@@ -73,6 +73,18 @@
  * PRÉ-#5156 nos dois hooks: "ativo nesta máquina" já basta, independente de
  * quem chama** — nunca um requisito novo que quebraria uma rodada em voo.
  *
+ * **Marker POR SESSÃO (#9347).** O path único por máquina deixou de bastar
+ * quando duas rodadas overnight simultâneas na MESMA máquina viraram caso
+ * suportado (#6328): o `--start` da 2ª sobrescrevia o marker da 1ª e o `--end`
+ * dela o apagava, desarmando em silêncio o guard da Regra 1 e o desconto de
+ * effort da 1ª, ainda viva (ocorrência 261001). Agora `--start` com
+ * `session_id` grava `.active-session-{tag}.{sessionId}.json`, `--end` só
+ * remove o marker desta sessão, e os hooks leem TODOS os markers da máquina
+ * (legado + por-sessão). O legado `.active-session-{tag}.json` continua
+ * existindo pra marker anônimo e é lido/migrado pra compatibilidade com
+ * rodadas iniciadas antes desta mudança — ver `activeSessionPath`,
+ * `endSession` e `listActiveSessionMarkerPaths`.
+ *
  * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1, Fase 0 passo 8
  * e Fase 2 passo 0):
  *   npx tsx scripts/overnight-session-marker.ts --start
@@ -94,13 +106,21 @@
  * silêncio.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 
 /** Fases da rodada (#4450) — ver docblock do topo do arquivo. */
 export type OvernightPhase = "briefing" | "autonomous";
+
+/**
+ * Mesmo teto de staleness dos dois hooks consumidores (`MAX_SESSION_AGE_MS`
+ * em `pr-create-review.mjs`/`block-askuserquestion-overnight-autonomous.mjs`).
+ * Usado aqui por `readPhase` (agregação multi-marker, #9347) e pela poda de
+ * markers por-sessão abandonados em `startSession`.
+ */
+export const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Sanitiza o hostname pra um nome de arquivo seguro. Nunca lança — string vazia em falha. */
 export function machineTag(): string {
@@ -111,8 +131,75 @@ export function machineTag(): string {
   }
 }
 
-export function activeSessionPath(repoRoot: string, tag: string = machineTag()): string {
-  return join(repoRoot, "data", "overnight", `.active-session-${tag}.json`);
+/** Sanitiza um `session_id` pra segmento de nome de arquivo (mesmo alfabeto do `machineTag`). */
+export function sessionFileSegment(sessionId: string): string {
+  return sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/**
+ * Path do marker (#3322). **#9347 — marker POR SESSÃO:** com `sessionId`, o
+ * path é `.active-session-{tag}.{sessionId}.json` — duas rodadas overnight
+ * simultâneas na MESMA máquina (caso suportado desde o #6328: planos
+ * `261001b`, `261001c`...) gravam arquivos distintos, e o `--start`/`--end`
+ * de uma nunca sobrescreve nem apaga o marker da outra. Sem `sessionId`, o
+ * path é o LEGADO por máquina `.active-session-{tag}.json` (marker anônimo,
+ * `--allow-no-session-id`, ou o de uma rodada iniciada antes do #9347 — que
+ * continua sendo lido pelos hooks, ver `listActiveSessionMarkerPaths`).
+ *
+ * Separador `.` (não `-`) entre tag e sessão de propósito: o tag sanitizado
+ * só contém `[a-zA-Z0-9_-]`, então `.` nunca aparece nele — com `-`, o marker
+ * por-sessão do host `host` seria indistinguível do legado de um host chamado
+ * `host-{algo}`.
+ */
+export function activeSessionPath(repoRoot: string, tag: string = machineTag(), sessionId?: string): string {
+  const name = sessionId
+    ? `.active-session-${tag}.${sessionFileSegment(sessionId)}.json`
+    : `.active-session-${tag}.json`;
+  return join(repoRoot, "data", "overnight", name);
+}
+
+/**
+ * (#9347) Todos os markers desta máquina — o legado `.active-session-{tag}.json`
+ * (se existir) + cada `.active-session-{tag}.{sessionId}.json`. Nunca lança:
+ * diretório ausente/ilegível → `[]`. Os dois hooks consumidores DUPLICAM esta
+ * lógica (self-contained, ver docblock do topo) — mudar aqui = mudar lá.
+ */
+export function listActiveSessionMarkerPaths(repoRoot: string, tag: string = machineTag()): string[] {
+  const dir = join(repoRoot, "data", "overnight");
+  const legacyName = `.active-session-${tag}.json`;
+  const prefix = `.active-session-${tag}.`;
+  try {
+    const out: string[] = [];
+    for (const name of readdirSync(dir)) {
+      if (name === legacyName) {
+        out.push(join(dir, name));
+        continue;
+      }
+      if (!name.startsWith(prefix) || !name.endsWith(".json")) continue;
+      const middle = name.slice(prefix.length, name.length - ".json".length);
+      if (/^[a-zA-Z0-9_-]+$/.test(middle)) out.push(join(dir, name));
+    }
+    return out.sort();
+  } catch {
+    return [];
+  }
+}
+
+function readMarkerFile(path: string): Record<string, unknown> | null {
+  try {
+    if (!existsSync(path)) return null;
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isFresh(marker: Record<string, unknown>, now: number): boolean {
+  const startedAtMs = Date.parse(String(marker.started_at));
+  if (!Number.isFinite(startedAtMs)) return false;
+  const ageMs = now - startedAtMs;
+  return ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS;
 }
 
 /**
@@ -132,28 +219,116 @@ export function activeSessionPath(repoRoot: string, tag: string = machineTag()):
  * fornecido — omitido, o marker sai no formato antigo (sem o campo), que os
  * dois hooks consumidores tratam como "comportamento pré-#5156" (ver docblock
  * do topo do arquivo).
+ *
+ * **#9347:** com `sessionId`, grava no arquivo POR SESSÃO (ver
+ * `activeSessionPath`) — nunca toca o marker de outra rodada viva nesta
+ * máquina. Duas limpezas, ambas restritas ao que comprovadamente não é de
+ * outra rodada viva: (1) migração — um marker LEGADO cujo `session_id` é o
+ * desta mesma sessão (rodada iniciada antes do #9347 e retomada agora) é
+ * removido, pra não sobrar cópia duplicada; (2) markers por-sessão de OUTRAS
+ * sessões já stale (>24h, sem `started_at` válido, ou JSON corrompido) são
+ * podados — uma rodada que crashou sem `--end` nunca mais teria o arquivo
+ * sobrescrito, ao contrário do legado.
  */
 export function startSession(repoRoot: string, startedAtIso: string, sessionId?: string): void {
-  const path = activeSessionPath(repoRoot);
+  const tag = machineTag();
+  const path = activeSessionPath(repoRoot, tag, sessionId);
   mkdirSync(dirname(path), { recursive: true });
   const marker: Record<string, unknown> = { started_at: startedAtIso, phase: "briefing" };
   if (sessionId) marker.session_id = sessionId;
   writeFileSync(path, JSON.stringify(marker), "utf8");
+  if (!sessionId) return;
+  const legacyPath = activeSessionPath(repoRoot, tag);
+  const now = Date.parse(startedAtIso);
+  for (const other of listActiveSessionMarkerPaths(repoRoot, tag)) {
+    if (other === path) continue;
+    try {
+      const m = readMarkerFile(other);
+      if (other === legacyPath) {
+        if (m && m.session_id === sessionId) rmSync(other, { force: true });
+        continue;
+      }
+      if (Number.isFinite(now) && (!m || !isFresh(m, now))) rmSync(other, { force: true });
+    } catch {
+      // Poda é best-effort — nunca derruba o --start.
+    }
+  }
 }
 
-/** Remove o marker de sessão ativa. Idempotente — no-op se já ausente. */
-export function endSession(repoRoot: string): void {
-  const path = activeSessionPath(repoRoot);
-  if (existsSync(path)) rmSync(path);
+/** Resultado de `endSession` (#9347) — o que foi removido e o que foi preservado. */
+export interface EndSessionResult {
+  removed: string[];
+  /** Marker legado preservado por pertencer a OUTRA sessão (ou não ser atribuível a esta). */
+  keptForeign: string | null;
 }
 
 /**
- * Lê o `phase` atual do marker (`data/overnight/.active-session-{tag}.json`),
- * sem mutar nada — #8174. Consumido por `overnight-watchdog.ts` pra
- * distinguir "coordenador legitimamente bloqueado esperando o `AskUserQuestion`
- * do briefing" (que não tem teto de tempo — o editor pode demorar o quanto
- * quiser pra responder, ver §"Briefing" da SKILL.md) de "morreu no meio do
- * loop autônomo" (aí sim, stall real).
+ * Remove o marker de sessão ativa. Idempotente — no-op se já ausente.
+ *
+ * **#9347 — só remove o que é DESTA sessão.** Com `sessionId`: remove o
+ * arquivo por-sessão dela e o marker legado SÓ se o `session_id` gravado nele
+ * for o desta sessão (rodada pré-#9347). O legado de OUTRA sessão — ou
+ * anônimo, que não dá pra atribuir — nunca é apagado por um `--end` alheio:
+ * era exatamente o bug (a 2ª rodada encerrava e desarmava em silêncio o guard
+ * da Regra 1 da 1ª, ainda viva). Sem `sessionId` (chamada anônima): remove só
+ * um legado também anônimo — nunca um marker que declara dono.
+ */
+export function endSession(repoRoot: string, sessionId?: string): EndSessionResult {
+  const tag = machineTag();
+  const removed: string[] = [];
+  let keptForeign: string | null = null;
+  if (sessionId) {
+    const own = activeSessionPath(repoRoot, tag, sessionId);
+    if (existsSync(own)) {
+      rmSync(own, { force: true });
+      removed.push(own);
+    }
+  }
+  const legacyPath = activeSessionPath(repoRoot, tag);
+  if (existsSync(legacyPath)) {
+    const owner = readMarkerFile(legacyPath)?.session_id;
+    const isOwn = sessionId ? owner === sessionId : owner === undefined || owner === null;
+    if (isOwn) {
+      rmSync(legacyPath, { force: true });
+      removed.push(legacyPath);
+    } else {
+      keptForeign = legacyPath;
+    }
+  }
+  return { removed, keptForeign };
+}
+
+/**
+ * (#9347) Resolve QUAL arquivo de marker `setPhase` deve atualizar:
+ *   - com `sessionId`: o por-sessão, se existir; senão o legado, se ele for
+ *     desta sessão ou anônimo (rodada pré-#9347, ou `--start` anônimo seguido
+ *     de `--phase` já com o id — contrato #5156); senão nenhum.
+ *   - sem `sessionId`: o legado, se existir; senão o ÚNICO por-sessão desta
+ *     máquina (2+ → nenhum: ambíguo, nunca chuta qual rodada mexer).
+ */
+function resolvePhaseTarget(repoRoot: string, sessionId?: string): string | null {
+  const tag = machineTag();
+  const legacyPath = activeSessionPath(repoRoot, tag);
+  if (sessionId) {
+    const own = activeSessionPath(repoRoot, tag, sessionId);
+    if (existsSync(own)) return own;
+    if (existsSync(legacyPath)) {
+      const owner = readMarkerFile(legacyPath)?.session_id;
+      if (owner === undefined || owner === null || owner === sessionId) return legacyPath;
+    }
+    return null;
+  }
+  if (existsSync(legacyPath)) return legacyPath;
+  const perSession = listActiveSessionMarkerPaths(repoRoot, tag).filter((p) => p !== legacyPath);
+  return perSession.length === 1 ? perSession[0]! : null;
+}
+
+/**
+ * Lê o `phase` atual do marker, sem mutar nada — #8174. Consumido por
+ * `overnight-watchdog.ts` pra distinguir "coordenador legitimamente bloqueado
+ * esperando o `AskUserQuestion` do briefing" (que não tem teto de tempo — o
+ * editor pode demorar o quanto quiser pra responder, ver §"Briefing" da
+ * SKILL.md) de "morreu no meio do loop autônomo" (aí sim, stall real).
  *
  * Fail-soft TOTAL, mesmo espírito de `setPhase`: marker ausente (nenhuma
  * rodada overnight ativa nesta máquina), JSON corrompido, ou campo `phase`
@@ -162,16 +337,34 @@ export function endSession(repoRoot: string): void {
  * nem que `"autonomous"`, então nunca suprime um alarme por engano quando o
  * marker simplesmente não existe (rodada que nunca chamou `--start`, ou já
  * foi encerrada via `--end`).
+ *
+ * **#9347 — agregação multi-marker:** com várias rodadas vivas nesta máquina
+ * (um marker por sessão), `sessionId` seleciona o dessa sessão. Sem ele (caso
+ * do watchdog, que não conhece o `session_id` da rodada): com um único marker,
+ * devolve o `phase` dele (comportamento pré-#9347, sem filtro de staleness);
+ * com vários, considera só os não-stale (≤24h) e devolve `"briefing"` se
+ * QUALQUER um está em briefing, senão `"autonomous"` se algum está, senão
+ * `null`. Trade-off aceito: uma rodada em briefing mascara o stall de outra,
+ * autônoma, na mesma máquina — mesmo escopo amplo já aceito no #8174, e o
+ * cenário (2 rodadas simultâneas, uma travada) é raro.
  */
-export function readPhase(repoRoot: string, tag: string = machineTag()): OvernightPhase | null {
-  const path = activeSessionPath(repoRoot, tag);
-  if (!existsSync(path)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    return parsed?.phase === "briefing" || parsed?.phase === "autonomous" ? parsed.phase : null;
-  } catch {
-    return null;
-  }
+export function readPhase(
+  repoRoot: string,
+  tag: string = machineTag(),
+  sessionId?: string,
+  now: number = Date.now(),
+): OvernightPhase | null {
+  const pick = (m: Record<string, unknown> | null | undefined): OvernightPhase | null =>
+    m?.phase === "briefing" || m?.phase === "autonomous" ? (m.phase as OvernightPhase) : null;
+  const markers = listActiveSessionMarkerPaths(repoRoot, tag)
+    .map(readMarkerFile)
+    .filter((m): m is Record<string, unknown> => m !== null);
+  if (sessionId) return pick(markers.find((m) => m.session_id === sessionId));
+  if (markers.length === 1) return pick(markers[0]);
+  const phases = markers.filter((m) => isFresh(m, now)).map((m) => pick(m));
+  if (phases.includes("briefing")) return "briefing";
+  if (phases.includes("autonomous")) return "autonomous";
+  return null;
 }
 
 /**
@@ -187,10 +380,13 @@ export function readPhase(repoRoot: string, tag: string = machineTag()): Overnig
  * uma rodada iniciada antes do #5156) mas o `session_id` já está disponível
  * agora. Omitido, preserva o `session_id` já presente (se houver) intocado —
  * mesmo espírito de "preserva campos que não conhece".
+ *
+ * **#9347:** qual arquivo é atualizado sai de `resolvePhaseTarget` — nunca o
+ * marker de OUTRA sessão viva.
  */
 export function setPhase(repoRoot: string, phase: OvernightPhase, sessionId?: string): boolean {
-  const path = activeSessionPath(repoRoot);
-  if (!existsSync(path)) return false;
+  const path = resolvePhaseTarget(repoRoot, sessionId);
+  if (!path) return false;
   try {
     const current = JSON.parse(readFileSync(path, "utf8"));
     const updated = { ...current, phase };
@@ -280,15 +476,26 @@ if (isMainModule(import.meta.url)) {
       const sessionId = resolveSessionIdOrThrow(rawSessionId, allowAnonymous);
       startSession(repoRoot, new Date().toISOString(), sessionId);
       process.stdout.write(
-        `overnight session marker: started, phase=briefing${sessionId ? `, session_id=${sessionId}` : ""} (${activeSessionPath(repoRoot)})\n`,
+        `overnight session marker: started, phase=briefing${sessionId ? `, session_id=${sessionId}` : ""} (${activeSessionPath(repoRoot, undefined, sessionId)})\n`,
       );
     } catch (err) {
       process.stderr.write(`overnight-session-marker: erro — ${(err as Error).message}\n`);
       process.exitCode = 1;
     }
   } else if (arg === "--end") {
-    endSession(repoRoot);
-    process.stdout.write(`overnight session marker: ended (${activeSessionPath(repoRoot)})\n`);
+    // #9347: --end só remove o marker DESTA sessão. Sem --session-id (chamada
+    // anônima) só remove um legado também anônimo — nunca o de outra rodada.
+    const { removed, keptForeign } = endSession(repoRoot, rawSessionId);
+    process.stdout.write(
+      `overnight session marker: ended${rawSessionId ? `, session_id=${rawSessionId}` : ""} ` +
+        `(removido: ${removed.length ? removed.join(", ") : "nada — já ausente"})\n`,
+    );
+    if (keptForeign) {
+      process.stderr.write(
+        `overnight session marker: preservado ${keptForeign} — pertence a OUTRA sessão (ou não é atribuível a ` +
+          "esta chamada); um --end alheio nunca apaga o marker de outra rodada viva (#9347).\n",
+      );
+    }
   } else if (arg === "--phase") {
     const phase = argv[1];
     if (phase !== "briefing" && phase !== "autonomous") {
@@ -298,10 +505,13 @@ if (isMainModule(import.meta.url)) {
       try {
         const sessionId = resolveSessionIdOrThrow(rawSessionId, allowAnonymous);
         if (setPhase(repoRoot, phase, sessionId)) {
-          process.stdout.write(`overnight session marker: phase=${phase} (${activeSessionPath(repoRoot)})\n`);
+          process.stdout.write(
+            `overnight session marker: phase=${phase}${sessionId ? `, session_id=${sessionId}` : ""}\n`,
+          );
         } else {
           process.stderr.write(
-            `overnight session marker: nenhum marker ativo em ${activeSessionPath(repoRoot)} — rode --start antes de --phase\n`,
+            `overnight session marker: nenhum marker desta sessão em ${activeSessionPath(repoRoot, undefined, sessionId)} ` +
+              "(nem legado atribuível a ela) — rode --start antes de --phase\n",
           );
           process.exitCode = 1;
         }

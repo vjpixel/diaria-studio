@@ -578,7 +578,8 @@ export function hasHealthyIdleSession(rootDir: string, kind: WatchableKind, nowM
 
 /**
  * #8174: `true` quando o coordenador `overnight` está no BRIEFING da Fase 0
- * (`data/overnight/.active-session-{hostname}.json` → `phase: "briefing"`)
+ * (`data/overnight/.active-session-{hostname}*.json` → `phase: "briefing"`;
+ * com várias rodadas na máquina, agregado por `readPhase` — #9347)
  * — bloqueado esperando a resposta do `AskUserQuestion` único do briefing,
  * um estado que **não tem teto de tempo** (a SKILL.md documenta: "o briefing
  * pressupõe editor presente... se ele sair no meio, a pergunta fica pendente
@@ -1073,7 +1074,7 @@ export function diagnoseWatchdogActivity(params: {
       lines: [
         `[watchdog] Rodada ${aammdd} sem atividade há ${elapsedMin} min, mas sessão registrada como ` +
           `aguardando-resposta/pausada (session-registry.ts) ou coordenador overnight em briefing ` +
-          `(#8174, .active-session-{hostname}.json → phase:"briefing") — não é stall. Skipping.`,
+          `(#8174, .active-session-{hostname}*.json → phase:"briefing") — não é stall. Skipping.`,
       ],
       elapsedMin,
     };

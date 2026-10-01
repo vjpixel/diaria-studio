@@ -95,16 +95,31 @@ export interface OnboardingTransactionalStepInfo {
    *  envio Kit, e o lote fica em `email{1,2}_kit_lot_id`. Só o e-mail 3
    *  reconcilia pelo lote aqui (`findKitLotForEntry`, ver `buildEmail3Info`). */
   brevoMessageId: string | null;
+  /** #7922 (§3 do corte: "entradas processadas aparecem com `provider: "kit"`
+   *  no funil"): qual transporte entregou esta etapa. `"kit"` quando a entrada
+   *  carrega o `lot_id` do lote Kit que a serviu (`email{1,2}_kit_lot_id`,
+   *  gravado por `applyKitLotToEntries`) — ou, só no e-mail 1, a proveniência
+   *  explícita `email1_transport: "kit"` (#9015); `"brevo"` em qualquer outro
+   *  envio (o Kit nunca gravou `sent_at` antes do #9014, então todo envio sem
+   *  lote é Brevo); `null` enquanto não enviado. */
+  provider: OnboardingProvider | null;
+  /** `lot_id` do lote Kit que serviu esta etapa — `null` fora do Kit. */
+  kitLotId: string | null;
 }
 
 function buildTransactionalStep(
   sentAt: string | null,
   brevoId: string | null,
   blockedNotActive: boolean,
+  kitLotId: string | null = null,
+  explicitTransport: OnboardingProvider | null = null,
 ): OnboardingTransactionalStepInfo {
-  if (sentAt != null) return { state: "sent", sentAt, brevoMessageId: brevoId };
-  if (blockedNotActive) return { state: "blocked_not_active", sentAt: null, brevoMessageId: null };
-  return { state: "not_reached", sentAt: null, brevoMessageId: null };
+  if (sentAt != null) {
+    const provider: OnboardingProvider = kitLotId != null || explicitTransport === "kit" ? "kit" : "brevo";
+    return { state: "sent", sentAt, brevoMessageId: brevoId, provider, kitLotId: provider === "kit" ? kitLotId : null };
+  }
+  if (blockedNotActive) return { state: "blocked_not_active", sentAt: null, brevoMessageId: null, provider: null, kitLotId: null };
+  return { state: "not_reached", sentAt: null, brevoMessageId: null, provider: null, kitLotId: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +403,13 @@ export function buildOnboardingFunnelEntry(entry: OnboardingEntry, opts: BuildFu
   const confirmedAt = anchor != null ? new Date(anchor * 1000).toISOString() : null;
   const isNovo = entry.email1_sent_at == null && entry.email2_sent_at == null && entry.email3_state === "pending";
 
-  const email1 = buildTransactionalStep(entry.email1_sent_at, entry.email1_brevo_id, isNovo && entry.status_detectado !== "active");
+  const email1 = buildTransactionalStep(
+    entry.email1_sent_at,
+    entry.email1_brevo_id,
+    isNovo && entry.status_detectado !== "active",
+    entry.email1_kit_lot_id ?? null,
+    entry.email1_transport ?? null,
+  );
   // #7917 item 2 (fleet review PR #8955): antes, `email2Due` só checava
   // "tem âncora e ainda não enviado" — sem o gate de tempo de
   // `dueForEmail2` (nowSec >= anchor + email2Days*DAY_S), uma entrada
@@ -397,7 +418,12 @@ export function buildOnboardingFunnelEntry(entry: OnboardingEntry, opts: BuildFu
   // `onboarding-state.ts` usa pra decidir o envio real) em vez de
   // reimplementar o cálculo aqui.
   const email2Due = dueForEmail2(entry, opts.nowSec, opts.email2Days ?? 3);
-  const email2 = buildTransactionalStep(entry.email2_sent_at, entry.email2_brevo_id, email2Due && entry.status_detectado !== "active");
+  const email2 = buildTransactionalStep(
+    entry.email2_sent_at,
+    entry.email2_brevo_id,
+    email2Due && entry.status_detectado !== "active",
+    entry.email2_kit_lot_id ?? null,
+  );
 
   const email3 = buildEmail3Info(entry, opts);
 
@@ -440,6 +466,13 @@ export interface OnboardingFunnelSummary {
   seededExcluded: number;
   /** Contagem por `email3.stage`, só sobre entradas NÃO semeadas. */
   byEmail3Stage: Record<OnboardingEmail3Stage, number>;
+  /** #7922: e-mails 1/2 ENVIADOS por transporte, só sobre entradas NÃO
+   *  semeadas — o que o §3 do corte manda conferir no Studio depois do flip
+   *  (entradas processadas com `provider: "kit"`). */
+  sentByProvider: {
+    email1: Record<OnboardingProvider, number>;
+    email2: Record<OnboardingProvider, number>;
+  };
   /** Rascunhos/lotes parados (`stale: true`) — idade + próxima ação, pronto
    *  pra render de tabela (issue: "rascunhos pendentes mostram idade e
    *  próxima ação"). Ordenado por idade decrescente (mais velho primeiro). */
@@ -509,6 +542,10 @@ export function summarizeOnboardingFunnel(
   let convitesCriados = 0;
   let convitesEnviados = 0;
   let primeirosApoiosConfirmados = 0;
+  const sentByProvider: OnboardingFunnelSummary["sentByProvider"] = {
+    email1: { brevo: 0, kit: 0 },
+    email2: { brevo: 0, kit: 0 },
+  };
 
   for (const e of entries) {
     if (e.seededBy != null) {
@@ -516,6 +553,8 @@ export function summarizeOnboardingFunnel(
       continue;
     }
     byEmail3Stage[e.email3.stage]++;
+    if (e.email1.provider != null) sentByProvider.email1[e.email1.provider]++;
+    if (e.email2.provider != null) sentByProvider.email2[e.email2.provider]++;
 
     // "elegível" = a régua D+10 já venceu e a entrada não ficou travada
     // esperando confirmação de assinatura.
@@ -545,6 +584,7 @@ export function summarizeOnboardingFunnel(
     total: entries.length,
     seededExcluded,
     byEmail3Stage,
+    sentByProvider,
     staleDrafts,
     cohort: {
       elegiveis,

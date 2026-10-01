@@ -90,6 +90,8 @@ import {
   type NoTrailingEllipsisReport,
 } from "./lib/lint-checks/no-trailing-ellipsis.ts"; // #2881
 import { checkRadarSummaryMatchesTitle } from "./lib/lint-checks/radar-summary-matches-title.ts"; // #8594
+import { checkPoolSummaryQuality } from "./lib/lint-checks/pool-summary-quality.ts"; // #9358
+export { checkPoolSummaryQuality } from "./lib/lint-checks/pool-summary-quality.ts"; // #9358
 export { checkRadarSummaryMatchesTitle } from "./lib/lint-checks/radar-summary-matches-title.ts"; // #8594
 import {
   checkMidSentenceEllipsis,
@@ -581,6 +583,14 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
       checkRadarSummaryMatchesTitle(md),
     );
 
+    // #9358: resumo de item do pool teaser/cortado/curto/boilerplate.
+    // WARN-ONLY aqui: no gate o texto pode já ser do editor (#7401). O mesmo
+    // check BLOQUEIA o sentinel da Etapa 2 (`reviewed-pool-summary-quality`
+    // em invariant-checks/stage-2.ts), onde o texto ainda é da pipeline.
+    runCheckSafely(push, "pool-summary-quality", "#9358", "warn-only", () =>
+      checkPoolSummaryQuality(md),
+    );
+
     runCheckSafely(push, "mid-sentence-ellipsis", "#3196", "warn-only", () =>
       checkMidSentenceEllipsis(md),
     );
@@ -787,6 +797,7 @@ import { runCli as run_noTrailingEllipsis } from "./lib/lint-checks/cli/no-trail
 import { runCli as run_radarSummaryMatchesTitle } from "./lib/lint-checks/cli/radar-summary-matches-title.ts"; // #8594
 import { runCli as run_midSentenceEllipsis } from "./lib/lint-checks/cli/mid-sentence-ellipsis.ts";
 import { runCli as run_noUntranslatedSummary } from "./lib/lint-checks/cli/no-untranslated-summary.ts";
+import { runCli as run_poolSummaryQuality } from "./lib/lint-checks/cli/pool-summary-quality.ts"; // #9358
 import { runCli as run_videoLinksAreYoutube } from "./lib/lint-checks/cli/video-links-are-youtube.ts";
 import { runCli as run_sectionLinksResolve } from "./lib/lint-checks/cli/section-links-resolve.ts";
 import { runCli as run_aprofundeFormat } from "./lib/lint-checks/cli/aprofunde-format.ts";
@@ -832,6 +843,7 @@ const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string
   "radar-summary-matches-title": run_radarSummaryMatchesTitle, // #8594
   "mid-sentence-ellipsis": run_midSentenceEllipsis,
   "no-untranslated-summary": run_noUntranslatedSummary,
+  "pool-summary-quality": run_poolSummaryQuality, // #9358
   "video-links-are-youtube": run_videoLinksAreYoutube,
   "section-links-resolve": run_sectionLinksResolve,
   "aprofunde-format": run_aprofundeFormat,
@@ -908,6 +920,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check no-trailing-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check mid-sentence-ellipsis --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-untranslated-summary --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check pool-summary-quality --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check video-links-are-youtube --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +

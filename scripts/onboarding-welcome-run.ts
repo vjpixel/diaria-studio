@@ -70,7 +70,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveBeehiivConfig, beehiivApiBase, type BeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { kitFetch } from "./lib/kit-client.ts";
+import { kitFetch, KitApiError } from "./lib/kit-client.ts";
 import {
   listAllKitSubscribers,
   getSubscriberById as getKitSubscriberById,
@@ -370,6 +370,23 @@ export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Pr
 }
 
 /**
+ * #7922 (alarme de continuidade do transporte Kit): falha de CONSULTA que não
+ * é ausência do assinante. Conta: erro de rede (qualquer erro não-HTTP), e
+ * TODO `KitApiError` exceto 404/422 — inclusive 400/401/403/409, não só
+ * auth e 429/5xx. Escolha deliberada: qualquer desses impede a consulta de
+ * TODOS os candidatos do mesmo jeito (key revogada, request malformado por
+ * mudança de API), e nenhum é crônico de UMA pessoa. Não conta: 404 e lista
+ * vazia na busca por e-mail (assinante saiu do Kit), 422, e a integridade de
+ * dado da busca por e-mail sem match exato (#7373) — esses são crônicos por
+ * assinante e não podem virar alarme de transporte.
+ */
+export function isKitTransportError(err: unknown): boolean {
+  if (err instanceof KitApiError) return err.status !== 404 && err.status !== 422;
+  if (err instanceof Error && err.message.startsWith("getKitSubscriberByEmail(")) return false;
+  return true;
+}
+
+/**
  * Equivalente Kit de `fetchSubscriptionById` (refresh de status + stats antes
  * da decisão).
  *
@@ -401,14 +418,18 @@ export async function fetchSubscriptionByIdKit(
   config: KitConfig,
   subscriptionId: string,
   emailFallback?: string,
+  /** #7922: preenchido quando o resultado é `null` POR erro de transporte
+   *  (`isKitTransportError`) — `null` por "não encontrado" deixa `false`. */
+  diag?: { transportError: boolean },
 ): Promise<{ status: string; stats: OpenStats | null; resolvedKitId?: number } | null> {
+  if (diag) diag.transportError = false;
   const id = Number(subscriptionId);
   if (Number.isFinite(id)) {
     try {
       const subscriber = await getKitSubscriberById(id, config);
       const stats = await fetchSubscriberStatsKit(id, config);
       return { status: subscriber.state, stats };
-    } catch {
+    } catch (err) {
       // NÃO devolve `null` aqui quando há e-mail disponível (achado do review
       // da PR #7693, confiança 82): o id numérico pode ser um
       // `kit_subscriber_id` CACHEADO, que a docstring do campo já declara não
@@ -418,7 +439,10 @@ export async function fetchSubscriptionByIdKit(
       // "refresh falhou" que este PR existe pra fechar, só que atrás de um
       // gatilho mais raro. O e-mail é a identidade estável da entrada; se o
       // id falhou, vale tentar por ele antes de desistir.
-      if (!emailFallback) return null;
+      if (!emailFallback) {
+        if (diag) diag.transportError = isKitTransportError(err);
+        return null;
+      }
     }
   }
 
@@ -427,6 +451,8 @@ export async function fetchSubscriptionByIdKit(
   if (!emailFallback) return null;
   try {
     const subscriber = await getKitSubscriberByEmail(emailFallback, config);
+    // Ausência real na busca por e-mail: o Kit respondeu (alcançável), então
+    // não é erro de transporte mesmo que o id numérico antes tenha falhado.
     if (!subscriber) return null;
     const stats = await fetchSubscriberStatsKit(subscriber.id, config);
     return { status: subscriber.state, stats, resolvedKitId: subscriber.id };
@@ -438,6 +464,7 @@ export async function fetchSubscriptionByIdKit(
     process.stderr.write(
       `[onboarding] resolução por e-mail falhou para ${emailFallback}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
+    if (diag) diag.transportError = isKitTransportError(err);
     return null;
   }
 }

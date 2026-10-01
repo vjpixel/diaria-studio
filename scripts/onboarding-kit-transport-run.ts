@@ -89,6 +89,7 @@ import {
   buildRunPlan,
   selectCandidatesNeedingRefresh,
   filterKitPlanForBrevoInFlight,
+  ownerTransportFor,
   type RunAction,
 } from "./lib/onboarding-state.ts";
 import {
@@ -101,6 +102,10 @@ import {
   rebuildLotPlanForRecreate,
   findLatestLotForKindDate,
   applyKitLotToEntries,
+  recordKitSendRun,
+  countKitContentSkips,
+  mapKitBroadcastStatusToLocal,
+  type KitSendRunRecord,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
   type OnboardingKitLotKind,
@@ -403,6 +408,36 @@ export function backfillTerminalLotEntries(storePath: string, lotId: string, now
   return touched;
 }
 
+/**
+ * #7922 (pré-requisito do corte, §3 de docs/onboarding-kit-cutover.md):
+ * registra o resultado de uma rodada `--send` NÃO-piloto em
+ * `store.kit_transport.last_send_run` + `consecutive_failed_send_runs`
+ * (`recordKitSendRun`), sob o MESMO lock + releitura fresca de
+ * `persistLotUpdate` — é o sinal que o alarme de continuidade
+ * (`onboarding-continuity-alarm.ts`) lê quando o transporte Kit está ativo.
+ * Store corrompido lança (mesma classe de `claimLot`/`persistLotUpdate`:
+ * nunca regravar um vazio por cima do arquivo bom).
+ */
+export function stampKitSendRun(storePath: string, run: KitSendRunRecord): void {
+  const lockPath = `${storePath}.lock`;
+  withFileLock(
+    lockPath,
+    () => {
+      const { store: freshStore, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(
+          `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — recusando registrar a ` +
+            `rodada --send (last_send_run). Repare/restaure o store antes de rodar --send de novo.`,
+        );
+      }
+      freshStore.kit_transport ??= { lots: {} };
+      recordKitSendRun(freshStore.kit_transport, run);
+      writeStore(freshStore, storePath);
+    },
+    30_000,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -434,18 +469,44 @@ async function main(): Promise<void> {
     storePath = args.storePath ?? realStorePath;
   }
 
+  // #7922 (alarme de continuidade do transporte Kit): com o kill switch
+  // LIGADO, uma rodada `--send` de produção que aborta antes de processar os
+  // lotes (backend errado, config Kit ausente) é e-mail que não sai —
+  // registra a rodada como abortada. Store CORROMPIDO não tem como ser
+  // registrado (a gravação também falha) e o alarme NÃO cobre esse caso:
+  // ele lê o mesmo store ilegível e responde `cannot-verify`, sem issue nem
+  // e-mail — quem sinaliza é o exit != 0 desta rodada.
+  const isProductionSend =
+    args.send && !args.pilot && args.cancelLotId == null && args.approveEmail3LotId == null && !args.reconcileOnly && kitTransportCfg.enabled === true;
+  const abortSend: (reason: string) => never = (reason) => {
+    if (isProductionSend) {
+      recordKitSendRunSafely(storePath, {
+        lots_created: 0,
+        lots_failed: 0,
+        lots_unverified: 0,
+        blocked_concurrent: 0,
+        refresh_candidates: 0,
+        refresh_failed: 0,
+        content_skipped: 0,
+        aborted: true,
+        error: redactEmails(reason),
+      });
+    }
+    process.exit(2);
+  };
+
   const backend = resolveNewsletterSubscriberBackend(configPathAbs);
   if (backend !== "kit") {
     process.stderr.write(
       `[onboarding-kit-transport] backend de assinante atual é "${backend}", não "kit" — nada a taguear/enviar. Abortando.\n`,
     );
-    process.exit(2);
+    abortSend(`backend de assinante "${backend}", não "kit"`);
   }
 
   const kitResult = resolveKitConfig();
   if (!kitResult.ok) {
     process.stderr.write(`[onboarding-kit-transport] ${kitResult.reason}\n`);
-    process.exit(2);
+    abortSend(`config Kit: ${kitResult.reason}`);
   }
   const kitCfg = kitResult.config;
 
@@ -460,7 +521,7 @@ async function main(): Promise<void> {
       `[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO (JSON ilegível) — abortando antes de decidir/tocar ` +
         `qualquer lote sobre um snapshot que "readStore" já esvaziou silenciosamente. Repare/restaure o store antes de rodar de novo.\n`,
     );
-    process.exit(2);
+    abortSend("store corrompido");
   }
   store.kit_transport ??= { lots: {} };
 
@@ -644,6 +705,134 @@ async function main(): Promise<void> {
   }
 
   // --- Plano normal: candidatos devidos → lotes por kind ---
+  // #7922 (alarme de continuidade do transporte Kit): a rodada `--send` é
+  // SEMPRE registrada — inclusive quando morre no meio (claimLot/
+  // persistLotUpdate lançando): o registro sai com `aborted: true` e os
+  // contadores parciais, e o erro segue propagando (exit != 0).
+  const counters: SendRunCounters = {
+    lots_created: 0,
+    lots_failed: 0,
+    lots_unverified: 0,
+    blocked_concurrent: 0,
+    refresh_candidates: 0,
+    refresh_failed: 0,
+    content_skipped: 0,
+  };
+  const summary = await runAndRecordSendRun(storePath, args.send, counters, () =>
+    runNormalPlan({ args, onboardingCfg, store, kitCfg, kitTransportEnabled: kitTransportCfg.enabled === true, storePath }, counters),
+  );
+  console.log(JSON.stringify(summary, null, 2));
+}
+
+/**
+ * Roda o plano normal e REGISTRA a rodada `--send` (`stampKitSendRun`) —
+ * sempre: rodada que lança no meio sai como `aborted: true` com os contadores
+ * parciais e o erro segue propagando (exit != 0 via `main().catch`). Falha
+ * ao registrar não desfaz o que a rodada fez; vira exit != 0 visível.
+ * Exportado pra teste (o caminho de exceção não é reproduzível por
+ * subprocesso sem corromper o próprio store onde o registro é gravado).
+ */
+export async function runAndRecordSendRun(
+  storePath: string,
+  send: boolean,
+  counters: SendRunCounters,
+  run: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  let summary: Record<string, unknown>;
+  try {
+    summary = await run();
+  } catch (e) {
+    if (send) recordKitSendRunSafely(storePath, { ...counters, aborted: true, error: redactEmails((e as Error).message) });
+    throw e;
+  }
+  if (send) summary.send_run = recordKitSendRunSafely(storePath, { ...counters });
+  return summary;
+}
+
+/**
+ * #7922: confirma o agendamento de um broadcast de e-mail 1/2 recém-criado
+ * pela RELEITURA no Kit (mesma regra de `schedule-newsletter-kit.ts`: 2xx do
+ * POST não é prova; o que vale é o `send_at` ecoado no GET — `status` é só
+ * diagnóstico). Muta `lot`.
+ *   - `"scheduled"`: releitura ecoou `send_at` válido.
+ *   - `"unscheduled"`: releitura sem `send_at` — o e-mail não sai sozinho.
+ *     Apaga o broadcast e marca o lote `cancelled` (as entradas voltam ao
+ *     plano na rodada seguinte); se o DELETE falhar, o lote fica `created`
+ *     com `schedule_failed: true`, que tira dele o status de "confirmado"
+ *     (`hasConfirmedKitLotForEntry`) — nunca prende as entradas.
+ *   - `"unverified"`: a releitura falhou (rede/API). Não se declara falha de
+ *     ENTREGA sem leitura: o lote fica `created` (dedup preservada — não
+ *     cria 2º broadcast pra quem pode já estar agendado), e a rodada conta
+ *     como falha de transporte (`lots_unverified`). Um `--reconcile`
+ *     posterior lê o estado real.
+ */
+export async function confirmOrCleanUpScheduledLot(
+  lot: OnboardingKitLot,
+  deps: { getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>; deleteBroadcast: (id: number) => Promise<void> },
+): Promise<"scheduled" | "unscheduled" | "unverified"> {
+  const id = lot.broadcast_id as number;
+  let reread: { status?: string | null; send_at?: string | null };
+  try {
+    reread = await deps.getBroadcast(id);
+  } catch (e) {
+    lot.status = "created";
+    lot.last_error = `releitura do broadcast ${id} falhou — agendamento NÃO confirmado: ${redactEmails((e as Error).message)}`;
+    return "unverified";
+  }
+  const sendAt = reread.send_at ?? null;
+  if (sendAt != null && !Number.isNaN(Date.parse(sendAt))) {
+    lot.send_at = sendAt;
+    lot.status = mapKitBroadcastStatusToLocal(reread.status) === "completed" ? "completed" : "scheduled";
+    lot.last_error = null;
+    return "scheduled";
+  }
+  const why = `broadcast ${id} sem agendamento na releitura (send_at ${JSON.stringify(reread.send_at ?? null)}, status Kit "${reread.status ?? "?"}") — e-mail não sai sozinho`;
+  try {
+    await deps.deleteBroadcast(id);
+    lot.status = "cancelled";
+    lot.send_at = null;
+    lot.last_error = `${why}; broadcast apagado, lote cancelado (entradas voltam ao plano)`;
+  } catch (e) {
+    lot.status = "created";
+    lot.schedule_failed = true;
+    lot.last_error = `${why}; DELETE falhou (${redactEmails((e as Error).message)}) — rascunho ficou no Kit, lote marcado schedule_failed`;
+  }
+  return "unscheduled";
+}
+
+/** Contadores de uma rodada `--send` (tudo de `KitSendRunRecord` menos o carimbo). */
+type SendRunCounters = Omit<KitSendRunRecord, "at" | "aborted" | "error">;
+
+/** Carimba a rodada (`stampKitSendRun`) sem nunca lançar — falha de
+ *  registro vira stderr + exit != 0. Devolve o registro montado. */
+function recordKitSendRunSafely(storePath: string, run: Omit<KitSendRunRecord, "at">): KitSendRunRecord {
+  const record: KitSendRunRecord = { at: new Date().toISOString(), ...run };
+  try {
+    stampKitSendRun(storePath, record);
+  } catch (e) {
+    process.stderr.write(`[onboarding-kit-transport] falha ao registrar last_send_run: ${(e as Error).message}\n`);
+    process.exitCode = 1;
+  }
+  return record;
+}
+
+interface NormalPlanCtx {
+  args: CliArgs;
+  onboardingCfg: ReturnType<typeof loadOnboardingConfig>;
+  store: OnboardingStore;
+  kitCfg: KitConfig;
+  kitTransportEnabled: boolean;
+  storePath: string;
+}
+
+/**
+ * Plano normal (não-piloto): candidatos devidos → lotes por kind. Atualiza
+ * `counters` À MEDIDA que a rodada avança (o caller registra os parciais se
+ * algo lançar no meio). Devolve o resumo impresso.
+ */
+async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Promise<Record<string, unknown>> {
+  const { args, onboardingCfg, store, kitCfg, storePath } = ctx;
+  store.kit_transport ??= { lots: {} };
   const email2Days = onboardingCfg.email2_days ?? 3;
   const email3Days = onboardingCfg.email3_days ?? 10;
   const graceDays = onboardingCfg.email3_grace_days ?? 10;
@@ -664,14 +853,24 @@ async function main(): Promise<void> {
   // último estado bom conhecido pro store), mas forçar `kit_state: null`
   // só na hora de montar `rawCandidates` (abaixo) pra quem falhou agora.
   const refreshFailedThisRun = new Set<string>();
+  counters.refresh_candidates = candidates.length;
   for (const e of candidates) {
-    const fresh = await fetchSubscriptionByIdKit(kitCfg, e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id, e.email);
+    // #7922: só erro de TRANSPORTE (rede/auth/5xx) conta no alarme —
+    // "assinante não existe mais no Kit" é crônico por pessoa, não apagão.
+    const diag = { transportError: false };
+    const fresh = await fetchSubscriptionByIdKit(
+      kitCfg,
+      e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id,
+      e.email,
+      diag,
+    );
     if (fresh) {
       e.status_detectado = fresh.status ?? e.status_detectado;
       statsById[e.subscription_id] = fresh.stats ?? null;
       if (typeof fresh.resolvedKitId === "number") e.kit_subscriber_id = fresh.resolvedKitId;
     } else {
       refreshFailedThisRun.add(e.subscription_id);
+      if (diag.transportError) counters.refresh_failed++;
       process.stderr.write(`[onboarding-kit-transport] refresh falhou pra ${e.subscription_id} — status NÃO CONFIRMADO nesta rodada, excluído da seleção (fail-safe)\n`);
     }
   }
@@ -695,7 +894,7 @@ async function main(): Promise<void> {
         3: loadSnippet(snippetsDirAbs, 3),
       },
     }),
-    kitTransportCfg.enabled === true,
+    ctx.kitTransportEnabled,
     // #9014: defesa em profundidade — entrada já presente num lote Kit
     // confirmado de QUALQUER dia anterior nunca entra num lote novo.
     Object.values(store.kit_transport.lots),
@@ -712,6 +911,14 @@ async function main(): Promise<void> {
   // com o script saindo exit 0 o tempo todo). Mesma forma/convenção do
   // irmão — nunca inclui `entry` bruta (PII) no resumo impresso.
   summary.skips = plan.skips.map((s) => ({ etapa: s.etapa, motivo: s.motivo, detalhe: s.detalhe }));
+  // #7922: ação devida a ESTE executor barrada por guard de conteúdo
+  // (snippet ausente/pendente/inválido) é e-mail que não sai — conta como
+  // falha da rodada (`isFailedKitSendRun`), senão "0 lotes, 0 falhas" = ok
+  // indefinidamente.
+  counters.content_skipped = countKitContentSkips(
+    plan.skips,
+    (entry, etapa) => ownerTransportFor(entry, etapa, ctx.kitTransportEnabled) === "kit",
+  );
 
   for (const kind of ["email1", "email2", "email3"] as OnboardingKitLotKind[]) {
     const actionsOfKind: RunAction[] =
@@ -795,6 +1002,12 @@ async function main(): Promise<void> {
     // seq=1 fixo) — desde que a reconciliação passou a olhar pro lote MAIS
     // NOVO da chave, os dois podem divergir depois de uma recriação.
     if (claim.decision.action === "blocked_concurrent") {
+      // NÃO conta falha: um `pending` com `last_error` dentro da janela de
+      // stale (15 min, `LOT_STALE_AFTER_MS`) é a falha de uma rodada
+      // ANTERIOR, que já entrou no contador dela — contar de novo aqui
+      // dobraria a streak (que é por rodada) com uma única falha real. Conta
+      // só como `blocked_concurrent`, que deixa a rodada NEUTRA na streak.
+      counters.blocked_concurrent++;
       (summary.lots as unknown[]).push({
         kind,
         lot_id: claim.decision.lot.lot_id,
@@ -842,18 +1055,33 @@ async function main(): Promise<void> {
       });
       const broadcast = await createBroadcast(input, kitCfg);
       lot.broadcast_id = broadcast.id;
-      lot.status = broadcast.status === "scheduled" ? "scheduled" : "created";
-      lot.send_at = broadcast.send_at;
+      lot.status = mapKitBroadcastStatusToLocal(broadcast.status);
+      lot.send_at = broadcast.send_at ?? null;
+      // #7922: e-mail 1/2 nasce com `send_at` — o agendamento só vale
+      // confirmado pela RELEITURA (`confirmOrCleanUpScheduledLot`), nunca
+      // pelo `status` da resposta do POST. E-mail 3 nasce rascunho por
+      // desenho (aprovação humana), então `created` é o sucesso dele.
+      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg) });
       persistLotUpdate(storePath, lot);
-      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lot.recipient_emails.length });
+      if (outcome === "scheduled") {
+        counters.lots_created++;
+        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lot.recipient_emails.length });
+      } else if (outcome === "unverified") {
+        counters.lots_unverified++;
+        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, unverified: true, broadcast_id: broadcast.id, warning: lot.last_error });
+      } else {
+        counters.lots_failed++;
+        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, broadcast_id: broadcast.id, status: lot.status, error: lot.last_error });
+      }
     } catch (e) {
+      counters.lots_failed++;
       lot.last_error = (e as Error).message;
       persistLotUpdate(storePath, lot);
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, error: (e as Error).message });
     }
   }
 
-  console.log(JSON.stringify(summary, null, 2));
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
