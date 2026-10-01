@@ -15,14 +15,16 @@ const ALLOWED_RE =
 
 export const WRITER_DESTAQUE_AGENT = "writer-destaque";
 
-const DEFAULT_ROOT = posix.resolve(
-  fileURLToPath(new URL("../..", import.meta.url)).replaceAll("\\", "/"),
-);
+// fileURLToPath já devolve path absoluto nativo; só normaliza barras (posix.resolve
+// não reconhece `C:/...` como absoluto e colaria o cwd na frente — #9264).
+export const rootFromFsPath = (fsPath) => fsPath.replaceAll("\\", "/");
+
+const DEFAULT_ROOT = rootFromFsPath(fileURLToPath(new URL("../..", import.meta.url)));
 
 export function isAllowedWriterDestaquePath(filePath, root = DEFAULT_ROOT) {
   if (typeof filePath !== "string" || filePath.length === 0) return false;
   let normalized = posix.normalize(filePath.replaceAll("\\", "/"));
-  const prefix = root.replace(/\/+$/, "") + "/";
+  const prefix = root.replaceAll("\\", "/").replace(/\/+$/, "") + "/";
   if (normalized.startsWith(prefix)) normalized = normalized.slice(prefix.length);
   if (normalized.split("/").includes("..")) return false;
   return ALLOWED_RE.test(normalized);
