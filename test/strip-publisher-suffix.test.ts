@@ -339,7 +339,7 @@ describe("normalizeItemTitle — chain completo (#2664 + #2672)", () => {
       normalizeItemTitle(
         "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como - Canaltech",
       ),
-      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como",
+      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo", // #9380: cauda "; veja como" também sai
     );
   });
 
@@ -365,7 +365,7 @@ describe("normalizeItemTitle — chain completo (#2664 + #2672)", () => {
       normalizeItemTitle(
         "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como. - Canaltech",
       ),
-      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo; veja como",
+      "ChatGPT consegue fazer check-up do seu PC sem abrir nenhum arquivo", // #9380: cauda "; veja como" também sai
     );
   });
 
