@@ -35,6 +35,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // 
 import { applySemanticTiebreaker, type CategorizedBuckets } from "./lib/semantic-tiebreaker.ts"; // #8211
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9380
+import { isNonAITopic } from "./lib/ai-relevance.ts"; // #9402
 import {
   AI_RELEVANT_TERMS,
   isArticleAIRelevant,
@@ -189,7 +190,15 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // AI_RELEVANT_TERMS). `pesquisa` de arXiv já tem seu próprio filtro
     // (isArxivRelevant) dentro de categorize(); reforçar aqui duplicaria sem
     // necessidade e ampliaria a superfície de falso-positivo.
-    if (cat === "noticias" && !isArticleAIRelevant(article)) {
+    //
+    // #9402: exceção à restrição acima — assunto sabidamente SEM IA
+    // (NON_AI_TOPIC_PATTERNS, ex: listas de jogos GeForce NOW em
+    // blogs.nvidia.com) é derrubado em QUALQUER categoria. Caso real 261002:
+    // o item caiu em `lancamento` (domínio oficial), onde o gate não rodava, e
+    // chegou ao RADAR. A denylist é estreita o bastante pra não ter o risco de
+    // falso-positivo descrito acima.
+    // (isArticleAIRelevant já inclui isNonAITopic — por isso o ternário.)
+    if (cat === "noticias" ? !isArticleAIRelevant(article) : isNonAITopic(article)) {
       // #5080: `flag: "editor_submitted"` isenta do gate #2986, mesmo
       // precedente de dedup.ts Pass-1d (#4192) e filter-date-window.ts
       // (#4656) — o editor já exerceu curadoria ao enviar o link; ausência
@@ -199,10 +208,10 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
       // foi dropada silenciosamente por este gate.
       if (article.flag === "editor_submitted") {
         console.warn(
-          `[categorize] #5080: #2986 spared editor_submitted item (would have dropped as non-AI-relevant): ${article.url}`,
+          `[categorize] #5080: #2986/#9402 spared editor_submitted item (would have dropped as non-AI-relevant): ${article.url}`,
         );
       } else {
-        console.error(`[categorize] #2986 dropping non-AI-relevant item (noticias): ${article.url}`);
+        console.error(`[categorize] #2986/#9402 dropping non-AI-relevant item (${cat}): ${article.url}`);
         continue;
       }
     }

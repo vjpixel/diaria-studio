@@ -13,6 +13,7 @@ import {
   urlHasAISlug,
   isAIRelevantDomain,
   isArticleAIRelevant,
+  isNonAITopic,
 } from "../scripts/lib/ai-relevance.ts";
 
 describe("AI_RELEVANT_TERMS regex (#642)", () => {
@@ -346,4 +347,53 @@ it("#8667 audit artifact _internal/dropped_non_ai.jsonl exists and references #8
   const content = fs.readFileSync("_internal/dropped_non_ai.jsonl", "utf8");
   assert.ok(content.includes("1168380"), "audit artifact must reference issue URL");
 
+});
+
+describe("isNonAITopic (#9402)", () => {
+  it("CASO REAL 261002: lista de jogos GeForce NOW → true, e isArticleAIRelevant vence o bypass de domínio", () => {
+    const art = {
+      url: "https://blogs.nvidia.com/blog/geforce-now-thursday-october-2026-games-list/",
+      title: "Fall Into 25 New Games on GeForce NOW This October",
+      summary: "25 new games are joining GeForce NOW throughout October.",
+    };
+    assert.equal(isNonAITopic(art), true);
+    assert.equal(isArticleAIRelevant(art), false);
+  });
+
+  it("casa por slug /geforce-now- mesmo com título genérico", () => {
+    assert.equal(
+      isNonAITopic({ url: "https://blogs.nvidia.com/blog/geforce-now-thursday-in-app-labels/", title: "Tag, You're It" }),
+      true,
+    );
+  });
+
+  it("post GeForce NOW com termo de IA no título → false (não derruba IA genuína)", () => {
+    assert.equal(isNonAITopic({ title: "GeForce NOW adds generative AI NPCs to cloud games" }), false);
+  });
+
+  it("post de IA comum em blogs.nvidia.com → false (bypass preservado)", () => {
+    const art = {
+      url: "https://blogs.nvidia.com/blog/cosmos-physical-ai-reasoning/",
+      title: "How Cosmos 3 Helps Physical AI Think Before It Acts",
+    };
+    assert.equal(isNonAITopic(art), false);
+    assert.equal(isArticleAIRelevant(art), true);
+  });
+
+  it("summary não dispara a denylist (só título/URL)", () => {
+    assert.equal(isNonAITopic({ title: "New membership perks", summary: "Also on GeForce NOW." } as { title: string }), false);
+  });
+
+  it("slug /gfn-thursday- também casa", () => {
+    assert.equal(isNonAITopic({ title: "Game on", url: "https://blogs.nvidia.com/blog/gfn-thursday-games/" }), true);
+  });
+
+  it("nome de jogo com termo permissivo (Agents, Benchmark) não salva o post", () => {
+    assert.equal(isNonAITopic({ title: "GFN Thursday: 'Agents of Mayhem' and 8 more games" }), true);
+    assert.equal(isNonAITopic({ title: "Benchmark-topping 'Cyberpunk' arrives on GeForce NOW" }), true);
+  });
+
+  it("título PT-BR com 'IA' solto é tratado como IA (paridade com 'AI')", () => {
+    assert.equal(isNonAITopic({ title: "Jogos com geração de quadros por IA chegam ao GeForce NOW" }), false);
+  });
 });

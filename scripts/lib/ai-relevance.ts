@@ -133,6 +133,59 @@ export const AI_RELEVANT_DOMAINS = new Set<string>([
   "7min.ai",
 ]);
 
+/**
+ * #9402: assuntos SEM IA que chegam recorrentemente por feeds de vendor cujo
+ * domínio está no bypass `AI_RELEVANT_DOMAINS` (ou que caem em `lancamento`,
+ * onde o gate #2986 não roda). Caso real 261002: "Fall Into 25 New Games on
+ * GeForce NOW This October" (blogs.nvidia.com) chegou ao RADAR — lista mensal
+ * de jogos do serviço de streaming, sem IA como assunto.
+ *
+ * Deliberadamente ESTREITO (denylist de tópico, não heurística ampla): a
+ * medição sobre os pools históricos (76 itens de blogs.nvidia.com /
+ * blog.google / blogs.microsoft.com) mostrou que um gate genérico "vendor sem
+ * keyword de IA" derrubaria 30 itens, vários com ângulo de IA real (coach de
+ * saúde do Fitbit, Googlebook "intelligence intégrée") — trade-off editorial,
+ * fica fora daqui. Cada padrão novo deve ser assunto que NUNCA é IA.
+ *
+ * Bate no título e na URL (slug), nunca no summary — summary de post de
+ * jogos às vezes cita DLSS/IA de passagem sem que o assunto vire IA.
+ */
+export const NON_AI_TOPIC_PATTERNS: readonly RegExp[] = [
+  // GeForce NOW — serviço de cloud gaming (listas semanais/mensais de jogos,
+  // "GFN Thursday", bundles de membership).
+  /\bgeforce\s*now\b/i,
+  /\bgfn[\s-]+thursday\b/i,
+  /\/geforce-now-/i,
+];
+
+/**
+ * #9402: termo de IA ESTRITO usado só como válvula de escape de
+ * `isNonAITopic`. Não reusa `AI_RELEVANT_TERMS` porque aquele é permissivo
+ * demais pra nome de jogo ("Agents of Mayhem", "benchmark", "reasoning") e
+ * não tem `ia` solto (PT-BR).
+ */
+const STRICT_AI_TITLE_TERMS =
+  /\b(ai|ia|a\.i\.|gen\s*ai|generative|gerativa?|llms?|chatgpt|gemini|claude|copilot|machine\s+learning|aprendizado\s+de\s+m[áa]quina|intelig[êe]ncia\s+artificial|artificial\s+intelligence)\b/i;
+
+/**
+ * Pure (#9402): `true` se o título/URL bate um assunto sabidamente sem IA
+ * (`NON_AI_TOPIC_PATTERNS`) E o título não traz termo de IA próprio. A
+ * segunda condição evita derrubar um post genuinamente de IA que mencione o
+ * serviço (ex: "GeForce NOW adds generative AI NPCs", "geração de quadros
+ * por IA"). A válvula usa `STRICT_AI_TITLE_TERMS`, então nome de vendor/
+ * hardware (nvidia, gpu, rtx) não conta como IA num post de jogos.
+ *
+ * Aplica-se a QUALQUER domínio, não só ao feed do vendor: matéria de
+ * imprensa sobre "jogos chegando ao GeForce NOW" também é derrubada — é o
+ * efeito pretendido.
+ */
+export function isNonAITopic(article: { url?: string; title?: string }): boolean {
+  const title = article.title ?? "";
+  const hay = `${title} ${article.url ?? ""}`;
+  if (!NON_AI_TOPIC_PATTERNS.some((re) => re.test(hay))) return false;
+  return !STRICT_AI_TITLE_TERMS.test(title);
+}
+
 function extractHostForRelevance(url: string | undefined | null): string | null {
   if (!url) return null;
   try {
@@ -177,6 +230,8 @@ export function isAIRelevantDomain(url: string | undefined | null): boolean {
  * Pure: predicate sobre artigo. Retorna `true` se houver qualquer sinal
  * de relevância pra IA — em ordem de checagem:
  *
+ *   0. Assunto sabidamente sem IA (`isNonAITopic`, #9402) → `false`,
+ *      vencendo inclusive o bypass de domínio
  *   1. Domínio 100%-IA (bypass) — anthropic.com, openai.com, …
  *   2. Slug de URL (`/ai-`, `/inteligencia-artificial/`, …)
  *   3. Keyword em título OU summary (regex AI_RELEVANT_TERMS)
@@ -198,6 +253,9 @@ export function isArticleAIRelevant(article: {
   title?: string;
   summary?: string;
 }): boolean {
+  // 0. #9402: assunto sabidamente sem IA vence até o bypass por domínio
+  //    (blogs.nvidia.com está no bypass e trazia listas de jogos GeForce NOW).
+  if (isNonAITopic(article)) return false;
   // 1. Bypass por domínio 100%-IA — evita falso-positivo em títulos curtos
   //    de blog oficial (#901: ex "Higher limits", "Class of 2026").
   if (isAIRelevantDomain(article.url)) return true;
