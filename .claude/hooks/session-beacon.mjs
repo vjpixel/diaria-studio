@@ -103,10 +103,10 @@
 // si só), mas não prova mais paridade cruzada nenhuma — nem o título dos
 // testes lá afirma isso.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
@@ -873,23 +873,38 @@ function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS
   );
 }
 
-const loggedLockErrorSessions = new Set();
-
 /**
  * #9280: o catch externo do beacon é fail-open total, então um EPERM/EACCES
- * persistente no `.lock` (permissão real, ou delete-pending que não cedeu)
- * sumia sem rastro. Registra UMA vez por sessão (marcador em memória) em
- * stderr + `data/run-log.jsonl`. Outros erros seguem silenciosos. Exportado
- * pra teste; devolve `true` se registrou.
+ * persistente ao gravar o registro (no `.lock`, ou no `renameSync` do write
+ * atômico) sumia sem rastro. Registra UMA vez por sessão em stderr +
+ * `data/run-log.jsonl`; outros erros seguem silenciosos.
+ *
+ * "Uma vez por sessão" é um marcador em ARQUIVO, não em memória: cada
+ * chamada de ferramenta é um processo `node` novo, e com o erro persistente
+ * o throttle de 5s não segura (`lastHeartbeat` nunca é gravado). O marcador
+ * vive no tmpdir do sistema, nunca em `data/` (junction OneDrive). EEXIST =
+ * já registrado; qualquer falha ao criar o marcador = não loga (melhor perder
+ * o rastro que inundar o run-log). Exportado pra teste; devolve `true` se
+ * registrou.
  */
 export function logBeaconLockErrorOnce(repoRoot, sessionId, err, deps = {}) {
   const code = err?.code;
   if (code !== "EPERM" && code !== "EACCES") return false;
-  const key = sessionId ?? "";
-  if (loggedLockErrorSessions.has(key)) return false;
-  loggedLockErrorSessions.add(key);
-  try { process.stderr.write(`[session-beacon] heartbeat não gravado: ${code} no lock do registro (#9280)\n`); } catch { /* ignore */ }
-  appendHookRunLog(repoRoot, "session-beacon", "warn", "beacon_lock_error", { code }, deps);
+  const safeId = String(sessionId ?? "").replace(/[^A-Za-z0-9_.-]/g, "_") || "sem-sessao";
+  try {
+    closeSync(openSync(join(deps.markerDir ?? tmpdir(), `diaria-beacon-lockerr-${safeId}`), "wx"));
+  } catch {
+    return false;
+  }
+  // syscall/path do erro de fs na origem: o wrapper do CAS e o de
+  // delete-pending esgotado embrulham o erro real em `cause`.
+  let origin = err;
+  for (let i = 0; i < 4 && origin && !origin.syscall && origin.cause; i++) origin = origin.cause;
+  const details = { code };
+  if (typeof origin?.syscall === "string") details.syscall = origin.syscall;
+  if (typeof origin?.path === "string") details.path = origin.path;
+  try { process.stderr.write(`[session-beacon] heartbeat não gravado: ${code} ao gravar o registro (#9280)\n`); } catch { /* ignore */ }
+  appendHookRunLog(repoRoot, "session-beacon", "warn", "beacon_registry_write_error", details, deps);
   return true;
 }
 

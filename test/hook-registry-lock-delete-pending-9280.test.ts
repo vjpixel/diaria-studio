@@ -25,12 +25,29 @@ import {
 } from "../.claude/hooks/lib/registry-lock.mjs";
 import { isDeletePendingWxError, DELETE_PENDING_MAX_STREAK, DELETE_PENDING_WAIT_MS } from "../scripts/lib/file-lock.ts";
 import { grantMergeWindow, machineTag, registerSession } from "../scripts/lib/session-registry.ts";
-import {
-  classifyConsumeError,
-  consumeGrantUnderLock,
-  findLiveMergeGrantFile,
-} from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
-import { logBeaconLockErrorOnce } from "../.claude/hooks/session-beacon.mjs";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+// Os dois hooks não têm `.d.mts`; um import estático deles seria TS7016 (o
+// ratchet de typecheck reprova chave nova). Carrega por especificador não
+// literal e tipa só a superfície que este teste usa.
+const HOOKS_DIR = join(import.meta.dirname, "..", ".claude", "hooks");
+const BEACON_HOOK = join(HOOKS_DIR, "session-beacon.mjs");
+interface ConsumerHook {
+  classifyConsumeError(e: unknown): string;
+  consumeGrantUnderLock(
+    repoRoot: string, sessionId: string, nowIso?: string, attempts?: number, lockTimeoutMs?: number,
+    targetPr?: number, opts?: { acquire?: (lockPath: string) => boolean },
+  ): boolean;
+  findLiveMergeGrantFile(repoRoot: string, sessionId: string): unknown;
+}
+interface BeaconHook {
+  logBeaconLockErrorOnce(repoRoot: string, sessionId: string, err: unknown, deps?: { markerDir?: string }): boolean;
+}
+const consumerUrl: string = pathToFileURL(join(HOOKS_DIR, "consume-merge-grant-on-merge.mjs")).href;
+const beaconUrl: string = pathToFileURL(BEACON_HOOK).href;
+const { classifyConsumeError, consumeGrantUnderLock, findLiveMergeGrantFile } = (await import(consumerUrl)) as ConsumerHook;
+const { logBeaconLockErrorOnce } = (await import(beaconUrl)) as BeaconHook;
 
 const dir = mkdtempSync(join(tmpdir(), "reglock-9280-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -200,17 +217,55 @@ describe("consume-merge-grant — rastro de concessão não consumida (#9280)", 
 });
 
 describe("session-beacon — rastro de EPERM/EACCES no lock (#9280)", () => {
-  it("registra uma vez por sessão, só para EPERM/EACCES", () => {
+  it("registra uma vez por sessão, só para EPERM/EACCES; falha ao criar o marcador = não loga", () => {
     const root = mkdtempSync(join(tmpdir(), "beacon-9280-"));
     try {
+      const markerDir = join(root, "markers");
+      mkdirSync(markerDir);
       const sid = `sess-9280-${process.pid}-${Date.now()}`;
-      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "ENOENT" })), false);
-      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EACCES" })), true);
-      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EPERM" })), false, "segunda vez na mesma sessão não repete");
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "ENOENT" }), { markerDir }), false);
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EACCES" }), { markerDir }), true);
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EPERM" }), { markerDir }), false, "segunda vez na mesma sessão não repete");
+      // Diretório do marcador inexistente: não consegue criar → não loga.
+      assert.equal(logBeaconLockErrorOnce(root, "outra", Object.assign(new Error("x"), { code: "EPERM" }), { markerDir: join(root, "nao-existe") }), false);
       const events = readRunLog(root).filter((e) => e.agent === "session-beacon");
       assert.equal(events.length, 1);
       assert.equal(events[0].level, "warn");
       assert.equal(events[0].details.code, "EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("o marcador vale entre PROCESSOS: a 2ª invocação não registra; details traz syscall/path da origem", () => {
+    // Cada chamada de ferramenta roda o hook num processo node novo — um
+    // marcador em memória registraria a cada chamada (re-review do #9297).
+    const root = mkdtempSync(join(tmpdir(), "beacon-9280-proc-"));
+    try {
+      const markerDir = join(root, "tmp");
+      mkdirSync(markerDir);
+      const sid = `sess-9280-proc-${process.pid}-${Date.now()}`;
+      const code = [
+        `const { logBeaconLockErrorOnce } = await import(${JSON.stringify(beaconUrl)});`,
+        `const origin = Object.assign(new Error("raw"), { code: "EPERM", syscall: "rename", path: "/x/sessions/a.json" });`,
+        `const err = Object.assign(new Error("wrapper", { cause: origin }), { code: "EPERM" });`,
+        `process.stdout.write(String(logBeaconLockErrorOnce(process.env.BEACON_ROOT, process.env.BEACON_SID, err)));`,
+      ].join("\n");
+      // os.tmpdir() do filho aponta pro diretório isolado do teste.
+      const env = { ...process.env, TMP: markerDir, TEMP: markerDir, TMPDIR: markerDir, BEACON_ROOT: root, BEACON_SID: sid };
+      const run = () => spawnSync(process.execPath, ["--input-type=module", "-e", code], { env, encoding: "utf8" });
+      const first = run();
+      assert.equal(first.status, 0, first.stderr);
+      assert.equal(first.stdout, "true");
+      assert.match(first.stderr, /EPERM ao gravar o registro/);
+      const second = run();
+      assert.equal(second.status, 0, second.stderr);
+      assert.equal(second.stdout, "false", "2º processo da mesma sessão não registra");
+      assert.equal(second.stderr, "");
+      const events = readRunLog(root).filter((e) => e.agent === "session-beacon");
+      assert.equal(events.length, 1);
+      assert.equal(events[0].message, "beacon_registry_write_error");
+      assert.deepEqual(events[0].details, { code: "EPERM", syscall: "rename", path: "/x/sessions/a.json" });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
