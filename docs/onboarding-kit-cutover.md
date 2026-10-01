@@ -186,6 +186,69 @@ Sequência de flip:
   qualquer broadcast agendado/enviado passa pela infraestrutura de entrega
   real do Kit, mesmo com poucos destinatários.
 
+**Status (30/09/2026):** doc aprovado e piloto autorizado pelo editor na
+#7922 para UM destinatário de teste (o próprio editor); kill switch de
+produção segue OFF até o editor ver o resultado.
+
+### 4.1 Comando exato do piloto (modo `--pilot`)
+
+O runner tem um modo piloto dedicado (`scripts/lib/onboarding-kit-pilot.ts`)
+que **não toca o store real nem o kill switch**. Substitua
+`<email-autorizado>` pelo destinatário aprovado na issue (nunca cole o
+e-mail na issue — só o summary, que sai sem PII):
+
+```bash
+# 0) store isolado (fora de data/onboarding/); o runner recusa o store real
+PILOT_STORE="$HOME/onboarding-pilot-7922/store.json"
+
+# 1) dry-run — semeia só em memória e imprime o plano dos 3 lotes
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE"
+
+# 2) envio real: e-mail 1 e 2 agendados para ~5 min depois de verificados; e-mail 3 fica RASCUNHO
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --send
+
+# 3) e-mail 3: aprovação humana explícita, como no fluxo real
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" \
+  --approve-email3-lot email3-AAAA-MM-DD-01 --send-at 2026-10-01T13:00:00Z
+
+# 4) depois do envio: releitura de status / repetição segura / cancelamento
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --reconcile
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --send   # 2ª vez: nada duplica
+```
+
+O que o modo piloto garante, em camadas independentes:
+
+- **Store isolado**: `--store` é obrigatório e é recusado se apontar para o
+  store real (`onboarding.store_path` ou `data/onboarding/store.json`).
+  Um store isolado que já contenha qualquer entry fora de
+  `--pilot-recipients` (ex: uma cópia do real) também é recusado.
+- **Kill switch**: ignorado **só** com `--pilot` — `platform.config.json`
+  não é tocado; o executor de produção continua bloqueado.
+- **Cadência**: os 3 kinds são planejados no mesmo dia (D+3/D+10 e as regras
+  de abertura do e-mail 3 são ignoradas **só** no piloto — o objetivo é
+  validar segmentação/entrega/renderização dos 3 conteúdos; a régua tem
+  cobertura própria). Re-rodar não replaneja kind já confirmado.
+- **Allowlist por lote**: os destinatários de cada lote têm de estar em
+  `--pilot-recipients` — senão aborta antes de qualquer escrita no Kit.
+- **Tag**: nome `onboarding-pilot-{lot_id}` (nunca colide com tag de
+  produção), precisa ser **recém-criada** (tag pré-existente aborta) e, após
+  taguear, é relida pela API: ausente, vazia, com membro estranho ou com
+  contagem ≠ destinatários do lote aborta (risco #6126). Falta de membro é
+  retentada algumas vezes (atraso de propagação de até ~180s da listagem).
+- **Broadcast**: nasce **sempre rascunho**, é relido, e só então é agendado
+  (e-mail 1/2). Filtro relido divergente → rascunho apagado e aborta
+  (2xx não é prova, #6582). Filtro **não ecoado** pela API → rascunho
+  mantido sem agendar e aborta; conferir a audiência no painel do Kit e, se
+  ok, agendar à mão no painel — ou `--cancel-lot <lot_id>` e re-rodar
+  `--send` com `--pilot-allow-unechoed-filter` (sem o cancelamento o
+  rascunho conta como lote confirmado e não é replanejado) (o eco de
+  `subscriber_filter` por `GET /broadcasts/{id}` nunca foi confirmado ao
+  vivo).
+- **E-mail 3**: rascunho; `--approve-email3-lot` no piloto repete allowlist +
+  releitura da tag + do filtro antes de agendar.
+- **Summary**: só contagens, ids de lote/broadcast e status — pronto para
+  colar na issue.
+
 O que o piloto precisa validar (todos os itens da issue, seção "Piloto e
 transição"):
 

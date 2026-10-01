@@ -51,6 +51,14 @@
  *   npx tsx scripts/onboarding-kit-transport-run.ts --cancel-lot <id>   # apaga (draft/scheduled) um lote
  *   npx tsx scripts/onboarding-kit-transport-run.ts --approve-email3-lot <id> --send-at <iso>
  *
+ * MODO PILOTO (#7922, seção 4 de docs/onboarding-kit-cutover.md):
+ *   npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email> --store <isolado> [--send]
+ *   Store isolado obrigatório (recusa o real), entries sintéticas só dos
+ *   destinatários, os 3 kinds no mesmo dia (sem cadência), kill switch de
+ *   produção ignorado SÓ aqui, guards de audiência duros — ver
+ *   `scripts/lib/onboarding-kit-pilot.ts`. `--cancel-lot`/`--reconcile`/
+ *   `--approve-email3-lot` também aceitam `--pilot` (mesmo store isolado).
+ *
  * Flags auxiliares (testes/operações): --store <path>, --snippets-dir <path>,
  * --config <path>, --env-root <path>.
  */
@@ -98,6 +106,17 @@ import {
 } from "./lib/onboarding-kit-transport.ts";
 import { loadOnboardingConfig, fetchSubscriptionByIdKit } from "./onboarding-welcome-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
+import {
+  parsePilotRecipients,
+  assertPilotStoreIsolated,
+  seedPilotStore,
+  selectPilotEntriesForKind,
+  runPilotLot,
+  assertPilotEmail3Approvable,
+  buildPilotLotTagName,
+  type PilotKitDeps,
+} from "./lib/onboarding-kit-pilot.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -115,10 +134,13 @@ interface CliArgs {
   snippetsDir?: string;
   configPath?: string;
   envRoot?: string;
+  pilot: boolean;
+  pilotRecipientsRaw?: string;
+  pilotAllowUnechoedFilter: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { send: false, reconcileOnly: false };
+  const args: CliArgs = { send: false, reconcileOnly: false, pilot: false, pilotAllowUnechoedFilter: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--send") args.send = true;
@@ -130,6 +152,9 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--snippets-dir") args.snippetsDir = argv[++i];
     else if (a === "--config") args.configPath = argv[++i];
     else if (a === "--env-root") args.envRoot = argv[++i];
+    else if (a === "--pilot") args.pilot = true;
+    else if (a === "--pilot-recipients") args.pilotRecipientsRaw = argv[++i];
+    else if (a === "--pilot-allow-unechoed-filter") args.pilotAllowUnechoedFilter = true;
     else {
       process.stderr.write(`[onboarding-kit-transport] flag desconhecida: ${a}\n`);
       process.exit(2);
@@ -205,7 +230,15 @@ export interface ClaimLotResult {
  * testável sem depender de dois processos OS reais — ver
  * `test/onboarding-kit-transport-run-lock-7922.test.ts`.
  */
-export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs: number = Date.now()): ClaimLotResult {
+export function claimLot(
+  storePath: string,
+  lotPlan: OnboardingKitLotPlan,
+  nowMs: number = Date.now(),
+  /** #7922 piloto: nome de tag alternativo (`onboarding-pilot-{lot_id}`) —
+   *  aplicado DEPOIS de `rebuildLotPlanForRecreate`, que sempre regera o
+   *  nome de produção. */
+  tagNameFor?: (lotId: string) => string,
+): ClaimLotResult {
   const lockPath = `${storePath}.lock`;
   return withFileLock(
     lockPath,
@@ -266,7 +299,8 @@ export function claimLot(storePath: string, lotPlan: OnboardingKitLotPlan, nowMs
       // foi "recreate_after_timeout" — "create" sem `existingLot` (nenhum
       // lote pra esta chave, o caso comum de 1ª rodada do dia) continua
       // usando `lotPlan` tal como veio, sem identidade velha a evitar.
-      const effectivePlan = existingLot != null ? rebuildLotPlanForRecreate(lotPlan, freshStore.kit_transport.lots) : lotPlan;
+      const basePlan = existingLot != null ? rebuildLotPlanForRecreate(lotPlan, freshStore.kit_transport.lots) : lotPlan;
+      const effectivePlan = tagNameFor ? { ...basePlan, tag_name: tagNameFor(basePlan.lot_id) } : basePlan;
       const pending: OnboardingKitLot = {
         lot_id: effectivePlan.lot_id,
         kind: effectivePlan.kind,
@@ -374,6 +408,25 @@ async function main(): Promise<void> {
   const configPathAbs = args.configPath ?? resolve(ROOT, "platform.config.json");
   const kitTransportCfg = loadKitTransportConfig(configPathAbs);
   const onboardingCfg = loadOnboardingConfig(configPathAbs);
+  const realStorePath = resolve(ROOT, onboardingCfg.store_path ?? DEFAULT_STORE_PATH);
+  let pilotRecipients: string[] = [];
+  let storePath: string;
+  if (args.pilot) {
+    // #7922 piloto — camada 1: store isolado obrigatório, ANTES de ler qualquer store.
+    try {
+      pilotRecipients = parsePilotRecipients(args.pilotRecipientsRaw);
+      storePath = assertPilotStoreIsolated(args.storePath, [realStorePath, DEFAULT_STORE_PATH]);
+    } catch (e) {
+      process.stderr.write(`${(e as Error).message}\n`);
+      process.exit(2);
+    }
+  } else {
+    if (args.pilotRecipientsRaw != null || args.pilotAllowUnechoedFilter) {
+      process.stderr.write("[onboarding-kit-transport] --pilot-recipients/--pilot-allow-unechoed-filter só valem com --pilot.\n");
+      process.exit(2);
+    }
+    storePath = args.storePath ?? realStorePath;
+  }
 
   const backend = resolveNewsletterSubscriberBackend(configPathAbs);
   if (backend !== "kit") {
@@ -390,7 +443,6 @@ async function main(): Promise<void> {
   }
   const kitCfg = kitResult.config;
 
-  const storePath = args.storePath ?? resolve(ROOT, onboardingCfg.store_path ?? DEFAULT_STORE_PATH);
   // #7922 (gap #2, mesma classe do guard em `claimLot`/`persistLotUpdate`
   // abaixo): sem checar `corrupted`, um JSON ilegível vira silenciosamente
   // um store vazio, e `--cancel-lot`/`--approve-email3-lot`/`--reconcile`
@@ -410,7 +462,9 @@ async function main(): Promise<void> {
   // Leituras (--reconcile, dry-run de plano) não dependem dele: consultar o
   // Kit não é "armar" o transporte. ---
   const writeRequested = args.send || args.cancelLotId != null || args.approveEmail3LotId != null;
-  if (writeRequested && kitTransportCfg.enabled !== true) {
+  // #7922 piloto: ignora o kill switch SÓ com --pilot (store isolado já
+  // garantido acima) — nunca toca platform.config.json.
+  if (writeRequested && kitTransportCfg.enabled !== true && !args.pilot) {
     process.stderr.write(
       "[onboarding-kit-transport] ⏸️  onboarding.kit_transport.enabled não é `true` em platform.config.json — " +
         "nenhuma escrita ao Kit é permitida (kill switch dedicado, #7922). Ligar é decisão do editor.\n",
@@ -473,6 +527,15 @@ async function main(): Promise<void> {
     }
     // aprovação É este próprio comando (só existe por invocação explícita).
     assertEmail3ScheduleAuthorized(lot.kind, true);
+    if (args.pilot) {
+      // #7922 piloto: repete allowlist + releitura da tag + filtro antes de agendar.
+      try {
+        await assertPilotEmail3Approvable(buildPilotKitDeps(kitCfg), lot, pilotRecipients, args.pilotAllowUnechoedFilter);
+      } catch (e) {
+        process.stderr.write(`${(e as Error).message}\n`);
+        process.exit(2);
+      }
+    }
     const updated = await updateBroadcast(lot.broadcast_id, { send_at: args.sendAt }, kitCfg);
     lot.send_at = args.sendAt;
     lot.status = updated.status === "scheduled" ? "scheduled" : lot.status;
@@ -517,6 +580,11 @@ async function main(): Promise<void> {
       }
     }
     console.log(JSON.stringify({ mode: "reconcile", results }, null, 2));
+    return;
+  }
+
+  if (args.pilot) {
+    await runPilotPlan({ args, kitCfg, storePath, store, recipients: pilotRecipients, onboardingCfg });
     return;
   }
 
@@ -731,6 +799,172 @@ async function main(): Promise<void> {
   }
 
   console.log(JSON.stringify(summary, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// Modo piloto (#7922, seção 4 de docs/onboarding-kit-cutover.md)
+// ---------------------------------------------------------------------------
+
+function buildPilotKitDeps(kitCfg: KitConfig): PilotKitDeps {
+  return {
+    findTagIdByName: (name) => findTagIdByName(name, kitCfg),
+    createTag: (name) => createTag(name, kitCfg),
+    tagSubscriber: (tagId, subId) => tagSubscriber(tagId, subId, kitCfg),
+    listTagMemberEmails: (tagId) => listAllTagSubscriberEmails(tagId, kitCfg),
+    createBroadcast: (input) => createBroadcast(input, kitCfg),
+    getBroadcast: (id) => getBroadcast(id, kitCfg),
+    updateBroadcast: (id, patch) => updateBroadcast(id, patch, kitCfg),
+    deleteBroadcast: (id) => deleteBroadcast(id, kitCfg),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
+}
+
+/** Semeia (sob lock) o store isolado com as entries sintéticas do piloto. */
+export function seedPilotStoreOnDisk(storePath: string, recipients: string[], nowIso: string = new Date().toISOString()): number {
+  let created = 0;
+  withFileLock(
+    `${storePath}.lock`,
+    () => {
+      const { store, corrupted } = readStore(storePath);
+      if (corrupted) throw new Error(`[onboarding-kit-pilot] store isolado "${storePath}" está CORROMPIDO — abortando.`);
+      created = seedPilotStore(store, recipients, nowIso);
+      if (created > 0) writeStore(store, storePath);
+    },
+    30_000,
+  );
+  return created;
+}
+
+async function runPilotPlan(ctx: {
+  args: CliArgs;
+  kitCfg: KitConfig;
+  storePath: string;
+  store: OnboardingStore;
+  recipients: string[];
+  onboardingCfg: ReturnType<typeof loadOnboardingConfig>;
+}): Promise<void> {
+  const { args, kitCfg, storePath, recipients } = ctx;
+  let store = ctx.store;
+  // Camada 2 + semeadura. Dry-run semeia só em memória (nunca grava store).
+  let seeded = 0;
+  try {
+    if (args.send) {
+      seeded = seedPilotStoreOnDisk(storePath, recipients);
+      store = readStore(storePath).store;
+    } else {
+      seeded = seedPilotStore(store, recipients, new Date().toISOString());
+    }
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exit(2);
+  }
+  store.kit_transport ??= { lots: {} };
+
+  // Refresh pelo e-mail: kit_subscriber_id + estado Kit fresco. Falha = não
+  // confirmado (fail-safe, mesmo contrato do plano normal).
+  const refreshFailed = new Set<string>();
+  for (const e of Object.values(store.entries)) {
+    const fresh = await fetchSubscriptionByIdKit(kitCfg, e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id, e.email);
+    if (fresh) {
+      e.status_detectado = fresh.status ?? e.status_detectado;
+      if (typeof fresh.resolvedKitId === "number") e.kit_subscriber_id = fresh.resolvedKitId;
+    } else {
+      refreshFailed.add(e.subscription_id);
+    }
+  }
+
+  const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? ctx.onboardingCfg.snippets_dir ?? "data/snippets");
+  const dateIso = unixSecondsToBrtDate(Math.floor(Date.now() / 1000));
+  const deps = buildPilotKitDeps(kitCfg);
+  // Summary SEM PII — só contagens/ids, pronto pra colar na issue.
+  const summary = {
+    mode: args.send ? "PILOT-SEND" : "PILOT-dry-run",
+    now: new Date().toISOString(),
+    pilot_recipients: recipients.length,
+    seeded_entries: seeded,
+    refresh_failed: refreshFailed.size,
+    lots: [] as Record<string, unknown>[],
+  };
+  let failed = false;
+
+  for (const kind of ["email1", "email2", "email3"] as OnboardingKitLotKind[]) {
+    const entries = selectPilotEntriesForKind(store, kind, recipients);
+    if (entries.length === 0) {
+      summary.lots.push({ kind, note: "todos os destinatários já têm lote confirmado deste kind — nada a fazer" });
+      continue;
+    }
+    const { eligible, excluded } = selectEligibleKitRecipients(
+      entries.map((e) => ({
+        subscription_id: e.subscription_id,
+        email: e.email,
+        kit_subscriber_id: e.kit_subscriber_id ?? null,
+        kit_state: refreshFailed.has(e.subscription_id) ? null : (e.status_detectado ?? null),
+        seeded_by: e.seeded_by ?? null,
+      })),
+    );
+    const excludedReasons = excluded.map((x) => x.reason);
+    if (eligible.length === 0) {
+      summary.lots.push({ kind, eligible: 0, excluded: excluded.length, excludedReasons, note: "nenhum destinatário elegível" });
+      continue;
+    }
+    const snippet = loadSnippet(snippetsDirAbs, KIND_TO_SNIPPET_NUM[kind]);
+    if (!snippet?.assunto || !snippet.body) {
+      summary.lots.push({ kind, eligible: eligible.length, error: `snippet onboarding-${KIND_TO_SNIPPET_NUM[kind]}.md ausente/vazio` });
+      failed = true;
+      continue;
+    }
+    const lotPlan = planLot({ kind, dateIso, seq: 1, eligible });
+    if (!args.send) {
+      summary.lots.push({
+        kind,
+        lot_id: lotPlan.lot_id,
+        tag_name: buildPilotLotTagName(lotPlan.lot_id),
+        eligible: eligible.length,
+        excluded: excluded.length,
+        excludedReasons,
+      });
+      continue;
+    }
+
+    const claim = claimLot(storePath, lotPlan, Date.now(), buildPilotLotTagName);
+    if (claim.decision.action === "blocked_concurrent" || claim.decision.action === "reuse") {
+      summary.lots.push({ kind, lot_id: claim.decision.lot.lot_id, skipped: claim.decision.action });
+      continue;
+    }
+    const lot = claim.lot as OnboardingKitLot;
+    const kitIdBySubscription: Record<string, number | undefined> = {};
+    for (const subId of lot.recipient_subscription_ids) kitIdBySubscription[subId] = store.entries[subId]?.kit_subscriber_id;
+    try {
+      const res = await runPilotLot(deps, lot, {
+        recipients,
+        kitIdBySubscription,
+        subject: snippet.assunto,
+        content: snippet.body,
+        previewText: snippet.previewText ?? undefined,
+        sendAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+        allowUnechoedFilter: args.pilotAllowUnechoedFilter,
+      });
+      summary.lots.push({
+        kind,
+        lot_id: lot.lot_id,
+        broadcast_id: res.broadcast_id,
+        status: res.status,
+        send_at: res.send_at,
+        filter_verified: res.filter_verified,
+        recipients: lot.recipient_emails.length,
+      });
+    } catch (e) {
+      lot.last_error = (e as Error).message;
+      failed = true;
+      summary.lots.push({ kind, lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, status: lot.status, error: (e as Error).message });
+    } finally {
+      // Persiste mesmo no erro — nunca perder o registro de um broadcast já criado.
+      persistLotUpdate(storePath, lot);
+    }
+  }
+
+  console.log(JSON.stringify(summary, null, 2));
+  if (failed) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {
