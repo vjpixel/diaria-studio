@@ -16,6 +16,7 @@ import assert from "node:assert/strict";
 import {
   stripNavigationBoilerplate,
   fixGluedAcronymDate,
+  stripCtaTail,
   sanitizeDescriptionBoilerplate,
 } from "../scripts/lib/sanitize-description-boilerplate.ts";
 
@@ -106,5 +107,30 @@ describe("sanitizeDescriptionBoilerplate — combinado (#3196)", () => {
   it("texto limpo passa intacto", () => {
     const out = sanitizeDescriptionBoilerplate("A empresa vai investir R$ 10 milhões no projeto.");
     assert.equal(out, "A empresa vai investir R$ 10 milhões no projeto.");
+  });
+});
+
+describe("stripCtaTail — rodapé de CTA do G1 (#9401)", () => {
+  // CASO REAL 261002 (RADAR G1, youtuber/Meta Muse): cauda removida à mão no gate 4.
+  it("CASO REAL 261002: corta '🗒️ Tem alguma sugestão de reportagem?' do fim", () => {
+    const raw =
+      "Youtuber usou o Meta Muse para criar vídeos e viralizou. 🗒️ Tem alguma sugestão de reportagem?";
+    assert.equal(stripCtaTail(raw), "Youtuber usou o Meta Muse para criar vídeos e viralizou.");
+    assert.equal(
+      sanitizeDescriptionBoilerplate(raw),
+      "Youtuber usou o Meta Muse para criar vídeos e viralizou.",
+    );
+  });
+
+  it("corta também o que vem depois do CTA e variação sem emoji/acento", () => {
+    assert.equal(
+      stripCtaTail("Texto do resumo. Tem alguma sugestao de reportagem? Mande para o g1."),
+      "Texto do resumo.",
+    );
+  });
+
+  it("texto sem o CTA passa intacto (inclusive 'sugestão' em outro contexto)", () => {
+    const t = "Leitores enviaram uma sugestão de pauta sobre IA. 🤖 Robôs avançam.";
+    assert.equal(stripCtaTail(t), t);
   });
 });

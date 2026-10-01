@@ -47,6 +47,24 @@ export function stripNavigationBoilerplate(text: string): string {
   return text.slice(0, match.index).trim();
 }
 
+/**
+ * Publisher CTA footers that leak into the description tail (#9401). G1 glues
+ * "🗒️ Tem alguma sugestão de reportagem?" (a reader-tip call-to-action) onto
+ * the end of its meta-description/body. The phrase and everything after it is
+ * cut, along with any emoji/whitespace immediately preceding it.
+ */
+const CTA_TAIL_RE =
+  /[\s\p{Extended_Pictographic}\uFE0F\u200D]*\btem\s+alguma\s+sugest[ãa]o\s+de\s+reportagem\b[\s\S]*$/iu;
+
+/**
+ * Cuts a known publisher CTA footer (and everything after it) from the tail
+ * of `text`. Text without the footer is returned unchanged. @pure
+ */
+export function stripCtaTail(text: string): string {
+  if (!text) return text;
+  return text.replace(CTA_TAIL_RE, "").trim();
+}
+
 const MONTHS =
   "janeiro|fevereiro|mar[çc]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro";
 
@@ -81,6 +99,6 @@ export function fixGluedAcronymDate(text: string): string {
  * glued-acronym-date artifact in what's left. @pure
  */
 export function sanitizeDescriptionBoilerplate(text: string): string {
-  const stripped = stripNavigationBoilerplate(text);
+  const stripped = stripCtaTail(stripNavigationBoilerplate(text));
   return fixGluedAcronymDate(stripped);
 }
