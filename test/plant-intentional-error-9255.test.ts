@@ -157,4 +157,57 @@ describe("#9255: plantio determinístico do erro intencional no Stage 2 headless
       null,
     );
   });
+  it("1º candidato só em URL → tenta a próxima entidade plantável", () => {
+    const md = `**📡 RADAR**
+
+**[Notícia](https://example.com/Claude/post)**
+O Gemini ganhou um modo novo.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.
+`;
+    const { root, dir } = makeEditionDir(md);
+    try {
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", join(root, "none.jsonl")])), 0);
+      const out = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+      const json = JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8"));
+      assert.equal(json.correct_value, "Gemini");
+      assert.match(out, /O Gemine ganhou/);
+      assert.match(out, /example\.com\/Claude\/post/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("seções seguidas sem `---` (RADAR → USE MELHOR) → planta na seção certa", () => {
+    const md = `**📡 RADAR**
+
+O Claude ganhou memória.
+
+**🛠️ USE MELHOR**
+
+Use o Copilot no terminal.
+`;
+    const out = plantWrongValue(md, "USE MELHOR", "Copilot", "Copilto")!;
+    assert.match(out, /Use o Copilto no terminal/);
+    assert.equal(plantWrongValue(md, "USE MELHOR", "Claude", "Craude"), null);
+    assert.match(plantWrongValue(md, "RADAR", "Claude", "Craude")!, /O Craude ganhou/);
+  });
+
+  it("placeholder ausente no MD com JSON {PREENCHER} → exit 1 e nada gravado", () => {
+    const md = MD_261001.replace("Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.\n", "");
+    const { root, dir } = makeEditionDir(md);
+    try {
+      const jsonPath = join(dir, "_internal", "intentional-error.json");
+      const jsonBefore = readFileSync(jsonPath, "utf8");
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", join(root, "none.jsonl")])), 1);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), md);
+      assert.equal(readFileSync(jsonPath, "utf8"), jsonBefore);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

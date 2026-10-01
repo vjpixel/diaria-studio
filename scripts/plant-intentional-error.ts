@@ -16,7 +16,7 @@
  *
  * Uso: npx tsx scripts/plant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--jsonl path] [--edition AAMMDD]
  * Stdout: JSON `{ action: "planted"|"already_filled"|"no_candidate", ... }`.
- * Exit: 0 = planted/already_filled; 1 = no_candidate (nada plantável — o
+ * Exit: 0 = planted/already_filled; 1 = no_candidate | no_placeholder (nada plantável — o
  * placeholder fica e o sentinel barra; o orchestrator escreve à mão);
  * 2 = uso inválido / arquivo ausente.
  */
@@ -24,7 +24,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
+import { listIntentionalErrorCandidates } from "./lib/propose-intentional-error-candidate.ts";
 import {
   intentionalErrorJsonPath,
   loadIntentionalErrorJson,
@@ -32,7 +32,8 @@ import {
   writeIntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir } from "./lib/intentional-error-repeat.ts";
-import { plantIntentionalError } from "./lib/plant-intentional-error.ts";
+import { NARRATIVE_PLACEHOLDER, plantIntentionalError } from "./lib/plant-intentional-error.ts";
+import type { IntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
 
 const REQUIRED = ["description", "location", "category", "correct_value", "reveal"] as const;
 
@@ -66,15 +67,33 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
 
   const md = readFileSync(mdPath, "utf8");
+  if (!md.includes(NARRATIVE_PLACEHOLDER)) {
+    // Sem a linha "Nessa edição, {PREENCHER_…}." não há onde declarar o erro:
+    // plantar só o valor deixaria JSON e texto sem narrativa — não grava nada.
+    console.log(JSON.stringify({ action: "no_placeholder" }));
+    console.error(`plant-intentional-error: ${NARRATIVE_PLACEHOLDER} ausente em ${mdPath} — rode render-erro-intencional.ts antes.`);
+    return 1;
+  }
   const jsonlPath = values["jsonl"] ?? intentionalErrorsJsonlPathForEditionDir(editionDir);
   const edition = values["edition"] ?? basename(editionDir);
-  const candidate = proposeIntentionalErrorCandidate(md, {
+  // Tenta os candidatos em ordem de preferência: o 1º pode não ser plantável
+  // (menção só em URL / fora da seção pelo rastreio de linha) — #9255 review.
+  let candidate: IntentionalErrorCandidate | null = null;
+  let planted: ReturnType<typeof plantIntentionalError> = null;
+  const tried: string[] = [];
+  for (const c of listIntentionalErrorCandidates(md, {
     history: jsonlPath ? loadIntentionalErrors(jsonlPath) : [],
     edition,
-  });
-  const planted = candidate ? plantIntentionalError(md, candidate) : null;
+  })) {
+    tried.push(c.location);
+    planted = plantIntentionalError(md, c);
+    if (planted) {
+      candidate = c;
+      break;
+    }
+  }
   if (!candidate || !planted) {
-    console.log(JSON.stringify({ action: "no_candidate", candidate }));
+    console.log(JSON.stringify({ action: "no_candidate", tried }));
     console.error(
       "plant-intentional-error: nenhuma menção plantável do catálogo #5742 em seção secundária — " +
         "monte o erro à mão (orchestrator-stage-2.md §Filtro de segurança) e preencha o JSON + a linha 'Nessa edição, …'.",
