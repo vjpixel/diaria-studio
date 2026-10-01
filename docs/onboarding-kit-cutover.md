@@ -153,13 +153,21 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
   - [x] Código: toda rodada `onboarding-kit-transport-run.ts --send` de
         produção grava `kit_transport.last_send_run` +
         `consecutive_failed_send_runs` no store (`stampKitSendRun`, sob o
-        lock) — inclusive a que ABORTA (backend/config/store inválido, ou
-        exceção no meio: registro `aborted: true` com o motivo). Rodada
-        "falha" (`isFailedKitSendRun`) = abortou, ou ≥1 lote falho (inclusive
-        e-mail 1/2 que o Kit devolveu sem agendamento), ou ≥1 ação devida
-        barrada por snippet ausente/pendente/inválido, ou o refresh de TODOS
-        os candidatos falhou por erro de transporte (rede/auth/5xx — "não
-        encontrado no Kit" não conta). Com
+        lock) — inclusive a que ABORTA (backend/config inválido, ou exceção
+        no meio: registro `aborted: true` com o motivo; store CORROMPIDO não
+        tem como ser registrado nem é coberto pelo alarme, que responde
+        `cannot-verify` — só o exit != 0 da rodada sinaliza). Rodada "falha"
+        (`isFailedKitSendRun`) = abortou; ou ≥1 lote falho — inclusive e-mail
+        1/2 cuja RELEITURA no Kit não ecoou `send_at` (o broadcast é apagado
+        e o lote cancelado, ou, se o DELETE falhar, marcado `schedule_failed`
+        e deixa de contar como confirmado: as entradas nunca ficam presas);
+        ou releitura de confirmação que falhou (`lots_unverified`, falha de
+        transporte — o lote fica `created`, sem declarar falha de entrega);
+        ou ≥1 ação devida barrada por snippet ausente/pendente/inválido; ou
+        o refresh de TODOS os candidatos falhou por erro de consulta (rede,
+        ou qualquer erro HTTP exceto 404/422 — "não encontrado no Kit" não
+        conta). Rodada com kind barrado por `blocked_concurrent` e sem falha
+        é NEUTRA (nem zera nem incrementa a streak). Com
         `onboarding.kit_transport.enabled: true`,
         `onboarding-continuity-alarm.ts` avalia esse sinal (check
         `onboarding-kit-transport`, issue própria): 2 rodadas seguidas

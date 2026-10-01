@@ -128,6 +128,19 @@ describe("filterBrevoPlanForKitCutover — rollback do cutover Kit não reenvia 
     assert.equal(filtered.skips.some((s) => s.motivo === "kit_lot_existente"), false);
   });
 
+  it("#7922: switch DESLIGADO + lote Kit `schedule_failed` (broadcast nunca agendado) — não bloqueia a Brevo, como cancelado", () => {
+    const e = entry({
+      email1_sent_at: iso(T0),
+      email1_brevo_id: "brevo-msg-1",
+      email2_sent_at: null,
+    });
+    const plan = planPara(e);
+    const lots = [kitLot({ status: "created", schedule_failed: true })];
+    const filtered = filterBrevoPlanForKitCutover(plan, false, lots);
+    assert.deepEqual(actionsSummary(filtered), [{ kind: "email2", email: "novo@example.com" }], "lote nunca agendado não prende a entrada");
+    assert.equal(filtered.skips.some((s) => s.motivo === "kit_lot_existente"), false);
+  });
+
   it("switch LIGADO + lote Kit `scheduled` para a etapa — guard de lote Kit vale independente do #8966 (esta entrada começou na Brevo, o #8966 sozinho DEIXARIA passar)", () => {
     const e = entry({
       email1_sent_at: iso(T0),

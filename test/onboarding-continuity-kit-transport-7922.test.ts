@@ -34,7 +34,16 @@ import {
   RUN_FRESHNESS_MAX_HORAS,
   ZERO_DETECTION_ALARM_THRESHOLD_RUNS,
 } from "../scripts/lib/onboarding-continuity-alarm.ts";
-import { recordKitSendRun, isFailedKitSendRun, type OnboardingKitLot, type KitSendRunRecord } from "../scripts/lib/onboarding-kit-transport.ts";
+import {
+  recordKitSendRun,
+  isFailedKitSendRun,
+  hasConfirmedKitLotForEntry,
+  mapKitBroadcastStatusToLocal,
+  reconcileLotWithKit,
+  decideLotReconciliation,
+  type OnboardingKitLot,
+  type KitSendRunRecord,
+} from "../scripts/lib/onboarding-kit-transport.ts";
 import { readStore, writeStore, emptyStore } from "../scripts/lib/onboarding-store.ts";
 import { stampKitSendRun } from "../scripts/onboarding-kit-transport-run.ts";
 import {
@@ -56,7 +65,17 @@ const OLD = new Date(NOW.getTime() - (RUN_FRESHNESS_MAX_HORAS + 1) * 3_600_000).
 
 /** Registro de rodada completo (todos os campos obrigatórios). */
 function rec(o: Partial<KitSendRunRecord> = {}): KitSendRunRecord {
-  return { at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 0, refresh_failed: 0, content_skipped: 0, ...o };
+  return {
+    at: FRESH,
+    lots_created: 0,
+    lots_failed: 0,
+    lots_unverified: 0,
+    blocked_concurrent: 0,
+    refresh_candidates: 0,
+    refresh_failed: 0,
+    content_skipped: 0,
+    ...o,
+  };
 }
 
 function lot(overrides: Partial<OnboardingKitLot> = {}): OnboardingKitLot {
@@ -387,5 +406,54 @@ describe("#7922 — evaluateContinuityRound (decisão da rodada, sem I/O)", () =
     });
     assert.equal(r.evaluatedChecks.size, 0);
     assert.equal(r.findings.length, 0);
+  });
+});
+
+describe("#7922 — re-review: broadcast não agendado, rodada neutra, store ausente", () => {
+  it("brevo + store AUSENTE: nada verificável — main() retorna antes de gravar estado de issues", () => {
+    const r = evaluateContinuityRound({
+      storeExists: false,
+      corrupted: false,
+      store: { kit_transport: { lots: {} } },
+      cfgRead: { enabled: false, error: null },
+      now: NOW,
+    });
+    assert.equal(r.evaluatedChecks.size, 0, "sem check avaliado = early-return, nenhum mkdir em data/onboarding");
+    const corrupted = evaluateContinuityRound({
+      storeExists: true,
+      corrupted: true,
+      store: { kit_transport: { lots: {} } },
+      cfgRead: { enabled: false, error: null },
+      now: NOW,
+    });
+    assert.equal(corrupted.evaluatedChecks.size, 0);
+  });
+
+  it("rodada só com blocked_concurrent é NEUTRA: não zera nem incrementa a streak", () => {
+    const kt: { last_send_run?: KitSendRunRecord | null; consecutive_failed_send_runs?: number } = { consecutive_failed_send_runs: 1 };
+    recordKitSendRun(kt, rec({ blocked_concurrent: 1 }));
+    assert.equal(kt.consecutive_failed_send_runs, 1);
+    recordKitSendRun(kt, rec({ lots_created: 1 }));
+    assert.equal(kt.consecutive_failed_send_runs, 0);
+    assert.equal(isFailedKitSendRun(rec({ lots_unverified: 1 })), true, "releitura falha conta como falha de transporte");
+  });
+
+  it("mapKitBroadcastStatusToLocal: campo ausente/fora do enum → 'created', nunca undefined", () => {
+    assert.equal(mapKitBroadcastStatusToLocal(undefined), "created");
+    assert.equal(mapKitBroadcastStatusToLocal("weird"), "created");
+    assert.equal(mapKitBroadcastStatusToLocal("scheduled"), "scheduled");
+  });
+
+  it("lote schedule_failed não confirma a entry, não é reusado, e só sai do estado quando o Kit mostra agendado", async () => {
+    const failed = lot({ status: "created", schedule_failed: true, last_error: "DELETE falhou", recipient_subscription_ids: ["1"] });
+    assert.equal(hasConfirmedKitLotForEntry([failed], "email1", "1"), null);
+    assert.equal(hasConfirmedKitLotForEntry([{ ...failed, schedule_failed: undefined }], "email1", "1")?.lot_id, failed.lot_id);
+    assert.equal(decideLotReconciliation(failed, NOW.getTime()).action, "create");
+    const stillDraft = await reconcileLotWithKit(failed, async () => ({ status: "draft" }), FRESH);
+    assert.equal(stillDraft.schedule_failed, true);
+    assert.equal(stillDraft.last_error, "DELETE falhou");
+    const nowScheduled = await reconcileLotWithKit(failed, async () => ({ status: "scheduled" }), FRESH);
+    assert.equal(nowScheduled.schedule_failed, undefined);
+    assert.equal(nowScheduled.status, "scheduled");
   });
 });

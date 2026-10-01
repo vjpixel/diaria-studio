@@ -127,6 +127,18 @@ export interface OnboardingKitLot {
   send_at: string | null;
   last_reconciled_at: string | null;
   last_error: string | null;
+  /**
+   * #7922 (fleet review do alarme de continuidade): `true` quando o broadcast
+   * de e-mail 1/2 foi criado mas a RELEITURA no Kit não confirmou o
+   * agendamento (sem `send_at` ecoado) E o `deleteBroadcast` de limpeza
+   * falhou — o rascunho ficou no Kit, mas nunca vai sair sozinho. Um lote
+   * assim NÃO conta como confirmado (`hasConfirmedKitLotForEntry`) nem
+   * bloqueia a Brevo no rollback (`filterBrevoPlanForKitCutover`): as
+   * entradas voltam ao plano em vez de ficarem presas. Some quando um
+   * `--reconcile` vir o broadcast agendado/enviado (`reconcileLotWithKit`).
+   * Ausente = comportamento anterior.
+   */
+  schedule_failed?: boolean;
 }
 
 /** `yyyy-mm-dd` (dia BRT do run) + kind + sequência dentro do dia — 1 lote
@@ -225,6 +237,9 @@ export function hasConfirmedKitLotForEntry(
   for (const lot of lots) {
     if (lot.kind !== kind) continue;
     if (lot.broadcast_id == null || lot.status === "cancelled") continue;
+    // #7922: broadcast que nunca foi agendado (e cuja limpeza falhou) não
+    // confirma nada — senão as entradas ficariam presas pra sempre.
+    if (lot.schedule_failed === true) continue;
     if (!lot.recipient_subscription_ids.includes(subscriptionId)) continue;
     return lot;
   }
@@ -645,6 +660,10 @@ export function decideLotReconciliation(
 ): LotReconciliationDecision {
   if (existingLot == null) return { action: "create" };
   if (existingLot.status === "cancelled") return { action: "create" };
+  // #7922: broadcast que nunca foi agendado (releitura sem `send_at` e DELETE
+  // falho) não pode ser "reusado" — o e-mail não sairia. Recria com
+  // identidade nova (o `claimLot` rebuilda o seq quando há lote existente).
+  if (existingLot.schedule_failed === true) return { action: "create" };
   if (
     existingLot.broadcast_id != null &&
     (existingLot.status === "created" || existingLot.status === "scheduled" || existingLot.status === "completed")
@@ -664,7 +683,9 @@ export function decideLotReconciliation(
  *  lote. `sending` vira `completed` — uma vez que o envio começou, o lote é
  *  terminal para fins de reconciliação (nunca recriar em cima de um
  *  broadcast que já começou a sair, mesmo que ainda não tenha terminado). */
-export function mapKitBroadcastStatusToLocal(status: KitBroadcastSummary["status"]): OnboardingKitLotStatus {
+export function mapKitBroadcastStatusToLocal(
+  status: KitBroadcastSummary["status"] | string | null | undefined,
+): OnboardingKitLotStatus {
   switch (status) {
     case "draft":
       return "created";
@@ -675,6 +696,11 @@ export function mapKitBroadcastStatusToLocal(status: KitBroadcastSummary["status
       return "completed";
     case "aborted":
       return "cancelled";
+    default:
+      // #7922: campo ausente/fora do enum (resposta inesperada do Kit) —
+      // conservador: "criado, não confirmado como enviado". Nunca `undefined`
+      // no store, nunca promove a enviado sem confirmação.
+      return "created";
   }
 }
 
@@ -702,12 +728,13 @@ export async function reconcileLotWithKit(
 ): Promise<OnboardingKitLot> {
   if (lot.broadcast_id == null) return lot;
   const remote = await fetchBroadcast(lot.broadcast_id);
-  return {
-    ...lot,
-    status: mapKitBroadcastStatusToLocal(remote.status),
-    last_reconciled_at: nowIso,
-    last_error: null,
-  };
+  const status = mapKitBroadcastStatusToLocal(remote.status);
+  const reconciled: OnboardingKitLot = { ...lot, status, last_reconciled_at: nowIso, last_error: null };
+  // #7922: o marcador só sai quando o Kit mostra o broadcast de fato
+  // agendado/enviado (alguém agendou à mão) — um rascunho continua falho.
+  if (status === "scheduled" || status === "completed") delete reconciled.schedule_failed;
+  else if (lot.schedule_failed === true) reconciled.last_error = lot.last_error;
+  return reconciled;
 }
 
 // ---------------------------------------------------------------------------
@@ -723,12 +750,21 @@ export interface KitSendRunRecord {
   at: string;
   /** Lotes cujo broadcast foi criado — e, pra e-mail 1/2, AGENDADO — nesta rodada. */
   lots_created: number;
-  /** Lotes que falharam nesta rodada: tag/criação lançou, ou (e-mail 1/2) o
-   *  broadcast voltou sem agendamento (não sai sozinho). */
+  /** Lotes que falharam nesta rodada: tag/criação lançou, ou (e-mail 1/2) a
+   *  RELEITURA do broadcast no Kit não ecoou `send_at` (não sai sozinho — o
+   *  broadcast é apagado e o lote cancelado, ou marcado `schedule_failed`). */
   lots_failed: number;
+  /** E-mail 1/2 criados cuja releitura de confirmação FALHOU (rede/API): o
+   *  lote fica `created` (não se declara falha de entrega sem leitura), mas a
+   *  rodada conta como falha de transporte. */
+  lots_unverified: number;
+  /** Kinds pulados por `blocked_concurrent` (outra rodada, ou o `pending` de
+   *  uma falha anterior há < 15 min). Rodada só com isso é NEUTRA na streak. */
+  blocked_concurrent: number;
   /** Candidatos que precisaram de refresh de status/stats no Kit. */
   refresh_candidates: number;
-  /** Refreshes que falharam por ERRO de transporte (rede, auth, 5xx/429) —
+  /** Refreshes que falharam por erro de CONSULTA (rede, ou qualquer erro HTTP
+   *  exceto 404/422 — ver `isKitTransportError` em `onboarding-welcome-run.ts`) —
    *  NÃO conta "assinante não encontrado" (ausência real, crônica pra quem
    *  saiu do Kit). Candidato com refresh falho é excluído da seleção
    *  (fail-safe do #8136). */
@@ -760,6 +796,8 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
  * Rodada `--send` que falhou em ENTREGAR:
  *   - abortou antes de terminar; ou
  *   - ≥1 lote falho; ou
+ *   - ≥1 releitura de confirmação de agendamento que falhou
+ *     (`lots_unverified` — falha de transporte, não de entrega); ou
  *   - ≥1 ação devida barrada por guard de conteúdo (sem isto, snippet
  *     ausente/pendente produziria "0 lotes, 0 falhas" indefinidamente); ou
  *   - o refresh de TODOS os candidatos falhou por erro de transporte. Com
@@ -773,6 +811,7 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
 export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
   if (run.aborted === true) return true;
   if (run.lots_failed > 0) return true;
+  if ((run.lots_unverified ?? 0) > 0) return true;
   if ((run.content_skipped ?? 0) > 0) return true;
   const candidates = run.refresh_candidates ?? 0;
   return candidates > 0 && (run.refresh_failed ?? 0) >= candidates;
@@ -789,7 +828,13 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
  */
 export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport: T, run: KitSendRunRecord): T {
   kitTransport.last_send_run = run;
-  kitTransport.consecutive_failed_send_runs = isFailedKitSendRun(run) ? (kitTransport.consecutive_failed_send_runs ?? 0) + 1 : 0;
+  const prev = kitTransport.consecutive_failed_send_runs ?? 0;
+  if (isFailedKitSendRun(run)) kitTransport.consecutive_failed_send_runs = prev + 1;
+  // NEUTRA: rodada sem falha mas com kind barrado por `blocked_concurrent`
+  // não prova que o transporte voltou a entregar — não zera (nem incrementa:
+  // a falha que deixou o `pending` já foi contada na rodada dela).
+  else if ((run.blocked_concurrent ?? 0) > 0) kitTransport.consecutive_failed_send_runs = prev;
+  else kitTransport.consecutive_failed_send_runs = 0;
   return kitTransport;
 }
 

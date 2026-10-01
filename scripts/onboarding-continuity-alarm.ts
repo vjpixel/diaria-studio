@@ -273,7 +273,8 @@ export interface ContinuityRound {
  *  - transporte Kit ATIVO: `evaluateKitTransportHealth` — `stale` vira achado;
  *    `cannot-verify` (store ausente/ilegível) fica fora da reconciliação;
  *  - transporte BREVO (config legível, switch desligado — inclusive rollback
- *    do §6): o check Kit não se aplica; entra na reconciliação SEM achado,
+ *    do §6) com o store lido: o check Kit não se aplica; entra na
+ *    reconciliação SEM achado,
  *    então uma issue Kit aberta é comentada e fecha sozinha (o corpo dela
  *    avisa que fechar por rollback não é "causa resolvida");
  *  - config ILEGÍVEL: transporte desconhecido — check Kit fora da
@@ -310,7 +311,10 @@ export function evaluateContinuityRound(input: ContinuityRoundInput): Continuity
       evaluatedChecks.add(KIT_TRANSPORT_CHECK);
       if (kitEvaluation.verdict === "stale") findings.push(toKitTransportAlarmFinding(kitEvaluation));
     }
-  } else if (transport === "brevo") {
+  } else if (transport === "brevo" && input.storeExists && !input.corrupted) {
+    // Só com o store LIDO: store ausente/ilegível não é leitura, e incluir o
+    // check aqui faria `main()` seguir até gravar o estado de issues — com a
+    // junction `data/` desmontada, criaria `data/onboarding/` real.
     evaluatedChecks.add(KIT_TRANSPORT_CHECK);
   }
   return { transport, evaluation, kitEvaluation, evaluatedChecks, findings };

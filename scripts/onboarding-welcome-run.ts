@@ -370,12 +370,15 @@ export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Pr
 }
 
 /**
- * #7922 (alarme de continuidade do transporte Kit): erro de TRANSPORTE — rede,
- * auth, 429/5xx — em oposição a "assinante não existe no Kit" (404, ou lista
- * vazia na busca por e-mail, que nem lança) e a integridade de dado (busca por
- * e-mail sem match exato, #7373). Só o 1º tipo diz que o Kit está fora do
- * alcance; os outros são crônicos por assinante e não podem virar alarme de
- * transporte.
+ * #7922 (alarme de continuidade do transporte Kit): falha de CONSULTA que não
+ * é ausência do assinante. Conta: erro de rede (qualquer erro não-HTTP), e
+ * TODO `KitApiError` exceto 404/422 — inclusive 400/401/403/409, não só
+ * auth e 429/5xx. Escolha deliberada: qualquer desses impede a consulta de
+ * TODOS os candidatos do mesmo jeito (key revogada, request malformado por
+ * mudança de API), e nenhum é crônico de UMA pessoa. Não conta: 404 e lista
+ * vazia na busca por e-mail (assinante saiu do Kit), 422, e a integridade de
+ * dado da busca por e-mail sem match exato (#7373) — esses são crônicos por
+ * assinante e não podem virar alarme de transporte.
  */
 export function isKitTransportError(err: unknown): boolean {
   if (err instanceof KitApiError) return err.status !== 404 && err.status !== 422;

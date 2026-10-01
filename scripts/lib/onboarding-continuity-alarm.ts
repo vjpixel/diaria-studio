@@ -376,7 +376,8 @@ export function describeKitTransportSignal(evaluation: KitTransportHealthEvaluat
     case "rodadas_falhas":
       return (
         `${evaluation.consecutiveFailedRuns} rodada(s) \`onboarding-kit-transport-run.ts --send\` consecutiva(s) sem conseguir entregar ` +
-        `(limiar ${evaluation.threshold}) — lote que falhou ao taguear/criar/agendar o broadcast, ação barrada ` +
+        `(limiar ${evaluation.threshold}) — lote que falhou ao taguear/criar/agendar o broadcast (ou cuja ` +
+        `releitura no Kit não confirmou o agendamento), ação barrada ` +
         `por snippet ausente/pendente, rodada abortada, ou refresh de todos os candidatos falho por erro de ` +
         `transporte. Última rodada ${evaluation.lastRunAt}: ${evaluation.lastRunFailedLots} lote(s) falho(s)` +
         (evaluation.lastRunAborted ? `, ABORTADA (${evaluation.lastRunError ?? "sem motivo registrado"})` : "") +
