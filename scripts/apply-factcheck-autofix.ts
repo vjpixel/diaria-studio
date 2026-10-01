@@ -62,6 +62,7 @@ export type AutofixStatus =
   | "applied"       // substituição feita
   | "skipped_intentional_error"  // claim pertence ao destaque do erro intencional
   | "skipped_superlative"        // claim_type superlative — nunca auto-fix
+  | "skipped_headline"           // (#9383) claim_type headline — título é do editor, nunca auto-fix
   | "skipped_secondary_destaque" // (#8992) destaque="secondary" — sem bloco DESTAQUE N pra escopar a substituição
   | "skipped_no_fix"             // sem suggested_fix no claim (ou texto/fix vazio)
   | "skipped_text_not_found";    // texto do claim não encontrado nos arquivos
@@ -365,6 +366,21 @@ export function planAutofixes(
 ): AutofixEntry[] {
   const divergent = claims.filter((c) => c.verdict === "DIVERGENT");
   return divergent.map((c): AutofixEntry => {
+    // Regra 2b (#9383): título do destaque nunca recebe auto-fix — este
+    // script lê o fact-check.json cru (sem normalizeFactCheckResult), então o
+    // descarte de suggested_fix lá não basta.
+    if (c.claim_type === "headline") {
+      return {
+        destaque: c.destaque,
+        claim_type: c.claim_type,
+        text: c.text,
+        suggested_fix: c.suggested_fix,
+        sources: c.sources,
+        status: "skipped_headline",
+        note: "Título do destaque não recebe auto-fix — revisão editorial manual.",
+      };
+    }
+
     // Regra 2: superlativos nunca recebem auto-fix (são de tom)
     if (c.claim_type === "superlative") {
       return {
