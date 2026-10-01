@@ -670,7 +670,8 @@ export function filterBrevoPlanForKitCutover(
       const remaining: OnboardingEntry[] = [];
       for (const entry of action.entries) {
         const lot3 = findKitLotForEntry(kitLots, "email3", entry.subscription_id);
-        if (lot3 == null || lot3.status === "cancelled") {
+        // #7922: `schedule_failed` = broadcast nunca agendado — não cobre nada.
+        if (lot3 == null || lot3.status === "cancelled" || lot3.schedule_failed === true) {
           remaining.push(entry);
           continue;
         }
@@ -688,7 +689,7 @@ export function filterBrevoPlanForKitCutover(
     }
 
     const kitLot = findKitLotForEntry(kitLots, action.kind, action.entry.subscription_id);
-    if (kitLot != null && kitLot.status !== "cancelled") {
+    if (kitLot != null && kitLot.status !== "cancelled" && kitLot.schedule_failed !== true) {
       skips.push({
         entry: action.entry,
         etapa: action.kind,

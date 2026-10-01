@@ -70,8 +70,46 @@
  */
 
 import { ZERO_DETECTION_ALARM_THRESHOLD_RUNS } from "./onboarding-state.ts";
+import type { KitTransportHealthBlock } from "./onboarding-kit-transport.ts";
 
 export { ZERO_DETECTION_ALARM_THRESHOLD_RUNS };
+
+// ---------------------------------------------------------------------------
+// Transporte ativo (#7922, pré-requisito do corte — §3 de
+// docs/onboarding-kit-cutover.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Qual transporte ENTREGA os e-mails novos do onboarding. A DETECÇÃO (e a
+ * streak `consecutive_zero_detections` que este alarme lê) é a mesma nos
+ * dois regimes: quem detecta é sempre `onboarding-welcome-run.ts`, que
+ * continua rodando depois do corte (§2.2 do doc — os dois executores rodam
+ * sempre). O que muda é quem envia — e, com o Kit ativo, o alarme também
+ * precisa observar o executor Kit (`evaluateKitTransportHealth`), porque a
+ * streak de detecção continua saudável mesmo se o Kit parar de criar os
+ * broadcasts.
+ */
+export type OnboardingTransport = "brevo" | "kit";
+
+/** Deriva o transporte ativo de `onboarding.kit_transport.enabled` — só
+ *  `true` literal liga o Kit (mesma regra do kill switch em
+ *  `isWriteBlockedByKillSwitch`/`filterBrevoPlanForKitCutover`).
+ *
+ *  @pure */
+export function resolveActiveOnboardingTransport(kitTransportEnabled: unknown): OnboardingTransport {
+  return kitTransportEnabled === true ? "kit" : "brevo";
+}
+
+/** Rótulo do transporte pro e-mail. `"desconhecido"` = `platform.config.json`
+ *  ilegível nesta rodada — nunca rotular como Brevo por default. */
+export type OnboardingTransportLabel = OnboardingTransport | "desconhecido";
+
+function transportLabel(transport: OnboardingTransportLabel): string {
+  if (transport === "desconhecido") return "desconhecido (platform.config.json ilegível nesta rodada)";
+  return transport === "kit"
+    ? "Kit — broadcasts segmentados por tag, `onboarding-kit-transport-run.ts` (#7922)"
+    : "Brevo transacional, `onboarding-welcome-run.ts` (#5908/#7599)";
+}
 
 // ---------------------------------------------------------------------------
 // Veredito — tri-state, puro
@@ -195,6 +233,10 @@ export function markOnboardingContinuityAlarmed(now: Date): OnboardingContinuity
 export function buildOnboardingContinuityAlarmEmail(
   evaluation: OnboardingContinuityEvaluation,
   issueLines: string,
+  /** #7922: transporte que ENVIA os e-mails hoje. A detecção é a mesma nos
+   *  dois — o texto só nomeia o transporte certo. Default `brevo` = o regime
+   *  em produção antes do corte. */
+  transport: OnboardingTransportLabel = "brevo",
 ): { subject: string; body: string } {
   const detail =
     evaluation.streak !== null
@@ -203,7 +245,8 @@ export function buildOnboardingContinuityAlarmEmail(
   return {
     subject: "⚠️ Diaria-Onboarding-Continuity-Alarm: detecção de cadastro novo pode ter parado",
     body:
-      `A detecção de assinantes novos do onboarding (Brevo transacional, #5908/#7599) parou de achar gente ` +
+      `A detecção de assinantes novos do onboarding (feita por \`onboarding-welcome-run.ts\` em qualquer ` +
+      `transporte; transporte de envio ativo: ${transportLabel(transport)}) parou de achar gente ` +
       `nova: ${detail}\n\n` +
       `Isto NÃO diz sozinho se é uma seca real de cadastros ou uma quebra silenciosa na detecção (fonte ` +
       `errada, filtro no-op, cursor travado — a mesma classe do #7599 e do #6043). Pra distinguir, checar ` +
@@ -214,6 +257,157 @@ export function buildOnboardingContinuityAlarmEmail(
       `também mostrar zero, é seca real de cadastro (fora do escopo deste alarme).\n\n` +
       `Este alarme só observa o streak que o próprio run diário já persiste em ` +
       `\`data/onboarding/store.json\` — não chama a API do Kit, não reativa nada, não reinscreve ninguém.` +
+      issueLines,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Saúde do executor Kit (#7922) — só avaliada com o transporte Kit ativo
+// ---------------------------------------------------------------------------
+
+/** Rodadas `--send` consecutivas do executor Kit que falharam em entregar
+ *  (`isFailedKitSendRun`, `onboarding-kit-transport.ts`) antes de alarmar.
+ *  2 e não 1: o lote que falhou numa rodada fica `pending` com `last_error`;
+ *  passados 15 min (`LOT_STALE_AFTER_MS`) a rodada seguinte o recria com
+ *  identidade nova (`recreate_after_timeout`, `seq` incrementado) — e no dia
+ *  seguinte a chave do lote já é outra (`buildLotId` usa a data). Uma falha
+ *  transitória (timeout, 5xx) se resolve aí; 2 rodadas seguidas falhando é
+ *  falha persistente. Diferente do limiar 3 da detecção zerada, que pode ser
+ *  seca legítima de cadastro: broadcast que não sai nunca é legítimo. A
+ *  streak é por RODADA — premissa de operação de 1 rodada `--send` por dia. */
+export const KIT_SEND_FAILURE_ALARM_THRESHOLD_RUNS = 2;
+
+/** Leitura impossível (nunca vira `ok`, nunca vira achado). */
+export type KitTransportCannotVerifyReason = "store_missing" | "store_corrupted";
+
+/** Por que o transporte Kit está em falha. Com o kill switch LIGADO, a
+ *  ausência/velhice da rodada é achado (não `cannot-verify`): o switch
+ *  garante que devia haver uma rodada `--send` recente. */
+export type KitTransportStaleReason =
+  /** ≥ limiar de rodadas seguidas sem entregar (`isFailedKitSendRun`). */
+  | "rodadas_falhas"
+  /** Transporte Kit ativo e nenhuma rodada `--send` registrada — o executor
+   *  não roda (task não armada) ou roda com código anterior ao registro. */
+  | "rodada_ausente"
+  /** Última rodada `--send` há mais de `RUN_FRESHNESS_MAX_HORAS` — o
+   *  executor parou (task desarmada, crash antes do registro). */
+  | "rodada_parada";
+
+export interface KitTransportHealthEvaluation {
+  verdict: OnboardingContinuityVerdict;
+  /** `null` com `cannot-verify` ou sem rodada registrada. */
+  consecutiveFailedRuns: number | null;
+  /** Lotes falhos na última rodada registrada — `null` sem rodada. */
+  lastRunFailedLots: number | null;
+  /** `true` quando a última rodada abortou antes de terminar. */
+  lastRunAborted: boolean;
+  lastRunError: string | null;
+  lastRunAt: string | null;
+  threshold: number;
+  cannotVerifyReason: KitTransportCannotVerifyReason | null;
+  staleReason: KitTransportStaleReason | null;
+}
+
+/**
+ * Tri-state honesto (#7776) sobre o que o executor Kit grava em
+ * `store.kit_transport` (`stampKitSendRun`). Só chamado com o transporte Kit
+ * ATIVO: nunca `ok` sem uma rodada `--send` registrada e fresca — rodada
+ * ausente ou parada vira `stale` (achado, com issue e e-mail), porque o kill
+ * switch ligado garante que devia haver uma.
+ *
+ * @pure
+ */
+export function evaluateKitTransportHealth(
+  storeExists: boolean,
+  corrupted: boolean,
+  kitTransport: KitTransportHealthBlock | undefined,
+  threshold: number = KIT_SEND_FAILURE_ALARM_THRESHOLD_RUNS,
+  now: Date = new Date(),
+): KitTransportHealthEvaluation {
+  const base = {
+    consecutiveFailedRuns: null,
+    lastRunFailedLots: null,
+    lastRunAborted: false,
+    lastRunError: null,
+    lastRunAt: null,
+    threshold,
+  };
+  if (!storeExists) return { ...base, verdict: "cannot-verify", cannotVerifyReason: "store_missing", staleReason: null };
+  if (corrupted) return { ...base, verdict: "cannot-verify", cannotVerifyReason: "store_corrupted", staleReason: null };
+  const run = kitTransport?.last_send_run ?? null;
+  const lastMs = run != null && typeof run.at === "string" ? Date.parse(run.at) : NaN;
+  if (run == null || Number.isNaN(lastMs)) {
+    return { ...base, verdict: "stale", cannotVerifyReason: null, staleReason: "rodada_ausente" };
+  }
+  const withRun = {
+    ...base,
+    lastRunFailedLots: run.lots_failed,
+    lastRunAborted: run.aborted === true,
+    lastRunError: run.error ?? null,
+    lastRunAt: run.at,
+  };
+  if ((now.getTime() - lastMs) / 3_600_000 > RUN_FRESHNESS_MAX_HORAS) {
+    return { ...withRun, verdict: "stale", cannotVerifyReason: null, staleReason: "rodada_parada" };
+  }
+  const streak = kitTransport?.consecutive_failed_send_runs ?? 0;
+  return {
+    ...withRun,
+    consecutiveFailedRuns: streak,
+    verdict: streak >= threshold ? "stale" : "ok",
+    cannotVerifyReason: null,
+    staleReason: streak >= threshold ? "rodadas_falhas" : null,
+  };
+}
+
+/** Texto curto do sinal, compartilhado entre e-mail e corpo da issue. */
+export function describeKitTransportSignal(evaluation: KitTransportHealthEvaluation): string {
+  switch (evaluation.staleReason) {
+    case "rodada_ausente":
+      return (
+        "o transporte Kit está ATIVO (`onboarding.kit_transport.enabled: true`) mas o executor " +
+        "`onboarding-kit-transport-run.ts --send` nunca registrou uma rodada no store — provavelmente a task " +
+        "agendada do executor não foi armada (passo do flip, §3 de docs/onboarding-kit-cutover.md)."
+      );
+    case "rodada_parada":
+      return (
+        `a última rodada \`--send\` do executor Kit registrada é de ${evaluation.lastRunAt} — mais de ` +
+        `${RUN_FRESHNESS_MAX_HORAS}h sem rodar (task desarmada, ou o processo morre antes de registrar).`
+      );
+    case "rodadas_falhas":
+      return (
+        `${evaluation.consecutiveFailedRuns} rodada(s) \`onboarding-kit-transport-run.ts --send\` consecutiva(s) sem conseguir entregar ` +
+        `(limiar ${evaluation.threshold}) — lote que falhou ao taguear/criar/agendar o broadcast (ou cuja ` +
+        `releitura no Kit não confirmou o agendamento), ação barrada ` +
+        `por snippet ausente/pendente, rodada abortada, ou refresh de todos os candidatos falho por erro de ` +
+        `transporte. Última rodada ${evaluation.lastRunAt}: ${evaluation.lastRunFailedLots} lote(s) falho(s)` +
+        (evaluation.lastRunAborted ? `, ABORTADA (${evaluation.lastRunError ?? "sem motivo registrado"})` : "") +
+        "."
+      );
+    default:
+      return "estado do executor Kit indisponível.";
+  }
+}
+
+export function buildKitTransportAlarmEmail(
+  evaluation: KitTransportHealthEvaluation,
+  issueLines: string,
+): { subject: string; body: string } {
+  const subject =
+    evaluation.staleReason === "rodadas_falhas"
+      ? "⚠️ Diaria-Onboarding-Continuity-Alarm: transporte Kit do onboarding não está entregando"
+      : "⚠️ Diaria-Onboarding-Continuity-Alarm: executor do transporte Kit do onboarding não está rodando";
+  return {
+    subject,
+    body:
+      `Transporte Kit do onboarding (#7922): ${describeKitTransportSignal(evaluation)}\n\n` +
+      `Enquanto isso, quem foi detectado não recebe o e-mail 1/2 e o rascunho do e-mail 3 não nasce — a ` +
+      `detecção continua saudável, então o alarme de detecção zerada NÃO cobre esta falha.\n\n` +
+      `Onde olhar: \`kit_transport.last_send_run\` e o \`last_error\` dos lotes em ` +
+      `\`data/onboarding/store.json\`, e o log da task do executor. Rollback: §6 de ` +
+      `docs/onboarding-kit-cutover.md (desligar \`onboarding.kit_transport.enabled\` devolve os candidatos ` +
+      `novos à Brevo; com o switch desligado este check deixa de ser avaliado e a issue fecha sozinha após 2 ` +
+      `execuções — conferir a causa antes de religar).\n\n` +
+      `Este alarme só lê o que o próprio executor Kit gravou no store — não chama a API do Kit.` +
       issueLines,
   };
 }

@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OnboardingKitLot } from "./onboarding-kit-transport.ts";
+import type { OnboardingKitLot, KitTransportHealthBlock } from "./onboarding-kit-transport.ts";
 import { withFileLock } from "./file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -225,10 +225,17 @@ export interface OnboardingStore {
    * (`onboarding-kit-transport.ts` → `buildLotId`). Ausente/`undefined` =
    * store criado antes deste campo existir, ou o transporte Kit nunca rodou
    * — tratado como "nenhum lote" (`{}`), nunca como erro.
+   *
+   * #7922 (§3 do corte): também carrega a saúde do executor Kit
+   * (`KitTransportHealthBlock` — `last_send_run` +
+   * `consecutive_failed_send_runs`, contados por `isFailedKitSendRun`).
+   * Gravado só por `stampKitSendRun` (rodada `--send` não-piloto, sob o lock
+   * do store; dry-run nunca grava). Ausente com o transporte Kit ativo = o
+   * executor nunca registrou rodada → achado do alarme, nunca `ok`.
    */
   kit_transport?: {
     lots: Record<string, OnboardingKitLot>;
-  };
+  } & KitTransportHealthBlock;
 }
 
 export function emptyStore(): OnboardingStore {
@@ -269,7 +276,16 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         // #7922: store anterior ao transporte Kit não tem este bloco —
         // normaliza pra "nenhum lote" em vez de deixar `undefined` vazar
         // para callers que assumem `.lots` sempre presente.
-        kit_transport: { lots: raw.kit_transport?.lots ?? {} },
+        kit_transport: {
+          lots: raw.kit_transport?.lots ?? {},
+          // #7922: sinais de saúde do executor Kit — só propagados quando
+          // presentes (store anterior não ganha campo fabricado; `?? null`
+          // seria um "nunca rodou" que o disco não disse).
+          ...(raw.kit_transport?.last_send_run != null ? { last_send_run: raw.kit_transport.last_send_run } : {}),
+          ...(raw.kit_transport?.consecutive_failed_send_runs != null
+            ? { consecutive_failed_send_runs: raw.kit_transport.consecutive_failed_send_runs }
+            : {}),
+        },
       },
       corrupted: false,
     };
