@@ -901,7 +901,10 @@ aqui.
    o marcador de `formatDecisionMarker` (`scripts/lib/issue-decisions.ts`,
    `{decided_at, pergunta, resposta, sessao: "continuo"}`) antes da prosa de
    sempre — a prosa não muda, o marcador é só o prefixo. Junto: `gh issue
-   edit N --add-label decisao-registrada`; e apender no CORPO da issue `>
+   edit N --add-label decisao-registrada` — e, se a resposta destrava
+   código (não encerra o assunto), `npx tsx scripts/route-issue.ts --issue N
+   --track overnight --motivo triada`, senão a label sozinha classifica
+   `fora-de-rodada` (#9229, mesma regra do passo 5 do overnight); e apender no CORPO da issue `>
    Decidido em {data}: {resposta breve}` logo após o trecho que fazia a
    pergunta (ou no fim do corpo, se não houver trecho localizável) — é o
    corpo que a próxima varredura (desta ou de outra sessão) lê primeiro, e
