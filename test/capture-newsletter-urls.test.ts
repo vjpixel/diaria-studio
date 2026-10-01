@@ -15,6 +15,10 @@ import {
   stripHtml,
   main,
   loadAlwaysConsiderConfig,
+  isThreadEligible,
+  editionFromOutPath,
+  verifyPersistedOutput,
+  MAX_OFFER_EDITIONS,
 } from "../scripts/capture-newsletter-urls.ts";
 import type {
   CapturedThread,
@@ -287,6 +291,7 @@ describe("main() CLI integration", () => {
         "--threads", threadsPath,
         "--out", outPath,
         "--cursor", cursorPath,
+        "--edition", "260921",
       ]);
     } finally {
       process.stdout.write = origWrite;
@@ -305,12 +310,14 @@ describe("main() CLI integration", () => {
     assert.ok(articles.some((a: any) => a.url.includes("openai.com")));
     assert.ok(articles.every((a: any) => a.flag === "newsletter_extracted"));
 
-    // cursor updated
+    // cursor updated — com o registro thread_id → edição (#9368)
     const cursor = JSON.parse(readFileSync(cursorPath, "utf8"));
     assert.ok(cursor.processed_thread_ids.includes("t1"));
+    assert.deepEqual(cursor.threads.t1.editions, ["260921"]);
+    assert.ok(cursor.threads.t1.articles >= 2);
   });
 
-  it("re-running with same threads is idempotent", () => {
+  it("re-running the SAME edition re-extracts and preserves output (#9368 — idempotente sem consumir)", () => {
     const threadsPath = tmpFile("threads2.json");
     const outPath = tmpFile("articles2.json");
     const cursorPath = tmpFile("cursor2.json");
@@ -330,6 +337,7 @@ describe("main() CLI integration", () => {
           "--threads", threadsPath,
           "--out", outPath,
           "--cursor", cursorPath,
+          "--edition", "260921",
         ]);
       } finally {
         process.stdout.write = origWrite;
@@ -344,8 +352,8 @@ describe("main() CLI integration", () => {
     assert.ok(firstArticles.length >= 2, "first run produced articles");
 
     const second = run();
-    assert.equal(second.articles_produced, 0);
-    assert.equal(second.skipped_already, 1);
+    assert.equal(second.skipped_already, 0, "mesma edição nunca vê a própria thread como consumida");
+    assert.equal(second.articles_produced, first.articles_produced);
 
     // articles.json should PRESERVE first run's articles (crash-resume safety)
     const articles = JSON.parse(readFileSync(outPath, "utf8"));
@@ -589,5 +597,136 @@ describe("regressão #8710: urls_extraidas chega em processThreads (ponta a pont
   it("sem urls_extraidas (JSON antigo), comportamento igual ao de antes", () => {
     const { result } = processThreads([makeThread()], { processed_thread_ids: [] });
     assert.ok(result.urls_extracted >= 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9368 — cursor por edição
+// ---------------------------------------------------------------------------
+
+function runMain(args: string[]): { summary: any; exitCode: number | undefined } {
+  const captured: string[] = [];
+  const origWrite = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  const origExit = process.exit;
+  let exitCode: number | undefined;
+  process.stdout.write = (chunk: any) => {
+    if (typeof chunk === "string") captured.push(chunk);
+    return true;
+  };
+  process.stderr.write = () => true;
+  (process as any).exit = (code?: number) => {
+    exitCode = code ?? 0;
+    throw new Error(`__exit_${exitCode}`);
+  };
+  try {
+    main(["node", "script.ts", ...args]);
+  } catch (err) {
+    if (!(err instanceof Error && err.message.startsWith("__exit_"))) throw err;
+  } finally {
+    process.stdout.write = origWrite;
+    process.stderr.write = origErr;
+    (process as any).exit = origExit;
+  }
+  return { summary: captured.length ? JSON.parse(captured.join("")) : undefined, exitCode };
+}
+
+describe("#9368 — cursor por edição (regressão 260921: threads consumidas, 0 artigos gravados)", () => {
+  beforeEach(() => mkdirSync(TMP_DIR, { recursive: true }));
+  afterEach(() => rmSync(TMP_DIR, { recursive: true, force: true }));
+
+  it("2º run da MESMA edição com saída perdida re-extrai em vez de gravar [] (caso 260921)", () => {
+    const threadsPath = tmpFile("threads.json");
+    const outPath = tmpFile("2609/260921/_internal/captured-newsletter-articles.json");
+    const cursorPath = tmpFile("cursor.json");
+    writeFileSync(threadsPath, JSON.stringify([makeThread({ thread_id: "1a0bf8d3462259d3" })]), "utf8");
+
+    const first = runMain(["--threads", threadsPath, "--out", outPath, "--cursor", cursorPath]);
+    assert.ok(first.summary.articles_produced >= 2);
+
+    // A saída da 1ª execução some (ex.: conflito de sync entre máquinas
+    // substituiu o arquivo por []) — o cursor global antigo deixava a thread
+    // marcada e o 2º run gravava [] de novo.
+    writeFileSync(outPath, "[]\n", "utf8");
+    const second = runMain(["--threads", threadsPath, "--out", outPath, "--cursor", cursorPath]);
+    assert.equal(second.summary.skipped_already, 0);
+    const articles = JSON.parse(readFileSync(outPath, "utf8"));
+    assert.ok(articles.length >= 2, `esperava artigos re-extraídos, veio ${articles.length}`);
+  });
+
+  it("execução sem edição (--out ad-hoc) nunca consome o cursor", () => {
+    const threadsPath = tmpFile("threads.json");
+    const cursorPath = tmpFile("cursor.json");
+    writeFileSync(threadsPath, JSON.stringify([makeThread()]), "utf8");
+    runMain(["--threads", threadsPath, "--out", tmpFile("adhoc.json"), "--cursor", cursorPath]);
+    assert.ok(!existsSync(cursorPath), "cursor não pode ser gravado sem saída numa edição real");
+  });
+
+  it("falha ao gravar a saída não deixa a thread marcada no cursor", () => {
+    const threadsPath = tmpFile("threads.json");
+    const cursorPath = tmpFile("cursor.json");
+    writeFileSync(threadsPath, JSON.stringify([makeThread()]), "utf8");
+    // Pai do --out é um ARQUIVO: mkdir/escrita da saída falham.
+    writeFileSync(tmpFile("blocker"), "x", "utf8");
+    assert.throws(() =>
+      runMain(["--threads", threadsPath, "--out", tmpFile("blocker/260921/_internal/out.json"), "--cursor", cursorPath, "--edition", "260921"]),
+    );
+    assert.ok(!existsSync(cursorPath), "cursor avançou sem a saída ter sido gravada");
+  });
+
+  it("--edition inválido aborta sem tocar no cursor", () => {
+    const threadsPath = tmpFile("threads.json");
+    const cursorPath = tmpFile("cursor.json");
+    writeFileSync(threadsPath, JSON.stringify([makeThread()]), "utf8");
+    const { exitCode } = runMain(["--threads", threadsPath, "--out", tmpFile("o.json"), "--cursor", cursorPath, "--edition", "26-09"]);
+    assert.equal(exitCode, 1);
+    assert.ok(!existsSync(cursorPath));
+  });
+
+  it("reoferta: thread capturada em 260928 volta em 260929 (caso openai.com) e para após MAX_OFFER_EDITIONS", () => {
+    let cursor: CapturedCursor = { processed_thread_ids: [] };
+    const editions = ["260928", "260929", "260930", "261001"];
+    const produced: number[] = [];
+    for (const ed of editions) {
+      const r = processThreads([makeThread()], cursor, { edition: ed });
+      produced.push(r.articles.length);
+      cursor = r.newCursor;
+    }
+    assert.equal(MAX_OFFER_EDITIONS, 3);
+    assert.ok(produced[0] > 0 && produced[1] > 0 && produced[2] > 0, `reoferta nas 2 edições seguintes: ${produced}`);
+    assert.equal(produced[3], 0, "4ª edição não recebe mais a thread");
+    assert.deepEqual(cursor.threads!.t1.editions, ["260928", "260929", "260930"]);
+  });
+
+  it("id só na lista legada (pré-#9368) segue consumido; sem edição só thread nova é extraída", () => {
+    const legacy: CapturedCursor = { processed_thread_ids: ["old"] };
+    assert.equal(isThreadEligible(legacy, "old", "260921"), false);
+    assert.equal(isThreadEligible(legacy, "new", "260921"), true);
+    const withEntry: CapturedCursor = { processed_thread_ids: ["x"], threads: { x: { editions: ["260920"], articles: 3 } } };
+    assert.equal(isThreadEligible(withEntry, "x", undefined), false);
+    assert.equal(isThreadEligible(withEntry, "x", "260920"), true);
+  });
+
+  it("editionFromOutPath: layout nested e flat; fora de edição → undefined", () => {
+    assert.equal(editionFromOutPath("data/editions/2609/260921/_internal/captured-newsletter-articles.json"), "260921");
+    assert.equal(editionFromOutPath("C:\\data\\editions\\260921\\_internal\\x.json"), "260921");
+    assert.equal(editionFromOutPath("/tmp/articles.json"), undefined);
+  });
+
+  it("verifyPersistedOutput detecta contagem divergente e arquivo ilegível", () => {
+    const p = tmpFile("v.json");
+    writeFileSync(p, "[1,2]", "utf8");
+    assert.deepEqual(verifyPersistedOutput(p, 2), { ok: true });
+    assert.equal(verifyPersistedOutput(p, 3).ok, false);
+    writeFileSync(p, "{", "utf8");
+    assert.equal(verifyPersistedOutput(p, 0).ok, false);
+  });
+
+  it("loadCursor descarta mapa `threads` malformado sem perder a lista legada", () => {
+    const p = tmpFile("c.json");
+    writeFileSync(p, JSON.stringify({ processed_thread_ids: ["a"], threads: [1, 2] }), "utf8");
+    const c = loadCursor(p);
+    assert.deepEqual(c.processed_thread_ids, ["a"]);
+    assert.equal(c.threads, undefined);
   });
 });
