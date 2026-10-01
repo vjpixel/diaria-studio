@@ -50,6 +50,7 @@ import {
 } from "./update-stage-status.ts";
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts"; // #3714
+import { computeEditionManualEdits, type EditionManualEdits, type GateName } from "./edition-manual-edits.ts"; // #9357
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -357,6 +358,7 @@ export function renderHtmlReport(
   braveCredits: BraveCreditStats | null = null, // #1558
   socialPreviewUrl: string | null = null, // #1739
   newsletterUrl: string | null = null, // #3466
+  manualEdits: EditionManualEdits | null = null, // #9357
 ): string {
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
   // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
@@ -500,6 +502,8 @@ export function renderHtmlReport(
 
   ${warnings.length === 0 && errors.length === 0 ? "<p>Nenhum warning ou error registrado.</p>" : ""}
 
+  ${manualEdits ? renderManualEditsSection(manualEdits) : ""}
+
   ${braveCredits && braveCredits.queries_this_month > 0 ? `
   <h2>Brave Search API (#1558)</h2>
   <table>
@@ -521,6 +525,48 @@ export function renderHtmlReport(
   </div>
 </body>
 </html>`;
+}
+
+/**
+ * Seção "Modificações manuais" (#9357) — veredito da métrica da épica #7972
+ * pra esta edição. `null` em `zero_manual_edits` = algum gate sem baseline
+ * confiável (ver `scripts/edition-manual-edits.ts`).
+ */
+export function renderManualEditsSection(m: EditionManualEdits): string {
+  const verdict =
+    m.zero_manual_edits === true
+      ? "&#10003; Nenhuma modificação manual"
+      : m.zero_manual_edits === false
+        ? `${m.manual_edit_count} modificação(ões) manual(is)`
+        : "Indeterminado (gate sem baseline confiável)";
+  const rows = (Object.entries(m.gates) as Array<[GateName, EditionManualEdits["gates"][GateName]]>)
+    .map(([name, g]) => {
+      const status =
+        g.status === "unmeasured"
+          ? `<em>não medido — ${escapeHtml(g.note ?? "")}</em>`
+          : g.changes.length === 0
+            ? "0"
+            : `${g.changes.length}<ul>${g.changes
+                .slice(0, 8)
+                .map((c) => `<li>${escapeHtml(c.kind)}: ${escapeHtml(c.detail)}</li>`)
+                .join("")}</ul>`;
+      return `<tr><td>${escapeHtml(name)}${g.baseline ? ` <small>(${escapeHtml(g.baseline)})</small>` : ""}</td><td>${status}</td></tr>`;
+    })
+    .join("\n");
+  return `
+  <h2>Modificações manuais (#9357)</h2>
+  <p><strong>${verdict}</strong> — baseline: ${escapeHtml(m.baseline_status)}</p>
+  <table><tbody>${rows}</tbody></table>`;
+}
+
+/** Fail-soft: a métrica nunca derruba o relatório. */
+function loadManualEdits(editionDir: string, edition: string): EditionManualEdits | null {
+  try {
+    return computeEditionManualEdits(editionDir, edition);
+  } catch (err) {
+    console.warn(`[send-edition-report] métrica de modificações manuais falhou (#9357): ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +733,7 @@ export function writeEditionReport(
     braveCredits,
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
+    loadManualEdits(editionDir, edition), // #9357
   );
   const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition, notify);
   return { md5, outPath: absOut, registered };
@@ -738,6 +785,7 @@ async function main(): Promise<void> {
     braveCredits,
     loadSocialPreviewUrl(editionDir), // #1739
     loadNewsletterUrl(editionDir), // #3466
+    loadManualEdits(editionDir, edition), // #9357
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5

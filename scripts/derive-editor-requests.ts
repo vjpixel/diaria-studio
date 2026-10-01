@@ -28,7 +28,7 @@
  * Escrita no mesmo editor-requests.jsonl com source: "derived".
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -37,24 +37,35 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { appendEditorRequest, type EditorRequestEntry, type RequestType, type RequestTarget, type Resolution, type RequestSource } from "./log-editor-request.ts";
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import { canonicalizeUrl } from "./apply-gate-edits.ts";
+import { logEvent } from "./lib/run-log.ts";
+import {
+  SNAPSHOT_DIR,
+  STAGE2_BASELINE_LABEL,
+  STAGE2_SNAPSHOT_FILES,
+  STAGE4_POST_GATE_LABEL,
+  assessStage2BaselineOnDisk,
+  captureStage2Baseline,
+  createSnapshots,
+  hasSnapshot,
+  readSnapshots,
+} from "./lib/editor-request-snapshots.ts";
+import {
+  applyAutofixReplacements,
+  normalizeNewsletterForComparison,
+  reconstructStage2Newsletter,
+  type AutofixReplacement,
+  type TitlePick,
+} from "./lib/manual-edit-diff.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Arquivos para snapshots pós-Stage 2 */
-const STAGE2_SNAPSHOT_FILES = [
-  "02-reviewed.md",
-  "03-social.md",
-  "_internal/01-approved.json",
-] as const;
+/** Arquivos para snapshots pós-Stage 2: `STAGE2_SNAPSHOT_FILES` em `lib/editor-request-snapshots.ts` (#9356). */
 
 /** Arquivos para snapshots pós-Stage 4 pre-render */
 const STAGE4_SNAPSHOT_FILES = [
   "_internal/newsletter-final.html",
   "_internal/social-preview.html",
 ] as const;
-
-/** Diretório de snapshots */
-const SNAPSHOT_DIR = "_internal/editor-request-snapshots";
 
 /** Tipos de request mapeados por arquivo e padrão de mudança */
 interface DiffClassifier {
@@ -127,7 +138,7 @@ function isDifferentArticleUrl(oldLine: string, newLine: string): boolean {
 /**
  * Classifica diferenças no 02-reviewed.md (newsletter)
  */
-function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
+export function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -151,7 +162,13 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
 
     for (const line of lines) {
       // Match headers like **DESTAQUE 1 | 🚀 LANÇAMENTO** or **É IA?** etc.
-      const headerMatch = line.match(/^\*\*((DESTAQUE \d+)(?:\s*\|\s*[^*]*)?|É IA\?|USE MELHOR|LANÇAMENTOS|RADAR|VÍDEOS|SORTEIO|PARA ENCERRAR)\*\*$/);
+      // #9356: o cabeçalho REAL das seções leva emoji na frente
+      // (`**📡 RADAR**`, `**🛠️ USE MELHOR**`, `**🚀 LANÇAMENTO**` no singular)
+      // — sem aceitar esse prefixo, nenhuma seção depois do DESTAQUE 3 era
+      // reconhecida e todo corte/movimentação no RADAR/USE MELHOR caía como
+      // "lead-rewrite" do d3. ERRO INTENCIONAL ganha seção própria pelo
+      // mesmo motivo (senão o preenchimento do erro virava link-swap no RADAR).
+      const headerMatch = line.match(/^\*\*(?:[^\p{L}\p{N}*]+)?((DESTAQUE \d+)(?:\s*\|\s*[^*]*)?|É IA\?|USE MELHOR|LANÇAMENTOS?|RADAR|VÍDEOS|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL)\*\*$/u);
       if (headerMatch) {
         if (currentContent.length > 0) {
           sections.set(currentSection, currentContent.join("\n"));
@@ -200,7 +217,7 @@ function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
     } else if (section === "use-melhor") {
       target = "use-melhor";
       requestType = "destaque-promote";
-    } else if (section === "lancamentos") {
+    } else if (section === "lancamentos" || section === "lancamento") {
       target = "lancamentos";
       requestType = "link-swap";
     } else if (section === "radar") {
@@ -346,7 +363,7 @@ function normalizeSelfUrls(content: string): string {
  * antigo/teste que não o passa), `context.url` fica `null` — nunca
  * fabricado, nunca quebra o comportamento anterior.
  */
-function classifySocialDiff(
+export function classifySocialDiff(
   oldContentRaw: string,
   newContentRaw: string,
   destaqueUrls?: ReadonlyMap<string, string>,
@@ -527,7 +544,7 @@ function bucketLabel(bucket: string): string {
  * `destaque-cut`/`destaque-promote` acima, e contá-las de novo como
  * `pool-cut`/`pool-add` inflaria a recorrência com o mesmo evento duas vezes.
  */
-function classifyPoolDiff(oldJson: any, newJson: any): Array<{
+export function classifyPoolDiff(oldJson: any, newJson: any): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -628,7 +645,7 @@ function classifyPoolDiff(oldJson: any, newJson: any): Array<{
 /**
  * Classifica diferenças no 01-approved.json (seleção de destaques)
  */
-function classifyApprovedDiff(oldContent: string, newContent: string): Array<{
+export function classifyApprovedDiff(oldContent: string, newContent: string): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -768,52 +785,6 @@ function classifyHtmlDiff(target: RequestTarget): (oldContent: string, newConten
 }
 
 /**
- * Cria snapshots dos arquivos especificados.
- *
- * Preserva a subestrutura de diretórios do arquivo original dentro do
- * snapshot dir (ex: `_internal/01-approved.json` vira
- * `{snapshotDir}/_internal/01-approved.json`) em vez de "achatar" o path
- * substituindo `/` por `_` — um path que já começa com `_` (como
- * `_internal/...`) tornaria esse achatamento não-reversível (`readSnapshots`
- * não conseguiria distinguir o `_` original do `_` que substituiu `/`).
- */
-function createSnapshots(editionDir: string, files: readonly string[], label: string): void {
-  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, label);
-  mkdirSync(snapshotDir, { recursive: true });
-
-  for (const file of files) {
-    const srcPath = resolve(editionDir, file);
-    if (existsSync(srcPath)) {
-      const destPath = resolve(snapshotDir, file);
-      mkdirSync(dirname(destPath), { recursive: true });
-      copyFileSync(srcPath, destPath);
-    }
-  }
-  console.log(`[derive-editor-requests] Snapshots ${label} criados em ${snapshotDir}`);
-}
-
-/**
- * Lê snapshots de um label. Recebe a lista de arquivos esperados (mesma
- * lista usada por `createSnapshots`) em vez de enumerar o diretório — o
- * path relativo original é preservado por `createSnapshots`, então basta
- * checar `{snapshotDir}/{file}` diretamente.
- */
-function readSnapshots(editionDir: string, label: string, files: readonly string[]): Map<string, string> {
-  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, label);
-  const result = new Map<string, string>();
-
-  if (!existsSync(snapshotDir)) return result;
-
-  for (const file of files) {
-    const snapPath = resolve(snapshotDir, file);
-    if (existsSync(snapPath)) {
-      result.set(file, readFileSync(snapPath, "utf8"));
-    }
-  }
-  return result;
-}
-
-/**
  * Executa diff e classifica mudanças
  */
 function diffAndClassify(
@@ -853,21 +824,6 @@ function diffAndClassify(
 }
 
 /**
- * Um snapshot conta como "já capturado" (#7964) se o diretório existe E
- * pelo menos um dos arquivos esperados foi de fato copiado pra dentro dele.
- * Só checar `existsSync(snapshotDir)` não bastaria: `createSnapshots` sempre
- * cria o diretório (`mkdirSync .. recursive`) mesmo quando NENHUM arquivo-
- * fonte existia ainda no momento da chamada (edição interrompida bem no
- * início do Stage 2) — travar nesse estado vazio pra sempre deixaria a
- * edição inteira sem baseline nenhum na 1ª chamada real subsequente.
- */
-function hasSnapshot(editionDir: string, label: string, files: readonly string[]): boolean {
-  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, label);
-  if (!existsSync(snapshotDir)) return false;
-  return files.some((file) => existsSync(resolve(snapshotDir, file)));
-}
-
-/**
  * Função principal - cria snapshots pós-Stage 2
  *
  * IMUTÁVEL por edição desde o #7964: se o snapshot `stage2-post-gate` já
@@ -883,20 +839,30 @@ function hasSnapshot(editionDir: string, label: string, files: readonly string[]
  * ordem — re-basearia esse snapshot para DEPOIS das mudanças que o editor
  * já fez, apagando a evidência que `deriveStage4` deveria capturar (o
  * próprio bug relatado: pedidos feitos no gate do Stage 4 nunca apareciam
- * em `editor-requests.jsonl`). `deriveStage4`/`deriveStage6` continuam
- * livres para REFRESCAR o checkpoint via `createSnapshots(...)` direto
- * (não passam por esta função) — esse refresh é intencional e documentado
- * (ver docstring de `deriveStage4`): acontece DEPOIS de já ter diffado e
- * registrado as mudanças, nunca antes.
+ * em `editor-requests.jsonl`).
+ *
+ * **#9356:** a imutabilidade acima não bastava — o passo em prosa que
+ * chamava este comando era pulado (15 de 21 edições), e o `deriveStage4`
+ * REGRAVAVA o `stage2-post-gate` no fim, com o estado final. Hoje a captura
+ * principal é mecânica (`pipeline-sentinel.ts write --step 2` chama
+ * `captureStage2Baseline`); este comando segue existindo como chamada
+ * explícita idempotente, e o `deriveStage4` grava o checkpoint dele num
+ * label separado (`stage4-post-gate`), nunca mais aqui.
  */
 function snapshotStage2(editionDir: string): void {
-  if (hasSnapshot(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES)) {
+  const outcome = captureStage2Baseline(editionDir, "snapshot-stage2");
+  if (outcome === "exists") {
     console.log(
       `[derive-editor-requests] Snapshot stage2-post-gate já existe — ignorando (imutável por edição, #7964).`,
     );
     return;
   }
-  createSnapshots(editionDir, STAGE2_SNAPSHOT_FILES, "stage2-post-gate");
+  const snapshotDir = resolve(editionDir, SNAPSHOT_DIR, STAGE2_BASELINE_LABEL);
+  console.log(
+    outcome === "created"
+      ? `[derive-editor-requests] Snapshots stage2-post-gate criados em ${snapshotDir}`
+      : `[derive-editor-requests] Nenhum arquivo do Stage 2 existe ainda — snapshot stage2-post-gate não gravado.`,
+  );
 }
 
 /**
@@ -917,6 +883,7 @@ function snapshotStage4(editionDir: string): void {
     return;
   }
   createSnapshots(editionDir, STAGE4_SNAPSHOT_FILES, "stage4-pre-render");
+  console.log(`[derive-editor-requests] Snapshots stage4-pre-render criados.`);
 }
 
 /**
@@ -928,7 +895,7 @@ function snapshotStage4(editionDir: string): void {
  * caso é `context.url: null` nas entradas de social, igual ao
  * comportamento de antes deste fix.
  */
-function buildDestaqueUrlMap(editionDir: string): Map<string, string> {
+export function buildDestaqueUrlMap(editionDir: string): Map<string, string> {
   const map = new Map<string, string>();
   try {
     const approvedPath = join(editionDir, "_internal", "01-approved.json");
@@ -971,9 +938,14 @@ function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: strin
  * captura qualquer edição feita pelo editor (Studio ou manual) entre o fim
  * do Stage 2 e a aprovação do gate do Stage 4.
  *
- * Ao final, o checkpoint é REFRESCADO para o estado atual: isso evita que
- * `deriveStage6` re-derive as mesmas mudanças já logadas aqui — Stage 6 só
- * vê o que mudou DEPOIS desta chamada.
+ * Ao final, grava o checkpoint `stage4-post-gate` com o estado atual: o
+ * `deriveStage6` (e uma 2ª chamada deste comando, na retomada) diffa contra
+ * ele, então só vê o que mudou DEPOIS desta chamada. Até o #9356 esse
+ * refresh sobrescrevia o próprio `stage2-post-gate` — o baseline virava o
+ * estado final e o bug ficava invisível em qualquer auditoria posterior.
+ *
+ * Baseline ausente/tardio/sem carimbo é reportado (`reportBaselineHealth`)
+ * — nunca mais "0 pedidos" em silêncio (#9356).
  *
  * Diffa também o checkpoint "stage4-pre-render" (criado por `snapshotStage4`
  * logo após o pre-render técnico, ainda dentro do Stage 4) contra o estado
@@ -982,9 +954,16 @@ function buildStage4FilesClassifierMap(): Map<string, (oldC: string, newC: strin
  * (ver docstring). O checkpoint também é refrescado ao final, mesmo padrão
  * do "stage2-post-gate" acima.
  */
-function deriveStage4(editionDir: string, edition: string): number {
+function deriveStage4(editionDir: string, edition: string, runLogRoot: string = ROOT): number {
+  // Reexecução (retomada do Stage 4): o checkpoint `stage4-post-gate` já
+  // existe — diffar contra ele evita duplicar o que a 1ª passada já logou
+  // (era o papel do antigo refresh do `stage2-post-gate`, #9356).
+  const resumed = hasSnapshot(editionDir, STAGE4_POST_GATE_LABEL, STAGE2_SNAPSHOT_FILES);
+  const baselineLabel = resumed ? STAGE4_POST_GATE_LABEL : STAGE2_BASELINE_LABEL;
+  if (!resumed) reportBaselineHealth(editionDir, edition, runLogRoot);
+
   const stage2ClassifierMap = buildStage2FilesClassifierMap(editionDir);
-  const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, stage2ClassifierMap, 4);
+  const derived = diffAndClassify(editionDir, baselineLabel, STAGE2_SNAPSHOT_FILES, stage2ClassifierMap, 4);
 
   const stage4ClassifierMap = buildStage4FilesClassifierMap();
   const derivedHtml = diffAndClassify(editionDir, "stage4-pre-render", STAGE4_SNAPSHOT_FILES, stage4ClassifierMap, 4);
@@ -995,7 +974,9 @@ function deriveStage4(editionDir: string, edition: string): number {
     count++;
   }
 
-  createSnapshots(editionDir, STAGE2_SNAPSHOT_FILES, "stage2-post-gate");
+  // Checkpoint pro derive-stage6 — label SEPARADO; o `stage2-post-gate`
+  // nunca é regravado (#9356).
+  createSnapshots(editionDir, STAGE2_SNAPSHOT_FILES, STAGE4_POST_GATE_LABEL);
   createSnapshots(editionDir, STAGE4_SNAPSHOT_FILES, "stage4-pre-render");
 
   console.log(`[derive-editor-requests] Stage 4 gate: ${count} pedidos derivados`);
@@ -1005,17 +986,19 @@ function deriveStage4(editionDir: string, edition: string): number {
 /**
  * Função principal - deriva requests no gate do Stage 6
  *
- * Mesmo checkpoint "stage2-post-gate" usado por deriveStage4. Se o Stage 4
- * já rodou o gate (caso normal), o checkpoint foi refrescado ao final
- * daquela chamada — então este diff captura só mudanças feitas DEPOIS da
+ * Diffa contra o checkpoint `stage4-post-gate` (gravado pelo
+ * `deriveStage4` depois de derivar) — então só vê o que mudou DEPOIS da
  * aprovação do Stage 4 (ex: edição via Studio durante o Stage 5). Se a
- * edição pulou o gate do Stage 4 (via --no-gates ou interrupção), o
- * checkpoint ainda é o snapshot original pós-Stage 2, e este diff cobre o
- * intervalo inteiro Stage 2 → Stage 6 numa passada só.
+ * edição pulou o gate do Stage 4 (interrupção), o checkpoint não existe e o
+ * diff é contra o baseline original `stage2-post-gate`, cobrindo o
+ * intervalo Stage 2 → Stage 6 numa passada só.
  */
 function deriveStage6(editionDir: string, edition: string): number {
+  const baselineLabel = hasSnapshot(editionDir, STAGE4_POST_GATE_LABEL, STAGE2_SNAPSHOT_FILES)
+    ? STAGE4_POST_GATE_LABEL
+    : STAGE2_BASELINE_LABEL;
   const classifierMap = buildStage2FilesClassifierMap(editionDir);
-  const derived = diffAndClassify(editionDir, "stage2-post-gate", STAGE2_SNAPSHOT_FILES, classifierMap, 6);
+  const derived = diffAndClassify(editionDir, baselineLabel, STAGE2_SNAPSHOT_FILES, classifierMap, 6);
 
   let count = 0;
   for (const entry of derived) {
@@ -1025,6 +1008,165 @@ function deriveStage6(editionDir: string, edition: string): number {
 
   console.log(`[derive-editor-requests] Stage 6 gate: ${count} pedidos derivados`);
   return count;
+}
+
+/**
+ * Guard do #9356: baseline ausente ou gravado tarde não pode virar "0
+ * pedidos" em silêncio — foi exatamente assim que 15 de 21 edições
+ * perderam todas as correções do Stage 4 sem ninguém notar. Loga `error`
+ * no run-log + stderr. Snapshot legado (sem carimbo — edição em curso no
+ * deploy deste fix) só vira `warn`: não dá pra julgar.
+ */
+function reportBaselineHealth(editionDir: string, edition: string, runLogRoot: string): void {
+  const health = assessStage2BaselineOnDisk(editionDir);
+  if (health.status === "ok") return;
+  const level = health.status === "legacy" ? "warn" : "error";
+  const message = `editor_request_baseline_${health.status}`;
+  const detail =
+    health.status === "missing"
+      ? `snapshot stage2-post-gate ausente — as edições do editor no Stage 4 NÃO serão derivadas. Rode \`derive-editor-requests.ts backfill-stage4 --edition ${edition}\` pra reconstruir.`
+      : health.status === "late"
+        ? health.reason
+        : "snapshot stage2-post-gate sem carimbo .capture.json (anterior ao #9356) — não dá pra confirmar que é a saída da pipeline.";
+  console.error(`[derive-editor-requests] [${level}] ${message}: ${detail}`);
+  logEvent(
+    { edition, stage: 4, agent: "derive-editor-requests", level, message, details: { status: health.status, detail } },
+    runLogRoot,
+  );
+}
+
+/** Lê `_internal/02-title-picks.json` → picks do title-picker (vazio se ausente/malformado). */
+export function readTitlePicks(editionDir: string): TitlePick[] {
+  const p = join(editionDir, "_internal", "02-title-picks.json");
+  if (!existsSync(p)) return [];
+  try {
+    const json = JSON.parse(readFileSync(p, "utf8"));
+    const picks = Array.isArray(json?.picks) ? json.picks : [];
+    return picks
+      .filter((x: any) => typeof x?.destaque === "number" && typeof x?.chosen === "string")
+      .map((x: any) => ({ destaque: x.destaque, chosen: x.chosen }));
+  } catch {
+    return [];
+  }
+}
+
+/** Correções do fact-check efetivamente aplicadas (`status: "applied"`). */
+export function readAppliedAutofixes(editionDir: string): AutofixReplacement[] {
+  const p = join(editionDir, "_internal", "fact-check-autofix.json");
+  if (!existsSync(p)) return [];
+  try {
+    const json = JSON.parse(readFileSync(p, "utf8"));
+    const entries = Array.isArray(json?.entries) ? json.entries : [];
+    return entries
+      .filter((e: any) => e?.status === "applied" && typeof e?.text === "string" && typeof e?.suggested_fix === "string")
+      .map((e: any) => ({ text: e.text, suggested_fix: e.suggested_fix, sources: Array.isArray(e.sources) ? e.sources : [] }));
+  } catch {
+    return [];
+  }
+}
+
+/** `_internal/intentional-error.json` (ou `null`). */
+export function readIntentionalError(editionDir: string): { correct_value?: string; wrong_value?: string } | null {
+  const p = join(editionDir, "_internal", "intentional-error.json");
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Último arquivo da newsletter escrito pela pipeline antes do `02-reviewed.md`
+ * (o de maior mtime entre `02-humanized.md` e `02-clarice-corrected.md`,
+ * critério do #9356). `null` se nenhum existe.
+ */
+export function findPipelineNewsletterOutput(editionDir: string): string | null {
+  const candidates = ["02-humanized.md", "02-clarice-corrected.md"]
+    .map((f) => join(editionDir, "_internal", f))
+    .filter((p) => existsSync(p))
+    .map((p) => ({ p, mtime: statSync(p).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  return candidates[0]?.p ?? null;
+}
+
+/**
+ * Baseline reconstruído do `02-reviewed.md` do fim do Stage 2 (#9356
+ * backfill), com as mutações conhecidas da pipeline descontadas e já
+ * normalizado (`normalizeNewsletterForComparison`). `null` sem arquivo da
+ * pipeline.
+ */
+export function buildReconstructedNewsletterBaseline(editionDir: string, finalMd: string): string | null {
+  const pipelinePath = findPipelineNewsletterOutput(editionDir);
+  if (!pipelinePath) return null;
+  const reconstructed = reconstructStage2Newsletter({
+    pipelineOutput: readFileSync(pipelinePath, "utf8"),
+    final: finalMd,
+    titlePicks: readTitlePicks(editionDir),
+    intentionalError: readIntentionalError(editionDir),
+  });
+  return normalizeNewsletterForComparison(
+    applyAutofixReplacements(reconstructed, readAppliedAutofixes(editionDir), "newsletter"),
+  );
+}
+
+const STAGE4_BACKFILL_MARKER = "_internal/.stage4-editor-requests-backfill.json";
+
+/**
+ * Backfill do #9356: deriva os pedidos do Stage 4 das edições cujo baseline
+ * `stage2-post-gate` foi gravado tarde (ou nunca), usando o baseline
+ * RECONSTRUÍDO a partir do último arquivo da pipeline. Só newsletter — a
+ * saída da pipeline pro social não é preservada em arquivo nenhum (o
+ * humanizador reescreve `03-social.md` in-place), então o social dessas
+ * edições é irrecuperável e fica de fora, declarado no stdout.
+ *
+ * Dry-run por padrão (imprime as entradas como JSON); `--write` acrescenta
+ * em `editor-requests.jsonl` com `context.baseline: "reconstructed"` e grava
+ * um marcador — uma 2ª chamada com `--write` é no-op. Recusa edição com
+ * baseline `ok` (não há o que reconstruir).
+ */
+function backfillStage4(editionDir: string, edition: string, write: boolean): number {
+  const health = assessStage2BaselineOnDisk(editionDir);
+  if (health.status === "ok") {
+    console.log(`[derive-editor-requests] backfill-stage4 ${edition}: baseline ok — nada a reconstruir.`);
+    return 0;
+  }
+  const markerPath = join(editionDir, STAGE4_BACKFILL_MARKER);
+  if (write && existsSync(markerPath)) {
+    console.log(`[derive-editor-requests] backfill-stage4 ${edition}: já aplicado (marcador presente) — no-op.`);
+    return 0;
+  }
+  const finalPath = join(editionDir, "02-reviewed.md");
+  if (!existsSync(finalPath)) {
+    console.log(`[derive-editor-requests] backfill-stage4 ${edition}: 02-reviewed.md ausente — pulando.`);
+    return 0;
+  }
+  const finalMd = readFileSync(finalPath, "utf8");
+  const baseline = buildReconstructedNewsletterBaseline(editionDir, finalMd);
+  if (baseline === null) {
+    console.log(`[derive-editor-requests] backfill-stage4 ${edition}: nenhum arquivo da pipeline (02-humanized/02-clarice-corrected) — pulando.`);
+    return 0;
+  }
+  const entries = classifyNewsletterDiff(baseline, normalizeNewsletterForComparison(finalMd)).map((e) => ({
+    ...e,
+    stage: 4,
+    edition,
+    source: "derived" as const,
+    context: { ...(e.context ?? {}), baseline: "reconstructed", backfill: "#9356", baseline_status: health.status },
+  }));
+  if (!write) {
+    console.log(JSON.stringify({ edition, baseline_status: health.status, social: "irrecuperável", entries }, null, 2));
+    return entries.length;
+  }
+  for (const entry of entries) appendEditorRequest(editionDir, entry);
+  mkdirSync(dirname(markerPath), { recursive: true });
+  writeFileSync(
+    markerPath,
+    JSON.stringify({ backfilled_at: new Date().toISOString(), entries: entries.length, baseline_status: health.status }, null, 2),
+    "utf8",
+  );
+  console.log(`[derive-editor-requests] backfill-stage4 ${edition}: ${entries.length} pedidos derivados (baseline reconstruído).`);
+  return entries.length;
 }
 
 /**
@@ -1053,7 +1195,7 @@ function deriveStage6(editionDir: string, edition: string): number {
  * `destaque-promote` (mais um item promovido do que caiu do top-3 — não
  * deveria estourar o teto de 3, mas o pareamento não assume isso).
  */
-function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Array<{
+export function classifyStage1DestaqueDiff(categorizedJson: any, approvedJson: any): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -1309,7 +1451,7 @@ function main(): void {
   const command = parsed.positional[0];
 
   if (!command) {
-    console.error("Uso: derive-editor-requests.ts <derive-stage1|snapshot-stage2|snapshot-stage4|derive-stage4|derive-stage6> --edition AAMMDD");
+    console.error("Uso: derive-editor-requests.ts <derive-stage1|snapshot-stage2|snapshot-stage4|derive-stage4|derive-stage6|backfill-stage4> --edition AAMMDD [--write]");
     process.exit(2);
   }
 
@@ -1323,6 +1465,9 @@ function main(): void {
     ? resolve(args["editions-dir"])
     : resolve(ROOT, "data", "editions");
   const editionDir = resolveEditionDir(editionsRootDir, edition);
+  // Run-log: com `--editions-dir` custom (testes/isolamento), loga DENTRO
+  // desse diretório — nunca no `data/run-log.jsonl` real (#9356).
+  const runLogRoot = args["editions-dir"] ? editionsRootDir : ROOT;
 
   if (!existsSync(editionDir)) {
     console.error(`Edition dir não existe: ${editionDir}`);
@@ -1340,7 +1485,10 @@ function main(): void {
       snapshotStage4(editionDir);
       break;
     case "derive-stage4":
-      deriveStage4(editionDir, edition);
+      deriveStage4(editionDir, edition, runLogRoot);
+      break;
+    case "backfill-stage4":
+      backfillStage4(editionDir, edition, parsed.flags.has("write"));
       break;
     case "derive-stage6":
       deriveStage6(editionDir, edition);
