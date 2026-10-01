@@ -112,3 +112,89 @@ export function toAlarmFinding(entry: AudienceStalenessLogEntry): AlarmFinding {
 export function buildAlarmFindings(entries: AudienceStalenessLogEntry[]): AlarmFinding[] {
   return entries.map(toAlarmFinding);
 }
+
+// ─── Fonte independente do run-log: snapshots arquivados (#9232) ───────────
+//
+// O evento do guard de 14/09/2026 (`2026-09-14T19:36:52Z`), citado
+// literalmente no #8148, sumiu de TODOS os `data/run-log*.jsonl` (inclusive
+// das cópias de conflito do OneDrive) — o append do `log-event.ts` acontece
+// na máquina/checkout que rodou o `update-audience.ts` (cwd do processo,
+// possivelmente um worktree descartado ou outra máquina cujo trecho perdeu
+// pro sync), então o run-log NÃO é fonte confiável pra este alarme: lendo só
+// ele, o alarme reportou `alarm=0` com o evento perdido e ficou cego sem
+// avisar. Os snapshots em `docs/audience-history/` são git-tracked (chegam
+// ao checkout do `300` via git-sync, não via OneDrive) e são exatamente o
+// que o guard compara — dois snapshots ADJACENTES byte-a-byte idênticos são
+// a própria condição do #4366, recomputável a qualquer momento sem depender
+// de nenhum log ter sobrevivido.
+
+/** Nome de snapshot arquivado (`YYYY-MM-DD.md`) — mesmo padrão de `HISTORY_FILE_RE` em `update-audience.ts`. */
+const SNAPSHOT_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+
+/**
+ * Piso da varredura por snapshots: só pares cujo arquivo MAIS NOVO é
+ * `>= 2026-09-15.md` viram finding. As duplicatas anteriores no histórico
+ * (07-19, 07-21, 07-23, 07-30 e 09-14) já foram investigadas em bloco no
+ * #8148 (fechado) — sem o piso, a 1ª execução pós-#9232 abriria 5 issues
+ * retroativas sobre fatos já tratados. O piso NÃO se aplica às entradas
+ * vindas do run-log (comportamento do #8166 preservado).
+ */
+export const SNAPSHOT_SCAN_SINCE = "2026-09-15.md";
+
+export interface SnapshotFile {
+  name: string;
+  content: string;
+}
+
+/**
+ * Pure: varre os snapshots arquivados (ordem lexicográfica = cronológica,
+ * nome `YYYY-MM-DD.md`) e devolve 1 entrada sintética por par ADJACENTE
+ * byte-a-byte idêntico — no mesmo formato das entradas do run-log
+ * (`agent=update-audience`, `details.issue=#4366`), pra que
+ * `toAlarmFinding` gere o MESMO fingerprint (`snapshot-{today_file}`) e o
+ * dedup de `alarm-issues.ts` trate as duas fontes como uma só ocorrência.
+ * Arquivos fora do padrão (`_consolidated.md`) são ignorados.
+ */
+export function findDuplicateSnapshotEntries(
+  files: SnapshotFile[],
+  since: string = SNAPSHOT_SCAN_SINCE,
+): AudienceStalenessLogEntry[] {
+  const sorted = files
+    .filter((f) => SNAPSHOT_FILE_RE.test(f.name))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const out: AudienceStalenessLogEntry[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const cur = sorted[i];
+    if (cur.name < since) continue;
+    if (cur.content !== prev.content) continue;
+    out.push({
+      timestamp: `${cur.name.slice(0, 10)}T00:00:00.000Z`,
+      agent: "update-audience",
+      level: "warn",
+      message: `snapshot ${cur.name} idêntico ao anterior ${prev.name} (detectado por comparação de docs/audience-history/, #9232)`,
+      details: { today_file: cur.name, latest_file: prev.name, issue: DUPLICATE_ARCHIVE_ISSUE_TAG },
+    });
+  }
+  return out;
+}
+
+/** Pure: arquivos de run-log a ler em `data/` — o canônico + as cópias de conflito do OneDrive (`run-log-{Máquina}[-N].jsonl`, `run-log-predator-safeBackup-NNNN.jsonl`), onde um evento perdido no canônico pode ter sobrevivido (#9232). */
+export function selectRunLogFiles(dataDirEntries: string[], canonicalName = "run-log.jsonl"): string[] {
+  return dataDirEntries
+    .filter((f) => f === canonicalName || /^run-log-.+\.jsonl$/.test(f))
+    .sort((a, b) => (a === canonicalName ? -1 : b === canonicalName ? 1 : a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Pure: une entradas de várias fontes (run-log canônico, cópias de conflito, snapshots) deduplicando por `today_file` — a 1ª ocorrência vence (passar o run-log ANTES dos snapshots preserva o timestamp real do disparo quando o log sobreviveu). */
+export function mergeStalenessEntries(...sources: AudienceStalenessLogEntry[][]): AudienceStalenessLogEntry[] {
+  const seen = new Set<string>();
+  const out: AudienceStalenessLogEntry[] = [];
+  for (const entry of sources.flat()) {
+    const key = entry.details?.today_file ?? entry.timestamp.slice(0, 10);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
