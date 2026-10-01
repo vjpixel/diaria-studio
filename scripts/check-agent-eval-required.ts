@@ -62,14 +62,16 @@ import { spawnSync } from "node:child_process";
 import { isMainModule } from "./lib/cli-args.ts";
 import type { PrCheckSpawnFn } from "./lib/spawn-types.ts";
 import { classifyAgentEvalEligibility, evaluateAgentEvalTrigger, AGENT_FILE_RE, type PromptEvalAgent } from "./lib/agent-eval-trigger-allowlist.ts";
-import { gitShowFileAtSha } from "./lib/diff-touched-lines.ts";
+import { gitMergeBase, gitShowFileAtSha } from "./lib/diff-touched-lines.ts";
 
 export const AGENT_EVAL_LABEL = "agent-eval:passed";
 
 export type SpawnFn = PrCheckSpawnFn;
 
 function getChangedFiles(baseSha: string, headSha: string, spawnFn: SpawnFn): string[] {
-  const r = spawnFn("git", ["diff", "--name-only", `${baseSha}..${headSha}`], { encoding: "utf8" });
+  // #9411: 3 pontos (merge-base) — só o que a PR tocou, não o que o master
+  // ganhou depois da criação do branch.
+  const r = spawnFn("git", ["diff", "--name-only", `${baseSha}...${headSha}`], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`git diff --name-only falhou: ${r.stderr}`);
   return r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
 }
@@ -165,8 +167,11 @@ async function main(): Promise<void> {
   }
 
   let changedFiles: string[];
+  let mergeBaseSha: string;
   try {
     changedFiles = getChangedFiles(baseSha, headSha, spawnSync as SpawnFn);
+    // #9411: conteúdo "antigo" vem do merge-base, coerente com o diff de 3 pontos.
+    mergeBaseSha = gitMergeBase(process.cwd(), baseSha, headSha);
   } catch (err) {
     console.error(`[#8144] INFRA: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);
@@ -175,7 +180,7 @@ async function main(): Promise<void> {
 
   const check = evaluateAgentEvalTouch(
     changedFiles,
-    (path) => gitShowFileAtSha(process.cwd(), baseSha, path),
+    (path) => gitShowFileAtSha(process.cwd(), mergeBaseSha, path),
     (path) => gitShowFileAtSha(process.cwd(), headSha, path),
   );
 

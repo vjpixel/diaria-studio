@@ -34,13 +34,29 @@ export function parseTouchedLinesFromUnifiedZeroDiff(diffOutput: string): Set<nu
   return touched;
 }
 
-/** Roda `git diff --unified=0 {baseSha}..{headSha} -- {path}` e retorna as linhas tocadas no arquivo novo. Arquivo deletado no head (`git show` falha) retorna conjunto vazio — o chamador trata "arquivo sumiu" separadamente (ver `newContent === null` em `isCalibrationTouchingFile`). */
+/** Roda `git diff --unified=0 {baseSha}...{headSha} -- {path}` (3 pontos = contra o MERGE-BASE, #9411 — senão o que o master avançou depois da criação do branch entra como "tocado pela PR") e retorna as linhas tocadas no arquivo novo. Arquivo deletado no head (`git show` falha) retorna conjunto vazio — o chamador trata "arquivo sumiu" separadamente (ver `newContent === null` em `isCalibrationTouchingFile`). */
 export function gitDiffTouchedLines(cwd: string, baseSha: string, headSha: string, path: string): Set<number> {
-  const result = spawnSync("git", ["diff", "--unified=0", `${baseSha}..${headSha}`, "--", path], { cwd, encoding: "utf8" });
+  const result = spawnSync("git", ["diff", "--unified=0", `${baseSha}...${headSha}`, "--", path], { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     throw new Error(`git diff falhou (exit ${result.status}) pra ${path}: ${result.stderr}`);
   }
   return parseTouchedLinesFromUnifiedZeroDiff(result.stdout);
+}
+
+/**
+ * `git merge-base {baseSha} {headSha}` (#9411). Os gates de PR recebem
+ * `pull_request.base.sha` = tip ATUAL do master; o conteúdo "antigo" de um
+ * arquivo tem que vir do ponto onde o branch saiu, não desse tip — senão o
+ * que o master mudou depois parece mudança da PR. Lança se o git falhar
+ * (histórico raso, refs inexistentes): o chamador trata como INFRA.
+ */
+export function gitMergeBase(cwd: string, baseSha: string, headSha: string): string {
+  const result = spawnSync("git", ["merge-base", baseSha, headSha], { cwd, encoding: "utf8" });
+  const sha = (result.stdout ?? "").trim();
+  if (result.status !== 0 || !sha) {
+    throw new Error(`git merge-base ${baseSha} ${headSha} falhou (exit ${result.status}): ${result.stderr}`);
+  }
+  return sha;
 }
 
 /** Lê o conteúdo de um arquivo em um SHA específico (`git show {sha}:{path}`). `null` se o arquivo não existir nesse SHA (deletado, ou criado só depois) — nunca lança pra esse caso, que é esperado. */

@@ -45,7 +45,8 @@ const LOG_PREFIX = "[#7114]";
  * raiz — exclui `scripts/lib/`, `scripts/studio-ui/`, etc., onde o padrão
  * de nome não é o alvo do guard). */
 export function getAddedScriptRootFiles(baseSha: string, headSha: string, spawnFn: SpawnFn = spawnSync): string[] {
-  const r = spawnFn("git", ["diff", "--name-status", "--diff-filter=A", `${baseSha}..${headSha}`], {
+  // #9411: 3 pontos (merge-base) — só o que a PR adicionou.
+  const r = spawnFn("git", ["diff", "--name-status", "--diff-filter=A", `${baseSha}...${headSha}`], {
     encoding: "utf8",
   });
   if (r.status !== 0) {
