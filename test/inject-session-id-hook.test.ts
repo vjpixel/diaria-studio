@@ -130,8 +130,8 @@ describe("needsSessionId", () => {
     assert.equal(needsSessionId("npx tsx scripts/overnight-session-marker.ts --phase autonomous"), true);
   });
 
-  it("overnight-session-marker.ts --end → false (leitura/remoção, session_id irrelevante)", () => {
-    assert.equal(needsSessionId("npx tsx scripts/overnight-session-marker.ts --end"), false);
+  it("overnight-session-marker.ts --end → true (#9419: marker é por sessão desde #9347)", () => {
+    assert.equal(needsSessionId("npx tsx scripts/overnight-session-marker.ts --end"), true);
   });
 
   it("session-registry.ts register/heartbeat/end/claim-issue/unclaim-issue/is-claimed/merge-lock-* → true", () => {
