@@ -50,6 +50,15 @@
  *    ≤0.5) — os gates de risco não tinham como capturar "candidato
  *    tecnicamente seguro, mas sem sinal preditivo real".
  *
+ * ## Rótulo (#9373)
+ *
+ * `kept` vem de `lib/calibration-labels.ts` — padrão `stage4` (desfecho no
+ * gate do Stage 4, onde o editor de fato cura o pool; linhas não entregues
+ * ficam fora). `--label stage1` reproduz o rótulo antigo (gate 1, onde o
+ * editor aprova ~100% do pool) — só pra comparação: sob ele a calibração
+ * aprendia com a etapa onde quase nada muda, o que explica parte de nunca ter
+ * produzido candidato aprovado.
+ *
  * ## De log-odds pra pontos do rubrico
  *
  * O coeficiente ajustado está em unidade de log-odds, não na mesma escala
@@ -81,6 +90,7 @@ import { registrableDomain } from "./lib/registrable-domain.ts";
 import { DEFAULT_MAX_PER_DOMAIN } from "./validate-domain-diversity.ts";
 import { computeAuc } from "./shadow-validation-report.ts";
 import type { CalibrationCase } from "./lib/calibration-evidence-report.ts";
+import { DEFAULT_LABEL_SOURCE, parseLabelSource, type CalibrationLabelSource } from "./lib/calibration-labels.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -182,6 +192,8 @@ export interface CalibratedFeatureCandidate {
 }
 
 export interface CalibrateResult {
+  /** Fonte do rótulo `kept` (#9373). */
+  label_source: CalibrationLabelSource;
   status: "no_eligible_features" | "insufficient_training_data" | "all_candidates_rejected" | "candidate_produced";
   editions_analyzed: number;
   editions_skipped: Array<{ edition: string; reason: string }>;
@@ -365,6 +377,18 @@ export function isPlausibleEditionDate(aammdd: string): boolean {
 }
 
 function describeEvent(e: LabeledEvent): string {
+  const base = describeStage1Event(e);
+  return e.stage4_outcome ? `${base}; no Stage 4: ${STAGE4_OUTCOME_TEXT[e.stage4_outcome]}` : base;
+}
+
+const STAGE4_OUTCOME_TEXT: Record<NonNullable<LabeledEvent["stage4_outcome"]>, string> = {
+  published: "entregue e publicado",
+  cut_by_editor: "entregue e cortado pelo editor",
+  editor_included: "não entregue, incluído à mão pelo editor",
+  not_delivered: "não entregue",
+};
+
+function describeStage1Event(e: LabeledEvent): string {
   return e.track_a === "llm_finalist_and_approved"
     ? "LLM escolheu como destaque, editor manteve"
     : e.track_a === "editor_promoted_outside_llm_finalists"
@@ -413,11 +437,17 @@ function evidenceCasesForFeatures(events: LabeledEvent[], features: readonly Can
   return cases;
 }
 
-export function calibrateScoringWeights(editionsRoot: string, rootDir: string, holdout = DEFAULT_HOLDOUT): CalibrateResult {
-  const powerReport = buildPowerReport(editionsRoot);
+export function calibrateScoringWeights(
+  editionsRoot: string,
+  rootDir: string,
+  holdout = DEFAULT_HOLDOUT,
+  labelSource: CalibrationLabelSource = DEFAULT_LABEL_SOURCE,
+): CalibrateResult {
+  const powerReport = buildPowerReport(editionsRoot, 42, labelSource);
   const eligibleFeatures = powerReport.features.filter((f) => f.passes_event_bar).map((f) => f.feature);
 
-  const base: Pick<CalibrateResult, "editions_analyzed" | "editions_skipped"> = {
+  const base: Pick<CalibrateResult, "label_source" | "editions_analyzed" | "editions_skipped"> = {
+    label_source: labelSource,
     editions_analyzed: powerReport.editions_analyzed,
     editions_skipped: powerReport.editions_skipped,
   };
@@ -442,7 +472,7 @@ export function calibrateScoringWeights(editionsRoot: string, rootDir: string, h
     };
   }
 
-  const { editions } = loadEditionRows(editionsRoot);
+  const { editions } = loadEditionRows(editionsRoot, labelSource);
   const holdoutSet = editions.slice(-holdout);
   const holdoutEditions = new Set(holdoutSet.map((e) => e.edition));
   const trainSet = editions.filter((e) => !holdoutEditions.has(e.edition));
@@ -620,7 +650,7 @@ export function writeCandidateWeightsFile(rootDir: string, result: CalibrateResu
   }
   const accepted = result.candidates.filter((c) => c.accepted);
   const rationale = [
-    `Saída de calibrate-scoring-weights.ts (#7990) — regressão logística L2 sobre ${result.train_editions} edições de treino (${result.holdout_editions} em holdout, nunca usadas no fit).`,
+    `Saída de calibrate-scoring-weights.ts (#7990) — rótulo ${result.label_source} (#9373) — regressão logística L2 sobre ${result.train_editions} edições de treino (${result.holdout_editions} em holdout, nunca usadas no fit).`,
     `Feature(s) calibrada(s): ${accepted.map((c) => `${c.feature} (coef=${c.coefficient.toFixed(4)}, odds_ratio=${c.odds_ratio.toFixed(3)}, proposto=${c.proposed_points}pt${c.existing_rubric_points !== null ? `, rubrico atual=${c.existing_rubric_points}pt` : ", sem bônus prévio no rubrico"})`).join("; ")}.`,
     `Escala log-odds→pontos: ${result.points_per_log_odds.toFixed(2)} (${result.points_per_log_odds_source === "anchored" ? "âncora empírica de feature(s) com ponto existente em rubric.json" : "default documentado — nenhuma feature elegível nesta rodada tinha âncora"}).`,
     `AUC holdout: real=${result.holdout_auc_real?.toFixed(3) ?? "n/d"} shadow=${result.holdout_auc_shadow?.toFixed(3) ?? "n/d"}.`,
@@ -641,7 +671,7 @@ export function writeCandidateWeightsFile(rootDir: string, result: CalibrateResu
 
 function formatReport(result: CalibrateResult): string {
   const lines: string[] = [];
-  lines.push(`[calibrate-scoring-weights] ${result.editions_analyzed} edições analisadas — status: ${result.status}`);
+  lines.push(`[calibrate-scoring-weights] ${result.editions_analyzed} edições analisadas (rótulo ${result.label_source}) — status: ${result.status}`);
   if (result.editions_skipped.length > 0) {
     lines.push(`  ${result.editions_skipped.length} edição(ões) pulada(s):`);
     for (const s of result.editions_skipped) lines.push(`    ${s.edition}: ${s.reason}`);
@@ -691,7 +721,7 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
-  const result = calibrateScoringWeights(editionsRoot, ROOT, holdout);
+  const result = calibrateScoringWeights(editionsRoot, ROOT, holdout, parseLabelSource(values["label"]));
   if (write && result.status === "candidate_produced") {
     result.weights_file = writeCandidateWeightsFile(ROOT, result);
   }

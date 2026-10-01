@@ -72,7 +72,7 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
           { url: `https://x.com/${ed}-d`, primary_source: false, keep: false },
         ]);
       }
-      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z", "stage1");
       assert.ok(result.eligible.some((c) => c.feature === "primary_source"), "primary_source deveria estar na fila de elegíveis");
       assert.equal(result.chosenFeature, "primary_source");
       assert.equal(result.blockedOnWeightComputation, true);
@@ -97,7 +97,7 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
       }
       registerReport(rootDir, { kind: "calibration", sessionId: "8010", title: "Calibração primary_source — PR #8010", htmlPath: "data/reports/calibration/primary_source-8010.md" }, undefined, false);
 
-      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z", "stage1");
       assert.ok(!result.eligible.some((c) => c.feature === "primary_source"), "primary_source já tem PR — não deveria voltar pra fila");
       assert.ok(result.alreadyCovered.includes("primary_source"));
     } finally {
@@ -124,7 +124,7 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
       const yesterday = new Date(new Date("2026-09-11T12:00:00.000Z").getTime() - 24 * 60 * 60 * 1000).toISOString();
       registerReport(rootDir, { kind: "calibration", sessionId: "8005", title: "Calibração academy — PR #8005", htmlPath: "x.md", createdAt: yesterday }, undefined, false);
 
-      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z", "stage1");
       assert.ok(result.eligible.some((c) => c.feature === "primary_source"));
       assert.equal(result.chosenFeature, null);
       assert.equal(result.cadence.canOpenNewCandidate, false);
@@ -139,7 +139,7 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
     const rootDir = mkdtempSync(join(tmpdir(), "trigger-root-blocked-flag-"));
     try {
       // Sem edições -> fila vazia -> chosenFeature null -> blockedOnWeightComputation deveria ser false, não uma constante true.
-      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z", "stage1");
       assert.equal(result.chosenFeature, null);
       assert.equal(result.blockedOnWeightComputation, false);
     } finally {
@@ -152,7 +152,7 @@ describe("decideTrackBTrigger (#7979, fim-a-fim contra fixtures em disco)", () =
     const editionsRoot = mkdtempSync(join(tmpdir(), "trigger-editions-empty-"));
     const rootDir = mkdtempSync(join(tmpdir(), "trigger-root-empty-"));
     try {
-      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z");
+      const result = decideTrackBTrigger(editionsRoot, rootDir, "2026-09-11T12:00:00.000Z", "stage1");
       assert.deepEqual(result.eligible, []);
       assert.equal(result.chosenFeature, null);
     } finally {

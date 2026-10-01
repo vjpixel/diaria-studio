@@ -128,7 +128,7 @@ describe("calibrateScoringWeights (#7990)", () => {
   it("nenhuma edição no corpus: status no_eligible_features", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-empty-"));
     try {
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "no_eligible_features");
       assert.deepEqual(result.eligible_features, []);
       assert.equal(result.weights, null);
@@ -141,7 +141,7 @@ describe("calibrateScoringWeights (#7990)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-small-"));
     try {
       writeStrongCorpus(dir, 3);
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "no_eligible_features");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -152,7 +152,7 @@ describe("calibrateScoringWeights (#7990)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-holdout-"));
     try {
       writeStrongCorpus(dir, 50); // passa a barra de evidência...
-      const result = calibrateScoringWeights(dir, dir, 50); // ...mas holdout == corpus inteiro
+      const result = calibrateScoringWeights(dir, dir, 50, "stage1"); // ...mas holdout == corpus inteiro
       assert.equal(result.status, "insufficient_training_data");
       assert.equal(result.train_editions, 0);
       assert.deepEqual(result.eligible_features, ["primary_source"]);
@@ -165,7 +165,7 @@ describe("calibrateScoringWeights (#7990)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-strong-"));
     try {
       writeStrongCorpus(dir, 60);
-      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "candidate_produced");
       assert.equal(result.train_editions, 60 - DEFAULT_HOLDOUT);
       assert.equal(result.holdout_editions, DEFAULT_HOLDOUT);
@@ -193,7 +193,7 @@ describe("calibrateScoringWeights (#7990)", () => {
           { url: `https://other-${e}.example/${ed}-d`, primary_source: false, keep: false },
         ]);
       }
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       const candidate = result.candidates.find((c) => c.feature === "primary_source")!;
       assert.equal(candidate.guardrails.hhi, 10000, "1 único domínio no suporte → HHI máximo");
       assert.equal(candidate.guardrails.hhi_rejected, true);
@@ -210,7 +210,7 @@ describe("calibrateScoringWeights (#7990)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-evidence-"));
     try {
       writeStrongCorpus(dir, 60);
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "candidate_produced");
       assert.ok(result.evidence_cases.length > 0 && result.evidence_cases.length <= 5);
       for (const c of result.evidence_cases) {
@@ -230,7 +230,7 @@ describe("writeCandidateWeightsFile (#7990)", () => {
   it("lança se o resultado não tiver weights/weights_hash (candidato não produzido)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-write-empty-"));
     try {
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.throws(() => writeCandidateWeightsFile(dir, result), /result\.weights\/weights_hash ausentes/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -241,7 +241,7 @@ describe("writeCandidateWeightsFile (#7990)", () => {
     const dir = mkdtempSync(join(tmpdir(), "calibrate-write-"));
     try {
       writeStrongCorpus(dir, 60);
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "candidate_produced");
       const relPath = writeCandidateWeightsFile(dir, result);
       assert.equal(relPath, `context/scoring/candidate-weights/${result.weights_hash}.json`);
@@ -442,7 +442,7 @@ describe("calibrateScoringWeights (#7990) — escala âncora de rubric.json + AU
         JSON.stringify({ bonuses: { primary_source: { points: 10, issue: "#5665", agent_files: [] } } }),
         "utf8",
       );
-      const result = calibrateScoringWeights(editionsDir, rootDir);
+      const result = calibrateScoringWeights(editionsDir, rootDir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "candidate_produced");
       assert.equal(result.points_per_log_odds_source, "anchored");
       const candidate = result.candidates.find((c) => c.feature === "primary_source")!;
@@ -480,7 +480,7 @@ describe("calibrateScoringWeights (#7990) — escala âncora de rubric.json + AU
           "utf8",
         );
       }
-      const result = calibrateScoringWeights(dir, dir);
+      const result = calibrateScoringWeights(dir, dir, DEFAULT_HOLDOUT, "stage1");
       assert.equal(result.status, "candidate_produced");
       assert.notEqual(result.holdout_auc_real, null);
       assert.notEqual(result.holdout_auc_shadow, null);

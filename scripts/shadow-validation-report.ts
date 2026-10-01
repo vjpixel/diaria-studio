@@ -20,7 +20,7 @@
  *
  * Holdout (#7972, correção de escopo do comentário de 11/09/2026): as ~25
  * edições mais recentes que tenham os 3 arquivos necessários
- * (scoring-features.json, scoring-shadow.json, 01-approved.json) —
+ * (scoring-features.json, scoring-shadow.json, rótulo disponível) —
  * cronologicamente as últimas, nunca uma amostra aleatória, porque o
  * candidato de baseline (`340ec6d9d3e9b0f1.json`) foi só LIDO do rubrico
  * real, nunca ajustado a nenhum dado — não há vazamento de treino a evitar
@@ -28,9 +28,12 @@
  * agora é o hábito certo pra quando `calibrate-scoring-weights.ts` (#7990)
  * existir e passar a ajustar pesos a partir do resto do corpus.
  *
- * `kept` reusa a mesma definição de `calibration-power-report.ts`
- * (`keptUrlsFromApproved`): URL presente em QUALQUER bucket de
- * `01-approved.json`, incluindo `highlights`.
+ * `kept` vem de `scripts/lib/calibration-labels.ts` (#9373) — mesma fonte
+ * de `calibration-power-report.ts`. Padrão `stage4`: desfecho no gate do
+ * Stage 4 (linhas sem sinal do editor — `not_delivered` — ficam fora do
+ * cálculo). `--label stage1` reproduz o rótulo antigo (01-approved do gate
+ * 1), sob o qual quase todo o pool era "mantido" e a AUC saía de 1 a 4
+ * descartes por edição (medição de 01/10/2026 na #9373).
  *
  * Concentração de fonte (HHI, `scripts/lib/source-concentration.ts`):
  * reportada por edição sobre os itens MANTIDOS (kept=true) — mitigação S-6
@@ -40,7 +43,7 @@
  * revisar o candidato decidir.
  *
  * Uso:
- *   npx tsx scripts/shadow-validation-report.ts --weights <hash> [--editions-dir DIR] [--holdout N] [--json]
+ *   npx tsx scripts/shadow-validation-report.ts --weights <hash> [--label stage4|stage1] [--editions-dir DIR] [--holdout N] [--json]
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -49,6 +52,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { computeDomainConcentration, type DomainConcentration } from "./lib/source-concentration.ts";
 import type { ScoringFeatureRow } from "./lib/scoring-features.ts";
+import { DEFAULT_LABEL_SOURCE, loadKeptLabeler, parseLabelSource, type CalibrationLabelSource } from "./lib/calibration-labels.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_HOLDOUT = 25;
@@ -58,19 +62,6 @@ interface ShadowRow {
   bucket: string;
   score: number | null;
   shadow_score_alt: number | null;
-}
-
-/** Mesma definição de `calibration-power-report.ts` — URL em qualquer bucket de `01-approved.json`, highlights incluído. */
-function keptUrlsFromApproved(json: any): Set<string> {
-  const urls = new Set<string>();
-  const buckets = ["highlights", "runners_up", "lancamento", "radar", "use_melhor", "video"];
-  for (const bucket of buckets) {
-    for (const item of json?.[bucket] ?? []) {
-      const url = item?.article?.url ?? item?.url;
-      if (typeof url === "string" && url !== "") urls.add(url);
-    }
-  }
-  return urls;
 }
 
 /**
@@ -102,6 +93,7 @@ export function computeAuc(values: ReadonlyArray<number | null>, labels: Readonl
 
 export interface EditionValidation {
   edition: string;
+  /** Linhas ROTULADAS (stage4: exclui `not_delivered`). */
   n_rows: number;
   n_kept: number;
   auc_real: number | null;
@@ -111,9 +103,11 @@ export interface EditionValidation {
 
 export interface ShadowValidationResult {
   candidate_weights_hash: string;
+  /** Fonte do rótulo `kept` (#9373). */
+  label_source: CalibrationLabelSource;
   holdout_requested: number;
   holdout_editions: EditionValidation[];
-  /** Edições candidatas (têm scoring-features.json) mas faltando scoring-shadow.json (deste candidato) ou 01-approved.json. */
+  /** Edições candidatas (têm scoring-features.json) mas faltando scoring-shadow.json (deste candidato) ou o rótulo da fonte escolhida. */
   editions_skipped: Array<{ edition: string; reason: string }>;
   mean_auc_real: number | null;
   mean_auc_shadow: number | null;
@@ -131,6 +125,7 @@ export function buildShadowValidationReport(
   editionsRoot: string,
   weightsHash: string,
   holdout = DEFAULT_HOLDOUT,
+  labelSource: CalibrationLabelSource = DEFAULT_LABEL_SOURCE,
 ): ShadowValidationResult {
   const editionDirs = enumerateEditionDirs(editionsRoot);
   const allEditions = [...editionDirs.entries()].sort(([a], [b]) => a.localeCompare(b));
@@ -147,21 +142,20 @@ export function buildShadowValidationReport(
   for (const [edition, dir] of holdoutSet) {
     const featuresPath = join(dir, "_internal", "scoring-features.json");
     const shadowPath = join(dir, "_internal", "scoring-shadow.json");
-    const approvedPath = join(dir, "_internal", "01-approved.json");
 
     if (!existsSync(shadowPath)) {
       skipped.push({ edition, reason: "scoring-shadow.json ausente — rodar compute-shadow-scores.ts pra este candidato primeiro" });
       continue;
     }
-    if (!existsSync(approvedPath)) {
-      skipped.push({ edition, reason: "01-approved.json ausente — impossível derivar kept" });
+    const labeler = loadKeptLabeler(dir, labelSource);
+    if (!labeler.ok) {
+      skipped.push({ edition, reason: `rótulo ${labelSource}: ${labeler.reason}` });
       continue;
     }
 
     try {
       const featuresPayload = JSON.parse(readFileSync(featuresPath, "utf8"));
       const shadowPayload = JSON.parse(readFileSync(shadowPath, "utf8"));
-      const approvedJson = JSON.parse(readFileSync(approvedPath, "utf8"));
 
       if (shadowPayload?.candidate_weights_hash !== weightsHash) {
         skipped.push({
@@ -178,7 +172,6 @@ export function buildShadowValidationReport(
         continue;
       }
 
-      const keptUrls = keptUrlsFromApproved(approvedJson);
       const shadowByUrl = new Map(shadowRows.map((r) => [r.url, r]));
 
       const realScores: Array<number | null> = [];
@@ -186,9 +179,12 @@ export function buildShadowValidationReport(
       const labels: boolean[] = [];
       const keptDomains: Array<string | null> = [];
       let nKept = 0;
+      let nLabeled = 0;
 
       for (const row of featureRows) {
-        const kept = keptUrls.has(row.url);
+        const kept = labeler.value.label(row.url);
+        if (kept === null) continue; // stage4 `not_delivered`: sem sinal do editor, fora da amostra
+        nLabeled++;
         labels.push(kept);
         realScores.push(row.score);
         shadowScores.push(shadowByUrl.get(row.url)?.shadow_score_alt ?? null);
@@ -200,7 +196,7 @@ export function buildShadowValidationReport(
 
       results.push({
         edition,
-        n_rows: featureRows.length,
+        n_rows: nLabeled,
         n_kept: nKept,
         auc_real: computeAuc(realScores, labels),
         auc_shadow: computeAuc(shadowScores, labels),
@@ -216,6 +212,7 @@ export function buildShadowValidationReport(
 
   return {
     candidate_weights_hash: weightsHash,
+    label_source: labelSource,
     holdout_requested: holdout,
     holdout_editions: results,
     editions_skipped: skipped,
@@ -228,7 +225,9 @@ export function buildShadowValidationReport(
 
 function formatReport(report: ShadowValidationResult): string {
   const lines: string[] = [];
-  lines.push(`[shadow-validation-report] candidato ${report.candidate_weights_hash} — holdout solicitado: ${report.holdout_requested} edições mais recentes`);
+  lines.push(
+    `[shadow-validation-report] candidato ${report.candidate_weights_hash} — rótulo ${report.label_source} — holdout solicitado: ${report.holdout_requested} edições mais recentes`,
+  );
   lines.push(`  avaliadas: ${report.holdout_editions.length}  puladas: ${report.editions_skipped.length}`);
   if (report.editions_skipped.length > 0) {
     for (const s of report.editions_skipped) lines.push(`    PULADA ${s.edition}: ${s.reason}`);
@@ -259,7 +258,7 @@ if (isMainModule(import.meta.url)) {
   const json = process.argv.includes("--json");
 
   if (!weightsHash) {
-    console.error("Uso: shadow-validation-report.ts --weights <hash> [--editions-dir DIR] [--holdout N] [--json]");
+    console.error("Uso: shadow-validation-report.ts --weights <hash> [--label stage4|stage1] [--editions-dir DIR] [--holdout N] [--json]");
     process.exit(2);
   }
   if (!Number.isInteger(holdout) || holdout <= 0) {
@@ -267,6 +266,6 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
-  const report = buildShadowValidationReport(editionsRoot, weightsHash, holdout);
+  const report = buildShadowValidationReport(editionsRoot, weightsHash, holdout, parseLabelSource(values["label"]));
   console.log(json ? JSON.stringify(report, null, 2) : formatReport(report));
 }

@@ -107,7 +107,7 @@ describe("buildShadowValidationReport (#7977)", () => {
         { url: "https://x.com/c", score: 10, shadow: 10, kept: false },
         { url: "https://x.com/d", score: 5, shadow: 5, kept: false },
       ]);
-      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25);
+      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25, "stage1");
       assert.equal(report.holdout_editions.length, 1);
       const e = report.holdout_editions[0];
       assert.equal(e.auc_real, 1);
@@ -130,7 +130,7 @@ describe("buildShadowValidationReport (#7977)", () => {
           { url: `https://x.com/${ed}-b`, score: 5, shadow: 5, kept: false },
         ]);
       }
-      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 2);
+      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 2, "stage1");
       assert.equal(report.holdout_editions.length, 2);
       assert.deepEqual(
         report.holdout_editions.map((e) => e.edition),
@@ -153,7 +153,7 @@ describe("buildShadowValidationReport (#7977)", () => {
         ],
         { skipShadow: true },
       );
-      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25);
+      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25, "stage1");
       assert.equal(report.holdout_editions.length, 0);
       assert.equal(report.editions_skipped.length, 1);
       assert.match(report.editions_skipped[0].reason, /scoring-shadow\.json ausente/);
@@ -174,7 +174,7 @@ describe("buildShadowValidationReport (#7977)", () => {
         ],
         { shadowHash: "outrocandidato0000" },
       );
-      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25);
+      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25, "stage1");
       assert.equal(report.holdout_editions.length, 0);
       assert.equal(report.editions_skipped.length, 1);
       assert.match(report.editions_skipped[0].reason, /outro candidato/);
@@ -192,7 +192,7 @@ describe("buildShadowValidationReport (#7977)", () => {
         { url: "https://b.com/1", score: 1, shadow: 1, kept: false },
       ];
       writeEditionFixture(dir, "260901", rows);
-      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25);
+      const report = buildShadowValidationReport(dir, WEIGHTS_HASH, 25, "stage1");
       assert.equal(report.holdout_editions[0].kept_domain_concentration.hhi, 10000);
       assert.equal(report.holdout_editions[0].kept_domain_concentration.top_domain, "a.com");
     } finally {

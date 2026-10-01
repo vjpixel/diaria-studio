@@ -56,7 +56,7 @@ describe("buildPowerReport (#7976)", () => {
     const dir = mkdtempSync(join(tmpdir(), "power-report-empty-"));
     try {
       mkdirSync(join(dir, "260811", "_internal"), { recursive: true });
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       assert.equal(report.editions_analyzed, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -75,7 +75,7 @@ describe("buildPowerReport (#7976)", () => {
           { url: `https://x.com/${e}-d`, primary_source: false, keep: e % 2 === 0 },
         ]);
       }
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       const feature = report.features.find((f) => f.feature === "primary_source")!;
       assert.equal(feature.passes_event_bar, false, "n=10 por lado é bem abaixo do piso de 30");
     } finally {
@@ -95,7 +95,7 @@ describe("buildPowerReport (#7976)", () => {
           { url: `https://x.com/${ed}-d`, primary_source: false, keep: false },
         ]);
       }
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       const feature = report.features.find((f) => f.feature === "primary_source")!;
       assert.equal(feature.n_true, 100);
       assert.equal(feature.n_false, 100);
@@ -118,7 +118,7 @@ describe("buildPowerReport (#7976)", () => {
       mkdirSync(join(dir, "260812", "_internal"), { recursive: true });
       writeFileSync(join(dir, "260812", "_internal", "scoring-features.json"), "{ inválido", "utf8");
       writeFileSync(join(dir, "260812", "_internal", "01-approved.json"), "{}", "utf8");
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       assert.equal(report.editions_analyzed, 1, "só a edição válida deveria contar");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -129,7 +129,7 @@ describe("buildPowerReport (#7976)", () => {
     const dir = mkdtempSync(join(tmpdir(), "power-report-noncalib-"));
     try {
       writeEdition(dir, "260811", [{ url: "https://x.com/a", primary_source: true, keep: true }]);
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       // `CandidateFeature` (#7990) já exclui "negative_impact" em COMPILAÇÃO
       // — `f.feature: string` widening explícito preserva este teste como
       // guard RUNTIME (defesa em profundidade, caso o tipo e o runtime
@@ -155,7 +155,7 @@ describe("buildPowerReport (#7976)", () => {
           { url: `https://x.com/${ed}-b`, primary_source: false, keep: false },
         ]);
       }
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       const feature = report.features.find((f) => f.feature === "primary_source")!;
       // primary_source aqui é sempre false (nunca true) — n_false deve
       // refletir as 40 linhas reais, n_true deve ser 0 (genuinamente, não
@@ -176,7 +176,7 @@ describe("buildPowerReport (#7976)", () => {
       mkdirSync(join(dir, "260812", "_internal"), { recursive: true });
       writeFileSync(join(dir, "260812", "_internal", "scoring-features.json"), "{ inválido", "utf8");
       writeFileSync(join(dir, "260812", "_internal", "01-approved.json"), "{}", "utf8");
-      const report = buildPowerReport(dir);
+      const report = buildPowerReport(dir, 42, "stage1");
       assert.equal(report.editions_analyzed, 1);
       assert.equal(report.editions_skipped.length, 1);
       assert.equal(report.editions_skipped[0].edition, "260812");
@@ -196,8 +196,8 @@ describe("buildPowerReport (#7976)", () => {
           { url: `https://x.com/${ed}-b`, primary_source: false, keep: e % 3 !== 0 },
         ]);
       }
-      const r1 = buildPowerReport(dir, 42);
-      const r2 = buildPowerReport(dir, 42);
+      const r1 = buildPowerReport(dir, 42, "stage1");
+      const r2 = buildPowerReport(dir, 42, "stage1");
       const f1 = r1.features.find((f) => f.feature === "primary_source")!;
       const f2 = r2.features.find((f) => f.feature === "primary_source")!;
       assert.equal(f1.null_p_value, f2.null_p_value);
