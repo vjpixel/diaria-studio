@@ -7,6 +7,7 @@ import {
   buildWaveProposal,
   computeFirstSendDeficit,
   computeNextWaveNumber,
+  nextFreeWaveNumber,
   detectCohortInversion,
   groupKeyFromCampaignName,
   measureNonOpenerExposure,
@@ -2006,5 +2007,15 @@ describe("renderWaveProposal — motivo dirigido por targetVolume (#6081)", () =
     );
     assert.match(out, /Motivo: déficit de fila: 700/);
     assert.doesNotMatch(out, /--volume/);
+  });
+});
+
+describe("nextFreeWaveNumber (#9333)", () => {
+  it("sem manifest existente => devolve o número inicial", () => {
+    assert.equal(nextFreeWaveNumber(1, "2026-10-02", () => false), 1);
+  });
+  it("pula números cujo manifest já existe", () => {
+    const taken = new Set(["d1-sex02", "d2-sex02"]);
+    assert.equal(nextFreeWaveNumber(1, "2026-10-02", (k) => taken.has(k)), 3);
   });
 });

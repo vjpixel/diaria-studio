@@ -104,10 +104,13 @@ import {
   VARIANT_CELLS,
   waveDateFragment,
   waveKey,
+  nextFreeWaveNumber,
   type WaveCell,
   type WaveProposal,
   type WaveState,
 } from "./lib/clarice-wave-plan.ts";
+import { clariceSegmentsDir } from "./lib/clarice-paths.ts";
+import { cellManifestFileName } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { stepWithTransientRetry as sharedStepWithTransientRetry } from "./lib/transient-step-retry.ts";
 import { writeLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
@@ -303,6 +306,8 @@ export interface EnvioRunDeps {
    * ausente = sem teste (mesmo seam de `readAbcState` — teste nunca lê o
    * `data/` real). Config presente mas inválida LANÇA → rodada aborta. */
   readAbTest?: (cycle: string) => ClariceAbTestConfig | null;
+  /** #9333 — `true` se o manifest `{key}-manifest.json` da onda já existe em disco no ciclo. */
+  waveManifestExists?: (cycle: string, key: string) => boolean;
 }
 
 /**
@@ -361,6 +366,8 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     readAbcState: () => readClariceAbcState(rootDir),
     sleep: (ms: number) => new Promise((r) => setTimeout(r, ms)),
     readAbTest: (cycle: string) => readClariceAbTest(resolveMonthlyDir(cycle)),
+    waveManifestExists: (cycle: string, key: string) =>
+      existsSync(resolve(clariceSegmentsDir(cycle), cellManifestFileName(key))),
   };
 }
 
@@ -1353,7 +1360,12 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
 
     // --- Passo 6: segmentar + dividir em células + importar. ---
     report.section("Passo 6 — Montar a onda");
-    const n = proposal.startingWaveNumber;
+    const n = deps.waveManifestExists
+      ? nextFreeWaveNumber(proposal.startingWaveNumber, sendDate, (k) => deps.waveManifestExists!(cycle, k))
+      : proposal.startingWaveNumber;
+    if (n !== proposal.startingWaveNumber) {
+      report.note(`⚠️ onda d${proposal.startingWaveNumber} já tem manifest local para ${sendDate} (montada fora do dashboard) — usando d${n} (#9333).`);
+    }
     const waveKeyBase = waveKey(n, sendDate);
     report.note(`onda d${n} · ${sendDate} · chave base "${waveKeyBase}" · teste A/B/C: ${abcAction}.`);
 

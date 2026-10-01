@@ -424,6 +424,23 @@ export function computeNextWaveNumber(waves: Array<Pick<WaveState, "key">>): num
   return max + 1;
 }
 
+/**
+ * #9333 — primeiro número de onda >= `start` cuja chave base (`waveKey(n,
+ * sendDate)`) ainda não tem manifest local. `computeNextWaveNumber` só enxerga
+ * campanhas já registradas no dashboard; uma onda montada à mão (e depois
+ * antecipada/enviada fora da data da chave) deixa o manifest em disco sem
+ * aparecer em `state.waves`, e reusar a chave faz o split abortar.
+ */
+export function nextFreeWaveNumber(
+  start: number,
+  sendDate: string,
+  manifestExists: (key: string) => boolean,
+): number {
+  let n = start;
+  while (manifestExists(waveKey(n, sendDate))) n++;
+  return n;
+}
+
 // ---------------------------------------------------------------------------
 // Teste A/B/C — TRADUZ a tabela já calculada numa AÇÃO recomendada
 // ---------------------------------------------------------------------------
