@@ -13,13 +13,11 @@
  * ambiente vence, o `.env` só preenche o que falta.
  *
  * **Diferença deliberada em relação ao `loadProjectEnv`:** valor presente
- * mas VAZIO no ambiente conta como ausente. `${VAR}` não resolvido vira
- * string vazia no harness, e é exatamente esse vazio que o `.env` precisa
- * preencher aqui.
+ * mas VAZIO no ambiente conta como ausente (ver `mergeEnvNoOverride`).
  *
- * **Menor privilégio:** o filho só recebe do `.env` as chaves que o servidor
- * de fato usa (`pickKeys`), nunca o `.env` inteiro — o processo do MCP não
- * tem por que enxergar a key da Brevo.
+ * **Menor privilégio:** do `.env` só entram as chaves listadas pelo wrapper
+ * (`pickKeys`), nunca o `.env` inteiro; o ambiente do harness é herdado
+ * como está.
  *
  * **Invariante de stdio:** é MCP sobre stdio — NADA aqui escreve em stdout.
  * Toda mensagem de diagnóstico vai pra stderr; stdout é do servidor.
@@ -52,13 +50,20 @@ export const GOOGLE_ADS_ENV_KEYS = [
 
 export const DOPPLER_MCP_TOKEN_KEY = "DOPPLER_MCP_TOKEN";
 
-/** Parse de `.env` (mesmo parser do `loadProjectEnv`). Arquivo ilegível → `{}`. */
+/** `.env` existe mas não pôde ser lido/parseado — os entrypoints saem com 1. */
+export class EnvFileReadError extends Error {}
+
+/**
+ * Parse de `.env` (mesmo parser do `loadProjectEnv`). Ausente → `{}` (caso
+ * legítimo: clone sem `.env`). Existente mas ilegível → `EnvFileReadError`
+ * — engolir isso faria o servidor subir sem credencial, o sintoma do #8994.
+ */
 export function readEnvFile(path, { exists = existsSync, read = (p) => readFileSync(p, "utf8") } = {}) {
   if (!exists(path)) return {};
   try {
     return dotenvParse(read(path));
-  } catch {
-    return {};
+  } catch (err) {
+    throw new EnvFileReadError(`[mcp-wrapper] falha ao ler ${path}: ${err?.message ?? String(err)}`);
   }
 }
 
@@ -72,6 +77,9 @@ export function pickKeys(vars, keys) {
 /**
  * Merge sem sobrescrever: chave presente e NÃO vazia em `base` vence;
  * ausente ou vazia é preenchida por `fileVars`. Retorna objeto novo.
+ * Vazio conta como ausente porque uma var exportada vazia (ex.: `set X=` no
+ * perfil, ou resíduo de `${VAR}` não resolvido de config antiga) não é
+ * credencial nenhuma — deixá-la vencer reproduziria o servidor sem token.
  */
 export function mergeEnvNoOverride(base, fileVars) {
   const out = { ...base };
@@ -79,6 +87,19 @@ export function mergeEnvNoOverride(base, fileVars) {
     if (out[k] === undefined || out[k] === "") out[k] = v;
   }
   return out;
+}
+
+/**
+ * Chaves cujo valor no ambiente (não vazio) difere do `.env` — o ambiente
+ * vence (precedência inalterada); isto só alimenta o aviso. Mesma lógica de
+ * `warnOnEnvDivergence` (`scripts/lib/env-loader.ts`), reimplementada aqui
+ * porque aquela lê o `.env` inteiro e avisaria sobre chaves que o servidor
+ * nem recebe (ex.: `GOOGLE_CLIENT_ID` injetado pelo app desktop, #8237).
+ */
+export function divergentKeys(env, fileVars) {
+  return Object.entries(fileVars)
+    .filter(([k, v]) => env[k] !== undefined && env[k] !== "" && env[k] !== v)
+    .map(([k]) => k);
 }
 
 /**
@@ -103,12 +124,29 @@ export function findOnPath(name, { env = process.env, platform = process.platfor
   return null;
 }
 
+const MATERIALIZE_HINT = "rode `npx tsx scripts/materialize-google-ads-credentials.ts` (ver docs/google-ads-api-setup.md)";
+
 /**
- * Decide como subir o google-ads-mcp: binário instalado (rápido) ou, se
- * ausente, `pipx run --spec ...` (re-resolve o spec git a cada start —
- * medido 11s com cache quente; frio pode estourar os 30s do harness).
+ * Decide como subir o google-ads-mcp. Primeiro a credencial: sem developer
+ * token, ou com `GOOGLE_APPLICATION_CREDENTIALS` vazio/apontando pra arquivo
+ * inexistente, devolve erro — subir o servidor assim reproduz o #8994.
+ * Depois o comando: binário instalado (rápido) ou, se ausente,
+ * `pipx run --spec ...` (re-resolve o spec git a cada start — medido no Neo
+ * 54,5s com cache frio, acima do timeout de 30s do harness; 9,3s quente).
  */
-export function resolveGoogleAdsLaunch({ find = (n) => findOnPath(n) } = {}) {
+export function resolveGoogleAdsLaunch(env, { find = (n) => findOnPath(n), exists = existsSync } = {}) {
+  if (!env.GOOGLE_ADS_DEVELOPER_TOKEN) {
+    return { error: `[run-google-ads-mcp] GOOGLE_ADS_DEVELOPER_TOKEN ausente — adicione ao .env do projeto.` };
+  }
+  const adc = env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (!adc) {
+    return { error: `[run-google-ads-mcp] GOOGLE_APPLICATION_CREDENTIALS ausente — ${MATERIALIZE_HINT}.` };
+  }
+  if (!exists(adc)) {
+    return {
+      error: `[run-google-ads-mcp] GOOGLE_APPLICATION_CREDENTIALS aponta para arquivo inexistente (${adc}) — ${MATERIALIZE_HINT}.`,
+    };
+  }
   const bin = find(GOOGLE_ADS_MCP_BIN);
   if (bin) return { command: bin, args: [], warning: null };
   const pipx = find("pipx");
@@ -124,7 +162,7 @@ export function resolveGoogleAdsLaunch({ find = (n) => findOnPath(n) } = {}) {
     args: ["run", "--spec", GOOGLE_ADS_MCP_SPEC, GOOGLE_ADS_MCP_BIN],
     warning:
       `[run-google-ads-mcp] "${GOOGLE_ADS_MCP_BIN}" não está instalado — caindo em "pipx run --spec", ` +
-      `que re-resolve o repo git a cada start e pode estourar o timeout de 30s do harness. ` +
+      `que re-resolve o repo git a cada start e, com cache frio, pode estourar o timeout do harness. ` +
       `Recomendado: pipx install ${GOOGLE_ADS_MCP_SPEC}`,
   };
 }
@@ -155,9 +193,20 @@ export function resolveDopplerLaunch(env, { find = (n) => findOnPath(n) } = {}) 
 }
 
 /**
+ * Ambiente do filho do doppler: tira o `DOPPLER_MCP_TOKEN` cru (o servidor
+ * só precisa de `DOPPLER_TOKEN`) e aplica `childEnv` por cima — inclusive
+ * sobre um `DOPPLER_TOKEN` herdado de escopo mais amplo.
+ */
+export function buildDopplerChildEnv(base, childEnv) {
+  const { [DOPPLER_MCP_TOKEN_KEY]: _omit, ...rest } = base;
+  return { ...rest, ...childEnv };
+}
+
+/**
  * Monta o spawn. `.cmd`/`.bat` no Windows não podem ser spawnados sem shell
- * (Node ≥20 recusa com EINVAL) — passa pelo `cmd.exe` com o caminho entre
- * aspas. Args aqui são sempre constantes nossas (sem entrada externa).
+ * (Node com o patch do CVE-2024-27980 recusa com EINVAL) — passa pelo
+ * `cmd.exe` com o caminho entre aspas. Args aqui são sempre constantes
+ * nossas (sem entrada externa).
  */
 export function buildSpawnSpec(command, args, { platform = process.platform, env = process.env } = {}) {
   if (platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
@@ -171,19 +220,51 @@ export function buildSpawnSpec(command, args, { platform = process.platform, env
   return { command, args, options: {} };
 }
 
-/** Carrega do `.env` só `keys` e faz merge sem sobrescrever o ambiente. */
+/**
+ * Carrega do `.env` só `keys`, faz merge sem sobrescrever o ambiente e
+ * devolve também as chaves divergentes (pra aviso em stderr, sem valor).
+ * Lança `EnvFileReadError` se o `.env` existe mas é ilegível.
+ */
 export function envWithProjectKeys(keys, { root = PROJECT_ROOT, env = process.env, readFile = readEnvFile } = {}) {
-  return mergeEnvNoOverride(env, pickKeys(readFile(join(root, ".env")), keys));
+  const fileVars = pickKeys(readFile(join(root, ".env")), keys);
+  return { env: mergeEnvNoOverride(env, fileVars), divergent: divergentKeys(env, fileVars) };
+}
+
+/**
+ * Cola dos entrypoints: carrega o env, avisa divergências (nome da chave,
+ * nunca o valor) e converte `EnvFileReadError` em stderr + exit 1.
+ */
+export function loadEnvOrExit(keys) {
+  try {
+    const { env, divergent } = envWithProjectKeys(keys);
+    for (const k of divergent) {
+      process.stderr.write(`[mcp-wrapper] ${k}: ambiente e .env divergem — usando o do ambiente\n`);
+    }
+    return env;
+  } catch (err) {
+    if (!(err instanceof EnvFileReadError)) throw err;
+    process.stderr.write(err.message + "\n");
+    process.exit(1);
+  }
 }
 
 /**
  * Cola com o processo real: spawn com stdio herdado, repassa sinais e o
  * código de saída. Só stderr para diagnóstico.
+ *
+ * Limite no Windows: o harness encerra o wrapper via TerminateProcess, que
+ * não roda handler de sinal nenhum — o repasse abaixo não acontece e o filho
+ * (ou o neto, quando há `cmd.exe` no meio) não é morto por nós. Ele termina
+ * sozinho quando o stdin herdado fecha (EOF), que é como servidor MCP stdio
+ * encerra. Por isso o guard `!child.killed` só existe no win32 (lá `kill`
+ * é TerminateProcess e repetir não acrescenta nada); fora dele, todo sinal
+ * recebido é repassado.
  */
 export function launch(spec, env) {
   const child = spawn(spec.command, spec.args, { stdio: "inherit", env, ...spec.options });
   const forward = (sig) => {
-    if (!child.killed) child.kill(sig);
+    if (process.platform === "win32" && child.killed) return;
+    child.kill(sig);
   };
   process.on("SIGINT", () => forward("SIGINT"));
   process.on("SIGTERM", () => forward("SIGTERM"));

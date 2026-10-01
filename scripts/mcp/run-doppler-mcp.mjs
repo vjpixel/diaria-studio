@@ -10,18 +10,17 @@
  */
 import {
   DOPPLER_MCP_TOKEN_KEY,
+  buildDopplerChildEnv,
   buildSpawnSpec,
-  envWithProjectKeys,
   launch,
+  loadEnvOrExit,
   resolveDopplerLaunch,
 } from "./mcp-wrapper-core.mjs";
 
-const merged = envWithProjectKeys([DOPPLER_MCP_TOKEN_KEY]);
+const merged = loadEnvOrExit([DOPPLER_MCP_TOKEN_KEY]);
 const resolved = resolveDopplerLaunch(merged);
 if (resolved.error) {
   process.stderr.write(resolved.error + "\n");
   process.exit(1);
 }
-// O filho recebe o ambiente + DOPPLER_TOKEN — não o DOPPLER_MCP_TOKEN cru.
-const { [DOPPLER_MCP_TOKEN_KEY]: _omit, ...base } = merged;
-launch(buildSpawnSpec(resolved.command, resolved.args), { ...base, ...resolved.childEnv });
+launch(buildSpawnSpec(resolved.command, resolved.args), buildDopplerChildEnv(merged, resolved.childEnv));
