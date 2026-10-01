@@ -11,7 +11,7 @@
 // Paridade com o lado TS travada por test/hook-registry-lock-9203.test.ts.
 // Mudou a política lá? Mude aqui também.
 
-import { closeSync, fstatSync, openSync, readFileSync, readlinkSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readlinkSync, unlinkSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
 
@@ -19,7 +19,8 @@ import { randomBytes } from "node:crypto";
 export const STALE_LOCK_MS = 60_000;
 /** Espelha `FOREIGN_HOST_STALE_LOCK_MS` de session-registry.ts (#9220). */
 export const FOREIGN_HOST_STALE_LOCK_MS = 30 * 60_000;
-const STEAL_STALE_MS = 30_000;
+/** Espelha `STEAL_STALE_MS` de file-lock.ts (#9317). */
+export const STEAL_STALE_MS = 30_000;
 
 let cachedHostId = null;
 /** Mesmo formato de `lockHostId()` de file-lock.ts (host + namespace de PID). */
@@ -38,7 +39,7 @@ function parseOwner(raw) {
   try {
     const o = JSON.parse(raw);
     if (Number.isInteger(o?.pid) && o.pid > 0 && typeof o.host === "string" && typeof o.token === "string") {
-      return { pid: o.pid, host: o.host };
+      return { pid: o.pid, host: o.host, token: o.token };
     }
   } catch { /* legado/vazio */ }
   return null;
@@ -75,31 +76,76 @@ function readLockFile(lockPath) {
 }
 
 /**
+ * Espelho de `isStealAbandoned` (file-lock.ts, #9317): o `.steal` só é
+ * abandonado pela mesma regra do `.lock` — dono deste host com PID morto;
+ * conteúdo legado/vazio ou dono de outro host após STEAL_STALE_MS. Dono vivo
+ * deste host NUNCA, por mais velho que seja (antes era quebrado só por mtime,
+ * e um removedor que travasse >30s antes do unlink apagava o lock VIVO de
+ * outro removedor).
+ */
+export function isStealAbandoned(raw, mtimeMs, now = Date.now(), host = lockHostId(), alive = pidAlive) {
+  return isLockOrphan(raw, mtimeMs, now, host, alive, STEAL_STALE_MS, STEAL_STALE_MS);
+}
+
+/** Cria o `.steal` (`wx`) gravando o dono; devolve o token, ou null em contenção/falha. */
+function acquireSteal(stealPath) {
+  let fd;
+  try {
+    fd = openSync(stealPath, "wx");
+  } catch (e) {
+    if (e?.code === "EEXIST") breakAbandonedSteal(stealPath);
+    return null;
+  }
+  const token = randomBytes(8).toString("hex");
+  let written = false;
+  try {
+    writeSync(fd, JSON.stringify({ pid: process.pid, host: lockHostId(), ts: Date.now(), token }));
+    written = true;
+  } catch {
+    /* tratado abaixo */
+  } finally {
+    closeSync(fd);
+    if (!written) { try { unlinkSync(stealPath); } catch { /* ignore */ } }
+  }
+  return written ? token : null;
+}
+
+function breakAbandonedSteal(stealPath) {
+  const seen = readLockFile(stealPath);
+  if (!seen || !isStealAbandoned(seen.raw, seen.mtimeMs)) return;
+  const again = readLockFile(stealPath);
+  if (!again || again.ino !== seen.ino || again.raw !== seen.raw) return;
+  try { unlinkSync(stealPath); } catch { /* outro removedor já cuidou */ }
+}
+
+function ownsSteal(stealPath, token) {
+  const cur = readLockFile(stealPath);
+  return !!cur && parseOwner(cur.raw)?.token === token;
+}
+
+/**
  * Espelho de `breakStaleLock` de session-registry.ts: remove o `.lock` só se
  * órfão, relendo-o sob `{lockPath}.steal` antes do unlink. Nunca lança.
+ * #9317: o `.steal` carrega dono e só é quebrado se abandonado
+ * (`isStealAbandoned`); o unlink só acontece se o `.steal` ainda for nosso.
  */
 export function breakStaleLock(lockPath, now = Date.now()) {
   try {
     const seen = readLockFile(lockPath);
     if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs, now)) return false;
     const stealPath = `${lockPath}.steal`;
-    try {
-      closeSync(openSync(stealPath, "wx"));
-    } catch (e) {
-      if (e?.code === "EEXIST") {
-        try { if (Date.now() - statSync(stealPath).mtimeMs > STEAL_STALE_MS) unlinkSync(stealPath); } catch { /* ignore */ }
-      }
-      return false;
-    }
+    const token = acquireSteal(stealPath);
+    if (token === null) return false;
     try {
       const cur = readLockFile(lockPath);
       if (!cur || cur.ino !== seen.ino || cur.raw !== seen.raw) return false;
+      if (!ownsSteal(stealPath, token)) return false;
       unlinkSync(lockPath);
       // Paridade com tryStealOrphan (file-lock.ts): remoção deixa rastro.
       try { process.stderr.write(`[registry-lock] lock órfão removido (#9203): ${lockPath} — ${seen.raw.trim() || "(vazio, legado)"}\n`); } catch { /* ignore */ }
       return true;
     } finally {
-      try { unlinkSync(stealPath); } catch { /* ignore */ }
+      if (ownsSteal(stealPath, token)) { try { unlinkSync(stealPath); } catch { /* ignore */ } }
     }
   } catch {
     return false;

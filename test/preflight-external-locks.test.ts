@@ -36,6 +36,9 @@ import {
   classifyCodexStatus,
   checkMcpConnectors,
   preflightExternalLocks,
+  isBlockingLock,
+  exitCodeForLocks,
+  formatRow,
   type LockCheckResult,
 } from "../scripts/lib/preflight-external-locks.ts";
 import type { TokenHealth } from "../scripts/google-auth.ts";
@@ -388,6 +391,46 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     assert.match(t.detail ?? "", /não respondeu/);
     assert.equal(classifyCodexStatus({ status: 0, stdout: "Logged in using an API key - sk-***" }).state, "expired");
     assert.equal(classifyCodexStatus(ok()).state, "ok");
+  });
+
+  // #9316: regressão — Codex OK + key do fallback ausente gerava `missing` com
+  // `blocks_stages: []`, mas o CLI filtrava só por `state` e saía com exit 1
+  // (banner "trava(s) externa(s)" no Stage 0 de toda edição sem nada bloqueado).
+  it("#9316: Codex OK + fallback ausente → exit 0 (entrada informativa, não bloqueante)", () => {
+    const orig = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok });
+      const fb = r.find((x) => x.dependency.includes("GEMINI"))!;
+      assert.equal(fb.state, "missing");
+      assert.equal(isBlockingLock(fb), false);
+      assert.equal(exitCodeForLocks(r), 0);
+      const row = formatRow(fb);
+      assert.doesNotMatch(row, /❌/);
+      assert.doesNotMatch(row, /bloqueia stages/);
+      assert.match(row, /informativo/);
+    } finally {
+      if (orig !== undefined) process.env.GEMINI_API_KEY = orig;
+    }
+  });
+
+  it("#9316: Codex quebrado + fallback ausente → exit 1 (as duas bloqueiam)", () => {
+    const orig = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }) });
+      assert.equal(r.filter(isBlockingLock).length, 2);
+      assert.equal(exitCodeForLocks(r), 1);
+      assert.match(formatRow(r[0]!), /❌ .*bloqueia stages: 1, 3/);
+    } finally {
+      if (orig !== undefined) process.env.GEMINI_API_KEY = orig;
+    }
+  });
+
+  it("#9316: unchecked e ok nunca bloqueiam, mesmo com blocks_stages preenchido (MCP)", () => {
+    const mcp = checkMcpConnectors();
+    assert.ok(mcp.every((m) => m.blocks_stages.length > 0 && !isBlockingLock(m)));
+    assert.equal(exitCodeForLocks(mcp), 0);
   });
 });
 

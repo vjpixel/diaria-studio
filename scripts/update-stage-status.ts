@@ -114,6 +114,13 @@ export interface StageRow {
   /** #9222: `terminal_reason`/`subtype` do CLI quando != `success` (ex: `error_max_turns`). */
   terminal_reason?: string;
   /**
+   * #9312: quantas execuções `claude --print` do stage estão SOMADAS em
+   * `cost_usd`/`tokens_*`/`num_turns` (retry do background-wait, re-run
+   * manual depois de `error_max_turns`). Ausente = 1 execução, ou valor vindo
+   * de transcript (`session_filter` ≠ `cli_json`).
+   */
+  cli_runs?: number;
+  /**
    * #9222: motivo persistente da falha de captura de usage (antes só ia pro
    * `onProgress`, sem rastro) — ex: stdout não parseou. Limpo (`undefined`)
    * numa captura bem-sucedida posterior.
@@ -301,6 +308,7 @@ export interface UpdateOpts {
   parse_errors?: number; // #5423
   num_turns?: number; // #9222
   terminal_reason?: string; // #9222
+  cli_runs?: number; // #9312
   usage_capture_error?: string; // #9222 — presença da chave é o critério (undefined limpa)
   /**
    * #8899: opt-in explícito pro auto-bump de `end` numa 2ª chamada `done`/`failed`
@@ -439,6 +447,7 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       sessions_excluded: opts.sessions_excluded ?? r.sessions_excluded,
       parse_errors: opts.parse_errors ?? r.parse_errors,
       num_turns: opts.num_turns ?? r.num_turns,
+      cli_runs: opts.cli_runs ?? r.cli_runs,
       // #9222: presença da chave (não `??`) — uma execução posterior que
       // terminou em sucesso precisa poder LIMPAR o motivo de uma anterior.
       terminal_reason: "terminal_reason" in opts ? opts.terminal_reason : r.terminal_reason,

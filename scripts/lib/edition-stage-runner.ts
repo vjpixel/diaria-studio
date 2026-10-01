@@ -40,8 +40,14 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { assertSentinel as assertSentinelImpl, type AssertResult } from "./pipeline-state.ts";
 import { resolveRunLogPath } from "./run-log.ts";
-import { parseCliJsonUsage, parseCliRunMeta, resultTextOrRaw } from "./cli-usage-json.ts";
-import { loadDoc, saveDoc, applyUpdate } from "../update-stage-status.ts";
+import {
+  parseCliJsonUsage,
+  parseCliRunMeta,
+  resultTextOrRaw,
+  type CliJsonUsage,
+  type CliRunMeta,
+} from "./cli-usage-json.ts";
+import { loadDoc, saveDoc, applyUpdate, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -352,12 +358,54 @@ export function countDeniedPolling(raw: string): number {
 }
 
 /**
+ * #9312 (pure): campos de custo/turnos a gravar para UMA execução do CLI,
+ * SOMANDO aos da linha quando ela já carrega números de execução(ões) CLI
+ * anteriores (`session_filter === "cli_json"`). Antes `applyUpdate`
+ * substituía: no retry do background-wait (ou num re-run manual depois de um
+ * `error_max_turns`), o custo/turnos da tentativa que falhou — justamente o
+ * que o #9222 quis tornar visível — sumiam. Número vindo de transcript
+ * (`current_session`/`all_sessions`) não é somado: é outra medição, a CLI
+ * substitui como antes. `terminal_reason`/`usage_capture_error` continuam
+ * descrevendo só a ÚLTIMA execução (ficam no caller).
+ */
+export function accumulateCliRun(
+  row: StageRow,
+  usage: CliJsonUsage | null,
+  meta: CliRunMeta | null,
+): Pick<UpdateOpts, "cost_usd" | "tokens_in" | "tokens_out" | "models" | "session_filter" | "num_turns" | "cli_runs"> {
+  const prior = row.session_filter === "cli_json";
+  const add = (prev: number | undefined, cur: number) => (prior && prev !== undefined ? prev + cur : cur);
+  const out: ReturnType<typeof accumulateCliRun> = {};
+  if (usage) {
+    // Soma arredondada a 1e-9 (só pra tirar o ruído de ponto flutuante tipo
+    // 0.1+0.2); execução única grava o valor do CLI intacto.
+    out.cost_usd =
+      prior && row.cost_usd !== undefined
+        ? Math.round((row.cost_usd + usage.costUsd) * 1e9) / 1e9
+        : usage.costUsd;
+    out.tokens_in = add(row.tokens_in, usage.tokensIn);
+    out.tokens_out = add(row.tokens_out, usage.tokensOut);
+    out.models = prior && row.models ? [...new Set([...row.models, ...usage.models])] : usage.models;
+    out.session_filter = "cli_json";
+  }
+  if (meta?.numTurns !== undefined) {
+    // num_turns só é gravado por execução CLI (#9222) — soma sempre que já existe.
+    out.num_turns = (row.num_turns ?? 0) + meta.numTurns;
+  }
+  if (usage || meta?.numTurns !== undefined) {
+    out.cli_runs = (prior || row.num_turns !== undefined ? (row.cli_runs ?? 1) : 0) + 1;
+  }
+  return out;
+}
+
+/**
  * #9222: grava em `stage-status.json` o que o envelope `--output-format json`
  * diz sobre a execução — `num_turns`, `terminal_reason` (≠ success) e, com
  * `captureUsage`, custo/tokens (#8560). Roda nos caminhos de sucesso E de
  * falha (um stage que estourou `--max-turns` gastou dinheiro de verdade).
  * Falha de captura agora fica PERSISTIDA em `usage_capture_error`, não só no
- * `onProgress`. Fail-soft: nunca lança.
+ * `onProgress`. Fail-soft: nunca lança. #9312: custo/tokens/turnos são
+ * SOMADOS entre execuções (retry, re-run) — ver `accumulateCliRun`.
  */
 export function recordStageRun(
   editionDir: string,
@@ -388,16 +436,8 @@ export function recordStageRun(
       {
         stage,
         status: row.status,
-        ...(usage
-          ? {
-              cost_usd: usage.costUsd,
-              tokens_in: usage.tokensIn,
-              tokens_out: usage.tokensOut,
-              models: usage.models,
-              session_filter: "cli_json" as const,
-            }
-          : {}),
-        ...(meta?.numTurns !== undefined ? { num_turns: meta.numTurns } : {}),
+        // #9312: soma à(s) execução(ões) CLI anterior(es) em vez de substituir.
+        ...accumulateCliRun(row, usage, meta),
         // Chave sempre presente quando o envelope parseou: execução bem-sucedida
         // LIMPA o motivo de uma anterior que estourou.
         ...(meta ? { terminal_reason: meta.terminalReason } : {}),
@@ -648,6 +688,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         // dois passam a operar sobre o objeto JSON inteiro como se fosse
         // texto humano (substring ainda funciona, mas com ruído estrutural).
         const diagnosticText = resultTextOrRaw(stdoutText);
+        // #9222/#9312: persiste num_turns/terminal_reason/custo da tentativa
+        // ANTES do `continue` do retry — senão a tentativa 1 nem era gravada.
+        recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
         if (looksLikeBackgroundWaitExit(diagnosticText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
@@ -658,8 +701,6 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
             ? ` | polling negado ×${deniedPolling} (#9223 — Agent é síncrono, não há o que esperar)`
             : "";
         const tail = summarizeFailure(diagnosticText);
-        // #9222: persiste num_turns/terminal_reason/custo também na falha.
-        recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
         exitCode = 1;
         failedStage = stage;
         stageOutcome = {

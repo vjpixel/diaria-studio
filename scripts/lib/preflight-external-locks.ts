@@ -413,19 +413,34 @@ export async function preflightExternalLocks(opts?: {
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
-function formatRow(r: LockCheckResult): string {
-  const icon =
-    r.state === "ok"
-      ? "✅"
-      : r.state === "unchecked"
-        ? "ℹ️ "
-        : "❌";
-  const stages =
-    r.state === "ok" || r.state === "unchecked"
-      ? ""
-      : `  → bloqueia stages: ${r.blocks_stages.join(", ")}`;
-  const action = r.state === "ok" || r.state === "unchecked" ? "" : `\n     Ação: ${r.reauth_action}`;
-  return `  ${icon} ${r.dependency} — ${r.state}${stages}${action}`;
+/**
+ * #9316: uma trava só é BLOQUEANTE quando o estado não é ok/unchecked E ela de
+ * fato bloqueia algum stage. Uma entrada `missing` com `blocks_stages: []` é
+ * informativa — caso real: a key do fallback do Codex ausente com o Codex OK
+ * (o fallback nem é usado). Antes o CLI filtrava só por `state` e saía com
+ * exit 1 nesse caso, renderizando o banner "trava(s) externa(s)" no Stage 0
+ * de toda edição sem nada bloqueado.
+ */
+export function isBlockingLock(r: LockCheckResult): boolean {
+  return r.state !== "ok" && r.state !== "unchecked" && r.blocks_stages.length > 0;
+}
+
+/** #9316: exit code do CLI — 1 se houver ao menos 1 trava bloqueante, senão 0. Pura. */
+export function exitCodeForLocks(results: LockCheckResult[]): 0 | 1 {
+  return results.some(isBlockingLock) ? 1 : 0;
+}
+
+export function formatRow(r: LockCheckResult): string {
+  if (r.state === "ok" || r.state === "unchecked") {
+    const icon = r.state === "ok" ? "✅" : "ℹ️ ";
+    return `  ${icon} ${r.dependency} — ${r.state}`;
+  }
+  const action = `\n     Ação: ${r.reauth_action}`;
+  if (!isBlockingLock(r)) {
+    // #9316: não-ok mas sem stage bloqueado → aviso informativo, nunca "❌ bloqueia".
+    return `  ⚠️  ${r.dependency} — ${r.state} (informativo, não bloqueia nenhum stage)${action}`;
+  }
+  return `  ❌ ${r.dependency} — ${r.state}  → bloqueia stages: ${r.blocks_stages.join(", ")}${action}`;
 }
 
 async function main(): Promise<number> {
@@ -441,9 +456,7 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  const blocking = results.filter(
-    (r) => r.state !== "ok" && r.state !== "unchecked",
-  );
+  const blocking = results.filter(isBlockingLock);
 
   process.stdout.write("\n=== Preflight de Travas Externas (#2358) ===\n\n");
   for (const r of results) {
@@ -451,14 +464,13 @@ async function main(): Promise<number> {
   }
   process.stdout.write("\n");
 
-  if (blocking.length > 0) {
+  const code = exitCodeForLocks(results);
+  if (code !== 0) {
     process.stderr.write(
       `[preflight-external-locks] ${blocking.length} trava(s) bloqueante(s) detectada(s).\n`,
     );
-    return 1;
   }
-
-  return 0;
+  return code;
 }
 
 // CLI guard — não dispara main() quando importado em testes (#cli-guard)

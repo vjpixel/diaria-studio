@@ -6,6 +6,11 @@ export function isLockOrphan(
   alive?: (pid: number) => boolean, legacyStaleMs?: number, foreignHostStaleMs?: number | null,
 ): boolean;
 export function breakStaleLock(lockPath: string, now?: number): boolean;
+/** #9317: espelho de `STEAL_STALE_MS`/`isStealAbandoned` de file-lock.ts. */
+export const STEAL_STALE_MS: number;
+export function isStealAbandoned(
+  raw: string, mtimeMs: number, now?: number, host?: string, alive?: (pid: number) => boolean,
+): boolean;
 export const DELETE_PENDING_MAX_STREAK: number;
 export const DELETE_PENDING_WAIT_MS: number;
 export function isDeletePendingWxError(code: string | undefined, platform?: NodeJS.Platform): boolean;

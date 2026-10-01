@@ -31,7 +31,6 @@ import {
   writeSync,
   readFileSync,
   fstatSync,
-  statSync,
   readlinkSync,
 } from "node:fs";
 import { hostname } from "node:os";
@@ -72,11 +71,23 @@ import { randomBytes } from "node:crypto";
  * libera, e os removedores concorrentes estão serializados pelo `.steal`, o
  * `.lock` não pode ser trocado entre a releitura e o `unlink` — não existe
  * janela com o path vazio fora do fluxo normal. O `.steal` só é segurado por
- * microssegundos; um `.steal` abandonado (removedor morto no meio) é
- * descartado após `STEAL_STALE_MS`.
+ * microssegundos.
+ *
+ * #9317: essa garantia só vale se um `.steal` VIVO nunca é quebrado. Antes,
+ * qualquer `.steal` com mtime > `STEAL_STALE_MS` era apagado — um removedor
+ * que travasse >30s entre a releitura e o `unlink` (suspensão no Windows,
+ * swap, SIGSTOP) perdia o `.steal` pra outro, que roubava o órfão e adquiria
+ * um lock novo; ao voltar, o primeiro apagava esse lock VIVO. Agora o `.steal`
+ * carrega o mesmo `{pid, host, ts, token}` do `.lock` e só é quebrado pela
+ * MESMA regra do `.lock` (`isStealAbandoned`): dono deste host com PID morto,
+ * ou conteúdo legado/vazio (ou dono de outro host, cujo PID é inverificável)
+ * após `STEAL_STALE_MS`. E, imediatamente antes do `unlink` do `.lock`, o
+ * removedor confere que o `.steal` ainda é dele (token) — se não for, desiste.
+ * PID reutilizado faz um `.steal` abandonado parecer vivo: cai em timeout
+ * (mesmo trade-off do `.lock`), nunca num roubo indevido.
  */
 export const LEGACY_STALE_MS = 10 * 60_000;
-const STEAL_STALE_MS = 30_000;
+export const STEAL_STALE_MS = 30_000;
 
 interface LockOwner {
   pid: number;
@@ -182,27 +193,78 @@ export function tryStealOrphan(
   if (!seen || !isLockOrphan(seen.raw, seen.mtimeMs, now, lockHostId(), pidAlive, legacyStaleMs, foreignHostStaleMs)) return false;
 
   const stealPath = `${lockPath}.steal`;
-  try {
-    closeSync(openSync(stealPath, "wx"));
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code === "EEXIST") {
-      try {
-        if (Date.now() - statSync(stealPath).mtimeMs > STEAL_STALE_MS) unlinkSync(stealPath);
-      } catch { /* outro removedor já cuidou */ }
-    }
-    return false; // tenta de novo na próxima volta
-  }
+  const token = acquireSteal(stealPath);
+  if (token === null) return false; // tenta de novo na próxima volta
   try {
     const now = readLockFile(lockPath);
     if (!now || now.ino !== seen.ino || now.raw !== seen.raw) return false;
+    // #9317: o `.steal` ainda é nosso? Se outro removedor o tomou, ele pode já
+    // ter roubado o órfão e adquirido um lock novo — não tocar no `.lock`.
+    if (!ownsSteal(stealPath, token)) return false;
     unlinkSync(lockPath);
     process.stderr.write(`[file-lock] lock órfão removido (#9185): ${lockPath} — ${seen.raw.trim() || "(vazio, legado)"}\n`);
     return true;
   } catch {
     return false;
   } finally {
-    try { unlinkSync(stealPath); } catch { /* ignore */ }
+    // #9317: nunca apagar o `.steal` de outro removedor.
+    if (ownsSteal(stealPath, token)) { try { unlinkSync(stealPath); } catch { /* ignore */ } }
   }
+}
+
+/**
+ * #9317: um `.steal` só é abandonado pela mesma regra do `.lock` — dono deste
+ * host com PID morto; conteúdo legado/vazio (removedor morto entre o `wx` e o
+ * `writeSync`, ou versão anterior do código) ou dono de outro host após
+ * `STEAL_STALE_MS`. Dono vivo deste host NUNCA, por mais velho que seja.
+ * Exportado pra teste (e paridade com `.claude/hooks/lib/registry-lock.mjs`).
+ */
+export function isStealAbandoned(
+  raw: string,
+  mtimeMs: number,
+  now = Date.now(),
+  host = lockHostId(),
+  alive: (pid: number) => boolean = pidAlive,
+): boolean {
+  return isLockOrphan(raw, mtimeMs, now, host, alive, STEAL_STALE_MS, STEAL_STALE_MS);
+}
+
+/** Cria o `.steal` (`wx`) gravando o dono; devolve o token, ou null em contenção/falha. */
+function acquireSteal(stealPath: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(stealPath, "wx");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "EEXIST") breakAbandonedSteal(stealPath);
+    return null;
+  }
+  const token = randomBytes(8).toString("hex");
+  let written = false;
+  try {
+    const owner: LockOwner = { pid: process.pid, host: lockHostId(), ts: Date.now(), token };
+    writeSync(fd, JSON.stringify(owner));
+    written = true;
+  } catch {
+    /* tratado abaixo */
+  } finally {
+    closeSync(fd);
+    if (!written) { try { unlinkSync(stealPath); } catch { /* ignore */ } }
+  }
+  return written ? token : null;
+}
+
+/** Apaga o `.steal` só se abandonado (`isStealAbandoned`) e ainda for o mesmo arquivo. */
+function breakAbandonedSteal(stealPath: string): void {
+  const seen = readLockFile(stealPath);
+  if (!seen || !isStealAbandoned(seen.raw, seen.mtimeMs)) return;
+  const again = readLockFile(stealPath);
+  if (!again || again.ino !== seen.ino || again.raw !== seen.raw) return;
+  try { unlinkSync(stealPath); } catch { /* outro removedor já cuidou */ }
+}
+
+function ownsSteal(stealPath: string, token: string): boolean {
+  const cur = readLockFile(stealPath);
+  return !!cur && parseOwner(cur.raw)?.token === token;
 }
 
 /**
