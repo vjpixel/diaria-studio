@@ -81,6 +81,13 @@ export const TARGET_SECTION_RE = sectionHeaderRegex(
   { capture: "none", flags: "u" },
 );
 
+// #9358: seções do POOL inteiro — TARGET_SECTION_RE + VÍDEO. Usado só por
+// pool-summary-quality.ts via `targetSectionRe` (ver opção abaixo).
+export const POOL_SECTION_RE = sectionHeaderRegex(
+  String.raw`LAN[ÇC]AMENTOS?|RADAR|USE\s+MELHOR|PESQUISAS?|OUTRAS?\s+NOT[ÍI]CIAS?|V[ÍI]DEOS?`,
+  { capture: "none", flags: "u" },
+);
+
 // Conjunto LEGADO (pré-#2918 bug 2): usado só por
 // secondary-items-have-summary.ts (#2545) — ver nota de divergência 1 acima.
 // `ALL_SECTION_NAMES_PATTERN` (section-naming.ts) já é EXATAMENTE esse
@@ -169,6 +176,15 @@ export interface SecondaryItemWalkerOptions {
    * Default `SAME_LINE_ITEM_RE`.
    */
   nextLineIsItemRe?: RegExp;
+  /**
+   * Regex das seções-ALVO (cujos itens são emitidos). Default
+   * `TARGET_SECTION_RE` (sem VÍDEO — escopo histórico dos 4 lints acima).
+   * `pool-summary-quality.ts` (#9358) passa `POOL_SECTION_RE`, que inclui
+   * VÍDEO: a descrição padrão do YouTube colada no lugar da do vídeo é um dos
+   * defeitos que o check precisa pegar, e mudar o default mudaria o
+   * comportamento dos lints gate-blocking existentes.
+   */
+  targetSectionRe?: RegExp;
   /** Chamado para cada item cuja descrição foi encontrada. */
   onFound?: (item: SecondaryItemFound) => void;
   /** Chamado para cada título solo sem descrição válida. */
@@ -182,6 +198,7 @@ export interface SecondaryItemWalkerOptions {
 export function forEachSecondaryItem(md: string, opts: SecondaryItemWalkerOptions = {}): void {
   const closingHeaderRe = opts.closingHeaderRe ?? ANY_SECTION_HEADER_RE;
   const nextLineIsItemRe = opts.nextLineIsItemRe ?? SAME_LINE_ITEM_RE;
+  const targetSectionRe = opts.targetSectionRe ?? TARGET_SECTION_RE;
 
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   let currentSection: string | null = null;
@@ -191,7 +208,7 @@ export function forEachSecondaryItem(md: string, opts: SecondaryItemWalkerOption
     const t = raw.trim();
 
     // Detectar seção alvo
-    if (TARGET_SECTION_RE.test(t)) {
+    if (targetSectionRe.test(t)) {
       currentSection = t.replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
       continue;
     }

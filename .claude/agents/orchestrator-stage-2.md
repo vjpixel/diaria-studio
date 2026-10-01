@@ -480,7 +480,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
   ```bash
   npx tsx scripts/check-invariants.ts --stage 2 --edition-dir {EDITION_DIR}/
   ```
-  Exit 1 = re-disparar writer ou bloquear gate até fix manual. Violations são logadas com `source_issue` pra rastreabilidade.
+  Exit 1 = re-disparar writer ou bloquear gate até fix manual. Violations são logadas com `source_issue` pra rastreabilidade. Exceção — `reviewed-pool-summary-quality` / `reviewed-no-untranslated-summary` (#9358): re-disparar o writer não resolve — o `writer` não tem WebFetch e é fiel ao `summary` bruto, que já é o teaser/corte da fonte. O orchestrator (top-level) reescreve **só a linha da descrição** de cada item listado em `02-reviewed.md` (edição cirúrgica, #495): abrir a URL do item (WebFetch) quando o resumo atual for teaser/curto/boilerplate, e escrever 1–2 frases completas em PT-BR, 3ª pessoa, com o fato central (o quê, quem, número/nome, o que mudou) e ponto final; manter o sufixo `(N min)` do USE MELHOR. Fonte inacessível → resumir a partir do título + `summary` sem inventar fato. Depois re-rodar `check-invariants --stage 2`.
   Exceção — `reviewed-destaque-category-noticias` (#9105): re-disparar o writer com o mesmo `category_label` reproduz o erro. Recalcule o `category_label` do destaque pela tabela temática do #6083 (acima) e edite **só** a linha `**DESTAQUE N | {emoji} {CATEGORIA}**` em `02-reviewed.md` (edição cirúrgica, #495); depois re-rode `check-invariants --stage 2`.
 
 - **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:

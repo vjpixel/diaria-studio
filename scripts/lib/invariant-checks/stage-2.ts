@@ -109,6 +109,15 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     // barato: recalcular o category_label e editar só a linha do header
     // (orchestrator-stage-2.md §2d) em vez de corrigir à mão no gate.
     { name: "destaque-category-noticias", issue: "#8200" },
+    // #9358: resumo do pool teaser/cortado/curto/boilerplate (+ [TRADUZIR] e
+    // descrição ausente, antes só barrados no gate do Stage 4). Mesmo padrão
+    // do `carousel-text-overflow` (#6439): pegar aqui, com o texto ainda da
+    // pipeline, faz o orchestrator reescrever a partir da fonte ANTES do
+    // editor — em vez de o editor abrir a fonte e reescrever à mão no gate
+    // (~3 itens/edição medidos no #9358). No Stage 4 o check é warn-only.
+    { name: "pool-summary-quality", issue: "#9358" },
+    { name: "no-untranslated-summary", issue: "#3196" },
+    { name: "secondary-items-have-summary", issue: "#2545" },
   ];
   const violations: InvariantViolation[] = [];
   for (const check of checks) {
@@ -579,7 +588,7 @@ function checkCarouselTextOverflowStage2(editionDir: string): InvariantViolation
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
-    description: "02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105)",
+    description: "02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105) e resumos do pool completos/traduzidos (#9358)",
     source_issue: "#964",
     stage: 2,
     run: checkReviewedPassesAllLints,
