@@ -64,6 +64,32 @@ describe("file-lock — delete-pending no Windows (#9194)", () => {
     assert.ok(Date.now() - t0 < 10_000, "não pode esperar o timeout de 60s");
   });
 
+  it("win32: exatamente DELETE_PENDING_MAX_STREAK EPERMs seguidos ainda adquire (limite inclusivo)", () => {
+    const lock = join(dir, "e.lock");
+    const fake = failingThenReal(Array(DELETE_PENDING_MAX_STREAK).fill("EPERM"));
+    acquireLockWithDeps(lock, 5_000, { platform: "win32", openWx: fake.openWx });
+    assert.equal(fake.calls, DELETE_PENDING_MAX_STREAK + 1);
+    releaseLock(lock);
+  });
+
+  it("win32: EEXIST zera a sequência — só EPERMs CONSECUTIVOS contam", () => {
+    const lock = join(dir, "f.lock");
+    const n = DELETE_PENDING_MAX_STREAK;
+    const fake = failingThenReal([...Array(n).fill("EPERM"), "EEXIST", ...Array(n).fill("EPERM")]);
+    acquireLockWithDeps(lock, 5_000, { platform: "win32", openWx: fake.openWx });
+    assert.equal(fake.calls, 2 * n + 2);
+    releaseLock(lock);
+  });
+
+  it("win32: deadline vencido não retenta o EPERM", () => {
+    const fake = failingThenReal(["EPERM"]);
+    assert.throws(
+      () => acquireLockWithDeps(join(dir, "g.lock"), -1, { platform: "win32", openWx: fake.openWx }),
+      (e: NodeJS.ErrnoException) => e.code === "EPERM",
+    );
+    assert.equal(fake.calls, 1);
+  });
+
   it("não-win32: EPERM/EACCES seguem falha dura imediata (#6952 intacto)", () => {
     for (const code of ["EPERM", "EACCES"]) {
       const fake = failingThenReal([code]);

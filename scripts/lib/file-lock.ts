@@ -271,7 +271,8 @@ export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: A
       }
       return; // Lock adquirido
     } catch (e) {
-      // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente.
+      // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente
+      // (exceto EPERM/EACCES no win32, numa sequência curta — delete-pending, #9194).
       //
       // O catch era vazio e engolia qualquer erro como "alguém tem o lock,
       // gira mais": `EACCES` (diretório sem permissão de escrita), `ENOENT`
@@ -308,7 +309,7 @@ export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: A
       // soltá-lo — com vários processos concorrendo (o runner paralelo roda
       // 150 arquivos por batch), a espera competia com a liberação.
       // `Atomics.wait` é a única espera síncrona real disponível aqui.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      sleepMs(50);
     }
   }
 }
