@@ -127,6 +127,28 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.equal(r.count, 2);
   });
 
+  it("FALHA (#9231): bloco multi-parágrafo fechado por `@*****` + 2º bloco real empilhado", () => {
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "**🎉 Os campeões do É IA? em setembro:",
+      "",
+      "🥇 fulano",
+      "",
+      "🥉 perli…@*****",
+      "",
+      "**📣 Patrocinado por Clarice. Divulgação: [saiba mais](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.count, 2);
+  });
+
   it("ok: caso normal — 1 único bloco 📣 patrocinado na intro", () => {
     const md = [
       TITULO_SUBTITULO,

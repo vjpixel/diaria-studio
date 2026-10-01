@@ -228,8 +228,10 @@ const PARA_ENDS_BOLD_RE = /\*\*\s*$/;
 // termina em `***` — sem neutralizar, `PARA_ENDS_BOLD_RE` lê o fim do
 // parágrafo como fechamento do bloco bold, o bloco é dado como fechado cedo
 // demais e o sub-cabeçalho `**Sorteio**` seguinte conta como 2ª abertura.
-// A máscara é exatamente `@***` (purge-leaderboard / leaderboard do É IA?);
-// consumir só 3 preserva um `**` de fechamento real colado nela (`@*****`).
+// A máscara vem de `maskEmail` (`workers/poll/src/lib.ts`): `{local}@***`;
+// o fallback sem `@` (dado histórico pré-validação) fica de fora de propósito.
+// Consumir só os 3 da máscara preserva um `**` de fechamento real colado
+// nela (`@*****`).
 const MASKED_EMAIL_ASTERISKS_RE = /@\*{3}/g;
 
 function paragraphEndsWithBold(lastLine: string): boolean {
