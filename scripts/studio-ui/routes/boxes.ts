@@ -214,8 +214,13 @@ export async function handleApiBoxSlotsSave(
 
 /** `POST /api/boxes/apply-to-edition` (#8990) — botão "aplicar na edição
  * {AAMMDD}" do painel Caixas: roda o núcleo de `apply-box-slot.ts` (sem
- * `force`) na edição corrente stitched. 200 = aplicado (com `warnings`),
- * 409 = box editado à mão / sem baseline (nada escrito), 400 = input inválido. */
+ * `force`) na edição corrente stitched. Status:
+ *   - 200 = aplicado (com `warnings`);
+ *   - 409 = box editado à mão / sem baseline (nada escrito; a mensagem traz o
+ *     comando de CLI com `--force`);
+ *   - 400 = input inválido OU pré-condição (edição não é a corrente stitched,
+ *     slot sem box, snippet ausente);
+ *   - 500 = imagem irmã inválida (nada escrito) ou exceção — logado no server. */
 export async function handleApiBoxApplyToEdition(
   rootDir: string,
   req: IncomingMessage,
@@ -234,7 +239,14 @@ export async function handleApiBoxApplyToEdition(
     return;
   }
   const result = await applySlotToStitchedEdition(rootDir, { edition: p.edition, slot: p.slot, file: p.file });
-  const status = result.ok ? 200 : result.reason === "edited" || result.reason === "no-baseline" ? 409 : 400;
+  const status = result.ok
+    ? 200
+    : result.reason === "edited" || result.reason === "no-baseline"
+      ? 409
+      : result.reason === "image-failed"
+        ? 500
+        : 400;
+  if (!result.ok && status === 500) console.error(`[studio-boxes] apply-to-edition ${p.edition} slot ${p.slot}: ${result.message}`);
   sendJson(res, status, result.ok ? result : { ...result, error: result.message });
 }
 

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import {
   applyBoxSlotToEdition,
+  classifyPublishMarkers,
   findSiblingSnippetImage,
   isBoxSlotImageUploaded,
   siblingImageCandidates,
@@ -99,18 +100,87 @@ describe("#8990 applyBoxSlotToEdition — imagem", () => {
     assert.ok(readFileSync(join(edDir, "02-reviewed.md"), "utf8").includes(NEW));
   });
 
-  it("sem imagem irmã → aviso, imagem atual mantida, sem upload", async () => {
+  it("sem imagem irmã → imagem anterior retirada (jpg + entry do 06-public-images) com backup", async () => {
     setup();
+    const oldEntry = { url: "https://x/velho.jpg", md5: "old" };
+    writeFileSync(join(edDir, "06-public-images.json"), JSON.stringify({ images: { box_slot1_image: oldEntry, cover: { url: "c" } } }));
     const calls: string[] = [];
-    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md", runUpload: fakeUpload(calls) });
+    const res = await applyBoxSlotToEdition({
+      rootDir: root,
+      editionDir: edDir,
+      slot: 1,
+      file: "novo.md",
+      runUpload: fakeUpload(calls),
+      now: () => new Date("2026-10-01T12:00:00Z"),
+    });
     assert.ok(res.ok);
     if (!res.ok) return;
-    assert.equal(res.image, "missing");
+    assert.equal(res.image, "removed");
     assert.equal(res.uploaded, null);
-    assert.match(res.warnings.join(" "), /sem imagem irmã.*04-box-slot1\.jpg ATUAL mantida/);
-    assert.deepEqual(readFileSync(join(edDir, "04-box-slot1.jpg")), JPEG_OLD);
     assert.equal(calls.length, 0);
+    assert.match(res.warnings.join(" "), /sem imagem irmã.*slot 1 fica sem imagem/);
+    assert.equal(existsSync(join(edDir, "04-box-slot1.jpg")), false);
+    const stamp = "2026-10-01T12-00-00-000Z";
+    assert.deepEqual(readFileSync(join(edDir, "_internal", `04-box-slot1.replaced-${stamp}.jpg`)), JPEG_OLD);
+    const pub = JSON.parse(readFileSync(join(edDir, "06-public-images.json"), "utf8"));
+    assert.equal(pub.images.box_slot1_image, undefined);
+    assert.deepEqual(pub.images.cover, { url: "c" }, "demais entries intactas");
+    const bak = JSON.parse(readFileSync(join(edDir, "_internal", `box_slot1_image.replaced-${stamp}.json`), "utf8"));
+    assert.deepEqual(bak, { box_slot1_image: oldEntry });
     assert.ok(readFileSync(join(edDir, "02-reviewed.md"), "utf8").includes(NEW), "texto troca mesmo sem imagem");
+  });
+
+  it("sem imagem irmã e slot sem imagem → missing, nada movido", async () => {
+    setup();
+    rmSync(join(edDir, "04-box-slot1.jpg"));
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md" });
+    assert.ok(res.ok);
+    if (res.ok) assert.equal(res.image, "missing");
+  });
+
+  it("PNG irmão corrompido → image-failed SEM escrever texto/seleção/imagem", async () => {
+    setup();
+    writeFileSync(join(root, "data", "snippets", "novo.png"), Buffer.from("não sou png"));
+    const beforeMd = readFileSync(join(edDir, "02-reviewed.md"), "utf8");
+    const beforeSel = readFileSync(join(edDir, "_internal", "box-selection.json"), "utf8");
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md", runUpload: () => assert.fail("upload") });
+    assert.equal(res.ok, false);
+    if (!res.ok) assert.equal(res.reason, "image-failed");
+    assert.equal(readFileSync(join(edDir, "02-reviewed.md"), "utf8"), beforeMd);
+    assert.equal(readFileSync(join(edDir, "_internal", "box-selection.json"), "utf8"), beforeSel);
+    assert.deepEqual(readFileSync(join(edDir, "04-box-slot1.jpg")), JPEG_OLD);
+    assert.equal(existsSync(join(edDir, "_internal", ".04-box-slot1.pending.jpg")), false, "temporário limpo");
+  });
+
+  it("slot 2 com imagem irmã", async () => {
+    setup();
+    writeFileSync(join(root, "data", "snippets", "novo.jpg"), JPEG_A);
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 2, file: "novo.md", runUpload: () => {} });
+    assert.ok(res.ok);
+    assert.equal(readFileSync(join(edDir, "02-reviewed.md"), "utf8"), md(OLD, NEW));
+    assert.deepEqual(readFileSync(join(edDir, "04-box-slot2.jpg")), JPEG_A);
+    assert.deepEqual(readFileSync(join(edDir, "04-box-slot1.jpg")), JPEG_OLD, "slot 1 intocado");
+  });
+
+  it("rascunho no ESP (marcador Kit sem scheduled_at) → warning de re-rodar Stage 5", async () => {
+    setup();
+    writeFileSync(join(edDir, "_internal", "newsletter-kit-published.json"), JSON.stringify({ status: "draft", broadcast_id: 1 }));
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md" });
+    assert.ok(res.ok);
+    if (!res.ok) return;
+    assert.equal(res.publishState, "draft");
+    assert.match(res.warnings.join(" "), /rascunho no ESP continua com o box antigo.*\/diaria-5-publicacao newsletter 261001/);
+  });
+
+  it("sem baseline → mensagem com comando de CLI --force exato e erro da caixa anterior", async () => {
+    setup();
+    rmSync(join(root, "data", "snippets", "velho.md"));
+    const res = await applyBoxSlotToEdition({ rootDir: root, editionDir: edDir, slot: 1, file: "novo.md" });
+    assert.equal(res.ok, false);
+    if (res.ok) return;
+    assert.equal(res.reason, "no-baseline");
+    assert.ok(res.message.includes("npx tsx scripts/apply-box-slot.ts --edition 261001 --slot 1 --file novo.md --force"));
+    assert.match(res.message, /velho\.md.*não existe/);
   });
 
   it("box editado à mão → aborta antes de tocar texto OU imagem", async () => {
@@ -187,22 +257,59 @@ describe("#8990 painel Caixas — edição já stitched", () => {
       { slot: 1, mode: "auto", file: "velho.md" },
       { slot: 2, mode: "auto", file: "outra.md" },
     ];
-    assert.deepEqual(detectStitchedSlotMismatches({ slots: { slot1: "novo.md", slot2: "outra.md" }, selection, reviewedMd: md(OLD) }), [
-      { slot: 1, from: "velho.md", to: "novo.md" },
+    const base = { edition: "261001", selection, reviewedMd: md(OLD) };
+    assert.deepEqual(detectStitchedSlotMismatches({ ...base, slots: { slot1: "novo.md", slot2: "outra.md" } }), [
+      {
+        slot: 1,
+        from: "velho.md",
+        to: "novo.md",
+        applicable: true,
+        forceCommand: "npx tsx scripts/apply-box-slot.ts --edition 261001 --slot 1 --file novo.md --force",
+      },
     ]);
-    assert.deepEqual(detectStitchedSlotMismatches({ slots: { slot1: "", slot2: "outra.md" }, selection, reviewedMd: md(OLD) }), []);
+    const s2 = detectStitchedSlotMismatches({ ...base, slots: { slot1: "velho.md", slot2: "novo.md" } });
+    assert.deepEqual(s2.map((m) => [m.slot, m.from, m.to]), [[2, "outra.md", "novo.md"]]);
+    assert.deepEqual(detectStitchedSlotMismatches({ ...base, slots: { slot1: "", slot2: "outra.md" } }), []);
     const noBoxes = "intro\n\n---\n\n**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\ncorpo\n";
-    assert.deepEqual(detectStitchedSlotMismatches({ slots: { slot1: "novo.md", slot2: "x.md" }, selection, reviewedMd: noBoxes }), []);
+    assert.deepEqual(detectStitchedSlotMismatches({ ...base, slots: { slot1: "novo.md", slot2: "x.md" }, reviewedMd: noBoxes }), []);
   });
 
-  it("checkStitchedEditionAfterSlotSave acha a edição corrente; publicada → null", () => {
-    assert.deepEqual(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" }), {
-      edition: "261001",
-      mismatches: [{ slot: 1, from: "velho.md", to: "novo.md" }],
-    });
+  it("sem referência (from nulo ou caixa anterior sumiu) → applicable=false (sem botão que sempre dá 409)", () => {
+    const nulo = detectStitchedSlotMismatches({ edition: "261001", slots: { slot1: "novo.md", slot2: "" }, selection: [], reviewedMd: md(OLD) });
+    assert.equal(nulo[0].from, null);
+    assert.equal(nulo[0].applicable, false);
+    rmSync(join(root, "data", "snippets", "velho.md"));
+    const info = checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" });
+    assert.equal(info?.mismatches[0].applicable, false);
+  });
+
+  it("checkStitchedEditionAfterSlotSave acha a edição corrente; Beehiiv publicada → null", () => {
+    const info = checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" });
+    assert.equal(info?.edition, "261001");
+    assert.equal(info?.publishState, "none");
+    assert.deepEqual(info?.mismatches.map((m) => [m.slot, m.from, m.to, m.applicable]), [[1, "velho.md", "novo.md", true]]);
     writeFileSync(join(edDir, "_internal", "05-published.json"), JSON.stringify({ status: "published" }));
     assert.equal(findStitchedEdition(root), null);
     assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" }), null);
+  });
+
+  it("backend Kit: newsletter-kit-published.json agendado → edição excluída; rascunho → incluída como draft", () => {
+    const kit = join(edDir, "_internal", "newsletter-kit-published.json");
+    writeFileSync(kit, JSON.stringify({ status: "draft" }));
+    assert.equal(findStitchedEdition(root)?.publishState, "draft");
+    assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" })?.publishState, "draft");
+    writeFileSync(kit, JSON.stringify({ status: "scheduled", scheduled_at: "2026-10-01T09:00:00Z" }));
+    assert.equal(findStitchedEdition(root), null);
+    assert.equal(checkStitchedEditionAfterSlotSave(root, { slot1: "novo.md", slot2: "outra.md" }), null);
+  });
+
+  it("classifyPublishMarkers", () => {
+    assert.equal(classifyPublishMarkers([]), "none");
+    assert.equal(classifyPublishMarkers([{ status: "draft" }]), "draft");
+    assert.equal(classifyPublishMarkers([{ status: "draft", scheduled_at: "x" }]), "locked");
+    assert.equal(classifyPublishMarkers([{ published_at: "x" }]), "locked");
+    assert.equal(classifyPublishMarkers([{ status: "sent" }]), "locked");
+    assert.equal(classifyPublishMarkers([null]), "locked", "ilegível = conservador");
   });
 
   it("fail-soft: data/ ausente → null", () => {

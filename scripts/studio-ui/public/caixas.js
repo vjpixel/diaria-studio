@@ -389,10 +389,25 @@ function renderStitchedEditionWarning(info) {
   const p = document.createElement("p");
   p.textContent = `A edição ${info.edition} já foi montada (02-reviewed.md) com a caixa anterior — a troca acima só vale para as próximas edições.`;
   box.appendChild(p);
+  if (info.publishState === "draft") {
+    const d = document.createElement("p");
+    d.textContent = `Atenção: o rascunho no ESP já existe — depois de aplicar, re-rode /diaria-5-publicacao newsletter ${info.edition}.`;
+    box.appendChild(d);
+  }
   for (const m of info.mismatches) {
     const row = document.createElement("div");
     const label = document.createElement("span");
     label.textContent = `Slot ${m.slot}: ${m.from ?? "(nenhuma)"} → ${m.to} `;
+    if (!m.applicable) {
+      // Sem snippet de referência o botão sempre daria 409 — mostra o comando.
+      const cmd = document.createElement("code");
+      cmd.textContent = m.forceCommand;
+      const why = document.createElement("span");
+      why.textContent = " sem caixa de referência pra provar que o box não foi editado — se puder descartar o texto atual, rode: ";
+      row.append(label, why, cmd);
+      box.appendChild(row);
+      continue;
+    }
     const btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = `Aplicar na edição ${info.edition}`;

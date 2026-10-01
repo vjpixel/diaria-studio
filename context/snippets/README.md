@@ -212,10 +212,13 @@ por slot).
   pra `04-box-slot{N}.jpg` da edição (PNG convertido pra JPEG) e, se a edição
   já tem `06-public-images.json`, sobe via `upload-images-public.ts --mode
   newsletter` (o mesmo upload do pipeline; md5 novo → re-upload) com
-  validação do md5 da entry `box_slot{N}_image`. Sem imagem irmã → só aviso:
-  a `04-box-slot{N}.jpg` atual da edição é mantida (pode ser a do box
-  anterior — conferir/remover à mão). Declare `alt:` no header quando a
-  caixa tiver imagem.
+  validação do md5 da entry `box_slot{N}_image`. Imagem irmã inválida →
+  nada é alterado (nem o texto). Sem imagem irmã → o slot fica SEM imagem:
+  a `04-box-slot{N}.jpg` do box anterior vai pra `_internal/` e a entry
+  `box_slot{N}_image` sai de `06-public-images.json` (backup em
+  `_internal/`), senão a imagem antiga acompanharia o box novo. Edição com
+  rascunho no ESP → re-rodar `/diaria-5-publicacao newsletter`. Declare
+  `alt:` no header quando a caixa tiver imagem.
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de
   links, parágrafo CTA-only) e por sinal de conteúdo (link de afiliado pra

@@ -1588,9 +1588,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       // #8990: aplicar a troca de slot na edição corrente já stitched.
       if (urlPath === "/api/boxes/apply-to-edition" && req.method === "POST") {
-        handleApiBoxApplyToEdition(rootDir, req, res).catch((e) =>
-          sendJson(res, 500, { error: (e as Error).message }),
-        );
+        handleApiBoxApplyToEdition(rootDir, req, res).catch((e) => {
+          console.error(`[studio-server] POST /api/boxes/apply-to-edition: ${(e as Error).stack ?? (e as Error).message}`);
+          sendJson(res, 500, { error: (e as Error).message });
+        });
         return;
       }
       // #4274: salvar o conteúdo dos slots A/B do PARA ENCERRAR — mesmo
