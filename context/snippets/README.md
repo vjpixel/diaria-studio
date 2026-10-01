@@ -203,6 +203,22 @@ por slot).
     corpo servem de chave; sem nenhum dos dois, a caixa não colide com nada.
   Todos os campos são opcionais e independentes — declarar um não exige
   os outros.
+- **Imagem irmã do snippet (#8990).** Uma caixa pode ter uma imagem com o
+  MESMO basename do `.md`, no mesmo diretório: `data/snippets/X.md` →
+  `data/snippets/X.jpg` (aceitos, nesta ordem: `.jpg`, `.jpeg`, `.png`).
+  Ao trocar o box de um slot numa edição já montada
+  (`npx tsx scripts/apply-box-slot.ts --edition AAMMDD --slot 1|2 --file X.md`,
+  ou o botão "aplicar na edição" do painel Caixas), a imagem irmã é copiada
+  pra `04-box-slot{N}.jpg` da edição (PNG convertido pra JPEG) e, se a edição
+  já tem `06-public-images.json`, sobe via `upload-images-public.ts --mode
+  newsletter` (o mesmo upload do pipeline; md5 novo → re-upload) com
+  validação do md5 da entry `box_slot{N}_image`. Imagem irmã inválida →
+  nada é alterado (nem o texto). Sem imagem irmã → o slot fica SEM imagem:
+  a `04-box-slot{N}.jpg` do box anterior vai pra `_internal/` e a entry
+  `box_slot{N}_image` sai de `06-public-images.json` (backup em
+  `_internal/`), senão a imagem antiga acompanharia o box novo. Edição com
+  rascunho no ESP → re-rodar `/diaria-5-publicacao newsletter`. Declare
+  `alt:` no header quando a caixa tiver imagem.
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de
   links, parágrafo CTA-only) e por sinal de conteúdo (link de afiliado pra

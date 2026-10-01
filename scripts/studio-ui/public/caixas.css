@@ -251,6 +251,9 @@
 .cx-save-status { font-family: var(--font-mono); font-size: 0.8rem; opacity: 0.8; }
 .cx-save-status.ok { color: var(--brand); }
 .cx-save-status.err { color: var(--status-danger); }
+/* #8990: aviso de edição já stitched + botão "aplicar na edição" */
+.cx-stitched { margin-top: 0.75rem; padding: 0.5rem 0.75rem; border-left: 3px solid var(--status-danger); font-size: 0.9rem; }
+.cx-stitched > div { margin-top: 0.35rem; }
 
 .cx-editor {
   width: 100%;
