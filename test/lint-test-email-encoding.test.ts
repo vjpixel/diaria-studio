@@ -186,6 +186,17 @@ describe("checkEncoding — marcador de celebração (#9279)", () => {
     assert.deepEqual(checkEncoding("🎉 Campeões do mês\n\nação", "Campeões do mês ação"), []);
   });
 
+  it("🎉 inicial dentro de negrito (`**🎉 Sorteio`) não é char_dropped (#9279)", () => {
+    const md = "se/diaria).\n\n---\n\n**🎉 Sorteio\n\nO sorteio será ao vivo.**";
+    assert.deepEqual(checkEncoding(md, "se/diaria). Sorteio O sorteio será ao vivo."), []);
+    assert.equal(stripSectionHeaderEmojis("**🎉 Sorteio"), "**Sorteio");
+  });
+
+  it("🎉 no meio de linha em negrito continua acusado", () => {
+    const r = checkEncoding("**Parabéns 🎉 a todos**", "Parabéns a todos");
+    assert.equal(r.length, 1);
+  });
+
   it("🎉 no meio do texto ausente do email continua acusado", () => {
     const r = checkEncoding("Parabéns 🎉 a todos", "Parabéns a todos");
     assert.equal(r.length, 1);
