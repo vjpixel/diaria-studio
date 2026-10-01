@@ -32,8 +32,9 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAndRecordSendRun, confirmOrCleanUpScheduledLot } from "../scripts/onboarding-kit-transport-run.ts";
-import type { OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
+import { runAndRecordSendRun, confirmOrCleanUpScheduledLot, isKitAlreadySentError } from "../scripts/onboarding-kit-transport-run.ts";
+import { recordKitSendRun, type OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
+import { KitApiError } from "../scripts/lib/kit-client.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = resolve(ROOT, "scripts", "onboarding-kit-transport-run.ts");
@@ -63,6 +64,13 @@ interface MockOpts {
   onTagCreate?: () => void;
   /** Muda o comportamento a partir da N-ésima releitura (1-based). */
   rereadNoSendAtOnlyFirst?: boolean;
+  /** `rereadNoSendAt` vale só pro 1º broadcast criado (id 4242), em TODAS as
+   *  releituras dele — os criados depois agendam normal (#9367). */
+  rereadNoSendAtFirstBroadcastOnly?: boolean;
+  /** Status Kit devolvido na releitura (sobrepõe o default "scheduled"/"draft"). */
+  rereadStatus?: string;
+  /** Corpo do erro do `DELETE` quando `deleteHttpStatus` ≥ 400. */
+  deleteErrorBody?: unknown;
 }
 
 function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: string; hits: string[] }> {
@@ -116,11 +124,15 @@ function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: strin
             if (opts.rereadHttpStatus && opts.rereadHttpStatus >= 400) return send(opts.rereadHttpStatus, { errors: ["mock"] });
             const b = broadcasts.get(id);
             if (!b) return send(404, { errors: ["Not Found"] });
-            const drop = opts.rereadNoSendAt && (!opts.rereadNoSendAtOnlyFirst || rereads === 1);
-            return send(200, { broadcast: { id, status: drop ? "draft" : "scheduled", send_at: drop ? null : b.send_at, public: false, subject: "s" } });
+            const drop =
+              opts.rereadNoSendAt &&
+              (opts.rereadNoSendAtFirstBroadcastOnly ? id === 4242 : !opts.rereadNoSendAtOnlyFirst || rereads === 1);
+            return send(200, {
+              broadcast: { id, status: opts.rereadStatus ?? (drop ? "draft" : "scheduled"), send_at: drop ? null : b.send_at, public: false, subject: "s" },
+            });
           }
           if (req.method === "DELETE") {
-            if (opts.deleteHttpStatus && opts.deleteHttpStatus >= 400) return send(opts.deleteHttpStatus, { errors: ["mock"] });
+            if (opts.deleteHttpStatus && opts.deleteHttpStatus >= 400) return send(opts.deleteHttpStatus, opts.deleteErrorBody ?? { errors: ["mock"] });
             broadcasts.delete(id);
             res.writeHead(204);
             return res.end();
@@ -298,7 +310,10 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   it("releitura sem send_at + DELETE falho → schedule_failed; não conta como confirmado e a rodada seguinte recria", async () => {
     const t = setup();
     try {
-      await withMock({ rereadNoSendAt: true, rereadNoSendAtOnlyFirst: true, deleteHttpStatus: 401 }, async (url) => {
+      // #9367: o 1º broadcast continua rascunho em TODAS as releituras (a
+      // releitura do início da rodada seguinte também o vê não-agendado);
+      // só o recriado agenda.
+      await withMock({ rereadNoSendAt: true, rereadNoSendAtFirstBroadcastOnly: true, deleteHttpStatus: 401 }, async (url) => {
         const r = await runExecutor(t.args, url);
         assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
@@ -480,17 +495,223 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     }
   });
 
-  it("confirmOrCleanUpScheduledLot: status da releitura fora do enum não vira undefined; send_at ecoado decide", async () => {
-    const mk = (): OnboardingKitLot => ({
-      lot_id: "email1-x-01", kind: "email1", tag_name: "t", tag_id: 1, broadcast_id: 9, recipient_subscription_ids: ["1"],
-      recipient_emails: ["a@example.com"], status: "created", created_at: new Date().toISOString(), send_at: null, last_reconciled_at: null, last_error: null,
-    });
-    const ok = mk();
-    assert.equal(await confirmOrCleanUpScheduledLot(ok, { getBroadcast: async () => ({ status: "weird", send_at: "2026-10-01T12:00:00Z" }), deleteBroadcast: async () => {} }), "scheduled");
+  const mkLot = (): OnboardingKitLot => ({
+    lot_id: "email1-x-01", kind: "email1", tag_name: "t", tag_id: 1, broadcast_id: 9, recipient_subscription_ids: ["1"],
+    recipient_emails: ["a@example.com"], status: "created", created_at: new Date().toISOString(), send_at: null, last_reconciled_at: null, last_error: null,
+  });
+
+  it("confirmOrCleanUpScheduledLot: só status ∈ {scheduled, sending, completed} confirma; fora disso (inclusive fora do enum) nunca vira undefined", async () => {
+    const ok = mkLot();
+    assert.equal(await confirmOrCleanUpScheduledLot(ok, { getBroadcast: async () => ({ status: "scheduled", send_at: "2026-10-01T12:00:00Z" }), deleteBroadcast: async () => {} }), "scheduled");
     assert.equal(ok.status, "scheduled");
-    const missing = mk();
+    // #9367 item 3: status fora do enum com send_at ecoado NÃO é agendado.
+    const weird = mkLot();
+    assert.equal(await confirmOrCleanUpScheduledLot(weird, { getBroadcast: async () => ({ status: "weird", send_at: "2026-10-01T12:00:00Z" }), deleteBroadcast: async () => {} }), "unscheduled");
+    assert.equal(weird.status, "cancelled");
+    const missing = mkLot();
     assert.equal(await confirmOrCleanUpScheduledLot(missing, { getBroadcast: async () => ({}), deleteBroadcast: async () => {} }), "unscheduled");
     assert.equal(missing.status, "cancelled");
+  });
+
+  it("#9367 item 3: releitura `aborted` com send_at ecoado → caminho unscheduled (apaga + cancela), nunca `scheduled`", async () => {
+    const lot = mkLot();
+    let deleted = 0;
+    const out = await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: async () => ({ status: "aborted", send_at: "2026-10-01T12:00:00Z" }),
+      deleteBroadcast: async () => {
+        deleted++;
+      },
+    });
+    assert.equal(out, "unscheduled");
+    assert.equal(lot.status, "cancelled");
+    assert.equal(deleted, 1);
+  });
+
+  it("#9367 item 2: releitura `sending`/`completed` SEM send_at ecoado → enviado (completed), nunca apaga", async () => {
+    for (const status of ["sending", "completed"]) {
+      const lot = { ...mkLot(), send_at: "2026-10-01T11:00:00Z" };
+      let deleted = 0;
+      const out = await confirmOrCleanUpScheduledLot(lot, {
+        getBroadcast: async () => ({ status, send_at: null }),
+        deleteBroadcast: async () => {
+          deleted++;
+        },
+      });
+      assert.equal(out, "scheduled", status);
+      assert.equal(lot.status, "completed", status);
+      assert.equal(deleted, 0, `${status}: broadcast que já saiu nunca é apagado`);
+      assert.equal(lot.send_at, "2026-10-01T11:00:00Z", "send_at do POST preservado quando a releitura não ecoa");
+    }
+  });
+
+  it("#9367 item 2: DELETE 422 'already been sent' → enviado (completed), não schedule_failed nem volta ao plano", async () => {
+    const lot = mkLot();
+    const out = await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: async () => ({ status: "draft", send_at: null }),
+      deleteBroadcast: async () => {
+        throw new KitApiError("/broadcasts/9", 422, JSON.stringify({ errors: ["Broadcast has already been sent."] }));
+      },
+    });
+    assert.equal(out, "scheduled");
+    assert.equal(lot.status, "completed");
+    assert.equal(lot.schedule_failed, undefined);
+    assert.match(lot.last_error ?? "", /already been sent/);
+    // 422 com OUTRO motivo continua sendo DELETE falho.
+    const other = mkLot();
+    await confirmOrCleanUpScheduledLot(other, {
+      getBroadcast: async () => ({ status: "draft", send_at: null }),
+      deleteBroadcast: async () => {
+        throw new KitApiError("/broadcasts/9", 422, "Name is invalid");
+      },
+    });
+    assert.equal(other.status, "created");
+    assert.equal(other.schedule_failed, true);
+    assert.equal(isKitAlreadySentError(new Error("already been sent")), false, "só KitApiError 422 conta");
+  });
+
+  it("#9367 item 2 (executor): releitura atrasada vê o broadcast `completed` sem send_at → lote completed, entry marcada, sem DELETE", async () => {
+    const t = setup();
+    try {
+      await withMock({ rereadNoSendAt: true, rereadStatus: "completed" }, async (url, hits) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const kt = t.readKt();
+        assert.equal(kt.last_send_run.lots_created, 1);
+        assert.equal(kt.last_send_run.lots_failed, 0);
+        const lot = Object.values(kt.lots as Record<string, { status: string }>)[0]!;
+        assert.equal(lot.status, "completed");
+        assert.ok(!hits.some((h) => h.startsWith("DELETE")), "broadcast já enviado nunca é apagado");
+        assert.ok(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, "envio gravado — não volta ao plano");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 2 (executor): DELETE 422 'already been sent' → lote completed, rodada seguinte NÃO recria (e-mail 1 não sai em dobro)", async () => {
+    const t = setup();
+    try {
+      await withMock(
+        { rereadNoSendAt: true, deleteHttpStatus: 422, deleteErrorBody: { errors: ["Broadcast has already been sent."] } },
+        async (url, hits) => {
+          const r = await runExecutor(t.args, url);
+          assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+          const kt = t.readKt();
+          const lot = Object.values(kt.lots as Record<string, { status: string; schedule_failed?: boolean }>)[0]!;
+          assert.equal(lot.status, "completed");
+          assert.equal(lot.schedule_failed, undefined);
+          assert.equal(kt.last_send_run.lots_created, 1);
+          assert.equal(kt.last_send_run.lots_failed, 0);
+          const r2 = await runExecutor(t.args, url);
+          assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+          assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "nenhum 2º broadcast de e-mail 1");
+        },
+      );
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 1: lote `unverified` é relido no INÍCIO do --send seguinte — agendado no Kit → grava o envio, não recria, streak zera", async () => {
+    const t = setup();
+    try {
+      const opts: MockOpts = { rereadHttpStatus: 401 };
+      await withMock(opts, async (url, hits) => {
+        const r1 = await runExecutor(t.args, url);
+        assert.equal(r1.status, 0, `stdout: ${r1.stdout} stderr: ${r1.stderr}`);
+        assert.equal(t.readKt().last_send_run.lots_unverified, 1);
+        assert.equal(t.readKt().consecutive_failed_send_runs, 1);
+        assert.equal(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, null);
+
+        // A rede volta: SEM nenhum --reconcile agendado, o próprio --send relê.
+        opts.rereadHttpStatus = undefined;
+        const r2 = await runExecutor(t.args, url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        const summary = JSON.parse(r2.stdout);
+        assert.equal(summary.reconciled_before_send?.[0]?.recovered, "scheduled", r2.stdout);
+        const kt = t.readKt();
+        const lot = Object.values(kt.lots as Record<string, { status: string }>)[0]!;
+        assert.equal(lot.status, "scheduled");
+        assert.equal(Object.keys(kt.lots).length, 1, "nenhum lote novo");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "nenhum 2º broadcast");
+        assert.ok(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, "régua ancora: email1_sent_at gravado");
+        assert.equal(kt.last_send_run.lots_unverified, 0);
+        assert.equal(kt.consecutive_failed_send_runs, 0);
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 1: lote `unverified` que CONTINUA ilegível no --send seguinte conta de novo (streak não zera em silêncio)", async () => {
+    const t = setup();
+    try {
+      await withMock({ rereadHttpStatus: 401 }, async (url, hits) => {
+        await runExecutor(t.args, url);
+        const r2 = await runExecutor(t.args, url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        const kt = t.readKt();
+        assert.equal(kt.last_send_run.lots_unverified, 1, "o lote preso segue contando");
+        assert.equal(kt.consecutive_failed_send_runs, 2, "a streak cresce em vez de zerar");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "sem leitura, nunca recria");
+        assert.ok(!hits.some((h) => h.startsWith("DELETE")), "sem leitura, nunca apaga");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 1: lote `unverified` que o Kit mostra RASCUNHO no --send seguinte → apagado + cancelado, entrada replanejada no mesmo --send", async () => {
+    const t = setup();
+    try {
+      const opts: MockOpts = { rereadHttpStatus: 401 };
+      await withMock(opts, async (url, hits) => {
+        await runExecutor(t.args, url);
+        opts.rereadHttpStatus = undefined;
+        opts.rereadNoSendAt = true;
+        opts.rereadNoSendAtFirstBroadcastOnly = true;
+        const r2 = await runExecutor(t.args, url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.ok(hits.includes("DELETE /broadcasts/4242"), "rascunho órfão apagado");
+        const kt = t.readKt();
+        const lots = Object.values(kt.lots as Record<string, { status: string; broadcast_id: number }>);
+        assert.equal(lots.find((l) => l.broadcast_id === 4242)?.status, "cancelled");
+        assert.equal(lots.find((l) => l.broadcast_id !== 4242)?.status, "scheduled", "entrada volta ao plano e sai num lote novo");
+        assert.equal(kt.last_send_run.lots_created, 1);
+        assert.ok(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at);
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 1: dry-run relê os lotes abertos SEM escrever (nem no Kit, nem no store)", async () => {
+    const t = setup();
+    try {
+      const opts: MockOpts = { rereadHttpStatus: 401 };
+      await withMock(opts, async (url, hits) => {
+        await runExecutor(t.args, url);
+        const before = readFileSync(t.storePath, "utf8");
+        opts.rereadHttpStatus = undefined;
+        opts.rereadNoSendAt = true;
+        const dry = await runExecutor(t.args.filter((a) => a !== "--send"), url);
+        assert.equal(dry.status, 0, `stdout: ${dry.stdout} stderr: ${dry.stderr}`);
+        assert.equal(readFileSync(t.storePath, "utf8"), before, "dry-run não grava o store");
+        assert.ok(!hits.some((h) => h.startsWith("DELETE")), "dry-run nunca apaga no Kit");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9367 item 4: blocked_concurrent num kind + lote criado em outro → streak ZERA (entrega provada)", () => {
+    const kt = { consecutive_failed_send_runs: 3 };
+    const base = { at: new Date().toISOString(), lots_failed: 0, lots_unverified: 0, refresh_candidates: 0, refresh_failed: 0, content_skipped: 0 };
+    recordKitSendRun(kt, { ...base, lots_created: 1, blocked_concurrent: 1 });
+    assert.equal(kt.consecutive_failed_send_runs, 0);
+    const kt2 = { consecutive_failed_send_runs: 3 };
+    recordKitSendRun(kt2, { ...base, lots_created: 0, blocked_concurrent: 1 });
+    assert.equal(kt2.consecutive_failed_send_runs, 3, "só blocked_concurrent, nada entregue → neutra");
   });
 
   it("store real de produção intocado", () => {

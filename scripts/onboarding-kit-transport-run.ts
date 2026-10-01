@@ -71,7 +71,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { getBroadcast } from "./lib/kit-client.ts";
+import { getBroadcast, KitApiError, type KitBroadcastSummary } from "./lib/kit-client.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import {
   createBroadcast,
@@ -408,6 +408,108 @@ export function backfillTerminalLotEntries(storePath: string, lotId: string, now
   return touched;
 }
 
+/** Linha do resultado de `reconcileOpenLots` (mesmo formato que `--reconcile`
+ *  sempre imprimiu, mais `recovered` quando o lote era `unverified`). */
+export interface OpenLotReconcileRow {
+  lot_id: string;
+  before: string;
+  after: string;
+  error?: string;
+  backfilled?: number;
+  /** Só pra lote de e-mail 1/2 `unverified` relido com limpeza permitida. */
+  recovered?: "scheduled" | "unscheduled" | "unverified";
+}
+
+export interface ReconcileOpenLotsDeps {
+  getBroadcast(id: number): Promise<{ status: KitBroadcastSummary["status"]; send_at?: string | null }>;
+  /**
+   * Presente = a releitura pode APAGAR o broadcast de um lote de e-mail 1/2
+   * `unverified` que o Kit mostra não-agendado (mesma regra do `--send` em
+   * `confirmOrCleanUpScheduledLot`). Ausente = só leitura (`--reconcile`,
+   * dry-run): nunca escreve no Kit.
+   */
+  deleteBroadcast?(id: number): Promise<void>;
+}
+
+/**
+ * #9367 item 1: o laço de releitura dos lotes — compartilhado entre
+ * `--reconcile` e o INÍCIO de cada `--send`.
+ *
+ * O buraco que fecha: um `--send` cria o broadcast agendado de e-mail 1/2,
+ * mas a releitura de confirmação falha (rede) → lote `created`
+ * (`unverified`). Sem `email1_sent_at` gravado, a régua não ancora (e-mail
+ * 2/3 nunca planejados); e como `hasConfirmedKitLotForEntry` conta `created`
+ * como confirmado, a entrada também nunca entra num lote novo — presa em
+ * silêncio. Nada em produção agenda `--reconcile`, e a streak do alarme
+ * zerava na rodada seguinte. Rodando este laço antes de planejar, a rodada
+ * `--send` seguinte relê o lote: agendado/enviado → grava o envio nas
+ * entries; não agendado → apaga e cancela (entradas voltam ao plano); ainda
+ * ilegível → conta em `stillUnverified` (o caller soma em `lots_unverified`,
+ * a streak não zera).
+ *
+ * Para cada lote:
+ *   - terminal (`completed`/`cancelled`): backfill local das entries (#9060).
+ *   - sem `broadcast_id` (`pending`): nada a reler (`claimLot` decide).
+ *   - e-mail 1/2 `unverified` (`created`, sem `schedule_failed`) com
+ *     `deps.deleteBroadcast`: `confirmOrCleanUpScheduledLot`.
+ *   - resto: `reconcileLotWithKit` (só leitura); falha vira `last_error`.
+ *
+ * Sempre aplica o resultado no `store` EM MEMÓRIA (o plano que vem depois
+ * enxerga as entries atualizadas); com `persist`, também grava cada lote no
+ * disco (`persistLotUpdate`/`backfillTerminalLotEntries`, sob lock — nunca
+ * um `writeStore` de lote-múltiplo fora do lock, #8136).
+ */
+export async function reconcileOpenLots(
+  opts: { storePath: string; store: OnboardingStore; persist: boolean; nowMs?: number },
+  deps: ReconcileOpenLotsDeps,
+): Promise<{ results: OpenLotReconcileRow[]; stillUnverified: number }> {
+  const { storePath, store, persist } = opts;
+  const nowMs = opts.nowMs ?? Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  store.kit_transport ??= { lots: {} };
+  const results: OpenLotReconcileRow[] = [];
+  let stillUnverified = 0;
+  for (const lot of Object.values(store.kit_transport.lots)) {
+    if (lot.status === "completed" || lot.status === "cancelled") {
+      // #9060 item 1: terminal não é relido no Kit, mas as entries de um
+      // lote concluído antes do #9058 podem nunca ter sido marcadas.
+      const inMemory = applyKitLotToEntries(store.entries, lot, nowIso);
+      const backfilled = persist ? backfillTerminalLotEntries(storePath, lot.lot_id, nowMs) : inMemory;
+      if (backfilled > 0) results.push({ lot_id: lot.lot_id, before: lot.status, after: lot.status, backfilled });
+      continue;
+    }
+    if (lot.broadcast_id == null) continue;
+    const before = lot.status;
+    const isUnverified = (lot.kind === "email1" || lot.kind === "email2") && lot.status === "created" && lot.schedule_failed !== true;
+    let updated: OnboardingKitLot;
+    const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
+    if (isUnverified && deps.deleteBroadcast) {
+      updated = { ...lot };
+      const outcome = await confirmOrCleanUpScheduledLot(updated, { getBroadcast: deps.getBroadcast, deleteBroadcast: deps.deleteBroadcast });
+      updated.last_reconciled_at = nowIso;
+      row.recovered = outcome;
+      if (outcome === "unverified") {
+        stillUnverified++;
+        row.error = updated.last_error ?? undefined;
+      }
+    } else {
+      try {
+        updated = await reconcileLotWithKit(lot, deps.getBroadcast, nowIso);
+      } catch (e) {
+        updated = { ...lot, last_error: (e as Error).message };
+        row.error = (e as Error).message;
+        if (isUnverified) stillUnverified++;
+      }
+    }
+    row.after = updated.status;
+    store.kit_transport.lots[lot.lot_id] = updated;
+    applyKitLotToEntries(store.entries, updated, nowIso);
+    if (persist) persistLotUpdate(storePath, updated, nowMs);
+    results.push(row);
+  }
+  return { results, stillUnverified };
+}
+
 /**
  * #7922 (pré-requisito do corte, §3 de docs/onboarding-kit-cutover.md):
  * registra o resultado de uma rodada `--send` NÃO-piloto em
@@ -655,26 +757,11 @@ async function main(): Promise<void> {
     // nunca um `writeStore` de lote-múltiplo fora do lock. A chamada de rede
     // (`reconcileLotWithKit`) continua fora do lock, de propósito (não
     // segurar o lock por 30s através de N round-trips de rede).
-    const results: { lot_id: string; before: string; after: string; error?: string; backfilled?: number }[] = [];
-    for (const lot of Object.values(store.kit_transport.lots)) {
-      if (lot.status === "completed" || lot.status === "cancelled") {
-        // #9060 item 1: terminal não é relido no Kit, mas as entries de um
-        // lote concluído antes do #9058 podem nunca ter sido marcadas.
-        const backfilled = backfillTerminalLotEntries(storePath, lot.lot_id);
-        if (backfilled > 0) results.push({ lot_id: lot.lot_id, before: lot.status, after: lot.status, backfilled });
-        continue;
-      }
-      const before = lot.status;
-      try {
-        const reconciled = await reconcileLotWithKit(lot, (id) => getBroadcast(id, kitCfg));
-        persistLotUpdate(storePath, reconciled);
-        results.push({ lot_id: lot.lot_id, before, after: reconciled.status });
-      } catch (e) {
-        lot.last_error = (e as Error).message;
-        persistLotUpdate(storePath, lot);
-        results.push({ lot_id: lot.lot_id, before, after: lot.status, error: (e as Error).message });
-      }
-    }
+    //
+    // #9367 item 1: o laço vive em `reconcileOpenLots` (compartilhado com o
+    // início de cada `--send`). Aqui SEM `deleteBroadcast` — `--reconcile` é
+    // só leitura e roda até com o kill switch desligado.
+    const { results } = await reconcileOpenLots({ storePath, store, persist: true }, { getBroadcast: (id) => getBroadcast(id, kitCfg) });
     console.log(JSON.stringify({ mode: "reconcile", results }, null, 2));
     return;
   }
@@ -754,17 +841,27 @@ export async function runAndRecordSendRun(
  * pela RELEITURA no Kit (mesma regra de `schedule-newsletter-kit.ts`: 2xx do
  * POST não é prova; o que vale é o `send_at` ecoado no GET — `status` é só
  * diagnóstico). Muta `lot`.
- *   - `"scheduled"`: releitura ecoou `send_at` válido.
- *   - `"unscheduled"`: releitura sem `send_at` — o e-mail não sai sozinho.
- *     Apaga o broadcast e marca o lote `cancelled` (as entradas voltam ao
- *     plano na rodada seguinte); se o DELETE falhar, o lote fica `created`
- *     com `schedule_failed: true`, que tira dele o status de "confirmado"
- *     (`hasConfirmedKitLotForEntry`) — nunca prende as entradas.
+ *   - `"scheduled"`: releitura com status `scheduled` + `send_at` válido
+ *     ecoado, OU status `sending`/`completed` (o envio já começou — #9367
+ *     item 2: nesse caso o `send_at` pode nem vir ecoado, e mesmo assim é
+ *     ENVIADO; nunca apagar). Lote `scheduled`/`completed`.
+ *   - `"unscheduled"`: qualquer outra releitura — sem `send_at`, ou status
+ *     fora de {scheduled, sending, completed} (#9367 item 3: `aborted` com
+ *     `send_at` ecoado NÃO é agendado). O e-mail não sai sozinho. Apaga o
+ *     broadcast e marca o lote `cancelled` (as entradas voltam ao plano na
+ *     rodada seguinte); se o DELETE falhar, o lote fica `created` com
+ *     `schedule_failed: true`, que tira dele o status de "confirmado"
+ *     (`hasConfirmedKitLotForEntry`) — nunca prende as entradas. Exceção
+ *     (#9367 item 2): DELETE que devolve 422 "already been sent" é o Kit
+ *     dizendo que o broadcast JÁ SAIU (releitura atrasada além do `send_at`)
+ *     — vira `"scheduled"` com lote `completed`, nunca volta ao plano (seria
+ *     o e-mail 1 em dobro).
  *   - `"unverified"`: a releitura falhou (rede/API). Não se declara falha de
  *     ENTREGA sem leitura: o lote fica `created` (dedup preservada — não
  *     cria 2º broadcast pra quem pode já estar agendado), e a rodada conta
- *     como falha de transporte (`lots_unverified`). Um `--reconcile`
- *     posterior lê o estado real.
+ *     como falha de transporte (`lots_unverified`). A rodada `--send`
+ *     seguinte relê o lote ANTES de planejar (`reconcileOpenLots`, #9367
+ *     item 1) — sem depender de um `--reconcile` agendado.
  */
 export async function confirmOrCleanUpScheduledLot(
   lot: OnboardingKitLot,
@@ -780,10 +877,20 @@ export async function confirmOrCleanUpScheduledLot(
     return "unverified";
   }
   const sendAt = reread.send_at ?? null;
-  if (sendAt != null && !Number.isNaN(Date.parse(sendAt))) {
-    lot.send_at = sendAt;
-    lot.status = mapKitBroadcastStatusToLocal(reread.status) === "completed" ? "completed" : "scheduled";
+  const sendAtValid = sendAt != null && !Number.isNaN(Date.parse(sendAt));
+  if (reread.status === "sending" || reread.status === "completed") {
+    // #9367 item 2: já saiu (ou está saindo) — enviado, com ou sem `send_at`.
+    if (sendAtValid) lot.send_at = sendAt;
+    lot.status = "completed";
     lot.last_error = null;
+    delete lot.schedule_failed;
+    return "scheduled";
+  }
+  if (reread.status === "scheduled" && sendAtValid) {
+    lot.send_at = sendAt;
+    lot.status = "scheduled";
+    lot.last_error = null;
+    delete lot.schedule_failed;
     return "scheduled";
   }
   const why = `broadcast ${id} sem agendamento na releitura (send_at ${JSON.stringify(reread.send_at ?? null)}, status Kit "${reread.status ?? "?"}") — e-mail não sai sozinho`;
@@ -793,11 +900,26 @@ export async function confirmOrCleanUpScheduledLot(
     lot.send_at = null;
     lot.last_error = `${why}; broadcast apagado, lote cancelado (entradas voltam ao plano)`;
   } catch (e) {
+    if (isKitAlreadySentError(e)) {
+      // #9367 item 2: o Kit recusou apagar porque o broadcast já foi enviado.
+      lot.status = "completed";
+      delete lot.schedule_failed;
+      lot.last_error = `${why}; DELETE recusado com 422 "already been sent" — broadcast JÁ ENVIADO, lote marcado completed`;
+      return "scheduled";
+    }
     lot.status = "created";
     lot.schedule_failed = true;
     lot.last_error = `${why}; DELETE falhou (${redactEmails((e as Error).message)}) — rascunho ficou no Kit, lote marcado schedule_failed`;
   }
   return "unscheduled";
+}
+
+/** #9367 item 2: `DELETE /broadcasts/{id}` de um broadcast que já saiu
+ *  devolve 422 `"Broadcast has already been sent."` (confirmado ao vivo —
+ *  docstring de `kit-broadcasts.ts`). É o Kit confirmando o ENVIO, não uma
+ *  falha do DELETE. */
+export function isKitAlreadySentError(e: unknown): boolean {
+  return e instanceof KitApiError && e.status === 422 && /already been sent/i.test(e.body);
 }
 
 /** Contadores de uma rodada `--send` (tudo de `KitSendRunRecord` menos o carimbo). */
@@ -837,6 +959,20 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   const email3Days = onboardingCfg.email3_days ?? 10;
   const graceDays = onboardingCfg.email3_grace_days ?? 10;
   const nowSec = Math.floor(Date.now() / 1000);
+
+  // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote de e-mail
+  // 1/2 `unverified` de uma rodada anterior (releitura de confirmação falhou)
+  // prendia as entradas em silêncio até alguém rodar `--reconcile`, que nada
+  // agenda em produção. No `--send` a releitura pode limpar (apagar broadcast
+  // não agendado) e persiste; no dry-run é só leitura, em memória.
+  const preSend = await reconcileOpenLots(
+    { storePath, store, persist: args.send },
+    {
+      getBroadcast: (id) => getBroadcast(id, kitCfg),
+      ...(args.send ? { deleteBroadcast: (id: number) => deleteBroadcast(id, kitCfg) } : {}),
+    },
+  );
+  counters.lots_unverified += preSend.stillUnverified;
 
   const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days);
   const statsById: Record<string, { total_unique_opened?: number | null; total_clicked?: number | null } | null> = {};
@@ -902,6 +1038,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
 
   const dateIso = unixSecondsToBrtDate(nowSec);
   const summary: Record<string, unknown> = { mode: args.send ? "SEND" : "dry-run", now: new Date(nowSec * 1000).toISOString(), lots: [] as unknown[] };
+  if (preSend.results.length > 0) summary.reconciled_before_send = preSend.results;
   // #7922 (gap #3, audit pós-merge da fatia 1/N): `plan.skips` (candidatos
   // barrados por elegibilidade/guard de conteúdo — snippet ausente/pendente,
   // idade mínima, sem abertura, etc.) nunca aparecia no output deste
