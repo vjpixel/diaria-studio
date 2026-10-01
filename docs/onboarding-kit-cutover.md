@@ -204,23 +204,27 @@ PILOT_STORE="$HOME/onboarding-pilot-7922/store.json"
 # 1) dry-run — semeia só em memória e imprime o plano dos 3 lotes
 npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE"
 
-# 2) envio real: e-mail 1 e 2 agendados para ~5 min depois de verificados; e-mail 3 fica RASCUNHO
+# 2) envio real: e-mail 1 e 2 agendados para ~5 min a partir do PATCH (feito só depois das verificações); e-mail 3 fica RASCUNHO
 npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --send
 
 # 3) e-mail 3: aprovação humana explícita, como no fluxo real
 npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" \
   --approve-email3-lot email3-AAAA-MM-DD-01 --send-at 2026-10-01T13:00:00Z
 
-# 4) depois do envio: releitura de status / repetição segura / cancelamento
+# 4) depois do envio: releitura de status / repetição segura
 npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --reconcile
 npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --send   # 2ª vez: nada duplica
+
+# 5) cancelamento de um lote do piloto (só aceita tag onboarding-pilot-* e destinatários da allowlist)
+npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email-autorizado> --store "$PILOT_STORE" --cancel-lot <lot_id>
 ```
 
 O que o modo piloto garante, em camadas independentes:
 
 - **Store isolado**: `--store` é obrigatório e é recusado se apontar para o
-  store real (`onboarding.store_path` ou `data/onboarding/store.json`).
-  Um store isolado que já contenha qualquer entry fora de
+  store real (`onboarding.store_path` ou `data/onboarding/store.json`),
+  comparado por caminho canônico (`realpathSync.native` — `data/` é junction
+  OneDrive). Um store isolado que já contenha qualquer entry fora de
   `--pilot-recipients` (ex: uma cópia do real) também é recusado.
 - **Kill switch**: ignorado **só** com `--pilot` — `platform.config.json`
   não é tocado; o executor de produção continua bloqueado.
@@ -230,35 +234,48 @@ O que o modo piloto garante, em camadas independentes:
   cobertura própria). Re-rodar não replaneja kind já confirmado.
 - **Allowlist por lote**: os destinatários de cada lote têm de estar em
   `--pilot-recipients` — senão aborta antes de qualquer escrita no Kit.
+  `--cancel-lot`/`--approve-email3-lot` com `--pilot` também exigem a tag
+  com prefixo `onboarding-pilot-` e a allowlist.
 - **Tag**: nome `onboarding-pilot-{lot_id}` (nunca colide com tag de
-  produção), precisa ser **recém-criada** (tag pré-existente aborta) e, após
-  taguear, é relida pela API: ausente, vazia, com membro estranho ou com
-  contagem ≠ destinatários do lote aborta (risco #6126). Falta de membro é
-  retentada algumas vezes (atraso de propagação de até ~180s da listagem).
-- **Broadcast**: nasce **sempre rascunho**, é relido, e só então é agendado
-  (e-mail 1/2). Filtro relido divergente → rascunho apagado e aborta
-  (2xx não é prova, #6582). Filtro **não ecoado** pela API → rascunho
-  mantido sem agendar e aborta; conferir a audiência no painel do Kit e, se
-  ok, agendar à mão no painel — ou `--cancel-lot <lot_id>` e re-rodar
-  `--send` com `--pilot-allow-unechoed-filter` (sem o cancelamento o
-  rascunho conta como lote confirmado e não é replanejado) (o eco de
-  `subscriber_filter` por `GET /broadcasts/{id}` nunca foi confirmado ao
-  vivo).
-- **E-mail 3**: rascunho; `--approve-email3-lot` no piloto repete allowlist +
-  releitura da tag + do filtro antes de agendar.
-- **Summary**: só contagens, ids de lote/broadcast e status — pronto para
-  colar na issue.
+  produção). Num **lote novo** a tag precisa ser recém-criada (tag
+  pré-existente aborta); o id usado é o devolvido pela criação. Após
+  taguear, busca por nome + membros são relidos no mesmo loop de retry
+  (~4 min, cobre os ~90s de propagação da tag e ~180s da listagem de
+  membros): nome resolvendo pra outro id, tag vazia, com membro estranho ou
+  com contagem ≠ destinatários do lote aborta (risco #6126).
+- **Broadcast**: nasce **sempre rascunho** e é relido. O PATCH que agenda
+  (e-mail 1/2 e `--approve-email3-lot`) **reenvia o `subscriber_filter`**
+  junto com `send_at` (PATCH no Kit pode zerar campo omitido, #8208) e o
+  broadcast é **relido de novo depois**. Filtro divergente em qualquer
+  releitura → broadcast apagado e aborta (2xx não é prova, #6582); se o
+  delete falhar, a mensagem manda apagar no painel. Releitura que **falha**
+  (rede/5xx/404) nunca agenda, com ou sem flag. PATCH que não deixa o
+  broadcast `scheduled` é falha (exit 1). Filtro **não ecoado** pela API →
+  rascunho mantido sem agendar e aborta; conferir a audiência no painel do
+  Kit e, se ok, agendar à mão no painel — ou `--cancel-lot <lot_id>` e
+  re-rodar `--send` com `--pilot-allow-unechoed-filter`, que agenda com
+  aviso em stderr (sem o cancelamento o rascunho conta como lote confirmado
+  e não é replanejado). O eco de `subscriber_filter` por
+  `GET /broadcasts/{id}` nunca foi confirmado ao vivo.
+- **E-mail 3**: rascunho; `--approve-email3-lot` no piloto repete prefixo +
+  allowlist + releitura da tag + do filtro, e agenda pelo mesmo PATCH
+  verificado acima.
+- **Summary**: contagens, ids de lote/broadcast, status e o filtro que o Kit
+  ecoou (só ids de tag). Mensagens de erro passam por redação de e-mail
+  (o corpo de um erro da API do Kit pode ecoar endereço) — mesmo assim,
+  revise antes de colar na issue. Lote que falha ou não persiste sai com
+  `failed: true` e exit 1.
 
 O que o piloto precisa validar (todos os itens da issue, seção "Piloto e
 transição"):
 
 | Item | Como verificar | Onde registrar |
 |---|---|---|
-| Segmentação | Confirmar no painel Kit que o broadcast do lote atingiu SÓ a tag `onboarding-{lot_id}` — nunca a base inteira. Comparar contagem esperada (`recipient_emails.length` do lote) com o destinatário real reportado pelo Kit. | Comentário na issue com contagem, sem PII (só números). |
+| Segmentação | Confirmar no painel Kit que o broadcast do lote atingiu SÓ a tag do lote (`onboarding-{lot_id}` em produção; `onboarding-pilot-{lot_id}` no piloto) — nunca a base inteira. Comparar contagem esperada (`recipient_emails.length` do lote) com o destinatário real reportado pelo Kit. | Comentário na issue com contagem, sem PII (só números). |
 | Entrega | Confirmar recebimento nas caixas de teste (inbox, não spam) para os 3 e-mails. | Idem — agregado, nunca lista de e-mails/nomes na issue. |
 | Renderização | Abrir o e-mail recebido: HTML íntegro, sem quebra de layout, personalização (se houver merge tag) resolvida, link de descadastro presente e funcional. | Idem. |
 | Métricas | Rodar `--reconcile` após o envio e conferir que o status do lote reflete o real (`scheduled`/`completed`) — e, quando disponível, `fetchSubscriberStatsKit`/`GET /subscribers/{id}/stats` mostrando a abertura do destinatário de teste (mesmo endpoint que o e-mail 3 usa para elegibilidade; ver seção 5 sobre a validação já feita neste PR). | Idem. |
-| Repetição segura | Rodar `--send` uma 2ª vez com o MESMO lote já criado — confirmar via `summary.lots[].skipped === "reuse"` que nada duplica (mecanismo já testado em `test/onboarding-kit-transport-run-lock-7922.test.ts`, mas nunca contra a API real). | Idem. |
+| Repetição segura | Rodar `--send` uma 2ª vez com o MESMO lote já criado — confirmar via `summary.lots[].skipped === "reuse"` (no piloto: `note` "já têm lote confirmado") que nada duplica (mecanismo já testado em `test/onboarding-kit-transport-run-lock-7922.test.ts`, mas nunca contra a API real). | Idem. |
 | Cancelamento | Rodar `--cancel-lot <id>` num lote do piloto (rascunho ou agendado) e confirmar no painel Kit que o broadcast foi removido/abortado. Confirmar que um lote com `status: sending`/já enviado recusa o cancelamento com o erro esperado do Kit (422 "Broadcast has already been sent"), nunca reportado como sucesso. | Idem. |
 | Entrega por provedor | Reusar a instrumentação de #6504 (acompanhamento de entrega) para os destinatários de teste, na medida em que o mecanismo já existente cobrir Kit. | Idem. |
 
