@@ -1,11 +1,13 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import {
   shouldBlockAskUserQuestion,
   readActiveMarker,
+  readActiveMarkers,
   activeSessionPath,
   buildBlockReason,
 } from "../.claude/hooks/block-askuserquestion-overnight-autonomous.mjs";
@@ -236,5 +238,75 @@ describe("buildBlockReason (#6232)", () => {
   it("nunca lança, mesmo com marker null/undefined (fail-open já garante que isto não é chamado nesse caso, mas a função em si é defensiva)", () => {
     assert.doesNotThrow(() => buildBlockReason(null, "x"));
     assert.doesNotThrow(() => buildBlockReason(undefined, undefined));
+  });
+});
+
+// #9347: marker POR SESSÃO — 2 rodadas overnight simultâneas na mesma
+// máquina gravam `.active-session-{tag}.{sessionId}.json` distintos. O hook
+// precisa ler TODOS (legado + por-sessão); antes, a 2ª rodada sobrescrevia/
+// apagava o marker único e este guard desarmava em silêncio na 1ª.
+describe("readActiveMarkers + entrypoint multi-marker (#9347)", () => {
+  const roots: string[] = [];
+  const HOOK = join(process.cwd(), ".claude", "hooks", "block-askuserquestion-overnight-autonomous.mjs");
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = mkdtempSync(join(tmpdir(), "block-askuserquestion-9347-"));
+    roots.push(root);
+    return root;
+  }
+
+  function writeNamed(root: string, name: string, marker: Record<string, unknown>) {
+    const dir = join(root, "data", "overnight");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, name), JSON.stringify(marker), "utf8");
+  }
+
+  const fresh = () => new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  it("lê legado + por-sessão da máquina; ignora outra máquina com prefixo parecido e arquivos alheios", () => {
+    const root = freshRoot();
+    writeNamed(root, ".active-session-host-a.json", { phase: "briefing", session_id: "legado" });
+    writeNamed(root, ".active-session-host-a.sess-A.json", { phase: "autonomous", session_id: "sess-A" });
+    writeNamed(root, ".active-session-host-a-b.sess-X.json", { phase: "autonomous", session_id: "sess-X" });
+    writeNamed(root, "plan.json", { phase: "autonomous" });
+    const ids = readActiveMarkers(root, "host-a").map((m: Record<string, unknown>) => m.session_id).sort();
+    assert.deepEqual(ids, ["legado", "sess-A"]);
+  });
+
+  it("diretório ausente → [] (nunca lança); marker individual corrompido é pulado", () => {
+    assert.deepEqual(readActiveMarkers(freshRoot(), "host-a"), []);
+    const root = freshRoot();
+    const dir = join(root, "data", "overnight");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, ".active-session-host-a.sess-A.json"), "{nope", "utf8");
+    writeNamed(root, ".active-session-host-a.sess-B.json", { phase: "autonomous", session_id: "sess-B" });
+    assert.deepEqual(readActiveMarkers(root, "host-a").map((m: Record<string, unknown>) => m.session_id), ["sess-B"]);
+  });
+
+  function runHook(cwd: string, sessionId: string) {
+    const out = execFileSync("node", [HOOK], {
+      cwd,
+      input: JSON.stringify({ tool_name: "AskUserQuestion", session_id: sessionId }),
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    return out.trim() ? JSON.parse(out).hookSpecificOutput.permissionDecision : "allow";
+  }
+
+  it("entrypoint: com 2 rodadas vivas, cada uma é bloqueada pelo PRÓPRIO marker; sessão alheia passa", () => {
+    const root = freshRoot();
+    execFileSync("git", ["init", "--quiet"], { cwd: root, timeout: 10_000 });
+    const tag = (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+    // Rodada A (autônoma) + rodada B (ainda no briefing) na mesma máquina.
+    writeNamed(root, `.active-session-${tag}.sess-A.json`, { started_at: fresh(), phase: "autonomous", session_id: "sess-A" });
+    writeNamed(root, `.active-session-${tag}.sess-B.json`, { started_at: fresh(), phase: "briefing", session_id: "sess-B" });
+
+    assert.equal(runHook(root, "sess-A"), "deny", "rodada A em Fase autônoma tem que continuar bloqueada com B viva");
+    assert.equal(runHook(root, "sess-B"), "allow", "rodada B em briefing pode perguntar");
+    assert.equal(runHook(root, "sess-develop"), "allow", "sessão alheia nunca é bloqueada");
   });
 });
