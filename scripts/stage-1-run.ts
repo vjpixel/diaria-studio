@@ -1459,6 +1459,16 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   if (opts.auto) {
     step(deps, report, "apply-gate-edits --auto (1y)", "scripts/apply-gate-edits.ts", ["--auto", "--json", categorizedJsonPath, "--out", approvedPath]);
     report.note("ℹ️  1y: --auto — sem edição humana, pulando re-render/validate-lancamentos (nada mudou vs 01-categorized.md).");
+    // #9386: sem gate 1, MESMO FATO em RADAR/LANÇAMENTOS sai do pool aqui
+    // (lista vai para o gate 4). Destaques ficam só com aviso. Fail-soft.
+    softStep(deps, report, "apply-same-fact-removal (1y, #9386)", "scripts/apply-same-fact-removal.ts", [
+      "--approved",
+      approvedPath,
+      "--theme-check",
+      internalPath(editionDir, "01-highlight-theme-check.json"),
+      "--out-log",
+      internalPath(editionDir, "01-same-fact-removed.json"),
+    ]);
   } else {
     step(deps, report, "apply-gate-edits (1y)", "scripts/apply-gate-edits.ts", ["--md", opts.md as string, "--json", categorizedJsonPath, "--out", approvedPath]);
     step(deps, report, "render-categorized-md pós-gate (1y)", "scripts/render-categorized-md.ts", ["--in", approvedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);
