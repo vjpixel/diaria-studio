@@ -67,6 +67,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
 import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
+import { assertNoAbTestForSingleHtmlPath } from "./lib/clarice-ab-test.ts";
 import { loadSendsSummary, parseBlocksArg, type SendsSummaryEntry } from "./lib/send-plan.ts";
 import { CELLS } from "./clarice-split-cells.ts";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -499,6 +500,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   // HTML render para todas as campanhas
+  assertNoAbTestForSingleHtmlPath(resolveMonthlyDir(cycle), "clarice-schedule-sends.ts"); // #9308
   const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   // #8059: reescreve tag de afiliado Amazon `diaria-20` (audiência de casa
