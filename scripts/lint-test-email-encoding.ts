@@ -31,6 +31,9 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+// #9115: mesma função que o renderer usa pra tirar o emoji do label do kicker
+// (headers de seção e categoria do DESTAQUE) — fonte única, nada de regex paralela.
+import { stripKickerEmoji } from "./lib/newsletter-render-html.ts";
 
 export interface EncodingIssue {
   type: "char_dropped" | "char_substituted";
@@ -41,6 +44,9 @@ export interface EncodingIssue {
   source_context: string;
   /** Substituto detectado no email (ASCII-ish), se houver. */
   email_substitute?: string;
+  /** #9115: sequência completa de codepoints quando o item é um emoji
+   * multi-codepoint (ZWJ, skin tone, VS16, bandeira) tratado como unidade. */
+  sequence?: string;
 }
 
 export interface EncodingResult {
@@ -97,27 +103,89 @@ const ASCII_SUBSTITUTES: Record<string, string[]> = {
 };
 
 /**
+ * #9115: remove do source MD o emoji dos headers de seção e da categoria do
+ * DESTAQUE — o renderer (`renderKicker` → `stripKickerEmoji`) os tira de
+ * propósito, então a ausência deles no HTML/e-mail é by-design, não drop.
+ *
+ * Cobre as duas formas de kicker do `02-reviewed.md`:
+ *   - `**🙋🏼‍♀️ PARA ENCERRAR**` (header de seção, linha inteira em negrito)
+ *   - `**DESTAQUE 1 | ⚠️ SEGURANÇA**` (categoria do destaque)
+ * O header de seção só é tocado quando o label limpo é CAIXA ALTA (convenção
+ * dos headers do template) — negrito de corpo com emoji não é kicker e continua
+ * sendo checado.
+ */
+export function stripSectionHeaderEmojis(md: string): string {
+  return md
+    .split("\n")
+    .map((line) => {
+      const destaque = line.match(/^(\s*\*\*DESTAQUE\s+\d+\s*\|\s*)(.+?)(\*\*\s*)$/u);
+      if (destaque) return destaque[1] + stripKickerEmoji(destaque[2]) + destaque[3];
+      const header = line.match(/^(\s*\*\*)(.+?)(\*\*\s*)$/u);
+      if (!header) return line;
+      const label = header[2];
+      const clean = stripKickerEmoji(label);
+      if (clean === label.trim() || !/\p{L}/u.test(clean)) return line;
+      if (clean !== clean.toLocaleUpperCase("pt-BR")) return line;
+      // só remove se o prefixo cortado contém emoji (não um "[" de link etc.)
+      if (!EMOJI_RE.test(label.slice(0, label.indexOf(clean)))) return line;
+      return header[1] + clean + header[3];
+    })
+    .join("\n");
+}
+
+const EMOJI_RE = /[\p{Extended_Pictographic}\p{Regional_Indicator}]/u;
+// VS15 (U+FE0E) / VS16 (U+FE0F) — montado por codepoint pra não deixar caractere invisível no fonte.
+const VARIATION_SELECTORS_RE = new RegExp(`[${String.fromCodePoint(0xfe0e, 0xfe0f)}]`, "gu");
+
+function isIgnorableCodepoint(cp: number): boolean {
+  return cp <= 127 || cp === 0xa0 || cp === 0xfeff;
+}
+
+function toCodepoint(ch: string): string {
+  return "U+" + ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0");
+}
+
+/**
+ * #9115: unidades a comparar. Emoji (incluindo sequências ZWJ, skin tone,
+ * VS16 e bandeiras) vira UMA unidade — o grapheme inteiro —, pra que ZWJ/♀/
+ * VS16/modificador nunca sejam acusados soltos quando o emoji todo sumiu (ou
+ * acusados por estarem só dentro de uma sequência). Fora de emoji, segue
+ * por codepoint como antes (acento, aspa tipográfica, travessão).
+ */
+function specialUnits(text: string): string[] {
+  const units = new Set<string>();
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  for (const { segment } of segmenter.segment(text)) {
+    if (EMOJI_RE.test(segment)) {
+      units.add(segment);
+      continue;
+    }
+    for (const ch of segment) {
+      if (!isIgnorableCodepoint(ch.codePointAt(0)!)) units.add(ch);
+    }
+  }
+  return [...units];
+}
+
+/**
  * Detecta caracteres não-ASCII no source que não aparecem no email.
  * Considera apenas chars onde drop seria semanticamente significante
  * (acentos, smart quotes, emojis). Ignora whitespace exotic.
  */
 export function checkEncoding(sourceText: string, emailText: string): EncodingIssue[] {
   const issues: EncodingIssue[] = [];
-  // Set de chars únicos não-ASCII no source que aparecem em palavras (não whitespace)
-  const sourceSpecial = new Set<string>();
-  for (const ch of sourceText) {
-    const cp = ch.codePointAt(0)!;
-    // Codepoints > 127 (não ASCII básico). Exclui whitespace control.
-    if (cp > 127 && cp !== 0xA0 && cp !== 0xFEFF) {
-      sourceSpecial.add(ch);
-    }
-  }
+  // #9115: emoji de kicker é removido pelo renderer por design — tira do source antes.
+  const source = stripSectionHeaderEmojis(sourceText);
+  const emailNoVs = emailText.replace(VARIATION_SELECTORS_RE, "");
 
-  for (const ch of sourceSpecial) {
-    if (emailText.includes(ch)) continue; // ok, char preservado
+  for (const unit of specialUnits(source)) {
+    if (emailText.includes(unit)) continue; // ok, preservado
+    const isEmoji = EMOJI_RE.test(unit);
+    // Emoji: VS15/VS16 é apresentação, não conteúdo — "⚠" e "⚠️" são o mesmo.
+    if (isEmoji && emailNoVs.includes(unit.replace(VARIATION_SELECTORS_RE, ""))) continue;
 
-    // Char source ausente no email. Verifica se há substituto ASCII conhecido.
-    const subs = ASCII_SUBSTITUTES[ch] ?? [];
+    // Ausente no email. Verifica se há substituto ASCII conhecido.
+    const subs = ASCII_SUBSTITUTES[unit] ?? [];
     let substitute: string | undefined;
     for (const sub of subs) {
       if (emailText.includes(sub)) {
@@ -127,20 +195,19 @@ export function checkEncoding(sourceText: string, emailText: string): EncodingIs
     }
 
     // Pega contexto curto do source
-    const idx = sourceText.indexOf(ch);
+    const idx = source.indexOf(unit);
     const start = Math.max(0, idx - 20);
-    const end = Math.min(sourceText.length, idx + 20);
-    const ctx = sourceText.slice(start, end).replace(/\s+/g, " ").trim();
+    const end = Math.min(source.length, idx + unit.length + 20);
+    const ctx = source.slice(start, end).replace(/\s+/g, " ").trim();
 
-    const cp = ch.codePointAt(0)!;
-    const codepoint = "U+" + cp.toString(16).toUpperCase().padStart(4, "0");
-
+    const cps = [...unit];
     issues.push({
       type: substitute ? "char_substituted" : "char_dropped",
-      char: ch,
-      codepoint,
+      char: unit,
+      codepoint: toCodepoint(unit),
       source_context: ctx,
       email_substitute: substitute,
+      ...(cps.length > 1 ? { sequence: cps.map(toCodepoint).join(" ") } : {}),
     });
   }
 

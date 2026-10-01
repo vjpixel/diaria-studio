@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   stripHtmlToText,
   checkEncoding,
+  stripSectionHeaderEmojis,
 } from "../scripts/lint-test-email-encoding.ts";
 
 describe("stripHtmlToText (#1248)", () => {
@@ -84,5 +85,58 @@ describe("checkEncoding (#1248)", () => {
     for (const i of r) {
       assert.match(i.codepoint, /^U\+[0-9A-F]{4,}$/);
     }
+  });
+});
+
+describe("checkEncoding — emoji de kicker e sequências de emoji (#9115)", () => {
+  it("regressão 260930: `**🙋🏼‍♀️ PARA ENCERRAR**` no source vs HTML sem o emoji → zero issues", () => {
+    const source = "Texto do corpo.\n\n---\n\n**🙋🏼‍♀️ PARA ENCERRAR**\n\nObrigado por ler.";
+    const email = "Texto do corpo. Para encerrar Obrigado por ler.";
+    assert.deepEqual(checkEncoding(source, email), []);
+  });
+
+  it("categoria do DESTAQUE e headers 🛠️/📡/🎁 sem emoji no HTML → zero issues", () => {
+    const source = [
+      "**DESTAQUE 1 | ⚠️ SEGURANÇA**",
+      "**DESTAQUE 3 | 🇧🇷 BRASIL**",
+      "**🛠️ USE MELHOR**",
+      "**📡 RADAR**",
+      "**🎁 SORTEIO**",
+    ].join("\n\n");
+    const email = "SEGURANÇA BRASIL Use melhor Radar Sorteio";
+    assert.deepEqual(checkEncoding(source, email), []);
+  });
+
+  it("emoji no CORPO que some continua acusado — como UMA unidade, não ZWJ/♀ soltos", () => {
+    const source = "**🎁 SORTEIO**\n\nA equipe comemorou 🙋🏼‍♀️ o resultado.";
+    const email = "Sorteio A equipe comemorou o resultado.";
+    const r = checkEncoding(source, email);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].type, "char_dropped");
+    assert.equal(r[0].char, "🙋🏼‍♀️");
+    assert.equal(r[0].codepoint, "U+1F64B");
+    assert.equal(r[0].sequence, "U+1F64B U+1F3FC U+200D U+2640 U+FE0F");
+  });
+
+  it("negrito de corpo com emoji (não caixa alta) não é kicker — drop acusado", () => {
+    const r = checkEncoding("**🔥 Uma frase em negrito no corpo**", "Uma frase em negrito no corpo");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🔥");
+  });
+
+  it("emoji preservado sem VS16 no email não é drop (⚠️ vs ⚠)", () => {
+    assert.deepEqual(checkEncoding("atenção ⚠️ aqui", "atenção ⚠ aqui"), []);
+  });
+});
+
+describe("stripSectionHeaderEmojis (#9115)", () => {
+  it("usa stripKickerEmoji do renderer: tira o emoji do header e da categoria", () => {
+    assert.equal(stripSectionHeaderEmojis("**🙋🏼‍♀️ PARA ENCERRAR**"), "**PARA ENCERRAR**");
+    assert.equal(stripSectionHeaderEmojis("**DESTAQUE 2 | 🚀 LANÇAMENTO**"), "**DESTAQUE 2 | LANÇAMENTO**");
+  });
+
+  it("não toca link em negrito nem linha de corpo", () => {
+    const md = "**[Título do link](https://x.com)**\nTexto 🎉 solto";
+    assert.equal(stripSectionHeaderEmojis(md), md);
   });
 });
