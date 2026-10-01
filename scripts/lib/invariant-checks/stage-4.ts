@@ -6,7 +6,8 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
+import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-selection-drift.ts"; // #9253
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
@@ -1746,6 +1747,39 @@ function checkBoxDivulgacaoRuntimeExcluded(
 }
 
 /**
+ * #9253: `boxes_divulgacao.slotN` trocado no config DEPOIS do stitch não tem
+ * efeito — `_internal/box-selection.json` congelou o snippet antigo e o
+ * render lê título/alt/categoria dele. Warning (não bloqueia: a troca pode
+ * ser pra próxima edição) que nomeia o slot e o comando de correção
+ * (`apply-box-slot.ts`). Lógica pura em `../box-selection-drift.ts`.
+ * `rootDir` só pra fixture de teste.
+ */
+export function checkBoxSelectionConfigDrift(
+  editionDir: string,
+  rootDir: string = ROOT,
+): InvariantViolation[] {
+  const selPath = resolve(editionDir, "_internal", "box-selection.json");
+  if (!existsSync(selPath)) return [];
+  let selection: unknown;
+  let cfg: { slot1?: string | null; slot2?: string | null } = {};
+  try {
+    selection = JSON.parse(readFileSync(selPath, "utf8"));
+    const raw = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+    cfg = raw?.boxes_divulgacao ?? {};
+  } catch {
+    return []; // arquivo malformado/config ilegível — outros checks cobrem
+  }
+  const edition = basename(editionDir).match(/^\d{6}$/) ? basename(editionDir) : null;
+  return detectBoxSelectionConfigDrift(selection, cfg).map((d) => ({
+    rule: "box-selection-config-drift",
+    message: formatBoxSelectionDrift(d, edition),
+    source_issue: "#9253",
+    severity: "warning" as const,
+    file: selPath,
+  }));
+}
+
+/**
  * #4090 item 4 (decisão do editor, 260727): se a edição gerou o card 4:5
  * (`04-d{N}-4x5.jpg` no disco — mandatório desde a decisão 260728, ver
  * `checkCard4x5Exists` em stage-3.ts) mas o upload (`06-public-images.json`)
@@ -2831,6 +2865,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#4086",
     stage: 4,
     run: checkBoxDivulgacaoAltMissing,
+  },
+  {
+    id: "box-selection-config-drift",
+    description: "boxes_divulgacao.slotN trocado no config depois do stitch, sem efeito no render (#9253, warning-only)",
+    source_issue: "#9253",
+    stage: 4,
+    run: (editionDir: string) => checkBoxSelectionConfigDrift(editionDir),
   },
   {
     id: "card-4x5-upload-missing",

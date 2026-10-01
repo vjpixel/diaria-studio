@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 101 invariants.
+**Total**: 102 invariants.
 
 ## Static (estrutura do repo)
 
@@ -77,6 +77,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `approved-item-removed` | item removido de 01-approved.json no Stage 4 (comparado ao snapshot pós-Stage 1) em vez de só desreferenciado — corrompe o sinal de analyze-bucket-overrides.ts (#8121, warning-only) | #8121 |
 | `box-divulgacao-alt-missing` | slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only) | #4086 |
 | `box-divulgacao-runtime-excluded` | slot de boxes_divulgacao aponta pra snippet runtime:false — injetaria conteúdo de doc/referência verbatim (#4504) | #4504 |
+| `box-selection-config-drift` | boxes_divulgacao.slotN trocado no config depois do stitch, sem efeito no render (#9253, warning-only) | #9253 |
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
 | `card-4x5-upload-missing` | card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only) | #4090 |
 | `carousel-cards-missing` | ausência TOTAL dos slides do carrossel diário (0 dos N×4) pra edição com texto de destaque — gen-carousel-cards.ts provavelmente nunca rodou (#6740) | #6740 |
