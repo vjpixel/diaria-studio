@@ -129,7 +129,7 @@ function tokensOverlap(a: Set<string>, bText: string): string[] {
   for (const t of a) {
     if (t.length < 4) {
       // sigla/nome curto (AWS, CNN, GPT, xAI): palavra inteira, com fronteira
-      const esc = t.replace(/[^\p{L}\p{N}]/gu, (c) => "\\" + c);
+      const esc = t.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
       const re = new RegExp("(?<![\\p{L}\\p{N}])" + esc + "(?![\\p{L}\\p{N}])", "u");
       if (re.test(bFolded)) shared.push(t);
     } else if (bTokens.has(t) || bStems.has(stem(t)) || bFolded.includes(t)) shared.push(t);

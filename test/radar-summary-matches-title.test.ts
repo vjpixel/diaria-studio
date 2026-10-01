@@ -213,3 +213,26 @@ describe("enrichArticles: restauração e isenções (#8594)", () => {
     assert.equal(articles[1].summary, digest);
   });
 });
+
+describe("título com hífen/dígito (#9227)", () => {
+  it("não lança com título 'S-1' (escape inválido sob /u)", () => {
+    const r = summaryMatchesArticle({
+      title: "S-1 da Anthropic revela prejuízo",
+      url: "https://example.com/s-1-anthropic",
+      summary: "O S-1 da Anthropic revela prejuízo bilionário antes do IPO.",
+    });
+    assert.equal(r.ok, true);
+  });
+
+  it("checkRadarSummaryMatchesTitle devolve ok:true com título S-1", () => {
+    const md = [
+      "**RADAR**",
+      "",
+      "[S-1 da Anthropic revela prejuízo](https://example.com/s-1-anthropic)",
+      "O S-1 da Anthropic revela prejuízo bilionário antes do IPO.",
+      "",
+    ].join("\n");
+    const r = checkRadarSummaryMatchesTitle(md);
+    assert.equal(r.ok, true);
+  });
+});
