@@ -16,11 +16,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getDiffLineStats } from "../scripts/lib/diff-line-stats.ts";
 
 function git(cwd: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+  // Isola o repo descartável da config global/sistema e de GIT_* herdadas
+  // (ex.: rodando de dentro de um hook), mesmo padrão do teste #8991.
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: cwd, GIT_CONFIG_NOSYSTEM: "1" };
+  delete env.GIT_DIR;
+  delete env.GIT_INDEX_FILE;
+  delete env.GIT_WORK_TREE;
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", env });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} falhou: ${r.stderr}`);
   return r.stdout.trim();
 }
@@ -70,7 +77,10 @@ describe("#9403 — removal declaration conta contra o merge-base", () => {
   });
 
   it("check-pr-removal-declaration.ts mede com mergeBase: true", () => {
-    const src = readFileSync(resolve("scripts/check-pr-removal-declaration.ts"), "utf8");
+    const src = readFileSync(
+      fileURLToPath(new URL("../scripts/check-pr-removal-declaration.ts", import.meta.url)),
+      "utf8",
+    );
     assert.match(src, /getDiffLineStats\(baseSha, headSha, \{ mergeBase: true \}\)/);
   });
 });
