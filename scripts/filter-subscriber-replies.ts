@@ -51,6 +51,12 @@
  *    correspondência endereçada a ele.
  *    `to` ausente (compat com callers/fixtures antigos) pula esta checagem —
  *    comportamento pré-#8997 preservado.
+ *    #9313: `to` em `CAMPAIGN_REPLY_TO_ADDRESSES` (reply-to das campanhas
+ *    Brevo desde #9186, mas também caixa pessoal) só
+ *    passa quando o assunto normalizado casa o assunto de uma campanha
+ *    enviada (`campaignSubjects` — no CLI, coletados de
+ *    `_internal/brevo-diaria-published.json` + snippets de onboarding +
+ *    `--campaign-subjects <json>` opcional).
  *  - `alreadyRepliedByEditor` (opcional no input, passthrough): `true` quando
  *    o thread já tem uma mensagem SENT do editor (o playbook §0-replies
  *    calcula isso a partir de `get_thread`, fora do escopo puro deste
@@ -60,7 +66,7 @@
  *    duplicado.
  *
  * Uso:
- *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json
+ *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json]
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
  * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
@@ -73,7 +79,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
-import { DEDICATED_SUBSCRIBER_REPLY_ADDRESSES, matchesKnownReplyAddress } from "./lib/newsletter-reply-addresses.ts";
+import {
+  CAMPAIGN_REPLY_TO_ADDRESSES,
+  DEDICATED_SUBSCRIBER_REPLY_ADDRESSES,
+  matchesKnownReplyAddress,
+} from "./lib/newsletter-reply-addresses.ts";
+import {
+  collectBrevoDiariaSubjects,
+  collectOnboardingSubjects,
+} from "./lib/campaign-reply-subjects.ts";
 
 export interface CapturedReply {
   thread_id?: string;
@@ -145,12 +159,25 @@ export function extractEmail(from: string): string {
  * chamado, e-mail de terceiro respondendo "Re: algo" pro editor). `to`
  * ausente pula esta checagem (compat com callers/fixtures pré-#8997).
  */
-export function looksLikeSubscriberReply(msg: {
-  subject?: string;
-  from?: string;
-  to?: string;
-}): boolean {
-  return passesSenderAndSubjectChecks(msg) && !isDroppedByTo(msg);
+export function looksLikeSubscriberReply(
+  msg: {
+    subject?: string;
+    from?: string;
+    to?: string;
+  },
+  opts: { campaignSubjects?: Iterable<string> } = {},
+): boolean {
+  return passesSenderAndSubjectChecks(msg) && !isDroppedByTo(msg, normalizeSubjectSet(opts.campaignSubjects));
+}
+
+/** #9313: assuntos de campanha normalizados (mesma `normalizeSubject` do assunto da reply). Vazios ignorados. */
+function normalizeSubjectSet(subjects: Iterable<string> | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const s of subjects ?? []) {
+    const n = normalizeSubject(s);
+    if (n) out.add(n);
+  }
+  return out;
 }
 
 /** Checagens de assunto (`Re:`) + remetente humano — tudo de
@@ -165,9 +192,22 @@ function passesSenderAndSubjectChecks(msg: { subject?: string; from?: string }):
   return true;
 }
 
-/** #8997: `to` presente e fora dos domínios dedicados de envio. */
-function isDroppedByTo(msg: { to?: string }): boolean {
-  return !!msg.to && !matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES);
+/**
+ * #8997: `to` presente e fora dos domínios dedicados de envio.
+ * #9313: exceção — `to` num reply-to de campanha (`CAMPAIGN_REPLY_TO_ADDRESSES`) passa
+ * quando o assunto normalizado da thread casa um assunto de campanha enviada.
+ */
+function isDroppedByTo(msg: { to?: string; subject?: string }, campaignSubjects: ReadonlySet<string>): boolean {
+  if (!msg.to) return false;
+  if (matchesKnownReplyAddress(msg.to, DEDICATED_SUBSCRIBER_REPLY_ADDRESSES)) return false;
+  if (
+    campaignSubjects.size > 0 &&
+    matchesKnownReplyAddress(msg.to, CAMPAIGN_REPLY_TO_ADDRESSES) &&
+    campaignSubjects.has(normalizeSubject(msg.subject))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** #9158: teto da amostra de remetentes descartados pelo check de `to`. */
@@ -436,14 +476,18 @@ export interface FilterResult {
   droppedByToSenders: string[];
 }
 
-export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult {
+export function filterSubscriberReplies(
+  threads: CapturedReply[],
+  opts: { campaignSubjects?: Iterable<string> } = {},
+): FilterResult {
+  const campaignSubjects = normalizeSubjectSet(opts.campaignSubjects);
   const baseCandidates = threads.filter((t) => passesSenderAndSubjectChecks(t));
-  const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t));
+  const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t, campaignSubjects));
   const droppedByToSenders = [...new Set(droppedByTo.map((t) => extractEmail(t.from ?? "")))].slice(
     0,
     DROPPED_BY_TO_SAMPLE_MAX,
   );
-  const candidates = baseCandidates.filter((t) => !isDroppedByTo(t));
+  const candidates = baseCandidates.filter((t) => !isDroppedByTo(t, campaignSubjects));
   const automatedSubjectCount = candidates.filter((t) => isAutomatedSubject(t.subject)).length;
   // #4509: near-miss ANTES do filtro final — roda sobre os mesmos candidatos
   // que alimentam automatedSubjectCount, nunca sobre `replies` (que já
@@ -476,7 +520,7 @@ function main(): void {
   const { values } = parseCliArgs(process.argv.slice(2));
   const inArg = values["in"];
   if (!inArg) {
-    console.error("Uso: filter-subscriber-replies.ts --in <captured-replies.json>");
+    console.error("Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>]");
     process.exit(2);
   }
   const inPath = resolve(ROOT, inArg);
@@ -493,7 +537,25 @@ function main(): void {
     process.exit(2);
   }
 
-  const result = filterSubscriberReplies(threads);
+  // #9313: assuntos de campanhas com reply-to `CAMPAIGN_REPLY_TO_ADDRESSES` — sem eles,
+  // toda resposta de assinante da Brevo diária/onboarding seria descartada.
+  const campaignSubjects = [
+    ...collectBrevoDiariaSubjects(resolve(ROOT, "data", "editions")),
+    ...collectOnboardingSubjects(resolve(ROOT, "data", "snippets")),
+  ];
+  const extraArg = values["campaign-subjects"];
+  if (typeof extraArg === "string" && extraArg) {
+    const extraPath = resolve(ROOT, extraArg);
+    try {
+      const parsed = JSON.parse(readFileSync(extraPath, "utf8"));
+      if (!Array.isArray(parsed)) throw new Error("esperado um array JSON de strings");
+      campaignSubjects.push(...parsed.filter((x): x is string => typeof x === "string"));
+    } catch (err) {
+      console.error(`Falha ao ler --campaign-subjects ${extraPath}: ${(err as Error).message}`);
+      process.exit(2);
+    }
+  }
+  const result = filterSubscriberReplies(threads, { campaignSubjects });
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     // #8997: as duas contagens são mutuamente exclusivas (trivial tem
