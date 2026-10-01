@@ -104,7 +104,6 @@ import {
   VARIANT_CELLS,
   waveDateFragment,
   waveKey,
-  nextFreeWaveNumber,
   type WaveCell,
   type WaveProposal,
   type WaveState,
@@ -1360,11 +1359,18 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
 
     // --- Passo 6: segmentar + dividir em células + importar. ---
     report.section("Passo 6 — Montar a onda");
-    const n = deps.waveManifestExists
-      ? nextFreeWaveNumber(proposal.startingWaveNumber, sendDate, (k) => deps.waveManifestExists!(cycle, k))
-      : proposal.startingWaveNumber;
-    if (n !== proposal.startingWaveNumber) {
-      report.note(`⚠️ onda d${proposal.startingWaveNumber} já tem manifest local para ${sendDate} (montada fora do dashboard) — usando d${n} (#9333).`);
+    const n = proposal.startingWaveNumber;
+    if (deps.waveManifestExists?.(cycle, waveKey(n, sendDate))) {
+      // #9333 — manifest local não prova que a onda saiu: pode já estar importada/agendada (retry);
+      // pular em silêncio duplicaria envio. Aborta e exige --wave explícito.
+      lockPath && releaseEnvioLock(lockPath);
+      lockPath = null;
+      report.note(
+        `🛑 manifest da onda d${n} (${waveKey(n, sendDate)}) já existe no ciclo ${cycle}. Pode já estar importada/agendada ou ter sido enviada fora da data da chave — não reutilizo nem pulo sozinho. Confira na Brevo e monte a onda correta com clarice-split-group-cells.ts --wave N explícito (#9333).`,
+      );
+      const reportId = `envio-${aammdd}-manifest-existente`;
+      writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — manifest da onda já existe`, report.build());
+      return { code: 1, reportId, reportMarkdown: report.build() };
     }
     const waveKeyBase = waveKey(n, sendDate);
     report.note(`onda d${n} · ${sendDate} · chave base "${waveKeyBase}" · teste A/B/C: ${abcAction}.`);
