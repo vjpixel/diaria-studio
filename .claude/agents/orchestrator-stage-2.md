@@ -35,7 +35,6 @@ Exit code handling:
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "stage1_sentinel_missing_legacy"`), continuar.
 
 ### 2a. Writer + social em paralelo
-
 **Limites por bucket (#358, #742, #907) — aplicados antes de passar ao writer via `apply-stage2-caps.ts`:**
 - Ler `_internal/01-approved.json` e calcular contagens de cada bucket.
 - Destaques: preservar todos (sempre ≤3).
@@ -67,7 +66,6 @@ Exit code handling:
   O script é idempotente (marca `summary_translated: true` após processar). Strip de prefixo arXiv + 1ª frase + truncate em 150 chars; **não faz tradução LLM** — apenas cleanup determinístico pra evitar prefix bruto `[TRADUZIR]` no MD final. Items com `summary_lang: "en"` (categorize.ts #1473) e/ou arXiv abstract são afetados. Stitch adiciona `[TRADUZIR]` na **DESCRIÇÃO** (2ª linha) quando o summary está em EN — **nunca no título** (#1697/#1634: título de seção secundária preserva o nome original do recurso, nunca traduzido). O prefixo da descrição é removido pelo **humanizer** (ETAPA 0, que roda no draft stitched inteiro — seções secundárias incluídas) ou pelo editor no gate. (Obs: `writer-destaque` NÃO toca seções secundárias — só escreve D1/D2/D3.) Sem este step, o `[TRADUZIR]` + summary em inglês cru vazam pro newsletter HTML (histórico: `docs/orchestrator-stage-narrative-history.md#stage-2-translate-leak`).
 
 **Em uma única mensagem**, disparar os agents simultaneamente:
-
 ### Modo padrão: writer-destaque paralelo (#1158, #1451, #2343)
 
 **INVARIANTE (#1451 decisão editorial 2026-05-21):** writer paralelo é **default em todas as situações**. Corta wall-clock do Stage 2 de ~30min pra ~10min (Stage 2 era 92% do total do pipeline).
@@ -81,11 +79,7 @@ Exit code handling:
 - `tutorial` → "USE MELHOR"
 - `video` → "VÍDEO"
 
-**#6083 (feedback do editor na 260825: "categoria nunca deve ser 'notícias'"):**
-"NOTÍCIAS" não carrega informação — qualquer destaque é uma notícia. Escolha
-SEMPRE um label específico ao tema da história antes de considerar o genérico.
-Lista de referência de primeira escolha (não exaustiva; crie label específico
-quando nenhum servir):
+**#6083 (feedback do editor na 260825: "categoria nunca deve ser 'notícias'"):** "NOTÍCIAS" não carrega informação — qualquer destaque é uma notícia. Escolha SEMPRE um label específico ao tema da história antes de considerar o genérico. Lista de referência de primeira escolha (não exaustiva; crie label específico quando nenhum servir):
 
 | Tema | Label |
 |---|---|
@@ -114,13 +108,19 @@ fonte correta. (O mapping bucket→seção da newsletter acontece no render laye
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
+**0. Baixar as fontes dos destaques ANTES do dispatch (#9252)** — do MESMO `01-approved-capped.json` que o writer e o lint usam (approved e capped podem divergir, ex. 260925):
+```bash
+npx tsx scripts/refresh-destaque-sources.ts --edition-dir {EDITION_DIR}/ --approved {EDITION_DIR}/_internal/01-approved-capped.json
+```
+Grava `_internal/fact-check-sources/d{N}.txt` com o texto completo de cada `article.url` (fail-soft: download falho vira `error`, writer segue só com o summary). Sem isso o writer escreve do `summary` curto e inventa fatos (261001).
+
 **Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):** **Nunca fazer polling (#9223).** As N+2 chamadas `Agent` são SÍNCRONAS: a mensagem só volta quando os subagentes terminaram, com os resultados já na resposta. Não há o que esperar — nunca usar `sleep`, `while … sleep`, `tasklist`, `ls` em loop ou script de poll para "aguardar" os subagentes. Em sessão headless (`claude --print`, spawn do `edition-stage-runner.ts`) esses comandos são negados (`permission_denials`) e cada tentativa queima um turno do teto `--max-turns` (edição 261001: ~15 tentativas negadas, 120 turnos esgotados sem sentinela). Se um output esperado não existir depois da resposta do `Agent`, o subagente falhou — tratar como falha, não esperar mais.
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
      - **#3920: passe o `article` INTEIRO** (não enumere campos) — ele carrega `cluster_sources[]` quando a história teve cobertura múltipla (dedup). O writer usa isso pra emitir o bloco "Aprofunde:" e citar fatos das fontes extras. O `article.url` já é o link canônico (artigo mais completo do cluster).
    - `peer_titles` (titles dos outros 2 — preserva voice diversity)
-   - `edition_date`
+   - `edition_date`; `source_url` = `highlights[N-1].article.url` **literal** — a única URL permitida no link do título (#9252: writer headless já inventou URL "parecida"); `source_text_path` = o `path` da entrada com `destaque === N` no JSON do passo **0** acima (omitir se a entrada veio com `error`)
    - `out_path = {EDITION_DIR}/_internal/02-d{N}-draft.md`
    - `image_prompt_out_path = {EDITION_DIR}/_internal/02-d{N}-prompt.md`
 
@@ -213,7 +213,7 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
 ```bash
 npx tsx scripts/lint-newsletter-md.ts --stage 2 --json --edition-dir {EDITION_DIR}
 ```
-Substitui as 6 invocações separadas que existiam aqui antes (1 processo Node por check) por uma única chamada agregadora — mesmas funções, mesmo veredito por check, só menos overhead de processo. Output (stdout): JSON `{ stage: 2, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. Os 6 `id` (`url-bucket`, `section-counts`, `destaque-min-chars`, `destaque-max-chars`, `why-matters-length`, `aprofunde-format`) são **todos gate-blocking** — `passed` já reflete "nenhum falhou". Debug de 1 check isolado (`--check X --md {EDITION_DIR}/_internal/02-draft.md`) continua funcionando exatamente como antes (modo aditivo, não removido). Para cada `id` com `ok:false`, a ação de re-dispatch é a descrita abaixo, indexada pelo `id` — rode os re-dispatches necessários e repita a chamada acima até `passed: true` (ou esgotar as tentativas descritas por check).
+Substitui as 6 invocações separadas que existiam aqui antes (1 processo Node por check) por uma única chamada agregadora — mesmas funções, mesmo veredito por check, só menos overhead de processo. Output (stdout): JSON `{ stage: 2, passed: boolean, checks: [{ id, source_issue, severity, ok, result }, ...] }`. Os 7 `id` (`url-bucket`, `section-counts`, `destaque-min-chars`, `destaque-max-chars`, `why-matters-length`, `aprofunde-format`, `destaque-url-matches-approved`) são **todos gate-blocking** — `passed` já reflete "nenhum falhou". Debug de 1 check isolado (`--check X --md {EDITION_DIR}/_internal/02-draft.md`) continua funcionando exatamente como antes (modo aditivo, não removido). Para cada `id` com `ok:false`, a ação de re-dispatch é a descrita abaixo, indexada pelo `id` — rode os re-dispatches necessários e repita a chamada acima até `passed: true` (ou esgotar as tentativas descritas por check).
 
 `url-bucket` (#165): valida que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`. Falha = URL na seção errada ou URL fantasma (não existe no approved). Ação: **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
 
@@ -225,7 +225,7 @@ Falha do max = destaque inflado — re-disparar writer com instruction de trimar
 
 `why-matters-length` (#3993): valida que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars). Ação: re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora da janela única 900-1000 (#6061), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
 
-`aprofunde-format` (#3920): valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional). Ação: item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
+`destaque-url-matches-approved` (#9252): a URL de cada DESTAQUE N tem de ser idêntica (só `#fragmento` ignorado) a `highlights[N-1].article.url` do approved. Ação: re-disparar o `writer-destaque` do destaque com a URL exata do approved + o `source_text_path` — nunca corrigir a URL à mão sem reler o corpo (URL inventada costuma vir junto com fato inventado). `aprofunde-format` (#3920): valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional). Ação: item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash

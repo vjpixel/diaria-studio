@@ -163,4 +163,25 @@ describe("refresh-destaque-sources (#9102)", () => {
       rmSync(ed, { recursive: true, force: true });
     }
   });
+
+  it("#9252: --approved aponta pro capped — texto-fonte segue os highlights do capped, não do approved", async () => {
+    // Caso real 260925: approved e capped com highlights diferentes.
+    const ed = setup(URLS);
+    try {
+      const capped = ["https://ex.com/a", "https://ex.com/CAPPED", "https://ex.com/c"];
+      const cappedPath = join(ed, "_internal", "01-approved-capped.json");
+      writeFileSync(
+        cappedPath,
+        JSON.stringify({ highlights: capped.map((url, i) => ({ rank: i + 1, article: { url, title: `t${i}` } })) }),
+        "utf8",
+      );
+      const calls: string[] = [];
+      const r = await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(calls), approvedPath: cappedPath });
+      assert.deepEqual(r.sources.map((s) => s.url), capped);
+      assert.match(readFileSync(join(srcDir(ed), "d2.txt"), "utf8"), /ex\.com\/CAPPED/);
+      assert.ok(!calls.includes("https://ex.com/b"), "URL do 01-approved.json não pode ser baixada");
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
 });

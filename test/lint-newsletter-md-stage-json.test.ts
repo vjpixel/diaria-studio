@@ -297,7 +297,7 @@ describe("runStage2LintReport (#5416)", () => {
     return dir;
   }
 
-  it("6 checks presentes, todos gate-blocking (mesma severity do modo --check individual)", () => {
+  it("7 checks presentes, todos gate-blocking (mesma severity do modo --check individual)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -305,6 +305,7 @@ describe("runStage2LintReport (#5416)", () => {
       "aprofunde-format",
       "destaque-max-chars",
       "destaque-min-chars",
+      "destaque-url-matches-approved",
       "section-counts",
       "url-bucket",
       "why-matters-length",
@@ -489,7 +490,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.deepEqual(aprofunde.result, checkAprofundeFormat(buildMd()));
 
     // Todos os 6 checks continuam presentes.
-    assert.equal(out.checks.length, 6);
+    assert.equal(out.checks.length, 7); // #9252: + destaque-url-matches-approved
 
     rmSync(dir, { recursive: true, force: true });
   });
