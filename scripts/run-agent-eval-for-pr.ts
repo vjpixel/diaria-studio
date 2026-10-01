@@ -250,7 +250,7 @@ export function addLabel(prNumber: string, label: string, runner: CommandRunner)
   if (w.status !== 0) {
     throw new Error(`[#9339] gh api POST issues/${prNumber}/labels (${label}) falhou: ${w.stderr || w.stdout || `exit ${w.status}`}`);
   }
-  const v = runner("gh", ["api", `repos/{owner}/{repo}/issues/${prNumber}/labels`, "--jq", ".[].name"]);
+  const v = runner("gh", ["api", `repos/{owner}/{repo}/issues/${prNumber}/labels?per_page=100`, "--jq", ".[].name"]);
   if (v.status !== 0) {
     throw new Error(`[#9339] label ${label} escrita, mas a releitura das labels da PR #${prNumber} falhou: ${v.stderr || `exit ${v.status}`}`);
   }

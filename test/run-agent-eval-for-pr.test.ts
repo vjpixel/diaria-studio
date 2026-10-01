@@ -335,6 +335,7 @@ describe("addLabel / postComment (#8144)", () => {
     };
     assert.doesNotThrow(() => addLabel("42", "agent-eval:passed", runner));
     assert.ok(calls.some((c) => c.includes("issues/42/labels") && c.includes("labels[]=agent-eval:passed")));
+    assert.ok(calls.some((c) => !c.includes("-X POST") && c.includes("--jq")), "releitura deve ser chamada");
   });
 
   it("addLabel: regressão #9339 — falha do POST lança com a label no erro", () => {
@@ -345,7 +346,7 @@ describe("addLabel / postComment (#8144)", () => {
   it("addLabel: POST ok mas label ausente na releitura lança (#9339)", () => {
     const runner = mockRunner({
       "-X POST": { status: 0, stdout: "", stderr: "" },
-      "issues/42/labels --jq": { status: 0, stdout: "bug\n", stderr: "" },
+      "labels?per_page=100 --jq": { status: 0, stdout: "bug\n", stderr: "" },
     });
     assert.throws(() => addLabel("42", "agent-eval:passed", runner), /releitura/);
   });
@@ -353,7 +354,7 @@ describe("addLabel / postComment (#8144)", () => {
   it("addLabel: releitura falhando lança (#9339)", () => {
     const runner = mockRunner({
       "-X POST": { status: 0, stdout: "", stderr: "" },
-      "issues/42/labels --jq": { status: 1, stdout: "", stderr: "5xx" },
+      "labels?per_page=100 --jq": { status: 1, stdout: "", stderr: "5xx" },
     });
     assert.throws(() => addLabel("42", "agent-eval:passed", runner), /5xx/);
   });
