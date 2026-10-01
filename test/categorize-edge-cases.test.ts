@@ -801,6 +801,48 @@ describe("categorizeArticles() — gate de relevância-IA em buckets secundário
     assert.equal(all[0].url, art.url);
   });
 
+  it("#9402 CASO REAL 261002: lista de jogos GeForce NOW (blogs.nvidia.com, caía em lancamento) é excluída", () => {
+    const arts: Article[] = [
+      {
+        url: "https://blogs.nvidia.com/blog/geforce-now-thursday-october-2026-games-list/",
+        title: "Fall Into 25 New Games on GeForce NOW This October",
+        summary:
+          "Spooky season is streaming in. Alongside falling leaves, pumpkin spice and everything nice, 25 new games are joining GeForce NOW throughout October, including six ready to play this week.",
+      },
+      {
+        url: "https://blogs.nvidia.com/blog/geforce-now-thursday-control-resonant/",
+        title: "Contain the Chaos: ‘CONTROL Resonant’ Launches on GeForce NOW",
+        summary: "Last chance for the ‘CONTROL Resonant’ Ultimate membership bundle, with GeForce NOW coming to Googlebooks and nine new games this week.",
+      },
+    ];
+    const result = categorizeArticles(arts);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 0, "post de jogos GeForce NOW não deve sobreviver em nenhum bucket");
+  });
+
+  it("#9402 sem-regressão: post de IA em blogs.nvidia.com continua no pool", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/cosmos-physical-ai-reasoning/",
+      title: "How Cosmos 3 Helps Physical AI Think Before It Acts",
+      summary: "NVIDIA Cosmos reasoning model for robotics.",
+    };
+    const result = categorizeArticles([art]);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 1);
+  });
+
+  it("#9402: editor_submitted GeForce NOW continua isento (precedente #5080)", () => {
+    const art: Article = {
+      url: "https://blogs.nvidia.com/blog/geforce-now-thursday-october-2026-games-list/",
+      title: "Fall Into 25 New Games on GeForce NOW This October",
+      summary: "",
+      flag: "editor_submitted",
+    };
+    const result = categorizeArticles([art]);
+    const all = [...result.lancamento, ...result.radar, ...result.use_melhor, ...result.video];
+    assert.equal(all.length, 1);
+  });
+
   it("#5080 sem-regressão: item editor_submitted SEM sinal de IA continua isento mesmo com summary vazio", () => {
     const art: Article = {
       url: "https://example.com/editor-link",
