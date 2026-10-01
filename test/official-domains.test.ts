@@ -298,3 +298,20 @@ describe("Qwen no GitHub é lançamento oficial (260922)", () => {
     assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen/blob/main/README.md"), false);
   });
 });
+
+describe("Cloudflare no gate de LANÇAMENTOS (#9390)", () => {
+  it("isOfficialLancamentoUrl aceita o anúncio real do Pay Per Use", () => {
+    assert.ok(lancamentoDomains().has("blog.cloudflare.com"));
+    assert.equal(isOfficialLancamentoUrl("https://blog.cloudflare.com/pay-per-use/"), true);
+  });
+
+  it("só o blog: cloudflare.com raiz e domínio parecido seguem NÃO-oficiais", () => {
+    assert.equal(isOfficialLancamentoUrl("https://www.cloudflare.com/plans/"), false);
+    assert.equal(isOfficialLancamentoUrl("https://blog.cloudflare.com.evil.io/x"), false);
+    assert.equal(isOfficialLancamentoUrl("https://techcrunch.com/cloudflare-pay-per-use"), false);
+  });
+
+  it("não registra keyword de detecção (Cloudflare é ruído de incidente/infra)", () => {
+    assert.ok(!companyToDomain().some((c) => c.domain === "blog.cloudflare.com"));
+  });
+});

@@ -172,6 +172,15 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(cerebras)\b/i,
   },
   {
+    // #9390: Pay Per Use (blog.cloudflare.com/pay-per-use/, edição 261002)
+    // barrado no gate e movido pro RADAR — allowlist incompleta (#7401).
+    // Só o host do blog: cloudflare.com inteiro tem pricing/docs/marketing.
+    // Sem detection_keywords de propósito: "Cloudflare" aparece demais em
+    // notícia de incidente/infra, não de lançamento de IA.
+    company: "Cloudflare",
+    domains: ["blog.cloudflare.com"],
+  },
+  {
     company: "Cohere",
     domains: ["cohere.com"],
     detection_keywords: /\bcohere\b/i,
