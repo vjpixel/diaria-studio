@@ -204,6 +204,11 @@ export type GitSyncOutcome =
                            // legítimo de uma sessão aterrissou em master local por causa disso).
                            // Ainda fail-soft (proceed: true) — nunca bloqueia quem chamou, só não
                            // toca o git deste worktree.
+  | "protected_config_dirty" // #9276: ff direto recusou e a tree suja inclui config consumida pela
+                           // edição (`PROTECTED_CONFIG_PATHS`, ex. platform.config.json editado no
+                           // gate 4). NÃO stasha — stashar tiraria a config do working tree e a
+                           // publicação seguiria com a versão do master em silêncio. Tree e HEAD
+                           // intocados (código fica defasado), WARN, fail-soft (proceed: true).
   | "preexisting_unmerged_state"; // #6800: caminho(s) UU/AA/etc JÁ presentes no índice ANTES de
                            // qualquer tentativa de stash desta chamada — sobra de um "stash pop"
                            // conflitante de uma rodada ANTERIOR (não desta). ESTADO ABSORVENTE:
@@ -1014,6 +1019,38 @@ export function parseUnmergedPaths(porcelainStdout: string): string[] {
 }
 
 /**
+ * #9276: arquivos de config rastreados que a edição em curso consome e que o
+ * editor pode ter editado localmente (ex. Stage 4: sorteio do mês, Meet, slots
+ * de caixa em `platform.config.json`). Se algum deles está sujo e o ff direto
+ * recusou, `syncCode()` NÃO cria autostash — a publicação dependeria da config
+ * stashada e seguiria com a versão do master em silêncio (incidente 261001).
+ */
+export const PROTECTED_CONFIG_PATHS: readonly string[] = ["platform.config.json"];
+
+/**
+ * #9276: dado o stdout de `git status --porcelain`, retorna os caminhos de
+ * `PROTECTED_CONFIG_PATHS` com mudança local rastreada (qualquer código XY
+ * exceto `??`/`!!`). Renomeação (`R  a -> b`) conta pelos dois lados. Puro.
+ */
+export function findDirtyProtectedConfig(
+  porcelainStdout: string,
+  protectedPaths: readonly string[] = PROTECTED_CONFIG_PATHS,
+): string[] {
+  const hits = new Set<string>();
+  for (const raw of porcelainStdout.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (line.length < 4) continue;
+    const code = line.slice(0, 2);
+    if (code === "??" || code === "!!") continue;
+    for (const part of line.slice(3).split(" -> ")) {
+      const path = part.trim().replace(/^"|"$/g, "");
+      if (protectedPaths.includes(path)) hits.add(path);
+    }
+  }
+  return [...hits];
+}
+
+/**
  * #9107: dado o stdout literal de `git status --porcelain` (sem `-z`),
  * retorna as entradas NÃO-RASTREADAS (`?? <caminho>`). Diretório inteiro
  * não-rastreado aparece colapsado com barra final (`?? dir/`) — preservado
@@ -1391,6 +1428,28 @@ function syncCodeLocked(
         message: upToDate
           ? "[git-sync] Código já estava atualizado (tree suja preservada, sem necessidade de stash — #8719)."
           : "[git-sync] Código sincronizado com origin/master (tree suja preservada, sem necessidade de stash — #8719).",
+        branch_before: branchBefore,
+        warnings,
+        proceed: true,
+        preserved_stash: null,
+      };
+    }
+
+    // #9276: config consumida pela edição suja → NÃO stasha. Stashar tiraria
+    // a config do working tree (a publicação seguiria com a do master em
+    // silêncio, incidente 261001). Fail-soft: código fica defasado, config
+    // intacta, warning explícito.
+    const dirtyConfig = statusRes.status === 0 ? findDirtyProtectedConfig(statusRes.stdout) : [];
+    if (dirtyConfig.length > 0) {
+      const msg =
+        `[git-sync] WARN: ff-only recusou com config local editada (${dirtyConfig.join(", ")}) — ` +
+        `sync PULADO para não stashar config de que a edição depende (#9276). Working tree e HEAD ` +
+        `intocados; o código segue defasado de origin/master. Commite/abra PR da config (ou ` +
+        `descarte-a) e rode o sync de novo.`;
+      warnings.push(msg);
+      return {
+        outcome: "protected_config_dirty",
+        message: msg,
         branch_before: branchBefore,
         warnings,
         proceed: true,

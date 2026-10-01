@@ -159,6 +159,16 @@ if (result.preserved_stash) {
   );
 }
 
+// #9276: config da edição editada localmente — sync pulado pra não stashá-la.
+if (result.outcome === "protected_config_dirty") {
+  process.stderr.write(
+    `\n🛑 SYNC PULADO — config local editada (${result.message.match(/\(([^)]*)\)/)?.[1] ?? "config"}).\n` +
+      `   O ff-only recusou e stashar tiraria a config de que esta edição depende (#9276).\n` +
+      `   Config e HEAD intocados; o código segue defasado de origin/master.\n` +
+      `   Commite/abra PR da config (ou descarte-a) e rode o sync de novo.\n\n`,
+  );
+}
+
 // #7336: banner — sync foi recusado por rodar dentro de um worktree de
 // agente. Ainda fail-soft (exit 0 abaixo, inalterado) — o chamador que
 // invocou este script de dentro de um worktree provavelmente tem um bug de
