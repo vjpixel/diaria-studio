@@ -166,8 +166,10 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
         ou ≥1 ação devida barrada por snippet ausente/pendente/inválido; ou
         o refresh de TODOS os candidatos falhou por erro de consulta (rede,
         ou qualquer erro HTTP exceto 404/422 — "não encontrado no Kit" não
-        conta). Rodada com kind barrado por `blocked_concurrent` e sem falha
-        é NEUTRA (nem zera nem incrementa a streak). Com
+        conta). Rodada com kind barrado por `blocked_concurrent`, sem falha e
+        SEM lote criado é NEUTRA (nem zera nem incrementa a streak) — se
+        outro kind criou lote na mesma rodada, a entrega está provada e a
+        streak zera (#9367 item 4). Com
         `onboarding.kit_transport.enabled: true`,
         `onboarding-continuity-alarm.ts` avalia esse sinal (check
         `onboarding-kit-transport`, issue própria): 2 rodadas seguidas
@@ -188,6 +190,25 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
         existe task agendada do executor Kit — declará-la e armá-la é passo
         do flip (abaixo). Sem ela, o alarme abre a issue "executor não está
         rodando" já na 1ª manhã depois do flip.
+- [x] Lote `unverified` nunca fica preso sem `--reconcile` agendado (#9367
+      item 1): toda rodada `--send` relê os lotes abertos ANTES de planejar
+      (`reconcileOpenLots`, o mesmo laço do `--reconcile`). Lote de e-mail
+      1/2 cuja releitura de confirmação falhou numa rodada anterior é
+      relido: agendado/enviado → grava `email{1,2}_sent_at` (a régua
+      ancora); rascunho → broadcast apagado e lote cancelado (entradas
+      voltam ao plano na mesma rodada); ainda ilegível → conta de novo em
+      `lots_unverified` (a streak cresce, não zera). Por isso NÃO é preciso
+      agendar `--reconcile` como task separada para o flip — ele segue
+      disponível para releitura manual. Dry-run relê só em memória.
+- [x] Bordas da releitura de confirmação (`confirmOrCleanUpScheduledLot`,
+      #9367 itens 2-3): só status `scheduled` (com `send_at` ecoado),
+      `sending` ou `completed` confirmam — `aborted`/rascunho/fora do enum
+      com `send_at` ecoado vai pro caminho "não agendado". `sending`/
+      `completed` sem `send_at` ecoado (releitura atrasada além do envio)
+      conta como ENVIADO e nunca é apagado; DELETE recusado com 422
+      "already been sent" idem — nunca vira `schedule_failed` nem devolve as
+      entradas ao plano (seria o e-mail 1 em dobro). Testes:
+      `test/onboarding-kit-transport-run-counters-7922.test.ts`.
 - [ ] Painel do Studio (`/assinantes`, #7917/#8955) mostrando os lotes Kit
       corretamente para pelo menos 1 ciclo completo em dry-run.
   - [x] Código: o painel lista os lotes Kit de produção (status, broadcast,

@@ -756,10 +756,14 @@ export interface KitSendRunRecord {
   lots_failed: number;
   /** E-mail 1/2 criados cuja releitura de confirmação FALHOU (rede/API): o
    *  lote fica `created` (não se declara falha de entrega sem leitura), mas a
-   *  rodada conta como falha de transporte. */
+   *  rodada conta como falha de transporte. Inclui (#9367 item 1) lote de
+   *  rodada ANTERIOR ainda `unverified` cuja releitura no início deste
+   *  `--send` (`reconcileOpenLots`) também falhou — senão a streak zerava
+   *  com o lote ainda preso. */
   lots_unverified: number;
   /** Kinds pulados por `blocked_concurrent` (outra rodada, ou o `pending` de
-   *  uma falha anterior há < 15 min). Rodada só com isso é NEUTRA na streak. */
+   *  uma falha anterior há < 15 min). Rodada só com isso (nenhum lote criado)
+   *  é NEUTRA na streak (#9367 item 4). */
   blocked_concurrent: number;
   /** Candidatos que precisaram de refresh de status/stats no Kit. */
   refresh_candidates: number;
@@ -832,8 +836,10 @@ export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport
   if (isFailedKitSendRun(run)) kitTransport.consecutive_failed_send_runs = prev + 1;
   // NEUTRA: rodada sem falha mas com kind barrado por `blocked_concurrent`
   // não prova que o transporte voltou a entregar — não zera (nem incrementa:
-  // a falha que deixou o `pending` já foi contada na rodada dela).
-  else if ((run.blocked_concurrent ?? 0) > 0) kitTransport.consecutive_failed_send_runs = prev;
+  // a falha que deixou o `pending` já foi contada na rodada dela). #9367
+  // item 4: só é neutra se NADA foi entregue — um lote criado e agendado na
+  // mesma rodada (outro kind) prova que o transporte entrega, então zera.
+  else if ((run.blocked_concurrent ?? 0) > 0 && run.lots_created === 0) kitTransport.consecutive_failed_send_runs = prev;
   else kitTransport.consecutive_failed_send_runs = 0;
   return kitTransport;
 }

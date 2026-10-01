@@ -293,7 +293,10 @@ describe("orchestrator-prompt (#634)", () => {
       // documentado é manual (não há script de substituição hoje) — a issue
       // aceita isso como suficiente, construir o script é escopo maior.
       // Arquivo foi a 927 linhas. Teto bumped de 910→935 com headroom pequeno.
-      "orchestrator-stage-4.md": 935,
+      // #9370: +6 linhas (§4c.9 refresh tardio pré-gate — 1 parágrafo + a
+      // seção `━━━ SAIU DEPOIS DA PESQUISA` com `{late_refresh_block}` no
+      // resumo do gate). Arquivo foi a 941 linhas. Teto bumped de 935→945.
+      "orchestrator-stage-4.md": 945,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser

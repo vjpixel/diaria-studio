@@ -16,17 +16,26 @@
  * Cenário: entrada já `status_detectado: "active"` (refresh anterior bem-
  * sucedido), `email1_sent_at` no passado (âncora da régua), due para o
  * e-mail 2 (D+3 vencido). Nesta rodada, TODA chamada de rede ao Kit falha
- * (`KIT_API_URL` apontado para uma porta sem listener — connection refused
- * determinístico, sem depender de internet/mock de `fetch`). Sem o fix, o
+ * (`KIT_API_URL` apontado para um Kit falso local que responde 401 em tudo —
+ * auth quebrada, erro de TRANSPORTE determinístico e NÃO retriável). Sem o fix, o
  * lote de email2 seria criado com este destinatário (kit_state ainda lido
  * como "active" do campo persistido); com o fix, o candidato é EXCLUÍDO
  * (`status_nao_confirmado`) e nenhum lote nasce — replica exatamente o
  * requisito da issue "Falha de consulta não autoriza envio" no caminho que
  * de fato roda em produção, não só na função isolada.
+ *
+ * #9361: a versão anterior apontava `KIT_API_URL` pra `127.0.0.1:1` (porta
+ * morta). Connection refused é erro de REDE — retriável —, então cada chamada
+ * pagava o backoff inteiro de `KIT_RETRY_DEFAULTS` (~27s de espera real, com
+ * timeout de 30s): sob carga paralela o teste estourava. O 401 do mock local
+ * (mesma técnica de `test/studio-onboarding-kit-lots-7922.test.ts`, #9350)
+ * exercita o mesmo "refresh falhou em todos os candidatos" sem backoff —
+ * `KIT_RETRY_DEFAULTS` de produção fica intocado.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -51,8 +60,40 @@ function assertRealStoreUntouched(): void {
   assert.equal(fingerprintRealStore(), realStoreBaseline, "store real de produção não deve ser tocado");
 }
 
+/** Kit falso: 401 em tudo (auth quebrada) — erro de transporte NÃO retriável,
+ *  então o executor falha o refresh na hora, sem pagar backoff (#9361). */
+function startKit401(): Promise<{ server: Server; url: string; hits: () => number }> {
+  let hits = 0;
+  return new Promise((resolvePromise) => {
+    const server = createServer((_req, res) => {
+      hits++;
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ errors: ["mock 401"] }));
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolvePromise({ server, url: `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`, hits: () => hits });
+    });
+  });
+}
+
+/** Subprocesso ASSÍNCRONO — `spawnSync` bloquearia o event loop deste
+ *  processo e o mock HTTP acima nunca responderia. */
+function runExecutor(args: string[], env: NodeJS.ProcessEnv): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", ...args], { cwd: __ROOT, env, timeout: 30_000 });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => (stdout += d.toString()));
+    child.stderr?.on("data", (d) => (stderr += d.toString()));
+    child.on("error", reject);
+    child.on("close", (status) => resolvePromise({ status, stdout, stderr }));
+  });
+}
+
 describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza envio, no nível do executor (#7922)", () => {
-  it("candidato com status_detectado='active' PERSISTIDO, mas refresh desta rodada FALHA (Kit inalcançável) → excluído do lote, nenhum lote criado", () => {
+  it("candidato com status_detectado='active' PERSISTIDO, mas refresh desta rodada FALHA (Kit inalcançável) → excluído do lote, nenhum lote criado", async () => {
+    const kit = await startKit401();
     const dir = mkdtempSync(join(tmpdir(), "diaria-kit-transport-refresh-failure-"));
     try {
       const configPath = join(dir, "platform.config.json");
@@ -109,18 +150,15 @@ describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza e
         '<!-- assunto: "assunto 2" preview_text: "preview 2" -->\nCorpo do e-mail 2 de teste.\n',
       );
 
-      // `KIT_API_URL` inalcançável (porta 1, sem listener) — TODA chamada de
-      // rede ao Kit (numérico + fallback por e-mail) falha com connection
-      // refused, determinístico e sem depender de internet nem de mockar
-      // `fetch` (que não seria possível através de `spawnSync` de qualquer
-      // forma — subprocesso real).
+      // `KIT_API_URL` = Kit falso local (401 em tudo) — TODA chamada ao Kit
+      // (numérico + fallback por e-mail) falha com erro de transporte não
+      // retriável, determinístico e sem depender de internet (#9361).
       const env = {
         ...process.env,
         KIT_API_KEY: "fixture_fake_kit_key_do_not_use",
-        KIT_API_URL: "http://127.0.0.1:1",
+        KIT_API_URL: kit.url,
       };
       const args = [
-        "tsx",
         resolve(__ROOT, "scripts/onboarding-kit-transport-run.ts"),
         "--config",
         configPath,
@@ -130,7 +168,9 @@ describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza e
         snippetsDir,
       ];
       if (realStoreBaseline === undefined) realStoreBaseline = fingerprintRealStore();
-      const result = spawnSync("npx", args, { cwd: __ROOT, encoding: "utf8", env, shell: process.platform === "win32", timeout: 30_000 });
+      const startedAt = Date.now();
+      const result = await runExecutor(args, env);
+      const elapsedMs = Date.now() - startedAt;
 
       assert.equal(result.status, 0, `esperava exit 0 (dry-run, sem --send), obteve ${result.status}. stdout: ${result.stdout} stderr: ${result.stderr}`);
       assert.ok(
@@ -158,7 +198,12 @@ describe("onboarding-kit-transport-run.ts — falha de consulta nunca autoriza e
       // reforça que a decisão de "0 elegíveis" nunca chegou perto de criar
       // um lote com este destinatário).
       assertRealStoreUntouched();
+      // #9361: o refresh falhou de fato CONTRA O MOCK (não por outro motivo), e
+      // sem backoff — a versão com porta morta gastava ~27s aqui.
+      assert.ok(kit.hits() > 0, "o executor deveria ter consultado o Kit falso");
+      assert.ok(elapsedMs < 20_000, `refresh falho não deveria pagar backoff de retry — levou ${elapsedMs}ms`);
     } finally {
+      kit.server.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });

@@ -552,6 +552,30 @@ describe("clarice-envio-run (#5026)", () => {
     });
   });
 
+  describe("runEnvio — chave de onda já ocupada por manifest local (#9333)", () => {
+    it("REGRESSÃO: retry com manifest já importado/agendado => aborta exit 1, sem split nem import (nunca pula p/ d+1)", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(
+        baseDeps(root, { exec, waveManifestExists: (_c, key) => key === "d12-qua12" }),
+      );
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.equal(calls.some((c) => c.script === "scripts/clarice-split-group-cells.ts"), false);
+      assert.match(r.reportMarkdown, /--wave N explícito/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha do split dentro do run => exit 1 (nunca 0)", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-split-group-cells.ts"] = { code: 1, stdout: "", stderr: "manifest já existe" };
+      const { exec } = makeFakeExec(h);
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 1);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
   describe("runEnvio — caminho feliz completo", () => {
     it("travar (1 célula): monta a onda e agenda com sucesso (code 0)", async () => {
       const root = freshRoot();
