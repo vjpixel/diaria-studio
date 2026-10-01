@@ -727,6 +727,10 @@ describe("#2277 — HF model-card como domínio oficial", () => {
     assert.ok(isOfficialLancamentoUrl("https://huggingface.co/microsoft/phi-3-mini-4k-instruct"));
   });
 
+  it("isOfficialLancamentoUrl: blog.cloudflare.com é oficial (#9390)", () => {
+    assert.ok(isOfficialLancamentoUrl("https://blog.cloudflare.com/pay-per-use/"));
+  });
+
   it("isOfficialLancamentoUrl: /blog/ HF ainda reconhecido (não regrediu)", () => {
     assert.ok(isOfficialLancamentoUrl("https://huggingface.co/blog/smollm3"));
     assert.ok(isOfficialLancamentoUrl("https://huggingface.co/blog/new-vision-model"));

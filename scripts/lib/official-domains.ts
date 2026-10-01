@@ -220,6 +220,11 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(microsoft|copilot|phi-?[0-9]+)\b/i,
   },
   {
+    company: "Cloudflare",
+    domains: ["blog.cloudflare.com"],
+    detection_keywords: /\bcloudflare\b/i,
+  },
+  {
     company: "Mistral",
     domains: ["mistral.ai"],
     detection_keywords: /\b(mistral|mixtral|codestral)\b/i,
