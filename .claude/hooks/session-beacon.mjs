@@ -108,6 +108,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath }
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
+import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 /** Kind das sessões registradas por este hook. Nunca coordenador — ver blast radius 2. */
 export const BEACON_KIND = "interactive";
@@ -795,8 +796,9 @@ function writeJsonAtomic(path, value) {
  * letra do CAS e quebraria a razão de existir dele — além de violar o "stall
  * silencioso > 60s é inaceitável" do CLAUDE.md.
  *
- * 2s × 3 = ~6s de pior caso (~7s no Windows: a sequência de delete-pending
- * do #9280, até ~300ms, não olha o deadline). A assimetria com o lado TS é escolha, não
+ * 2s × 3 = ~6s de pior caso, mais, no Windows, até ~330ms além do deadline
+ * em cada tentativa CAS (a sequência de delete-pending do #9280 não olha o
+ * deadline). A assimetria com o lado TS é escolha, não
  * descuido: lá, perder a escrita custa um grant/claim e vale esperar; aqui,
  * custa um heartbeat alguns segundos mais velho e não vale segurar o editor.
  */
@@ -859,10 +861,36 @@ function writeJsonAtomicWithCas(path, buildRecord, verify, attempts = BEACON_CAS
       if (acquired) releaseBeaconLock(lockPath);
     }
   }
-  throw new Error(
-    `writeJsonAtomicWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
-      `— outro processo continua escrevendo o registro; última falha: ${lastErr?.message ?? String(lastErr)}`,
+  // #9280: `code`/`cause` da última falha sobem junto — o catch externo
+  // classifica por `e.code` (EPERM/EACCES), não pela mensagem.
+  throw Object.assign(
+    new Error(
+      `writeJsonAtomicWithCas: ${attempts} tentativas de CAS falharam em ${path} ` +
+        `— outro processo continua escrevendo o registro; última falha: ${lastErr?.message ?? String(lastErr)}`,
+      { cause: lastErr },
+    ),
+    { code: lastErr?.code },
   );
+}
+
+const loggedLockErrorSessions = new Set();
+
+/**
+ * #9280: o catch externo do beacon é fail-open total, então um EPERM/EACCES
+ * persistente no `.lock` (permissão real, ou delete-pending que não cedeu)
+ * sumia sem rastro. Registra UMA vez por sessão (marcador em memória) em
+ * stderr + `data/run-log.jsonl`. Outros erros seguem silenciosos. Exportado
+ * pra teste; devolve `true` se registrou.
+ */
+export function logBeaconLockErrorOnce(repoRoot, sessionId, err, deps = {}) {
+  const code = err?.code;
+  if (code !== "EPERM" && code !== "EACCES") return false;
+  const key = sessionId ?? "";
+  if (loggedLockErrorSessions.has(key)) return false;
+  loggedLockErrorSessions.add(key);
+  try { process.stderr.write(`[session-beacon] heartbeat não gravado: ${code} no lock do registro (#9280)\n`); } catch { /* ignore */ }
+  appendHookRunLog(repoRoot, "session-beacon", "warn", "beacon_lock_error", { code }, deps);
+  return true;
 }
 
 // #2019-style CLI guard — só roda o corpo quando este arquivo é o entrypoint
@@ -878,9 +906,12 @@ if (
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
   process.stdin.on("end", () => {
+    let logRoot = null;
+    let logSessionId = null;
     try {
       const payload = JSON.parse(data || "{}");
       const sessionId = payload.session_id;
+      logSessionId = sessionId;
       if (!sessionId) return; // sem identidade não há beacon possível
 
       const hookDir = dirname(fileURLToPath(import.meta.url));
@@ -926,6 +957,7 @@ if (
       if (isLinkedWorktree(cwdRoot)) return;
 
       const mainRoot = resolveMainRepoRootNoSpawn(cwdRoot) ?? cwdRoot;
+      logRoot = mainRoot;
       const sessionsDir = join(mainRoot, "data", "sessions");
       // `data/` é junction do OneDrive e NÃO existe num clone fresco nem num
       // worktree — sem ela não há registro compartilhado pra alimentar.
@@ -990,8 +1022,10 @@ if (
         );
       }
       // Nunca emitir saída: este hook não altera nem bloqueia a chamada.
-    } catch {
-      // Fail-open total — ver "CUSTO E FAIL-OPEN" no topo.
+    } catch (e) {
+      // Fail-open total — ver "CUSTO E FAIL-OPEN" no topo. Só EPERM/EACCES
+      // deixa rastro, uma vez por sessão (#9280).
+      logBeaconLockErrorOnce(logRoot, logSessionId, e);
     }
   });
 }

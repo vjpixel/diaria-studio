@@ -107,13 +107,19 @@ export function breakStaleLock(lockPath, now = Date.now()) {
 }
 
 /**
- * #9280 — espelho de `DELETE_PENDING_MAX_STREAK`/`isDeletePendingWxError` de
- * `scripts/lib/file-lock.ts` (#9194, fonte canônica). No Windows, o unlink do
- * dono enquanto outro processo segura o `.lock` aberto (os waiters TS o leem
- * a cada volta, #9185) deixa o nome em DELETE-PENDING, e o `wx` falha com
- * EPERM/EACCES em vez de EEXIST. É contenção transitória: retenta a cada ~5ms,
- * no máximo DELETE_PENDING_MAX_STREAK vezes seguidas; esgotada a sequência é
- * permissão real e propaga rápido (#6952), com o mesmo `code` e `cause`.
+ * #9280 — espelho de `DELETE_PENDING_MAX_STREAK`/`DELETE_PENDING_WAIT_MS`/
+ * `isDeletePendingWxError` de `scripts/lib/file-lock.ts` (#9194, fonte
+ * canônica). No Windows, o unlink do dono enquanto outro processo segura o
+ * `.lock` aberto (o `readLockFile` dos waiters, #9194) deixa o nome em
+ * DELETE-PENDING, e o `wx` falha com EPERM/EACCES em vez de EEXIST. É
+ * contenção transitória: até DELETE_PENDING_MAX_STREAK retentativas seguidas
+ * (21 tentativas no total) a cada ~5ms; esgotada a sequência, provavelmente é
+ * permissão real e propaga rápido (#6952), com `code`, `cause` e
+ * `deletePendingExhausted: true`.
+ *
+ * Diferença DELIBERADA do lado TS: aqui não há deadline — o hook não conhece
+ * o do caller. O único teto é o streak: ~20×5ms nominal, ~300ms na prática
+ * (resolução de timer ~15,6ms do Windows), além do deadline do caller.
  * Paridade travada por test/hook-registry-lock-delete-pending-9280.test.ts.
  */
 export const DELETE_PENDING_MAX_STREAK = 20;
@@ -122,6 +128,11 @@ export const DELETE_PENDING_WAIT_MS = 5;
 /** `true` se o erro do `wx` é o sintoma de delete-pending do Windows (#9194/#9280). */
 export function isDeletePendingWxError(code, platform = process.platform) {
   return platform === "win32" && (code === "EPERM" || code === "EACCES");
+}
+
+/** `true` se `e` é o erro de sequência de delete-pending esgotada de `tryAcquireOwnedLock`. */
+export function isDeletePendingExhausted(e) {
+  return e?.deletePendingExhausted === true;
 }
 
 const DEFAULT_ACQUIRE_DEPS = { platform: process.platform, openWx: (p) => openSync(p, "wx") };
@@ -133,7 +144,7 @@ const DEFAULT_ACQUIRE_DEPS = { platform: process.platform, openWx: (p) => openSy
  * (delete-pending, #9280) é retentado aqui dentro numa sequência curta — que
  * termina em true, em false (apareceu EEXIST: o próximo dono já criou) ou,
  * esgotada, lança. Qualquer outro erro propaga imediatamente.
- * `deps` é seam de teste (plataforma + `open(wx)`); produção omite.
+ * @internal `deps` é seam de teste (plataforma + `open(wx)`); produção omite.
  */
 export function tryAcquireOwnedLock(lockPath, deps = DEFAULT_ACQUIRE_DEPS) {
   let fd;
@@ -150,13 +161,13 @@ export function tryAcquireOwnedLock(lockPath, deps = DEFAULT_ACQUIRE_DEPS) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, DELETE_PENDING_WAIT_MS);
         continue;
       }
-      // Sequência esgotada: não é delete-pending, é permissão real.
+      // Sequência esgotada: provavelmente não é delete-pending, e sim permissão real.
       throw Object.assign(
         new Error(
-          `[registry-lock] ${code} persistiu por ${pendingStreak} tentativas seguidas em ${lockPath} — não é delete-pending (#9194)`,
+          `[registry-lock] ${code} persistiu por ${pendingStreak} tentativas seguidas em ${lockPath} — provável permissão real, não delete-pending (#9194)`,
           { cause: e },
         ),
-        { code },
+        { code, deletePendingExhausted: true },
       );
     }
   }

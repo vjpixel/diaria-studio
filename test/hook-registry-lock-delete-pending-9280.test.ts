@@ -13,7 +13,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,8 +21,16 @@ import {
   isDeletePendingWxError as isDeletePendingMjs,
   DELETE_PENDING_MAX_STREAK as STREAK_MJS,
   DELETE_PENDING_WAIT_MS as WAIT_MJS,
+  isDeletePendingExhausted,
 } from "../.claude/hooks/lib/registry-lock.mjs";
 import { isDeletePendingWxError, DELETE_PENDING_MAX_STREAK, DELETE_PENDING_WAIT_MS } from "../scripts/lib/file-lock.ts";
+import { grantMergeWindow, machineTag, registerSession } from "../scripts/lib/session-registry.ts";
+import {
+  classifyConsumeError,
+  consumeGrantUnderLock,
+  findLiveMergeGrantFile,
+} from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
+import { logBeaconLockErrorOnce } from "../.claude/hooks/session-beacon.mjs";
 
 const dir = mkdtempSync(join(tmpdir(), "reglock-9280-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -82,8 +90,9 @@ describe("registry-lock.mjs — delete-pending no Windows (#9280)", () => {
       () => tryAcquireOwnedLock(lock, { platform: "win32", openWx: fake.openWx }),
       (e: NodeJS.ErrnoException) =>
         e.code === "EPERM" &&
-        /EPERM persistiu por \d+ tentativas seguidas em .*c\.lock — não é delete-pending \(#9194\)/.test(e.message) &&
-        (e.cause as NodeJS.ErrnoException)?.code === "EPERM",
+        /EPERM persistiu por \d+ tentativas seguidas em .*c\.lock — provável permissão real, não delete-pending \(#9194\)/.test(e.message) &&
+        (e.cause as NodeJS.ErrnoException)?.code === "EPERM" &&
+        isDeletePendingExhausted(e),
     );
     assert.equal(fake.calls, DELETE_PENDING_MAX_STREAK + 1);
     assert.ok(Date.now() - t0 < 3_000);
@@ -103,7 +112,7 @@ describe("registry-lock.mjs — delete-pending no Windows (#9280)", () => {
       const fake = failingThenReal([code]);
       assert.throws(
         () => tryAcquireOwnedLock(join(dir, "e.lock"), { platform: "linux", openWx: fake.openWx }),
-        (e: NodeJS.ErrnoException) => e.code === code && !/persistiu/.test(e.message),
+        (e: NodeJS.ErrnoException) => e.code === code && !/persistiu/.test(e.message) && !isDeletePendingExhausted(e),
       );
       assert.equal(fake.calls, 1);
     }
@@ -123,5 +132,87 @@ describe("registry-lock.mjs — delete-pending no Windows (#9280)", () => {
     assert.equal(tryAcquireOwnedLock(lock), true);
     assert.equal(tryAcquireOwnedLock(lock), false);
     unlinkSync(lock);
+  });
+});
+
+// ── Rastro quando a concessão de merge não é consumida (#9280) ─────────────
+// Antes, qualquer falha do lock/CAS em `consumeOneUnderLock` caía num
+// `catch {}` vazio: o grant ficava vivo até o TTL sem sinal nenhum.
+
+function readRunLog(root: string): Array<Record<string, any>> {
+  const p = join(root, "data", "run-log.jsonl");
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
+function makeGrantRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "grant-9280-"));
+  mkdirSync(join(root, "data", "sessions"), { recursive: true });
+  registerSession(root, "overnight", "coord", { tag: machineTag() });
+  grantMergeWindow(root, "overnight", "coord", "interativa", {});
+  return root;
+}
+
+describe("consume-merge-grant — rastro de concessão não consumida (#9280)", () => {
+  it("EACCES no lock: devolve false, grant segue vivo e o run-log recebe UM aviso com o code", () => {
+    const root = makeGrantRepo();
+    try {
+      let calls = 0;
+      const acquire = () => { calls++; throw errno("EACCES"); };
+      const nowIso = new Date().toISOString();
+      assert.equal(consumeGrantUnderLock(root, "interativa", nowIso, 3, 50, undefined, { acquire }), false);
+      assert.equal(calls, 3, "uma tentativa por volta de CAS");
+      assert.ok(findLiveMergeGrantFile(root, "interativa"), "grant não consumido continua vivo");
+      const events = readRunLog(root).filter((e) => e.agent === "consume-merge-grant");
+      assert.equal(events.length, 1, "um único aviso, depois do laço");
+      assert.equal(events[0].level, "warn");
+      assert.equal(events[0].message, "merge_grant_not_consumed");
+      assert.equal(events[0].details.code, "EACCES");
+      assert.equal(events[0].details.attempts, 3);
+      assert.ok(!JSON.stringify(events[0]).includes(root), "sem path absoluto no rastro");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("classifica delete-pending esgotado, timeout, CAS e JSON corrompido por propriedade estruturada", () => {
+    const exhausted = Object.assign(new Error("x"), { code: "EPERM", deletePendingExhausted: true });
+    assert.equal(classifyConsumeError(exhausted), "DELETE_PENDING_EXHAUSTED");
+    assert.equal(classifyConsumeError(Object.assign(new Error("x"), { code: "LOCK_TIMEOUT" })), "LOCK_TIMEOUT");
+    assert.equal(classifyConsumeError(Object.assign(new Error("x"), { code: "CAS_VERIFY_FAILED" })), "CAS_VERIFY_FAILED");
+    assert.equal(classifyConsumeError(new SyntaxError("bad json")), "JSON_PARSE");
+    assert.equal(classifyConsumeError(new Error("sem code")), "UNKNOWN");
+    assert.equal(classifyConsumeError(null), "UNKNOWN");
+  });
+
+  it("lock sempre ocupado: o aviso sai com LOCK_TIMEOUT", () => {
+    const root = makeGrantRepo();
+    try {
+      const nowIso = new Date().toISOString();
+      assert.equal(consumeGrantUnderLock(root, "interativa", nowIso, 2, 20, undefined, { acquire: () => false }), false);
+      const events = readRunLog(root).filter((e) => e.agent === "consume-merge-grant");
+      assert.equal(events.length, 1);
+      assert.equal(events[0].details.code, "LOCK_TIMEOUT");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("session-beacon — rastro de EPERM/EACCES no lock (#9280)", () => {
+  it("registra uma vez por sessão, só para EPERM/EACCES", () => {
+    const root = mkdtempSync(join(tmpdir(), "beacon-9280-"));
+    try {
+      const sid = `sess-9280-${process.pid}-${Date.now()}`;
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "ENOENT" })), false);
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EACCES" })), true);
+      assert.equal(logBeaconLockErrorOnce(root, sid, Object.assign(new Error("x"), { code: "EPERM" })), false, "segunda vez na mesma sessão não repete");
+      const events = readRunLog(root).filter((e) => e.agent === "session-beacon");
+      assert.equal(events.length, 1);
+      assert.equal(events[0].level, "warn");
+      assert.equal(events[0].details.code, "EACCES");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

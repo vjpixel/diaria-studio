@@ -9,8 +9,11 @@ export function breakStaleLock(lockPath: string, now?: number): boolean;
 export const DELETE_PENDING_MAX_STREAK: number;
 export const DELETE_PENDING_WAIT_MS: number;
 export function isDeletePendingWxError(code: string | undefined, platform?: NodeJS.Platform): boolean;
+export function isDeletePendingExhausted(e: unknown): boolean;
+/** @internal Seam de teste de `tryAcquireOwnedLock` (#9280); produção omite. */
 export interface AcquireDeps {
   platform: NodeJS.Platform;
   openWx: (lockPath: string) => number;
 }
+/** @param deps @internal seam de teste; produção omite. */
 export function tryAcquireOwnedLock(lockPath: string, deps?: AcquireDeps): boolean;
