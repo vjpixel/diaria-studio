@@ -120,6 +120,10 @@ describe("concurrency: `edited` não cancela a rodada do commit (#9262)", () => 
     );
   });
 
+  it("grupo `edited` é único por run (#9324: pendente novo cancela pendente velho)", () => {
+    assert.match(block, /group:.*'edited' && format\('edited-\{0\}', github\.run_id\)/);
+  });
+
   it("cancel-in-progress é falso para `edited`", () => {
     assert.match(block, /cancel-in-progress: \$\{\{ github\.event\.action != 'edited' \}\}/);
   });
