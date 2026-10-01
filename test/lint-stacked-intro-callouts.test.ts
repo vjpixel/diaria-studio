@@ -84,6 +84,71 @@ describe("lintStackedIntroCallouts (#2729)", () => {
     assert.equal(r.count, 1);
   });
 
+  it("ok (#9231): 3º colocado com e-mail mascarado `@***` não fecha o bloco antes de **Sorteio**", () => {
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "**🎉 Os campeões do É IA? em setembro:",
+      "",
+      "🥇 fulano",
+      "",
+      "🥈 beltrano",
+      "",
+      "🥉 perli…@***",
+      "",
+      "**Sorteio**",
+      "",
+      "O sorteio será ao vivo no dia 2 de outubro.**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.deepEqual(r, { ok: true, count: 1, lines: [7] });
+  });
+
+  it("FALHA (#9231): e-mail mascarado não esconde um 2º bloco real empilhado", () => {
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "**🎉 Os campeões do É IA? em setembro: 🥉 perli…@*****",
+      "",
+      "**📣 Patrocinado por Clarice. Divulgação: [saiba mais](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.count, 2);
+  });
+
+  it("FALHA (#9231): bloco multi-parágrafo fechado por `@*****` + 2º bloco real empilhado", () => {
+    const md = [
+      TITULO_SUBTITULO,
+      COVERAGE_LINE,
+      "",
+      "**🎉 Os campeões do É IA? em setembro:",
+      "",
+      "🥇 fulano",
+      "",
+      "🥉 perli…@*****",
+      "",
+      "**📣 Patrocinado por Clarice. Divulgação: [saiba mais](https://clarice.ai).**",
+      "",
+      "---",
+      "",
+      destaque(1),
+    ].join("\n");
+    const r = lintStackedIntroCallouts(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.count, 2);
+  });
+
   it("ok: caso normal — 1 único bloco 📣 patrocinado na intro", () => {
     const md = [
       TITULO_SUBTITULO,

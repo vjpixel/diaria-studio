@@ -224,6 +224,19 @@ export interface StackedIntroCalloutResult {
 const DESTAQUE_MARKER_RE = /^\*\*DESTAQUE/;
 const PARA_STARTS_BOLD_RE = /^\*\*\S/;
 const PARA_ENDS_BOLD_RE = /\*\*\s*$/;
+// #9231: e-mail mascarado (`perli…@***`, 3º colocado dos campeões do É IA?)
+// termina em `***` — sem neutralizar, `PARA_ENDS_BOLD_RE` lê o fim do
+// parágrafo como fechamento do bloco bold, o bloco é dado como fechado cedo
+// demais e o sub-cabeçalho `**Sorteio**` seguinte conta como 2ª abertura.
+// A máscara vem de `maskEmail` (`workers/poll/src/lib.ts`): `{local}@***`;
+// o fallback sem `@` (dado histórico pré-validação) fica de fora de propósito.
+// Consumir só os 3 da máscara preserva um `**` de fechamento real colado
+// nela (`@*****`).
+const MASKED_EMAIL_ASTERISKS_RE = /@\*{3}/g;
+
+function paragraphEndsWithBold(lastLine: string): boolean {
+  return PARA_ENDS_BOLD_RE.test(lastLine.replace(MASKED_EMAIL_ASTERISKS_RE, "@x"));
+}
 
 export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult {
   const normalized = md.replace(/\r\n/g, "\n");
@@ -238,7 +251,7 @@ export function lintStackedIntroCallouts(md: string): StackedIntroCalloutResult 
   const flushParagraph = () => {
     if (paraLines.length === 0) return;
     const startsWithBold = PARA_STARTS_BOLD_RE.test(paraLines[0]);
-    const endsWithBold = PARA_ENDS_BOLD_RE.test(paraLines[paraLines.length - 1]);
+    const endsWithBold = paragraphEndsWithBold(paraLines[paraLines.length - 1]);
     if (inOpenBlock) {
       // Dentro de um bloco já aberto: este parágrafo nunca conta como nova
       // abertura — só observamos se ele FECHA o bloco (ex: "**Sorteio**",
