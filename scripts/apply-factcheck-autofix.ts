@@ -16,7 +16,13 @@
  *      o intentional_error de outro destaque com mesmo texto (#2617). Em
  *      `03-social.md`, o "bloco do destaque" são os headers `## dN` — pode
  *      haver até 2 (um em `# LinkedIn`, outro em `# Facebook`) e a correção
- *      é aplicada em AMBOS quando o texto aparece nos dois (#3224).
+ *      é aplicada em AMBOS quando o texto aparece nos dois (#3224). Vale para
+ *      qualquer `## dN` do arquivo, inclusive sob `# Curto` (#9400).
+ *   5b. (#9400) A substituição é por texto EXATO. Depois de todas as correções,
+ *      o claim é procurado de novo com redação tolerante (pontuação, 1 palavra
+ *      trocada) em todas as seções do destaque; o que sobrar é ACUSADO em
+ *      `social_residual_sections` + `summary.social_residual` + stderr, nunca
+ *      reescrito (paráfrase é julgamento editorial).
  *   6. `entry.sources` decide ONDE aplicar: `["newsletter"]` → só newsletter,
  *      `["social"]` → só social, `["newsletter","social"]` → em ambos (cada
  *      um só se o texto de fato aparecer lá — sucesso parcial é permitido e
@@ -76,6 +82,9 @@ export interface AutofixEntry {
   status: AutofixStatus;
   /** Arquivo(s) modificado(s), preenchido quando status="applied" */
   files_modified?: string[];
+  /** (#9400) Seções de `03-social.md` (ex: "Curto/d1") onde o claim ainda
+   * sobra parafraseado após a substituição exata — revisar à mão no gate. */
+  social_residual_sections?: string[];
   note?: string;
 }
 
@@ -89,6 +98,8 @@ export interface AutofixResult {
     total_divergent: number;
     applied: number;
     skipped: number;
+    /** (#9400) Nº de claims com resíduo parafraseado em `03-social.md`. */
+    social_residual?: number;
   };
   /** (#3224) true quando ao menos 1 correção foi escrita em `03-social.md`
    * nesta execução (sempre `false` em `--dry-run`, já que nada é escrito em
@@ -353,6 +364,100 @@ export function applySocialTextSubstitution(
 }
 
 /**
+ * (#9400) Tokeniza texto em palavras normalizadas (minúsculas, NFC), só
+ * letras/dígitos/`%` — pontuação vira separador. Usado pela detecção de
+ * resíduo: "Bolsonaro, em 190" e "Bolsonaro em 190" viram a mesma sequência.
+ */
+export function claimWords(text: string): string[] {
+  return (text ?? "")
+    .normalize("NFC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}%]+/u)
+    .filter((w) => w.length > 0);
+}
+
+function countWordSeq(haystack: string[], needle: string[]): number {
+  if (needle.length === 0 || needle.length > haystack.length) return 0;
+  let n = 0;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) { ok = false; break; }
+    }
+    if (ok) n++;
+  }
+  return n;
+}
+
+/**
+ * (#9400) O claim DIVERGENT ainda sobra (parafraseado) em `region`?
+ *
+ * A substituição é por texto EXATO — o `# Curto` reescreve o mesmo fato com
+ * pontuação/palavras ligeiramente diferentes ("Bolsonaro, em 190"; "60% deles
+ * deepfakes de jornalistas"), e aí o `## d1` do Curto passava intocado sem
+ * nenhum aviso (edição 261002). Esta checagem NÃO corrige — só acusa, porque
+ * reescrever paráfrase é julgamento editorial, não substituição mecânica.
+ *
+ * Duas regras, em sequência de palavras normalizadas (`claimWords`):
+ *   1. Match tolerante a pontuação: a sequência do claim aparece mais vezes
+ *      do que a sequência do fix (desconta o caso do fix que CONTÉM o claim,
+ *      ex: "Bolsonaro em 190" → "Flávio Bolsonaro em 190").
+ *   2. Claim de ≥4 palavras com UMA palavra trocada ("eram" → "deles"), desde
+ *      que aquela janela não seja ela mesma um trecho do fix.
+ */
+export function claimResidueInRegion(region: string, text: string, fix: string): boolean {
+  const rw = claimWords(region);
+  const tw = claimWords(text);
+  const fw = claimWords(fix);
+  if (tw.length === 0) return false;
+
+  const claimCount = countWordSeq(rw, tw);
+  const fixContainsClaim = countWordSeq(fw, tw) > 0;
+  const fixCount = fixContainsClaim ? countWordSeq(rw, fw) * countWordSeq(fw, tw) : 0;
+  if (claimCount > fixCount) return true;
+
+  if (tw.length < 4) return false;
+  const fixWindows = new Set<string>();
+  for (let i = 0; i + tw.length <= fw.length; i++) fixWindows.add(fw.slice(i, i + tw.length).join(" "));
+  for (let i = 0; i + tw.length <= rw.length; i++) {
+    let mismatches = 0;
+    for (let j = 0; j < tw.length && mismatches <= 1; j++) {
+      if (rw[i + j] !== tw[j]) mismatches++;
+    }
+    if (mismatches === 1 && !fixWindows.has(rw.slice(i, i + tw.length).join(" "))) return true;
+  }
+  return false;
+}
+
+/**
+ * (#9400) Lista as seções de `03-social.md` do destaque (`## dN` em `# Social`,
+ * `# Curto`, … + `## post_pixel` quando destaque=1) onde o claim ainda sobra
+ * após a substituição. Rótulo: "{seção de 1 hash}/{header de 2 hashes}", ex:
+ * "Curto/d1". Rodar sobre o conteúdo JÁ corrigido.
+ */
+export function findSocialClaimResidues(
+  content: string,
+  destaque: ClaimDestaque,
+  text: string,
+  fix: string,
+): string[] {
+  const labels: string[] = [];
+  for (const range of findSocialDestaqueRanges(content, destaque)) {
+    const region = content.slice(range.start, range.end);
+    if (!claimResidueInRegion(region, text, fix)) continue;
+    const before = content.slice(0, range.start).split("\n");
+    let section = "";
+    for (let i = before.length - 1; i >= 0; i--) {
+      const m = before[i].match(/^#\s+(.+?)\s*$/);
+      if (m) { section = m[1]; break; }
+    }
+    const header = (region.split("\n")[0] ?? "").replace(/^#+\s*/, "").trim();
+    labels.push(section ? `${section}/${header}` : header);
+  }
+  return labels;
+}
+
+/**
  * Processa a lista de claims e determina ação para cada um.
  * Pure: não lê/escreve arquivos — lógica de decisão testável.
  *
@@ -586,6 +691,24 @@ async function main(): Promise<void> {
     }
   }
 
+  // (#9400) Resíduo parafraseado: depois de TODAS as substituições, procurar o
+  // claim que sobrou com outra redação em qualquer seção `## dN` do destaque
+  // (ex: `# Curto` → `## d1`). Só acusa — não reescreve paráfrase.
+  let socialResidual = 0;
+  if (socialExists) {
+    for (const entry of entries) {
+      if (entry.status !== "applied" && entry.status !== "skipped_text_not_found") continue;
+      if (!entry.suggested_fix || !(entry.sources ?? []).includes("social")) continue;
+      const residues = findSocialClaimResidues(social, entry.destaque, entry.text, entry.suggested_fix);
+      if (residues.length === 0) continue;
+      socialResidual++;
+      entry.social_residual_sections = residues;
+      const msg = `Claim ainda presente (redação diferente) em 03-social.md: ${residues.join(", ")} — corrigir à mão no gate.`;
+      entry.note = entry.note ? `${entry.note} ${msg}` : msg;
+      console.warn(`[apply-factcheck-autofix] WARN: D${entry.destaque} "${entry.text}" — ${msg}`);
+    }
+  }
+
   // Gravar arquivos modificados + regravar sentinel do humanizador social (não dry-run)
   let socialSentinelBypassReason: string | undefined;
   if (!isDryRun) {
@@ -626,6 +749,7 @@ async function main(): Promise<void> {
       total_divergent: entries.length,
       applied,
       skipped,
+      ...(socialResidual > 0 ? { social_residual: socialResidual } : {}),
     },
     social_modified: socialModified,
     ...(socialSentinelBypassReason ? { social_sentinel_bypass_reason: socialSentinelBypassReason } : {}),

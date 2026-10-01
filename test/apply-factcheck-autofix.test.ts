@@ -21,6 +21,8 @@
  *      passa a bater com o novo hash de 03-social.md
  *  15. (#3274) `## post_pixel` é aberto como range-alvo quando destaque=1 — claim
  *      DIVERGENT sobre D1 corrige tanto `## d1` quanto `## post_pixel`
+ *  17. (#9400) `# Curto` → `## d1`: exato é corrigido; paráfrase vira resíduo
+ *      acusado (`social_residual_sections`), sem reescrita mecânica
  *  16. (#3275) applyTextSubstitution (scoped) substitui TODAS as ocorrências dentro
  *      do range — inclusive quando a mesma claim aparece no corpo E em
  *      `### comment_pixel`/`### comment_diaria` aninhados
@@ -40,6 +42,8 @@ import {
   findDestaqueBodyRange,
   findSocialDestaqueRanges,
   applySocialTextSubstitution,
+  claimResidueInRegion,
+  findSocialClaimResidues,
   planAutofixes,
   type AutofixEntry,
 } from "../scripts/apply-factcheck-autofix.ts";
@@ -1615,5 +1619,115 @@ describe("regressao #2715 item 1: findDestaqueBodyRange — header nao-canonico 
     const d1Block = content.slice(rangeD1!.start, rangeD1!.end);
     assert.ok(d1Block.includes("Texto do D1"), "bloco D1 deve conter o texto do D1");
     assert.ok(!d1Block.includes("Texto do D2"), "bloco D1 NAO deve englobar o D2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressão #9400 — `# Curto` → `## d1` com o mesmo claim (edição 261002)
+// ---------------------------------------------------------------------------
+
+const SOCIAL_261002 = [
+  "# Social",
+  "",
+  "## d1",
+  "",
+  "Dos 920 posts eleitorais com IA, 60% eram deepfakes de jornalistas. A Lupa achou Lula em 379 e Bolsonaro em 190.",
+  "",
+  "## post_pixel",
+  "",
+  "Dos 920 posts mapeados, 60% eram deepfakes de jornalistas. Faz sentido.",
+  "",
+  "# Curto",
+  "",
+  "## d1",
+  "",
+  "Lula apareceu em 379 conteúdos manipulados; Bolsonaro, em 190. O VigIA contou 920 posts, 60% deles deepfakes de jornalistas.",
+  "",
+  "## d2",
+  "",
+  "Outro assunto.",
+  "",
+].join("\n");
+
+describe("regressao #9400: Curto d1 com o mesmo claim", () => {
+  it("texto exato no `# Curto` → `## d1` também é corrigido", () => {
+    const content = "# Social\n\n## d1\n\nBolsonaro em 190.\n\n# Curto\n\n## d1\n\nBolsonaro em 190 posts.\n";
+    const r = applySocialTextSubstitution(content, 1, "Bolsonaro em 190", "Flávio Bolsonaro em 190");
+    assert.equal(r.modifiedRanges, 2);
+    assert.equal(r.content.split("Flávio Bolsonaro em 190").length - 1, 2);
+  });
+
+  it("claimResidueInRegion: pontuação diferente e 1 palavra trocada contam como resíduo", () => {
+    assert.equal(claimResidueInRegion("Lula em 379; Bolsonaro, em 190.", "Bolsonaro em 190", "Flávio Bolsonaro em 190"), true);
+    assert.equal(
+      claimResidueInRegion("920 posts, 60% deles deepfakes de jornalistas.", "60% eram deepfakes de jornalistas", "60% eram deepfakes"),
+      true,
+    );
+  });
+
+  it("claimResidueInRegion: texto já corrigido não é resíduo (sem falso positivo)", () => {
+    assert.equal(claimResidueInRegion("Lula em 379; Flávio Bolsonaro, em 190.", "Bolsonaro em 190", "Flávio Bolsonaro em 190"), false);
+    assert.equal(
+      claimResidueInRegion("Dos 920 posts, 60% eram deepfakes, e ao menos 30 usavam jornalistas da TV Globo.", "60% eram deepfakes de jornalistas", "60% eram deepfakes"),
+      false,
+    );
+    assert.equal(claimResidueInRegion("Texto sem relação.", "Bolsonaro em 190", "Flávio Bolsonaro em 190"), false);
+  });
+
+  it("findSocialClaimResidues rotula a seção que sobrou (Curto/d1)", () => {
+    const fixed = applySocialTextSubstitution(SOCIAL_261002, 1, "Bolsonaro em 190", "Flávio Bolsonaro em 190").content;
+    assert.deepEqual(findSocialClaimResidues(fixed, 1, "Bolsonaro em 190", "Flávio Bolsonaro em 190"), ["Curto/d1"]);
+  });
+
+  it("CLI: corrige Social d1 + post_pixel e acusa o resíduo no Curto d1 (caso real 261002)", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nTexto sem o claim aqui.\n",
+      socialContent: SOCIAL_261002,
+      factCheckClaims: [
+        { verdict: "DIVERGENT", destaque: 1, text: "60% eram deepfakes de jornalistas", suggested_fix: "60% eram deepfakes", sources: ["social"] } as Partial<FactClaim>,
+        { verdict: "DIVERGENT", destaque: 1, text: "Bolsonaro em 190", suggested_fix: "Flávio Bolsonaro em 190", sources: ["social"] } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+      const social = readFileSync(fixture.socialPath, "utf8");
+      const [socialPart, curtoPart] = social.split("# Curto");
+      assert.ok(!socialPart.includes("deepfakes de jornalistas"), "Social d1 + post_pixel corrigidos");
+      assert.ok(socialPart.includes("Flávio Bolsonaro em 190"));
+      assert.ok(curtoPart.includes("Bolsonaro, em 190"), "paráfrase do Curto não é reescrita mecanicamente");
+
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.social_residual, 2);
+      for (const e of autofix.entries) {
+        assert.equal(e.status, "applied");
+        assert.deepEqual(e.social_residual_sections, ["Curto/d1"]);
+        assert.match(e.note, /Curto\/d1/);
+      }
+      assert.match(result.stderr, /Curto\/d1/);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CLI: sem resíduo → summary sem social_residual", () => {
+    const fixture = createFixture({
+      newsletterContent: "DESTAQUE 1\n\nTexto.\n",
+      socialContent: "# Social\n\n## d1\n\nBolsonaro em 190.\n\n# Curto\n\n## d1\n\nBolsonaro em 190.\n",
+      factCheckClaims: [
+        { verdict: "DIVERGENT", destaque: 1, text: "Bolsonaro em 190", suggested_fix: "Flávio Bolsonaro em 190", sources: ["social"] } as Partial<FactClaim>,
+      ],
+    });
+    try {
+      const result = runCli(fixture.dir);
+      assert.equal(result.status, 0, `exit 0. stderr: ${result.stderr}`);
+      const social = readFileSync(fixture.socialPath, "utf8");
+      assert.equal(social.split("Flávio Bolsonaro em 190").length - 1, 2, "Social e Curto corrigidos");
+      const autofix = JSON.parse(readFileSync(fixture.autofixPath, "utf8"));
+      assert.equal(autofix.summary.social_residual, undefined);
+      assert.equal(autofix.entries[0].social_residual_sections, undefined);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
   });
 });
