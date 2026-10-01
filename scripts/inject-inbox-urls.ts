@@ -213,7 +213,11 @@ export function isTrackingUrl(url: string): boolean {
  * `buttondown.com/unsubscribe/...` virou `cluster_sources` de um LANÇAMENTO.
  */
 const NON_CONTENT_URL_PATTERNS: RegExp[] = [
-  /[/?&=._-](un-?subscribe|unsub|opt-?out|optout)\b/i,
+  // Segmento de path EXATO — nunca substring de slug editorial
+  // (`/how-to-opt-out-of-ai-training` é artigo legítimo).
+  /\/(un-?subscribe|unsub|opt-?out)(\/|\?|#|$)/i,
+  // Query param (chave ou valor) de unsubscribe/opt-out.
+  /[?&](?:[^=&#]*=)?(un-?subscribe|unsub|opt-?out)(?=&|#|$)/i,
   /\/(manage|update)[-_]?(your[-_]?)?(preferences|subscription|profile)\b/i,
   /\/(email[-_]?)?preferences(\/|\?|$)/i,
   /\/(view|web)[-_]?(in[-_]?)?browser\b/i,

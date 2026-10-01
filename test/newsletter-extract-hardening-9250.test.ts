@@ -53,6 +53,9 @@ describe("#9250 links de unsubscribe/preferências nunca viram candidato", () =>
   it("não filtra artigo legítimo", () => {
     assert.ok(!isNonContentUrl("https://openai.com/index/introducing-gpt-6-1-sol"));
     assert.ok(!isNonContentUrl("https://techcrunch.com/2026/09/29/unsubstantiated-claims-about-ai"));
+    assert.ok(!isNonContentUrl("https://example.com/how-to-opt-out-of-ai-training"));
+    assert.ok(!isNonContentUrl("https://example.com/blog/why-users-unsubscribe-from-ai-apps"));
+    assert.ok(isNonContentUrl("https://example.com/opt-out?id=1"));
   });
 
   it("extractNewsletterUrls descarta o unsubscribe", () => {
