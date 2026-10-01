@@ -520,6 +520,8 @@ Capturar os dois e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate 
 
 **4c.8 — REMOVIDO (#7402, achado de review do #7403).** Existia pra exibir `kit-gmail-ramp-proposal.json`, a proposta de onda do aquecimento Gmail (`0o.2` de `scripts/stage-0-run.ts`) — passo que saiu em 04/09/2026 porque a coorte esgotou (ver histórico no cabeçalho de `scripts/stage-0-run.ts`). O Stage 0 nunca mais escreve esse arquivo, e não existe substituto: a medição que sobrou (`0o.1`, `kit-provider-split.ts`) persiste em `_internal/kit-delivery-split.json` **da edição anterior com Kit**, não da edição corrente — não é um artefato desenhado para o gate desta edição consumir. Sem arquivo pra ler, não há o que exibir aqui; a linha "Rampa Gmail" e a variável correspondente do resumo consolidado (§4d) saíram pelo mesmo motivo.
 
+**4c.9 — Refresh tardio: o que saiu depois da pesquisa (#9370) — informativo, nunca bloqueia, nunca altera a edição.** Rodar por último em §4c (o mais perto possível do gate): `npx tsx scripts/late-refresh-candidates.ts --edition-dir {EDITION_DIR}/` — feeds oficiais de laboratório (Anthropic, OpenAI, Google/DeepMind, Microsoft AI) + newsletters chegadas depois da captura do Stage 0 (Gmail REST, diretório próprio, sem tocar o cursor), deduplicados contra a edição e as anteriores, cada um com sugestão de substituição. Stdout = `{late_refresh_block}`; relatório em `_internal/04-late-refresh.json`. Exit ≠ 0 ou erro = `⚠️ Refresh tardio indisponível`, seguir. Incluir algo é decisão do editor (`ajustar`, ou §4d.1b se for destaque).
+
 ### 4d. Gate humano (#1694)
 
 **#6444 — consumir decisão já tomada via painel do Studio (`/revisao`) antes de montar o resumo.** Desde #6447 o painel cobre a revisão item-a-item (destaques, títulos, lints, preview, fact-check) com botão "Aprovar gate". Checar antes de montar o resumo:
@@ -602,6 +604,10 @@ Facebook  D3  "{hook_d3_facebook}"
 ━━━ BOXES DE DIVULGAÇÃO ━━━━━━━━━━━━
 
 {box_click_report_block}
+
+━━━ SAIU DEPOIS DA PESQUISA ━━━━━━━━━
+
+{late_refresh_block}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?
