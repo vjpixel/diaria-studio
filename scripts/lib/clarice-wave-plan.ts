@@ -165,7 +165,12 @@ export type HourCell = `H${string}`;
  *  O nome `AbcCell` NÃO é reexportado aqui de propósito — ele já é dono de
  *  `clarice-abc-state.ts`, e dois tipos homônimos em módulos irmãos é a
  *  espécie de ambiguidade que faz alguém importar do lugar errado. */
-export type WaveCell = "A" | "B" | "C" | HourCell;
+export type WaveCell = "A" | "B" | "C" | HourCell | VariantCell;
+
+/** #9308 — célula do teste A/B de CONTEÚDO (ex: caixa): `VA`/`VB`. Ver
+ *  `scripts/lib/clarice-ab-test.ts` pro porquê de não reusar `A`/`B`. */
+export type VariantCell = "VA" | "VB";
+export const VARIANT_CELLS: readonly VariantCell[] = ["VA", "VB"];
 
 /** Hora BRT (0–23) → rótulo de célula de horário (`6` → `H06`). */
 export function hourCellLabel(hourBrt: number): HourCell {
@@ -230,9 +235,14 @@ export function waveKey(n: number, date: string, cell?: WaveCell): string {
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`número de onda inválido: ${n} — esperado inteiro > 0.`);
   }
-  if (cell !== undefined && !ABC_CELLS.includes(cell) && parseHourCell(cell) === null) {
+  if (
+    cell !== undefined &&
+    !ABC_CELLS.includes(cell) &&
+    parseHourCell(cell) === null &&
+    !(VARIANT_CELLS as readonly string[]).includes(cell)
+  ) {
     throw new Error(
-      `célula inválida: "${cell}" — esperado "A"/"B"/"C" (assunto) ou "H{00-23}" (horário, #5140).`,
+      `célula inválida: "${cell}" — esperado "A"/"B"/"C" (assunto), "H{00-23}" (horário, #5140) ou "VA"/"VB" (conteúdo, #9308).`,
     );
   }
   const base = `d${n}-${waveDateFragment(date)}`;

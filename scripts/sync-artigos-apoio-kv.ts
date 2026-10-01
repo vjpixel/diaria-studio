@@ -1,141 +1,138 @@
 #!/usr/bin/env node
 /**
- * scripts/sync-artigos-apoio-kv.ts (#7030)
+ * scripts/sync-artigos-apoio-kv.ts (#7030, fonte trocada no #9300)
  *
  * Popula o KV `ARTIGOS_APOIO_NIVEL` (worker `artigos`) com uma chave
  * `apoio:{sha256(email)}` → nível de apoio (`amigo`/`apoiador`/`mantenedor`/
- * `patrono`) por assinante ativo cujo custom field `apoio_nivel` (Beehiiv)
- * está preenchido — fonte PRIMÁRIA do gate dos Artigos Especiais
- * (`workers/artigos/src/apoio-gate.ts`, via
+ * `patrono`) por e-mail de apoiador — fonte PRIMÁRIA do gate dos Artigos
+ * Especiais (`workers/artigos/src/apoio-gate.ts`, via
  * `scripts/lib/shared/apoio-level-verify.ts`).
  *
- * Mesmo padrão de paginação/KV bulk de `scripts/sync-cursos-subscribers-kv.ts`
- * (#4052) — reusa `hasMorePages`, mesmo layout de comando `wrangler kv bulk
- * put`/`kv key list`/`kv bulk delete`. Diferença: em vez de "assinante
- * ativo?" (booleano), lê+grava o VALOR do custom field `apoio_nivel`, já
- * calculado com carência de 1 mês por `sync-apoio-nivel-beehiiv.ts` — este
- * script NÃO recalcula apoio a partir do apoia.se/Stripe, só espelha o que
- * já está sincronizado na Beehiiv pro KV do worker `artigos` (mesma divisão
- * de responsabilidade que `sync-cursos-subscribers-kv.ts` tem com
- * `subscriber-verify.ts`).
+ * **Fonte (#9300):** o CRM de Apoios (apoia.se) — o MESMO cálculo de nível
+ * com carência de 1 mês que alimenta os syncs de `apoio_nivel`
+ * (`buildApoiosData` → `computeDesiredApoioLevels`, + overrides de
+ * `data/apoio-overrides.json`). Até o #9300 este script espelhava o custom
+ * field `apoio_nivel` da Beehiiv, o que tinha dois buracos: (1) apoiador que
+ * não assina a Beehiiv (ou assina com outro e-mail) nunca entrava, e (2)
+ * depois da migração pro Kit o campo da Beehiiv parou de ser mantido. Medido
+ * em 01/10/2026: o KV tinha 4 chaves para 22 apoiadores R$10+ — o gate
+ * recusava 20 deles. O gate é sobre APOIO, não sobre assinatura da
+ * newsletter, então a fonte certa é a apoia.se, com TODOS os e-mails de cada
+ * contato do CRM.
  *
- * Assinantes SEM `apoio_nivel` preenchido (ou com status inativo) não geram
- * entrada — o gate trata ausência de chave como `"unknown"` (nunca apoiou,
- * do ponto de vista do gate).
+ * Contatos com nível desconhecido (`sem_dados`, falha transiente da
+ * apoia.se) não geram entrada nova, mas também nunca têm a chave existente
+ * apagada. Remoções ficam bloqueadas quando a fonte veio degradada
+ * (`buildApoiosData` com erro, snapshot do mês anterior ausente/ilegível) ou
+ * quando passam de 30% das chaves existentes (mesmo limiar do #4436),
+ * salvo `--force-blast-radius`. Rodada com remoções bloqueadas sai com
+ * exit 3 (as gravações já foram feitas) — a unit systemd fica `failed`.
  *
  * Uso:
  *   npx tsx scripts/sync-artigos-apoio-kv.ts                  # full sync
  *   npx tsx scripts/sync-artigos-apoio-kv.ts --dry-run        # só imprime contagem, não escreve
  *   npx tsx scripts/sync-artigos-apoio-kv.ts --namespace-id X # override do binding id
+ *   npx tsx scripts/sync-artigos-apoio-kv.ts --force-blast-radius
  *
  * Env:
- *   BEEHIIV_API_KEY          obrigatório
- *   BEEHIIV_PUBLICATION_ID   opcional — fallback platform.config.json
+ *   APOIA_SE_API_KEY/_SECRET/_CAMPAIGN  via `buildApoiosData`
  *   CLOUDFLARE_ACCOUNT_ID    obrigatório pro write real (não pro --dry-run)
- *   ARTIGOS_KV_NAMESPACE_ID  id do namespace ARTIGOS_APOIO_NIVEL (ou --namespace-id)
+ *   ARTIGOS_KV_NAMESPACE_ID  opcional — default: id do binding em workers/artigos/wrangler.toml
  *
- * NÃO agendado ainda (#7030 não abre esse passo — deploy/provisionamento do
- * KV real fica pro editor, ver PR body). Uso standalone/manual, mesmo
- * comportamento de `sync-cursos-subscribers-kv.ts` antes do #4320.
+ * Agendado como `Diaria-Artigos-Apoio-Kv-Sync` (`scripts/lib/scheduled-tasks.ts`, #9300).
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { apoioLevelKvKey } from "./lib/shared/apoio-level-verify.ts";
-import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
-import { extractApoioNivelValue, isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
+import { type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
+import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
+import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
+import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
+import {
+  computeDesiredApoioLevels,
+  isPreviousMonthSnapshotMissing,
+  type DesiredApoioLevel,
+} from "./sync-apoio-nivel-beehiiv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_DIR = resolve(ROOT, "workers", "artigos");
-const PER_PAGE = 100;
-const RATE_LIMIT_DELAY_MS = 300;
-const MAX_RETRIES = 3;
+const LOG_PREFIX = "[sync-artigos-apoio-kv]";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/** Mesmo limiar de blast radius do sync de `apoio_nivel` (#4436). */
+export const BLAST_RADIUS_THRESHOLD = 0.3;
+/** Abaixo disso o percentual não diz nada (2 de 4 = 50%). */
+const BLAST_RADIUS_MIN_EXISTING = 5;
+/** Exit de rodada degradada (remoções bloqueadas) — fora de
+ * `successExitCodes` da task, pra unit sair `failed` e o alarme pegar. */
+export const DEGRADED_EXIT_CODE = 3;
+const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
+
+export interface ApoioLevelRows {
+  /** Uma linha por e-mail de contato com nível conhecido. */
+  rows: Array<{ email: string; nivel: ApoioNivel }>;
+  /** E-mails de contatos `sem_dados` — chave existente nunca é apagada. */
+  protectedEmails: string[];
 }
 
-interface BeehiivCustomFieldRaw {
-  name?: unknown;
-  value?: unknown;
-}
-
-interface BeehiivSubscriberRaw {
-  email: string;
-  status: string;
-  custom_fields?: BeehiivCustomFieldRaw[];
-}
-
-interface Page<T> {
-  data?: T[];
-  total_results?: number;
-  limit?: number;
-}
-
-async function apiFetch<T>(
-  path: string,
-  apiKey: string,
-  fetchImpl: typeof fetch,
-  retries = 0,
-): Promise<{ ok: boolean; status: number; body: T | null }> {
-  await sleep(RATE_LIMIT_DELAY_MS);
-  const res = await fetchImpl(`${beehiivApiBase()}${path}`, {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-  });
-  if (res.status === 429 && retries < MAX_RETRIES) {
-    const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
-    await sleep(Math.max(retryAfter * 1000, 30_000));
-    return apiFetch<T>(path, apiKey, fetchImpl, retries + 1);
-  }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
-  return { ok: true, status: res.status, body: (await res.json()) as T };
-}
-
-/** Pagina `GET /subscriptions?status=active&expand[]=custom_fields`,
- * devolvendo só {email, apoioNivel} pros que TÊM um nível reconhecido
- * (`isApoioNivel`) — o resto (campo vazio/ausente/valor não reconhecido)
- * fica de fora, mesma semântica de "não gera entrada" do docstring do topo. */
-export async function fetchApoioNivelByEmail(
-  publicationId: string,
-  apiKey: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<Array<{ email: string; nivel: ApoioNivel }>> {
-  const out: Array<{ email: string; nivel: ApoioNivel }> = [];
-  let collected = 0;
-  let page = 1;
-  let more = true;
-  while (more) {
-    const res = await apiFetch<Page<BeehiivSubscriberRaw>>(
-      `/publications/${publicationId}/subscriptions?status=active&expand[]=custom_fields&per_page=${PER_PAGE}&page=${page}`,
-      apiKey,
-      fetchImpl,
-    );
-    if (!res.ok) {
-      if (res.status === 404 || res.status === 403) break;
-      throw new Error(`Beehiiv API ${res.status} em /subscriptions (página ${page})`);
+/** Pure: níveis desejados por contato → linhas {email, nivel} pro KV. Todos
+ * os e-mails do contato recebem o nível (o apoiador pode confirmar no gate
+ * com qualquer um deles). */
+export function rowsFromDesiredLevels(desired: readonly DesiredApoioLevel[]): ApoioLevelRows {
+  const rows: Array<{ email: string; nivel: ApoioNivel }> = [];
+  const protectedEmails: string[] = [];
+  for (const d of desired) {
+    if (d.unresolved) {
+      protectedEmails.push(...d.emails);
+      continue;
     }
-    const body = res.body!;
-    const got = body.data ?? [];
-    collected += got.length;
-    for (const sub of got) {
-      const value = extractApoioNivelValue(sub.custom_fields);
-      if (value && isApoioNivel(value)) out.push({ email: sub.email.trim().toLowerCase(), nivel: value });
-    }
-    more = hasMorePages({
-      collected,
-      gotLength: got.length,
-      totalResults: body.total_results,
-      effectiveLimit: body.limit,
-      requestedPerPage: PER_PAGE,
-    });
-    page++;
+    if (!d.level) continue;
+    for (const email of d.emails) rows.push({ email, nivel: d.level });
   }
-  return out;
+  return { rows, protectedEmails };
+}
+
+export interface DeletionDecision {
+  allowed: boolean;
+  reason?: string;
+}
+
+/** Pure: pode apagar as chaves stale nesta rodada? */
+export function decideStaleDeletion(args: {
+  staleCount: number;
+  existingCount: number;
+  sourceDegraded: boolean;
+  forceBlastRadius: boolean;
+}): DeletionDecision {
+  if (args.staleCount === 0) return { allowed: true };
+  if (args.sourceDegraded) {
+    return { allowed: false, reason: "fonte apoia.se degradada nesta rodada — remoções bloqueadas" };
+  }
+  if (
+    !args.forceBlastRadius &&
+    args.existingCount >= BLAST_RADIUS_MIN_EXISTING &&
+    args.staleCount / args.existingCount > BLAST_RADIUS_THRESHOLD
+  ) {
+    return {
+      allowed: false,
+      reason:
+        `${args.staleCount} de ${args.existingCount} chaves seriam apagadas (> ${BLAST_RADIUS_THRESHOLD * 100}%) — ` +
+        "remoções bloqueadas; rode com --force-blast-radius se for real",
+    };
+  }
+  return { allowed: true };
+}
+
+/** Lê o id do binding `ARTIGOS_APOIO_NIVEL` de `workers/artigos/wrangler.toml`. */
+export function readNamespaceIdFromWranglerToml(toml: string): string | undefined {
+  const m = toml.match(/binding\s*=\s*"ARTIGOS_APOIO_NIVEL"\s*\r?\n\s*id\s*=\s*"([^"]+)"/);
+  if (!m || m[1].startsWith("PLACEHOLDER")) return undefined;
+  return m[1];
 }
 
 export interface KvBulkEntry {
@@ -144,7 +141,9 @@ export interface KvBulkEntry {
 }
 
 /** Pure: {email, nivel}[] → entradas de bulk KV (`apoio:{sha256}` → nível).
- * Dedupe por key (mesmo e-mail normalizado colapsa no mesmo hash). */
+ * Dedupe por key (mesmo e-mail normalizado colapsa no mesmo hash); se o
+ * mesmo e-mail aparece com níveis diferentes (2 contatos no CRM), vence o
+ * MAIOR — nunca rebaixa um Patrono pela ordem dos contatos (#9300). */
 export async function buildKvBulkEntries(
   rows: Array<{ email: string; nivel: ApoioNivel }>,
 ): Promise<KvBulkEntry[]> {
@@ -152,7 +151,10 @@ export async function buildKvBulkEntries(
     rows.map(async (r) => ({ key: await apoioLevelKvKey(r.email), value: r.nivel })),
   );
   const seen = new Map<string, KvBulkEntry>();
-  for (const e of entries) seen.set(e.key, e);
+  for (const e of entries) {
+    const prev = seen.get(e.key);
+    if (!prev || LEVEL_RANK[e.value as ApoioNivel] > LEVEL_RANK[prev.value as ApoioNivel]) seen.set(e.key, e);
+  }
   return [...seen.values()];
 }
 
@@ -260,65 +262,118 @@ export function syncKvKeys(
   namespaceId: string,
   accountId: string,
   ops: KvSyncOps = defaultKvSyncOps,
-): { existingKeys: string[]; staleKeys: string[] } {
+  opts: {
+    /** Chaves que nunca entram no delete (contatos `sem_dados`, #9300). */
+    protectedKeys?: ReadonlySet<string>;
+    /** Guard de remoção (#9300) — `allowed: false` pula o delete. */
+    decide?: (staleCount: number, existingCount: number) => DeletionDecision;
+  } = {},
+): { existingKeys: string[]; staleKeys: string[]; deletion: DeletionDecision } {
   const existingKeys = ops.listApoio(namespaceId, accountId);
-  const staleKeys = diffStaleApoioKeys(existingKeys, entries);
+  const staleKeys = diffStaleApoioKeys(existingKeys, entries).filter((k) => !opts.protectedKeys?.has(k));
+  const deletion = opts.decide ? opts.decide(staleKeys.length, existingKeys.length) : { allowed: true };
 
   if (entries.length > 0) ops.put(entries, namespaceId, accountId); // lança => delete nunca roda
-  ops.bulkDelete(staleKeys, namespaceId, accountId);
-  return { existingKeys, staleKeys };
+  if (deletion.allowed) ops.bulkDelete(staleKeys, namespaceId, accountId);
+  return { existingKeys, staleKeys, deletion };
 }
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const dryRun = argv.includes("--dry-run");
-  const nsIdx = argv.indexOf("--namespace-id");
-  const namespaceId = nsIdx >= 0 ? argv[nsIdx + 1] : process.env.ARTIGOS_KV_NAMESPACE_ID;
+  loadProjectEnv(ROOT);
+  const dryRun = hasFlag(argv, "dry-run");
+  const forceBlastRadius = hasFlag(argv, "force-blast-radius");
+  const namespaceId =
+    (getArg(argv, "namespace-id") || undefined) ??
+    process.env.ARTIGOS_KV_NAMESPACE_ID ??
+    readNamespaceIdFromWranglerToml(readFileSync(join(WORKER_DIR, "wrangler.toml"), "utf8"));
 
-  const { apiKey, publicationId } = loadBeehiivConfig("[sync-artigos-apoio-kv]");
+  process.stderr.write(`${LOG_PREFIX} calculando níveis de apoio a partir do CRM apoia.se…\n`);
+  const data = await buildApoiosData(ROOT);
+  let sourceDegraded = false;
+  if (data.error) {
+    sourceDegraded = true;
+    process.stderr.write(`${LOG_PREFIX} aviso: buildApoiosData reportou erro: ${data.error}\n`);
+  }
 
-  process.stderr.write("[sync-artigos-apoio-kv] buscando apoio_nivel dos assinantes ativos…\n");
-  const rows = await fetchApoioNivelByEmail(publicationId, apiKey);
-  process.stderr.write(`[sync-artigos-apoio-kv] ${rows.length} assinantes com apoio_nivel reconhecido.\n`);
+  const currentMonth = competenceMonth(new Date());
+  let pastSnapshots: MonthSnapshot[] = [];
+  try {
+    pastSnapshots = readPastMonthSnapshots(defaultCacheDir(readApoiaSeEnv().campaign), currentMonth);
+  } catch (e) {
+    sourceDegraded = true;
+    process.stderr.write(
+      `${LOG_PREFIX} aviso: snapshots de meses anteriores ilegíveis (carência off): ${(e as Error).message}\n`,
+    );
+  }
+  // `readPastMonthSnapshots` não lança com arquivo ausente/corrompido — só
+  // devolve menos meses. Sem o mês anterior não há carência, e no começo do
+  // mês isso apagaria quem ainda não foi cobrado (mesmo guard do #7195).
+  if (isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth)) {
+    sourceDegraded = true;
+    process.stderr.write(`${LOG_PREFIX} aviso: snapshot do mês anterior ausente — carência off, remoções bloqueadas.\n`);
+  }
 
+  let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+  const overrides = loadApoioOverrides(ROOT);
+  if (overrides.length > 0) desired = applyApoioOverrides(desired, overrides);
+
+  const { rows, protectedEmails } = rowsFromDesiredLevels(desired);
   const entries = await buildKvBulkEntries(rows);
+  const protectedKeys = new Set(await Promise.all(protectedEmails.map((e) => apoioLevelKvKey(e))));
+  const byLevel: Record<string, number> = {};
+  for (const e of entries) byLevel[e.value] = (byLevel[e.value] ?? 0) + 1;
+  process.stderr.write(
+    `${LOG_PREFIX} ${entries.length} e-mail(s) com nível (${JSON.stringify(byLevel)}), ` +
+      `${protectedEmails.length} protegido(s) por sem_dados.\n`,
+  );
 
   if (dryRun) {
-    process.stderr.write("[sync-artigos-apoio-kv] --dry-run: não escreve nem apaga no KV.\n");
-    console.log(JSON.stringify({ apoiadores: rows.length, kv_entries: entries.length, dry_run: true }));
+    process.stderr.write(`${LOG_PREFIX} --dry-run: não escreve nem apaga no KV.\n`);
+    console.log(JSON.stringify({ kv_entries: entries.length, by_level: byLevel, dry_run: true }));
     return;
   }
 
   if (!namespaceId) {
     process.stderr.write(
-      "[sync-artigos-apoio-kv] ARTIGOS_KV_NAMESPACE_ID ausente (env ou --namespace-id) — rode `wrangler kv namespace create ARTIGOS_APOIO_NIVEL` primeiro.\n",
+      `${LOG_PREFIX} namespace ARTIGOS_APOIO_NIVEL não resolvido (env, --namespace-id ou wrangler.toml).\n`,
     );
     process.exit(2);
   }
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   if (!accountId) {
-    process.stderr.write("[sync-artigos-apoio-kv] CLOUDFLARE_ACCOUNT_ID ausente.\n");
+    process.stderr.write(`${LOG_PREFIX} CLOUDFLARE_ACCOUNT_ID ausente.\n`);
     process.exit(2);
   }
 
-  const { existingKeys, staleKeys } = syncKvKeys(entries, namespaceId, accountId);
+  const { existingKeys, staleKeys, deletion } = syncKvKeys(entries, namespaceId, accountId, defaultKvSyncOps, {
+    protectedKeys,
+    decide: (staleCount, existingCount) =>
+      decideStaleDeletion({ staleCount, existingCount, sourceDegraded, forceBlastRadius }),
+  });
+  if (!deletion.allowed) process.stderr.write(`${LOG_PREFIX} aviso: ${deletion.reason}\n`);
+  const deleted = deletion.allowed ? staleKeys.length : 0;
   process.stderr.write(
-    `[sync-artigos-apoio-kv] KV atualizado: ${entries.length} chaves gravadas, ${existingKeys.length} existentes antes, ${staleKeys.length} stale apagadas.\n`,
+    `${LOG_PREFIX} KV atualizado: ${entries.length} chaves gravadas, ${existingKeys.length} existentes antes, ` +
+      `${deleted} stale apagadas.\n`,
   );
 
   console.log(
     JSON.stringify({
-      apoiadores: rows.length,
       kv_entries: entries.length,
-      stale_deleted: staleKeys.length,
+      by_level: byLevel,
+      stale_deleted: deleted,
+      stale_blocked: staleKeys.length - deleted,
+      source_degraded: sourceDegraded,
       dry_run: false,
     }),
   );
+  if (sourceDegraded || !deletion.allowed) process.exit(DEGRADED_EXIT_CODE);
 }
 
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
-    process.stderr.write(`[sync-artigos-apoio-kv] erro fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(`${LOG_PREFIX} erro fatal: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(1);
   });
 }

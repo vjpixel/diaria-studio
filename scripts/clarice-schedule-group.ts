@@ -198,6 +198,7 @@ import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
 import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
+import { readClariceAbTest, resolveCampaignHtmlPath } from "./lib/clarice-ab-test.ts";
 
 loadProjectEnv();
 
@@ -999,7 +1000,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // HTML render: mesma fonte que clarice-schedule-sends.ts (Stage 4 já subiu
   // as imagens pro Cloudflare KV — nada de upload aqui, ver docstring do topo).
-  const htmlPath = resolve(resolveMonthlyDir(contentCycle), "_internal", "cloudflare-preview.html");
+  // #9308: key de célula de variante (`-VA`/`-VB`) usa o HTML do braço
+  // declarado em `_internal/ab-test.json`; demais keys seguem no default.
+  const contentMonthlyDir = resolveMonthlyDir(contentCycle);
+  const htmlPath = resolveCampaignHtmlPath(contentMonthlyDir, key, readClariceAbTest(contentMonthlyDir));
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   let html = readFileSync(htmlPath, "utf8");
   // #8059: o HTML renderizado sempre carrega links Amazon com a tag da

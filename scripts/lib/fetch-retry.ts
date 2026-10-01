@@ -33,6 +33,25 @@ export interface FetchRetryOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Decide se um status HTTP não-ok vale retry. Default: `status >= 500`. */
   isRetriableStatus?: (status: number) => boolean;
+  /** #9291 — quando true, uma resposta retriável com header `Retry-After`
+   * (segundos ou data HTTP) espera `max(backoff, Retry-After)`, limitado a
+   * `maxRetryAfterMs`. Opt-in pra não mudar o comportamento dos chamadores
+   * antigos. Default false. */
+  honorRetryAfter?: boolean;
+  /** Teto da espera derivada de `Retry-After`, ms. Default 60000. */
+  maxRetryAfterMs?: number;
+}
+
+/** #9291 — `Retry-After` em ms (segundos inteiros/decimais ou data HTTP);
+ *  `null` se ausente/inválido. Data no passado vira 0. */
+export function parseRetryAfterMs(value: string | null | undefined, nowMs: number = Date.now()): number | null {
+  if (value == null) return null;
+  const v = value.trim();
+  if (!v) return null;
+  if (/^\d+(\.\d+)?$/.test(v)) return Math.round(Number(v) * 1000);
+  const t = Date.parse(v);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, t - nowMs);
 }
 
 const DEFAULT_BACKOFF_MS = [1000, 3000, 9000];
@@ -69,7 +88,10 @@ export async function fetchWithRetry(
   const sleep = opts.sleep ?? defaultSleep;
   const isRetriableStatus = opts.isRetriableStatus ?? defaultIsRetriableStatus;
 
+  const maxRetryAfterMs = opts.maxRetryAfterMs ?? 60_000;
+
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    let retryAfterMs: number | null = null;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -80,6 +102,7 @@ export async function fetchWithRetry(
       // review pré-merge, silent-failure-hunter: undici mantém o socket vivo
       // até o corpo ser consumido ou cancelado; mesmo padrão já usado em
       // brevo-client.ts pra descarte de resposta retriável).
+      if (opts.honorRetryAfter) retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
       await res.body?.cancel().catch(() => {});
     } catch (e) {
       if (attempt === attempts) {
@@ -91,7 +114,8 @@ export async function fetchWithRetry(
     } finally {
       clearTimeout(timer);
     }
-    await sleep(backoffMs[Math.min(attempt - 1, backoffMs.length - 1)]);
+    const base = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)];
+    await sleep(retryAfterMs == null ? base : Math.max(base, Math.min(retryAfterMs, maxRetryAfterMs)));
   }
   // Inalcançável dado attempts >= 1 (validado acima) — o loop sempre retorna
   // ou lança na última tentativa.

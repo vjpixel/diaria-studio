@@ -180,7 +180,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Mecanismo: branch dedicada + PR, nunca push direto em `master` (#6598).** Script recria `site-publish/{slug}` do `master` local, commita/empurra (`--force-with-lease`) e abre/reusa PR via `gh pr create` — desde o #8158 tenta mergear sozinho se CI ficar verde; senão o PR fica aberto pra revisão manual (decisão do editor). Detalhes/histórico do incidente que motivou (`GH013`, 260828): `docs/site-page-publish-mechanism.md`.
 
-Guardar o resultado (`SITE_PUBLISH_OK` booleano, derivado de `published === true` em `_internal/site-page-published.json`, + o `reason`/`prUrl` se houver) para usar em §6c. **Segue para §6c em qualquer resultado** — falha nunca bloqueia esta seção sozinha.
+Guardar o resultado (`SITE_PUBLISH_OK` booleano, derivado de `published === true` em `_internal/site-page-published.json`, + o `reason`/`prUrl` se houver, + `mergeBlocker` — texto não-nulo quando o PR foi aberto mas NÃO mergeado, #9278) para usar em §6c. **Segue para §6c em qualquer resultado** — falha nunca bloqueia esta seção sozinha.
 
 ### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
 
@@ -226,6 +226,7 @@ Test email:            {test_email_sent_at} ✓
 Review automatico (review-test-email + lint-test-email-*): {review_status_block — "✓ sem achados" | lista de review_final_issues/unfixed_issues}
 {"⚠ Slug do bloco WhatsApp diverge — link ficaria quebrado no e-mail já enviado. " + instrucoes de correcao manual, SÓ se SLUG_CHECK_OK === false}
 {"⚠ Publicação da página do site falhou (código {code}, motivo {reason}) — a edição não vai pro acervo até re-rodar publish-edition-site-page.ts e mergear o PR. " + prUrl se houver, SÓ se SITE_PUBLISH_OK === false}
+{"⛔ " + mergeBlocker de `_internal/site-page-published.json`, SÓ se não-nulo (#9278 — PR aberto e não mergeado: /p/{slug} dá 404 no envio; antes de responder `ok`, conferir com `gh pr view {N} --json state` que virou MERGED)}
 {"📋 Pedidos editoriais aceitos: " + resumo de §6b2, SÓ se o arquivo existia}
 
 Social agendado:

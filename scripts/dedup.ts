@@ -451,7 +451,8 @@ export function dedup(
         continue;
       }
       const note = `same-event (#9249, ${hit.match.signal}: ${hit.match.shared.join(", ")}) com artigo de edição anterior "${hit.title}"`;
-      if (art.flag === "editor_submitted") {
+      // #9293: sinal fraco (A2) só marca — remoção apenas em A1/B.
+      if (art.flag === "editor_submitted" || !hit.match.removable) {
         afterPass1f.push({ ...art, event_dedup_flagged: note });
         continue;
       }

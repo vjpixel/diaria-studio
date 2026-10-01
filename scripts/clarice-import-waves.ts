@@ -280,8 +280,14 @@ export function groupCellListNameFor(cycle: string, key: string): string {
   if (hour) {
     return assertListNameLength(`Clarice ${cycle} ${key} — hora ${hour[1]}:00 BRT`);
   }
+  // #9308: célula do teste A/B de CONTEÚDO (caixa). "variante X", nunca
+  // "célula X" — `parseAbcAudienceCampaign` leria "célula A" como assunto.
+  const variant = /-V([AB])$/.exec(key);
+  if (variant) {
+    return assertListNameLength(`Clarice ${cycle} ${key} — variante ${variant[1]}`);
+  }
   throw new Error(
-    `groupCellListNameFor: key "${key}" não termina em -A/-B/-C (assunto) nem -H{00-23} (horário) — ` +
+    `groupCellListNameFor: key "${key}" não termina em -A/-B/-C (assunto), -H{00-23} (horário) nem -VA/-VB (conteúdo) — ` +
       `não é uma célula de teste (grupos sem célula não usam este helper).`,
   );
 }
@@ -308,7 +314,7 @@ export function isGroupCellWave(group: string | null, waveKey: string): boolean 
   // sobrescreveria `wave.key` com a key de campanha, colapsando os dois braços
   // — o teste sairia com as duas metades na mesma lista, e o defeito só
   // apareceria na leitura dos resultados, depois do disparo.
-  return Boolean(group) && (/-[ABC]$/i.test(waveKey) || /-H\d{2}$/.test(waveKey));
+  return Boolean(group) && (/-[ABC]$/i.test(waveKey) || /-H\d{2}$/.test(waveKey) || /-V[AB]$/.test(waveKey));
 }
 
 /**

@@ -184,6 +184,25 @@ export function readWatchPrefixes(argv: string[]): string[] {
   return prefixes;
 }
 
+/**
+ * #9274: desfecho da checagem do arquivo de chave. Com `--key-check-soft`
+ * (usado pelo deploy do site), arquivo de chave inacessível vira
+ * `::warning::` do GitHub Actions e exit 0 — o deploy em si funcionou e o
+ * job vermelho mascarava falha real de deploy. Causa conhecida: secret
+ * `INDEXNOW_KEY` não provisionado no Worker (`wrangler secret put
+ * INDEXNOW_KEY --name diaria-site`, ação do editor, #8905). Sem a flag o
+ * comportamento é o de sempre (erro, exit 1). Falha do POST em si continua
+ * exit 1 em qualquer modo.
+ */
+export function keyCheckFailureOutcome(
+  message: string,
+  soft: boolean,
+): { exitCode: number; line: string } {
+  return soft
+    ? { exitCode: 0, line: `::warning title=IndexNow não pingado::${message}` }
+    : { exitCode: 1, line: message };
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const changedFiles = readChangedFiles(argv);
@@ -191,6 +210,7 @@ async function main(): Promise<number> {
   const watchPrefixes = readWatchPrefixes(argv);
   const host = getStringArg(argv, "host");
   const archivePages = hasFlag(argv, "archive-pages");
+  const keyCheckSoft = hasFlag(argv, "key-check-soft");
 
   // #5703: `--watch-prefix` presente troca pro gate genérico de página
   // única (host obrigatório, sem default — ao contrário do modo hub, que
@@ -229,11 +249,13 @@ async function main(): Promise<number> {
   // assíncrono e invisível pro CI.
   const keyCheck = await checkKeyLocationServed(payload.keyLocation, payload.key);
   if (!keyCheck.ok) {
-    console.error(
+    const outcome = keyCheckFailureOutcome(
       `${LOG_PREFIX} falha: arquivo de chave não está acessível em ${payload.keyLocation} — ${keyCheck.error} ` +
         `(a submissão IndexNow nunca vai validar; regrave a secret no Worker antes de tentar de novo)`,
+      keyCheckSoft,
     );
-    return 1;
+    (outcome.exitCode === 0 ? console.log : console.error)(outcome.line);
+    return outcome.exitCode;
   }
 
   console.log(

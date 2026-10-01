@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 30 Sep 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 01 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Seu próximo modelo de código pode ser o Argon?</title>
+      <link>https://diar.ia.br/p/seu-proximo-modelo-de-codigo-pode-ser-o-argon</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/seu-proximo-modelo-de-codigo-pode-ser-o-argon</guid>
+      <pubDate>Thu, 01 Oct 2026 09:00:00 GMT</pubDate>
+      <description>GPT-6.1 Sol encosta no Astra por um quinto do preço | Gemini aposenta os Gems e aposta nas skills</description>
+    </item>
     <item>
       <title>OpenAI cancela modelo que mentia e desobedecia</title>
       <link>https://diar.ia.br/p/openai-cancela-modelo-que-mentia-e-desobedecia</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai</guid>
       <pubDate>Thu, 23 Jul 2026 09:00:00 GMT</pubDate>
       <description>Fundador do Nubank entra para o conselho da OpenAI | AMD fecha acordo bilionário com Anthropic</description>
-    </item>
-    <item>
-      <title>Google lança trio Gemini 3.6 e 3.5 Flash</title>
-      <link>https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/google-lanca-trio-gemini-3-6-e-3-5-flash</guid>
-      <pubDate>Wed, 22 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Rede de hotéis vende 47% via chatbot no WhatsApp | OpenAI lança ChatGPT para pequenos negócios</description>
     </item>
   </channel>
 </rss>

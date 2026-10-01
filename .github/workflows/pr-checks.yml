@@ -38,9 +38,12 @@ on:
 # ela cancelava a rodada do push e a UI do PR mostrava os jobs cancelados como
 # "failing checks". Agora `edited` vive num grupo próprio e nunca cancela nem é
 # cancelada pela rodada de código; só eventos de código (push/label/reopen)
-# cancelam a rodada de código anterior (commit obsoleto).
+# cancelam a rodada de código anterior (commit obsoleto). #9324: o GitHub
+# mantém só UM run pendente por grupo (cancel-in-progress:false não impede que
+# um pendente novo cancele o pendente velho), então cada `edited` ganha grupo
+# único via run_id — nenhum run `edited` é cancelado por outro.
 concurrency:
-  group: pr-checks-${{ github.ref }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  group: pr-checks-${{ github.ref }}-${{ github.event.action == 'edited' && format('edited-{0}', github.run_id) || 'code' }}
   cancel-in-progress: ${{ github.event.action != 'edited' }}
 
 # #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job

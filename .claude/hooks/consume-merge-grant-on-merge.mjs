@@ -98,9 +98,10 @@
 // nesse caso ambíguo.
 
 import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
+import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
+import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import { execFileSync } from "node:child_process";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
@@ -340,6 +341,8 @@ export function consumeGrantUnderLock(
   attempts = CAS_ATTEMPTS,
   lockTimeoutMs = LOCK_TIMEOUT_MS,
   targetPr = undefined,
+  // @internal Seam de teste (#9280): `acquire` substitui `tryAcquireOwnedLock`.
+  opts = {},
 ) {
   // #6952 (achado do review independente): varre o GRUPO inteiro — arquivo
   // real E cópias `-safeBackup-*`. Desde que `mergeSessionRecords` passou a
@@ -352,14 +355,16 @@ export function consumeGrantUnderLock(
   for (;;) {
     const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, targetPr);
     if (!initial) return consumedAny;
-    if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs)) return consumedAny;
+    if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs, repoRoot, opts)) return consumedAny;
     consumedAny = true;
   }
 }
 
 /** Marca `consumedAt` num único arquivo do grupo, sob o lock dele. */
-function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeoutMs = LOCK_TIMEOUT_MS) {
+function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeoutMs = LOCK_TIMEOUT_MS, repoRoot = undefined, opts = {}) {
   const lockPath = `${initial.path}.lock`;
+  const acquire = opts.acquire ?? tryAcquireOwnedLock;
+  let lastErr = null;
 
   for (let i = 0; i < attempts; i++) {
     let acquired = false;
@@ -367,8 +372,8 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
       breakStaleLock(lockPath);
       const deadline = Date.now() + lockTimeoutMs;
       for (;;) {
-        if (tryAcquireOwnedLock(lockPath)) { acquired = true; break; }
-        if (Date.now() >= deadline) throw new Error(`lock timeout: ${lockPath}`);
+        if (acquire(lockPath)) { acquired = true; break; }
+        if (Date.now() >= deadline) throw Object.assign(new Error(`lock timeout: ${lockPath}`), { code: "LOCK_TIMEOUT" });
         // Espera 50ms DORMINDO, não em busy wait (#6952/#6969, #7031).
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
       }
@@ -394,17 +399,42 @@ function consumeOneUnderLock(initial, nowIso, attempts = CAS_ATTEMPTS, lockTimeo
 
       const onDisk = JSON.parse(readFileSync(initial.path, "utf8"));
       if (onDisk?.merge_grant?.consumedAt !== nowIso) {
-        throw new Error("CAS verify failed: outro escritor sobrescreveu o consumedAt");
+        throw Object.assign(new Error("CAS verify failed: outro escritor sobrescreveu o consumedAt"), { code: "CAS_VERIFY_FAILED" });
       }
       return true;
-    } catch {
+    } catch (e) {
       // Retry: contenção de lock, ou verify perdido pro caminho advisory
-      // cross-máquina do OneDrive (#6182).
+      // cross-máquina do OneDrive (#6182). O rastro sai UMA vez, depois do laço.
+      lastErr = e;
     } finally {
       if (acquired) { try { unlinkSync(lockPath); } catch { /* ignore */ } }
     }
   }
+  // #9280: esgotou as tentativas — o grant fica sem consumir até o TTL. Deixa
+  // rastro (stderr + data/run-log.jsonl) pra QUALQUER causa, classificada.
+  logGrantNotConsumed(repoRoot, lastErr, initial.path, attempts);
   return false;
+}
+
+/**
+ * Classe estável da falha que impediu o consumo (#9280). Lê só propriedades
+ * estruturadas (`code`, marcador de delete-pending), nunca a mensagem.
+ */
+export function classifyConsumeError(e) {
+  if (isDeletePendingExhausted(e)) return "DELETE_PENDING_EXHAUSTED";
+  if (typeof e?.code === "string" && e.code) return e.code;
+  if (e instanceof SyntaxError) return "JSON_PARSE";
+  return "UNKNOWN";
+}
+
+/** Aviso único de grant não consumido: stderr + run-log, sem conteúdo do registro (#9280). */
+export function logGrantNotConsumed(repoRoot, err, path, attempts, deps = {}) {
+  const code = classifyConsumeError(err);
+  const file = basename(path);
+  try {
+    process.stderr.write(`[consume-merge-grant] concessão não consumida em ${file} após ${attempts} tentativas (${code})\n`);
+  } catch { /* ignore */ }
+  appendHookRunLog(repoRoot, "consume-merge-grant", "warn", "merge_grant_not_consumed", { code, file, attempts }, deps);
 }
 
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o

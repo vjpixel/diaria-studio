@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   stripHtmlToText,
   checkEncoding,
+  stripSectionHeaderEmojis,
 } from "../scripts/lint-test-email-encoding.ts";
 
 describe("stripHtmlToText (#1248)", () => {
@@ -84,5 +85,121 @@ describe("checkEncoding (#1248)", () => {
     for (const i of r) {
       assert.match(i.codepoint, /^U\+[0-9A-F]{4,}$/);
     }
+  });
+});
+
+describe("checkEncoding — emoji de kicker e sequências de emoji (#9115)", () => {
+  it("regressão 260930: `**🙋🏼‍♀️ PARA ENCERRAR**` no source vs HTML sem o emoji → zero issues", () => {
+    const source = "Texto do corpo.\n\n---\n\n**🙋🏼‍♀️ PARA ENCERRAR**\n\nObrigado por ler.";
+    const email = "Texto do corpo. Para encerrar Obrigado por ler.";
+    assert.deepEqual(checkEncoding(source, email), []);
+  });
+
+  it("categoria do DESTAQUE e headers 🛠️/📡/🎁 sem emoji no HTML → zero issues", () => {
+    const source = [
+      "**DESTAQUE 1 | ⚠️ SEGURANÇA**",
+      "**DESTAQUE 3 | 🇧🇷 BRASIL**",
+      "**🛠️ USE MELHOR**",
+      "**📡 RADAR**",
+      "**🎁 SORTEIO**",
+    ].join("\n\n");
+    const email = "SEGURANÇA BRASIL Use melhor Radar Sorteio";
+    assert.deepEqual(checkEncoding(source, email), []);
+  });
+
+  it("emoji no CORPO que some continua acusado — como UMA unidade, não ZWJ/♀ soltos", () => {
+    const source = "**🎁 SORTEIO**\n\nA equipe comemorou 🙋🏼‍♀️ o resultado.";
+    const email = "Sorteio A equipe comemorou o resultado.";
+    const r = checkEncoding(source, email);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].type, "char_dropped");
+    assert.equal(r[0].char, "🙋🏼‍♀️");
+    assert.equal(r[0].codepoint, "U+1F64B");
+    assert.equal(r[0].sequence, "U+1F64B U+1F3FC U+200D U+2640 U+FE0F");
+  });
+
+  it("negrito de corpo com emoji (não caixa alta) não é kicker — drop acusado", () => {
+    const r = checkEncoding("**🔥 Uma frase em negrito no corpo**", "Uma frase em negrito no corpo");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🔥");
+  });
+
+  it("bandeira dropada no corpo é acusada como unidade (não 2 regional indicators)", () => {
+    const r = checkEncoding("Feito no 🇧🇷 hoje", "Feito no hoje");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🇧🇷");
+    assert.equal(r[0].sequence, "U+1F1E7 U+1F1F7");
+  });
+
+  it("2 spans em negrito na mesma linha não viram kicker — emoji dropado é acusado", () => {
+    const r = checkEncoding("**🔥 FOO** E **BAR**", "FOO E BAR");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🔥");
+  });
+
+  it("negrito de corpo em CAIXA ALTA que não é nome de seção — drop acusado", () => {
+    const r = checkEncoding("**⚠️ ATENÇÃO: PRAZO ENCERRA HOJE**", "ATENÇÃO: PRAZO ENCERRA HOJE");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "⚠️");
+  });
+
+  it("header de seção em Title Case também é kicker → zero issues", () => {
+    assert.deepEqual(checkEncoding("**📡 Radar**\n\n**🙋🏼‍♀️ Para encerrar**", "Radar Para encerrar"), []);
+  });
+
+  it("keycap (1️⃣) é tratado como emoji — 1 issue com o grapheme inteiro", () => {
+    const r = checkEncoding("a 1️⃣ b", "a 1 b");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "1️⃣");
+  });
+
+  it("`sequence` ausente para caractere de 1 codepoint (acento)", () => {
+    const r = checkEncoding("ação", "acao");
+    assert.ok(r.length > 0);
+    for (const i of r) assert.equal(i.sequence, undefined);
+  });
+
+  it("emoji preservado sem VS16 no email não é drop (⚠️ vs ⚠)", () => {
+    assert.deepEqual(checkEncoding("atenção ⚠️ aqui", "atenção ⚠ aqui"), []);
+  });
+});
+
+describe("stripSectionHeaderEmojis (#9115)", () => {
+  it("usa stripKickerEmoji do renderer: tira o emoji do header e da categoria", () => {
+    assert.equal(stripSectionHeaderEmojis("**🙋🏼‍♀️ PARA ENCERRAR**"), "**PARA ENCERRAR**");
+    assert.equal(stripSectionHeaderEmojis("**DESTAQUE 2 | 🚀 LANÇAMENTO**"), "**DESTAQUE 2 | LANÇAMENTO**");
+  });
+
+  it("não toca link em negrito nem linha de corpo", () => {
+    const md = "**[Título do link](https://x.com)**\nTexto 🎉 solto";
+    assert.equal(stripSectionHeaderEmojis(md), md);
+  });
+
+  it("tira o marcador 🎉 de abertura de box de celebração (#9279)", () => {
+    assert.equal(stripSectionHeaderEmojis("🎉 Campeões do mês"), "Campeões do mês");
+    assert.equal(stripSectionHeaderEmojis("🎉️ Campeões"), "Campeões");
+  });
+});
+
+describe("checkEncoding — marcador de celebração (#9279)", () => {
+  it("🎉 inicial removido pelo renderer não é char_dropped", () => {
+    assert.deepEqual(checkEncoding("🎉 Campeões do mês\n\nação", "Campeões do mês ação"), []);
+  });
+
+  it("🎉 inicial dentro de negrito (`**🎉 Sorteio`) não é char_dropped (#9279)", () => {
+    const md = "se/diaria).\n\n---\n\n**🎉 Sorteio\n\nO sorteio será ao vivo.**";
+    assert.deepEqual(checkEncoding(md, "se/diaria). Sorteio O sorteio será ao vivo."), []);
+    assert.equal(stripSectionHeaderEmojis("**🎉 Sorteio"), "**Sorteio");
+  });
+
+  it("🎉 no meio de linha em negrito continua acusado", () => {
+    const r = checkEncoding("**Parabéns 🎉 a todos**", "Parabéns a todos");
+    assert.equal(r.length, 1);
+  });
+
+  it("🎉 no meio do texto ausente do email continua acusado", () => {
+    const r = checkEncoding("Parabéns 🎉 a todos", "Parabéns a todos");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🎉");
   });
 });

@@ -378,6 +378,7 @@ import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirm
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
+import { KitApiError } from "./lib/kit-client.ts"; // #9291
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1472,7 +1473,15 @@ export interface RunEvaluationResult {
    * comportamento pré-existente do contador `failed` em si, só que agora
    * visível por e-mail em vez de só na soma.
    */
-  failedContacts: { email: string; reason: string }[];
+  failedContacts: FailedContact[];
+  /**
+   * #9291 — quantos incrementos de `failed` vieram de 429 da Kit API que
+   * sobreviveu ao retry (`kitFetch` já respeita `Retry-After`). SUBCONJUNTO
+   * de `failed` (nunca somado à parte). Contato nessa situação não teve
+   * decisão tomada — fica `in_brevo` e é reavaliado na próxima rodada —, então
+   * poucos deles não derrubam a unit (ver `resolveEvaluateExitCode`).
+   */
+  kitRateLimited: number;
 }
 
 /**
@@ -1499,8 +1508,39 @@ export const PARTIAL_FAILURE_EXIT_CODE = 3;
  * importam pra esta decisão (não o `RunEvaluationResult` inteiro) pra
  * ficar trivial de testar sem construir um resultado completo.
  */
-export function resolveEvaluateExitCode(result: Pick<RunEvaluationResult, "failed" | "kitAutoConfirmSkipped">): number {
-  return result.failed > 0 || result.kitAutoConfirmSkipped > 0 ? PARTIAL_FAILURE_EXIT_CODE : 0;
+export function resolveEvaluateExitCode(
+  result: Pick<RunEvaluationResult, "failed" | "kitAutoConfirmSkipped"> & Partial<Pick<RunEvaluationResult, "kitRateLimited">>,
+): number {
+  if (result.kitAutoConfirmSkipped > 0) return PARTIAL_FAILURE_EXIT_CODE;
+  const rateLimited = Math.min(result.kitRateLimited ?? 0, result.failed);
+  // #9291 — falhas que são SÓ 429 esgotado da Kit, em poucos contatos, não
+  // derrubam a unit: o contato fica in_brevo sem decisão e volta na próxima
+  // rodada (concorrência com kit-roster-ingest). Qualquer outra falha, ou
+  // 429 em massa (acima do teto), continua sinalizando exit 3.
+  if (result.failed - rateLimited > 0) return PARTIAL_FAILURE_EXIT_CODE;
+  if (rateLimited > KIT_RATE_LIMIT_TOLERATED_MAX) return PARTIAL_FAILURE_EXIT_CODE;
+  return 0;
+}
+
+/** #9291 — teto de incrementos de `failed` por 429 esgotado da Kit tolerados
+ *  sem exit 3. Acima disso o 429 deixa de ser blip de concorrência e vira sinal. */
+export const KIT_RATE_LIMIT_TOLERATED_MAX = 25;
+
+/** Entrada de `failedContacts` (#8724); `kitRateLimited` marca 429 esgotado da Kit (#9291). */
+export interface FailedContact {
+  email: string;
+  reason: string;
+  kitRateLimited?: boolean;
+}
+
+/** #9291 — erro (ou cadeia de `cause`) é um 429 da Kit API. */
+export function isKitRateLimitError(e: unknown): boolean {
+  let cur: unknown = e;
+  for (let i = 0; i < 5 && cur; i++) {
+    if (cur instanceof KitApiError && cur.status === 429) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**
@@ -1534,7 +1574,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let suppressed = 0;
   let kept = 0;
   let failed = 0;
-  const failedContacts: { email: string; reason: string }[] = []; // #8724
+  const failedContacts: FailedContact[] = []; // #8724
   let kitAutoConfirmSkipped = 0;
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
@@ -1626,7 +1666,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               } catch (e) {
                 log(`warn: falha ao checar status Kit de ${contact.email} no Passo 0 (#6340 item 4 fix B): ${(e as Error).message}`);
                 failed++;
-                failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 0): ${(e as Error).message}` });
+                failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 0): ${(e as Error).message}`, kitRateLimited: isKitRateLimitError(e) });
                 continue;
               }
               break;
@@ -1851,7 +1891,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 } catch (e) {
                   log(`warn: falha ao checar status Kit de ${contact.email} (subscriber id ${kitParseResult.id}): ${(e as Error).message}`);
                   failed++;
-                  failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 1): ${(e as Error).message}` });
+                  failedContacts.push({ email: contact.email, reason: `falha ao checar status Kit (Passo 1): ${(e as Error).message}`, kitRateLimited: isKitRateLimitError(e) });
                 }
               }
               break;
@@ -1999,7 +2039,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           } catch (e) {
             log(`warn: falha ao checar estado Kit de ${contact.email} antes de promover (#8728): ${(e as Error).message}`);
             failed++;
-            failedContacts.push({ email: contact.email, reason: `falha ao checar estado Kit antes de promover: ${(e as Error).message}` });
+            failedContacts.push({ email: contact.email, reason: `falha ao checar estado Kit antes de promover: ${(e as Error).message}`, kitRateLimited: isKitRateLimitError(e) });
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             continue;
           }
@@ -2027,6 +2067,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // docstring de `decidePromoteToBeehiivAction` acima.
           let kitActive = false;
           let kitCheckAvailable = true;
+          let kitCheckRateLimited = false; // #9291
           if (!kitApiKey) {
             kitCheckAvailable = false;
           } else {
@@ -2036,6 +2077,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             } catch (e) {
               log(`warn: falha ao checar status Kit de ${contact.email} antes de promover pra Beehiiv (#7382): ${(e as Error).message}`);
               kitCheckAvailable = false;
+              kitCheckRateLimited = isKitRateLimitError(e); // #9291
             }
           }
           const crossPlatformDecision = decidePromoteToBeehiivAction({ kitCheckAvailable, kitActive });
@@ -2053,7 +2095,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               }) — mantendo in_brevo (fail-safe, nunca promove sem saber se já está ativo no Kit).`,
             );
             failed++;
-            failedContacts.push({ email: contact.email, reason: "checagem Kit indisponível antes de promover pra Beehiiv (#7382)" });
+            failedContacts.push({ email: contact.email, reason: "checagem Kit indisponível antes de promover pra Beehiiv (#7382)", kitRateLimited: kitCheckRateLimited });
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             continue;
           }
@@ -2096,7 +2138,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // `store` (contatos processados com sucesso antes deste) persiste no
       // `writeStore()` final, mesmo padrão de `sync-pending-to-brevo.ts`.
       failed++;
-      failedContacts.push({ email: contact.email, reason: (e as Error).message });
+      failedContacts.push({ email: contact.email, reason: (e as Error).message, kitRateLimited: isKitRateLimitError(e) });
       log(`FALHA em ${contact.email}: ${(e as Error).message}`);
     }
   }
@@ -2116,6 +2158,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     awaitingKitConfirmation,
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
+    kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
   };
 }
 
@@ -2255,6 +2298,15 @@ async function main(): Promise<void> {
       `warn: ${result.staleAwaitingKitConfirmation.length} contato(s) aguardando auto-confirmação no Kit há mais de ` +
         `${AWAITING_KIT_CONFIRMATION_STALE_DAYS} dias e seguem recebendo pela Brevo (#8753): ` +
         result.staleAwaitingKitConfirmation.map((c) => `${c.email} [desde ${c.since.slice(0, 10)}, ${c.days}d]`).join(" | "),
+    );
+  }
+  if (result.kitRateLimited > 0) {
+    log(
+      `warn: ${result.kitRateLimited} falha(s) por 429 esgotado da Kit API (#9291) — contato(s) mantido(s) in_brevo, ` +
+        `reavaliado(s) na próxima rodada` +
+        (result.kitRateLimited > KIT_RATE_LIMIT_TOLERATED_MAX
+          ? ` (acima do teto ${KIT_RATE_LIMIT_TOLERATED_MAX} — sinaliza exit ${PARTIAL_FAILURE_EXIT_CODE}).`
+          : ` (até ${KIT_RATE_LIMIT_TOLERATED_MAX} não derruba a unit).`),
     );
   }
   if (result.failedContacts.length > 0) {

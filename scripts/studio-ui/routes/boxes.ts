@@ -9,7 +9,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { listBoxes, readBox, saveBox, createBox, duplicateBox, archiveBox, unarchiveBox, listArchivedBoxes, buildBoxContent, buildBoxContentWithNome, replaceBoxContentTitle, readBoxSlotsState, saveBoxSlots, readParaEncerrarState, saveParaEncerrar } from "../studio-boxes.ts";
+import { listBoxes, readBox, saveBox, createBox, duplicateBox, archiveBox, unarchiveBox, listArchivedBoxes, buildBoxContent, buildBoxContentWithNome, replaceBoxContentTitle, readBoxSlotsState, saveBoxSlots, readParaEncerrarState, saveParaEncerrar, checkStitchedEditionAfterSlotSave, applySlotToStitchedEdition } from "../studio-boxes.ts";
 import { sendJson, readRequestBody } from "../http-utils.ts";
 
 const BOXES_MAX_BODY_BYTES = 500_000;
@@ -204,7 +204,50 @@ export async function handleApiBoxSlotsSave(
   const variant = parsed?.variant === "patronos" ? "patronos" : "default";
   const result = saveBoxSlots(rootDir, { slot0, slot1, slot2, slot3 }, { expectedModifiedAt, force, variant });
   const status = result.ok ? 200 : result.conflict ? 409 : 400;
-  sendJson(res, status, result);
+  // #8990: edição corrente já stitched com slot divergente → o client avisa e
+  // oferece "aplicar na edição". Só a variante default (a Patronos não é
+  // stitched na diária). Fail-soft: null quando nada a aplicar / data/ ausente.
+  const stitchedEdition =
+    result.ok && variant === "default" ? checkStitchedEditionAfterSlotSave(rootDir, { slot1, slot2 }) : null;
+  sendJson(res, status, { ...result, stitchedEdition });
+}
+
+/** `POST /api/boxes/apply-to-edition` (#8990) — botão "aplicar na edição
+ * {AAMMDD}" do painel Caixas: roda o núcleo de `apply-box-slot.ts` (sem
+ * `force`) na edição corrente stitched. Status:
+ *   - 200 = aplicado (com `warnings`);
+ *   - 409 = box editado à mão / sem baseline (nada escrito; a mensagem traz o
+ *     comando de CLI com `--force`);
+ *   - 400 = input inválido OU pré-condição (edição não é a corrente stitched,
+ *     slot sem box, snippet ausente);
+ *   - 500 = imagem irmã inválida (nada escrito) ou exceção — logado no server. */
+export async function handleApiBoxApplyToEdition(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const p = body as { edition?: unknown; slot?: unknown; file?: unknown } | null;
+  if (typeof p?.edition !== "string" || !/^\d{6}$/.test(p.edition) || typeof p.slot !== "number" || typeof p.file !== "string") {
+    sendJson(res, 400, { error: "campos 'edition' (AAMMDD), 'slot' (1|2) e 'file' são obrigatórios" });
+    return;
+  }
+  const result = await applySlotToStitchedEdition(rootDir, { edition: p.edition, slot: p.slot, file: p.file });
+  const status = result.ok
+    ? 200
+    : result.reason === "edited" || result.reason === "no-baseline"
+      ? 409
+      : result.reason === "image-failed"
+        ? 500
+        : 400;
+  if (!result.ok && status === 500) console.error(`[studio-boxes] apply-to-edition ${p.edition} slot ${p.slot}: ${result.message}`);
+  sendJson(res, status, result.ok ? result : { ...result, error: result.message });
 }
 
 /** `GET /api/boxes/para-encerrar` — conteúdo dos slots A/B do PARA ENCERRAR (#4274). */

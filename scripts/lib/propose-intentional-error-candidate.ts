@@ -147,6 +147,21 @@ export function proposeIntentionalErrorCandidate(
   reviewedMd: string,
   opts: ProposeOptions = {},
 ): IntentionalErrorCandidate | null {
+  for (const c of listIntentionalErrorCandidates(reviewedMd, opts)) return c;
+  return null;
+}
+
+/**
+ * (#9255) Todos os candidatos, na MESMA ordem de preferência de
+ * `proposeIntentionalErrorCandidate` (que devolve o 1º). Usado pelo plantio
+ * pra tentar o próximo quando o 1º não é plantável (menção só em URL etc.).
+ * Sem duplicatas por (seção, entidade).
+ */
+export function* listIntentionalErrorCandidates(
+  reviewedMd: string,
+  opts: ProposeOptions = {},
+): Generator<IntentionalErrorCandidate> {
+  const seen = new Set<string>();
   const blocks = splitIntoBlocks(reviewedMd);
   const history = opts.history ?? [];
   const edition = opts.edition ?? "";
@@ -175,7 +190,10 @@ export function proposeIntentionalErrorCandidate(
         if (isBlocked(entry)) continue; // #9101
         if (!allowUsedEntity && entityEverUsed(entry)) continue; // #9101 — prefere inédita
 
-        return {
+        const key = `${section.name}|${correct}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        yield {
           description:
             "Uma marca de IA muito conhecida do público da newsletter aparece com o nome grafado errado numa menção lateral do texto.",
           location: `${section.name} (menção a "${correct}")`,
@@ -188,5 +206,4 @@ export function proposeIntentionalErrorCandidate(
     }
   }
 
-  return null;
 }

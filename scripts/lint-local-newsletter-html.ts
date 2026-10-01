@@ -46,9 +46,15 @@ export function resolveLocalHtmlPath(editionDir: string, platform: LocalLintPlat
   return null;
 }
 
+/** Remove o bloco TÍTULO/SUBTÍTULO (até o 1º `---`): metadado que nunca vai pro corpo do HTML (#9284). */
+export function stripMetadataBlock(md: string): string {
+  const m = md.match(/^\s*TÍTULO\s*\r?\n[\s\S]*?\r?\n---[ \t]*\r?(?:\n|$)\s*/);
+  return m ? md.slice(m[0].length) : md;
+}
+
 export function lintLocalNewsletterHtml(sourceMd: string, html: string) {
   const structureIssues = compareStructure(extractMdStructure(sourceMd), extractEmailStructure(html));
-  const encodingIssues = checkEncoding(sourceMd, stripHtmlToText(html));
+  const encodingIssues = checkEncoding(stripMetadataBlock(sourceMd), stripHtmlToText(html));
   return { structure_issues: structureIssues, encoding_issues: encodingIssues };
 }
 

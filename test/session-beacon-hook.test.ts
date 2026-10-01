@@ -739,6 +739,7 @@ describe("CLI end-to-end — harness real via stdin (#6303 Finding H, mesmo padr
     // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
     mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
     copyFileSync(join(dirname(REAL_HOOK_PATH), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
+    copyFileSync(join(dirname(REAL_HOOK_PATH), "lib", "hook-run-log.mjs"), join(root, ".claude", "hooks", "lib", "hook-run-log.mjs")); // #9280
     return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
   }
 
@@ -1009,6 +1010,7 @@ describe("#6952 — escrita concorrente durante a janela read→write do beacon"
     // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
     mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
     copyFileSync(join(dirname(REAL_HOOK), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
+    copyFileSync(join(dirname(REAL_HOOK), "lib", "hook-run-log.mjs"), join(root, ".claude", "hooks", "lib", "hook-run-log.mjs")); // #9280
     return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
   }
 
@@ -1263,6 +1265,7 @@ describe("#6952 — beacon e session-registry se excluem mutuamente no mesmo reg
     // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
     mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
     copyFileSync(join(dirname(REAL_HOOK), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
+    copyFileSync(join(dirname(REAL_HOOK), "lib", "hook-run-log.mjs"), join(root, ".claude", "hooks", "lib", "hook-run-log.mjs")); // #9280
     const sessionsDir = join(root, "data", "sessions");
     const sessionId = "coord-6952-cross";
 

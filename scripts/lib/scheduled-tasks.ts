@@ -215,6 +215,28 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4485 item 2",
   },
   {
+    name: "Diaria-Artigos-Apoio-Kv-Sync",
+    description: "sync diario do KV ARTIGOS_APOIO_NIVEL (gate dos Artigos Especiais) a partir do CRM apoia.se",
+    steps: [{ key: "sync", script: "scripts/sync-artigos-apoio-kv.ts" }],
+    logPath: "apoia-se/.artigos-kv-sync.log",
+    // #9300: sem agendamento o KV ficou com a carga inicial (4 chaves para 22
+    // apoiadores R$10+) e o gate recusava quase todo mundo. 10:17 — meia hora
+    // depois de Diaria-Apoios-Diff-Alarm (09:45), que roda o ciclo de
+    // reconciliação do CRM (drain Gmail + promessas + apoia.se): folga pra ele
+    // terminar antes, sem as duas rodadas escreverem o cache do mês juntas.
+    // Mesmo molde de Diaria-Cursos-Kv-Sync (wrangler + CLOUDFLARE_ACCOUNT_ID
+    // do .env). Exit 3 = rodada degradada (remoções bloqueadas) — fica fora de
+    // successExitCodes de propósito, pra unit sair `failed` e o alarme pegar.
+    schedule: { kind: "daily", hour: 10, minute: 17 },
+    guard: {
+      requiredFile: "apoia-se/contacts.jsonl",
+      abortMessage:
+        "contacts.jsonl nao encontrado (data/apoia-se/contacts.jsonl) -- provavel junction data/ nao " +
+        "montada; abortando sem tocar o KV ARTIGOS_APOIO_NIVEL.",
+    },
+    issue: "#7030, #9300",
+  },
+  {
     name: "Diaria-Kv-Image-Binding-Smoke",
     description:
       "smoke test do binding KV POLL de workers/site (/img/{key}) — distingue key-ausente de binding morto (#7663)",

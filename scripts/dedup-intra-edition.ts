@@ -1005,8 +1005,10 @@ export function isIntraEditionDuplicate(
     // Caso real 261001: RADAR "Após meses de atrasos, Google anuncia Argon"
     // (CNN) duplicava o D1 "Gemini 4 Argon: our next era..." — Gemini não é
     // empresa no path (d) e "Argon" sozinho fica abaixo do mínimo de (b).
+    // #9295: sinal fraco (A2, só um lado nomeia empresa) nunca remove aqui —
+    // só marca (ver `weakEventFlag`). Remoção apenas em A1/B.
     const ev = sameEvent(artTitle, hTitle);
-    if (ev) {
+    if (ev && ev.removable) {
       return {
         match_type: "event",
         matched_highlight: hTitle,
@@ -1015,6 +1017,25 @@ export function isIntraEditionDuplicate(
     }
   }
 
+  return null;
+}
+
+/**
+ * #9295: nota de marcação quando o artigo casa com algum destaque só pelo
+ * sinal fraco A2 do event-dedup (`removable: false`). O item fica no bucket;
+ * a nota vai em `event_dedup_flagged` pra visibilidade no gate.
+ */
+export function weakEventFlag(article: Article, highlights: HighlightEntry[]): string | null {
+  const artTitle = typeof article.title === "string" ? article.title : "";
+  if (!artTitle) return null;
+  for (const h of highlights) {
+    const hTitle = highlightTitle(h);
+    if (!hTitle) continue;
+    const ev = sameEvent(artTitle, hTitle);
+    if (ev && !ev.removable) {
+      return `same-event fraco (#9295, ${ev.signal}: ${ev.shared.join(", ")}) com destaque "${hTitle}"`;
+    }
+  }
   return null;
 }
 
@@ -1376,7 +1397,8 @@ export function dedupIntraEdition(
           });
         }
       } else {
-        bucketKept.push(article);
+        const weak = weakEventFlag(article, highlights);
+        bucketKept.push(weak ? ({ ...article, event_dedup_flagged: weak } as Article) : article);
       }
     }
 

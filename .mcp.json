@@ -12,26 +12,12 @@
       "url": "https://app.kit.com/mcp"
     },
     "google-ads": {
-      "command": "pipx",
-      "args": [
-        "run",
-        "--spec",
-        "git+https://github.com/googleads/google-ads-mcp.git",
-        "google-ads-mcp"
-      ],
-      "env": {
-        "GOOGLE_ADS_DEVELOPER_TOKEN": "${GOOGLE_ADS_DEVELOPER_TOKEN}",
-        "GOOGLE_ADS_LOGIN_CUSTOMER_ID": "${GOOGLE_ADS_LOGIN_CUSTOMER_ID}",
-        "GOOGLE_ADS_CUSTOMER_ID": "${GOOGLE_ADS_CUSTOMER_ID}",
-        "GOOGLE_APPLICATION_CREDENTIALS": "${GOOGLE_APPLICATION_CREDENTIALS}"
-      }
+      "command": "node",
+      "args": ["scripts/mcp/run-google-ads-mcp.mjs"]
     },
     "doppler": {
-      "command": "npx",
-      "args": ["-y", "@dopplerhq/mcp-server", "--read-only"],
-      "env": {
-        "DOPPLER_TOKEN": "${DOPPLER_MCP_TOKEN}"
-      }
+      "command": "node",
+      "args": ["scripts/mcp/run-doppler-mcp.mjs"]
     }
   }
 }
