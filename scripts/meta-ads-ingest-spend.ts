@@ -79,7 +79,7 @@ import {
   spendIngestRetryOptions,
   type SpendIngestFetchResult,
 } from "./lib/spend-ingest.ts";
-import { fetchMetaAdsChannelMetrics, metaAdsAuthConfigFromEnv, type MetaFetchLike } from "./lib/ads-campaign-economics-fetch.ts";
+import { fetchMetaAdsChannelMetrics, loadMetaAdsCampaignIds, metaAdsAuthConfigFromEnv, type MetaFetchLike } from "./lib/ads-campaign-economics-fetch.ts";
 import { withFetchRetry } from "./lib/fetch-retry.ts";
 import type { ChannelDailyMetric } from "./lib/ads-campaign-economics.ts";
 
@@ -180,6 +180,21 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * `toMetaAdsDateRange` (`ads-campaign-economics-fetch.ts`); comparação
  * lexicográfica, então valor fora desse formato quebra o guard.
  *
+ * **Mês sem gasto dentro da janela (#9413):** com `windowStart` conhecido,
+ * todo mês INTEIRAMENTE coberto pela janela (do 1º mês cujo dia 1 está na
+ * janela até o mês de `windowEnd` — ou, sem `windowEnd`, até o mês mais
+ * recente com dado) que não tenha nenhuma linha sai com `valor: 0`. Antes
+ * esse mês nem entrava no retorno e `mergeSpendRows` mantinha a linha antiga
+ * (ex: `--since 2026-08-01` não tocava agosto se a campanha da newsletter
+ * não gastou lá, e o agregado `level=account` antigo ficava). O mês de
+ * `windowEnd` é o mês em andamento: 0 é o gasto real até ali, mesmo
+ * contrato incremental de quando há dado. Sem `windowStart`, nada é
+ * preenchido (a janela é desconhecida, ausência de linha não prova zero).
+ * Também nada é preenchido quando NENHUMA linha datada chegou: resposta
+ * inteiramente vazia é indistinguível de schema drift (linhas sem
+ * `date_start` já descartadas upstream) e zerar ali apagaria gasto real —
+ * esse caso segue o banner "sem gasto, spend.csv intocado".
+ *
  * @pure
  */
 export function aggregateMetaAdsChannelMetricsByMonth(
@@ -187,6 +202,7 @@ export function aggregateMetaAdsChannelMetricsByMonth(
   canal: string,
   moeda = "BRL",
   windowStart?: string,
+  windowEnd?: string,
 ): SpendRow[] {
   const byMonth = new Map<string, { sum: number; dates: string[] }>();
 
@@ -213,9 +229,29 @@ export function aggregateMetaAdsChannelMetricsByMonth(
     if (primeiroDia.slice(8, 10) !== "01") byMonth.delete(maisAntigo);
   }
 
+  // #9413: meses inteiros da janela sem nenhuma linha → valor 0 explícito.
+  // Só com ≥1 linha datada: resposta 100% vazia pode ser schema drift
+  // (`normalizeMetaAdsInsightsRows` descarta linha sem `date_start`) e não
+  // pode zerar meses reais — esse caso segue "sem gasto, spend.csv intocado".
+  const zeroMonths =
+    windowStart !== undefined && mesesOrdenados.length > 0
+      ? monthsFullyCoveredByWindow(windowStart, windowEnd, mesesOrdenados.at(-1))
+      : [];
+  const janela = `${windowStart}..${windowEnd ?? ""}`;
+  for (const mes of zeroMonths) if (!byMonth.has(mes)) byMonth.set(mes, { sum: 0, dates: [] });
+
   return [...byMonth.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([mes, { sum, dates }]) => {
+      if (dates.length === 0) {
+        return {
+          canal,
+          mes,
+          moeda,
+          valor: 0,
+          fonte: `${META_ADS_HEADLESS_FONTE_LABEL}, 0 dia(s) com gasto na janela ${janela}, ingestão automática`,
+        };
+      }
       const sorted = dates.slice().sort();
       const first = sorted[0];
       const last = sorted.at(-1);
@@ -228,6 +264,30 @@ export function aggregateMetaAdsChannelMetricsByMonth(
         fonte: `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), ingestão automática`,
       };
     });
+}
+
+/** Meses `AAAA-MM` cujo dia 1 está dentro da janela (`windowStart` ≤ dia 1),
+ *  do primeiro até o mês de `windowEnd` (ou `fallbackLast` sem `windowEnd`).
+ *  Formato inválido → `[]`. @pure */
+function monthsFullyCoveredByWindow(windowStart: string, windowEnd: string | undefined, fallbackLast: string | undefined): string[] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(windowStart)) return [];
+  const last = windowEnd !== undefined ? windowEnd.slice(0, 7) : fallbackLast;
+  if (last === undefined || !/^\d{4}-\d{2}$/.test(last)) return [];
+  let y = Number(windowStart.slice(0, 4));
+  let mo = Number(windowStart.slice(5, 7));
+  if (windowStart.slice(8, 10) !== "01") {
+    mo++;
+    if (mo > 12) { mo = 1; y++; }
+  }
+  const out: string[] = [];
+  for (;;) {
+    const mes = `${y}-${String(mo).padStart(2, "0")}`;
+    if (mes > last) break;
+    out.push(mes);
+    mo++;
+    if (mo > 12) { mo = 1; y++; }
+  }
+  return out;
 }
 
 /**
@@ -283,6 +343,9 @@ export interface RunHeadlessOptions {
   /** Override das campanhas (#9378) — default `platform.config.json` →
    *  `meta_ads.campaign_ids`. Só pra teste. */
   campaignIds?: readonly string[];
+  /** Caminho do `platform.config.json` lido quando `campaignIds` não vem
+   *  (#9413) — default o da raiz do repo. Só pra teste. */
+  campaignConfigPath?: string;
 }
 
 /**
@@ -362,19 +425,37 @@ export async function runHeadless(
   const now = opts.now ?? new Date();
   const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
   const windowStart = new Date(now.getTime() - (lookbackDays - 1) * 86_400_000).toISOString().slice(0, 10);
+  const windowEnd = now.toISOString().slice(0, 10);
+
+  // #9413: config de campanhas ilegível é falha explícita, nunca `level=account`
+  // silencioso — e o `level` efetivamente usado vai pro log.
+  let campaignIds: readonly string[];
+  try {
+    campaignIds = opts.campaignIds ?? loadMetaAdsCampaignIds(opts.campaignConfigPath);
+  } catch (e) {
+    fallback(`config de campanhas Meta ilegível — ${e instanceof Error ? e.message : e}`);
+    return META_ADS_INGEST_FAILURE_EXIT_CODE;
+  }
+  if (campaignIds.length > 0) {
+    console.log(`[meta-ads-ingest-spend] level=campaign (${campaignIds.length} campanha(s) de meta_ads.campaign_ids)`);
+  } else {
+    console.warn(
+      "[meta-ads-ingest-spend] level=account — meta_ads.campaign_ids ausente/vazio em platform.config.json: gasto da CONTA INTEIRA (inclui campanhas que não são da newsletter)",
+    );
+  }
 
   const fetcher = async (): Promise<SpendIngestFetchResult> => {
     const fetchResult = await fetchMetaAdsChannelMetrics(retryingFetch, authResult.auth.accessToken, {
       lookbackDays,
       now,
-      ...(opts.campaignIds !== undefined ? { campaignIds: opts.campaignIds } : {}),
+      campaignIds,
     });
     if (fetchResult.error) {
       networkErrorReason = `Graph API (Meta Ads insights) falhou — ${fetchResult.error}`;
       return { kind: "error", reason: networkErrorReason };
     }
     fetchedMetricsCount = fetchResult.metrics.length;
-    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL, "BRL", windowStart);
+    const rows = aggregateMetaAdsChannelMetricsByMonth(fetchResult.metrics, META_ADS_CANAL, "BRL", windowStart, windowEnd);
     // #9378: mês descartado pelo guard nunca some em silêncio — diz qual e como regravar.
     const kept = new Set(rows.map((r) => r.mes));
     for (const mes of new Set(fetchResult.metrics.map((x) => x.date.slice(0, 7)))) {

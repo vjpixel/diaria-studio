@@ -80,7 +80,7 @@ describe("#9378 — loadMetaAdsCampaignIds", () => {
   it("o platform.config.json real lista a campanha da newsletter", () => {
     assert.ok(loadMetaAdsCampaignIds().includes(NEWSLETTER));
   });
-  it("config ausente/sem a chave/valor não numérico → filtrado, nunca lança", () => {
+  it("config ausente/sem a chave/valor não numérico → filtrado; ilegível lança (#9413)", () => {
     const dir = mkdtempSync(join(tmpdir(), "meta-9378-cfg-"));
     try {
       assert.deepEqual(loadMetaAdsCampaignIds(join(dir, "nao-existe.json")), []);
@@ -90,7 +90,7 @@ describe("#9378 — loadMetaAdsCampaignIds", () => {
       writeFileSync(p, JSON.stringify({ meta_ads: { campaign_ids: ["123", 456, "abc"] } }));
       assert.deepEqual(loadMetaAdsCampaignIds(p), ["123", "456"]);
       writeFileSync(p, "{ quebrado");
-      assert.deepEqual(loadMetaAdsCampaignIds(p), []);
+      assert.throws(() => loadMetaAdsCampaignIds(p), /ilegível/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

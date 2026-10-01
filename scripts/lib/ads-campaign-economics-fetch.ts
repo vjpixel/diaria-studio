@@ -362,21 +362,50 @@ const PLATFORM_CONFIG_PATH_DEFAULT = resolvePath(dirnamePath(fileURLToPath(impor
  * `platform.config.json` → `meta_ads.campaign_ids`. A conta
  * `act_{META_ADS_AD_ACCOUNT_ID}` passou a rodar também a campanha do
  * ingresso do evento agente-ia (24/09/2026); sem o filtro, `level=account`
- * atribuía esse gasto à newsletter. Config ausente/ilegível/sem a chave →
- * `[]` (conta inteira, comportamento pré-#9378) — a ingestão nunca quebra
- * por causa da config, mas o caminho normal sempre tem a lista. Só aceita
- * strings de dígitos (id de campanha da Graph API); qualquer outro valor é
- * ignorado.
+ * atribuía esse gasto à newsletter. Config AUSENTE (arquivo inexistente ou
+ * sem a chave) → `[]` (conta inteira, comportamento pré-#9378). Config
+ * ILEGÍVEL (JSON malformado, erro de leitura, `campaign_ids` presente mas
+ * não-array) → lança `MetaAdsCampaignConfigError` (#9413): antes virava `[]`
+ * em silêncio e o gasto do ingresso voltava a ser contado como da newsletter.
+ * Os fetchers (`fetchMetaAdsChannelMetrics`/`fetchMetaAdsCompleteRegistrationDaily`)
+ * convertem o erro em `{ error }` — o contrato "nunca lança" deles segue. Só
+ * aceita strings de dígitos (id de campanha da Graph API); qualquer outro
+ * valor dentro da lista é ignorado.
  */
 export function loadMetaAdsCampaignIds(configPath: string = PLATFORM_CONFIG_PATH_DEFAULT): string[] {
+  if (!existsSync(configPath)) return [];
+  let cfg: unknown;
   try {
-    if (!existsSync(configPath)) return [];
-    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
-    const ids = cfg?.meta_ads?.campaign_ids;
-    if (!Array.isArray(ids)) return [];
-    return ids.map((v: unknown) => String(v).trim()).filter((v: string) => /^\d+$/.test(v));
-  } catch {
-    return [];
+    cfg = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch (e) {
+    throw new MetaAdsCampaignConfigError(`${configPath} ilegível: ${e instanceof Error ? e.message : e}`);
+  }
+  const metaAds = (cfg as { meta_ads?: { campaign_ids?: unknown } } | null)?.meta_ads;
+  const ids = metaAds?.campaign_ids;
+  if (ids === undefined) return [];
+  if (!Array.isArray(ids)) {
+    throw new MetaAdsCampaignConfigError(`${configPath} → meta_ads.campaign_ids não é uma lista (${typeof ids})`);
+  }
+  return ids.map((v: unknown) => String(v).trim()).filter((v: string) => /^\d+$/.test(v));
+}
+
+/** Config de campanhas Meta presente mas ilegível (#9413) — nunca degrada
+ *  pra `level=account` em silêncio. */
+export class MetaAdsCampaignConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MetaAdsCampaignConfigError";
+  }
+}
+
+/** Resolve as campanhas pro fetch (#9413): override explícito ou config;
+ *  config ilegível vira `{ error }` (o fetcher devolve sem chamar a API). */
+function resolveMetaAdsCampaignIds(override: readonly string[] | undefined): { ids: readonly string[] } | { error: string } {
+  if (override !== undefined) return { ids: override };
+  try {
+    return { ids: loadMetaAdsCampaignIds() };
+  } catch (e) {
+    return { error: `config de campanhas Meta ilegível — ${e instanceof Error ? e.message : e} (não cai pra level=account)` };
   }
 }
 
@@ -466,7 +495,9 @@ export async function fetchMetaAdsChannelMetrics(
 
   const { since, until } = toMetaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-  const levelParams = buildMetaAdsInsightsLevelParams(opts.campaignIds ?? loadMetaAdsCampaignIds());
+  const campaigns = resolveMetaAdsCampaignIds(opts.campaignIds);
+  if ("error" in campaigns) return { metrics: [], fetchedAt: null, error: campaigns.error };
+  const levelParams = buildMetaAdsInsightsLevelParams(campaigns.ids);
   let url = `${base}/act_${adAccountId}/insights?${levelParams}&time_increment=1&time_range=${timeRange}&fields=spend,clicks,impressions&limit=100`;
   // Token vai no header Authorization, nunca na query string (#7893, mesmo
   // padrão do #7779) — passado em TODAS as páginas, não só a 1ª: o
@@ -604,7 +635,9 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
 
   const { since, until } = toMetaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-  const levelParams = buildMetaAdsInsightsLevelParams(opts.campaignIds ?? loadMetaAdsCampaignIds());
+  const campaigns = resolveMetaAdsCampaignIds(opts.campaignIds);
+  if ("error" in campaigns) return { counts: [], discardedCount: 0, fetchedAt: null, error: campaigns.error };
+  const levelParams = buildMetaAdsInsightsLevelParams(campaigns.ids);
   let url = `${base}/act_${adAccountId}/insights?${levelParams}&time_increment=1&time_range=${timeRange}&fields=actions,date_start&limit=100`;
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
