@@ -462,7 +462,9 @@ function renderOnboardingKitLots(kitLots) {
   const run = kitLots.lastSendRun;
   el.onboardingKitRun.textContent = run
     ? `Última rodada --send do executor Kit: ${run.at} — ${run.lots_created} lote(s) criado(s), ${run.lots_failed} com falha` +
-      (run.refresh_failed ? `, refresh falhou em ${run.refresh_failed} de ${run.refresh_candidates ?? "?"} candidato(s)` : "") +
+      (run.refresh_failed ? `, refresh falhou (erro de transporte) em ${run.refresh_failed} de ${run.refresh_candidates ?? "?"} candidato(s)` : "") +
+      (run.content_skipped ? `, ${run.content_skipped} barrado(s) por snippet ausente/pendente` : "") +
+      (run.aborted ? ` — ABORTADA (${run.error ?? "sem motivo"})` : "") +
       (kitLots.consecutiveFailedSendRuns > 0 ? ` (${kitLots.consecutiveFailedSendRuns} rodada(s) seguida(s) com falha)` : "") + "."
     : "Executor Kit sem rodada --send registrada (kill switch desligado, ou só dry-run até agora).";
   if (kitLots.production.length === 0) {

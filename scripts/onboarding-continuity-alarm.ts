@@ -2,8 +2,9 @@
 /**
  * scripts/onboarding-continuity-alarm.ts (#7665, follow-up de detecção)
  *
- * Task diária (DECLARADA, NÃO ARMADA — ver `scripts/lib/scheduled-tasks.ts`,
- * `Diaria-Onboarding-Continuity-Alarm`): lê `data/onboarding/store.json` e
+ * Task diária (`Diaria-Onboarding-Continuity-Alarm`, 09:10 BRT, ARMADA na
+ * `300` — confirmado pelo drift-check em 10/09/2026, #7553; estado vivo:
+ * `npx tsx scripts/lib/scheduled-tasks.ts --list`): lê `data/onboarding/store.json` e
  * alarma (issue + e-mail) quando `consecutive_zero_detections` cruza o
  * limiar já decidido em #7599 (`ZERO_DETECTION_ALARM_THRESHOLD_RUNS`) sem
  * que nada o tenha surfaced antes — hoje o sinal existe (`zeroDetectionAlarm`
@@ -20,11 +21,15 @@
  * `onboarding-welcome-run.ts`). Com `onboarding.kit_transport.enabled: true`
  * este alarme também avalia o executor Kit (`evaluateKitTransportHealth`,
  * sobre `store.kit_transport.last_send_run`/`consecutive_failed_send_runs`,
- * gravados por `onboarding-kit-transport-run.ts --send`) — 2º achado,
- * `check: "onboarding-kit-transport"`, issue própria. Com o Kit desligado,
- * esse check nem é avaliado. Cada check só participa da reconciliação de
- * issues quando foi de fato avaliado (`cannot-verify` não conta como
- * "resolvido" pra fechar uma issue aberta — `reconcileEvaluatedChecks`).
+ * gravados por `onboarding-kit-transport-run.ts --send`) — 2º eixo,
+ * `check: "onboarding-kit-transport"`, issue própria: rodadas que não
+ * entregam, OU executor que não roda (rodada ausente/parada há >48h — com o
+ * switch ligado devia haver uma). Com o Kit desligado (inclusive rollback
+ * do §6) o check não se aplica e uma issue Kit aberta fecha sozinha; com o
+ * config ilegível o transporte é "desconhecido" e o check nem alarma nem
+ * fecha. `cannot-verify` nunca conta como "resolvido"
+ * (`reconcileEvaluatedChecks`). Decisão da rodada: `evaluateContinuityRound`
+ * (pura, testável).
  *
  * Lógica pura em `scripts/lib/onboarding-continuity-alarm.ts` — este
  * arquivo é só I/O: ler o store, enviar e-mail, dedup/criação de issue via
@@ -71,16 +76,17 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
-import { readStore, DEFAULT_STORE_PATH } from "./lib/onboarding-store.ts";
+import { readStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
 import {
   evaluateOnboardingContinuity,
   buildOnboardingContinuityAlarmEmail,
   evaluateKitTransportHealth,
   buildKitTransportAlarmEmail,
+  describeKitTransportSignal,
   resolveActiveOnboardingTransport,
   type OnboardingContinuityEvaluation,
   type KitTransportHealthEvaluation,
-  type OnboardingTransport,
+  type OnboardingTransportLabel,
 } from "./lib/onboarding-continuity-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
@@ -114,9 +120,10 @@ const FINDING_FINGERPRINT = "zero-detection-streak";
 export const DETECTION_CHECK = "onboarding-continuity";
 export const KIT_TRANSPORT_CHECK = "onboarding-kit-transport";
 const KIT_FINDING_FINGERPRINT = "kit-send-failure-streak";
+const KIT_NOT_RUNNING_FINGERPRINT = "kit-send-run-stalled";
 
 /** Lê `onboarding.kit_transport.enabled` sem lançar — config ilegível vira
- *  `error` (o caller loga e não avalia o check Kit nesta rodada). */
+ *  `error` (transporte "desconhecido": o check Kit nem alarma nem fecha nada). */
 export function readKitTransportEnabled(configPath: string): { enabled: unknown; error: string | null } {
   try {
     const raw = JSON.parse(readFileSync(configPath, "utf8")) as { onboarding?: { kit_transport?: { enabled?: unknown } } };
@@ -206,33 +213,107 @@ export function toAlarmFinding(evaluation: OnboardingContinuityEvaluation): Alar
   };
 }
 
-/** #7922: achado do executor Kit (transporte ativo = Kit). */
+/** #7922: achado do executor Kit (transporte ativo = Kit). Dois fingerprints
+ *  de propósito: "executor não roda" (task desarmada) e "executor roda mas
+ *  não entrega" pedem remédios diferentes e não devem se fundir numa issue. */
 export function toKitTransportAlarmFinding(evaluation: KitTransportHealthEvaluation): AlarmFinding {
+  const notRunning = evaluation.staleReason === "rodada_ausente" || evaluation.staleReason === "rodada_parada";
   return {
     check: KIT_TRANSPORT_CHECK,
-    fingerprint: KIT_FINDING_FINGERPRINT,
-    // Re-checável: zera na 1ª rodada `--send` sem lote falho.
+    fingerprint: notRunning ? KIT_NOT_RUNNING_FINGERPRINT : KIT_FINDING_FINGERPRINT,
+    // Re-checável: some sozinho quando o executor volta a rodar/entregar.
     family: "estado",
-    title: "[diar.ia.br] Transporte Kit do onboarding falhando ao criar broadcasts",
+    title: notRunning
+      ? "[diar.ia.br] Executor do transporte Kit do onboarding não está rodando"
+      : "[diar.ia.br] Transporte Kit do onboarding não está entregando (rodadas --send falhando)",
     body: [
       "Achado automático do alarme `Diaria-Onboarding-Continuity-Alarm`",
       "(`scripts/onboarding-continuity-alarm.ts`, check do transporte Kit — #7922).",
       "",
-      `Sinal: ${evaluation.consecutiveFailedRuns} rodada(s) \`--send\` consecutiva(s) de ` +
-        `\`onboarding-kit-transport-run.ts\` sem conseguir entregar — lote falho ou refresh de todos os ` +
-        `candidatos falho (limiar ${evaluation.threshold}; ` +
-        `última rodada ${evaluation.lastRunAt}, ${evaluation.lastRunFailedLots} lote(s) falho(s)).`,
+      `Sinal: ${describeKitTransportSignal(evaluation)}`,
       "",
-      "Quem foi detectado nesse período não recebeu o e-mail 1/2. Ver `last_error` dos lotes em",
-      "`data/onboarding/store.json` (`kit_transport.lots`). Rollback: §6 de `docs/onboarding-kit-cutover.md`.",
+      "Quem foi detectado nesse período não recebeu o e-mail 1/2, e o rascunho do e-mail 3 não nasceu.",
+      "Ver `kit_transport.last_send_run` e o `last_error` dos lotes em `data/onboarding/store.json`.",
       "",
-      "Esta issue é criada automaticamente pelo alarme e será",
-      "comentada/fechada sozinha quando a streak voltar a zerar por",
+      "**Rollback (§6 de `docs/onboarding-kit-cutover.md`):** com `onboarding.kit_transport.enabled`",
+      "desligado este check deixa de valer e esta issue é comentada/fechada sozinha após",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções — o fechamento NÃO significa que a causa foi resolvida;`,
+      "conferir antes de religar o switch.",
+      "",
+      "Fora do rollback, a issue é comentada/fechada sozinha quando o sinal sumir por",
       `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
     ].join("\n"),
     labels: ["bug"],
     priority: "P1",
   };
+}
+
+export interface ContinuityRoundInput {
+  storeExists: boolean;
+  corrupted: boolean;
+  store: Pick<OnboardingStore, "consecutive_zero_detections" | "last_zero_detection_run_at" | "kit_transport">;
+  cfgRead: { enabled: unknown; error: string | null };
+  now?: Date;
+}
+
+export interface ContinuityRound {
+  /** `"desconhecido"` = config ilegível nesta rodada. */
+  transport: OnboardingTransportLabel;
+  evaluation: OnboardingContinuityEvaluation;
+  /** `null` quando o check Kit não foi avaliado (transporte Brevo ou desconhecido). */
+  kitEvaluation: KitTransportHealthEvaluation | null;
+  /** Checks que participam da reconciliação de issues nesta rodada. */
+  evaluatedChecks: Set<string>;
+  findings: AlarmFinding[];
+}
+
+/**
+ * Decisão de uma rodada do alarme, sem I/O (testável). Regras:
+ *  - detecção: avaliada sempre; `cannot-verify` fica fora da reconciliação;
+ *  - transporte Kit ATIVO: `evaluateKitTransportHealth` — `stale` vira achado;
+ *    `cannot-verify` (store ausente/ilegível) fica fora da reconciliação;
+ *  - transporte BREVO (config legível, switch desligado — inclusive rollback
+ *    do §6): o check Kit não se aplica; entra na reconciliação SEM achado,
+ *    então uma issue Kit aberta é comentada e fecha sozinha (o corpo dela
+ *    avisa que fechar por rollback não é "causa resolvida");
+ *  - config ILEGÍVEL: transporte desconhecido — check Kit fora da
+ *    reconciliação (nem alarma, nem fecha nada).
+ *
+ * @pure
+ */
+export function evaluateContinuityRound(input: ContinuityRoundInput): ContinuityRound {
+  const now = input.now ?? new Date();
+  const evaluation = evaluateOnboardingContinuity(
+    input.storeExists,
+    input.corrupted,
+    input.store.consecutive_zero_detections ?? 0,
+    undefined,
+    // #7665: sem o carimbo da última rodada, a streak sozinha não distingue
+    // "detectou zero" de "parou de rodar" — ver evaluateOnboardingContinuity.
+    input.store.last_zero_detection_run_at ?? null,
+    now,
+  );
+  const transport: OnboardingTransportLabel =
+    input.cfgRead.error != null ? "desconhecido" : resolveActiveOnboardingTransport(input.cfgRead.enabled);
+
+  const evaluatedChecks = new Set<string>();
+  const findings: AlarmFinding[] = [];
+  if (evaluation.verdict !== "cannot-verify") {
+    evaluatedChecks.add(DETECTION_CHECK);
+    if (evaluation.verdict === "stale") findings.push(toAlarmFinding(evaluation));
+  }
+
+  let kitEvaluation: KitTransportHealthEvaluation | null = null;
+  if (transport === "kit") {
+    kitEvaluation = evaluateKitTransportHealth(input.storeExists, input.corrupted, input.store.kit_transport, undefined, now);
+    if (kitEvaluation.verdict !== "cannot-verify") {
+      evaluatedChecks.add(KIT_TRANSPORT_CHECK);
+      if (kitEvaluation.verdict === "stale") findings.push(toKitTransportAlarmFinding(kitEvaluation));
+    }
+  } else if (transport === "brevo") {
+    evaluatedChecks.add(KIT_TRANSPORT_CHECK);
+  }
+  return { transport, evaluation, kitEvaluation, evaluatedChecks, findings };
 }
 
 async function main(): Promise<void> {
@@ -243,32 +324,13 @@ async function main(): Promise<void> {
 
   const storeExists = existsSync(DEFAULT_STORE_PATH);
   const { store, corrupted } = readStore(DEFAULT_STORE_PATH);
-  const evaluation = evaluateOnboardingContinuity(
-    storeExists,
-    corrupted,
-    store.consecutive_zero_detections ?? 0,
-    undefined,
-    // #7665: sem o carimbo da última rodada, a streak sozinha não distingue
-    // "detectou zero" de "parou de rodar" — ver evaluateOnboardingContinuity.
-    store.last_zero_detection_run_at ?? null,
-  );
-
-  // #7922: transporte ativo derivado do kill switch. Config ilegível → não
-  // dá pra saber se o Kit está ativo: o check Kit fica sem avaliar (estado
-  // de issue preservado), a detecção segue normal.
   const cfgRead = readKitTransportEnabled(PLATFORM_CONFIG_PATH);
-  const transport: OnboardingTransport = resolveActiveOnboardingTransport(cfgRead.enabled);
   if (cfgRead.error != null) {
     console.error(`${LOG_PREFIX} platform.config.json ilegível (${cfgRead.error}) — check do transporte Kit NÃO avaliado nesta rodada.`);
   }
-  const kitEvaluation: KitTransportHealthEvaluation | null =
-    cfgRead.error == null && transport === "kit"
-      ? evaluateKitTransportHealth(storeExists, corrupted, store.kit_transport)
-      : null;
-  console.log(`${LOG_PREFIX} transporte ativo: ${cfgRead.error != null ? "desconhecido (config ilegível)" : transport}`);
-
-  const evaluatedChecks = new Set<string>();
-  const alarmFindings: AlarmFinding[] = [];
+  const round = evaluateContinuityRound({ storeExists, corrupted, store, cfgRead });
+  const { transport, evaluation, kitEvaluation, evaluatedChecks, findings: alarmFindings } = round;
+  console.log(`${LOG_PREFIX} transporte ativo: ${transport}`);
 
   if (evaluation.verdict === "cannot-verify") {
     // Fail-soft honesto: não dá pra concluir nada — nunca alarma a partir
@@ -283,24 +345,13 @@ async function main(): Promise<void> {
     }
   } else {
     console.log(`${LOG_PREFIX} detecção: verdict=${evaluation.verdict} streak=${evaluation.streak} threshold=${evaluation.threshold}`);
-    evaluatedChecks.add(DETECTION_CHECK);
-    if (evaluation.verdict === "stale") alarmFindings.push(toAlarmFinding(evaluation));
   }
-
   if (kitEvaluation != null) {
-    if (kitEvaluation.verdict === "cannot-verify") {
-      console.log(
-        `${LOG_PREFIX} transporte Kit: não foi possível verificar (${kitEvaluation.cannotVerifyReason}` +
-          `${kitEvaluation.lastRunAt ? `, última rodada --send ${kitEvaluation.lastRunAt}` : ""}) — sem alarme deste check.`,
-      );
-    } else {
-      console.log(
-        `${LOG_PREFIX} transporte Kit: verdict=${kitEvaluation.verdict} rodadas_falhas=${kitEvaluation.consecutiveFailedRuns} ` +
-          `threshold=${kitEvaluation.threshold} ultima_rodada=${kitEvaluation.lastRunAt}`,
-      );
-      evaluatedChecks.add(KIT_TRANSPORT_CHECK);
-      if (kitEvaluation.verdict === "stale") alarmFindings.push(toKitTransportAlarmFinding(kitEvaluation));
-    }
+    console.log(
+      `${LOG_PREFIX} transporte Kit: verdict=${kitEvaluation.verdict} ` +
+        `motivo=${kitEvaluation.staleReason ?? kitEvaluation.cannotVerifyReason ?? "-"} ` +
+        `rodadas_falhas=${kitEvaluation.consecutiveFailedRuns ?? "-"} ultima_rodada=${kitEvaluation.lastRunAt ?? "-"}`,
+    );
   }
 
   if (evaluatedChecks.size === 0) {
@@ -365,7 +416,7 @@ export function buildContinuityAlarmMessage(
   qualifying: readonly AlarmFindingOutcome[],
   evaluation: OnboardingContinuityEvaluation,
   kitEvaluation: KitTransportHealthEvaluation | null,
-  transport: OnboardingTransport,
+  transport: OnboardingTransportLabel,
 ): { subject: string; body: string } {
   const issueLinesFor = (check: string): string => {
     const rows = qualifying.filter((r) => r.check === check);

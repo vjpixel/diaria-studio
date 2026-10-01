@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OnboardingKitLot, KitSendRunRecord } from "./onboarding-kit-transport.ts";
+import type { OnboardingKitLot, KitTransportHealthBlock } from "./onboarding-kit-transport.ts";
 import { withFileLock } from "./file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -225,25 +225,17 @@ export interface OnboardingStore {
    * (`onboarding-kit-transport.ts` → `buildLotId`). Ausente/`undefined` =
    * store criado antes deste campo existir, ou o transporte Kit nunca rodou
    * — tratado como "nenhum lote" (`{}`), nunca como erro.
+   *
+   * #7922 (§3 do corte): também carrega a saúde do executor Kit
+   * (`KitTransportHealthBlock` — `last_send_run` +
+   * `consecutive_failed_send_runs`, contados por `isFailedKitSendRun`).
+   * Gravado só por `stampKitSendRun` (rodada `--send` não-piloto, sob o lock
+   * do store; dry-run nunca grava). Ausente com o transporte Kit ativo = o
+   * executor nunca registrou rodada → achado do alarme, nunca `ok`.
    */
   kit_transport?: {
     lots: Record<string, OnboardingKitLot>;
-    /**
-     * #7922 (pré-requisito do corte, §3 de docs/onboarding-kit-cutover.md):
-     * última rodada `--send` NÃO-piloto do executor Kit — quando rodou e
-     * quantos lotes criou/falhou. É o par Kit do `last_zero_detection_run_at`:
-     * permite ao alarme de continuidade distinguir "o executor Kit rodou e
-     * deu certo" de "parou de rodar" e de "roda mas não consegue criar o
-     * broadcast". Ausente = executor Kit nunca rodou `--send` com este campo
-     * (store anterior, ou kill switch ainda desligado) — o alarme responde
-     * `cannot-verify`, nunca `ok`. Gravado só pelo executor Kit
-     * (`stampKitSendRun`, sob o lock do store); dry-run nunca grava.
-     */
-    last_send_run?: KitSendRunRecord | null;
-    /** #7922: rodadas `--send` consecutivas com ≥1 lote que falhou ao
-     *  criar/taguear/agendar o broadcast. Zera numa rodada sem falha. */
-    consecutive_failed_send_runs?: number;
-  };
+  } & KitTransportHealthBlock;
 }
 
 export function emptyStore(): OnboardingStore {

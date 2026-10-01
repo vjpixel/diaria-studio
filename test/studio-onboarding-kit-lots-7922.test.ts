@@ -3,22 +3,23 @@
  * docs/onboarding-kit-cutover.md — "Painel do Studio (`/assinantes`) mostrando
  * os lotes Kit corretamente para pelo menos 1 ciclo completo em dry-run")
  *
- * Antes deste PR o painel não listava lote Kit nenhum (só o e-mail 3 via
+ * Regressão #7922: o painel não listava lote Kit nenhum (só o e-mail 3 via
  * `staleDrafts`), não dizia por qual transporte o e-mail 1/2 saiu (o §3 manda
  * conferir `provider: "kit"` depois do flip) e, se um lote/entrada de PILOTO
  * (`onboarding-pilot-*`, `pilot:*`) aparecesse no store, ele entrava no funil
  * de produção misturado.
  *
  * O ciclo é real: o executor `onboarding-kit-transport-run.ts` roda como
- * subprocesso sobre um store temporário (Kit inalcançável — porta 1, sem
- * rede), primeiro em dry-run (não pode gravar NADA) e depois com `--send` e
+ * subprocesso sobre um store temporário (Kit = mock local que responde 401
+ * a tudo — auth quebrada, sem rede real e sem o backoff de conexão recusada), primeiro em dry-run (não pode gravar NADA) e depois com `--send` e
  * kill switch ligado só no config temporário (grava `last_send_run`, sem
  * criar lote porque o refresh falha → ninguém elegível). O painel é lido
  * depois de cada passo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -26,7 +27,13 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 import type { OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
-import { buildOnboardingFunnelData, buildKitLotsView, isPilotKitLot } from "../scripts/studio-ui/studio-onboarding.ts";
+import {
+  buildOnboardingFunnelData,
+  buildKitLotsView,
+  isPilotKitLot,
+  listPendingBrevoCampaignIds,
+} from "../scripts/studio-ui/studio-onboarding.ts";
+import { buildOnboardingFunnelEntry } from "../scripts/lib/onboarding-funnel-report.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REAL_STORE_PATH = resolve(ROOT, "data/onboarding/store.json");
@@ -143,18 +150,34 @@ function realisticStore() {
   };
 }
 
-function runExecutor(args: string[], configPath: string, storePath: string, snippetsDir: string) {
-  return spawnSync(
-    "npx",
-    ["tsx", resolve(ROOT, "scripts/onboarding-kit-transport-run.ts"), "--config", configPath, "--store", storePath, "--snippets-dir", snippetsDir, ...args],
-    {
-      cwd: ROOT,
-      encoding: "utf8",
-      env: { ...process.env, KIT_API_KEY: "fixture_fake_kit_key_do_not_use", KIT_API_URL: "http://127.0.0.1:1" },
-      shell: process.platform === "win32",
-      timeout: 60_000,
-    },
-  );
+/** Kit falso: 401 em tudo (auth quebrada) — rápido, sem retry (401 não é retriável). */
+function startKit401(): Promise<{ server: Server; url: string }> {
+  return new Promise((resolvePromise) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ errors: ["mock 401"] }));
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      resolvePromise({ server, url: `http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}` });
+    });
+  });
+}
+
+function runExecutor(args: string[], configPath: string, storePath: string, snippetsDir: string, kitUrl: string) {
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolvePromise, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", resolve(ROOT, "scripts/onboarding-kit-transport-run.ts"), "--config", configPath, "--store", storePath, "--snippets-dir", snippetsDir, ...args],
+      { cwd: ROOT, env: { ...process.env, KIT_API_KEY: "fixture_fake_kit_key_do_not_use", KIT_API_URL: kitUrl }, timeout: 60_000 },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (d) => (stdout += d.toString()));
+    child.stderr?.on("data", (d) => (stderr += d.toString()));
+    child.on("error", reject);
+    child.on("close", (status) => resolvePromise({ status, stdout, stderr }));
+  });
 }
 
 function assertPanel(root: string) {
@@ -201,9 +224,10 @@ function assertPanel(root: string) {
 }
 
 describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor", () => {
-  it("dry-run não grava nada e o painel mostra produção/piloto separados; --send registra a rodada no painel", () => {
+  it("dry-run não grava nada e o painel mostra produção/piloto separados; --send registra a rodada no painel", async () => {
     const realBefore = fingerprintRealStore();
     const root = mkdtempSync(join(tmpdir(), "studio-onboarding-kit-lots-"));
+    const kit = await startKit401();
     try {
       mkdirSync(join(root, "data", "onboarding"), { recursive: true });
       const storePath = join(root, "data", "onboarding", "store.json");
@@ -218,7 +242,7 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       // 1) Ciclo dry-run — kill switch DESLIGADO, como está em produção hoje.
       writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: false } } }));
       const before = readFileSync(storePath, "utf8");
-      const dry = runExecutor([], configPath, storePath, snippetsDir);
+      const dry = await runExecutor([], configPath, storePath, snippetsDir, kit.url);
       assert.equal(dry.status, 0, `dry-run deveria sair 0. stdout: ${dry.stdout} stderr: ${dry.stderr}`);
       assert.equal(JSON.parse(dry.stdout).mode, "dry-run");
       assert.equal(readFileSync(storePath, "utf8"), before, "dry-run não pode gravar o store (nem last_send_run)");
@@ -226,12 +250,12 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       assert.equal(afterDry.kitLots.lastSendRun, null, "sem rodada --send registrada ainda");
 
       // 2) Rodada --send com o switch ligado SÓ no config temporário: Kit
-      //    inalcançável → refresh de TODOS os candidatos falha → ninguém
+      //    respondendo 401 → refresh de TODOS os candidatos falha → ninguém
       //    elegível → nenhum lote criado. A rodada fica registrada e conta
       //    como FALHA de entrega (isFailedKitSendRun) — sem isso um Kit fora
       //    do ar pareceria uma rodada saudável "0 lotes, 0 falhas".
       writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: true } } }));
-      const send = runExecutor(["--send"], configPath, storePath, snippetsDir);
+      const send = await runExecutor(["--send"], configPath, storePath, snippetsDir, kit.url);
       assert.equal(send.status, 0, `--send deveria sair 0. stdout: ${send.stdout} stderr: ${send.stderr}`);
       const summary = JSON.parse(send.stdout);
       assert.equal(summary.mode, "SEND");
@@ -243,6 +267,7 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       assert.equal(afterSend.kitLots.lastSendRun!.lots_created, 0);
       assert.equal(afterSend.kitLots.consecutiveFailedSendRuns, 1, "Kit inalcançável conta como rodada falha");
     } finally {
+      await new Promise<void>((r) => kit.server.close(() => r()));
       rmSync(root, { recursive: true, force: true });
     }
     assert.equal(fingerprintRealStore(), realBefore, "store real de produção intocado");
@@ -256,5 +281,72 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
     const view = buildKitLotsView([base], 0, undefined);
     assert.equal(view.lastSendRun, null);
     assert.equal(view.consecutiveFailedSendRuns, 0);
+  });
+
+  it("lote de piloto com id de PRODUÇÃO não sombreia o lote de produção do e-mail 3", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-onboarding-pilot-shadow-"));
+    try {
+      mkdirSync(join(root, "data", "onboarding"), { recursive: true });
+      const storePath = join(root, "data", "onboarding", "store.json");
+      const prod = lot({
+        lot_id: "email3-2026-09-28-01",
+        kind: "email3",
+        status: "created",
+        send_at: null,
+        recipient_subscription_ids: ["3001"],
+        created_at: iso(3),
+      });
+      // Piloto MAIS NOVO e com o mesmo id de produção na lista (não deveria
+      // acontecer, mas se acontecer não pode vencer a resolução do e-mail 3).
+      const pilot = lot({
+        lot_id: "email3-2026-09-30-01p",
+        kind: "email3",
+        status: "completed",
+        tag_name: "onboarding-pilot-email3-2026-09-30-01",
+        recipient_subscription_ids: ["3001", "pilot:editor@example.com"],
+        created_at: iso(1),
+      });
+      const st = realisticStore();
+      st.entries = {
+        "3001": entry("3001", { email1_sent_at: iso(14), email1_transport: "kit", email3_state: "campaign_created", email3_kit_lot_id: prod.lot_id, email3_decided_at: iso(3) }),
+      };
+      st.kit_transport = { lots: { [prod.lot_id]: prod, [pilot.lot_id]: pilot } };
+      writeFileSync(storePath, JSON.stringify(st));
+      const data = buildOnboardingFunnelData(root, { apoiadores: [] });
+      const e = data.entries.find((x) => x.subscriptionId === "3001")!;
+      assert.equal(e.email3.stage, "rascunho_criado", "resolvido pelo lote de produção, não pelo piloto 'completed'");
+      assert.deepEqual(data.kitLots.pilot.map((l) => l.lotId), [pilot.lot_id]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("listPendingBrevoCampaignIds ignora entry sintética de piloto", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-onboarding-pilot-brevo-"));
+    try {
+      mkdirSync(join(root, "data", "onboarding"), { recursive: true });
+      const storePath = join(root, "data", "onboarding", "store.json");
+      const st = realisticStore();
+      st.entries = {
+        "4001": entry("4001", { email3_state: "campaign_created", email3_campaign_id: 11, email3_decided_at: iso(2) }),
+        "pilot:x@example.com": entry("pilot:x@example.com", { email3_state: "campaign_created", email3_campaign_id: 22, email3_decided_at: iso(2) }),
+      };
+      st.kit_transport = { lots: {} };
+      writeFileSync(storePath, JSON.stringify(st));
+      assert.deepEqual(listPendingBrevoCampaignIds(root), [11]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("e-mail 1 com proveniência explícita `email1_transport: kit` e SEM lot id → provider kit", () => {
+    const e = buildOnboardingFunnelEntry(entry("5001", { email1_sent_at: iso(2), email1_transport: "kit" }), {
+      nowSec: sec(0),
+      email3Days: 10,
+      email3GraceDays: 3,
+      kitLots: [],
+    });
+    assert.equal(e.email1.provider, "kit");
+    assert.equal(e.email1.kitLotId, null);
   });
 });

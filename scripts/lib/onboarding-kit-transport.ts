@@ -719,35 +719,61 @@ export async function reconcileLotWithKit(
  *  `onboarding-store.ts`). Consumido pelo alarme de continuidade
  *  (`onboarding-continuity-alarm.ts`) quando o transporte Kit está ativo. */
 export interface KitSendRunRecord {
-  /** ISO de quando a rodada terminou de processar os lotes. */
+  /** ISO de quando a rodada terminou (ou abortou). */
   at: string;
-  /** Lotes cujo broadcast foi criado nesta rodada. */
+  /** Lotes cujo broadcast foi criado — e, pra e-mail 1/2, AGENDADO — nesta rodada. */
   lots_created: number;
-  /** Lotes que falharam ao taguear/criar/agendar o broadcast nesta rodada —
-   *  inclui o lote barrado por `blocked_concurrent` cujo `pending` carrega
-   *  `last_error` (falha de uma tentativa anterior ainda dentro da janela de
-   *  stale: o e-mail daquele kind também não saiu nesta rodada). */
+  /** Lotes que falharam nesta rodada: tag/criação lançou, ou (e-mail 1/2) o
+   *  broadcast voltou sem agendamento (não sai sozinho). */
   lots_failed: number;
-  /** Candidatos que precisaram de refresh de status/stats no Kit nesta
-   *  rodada, e quantos desses refreshes falharam (candidato com refresh
-   *  falho é EXCLUÍDO da seleção — fail-safe do #8136). Opcionais só por
-   *  compatibilidade com registros anteriores a estes campos. */
-  refresh_candidates?: number;
-  refresh_failed?: number;
+  /** Candidatos que precisaram de refresh de status/stats no Kit. */
+  refresh_candidates: number;
+  /** Refreshes que falharam por ERRO de transporte (rede, auth, 5xx/429) —
+   *  NÃO conta "assinante não encontrado" (ausência real, crônica pra quem
+   *  saiu do Kit). Candidato com refresh falho é excluído da seleção
+   *  (fail-safe do #8136). */
+  refresh_failed: number;
+  /** Ações devidas DESTE executor barradas por guard de conteúdo
+   *  (`snippet_ausente`/`corpo_pendente`/`snippet_invalido`) — o e-mail não
+   *  sai enquanto o snippet não for corrigido. */
+  content_skipped: number;
+  /** `true` quando a rodada `--send` morreu antes de terminar (exceção,
+   *  backend/config/store inválido) — os contadores acima são parciais. */
+  aborted?: boolean;
+  /** Motivo do aborto (sem PII). */
+  error?: string | null;
 }
 
+/** Bloco de saúde do executor Kit dentro de `store.kit_transport` — mesmo
+ *  formato lido pelo store, pelo alarme e pelo painel do Studio. */
+export interface KitTransportHealthBlock {
+  last_send_run?: KitSendRunRecord | null;
+  /** Rodadas `--send` CONSECUTIVAS (por rodada, não por dia — premissa de
+   *  operação: 1 rodada `--send` por dia) em que `isFailedKitSendRun`. */
+  consecutive_failed_send_runs?: number;
+}
+
+/** Motivos de skip de conteúdo do `buildRunPlan` (`onboarding-state.ts`). */
+export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausente", "corpo_pendente", "snippet_invalido"]);
+
 /**
- * Rodada `--send` que falhou em ENTREGAR: ≥1 lote falho, OU todos os
- * refreshes falharam (havendo candidato). O 2º caso é o Kit inteiro fora do
- * ar/auth quebrada: todo candidato cai em `status_nao_confirmado`, nenhum
- * lote nem chega a ser tentado, e sem esta regra a rodada pareceria
- * saudável ("0 lotes, 0 falhas") enquanto ninguém recebe nada. Falha
- * PARCIAL de refresh não conta — os demais candidatos seguiram.
+ * Rodada `--send` que falhou em ENTREGAR:
+ *   - abortou antes de terminar; ou
+ *   - ≥1 lote falho; ou
+ *   - ≥1 ação devida barrada por guard de conteúdo (sem isto, snippet
+ *     ausente/pendente produziria "0 lotes, 0 falhas" indefinidamente); ou
+ *   - o refresh de TODOS os candidatos falhou por erro de transporte. Com
+ *     muitos candidatos isso é o Kit fora do ar / auth quebrada; com N
+ *     pequeno (1-2) pode ser um erro pontual — o limiar de 2 rodadas
+ *     seguidas do alarme absorve o caso pontual. Falha PARCIAL não conta
+ *     (os demais candidatos seguiram).
  *
  * @pure
  */
 export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
+  if (run.aborted === true) return true;
   if (run.lots_failed > 0) return true;
+  if ((run.content_skipped ?? 0) > 0) return true;
   const candidates = run.refresh_candidates ?? 0;
   return candidates > 0 && (run.refresh_failed ?? 0) >= candidates;
 }
@@ -755,17 +781,30 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
 /**
  * Aplica o resultado de uma rodada `--send` ao bloco `kit_transport` —
  * atualiza `last_send_run` e a streak `consecutive_failed_send_runs`
- * (incrementa quando `isFailedKitSendRun`, zera caso contrário). Mesma forma de
- * `updateZeroDetectionStreak` (`onboarding-state.ts`), só que pro executor
- * Kit.
+ * (incrementa quando `isFailedKitSendRun`, zera caso contrário). Mesma forma
+ * de `updateZeroDetectionStreak` (`onboarding-state.ts`), só que pro executor
+ * Kit. A streak conta RODADAS: duas rodadas no mesmo dia contam 2.
  *
  * @pure — muta e devolve o bloco recebido (sem I/O).
  */
-export function recordKitSendRun<T extends { last_send_run?: KitSendRunRecord | null; consecutive_failed_send_runs?: number }>(
-  kitTransport: T,
-  run: KitSendRunRecord,
-): T {
+export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport: T, run: KitSendRunRecord): T {
   kitTransport.last_send_run = run;
   kitTransport.consecutive_failed_send_runs = isFailedKitSendRun(run) ? (kitTransport.consecutive_failed_send_runs ?? 0) + 1 : 0;
   return kitTransport;
+}
+
+/** Conta as ações devidas a ESTE executor barradas por guard de conteúdo.
+ *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`); e-mail
+ *  3 fica fora da decisão de dono (mesma regra dos filtros do #8966).
+ *  @pure */
+export function countKitContentSkips(
+  skips: readonly { etapa: "email1" | "email2" | "email3"; motivo: string; entry: OnboardingEntry }[],
+  isKitOwned: (entry: OnboardingEntry, etapa: "email1" | "email2") => boolean,
+): number {
+  let n = 0;
+  for (const s of skips) {
+    if (!CONTENT_SKIP_REASONS.has(s.motivo)) continue;
+    if (s.etapa === "email3" || isKitOwned(s.entry, s.etapa)) n++;
+  }
+  return n;
 }

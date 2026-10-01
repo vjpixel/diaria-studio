@@ -59,7 +59,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { readStore } from "../lib/onboarding-store.ts";
 import type { OnboardingEntry } from "../lib/onboarding-store.ts";
-import type { OnboardingKitLot, KitSendRunRecord } from "../lib/onboarding-kit-transport.ts";
+import type { OnboardingKitLot, KitSendRunRecord, KitTransportHealthBlock } from "../lib/onboarding-kit-transport.ts";
 import { PILOT_TAG_PREFIX, PILOT_SUBSCRIPTION_PREFIX, redactEmails } from "../lib/onboarding-kit-pilot.ts";
 import {
   buildOnboardingFunnelEntry,
@@ -140,7 +140,11 @@ export interface OnboardingKitLotsView {
  *  sintético do piloto. Qualquer dos dois sinais basta (um lote de produção
  *  nunca tem nenhum deles). */
 export function isPilotKitLot(lot: OnboardingKitLot): boolean {
-  return lot.tag_name.startsWith(PILOT_TAG_PREFIX) || lot.recipient_subscription_ids.some((id) => id.startsWith(PILOT_SUBSCRIPTION_PREFIX));
+  // `?? ""`/`?? []`: store é JSON editável à mão — lote sem um campo não pode derrubar o painel.
+  return (
+    (lot.tag_name ?? "").startsWith(PILOT_TAG_PREFIX) ||
+    (lot.recipient_subscription_ids ?? []).some((id) => String(id).startsWith(PILOT_SUBSCRIPTION_PREFIX))
+  );
 }
 
 export function isPilotEntry(entry: OnboardingEntry): boolean {
@@ -152,12 +156,12 @@ function toKitLotView(lot: OnboardingKitLot): OnboardingKitLotView {
     lotId: lot.lot_id,
     kind: lot.kind,
     status: lot.status,
-    tagName: lot.tag_name,
+    tagName: lot.tag_name ?? "",
     broadcastId: lot.broadcast_id,
-    recipients: lot.recipient_subscription_ids.length,
-    createdAt: lot.created_at,
+    recipients: (lot.recipient_subscription_ids ?? []).length,
+    createdAt: lot.created_at ?? "",
     sendAt: lot.send_at,
-    lastError: lot.last_error != null ? redactEmails(lot.last_error) : null,
+    lastError: lot.last_error != null ? redactEmails(String(lot.last_error)) : null,
     pilot: isPilotKitLot(lot),
   };
 }
@@ -166,9 +170,9 @@ function toKitLotView(lot: OnboardingKitLot): OnboardingKitLotView {
 export function buildKitLotsView(
   lots: readonly OnboardingKitLot[],
   pilotEntriesExcluded: number,
-  kitTransport: { last_send_run?: KitSendRunRecord | null; consecutive_failed_send_runs?: number } | undefined,
+  kitTransport: KitTransportHealthBlock | undefined,
 ): OnboardingKitLotsView {
-  const byNewest = (a: OnboardingKitLotView, b: OnboardingKitLotView) => b.createdAt.localeCompare(a.createdAt);
+  const byNewest = (a: OnboardingKitLotView, b: OnboardingKitLotView) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
   const views = lots.map(toKitLotView);
   return {
     production: views.filter((v) => !v.pilot).sort(byNewest),

@@ -150,32 +150,43 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
       reconferir no builder/preview do Kit.
 - [ ] Alarme de continuidade (#7839) confirmado operante para o novo
       transporte, não só para o Brevo.
-  - [x] Código: `onboarding-kit-transport-run.ts --send` grava
-        `kit_transport.last_send_run` + `consecutive_failed_send_runs` no
-        store (`stampKitSendRun`, sob o lock); com
+  - [x] Código: toda rodada `onboarding-kit-transport-run.ts --send` de
+        produção grava `kit_transport.last_send_run` +
+        `consecutive_failed_send_runs` no store (`stampKitSendRun`, sob o
+        lock) — inclusive a que ABORTA (backend/config/store inválido, ou
+        exceção no meio: registro `aborted: true` com o motivo). Rodada
+        "falha" (`isFailedKitSendRun`) = abortou, ou ≥1 lote falho (inclusive
+        e-mail 1/2 que o Kit devolveu sem agendamento), ou ≥1 ação devida
+        barrada por snippet ausente/pendente/inválido, ou o refresh de TODOS
+        os candidatos falhou por erro de transporte (rede/auth/5xx — "não
+        encontrado no Kit" não conta). Com
         `onboarding.kit_transport.enabled: true`,
-        `onboarding-continuity-alarm.ts` avalia também esse sinal (check
-        `onboarding-kit-transport`, issue própria; limiar 2 rodadas que não
-        entregaram — lote falho ou refresh de TODOS os candidatos falho,
-        i.e. Kit fora do ar; tri-state honesto — sem rodada `--send` registrada ou com a
-        última há mais de 48h é `cannot-verify`, nunca `ok`) e o e-mail nomeia
-        o transporte ativo. A streak de detecção segue a mesma nos dois
-        regimes (quem detecta é sempre `onboarding-welcome-run.ts`). Testes:
-        `test/onboarding-continuity-kit-transport-7922.test.ts`.
+        `onboarding-continuity-alarm.ts` avalia esse sinal (check
+        `onboarding-kit-transport`, issue própria): 2 rodadas seguidas
+        falhando, OU nenhuma rodada registrada, OU a última há mais de 48h
+        → issue + e-mail (com o switch ligado devia haver rodada; nunca `ok`
+        sem leitura). Com o switch desligado (rollback do §6) o check não se
+        aplica e a issue Kit aberta fecha sozinha após 2 execuções — fechar
+        por rollback NÃO é causa resolvida. Config ilegível = transporte
+        "desconhecido": o check Kit nem alarma nem fecha. O e-mail nomeia o
+        transporte ativo; a streak de detecção é a mesma nos dois regimes
+        (quem detecta é sempre `onboarding-welcome-run.ts`). Testes:
+        `test/onboarding-continuity-kit-transport-7922.test.ts` e
+        `test/onboarding-kit-transport-run-counters-7922.test.ts`.
   - [ ] Confirmação em produção: depende de 1 ciclo real depois do flip
-        (rodada `--send` do executor Kit seguida do alarme). Nem a task
-        `Diaria-Onboarding-Continuity-Alarm` (declarada, não armada) nem uma
-        task agendada do executor Kit existem armadas hoje — armar as duas
-        faz parte do flip. Limite conhecido: `cannot-verify` (executor Kit
-        parado há mais de 48h) só vira linha de log, sem issue nem e-mail —
-        mesma semântica do `run_parado` da detecção.
+        (rodada `--send` do executor Kit seguida do alarme). A task
+        `Diaria-Onboarding-Continuity-Alarm` já está ARMADA na `300` (09:10
+        BRT; `npx tsx scripts/lib/scheduled-tasks.ts --list`), mas NÃO
+        existe task agendada do executor Kit — declará-la e armá-la é passo
+        do flip (abaixo). Sem ela, o alarme abre a issue "executor não está
+        rodando" já na 1ª manhã depois do flip.
 - [ ] Painel do Studio (`/assinantes`, #7917/#8955) mostrando os lotes Kit
       corretamente para pelo menos 1 ciclo completo em dry-run.
   - [x] Código: o painel lista os lotes Kit de produção (status, broadcast,
         destinatários, último erro com e-mail mascarado) e a última rodada
         `--send`; separa lote/entrada de piloto (`onboarding-pilot-*`,
         `pilot:*`) do funil de produção; mostra por qual transporte saiu
-        cada e-mail 1/2 (`provider: "kit"` do passo 4 abaixo). Teste com o
+        cada e-mail 1/2 (`provider: "kit"` do passo 5 abaixo). Teste com o
         executor real em subprocesso (dry-run não grava nada; `--send`
         registra a rodada): `test/studio-onboarding-kit-lots-7922.test.ts`.
   - [ ] Conferência visual no Studio com o store real, num ciclo dry-run de
@@ -183,17 +194,23 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
 
 Sequência de flip:
 
-1. `platform.config.json` → `onboarding.kit_transport.enabled: true`.
+1. Declarar a task agendada do executor Kit (`onboarding-kit-transport-run.ts
+   --send`, diária, ANTES das 09:10 BRT do alarme de continuidade e depois
+   das 09:05 da detecção) em `scripts/lib/scheduled-tasks.ts` e armá-la na
+   `300` via `scripts/setup-systemd-timers.ts` — no mesmo dia do flip. Sem
+   ela, nada envia pelo Kit e o alarme abre "executor não está rodando".
+2. `platform.config.json` → `onboarding.kit_transport.enabled: true`.
    Commitado, revisado, nunca editado direto em produção sem PR (mesma
    disciplina de "pipeline reproducible" do `CLAUDE.md`).
-2. Rodar `onboarding-kit-transport-run.ts` (sem `--send`) uma vez para
+3. Rodar `onboarding-kit-transport-run.ts` (sem `--send`) uma vez para
    conferir o PLANO antes de qualquer escrita — o dry-run já reflete o
    estado real (kill switch só bloqueia escrita, nunca leitura).
-3. Primeira rodada com `--send` real: acompanhar o `summary` impresso
+4. Primeira rodada com `--send` real: acompanhar o `summary` impresso
    (lotes criados, `excluded`, `skips`) e confirmar no painel Kit
    (broadcasts criados como rascunho/agendado, nunca `public`).
-4. Confirmar no Studio (#7917) que as entradas processadas aparecem com
-   `provider: "kit"` no funil.
+5. Confirmar no Studio (#7917) que as entradas processadas aparecem com
+   `provider: "kit"` no funil e que a "Última rodada --send" do painel de
+   lotes Kit mostra a rodada sem falha.
 
 ## 4. Piloto supervisionado (pré-requisito do corte, não o corte em si)
 
@@ -397,10 +414,17 @@ cego que reenvie pela Brevo em cima do que o Kit já entregou.**
    lote `cancelled` (ou a ausência de qualquer lote) libera a Brevo para
    aquela etapa — não é preciso mais nenhuma ação manual de conferência
    antes de reativar o transporte Brevo, o guard já recusa a duplicação.
-4. **Nunca resetar histórico/cursor** durante o rollback — mesma regra do
+4. **Alarme de continuidade no rollback**: com o switch `false`, o check do
+   transporte Kit (`onboarding-continuity-alarm.ts`, check
+   `onboarding-kit-transport`) deixa de se aplicar — uma issue dele que
+   estiver aberta é comentada e fecha SOZINHA após 2 execuções. Esse
+   fechamento é consequência do rollback, não prova de que a causa foi
+   resolvida: registrar a causa no item 6 abaixo antes de religar o switch.
+   Também desligar (ou deixar de armar) a task agendada do executor Kit.
+5. **Nunca resetar histórico/cursor** durante o rollback — mesma regra do
    corte (seção 2, item 1). O rollback é sobre TRANSPORTE FUTURO, nunca uma
    reescrita do que já aconteceu.
-5. **Registrar o rollback** como comentário na issue #7922 (ou uma issue
+6. **Registrar o rollback** como comentário na issue #7922 (ou uma issue
    dedicada, se o motivo for um bug específico) com: motivo, lotes
    cancelados/reconciliados, e se alguma entrada precisou de intervenção
    manual (sem PII).

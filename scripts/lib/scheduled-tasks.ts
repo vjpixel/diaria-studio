@@ -2317,12 +2317,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
         "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao " +
         "montada; abortando por seguranca -- o proprio script tambem reporta cannot-verify nesse caso.",
     },
-    // DECLARADA, NÃO ARMADA nesta unidade (worktree isolado de rodada
-    // overnight) — armar via `scripts/setup-systemd-timers.ts` na checkout
-    // compartilhada (`300`) é ação POSTERIOR do editor, mesma disciplina
-    // de toda task nova deste arquivo.
+    // Declarada numa rodada overnight; ARMADA na `300` (confirmado pelo
+    // drift-check em 10/09/2026, #7553 — `--list` mostra o estado vivo).
+    // Desde #7922 também avalia a saúde do executor do transporte Kit
+    // quando `onboarding.kit_transport.enabled` está ligado.
     //
-    // Escopo desta unidade é SÓ detecção — o alarme de sequence do Kit que
+    // Escopo original desta unidade era SÓ detecção — o alarme de sequence do Kit que
     // a #7665 propôs originalmente foi descartado no próprio thread da
     // issue (sequence morta pelo downgrade de plano, #7365, não reativável;
     // canal migrou pro Brevo, #7599). O que sobrou de código real pra
