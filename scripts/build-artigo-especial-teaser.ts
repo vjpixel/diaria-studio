@@ -83,7 +83,10 @@ export function buildArticleArtifacts(
   sourceHtml: string,
   article: ArticleConfig,
 ): { full: string; teaser: string } {
-  const split = splitAtMarker(sourceHtml, GATE_CUT_MARKER);
+  // #9257: fonte salva no Windows vem em CRLF; o Git normaliza o .html pra LF
+  // no commit, então gerar com \r\n embutido acusava drift no CI. Normaliza
+  // antes de tudo — o artefato é o mesmo em qualquer SO.
+  const split = splitAtMarker(sourceHtml.replace(/\r\n?/g, "\n"), GATE_CUT_MARKER);
   if (!split) {
     throw new Error(`${article.slug}: marcador ${GATE_CUT_MARKER} não encontrado em articles-src/${article.slug}.html`);
   }
