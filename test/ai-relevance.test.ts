@@ -381,6 +381,19 @@ describe("isNonAITopic (#9402)", () => {
   });
 
   it("summary não dispara a denylist (só título/URL)", () => {
-    assert.equal(isNonAITopic({ title: "NVIDIA releases new LLM", summary: "Also on GeForce NOW." } as { title: string }), false);
+    assert.equal(isNonAITopic({ title: "New membership perks", summary: "Also on GeForce NOW." } as { title: string }), false);
+  });
+
+  it("slug /gfn-thursday- também casa", () => {
+    assert.equal(isNonAITopic({ title: "Game on", url: "https://blogs.nvidia.com/blog/gfn-thursday-games/" }), true);
+  });
+
+  it("nome de jogo com termo permissivo (Agents, Benchmark) não salva o post", () => {
+    assert.equal(isNonAITopic({ title: "GFN Thursday: 'Agents of Mayhem' and 8 more games" }), true);
+    assert.equal(isNonAITopic({ title: "Benchmark-topping 'Cyberpunk' arrives on GeForce NOW" }), true);
+  });
+
+  it("título PT-BR com 'IA' solto é tratado como IA (paridade com 'AI')", () => {
+    assert.equal(isNonAITopic({ title: "Jogos com geração de quadros por IA chegam ao GeForce NOW" }), false);
   });
 });

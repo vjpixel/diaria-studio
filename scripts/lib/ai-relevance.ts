@@ -154,24 +154,36 @@ export const NON_AI_TOPIC_PATTERNS: readonly RegExp[] = [
   // GeForce NOW — serviço de cloud gaming (listas semanais/mensais de jogos,
   // "GFN Thursday", bundles de membership).
   /\bgeforce\s*now\b/i,
-  /\bgfn\s+thursday\b/i,
+  /\bgfn[\s-]+thursday\b/i,
   /\/geforce-now-/i,
 ];
+
+/**
+ * #9402: termo de IA ESTRITO usado só como válvula de escape de
+ * `isNonAITopic`. Não reusa `AI_RELEVANT_TERMS` porque aquele é permissivo
+ * demais pra nome de jogo ("Agents of Mayhem", "benchmark", "reasoning") e
+ * não tem `ia` solto (PT-BR).
+ */
+const STRICT_AI_TITLE_TERMS =
+  /\b(ai|ia|a\.i\.|gen\s*ai|generative|gerativa?|llms?|chatgpt|gemini|claude|copilot|machine\s+learning|aprendizado\s+de\s+m[áa]quina|intelig[êe]ncia\s+artificial|artificial\s+intelligence)\b/i;
 
 /**
  * Pure (#9402): `true` se o título/URL bate um assunto sabidamente sem IA
  * (`NON_AI_TOPIC_PATTERNS`) E o título não traz termo de IA próprio. A
  * segunda condição evita derrubar um post genuinamente de IA que mencione o
- * serviço (ex: "GeForce NOW adds generative AI NPCs"). Termos de vendor/
- * hardware (nvidia, gpu, geforce, rtx) são neutralizados antes do teste —
- * num post de jogos eles não indicam IA.
+ * serviço (ex: "GeForce NOW adds generative AI NPCs", "geração de quadros
+ * por IA"). A válvula usa `STRICT_AI_TITLE_TERMS`, então nome de vendor/
+ * hardware (nvidia, gpu, rtx) não conta como IA num post de jogos.
+ *
+ * Aplica-se a QUALQUER domínio, não só ao feed do vendor: matéria de
+ * imprensa sobre "jogos chegando ao GeForce NOW" também é derrubada — é o
+ * efeito pretendido.
  */
 export function isNonAITopic(article: { url?: string; title?: string }): boolean {
   const title = article.title ?? "";
   const hay = `${title} ${article.url ?? ""}`;
   if (!NON_AI_TOPIC_PATTERNS.some((re) => re.test(hay))) return false;
-  const titleSansVendor = title.replace(/\b(nvidia|geforce|rtx|gpus?)\b/gi, " ");
-  return !containsAITerms(titleSansVendor);
+  return !STRICT_AI_TITLE_TERMS.test(title);
 }
 
 function extractHostForRelevance(url: string | undefined | null): string | null {
@@ -218,6 +230,8 @@ export function isAIRelevantDomain(url: string | undefined | null): boolean {
  * Pure: predicate sobre artigo. Retorna `true` se houver qualquer sinal
  * de relevância pra IA — em ordem de checagem:
  *
+ *   0. Assunto sabidamente sem IA (`isNonAITopic`, #9402) → `false`,
+ *      vencendo inclusive o bypass de domínio
  *   1. Domínio 100%-IA (bypass) — anthropic.com, openai.com, …
  *   2. Slug de URL (`/ai-`, `/inteligencia-artificial/`, …)
  *   3. Keyword em título OU summary (regex AI_RELEVANT_TERMS)

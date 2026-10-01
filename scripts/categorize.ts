@@ -197,7 +197,8 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // o item caiu em `lancamento` (domínio oficial), onde o gate não rodava, e
     // chegou ao RADAR. A denylist é estreita o bastante pra não ter o risco de
     // falso-positivo descrito acima.
-    if (isNonAITopic(article) || (cat === "noticias" && !isArticleAIRelevant(article))) {
+    // (isArticleAIRelevant já inclui isNonAITopic — por isso o ternário.)
+    if (cat === "noticias" ? !isArticleAIRelevant(article) : isNonAITopic(article)) {
       // #5080: `flag: "editor_submitted"` isenta do gate #2986, mesmo
       // precedente de dedup.ts Pass-1d (#4192) e filter-date-window.ts
       // (#4656) — o editor já exerceu curadoria ao enviar o link; ausência
@@ -207,7 +208,7 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
       // foi dropada silenciosamente por este gate.
       if (article.flag === "editor_submitted") {
         console.warn(
-          `[categorize] #5080: #2986 spared editor_submitted item (would have dropped as non-AI-relevant): ${article.url}`,
+          `[categorize] #5080: #2986/#9402 spared editor_submitted item (would have dropped as non-AI-relevant): ${article.url}`,
         );
       } else {
         console.error(`[categorize] #2986/#9402 dropping non-AI-relevant item (${cat}): ${article.url}`);
