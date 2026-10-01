@@ -8,7 +8,10 @@
  *   - all_scored: TODOS os artigos com score, ordenados por score desc. É o
  *     contrato que finalize-stage1.ts consome (join por URL exata).
  *   - finalists: os top-N artigos COMPLETOS (com score + bucket) que vão pro
- *     agent `scorer-select` escolher os 6 destaques + ordem editorial.
+ *     agent `scorer-select` escolher os 6 destaques + ordem editorial — até
+ *     N+2: a garantia do #9359 acrescenta até 2 lançamentos oficiais de
+ *     laboratório de fronteira que ficaram abaixo do corte (ordem por score
+ *     desc preservada, pois vêm de depois do corte).
  *
  * Guard: se a contagem de artigos pontuados não bater com o pool, ECOA warning
  * no stderr e marca `incomplete: true` no manifest — um chunk pode ter falhado.
