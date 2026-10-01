@@ -70,7 +70,15 @@ export function readClariceAbTest(monthlyDir: string): ClariceAbTestConfig | nul
   } catch (e) {
     throw new Error(`${p}: JSON inválido — ${(e as Error).message}`);
   }
-  return parseClariceAbTest(raw, monthlyDir);
+  const config = parseClariceAbTest(raw, monthlyDir);
+  // Checado AQUI (antes de qualquer lista/campanha) e não só no
+  // `clarice-schedule-group` da célula: lá o VA já estaria agendado quando o
+  // VB falhasse — teste saindo com um braço só (achado do review do PR).
+  for (const arm of ["a", "b"] as const) {
+    if (!existsSync(config.arms[arm])) throw new Error(`${p}: HTML do braço ${arm.toUpperCase()} não existe: ${config.arms[arm]}`);
+  }
+  assertArmsDiffer(readFileSync(config.arms.a, "utf8"), readFileSync(config.arms.b, "utf8"));
+  return config;
 }
 
 /** `d6-qui06-VA` → "a"; key sem sufixo de variante → null. */

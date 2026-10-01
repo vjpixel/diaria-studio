@@ -993,6 +993,21 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("#9308: ab-test.json + A/B/C de assunto ABERTO => aborta antes de montar/agendar", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        ...goldenHandlers(),
+        "scripts/clarice-plan-wave.ts": jsonResult(
+          goldenProposal({ abc: { action: "continuar", metric: "abertura", winner: null, caveats: [], rationale: "em curso" } }),
+        ),
+      });
+      const r = await runEnvio(baseDeps(root, { exec, readAbTest: () => AB_TEST }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-split-group-cells.ts"), "nada dividido");
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), "nada criado/agendado");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("#9308: ab-test.json inválido (readAbTest lança) => aborta, nunca cai em silêncio no HTML default", async () => {
       const root = freshRoot();
       const { exec, calls } = makeFakeExec({

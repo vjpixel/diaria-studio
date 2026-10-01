@@ -26,6 +26,8 @@ function monthlyFixture(config?: unknown): string {
   if (config !== undefined) {
     writeFileSync(join(dir, "_internal", "ab-test.json"), typeof config === "string" ? config : JSON.stringify(config));
   }
+  writeFileSync(join(dir, "_internal", "cloudflare-preview-caixa-a.html"), "<p>caixa A</p>");
+  writeFileSync(join(dir, "_internal", "cloudflare-preview-caixa-b.html"), "<p>caixa B</p>");
   return dir;
 }
 
@@ -58,6 +60,16 @@ describe("#9308 clarice-ab-test — config", () => {
     assert.throws(() => parseClariceAbTest({ label: "caixa", arms: { a: "x.html" } }, "/m"), /arms/);
     assert.throws(() => parseClariceAbTest({ label: "caixa", arms: { a: "x.html", b: "x.html" } }, "/m"), /MESMO/);
     assert.throws(() => parseClariceAbTest({ label: "com espaço", arms: CFG.arms }, "/m"), /label/);
+  });
+
+  it("braço ausente ou idêntico => LANÇA na leitura (antes de qualquer campanha existir)", () => {
+    const missing = monthlyFixture({ ...CFG, arms: { a: CFG.arms.a, b: "_internal/nao-existe.html" } });
+    assert.throws(() => readClariceAbTest(missing), /braço B não existe/);
+    rmSync(missing, { recursive: true, force: true });
+    const same = monthlyFixture(CFG);
+    writeFileSync(join(same, "_internal", "cloudflare-preview-caixa-b.html"), "<p>caixa A</p>");
+    assert.throws(() => readClariceAbTest(same), /idênticos/);
+    rmSync(same, { recursive: true, force: true });
   });
 
   it("assertArmsDiffer recusa HTMLs idênticos", () => {
