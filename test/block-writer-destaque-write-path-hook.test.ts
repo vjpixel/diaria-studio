@@ -2,10 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // @ts-expect-error -- hook .mjs sem .d.mts (TS7016); edição de .claude/hooks negada ao subagente.
-import {
-  isAllowedWriterDestaquePath,
-  shouldBlockWrite,
-} from "../.claude/hooks/block-writer-destaque-write-path.mjs";
+import { isAllowedWriterDestaquePath, shouldBlockWrite } from "../.claude/hooks/block-writer-destaque-write-path.mjs";
 
 // #9132 — Write do writer-destaque restrito aos 2 outputs do destaque.
 const W = (agent_type: string | undefined, file_path: string) => ({
