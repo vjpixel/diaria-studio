@@ -174,15 +174,31 @@ describe("checkKeyLocationServed (#5620) — confirma o arquivo de chave ANTES d
   });
 });
 
-describe("keyCheckFailureOutcome (#9274)", () => {
-  it("modo soft: arquivo de chave inacessível vira ::warning:: com exit 0 (não derruba o deploy)", () => {
-    const out = keyCheckFailureOutcome("falha X", true);
+describe("keyCheckFailureOutcome (#9274, #9325)", () => {
+  it("modo soft: arquivo de chave ausente (404) vira ::warning:: com exit 0 (não derruba o deploy)", () => {
+    const out = keyCheckFailureOutcome("falha X", true, 404);
     assert.equal(out.exitCode, 0);
     assert.match(out.line, /^::warning /);
     assert.match(out.line, /falha X/);
   });
   it("sem a flag: comportamento original, exit 1", () => {
-    assert.deepEqual(keyCheckFailureOutcome("falha X", false), { exitCode: 1, line: "falha X" });
+    assert.deepEqual(keyCheckFailureOutcome("falha X", false, 404), { exitCode: 1, line: "falha X" });
+  });
+  // #9325: o soft não pode engolir defeito que o secret não provisionado não explica.
+  it("modo soft: chave divergente (200 com corpo errado) continua exit 1", () => {
+    assert.deepEqual(keyCheckFailureOutcome("falha X", true, 200), { exitCode: 1, line: "falha X" });
+  });
+  it("modo soft: 5xx do Worker continua exit 1", () => {
+    assert.deepEqual(keyCheckFailureOutcome("falha X", true, 503), { exitCode: 1, line: "falha X" });
+  });
+  it("modo soft: erro de rede (status null) continua exit 1", () => {
+    assert.deepEqual(keyCheckFailureOutcome("falha X", true, null), { exitCode: 1, line: "falha X" });
+  });
+  it("modo soft ponta a ponta: mismatch detectado por checkKeyLocationServed não é rebaixado", async () => {
+    const fetchStub = (async () => new Response("chave-teste\n\nlixo", { status: 200 })) as unknown as typeof fetch;
+    const check = await checkKeyLocationServed("https://diar.ia.br/chave-teste.txt", "chave-teste", fetchStub);
+    assert.equal(check.ok, false);
+    assert.equal(keyCheckFailureOutcome(check.error ?? "", true, check.status).exitCode, 1);
   });
 });
 

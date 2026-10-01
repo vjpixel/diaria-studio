@@ -312,6 +312,40 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  it("REGRESSÃO #9326: published:true + merged:false SEM prUrl não passa limpo — warning com o mergeBlocker", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({
+        code: 0,
+        slug: "abc",
+        published: true,
+        merged: false,
+        mergeReason: "sem prNumber — nada a mergear",
+        mergeBlocker: "BLOQUEIO: PR da página do site não identificado — verificar branch site-publish/abc",
+        checked_at: new Date().toISOString(),
+      }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-merge-pending");
+    assert.equal(v[0].severity, "warning");
+    assert.equal(v[0].source_issue, "#9326");
+    assert.match(v[0].message, /site-publish\/abc/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#9326: merged:false sem mergeBlocker gravado (arquivo antigo) ainda acusa, derivando a mensagem", () => {
+    writeFileSync(
+      join(fixture, "_internal", "site-page-published.json"),
+      JSON.stringify({ code: 0, slug: "abc", published: true, merged: false }),
+    );
+    const v = checkSitePagePublished(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-merge-pending");
+    assert.match(v[0].message, /PR não identificado/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
   it("passa (0 violations) quando published:true — página escrita, branch pushada, PR aberto/reusado", () => {
     writeFileSync(
       join(fixture, "_internal", "site-page-published.json"),

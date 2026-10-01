@@ -298,7 +298,15 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
       },
     ];
   }
-  let data: { code?: number; slug?: string; published?: boolean; reason?: string; prUrl?: string };
+  let data: {
+    code?: number;
+    slug?: string;
+    published?: boolean;
+    reason?: string;
+    prUrl?: string;
+    merged?: boolean;
+    mergeBlocker?: string;
+  };
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
   } catch (e) {
@@ -329,6 +337,28 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
           `a página fica 404 (ver #7266/#7280).`,
         source_issue: "#7578",
         severity: "error",
+        file: path,
+      },
+    ];
+  }
+  // #9326: `published: true` com `merged: false` = branch pushada sem merge
+  // (PR aberto e não mergeado, OU nem identificado — `gh pr create/list` sem
+  // URL parseável). O `/p/{slug}` do e-mail dá 404 no envio. O gate 6 já
+  // exibe o `mergeBlocker` (⛔, #9278); aqui o invariante deixa de passar
+  // limpo. `warning` e não `error`: o merge costuma ser feito à mão depois
+  // (o arquivo não é regravado), então o estado gravado fica defasado e um
+  // `error` travaria o re-run pós-merge à toa.
+  if (data.merged === false) {
+    return [
+      {
+        rule: "site-page-merge-pending",
+        message:
+          (data.mergeBlocker ??
+            `branch site-publish/${data.slug ?? "?"} pushada mas NÃO mergeada${data.prUrl ? ` (${data.prUrl})` : " (PR não identificado)"} — ` +
+              `/p/${data.slug ?? "?"} dá 404 no envio até o merge.`) +
+          ` Se já foi mergeado à mão, conferir com \`gh pr view\` e ignorar.`,
+        source_issue: "#9326",
+        severity: "warning",
         file: path,
       },
     ];

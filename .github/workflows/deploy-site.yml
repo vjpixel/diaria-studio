@@ -45,7 +45,9 @@ name: Deploy site Worker
 #      ao vivo em 28/09/2026 — o Worker `diaria-site` nunca teve esse
 #      secret provisionado, só o de repo; ação de provisionar é do editor,
 #      fora do CI). #9274: `--key-check-soft` faz essa falha virar
-#      `::warning::` (exit 0) em vez de derrubar o deploy que funcionou.
+#      `::warning::` (exit 0) em vez de derrubar o deploy que funcionou —
+#      SÓ quando o arquivo de chave responde 404 (secret ausente, #9325);
+#      chave divergente, 5xx e erro de rede continuam derrubando o job.
 
 on:
   push:

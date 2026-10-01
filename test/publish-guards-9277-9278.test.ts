@@ -49,12 +49,41 @@ test("#9278: published + merged:false gera bloqueio com prazo e link", () => {
   assert.match(msg!, /pull\/9263/);
 });
 
-test("#9278: mergeado ou sem PR não gera bloqueio", () => {
+test("#9278: mergeado, sem merged registrado ou sem publicação não gera bloqueio", () => {
   assert.equal(sitePageMergeBlocker({ published: true, merged: true }), null);
   assert.equal(sitePageMergeBlocker({ published: true, merged: undefined }), null);
   assert.equal(sitePageMergeBlocker({ published: false, merged: false }), null);
-  // sem prNumber/prUrl ("nada a mergear") não pode alegar PR inexistente
-  assert.equal(sitePageMergeBlocker({ published: true, merged: false, mergeReason: "sem prNumber" }), null);
+});
+
+// #9326 — branch pushada sem PR identificado (gh pr create/list sem URL
+// parseável) é o mesmo 404 no envio; antes devolvia null e o gate 6 ficava verde.
+test("#9326: published + merged:false SEM prUrl também bloqueia, apontando a branch", () => {
+  const msg = sitePageMergeBlocker({
+    published: true,
+    merged: false,
+    mergeReason: "sem prNumber — nada a mergear",
+    slug: "abc",
+  });
+  assert.ok(msg);
+  assert.match(msg!, /BLOQUEIO/);
+  assert.match(msg!, /não identificado/);
+  assert.match(msg!, /site-publish\/abc/);
+  assert.match(msg!, /06:00/);
+  assert.match(msg!, /\/p\/abc/);
+});
+
+test("#9326: writeSitePageState persiste mergeBlocker mesmo sem prUrl", () => {
+  const dir = mkdtempSync(join(tmpdir(), "site-9326-"));
+  writeSitePageState(dir, {
+    code: 0,
+    slug: "abc",
+    bytes: 1,
+    published: true,
+    merged: false,
+    mergeReason: "sem prNumber — nada a mergear",
+  } as Parameters<typeof writeSitePageState>[1]);
+  const st = JSON.parse(readFileSync(join(dir, "_internal", "site-page-published.json"), "utf8"));
+  assert.match(st.mergeBlocker, /site-publish\/abc/);
 });
 
 test("#9278: writeSitePageState persiste mergeBlocker", () => {
