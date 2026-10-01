@@ -53,10 +53,11 @@ test("negativos reais da calibração não casam (limiar conservador)", () => {
   for (const [a, b] of pairs) assert.equal(sameEvent(a, b), null, `${a} <=> ${b}`);
 });
 
-test("dedup() Pass-1f remove o RADAR repetido e registra o motivo; poupa submissão do editor", () => {
+test("dedup() Pass-1f: A2 (Dots) só marca; B (Pause) remove; poupa submissão do editor", () => {
   const articles = [
     { url: "https://venturebeat.com/dots", title: "OpenAI launches Dots, always-on AI agent coworkers, and ChatGPT Space where they can collaborate with human teams" },
     { url: "https://wired.com/pause", title: "OpenAI Pauses Training Its Most Powerful Models After Rogue Agents Target Government", flag: "editor_submitted" },
+    { url: "https://theverge.com/pause", title: "OpenAI pauses training of frontier models after rogue agents hack government" },
     { url: "https://example.com/other", title: "Nvidia apresenta chip novo para data centers" },
   ];
   const r = dedup(
@@ -67,10 +68,14 @@ test("dedup() Pass-1f remove o RADAR repetido e registra o motivo; poupa submiss
     0.7,
     ["Introducing Dots"],
   );
-  const removed = r.removed.find((x) => x.url === "https://venturebeat.com/dots");
-  assert.ok(removed, "Dots deveria ser removido");
-  assert.match(removed.dedup_note, /same-event \(#9249/);
-  assert.match(removed.dedup_note, /Introducing Dots/);
+  // #9293: Dots casa só por A2 (um lado sem empresa) → marcado, não removido.
+  const dots = r.kept.find((x) => x.url === "https://venturebeat.com/dots");
+  assert.ok(dots, "A2 não remove");
+  assert.match(String(dots.event_dedup_flagged), /same-event \(#9249/);
+  assert.match(String(dots.event_dedup_flagged), /Introducing Dots/);
+  const removed = r.removed.find((x) => x.url === "https://theverge.com/pause");
+  assert.ok(removed, "sinal B (empresa + 2 conceitos) remove");
+  assert.match(removed.dedup_note, /event_concepts/);
   const spared = r.kept.find((x) => x.url === "https://wired.com/pause");
   assert.ok(spared, "submissão do editor nunca é removida");
   assert.match(String(spared.event_dedup_flagged), /#9249/);
@@ -84,4 +89,30 @@ test("isIntraEditionDuplicate: RADAR Argon (CNN) duplica o D1 da mesma edição"
   );
   assert.ok(res);
   assert.equal(res.match_type, "event");
+});
+
+test("#9293: A2 com palavra capitalizada comum (Search/Index/Studio) nunca remove", () => {
+  const cases: [string, string][] = [
+    ["OpenAI launches Search for enterprise teams", "Why Search engines are drowning in AI slop"],
+    ["Anthropic publishes new Index of model welfare", "The AI Index shows adoption slowing in Brazil"],
+    ["Google opens Studio to all developers", "How a small Studio made an animated film with AI"],
+  ];
+  for (const [cur, past] of cases) {
+    const m = sameEvent(cur, past);
+    if (m) assert.equal(m.removable, false, `${cur} <=> ${past}`);
+    const r = dedup([{ url: "https://example.com/x", title: cur }], new Set(), 0.85, [], 0.7, [past]);
+    assert.equal(r.removed.length, 0, `não deveria remover: ${cur}`);
+    assert.equal(r.kept.length, 1);
+  }
+});
+
+test("#9293: A1 e B continuam removíveis", () => {
+  assert.equal(
+    sameEvent("Após meses de atrasos, Google anuncia Argon, seu principal modelo de IA", "Gemini 4 Argon: our next era of frontier intelligence")?.removable,
+    true,
+  );
+  assert.equal(
+    sameEvent("OpenAI Pauses Training Its Most Powerful Models After Rogue Agents Target Government", "OpenAI cancelou treino após agente furar a rede")?.removable,
+    true,
+  );
 });
