@@ -42,9 +42,9 @@ Mecanismo (reusa `scripts/lib/shared/*`, não reimplementa):
 - `apoio-level-verify.ts` — lookup do nível de apoio via KV
   (`ARTIGOS_APOIO_NIVEL`, chave `apoio:{sha256(email)}` →
   `amigo`/`apoiador`/`mantenedor`/`patrono`), populado por
-  `scripts/sync-artigos-apoio-kv.ts` a partir do custom field `apoio_nivel`
-  já sincronizado na Beehiiv (`sync-apoio-nivel-beehiiv.ts` — carência de
-  1 mês herdada de lá, não recalculada aqui).
+  `scripts/sync-artigos-apoio-kv.ts` a partir do CRM de Apoios (apoia.se) — mesmo cálculo de nível com
+  carência de 1 mês do `sync-apoio-nivel-*` (#9300; antes espelhava o
+  custom field `apoio_nivel` da Beehiiv, que deixava de fora quase todos).
 - `session-cookie.ts` / `rate-limit.ts` — mesmos primitivos do `cursos`
   (cookie assinado 30 dias, 8 tentativas/IP/hora em `/gate/verify`).
 - **Limiar "R$10/mês ↔ qual(is) nível(is)": DECIDIDO (02/09/2026, #7030)**
@@ -58,8 +58,8 @@ Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
    — enquanto ele estiver lá, `.github/workflows/deploy-artigos.yml` PULA
    o deploy automático de propósito, ver comentário no workflow).
 2. `wrangler secret put COOKIE_HMAC_SECRET` (gerar: `openssl rand -hex 32`).
-3. Rodar `scripts/sync-artigos-apoio-kv.ts` pra popular o KV (ainda sem
-   agendamento — rodar manualmente até decidir cadência, #7030).
+3. Rodar `scripts/sync-artigos-apoio-kv.ts` pra popular o KV — depois
+   disso a task `Diaria-Artigos-Apoio-Kv-Sync` (diária, 09:47) mantém (#9300).
 
 ## Adicionar um artigo novo
 

@@ -215,6 +215,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4485 item 2",
   },
   {
+    name: "Diaria-Artigos-Apoio-Kv-Sync",
+    description: "sync diario do KV ARTIGOS_APOIO_NIVEL (gate dos Artigos Especiais) a partir do CRM apoia.se",
+    steps: [{ key: "sync", script: "scripts/sync-artigos-apoio-kv.ts" }],
+    logPath: "apoia-se/.artigos-kv-sync.log",
+    // #9300: sem agendamento o KV ficou com a carga inicial (4 chaves para 22
+    // apoiadores R$10+) e o gate recusava quase todo mundo. 09:47, logo depois
+    // de Diaria-Apoios-Diff-Alarm (09:45), que roda o ciclo de reconciliação
+    // do CRM (drain Gmail + promessas) — o sync lê o CRM já atualizado. Mesmo
+    // molde de Diaria-Cursos-Kv-Sync (wrangler + CLOUDFLARE_ACCOUNT_ID do .env).
+    schedule: { kind: "daily", hour: 9, minute: 47 },
+    issue: "#7030, #9300",
+  },
+  {
     name: "Diaria-Kv-Image-Binding-Smoke",
     description:
       "smoke test do binding KV POLL de workers/site (/img/{key}) — distingue key-ausente de binding morto (#7663)",
