@@ -169,6 +169,19 @@ describe("captureStage1Records (#9372)", () => {
     }
   });
 
+  it("sentinel do Stage 1 reescrito depois do Stage 2: NÃO congela o 01-approved vivo como gate 1", () => {
+    const dir = writeEditionDir();
+    try {
+      writeFileSync(join(dir, "_internal", ".step-2-done.json"), JSON.stringify({ step: 2, completed_at: "2026-10-01T00:00:00Z", outputs: [] }));
+      const r = captureStage1Records(dir, "261001");
+      assert.equal(r.gate1_snapshot, "too-late");
+      assert.equal(existsSync(join(dir, GATE1_SNAPSHOT_FILE)), false);
+      assert.equal(JSON.parse(readFileSync(join(dir, FUNNEL_MANIFEST_FILE), "utf8")).gate1_frozen, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sem snapshot congelado, readGate1Approved cai no arquivo vivo marcando frozen=false", () => {
     const dir = writeEditionDir();
     try {

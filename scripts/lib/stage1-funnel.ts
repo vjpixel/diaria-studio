@@ -411,7 +411,13 @@ export function buildStage1FunnelFromDisk(
   return manifest;
 }
 
-export type RecordOutcome = "created" | "exists" | "no-source";
+/**
+ * `too-late`: o Stage 2 já concluiu quando o sentinel do Stage 1 foi
+ * (re)escrito — o `01-approved.json` vivo pode já carregar edições de
+ * Stage 4, então NÃO é congelado como "gate 1" (sentinel reescrito à mão
+ * numa edição antiga, ou edição em curso no deploy do #9372).
+ */
+export type RecordOutcome = "created" | "exists" | "no-source" | "too-late";
 
 export interface CaptureStage1Result {
   gate1_snapshot: RecordOutcome;
@@ -429,6 +435,7 @@ export function captureStage1Records(editionDir: string, edition: string, now: D
   let gate1: RecordOutcome;
   if (existsSync(snap)) gate1 = "exists";
   else if (!existsSync(approved)) gate1 = "no-source";
+  else if (existsSync(resolve(editionDir, "_internal", ".step-2-done.json"))) gate1 = "too-late";
   else {
     copyFileSync(approved, snap);
     gate1 = "created";
