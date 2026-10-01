@@ -76,6 +76,19 @@ export const CREDITO_BEEHIIV_RE =
 export const CREDITO_NEUTRO = "enviei por e-mail";
 
 /**
+ * #9307: crédito de envio do digest MENSAL (Clarice News), que sai pela
+ * **Brevo** — decisão do editor, reforçada em 01/10/2026. Sem link: a Brevo
+ * não tem programa de afiliado configurado no projeto, e o snippet
+ * compartilhado com a diária (`data/snippets/encerramento-social-apoio.md`)
+ * carrega o crédito da Beehiiv com link de afiliado, que o `writer-monthly`
+ * troca por este texto. Citado literalmente no prompt do agente
+ * (`.claude/agents/writer-monthly.md`), drift-guardado por
+ * `test/writer-monthly-prompt.test.ts`, e verificado no draft por
+ * `checkMonthlySendingCredit` (`scripts/lint-monthly-draft.ts`).
+ */
+export const CREDITO_BREVO_MENSAL = "enviei via Brevo";
+
+/**
  * Qualquer menção ao domínio da concorrente. Usado no guard de saída sobre o
  * HTML final — ver `contemResiduoBeehiiv`.
  */

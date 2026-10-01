@@ -154,7 +154,10 @@ nunca reescrever de memória):
 1. 2 parágrafos fixos de data/snippets/encerramento-social-apoio.md —
    apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das
    ferramentas usadas na produção (Claude Code, Gemini, Wispr Flow, MCP
-   Clarice, Beehiiv).
+   Clarice). O crédito de envio do snippet ("enviei via Beehiiv" + link de
+   afiliado, herdado da diária) vira "enviei via Brevo", SEM link — o
+   mensal sai pela Brevo (#9307; lint-monthly-draft.ts reprova Beehiiv no
+   PARA ENCERRAR).
 2. A lista de pílulas de curadoria (`CURADORIA_PILLS`), EM DOIS GRUPOS
    ROTULADOS (#4968) — cada rótulo (`Curadorias:`/`Da diar.ia.br:`) já vem
    EMBUTIDO no bloco abaixo, na linha imediatamente anterior à sua lista;

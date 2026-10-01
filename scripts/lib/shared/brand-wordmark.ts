@@ -86,6 +86,31 @@ export function applyBrandWordmark(s: string, linkHref?: string): string {
 }
 
 /**
+ * #9329: domínio cheio `diar.ia.br` em TEXTO PURO (fora de URL), com o
+ * mesmo critério URL-safe de `BRAND_WORDMARK_RE`, mas só a forma com `.br`
+ * — é a única que um cliente de e-mail reconhece como domínio.
+ */
+const BRAND_DOMAIN_TEXT_RE = /(?<![/\w.@])diar\.ia\.br(?![/\w@])/gi;
+
+/**
+ * #9329: quebra o AUTOLINK de domínio do Gmail (e de outros clientes que
+ * transformam `algo.tld` em link azul sublinhado) em texto que não deve ser
+ * link — o rótulo "Da diar.ia.br:" do rodapé PARA ENCERRAR saiu como link no
+ * e-mail de teste do mensal 2609-10, sem nenhum `<a>` no HTML. Insere um
+ * ZERO WIDTH NON-JOINER (`&#8204;`) antes de cada ponto: invisível, mas o
+ * cliente deixa de ver um domínio.
+ *
+ * Usado onde `applyBrandWordmark` NÃO se aplica (o wordmark já quebra o
+ * domínio em `<span>`s, então prosa com wordmark não é afetada): rótulos em
+ * caixa-alta das listas de pills, renderizados como texto liso. Mesma ordem
+ * de `applyBrandWordmark`: recebe string JÁ ESCAPADA (injeta entidade crua).
+ * Idempotente: depois da troca o texto não casa mais o regex.
+ */
+export function breakBrandDomainAutolink(escapedText: string): string {
+  return escapedText.replace(BRAND_DOMAIN_TEXT_RE, (m) => m.replace(/\./g, "&#8204;."));
+}
+
+/**
  * Um segmento do wordmark de DISPLAY "diar.ia.br" (nav/hero, tipografia
  * grande) — `teal` marca se o segmento leva a cor de marca; `decorative`
  * marca se é só pontuação separadora, candidata a `aria-hidden` (ver

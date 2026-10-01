@@ -7,12 +7,51 @@ import { evaluateDeliveredSize, GMAIL_CLIP_BYTES } from "../scripts/lint-test-em
 import { sitePageMergeBlocker, writeSitePageState } from "../scripts/publish-edition-site-page.ts";
 
 // #9277 — o caso real da 261001: HTML local 43 KB, entregue 106.488 bytes.
-test("#9277: sizeEstimate do Gmail acima do corte acusa mesmo com HTML local pequeno", () => {
+// #9311: sizeEstimate é a mensagem MIME inteira (teto da parte HTML) — acima do
+// corte vira "pode cortar" (info), nunca over_limit/blocker.
+test("#9277/#9311: sizeEstimate acima do corte acusa como PODE cortar, sem over_limit", () => {
   const r = evaluateDeliveredSize({ sizeEstimate: 106_488, localHtmlBytes: 43 * 1024 });
-  assert.equal(r.over_limit, true);
+  assert.equal(r.over_limit, false);
+  assert.equal(r.may_clip, true);
   assert.equal(r.delivered_source, "gmail_size_estimate");
-  assert.equal(r.issues[0].category, "delivered_size_over_clip");
+  assert.equal(r.issues.length, 1);
+  assert.equal(r.issues[0].category, "delivered_size_may_clip");
+  assert.equal(r.issues[0].type, "info");
   assert.match(r.issues[0].detail, /HTML local: 43\.0 KB/);
+  assert.match(r.issues[0].detail, /MIME inteira/);
+});
+
+// #9311 — cenário da issue: HTML de ~60 KB, estimate de ~110 KB → não acusa corte.
+test("#9311: parte HTML medida tem precedência sobre o sizeEstimate (HTML 60 KB, estimate 110 KB → ok)", () => {
+  const r = evaluateDeliveredSize({ htmlPartBytes: 60 * 1024, sizeEstimate: 110 * 1024 });
+  assert.equal(r.delivered_source, "gmail_html_part");
+  assert.equal(r.over_limit, false);
+  assert.equal(r.may_clip, false);
+  assert.deepEqual(r.issues, []);
+});
+
+test("#9311: parte HTML acima do corte é veredito definitivo (over_clip, over_limit)", () => {
+  const r = evaluateDeliveredSize({ htmlPartBytes: GMAIL_CLIP_BYTES + 1, sizeEstimate: 200_000 });
+  assert.equal(r.over_limit, true);
+  assert.equal(r.may_clip, false);
+  assert.equal(r.issues[0].category, "delivered_size_over_clip");
+});
+
+test("#9311: sizeEstimate abaixo do corte → ok (o teto já prova que a parte HTML cabe)", () => {
+  const r = evaluateDeliveredSize({ sizeEstimate: GMAIL_CLIP_BYTES });
+  assert.equal(r.over_limit, false);
+  assert.equal(r.may_clip, false);
+  assert.deepEqual(r.issues, []);
+});
+
+test("#9311: review-test-email roteia TODOS os achados de tamanho como info:, nunca email: (blocker do fix loop)", () => {
+  const md = readFileSync(join(import.meta.dirname, "..", ".claude", "agents", "review-test-email.md"), "utf8");
+  const sec = md.slice(md.indexOf("### 3f. Tamanho do e-mail ENTREGUE"), md.indexOf("### 3b. Image freshness"));
+  assert.ok(sec.length > 0, "seção 3f não encontrada");
+  assert.doesNotMatch(sec, /"email:delivered_size/, "achado de tamanho com prefixo email: dispara o fix loop do Stage 5");
+  for (const cat of ["delivered_size_over_clip", "delivered_size_may_clip", "delivered_size_unmeasured"]) {
+    assert.ok(sec.includes(`"info:${cat}`), `${cat} deveria mapear para info:`);
+  }
 });
 
 test("#9277: sizeEstimate tem precedência sobre o dump", () => {
