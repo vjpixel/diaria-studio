@@ -110,16 +110,16 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/04-crop-review.json
   ```
   Sempre exit 0 (warning-only). Reaparece no gate da Etapa 4 via `check-invariants.ts --stage 4` (`image-crop-warn`) — nunca gate-blocking.
-- **Leaderboard top1 (#1160/#1753 — só 1ª edição do mês, período ANTERIOR).**
+- **Leaderboard top1 (#1160/#1753/#9236 — 3 primeiras edições publicadas do mês, período ANTERIOR; renderizado como bloco de campeões no box do É IA?).**
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts --edition {AAMMDD} --out {EDITION_DIR}/_internal/04-leaderboard-top1.json
   ```
   Falha (Worker offline/timeout) grava `top1: []`; renderer omite. Não-bloqueante.
-- **Box campeões/sorteio (#2725).** Logo após o fetch acima (mesmo gate "1ª edição do mês"):
+- **Callout do sorteio (#2725; só Sorteio desde #9236 — campeões vivem no box do É IA?).** Logo após o fetch acima (gate "1ª edição do mês"):
   ```bash
   npx tsx scripts/inject-champions-callout.ts --edition {AAMMDD} --edition-dir {EDITION_DIR}/
   ```
-  **Graceful/no-op**: não é 1ª edição do mês, pódio incompleto, `raffle` ausente, ou `02-reviewed.md` já tem callout de intro (ex: patrocínio manual — o existente vence, evita corromper `extractIntroCallout` #2727; reportar ao editor se isso ocorrer) → sai 0 sem alterar nada. **NÃO-graceful, exit 1 (#4583):** `raffle.sorteio_do_mes.mes` presente mas divergente do mês da edição (dia herdado do mês anterior) é FATAL — tratar como parada inesperada (CLAUDE.md "MCP indisponível = fail-fast"): halt banner pedindo ao editor o dia do sorteio deste mês, atualizar `platform.config.json` → `raffle.sorteio_do_mes` `{ "mes": "{YYYY-MM}", "dia": N }`, re-rodar.
+  **Graceful/no-op**: não é 1ª edição do mês, `raffle` ausente, ou `02-reviewed.md` já tem callout de intro (ex: patrocínio manual — o existente vence, evita corromper `extractIntroCallout` #2727; reportar ao editor se isso ocorrer) → sai 0 sem alterar nada. **NÃO-graceful, exit 1 (#4583):** `raffle.sorteio_do_mes.mes` presente mas divergente do mês da edição (dia herdado do mês anterior) é FATAL — tratar como parada inesperada (CLAUDE.md "MCP indisponível = fail-fast"): halt banner pedindo ao editor o dia do sorteio deste mês, atualizar `platform.config.json` → `raffle.sorteio_do_mes` `{ "mes": "{YYYY-MM}", "dia": N }`, re-rodar.
 - **Pre-gate invariants (#1007 Fase 1).** Imagens obrigatórias (eia A/B + d1/d2 2x1/1x1; d3 condicional a `destaque_count === 3`, #2352) + prompts sem violação editorial:
   ```bash
   npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDITION_DIR}/
