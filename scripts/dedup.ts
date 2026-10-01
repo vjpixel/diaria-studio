@@ -4,6 +4,7 @@
  * Remove artigos duplicados da lista de candidatos.
  * Dois passes:
  *   1. Contra `past-editions.md` — URL canônica (últimas N edições)
+ *      1r. Contra itens CORTADOS pelo editor no Stage 4 das mesmas N edições (#9360)
  *   2. Dentro da própria lista — URL canônica + similaridade de título
  *
  * Uso:
@@ -72,6 +73,7 @@ import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
 import { findSameEvent } from "./lib/event-dedup.ts";
 // #8505: tie-breaker Jev da zona cinzenta do Pass 1c (atrás de flag, fail-soft).
 import { buildGrayZoneResolver, type GrayZoneResolver } from "./lib/dedup-grayzone-jev.ts";
+import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 
 export { canonicalize };
 export {
@@ -180,6 +182,9 @@ export function dedup(
   // #8505: resolver opcional da zona cinzenta do Pass 1c (Jev). Ausente =
   // comportamento idêntico ao histórico (`sim >= threshold`).
   grayZone?: GrayZoneResolver,
+  // #9360: itens que o editor CORTOU no Stage 4 das últimas edições (nunca
+  // publicados → ausentes de past-editions.md). Ver lib/editor-rejected-items.ts.
+  editorRejected: EditorRejectedItem[] = [],
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -241,6 +246,43 @@ export function dedup(
     pushRemoved(removed, art, "url-match com edição anterior");
   }
   // #1512: promotedFromSecondary counter removed — promotion no longer applies.
+
+  // ---- Pass 1r: itens cortados pelo editor no Stage 4 (#9360) ------------
+  // Item cortado nunca é publicado, então o Pass 1 não o conhece e ele volta
+  // no dia seguinte (casos reais: wired "OpenAI Pauses Training..." cortado em
+  // 260930 e 261001). Match por URL canônica, ou título quase idêntico
+  // (>= titleThreshold, o mesmo critério do cluster intra-lista) para a
+  // mesma matéria recapturada sob outra URL. Submissão do editor nunca é
+  // removida (#4192) — ele pode ter mudado de ideia; só fica marcada.
+  if (editorRejected.length > 0) {
+    const rejectedByUrl = new Map(editorRejected.map((r) => [canonicalize(r.url), r]));
+    const before = afterPass1.length;
+    const survivors: Article[] = [];
+    for (const art of afterPass1) {
+      const hit =
+        rejectedByUrl.get(canonicalize(art.url)) ??
+        (art.title && !isPlaceholderHighlightTitle(art.title)
+          ? editorRejected.find((r) => titleSimilarity(art.title as string, r.title) >= titleThreshold)
+          : undefined);
+      if (!hit) {
+        survivors.push(art);
+        continue;
+      }
+      const note = `cortado pelo editor no Stage 4 da edição ${hit.edition} (#9360): "${hit.title}"`;
+      if (art.flag === "editor_submitted") {
+        survivors.push({ ...art, editor_rejected_flagged: note });
+        continue;
+      }
+      pushRemoved(removed, art, note);
+    }
+    afterPass1.length = 0;
+    afterPass1.push(...survivors);
+    if (before > afterPass1.length) {
+      console.error(
+        `dedup Pass-1r (#9360): ${before - afterPass1.length} artigo(s) removido(s) por já terem sido cortados pelo editor em edição recente`,
+      );
+    }
+  }
 
   // ---- Pass 1b: title similarity vs past edition headlines (#231 defense-in-depth) ---
   // Threshold mais permissivo (0.70 vs 0.85 dentro da lista) — títulos de newsletter
@@ -810,6 +852,14 @@ async function main() {
     );
   }
 
+  // #9360: itens cortados pelo editor no Stage 4 da mesma janela de edições.
+  const editorRejected = extractEditorRejectedItems(editionsDir, window, currentAammdd);
+  if (editorRejected.length > 0) {
+    console.error(
+      `dedup: ${editorRejected.length} item(ns) cortado(s) pelo editor em edições recentes carregado(s) (#9360)`,
+    );
+  }
+
   // #8505: zona cinzenta via Jev. `undefined` (flag off, o default) → dedup idêntico.
   const grayZone = await buildGrayZoneResolver(
     articles.map((a) => ({ title: a.title ?? "", summary: a.summary, source: a.source })),
@@ -830,6 +880,7 @@ async function main() {
     pastThemes,
     pastHighlightsData,
     grayZone,
+    editorRejected,
   );
 
   // #8505: decisões Jev × heurística (shadow ou ativo) ao lado do resultado.
