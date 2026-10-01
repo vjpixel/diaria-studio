@@ -13,6 +13,10 @@
  * o guard falha só quando a declaração está AUSENTE, nunca por causa do
  * TAMANHO do diff em si.
  *
+ * O diff é medido contra o MERGE-BASE (`BASE_SHA...HEAD_SHA`, #9403), não
+ * contra o tip atual do master — senão o que o master avançou depois da
+ * criação do branch entra na contagem (falso positivo).
+ *
  * FALHA ALTO de propósito — o dado (diff numstat entre 2 SHAs do próprio
  * checkout + body do PR, já disponíveis via `pull_request` event) é 100%
  * local, sem dependência de rede/API externa; não há fail-soft aplicável
@@ -57,7 +61,9 @@ async function main(): Promise<void> {
 
   let stats;
   try {
-    stats = getDiffLineStats(baseSha, headSha);
+    // #9403: merge-base (3 pontos) — conta só o que o PR introduziu, não o
+    // que o master ganhou depois da criação do branch.
+    stats = getDiffLineStats(baseSha, headSha, { mergeBase: true });
   } catch (e) {
     console.error(`[#7115] git diff falhou: ${(e as Error).message}`);
     process.exit(2);

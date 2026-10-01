@@ -80,6 +80,17 @@ describe("getDiffLineStats", () => {
     assert.deepEqual(capturedArgs, ["diff", "--numstat", "abc123..def456"]);
   });
 
+  it("mergeBase: true usa a forma de 3 pontos (#9403)", () => {
+    let capturedArgs: string[] | null = null;
+    const fakeSpawn = ((_cmd: string, args: string[]) => {
+      capturedArgs = args;
+      return { status: 0, stdout: "", stderr: "" } as ReturnType<typeof import("node:child_process").spawnSync>;
+    }) as typeof import("node:child_process").spawnSync;
+
+    getDiffLineStats("abc123", "def456", { spawnFn: fakeSpawn, mergeBase: true });
+    assert.deepEqual(capturedArgs, ["diff", "--numstat", "abc123...def456"]);
+  });
+
   it("lança quando git falha (status !== 0)", () => {
     const fakeSpawn = (() => ({ status: 1, stdout: "", stderr: "fatal: bad revision" })) as unknown as typeof import("node:child_process").spawnSync;
     assert.throws(() => getDiffLineStats("bad", "HEAD", { spawnFn: fakeSpawn }), /git diff --numstat/);

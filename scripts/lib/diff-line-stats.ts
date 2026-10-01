@@ -73,19 +73,27 @@ export function formatRatio(ratio: number | null, added: number): string {
  * resultado. Lança se o `git` falhar (refs inexistentes, não é um repo)
  * — o caller decide como degradar (ver `measure-round-diff-stats.ts` e
  * `check-pr-removal-declaration.ts`).
+ *
+ * `mergeBase: true` (#9403) usa a forma de 3 pontos (`base...head`): o diff
+ * vai do MERGE-BASE entre os dois refs até `head`, ou seja, só o que o
+ * branch introduziu. É o que um gate de PR precisa — com 2 pontos, quando o
+ * master avançou depois da criação do branch, o diff inclui (invertido)
+ * tudo que o master ganhou e o branch não tem, inflando a contagem (PR
+ * +10/−7 reportada como "+1114").
  */
 export function getDiffLineStats(
   baseRef: string,
   headRef: string,
-  opts: { cwd?: string; spawnFn?: typeof spawnSync } = {},
+  opts: { cwd?: string; spawnFn?: typeof spawnSync; mergeBase?: boolean } = {},
 ): DiffLineStats {
   const spawnFn = opts.spawnFn ?? spawnSync;
-  const r = spawnFn("git", ["diff", "--numstat", `${baseRef}..${headRef}`], {
+  const range = `${baseRef}${opts.mergeBase ? "..." : ".."}${headRef}`;
+  const r = spawnFn("git", ["diff", "--numstat", range], {
     encoding: "utf8",
     cwd: opts.cwd,
   });
   if (r.status !== 0) {
-    throw new Error(`git diff --numstat ${baseRef}..${headRef} falhou: ${r.stderr || `exit ${r.status}`}`);
+    throw new Error(`git diff --numstat ${range} falhou: ${r.stderr || `exit ${r.status}`}`);
   }
   return parseNumstat(r.stdout ?? "");
 }
