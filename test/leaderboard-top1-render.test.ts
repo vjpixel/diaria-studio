@@ -5,6 +5,11 @@ import { editionToMonthSlug } from "../scripts/fetch-leaderboard-top1.ts";
 
 const PSTYLE = "font:0;"; // dummy, só pra passar pro renderer
 
+/** Texto visível do bloco (tags removidas, espaços colapsados). */
+function text(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function makeEia(overrides: Partial<EIA>): EIA {
   return {
     credit: "credit",
@@ -15,7 +20,7 @@ function makeEia(overrides: Partial<EIA>): EIA {
   };
 }
 
-describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () => {
+describe("renderLeaderboardTop1Row (#1160 followup → #9236 bloco de campeões com medalhas)", () => {
   it("retorna '' quando leaderboard ausente", () => {
     const r = renderLeaderboardTop1Row(makeEia({}), PSTYLE);
     assert.equal(r, "");
@@ -37,8 +42,11 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, />🏆 <strong>Vencedores de Maio<\/strong>: 1º Alice<\/p>/);
+    assert.match(r, /<strong>🎉 Os campeões do É IA\? em maio:<\/strong>/);
+    assert.match(r, />🥇 Alice<\/p>/);
     assert.doesNotMatch(r, /100%/);
+    // #9236: a linha compacta antiga ("Vencedores de Maio: 1º …") não volta.
+    assert.doesNotMatch(r, /Vencedores/);
   });
 
   it("2 leitores no podium: '1º X, 2º Y'", () => {
@@ -52,7 +60,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 2º Bob/);
+    assert.match(text(r), /🥇 Alice 🥈 Bob$/);
   });
 
   it("3 leitores no podium (1,2,3): '1º X, 2º Y, 3º Z' na ordem", () => {
@@ -67,7 +75,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 2º Bob, 3º Carol/);
+    assert.match(text(r), /em maio: 🥇 Alice 🥈 Bob 🥉 Carol$/);
   });
 
   it("3 empatados em rank 1: cada um marcado 1º na mesma ordem", () => {
@@ -82,7 +90,7 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Davyd, 1º Luisao P, 1º Vanessa/);
+    assert.match(text(r), /🥇 Davyd 🥇 Luisao P 🥇 Vanessa$/);
   });
 
   it("5 leitores no podium (2 ouros + 1 prata + 2 bronzes): ordinais em ordem", () => {
@@ -99,18 +107,18 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /1º Alice, 1º Bob, 2º Carol, 3º Dave, 3º Eve/);
+    assert.match(text(r), /🥇 Alice 🥇 Bob 🥈 Carol 🥉 Dave 🥉 Eve$/);
   });
 
-  it("período ausente: omite ' de {mês}'", () => {
+  it("período ausente: título genérico sem ' em {mês}'", () => {
     const r = renderLeaderboardTop1Row(
       makeEia({
         leaderboardPodium: [{ nickname: "Alice", rank: 1 }],
       }),
       PSTYLE,
     );
-    assert.match(r, /Vencedores<\/strong>:/);
-    assert.doesNotMatch(r, /Vencedores de/);
+    assert.match(r, /Os campeões do É IA\? do mês:/);
+    assert.doesNotMatch(r, / em [a-z]+:/);
   });
 
   it("HTML escape em nickname com caracteres especiais", () => {
@@ -134,7 +142,40 @@ describe("renderLeaderboardTop1Row (#1160 followup — podium ranks 1-3)", () =>
       }),
       PSTYLE,
     );
-    assert.match(r, /Legacy/);
+    assert.match(r, /🥇 Legacy/);
+  });
+
+  it("#9236: rank fora de 1-3 cai em ordinal (sem medalha inventada)", () => {
+    const r = renderLeaderboardTop1Row(
+      makeEia({
+        leaderboardPodium: [{ nickname: "Zé", rank: 4 }],
+        leaderboardPeriod: "Maio",
+      }),
+      PSTYLE,
+    );
+    assert.match(r, />4º Zé<\/p>/);
+  });
+
+  it("#9242: e-mail mascarado com '@***' sai literal, sem virar negrito/itálico", () => {
+    // O apelido nunca passa por parse de markdown no box do É IA? — vem do
+    // JSON do leaderboard e só é escapado como HTML. Os '***' do mascaramento
+    // (maskEmail, workers/poll) não podem abrir/fechar <strong>/<em>.
+    const r = renderLeaderboardTop1Row(
+      makeEia({
+        leaderboardPodium: [
+          { nickname: "Bruna Quevedo", rank: 1 },
+          { nickname: "Robin", rank: 2 },
+          { nickname: "perli…@***", rank: 3 },
+        ],
+        leaderboardPeriod: "Setembro",
+        leaderboardPeriodSlug: "2026-09",
+      }),
+      PSTYLE,
+    );
+    assert.match(r, />🥉 perli…@\*\*\*<\/p>/);
+    assert.equal((r.match(/<strong>/g) ?? []).length, 1, "só o título é <strong>");
+    assert.equal((r.match(/<\/strong>/g) ?? []).length, 1);
+    assert.doesNotMatch(r, /<em>/);
   });
 });
 

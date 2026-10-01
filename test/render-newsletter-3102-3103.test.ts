@@ -84,15 +84,18 @@ describe("#3103 — rodapé do É IA?: resultado + leaderboard em 16px, crédito
     assert.doesNotMatch(match![1], /font-size:12px/, "prevResultLine não deve mais ser 12px");
   });
 
-  it("leaderboard 'Vencedores' (pódio) sobe para font-size:16px", () => {
+  it("bloco de campeões (pódio, #9236) sai em font-size:16px — título e linhas de medalha", () => {
     const html = renderEIA({
       ...baseEia,
       leaderboardPeriod: "Julho",
       leaderboardPodium: [{ nickname: "Fulano", rank: 1 }],
     });
-    const match = html.match(/<p style="([^"]+)">🏆[\s\S]*?Vencedores[\s\S]*?<\/p>/);
-    assert.ok(match, `linha de vencedores não encontrada: ${html}`);
-    assert.match(match![1], /font-size:16px/, "linha de vencedores deve ser 16px");
+    const title = html.match(/<p style="([^"]+)"><strong>🎉 Os campeões do É IA\?/);
+    assert.ok(title, `título do bloco de campeões não encontrado: ${html}`);
+    assert.match(title![1], /font-size:16px/, "título do bloco de campeões deve ser 16px");
+    const medal = html.match(/<p style="([^"]+)">🥇 Fulano<\/p>/);
+    assert.ok(medal, `linha de medalha não encontrada: ${html}`);
+    assert.match(medal![1], /font-size:16px/, "linha de medalha deve ser 16px");
   });
 
   it("'Veja o ranking → leaderboard' sobe para font-size:16px", () => {

@@ -1,14 +1,13 @@
 /**
- * build-champions-callout.ts (#2725)
+ * build-champions-callout.ts (#2725; #9236 — hoje só o Sorteio)
  *
- * Preenche o texto do box de início de mês (campeões do É IA? + sorteio do
- * erro intencional) — criado manualmente na edição 260701, agora reutilizável
+ * Preenche o texto do box de início de mês (sorteio do erro intencional; até
+ * #9236 também trazia os campeões do É IA?, que migraram pro box do É IA?) — criado manualmente na edição 260701, agora reutilizável
  * e auto-gerado (#2727 já deu suporte de renderer: renderIntroCallout
  * titleStyle="body" + sub-cabeçalho fully-bold + extractIntroCallout greedy).
  *
- * Puro e testável: recebe o `podium` (top-3 do leaderboard, de
- * `_internal/04-leaderboard-top1.json`) + a config `raffle` (de
- * `platform.config.json`) + os labels de mês/data já resolvidos, e retorna o
+ * Puro e testável: recebe a config `raffle` (de `platform.config.json`) + o
+ * label de data já resolvido, e retorna o
  * texto INTERNO do callout (sem o `**` de wrap externo — mesmo contrato de
  * `extractIntroCallout`/`renderIntroCallout`: quem escreve o `**...**` no
  * markdown bruto é o caller, `inject-champions-callout.ts`).
@@ -23,11 +22,6 @@ export const MONTH_NAMES_PT = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ];
-
-export interface PodiumEntry {
-  nickname: string;
-  rank: number;
-}
 
 export interface RaffleConfig {
   meet_url: string;
@@ -78,46 +72,31 @@ export function raffleDateLabel(editionMonthSlug: string, dayOfMonth: number): s
 }
 
 /**
- * Monta o texto INTERNO do box campeões/sorteio (sem `**` externo).
+ * Monta o texto INTERNO do callout de intro do Sorteio (sem `**` externo).
  *
- * Requer os 3 ranks (1, 2, 3) presentes no `podium` — sem pódio completo não
- * há box (retorna `null`, caller decide logar + pular a injeção, #2725 item 4:
- * "em meses sem o box... não injetar").
+ * #9236 (pedido do editor 30/09/2026): o callout de início de mês ficou SÓ com
+ * o Sorteio. O bloco de campeões do É IA? ("Os campeões do É IA? em {mês}:" +
+ * 🥇/🥈/🥉 + "Veja o ranking completo") saiu daqui e passou a ser renderizado
+ * dentro do box do É IA? (`renderLeaderboardTop1Row` em
+ * `newsletter-render-html.ts`), nas 3 primeiras edições do mês. Por isso esta
+ * função não recebe mais o pódio — o callout não depende dele.
  *
- * `leaderboardUrl` (#4506, pedido do editor 260803): link pro ranking
- * completo, logo após o pódio top-3. Opcional/fail-open — omitido quando
- * `undefined` (ex: `poll.worker_url` ausente em `platform.config.json`),
- * nunca bloqueia a geração do box por causa dele.
+ * Efeito colateral desejado (#9242): sem apelidos de leitores na região de
+ * intro, um e-mail mascarado `perli…@***` nunca mais soma `**` ímpar ao
+ * markdown que `extractIntroCallout`/`stacked-intro-callouts` parseiam.
+ *
+ * O 1º parágrafo ("🎉 Sorteio") vira o título do callout (marcador 🎉 →
+ * `hasCeremonyMarker`, `titleStyle="body"`), igual ao que o editor aplicou à
+ * mão na edição 261001.
  */
-export function buildChampionsCallout(
-  podium: PodiumEntry[],
+export function buildRaffleCallout(
   raffle: RaffleConfig,
-  championsMonthLabel: string,
   raffleDateLabelResolved: string,
-  leaderboardUrl?: string,
-): string | null {
-  const byRank = new Map(podium.map((p) => [p.rank, p.nickname]));
-  const first = byRank.get(1);
-  const second = byRank.get(2);
-  const third = byRank.get(3);
-  if (!first || !second || !third) return null;
-
+): string {
   const horaInicio = formatHourPt(raffle.hora_inicio);
   const horaFim = formatHourPt(raffle.hora_fim);
 
-  const leaderboardLine = leaderboardUrl
-    ? `\n\n[Veja o ranking completo](${leaderboardUrl})`
-    : "";
-
-  return `🎉 Os campeões do É IA? em ${championsMonthLabel}:
-
-🥇 ${first}
-
-🥈 ${second}
-
-🥉 ${third}${leaderboardLine}
-
-Sorteio
+  return `🎉 Sorteio
 
 O sorteio entre quem achou o erro intencional será ao vivo no dia ${raffleDateLabelResolved}, das ${horaInicio} às ${horaFim}, no [Google Meet](${raffle.meet_url}). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
 }

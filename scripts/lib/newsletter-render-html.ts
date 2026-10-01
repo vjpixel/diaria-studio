@@ -823,7 +823,7 @@ function renderBulletList(p: string, marginTop: string): string {
 }
 
 /**
- * #3475: reconhece SÓ o marcador 🎉 do box de campeões/sorteio auto-gerado
+ * #3475: reconhece SÓ o marcador 🎉 do box do sorteio (até #9236, campeões/sorteio) auto-gerado
  * no topo da edição (`build-champions-callout.ts`, 1ª edição do mês). Este
  * NÃO é o sistema de marcadores dos boxes de divulgação (📣/📚/📖/🎉,
  * removido em #3475) — é uma convenção separada, específica da região de
@@ -1522,8 +1522,14 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   // que foi gerada por IA."), dando à linha o mesmo peso do texto principal.
   const lbStyle = `margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};`;
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
-  // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
-  const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
+  // #1970: link persistente pra leaderboard em TODA edição (pódio acima é das
+  // 3 primeiras edições do mês, #9236). #9236: quando o bloco de campeões
+  // aparece COM o próprio "Veja o ranking completo" (slug do mês presente), o
+  // link persistente logo abaixo seria um 2º link de ranking empilhado — é
+  // suprimido só nessas edições. Sem slug o bloco sai sem link, e o
+  // persistente continua sendo o único ponto de entrada pro ranking.
+  const championsCarryRankingLink = hasLeaderboardChampions(eia) && Boolean(eia.leaderboardPeriodSlug);
+  const leaderboardLinkRow = championsCarryRankingLink ? "" : renderLeaderboardLinkRow(lbStyle);
   // #3578 (correção do #3524, feedback do editor 260716): esta função —
   // `renderEIA` — só é usada pelo pipeline DIÁRIO (o mensal tem sua própria
   // implementação, `monthly-render.ts::renderEia`, que nunca ganhou este
@@ -1680,40 +1686,65 @@ ${leaderboardLinkRow}
 </td></tr>`;
 }
 
+/** Pure (#9236): pódio normalizado (ranks preservados) a partir do EIA —
+ * prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
+ * only) pra compat com arquivos legacy. */
+function leaderboardRanked(eia: EIA): { nickname: string; rank: number }[] {
+  if (eia.leaderboardPodium && eia.leaderboardPodium.length > 0) {
+    return eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }));
+  }
+  if (eia.leaderboardTop1 && eia.leaderboardTop1.length > 0) {
+    // #1672: `top1` (worker computeTop1) são TODOS líderes em rank 1 —
+    // empatados (mesmo pct E mesmo correct, sem campo rank). Atribuir rank 1 a
+    // todos, não i+1, senão fabricamos 2º/3º (ordem alfabética acidental) pra
+    // quem empatou em 1º.
+    return eia.leaderboardTop1.map((e) => ({ nickname: e.nickname, rank: 1 }));
+  }
+  return [];
+}
+
+/** Pure (#9236): true quando o box do É IA? vai exibir o bloco de campeões
+ * (há pelo menos 1 colocado no pódio). */
+export function hasLeaderboardChampions(eia: EIA): boolean {
+  return leaderboardRanked(eia).length > 0;
+}
+
+const PODIUM_MEDALS: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
+
 /**
- * Pure (#1160): renderiza linha do leaderboard no rodapé do È IA?.
- * Inclui leitores até o 3º lugar (dense rank) na mesma ordem do leaderboard
- * público. #1646: posições ordinais por acertos, sem percentual nem % de ranking.
+ * Pure (#1160 → #9236): bloco de campeões do mês anterior no rodapé do É IA?.
  *
- * Formato:
- *   - 1 leader: "🏆 Vencedores de Maio: 1º Davyd Wilkerson"
- *   - 2 leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P"
- *   - 3+ leitores: "🏆 Vencedores de Maio: 1º Davyd, 2º Luisao P, 3º Vanessa"
- *   - Vazio (1ª edição do mês): convite linkado pra leaderboard do mês, ou ""
+ * #9236 (pedido do editor 30/09/2026): o bloco saiu do callout de intro
+ * (`inject-champions-callout.ts`, que agora injeta só o Sorteio) e vive aqui,
+ * no MESMO formato que tinha no callout — título + uma linha por colocado com
+ * medalha + "Veja o ranking completo" — substituindo a antiga linha compacta
+ * "🏆 Vencedores de {mês}: 1º…, 2º…, 3º…" (#1646), para não duplicar.
+ * Aparece nas 3 primeiras edições publicadas do mês (gate em
+ * `fetch-leaderboard-top1.ts`, que grava o JSON vazio fora da janela).
  *
- * Prefere `leaderboardPodium` (ranks 1-3); cai em `leaderboardTop1` (rank 1
- * only) pra compat com arquivos legacy.
+ * Formato (3 colocados, slug presente):
+ *   🎉 Os campeões do É IA? em setembro:
+ *   🥇 Davyd
+ *   🥈 Luisao P
+ *   🥉 Vanessa
+ *   Veja o ranking completo   (→ /leaderboard/{YYYY-MM})
+ *
+ * Empates mantêm o rank do worker (dense rank) e repetem a medalha; rank fora
+ * de 1-3 cai em ordinal ("4º"). Apelidos são escapados como HTML puro — nunca
+ * passam por parse de markdown, então um e-mail mascarado `perli…@***` sai
+ * literal (#9242).
+ *
+ * Vazio com slug (fetch falhou na janela): convite linkado pro ranking do mês.
+ * Vazio sem slug (fora da janela): "".
  */
 export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): string {
-  // Source: prefere podium (#1160 followup), cai em top1 legacy. Preserva o
-  // rank pra exibir posições ordinais (1º, 2º, 3º). #1646: ranking por acertos.
-  const ranked: { nickname: string; rank: number }[] =
-    eia.leaderboardPodium && eia.leaderboardPodium.length > 0
-      ? eia.leaderboardPodium.map((e) => ({ nickname: e.nickname, rank: e.rank }))
-      : eia.leaderboardTop1 && eia.leaderboardTop1.length > 0
-        // #1672: `top1` (worker computeTop1) são TODOS líderes em rank 1 —
-        // empatados (mesmo pct E mesmo correct, sem campo rank). Atribuir rank 1 a
-        // todos, não i+1, senão fabricamos 2º/3º (ordem alfabética acidental) pra
-        // quem empatou em 1º.
-        ? eia.leaderboardTop1.map((e) => ({ nickname: e.nickname, rank: 1 }))
-        : [];
-  const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
+  const ranked = leaderboardRanked(eia);
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
   const slug = eia.leaderboardPeriodSlug || "";
   const lbUrl = slug ? `${PUBLIC_GAME_BASE_URL}/leaderboard/${slug}` : "";
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
 
-  // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
+  // Sem líderes ainda (ex: fetch falhou) — em vez de omitir o bloco,
   // convidar o leitor pra acompanhar a leaderboard do mês na URL histórica.
   if (ranked.length === 0) {
     if (!lbUrl) return "";
@@ -1725,18 +1756,23 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
       </td></tr>`;
   }
 
-  // Posições ordinais: "1º Bruna Quevedo, 2º Joshu, 3º Ana Cândida".
-  const phrase = ranked
-    .map((e) => `${e.rank}º ${esc(e.nickname)}`)
-    .join(", ");
-
-  // Quando há slug, o título "Vencedores de {mês}" vira link pra leaderboard histórica.
-  const heading = lbUrl
-    ? `<a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Vencedores${period}</a>`
-    : `<strong>Vencedores${period}</strong>`;
+  // Mês em minúscula no meio da frase (o worker devolve "Setembro").
+  const month = eia.leaderboardPeriod ? eia.leaderboardPeriod.toLocaleLowerCase("pt-BR") : "";
+  const title = month
+    ? `🎉 Os campeões do É IA? em ${esc(month)}:`
+    : "🎉 Os campeões do É IA? do mês:";
+  // Linhas internas com margem curta (lista), mesma fonte/tamanho do corpo.
+  const lineStyle = paragraphStyle.replace(/margin:[^;]*;/, "margin:4px 0 0;");
+  const lines = ranked
+    .map((e) => `<p style="${lineStyle}">${PODIUM_MEDALS[e.rank] ?? `${e.rank}º`} ${esc(e.nickname)}</p>`)
+    .join("\n        ");
+  const rankingLink = lbUrl
+    ? `\n        <p style="${paragraphStyle}"><a href="${lbUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">Veja o ranking completo</a></p>`
+    : "";
 
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">🏆 ${heading}: ${phrase}</p>
+        <p style="${paragraphStyle}"><strong>${title}</strong></p>
+        ${lines}${rankingLink}
       </td></tr>`;
 }
 

@@ -17,6 +17,10 @@
  * outra edição grava vazio (renderer omite). "1ª do mês" = nenhuma edição
  * publicada em `past-editions-raw.json` cai no mesmo ano-mês com data anterior.
  *
+ * #9236: a janela passou de 1 para as 3 primeiras edições PUBLICADAS do mês
+ * (`isWithinFirstEditionsOfMonth` + `CHAMPIONS_EDITIONS_PER_MONTH`) — o bloco
+ * de campeões saiu do callout de intro e vive no box do É IA?.
+ *
  * Uso:
  *   npx tsx scripts/fetch-leaderboard-top1.ts --edition AAMMDD --out path.json
  *
@@ -120,6 +124,38 @@ export function isFirstEditionOfMonth(
 }
 
 /**
+ * #9236: quantas edições do mês exibem o bloco de campeões do mês anterior
+ * dentro do box do É IA? (pedido do editor 30/09/2026 — antes era só a 1ª).
+ */
+export const CHAMPIONS_EDITIONS_PER_MONTH = 3;
+
+/**
+ * Pure (#9236): true se a edição está entre as `n` primeiras PUBLICADAS do seu
+ * mês — conta as datas DISTINTAS (YYYY-MM-DD) de `publishedAt` no mesmo
+ * ano-mês e estritamente anteriores à edição; true se essa contagem < `n`.
+ * Por edição publicada, não por dia de calendário: um mês que começa no dia 3
+ * mostra o bloco em 03, 04 e 05 (ou nas 3 primeiras datas publicadas, pulando
+ * fins de semana sem edição). Mesmos fail-opens de `isFirstEditionOfMonth`
+ * (edição malformada → true; a própria data não conta contra si).
+ */
+export function isWithinFirstEditionsOfMonth(
+  edition: string,
+  publishedAt: string[],
+  n: number,
+): boolean {
+  const iso = editionToIsoDate(edition);
+  if (!iso) return true;
+  const ym = iso.slice(0, 7);
+  const earlier = new Set<string>();
+  for (const ts of publishedAt) {
+    if (typeof ts !== "string" || ts.length < 10) continue;
+    const tsDate = ts.slice(0, 10);
+    if (tsDate.slice(0, 7) === ym && tsDate < iso) earlier.add(tsDate);
+  }
+  return earlier.size < n;
+}
+
+/**
  * Lê `published_at` de cada edição em `past-editions-raw.json`. Graceful:
  * arquivo ausente/inválido → `[]` (→ `isFirstEditionOfMonth` retorna true,
  * fail-open: mostra o bloco em vez de suprimir por engano).
@@ -200,33 +236,38 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // #1753: o bloco "Vencedores do mês" só aparece na 1ª edição do mês e anuncia
-  // o mês que acabou de fechar (período ANTERIOR). Em qualquer outra edição,
-  // grava vazio — o renderer omite o bloco. Evita repetir os vencedores todo dia.
+  // #1753 → #9236: o bloco de campeões anuncia o mês que acabou de fechar
+  // (período ANTERIOR) e aparece nas CHAMPIONS_EDITIONS_PER_MONTH (3) primeiras
+  // edições publicadas do mês (antes de #9236, só na 1ª). Fora dessa janela,
+  // grava vazio — o renderer omite o bloco. Evita repetir os campeões todo dia.
   const targetSlug = previousMonthSlug(slug);
   const publishedAt = readPublishedDates(
     resolve(process.cwd(), args.pastEditions),
   );
-  const isFirst = isFirstEditionOfMonth(args.edition, publishedAt);
+  const inWindow = isWithinFirstEditionsOfMonth(
+    args.edition,
+    publishedAt,
+    CHAMPIONS_EDITIONS_PER_MONTH,
+  );
 
   let payload: Top1Response;
-  if (!isFirst) {
+  if (!inWindow) {
     console.log(
-      `[fetch-leaderboard-top1] edição ${args.edition} não é a 1ª do mês — ` +
-        "leaderboard omitido (gravando vazio).",
+      `[fetch-leaderboard-top1] edição ${args.edition} não está entre as ` +
+        `${CHAMPIONS_EDITIONS_PER_MONTH} primeiras do mês — leaderboard omitido (gravando vazio).`,
     );
     // period_slug VAZIO de propósito: o renderer (renderLeaderboardTop1Row)
     // só OMITE o bloco quando não há slug (`if (!lbUrl) return ""`). Com um slug
     // não-vazio + zero líderes ele renderiza o convite "Acompanhe a leaderboard
     // de {mês}" — o que reintroduziria o bloco em toda edição (#1753). Vazio aqui
-    // = bloco totalmente omitido nas edições que não são a 1ª do mês.
+    // = bloco totalmente omitido fora da janela das 3 primeiras edições do mês.
     payload = { top1: [], podium: [], period: "", period_slug: "" };
   } else {
     try {
       payload = await fetchTop1ForPeriod(targetSlug, defaultFetchImpl, args.brand);
       const podiumCount = payload.podium?.length ?? 0;
       console.log(
-        `[fetch-leaderboard-top1] 1ª edição do mês — anunciando ${payload.period_slug}: ` +
+        `[fetch-leaderboard-top1] edição na janela das ${CHAMPIONS_EDITIONS_PER_MONTH} primeiras do mês — anunciando ${payload.period_slug}: ` +
           `${payload.top1.length} líder(es) em rank 1, ${podiumCount} no podium (1-3)`,
       );
     } catch (e) {
