@@ -395,6 +395,7 @@ import {
   handleApiArchivedBoxesList,
   handleApiBoxSlotsGet,
   handleApiBoxSlotsSave,
+  handleApiBoxApplyToEdition,
   handleApiParaEncerrarGet,
   handleApiParaEncerrarSave,
 } from "./routes/boxes.ts";
@@ -1581,6 +1582,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // que não tem barra adicional pra diferenciar).
       if (urlPath === "/api/boxes/slots" && req.method === "PUT") {
         handleApiBoxSlotsSave(rootDir, req, res).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #8990: aplicar a troca de slot na edição corrente já stitched.
+      if (urlPath === "/api/boxes/apply-to-edition" && req.method === "POST") {
+        handleApiBoxApplyToEdition(rootDir, req, res).catch((e) =>
           sendJson(res, 500, { error: (e as Error).message }),
         );
         return;

@@ -108,6 +108,11 @@ import {
 } from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); isRuntimeExcluded MOVIDA pra cá em #4504 (camada errada — pipeline core também precisa dela e não pode importar de studio-ui/, ver test/lib-boundary.test.ts) — reexportada abaixo por back-compat de import
 import { resolveConviteAmigoFilename } from "../lib/newsletter-render-html.ts"; // #5999 — mesma fonte de verdade do render pro filename da caixa fixa "Convide um amigo" (platform.config.json -> boxes_fixos.convite_amigo)
 
+import { applyBoxSlotToEdition, type ApplyBoxSlotToEditionResult, type BoxSelectionEntry } from "../apply-box-slot.ts"; // #8990
+import { locateBoxDivulgacaoRange } from "../lib/newsletter-parse.ts"; // #8990
+import { enumerateEditionDirs } from "../lib/find-current-edition.ts"; // #8990
+import { isEditionPublishedOrScheduled } from "./studio-state.ts"; // #8990
+
 export { isRuntimeExcluded };
 
 // ── slug / path ──────────────────────────────────────────────────────────
@@ -1454,4 +1459,109 @@ export function listArchivedBoxes(rootDir: string): ArchivedBoxEntry[] {
       mtimeIso: statSync(filePath).mtime.toISOString(),
     };
   });
+}
+
+// ── #8990: troca de slot com a edição corrente já stitched ─────────────────
+//
+// `saveBoxSlots` grava em `platform.config.json` — vale pras PRÓXIMAS edições.
+// Se a edição corrente já passou do stitch (`02-reviewed.md` com o box), a
+// troca não chega nela sozinha. Decisão do editor (260930): o painel AVISA e
+// oferece um botão "aplicar na edição {AAMMDD}" que roda o MESMO núcleo de
+// `scripts/apply-box-slot.ts` (`applyBoxSlotToEdition`) — que já recusa
+// sobrescrever box editado à mão (#495/#7401). Só slots 1 e 2 (os únicos que
+// `apply-box-slot.ts` sabe trocar; slot0 é intro, slot3 eliminado #6748).
+
+export interface StitchedSlotMismatch {
+  slot: 1 | 2;
+  /** Snippet registrado hoje na edição (`box-selection.json`), `null` se não há. */
+  from: string | null;
+  /** Snippet novo atribuído ao slot em `platform.config.json`. */
+  to: string;
+}
+
+/** Puro: slots 1/2 cujo snippet novo difere do que está na edição stitched E
+ * que têm box no `02-reviewed.md` (sem box → nada a aplicar). */
+export function detectStitchedSlotMismatches(input: {
+  slots: { slot1: string; slot2: string };
+  selection: BoxSelectionEntry[];
+  reviewedMd: string;
+}): StitchedSlotMismatch[] {
+  const out: StitchedSlotMismatch[] = [];
+  for (const slot of [1, 2] as const) {
+    const to = (slot === 1 ? input.slots.slot1 : input.slots.slot2).trim();
+    if (!to) continue;
+    const from = input.selection.find((e) => e.slot === slot)?.file ?? null;
+    if (from === to) continue;
+    if (!locateBoxDivulgacaoRange(input.reviewedMd, slot)) continue;
+    out.push({ slot, from, to });
+  }
+  return out;
+}
+
+export interface StitchedEditionInfo {
+  edition: string;
+  mismatches: StitchedSlotMismatch[];
+}
+
+/** Edição mais recente com `02-reviewed.md` que ainda não foi publicada/agendada.
+ * Fail-soft: `data/` ausente/ilegível → null. */
+export function findStitchedEdition(rootDir: string): { edition: string; dir: string } | null {
+  try {
+    const dirs = enumerateEditionDirs(resolve(rootDir, "data", "editions"));
+    for (const edition of [...dirs.keys()].sort().reverse()) {
+      const dir = dirs.get(edition)!;
+      if (!existsSync(resolve(dir, "02-reviewed.md"))) continue;
+      if (isEditionPublishedOrScheduled(dir)) continue;
+      return { edition, dir };
+    }
+  } catch {
+    /* fail-soft */
+  }
+  return null;
+}
+
+/** Depois de um save de slots: a edição corrente stitched ficou divergente?
+ * Fail-soft — qualquer erro de leitura → null (nunca derruba o save). */
+export function checkStitchedEditionAfterSlotSave(
+  rootDir: string,
+  slots: { slot1: string; slot2: string },
+): StitchedEditionInfo | null {
+  try {
+    const found = findStitchedEdition(rootDir);
+    if (!found) return null;
+    const selPath = resolve(found.dir, "_internal", "box-selection.json");
+    const selection = existsSync(selPath) ? (JSON.parse(readFileSync(selPath, "utf8")) as BoxSelectionEntry[]) : [];
+    const mismatches = detectStitchedSlotMismatches({
+      slots,
+      selection,
+      reviewedMd: readFileSync(resolve(found.dir, "02-reviewed.md"), "utf8"),
+    });
+    return mismatches.length ? { edition: found.edition, mismatches } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Botão "aplicar na edição": valida edição/slot/arquivo e roda o núcleo do
+ * `apply-box-slot.ts` SEM `force` (box editado à mão → recusa, nada escrito). */
+export async function applySlotToStitchedEdition(
+  rootDir: string,
+  input: { edition: string; slot: number; file: string },
+  deps: { runUpload?: (editionDir: string) => void } = {},
+): Promise<ApplyBoxSlotToEditionResult> {
+  if (input.slot !== 1 && input.slot !== 2) {
+    return { ok: false, reason: "no-box", message: "só slots 1 e 2 podem ser aplicados numa edição já stitched" };
+  }
+  if (!isValidBoxSlug(input.file)) {
+    return { ok: false, reason: "no-snippet", message: `caixa inválida: ${input.file}` };
+  }
+  const found = findStitchedEdition(rootDir);
+  if (!found || found.edition !== input.edition) {
+    return {
+      ok: false,
+      reason: "no-reviewed",
+      message: `edição ${input.edition} não é a edição corrente stitched (não publicada) — nada aplicado`,
+    };
+  }
+  return applyBoxSlotToEdition({ rootDir, editionDir: found.dir, slot: input.slot, file: input.file, runUpload: deps.runUpload });
 }

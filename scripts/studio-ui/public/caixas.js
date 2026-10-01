@@ -84,6 +84,7 @@ const el = {
   slot3Select: document.getElementById("slot3-select"),
   slotsSaveBtn: document.getElementById("slots-save-btn"),
   slotsStatus: document.getElementById("slots-status"),
+  slotsStitched: document.getElementById("slots-stitched"), // #8990
   // #4275: toggle "Padrão"/"Patronos"
   variantDefaultBtn: document.getElementById("variant-default-btn"),
   variantPatronosBtn: document.getElementById("variant-patronos-btn"),
@@ -370,6 +371,63 @@ function switchSlotsVariant(variant) {
   fetchSlots();
 }
 
+// ── #8990: troca de slot com a edição corrente já stitched ─────────────────
+// O save grava platform.config.json (próximas edições). Se a edição corrente
+// já tem 02-reviewed.md com o box antigo, o server devolve `stitchedEdition`
+// ({edition, mismatches:[{slot,from,to}]}) e aqui mostramos aviso + botão que
+// chama POST /api/boxes/apply-to-edition (núcleo de apply-box-slot.ts, que
+// recusa sobrescrever box editado à mão — 409).
+function renderStitchedEditionWarning(info) {
+  const box = el.slotsStitched;
+  if (!box) return;
+  box.replaceChildren();
+  if (!info || !Array.isArray(info.mismatches) || info.mismatches.length === 0) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const p = document.createElement("p");
+  p.textContent = `A edição ${info.edition} já foi montada (02-reviewed.md) com a caixa anterior — a troca acima só vale para as próximas edições.`;
+  box.appendChild(p);
+  for (const m of info.mismatches) {
+    const row = document.createElement("div");
+    const label = document.createElement("span");
+    label.textContent = `Slot ${m.slot}: ${m.from ?? "(nenhuma)"} → ${m.to} `;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `Aplicar na edição ${info.edition}`;
+    const status = document.createElement("span");
+    status.className = "cx-save-status";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      status.textContent = " Aplicando…";
+      status.className = "cx-save-status";
+      try {
+        const { ok, body } = await fetchJson("/api/boxes/apply-to-edition", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ edition: info.edition, slot: m.slot, file: m.to }),
+        });
+        if (ok && body && body.ok) {
+          const warn = (body.warnings || []).length ? ` Avisos: ${body.warnings.join(" ")}` : "";
+          status.textContent = ` Aplicado.${warn}`;
+          status.className = `cx-save-status ${warn ? "err" : "ok"}`;
+        } else {
+          status.textContent = ` Não aplicado: ${(body && (body.error || body.message)) || "falha desconhecida"}`;
+          status.className = "cx-save-status err";
+          btn.disabled = false;
+        }
+      } catch (e) {
+        status.textContent = ` Erro: ${e.message ?? e}`;
+        status.className = "cx-save-status err";
+        btn.disabled = false;
+      }
+    });
+    row.append(label, btn, status);
+    box.appendChild(row);
+  }
+}
+
 async function saveSlots() {
   if (!slotsState) return;
   const input = {
@@ -422,6 +480,7 @@ async function saveSlots() {
     if (ok && body && body.ok) {
       el.slotsStatus.textContent = "Slots atualizados.";
       el.slotsStatus.className = "cx-save-status ok";
+      renderStitchedEditionWarning(body.stitchedEdition); // #8990
       // #3874/R5: zero UI otimista — refetcha slots + lista do servidor (o
       // badge "slot N" nos cards e as opções dos <select> vêm sempre do
       // disco, nunca de um cálculo local otimista).
