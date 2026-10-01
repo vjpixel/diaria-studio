@@ -33,19 +33,19 @@ import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
-const VARIANTS = ["a", "b"] as const;
+const VARIANTS = ["a", "b", "c"] as const;
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html da raiz manda todo mundo para /a (teste A/B encerrado) e preserva a query string", () => {
+  it("index.html da raiz manda todo mundo para /c (versão C desde 01/10, #9334) e preserva a query string", () => {
     const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
-    assert.match(html, /"\/evento\/agente-ia\/a"\s*\+\s*location\.search/);
-    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na B também vai para a A.
+    assert.match(html, /"\/evento\/agente-ia\/c"\s*\+\s*location\.search/);
+    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na A ou na B também vai para a C.
     assert.doesNotMatch(html, /Math\.random/);
     assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
-    // Sem JavaScript, cai na versão A em vez de ficar numa página vazia.
-    assert.match(html, /url=\/evento\/agente-ia\/a"/);
+    // Sem JavaScript, cai na versão C em vez de ficar numa página vazia.
+    assert.match(html, /url=\/evento\/agente-ia\/c"/);
   });
 
   for (const v of VARIANTS) {
