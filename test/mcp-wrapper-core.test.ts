@@ -30,6 +30,16 @@ import {
   resolveGoogleAdsLaunch,
 } from "../scripts/mcp/mcp-wrapper-core.mjs";
 
+/** Narrowing do retorno em união (sucesso | `{ error }`) pro ratchet de tipos (#6217). */
+function errorOf(r: { error?: string }): string {
+  assert.equal(typeof r.error, "string", "esperava retorno de erro");
+  return r.error as string;
+}
+function okOf<R extends { error?: string }>(r: R): Exclude<R, { error: string }> {
+  if (typeof r.error === "string") assert.fail(`esperava sucesso, veio erro: ${r.error}`);
+  return r as Exclude<R, { error: string }>;
+}
+
 const CORE_URL = pathToFileURL(join(PROJECT_ROOT, "scripts/mcp/mcp-wrapper-core.mjs")).href;
 
 describe("mergeEnvNoOverride (#8994)", () => {
@@ -129,18 +139,18 @@ describe("resolveGoogleAdsLaunch (#8994)", () => {
 
   it("sem developer token → erro, não sobe servidor", () => {
     const r = resolveGoogleAdsLaunch({ ...CREDS, GOOGLE_ADS_DEVELOPER_TOKEN: "" }, { find: () => "/bin/x", exists: credsExist });
-    assert.match(r.error, /GOOGLE_ADS_DEVELOPER_TOKEN ausente/);
+    assert.match(errorOf(r), /GOOGLE_ADS_DEVELOPER_TOKEN ausente/);
     assert.equal(r.command, undefined);
   });
   it("sem GOOGLE_APPLICATION_CREDENTIALS → erro citando o materialize", () => {
     const r = resolveGoogleAdsLaunch({ GOOGLE_ADS_DEVELOPER_TOKEN: "tok" }, { find: () => "/bin/x", exists: credsExist });
-    assert.match(r.error, /GOOGLE_APPLICATION_CREDENTIALS ausente/);
-    assert.match(r.error, /npx tsx scripts\/materialize-google-ads-credentials\.ts/);
+    assert.match(errorOf(r), /GOOGLE_APPLICATION_CREDENTIALS ausente/);
+    assert.match(errorOf(r), /npx tsx scripts\/materialize-google-ads-credentials\.ts/);
   });
   it("GOOGLE_APPLICATION_CREDENTIALS apontando para arquivo inexistente → erro", () => {
     const r = resolveGoogleAdsLaunch(CREDS, { find: () => "/bin/x", exists: () => false });
-    assert.match(r.error, /arquivo inexistente/);
-    assert.match(r.error, /materialize-google-ads-credentials/);
+    assert.match(errorOf(r), /arquivo inexistente/);
+    assert.match(errorOf(r), /materialize-google-ads-credentials/);
   });
   it("prefere o binário instalado, sem aviso", () => {
     const r = resolveGoogleAdsLaunch(CREDS, {
@@ -150,10 +160,10 @@ describe("resolveGoogleAdsLaunch (#8994)", () => {
     assert.deepEqual(r, { command: "/bin/google-ads-mcp", args: [], warning: null });
   });
   it("binário ausente → pipx run --spec com aviso recomendando pipx install", () => {
-    const r = resolveGoogleAdsLaunch(CREDS, { find: (n: string) => (n === "pipx" ? "/bin/pipx" : null), exists: credsExist });
+    const r = okOf(resolveGoogleAdsLaunch(CREDS, { find: (n: string) => (n === "pipx" ? "/bin/pipx" : null), exists: credsExist }));
     assert.equal(r.command, "/bin/pipx");
     assert.deepEqual(r.args, ["run", "--spec", GOOGLE_ADS_MCP_SPEC, "google-ads-mcp"]);
-    assert.match(r.warning, /pipx install git\+https:\/\/github\.com\/googleads\/google-ads-mcp\.git/);
+    assert.match(r.warning ?? "", /pipx install git\+https:\/\/github\.com\/googleads\/google-ads-mcp\.git/);
   });
   it("nem binário nem pipx → erro", () => {
     assert.ok(resolveGoogleAdsLaunch(CREDS, { find: () => null, exists: credsExist }).error);
@@ -163,7 +173,7 @@ describe("resolveGoogleAdsLaunch (#8994)", () => {
 describe("resolveDopplerLaunch / buildDopplerChildEnv (#8994)", () => {
   it("token ausente → erro claro, não sobe servidor", () => {
     const r = resolveDopplerLaunch({}, { find: () => "/bin/npx" });
-    assert.match(r.error, /DOPPLER_MCP_TOKEN ausente — adicione ao \.env/);
+    assert.match(errorOf(r), /DOPPLER_MCP_TOKEN ausente — adicione ao \.env/);
     assert.equal(r.command, undefined);
   });
   it("token vazio conta como ausente", () => {
@@ -173,7 +183,7 @@ describe("resolveDopplerLaunch / buildDopplerChildEnv (#8994)", () => {
     assert.ok(resolveDopplerLaunch({ DOPPLER_TOKEN: "amplo" }, { find: () => "/bin/npx" }).error);
   });
   it("token presente → npx read-only com DOPPLER_TOKEN no filho", () => {
-    const r = resolveDopplerLaunch({ DOPPLER_MCP_TOKEN: "t" }, { find: () => "/bin/npx" });
+    const r = okOf(resolveDopplerLaunch({ DOPPLER_MCP_TOKEN: "t" }, { find: () => "/bin/npx" }));
     assert.equal(r.command, "/bin/npx");
     assert.deepEqual(r.args, ["-y", "@dopplerhq/mcp-server", "--read-only"]);
     assert.deepEqual(r.childEnv, { DOPPLER_TOKEN: "t" });
