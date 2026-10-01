@@ -95,6 +95,8 @@ export function breakStaleLock(lockPath, now = Date.now()) {
       const cur = readLockFile(lockPath);
       if (!cur || cur.ino !== seen.ino || cur.raw !== seen.raw) return false;
       unlinkSync(lockPath);
+      // Paridade com tryStealOrphan (file-lock.ts): remoção deixa rastro.
+      try { process.stderr.write(`[registry-lock] lock órfão removido (#9203): ${lockPath} — ${seen.raw.trim() || "(vazio, legado)"}\n`); } catch { /* ignore */ }
       return true;
     } finally {
       try { unlinkSync(stealPath); } catch { /* ignore */ }

@@ -97,7 +97,7 @@
 // pela fricção pior de nunca liberar automaticamente uma concessão genuína
 // nesse caso ambíguo.
 
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { breakStaleLock, tryAcquireOwnedLock } from "./lib/registry-lock.mjs";
