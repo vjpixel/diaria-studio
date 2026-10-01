@@ -402,6 +402,8 @@ interface HighlightCandidate {
   rank: number;
   title: string;
   url: string;
+  /** #9386: resumo (MESMO FATO quando a manchete omite a versão). */
+  summary?: string;
 }
 
 export function extractHighlightCandidates(
@@ -421,7 +423,9 @@ export function extractHighlightCandidates(
       const title = art.title ?? h.title ?? "";
       const url = art.url ?? h.url ?? "";
       const rank = h.rank ?? idx + 1;
-      return { rank, title: title.trim(), url: url.trim() };
+      const rawSummary = (art as { summary?: unknown }).summary ?? (h as { summary?: unknown }).summary;
+      const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
+      return { rank, title: title.trim(), url: url.trim(), ...(summary ? { summary } : {}) };
     })
     .filter((h) => h.title.length > 0);
 }
@@ -917,7 +921,8 @@ const SECONDARY_PREFIX_MIN_LEN = 6;
 interface RawBucketItem {
   url?: string;
   title?: string;
-  article?: { url?: string; title?: string };
+  article?: { url?: string; title?: string; summary?: string };
+  summary?: string;
 }
 type RawBuckets = Record<string, RawBucketItem[]>;
 
@@ -925,6 +930,8 @@ export interface SecondaryItem {
   bucket: string;  // "radar" | "lancamento" | "use_melhor"
   title: string;
   url: string;
+  /** #9386: resumo (alimenta o MESMO FATO quando a manchete omite a versão). */
+  summary?: string;
 }
 
 export interface PastSecondaryItem {
@@ -1100,7 +1107,8 @@ export function extractSecondaryItems(
       const url = (art.url ?? item.url ?? "").trim();
       if (!title) continue;
       if (url && highlightUrls.has(canonicalize(url))) continue; // #2684 item 5
-      items.push({ bucket, title, url });
+      const summary = (art.summary ?? item.summary ?? "").trim();
+      items.push({ bucket, title, url, ...(summary ? { summary } : {}) });
     }
   }
   return items;
@@ -1536,17 +1544,24 @@ async function main(): Promise<void> {
   // destaque E contra o pool secundário (o check secundário acima só compara
   // secundário×secundário, então RADAR repetindo destaque passado escapava).
   // Sinaliza, nunca demove (premissa #9100).
+  // #9386: também contra o pool secundário (RADAR/LANÇAMENTOS...) das mesmas
+  // últimas edições — fato saído como RADAR ontem escapava — e usando o
+  // resumo do item corrente (manchete de outro veículo omite a versão).
+  const pastSecondaryRecent = readPastApprovedSecondary(editionsDir, CROSS_SOURCE_DEFAULT_WINDOW, currentEdition);
   const sameFactWarnings = findSameFactMatches(
     [
-      ...candidates.map((c) => ({ kind: "highlight", rank: c.rank, title: c.title, url: c.url })),
-      ...secondaryItems.map((s) => ({ kind: s.bucket, title: s.title, url: s.url })),
+      ...candidates.map((c) => ({ kind: "highlight", rank: c.rank, title: c.title, url: c.url, summary: c.summary })),
+      ...secondaryItems.map((s) => ({ kind: s.bucket, title: s.title, url: s.url, summary: s.summary })),
     ],
-    pastDestaques,
+    [
+      ...pastDestaques.map((p) => ({ ...p, bucket: "highlight" })),
+      ...pastSecondaryRecent.map((p) => ({ title: p.title, aammdd: p.edition, bucket: p.bucket })),
+    ],
   );
   for (const w of sameFactWarnings) {
     const where = w.kind === "highlight" ? `Candidato a destaque #${w.rank}` : `[${w.kind}]`;
     console.error(
-      `[check-highlight-themes] 🚨 MESMO FATO ${where} "${w.item_title}" (${w.item_url}) repete o DESTAQUE de ${w.matched_edition} "${w.matched_title}" (produto: ${w.shared_products.join(", ")})`,
+      `[check-highlight-themes] 🚨 MESMO FATO ${where} "${w.item_title}" (${w.item_url}) repete ${w.matched_bucket === "highlight" ? "o DESTAQUE" : `o item [${w.matched_bucket}]`} de ${w.matched_edition} "${w.matched_title}" (produto: ${w.shared_products.join(", ")}, via ${w.evidence})`,
     );
   }
 
