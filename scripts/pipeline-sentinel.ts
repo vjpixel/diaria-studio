@@ -52,6 +52,7 @@ import {
   type NewsletterBackend,
 } from "./lib/newsletter-backend.ts";
 import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request-snapshots.ts";
+import { ensureHandoffClosed } from "./lib/session-handoff.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -327,6 +328,28 @@ export function captureEditorBaselineOnStage2Sentinel(editionDir: string): Captu
   }
 }
 
+/**
+ * #9374: no write do sentinel do Stage 4 (último passo da 1ª sessão), fecha
+ * o handoff `_internal/session-1-handoff.json` — cria vazio+fechado se a
+ * sessão não registrou nada. Sem isso, o Stage 6 (sessão nova) não distingue
+ * "nada aconteceu" de "ninguém registrou" quando a prosa do §4e é pulada.
+ * Idempotente; só no layout da diária (`02-reviewed.md`). Nunca lança.
+ */
+export function closeSessionHandoffOnStage4Sentinel(
+  editionDir: string,
+  edition: string,
+): "closed" | "already-closed" | "skipped" | "error" {
+  try {
+    if (!existsSync(resolve(editionDir, "02-reviewed.md"))) return "skipped";
+    const outcome = ensureHandoffClosed(editionDir, edition);
+    if (outcome === "closed") console.log(`handoff da 1ª sessão fechado (#9374)`);
+    return outcome;
+  } catch (e: unknown) {
+    console.warn(`[warn] falha ao fechar handoff da 1ª sessão (#9374): ${e instanceof Error ? e.message : String(e)}`);
+    return "error";
+  }
+}
+
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
   const args = parseCliArgs(rest).values;
@@ -425,6 +448,9 @@ function main(): void {
       // fim do Stage 2 — o passo em prosa equivalente era pulado em 15 de 21
       // edições. Fail-soft: falha aqui nunca derruba o sentinel.
       if (step === 2) captureEditorBaselineOnStage2Sentinel(editionDir);
+      // #9374: fechamento mecânico do handoff da 1ª sessão — mesmo motivo
+      // (o `close` em prosa do §4e pode ser pulado). Fail-soft.
+      if (step === 4) closeSessionHandoffOnStage4Sentinel(editionDir, args.edition);
       break;
     }
 

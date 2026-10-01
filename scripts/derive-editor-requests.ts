@@ -42,6 +42,7 @@ import {
   SNAPSHOT_DIR,
   STAGE2_BASELINE_LABEL,
   STAGE2_SNAPSHOT_FILES,
+  STAGE4_BACKFILL_MARKER,
   STAGE4_POST_GATE_LABEL,
   assessStage2BaselineOnDisk,
   captureStage2Baseline,
@@ -1109,8 +1110,6 @@ export function buildReconstructedNewsletterBaseline(editionDir: string, finalMd
     applyAutofixReplacements(reconstructed, readAppliedAutofixes(editionDir), "newsletter"),
   );
 }
-
-const STAGE4_BACKFILL_MARKER = "_internal/.stage4-editor-requests-backfill.json";
 
 /**
  * Backfill do #9356: deriva os pedidos do Stage 4 das edições cujo baseline
