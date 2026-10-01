@@ -477,6 +477,30 @@ def test_regressao_9026_pela_feminino():
     print("regressão #9026: 'reivindicada pela' atribui claim a outro ator — OK")
 
 
+def test_regressao_9210_outros_solto_nao_e_ator():
+    """#9210: `_OTHERS_CLAIM` tolera até 4 palavras entre a preposição e o
+    ator, e o ator incluía `outr[oa]s?` solto — frases comuns escondiam um
+    claim PRÓPRIO (falso negativo do detector)."""
+    mod = _load_module()
+    for linha in (
+        "#9101 reivindicada pela primeira vez e as outras duas puladas.",
+        "#9101 reivindicada pelo coordenador e outras duas ficaram de fora.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9101 in refs, f"claim proprio #9101 escondido: {linha!r} -> {refs}"
+    # Positivos mantidos: "outr*" seguido de substantivo de ator.
+    for linha in (
+        "#9102 foi reivindicada por outra sessao.",
+        "#9103 foi reivindicada pela outra rodada.",
+        "#9104 reivindicada pelos outros coordenadores.",
+        "#9105 reivindicada por outro tick.",
+    ):
+        n = int(linha[1:5])
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n not in refs, f"#{n} (outro ator) indevido: {refs}"
+    print("regressão #9210: 'outr*' solto não é ator — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -964,6 +988,7 @@ def main() -> int:
         test_regressao_8863_antes_do_nao_apaga_claim_real()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
         test_regressao_9026_pela_feminino()
+        test_regressao_9210_outros_solto_nao_e_ator()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

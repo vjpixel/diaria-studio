@@ -308,10 +308,18 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
 # #9026: `pel[oa]s?` — "pela" (feminino: "reivindicada pela sessão
 # overnight") e "pelos" faltavam na alternância original (por|pelo|pelas).
+# #9210: no caminho com até 4 palavras intermediárias, o `outr[oa]s?` solto
+# casava frases comuns ("reivindicada pela primeira vez e as outras duas")
+# e escondia um claim PRÓPRIO. Ali o pronome só vale como ator quando vem
+# seguido de um substantivo de ator (sessão/rodada/coordenador/tick).
+_ACTOR_STRICT = (
+    r"(?:outr[oa]s?\s+(?:sess\w+|rodadas?|coordenador\w*|ticks?)"
+    r"|overnight|develop|interactive|terceir[oa]s?)"
+)
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
     r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+(?:\w+\s+){0,4}"
-    + _ACTOR + r"\b",
+    + _ACTOR_STRICT + r"\b",
     re.IGNORECASE,
 )
 # #8974 (28/09/2026): FALSO POSITIVO real — o relatório do tick descreveu
