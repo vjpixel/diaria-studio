@@ -33,6 +33,7 @@ import {
   runTestSend,
   type TestSendDeps,
 } from "../scripts/publish-voto-tema-kit.ts";
+import { assertLembreteDentroDoPrazo } from "../scripts/voto-tema-lembrete.ts";
 import { KIT_TEST_SEND_TAG_NAME, buildTestSendFilter } from "../scripts/lib/kit-broadcasts.ts";
 
 const OPCOES = [
@@ -209,5 +210,16 @@ describe("runTestSend — test-send da merge tag voto_token (#9261)", () => {
     const vazia = mkDeps({ fetchTagMembers: async () => [] });
     await assert.rejects(runTestSend("2610", ballot, vazia.deps, () => {}), /vazia/);
     assert.deepEqual([...semTag.calls, ...vazia.calls], []);
+  });
+});
+
+describe("lembrete recusa depois do prazo (#9260, finding 2 da #9269)", () => {
+  const now = new Date("2026-10-01T12:00:00Z");
+  it("prazo vencido → erro explícito", () => {
+    assert.throws(() => assertLembreteDentroDoPrazo({ prazo: PASSADO }, now), /prazo da votação já passou/);
+  });
+  it("prazo futuro ou ausente → segue", () => {
+    assertLembreteDentroDoPrazo({ prazo: FUTURO }, now);
+    assertLembreteDentroDoPrazo({}, now);
   });
 });
