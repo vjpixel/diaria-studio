@@ -257,6 +257,43 @@ export function dataAddDirArgs(
 }
 
 /**
+ * #9223 item 2 (pure, testável): diretiva com o diretório REAL da edição,
+ * anexada ao prompt headless de todo stage.
+ *
+ * Edição 261001 (`/diaria-edicao-jev`): a re-execução do Stage 2 respondeu em
+ * 43 s "No edition data exists for 261001 anywhere — 01-approved.json isn't
+ * present", embora o arquivo existisse em
+ * `data/editions/2610/261001/_internal/01-approved.json` (layout aninhado
+ * `YYMM/AAMMDD`). O `--add-dir` do #9086 resolve o ACESSO; esta diretiva
+ * resolve a DESCOBERTA — o driver já tem o diretório resolvido
+ * (`resolveEditionDir`, flat legado OU aninhado), então entrega o caminho
+ * pronto em vez de deixar a sub-sessão montar `data/editions/{AAMMDD}` à mão
+ * e concluir que a edição não existe. Quando `data/` é junction pra fora do
+ * repo, cita também o caminho real (o mesmo liberado via `--add-dir`).
+ */
+export function editionDirDirective(
+  editionDir: string,
+  repoRootAbs: string,
+  realpathFn: (p: string) => string = realpathSync,
+): string {
+  const rel = relative(repoRootAbs, editionDir);
+  const insideRepo = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  const shown = (insideRepo ? rel : editionDir).replaceAll("\\", "/");
+  let realNote = "";
+  try {
+    const real = realpathFn(editionDir).replaceAll("\\", "/");
+    if (real !== editionDir.replaceAll("\\", "/")) realNote = ` (caminho real: ${real})`;
+  } catch {
+    // edição ainda não criada (Stage 1) — o path resolvido continua sendo o alvo
+  }
+  return (
+    `Diretório da edição já resolvido pelo driver (layout flat OU aninhado YYMM/AAMMDD): ${shown}${realNote}. ` +
+    `Use exatamente esse path como {EDIR} (equivale a find-current-edition.ts --resolve) — nunca monte ` +
+    `data/editions/{AAMMDD} à mão, e não conclua que a edição não existe sem antes ler ${shown}/_internal/.`
+  );
+}
+
+/**
  * #9086 (pure): resume `permission_denials` do objeto `--output-format json`
  * do CLI ("18 negadas: Write×11, Bash×6, Skill×1"). `null` quando não há
  * negação ou o stdout não é JSON. Vai pro `failureTail` — negação de
@@ -483,6 +520,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     realpathFn = realpathSync,
   } = opts;
   const addDirArgs = dataAddDirArgs(repoRootAbs, realpathFn);
+  const editionDirNote = editionDirDirective(editionDir, repoRootAbs, realpathFn);
 
   assertNoPublishStage(plan);
 
@@ -514,7 +552,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
     // demais stages não teria efeito, mas manteria o escopo do achado restrito
     // ao que de fato precisa dela.
     const supervisedFlagPart = sessionSupervised && stage === 1 ? ` ${SESSION_SUPERVISED_FLAG}` : "";
-    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}${supervisedFlagPart} ${NO_BACKGROUND_DIRECTIVE}`;
+    // #9223 item 2: diretório real da edição no prompt (descoberta; o
+    // `--add-dir` do #9086 cobre o acesso).
+    const prompt = `/${skill} ${aammdd} ${HEADLESS_FLAGS}${supervisedFlagPart} ${NO_BACKGROUND_DIRECTIVE} ${editionDirNote}`;
     onProgress(`Stage ${stage}: claude -p '${prompt.slice(0, 80)}…'`);
 
     let stageOutcome: StageOutcome | null = null;

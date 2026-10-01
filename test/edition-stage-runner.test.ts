@@ -28,12 +28,15 @@ import {
   FAILURE_TAIL_LINES,
   NO_BACKGROUND_DIRECTIVE,
   BACKGROUND_WAIT_MAX_ATTEMPTS,
+  editionDirDirective,
 } from "../scripts/lib/edition-stage-runner.ts";
 import { planThrough, main as cliMain, DEFAULT_THROUGH } from "../scripts/run-edition-stages.ts";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const AAMMDD = "260820";
+/** #9223: diretiva de diretório que todo prompt carrega (editionDir/repoRoot de `makeOpts`). */
+const DIR_NOTE = editionDirDirective("/fake/data/editions/2608/260820", "/fake/repo");
 
 /**
  * Mundo de sentinelas fake — modela DISCO, não contagem de chamadas (#5744).
@@ -233,9 +236,9 @@ describe("edition-stage-runner — laço", () => {
     runEditionStages(makeOpts({ execFn, plan: planThrough(3) }));
 
     assert.deepEqual(prompts, [
-      `/diaria-1-pesquisa ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-2-escrita ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-1-pesquisa ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE} ${DIR_NOTE}`,
+      `/diaria-2-escrita ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE} ${DIR_NOTE}`,
+      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE} ${DIR_NOTE}`,
     ]);
     // O Stage 4 fica de fora porque é onde está o gate humano de revisão —
     // ele roda NA sessão do editor, já com o contexto limpo que os 3 spawns
@@ -422,8 +425,8 @@ describe("edition-stage-runner — laço", () => {
     );
 
     assert.deepEqual(prompts, [
-      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
-      `/diaria-4-revisao ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE}`,
+      `/diaria-3-imagens ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE} ${DIR_NOTE}`,
+      `/diaria-4-revisao ${AAMMDD} --no-gates ${NO_BACKGROUND_DIRECTIVE} ${DIR_NOTE}`,
     ]);
     assert.deepEqual(
       result.outcomes.filter((o) => o.status === "skipped").map((o) => o.stage),
