@@ -112,7 +112,10 @@ const ASCII_SUBSTITUTES: Record<string, string[]> = {
  *   - `**DESTAQUE 1 | ⚠️ SEGURANÇA**` (categoria do destaque)
  * O header de seção só é tocado quando o label limpo é CAIXA ALTA (convenção
  * dos headers do template) — negrito de corpo com emoji não é kicker e continua
- * sendo checado.
+ * sendo checado. Trade-off aceito: uma linha de corpo inteira em negrito, em
+ * CAIXA ALTA e com emoji no início seria tratada como kicker (o template só
+ * usa negrito de linha inteira em nome de seção e título, então é raro). Não
+ * há lista única de nomes de seção pra restringir sem criar outra paralela.
  */
 export function stripSectionHeaderEmojis(md: string): string {
   return md
@@ -120,11 +123,12 @@ export function stripSectionHeaderEmojis(md: string): string {
     .map((line) => {
       const destaque = line.match(/^(\s*\*\*DESTAQUE\s+\d+\s*\|\s*)(.+?)(\*\*\s*)$/u);
       if (destaque) return destaque[1] + stripKickerEmoji(destaque[2]) + destaque[3];
-      const header = line.match(/^(\s*\*\*)(.+?)(\*\*\s*)$/u);
+      // `[^*]` — 2 spans em negrito na mesma linha (`**🔥 A** e **B**`) não é kicker.
+      const header = line.match(/^(\s*\*\*)([^*]+)(\*\*\s*)$/u);
       if (!header) return line;
       const label = header[2];
       const clean = stripKickerEmoji(label);
-      if (clean === label.trim() || !/\p{L}/u.test(clean)) return line;
+      if (!/\p{L}/u.test(clean)) return line;
       if (clean !== clean.toLocaleUpperCase("pt-BR")) return line;
       // só remove se o prefixo cortado contém emoji (não um "[" de link etc.)
       if (!EMOJI_RE.test(label.slice(0, label.indexOf(clean)))) return line;

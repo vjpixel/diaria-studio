@@ -124,6 +124,19 @@ describe("checkEncoding — emoji de kicker e sequências de emoji (#9115)", () 
     assert.equal(r[0].char, "🔥");
   });
 
+  it("bandeira dropada no corpo é acusada como unidade (não 2 regional indicators)", () => {
+    const r = checkEncoding("Feito no 🇧🇷 hoje", "Feito no hoje");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🇧🇷");
+    assert.equal(r[0].sequence, "U+1F1E7 U+1F1F7");
+  });
+
+  it("2 spans em negrito na mesma linha não viram kicker — emoji dropado é acusado", () => {
+    const r = checkEncoding("**🔥 FOO** E **BAR**", "FOO E BAR");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].char, "🔥");
+  });
+
   it("emoji preservado sem VS16 no email não é drop (⚠️ vs ⚠)", () => {
     assert.deepEqual(checkEncoding("atenção ⚠️ aqui", "atenção ⚠ aqui"), []);
   });
