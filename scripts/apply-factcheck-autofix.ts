@@ -261,7 +261,26 @@ export function applyTextSubstitution(
   if (scope) {
     const region = content.slice(scope.start, scope.end);
     if (!oldText || !region.includes(oldText)) return { changed: false, content };
-    const newRegion = region.replaceAll(oldText, () => newText);
+    // (#9400 review) Quando o fix CONTÉM o claim ("Bolsonaro em 190" →
+    // "Flávio Bolsonaro em 190"), ocorrência que já está dentro do fix (seção
+    // já correta, ex: Curto reescrito à mão) não pode ser substituída de novo —
+    // senão vira "Flávio Flávio Bolsonaro em 190".
+    const innerOffsets: number[] = [];
+    for (let k = newText.indexOf(oldText); k !== -1; k = newText.indexOf(oldText, k + 1)) innerOffsets.push(k);
+    let out = "";
+    let last = 0;
+    let changed = false;
+    for (let idx = region.indexOf(oldText); idx !== -1; idx = region.indexOf(oldText, idx + oldText.length)) {
+      const alreadyFixed = innerOffsets.some(
+        (k) => idx - k >= 0 && region.startsWith(newText, idx - k),
+      );
+      if (alreadyFixed) continue;
+      out += region.slice(last, idx) + newText;
+      last = idx + oldText.length;
+      changed = true;
+    }
+    if (!changed) return { changed: false, content };
+    const newRegion = out + region.slice(last);
     return { changed: true, content: content.slice(0, scope.start) + newRegion + content.slice(scope.end) };
   }
   const idx = content.indexOf(oldText);
@@ -402,14 +421,18 @@ function countWordSeq(haystack: string[], needle: string[]): number {
  *   1. Match tolerante a pontuação: a sequência do claim aparece mais vezes
  *      do que a sequência do fix (desconta o caso do fix que CONTÉM o claim,
  *      ex: "Bolsonaro em 190" → "Flávio Bolsonaro em 190").
- *   2. Claim de ≥4 palavras com UMA palavra trocada ("eram" → "deles"), desde
+ *   0. Claim de <3 palavras nunca acusa (só número/"em 2025" casa frase alheia).
+ *   2. Claim de ≥4 palavras com UMA palavra trocada no MEIO ("eram" → "deles";
+ *      troca na 1ª/última palavra é tratada como outro fato), desde
  *      que aquela janela não seja ela mesma um trecho do fix.
  */
 export function claimResidueInRegion(region: string, text: string, fix: string): boolean {
   const rw = claimWords(region);
   const tw = claimWords(text);
   const fw = claimWords(fix);
-  if (tw.length === 0) return false;
+  // Claim curto (só um número, "em 2025") casa frase sem relação — sem
+  // contexto suficiente pra acusar resíduo com confiança.
+  if (tw.length < 3) return false;
 
   const claimCount = countWordSeq(rw, tw);
   const fixContainsClaim = countWordSeq(fw, tw) > 0;
@@ -421,10 +444,16 @@ export function claimResidueInRegion(region: string, text: string, fix: string):
   for (let i = 0; i + tw.length <= fw.length; i++) fixWindows.add(fw.slice(i, i + tw.length).join(" "));
   for (let i = 0; i + tw.length <= rw.length; i++) {
     let mismatches = 0;
+    let edgeMismatch = false;
     for (let j = 0; j < tw.length && mismatches <= 1; j++) {
-      if (rw[i + j] !== tw[j]) mismatches++;
+      if (rw[i + j] !== tw[j]) {
+        mismatches++;
+        if (j === 0 || j === tw.length - 1) edgeMismatch = true;
+      }
     }
-    if (mismatches === 1 && !fixWindows.has(rw.slice(i, i + tw.length).join(" "))) return true;
+    // Troca na 1ª/última palavra = provavelmente OUTRO fato com a mesma forma
+    // ("receita cresceu 30% em 2025" vs claim "lucro cresceu 30% em 2025").
+    if (mismatches === 1 && !edgeMismatch && !fixWindows.has(rw.slice(i, i + tw.length).join(" "))) return true;
   }
   return false;
 }
@@ -762,6 +791,9 @@ async function main(): Promise<void> {
     console.log(`[apply-factcheck-autofix] ${isDryRun ? "[DRY-RUN] " : ""}${applied} correção(ões) aplicada(s) automaticamente:`);
     for (const e of entries.filter((x) => x.status === "applied")) {
       console.log(`  D${e.destaque} [${e.claim_type}] "${e.text}" → "${e.suggested_fix}" (${(e.files_modified ?? []).join(", ")})`);
+      if (e.social_residual_sections?.length) {
+        console.log(`    ⚠ resíduo parafraseado em 03-social.md: ${e.social_residual_sections.join(", ")} — corrigir à mão`);
+      }
     }
   } else {
     console.log(`[apply-factcheck-autofix] Nenhuma correção automática disponível (${skipped} claim(s) pulado(s)).`);

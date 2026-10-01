@@ -470,6 +470,8 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
+**Resíduo (#9400), independente de `applied`/`social_modified`:** se `summary.social_residual > 0`, mostrar no gate (mesmo sem nenhuma correção aplicada) a linha `⚠ Claim ainda presente com outra redação em 03-social.md: {seções} — corrigir à mão` para cada entry com `social_residual_sections`. Em `--no-gates`, registrar essas seções no relatório da edição.
+
 `{arquivo(s)}` = `entry.files_modified.join(", ")` — agora pode ser `newsletter`, `social`, ou `newsletter, social` (antes só `newsletter`, já que social era sempre skipped). Isso já deixa explícito no gate quando uma correção social foi aplicada, sem bloco separado — se `social_modified === true`, acrescentar uma linha informativa: `📱 Social também corrigido — preview social republicado.`
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`, re-renderiza/republica newsletter e social se aplicável); o gate é pulado.

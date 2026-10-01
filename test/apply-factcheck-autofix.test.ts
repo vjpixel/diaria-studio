@@ -21,11 +21,11 @@
  *      passa a bater com o novo hash de 03-social.md
  *  15. (#3274) `## post_pixel` é aberto como range-alvo quando destaque=1 — claim
  *      DIVERGENT sobre D1 corrige tanto `## d1` quanto `## post_pixel`
- *  17. (#9400) `# Curto` → `## d1`: exato é corrigido; paráfrase vira resíduo
- *      acusado (`social_residual_sections`), sem reescrita mecânica
  *  16. (#3275) applyTextSubstitution (scoped) substitui TODAS as ocorrências dentro
  *      do range — inclusive quando a mesma claim aparece no corpo E em
  *      `### comment_pixel`/`### comment_diaria` aninhados
+ *  17. (#9400) `# Curto` → `## d1`: exato é corrigido; paráfrase vira resíduo
+ *      acusado (`social_residual_sections`), sem reescrita mecânica
  */
 
 import { describe, it } from "node:test";
@@ -1729,5 +1729,21 @@ describe("regressao #9400: Curto d1 com o mesmo claim", () => {
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
+  });
+
+  it("review: seção já com o fix (contém o claim) não é corrigida de novo", () => {
+    const content = "# Social\n\n## d1\n\nBolsonaro em 190.\n\n# Curto\n\n## d1\n\nFlávio Bolsonaro em 190.\n";
+    const r = applySocialTextSubstitution(content, 1, "Bolsonaro em 190", "Flávio Bolsonaro em 190");
+    assert.equal(r.modifiedRanges, 1);
+    assert.ok(!r.content.includes("Flávio Flávio"), r.content);
+    assert.equal(r.content.split("Flávio Bolsonaro em 190").length - 1, 2);
+  });
+
+  it("review: claim curto (<3 palavras) e troca na 1ª/última palavra não acusam resíduo", () => {
+    assert.equal(claimResidueInRegion("O modelo saiu em 2025.", "em 2025", "em 2024"), false);
+    assert.equal(
+      claimResidueInRegion("O lucro cresceu 40% em 2025 e a receita cresceu 30% em 2025.", "lucro cresceu 30% em 2025", "lucro cresceu 40% em 2025"),
+      false,
+    );
   });
 });
