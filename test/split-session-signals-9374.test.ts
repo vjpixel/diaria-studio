@@ -32,6 +32,7 @@ import { armFromProfile, computeMetrics, type EditionRaw, type Tri } from "../sc
 import { loadEdition } from "../scripts/jev-ab-report.ts";
 import { summarizeSeries, type EditionManualEdits } from "../scripts/edition-manual-edits.ts";
 import { STAGE4_BACKFILL_MARKER } from "../scripts/lib/editor-request-snapshots.ts";
+import { closeSessionHandoffOnStage4Sentinel } from "../scripts/pipeline-sentinel.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -207,5 +208,69 @@ describe("métrica editorial estratificada por braço (#9374)", () => {
     assert.deepEqual(s.by_arm.B, { editions: 2, zero: 1, with_edits: 1, unknown: 0 });
     assert.deepEqual(s.by_arm.A, { editions: 1, zero: 1, with_edits: 0, unknown: 0 });
     assert.equal(s.by_arm.unknown.editions, 0);
+  });
+});
+
+describe("fechamento mecânico no sentinel do Stage 4 (#9374)", () => {
+  it("cria vazio+fechado quando a sessão não registrou nada", () => {
+    const { root, dir } = tmpEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "x");
+      assert.equal(closeSessionHandoffOnStage4Sentinel(dir, "261001"), "closed");
+      const r = readHandoff(dir);
+      assert.equal(r.state, "ok");
+      if (r.state === "ok") {
+        assert.equal(r.value.entries.length, 0);
+        assert.ok(r.value.closed_at);
+      }
+      assert.match(summarizeHandoffForStage6(r), /nenhuma ocorrência/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotente: preserva entradas e o closed_at original", () => {
+    const { root, dir } = tmpEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "x");
+      appendHandoffEntry(dir, "261001", { kind: "halt", stage: 2, summary: "y" });
+      closeHandoff(dir, "261001", new Date("2026-10-01T10:00:00Z"));
+      assert.equal(closeSessionHandoffOnStage4Sentinel(dir, "261001"), "already-closed");
+      const r = readHandoff(dir);
+      assert.ok(r.state === "ok" && r.value.closed_at === "2026-10-01T10:00:00.000Z" && r.value.entries.length === 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pula layout sem 02-reviewed.md (mensal) e não sobrescreve arquivo corrompido", () => {
+    const { root, dir } = tmpEdition();
+    try {
+      assert.equal(closeSessionHandoffOnStage4Sentinel(dir, "261001"), "skipped");
+      writeFileSync(join(dir, "02-reviewed.md"), "x");
+      writeFileSync(join(dir, SESSION1_HANDOFF_FILE), "{bad");
+      assert.equal(closeSessionHandoffOnStage4Sentinel(dir, "261001"), "error");
+      assert.equal(readFileSync(join(dir, SESSION1_HANDOFF_FILE), "utf8"), "{bad");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("CLI `pipeline-sentinel.ts write --step 4` fecha o handoff de verdade", () => {
+    const { root, dir } = tmpEdition();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), "x");
+      writeFileSync(join(dir, "03-social.md"), "x");
+      const res = spawnSync(
+        process.execPath,
+        // cwd = raiz temporária (sem node_modules): tsx resolvido pelo URL absoluto.
+        ["--import", import.meta.resolve("tsx"), join(ROOT, "scripts/pipeline-sentinel.ts"), "write", "--edition", "261001", "--step", "4", "--outputs", "02-reviewed.md,03-social.md", "--dir", dir],
+        { encoding: "utf8", cwd: root },
+      );
+      const r = readHandoff(dir);
+      assert.equal(r.state, "ok", `stdout=${res.stdout} stderr=${res.stderr}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -184,6 +184,19 @@ export function closeHandoff(editionDir: string, edition: string, now: Date = ne
 }
 
 /**
+ * Fechamento MECÂNICO (#9374): chamado pelo `pipeline-sentinel.ts write
+ * --step 4`. Idempotente — se o handoff já está fechado, não mexe (preserva o
+ * `closed_at` original); se não existe, cria vazio+fechado. Lança em arquivo
+ * corrompido (nunca sobrescreve o que a sessão registrou).
+ */
+export function ensureHandoffClosed(editionDir: string, edition: string, now: Date = new Date()): "closed" | "already-closed" {
+  const cur = readHandoff(editionDir);
+  if (cur.state === "ok" && cur.value.closed_at) return "already-closed";
+  closeHandoff(editionDir, edition, now);
+  return "closed";
+}
+
+/**
  * Linha de 1 frase pro resumo final do Stage 6. Pura.
  * Distingue "ausente" (1ª sessão não registrou) de "fechado sem ocorrências".
  */
