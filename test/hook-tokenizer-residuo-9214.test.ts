@@ -11,6 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+// @ts-expect-error -- hook .mjs sem tipos
 import * as A from "../.claude/hooks/block-unsafe-shared-checkout-ops.mjs";
 import * as B from "../.claude/hooks/block-worktree-bare-push.mjs";
 import * as C from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
