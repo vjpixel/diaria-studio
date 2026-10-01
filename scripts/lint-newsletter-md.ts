@@ -271,6 +271,7 @@ export {
   type AprofundeFormatError,
   type AprofundeFormatReport,
 } from "./lib/lint-checks/aprofunde-format.ts"; // #3920
+import { checkDestaqueUrlMatchesApproved } from "./lib/lint-checks/destaque-url-matches-approved.ts"; // #9252
 export {
   checkWhyMattersLength,
   WHY_MATTERS_MIN_CHARS,
@@ -689,6 +690,9 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
     push("section-counts", "#907", "gate-blocking", false, {
       error: `01-approved-capped.json não encontrado: ${approvedPath}`,
     });
+    push("destaque-url-matches-approved", "#9252", "gate-blocking", false, {
+      error: `01-approved-capped.json não encontrado: ${approvedPath}`,
+    });
   } else {
     // JSON.parse pode lançar (arquivo presente mas malformado) — isolado à
     // parte de runCheckSafely porque os DOIS checks abaixo (url-bucket e
@@ -701,6 +705,7 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
       const message = `exceção não tratada ao ler/parsear ${approvedPath}: ${err instanceof Error ? err.message : String(err)}`;
       push("url-bucket", "#165", "gate-blocking", false, { error: message });
       push("section-counts", "#907", "gate-blocking", false, { error: message });
+      push("destaque-url-matches-approved", "#9252", "gate-blocking", false, { error: message });
     }
 
     if (approved) {
@@ -723,6 +728,12 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
 
       runCheckSafely(push, "section-counts", "#907", "gate-blocking", () =>
         checkSectionCounts(md, approved!),
+      );
+
+      // #9252: URL do destaque tem de ser a do highlight aprovado (writer
+      // headless já inventou URL "parecida" — edição 261001).
+      runCheckSafely(push, "destaque-url-matches-approved", "#9252", "gate-blocking", () =>
+        checkDestaqueUrlMatchesApproved(md, approved!),
       );
     }
   }
