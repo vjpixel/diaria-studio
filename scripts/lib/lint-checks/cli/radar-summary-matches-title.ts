@@ -21,6 +21,7 @@ export function runCli(args: Record<string, string>, root: string): void {
   }
   const result = checkRadarSummaryMatchesTitle(readFileSync(mdPath, "utf8"));
   console.log(JSON.stringify(result, null, 2));
+  if (result.warning) console.error(`\n⚠️  ${result.warning}`);
   if (!result.ok) {
     console.error(
       `\n⚠️  radar-summary-matches-title: ${result.errors.length} item(ns) com descrição sem relação com o título/URL:`,

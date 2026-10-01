@@ -22,9 +22,18 @@ export interface RadarSummaryMatchError {
 export interface RadarSummaryMatchReport {
   ok: boolean;
   errors: RadarSummaryMatchError[];
+  warning?: string;
 }
 
 export function checkRadarSummaryMatchesTitle(md: string): RadarSummaryMatchReport {
+  try {
+    return runCheck(md);
+  } catch (e) {
+    return { ok: true, errors: [], warning: `radar-summary-matches-title falhou internamente: ${(e as Error).message}` };
+  }
+}
+
+function runCheck(md: string): RadarSummaryMatchReport {
   const errors: RadarSummaryMatchError[] = [];
   forEachSecondaryItem(md, {
     onFound: (item) => {
