@@ -121,3 +121,24 @@ export function writeFilesVerified(
     throw base;
   }
 }
+
+/**
+ * #9320: `writeFilesVerified` só reverte o LOTE de texto. Em reorder/promote,
+ * imagens e prompts já foram renomeados para a ordem nova ANTES do lote
+ * (#5087) e não entram no rollback — a mensagem "Lote revertido" sozinha
+ * levava o operador a reexecutar o mesmo `--order` e permutar as imagens uma
+ * 2ª vez. Anexa ao erro quais renames ficaram aplicados.
+ */
+export function annotateRenamesNotReverted(
+  err: unknown,
+  renamed: ReadonlyArray<{ from: string; to: string }>,
+): Error {
+  const base = err instanceof Error ? err : new Error(String(err));
+  if (renamed.length === 0) return base;
+  const list = renamed.map((r) => `${basename(r.from)}→${basename(r.to)}`).join(", ");
+  base.message +=
+    ` ATENÇÃO: imagens/prompts JÁ renomeados para a ordem nova NÃO foram revertidos ` +
+    `(${list}). NÃO reexecute o mesmo comando — isso permutaria as imagens uma 2ª vez; ` +
+    `desfaça os renames à mão ou reexecute com a ordem que leva o estado atual ao alvo.`;
+  return base;
+}

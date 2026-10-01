@@ -92,7 +92,11 @@ import {
   unlinkSync,
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
-import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9188
+import {
+  annotateRenamesNotReverted,
+  writeFilesVerified,
+  type VerifiedWrite,
+} from "./lib/write-files-verified.ts"; // #9188, #9320
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
@@ -1205,20 +1209,6 @@ function main(): void {
     reorderedReviewedMd = md;
   }
 
-  // 3c. _internal/intentional-error.json (#3222 — location não mora mais no
-  // frontmatter de 02-reviewed.md).
-  const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
-  const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
-  if (intentionalErrorRecord) {
-    const { record: updatedRecord, changed } = updateIntentionalErrorLocationJson(
-      intentionalErrorRecord,
-      args.newOrder,
-    );
-    if (changed) {
-      if (!args.dryRun) writeIntentionalErrorJson(intentionalErrorPath, updatedRecord);
-      modified.rewritten.push(intentionalErrorPath);
-    }
-  }
 
   // 3d. TÍTULO/SUBTÍTULO (#3980): re-derivar do D1/D2/D3 JÁ REORDENADOS.
   // Reusa `deriveTituloSubtitulo` (→ insert-titulo-subtitulo.ts, #916) — não
@@ -1253,8 +1243,31 @@ function main(): void {
     }
   }
 
-  if (!args.dryRun) writeFilesVerified(pendingWrites, "reorder-destaques");
+  if (!args.dryRun) {
+    try {
+      writeFilesVerified(pendingWrites, "reorder-destaques");
+    } catch (err) {
+      throw annotateRenamesNotReverted(err, modified.renamed); // #9320
+    }
+  }
   for (const w of pendingWrites) modified.rewritten.push(w.path);
+
+  // 4a. _internal/intentional-error.json (#3222 — location não mora mais no
+  // frontmatter de 02-reviewed.md). #9320: gravado DEPOIS do lote verificado
+  // (como o promote já fazia) — se o lote falha e é revertido, o erro
+  // intencional não fica permutado na ordem nova.
+  const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
+  const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
+  if (intentionalErrorRecord) {
+    const { record: updatedRecord, changed } = updateIntentionalErrorLocationJson(
+      intentionalErrorRecord,
+      args.newOrder,
+    );
+    if (changed) {
+      if (!args.dryRun) writeIntentionalErrorJson(intentionalErrorPath, updatedRecord);
+      modified.rewritten.push(intentionalErrorPath);
+    }
+  }
 
   // 4b. _internal/.social-source-hash.json (#6062) — recarimbar SÓ quando o
   // passo 4 de fato reordenou o social. Recarimbar quando ele não mudou
