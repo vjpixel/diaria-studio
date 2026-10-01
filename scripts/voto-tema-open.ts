@@ -87,12 +87,14 @@ export function ballotInputPath(dataDir: string, ciclo: string): string {
 interface BallotInput {
   titulo: string;
   opcoes: CandidatoTema[];
+  /** #9260: fim da votação, ISO 8601 com fuso — obrigatório em ciclo novo. */
+  prazo?: string;
 }
 
 export function readBallotInput(path: string): BallotInput {
   if (!existsSync(path)) {
     throw new VotoTemaGuardError(
-      `${path} ausente — escreva a cédula lá (título + opcoes[{n,titulo,descricao,proponente?}]) antes de abrir a votação.`,
+      `${path} ausente — escreva a cédula lá (título + prazo + opcoes[{n,titulo,descricao,proponente?}]) antes de abrir a votação.`,
     );
   }
   return JSON.parse(readFileSync(path, "utf8")) as BallotInput;
@@ -122,7 +124,7 @@ export async function run(options: RunOptions): Promise<void> {
 
   const inputPath = ballotInputPath(dataDir, ciclo);
   const input = readBallotInput(inputPath);
-  const validation = validarCedula(input);
+  const validation = validarCedula(input, { exigirPrazo: true });
   if (!validation.ok) throw new VotoTemaGuardError(`cédula inválida (${inputPath}): ${validation.reason}`);
 
   const kvConfig = resolveVotoTemaKvConfig();
@@ -140,6 +142,7 @@ export async function run(options: RunOptions): Promise<void> {
   if (dryRun) {
     log(`[DRY RUN] ciclo: ${ciclo}`);
     log(`[DRY RUN] título: ${input.titulo}`);
+    log(`[DRY RUN] prazo: ${input.prazo}`);
     for (const o of input.opcoes) log(`[DRY RUN]   opção ${o.n}: ${o.titulo}`);
     log(`[DRY RUN] tag de audiência: "${tagName}" (Mantenedor/Patrono, R$25+)`);
     log("[DRY RUN] nenhuma escrita em KV/Kit — rode com --push para gravar de verdade.");
@@ -192,6 +195,7 @@ export async function run(options: RunOptions): Promise<void> {
     opcoes: input.opcoes,
     eleitores: eleitoresHashes,
     aberta_em: new Date().toISOString(),
+    prazo: input.prazo,
   };
   try {
     await writeBallotToKv(ciclo, ballot, kvConfig);

@@ -22,13 +22,23 @@
  * qualquer disparo de campanha Kit, mesmo de teste). Antes do 1º uso real,
  * rode o teste decisivo descrito no corpo da #8371.
  *
- * ⚠️ NUNCA remove o guard `--dry-run` por padrão nem adiciona `send_at` —
- * disparo é sempre ação humana no painel do Kit.
+ * ⚠️ NUNCA remove o guard `--dry-run` por padrão nem adiciona `send_at` ao
+ * broadcast real — disparo pro eleitorado é sempre ação humana no painel do Kit.
+ *
+ * `--test-send` (#9261) é o teste decisivo da merge tag `voto_token`: garante
+ * token (KV `polltoken:` + custom field `voto_token`) para cada membro da tag
+ * `diaria-test-email`, cria um broadcast `[TESTE]` filtrado SÓ nessa tag,
+ * relê o `subscriber_filter` e, só se ele bater, agenda o envio para daqui a
+ * 2 min (`send_at`). Filtro não confirmado → nada é agendado. O link do e-mail
+ * de teste deve abrir a página "não pertence ao eleitorado" (403: token
+ * substituído e resolvido) — a página de "tag de e-mail não resolvida" (400)
+ * significa que o Kit NÃO substituiu a merge tag.
  *
  * Uso:
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --dry-run
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610                      # cria rascunho (eleitorado inteiro)
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --audience pendentes  # rascunho do lembrete
+ *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --test-send --push    # teste da merge tag (#9261)
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,10 +46,24 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { createBroadcast, findTagIdByName, buildTagFilter, type KitSubscriberFilter } from "./lib/kit-broadcasts.ts";
+import {
+  KIT_TEST_SEND_TAG_NAME,
+  buildTagFilter,
+  buildTestSendFilter,
+  createBroadcast,
+  findTagIdByName,
+  updateBroadcast,
+  type CreateBroadcastInput,
+  type KitSubscriberFilter,
+} from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
+import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
+import type { KitTagMember } from "./lib/shared/kit-apoio-tag.ts";
+import { updateSubscriberFields } from "./lib/kit-subscribers.ts";
+import { computePollToken } from "./lib/shared/poll-token.ts";
+import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts";
-import { parseCicloVotacao, htmlEscapeVotoTema, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
+import { parseCicloVotacao, htmlEscapeVotoTema, formatPrazo, pollTokenKvKeyMirror, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
@@ -54,7 +78,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-voto-tema-kit]";
 const ARTIGOS_BASE_URL = "https://especial.diar.ia.br";
 
-export function publishedStatePath(dataDir: string, ciclo: string, audience: "eleitorado" | "pendentes"): string {
+export function publishedStatePath(dataDir: string, ciclo: string, audience: "eleitorado" | "pendentes" | "teste"): string {
   return resolve(dataDir, "artigo-especial", "votacao", ciclo, `published-${audience}.json`);
 }
 
@@ -70,10 +94,103 @@ export function renderVotoTemaEmailHtml(ciclo: string, ballot: BallotTema): stri
         `— ${htmlEscapeVotoTema(o.descricao)}${o.proponente ? ` (sugestão de ${htmlEscapeVotoTema(o.proponente)})` : ""}</p>`,
     )
     .join("\n");
+  // #9260: prazo no e-mail — no ciclo 2609 ele ficou de fora e ninguém sabia até quando votar.
+  const prazoFmt = formatPrazo(ballot.prazo);
+  const prazoP = prazoFmt ? `\n<p><strong>Prazo para votar: ${htmlEscapeVotoTema(prazoFmt)}.</strong></p>` : "";
   return `<h1>${htmlEscapeVotoTema(ballot.titulo)}</h1>
-<p>Você tem voz no tema do próximo Artigo Especial — escolha uma opção abaixo. Pode trocar seu voto depois, o último clique vale.</p>
+<p>Você tem voz no tema do próximo Artigo Especial — escolha uma opção abaixo. Pode trocar seu voto depois, o último clique vale.</p>${prazoP}
 ${links}
 <p><a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}">Ver placar parcial</a></p>`;
+}
+
+/** Atraso do envio agendado do `--test-send` — curto o bastante pra conferir
+ *  na hora, longo o bastante pro Kit aceitar o agendamento. */
+export const TEST_SEND_DELAY_MS = 2 * 60 * 1000;
+const KIT_VOTO_TOKEN_FIELD = "voto_token";
+
+/** I/O injetável do `--test-send` — produção usa os clientes reais; o teste
+ *  passa mocks (nunca toca Kit/KV de verdade). */
+export interface TestSendDeps {
+  findTagIdByName: (name: string) => Promise<number | null>;
+  fetchTagMembers: (tagId: number) => Promise<KitTagMember[]>;
+  computeToken: (email: string) => Promise<string>;
+  putKv: (key: string, value: string) => Promise<void>;
+  updateSubscriberFields: (id: number, fields: Record<string, string>) => Promise<void>;
+  createBroadcast: (input: CreateBroadcastInput) => Promise<{ id: number }>;
+  getBroadcast: (id: number) => Promise<{ subscriber_filter?: unknown }>;
+  updateBroadcast: (id: number, input: { send_at: string }) => Promise<unknown>;
+  now: () => Date;
+}
+
+export interface TestSendResult {
+  broadcastId: number;
+  tagId: number;
+  members: number;
+  sendAt: string;
+}
+
+/**
+ * #9261 — teste decisivo da merge tag `{{ subscriber.voto_token }}`. Ordem:
+ * tag de teste resolvida (sem criar — tag vazia/inexistente é erro) → token
+ * por membro (KV ANTES do Kit, mesmo racional de `voto-tema-open.ts`) →
+ * broadcast `[TESTE]` como rascunho → releitura do `subscriber_filter` →
+ * só então `send_at`. Filtro divergente ou releitura falha = nada agendado.
+ */
+export async function runTestSend(
+  ciclo: string,
+  ballot: BallotTema,
+  deps: TestSendDeps,
+  log: (msg: string) => void,
+): Promise<TestSendResult> {
+  const tagId = await deps.findTagIdByName(KIT_TEST_SEND_TAG_NAME);
+  if (tagId === null) {
+    throw new VotoTemaGuardError(`tag "${KIT_TEST_SEND_TAG_NAME}" não existe no Kit — crie-a com o e-mail de teste antes.`);
+  }
+  const members = await deps.fetchTagMembers(tagId);
+  if (members.length === 0) {
+    throw new VotoTemaGuardError(`tag "${KIT_TEST_SEND_TAG_NAME}" (id=${tagId}) está vazia — nada a testar.`);
+  }
+
+  for (const m of members) {
+    const token = await deps.computeToken(m.email);
+    await deps.putKv(pollTokenKvKeyMirror(token), m.email);
+    await deps.updateSubscriberFields(m.id, { [KIT_VOTO_TOKEN_FIELD]: token });
+  }
+  log(`token "${KIT_VOTO_TOKEN_FIELD}" garantido para ${members.length} membro(s) de "${KIT_TEST_SEND_TAG_NAME}".`);
+
+  const filter = buildTestSendFilter(tagId);
+  const created = await deps.createBroadcast({
+    subject: `[TESTE] Vote no tema do próximo Artigo Especial`,
+    content: renderVotoTemaEmailHtml(ciclo, ballot),
+    preview_text: APOIO_EXCLUSIVE_PREVIEW_TEXT,
+    description: `diar.ia.br votação de tema — ciclo ${ciclo} (test-send da merge tag voto_token, #9261)`,
+    send_at: null,
+    subscriber_filter: filter,
+    public: false,
+  });
+
+  let reread: { subscriber_filter?: unknown };
+  try {
+    reread = await deps.getBroadcast(created.id);
+  } catch (e) {
+    throw new Error(
+      `broadcast de teste id=${created.id} criado como RASCUNHO, mas a releitura falhou (${(e as Error).message}) — NÃO foi agendado.`,
+    );
+  }
+  if (JSON.stringify(reread.subscriber_filter) !== JSON.stringify(filter)) {
+    throw new Error(
+      `broadcast de teste id=${created.id} criado como RASCUNHO com subscriber_filter divergente ` +
+        `(${JSON.stringify(reread.subscriber_filter)}) — NÃO foi agendado. Apague-o no painel do Kit.`,
+    );
+  }
+
+  const sendAt = new Date(deps.now().getTime() + TEST_SEND_DELAY_MS).toISOString();
+  await deps.updateBroadcast(created.id, { send_at: sendAt });
+  log(
+    `broadcast de teste id=${created.id} agendado para ${sendAt} (só tag "${KIT_TEST_SEND_TAG_NAME}"). ` +
+      'Ao clicar, a página esperada é "não pertence ao eleitorado" (token substituído); "tag de e-mail não resolvida" = merge tag falhou.',
+  );
+  return { broadcastId: created.id, tagId, members: members.length, sendAt };
 }
 
 export interface RunOptions {
@@ -81,17 +198,57 @@ export interface RunOptions {
   audience: "eleitorado" | "pendentes";
   dataDir: string;
   dryRun: boolean;
+  /** #9261: em vez do broadcast real, roda `runTestSend`. */
+  testSend?: boolean;
   log: (msg: string) => void;
 }
 
 export async function run(options: RunOptions): Promise<void> {
-  const { ciclo: rawCiclo, audience, dataDir, dryRun, log } = options;
+  const { ciclo: rawCiclo, audience, dataDir, dryRun, testSend, log } = options;
   const ciclo = parseCicloVotacao(rawCiclo);
   if (!ciclo) throw new VotoTemaGuardError(`--ciclo "${rawCiclo}" inválido — precisa ser AAMM.`);
 
   const kvConfig = resolveVotoTemaKvConfig();
   const ballot = await readBallotFromKv(ciclo, kvConfig);
   if (!ballot) throw new VotoTemaGuardError(`ciclo ${ciclo}: nenhuma cédula gravada — rode voto-tema-open.ts antes.`);
+
+  if (testSend) {
+    if (dryRun) {
+      log(`[DRY RUN] test-send: tokens para os membros de "${KIT_TEST_SEND_TAG_NAME}", broadcast [TESTE] filtrado nessa tag,`);
+      log(`[DRY RUN] releitura do filtro e agendamento para +${TEST_SEND_DELAY_MS / 60000} min. Rode com --push para executar.`);
+      return;
+    }
+    const kitResult = resolveKitConfig();
+    if (!kitResult.ok) throw new VotoTemaGuardError(kitResult.reason);
+    const kc: KitConfig = kitResult.config;
+    const pollSecret = process.env.POLL_SECRET;
+    if (!pollSecret) throw new VotoTemaGuardError("POLL_SECRET ausente — necessário pra calcular o token de voto.");
+    const result = await runTestSend(
+      ciclo,
+      ballot,
+      {
+        findTagIdByName: (name) => findTagIdByName(name, kc),
+        fetchTagMembers: (id) => fetchTagMembers(id, kc),
+        computeToken: (email) => computePollToken(pollSecret, email),
+        putKv: async (key, value) => {
+          await putTextToWorkerKV(key, value, kvConfig);
+        },
+        updateSubscriberFields: async (id, fields) => {
+          await updateSubscriberFields(id, fields, kc);
+        },
+        createBroadcast: (input) => createBroadcast(input, kc),
+        getBroadcast: (id) => getBroadcast(id, kc),
+        updateBroadcast: (id, input) => updateBroadcast(id, input, kc),
+        now: () => new Date(),
+      },
+      log,
+    );
+    writeFileAtomic(
+      publishedStatePath(dataDir, ciclo, "teste"),
+      JSON.stringify({ ciclo, audience: "teste", ...result, createdAt: new Date().toISOString() }, null, 2) + "\n",
+    );
+    return;
+  }
 
   const platformConfig = readPlatformConfig(ROOT);
   const tagName =
@@ -173,7 +330,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const ciclo = getStringArg(argv, "ciclo", { example: "2610" });
   if (!ciclo) {
-    process.stderr.write("Uso: npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM [--dry-run|--push] [--audience eleitorado|pendentes]\n");
+    process.stderr.write("Uso: npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM [--dry-run|--push] [--audience eleitorado|pendentes] [--test-send]\n");
     process.exit(2);
   }
   const audienceRaw = getStringArg(argv, "audience") ?? "eleitorado";
@@ -187,6 +344,7 @@ async function main(): Promise<void> {
       audience: audienceRaw,
       dataDir: resolve(ROOT, "data"),
       dryRun: !hasFlag(argv, "push"),
+      testSend: hasFlag(argv, "test-send"),
       log: (msg) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`),
     });
   } catch (e) {

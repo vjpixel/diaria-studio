@@ -22,6 +22,7 @@ import {
   isUnsubstitutedMergeTagToken,
   isValidTemaVoteToken,
   pollTokenKvKeyMirror,
+  prazoEncerrado,
   resultKey,
   sobreporVotoProprio,
   voteKey,
@@ -46,6 +47,10 @@ interface ResultadoFinal {
   total: number;
   fechado_em: string;
 }
+
+/** #9260: voto depois do `prazo` da cédula. */
+export const PRAZO_ENCERRADO_MSG =
+  "O prazo desta votação terminou — seu clique não foi registrado e não altera o resultado.";
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/html;charset=utf-8" } });
@@ -132,7 +137,10 @@ export async function handleVotacaoPlacar(_request: Request, env: VotoTemaEnv, c
 
   const votos = await listVotos(env, ciclo);
   const apuracao = apurar(ballot, votos);
-  return html(renderPlacarPage({ ciclo, ballot, apuracao, fechado: false, meuVoto: null }));
+  // #9260: prazo vencido sem `voto-tema-close.ts` ter rodado — o placar já se
+  // mostra encerrado (a apuração ao vivo é a final: o POST recusa voto novo).
+  const fechado = prazoEncerrado(ballot, new Date());
+  return html(renderPlacarPage({ ciclo, ballot, apuracao, fechado, meuVoto: null }));
 }
 
 export async function handleVotacaoOpcaoGet(
@@ -151,6 +159,9 @@ export async function handleVotacaoOpcaoGet(
 
   if (await readResultado(env, ciclo)) {
     return html(renderErroPage("Esta votação já foi encerrada — seu clique não altera o resultado final."), 409);
+  }
+  if (prazoEncerrado(ballot, new Date())) {
+    return html(renderErroPage(PRAZO_ENCERRADO_MSG), 409);
   }
 
   const opcao = ballot.opcoes.find((o) => o.n === n);
@@ -188,6 +199,9 @@ export async function handleVotoPost(request: Request, env: VotoTemaEnv, ciclo: 
 
   if (await readResultado(env, ciclo)) {
     return html(renderErroPage("Esta votação já foi encerrada — seu clique não altera o resultado final."), 409);
+  }
+  if (prazoEncerrado(ballot, new Date())) {
+    return html(renderErroPage(PRAZO_ENCERRADO_MSG), 409);
   }
 
   const opcao = ballot.opcoes.find((o) => o.n === n);
