@@ -253,7 +253,9 @@ export function dataAddDirArgs(
   }
   const rel = relative(realRepo, realData);
   const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-  return inside ? [] : ["--add-dir", realData];
+  // #9348: forma `--add-dir=<path>` — `--add-dir` é variádico no CLI; separado,
+  // ele engolia o prompt posicional seguinte e o `--print` ficava sem input.
+  return inside ? [] : [`--add-dir=${realData}`];
 }
 
 /**
@@ -285,8 +287,8 @@ export function editionDirDirective(
   let realNote = "";
   const addDir = dataAddDirArgs(repoRootAbs, realpathFn);
   const underData = relative(join(repoRootAbs, "data"), editionDir);
-  if (addDir.length === 2 && underData !== "" && !underData.startsWith("..") && !isAbsolute(underData)) {
-    realNote = ` (caminho real: ${join(addDir[1], underData).replaceAll("\\", "/")})`;
+  if (addDir.length === 1 && underData !== "" && !underData.startsWith("..") && !isAbsolute(underData)) {
+    realNote = ` (caminho real: ${join(addDir[0].slice("--add-dir=".length), underData).replaceAll("\\", "/")})`;
   }
   return (
     `Diretório da edição já resolvido pelo driver (layout flat OU aninhado YYMM/AAMMDD): ${shown}${realNote}. ` +

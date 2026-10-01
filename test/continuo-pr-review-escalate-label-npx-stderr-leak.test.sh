@@ -129,6 +129,47 @@ EOF
   assert_contains "log_infra_error recebe o motivo tipado" "$INFRA2" "INFRA:escalate_label_not_applied"
 fi
 
+# Cenário 3 (#9323): o wrapper recebe `--head` com o SHA que o GATE julgou
+# (`details.currentHeadSha`), nunca relê o head depois — um push entre o
+# gate e o wrapper faria o marcador gravar um head nunca escalado. Sem SHA
+# no JSON do gate, a chamada sai sem `--head` e não quebra sob `set -u`.
+if [ "$FAILED" -eq 0 ]; then
+  WORKDIR3="$(mktemp -d)"
+  trap 'rm -rf "$WORKDIR" "${WORKDIR2:-}" "$WORKDIR3"' EXIT
+  mkdir -p "$WORKDIR3/bin"
+  cat > "$WORKDIR3/bin/npx" <<EOF
+#!/usr/bin/env bash
+echo "ARGS:\$*" >> "$WORKDIR3/args.txt"
+echo '{"firstTime":false,"labelApplied":true,"source":"ok"}'
+exit 0
+EOF
+  chmod +x "$WORKDIR3/bin/npx"
+  JUDGED_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  for gate_json in "{\"details\":{\"currentHeadSha\":\"$JUDGED_SHA\"}}" '{}'; do
+    {
+      echo 'set -euo pipefail'
+      echo 'pr=7432'
+      printf 'GATE_JSON=%q\n' "$gate_json"
+      echo 'ESCALATED=0'
+      echo 'INFRA_ERRORS=0'
+      echo 'log_infra_error() { :; }'
+      echo "$BLOCK"
+    } > "$WORKDIR3/runnable.sh"
+    PATH="$WORKDIR3/bin:$PATH" bash "$WORKDIR3/runnable.sh" >/dev/null 2>&1 || echo "ARGS:RC_FAIL" >> "$WORKDIR3/args.txt"
+  done
+  ARGS3="$(cat "$WORKDIR3/args.txt" 2>/dev/null || echo "SEM ARGS")"
+  assert_contains "gate com currentHeadSha → wrapper recebe --head <sha julgado>" "$ARGS3" "--pr 7432 --head $JUDGED_SHA"
+  case "$ARGS3" in
+    *RC_FAIL*) echo "FAIL: bloco abortou (set -u com array vazio?): $ARGS3"; FAILED=1 ;;
+    *) echo "ok: bloco não aborta sob set -euo pipefail" ;;
+  esac
+  LAST_LINE="$(printf '%s\n' "$ARGS3" | tail -1)"
+  case "$LAST_LINE" in
+    *--head*) echo "FAIL: gate sem SHA não deveria passar --head: $LAST_LINE"; FAILED=1 ;;
+    *) echo "ok: gate sem SHA → chamada sem --head" ;;
+  esac
+fi
+
 if [ "$FAILED" -eq 1 ]; then
   echo "FALHOU"
   exit 1
