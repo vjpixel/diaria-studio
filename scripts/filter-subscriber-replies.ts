@@ -51,8 +51,8 @@
  *    correspondência endereçada a ele.
  *    `to` ausente (compat com callers/fixtures antigos) pula esta checagem —
  *    comportamento pré-#8997 preservado.
- *    #9313: `to` em `CAMPAIGN_REPLY_TO_ADDRESSES` (`pixel@diar.ia.br`,
- *    reply-to das campanhas Brevo desde #9186, mas também caixa pessoal) só
+ *    #9313: `to` em `CAMPAIGN_REPLY_TO_ADDRESSES` (reply-to das campanhas
+ *    Brevo desde #9186, mas também caixa pessoal) só
  *    passa quando o assunto normalizado casa o assunto de uma campanha
  *    enviada (`campaignSubjects` — no CLI, coletados de
  *    `_internal/brevo-diaria-published.json` + snippets de onboarding +
@@ -194,7 +194,7 @@ function passesSenderAndSubjectChecks(msg: { subject?: string; from?: string }):
 
 /**
  * #8997: `to` presente e fora dos domínios dedicados de envio.
- * #9313: exceção — `to` num reply-to de campanha (`pixel@diar.ia.br`) passa
+ * #9313: exceção — `to` num reply-to de campanha (`CAMPAIGN_REPLY_TO_ADDRESSES`) passa
  * quando o assunto normalizado da thread casa um assunto de campanha enviada.
  */
 function isDroppedByTo(msg: { to?: string; subject?: string }, campaignSubjects: ReadonlySet<string>): boolean {
@@ -537,7 +537,7 @@ function main(): void {
     process.exit(2);
   }
 
-  // #9313: assuntos de campanhas com reply-to `pixel@diar.ia.br` — sem eles,
+  // #9313: assuntos de campanhas com reply-to `CAMPAIGN_REPLY_TO_ADDRESSES` — sem eles,
   // toda resposta de assinante da Brevo diária/onboarding seria descartada.
   const campaignSubjects = [
     ...collectBrevoDiariaSubjects(resolve(ROOT, "data", "editions")),

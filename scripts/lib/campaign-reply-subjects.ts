@@ -1,11 +1,10 @@
 /**
  * campaign-reply-subjects.ts (#9313)
  *
- * Coleta os ASSUNTOS de campanhas enviadas com reply-to
- * `pixel@diar.ia.br` (`CAMPAIGN_REPLY_TO_ADDRESSES` em
- * `newsletter-reply-addresses.ts`) — usado por
- * `filter-subscriber-replies.ts` pra aceitar uma thread endereçada a
- * `pixel@` SÓ quando o assunto dela (sem `Re:`) casa o assunto de uma
+ * Coleta os ASSUNTOS de campanhas enviadas com reply-to de campanha
+ * (`CAMPAIGN_REPLY_TO_ADDRESSES` em `newsletter-reply-addresses.ts`) —
+ * usado por `filter-subscriber-replies.ts` pra aceitar uma thread
+ * endereçada a esse reply-to SÓ quando o assunto dela (sem `Re:`) casa o assunto de uma
  * campanha nossa. `pixel@` também recebe correspondência pessoal do editor,
  * então aceitar o endereço incondicionalmente reabriria o falso positivo do
  * #8997; descartá-lo incondicionalmente (o que o #9186 fazia) some com as
