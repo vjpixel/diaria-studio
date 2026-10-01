@@ -31,6 +31,7 @@
  * Uso:
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir data/editions/2609/260930/
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --check   # só diz se está defasado
+ *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --approved .../_internal/01-approved-capped.json  # Stage 2 (#9252)
  *
  * Exit codes:
  *   0 — cache em dia (após refresh, ou já estava em dia no --check)
@@ -92,11 +93,13 @@ function failedDestaques(internalDir: string): number[] {
 
 export async function refreshDestaqueSources(
   editionDir: string,
-  opts: { check?: boolean; fetchImpl?: typeof fetch } = {},
+  opts: { check?: boolean; fetchImpl?: typeof fetch; approvedPath?: string } = {},
 ): Promise<RefreshResult> {
   const internalDir = join(editionDir, "_internal");
-  const approvedPath = join(internalDir, "01-approved.json");
-  if (!existsSync(approvedPath)) throw new Error(`01-approved.json não encontrado em ${approvedPath}`);
+  // #9252: Stage 2 passa o 01-approved-capped.json (o mesmo que writer e lint
+  // usam) — approved e capped podem divergir nos highlights (edição 260925).
+  const approvedPath = opts.approvedPath ?? join(internalDir, "01-approved.json");
+  if (!existsSync(approvedPath)) throw new Error(`approved não encontrado em ${approvedPath}`);
   const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as unknown;
   const stale = isSourcesManifestStale(approved, internalDir);
   if (opts.check) return { stale_before: stale, refetched: false, failed: failedDestaques(internalDir), sources: [] };
@@ -108,13 +111,16 @@ export async function refreshDestaqueSources(
 async function main(): Promise<void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
-    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--check]");
+    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check]");
     process.exit(1);
   }
   const check = flags.has("check");
   let result: RefreshResult;
   try {
-    result = await refreshDestaqueSources(resolve(process.cwd(), args["edition-dir"]), { check });
+    result = await refreshDestaqueSources(resolve(process.cwd(), args["edition-dir"]), {
+      check,
+      approvedPath: args.approved ? resolve(process.cwd(), args.approved) : undefined,
+    });
   } catch (e) {
     console.error(`refresh-destaque-sources: ${(e as Error).message}`);
     process.exit(1);
