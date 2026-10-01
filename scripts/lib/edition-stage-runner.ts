@@ -269,7 +269,10 @@ export function dataAddDirArgs(
  * (`resolveEditionDir`, flat legado OU aninhado), então entrega o caminho
  * pronto em vez de deixar a sub-sessão montar `data/editions/{AAMMDD}` à mão
  * e concluir que a edição não existe. Quando `data/` é junction pra fora do
- * repo, cita também o caminho real (o mesmo liberado via `--add-dir`).
+ * repo, cita também o caminho real — derivado do MESMO alvo de
+ * `dataAddDirArgs` (mesma regra de "fora do repo"), não do realpath da pasta da
+ * edição: assim funciona antes de o Stage 1 criar a pasta e não gera ruído
+ * quando o próprio repo está sob symlink (achados 1 e 3 do review da PR #9238).
  */
 export function editionDirDirective(
   editionDir: string,
@@ -280,16 +283,16 @@ export function editionDirDirective(
   const insideRepo = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
   const shown = (insideRepo ? rel : editionDir).replaceAll("\\", "/");
   let realNote = "";
-  try {
-    const real = realpathFn(editionDir).replaceAll("\\", "/");
-    if (real !== editionDir.replaceAll("\\", "/")) realNote = ` (caminho real: ${real})`;
-  } catch {
-    // edição ainda não criada (Stage 1) — o path resolvido continua sendo o alvo
+  const addDir = dataAddDirArgs(repoRootAbs, realpathFn);
+  const underData = relative(join(repoRootAbs, "data"), editionDir);
+  if (addDir.length === 2 && underData !== "" && !underData.startsWith("..") && !isAbsolute(underData)) {
+    realNote = ` (caminho real: ${join(addDir[1], underData).replaceAll("\\", "/")})`;
   }
   return (
     `Diretório da edição já resolvido pelo driver (layout flat OU aninhado YYMM/AAMMDD): ${shown}${realNote}. ` +
-    `Use exatamente esse path como {EDIR} (equivale a find-current-edition.ts --resolve) — nunca monte ` +
-    `data/editions/{AAMMDD} à mão, e não conclua que a edição não existe sem antes ler ${shown}/_internal/.`
+    `Use exatamente esse path como diretório da edição ({EDIR}/{EDITION_DIR} nos playbooks, o mesmo que ` +
+    `find-current-edition.ts resolve) — nunca monte data/editions/{AAMMDD} à mão, e não conclua que a edição ` +
+    `não existe sem antes ler ${shown}/_internal/.`
   );
 }
 

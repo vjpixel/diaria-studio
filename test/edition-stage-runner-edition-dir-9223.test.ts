@@ -34,6 +34,25 @@ describe("#9223 editionDirDirective", () => {
     assert.match(d, /data\/editions\/2610\/261001/);
   });
 
+  it("junction + edição ainda não criada (Stage 1) -> caminho real já aparece (review #9238, achado 1)", () => {
+    const d = editionDirDirective(NESTED, REPO, (p) => {
+      if (p === NESTED) throw new Error("ENOENT");
+      return junction(p);
+    });
+    assert.match(d, /caminho real: \/onedrive\/diaria\/data\/editions\/2610\/261001/);
+  });
+
+  it("repo sob symlink sem junction em data/ -> sem nota de caminho real (achado 3)", () => {
+    const viaSymlink = (p: string) => p.replace(/^\/repo/, "/private/repo");
+    assert.ok(!editionDirDirective(NESTED, REPO, viaSymlink).includes("caminho real"));
+  });
+
+  it("cita os dois nomes de variável usados nos playbooks (achado 2)", () => {
+    const d = editionDirDirective(NESTED, REPO, (p) => p);
+    assert.match(d, /\{EDIR\}/);
+    assert.match(d, /\{EDITION_DIR\}/);
+  });
+
   it("editionDir fora do repo -> cita o path absoluto", () => {
     const d = editionDirDirective("/onedrive/diaria/data/editions/2610/261001", REPO, (p) => p);
     assert.match(d, /\/onedrive\/diaria\/data\/editions\/2610\/261001/);
