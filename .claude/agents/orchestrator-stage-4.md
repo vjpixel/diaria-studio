@@ -389,7 +389,7 @@ npx tsx scripts/serve-preview.ts \
 ```
 Rodar o `serve-preview.ts` final com `run_in_background: true`. Re-ler `newsletter_url` de `04-newsletter-url.json` e atualizar a variável `{newsletter_url}` do gate. **Re-publicar o Artifact também (#6003)** — mesmo `file_path` do step 2b (redeploy pra MESMA URL). Atualizar `{newsletter_artifact_url}` em `04-newsletter-url.json`; warning-only.
 
-**⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
+**⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. **Resíduo (#9400):** se `summary.social_residual > 0`, o claim sobrou com outra redação nas seções listadas em `entries[].social_residual_sections` (ex: `Curto/d1`) — o script não reescreve paráfrase; listar essas seções no resumo do gate pro editor corrigir à mão. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
 
 ```bash
 # Re-render social HTML com o 03-social.md já corrigido
@@ -469,6 +469,8 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
   Para reverter: editar o arquivo e usar a opção "ajustar" no gate.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+**Resíduo (#9400), independente de `applied`/`social_modified`:** se `summary.social_residual > 0`, mostrar no gate (mesmo sem nenhuma correção aplicada) a linha `⚠ Claim ainda presente com outra redação em 03-social.md: {seções} — corrigir à mão` para cada entry com `social_residual_sections`. Em `--no-gates`, registrar essas seções no relatório da edição.
 
 `{arquivo(s)}` = `entry.files_modified.join(", ")` — agora pode ser `newsletter`, `social`, ou `newsletter, social` (antes só `newsletter`, já que social era sempre skipped). Isso já deixa explícito no gate quando uma correção social foi aplicada, sem bloco separado — se `social_modified === true`, acrescentar uma linha informativa: `📱 Social também corrigido — preview social republicado.`
 
