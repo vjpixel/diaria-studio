@@ -11,12 +11,15 @@ import { editionDirDirective, runEditionStages } from "../scripts/lib/edition-st
 
 const REPO = "/repo";
 const NESTED = "/repo/data/editions/2610/261001";
+// #9404: o código monta paths com o `path` da plataforma (no Windows chega
+// `\repo\data`); os fakes de realpath normalizam o separador antes de comparar.
+const posix = (p: string) => p.replaceAll("\\", "/");
 const junction = (p: string) =>
-  p.startsWith("/repo/data") ? p.replace("/repo/data", "/onedrive/diaria/data") : p;
+  posix(p).startsWith("/repo/data") ? posix(p).replace("/repo/data", "/onedrive/diaria/data") : posix(p);
 
 describe("#9223 editionDirDirective", () => {
   it("cita o path aninhado relativo ao repo", () => {
-    const d = editionDirDirective(NESTED, REPO, (p) => p);
+    const d = editionDirDirective(NESTED, REPO, posix);
     assert.match(d, /data\/editions\/2610\/261001(?![/\w])/);
     assert.match(d, /data\/editions\/2610\/261001\/_internal\//);
     assert.ok(!d.includes("caminho real"), "sem junction não cita caminho real");
@@ -36,25 +39,25 @@ describe("#9223 editionDirDirective", () => {
 
   it("junction + edição ainda não criada (Stage 1) -> caminho real já aparece (review #9238, achado 1)", () => {
     const d = editionDirDirective(NESTED, REPO, (p) => {
-      if (p === NESTED) throw new Error("ENOENT");
+      if (posix(p) === NESTED) throw new Error("ENOENT");
       return junction(p);
     });
     assert.match(d, /caminho real: \/onedrive\/diaria\/data\/editions\/2610\/261001/);
   });
 
   it("repo sob symlink sem junction em data/ -> sem nota de caminho real (achado 3)", () => {
-    const viaSymlink = (p: string) => p.replace(/^\/repo/, "/private/repo");
+    const viaSymlink = (p: string) => posix(p).replace(/^\/repo/, "/private/repo");
     assert.ok(!editionDirDirective(NESTED, REPO, viaSymlink).includes("caminho real"));
   });
 
   it("cita os dois nomes de variável usados nos playbooks (achado 2)", () => {
-    const d = editionDirDirective(NESTED, REPO, (p) => p);
+    const d = editionDirDirective(NESTED, REPO, posix);
     assert.match(d, /\{EDIR\}/);
     assert.match(d, /\{EDITION_DIR\}/);
   });
 
   it("editionDir fora do repo -> cita o path absoluto", () => {
-    const d = editionDirDirective("/onedrive/diaria/data/editions/2610/261001", REPO, (p) => p);
+    const d = editionDirDirective("/onedrive/diaria/data/editions/2610/261001", REPO, posix);
     assert.match(d, /\/onedrive\/diaria\/data\/editions\/2610\/261001/);
   });
 });
