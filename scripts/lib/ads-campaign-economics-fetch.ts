@@ -23,6 +23,9 @@
  * acesso REST direto).
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve as resolvePath, dirname as dirnamePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   refreshGoogleAdsAccessToken,
   fetchGoogleAdsSpendRows,
@@ -351,12 +354,53 @@ function toMetaAdsDateRange(now: Date, lookbackDays: number): { since: string; u
   return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
 }
 
+/** Caminho default de `platform.config.json` (raiz do repo). */
+const PLATFORM_CONFIG_PATH_DEFAULT = resolvePath(dirnamePath(fileURLToPath(import.meta.url)), "..", "..", "platform.config.json");
+
+/**
+ * Ids das campanhas Meta Ads que contam como canal da newsletter (#9378) —
+ * `platform.config.json` → `meta_ads.campaign_ids`. A conta
+ * `act_{META_ADS_AD_ACCOUNT_ID}` passou a rodar também a campanha do
+ * ingresso do evento agente-ia (24/09/2026); sem o filtro, `level=account`
+ * atribuía esse gasto à newsletter. Config ausente/ilegível/sem a chave →
+ * `[]` (conta inteira, comportamento pré-#9378) — a ingestão nunca quebra
+ * por causa da config, mas o caminho normal sempre tem a lista. Só aceita
+ * strings de dígitos (id de campanha da Graph API); qualquer outro valor é
+ * ignorado.
+ */
+export function loadMetaAdsCampaignIds(configPath: string = PLATFORM_CONFIG_PATH_DEFAULT): string[] {
+  try {
+    if (!existsSync(configPath)) return [];
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const ids = cfg?.meta_ads?.campaign_ids;
+    if (!Array.isArray(ids)) return [];
+    return ids.map((v: unknown) => String(v).trim()).filter((v: string) => /^\d+$/.test(v));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Parâmetros de nível/filtro da `insights` (#9378). Com `campaignIds`
+ * não-vazio: `level=campaign` + `filtering=[{campaign.id IN [...]}]` — a
+ * Graph API devolve 1 linha por campanha por dia, e os normalizadores
+ * (`normalizeMetaAdsInsightsRows`, `extractMetaCompleteRegistrationDaily`)
+ * somam por data. Vazio: `level=account` (conta inteira). @pure
+ */
+export function buildMetaAdsInsightsLevelParams(campaignIds: readonly string[]): string {
+  if (campaignIds.length === 0) return "level=account";
+  const filtering = encodeURIComponent(JSON.stringify([{ field: "campaign.id", operator: "IN", value: [...campaignIds] }]));
+  return `level=campaign&filtering=${filtering}`;
+}
+
 /** Normaliza `MetaAdsInsightsApiRow[]` (bruto, 1 linha por dia) pro shape
  *  canônico `ChannelDailyMetric` — linha sem `date_start` reconhecível é
  *  descartada (mesma disciplina de `normalizeGoogleAdsPerformanceRows`:
  *  nunca contamina com 0 silencioso). @pure */
 export function normalizeMetaAdsInsightsRows(rows: MetaAdsInsightsApiRow[], canal: string): ChannelDailyMetric[] {
-  const out: ChannelDailyMetric[] = [];
+  // #9378: com `level=campaign` chegam N linhas por dia (1 por campanha) —
+  // soma por data, preservando a ordem da 1ª ocorrência.
+  const byDate = new Map<string, ChannelDailyMetric>();
   for (const row of rows) {
     const date = row.date_start;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
@@ -365,15 +409,17 @@ export function normalizeMetaAdsInsightsRows(rows: MetaAdsInsightsApiRow[], cana
       const n = typeof v === "string" ? Number(v) : v;
       return Number.isFinite(n) ? n : 0;
     };
-    out.push({
+    const prev = byDate.get(date);
+    const gastoBrl = Math.round(((prev?.gastoBrl ?? 0) + toNum(row.spend)) * 100) / 100;
+    byDate.set(date, {
       canal,
       date,
-      gastoBrl: Math.round(toNum(row.spend) * 100) / 100,
-      cliques: toNum(row.clicks),
-      impressoes: toNum(row.impressions),
+      gastoBrl,
+      cliques: (prev?.cliques ?? 0) + toNum(row.clicks),
+      impressoes: (prev?.impressoes ?? 0) + toNum(row.impressions),
     });
   }
-  return out;
+  return [...byDate.values()];
 }
 
 export interface FetchMetaAdsChannelMetricsOptions {
@@ -388,11 +434,16 @@ export interface FetchMetaAdsChannelMetricsOptions {
    *  pra trocar o domínio, mesmo padrão de `meta-capi-staleness.ts`). */
   apiBaseUrl?: string;
   maxPages?: number;
+  /** Campanhas a considerar (#9378). Default: `loadMetaAdsCampaignIds()`
+   *  (`platform.config.json` → `meta_ads.campaign_ids`). `[]` explícito =
+   *  conta inteira (`level=account`). */
+  campaignIds?: readonly string[];
 }
 
 /**
  * Busca gasto/cliques/impressões diários do Meta Ads pra `canal`, via Graph
- * API `act_{id}/insights?level=account&time_increment=1` (REST puro, sem
+ * API `act_{id}/insights?level=campaign&filtering=campaign.id IN meta_ads.campaign_ids
+ * &time_increment=1` (#9378; `level=account` só com lista vazia — REST puro, sem
  * MCP — `accessToken` é o System User token criado pelo editor, `ads_read`,
  * sem expiração, ver comentário da issue #7536 de 09/09/2026). Nunca lança
  * — qualquer falha (rede, credencial inválida, erro do Graph API, corpo
@@ -415,7 +466,8 @@ export async function fetchMetaAdsChannelMetrics(
 
   const { since, until } = toMetaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-  let url = `${base}/act_${adAccountId}/insights?level=account&time_increment=1&time_range=${timeRange}&fields=spend,clicks,impressions&limit=100`;
+  const levelParams = buildMetaAdsInsightsLevelParams(opts.campaignIds ?? loadMetaAdsCampaignIds());
+  let url = `${base}/act_${adAccountId}/insights?${levelParams}&time_increment=1&time_range=${timeRange}&fields=spend,clicks,impressions&limit=100`;
   // Token vai no header Authorization, nunca na query string (#7893, mesmo
   // padrão do #7779) — passado em TODAS as páginas, não só a 1ª: o
   // `paging.next` que a Graph API devolve não reintroduz um access_token
@@ -552,7 +604,8 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
 
   const { since, until } = toMetaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
-  let url = `${base}/act_${adAccountId}/insights?level=account&time_increment=1&time_range=${timeRange}&fields=actions,date_start&limit=100`;
+  const levelParams = buildMetaAdsInsightsLevelParams(opts.campaignIds ?? loadMetaAdsCampaignIds());
+  let url = `${base}/act_${adAccountId}/insights?${levelParams}&time_increment=1&time_range=${timeRange}&fields=actions,date_start&limit=100`;
   const authHeaders = { Authorization: `Bearer ${accessToken}` };
 
   const allRows: MetaAdsInsightsApiRow[] = [];
