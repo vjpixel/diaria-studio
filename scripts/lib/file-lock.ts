@@ -206,16 +206,62 @@ export function tryStealOrphan(
 }
 
 /**
+ * #9194 — no Windows, o `unlinkSync` do dono enquanto um waiter está com o
+ * `.lock` aberto pra leitura (`readLockFile`, a cada volta) deixa o nome em
+ * DELETE-PENDING até esse handle fechar; nesse intervalo o `wx` falha com
+ * `EPERM` (às vezes `EACCES`) em vez de `EEXIST`. Reproduzido no neo
+ * (30/09/2026): 211 EPERM em 87.488 aquisições com 8 processos, e 490 em
+ * 3.406 com 16 processos segurando 1ms. É contenção transitória, não erro.
+ *
+ * Só no win32, e LIMITADO a uma sequência curta de tentativas seguidas: o
+ * delete-pending some em microssegundos (quando o leitor fecha o handle),
+ * então uma sequência longa é permissão de verdade — e essa propaga rápido,
+ * preservando o #6952 (nada de girar até o timeout escondendo a causa).
+ */
+export const DELETE_PENDING_MAX_STREAK = 20;
+const DELETE_PENDING_WAIT_MS = 5;
+
+/** `true` se o erro do `wx` é o sintoma de delete-pending do Windows (#9194). Exportado pra teste. */
+export function isDeletePendingWxError(code: string | undefined, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && (code === "EPERM" || code === "EACCES");
+}
+
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** @internal Dependências injetáveis de `acquireLockWithDeps` (seam de teste, #9194). */
+export interface AcquireDeps {
+  platform: NodeJS.Platform;
+  openWx: (lockPath: string) => number;
+}
+
+/**
  * Adquire o lock — spin-wait com timeout. `wx` (O_WRONLY | O_CREAT | O_EXCL)
  * falha se o arquivo já existe, então só um caller por vez consegue criar o
- * `.lock` — os demais tentam de novo a cada 50ms até o dono liberar
- * (`releaseLock`) ou o timeout estourar.
+ * `.lock` — os demais tentam de novo a cada 50ms (em `EEXIST`) até o dono
+ * liberar (`releaseLock`) ou o timeout estourar.
+ *
+ * No win32, `EPERM`/`EACCES` do `wx` (delete-pending, #9194) também é
+ * retentado, até `DELETE_PENDING_MAX_STREAK` vezes seguidas a cada 5ms
+ * (~20×5ms nominal; na prática ~300ms, pela resolução de timer ~15,6ms do
+ * Windows). Esgotada a sequência, lança com o mesmo `code` e o erro
+ * original em `cause`. Qualquer outro erro propaga imediatamente (#6952).
  */
 export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
+  acquireLockWithDeps(lockPath, timeoutMs, { platform: process.platform, openWx: (p) => openSync(p, "wx") });
+}
+
+/**
+ * @internal Seam de teste (#9194): injeta plataforma e o `open(wx)`.
+ * Não usar fora de teste — produção chama `acquireLock`.
+ */
+export function acquireLockWithDeps(lockPath: string, timeoutMs: number, deps: AcquireDeps): void {
   const deadline = Date.now() + timeoutMs;
+  let pendingStreak = 0;
   while (true) {
     try {
-      const fd = openSync(lockPath, "wx");
+      const fd = deps.openWx(lockPath);
       let written = false;
       try {
         const owner: LockOwner = {
@@ -235,7 +281,10 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
       }
       return; // Lock adquirido
     } catch (e) {
-      // #6952: só `EEXIST` é CONTENÇÃO — o resto propaga imediatamente.
+      // #6952: só `EEXIST` é CONTENÇÃO, exceto delete-pending no win32 (#9194:
+      // EPERM/EACCES numa sequência curta) — o resto propaga imediatamente.
+      // O espelho dos hooks (`.claude/hooks/lib/registry-lock.mjs`) ainda NÃO
+      // tem a exceção do #9194 e diverge neste ponto (#9280).
       //
       // O catch era vazio e engolia qualquer erro como "alguém tem o lock,
       // gira mais": `EACCES` (diretório sem permissão de escrita), `ENOENT`
@@ -252,7 +301,28 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
       // `acquireBeaconLock` (`.claude/hooks/session-beacon.mjs`) já fazia essa
       // distinção; os docstrings diziam que os dois mecanismos eram espelhados
       // e não eram — este era o lado errado.
-      if ((e as NodeJS.ErrnoException)?.code !== "EEXIST") throw e;
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code !== "EEXIST") {
+        // #9194: delete-pending no Windows — retenta, mas só numa sequência curta.
+        if (isDeletePendingWxError(code, deps.platform)) {
+          if (++pendingStreak <= DELETE_PENDING_MAX_STREAK && Date.now() < deadline) {
+            sleepMs(DELETE_PENDING_WAIT_MS);
+            continue;
+          }
+          if (pendingStreak > DELETE_PENDING_MAX_STREAK) {
+            // Sequência esgotada: não é delete-pending, é permissão real.
+            throw Object.assign(
+              new Error(
+                `[file-lock] ${code} persistiu por ${pendingStreak} tentativas seguidas em ${lockPath} — não é delete-pending (#9194)`,
+                { cause: e },
+              ),
+              { code },
+            );
+          }
+        }
+        throw e;
+      }
+      pendingStreak = 0;
       // #9185: dono morto → remove o órfão e tenta de novo sem esperar.
       if (tryStealOrphan(lockPath)) continue;
       if (Date.now() >= deadline) {
@@ -263,7 +333,7 @@ export function acquireLock(lockPath: string, timeoutMs = 10_000): void {
       // soltá-lo — com vários processos concorrendo (o runner paralelo roda
       // 150 arquivos por batch), a espera competia com a liberação.
       // `Atomics.wait` é a única espera síncrona real disponível aqui.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      sleepMs(50);
     }
   }
 }
