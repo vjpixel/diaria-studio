@@ -148,6 +148,66 @@ describe("kitFetch", () => {
     assert.equal(attempt, 2, "deveria ter tentado exatamente `attempts` vezes, nunca mais nem menos");
   });
 
+  // #9315 — POST não-idempotente: reenviar após 5xx/timeout pode duplicar broadcast.
+  it("POST com 5xx NÃO é retentado (1 tentativa, lança KitApiError)", async () => {
+    let attempt = 0;
+    await withMockFetch(
+      (async () => {
+        attempt++;
+        return jsonResponse(502, {});
+      }) as typeof fetch,
+      () =>
+        assert.rejects(
+          () => kitFetch("/broadcasts", { method: "POST", body: {}, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } }),
+          (e: unknown) => e instanceof KitApiError && e.status === 502,
+        ),
+    );
+    assert.equal(attempt, 1);
+  });
+
+  it("POST com erro de rede/timeout NÃO é retentado", async () => {
+    let attempt = 0;
+    await withMockFetch(
+      (async () => {
+        attempt++;
+        throw new Error("socket hang up");
+      }) as typeof fetch,
+      () =>
+        assert.rejects(() =>
+          kitFetch("/broadcasts", { method: "POST", body: {}, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } }),
+        ),
+    );
+    assert.equal(attempt, 1);
+  });
+
+  it("POST com 429 continua retentado (rejeitado antes de processar)", async () => {
+    let attempt = 0;
+    await withMockFetch(
+      (async () => {
+        attempt++;
+        return attempt === 1 ? jsonResponse(429, {}) : jsonResponse(201, { broadcast: { id: 1 } });
+      }) as typeof fetch,
+      async () => {
+        await kitFetch("/broadcasts", { method: "POST", body: {}, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } });
+      },
+    );
+    assert.equal(attempt, 2);
+  });
+
+  it("GET com 5xx segue retentado (idempotente)", async () => {
+    let attempt = 0;
+    await withMockFetch(
+      (async () => {
+        attempt++;
+        return attempt === 1 ? jsonResponse(503, {}) : jsonResponse(200, { ok: true });
+      }) as typeof fetch,
+      async () => {
+        await kitFetch("/account", { config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } });
+      },
+    );
+    assert.equal(attempt, 2);
+  });
+
   it("resposta vazia (204-like, sem corpo) devolve undefined em vez de lançar no JSON.parse", async () => {
     await withMockFetch(
       (async () => new Response("", { status: 200 })) as typeof fetch,

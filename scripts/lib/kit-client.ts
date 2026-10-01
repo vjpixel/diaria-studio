@@ -77,6 +77,18 @@ function isRetriableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+/** #9315 — POST (criação: `POST /broadcasts` etc.) não é idempotente. 5xx,
+ *  timeout ou erro de rede podem acontecer DEPOIS de o Kit gravar — reenviar
+ *  criaria um 2º broadcast (envio duplo). Só 429 é seguro de retentar: o rate
+ *  limit rejeita antes de processar. GET/PUT/DELETE seguem com o retry cheio. */
+function isNonIdempotentMethod(method: string): boolean {
+  return method.toUpperCase() === "POST";
+}
+
+function isRetriableStatusNonIdempotent(status: number): boolean {
+  return status === 429;
+}
+
 /**
  * GET/POST/PATCH/DELETE genérico contra a API do Kit — auth via header
  * `X-Kit-Api-Key`, retry com backoff (incluindo 429), parse de JSON. Lança
@@ -183,10 +195,12 @@ export async function kitFetch<T = unknown>(
     return resolved.config;
   })();
 
+  const method = opts.method ?? "GET";
+  const nonIdempotent = isNonIdempotentMethod(method);
   const res = await fetchWithRetry(
     (signal) =>
       fetch(`${kitApiBase()}${path}`, {
-        method: opts.method ?? "GET",
+        method,
         signal,
         headers: {
           "X-Kit-Api-Key": config.apiKey,
@@ -194,7 +208,14 @@ export async function kitFetch<T = unknown>(
         },
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       }),
-    { ...KIT_RETRY_DEFAULTS, ...opts.retry, isRetriableStatus },
+    nonIdempotent
+      ? {
+          ...KIT_RETRY_DEFAULTS,
+          ...opts.retry,
+          isRetriableStatus: isRetriableStatusNonIdempotent,
+          retryOnError: false,
+        }
+      : { ...KIT_RETRY_DEFAULTS, ...opts.retry, isRetriableStatus },
   );
 
   const text = await res.text();
