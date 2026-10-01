@@ -25,6 +25,7 @@ test("#9277: sem sizeEstimate cai no tamanho do dump", () => {
   const r = evaluateDeliveredSize({ emailFileBytes: GMAIL_CLIP_BYTES + 1 });
   assert.equal(r.delivered_source, "email_file");
   assert.equal(r.over_limit, true);
+  assert.ok(r.issues.some((i) => i.type === "info"), "fallback avisa que é estimativa por baixo");
 });
 
 test("#9277: sem medida nenhuma vira info, nunca passa por limpo silencioso", () => {
@@ -52,6 +53,8 @@ test("#9278: mergeado ou sem PR não gera bloqueio", () => {
   assert.equal(sitePageMergeBlocker({ published: true, merged: true }), null);
   assert.equal(sitePageMergeBlocker({ published: true, merged: undefined }), null);
   assert.equal(sitePageMergeBlocker({ published: false, merged: false }), null);
+  // sem prNumber/prUrl ("nada a mergear") não pode alegar PR inexistente
+  assert.equal(sitePageMergeBlocker({ published: true, merged: false, mergeReason: "sem prNumber" }), null);
 });
 
 test("#9278: writeSitePageState persiste mergeBlocker", () => {

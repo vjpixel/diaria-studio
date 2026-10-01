@@ -598,7 +598,7 @@ npx tsx scripts/lint-test-email-size.ts \
   --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --local-html {edition_dir}/_internal/newsletter-final-kit.html \
   --out {edition_dir}/_internal/lint-size-{AAMMDD}.json
-# Exit 0 = dentro do corte de 102 KB. Exit 1 = acima (Gmail vai cortar).
+# Exit 0 = dentro do corte de 102 KB. Exit 1 = acima (Gmail vai cortar) — NÃO é erro do script: ler o JSON do --out e seguir.
 ```
 
 Mapear `issues[]`:

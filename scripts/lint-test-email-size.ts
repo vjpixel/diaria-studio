@@ -77,6 +77,13 @@ export function evaluateDeliveredSize(input: {
     });
     return { delivered_bytes: null, delivered_source: source, local_html_bytes: local, limit_bytes: limit, over_limit: false, issues };
   }
+  if (source === "email_file") {
+    issues.push({
+      type: "info",
+      category: "delivered_size_unmeasured",
+      detail: "sem sizeEstimate do Gmail — tamanho veio do dump (corpo extraído, sem headers/MIME): estimativa por BAIXO",
+    });
+  }
   const over = delivered > limit;
   if (over) {
     const localPart = local !== null ? ` (HTML local: ${kb(local)} KB — a diferença é o que o ESP acrescenta)` : "";
@@ -84,7 +91,7 @@ export function evaluateDeliveredSize(input: {
       type: "warning",
       category: "delivered_size_over_clip",
       detail:
-        `e-mail ENTREGUE tem ${delivered} bytes (${kb(delivered)} KB, fonte ${source}), acima do corte do Gmail ` +
+        `e-mail ENTREGUE tem ${delivered} bytes (${kb(delivered)} KB, fonte ${source}), acima do corte do Gmail (estimativa: sizeEstimate inclui headers/MIME) ` +
         `(${kb(limit)} KB)${localPart}. O Gmail vai cortar ("Mensagem cortada") e o pixel de abertura no fim some — ` +
         `abertura Gmail subcontada. Cortar conteúdo é decisão editorial.`,
     });
@@ -103,7 +110,7 @@ function main(): void {
   let sizeEstimate: number | null = null;
   if (typeof rawEstimate === "string" && rawEstimate !== "") {
     sizeEstimate = Number(rawEstimate);
-    if (!Number.isFinite(sizeEstimate)) {
+    if (!Number.isFinite(sizeEstimate) || sizeEstimate <= 0) {
       console.error(`--size-estimate inválido: ${rawEstimate}`);
       process.exit(2);
     }
