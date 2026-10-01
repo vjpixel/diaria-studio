@@ -553,10 +553,26 @@ export interface LancamentosRemovedSummary {
    * esses itens de `lancamento[]` pra `radar[]` via `demoteNotATool` (allowlist
    * continua sendo o escape-hatch pra falso-positivo de slug atípico). */
   not_a_tool: Array<{ url: string; title?: string }>;
+  /** #9250: newsletter_extracted sem summary verificado — auto-demovido pra radar[]. */
+  unverified_extract: Array<{ url: string; title?: string }>;
   original_count: number;
   /** #4339: reflete a composição de LANÇAMENTOS APÓS a auto-demoção de
    * not_a_tool (não só a remoção de URL não-oficial). */
   final_count: number;
+}
+
+/**
+ * #9250: item extraído de newsletter capturada (`flag: newsletter_extracted`)
+ * só entra em LANÇAMENTOS com summary real E `verify_verdict: "accessible"`.
+ * Sem isso o título/escopo do item nunca foi confirmado contra a página de
+ * destino (caso real 261001: título = assunto do e-mail da 7min.ai, sem
+ * summary, `verify_verdict: uncertain`). Demovido pra radar[] junto com os
+ * `not_a_tool` (mesmo mecanismo do #4339).
+ */
+export function isUnverifiedNewsletterExtract(item: { [k: string]: unknown }): boolean {
+  if (item.flag !== "newsletter_extracted") return false;
+  const summary = typeof item.summary === "string" ? item.summary.trim() : "";
+  return !summary || item.verify_verdict !== "accessible";
 }
 
 interface ApprovedShape {
@@ -579,6 +595,7 @@ export function validateLancamentosFromApproved(
   const removed: LancamentoRemoved[] = [];
   const flagged_non_product: Array<{ url: string; title?: string }> = [];
   const not_a_tool: Array<{ url: string; title?: string }> = [];
+  const unverified_extract: Array<{ url: string; title?: string }> = [];
   let kept = 0;
   // #4339: contagem PÓS auto-demoção de not_a_tool (ver `demoteNotATool`) —
   // diferente de `kept` (que só desconta não-oficiais, usado no cálculo de
@@ -609,6 +626,8 @@ export function validateLancamentosFromApproved(
       !isConferenceRoundupWarn(title);
     if (isNatool) {
       not_a_tool.push({ url, title });
+    } else if (official && isUnverifiedNewsletterExtract(item)) {
+      unverified_extract.push({ url, title });
     } else if (official) {
       keptAfterDemotion++;
     }
@@ -626,7 +645,14 @@ export function validateLancamentosFromApproved(
   }
 
   const original_count = kept + removed.length;
-  return { removed, flagged_non_product, not_a_tool, original_count, final_count: keptAfterDemotion };
+  return {
+    removed,
+    flagged_non_product,
+    not_a_tool,
+    unverified_extract,
+    original_count,
+    final_count: keptAfterDemotion,
+  };
 }
 
 export interface DemoteNotAToolResult {
@@ -686,6 +712,10 @@ export function demoteNotATool(
     if (isNatool) {
       demoted.push({ url, title });
       radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "not_a_tool" });
+    } else if (isUnverifiedNewsletterExtract(item)) {
+      // #9250: newsletter_extracted sem summary verificado nunca fica em LANÇAMENTOS.
+      demoted.push({ url, title });
+      radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "unverified_newsletter_extract" });
     } else {
       kept.push(item);
     }
@@ -773,11 +803,11 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
   // já é #1968 de alta precisão; allowlist cobre o escape-hatch de FP). Reescreve
   // `01-approved.json` (mesmo path de `--approved`) com o item já movido, ANTES
   // do writer rodar — o item nunca chega a aparecer em LANÇAMENTOS na newsletter.
-  if (summary.not_a_tool.length > 0) {
+  if (summary.not_a_tool.length > 0 || summary.unverified_extract.length > 0) {
     const { approved: demotedApproved, demoted, consolidated } = demoteNotATool(approved, allowlist);
     writeFileSync(approvedPath, JSON.stringify(demotedApproved, null, 2) + "\n", "utf8");
     console.error(
-      `\n➡️  ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) foram movidos automaticamente para RADAR (#4339):`,
+      `\n➡️  ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) ou extraído(s) de newsletter sem summary verificado (#9250) foram movidos automaticamente para RADAR (#4339):`,
     );
     for (const n of demoted) {
       const titleHint = n.title ? ` ("${n.title.slice(0, 60)}")` : "";

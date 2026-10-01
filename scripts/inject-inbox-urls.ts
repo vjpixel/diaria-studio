@@ -206,6 +206,25 @@ export function isTrackingUrl(url: string): boolean {
 }
 
 /**
+ * #9250: links de gestão de inscrição (unsubscribe / preferências / opt-out /
+ * "ver no navegador") nunca são conteúdo editorial — em NENHUM caso, nem para
+ * sender `always_consider` (#7662), que isenta só as heurísticas de
+ * tracking/afiliado/auto-promo. Caso real 261001: um
+ * `buttondown.com/unsubscribe/...` virou `cluster_sources` de um LANÇAMENTO.
+ */
+const NON_CONTENT_URL_PATTERNS: RegExp[] = [
+  /[/?&=._-](un-?subscribe|unsub|opt-?out|optout)\b/i,
+  /\/(manage|update)[-_]?(your[-_]?)?(preferences|subscription|profile)\b/i,
+  /\/(email[-_]?)?preferences(\/|\?|$)/i,
+  /\/(view|web)[-_]?(in[-_]?)?browser\b/i,
+  /[/.]list-manage\.com\//i,
+];
+
+export function isNonContentUrl(url: string): boolean {
+  return NON_CONTENT_URL_PATTERNS.some((p) => p.test(url));
+}
+
+/**
  * Extrai TODOS os URLs distintos (após filtrar tracking-only) dos blocos do
  * editor. Forwards de newsletter contam como submissões intencionais (#593) —
  * cada URL no body vira candidato.
@@ -355,6 +374,7 @@ export function extractNewsletterUrls(blocks: InboxBlock[]): SyntheticInboxArtic
     for (const rawUrl of block.urls) {
       const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
       if (!trackerDecoded && isTrackingUrl(rawUrl)) continue;
+      if (isNonContentUrl(url) || isNonContentUrl(rawUrl)) continue; // #9250
       if (isAffiliateUrl(url)) continue;
       if (isSenderOwnUrl(url, senderDom, senderBrand)) continue; // auto-promo
 
