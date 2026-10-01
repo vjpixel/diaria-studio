@@ -25,9 +25,10 @@
  * durante o import de 585 assinantes no #6047 (bateu em ~240 chamadas sem
  * espera). `kitFetch` usa `fetchWithRetry` com `isRetriableStatus` incluindo
  * 429 (além do default `>=500`), o que absorve um blip ISOLADO de 429 via o
- * backoff fixo do `fetchWithRetry` (~1s/3s/9s, 3 tentativas) — **não é um
- * mecanismo geral de recuperação de rate limit**: nada aqui lê `Retry-After`
- * nem garante que a janela de cooldown real do Kit caiba nesse backoff. Um
+ * backoff do `fetchWithRetry` (`KIT_RETRY_DEFAULTS`: 4 tentativas, ~1s/3s/9s,
+ * respeitando `Retry-After` até 20s desde #9291) — **não é um
+ * mecanismo geral de recuperação de rate limit**: não
+ * garante que a janela de cooldown real do Kit caiba nesse backoff. Um
  * CALLER que itera sobre N broadcasts (1 chamada por post, sem fila) precisa
  * se auto-espaçar (mesmo padrão do import do #6047: ~350ms entre chamadas)
  * — não confiar só no retry deste módulo pra volume alto.
@@ -54,6 +55,21 @@ export class KitApiError extends Error {
     this.name = "KitApiError";
   }
 }
+
+/** #9291 — defaults de retry do Kit: 4 tentativas (1 a mais) e
+ *  `Retry-After` respeitado no 429 (antes: 3 tentativas, esperas fixas ~1s/3s, que
+ *  não cobriam a janela de cooldown quando `kit-roster-ingest` concorria).
+ *  Não alonga mais o backoff base porque erro de rede também é retriável e
+ *  callers com Kit inalcançável pagariam a espera inteira. Sobrescrevível
+ *  por chamada via `opts.retry`. */
+export const KIT_RETRY_DEFAULTS: Omit<FetchRetryOptions, "isRetriableStatus"> = {
+  attempts: 4,
+  backoffMs: [1000, 3000, 9000],
+  honorRetryAfter: true,
+  // Teto menor que o default (60s): estes defaults valem pra TODO kitFetch,
+  // e 4 tentativas x 60s por chamada alongaria demais uma unit com N contatos.
+  maxRetryAfterMs: 20_000,
+};
 
 /** 429 é retriável aqui além do default (>=500) — ver docstring do módulo
  *  sobre o rate limit dos endpoints singulares confirmado no #6047. */
@@ -178,7 +194,7 @@ export async function kitFetch<T = unknown>(
         },
         body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       }),
-    { ...opts.retry, isRetriableStatus },
+    { ...KIT_RETRY_DEFAULTS, ...opts.retry, isRetriableStatus },
   );
 
   const text = await res.text();
