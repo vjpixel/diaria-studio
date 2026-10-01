@@ -283,7 +283,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
  * imports existentes (`test/poll-subscribe-apex-utm-6427.test.ts` e afins).
  */
 export { CLIENT_UTM_SOURCE_ALLOWED_PREFIXES, isAllowedClientUtmSource } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
-import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
+import { isAllowedClientSocialUtmSource, isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts";
 
 /** #4530 Parte B: `magic-link.ts` reusa o triplo UTM de `"jogar-identify"`
  * (mesmo funil de opt-in do form de identidade), mas é um CALL SITE distinto
@@ -333,7 +333,13 @@ export interface ClientUtmOverride {
 export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride): SubscribeUtm {
   const key = typeof raw === "string" ? raw : "";
   const base = SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
-  if (key === "apex" && clientUtm && isAllowedClientUtmSource(clientUtm.source)) {
+  // #9283: no apex, social orgânico (linkedin/instagram/...) também passa —
+  // só no triplo, nunca em `origemPaga` (o ramo abaixo usa só a lista paga).
+  if (
+    key === "apex" &&
+    clientUtm &&
+    (isAllowedClientUtmSource(clientUtm.source) || isAllowedClientSocialUtmSource(clientUtm.source))
+  ) {
     const source = String(clientUtm.source).trim();
     const medium =
       typeof clientUtm.medium === "string" && clientUtm.medium.trim() ? clientUtm.medium.trim() : base.medium;

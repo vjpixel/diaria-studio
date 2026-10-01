@@ -45,6 +45,31 @@ export function isAllowedClientUtmSource(rawSource: unknown): boolean {
 }
 
 /**
+ * #9283: `utm_source` ORGÂNICOS de rede social que a própria pipeline emite
+ * nos posts (#4295 — valores de `utm-registry.ts`). Lista SEPARADA de
+ * `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES` de propósito: aquela também alimenta
+ * `origemPaga` (canal PAGO) nos sources não-apex, e social orgânico nunca
+ * pode virar origem paga. Só consultada no caminho `source === "apex"` de
+ * `resolveSubscribeUtm` — antes dela, o post social levava pra
+ * `diar.ia.br/?utm_source=linkedin...` e o servidor descartava o valor,
+ * gravando o default `diaria-apex` no ESP.
+ */
+export const CLIENT_UTM_SOCIAL_SOURCE_PREFIXES = [
+  "linkedin",
+  "instagram",
+  "facebook",
+  "threads",
+  "twitter",
+] as const;
+
+/** Pure (#9283): mesma regra de fronteira de traço de `isAllowedClientUtmSource`. */
+export function isAllowedClientSocialUtmSource(rawSource: unknown): boolean {
+  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
+  if (!s) return false;
+  return CLIENT_UTM_SOCIAL_SOURCE_PREFIXES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+}
+
+/**
  * #8553: mapeia o PREFIXO de `click_id` (#8003 — `gclid:`/`fbclid:`/
  * `msclkid:`, antes do `:`) pro `utm_source` CANÔNICO da mesma plataforma —
  * mesmos 3 valores pagos de `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES` (exceto
