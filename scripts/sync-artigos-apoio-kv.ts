@@ -23,9 +23,10 @@
  * Contatos com nível desconhecido (`sem_dados`, falha transiente da
  * apoia.se) não geram entrada nova, mas também nunca têm a chave existente
  * apagada. Remoções ficam bloqueadas quando a fonte veio degradada
- * (`buildApoiosData` com erro, snapshots de meses anteriores ilegíveis) ou
+ * (`buildApoiosData` com erro, snapshot do mês anterior ausente/ilegível) ou
  * quando passam de 30% das chaves existentes (mesmo limiar do #4436),
- * salvo `--force-blast-radius`.
+ * salvo `--force-blast-radius`. Rodada com remoções bloqueadas sai com
+ * exit 3 (as gravações já foram feitas) — a unit systemd fica `failed`.
  *
  * Uso:
  *   npx tsx scripts/sync-artigos-apoio-kv.ts                  # full sync
@@ -46,14 +47,18 @@ import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { apoioLevelKvKey } from "./lib/shared/apoio-level-verify.ts";
 import { type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
 import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
-import { computeDesiredApoioLevels, type DesiredApoioLevel } from "./sync-apoio-nivel-beehiiv.ts";
+import {
+  computeDesiredApoioLevels,
+  isPreviousMonthSnapshotMissing,
+  type DesiredApoioLevel,
+} from "./sync-apoio-nivel-beehiiv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_DIR = resolve(ROOT, "workers", "artigos");
@@ -63,6 +68,10 @@ const LOG_PREFIX = "[sync-artigos-apoio-kv]";
 export const BLAST_RADIUS_THRESHOLD = 0.3;
 /** Abaixo disso o percentual não diz nada (2 de 4 = 50%). */
 const BLAST_RADIUS_MIN_EXISTING = 5;
+/** Exit de rodada degradada (remoções bloqueadas) — fora de
+ * `successExitCodes` da task, pra unit sair `failed` e o alarme pegar. */
+export const DEGRADED_EXIT_CODE = 3;
+const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
 
 export interface ApoioLevelRows {
   /** Uma linha por e-mail de contato com nível conhecido. */
@@ -132,7 +141,9 @@ export interface KvBulkEntry {
 }
 
 /** Pure: {email, nivel}[] → entradas de bulk KV (`apoio:{sha256}` → nível).
- * Dedupe por key (mesmo e-mail normalizado colapsa no mesmo hash). */
+ * Dedupe por key (mesmo e-mail normalizado colapsa no mesmo hash); se o
+ * mesmo e-mail aparece com níveis diferentes (2 contatos no CRM), vence o
+ * MAIOR — nunca rebaixa um Patrono pela ordem dos contatos (#9300). */
 export async function buildKvBulkEntries(
   rows: Array<{ email: string; nivel: ApoioNivel }>,
 ): Promise<KvBulkEntry[]> {
@@ -140,7 +151,10 @@ export async function buildKvBulkEntries(
     rows.map(async (r) => ({ key: await apoioLevelKvKey(r.email), value: r.nivel })),
   );
   const seen = new Map<string, KvBulkEntry>();
-  for (const e of entries) seen.set(e.key, e);
+  for (const e of entries) {
+    const prev = seen.get(e.key);
+    if (!prev || LEVEL_RANK[e.value as ApoioNivel] > LEVEL_RANK[prev.value as ApoioNivel]) seen.set(e.key, e);
+  }
   return [...seen.values()];
 }
 
@@ -269,9 +283,8 @@ async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const dryRun = hasFlag(argv, "dry-run");
   const forceBlastRadius = hasFlag(argv, "force-blast-radius");
-  const nsIdx = argv.indexOf("--namespace-id");
   const namespaceId =
-    (nsIdx >= 0 ? argv[nsIdx + 1] : undefined) ??
+    (getArg(argv, "namespace-id") || undefined) ??
     process.env.ARTIGOS_KV_NAMESPACE_ID ??
     readNamespaceIdFromWranglerToml(readFileSync(join(WORKER_DIR, "wrangler.toml"), "utf8"));
 
@@ -292,6 +305,13 @@ async function main(): Promise<void> {
     process.stderr.write(
       `${LOG_PREFIX} aviso: snapshots de meses anteriores ilegíveis (carência off): ${(e as Error).message}\n`,
     );
+  }
+  // `readPastMonthSnapshots` não lança com arquivo ausente/corrompido — só
+  // devolve menos meses. Sem o mês anterior não há carência, e no começo do
+  // mês isso apagaria quem ainda não foi cobrado (mesmo guard do #7195).
+  if (isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth)) {
+    sourceDegraded = true;
+    process.stderr.write(`${LOG_PREFIX} aviso: snapshot do mês anterior ausente — carência off, remoções bloqueadas.\n`);
   }
 
   let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
@@ -344,9 +364,11 @@ async function main(): Promise<void> {
       by_level: byLevel,
       stale_deleted: deleted,
       stale_blocked: staleKeys.length - deleted,
+      source_degraded: sourceDegraded,
       dry_run: false,
     }),
   );
+  if (sourceDegraded || !deletion.allowed) process.exit(DEGRADED_EXIT_CODE);
 }
 
 if (isMainModule(import.meta.url)) {

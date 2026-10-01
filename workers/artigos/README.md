@@ -59,7 +59,7 @@ Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
    o deploy automático de propósito, ver comentário no workflow).
 2. `wrangler secret put COOKIE_HMAC_SECRET` (gerar: `openssl rand -hex 32`).
 3. Rodar `scripts/sync-artigos-apoio-kv.ts` pra popular o KV — depois
-   disso a task `Diaria-Artigos-Apoio-Kv-Sync` (diária, 09:47) mantém (#9300).
+   disso a task `Diaria-Artigos-Apoio-Kv-Sync` (diária, 10:17) mantém (#9300).
 
 ## Adicionar um artigo novo
 

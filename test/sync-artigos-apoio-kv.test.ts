@@ -101,10 +101,21 @@ describe("buildKvBulkEntries (#7030)", () => {
   it("dedupe por chave — mesmo e-mail normalizado 2x colapsa numa entrada", async () => {
     const entries = await buildKvBulkEntries([
       { email: "x@example.com", nivel: "amigo" },
-      { email: "X@Example.com", nivel: "mantenedor" }, // último vence
+      { email: "X@Example.com", nivel: "mantenedor" },
     ]);
     assert.equal(entries.length, 1);
     assert.equal(entries[0].value, "mantenedor");
+  });
+
+  it("#9300: mesmo e-mail com 2 níveis — vence o MAIOR, independente da ordem", async () => {
+    const entries = await buildKvBulkEntries([
+      { email: "x@example.com", nivel: "patrono" },
+      { email: "x@example.com", nivel: "amigo" },
+    ]);
+    assert.deepEqual(
+      entries.map((e) => e.value),
+      ["patrono"],
+    );
   });
 });
 
