@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, rmSync, closeSync, openSync, unlinkSync, renameSync, existsSync } from "node:fs";
 import { spawnSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
@@ -736,6 +736,9 @@ describe("CLI end-to-end — harness real via stdin (#6303 Finding H, mesmo padr
     mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
     const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
     copyFileSync(REAL_HOOK_PATH, hookPath);
+    // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
+    mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
+    copyFileSync(join(dirname(REAL_HOOK_PATH), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
     return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
   }
 
@@ -1003,6 +1006,9 @@ describe("#6952 — escrita concorrente durante a janela read→write do beacon"
     mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
     const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
     copyFileSync(REAL_HOOK, hookPath);
+    // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
+    mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
+    copyFileSync(join(dirname(REAL_HOOK), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
     return { root, hookPath, sessionsDir: join(root, "data", "sessions") };
   }
 
@@ -1254,6 +1260,9 @@ describe("#6952 — beacon e session-registry se excluem mutuamente no mesmo reg
     mkdirSync(join(root, ".claude", "hooks"), { recursive: true });
     const hookPath = join(root, ".claude", "hooks", "session-beacon.mjs");
     copyFileSync(REAL_HOOK, hookPath);
+    // #9203: o hook importa ./lib/registry-lock.mjs — copiar junto.
+    mkdirSync(join(root, ".claude", "hooks", "lib"), { recursive: true });
+    copyFileSync(join(dirname(REAL_HOOK), "lib", "registry-lock.mjs"), join(root, ".claude", "hooks", "lib", "registry-lock.mjs"));
     const sessionsDir = join(root, "data", "sessions");
     const sessionId = "coord-6952-cross";
 
