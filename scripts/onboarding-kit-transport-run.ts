@@ -899,7 +899,13 @@ async function main(): Promise<void> {
     // #7922: alimenta o alarme de continuidade do transporte Kit — inclusive
     // rodada sem nenhum lote (prova de que o executor está rodando). Falha
     // ao registrar não desfaz o que a rodada fez; vira exit != 0 visível.
-    const run: KitSendRunRecord = { at: new Date().toISOString(), lots_created: lotsCreated, lots_failed: lotsFailed };
+    const run: KitSendRunRecord = {
+      at: new Date().toISOString(),
+      lots_created: lotsCreated,
+      lots_failed: lotsFailed,
+      refresh_candidates: candidates.length,
+      refresh_failed: refreshFailedThisRun.size,
+    };
     try {
       stampKitSendRun(storePath, run);
     } catch (e) {

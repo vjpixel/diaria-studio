@@ -226,18 +226,22 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       assert.equal(afterDry.kitLots.lastSendRun, null, "sem rodada --send registrada ainda");
 
       // 2) Rodada --send com o switch ligado SÓ no config temporário: Kit
-      //    inalcançável → refresh falha → ninguém elegível → nenhum lote
-      //    criado, mas a rodada fica registrada pro alarme e pro painel.
+      //    inalcançável → refresh de TODOS os candidatos falha → ninguém
+      //    elegível → nenhum lote criado. A rodada fica registrada e conta
+      //    como FALHA de entrega (isFailedKitSendRun) — sem isso um Kit fora
+      //    do ar pareceria uma rodada saudável "0 lotes, 0 falhas".
       writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: true } } }));
       const send = runExecutor(["--send"], configPath, storePath, snippetsDir);
       assert.equal(send.status, 0, `--send deveria sair 0. stdout: ${send.stdout} stderr: ${send.stderr}`);
       const summary = JSON.parse(send.stdout);
       assert.equal(summary.mode, "SEND");
       assert.deepEqual({ c: summary.send_run.lots_created, f: summary.send_run.lots_failed }, { c: 0, f: 0 });
+      assert.ok(summary.send_run.refresh_candidates > 0, `esperava candidatos a refresh: ${send.stdout}`);
+      assert.equal(summary.send_run.refresh_failed, summary.send_run.refresh_candidates);
       const afterSend = assertPanel(root);
       assert.ok(afterSend.kitLots.lastSendRun, "rodada --send aparece no painel");
       assert.equal(afterSend.kitLots.lastSendRun!.lots_created, 0);
-      assert.equal(afterSend.kitLots.consecutiveFailedSendRuns, 0);
+      assert.equal(afterSend.kitLots.consecutiveFailedSendRuns, 1, "Kit inalcançável conta como rodada falha");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

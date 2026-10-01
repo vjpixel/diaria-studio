@@ -219,7 +219,8 @@ export function toKitTransportAlarmFinding(evaluation: KitTransportHealthEvaluat
       "(`scripts/onboarding-continuity-alarm.ts`, check do transporte Kit — #7922).",
       "",
       `Sinal: ${evaluation.consecutiveFailedRuns} rodada(s) \`--send\` consecutiva(s) de ` +
-        `\`onboarding-kit-transport-run.ts\` com ≥1 lote falho (limiar ${evaluation.threshold}; ` +
+        `\`onboarding-kit-transport-run.ts\` sem conseguir entregar — lote falho ou refresh de todos os ` +
+        `candidatos falho (limiar ${evaluation.threshold}; ` +
         `última rodada ${evaluation.lastRunAt}, ${evaluation.lastRunFailedLots} lote(s) falho(s)).`,
       "",
       "Quem foi detectado nesse período não recebeu o e-mail 1/2. Ver `last_error` dos lotes em",

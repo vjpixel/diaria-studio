@@ -260,8 +260,9 @@ export function buildOnboardingContinuityAlarmEmail(
 // Saúde do executor Kit (#7922) — só avaliada com o transporte Kit ativo
 // ---------------------------------------------------------------------------
 
-/** Rodadas `--send` consecutivas do executor Kit com ≥1 lote falho antes de
- *  alarmar. 2 e não 1: uma falha transitória de API (timeout, 5xx) num dia
+/** Rodadas `--send` consecutivas do executor Kit que falharam em entregar
+ *  (`isFailedKitSendRun`: ≥1 lote falho, ou refresh de todos os candidatos
+ *  falho) antes de alarmar. 2 e não 1: uma falha transitória de API (timeout, 5xx) num dia
  *  se resolve sozinha na rodada seguinte (o lote do dia seguinte tem chave
  *  nova, `buildLotId`); 2 seguidas é falha persistente — e cada rodada
  *  falha é um dia de e-mail 1/2 que não saiu. Diferente do limiar 3 da
@@ -341,8 +342,9 @@ export function buildKitTransportAlarmEmail(
     subject: "⚠️ Diaria-Onboarding-Continuity-Alarm: transporte Kit do onboarding não está criando os broadcasts",
     body:
       `O executor do transporte Kit do onboarding (\`onboarding-kit-transport-run.ts --send\`, #7922) teve ` +
-      `${evaluation.consecutiveFailedRuns ?? "?"} rodada(s) consecutiva(s) com lote que falhou ao taguear/criar/` +
-      `agendar o broadcast (limiar ${evaluation.threshold}; última rodada ${evaluation.lastRunAt ?? "?"}, ` +
+      `${evaluation.consecutiveFailedRuns ?? "?"} rodada(s) consecutiva(s) sem conseguir entregar — lote que falhou ao ` +
+      `taguear/criar/agendar o broadcast, ou o refresh de TODOS os candidatos falhou (Kit fora do ar/auth) ` +
+      `(limiar ${evaluation.threshold}; última rodada ${evaluation.lastRunAt ?? "?"}, ` +
       `${evaluation.lastRunFailedLots ?? "?"} lote(s) falho(s)). Enquanto isso, quem foi detectado não recebe ` +
       `o e-mail 1/2 — a detecção continua saudável, então o alarme de detecção zerada NÃO cobre esta falha.\n\n` +
       `Onde olhar: \`last_error\` dos lotes em \`data/onboarding/store.json\` (\`kit_transport.lots\`) e o ` +

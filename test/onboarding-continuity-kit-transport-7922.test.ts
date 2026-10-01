@@ -33,7 +33,7 @@ import {
   RUN_FRESHNESS_MAX_HORAS,
   ZERO_DETECTION_ALARM_THRESHOLD_RUNS,
 } from "../scripts/lib/onboarding-continuity-alarm.ts";
-import { recordKitSendRun, type OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
+import { recordKitSendRun, isFailedKitSendRun, type OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
 import { readStore, writeStore, emptyStore } from "../scripts/lib/onboarding-store.ts";
 import { stampKitSendRun } from "../scripts/onboarding-kit-transport-run.ts";
 import {
@@ -114,6 +114,16 @@ describe("#7922 — executor Kit alimenta o sinal (recordKitSendRun / stampKitSe
     assert.deepEqual(kt.last_send_run, { at: "2026-09-30T12:05:00Z", lots_created: 0, lots_failed: 2 });
     recordKitSendRun(kt, { at: "2026-10-01T12:05:00Z", lots_created: 3, lots_failed: 0 });
     assert.equal(kt.consecutive_failed_send_runs, 0);
+  });
+
+  it("Kit fora do ar (refresh de TODOS os candidatos falhou, 0 lotes tentados) conta como falha; falha parcial não", () => {
+    assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 3, refresh_failed: 3 }), true);
+    assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 1, lots_failed: 0, refresh_candidates: 3, refresh_failed: 1 }), false);
+    assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 0, refresh_failed: 0 }), false);
+    assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 0, lots_failed: 0 }), false, "registro antigo sem os campos de refresh");
+    const kt: { consecutive_failed_send_runs?: number } = {};
+    recordKitSendRun(kt, { at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 2, refresh_failed: 2 });
+    assert.equal(kt.consecutive_failed_send_runs, 1);
   });
 
   it("readStore preserva last_send_run/consecutive_failed_send_runs (antes normalizava kit_transport só pra { lots })", () => {

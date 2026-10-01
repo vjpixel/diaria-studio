@@ -155,8 +155,9 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
         store (`stampKitSendRun`, sob o lock); com
         `onboarding.kit_transport.enabled: true`,
         `onboarding-continuity-alarm.ts` avalia também esse sinal (check
-        `onboarding-kit-transport`, issue própria; limiar 2 rodadas com lote
-        falho; tri-state honesto — sem rodada `--send` registrada ou com a
+        `onboarding-kit-transport`, issue própria; limiar 2 rodadas que não
+        entregaram — lote falho ou refresh de TODOS os candidatos falho,
+        i.e. Kit fora do ar; tri-state honesto — sem rodada `--send` registrada ou com a
         última há mais de 48h é `cannot-verify`, nunca `ok`) e o e-mail nomeia
         o transporte ativo. A streak de detecção segue a mesma nos dois
         regimes (quem detecta é sempre `onboarding-welcome-run.ts`). Testes:

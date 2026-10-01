@@ -728,12 +728,34 @@ export interface KitSendRunRecord {
    *  `last_error` (falha de uma tentativa anterior ainda dentro da janela de
    *  stale: o e-mail daquele kind também não saiu nesta rodada). */
   lots_failed: number;
+  /** Candidatos que precisaram de refresh de status/stats no Kit nesta
+   *  rodada, e quantos desses refreshes falharam (candidato com refresh
+   *  falho é EXCLUÍDO da seleção — fail-safe do #8136). Opcionais só por
+   *  compatibilidade com registros anteriores a estes campos. */
+  refresh_candidates?: number;
+  refresh_failed?: number;
+}
+
+/**
+ * Rodada `--send` que falhou em ENTREGAR: ≥1 lote falho, OU todos os
+ * refreshes falharam (havendo candidato). O 2º caso é o Kit inteiro fora do
+ * ar/auth quebrada: todo candidato cai em `status_nao_confirmado`, nenhum
+ * lote nem chega a ser tentado, e sem esta regra a rodada pareceria
+ * saudável ("0 lotes, 0 falhas") enquanto ninguém recebe nada. Falha
+ * PARCIAL de refresh não conta — os demais candidatos seguiram.
+ *
+ * @pure
+ */
+export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
+  if (run.lots_failed > 0) return true;
+  const candidates = run.refresh_candidates ?? 0;
+  return candidates > 0 && (run.refresh_failed ?? 0) >= candidates;
 }
 
 /**
  * Aplica o resultado de uma rodada `--send` ao bloco `kit_transport` —
  * atualiza `last_send_run` e a streak `consecutive_failed_send_runs`
- * (incrementa com ≥1 lote falho, zera sem falha). Mesma forma de
+ * (incrementa quando `isFailedKitSendRun`, zera caso contrário). Mesma forma de
  * `updateZeroDetectionStreak` (`onboarding-state.ts`), só que pro executor
  * Kit.
  *
@@ -744,6 +766,6 @@ export function recordKitSendRun<T extends { last_send_run?: KitSendRunRecord | 
   run: KitSendRunRecord,
 ): T {
   kitTransport.last_send_run = run;
-  kitTransport.consecutive_failed_send_runs = run.lots_failed > 0 ? (kitTransport.consecutive_failed_send_runs ?? 0) + 1 : 0;
+  kitTransport.consecutive_failed_send_runs = isFailedKitSendRun(run) ? (kitTransport.consecutive_failed_send_runs ?? 0) + 1 : 0;
   return kitTransport;
 }
