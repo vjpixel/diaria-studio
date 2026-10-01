@@ -119,6 +119,7 @@ import { execFileSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
+import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
 // `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
@@ -895,39 +896,7 @@ export function machineTag() {
  * span (mesmo trade-off de "comando malformado degrada pra fail-closed
  * nessa cauda" já aceito pelo restante do guard — ver topo do arquivo).
  */
-export function stripQuotedSpans(command) {
-  let result = "";
-  let i = 0;
-  const n = command.length;
-  while (i < n) {
-    const ch = command[i];
-    // `\x` fora de aspas é caractere literal (`don\'t`), não abre span —
-    // sem isto a aspa escapada engolia o resto do comando (#9214).
-    if (ch === "\\" && i + 1 < n) {
-      result += command.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      let j = i + 1;
-      while (j < n && command[j] !== "'") j++;
-      i = j + 1;
-      continue;
-    }
-    if (ch === '"') {
-      let j = i + 1;
-      while (j < n && command[j] !== '"') {
-        if (command[j] === "\\") j++;
-        j++;
-      }
-      i = j + 1;
-      continue;
-    }
-    result += ch;
-    i++;
-  }
-  return result;
-}
+export { stripQuotedSpans };
 
 /** `true` se `command` contém `gh pr merge` como um comando REAL — só no
  * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
