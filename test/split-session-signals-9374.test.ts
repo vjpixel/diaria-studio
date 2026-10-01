@@ -28,7 +28,7 @@ import {
   summarizeHandoffForStage6,
 } from "../scripts/lib/session-handoff.ts";
 import { collectSignals, signalsFromSessionHandoff } from "../scripts/collect-edition-signals.ts";
-import { armFromProfile, computeMetrics, type EditionRaw, type Tri } from "../scripts/lib/jev-ab-report.ts";
+import { armFromProfile, computeMetrics, countGate4Corrections, type EditionRaw, type Tri } from "../scripts/lib/jev-ab-report.ts";
 import { loadEdition } from "../scripts/jev-ab-report.ts";
 import { summarizeSeries, type EditionManualEdits } from "../scripts/edition-manual-edits.ts";
 import { STAGE4_BACKFILL_MARKER } from "../scripts/lib/editor-request-snapshots.ts";
@@ -185,6 +185,34 @@ describe("A/B do Jev com captura quebrada (#9374/#9356)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("countGate4Corrections (#9374)", () => {
+  const bf = { backfill: "#9356" };
+  it("exclui request_type process (re-render do HTML)", () => {
+    assert.equal(
+      countGate4Corrections([
+        { stage: 4, source: "derived", request_type: "process", target: "newsletter" },
+        { stage: 4, source: "derived", request_type: "process", target: "social" },
+        { stage: 4, source: "derived", request_type: "title-choice", target: "d1", context: bf },
+      ]),
+      1,
+    );
+  });
+  it("caso 260914: backfill não recontar seção já derivada no original", () => {
+    assert.equal(
+      countGate4Corrections([
+        { stage: 4, source: "derived", request_type: "lead-rewrite", target: "d1" },
+        { stage: 4, source: "derived", request_type: "lead-rewrite", target: "d2" },
+        { stage: 4, source: "derived", request_type: "social-rewrite", target: "d1" },
+        { stage: 4, source: "derived", request_type: "title-choice", target: "d1", context: bf },
+        { stage: 4, source: "derived", request_type: "lead-rewrite", target: "d2", context: bf },
+        { stage: 4, source: "derived", request_type: "link-swap", target: "radar", context: bf },
+        { stage: 6, source: "derived", request_type: "tone", target: "d1" },
+      ]),
+      4,
+    );
   });
 });
 

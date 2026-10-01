@@ -170,6 +170,24 @@ export interface AbReport {
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/**
+ * Correções de CONTEÚDO do gate 4 (#9374). Pura.
+ * - `request_type: "process"` fica de fora: é o re-render do HTML (2 linhas
+ *   derivadas por edição, newsletter + social), não edição do editor —
+ *   inflava os dois braços em +2.
+ * - Linha do backfill do #9356 (`context.backfill === "#9356"`) cujo
+ *   `target` já tem linha derivada ORIGINAL não conta de novo (260914:
+ *   d1/d2 contados pelo derive original e pelo backfill).
+ */
+export function countGate4Corrections(rows: unknown[]): number {
+  const s4 = rows.filter((r): r is Record<string, unknown> => isObj(r) && r.stage === 4 && r.request_type !== "process");
+  const isBackfill = (r: Record<string, unknown>) => isObj(r.context) && r.context.backfill === "#9356";
+  const originalTargets = new Set(
+    s4.filter((r) => r.source === "derived" && !isBackfill(r)).map((r) => String(r.target ?? "")),
+  );
+  return s4.filter((r) => !(isBackfill(r) && originalTargets.has(String(r.target ?? "")))).length;
+}
+
 /** Braço B exige profile==='all' E features não vazio (P1-2). */
 export function armOf(e: EditionRaw): Arm {
   return armFromProfile(e.profile);
@@ -289,7 +307,7 @@ export function computeMetrics(e: EditionRaw): { m: EditionMetrics; warnings: st
   else {
     const { rows, invalidLines } = e.editorRequests.value;
     if (invalidLines > 0) w.push(`${id}: editor-requests.jsonl com ${invalidLines} linha(s) inválida(s) ignorada(s)`);
-    gate4 = rows.filter((r) => isObj(r) && r.stage === 4).length;
+    gate4 = countGate4Corrections(rows);
   }
   // #9374: com o baseline quebrado (#9356) o derive-stage4 não derivou as
   // edições do editor — o número acima é subnotificação, não medida.
