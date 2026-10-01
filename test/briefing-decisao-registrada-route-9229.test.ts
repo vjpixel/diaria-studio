@@ -64,7 +64,7 @@ function overnightStep5(): string {
 describe("#9229 — guard de texto das skills", () => {
   it("overnight passo 5: todo route-issue --track overnight leva --motivo triada", () => {
     const step = overnightStep5();
-    const calls = step.match(/route-issue\.ts --issue N --track overnight[^`]*/g) ?? [];
+    const calls = step.match(/route-issue\.ts[^`]*--track overnight\b[^`]*/g) ?? [];
     assert.ok(calls.length > 0, "nenhum route-issue --track overnight no passo 5");
     for (const c of calls) {
       assert.match(c, /--motivo triada/, `roteamento sem --motivo triada no passo 5: ${c}`);
@@ -78,9 +78,13 @@ describe("#9229 — guard de texto das skills", () => {
   for (const skill of ["diaria-continuo", "diaria-develop"]) {
     it(`${skill}: registro de decisão cita --motivo triada junto de decisao-registrada`, () => {
       const s = read(`.claude/skills/${skill}/SKILL.md`);
-      const idx = s.indexOf("--add-label decisao-registrada");
-      assert.ok(idx >= 0, `${skill} não aplica decisao-registrada?`);
-      const window = s.slice(idx, idx + 600);
+      // Ancorado na seção de registro da decisão (#5373), não num offset fixo.
+      const start = s.indexOf("Registro machine-readable");
+      assert.ok(start >= 0, `${skill}: seção 'Registro machine-readable' não encontrada`);
+      const idx = s.indexOf("--add-label decisao-registrada", start);
+      assert.ok(idx >= 0, `${skill} não aplica decisao-registrada na seção de registro?`);
+      const next = s.indexOf("**Registro do bloqueio", idx);
+      const window = s.slice(start, next > idx ? next : idx + 1500);
       assert.match(window, /--motivo\s+triada/, `${skill}: falta --motivo triada perto de decisao-registrada`);
     });
   }

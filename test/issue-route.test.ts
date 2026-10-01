@@ -730,6 +730,26 @@ describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
     assert.ok(gh.state.labels.includes("decisao-registrada"));
   });
 
+  it("#9229 — 'decisao-registrada' + --motivo triada: dry-run aceita e a issue fica overnight", () => {
+    // Briefing do overnight (passo 5): decisão que destrava código. Sem o
+    // `--motivo triada` o caso acima (recusa do dry-run #8230) é o sintoma
+    // reproduzido em #9217/#4469/#8990.
+    const gh = fakeGh({ labels: ["decisao-registrada", "trade-off-real"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 53,
+      track: "overnight",
+      motivo: "triada",
+      reason: "decidido no briefing",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(classifyExecTrack({ labels: gh.state.labels, body: gh.state.body, state: "OPEN" }), "overnight");
+    assert.ok(gh.state.labels.includes("decisao-registrada"));
+    assert.ok(gh.state.labels.includes("triada-overnight"));
+    assert.ok(!gh.state.labels.includes("trade-off-real"));
+  });
+
   it("a mesma issue de alarme roteada pra 'fora-de-rodada' valida ok e mantem a proveniencia (#6223)", () => {
     const gh = fakeGh({ labels: ["alarm"], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({
