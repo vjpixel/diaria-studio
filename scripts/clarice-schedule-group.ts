@@ -198,7 +198,7 @@ import { tagHourCellUtm } from "./lib/shared/utm-registry.ts";
 import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
-import { readClariceAbTest, resolveCampaignHtmlPath } from "./lib/clarice-ab-test.ts";
+import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
 
 loadProjectEnv();
 
@@ -1003,7 +1003,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // #9308: key de célula de variante (`-VA`/`-VB`) usa o HTML do braço
   // declarado em `_internal/ab-test.json`; demais keys seguem no default.
   const contentMonthlyDir = resolveMonthlyDir(contentCycle);
-  const htmlPath = resolveCampaignHtmlPath(contentMonthlyDir, key, readClariceAbTest(contentMonthlyDir));
+  // #9314: só lê ab-test.json pra key de variante — config quebrada não trava
+  // os fluxos sem braço (clarice-novos, ondas normais).
+  const abTestConfig = variantArmFromKey(key) !== null ? readClariceAbTest(contentMonthlyDir) : null;
+  const htmlPath = resolveCampaignHtmlPath(contentMonthlyDir, key, abTestConfig);
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   let html = readFileSync(htmlPath, "utf8");
   // #8059: o HTML renderizado sempre carrega links Amazon com a tag da

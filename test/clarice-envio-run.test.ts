@@ -1013,6 +1013,8 @@ describe("clarice-envio-run (#5026)", () => {
       );
       assert.equal(r.code, 1, r.reportMarkdown);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-split-group-cells.ts"), "nada dividido");
+      // #9314 — abortar ANTES do build-segment: ele grava sent-or-queued.json.
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "build-segment não pode rodar antes da validação do ab-test");
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), "nada criado/agendado");
       rmSync(root, { recursive: true, force: true });
     });
@@ -1048,6 +1050,8 @@ describe("clarice-envio-run (#5026)", () => {
         }),
       );
       assert.equal(r.code, 1, r.reportMarkdown);
+      // #9314 — abortar ANTES do build-segment: ele grava sent-or-queued.json.
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "build-segment não pode rodar antes da validação do ab-test");
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"));
       rmSync(root, { recursive: true, force: true });
     });
