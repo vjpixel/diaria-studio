@@ -62,6 +62,9 @@ test("#9380 anti-falso-positivo: separadores/caudas legítimos ficam intactos", 
     "Visão · áudio · texto: o novo modelo unificado",
     "IA; entenda", // prefixo curto demais
     "Como usar o Gemini: guia rápido",
+    "Como migrar seu app de React - Next.js",
+    "Novo recurso de voz lançado / Character.ai",
+    "Startup brasileira fecha acordo - Hugging Face",
   ]) {
     assert.equal(normalizeItemTitle(t), t);
   }
@@ -76,6 +79,8 @@ test("#9380 categorizeArticles normaliza título de item vindo de RSS/pesquisa (
       summary: "Inteligência artificial: OpenAI abandona lançamento de modelo de IA.",
     } as any,
   ]);
+  const all0 = [...out.lancamento, ...out.radar, ...out.use_melhor, ...out.video];
+  assert.match(String((all0[0] as any).title_raw), /BBC News Brasil$/);
   const all = [...out.lancamento, ...out.radar, ...out.use_melhor, ...out.video];
   assert.equal(all.length, 1);
   assert.equal(

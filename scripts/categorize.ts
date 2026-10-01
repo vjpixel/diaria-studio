@@ -217,7 +217,9 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // heurísticas de título viram o título cru da fonte, como sempre).
     const normalizedTitle =
       typeof article.title === "string" ? normalizeItemTitle(article.title) : article.title;
-    result[bucket].push({ ...article, title: normalizedTitle, category: cat, category_rule: categoryRule });
+    // title_raw preserva o título da fonte quando mudou (auditoria/dedup).
+    const rawField = normalizedTitle !== article.title ? { title_raw: article.title } : {};
+    result[bucket].push({ ...article, ...rawField, title: normalizedTitle, category: cat, category_rule: categoryRule });
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.

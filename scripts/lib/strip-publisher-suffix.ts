@@ -179,8 +179,6 @@ export const KNOWN_DASH_PUBLISHERS = new Set([
   "bbc news brasil",
   "muahoolab",
   "descomplicando sites",
-  "hugging face",
-  "openai",
   "elevenmind",
 ]);
 
@@ -188,10 +186,20 @@ export const KNOWN_DASH_PUBLISHERS = new Set([
  * Sufixo com cara de domínio (`claude.dev`, `MachineLearningMastery.com`) — #9380.
  * Domínio como sufixo é sempre atribuição de site, nunca conteúdo do título.
  */
-const DOMAIN_LIKE_SUFFIX_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i;
+// TLDs restritos de propósito: `.js`/`.ai`/`.io` são nomes de produto
+// (Next.js, Character.ai, Socket.io), não atribuição de site.
+const DOMAIN_LIKE_SUFFIX_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|com\.br|br|dev|org|net)$/i;
 
-function isKnownPublisherSuffix(suffix: string): boolean {
-  return KNOWN_DASH_PUBLISHERS.has(suffix) || DOMAIN_LIKE_SUFFIX_RE.test(suffix);
+// Marcas que só valem como sufixo no separador ` · ` (formato de página do
+// Hugging Face) — com traço seriam sujeito do título ("acordo - Hugging Face").
+const MIDDOT_ONLY_PUBLISHERS = new Set(["hugging face"]);
+
+function isKnownPublisherSuffix(suffix: string, middot: boolean): boolean {
+  return (
+    KNOWN_DASH_PUBLISHERS.has(suffix) ||
+    DOMAIN_LIKE_SUFFIX_RE.test(suffix) ||
+    (middot && MIDDOT_ONLY_PUBLISHERS.has(suffix))
+  );
 }
 
 /**
@@ -249,7 +257,7 @@ function stripDashSuffix(title: string): string {
     .toLowerCase();
 
   // Anti-falso-positivo principal: só strip se o sufixo é veículo conhecido
-  if (!isKnownPublisherSuffix(suffix)) return title;
+  if (!isKnownPublisherSuffix(suffix, sepStart === middotIdx)) return title;
 
   const prefix = trimmed.slice(0, sepStart).trim();
   if (prefix.length < MIN_PREFIX_LEN) return title;
