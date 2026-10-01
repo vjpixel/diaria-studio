@@ -22,11 +22,8 @@ import * as pii from "../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs
 import * as prReview from "../.claude/hooks/pr-create-review.mjs";
 // @ts-expect-error -- hooks .mjs sem tipos
 import * as unsafeCheckout from "../.claude/hooks/block-unsafe-shared-checkout-ops.mjs";
-// @ts-expect-error -- hooks .mjs sem tipos
 import * as barePush from "../.claude/hooks/block-worktree-bare-push.mjs";
-// @ts-expect-error -- hooks .mjs sem tipos
 import * as checksLoop from "../.claude/hooks/block-handwritten-pr-checks-loop.mjs";
-// @ts-expect-error -- hooks .mjs sem tipos
 import * as npmGuard from "../.claude/hooks/block-npm-install-node-modules-symlink.mjs";
 import { stripQuotedSpans as shared } from "../.claude/hooks/lib/shell-quote-strip.mjs";
 
