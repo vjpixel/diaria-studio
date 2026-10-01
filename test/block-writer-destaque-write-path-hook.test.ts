@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 // @ts-expect-error -- hook .mjs sem .d.mts (TS7016); edição de .claude/hooks negada ao subagente.
-import { isAllowedWriterDestaquePath, shouldBlockWrite } from "../.claude/hooks/block-writer-destaque-write-path.mjs";
+import { isAllowedWriterDestaquePath, rootFromFsPath, shouldBlockWrite } from "../.claude/hooks/block-writer-destaque-write-path.mjs";
 
 // #9132 — Write do writer-destaque restrito aos 2 outputs do destaque.
 const W = (agent_type: string | undefined, file_path: string) => ({
@@ -19,6 +19,17 @@ describe("block-writer-destaque-write-path (#9132)", () => {
       "data/editions/260930/_internal/02-d3-prompt.md",
       `${root}/data/editions/2609/260930/_internal/02-d2-draft.md`,
     ]) assert.equal(shouldBlockWrite(W("writer-destaque", p)), false, p);
+  });
+
+  it("raiz Windows: não cola cwd na frente e relativiza file_path absoluto (#9264)", () => {
+    const root = rootFromFsPath("C:\\Users\\x\\repo\\");
+    assert.equal(root, "C:/Users/x/repo/");
+    const ok = "data/editions/2609/260930/_internal/02-d1-draft.md";
+    for (const p of [`C:\\Users\\x\\repo\\${ok.replaceAll("/", "\\")}`, `C:/Users/x/repo/${ok}`])
+      assert.equal(isAllowedWriterDestaquePath(p, root), true, p);
+    assert.equal(isAllowedWriterDestaquePath("C:\\Users\\x\\repo\\CLAUDE.md", root), false);
+    assert.equal(isAllowedWriterDestaquePath(`C:\\other\\${ok}`, root), false);
+    assert.equal(isAllowedWriterDestaquePath(`C:\\Users\\x\\repo\\${ok}`, "C:\\Users\\x\\repo"), true);
   });
 
   it("bloqueia outros paths do writer-destaque", () => {
