@@ -1,5 +1,5 @@
 // PreToolUse hook — injeta `--session-id {payload.session_id}` em chamadas
-// standalone de `scripts/overnight-session-marker.ts` (--start/--phase),
+// standalone de `scripts/overnight-session-marker.ts` (--start/--phase/--end),
 // `scripts/lib/session-registry.ts` (register/heartbeat/end/claim-issue/
 // unclaim-issue/is-claimed/merge-lock-acquire/merge-lock-release),
 // `scripts/resolve-develop-plan-path.ts` e `scripts/resolve-overnight-
@@ -218,7 +218,13 @@ const REGISTER_SUBCOMMAND = /\bregister\b/;
 const SESSION_ID_TARGETS = [
   {
     match: TARGET_MARKER,
-    needsSessionId: (command) => /--start\b/.test(command) || /--phase\b/.test(command),
+    // #9419: `--end` entra junto com `--start`/`--phase` — desde o #9347 o
+    // marker é POR SESSÃO (`.active-session-{tag}.{sid}.json`) e `endSession`
+    // sem id só apaga o legado anônimo; sem a injeção aqui o `--end` da Fase 2
+    // deixava o marker da rodada vivo (`phase:"autonomous"`, AskUserQuestion
+    // negado na sessão por até 24h).
+    needsSessionId: (command) =>
+      /--start\b/.test(command) || /--phase\b/.test(command) || /--end\b/.test(command),
   },
   {
     match: TARGET_REGISTRY,
