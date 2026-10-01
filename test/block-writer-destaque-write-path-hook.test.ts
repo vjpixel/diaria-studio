@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+// @ts-expect-error -- hook .mjs sem .d.mts (TS7016); edição de .claude/hooks negada ao subagente.
 import {
   isAllowedWriterDestaquePath,
   shouldBlockWrite,
