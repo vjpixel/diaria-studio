@@ -39,6 +39,7 @@ import {
   decodeTrackerUrl,
   isSenderOwnUrl,
   isAffiliateUrl,
+  isNonContentUrl,
   senderDomain,
   senderEmail,
 } from "./inject-inbox-urls.ts";
@@ -172,6 +173,12 @@ export function processThreads(
       // (queremos a URL final, não o wrapper — issue #7662 é explícita nisso).
       const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
 
+      // #9250: unsubscribe/preferências nunca é conteúdo — filtrado ANTES
+      // da isenção always_consider (que cobre só as heurísticas abaixo).
+      if (isNonContentUrl(url) || isNonContentUrl(rawUrl)) {
+        totalFiltered++;
+        continue;
+      }
       const isTracking = !trackerDecoded && isTrackingUrl(rawUrl);
       const isAffiliate = isAffiliateUrl(url);
       const isSenderOwn = isSenderOwnUrl(url, senderDom, senderBrand);
