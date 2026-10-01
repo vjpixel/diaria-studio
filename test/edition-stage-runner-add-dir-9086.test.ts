@@ -17,7 +17,7 @@ const junction = (p: string) => (p === "/repo/data" ? "/onedrive/diaria/data" : 
 
 describe("#9086 dataAddDirArgs", () => {
   it("data/ junction pra fora do repo -> --add-dir alvo real", () => {
-    assert.deepEqual(dataAddDirArgs("/repo", junction), ["--add-dir", "/onedrive/diaria/data"]);
+    assert.deepEqual(dataAddDirArgs("/repo", junction), ["--add-dir=/onedrive/diaria/data"]);
   });
   it("data/ dentro do repo -> nenhum arg", () => {
     assert.deepEqual(dataAddDirArgs("/repo", (p) => p), []);
@@ -74,9 +74,10 @@ describe("#9086 runEditionStages", () => {
           : { ok: true }) as never,
     } as never);
     assert.equal(res.exitCode, 0);
-    const i = calls[0].indexOf("--add-dir");
-    assert.ok(i >= 0);
-    assert.equal(calls[0][i + 1], "/onedrive/diaria/data");
+    assert.ok(calls[0].includes("--add-dir=/onedrive/diaria/data"));
+    // #9348: `--add-dir` é variádico — nunca pode aparecer separado do valor,
+    // senão engole o prompt posicional e o `--print` fica sem input.
+    assert.ok(!calls[0].includes("--add-dir"));
     assert.ok(calls[0].at(-1)?.startsWith("/diaria-2-escrita 260930"));
   });
 
