@@ -9,6 +9,7 @@
  *   - guard de slug do bloco WhatsApp (#4570) não rodou, ou rodou e falhou (#4574)
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +246,32 @@ function checkWhatsappSlugGuard(
 }
 
 /**
+ * Estado vivo de um PR (#9429). Devolve o `state` do `gh pr view` (`OPEN`,
+ * `MERGED`, `CLOSED`) ou `null` quando a consulta falha — chamador trata
+ * `null` como "desconhecido" e mantém o warning (fail-soft).
+ */
+export type PrStateFetcher = (prNumber: number) => string | null;
+
+export function parsePrNumber(prUrl: string): number | null {
+  const m = prUrl.match(/\/pull\/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+export const ghPrState: PrStateFetcher = (prNumber) => {
+  try {
+    const r = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "state", "--jq", ".state"], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (r.status !== 0 || typeof r.stdout !== "string") return null;
+    const state = r.stdout.trim();
+    return state.length > 0 ? state : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * `_internal/site-page-published.json` (escrito por
  * `publish-edition-site-page.ts`, #7283) deve existir e registrar
  * `published: true` — senão a página `/p/{slug}` do acervo não foi
@@ -280,7 +307,10 @@ function checkWhatsappSlugGuard(
  * casos a edição não tem página. (Antes do #7578 era `warning`, para tolerar
  * uma versão do script anterior ao #7283; esse período já passou.)
  */
-function checkSitePagePublished(editionDir: string): InvariantViolation[] {
+function checkSitePagePublished(
+  editionDir: string,
+  fetchPrState: PrStateFetcher = ghPrState,
+): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
   if (!existsSync(path)) {
     return [
@@ -349,6 +379,20 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   // (o arquivo não é regravado), então o estado gravado fica defasado e um
   // `error` travaria o re-run pós-merge à toa.
   if (data.merged === false) {
+    // #9429: o JSON é gravado uma vez e fica defasado quando o merge acontece
+    // depois (à mão ou CI convergindo após o timeout do publisher). Com prUrl,
+    // consulta o estado VIVO do PR — MERGED => sem violation. Qualquer outro
+    // estado, ou falha do gh (offline, sem auth), cai no warning de sempre.
+    const prNumber = data.prUrl ? parsePrNumber(data.prUrl) : null;
+    if (prNumber !== null) {
+      let liveState: string | null = null;
+      try {
+        liveState = fetchPrState(prNumber);
+      } catch {
+        liveState = null;
+      }
+      if (liveState === "MERGED") return [];
+    }
     return [
       {
         rule: "site-page-merge-pending",
