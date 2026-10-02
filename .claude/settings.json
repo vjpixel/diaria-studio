@@ -42,7 +42,14 @@
       "mcp__claude-in-chrome__upload_image",
       "mcp__claude-in-chrome__tabs_create_mcp",
       "mcp__claude-in-chrome__tabs_context_mcp",
-      "mcp__claude-in-chrome__javascript_tool"
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__claude_ai_Gmail__list_labels",
+      "mcp__claude_ai_Beehiiv__get_current_user",
+      "mcp__claude_ai_Gmail__search_threads",
+      "mcp__claude_ai_Gmail__get_thread",
+      "mcp__claude_ai_Beehiiv__list_posts",
+      "mcp__claude_ai_Beehiiv__get_post_content",
+      "mcp__claude_ai_Beehiiv__list_post_clicks"
     ],
     "deny": [
       "Bash(rm -rf *)"
