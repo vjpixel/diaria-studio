@@ -77,31 +77,7 @@ export function readArtigoEspecialState(
       process.stderr.write(`[artigo-especial-state] AVISO: ${path} tem shape inesperado — tratando como vazio.\n`);
       return empty;
     }
-    const channels: ArtigoEspecialState["channels"] = {};
-    for (const ch of ARTIGO_ESPECIAL_CHANNELS) {
-      const raw = (parsed.channels as Record<string, unknown>)[ch];
-      if (raw && typeof raw === "object") {
-        const r = raw as Partial<ChannelState>;
-        if (r.status === "pending" || r.status === "done" || r.status === "failed") {
-          channels[ch] = {
-            status: r.status,
-            attemptedAt: typeof r.attemptedAt === "string" ? r.attemptedAt : "",
-            url: typeof r.url === "string" ? r.url : null,
-            reason: typeof r.reason === "string" ? r.reason : null,
-          };
-        } else {
-          // Status inválido/inesperado pra este canal — descartado (mesmo
-          // fail-soft dos outros ramos), mas com aviso: sem log aqui, um
-          // state file 95% saudável com 1 canal corrompido falhava mais
-          // silenciosamente que um arquivo 100% corrompido (que já loga no
-          // catch abaixo) — achado do silent-failure-hunter, review #5979/PR
-          // #6000.
-          process.stderr.write(
-            `[artigo-especial-state] AVISO: ${path} — canal "${ch}" tem status inválido (${JSON.stringify(r.status)}) — descartado, tratado como "nunca tentado".\n`,
-          );
-        }
-      }
-    }
+    const channels = parseChannelStates(parsed.channels as Record<string, unknown>, ARTIGO_ESPECIAL_CHANNELS, path, "artigo-especial-state");
     return { ano: parsed.ano, slug: parsed.slug, channels };
   } catch (e) {
     process.stderr.write(
@@ -109,6 +85,48 @@ export function readArtigoEspecialState(
     );
     return empty;
   }
+}
+
+/**
+ * Pura (exceto o aviso em stderr): valida o mapa `channels` cru de um state
+ * file por canal. Extraído de `readArtigoEspecialState` (#9474) pra que o
+ * state da Retrospectiva do Mês (`scripts/lib/mensal/retrospectiva-divulgacao.ts`)
+ * use EXATAMENTE a mesma tolerância — canal com status inválido é descartado
+ * com aviso (achado do silent-failure-hunter, review #5979/PR #6000), nunca
+ * aceito em silêncio.
+ */
+export function parseChannelStates<C extends string>(
+  rawChannels: Record<string, unknown>,
+  channelList: readonly C[],
+  path: string,
+  tag: string,
+): Partial<Record<C, ChannelState>> {
+  const channels: Partial<Record<C, ChannelState>> = {};
+  for (const ch of channelList) {
+    const raw = rawChannels[ch];
+    if (raw && typeof raw === "object") {
+      const r = raw as Partial<ChannelState>;
+      if (r.status === "pending" || r.status === "done" || r.status === "failed") {
+        channels[ch] = {
+          status: r.status,
+          attemptedAt: typeof r.attemptedAt === "string" ? r.attemptedAt : "",
+          url: typeof r.url === "string" ? r.url : null,
+          reason: typeof r.reason === "string" ? r.reason : null,
+        };
+      } else {
+        // Status inválido/inesperado pra este canal — descartado (mesmo
+        // fail-soft dos outros ramos), mas com aviso: sem log aqui, um
+        // state file 95% saudável com 1 canal corrompido falhava mais
+        // silenciosamente que um arquivo 100% corrompido (que já loga no
+        // catch do caller) — achado do silent-failure-hunter, review
+        // #5979/PR #6000.
+        process.stderr.write(
+          `[${tag}] AVISO: ${path} — canal "${ch}" tem status inválido (${JSON.stringify(r.status)}) — descartado, tratado como "nunca tentado".\n`,
+        );
+      }
+    }
+  }
+  return channels;
 }
 
 /** Escreve o state file (atômico). Cria o diretório do ciclo se faltar. */
@@ -126,9 +144,9 @@ export type ChannelDecision = { action: "run" } | { action: "skip"; reason: stri
  *   - `status === "done"` sem `force` → skip (já feito — idempotência real).
  *   - `status === "done"` com `force` → roda de novo.
  */
-export function decideChannelAction(
-  state: ArtigoEspecialState,
-  channel: ArtigoEspecialChannel,
+export function decideChannelAction<C extends string>(
+  state: { channels: Partial<Record<C, ChannelState>> },
+  channel: C,
   force: boolean,
 ): ChannelDecision {
   const ch = state.channels[channel];
@@ -155,11 +173,15 @@ export function buildFailedChannelState(attemptedAt: string, reason: string): Ch
 /**
  * Atualiza (imutável) o state com o resultado de um canal e retorna o novo
  * objeto — caller decide quando persistir (`writeArtigoEspecialState`).
+ *
+ * Genérico desde #9474 (o state da Retrospectiva do Mês tem o mesmo shape de
+ * `channels`, com 1 canal a mais — `pagina`); pro artigo especial a inferência
+ * devolve `ArtigoEspecialState`, sem mudar nenhum call site.
  */
-export function withChannelState(
-  state: ArtigoEspecialState,
-  channel: ArtigoEspecialChannel,
+export function withChannelState<C extends string, S extends { channels: Partial<Record<C, ChannelState>> }>(
+  state: S,
+  channel: C,
   channelState: ChannelState,
-): ArtigoEspecialState {
+): S {
   return { ...state, channels: { ...state.channels, [channel]: channelState } };
 }

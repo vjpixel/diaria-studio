@@ -791,6 +791,12 @@ ciclo 0-5 acima):
 /diaria-mensal-apoiadores --cycle $CYCLE
 ```
 
+**Desde #9474 a skill fecha o loop inteiro de divulgação da Retrospectiva**
+(página `retrospectiva.diar.ia.br/{AAMM}` no ar + e-mail + apoia.se + LinkedIn
++ box no slot 2, alternando com o Artigo Especial), com gate único e state por
+canal. Nenhuma etapa 0-5 deste skill publica a página — quem publica é o Passo
+3 de lá (`build-article-page.ts --push`).
+
 Ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md` para o fluxo completo
 (render via `scripts/lib/mensal/monthly-apoiadores-kit-render.ts` com UTM
 próprio `APOIADORES_KIT_UTM_PROFILE`, publicação via
