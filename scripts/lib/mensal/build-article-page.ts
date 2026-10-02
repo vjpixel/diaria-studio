@@ -12,6 +12,16 @@
  * `draftToEmail` já devolve o documento HTML COMPLETO (`wrapEmail` é
  * chamado internamente) — nenhum wrap adicional é feito aqui.
  *
+ * #9496: o render de entrada é o do e-mail dos APOIADORES
+ * (`draftToEmailApoiadoresKit` = `filterDraftForApoiadores` + `draftToEmail`
+ * com o perfil de UTM do canal), não o do envio Clarice. A página fica atrás
+ * do gate de apoiador e é a versão web do e-mail que ele recebe: sem
+ * APRESENTAÇÃO/`CLARICE — *`, com a legenda do É IA? do `01-eia.md` e o relink
+ * das diárias (os dois insumos de I/O chegam por `ArticleBuildOptions`).
+ * Nos drafts reais o `{{ unsubscribe }}` e o "responda a este e-mail" moravam
+ * na APRESENTAÇÃO, que o filtro já corta — os passos 1 e 2 abaixo seguem como
+ * defesa em profundidade para um template que os traga em outra seção.
+ *
  * O que diverge entre o HTML do e-mail e o da web são três coisas, todas
  * consequência de reaproveitar um render de e-mail numa página (#7580):
  *
@@ -41,7 +51,7 @@
  * escopo.
  */
 import { cycleToYymm, isValidMonthlyCycle } from "./monthly-paths.ts";
-import { draftToEmail } from "./monthly-render.ts";
+import { draftToEmailApoiadoresKit } from "./monthly-apoiadores-kit-render.ts";
 import { assertNoLegacyBrand, checkLegacyBrand } from "../shared/legacy-brand-guard.ts";
 
 /**
@@ -131,9 +141,10 @@ export function stripReplyByEmailSentence(html: string): string {
  * efeito: o cadastro vindo do artigo público some dentro do balde do envio, e
  * ninguém consegue medir se a página converte.
  *
- * Troca só o `medium`. `utm_source=clarice` e o `utm_campaign` do ciclo
- * continuam — o conteúdo É o mensal da parceria, e manter os dois deixa o
- * clique rastreável até o ciclo exato.
+ * Troca só o `medium`. O `utm_source` (desde #9496 o do canal apoiadores,
+ * `mensal-apoiadores-kit`, nos links que o render monta; link com UTM escrita
+ * à mão no draft mantém a dele) e o `utm_campaign` do ciclo continuam —
+ * manter os dois deixa o clique rastreável até o ciclo exato.
  */
 export function retagWebUtmMedium(html: string): string {
   // Sem classe de caractere antes: no HTML os separadores vêm ESCAPADOS
@@ -291,18 +302,41 @@ export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): stri
  * (`workers/artigo-mensal/src/render.ts`), onde o CTA já vive. Assim mudar o
  * texto do convite não exige reconstruir e republicar todos os ciclos.
  */
-export function buildArticleTeaserHtml(draftMd: string, cycle: string): ArticlePage {
-  return buildArticleHtml(cutDraftAfterFirstDestaque(draftMd, cycle), cycle);
+export function buildArticleTeaserHtml(draftMd: string, cycle: string, opts: ArticleBuildOptions = {}): ArticlePage {
+  return buildArticleHtml(cutDraftAfterFirstDestaque(draftMd, cycle), cycle, opts);
 }
 
-export function buildArticleHtml(draftMd: string, cycle: string): ArticlePage {
+/**
+ * Insumos de I/O que o e-mail dos apoiadores recebe além do `draft.md` (#9496).
+ * A lib segue pura: quem lê os arquivos do ciclo é o CLI
+ * (`scripts/build-article-page.ts`), pelas MESMAS funções que o render do
+ * e-mail usa (`scripts/render-monthly-apoiadores-kit.ts`).
+ */
+export interface ArticleBuildOptions {
+  /** Legenda do `01-eia.md` (crédito da foto + "Resultado da última edição"),
+   * que substitui o corpo do bloco É IA? do draft — o `eiaCredit` do e-mail. */
+  eiaCredit?: string;
+  /** Pós-processo do HTML de e-mail ANTES das transformações web — o relink
+   * dos destaques para a edição diária de origem (#4048), como no e-mail. */
+  postProcessEmailHtml?: (html: string) => string;
+}
+
+export function buildArticleHtml(draftMd: string, cycle: string, opts: ArticleBuildOptions = {}): ArticlePage {
   if (!isValidMonthlyCycle(cycle)) {
     throw new Error(
       `build-article-page: ciclo inválido "${cycle}" (esperado {conteúdo}-{envio}, ex: 2607-08)`,
     );
   }
   const yymm = cycleToYymm(cycle);
-  const { subject, previewText, html } = draftToEmail(draftMd, null, yymm);
+  // #9496: a página é a MESMA versão do e-mail dos apoiadores — mesmo filtro
+  // de seções Clarice-only e mesmo perfil de UTM (`draftToEmailApoiadoresKit`),
+  // em vez do `draft.md` cru da Clarice. Imagens ficam de fora como antes.
+  // O `<title>` segue vindo do ASSUNTO do draft (contrato do #3940 e alvo do
+  // guard de marca do #7719), não do assunto próprio do e-mail
+  // (`deriveApoiadoresKitSubject`) — só o CORPO se alinha ao e-mail.
+  const email = draftToEmailApoiadoresKit(draftMd, null, yymm, undefined, undefined, opts.eiaCredit);
+  const { subject, previewText } = email;
+  const html = opts.postProcessEmailHtml ? opts.postProcessEmailHtml(email.html) : email.html;
   // Sanitiza o que é só de e-mail, depois GUARDA — a mesma ordem de
   // `buildArchivePageHtml`: primeiro o que se sabe tratar, e só então a recusa
   // do que sobrou, para o guard validar exatamente o HTML que vai ser servido.

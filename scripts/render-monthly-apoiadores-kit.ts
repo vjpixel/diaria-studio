@@ -75,6 +75,43 @@ export interface RenderedMonthlyApoiadoresKitEmail {
 }
 
 /**
+ * Legenda do É IA? do ciclo (`01-eia.md`), que substitui o corpo do bloco
+ * É IA? do draft. Exportada para a página web (`build-article-page.ts`,
+ * #9496) ler o MESMO insumo do e-mail. `undefined` sem o arquivo.
+ */
+export function readApoiadoresEiaCredit(monthlyDir: string): string | undefined {
+  const eiaMdPath = resolve(monthlyDir, "01-eia.md");
+  return existsSync(eiaMdPath) ? parseEiaLegend(readFileSync(eiaMdPath, "utf8")) : undefined;
+}
+
+/**
+ * #4048: mesmo pós-processo dos demais canais — reescreve destaques pra
+ * apontar pra edição diária de origem, com sourceOverride pra não vazar
+ * utm_source=clarice nesta variante. Fail-soft: sem raw-destaques.json, o
+ * HTML original segue intacto. Exportada para a página web (#9496).
+ */
+export function relinkApoiadoresKitHtml(html: string, monthlyDir: string, logLabel = ""): string {
+  try {
+    const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT, undefined, APOIADORES_KIT_UTM_PROFILE.source);
+    console.error(
+      `${logLabel}Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
+    );
+    if (relinked.ambiguous.length) {
+      console.error(
+        `${logLabel}aviso: ${relinked.ambiguous.length} URL(s) de destaque aparecem em MAIS DE UMA edição — o relink usou a primeira; confira se é a citada no texto:`,
+      );
+      for (const a of relinked.ambiguous) {
+        console.error(`  ${a.url.slice(0, 80)}  → edições ${a.editions.join(", ")} (usada: ${a.editions[0]})`);
+      }
+    }
+    return relinked.html;
+  } catch (e) {
+    console.error(`${logLabel}warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
+    return html;
+  }
+}
+
+/**
  * Núcleo de render, reusado por `scripts/publish-monthly-apoiadores-kit.ts`
  * sem duplicar montagem/relink/escrita. Aborta (`process.exit`) se `draft.md`
  * ou `public-images.json` estiverem ausentes — mesmo contrato do render
@@ -107,8 +144,7 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
   const eiaImageUrlB = images.eia_b?.url;
   const livrosImageUrl = images.livros_promo?.url;
 
-  const eiaMdPath = resolve(monthlyDir, "01-eia.md");
-  const eiaCredit = existsSync(eiaMdPath) ? parseEiaLegend(readFileSync(eiaMdPath, "utf8")) : undefined;
+  const eiaCredit = readApoiadoresEiaCredit(monthlyDir);
 
   const platformConfigPath = resolve(ROOT, "platform.config.json");
   const imageGenerator: string = existsSync(platformConfigPath)
@@ -136,27 +172,7 @@ export function renderMonthlyApoiadoresKitEmail(cycle: string): RenderedMonthlyA
   // num canal pago não é caso pra fallback silencioso.
   subject = deriveApoiadoresKitSubject(draft, yymm);
 
-  // #4048: mesmo pós-processo dos demais canais — reescreve destaques pra
-  // apontar pra edição diária de origem, com sourceOverride pra não vazar
-  // utm_source=clarice nesta variante. Fail-soft: sem raw-destaques.json, o
-  // HTML original segue intacto.
-  try {
-    const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT, undefined, APOIADORES_KIT_UTM_PROFILE.source);
-    html = relinked.html;
-    console.error(
-      `Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
-    );
-    if (relinked.ambiguous.length) {
-      console.error(
-        `aviso: ${relinked.ambiguous.length} URL(s) de destaque aparecem em MAIS DE UMA edição — o relink usou a primeira; confira se é a citada no texto:`,
-      );
-      for (const a of relinked.ambiguous) {
-        console.error(`  ${a.url.slice(0, 80)}  → edições ${a.editions.join(", ")} (usada: ${a.editions[0]})`);
-      }
-    }
-  } catch (e) {
-    console.error(`warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
-  }
+  html = relinkApoiadoresKitHtml(html, monthlyDir);
 
   const internalDir = resolve(monthlyDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
