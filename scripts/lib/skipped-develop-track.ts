@@ -49,5 +49,5 @@ export function planIssuesRequiringRouting(plan: IssuesBearing<SkippedPlanIssue>
   return normalizeIssues(plan)
     .filter(requiresDevelopRouting)
     .map((i) => i.number as number)
-    .filter((n) => typeof n === "number");
+    .filter((n) => Number.isInteger(n));
 }

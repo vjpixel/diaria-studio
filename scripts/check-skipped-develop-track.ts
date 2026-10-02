@@ -26,16 +26,22 @@ if (isMainModule(import.meta.url)) {
   const plan = JSON.parse(readFileSync(values.plan, "utf8"));
   const numbers = planIssuesRequiringRouting(plan);
   const snapshots = new Map<number, IssueSnapshot>();
+  let ghFailures = 0;
   for (const n of numbers) {
     try {
       const raw = execFileSync("gh", ["api", `repos/vjpixel/diaria-studio/issues/${n}`], { encoding: "utf8" });
       const j = JSON.parse(raw) as { labels: { name: string }[]; body: string | null };
       snapshots.set(n, { labels: j.labels.map((l) => l.name), body: j.body ?? "" });
     } catch (e) {
+      ghFailures++;
       console.warn(`[check-skipped-develop-track] #${n}: gh falhou, ignorada (${(e as Error).message.split("\n")[0]})`);
     }
   }
   const bad = findUnroutedSkips(normalizeIssues(plan) as SkippedPlanIssue[], snapshots);
+  if (ghFailures > 0 && !bad.length) {
+    console.error(`[check-skipped-develop-track] ${ghFailures} issue(s) não verificadas (gh falhou) — não dá pra afirmar ok`);
+    process.exit(2);
+  }
   if (bad.length) {
     console.error(`[check-skipped-develop-track] sem trilha Develop: ${bad.map((n) => "#" + n).join(", ")}`);
     console.error("  corrigir: npx tsx scripts/route-issue.ts --issue N --track develop --reason \"...\"");
