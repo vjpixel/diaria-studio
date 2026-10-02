@@ -13,10 +13,14 @@
  *     retrospectiva paywalled nunca. O post da página ainda é rechecado por
  *     `publish-retrospectiva-linkedin.ts` no dispatch; o do PERFIL é colado à
  *     mão, então esta é a única barreira mecânica dele (achado do review do
- *     PR #9475).
+ *     PR #9475);
+ *   - #9500: roda `retrospectivaSocialPostProblems` em `divulgacao/{facebook,
+ *     instagram,threads,x}.md` — mesma regra de CTA (X/Threads aceitam a
+ *     linha curta) + teto de caracteres da rede (X/Threads 280), pra que o
+ *     gate só mostre texto que `publish-retrospectiva-social.ts` aceitaria.
  *
  * Uso:
- *   npx tsx scripts/check-retrospectiva-divulgacao.ts --cycle 2609-10 [--skip linkedin,...]
+ *   npx tsx scripts/check-retrospectiva-divulgacao.ts --cycle 2609-10 [--skip linkedin,x,...]
  *
  * Exit: 0 = ok; 1 = texto reprovado ou ausente; 2 = uso (`--skip` inválido).
  */
@@ -25,7 +29,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
-import { parseRetrospectivaSkip, publicPostCtaProblems } from "./lib/mensal/retrospectiva-divulgacao.ts";
+import { parseRetrospectivaSkip, publicPostCtaProblems, type RetrospectivaDivulgacaoChannel } from "./lib/mensal/retrospectiva-divulgacao.ts";
+import {
+  RETROSPECTIVA_SOCIAL_CHANNELS,
+  RETROSPECTIVA_SOCIAL_TEXT_FILES,
+  retrospectivaSocialPostProblems,
+} from "./lib/mensal/retrospectiva-social.ts";
 
 export interface DivulgacaoTextCheck {
   file: string;
@@ -35,9 +44,15 @@ export interface DivulgacaoTextCheck {
 /** Corpo testável: problemas por arquivo de post público não pulado. */
 export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: string | undefined): DivulgacaoTextCheck[] {
   const skip = parseRetrospectivaSkip(skipArg);
-  const targets: Array<{ channel: "linkedin_pagina" | "linkedin_perfil"; file: string }> = [
-    { channel: "linkedin_pagina", file: "linkedin-pagina.md" },
-    { channel: "linkedin_perfil", file: "linkedin-perfil.md" },
+  const targets: Array<{ channel: RetrospectivaDivulgacaoChannel; file: string; check: (text: string) => string[] }> = [
+    { channel: "linkedin_pagina", file: "linkedin-pagina.md", check: (t) => publicPostCtaProblems(t) },
+    { channel: "linkedin_perfil", file: "linkedin-perfil.md", check: (t) => publicPostCtaProblems(t) },
+    // #9500 — mesma regra de CTA + teto de caracteres de cada rede.
+    ...RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => ({
+      channel: ch,
+      file: RETROSPECTIVA_SOCIAL_TEXT_FILES[ch],
+      check: (t: string) => retrospectivaSocialPostProblems(ch, t),
+    })),
   ];
   const out: DivulgacaoTextCheck[] = [];
   for (const t of targets) {
@@ -47,7 +62,7 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
       out.push({ file: path, problems: ["arquivo ausente — o Passo 1 (geração de textos) precisa rodar antes"] });
       continue;
     }
-    out.push({ file: path, problems: publicPostCtaProblems(readFileSync(path, "utf8")) });
+    out.push({ file: path, problems: t.check(readFileSync(path, "utf8")) });
   }
   return out;
 }

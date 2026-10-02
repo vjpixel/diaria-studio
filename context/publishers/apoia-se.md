@@ -113,8 +113,8 @@ diferenças — tudo o mais vale igual:
 - **`Link externo` = URL da retrospectiva do ciclo**
   (`https://retrospectiva.diar.ia.br/{AAMM}`, AAMM = mês de CONTEÚDO — ciclo
   `2609-10` → `/2609`). Aqui a URL direta é correta: o público do post já é
-  apoiador R$25+. (Nos posts PÚBLICOS de LinkedIn é o contrário — CTA só pro
-  apoia.se.) Não repetir a URL no corpo.
+  apoiador R$25+. (Nos posts PÚBLICOS — LinkedIn, Facebook, Instagram, Threads
+  e X, #9500 — é o contrário: CTA só pro apoia.se.) Não repetir a URL no corpo.
 - **Título + corpo** = `data/monthly/{ciclo}/divulgacao/apoiase.md` (título +
   2 parágrafos curtos de CHAMADA, sem CTA de conversão — fala com quem já
   apoia). Nunca colar o conteúdo da retrospectiva.

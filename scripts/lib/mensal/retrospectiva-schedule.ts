@@ -21,6 +21,11 @@
  *
  * Reusa `resolveArtigoEspecialScheduledAts` (que reusa `computeScheduledAt`) —
  * nenhuma aritmética de data/fuso reimplementada aqui.
+ *
+ * #9500: Facebook/Instagram/Threads/X saem no mesmo D+1, escalonados 10 min
+ * depois da página (`resolveRetrospectivaSocialScheduledAts`, abaixo) — a
+ * âncora e o fuso continuam vindo de lá; a única aritmética nova é somar
+ * minutos a um ISO com offset explícito (`addMinutesIso`).
  */
 
 import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "../artigo-especial-schedule.ts";
@@ -69,6 +74,118 @@ export function resolveRetrospectivaScheduledAts(
     );
   }
   return ats;
+}
+
+// ── #9500: Facebook, Instagram, Threads e X ─────────────────────────────
+
+/** Canais sociais fora do LinkedIn, na ordem do escalonamento. */
+export const RETROSPECTIVA_SOCIAL_CHANNELS = ["facebook", "instagram", "threads", "x"] as const;
+export type RetrospectivaSocialChannel = (typeof RETROSPECTIVA_SOCIAL_CHANNELS)[number];
+
+/**
+ * Minutos depois da PÁGINA LinkedIn (D+1 09:00 BRT) — um canal a cada 10 min,
+ * pra não saírem no mesmo minuto: `09:10 facebook | 09:20 instagram | 09:30
+ * threads | 09:40 x`, tudo antes do `d1` das 10:00 (premissa do #9500).
+ */
+export const RETROSPECTIVA_SOCIAL_STAGGER_MIN: Record<RetrospectivaSocialChannel, number> = {
+  facebook: 10,
+  instagram: 20,
+  threads: 30,
+  x: 40,
+};
+
+/** Margem mínima até um slot da diária (`d{1,2,3}_time`) — post colado no d1 compete com ele no feed. */
+export const DAILY_SLOT_MARGIN_MIN = 15;
+
+/**
+ * Pura: soma `minutes` a um ISO com offset explícito (`…-03:00`) preservando o
+ * offset (o formato que `computeScheduledAt` devolve e os publicadores gravam).
+ * Lança em ISO sem offset — reinterpretar no fuso do processo é a classe de bug
+ * do #270.
+ */
+export function addMinutesIso(iso: string, minutes: number): string {
+  const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)([+-])(\d{2}):(\d{2})$/.exec(iso);
+  if (!m) throw new Error(`ISO sem offset explícito: "${iso}" (esperado AAAA-MM-DDTHH:MM[:SS]±HH:MM).`);
+  const offsetMin = (m[2] === "-" ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4]));
+  const local = new Date(Date.parse(iso) + (minutes + offsetMin) * 60_000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}-${p(local.getUTCDate())}` +
+    `T${p(local.getUTCHours())}:${p(local.getUTCMinutes())}:${p(local.getUTCSeconds())}${m[2]}${m[3]}:${m[4]}`
+  );
+}
+
+/** Pura: `HH:MM` de um ISO no fuso informado (via `Intl`, nunca o fuso do processo). */
+function hhmmInTz(iso: string, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(
+    new Date(iso),
+  );
+  const get = (t: string) => Number(parts.find((x) => x.type === t)?.value);
+  return get("hour") * 60 + get("minute");
+}
+
+/**
+ * Pura: horários que caem a menos de `DAILY_SLOT_MARGIN_MIN` de um slot da
+ * diária (`publishing.social.fallback_schedule.d{1,2,3}_time`, no fuso de
+ * `publishing.social.timezone`). Lista vazia = sem colisão. Compara só a HORA
+ * do dia: a diária sai todo dia, então qualquer data conta.
+ */
+export function dailySlotCollisions(isos: Record<string, string>, config: ScheduleConfig): string[] {
+  const social = config.publishing?.social as
+    | { timezone?: string; fallback_schedule?: Partial<Record<"d1_time" | "d2_time" | "d3_time", string>> }
+    | undefined;
+  const tz = social?.timezone ?? "America/Sao_Paulo";
+  const sched = social?.fallback_schedule ?? {};
+  const slots = (["d1_time", "d2_time", "d3_time"] as const)
+    .map((k) => ({ k, v: sched[k] }))
+    .filter((s): s is { k: "d1_time" | "d2_time" | "d3_time"; v: string } => typeof s.v === "string" && /^\d{1,2}:\d{2}$/.test(s.v));
+  const out: string[] = [];
+  for (const [label, iso] of Object.entries(isos)) {
+    const t = hhmmInTz(iso, tz);
+    for (const s of slots) {
+      const [h, mi] = s.v.split(":").map(Number);
+      if (Math.abs(t - (h * 60 + mi)) < DAILY_SLOT_MARGIN_MIN) out.push(`${label}=${iso} a <${DAILY_SLOT_MARGIN_MIN}min do ${s.k.slice(0, 2)} (${s.v})`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve o horário de cada canal social: horário da PÁGINA LinkedIn
+ * (`resolveRetrospectivaScheduledAts`, mesma âncora D/`--at`/guard de passado)
+ * + o escalonamento acima. Com `--at`, o escalonamento parte dele. Lança se
+ * algum horário colidir com a diária (`dailySlotCollisions`) — nunca agenda
+ * colado num d1/d2/d3.
+ */
+export function resolveRetrospectivaSocialScheduledAts(
+  config: ScheduleConfig,
+  input: RetrospectivaScheduleInput = {},
+): Record<RetrospectivaSocialChannel, string> {
+  const { pagina } = resolveRetrospectivaScheduledAts(config, input);
+  const out = Object.fromEntries(
+    RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => [ch, addMinutesIso(pagina, RETROSPECTIVA_SOCIAL_STAGGER_MIN[ch])]),
+  ) as Record<RetrospectivaSocialChannel, string>;
+  const collisions = dailySlotCollisions(out, config);
+  if (collisions.length > 0) {
+    throw new Error(`agenda dos posts sociais colide com a diária: ${collisions.join("; ")}. Passe outro --at.`);
+  }
+  return out;
+}
+
+/**
+ * Pura: âncora D (`--base-date`) efetiva — a explícita; senão (sem `--at`) a
+ * data do 1º sábado pela regra #9473, se o e-mail ainda sai agendado por ela;
+ * senão `undefined` (= hoje, com banner no caller). Mesma decisão que o
+ * `publish-retrospectiva-linkedin.ts` aplica, num lugar só.
+ */
+export function resolveRetrospectivaBaseDate(
+  cycle: string,
+  opts: { baseDate?: string; at?: string; now?: Date; rule?: MonthlySendScheduleRule },
+): { baseDate: string | undefined; fromRule: boolean } {
+  if (opts.baseDate) return { baseDate: opts.baseDate, fromRule: false };
+  if (opts.at) return { baseDate: undefined, fromRule: false };
+  const ruled = ruleBaseDateForCycle(cycle, opts.now ?? new Date(), opts.rule ?? DEFAULT_MONTHLY_SEND_SCHEDULE);
+  return { baseDate: ruled ?? undefined, fromRule: ruled !== null };
 }
 
 /**

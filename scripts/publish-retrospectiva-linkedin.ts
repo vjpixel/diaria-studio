@@ -53,7 +53,7 @@ import { decideChannelAction, buildDoneChannelState, buildFailedChannelState, wi
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
-import { resolveRetrospectivaScheduledAts, ruleBaseDateForCycle } from "./lib/mensal/retrospectiva-schedule.ts";
+import { resolveRetrospectivaScheduledAts, resolveRetrospectivaBaseDate } from "./lib/mensal/retrospectiva-schedule.ts";
 import { resolveMonthlySendSchedule, type MonthlySendScheduleConfig } from "./lib/mensal/monthly-send-schedule.ts";
 import {
   publicPostCtaProblems,
@@ -261,9 +261,11 @@ async function main(): Promise<void> {
   }
 
   const ruleConfig = (config as { monthly_send_schedule?: MonthlySendScheduleConfig }).monthly_send_schedule;
-  const baseDate =
-    values["base-date"] ?? (values["at"] ? undefined : ruleBaseDateForCycle(cycle, new Date(), resolveMonthlySendSchedule(ruleConfig)) ?? undefined);
-  const baseDateFromRule = !values["base-date"] && !values["at"] && baseDate !== undefined;
+  const { baseDate, fromRule: baseDateFromRule } = resolveRetrospectivaBaseDate(cycle, {
+    baseDate: values["base-date"],
+    at: values["at"],
+    rule: resolveMonthlySendSchedule(ruleConfig),
+  });
   const ats = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate });
   if (!values["at"]) {
     console.log(
