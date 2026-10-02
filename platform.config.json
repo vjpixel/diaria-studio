@@ -136,7 +136,7 @@
   "boxes_divulgacao": {
     "slot0": "",
     "slot1": "diaria-imersao1010-copia.md",
-    "slot2": "artigo-especial-apoiadores.md",
+    "slot2": "retrospectiva-apoiadores.md",
     "slot3": null,
     "note_slot3": "#6748 (29/08/2026) — slot 3 eliminado; a edição sai com no máximo 2 caixas (slot1+slot2). Chave mantida (não removida do schema, decisão documentada no PR #6748) por back-compat/reversibilidade, mas ignorada em todo o pipeline (stitch-newsletter.ts nunca renderiza, select-boxes-by-clicks.ts nunca ranqueia/seleciona). apoio-divulgacao.md, que ocupava este slot, SAIU da rotação (não migrado pro slot2, que já tem amazon-loja-divulgacao.md ativo) — reintroduzir exige decisão editorial nova, não é automático."
   },
