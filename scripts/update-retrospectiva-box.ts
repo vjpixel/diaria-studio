@@ -42,15 +42,27 @@
  *   npx tsx scripts/update-retrospectiva-box.ts --unpin [--cycle 2609-10] [--dry-run]
  *   [--snippets-file path] [--config path]
  *
- * `--unpin` não exige título/gancho e não toca no snippet — só no pin.
- * Com `--cycle`, grava o canal `box` em `divulgacao-published.json`.
+ * `--unpin` não exige título/gancho, não toca no snippet nem no state por
+ * canal — só no pin. Fora do `--unpin`, `--cycle` é obrigatório e o canal
+ * `box` é gravado em `divulgacao-published.json`.
+ *
+ * **Retomar o slot depois do Artigo Especial:** com o canal `box` já `done`,
+ * uma 2ª execução pula (idempotência) e NÃO re-pina — se o Artigo Especial
+ * assumiu o slot 2 depois, devolver o slot à Retrospectiva é decisão
+ * consciente: `--force`.
  */
 
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { applyBoxPin, isBoxSlotOwnedBy, serializeConfigSurgically, type BoxesDivulgacaoConfig } from "./lib/box-slot-pin.ts";
+import {
+  ARTIGO_ESPECIAL_BOX_FILENAME,
+  applyBoxPin,
+  isBoxSlotOwnedBy,
+  serializeConfigSurgically,
+  type BoxesDivulgacaoConfig,
+} from "./lib/box-slot-pin.ts";
 import { decideChannelAction, buildDoneChannelState, buildFailedChannelState, withChannelState } from "./lib/artigo-especial-state.ts";
 import { monthlyDir } from "./lib/mensal/monthly-paths.ts";
 import {
@@ -132,10 +144,12 @@ export function applyRetrospectivaBoxUpdate(content: string, input: Retrospectiv
         "Ajuste manualmente uma vez (ver context/snippets/README.md) antes de rodar de novo.",
     );
   }
+  // Replacers como FUNÇÃO: título/gancho vêm de texto editorial, e numa
+  // string de substituição `$&`, `$'` etc. seriam interpretados como padrões.
   return content
-    .replace(TITLE_LINE_RE, buildTitleLine(input.mesLabel))
-    .replace(QUOTE_PARAGRAPH_RE, buildQuoteParagraph(input.mesLabel, input.titulo, input.gancho))
-    .replace(CTA_LINE_RE, buildCtaLine(input.url));
+    .replace(TITLE_LINE_RE, () => buildTitleLine(input.mesLabel))
+    .replace(QUOTE_PARAGRAPH_RE, () => buildQuoteParagraph(input.mesLabel, input.titulo, input.gancho))
+    .replace(CTA_LINE_RE, () => buildCtaLine(input.url));
 }
 
 export function renderRetrospectivaBox(existing: string | null, input: RetrospectivaBoxInput): string {
@@ -162,6 +176,8 @@ export interface RunRetrospectivaBoxOptions {
 export type RunRetrospectivaBoxResult =
   | { action: "skipped"; reason: string }
   | { action: "dry-run" }
+  /** `--unpin` sem efeito: o slot não aponta (mais) pra Retrospectiva. */
+  | { action: "noop"; reason: string }
   | { action: "updated"; snippetWritten: boolean; configChanged: boolean };
 
 export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRetrospectivaBoxResult {
@@ -210,11 +226,23 @@ export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRet
   const configChanged = JSON.stringify(nextConfig) !== JSON.stringify(config);
 
   if (o.unpin && !isBoxSlotOwnedBy(config, RETROSPECTIVA_BOX_SLOT, RETROSPECTIVA_BOX_FILENAME)) {
-    console.log(
-      `[box] --unpin no-op: boxes_divulgacao.slot${RETROSPECTIVA_BOX_SLOT}=` +
-        `${JSON.stringify(config.boxes_divulgacao?.[`slot${RETROSPECTIVA_BOX_SLOT}`])} não é a Retrospectiva — ` +
-        "o pin atual (do outro box) fica intacto.",
-    );
+    const current = config.boxes_divulgacao?.[`slot${RETROSPECTIVA_BOX_SLOT}`];
+    // Só o PARCEIRO de alternância (Artigo Especial) é no-op legítimo; um
+    // terceiro valor (typo, edição manual) é drift de config — avisar alto.
+    const reason =
+      current === ARTIGO_ESPECIAL_BOX_FILENAME
+        ? `slot${RETROSPECTIVA_BOX_SLOT} está com o Artigo Especial — o pin dele fica intacto (alternância, #9474).`
+        : `slot${RETROSPECTIVA_BOX_SLOT}=${JSON.stringify(current)} não é nenhum dos 2 boxes que se alternam no slot — ` +
+          "nada alterado; confira platform.config.json.";
+    if (current === ARTIGO_ESPECIAL_BOX_FILENAME) console.log(`[box] --unpin no-op: ${reason}`);
+    else console.warn(`[box] AVISO --unpin no-op: ${reason}`);
+    return { action: "noop", reason };
+  }
+  if (doPin && configChanged) {
+    const before = config.boxes_divulgacao?.[`slot${RETROSPECTIVA_BOX_SLOT}`];
+    if (before !== RETROSPECTIVA_BOX_FILENAME) {
+      console.log(`[box] slot${RETROSPECTIVA_BOX_SLOT}: ${JSON.stringify(before)} → "${RETROSPECTIVA_BOX_FILENAME}" (last-writer-wins).`);
+    }
   }
 
   if (o.dryRun) {

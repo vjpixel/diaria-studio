@@ -90,7 +90,7 @@ export function readArtigoEspecialState(
 /**
  * Pura (exceto o aviso em stderr): valida o mapa `channels` cru de um state
  * file por canal. Extraído de `readArtigoEspecialState` (#9474) pra que o
- * state da Retrospectiva do Mês (`scripts/lib/mensal/retrospectiva-divulgacao-state.ts`)
+ * state da Retrospectiva do Mês (`scripts/lib/mensal/retrospectiva-divulgacao.ts`)
  * use EXATAMENTE a mesma tolerância — canal com status inválido é descartado
  * com aviso (achado do silent-failure-hunter, review #5979/PR #6000), nunca
  * aceito em silêncio.
@@ -121,8 +121,7 @@ export function parseChannelStates<C extends string>(
         // catch do caller) — achado do silent-failure-hunter, review
         // #5979/PR #6000.
         process.stderr.write(
-          `[${tag}] AVISO: ${path} — canal "${ch}" tem status inválido (${JSON.stringify(r.status)}) — descartado, tratado como "nunca tentado".
-`,
+          `[${tag}] AVISO: ${path} — canal "${ch}" tem status inválido (${JSON.stringify(r.status)}) — descartado, tratado como "nunca tentado".\n`,
         );
       }
     }

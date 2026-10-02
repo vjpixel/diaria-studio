@@ -27,10 +27,12 @@
  *      a agenda. Além disso o dispatch usa `allowImmediateFallback: false`
  *      (#6015): falha do Worker vira `failed`, nunca post imediato.
  *   3. **Destaque válido** pro Worker (`especial-retrospectiva` casa o regex
- *      `especial(-[a-z]+)?` do Worker publicado). Namespace `especial` porque
- *      é o único valor não-diário que o Worker deployado já aceita — ampliar o
- *      regex exigiria deploy (fora de escopo); o store desta skill é por ciclo,
- *      sem colisão com o do Artigo Especial.
+ *      `especial(-[a-z]+)?` do Worker publicado). Dos namespaces que o Worker
+ *      deployado aceita (`d[123]`, `weekly[-x]`, `especial[-x]`, `eia-AAMMDD`),
+ *      `especial-{sufixo}` é o único que comporta um identificador próprio sem
+ *      semântica alheia — os outros são da diária, do carrossel semanal e do
+ *      "É IA?". Ampliar o regex exigiria deploy (fora de escopo); o store
+ *      desta skill é por ciclo, sem colisão com o do Artigo Especial.
  *
  * Uso:
  *   npx tsx scripts/publish-retrospectiva-linkedin.ts --cycle 2609-10 \
@@ -64,17 +66,42 @@ const ROOT = resolve(import.meta.dirname, "..");
 /** `destaque` enviado ao Worker (ver docstring, guard 3). */
 export const RETROSPECTIVA_LINKEDIN_DESTAQUE = "especial-retrospectiva";
 
-/** Pura: lê a imagem do D1 de `_internal/public-images.json` do ciclo, ou `null`. */
+/**
+ * Lê a imagem do D1 de `_internal/public-images.json` do ciclo, ou `null`.
+ * Arquivo ilegível e URL não-https avisam em stderr com a causa real — "sem
+ * imagem" por arquivo corrompido não pode parecer "campo ausente".
+ */
 export function readD1ImageUrl(cycleDir: string): string | null {
   const p = resolve(cycleDir, "_internal", "public-images.json");
   if (!existsSync(p)) return null;
   try {
     const j = JSON.parse(readFileSync(p, "utf8")) as { images?: { d1?: { url?: unknown } } };
     const url = j.images?.d1?.url;
-    return typeof url === "string" && url.startsWith("https://") ? url : null;
-  } catch {
+    if (typeof url === "string" && url.startsWith("https://")) return url;
+    if (url !== undefined) console.warn(`[publish-retrospectiva-linkedin] AVISO: images.d1.url em ${p} não é https (${JSON.stringify(url)}) — ignorada.`);
+    return null;
+  } catch (e) {
+    console.warn(`[publish-retrospectiva-linkedin] AVISO: ${p} ilegível (${(e as Error).message}) — post sem imagem.`);
     return null;
   }
+}
+
+/**
+ * Pura: há no store de dispatch uma entry viva (agendada/publicada) deste post?
+ * Segundo guard de idempotência, independente do state por canal: se a escrita
+ * do state falhou depois de um dispatch bem-sucedido (lock do OneDrive,
+ * EPERM), o state não registra nada e só o store sabe que o post JÁ está na
+ * fila do Worker (achado do review do PR #9475).
+ */
+export function findLiveDispatch(published: SocialPublished): PostEntry | null {
+  return (
+    published.posts.find(
+      (p) =>
+        p.platform === "linkedin" &&
+        p.destaque === RETROSPECTIVA_LINKEDIN_DESTAQUE &&
+        (p.status === "scheduled" || p.status === "published"),
+    ) ?? null
+  );
 }
 
 export interface RunRetrospectivaLinkedinOptions {
@@ -96,7 +123,11 @@ export interface RunRetrospectivaLinkedinOptions {
 export type RunRetrospectivaLinkedinResult =
   | { action: "skipped"; reason: string }
   | { action: "dry-run" }
-  | { action: "dispatched"; entry: PostEntry; channelStatus: "done" | "failed" };
+  /** Agendado. `verifyError` = a reconciliação com o Worker não rodou (o post
+   *  está na fila, mas não foi confirmado lá) — o caller sinaliza exit != 0. */
+  | { action: "dispatched"; entry: PostEntry; verifyError: string | null }
+  /** Falhou no dispatch ou caiu no DLQ na reconciliação — canal `failed`. */
+  | { action: "failed"; entry: PostEntry; reason: string };
 
 /**
  * Corpo testável. Aplica os guards de CTA e destaque (o de Worker configurado
@@ -111,6 +142,15 @@ export async function runRetrospectivaLinkedinDispatch(o: RunRetrospectivaLinked
   if (decision.action === "skip") {
     console.log(`[linkedin_pagina] pulado — ${decision.reason}`);
     return { action: "skipped", reason: decision.reason };
+  }
+  const live = o.force ? null : findLiveDispatch(readSocialPublished(o.ctx.publishedPath));
+  if (live) {
+    const reason =
+      `o store ${o.ctx.publishedPath} já tem o post na fila (status ${live.status}, ` +
+      `worker_queue_key ${String(live.worker_queue_key ?? "?")}, ${live.scheduled_at ?? "?"}) — o state por canal não registrou ` +
+      "(escrita anterior falhou?). Confira no Worker; --force despacha de novo.";
+    console.log(`[linkedin_pagina] pulado — ${reason}`);
+    return { action: "skipped", reason };
   }
 
   const problems = publicPostCtaProblems(o.text);
@@ -142,15 +182,24 @@ export async function runRetrospectivaLinkedinDispatch(o: RunRetrospectivaLinked
   }
 
   const entry = await (o.dispatch ?? dispatchEntry)(input, o.ctx);
-  let channelStatus: "done" | "failed" = entry.status === "failed" ? "failed" : "done";
   const at = new Date().toISOString();
-  state = withChannelState(
-    state,
-    "linkedin_pagina",
-    channelStatus === "done" ? buildDoneChannelState(at, null) : buildFailedChannelState(at, entry.reason ?? "dispatch falhou"),
-  );
-  writeRetrospectivaDivulgacaoState(statePath, state);
+  if (entry.status === "failed") {
+    const reason = entry.reason ?? "dispatch falhou";
+    writeRetrospectivaDivulgacaoState(statePath, withChannelState(state, "linkedin_pagina", buildFailedChannelState(at, reason)));
+    return { action: "failed", entry, reason };
+  }
+  state = withChannelState(state, "linkedin_pagina", buildDoneChannelState(at, null));
+  try {
+    writeRetrospectivaDivulgacaoState(statePath, state);
+  } catch (e) {
+    throw new Error(
+      `post JÁ ESTÁ na fila do Worker (worker_queue_key ${String(entry.worker_queue_key ?? "?")}, ${o.scheduledAt}), ` +
+        `mas o state por canal não foi gravado: ${(e as Error).message}. NÃO rode de novo sem conferir — ` +
+        `o store ${o.ctx.publishedPath} segura uma 2ª execução.`,
+    );
+  }
 
+  let verifyError: string | null = null;
   if (entry.status === "scheduled") {
     try {
       const published = readSocialPublished(o.ctx.publishedPath);
@@ -163,17 +212,22 @@ export async function runRetrospectivaLinkedinDispatch(o: RunRetrospectivaLinked
           (p) => p.platform === "linkedin" && p.destaque === RETROSPECTIVA_LINKEDIN_DESTAQUE && p.status === "failed",
         );
         if (failed) {
-          channelStatus = "failed";
           const reason = typeof failed.failure_reason === "string" ? failed.failure_reason : "reconciliação pós-dispatch: Worker reportou falha (DLQ).";
           state = withChannelState(state, "linkedin_pagina", buildFailedChannelState(new Date().toISOString(), reason));
           writeRetrospectivaDivulgacaoState(statePath, state);
+          return { action: "failed", entry: failed, reason };
         }
       }
     } catch (e) {
-      console.warn(`[verify] falhou (non-fatal, o dispatch já foi gravado): ${(e as Error).message}`);
+      // O dispatch foi aceito e está gravado; o que falhou foi CONFIRMAR na
+      // fila. Não vira `failed` (retentar despacharia de novo), mas o caller
+      // sai != 0 pra que "agendado e confirmado" nunca se confunda com
+      // "agendado, sem confirmação" (achado do review do PR #9475).
+      verifyError = (e as Error).message;
+      console.warn(`[verify] falhou — o post está na fila, mas não foi confirmado no Worker: ${verifyError}`);
     }
   }
-  return { action: "dispatched", entry, channelStatus };
+  return { action: "dispatched", entry, verifyError };
 }
 
 async function main(): Promise<void> {
@@ -236,20 +290,30 @@ async function main(): Promise<void> {
     dryRun,
     ctx,
   });
-  if (r.action === "dispatched") {
+  if (r.action === "dispatched" || r.action === "failed") {
     logEvent(
       {
         edition: cycle,
         stage: null,
         agent: "publish-retrospectiva-linkedin",
-        level: r.channelStatus === "failed" ? "warn" : "info",
-        message: `linkedin_pagina ${r.channelStatus} (${r.entry.status}) para ${ats.pagina}`,
-        details: { worker_queue_key: r.entry.worker_queue_key ?? null, route: r.entry.route ?? null },
+        level: r.action === "failed" || r.verifyError ? "warn" : "info",
+        message: `linkedin_pagina ${r.action} (${r.entry.status}) para ${ats.pagina}`,
+        details: {
+          worker_queue_key: r.entry.worker_queue_key ?? null,
+          route: r.entry.route ?? null,
+          ...(r.action === "failed" ? { reason: r.reason } : { verifyError: r.verifyError }),
+        },
       },
       ROOT,
     );
-    if (r.channelStatus === "failed") {
-      console.error(`linkedin_pagina falhou — ver ${ctx.publishedPath}.`);
+    if (r.action === "failed") {
+      console.error(`linkedin_pagina falhou (${r.reason}) — ver ${ctx.publishedPath}.`);
+      process.exitCode = 1;
+    } else if (r.verifyError) {
+      console.error(
+        `linkedin_pagina agendada para ${ats.pagina}, mas NÃO confirmada no Worker — confira a fila do Worker ` +
+          `(worker_queue_key em ${ctx.publishedPath}) antes de considerar feito.`,
+      );
       process.exitCode = 1;
     } else {
       console.log(`OK — página agendada para ${ats.pagina}.`);

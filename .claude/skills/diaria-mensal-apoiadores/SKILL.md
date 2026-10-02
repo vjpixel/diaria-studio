@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal-apoiadores
-description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada no LinkedIn (página D+1 09:00 BRT + perfil D+2 09:30 BRT, CTA pro apoia.se) e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,box,email] [--dry-run] [--force] [--schedule "AAAA-MM-DDTHH:mm"] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
+description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada no LinkedIn (página D+1 09:00 BRT + perfil D+2 09:30 BRT, CTA pro apoia.se) e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,box,email] [--dry-run] [--force canal[,canal]] [--schedule "AAAA-MM-DDTHH:mm"] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
 ---
 
 # /diaria-mensal-apoiadores
@@ -57,7 +57,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 |---|---|
 | Audiência do e-mail | **TAG** `kit_apoiadores.audience_tag` (`apoio-retrospectiva`), nunca segmento — ver "Audiência é TAG" abaixo. `public: false`, envio EXTRA (a diária do dia sai normal). |
 | Página | `retrospectiva.diar.ia.br/{AAMM}`, AAMM = mês de **CONTEÚDO** do ciclo (`2609-10` → `/2609`, `mensalPathFromCycle`). Gate de apoio R$25+ no Worker `workers/retrospectiva`. Tem que estar no ar ANTES do e-mail e dos posts (todos levam até ela). |
-| Post apoia.se | **Restrito a R$25+** (valor `25` do `Quem pode ver?`) — mesma lógica de visibilidade do Artigo Especial (restringe ao tier que ganha a recompensa). Texto de **CHAMADA** (título + 2 parágrafos curtos + URL da retrospectiva), nunca o conteúdo integral. Fala com quem JÁ apoia, sem CTA de conversão. |
+| Post apoia.se | **Restrito a R$25+** (valor `25` do `Quem pode ver?`) — mesma lógica de visibilidade do Artigo Especial (restringe ao tier que ganha a recompensa). Texto de **CHAMADA** (título + 2 parágrafos curtos; a URL da retrospectiva vai no campo `Link externo`, nunca repetida no corpo), nunca o conteúdo integral. Fala com quem JÁ apoia, sem CTA de conversão. |
 | Posts públicos (editor, 02/10/2026) | **Sim — LinkedIn página + perfil.** CTA aponta pro apoia.se, **NUNCA** pra URL direta da retrospectiva paywalled: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria` (adaptação da frase do editor no Artigo Especial — não reescrever, não passar por Clarice/humanizador). Texto de chamada, não recorte. Facebook/Instagram/X: **a avaliar**, fora desta skill. |
 | Agenda LinkedIn | Página `webhook_target: "diaria"` **D+1 09:00 BRT**, perfil **D+2 09:30 BRT**, D = data do ENVIO do e-mail (`--base-date`). Agenda do dia: `09:00 retrospectiva-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. Perfil é **manual** (o Worker rejeita `pixel` + `post`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
@@ -74,17 +74,30 @@ fecha de ponta a ponta com `--skip apoiase`.
   nunca "não pulou nada".
 - `--dry-run` — roda o preflight, gera os textos e mostra tudo no gate;
   **para no gate**, sem publicar/agendar/gravar nada.
-- `--force` — reexecuta um canal já `done` no state por canal. No canal
-  `email`, repassado ao publisher Kit: cria um novo broadcast mesmo com
-  `kitBroadcastId` gravado (o rascunho anterior NÃO é excluído — vira órfão no
-  painel, e o comando avisa nomeando o id).
+- `--force canal[,canal]` — reexecuta SÓ os canais nomeados que já estão
+  `done` (mesmos tokens do `--skip`). **Nunca global**: um `--force` sem lista
+  reexecutaria também o apoia.se e criaria um 2º broadcast Kit (com
+  `--schedule`, um 2º envio agendado pros apoiadores). O gate lista os canais
+  forçados. No canal `email`, vira `--force` do publisher Kit: novo broadcast
+  mesmo com `kitBroadcastId` gravado (o rascunho anterior NÃO é excluído —
+  vira órfão no painel, e o comando avisa nomeando o id). No canal `box`, é
+  o jeito de devolver o slot 2 à Retrospectiva depois que o Artigo Especial o
+  assumiu (o canal já `done` pula sem ele).
 - `--schedule "AAAA-MM-DDTHH:mm"` — repassado ao publisher Kit: cria o
   broadcast JÁ AGENDADO (#7867 item 1). Sem ele, rascunho.
 - `--base-date AAAA-MM-DD` — data do ENVIO do e-mail, âncora do D+1/D+2 do
-  LinkedIn. Default: a data do `--schedule`, se houver; senão hoje (banner).
+  LinkedIn. Default (decidido pelo AGENTE, não pelo script): a data do
+  `--schedule`, se houver; senão hoje (banner). O agente sempre repassa o
+  valor resolvido explicitamente ao `publish-retrospectiva-linkedin.ts` — o
+  script sozinho só conhece "hoje". Data-base cujo D+1 09:00 / D+2 09:30 já
+  passou é ERRO (nunca reagenda pra daqui a minutos): usar `--at`.
 - `--at ISO` — horário único pros dois posts LinkedIn (sobrepõe o default).
 - `--unpin` — só tira o pin do box da Retrospectiva do slot 2 (no-op se o
   Artigo Especial já assumiu o slot). Não mexe em nenhum outro canal.
+- Flags repassadas a um script específico (não são da skill como um todo):
+  `--accept-teaser` (Passo 3, `verify-retrospectiva-page.ts`), `--no-pin`
+  (Passo 7, `update-retrospectiva-box.ts`), `--image-url` (Passo 6,
+  `publish-retrospectiva-linkedin.ts` — default: imagem do D1).
 - `--mark-sent` — **não prepara nada**: registra que o EDITOR já enviou o
   e-mail de verdade pela UI (Passo 4c). Rodar 2x é idempotente.
 
@@ -119,8 +132,10 @@ fecha de ponta a ponta com `--skip apoiase`.
    `GET 200` sozinho não prova nada: `/AAMM` devolve 200 com o paywall seco
    mesmo sem conteúdo, e `HEAD` cai no 405. O script classifica o corpo
    (trecho+paywall × paywall seco) e confere a chave `article:{AAMM}` (edição
-   completa) no KV `ARTICLES`. `not_live` aqui não é erro — é o aviso de que o
-   Passo 3 vai publicar a página.
+   completa) no KV `ARTICLES`. `not_live` (exit 1, por contrato) aqui não é
+   falha do comando — é o sinal de que o Passo 3 vai publicar a página. Exit
+   3 = `live_unconfirmed` (trecho no ar, KV não consultado por falta de
+   credencial).
 
 3. **Mural do apoia.se ANTES de criar post** (#6014 item 3). O state por
    canal só enxerga o que ESTA skill fez. Abrir a aba `Posts no Mural` da
@@ -159,6 +174,12 @@ fecha de ponta a ponta com `--skip apoiase`.
    Rodar o sync da tag ANTES do de nível numa virada de mês projeta o estado
    velho.
 
+   O gate WEB da página (`/AAMM`) não lê a tag do Kit: lê a allowlist do KV
+   `ALLOWLIST`, populada por `npx tsx scripts/build-apoiador-allowlist.ts
+   --push` (fail-closed, recusa push parcial). Sem rodá-lo no ciclo, quem
+   virou Mantenedor este mês recebe o e-mail mas pode ser barrado na página
+   que o box e o apoia.se apontam.
+
 ## Passo 1 — gerar os textos (agente, 1 dispatch)
 
 Dispatch de **1** subagente `general-purpose` com `model: claude-opus-5-5` +
@@ -175,8 +196,9 @@ Agent(subagent_type="general-purpose", model="claude-opus-5-5", effort="low", pr
   parágrafos do draft, não entregue as conclusões — é isso que a pessoa vai
   buscar na retrospectiva. Nada de clickbait vazio.
 
-  1. apoiase.md — fala com quem JÁ apoia (R$25+): título + 2 parágrafos curtos
-     + URL {retrospectivaUrl}. Sem CTA de conversão.
+  1. apoiase.md — fala com quem JÁ apoia (R$25+): título na 1ª linha + 2
+     parágrafos curtos. NÃO coloque a URL no texto: ela vai no campo
+     "Link externo" do post ({retrospectivaUrl}). Sem CTA de conversão.
   2. linkedin-pagina.md — voz institucional diar.ia.br (3ª pessoa), formato de
      post LinkedIn comum (context/publishers/linkedin.md seções 1-8). Termine
      com a linha literal, sozinha:
@@ -197,9 +219,16 @@ editor — remover antes, recolocar depois) e em marca/identificador técnico.
 Pular a geração dos canais em `--skip`. O e-mail não tem texto novo: é o
 render Kit do próprio `draft.md`.
 
-Checagem mecânica antes do gate (os 2 LinkedIn):
-`publicPostCtaProblems` (`retrospectiva-divulgacao.ts`) — o próprio
-`publish-retrospectiva-linkedin.ts` recusa despachar texto reprovado.
+Checagem mecânica antes do gate — valida o `--skip` e roda
+`publicPostCtaProblems` nos DOIS posts de LinkedIn (exit 1 = texto reprovado:
+reescrever antes de mostrar no gate):
+
+```bash
+npx tsx scripts/check-retrospectiva-divulgacao.ts --cycle $CYCLE [--skip ...]
+```
+
+O da página ainda é rechecado no dispatch; o do PERFIL é colado à mão, então
+esta é a única barreira mecânica dele.
 
 ## Passo 2 — gate humano único
 
@@ -228,6 +257,7 @@ Box (slot 2, alterna com o Artigo Especial — substitui o pin atual: {slot2 hoj
 {preview do box — update-retrospectiva-box.ts --dry-run}
 
 Defaults assumidos: {banner do Passo 0.5}
+Re-execução forçada (--force): {canais | nenhum}
 
 Aprovar? sim / ajustar {canal} / abortar
 ```
@@ -259,8 +289,9 @@ npx tsx scripts/verify-retrospectiva-page.ts --cycle $CYCLE
 ```
 
 Grava `pagina` como `done` (veredito `live`) ou `failed`. `live_unconfirmed`
-(trecho no ar, KV não consultável por falta de credencial) não grava nada —
-`--accept-teaser` aceita conscientemente. **Página `failed` bloqueia os
+(trecho no ar, KV não consultado por falta de credencial; exit 3) não grava
+nada — `--accept-teaser` aceita conscientemente. Erro REAL de leitura do KV
+(403, 5xx) é `not_live`, nunca aceitável pelo `--accept-teaser`. **Página `failed` bloqueia os
 Passos 4-7** (todos levam até ela): parar e reportar.
 
 ## Passo 4 — e-mail (canal `email`, Kit)
@@ -352,18 +383,24 @@ Pulado se `--skip linkedin`; cada canal com o próprio guard.
 1. **Página:**
    ```bash
    npx tsx scripts/publish-retrospectiva-linkedin.ts --cycle $CYCLE \
-     [--base-date AAAA-MM-DD] [--at ISO] [--force] [--dry-run]
+     --base-date {data do envio, resolvida no Passo 0.5} [--at ISO] [--force] [--dry-run]
    ```
    Lê `divulgacao/linkedin-pagina.md`, imagem = D1 de
    `_internal/public-images.json`. Recusa ANTES de despachar se o texto citar
    a URL paywalled ou faltar a linha literal de CTA, se a agenda não estiver
    no futuro, ou se o Worker não estiver configurado (sem Worker a rota seria
    `make_now` — publicaria AGORA). `allowImmediateFallback: false` (#6015).
-   `destaque` no Worker = `especial-retrospectiva` (único namespace não-diário
-   que o Worker publicado aceita sem deploy). Detalhe do dispatch em
-   `_internal/divulgacao-linkedin-published.json`, reconciliado contra o
-   Worker (`verifyWorkerDispatch`; DLQ → `failed`).
-2. **Perfil (manual):** agendar `divulgacao/linkedin-perfil.md` no composer
+   `destaque` no Worker = `especial-retrospectiva` (`especial-{sufixo}` é o
+   namespace que comporta um identificador próprio sem deploy; `d[123]`,
+   `weekly-*` e `eia-*` têm semântica alheia). Detalhe do dispatch em
+   `_internal/divulgacao-linkedin-published.json` — que também é 2º guard: se
+   ele já tem o post agendado, o script pula mesmo com o state sem registro.
+   Reconciliado contra o Worker (`verifyWorkerDispatch`; DLQ → `failed`);
+   reconciliação que não roda deixa o canal `done` mas sai com exit 1
+   ("agendado, não confirmado").
+2. **Perfil (manual):** rodar de novo o `check-retrospectiva-divulgacao.ts`
+   (o texto pode ter sido mexido depois do gate) e agendar
+   `divulgacao/linkedin-perfil.md` no composer
    nativo para o horário `perfil` do Passo 0.5 (D+2 09:30 BRT) e marcar:
    `npx tsx scripts/mark-retrospectiva-channel.ts --cycle $CYCLE --channel linkedin_perfil --status done`.
    O Worker rejeita `webhook_target=pixel` + `action=post` — não tente por
@@ -400,9 +437,15 @@ gh pr create --title "chore(#9474): pin box Retrospectiva — $CYCLE" \
 O snippet (`data/`, OneDrive, gitignored) **não** entra no commit. Review
 automatizado via hook; merge segue a regra de sessão interativa (#5251).
 
-`--unpin` (standalone, sem título/gancho): devolve o slot 2 ao auto-select
-por cliques (#4626) quando a Retrospectiva envelhecer — **no-op** se o Artigo
-Especial já assumiu o slot. Mesmo fluxo de branch/PR quando houver diff.
+Com o canal `box` já `done`, rodar de novo pula — inclusive quando o Artigo
+Especial assumiu o slot 2 depois. Devolver o slot à Retrospectiva é decisão
+consciente: `--force box`.
+
+`--unpin` (standalone, sem título/gancho, não toca snippet nem state):
+devolve o slot 2 ao auto-select por cliques (#4626) quando a Retrospectiva
+envelhecer — **no-op** (resultado `noop`) se o Artigo Especial já assumiu o
+slot; um 3º valor no slot (drift de config) também é no-op, com aviso. Mesmo
+fluxo de branch/PR quando houver diff.
 
 ## Passo 8 — resumo + registro
 

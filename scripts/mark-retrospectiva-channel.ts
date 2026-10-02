@@ -62,16 +62,33 @@ export function runMarkRetrospectivaChannel(o: MarkRetrospectivaChannelOptions):
   return { statePath };
 }
 
-export type SyncEmailResult = { action: "written"; status: "done" | "failed"; reason: string | null } | { action: "nothing" };
+export type SyncEmailResult =
+  | { action: "written"; status: "done" | "failed"; reason: string | null }
+  | { action: "kept-manual-done" }
+  | { action: "nothing" };
 
-/** Corpo testável do `--sync-email`: lê o state do publisher Kit e projeta no canal `email`. */
+/**
+ * Corpo testável do `--sync-email`: lê o state do publisher Kit e projeta no
+ * canal `email`.
+ *
+ * Preserva um `done` já gravado quando a projeção só diria "audiência não
+ * confirmável" (`kitAudienceVerified: null`): é exatamente o caso em que o
+ * SKILL manda o editor conferir no painel e marcar `done` à mão — reverter
+ * isso a cada execução faria a skill entrar em loop num falso `failed`
+ * (achado do review do PR #9475). `kitAudienceVerified: false` (audiência
+ * DIVERGENTE, incidente) sempre sobrescreve.
+ */
 export function runSyncEmailChannel(cycle: string, cycleDir: string): SyncEmailResult {
-  const derived = deriveEmailChannelState(readApoiadoresState(cycleDir));
-  if (!derived || derived.status === "pending") return { action: "nothing" };
+  const apoiadores = readApoiadoresState(cycleDir);
+  const derived = deriveEmailChannelState(apoiadores);
+  if (!derived) return { action: "nothing" };
   const statePath = retrospectivaDivulgacaoStatePath(cycleDir);
   const state = readRetrospectivaDivulgacaoState(statePath, cycle);
+  if (derived.status === "failed" && state.channels.email?.status === "done" && apoiadores?.kitAudienceVerified !== false) {
+    return { action: "kept-manual-done" };
+  }
   writeRetrospectivaDivulgacaoState(statePath, withChannelState(state, "email", derived));
-  return { action: "written", status: derived.status, reason: derived.reason };
+  return { action: "written", status: derived.status === "done" ? "done" : "failed", reason: derived.reason };
 }
 
 function main(): void {
@@ -83,6 +100,8 @@ function main(): void {
     const r = runSyncEmailChannel(cycle, cycleDir);
     if (r.action === "nothing") {
       console.log("Canal `email`: nenhum broadcast Kit registrado ainda pra este ciclo — nada gravado (segue pendente).");
+    } else if (r.action === "kept-manual-done") {
+      console.log("Canal `email`: mantido o `done` marcado à mão (audiência conferida no painel) — a releitura do publisher segue sem confirmação.");
     } else {
       console.log(`Canal \`email\` gravado como "${r.status}"${r.reason ? ` — ${r.reason}` : ""}.`);
       if (r.status === "failed") process.exitCode = 1;

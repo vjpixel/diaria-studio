@@ -96,6 +96,15 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.ok(!next.includes("Setembro"));
   });
 
+  it("título/gancho com padrões de substituição ($&, $') entram literais", () => {
+    const next = applyRetrospectivaBoxUpdate(buildDefaultRetrospectivaBox(INPUT), {
+      ...INPUT,
+      titulo: "IA custa $& por mês",
+      gancho: "Preço $' de verdade",
+    });
+    assert.ok(next.includes('**"IA custa $& por mês"**. Preço $\' de verdade.'));
+  });
+
   it("formato divergente aborta com RetrospectivaBoxFormatError (nunca adivinha)", () => {
     assert.throws(() => applyRetrospectivaBoxUpdate("**Outro box**\n\ntexto", INPUT), RetrospectivaBoxFormatError);
   });
@@ -147,7 +156,50 @@ describe("runUpdateRetrospectivaBox / runUpdateArtigoEspecialBox — integraçã
 
   it("--unpin da Retrospectiva com o Artigo Especial no slot é no-op e não exige título/gancho", () => {
     const r = runUpdateRetrospectivaBox({ ...opts(), titulo: undefined, gancho: undefined, cycle: undefined, unpin: true });
-    assert.deepEqual(r, { action: "updated", snippetWritten: false, configChanged: false });
+    assert.equal(r.action, "noop");
+    assert.match((r as { reason: string }).reason, /Artigo Especial/);
+    assert.equal(readFileSync(configPath, "utf8"), realishConfig);
+  });
+
+  it("--unpin com um 3º valor no slot (drift) também é no-op, mas avisando que não é o parceiro", () => {
+    writeFileSync(configPath, realishConfig.replace(`"slot2": "${AE}"`, '"slot2": "outro-box.md"'));
+    const r = runUpdateRetrospectivaBox({ ...opts(), titulo: undefined, gancho: undefined, cycle: undefined, unpin: true });
+    assert.equal(r.action, "noop");
+    assert.match((r as { reason: string }).reason, /nenhum dos 2 boxes/);
+  });
+
+  it("--unpin da Retrospectiva quando ELA é a dona: solta o slot sem tocar snippet nem state", () => {
+    runUpdateRetrospectivaBox(opts());
+    const r = runUpdateRetrospectivaBox({ ...opts(), titulo: undefined, gancho: undefined, unpin: true });
+    assert.deepEqual(r, { action: "updated", snippetWritten: false, configChanged: true });
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig;
+    assert.deepEqual(cfg.boxes_divulgacao_auto!.pinned_slots, [1]);
+    assert.equal(cfg.boxes_divulgacao!.slot2, RETRO);
+  });
+
+  it("retomar o slot depois do Artigo Especial exige --force (canal box já done)", () => {
+    runUpdateRetrospectivaBox(opts());
+    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig;
+    cfg.boxes_divulgacao!.slot2 = AE;
+    writeFileSync(configPath, JSON.stringify(cfg, null, 2) + "\n");
+    assert.equal(runUpdateRetrospectivaBox(opts()).action, "skipped");
+    assert.equal((JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig).boxes_divulgacao!.slot2, AE);
+    assert.equal(runUpdateRetrospectivaBox({ ...opts(), force: true }).action, "updated");
+    assert.equal((JSON.parse(readFileSync(configPath, "utf8")) as BoxesDivulgacaoConfig).boxes_divulgacao!.slot2, RETRO);
+  });
+
+  it("formato divergente num snippet existente: canal box failed, nada escrito, erro propaga", () => {
+    mkdirSync(join(tmp, "snippets"), { recursive: true });
+    writeFileSync(snippetsFile, "**Outro box**\n\ntexto\n");
+    assert.throws(() => runUpdateRetrospectivaBox(opts()), RetrospectivaBoxFormatError);
+    assert.equal(readFileSync(snippetsFile, "utf8"), "**Outro box**\n\ntexto\n");
+    assert.equal(readFileSync(configPath, "utf8"), realishConfig);
+    assert.equal(readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10").channels.box?.status, "failed");
+  });
+
+  it("--no-pin escreve o snippet e não toca no config", () => {
+    const r = runUpdateRetrospectivaBox({ ...opts(), pin: false });
+    assert.deepEqual(r, { action: "updated", snippetWritten: true, configChanged: false });
     assert.equal(readFileSync(configPath, "utf8"), realishConfig);
   });
 

@@ -34,6 +34,9 @@
  * 2 destaques nenhum dos dois boxes aparece, mesmo pinado.
  */
 
+/** Arquivo do box do Artigo Especial — parceiro de alternância da Retrospectiva no slot 2. */
+export const ARTIGO_ESPECIAL_BOX_FILENAME = "artigo-especial-apoiadores.md";
+
 export interface BoxesDivulgacaoConfig {
   boxes_divulgacao?: Record<string, unknown>;
   boxes_divulgacao_auto?: { enabled?: boolean; pinned_slots?: number[]; note?: string };

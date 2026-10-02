@@ -37,8 +37,16 @@ export interface RetrospectivaScheduleInput {
 
 /**
  * Resolve `{ pagina, perfil }`. Lança em `at` passado/inválido ou `baseDate`
- * inválida. Se a data resultante já passou (ex: `baseDate` antiga),
- * `computeScheduledAt` aplica o shift de slot-no-passado de sempre.
+ * inválida.
+ *
+ * **`baseDate` no passado LANÇA** em vez de deixar `computeScheduledAt` aplicar
+ * o shift de slot-no-passado (#2552, que move o horário pra `agora + 15min`):
+ * aqui a âncora é a data do ENVIO do e-mail, que pode ser de dias atrás (ex:
+ * retentar um `linkedin_pagina` que falhou), e o shift transformaria isso num
+ * post público quase imediato, fora da agenda e possivelmente colado no d1 da
+ * diária — passaria pelo guard "no futuro" do publisher sem erro nenhum
+ * (achado do review do PR #9475). Sem `baseDate` (âncora = hoje) o
+ * comportamento é o do Artigo Especial, inalterado.
  */
 export function resolveRetrospectivaScheduledAts(
   config: ScheduleConfig,
@@ -48,5 +56,16 @@ export function resolveRetrospectivaScheduledAts(
     const at = validateExplicitAt(input.at, input.now ?? Date.now());
     return { pagina: at, perfil: at };
   }
-  return resolveArtigoEspecialScheduledAts(config, { now: input.now, baseDate: input.baseDate });
+  if (!input.baseDate) return resolveArtigoEspecialScheduledAts(config, { now: input.now });
+  const now = input.now ?? Date.now();
+  const ats = resolveArtigoEspecialScheduledAts(config, { now, baseDate: input.baseDate, disablePastSlotShift: true });
+  const passados = (["pagina", "perfil"] as const).filter((k) => !(Date.parse(ats[k]) > now));
+  if (passados.length > 0) {
+    throw new Error(
+      `--base-date ${input.baseDate}: horário(s) ${passados.map((k) => `${k}=${ats[k]}`).join(", ")} já passaram ` +
+        `(agora: ${new Date(now).toISOString()}). Passe --at com um horário futuro explícito — nunca reagendar ` +
+        "automaticamente pra daqui a minutos.",
+    );
+  }
+  return ats;
 }

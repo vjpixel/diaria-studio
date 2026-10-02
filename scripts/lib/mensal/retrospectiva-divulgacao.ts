@@ -30,7 +30,7 @@
  * o que o ESP entregou — antes de afirmar "enviado", perguntar ao Kit.
  */
 
-import { existsSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "../atomic-write.ts";
 import { parseChannelStates, type ChannelState } from "../artigo-especial-state.ts";
@@ -68,17 +68,27 @@ export function retrospectivaDivulgacaoStatePath(monthlyDirPath: string): string
 export function readRetrospectivaDivulgacaoState(path: string, cycle: string): RetrospectivaDivulgacaoState {
   const empty: RetrospectivaDivulgacaoState = { cycle, channels: {} };
   if (!existsSync(path)) return empty;
+  // Arquivo presente mas inaproveitável: guarda uma cópia ANTES de devolver
+  // vazio — o próximo write de qualquer canal sobrescreveria o arquivo e
+  // apagaria o único registro de um canal irreversível (ex: `apoiase` com a
+  // URL do post). Achado do review do PR #9475.
+  const quarantine = (why: string): RetrospectivaDivulgacaoState => {
+    const backup = `${path}.corrupt-${Date.now()}`;
+    try {
+      copyFileSync(path, backup);
+    } catch {
+      /* best-effort: o aviso abaixo continua saindo */
+    }
+    process.stderr.write(`[retrospectiva-divulgacao] AVISO: ${path} ${why} — tratando como vazio (cópia em ${backup}).\n`);
+    return empty;
+  };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<RetrospectivaDivulgacaoState>;
     if (typeof parsed.cycle !== "string" || !parsed.channels || typeof parsed.channels !== "object") {
-      process.stderr.write(`[retrospectiva-divulgacao] AVISO: ${path} tem shape inesperado — tratando como vazio.\n`);
-      return empty;
+      return quarantine("tem shape inesperado");
     }
     if (parsed.cycle !== cycle) {
-      process.stderr.write(
-        `[retrospectiva-divulgacao] AVISO: ${path} é do ciclo "${parsed.cycle}", não "${cycle}" — tratando como vazio.\n`,
-      );
-      return empty;
+      return quarantine(`é do ciclo "${parsed.cycle}", não "${cycle}"`);
     }
     const channels = parseChannelStates(
       parsed.channels as Record<string, unknown>,
@@ -88,10 +98,7 @@ export function readRetrospectivaDivulgacaoState(path: string, cycle: string): R
     );
     return { cycle, channels };
   } catch (e) {
-    process.stderr.write(
-      `[retrospectiva-divulgacao] AVISO: ${path} existe mas não pôde ser lido/parseado (${(e as Error).message}) — tratando como vazio.\n`,
-    );
-    return empty;
+    return quarantine(`existe mas não pôde ser lido/parseado (${(e as Error).message})`);
   }
 }
 
@@ -212,13 +219,16 @@ export function publicPostCtaProblems(text: string): string[] {
  *   - `kitAudienceVerified === false` → `failed` sempre (registro de
  *     INCIDENTE: rascunho com audiência divergente, inclusive se marcado
  *     `sent` — mandar com filtro errado é o pior caso do canal, #6126).
- *   - `status: "sent"` (agendado via `--schedule` ou `--mark-sent` do editor)
- *     → `done`.
- *   - `kitBroadcastId` com audiência confirmada (`true`) → `done`.
- *   - `kitBroadcastId` com `kitAudienceVerified: null` → `failed`: "não
- *     confirmável" não é "ok" (mesma regra do canal email do Artigo Especial).
- *     O rascunho existe — depois de conferir a audiência no painel, o editor
- *     marca `done` à mão via `mark-retrospectiva-channel.ts`.
+ *   - sem `kitBroadcastId` (state legado ou só `draft_prepared`): `sent`
+ *     (`--mark-sent` do editor) → `done`; senão `null` (pendente).
+ *   - `kitBroadcastId` com audiência confirmada (`true`) → `done`, rascunho
+ *     ou agendado.
+ *   - `kitBroadcastId` com `kitAudienceVerified: null` → `failed`, MESMO com
+ *     `status: "sent"` (agendado): "não confirmável" não é "ok" (mesma regra
+ *     do canal email do Artigo Especial). Depois de conferir a audiência no
+ *     painel, o editor marca `done` à mão via `mark-retrospectiva-channel.ts`
+ *     — e o `--sync-email` seguinte preserva esse `done` (ver
+ *     `runSyncEmailChannel`).
  */
 export function deriveEmailChannelState(apoiadores: ApoiadoresState | null): ChannelState | null {
   if (!apoiadores) return null;
@@ -232,13 +242,24 @@ export function deriveEmailChannelState(apoiadores: ApoiadoresState | null): Cha
       reason: `audiência do broadcast Kit ${id ?? "?"} DIVERGIU do filtro esperado (kitAudienceVerified=false) — conferir no painel antes de qualquer disparo.`,
     };
   }
-  if (apoiadores.status === "sent") return { status: "done", attemptedAt, url: null, reason: null };
-  if (id === null) return null;
+  // `== null` cobre também o state legado (Beehiiv/Brevo) sem a chave.
+  if (id == null) {
+    // Sem broadcast Kit: só um `--mark-sent` do editor (envio pela UI, ex.
+    // ciclo Brevo 2607-08) conta como feito; `draft_prepared` = pendente.
+    return apoiadores.status === "sent" ? { status: "done", attemptedAt, url: null, reason: null } : null;
+  }
+  // Com broadcast Kit, a audiência confirmada é condição de `done` — VALE
+  // TAMBÉM pro `status: "sent"` do caminho `--schedule`: o publisher grava
+  // `sent` mesmo quando a releitura falhou na rede (`kitAudienceVerified:
+  // null`), e um broadcast que vai disparar sozinho sem filtro conferido é
+  // justamente o pior caso do canal (#6126). Achado do review do PR #9475.
   if (apoiadores.kitAudienceVerified === true) return { status: "done", attemptedAt, url: null, reason: null };
   return {
     status: "failed",
     attemptedAt,
     url: null,
-    reason: `rascunho Kit ${id} criado, mas a audiência não foi confirmada na releitura (kitAudienceVerified=null) — conferir no painel e marcar done à mão.`,
+    reason:
+      `broadcast Kit ${id} ${apoiadores.status === "sent" ? "AGENDADO" : "criado"}, mas a audiência não foi confirmada na releitura ` +
+      "(kitAudienceVerified=null) — conferir no painel e marcar done à mão.",
   };
 }

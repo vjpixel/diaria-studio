@@ -9,7 +9,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,6 +28,7 @@ import { normalizeBaseDate } from "../scripts/lib/artigo-especial-schedule.ts";
 import { resolveRetrospectivaScheduledAts } from "../scripts/lib/mensal/retrospectiva-schedule.ts";
 import { runMarkRetrospectivaChannel, runSyncEmailChannel } from "../scripts/mark-retrospectiva-channel.ts";
 import { classifyPublicBody, decidePageVerdict, verifyRetrospectivaPage } from "../scripts/verify-retrospectiva-page.ts";
+import { checkRetrospectivaDivulgacaoTexts } from "../scripts/check-retrospectiva-divulgacao.ts";
 import type { ApoiadoresState } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
 
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
@@ -54,6 +55,16 @@ describe("state por canal (divulgacao-published.json)", () => {
     }
     writeRetrospectivaDivulgacaoState(p, s);
     assert.equal(Object.keys(readRetrospectivaDivulgacaoState(p, "2609-10").channels).length, 6);
+  });
+
+  it("arquivo corrompido é copiado pra .corrupt-* antes de virar vazio (o próximo write não apaga a evidência)", () => {
+    const p = retrospectivaDivulgacaoStatePath(tmp);
+    mkdirSync(join(tmp, "_internal"), { recursive: true });
+    writeFileSync(p, '{"cycle":"2609-10","channels":{"apoiase":{"status":"done","url":"https://apoia.se/x"');
+    assert.deepEqual(readRetrospectivaDivulgacaoState(p, "2609-10").channels, {});
+    const backups = readdirSync(join(tmp, "_internal")).filter((f) => f.includes(".corrupt-"));
+    assert.equal(backups.length, 1);
+    assert.match(readFileSync(join(tmp, "_internal", backups[0]), "utf8"), /apoia\.se\/x/);
   });
 
   it("corrompido / de outro ciclo / status inválido → fail-soft (vazio ou canal descartado)", () => {
@@ -149,6 +160,17 @@ describe("deriveEmailChannelState — projeção do state do publisher Kit", () 
     assert.equal(r?.status, "failed");
     assert.match(r!.reason!, /não foi confirmada/);
   });
+  it("AGENDADO (sent via --schedule) com audiência não confirmada → failed, nunca done (#6126)", () => {
+    const r = deriveEmailChannelState(apoiadores({ status: "sent", sentAt: "2026-10-03T09:00:00Z", kitBroadcastId: 7, kitAudienceVerified: null }));
+    assert.equal(r?.status, "failed");
+    assert.match(r!.reason!, /AGENDADO/);
+  });
+  it("state legado sem a chave kitBroadcastId: draft → null; --mark-sent → done", () => {
+    const legacy = apoiadores({}) as unknown as Record<string, unknown>;
+    delete legacy.kitBroadcastId;
+    assert.equal(deriveEmailChannelState(legacy as unknown as ApoiadoresState), null);
+    assert.equal(deriveEmailChannelState({ ...(legacy as unknown as ApoiadoresState), status: "sent", sentAt: "2026-08-04T10:00:00Z" })?.status, "done");
+  });
   it("audiência divergente → failed MESMO marcado sent (incidente)", () => {
     const r = deriveEmailChannelState(apoiadores({ status: "sent", kitBroadcastId: 7, kitAudienceVerified: false }));
     assert.equal(r?.status, "failed");
@@ -177,6 +199,13 @@ describe("agenda (#9474) — D+1 09:00 / D+2 09:30 relativos à data do ENVIO", 
     assert.equal(r.pagina, r.perfil);
     assert.throws(() => resolveRetrospectivaScheduledAts(CONFIG, { at: "2026-09-01T08:00:00-03:00", now }), /passado/);
   });
+  it("baseDate no passado LANÇA (nunca vira post daqui a 15 min pelo shift de slot-no-passado)", () => {
+    const later = Date.parse("2026-10-10T10:00:00-03:00");
+    assert.throws(() => resolveRetrospectivaScheduledAts(CONFIG, { baseDate: "2026-10-03", now: later }), /já passaram/);
+    // perfil (D+2 09:30) já passou mesmo com a página no futuro? também lança.
+    const between = Date.parse("2026-10-05T10:00:00-03:00");
+    assert.throws(() => resolveRetrospectivaScheduledAts(CONFIG, { baseDate: "2026-10-03", now: between }), /pagina=.*perfil=|já passaram/);
+  });
   it("normalizeBaseDate rejeita formato e data inexistente", () => {
     assert.equal(normalizeBaseDate("2026-10-03"), "261003");
     assert.throws(() => normalizeBaseDate("03/10/2026"), /inválida/);
@@ -190,6 +219,19 @@ describe("mark-retrospectiva-channel", () => {
     const s = readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10");
     assert.equal(s.channels.apoiase?.url, "https://apoia.se/diaria/contents/view/x");
     assert.throws(() => runMarkRetrospectivaChannel({ cycle: "2609-10", cycleDir: tmp, channel: "linkedin_perfil", status: "failed" }), /--reason/);
+  });
+
+  it("--sync-email preserva o done marcado à mão quando a releitura só diz 'não confirmável'; divergência sobrescreve", () => {
+    mkdirSync(join(tmp, "_internal"), { recursive: true });
+    const apPath = join(tmp, "_internal", "beehiiv-apoiadores-state.json");
+    writeFileSync(apPath, JSON.stringify(apoiadores({ kitBroadcastId: 5, kitAudienceVerified: null })));
+    assert.equal(runSyncEmailChannel("2609-10", tmp).action, "written");
+    runMarkRetrospectivaChannel({ cycle: "2609-10", cycleDir: tmp, channel: "email", status: "done" });
+    assert.deepEqual(runSyncEmailChannel("2609-10", tmp), { action: "kept-manual-done" });
+    assert.equal(readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10").channels.email?.status, "done");
+    writeFileSync(apPath, JSON.stringify(apoiadores({ kitBroadcastId: 5, kitAudienceVerified: false })));
+    assert.equal(runSyncEmailChannel("2609-10", tmp).action, "written");
+    assert.equal(readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10").channels.email?.status, "failed");
   });
 
   it("--sync-email lê beehiiv-apoiadores-state.json e projeta no canal email (sem tocar o state do publisher)", () => {
@@ -222,6 +264,10 @@ describe("verify-retrospectiva-page — 200 sozinho não prova publicação", ()
     assert.equal(decidePageVerdict({ httpStatus: 200, publicKind: "paywall_seco", kvArticle: null }).verdict, "not_live");
     assert.equal(decidePageVerdict({ httpStatus: 405, publicKind: null, kvArticle: true }).verdict, "not_live");
     assert.equal(decidePageVerdict({ httpStatus: null, publicKind: null, kvArticle: null }).verdict, "not_live");
+    // KV TENTADO com erro nunca vira live_unconfirmed (o --accept-teaser não pode aceitar 403/5xx)
+    assert.equal(decidePageVerdict({ httpStatus: 200, publicKind: "teaser", kvArticle: null, kvError: "403" }).verdict, "not_live");
+    // 200 com corpo ilegível não é "erro de rede"
+    assert.match(decidePageVerdict({ httpStatus: 200, publicKind: null, kvArticle: true, fetchError: "aborted" }).reason!, /corpo não pôde ser lido.*aborted/);
   });
 
   it("faz GET (nunca HEAD — o Worker devolve 405) na URL do mês de conteúdo e lê article:{AAMM}", async () => {
@@ -256,7 +302,36 @@ describe("verify-retrospectiva-page — 200 sozinho não prova publicação", ()
         throw new Error("403");
       },
     });
-    assert.equal(v2.verdict, "live_unconfirmed");
-    assert.ok(v2.warnings.some((w) => w.includes("403")));
+    assert.equal(v2.verdict, "not_live");
+    assert.match(v2.reason!, /403/);
+    assert.match(v.reason!, /ECONNRESET/);
+  });
+});
+
+describe("check-retrospectiva-divulgacao — CTA nos DOIS posts públicos (o do perfil é colado à mão)", () => {
+  function write(file: string, text: string) {
+    mkdirSync(join(tmp, "divulgacao"), { recursive: true });
+    writeFileSync(join(tmp, "divulgacao", file), text);
+  }
+  const OK = `Chamada.\n\n${RETROSPECTIVA_PUBLIC_CTA}\n`;
+
+  it("perfil com a URL paywalled reprova, mesmo com a página ok", () => {
+    write("linkedin-pagina.md", OK);
+    write("linkedin-perfil.md", `${OK}https://retrospectiva.diar.ia.br/2609\n`);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
+    assert.equal(r.length, 2);
+    assert.equal(r[0].problems.length, 0);
+    assert.match(r[1].problems.join(), /paywalled/);
+  });
+  it("arquivo ausente reprova; --skip linkedin não checa nada; token inválido lança", () => {
+    write("linkedin-pagina.md", OK);
+    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, undefined)[1].problems.join(), /ausente/);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin"), []);
+    assert.throws(() => checkRetrospectivaDivulgacaoTexts(tmp, "linkdin"), /linkdin/);
+  });
+  it("CTA tolera CRLF e espaços em volta; host sem esquema e maiúsculas também reprovam", () => {
+    assert.deepEqual(publicPostCtaProblems(`Texto.\r\n\r\n  ${RETROSPECTIVA_PUBLIC_CTA}  \r\n`), []);
+    assert.equal(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2609`).length, 1);
+    assert.equal(publicPostCtaProblems(`${OK}outra.diar.ia.br/x`).length, 0);
   });
 });

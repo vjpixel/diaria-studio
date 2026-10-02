@@ -26,11 +26,12 @@
  * Veredito:
  *   - `live`: 200 + `article:{AAMM}` no KV (teaser ausente vira AVISO — o
  *     ciclo 2604-05 é anterior à convenção de corte e não tem trecho, #7580).
- *   - `live_unconfirmed`: 200 + teaser, KV não consultável (sem credencial) —
+ *   - `live_unconfirmed`: 200 + teaser, KV NÃO CONSULTADO (sem credencial) —
  *     forte indício, não prova; o script sai 0 mas grava `pagina` como
  *     `done` só com `--accept-teaser` (decisão consciente, logada).
- *   - `not_live`: status ≠ 200, ou KV respondeu que a edição completa NÃO
- *     existe, ou paywall seco sem KV pra desempatar.
+ *   - `not_live`: status ≠ 200 (ou corpo ilegível), KV respondeu que a edição
+ *     completa NÃO existe, a leitura do KV FALHOU (403/5xx — nunca confundida
+ *     com "sem credencial"), ou paywall seco sem KV pra desempatar.
  *
  * ## Quem publica a página (achado do #9474)
  *
@@ -45,7 +46,9 @@
  * Uso:
  *   npx tsx scripts/verify-retrospectiva-page.ts --cycle 2609-10 [--no-kv] [--accept-teaser] [--no-state]
  *
- * Exit: 0 = live (ou live_unconfirmed); 1 = not_live; 2 = uso.
+ * Exit: 0 = live; 1 = not_live (contrato: no preflight do Passo 0 é SINAL de
+ * que a página ainda vai ser publicada, não falha do comando); 3 =
+ * live_unconfirmed sem `--accept-teaser` (nada gravado); 2 = uso/erro.
  * Grava o canal `pagina` em `data/monthly/{ciclo}/_internal/divulgacao-published.json`
  * e registra no run-log (`--no-state` desliga os dois — preflight read-only).
  */
@@ -101,12 +104,31 @@ export function decidePageVerdict(input: {
   httpStatus: number | null;
   publicKind: PublicPageKind | null;
   kvArticle: KvArticleCheck;
+  /** Erro do fetch público (rede, timeout, corpo ilegível), quando houve. */
+  fetchError?: string | null;
+  /** Erro da leitura do KV quando ela FOI tentada (credencial presente). */
+  kvError?: string | null;
 }): { verdict: PageVerdict; reason: string | null; warnings: string[] } {
   const warnings: string[] = [];
-  if (input.httpStatus !== 200) {
+  if (input.httpStatus !== 200 || input.publicKind === null) {
+    const what = input.httpStatus === null ? "erro de rede" : `status ${input.httpStatus}`;
     return {
       verdict: "not_live",
-      reason: `GET público devolveu ${input.httpStatus ?? "erro de rede"} (esperado 200).`,
+      reason:
+        input.httpStatus === 200
+          ? `GET público devolveu 200, mas o corpo não pôde ser lido${input.fetchError ? ` (${input.fetchError})` : ""}.`
+          : `GET público: ${what}${input.fetchError ? ` (${input.fetchError})` : ""} — esperado 200.`,
+      warnings,
+    };
+  }
+  // KV TENTADO e com erro (403 de token sem escopo, 5xx, timeout) não é o
+  // mesmo que "sem credencial": nunca vira `live_unconfirmed`, senão o
+  // `--accept-teaser` aceitaria uma falha real de permissão como se fosse a
+  // ausência esperada de credencial (achado do review do PR #9475).
+  if (input.kvError) {
+    return {
+      verdict: "not_live",
+      reason: `a leitura do KV ARTICLES falhou (${input.kvError}) — não há como afirmar que a edição completa foi publicada.`,
       warnings,
     };
   }
@@ -152,6 +174,7 @@ export async function verifyRetrospectivaPage(cycle: string, deps: VerifyDeps): 
 
   let httpStatus: number | null = null;
   let publicKind: PublicPageKind | null = null;
+  let fetchError: string | null = null;
   try {
     const res = await deps.fetchImpl(url, {
       method: "GET",
@@ -162,8 +185,10 @@ export async function verifyRetrospectivaPage(cycle: string, deps: VerifyDeps): 
     });
     httpStatus = res.status;
     if (res.status === 200) publicKind = classifyPublicBody(await res.text());
-  } catch {
-    httpStatus = null;
+  } catch (e) {
+    // Mantém o `httpStatus` já recebido (um 200 com corpo ilegível não é
+    // "erro de rede") e preserva a causa no motivo.
+    fetchError = (e as Error).message;
   }
 
   let kvArticle: KvArticleCheck = null;
@@ -177,8 +202,7 @@ export async function verifyRetrospectivaPage(cycle: string, deps: VerifyDeps): 
     }
   }
 
-  const { verdict, reason, warnings } = decidePageVerdict({ httpStatus, publicKind, kvArticle });
-  if (kvError) warnings.push(`KV não consultável: ${kvError}`);
+  const { verdict, reason, warnings } = decidePageVerdict({ httpStatus, publicKind, kvArticle, fetchError, kvError });
   return { url, httpStatus, publicKind, kvArticle, kvError, verdict, warnings, reason };
 }
 
@@ -241,7 +265,7 @@ async function main(): Promise<void> {
   if (v.verdict === "live_unconfirmed" && !acceptTeaser) {
     console.warn("Canal `pagina` NÃO gravado: passe --accept-teaser pra aceitar o trecho como prova, ou configure a credencial Cloudflare.");
   }
-  process.exitCode = v.verdict === "not_live" ? 1 : 0;
+  process.exitCode = v.verdict === "not_live" ? 1 : v.verdict === "live_unconfirmed" && !acceptTeaser ? 3 : 0;
 }
 
 if (isMainModule(import.meta.url)) {

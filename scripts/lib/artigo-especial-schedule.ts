@@ -93,7 +93,7 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  */
 export function resolveArtigoEspecialScheduledAts(
   config: ScheduleConfig,
-  input: { at?: string; now?: number; baseDate?: string } = {},
+  input: { at?: string; now?: number; baseDate?: string; disablePastSlotShift?: boolean } = {},
 ): { pagina: string; perfil: string } {
   if (input.at) {
     const at = validateExplicitAt(input.at, input.now ?? Date.now());
@@ -133,6 +133,7 @@ export function resolveArtigoEspecialScheduledAts(
       platform: "linkedin",
       dayOffsetOverride: 1,
       now,
+      disablePastSlotShift: input.disablePastSlotShift ?? false,
     }),
     perfil: computeScheduledAt({
       config: withTime("09:30"),
@@ -141,6 +142,7 @@ export function resolveArtigoEspecialScheduledAts(
       platform: "linkedin",
       dayOffsetOverride: 2,
       now,
+      disablePastSlotShift: input.disablePastSlotShift ?? false,
     }),
   };
 }
