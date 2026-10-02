@@ -299,6 +299,34 @@ export function endSession(repoRoot: string, sessionId?: string): EndSessionResu
 }
 
 /**
+ * (#9451) `--end` SEM `--session-id` só remove um legado anônimo — nunca um
+ * marker por-sessão. Se há marker por-sessão nesta máquina, a causa quase
+ * certa é a injeção do `--session-id` ter falhado (comando encadeado/pipado,
+ * `inject-session-id.mjs` recusa de propósito): o marker da rodada sobrevive
+ * (até 24h travando o `AskUserQuestion` dela e mascarando stall de outra
+ * rodada no watchdog) enquanto o CLI dizia "removido: nada" com exit 0.
+ * Devolve a mensagem de erro nesse caso (o CLI sai com exit 1), `null` caso
+ * contrário. `--allow-no-session-id` preserva o comportamento antigo.
+ */
+export function anonymousEndError(
+  repoRoot: string,
+  sessionId: string | undefined,
+  allowAnonymous: boolean,
+  tag: string = machineTag(),
+): string | null {
+  if (sessionId || allowAnonymous) return null;
+  const legacyPath = activeSessionPath(repoRoot, tag);
+  const perSession = listActiveSessionMarkerPaths(repoRoot, tag).filter((p) => p !== legacyPath);
+  if (perSession.length === 0) return null;
+  return (
+    `--end sem --session-id não remove marker por-sessão, e há ${perSession.length} nesta máquina ` +
+    `(${perSession.join(", ")}). Provável injeção de --session-id recusada (comando encadeado/pipado — ` +
+    "context/overnight-dispatch-rules.md item 18). Rode `npx tsx scripts/overnight-session-marker.ts --end` " +
+    "STANDALONE, ou passe --session-id explicitamente (#9451)."
+  );
+}
+
+/**
  * (#9347) Resolve QUAL arquivo de marker `setPhase` deve atualizar:
  *   - com `sessionId`: o por-sessão, se existir; senão o legado, se ele for
  *     desta sessão ou anônimo (rodada pré-#9347, ou `--start` anônimo seguido
@@ -495,6 +523,11 @@ if (isMainModule(import.meta.url)) {
         `overnight session marker: preservado ${keptForeign} — pertence a OUTRA sessão (ou não é atribuível a ` +
           "esta chamada); um --end alheio nunca apaga o marker de outra rodada viva (#9347).\n",
       );
+    }
+    const anonErr = anonymousEndError(repoRoot, rawSessionId, allowAnonymous);
+    if (anonErr) {
+      process.stderr.write(`overnight-session-marker: erro — ${anonErr}\n`);
+      process.exitCode = 1;
     }
   } else if (arg === "--phase") {
     const phase = argv[1];
