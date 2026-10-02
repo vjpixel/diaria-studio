@@ -401,6 +401,39 @@ export function renderSection(
   return `## ${title}\n\n${lines.join("\n")}\n`;
 }
 
+/**
+ * #9432: bloco informativo "Descartados (mesma história)" — itens removidos do
+ * pool pelo agrupamento por história (#9360), com a URL primária mantida.
+ * Sem prefixo numerado/bullet, pra `parseSections` nunca tratar como candidato.
+ */
+export function renderStoryGroupDiscarded(
+  removed: { url?: string; title?: string; match_type?: string; matched_highlight?: string; story_signal?: string }[],
+): string {
+  const items = removed.filter((r) => r.match_type === "story_group" && r.url);
+  if (items.length === 0) return "";
+  const lines = items.map((r) => {
+    const signal = r.story_signal ? ` (${r.story_signal})` : "";
+    return `* ${r.title?.trim() || "(sem título)"} — ${r.url} → primária: ${r.matched_highlight ?? "?"}${signal}`;
+  });
+  return (
+    `\n---\n\n## Descartados (mesma história)\n\n` +
+    `_Cobertura secundária da mesma história, removida do pool. Se for falso positivo, o material segue em cluster_sources[] da primária._\n\n` +
+    `${lines.join("\n")}\n`
+  );
+}
+
+function loadStoryGroupDiscarded(internalDir: string): string {
+  const statsPath = join(internalDir, "dedup-intra-edition-stats.json");
+  if (!existsSync(statsPath)) return "";
+  try {
+    const stats = JSON.parse(readFileSync(statsPath, "utf8")) as { removed?: unknown };
+    return Array.isArray(stats.removed) ? renderStoryGroupDiscarded(stats.removed) : "";
+  } catch (err) {
+    console.error(`[render-categorized-md] WARN: dedup-intra-edition-stats.json ilegível (${(err as Error).message.slice(0, 120)}) — bloco de descartados omitido.`);
+    return "";
+  }
+}
+
 function renderSourceHealth(path?: string): string {
   if (!path || !existsSync(path)) return "";
   try {
@@ -792,7 +825,7 @@ function main() {
     ...(vidSec ? [vidSec] : []),
   ].join("\n");
 
-  const footer = renderSourceHealth(cli.sourceHealth);
+  const footer = loadStoryGroupDiscarded(dirname(resolve(cli.in))) + renderSourceHealth(cli.sourceHealth);
 
   // #293: Merge automático da curadoria do editor.
   // Se o MD existente foi modificado pelo editor (detectado por hash fingerprint),
