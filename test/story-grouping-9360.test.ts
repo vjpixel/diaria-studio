@@ -87,7 +87,16 @@ describe("modelVersionTokens (#9360)", () => {
     }
   });
   it("mesma versão + os dois anunciando lançamento agrupa", () => {
-    assert.equal(sameStorySignal(VB_SONNET.title, "Quase um Opus por uma fração do preço: novo Claude Sonnet 5.5 chega 30% mais barato"), "model_version");
+    assert.equal(sameStorySignal(VB_SONNET.title, "Quase um Opus por uma fração do preço: Anthropic lança Claude Sonnet 5.5, 30% mais barato"), "model_version");
+  });
+  it("palavra fraca (novo/chega) não conta como lançamento (#9455)", () => {
+    for (const [a, b] of [
+      ["Novo estudo mostra que Claude Opus 5.5 vaza prompt", "Anthropic lança Claude Opus 5.5"],
+      ["GPT-6.1 ganha novo modo de voz", "OpenAI lança GPT-6.1"],
+      ["Gemini 3 chega ao Android Auto", "Google lança Gemini 3"],
+    ]) {
+      assert.equal(sameStorySignal(a, b), null, `${a} × ${b}`);
+    }
   });
   it("versões diferentes do mesmo modelo não casam", () => {
     assert.equal(sameStorySignal("Claude Sonnet 5.5 chega", "Claude Sonnet 5 ganha recurso"), null);

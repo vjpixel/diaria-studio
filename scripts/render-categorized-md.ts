@@ -515,8 +515,13 @@ function mergeVerifiedFlags(inputPath: string, data: CategorizedJson): void {
  *
  * O arquivo é auto-descoberto: substitui o sufixo `01-categorized.json` (ou
  * `01-approved.json`) por `tmp-scored.json` no mesmo diretório `_internal/`.
+ *
+ * Só PREENCHE score ausente (#9454): `tmp-scored.json` é gravado no 1q.5,
+ * antes do story-grouping (§1u-bis), que soma bônus herdados ao score da
+ * primária (`rebonusPrimary`, #9443). Sobrescrever desfazia esse bônus no MD
+ * do gate (score exibido e ordenação divergiam do JSON).
  */
-function mergeScores(jsonPath: string, data: CategorizedJson): void {
+export function mergeScores(jsonPath: string, data: CategorizedJson): void {
   const scoredPath = jsonPath.replace('01-categorized.json', 'tmp-scored.json')
                              .replace('01-approved.json', 'tmp-scored.json');
   if (!existsSync(scoredPath)) return;
@@ -525,7 +530,7 @@ function mergeScores(jsonPath: string, data: CategorizedJson): void {
     const scoreMap = new Map(scored.map(s => [s.url, s.score]));
     for (const bucket of [data.lancamento, data.radar, data.use_melhor, data.video]) {
       for (const art of (bucket ?? [])) {
-        if (art.url && scoreMap.has(art.url)) {
+        if (art.url && typeof art.score !== 'number' && scoreMap.has(art.url)) {
           art.score = scoreMap.get(art.url);
         }
       }

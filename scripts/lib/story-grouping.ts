@@ -135,9 +135,15 @@ export function modelVersionTokens(title: string): Set<string> {
   return out;
 }
 
-/** Título com cara de anúncio de lançamento (PT/EN), usado só no sinal (2). */
+/**
+ * Título com cara de anúncio de lançamento (PT/EN), usado só no sinal (2).
+ * Só verbos FORTES de lançamento (#9455): `novo|nova|chega|chegou|estreia`
+ * aparecem em boa parte das manchetes em português ("Novo estudo mostra que
+ * X vaza prompt", "X chega ao Android Auto") e fundiam histórias diferentes
+ * sobre o mesmo modelo, tirando o perdedor do pool em silêncio.
+ */
 export const LAUNCH_TITLE_RE =
-  /\b(introducing|introduces|launch(es|ed|ing)?|unveil(s|ed|ing)?|releas(e|es|ed|ing)|announc(e|es|ed|ing)|debuts?|now available|available now|lan[çc]a(m|r|do|da)?|lan[çc]ou|lan[çc]amento|apresenta|anuncia|anunciou|chega|chegou|estreia|novo|nova)\b/i;
+  /\b(introducing|introduces|launch(es|ed|ing)?|unveil(s|ed|ing)?|releas(e|es|ed|ing)|announc(e|es|ed|ing)|debuts?|now available|available now|lan[çc]a(m|r|do|da)?|lan[çc]ou|lan[çc]amento|apresenta|anuncia|anunciou)\b/i;
 
 /** Sinal de mesma história entre dois títulos, ou null. */
 export function sameStorySignal(a: string, b: string): StorySignal | null {
