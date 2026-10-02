@@ -21,6 +21,7 @@
 import { canonicalize, extractUrls } from "./url-utils.ts";
 import { FLAGSHIP_MODEL_RE, detectFrontierLaunch, frontierLabOfUrl } from "./frontier-signals.ts";
 import { hasLaunchVerb } from "./launch-detect.ts";
+import { lancamentoDomains } from "./official-domains.ts";
 
 // ---------------------------------------------------------------------------
 // Fontes
@@ -342,6 +343,27 @@ export function currentHighlights(
  *   lançamento no título) → LANÇAMENTOS (link oficial, #160).
  * - Resto (case de cliente, ensaio, imprensa) → RADAR.
  */
+const OFFICIAL_LANCAMENTO_DOMAINS = lancamentoDomains();
+
+/**
+ * #9457: host oficial = laboratório de fronteira (`FRONTIER_LABS`) OU domínio
+ * de `official-domains.ts` (about.fb.com, mistral.ai…). Não
+ * mexe em `FRONTIER_LABS` para não alterar o scorer-select (#9359). @pure
+ */
+export function isOfficialHost(url: string): boolean {
+  if (frontierLabOfUrl(url) !== undefined) return true;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+  for (const d of OFFICIAL_LANCAMENTO_DOMAINS) {
+    if (host === d || host.endsWith(`.${d}`)) return true;
+  }
+  return false;
+}
+
 export function suggestSubstitution(
   article: { url: string; title: string },
   highlights: readonly HighlightLike[],
@@ -365,8 +387,10 @@ export function suggestSubstitution(
     }
     return { target: "destaque", slot: "?", reason: `lançamento oficial de ${signal.matched} — todos os destaques são manuais/protegidos, editor escolhe` };
   }
-  const official = frontierLabOfUrl(article.url) !== undefined;
-  if (signal?.route === "official" || (official && hasLaunchVerb(article.title) !== undefined)) {
+  const official = isOfficialHost(article.url);
+  // #9457: "Introducing X" também é anúncio em host oficial fora de FRONTIER_LABS.
+  const announces = hasLaunchVerb(article.title) !== undefined || /^\s*introducing\b/i.test(article.title);
+  if (signal?.route === "official" || (official && announces)) {
     return { target: "pool", slot: "LANÇAMENTOS", reason: "anúncio em host oficial do laboratório" };
   }
   return { target: "pool", slot: "RADAR", reason: official ? "post oficial que não anuncia lançamento" : "fonte não oficial" };

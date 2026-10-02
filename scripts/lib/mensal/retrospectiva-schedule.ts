@@ -15,8 +15,8 @@
  * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou. Hoje o
  * envio é decidido pelo editor (`--schedule` do publisher Kit); a regra fixa
  * do 1º sábado do mês 06:00 BRT é a #9473 (issue separada). Por isso
- * `baseDate` é parâmetro explícito — quando a #9473 entrar, o caller passa a
- * data derivada dela sem mudar este módulo. Omitido = hoje (mesmo default do
+ * `baseDate` é parâmetro explícito; com a #9473 em produção o caller deriva a
+ * data da regra via `ruleBaseDateForCycle` (abaixo). Omitido = hoje (mesmo default do
  * Artigo Especial), com banner no caller (#5321).
  *
  * Reusa `resolveArtigoEspecialScheduledAts` (que reusa `computeScheduledAt`) —
@@ -24,6 +24,7 @@
  */
 
 import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "../artigo-especial-schedule.ts";
+import { decideMonthlySendAt, DEFAULT_MONTHLY_SEND_SCHEDULE, type MonthlySendScheduleRule } from "./monthly-send-schedule.ts";
 
 type ScheduleConfig = Parameters<typeof resolveArtigoEspecialScheduledAts>[0];
 
@@ -68,4 +69,21 @@ export function resolveRetrospectivaScheduledAts(
     );
   }
   return ats;
+}
+
+/**
+ * Pura (#9473): data (`AAAA-MM-DD`, BRT) do envio do e-mail do ciclo segundo a
+ * regra do 1º sábado 06:00 BRT — a âncora D dos posts LinkedIn quando o e-mail
+ * sai AGENDADO pelo publisher Kit. `null` quando a regra já não vale pra este
+ * ciclo (faltam menos que `minLeadHours` ou o sábado passou): o publisher cai
+ * pra rascunho, a data real do envio é desconhecida, e o caller deve manter o
+ * comportamento anterior (âncora = hoje, com banner, ou `--base-date`/`--at`).
+ */
+export function ruleBaseDateForCycle(
+  cycle: string,
+  now: Date = new Date(),
+  rule: MonthlySendScheduleRule = DEFAULT_MONTHLY_SEND_SCHEDULE,
+): string | null {
+  const d = decideMonthlySendAt(cycle, now, rule);
+  return d.kind === "schedule" ? d.sendAt.slice(0, 10) : null;
 }

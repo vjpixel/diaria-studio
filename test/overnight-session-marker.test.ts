@@ -12,6 +12,7 @@ import {
   readPhase,
   resolveSessionIdOrThrow,
   listActiveSessionMarkerPaths,
+  anonymousEndError,
 } from "../scripts/overnight-session-marker.ts";
 
 // #3322: write/remove side do marker que .claude/hooks/pr-create-review.mjs
@@ -575,5 +576,43 @@ describe("marker por sessão — rodadas concorrentes na mesma máquina (#9347)"
 
     endSession(root, B);
     assert.equal(readPhase(root, undefined, undefined, now), "autonomous");
+  });
+});
+
+// #9451: `--end` sem `--session-id` (injeção recusada por comando encadeado)
+// não removia nada e saía com exit 0 — o marker por-sessão sobrevivia até 24h.
+describe("--end anônimo com marker por-sessão (#9451)", () => {
+  const roots: string[] = [];
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+  function freshRoot() {
+    const root = join(tmpdir(), `overnight-session-marker-9451-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    roots.push(root);
+    return root;
+  }
+  const A = "7746e03c-aaaa-4bbb-8ccc-000000009451";
+
+  it("REGRESSÃO: há marker por-sessão nesta máquina → erro (CLI sai com exit 1)", () => {
+    const root = freshRoot();
+    startSession(root, "2026-10-02T02:00:00.000Z", A);
+    const err = anonymousEndError(root, undefined, false);
+    assert.ok(err, "esperava erro com marker por-sessão vivo");
+    assert.match(err!, /STANDALONE/);
+    assert.ok(existsSync(activeSessionPath(root, undefined, A)), "marker não deve ser removido por --end anônimo");
+  });
+
+  it("sem marker por-sessão (nada ou só legado anônimo) → sem erro", () => {
+    const root = freshRoot();
+    assert.equal(anonymousEndError(root, undefined, false), null);
+    startSession(root, "2026-10-02T02:00:00.000Z");
+    assert.equal(anonymousEndError(root, undefined, false), null);
+  });
+
+  it("com --session-id ou --allow-no-session-id → sem erro", () => {
+    const root = freshRoot();
+    startSession(root, "2026-10-02T02:00:00.000Z", A);
+    assert.equal(anonymousEndError(root, A, false), null);
+    assert.equal(anonymousEndError(root, undefined, true), null);
   });
 });

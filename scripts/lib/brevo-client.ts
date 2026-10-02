@@ -735,6 +735,41 @@ export async function brevoGet(
   );
 }
 
+/** Backoff do retry de REDE de `brevoGetWithNetworkRetry` (#6035). */
+export const NETWORK_RETRY_DELAYS_MS = [2000, 5000, 15000];
+
+/**
+ * #6035 (02/10/2026) — `brevoGet` + retry quando o `fetch()` em si LANÇA
+ * (undici `TypeError: fetch failed` — ECONNRESET/DNS/timeout; sem Response).
+ * `brevoGet` só retenta 429/5xx: uma falha de rede escapa na 1ª ocorrência.
+ * Medido ao vivo: um único blip abortou o `Diaria-Clarice-Sync` (exit 2)
+ * após 45min, em 30004 de 82059 GETs por contato — com dezenas de milhares
+ * de GETs por run, um blip passageiro é praticamente certo de acontecer.
+ *
+ * Wrapper separado (não dentro do `brevoGet`) pra não multiplicar o retry
+ * EXTERNO que `fetchQueuedAndCommittedCampaignListIds` (#6458) já faz em
+ * `TypeError` contra `/emailCampaigns` (quota apertada). Só `TypeError` é
+ * retentado; esgotadas as tentativas, relança o MESMO erro.
+ */
+export async function brevoGetWithNetworkRetry(
+  apiKey: string,
+  path: string,
+  _sleep: (ms: number) => Promise<void> = _defaultSleep,
+): Promise<{ status: number; body: any }> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await brevoGet(apiKey, path, _sleep);
+    } catch (e) {
+      const delay = NETWORK_RETRY_DELAYS_MS[attempt];
+      if (!(e instanceof TypeError) || delay === undefined) throw e;
+      console.error(
+        `⚠️  Brevo GET ${path}: erro de rede (${e.message}) — retry ${attempt + 1} em ${delay}ms`,
+      );
+      await _sleep(delay);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // #2994 (P0): campanhas AGENDADAS (queued) — fonte de verdade pra excluir da
 // seleção de audiência contatos comprometidos com um envio ainda não disparado

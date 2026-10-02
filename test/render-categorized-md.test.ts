@@ -1134,3 +1134,27 @@ describe("renderStoryGroupDiscarded (#9432)", () => {
     assert.equal(renderStoryGroupDiscarded([{ url: "u", match_type: "jaccard" }]), "");
   });
 });
+
+describe("mergeScores (#9454)", () => {
+  it("preserva score já presente (bônus do story-grouping) e só preenche ausente", async () => {
+    const { mergeScores } = await import("../scripts/render-categorized-md.ts");
+    const dir = mkdtempSync(join(tmpdir(), "merge-scores-9454-"));
+    try {
+      mkdirSync(join(dir, "_internal"));
+      writeFileSync(
+        join(dir, "_internal", "tmp-scored.json"),
+        JSON.stringify({ all_scored: [{ url: "https://a.com/x", score: 70 }, { url: "https://b.com/y", score: 55 }] }),
+      );
+      const data = {
+        lancamento: [],
+        radar: [{ url: "https://a.com/x", score: 85 }, { url: "https://b.com/y" }],
+      } as unknown as Parameters<typeof mergeScores>[1];
+      mergeScores(join(dir, "_internal", "01-categorized.json"), data);
+      const radar = (data as unknown as { radar: { url: string; score?: number }[] }).radar;
+      assert.equal(radar[0].score, 85);
+      assert.equal(radar[1].score, 55);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

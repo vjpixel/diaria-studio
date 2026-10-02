@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal-apoiadores
-description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada no LinkedIn (página D+1 09:00 BRT + perfil D+2 09:30 BRT, CTA pro apoia.se) e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,box,email] [--dry-run] [--force canal[,canal]] [--schedule "AAAA-MM-DDTHH:mm"] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
+description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada no LinkedIn (página D+1 09:00 BRT + perfil D+2 09:30 BRT, CTA pro apoia.se) e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,box,email] [--dry-run] [--force canal[,canal]] [--schedule "AAAA-MM-DDTHH:mm" | --draft] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
 ---
 
 # /diaria-mensal-apoiadores
@@ -61,7 +61,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 | Posts públicos (editor, 02/10/2026) | **Sim — LinkedIn página + perfil.** CTA aponta pro apoia.se, **NUNCA** pra URL direta da retrospectiva paywalled: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria` (adaptação da frase do editor no Artigo Especial — não reescrever, não passar por Clarice/humanizador). Texto de chamada, não recorte. Facebook/Instagram/X: **a avaliar**, fora desta skill. |
 | Agenda LinkedIn | Página `webhook_target: "diaria"` **D+1 09:00 BRT**, perfil **D+2 09:30 BRT**, D = data do ENVIO do e-mail (`--base-date`). Agenda do dia: `09:00 retrospectiva-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. Perfil é **manual** (o Worker rejeita `pixel` + `post`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
-| Horário do e-mail | Hoje decidido pelo editor (`--schedule`). A regra fixa **1º sábado do mês, 06:00 BRT** é a #9473 — integração futura: quando entrar, o `--schedule` e o `--base-date` passam a vir dela. |
+| Horário do e-mail | **1º sábado do mês de envio, 06:00 BRT** (#9473, `monthly_send_schedule` no config; regra única em `lib/mensal/monthly-send-schedule.ts`). O 4b agenda por ela por padrão (rascunho se faltar <24h ou com `--draft`; `--schedule` sobrepõe). O LinkedIn herda a âncora D dessa mesma data (`ruleBaseDateForCycle`) quando o e-mail ainda sai agendado pela regra. |
 
 ## Argumentos
 
@@ -83,11 +83,13 @@ fecha de ponta a ponta com `--skip apoiase`.
   vira órfão no painel, e o comando avisa nomeando o id). No canal `box`, é
   o jeito de devolver o slot 2 à Retrospectiva depois que o Artigo Especial o
   assumiu (o canal já `done` pula sem ele).
-- `--schedule "AAAA-MM-DDTHH:mm"` — repassado ao publisher Kit: cria o
-  broadcast JÁ AGENDADO (#7867 item 1). Sem ele, rascunho.
+- `--schedule "AAAA-MM-DDTHH:mm"` — repassado ao publisher Kit: horário
+  EXPLÍCITO, sobrepõe a regra (#7867 item 1). Sem ele, vale a regra do 1º
+  sábado 06:00 BRT (#9473); `--draft` força rascunho.
 - `--base-date AAAA-MM-DD` — data do ENVIO do e-mail, âncora do D+1/D+2 do
   LinkedIn. Default (decidido pelo AGENTE, não pelo script): a data do
-  `--schedule`, se houver; senão hoje (banner). O agente sempre repassa o
+  `--schedule`, se houver; senão a data da regra #9473 (1º sábado do mês de
+  envio, se o e-mail ainda sai agendado por ela); senão hoje (banner). O agente sempre repassa o
   valor resolvido explicitamente ao `publish-retrospectiva-linkedin.ts` — o
   script sozinho só conhece "hoje". Data-base cujo D+1 09:00 / D+2 09:30 já
   passou é ERRO (nunca reagenda pra daqui a minutos): usar `--at`.
@@ -155,7 +157,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 5. **Agenda LinkedIn.** `resolveRetrospectivaScheduledAts`
    (`scripts/lib/mensal/retrospectiva-schedule.ts`) com `--at` ou
    `--base-date`. Imprimir o **banner de defaults assumidos** (#5321) sempre
-   que algo for default: âncora do D (data do `--schedule` ou hoje), visibilidade
+   que algo for default: âncora do D (data do `--schedule`, da regra #9473 ou hoje), visibilidade
    `25` no apoia.se, slot 2.
 
 6. **Audiência (antes do 1º envio de cada ciclo, canal `email`):**
@@ -241,7 +243,7 @@ o gate cobre tudo junto:
 
 Página (Passo 3): {"já no ar" | "vai publicar via build-article-page --push"}
 
-E-mail (Kit, tag {kit_apoiadores.audience_tag}, N membros, {rascunho | agendado --schedule}):
+E-mail (Kit, tag {kit_apoiadores.audience_tag}, N membros, {rascunho | agendado pela regra #9473 | agendado --schedule}):
   assunto: {deriveApoiadoresKitSubject} — preview: _internal/apoiadores-kit-preview.html
 
 Apoia.se (restrito R$25+, publica AGORA se aprovado):
@@ -316,10 +318,15 @@ prévio o `--force`/`--mark-sent` não têm o que referenciar.
 # Preview local — NUNCA chama a API do Kit, nem lê/grava o state.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --dry-run
 
-# Rascunho (send_at: null).
+# #9473: JÁ AGENDADO pela regra — 1º sábado do mês de ENVIO, 06:00 BRT
+# (platform.config.json → monthly_send_schedule). Se esse horário estiver a <24h
+# (#8205) ou já tiver passado, cai pra RASCUNHO com aviso.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE
 
-# #7867 item 1: JÁ AGENDADO e marca status "sent" — dispensa o 4c. SEM guard
+# Rascunho explícito (send_at: null) — o default antigo.
+npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --draft
+
+# #7867 item 1: horário EXPLÍCITO (sobrepõe a regra), marca status "sent" — dispensa o 4c. SEM guard
 # de data (decisão do editor): o script não checa colisão com a diária.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --schedule "2026-10-03T06:00:00-03:00"
 
@@ -345,10 +352,10 @@ npx tsx scripts/mark-retrospectiva-channel.ts --cycle $CYCLE --sync-email
   ausente, tag inexistente/vazia, ou guard de idempotência (`kitBroadcastId`
   gravado ou ciclo `sent`; `--force` ignora).
 
-**Sem `--schedule`** (rascunho): test send no painel → escolher um dia SEM
+**Rascunho** (`--draft`, ou regra tarde demais): test send no painel → escolher um dia SEM
 edição diária pesada (decisão 1 do #4482) → Send/Schedule pela UI → 4c.
 
-### 4c — Confirmar o envio (só o caminho manual)
+### 4c — Confirmar o envio (só o caminho rascunho)
 
 ```bash
 npx tsx scripts/send-monthly-apoiadores.ts --cycle $CYCLE --mark-sent
@@ -529,6 +536,8 @@ produto — comentário na issue.
 
 ## Escopo explícito
 
-O disparo do e-mail (test send, Send/Schedule sem `--schedule`) e o clique
-final do apoia.se continuam humanos. Facebook/Instagram/X da Retrospectiva:
-a avaliar (decisão do editor no #9474). Regra de horário do 1º sábado: #9473.
+O e-mail sai agendado pela regra do 1º sábado, 06:00 BRT (#9473) quando faltam
+>=24h; fora disso (ou com `--draft`) é rascunho e o disparo (test send,
+Send/Schedule) continua humano no painel do Kit. O clique final do apoia.se
+continua humano. Facebook/Instagram/X da Retrospectiva: a avaliar (decisão do
+editor no #9474).

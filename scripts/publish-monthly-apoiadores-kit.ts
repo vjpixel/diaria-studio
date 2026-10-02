@@ -4,7 +4,9 @@
  * `/diaria-mensal-apoiadores`)
  *
  * Cria o broadcast do envio extra pros apoiadores Mantenedor/Patrono na base
- * própria (Kit), **sempre como rascunho**. Sucessor de
+ * própria (Kit) — **agendado por padrão no 1º sábado do mês de envio, 06:00
+ * BRT (#9473) quando faltam >=24h; rascunho caso contrário ou com `--draft`**.
+ * Sucessor de
  * `publish-monthly-apoiadores-brevo.ts` (#4593), que por sua vez sucede o
  * paste manual no Beehiiv do #4482.
  *
@@ -22,10 +24,15 @@
  *      credencial do Kit no ambiente, idempotência (state do ciclo).
  *   3. Audiência: resolve a tag POR NOME (`findTagIdByName`, que nunca cria) e
  *      recusa se ela não existir ou estiver vazia.
- *   4. Cria o broadcast (`POST /v4/broadcasts`). **Rascunho por padrão**
- *      (`send_at: null`) — test-send, conferência visual e disparo continuam
- *      sendo ação humana no painel do Kit. **Com `--schedule` (#7867 item 1)**
- *      agenda via `send_at` e grava `status: "sent"` direto no state,
+ *   4. Cria o broadcast (`POST /v4/broadcasts`). **Desde o #9473, agendado
+ *      por padrão pela REGRA** — 1º sábado do mês de ENVIO, 06:00 BRT
+ *      (`platform.config.json` → `monthly_send_schedule`, helper
+ *      `lib/mensal/monthly-send-schedule.ts`). Se o instante da regra estiver
+ *      a menos de 24h (#8205) ou já tiver passado, cai pra **rascunho** com
+ *      aviso (nunca agenda em cima da hora). `--draft` força rascunho
+ *      (`send_at: null`); `--schedule ISO` (#7867 item 1) força um horário
+ *      explícito. Agendado (pela regra ou por `--schedule`), grava
+ *      `status: "sent"` direto no state,
  *      dispensando `--mark-sent` (`send-monthly-apoiadores.ts`) no caminho
  *      automatizado — que continua existindo pro caminho manual. Sem guard
  *      de data (decisão explícita do editor, #7867): o script não checa
@@ -79,6 +86,7 @@
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --force
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --schedule "2026-09-15T10:00:00-03:00"
+ *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --draft
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -117,6 +125,12 @@ import {
   buildApoiadoresKitScheduledState,
   type ApoiadoresState,
 } from "./lib/mensal/monthly-apoiadores-state.ts";
+import {
+  decideMonthlySendAt,
+  resolveMonthlySendSchedule,
+  type MonthlySendScheduleConfig,
+  type MonthlySendScheduleRule,
+} from "./lib/mensal/monthly-send-schedule.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-monthly-apoiadores-kit]";
@@ -135,8 +149,8 @@ export function buildApoiadoresKitDescription(cycle: string): string {
 
 /**
  * Pura — monta o payload de `POST /v4/broadcasts`. `send_at` é `null`
- * (rascunho) por padrão; `--schedule` (#7867 item 1) passa um ISO 8601 pra
- * agendar via API — sem checagem de colisão com a edição diária, decisão
+ * (rascunho) quando `scheduleAt` é omitido; o `main()` passa o ISO da regra
+ * (#9473) ou de `--schedule` (#7867 item 1) pra agendar via API — sem checagem de colisão com a edição diária, decisão
  * explícita do editor (ver docstring do módulo). SEMPRE inclui um
  * `subscriber_filter` de tag resolvida. `public: false` de propósito — ver
  * docstring do módulo.
@@ -180,6 +194,84 @@ export interface ApoiadoresKitDeps {
    * este campo importa aqui, e a API pode não ecoá-lo.
    */
   getBroadcast: (id: number, config?: KitConfig) => Promise<{ subscriber_filter?: unknown }>;
+  /** Relógio injetável (#9473) — a regra de envio compara contra "agora". */
+  now?: () => Date;
+}
+
+/**
+ * Resultado de `resolveApoiadoresSendAt` (#9473). `source` diz DE ONDE veio o
+ * horário — o log e o PR body precisam distinguir "a regra agendou" de "o
+ * editor passou --schedule" de "caiu pra rascunho porque era tarde demais".
+ */
+export type ApoiadoresSendAtResolution =
+  | { source: "explicit"; scheduleAt: string; warning?: undefined }
+  | { source: "rule"; scheduleAt: string; warning?: undefined }
+  | { source: "draft_flag"; scheduleAt: null; warning?: undefined }
+  | { source: "rule_too_late"; scheduleAt: null; ruleSendAt: string; warning: string };
+
+/**
+ * Pura (#9473): decide o `send_at` do broadcast.
+ *
+ *   - `--schedule ISO` → usa o ISO (comportamento #7867 item 1, sem guard).
+ *   - `--draft` → rascunho (`send_at: null`), o default antigo.
+ *   - nenhum dos dois → REGRA (`monthly_send_schedule`, 1º sábado do mês de
+ *     ENVIO, 06:00 BRT). Se o instante da regra está a menos de
+ *     `minLeadHours` (#8205, 24h) ou já passou → **cai pra RASCUNHO com
+ *     aviso**, nunca agenda. Escolha segura: rascunho é inerte e reversível;
+ *     agendar para dali a poucas horas (ou no passado, que o Kit dispara na
+ *     hora) tiraria a janela de conferência. Falhar em vez de cair pra
+ *     rascunho travaria o caminho manual que sempre funcionou.
+ *
+ * `--schedule` + `--draft` juntos é contraditório → lança.
+ *
+ * #9485: `rule` aceita um thunk, avaliado SÓ quando nenhum override foi
+ * passado — `monthly_send_schedule` inválido em `platform.config.json` não
+ * pode travar `--schedule`/`--draft` (o caminho manual de contingência).
+ */
+export function resolveApoiadoresSendAt(opts: {
+  cycle: string;
+  scheduleRaw: string | undefined;
+  draft: boolean;
+  now: Date;
+  rule: MonthlySendScheduleRule | (() => MonthlySendScheduleRule);
+}): ApoiadoresSendAtResolution {
+  if (opts.scheduleRaw !== undefined && opts.draft) {
+    throw new Error("--schedule e --draft são mutuamente exclusivos — passe só um.");
+  }
+  if (opts.scheduleRaw !== undefined) {
+    if (Number.isNaN(Date.parse(opts.scheduleRaw))) {
+      throw new Error(
+        `--schedule "${opts.scheduleRaw}" não é uma data/hora ISO 8601 válida (ex: 2026-09-15T10:00:00-03:00).`,
+      );
+    }
+    return { source: "explicit", scheduleAt: opts.scheduleRaw };
+  }
+  if (opts.draft) return { source: "draft_flag", scheduleAt: null };
+  const rule = typeof opts.rule === "function" ? opts.rule() : opts.rule;
+  const decision = decideMonthlySendAt(opts.cycle, opts.now, rule);
+  if (decision.kind === "schedule") return { source: "rule", scheduleAt: decision.sendAt };
+  return {
+    source: "rule_too_late",
+    scheduleAt: null,
+    ruleSendAt: decision.sendAt,
+    warning:
+      `${decision.reason} — criando RASCUNHO (send_at: null) em vez de agendar. Escolha o horário no painel ` +
+      "do Kit ou reexecute com --schedule ISO explícito.",
+  };
+}
+
+/** Pura: linha humana de log pra a resolução. */
+export function describeSendAtResolution(r: ApoiadoresSendAtResolution): string {
+  switch (r.source) {
+    case "explicit":
+      return `${r.scheduleAt} (--schedule explícito)`;
+    case "rule":
+      return `${r.scheduleAt} (regra monthly_send_schedule — 1º sábado do mês de envio, #9473)`;
+    case "draft_flag":
+      return "rascunho (--draft)";
+    case "rule_too_late":
+      return `rascunho (regra daria ${r.ruleSendAt}, tarde demais para agendar)`;
+  }
 }
 
 const defaultDeps: ApoiadoresKitDeps = {
@@ -236,31 +328,48 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   const cycle = requireMonthlyCycleArg(argv);
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 
-  // #7867 item 1: --schedule agenda via API (send_at) em vez de sempre criar
-  // rascunho. Sem guard de data de propósito (decisão do editor, #7867) —
-  // este script não checa `data/editions/` nem opina sobre colisão com a
-  // edição diária do dia; a escolha do horário é julgamento do editor.
-  let scheduleAt: string | null = null;
+  // #9473: o horário de envio vem da REGRA (1º sábado do mês de envio, 06:00
+  // BRT — `platform.config.json` → `monthly_send_schedule`) por padrão.
+  // Overrides explícitos: `--schedule ISO` (#7867 item 1, comportamento
+  // inalterado — sem guard de data, decisão do editor) e `--draft` (rascunho,
+  // o default antigo). Lido aqui só o argv; a regra é aplicada depois que a
+  // config é carregada.
+  let scheduleRaw: string | undefined;
   try {
-    const scheduleRaw = getStringArg(argv, "schedule", { example: "2026-09-15T10:00:00-03:00" });
-    if (scheduleRaw !== undefined) {
-      if (Number.isNaN(Date.parse(scheduleRaw))) {
-        log(`ERRO: --schedule "${scheduleRaw}" não é uma data/hora ISO 8601 válida (ex: 2026-09-15T10:00:00-03:00).`);
-        process.exit(1);
-        return;
-      }
-      scheduleAt = scheduleRaw;
-    }
+    scheduleRaw = getStringArg(argv, "schedule", { example: "2026-09-15T10:00:00-03:00" });
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
     process.exit(1);
     return;
   }
+  const draftFlag = hasFlag(argv, "draft");
 
   const platformConfigPath = resolve(rootDir, "platform.config.json");
   const platformConfig = existsSync(platformConfigPath)
-    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as { kit_apoiadores?: KitApoiadoresChannelConfig })
+    ? (JSON.parse(readFileSync(platformConfigPath, "utf8")) as {
+        kit_apoiadores?: KitApoiadoresChannelConfig;
+        monthly_send_schedule?: MonthlySendScheduleConfig;
+      })
     : {};
+
+  let sendAtResolution: ApoiadoresSendAtResolution;
+  try {
+    sendAtResolution = resolveApoiadoresSendAt({
+      cycle,
+      scheduleRaw,
+      draft: draftFlag,
+      now: (deps.now ?? (() => new Date()))(),
+      // #9485: thunk — só resolvido sem --schedule/--draft.
+      rule: () => resolveMonthlySendSchedule(platformConfig.monthly_send_schedule),
+    });
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+  if (sendAtResolution.warning) log(`AVISO: ${sendAtResolution.warning}`);
+  const scheduleAt = sendAtResolution.scheduleAt;
+  log(`horário de envio: ${describeSendAtResolution(sendAtResolution)}`);
   const tagNameResolution = resolveApoiadoresTagName(platformConfig.kit_apoiadores);
   if (!tagNameResolution.ok) {
     // Vale inclusive em --dry-run: sem nome de tag não há audiência possível,
@@ -479,7 +588,8 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   }
 
   try {
-    // markSent = true só quando --schedule foi passado E a audiência foi
+    // markSent = true só quando há horário agendado (regra #9473 ou
+    // --schedule) E a audiência foi
     // CONFIRMADA (`verified === true`, estritamente — não `!== false`).
     // `verified === null` (releitura falhou/não ecoou o campo) chega até
     // aqui sem lançar, mas "não confirmável" não é "confirmado": marcar

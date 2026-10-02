@@ -71,7 +71,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { getBroadcast, KitApiError, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { getBroadcast, kitFetch, KitApiError, type KitBroadcastSummary } from "./lib/kit-client.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import {
   createBroadcast,
@@ -429,6 +429,15 @@ export interface ReconcileOpenLotsDeps {
    * dry-run): nunca escreve no Kit.
    */
   deleteBroadcast?(id: number): Promise<void>;
+  /**
+   * #9484/#9487: id da conta Kit ATUAL (`GET /account` → `account.id`). Um
+   * 404 na releitura só conta como "broadcast apagado" se este id for IGUAL
+   * ao `kit_account_id` gravado no lote na criação — `GET /account` 200 sozinho
+   * só prova que a chave funciona, não que é a conta DONA do lote. Ausente,
+   * lançando, id diferente ou lote sem id gravado → `unverified`. Ver
+   * `confirmOrCleanUpScheduledLot`.
+   */
+  getAccountId?(): Promise<string>;
 }
 
 /**
@@ -485,7 +494,11 @@ export async function reconcileOpenLots(
     const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
     if (isUnverified && deps.deleteBroadcast) {
       updated = { ...lot };
-      const outcome = await confirmOrCleanUpScheduledLot(updated, { getBroadcast: deps.getBroadcast, deleteBroadcast: deps.deleteBroadcast });
+      const outcome = await confirmOrCleanUpScheduledLot(updated, {
+        getBroadcast: deps.getBroadcast,
+        deleteBroadcast: deps.deleteBroadcast,
+        ...(deps.getAccountId ? { getAccountId: deps.getAccountId } : {}),
+      });
       updated.last_reconciled_at = nowIso;
       row.recovered = outcome;
       if (outcome === "unverified") {
@@ -660,10 +673,9 @@ async function main(): Promise<void> {
       }
     }
     try {
-      await deleteBroadcast(lot.broadcast_id, kitCfg);
-      lot.status = "cancelled";
+      const outcome = await cancelKitLot(lot, (id) => deleteBroadcast(id, kitCfg));
       persistLotUpdate(storePath, lot);
-      console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true }, null, 2));
+      console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true, ...(outcome === "already_gone" ? { note: "broadcast já não existia no Kit (404)" } : {}) }, null, 2));
     } catch (e) {
       // #7922: 422 "Broadcast has already been sent." é esperado quando o
       // envio já começou entre a leitura do store e esta chamada — não é bug
@@ -865,13 +877,43 @@ export async function runAndRecordSendRun(
  */
 export async function confirmOrCleanUpScheduledLot(
   lot: OnboardingKitLot,
-  deps: { getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>; deleteBroadcast: (id: number) => Promise<void> },
+  deps: {
+    getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>;
+    deleteBroadcast: (id: number) => Promise<void>;
+    /** #9484/#9487: ver `ReconcileOpenLotsDeps.getAccountId`. Ausente = 404 na releitura nunca cancela. */
+    getAccountId?: () => Promise<string>;
+  },
 ): Promise<"scheduled" | "unscheduled" | "unverified"> {
   const id = lot.broadcast_id as number;
   let reread: { status?: string | null; send_at?: string | null };
   try {
     reread = await deps.getBroadcast(id);
   } catch (e) {
+    if (isKitNotFoundError(e)) {
+      // #9484/#9487: 404 só prova deleção se a conta ATUAL é a dona do lote.
+      // Com a chave de OUTRA conta Kit (credencial trocada, `.env` de outra
+      // máquina) TODO broadcast dá 404 e `GET /account` ainda dá 200 —
+      // cancelar aqui devolveria as entradas ao plano e a rodada seguinte
+      // criaria outro broadcast na conta real (e-mail em dobro). Sem prova
+      // (lote legado sem id, probe ausente/falhando, id diferente), o lado
+      // seguro é `unverified`.
+      const accountError = await verifyLotAccount(lot, deps.getAccountId);
+      if (accountError != null) {
+        lot.status = "created";
+        lot.last_error = `releitura do broadcast ${id} deu 404, mas não há prova de que a conta Kit atual é a dona do lote (${accountError}) — 404 NÃO tratado como deleção; agendamento NÃO confirmado`;
+        return "unverified";
+      }
+      // #9460: 404 permanente = broadcast apagado (ex.: à mão na UI do Kit).
+      // Não existe, logo não está agendado — mesma saída do "unscheduled"
+      // com DELETE ok: lote `cancelled`, entradas voltam ao plano. Mantê-lo
+      // `created` prenderia as entradas (contam como confirmadas) e o streak
+      // de `lots_unverified` nunca zeraria.
+      lot.status = "cancelled";
+      lot.send_at = null;
+      delete lot.schedule_failed;
+      lot.last_error = `broadcast ${id} não existe mais no Kit (404 na releitura) — lote cancelado (entradas voltam ao plano)`;
+      return "unscheduled";
+    }
     lot.status = "created";
     lot.last_error = `releitura do broadcast ${id} falhou — agendamento NÃO confirmado: ${redactEmails((e as Error).message)}`;
     return "unverified";
@@ -907,11 +949,68 @@ export async function confirmOrCleanUpScheduledLot(
       lot.last_error = `${why}; DELETE recusado com 422 "already been sent" — broadcast JÁ ENVIADO, lote marcado completed`;
       return "scheduled";
     }
+    if (isKitNotFoundError(e)) {
+      // #9460: sumiu entre a releitura e o DELETE — o efeito desejado (não
+      // existir broadcast) já vale. #9484: aqui não precisa de probe — a
+      // releitura logo acima achou ESTE broadcast nesta mesma conta (200),
+      // o que já prova que a credencial é a certa.
+      lot.status = "cancelled";
+      lot.send_at = null;
+      delete lot.schedule_failed;
+      lot.last_error = `${why}; DELETE devolveu 404 — broadcast já não existe, lote cancelado (entradas voltam ao plano)`;
+      return "unscheduled";
+    }
     lot.status = "created";
     lot.schedule_failed = true;
     lot.last_error = `${why}; DELETE falhou (${redactEmails((e as Error).message)}) — rascunho ficou no Kit, lote marcado schedule_failed`;
   }
   return "unscheduled";
+}
+
+/** #9487: confere, sem lançar, que a conta Kit atual é a que criou o lote.
+ *  `null` = mesma conta (404 pode ser tratado como deleção); string = motivo
+ *  de NÃO confiar no 404. Lote sem `kit_account_id` (legado) nem consulta a
+ *  conta — não há com o que comparar. */
+async function verifyLotAccount(lot: OnboardingKitLot, getAccountId: (() => Promise<string>) | undefined): Promise<string | null> {
+  const saved = lot.kit_account_id;
+  if (saved == null || saved === "") return "lote sem id de conta Kit gravado (legado)";
+  if (!getAccountId) return "probe de conta ausente";
+  let current: string;
+  try {
+    current = await getAccountId();
+  } catch (e) {
+    return `GET /account falhou: ${redactEmails((e as Error).message)}`;
+  }
+  if (current !== saved) return `conta Kit atual (${current}) difere da que criou o lote (${saved})`;
+  return null;
+}
+
+/** #9487: id da conta Kit da credencial em uso — `GET /account` →
+ *  `account.id` (aceita também o objeto flat na raiz), normalizado pra
+ *  string. Usa `kitFetch` cru (não `getKitAccount`, que exige
+ *  `subscriber_limit` e lançaria por forma de envelope, não por conta).
+ *  Resposta sem id → lança (sem id não há como provar a conta). */
+export async function fetchKitAccountId(kitCfg: KitConfig): Promise<string> {
+  const data = await kitFetch<Record<string, unknown> | undefined>("/account", { config: kitCfg });
+  return extractKitAccountId(data);
+}
+
+/** #9487: parte pura de `fetchKitAccountId`. */
+export function extractKitAccountId(data: unknown): string {
+  const obj = data && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+  const raw =
+    obj && typeof obj.account === "object" && obj.account !== null ? (obj.account as Record<string, unknown>) : obj;
+  const id = raw?.id;
+  if ((typeof id === "number" && Number.isFinite(id)) || (typeof id === "string" && id.trim() !== "")) return String(id).trim();
+  throw new Error(`GET /account sem "account.id" utilizável — não dá pra provar qual conta Kit está em uso`);
+}
+
+/** #9487: memoiza `fetchKitAccountId` por rodada (a chave não muda dentro do
+ *  processo). Uma falha também fica memoizada — dentro da rodada, a resposta
+ *  seria a mesma; a rodada seguinte tenta de novo. */
+function memoizedKitAccountId(kitCfg: KitConfig): () => Promise<string> {
+  let p: Promise<string> | null = null;
+  return () => (p ??= fetchKitAccountId(kitCfg));
 }
 
 /** #9367 item 2: `DELETE /broadcasts/{id}` de um broadcast que já saiu
@@ -920,6 +1019,39 @@ export async function confirmOrCleanUpScheduledLot(
  *  falha do DELETE. */
 export function isKitAlreadySentError(e: unknown): boolean {
   return e instanceof KitApiError && e.status === 422 && /already been sent/i.test(e.body);
+}
+
+/** #9460: 404 do Kit num broadcast = ele não existe (apagado na UI). Pra
+ *  releitura/DELETE de lote, equivale a "não agendado". */
+export function isKitNotFoundError(e: unknown): boolean {
+  return e instanceof KitApiError && e.status === 404;
+}
+
+/** `--cancel-lot`: apaga o broadcast e marca o lote `cancelled`. #9460: 404 no
+ *  DELETE (broadcast já apagado à mão) também cancela — antes o lote ficava
+ *  `created` pra sempre e só editar o store resolvia. Outros erros propagam
+ *  (o caller grava `last_error` e sai != 0). Muta `lot`. */
+export async function cancelKitLot(
+  lot: OnboardingKitLot,
+  deleteFn: (id: number) => Promise<void>,
+): Promise<"deleted" | "already_gone"> {
+  const id = lot.broadcast_id as number;
+  // Review PR #9478: lote já enviado nunca volta ao plano (e-mail em dobro).
+  if (lot.status === "completed") {
+    throw new Error(`[onboarding-kit-transport] lote ${lot.lot_id} já está completed (enviado) — nada a cancelar.`);
+  }
+  let outcome: "deleted" | "already_gone" = "deleted";
+  try {
+    await deleteFn(id);
+  } catch (e) {
+    if (!isKitNotFoundError(e)) throw e;
+    outcome = "already_gone";
+  }
+  lot.status = "cancelled";
+  lot.send_at = null;
+  delete lot.schedule_failed;
+  lot.last_error = outcome === "already_gone" ? `--cancel-lot: broadcast ${id} já não existia no Kit (404) — lote cancelado` : null;
+  return outcome;
 }
 
 /** Contadores de uma rodada `--send` (tudo de `KitSendRunRecord` menos o carimbo). */
@@ -959,6 +1091,9 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   const email3Days = onboardingCfg.email3_days ?? 10;
   const graceDays = onboardingCfg.email3_grace_days ?? 10;
   const nowSec = Math.floor(Date.now() / 1000);
+  // #9487: id da conta Kit desta rodada — gravado em cada lote criado e
+  // comparado com o gravado quando uma releitura dá 404.
+  const getAccountId = memoizedKitAccountId(kitCfg);
 
   // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote de e-mail
   // 1/2 `unverified` de uma rodada anterior (releitura de confirmação falhou)
@@ -969,7 +1104,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     { storePath, store, persist: args.send },
     {
       getBroadcast: (id) => getBroadcast(id, kitCfg),
-      ...(args.send ? { deleteBroadcast: (id: number) => deleteBroadcast(id, kitCfg) } : {}),
+      ...(args.send ? { deleteBroadcast: (id: number) => deleteBroadcast(id, kitCfg), getAccountId } : {}),
     },
   );
   counters.lots_unverified += preSend.stillUnverified;
@@ -1190,6 +1325,14 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
         tagId,
         sendAt: kind === "email3" ? null : new Date(Date.now() + 60_000).toISOString(),
       });
+      // #9487: grava a conta dona ANTES de criar — se `/account` falhar, o
+      // lote nasce sem id (mesmo tratamento de um legado: 404 na releitura
+      // nunca cancela) em vez de bloquear o envio.
+      try {
+        lot.kit_account_id = await getAccountId();
+      } catch (e) {
+        process.stderr.write(`[onboarding-kit-transport] GET /account falhou ao criar o lote ${lot.lot_id} — lote sem id de conta (404 numa releitura futura não será tratado como deleção): ${redactEmails((e as Error).message)}\n`);
+      }
       const broadcast = await createBroadcast(input, kitCfg);
       lot.broadcast_id = broadcast.id;
       lot.status = mapKitBroadcastStatusToLocal(broadcast.status);
@@ -1198,7 +1341,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       // confirmado pela RELEITURA (`confirmOrCleanUpScheduledLot`), nunca
       // pelo `status` da resposta do POST. E-mail 3 nasce rascunho por
       // desenho (aprovação humana), então `created` é o sucesso dele.
-      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg) });
+      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg), getAccountId });
       persistLotUpdate(storePath, lot);
       if (outcome === "scheduled") {
         counters.lots_created++;

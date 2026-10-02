@@ -38,8 +38,9 @@
  *   npx tsx scripts/publish-retrospectiva-linkedin.ts --cycle 2609-10 \
  *     [--base-date 2026-10-03] [--at ISO] [--image-url URL] [--force] [--dry-run]
  *
- * `--base-date` = data do ENVIO do e-mail (âncora do D+1 09:00 BRT; #9473 vai
- * fixar o 1º sábado do mês). Omitido = hoje, com banner.
+ * `--base-date` = data do ENVIO do e-mail (âncora do D+1 09:00 BRT). Omitido =
+ * data do 1º sábado do mês de envio pela regra #9473 (`monthly_send_schedule`),
+ * se o e-mail ainda puder sair agendado por ela (>=24h); senão hoje, com banner.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -52,7 +53,8 @@ import { decideChannelAction, buildDoneChannelState, buildFailedChannelState, wi
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
-import { resolveRetrospectivaScheduledAts } from "./lib/mensal/retrospectiva-schedule.ts";
+import { resolveRetrospectivaScheduledAts, ruleBaseDateForCycle } from "./lib/mensal/retrospectiva-schedule.ts";
+import { resolveMonthlySendSchedule, type MonthlySendScheduleConfig } from "./lib/mensal/monthly-send-schedule.ts";
 import {
   publicPostCtaProblems,
   retrospectivaDivulgacaoStatePath,
@@ -258,11 +260,17 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const ats = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate: values["base-date"] });
+  const ruleConfig = (config as { monthly_send_schedule?: MonthlySendScheduleConfig }).monthly_send_schedule;
+  const baseDate =
+    values["base-date"] ?? (values["at"] ? undefined : ruleBaseDateForCycle(cycle, new Date(), resolveMonthlySendSchedule(ruleConfig)) ?? undefined);
+  const baseDateFromRule = !values["base-date"] && !values["at"] && baseDate !== undefined;
+  const ats = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate });
   if (!values["at"]) {
     console.log(
       `Agenda (#9474): página=${ats.pagina} | perfil (manual)=${ats.perfil}` +
-        (values["base-date"] ? ` — âncora: envio em ${values["base-date"]}` : " — âncora: HOJE (passe --base-date com a data do envio do e-mail)"),
+        (baseDate
+          ? ` — âncora: envio em ${baseDate}${baseDateFromRule ? " (regra do 1º sábado, #9473)" : ""}`
+          : " — âncora: HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)"),
     );
   }
 

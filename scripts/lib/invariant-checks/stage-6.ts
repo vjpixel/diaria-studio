@@ -149,7 +149,13 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
  */
 function checkKitDraftFresh(
   editionDir: string,
-  opts: { backend?: string; rootDir?: string; now?: number; brevoDiariaEnabled?: boolean } = {},
+  opts: {
+    backend?: string;
+    rootDir?: string;
+    now?: number;
+    brevoDiariaEnabled?: boolean;
+    kitDiaria?: { broadcastId: number | null } | null;
+  } = {},
 ): InvariantViolation[] {
   if ((opts.backend ?? loadNewsletterBackend()) !== "kit") return [];
   const path = resolve(editionDir, "_internal", "newsletter-kit-published.json");
@@ -200,7 +206,8 @@ function checkKitDraftFresh(
         `A correção vale só pro acervo/site.`,
     );
   }
-  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled }));
+  const kitDiaria = opts.kitDiaria !== undefined ? opts.kitDiaria : readKitDiariaState(editionDir);
+  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled, kitDiaria }));
 }
 
 /**
@@ -215,11 +222,25 @@ export function isBrevoDiariaActiveForEdition(editionDir: string): boolean {
   return existsSync(resolve(editionDir, "_internal", "brevo-diaria-published.json"));
 }
 
+/** #9445: estado da Kit diária (canal paralelo, `kit-diaria-stage5-dispatch.ts`)
+ *  nesta edição. `null` = o canal não participou (arquivo ausente/ilegível). */
+export function readKitDiariaState(editionDir: string): { broadcastId: number | null } | null {
+  const p = resolve(editionDir, "_internal", "kit-diaria-published.json");
+  if (!existsSync(p)) return null;
+  try {
+    const d = JSON.parse(readFileSync(p, "utf8")) as { broadcast_id?: unknown } | null;
+    return { broadcastId: d && typeof d.broadcast_id === "number" ? d.broadcast_id : null };
+  } catch {
+    // Ilegível mas presente: o canal participou — melhor nomear sem id que omitir.
+    return { broadcastId: null };
+  }
+}
+
 /**
  * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
  * Nomeia o Kit sempre, e a Brevo diária quando ela participou da edição
- * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) fica fora deste
- * escopo mínimo — follow-up. (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
+ * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) também, quando
+ * seu estado existe (#9445 — `readKitDiariaState`). (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
  * com o conteúdo recalculado — re-rodar é idempotente). Sem isso o editor
  * corrigia o Kit seguindo o aviso e a campanha Brevo saía com o texto velho.
  * Pura, exportada pra teste.
@@ -229,14 +250,29 @@ export function buildKitDraftStaleMessage(args: {
   when: string;
   editionDir: string;
   brevoDiariaEnabled: boolean;
+  /** #9445: estado da Kit diária quando ela participou da edição. */
+  kitDiaria?: { broadcastId: number | null } | null;
 }): string {
-  const { what, when, editionDir, brevoDiariaEnabled } = args;
+  const { what, when, editionDir, brevoDiariaEnabled, kitDiaria } = args;
   const kitCmd = `\`npx tsx scripts/publish-newsletter-kit.ts ${editionDir} --send-test\``;
+  // #9445: a Kit diária NÃO atualiza no re-run — com o estado gravado,
+  // `decideKitChannelDispatch` devolve `already_done`. Pra refletir o texto
+  // novo é preciso apagar o broadcast velho no Kit E o arquivo de estado (só
+  // o arquivo, sem apagar o broadcast, criaria um 2º = envio em dobro).
+  const kitDiariaPart = kitDiaria
+    ? ` Kit diária (canal paralelo): re-rodar sozinho NÃO atualiza (o estado gravado vira ` +
+      `\`already_done\`) — apagar o broadcast${kitDiaria.broadcastId != null ? ` ${kitDiaria.broadcastId}` : ""} ` +
+      `no Kit, depois remover \`${editionDir}/_internal/kit-diaria-published.json\` e rodar ` +
+      `\`npx tsx scripts/kit-diaria-stage5-dispatch.ts ${editionDir}\` SEM \`--send-test\` (é o que ` +
+      `recria o broadcast real + estado; \`--send-test\` é descartável, não grava estado — opcional antes, ` +
+      `só pra prévia). Nunca remover só o arquivo: criaria um 2º broadcast, envio em dobro.`
+    : "";
   if (!brevoDiariaEnabled) {
     return (
       `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
       `teste estão com o conteúdo VELHO. Re-rodar ${kitCmd} (idempotente: atualiza o mesmo broadcast ` +
-      `e manda novo teste) e conferir o novo e-mail antes de aprovar o agendamento.`
+      `e manda novo teste) e conferir o novo e-mail antes de aprovar o agendamento.` +
+      kitDiariaPart
     );
   }
   const brevoCmd =
@@ -246,7 +282,8 @@ export function buildKitDraftStaleMessage(args: {
     `mesmo conteúdo (broadcast Kit e campanha Brevo diária) e os e-mails de teste estão com o ` +
     `conteúdo VELHO. Re-rodar os 2 canais: Kit ${kitCmd} (idempotente: atualiza o mesmo broadcast) ` +
     `e Brevo diária ${brevoCmd} (idempotente: reaproveita a campanha registrada e atualiza via PUT); ` +
-    `conferir os novos e-mails de teste antes de aprovar o agendamento.`
+    `conferir os novos e-mails de teste antes de aprovar o agendamento.` +
+    kitDiariaPart
   );
 }
 

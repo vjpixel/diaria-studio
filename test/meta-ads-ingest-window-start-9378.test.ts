@@ -129,14 +129,16 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
     });
   }
 
-  it("janela default (30 dias, começa 02/09): setembro antigo preservado, outubro gravado, descarte avisado", async () => {
+  // Janela de 30 dias explícita: desde o #9459 o default começa no dia 1 do
+  // mês anterior; este caso segue cobrindo o guard de janela no meio do mês.
+  it("janela de 30 dias (começa 02/09): setembro antigo preservado, outubro gravado, descarte avisado", async () => {
     seedAccountLevelSeptember();
     const warns: string[] = [];
     const originalWarn = console.warn;
     console.warn = (...args: unknown[]) => warns.push(args.join(" "));
     let code: number;
     try {
-      code = await runHeadless(spendPath, fetchImpl, { now: new Date("2026-10-01T22:00:00Z"), campaignIds: ["123"] });
+      code = await runHeadless(spendPath, fetchImpl, { lookbackDays: 30, now: new Date("2026-10-01T22:00:00Z"), campaignIds: ["123"] });
     } finally {
       console.warn = originalWarn;
     }

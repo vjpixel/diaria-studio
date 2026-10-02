@@ -154,7 +154,8 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * **Janela vs. mês truncado (#8245 item 3, corrigido aqui — Google segue
  * latente, `buildDefaultGaqlQuery` continua fora de escopo).** `mergeSpendRows`
  * troca a linha `(canal, mes)` inteira; se a janela de
- * `fetchMetaAdsChannelMetrics` (default `lookbackDays=30`) começar NO MEIO
+ * `fetchMetaAdsChannelMetrics` (`lookbackDays` arbitrário via `--since`; o
+ * default do cron sempre começa num dia 1, ver `defaultMetaAdsLookbackDays`) começar NO MEIO
  * de um mês, o agregado parcial desse mês SUBSTITUIRIA (não somaria) o
  * gasto real já registrado pros dias que ficaram fora da janela — ex:
  * rodada em 06/10 com janela iniciando 07/09 reescreveria setembro sem
@@ -184,7 +185,7 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * a ausência de dados nos primeiros dias é gasto zero real, não truncamento.
  * Com `windowStart` o check vale **mesmo com 1 mês só** nos dados: a janela
  * prova o truncamento sozinha (ex: campanha pausada o mês corrente inteiro e
- * janela default começando 11/09 — antes, setembro seria regravado só com
+ * janela de 30 dias começando 11/09 — antes, setembro seria regravado só com
  * 11–30/09 a cada rodada). Formato `AAAA-MM-DD` em UTC, mesma convenção de
  * `metaAdsDateRange` (`ads-campaign-economics-fetch.ts`); comparação
  * lexicográfica, então valor fora desse formato quebra o guard.
@@ -339,16 +340,36 @@ export const META_ADS_INGEST_FAILURE_EXIT_CODE = SPEND_INGEST_FAILURE_EXIT_CODE;
  */
 export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
 
-/** Janela default do ingest Meta (#9378). `runHeadless` sempre passa
- *  `lookbackDays` explícito ao fetch, então guard e fetch nunca divergem;
- *  igualar ao `?? 30` de `fetchMetaAdsChannelMetrics` só mantém este cron
- *  e o painel `/ads` na mesma janela. */
-export const META_ADS_DEFAULT_LOOKBACK_DAYS = 30;
+/** Até que dia (UTC) do mês a janela default ainda volta ao mês anterior
+ *  (#9459). Cobre a virada (fecha o mês fechado com o último dia) e alguns
+ *  dias de folga pra cron que falhou, sem regravar o mês anterior o mês todo. */
+export const META_ADS_PREV_MONTH_REACH_DAYS = 5;
+
+/**
+ * Janela default do cron (#9459). A antiga janela móvel de 30 dias + o guard
+ * de mês truncado só gravavam o mês M na rodada em que a janela começava em
+ * `M-01` (dia 30): as de 31/10 e 01/11 descartavam outubro e o fim do mês
+ * nunca chegava ao `spend.csv`. Agora a janela SEMPRE começa num dia 1 (UTC),
+ * então o guard nunca descarta o mês corrente:
+ *  - dia 1..`META_ADS_PREV_MONTH_REACH_DAYS`: desde o dia 1 do mês ANTERIOR —
+ *    o mês recém-fechado é regravado inteiro (inclusive o último dia);
+ *  - depois disso: desde o dia 1 do mês corrente — o mês anterior (já
+ *    fechado) não é mais tocado, preservando reconciliação manual e evitando
+ *    que o zero-fill do #9413 grave 0 sobre ele o mês inteiro.
+ * O painel `/ads` segue com os 30 dias de `fetchMetaAdsChannelMetrics`. @pure
+ */
+export function defaultMetaAdsLookbackDays(now: Date): number {
+  const monthOffset = now.getUTCDate() <= META_ADS_PREV_MONTH_REACH_DAYS ? 1 : 0;
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthOffset, 1);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.round((today - start) / 86_400_000) + 1;
+}
 
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
-  /** Janela da consulta (#9378) — default 30 dias (`fetchMetaAdsChannelMetrics`).
+  /** Janela da consulta (#9378) — default desde o dia 1 do mês anterior
+   *  (`defaultMetaAdsLookbackDays`, #9459).
    *  `--since AAAA-MM-DD` do CLI vira isto via `lookbackDaysSince`. */
   lookbackDays?: number;
   /** Injetável só pra teste (default `new Date()`). */
@@ -436,7 +457,7 @@ export async function runHeadless(
   // Mesmo `now`/janela pro fetch e pro guard de mês truncado (#9378) — o
   // guard precisa saber onde a JANELA começou, não só o primeiro dia com dado.
   const now = opts.now ?? new Date();
-  const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
+  const lookbackDays = opts.lookbackDays ?? defaultMetaAdsLookbackDays(now);
   // #9413 item 4: mesmo helper que monta o `time_range` do fetch — a janela
   // do guard nunca diverge da janela consultada.
   const { since: windowStart, until: windowEnd } = metaAdsDateRange(now, lookbackDays);

@@ -80,9 +80,30 @@ function isRetriableStatus(status: number): boolean {
 /** #9315 — POST (criação: `POST /broadcasts` etc.) não é idempotente. 5xx,
  *  timeout ou erro de rede podem acontecer DEPOIS de o Kit gravar — reenviar
  *  criaria um 2º broadcast (envio duplo). Só 429 é seguro de retentar: o rate
- *  limit rejeita antes de processar. GET/PUT/DELETE seguem com o retry cheio. */
-function isNonIdempotentMethod(method: string): boolean {
-  return method.toUpperCase() === "POST";
+ *  limit rejeita antes de processar. GET/PUT/DELETE seguem com o retry cheio;
+ *  POSTs idempotentes (allowlist abaixo, #9452) também.
+ *
+ *  #9452 — POSTs que NÃO criam recurso novo a cada chamada: consulta
+ *  read-only (`/subscribers/filter`), upsert por e-mail (`/subscribers`),
+ *  tagging (`/tags/{id}/subscribers/{sid}`) e unsubscribe. Reenviar é seguro,
+ *  então mantêm o backoff cheio. Todo o resto (sobretudo `POST /broadcasts`)
+ *  segue não-idempotente por padrão — allowlist, não denylist, pra que um
+ *  POST novo de criação nasça seguro. */
+const IDEMPOTENT_POST_PATHS: RegExp[] = [
+  /^\/subscribers\/filter(?:\?|$)/,
+  /^\/subscribers(?:\?|$)/,
+  /^\/tags\/\d+\/subscribers\/\d+(?:\?|$)/,
+  /^\/subscribers\/\d+\/unsubscribe(?:\?|$)/,
+];
+
+export function isNonIdempotentRequest(
+  method: string,
+  path: string,
+  idempotent?: boolean,
+): boolean {
+  if (idempotent !== undefined) return !idempotent;
+  if (method.toUpperCase() !== "POST") return false;
+  return !IDEMPOTENT_POST_PATHS.some((re) => re.test(path));
 }
 
 function isRetriableStatusNonIdempotent(status: number): boolean {
@@ -187,6 +208,10 @@ export async function kitFetch<T = unknown>(
     body?: unknown;
     config?: KitConfig;
     retry?: Omit<FetchRetryOptions, "isRetriableStatus">;
+    /** #9452 — classificação explícita de idempotência. Omitido: decide por
+     *  método+path (`isNonIdempotentRequest`). `true` força o retry cheio
+     *  (mesmo num POST fora da allowlist); `false` força o modo só-429. */
+    idempotent?: boolean;
   } = {},
 ): Promise<T> {
   const config = opts.config ?? (() => {
@@ -196,7 +221,7 @@ export async function kitFetch<T = unknown>(
   })();
 
   const method = opts.method ?? "GET";
-  const nonIdempotent = isNonIdempotentMethod(method);
+  const nonIdempotent = isNonIdempotentRequest(method, path, opts.idempotent);
   const res = await fetchWithRetry(
     (signal) =>
       fetch(`${kitApiBase()}${path}`, {

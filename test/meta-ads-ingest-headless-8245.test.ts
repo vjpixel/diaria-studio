@@ -221,7 +221,8 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
         paging: {},
       })) as typeof fetch;
 
-    const code = await runHeadless(spendPath, fetchImpl, { now: FIXED_NOW });
+    // Janela de 30 dias explícita (o default virou "desde 01 do mês anterior", #9459).
+    const code = await runHeadless(spendPath, fetchImpl, { lookbackDays: 30, now: FIXED_NOW });
 
     assert.equal(code, 0);
     assert.ok(existsSync(spendPath), "spend.csv deveria ser criado");
@@ -292,7 +293,8 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
         paging: {},
       })) as typeof fetch;
 
-    const code = await runHeadless(spendPath, fetchImpl);
+    // Janela de 30 dias explícita (o default virou "desde 01 do mês anterior", #9459).
+    const code = await runHeadless(spendPath, fetchImpl, { lookbackDays: 30 });
     assert.equal(code, 0);
 
     const csv = readFileSync(spendPath, "utf8");

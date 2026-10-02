@@ -25,7 +25,7 @@ import {
 } from "../scripts/lib/mensal/retrospectiva-divulgacao.ts";
 import { decideChannelAction, withChannelState, buildDoneChannelState } from "../scripts/lib/artigo-especial-state.ts";
 import { normalizeBaseDate } from "../scripts/lib/artigo-especial-schedule.ts";
-import { resolveRetrospectivaScheduledAts } from "../scripts/lib/mensal/retrospectiva-schedule.ts";
+import { resolveRetrospectivaScheduledAts, ruleBaseDateForCycle } from "../scripts/lib/mensal/retrospectiva-schedule.ts";
 import { runMarkRetrospectivaChannel, runSyncEmailChannel } from "../scripts/mark-retrospectiva-channel.ts";
 import { classifyPublicBody, decidePageVerdict, verifyRetrospectivaPage } from "../scripts/verify-retrospectiva-page.ts";
 import { checkRetrospectivaDivulgacaoTexts } from "../scripts/check-retrospectiva-divulgacao.ts";
@@ -333,5 +333,23 @@ describe("check-retrospectiva-divulgacao — CTA nos DOIS posts públicos (o do 
     assert.deepEqual(publicPostCtaProblems(`Texto.\r\n\r\n  ${RETROSPECTIVA_PUBLIC_CTA}  \r\n`), []);
     assert.equal(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2609`).length, 1);
     assert.equal(publicPostCtaProblems(`${OK}outra.diar.ia.br/x`).length, 0);
+  });
+});
+
+describe("ruleBaseDateForCycle (#9473 × #9474)", () => {
+  it("ciclo 2609-10 com folga: âncora = 1º sábado de outubro/2026 (BRT)", () => {
+    assert.equal(ruleBaseDateForCycle("2609-10", new Date("2026-10-01T12:00:00Z")), "2026-10-03");
+  });
+
+  it("ciclo 2610-11: 1º sábado de novembro/2026", () => {
+    assert.equal(ruleBaseDateForCycle("2610-11", new Date("2026-10-30T12:00:00Z")), "2026-11-07");
+  });
+
+  it("faltando <24h pro envio da regra: null (publisher cai pra rascunho)", () => {
+    assert.equal(ruleBaseDateForCycle("2609-10", new Date("2026-10-03T03:00:00Z")), null);
+  });
+
+  it("sábado da regra já passou: null", () => {
+    assert.equal(ruleBaseDateForCycle("2609-10", new Date("2026-10-10T12:00:00Z")), null);
   });
 });
