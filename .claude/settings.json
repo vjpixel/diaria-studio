@@ -42,7 +42,9 @@
       "mcp__claude-in-chrome__upload_image",
       "mcp__claude-in-chrome__tabs_create_mcp",
       "mcp__claude-in-chrome__tabs_context_mcp",
-      "mcp__claude-in-chrome__javascript_tool"
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__claude_ai_Gmail__list_labels",
+      "mcp__claude_ai_Beehiiv__get_current_user"
     ],
     "deny": [
       "Bash(rm -rf *)"
