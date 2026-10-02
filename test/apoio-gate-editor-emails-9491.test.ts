@@ -19,7 +19,13 @@ import {
   mergeEditorEmails,
 } from "../scripts/lib/apoio-gate-editor-emails.ts";
 import { decideAllowlistPush, evaluateAllowlistBlastRadius } from "../scripts/build-apoiador-allowlist.ts";
-import { buildKvBulkEntries, withEditorRows, EDITOR_APOIO_NIVEL } from "../scripts/sync-artigos-apoio-kv.ts";
+import {
+  buildKvBulkEntries,
+  withEditorRows,
+  syncKvKeys,
+  EDITOR_APOIO_NIVEL,
+  type KvSyncOps,
+} from "../scripts/sync-artigos-apoio-kv.ts";
 import { apoioLevelKvKey, meetsApoioThreshold } from "../scripts/lib/shared/apoio-level-verify.ts";
 import { ARTIGOS_ESPECIAIS_APOIO_THRESHOLD } from "../workers/artigos/src/apoio-gate-config.ts";
 import { decideApoioGate, parseAllowlist } from "../workers/retrospectiva/src/gate-apoio.ts";
@@ -124,6 +130,23 @@ describe("#9491 — Artigo Especial: editor entra no KV com nível que passa no 
   it("editor que já é apoiador fica com o MAIOR nível, uma chave só", async () => {
     const entries = await buildKvBulkEntries(withEditorRows([{ email: "ed@x.com", nivel: "amigo" }], ["ed@x.com"]));
     assert.deepEqual(entries, [{ key: await apoioLevelKvKey("ed@x.com"), value: "patrono" }]);
+  });
+
+  it("chaves de editor ficam fora do denominador do guard de remoção", () => {
+    const ops: KvSyncOps = {
+      listApoio: () => ["apoio:ed", "apoio:a", "apoio:b"],
+      put: () => {},
+      bulkDelete: () => {},
+    };
+    let visto: [number, number] | null = null;
+    syncKvKeys([{ key: "apoio:ed", value: "patrono" }, { key: "apoio:a", value: "apoiador" }], "ns", "acc", ops, {
+      excludeFromCount: new Set(["apoio:ed"]),
+      decide: (stale, existing) => {
+        visto = [stale, existing];
+        return { allowed: true };
+      },
+    });
+    assert.deepEqual(visto, [1, 2]);
   });
 
   it("sem editores → linhas inalteradas", () => {

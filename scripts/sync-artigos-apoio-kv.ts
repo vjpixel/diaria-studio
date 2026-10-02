@@ -287,11 +287,17 @@ export function syncKvKeys(
     protectedKeys?: ReadonlySet<string>;
     /** Guard de remoção (#9300) — `allowed: false` pula o delete. */
     decide?: (staleCount: number, existingCount: number) => DeletionDecision;
+    /** Chaves fora do denominador do guard (e-mails de editor, #9491) — não
+     *  são apoiadores, então não diluem a razão de remoção. */
+    excludeFromCount?: ReadonlySet<string>;
   } = {},
 ): { existingKeys: string[]; staleKeys: string[]; deletion: DeletionDecision } {
   const existingKeys = ops.listApoio(namespaceId, accountId);
   const staleKeys = diffStaleApoioKeys(existingKeys, entries).filter((k) => !opts.protectedKeys?.has(k));
-  const deletion = opts.decide ? opts.decide(staleKeys.length, existingKeys.length) : { allowed: true };
+  const countedExisting = opts.excludeFromCount
+    ? existingKeys.filter((k) => !opts.excludeFromCount!.has(k)).length
+    : existingKeys.length;
+  const deletion = opts.decide ? opts.decide(staleKeys.length, countedExisting) : { allowed: true };
 
   if (entries.length > 0) ops.put(entries, namespaceId, accountId); // lança => delete nunca roda
   if (deletion.allowed) ops.bulkDelete(staleKeys, namespaceId, accountId);
@@ -369,8 +375,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const editorKeys = new Set(await Promise.all(editors.map((e) => apoioLevelKvKey(e))));
   const { existingKeys, staleKeys, deletion } = syncKvKeys(entries, namespaceId, accountId, defaultKvSyncOps, {
     protectedKeys,
+    excludeFromCount: editorKeys,
     decide: (staleCount, existingCount) =>
       decideStaleDeletion({ staleCount, existingCount, sourceDegraded, forceBlastRadius }),
   });

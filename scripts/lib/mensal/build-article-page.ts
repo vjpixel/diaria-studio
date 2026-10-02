@@ -28,8 +28,10 @@
  *
  * `verifyNoMergeTagsInArticle` fecha, recusando qualquer tag remanescente. As
  * três vivem no caminho de RENDER, então valem para os ciclos existentes e para
- * todos os futuros, sem passo manual por ciclo. O caminho de e-mail não passa
- * por nenhuma delas.
+ * todos os futuros sem mudança de código por ciclo — mas o Worker serve o HTML
+ * JÁ GRAVADO no KV, então um ciclo publicado antes de uma mudança aqui só a
+ * recebe quando é reconstruído e re-enviado (`build-article-page.ts --push`).
+ * O caminho de e-mail não passa por nenhuma delas.
  *
  * Sem imagens geradas (destaqueImageUrls/eiaImageUrl*) nesta 1ª versão —
  * `renderDestaque`/`renderEia` toleram `undefined` (renderizam sem `<img>`).
@@ -186,19 +188,20 @@ export const WEB_MOBILE_STYLE = `<style id="${WEB_MOBILE_STYLE_ID}">
     .ds-canvas td, .ds-canvas p, .ds-canvas a { overflow-wrap:break-word; word-wrap:break-word; }
     .ds-canvas h2 { font-size:23px !important; line-height:1.25 !important; }
     .ds-canvas h3 { font-size:20px !important; line-height:1.3 !important; }
-    .ds-canvas img { max-width:100% !important; height:auto !important; }
+    .ds-canvas img { max-width:100% !important; }
   }
 </style>`;
 
-/** Injeta `WEB_MOBILE_STYLE` antes do ÚLTIMO `</head>` (mesma disciplina do
- * `</body>` em `renderTeaserWithPaywall`). Sem `</head>` lança: publicar sem
- * o CSS é voltar à página cortada no celular sem ninguém notar. */
+/** Injeta `WEB_MOBILE_STYLE` antes do PRIMEIRO `</head>` — o `<head>` real
+ * vem antes de qualquer `</head>` citado como texto no corpo (o inverso do
+ * `</body>`, onde o real é o último). Sem `</head>` lança: publicar sem o CSS
+ * é voltar à página cortada no celular sem ninguém notar. */
 export function injectWebMobileStyle(html: string): string {
-  const ultima = [...html.matchAll(/<\/head\s*>/gi)].at(-1);
-  if (ultima?.index === undefined) {
+  const primeira = /<\/head\s*>/i.exec(html);
+  if (!primeira) {
     throw new Error("build-article-page: HTML sem </head> — não há onde injetar o CSS mobile (#9492)");
   }
-  return `${html.slice(0, ultima.index)}${WEB_MOBILE_STYLE}\n${html.slice(ultima.index)}`;
+  return `${html.slice(0, primeira.index)}${WEB_MOBILE_STYLE}\n${html.slice(primeira.index)}`;
 }
 
 export interface ArticlePage {

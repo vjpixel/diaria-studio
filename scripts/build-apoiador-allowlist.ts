@@ -397,7 +397,9 @@ async function main(): Promise<void> {
     const decision = await decideAllowlistPush({
       next: allowlist,
       force: hasFlag(argv, "force-blast-radius"),
-      editors,
+      // Só quem NÃO é apoiador conta como editor no diff: editor que também
+      // apoia segue no diff de apoiadores (achado do review da PR #9494).
+      editors: editorsOnly,
       readCurrent: () => getTextFromWorkerKV(APOIADOR_ALLOWLIST_KV_KEY, { kvNamespaceId }),
     });
 

@@ -21,7 +21,7 @@ import {
   RETROSPECTIVA_ANUAL_UTM_MEDIUM,
   buildRetrospectivaAnualCampaign,
 } from "../../../scripts/lib/shared/utm-registry.ts"; // #7715
-import { GATE_MOBILE_CSS } from "./render-mensal.ts"; // #9492
+import { GATE_MOBILE_CSS, teaserBlockMobileCss } from "./render-mensal.ts"; // #9492
 
 const INK = "#171411";
 const TEAL = "#00A0A0";
@@ -219,9 +219,11 @@ export function renderTeaserWithSignup(teaserHtml: string, canonical: string, pa
   if (ultima?.index === undefined) {
     throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7581)");
   }
+  // `id="retrospectiva-signup"`: alvo do CSS de celular (#9492).
   const bloco = `
+${teaserBlockMobileCss("retrospectiva-signup")}
 <div style="position:relative;margin-top:-120px;height:120px;background:linear-gradient(to bottom, rgba(255,255,255,0), ${PAPER});pointer-events:none;"></div>
-<div style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+<div id="retrospectiva-signup" style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
   <div style="max-width:520px;margin:0 auto;background:${PAPER};border-radius:12px;padding:32px 28px;box-sizing:border-box;">
     <h2 style="font-family:Georgia,'Times New Roman',serif;font-size:22px;line-height:1.3;margin:0 0 12px;color:${INK};">
       O resto desta retrospectiva é para assinantes da diar.ia.br

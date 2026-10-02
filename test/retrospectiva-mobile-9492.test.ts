@@ -9,8 +9,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
+  buildArticleHtml,
+  buildArticleTeaserHtml,
   injectWebMobileStyle,
   WEB_MOBILE_STYLE,
   WEB_MOBILE_STYLE_ID,
@@ -23,7 +27,12 @@ import {
   renderCycleNotFound,
   renderTeaserWithPaywall,
 } from "../workers/retrospectiva/src/render-mensal.ts";
-import { renderEmailForm as renderAnualEmailForm } from "../workers/retrospectiva/src/render-anual.ts";
+import {
+  renderEmailForm as renderAnualEmailForm,
+  renderTeaserWithSignup,
+} from "../workers/retrospectiva/src/render-anual.ts";
+
+const FIXTURE = resolve(import.meta.dirname, "fixtures/publish-monthly/2604/draft.md");
 
 const DRAFT = `**ASSUNTO**
 
@@ -38,6 +47,20 @@ O mês
 **Agentes saem do teste**
 
 Texto do destaque com um link [fonte](https://example.com/a).
+`;
+
+/** Draft com corpo suficiente pro corte do trecho (`cutDraftAfterFirstDestaque`). */
+const DRAFT_LONGO = `**ASSUNTO**
+
+Setembro em IA
+
+**DESTAQUE 1 | INDÚSTRIA**
+
+${"Mais contexto sobre o destaque, com detalhes do que aconteceu no mês. ".repeat(12)}
+
+**DESTAQUE 2 | BRASIL**
+
+Texto do segundo destaque.
 `;
 
 /** Extrai o conteúdo do 1º bloco `@media (max-width: Npx) { ... }` do CSS. */
@@ -77,9 +100,16 @@ describe("#9492 — artigo web: CSS responsivo injetado só na versão web", () 
     assert.throws(() => injectWebMobileStyle("<html><body>x</body></html>"), /sem <\/head>/);
   });
 
-  it("injeta antes do ÚLTIMO </head>", () => {
-    const out = injectWebMobileStyle("<head><title>a</head> texto</title></head><body></body>");
-    assert.ok(out.lastIndexOf(WEB_MOBILE_STYLE_ID) > out.indexOf("</head>"));
+  it("injeta antes do PRIMEIRO </head> (um </head> citado no corpo não desloca o CSS)", () => {
+    const out = injectWebMobileStyle("<head><title>a</title></head><body><p>&lt;/head&gt; e </head> no texto</p></body>");
+    assert.ok(out.indexOf(WEB_MOBILE_STYLE_ID) < out.indexOf("</head>"));
+    assert.ok(out.indexOf(WEB_MOBILE_STYLE_ID) < out.indexOf("<body>"));
+  });
+
+  it("call site real: buildArticleHtml e buildArticleTeaserHtml saem com o CSS mobile", () => {
+    const md = readFileSync(FIXTURE, "utf8");
+    assert.ok(buildArticleHtml(md, "2604-05").html.includes(WEB_MOBILE_STYLE_ID));
+    assert.ok(buildArticleTeaserHtml(DRAFT_LONGO, "2604-05").html.includes(WEB_MOBILE_STYLE_ID));
   });
 });
 
@@ -103,5 +133,11 @@ describe("#9492 — telas de acesso (gate) no celular", () => {
     const out = renderTeaserWithPaywall("<html><head></head><body><p>trecho</p></body></html>", "2609");
     assert.match(out, /@media only screen and \(max-width: 640px\)[\s\S]*#retrospectiva-paywall/);
     assert.match(out, /<a class="retrospectiva-cta" href="https:\/\/apoia\.se\/diaria/);
+  });
+
+  it("bloco de cadastro do trecho ANUAL: mesma media query, escopada no próprio id", () => {
+    const out = renderTeaserWithSignup("<html><head></head><body><p>t</p></body></html>", "https://x/2026", "2026");
+    assert.match(out, /@media only screen and \(max-width: 640px\)[\s\S]*#retrospectiva-signup/);
+    assert.match(out, /<div id="retrospectiva-signup"/);
   });
 });

@@ -69,6 +69,22 @@ export const GATE_MOBILE_CSS = `@media only screen and (max-width: 640px) {
     a.button, button.button { display:block !important; width:100% !important; box-sizing:border-box; text-align:center; min-height:48px; }
   }`;
 
+/**
+ * #9492: o bloco de conversão injetado no trecho é todo inline (o trecho vem
+ * pronto do KV), então o ajuste de celular vai num `<style>` próprio, escopado
+ * no id do bloco e só abaixo de 640px. Compartilhado com o bloco de cadastro da
+ * anual (`render-anual.ts`), que tem o mesmo layout.
+ */
+export function teaserBlockMobileCss(id: string): string {
+  return `<style>
+  @media only screen and (max-width: 640px) {
+    #${id} { padding:28px 12px !important; }
+    #${id} > div { padding:24px 20px !important; }
+    #${id} a.retrospectiva-cta { display:block !important; text-align:center; }
+  }
+</style>`;
+}
+
 function shell(title: string, bodyHtml: string): string {
   return `<!doctype html>
 <html lang="pt-BR">
@@ -226,20 +242,12 @@ export function renderTeaserWithPaywall(teaserHtml: string, path: string): strin
   if (ultima?.index === undefined) {
     throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7580)");
   }
-  // `id="retrospectiva-paywall"` (#7720) — nenhum estilo depende dele, é só o
-  // marcador que `index.ts` usa como `hasPart.cssSelector` no JSON-LD de
-  // paywall (o texto pago em si nunca chega aqui, ver docstring de
-  // `retrospectiva-seo.ts`).
-  // #9492: o bloco é todo inline (o trecho vem pronto do KV), então o ajuste
-  // de celular vai num <style> próprio, escopado no id e só abaixo de 640px.
+  // `id="retrospectiva-paywall"` (#7720) — marcador que `index.ts` usa como
+  // `hasPart.cssSelector` no JSON-LD de paywall (o texto pago em si nunca chega
+  // aqui, ver docstring de `retrospectiva-seo.ts`) E, desde o #9492, alvo do CSS
+  // de celular (`teaserBlockMobileCss`). Renomear quebra os dois.
   const bloco = `
-<style>
-  @media only screen and (max-width: 640px) {
-    #retrospectiva-paywall { padding:28px 12px !important; }
-    #retrospectiva-paywall > div { padding:24px 20px !important; }
-    #retrospectiva-paywall a.retrospectiva-cta { display:block !important; text-align:center; }
-  }
-</style>
+${teaserBlockMobileCss("retrospectiva-paywall")}
 <div style="position:relative;margin-top:-120px;height:120px;background:linear-gradient(to bottom, rgba(255,255,255,0), ${PAPER});pointer-events:none;"></div>
 <div id="retrospectiva-paywall" style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
   <div style="max-width:520px;margin:0 auto;background:${PAPER};border-radius:12px;padding:32px 28px;box-sizing:border-box;">
