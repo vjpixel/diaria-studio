@@ -129,7 +129,15 @@ const RECOMENDACAO_DIARIA_TITLE = "Recomendação da equipe da Clarice";
  * fixo é sempre em-dash). @pure
  */
 export function isClariceOnlySection(label: string): boolean {
-  return label === "APRESENTAÇÃO" || label === "APRESENTACAO" || label.startsWith("CLARICE —");
+  return (
+    label === "APRESENTAÇÃO" ||
+    label === "APRESENTACAO" ||
+    label.startsWith("CLARICE —") ||
+    // #9496: nome antigo do tutorial Clarice (ciclos até 2606-07, antes do
+    // `CLARICE — TUTORIAL`) — o parser já o reconhece como seção própria
+    // (`isSectionLabel`), então dá para cortá-lo pelo label como os demais.
+    /^LABORAT[ÓO]RIO CLARICE$/.test(label)
+  );
 }
 
 /**

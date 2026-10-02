@@ -55,14 +55,21 @@ describe("#4482 — isClariceOnlySection", () => {
     assert.equal(isClariceOnlySection("CLARICE - DIVULGAÇÃO"), false);
   });
 
-  it("seções normais (DESTAQUE, RADAR, LABORATÓRIO CLARICE) não são Clarice-only", () => {
+  it("seções normais (DESTAQUE, RADAR, USE MELHOR, PARA ENCERRAR) não são Clarice-only", () => {
     assert.equal(isClariceOnlySection("DESTAQUE 1 | ANTHROPIC"), false);
     assert.equal(isClariceOnlySection("RADAR"), false);
     assert.equal(isClariceOnlySection("USE MELHOR"), false);
     assert.equal(isClariceOnlySection("PARA ENCERRAR"), false);
-    // LABORATÓRIO CLARICE não começa com "CLARICE —" (o label é outro) — fora
-    // do escopo decidido do #4482 (só DIVULGAÇÃO/TUTORIAL foram removidas).
-    assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE"), false);
+  });
+
+  // #9496: LABORATÓRIO CLARICE é o nome antigo do `CLARICE — TUTORIAL` (ciclos
+  // até 2606-07) — o mesmo tutorial do produto com o CTA "Assine agora e ganhe
+  // até 63% de desconto". Ficou fora do #4482 só por escopo; com a página web
+  // passando pelo mesmo filtro, ele vazaria para o apoiador na 2606-07.
+  it("LABORATÓRIO CLARICE (nome antigo do tutorial) é Clarice-only, com ou sem acento", () => {
+    assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE"), true);
+    assert.equal(isClariceOnlySection("LABORATORIO CLARICE"), true);
+    assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE EXTRA"), false, "ancorado no label inteiro");
   });
 });
 

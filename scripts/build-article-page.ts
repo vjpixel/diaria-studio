@@ -32,6 +32,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DIARIA_RETROSPECTIVA_URL } from "./lib/canonical-urls.ts";
 import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
 import { mensalPathFromCycle } from "./lib/shared/retrospectiva-path.ts";
+import { readApoiadoresEiaCredit, relinkApoiadoresKitHtml } from "./render-monthly-apoiadores-kit.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -99,7 +100,15 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const page = buildArticleHtml(draftMd, cycle);
+  // #9496: mesmos insumos de I/O do e-mail dos apoiadores, pelas MESMAS
+  // funções (legenda do É IA? + relink das diárias) — a página é a versão web
+  // daquele e-mail, não do envio Clarice.
+  const monthlyDirPath = monthlyDir(cycle);
+  const buildOpts = {
+    eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
+    postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath),
+  };
+  const page = buildArticleHtml(draftMd, cycle, buildOpts);
 
   const outPath = getArg(argv, "out");
   if (outPath) {
@@ -130,7 +139,7 @@ async function main(): Promise<void> {
     // antes desta issue. O ciclo 2604-05 cai aqui de propósito: é anterior à
     // convenção `**DESTAQUE N | TEMA**` e não tem onde cortar.
     try {
-      const trecho = buildArticleTeaserHtml(draftMd, cycle);
+      const trecho = buildArticleTeaserHtml(draftMd, cycle, buildOpts);
       console.error(
         `[build-article-page] --push: enviando ${articleTeaserKvKey(cycle)} (${trecho.html.length} bytes, ` +
           `${Math.round((trecho.html.length / page.html.length) * 100)}% do artigo)...`,
