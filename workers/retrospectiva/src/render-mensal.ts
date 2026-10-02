@@ -190,8 +190,14 @@ const ASSINAR_URL = "https://diar.ia.br/assinar";
  *
  * #9499: o UTM era um literal solto (`artigo-mensal`/`artigo-web`) que o #7715
  * não migrou pro registry. Agora usa o mesmo triplo do CTA de apoio e se
- * distingue dele por `utm_content` — o destino (apex x apoia.se) já separa os
- * dois, o `utm_content` deixa isso explícito no relatório.
+ * distingue dele por `utm_content` (e pelo destino, apex x apoia.se).
+ *
+ * Alcance da atribuição: o UTM fica visível na ANALYTICS da página `/assinar`
+ * (GA4/GTM do apex). Ele NÃO chega ao registro do assinante no ESP: o form de
+ * `/assinar` só repassa `utm_source`/`utm_medium`/`utm_campaign` (sem
+ * `utm_content`), e o `poll` (`resolveSubscribeUtm`, source `apex`) descarta
+ * `utm_source` fora da allowlist de `client-utm-allowlist.ts`, onde
+ * `retrospectiva-mensal` não está. O literal antigo tinha a mesma lacuna.
  */
 function assinarUrlComUtm(path: string): string {
   const params = new URLSearchParams({
@@ -286,7 +292,7 @@ ${teaserBlockMobileCss("retrospectiva-paywall")}
       Já apoia? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.
     </p>
     <p style="font-size:15px;line-height:1.6;margin:20px 0 0;padding-top:20px;border-top:1px solid ${BEGE};color:${INK};">
-      Ainda não recebe a diar.ia.br? <a class="retrospectiva-cadastro" href="${escHtml(assinarUrlComUtm(path))}" style="color:${INK};font-weight:bold;text-decoration-color:${TEAL};">Cadastre-se gratuitamente na newsletter diária</a> — notícias e tutoriais de IA todo dia útil, no seu e-mail.
+      Ainda não recebe a diar.ia.br? <a href="${escHtml(assinarUrlComUtm(path))}" style="color:${INK};font-weight:bold;text-decoration-color:${TEAL};">Cadastre-se gratuitamente na newsletter diária</a>: notícias e tutoriais de IA todo dia útil, no seu e-mail.
     </p>
   </div>
 </div>`;

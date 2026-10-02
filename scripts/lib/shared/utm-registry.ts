@@ -299,7 +299,9 @@ export function buildRetrospectivaMensalCampaign(path: string): string {
 /**
  * `utm_content` do CTA de cadastro gratuito na diária do bloco de conversão do
  * trecho (#9499) — mesmo source/medium/campaign do CTA de apoio, distinguido só
- * por este `utm_content` (o CTA de apoio não leva `utm_content`).
+ * por este `utm_content` (o CTA de apoio não leva `utm_content`). Visível na
+ * analytics de `diar.ia.br/assinar`; não chega ao registro do assinante no ESP
+ * (ver `assinarUrlComUtm` em `workers/retrospectiva/src/render-mensal.ts`).
  */
 export const RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT = "cadastro-diaria";
 
@@ -1024,7 +1026,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "`utm_source` próprio, distinto de todo canal de e-mail: audiência e objetivo diferentes " +
       "(converter em apoio, não em leitura). Desde o #9499, o mesmo triplo marca também o CTA de " +
       "cadastro gratuito na diária (diar.ia.br/assinar) do bloco do trecho, com " +
-      "`utm_content=cadastro-diaria`.",
+      "`utm_content=cadastro-diaria` (atribuição só na analytics de /assinar, não no ESP).",
     status: "ativo",
   },
   {

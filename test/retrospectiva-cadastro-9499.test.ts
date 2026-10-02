@@ -25,7 +25,7 @@ import {
   RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT,
   buildRetrospectivaMensalCampaign,
 } from "../scripts/lib/shared/utm-registry.ts";
-import { renderTeaserWithPaywall, teaserBlockMobileCss } from "../workers/retrospectiva/src/render-mensal.ts";
+import { renderTeaserWithPaywall } from "../workers/retrospectiva/src/render-mensal.ts";
 
 const TEASER = "<html><head></head><body><p>começo do artigo</p></body></html>";
 
@@ -56,10 +56,11 @@ describe("#9499 — CTA de cadastro gratuito na diária no trecho da Retrospecti
     assert.equal(RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT, "cadastro-diaria");
   });
 
-  it("REGRESSÃO: o literal solto antigo não volta", () => {
+  it("REGRESSÃO: nenhum valor do literal solto antigo volta", () => {
     const out = renderTeaserWithPaywall(TEASER, "2609");
-    assert.ok(!out.includes("utm_source=artigo-mensal"));
-    assert.ok(!out.includes("utm_campaign=trecho-paywall"));
+    for (const antigo of ["artigo-mensal", "artigo-web", "trecho-paywall"]) {
+      assert.ok(!out.includes(antigo), `valor antigo de UTM no HTML: ${antigo}`);
+    }
   });
 
   it("edições distintas geram utm_campaign distinto no cadastro", () => {
@@ -74,8 +75,9 @@ describe("#9499 — CTA de cadastro gratuito na diária no trecho da Retrospecti
     assert.ok(out.search(RE_APOIO) < out.search(RE_CADASTRO), "o apoio vem primeiro");
   });
 
-  it("CSS de celular do #9492 continua no bloco", () => {
+  it("CSS de celular do #9492 continua no bloco (media query escopada + botão de apoio marcado)", () => {
     const out = renderTeaserWithPaywall(TEASER, "2609");
-    assert.ok(out.includes(teaserBlockMobileCss("retrospectiva-paywall")));
+    assert.match(out, /@media only screen and \(max-width: 640px\)[\s\S]*#retrospectiva-paywall a\.retrospectiva-cta/);
+    assert.match(out, /<a class="retrospectiva-cta" href="https:\/\/apoia\.se\/diaria/);
   });
 });
