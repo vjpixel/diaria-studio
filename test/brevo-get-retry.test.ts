@@ -1,6 +1,62 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { brevoGet } from "../scripts/lib/brevo-client.ts";
+import { brevoGet, brevoGetWithNetworkRetry } from "../scripts/lib/brevo-client.ts";
+
+// #6035 (02/10/2026): `fetch failed` (erro de REDE — o fetch lança, não há
+// Response) escapava do brevoGet na 1ª ocorrência e abortou o
+// Diaria-Clarice-Sync (exit 2) após 45min / 30004 de 82059 contatos.
+test("#6035 brevoGetWithNetworkRetry: TypeError de rede (fetch failed) é retentado", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (calls < 3) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+  }) as unknown as typeof globalThis.fetch;
+  const sleeps: number[] = [];
+  try {
+    const r = await brevoGetWithNetworkRetry("key", "/contacts/1", async (ms) => {
+      sleeps.push(ms);
+    });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { id: 1 });
+    assert.equal(calls, 3);
+    assert.deepEqual(sleeps, [2000, 5000]);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("#6035 brevoGetWithNetworkRetry: rede falhando sempre → relança o MESMO TypeError após 4 tentativas", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  const err = new TypeError("fetch failed");
+  globalThis.fetch = (async () => {
+    calls++;
+    throw err;
+  }) as unknown as typeof globalThis.fetch;
+  try {
+    await assert.rejects(brevoGetWithNetworkRetry("key", "/contacts/1", async () => {}), (e) => e === err);
+    assert.equal(calls, 4);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("#6035 brevoGetWithNetworkRetry: erro não-TypeError (ex: 401) NÃO é retentado", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response("unauthorized", { status: 403 });
+  }) as unknown as typeof globalThis.fetch;
+  try {
+    await assert.rejects(brevoGetWithNetworkRetry("key", "/x", async () => {}));
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
 
 // #2651: brevoGet ganhou _sleep injetável → o caminho de fallback-backoff
 // (429 SEM header Retry-After, usa RETRY_MS) fica testável sem espera real.
