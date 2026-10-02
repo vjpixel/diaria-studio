@@ -890,3 +890,71 @@ describe("#9473 — main() aplica a regra por padrão", () => {
     assert.equal(spy.written.length, 0);
   });
 });
+
+// ── #9485 — monthly_send_schedule inválido não trava --schedule/--draft ─────
+
+describe("#9485 — regra só é resolvida sem --schedule/--draft", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  const INVALID_CFG = { kit_apoiadores: { audience_tag: "apoio-mensal" }, monthly_send_schedule: { time_brt: "6:00" } };
+
+  async function runWithInvalidRule(argvExtra: string[], spy: Spy): Promise<void> {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writeFileSync(join(root, "platform.config.json"), JSON.stringify(INVALID_CFG), "utf8");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2610-11", ...argvExtra];
+      mockProcessExit();
+      await main(root, spy.deps);
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const now = new Date("2026-10-20T12:00:00Z");
+
+  it("config inválida + --draft: cria rascunho, sem exit", async () => {
+    const spy = makeSpy({ now: () => now });
+    await runWithInvalidRule(["--draft"], spy);
+    assert.equal(exitCode, null);
+    assert.equal(spy.created.length, 1);
+    assert.equal(spy.created[0].send_at, null);
+  });
+
+  it("config inválida + --schedule: agenda no ISO explícito, sem exit", async () => {
+    const spy = makeSpy({ now: () => now });
+    await runWithInvalidRule(["--schedule", "2026-11-07T06:00:00-03:00"], spy);
+    assert.equal(exitCode, null);
+    assert.equal(spy.created.length, 1);
+    assert.equal(spy.created[0].send_at, "2026-11-07T06:00:00-03:00");
+  });
+
+  it("config inválida SEM flags: continua falhando (exit 1) — a regra é necessária e está quebrada", async () => {
+    const spy = makeSpy({ now: () => now });
+    await assert.rejects(runWithInvalidRule([], spy), /__mocked_exit__/);
+    assert.equal(exitCode, 1);
+    assert.equal(spy.created.length, 0);
+  });
+
+  it("resolveApoiadoresSendAt: thunk da regra nunca é chamado com --draft/--schedule", () => {
+    let calls = 0;
+    const rule = () => {
+      calls++;
+      throw new Error("regra inválida");
+    };
+    assert.equal(resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: undefined, draft: true, now, rule }).source, "draft_flag");
+    assert.equal(
+      resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: "2026-11-07T06:00:00-03:00", draft: false, now, rule }).source,
+      "explicit",
+    );
+    assert.equal(calls, 0);
+    assert.throws(() => resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: undefined, draft: false, now, rule }), /regra inválida/);
+    assert.equal(calls, 1);
+  });
+});

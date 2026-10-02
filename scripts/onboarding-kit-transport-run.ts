@@ -71,7 +71,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { getBroadcast, KitApiError, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { getBroadcast, kitFetch, KitApiError, type KitBroadcastSummary } from "./lib/kit-client.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import {
   createBroadcast,
@@ -429,6 +429,13 @@ export interface ReconcileOpenLotsDeps {
    * dry-run): nunca escreve no Kit.
    */
   deleteBroadcast?(id: number): Promise<void>;
+  /**
+   * #9484: prova barata de que a conta/credencial responde (`GET /account`
+   * 200). Só com ela um 404 na releitura conta como "broadcast apagado" —
+   * sem ela (ou se lançar) o lote fica `unverified`. Ver
+   * `confirmOrCleanUpScheduledLot`.
+   */
+  probeAccount?(): Promise<void>;
 }
 
 /**
@@ -485,7 +492,11 @@ export async function reconcileOpenLots(
     const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
     if (isUnverified && deps.deleteBroadcast) {
       updated = { ...lot };
-      const outcome = await confirmOrCleanUpScheduledLot(updated, { getBroadcast: deps.getBroadcast, deleteBroadcast: deps.deleteBroadcast });
+      const outcome = await confirmOrCleanUpScheduledLot(updated, {
+        getBroadcast: deps.getBroadcast,
+        deleteBroadcast: deps.deleteBroadcast,
+        ...(deps.probeAccount ? { probeAccount: deps.probeAccount } : {}),
+      });
       updated.last_reconciled_at = nowIso;
       row.recovered = outcome;
       if (outcome === "unverified") {
@@ -864,7 +875,12 @@ export async function runAndRecordSendRun(
  */
 export async function confirmOrCleanUpScheduledLot(
   lot: OnboardingKitLot,
-  deps: { getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>; deleteBroadcast: (id: number) => Promise<void> },
+  deps: {
+    getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>;
+    deleteBroadcast: (id: number) => Promise<void>;
+    /** #9484: ver `ReconcileOpenLotsDeps.probeAccount`. Ausente = 404 na releitura nunca cancela. */
+    probeAccount?: () => Promise<void>;
+  },
 ): Promise<"scheduled" | "unscheduled" | "unverified"> {
   const id = lot.broadcast_id as number;
   let reread: { status?: string | null; send_at?: string | null };
@@ -872,6 +888,17 @@ export async function confirmOrCleanUpScheduledLot(
     reread = await deps.getBroadcast(id);
   } catch (e) {
     if (isKitNotFoundError(e)) {
+      // #9484: 404 só prova deleção se a conta responde. Com `kitCfg` da
+      // conta errada (credencial trocada, env de outra máquina) TODO
+      // broadcast dá 404 — cancelar aqui devolveria as entradas ao plano e a
+      // rodada seguinte criaria outro broadcast (e-mail em dobro). Sem prova
+      // (probe ausente ou falhando), o lado seguro é `unverified`.
+      const accountError = await probeAccountSafely(deps.probeAccount);
+      if (accountError != null) {
+        lot.status = "created";
+        lot.last_error = `releitura do broadcast ${id} deu 404, mas a conta Kit não confirmou que responde (${accountError}) — 404 NÃO tratado como deleção; agendamento NÃO confirmado`;
+        return "unverified";
+      }
       // #9460: 404 permanente = broadcast apagado (ex.: à mão na UI do Kit).
       // Não existe, logo não está agendado — mesma saída do "unscheduled"
       // com DELETE ok: lote `cancelled`, entradas voltam ao plano. Mantê-lo
@@ -920,7 +947,9 @@ export async function confirmOrCleanUpScheduledLot(
     }
     if (isKitNotFoundError(e)) {
       // #9460: sumiu entre a releitura e o DELETE — o efeito desejado (não
-      // existir broadcast) já vale.
+      // existir broadcast) já vale. #9484: aqui não precisa de probe — a
+      // releitura logo acima achou ESTE broadcast nesta mesma conta (200),
+      // o que já prova que a credencial é a certa.
       lot.status = "cancelled";
       lot.send_at = null;
       delete lot.schedule_failed;
@@ -932,6 +961,25 @@ export async function confirmOrCleanUpScheduledLot(
     lot.last_error = `${why}; DELETE falhou (${redactEmails((e as Error).message)}) — rascunho ficou no Kit, lote marcado schedule_failed`;
   }
   return "unscheduled";
+}
+
+/** #9484: roda o probe de conta sem lançar. `null` = conta respondeu;
+ *  string = motivo de NÃO confiar no 404 (probe ausente ou falhou). */
+async function probeAccountSafely(probe: (() => Promise<void>) | undefined): Promise<string | null> {
+  if (!probe) return "probe de conta ausente";
+  try {
+    await probe();
+    return null;
+  } catch (e) {
+    return `GET /account falhou: ${redactEmails((e as Error).message)}`;
+  }
+}
+
+/** #9484: prova barata de que a credencial do Kit responde — `GET /account`
+ *  com 200. Usa `kitFetch` cru (não `getKitAccount`, que exige
+ *  `subscriber_limit` e lançaria por forma de envelope, não por conta). */
+export async function probeKitAccount(kitCfg: KitConfig): Promise<void> {
+  await kitFetch("/account", { config: kitCfg });
 }
 
 /** #9367 item 2: `DELETE /broadcasts/{id}` de um broadcast que já saiu
@@ -1022,7 +1070,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     { storePath, store, persist: args.send },
     {
       getBroadcast: (id) => getBroadcast(id, kitCfg),
-      ...(args.send ? { deleteBroadcast: (id: number) => deleteBroadcast(id, kitCfg) } : {}),
+      ...(args.send ? { deleteBroadcast: (id: number) => deleteBroadcast(id, kitCfg), probeAccount: () => probeKitAccount(kitCfg) } : {}),
     },
   );
   counters.lots_unverified += preSend.stillUnverified;
@@ -1251,7 +1299,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       // confirmado pela RELEITURA (`confirmOrCleanUpScheduledLot`), nunca
       // pelo `status` da resposta do POST. E-mail 3 nasce rascunho por
       // desenho (aprovação humana), então `created` é o sucesso dele.
-      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg) });
+      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg), probeAccount: () => probeKitAccount(kitCfg) });
       persistLotUpdate(storePath, lot);
       if (outcome === "scheduled") {
         counters.lots_created++;
