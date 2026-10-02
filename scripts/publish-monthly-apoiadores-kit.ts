@@ -4,7 +4,9 @@
  * `/diaria-mensal-apoiadores`)
  *
  * Cria o broadcast do envio extra pros apoiadores Mantenedor/Patrono na base
- * própria (Kit), **sempre como rascunho**. Sucessor de
+ * própria (Kit) — **agendado por padrão no 1º sábado do mês de envio, 06:00
+ * BRT (#9473) quando faltam >=24h; rascunho caso contrário ou com `--draft`**.
+ * Sucessor de
  * `publish-monthly-apoiadores-brevo.ts` (#4593), que por sua vez sucede o
  * paste manual no Beehiiv do #4482.
  *

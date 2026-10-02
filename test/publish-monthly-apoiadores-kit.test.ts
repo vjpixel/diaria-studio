@@ -7,8 +7,10 @@
  *
  * O que os testes travam, e por que cada um importa:
  *
- *   - **Payload sempre rascunho e sempre com filtro de tag.** `send_at`
- *     presente agenda um envio real; `subscriber_filter` ausente/vazio no Kit
+ *   - **`send_at` só pela regra/override e sempre com filtro de tag.** Desde
+ *     o #9473 o default agenda no 1º sábado do mês de envio, 06:00 BRT,
+ *     quando faltam >=24h; rascunho (`send_at: null`) caso contrário ou com
+ *     `--draft`. `send_at` presente agenda um envio real; `subscriber_filter` ausente/vazio no Kit
  *     significa BASE INTEIRA (#6126) — o conteúdo exclusivo de apoiador indo
  *     pra todo mundo. Os dois são verificados por chave, não por substring.
  *   - **`public: false`.** A anual e a diária passam `public: true` pra ganhar
@@ -833,7 +835,7 @@ describe("#9473 — main() aplica a regra por padrão", () => {
     delete process.env.KIT_API_KEY;
   });
 
-  async function run(argvExtra: string[], now: Date, cycle = "2610-11"): Promise<Spy> {
+  async function run(argvExtra: string[], now: Date, cycle = "2610-11", spy: Spy = makeSpy({ now: () => now })): Promise<Spy> {
     const root = mkTmpRoot();
     const restore = silenceStderr();
     try {
@@ -841,7 +843,6 @@ describe("#9473 — main() aplica a regra por padrão", () => {
       process.env.KIT_API_KEY = "fake_key";
       process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", cycle, ...argvExtra];
       mockProcessExit();
-      const spy = makeSpy({ now: () => now });
       await main(root, spy.deps);
       return spy;
     } finally {
@@ -876,11 +877,16 @@ describe("#9473 — main() aplica a regra por padrão", () => {
     assert.equal(spy.written[0].state.status, "draft_prepared");
   });
 
-  it("--schedule + --draft: exit(1)", async () => {
+  it("--schedule + --draft: exit(1), nada renderizado, criado nem gravado", async () => {
+    const now = new Date("2026-10-20T12:00:00Z");
+    const spy = makeSpy({ now: () => now });
     await assert.rejects(
-      run(["--draft", "--schedule", "2026-11-07T06:00:00-03:00"], new Date("2026-10-20T12:00:00Z")),
+      run(["--draft", "--schedule", "2026-11-07T06:00:00-03:00"], now, "2610-11", spy),
       /__mocked_exit__/,
     );
     assert.equal(exitCode, 1);
+    assert.deepEqual(spy.renderCalls, []);
+    assert.equal(spy.created.length, 0);
+    assert.equal(spy.written.length, 0);
   });
 });

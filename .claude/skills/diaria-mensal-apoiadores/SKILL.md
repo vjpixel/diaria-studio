@@ -28,8 +28,9 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > 1 caiu pra `apoiador` (R$10–25, abaixo do corte), 2 estão sem `apoio_nivel`
 > (apoio não vigente) e 1 está blacklisted na Brevo e não existe no Kit.
 >
-> **O que falta pro 1º envio Kit:** rodar o Passo 2 abaixo sem `--dry-run` e
-> conferir o rascunho no painel. Nenhum broadcast Kit foi criado ainda.
+> **O que falta pro 1º envio Kit:** rodar o Passo 2 abaixo sem `--dry-run` —
+> desde o #9473 isso já AGENDA pro 1º sábado do mês de envio, 06:00 BRT (se
+> faltarem >=24h; senão cria rascunho) — e conferir o broadcast no painel. Nenhum broadcast Kit foi criado ainda.
 
 ## ⚠️ O state local não é prova de envio
 
@@ -252,7 +253,8 @@ tomou. Reabrir é questão de produto — registrar como comentário na issue.
 
 ## Escopo explícito
 
-O disparo real (test send, Send/Schedule) continua manual no painel do Kit.
 O que a skill garante: conteúdo certo, audiência certa e auditável, broadcast
-SEMPRE criado como rascunho, e dedup entre Passo 1 (estado) e Passo 2
+agendado pela regra do 1º sábado do mês de envio, 06:00 BRT (#9473), quando
+faltam >=24h — rascunho caso contrário ou com `--draft`, e aí o disparo
+(test send, Send/Schedule) continua manual no painel do Kit — e dedup entre Passo 1 (estado) e Passo 2
 (broadcast real).
