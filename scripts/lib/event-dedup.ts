@@ -57,7 +57,7 @@ export const EVENT_COMPANY_ALIASES: Record<string, string> = {
  */
 const NON_DISTINCTIVE = new Set<string>([
   ...Object.keys(EVENT_COMPANY_ALIASES),
-  "ia", "ai", "agi", "api", "apis", "llm", "llms", "pc", "ceo", "cto", "ipo", "s", "eua", "us", "usa", "uk", "ue", "eu",
+  "ia", "ias", "ai", "ais", "agi", "api", "apis", "llm", "llms", "pc", "ceo", "cto", "ipo", "s", "eua", "us", "usa", "uk", "ue", "eu",
   "brasil", "brazil", "china", "europa", "europe", "india", "japao", "japan", "australia", "california",
   "pix", "sus", "stf", "governo", "government", "congresso", "congress", "senado", "senate", "casa", "branca", "white", "house",
   "trump", "biden", "lula", "musk", "altman", "amodei", "zuckerberg", "pichai", "nadella",

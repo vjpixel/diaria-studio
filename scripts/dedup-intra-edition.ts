@@ -23,6 +23,9 @@
  *         (#2397: usa `extractNamedEntitiesIntra` — variante local que strip
  *         sufixo de veículo "- Publisher" e NÃO pula index-0.)
  *   3. Se match encontrado: remover do bucket secundário (destaque preservado).
+ *   4. (#9360) Agrupa coberturas da mesma história entre LANÇAMENTOS e RADAR
+ *      (lib/story-grouping.ts): fica a fonte primária, as demais saem
+ *      (`match_type: "story_group"`). Depois, o item-vs-item por bucket (#4360/#4667).
  *
  * Uso:
  *   npx tsx scripts/dedup-intra-edition.ts \
@@ -58,6 +61,8 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 // aqui aplicado no ponto destaque-vs-pool (pós-scorer), não no pool bruto.
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
 import { sameEvent } from "./lib/event-dedup.ts";
+// #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
+import { groupSameStory } from "./lib/story-grouping.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -391,7 +396,10 @@ interface IntraEditionRemovedEntry {
     /** #9249: mesmo evento (lib/event-dedup.ts). */
     | "event"
     /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
-    | "intra_bucket";
+    | "intra_bucket"
+    /** #9360: outra cobertura da mesma história no pool (cross-bucket);
+     *  `matched_highlight` = URL da fonte primária mantida. */
+    | "story_group";
   matched_highlight: string;
   score: number;
 }
@@ -1403,6 +1411,30 @@ export function dedupIntraEdition(
     }
 
     keptBuckets[bucket] = bucketKept;
+  }
+
+  // #9360 (padrão 2, decisão do editor no briefing 261002): agrupa coberturas
+  // da MESMA história entre LANÇAMENTOS e RADAR — fica a fonte primária
+  // (domínio oficial da empresa da história; senão maior score), as demais
+  // saem do pool (descartados, via `removed` → sidecar) e viram
+  // `cluster_sources[]` da primária. Roda ANTES do item-vs-item por bucket
+  // abaixo para que a escolha da primária siga o critério do editor e não o
+  // desempate por summary/model-card. Ver lib/story-grouping.ts.
+  {
+    const grouped = groupSameStory(keptBuckets, { isModelCard: isModelCardOrHubPage });
+    for (const [bucket, arts] of Object.entries(grouped.buckets)) {
+      keptBuckets[bucket] = arts as Article[];
+    }
+    for (const r of grouped.removed) {
+      removed.push({
+        url: r.url,
+        title: r.title,
+        bucket: r.bucket,
+        match_type: "story_group",
+        matched_highlight: r.kept_url,
+        score: 1,
+      });
+    }
   }
 
   // #4360/#4667: consolida duplicatas DENTRO de um bucket secundário
