@@ -347,8 +347,10 @@ export interface MetaAdsInsightsApiRow {
 /** `{since, until}` (`YYYY-MM-DD`, calendário UTC) — mesma convenção de
  *  `buildGoogleAdsPerformanceQuery`/`fetchMicrosoftAdsChannelMetrics`
  *  acima: `now` menos `lookbackDays - 1` dias, inclusive nas duas pontas.
+ *  Exportado (#9413 item 4) pra `runHeadless` (`meta-ads-ingest-spend.ts`)
+ *  derivar a janela do guard de mês truncado daqui em vez de duplicar a conta.
  *  @pure */
-function toMetaAdsDateRange(now: Date, lookbackDays: number): { since: string; until: string } {
+export function metaAdsDateRange(now: Date, lookbackDays: number): { since: string; until: string } {
   const end = new Date(now.getTime());
   const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
   return { since: start.toISOString().slice(0, 10), until: end.toISOString().slice(0, 10) };
@@ -493,7 +495,7 @@ export async function fetchMetaAdsChannelMetrics(
   const base = opts.apiBaseUrl ?? `https://graph.facebook.com/${apiVersion}`;
   const maxPages = opts.maxPages ?? META_ADS_INSIGHTS_MAX_PAGES;
 
-  const { since, until } = toMetaAdsDateRange(now, lookbackDays);
+  const { since, until } = metaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
   const campaigns = resolveMetaAdsCampaignIds(opts.campaignIds);
   if ("error" in campaigns) return { metrics: [], fetchedAt: null, error: campaigns.error };
@@ -633,7 +635,7 @@ export async function fetchMetaAdsCompleteRegistrationDaily(
   const base = opts.apiBaseUrl ?? `https://graph.facebook.com/${apiVersion}`;
   const maxPages = opts.maxPages ?? META_ADS_INSIGHTS_MAX_PAGES;
 
-  const { since, until } = toMetaAdsDateRange(now, lookbackDays);
+  const { since, until } = metaAdsDateRange(now, lookbackDays);
   const timeRange = encodeURIComponent(JSON.stringify({ since, until }));
   const campaigns = resolveMetaAdsCampaignIds(opts.campaignIds);
   if ("error" in campaigns) return { counts: [], discardedCount: 0, fetchedAt: null, error: campaigns.error };

@@ -79,7 +79,13 @@ import {
   spendIngestRetryOptions,
   type SpendIngestFetchResult,
 } from "./lib/spend-ingest.ts";
-import { fetchMetaAdsChannelMetrics, loadMetaAdsCampaignIds, metaAdsAuthConfigFromEnv, type MetaFetchLike } from "./lib/ads-campaign-economics-fetch.ts";
+import {
+  fetchMetaAdsChannelMetrics,
+  loadMetaAdsCampaignIds,
+  metaAdsAuthConfigFromEnv,
+  metaAdsDateRange,
+  type MetaFetchLike,
+} from "./lib/ads-campaign-economics-fetch.ts";
 import { withFetchRetry } from "./lib/fetch-retry.ts";
 import type { ChannelDailyMetric } from "./lib/ads-campaign-economics.ts";
 
@@ -177,7 +183,7 @@ export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=cam
  * prova o truncamento sozinha (ex: campanha pausada o mês corrente inteiro e
  * janela default começando 11/09 — antes, setembro seria regravado só com
  * 11–30/09 a cada rodada). Formato `AAAA-MM-DD` em UTC, mesma convenção de
- * `toMetaAdsDateRange` (`ads-campaign-economics-fetch.ts`); comparação
+ * `metaAdsDateRange` (`ads-campaign-economics-fetch.ts`); comparação
  * lexicográfica, então valor fora desse formato quebra o guard.
  *
  * **Mês sem gasto dentro da janela (#9413):** com `windowStart` conhecido,
@@ -261,7 +267,13 @@ export function aggregateMetaAdsChannelMetricsByMonth(
         mes,
         moeda,
         valor: Math.round(sum * 100) / 100,
-        fonte: `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), ingestão automática`,
+        // #9413 item 3: com a janela conhecida, ela vai na `fonte` — sem isso
+        // "N dia(s) (19..30/09)" parece mês truncado mesmo quando a janela
+        // cobriu desde o dia 1 (o mês só não teve gasto antes do dia 19).
+        fonte:
+          windowStart !== undefined
+            ? `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), janela ${janela}, ingestão automática`
+            : `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), ingestão automática`,
       };
     });
 }
@@ -424,8 +436,9 @@ export async function runHeadless(
   // guard precisa saber onde a JANELA começou, não só o primeiro dia com dado.
   const now = opts.now ?? new Date();
   const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
-  const windowStart = new Date(now.getTime() - (lookbackDays - 1) * 86_400_000).toISOString().slice(0, 10);
-  const windowEnd = now.toISOString().slice(0, 10);
+  // #9413 item 4: mesmo helper que monta o `time_range` do fetch — a janela
+  // do guard nunca diverge da janela consultada.
+  const { since: windowStart, until: windowEnd } = metaAdsDateRange(now, lookbackDays);
 
   // #9413: config de campanhas ilegível é falha explícita, nunca `level=account`
   // silencioso — e o `level` efetivamente usado vai pro log.
