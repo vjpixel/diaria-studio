@@ -297,6 +297,15 @@ export function buildRetrospectivaMensalCampaign(path: string): string {
 }
 
 /**
+ * `utm_content` do CTA de cadastro gratuito na diária do bloco de conversão do
+ * trecho (#9499) — mesmo source/medium/campaign do CTA de apoio, distinguido só
+ * por este `utm_content` (o CTA de apoio não leva `utm_content`). Visível na
+ * analytics de `diar.ia.br/assinar`; não chega ao registro do assinante no ESP
+ * (ver `assinarUrlComUtm` em `workers/retrospectiva/src/render-mensal.ts`).
+ */
+export const RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT = "cadastro-diaria";
+
+/**
  * `utm_source`/`utm_medium` da retrospectiva anual/aniversário
  * (`retrospectiva.diar.ia.br/AAAA` ou `/aniversarioAAAA`, gate de cadastro
  * grátis, #7715). Link de saída = CTA de cadastro (form + submit por fetch)
@@ -1015,7 +1024,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "CTA \"Apoiar a diar.ia.br\" (apoia.se) no bloco de conversão do trecho e no paywall seco de " +
       "`retrospectiva.diar.ia.br/AAMM` (#7715) — quem não passou no gate de apoio Mantenedor R$25+. " +
       "`utm_source` próprio, distinto de todo canal de e-mail: audiência e objetivo diferentes " +
-      "(converter em apoio, não em leitura).",
+      "(converter em apoio, não em leitura). Desde o #9499, o mesmo triplo marca também o CTA de " +
+      "cadastro gratuito na diária (diar.ia.br/assinar) do bloco do trecho, com " +
+      "`utm_content=cadastro-diaria` (atribuição só na analytics de /assinar, não no ESP).",
     status: "ativo",
   },
   {

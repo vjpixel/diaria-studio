@@ -21,7 +21,8 @@ import {
   RETROSPECTIVA_MENSAL_UTM_SOURCE,
   RETROSPECTIVA_MENSAL_UTM_MEDIUM,
   buildRetrospectivaMensalCampaign,
-} from "../../../scripts/lib/shared/utm-registry.ts"; // #7715
+  RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT,
+} from "../../../scripts/lib/shared/utm-registry.ts"; // #7715, #9499
 
 const INK = "#171411";
 const TEAL = "#00A0A0";
@@ -175,18 +176,38 @@ export function renderCycleNotFound(cycle: string): string {
 // sabe ainda se a URL malformada seria mensal ou anual — e chutar seria
 // servir o gate errado.
 
+/** Página de cadastro da diária no apex (`scripts/lib/site-assinar-page.ts`, form → Kit). */
+const ASSINAR_URL = "https://diar.ia.br/assinar";
+
 /**
- * URL de cadastro na diária, com UTM próprio (#7580).
+ * URL de cadastro na diária, com UTM próprio (#7580, #9499).
  *
- * O CTA secundário do trecho aponta para `/assinar` em vez de embutir um
+ * O CTA de cadastro do trecho aponta para `/assinar` em vez de embutir um
  * formulário: o endpoint de cadastro (`workers/poll/src/subscribe.ts`) valida
- * `source` contra um enum por superfície, e acrescentar `artigo.diar.ia.br` ali
+ * `source` contra um enum por superfície, e acrescentar este host ali
  * seria mais um deploy e mais uma origem para manter — desproporcional a um
- * CTA que a decisão do editor colocou como linha SECUNDÁRIA. `/assinar` já tem
- * o formulário funcionando.
+ * CTA que fica abaixo do de apoio. `/assinar` já tem o formulário funcionando.
+ *
+ * #9499: o UTM era um literal solto (`artigo-mensal`/`artigo-web`) que o #7715
+ * não migrou pro registry. Agora usa o mesmo triplo do CTA de apoio e se
+ * distingue dele por `utm_content` (e pelo destino, apex x apoia.se).
+ *
+ * Alcance da atribuição: o UTM fica visível na ANALYTICS da página `/assinar`
+ * (GA4/GTM do apex). Ele NÃO chega ao registro do assinante no ESP: o form de
+ * `/assinar` só repassa `utm_source`/`utm_medium`/`utm_campaign` (sem
+ * `utm_content`), e o `poll` (`resolveSubscribeUtm`, source `apex`) descarta
+ * `utm_source` fora da allowlist de `client-utm-allowlist.ts`, onde
+ * `retrospectiva-mensal` não está. O literal antigo tinha a mesma lacuna.
  */
-const ASSINAR_URL =
-  "https://diar.ia.br/assinar?utm_source=artigo-mensal&utm_medium=artigo-web&utm_campaign=trecho-paywall";
+function assinarUrlComUtm(path: string): string {
+  const params = new URLSearchParams({
+    utm_source: RETROSPECTIVA_MENSAL_UTM_SOURCE,
+    utm_medium: RETROSPECTIVA_MENSAL_UTM_MEDIUM,
+    utm_campaign: buildRetrospectivaMensalCampaign(path),
+    utm_content: RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT,
+  });
+  return `${ASSINAR_URL}?${params.toString()}`;
+}
 
 /**
  * Trecho público + paywall por cima (#7580).
@@ -209,6 +230,12 @@ const ASSINAR_URL =
  * secundária. Quem chega aqui sem apoiar é o perfil que assinaria a diária de
  * graça, mas dois CTAs com o mesmo peso diluem os dois — a página vende apoio,
  * e o cadastro é a saída de quem não vai apoiar hoje.
+ *
+ * #9499 (decisão do editor, 02/10/2026): o #9497 tirou do trecho a abertura
+ * Clarice-only, que trazia o "se cadastre gratuitamente" — este bloco passou a
+ * ser o único ponto de conversão de quem não apoia. O cadastro continua abaixo
+ * do botão de apoio, mas deixou de ser nota de rodapé esmaecida: vira uma seção
+ * própria, separada por um fio, com o convite explícito de cadastro gratuito.
  *
  * Falha alto se não houver `</body>`: publicar o trecho SEM o bloco de
  * conversão seria entregar conteúdo de graça sem pedir nada em troca — o pior
@@ -264,8 +291,8 @@ ${teaserBlockMobileCss("retrospectiva-paywall")}
     <p style="font-size:14px;line-height:1.6;margin:0 0 8px;color:${INK};opacity:.75;">
       Já apoia? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.
     </p>
-    <p style="font-size:14px;line-height:1.6;margin:0;color:${INK};opacity:.75;">
-      Não quer apoiar agora? A <a href="${ASSINAR_URL}" style="color:${INK};text-decoration-color:${TEAL};">diária é de graça</a> — notícias e tutoriais de IA todo dia útil.
+    <p style="font-size:15px;line-height:1.6;margin:20px 0 0;padding-top:20px;border-top:1px solid ${BEGE};color:${INK};">
+      Ainda não recebe a diar.ia.br? <a href="${escHtml(assinarUrlComUtm(path))}" style="color:${INK};font-weight:bold;text-decoration-color:${TEAL};">Cadastre-se gratuitamente na newsletter diária</a>: notícias e tutoriais de IA todo dia útil, no seu e-mail.
     </p>
   </div>
 </div>`;
