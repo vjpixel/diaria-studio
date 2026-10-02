@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   kitFetch,
+  isNonIdempotentRequest,
   KitApiError,
   listBroadcasts,
   getBroadcast,
@@ -189,6 +190,42 @@ describe("kitFetch", () => {
       }) as typeof fetch,
       async () => {
         await kitFetch("/broadcasts", { method: "POST", body: {}, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } });
+      },
+    );
+    assert.equal(attempt, 2);
+  });
+
+  // #9452 — só a criação perde o retry; POSTs read-only/idempotentes mantêm backoff.
+  for (const path of ["/subscribers/filter", "/subscribers", "/tags/12/subscribers/34", "/subscribers/5/unsubscribe"]) {
+    it(`POST ${path} com 5xx É retentado (idempotente, #9452)`, async () => {
+      let attempt = 0;
+      await withMockFetch(
+        (async () => {
+          attempt++;
+          return attempt === 1 ? jsonResponse(503, {}) : jsonResponse(200, { ok: true });
+        }) as typeof fetch,
+        async () => {
+          await kitFetch(path, { method: "POST", body: {}, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } });
+        },
+      );
+      assert.equal(attempt, 2);
+    });
+  }
+
+  it("idempotent explícito sobrepõe a classificação por path (#9452)", async () => {
+    assert.equal(isNonIdempotentRequest("POST", "/broadcasts"), true);
+    assert.equal(isNonIdempotentRequest("POST", "/tags"), true);
+    assert.equal(isNonIdempotentRequest("POST", "/broadcasts", true), false);
+    assert.equal(isNonIdempotentRequest("POST", "/subscribers/filter", false), true);
+    assert.equal(isNonIdempotentRequest("GET", "/broadcasts"), false);
+    let attempt = 0;
+    await withMockFetch(
+      (async () => {
+        attempt++;
+        return attempt === 1 ? jsonResponse(502, {}) : jsonResponse(200, {});
+      }) as typeof fetch,
+      async () => {
+        await kitFetch("/broadcasts", { method: "POST", body: {}, idempotent: true, config: TEST_CONFIG, retry: { sleep: NO_REAL_SLEEP } });
       },
     );
     assert.equal(attempt, 2);

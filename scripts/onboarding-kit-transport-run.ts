@@ -660,10 +660,9 @@ async function main(): Promise<void> {
       }
     }
     try {
-      await deleteBroadcast(lot.broadcast_id, kitCfg);
-      lot.status = "cancelled";
+      const outcome = await cancelKitLot(lot, (id) => deleteBroadcast(id, kitCfg));
       persistLotUpdate(storePath, lot);
-      console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true }, null, 2));
+      console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true, ...(outcome === "already_gone" ? { note: "broadcast já não existia no Kit (404)" } : {}) }, null, 2));
     } catch (e) {
       // #7922: 422 "Broadcast has already been sent." é esperado quando o
       // envio já começou entre a leitura do store e esta chamada — não é bug
@@ -872,6 +871,18 @@ export async function confirmOrCleanUpScheduledLot(
   try {
     reread = await deps.getBroadcast(id);
   } catch (e) {
+    if (isKitNotFoundError(e)) {
+      // #9460: 404 permanente = broadcast apagado (ex.: à mão na UI do Kit).
+      // Não existe, logo não está agendado — mesma saída do "unscheduled"
+      // com DELETE ok: lote `cancelled`, entradas voltam ao plano. Mantê-lo
+      // `created` prenderia as entradas (contam como confirmadas) e o streak
+      // de `lots_unverified` nunca zeraria.
+      lot.status = "cancelled";
+      lot.send_at = null;
+      delete lot.schedule_failed;
+      lot.last_error = `broadcast ${id} não existe mais no Kit (404 na releitura) — lote cancelado (entradas voltam ao plano)`;
+      return "unscheduled";
+    }
     lot.status = "created";
     lot.last_error = `releitura do broadcast ${id} falhou — agendamento NÃO confirmado: ${redactEmails((e as Error).message)}`;
     return "unverified";
@@ -907,6 +918,15 @@ export async function confirmOrCleanUpScheduledLot(
       lot.last_error = `${why}; DELETE recusado com 422 "already been sent" — broadcast JÁ ENVIADO, lote marcado completed`;
       return "scheduled";
     }
+    if (isKitNotFoundError(e)) {
+      // #9460: sumiu entre a releitura e o DELETE — o efeito desejado (não
+      // existir broadcast) já vale.
+      lot.status = "cancelled";
+      lot.send_at = null;
+      delete lot.schedule_failed;
+      lot.last_error = `${why}; DELETE devolveu 404 — broadcast já não existe, lote cancelado (entradas voltam ao plano)`;
+      return "unscheduled";
+    }
     lot.status = "created";
     lot.schedule_failed = true;
     lot.last_error = `${why}; DELETE falhou (${redactEmails((e as Error).message)}) — rascunho ficou no Kit, lote marcado schedule_failed`;
@@ -920,6 +940,35 @@ export async function confirmOrCleanUpScheduledLot(
  *  falha do DELETE. */
 export function isKitAlreadySentError(e: unknown): boolean {
   return e instanceof KitApiError && e.status === 422 && /already been sent/i.test(e.body);
+}
+
+/** #9460: 404 do Kit num broadcast = ele não existe (apagado na UI). Pra
+ *  releitura/DELETE de lote, equivale a "não agendado". */
+export function isKitNotFoundError(e: unknown): boolean {
+  return e instanceof KitApiError && e.status === 404;
+}
+
+/** `--cancel-lot`: apaga o broadcast e marca o lote `cancelled`. #9460: 404 no
+ *  DELETE (broadcast já apagado à mão) também cancela — antes o lote ficava
+ *  `created` pra sempre e só editar o store resolvia. Outros erros propagam
+ *  (o caller grava `last_error` e sai != 0). Muta `lot`. */
+export async function cancelKitLot(
+  lot: OnboardingKitLot,
+  deleteFn: (id: number) => Promise<void>,
+): Promise<"deleted" | "already_gone"> {
+  const id = lot.broadcast_id as number;
+  let outcome: "deleted" | "already_gone" = "deleted";
+  try {
+    await deleteFn(id);
+  } catch (e) {
+    if (!isKitNotFoundError(e)) throw e;
+    outcome = "already_gone";
+  }
+  lot.status = "cancelled";
+  lot.send_at = null;
+  delete lot.schedule_failed;
+  lot.last_error = outcome === "already_gone" ? `--cancel-lot: broadcast ${id} já não existia no Kit (404) — lote cancelado` : null;
+  return outcome;
 }
 
 /** Contadores de uma rodada `--send` (tudo de `KitSendRunRecord` menos o carimbo). */

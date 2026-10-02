@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAndRecordSendRun, confirmOrCleanUpScheduledLot, isKitAlreadySentError } from "../scripts/onboarding-kit-transport-run.ts";
+import { runAndRecordSendRun, confirmOrCleanUpScheduledLot, isKitAlreadySentError, isKitNotFoundError, cancelKitLot } from "../scripts/onboarding-kit-transport-run.ts";
 import { recordKitSendRun, type OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
 
@@ -542,6 +542,53 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
       assert.equal(deleted, 0, `${status}: broadcast que já saiu nunca é apagado`);
       assert.equal(lot.send_at, "2026-10-01T11:00:00Z", "send_at do POST preservado quando a releitura não ecoa");
     }
+  });
+
+  it("#9460: releitura 404 (broadcast apagado na UI) → lote cancelled, entradas liberadas, nunca unverified", async () => {
+    const lot = mkLot();
+    let deleted = 0;
+    const out = await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: async () => {
+        throw new KitApiError("/broadcasts/9", 404, JSON.stringify({ errors: ["Not Found"] }));
+      },
+      deleteBroadcast: async () => {
+        deleted++;
+      },
+    });
+    assert.equal(out, "unscheduled");
+    assert.equal(lot.status, "cancelled");
+    assert.equal(lot.schedule_failed, undefined);
+    assert.equal(deleted, 0, "não há o que apagar");
+    // outro erro (401) continua unverified
+    const auth = mkLot();
+    assert.equal(await confirmOrCleanUpScheduledLot(auth, { getBroadcast: async () => { throw new KitApiError("/broadcasts/9", 401, "x"); }, deleteBroadcast: async () => {} }), "unverified");
+    assert.equal(auth.status, "created");
+    assert.equal(isKitNotFoundError(new Error("404")), false, "só KitApiError 404 conta");
+  });
+
+  it("#9460: DELETE 404 após releitura sem agendamento → cancelled (não schedule_failed)", async () => {
+    const lot = mkLot();
+    const out = await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: async () => ({ status: "draft", send_at: null }),
+      deleteBroadcast: async () => {
+        throw new KitApiError("/broadcasts/9", 404, "Not Found");
+      },
+    });
+    assert.equal(out, "unscheduled");
+    assert.equal(lot.status, "cancelled");
+    assert.equal(lot.schedule_failed, undefined);
+  });
+
+  it("#9460: --cancel-lot com DELETE 404 → lote cancelled; outros erros propagam sem cancelar", async () => {
+    const gone = mkLot();
+    assert.equal(await cancelKitLot(gone, async () => { throw new KitApiError("/broadcasts/9", 404, "Not Found"); }), "already_gone");
+    assert.equal(gone.status, "cancelled");
+    const ok = mkLot();
+    assert.equal(await cancelKitLot(ok, async () => {}), "deleted");
+    assert.equal(ok.status, "cancelled");
+    const bad = mkLot();
+    await assert.rejects(() => cancelKitLot(bad, async () => { throw new KitApiError("/broadcasts/9", 500, "boom"); }));
+    assert.equal(bad.status, "created");
   });
 
   it("#9367 item 2: DELETE 422 'already been sent' → enviado (completed), não schedule_failed nem volta ao plano", async () => {
