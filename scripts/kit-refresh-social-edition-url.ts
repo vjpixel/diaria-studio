@@ -86,6 +86,7 @@ import {
 } from "./lib/edition-url.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -341,7 +342,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
-  const editionDir = resolve(editionDirArg);
+  const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427 (antes: cwd)
+  if (!resolvedArg.ok) {
+    process.stderr.write(`ERRO: ${resolvedArg.error}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const editionDir = resolvedArg.editionDir;
   const result = await kitRefreshSocialEditionUrl(editionDir, productionDeps());
   console.log(JSON.stringify(result));
   process.exitCode = result.ok ? 0 : result.code;

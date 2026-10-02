@@ -42,6 +42,7 @@ import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — inje
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -633,7 +634,7 @@ async function rescheduleFacebookPosts(opts: {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const editionDir = resolve(ROOT, args["edition-dir"] as string);
+  const editionDir = resolveEditionDirArgOrExit(args["edition-dir"] as string | undefined, { root: ROOT }); // #9427
   const doSchedule = !!args.schedule;
   // #725 bug #2: args["skip-existing"] é true (presente) ou undefined (ausente);
   // `undefined !== false` === true → skipExisting era SEMPRE true independente

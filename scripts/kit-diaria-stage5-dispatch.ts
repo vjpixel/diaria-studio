@@ -61,6 +61,7 @@ import {
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { KIT_NATIVE_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts";
+import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   decideKitChannelDispatch,
   resolveAudienceTagId,
@@ -633,7 +634,8 @@ export async function main(): Promise<void> {
   // resumo em vez de aparecer como falha.
   let result: Stage5KitResult;
   try {
-    result = await runStage5KitDispatch(resolve(ROOT, editionDirArg), productionDeps(), {
+    // #9427: dentro do try — erro de argumento vira JSON `failed`, nunca stack trace.
+    result = await runStage5KitDispatch(resolveEditionDirArg(editionDirArg, { root: ROOT }), productionDeps(), {
       dryRun: hasFlag(argv, "dry-run"),
       sendTest: hasFlag(argv, "send-test"),
     });

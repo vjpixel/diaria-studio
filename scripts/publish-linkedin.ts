@@ -101,6 +101,7 @@ import {
 // (era duplicação de scripts/lib/worker-queue-client.ts sem o guard de 4xx
 // do #8303; publish-instagram.ts já delegava assim desde #3944 Parte B).
 import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -683,7 +684,7 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  const editionDir = resolve(ROOT, editionDirRaw);
+  const editionDir = resolveEditionDirArgOrExit(editionDirRaw, { root: ROOT }); // #9427
   // #3311: override SÓ pra isolamento de teste — repassado a todo logEvent
   // deste arquivo. Produção nunca passa essa flag (logRootDir === ROOT em
   // todo uso real, cwd-independente). Mesmo padrão de --log-root-dir em

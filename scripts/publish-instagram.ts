@@ -70,6 +70,7 @@ import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "./lib/comment-delivery-promise.ts"; // #8681 — guard contra promessa de entrega via comentário
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
   postToWorkerQueue as sharedPostToWorkerQueue,
@@ -412,7 +413,7 @@ async function main() {
     console.error("ERRO: --edition-dir é obrigatório.");
     process.exit(1);
   }
-  const editionDir = resolve(ROOT, editionDirArg);
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
   const isTest = flags.has("test-mode");
   // #3817 — --schedule enfileira no Worker em vez de publicar imediato.

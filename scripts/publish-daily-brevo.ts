@@ -127,6 +127,7 @@ import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
 import { applyKitActiveExclusionGuard } from "./lib/brevo-kit-active-exclusion.ts"; // #6485
 import { resolveKitConfig } from "./lib/kit-config.ts"; // #6485
 import { logEvent } from "./lib/run-log.ts"; // #6501
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   checkAccountSendQuota,
   resolveAccountDailyLimit,
@@ -701,7 +702,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     process.exit(1);
   }
 
-  const editionDir = resolve(rootDir, editionDirArg);
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: rootDir }); // #9427
   const content = stripGreetingAndSupporterBlocks(extractContent(editionDir));
 
   const imagesPath = resolvePublicImagesPath(editionDir);
