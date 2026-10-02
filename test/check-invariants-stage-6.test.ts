@@ -346,6 +346,84 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  describe("REGRESSÃO #9429: merged:false + prUrl consulta o estado VIVO do PR", () => {
+    const writeMergePending = () =>
+      writeFileSync(
+        join(fixture, "_internal", "site-page-published.json"),
+        JSON.stringify({
+          code: 0,
+          slug: "abc",
+          published: true,
+          prUrl: "https://github.com/vjpixel/diaria-studio/pull/9415",
+          merged: false,
+          mergeBlocker: "BLOQUEIO: CI não convergiu em 120s — PR #9415 aberto",
+        }),
+      );
+
+    it("PR já MERGED (merge feito depois do JSON gravado) → 0 violations, e consulta o número certo", () => {
+      writeMergePending();
+      const asked: string[] = [];
+      const v = checkSitePagePublished(fixture, (url) => {
+        asked.push(url);
+        return "MERGED";
+      });
+      assert.deepEqual(asked, ["https://github.com/vjpixel/diaria-studio/pull/9415"]);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("PR ainda OPEN → mantém o warning site-page-merge-pending", () => {
+      writeMergePending();
+      const v = checkSitePagePublished(fixture, () => "OPEN");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-page-merge-pending");
+      assert.equal(v[0].severity, "warning");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("PR CLOSED sem merge → mantém o warning", () => {
+      writeMergePending();
+      const v = checkSitePagePublished(fixture, () => "CLOSED");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-page-merge-pending");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("gh falha (null) → fail-soft para o warning existente, nunca passa limpo", () => {
+      writeMergePending();
+      const v = checkSitePagePublished(fixture, () => null);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-page-merge-pending");
+      assert.match(v[0].message, /CI não convergiu/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("fetcher que lança → fail-soft para o warning", () => {
+      writeMergePending();
+      const v = checkSitePagePublished(fixture, () => {
+        throw new Error("gh: command not found");
+      });
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-page-merge-pending");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("sem prUrl o fetcher nem é chamado (nada a consultar)", () => {
+      writeFileSync(
+        join(fixture, "_internal", "site-page-published.json"),
+        JSON.stringify({ code: 0, slug: "abc", published: true, merged: false }),
+      );
+      let called = false;
+      const v = checkSitePagePublished(fixture, () => {
+        called = true;
+        return "MERGED";
+      });
+      assert.equal(called, false);
+      assert.equal(v.length, 1);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+  });
+
   it("passa (0 violations) quando published:true — página escrita, branch pushada, PR aberto/reusado", () => {
     writeFileSync(
       join(fixture, "_internal", "site-page-published.json"),

@@ -9,6 +9,7 @@
  *   - guard de slug do bloco WhatsApp (#4570) não rodou, ou rodou e falhou (#4574)
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -245,6 +246,36 @@ function checkWhatsappSlugGuard(
 }
 
 /**
+ * Estado vivo de um PR (#9429). Devolve o `state` do `gh pr view` (`OPEN`,
+ * `MERGED`, `CLOSED`) ou `null` quando a consulta falha — chamador trata
+ * `null` como "desconhecido" e mantém o warning (fail-soft).
+ */
+export type PrStateFetcher = (prUrl: string) => string | null;
+
+// Mesmo regex de `parsePrNumberFromUrl` (publish-edition-site-page.ts) — não
+// importado de lá pra não puxar o módulo do publisher pro lib de invariantes.
+export function isPrUrl(prUrl: string): boolean {
+  return /\/pull\/(\d+)(?:[/?#]|$)/.test(prUrl);
+}
+
+// Passa a URL inteira (não só o número): o `gh` resolve owner/repo a partir
+// dela, então o cwd de quem roda check-invariants não pode apontar o número
+// pra um PR de outro repo.
+export const ghPrState: PrStateFetcher = (prUrl) => {
+  try {
+    const r = spawnSync("gh", ["pr", "view", prUrl, "--json", "state", "--jq", ".state"], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (r.status !== 0 || typeof r.stdout !== "string") return null;
+    const state = r.stdout.trim();
+    return state.length > 0 ? state : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * `_internal/site-page-published.json` (escrito por
  * `publish-edition-site-page.ts`, #7283) deve existir e registrar
  * `published: true` — senão a página `/p/{slug}` do acervo não foi
@@ -280,7 +311,10 @@ function checkWhatsappSlugGuard(
  * casos a edição não tem página. (Antes do #7578 era `warning`, para tolerar
  * uma versão do script anterior ao #7283; esse período já passou.)
  */
-function checkSitePagePublished(editionDir: string): InvariantViolation[] {
+function checkSitePagePublished(
+  editionDir: string,
+  fetchPrState: PrStateFetcher = ghPrState,
+): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
   if (!existsSync(path)) {
     return [
@@ -347,8 +381,23 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   // exibe o `mergeBlocker` (⛔, #9278); aqui o invariante deixa de passar
   // limpo. `warning` e não `error`: o merge costuma ser feito à mão depois
   // (o arquivo não é regravado), então o estado gravado fica defasado e um
-  // `error` travaria o re-run pós-merge à toa.
+  // `error` travaria o re-run pós-merge à toa. Desde #9429 o caso com prUrl
+  // é resolvido pela consulta ao vivo abaixo; o warning só sobra quando o PR
+  // não está MERGED ou a consulta falhou.
   if (data.merged === false) {
+    // #9429: o JSON é gravado uma vez e fica defasado quando o merge acontece
+    // depois (à mão ou CI convergindo após o timeout do publisher). Com prUrl,
+    // consulta o estado VIVO do PR — MERGED => sem violation. Qualquer outro
+    // estado, ou falha do gh (offline, sem auth), cai no warning de sempre.
+    if (data.prUrl && isPrUrl(data.prUrl)) {
+      let liveState: string | null = null;
+      try {
+        liveState = fetchPrState(data.prUrl);
+      } catch {
+        liveState = null;
+      }
+      if (liveState === "MERGED") return [];
+    }
     return [
       {
         rule: "site-page-merge-pending",
@@ -356,7 +405,7 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
           (data.mergeBlocker ??
             `branch site-publish/${data.slug ?? "?"} pushada mas NÃO mergeada${data.prUrl ? ` (${data.prUrl})` : " (PR não identificado)"} — ` +
               `/p/${data.slug ?? "?"} dá 404 no envio até o merge.`) +
-          ` Se já foi mergeado à mão, conferir com \`gh pr view\` e ignorar.`,
+          ` (Estado vivo do PR não está MERGED, ou a consulta ao \`gh\` falhou — conferir com \`gh pr view\`.)`,
         source_issue: "#9326",
         severity: "warning",
         file: path,
