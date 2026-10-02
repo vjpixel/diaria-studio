@@ -229,7 +229,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,270\.17,/);
     assert.match(
       csv,
-      /Meta Graph API insights \(level=campaign, meta_ads\.campaign_ids, time_increment=1\), 2 dia\(s\) \(2026-09-05\.\.2026-09-06\), ingestão automática/,
+      /Meta Graph API insights \(level=campaign, meta_ads\.campaign_ids, time_increment=1\), 2 dia\(s\) \(2026-09-05\.\.2026-09-06\), janela 2026-09-01\.\.2026-09-30, ingestão automática/,
     );
   });
 
