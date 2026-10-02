@@ -362,12 +362,12 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
 
     it("PR já MERGED (merge feito depois do JSON gravado) → 0 violations, e consulta o número certo", () => {
       writeMergePending();
-      const asked: number[] = [];
-      const v = checkSitePagePublished(fixture, (n) => {
-        asked.push(n);
+      const asked: string[] = [];
+      const v = checkSitePagePublished(fixture, (url) => {
+        asked.push(url);
         return "MERGED";
       });
-      assert.deepEqual(asked, [9415]);
+      assert.deepEqual(asked, ["https://github.com/vjpixel/diaria-studio/pull/9415"]);
       assert.equal(v.length, 0);
       rmSync(fixture, { recursive: true, force: true });
     });
@@ -378,6 +378,14 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "site-page-merge-pending");
       assert.equal(v[0].severity, "warning");
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("PR CLOSED sem merge → mantém o warning", () => {
+      writeMergePending();
+      const v = checkSitePagePublished(fixture, () => "CLOSED");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "site-page-merge-pending");
       rmSync(fixture, { recursive: true, force: true });
     });
 

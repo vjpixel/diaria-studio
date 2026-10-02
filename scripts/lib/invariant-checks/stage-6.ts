@@ -250,16 +250,20 @@ function checkWhatsappSlugGuard(
  * `MERGED`, `CLOSED`) ou `null` quando a consulta falha — chamador trata
  * `null` como "desconhecido" e mantém o warning (fail-soft).
  */
-export type PrStateFetcher = (prNumber: number) => string | null;
+export type PrStateFetcher = (prUrl: string) => string | null;
 
-export function parsePrNumber(prUrl: string): number | null {
-  const m = prUrl.match(/\/pull\/(\d+)/);
-  return m ? Number(m[1]) : null;
+// Mesmo regex de `parsePrNumberFromUrl` (publish-edition-site-page.ts) — não
+// importado de lá pra não puxar o módulo do publisher pro lib de invariantes.
+export function isPrUrl(prUrl: string): boolean {
+  return /\/pull\/(\d+)(?:[/?#]|$)/.test(prUrl);
 }
 
-export const ghPrState: PrStateFetcher = (prNumber) => {
+// Passa a URL inteira (não só o número): o `gh` resolve owner/repo a partir
+// dela, então o cwd de quem roda check-invariants não pode apontar o número
+// pra um PR de outro repo.
+export const ghPrState: PrStateFetcher = (prUrl) => {
   try {
-    const r = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "state", "--jq", ".state"], {
+    const r = spawnSync("gh", ["pr", "view", prUrl, "--json", "state", "--jq", ".state"], {
       encoding: "utf8",
       timeout: 15_000,
     });
@@ -377,17 +381,18 @@ function checkSitePagePublished(
   // exibe o `mergeBlocker` (⛔, #9278); aqui o invariante deixa de passar
   // limpo. `warning` e não `error`: o merge costuma ser feito à mão depois
   // (o arquivo não é regravado), então o estado gravado fica defasado e um
-  // `error` travaria o re-run pós-merge à toa.
+  // `error` travaria o re-run pós-merge à toa. Desde #9429 o caso com prUrl
+  // é resolvido pela consulta ao vivo abaixo; o warning só sobra quando o PR
+  // não está MERGED ou a consulta falhou.
   if (data.merged === false) {
     // #9429: o JSON é gravado uma vez e fica defasado quando o merge acontece
     // depois (à mão ou CI convergindo após o timeout do publisher). Com prUrl,
     // consulta o estado VIVO do PR — MERGED => sem violation. Qualquer outro
     // estado, ou falha do gh (offline, sem auth), cai no warning de sempre.
-    const prNumber = data.prUrl ? parsePrNumber(data.prUrl) : null;
-    if (prNumber !== null) {
+    if (data.prUrl && isPrUrl(data.prUrl)) {
       let liveState: string | null = null;
       try {
-        liveState = fetchPrState(prNumber);
+        liveState = fetchPrState(data.prUrl);
       } catch {
         liveState = null;
       }
@@ -400,7 +405,7 @@ function checkSitePagePublished(
           (data.mergeBlocker ??
             `branch site-publish/${data.slug ?? "?"} pushada mas NÃO mergeada${data.prUrl ? ` (${data.prUrl})` : " (PR não identificado)"} — ` +
               `/p/${data.slug ?? "?"} dá 404 no envio até o merge.`) +
-          ` Se já foi mergeado à mão, conferir com \`gh pr view\` e ignorar.`,
+          ` (Estado vivo do PR não está MERGED, ou a consulta ao \`gh\` falhou — conferir com \`gh pr view\`.)`,
         source_issue: "#9326",
         severity: "warning",
         file: path,
