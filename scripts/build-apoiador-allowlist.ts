@@ -66,6 +66,7 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { buildApoiosData, computeRewardGroup, type ContactWithStatus, type RewardGroup } from "./studio-ui/studio-apoios.ts";
 import { uploadTextToWorkerKV, getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { readEditorQaEmails } from "./lib/shared/editor-qa-emails.ts";
 import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
 import {
   diffTagMembership,
@@ -141,6 +142,11 @@ export function computeApoiadorAllowlist(contacts: ContactWithStatus[]): string[
     for (const email of c.emails) emails.add(email);
   }
   return [...emails].sort();
+}
+
+/** Pure (#9491): une a allowlist de apoiadores com os e-mails editor/QA; ordenada, deduplicada. */
+export function withEditorQaEmails(allowlist: readonly string[], qaEmails: readonly string[]): string[] {
+  return [...new Set([...allowlist, ...qaEmails])].sort();
 }
 
 /**
@@ -306,7 +312,9 @@ async function main(): Promise<void> {
   loadProjectEnv(REPO_ROOT);
 
   const data = await buildApoiosData(REPO_ROOT);
-  const allowlist = computeApoiadorAllowlist(data.contacts);
+  // #9491: e-mails do editor/QA (env EDITOR_QA_EMAILS, fora do repo público)
+  // sempre entram — não são apoiadores, mas conferem o que o apoiador vê.
+  const allowlist = withEditorQaEmails(computeApoiadorAllowlist(data.contacts), readEditorQaEmails());
   const payload = JSON.stringify(allowlist);
 
   const outPath = getArg(argv, "out");

@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { apoioLevelKvKey } from "./lib/shared/apoio-level-verify.ts";
+import { readEditorQaEmails } from "./lib/shared/editor-qa-emails.ts";
 import { type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
@@ -95,6 +96,17 @@ export function rowsFromDesiredLevels(desired: readonly DesiredApoioLevel[]): Ap
     for (const email of d.emails) rows.push({ email, nivel: d.level });
   }
   return { rows, protectedEmails };
+}
+
+/** Pure (#9491): e-mails editor/QA entram como `patrono` (nível máximo → passa o limiar do gate);
+ * sem isso o `stale delete` apagaria a chave a cada sync. Nunca rebaixa quem já tem nível. */
+export function withEditorQaRows(
+  rows: Array<{ email: string; nivel: ApoioNivel }>,
+  qaEmails: readonly string[],
+): Array<{ email: string; nivel: ApoioNivel }> {
+  const have = new Set(rows.map((r) => r.email.trim().toLowerCase()));
+  const extra = qaEmails.filter((e) => !have.has(e)).map((email) => ({ email, nivel: "patrono" as ApoioNivel }));
+  return [...rows, ...extra];
 }
 
 export interface DeletionDecision {
@@ -318,7 +330,8 @@ async function main(): Promise<void> {
   const overrides = loadApoioOverrides(ROOT);
   if (overrides.length > 0) desired = applyApoioOverrides(desired, overrides);
 
-  const { rows, protectedEmails } = rowsFromDesiredLevels(desired);
+  const { rows: apoioRows, protectedEmails } = rowsFromDesiredLevels(desired);
+  const rows = withEditorQaRows(apoioRows, readEditorQaEmails());
   const entries = await buildKvBulkEntries(rows);
   const protectedKeys = new Set(await Promise.all(protectedEmails.map((e) => apoioLevelKvKey(e))));
   const byLevel: Record<string, number> = {};
