@@ -589,6 +589,9 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     const bad = mkLot();
     await assert.rejects(() => cancelKitLot(bad, async () => { throw new KitApiError("/broadcasts/9", 500, "boom"); }));
     assert.equal(bad.status, "created");
+    const sent = { ...mkLot(), status: "completed" as const };
+    await assert.rejects(() => cancelKitLot(sent, async () => { throw new KitApiError("/broadcasts/9", 404, "x"); }));
+    assert.equal(sent.status, "completed", "lote enviado nunca vira cancelled");
   });
 
   it("#9367 item 2: DELETE 422 'already been sent' → enviado (completed), não schedule_failed nem volta ao plano", async () => {

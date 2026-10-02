@@ -501,7 +501,8 @@ describe("kit-draft-fresh — Kit diária nomeada quando o estado existe (#9445)
   it("com estado → comando exato + apagar broadcast e estado (re-run sozinho é no-op)", () => {
     for (const brevo of [false, true]) {
       const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo, kitDiaria: { broadcastId: 777 } });
-      assert.ok(msg.includes("npx tsx scripts/kit-diaria-stage5-dispatch.ts data/editions/261002 --send-test"));
+      assert.ok(msg.includes("`npx tsx scripts/kit-diaria-stage5-dispatch.ts data/editions/261002`"));
+      assert.ok(!msg.includes("kit-diaria-stage5-dispatch.ts data/editions/261002 --send-test"), "--send-test não grava estado — nunca é o comando de recriação");
       assert.ok(msg.includes("data/editions/261002/_internal/kit-diaria-published.json"));
       assert.match(msg, /broadcast 777/);
       assert.match(msg, /Kit diária/);

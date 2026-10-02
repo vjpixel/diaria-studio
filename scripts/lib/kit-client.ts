@@ -81,8 +81,9 @@ function isRetriableStatus(status: number): boolean {
  *  timeout ou erro de rede podem acontecer DEPOIS de o Kit gravar — reenviar
  *  criaria um 2º broadcast (envio duplo). Só 429 é seguro de retentar: o rate
  *  limit rejeita antes de processar. GET/PUT/DELETE seguem com o retry cheio;
- *  POSTs idempotentes (allowlist abaixo, #9452) também. */
-/** #9452 — POSTs que NÃO criam recurso novo a cada chamada: consulta
+ *  POSTs idempotentes (allowlist abaixo, #9452) também.
+ *
+ *  #9452 — POSTs que NÃO criam recurso novo a cada chamada: consulta
  *  read-only (`/subscribers/filter`), upsert por e-mail (`/subscribers`),
  *  tagging (`/tags/{id}/subscribers/{sid}`) e unsubscribe. Reenviar é seguro,
  *  então mantêm o backoff cheio. Todo o resto (sobretudo `POST /broadcasts`)

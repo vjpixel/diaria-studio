@@ -263,8 +263,9 @@ export function buildKitDraftStaleMessage(args: {
     ? ` Kit diária (canal paralelo): re-rodar sozinho NÃO atualiza (o estado gravado vira ` +
       `\`already_done\`) — apagar o broadcast${kitDiaria.broadcastId != null ? ` ${kitDiaria.broadcastId}` : ""} ` +
       `no Kit, depois remover \`${editionDir}/_internal/kit-diaria-published.json\` e rodar ` +
-      `\`npx tsx scripts/kit-diaria-stage5-dispatch.ts ${editionDir} --send-test\` (nunca remover só o ` +
-      `arquivo: criaria um 2º broadcast, envio em dobro).`
+      `\`npx tsx scripts/kit-diaria-stage5-dispatch.ts ${editionDir}\` SEM \`--send-test\` (é o que ` +
+      `recria o broadcast real + estado; \`--send-test\` é descartável, não grava estado — opcional antes, ` +
+      `só pra prévia). Nunca remover só o arquivo: criaria um 2º broadcast, envio em dobro.`
     : "";
   if (!brevoDiariaEnabled) {
     return (

@@ -957,6 +957,10 @@ export async function cancelKitLot(
   deleteFn: (id: number) => Promise<void>,
 ): Promise<"deleted" | "already_gone"> {
   const id = lot.broadcast_id as number;
+  // Review PR #9478: lote já enviado nunca volta ao plano (e-mail em dobro).
+  if (lot.status === "completed") {
+    throw new Error(`[onboarding-kit-transport] lote ${lot.lot_id} já está completed (enviado) — nada a cancelar.`);
+  }
   let outcome: "deleted" | "already_gone" = "deleted";
   try {
     await deleteFn(id);
