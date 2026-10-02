@@ -174,16 +174,11 @@ function checkKitDraftFresh(
   ];
 
   let currentHash: string;
-  let brevoDiariaEnabled = opts.brevoDiariaEnabled ?? false;
+  // #9442: a Brevo diária monta o rascunho do MESMO 02-reviewed.md — se ela
+  // participou desta edição, o aviso precisa mandar re-rodar os dois canais.
+  const brevoDiariaEnabled = opts.brevoDiariaEnabled ?? isBrevoDiariaActiveForEdition(editionDir);
   try {
-    const platformConfig = loadPlatformConfig(opts.rootDir ?? ROOT);
-    // #9442: a Brevo diária monta o rascunho do MESMO 02-reviewed.md — se o
-    // canal está configurado, o aviso precisa mandar re-rodar os dois.
-    if (opts.brevoDiariaEnabled === undefined) {
-      const bd = (platformConfig as { brevo_diaria?: unknown }).brevo_diaria;
-      brevoDiariaEnabled = typeof bd === "object" && bd !== null;
-    }
-    const payload = renderKitPayload(editionDir, platformConfig);
+    const payload = renderKitPayload(editionDir, loadPlatformConfig(opts.rootDir ?? ROOT));
     currentHash = kitContentHash(payload.subject, payload.previewText, payload.html);
   } catch (e) {
     return warn(
@@ -209,10 +204,22 @@ function checkKitDraftFresh(
 }
 
 /**
+ * #9442 — a Brevo diária participou desta edição? Mesmo critério do
+ * playbook do Stage 6 (§6d-brevo): `_internal/brevo-diaria-published.json`
+ * existe. NÃO usar só "`brevo_diaria` está no config" — o config sempre tem a
+ * chave, e numa edição com `--skip brevo` o aviso mandaria rodar o publisher,
+ * que sem `campaign_id` registrado CRIA uma campanha nova que o Stage 6 então
+ * agenda (achado do review da PR #9444).
+ */
+export function isBrevoDiariaActiveForEdition(editionDir: string): boolean {
+  return existsSync(resolve(editionDir, "_internal", "brevo-diaria-published.json"));
+}
+
+/**
  * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
- * Nomeia TODO canal ativo montado do mesmo `02-reviewed.md`: o Kit sempre, e a
- * Brevo diária quando `brevo_diaria` está configurado em `platform.config.json`
- * (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
+ * Nomeia o Kit sempre, e a Brevo diária quando ela participou da edição
+ * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) fica fora deste
+ * escopo mínimo — follow-up. (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
  * com o conteúdo recalculado — re-rodar é idempotente). Sem isso o editor
  * corrigia o Kit seguindo o aviso e a campanha Brevo saía com o texto velho.
  * Pura, exportada pra teste.
@@ -631,7 +638,8 @@ export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "kit-draft-fresh",
     description:
-      "backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428)",
+      "backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); " +
+      "o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442)",
     source_issue: "#9428",
     stage: 6,
     run: checkKitDraftFresh,

@@ -25,6 +25,7 @@ import {
   checkStep6Sentinel,
   checkSitePagePublished,
   buildKitDraftStaleMessage,
+  isBrevoDiariaActiveForEdition,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 
@@ -483,5 +484,18 @@ describe("kit-draft-fresh — mensagem nomeia todo canal ativo (#9442)", () => {
     );
     assert.match(msg, /Brevo diária/);
     assert.ok(!msg.includes("--force"), "--force criaria campanha duplicada — nunca sugerir");
+  });
+});
+
+describe("isBrevoDiariaActiveForEdition (#9442, review PR #9444)", () => {
+  it("só conta como ativa se o publisher gravou brevo-diaria-published.json nesta edição (--skip brevo → não manda rodar)", () => {
+    const dir = makeFixtureEdition();
+    try {
+      assert.equal(isBrevoDiariaActiveForEdition(dir), false, "config com brevo_diaria não basta — sem estado, canal foi pulado");
+      writeFileSync(join(dir, "_internal", "brevo-diaria-published.json"), JSON.stringify({ campaign_id: 42, status: "draft" }));
+      assert.equal(isBrevoDiariaActiveForEdition(dir), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
