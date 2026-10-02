@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 01 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 02 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Você viu Bonner anunciar pesquisa? Era deepfake</title>
+      <link>https://diar.ia.br/p/voce-viu-bonner-anunciar-pesquisa-era-deepfake</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/voce-viu-bonner-anunciar-pesquisa-era-deepfake</guid>
+      <pubDate>Fri, 02 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic desafia mercado arisco com IPO em novembro | Golpistas usam o próprio ChatGPT para invadir PCs</description>
+    </item>
     <item>
       <title>Seu próximo modelo de código pode ser o Argon?</title>
       <link>https://diar.ia.br/p/seu-proximo-modelo-de-codigo-pode-ser-o-argon</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google</guid>
       <pubDate>Fri, 24 Jul 2026 09:00:00 GMT</pubDate>
       <description>Clientes preferem IA, empresas cortam vagas | OpenAI conecta prontuário médico ao ChatGPT</description>
-    </item>
-    <item>
-      <title>IA agiu sozinha e hackeou startup, revela OpenAI</title>
-      <link>https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ia-agiu-sozinha-e-hackeou-startup-revela-openai</guid>
-      <pubDate>Thu, 23 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Fundador do Nubank entra para o conselho da OpenAI | AMD fecha acordo bilionário com Anthropic</description>
     </item>
   </channel>
 </rss>
