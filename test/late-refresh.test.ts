@@ -202,5 +202,13 @@ test("#9424: Mistral tem feed RSS oficial e sai da lista de labs sem cobertura",
   assert.equal(m.url, "https://mistral.ai/news/rss");
   assert.equal(m.method, "rss");
   assert.ok(!LATE_REFRESH_UNCOVERED_LABS.includes("Mistral"));
-  for (const lab of ["Meta", "xAI", "DeepSeek", "Qwen"]) assert.ok(LATE_REFRESH_UNCOVERED_LABS.includes(lab), lab);
+  for (const lab of ["xAI", "DeepSeek", "Qwen"]) assert.ok(LATE_REFRESH_UNCOVERED_LABS.includes(lab), lab);
+});
+
+test("#9424: Meta tem feed RSS oficial (tag AI do Newsroom) e sai da lista de labs sem cobertura", () => {
+  const m = LATE_REFRESH_FEEDS.find((f) => f.lab === "Meta");
+  assert.ok(m, "feed Meta ausente");
+  assert.equal(m.url, "https://about.fb.com/news/tag/ai/feed/");
+  assert.equal(m.method, "rss");
+  assert.ok(!LATE_REFRESH_UNCOVERED_LABS.includes("Meta"));
 });
