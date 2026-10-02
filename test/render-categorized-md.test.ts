@@ -18,6 +18,7 @@ import {
   extractEaiAnswer,
   renderDestaquesFromApproved,
   formatCoverageLineUnknownTotal,
+  renderStoryGroupDiscarded,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -1113,5 +1114,23 @@ describe("render-categorized-md CLI --in 01-categorized.json — guard de captur
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("renderStoryGroupDiscarded (#9432)", () => {
+  it("lista só story_group com URL primária e não vira candidato no parseSections", async () => {
+    const md = renderStoryGroupDiscarded([
+      { url: "https://b.com/x", title: "Dup", match_type: "story_group", matched_highlight: "https://a.com/p", story_signal: "entity" },
+      { url: "https://c.com/y", title: "Outro", match_type: "jaccard", matched_highlight: "https://a.com/p" },
+    ]);
+    assert.match(md, /## Descartados \(mesma história\)/);
+    assert.match(md, /https:\/\/b\.com\/x → primária: https:\/\/a\.com\/p \(entity\)/);
+    assert.doesNotMatch(md, /c\.com/);
+    const { parseSections } = await import("../scripts/apply-gate-edits.ts");
+    const parsed = parseSections(md);
+    assert.deepEqual(Object.values(parsed).flat(), []);
+  });
+  it("sem story_group devolve vazio", () => {
+    assert.equal(renderStoryGroupDiscarded([{ url: "u", match_type: "jaccard" }]), "");
   });
 });
