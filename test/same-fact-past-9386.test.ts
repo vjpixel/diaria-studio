@@ -62,7 +62,8 @@ test("#9386: removeSameFactSecondary remove RADAR/LANÇAMENTOS, nunca destaque",
     radar: [{ article: { url: ASTRA_ITEM.url, title: ASTRA_ITEM.title } }, { url: "https://keep.example/", title: "fica" }],
     lancamento: [],
   };
-  const warnings = findSameFactMatches([ASTRA_ITEM], PAST);
+  // #9456: só evidência por título remove — força "title" aqui para testar o bucket.
+  const warnings = findSameFactMatches([ASTRA_ITEM], PAST).map((w) => ({ ...w, evidence: "title" as const }));
   const hlWarning = { ...warnings[0], kind: "highlight", item_url: "https://h.example/d1" };
   const { approved: out, removed } = removeSameFactSecondary(approved, [...warnings, hlWarning]);
   assert.equal(removed.length, 1);
@@ -71,4 +72,37 @@ test("#9386: removeSameFactSecondary remove RADAR/LANÇAMENTOS, nunca destaque",
   assert.equal((out.radar as unknown[]).length, 1);
   assert.equal((out.highlights as unknown[]).length, 1);
   assert.equal(approved.radar.length, 2, "não muta a entrada");
+});
+
+test("#9456: evidência só por RESUMO (versão citada como contexto) não remove — fica só aviso", () => {
+  const item = {
+    kind: "radar",
+    title: "DeepSeek lança V5",
+    url: "https://radar.example/deepseek-v5",
+    summary: "O novo modelo supera o GPT-6.1 em benchmarks de raciocínio.",
+  };
+  const past = [{ aammdd: "260930", title: "OpenAI lança GPT-6.1", url: "https://openai.com/x", bucket: "highlight" }];
+  const warnings = findSameFactMatches([item], past);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].evidence, "summary");
+  const approved = { radar: [{ article: { url: item.url, title: item.title } }] };
+  const { approved: out, removed } = removeSameFactSecondary(approved, warnings);
+  assert.equal(removed.length, 0);
+  assert.equal((out.radar as unknown[]).length, 1);
+});
+
+test("#9456: item editor_submitted nunca é removido, mesmo com evidência por título", () => {
+  const warnings = findSameFactMatches(
+    [{ kind: "radar", title: "Anthropic debuts Claude Sonnet 5.5 running 30% faster", url: "https://siliconangle.com/x" }],
+    PAST,
+  );
+  assert.equal(warnings[0].evidence, "title");
+  const approved = {
+    radar: [{ article: { url: "https://siliconangle.com/x", title: "t" }, flag: "editor_submitted" }],
+  };
+  const { removed } = removeSameFactSecondary(approved, warnings);
+  assert.equal(removed.length, 0);
+  // controle: sem a flag, remove
+  const { removed: r2 } = removeSameFactSecondary({ radar: [{ article: { url: "https://siliconangle.com/x", title: "t" } }] }, warnings);
+  assert.equal(r2.length, 1);
 });
