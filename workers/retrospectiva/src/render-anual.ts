@@ -21,6 +21,7 @@ import {
   RETROSPECTIVA_ANUAL_UTM_MEDIUM,
   buildRetrospectivaAnualCampaign,
 } from "../../../scripts/lib/shared/utm-registry.ts"; // #7715
+import { GATE_MOBILE_CSS } from "./render-mensal.ts"; // #9492
 
 const INK = "#171411";
 const TEAL = "#00A0A0";
@@ -99,6 +100,7 @@ function shell(title: string, description: string, canonical: string, bodyHtml: 
   label.optin { font-size:13px; display:flex; gap:6px; align-items:flex-start; font-family: -apple-system, Helvetica, Arial, sans-serif; margin:0 0 16px; }
   .muted { font-size:13px; color:${INK}; opacity:0.7; font-family: -apple-system, Helvetica, Arial, sans-serif; }
   .status { margin-top:10px; min-height:1.2em; font-size:14px; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  ${GATE_MOBILE_CSS}
 </style>
 </head>
 <body>

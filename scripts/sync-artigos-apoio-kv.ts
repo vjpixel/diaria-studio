@@ -28,6 +28,12 @@
  * salvo `--force-blast-radius`. Rodada com remoções bloqueadas sai com
  * exit 3 (as gravações já foram feitas) — a unit systemd fica `failed`.
  *
+ * **E-mails de editor/QA (#9491):** `platform.config.json` →
+ * `apoio_gate_editor_emails.emails` (via `scripts/lib/apoio-gate-editor-emails.ts`)
+ * entra SEMPRE com nível `patrono` (`EDITOR_APOIO_NIVEL`), pra o editor conferir
+ * o que o apoiador vê. Como faz parte do conjunto atual, nunca é apagado como
+ * stale; o log o conta à parte dos apoiadores.
+ *
  * Uso:
  *   npx tsx scripts/sync-artigos-apoio-kv.ts                  # full sync
  *   npx tsx scripts/sync-artigos-apoio-kv.ts --dry-run        # só imprime contagem, não escreve
@@ -53,6 +59,7 @@ import { apoioLevelKvKey } from "./lib/shared/apoio-level-verify.ts";
 import { type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
+import { readApoioGateEditorEmails } from "./lib/apoio-gate-editor-emails.ts";
 import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
 import {
   computeDesiredApoioLevels,
@@ -95,6 +102,19 @@ export function rowsFromDesiredLevels(desired: readonly DesiredApoioLevel[]): Ap
     for (const email of d.emails) rows.push({ email, nivel: d.level });
   }
   return { rows, protectedEmails };
+}
+
+/** Nível gravado pros e-mails de editor/QA (#9491) — o maior, pra passar em
+ * qualquer limiar de `apoio-gate-config.ts`, presente ou futuro. */
+export const EDITOR_APOIO_NIVEL: ApoioNivel = "patrono";
+
+/** Pure (#9491): acrescenta os e-mails de editor/QA às linhas do KV. Se o
+ * e-mail já é de apoiador, `buildKvBulkEntries` mantém o MAIOR nível. */
+export function withEditorRows(
+  rows: ReadonlyArray<{ email: string; nivel: ApoioNivel }>,
+  editors: readonly string[],
+): Array<{ email: string; nivel: ApoioNivel }> {
+  return [...rows, ...editors.map((email) => ({ email, nivel: EDITOR_APOIO_NIVEL }))];
 }
 
 export interface DeletionDecision {
@@ -319,13 +339,16 @@ async function main(): Promise<void> {
   if (overrides.length > 0) desired = applyApoioOverrides(desired, overrides);
 
   const { rows, protectedEmails } = rowsFromDesiredLevels(desired);
-  const entries = await buildKvBulkEntries(rows);
+  // #9491: e-mails de editor/QA (config) entram sempre — ver cabeçalho.
+  const editors = readApoioGateEditorEmails(ROOT);
+  const entries = await buildKvBulkEntries(withEditorRows(rows, editors));
   const protectedKeys = new Set(await Promise.all(protectedEmails.map((e) => apoioLevelKvKey(e))));
   const byLevel: Record<string, number> = {};
   for (const e of entries) byLevel[e.value] = (byLevel[e.value] ?? 0) + 1;
   process.stderr.write(
     `${LOG_PREFIX} ${entries.length} e-mail(s) com nível (${JSON.stringify(byLevel)}), ` +
-      `${protectedEmails.length} protegido(s) por sem_dados.\n`,
+      `${protectedEmails.length} protegido(s) por sem_dados, ${editors.length} de editor ` +
+      `(apoio_gate_editor_emails, nível ${EDITOR_APOIO_NIVEL}, incluídos na contagem): ${editors.join(", ") || "nenhum"}.\n`,
   );
 
   if (dryRun) {

@@ -23,6 +23,9 @@
  *   3. `retagWebUtmMedium` — troca `utm_medium=email` por `artigo-web`, senão
  *      o clique na página é contado como clique de e-mail.
  *
+ * Além delas, `injectWebMobileStyle` (#9492) acrescenta o CSS responsivo que o
+ * e-mail não precisa (cliente de e-mail reescala sozinho; navegador não).
+ *
  * `verifyNoMergeTagsInArticle` fecha, recusando qualquer tag remanescente. As
  * três vivem no caminho de RENDER, então valem para os ciclos existentes e para
  * todos os futuros, sem passo manual por ciclo. O caminho de e-mail não passa
@@ -159,6 +162,45 @@ export function verifyNoMergeTagsInArticle(html: string, cycle: string): void {
   if (tags.length > 0) throw new UnresolvedMergeTagInArticleError(cycle, tags);
 }
 
+/**
+ * CSS responsivo SÓ da versão web (#9492).
+ *
+ * O render vem do e-mail (`wrapEmail`, `monthly-render.ts`), que fixa o cartão
+ * em `<table width="600">` com `padding:20px 10px` em volta: no navegador de um
+ * celular (375px) isso abre um viewport de layout de 620px e o texto corta na
+ * borda direita (medido em 02/10/2026 na 2609-10: `scrollWidth` 620 contra 375).
+ * Cliente de e-mail reescala sozinho; a página web não.
+ *
+ * Tudo dentro de `max-width:640px`, então o desktop (cartão de 600px + margem)
+ * fica idêntico. Seletores por atributo/classe que o `wrapEmail` já emite, sem
+ * mexer no render do e-mail — o canal de e-mail segue byte a byte igual.
+ * `!important` porque o render de e-mail põe tudo inline.
+ */
+export const WEB_MOBILE_STYLE_ID = "retrospectiva-web-mobile";
+export const WEB_MOBILE_STYLE = `<style id="${WEB_MOBILE_STYLE_ID}">
+  /* #9492: leitura no celular — só abaixo de 640px; desktop intacto. */
+  @media only screen and (max-width: 640px) {
+    .ds-canvas > tbody > tr > td { padding:0 !important; }
+    .ds-canvas table[width="600"] { width:100% !important; max-width:100% !important; }
+    .ds-canvas table[width="600"] > tbody > tr > td { padding:28px 20px !important; }
+    .ds-canvas td, .ds-canvas p, .ds-canvas a { overflow-wrap:break-word; word-wrap:break-word; }
+    .ds-canvas h2 { font-size:23px !important; line-height:1.25 !important; }
+    .ds-canvas h3 { font-size:20px !important; line-height:1.3 !important; }
+    .ds-canvas img { max-width:100% !important; height:auto !important; }
+  }
+</style>`;
+
+/** Injeta `WEB_MOBILE_STYLE` antes do ÚLTIMO `</head>` (mesma disciplina do
+ * `</body>` em `renderTeaserWithPaywall`). Sem `</head>` lança: publicar sem
+ * o CSS é voltar à página cortada no celular sem ninguém notar. */
+export function injectWebMobileStyle(html: string): string {
+  const ultima = [...html.matchAll(/<\/head\s*>/gi)].at(-1);
+  if (ultima?.index === undefined) {
+    throw new Error("build-article-page: HTML sem </head> — não há onde injetar o CSS mobile (#9492)");
+  }
+  return `${html.slice(0, ultima.index)}${WEB_MOBILE_STYLE}\n${html.slice(ultima.index)}`;
+}
+
 export interface ArticlePage {
   subject: string;
   previewText: string;
@@ -261,7 +303,7 @@ export function buildArticleHtml(draftMd: string, cycle: string): ArticlePage {
   // Sanitiza o que é só de e-mail, depois GUARDA — a mesma ordem de
   // `buildArchivePageHtml`: primeiro o que se sabe tratar, e só então a recusa
   // do que sobrou, para o guard validar exatamente o HTML que vai ser servido.
-  const web = retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html)));
+  const web = injectWebMobileStyle(retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html))));
   verifyNoMergeTagsInArticle(web, cycle);
   // Guard de marca legada (#7719) — mesma disciplina do guard de merge tag
   // acima: checa o HTML final, DEPOIS do render, porque é dado que vem do
