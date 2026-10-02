@@ -25,7 +25,7 @@ import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   checkCard4x5Exists,
   CARD_4X5_BASE,
@@ -97,7 +97,24 @@ describe("checkCard4x5Exists — Stage 3, gate-blocking (#4090, decisão 260728)
     writeApprovedCapped(fixture, 2);
     const v = checkCard4x5Exists(fixture, "local");
     assert.equal(v.length, 2, `esperava 2 violations (d1/d2), achei ${JSON.stringify(v)}`);
-    assert.ok(!v.some((x) => x.file?.includes("d3")), "d3 não deveria ser exigido com destaque_count=2");
+    assert.ok(!v.some((x) => x.file !== undefined && basename(x.file) === "04-d3-4x5.jpg"), "d3 não deveria ser exigido com destaque_count=2");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("regressão #9439: diretório da edição com 'd3' no nome não faz d3 parecer exigido", () => {
+    // O sufixo aleatório do mkdtemp podia sortear "d3" (ex.: `-ad3kQz`), e a
+    // asserção antiga `x.file?.includes("d3")` olhava o path ABSOLUTO — flake
+    // ~0,1% no CI. Aqui o "d3" no nome do diretório é forçado, deterministicamente.
+    const dir = mkdtempSync(join(tmpdir(), "diaria-card4x5-d3-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeApprovedCapped(dir, 2);
+    const v = checkCard4x5Exists(dir, "local");
+    assert.equal(v.length, 2);
+    assert.deepEqual(
+      v.map((x) => basename(x.file ?? "")).sort(),
+      ["04-d1-4x5.jpg", "04-d2-4x5.jpg"],
+    );
+    rmSync(dir, { recursive: true, force: true });
     rmSync(fixture, { recursive: true, force: true });
   });
 
@@ -175,7 +192,7 @@ describe("checkCard4x5Exists — exec-mode gate (#4227)", () => {
     writeApprovedCapped(fixture, 2);
     const v = checkCard4x5Exists(fixture, "cloud");
     assert.equal(v.length, 2);
-    assert.ok(!v.some((x) => x.file?.includes("d3")));
+    assert.ok(!v.some((x) => x.file !== undefined && basename(x.file) === "04-d3-4x5.jpg"));
     rmSync(fixture, { recursive: true, force: true });
   });
 });
