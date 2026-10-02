@@ -67,6 +67,7 @@ import {
 // #3920: preserva perdedores de clusters same-story como cluster_sources[] no
 // vencedor mais completo, em vez de descartá-los.
 import { foldCluster, type ClusterArticle } from "./lib/cluster-sources.ts";
+import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
@@ -543,6 +544,16 @@ export function dedup(
         winner.flag = "editor_submitted";
         winner.editor_submitted_url = editorCopy.url;
       }
+    }
+    // #9365: a mesma URL canônica chega crua da pesquisa e canonicalizada da
+    // captura de newsletter (e/ou do forward do editor) — as menções em
+    // newsletter de todos os membros vão pro vencedor, senão o bônus de
+    // score some justo quando o item foi achado por mais de um caminho.
+    const mentions = unionNewsletterMentions(
+      ...sorted.map((a) => (a as { newsletter_mentions?: unknown }).newsletter_mentions),
+    );
+    if (mentions.length > 0) {
+      (winner as { newsletter_mentions?: string[] }).newsletter_mentions = mentions;
     }
     afterUrlDedup.push(winner);
     for (let i = 1; i < sorted.length; i++) {

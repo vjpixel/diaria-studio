@@ -43,6 +43,7 @@ import { writeMarker } from "./lib/pipeline-state.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
+import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 
 // ---------------------------------------------------------------------------
 // Tracker decoders (#719)
@@ -114,6 +115,12 @@ export interface SyntheticInboxArticle {
    * regras editoriais de seção).
    */
   always_consider?: boolean;
+  /**
+   * #9365: remetentes (e-mail, minúsculo) das newsletters DISTINTAS que
+   * citaram esta URL. Alimenta o bônus de score de
+   * `lib/newsletter-mention-bonus.ts` (+5 por newsletter, teto +15).
+   */
+  newsletter_mentions?: string[];
 }
 
 export interface InboxBlock {
@@ -414,6 +421,38 @@ export function validateInjection(
   return injected.filter((a) => !poolUrls.has(a.url)).map((a) => a.url);
 }
 
+/**
+ * Merge dos artigos injetados (editor + newsletters) no pool da pesquisa.
+ * Dedup por URL exata (opaca, #720): artigo já no pool não duplica.
+ *
+ * #9365: quando a URL já está no pool (a pesquisa trouxe o mesmo link), as
+ * `newsletter_mentions` do injetado são unidas no artigo do pool em vez de
+ * descartadas — senão o bônus de menção em newsletter some justamente nos
+ * itens que a pesquisa também achou. Não muta os arrays de entrada (o artigo
+ * anotado é cópia).
+ */
+export function mergeInjectedIntoPool<P extends { url: string; [k: string]: unknown }>(
+  pool: P[],
+  injected: SyntheticInboxArticle[],
+): { merged: Array<P | SyntheticInboxArticle>; newInjected: SyntheticInboxArticle[] } {
+  const poolOut: P[] = pool.slice();
+  const indexByUrl = new Map<string, number>();
+  poolOut.forEach((a, i) => {
+    if (!indexByUrl.has(a.url)) indexByUrl.set(a.url, i);
+  });
+  const newInjected: SyntheticInboxArticle[] = [];
+  for (const a of injected) {
+    const idx = indexByUrl.get(a.url);
+    if (idx === undefined) {
+      newInjected.push(a);
+      continue;
+    }
+    const mentions = unionNewsletterMentions(poolOut[idx].newsletter_mentions, a.newsletter_mentions);
+    if (mentions.length > 0) poolOut[idx] = { ...poolOut[idx], newsletter_mentions: mentions };
+  }
+  return { merged: [...poolOut, ...newInjected], newInjected };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -490,10 +529,7 @@ async function main(): Promise<void> {
     pool = JSON.parse(readFileSync(resolve(ROOT, poolPath), "utf8"));
   }
 
-  // Dedup contra pool: artigos já em pool com mesma URL não duplicam
-  const poolUrls = new Set(pool.map((a) => a.url));
-  const newInjected = injected.filter((a) => !poolUrls.has(a.url));
-  const merged = [...pool, ...newInjected];
+  const { merged, newInjected } = mergeInjectedIntoPool(pool, injected);
 
   // Atomic write (#628): write to .tmp + rename, evita leitor pegar JSON parcial
   // se o write crashar mid-flight. Padrão usado em drive-sync.ts, publish-facebook.ts.

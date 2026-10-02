@@ -46,6 +46,7 @@ import {
 } from "./split-articles-for-scoring.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
+import { articleNewsletterMentions, newsletterMentionBonus } from "./lib/newsletter-mention-bonus.ts"; // #9365
 import { isGuaranteedFrontierLaunch, pickFrontierLaunchFinalists } from "./lib/frontier-signals.ts"; // #9359
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -217,10 +218,19 @@ export function mergeChunks(
     const clusterSources = (article as { cluster_sources?: unknown[] }).cluster_sources;
     const extraSources = Array.isArray(clusterSources) ? clusterSources.length : 0;
     const bonus = coverageBonus(extraSources);
-    const score = baseScore + bonus;
     if (bonus > 0) {
       (article as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
     }
+    // #9365: bônus de menção em newsletter recebida — +5 por newsletter
+    // DISTINTA que cita o item (próprio artigo + perdedores do cluster), teto
+    // +15. Mesmo ponto do bônus de cobertura: antes do corte de finalistas.
+    const newsletterBonus = newsletterMentionBonus(
+      articleNewsletterMentions(article).length,
+    );
+    if (newsletterBonus > 0) {
+      (article as { score_bonus_newsletter?: number }).score_bonus_newsletter = newsletterBonus;
+    }
+    const score = baseScore + bonus + newsletterBonus;
     // #4842: score_base generalizado — SEMPRE presente (não só quando há bônus
     // de cobertura), reconstituído a partir do que o scorer-chunk decompôs
     // (fallback pro score do chunk quando o chunk não decompôs). bonuses_applied
@@ -228,7 +238,11 @@ export function mergeChunks(
     // de cobertura calculado aqui, numa única lista auditável.
     const chunkScoreBase = scoreBaseByUrl.get(article.url) ?? baseScore;
     const chunkBonuses = bonusesByUrl.get(article.url) ?? [];
-    const bonusesApplied = bonus > 0 ? [...chunkBonuses, `coverage:+${bonus}`] : chunkBonuses;
+    const bonusesApplied = [
+      ...chunkBonuses,
+      ...(bonus > 0 ? [`coverage:+${bonus}`] : []),
+      ...(newsletterBonus > 0 ? [`newsletter:+${newsletterBonus}`] : []),
+    ];
     (article as { score_base?: number }).score_base = chunkScoreBase;
     if (bonusesApplied.length > 0) {
       (article as { bonuses_applied?: string[] }).bonuses_applied = bonusesApplied;

@@ -562,6 +562,18 @@ export function finalizeStage1(
         const bonus = coverageBonus(extraSources);
         (enrichedArticle as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
       }
+      // #9365: auditoria do bônus de menção em newsletter SÓ quando ele de
+      // fato entrou no score — i.e. `bonuses_applied` (vindo do all_scored do
+      // merge-scored-chunks) traz `newsletter:+N`. No fallback single-call do
+      // scorer o merge não roda e o bônus não é somado; gravar o campo ali
+      // afirmaria um bônus que não existe (review PR #9434).
+      const applied = (enrichedArticle as { bonuses_applied?: unknown }).bonuses_applied;
+      const newsletterEntry = (Array.isArray(applied) ? (applied as unknown[]) : [])
+        .filter((b): b is string => typeof b === "string")
+        .find((b) => /^newsletter:\+\d+$/.test(b));
+      if (newsletterEntry && typeof score === "number") {
+        (enrichedArticle as { score_bonus_newsletter?: number }).score_bonus_newsletter = Number(newsletterEntry.split("+")[1]);
+      }
       // #4842: score_base já foi propagado por joinScore a partir de
       // all_scored (decomposição completa: score_base do scorer-chunk +
       // bonuses_applied, coverage incluso). Só cai no fallback abaixo quando
