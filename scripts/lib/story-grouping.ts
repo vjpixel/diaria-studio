@@ -63,6 +63,8 @@ import { OFFICIAL_SOURCES } from "./official-domains.ts";
 import { isOfficialLancamentoUrl } from "./launch-heuristics.ts";
 import { sameEvent, companiesIn, EVENT_COMPANY_ALIASES } from "./event-dedup.ts";
 import { canonicalize } from "./url-utils.ts";
+import { coverageBonus } from "./coverage-bonus.ts";
+import { articleNewsletterMentions, newsletterMentionBonus } from "./newsletter-mention-bonus.ts";
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./cluster-sources.ts";
 
 /** Buckets do pool agrupados entre si (notícia/lançamento — tutorial e vídeo ficam fora). */
@@ -198,6 +200,23 @@ interface Member {
  * os buckets só com a primária de cada grupo (+ submissões do editor).
  * Pure: não muta `input` (a primária enriquecida é um clone).
  */
+// #9443: os bônus de cobertura (#3920) e de menção em newsletter (#9365) foram
+// somados ao score ANTES do agrupamento; a primária que herda fontes/menções dos
+// perdedores recebe só o delta (novo - já aplicado), sem recontar o que já tinha.
+function rebonusPrimary(art: StoryArticle, sources: ClusterSource[]): StoryArticle {
+  const a = art as StoryArticle & { score_bonus_coverage?: number; score_bonus_newsletter?: number };
+  const merged = { ...a, cluster_sources: sources };
+  const newCoverage = coverageBonus(sources.length);
+  const newNewsletter = newsletterMentionBonus(articleNewsletterMentions(merged).length);
+  const delta = (newCoverage - (a.score_bonus_coverage ?? 0)) + (newNewsletter - (a.score_bonus_newsletter ?? 0));
+  if (delta === 0) return merged;
+  const out: StoryArticle & { score_bonus_coverage?: number; score_bonus_newsletter?: number } = { ...merged };
+  if (newCoverage > 0) out.score_bonus_coverage = newCoverage;
+  if (newNewsletter > 0) out.score_bonus_newsletter = newNewsletter;
+  if (typeof out.score === "number") out.score += delta;
+  return out;
+}
+
 export function groupSameStory(
   input: Record<string, unknown>,
   options: {
@@ -340,7 +359,7 @@ export function groupSameStory(
         signal: sig,
       });
     }
-    replace.set(primary.order, { ...primary.art, cluster_sources: sources });
+    replace.set(primary.order, rebonusPrimary(primary.art, sources));
   }
 
   const buckets: Record<string, StoryArticle[]> = {};
