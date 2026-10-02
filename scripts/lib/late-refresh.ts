@@ -47,16 +47,18 @@ export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
   { lab: "Google", name: "Google AI Blog", url: "https://blog.google/technology/ai/rss/", method: "rss" },
   { lab: "Google DeepMind", name: "DeepMind Blog", url: "https://deepmind.google/blog/rss.xml", method: "rss" },
   { lab: "Microsoft AI", name: "Microsoft AI", url: "https://microsoft.ai/feed/", method: "rss" },
+  { lab: "Mistral", name: "Mistral Blog", url: "https://mistral.ai/news/rss", method: "rss" },
 ];
 
 /**
  * Laboratórios da lista da #9370 SEM feed máquina-legível (sondado em
  * 2026-10-01: Meta `ai.meta.com/blog/rss/` 400, xAI `rss.xml` 404 e sitemap
- * 403, Mistral `news/rss.xml` 404, DeepSeek sitemap só de docs, Qwen sitemap
- * serve HTML). Ficam cobertos só indiretamente pelas newsletters — reportado
+ * 403, DeepSeek sitemap só de docs, Qwen sitemap serve HTML; reavaliado em
+ * 2026-10-02 (#9424): Mistral ganhou feed `mistral.ai/news/rss`; o feed do blog
+ * Qwen (`qwenlm.github.io`) parou em set/2025 e `qwen.ai` não tem RSS). Ficam cobertos só indiretamente pelas newsletters — reportado
  * no output em vez de omitido em silêncio.
  */
-export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = ["Meta", "xAI", "Mistral", "DeepSeek", "Qwen"];
+export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = ["Meta", "xAI", "DeepSeek", "Qwen"];
 
 /**
  * Entradas de sitemap modificadas depois do corte, no `pathPrefix` do feed,

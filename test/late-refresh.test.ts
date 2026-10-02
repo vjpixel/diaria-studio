@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   IMPRECISE_DATE_LOOKBACK_MS,
   LATE_REFRESH_FEEDS,
+  LATE_REFRESH_UNCOVERED_LABS,
   canonicalUrlSet,
   filterLateArticles,
   formatLateRefreshBlock,
@@ -193,4 +194,13 @@ test("selectSitemapEntries: ordena por lastmod desc ANTES do corte (cap não des
   ];
   const out = selectSitemapEntries(entries, CUTOFF, "/news/", 2);
   assert.deepEqual(out.map((e) => e.loc), ["https://www.anthropic.com/news/newest", "https://www.anthropic.com/news/mid"]);
+});
+
+test("#9424: Mistral tem feed RSS oficial e sai da lista de labs sem cobertura", () => {
+  const m = LATE_REFRESH_FEEDS.find((f) => f.lab === "Mistral");
+  assert.ok(m, "feed Mistral ausente");
+  assert.equal(m.url, "https://mistral.ai/news/rss");
+  assert.equal(m.method, "rss");
+  assert.ok(!LATE_REFRESH_UNCOVERED_LABS.includes("Mistral"));
+  for (const lab of ["Meta", "xAI", "DeepSeek", "Qwen"]) assert.ok(LATE_REFRESH_UNCOVERED_LABS.includes(lab), lab);
 });
