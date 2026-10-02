@@ -374,7 +374,7 @@ describe("canais sociais públicos (#9500)", () => {
     const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
     assert.equal(r.length, 6);
     assert.equal(r.filter((c) => c.problems.length > 0).length, 1);
-    assert.match(r.find((c) => c.file.endsWith("x.md"))!.problems.join(), /limite de 280/);
+    assert.match(r.find((c) => c.file.endsWith("x.md"))!.problems.join(), /limite de 272/);
     write("facebook.md", `${OK}retrospectiva.diar.ia.br/2609`);
     assert.match(checkRetrospectivaDivulgacaoTexts(tmp, "x")[2].problems.join(), /paywalled/);
     assert.equal(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook,instagram,threads,x").length, 0);

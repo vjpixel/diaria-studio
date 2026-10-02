@@ -58,7 +58,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 | Audiência do e-mail | **TAG** `kit_apoiadores.audience_tag` (`apoio-retrospectiva`), nunca segmento — ver "Audiência é TAG" abaixo. `public: false`, envio EXTRA (a diária do dia sai normal). |
 | Página | `retrospectiva.diar.ia.br/{AAMM}`, AAMM = mês de **CONTEÚDO** do ciclo (`2609-10` → `/2609`, `mensalPathFromCycle`). Gate de apoio R$25+ no Worker `workers/retrospectiva`. Tem que estar no ar ANTES do e-mail e dos posts (todos levam até ela). |
 | Post apoia.se | **Restrito a R$25+** (valor `25` do `Quem pode ver?`) — mesma lógica de visibilidade do Artigo Especial (restringe ao tier que ganha a recompensa). Texto de **CHAMADA** (título + 2 parágrafos curtos; a URL da retrospectiva vai no campo `Link externo`, nunca repetida no corpo), nunca o conteúdo integral. Fala com quem JÁ apoia, sem CTA de conversão. |
-| Posts públicos (editor, 02/10/2026) | **Sim — LinkedIn página + perfil.** CTA aponta pro apoia.se, **NUNCA** pra URL direta da retrospectiva paywalled: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria` (adaptação da frase do editor no Artigo Especial — não reescrever, não passar por Clarice/humanizador). Texto de chamada, não recorte. **Facebook, Instagram, Threads e X (#9500, editor 02/10/2026): também**, mesma regra de CTA (apoia.se, nunca a URL paywalled), texto único por canal, de chamada. Instagram = post de **imagem única estática** (capa D1), nunca o carrossel de 5 slides da diária. Agenda: mesmo slot da página LinkedIn (D+1 09:00 BRT). Limites: X ≤280, Threads ≤500 (checados por `check-retrospectiva-divulgacao.ts`). |
+| Posts públicos (editor, 02/10/2026) | **Sim — LinkedIn página + perfil.** CTA aponta pro apoia.se, **NUNCA** pra URL direta da retrospectiva paywalled: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria` (adaptação da frase do editor no Artigo Especial — não reescrever, não passar por Clarice/humanizador). Texto de chamada, não recorte. **Facebook, Instagram, Threads e X (#9500, editor 02/10/2026): também**, mesma regra de CTA (apoia.se, nunca a URL paywalled), texto único por canal, de chamada. Instagram = post de **imagem única estática** (capa D1), nunca o carrossel de 5 slides da diária. Agenda: mesmo slot da página LinkedIn (D+1 09:00 BRT). Limites: X ≤272, Threads ≤500 (checados por `check-retrospectiva-divulgacao.ts`). |
 | Agenda LinkedIn | Página `webhook_target: "diaria"` **D+1 09:00 BRT**, perfil **D+2 09:30 BRT**, D = data do ENVIO do e-mail (`--base-date`). Agenda do dia: `09:00 retrospectiva-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`. Perfil é **manual** (o Worker rejeita `pixel` + `post`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
 | Horário do e-mail | **1º sábado do mês de envio, 06:00 BRT** (#9473, `monthly_send_schedule` no config; regra única em `lib/mensal/monthly-send-schedule.ts`). O 4b agenda por ela por padrão (rascunho se faltar <24h ou com `--draft`; `--schedule` sobrepõe). O LinkedIn herda a âncora D dessa mesma data (`ruleBaseDateForCycle`) quando o e-mail ainda sai agendado pela regra. |
@@ -214,11 +214,11 @@ Agent(subagent_type="general-purpose", model="claude-opus-5-5", effort="low", pr
   5. facebook.md, instagram.md — voz institucional, chamada curta (legenda
      de imagem única no Instagram). Terminam com a MESMA linha literal de
      CTA do LinkedIn, sozinha; sem URL da retrospectiva.
-  6. threads.md (≤ 500 caracteres) e x.md (≤ 280 caracteres) — textos
+  6. threads.md (≤ 500 caracteres) e x.md (≤ 272 caracteres: 280 menos margem do link) — textos
      curtos e distintos entre si, com a MESMA linha literal de CTA (conta
      nos limites); sem URL da retrospectiva.
 
-  Escreva os 10 arquivos em data/monthly/{ciclo}/divulgacao/.
+  Escreva os 8 arquivos em data/monthly/{ciclo}/divulgacao/.
 >)
 ```
 
@@ -507,6 +507,7 @@ data/monthly/{ciclo}/
     apoiase.md                         chamada pro mural (Passo 1)
     linkedin-pagina.md                 post da página diar.ia.br (Passo 1)
     linkedin-perfil.md                 post do perfil pessoal (Passo 1)
+    facebook.md, instagram.md, threads.md, x.md   posts sociais públicos (Passo 1, #9500)
     box-gancho.md                      gancho do box (Passo 1)
   _internal/
     divulgacao-published.json          status por canal — pagina/apoiase/linkedin_pagina/linkedin_perfil/facebook/instagram/threads/x/box/email

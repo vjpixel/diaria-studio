@@ -165,7 +165,7 @@ export const SOCIAL_PUBLIC_TEXT_FILES = {
 } as const satisfies Partial<Record<RetrospectivaDivulgacaoChannel, string>>;
 
 /** Limites de caracteres por canal (X e Threads têm teto duro; os demais não precisam). */
-export const SOCIAL_CHAR_LIMITS = { threads: 500, x: 280 } as const;
+export const SOCIAL_CHAR_LIMITS = { threads: 500, x: 272 } as const; // X: 280 menos margem — o X conta link como 23 chars (o CTA tem 15)
 
 /**
  * Pura: problemas de um texto social público (lista vazia = ok) — o CTA do
@@ -173,7 +173,7 @@ export const SOCIAL_CHAR_LIMITS = { threads: 500, x: 280 } as const;
  * que o excesso apareça ANTES do gate e não no dispatch.
  */
 export function socialPublicTextProblems(channel: keyof typeof SOCIAL_PUBLIC_TEXT_FILES, text: string): string[] {
-  const problems = publicPostCtaProblems(text);
+  const problems = [...publicPostCtaProblems(text)];
   const limit = (SOCIAL_CHAR_LIMITS as Record<string, number>)[channel];
   const len = text.trim().length;
   if (limit !== undefined && len > limit) {
