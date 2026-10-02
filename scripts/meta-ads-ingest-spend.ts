@@ -345,10 +345,26 @@ export const META_ADS_FETCH_RETRY = SPEND_INGEST_FETCH_RETRY;
  *  e o painel `/ads` na mesma janela. */
 export const META_ADS_DEFAULT_LOOKBACK_DAYS = 30;
 
+/**
+ * Janela default do cron (#9459): sempre do dia 1 do mês ANTERIOR (UTC) até
+ * `now`. Com a janela móvel de 30 dias, o guard de mês truncado só gravava o
+ * mês M na rodada em que a janela começava em `M-01` (dia 30): as rodadas de
+ * 31/10 e 01/11 descartavam outubro e o fim do mês nunca entrava no
+ * `spend.csv`. Começando no dia 1 do mês anterior, o mês anterior é sempre
+ * regravado inteiro — a virada do mês fecha o mês fechado. Janela: 32..62
+ * dias. @pure
+ */
+export function defaultMetaAdsLookbackDays(now: Date): number {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  // Nunca null: `start` é sempre válido e anterior a `now`.
+  return lookbackDaysSince(start, now) ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
+}
+
 export interface RunHeadlessOptions {
   /** Injetável só pra teste — nunca espera de verdade fora de produção. */
   sleep?: (ms: number) => Promise<void>;
-  /** Janela da consulta (#9378) — default 30 dias (`fetchMetaAdsChannelMetrics`).
+  /** Janela da consulta (#9378) — default desde o dia 1 do mês anterior
+   *  (`defaultMetaAdsLookbackDays`, #9459).
    *  `--since AAAA-MM-DD` do CLI vira isto via `lookbackDaysSince`. */
   lookbackDays?: number;
   /** Injetável só pra teste (default `new Date()`). */
@@ -436,7 +452,7 @@ export async function runHeadless(
   // Mesmo `now`/janela pro fetch e pro guard de mês truncado (#9378) — o
   // guard precisa saber onde a JANELA começou, não só o primeiro dia com dado.
   const now = opts.now ?? new Date();
-  const lookbackDays = opts.lookbackDays ?? META_ADS_DEFAULT_LOOKBACK_DAYS;
+  const lookbackDays = opts.lookbackDays ?? defaultMetaAdsLookbackDays(now);
   // #9413 item 4: mesmo helper que monta o `time_range` do fetch — a janela
   // do guard nunca diverge da janela consultada.
   const { since: windowStart, until: windowEnd } = metaAdsDateRange(now, lookbackDays);
