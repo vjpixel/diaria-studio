@@ -234,3 +234,26 @@ describe("dedupIntraEdition integra o agrupamento (#9360)", () => {
     );
   });
 });
+
+describe("groupSameStory x bônus de cobertura/menção (#9443)", () => {
+  it("primária oficial herda o bônus que o perdedor (já boostado) tinha", () => {
+    const vb = { ...VB_ARGON, score: 85, newsletter_mentions: ["a", "b", "c"], score_bonus_newsletter: 15 };
+    const r = groupSameStory({ lancamento: [{ ...BLOG_GOOGLE_ARGON, score: 60 }], radar: [vb] });
+    const p = r.buckets.lancamento[0] as typeof BLOG_GOOGLE_ARGON & {
+      score_bonus_coverage?: number;
+      score_bonus_newsletter?: number;
+    };
+    assert.equal(p.url, BLOG_GOOGLE_ARGON.url);
+    assert.equal(p.score_bonus_newsletter, 15);
+    assert.equal(p.score_bonus_coverage, 5);
+    assert.equal(p.score, 60 + 15 + 5);
+  });
+
+  it("não recontar bônus que a primária já tinha", () => {
+    const prim = { ...BLOG_GOOGLE_ARGON, score: 70, newsletter_mentions: ["a"], score_bonus_newsletter: 5 };
+    const r = groupSameStory({ lancamento: [prim], radar: [{ ...CNN_ARGON, newsletter_mentions: ["a"] }] });
+    const p = r.buckets.lancamento[0] as typeof prim & { score_bonus_coverage?: number };
+    assert.equal(p.score, 75);
+    assert.equal(p.score_bonus_coverage, 5);
+  });
+});
