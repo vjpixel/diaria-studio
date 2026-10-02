@@ -15,6 +15,8 @@ import {
   extractEmailsSet,
   readBaseEmailSet,
   buildBaseEmailsByFile,
+  extractStructurallyExemptEmails,
+  addStructuralExemptions,
   resolveRepoRootCandidates,
   resolveGitRoot,
   cdTargetFromCommand,
@@ -831,5 +833,100 @@ describe("#7241 — o cd do comando tem precedência sobre o cwd do payload", ()
   it("sem cd no comando, a ordem anterior continua valendo (payload.cwd primeiro)", () => {
     const cands = resolveRepoRootCandidates("/wt", "/base/repo/.claude/hooks", "gh pr create -t x");
     assert.equal(cands[0], "/wt");
+  });
+});
+
+describe("#9414 — isenção por caminho JSON `newsletter_auto_capture.senders`", () => {
+  // Conteúdo SINTÉTICO de platform.config.json no HEAD da branch: um
+  // remetente novo em `senders` e um e-mail novo em OUTRA chave.
+  const headConfig = JSON.stringify(
+    {
+      newsletter_auto_capture: {
+        senders: ["email@newsletter.7min.ai", "novo.remetente@newsletter-publica.example"],
+        since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+        always_consider_senders: ["email@newsletter.7min.ai"],
+      },
+      outra_chave: { contato: "pessoa.real@exemplo-teste.invalid" },
+    },
+    null,
+    2,
+  );
+  const baseConfigEmails = new Set(["email@newsletter.7min.ai"]);
+  const fakeGit = (args: string[]) => (args[1] === "HEAD:platform.config.json" ? headConfig : null);
+
+  function run(addedLines: string[]) {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const added = new Map([["platform.config.json", addedLines]]);
+    const baseEmails = new Map([["platform.config.json", new Set(baseConfigEmails)]]);
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", fakeGit as never);
+    return findDangerousDiffContent(nameStatus, added, baseEmails);
+  }
+
+  it("(1) linha nova em `senders` passa", () => {
+    assert.deepEqual(run(['    "novo.remetente@newsletter-publica.example",']), []);
+  });
+
+  it("(2) e-mail em outra chave do MESMO arquivo continua barrado", () => {
+    const findings = run(['    "contato": "pessoa.real@exemplo-teste.invalid"']);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].kind, "pii-email");
+  });
+
+  it("(2b) e-mail que está em `senders` E em outra chave não é isento (na dúvida, barra)", () => {
+    const set = extractStructurallyExemptEmails(
+      JSON.stringify({
+        newsletter_auto_capture: {
+          senders: ["dup@exemplo-teste.invalid"],
+          always_consider_senders: ["dup@exemplo-teste.invalid"],
+        },
+      }),
+      ["newsletter_auto_capture", "senders"],
+    );
+    assert.equal(set?.has("dup@exemplo-teste.invalid"), false);
+  });
+
+  it("(2c) e-mail como CHAVE de outro objeto também conta como 'outro lugar'", () => {
+    const set = extractStructurallyExemptEmails(
+      JSON.stringify({
+        newsletter_auto_capture: {
+          senders: ["k@exemplo-teste.invalid"],
+          since_hours_by_sender: { "k@exemplo-teste.invalid": 1 },
+        },
+      }),
+      ["newsletter_auto_capture", "senders"],
+    );
+    assert.equal(set?.size, 0);
+  });
+
+  it("(2d) JSON inválido ou caminho ausente -> null (fail-closed)", () => {
+    assert.equal(extractStructurallyExemptEmails("{ quebrado", ["newsletter_auto_capture", "senders"]), null);
+    assert.equal(extractStructurallyExemptEmails("{}", ["newsletter_auto_capture", "senders"]), null);
+  });
+
+  it("(2e) git show falhando não acrescenta isenção -> remetente novo segue barrado", () => {
+    const nameStatus = [{ status: "M", path: "platform.config.json" }];
+    const added = new Map([["platform.config.json", ['"novo.remetente@newsletter-publica.example",']]]);
+    const baseEmails = new Map([["platform.config.json", new Set(baseConfigEmails)]]);
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", (() => null) as never);
+    assert.equal(findDangerousDiffContent(nameStatus, added, baseEmails).length, 1);
+  });
+
+  it("(2f) isenção vale só pro arquivo declarado — mesmo array em outro arquivo não isenta", () => {
+    const nameStatus = [{ status: "M", path: "outro/platform.config.json" }];
+    const added = new Map([["outro/platform.config.json", ['"novo.remetente@newsletter-publica.example",']]]);
+    const baseEmails = new Map();
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", (() => headConfig) as never);
+    assert.equal(findDangerousDiffContent(nameStatus, added, baseEmails).length, 1);
+  });
+
+  it("(3) fixture do incidente #6753 continua acusando, mesmo com a isenção estrutural ativa", () => {
+    const dumpPath = "scripts/_tmp_engagement_backup3/b29f6620_p1.json";
+    const nameStatus = [{ status: "A", path: dumpPath }];
+    const added = new Map([[dumpPath, ['{ "email": "sintetico.fixture@exemplo-teste.invalid" }']]]);
+    const baseEmails = new Map();
+    addStructuralExemptions(baseEmails, added.keys(), "HEAD", "/repo", (() => headConfig) as never);
+    const kinds = findDangerousDiffContent(nameStatus, added, baseEmails).map((f: { kind: string }) => f.kind);
+    assert.ok(kinds.includes("runtime-artifact"));
+    assert.ok(kinds.includes("pii-email"));
   });
 });

@@ -348,6 +348,101 @@ export function buildBaseEmailsByFile(nameStatusEntries, touchedPaths, base, cwd
 }
 
 /**
+ * Isenção por CAMINHO JSON estrutural (#9414, decisão do editor 01/10/2026).
+ *
+ * `newsletter_auto_capture.senders` em `platform.config.json` é a lista de
+ * REMETENTES PÚBLICOS de newsletters capturadas (a fonte, não um assinante) —
+ * toda PR que acrescenta um remetente NOVO caía no guard, porque a isenção do
+ * #7822 só cobre e-mails já presentes na base. Isentar por padrão de e-mail
+ * ou por domínio está fora de cogitação (reprovaria a reconstituição do
+ * #6753, ver docstring de `ALLOWLISTED_EMAILS`); isentar pelo LUGAR do JSON
+ * onde o endereço mora não tem esse efeito colateral.
+ *
+ * Cada entrada: `file` (path relativo exato) + `jsonPath` (chaves até um
+ * array de strings). Acrescentar aqui exige a mesma prova: o array inteiro
+ * guarda endereços PÚBLICOS por definição de produto.
+ */
+export const STRUCTURAL_EMAIL_EXEMPTIONS = [
+  { file: "platform.config.json", jsonPath: ["newsletter_auto_capture", "senders"] },
+];
+
+/**
+ * Pura: dado o conteúdo (texto JSON) de um arquivo e o `jsonPath` de um array
+ * isento, devolve o `Set` (minúsculas) dos e-mails que aparecem DENTRO desse
+ * array e em NENHUM outro lugar do arquivo (chaves ou valores de qualquer
+ * outra parte da árvore). `null` quando o JSON não parseia ou o caminho não
+ * leva a um array — fail-closed, nenhuma isenção.
+ *
+ * **Por que subtrair o "resto do arquivo".** O hook só vê linhas `+` soltas,
+ * sem saber a que chave pertencem. Um e-mail que mora SÓ no array isento só
+ * pode ter entrado no diff pela linha do array; um e-mail que também aparece
+ * em outra chave poderia ser a linha da outra chave — e "qualquer outro
+ * e-mail no arquivo continua barrado" (decisão do editor). Na dúvida, barra.
+ */
+export function extractStructurallyExemptEmails(content, jsonPath) {
+  if (typeof content !== "string" || !Array.isArray(jsonPath) || jsonPath.length === 0) return null;
+  let root;
+  try {
+    root = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  let target = root;
+  for (const key of jsonPath) {
+    if (target === null || typeof target !== "object" || Array.isArray(target)) return null;
+    target = target[key];
+  }
+  if (!Array.isArray(target)) return null;
+
+  const inside = new Set();
+  for (const item of target) {
+    if (typeof item === "string") for (const e of extractEmailsSet(item)) inside.add(e);
+  }
+
+  const elsewhere = new Set();
+  const walk = (node) => {
+    if (node === target) return; // o próprio array isento não conta como "outro lugar"
+    if (typeof node === "string") {
+      for (const e of extractEmailsSet(node)) elsewhere.add(e);
+    } else if (Array.isArray(node)) {
+      for (const child of node) walk(child);
+    } else if (node !== null && typeof node === "object") {
+      for (const [k, v] of Object.entries(node)) {
+        for (const e of extractEmailsSet(k)) elsewhere.add(e);
+        walk(v);
+      }
+    }
+  };
+  walk(root);
+
+  const out = new Set();
+  for (const e of inside) if (!elsewhere.has(e)) out.add(e);
+  return out;
+}
+
+/**
+ * Soma ao `baseEmailsByFile` (mutando e devolvendo o mesmo Map) os e-mails
+ * isentos por caminho estrutural (#9414), lendo a versão de `ref` (HEAD da
+ * branch — o estado que a PR leva pra master) de cada arquivo tocado que tem
+ * entrada em `STRUCTURAL_EMAIL_EXEMPTIONS`. Falha de leitura/parse não
+ * acrescenta nada (fail-closed, mesma assimetria do #7822).
+ */
+export function addStructuralExemptions(baseEmailsByFile, touchedPaths, ref, cwd, gitRunner) {
+  const touched = new Set(touchedPaths);
+  for (const { file, jsonPath } of STRUCTURAL_EMAIL_EXEMPTIONS) {
+    if (!touched.has(file)) continue;
+    const content = gitRunner(["show", `${ref}:${file}`], cwd);
+    if (content === null) continue;
+    const exempt = extractStructurallyExemptEmails(content, jsonPath);
+    if (!exempt || exempt.size === 0) continue;
+    const merged = new Set(baseEmailsByFile.get(file) ?? []);
+    for (const e of exempt) merged.add(e);
+    baseEmailsByFile.set(file, merged);
+  }
+  return baseEmailsByFile;
+}
+
+/**
  * Parse de `git diff --name-status <base> <head>` — devolve
  * `{ status, path }[]`. Renomeações (`R100\told\tnew`) resolvem `path` pro
  * destino (`new`) — é o path que vai existir em `master` se a PR mergear.
@@ -652,7 +747,9 @@ if (
         cwd,
         runGit,
       );
-      const findings = findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile);
+      // #9414 — remetentes públicos em `newsletter_auto_capture.senders`.
+      addStructuralExemptions(baseEmailsByFile, addedLinesByFile.keys(), "HEAD", cwd, runGit);
+      const findings =findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile);
 
       if (findings.length > 0) {
         process.stdout.write(
