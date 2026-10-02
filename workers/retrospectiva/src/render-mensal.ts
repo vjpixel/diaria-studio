@@ -86,6 +86,13 @@ function shell(title: string, bodyHtml: string): string {
     border:1px solid ${BEGE}; border-radius:8px; margin:0 0 16px; font-family:inherit;
   }
   .muted { font-size:13px; color:${INK}; opacity:0.7; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  /* #9492: em 375px o wrap+card comiam ~130px de margem; a coluna ficava com ~260px. */
+  @media (max-width: 480px) {
+    .wrap { padding:24px 12px; }
+    .card { padding:24px 18px; }
+    h1 { font-size:22px; }
+    a.button { display:block; text-align:center; }
+  }
 </style>
 </head>
 <body>

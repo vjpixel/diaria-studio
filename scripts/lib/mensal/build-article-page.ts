@@ -139,6 +139,32 @@ export function retagWebUtmMedium(html: string): string {
 }
 
 /**
+ * CSS responsivo só da versão WEB (#9492).
+ *
+ * O render é o do e-mail: tabela `width="600"` com `padding:36px 32px` no card
+ * e `padding:20px 10px` no canvas. Em 375px isso come ~84px de largura em
+ * margem e a coluna de texto fica com ~290px. Nada disso muda no e-mail
+ * (`draftToEmail` segue intacto) — o bloco é injetado só aqui, e só vale
+ * abaixo de 480px. Seletores por atributo porque o markup é todo inline-style.
+ */
+export const WEB_MOBILE_CSS_MARKER = "article-web-mobile-9492";
+
+export function injectWebMobileCss(html: string): string {
+  const css = `<style id="${WEB_MOBILE_CSS_MARKER}">
+  body { -webkit-text-size-adjust:100%; }
+  img { max-width:100%; height:auto; }
+  a, p { overflow-wrap:anywhere; }
+  @media only screen and (max-width: 480px) {
+    table[width="600"] { width:100% !important; }
+    td[align="center"][style*="padding:20px 10px"] { padding:0 !important; }
+    td[style*="padding:36px 32px"] { padding:24px 16px !important; }
+    td[style*="padding:24px 28px"] { padding:20px 16px !important; }
+  }
+</style>`;
+  return html.replace(/<\/head\s*>/i, `${css}\n</head>`);
+}
+
+/**
  * Guard: nenhuma merge tag pode sobreviver no HTML servido na web.
  *
  * Falha ALTO em vez de publicar o literal — mesma disciplina do #6210. Se um
@@ -261,7 +287,9 @@ export function buildArticleHtml(draftMd: string, cycle: string): ArticlePage {
   // Sanitiza o que é só de e-mail, depois GUARDA — a mesma ordem de
   // `buildArchivePageHtml`: primeiro o que se sabe tratar, e só então a recusa
   // do que sobrou, para o guard validar exatamente o HTML que vai ser servido.
-  const web = retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html)));
+  const web = injectWebMobileCss(
+    retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html))),
+  );
   verifyNoMergeTagsInArticle(web, cycle);
   // Guard de marca legada (#7719) — mesma disciplina do guard de merge tag
   // acima: checa o HTML final, DEPOIS do render, porque é dado que vem do
