@@ -34,7 +34,6 @@ import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
-import { articleNewsletterMentions, newsletterMentionBonus } from "./lib/newsletter-mention-bonus.ts"; // #9365
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -563,11 +562,17 @@ export function finalizeStage1(
         const bonus = coverageBonus(extraSources);
         (enrichedArticle as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
       }
-      // #9365: idem pro bônus de menção em newsletter — já somado no
-      // merge-scored-chunks; aqui só o campo de auditoria no artigo final.
-      const newsletterBonus = newsletterMentionBonus(articleNewsletterMentions(enrichedArticle).length);
-      if (newsletterBonus > 0 && typeof score === "number") {
-        (enrichedArticle as { score_bonus_newsletter?: number }).score_bonus_newsletter = newsletterBonus;
+      // #9365: auditoria do bônus de menção em newsletter SÓ quando ele de
+      // fato entrou no score — i.e. `bonuses_applied` (vindo do all_scored do
+      // merge-scored-chunks) traz `newsletter:+N`. No fallback single-call do
+      // scorer o merge não roda e o bônus não é somado; gravar o campo ali
+      // afirmaria um bônus que não existe (review PR #9434).
+      const applied = (enrichedArticle as { bonuses_applied?: unknown }).bonuses_applied;
+      const newsletterEntry = (Array.isArray(applied) ? (applied as unknown[]) : [])
+        .filter((b): b is string => typeof b === "string")
+        .find((b) => /^newsletter:\+\d+$/.test(b));
+      if (newsletterEntry && typeof score === "number") {
+        (enrichedArticle as { score_bonus_newsletter?: number }).score_bonus_newsletter = Number(newsletterEntry.split("+")[1]);
       }
       // #4842: score_base já foi propagado por joinScore a partir de
       // all_scored (decomposição completa: score_base do scorer-chunk +

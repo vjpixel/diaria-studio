@@ -48,6 +48,8 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
    <!-- CALIBRATED:primary_source:end -->
 
    Pontue cada artigo **pelo seu mérito absoluto**, não em relação aos outros do chunk — assim os scores são comparáveis entre chunks no merge.
+
+   **Ignore `newsletter_mentions` e `cluster_sources` na nota (#9365, #3920).** Menção em newsletter e cobertura ampla já viram bônus determinístico em `merge-scored-chunks.ts` depois de você — pesar esses campos aqui contaria o mesmo sinal duas vezes.
 3. **Auditoria dos bônus (#4842).** Para viabilizar auditoria retroativa do rubrico, registre para CADA artigo:
    - `score_base`: a nota considerando **só** relevância + atualidade — antes de qualquer um dos bônus/penalidades acima. **Sempre presente**, mesmo quando nenhum bônus se aplicou (nesse caso `score_base == score`).
    - `bonuses_applied`: lista de strings no formato `"<slug>:+N"` (ou `"<slug>:-N"` para penalidade), uma entrada por bônus/penalidade efetivamente aplicado a este artigo. Slugs: `impact_routine` (+10), `impact_routine_br` (+5), `audience_affinity` (+10 / +5 / -5 — omitir a entrada quando o bucket 0.1–0.39 não dá bônus), `hands_on` (+8), `academy` (+6), `howto_br` (+5), `howto_br_source` (+3). Omitir o campo (ou usar lista vazia) quando nenhum bônus/penalidade se aplicou.

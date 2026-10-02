@@ -18,6 +18,8 @@ import { mergeInjectedIntoPool, type SyntheticInboxArticle } from "../scripts/in
 import { mergeChunks } from "../scripts/merge-scored-chunks.ts";
 import { toClusterSource } from "../scripts/lib/cluster-sources.ts";
 import type { Categorized } from "../scripts/split-articles-for-scoring.ts";
+import { dedup } from "../scripts/dedup.ts";
+import { finalizeStage1, type CategorizedBuckets, type ScoredOutput } from "../scripts/finalize-stage1.ts";
 
 const thread = (id: string, sender: string, body: string): CapturedThread => ({
   thread_id: id,
@@ -172,5 +174,54 @@ describe("mergeChunks aplica o bônus de menção em newsletter (#9365)", () => 
     assert.equal(r.finalists[0].url, "one");
     const one = r.finalists[0].article as { score_bonus_newsletter?: number };
     assert.equal(one.score_bonus_newsletter, 5);
+  });
+});
+
+// ---- Review PR #9434 (P2 alta): perdas reais do bônus no caminho até o score ----
+
+describe("dedup 2a une newsletter_mentions de membros da mesma URL canônica (#9365)", () => {
+  it("pesquisa (URL crua) + newsletter (URL canônica) → vencedor carrega as menções", () => {
+    const articles = [
+      { url: "https://example.com/post?utm_source=x", title: "Um título bem longo da pesquisa original" },
+      { url: "https://example.com/post", title: "(newsletter:Rundown)", newsletter_mentions: ["a@x.com", "b@y.com"] },
+    ];
+    const { kept } = dedup(articles, new Set(), 0.85);
+    assert.equal(kept.length, 1, "canonicalize une as duas URLs");
+    assert.equal(kept[0].title, "Um título bem longo da pesquisa original");
+    assert.deepEqual((kept[0] as { newsletter_mentions?: string[] }).newsletter_mentions, ["a@x.com", "b@y.com"]);
+  });
+
+  it("forward do editor (mesma URL) vence mas herda as menções da cópia de newsletter", () => {
+    const articles = [
+      { url: "https://example.com/p", title: "Título do editor bem mais longo aqui", flag: "editor_submitted" },
+      { url: "https://example.com/p", title: "(newsletter:X)", newsletter_mentions: ["a@x.com"] },
+    ];
+    const { kept } = dedup(articles, new Set(), 0.85);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].flag, "editor_submitted");
+    assert.deepEqual((kept[0] as { newsletter_mentions?: string[] }).newsletter_mentions, ["a@x.com"]);
+  });
+});
+
+describe("finalize-stage1 só audita bônus de newsletter que entrou no score (#9365)", () => {
+  const categorized = {
+    lancamento: [],
+    radar: [{ url: "https://a.com/1", title: "A", newsletter_mentions: ["a@x.com"] }],
+  } as unknown as CategorizedBuckets;
+
+  it("fallback single-call (sem bonuses_applied) → sem score_bonus_newsletter", () => {
+    const scored = { highlights: [], runners_up: [], all_scored: [{ url: "https://a.com/1", score: 80 }] } as ScoredOutput;
+    const { buckets } = finalizeStage1(categorized, scored);
+    assert.equal((buckets.radar[0] as { score_bonus_newsletter?: number }).score_bonus_newsletter, undefined);
+  });
+
+  it("merge-scored-chunks (bonuses_applied com newsletter:+5) → campo gravado", () => {
+    const scored = {
+      highlights: [],
+      runners_up: [],
+      all_scored: [{ url: "https://a.com/1", score: 85, score_base: 80, bonuses_applied: ["newsletter:+5"] }],
+    } as unknown as ScoredOutput;
+    const { buckets } = finalizeStage1(categorized, scored);
+    assert.equal((buckets.radar[0] as { score_bonus_newsletter?: number }).score_bonus_newsletter, 5);
   });
 });
