@@ -1111,10 +1111,6 @@ export function invalidatePublicImagesForReorder(
 }
 
 /**
- * Conteúdo reordenado de um JSON canônico, ou null se ausente/inalterado.
- * #9188: não grava — o chamador acumula no lote verificado.
- */
-/**
  * #9461: passos 4a–7 de `main()` rodam DEPOIS do lote principal
  * (01-approved*.json, 02-reviewed.md, 03-social.md) e dos renames de
  * imagens/prompts já gravados. Uma falha ali ("Lote revertido…" reverte só
@@ -1144,6 +1140,10 @@ export function writePostBatchVerified(
   }
 }
 
+/**
+ * Conteúdo reordenado de um JSON canônico, ou null se ausente/inalterado.
+ * #9188: não grava — o chamador acumula no lote verificado.
+ */
 function processJsonFile(path: string, newOrder: number[]): string | null {
   if (!existsSync(path)) return null;
   const data = JSON.parse(readFileSync(path, "utf8"));
@@ -1322,7 +1322,8 @@ function main(): void {
   const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
   } catch (err) {
-    throw annotateMainBatchAlreadyApplied(err, args.newOrder); // #9461
+    // Em --dry-run nada foi gravado — não afirmar "JÁ aplicado".
+    throw args.dryRun ? err : annotateMainBatchAlreadyApplied(err, args.newOrder); // #9461
   }
 
   // 5. fact-check-sources/manifest.json + d{N}.txt (#8679).
