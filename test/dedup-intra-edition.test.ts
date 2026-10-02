@@ -1964,8 +1964,8 @@ describe("dedupSecondaryIntraBucket (#4360, generalizado #4667)", () => {
 
     const { kept, removed } = dedupIntraEdition(input);
 
-    const intraBucketRemoved = removed.filter((r) => r.match_type === "intra_bucket" || r.match_type === "story_group");
-    assert.equal(intraBucketRemoved.length, 1, "deve consolidar via intra_bucket");
+    const intraBucketRemoved = removed.filter((r) => r.match_type === "story_group");
+    assert.equal(intraBucketRemoved.length, 1, "deve consolidar como mesma história (story_group, #9360 — antes intra_bucket)");
     assert.equal(
       intraBucketRemoved[0].url,
       "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
@@ -2022,9 +2022,9 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     const { kept, removed } = dedupIntraEdition(input);
 
     const radarIntraBucket = removed.filter(
-      (r) => (r.match_type === "intra_bucket" || r.match_type === "story_group") && r.bucket === "radar",
+      (r) => r.match_type === "story_group" && r.bucket === "radar",
     );
-    assert.equal(radarIntraBucket.length, 2, "deve consolidar 2 das 3 fontes no item sobrevivente");
+    assert.equal(radarIntraBucket.length, 2, "deve consolidar 2 das 3 fontes no item sobrevivente (story_group, #9360 — antes intra_bucket)");
     assert.equal(kept.radar?.length, 1, "RADAR: cluster consolidado em 1 item");
     // #4675 review: achado menor — assegurar QUAL url sobrevive, não só a
     // contagem. Sem summary/model-card em nenhum dos 3, o desempate cai no
@@ -2065,7 +2065,7 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     const { kept, removed } = dedupIntraEdition(input);
 
     const radarIntraBucket = removed.filter(
-      (r) => (r.match_type === "intra_bucket" || r.match_type === "story_group") && r.bucket === "radar",
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
     );
     assert.equal(radarIntraBucket.length, 3, "deve consolidar 3 das 4 fontes no item sobrevivente");
     assert.equal(kept.radar?.length, 1, "RADAR: cluster de 4 fontes consolidado em 1 item");
@@ -2195,8 +2195,8 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
 
     const { kept, removed } = dedupIntraEdition(input);
 
-    const intraBucketRemoved = removed.filter((r) => r.match_type === "intra_bucket" || r.match_type === "story_group");
-    assert.equal(intraBucketRemoved.length, 1, "deve consolidar via intra_bucket, exatamente como antes do #4667");
+    const intraBucketRemoved = removed.filter((r) => r.match_type === "story_group");
+    assert.equal(intraBucketRemoved.length, 1, "deve consolidar como mesma história (story_group, #9360 — antes intra_bucket); sobrevivente igual ao #4360");
     assert.equal(
       intraBucketRemoved[0].url,
       "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
@@ -2318,7 +2318,7 @@ describe("dedupIntraEdition — #4667 RADAR consolidação item-vs-item", () => 
     const { kept, removed } = dedupIntraEdition(input);
 
     const radarIntraBucket = removed.filter(
-      (r) => (r.match_type === "intra_bucket" || r.match_type === "story_group") && r.bucket === "radar",
+      (r) => r.match_type === "intra_bucket" && r.bucket === "radar",
     );
     assert.equal(radarIntraBucket.length, 3, "cluster real continua consolidando 3 das 4 fontes, comportamento #4667 inalterado");
     assert.equal(kept.radar?.length, 1);

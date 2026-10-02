@@ -17,6 +17,7 @@ import {
   isOfficialForStory,
 } from "../scripts/lib/story-grouping.ts";
 import { dedupIntraEdition } from "../scripts/dedup-intra-edition.ts";
+import { sameEvent } from "../scripts/lib/event-dedup.ts";
 
 const VB_SONNET = {
   url: "https://venturebeat.com/technology/anthropic-launches-claude-sonnet-5-5-with-30-cost-reduction-per-task-due-to-faster-speeds-and-fewer-tool-calls",
@@ -70,6 +71,23 @@ describe("modelVersionTokens (#9360)", () => {
   });
   it("sem versão não gera token", () => {
     assert.equal(modelVersionTokens("Build plugins for Claude with the directory").size, 0);
+  });
+  it("sufixo de letra é outro modelo (gpt-4o não é gpt 4)", () => {
+    assert.equal(modelVersionTokens("GPT-4o mini gets cheaper").size, 0);
+  });
+  it("mesma versão mas histórias diferentes NÃO agrupam (review PR #9430)", () => {
+    for (const [a, b] of [
+      ["GPT-6.1 banido em escolas", "GPT-6.1 ganha novo modo de voz"],
+      ["Claude Opus 5.5 vaza prompt de sistema", "Como usar o Claude Opus 5.5 para planilhas"],
+      ["Llama 4 lawsuit filed by authors", "Meta releases Llama 4 Scout"],
+      ["Gemini 3 chega ao Android Auto", "Gemini 3 é acusado de viés em eleições"],
+      ["GPT-4o mini gets cheaper", "Court rules on GPT-4 training data"],
+    ]) {
+      assert.equal(sameStorySignal(a, b), null, `${a} × ${b}`);
+    }
+  });
+  it("mesma versão + os dois anunciando lançamento agrupa", () => {
+    assert.equal(sameStorySignal(VB_SONNET.title, "Quase um Opus por uma fração do preço: novo Claude Sonnet 5.5 chega 30% mais barato"), "model_version");
   });
   it("versões diferentes do mesmo modelo não casam", () => {
     assert.equal(sameStorySignal("Claude Sonnet 5.5 chega", "Claude Sonnet 5 ganha recurso"), null);
@@ -135,7 +153,69 @@ describe("groupSameStory (#9360)", () => {
   });
 });
 
+describe("groupSameStory — guardas do review da PR #9430", () => {
+  it("cópia de destaque no bucket nunca sai; a oficial segue primária (#4943/#2397)", () => {
+    const r = groupSameStory(
+      { lancamento: [BLOG_GOOGLE_ARGON], radar: [CNN_ARGON, VB_ARGON] },
+      { protectedUrls: [VB_ARGON.url] },
+    );
+    assert.ok(r.buckets.radar.some((a) => a.url === VB_ARGON.url));
+    assert.deepEqual(r.buckets.lancamento.map((a) => a.url), [BLOG_GOOGLE_ARGON.url]);
+    assert.deepEqual(r.removed.map((x) => x.url), [CNN_ARGON.url]);
+    assert.ok(r.removed.every((x) => x.kept_url === BLOG_GOOGLE_ARGON.url));
+    assert.ok(r.spared.some((x) => x.url === VB_ARGON.url && x.reason === "protected"));
+  });
+
+  it("duas submissões do editor no mesmo grupo: as duas ficam", () => {
+    const r = groupSameStory({
+      radar: [{ ...CNN_ARGON, flag: "editor_submitted" }, { ...VB_ARGON, flag: "editor_submitted" }],
+    });
+    assert.equal(r.removed.length, 0);
+    assert.equal(r.buckets.radar.length, 2);
+  });
+
+  it("LANÇAMENTOS oficial de outra empresa sai em favor da cobertura da história (cross-bucket)", () => {
+    const r = groupSameStory({ lancamento: [AWS_SONNET], radar: [VB_SONNET] });
+    assert.deepEqual(r.buckets.lancamento, []);
+    assert.deepEqual(r.buckets.radar.map((a) => a.url), [VB_SONNET.url]);
+    assert.equal(r.removed[0].bucket, "lancamento");
+  });
+
+  it("sinal registrado contra a primária, mesmo quando a âncora perde o posto", () => {
+    const r = groupSameStory({ lancamento: [AWS_SONNET], radar: [VB_SONNET] });
+    assert.ok(["event", "model_version"].includes(r.removed[0].signal));
+    assert.equal(r.removed[0].url, AWS_SONNET.url);
+  });
+
+  it("cluster_sources que o perdedor já carregava passam para a primária", () => {
+    const loser = { ...CNN_ARGON, cluster_sources: [{ url: "https://g1.globo.com/argon" }] };
+    const r = groupSameStory({ lancamento: [BLOG_GOOGLE_ARGON], radar: [loser] });
+    const srcs = (r.buckets.lancamento[0].cluster_sources ?? []).map((c) => c.url);
+    assert.ok(srcs.includes(CNN_ARGON.url));
+    assert.ok(srcs.includes("https://g1.globo.com/argon"));
+  });
+
+  it("'IAs' não é nome distintivo (calibração 260820)", () => {
+    assert.equal(
+      sameEvent("11 prompts para foto profissional no ChatGPT e outras IAs", 'OpenAI desmancha equipe responsável por "conter" rebelião de IAs'),
+      null,
+    );
+  });
+});
+
 describe("dedupIntraEdition integra o agrupamento (#9360)", () => {
+  it("destaque de qualquer rank presente no bucket é protegido", () => {
+    const { kept, removed } = dedupIntraEdition({
+      highlights: [{ rank: 5, url: VB_ARGON.url, title: VB_ARGON.title }],
+      lancamento: [BLOG_GOOGLE_ARGON],
+      radar: [VB_ARGON, CNN_ARGON],
+      use_melhor: [],
+      video: [],
+    });
+    assert.ok((kept.radar ?? []).some((a) => a.url === VB_ARGON.url));
+    assert.ok(!removed.some((r) => r.url === VB_ARGON.url));
+  });
+
   it("removidos aparecem com match_type story_group (sidecar → descartados)", () => {
     const { kept, removed } = dedupIntraEdition({
       highlights: [],
@@ -147,6 +227,7 @@ describe("dedupIntraEdition integra o agrupamento (#9360)", () => {
     assert.deepEqual((kept.lancamento ?? []).map((a) => a.url), [BLOG_GOOGLE_ARGON.url]);
     assert.deepEqual((kept.radar ?? []).map((a) => a.url), [VB_SONNET.url]);
     const grouped = removed.filter((r) => r.match_type === "story_group");
+    assert.ok(grouped.every((r) => typeof r.story_signal === "string"));
     assert.deepEqual(
       grouped.map((r) => r.url).sort(),
       [CNN_ARGON.url, VB_ARGON.url, AWS_SONNET.url].sort(),

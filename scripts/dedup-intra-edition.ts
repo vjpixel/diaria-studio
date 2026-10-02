@@ -402,6 +402,8 @@ interface IntraEditionRemovedEntry {
     | "story_group";
   matched_highlight: string;
   score: number;
+  /** #9360: sinal que agrupou a história (só em `story_group`). */
+  story_signal?: string;
 }
 
 export interface IntraEditionDedupResult {
@@ -1421,7 +1423,13 @@ export function dedupIntraEdition(
   // abaixo para que a escolha da primária siga o critério do editor e não o
   // desempate por summary/model-card. Ver lib/story-grouping.ts.
   {
-    const grouped = groupSameStory(keptBuckets, { isModelCard: isModelCardOrHubPage });
+    // Cópias de destaque (TODOS os ranks, não só o top-N) nunca saem do pool:
+    // o gate resolve D1..D6 pela URL no bucket (#4943) e rank 4-6 não pode ser
+    // podado antes do gate (#2397) — review da PR #9430.
+    const protectedUrls = allHighlights
+      .map((h) => highlightUrl(h))
+      .filter((u): u is string => typeof u === "string");
+    const grouped = groupSameStory(keptBuckets, { isModelCard: isModelCardOrHubPage, protectedUrls });
     for (const [bucket, arts] of Object.entries(grouped.buckets)) {
       keptBuckets[bucket] = arts as Article[];
     }
@@ -1432,6 +1440,18 @@ export function dedupIntraEdition(
         bucket: r.bucket,
         match_type: "story_group",
         matched_highlight: r.kept_url,
+        score: 1,
+        story_signal: r.signal,
+      });
+    }
+    for (const sp of grouped.spared) {
+      if (sp.reason !== "editor_submitted") continue;
+      editorSubmittedSpared.push({
+        url: sp.url,
+        title: sp.title,
+        bucket: sp.bucket,
+        match_type: "story_group",
+        matched_highlight: sp.kept_url,
         score: 1,
       });
     }
