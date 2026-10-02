@@ -1166,4 +1166,16 @@
       <news:title>Seu próximo modelo de código pode ser o Argon?</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/voce-viu-bonner-anunciar-pesquisa-era-deepfake</loc>
+    <lastmod>2026-10-02</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-02T00:00:00.000Z</news:publication_date>
+      <news:title>Você viu Bonner anunciar pesquisa? Era deepfake</news:title>
+    </news:news>
+  </url>
 </urlset>
