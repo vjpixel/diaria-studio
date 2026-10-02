@@ -98,15 +98,14 @@ export function rowsFromDesiredLevels(desired: readonly DesiredApoioLevel[]): Ap
   return { rows, protectedEmails };
 }
 
-/** Pure (#9491): e-mails editor/QA entram como `patrono` (nível máximo → passa o limiar do gate);
- * sem isso o `stale delete` apagaria a chave a cada sync. Nunca rebaixa quem já tem nível. */
+/** Pure (#9491): e-mails editor/QA entram como `patrono` (passa o limiar do gate); sem isso o
+ * stale delete apagaria a chave a cada sync. `buildKvBulkEntries` mantém o MAIOR nível por e-mail,
+ * então append incondicional nunca rebaixa ninguém e eleva um QA que seja apoiador `amigo`. */
 export function withEditorQaRows(
   rows: Array<{ email: string; nivel: ApoioNivel }>,
   qaEmails: readonly string[],
 ): Array<{ email: string; nivel: ApoioNivel }> {
-  const have = new Set(rows.map((r) => r.email.trim().toLowerCase()));
-  const extra = qaEmails.filter((e) => !have.has(e)).map((email) => ({ email, nivel: "patrono" as ApoioNivel }));
-  return [...rows, ...extra];
+  return [...rows, ...qaEmails.map((email) => ({ email, nivel: "patrono" as ApoioNivel }))];
 }
 
 export interface DeletionDecision {
@@ -331,7 +330,12 @@ async function main(): Promise<void> {
   if (overrides.length > 0) desired = applyApoioOverrides(desired, overrides);
 
   const { rows: apoioRows, protectedEmails } = rowsFromDesiredLevels(desired);
-  const rows = withEditorQaRows(apoioRows, readEditorQaEmails());
+  const qaEmails = readEditorQaEmails();
+  process.stderr.write(
+    `${LOG_PREFIX} editor/QA: ${qaEmails.length} e-mail(s) incluídos (EDITOR_QA_EMAILS)` +
+      `${qaEmails.length === 0 ? " — AVISO: vazio, chaves QA existentes serão apagadas como stale" : ""}.\n`,
+  );
+  const rows = withEditorQaRows(apoioRows, qaEmails);
   const entries = await buildKvBulkEntries(rows);
   const protectedKeys = new Set(await Promise.all(protectedEmails.map((e) => apoioLevelKvKey(e))));
   const byLevel: Record<string, number> = {};

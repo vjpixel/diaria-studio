@@ -314,7 +314,12 @@ async function main(): Promise<void> {
   const data = await buildApoiosData(REPO_ROOT);
   // #9491: e-mails do editor/QA (env EDITOR_QA_EMAILS, fora do repo público)
   // sempre entram — não são apoiadores, mas conferem o que o apoiador vê.
-  const allowlist = withEditorQaEmails(computeApoiadorAllowlist(data.contacts), readEditorQaEmails());
+  const qaEmails = readEditorQaEmails();
+  console.error(
+    `[build-apoiador-allowlist] editor/QA: ${qaEmails.length} e-mail(s) incluídos (EDITOR_QA_EMAILS)` +
+      `${qaEmails.length === 0 ? " — AVISO: vazio, QA já no KV sairá como remoção" : ""}.`,
+  );
+  const allowlist = withEditorQaEmails(computeApoiadorAllowlist(data.contacts), qaEmails);
   const payload = JSON.stringify(allowlist);
 
   const outPath = getArg(argv, "out");

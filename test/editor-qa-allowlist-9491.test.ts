@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseEditorQaEmails, readEditorQaEmails } from "../scripts/lib/shared/editor-qa-emails.ts";
 import { withEditorQaEmails } from "../scripts/build-apoiador-allowlist.ts";
-import { withEditorQaRows } from "../scripts/sync-artigos-apoio-kv.ts";
+import { apoioLevelKvKey } from "../scripts/lib/shared/apoio-level-verify.ts";
+import { withEditorQaRows, buildKvBulkEntries } from "../scripts/sync-artigos-apoio-kv.ts";
 
 describe("editor QA emails (#9491)", () => {
   it("parseia CSV, normaliza, deduplica e descarta lixo", () => {
@@ -21,15 +22,19 @@ describe("editor QA emails (#9491)", () => {
     assert.deepEqual(withEditorQaEmails(["ap@x.com", "qa@x.com"], ["qa@x.com", "z@x.com"]), ["ap@x.com", "qa@x.com", "z@x.com"]);
     assert.deepEqual(withEditorQaEmails(["ap@x.com"], []), ["ap@x.com"]);
   });
-  it("Artigo Especial: QA entra como patrono e não rebaixa apoiador existente", () => {
-    const rows = withEditorQaRows([{ email: "qa@x.com", nivel: "mantenedor" }, { email: "a@x.com", nivel: "amigo" }], ["qa@x.com", "new@x.com"]);
-    assert.deepEqual(rows.find((r) => r.email === "qa@x.com")?.nivel, "mantenedor");
-    assert.deepEqual(rows.find((r) => r.email === "new@x.com")?.nivel, "patrono");
-    assert.equal(rows.length, 3);
+  it("Artigo Especial: QA vira patrono, inclusive se já for apoiador amigo; nunca rebaixa", async () => {
+    const rows = withEditorQaRows([{ email: "qa@x.com", nivel: "amigo" }, { email: "a@x.com", nivel: "amigo" }], ["qa@x.com", "new@x.com"]);
+    const entries = await buildKvBulkEntries(rows);
+    const lvl = async (e: string) => entries.find((x) => x.key === k[e])?.value;
+    const k: Record<string, string> = {};
+    for (const e of ["qa@x.com", "a@x.com", "new@x.com"]) k[e] = await apoioLevelKvKey(e);
+    assert.equal(await lvl("qa@x.com"), "patrono");
+    assert.equal(await lvl("new@x.com"), "patrono");
+    assert.equal(await lvl("a@x.com"), "amigo");
   });
   it("nenhum e-mail pessoal do editor hardcoded nos Workers", () => {
     for (const f of ["workers/retrospectiva/src/gate-apoio.ts", "workers/artigos/src/apoio-gate.ts"]) {
-      assert.ok(!/vjpixel@gmail\.com/i.test(readFileSync(new URL(`../${f}`, import.meta.url), "utf8")), f);
+      assert.ok(!/[\w.+-]+@[\w-]+\.[\w.]+/.test(readFileSync(new URL(`../${f}`, import.meta.url), "utf8")), f);
     }
   });
 });
