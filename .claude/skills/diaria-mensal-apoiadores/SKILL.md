@@ -452,8 +452,14 @@ Pulado canal a canal por `--skip` ou já `done` sem `--force` (#9500).
 1. **Facebook, Instagram, Threads:**
    ```bash
    npx tsx scripts/publish-retrospectiva-social.ts --cycle $CYCLE \
-     --base-date {data do envio, Passo 0.5} [--at ISO] [--skip ...] [--force canal[,canal]] [--image-url URL] [--dry-run]
+     --base-date {data do envio, Passo 0.5} [--at ISO] [--skip ...] [--force canal[,canal]] \
+     [--old-cancelled facebook,x] [--image-url URL] [--dry-run]
    ```
+   `--force` sobre um post ainda vivo no store: Instagram/Threads cancelam a
+   entry antiga na fila do Worker ANTES de reenviar (se ela já saiu da fila —
+   provavelmente publicada — o canal falha sem reenviar); Facebook/X não têm
+   cancelamento por script — o editor apaga o anterior na rede e confirma com
+   `--old-cancelled {canal}`, senão o pré-voo recusa (sairiam dois).
    Adaptador fino sobre os clientes da Etapa 5 da diária, sem alterá-los:
    Facebook por `publishFacebookCarouselByUrl` (agendamento nativo da Graph
    API, 1 foto), Instagram/Threads por `postToWorkerQueue` (o mesmo Worker do
@@ -472,7 +478,11 @@ Pulado canal a canal por `--skip` ou já `done` sem `--force` (#9500).
 2. **X (top-level):** o mesmo comando devolve, no JSON, o item
    `{"channel": "x", "action": "x-payload"}` com `channelId`, `text`,
    `dueAt`, `images` e `publishedPath` — o MCP do Buffer só é alcançável daqui.
-   Chamar `mcp__claude_ai_Buffer__execute_mutation` (NÃO `create_post`: o
+   **Antes da mutation**, listar os posts agendados do canal no Buffer
+   (`execute_query`) e pular se já houver um com o mesmo `dueAt` — uma
+   execução anterior pode ter criado o post e caído antes de gravar (o
+   payload é reimpresso até o `append`). `imagePendingUpload: true` só
+   aparece no `--dry-run` (a URL do 1:1 nasce no envio). Chamar `mcp__claude_ai_Buffer__execute_mutation` (NÃO `create_post`: o
    schema não tipa `assets` como array, ver Passo 5c-3b de
    `.claude/agents/orchestrator-stage-5.md`) com `createPost(input: {
    channelId, text, mode: customScheduled, schedulingType: automatic, dueAt,

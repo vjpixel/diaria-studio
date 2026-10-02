@@ -36,6 +36,7 @@ import {
 import { buildDoneChannelState, withChannelState } from "../scripts/lib/artigo-especial-state.ts";
 import {
   RETROSPECTIVA_SOCIAL_DESTAQUE,
+  SQUARE_PENDING_UPLOAD,
   parseSocialForce,
   runRetrospectivaSocialDispatch,
   type RunRetrospectivaSocialOptions,
@@ -164,9 +165,14 @@ describe("agenda escalonada, sem colisão com a diária", () => {
   it("data-base no passado continua lançando (herdado do LinkedIn)", () => {
     assert.throws(() => resolveRetrospectivaSocialScheduledAts(CONFIG, { baseDate: "2026-09-01", now: NOW }), /já passaram/);
   });
-  it("addMinutesIso preserva o offset e vira o dia; ISO sem offset lança", () => {
+  it("addMinutesIso preserva o offset e vira o dia; aceita Z/ms; ISO sem fuso lança", () => {
     assert.equal(addMinutesIso("2026-10-11T23:55:00-03:00", 10), "2026-10-12T00:05:00-03:00");
+    assert.equal(addMinutesIso("2026-10-11T12:00:00.000Z", 10), "2026-10-11T09:10:00-03:00");
     assert.throws(() => addMinutesIso("2026-10-11T09:00:00", 10), /offset/);
+  });
+  it("--at em UTC (Z) funciona igual ao LinkedIn", () => {
+    const ats = resolveRetrospectivaSocialScheduledAts(CONFIG, { at: "2026-10-11T12:00:00Z", now: NOW });
+    assert.equal(ats.facebook, "2026-10-11T09:10:00-03:00");
   });
   it("âncora D: explícita > regra do 1º sábado > hoje; --at desliga a regra", () => {
     assert.deepEqual(resolveRetrospectivaBaseDate("2609-10", { baseDate: "2026-10-03" }), { baseDate: "2026-10-03", fromRule: false });
@@ -183,13 +189,18 @@ describe("adaptador publish-retrospectiva-social", () => {
 
   function opts(over: Partial<RunRetrospectivaSocialOptions> = {}) {
     const calls: Array<{ ch: string; input: SocialDispatchInput }> = [];
+    const cancels: string[] = [];
     let squareCalls = 0;
+    let scheduleCalls = 0;
     const o: RunRetrospectivaSocialOptions = {
       cycle: "2609-10",
       cycleDir: tmp,
       channels: ["facebook", "instagram", "threads", "x"],
       texts: TEXTS,
-      scheduledAts: ATS,
+      resolveScheduledAts: () => {
+        scheduleCalls++;
+        return ATS;
+      },
       imageOverride: null,
       d1ImageUrl: "https://eia.diar.ia.br/img/img-2609-10-04-d1-2x1.jpg",
       resolveSquareImage: async () => {
@@ -211,13 +222,88 @@ describe("adaptador publish-retrospectiva-social", () => {
           calls.push({ ch, input });
           return { platform: ch, destaque: RETROSPECTIVA_SOCIAL_DESTAQUE, url: null, status: "scheduled", scheduled_at: input.scheduledAt, worker_queue_key: `k-${ch}` };
         },
+        cancelWorker: async (key) => {
+          cancels.push(key);
+          return { alreadyGone: false };
+        },
       },
       verifyWorker: async (p) => ({ updated: p, changes: 0, inQueue: 2 }),
       now: NOW,
       ...over,
     };
-    return { o, calls, squareCalls: () => squareCalls };
+    return { o, calls, cancels, squareCalls: () => squareCalls, scheduleCalls: () => scheduleCalls };
   }
+  const liveStore = (platform: string, extra: Record<string, unknown>) => {
+    mkdirSync(join(tmp, "_internal"), { recursive: true });
+    writeFileSync(
+      join(tmp, "_internal", "divulgacao-social-published.json"),
+      JSON.stringify({ posts: [{ platform, destaque: RETROSPECTIVA_SOCIAL_DESTAQUE, url: null, status: "scheduled", scheduled_at: "2026-10-11T09:20:00-03:00", ...extra }] }),
+    );
+  };
+
+  it("--force sobre post vivo no Worker cancela a entry antiga ANTES de reenviar", async () => {
+    liveStore("instagram", { worker_queue_key: "old-ig" });
+    const { o, calls, cancels } = opts({ channels: ["instagram"], force: new Set(["instagram"]) });
+    await runRetrospectivaSocialDispatch(o);
+    assert.deepEqual(cancels, ["old-ig"]);
+    assert.deepEqual(calls.map((c) => c.ch), ["instagram"]);
+  });
+
+  it("--force com o post antigo já fora da fila (provavelmente publicado) NÃO reenvia", async () => {
+    liveStore("threads", { worker_queue_key: "old-th" });
+    const base = opts({ channels: ["threads"], force: new Set(["threads"]) });
+    base.o.dispatchers.cancelWorker = async () => ({ alreadyGone: true });
+    const r = await runRetrospectivaSocialDispatch(base.o);
+    assert.equal(base.calls.length, 0);
+    assert.match(String((r.results[0] as { reason?: string }).reason), /já saiu da fila/);
+  });
+
+  it("--force sobre post vivo do Facebook é recusado sem --old-cancelled", async () => {
+    liveStore("facebook", { fb_post_id: "123" });
+    const a = opts({ channels: ["facebook"], force: new Set(["facebook"]) });
+    await assert.rejects(runRetrospectivaSocialDispatch(a.o), /--old-cancelled facebook/);
+    assert.equal(a.calls.length, 0);
+    const b = opts({ channels: ["facebook"], force: new Set(["facebook"]), oldCancelled: new Set(["facebook"]) });
+    await runRetrospectivaSocialDispatch(b.o);
+    assert.deepEqual(b.calls.map((c) => c.ch), ["facebook"]);
+  });
+
+  it("com tudo done, a agenda nem é resolvida (base-date antiga não aborta)", async () => {
+    let s = readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10");
+    for (const ch of ["facebook", "instagram", "threads", "x"] as const) s = withChannelState(s, ch, buildDoneChannelState("x", null));
+    writeRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), s);
+    const { o, scheduleCalls } = opts({ resolveScheduledAts: () => { throw new Error("já passaram"); } });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.ok(r.results.every((y) => y.action === "skipped"));
+    assert.equal(scheduleCalls(), 0);
+  });
+
+  it("texto ruim aborta antes do upload do 1:1", async () => {
+    const { o, squareCalls } = opts({ texts: { ...TEXTS, x: "sem CTA" } });
+    await assert.rejects(runRetrospectivaSocialDispatch(o), /x: falta a linha literal/);
+    assert.equal(squareCalls(), 0);
+  });
+
+  it("reconciliação que marca post FUTURO como publicado não grava o store e sinaliza", async () => {
+    const { o } = opts({
+      channels: ["instagram"],
+      verifyWorker: async (p) => ({ updated: { posts: p.posts.map((e: PostEntry) => ({ ...e, status: "published" as const })) }, changes: 1, inQueue: 0 }),
+    });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.match(String(r.verifyError), /lag do KV/);
+    assert.equal(readSocialPublished(o.publishedPath).posts[0].status, "scheduled");
+  });
+
+  it("dry-run: payload do X não leva o placeholder do upload como URL", async () => {
+    const { o } = opts({ dryRun: true, channels: ["x"], resolveSquareImage: async () => SQUARE_PENDING_UPLOAD });
+    const r = await runRetrospectivaSocialDispatch(o);
+    const x = r.results[0];
+    assert.equal(x.action, "x-payload");
+    if (x.action === "x-payload") {
+      assert.deepEqual(x.payload.images, []);
+      assert.equal(x.payload.imagePendingUpload, true);
+    }
+  });
 
   it("despacha Facebook/Instagram/Threads com o 1:1 do D1, grava store + state e devolve o payload do X", async () => {
     mkdirSync(join(tmp, "_internal"), { recursive: true });
@@ -311,6 +397,7 @@ describe("adaptador publish-retrospectiva-social", () => {
           throw new Error("Graph 500");
         },
         worker: async (ch, input) => ({ platform: ch, destaque: RETROSPECTIVA_SOCIAL_DESTAQUE, url: null, status: "scheduled", scheduled_at: input.scheduledAt, worker_queue_key: `k-${ch}` }),
+        cancelWorker: async () => ({ alreadyGone: false }),
       },
       verifyWorker: async (p) => ({
         updated: { posts: p.posts.map((e: PostEntry) => (e.platform === "threads" ? { ...e, status: "failed", failure_reason: "worker_dlq" } : e)) },

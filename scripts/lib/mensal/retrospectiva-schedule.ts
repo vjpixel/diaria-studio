@@ -98,21 +98,32 @@ export const RETROSPECTIVA_SOCIAL_STAGGER_MIN: Record<RetrospectivaSocialChannel
 export const DAILY_SLOT_MARGIN_MIN = 15;
 
 /**
- * Pura: soma `minutes` a um ISO com offset explícito (`…-03:00`) preservando o
- * offset (o formato que `computeScheduledAt` devolve e os publicadores gravam).
- * Lança em ISO sem offset — reinterpretar no fuso do processo é a classe de bug
- * do #270.
+ * Pura: soma `minutes` a um ISO e devolve no fuso `timeZone` com offset
+ * explícito (`…-03:00`, o formato que `computeScheduledAt` devolve e os
+ * publicadores gravam). Aceita offset, `Z` e milissegundos (o `--at` do
+ * LinkedIn aceita tudo isso). Lança em ISO SEM fuso — reinterpretar no fuso do
+ * processo é a classe de bug do #270.
  */
-export function addMinutesIso(iso: string, minutes: number): string {
-  const m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)([+-])(\d{2}):(\d{2})$/.exec(iso);
-  if (!m) throw new Error(`ISO sem offset explícito: "${iso}" (esperado AAAA-MM-DDTHH:MM[:SS]±HH:MM).`);
-  const offsetMin = (m[2] === "-" ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4]));
-  const local = new Date(Date.parse(iso) + (minutes + offsetMin) * 60_000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${local.getUTCFullYear()}-${p(local.getUTCMonth() + 1)}-${p(local.getUTCDate())}` +
-    `T${p(local.getUTCHours())}:${p(local.getUTCMinutes())}:${p(local.getUTCSeconds())}${m[2]}${m[3]}:${m[4]}`
-  );
+export function addMinutesIso(iso: string, minutes: number, timeZone = "America/Sao_Paulo"): string {
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(iso) || Number.isNaN(Date.parse(iso))) {
+    throw new Error(`ISO sem offset explícito: "${iso}" (esperado AAAA-MM-DDTHH:MM[:SS]±HH:MM ou …Z).`);
+  }
+  const instant = new Date(Date.parse(iso) + minutes * 60_000);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "longOffset",
+  }).formatToParts(instant);
+  const get = (t: string) => parts.find((x) => x.type === t)?.value ?? "";
+  const tzName = get("timeZoneName"); // "GMT-03:00" (ou "GMT" em UTC)
+  const offset = tzName === "GMT" ? "+00:00" : tzName.replace(/^GMT/, "");
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${offset}`;
 }
 
 /** Pura: `HH:MM` de um ISO no fuso informado (via `Intl`, nunca o fuso do processo). */
@@ -162,8 +173,9 @@ export function resolveRetrospectivaSocialScheduledAts(
   input: RetrospectivaScheduleInput = {},
 ): Record<RetrospectivaSocialChannel, string> {
   const { pagina } = resolveRetrospectivaScheduledAts(config, input);
+  const tz = config.publishing?.social?.timezone ?? "America/Sao_Paulo";
   const out = Object.fromEntries(
-    RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => [ch, addMinutesIso(pagina, RETROSPECTIVA_SOCIAL_STAGGER_MIN[ch])]),
+    RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => [ch, addMinutesIso(pagina, RETROSPECTIVA_SOCIAL_STAGGER_MIN[ch], tz)]),
   ) as Record<RetrospectivaSocialChannel, string>;
   const collisions = dailySlotCollisions(out, config);
   if (collisions.length > 0) {

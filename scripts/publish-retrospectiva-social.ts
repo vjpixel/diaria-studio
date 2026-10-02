@@ -26,7 +26,7 @@
  *   qualquer dispatch se `retrospectivaSocialPostProblems` acusar algo (CTA,
  *   URL paywalled, teto de caracteres, markdown).
  * - Imagem: a capa ESTÁTICA do D1 em 1:1 (`04-d1-1x1.jpg` do ciclo, subida
- *   pro KV na hora com a mesma convenção de key das imagens da mensal —
+ *   pro KV na hora via `uploadMonthlyImage`, key própria
  *   `img-{ciclo}-04-d1-1x1.jpg`) — nunca o carrossel de 5 slides da diária.
  *   1:1 porque o Instagram recusa proporção acima de 1,91:1, e a imagem do D1
  *   em `_internal/public-images.json` é 2:1. Facebook, Threads e X usam a
@@ -41,12 +41,15 @@
  * State por canal (`divulgacao-published.json`): `done` sem `--force` pula.
  * 2º guard: `_internal/divulgacao-social-published.json` (mesmo store dos
  * publicadores, `appendSocialPosts`) — post vivo ali pula mesmo com o state
- * sem registro. Instagram/Threads reconciliados contra o Worker
- * (`verifyWorkerDispatch`; DLQ → `failed`).
+ * sem registro. `--force` sobre post vivo: Instagram/Threads cancelam a entry
+ * antiga na fila do Worker ANTES de reenviar; Facebook/X exigem que o editor
+ * remova o anterior na rede e confirme com `--old-cancelled canal`.
+ * Instagram/Threads reconciliados contra o Worker (`verifyWorkerDispatch`;
+ * DLQ → `failed`; "publicado" antes da hora = lag do KV, não grava).
  *
  * Uso:
  *   npx tsx scripts/publish-retrospectiva-social.ts --cycle 2609-10 \
- *     [--skip facebook,instagram,threads,x] [--force canal[,canal]] \
+ *     [--skip facebook,instagram,threads,x] [--force canal[,canal]] [--old-cancelled facebook,x] \
  *     [--base-date AAAA-MM-DD] [--at ISO] [--image-url URL] [--dry-run]
  *
  * Exit: 0 = ok; 1 = canal falhou, reconciliação não rodou, ou texto/agenda
@@ -57,7 +60,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { appendSocialPosts, readSocialPublished, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
-import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
+import { deleteFromWorkerQueue, postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
 import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worker-dispatch.ts";
 import { readD1ImageUrl, RETROSPECTIVA_LINKEDIN_DESTAQUE } from "./publish-retrospectiva-linkedin.ts";
@@ -106,6 +109,8 @@ export interface SocialDispatchInput {
 export interface SocialDispatchers {
   facebook: (i: SocialDispatchInput) => Promise<PostEntry>;
   worker: (channel: "instagram" | "threads", i: SocialDispatchInput) => Promise<PostEntry>;
+  /** Remove da fila do Worker o post anterior antes de um `--force` (`deleteFromWorkerQueue`). */
+  cancelWorker: (key: string) => Promise<{ alreadyGone: boolean }>;
 }
 
 /** Payload da mutation `createPost` do Buffer pro top-level (o MCP não é alcançável de script). */
@@ -114,9 +119,14 @@ export interface XBufferPayload {
   text: string;
   dueAt: string;
   images: Array<{ url: string; altText: string }>;
+  /** `--dry-run` com o 1:1 ainda não subido: a imagem existe, mas a URL só nasce no envio. */
+  imagePendingUpload: boolean;
   publishedPath: string;
   destaque: string;
 }
+
+/** Valor que `resolveSquareImage` devolve no `--dry-run` (sem upload) — nunca uma URL. */
+export const SQUARE_PENDING_UPLOAD = `PENDENTE: upload de ${D1_SQUARE_FILENAME} no envio`;
 
 export type SocialChannelResult =
   | { channel: RetrospectivaSocialChannel; action: "skipped"; reason: string }
@@ -132,7 +142,10 @@ export interface RunRetrospectivaSocialOptions {
   channels: readonly RetrospectivaSocialChannel[];
   /** Texto de cada canal (`divulgacao/{canal}.md`); ausente = recusado no pré-voo. */
   texts: Partial<Record<RetrospectivaSocialChannel, string>>;
-  scheduledAts: Record<RetrospectivaSocialChannel, string>;
+  /** Agenda — resolvida só se algum canal tiver trabalho (com tudo `done`, uma `--base-date` antiga não deve abortar). */
+  resolveScheduledAts: () => Record<RetrospectivaSocialChannel, string>;
+  /** `--old-cancelled canal`: o editor já removeu na rede o post anterior (Facebook/X) — destrava o `--force` sobre post vivo. */
+  oldCancelled?: ReadonlySet<RetrospectivaSocialChannel>;
   /** `--image-url` explícito (sobrepõe as duas abaixo). */
   imageOverride: string | null;
   /** 2:1 do D1 (`_internal/public-images.json`) — fallback fora do Instagram. */
@@ -155,8 +168,10 @@ export interface RunRetrospectivaSocialOptions {
 
 export interface RunRetrospectivaSocialResult {
   results: SocialChannelResult[];
-  /** A reconciliação com o Worker não rodou — os posts estão na fila, sem confirmação (caller sai != 0). */
+  /** A reconciliação com o Worker não rodou ou não confirmou — os posts estão na fila, sem confirmação (caller sai != 0). */
   verifyError: string | null;
+  /** Post despachado cujo state por canal não foi gravado (o store segura a reexecução; caller sai != 0). */
+  stateWriteErrors: string[];
 }
 
 /**
@@ -184,6 +199,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   const published = readSocialPublished(o.publishedPath);
   const results: SocialChannelResult[] = [];
   const active: RetrospectivaSocialChannel[] = [];
+  const liveOnForce = new Map<RetrospectivaSocialChannel, PostEntry>();
 
   for (const ch of o.channels) {
     const decision = decideChannelAction(state, ch, o.force.has(ch));
@@ -206,66 +222,105 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       });
       continue;
     }
-    if (live) {
-      console.warn(`[${ch}] --force: o post anterior (${String(live.fb_post_id ?? live.worker_queue_key ?? live.buffer_post_id ?? "?")}) NÃO é cancelado — remova-o à mão se não for pra sair duplicado.`);
-    }
+    if (live) liveOnForce.set(ch, live);
     active.push(ch);
   }
+  if (active.length === 0) return { results, verifyError: null, stateWriteErrors: [] };
 
-  // Imagem: o 1:1 só é resolvido (upload) se algum canal ativo for usá-lo.
-  const square = o.imageOverride ?? (active.length > 0 ? await o.resolveSquareImage() : null);
-  const imageFor = (ch: RetrospectivaSocialChannel): string | null =>
-    o.imageOverride ?? (ch === "instagram" ? square : (square ?? o.d1ImageUrl));
+  const scheduledAts = o.resolveScheduledAts();
 
-  // Pré-voo de TODOS os canais ativos — qualquer problema aborta antes do 1º dispatch.
+  // Pré-voo de TODOS os canais ativos — qualquer problema aborta antes do 1º
+  // dispatch. Texto/agenda/credencial ANTES do upload do 1:1: recusa não sobe nada.
   const now = o.now ?? Date.now();
   const errors: string[] = [];
   for (const ch of active) {
     const text = o.texts[ch];
     if (text === undefined) {
       errors.push(`${ch}: divulgacao/${RETROSPECTIVA_SOCIAL_TEXT_FILES[ch]} ausente — o Passo 1 da skill precisa rodar antes`);
-      continue;
+    } else {
+      const problems = retrospectivaSocialPostProblems(ch, text);
+      if (problems.length > 0) errors.push(`${ch}: ${problems.join("; ")}`);
     }
-    const problems = retrospectivaSocialPostProblems(ch, text);
-    if (problems.length > 0) errors.push(`${ch}: ${problems.join("; ")}`);
-    if ((ch === "instagram" || ch === "facebook") && !imageFor(ch)) {
-      errors.push(
-        ch === "instagram"
-          ? `instagram: sem imagem 1:1 (${D1_SQUARE_FILENAME} ausente e sem --image-url) — o Instagram recusa o 2:1 do D1`
-          : `facebook: sem imagem (nem ${D1_SQUARE_FILENAME}, nem images.d1, nem --image-url)`,
-      );
-    }
-    if (!(Date.parse(o.scheduledAts[ch]) > now + MIN_LEAD_MS)) {
-      errors.push(`${ch}: ${o.scheduledAts[ch]} não está a ≥10 min no futuro — o post sairia fora da agenda`);
+    if (!(Date.parse(scheduledAts[ch]) > now + MIN_LEAD_MS)) {
+      errors.push(`${ch}: ${scheduledAts[ch]} não está a ≥10 min no futuro — o post sairia fora da agenda`);
     }
     if (ch === "x" && !o.xChannelId) errors.push("x: publishing.social.twitter.buffer_channel_id ausente no platform.config.json");
     if (!o.dryRun && o.missingCredentials[ch]) errors.push(`${ch}: ${o.missingCredentials[ch]}`);
+    // --force sobre post vivo: Instagram/Threads cancelam a entry antiga na fila
+    // do Worker antes de reenviar; Facebook/X não têm cancelamento por script —
+    // o editor remove na rede e confirma com --old-cancelled (senão sairiam dois).
+    const live = liveOnForce.get(ch);
+    if (live && (ch === "facebook" || ch === "x") && !o.oldCancelled?.has(ch)) {
+      errors.push(
+        `${ch}: --force sobre post vivo (${String(live.fb_post_id ?? live.buffer_post_id ?? live.url ?? "?")}, ${live.scheduled_at ?? "?"}) — ` +
+          `remova-o na rede e rode de novo com --old-cancelled ${ch}`,
+      );
+    }
+    if (live && (ch === "instagram" || ch === "threads") && typeof live.worker_queue_key !== "string") {
+      errors.push(`${ch}: --force sobre post vivo sem worker_queue_key no store — não há como cancelá-lo na fila; confira no Worker`);
+    }
   }
   if (errors.length > 0) {
     throw new Error(`posts sociais recusados ANTES de qualquer dispatch:\n  - ${errors.join("\n  - ")}`);
   }
 
-  const xPayload = (): XBufferPayload => ({
-    channelId: o.xChannelId!,
-    text: o.texts.x!.trim(),
-    dueAt: o.scheduledAts.x,
-    images: imageFor("x") ? [{ url: imageFor("x")!, altText: `Imagem do destaque principal da Retrospectiva de ${contentMonthLabel(o.cycle)} da diar.ia.br` }] : [],
-    publishedPath: o.publishedPath,
-    destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-  });
+  // Imagem: o 1:1 só é resolvido (upload) depois do pré-voo de texto/agenda.
+  let square: string | null;
+  try {
+    square = o.imageOverride ?? (await o.resolveSquareImage());
+  } catch (e) {
+    throw new Error(`upload de ${D1_SQUARE_FILENAME} falhou — nada despachado: ${(e as Error).message}`);
+  }
+  const imageFor = (ch: RetrospectivaSocialChannel): string | null =>
+    o.imageOverride ?? (ch === "instagram" ? square : (square ?? o.d1ImageUrl));
+  const imageErrors = active
+    .filter((ch) => (ch === "instagram" || ch === "facebook") && !imageFor(ch))
+    .map((ch) =>
+      ch === "instagram"
+        ? `instagram: sem imagem 1:1 (${D1_SQUARE_FILENAME} ausente e sem --image-url) — o Instagram recusa o 2:1 do D1`
+        : `facebook: sem imagem (nem ${D1_SQUARE_FILENAME}, nem images.d1, nem --image-url)`,
+    );
+  if (imageErrors.length > 0) {
+    throw new Error(`posts sociais recusados ANTES de qualquer dispatch:\n  - ${imageErrors.join("\n  - ")}`);
+  }
+
+  const xPayload = (): XBufferPayload => {
+    const img = imageFor("x");
+    const pending = img === SQUARE_PENDING_UPLOAD;
+    return {
+      channelId: o.xChannelId!,
+      text: o.texts.x!.trim(),
+      dueAt: scheduledAts.x,
+      images: img && !pending ? [{ url: img, altText: `Imagem do destaque principal da Retrospectiva de ${contentMonthLabel(o.cycle)} da diar.ia.br` }] : [],
+      imagePendingUpload: pending,
+      publishedPath: o.publishedPath,
+      destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
+    };
+  };
 
   if (o.dryRun) {
     for (const ch of active) {
       if (ch === "x") results.push({ channel: "x", action: "x-payload", payload: xPayload() });
-      else results.push({ channel: ch, action: "dry-run", scheduledAt: o.scheduledAts[ch], imageUrl: imageFor(ch), text: o.texts[ch]!.trim() });
+      else results.push({ channel: ch, action: "dry-run", scheduledAt: scheduledAts[ch], imageUrl: imageFor(ch), text: o.texts[ch]!.trim() });
     }
-    return { results, verifyError: null };
+    return { results, verifyError: null, stateWriteErrors: [] };
   }
 
-  const record = (ch: RetrospectivaSocialChannel, ok: boolean, reason: string | null, url: string | null) => {
+  const stateWriteErrors: string[] = [];
+  const record = (ch: RetrospectivaSocialChannel, ok: boolean, reason: string | null, entry: PostEntry | null) => {
     const at = new Date().toISOString();
-    state = withChannelState(state, ch, ok ? buildDoneChannelState(at, url) : buildFailedChannelState(at, reason ?? "dispatch falhou"));
-    writeRetrospectivaDivulgacaoState(statePath, state);
+    try {
+      state = withChannelState(state, ch, ok ? buildDoneChannelState(at, entry?.url ?? null) : buildFailedChannelState(at, reason ?? "dispatch falhou"));
+      writeRetrospectivaDivulgacaoState(statePath, state);
+    } catch (e) {
+      // Mesmo cuidado do LinkedIn: o post pode JÁ estar agendado — o store
+      // (gravado antes) segura uma 2ª execução; segue pros outros canais.
+      const id = entry ? String(entry.fb_post_id ?? entry.worker_queue_key ?? "?") : "-";
+      const msg =
+        `${ch}: state por canal NÃO gravado (${(e as Error).message})${ok ? ` — o post JÁ ESTÁ agendado (${id}); NÃO rode de novo sem conferir` : ""}.`;
+      console.error(msg);
+      stateWriteErrors.push(msg);
+    }
   };
 
   mkdirSync(dirname(o.publishedPath), { recursive: true });
@@ -275,7 +330,23 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ channel: "x", action: "x-payload", payload: xPayload() });
       continue;
     }
-    const input: SocialDispatchInput = { text: o.texts[ch]!.trim(), imageUrl: imageFor(ch), scheduledAt: o.scheduledAts[ch] };
+    const live = liveOnForce.get(ch);
+    if (live && (ch === "instagram" || ch === "threads")) {
+      // Cancela ANTES de reenviar: se o reenvio falhar, não sobra post antigo
+      // vivo com o store dizendo `failed` (o que liberaria um 3º envio).
+      let reason: string | null = null;
+      try {
+        const c = await o.dispatchers.cancelWorker(live.worker_queue_key as string);
+        if (c.alreadyGone) reason = `post anterior (${String(live.worker_queue_key)}) já saiu da fila — provavelmente JÁ publicado; não reenviado`;
+      } catch (e) {
+        reason = `cancelamento do post anterior (${String(live.worker_queue_key)}) falhou: ${(e as Error).message} — não reenviado`;
+      }
+      if (reason) {
+        results.push({ channel: ch, action: "failed", reason });
+        continue;
+      }
+    }
+    const input: SocialDispatchInput = { text: o.texts[ch]!.trim(), imageUrl: imageFor(ch), scheduledAt: scheduledAts[ch] };
     let entry: PostEntry;
     try {
       entry = ch === "facebook" ? await o.dispatchers.facebook(input) : await o.dispatchers.worker(ch, input);
@@ -296,7 +367,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ channel: ch, action: "failed", reason });
       continue;
     }
-    record(ch, true, null, entry.url);
+    record(ch, true, null, entry);
     results.push({ channel: ch, action: "dispatched", entry });
     if (ch !== "facebook" && entry.status === "scheduled") workerDispatched = true;
   }
@@ -306,6 +377,26 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     try {
       const r = await o.verifyWorker(readSocialPublished(o.publishedPath));
       console.log(`[verify] reconciliação Worker: ${formatVerifySummary(r)}`);
+      // Post de amanhã que some da fila E do DLQ vira "published" na
+      // reconciliação — leitura de lag do KV, não entrega (#573). Não grava.
+      const precoce = r.updated.posts.filter(
+        (p) =>
+          (p.platform === "instagram" || p.platform === "threads") &&
+          p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE &&
+          p.status === "published" &&
+          typeof p.scheduled_at === "string" &&
+          Date.parse(p.scheduled_at) > (o.now ?? Date.now()),
+      );
+      const dispatchedWorker = results.filter((x) => x.action === "dispatched" && x.channel !== "facebook").length;
+      if (precoce.length > 0) {
+        throw new Error(
+          `reconciliação marcou como publicado post ainda no futuro (${precoce.map((p) => p.platform).join(", ")}) — ` +
+            "provável lag do KV; store NÃO atualizado, confira a fila do Worker",
+        );
+      }
+      if (typeof r.inQueue === "number" && r.inQueue < dispatchedWorker) {
+        verifyError = `só ${r.inQueue} de ${dispatchedWorker} post(s) do Worker confirmados na fila — confira antes de considerar agendado`;
+      }
       if (r.changes > 0) {
         writeFileSync(o.publishedPath, JSON.stringify(r.updated, null, 2) + "\n", "utf8");
         for (const ch of ["instagram", "threads"] as const) {
@@ -327,7 +418,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       console.warn(`[verify] falhou — os posts estão na fila, mas não foram confirmados no Worker: ${verifyError}`);
     }
   }
-  return { results, verifyError };
+  return { results, verifyError, stateWriteErrors };
 }
 
 /** Pura: `--force canal[,canal]` → canais sociais (mesmos tokens do `--skip`; tokens de outros canais são ignorados aqui). */
@@ -351,11 +442,13 @@ async function main(): Promise<void> {
 
   let skip: Set<string>;
   let force: Set<RetrospectivaSocialChannel>;
+  let oldCancelled: Set<RetrospectivaSocialChannel>;
   try {
     skip = parseRetrospectivaSkip(values["skip"]);
     // `--force` sem lista NÃO é global (ver SKILL): exige os canais.
     if (flags.has("force")) throw new Error("--force exige a lista de canais (ex: --force instagram) — nunca global.");
     force = parseSocialForce(values["force"]);
+    oldCancelled = parseSocialForce(values["old-cancelled"]);
   } catch (e) {
     console.error((e as Error).message);
     process.exit(2);
@@ -387,23 +480,31 @@ async function main(): Promise<void> {
     at: values["at"],
     rule: resolveMonthlySendSchedule(config.monthly_send_schedule),
   });
-  const scheduledAts = resolveRetrospectivaSocialScheduledAts(config, { at: values["at"], baseDate });
-  console.log(
-    `Agenda (#9500): ${RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => `${ch}=${scheduledAts[ch]}`).join(" | ")}` +
-      (values["at"]
-        ? " — a partir de --at"
-        : baseDate
-          ? ` — âncora: envio em ${baseDate}${fromRule ? " (regra do 1º sábado, #9473)" : ""}`
-          : " — âncora: HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)"),
-  );
+  let scheduledAts: Record<RetrospectivaSocialChannel, string> | null = null;
+  const resolveScheduledAts = (): Record<RetrospectivaSocialChannel, string> => {
+    scheduledAts = resolveRetrospectivaSocialScheduledAts(config, { at: values["at"], baseDate });
+    const ats = scheduledAts;
+    console.log(
+      `Agenda (#9500): ${RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => `${ch}=${ats[ch]}`).join(" | ")}` +
+        (values["at"]
+          ? " — a partir de --at"
+          : baseDate
+            ? ` — âncora: envio em ${baseDate}${fromRule ? " (regra do 1º sábado, #9473)" : ""}`
+            : " — âncora: HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)"),
+    );
+    return ats;
+  };
 
   const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? social.instagram?.cloudflare_worker_url ?? social.linkedin?.cloudflare_worker_url ?? "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   let fbCreds: { page_id?: string; page_access_token?: string; api_version?: string } = {};
-  try {
-    fbCreds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
-  } catch {
-    /* sem arquivo legado: só env */
+  const fbCredsPath = resolve(ROOT, "data/.fb-credentials.json");
+  if (existsSync(fbCredsPath)) {
+    try {
+      fbCreds = JSON.parse(readFileSync(fbCredsPath, "utf8"));
+    } catch (e) {
+      console.warn(`AVISO: ${fbCredsPath} existe mas não é JSON válido (${(e as Error).message}) — usando só as env vars.`);
+    }
   }
   const fbPageId = process.env.FACEBOOK_PAGE_ID || fbCreds.page_id || "";
   const fbToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || fbCreds.page_access_token || "";
@@ -419,7 +520,7 @@ async function main(): Promise<void> {
   const squarePath = resolve(cycleDir, D1_SQUARE_FILENAME);
   const resolveSquareImage = async (): Promise<string | null> => {
     if (!existsSync(squarePath)) return null;
-    if (dryRun) return `(upload de ${D1_SQUARE_FILENAME} no envio)`;
+    if (dryRun) return SQUARE_PENDING_UPLOAD;
     return uploadMonthlyImage(squarePath, cycle, ROOT);
   };
 
@@ -429,11 +530,12 @@ async function main(): Promise<void> {
     cycleDir,
     channels,
     texts,
-    scheduledAts,
+    resolveScheduledAts,
     imageOverride: values["image-url"] ?? null,
     d1ImageUrl: readD1ImageUrl(cycleDir),
     resolveSquareImage,
     force,
+    oldCancelled,
     dryRun,
     publishedPath,
     disabled,
@@ -470,6 +572,7 @@ async function main(): Promise<void> {
           worker_queue_key: res.key,
         };
       },
+      cancelWorker: (key) => deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-retrospectiva-social"),
     },
     verifyWorker: (p) => verifyWorkerDispatch(p, workerUrl, workerToken),
   });
@@ -482,14 +585,20 @@ async function main(): Promise<void> {
         stage: null,
         agent: "publish-retrospectiva-social",
         level: x.action === "failed" || r.verifyError ? "warn" : "info",
-        message: `${x.channel} ${x.action} para ${scheduledAts[x.channel]}`,
+        message: `${x.channel} ${x.action} para ${scheduledAts?.[x.channel] ?? "?"}`,
         details: x.action === "failed" ? { reason: x.reason } : { url: x.entry.url, worker_queue_key: x.entry.worker_queue_key ?? null },
       },
       ROOT,
     );
   }
-  console.log(JSON.stringify({ cycle, dry_run: dryRun, published_path: publishedPath, results: r.results, verify_error: r.verifyError }, null, 2));
-  if (r.results.some((x) => x.action === "failed") || r.verifyError) process.exitCode = 1;
+  console.log(
+    JSON.stringify(
+      { cycle, dry_run: dryRun, published_path: publishedPath, results: r.results, verify_error: r.verifyError, state_write_errors: r.stateWriteErrors },
+      null,
+      2,
+    ),
+  );
+  if (r.results.some((x) => x.action === "failed") || r.verifyError || r.stateWriteErrors.length > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {
