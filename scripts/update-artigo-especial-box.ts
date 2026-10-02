@@ -50,7 +50,11 @@
  * sessão interativa tocando um arquivo git-tracked). `--unpin` só remove o
  * slot de `pinned_slots` — NÃO apaga `boxes_divulgacao.slotN` (o valor
  * configurado ali volta a ser candidato normal do auto-select por cliques,
- * #4626, em vez de ficar travado).
+ * #4626, em vez de ficar travado). Desde #9474 o `--unpin` também só age se
+ * o slot AINDA aponta pra `artigo-especial-apoiadores.md`: o slot 2 se
+ * alterna com o box da Retrospectiva do Mês (`update-retrospectiva-box.ts`),
+ * e um unpin atrasado nunca derruba o pin do outro (ver
+ * `scripts/lib/box-slot-pin.ts`).
  *
  * ## Guard de idempotência (canal "box", #5979 review PR #6000)
  *
@@ -81,6 +85,7 @@
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { applyBoxPin, serializeConfigSurgically, isBoxSlotOwnedBy, type BoxesDivulgacaoConfig } from "./lib/box-slot-pin.ts";
 import { parseArgs, isMainModule, getIntArg } from "./lib/cli-args.ts";
 import {
   artigoEspecialStatePath,
@@ -194,133 +199,22 @@ export function renderArtigoEspecialBox(existingContent: string | null, input: A
 }
 
 // ── platform.config.json: pin/unpin ─────────────────────────────────────
+//
+// #9474: `applyBoxPin`/`serializeConfigSurgically` migraram pra
+// `scripts/lib/box-slot-pin.ts`, compartilhados com
+// `update-retrospectiva-box.ts` — os dois boxes (Artigo Especial e
+// Retrospectiva do Mês) se ALTERNAM no slot 2 (decisão do editor,
+// 02/10/2026), e a regra de alternância (pin last-writer-wins; `--unpin` só
+// solta o slot se ele ainda aponta pro arquivo de quem pede) precisa ser UMA
+// só pros dois. Re-exportados aqui por compat dos imports existentes.
 
-export interface BoxesDivulgacaoConfig {
-  boxes_divulgacao?: Record<string, unknown>;
-  boxes_divulgacao_auto?: { enabled?: boolean; pinned_slots?: number[]; note?: string };
-  [key: string]: unknown;
-}
-
-export interface PinBoxInput {
-  slot: number;
-  filename: string;
-  pin: boolean;
-}
-
-/**
- * Pura/imutável: aplica pin/unpin. `pin: true` seta `boxes_divulgacao.slot{N}`
- * = filename (idempotente — sobrescreve sempre) e garante `N` em
- * `pinned_slots` (dedup + ordenado). `pin: false` (--unpin) só REMOVE `N` de
- * `pinned_slots` — não mexe em `boxes_divulgacao.slot{N}` (ver docstring do
- * módulo).
- */
-export function applyBoxPin(config: BoxesDivulgacaoConfig, input: PinBoxInput): BoxesDivulgacaoConfig {
-  const slotKey = `slot${input.slot}`;
-  const currentPinned = config.boxes_divulgacao_auto?.pinned_slots ?? [];
-
-  if (!input.pin) {
-    return {
-      ...config,
-      boxes_divulgacao_auto: {
-        ...(config.boxes_divulgacao_auto ?? {}),
-        pinned_slots: currentPinned.filter((s) => s !== input.slot),
-      },
-    };
-  }
-
-  const nextPinned = Array.from(new Set([...currentPinned, input.slot])).sort((a, b) => a - b);
-  return {
-    ...config,
-    boxes_divulgacao: {
-      ...(config.boxes_divulgacao ?? {}),
-      [slotKey]: input.filename,
-    },
-    boxes_divulgacao_auto: {
-      ...(config.boxes_divulgacao_auto ?? {}),
-      pinned_slots: nextPinned,
-    },
-  };
-}
-
-/**
- * #9256 — serializa `nextConfig` preservando a formatação ORIGINAL do arquivo.
- *
- * `JSON.stringify(nextConfig, null, 2)` expandia todo array inline do
- * `platform.config.json` (dezenas de linhas não relacionadas no diff). Aqui a
- * troca é cirúrgica (#495): só a linha `"slot{N}": ...` dentro do objeto
- * `boxes_divulgacao` e a linha `"pinned_slots": [...]` dentro de
- * `boxes_divulgacao_auto` são substituídas. Validação de segurança: o texto
- * resultante precisa parsear para EXATAMENTE `nextConfig`; se a chave não
- * existir no texto (bootstrap) ou a validação falhar, cai no
- * `JSON.stringify` completo — correto, só mais ruidoso.
- */
-export function serializeConfigSurgically(
-  originalText: string,
-  nextConfig: BoxesDivulgacaoConfig,
-  slot: number,
-): string {
-  const fallback = JSON.stringify(nextConfig, null, 2) + "\n";
-  let text = originalText;
-
-  const replaceInBlock = (blockKey: string, innerKey: string, value: unknown): boolean => {
-    const blockRe = new RegExp(`"${blockKey}"\\s*:\\s*\\{`);
-    const m = blockRe.exec(text);
-    if (!m) return false;
-    const start = m.index + m[0].length;
-    // fim do bloco: primeira "}" de fechamento respeitando strings/aninhamento
-    let depth = 1;
-    let inStr = false;
-    let end = -1;
-    for (let i = start; i < text.length; i++) {
-      const c = text[i];
-      if (inStr) {
-        if (c === "\\") i++;
-        else if (c === '"') inStr = false;
-        continue;
-      }
-      if (c === '"') inStr = true;
-      else if (c === "{" || c === "[") depth++;
-      else if (c === "}" || c === "]") {
-        depth--;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
-      }
-    }
-    if (end < 0) return false;
-    const block = text.slice(start, end);
-    const keyRe = new RegExp(`("${innerKey}"\\s*:\\s*)("(?:[^"\\\\]|\\\\.)*"|null|true|false|-?\\d+(?:\\.\\d+)?|\\[[^\\[\\]]*\\])`);
-    const km = keyRe.exec(block);
-    if (!km) return false;
-    const rendered = Array.isArray(value) ? `[${value.map((v) => JSON.stringify(v)).join(", ")}]` : JSON.stringify(value);
-    const newBlock = block.slice(0, km.index) + km[1] + rendered + block.slice(km.index + km[0].length);
-    text = text.slice(0, start) + newBlock + text.slice(end);
-    return true;
-  };
-
-  const slotKey = `slot${slot}`;
-  const nextSlotValue = nextConfig.boxes_divulgacao?.[slotKey];
-  let original: unknown;
-  try {
-    original = JSON.parse(originalText);
-  } catch {
-    return fallback;
-  }
-  const origSlotValue = (original as BoxesDivulgacaoConfig).boxes_divulgacao?.[slotKey];
-  if (nextSlotValue !== origSlotValue) {
-    if (!replaceInBlock("boxes_divulgacao", slotKey, nextSlotValue)) return fallback;
-  }
-  if (!replaceInBlock("boxes_divulgacao_auto", "pinned_slots", nextConfig.boxes_divulgacao_auto?.pinned_slots ?? [])) {
-    return fallback;
-  }
-  try {
-    if (JSON.stringify(JSON.parse(text)) !== JSON.stringify(nextConfig)) return fallback;
-  } catch {
-    return fallback;
-  }
-  return text;
-}
+export {
+  applyBoxPin,
+  serializeConfigSurgically,
+  isBoxSlotOwnedBy,
+  type BoxesDivulgacaoConfig,
+  type PinBoxInput,
+} from "./lib/box-slot-pin.ts";
 
 // ── Orquestração (testável, sem CLI/process.exit) ──────────────────────
 
@@ -393,6 +287,14 @@ export function runUpdateArtigoEspecialBox(options: RunUpdateBoxOptions): RunUpd
   const configText = readFileSync(configPath, "utf8");
   const config = JSON.parse(configText) as BoxesDivulgacaoConfig;
   const nextConfig = applyBoxPin(config, { slot, filename: "artigo-especial-apoiadores.md", pin });
+  if (!pin && !isBoxSlotOwnedBy(config, slot, "artigo-especial-apoiadores.md")) {
+    // #9474: o slot foi assumido pelo outro box que se alterna nele (ex:
+    // Retrospectiva do Mês) — unpin é no-op, nunca derruba o pin alheio.
+    console.log(
+      `[box] --unpin no-op: boxes_divulgacao.slot${slot}=${JSON.stringify(config.boxes_divulgacao?.[`slot${slot}`])} ` +
+        "não é mais o Artigo Especial — o pin atual (do outro box) fica intacto.",
+    );
+  }
 
   if (dryRun) {
     console.log(`[dry-run] escreveria ${snippetsFile}:\n---\n${nextContent}\n---`);

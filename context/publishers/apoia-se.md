@@ -1,4 +1,4 @@
-# Playbook: apoia.se (post de anúncio do Artigo Especial)
+# Playbook: apoia.se (post de anúncio do Artigo Especial e da Retrospectiva do Mês)
 
 Roteiro semântico para o TOP-LEVEL (nunca um subagente — só o top-level tem
 `mcp__claude-in-chrome__*`) operar o painel de posts da campanha apoia.se via
@@ -100,6 +100,30 @@ viu, porque `published.json` só existe se a skill rodou. **Sempre abrir a aba
 novo** — senão a skill duplica o post pros mesmos apoiadores. Se existir,
 o caminho é EDITAR aquele (preserva URL e timestamp), não criar outro.
 Mesma classe do "publicação manual exige refresh-dedup" do `CLAUDE.md`.
+
+## Retrospectiva do Mês (`/diaria-mensal-apoiadores`, #9474)
+
+Mesmo fluxo de UI acima (passos 1-7 e a armadilha do post manual), com 3
+diferenças — tudo o mais vale igual:
+
+- **`Quem pode ver?` = `25`** (`R$ 25 ou +`). A Retrospectiva é recompensa de
+  Mantenedor/Patrono (R$25+); `10` entregaria o anúncio a quem não recebe a
+  edição — e o gate da página (`retrospectiva.diar.ia.br/{AAMM}`) negaria o
+  acesso a essa mesma pessoa. Nunca cair pra público em silêncio.
+- **`Link externo` = URL da retrospectiva do ciclo**
+  (`https://retrospectiva.diar.ia.br/{AAMM}`, AAMM = mês de CONTEÚDO — ciclo
+  `2609-10` → `/2609`). Aqui a URL direta é correta: o público do post já é
+  apoiador R$25+. (Nos posts PÚBLICOS de LinkedIn é o contrário — CTA só pro
+  apoia.se.) Não repetir a URL no corpo.
+- **Título + corpo** = `data/monthly/{ciclo}/divulgacao/apoiase.md` (título +
+  2 parágrafos curtos de CHAMADA, sem CTA de conversão — fala com quem já
+  apoia). Nunca colar o conteúdo da retrospectiva.
+
+Antes de criar, procurar na aba `Posts no Mural` um post da Retrospectiva do
+mesmo mês (o editor pode ter postado à mão — o envio de 02/10/2026 foi todo
+manual); se existir, EDITAR. Gravar o resultado com
+`npx tsx scripts/mark-retrospectiva-channel.ts --cycle {ciclo} --channel apoiase --status done --url {URL estável do post}`
+(ou `--status failed --reason "..."`) — nunca editando o JSON à mão.
 
 ## Erros recuperáveis
 

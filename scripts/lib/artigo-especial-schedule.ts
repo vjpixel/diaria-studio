@@ -93,7 +93,7 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  */
 export function resolveArtigoEspecialScheduledAts(
   config: ScheduleConfig,
-  input: { at?: string; now?: number } = {},
+  input: { at?: string; now?: number; baseDate?: string } = {},
 ): { pagina: string; perfil: string } {
   if (input.at) {
     const at = validateExplicitAt(input.at, input.now ?? Date.now());
@@ -102,7 +102,11 @@ export function resolveArtigoEspecialScheduledAts(
 
   const now = input.now ?? Date.now();
   const timeZone = config.publishing?.social?.timezone ?? DEFAULT_TIMEZONE;
-  const today = toAammdd(new Date(now), timeZone);
+  // #9474: `baseDate` explícito (AAAA-MM-DD ou AAMMDD) troca o "hoje" pela
+  // data de referência do caller — a Retrospectiva do Mês ancora a agenda na
+  // data do ENVIO do e-mail (#9473, 1º sábado do mês), não no dia em que a
+  // skill rodou. Omitido = hoje no fuso configurado (comportamento de sempre).
+  const today = input.baseDate ? normalizeBaseDate(input.baseDate) : toAammdd(new Date(now), timeZone);
 
   // Deriva configs sintéticos com o horário do slot — computeScheduledAt lê
   // o horário de `fallback_schedule.{destaque}_time`; sobrescrever o valor
@@ -139,6 +143,29 @@ export function resolveArtigoEspecialScheduledAts(
       now,
     }),
   };
+}
+
+/**
+ * Pura: normaliza uma data-base explícita (`AAAA-MM-DD` ou `AAMMDD`) para
+ * `AAMMDD`. Lança em formato/data inválidos — uma data-base mal lida agendaria
+ * os posts no dia errado sem erro nenhum.
+ */
+export function normalizeBaseDate(baseDate: string): string {
+  const s = baseDate.trim();
+  let yy: string, mm: string, dd: string;
+  const iso = /^20(\d{2})-(\d{2})-(\d{2})$/.exec(s);
+  const short = /^(\d{2})(\d{2})(\d{2})$/.exec(s);
+  if (iso) [, yy, mm, dd] = iso;
+  else if (short) [, yy, mm, dd] = short;
+  else throw new Error(`data-base inválida: "${baseDate}" (esperado AAAA-MM-DD ou AAMMDD).`);
+  const y = 2000 + Number(yy);
+  const m = Number(mm);
+  const d = Number(dd);
+  const probe = new Date(Date.UTC(y, m - 1, d));
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== m - 1 || probe.getUTCDate() !== d) {
+    throw new Error(`data-base inválida: "${baseDate}" não é uma data do calendário.`);
+  }
+  return `${yy}${mm}${dd}`;
 }
 
 /** Compat (#5979/#6014): devolve só o horário da PÁGINA (D+1 09:00 BRT). */
