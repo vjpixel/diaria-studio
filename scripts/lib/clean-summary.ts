@@ -242,7 +242,7 @@ function splitSentences(text: string): string[] {
  * ("Segundo o post publicado...") cortava o texto inteiro.
  */
 const WORDPRESS_FOOTER_RE =
-  /(?:^|(?<=[.!?…"'”»)])\s+)(?:O post|The post)\s(?:(?!(?:O|The) post\s)[\s\S])*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/u;
+  /(?:^|(?<=[.!?…"'”»)\]])\s+)(?:O post|The post)\s(?:(?!(?:O|The) post\s)[\s\S])*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/u;
 
 /** Espaço antes de pontuação ("Meta , trouxe" / "medida ."). Não toca reticências. */
 const SPACE_BEFORE_PUNCTUATION_RE = /(\S)[ \t]+([,;:!?]|\.(?!\.))(?=\s|$)/gu;

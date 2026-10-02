@@ -17,4 +17,6 @@ test("#9458: 'O post' capitalizado em frase anterior não é confundido com o ro
 test("#9458: rodapé sozinho e em inglês continuam saindo", () => {
   assert.equal(stripFeedBoilerplate("O post Título apareceu primeiro em Fonte."), "");
   assert.equal(stripFeedBoilerplate("Body text here. The post Foo appeared first on Blog."), "Body text here.");
+  // excerpt WordPress típico termina em "[…]" antes do rodapé
+  assert.equal(stripFeedBoilerplate("Texto do excerpt […] O post Foo apareceu primeiro em Site."), "Texto do excerpt […]");
 });
