@@ -149,7 +149,7 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
  */
 function checkKitDraftFresh(
   editionDir: string,
-  opts: { backend?: string; rootDir?: string; now?: number } = {},
+  opts: { backend?: string; rootDir?: string; now?: number; brevoDiariaEnabled?: boolean } = {},
 ): InvariantViolation[] {
   if ((opts.backend ?? loadNewsletterBackend()) !== "kit") return [];
   const path = resolve(editionDir, "_internal", "newsletter-kit-published.json");
@@ -174,6 +174,9 @@ function checkKitDraftFresh(
   ];
 
   let currentHash: string;
+  // #9442: a Brevo diária monta o rascunho do MESMO 02-reviewed.md — se ela
+  // participou desta edição, o aviso precisa mandar re-rodar os dois canais.
+  const brevoDiariaEnabled = opts.brevoDiariaEnabled ?? isBrevoDiariaActiveForEdition(editionDir);
   try {
     const payload = renderKitPayload(editionDir, loadPlatformConfig(opts.rootDir ?? ROOT));
     currentHash = kitContentHash(payload.subject, payload.previewText, payload.html);
@@ -197,11 +200,53 @@ function checkKitDraftFresh(
         `A correção vale só pro acervo/site.`,
     );
   }
-  return warn(
-    `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
-      `teste estão com o conteúdo VELHO. Re-rodar \`npx tsx scripts/publish-newsletter-kit.ts ` +
-      `${editionDir} --send-test\` (idempotente: atualiza o mesmo broadcast e manda novo teste) e ` +
-      `conferir o novo e-mail antes de aprovar o agendamento.`,
+  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled }));
+}
+
+/**
+ * #9442 — a Brevo diária participou desta edição? Mesmo critério do
+ * playbook do Stage 6 (§6d-brevo): `_internal/brevo-diaria-published.json`
+ * existe. NÃO usar só "`brevo_diaria` está no config" — o config sempre tem a
+ * chave, e numa edição com `--skip brevo` o aviso mandaria rodar o publisher,
+ * que sem `campaign_id` registrado CRIA uma campanha nova que o Stage 6 então
+ * agenda (achado do review da PR #9444).
+ */
+export function isBrevoDiariaActiveForEdition(editionDir: string): boolean {
+  return existsSync(resolve(editionDir, "_internal", "brevo-diaria-published.json"));
+}
+
+/**
+ * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
+ * Nomeia o Kit sempre, e a Brevo diária quando ela participou da edição
+ * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) fica fora deste
+ * escopo mínimo — follow-up. (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
+ * com o conteúdo recalculado — re-rodar é idempotente). Sem isso o editor
+ * corrigia o Kit seguindo o aviso e a campanha Brevo saía com o texto velho.
+ * Pura, exportada pra teste.
+ */
+export function buildKitDraftStaleMessage(args: {
+  what: string;
+  when: string;
+  editionDir: string;
+  brevoDiariaEnabled: boolean;
+}): string {
+  const { what, when, editionDir, brevoDiariaEnabled } = args;
+  const kitCmd = `\`npx tsx scripts/publish-newsletter-kit.ts ${editionDir} --send-test\``;
+  if (!brevoDiariaEnabled) {
+    return (
+      `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
+      `teste estão com o conteúdo VELHO. Re-rodar ${kitCmd} (idempotente: atualiza o mesmo broadcast ` +
+      `e manda novo teste) e conferir o novo e-mail antes de aprovar o agendamento.`
+    );
+  }
+  const brevoCmd =
+    `\`npx tsx scripts/publish-daily-brevo.ts ${editionDir} --i-reviewed-the-copy --send-test\``;
+  return (
+    `${what} mudou depois que o rascunho Kit foi publicado (${when}) — os rascunhos montados do ` +
+    `mesmo conteúdo (broadcast Kit e campanha Brevo diária) e os e-mails de teste estão com o ` +
+    `conteúdo VELHO. Re-rodar os 2 canais: Kit ${kitCmd} (idempotente: atualiza o mesmo broadcast) ` +
+    `e Brevo diária ${brevoCmd} (idempotente: reaproveita a campanha registrada e atualiza via PUT); ` +
+    `conferir os novos e-mails de teste antes de aprovar o agendamento.`
   );
 }
 
@@ -593,7 +638,8 @@ export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "kit-draft-fresh",
     description:
-      "backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428)",
+      "backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); " +
+      "o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442)",
     source_issue: "#9428",
     stage: 6,
     run: checkKitDraftFresh,
