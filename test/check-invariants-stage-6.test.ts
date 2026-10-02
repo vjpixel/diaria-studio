@@ -25,6 +25,7 @@ import {
   checkStep6Sentinel,
   checkSitePagePublished,
   buildKitDraftStaleMessage,
+  readKitDiariaState,
   isBrevoDiariaActiveForEdition,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
@@ -484,6 +485,40 @@ describe("kit-draft-fresh — mensagem nomeia todo canal ativo (#9442)", () => {
     );
     assert.match(msg, /Brevo diária/);
     assert.ok(!msg.includes("--force"), "--force criaria campanha duplicada — nunca sugerir");
+  });
+});
+
+describe("kit-draft-fresh — Kit diária nomeada quando o estado existe (#9445)", () => {
+  const base = { what: "02-reviewed.md", when: "2026-10-02T10:00:00Z", editionDir: "data/editions/261002" };
+
+  it("sem estado da Kit diária → não menciona o canal", () => {
+    for (const brevo of [false, true]) {
+      const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo, kitDiaria: null });
+      assert.ok(!msg.includes("kit-diaria-stage5-dispatch.ts"));
+    }
+  });
+
+  it("com estado → comando exato + apagar broadcast e estado (re-run sozinho é no-op)", () => {
+    for (const brevo of [false, true]) {
+      const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo, kitDiaria: { broadcastId: 777 } });
+      assert.ok(msg.includes("`npx tsx scripts/kit-diaria-stage5-dispatch.ts data/editions/261002`"));
+      assert.ok(!msg.includes("kit-diaria-stage5-dispatch.ts data/editions/261002 --send-test"), "--send-test não grava estado — nunca é o comando de recriação");
+      assert.ok(msg.includes("data/editions/261002/_internal/kit-diaria-published.json"));
+      assert.match(msg, /broadcast 777/);
+      assert.match(msg, /Kit diária/);
+      assert.ok(msg.includes("publish-newsletter-kit.ts"), "Kit principal continua nomeado");
+    }
+  });
+
+  it("readKitDiariaState lê o broadcast_id do arquivo da edição", () => {
+    const dir = mkdtempSync(join(tmpdir(), "kd-9445-"));
+    assert.equal(readKitDiariaState(dir), null);
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "kit-diaria-published.json"), JSON.stringify({ broadcast_id: 42 }));
+    assert.deepEqual(readKitDiariaState(dir), { broadcastId: 42 });
+    writeFileSync(join(dir, "_internal", "kit-diaria-published.json"), "{quebrado");
+    assert.deepEqual(readKitDiariaState(dir), { broadcastId: null });
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
