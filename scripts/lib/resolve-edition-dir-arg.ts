@@ -16,12 +16,16 @@
  *
  * Regras:
  *  1. Vazio/só espaços → erro (nunca resolve para a raiz do repo em silêncio).
- *  2. Path que cai dentro do diretório de instalação do Git for Windows
- *     (`.../Program Files/Git/...` ou `.../Git/usr/...`) → erro explícito
- *     com dica sobre a conversão MSYS — resolver isso em silêncio publicaria
- *     contra o diretório errado.
- *  3. No win32, path estilo MSYS `/c/Users/...` → `C:/Users/...`.
- *  4. Relativo → `path.resolve(root, raw)` (raiz do repo, nunca o cwd).
+ *  2. Path dentro da instalação PADRÃO do Git for Windows
+ *     (`.../Program Files[ (x86)]/Git/...`) → erro explícito com dica sobre a
+ *     conversão MSYS — resolver isso em silêncio publicaria contra o
+ *     diretório errado. Instalações não-padrão (per-user, scoop) não são
+ *     detectadas; a regra 3 ainda pega o caso `/` → raiz.
+ *  3. Resultado que é a raiz do filesystem (`/`, `C:\`) → erro (é `$VAR/`
+ *     com `$VAR` vazia, sem conversão MSYS ou com `MSYS_NO_PATHCONV=1`).
+ *  4. No win32, path estilo MSYS `/c/Users/...` → `C:/Users/...` (só chega
+ *     ao Node assim com `MSYS_NO_PATHCONV=1`; sem isso o Git Bash converte).
+ *  5. Relativo → `path.resolve(root, raw)` (raiz do repo, nunca o cwd).
  */
 
 import { win32, posix } from "node:path";
@@ -74,12 +78,33 @@ export function resolveEditionDirArg(raw: string | undefined | null, opts: Resol
   // path.win32/posix explícito para o teste poder emular a outra plataforma;
   // em produção `platform === process.platform`, idêntico ao `path` default.
   const p = platform === "win32" ? win32 : posix;
-  return p.isAbsolute(normalized) ? p.resolve(normalized) : p.resolve(opts.root, normalized);
+  const abs = p.isAbsolute(normalized) ? p.resolve(normalized) : p.resolve(opts.root, normalized);
+  if (p.parse(abs).root === abs) {
+    throw new EditionDirArgError(
+      `--edition-dir "${trimmed}" resolve para a raiz do filesystem (${abs}) — provavelmente '$VAR/' ` +
+        "com a variável vazia no subshell. Passe o diretório da edição (data/editions/AAMM/AAMMDD/).",
+    );
+  }
+  return abs;
+}
+
+/** Variante sem exceção, para `main()`s no padrão `process.exitCode = N; return`. */
+export function tryResolveEditionDirArg(
+  raw: string | undefined | null,
+  opts: ResolveEditionDirArgOptions,
+): { ok: true; editionDir: string } | { ok: false; error: string } {
+  try {
+    return { ok: true, editionDir: resolveEditionDirArg(raw, opts) };
+  } catch (e) {
+    if (e instanceof EditionDirArgError) return { ok: false, error: e.message };
+    throw e;
+  }
 }
 
 /**
  * Variante de CLI: imprime o erro em stderr e encerra com `exitCode`
- * (default 2 = uso) em vez de lançar.
+ * (default 1 — mesmo código do "--edition-dir ausente" dos publishers; o 2
+ * já tem significado próprio em vários deles, ex.: Worker não configurado).
  */
 export function resolveEditionDirArgOrExit(
   raw: string | undefined | null,
@@ -90,7 +115,7 @@ export function resolveEditionDirArgOrExit(
   } catch (e) {
     if (e instanceof EditionDirArgError) {
       process.stderr.write(`ERRO: ${e.message}\n`);
-      process.exit(opts.exitCode ?? 2);
+      process.exit(opts.exitCode ?? 1);
     }
     throw e;
   }

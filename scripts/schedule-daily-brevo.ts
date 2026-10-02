@@ -58,6 +58,7 @@ import {
   type BrevoDiariaPublished,
 } from "./publish-daily-brevo.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -256,7 +257,7 @@ if (isMainModule(import.meta.url)) {
     );
     process.exit(1);
   }
-  const editionDir = resolve(editionDirArg);
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427 (antes: cwd)
   const allowOtherDate = hasFlag(argv, "allow-other-date");
   scheduleDailyBrevo(editionDir, scheduledAtArg, productionDeps(ROOT), { allowOtherDate }).then((result) => {
     console.log(JSON.stringify(result));

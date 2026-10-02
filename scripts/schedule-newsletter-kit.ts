@@ -55,6 +55,7 @@ import { updateBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -223,7 +224,13 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
-  const editionDir = resolve(editionDirArg);
+  const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427 (antes: cwd)
+  if (!resolvedArg.ok) {
+    process.stderr.write(`[schedule-newsletter-kit] ERRO: ${resolvedArg.error}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const editionDir = resolvedArg.editionDir;
   const allowOtherDate = hasFlag(argv, "allow-other-date");
   const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps(), { allowOtherDate });
   console.log(JSON.stringify(result));
