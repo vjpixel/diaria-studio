@@ -51,6 +51,7 @@ import {
   senderEmail,
 } from "./inject-inbox-urls.ts";
 import type { SyntheticInboxArticle } from "./inject-inbox-urls.ts";
+import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #2834: stripHtml consolidado em lib/strip-html.ts (era byte-idêntico ao
 // de auto-forward-newsletters.ts). Reexportado aqui pra não quebrar imports
 // existentes deste módulo (incl. test/capture-newsletter-urls.test.ts).
@@ -210,7 +211,9 @@ export function processThreads(
   const threadsMap: Record<string, CursorThreadEntry> = { ...(cursor.threads ?? {}) };
   const edition = options.edition;
   const articles: SyntheticInboxArticle[] = [];
-  const seen = new Set<string>();
+  // #9365: chave canônica → artigo já emitido, pra somar a menção de outra
+  // newsletter que cita a MESMA URL (bônus de score por newsletter distinta).
+  const seen = new Map<string, SyntheticInboxArticle>();
   let skippedAlready = 0;
   let totalUrls = 0;
   let totalFiltered = 0;
@@ -242,6 +245,9 @@ export function processThreads(
     // de data em filter-date-window.ts, piso de score em finalize-stage1.ts).
     // Nunca isenta dedup, acessibilidade ou regras editoriais de seção.
     const isAlwaysConsider = alwaysConsiderSet.has(senderEmail(thread.sender));
+    // #9365: identidade da newsletter pro bônus de menção — e-mail do
+    // remetente (2 edições da mesma newsletter contam 1); domínio como fallback.
+    const mentionId = senderEmail(thread.sender) || senderDom;
 
     for (const rawUrl of urls) {
       // Decode tracker URLs before filtering — sempre, mesmo em always_consider
@@ -296,10 +302,13 @@ export function processThreads(
 
       // Dedup by canonical URL — correção, nunca isenta (#7662)
       const key = canonicalize(url).toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const already = seen.get(key);
+      if (already) {
+        already.newsletter_mentions = unionNewsletterMentions(already.newsletter_mentions, mentionId ? [mentionId] : []);
+        continue;
+      }
 
-      articles.push({
+      const article: SyntheticInboxArticle = {
         url: canonicalize(url),
         source: `inbox_newsletter:${senderLabel}`,
         title: `(newsletter:${senderLabel})`,
@@ -309,7 +318,10 @@ export function processThreads(
         submitted_via: `newsletter:${senderLabel}`,
         tracker_decoded: trackerDecoded || undefined,
         always_consider: isAlwaysConsider || undefined,
-      });
+        newsletter_mentions: mentionId ? [mentionId] : undefined,
+      };
+      seen.set(key, article);
+      articles.push(article);
     }
 
     processedSet.add(thread.thread_id);
@@ -418,6 +430,31 @@ export function loadAlwaysConsiderConfig(configPath: string): { alwaysConsiderSe
 }
 
 /**
+ * Merge da saída existente (re-run / crash-resume) com os artigos recém-
+ * extraídos: URL nova é acrescentada; URL já presente fica como estava, mas
+ * #9365 une as `newsletter_mentions` — senão a 2ª newsletter citando a mesma
+ * URL num re-run da edição não contaria pro bônus de score. Pura.
+ */
+export function mergeCapturedArticles(
+  existing: SyntheticInboxArticle[],
+  fresh: SyntheticInboxArticle[],
+): SyntheticInboxArticle[] {
+  const merged = existing.map((a) => ({ ...a }));
+  const byUrl = new Map(merged.map((a) => [a.url, a]));
+  for (const a of fresh) {
+    const prev = byUrl.get(a.url);
+    if (!prev) {
+      merged.push(a);
+      byUrl.set(a.url, a);
+      continue;
+    }
+    const mentions = unionNewsletterMentions(prev.newsletter_mentions, a.newsletter_mentions);
+    if (mentions.length > 0) prev.newsletter_mentions = mentions;
+  }
+  return merged;
+}
+
+/**
  * #9368: relê a saída recém-gravada e confere a contagem antes de o cursor
  * avançar. Pura sobre o filesystem (exportada pra teste).
  */
@@ -493,8 +530,7 @@ export function main(argv: string[] = process.argv): void {
       existing = JSON.parse(readFileSync(absOut, "utf8"));
     } catch { /* corrupt file — overwrite */ }
   }
-  const existingUrls = new Set(existing.map((a) => a.url));
-  const merged = [...existing, ...articles.filter((a) => !existingUrls.has(a.url))];
+  const merged = mergeCapturedArticles(existing, articles);
   const tmpOut = absOut + ".tmp";
   writeFileSync(tmpOut, JSON.stringify(merged, null, 2) + "\n", "utf8");
   renameSync(tmpOut, absOut);

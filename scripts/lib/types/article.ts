@@ -66,6 +66,10 @@ export interface Article {
   score_base?: number;
   /** #3920: bônus de cobertura aplicado (= +5 × cluster_sources.length, sem teto). */
   score_bonus_coverage?: number;
+  /** #9365: bônus de menção em newsletter recebida (+5 por newsletter distinta, teto +15). */
+  score_bonus_newsletter?: number;
+  /** #9365: remetentes das newsletters distintas que citaram o item (capture-newsletter-urls.ts). */
+  newsletter_mentions?: string[];
   /**
    * #4842: decomposição auditável de `score - score_base`, uma entrada
    * "<slug>:+N"/"<slug>:-N" por bônus/penalidade aplicado (scorer-chunk LLM +

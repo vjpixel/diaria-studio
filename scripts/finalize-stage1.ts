@@ -34,6 +34,7 @@ import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
 import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
+import { articleNewsletterMentions, newsletterMentionBonus } from "./lib/newsletter-mention-bonus.ts"; // #9365
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -561,6 +562,12 @@ export function finalizeStage1(
       if (extraSources > 0 && typeof score === "number") {
         const bonus = coverageBonus(extraSources);
         (enrichedArticle as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
+      }
+      // #9365: idem pro bônus de menção em newsletter — já somado no
+      // merge-scored-chunks; aqui só o campo de auditoria no artigo final.
+      const newsletterBonus = newsletterMentionBonus(articleNewsletterMentions(enrichedArticle).length);
+      if (newsletterBonus > 0 && typeof score === "number") {
+        (enrichedArticle as { score_bonus_newsletter?: number }).score_bonus_newsletter = newsletterBonus;
       }
       // #4842: score_base já foi propagado por joinScore a partir de
       // all_scored (decomposição completa: score_base do scorer-chunk +

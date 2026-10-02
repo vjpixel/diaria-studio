@@ -21,6 +21,8 @@
  * a seleção de canônico aqui é bucket-agnóstica.
  */
 
+import { unionNewsletterMentions } from "./newsletter-mention-bonus.ts"; // #9365
+
 /** Uma fonte do cluster, preservada no artigo vencedor. */
 export interface ClusterSource {
   url: string;
@@ -38,6 +40,13 @@ export interface ClusterSource {
    */
   flag?: string;
   editor_submitted_url?: string;
+  /**
+   * #9365: newsletters (remetentes) que citaram este membro do cluster —
+   * preservado pra o bônus de menção em newsletter do vencedor
+   * (`newsletter-mention-bonus.ts`) não se perder quando outra cobertura da
+   * mesma história vence o cluster.
+   */
+  newsletter_mentions?: string[];
 }
 
 /** Shape mínimo de artigo que os helpers de cluster consomem. */
@@ -102,6 +111,9 @@ export function toClusterSource(a: ClusterArticle): ClusterSource {
   if (typeof a.editor_submitted_url === "string" && a.editor_submitted_url.trim()) {
     cs.editor_submitted_url = a.editor_submitted_url;
   }
+  // #9365: menções em newsletter do perdedor seguem pro vencedor do cluster.
+  const mentions = unionNewsletterMentions(a.newsletter_mentions);
+  if (mentions.length > 0) cs.newsletter_mentions = mentions;
   return cs;
 }
 
