@@ -139,6 +139,15 @@ export interface OnboardingKitLot {
    * Ausente = comportamento anterior.
    */
   schedule_failed?: boolean;
+  /**
+   * #9487: id da conta Kit (`GET /account` → `account.id`, normalizado pra
+   * string) que criou o broadcast deste lote, gravado na criação. Um 404 na
+   * releitura só prova "broadcast apagado" se a conta ATUAL for esta — com a
+   * chave de OUTRA conta, todo broadcast dá 404 e cancelar o lote mandaria o
+   * e-mail em dobro. Ausente (lote legado, ou `/account` falhou na criação) =
+   * 404 nunca cancela (`confirmOrCleanUpScheduledLot` → `unverified`).
+   */
+  kit_account_id?: string;
 }
 
 /** `yyyy-mm-dd` (dia BRT do run) + kind + sequência dentro do dia — 1 lote

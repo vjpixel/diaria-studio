@@ -32,7 +32,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAndRecordSendRun, confirmOrCleanUpScheduledLot, isKitAlreadySentError, isKitNotFoundError, cancelKitLot } from "../scripts/onboarding-kit-transport-run.ts";
+import { runAndRecordSendRun, confirmOrCleanUpScheduledLot, isKitAlreadySentError, isKitNotFoundError, cancelKitLot, extractKitAccountId } from "../scripts/onboarding-kit-transport-run.ts";
 import { recordKitSendRun, type OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
 import { KitApiError } from "../scripts/lib/kit-client.ts";
 
@@ -71,6 +71,10 @@ interface MockOpts {
   rereadStatus?: string;
   /** Corpo do erro do `DELETE` quando `deleteHttpStatus` ≥ 400. */
   deleteErrorBody?: unknown;
+  /** #9487: `account.id` de `GET /account` (default 111); `null` = resposta sem id. */
+  accountId?: number | null;
+  /** #9487: estes broadcasts dão 404 na releitura (apagados na UI / outra conta). */
+  notFoundIds?: Set<number>;
 }
 
 function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: string; hits: string[] }> {
@@ -100,6 +104,10 @@ function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: strin
           if (opts.subscriberMissing) return send(404, { errors: ["Not Found"] });
           return send(200, { subscriber: { id: Number(m[1]), email_address: "x@example.com", state: "active", created_at: "2026-09-01T00:00:00Z" } });
         }
+        if (req.method === "GET" && p === "/account") {
+          const id = opts.accountId === undefined ? 111 : opts.accountId;
+          return send(200, { account: { ...(id === null ? {} : { id }), name: "mock", plan_type: "creator" } });
+        }
         if (req.method === "GET" && p === "/subscribers") return send(200, { subscribers: [], pagination });
         if (req.method === "GET" && p === "/tags") return send(200, { tags: [], pagination });
         if (req.method === "POST" && p === "/tags") {
@@ -122,6 +130,7 @@ function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: strin
           if (req.method === "GET") {
             rereads++;
             if (opts.rereadHttpStatus && opts.rereadHttpStatus >= 400) return send(opts.rereadHttpStatus, { errors: ["mock"] });
+            if (opts.notFoundIds?.has(id)) return send(404, { errors: ["Not Found"] });
             const b = broadcasts.get(id);
             if (!b) return send(404, { errors: ["Not Found"] });
             const drop =
@@ -545,7 +554,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9460: releitura 404 (broadcast apagado na UI) → lote cancelled, entradas liberadas, nunca unverified", async () => {
-    const lot = mkLot();
+    const lot = { ...mkLot(), kit_account_id: "111" };
     let deleted = 0;
     const out = await confirmOrCleanUpScheduledLot(lot, {
       getBroadcast: async () => {
@@ -554,7 +563,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
       deleteBroadcast: async () => {
         deleted++;
       },
-      probeAccount: async () => {},
+      getAccountId: async () => "111",
     });
     assert.equal(out, "unscheduled");
     assert.equal(lot.status, "cancelled");
@@ -572,14 +581,14 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
       throw new KitApiError("/broadcasts/9", 404, JSON.stringify({ errors: ["Not Found"] }));
     };
     // probe falha (ex.: 401 de credencial trocada)
-    const lot = mkLot();
+    const lot = { ...mkLot(), kit_account_id: "111" };
     let probes = 0;
     const out = await confirmOrCleanUpScheduledLot(lot, {
       getBroadcast: notFound,
       deleteBroadcast: async () => {
         throw new Error("não deveria apagar");
       },
-      probeAccount: async () => {
+      getAccountId: async () => {
         probes++;
         throw new KitApiError("/account", 401, "Unauthorized");
       },
@@ -591,26 +600,78 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     assert.match(lot.last_error ?? "", /404/);
     assert.match(lot.last_error ?? "", /NÃO tratado como deleção/);
     // probe ausente = sem prova de conta → também unverified (lado seguro)
-    const noProbe = mkLot();
+    const noProbe = { ...mkLot(), kit_account_id: "111" };
     assert.equal(await confirmOrCleanUpScheduledLot(noProbe, { getBroadcast: notFound, deleteBroadcast: async () => {} }), "unverified");
     assert.equal(noProbe.status, "created");
-    // probe ok → 404 aceito como deleção (contraprova)
-    const okProbe = mkLot();
-    assert.equal(await confirmOrCleanUpScheduledLot(okProbe, { getBroadcast: notFound, deleteBroadcast: async () => {}, probeAccount: async () => {} }), "unscheduled");
+    // probe ok com a MESMA conta → 404 aceito como deleção (contraprova)
+    const okProbe = { ...mkLot(), kit_account_id: "111" };
+    assert.equal(await confirmOrCleanUpScheduledLot(okProbe, { getBroadcast: notFound, deleteBroadcast: async () => {}, getAccountId: async () => "111" }), "unscheduled");
     assert.equal(okProbe.status, "cancelled");
   });
 
   it("#9484: probe só roda no 404 — releitura 200 nunca consulta a conta", async () => {
-    const lot = mkLot();
+    const lot = { ...mkLot(), kit_account_id: "111" };
     let probes = 0;
     await confirmOrCleanUpScheduledLot(lot, {
       getBroadcast: async () => ({ status: "scheduled", send_at: "2026-10-01T12:00:00Z" }),
       deleteBroadcast: async () => {},
-      probeAccount: async () => {
+      getAccountId: async () => {
         probes++;
+        return "111";
       },
     });
     assert.equal(probes, 0);
+  });
+
+  describe("#9487: 404 só cancela se a conta ATUAL é a dona do lote (GET /account 200 não basta)", () => {
+    const notFound = async () => {
+      throw new KitApiError("/broadcasts/9", 404, JSON.stringify({ errors: ["Not Found"] }));
+    };
+    const noDelete = async () => {
+      throw new Error("não deveria apagar");
+    };
+
+    it("mesma conta → cancelled (entradas voltam ao plano)", async () => {
+      const lot = { ...mkLot(), kit_account_id: "111" };
+      assert.equal(await confirmOrCleanUpScheduledLot(lot, { getBroadcast: notFound, deleteBroadcast: noDelete, getAccountId: async () => "111" }), "unscheduled");
+      assert.equal(lot.status, "cancelled");
+    });
+
+    it("conta DIFERENTE (chave válida de outra conta Kit) → unverified, lote created, nunca cancelled", async () => {
+      const lot = { ...mkLot(), kit_account_id: "111" };
+      assert.equal(await confirmOrCleanUpScheduledLot(lot, { getBroadcast: notFound, deleteBroadcast: noDelete, getAccountId: async () => "222" }), "unverified");
+      assert.equal(lot.status, "created", "dedup preservada — a rodada seguinte não cria 2º broadcast");
+      assert.equal(lot.schedule_failed, undefined);
+      assert.match(lot.last_error ?? "", /222/);
+      assert.match(lot.last_error ?? "", /111/);
+      assert.match(lot.last_error ?? "", /NÃO tratado como deleção/);
+    });
+
+    it("lote LEGADO sem kit_account_id → unverified, sem nem consultar a conta", async () => {
+      const lot = mkLot();
+      assert.equal(lot.kit_account_id, undefined);
+      let probes = 0;
+      const out = await confirmOrCleanUpScheduledLot(lot, {
+        getBroadcast: notFound,
+        deleteBroadcast: noDelete,
+        getAccountId: async () => {
+          probes++;
+          return "111";
+        },
+      });
+      assert.equal(out, "unverified");
+      assert.equal(lot.status, "created");
+      assert.equal(probes, 0);
+      assert.match(lot.last_error ?? "", /legado/);
+    });
+
+    it("extractKitAccountId: aceita {account:{id}} e flat; normaliza pra string; sem id lança", () => {
+      assert.equal(extractKitAccountId({ account: { id: 111, name: "x" } }), "111");
+      assert.equal(extractKitAccountId({ id: "abc" }), "abc");
+      assert.throws(() => extractKitAccountId({ account: { name: "x" } }), /account\.id/);
+      assert.throws(() => extractKitAccountId(undefined), /account\.id/);
+      assert.throws(() => extractKitAccountId({ account: { id: "" } }), /account\.id/);
+    });
   });
 
   it("#9460: DELETE 404 após releitura sem agendamento → cancelled (não schedule_failed)", async () => {
@@ -809,6 +870,80 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     const kt2 = { consecutive_failed_send_runs: 3 };
     recordKitSendRun(kt2, { ...base, lots_created: 0, blocked_concurrent: 1 });
     assert.equal(kt2.consecutive_failed_send_runs, 3, "só blocked_concurrent, nada entregue → neutra");
+  });
+
+  it("#9487 (wiring runNormalPlan): o lote nasce com kit_account_id e a releitura 404 da criação, mesma conta → cancelled", async () => {
+    const t = setup();
+    try {
+      // 4242 = 1º broadcast criado: a releitura de confirmação dá 404.
+      await withMock({ notFoundIds: new Set([4242]) }, async (url, hits) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const kt = t.readKt();
+        const lot = Object.values(kt.lots as Record<string, { status: string; kit_account_id?: string; last_error: string }>)[0]!;
+        assert.equal(lot.kit_account_id, "111", "id da conta gravado no lote na criação");
+        assert.equal(lot.status, "cancelled", `runNormalPlan precisa repassar getAccountId — sem ele fica unverified: ${lot.last_error}`);
+        assert.ok(hits.includes("GET /account"));
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9487 (wiring reconcileOpenLots): lote unverified relido no --send — 404 com OUTRA conta fica unverified; com a MESMA conta cancela e replaneja", async () => {
+    const t = setup();
+    try {
+      const opts: MockOpts = { rereadHttpStatus: 401 };
+      await withMock(opts, async (url, hits) => {
+        // 1ª rodada: releitura de confirmação falha → lote `created` (unverified), conta 111 gravada.
+        const r1 = await runExecutor(t.args, url);
+        assert.equal(r1.status, 0, `stdout: ${r1.stdout} stderr: ${r1.stderr}`);
+        const lot1 = Object.values(t.readKt().lots as Record<string, { status: string; kit_account_id?: string }>)[0]!;
+        assert.equal(lot1.status, "created");
+        assert.equal(lot1.kit_account_id, "111");
+
+        // 2ª rodada com a chave de OUTRA conta: o broadcast dá 404, /account dá 200 com id 222.
+        opts.rereadHttpStatus = undefined;
+        opts.notFoundIds = new Set([4242]);
+        opts.accountId = 222;
+        const r2 = await runExecutor(t.args, url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.equal(JSON.parse(r2.stdout).reconciled_before_send?.[0]?.recovered, "unverified", r2.stdout);
+        const kt2 = t.readKt();
+        assert.equal(Object.keys(kt2.lots).length, 1, "nenhum lote novo");
+        assert.equal(Object.values(kt2.lots as Record<string, { status: string }>)[0]!.status, "created");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "nenhum 2º broadcast (e-mail em dobro)");
+        assert.equal(kt2.last_send_run.lots_unverified, 1);
+
+        // 3ª rodada de volta à conta dona: 404 = apagado → cancela e a entrada volta ao plano.
+        opts.accountId = 111;
+        const r3 = await runExecutor(t.args, url);
+        assert.equal(r3.status, 0, `stdout: ${r3.stdout} stderr: ${r3.stderr}`);
+        assert.equal(JSON.parse(r3.stdout).reconciled_before_send?.[0]?.recovered, "unscheduled", r3.stdout);
+        const kt3 = t.readKt();
+        const lots3 = Object.values(kt3.lots as Record<string, { status: string; broadcast_id: number }>);
+        assert.equal(lots3.find((l) => l.broadcast_id === 4242)?.status, "cancelled");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 2, "entrada replanejada no mesmo --send");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9487: /account sem id na criação → lote nasce sem kit_account_id e um 404 posterior fica unverified", async () => {
+    const t = setup();
+    try {
+      await withMock({ accountId: null, notFoundIds: new Set([4242]) }, async (url) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const lot = Object.values(t.readKt().lots as Record<string, { status: string; kit_account_id?: string }>)[0]!;
+        assert.equal(lot.kit_account_id, undefined);
+        assert.equal(lot.status, "created");
+        assert.match(r.stderr, /GET \/account falhou ao criar o lote/);
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
   });
 
   it("store real de produção intocado", () => {
