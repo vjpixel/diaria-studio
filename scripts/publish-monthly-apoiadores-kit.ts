@@ -223,13 +223,17 @@ export type ApoiadoresSendAtResolution =
  *     rascunho travaria o caminho manual que sempre funcionou.
  *
  * `--schedule` + `--draft` juntos é contraditório → lança.
+ *
+ * #9485: `rule` aceita um thunk, avaliado SÓ quando nenhum override foi
+ * passado — `monthly_send_schedule` inválido em `platform.config.json` não
+ * pode travar `--schedule`/`--draft` (o caminho manual de contingência).
  */
 export function resolveApoiadoresSendAt(opts: {
   cycle: string;
   scheduleRaw: string | undefined;
   draft: boolean;
   now: Date;
-  rule: MonthlySendScheduleRule;
+  rule: MonthlySendScheduleRule | (() => MonthlySendScheduleRule);
 }): ApoiadoresSendAtResolution {
   if (opts.scheduleRaw !== undefined && opts.draft) {
     throw new Error("--schedule e --draft são mutuamente exclusivos — passe só um.");
@@ -243,7 +247,8 @@ export function resolveApoiadoresSendAt(opts: {
     return { source: "explicit", scheduleAt: opts.scheduleRaw };
   }
   if (opts.draft) return { source: "draft_flag", scheduleAt: null };
-  const decision = decideMonthlySendAt(opts.cycle, opts.now, opts.rule);
+  const rule = typeof opts.rule === "function" ? opts.rule() : opts.rule;
+  const decision = decideMonthlySendAt(opts.cycle, opts.now, rule);
   if (decision.kind === "schedule") return { source: "rule", scheduleAt: decision.sendAt };
   return {
     source: "rule_too_late",
@@ -354,7 +359,8 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
       scheduleRaw,
       draft: draftFlag,
       now: (deps.now ?? (() => new Date()))(),
-      rule: resolveMonthlySendSchedule(platformConfig.monthly_send_schedule),
+      // #9485: thunk — só resolvido sem --schedule/--draft.
+      rule: () => resolveMonthlySendSchedule(platformConfig.monthly_send_schedule),
     });
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);

@@ -240,9 +240,16 @@ function splitSentences(text: string): string[] {
  * de texto/frase e casando a ÚLTIMA ocorrência de "O post" antes do
  * "apareceu primeiro em" — com a flag `i`, um "o post" no meio do resumo
  * ("Segundo o post publicado...") cortava o texto inteiro.
+ *
+ * #9483: a âncora deixou de exigir pontuação antes do "O post" — basta não
+ * estar colado a letra/dígito (`(?<![\p{L}\p{N}])`). O `stripHtml` colapsa
+ * `</p><p>` em espaço, então um último parágrafo sem pontuação final
+ * ("…com recursos O post Foo apareceu…") deixava o rodapé passar; idem
+ * "excerpt…O post" (sem espaço) e "texto: O post". A proteção de
+ * "Segundo o post…" continua vindo do case-sensitive + última ocorrência.
  */
 const WORDPRESS_FOOTER_RE =
-  /(?:^|(?<=[.!?…"'”»)\]])\s+)(?:O post|The post)\s(?:(?!(?:O|The) post\s)[\s\S])*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/u;
+  /\s*(?<![\p{L}\p{N}])(?:O post|The post)\s(?:(?!(?:O|The) post\s)[\s\S])*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/u;
 
 /** Espaço antes de pontuação ("Meta , trouxe" / "medida ."). Não toca reticências. */
 const SPACE_BEFORE_PUNCTUATION_RE = /(\S)[ \t]+([,;:!?]|\.(?!\.))(?=\s|$)/gu;

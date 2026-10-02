@@ -554,6 +554,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
       deleteBroadcast: async () => {
         deleted++;
       },
+      probeAccount: async () => {},
     });
     assert.equal(out, "unscheduled");
     assert.equal(lot.status, "cancelled");
@@ -564,6 +565,52 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     assert.equal(await confirmOrCleanUpScheduledLot(auth, { getBroadcast: async () => { throw new KitApiError("/broadcasts/9", 401, "x"); }, deleteBroadcast: async () => {} }), "unverified");
     assert.equal(auth.status, "created");
     assert.equal(isKitNotFoundError(new Error("404")), false, "só KitApiError 404 conta");
+  });
+
+  it("#9484: releitura 404 com a conta NÃO respondendo (credencial/conta errada) → unverified, lote created, nunca cancelled", async () => {
+    const notFound = async () => {
+      throw new KitApiError("/broadcasts/9", 404, JSON.stringify({ errors: ["Not Found"] }));
+    };
+    // probe falha (ex.: 401 de credencial trocada)
+    const lot = mkLot();
+    let probes = 0;
+    const out = await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: notFound,
+      deleteBroadcast: async () => {
+        throw new Error("não deveria apagar");
+      },
+      probeAccount: async () => {
+        probes++;
+        throw new KitApiError("/account", 401, "Unauthorized");
+      },
+    });
+    assert.equal(out, "unverified");
+    assert.equal(lot.status, "created", "lote fica created — dedup preservada, sem 2º broadcast");
+    assert.equal(lot.schedule_failed, undefined);
+    assert.equal(probes, 1);
+    assert.match(lot.last_error ?? "", /404/);
+    assert.match(lot.last_error ?? "", /NÃO tratado como deleção/);
+    // probe ausente = sem prova de conta → também unverified (lado seguro)
+    const noProbe = mkLot();
+    assert.equal(await confirmOrCleanUpScheduledLot(noProbe, { getBroadcast: notFound, deleteBroadcast: async () => {} }), "unverified");
+    assert.equal(noProbe.status, "created");
+    // probe ok → 404 aceito como deleção (contraprova)
+    const okProbe = mkLot();
+    assert.equal(await confirmOrCleanUpScheduledLot(okProbe, { getBroadcast: notFound, deleteBroadcast: async () => {}, probeAccount: async () => {} }), "unscheduled");
+    assert.equal(okProbe.status, "cancelled");
+  });
+
+  it("#9484: probe só roda no 404 — releitura 200 nunca consulta a conta", async () => {
+    const lot = mkLot();
+    let probes = 0;
+    await confirmOrCleanUpScheduledLot(lot, {
+      getBroadcast: async () => ({ status: "scheduled", send_at: "2026-10-01T12:00:00Z" }),
+      deleteBroadcast: async () => {},
+      probeAccount: async () => {
+        probes++;
+      },
+    });
+    assert.equal(probes, 0);
   });
 
   it("#9460: DELETE 404 após releitura sem agendamento → cancelled (não schedule_failed)", async () => {
