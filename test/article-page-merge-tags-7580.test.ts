@@ -116,6 +116,9 @@ describe("#7580 — contra os drafts REAIS, não só fixtures", () => {
     assert.ok(true);
   });
 
+  // #9496: nos drafts reais a tag mora na APRESENTAÇÃO, que o filtro de
+  // apoiadores já corta antes de `stripEmailOnlyFooter` — este bloco prova o
+  // resultado ponta a ponta; quem discrimina o strip são os unitários acima.
   for (const ciclo of ciclos) {
     it(`${ciclo}: HTML web sem nenhuma merge tag`, { skip: !existsSync(`data/monthly/${ciclo}/draft.md`) }, () => {
       const md = readFileSync(`data/monthly/${ciclo}/draft.md`, "utf8");

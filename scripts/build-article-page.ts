@@ -26,7 +26,12 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
-import { TeaserCutError, buildArticleHtml, buildArticleTeaserHtml } from "./lib/mensal/build-article-page.ts";
+import {
+  TeaserCutError,
+  buildArticleHtml,
+  buildArticleTeaserHtml,
+  type ArticleBuildOptions,
+} from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DIARIA_RETROSPECTIVA_URL } from "./lib/canonical-urls.ts";
@@ -87,6 +92,19 @@ export function articleTeaserKvKey(cycle: string): string {
   return `${articleKvKey(cycle)}:teaser`;
 }
 
+/**
+ * #9496: os insumos de I/O do e-mail dos apoiadores, lidos pelas MESMAS
+ * funções do render do e-mail (legenda do É IA? do `01-eia.md` + relink das
+ * diárias) — a página é a versão web daquele e-mail, não do envio Clarice.
+ * `logLabel` separa no stderr o relink do artigo do relink do trecho.
+ */
+export function articleBuildOptionsForCycle(monthlyDirPath: string, logLabel = ""): ArticleBuildOptions {
+  return {
+    eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
+    postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath, logLabel),
+  };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cycle = requireMonthlyCycleArg(argv);
@@ -100,15 +118,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // #9496: mesmos insumos de I/O do e-mail dos apoiadores, pelas MESMAS
-  // funções (legenda do É IA? + relink das diárias) — a página é a versão web
-  // daquele e-mail, não do envio Clarice.
   const monthlyDirPath = monthlyDir(cycle);
-  const buildOpts = {
-    eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
-    postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath),
-  };
-  const page = buildArticleHtml(draftMd, cycle, buildOpts);
+  const page = buildArticleHtml(draftMd, cycle, articleBuildOptionsForCycle(monthlyDirPath, "[artigo] "));
 
   const outPath = getArg(argv, "out");
   if (outPath) {
@@ -139,7 +150,7 @@ async function main(): Promise<void> {
     // antes desta issue. O ciclo 2604-05 cai aqui de propósito: é anterior à
     // convenção `**DESTAQUE N | TEMA**` e não tem onde cortar.
     try {
-      const trecho = buildArticleTeaserHtml(draftMd, cycle, buildOpts);
+      const trecho = buildArticleTeaserHtml(draftMd, cycle, articleBuildOptionsForCycle(monthlyDirPath, "[trecho] "));
       console.error(
         `[build-article-page] --push: enviando ${articleTeaserKvKey(cycle)} (${trecho.html.length} bytes, ` +
           `${Math.round((trecho.html.length / page.html.length) * 100)}% do artigo)...`,

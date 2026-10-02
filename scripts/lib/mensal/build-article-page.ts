@@ -18,6 +18,9 @@
  * do gate de apoiador e é a versão web do e-mail que ele recebe: sem
  * APRESENTAÇÃO/`CLARICE — *`, com a legenda do É IA? do `01-eia.md` e o relink
  * das diárias (os dois insumos de I/O chegam por `ArticleBuildOptions`).
+ * Nos drafts reais o `{{ unsubscribe }}` e o "responda a este e-mail" moravam
+ * na APRESENTAÇÃO, que o filtro já corta — os passos 1 e 2 abaixo seguem como
+ * defesa em profundidade para um template que os traga em outra seção.
  *
  * O que diverge entre o HTML do e-mail e o da web são três coisas, todas
  * consequência de reaproveitar um render de e-mail numa página (#7580):
@@ -139,8 +142,9 @@ export function stripReplyByEmailSentence(html: string): string {
  * ninguém consegue medir se a página converte.
  *
  * Troca só o `medium`. O `utm_source` (desde #9496 o do canal apoiadores,
- * `mensal-apoiadores-kit`) e o `utm_campaign` do ciclo continuam — manter os
- * dois deixa o clique rastreável até o ciclo exato.
+ * `mensal-apoiadores-kit`, nos links que o render monta; link com UTM escrita
+ * à mão no draft mantém a dele) e o `utm_campaign` do ciclo continuam —
+ * manter os dois deixa o clique rastreável até o ciclo exato.
  */
 export function retagWebUtmMedium(html: string): string {
   // Sem classe de caractere antes: no HTML os separadores vêm ESCAPADOS
@@ -327,6 +331,9 @@ export function buildArticleHtml(draftMd: string, cycle: string, opts: ArticleBu
   // #9496: a página é a MESMA versão do e-mail dos apoiadores — mesmo filtro
   // de seções Clarice-only e mesmo perfil de UTM (`draftToEmailApoiadoresKit`),
   // em vez do `draft.md` cru da Clarice. Imagens ficam de fora como antes.
+  // O `<title>` segue vindo do ASSUNTO do draft (contrato do #3940 e alvo do
+  // guard de marca do #7719), não do assunto próprio do e-mail
+  // (`deriveApoiadoresKitSubject`) — só o CORPO se alinha ao e-mail.
   const email = draftToEmailApoiadoresKit(draftMd, null, yymm, undefined, undefined, opts.eiaCredit);
   const { subject, previewText } = email;
   const html = opts.postProcessEmailHtml ? opts.postProcessEmailHtml(email.html) : email.html;

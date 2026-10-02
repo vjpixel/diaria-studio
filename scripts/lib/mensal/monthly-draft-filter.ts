@@ -133,10 +133,12 @@ export function isClariceOnlySection(label: string): boolean {
     label === "APRESENTAÇÃO" ||
     label === "APRESENTACAO" ||
     label.startsWith("CLARICE —") ||
-    // #9496: nome antigo do tutorial Clarice (ciclos até 2606-07, antes do
+    // #9496: nome antigo do tutorial Clarice (ciclos até 2607-08, antes do
     // `CLARICE — TUTORIAL`) — o parser já o reconhece como seção própria
     // (`isSectionLabel`), então dá para cortá-lo pelo label como os demais.
-    /^LABORAT[ÓO]RIO CLARICE$/.test(label)
+    // MESMO casamento do parser (prefixo, `\s+`, sem caixa): mais estrito que
+    // ele, uma grafia que o parser aceita como seção vazaria inteira.
+    /^LABORAT[ÓO]RIO\s+CLARICE/i.test(label)
   );
 }
 

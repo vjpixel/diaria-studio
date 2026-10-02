@@ -63,13 +63,17 @@ describe("#4482 — isClariceOnlySection", () => {
   });
 
   // #9496: LABORATÓRIO CLARICE é o nome antigo do `CLARICE — TUTORIAL` (ciclos
-  // até 2606-07) — o mesmo tutorial do produto com o CTA "Assine agora e ganhe
+  // até 2607-08) — o mesmo tutorial do produto com o CTA "Assine agora e ganhe
   // até 63% de desconto". Ficou fora do #4482 só por escopo; com a página web
-  // passando pelo mesmo filtro, ele vazaria para o apoiador na 2606-07.
-  it("LABORATÓRIO CLARICE (nome antigo do tutorial) é Clarice-only, com ou sem acento", () => {
+  // passando pelo mesmo filtro, ele vazaria para o apoiador.
+  it("LABORATÓRIO CLARICE (nome antigo do tutorial) é Clarice-only, nas grafias que o parser aceita", () => {
     assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE"), true);
     assert.equal(isClariceOnlySection("LABORATORIO CLARICE"), true);
-    assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE EXTRA"), false, "ancorado no label inteiro");
+    // Mesmo casamento de `isSectionLabel` (prefixo, \s+, sem caixa): o que o
+    // parser aceita como seção, o filtro precisa cortar.
+    assert.equal(isClariceOnlySection("Laboratório  Clarice"), true);
+    assert.equal(isClariceOnlySection("LABORATÓRIO CLARICE — PARAFRASEAR"), true);
+    assert.equal(isClariceOnlySection("LABORATÓRIO DE AGENTES"), false);
   });
 });
 

@@ -90,15 +90,15 @@ export function readApoiadoresEiaCredit(monthlyDir: string): string | undefined 
  * utm_source=clarice nesta variante. Fail-soft: sem raw-destaques.json, o
  * HTML original segue intacto. Exportada para a página web (#9496).
  */
-export function relinkApoiadoresKitHtml(html: string, monthlyDir: string): string {
+export function relinkApoiadoresKitHtml(html: string, monthlyDir: string, logLabel = ""): string {
   try {
     const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT, undefined, APOIADORES_KIT_UTM_PROFILE.source);
     console.error(
-      `Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
+      `${logLabel}Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
     );
     if (relinked.ambiguous.length) {
       console.error(
-        `aviso: ${relinked.ambiguous.length} URL(s) de destaque aparecem em MAIS DE UMA edição — o relink usou a primeira; confira se é a citada no texto:`,
+        `${logLabel}aviso: ${relinked.ambiguous.length} URL(s) de destaque aparecem em MAIS DE UMA edição — o relink usou a primeira; confira se é a citada no texto:`,
       );
       for (const a of relinked.ambiguous) {
         console.error(`  ${a.url.slice(0, 80)}  → edições ${a.editions.join(", ")} (usada: ${a.editions[0]})`);
@@ -106,7 +106,7 @@ export function relinkApoiadoresKitHtml(html: string, monthlyDir: string): strin
     }
     return relinked.html;
   } catch (e) {
-    console.error(`warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
+    console.error(`${logLabel}warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
     return html;
   }
 }

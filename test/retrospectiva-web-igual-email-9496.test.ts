@@ -25,7 +25,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildArticleHtml, buildArticleTeaserHtml } from "../scripts/lib/mensal/build-article-page.ts";
+import { articleBuildOptionsForCycle } from "../scripts/build-article-page.ts";
 import { draftToEmailApoiadoresKit } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 
 /** Segmentos de texto visíveis: um por bloco (p/h*, td, li…), entidades e espaços normalizados. */
@@ -134,7 +138,7 @@ const DRAFT = [
   "",
   "---",
   "",
-  "**LABORATÓRIO CLARICE**",
+  "**Laboratório Clarice**",
   "",
   "Parafrasear sem repetir você mesmo",
   "",
@@ -219,6 +223,28 @@ describe("#9496 — a página é a mesma versão do e-mail dos apoiadores", () =
       postProcessEmailHtml: (h) => h.replace("https://exemplo.com/a1", "https://diar.ia.br/p/relinkada?utm_medium=email"),
     }).html;
     assert.match(html, /diar\.ia\.br\/p\/relinkada\?utm_medium=artigo-web/, "o link relinkado também é retagueado");
+  });
+});
+
+describe("#9496 — o CLI pluga os insumos do e-mail nas duas chamadas", () => {
+  it("articleBuildOptionsForCycle lê a legenda do 01-eia.md e o relink é fail-soft", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ret-9496-"));
+    try {
+      writeFileSync(join(dir, "01-eia.md"), `---\neia_answer:\n  A: ia\n---\n\n**É IA?**\n\n${EIA_CREDIT}\n`);
+      const opts = articleBuildOptionsForCycle(dir);
+      assert.match(opts.eiaCredit ?? "", /Resultado da última edição: 61%/);
+      // Sem `_internal/raw-destaques.json` o relink avisa e devolve o HTML intacto.
+      assert.equal(opts.postProcessEmailHtml?.("<p>x</p>"), "<p>x</p>");
+      assert.match(buildArticleHtml(DRAFT, CICLO, opts).html, /Reservatório de Bab Louta/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("main() passa as opções para o artigo E para o trecho", () => {
+    const src = readFileSync("scripts/build-article-page.ts", "utf8");
+    assert.match(src, /buildArticleHtml\(draftMd, cycle, articleBuildOptionsForCycle\(/);
+    assert.match(src, /buildArticleTeaserHtml\(draftMd, cycle, articleBuildOptionsForCycle\(/);
   });
 });
 
