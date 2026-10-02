@@ -52,7 +52,8 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(ids.includes("site-page-published"));
     assert.ok(ids.includes("site-sitemap-no-orphans"));
     assert.ok(ids.includes("sync-code-ran"));
-    assert.equal(ids.length, 8, `esperava 8 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("kit-draft-fresh"));
+    assert.equal(ids.length, 9, `esperava 9 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
   });
 
   it("contém a entry site-page-published, stage 6, source_issue #7578 (GATE-BLOCKING desde a decisão do editor de 07/09/2026)", () => {

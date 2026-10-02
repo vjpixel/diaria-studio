@@ -157,6 +157,7 @@ import {
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -253,6 +254,47 @@ export interface KitNewsletterPublished {
   status: "draft" | "test_sent" | "scheduled";
   test_broadcast_ids?: number[];
   scheduled_at?: string;
+  /**
+   * #9428: sha256 dos insumos do `content` (`02-reviewed.md`, `01-eia.md`,
+   * `06-public-images.json`) no momento deste publish. `check-invariants.ts
+   * --stage 6` (regra `kit-draft-fresh`) recalcula e acusa se o editor mexeu
+   * em algum deles depois — o draft no Kit (e o e-mail de teste) ficaria
+   * defasado. Ausente em estados gravados antes do #9428.
+   */
+  source_hashes?: SourceHashes;
+  /** #9428: ISO do momento em que `source_hashes` foi calculado. */
+  source_hashed_at?: string;
+  /**
+   * #9428: sha256 de subject + preview_text + HTML exatamente como enviados no
+   * PATCH/POST do draft. É o que o check compara (re-renderizando com
+   * `renderKitPayload`) — sem falso positivo de mudança que não chega ao
+   * e-mail (entradas só-social em `06-public-images.json`, CRLF) e cobrindo
+   * insumos indiretos (snippets, leaderboard, config de afiliado).
+   */
+  content_hash?: string;
+}
+
+/**
+ * #9428: monta subject/preview/HTML do broadcast a partir do disco — a MESMA
+ * função que `main()` usa pra publicar e que o invariante `kit-draft-fresh`
+ * usa pra re-renderizar e comparar com `content_hash`. Sem rede.
+ */
+export function renderKitPayload(editionDir: string, platformConfig: PlatformConfig) {
+  const content = extractContent(editionDir);
+  const imagesPath = resolve(editionDir, "06-public-images.json");
+  const publicImages: PublicImagesFile = existsSync(imagesPath)
+    ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
+    : {};
+  const built = buildKitHtml(content, publicImages, {
+    kitAffiliateUrl: platformConfig.kit?.affiliate_url,
+    kitOfferText: platformConfig.kit?.affiliate_offer_text,
+  });
+  return { content, ...built, subject: buildKitSubject(content), previewText: buildKitPreviewText(content) };
+}
+
+/** #9428: lê `platform.config.json` de `rootDir` (mesma leitura de `main()`). */
+export function loadPlatformConfig(rootDir: string): PlatformConfig {
+  return JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
 }
 
 export function resolvePublishedStatePath(editionDir: string): string {
@@ -279,7 +321,7 @@ export interface KitAffiliateConfig {
   affiliate_offer_text?: string;
 }
 
-interface PlatformConfig {
+export interface PlatformConfig {
   publishing?: {
     newsletter?: {
       backend?: string;
@@ -440,7 +482,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
-  const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
+  const platformConfig = loadPlatformConfig(rootDir);
   const backendCheck = checkKitBackendEnabled(platformConfig);
   if (!backendCheck.ok) {
     log(`ERRO: ${backendCheck.reason}`);
@@ -455,18 +497,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
   const editionDir = resolvedArg.editionDir;
-  const content = extractContent(editionDir);
-
-  const imagesPath = resolve(editionDir, "06-public-images.json");
-  const publicImages: PublicImagesFile = existsSync(imagesPath)
-    ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
-    : {};
-
-  const { html, unresolvedImages, renderWarnings, creditoSubstituido, residuoBeehiiv } = buildKitHtml(
-    content,
-    publicImages,
-    { kitAffiliateUrl: platformConfig.kit?.affiliate_url, kitOfferText: platformConfig.kit?.affiliate_offer_text },
-  );
+  // #9428: hash dos insumos ANTES de lê-los — só diagnóstico (nomear qual
+  // arquivo mudou); quem decide se o draft ficou defasado é `content_hash`.
+  const sourceHashes = computeKitDraftSourceHashes(editionDir);
+  const sourceHashedAt = new Date().toISOString();
+  const { content, html, unresolvedImages, renderWarnings, creditoSubstituido, residuoBeehiiv, subject, previewText } =
+    renderKitPayload(editionDir, platformConfig);
   if (creditoSubstituido === false) {
     log("[#6195] aviso: nenhum crédito da Beehiiv achado no 'Para encerrar' — nada a trocar.");
   }
@@ -485,9 +521,6 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (renderWarnings.length > 0) {
     log(`warn: ${renderWarnings.length} evento(s) de conteúdo perdido no render Kit: ${renderWarnings.map((w) => w.event).join(", ")}`);
   }
-
-  const subject = buildKitSubject(content);
-  const previewText = buildKitPreviewText(content);
 
   const subjectCheck = checkSubjectNotEmpty(subject);
   if (!subjectCheck.ok) {
@@ -569,6 +602,11 @@ export async function main(rootDirOverride?: string): Promise<void> {
     // reforço explícito/releitura desta função sem nenhum PATCH ter mudado
     // o agendamento de verdade.
     ...(existing?.scheduled_at ? { scheduled_at: existing.scheduled_at } : {}),
+    // #9428: hash do payload que ACABOU de ir pro Kit (sempre o desta
+    // invocação — um re-run atualiza o draft e, portanto, o baseline).
+    content_hash: kitContentHash(subject, previewText, html),
+    source_hashes: sourceHashes,
+    source_hashed_at: sourceHashedAt,
   };
   writePublishedState(editionDir, state);
 

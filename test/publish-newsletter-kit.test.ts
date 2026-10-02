@@ -27,6 +27,9 @@ import {
 } from "../scripts/publish-newsletter-kit.ts";
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
 import type { KitBroadcastDetail } from "../scripts/lib/kit-client.ts";
+import { checkKitDraftFresh } from "../scripts/lib/invariant-checks/stage-6.ts"; // #9428
+import { kitContentHash } from "../scripts/lib/kit-draft-freshness.ts"; // #9428
+import { scheduleNewsletterKit } from "../scripts/schedule-newsletter-kit.ts"; // #9428
 
 describe("buildKitSubject / buildKitPreviewText", () => {
   it("subject é content.title, preview é content.subtitle — sem transformação", () => {
@@ -448,6 +451,133 @@ describe("main() — integração", () => {
       );
     } finally {
       process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#9428: grava content_hash no publish; edição posterior do 02-reviewed.md vira kit-draft-fresh; re-run limpa", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260997");
+      const opts = { backend: "kit", rootDir: root };
+      mockFetch((call) => {
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          return jsonRes(201, { broadcast: { id: 9428, status: "draft", public_url: "https://news.diar.ia.br/p/9428" } });
+        }
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/9428") {
+          return jsonRes(200, { broadcast: { id: 9428, status: "draft", public_url: "https://news.diar.ia.br/p/9428" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+
+      const state = readPublishedState(editionDir);
+      assert.match(state?.content_hash ?? "", /^[0-9a-f]{64}$/, "estado do publish precisa carregar content_hash (#9428)");
+      const sent = calls[0].body as { subject: string; preview_text: string; content: string };
+      assert.equal(
+        state!.content_hash,
+        kitContentHash(sent.subject, sent.preview_text, sent.content),
+        "content_hash é do payload EXATO enviado ao Kit",
+      );
+      assert.match(state!.source_hashes?.["02-reviewed.md"] ?? "", /^[0-9a-f]{64}$/);
+      assert.ok(state!.source_hashed_at);
+      assert.deepEqual(checkKitDraftFresh(editionDir, opts), [], "logo após o publish não há divergência (render determinístico)");
+
+      // Mudança que não chega ao e-mail (entrada só-social em 06-public-images.json) não acusa.
+      writeFileSync(
+        join(editionDir, "06-public-images.json"),
+        JSON.stringify({ images: { d1_1x1: { url: "https://x/d1-1x1.jpg", file: "04-d1-1x1.jpg" } } }),
+        "utf8",
+      );
+      assert.deepEqual(checkKitDraftFresh(editionDir, opts), [], "sem falso positivo por insumo que não vai pro e-mail");
+
+      // Cenário da 261002: editor corrige o 02-reviewed.md depois do publish.
+      const reviewedPath = join(editionDir, "02-reviewed.md");
+      writeFileSync(reviewedPath, readFileSync(reviewedPath, "utf8").replace("Corpo dois.", "Corpo dois, corrigido."), "utf8");
+      const v = checkKitDraftFresh(editionDir, opts);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "kit-draft-fresh");
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /02-reviewed\.md/);
+      assert.ok(v[0].message.includes(`publish-newsletter-kit.ts ${editionDir} --send-test`), "comando copiável, com o path real");
+
+      // Broadcast já enviado: mensagem não manda re-publicar.
+      writePublishedState(editionDir, { ...readPublishedState(editionDir)!, status: "scheduled", scheduled_at: "2026-01-01T09:00:00Z" });
+      const sentV = checkKitDraftFresh(editionDir, opts);
+      assert.equal(sentV.length, 1);
+      assert.match(sentV[0].message, /já saiu/);
+      assert.ok(!sentV[0].message.includes("--send-test"));
+      const { scheduled_at: _drop, ...unscheduled } = readPublishedState(editionDir)!;
+      writePublishedState(editionDir, { ...unscheduled, status: "draft" });
+
+      // Re-rodar o publisher (PATCH idempotente) atualiza o baseline.
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(calls.at(-1)?.method, "PATCH");
+      assert.deepEqual(checkKitDraftFresh(editionDir, opts), [], "re-publicar reseta o baseline");
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#9428: publish que falha (exit 10) preserva o baseline antigo — o aviso continua de pé", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260996");
+      writePublishedState(editionDir, {
+        broadcast_id: 31,
+        subject: "s",
+        preview_text: "p",
+        status: "draft",
+        content_hash: "hash-antigo",
+      });
+      mockFetch(() => jsonRes(422, { errors: ["boom"] }));
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 10);
+      assert.equal(readPublishedState(editionDir)?.content_hash, "hash-antigo");
+      assert.equal(checkKitDraftFresh(editionDir, { backend: "kit", rootDir: root }).length, 1);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#9428: schedule-newsletter-kit preserva content_hash/source_hashes ao gravar scheduled_at", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      const editionDir = writeEdition(root, "260995");
+      writePublishedState(editionDir, {
+        broadcast_id: 32,
+        subject: "s",
+        preview_text: "p",
+        status: "draft",
+        content_hash: "h",
+        source_hashes: { "02-reviewed.md": "x" },
+        source_hashed_at: "2026-10-01T22:42:00Z",
+      });
+      let written: Record<string, unknown> | undefined;
+      const result = await scheduleNewsletterKit(editionDir, "2026-10-03T09:00:00Z", {
+        readPublished: (d) => readPublishedState(d),
+        writePublished: (_d, s) => {
+          written = s as unknown as Record<string, unknown>;
+        },
+        patchSchedule: async () => undefined,
+        getBroadcastStatus: async () => ({ status: "scheduled", sendAt: "2026-10-03T09:00:00Z" }),
+      }, { allowOtherDate: true });
+      assert.equal(result.ok, true);
+      assert.equal(written?.content_hash, "h");
+      assert.deepEqual(written?.source_hashes, { "02-reviewed.md": "x" });
+      assert.equal(written?.source_hashed_at, "2026-10-01T22:42:00Z");
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
