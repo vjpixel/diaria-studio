@@ -10,7 +10,7 @@
  * `data/monthly/{ciclo}/_internal/divulgacao-published.json`, mesmo shape de
  * `data/artigo-especial/{ano}-{slug}/published.json` (reusa
  * `parseChannelStates`/`decideChannelAction`/`withChannelState`/builders de
- * `scripts/lib/artigo-especial-state.ts` — nada reimplementado), com 6 canais:
+ * `scripts/lib/artigo-especial-state.ts` — nada reimplementado), com 10 canais:
  *
  *   | canal             | quem grava                                              |
  *   |-------------------|---------------------------------------------------------|
@@ -20,6 +20,8 @@
  *   | `linkedin_perfil` | `mark-retrospectiva-channel.ts` (composer manual)         |
  *   | `box`             | `update-retrospectiva-box.ts`                             |
  *   | `email`           | `mark-retrospectiva-channel.ts --sync-email` (deriva do state do publisher) |
+ *   | `facebook`/`instagram`/`threads` | `publish-retrospectiva-social.ts` (#9500)  |
+ *   | `x`               | `mark-retrospectiva-channel.ts` (Buffer MCP, top-level, #9500) |
  *
  * O canal `email` NÃO duplica o guard do publisher Kit: a fonte de verdade do
  * broadcast segue sendo `_internal/beehiiv-apoiadores-state.json`
@@ -45,6 +47,11 @@ export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
   "linkedin_perfil",
   "box",
   "email",
+  // #9500 — posts públicos de chamada fora do LinkedIn.
+  "facebook",
+  "instagram",
+  "threads",
+  "x",
 ] as const;
 export type RetrospectivaDivulgacaoChannel = (typeof RETROSPECTIVA_DIVULGACAO_CHANNELS)[number];
 
@@ -117,10 +124,14 @@ const SKIP_TOKEN_TO_CHANNELS: Record<string, readonly RetrospectivaDivulgacaoCha
   linkedin: ["linkedin_pagina", "linkedin_perfil"],
   box: ["box"],
   email: ["email"],
+  facebook: ["facebook"],
+  instagram: ["instagram"],
+  threads: ["threads"],
+  x: ["x"],
 };
 
 /**
- * Pura: `--skip pagina,apoiase,linkedin,box,email` → conjunto de canais.
+ * Pura: `--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email` → conjunto de canais.
  * Token desconhecido LANÇA (typo nunca vira "não pulou nada" em silêncio —
  * mesma disciplina do `--only` de `publish-artigo-especial-linkedin.ts`).
  */
@@ -195,15 +206,18 @@ const PAYWALLED_HOSTS_RE = /\b(?:retrospectiva|artigo)\.diar\.ia\.br\b/i;
  * ok). Regra herdada do Artigo Especial (decisão do editor no #9474): o CTA
  * aponta pro apoia.se, NUNCA pra URL direta da retrospectiva paywalled — é no
  * apoia.se que a conversão acontece.
+ *
+ * `acceptedCtas` (#9500): linhas de CTA aceitas — default só a longa. X e
+ * Threads (≤280) aceitam também a curta (`retrospectiva-social.ts`).
  */
-export function publicPostCtaProblems(text: string): string[] {
+export function publicPostCtaProblems(text: string, acceptedCtas: readonly string[] = [RETROSPECTIVA_PUBLIC_CTA]): string[] {
   const problems: string[] = [];
   if (PAYWALLED_HOSTS_RE.test(text)) {
     problems.push("o texto cita a URL da retrospectiva paywalled (retrospectiva./artigo.diar.ia.br) — post público aponta só pro apoia.se");
   }
   const lines = text.replace(/\r\n/g, "\n").split("\n").map((l) => l.trim());
-  if (!lines.includes(RETROSPECTIVA_PUBLIC_CTA)) {
-    problems.push(`falta a linha literal de CTA: "${RETROSPECTIVA_PUBLIC_CTA}"`);
+  if (!acceptedCtas.some((cta) => lines.includes(cta))) {
+    problems.push(`falta a linha literal de CTA: ${acceptedCtas.map((c) => `"${c}"`).join(" ou ")}`);
   }
   return problems;
 }
