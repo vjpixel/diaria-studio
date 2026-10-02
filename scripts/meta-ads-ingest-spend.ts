@@ -119,8 +119,11 @@ export const META_ADS_CANAL = "Meta Ads (teste 2608)";
  *  `"... — GAQL cost_micros, N dia(s) (range), ingestão automática"`), só
  *  que sem o separador `—` porque este prefixo já descreve completamente a
  *  fonte (endpoint + parâmetros), sem precisar de um "label" curto na
- *  frente. Formato final: `${META_ADS_HEADLESS_FONTE_LABEL}, N dia(s)
- *  (AAAA-MM-DD..AAAA-MM-DD), ingestão automática`. */
+ *  frente. Formato final (`runHeadless`, janela conhecida — #9413 item 3):
+ *  `${META_ADS_HEADLESS_FONTE_LABEL}, N dia(s) (AAAA-MM-DD..AAAA-MM-DD),
+ *  janela AAAA-MM-DD..AAAA-MM-DD, ingestão automática`; sem janela
+ *  (chamador legado de `aggregateMetaAdsChannelMetricsByMonth`), sem o
+ *  trecho `janela ...`. */
 export const META_ADS_HEADLESS_FONTE_LABEL = "Meta Graph API insights (level=campaign, meta_ads.campaign_ids, time_increment=1)";
 
 /**
@@ -244,6 +247,7 @@ export function aggregateMetaAdsChannelMetricsByMonth(
       ? monthsFullyCoveredByWindow(windowStart, windowEnd, mesesOrdenados.at(-1))
       : [];
   const janela = `${windowStart}..${windowEnd ?? ""}`;
+  const janelaSuffix = windowStart !== undefined ? `, janela ${janela}` : "";
   for (const mes of zeroMonths) if (!byMonth.has(mes)) byMonth.set(mes, { sum: 0, dates: [] });
 
   return [...byMonth.entries()]
@@ -270,10 +274,7 @@ export function aggregateMetaAdsChannelMetricsByMonth(
         // #9413 item 3: com a janela conhecida, ela vai na `fonte` — sem isso
         // "N dia(s) (19..30/09)" parece mês truncado mesmo quando a janela
         // cobriu desde o dia 1 (o mês só não teve gasto antes do dia 19).
-        fonte:
-          windowStart !== undefined
-            ? `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), janela ${janela}, ingestão automática`
-            : `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range}), ingestão automática`,
+        fonte: `${META_ADS_HEADLESS_FONTE_LABEL}, ${dates.length} dia(s) (${range})${janelaSuffix}, ingestão automática`,
       };
     });
 }
