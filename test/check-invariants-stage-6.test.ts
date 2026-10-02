@@ -24,6 +24,7 @@ import {
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
+  buildKitDraftStaleMessage,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
 import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 
@@ -460,5 +461,27 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     assert.equal(v[0].rule, "site-page-published-parseable");
     assert.equal(v[0].severity, "error");
     rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("kit-draft-fresh — mensagem nomeia todo canal ativo (#9442)", () => {
+  const base = { what: "02-reviewed.md", when: "2026-10-02T10:00:00Z", editionDir: "data/editions/261002" };
+
+  it("Brevo diária desligada → só o re-run do Kit", () => {
+    const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: false });
+    assert.ok(msg.includes("npx tsx scripts/publish-newsletter-kit.ts data/editions/261002 --send-test"));
+    assert.ok(!msg.includes("publish-daily-brevo.ts"), "sem brevo_diaria não manda rodar a Brevo");
+    assert.match(msg, /02-reviewed\.md/);
+  });
+
+  it("Brevo diária ligada → Kit E Brevo diária, com o comando exato da Brevo", () => {
+    const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: true });
+    assert.ok(msg.includes("npx tsx scripts/publish-newsletter-kit.ts data/editions/261002 --send-test"));
+    assert.ok(
+      msg.includes("npx tsx scripts/publish-daily-brevo.ts data/editions/261002 --i-reviewed-the-copy --send-test"),
+      "comando copiável da Brevo diária com a flag obrigatória --i-reviewed-the-copy",
+    );
+    assert.match(msg, /Brevo diária/);
+    assert.ok(!msg.includes("--force"), "--force criaria campanha duplicada — nunca sugerir");
   });
 });

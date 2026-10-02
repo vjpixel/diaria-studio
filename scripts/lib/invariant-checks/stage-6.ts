@@ -149,7 +149,7 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
  */
 function checkKitDraftFresh(
   editionDir: string,
-  opts: { backend?: string; rootDir?: string; now?: number } = {},
+  opts: { backend?: string; rootDir?: string; now?: number; brevoDiariaEnabled?: boolean } = {},
 ): InvariantViolation[] {
   if ((opts.backend ?? loadNewsletterBackend()) !== "kit") return [];
   const path = resolve(editionDir, "_internal", "newsletter-kit-published.json");
@@ -174,8 +174,16 @@ function checkKitDraftFresh(
   ];
 
   let currentHash: string;
+  let brevoDiariaEnabled = opts.brevoDiariaEnabled ?? false;
   try {
-    const payload = renderKitPayload(editionDir, loadPlatformConfig(opts.rootDir ?? ROOT));
+    const platformConfig = loadPlatformConfig(opts.rootDir ?? ROOT);
+    // #9442: a Brevo diária monta o rascunho do MESMO 02-reviewed.md — se o
+    // canal está configurado, o aviso precisa mandar re-rodar os dois.
+    if (opts.brevoDiariaEnabled === undefined) {
+      const bd = (platformConfig as { brevo_diaria?: unknown }).brevo_diaria;
+      brevoDiariaEnabled = typeof bd === "object" && bd !== null;
+    }
+    const payload = renderKitPayload(editionDir, platformConfig);
     currentHash = kitContentHash(payload.subject, payload.previewText, payload.html);
   } catch (e) {
     return warn(
@@ -197,11 +205,41 @@ function checkKitDraftFresh(
         `A correção vale só pro acervo/site.`,
     );
   }
-  return warn(
-    `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
-      `teste estão com o conteúdo VELHO. Re-rodar \`npx tsx scripts/publish-newsletter-kit.ts ` +
-      `${editionDir} --send-test\` (idempotente: atualiza o mesmo broadcast e manda novo teste) e ` +
-      `conferir o novo e-mail antes de aprovar o agendamento.`,
+  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled }));
+}
+
+/**
+ * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
+ * Nomeia TODO canal ativo montado do mesmo `02-reviewed.md`: o Kit sempre, e a
+ * Brevo diária quando `brevo_diaria` está configurado em `platform.config.json`
+ * (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
+ * com o conteúdo recalculado — re-rodar é idempotente). Sem isso o editor
+ * corrigia o Kit seguindo o aviso e a campanha Brevo saía com o texto velho.
+ * Pura, exportada pra teste.
+ */
+export function buildKitDraftStaleMessage(args: {
+  what: string;
+  when: string;
+  editionDir: string;
+  brevoDiariaEnabled: boolean;
+}): string {
+  const { what, when, editionDir, brevoDiariaEnabled } = args;
+  const kitCmd = `\`npx tsx scripts/publish-newsletter-kit.ts ${editionDir} --send-test\``;
+  if (!brevoDiariaEnabled) {
+    return (
+      `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
+      `teste estão com o conteúdo VELHO. Re-rodar ${kitCmd} (idempotente: atualiza o mesmo broadcast ` +
+      `e manda novo teste) e conferir o novo e-mail antes de aprovar o agendamento.`
+    );
+  }
+  const brevoCmd =
+    `\`npx tsx scripts/publish-daily-brevo.ts ${editionDir} --i-reviewed-the-copy --send-test\``;
+  return (
+    `${what} mudou depois que o rascunho Kit foi publicado (${when}) — os rascunhos montados do ` +
+    `mesmo conteúdo (broadcast Kit e campanha Brevo diária) e os e-mails de teste estão com o ` +
+    `conteúdo VELHO. Re-rodar os 2 canais: Kit ${kitCmd} (idempotente: atualiza o mesmo broadcast) ` +
+    `e Brevo diária ${brevoCmd} (idempotente: reaproveita a campanha registrada e atualiza via PUT); ` +
+    `conferir os novos e-mails de teste antes de aprovar o agendamento.`
   );
 }
 
