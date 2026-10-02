@@ -207,7 +207,7 @@ export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
  * quando ela não está instalada e título longo cortava a 62px (achado 260919).
  * Só o semanal passa isto; o card diário segue nas constantes acima.
  */
-export const WEEKLY_OVERLAY_WRAP = { divisor: 38, ratio: 0.66 } as const;
+export const WEEKLY_OVERLAY_WRAP = { divisor: 41, ratio: 0.66 } as const;
 export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
 
 /**
