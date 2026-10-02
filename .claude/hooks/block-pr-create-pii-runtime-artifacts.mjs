@@ -361,6 +361,9 @@ export function buildBaseEmailsByFile(nameStatusEntries, touchedPaths, base, cwd
  * Cada entrada: `file` (path relativo exato) + `jsonPath` (chaves até um
  * array de strings). Acrescentar aqui exige a mesma prova: o array inteiro
  * guarda endereços PÚBLICOS por definição de produto.
+ *
+ * **Custo aceito:** o guard deixa de inspecionar o que entra nesse array —
+ * um endereço privado colado ali passa. Quem revisa a PR responde por ele.
  */
 export const STRUCTURAL_EMAIL_EXEMPTIONS = [
   { file: "platform.config.json", jsonPath: ["newsletter_auto_capture", "senders"] },
@@ -415,8 +418,27 @@ export function extractStructurallyExemptEmails(content, jsonPath) {
   };
   walk(root);
 
+  // Chave JSON duplicada some no `JSON.parse` (fica só o último valor), então
+  // a árvore parseada pode esconder uma ocorrência "em outro lugar" (review
+  // da PR #9426). Confere também o TEXTO cru: o e-mail só é isento se o
+  // número de ocorrências no arquivo bater com o número dentro do array.
+  const countAll = (text) => {
+    const counts = new Map();
+    for (const m of text.matchAll(new RegExp(EMAIL_RE.source, "g"))) {
+      const e = m[0].toLowerCase();
+      counts.set(e, (counts.get(e) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const rawCounts = countAll(content);
+  const insideCounts = countAll(target.filter((item) => typeof item === "string").join("\n"));
+
   const out = new Set();
-  for (const e of inside) if (!elsewhere.has(e)) out.add(e);
+  for (const e of inside) {
+    if (elsewhere.has(e)) continue;
+    if ((rawCounts.get(e) ?? 0) !== (insideCounts.get(e) ?? 0)) continue;
+    out.add(e);
+  }
   return out;
 }
 
@@ -749,7 +771,7 @@ if (
       );
       // #9414 — remetentes públicos em `newsletter_auto_capture.senders`.
       addStructuralExemptions(baseEmailsByFile, addedLinesByFile.keys(), "HEAD", cwd, runGit);
-      const findings =findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile);
+      const findings = findDangerousDiffContent(nameStatusEntries, addedLinesByFile, baseEmailsByFile);
 
       if (findings.length > 0) {
         process.stdout.write(

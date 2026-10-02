@@ -898,6 +898,14 @@ describe("#9414 — isenção por caminho JSON `newsletter_auto_capture.senders`
     assert.equal(set?.size, 0);
   });
 
+  it("(2c') chave JSON duplicada não esconde a ocorrência 'em outro lugar' (review PR #9426)", () => {
+    const raw =
+      '{"outra": "pii@exemplo-teste.invalid", "outra": "ok",' +
+      ' "newsletter_auto_capture": {"senders": ["pii@exemplo-teste.invalid"]}}';
+    const set = extractStructurallyExemptEmails(raw, ["newsletter_auto_capture", "senders"]);
+    assert.equal(set?.has("pii@exemplo-teste.invalid"), false);
+  });
+
   it("(2d) JSON inválido ou caminho ausente -> null (fail-closed)", () => {
     assert.equal(extractStructurallyExemptEmails("{ quebrado", ["newsletter_auto_capture", "senders"]), null);
     assert.equal(extractStructurallyExemptEmails("{}", ["newsletter_auto_capture", "senders"]), null);
