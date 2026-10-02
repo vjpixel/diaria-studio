@@ -31,6 +31,7 @@ import {
   buildApoiadoresKitBroadcastInput,
   buildApoiadoresKitDescription,
   main,
+  resolveApoiadoresSendAt,
   verifyAudienceFilter,
   type ApoiadoresKitDeps,
   type ApoiadoresKitEmailContent,
@@ -39,6 +40,7 @@ import type { RenderedMonthlyApoiadoresKitEmail } from "../scripts/render-monthl
 import type { ApoiadoresState } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
 import { buildTagFilter, type CreateBroadcastInput } from "../scripts/lib/kit-broadcasts.ts";
 import { resolveApoiadoresAudience } from "../scripts/lib/mensal/apoiadores-kit-channel.ts";
+import { DEFAULT_MONTHLY_SEND_SCHEDULE } from "../scripts/lib/mensal/monthly-send-schedule.ts";
 
 const CONTENT: ApoiadoresKitEmailContent = {
   subject: "Assunto de teste",
@@ -153,6 +155,10 @@ function makeSpy(overrides: Partial<ApoiadoresKitDeps> = {}, existing: Apoiadore
     },
     // Default do caminho feliz: a releitura ecoa exatamente o filtro enviado.
     getBroadcast: async () => ({ subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] }),
+    // #9473: relógio FIXO bem depois do 1º sábado de ago/2026 (envio do ciclo
+    // 2607-08 pela regra) — sem --schedule/--draft, a regra cai pra RASCUNHO
+    // por "já passou", que é o que os testes pré-#9473 abaixo assumem.
+    now: () => new Date("2030-01-01T00:00:00Z"),
     ...overrides,
   };
   return { deps, created, written, renderCalls };
@@ -762,5 +768,119 @@ describe("#7867 item 1 — main() com --schedule", () => {
       restore();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ── #9473 — regra "1º sábado do mês de envio, 06:00 BRT" por padrão ─────────
+
+describe("#9473 — resolveApoiadoresSendAt", () => {
+  const rule = DEFAULT_MONTHLY_SEND_SCHEDULE;
+  const before = new Date("2026-10-20T12:00:00Z"); // bem antes de 07/11/2026
+
+  it("sem flags e com folga: agenda pela regra (1º sábado do mês de ENVIO)", () => {
+    const r = resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: undefined, draft: false, now: before, rule });
+    assert.deepEqual(r, { source: "rule", scheduleAt: "2026-11-07T06:00:00-03:00" });
+  });
+
+  it("sem flags e a menos de 24h: cai pra RASCUNHO com aviso (#8205), nunca agenda", () => {
+    const r = resolveApoiadoresSendAt({
+      cycle: "2610-11",
+      scheduleRaw: undefined,
+      draft: false,
+      now: new Date("2026-11-06T20:00:00Z"),
+      rule,
+    });
+    assert.equal(r.source, "rule_too_late");
+    assert.equal(r.scheduleAt, null);
+    assert.match(r.warning ?? "", /RASCUNHO/);
+  });
+
+  it("--schedule explícito vence a regra (comportamento #7867 inalterado, sem guard de 24h)", () => {
+    const r = resolveApoiadoresSendAt({
+      cycle: "2610-11",
+      scheduleRaw: "2026-11-06T22:00:00-03:00",
+      draft: false,
+      now: new Date("2026-11-06T20:00:00Z"),
+      rule,
+    });
+    assert.deepEqual(r, { source: "explicit", scheduleAt: "2026-11-06T22:00:00-03:00" });
+  });
+
+  it("--draft força rascunho mesmo com a regra disponível", () => {
+    const r = resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: undefined, draft: true, now: before, rule });
+    assert.deepEqual(r, { source: "draft_flag", scheduleAt: null });
+  });
+
+  it("--schedule + --draft juntos lançam (contraditório)", () => {
+    assert.throws(
+      () => resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: "2026-11-07T06:00:00-03:00", draft: true, now: before, rule }),
+      /mutuamente exclusivos/,
+    );
+  });
+
+  it("--schedule inválido lança", () => {
+    assert.throws(
+      () => resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: "amanhã", draft: false, now: before, rule }),
+      /ISO 8601/,
+    );
+  });
+});
+
+describe("#9473 — main() aplica a regra por padrão", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  async function run(argvExtra: string[], now: Date, cycle = "2610-11"): Promise<Spy> {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", cycle, ...argvExtra];
+      mockProcessExit();
+      const spy = makeSpy({ now: () => now });
+      await main(root, spy.deps);
+      return spy;
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("sem --schedule: send_at = 1º sábado do mês de envio 06:00 BRT, state 'sent'", async () => {
+    const spy = await run([], new Date("2026-10-20T12:00:00Z"));
+    assert.equal(exitCode, null);
+    assert.equal(spy.created.length, 1);
+    assert.equal(spy.created[0].send_at, "2026-11-07T06:00:00-03:00");
+    assert.equal(spy.written[0].state.status, "sent");
+  });
+
+  it("virada de ano: ciclo 2612-01 agenda em 02/01/2027", async () => {
+    const spy = await run([], new Date("2026-12-20T12:00:00Z"), "2612-01");
+    assert.equal(spy.created[0].send_at, "2027-01-02T06:00:00-03:00");
+  });
+
+  it("regra a <24h: cria RASCUNHO (send_at null, draft_prepared), sem abortar", async () => {
+    const spy = await run([], new Date("2026-11-06T20:00:00Z"));
+    assert.equal(exitCode, null);
+    assert.equal(spy.created[0].send_at, null);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+  });
+
+  it("--draft: rascunho mesmo com folga", async () => {
+    const spy = await run(["--draft"], new Date("2026-10-20T12:00:00Z"));
+    assert.equal(spy.created[0].send_at, null);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+  });
+
+  it("--schedule + --draft: exit(1)", async () => {
+    await assert.rejects(
+      run(["--draft", "--schedule", "2026-11-07T06:00:00-03:00"], new Date("2026-10-20T12:00:00Z")),
+      /__mocked_exit__/,
+    );
+    assert.equal(exitCode, 1);
   });
 });
