@@ -52,6 +52,13 @@
  * a allowlist de 21 para 10 sem nenhum aviso proporcional. Quem sai perde
  * acesso às Retrospectivas do Mês já publicadas.
  *
+ * **E-mails de editor/QA (#9491):** `platform.config.json` →
+ * `apoio_gate_editor_emails.emails` entra SEMPRE na lista gravada (via
+ * `scripts/lib/apoio-gate-editor-emails.ts`), pra o editor conseguir conferir
+ * o que o apoiador vê. Nunca entram no cálculo do blast radius (não são
+ * apoiadores) e o diff impresso os marca como `(editor)`. Os guards de dado
+ * faltando/parcial acima seguem valendo igual — editor nunca destrava push.
+ *
  * HISTÓRICO (#3940 → #7580): `--push` nunca tinha sido executado, e o
  * namespace era um literal `REPLACE_ME_...`. Em 07/09/2026 a allowlist foi
  * publicada pela primeira vez (21 apoiadores, contra `contacts.jsonl` real) —
@@ -72,6 +79,7 @@ import {
   evaluateTagBlastRadius,
   APOIO_TAG_BLAST_RADIUS_THRESHOLD,
 } from "./lib/shared/kit-apoio-tag.ts";
+import { mergeEditorEmails, normalizeGateEmail, readApoioGateEditorEmails } from "./lib/apoio-gate-editor-emails.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -203,6 +211,9 @@ export interface AllowlistBlastRadius {
   blocked: boolean;
   ratio: number;
   currentCount: number;
+  /** E-mails de editor/QA (#9491) — fora de `entram`/`saem`/`inalterados` e
+   *  do cálculo de blast radius; listados à parte pro diff marcar `(editor)`. */
+  editores: { entram: string[]; inalterados: string[] };
 }
 
 /**
@@ -213,13 +224,27 @@ export interface AllowlistBlastRadius {
  * audiência vizinhos já fazem, com o mesmo limiar de 30%, e ter duas respostas
  * diferentes pra ela seria a origem do próximo bug.
  *
+ * `editors` (#9491): e-mails de editor/QA são tirados das DUAS listas antes do
+ * diff — não são apoiadores, então nem diluem nem inflam a razão de remoção.
+ *
  * @pure
  */
 export function evaluateAllowlistBlastRadius(
   next: readonly string[],
   current: readonly string[],
   force: boolean,
+  editors: readonly string[] = [],
 ): AllowlistBlastRadius {
+  const editorSet = new Set(editors.map(normalizeGateEmail).filter(Boolean));
+  const isEditor = (e: string) => editorSet.has(normalizeGateEmail(e));
+  const currentNorm = new Set(current.map(normalizeGateEmail).filter(Boolean));
+  const editoresNoNext = [...new Set(next.map(normalizeGateEmail).filter((e) => e && editorSet.has(e)))].sort();
+  const editores = {
+    entram: editoresNoNext.filter((e) => !currentNorm.has(e)),
+    inalterados: editoresNoNext.filter((e) => currentNorm.has(e)),
+  };
+  next = next.filter((e) => !isEditor(e));
+  current = current.filter((e) => !isEditor(e));
   const diff = diffTagMembership(next, current);
   // Denominador DEDUPLICADO/normalizado, não `current.length` cru: o numerador
   // (`toRemove`) já sai de um `Set` normalizado dentro de `diffTagMembership`,
@@ -236,6 +261,7 @@ export function evaluateAllowlistBlastRadius(
     blocked: blast.blocked,
     ratio: blast.ratio,
     currentCount: blast.currentCount,
+    editores,
   };
 }
 
@@ -263,6 +289,8 @@ export type AllowlistPushDecision =
 export async function decideAllowlistPush(opts: {
   next: readonly string[];
   force: boolean;
+  /** E-mails de editor/QA (#9491) — ver `evaluateAllowlistBlastRadius`. */
+  editors?: readonly string[];
   readCurrent: () => Promise<string | null>;
 }): Promise<AllowlistPushDecision> {
   let current: string[];
@@ -286,7 +314,7 @@ export async function decideAllowlistPush(opts: {
     };
   }
 
-  const blast = evaluateAllowlistBlastRadius(opts.next, current, opts.force);
+  const blast = evaluateAllowlistBlastRadius(opts.next, current, opts.force, opts.editors ?? []);
   if (blast.blocked) {
     return {
       action: "refuse",
@@ -306,8 +334,15 @@ async function main(): Promise<void> {
   loadProjectEnv(REPO_ROOT);
 
   const data = await buildApoiosData(REPO_ROOT);
-  const allowlist = computeApoiadorAllowlist(data.contacts);
+  const apoiadores = computeApoiadorAllowlist(data.contacts);
+  // #9491: e-mails de editor/QA (config) entram sempre — ver cabeçalho.
+  const editors = readApoioGateEditorEmails(REPO_ROOT);
+  const { merged: allowlist, editorsOnly } = mergeEditorEmails(apoiadores, editors);
   const payload = JSON.stringify(allowlist);
+  console.error(
+    `[build-apoiador-allowlist] ${apoiadores.length} apoiador(es) + ${editorsOnly.length} e-mail(s) de editor ` +
+      `(apoio_gate_editor_emails) = ${allowlist.length} na allowlist.`,
+  );
 
   const outPath = getArg(argv, "out");
   if (outPath) {
@@ -362,6 +397,9 @@ async function main(): Promise<void> {
     const decision = await decideAllowlistPush({
       next: allowlist,
       force: hasFlag(argv, "force-blast-radius"),
+      // Só quem NÃO é apoiador conta como editor no diff: editor que também
+      // apoia segue no diff de apoiadores (achado do review da PR #9494).
+      editors: editorsOnly,
       readCurrent: () => getTextFromWorkerKV(APOIADOR_ALLOWLIST_KV_KEY, { kvNamespaceId }),
     });
 
@@ -378,12 +416,15 @@ async function main(): Promise<void> {
       const { blast } = decision;
       console.error(
         `[build-apoiador-allowlist] diff vs KV: +${blast.entram.length} entram · -${blast.saem.length} saem · ` +
-          `${blast.inalterados.length} já corretos (allowlist atual: ${blast.currentCount}).`,
+          `${blast.inalterados.length} já corretos (apoiadores na allowlist atual: ${blast.currentCount}) · ` +
+          `editor: +${blast.editores.entram.length} entram, ${blast.editores.inalterados.length} já presentes.`,
       );
       // Lista explícita, como os syncs vizinhos — quem revisa precisa ver QUEM
       // perde acesso, não só quantos.
       for (const e of blast.entram) console.error(`[build-apoiador-allowlist]   + ${e}`);
       for (const e of blast.saem) console.error(`[build-apoiador-allowlist]   - ${e}`);
+      for (const e of blast.editores.entram) console.error(`[build-apoiador-allowlist]   + ${e} (editor)`);
+      for (const e of blast.editores.inalterados) console.error(`[build-apoiador-allowlist]   = ${e} (editor)`);
     }
 
     console.error(

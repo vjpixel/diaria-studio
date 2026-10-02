@@ -180,7 +180,9 @@ fecha de ponta a ponta com `--skip apoiase`.
    `ALLOWLIST`, populada por `npx tsx scripts/build-apoiador-allowlist.ts
    --push` (fail-closed, recusa push parcial). Sem rodá-lo no ciclo, quem
    virou Mantenedor este mês recebe o e-mail mas pode ser barrado na página
-   que o box e o apoia.se apontam.
+   que o box e o apoia.se apontam. Os e-mails de `apoio_gate_editor_emails`
+   (`platform.config.json`, #9491) entram sempre — é o que deixa o editor
+   conferir a página como apoiador.
 
 ## Passo 1 — gerar os textos (agente, 1 dispatch)
 

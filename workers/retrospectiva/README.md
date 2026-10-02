@@ -59,7 +59,7 @@ Nunca deploye este Worker com rota comentada esperando que isso "adie" alguma co
 | binding | uso |
 |---|---|
 | `ARTICLES` | HTML pré-renderizado, `article:{path}` (completo) e `article:{path}:teaser` (trecho). Namespace **único** — a chave já distingue mensal de anual pelo formato do path. |
-| `ALLOWLIST` | `emails` (JSON array) — apoio Mantenedor/Patrono, populada por `scripts/build-apoiador-allowlist.ts --push`. Só `/AAMM` consulta. |
+| `ALLOWLIST` | `emails` (JSON array) — apoio Mantenedor/Patrono + e-mails de editor/QA de `platform.config.json` → `apoio_gate_editor_emails` (#9491), populada por `scripts/build-apoiador-allowlist.ts --push`. Só `/AAMM` consulta. |
 | `RATE_LIMIT` | contadores do rate-limit por IP do gate de cadastro. |
 
 Os ids vivem no `wrangler.toml` e são lidos pelos publishers via `scripts/lib/shared/retrospectiva-kv-namespaces.ts` — uma fonte só, a mesma que o `wrangler deploy` consome.

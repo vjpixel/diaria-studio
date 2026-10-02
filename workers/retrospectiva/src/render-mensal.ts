@@ -56,6 +56,35 @@ function escHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * #9492: telas de acesso no celular. O `.wrap` de 64px/24px + `.card` de
+ * 36px/32px deixava ~260px de texto num aparelho de 375px. Só abaixo de 640px —
+ * o desktop fica idêntico. Exportado pra `render-anual.ts` usar a mesma regra
+ * (as duas telas de gate têm o mesmo `.wrap`/`.card`).
+ */
+export const GATE_MOBILE_CSS = `@media only screen and (max-width: 640px) {
+    .wrap { padding:24px 12px !important; }
+    .card { padding:28px 20px !important; }
+    h1 { font-size:22px !important; }
+    a.button, button.button { display:block !important; width:100% !important; box-sizing:border-box; text-align:center; min-height:48px; }
+  }`;
+
+/**
+ * #9492: o bloco de conversão injetado no trecho é todo inline (o trecho vem
+ * pronto do KV), então o ajuste de celular vai num `<style>` próprio, escopado
+ * no id do bloco e só abaixo de 640px. Compartilhado com o bloco de cadastro da
+ * anual (`render-anual.ts`), que tem o mesmo layout.
+ */
+export function teaserBlockMobileCss(id: string): string {
+  return `<style>
+  @media only screen and (max-width: 640px) {
+    #${id} { padding:28px 12px !important; }
+    #${id} > div { padding:24px 20px !important; }
+    #${id} a.retrospectiva-cta { display:block !important; text-align:center; }
+  }
+</style>`;
+}
+
 function shell(title: string, bodyHtml: string): string {
   return `<!doctype html>
 <html lang="pt-BR">
@@ -86,6 +115,7 @@ function shell(title: string, bodyHtml: string): string {
     border:1px solid ${BEGE}; border-radius:8px; margin:0 0 16px; font-family:inherit;
   }
   .muted { font-size:13px; color:${INK}; opacity:0.7; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  ${GATE_MOBILE_CSS}
 </style>
 </head>
 <body>
@@ -212,11 +242,12 @@ export function renderTeaserWithPaywall(teaserHtml: string, path: string): strin
   if (ultima?.index === undefined) {
     throw new Error("teaser sem </body> — não há onde injetar o bloco de conversão (#7580)");
   }
-  // `id="retrospectiva-paywall"` (#7720) — nenhum estilo depende dele, é só o
-  // marcador que `index.ts` usa como `hasPart.cssSelector` no JSON-LD de
-  // paywall (o texto pago em si nunca chega aqui, ver docstring de
-  // `retrospectiva-seo.ts`).
+  // `id="retrospectiva-paywall"` (#7720) — marcador que `index.ts` usa como
+  // `hasPart.cssSelector` no JSON-LD de paywall (o texto pago em si nunca chega
+  // aqui, ver docstring de `retrospectiva-seo.ts`) E, desde o #9492, alvo do CSS
+  // de celular (`teaserBlockMobileCss`). Renomear quebra os dois.
   const bloco = `
+${teaserBlockMobileCss("retrospectiva-paywall")}
 <div style="position:relative;margin-top:-120px;height:120px;background:linear-gradient(to bottom, rgba(255,255,255,0), ${PAPER});pointer-events:none;"></div>
 <div id="retrospectiva-paywall" style="background:${BEGE};padding:40px 20px;font-family:-apple-system,Helvetica,Arial,sans-serif;">
   <div style="max-width:520px;margin:0 auto;background:${PAPER};border-radius:12px;padding:32px 28px;box-sizing:border-box;">
@@ -228,7 +259,7 @@ export function renderTeaserWithPaywall(teaserHtml: string, path: string): strin
       destaques, as recomendações e o fechamento.
     </p>
     <p style="margin:0 0 20px;">
-      <a href="${escHtml(apoiaseUrlComUtm(path))}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
+      <a class="retrospectiva-cta" href="${escHtml(apoiaseUrlComUtm(path))}" style="display:inline-block;background:${TEAL};color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:8px;font-size:16px;">Apoiar a diar.ia.br</a>
     </p>
     <p style="font-size:14px;line-height:1.6;margin:0 0 8px;color:${INK};opacity:.75;">
       Já apoia? <a href="?entrar=1" style="color:${INK};text-decoration-color:${TEAL};">Entre com seu e-mail</a>.
