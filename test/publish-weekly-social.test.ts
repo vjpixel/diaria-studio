@@ -1919,10 +1919,10 @@ describe("main(): dispatch mockado", () => {
     it("cards internos: título que NÃO cabe no piso fixo (62px) ABORTA o carrossel inteiro (status:failed pros 4 canais), reescrever é o fix indicado", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);
-      // Título deliberadamente longo — o teto de 52 chars é regra de D1/D2/D3,
+      // Título com palavra maior que a linha (22 chars a 62px, #9464): quebra não resolve — o teto de 52 chars é regra de D1/D2/D3,
       // não vale pra RADAR/USE MELHOR (o caso real que motivou a issue).
       const overflowingTitle =
-        "Um título de notícia extraordinariamente longo, do tipo que só um item de RADAR ou USE MELHOR carregaria, sem o teto editorial de 52 caracteres dos destaques";
+        "Superconstitucionalissimamente inconstitucionalizavelmente: palavra que nenhuma quebra de linha consegue dividir, como pode surgir num item de RADAR ou USE MELHOR";
       const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: overflowingTitle, url: "https://exemplo.com/d1" }]);
       addImageFixture(dirA, 1, "https://cdn.example.com/271220-d1.jpg");
 

@@ -391,8 +391,13 @@ describe("título diário de 32 chars quebra em 2 linhas que cabem (#8589)", () 
   it("semanal (wrap explícito) inalterado, fits:true mesmo com título longo de RADAR", () => {
     const t = "Um título de notícia bem mais longo do que qualquer destaque D1/D2/D3 jamais teria, porque RADAR";
     const r = overlayWrapLines(t, 936, WEEKLY_OVERLAY_WRAP);
-    assert.deepEqual(r.lines, wrapTitle(t, Math.floor(936 / 38)));
+    assert.deepEqual(r.lines, wrapTitle(t, Math.floor(936 / 41)));
     assert.equal(r.fits, true);
+  });
+  it("#9464: título ≤52 chars nunca reprova a 62px no wrap semanal (linha do wrap cabe no guard)", () => {
+    for (const t of ["Google vai colocar data centers no espaço?", "OpenAI cancela modelo que mentia e desobedecia", "Você viu Bonner anunciar pesquisa? Era deepfake", "Golpistas usam o próprio ChatGPT para invadir PCs", "Seu próximo modelo de código pode ser o Argon?"]) {
+      assert.equal(overlayTitleOverflows(t, 62, undefined, WEEKLY_OVERLAY_WRAP), false, t);
+    }
   });
   it("título sem quebra que caiba falha com mensagem clara no card diário", () => {
     assert.throws(() => buildOverlaySvg("Superconstitucionalissimamente inconstitucionalizavelmente"), /reescreva/);
