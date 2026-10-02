@@ -931,6 +931,17 @@ export function applyRescheduleVerifyResults(
   }
 }
 
+/**
+ * #9314/#9453: HTML da campanha `key`. Só lê `_internal/ab-test.json` quando a
+ * key é de célula de variante (`-VA`/`-VB`) — um ab-test.json quebrado não pode
+ * travar os fluxos sem braço (clarice-novos, ondas normais). Exportado pra
+ * teste de regressão.
+ */
+export function resolveGroupCampaignHtmlPath(monthlyDir: string, key: string): string {
+  const abTestConfig = variantArmFromKey(key) !== null ? readClariceAbTest(monthlyDir) : null;
+  return resolveCampaignHtmlPath(monthlyDir, key, abTestConfig);
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -1005,8 +1016,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const contentMonthlyDir = resolveMonthlyDir(contentCycle);
   // #9314: só lê ab-test.json pra key de variante — config quebrada não trava
   // os fluxos sem braço (clarice-novos, ondas normais).
-  const abTestConfig = variantArmFromKey(key) !== null ? readClariceAbTest(contentMonthlyDir) : null;
-  const htmlPath = resolveCampaignHtmlPath(contentMonthlyDir, key, abTestConfig);
+  const htmlPath = resolveGroupCampaignHtmlPath(contentMonthlyDir, key);
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   let html = readFileSync(htmlPath, "utf8");
   // #8059: o HTML renderizado sempre carrega links Amazon com a tag da

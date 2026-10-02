@@ -96,7 +96,8 @@ import {
   annotateRenamesNotReverted,
   writeFilesVerified,
   type VerifiedWrite,
-} from "./lib/write-files-verified.ts"; // #9188, #9320
+  type WriteFilesVerifiedDeps,
+} from "./lib/write-files-verified.ts"; // #9188, #9320, #9461
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
@@ -1110,6 +1111,36 @@ export function invalidatePublicImagesForReorder(
 }
 
 /**
+ * #9461: passos 4a–7 de `main()` rodam DEPOIS do lote principal
+ * (01-approved*.json, 02-reviewed.md, 03-social.md) e dos renames de
+ * imagens/prompts já gravados. Uma falha ali ("Lote revertido…" reverte só
+ * aquele arquivo) não pode levar o operador a re-rodar o mesmo --new-order —
+ * isso permutaria os destaques uma 2ª vez (mesma classe do #9320).
+ */
+export function annotateMainBatchAlreadyApplied(err: unknown, newOrder: number[]): Error {
+  const base = err instanceof Error ? err : new Error(String(err));
+  base.message +=
+    ` ATENÇÃO: o lote principal JÁ foi aplicado (01-approved*.json, 02-reviewed.md, 03-social.md ` +
+    `e renames de imagens/prompts estão na ordem nova --new-order ${newOrder.join(",")}). ` +
+    `NÃO re-rodar o mesmo --new-order — isso permutaria os destaques uma 2ª vez; ` +
+    `corrija à mão só o arquivo que falhou.`;
+  return base;
+}
+
+/** #9461: `writeFilesVerified` dos passos pós-lote, com a anotação acima. */
+export function writePostBatchVerified(
+  writes: VerifiedWrite[],
+  newOrder: number[],
+  deps?: WriteFilesVerifiedDeps,
+): void {
+  try {
+    writeFilesVerified(writes, "reorder-destaques", deps);
+  } catch (err) {
+    throw annotateMainBatchAlreadyApplied(err, newOrder);
+  }
+}
+
+/**
  * Conteúdo reordenado de um JSON canônico, ou null se ausente/inalterado.
  * #9188: não grava — o chamador acumula no lote verificado.
  */
@@ -1256,6 +1287,10 @@ function main(): void {
   // frontmatter de 02-reviewed.md). #9320: gravado DEPOIS do lote verificado
   // (como o promote já fazia) — se o lote falha e é revertido, o erro
   // intencional não fica permutado na ordem nova.
+  // #9461: daqui pra baixo (4a–7) o lote principal JÁ está gravado — toda
+  // falha de escrita precisa avisar isso, senão o operador re-roda o mesmo
+  // --new-order e permuta os destaques uma 2ª vez.
+  try {
   const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
   if (intentionalErrorRecord) {
@@ -1286,6 +1321,10 @@ function main(): void {
   // rename mesmo numa edição cujo `03-social.md` nem existe ainda.
   const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
+  } catch (err) {
+    // Em --dry-run nada foi gravado — não afirmar "JÁ aplicado".
+    throw args.dryRun ? err : annotateMainBatchAlreadyApplied(err, args.newOrder); // #9461
+  }
 
   // 5. fact-check-sources/manifest.json + d{N}.txt (#8679).
   //
@@ -1343,10 +1382,10 @@ function main(): void {
         const cropResult = reorderCropReviewJson(cropData, args.newOrder);
         if (cropResult.changed) {
           if (!args.dryRun) {
-            writeFilesVerified(
+            writePostBatchVerified(
               [{ path: cropReviewPath, content: JSON.stringify(cropResult.data, null, 2) + "\n" }],
-              "reorder-destaques",
-            ); // #9188
+              args.newOrder,
+            ); // #9188, #9461
           }
           modified.rewritten.push(cropReviewPath);
         }
@@ -1382,10 +1421,10 @@ function main(): void {
         const publicImagesResult = invalidatePublicImagesForReorder(publicImagesData, args.newOrder);
         if (publicImagesResult.changed) {
           if (!args.dryRun) {
-            writeFilesVerified(
+            writePostBatchVerified(
               [{ path: publicImagesPath, content: JSON.stringify(publicImagesResult.data, null, 2) + "\n" }],
-              "reorder-destaques",
-            ); // #9188
+              args.newOrder,
+            ); // #9188, #9461
           }
           modified.rewritten.push(publicImagesPath);
           const reuploadMsg =

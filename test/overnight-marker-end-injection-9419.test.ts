@@ -88,8 +88,10 @@ describe("#9419 — --end via hook remove o marker por sessão", () => {
     const markerPath = activeSessionPath(root, undefined, sid);
 
     const r = runMarker("npx tsx scripts/overnight-session-marker.ts --end", root);
-    assert.equal(r.status, 0, r.stderr);
+    // #9451: continua não removendo, mas agora falha ALTO (exit 1) em vez de exit 0 silencioso.
+    assert.equal(r.status, 1, r.stderr);
     assert.match(r.stdout, /nada — já ausente/);
+    assert.match(r.stderr, /STANDALONE/);
     assert.ok(existsSync(markerPath), "sem --session-id o marker por sessão sobrevive — por isso a injeção é necessária");
   });
 
