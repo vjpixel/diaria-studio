@@ -62,7 +62,7 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoGet } from "./lib/brevo-client.ts";
+import { brevoGetWithNetworkRetry } from "./lib/brevo-client.ts";
 import { pool, poolAbortOnError } from "./lib/pool.ts";
 import { parseBrevoContact, type BrevoColumns } from "./lib/brevo-stats.ts";
 import {
@@ -654,7 +654,7 @@ async function enumerateContacts(
   const doneIds = existing?.doneIds ?? [];
   let offset = ids.length;
   for (;;) {
-    const { body } = await brevoGet(apiKey, contactsListPath(offset, modifiedSince));
+    const { body } = await brevoGetWithNetworkRetry(apiKey, contactsListPath(offset, modifiedSince));
     const cs = body?.contacts ?? [];
     for (const c of cs)
       ids.push({ id: c.id, email: String(c.email ?? "").toLowerCase() });
@@ -818,7 +818,7 @@ export async function main(
 
   try {
     await poolAbortOnError(pending, concurrency, async (c) => {
-      const { body } = await brevoGet(apiKey, `/contacts/${c.id}`);
+      const { body } = await brevoGetWithNetworkRetry(apiKey, `/contacts/${c.id}`);
       // 404 (sumiu entre listar e buscar) → body {} → parse vira tudo-zero; marca
       // como done mesmo assim pra não re-tentar em loop.
       buffer.push({ id: c.id, cols: parseBrevoContact(body) });
@@ -865,7 +865,7 @@ export async function main(
       const result = await runOpensCatchup({
         client: campaignClient,
         fetchContact: async (identifier) => {
-          const { body } = await brevoGet(apiKey, `/contacts/${encodeURIComponent(identifier)}`);
+          const { body } = await brevoGetWithNetworkRetry(apiKey, `/contacts/${encodeURIComponent(identifier)}`);
           return body;
         },
         upsert: upsertBrevo,
