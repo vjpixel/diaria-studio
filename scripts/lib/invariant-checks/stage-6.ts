@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-orphans.ts";
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8786
+import { checkKitDraftFreshness, type SourceHashes } from "../kit-draft-freshness.ts"; // #9428
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -119,6 +120,53 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
     ];
   }
   return [];
+}
+
+/**
+ * #9428: o rascunho Kit (e o e-mail de teste) refletem o `02-reviewed.md`
+ * ATUAL? `publish-newsletter-kit.ts` grava em `newsletter-kit-published.json`
+ * o sha256 dos insumos do `content` (`source_hashes`); aqui recalculamos. Se o
+ * editor editou `02-reviewed.md` (ou `01-eia.md`/`06-public-images.json`)
+ * DEPOIS do publish, o broadcast agendado sairia com o texto velho pra base
+ * inteira — achado ao vivo na edição 261002 (vencedora do erro intencional
+ * corrigida 12 min depois do publish; só o `review-test-email` pegou, por
+ * acaso).
+ *
+ * `warning`, não `error`: a ação certa é re-publicar (idempotente), não
+ * travar o Stage 6 — e o mesmo check roda ANTES do gate (§6b), onde o aviso
+ * entra destacado na parada única. Nunca re-publica sozinho.
+ *
+ * Só backend `"kit"` (o Beehiiv tem fluxo próprio via playbook). Estado
+ * ausente/ilegível → sem violação aqui (`scheduled-at-present` já acusa);
+ * estado sem `source_hashes` (publicado antes do #9428) → sem violação.
+ * `backendOverride` só pra teste (mesmo padrão de `checkScheduledAt`).
+ */
+function checkKitDraftFresh(editionDir: string, backendOverride?: string): InvariantViolation[] {
+  if ((backendOverride ?? loadNewsletterBackend()) !== "kit") return [];
+  const path = resolve(editionDir, "_internal", "newsletter-kit-published.json");
+  if (!existsSync(path)) return [];
+  let data: { source_hashes?: SourceHashes; source_hashed_at?: string };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+  const result = checkKitDraftFreshness(editionDir, data.source_hashes);
+  if (result.status !== "stale") return [];
+  return [
+    {
+      rule: "kit-draft-fresh",
+      message:
+        `${result.changed.join(", ")} mudou depois que o rascunho Kit foi publicado ` +
+        `(${data.source_hashed_at ?? "momento desconhecido"}) — o broadcast e o e-mail de teste ` +
+        `estão com o conteúdo VELHO. Re-rodar \`npx tsx scripts/publish-newsletter-kit.ts ` +
+        `{EDITION_DIR} --send-test\` (idempotente: atualiza o mesmo broadcast e manda novo teste) ` +
+        `e conferir o novo e-mail antes de aprovar o agendamento.`,
+      source_issue: "#9428",
+      severity: "warning",
+      file: path,
+    },
+  ];
 }
 
 /**
@@ -507,6 +555,14 @@ export const STAGE_6_RULES: InvariantRule[] = [
     run: checkScheduledAt,
   },
   {
+    id: "kit-draft-fresh",
+    description:
+      "backend Kit: insumos do rascunho (02-reviewed.md, 01-eia.md, 06-public-images.json) não mudaram desde o publish (#9428)",
+    source_issue: "#9428",
+    stage: 6,
+    run: checkKitDraftFresh,
+  },
+  {
     id: "edition-report-exists",
     description: "_internal/edition-report.html escrito pelo send-edition-report.ts (#1510)",
     source_issue: "#1510",
@@ -558,6 +614,7 @@ export const STAGE_6_RULES: InvariantRule[] = [
 export {
   checkStep5Sentinel,
   checkScheduledAt,
+  checkKitDraftFresh,
   checkEditionReport,
   checkWhatsappSlugGuard,
   checkStep6Sentinel,

@@ -27,6 +27,7 @@ import {
 } from "../scripts/publish-newsletter-kit.ts";
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
 import type { KitBroadcastDetail } from "../scripts/lib/kit-client.ts";
+import { checkKitDraftFresh } from "../scripts/lib/invariant-checks/stage-6.ts"; // #9428
 
 describe("buildKitSubject / buildKitPreviewText", () => {
   it("subject é content.title, preview é content.subtitle — sem transformação", () => {
@@ -446,6 +447,55 @@ describe("main() — integração", () => {
           "(mesma que o bloco WhatsApp já crava no e-mail), nunca o public_url do Kit " +
           "— diar.ia.br é nosso desde o cutover do apex (#467), não domínio de terceiro.",
       );
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#9428: grava source_hashes no publish; edição posterior do 02-reviewed.md vira kit-draft-fresh; re-run limpa", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260997");
+      mockFetch((call) => {
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          return jsonRes(201, { broadcast: { id: 9428, status: "draft", public_url: "https://news.diar.ia.br/p/9428" } });
+        }
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/9428") {
+          return jsonRes(200, { broadcast: { id: 9428, status: "draft", public_url: "https://news.diar.ia.br/p/9428" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+
+      const state = readPublishedState(editionDir);
+      assert.ok(state?.source_hashes, "estado do publish precisa carregar source_hashes (#9428)");
+      assert.match(state!.source_hashes!["02-reviewed.md"] ?? "", /^[0-9a-f]{64}$/);
+      assert.match(state!.source_hashes!["01-eia.md"] ?? "", /^[0-9a-f]{64}$/);
+      assert.equal(state!.source_hashes!["06-public-images.json"], null, "ausente no publish = null");
+      assert.ok(state!.source_hashed_at);
+      assert.deepEqual(checkKitDraftFresh(editionDir, "kit"), [], "logo após o publish não há divergência");
+
+      // Cenário da 261002: editor corrige o 02-reviewed.md depois do publish.
+      const reviewedPath = join(editionDir, "02-reviewed.md");
+      writeFileSync(reviewedPath, readFileSync(reviewedPath, "utf8") + "\nCorreção pós-publish.\n", "utf8");
+      const v = checkKitDraftFresh(editionDir, "kit");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "kit-draft-fresh");
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /02-reviewed\.md/);
+      assert.match(v[0].message, /publish-newsletter-kit\.ts .*--send-test/);
+
+      // Re-rodar o publisher (PATCH idempotente) atualiza o baseline.
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(calls.at(-1)?.method, "PATCH");
+      assert.deepEqual(checkKitDraftFresh(editionDir, "kit"), [], "re-publicar reseta o baseline");
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });
