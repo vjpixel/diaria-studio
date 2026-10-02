@@ -411,6 +411,13 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   quebrada, não CI vermelho. Não confundir com a outra quebra do mesmo dia
   (#6237 → master vermelho, fix `eac20369`/#6261): teste desatualizado, o
   CI pega sozinho e não precisa deste guard.
+  **Issue pulada por guard de arquivo sensível (#9463):** quando uma edição for
+  negada por guard (ou o motivo for `requer-sessao-local`/`guard-de-execucao`),
+  além do comentário, rotear a issue pra Develop:
+  `npx tsx scripts/route-issue.ts --issue N --track develop --reason "guard-de-execucao: {arquivo}"`
+  (com dedup). Sem a label `develop-track`, a Triagem continua mostrando
+  Overnight e o próximo ciclo a pega de novo. Gate:
+  `npx tsx scripts/check-skipped-develop-track.ts --plan {plan.json}`.
 - **Não reivindica issue nova enquanto houver rodada overnight ativa**
   (#6277). No início de cada ciclo, antes de qualquer `claim-issue`: `npx
   tsx scripts/lib/session-registry.ts active-of-kind --kind overnight`.
