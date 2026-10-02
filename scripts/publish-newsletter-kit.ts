@@ -156,6 +156,7 @@ import {
   type UpdateBroadcastInput,
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -447,7 +448,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
-  const editionDir = resolve(rootDir, editionDirArg);
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: rootDir }); // #9427
   const content = extractContent(editionDir);
 
   const imagesPath = resolve(editionDir, "06-public-images.json");

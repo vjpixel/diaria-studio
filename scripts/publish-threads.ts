@@ -85,6 +85,7 @@ import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de ed
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -441,7 +442,7 @@ async function main() {
     console.error("ERRO: --edition-dir é obrigatório.");
     process.exit(1);
   }
-  const editionDir = resolve(ROOT, editionDirArg);
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");

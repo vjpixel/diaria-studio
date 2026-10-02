@@ -67,6 +67,7 @@ import {
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -256,7 +257,7 @@ export async function main(): Promise<void> {
   const allowOtherDate = hasFlag(argv, "allow-other-date");
   let result: ScheduleKitDiariaResult;
   try {
-    result = await scheduleKitDiaria(resolve(ROOT, editionDir), scheduledAt, productionDeps(), { allowOtherDate });
+    result = await scheduleKitDiaria(resolveEditionDirArg(editionDir, { root: ROOT }) /* #9427 */, scheduledAt, productionDeps(), { allowOtherDate });
   } catch (e) {
     result = { code: 3, reason: `erro inesperado: ${(e as Error).message}` };
   }

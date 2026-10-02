@@ -58,6 +58,7 @@ import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { resolveStage5MaxAdd } from "./lib/brevo-diaria-max-add.ts";
 import { readStore, DEFAULT_STORE_PATH, type BrevoDiariaContact } from "./lib/brevo-diaria-store.ts";
+import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
 
@@ -267,7 +268,8 @@ if (isMainModule(import.meta.url)) {
     process.stderr.write("uso: npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir <dir>\n");
     process.exit(2);
   }
-  const editionDir = resolve(editionDirArg);
+  // #9427: resolve contra a raiz do repo (antes era `process.cwd()`).
+  const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT });
   const deps = productionDeps(ROOT);
   const result = runStage5BrevoDispatch(editionDir, deps);
   console.log(JSON.stringify(result));
