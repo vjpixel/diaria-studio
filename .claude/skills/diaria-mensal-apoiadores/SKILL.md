@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal-apoiadores
-description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). Canal Kit (migrado de Brevo, #7633; e a Brevo tinha migrado da Beehiiv, #4572). Cria rascunho por padrão (disparo manual no painel), ou agenda direto com `--schedule` (#7867 item 1). Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent] [--schedule "AAAA-MM-DDTHH:mm"]`.
+description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail pros apoiadores dos níveis Mantenedor/Patrono — skill manual e separada do fluxo 0-5 de /diaria-mensal (o editor decide o timing). Canal Kit (migrado de Brevo, #7633; e a Brevo tinha migrado da Beehiiv, #4572). Agenda por padrão no 1º sábado do mês de envio, 06:00 BRT (#9473 — cai pra rascunho se faltar <24h); `--draft` força rascunho, `--schedule` (#7867 item 1) força outro horário. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--force] [--mark-sent] [--draft | --schedule "AAAA-MM-DDTHH:mm"]`.
 ---
 
 # /diaria-mensal-apoiadores
@@ -28,8 +28,9 @@ description: Envia a edição mensal (data/monthly/{ciclo}/draft.md) por e-mail 
 > 1 caiu pra `apoiador` (R$10–25, abaixo do corte), 2 estão sem `apoio_nivel`
 > (apoio não vigente) e 1 está blacklisted na Brevo e não existe no Kit.
 >
-> **O que falta pro 1º envio Kit:** rodar o Passo 2 abaixo sem `--dry-run` e
-> conferir o rascunho no painel. Nenhum broadcast Kit foi criado ainda.
+> **O que falta pro 1º envio Kit:** rodar o Passo 2 abaixo sem `--dry-run` —
+> desde o #9473 isso já AGENDA pro 1º sábado do mês de envio, 06:00 BRT (se
+> faltarem >=24h; senão cria rascunho) — e conferir o broadcast no painel. Nenhum broadcast Kit foi criado ainda.
 
 ## ⚠️ O state local não é prova de envio
 
@@ -158,10 +159,15 @@ o que referenciar.
 # Preview local — NUNCA chama a API do Kit, nem lê/grava o state.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --dry-run
 
-# Cria o broadcast de verdade — rascunho por padrão (send_at: null).
+# #9473: cria o broadcast JÁ AGENDADO pela regra — 1º sábado do mês de ENVIO,
+# 06:00 BRT (platform.config.json → monthly_send_schedule). Se esse horário
+# estiver a <24h (#8205) ou já tiver passado, cai pra RASCUNHO com aviso.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE
 
-# #7867 item 1: cria JÁ AGENDADO via send_at e marca status "sent" direto —
+# Rascunho explícito (send_at: null) — o default antigo.
+npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --draft
+
+# #7867 item 1: horário EXPLÍCITO (sobrepõe a regra) — agenda via send_at e marca status "sent" direto —
 # dispensa o Passo 3 (--mark-sent) neste caminho. SEM guard de data (decisão
 # do editor): o script não checa colisão com a edição diária — a escolha do
 # horário/dia é julgamento do editor, igual ao Passo 2 "escolher um dia sem
@@ -177,7 +183,7 @@ npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --schedule "202
 - Escreve `data/monthly/$CYCLE/_internal/apoiadores-kit-preview.html`.
 - Fora de `--dry-run`: resolve a tag por NOME (nunca cria), confere que ela
   tem membros, e cria o broadcast com `subscriber_filter` de tag,
-  `send_at: null` e **`public: false`** — sem `public_url`, pra recompensa de
+  `send_at` da regra/`--schedule` (ou `null` = rascunho) e **`public: false`** — sem `public_url`, pra recompensa de
   apoiador não virar página pública (a anual e a diária usam `public: true`
   justamente pelo motivo inverso).
 - **Depois de criar, relê o broadcast e confere o `subscriber_filter` que a
@@ -194,7 +200,7 @@ npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --schedule "202
   2º broadcast pro mesmo ciclo (`kitBroadcastId` gravado ou ciclo `sent`);
   `--force` ignora. Depois de criar, grava o id de volta.
 
-**Sem `--schedule`** (caminho manual, rascunho): ação manual do editor no
+**Rascunho** (`--draft`, ou regra tarde demais): ação manual do editor no
 painel do Kit:
 1. Test send (Broadcasts → o rascunho → Send preview) pra conferir
    visualmente.
@@ -202,12 +208,12 @@ painel do Kit:
    #4482 — evitar 2 e-mails no mesmo dia).
 3. Send/Schedule pela UI.
 
-**Com `--schedule`** (#7867 item 1): o broadcast já sai agendado — nada a
+**Agendado** (regra #9473 ou `--schedule` #7867 item 1): o broadcast já sai agendado — nada a
 fazer no painel além de conferir (test send continua possível antes do
 horário chegar). O state já vira `status: "sent"` — o Passo 3 abaixo não é
 necessário neste caminho.
 
-## Passo 3 — Confirmar o envio (só o caminho manual, sem `--schedule`)
+## Passo 3 — Confirmar o envio (só o caminho rascunho)
 
 ```bash
 npx tsx scripts/send-monthly-apoiadores.ts --cycle $CYCLE --mark-sent
@@ -218,7 +224,7 @@ o ciclo já saiu, e o Passo 1 continuaria "permitido" indefinidamente. Depois
 de marcado, uma nova tentativa dos Passos 1/2 pro MESMO ciclo é bloqueada por
 padrão; `--force` cobre o caso legítimo "preciso reenviar uma correção".
 **Continua existindo pro caminho manual** — só é dispensável quando o Passo 2
-já rodou com `--schedule` (item 1 acima), que grava `status: "sent"` sozinho.
+já saiu agendado (regra #9473 ou `--schedule`), que grava `status: "sent"` sozinho.
 
 ## Saídas
 
@@ -247,7 +253,8 @@ tomou. Reabrir é questão de produto — registrar como comentário na issue.
 
 ## Escopo explícito
 
-O disparo real (test send, Send/Schedule) continua manual no painel do Kit.
 O que a skill garante: conteúdo certo, audiência certa e auditável, broadcast
-SEMPRE criado como rascunho, e dedup entre Passo 1 (estado) e Passo 2
+agendado pela regra do 1º sábado do mês de envio, 06:00 BRT (#9473), quando
+faltam >=24h — rascunho caso contrário ou com `--draft`, e aí o disparo
+(test send, Send/Schedule) continua manual no painel do Kit — e dedup entre Passo 1 (estado) e Passo 2
 (broadcast real).
