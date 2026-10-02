@@ -212,3 +212,14 @@ test("#9424: Meta tem feed RSS oficial (tag AI do Newsroom) e sai da lista de la
   assert.equal(m.method, "rss");
   assert.ok(!LATE_REFRESH_UNCOVERED_LABS.includes("Meta"));
 });
+
+test("#9457: posts oficiais de Meta (about.fb.com) e Mistral anunciando lançamento → LANÇAMENTOS, não 'fonte não oficial'", () => {
+  const meta = suggestSubstitution({ url: "https://about.fb.com/news/2026/10/introducing-new-ai-glasses/", title: "Introducing new AI glasses" }, []);
+  assert.equal(meta.slot, "LANÇAMENTOS");
+  const mistral = suggestSubstitution({ url: "https://mistral.ai/news/mistral-medium-4", title: "Mistral launches Medium 4" }, []);
+  assert.equal(mistral.slot, "LANÇAMENTOS");
+  const essay = suggestSubstitution({ url: "https://mistral.ai/news/our-values", title: "Our values" }, []);
+  assert.equal(essay.slot, "RADAR");
+  assert.equal(essay.reason, "post oficial que não anuncia lançamento");
+  assert.equal(suggestSubstitution({ url: "https://techcrunch.com/x", title: "Mistral launches Medium 4" }, []).reason, "fonte não oficial");
+});

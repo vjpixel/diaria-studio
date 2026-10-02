@@ -235,8 +235,14 @@ function splitSentences(text: string): string[] {
  * 6 itens de pool em 260801→261001 saíram com ele; como o rodapé repete o
  * título, o filtro de relevância por título do passo 3 abaixo o MANTÉM, então
  * precisa sair antes). Corta do "O post" até o fim.
+ *
+ * #9458: case-sensitive (o rodapé é sempre capitalizado), ancorado em início
+ * de texto/frase e casando a ÚLTIMA ocorrência de "O post" antes do
+ * "apareceu primeiro em" — com a flag `i`, um "o post" no meio do resumo
+ * ("Segundo o post publicado...") cortava o texto inteiro.
  */
-const WORDPRESS_FOOTER_RE = /\s*\b(?:O post|The post)\s[\s\S]*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/iu;
+const WORDPRESS_FOOTER_RE =
+  /(?:^|(?<=[.!?…"'”»)])\s+)(?:O post|The post)\s(?:(?!(?:O|The) post\s)[\s\S])*?\b(?:apareceu primeiro em|appeared first on)\b[\s\S]*$/u;
 
 /** Espaço antes de pontuação ("Meta , trouxe" / "medida ."). Não toca reticências. */
 const SPACE_BEFORE_PUNCTUATION_RE = /(\S)[ \t]+([,;:!?]|\.(?!\.))(?=\s|$)/gu;

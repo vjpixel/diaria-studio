@@ -227,7 +227,8 @@ export interface SameFactRemoval {
 /**
  * #9386: em `--no-gates`, remove do pool secundário (RADAR/LANÇAMENTOS) do
  * `01-approved.json` os itens com warning de MESMO FATO (casados por URL
- * contra o bucket final). Destaques (e use_melhor/video) nunca são removidos — continuam só com aviso. Pura: não
+ * contra o bucket final) — só evidência por título e nunca `editor_submitted`
+ * (#9456). Destaques (e use_melhor/video) nunca são removidos — continuam só com aviso. Pura: não
  * muta `approved`; devolve a cópia filtrada + as remoções (para o gate 4).
  */
 export function removeSameFactSecondary(
@@ -255,6 +256,11 @@ export function removeSameFactSecondary(
       if (typeof url !== "string" || !url) return true;
       const w = byUrl.get(canonicalize(url));
       if (!w) return true;
+      // #9456: só evidência por TÍTULO remove sozinha — versão citada no
+      // resumo é contexto comum ("supera o GPT-6.1") e fica só como aviso.
+      if (w.evidence !== "title") return true;
+      // #9456: submissão do editor nunca é removida automaticamente (#4192, #5080).
+      if ((it as { flag?: unknown }).flag === "editor_submitted") return true;
       const title = rec.article?.title ?? rec.title;
       removed.push({
         bucket,
