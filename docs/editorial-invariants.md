@@ -140,7 +140,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `edition-report-exists` | _internal/edition-report.html escrito pelo send-edition-report.ts (#1510) | #1510 |
-| `kit-draft-fresh` | backend Kit: insumos do rascunho (02-reviewed.md, 01-eia.md, 06-public-images.json) não mudaram desde o publish (#9428) | #9428 |
+| `kit-draft-fresh` | backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428) | #9428 |
 | `scheduled-at-present` | 05-published.json tem scheduled_at ou status=published (#1694) | #1694 |
 | `site-page-published` | _internal/site-page-published.json registra published:true — GATE-BLOCKING desde #7578 (era warning, #7283) | #7578 |
 | `site-sitemap-no-orphans` | toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578) | #7578 |
