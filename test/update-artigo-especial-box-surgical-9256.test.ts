@@ -13,7 +13,12 @@ import {
 // #9256 — o pin/unpin do box reescrevia platform.config.json inteiro via
 // JSON.stringify (arrays inline expandidos, dezenas de linhas no diff).
 
-const realText = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8");
+// slot2 normalizado pro Artigo Especial: na config real ele alterna com a Retrospectiva
+// (#9474, last-writer-wins) e estes testes não podem depender de quem ocupa o slot hoje.
+const realText = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8").replace(
+  /("slot2": )"[^"]*"/,
+  '$1"artigo-especial-apoiadores.md"',
+);
 const INPUT = { titulo: "T", gancho: "G", mesLabel: "Setembro" };
 
 function changedLines(a: string, b: string): string[] {
