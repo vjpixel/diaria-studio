@@ -318,7 +318,7 @@ describe("check-retrospectiva-divulgacao — CTA nos DOIS posts públicos (o do 
   it("perfil com a URL paywalled reprova, mesmo com a página ok", () => {
     write("linkedin-pagina.md", OK);
     write("linkedin-perfil.md", `${OK}https://retrospectiva.diar.ia.br/2609\n`);
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, "facebook,instagram,threads,x");
     assert.equal(r.length, 2);
     assert.equal(r[0].problems.length, 0);
     assert.match(r[1].problems.join(), /paywalled/);
@@ -326,13 +326,64 @@ describe("check-retrospectiva-divulgacao — CTA nos DOIS posts públicos (o do 
   it("arquivo ausente reprova; --skip linkedin não checa nada; token inválido lança", () => {
     write("linkedin-pagina.md", OK);
     assert.match(checkRetrospectivaDivulgacaoTexts(tmp, undefined)[1].problems.join(), /ausente/);
-    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin"), []);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook,instagram,threads,x"), []);
     assert.throws(() => checkRetrospectivaDivulgacaoTexts(tmp, "linkdin"), /linkdin/);
   });
   it("CTA tolera CRLF e espaços em volta; host sem esquema e maiúsculas também reprovam", () => {
     assert.deepEqual(publicPostCtaProblems(`Texto.\r\n\r\n  ${RETROSPECTIVA_PUBLIC_CTA}  \r\n`), []);
     assert.equal(publicPostCtaProblems(`${OK}veja RETROSPECTIVA.DIAR.IA.BR/2609`).length, 1);
     assert.equal(publicPostCtaProblems(`${OK}outra.diar.ia.br/x`).length, 0);
+  });
+});
+
+describe("canais sociais públicos (#9500)", () => {
+  function write(file: string, text: string) {
+    mkdirSync(join(tmp, "divulgacao"), { recursive: true });
+    writeFileSync(join(tmp, "divulgacao", file), text);
+  }
+  const OK = `Chamada.\n\n${RETROSPECTIVA_PUBLIC_CTA}\n`;
+
+  it("state aceita e round-tripa facebook/instagram/threads/x", () => {
+    const p = retrospectivaDivulgacaoStatePath(tmp);
+    let s = readRetrospectivaDivulgacaoState(p, "2609-10");
+    for (const ch of ["facebook", "instagram", "threads", "x"] as const) {
+      s = withChannelState(s, ch, buildDoneChannelState("2026-10-02T00:00:00Z", null));
+    }
+    writeRetrospectivaDivulgacaoState(p, s);
+    assert.deepEqual(Object.keys(readRetrospectivaDivulgacaoState(p, "2609-10").channels).sort(), ["facebook", "instagram", "threads", "x"]);
+  });
+
+  it("--skip aceita cada canal social; typo continua lançando", () => {
+    assert.deepEqual([...parseRetrospectivaSkip("facebook,x")].sort(), ["facebook", "x"]);
+    assert.throws(() => parseRetrospectivaSkip("twitter"), /twitter/);
+  });
+
+  it("mark grava canal social", () => {
+    runMarkRetrospectivaChannel({ cycle: "2609-10", cycleDir: tmp, channel: "threads", status: "done", url: "https://threads.net/x" });
+    const st = readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10");
+    assert.equal(st.channels.threads?.status, "done");
+  });
+
+  it("check: os 4 textos são exigidos; X acima de 280 e URL paywalled reprovam; --skip os dispensa", () => {
+    write("linkedin-pagina.md", OK);
+    write("linkedin-perfil.md", OK);
+    write("facebook.md", OK);
+    write("instagram.md", OK);
+    write("threads.md", OK);
+    write("x.md", `${"a".repeat(300)}\n${RETROSPECTIVA_PUBLIC_CTA}\n`);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
+    assert.equal(r.length, 6);
+    assert.equal(r.filter((c) => c.problems.length > 0).length, 1);
+    assert.match(r.find((c) => c.file.endsWith("x.md"))!.problems.join(), /limite de 280/);
+    write("facebook.md", `${OK}retrospectiva.diar.ia.br/2609`);
+    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, "x")[2].problems.join(), /paywalled/);
+    assert.equal(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook,instagram,threads,x").length, 0);
+  });
+
+  it("ausente reprova quando não pulado", () => {
+    write("linkedin-pagina.md", OK);
+    write("linkedin-perfil.md", OK);
+    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, undefined)[2].problems.join(), /ausente/);
   });
 });
 

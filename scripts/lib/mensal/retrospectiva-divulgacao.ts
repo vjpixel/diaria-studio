@@ -20,6 +20,7 @@
  *   | `linkedin_perfil` | `mark-retrospectiva-channel.ts` (composer manual)         |
  *   | `box`             | `update-retrospectiva-box.ts`                             |
  *   | `email`           | `mark-retrospectiva-channel.ts --sync-email` (deriva do state do publisher) |
+ *   | `facebook`/`instagram`/`threads`/`x` (#9500) | `mark-retrospectiva-channel.ts` — post PÚBLICO de chamada, mesma regra de CTA do LinkedIn |
  *
  * O canal `email` NÃO duplica o guard do publisher Kit: a fonte de verdade do
  * broadcast segue sendo `_internal/beehiiv-apoiadores-state.json`
@@ -45,6 +46,10 @@ export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
   "linkedin_perfil",
   "box",
   "email",
+  "facebook",
+  "instagram",
+  "threads",
+  "x",
 ] as const;
 export type RetrospectivaDivulgacaoChannel = (typeof RETROSPECTIVA_DIVULGACAO_CHANNELS)[number];
 
@@ -117,6 +122,10 @@ const SKIP_TOKEN_TO_CHANNELS: Record<string, readonly RetrospectivaDivulgacaoCha
   linkedin: ["linkedin_pagina", "linkedin_perfil"],
   box: ["box"],
   email: ["email"],
+  facebook: ["facebook"],
+  instagram: ["instagram"],
+  threads: ["threads"],
+  x: ["x"],
 };
 
 /**
@@ -139,6 +148,38 @@ export function parseRetrospectivaSkip(skipArg: string | undefined): Set<Retrosp
   }
   for (const t of tokens) for (const ch of SKIP_TOKEN_TO_CHANNELS[t]) out.add(ch);
   return out;
+}
+
+// ── Canais sociais públicos (#9500) ────────────────────────────────────
+
+/**
+ * Canais sociais públicos além do LinkedIn → arquivo de texto em
+ * `divulgacao/`. Todos seguem a regra de CTA dos posts públicos
+ * (`publicPostCtaProblems`): apoia.se, nunca a URL paywalled.
+ */
+export const SOCIAL_PUBLIC_TEXT_FILES = {
+  facebook: "facebook.md",
+  instagram: "instagram.md",
+  threads: "threads.md",
+  x: "x.md",
+} as const satisfies Partial<Record<RetrospectivaDivulgacaoChannel, string>>;
+
+/** Limites de caracteres por canal (X e Threads têm teto duro; os demais não precisam). */
+export const SOCIAL_CHAR_LIMITS = { threads: 500, x: 280 } as const;
+
+/**
+ * Pura: problemas de um texto social público (lista vazia = ok) — o CTA do
+ * apoia.se (`publicPostCtaProblems`) mais o teto de caracteres do canal, pra
+ * que o excesso apareça ANTES do gate e não no dispatch.
+ */
+export function socialPublicTextProblems(channel: keyof typeof SOCIAL_PUBLIC_TEXT_FILES, text: string): string[] {
+  const problems = publicPostCtaProblems(text);
+  const limit = (SOCIAL_CHAR_LIMITS as Record<string, number>)[channel];
+  const len = text.trim().length;
+  if (limit !== undefined && len > limit) {
+    problems.push(`${channel}: ${len} caracteres, acima do limite de ${limit}`);
+  }
+  return problems;
 }
 
 // ── URL / rótulos ──────────────────────────────────────────────────────

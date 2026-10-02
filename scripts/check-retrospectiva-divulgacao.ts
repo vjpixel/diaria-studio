@@ -25,7 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
-import { parseRetrospectivaSkip, publicPostCtaProblems } from "./lib/mensal/retrospectiva-divulgacao.ts";
+import { parseRetrospectivaSkip, publicPostCtaProblems, socialPublicTextProblems, SOCIAL_PUBLIC_TEXT_FILES } from "./lib/mensal/retrospectiva-divulgacao.ts";
 
 export interface DivulgacaoTextCheck {
   file: string;
@@ -35,9 +35,13 @@ export interface DivulgacaoTextCheck {
 /** Corpo testável: problemas por arquivo de post público não pulado. */
 export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: string | undefined): DivulgacaoTextCheck[] {
   const skip = parseRetrospectivaSkip(skipArg);
-  const targets: Array<{ channel: "linkedin_pagina" | "linkedin_perfil"; file: string }> = [
+  const targets: Array<{ channel: "linkedin_pagina" | "linkedin_perfil" | keyof typeof SOCIAL_PUBLIC_TEXT_FILES; file: string }> = [
     { channel: "linkedin_pagina", file: "linkedin-pagina.md" },
     { channel: "linkedin_perfil", file: "linkedin-perfil.md" },
+    ...(Object.entries(SOCIAL_PUBLIC_TEXT_FILES) as Array<[keyof typeof SOCIAL_PUBLIC_TEXT_FILES, string]>).map(([channel, file]) => ({
+      channel,
+      file,
+    })),
   ];
   const out: DivulgacaoTextCheck[] = [];
   for (const t of targets) {
@@ -47,7 +51,13 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
       out.push({ file: path, problems: ["arquivo ausente — o Passo 1 (geração de textos) precisa rodar antes"] });
       continue;
     }
-    out.push({ file: path, problems: publicPostCtaProblems(readFileSync(path, "utf8")) });
+    const text = readFileSync(path, "utf8");
+    out.push({
+      file: path,
+      problems: t.channel in SOCIAL_PUBLIC_TEXT_FILES
+        ? socialPublicTextProblems(t.channel as keyof typeof SOCIAL_PUBLIC_TEXT_FILES, text)
+        : publicPostCtaProblems(text),
+    });
   }
   return out;
 }
