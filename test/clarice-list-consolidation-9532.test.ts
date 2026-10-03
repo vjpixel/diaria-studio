@@ -539,13 +539,18 @@ describe("clarice_list_history config (#9532)", () => {
   });
 
   it("insertConsolidatedAt edita só o bloco, preserva o resto do arquivo e é idempotente", () => {
+    // Fixtures derivadas do config real mas independentes do list_id que estiver
+    // commitado nele (null antes de configurar, numérico depois — #9540).
     const real = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8");
-    const withId = real.replace(/("clarice_list_history":\s*\{\s*\n\s*"list_id":\s*)null/, "$1313");
+    const listIdRe = /("clarice_list_history":\s*\{\s*\n\s*"list_id":\s*)(null|\d+)/;
+    assert.match(real, listIdRe, "bloco clarice_list_history com list_id no formato esperado");
+    const withNull = real.replace(listIdRe, "$1null");
+    const withId = real.replace(listIdRe, "$1313");
     const out = insertConsolidatedAt(withId, "2026-10-04T00:00:00.000Z");
     assert.equal(out.split("\n").length, withId.split("\n").length + 1);
     assert.equal(loadFromText(out).consolidatedAt, "2026-10-04T00:00:00.000Z");
     assert.equal(insertConsolidatedAt(out, "2027-01-01T00:00:00.000Z"), out);
-    assert.throws(() => insertConsolidatedAt(real, "2026-10-04T00:00:00.000Z"), /formato/); // list_id null
+    assert.throws(() => insertConsolidatedAt(withNull, "2026-10-04T00:00:00.000Z"), /formato/); // list_id null
   });
 
   it("arquivo ilegível/JSON quebrado falha alto", () => {
