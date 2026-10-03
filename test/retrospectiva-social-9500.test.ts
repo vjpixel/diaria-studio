@@ -50,6 +50,7 @@ import {
   RETROSPECTIVA_SOCIAL_DESTAQUE,
   imageUrlsFor,
   parseSocialForce,
+  parseSocialListArgs,
   retrospectivaSocialPublishedPath,
   runRetrospectivaSocialDispatch,
   type HistoriaImages,
@@ -642,6 +643,36 @@ describe("adaptador publish-retrospectiva-social", () => {
     assert.deepEqual(calls.map((c) => `${c.ch}:${c.input.historia}`), ["facebook:d2"]);
     assert.match(String((r.results.find((y) => y.key === "linkedin_pagina:d1") as { reason?: string }).reason), /<10 min durante a execução/);
     assert.equal(state()["linkedin_pagina:d1"]?.status, "failed");
+  });
+
+  it("#9517: X com horário vencido DURANTE a execução vira failed, sem x-payload (dueAt vencido)", async () => {
+    let t = NOW;
+    const { o } = opts({
+      posts: ["x:d1", "x:d2"],
+      clock: () => t,
+      prepareImages: async (hs) => {
+        t = Date.parse(SCHEDULE.d1.x) - 5 * 60_000; // faltam 5 min pro X d1
+        return Object.fromEntries(hs.map((h) => [h, { cards: cardsFor(h), pendingUpload: false }]));
+      },
+    });
+    const r = await runRetrospectivaSocialDispatch(o);
+    const d1 = r.results.find((y) => y.key === "x:d1");
+    assert.equal(d1?.action, "failed");
+    assert.match(String((d1 as { reason?: string }).reason), /<10 min durante a execução/);
+    assert.equal(state()["x:d1"]?.status, "failed");
+    assert.equal(r.results.find((y) => y.key === "x:d2")?.action, "x-payload");
+  });
+
+  it("#9518: --skip/--force/--old-cancelled sem valor, vazio ou repetido lança (nunca 'não pula nada')", () => {
+    assert.throws(() => parseSocialListArgs(["--skip", "--dry-run"]), /--skip foi passado sem valor/);
+    assert.throws(() => parseSocialListArgs(["--skip="]), /--skip foi passado com valor vazio/);
+    assert.throws(() => parseSocialListArgs(["--skip", "x", "--skip", "instagram"]), /--skip foi passada 2×/);
+    assert.throws(() => parseSocialListArgs(["--old-cancelled"]), /--old-cancelled foi passado sem valor/);
+    assert.throws(() => parseSocialListArgs(["--force"]), /--force exige a lista/);
+    const ok = parseSocialListArgs(["--skip", "instagram", "--old-cancelled", "facebook:d1"]);
+    assert.ok(ok.skip.has("instagram:d1"));
+    assert.ok(ok.oldCancelled.has("facebook:d1"));
+    assert.equal(ok.force.size, 0);
   });
 
   it("store que não grava DEPOIS do dispatch: não aborta, grava o state (que segura a reexecução) e sinaliza", async () => {

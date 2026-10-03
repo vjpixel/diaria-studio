@@ -85,7 +85,7 @@ import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worke
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
 import { TWITTER_IMAGE_LIMIT } from "./prep-twitter-posts.ts";
 import { decideChannelAction, buildDoneChannelState, buildFailedChannelState, withChannelState } from "./lib/artigo-especial-state.ts";
-import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs, isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
 import { uploadMonthlyImage } from "./lib/mensal/monthly-image-upload.ts";
@@ -560,10 +560,6 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     const { channel, historia } = splitPostKey(key);
     const base = { key, channel, historia };
     const publishedPath = retrospectivaSocialPublishedPath(o.cycleDir, historia);
-    if (channel === "x") {
-      results.push({ ...base, channel: "x", action: "x-payload", payload: xPayload(historia) });
-      continue;
-    }
     if (channel === "linkedin_pagina" && linkedinBlocked) {
       record(key, false, linkedinBlocked, null);
       results.push({ ...base, action: "failed", reason: linkedinBlocked });
@@ -572,11 +568,17 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     // O pré-voo mediu a antecedência ANTES de gerar/subir 15 imagens e de
     // despachar em série: re-checa por post. Um horário que passou no meio do
     // caminho viraria post IMEDIATO (o `dispatchEntry` roteia horário passado
-    // pro `make_now`; a fila do Worker dispara entry vencida na hora).
+    // pro `make_now`; a fila do Worker dispara entry vencida na hora). Vale
+    // também pro X (#9517): o payload do Buffer com `dueAt` vencido seria
+    // despachado pelo top-level fora de hora.
     if (!(Date.parse(schedule[historia][channel]) > clock() + MIN_LEAD_MS)) {
       const reason = `${schedule[historia][channel]} ficou a <10 min durante a execução — não despachado (sairia na hora); rode de novo com --at`;
       record(key, false, reason, null);
       results.push({ ...base, action: "failed", reason });
+      continue;
+    }
+    if (channel === "x") {
+      results.push({ ...base, channel: "x", action: "x-payload", payload: xPayload(historia) });
       continue;
     }
     const live = liveOnForce.get(key);
@@ -716,6 +718,24 @@ export function parseSocialForce(forceArg: string | undefined, flag = "--force")
   return new Set(RETROSPECTIVA_POST_KEYS.filter((k) => all.has(k)));
 }
 
+/**
+ * Pura: lê `--skip`/`--force`/`--old-cancelled` com `getStringArg` (#9518) —
+ * flag sem valor, valor vazio ou repetida LANÇA (nunca vira "não pula nada" em
+ * silêncio), igual ao gate `check-retrospectiva-divulgacao.ts`.
+ */
+export function parseSocialListArgs(argv: string[]): {
+  skip: Set<string>;
+  force: Set<RetrospectivaPostKey>;
+  oldCancelled: Set<RetrospectivaPostKey>;
+} {
+  const skip = parseRetrospectivaSkip(getStringArg(argv, "skip", { example: "instagram,x:d2" }));
+  // `--force` sem lista NÃO é global (ver SKILL): exige os canais.
+  if (parseArgs(argv).flags.has("force")) throw new Error("--force exige a lista de canais (ex: --force instagram ou instagram:d2) — nunca global.");
+  const force = parseSocialForce(getStringArg(argv, "force", { example: "instagram:d2" }));
+  const oldCancelled = parseSocialForce(getStringArg(argv, "old-cancelled", { example: "facebook:d1" }), "--old-cancelled");
+  return { skip, force, oldCancelled };
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -728,11 +748,7 @@ async function main(): Promise<void> {
   let force: Set<RetrospectivaPostKey>;
   let oldCancelled: Set<RetrospectivaPostKey>;
   try {
-    skip = parseRetrospectivaSkip(values["skip"]);
-    // `--force` sem lista NÃO é global (ver SKILL): exige os canais.
-    if (flags.has("force")) throw new Error("--force exige a lista de canais (ex: --force instagram ou instagram:d2) — nunca global.");
-    force = parseSocialForce(values["force"]);
-    oldCancelled = parseSocialForce(values["old-cancelled"], "--old-cancelled");
+    ({ skip, force, oldCancelled } = parseSocialListArgs(argv));
   } catch (e) {
     console.error((e as Error).message);
     process.exit(2);
