@@ -112,13 +112,15 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
 function main(): void {
   const argv = process.argv.slice(2);
   const cycle = requireMonthlyCycleArg(argv);
-  let checks: DivulgacaoTextCheck[];
+  const skipArg = getStringArg(argv, "skip", { example: "apoiase,linkedin" });
   try {
-    checks = checkRetrospectivaDivulgacaoTexts(monthlyDir(cycle), getStringArg(argv, "skip", { example: "apoiase,linkedin" }));
+    parseRetrospectivaSkip(skipArg);
   } catch (e) {
     console.error((e as Error).message);
     process.exit(2);
   }
+  // Só o --skip inválido é erro de uso (exit 2); I/O e bug propagam (exit 1).
+  const checks = checkRetrospectivaDivulgacaoTexts(monthlyDir(cycle), skipArg);
   let bad = 0;
   for (const c of checks) {
     if (c.problems.length === 0) {

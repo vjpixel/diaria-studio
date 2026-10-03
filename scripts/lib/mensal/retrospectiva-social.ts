@@ -79,7 +79,7 @@ export function retrospectivaPostTextFile(ch: RetrospectivaSocialChannel, h: Ret
  * diário trunca; aqui o texto é RECUSADO, porque truncar comeria o CTA).
  * Facebook: o mesmo 2200, por paridade com o Instagram (a diária usa um texto
  * só pros dois). LinkedIn: 3000 (limite do post). X e Threads: 280 — o X
- * conta URL como 23 (`xWeightedLength`); o Threads aceitaria 500 no Worker,
+ * conta URL como 23 (`xWeightedLength`); o Threads aceitaria 500,
  * mas o texto curto é o mesmo formato do X (`social-curto` da diária).
  */
 export const RETROSPECTIVA_SOCIAL_MAX_CHARS: Record<RetrospectivaSocialChannel, number> = {

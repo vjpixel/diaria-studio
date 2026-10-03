@@ -5,8 +5,10 @@
  * carrossel dos destaques diários (#6005 Parte B), sem render novo:
  *
  *   - capa 4:5 com o título da história (`generateCard` de
- *     `gen-social-card-4x5.ts`, a partir do `04-d{N}-2x1.jpg` do ciclo), com a
- *     linha de série "Retrospectiva de {Mês}" acima do título;
+ *     `gen-social-card-4x5.ts`, que usa a melhor arte do ciclo — nativo 4x5 >
+ *     master > `04-d{N}-2x1.jpg`; a mensal só gera o 2x1, então ele é
+ *     exigido), com a linha de série "Retrospectiva de {Mês}" acima do título e
+ *     sem data (o diretório do ciclo, `AAMM-MM`, não vira data no rodapé);
  *   - 3 slides de parágrafo + slide de CTA (`renderCarouselSlides` de
  *     `daily-carousel-card.ts`), texto = `divulgacao/d{N}.md`, slide de CTA
  *     com `RETROSPECTIVA_CAROUSEL_CTA` (override do #8681).

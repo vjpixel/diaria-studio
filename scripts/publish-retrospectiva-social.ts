@@ -9,7 +9,7 @@
  *
  *   | canal             | formato                                  | via |
  *   |-------------------|------------------------------------------|-----|
- *   | `linkedin_pagina` | imagem (capa 4:5) + texto                | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` |
+ *   | `linkedin_pagina` | imagem (capa 4:5) + texto                | `dispatchEntry` (`publish-linkedin.ts`), Worker, `allowImmediateFallback: false` e SEM URL do Make (o `make_now` falha em vez de publicar na hora) |
  *   | `facebook`        | imagem (capa 4:5) + texto                | `publishFacebookCarouselByUrl` (`publish-facebook.ts`), agendamento nativo da Graph API, 1 foto |
  *   | `instagram`       | carrossel de 5 (capa + 3 parágrafos + CTA) | `postToWorkerQueue` com `image_urls` (#6005 Parte B) |
  *   | `threads`         | carrossel de 5                           | `postToWorkerQueue` com `image_urls` (#6095) |
@@ -18,8 +18,8 @@
  * Por que não rodar os CLIs da diária: eles exigem diretório de edição e
  * INJETAM a linha de canal com a URL da edição (`injectChannelLine`) — aqui
  * isso publicaria a URL da retrospectiva paywalled, justamente o que o post
- * público não pode citar (#9474). O post da página LinkedIn, que até o #9508
- * era 1 só e saía por `publish-retrospectiva-linkedin.ts`, entrou aqui.
+ * público não pode citar (#9474). Até o #9508 a página LinkedIn tinha 1 post
+ * único, em script próprio — ver "Post ÚNICO legado" abaixo.
  *
  * ## Texto, imagens, agenda
  *
@@ -49,12 +49,18 @@
  *
  * O ciclo 2609-10 já tem o post único da página agendado no Worker
  * (`_internal/divulgacao-linkedin-published.json`). Enquanto ele estiver
- * vivo, os posts por história da página são RECUSADOS no pré-voo (sairiam
- * 4). `--replace-linkedin-single` cancela a entry no Worker (DELETE
+ * vivo e algum post da página estiver pedido, o pré-voo INTEIRO é recusado
+ * (tudo-ou-nada: sairiam 4 na página). `--replace-linkedin-single` cancela a entry no Worker (DELETE
  * /queue/:key) antes de despachar os 3 novos, marca o store legado como
  * `deleted` e o canal `linkedin_pagina` (sem sufixo) como `pending`. Se a
  * entry já saiu da fila (provavelmente publicada), os 3 seguem mesmo assim e
- * o resultado avisa (`legacy_linkedin.action = "already-gone"`).
+ * o resultado avisa (`legacy_linkedin.action = "already-gone"`). O post único
+ * do #9500 nas outras redes (`_internal/divulgacao-social-published.json`)
+ * não tem cancelamento por script: vivo, também recusa o pré-voo.
+ *
+ * Antecedência: o pré-voo exige ≥10 min e a checagem se repete post a post
+ * logo antes do dispatch (a geração/upload das imagens e o envio em série
+ * levam minutos) — horário vencido vira `failed`, nunca post imediato.
  *
  * Uso:
  *   npx tsx scripts/publish-retrospectiva-social.ts --cycle 2609-10 \
@@ -131,6 +137,9 @@ export const RETROSPECTIVA_SOCIAL_DESTAQUE = "especial-retrospectiva";
 
 /** Store do post ÚNICO da página LinkedIn (#9474) — legado, só lido/cancelado. */
 export const LEGACY_LINKEDIN_PUBLISHED_FILENAME = "divulgacao-linkedin-published.json";
+
+/** Store do post ÚNICO de Facebook/Instagram/Threads/X (#9500) — legado, só lido (post vivo ali barra o pré-voo). */
+export const LEGACY_SOCIAL_PUBLISHED_FILENAME = "divulgacao-social-published.json";
 
 /** Piso de antecedência: a Graph API do Facebook recusa agendamento a menos de 10 min. */
 const MIN_LEAD_MS = 10 * 60 * 1000;
@@ -221,6 +230,8 @@ export interface RunRetrospectivaSocialOptions {
   missingCredentials: Partial<Record<RetrospectivaPostChannel, string>>;
   verifyWorker?: (published: SocialPublished) => Promise<{ updated: SocialPublished; changes: number; inQueue?: number }>;
   now?: number;
+  /** Relógio da re-checagem de antecedência por post (default: `now` fixo, senão `Date.now`). */
+  clock?: () => number;
 }
 
 export interface RunRetrospectivaSocialResult {
@@ -328,7 +339,8 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   if (active.length === 0) return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [] };
 
   const schedule = o.resolveScheduledAts();
-  const now = o.now ?? Date.now();
+  const clock = o.clock ?? (() => o.now ?? Date.now());
+  const now = clock();
   const errors: string[] = [];
 
   // Pré-voo de TODOS os posts ativos — qualquer problema aborta antes do 1º
@@ -381,8 +393,21 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   if (linkedinActive && legacy && !o.replaceLinkedinSingle) {
     errors.push(
       `linkedin: o post ÚNICO da página (#9474) segue agendado no Worker (${String(legacy.worker_queue_key)}, ${legacy.scheduled_at ?? "?"}) — ` +
-        "os 3 posts por história somariam 4. Passe --replace-linkedin-single pra cancelá-lo e substituí-lo, ou --skip linkedin.",
+        "os 3 posts por história somariam 4 (o pré-voo é tudo-ou-nada: nada sai). Passe --replace-linkedin-single pra cancelá-lo e substituí-lo, ou --skip linkedin.",
     );
+  }
+  // Post ÚNICO do #9500 (Facebook/Instagram/Threads/X): sem cancelamento por
+  // script — se algum estiver vivo, os 3 por história somariam 4 naquela rede.
+  const legacySocial = readSocialPublished(resolve(o.cycleDir, "_internal", LEGACY_SOCIAL_PUBLISHED_FILENAME));
+  for (const ch of RETROSPECTIVA_POST_CHANNELS) {
+    if (ch === "linkedin_pagina" || !active.some((k) => splitPostKey(k).channel === ch)) continue;
+    const live = findLiveSocialDispatch(legacySocial, ch);
+    if (live) {
+      errors.push(
+        `${ch}: o post ÚNICO do #9500 está vivo (${LEGACY_SOCIAL_PUBLISHED_FILENAME}, status ${live.status}, ${live.scheduled_at ?? "?"}) — ` +
+          `remova-o na rede, marque-o "deleted" no store, ou --skip ${ch === "x" ? "x" : ch}`,
+      );
+    }
   }
   if (!WORKER_DESTAQUE_RE.test(RETROSPECTIVA_SOCIAL_DESTAQUE)) {
     errors.push(`destaque "${RETROSPECTIVA_SOCIAL_DESTAQUE}" incompatível com o Worker (${WORKER_DESTAQUE_RE})`);
@@ -399,6 +424,11 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   }
   const missingImages = historiasAtivas.filter((h) => !images[h]);
   if (missingImages.length > 0) throw new Error(`imagens ausentes para ${missingImages.join(", ")} — nada despachado`);
+  // Paths locais (dry-run) nunca podem chegar a um dispatcher real como URL.
+  const notUploaded = historiasAtivas.filter((h) => images[h]!.pendingUpload);
+  if (!o.dryRun && notUploaded.length > 0) {
+    throw new Error(`imagens de ${notUploaded.join(", ")} não subiram pro KV (pendingUpload fora do dry-run) — nada despachado`);
+  }
 
   const xPayload = (h: RetrospectivaHistoria): XBufferPayload => {
     const img = images[h]!;
@@ -406,7 +436,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     return {
       historia: h,
       channelId: o.xChannelId!,
-      text: o.texts[h]!.curto!.trim(),
+      text: retrospectivaPostText("x", o.texts[h]!)!, // o mesmo texto (CRLF normalizado) que o pré-voo mediu
       dueAt: schedule[h].x,
       images: img.pendingUpload
         ? []
@@ -509,6 +539,16 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ ...base, action: "failed", reason: linkedinBlocked });
       continue;
     }
+    // O pré-voo mediu a antecedência ANTES de gerar/subir 15 imagens e de
+    // despachar em série: re-checa por post. Um horário que passou no meio do
+    // caminho viraria post IMEDIATO (o `dispatchEntry` roteia horário passado
+    // pro `make_now`; a fila do Worker dispara entry vencida na hora).
+    if (!(Date.parse(schedule[historia][channel]) > clock() + MIN_LEAD_MS)) {
+      const reason = `${schedule[historia][channel]} ficou a <10 min durante a execução — não despachado (sairia na hora); rode de novo com --at`;
+      record(key, false, reason, null);
+      results.push({ ...base, action: "failed", reason });
+      continue;
+    }
     const live = liveOnForce.get(key);
     if (live && WORKER_CHANNELS.has(channel)) {
       // Cancela ANTES de reenviar: se o reenvio falhar, não sobra post antigo
@@ -550,7 +590,19 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       };
     }
     entry = { ...entry, historia };
-    appendSocialPosts(publishedPath, [entry]);
+    try {
+      appendSocialPosts(publishedPath, [entry]);
+    } catch (e) {
+      // O post pode JÁ estar aceito pela rede: abortar aqui perderia o
+      // registro e liberaria um 2º envio na reexecução. Segue pro state (que
+      // então segura a reexecução) e pros outros posts.
+      const msg =
+        `${key}: store NÃO gravado (${(e as Error).message})` +
+        (entry.status !== "failed" ? ` — o post JÁ ESTÁ agendado (${String(entry.fb_post_id ?? entry.worker_queue_key ?? "?")}); NÃO rode de novo sem conferir` : "") +
+        ".";
+      console.error(msg);
+      stateWriteErrors.push(msg);
+    }
     if (entry.status === "failed") {
       const reason = entry.reason ?? "dispatch falhou";
       record(key, false, reason, null);
@@ -567,7 +619,8 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     for (const h of workerDispatched) {
       const publishedPath = retrospectivaSocialPublishedPath(o.cycleDir, h);
       try {
-        const r = await o.verifyWorker(readSocialPublished(publishedPath));
+        const before = readSocialPublished(publishedPath);
+        const r = await o.verifyWorker(before);
         console.log(`[verify] ${h}: reconciliação Worker: ${formatVerifySummary(r)}`);
         const workerPlatforms = new Set([...WORKER_CHANNELS].map((ch) => RETROSPECTIVA_SOCIAL_PLATFORM[ch]));
         // Post de amanhã que some da fila E do DLQ vira "published" na
@@ -578,7 +631,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
             p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE &&
             p.status === "published" &&
             typeof p.scheduled_at === "string" &&
-            Date.parse(p.scheduled_at) > (o.now ?? Date.now()),
+            Date.parse(p.scheduled_at) > clock(),
         );
         if (precoce.length > 0) {
           throw new Error(
@@ -586,9 +639,15 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
               "provável lag do KV; store NÃO atualizado, confira a fila do Worker",
           );
         }
-        const dispatchedHere = results.filter((x) => x.historia === h && x.action === "dispatched" && WORKER_CHANNELS.has(x.channel)).length;
-        if (typeof r.inQueue === "number" && r.inQueue < dispatchedHere) {
-          verifyErrors.push(`${h}: só ${r.inQueue} de ${dispatchedHere} post(s) do Worker confirmados na fila — confira antes de considerar agendado`);
+        // `inQueue` conta TODA entry agendada do store que o Worker lista —
+        // inclusive as de execuções anteriores. Compara com todas as agendadas
+        // do store (não só as desta execução), senão uma antiga confirmada
+        // mascararia uma nova que não chegou à fila.
+        const expected = before.posts.filter(
+          (p) => workerPlatforms.has(p.platform) && p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE && p.status === "scheduled",
+        ).length;
+        if (typeof r.inQueue === "number" && r.inQueue < expected) {
+          verifyErrors.push(`${h}: só ${r.inQueue} de ${expected} post(s) do Worker confirmados na fila — confira antes de considerar agendado`);
         }
         if (r.changes > 0) {
           writeFileSync(publishedPath, JSON.stringify(r.updated, null, 2) + "\n", "utf8");
@@ -666,7 +725,7 @@ async function main(): Promise<void> {
     string | null
   >;
 
-  type SocialCfg = { enabled?: boolean; disabled_reason?: string; buffer_channel_id?: string; cloudflare_worker_url?: string; make_webhook_url?: string };
+  type SocialCfg = { enabled?: boolean; disabled_reason?: string; buffer_channel_id?: string; cloudflare_worker_url?: string };
   const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as Parameters<
     typeof resolveRetrospectivaPostScheduledAts
   >[0] & {
@@ -677,7 +736,7 @@ async function main(): Promise<void> {
   const disabled: Partial<Record<RetrospectivaPostChannel, string>> = {};
   for (const ch of RETROSPECTIVA_POST_CHANNELS) {
     const c = social[ch === "x" ? "twitter" : ch === "linkedin_pagina" ? "linkedin" : ch];
-    if (c?.enabled === false) disabled[ch] = c.disabled_reason ?? "enabled=false";
+    if (c?.enabled === false) disabled[ch] = c.disabled_reason || "enabled=false"; // `||`: motivo "" não pode reabilitar a rede
   }
 
   const { baseDate, fromRule } = resolveRetrospectivaBaseDate(cycle, {
@@ -764,7 +823,11 @@ async function main(): Promise<void> {
       linkedin: (i, publishedPath) => {
         const ctx: DispatchContext = {
           publishedPath,
-          webhookUrl: process.env.MAKE_LINKEDIN_WEBHOOK_URL ?? social.linkedin?.make_webhook_url ?? "",
+          // Vazio DE PROPÓSITO: o `dispatchEntry` roteia horário vencido pro
+          // `make_now` (post imediato) e `allowImmediateFallback: false` só
+          // cobre falha do Worker. Sem URL do Make, esse caminho falha em vez
+          // de publicar — post da Retrospectiva nunca sai fora da agenda.
+          webhookUrl: "",
           apiKey: process.env.MAKE_WEBHOOK_API_KEY || undefined,
           workerUrl,
           workerToken,

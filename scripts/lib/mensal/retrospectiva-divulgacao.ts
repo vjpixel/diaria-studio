@@ -201,7 +201,7 @@ export function parseRetrospectivaSkip(skipArg: string | undefined): Set<Retrosp
     .split(",")
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
-  const invalid = tokens.filter((t) => !(t in SKIP_TOKEN_TO_CHANNELS));
+  const invalid = tokens.filter((t) => !Object.hasOwn(SKIP_TOKEN_TO_CHANNELS, t)); // hasOwn: "constructor" etc. não passam
   if (invalid.length > 0) {
     throw new Error(
       `--skip contém valor(es) não reconhecido(s): ${invalid.join(", ")} (esperado: ${Object.keys(SKIP_TOKEN_TO_CHANNELS)

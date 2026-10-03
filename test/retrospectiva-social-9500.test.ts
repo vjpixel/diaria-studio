@@ -45,6 +45,7 @@ import {
 import { buildDoneChannelState, withChannelState } from "../scripts/lib/artigo-especial-state.ts";
 import {
   LEGACY_LINKEDIN_PUBLISHED_FILENAME,
+  LEGACY_SOCIAL_PUBLISHED_FILENAME,
   RETROSPECTIVA_SOCIAL_DESTAQUE,
   imageUrlsFor,
   parseSocialForce,
@@ -57,6 +58,7 @@ import {
 import { WORKER_DESTAQUE_RE } from "../scripts/publish-artigo-especial-linkedin.ts";
 import { checkRetrospectivaDivulgacaoTexts } from "../scripts/check-retrospectiva-divulgacao.ts";
 import { buildCarouselSlideTexts } from "../scripts/lib/daily-carousel-card.ts";
+import { renderRetrospectivaCards, retrospectivaCardPaths } from "../scripts/lib/mensal/retrospectiva-cards.ts";
 import { readSocialPublished, type PostEntry } from "../scripts/lib/social-published-store.ts";
 
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
@@ -288,6 +290,27 @@ describe("imagens por rede (mesmo recorte da diária)", () => {
   });
 });
 
+describe("retrospectiva-cards: as 5 imagens da história (render real)", () => {
+  it("gera capa + 4 slides em divulgacao/ com os nomes da diária; sem o 2x1 da história lança", async () => {
+    const sharp = (await import("sharp")).default;
+    await sharp({ create: { width: 1200, height: 600, channels: 3, background: { r: 40, g: 60, b: 90 } } }).jpeg().toFile(join(tmp, "04-d2-2x1.jpg"));
+    const paths = retrospectivaCardPaths(tmp, "d2");
+    assert.deepEqual(
+      Object.values(paths).map((p) => p.replace(/\\/g, "/").split("/").slice(-2).join("/")),
+      ["divulgacao/04-d2-4x5.jpg", "divulgacao/04-d2-carousel-p1-4x5.jpg", "divulgacao/04-d2-carousel-p2-4x5.jpg", "divulgacao/04-d2-carousel-p3-4x5.jpg", "divulgacao/04-d2-carousel-cta-4x5.jpg"],
+    );
+    const out = await renderRetrospectivaCards({ cycleDir: tmp, historia: "d2", title: TITLES.d2, corpo: CORPO, kicker: "Retrospectiva de Setembro", fontSize: 72 });
+    for (const p of Object.values(out)) {
+      const m = await sharp(p).metadata();
+      assert.deepEqual([m.width, m.height], [1080, 1350], p);
+    }
+    await assert.rejects(
+      renderRetrospectivaCards({ cycleDir: tmp, historia: "d3", title: TITLES.d3, corpo: CORPO, kicker: "k", fontSize: 72 }),
+      /04-d3-2x1\.jpg ausente/,
+    );
+  });
+});
+
 describe("adaptador publish-retrospectiva-social", () => {
   const SCHEDULE = resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "2026-10-10", now: NOW });
 
@@ -507,12 +530,12 @@ describe("adaptador publish-retrospectiva-social", () => {
     assert.equal(calls.length + cancels.length, 0);
     assert.equal(r.results.filter((y) => y.action === "dry-run").length, 12);
     const x = r.results.find((y) => y.action === "x-payload");
-    if (x?.action === "x-payload") {
-      assert.deepEqual(x.payload.images, []);
-      assert.equal(x.payload.imagePendingUpload, true);
-    }
+    assert.ok(x?.action === "x-payload");
+    assert.deepEqual(x.payload.images, []);
+    assert.equal(x.payload.imagePendingUpload, true);
     const ig = r.results.find((y) => y.key === "instagram:d1");
-    if (ig?.action === "dry-run") assert.equal(ig.images.length, 5);
+    assert.ok(ig?.action === "dry-run");
+    assert.equal(ig.images.length, 5);
     assert.equal(readFileSync(retrospectivaDivulgacaoStatePath(tmp), "utf8"), before);
     for (const h of H) assert.equal(existsSync(retrospectivaSocialPublishedPath(tmp, h)), false);
   });
@@ -601,6 +624,98 @@ describe("adaptador publish-retrospectiva-social", () => {
     const r2 = await runRetrospectivaSocialDispatch(b.o);
     assert.match(String(r2.verifyError), /lag do KV/);
     assert.equal(readSocialPublished(retrospectivaSocialPublishedPath(tmp, "d3")).posts[0].status, "scheduled");
+  });
+
+  it("horário que vence DURANTE a execução: o post vira failed sem despachar (nunca post imediato)", async () => {
+    let t = NOW;
+    const { o, calls } = opts({
+      posts: ["linkedin_pagina:d1", "facebook:d2"],
+      clock: () => t,
+      prepareImages: async (hs) => {
+        t = Date.parse(SCHEDULE.d1.linkedin_pagina) - 5 * 60_000; // upload lento: faltam 5 min pro d1
+        return Object.fromEntries(hs.map((h) => [h, { cards: cardsFor(h), pendingUpload: false }]));
+      },
+    });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.deepEqual(calls.map((c) => `${c.ch}:${c.input.historia}`), ["facebook:d2"]);
+    assert.match(String((r.results.find((y) => y.key === "linkedin_pagina:d1") as { reason?: string }).reason), /<10 min durante a execução/);
+    assert.equal(state()["linkedin_pagina:d1"]?.status, "failed");
+  });
+
+  it("store que não grava DEPOIS do dispatch: não aborta, grava o state (que segura a reexecução) e sinaliza", async () => {
+    const { o } = opts({ posts: ["facebook:d1", "facebook:d2"] });
+    const fb = o.dispatchers.facebook;
+    o.dispatchers.facebook = async (i) => {
+      // Simula lock/EPERM do OneDrive: o store da história vira um diretório.
+      if (i.historia === "d1") mkdirSync(retrospectivaSocialPublishedPath(tmp, "d1"), { recursive: true });
+      return fb(i);
+    };
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.match(r.stateWriteErrors.join(), /facebook:d1: store NÃO gravado.*JÁ ESTÁ agendado/);
+    assert.equal(state()["facebook:d1"]?.status, "done");
+    assert.equal(state()["facebook:d2"]?.status, "done", "os outros posts seguem");
+    // Reexecução (o lock passou; store da história SEM o registro): o state segura, nada sai de novo.
+    rmSync(retrospectivaSocialPublishedPath(tmp, "d1"), { recursive: true, force: true });
+    const again = opts({ posts: ["facebook:d1"] });
+    await runRetrospectivaSocialDispatch(again.o);
+    assert.equal(again.calls.length, 0);
+  });
+
+  it("post único do #9500 vivo numa rede recusa o pré-voo; deleted ou rede pulada não recusa", async () => {
+    mkdirSync(join(tmp, "_internal"), { recursive: true });
+    const legacy = join(tmp, "_internal", LEGACY_SOCIAL_PUBLISHED_FILENAME);
+    writeFileSync(legacy, JSON.stringify({ posts: [{ platform: "instagram", destaque: RETROSPECTIVA_SOCIAL_DESTAQUE, url: null, status: "scheduled", scheduled_at: "2026-10-03T09:20:00-03:00" }] }));
+    const a = opts();
+    await assert.rejects(runRetrospectivaSocialDispatch(a.o), /instagram: o post ÚNICO do #9500 está vivo/);
+    assert.equal(a.calls.length, 0);
+    const b = opts({ posts: ALL.filter((k) => !k.startsWith("instagram")) });
+    await runRetrospectivaSocialDispatch(b.o);
+    assert.equal(b.calls.length, 9);
+  });
+
+  it("confirmação na fila compara com TODAS as agendadas do store (uma antiga não mascara uma nova ausente)", async () => {
+    liveStore("d1", "linkedin", { worker_queue_key: "k-old-li" });
+    let s = readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10");
+    s = withChannelState(s, "linkedin_pagina:d1", buildDoneChannelState("x", null));
+    writeRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), s);
+    // Só a antiga está na fila: 1 de 2.
+    const { o } = opts({ posts: ["linkedin_pagina:d1", "threads:d1"], verifyWorker: async (p) => ({ updated: p, changes: 0, inQueue: 1 }) });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.match(String(r.verifyError), /d1: só 1 de 2/);
+  });
+
+  it("--force num post do Worker cujo cancelamento lança ou já sumiu: não reenvia", async () => {
+    let s = readRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), "2609-10");
+    s = withChannelState(s, "linkedin_pagina:d3", buildDoneChannelState("x", null));
+    writeRetrospectivaDivulgacaoState(retrospectivaDivulgacaoStatePath(tmp), s);
+    liveStore("d3", "linkedin", { worker_queue_key: "old-li-d3" });
+    const boom = opts({ posts: ["linkedin_pagina:d3"], force: new Set(["linkedin_pagina:d3"]) });
+    boom.o.dispatchers.cancelWorker = async () => {
+      throw new Error("Worker 500");
+    };
+    const r = await runRetrospectivaSocialDispatch(boom.o);
+    assert.equal(boom.calls.length, 0);
+    assert.match(String((r.results[0] as { reason?: string }).reason), /cancelamento do post anterior.*Worker 500/);
+    const gone = opts({ posts: ["linkedin_pagina:d3"], force: new Set(["linkedin_pagina:d3"]) });
+    gone.o.dispatchers.cancelWorker = async () => ({ alreadyGone: true });
+    const r2 = await runRetrospectivaSocialDispatch(gone.o);
+    assert.equal(gone.calls.length, 0);
+    assert.match(String((r2.results[0] as { reason?: string }).reason), /já saiu da fila/);
+  });
+
+  it("payload do X leva o texto como o pré-voo mediu (CRLF normalizado)", async () => {
+    const crlf = CURTO.replace(/\n/g, "\r\n");
+    const { o } = opts({ posts: ["x:d1"], texts: { ...TEXTS, d1: { corpo: CORPO, curto: crlf } } });
+    const r = await runRetrospectivaSocialDispatch(o);
+    const x = r.results[0];
+    assert.ok(x.action === "x-payload");
+    assert.ok(!x.payload.text.includes("\r"));
+  });
+
+  it("imagens não subidas (pendingUpload) fora do dry-run: nada despachado", async () => {
+    const { o, calls } = opts({ prepareImages: async (hs) => Object.fromEntries(hs.map((h) => [h, { cards: cardsFor(h), pendingUpload: true }])) });
+    await assert.rejects(runRetrospectivaSocialDispatch(o), /não subiram pro KV/);
+    assert.equal(calls.length, 0);
   });
 
   it("upload/geração de imagem que falha: nada despachado", async () => {

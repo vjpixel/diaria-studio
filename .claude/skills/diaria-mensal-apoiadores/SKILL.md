@@ -62,7 +62,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 | Facebook/Instagram/Threads/X (editor, 02/10/2026, #9500) | **Sim, os quatro**, mesma regra de CTA. X/Threads (≤280) aceitam a linha curta `Apoie e leia a retrospectiva completa: apoia.se/diaria` (premissa do #9500: mantém o "Apoie", corta o resto pra caber); LinkedIn/Facebook/Instagram, a longa. |
 | Um post por história (editor, 02/10/2026, #9508) | **3 posts por rede, um por história** (DESTAQUE 1/2/3 do `draft.md`), no **formato dos destaques diários**: Instagram e Threads = carrossel de 5 slides fixos (capa 4:5 com o título + 3 parágrafos + CTA, #6005 Parte B); X = até 4 imagens (capa + 3 parágrafos, **sem** o slide de CTA, #8202); Facebook e página LinkedIn = 1 imagem (a capa 4:5 da história, como a diária prefere) + texto. O **perfil LinkedIn segue com 1 post só**, manual. Textos (premissa do #9508, espelho da diária `# Social`/`# Curto`): por história, `d{N}.md` = **exatamente 3 parágrafos** (≤260 cada; os slides E o corpo da legenda de LinkedIn/Facebook/Instagram — o script soma a linha longa de CTA) e `d{N}-curto.md` = ≤280 com a linha curta (Threads e X). Parágrafo que não cabe no card é **REESCRITO**, nunca encolhido nem truncado (#6078). Slide de CTA = a linha longa, faixa "Exclusivo para apoiadores". Capa = `04-d{N}-2x1.jpg` do ciclo recortada em 4:5, título da história, linha "Retrospectiva de {Mês}". Tudo por `publish-retrospectiva-social.ts`; X via Buffer MCP pelo top-level (o script só monta os 3 payloads). |
 | Agenda (editor, 02/10/2026, #9508) | D = data do ENVIO do e-mail (`--base-date`). Os 15 posts no **mesmo dia D+1**, longe (≥15 min) dos slots da diária: **história 1 às 09:00, 2 às 14:30, 3 às 20:00 BRT**; dentro da história, uma rede a cada 10 min — `:00 linkedin | :10 facebook | :20 instagram | :30 threads | :40 x`. Agenda do dia: `09:00-09:40 h1 | 10:00 d1 | 12:30 d2 | 14:30-15:10 h2 | 17:30 d3 | 20:00-20:40 h3`. Colisão (<15 min) com d1/d2/d3 é erro. Perfil LinkedIn **D+2 09:30 BRT**, manual (o Worker rejeita `pixel` + `post`). Página `webhook_target: "diaria"`. |
-| Post único legado da página (#9474 → #9508) | O ciclo 2609-10 já tem 1 post geral da página agendado. Enquanto ele estiver vivo no Worker, os posts por história da página são **recusados** (sairiam 4). `--replace-linkedin-single` cancela a entry (DELETE `/queue/:key`) antes de despachar os 3; se ela já saiu da fila (provavelmente publicada), os 3 seguem e o resultado avisa (`legacy_linkedin.action: "already-gone"`). |
+| Post único legado da página (#9474 → #9508) | O ciclo 2609-10 já tem 1 post geral da página agendado. Enquanto ele estiver vivo no Worker e algum post da página estiver pedido, o pré-voo **inteiro** é recusado (tudo-ou-nada; sairiam 4 na página). O post único do #9500 nas outras redes (`divulgacao-social-published.json`), se existir vivo, também recusa — sem cancelamento por script. `--replace-linkedin-single` cancela a entry (DELETE `/queue/:key`) antes de despachar os 3; se ela já saiu da fila (provavelmente publicada), os 3 seguem e o resultado avisa (`legacy_linkedin.action: "already-gone"`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
 | Horário do e-mail | **1º sábado do mês de envio, 06:00 BRT** (#9473, `monthly_send_schedule` no config; regra única em `lib/mensal/monthly-send-schedule.ts`). O 4b agenda por ela por padrão (rascunho se faltar <24h ou com `--draft`; `--schedule` sobrepõe). O LinkedIn herda a âncora D dessa mesma data (`ruleBaseDateForCycle`) quando o e-mail ainda sai agendado pela regra. |
 
@@ -104,7 +104,7 @@ fecha de ponta a ponta com `--skip apoiase`.
   min; colisão com a diária continua sendo erro.
 - `--replace-linkedin-single` (#9508) — cancela no Worker o post ÚNICO legado
   da página LinkedIn (#9474) antes de despachar os 3 por história. Sem ele, um
-  post único ainda agendado faz o pré-voo recusar os posts da página.
+  post único ainda agendado faz o pré-voo recusar a execução inteira.
 - `--unpin` — só tira o pin do box da Retrospectiva do slot 2 (no-op se o
   Artigo Especial já assumiu o slot). Não mexe em nenhum outro canal.
 - Flags repassadas a um script específico (não são da skill como um todo):
@@ -281,8 +281,14 @@ Depois, gerar os slides pra o editor ver no gate (só local, sem upload nem
 dispatch):
 
 ```bash
-npx tsx scripts/publish-retrospectiva-social.ts --cycle $CYCLE --base-date {D} [--at ISO] [--skip ...] --dry-run
+npx tsx scripts/publish-retrospectiva-social.ts --cycle $CYCLE --base-date {D} [--at ISO] [--skip ...] [--replace-linkedin-single] --dry-run
 ```
+
+Com post único legado da página vivo (ciclo 2609-10), sem
+`--replace-linkedin-single` o dry-run é recusado inteiro. Se o horário de
+alguma história já passou pra data-base escolhida (ex: D+1 09:00 de hoje),
+o pré-voo também recusa tudo: passar `--at` com um horário futuro (as
+histórias 2/3 deslocam junto) ou `--skip {rede}:d1` pras 5 da história 1.
 
 Grava `divulgacao/04-d{N}-4x5.jpg` (capa) e
 `divulgacao/04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg` e imprime os 15 horários,

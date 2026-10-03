@@ -1,23 +1,23 @@
 /**
- * scripts/lib/mensal/retrospectiva-schedule.ts (#9474)
+ * scripts/lib/mensal/retrospectiva-schedule.ts (#9474, #9508)
  *
- * Agenda dos posts PÚBLICOS de LinkedIn da Retrospectiva do Mês
- * (`/diaria-mensal-apoiadores`). Mesma regra do Artigo Especial (#6014),
- * decidida pelo editor no #9474:
+ * Agenda dos posts PÚBLICOS da Retrospectiva do Mês
+ * (`/diaria-mensal-apoiadores`). Âncora com a mesma regra do Artigo Especial
+ * (#6014), decidida pelo editor no #9474:
  *
- *   - **Página diar.ia.br: D+1 09:00 BRT**
- *   - **Perfil pessoal:    D+2 09:30 BRT**
+ *   - **Âncora (ex-post único da página): D+1 09:00 BRT**
+ *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
- * Agenda do dia resultante: `09:00 retrospectiva-pagina | 10:00 d1 | 12:30 d2
- * | 17:30 d3` — não colide com a diária.
+ * Os 15 posts por história saem a partir da âncora (ver #9508 abaixo); os
+ * slots da diária (`10:00 d1 | 12:30 d2 | 17:30 d3`) entram só como
+ * referência de colisão (`dailySlotCollisions`).
  *
  * **A diferença pro Artigo Especial é a âncora "D"**: aqui D é a data do
- * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou. Hoje o
- * envio é decidido pelo editor (`--schedule` do publisher Kit); a regra fixa
- * do 1º sábado do mês 06:00 BRT é a #9473 (issue separada). Por isso
- * `baseDate` é parâmetro explícito; com a #9473 em produção o caller deriva a
- * data da regra via `ruleBaseDateForCycle` (abaixo). Omitido = hoje (mesmo default do
- * Artigo Especial), com banner no caller (#5321).
+ * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou — explícita
+ * (`--base-date`, a data do `--schedule` do publisher Kit) ou derivada da regra
+ * do 1º sábado do mês 06:00 BRT (#9473) via `ruleBaseDateForCycle`/
+ * `resolveRetrospectivaBaseDate` (abaixo). Sem nenhuma = hoje (mesmo default
+ * do Artigo Especial), com banner no caller (#5321).
  *
  * Reusa `resolveArtigoEspecialScheduledAts` (que reusa `computeScheduledAt`) —
  * nenhuma aritmética de data/fuso reimplementada aqui.
@@ -144,7 +144,7 @@ export function addMinutesIso(iso: string, minutes: number, timeZone = "America/
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${offset}`;
 }
 
-/** Pura: `HH:MM` de um ISO no fuso informado (via `Intl`, nunca o fuso do processo). */
+/** Pura: minutos desde 00:00 de um ISO no fuso informado (via `Intl`, nunca o fuso do processo). */
 function hhmmInTz(iso: string, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(
     new Date(iso),
@@ -232,7 +232,7 @@ export function resolveRetrospectivaBaseDate(
 
 /**
  * Pura (#9473): data (`AAAA-MM-DD`, BRT) do envio do e-mail do ciclo segundo a
- * regra do 1º sábado 06:00 BRT — a âncora D dos posts LinkedIn quando o e-mail
+ * regra do 1º sábado 06:00 BRT — a âncora D dos posts públicos quando o e-mail
  * sai AGENDADO pelo publisher Kit. `null` quando a regra já não vale pra este
  * ciclo (faltam menos que `minLeadHours` ou o sábado passou): o publisher cai
  * pra rascunho, a data real do envio é desconhecida, e o caller deve manter o
