@@ -165,6 +165,12 @@ const TARGET_RESOLVE_OVERNIGHT_PLAN_PATH = "resolve-overnight-plan-path.ts";
 // sessão ativa" e preserva os próprios worktrees, que é justamente o bug.
 // Incondicional: o script não tem subcomando.
 const TARGET_CLEANUP_WORKTREES = "cleanup-merged-worktrees.ts";
+// #9527 (review do PR #9529): `effective-model-probe.ts` é o 6º alvo. Sem a
+// injeção, a sonda da Fase 0 do overnight não sabe qual transcript é o DELA
+// (não há env `CLAUDE_SESSION_ID`) e o fallback por mtime podia ler o de outra
+// sessão no mesmo checkout. Com `--transcript` explícito (uso do relatório,
+// um arquivo por subagente) a flag injetada é inócua: `--transcript` vence.
+const TARGET_EFFECTIVE_MODEL_PROBE = "effective-model-probe.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -240,6 +246,10 @@ const SESSION_ID_TARGETS = [
   },
   {
     match: TARGET_CLEANUP_WORKTREES,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_EFFECTIVE_MODEL_PROBE,
     needsSessionId: () => true,
   },
 ];

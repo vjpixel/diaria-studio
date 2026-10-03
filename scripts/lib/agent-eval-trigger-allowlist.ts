@@ -123,6 +123,14 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
   ...excludedGroup(["review-test-email"], "QA de e-mail de teste no loop verify→fix do Stage 5 — não gera texto editorial novo."),
   ...excludedGroup(["social-critic"], "juiz LLM de tom sobre 03-social.md — a #8143 exclui EXPLICITAMENTE juiz LLM de tom do seu escopo (ver docstring de prompt-regression-eval.ts); mesma exclusão vale aqui."),
   ...excludedGroup(["social-curto"], "escreve texto curto (X/Threads) a partir de 01-approved.json — candidato natural a uma extensão futura da #8143, mas não coberto hoje; nenhum preset de fixture mapeado."),
+  ...excludedGroup(
+    ["dev-implementador", "dev-fixer", "dev-revisor"],
+    "agents de desenvolvimento das rodadas autônomas (#9081) — escrevem/revisam CÓDIGO do repo, não texto editorial; nenhum grader de prosa da #8143 se aplica.",
+  ),
+  ...excludedGroup(
+    ["adhoc-opus-low"],
+    "agent genérico só pra fixar model/effort de dispatches ad-hoc (#9081) — sem prompt próprio; a tarefa vem inteira do dispatch, não há comportamento do agent a avaliar por replay.",
+  ),
   ...excludedGroup(["title-picker"], "fallback de escolha entre títulos JÁ escritos por writer-destaque — não gera texto novo, os graders de texto não discriminam nada aqui."),
 ];
 

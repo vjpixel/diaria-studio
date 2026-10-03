@@ -207,11 +207,11 @@ fecha de ponta a ponta com `--skip apoiase`.
 
 ## Passo 1 — gerar os textos (agente, 1 dispatch)
 
-Dispatch de **1** subagente `general-purpose` com `model: claude-opus-5-5` +
-`effort: low` explícitos (#2019/#8941), a partir do `draft.md` do ciclo:
+Dispatch de **1** subagente `adhoc-opus-low` (agent dedicado, `model: claude-opus-5-5` +
+`effort: low` no frontmatter — o Agent tool não aceita `effort`, #9081; #2019/#8941), a partir do `draft.md` do ciclo:
 
 ```
-Agent(subagent_type="general-purpose", model="claude-opus-5-5", effort="low", prompt=<
+Agent(subagent_type="adhoc-opus-low", prompt=<
   Gere os textos de divulgação da Retrospectiva do Mês a partir de
   data/monthly/{ciclo}/draft.md. Nunca invente fatos além do que o draft
   sustenta.

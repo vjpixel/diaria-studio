@@ -121,13 +121,13 @@ inteira não fecha de ponta a ponta.
 
 ## Passo 1 — gerar os 4 textos (agente, 1 dispatch)
 
-Dispatch de **1** subagente `general-purpose` com `model: claude-opus-5-5` +
-`effort: low` explícitos (#2019/#8941 — subagente ad-hoc sempre com model
+Dispatch de **1** subagente `adhoc-opus-low` (agent dedicado, `model: claude-opus-5-5` +
+`effort: low` no frontmatter — o Agent tool não aceita `effort`, #9081; #2019/#8941 — subagente ad-hoc sempre com model
 explícito), a partir dos metadados do Passo 0 (`title`, `description`,
 `leadParagraphs`, `url`):
 
 ```
-Agent(subagent_type="general-purpose", model="claude-opus-5-5", effort="low", prompt=<
+Agent(subagent_type="adhoc-opus-low", prompt=<
   Gere 4 textos a partir deste artigo especial (metadados abaixo). Nunca
   invente fatos além do que os metadados sustentam.
 

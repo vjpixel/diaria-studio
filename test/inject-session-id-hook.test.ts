@@ -435,6 +435,15 @@ describe("buildUpdatedCommand (#5156)", () => {
     assert.equal(result, null);
   });
 
+  it("injeta --session-id em effective-model-probe.ts standalone (#9527 — sonda lia transcript de outra sessão)", () => {
+    const result = buildUpdatedCommand("npx tsx scripts/lib/effective-model-probe.ts", "sess-abc", 4242);
+    assert.equal(result, "npx tsx scripts/lib/effective-model-probe.ts --session-id 'sess-abc'");
+  });
+
+  it("effective-model-probe.ts encadeado → null (#9527)", () => {
+    assert.equal(buildUpdatedCommand("cd x && npx tsx scripts/lib/effective-model-probe.ts", "sess-abc"), null);
+  });
+
   it("resolve-overnight-plan-path.ts encadeado → null, mesmo invariante dos outros alvos (#6328)", () => {
     const result = buildUpdatedCommand(
       "git pull && npx tsx scripts/resolve-overnight-plan-path.ts --aammdd 260826",

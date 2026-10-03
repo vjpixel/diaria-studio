@@ -250,7 +250,7 @@ Cada tema vira um post, e as previsões viram mais um (N+1 posts), em todos os c
 
 ### 6a. Textos
 
-Disparar um `Agent` (`general-purpose`, `model: claude-opus-5-5`, `effort: low`, #8941) que lê `draft.md` e escreve `data/annual/$SLUG/social/03-social.md` seguindo as regras de `.claude/agents/social-writer.md` (§3a) e `.claude/agents/social-curto.md`, com as adaptações da anual:
+Disparar um `Agent` (`subagent_type: "adhoc-opus-low"` — agent dedicado com `claude-opus-5-5`/`low` no frontmatter, #8941/#9081; o Agent tool não aceita `effort`) que lê `draft.md` e escreve `data/annual/$SLUG/social/03-social.md` seguindo as regras de `.claude/agents/social-writer.md` (§3a) e `.claude/agents/social-curto.md`, com as adaptações da anual:
 
 - **`# Social`** — uma seção por post: `## t1` … `## tN` (N = temas do draft, na ordem do draft) e `## previsoes`. Exatamente 3 parágrafos, cada um até ~260 caracteres (1 slide de carrossel por parágrafo), 1 trecho em `**negrito**` por parágrafo, bloco de até 5 hashtags no fim, sem URL e sem CTA de canal (os publicadores injetam a linha de cada rede).
 - **Abertura fixa, num parágrafo só dela, antes dos 3 parágrafos:** `Retrospectiva de 1 ano da diar.ia.br, parte {i} de {N+1}: {tema em poucas palavras}.` — a série tem N+1 partes, as previsões são a última (`…, parte {N+1} de {N+1}: as previsões.`); numerar só os temas ("de N") fazia a série parecer ter um post a menos (editor, 12/09/2026).
