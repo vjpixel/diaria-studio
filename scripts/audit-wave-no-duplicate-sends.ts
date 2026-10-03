@@ -46,7 +46,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { requireCycleArg, clariceSegmentsDir, cycleSendMonthStartIso } from "./lib/clarice-paths.ts";
+import { requireCycleArg, clariceSegmentsDir, cycleSendMonthStartIso, CLARICE_BASE } from "./lib/clarice-paths.ts";
+import { archivedListsInWindow } from "./lib/clarice-list-consolidation.ts"; // #9532
 import { assertCampaignQuotaHeadroom, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows } from "./lib/clarice-segment.ts";
@@ -117,6 +118,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const emails = extractCsvEmails(readFileSync(csvPath, "utf8"));
 
   const window = monthWindowIso(month);
+
+  // #9532 — PONTO CEGO declarado: o índice abaixo é montado a partir das
+  // listas AO VIVO das campanhas. Listas apagadas por
+  // `clarice-consolidate-lists.ts` (membros movidos pra lista de histórico
+  // `clarice_list_history.list_id`, que não tem data e por isso não dá pra
+  // recortar por `--month`) somem do índice. A consolidação só apaga listas
+  // de ciclo fechado e 45+ dias, então o mês corrente nunca é afetado — mas
+  // um `--month` antigo pode ser. Aviso alto quando há snapshot na janela.
+  const archivedInWindow = archivedListsInWindow(resolve(CLARICE_BASE, "list-archive"), window.startIso, window.endIsoExclusive);
+  if (archivedInWindow.length > 0) {
+    console.warn(
+      `⚠️  ${archivedInWindow.length} lista(s) apagada(s) pela consolidação (#9532) tinham envio em ${month} — ` +
+        `colisões com elas NÃO aparecem nesta auditoria: ${archivedInWindow.map((l) => `${l.listId} "${l.name}"`).join(", ")}`,
+    );
+  }
 
   let contacts: WaveContact[] = [];
   if (emails.length > 0) {
