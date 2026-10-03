@@ -1006,11 +1006,25 @@ export function extractKitAccountId(data: unknown): string {
 }
 
 /** #9487: memoiza `fetchKitAccountId` por rodada (a chave não muda dentro do
- *  processo). Uma falha também fica memoizada — dentro da rodada, a resposta
- *  seria a mesma; a rodada seguinte tenta de novo. */
-function memoizedKitAccountId(kitCfg: KitConfig): () => Promise<string> {
+ *  processo). #9489: só o SUCESSO fica memoizado — uma rejeição transitória
+ *  (5xx) limpa o memo, senão todo lote criado depois na rodada sairia sem
+ *  `kit_account_id`. */
+export function memoizeAccountId(fetchId: () => Promise<string>): () => Promise<string> {
   let p: Promise<string> | null = null;
-  return () => (p ??= fetchKitAccountId(kitCfg));
+  return () => {
+    if (!p) {
+      const cur: Promise<string> = fetchId().catch((e) => {
+        if (p === cur) p = null;
+        throw e;
+      });
+      p = cur;
+    }
+    return p;
+  };
+}
+
+function memoizedKitAccountId(kitCfg: KitConfig): () => Promise<string> {
+  return memoizeAccountId(() => fetchKitAccountId(kitCfg));
 }
 
 /** #9367 item 2: `DELETE /broadcasts/{id}` de um broadcast que já saiu
