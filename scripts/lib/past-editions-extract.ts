@@ -348,7 +348,7 @@ export function readNewsletterHtmlDestaqueUrls(htmlPath: string): string[] {
   return urls;
 }
 
-function readApprovedTitles(approvedPath: string): string[] {
+export function readApprovedTitles(approvedPath: string): string[] {
   if (!existsSync(approvedPath)) return [];
   let parsed: ApprovedJsonShape;
   try {
