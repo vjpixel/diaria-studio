@@ -72,6 +72,8 @@ Recebido pelo coordenador (não vem como arquivo):
 
    - **Body** (2-4 parágrafos curtos):
      - 3-4 parágrafos cobrindo: o quê, onde/quando, por quê, consequência concreta.
+     - **Lead com ângulo, não com resumo literal (#9423, #8694).** A 1ª frase diz por que o fato chama atenção — o conflito, a virada, o número que surpreende —, não repete o título nem abre com "A empresa X anunciou Y". Errado: "A OpenAI anunciou nesta semana um novo modelo de raciocínio." Certo: "A OpenAI passou a cobrar por raciocínio do mesmo jeito que cobra por texto." O ângulo sai do `summary` (#4000 continua valendo): se o summary não sustenta um ângulo, abra pelo dado mais concreto, nunca por um adjetivo.
+     - **Enxuto (#9422).** O editor encurtou destaques em 5 de 6 edições recentes. Mire o **piso** da janela total (~900-940 chars), não o teto; corte frase que só reformula a anterior, contexto que o leitor já sabe e enumerações de exemplos. Uma ideia por frase.
      - **#3993: o body carrega mais peso do total agora** — "Por que isso importa" encolheu de ~400 pra 180-300 chars, mas o total do destaque **não mudou** (janela única 900-1000 para D1/D2/D3, #6061, ver passo 3). Para qualquer destaque, mire corpo entre **~650-950 chars**. Para D2/D3, a margem é mais apertada — mire corpo entre **~650-780 chars** e "Por que isso importa" perto do meio da janela (~220-260 chars), porque a janela do total (900-1000, largura 100) é mais estreita que a do why (180-300, largura 120): não existe um único valor de corpo que funcione com QUALQUER why dentro de 180-300 pra D2/D3 — os dois precisam ser calculados juntos antes de gravar (passo 3).
      - **Evitar "IA" e "inteligência artificial"** quando possível — use o sujeito concreto (o modelo, a empresa, o paper).
      - **Sem referências temporais relativas** (#747).
@@ -81,6 +83,8 @@ Recebido pelo coordenador (não vem como arquivo):
      - Frase 2: implicação concreta (timing, custo, processo, decisão pra quem usa).
      - **#1755: NÃO forçar ângulo Brasil.** Cláusulas genéricas de localização ("no Brasil", "para o leitor brasileiro", "para quem trabalha com X no Brasil") são marca de template, não relevância real — soam artificiais e repetitivas. Só citar o Brasil quando houver **fato local concreto** (regulação no Senado/ANPD, empresa BR envolvida, custo em reais, timing eleitoral, disponibilidade regional). Sem âncora factual local → escreva a implicação sem geografia.
      - Não começar com "Para [audiência],".
+     - **Proibido fechar com conselho genérico a público corporativo (#9382).** Nada de "Equipes/Empresas/Plataformas que X devem/precisam Y" nem "vale monitorar/acompanhar/revisar" — o editor cortou ou reescreveu 7 de 8 frases nesse formato. Feche com: (a) a **consequência concreta do caso** (o que muda, para quem, quanto); (b) uma **ação datada** para o leitor ("Quem montou macros com a fórmula COPILOT precisa migrar antes de setembro" fica); ou (c) a **pergunta que o caso deixa**. Errado: "Equipes que já usam Flash em produção devem revisar prompts antes de migrar." Certo: dizer o que quebra na migração, segundo a fonte.
+     - O "Por que isso importa" é a análise; o último parágrafo do body é contexto. Se o body terminou analisando, troque os dois de lugar.
 
    - **Bloco "Aprofunde:" (#3920) — SÓ quando `cluster_sources` está presente.** Logo APÓS o parágrafo "Por que isso importa:", emita:
      ```
