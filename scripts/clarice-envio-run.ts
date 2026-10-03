@@ -424,6 +424,20 @@ function writeAndRegisterReport(deps: EnvioRunDeps, reportId: string, title: str
 // Passo runner.
 // ---------------------------------------------------------------------------
 
+/**
+ * #9506 — resumo do stderr de um sub-script que falhou. Só o rabo (últimas 6
+ * linhas) perdia a mensagem do erro quando o stack é longo: o relatório de
+ * 261002 mostrou só frames `at ...` de `brevo-client.ts`, sem o motivo da
+ * Brevo. Mantém a 1ª linha não-vazia (a mensagem) + o rabo.
+ */
+export function summarizeStderr(stderr: string): string {
+  const lines = stderr.trim().split("\n");
+  if (lines.length === 1 && lines[0] === "") return "(sem stderr)";
+  const tail = lines.slice(-6);
+  if (lines.length <= 6) return tail.join(" | ");
+  return [lines[0], "[…]", ...tail].join(" | ");
+}
+
 function step<T = unknown>(
   deps: EnvioRunDeps,
   report: ReportBuilder,
@@ -454,8 +468,7 @@ function step<T = unknown>(
     }
   }
   if (!okCodes.includes(result.code)) {
-    const detail = result.stderr.trim().split("\n").slice(-6).join(" | ") || "(sem stderr)";
-    throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${detail}`);
+    throw new EnvioAbort(`❌ ${label} falhou (exit ${result.code}): ${summarizeStderr(result.stderr)}`);
   }
   return { result, json: parseStepJson<T>(result.stdout) };
 }
@@ -1610,7 +1623,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           anyUncertain = true;
           report.note(`⚠️  "${key}": agendamento INCERTO — POST aceito mas GET-verify não confirmou (status="${scheduleJson?.status ?? "?"}"). Reconciliável amanhã.`);
         } else if (scheduleResult.code !== 0) {
-          throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${scheduleResult.stderr.trim().split("\n").slice(-6).join(" | ")}`);
+          throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${summarizeStderr(scheduleResult.stderr)}`);
         } else {
           report.note(`✅ "${key}" agendada pra ${scheduleAt} (status="${scheduleJson?.status ?? "?"}").`);
         }
