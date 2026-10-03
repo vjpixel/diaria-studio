@@ -1,8 +1,8 @@
 #!/usr/bin/env npx tsx
 /**
  * #9463 — gate: issue `pulada` por `requer-sessao-local`/`guard-de-execucao`
- * em plan.json deve estar na trilha Develop (label develop-track/windows).
- * exit 1 = há issue sem roteamento (corrigir: route-issue --track develop).
+ * em plan.json não pode continuar na trilha Overnight (seria repescada).
+ * Bloqueada/agendada/fechada não é acusada (#9516). exit 1 = há issue sem roteamento (corrigir: route-issue --track develop).
  *
  * Uso: npx tsx scripts/check-skipped-develop-track.ts --plan data/overnight/AAMMDD/plan.json
  */
@@ -30,8 +30,8 @@ if (isMainModule(import.meta.url)) {
   for (const n of numbers) {
     try {
       const raw = execFileSync("gh", ["api", `repos/vjpixel/diaria-studio/issues/${n}`], { encoding: "utf8" });
-      const j = JSON.parse(raw) as { labels: { name: string }[]; body: string | null };
-      snapshots.set(n, { labels: j.labels.map((l) => l.name), body: j.body ?? "" });
+      const j = JSON.parse(raw) as { labels: { name: string }[]; body: string | null; state?: string };
+      snapshots.set(n, { labels: j.labels.map((l) => l.name), body: j.body ?? "", state: j.state ?? null });
     } catch (e) {
       ghFailures++;
       console.warn(`[check-skipped-develop-track] #${n}: gh falhou, ignorada (${(e as Error).message.split("\n")[0]})`);

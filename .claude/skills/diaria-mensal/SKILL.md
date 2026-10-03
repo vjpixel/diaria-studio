@@ -801,7 +801,10 @@ Ver `.claude/skills/diaria-mensal-apoiadores/SKILL.md` para o fluxo completo
 (render via `scripts/lib/mensal/monthly-apoiadores-kit-render.ts` com UTM
 próprio `APOIADORES_KIT_UTM_PROFILE`, publicação via
 `scripts/publish-monthly-apoiadores-kit.ts` — cria o broadcast Kit real,
-sempre como rascunho —, idempotência/dedup do envio via
+agendado por padrão no 1º sábado do mês 06:00 BRT (regra em
+`lib/mensal/monthly-send-schedule.ts`; com audiência confirmada já marca o
+ciclo como `sent`), rascunho só com `--draft` ou se faltar <24h — NÃO rodar
+"só pra preparar o rascunho" (#9513) —, idempotência/dedup do envio via
 `scripts/lib/mensal/monthly-apoiadores-state.ts`, e o passo-a-passo de
 publicação manual). **#7633 (260908): canal migrado de Brevo pra Kit** — o
 backend da newsletter virou `"kit"` (#7388) e a base inteira migrou (#7386),

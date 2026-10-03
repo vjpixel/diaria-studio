@@ -26,10 +26,15 @@ export function requiresDevelopRouting(issue: SkippedPlanIssue): boolean {
 export interface IssueSnapshot {
   labels: string[];
   body: string;
+  /** `state` cru do `gh api` (`open`/`closed`) — opcional (#9516). */
+  state?: string | null;
 }
 
 /** Pure: devolve os números de issues puladas por guard/sessão-local cujo
- * track classificado não é `develop`. Issue sem snapshot é ignorada (fail-soft). */
+ * track classificado continua `overnight` (seria repescada na próxima rodada).
+ * Track `bloqueada`/`agendada`/`fora-de-rodada` (inclui issue fechada) NÃO é
+ * acusada — a correção sugerida (`route-issue --track develop`) apagaria um
+ * bloqueio legítimo (#9516). Issue sem snapshot é ignorada (fail-soft). */
 export function findUnroutedSkips(
   issues: SkippedPlanIssue[],
   snapshots: ReadonlyMap<number, IssueSnapshot>,
@@ -39,8 +44,12 @@ export function findUnroutedSkips(
     if (!requiresDevelopRouting(issue) || typeof issue.number !== "number") continue;
     const snap = snapshots.get(issue.number);
     if (!snap) continue;
-    const track = classifyExecTrack({ labels: snap.labels, body: snap.body });
-    if (track !== "develop") out.push(issue.number);
+    const track = classifyExecTrack({
+      labels: snap.labels,
+      body: snap.body,
+      state: snap.state ? snap.state.toUpperCase() : undefined,
+    });
+    if (track === "overnight") out.push(issue.number);
   }
   return out.sort((a, b) => a - b);
 }
