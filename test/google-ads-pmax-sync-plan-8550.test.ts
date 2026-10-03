@@ -14,6 +14,8 @@ import { join } from "node:path";
 
 import {
   classifyAssetGroupAssets,
+  buildAssetGroupAssetsQuery,
+  parseAssetGroupAssetRows,
   planTextFieldLinks,
   validateNewTextAssetPlan,
   NEW_HEADLINES,
@@ -31,6 +33,7 @@ import {
   verifyRemovedAfterApply,
   fieldsBelowMin,
   buildSyncPlanReport,
+  type Phase2RemovalPlan,
   countEnabledByFieldType,
   PMAX_MANAGED_FIELD_LIMITS,
   type FieldCounts,
@@ -143,15 +146,17 @@ describe("#8550 sync — planPhase2Removal (piso com aprovação)", () => {
     assert.equal(byFt.LONG_HEADLINE.retain.length, 1);
     assert.equal(byFt.DESCRIPTION.retain.length, 2);
     assert.equal(byFt.MARKETING_IMAGE.retain.length, 1);
-    assert.equal(byFt.SQUARE_MARKETING_IMAGE.retain.length, 0); // logo_1.jpg (needsReview) cobre o mínimo
+    // logo_1.jpg é needsReview: NÃO conta no piso — 1 imagem quadrada antiga fica.
+    assert.equal(byFt.SQUARE_MARKETING_IMAGE.retain.length, 1);
+    assert.equal(byFt.SQUARE_MARKETING_IMAGE.needsReview, 1);
     assert.equal(byFt.PORTRAIT_MARKETING_IMAGE.retain.length, 0); // mínimo 0
   });
 
   it("novos ainda em revisão (approval UNKNOWN/ausente) ou reprovados NÃO contam no piso", () => {
     const pendente = [
-      item("900", "LONG_HEADLINE", { text: "novo 1", approval: "UNKNOWN" }),
-      item("901", "LONG_HEADLINE", { text: "novo 2" }),
-      item("902", "LONG_HEADLINE", { text: "novo 3", approval: "DISAPPROVED" }),
+      item("900", "LONG_HEADLINE", { text: NEW_LONG_HEADLINES[0], approval: "UNKNOWN" }),
+      item("901", "LONG_HEADLINE", { text: NEW_LONG_HEADLINES[1] }),
+      item("902", "LONG_HEADLINE", { text: NEW_LONG_HEADLINES[2], approval: "DISAPPROVED" }),
     ];
     const items = [...oldGroup(), ...pendente];
     const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
@@ -168,6 +173,7 @@ describe("#8550 sync — planPhase2Removal (piso com aprovação)", () => {
       ...NEW_LONG_HEADLINES.slice(0, 1).map((t, k) => item(`81${k}`, "LONG_HEADLINE", { text: t, approval: "APPROVED_LIMITED" })),
       ...NEW_DESCRIPTIONS.slice(0, 2).map((t, k) => item(`82${k}`, "DESCRIPTION", { text: t, approval: "APPROVED" })),
       item("830", "MARKETING_IMAGE", { imageName: "pmax-d1-191x1.jpg", approval: "APPROVED" }),
+      item("831", "SQUARE_MARKETING_IMAGE", { imageName: "pmax-d1-1x1.jpg", approval: "APPROVED" }),
     ];
     const classification = classifyAssetGroupAssets(items);
     const plan = planPhase2Removal(items, classification);
@@ -239,14 +245,20 @@ describe("#8550 sync — buildSyncPlanReport (dry-run)", () => {
       capacityErrors: [],
     });
     assert.deepEqual(report.violations, []);
-    assert.equal(report.phase2.basis, "projected-after-phase1");
+    assert.equal(report.phase2.assumedNewApproved, true);
+    assert.match(report.phase2.snapshot.label, /assume os novos já APROVADOS/);
     const final = report.phase2.snapshot.counts;
     for (const [ft, n] of Object.entries(final)) {
       assert.ok(n >= PMAX_MANAGED_FIELD_LIMITS[ft as keyof FieldCounts].min, `${ft} terminou com ${n}`);
     }
     assert.equal(final.HEADLINE, 5); // 4 novos + diar.ia.br
-    // Sem imagens novas, a Fase 2 projetada mantém 1 imagem paisagem antiga.
+    // Sem imagens novas, a Fase 2 projetada mantém 1 antiga por tipo obrigatório
+    // (o logo needsReview não conta no piso, mas segue no grupo).
     assert.equal(final.MARKETING_IMAGE, 1);
+    assert.equal(final.SQUARE_MARKETING_IMAGE, 2);
+    // LONG_HEADLINE/DESCRIPTION: 2 antigos + 5 novos > 5 → os 2 saem no link e
+    // o tipo fica só com novos — a limitação conhecida (#9017) vai pro relatório.
+    assert.ok(report.notes.some((n) => n.includes("INTEIRO")));
     JSON.parse(JSON.stringify(report)); // serializável
   });
 
@@ -269,6 +281,99 @@ describe("#8550 sync — releitura pós-mutação", () => {
     const after = [item("1", "HEADLINE", { text: "a" })];
     assert.equal(verifyRemovedAfterApply(after, [after[0].assetGroupAssetResourceName]).length, 1);
     assert.equal(verifyRemovedAfterApply(after, ["outro"]).length, 0);
+  });
+});
+
+describe("#8550 sync — regras de comprimento e casos de aprovação", () => {
+  it("sem DESCRIPTION nova curta aprovada, mantém a stale aprovada MAIS CURTA (≤60)", () => {
+    const longNew = NEW_DESCRIPTIONS.filter((d) => d.length > 60).slice(0, 2);
+    const items = [
+      ...longNew.map((t, k) => item(`70${k}`, "DESCRIPTION", { text: t, approval: "APPROVED" })),
+      item("710", "DESCRIPTION", { text: "As notícias mais importantes sobre IA, resumidas para você.", approval: "APPROVED" }), // 59
+      item("711", "DESCRIPTION", { text: "Receba atualizações diárias sobre as últimas novidades em IA.", approval: "APPROVED" }), // 61
+    ];
+    const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+    const d = plan.fields.find((f) => f.fieldType === "DESCRIPTION")!;
+    assert.equal(d.shortRule?.status, "retained");
+    assert.deepEqual(d.retain, [items[2].assetGroupAssetResourceName]);
+    assert.deepEqual(d.remove, [items[3].assetGroupAssetResourceName]);
+  });
+
+  it("HEADLINE ≤15 (premissa conservadora): diar.ia.br aprovado já atende", () => {
+    const items = [
+      item("1", "HEADLINE", { text: "diar.ia.br", approval: "APPROVED" }),
+      ...NEW_HEADLINES.map((t, k) => item(`2${k}`, "HEADLINE", { text: t, approval: "APPROVED" })),
+      item("9", "HEADLINE", { text: "Dicas de IA", approval: "APPROVED" }),
+    ];
+    const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+    const h = plan.fields.find((f) => f.fieldType === "HEADLINE")!;
+    assert.equal(h.shortRule?.status, "permanent");
+    assert.equal(h.remove.length, 1);
+  });
+
+  it("HEADLINE ≤15 sem nenhum curto aprovado entre os permanentes: mantém o stale curto aprovado", () => {
+    const items = [
+      ...NEW_HEADLINES.map((t, k) => item(`2${k}`, "HEADLINE", { text: t, approval: "APPROVED" })),
+      item("9", "HEADLINE", { text: "Dicas de IA", approval: "APPROVED" }),
+    ];
+    const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+    const h = plan.fields.find((f) => f.fieldType === "HEADLINE")!;
+    assert.equal(h.shortRule?.status, "retained");
+    assert.equal(h.remove.length, 0);
+  });
+
+  it("todo o stale REPROVADO e nenhum novo aprovado: mantém o necessário ao mínimo, sem regra curta atendível", () => {
+    const items = STALE_LONG.map((t, k) => item(`5${k}`, "LONG_HEADLINE", { text: t, approval: "DISAPPROVED" }));
+    const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+    const lh = plan.fields.find((f) => f.fieldType === "LONG_HEADLINE")!;
+    assert.equal(lh.retain.length, 1);
+    assert.equal(lh.remove.length, 1);
+    const desc = STALE_DESC.map((t, k) => item(`6${k}`, "DESCRIPTION", { text: t, approval: "DISAPPROVED" }));
+    const dplan = planPhase2Removal(desc, classifyAssetGroupAssets(desc));
+    const d = dplan.fields.find((f) => f.fieldType === "DESCRIPTION")!;
+    assert.equal(d.retain.length, 2, "mínimo 2 mesmo reprovados");
+    assert.equal(d.shortRule?.status, "unmet", "reprovado não atende a regra curta");
+  });
+
+  it("simulateSteps: remove de tipo não resolvido vira violação explícita", () => {
+    const [s] = simulateSteps(zero(), [{ label: "x", add: {}, remove: [{ resourceName: "r", fieldType: "UNKNOWN" }] }]);
+    assert.match(s.violations.join(), /tipo não resolvido \(UNKNOWN\)/);
+  });
+
+  it("relatório registra a limitação de troca do tipo INTEIRO (#9017)", () => {
+    const items = [
+      ...oldGroup().filter((i) => i.fieldType !== "LONG_HEADLINE"),
+      ...["a", "b", "c", "d", "e"].map((x, k) => item(`4${k}`, "LONG_HEADLINE", { text: STALE_LONG[k % 2], approval: "APPROVED" })),
+    ];
+    const classification = classifyAssetGroupAssets(items);
+    const linkPlan = planTextFieldLinks(items, classification, { HEADLINE: 4, LONG_HEADLINE: 5, DESCRIPTION: 5 });
+    const report = buildSyncPlanReport({
+      generatedAt: "x", assetGroup: GROUP, mode: "dry-run", items, classification,
+      text: { headlines: NEW_HEADLINES, longHeadlines: NEW_LONG_HEADLINES, descriptions: NEW_DESCRIPTIONS, errors: [] },
+      images: { manifest: null, pending: [] }, phase1Plans: linkPlan.plans, capacityErrors: [],
+    });
+    assert.ok(report.notes.some((n) => n.includes("INTEIRO")));
+  });
+});
+
+describe("#8550 sync — leitura de approval_status/primary_status", () => {
+  it("query pede os dois campos e o parser os preserva (e omite quando ausentes)", () => {
+    const q = buildAssetGroupAssetsQuery(GROUP);
+    assert.match(q, /asset_group_asset\.primary_status/);
+    assert.match(q, /asset_group_asset\.policy_summary\.approval_status/);
+    const [withStatus, without] = parseAssetGroupAssetRows([
+      {
+        asset: { resourceName: "customers/1/assets/1", id: "1", type: "TEXT", textAsset: { text: "a" } },
+        assetGroupAsset: { resourceName: "r1", asset: "customers/1/assets/1", fieldType: "HEADLINE", status: "ENABLED", primaryStatus: "NOT_ELIGIBLE", policySummary: { approvalStatus: "APPROVED" } },
+      },
+      {
+        asset: { resourceName: "customers/1/assets/2", id: "2", type: "TEXT", textAsset: { text: "b" } },
+        assetGroupAsset: { resourceName: "r2", asset: "customers/1/assets/2", fieldType: "HEADLINE", status: "ENABLED" },
+      },
+    ]);
+    assert.equal(withStatus.approvalStatus, "APPROVED");
+    assert.equal(withStatus.primaryStatus, "NOT_ELIGIBLE");
+    assert.ok(!("approvalStatus" in without) && !("primaryStatus" in without));
   });
 });
 
@@ -360,7 +465,102 @@ describe("#8550 sync — CLI", () => {
       assert.equal(code, 0);
       const after = items.filter((i) => !removed.includes(i.assetGroupAssetResourceName));
       assert.deepEqual(fieldsBelowMin(after), []);
+      // Por tipo, exatamente o que o plano puro manda remover.
+      const expected: Phase2RemovalPlan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+      for (const f of expected.fields) {
+        assert.deepEqual(removed.filter((r) => f.remove.includes(r)).sort(), [...f.remove].sort(), f.fieldType);
+      }
+      assert.equal(removed.length, expected.remove.length);
       assert.ok(removed.length > 0 && removed.length < classifyAssetGroupAssets(items).stale.length);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const approval of ["UNKNOWN", "DISAPPROVED", null] as const) {
+    it(`Fase 1 → Fase 2 com os novos ${approval ?? "sem approval_status"}: a releitura nunca fica abaixo do mínimo`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "gads-pmax-sync-p2-pending-"));
+      try {
+        const img = (n: string) => {
+          const p = join(dir, n);
+          writeFileSync(p, Buffer.from(n));
+          return p;
+        };
+        const manifestPath = join(dir, "manifest.json");
+        writeFileSync(manifestPath, JSON.stringify({ SQUARE_MARKETING_IMAGE: [img("a.jpg")], MARKETING_IMAGE: [img("b.jpg")], PORTRAIT_MARKETING_IMAGE: [img("c.jpg")] }));
+        let assetCounter = 8000;
+        const inner = async (input: string, init?: RequestInit) => {
+          if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+          const ops = JSON.parse(String(init?.body)).operations;
+          if (input.endsWith("assets:mutate")) return jsonResponse(200, { results: ops.map(() => ({ resourceName: `customers/${CUSTOMER}/assets/${assetCounter++}` })) });
+          if (input.endsWith("assetGroupAssets:mutate")) return jsonResponse(200, { results: ops.map(() => ({ resourceName: "x" })) });
+          throw new Error(`chamada inesperada: ${input}`);
+        };
+        const api = withStatefulSearch(inner, oldGroup().map(toRow), { newApprovalStatus: approval });
+        const p1 = await withEnv(AUTH_ENV, () =>
+          swapMain(
+            ["--customer-id", CUSTOMER, "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json"), "--plan-out", join(dir, "p1.json")],
+            api as unknown as typeof fetch,
+            () => [],
+          ),
+        );
+        assert.equal(p1, 0);
+        const p2 = await withEnv(AUTH_ENV, () =>
+          swapMain(["--customer-id", CUSTOMER, "--send", "--remove-stale", "--plan-out", join(dir, "p2.json")], api as unknown as typeof fetch, () => []),
+        );
+        assert.equal(p2, 0);
+        const res = await api(`https://googleads.googleapis.com/v0/customers/${CUSTOMER}/googleAds:search`);
+        const finalItems = parseAssetGroupAssetRows((await res.json()).results);
+        assert.deepEqual(fieldsBelowMin(finalItems), []);
+        // Novos pendentes/reprovados não contam: sobra stale aprovado nos tipos em
+        // que a Fase 1 não trocou tudo (LONG_HEADLINE/DESCRIPTION foram trocados
+        // inteiros no link — limitação conhecida do #9017).
+        const stale = classifyAssetGroupAssets(finalItems).stale;
+        for (const ft of ["HEADLINE", "SQUARE_MARKETING_IMAGE", "MARKETING_IMAGE"]) {
+          assert.ok(stale.some((i) => i.fieldType === ft), `${ft} precisa manter stale aprovado`);
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("releitura que FALHA depois da remoção (search HTTP 500) → exit 1", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-sync-reread-fail-"));
+    try {
+      const rows = oldGroup().map(toRow);
+      let searches = 0;
+      const fetchMock = async (input: string, init?: RequestInit) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return ++searches === 1 ? jsonResponse(200, { results: rows }) : jsonResponse(500, { error: "x" });
+        if (input.endsWith("assetGroupAssets:mutate")) {
+          const ops = JSON.parse(String(init?.body)).operations;
+          return jsonResponse(200, { results: ops.map(() => ({ resourceName: "x" })) });
+        }
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", CUSTOMER, "--send", "--remove-stale", "--plan-out", join(dir, "p.json")], fetchMock as unknown as typeof fetch, () => []),
+      );
+      assert.equal(code, 1);
+      assert.equal(searches, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("search com nextPageToken (estado parcial) recusa antes de planejar ou mutar", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gads-pmax-sync-page-"));
+    try {
+      const fetchMock = async (input: string) => {
+        if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
+        if (input.endsWith(":search")) return jsonResponse(200, { results: oldGroup().map(toRow), nextPageToken: "p2" });
+        throw new Error(`chamada inesperada: ${input}`);
+      };
+      const code = await withEnv(AUTH_ENV, () =>
+        swapMain(["--customer-id", CUSTOMER, "--send", "--remove-stale", "--plan-out", join(dir, "p.json")], fetchMock as unknown as typeof fetch, () => []),
+      );
+      assert.equal(code, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

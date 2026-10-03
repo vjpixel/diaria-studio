@@ -3,25 +3,34 @@
  *
  * Plano auditável da troca de criativos do PMax "Max" — o que
  * `scripts/google-ads-swap-asset-group-creatives.ts` grava em JSON
- * (`--plan-out`) e usa como trava antes/depois de cada mutação:
+ * (`--plan-out`) em toda execução que lê o estado do grupo, e usa como TRAVA:
+ * qualquer item em `report.violations` faz `--send` recusar antes de mutar.
  *
- *   1. **Contagem por field_type passo a passo** (`simulateSteps`): estado de
- *      hoje → cada `assetGroupAssets:mutate` da Fase 1 (link dos novos, com a
- *      remoção atômica mínima do #9017/#9057/#9080) → Fase 2. Marca violação
- *      quando um passo deixa um tipo acima do máximo, ou o REMOVE abaixo do
- *      mínimo do PMax.
+ *   1. **Contagem por field_type passo a passo** (`simulateSteps`): estado
+ *      lido → cada `assetGroupAssets:mutate` da Fase 1 (link dos novos, com a
+ *      remoção atômica mínima do #9017/#9057/#9080) → Fase 2. Violação quando
+ *      um passo deixa um tipo acima do máximo, o REMOVE abaixo do mínimo, ou
+ *      remove um recurso de tipo não resolvido.
  *   2. **Piso na Fase 2** (`planPhase2Removal`): a remoção dos antigos nunca
- *      deixa um tipo abaixo do mínimo contando só o que o Google já APROVOU
- *      (`policy_summary.approval_status` APPROVED/APPROVED_LIMITED). Até este
- *      módulo, `--send --remove-stale` removia TODO o stale sem olhar piso
- *      nem aprovação — rodado antes da Fase 1 (ou com os novos ainda em
- *      revisão/reprovados), deixava o grupo com 1 headline e 0 imagem
- *      paisagem, abaixo do mínimo obrigatório.
+ *      deixa um tipo abaixo do mínimo contando só `keep` (inclui os textos
+ *      novos do swap) e imagens novas que o Google já APROVOU
+ *      (`policy_summary.approval_status` APPROVED/APPROVED_LIMITED).
+ *      `needsReview` (logos usados como marketing image, texto desconhecido)
+ *      NÃO conta: é pendência humana, não criativo do swap. Também preserva a
+ *      regra de comprimento do PMax: ≥1 DESCRIPTION ≤60 chars (exigida) e
+ *      ≥1 HEADLINE ≤15 chars (premissa conservadora — fontes divergem entre
+ *      "exigido" e "recomendado").
  *   3. **Releitura pós-mutação** (`verifyLinkedAfterApply`,
- *      `verifyRemovedAfterApply`): 2xx com a contagem certa de `results` não
- *      prova o estado do grupo (escrita silenciosa já aconteceu em outras
- *      plataformas de anúncio) — a CLI relê o grupo depois de cada fase e
- *      compara com o que pediu.
+ *      `verifyRemovedAfterApply`, `fieldsBelowMin`): 2xx com a contagem certa
+ *      de `results` não prova o estado do grupo (escrita silenciosa já
+ *      aconteceu em outras plataformas de anúncio) — a CLI relê o grupo
+ *      depois de cada fase e compara com o que pediu.
+ *
+ * Limitação conhecida (herdada do #9017, comportamento mantido): quando o
+ * grupo já está no máximo de um tipo (LONG_HEADLINE/DESCRIPTION 5/5), a Fase
+ * 1 troca o tipo INTEIRO no mesmo mutate — os antigos aprovados saem e ficam
+ * só os novos, ainda em revisão do Google. Até a aprovação, esse tipo serve
+ * apenas recursos pendentes. Registrado em `report.notes`.
  *
  * Tudo aqui é puro (sem rede, sem disco).
  */
@@ -50,6 +59,14 @@ export const PMAX_MANAGED_FIELD_LIMITS: Readonly<Record<ManagedFieldType, { min:
   MARKETING_IMAGE: { min: PMAX_IMAGE_FIELD_MIN.MARKETING_IMAGE, max: PMAX_IMAGE_FIELD_MAX.MARKETING_IMAGE },
   PORTRAIT_MARKETING_IMAGE: { min: PMAX_IMAGE_FIELD_MIN.PORTRAIT_MARKETING_IMAGE, max: PMAX_IMAGE_FIELD_MAX.PORTRAIT_MARKETING_IMAGE },
 };
+
+/** Regra de comprimento por tipo: ≥1 recurso com até `maxChars`. DESCRIPTION
+ *  ≤60 é exigência documentada do PMax; HEADLINE ≤15 é premissa conservadora
+ *  (há fontes que tratam como exigência, outras como recomendação). */
+export const PMAX_SHORT_TEXT_RULES: ReadonlyArray<{ fieldType: TextFieldType; maxChars: number }> = [
+  { fieldType: "DESCRIPTION", maxChars: PMAX_TEXT_LIMITS.description.shortMaxChars },
+  { fieldType: "HEADLINE", maxChars: 15 },
+];
 
 export const MANAGED_FIELD_TYPES = Object.keys(PMAX_MANAGED_FIELD_LIMITS) as readonly ManagedFieldType[];
 const IMAGE_TYPES = Object.keys(PMAX_IMAGE_FIELD_MAX) as readonly ImageFieldType[];
@@ -92,9 +109,12 @@ export interface CountSnapshot {
 
 /**
  * Aplica os passos em ordem e devolve a contagem depois de cada um. Violação
- * = o passo deixa um tipo acima do máximo, o teto combinado de imagens
- * estourado, ou um tipo abaixo do mínimo PORQUE o passo removeu dele (um tipo
- * que já estava abaixo antes e o passo não tocou não é culpa do passo).
+ * = o passo deixa um tipo acima do máximo; o tipo abaixo do mínimo PORQUE o
+ * passo removeu dele (um tipo já abaixo antes e não tocado não é culpa do
+ * passo); um remove de tipo não resolvido (fora dos 6 gerenciados — a
+ * contagem não teria como refletir); ou, num passo que linka imagem, a soma
+ * das imagens acima do teto combinado (`PMAX_IMAGE_COMBINED_MAX`). Um passo
+ * só de remoção não é cobrado pelo teto: remover nunca piora o total.
  * @pure
  */
 export function simulateSteps(initial: FieldCounts, steps: readonly SyncStep[]): CountSnapshot[] {
@@ -103,13 +123,16 @@ export function simulateSteps(initial: FieldCounts, steps: readonly SyncStep[]):
   for (const step of steps) {
     const next: FieldCounts = { ...counts };
     const removedFrom = new Set<ManagedFieldType>();
+    const violations: string[] = [];
     for (const [ft, n] of Object.entries(step.add) as Array<[ManagedFieldType, number]>) next[ft] += n;
     for (const r of step.remove) {
-      if (!isManaged(r.fieldType)) continue;
+      if (!isManaged(r.fieldType)) {
+        violations.push(`remove de tipo não resolvido (${r.fieldType}): ${r.resourceName}`);
+        continue;
+      }
       next[r.fieldType]--;
       removedFrom.add(r.fieldType);
     }
-    const violations: string[] = [];
     for (const ft of MANAGED_FIELD_TYPES) {
       const { min, max } = PMAX_MANAGED_FIELD_LIMITS[ft];
       if (next[ft] > max) violations.push(`${ft}: ${next[ft]} > máximo ${max}`);
@@ -126,7 +149,9 @@ export function simulateSteps(initial: FieldCounts, steps: readonly SyncStep[]):
   return snapshots;
 }
 
-/** Converte o plano de link da Fase 1 (um mutate por fieldType) em passos. */
+/** Converte o plano de link da Fase 1 (um mutate por fieldType) em passos.
+ *  Recurso removido que não está em `items` vira tipo "UNKNOWN" — e
+ *  `simulateSteps` acusa isso como violação. */
 export function phase1StepsFromLinkPlans(
   plans: ReadonlyArray<FieldLinkPlan>,
   items: readonly AssetGroupAssetItem[],
@@ -144,14 +169,18 @@ export function phase1StepsFromLinkPlans(
 export interface Phase2FieldPlan {
   fieldType: ManagedFieldType;
   min: number;
-  /** ENABLED não-stale com aprovação confirmada — o que sobra garantido. */
+  /** ENABLED não-stale, não-needsReview, com aprovação confirmada. */
   confirmedPermanent: number;
-  /** ENABLED não-stale ainda sem aprovação confirmada (em revisão/reprovado). */
+  /** ENABLED não-stale, não-needsReview, ainda sem aprovação confirmada. */
   unconfirmedPermanent: number;
+  /** ENABLED `needsReview` — nunca removidos, mas fora do piso. */
+  needsReview: number;
   staleEnabled: number;
   remove: string[];
-  /** Stale mantidos porque removê-los deixaria o tipo abaixo do mínimo. */
+  /** Stale mantidos pelo piso (contagem e/ou regra de comprimento). */
   retain: string[];
+  /** Regra de comprimento deste tipo (se houver) e como foi atendida. */
+  shortRule?: { maxChars: number; status: "permanent" | "retained" | "unmet" };
 }
 
 export interface Phase2RemovalPlan {
@@ -163,39 +192,69 @@ export interface Phase2RemovalPlan {
 }
 
 /**
- * Plano da Fase 2 com piso: por tipo, remove o stale só até o ponto em que o
- * que SOBRA aprovado (não-stale com `approval_status` confirmado) cobre o
- * mínimo do PMax. Se os novos ainda estão em revisão, o stale necessário pro
- * piso fica — a Fase 2 pode ser rodada de novo depois, e remove o resto.
+ * Plano da Fase 2 com piso. Por tipo, conta como "garantido" só o ENABLED
+ * não-stale e não-`needsReview` com aprovação confirmada; mantém do stale o
+ * necessário pra (a) a contagem chegar ao mínimo e (b) a regra de comprimento
+ * (`PMAX_SHORT_TEXT_RULES`) seguir atendida — mantendo o stale aprovado mais
+ * curto que cabe. Se os novos ainda estão em revisão, o stale necessário
+ * fica; rodar a Fase 2 de novo depois da aprovação remove o resto.
  * @pure
  */
 export function planPhase2Removal(
   items: readonly AssetGroupAssetItem[],
-  classification: Pick<AssetGroupClassification, "stale">,
+  classification: Pick<AssetGroupClassification, "stale" | "needsReview">,
 ): Phase2RemovalPlan {
   const staleSet = new Set(classification.stale.map((i) => i.assetGroupAssetResourceName));
+  const reviewSet = new Set(classification.needsReview.map((i) => i.assetGroupAssetResourceName));
   const fields: Phase2FieldPlan[] = [];
   const remove: string[] = [];
   for (const ft of MANAGED_FIELD_TYPES) {
     const enabled = items.filter((i) => i.status === "ENABLED" && i.fieldType === ft);
     const stale = enabled.filter((i) => staleSet.has(i.assetGroupAssetResourceName));
-    const permanent = enabled.filter((i) => !staleSet.has(i.assetGroupAssetResourceName));
-    const confirmedPermanent = permanent.filter(isApprovalConfirmed).length;
+    const needsReview = enabled.filter((i) => reviewSet.has(i.assetGroupAssetResourceName)).length;
+    const permanent = enabled.filter((i) => !staleSet.has(i.assetGroupAssetResourceName) && !reviewSet.has(i.assetGroupAssetResourceName));
+    const confirmed = permanent.filter(isApprovalConfirmed);
     const { min } = PMAX_MANAGED_FIELD_LIMITS[ft];
-    const retainCount = Math.min(stale.length, Math.max(0, min - confirmedPermanent));
+    const retainCount = Math.min(stale.length, Math.max(0, min - confirmed.length));
     // Mantém primeiro os stale JÁ aprovados — são os que de fato servem.
     const ordered = [...stale].sort((a, b) => Number(isApprovalConfirmed(b)) - Number(isApprovalConfirmed(a)));
-    const retain = ordered.slice(0, retainCount).map((i) => i.assetGroupAssetResourceName);
-    const removeFt = ordered.slice(retainCount).map((i) => i.assetGroupAssetResourceName);
+    const retained = ordered.slice(0, retainCount);
+    let removable = ordered.slice(retainCount);
+
+    let shortRule: Phase2FieldPlan["shortRule"];
+    const rule = PMAX_SHORT_TEXT_RULES.find((r) => r.fieldType === ft);
+    if (rule) {
+      const isShort = (i: AssetGroupAssetItem) => i.text !== undefined && i.text.length <= rule.maxChars;
+      if (confirmed.some(isShort)) {
+        shortRule = { maxChars: rule.maxChars, status: "permanent" };
+      } else if (retained.some((i) => isShort(i) && isApprovalConfirmed(i))) {
+        shortRule = { maxChars: rule.maxChars, status: "retained" };
+      } else {
+        const candidate = removable
+          .filter((i) => isShort(i) && isApprovalConfirmed(i))
+          .sort((a, b) => (a.text?.length ?? 0) - (b.text?.length ?? 0))[0];
+        if (candidate) {
+          retained.push(candidate);
+          removable = removable.filter((i) => i !== candidate);
+          shortRule = { maxChars: rule.maxChars, status: "retained" };
+        } else {
+          shortRule = { maxChars: rule.maxChars, status: "unmet" };
+        }
+      }
+    }
+
+    const removeFt = removable.map((i) => i.assetGroupAssetResourceName);
     remove.push(...removeFt);
     fields.push({
       fieldType: ft,
       min,
-      confirmedPermanent,
-      unconfirmedPermanent: permanent.length - confirmedPermanent,
+      confirmedPermanent: confirmed.length,
+      unconfirmedPermanent: permanent.length - confirmed.length,
+      needsReview,
       staleEnabled: stale.length,
       remove: removeFt,
-      retain,
+      retain: retained.map((i) => i.assetGroupAssetResourceName),
+      ...(shortRule ? { shortRule } : {}),
     });
   }
   const unmanagedStale = classification.stale
@@ -206,15 +265,17 @@ export function planPhase2Removal(
 
 /**
  * Estado PROJETADO depois da Fase 1: tira o que sai no mesmo mutate do link e
- * acrescenta os novos como ENABLED. `assumeNewApproved` marca os novos como
- * APPROVED — premissa explícita do dry-run (a aprovação real só existe depois
- * da revisão do Google; a Fase 2 de verdade relê o estado).
+ * acrescenta os novos como ENABLED (com o texto, quando `newTexts` traz). Com
+ * `assumeNewApproved` os novos entram como APPROVED — premissa otimista e
+ * explícita do dry-run (`report.phase2.assumedNewApproved`); a Fase 2 de
+ * verdade relê a aprovação ao vivo.
  * @pure
  */
 export function projectItemsAfterPhase1(
   items: readonly AssetGroupAssetItem[],
   steps: readonly SyncStep[],
   assumeNewApproved: boolean,
+  newTexts: Partial<Record<ManagedFieldType, readonly string[]>> = {},
 ): AssetGroupAssetItem[] {
   const removed = new Set(steps.flatMap((s) => s.remove.map((r) => r.resourceName)));
   const out = items.filter((i) => !removed.has(i.assetGroupAssetResourceName));
@@ -222,6 +283,7 @@ export function projectItemsAfterPhase1(
     for (const [ft, n] of Object.entries(step.add) as Array<[ManagedFieldType, number]>) {
       for (let k = 1; k <= n; k++) {
         const name = `(novo) ${ft} #${k}`;
+        const text = newTexts[ft]?.[k - 1];
         out.push({
           assetGroupAssetResourceName: name,
           assetResourceName: name,
@@ -229,6 +291,7 @@ export function projectItemsAfterPhase1(
           fieldType: ft,
           status: "ENABLED",
           assetType: (IMAGE_TYPES as readonly string[]).includes(ft) ? "IMAGE" : "TEXT",
+          ...(text !== undefined ? { text } : {}),
           ...(assumeNewApproved ? { approvalStatus: "APPROVED" } : {}),
         });
       }
@@ -275,11 +338,18 @@ export function fieldsBelowMin(items: readonly AssetGroupAssetItem[], onlyFieldT
   );
 }
 
+export const KNOWN_LIMITATION_FULL_TYPE_SWAP =
+  "Fase 1 (herdado do #9017): tipo já no máximo (LONG_HEADLINE/DESCRIPTION 5/5) é trocado INTEIRO no mesmo mutate — " +
+  "os antigos aprovados saem e o tipo fica só com os novos, ainda em revisão do Google, até a aprovação.";
+
 export interface SyncPlanReport {
   generatedAt: string;
   assetGroup: string;
+  /** `dry-run`/`phase1`: Fase 2 PROJETADA sobre o pós-Fase 1.
+   *  `phase2-dry-run`/`phase2`: Fase 2 sobre o estado lido agora. */
   mode: "dry-run" | "phase1" | "phase2-dry-run" | "phase2";
   limits: typeof PMAX_MANAGED_FIELD_LIMITS;
+  shortTextRules: typeof PMAX_SHORT_TEXT_RULES;
   imagesCombinedMax: number;
   text: {
     headlines: readonly string[];
@@ -290,10 +360,16 @@ export interface SyncPlanReport {
   };
   images: { manifest: Partial<Record<ImageFieldType, readonly string[]>> | null; pending: readonly string[] };
   phase1: { steps: SyncStep[]; snapshots: CountSnapshot[]; capacityErrors: readonly string[] };
-  /** Fase 2 projetada sobre o estado pós-Fase 1 (novos ASSUMIDOS aprovados no
-   *  dry-run) ou, em `phase2*`, sobre o estado lido agora. */
-  phase2: { basis: "projected-after-phase1" | "live"; plan: Phase2RemovalPlan; snapshot: CountSnapshot };
+  phase2: {
+    /** true = a projeção trata os novos da Fase 1 como já APROVADOS
+     *  (otimista; a Fase 2 real relê a aprovação). */
+    assumedNewApproved: boolean;
+    plan: Phase2RemovalPlan;
+    snapshot: CountSnapshot;
+  };
   current: { counts: FieldCounts; stale: number; keep: number; needsReview: Array<{ fieldType: string; assetId: string; label?: string }>; protected: number };
+  notes: string[];
+  /** Não-vazio = `--send` recusa antes de qualquer mutação. */
   violations: string[];
 }
 
@@ -318,20 +394,37 @@ export function buildSyncPlanReport(input: {
   let phase2Items: readonly AssetGroupAssetItem[] = items;
   let phase2Stale = classification.stale;
   if (!isPhase2Mode) {
-    phase2Items = projectItemsAfterPhase1(items, steps, true);
+    phase2Items = projectItemsAfterPhase1(items, steps, true, {
+      HEADLINE: input.text.headlines,
+      LONG_HEADLINE: input.text.longHeadlines,
+      DESCRIPTION: input.text.descriptions,
+    });
     const removedInPhase1 = new Set(steps.flatMap((s) => s.remove.map((r) => r.resourceName)));
     phase2Stale = classification.stale.filter((i) => !removedInPhase1.has(i.assetGroupAssetResourceName));
   }
-  const phase2Plan = planPhase2Removal(phase2Items, { stale: phase2Stale });
+  const phase2Plan = planPhase2Removal(phase2Items, { stale: phase2Stale, needsReview: classification.needsReview });
   const ftByAga = new Map(phase2Items.map((i) => [i.assetGroupAssetResourceName, i.fieldType]));
   const afterPhase1Counts = snapshots.length > 0 ? snapshots[snapshots.length - 1].counts : currentCounts;
   const [phase2Snapshot] = simulateSteps(afterPhase1Counts, [
     {
-      label: "Fase 2 — remoção dos antigos (com piso)",
+      label: isPhase2Mode
+        ? "Fase 2 — remoção dos antigos (com piso)"
+        : "Fase 2 PROJETADA — remoção dos antigos (com piso; assume os novos já APROVADOS)",
       add: {},
       remove: phase2Plan.remove.map((rn) => ({ resourceName: rn, fieldType: ftByAga.get(rn) ?? "UNKNOWN" })),
     },
   ]);
+
+  const fullTypeSwap = steps.some((s) => {
+    const ft = Object.keys(s.add)[0] as ManagedFieldType | undefined;
+    return ft !== undefined && s.remove.length > 0 && currentCounts[ft] - s.remove.length === 0;
+  });
+  const notes = fullTypeSwap ? [KNOWN_LIMITATION_FULL_TYPE_SWAP] : [];
+  for (const f of phase2Plan.fields) {
+    if (f.shortRule?.status === "unmet") {
+      notes.push(`${f.fieldType}: nenhum recurso aprovado com ≤${f.shortRule.maxChars} chars no grupo — regra de comprimento não atendida (nada a preservar).`);
+    }
+  }
 
   const violations = [
     ...input.text.errors,
@@ -345,11 +438,12 @@ export function buildSyncPlanReport(input: {
     assetGroup: input.assetGroup,
     mode: input.mode,
     limits: PMAX_MANAGED_FIELD_LIMITS,
+    shortTextRules: PMAX_SHORT_TEXT_RULES,
     imagesCombinedMax: PMAX_IMAGE_COMBINED_MAX,
     text: input.text,
     images: input.images,
     phase1: { steps, snapshots, capacityErrors: input.capacityErrors },
-    phase2: { basis: isPhase2Mode ? "live" : "projected-after-phase1", plan: phase2Plan, snapshot: phase2Snapshot },
+    phase2: { assumedNewApproved: !isPhase2Mode, plan: phase2Plan, snapshot: phase2Snapshot },
     current: {
       counts: currentCounts,
       stale: classification.stale.length,
@@ -357,6 +451,7 @@ export function buildSyncPlanReport(input: {
       needsReview: classification.needsReview.map((i) => ({ fieldType: i.fieldType, assetId: i.assetId, label: i.text ?? i.imageName })),
       protected: classification.protectedItems.length,
     },
+    notes,
     violations,
   };
 }

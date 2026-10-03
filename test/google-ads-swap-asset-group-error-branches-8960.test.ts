@@ -68,13 +68,13 @@ const SAMPLE_SEARCH_RESULTS = [
   },
 ];
 
-/** Fase 2 com piso (#8550 sync): 3 headlines não-stale APROVADOS, então o
+/** Fase 2 com piso (#8550 sync): 3 headlines novos do swap (keep) APROVADOS, então o
  *  stale "Newsletter de IA" é removível sem deixar HEADLINE abaixo de 3 — os
  *  testes abaixo chegam de fato ao `assetGroupAssets:mutate` (remove). */
 const PHASE2_SEARCH_RESULTS = [
   ...SAMPLE_SEARCH_RESULTS,
-  ...["21", "22", "23"].map((id) => ({
-    asset: { resourceName: `customers/2369219639/assets/${id}`, id, type: "TEXT", textAsset: { text: `Título novo ${id}` } },
+  ...["5 minutos por dia", "Também o lado ruim da IA", "Acompanhe pra usar melhor"].map((text, k) => String(21 + k)).map((id, k) => ({
+    asset: { resourceName: `customers/2369219639/assets/${id}`, id, type: "TEXT", textAsset: { text: ["5 minutos por dia", "Também o lado ruim da IA", "Acompanhe pra usar melhor"][k] } },
     assetGroupAsset: {
       resourceName: `customers/2369219639/assetGroupAssets/g~${id}~HEADLINE`,
       asset: `customers/2369219639/assets/${id}`,

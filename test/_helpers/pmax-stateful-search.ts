@@ -8,6 +8,7 @@
  * quando o `assetGroupAssets:mutate` do mock interno devolve 2xx, aplica as
  * operações (remove → some; create → linha nova ENABLED/APPROVED). Todo o
  * resto (token, `assets:mutate`, respostas de erro) segue pro mock interno.
+ * Status de aprovação dos links novos configurável (`newApprovalStatus`).
  *
  * Também fixa `PMAX_SWAP_PLAN_OUT` num diretório temporário — o plano JSON
  * nunca é gravado no `data/` real.
@@ -22,7 +23,14 @@ export const PMAX_PLAN_OUT_TMP = join(mkdtempSync(join(tmpdir(), "gads-pmax-plan
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
-export function withStatefulSearch(inner: FetchLike, initialRows: readonly AssetGroupAssetApiRow[]): FetchLike {
+/** `newApprovalStatus`: approval_status dos links criados (default APPROVED;
+ *  `null` = campo ausente, como um recurso ainda sem revisão). */
+export function withStatefulSearch(
+  inner: FetchLike,
+  initialRows: readonly AssetGroupAssetApiRow[],
+  opts: { newApprovalStatus?: string | null } = {},
+): FetchLike {
+  const approval = opts.newApprovalStatus === undefined ? "APPROVED" : opts.newApprovalStatus;
   const rows = new Map<string, AssetGroupAssetApiRow>();
   for (const r of initialRows) rows.set(r.assetGroupAsset!.resourceName!, r);
   return async (input, init) => {
@@ -43,7 +51,7 @@ export function withStatefulSearch(inner: FetchLike, initialRows: readonly Asset
           const rn = `customers/${customer}/assetGroupAssets/${groupId}~${id}~${op.create.fieldType}`;
           rows.set(rn, {
             asset: { resourceName: op.create.asset, id, type: op.create.fieldType.includes("IMAGE") ? "IMAGE" : "TEXT" },
-            assetGroupAsset: { resourceName: rn, asset: op.create.asset, fieldType: op.create.fieldType, status: "ENABLED", policySummary: { approvalStatus: "APPROVED" } },
+            assetGroupAsset: { resourceName: rn, asset: op.create.asset, fieldType: op.create.fieldType, status: "ENABLED", ...(approval !== null ? { policySummary: { approvalStatus: approval } } : {}) },
           });
         }
       }
