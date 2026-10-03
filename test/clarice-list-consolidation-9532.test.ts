@@ -49,7 +49,7 @@ import {
 } from "../scripts/lib/clarice-list-history-config.ts";
 import { fetchQueuedAndCommittedCampaignListIds, fetchCommittedCampaignListIds } from "../scripts/lib/brevo-client.ts";
 import { buildDailySendQueue } from "../scripts/lib/clarice-segment.ts";
-import { collectConfiguredListIds, paginateComplete } from "../scripts/clarice-consolidate-lists.ts";
+import { collectConfiguredListIds, paginateComplete, makeBrevoConsolidationClient } from "../scripts/clarice-consolidate-lists.ts";
 import { enrichWithLists } from "../scripts/clarice-plan-wave.ts";
 
 const NOW = new Date("2026-10-03T12:00:00Z"); // ciclo esperado: 2609-10
@@ -650,5 +650,24 @@ describe("listMemberCount — contagem de membros comparável ao /contacts (#953
   it("sem uniqueSubscribers, soma totalSubscribers + totalBlacklisted", () => {
     assert.equal(listMemberCount({ totalSubscribers: 49, totalBlacklisted: 1 }), 50);
     assert.equal(listMemberCount({ totalSubscribers: 12 }), 12);
+  });
+  it("uniqueSubscribers vence a soma quando divergem; NaN cai na soma; 0 é aceito", () => {
+    assert.equal(listMemberCount({ totalSubscribers: 49, totalBlacklisted: 1, uniqueSubscribers: 48 }), 48);
+    assert.equal(listMemberCount({ totalSubscribers: 49, totalBlacklisted: 1, uniqueSubscribers: Number.NaN }), 50);
+    assert.equal(listMemberCount({ totalSubscribers: 0, totalBlacklisted: 0, uniqueSubscribers: 0 }), 0);
+  });
+  it("makeBrevoConsolidationClient.getListCount conta blacklistados (wiring real, fetch stubado)", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 9, name: "T1-W1 (top 50)", totalSubscribers: 49, totalBlacklisted: 1, uniqueSubscribers: 50 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const client = makeBrevoConsolidationClient("k", tmpdir(), "/nao-usado.json");
+      assert.equal(await client.getListCount(9), 50);
+    } finally {
+      globalThis.fetch = orig;
+    }
   });
 });
