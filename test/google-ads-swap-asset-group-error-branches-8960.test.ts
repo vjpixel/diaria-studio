@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { main as swapMain } from "../scripts/google-ads-swap-asset-group-creatives.ts";
+import { PMAX_PLAN_OUT_TMP } from "./_helpers/pmax-stateful-search.ts";
 
 const AUTH_ENV = {
   GOOGLE_ADS_CLIENT_ID: "client-id",
@@ -33,6 +34,7 @@ const AUTH_ENV = {
   GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token",
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: "6236094249",
   GOOGLE_ADS_CUSTOMER_ID: "2369219639",
+  PMAX_SWAP_PLAN_OUT: PMAX_PLAN_OUT_TMP,
 };
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
@@ -64,6 +66,23 @@ const SAMPLE_SEARCH_RESULTS = [
     asset: { resourceName: "customers/2369219639/assets/1", id: "1", type: "TEXT", textAsset: { text: "Newsletter de IA" } },
     assetGroupAsset: { resourceName: "customers/2369219639/assetGroupAssets/g~1~HEADLINE", asset: "customers/2369219639/assets/1", fieldType: "HEADLINE", status: "ENABLED" },
   },
+];
+
+/** Fase 2 com piso (#8550 sync): 3 headlines não-stale APROVADOS, então o
+ *  stale "Newsletter de IA" é removível sem deixar HEADLINE abaixo de 3 — os
+ *  testes abaixo chegam de fato ao `assetGroupAssets:mutate` (remove). */
+const PHASE2_SEARCH_RESULTS = [
+  ...SAMPLE_SEARCH_RESULTS,
+  ...["21", "22", "23"].map((id) => ({
+    asset: { resourceName: `customers/2369219639/assets/${id}`, id, type: "TEXT", textAsset: { text: `Título novo ${id}` } },
+    assetGroupAsset: {
+      resourceName: `customers/2369219639/assetGroupAssets/g~${id}~HEADLINE`,
+      asset: `customers/2369219639/assets/${id}`,
+      fieldType: "HEADLINE",
+      status: "ENABLED",
+      policySummary: { approvalStatus: "APPROVED" },
+    },
+  })),
 ];
 
 function makeManifest(dir: string): string {
@@ -352,7 +371,7 @@ describe("#8960 — google-ads-swap-asset-group-creatives: Fase 2, remoção (as
   it("falha de rede na remoção -> falha limpa", async () => {
     const fetchMock = async (input: string) => {
       if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
-      if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+      if (input.endsWith(":search")) return jsonResponse(200, { results: PHASE2_SEARCH_RESULTS });
       if (input.endsWith("assetGroupAssets:mutate")) throw new Error("network down na remoção (simulado)");
       throw new Error(`chamada inesperada: ${input}`);
     };
@@ -365,7 +384,7 @@ describe("#8960 — google-ads-swap-asset-group-creatives: Fase 2, remoção (as
   it("remoção HTTP não-2xx -> falha limpa", async () => {
     const fetchMock = async (input: string) => {
       if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
-      if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+      if (input.endsWith(":search")) return jsonResponse(200, { results: PHASE2_SEARCH_RESULTS });
       if (input.endsWith("assetGroupAssets:mutate")) return jsonResponse(500, { error: "internal" });
       throw new Error(`chamada inesperada: ${input}`);
     };
@@ -378,7 +397,7 @@ describe("#8960 — google-ads-swap-asset-group-creatives: Fase 2, remoção (as
   it("remoção corpo não-JSON -> falha limpa", async () => {
     const fetchMock = async (input: string) => {
       if (input === "https://oauth2.googleapis.com/token") return jsonResponse(200, { access_token: "tok" });
-      if (input.endsWith(":search")) return jsonResponse(200, { results: SAMPLE_SEARCH_RESULTS });
+      if (input.endsWith(":search")) return jsonResponse(200, { results: PHASE2_SEARCH_RESULTS });
       if (input.endsWith("assetGroupAssets:mutate")) return new Response("isto não é JSON", { status: 200 });
       throw new Error(`chamada inesperada: ${input}`);
     };

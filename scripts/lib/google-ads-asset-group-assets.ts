@@ -67,6 +67,10 @@ export interface AssetGroupAssetApiRow {
     asset?: string;
     fieldType?: string;
     status?: string;
+    /** #8550 sync — lido pra a Fase 2 só contar no piso do PMax o que o
+     *  Google já APROVOU (nunca o que ainda está em revisão). */
+    primaryStatus?: string;
+    policySummary?: { approvalStatus?: string };
   };
 }
 
@@ -110,6 +114,11 @@ export interface AssetGroupAssetItem {
    *  do asset — é onde os marcadores "Generated image"/"Gemini_Generated_Image"
    *  aparecem, não no texto). */
   imageName?: string;
+  /** `asset_group_asset.policy_summary.approval_status` (APPROVED,
+   *  APPROVED_LIMITED, DISAPPROVED, UNKNOWN...). Ausente = não lido. */
+  approvalStatus?: string;
+  /** `asset_group_asset.primary_status` (ELIGIBLE, NOT_ELIGIBLE, PENDING...). */
+  primaryStatus?: string;
 }
 
 /** Monta a query GAQL de leitura de todos os `asset_group_asset` de um
@@ -128,6 +137,7 @@ export function buildAssetGroupAssetsQuery(assetGroupResourceName: string): stri
   }
   return (
     "SELECT asset_group_asset.asset, asset_group_asset.field_type, asset_group_asset.status, " +
+    "asset_group_asset.primary_status, asset_group_asset.policy_summary.approval_status, " +
     "asset.id, asset.name, asset.type, asset.text_asset.text, asset.image_asset.full_size.url " +
     `FROM asset_group_asset WHERE asset_group_asset.asset_group = '${assetGroupResourceName}'`
   );
@@ -152,6 +162,10 @@ export function parseAssetGroupAssetRows(rows: AssetGroupAssetApiRow[]): AssetGr
       assetType: asset.type ?? "UNKNOWN",
       text: asset.textAsset?.text,
       imageName: asset.name,
+      // Só presentes quando a API devolve — chave `undefined` explícita
+      // quebraria comparações estritas de quem já consome este shape.
+      ...(aga.policySummary?.approvalStatus ? { approvalStatus: aga.policySummary.approvalStatus } : {}),
+      ...(aga.primaryStatus ? { primaryStatus: aga.primaryStatus } : {}),
     });
   }
   return items;
@@ -221,10 +235,12 @@ export function isStaleImageName(name: string | undefined): boolean {
   return STALE_IMAGE_NAME_PATTERNS.some((re) => re.test(name));
 }
 
-/** Nome de imagem que precisa de decisão humana antes de mexer — hoje só
- *  `logo_1.jpg` (a única imagem com cara de logo ativa como marketing
- *  image, ver docstring do módulo). @pure */
-const NEEDS_REVIEW_IMAGE_NAMES: ReadonlySet<string> = new Set(["logo_1.jpg"]);
+/** Nome de imagem que precisa de decisão humana antes de mexer — logos
+ *  ativos como marketing image: `logo_1.jpg` (quadrada, ver docstring do
+ *  módulo) e `logo_1.91:1.jpg` (id `318613044963`, MARKETING_IMAGE 724×378 —
+ *  achado na leitura de 03/10/2026; antes caía em `keep` por não bater com
+ *  nenhum padrão, sem aparecer no relatório de pendências). @pure */
+const NEEDS_REVIEW_IMAGE_NAMES: ReadonlySet<string> = new Set(["logo_1.jpg", "logo_1.91:1.jpg"]);
 
 export interface AssetGroupClassification {
   /** Recursos genéricos antigos — candidatos a REMOVER depois que os novos

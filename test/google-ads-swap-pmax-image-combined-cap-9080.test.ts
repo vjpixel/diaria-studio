@@ -34,6 +34,7 @@ import {
   type SwapProgress,
 } from "../scripts/lib/google-ads-asset-group-assets.ts";
 import { main as swapMain } from "../scripts/google-ads-swap-asset-group-creatives.ts";
+import { PMAX_PLAN_OUT_TMP } from "./_helpers/pmax-stateful-search.ts";
 
 const CUSTOMER = "2369219639";
 const GROUP = `customers/${CUSTOMER}/assetGroups/6642889160`;
@@ -46,6 +47,7 @@ const AUTH_ENV = {
   GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token",
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: "6236094249",
   GOOGLE_ADS_CUSTOMER_ID: CUSTOMER,
+  PMAX_SWAP_PLAN_OUT: PMAX_PLAN_OUT_TMP,
 };
 
 async function withEnv<T>(overrides: Record<string, string>, fn: () => Promise<T>): Promise<T> {

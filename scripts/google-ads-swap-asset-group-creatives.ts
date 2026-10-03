@@ -87,6 +87,20 @@
  *   reprovação): remove os `asset_group_asset` classificados como stale
  *   na leitura mais recente.
  *
+ * ## Plano JSON, piso e releitura (#8550 sync, `lib/google-ads-pmax-sync-plan.ts`)
+ *
+ *   - Toda execução (inclusive dry-run) grava o plano em `--plan-out`
+ *     (default `data/aquisicao/campanhas-260816/pmax-swap-plan.json`):
+ *     contagem por field_type depois de CADA mutate da Fase 1 e da Fase 2
+ *     projetada, contra mínimo/máximo do PMax, e a lista de violações.
+ *   - A Fase 2 tem PISO: remove o stale só até onde o que sobra com
+ *     `policy_summary.approval_status` APPROVED/APPROVED_LIMITED cobre o
+ *     mínimo do tipo. Rodada cedo (antes da Fase 1, ou com os novos em
+ *     revisão), mantém o stale necessário; rodar de novo depois remove o resto.
+ *   - Depois de cada fase, o grupo é RELIDO: os novos precisam aparecer
+ *     ENABLED no tipo pedido; os removidos não podem seguir ENABLED. Divergência
+ *     = exit 1 (2xx não prova o estado).
+ *
  * `needsReview` (hoje: `logo_1.jpg` e qualquer texto ENABLED desconhecido)
  * NUNCA é tocado por nenhuma fase — fica de fora do plano, reportado à
  * parte pra decisão humana.
@@ -148,6 +162,14 @@ import {
   type SwapProgressStepKey,
   type FieldLinkPlanResult,
 } from "./lib/google-ads-asset-group-assets.ts";
+import {
+  buildSyncPlanReport,
+  planPhase2Removal,
+  verifyLinkedAfterApply,
+  verifyRemovedAfterApply,
+  fieldsBelowMin,
+  type SyncPlanReport,
+} from "./lib/google-ads-pmax-sync-plan.ts";
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
 import { spawnSync } from "node:child_process";
@@ -156,6 +178,21 @@ import { latestAcaoAdiadaFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts
 
 const DEFAULT_ASSET_GROUP_ID = "6642889160";
 const DEFAULT_PROGRESS_FILE = "_internal/pmax-swap-progress.json";
+/** Plano auditável (JSON) gravado em TODA execução, inclusive dry-run —
+ *  junto dos criativos (`data/` é gitignored e sincronizado entre máquinas).
+ *  Precedência: `--plan-out` > env `PMAX_SWAP_PLAN_OUT` (os testes apontam
+ *  pra tmp, nunca pro `data/` real) > este default. */
+const DEFAULT_PLAN_OUT = "data/aquisicao/campanhas-260816/pmax-swap-plan.json";
+
+function writePlanReport(path: string, report: SyncPlanReport): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(report, null, 2) + "\n", "utf8");
+  console.log(`[google-ads-swap-asset-group-creatives] plano gravado em ${path} (${report.violations.length} violação(ões)).`);
+  for (const snap of [...report.phase1.snapshots, report.phase2.snapshot]) {
+    const counts = Object.entries(snap.counts).map(([ft, n]) => `${ft}=${n}`).join(" ");
+    console.log(`  ${snap.label}: ${counts} | imagens=${snap.imagesCombined}${snap.violations.length ? ` ✖ ${snap.violations.join("; ")}` : ""}`);
+  }
+}
 /** Issue #8550 é onde o adiamento (`acao-adiada`) do editor foi gravado em
  *  28/09/2026 — ver docstring do módulo acima. Fixo porque este script
  *  serve UM swap específico (grupo `6642889160`), não um fluxo genérico. */
@@ -318,6 +355,7 @@ export async function main(
   const manifestPath = getStringArg(argv, "images-manifest", { example: "path/to/manifest.json" });
   const progressFile = getStringArg(argv, "progress-file", { example: DEFAULT_PROGRESS_FILE }) ?? DEFAULT_PROGRESS_FILE;
   const skipCooldownCheck = hasFlag(argv, "skip-cooldown-check-UNSAFE");
+  const planOut = getStringArg(argv, "plan-out", { example: DEFAULT_PLAN_OUT }) ?? process.env.PMAX_SWAP_PLAN_OUT ?? DEFAULT_PLAN_OUT;
 
   // #8960 achado #2 — cooldown do editor agora é checado em CÓDIGO, não só
   // documentado. Só se aplica a `--send` (dry-run continua seguro sempre,
@@ -398,18 +436,47 @@ export async function main(
   }
 
   if (removeStale) {
+    // Piso (#8550 sync): remove o stale só até onde o que SOBRA APROVADO
+    // cobre o mínimo do PMax por tipo — nunca deixa o grupo inválido, nem
+    // quando rodada antes da Fase 1 ou com os novos ainda em revisão.
+    const phase2 = planPhase2Removal(current.items, classification);
+    writePlanReport(
+      planOut,
+      buildSyncPlanReport({
+        generatedAt: new Date().toISOString(),
+        assetGroup: assetGroupResourceName,
+        mode: send ? "phase2" : "phase2-dry-run",
+        items: current.items,
+        classification,
+        text: { headlines: NEW_HEADLINES, longHeadlines: NEW_LONG_HEADLINES, descriptions: NEW_DESCRIPTIONS, errors: [] },
+        images: { manifest: null, pending: [] },
+        phase1Plans: [],
+        capacityErrors: [],
+      }),
+    );
+    for (const f of phase2.fields) {
+      if (f.staleEnabled === 0) continue;
+      console.log(
+        `[google-ads-swap-asset-group-creatives] Fase 2 ${f.fieldType}: ${f.confirmedPermanent} não-stale aprovado(s)` +
+          (f.unconfirmedPermanent > 0 ? ` + ${f.unconfirmedPermanent} sem aprovação confirmada (não contam no piso)` : "") +
+          `, mínimo ${f.min} — remove ${f.remove.length} de ${f.staleEnabled} stale` +
+          (f.retain.length > 0 ? `, MANTÉM ${f.retain.length} (piso; rode a Fase 2 de novo depois da aprovação dos novos)` : "") +
+          ".",
+      );
+    }
+    if (phase2.unmanagedStale.length > 0) {
+      console.log(`[google-ads-swap-asset-group-creatives] stale de tipo sem piso conhecido, NÃO removido: ${phase2.unmanagedStale.join(", ")}`);
+    }
     if (!send) {
       console.log("[google-ads-swap-asset-group-creatives] --remove-stale sem --send: plano de remoção (dry-run):");
-      for (const item of classification.stale) {
-        console.log(`  removeria: ${item.assetGroupAssetResourceName} (${item.fieldType})`);
-      }
+      for (const rn of phase2.remove) console.log(`  removeria: ${rn}`);
       return 0;
     }
-    if (classification.stale.length === 0) {
-      console.log("[google-ads-swap-asset-group-creatives] nada stale a remover — nenhuma chamada de mutação necessária.");
+    if (phase2.remove.length === 0) {
+      console.log("[google-ads-swap-asset-group-creatives] nada stale removível acima do piso — nenhuma chamada de mutação necessária.");
       return 0;
     }
-    const removePayload = buildRemoveAssetGroupAssetsPayload(classification.stale.map((i) => i.assetGroupAssetResourceName));
+    const removePayload = buildRemoveAssetGroupAssetsPayload(phase2.remove);
     const apiVersion = auth.apiVersion ?? DEFAULT_API_VERSION;
     const url = `https://googleads.googleapis.com/${apiVersion}/customers/${customerId.replace(/[^0-9]/g, "")}/assetGroupAssets:mutate`;
     console.log(`[google-ads-swap-asset-group-creatives] removendo ${classification.stale.length} asset_group_asset stale...`);
@@ -440,7 +507,22 @@ export async function main(
       );
       return 1;
     }
-    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${removedCount} recurso(s) removido(s) (confirmado pela resposta): ${attempt.text.slice(0, 500)}`);
+    console.log(`[google-ads-swap-asset-group-creatives] ✔ ${removedCount} recurso(s) removido(s) (confirmado pela resposta).`);
+    // Releitura: a resposta 2xx não prova o estado do grupo.
+    const after = await readCurrentAssetGroupAssets(fetchFn, auth, accessToken, assetGroupResourceName);
+    if ("error" in after) {
+      console.error(`[google-ads-swap-asset-group-creatives] ✖ remoção enviada, mas a releitura falhou — conferir o grupo pela API: ${after.error}`);
+      return 1;
+    }
+    const removeErrors = verifyRemovedAfterApply(after.items, phase2.remove);
+    const touched = new Set(phase2.fields.filter((f) => f.remove.length > 0).map((f) => f.fieldType as string));
+    const belowMin = fieldsBelowMin(after.items, touched);
+    if (removeErrors.length > 0 || belowMin.length > 0) {
+      for (const e of [...removeErrors, ...belowMin]) console.error(`  ✖ ${e}`);
+      console.error("[google-ads-swap-asset-group-creatives] ✖ releitura pós-remoção não confere com o pedido (ver acima).");
+      return 1;
+    }
+    console.log("[google-ads-swap-asset-group-creatives] ✔ releitura confere: nenhum removido segue ENABLED, nenhum tipo abaixo do mínimo.");
     return 0;
   }
 
@@ -531,6 +613,21 @@ export async function main(
     );
     applyLinkPlan(imageLinkPlan);
   }
+
+  writePlanReport(
+    planOut,
+    buildSyncPlanReport({
+      generatedAt: new Date().toISOString(),
+      assetGroup: assetGroupResourceName,
+      mode: send ? "phase1" : "dry-run",
+      items: current.items,
+      classification,
+      text: { headlines: NEW_HEADLINES, longHeadlines: NEW_LONG_HEADLINES, descriptions: NEW_DESCRIPTIONS, errors: textValidation.errors },
+      images: { manifest: manifest && manifestErrors.length === 0 ? manifest : null, pending: manifestErrors },
+      phase1Plans: [...textLinkPlan.plans, ...imageLinkPlan.plans],
+      capacityErrors: [...(textLinkPlan.ok ? [] : textLinkPlan.errors), ...(imageLinkPlan.ok ? [] : imageLinkPlan.errors)],
+    }),
+  );
 
   if (!send) {
     console.log("[google-ads-swap-asset-group-creatives] DRY-RUN (default) — plano de texto que seria criado:");
@@ -772,6 +869,26 @@ export async function main(
         " (confirmado pela resposta).",
     );
   }
+
+  // Releitura (#8550 sync): a resposta 2xx com a contagem certa não prova o
+  // estado do grupo — confere que cada asset novo aparece ENABLED no tipo
+  // pedido. Falha mantém o arquivo de progresso (todas as etapas linked:true,
+  // um retry não recria nada) pra investigação.
+  const afterPhase1 = await readCurrentAssetGroupAssets(fetchFn, auth, accessToken, assetGroupResourceName);
+  if ("error" in afterPhase1) {
+    console.error(`[google-ads-swap-asset-group-creatives] ✖ Fase 1 enviada, mas a releitura falhou — conferir o grupo pela API: ${afterPhase1.error}`);
+    return 1;
+  }
+  const linkErrors = verifyLinkedAfterApply(
+    afterPhase1.items,
+    allNewAssetsByFieldType.map(({ fieldType, resourceNames }) => ({ fieldType, assetResourceNames: resourceNames })),
+  );
+  if (linkErrors.length > 0) {
+    for (const e of linkErrors) console.error(`  ✖ ${e}`);
+    console.error("[google-ads-swap-asset-group-creatives] ✖ releitura pós-Fase 1 não confere com o que foi linkado (ver acima).");
+    return 1;
+  }
+  console.log("[google-ads-swap-asset-group-creatives] ✔ releitura confere: todos os recursos novos aparecem ENABLED no grupo.");
 
   // Fase 1 terminou com tudo criado E linkado — o progresso não deve
   // sobreviver pro PRÓXIMO swap (textos/imagens diferentes), então é
