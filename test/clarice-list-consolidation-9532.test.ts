@@ -234,6 +234,8 @@ interface FakeOpts {
   snapshotFails?: boolean;
   snapshotCorrupts?: boolean;
   spotCheckFalse?: boolean;
+  /** Propagação atrasada: as N primeiras consultas de cada e-mail devolvem false. */
+  verifyLag?: number;
   deleteFails?: boolean;
   nonTerminalRefs?: number[][];
   recheckFails?: boolean;
@@ -244,6 +246,7 @@ function fakeClient(o: FakeOpts = {}) {
   const snapshots = new Map<number, ListArchiveSnapshot>();
   const inHistory = new Set<string>();
   let recheck = 0;
+  const seenVerify = new Map<string, number>();
   const client: ConsolidationClient = {
     async getListCount(id) {
       calls.push(`count:${id}`);
@@ -272,6 +275,9 @@ function fakeClient(o: FakeOpts = {}) {
     },
     async contactInList(email) {
       calls.push(`verify:${email}`);
+      const n = (seenVerify.get(email) ?? 0) + 1;
+      seenVerify.set(email, n);
+      if (o.verifyLag !== undefined && n <= o.verifyLag) return false;
       return o.spotCheckFalse ? false : inHistory.has(email);
     },
     async fetchNonTerminalListRefs() {
@@ -291,11 +297,27 @@ function fakeClient(o: FakeOpts = {}) {
 }
 
 function opts(historyMembers = new Set<string>(), extra: Partial<Parameters<typeof applyListConsolidation>[2]> = {}) {
-  return { historyListId: HISTORY, historyMembers, protectedListIds: new Set<number>([7]), now: () => NOW, ...extra };
+  return { historyListId: HISTORY, historyMembers, protectedListIds: new Set<number>([7]), now: () => NOW, sleep: async () => {}, ...extra };
 }
 const failStep = (r: ListApplyResult) => (r.status === "failed" ? r.step : r.status);
 
 describe("applyListConsolidation (#9532) — contagem → snapshot → add → marcador → delete", () => {
+  it("propagação atrasada da Brevo: amostra re-tenta com espera e apaga (achado ao vivo 03/10)", async () => {
+    const { client, calls } = fakeClient({ members: { 1: ["a@x.com"] }, verifyLag: 2 });
+    const waits: number[] = [];
+    const [r] = await applyListConsolidation([cand(1)], client, opts(new Set(), { sleep: async (ms) => { waits.push(ms); } }));
+    assert.equal(failStep(r), "deleted");
+    assert.deepEqual(waits, [2000, 5000]);
+    assert.equal(calls.filter((x) => x === "verify:a@x.com").length, 3);
+  });
+  it("ausência persistente após todas as re-tentativas → falha em verify, NÃO apaga", async () => {
+    const { client, calls } = fakeClient({ members: { 1: ["a@x.com"] }, verifyLag: 99 });
+    const [r] = await applyListConsolidation([cand(1)], client, opts());
+    assert.equal(failStep(r), "verify");
+    assert.ok(!calls.includes("delete:1"));
+    assert.equal(calls.filter((x) => x === "verify:a@x.com").length, 5);
+  });
+
   it("ordem estrita; marcador gravado UMA vez antes do 1º DELETE", async () => {
     const { client, calls, snapshots } = fakeClient({ members: { 1: ["B@x.com", "a@x.com"], 2: ["c@x.com"] } });
     const res = await applyListConsolidation([cand(1), cand(2)], client, opts());
