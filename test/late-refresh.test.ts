@@ -4,6 +4,7 @@ import {
   IMPRECISE_DATE_LOOKBACK_MS,
   LATE_REFRESH_FEEDS,
   LATE_REFRESH_UNCOVERED_LABS,
+  isOfficialHost,
   canonicalUrlSet,
   filterLateArticles,
   formatLateRefreshBlock,
@@ -222,4 +223,14 @@ test("#9457: posts oficiais de Meta (about.fb.com) e Mistral anunciando lançame
   assert.equal(essay.slot, "RADAR");
   assert.equal(essay.reason, "post oficial que não anuncia lançamento");
   assert.equal(suggestSubstitution({ url: "https://techcrunch.com/x", title: "Mistral launches Medium 4" }, []).reason, "fonte não oficial");
+});
+
+// #9515: post do próprio feed oficial nunca pode cair como "fonte não oficial".
+test("LATE_REFRESH_FEEDS: todo host de feed satisfaz isOfficialHost (#9515)", () => {
+  for (const f of LATE_REFRESH_FEEDS) {
+    const u = new URL(f.url);
+    const post = `${u.protocol}//${u.host}${f.pathPrefix ?? "/"}post-exemplo`;
+    assert.equal(isOfficialHost(post), true, `${f.name}: ${post} deveria ser oficial`);
+  }
+  assert.equal(isOfficialHost("https://microsoft.ai/news/introducing-mai-voice-2/"), true);
 });

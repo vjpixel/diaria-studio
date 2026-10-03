@@ -225,7 +225,7 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   },
   {
     company: "Microsoft",
-    domains: ["blogs.microsoft.com"],
+    domains: ["blogs.microsoft.com", "microsoft.ai"],
     detection_keywords: /\b(microsoft|copilot|phi-?[0-9]+)\b/i,
   },
   {
