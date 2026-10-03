@@ -271,7 +271,7 @@ async function main(): Promise<void> {
   const since = getStringArg(argv, "since") ?? "260901";
   const until = getStringArg(argv, "until") ?? "999999";
   const outDir = resolve(root, getStringArg(argv, "out") ?? "data/jev-eval/ab-paired-9531");
-  const noNetwork = hasFlag(argv, "--no-network");
+  const noNetwork = hasFlag(argv, "no-network");
   loadProjectEnv(root);
   const envKey = process.env.TYPESAFE_API_KEY;
   if (!envKey && !noNetwork) {
