@@ -362,7 +362,7 @@ describe("#4270 — contrato HTTP (/skills e /api/skills)", () => {
     // parser em cima de um arquivo de verdade, não só fixture sintética.
     const overnight = body.skills.find((s) => s.id === "diaria-overnight");
     assert.ok(overnight);
-    assert.equal(overnight.flags.model, "claude-opus-5-5");
+    assert.equal(overnight.flags.model, "claude-sonnet-5-5");
     assert.equal(overnight.flags.disableModelInvocation, true);
   });
 });
