@@ -38,9 +38,10 @@ import {
 } from "../scripts/lib/mensal/retrospectiva-social.ts";
 import {
   addMinutesIso,
-  dailySlotCollisions,
+  localIsoAt,
   resolveRetrospectivaBaseDate,
   resolveRetrospectivaPostScheduledAts,
+  retrospectivaPostDay,
 } from "../scripts/lib/mensal/retrospectiva-schedule.ts";
 import { buildDoneChannelState, withChannelState } from "../scripts/lib/artigo-especial-state.ts";
 import {
@@ -234,37 +235,38 @@ describe("check-retrospectiva-divulgacao cobre as 3 histórias", () => {
   });
 });
 
-describe("agenda: 3 histórias no mesmo dia, redes escalonadas, sem colisão com a diária", () => {
-  it("D+1: história 1 às 09:00, 2 às 14:30, 3 às 20:00; LinkedIn :00 / Facebook :10 / Instagram :20 / Threads :30 / X :40", () => {
+describe("agenda: D+1, slots da diária, 5 redes no mesmo horário (decisão do editor)", () => {
+  it("D+1 do envio: história 1 às 10:00, 2 às 12:30, 3 às 17:30 — as 5 redes juntas", () => {
     const s = resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "2026-10-10", now: NOW });
-    assert.deepEqual(s.d1, {
-      linkedin_pagina: "2026-10-11T09:00:00-03:00",
-      facebook: "2026-10-11T09:10:00-03:00",
-      instagram: "2026-10-11T09:20:00-03:00",
-      threads: "2026-10-11T09:30:00-03:00",
-      x: "2026-10-11T09:40:00-03:00",
-    });
-    assert.equal(s.d2.linkedin_pagina, "2026-10-11T14:30:00-03:00");
-    assert.equal(s.d2.x, "2026-10-11T15:10:00-03:00");
-    assert.equal(s.d3.linkedin_pagina, "2026-10-11T20:00:00-03:00");
-    assert.equal(s.d3.x, "2026-10-11T20:40:00-03:00");
-    const flat = Object.fromEntries(H.flatMap((h) => Object.entries(s[h]).map(([ch, v]) => [`${ch}:${h}`, v])));
-    assert.equal(new Set(Object.values(flat)).size, 15);
-    assert.deepEqual(dailySlotCollisions(flat, CONFIG), []);
+    for (const ch of ["linkedin_pagina", "facebook", "instagram", "threads", "x"] as const) {
+      assert.equal(s.d1[ch], "2026-10-11T10:00:00-03:00", ch);
+      assert.equal(s.d2[ch], "2026-10-11T12:30:00-03:00", ch);
+      assert.equal(s.d3[ch], "2026-10-11T17:30:00-03:00", ch);
+    }
+    assert.deepEqual(resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "261010", now: NOW }), s);
   });
-  it("--at desloca tudo; qualquer um dos 15 colado num slot da diária lança (inclusive pela história 2/3)", () => {
-    assert.throws(() => resolveRetrospectivaPostScheduledAts(CONFIG, { at: "2026-10-11T09:55:00-03:00", now: NOW }), /colide com a diária.*d1/);
-    // 07:00 → história 2 às 12:30 (em cima do d2 da diária).
-    assert.throws(() => resolveRetrospectivaPostScheduledAts(CONFIG, { at: "2026-10-11T07:00:00-03:00", now: NOW }), /:d2=.*d2 \(12:30\)/);
-    const ok = resolveRetrospectivaPostScheduledAts(CONFIG, { at: "2026-10-11T12:00:00Z", now: NOW });
-    assert.equal(ok.d1.facebook, "2026-10-11T09:10:00-03:00");
+  it("slots vêm do fallback_schedule do config (fonte do compute-social-schedule); sem ele, 10:00/12:30/17:30", () => {
+    const outro = { publishing: { social: { timezone: "America/Sao_Paulo", fallback_schedule: { d1_time: "09:15", d2_time: "13:00", d3_time: "18:45" } } } };
+    const s = resolveRetrospectivaPostScheduledAts(outro, { baseDate: "2026-10-10", now: NOW });
+    assert.deepEqual([s.d1.x, s.d2.x, s.d3.x], ["2026-10-11T09:15:00-03:00", "2026-10-11T13:00:00-03:00", "2026-10-11T18:45:00-03:00"]);
+    const semConfig = resolveRetrospectivaPostScheduledAts({}, { baseDate: "2026-10-10", now: NOW });
+    assert.equal(semConfig.d2.facebook, "2026-10-11T12:30:00-03:00");
   });
-  it("data-base no passado continua lançando (herdado do LinkedIn)", () => {
-    assert.throws(() => resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "2026-09-01", now: NOW }), /já passaram/);
+  it("--at define só o DIA (local); sem base-date nem --at, D+1 de hoje no fuso", () => {
+    const s = resolveRetrospectivaPostScheduledAts(CONFIG, { at: "2026-10-12T02:00:00Z", now: NOW }); // 23:00 de 11/10 em BRT
+    assert.equal(s.d1.instagram, "2026-10-11T10:00:00-03:00");
+    assert.equal(retrospectivaPostDay({ now: Date.parse("2026-10-03T01:00:00Z") }), "2026-10-03"); // 22:00 de 02/10 BRT → D+1 = 03/10
+    assert.throws(() => retrospectivaPostDay({ at: "2026-10-11T09:00:00" }), /--at inválido/);
+    assert.throws(() => retrospectivaPostDay({ baseDate: "2026-02-30" }), /calendário/);
   });
-  it("addMinutesIso preserva o offset e vira o dia; aceita Z/ms; ISO sem fuso lança", () => {
+  it("horário no passado NÃO lança no resolver (o pré-voo decide por post, pra --skip {rede}:d1 destravar as outras)", () => {
+    const s = resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "2026-09-01", now: NOW });
+    assert.equal(s.d1.x, "2026-09-02T10:00:00-03:00");
+  });
+  it("localIsoAt e addMinutesIso preservam o offset; ISO sem fuso lança", () => {
+    assert.equal(localIsoAt("2026-10-11", "17:30"), "2026-10-11T17:30:00-03:00");
+    assert.equal(localIsoAt("2026-10-11", "9:05", "UTC"), "2026-10-11T09:05:00+00:00");
     assert.equal(addMinutesIso("2026-10-11T23:55:00-03:00", 10), "2026-10-12T00:05:00-03:00");
-    assert.equal(addMinutesIso("2026-10-11T12:00:00.000Z", 10), "2026-10-11T09:10:00-03:00");
     assert.throws(() => addMinutesIso("2026-10-11T09:00:00", 10), /offset/);
   });
   it("âncora D: explícita > regra do 1º sábado > hoje; --at desliga a regra", () => {
@@ -716,6 +718,48 @@ describe("adaptador publish-retrospectiva-social", () => {
     const { o, calls } = opts({ prepareImages: async (hs) => Object.fromEntries(hs.map((h) => [h, { cards: cardsFor(h), pendingUpload: true }])) });
     await assert.rejects(runRetrospectivaSocialDispatch(o), /não subiram pro KV/);
     assert.equal(calls.length, 0);
+  });
+
+  it("edição diária com posts agendados no dia alvo (mesmos slots) recusa o pré-voo; pasta sem posts ou dia útil só avisam", async () => {
+    const seen: string[] = [];
+    const conflito = opts({
+      dailyEditionCheck: (aammdd) => {
+        seen.push(aammdd);
+        return { dirExists: true, livePosts: 3 };
+      },
+    });
+    await assert.rejects(runRetrospectivaSocialDispatch(conflito.o), /dia 2026-10-11: a edição diária 261011 tem 3 post\(s\)/);
+    assert.deepEqual(seen, ["261011"]);
+    assert.equal(conflito.calls.length, 0);
+
+    const emCurso = opts({ dailyEditionCheck: () => ({ dirExists: true, livePosts: 0 }) });
+    const r = await runRetrospectivaSocialDispatch(emCurso.o);
+    assert.match(r.warnings.join(), /edição em curso/);
+    assert.equal(emCurso.calls.length, 12);
+
+    // 2026-10-12 é segunda: sem edição ainda → aviso de dia útil, segue.
+    rmSync(tmp, { recursive: true, force: true });
+    mkdirSync(tmp, { recursive: true });
+    const util = opts({
+      resolveScheduledAts: () => resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "2026-10-11", now: NOW }),
+      dailyEditionCheck: () => ({ dirExists: false, livePosts: 0 }),
+    });
+    const r2 = await runRetrospectivaSocialDispatch(util.o);
+    assert.match(r2.warnings.join(), /2026-10-12 é dia útil/);
+    // Domingo (11/10) sem edição: nenhum aviso.
+    rmSync(tmp, { recursive: true, force: true });
+    mkdirSync(tmp, { recursive: true });
+    const domingo = opts({ dailyEditionCheck: () => ({ dirExists: false, livePosts: 0 }) });
+    assert.deepEqual((await runRetrospectivaSocialDispatch(domingo.o)).warnings, []);
+  });
+
+  it("história 1 já passou: --skip das 5 da história 1 destrava as histórias 2 e 3", async () => {
+    const at = Date.parse(SCHEDULE.d1.x) + 60_000; // 10:01 do dia
+    const travado = opts({ now: at });
+    await assert.rejects(runRetrospectivaSocialDispatch(travado.o), /linkedin_pagina:d1: .*não está a ≥10 min/);
+    const { o, calls } = opts({ now: at, posts: ALL.filter((k) => !k.endsWith(":d1")) });
+    await runRetrospectivaSocialDispatch(o);
+    assert.deepEqual([...new Set(calls.map((c) => c.input.historia))], ["d2", "d3"]);
   });
 
   it("upload/geração de imagem que falha: nada despachado", async () => {

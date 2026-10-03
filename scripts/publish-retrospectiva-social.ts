@@ -30,9 +30,12 @@
  * - Imagens (`lib/mensal/retrospectiva-cards.ts`): capa 4:5 + 4 slides
  *   gerados localmente em `divulgacao/` e subidos pro KV (só fora do
  *   `--dry-run`, só depois do pré-voo).
- * - Agenda (`resolveRetrospectivaPostScheduledAts`): D+1, história 1 às 09:00,
- *   2 às 14:30, 3 às 20:00 BRT; rede escalonada +0/+10/+20/+30/+40 min
- *   (LinkedIn, Facebook, Instagram, Threads, X). Colisão com a diária é erro.
+ * - Agenda (`resolveRetrospectivaPostScheduledAts`, decisão do editor): dia
+ *   D+1 do envio do e-mail, nos slots da diária — história 1 às 10:00, 2 às
+ *   12:30, 3 às 17:30 BRT — com as 5 redes NO MESMO horário. Por isso o dia
+ *   não pode ter edição diária agendada: post vivo no store da diária desse
+ *   dia (`data/editions/{AAMMDD}/_internal/06-social-published.json`) barra o
+ *   pré-voo; dia útil sem edição (ainda) vira aviso.
  *
  * ## Idempotência
  *
@@ -125,6 +128,7 @@ import {
   type RetrospectivaCardSet,
 } from "./lib/mensal/retrospectiva-cards.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { editionDir } from "./lib/edition-paths.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -232,11 +236,19 @@ export interface RunRetrospectivaSocialOptions {
   now?: number;
   /** Relógio da re-checagem de antecedência por post (default: `now` fixo, senão `Date.now`). */
   clock?: () => number;
+  /**
+   * Edição diária do dia alvo (`AAMMDD`): a pasta existe? quantos posts
+   * sociais agendados/publicados no store dela? Post vivo barra o pré-voo
+   * (mesmos slots). Ausente = nenhuma checagem (só testes).
+   */
+  dailyEditionCheck?: (aammdd: string) => { dirExists: boolean; livePosts: number };
 }
 
 export interface RunRetrospectivaSocialResult {
   results: SocialPostResult[];
   legacyLinkedin: LegacyLinkedinResult;
+  /** Avisos que não barram (ex: dia útil sem edição diária ainda — #9508). */
+  warnings: string[];
   /** A reconciliação com o Worker não rodou ou não confirmou — os posts estão na fila, sem confirmação (caller sai != 0). */
   verifyError: string | null;
   /** Post despachado cujo state não foi gravado (o store segura a reexecução; caller sai != 0). */
@@ -336,12 +348,13 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   const legacy = findLegacyLinkedinSingle(readSocialPublished(legacyPath));
   const linkedinActive = active.some((k) => splitPostKey(k).channel === "linkedin_pagina");
   let legacyResult: LegacyLinkedinResult = { action: "none" };
-  if (active.length === 0) return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [] };
+  if (active.length === 0) return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [], warnings: [] };
 
   const schedule = o.resolveScheduledAts();
   const clock = o.clock ?? (() => o.now ?? Date.now());
   const now = clock();
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   // Pré-voo de TODOS os posts ativos — qualquer problema aborta antes do 1º
   // dispatch e antes do upload das imagens.
@@ -409,6 +422,23 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       );
     }
   }
+  // Os posts saem nos MESMOS slots da diária (decisão do editor, #9508): o dia
+  // não pode ter edição diária agendada — os dois disputariam o mesmo feed no
+  // mesmo minuto. Sábado/domingo não têm edição.
+  const day = schedule.d1.linkedin_pagina.slice(0, 10);
+  const aammdd = `${day.slice(2, 4)}${day.slice(5, 7)}${day.slice(8, 10)}`;
+  const weekend = [0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay());
+  const daily = o.dailyEditionCheck?.(aammdd) ?? { dirExists: false, livePosts: 0 };
+  if (daily.livePosts > 0) {
+    errors.push(
+      `dia ${day}: a edição diária ${aammdd} tem ${daily.livePosts} post(s) social(is) agendado(s)/publicado(s) nos mesmos slots ` +
+        "(10:00/12:30/17:30) — escolha outro dia (--base-date ou --at; sábado/domingo não têm edição)",
+    );
+  } else if (daily.dirExists) {
+    warnings.push(`dia ${day}: data/editions/${aammdd}/ existe (edição em curso) — se a diária publicar, sai nos mesmos slots da Retrospectiva`);
+  } else if (!weekend) {
+    warnings.push(`dia ${day} é dia útil: uma edição diária ainda pode ser produzida pra ele e sairia nos mesmos slots`);
+  }
   if (!WORKER_DESTAQUE_RE.test(RETROSPECTIVA_SOCIAL_DESTAQUE)) {
     errors.push(`destaque "${RETROSPECTIVA_SOCIAL_DESTAQUE}" incompatível com o Worker (${WORKER_DESTAQUE_RE})`);
   }
@@ -464,7 +494,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
           text: retrospectivaPostText(channel, o.texts[historia]!)!,
         });
     }
-    return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [] };
+    return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [], warnings };
   }
 
   const stateWriteErrors: string[] = [];
@@ -672,7 +702,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       }
     }
   }
-  return { results, legacyLinkedin: legacyResult, verifyError: verifyErrors.length > 0 ? verifyErrors.join(" | ") : null, stateWriteErrors };
+  return { results, legacyLinkedin: legacyResult, verifyError: verifyErrors.length > 0 ? verifyErrors.join(" | ") : null, stateWriteErrors, warnings };
 }
 
 /** Pura: `--force`/`--old-cancelled` → chaves de post (mesmos tokens do `--skip`; tokens de outros canais são ignorados aqui). */
@@ -748,15 +778,20 @@ async function main(): Promise<void> {
   const resolveScheduledAts = (): RetrospectivaPostSchedule => {
     const s = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
     schedule = s;
-    const perfil = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate }).perfil;
+    let perfil: string;
+    try {
+      perfil = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate }).perfil;
+    } catch (e) {
+      perfil = `(não resolvido: ${(e as Error).message})`;
+    }
     console.log(
-      `Agenda (#9508)` +
+      `Agenda (#9508) — dia ${s.d1.linkedin_pagina.slice(0, 10)}, 5 redes no mesmo horário, slots da diária` +
         (values["at"]
-          ? " — a partir de --at"
+          ? " — dia tirado do --at"
           : baseDate
-            ? ` — âncora: envio em ${baseDate}${fromRule ? " (regra do 1º sábado, #9473)" : ""}`
-            : " — âncora: HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)") +
-        `:\n${RETROSPECTIVA_HISTORIAS.map((h) => `  ${h}: ${RETROSPECTIVA_POST_CHANNELS.map((ch) => `${ch}=${s[h][ch]}`).join(" | ")}`).join("\n")}` +
+            ? ` — D+1 do envio em ${baseDate}${fromRule ? " (regra do 1º sábado, #9473)" : ""}`
+            : " — D+1 de HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)") +
+        `:\n${RETROSPECTIVA_HISTORIAS.map((h) => `  ${h}: ${s[h].linkedin_pagina} (LinkedIn, Facebook, Instagram, Threads, X)`).join("\n")}` +
         `\n  linkedin_perfil (manual, 1 post só) = ${perfil}`,
     );
     return s;
@@ -890,6 +925,20 @@ async function main(): Promise<void> {
       cancelWorker: (key) => deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-retrospectiva-social"),
     },
     verifyWorker: (p) => verifyWorkerDispatch(p, workerUrl, workerToken),
+    dailyEditionCheck: (aammdd) => {
+      const dir = resolve(ROOT, editionDir(aammdd));
+      const store = resolve(dir, "_internal", "06-social-published.json");
+      let livePosts = 0;
+      if (existsSync(store)) {
+        // Store ilegível conta como conflito: na dúvida, não agendar em cima da diária.
+        try {
+          livePosts = readSocialPublished(store).posts.filter((p) => p.status === "scheduled" || p.status === "published").length;
+        } catch {
+          livePosts = 1;
+        }
+      }
+      return { dirExists: existsSync(dir), livePosts };
+    },
   });
 
   for (const x of r.results) {
@@ -925,6 +974,7 @@ async function main(): Promise<void> {
         cycle,
         dry_run: dryRun,
         legacy_linkedin: r.legacyLinkedin,
+        warnings: r.warnings,
         results: r.results,
         verify_error: r.verifyError,
         state_write_errors: r.stateWriteErrors,

@@ -5,12 +5,11 @@
  * (`/diaria-mensal-apoiadores`). Âncora com a mesma regra do Artigo Especial
  * (#6014), decidida pelo editor no #9474:
  *
- *   - **Âncora (ex-post único da página): D+1 09:00 BRT**
+ *   - **Post único da página (#9474, legado): D+1 09:00 BRT**
  *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
- * Os 15 posts por história saem a partir da âncora (ver #9508 abaixo); os
- * slots da diária (`10:00 d1 | 12:30 d2 | 17:30 d3`) entram só como
- * referência de colisão (`dailySlotCollisions`).
+ * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS slots da
+ * diária (`10:00 d1 | 12:30 d2 | 17:30 d3`).
  *
  * **A diferença pro Artigo Especial é a âncora "D"**: aqui D é a data do
  * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou — explícita
@@ -23,13 +22,12 @@
  * nenhuma aritmética de data/fuso reimplementada aqui.
  *
  * #9508: os posts por história (LinkedIn página, Facebook, Instagram, Threads,
- * X × D1/D2/D3) saem no mesmo D+1 (`resolveRetrospectivaPostScheduledAts`,
- * abaixo) — a âncora e o fuso continuam vindo de lá; a única aritmética nova é
- * somar minutos a um ISO com offset explícito (`addMinutesIso`). O post da
- * página LinkedIn deixou de ser 1 só: `pagina` abaixo virou só a âncora.
+ * X × D1/D2/D3) saem no dia D+1 (`resolveRetrospectivaPostScheduledAts`,
+ * abaixo), nos slots da diária e nas 5 redes ao mesmo tempo. A aritmética
+ * nova é só montar "dia + HH:MM no fuso" (`localIsoAt`).
  */
 
-import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "../artigo-especial-schedule.ts";
+import { normalizeBaseDate, resolveArtigoEspecialScheduledAts, validateExplicitAt } from "../artigo-especial-schedule.ts";
 import { decideMonthlySendAt, DEFAULT_MONTHLY_SEND_SCHEDULE, type MonthlySendScheduleRule } from "./monthly-send-schedule.ts";
 import {
   RETROSPECTIVA_HISTORIAS,
@@ -86,34 +84,15 @@ export function resolveRetrospectivaScheduledAts(
 // ── #9508: um post por (rede × história), os 3 no mesmo dia ─────────────
 
 /**
- * Minutos depois da âncora (D+1 09:00 BRT, ou `--at`) em que sai cada
- * história — decisão do editor no #9508: os 3 posts de cada rede no MESMO
- * dia, em horários livres, longe (≥15 min) dos slots da diária (10:00 d1 |
- * 12:30 d2 | 17:30 d3): história 1 às 09:00, 2 às 14:30, 3 às 20:00.
+ * Horário de cada história — decisão do editor no #9508 (02/10/2026): os
+ * MESMOS slots dos dias de semana da diária
+ * (`publishing.social.fallback_schedule.d{1,2,3}_time`, a fonte de
+ * `compute-social-schedule.ts`), com as 5 redes ao mesmo tempo, sem
+ * escalonar. Default quando o config não traz o slot.
  */
-export const RETROSPECTIVA_HISTORIA_OFFSET_MIN: Record<RetrospectivaHistoria, number> = {
-  d1: 0,
-  d2: 5 * 60 + 30,
-  d3: 11 * 60,
-};
-
-/**
- * Minutos depois do horário da história em que sai cada rede — uma a cada 10
- * min, pra não saírem no mesmo minuto: `:00 linkedin | :10 facebook | :20
- * instagram | :30 threads | :40 x` (o mesmo escalonamento do #9500).
- */
-export const RETROSPECTIVA_CHANNEL_STAGGER_MIN: Record<RetrospectivaPostChannel, number> = {
-  linkedin_pagina: 0,
-  facebook: 10,
-  instagram: 20,
-  threads: 30,
-  x: 40,
-};
+export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "10:00", d2: "12:30", d3: "17:30" };
 
 export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
-
-/** Margem mínima até um slot da diária (`d{1,2,3}_time`) — post colado no d1 compete com ele no feed. */
-export const DAILY_SLOT_MARGIN_MIN = 15;
 
 /**
  * Pura: soma `minutes` a um ISO e devolve no fuso `timeZone` com offset
@@ -144,74 +123,84 @@ export function addMinutesIso(iso: string, minutes: number, timeZone = "America/
   return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${offset}`;
 }
 
-/** Pura: minutos desde 00:00 de um ISO no fuso informado (via `Intl`, nunca o fuso do processo). */
-function hhmmInTz(iso: string, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(
-    new Date(iso),
-  );
-  const get = (t: string) => Number(parts.find((x) => x.type === t)?.value);
-  return get("hour") * 60 + get("minute");
+/** Pura: `AAAA-MM-DD` do instante no fuso informado (via `Intl`, nunca o fuso do processo). */
+export function localDateInTz(instant: number, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(instant));
+}
+
+/** Pura: `AAAA-MM-DD` + `days` dias de calendário. */
+export function addDaysToDate(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
 /**
- * Pura: horários que caem a menos de `DAILY_SLOT_MARGIN_MIN` de um slot da
- * diária (`publishing.social.fallback_schedule.d{1,2,3}_time`, no fuso de
- * `publishing.social.timezone`). Lista vazia = sem colisão. Compara só a HORA
- * do dia: a diária sai todo dia, então qualquer data conta.
+ * Pura: ISO com offset explícito de `date` às `hhmm` no fuso `timeZone`
+ * (`2026-10-04` + `10:00` → `2026-10-04T10:00:00-03:00`). Corrige o palpite
+ * UTC pelo offset do fuso naquele instante (`addMinutesIso` formata), então
+ * vale também em fuso com horário de verão.
  */
-export function dailySlotCollisions(isos: Record<string, string>, config: ScheduleConfig): string[] {
-  const social = config.publishing?.social as
-    | { timezone?: string; fallback_schedule?: Partial<Record<"d1_time" | "d2_time" | "d3_time", string>> }
-    | undefined;
-  const tz = social?.timezone ?? "America/Sao_Paulo";
-  const sched = social?.fallback_schedule ?? {};
-  const slots = (["d1_time", "d2_time", "d3_time"] as const)
-    .map((k) => ({ k, v: sched[k] }))
-    .filter((s): s is { k: "d1_time" | "d2_time" | "d3_time"; v: string } => typeof s.v === "string" && /^\d{1,2}:\d{2}$/.test(s.v));
-  const out: string[] = [];
-  for (const [label, iso] of Object.entries(isos)) {
-    const t = hhmmInTz(iso, tz);
-    for (const s of slots) {
-      const [h, mi] = s.v.split(":").map(Number);
-      if (Math.abs(t - (h * 60 + mi)) < DAILY_SLOT_MARGIN_MIN) out.push(`${label}=${iso} a <${DAILY_SLOT_MARGIN_MIN}min do ${s.k.slice(0, 2)} (${s.v})`);
-    }
+export function localIsoAt(date: string, hhmm: string, timeZone = "America/Sao_Paulo"): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}$/.test(hhmm)) {
+    throw new Error(`localIsoAt: data/hora inválida (${date} ${hhmm})`);
   }
-  return out;
+  const [h, mi] = hhmm.split(":").map(Number);
+  const guess = Date.parse(`${date}T${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00Z`);
+  const offsetOf = (instant: number): number => {
+    const m = /([+-])(\d{2}):(\d{2})$/.exec(addMinutesIso(new Date(instant).toISOString(), 0, timeZone))!;
+    return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  };
+  const instant = guess - offsetOf(guess) * 60_000;
+  return addMinutesIso(new Date(instant).toISOString(), 0, timeZone);
 }
 
 /**
- * Resolve o horário de cada post (rede × história): a âncora é o horário que
- * a PÁGINA LinkedIn tinha no #9474 (`resolveRetrospectivaScheduledAts` —
- * D+1 09:00 BRT, mesma âncora D/`--at`/guard de passado) + o deslocamento da
- * história + o escalonamento da rede. Com `--at`, tudo parte dele. Lança se
- * algum horário colidir com a diária (`dailySlotCollisions`) — nunca agenda
- * colado num d1/d2/d3.
+ * Pura: o DIA dos posts por história (`AAAA-MM-DD`, no fuso do config).
+ * `--at` (ISO com offset): o dia local dele — só o dia conta, os horários
+ * são os slots. Senão D+1 de `baseDate` (`AAAA-MM-DD`/`AAMMDD`, a data do
+ * envio do e-mail). Sem nenhum: amanhã (D = hoje, mesmo default do #9474).
+ */
+export function retrospectivaPostDay(input: RetrospectivaScheduleInput, timeZone = "America/Sao_Paulo"): string {
+  if (input.at) {
+    if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(input.at) || Number.isNaN(Date.parse(input.at))) {
+      throw new Error(`--at inválido: "${input.at}" (esperado ISO com offset, ex: 2026-10-04T10:00:00-03:00).`);
+    }
+    return localDateInTz(Date.parse(input.at), timeZone);
+  }
+  if (input.baseDate) {
+    const n = normalizeBaseDate(input.baseDate); // AAMMDD, valida calendário
+    return addDaysToDate(`20${n.slice(0, 2)}-${n.slice(2, 4)}-${n.slice(4, 6)}`, 1);
+  }
+  return addDaysToDate(localDateInTz(input.now ?? Date.now(), timeZone), 1);
+}
+
+/**
+ * Resolve o horário de cada post (rede × história) — decisão do editor no
+ * #9508: o dia é D+1 do envio (`retrospectivaPostDay`); história N sai no slot
+ * d{N} da diária (`fallback_schedule.d{N}_time`: 10:00 | 12:30 | 17:30) e as
+ * 5 redes de uma história saem no MESMO horário. Não lança por horário no
+ * passado: quem decide é o pré-voo do publisher, por post (≥10 min), pra que
+ * `--skip {rede}:d1` destrave as histórias 2/3 quando só a 1 já passou.
+ *
+ * Como os horários SÃO os da diária, o dia não pode ter edição diária
+ * agendada — guard no publisher (`dailyEditionConflict`), não aqui.
  */
 export function resolveRetrospectivaPostScheduledAts(
   config: ScheduleConfig,
   input: RetrospectivaScheduleInput = {},
 ): RetrospectivaPostSchedule {
-  const { pagina: anchor } = resolveRetrospectivaScheduledAts(config, input);
-  const tz = config.publishing?.social?.timezone ?? "America/Sao_Paulo";
-  const out = Object.fromEntries(
-    RETROSPECTIVA_HISTORIAS.map((h) => [
-      h,
-      Object.fromEntries(
-        RETROSPECTIVA_POST_CHANNELS.map((ch) => [
-          ch,
-          addMinutesIso(anchor, RETROSPECTIVA_HISTORIA_OFFSET_MIN[h] + RETROSPECTIVA_CHANNEL_STAGGER_MIN[ch], tz),
-        ]),
-      ),
-    ]),
+  const social = config.publishing?.social as
+    | { timezone?: string; fallback_schedule?: Partial<Record<"d1_time" | "d2_time" | "d3_time", string>> }
+    | undefined;
+  const tz = social?.timezone ?? "America/Sao_Paulo";
+  const day = retrospectivaPostDay(input, tz);
+  return Object.fromEntries(
+    RETROSPECTIVA_HISTORIAS.map((h) => {
+      const slot = social?.fallback_schedule?.[`${h}_time`] ?? RETROSPECTIVA_DEFAULT_SLOTS[h];
+      const at = localIsoAt(day, slot, tz);
+      return [h, Object.fromEntries(RETROSPECTIVA_POST_CHANNELS.map((ch) => [ch, at]))];
+    }),
   ) as RetrospectivaPostSchedule;
-  const flat = Object.fromEntries(
-    RETROSPECTIVA_HISTORIAS.flatMap((h) => RETROSPECTIVA_POST_CHANNELS.map((ch) => [`${ch}:${h}`, out[h][ch]])),
-  );
-  const collisions = dailySlotCollisions(flat, config);
-  if (collisions.length > 0) {
-    throw new Error(`agenda dos posts da Retrospectiva colide com a diária: ${collisions.join("; ")}. Passe outro --at.`);
-  }
-  return out;
 }
 
 /**
