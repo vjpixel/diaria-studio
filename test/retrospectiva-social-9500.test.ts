@@ -49,6 +49,7 @@ import {
   LEGACY_SOCIAL_PUBLISHED_FILENAME,
   RETROSPECTIVA_SOCIAL_DESTAQUE,
   imageUrlsFor,
+  isLiveDailyPost,
   parseSocialForce,
   retrospectivaSocialPublishedPath,
   runRetrospectivaSocialDispatch,
@@ -766,5 +767,27 @@ describe("adaptador publish-retrospectiva-social", () => {
     const { o, calls } = opts({ prepareImages: async () => { throw new Error("sharp morreu"); } });
     await assert.rejects(runRetrospectivaSocialDispatch(o), /imagens falhou — nada despachado: sharp morreu/);
     assert.equal(calls.length, 0);
+  });
+});
+
+describe("#9510 — P2/P3 da revisão da #9509", () => {
+  const base = { platform: "linkedin", destaque: "d1", url: null, scheduled_at: null };
+  it("isLiveDailyPost: draft do LinkedIn que de fato sai conta; failed/deleted/skipped/dry-run/roteado-sem-make não", () => {
+    assert.equal(isLiveDailyPost({ ...base, status: "scheduled" }), true);
+    assert.equal(isLiveDailyPost({ ...base, status: "published" }), true);
+    assert.equal(isLiveDailyPost({ ...base, status: "draft" }), true);
+    assert.equal(isLiveDailyPost({ ...base, status: "draft", route: "none", make_request_id: "r1" }), true);
+    assert.equal(isLiveDailyPost({ ...base, status: "failed" }), false);
+    assert.equal(isLiveDailyPost({ ...base, status: "deleted" }), false);
+    assert.equal(isLiveDailyPost({ ...base, status: "skipped" }), false);
+    assert.equal(isLiveDailyPost({ ...base, status: "draft", reason: "dry-run: nada enviado" }), false);
+    assert.equal(isLiveDailyPost({ ...base, status: "draft", route: "manual" }), false);
+  });
+
+  it("localIsoAt rejeita slot fora da faixa com mensagem clara e acerta o offset em fuso com DST", () => {
+    assert.throws(() => localIsoAt("2026-10-04", "24:00"), /fora da faixa/);
+    assert.throws(() => localIsoAt("2026-10-04", "10:75"), /fora da faixa/);
+    assert.equal(localIsoAt("2026-10-04", "10:00"), "2026-10-04T10:00:00-03:00");
+    assert.equal(localIsoAt("2026-03-29", "01:30", "Europe/Berlin"), "2026-03-29T01:30:00+01:00");
   });
 });
