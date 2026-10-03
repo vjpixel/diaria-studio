@@ -12,7 +12,7 @@
  * CLI: `--transcript <path> | --session-id <id>` `[--expect-model M] [--expect-effort E] [--since-line N]`
  * Imprime JSON; exit 0 = par efetivo bate, 2 = diverge, 1 = erro/sem entrada assistant.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,10 +82,20 @@ export function findTranscript(sessionId: string, projectsDir = join(homedir(), 
   return null;
 }
 
+/** Fallback sem id: .jsonl mais recente do diretório de projeto do cwd (o hook não injeta id neste script). */
+export function newestTranscriptForCwd(cwd = process.cwd(), projectsDir = join(homedir(), ".claude", "projects")): string | null {
+  const dir = join(projectsDir, cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  if (!existsSync(dir)) return null;
+  const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => join(dir, f));
+  files.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+  return files[0] ?? null;
+}
+
 function main(): void {
   const a = process.argv.slice(2);
   const get = (k: string) => (a.indexOf(k) >= 0 ? a[a.indexOf(k) + 1] : undefined);
-  const path = get("--transcript") ?? (get("--session-id") ? findTranscript(get("--session-id")!) : null);
+  const sid = get("--session-id") ?? process.env.CLAUDE_SESSION_ID;
+  const path = get("--transcript") ?? (sid ? findTranscript(sid) : newestTranscriptForCwd());
   if (!path || !existsSync(path)) {
     console.error("transcript não encontrado (--transcript <path> ou --session-id <id>)");
     process.exit(1);
