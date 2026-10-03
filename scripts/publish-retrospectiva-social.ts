@@ -34,7 +34,7 @@
  *   D+1 do envio do e-mail, nos slots da diária — história 1 às 10:00, 2 às
  *   12:30, 3 às 17:30 BRT — com as 5 redes NO MESMO horário. Por isso o dia
  *   não pode ter edição diária agendada: post vivo no store da diária desse
- *   dia (`data/editions/{AAMMDD}/_internal/06-social-published.json`) barra o
+ *   dia (`editionDir(AAMMDD)/_internal/06-social-published.json`, ou seja `data/editions/{AAMM}/{AAMMDD}/`) barra o
  *   pré-voo; dia útil sem edição (ainda) vira aviso.
  *
  * ## Idempotência
@@ -274,6 +274,23 @@ export function findLiveSocialDispatch(published: SocialPublished, channel: Retr
   );
 }
 
+/**
+ * Pura (#9510): a entrada do store da DIÁRIA conta como post vivo (que ocupa o
+ * slot)? Tudo que não é `failed`/`deleted`/`skipped` — o LinkedIn grava
+ * `status: "draft"` em posts que de fato saem (fallback Make, `make_now`) —,
+ * exceto dry-run (`reason` "dry-run…") e draft roteado a outro destino sem
+ * `make_request_id` (não saiu).
+ */
+export function isLiveDailyPost(p: PostEntry): boolean {
+  if (p.status === "failed" || p.status === "deleted" || p.status === "skipped") return false;
+  if (typeof p.reason === "string" && p.reason.startsWith("dry-run")) return false;
+  if (p.status === "draft") {
+    const routedElsewhere = p.route !== undefined && p.route !== null && p.route !== "none";
+    if (routedElsewhere && (p.make_request_id === undefined || p.make_request_id === null)) return false;
+  }
+  return true;
+}
+
 /** Pura: o post ÚNICO legado da página LinkedIn ainda agendado (cancelável) no store do #9474, ou `null`. */
 export function findLegacyLinkedinSingle(published: SocialPublished): PostEntry | null {
   return (
@@ -428,14 +445,15 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   const day = schedule.d1.linkedin_pagina.slice(0, 10);
   const aammdd = `${day.slice(2, 4)}${day.slice(5, 7)}${day.slice(8, 10)}`;
   const weekend = [0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay());
+  const slotsLabel = RETROSPECTIVA_HISTORIAS.map((h) => schedule[h].linkedin_pagina.slice(11, 16)).join("/");
   const daily = o.dailyEditionCheck?.(aammdd) ?? { dirExists: false, livePosts: 0 };
   if (daily.livePosts > 0) {
     errors.push(
       `dia ${day}: a edição diária ${aammdd} tem ${daily.livePosts} post(s) social(is) agendado(s)/publicado(s) nos mesmos slots ` +
-        "(10:00/12:30/17:30) — escolha outro dia (--base-date ou --at; sábado/domingo não têm edição)",
+        `(${slotsLabel}) — escolha outro dia (--base-date ou --at; sábado/domingo não têm edição)`,
     );
   } else if (daily.dirExists) {
-    warnings.push(`dia ${day}: data/editions/${aammdd}/ existe (edição em curso) — se a diária publicar, sai nos mesmos slots da Retrospectiva`);
+    warnings.push(`dia ${day}: ${editionDir(aammdd)} existe (edição em curso) — se a diária publicar, sai nos mesmos slots da Retrospectiva`);
   } else if (!weekend) {
     warnings.push(`dia ${day} é dia útil: uma edição diária ainda pode ser produzida pra ele e sairia nos mesmos slots`);
   }
@@ -948,7 +966,7 @@ async function main(): Promise<void> {
       if (existsSync(store)) {
         // Store ilegível conta como conflito: na dúvida, não agendar em cima da diária.
         try {
-          livePosts = readSocialPublished(store).posts.filter((p) => p.status === "scheduled" || p.status === "published").length;
+          livePosts = readSocialPublished(store).posts.filter(isLiveDailyPost).length;
         } catch {
           livePosts = 1;
         }
@@ -957,6 +975,19 @@ async function main(): Promise<void> {
     },
   });
 
+  for (const w of r.warnings) {
+    console.error(`AVISO: ${w}`);
+    logEvent({ edition: cycle, stage: null, agent: "publish-retrospectiva-social", level: "warn", message: w }, ROOT);
+  }
+  const sched = schedule as RetrospectivaPostSchedule | null;
+  if (values["at"] && sched) {
+    const slots = RETROSPECTIVA_HISTORIAS.map((h) => sched[h].linkedin_pagina);
+    if (!slots.some((x) => Date.parse(x) === Date.parse(values["at"]!))) {
+      const msg = `--at só escolhe o DIA (${sched.d1.linkedin_pagina.slice(0, 10)}); o horário "${values["at"]}" é descartado — os posts saem nos slots ${slots.join(", ")}`;
+      console.error(`AVISO: ${msg}`);
+      logEvent({ edition: cycle, stage: null, agent: "publish-retrospectiva-social", level: "warn", message: msg }, ROOT);
+    }
+  }
   for (const x of r.results) {
     if (x.action !== "dispatched" && x.action !== "failed") continue;
     logEvent(

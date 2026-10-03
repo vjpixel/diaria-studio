@@ -145,12 +145,16 @@ export function localIsoAt(date: string, hhmm: string, timeZone = "America/Sao_P
     throw new Error(`localIsoAt: data/hora inválida (${date} ${hhmm})`);
   }
   const [h, mi] = hhmm.split(":").map(Number);
+  if (h > 23 || mi > 59) throw new Error(`localIsoAt: horário fora da faixa (${hhmm}) — horas 0-23, minutos 0-59`);
   const guess = Date.parse(`${date}T${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:00Z`);
   const offsetOf = (instant: number): number => {
     const m = /([+-])(\d{2}):(\d{2})$/.exec(addMinutesIso(new Date(instant).toISOString(), 0, timeZone))!;
     return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
   };
-  const instant = guess - offsetOf(guess) * 60_000;
+  // 2 passadas: o offset do palpite UTC pode diferir do offset do instante
+  // corrigido quando a transição de horário de verão cai entre os dois.
+  let instant = guess - offsetOf(guess) * 60_000;
+  instant = guess - offsetOf(instant) * 60_000;
   return addMinutesIso(new Date(instant).toISOString(), 0, timeZone);
 }
 
