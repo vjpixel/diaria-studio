@@ -19,8 +19,15 @@
  *    excludeCommittedToQueuedCampaigns(rows, fetchCommittedCampaignListIds(...)).
  */
 
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { __setClariceHistoryListIdOverrideForTests } from "../scripts/lib/clarice-list-history-config.ts";
+
+// #9532: os asserts abaixo comparam o Set `committed` EXATO — isola do
+// `clarice_list_history.list_id` real (somado ao committed quando configurado,
+// coberto em test/clarice-list-consolidation-9532.test.ts).
+before(() => __setClariceHistoryListIdOverrideForTests(null));
+after(() => __setClariceHistoryListIdOverrideForTests(undefined));
 import {
   fetchQueuedCampaignListIds,
   fetchSentCampaignListIds,

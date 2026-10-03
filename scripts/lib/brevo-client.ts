@@ -40,6 +40,8 @@ import {
 // de erro deste módulo com a ação exata (ex: "adicione o IP X em
 // authorised_ips") em vez de deixar o operador decifrar o JSON cru.
 import { formatBrevoApiError } from "./brevo-error-classify.ts";
+// #9532: id da lista de histórico da Clarice somado ao Set `committed`.
+import { resolveClariceHistoryListIdForGuard } from "./clarice-list-history-config.ts";
 
 // #5697: re-exportado pra quem já importa tudo de brevo-client.ts — a
 // implementação/estado vivem em brevo-rate-state.ts (módulo dedicado,
@@ -922,6 +924,19 @@ export async function fetchQueuedAndCommittedCampaignListIds(
   apiKey: string,
   _sleep = _defaultSleep,
 ): Promise<{ queued: Set<string>; committed: Set<string> }> {
+  // #9532 — lista de HISTÓRICO da Clarice (`clarice_list_history.list_id`):
+  // `scripts/clarice-consolidate-lists.ts` copia pra ela os membros das listas
+  // de campanhas `sent` antigas ANTES de apagá-las (teto de 300 listas). Apagar
+  // a lista tira o id do `listIds` do contato no próximo sync — sem somar o id
+  // de histórico aqui, o guard perderia esse histórico. Entra só em
+  // `committed` (quem nunca recebeu é barrado), NUNCA em `queued` (re-envio de
+  // quem já recebeu não pode ser zerado por construção — ver
+  // `CommittedGuardScope` em clarice-segment.ts). Lido ANTES da rede e sem
+  // try/catch: config malformado lança alto, nunca encolhe o guard em
+  // silêncio. Ponto central — todo consumidor do Set `committed`
+  // (`fetchCommittedCampaignListIds`, clarice-plan-wave, schedule-ramp,
+  // weekly-send-plan-audience, cohort-order-dryrun, build-segment) passa aqui.
+  const historyListId = resolveClariceHistoryListIdForGuard();
   let lastErr: unknown;
   for (let attempt = 0; ; attempt++) {
     try {
@@ -929,7 +944,9 @@ export async function fetchQueuedAndCommittedCampaignListIds(
         fetchQueuedCampaignListIds(apiKey),
         fetchSentCampaignListIds(apiKey),
       ]);
-      return { queued, committed: new Set([...queued, ...sent]) };
+      const committed = new Set([...queued, ...sent]);
+      if (historyListId !== null) committed.add(String(historyListId));
+      return { queued, committed };
     } catch (err) {
       lastErr = err;
       if (!(err instanceof TypeError)) throw err; // não é falha de rede — retry não ajudaria
