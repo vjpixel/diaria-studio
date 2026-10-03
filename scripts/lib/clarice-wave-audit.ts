@@ -33,6 +33,12 @@
  * (mesmo padrão de `fetchQueuedCampaignListIds`/`fetchSentCampaignListIds`,
  * brevo-client.ts) — o filtro de status é estrutural, não uma regra a
  * lembrar aqui.
+ *
+ * ⚠️ #9532 — ponto cego: listas apagadas por `clarice-consolidate-lists.ts`
+ * (membros movidos pra lista de histórico, que não tem data) somem do índice
+ * ao vivo. A consolidação só apaga listas de ciclo fechado e 45+ dias; o
+ * caller (`audit-wave-no-duplicate-sends.ts`) avisa alto quando há snapshot
+ * em `list-archive/` dentro da janela auditada.
  */
 
 import type { BrevoDraftCampaignRaw } from "./brevo-client.ts";

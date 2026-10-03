@@ -5,54 +5,79 @@
  * Libera espaço sob o teto de 300 listas da conta Brevo da Clarice
  * (`BREVO_CLARICE_API_KEY`) sem perder o histórico do guard por contato
  * (#7406/#3682). Decisão do editor na #9532 (caminho 1): consolidar as listas
- * de campanhas `sent` há mais de `min_age_days` numa lista de HISTÓRICO única
- * (`platform.config.json` → `clarice_list_history.list_id`, nome
- * `clarice-historico-envios`) e SÓ ENTÃO apagar as originais.
+ * de campanhas sent/archive há mais de `min_age_days` (piso 45, ciclo mensal
+ * já fechado) numa lista de HISTÓRICO única (`platform.config.json` →
+ * `clarice_list_history.list_id`, nome `clarice-historico-envios`) e SÓ
+ * ENTÃO apagar as originais.
  *
  * Por que o guard continua valendo: `fetchQueuedAndCommittedCampaignListIds`
  * (scripts/lib/brevo-client.ts) soma o id de histórico ao Set `committed`.
  * O store (`brevo_list_ids`, sincronizado do `listIds` do contato) passa a
  * carregar o id de histórico no próximo sync. Janela entre DELETE e sync: o
- * id apagado some do `listIds` só no sync seguinte, e `min_age_days` (14) é
+ * id apagado some do `listIds` só no sync seguinte, e `min_age_days` (45) é
  * muito maior que o lag do `sends_count` (~1 dia) — quem recebeu uma campanha
- * de 14+ dias atrás já tem `sends_count > 0` no store, que é o outro eixo do
- * guard (`hasSendHistory`).
+ * dessas já tem `sends_count > 0` no store, que é o outro eixo do guard
+ * (`hasSendHistory`). Isso pressupõe o sync diário do store rodando.
  *
  * Uso:
  *   npx tsx scripts/clarice-consolidate-lists.ts                 # dry-run (default): plano + JSON
  *   npx tsx scripts/clarice-consolidate-lists.ts --apply [--limit N]
- *   Opções: --root DIR (onde ler .env e gravar data/), --config PATH
- *           (default: platform.config.json deste checkout),
- *           --plan-out PATH, --protect 12,34 (ids extras a nunca apagar)
+ *   Opções: --root DIR (onde ler .env e gravar data/), --plan-out PATH,
+ *           --protect 12,34 (ids extras a nunca apagar),
+ *           --config PATH (SÓ dry-run; o --apply recusa — o guard lê o
+ *           platform.config.json default deste checkout, e é esse que vale)
  *
- * Seleção de candidatas e a ordem snapshot → add → delete:
- * scripts/lib/clarice-list-consolidation.ts. Custo de cota: o dry-run faz ~1
- * GET a `/emailCampaigns` por 100 campanhas (sem filtro de status — UMA
- * varredura cobre sent/queued/draft/suspended/...), o resto é família
- * `/contacts` (quota folgada, docs/brevo-rate-limits.md).
+ * Pré-condições do --apply (`checkApplyPreconditions`, todas obrigatórias):
+ *   - `clarice_list_history.list_id` preenchido;
+ *   - o id que o GUARD lê (`resolveClariceHistoryListIdForGuard`) == o do script;
+ *   - platform.config.json sem mudança não commitada (`git diff --quiet`);
+ *   - `origin/master:platform.config.json` com o MESMO list_id (após `git fetch`);
+ *   - `data/` existente no --root (o snapshot não pode sumir com um worktree);
+ *   - a lista se chama `clarice-historico-envios`.
  *
- * `--apply` é IRREVERSÍVEL na Brevo (DELETE de lista). Autorizado pelo editor
- * na #9532 SÓ nesse desenho (preservação antes da deleção). Exige
- * `clarice_list_history.list_id` configurado e a lista com o nome esperado.
+ * Proteção: só `list_id`/`*_list_id` numéricos do platform.config.json e
+ * `--protect` são varridos como ids fixos (nada de grep no código); além
+ * disso, só lista com NOME na allowlist de listas de campanha
+ * (`CAMPAIGN_LIST_NAME_PATTERNS`) pode ser apagada.
+ *
+ * Custo de cota em `/emailCampaigns` (100 req/HORA/conta): o plano faz ~3
+ * GETs (1 varredura sem filtro de status); o --apply re-checa as campanhas
+ * não-terminais (5 status) a cada `RECHECK_EVERY` listas, e para se a reserva
+ * de cota acabar (`assertCampaignQuotaHeadroom`). Prefira `--limit`.
+ *
+ * `--apply` é IRREVERSÍVEL na Brevo (DELETE de lista). Antes do 1º DELETE
+ * grava `clarice_list_history.consolidated_at` no platform.config.json —
+ * COMMITE essa mudança depois da rodada (o parser passa a recusar
+ * `list_id: null`).
  */
 
-import { mkdirSync, readFileSync, existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
+  assertCampaignQuotaHeadroom,
   brevoGet,
   brevoGetList,
   brevoListContacts,
   brevoPost,
   brevoDelete,
 } from "./lib/brevo-client.ts";
-import { loadClariceListHistoryConfig } from "./lib/clarice-list-history-config.ts";
+import {
+  loadClariceListHistoryConfig,
+  parseClariceListHistoryConfig,
+  insertConsolidatedAt,
+  resolveClariceHistoryListIdForGuard,
+  DEFAULT_PLATFORM_CONFIG_PATH,
+} from "./lib/clarice-list-history-config.ts";
 import {
   planListConsolidation,
   applyListConsolidation,
+  checkApplyPreconditions,
+  HISTORY_LIST_NAME,
   type ConsolidationList,
   type ConsolidationCampaign,
   type ConsolidationClient,
@@ -61,7 +86,6 @@ import {
 } from "./lib/clarice-list-consolidation.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const HISTORY_LIST_NAME = "clarice-historico-envios";
 
 /** Todo `list_id`/`*_list_id` numérico do config — conservador: protege até ids de outras contas. */
 export function collectConfiguredListIds(node: unknown, out = new Set<number>()): Set<number> {
@@ -76,42 +100,69 @@ export function collectConfiguredListIds(node: unknown, out = new Set<number>())
   return out;
 }
 
-async function fetchAllListsWithCounts(apiKey: string): Promise<ConsolidationList[]> {
-  const out: ConsolidationList[] = [];
-  const limit = 50;
+type BrevoGetFn = (path: string) => Promise<{ status: number; body: any }>;
+
+/**
+ * Varredura paginada COMPLETA: 404 lança (o `brevoGet` devolve 404 como
+ * corpo vazio, o que pararia a paginação em silêncio) e o total coletado
+ * precisa bater com `count` — divergência aborta antes de qualquer plano.
+ */
+export async function paginateComplete<T>(
+  get: BrevoGetFn,
+  basePath: string,
+  key: "lists" | "campaigns",
+  limit: number,
+): Promise<T[]> {
+  const out: T[] = [];
+  let count: number | undefined;
   for (let offset = 0; ; offset += limit) {
-    const { body } = await brevoGet(apiKey, `/contacts/lists?limit=${limit}&offset=${offset}`);
-    const lists = (body?.lists ?? []) as ConsolidationList[];
-    for (const l of lists) {
-      out.push({ id: l.id, name: l.name, totalSubscribers: l.totalSubscribers, uniqueSubscribers: l.uniqueSubscribers });
-    }
-    if (lists.length < limit) break;
+    const sep = basePath.includes("?") ? "&" : "?";
+    const path = `${basePath}${sep}limit=${limit}&offset=${offset}`;
+    const { status, body } = await get(path);
+    if (status === 404) throw new Error(`Brevo GET ${path} devolveu 404 — varredura incompleta, abortando.`);
+    const page = (body?.[key] ?? []) as T[];
+    if (typeof body?.count === "number") count = body.count;
+    out.push(...page);
+    if (page.length < limit) break;
+  }
+  // Página vazia de um status sem itens pode vir sem `count` — só aí 0 é aceito.
+  if (count === undefined && out.length === 0) return out;
+  if (count === undefined) throw new Error(`Brevo GET ${basePath}: resposta sem \`count\` — não dá pra provar varredura completa.`);
+  if (out.length !== count) {
+    throw new Error(`Brevo GET ${basePath}: coletados ${out.length} ≠ count ${count} — paginação divergente, abortando.`);
   }
   return out;
 }
 
+async function fetchAllListsWithCounts(apiKey: string): Promise<ConsolidationList[]> {
+  const raw = await paginateComplete<ConsolidationList>((p) => brevoGet(apiKey, p), "/contacts/lists", "lists", 50);
+  return raw.map((l) => ({ id: l.id, name: l.name, totalSubscribers: l.totalSubscribers, uniqueSubscribers: l.uniqueSubscribers }));
+}
+
 /** UMA varredura de `/emailCampaigns` sem filtro de status (limit=100) — todos os status de uma vez. */
 async function fetchAllCampaigns(apiKey: string): Promise<ConsolidationCampaign[]> {
-  const out: ConsolidationCampaign[] = [];
-  const limit = 100;
-  for (let offset = 0; ; offset += limit) {
-    const { body } = await brevoGet(apiKey, `/emailCampaigns?limit=${limit}&offset=${offset}&excludeHtmlContent=true`);
-    const campaigns = (body?.campaigns ?? []) as ConsolidationCampaign[];
-    for (const c of campaigns) {
-      out.push({ id: c.id, name: c.name, status: c.status, sentDate: c.sentDate ?? null, recipients: c.recipients ?? null });
-    }
-    if (campaigns.length < limit) break;
-  }
-  return out;
+  const raw = await paginateComplete<ConsolidationCampaign>(
+    (p) => brevoGet(apiKey, p),
+    "/emailCampaigns?excludeHtmlContent=true",
+    "campaigns",
+    100,
+  );
+  return raw.map((c) => ({ id: c.id, name: c.name, status: c.status, sentDate: c.sentDate ?? null, recipients: c.recipients ?? null }));
 }
+
+/** Status não-terminais re-checados antes de apagar (filtro do GET da Brevo). */
+const NON_TERMINAL_FILTERS = ["queued", "draft", "suspended", "inProcess", "inReview"] as const;
 
 function archiveDir(root: string): string {
   return resolve(root, "data", "clarice-subscribers", "list-archive");
 }
 
-export function makeBrevoConsolidationClient(apiKey: string, root: string): ConsolidationClient {
+export function makeBrevoConsolidationClient(apiKey: string, root: string, configPath: string): ConsolidationClient {
   const dir = archiveDir(root);
   return {
+    async getListCount(listId) {
+      return (await brevoGetList(apiKey, listId)).totalSubscribers;
+    },
     listContacts: (listId) => brevoListContacts(apiKey, listId),
     async writeSnapshot(s: ListArchiveSnapshot) {
       mkdirSync(dir, { recursive: true });
@@ -126,12 +177,43 @@ export function makeBrevoConsolidationClient(apiKey: string, root: string): Cons
       const res = (await brevoPost(apiKey, `/contacts/lists/${listId}/contacts/add`, { emails })) as {
         contacts?: { success?: string[]; failure?: string[] };
       };
-      return { success: res?.contacts?.success ?? [], failure: res?.contacts?.failure ?? [] };
+      if (!res || typeof res !== "object" || !res.contacts) {
+        throw new Error(`resposta do add sem \`contacts\`: ${JSON.stringify(res)}`);
+      }
+      return { success: res.contacts.success ?? [], failure: res.contacts.failure ?? [] };
     },
     async contactInList(email, listId) {
+      // `brevoGet` NÃO lança em 404 — devolve `{status: 404, body: {}}` (contato
+      // inexistente). Os outros erros lançam e viram falha em "verify".
       const { status, body } = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
       if (status === 404) return false;
       return Array.isArray(body?.listIds) && body.listIds.includes(listId);
+    },
+    async fetchNonTerminalListRefs() {
+      assertCampaignQuotaHeadroom(); // consumidor que não é o caminho de escrita da onda: respeita a reserva
+      const ids = new Set<number>();
+      for (const status of NON_TERMINAL_FILTERS) {
+        const camps = await paginateComplete<ConsolidationCampaign>(
+          (p) => brevoGet(apiKey, p),
+          `/emailCampaigns?status=${status}&excludeHtmlContent=true`,
+          "campaigns",
+          100,
+        );
+        for (const c of camps) {
+          for (const id of c.recipients?.lists ?? []) ids.add(id);
+          for (const id of c.recipients?.exclusionLists ?? []) ids.add(id);
+        }
+      }
+      return ids;
+    },
+    async markConsolidated(iso) {
+      const text = readFileSync(configPath, "utf8");
+      const next = insertConsolidatedAt(text, iso);
+      if (next !== text) writeFileAtomic(configPath, next);
+      const back = parseClariceListHistoryConfig(
+        (JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>).clarice_list_history,
+      );
+      if (back.consolidatedAt === null) throw new Error("consolidated_at não aparece no config relido.");
     },
     deleteList: (listId) => brevoDelete(apiKey, `/contacts/lists/${listId}`),
   };
@@ -139,15 +221,38 @@ export function makeBrevoConsolidationClient(apiKey: string, root: string): Cons
 
 export function formatPlanSummary(plan: ConsolidationPlan): string {
   const v = plan.verdict_counts;
-  return [
-    `Plano de consolidação (#9532) — corte: sentDate < ${plan.cutoff} (min_age_days=${plan.min_age_days})`,
+  const lines = [
+    `Plano de consolidação (#9532) — corte: sentDate < ${plan.cutoff} (min_age_days=${plan.min_age_days}), ciclo corrente ${plan.current_cycle}`,
     `  listas na conta: ${plan.total_lists}/${plan.list_cap}`,
     `  candidatas a apagar: ${plan.candidates.length} (~${plan.candidate_contacts_estimate} contato(s) somando as listas, com repetição entre listas)`,
     `  após apagar todas: ${plan.lists_after} lista(s), ${plan.free_after} livre(s) sob o teto`,
-    `  mantidas: recentes=${v["recent-sent"]}, ref. não-terminal=${v["non-terminal-ref"]}, só-exclusão=${v["exclusion-only"]}, ` +
-      `sem sentDate=${v["sent-without-date"]}, protegidas=${v.protected}, histórico=${v.history}, sem campanha=${v["no-campaign"]}`,
+    `  mantidas: recentes=${v["recent-sent"]}, ciclo aberto=${v["open-cycle"]}, ref. não-terminal=${v["non-terminal-ref"]}, ` +
+      `só-exclusão=${v["exclusion-only"]}, sem sentDate=${v["sent-without-date"]}, nome fora da allowlist=${v["unmatched-name"]}, ` +
+      `protegidas=${v.protected}, histórico=${v.history}, sem campanha=${v["no-campaign"]}`,
     `  lista de histórico: ${plan.history_list_id ?? "NÃO configurada (clarice_list_history.list_id = null) — --apply recusa"}`,
-  ].join("\n");
+  ];
+  for (const u of plan.unmatched_names) lines.push(`    nome fora da allowlist (não apagada): ${u.listId} "${u.name}"`);
+  return lines.join("\n");
+}
+
+function git(args: string[]): { ok: boolean; out: string } {
+  try {
+    return { ok: true, out: execFileSync("git", ["-C", REPO_ROOT, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
+  } catch (e) {
+    return { ok: false, out: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** `list_id` do bloco no `origin/master` (após fetch). undefined = não foi possível ler. */
+function readMasterListId(): number | null | undefined {
+  if (!git(["fetch", "--quiet", "origin", "master"]).ok) return undefined;
+  const shown = git(["show", "origin/master:platform.config.json"]);
+  if (!shown.ok) return undefined;
+  try {
+    return parseClariceListHistoryConfig((JSON.parse(shown.out) as Record<string, unknown>).clarice_list_history).listId;
+  } catch {
+    return undefined;
+  }
 }
 
 async function main(): Promise<void> {
@@ -158,10 +263,12 @@ async function main(): Promise<void> {
   const limit = getIntArg(argv, "limit", { min: 1 });
   const protectArg = getStringArg(argv, "protect");
   const planOut = getStringArg(argv, "plan-out");
+  const configArg = getStringArg(argv, "config");
+  if (apply && configArg !== undefined) {
+    throw new Error("--config não vale com --apply: o guard lê o platform.config.json default deste checkout, e é ele que o --apply usa.");
+  }
 
-  // Config vem DESTE checkout (código e config andam juntos no git); `--root`
-  // só aponta .env + data/. `--config` sobrepõe.
-  const configPath = resolve(getStringArg(argv, "config") ?? resolve(REPO_ROOT, "platform.config.json"));
+  const configPath = configArg !== undefined ? resolve(configArg) : DEFAULT_PLATFORM_CONFIG_PATH;
   const historyCfg = loadClariceListHistoryConfig(configPath); // lança alto se malformado
   const protectedIds = collectConfiguredListIds(JSON.parse(readFileSync(configPath, "utf8")));
   for (const s of (protectArg ?? "").split(",").map((x) => x.trim()).filter(Boolean)) {
@@ -172,17 +279,24 @@ async function main(): Promise<void> {
 
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) throw new Error("BREVO_CLARICE_API_KEY não definida.");
-  if (apply && historyCfg.listId === null) {
-    throw new Error(
-      "--apply exige `clarice_list_history.list_id` em platform.config.json (#9532) — crie a lista " +
-        `\`${HISTORY_LIST_NAME}\` na conta Brevo da Clarice e preencha o id antes. Nada foi apagado.`,
-    );
-  }
-  // Snapshot é a cópia de segurança de um DELETE irreversível: nunca gravá-lo
-  // num `data/` criado agora (worktree sem a junction → some com o worktree).
-  // Checado ANTES de gravar o plano, que faria mkdir recursivo de data/.
-  if (apply && !existsSync(resolve(root, "data"))) {
-    throw new Error(`--apply: ${resolve(root, "data")} não existe — rode do checkout com data/ (ou --root). Nada foi apagado.`);
+
+  if (apply) {
+    // Checado ANTES de gravar o plano (que faria mkdir recursivo de data/).
+    const pre = {
+      configListId: historyCfg.listId,
+      guardListId: resolveClariceHistoryListIdForGuard(),
+      configDirty: !git(["diff", "--quiet", "--", "platform.config.json"]).ok,
+      masterListId: readMasterListId(),
+      dataDirExists: existsSync(resolve(root, "data")),
+    };
+    let errs = checkApplyPreconditions(pre);
+    if (errs.length === 0) {
+      const historyList = await brevoGetList(apiKey, historyCfg.listId as number);
+      errs = checkApplyPreconditions({ ...pre, historyListName: historyList.name });
+    }
+    if (errs.length > 0) {
+      throw new Error(`--apply recusado (#9532), nada foi apagado:\n  - ${errs.join("\n  - ")}`);
+    }
   }
 
   const lists = await fetchAllListsWithCounts(apiKey);
@@ -211,27 +325,26 @@ async function main(): Promise<void> {
   }
 
   const historyListId = historyCfg.listId as number;
-  const historyList = await brevoGetList(apiKey, historyListId);
-  if (historyList.name !== HISTORY_LIST_NAME) {
-    throw new Error(
-      `lista ${historyListId} se chama "${historyList.name}", esperado "${HISTORY_LIST_NAME}" — config apontando pra lista errada? Nada foi apagado.`,
-    );
-  }
   const historyMembers = new Set((await brevoListContacts(apiKey, historyListId)).map((e) => e.trim().toLowerCase()));
-  console.log(`\nlista de histórico ${historyListId}: ${historyMembers.size} membro(s) antes da rodada.`);
+  console.log(`\nlista de histórico ${historyListId} (${HISTORY_LIST_NAME}): ${historyMembers.size} membro(s) antes da rodada.`);
 
-  const results = await applyListConsolidation(plan.candidates, makeBrevoConsolidationClient(apiKey, root), {
+  const resultPath = outPath.replace(/\.json$/, "-apply.jsonl");
+  const results = await applyListConsolidation(plan.candidates, makeBrevoConsolidationClient(apiKey, root, configPath), {
     historyListId,
     historyMembers,
+    protectedListIds: protectedIds,
     limit,
     now: () => new Date(),
     log: (m) => console.log(m),
+    onResult: (r) => appendFileSync(resultPath, JSON.stringify({ at: new Date().toISOString(), ...r }) + "\n"),
   });
   const deleted = results.filter((r) => r.status === "deleted").length;
-  const failed = results.length - deleted;
-  const resultPath = outPath.replace(/\.json$/, "-apply.json");
-  writeFileAtomic(resultPath, JSON.stringify({ history_list_id: historyListId, results }, null, 2) + "\n");
-  console.log(`\nResultado: ${deleted} lista(s) apagada(s), ${failed} falha(s). Detalhe em ${resultPath}`);
+  const failed = results.filter((r) => r.status === "failed").length;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  console.log(`\nResultado: ${deleted} apagada(s), ${skipped} pulada(s), ${failed} falha(s). Detalhe em ${resultPath}`);
+  if (deleted > 0) {
+    console.log("⚠️  platform.config.json ganhou `consolidated_at` — commite e mergeie essa mudança.");
+  }
   if (failed > 0) process.exitCode = 2;
 }
 

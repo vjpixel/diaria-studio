@@ -72,6 +72,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
+import { readListArchiveMeta } from "./lib/clarice-list-consolidation.ts"; // #9532
+import { resolve } from "node:path";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
 import { readNovosState } from "./lib/clarice-novos-state.ts";
 import { readNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
@@ -159,9 +161,13 @@ export function parseDatesArg(raw: string | undefined): string[] {
  * mesmo com um teste em curso — falha silenciosa exatamente na direção
  * errada (recomeçar um teste já maduro).
  */
-async function enrichWithLists(
+export async function enrichWithLists(
   apiKey: string | undefined,
   campaigns: BrevoCampaign[],
+  // #9532 — listas apagadas por `clarice-consolidate-lists.ts` deixam o
+  // snapshot `{id}.json` aqui; sem ele, a campanha ficaria sem `listName` e
+  // cairia em `unscopedCount` (subcontagem do ciclo, reuso de número de onda).
+  archiveDir: string = resolve(CLARICE_BASE, "list-archive"),
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
   if (!apiKey) return campaigns;
   const ids = new Set<number>();
@@ -169,13 +175,19 @@ async function enrichWithLists(
   const info = new Map<number, { name: string; total: number }>();
   for (const id of ids) {
     try {
-      const { body } = await brevoGet(apiKey, `/contacts/lists/${id}`);
-      if (body && typeof body === "object") {
-        info.set(id, {
-          name: String((body as { name?: unknown }).name ?? ""),
-          total: Number((body as { totalSubscribers?: unknown }).totalSubscribers ?? 0),
-        });
+      const { status, body } = await brevoGet(apiKey, `/contacts/lists/${id}`);
+      const name = body && typeof body === "object" ? String((body as { name?: unknown }).name ?? "") : "";
+      if (status === 404 || !name) {
+        // `brevoGet` devolve 404 como corpo vazio (não lança) — lista apagada.
+        const archived = readListArchiveMeta(archiveDir, id);
+        if (archived) info.set(id, { name: archived.name, total: archived.total });
+        else if (status !== 404) info.set(id, { name, total: Number((body as { totalSubscribers?: unknown }).totalSubscribers ?? 0) });
+        continue;
       }
+      info.set(id, {
+        name,
+        total: Number((body as { totalSubscribers?: unknown }).totalSubscribers ?? 0),
+      });
     } catch (err) {
       // Lista inacessível (removida, permissão, rede). NÃO é inócuo: sem
       // `listName` a campanha não pode ser atribuída a ciclo nenhum, e
