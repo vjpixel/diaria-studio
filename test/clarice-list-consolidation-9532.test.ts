@@ -39,6 +39,7 @@ import {
   type CandidateList,
   type ListArchiveSnapshot,
   type ListApplyResult,
+  listMemberCount,
 } from "../scripts/lib/clarice-list-consolidation.ts";
 import {
   parseClariceListHistoryConfig,
@@ -639,5 +640,15 @@ describe("listas apagadas: snapshot como fonte de nome (#9532)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("listMemberCount — contagem de membros comparável ao /contacts (#9532, achado ao vivo 03/10)", () => {
+  it("usa uniqueSubscribers: lista 9 real (49 + 1 blacklistado = 50) não é 'truncada'", () => {
+    assert.equal(listMemberCount({ totalSubscribers: 49, totalBlacklisted: 1, uniqueSubscribers: 50 }), 50);
+  });
+  it("sem uniqueSubscribers, soma totalSubscribers + totalBlacklisted", () => {
+    assert.equal(listMemberCount({ totalSubscribers: 49, totalBlacklisted: 1 }), 50);
+    assert.equal(listMemberCount({ totalSubscribers: 12 }), 12);
   });
 });

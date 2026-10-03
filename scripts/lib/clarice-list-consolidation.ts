@@ -373,9 +373,25 @@ export interface ListArchiveSnapshot {
   archived_at: string;
 }
 
+/**
+ * Total de MEMBROS de uma lista a partir do `GET /contacts/lists/{id}`.
+ * `totalSubscribers` da Brevo EXCLUI os blacklistados, mas
+ * `/contacts/lists/{id}/contacts` devolve todos — comparar com ele faz toda
+ * lista com 1+ blacklistado falhar como "truncada" (achado ao vivo 03/10,
+ * lista 9: 50 baixados × totalSubscribers 49, uniqueSubscribers 50). Prefere
+ * `uniqueSubscribers`; sem ele, `totalSubscribers + totalBlacklisted`.
+ */
+export function listMemberCount(info: { totalSubscribers: number; totalBlacklisted?: number; uniqueSubscribers?: number }): number {
+  if (typeof info.uniqueSubscribers === "number" && Number.isFinite(info.uniqueSubscribers)) return info.uniqueSubscribers;
+  return info.totalSubscribers + (info.totalBlacklisted ?? 0);
+}
+
 /** Cliente injetável — o script real liga na Brevo + disco; os testes num fake. */
 export interface ConsolidationClient {
-  /** `totalSubscribers` FRESCO da lista (GET /contacts/lists/{id}). */
+  /**
+   * Nº FRESCO de membros da lista (GET /contacts/lists/{id}) — via
+   * `listMemberCount`, nunca `totalSubscribers` cru (exclui blacklistados).
+   */
   getListCount(listId: number): Promise<number>;
   /** Todos os e-mails membros da lista (paginado). Lança em 404/erro. */
   listContacts(listId: number): Promise<string[]>;
@@ -467,7 +483,7 @@ export async function consolidateOneList(
     const count = await client.getListCount(cand.listId);
     emails = [...new Set((await client.listContacts(cand.listId)).map(normEmail).filter(Boolean))].sort();
     if (emails.length !== count) {
-      throw new Error(`membros baixados (${emails.length}) ≠ totalSubscribers (${count}) — paginação truncada ou lista mudou`);
+      throw new Error(`membros baixados (${emails.length}) ≠ membros da lista (${count}) — paginação truncada ou lista mudou`);
     }
   } catch (e) {
     return fail("contacts", e);
