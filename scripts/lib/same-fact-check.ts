@@ -149,7 +149,8 @@ function variantsConflict(product: string, a: Map<string, string>, b: Map<string
 
 /**
  * Compara cada item corrente contra os destaques passados. Retorna no máximo
- * 1 warning por item (o destaque mais recente que casa). Pula o par quando a
+ * 1 warning por item: o passado mais recente que casa pelo TÍTULO; só sem
+ * nenhum, o mais recente que casa pelo resumo (#9514). Pula o par quando a
  * URL canônica é a mesma (isso é trabalho do dedup por URL, não daqui).
  */
 export function findSameFactMatches(
@@ -177,17 +178,26 @@ export function findSameFactMatches(
     if (titleProducts.size === 0 && summaryProducts.size === 0) continue;
     const itemVariants = extractProductVariants(`${item.title}\n${summary}`);
     const itemUrl = item.url ? canonicalize(item.url) : "";
-    for (const p of past) {
-      if (itemUrl && p.url && canonicalize(p.url) === itemUrl) continue;
-      const matches = (set: Set<string>) =>
-        [...set].filter((x) => p.products.has(x) && !variantsConflict(x, itemVariants, p.variants));
-      let shared = matches(titleProducts);
-      let evidence: "title" | "summary" = "title";
-      if (shared.length === 0) {
-        shared = matches(summaryProducts);
-        evidence = "summary";
+    const candidates = past.filter((p) => !(itemUrl && p.url && canonicalize(p.url) === itemUrl));
+    const matches = (p: (typeof past)[number], set: Set<string>) =>
+      [...set].filter((x) => p.products.has(x) && !variantsConflict(x, itemVariants, p.variants));
+    // #9514: duas passadas — match por título em QUALQUER passado vence match
+    // por resumo num passado mais novo. Senão a evidência dependeria da ordem
+    // de iteração, e um match forte (título) ficaria escondido atrás de um
+    // fraco (resumo), escapando de removeSameFactSecondary.
+    let found: { p: (typeof past)[number]; shared: string[]; evidence: "title" | "summary" } | null = null;
+    for (const [set, evidence] of [[titleProducts, "title"], [summaryProducts, "summary"]] as const) {
+      for (const p of candidates) {
+        const shared = matches(p, set);
+        if (shared.length > 0) {
+          found = { p, shared, evidence };
+          break;
+        }
       }
-      if (shared.length === 0) continue;
+      if (found) break;
+    }
+    if (found) {
+      const { p, shared, evidence } = found;
       warnings.push({
         kind: item.kind,
         ...(item.rank !== undefined ? { rank: item.rank } : {}),
@@ -200,7 +210,6 @@ export function findSameFactMatches(
         matched_bucket: p.bucket ?? "highlight",
         evidence,
       });
-      break;
     }
   }
   return warnings;
