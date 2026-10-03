@@ -351,11 +351,11 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   rotação — ele trata "ativa" como "plan.json existe no `{AAMMDD}` mais
   recente", sem depender de `report.md` (que `continuo` nunca escreve).
 - **Reusa a Fase 1 de implementação** do overnight, **verbatim**: subagente
-  `general-purpose`, `isolation: "worktree"`, `model: "claude-opus-5-5"` +
-  `effort: "low"` explícitos (#2019/#8941) → `npm ci` → `npx tsc --noEmit` + testes afetados (nunca a suíte
+  `dev-implementador` (agent dedicado, `claude-opus-5-5`/`medium` no
+  frontmatter, #9081 — o Agent tool não aceita `effort`), `isolation: "worktree"` → `npm ci` → `npx tsc --noEmit` + testes afetados (nunca a suíte
   completa local, #2959) → branch → PR com `Closes #NNNN` (ou
   `REFS #NNNN, NÃO CLOSES`, #5010) → self-review (#2038) → agente fixer se
-  houver findings acionáveis → review leve do coordenador → `gh pr checks
+  houver findings acionáveis (`dev-fixer`, #9081) → review leve do coordenador → `gh pr checks
   --watch` → gate de 2 condições → squash-merge. **⚠️ A cauda desta cadeia
   (`gh pr checks --watch` → gate → squash-merge) descreve o fluxo desta skill
   DESTE repo, que hoje não tem consumidor (#7702).** O que roda em produção é
@@ -386,7 +386,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   filtram por `agent === "continuo"` especificamente).
 - **Reusa a Fase 1.5 de review consolidado** do overnight (1 agente,
   `pr-review-toolkit:code-reviewer` via `Agent` com `model: "claude-opus-5-5"`
-  + `effort: "low"` explícitos, sobre o diff acumulado desde `base_sha`) — mesma cadência de
+  explícito — `effort` não é parâmetro do Agent tool e o agente do plugin herda o
+  do turno; plugin ausente → `dev-revisor`, #9081 — sobre o diff acumulado desde `base_sha`) — mesma cadência de
   `findings_depth` (cap 2) documentada lá.
 - **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
   Antes de abrir a PR e de novo antes do merge, rodar `npx tsx

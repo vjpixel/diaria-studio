@@ -56,6 +56,55 @@ function collectFrontmatterFiles(): string[] {
   return files;
 }
 
+/**
+ * #9530 (03/10/2026) — exceções nominais à proibição de Sonnet+medium, cada uma
+ * decidida explicitamente pelo editor. Só o COORDENADOR do overnight: a
+ * análise de 03/10 mediu que o modelo do coordenador não afeta a qualidade, e
+ * os implementadores/fixers/revisores não herdam mais o effort dele (agents
+ * dedicados `dev-*` em Opus 5.5/medium, #9081 — travados abaixo). Nenhum
+ * outro arquivo ganha a exceção por tabela.
+ */
+const SONNET_MEDIUM_DECIDED = new Set([".claude/skills/diaria-overnight/SKILL.md"]);
+
+describe("#9530/#9081 — par do overnight e agents dedicados de dev", () => {
+  it("diaria-overnight: model claude-sonnet-5-5 + effort medium (#9530)", () => {
+    const fm = frontmatter(readFileSync(join(SKILLS_DIR, "diaria-overnight", "SKILL.md"), "utf8"));
+    assert.match(fm!, /^model:\s*claude-sonnet-5-5\s*$/m);
+    assert.match(fm!, /^effort:\s*medium\s*$/m);
+  });
+  for (const agent of ["dev-implementador", "dev-fixer", "dev-revisor"]) {
+    it(`${agent}: claude-opus-5-5 + effort medium, sem tools: (toolset do general-purpose) (#9081)`, () => {
+      const fm = frontmatter(readFileSync(join(AGENTS_DIR, `${agent}.md`), "utf8"));
+      assert.match(fm!, /^model:\s*claude-opus-5-5\s*$/m);
+      assert.match(fm!, /^effort:\s*medium\s*$/m);
+      assert.doesNotMatch(fm!, /^tools:/m, "tools: restringiria o toolset — o implementador precisa commitar/pushar");
+    });
+  }
+  it("adhoc-opus-low: claude-opus-5-5 + effort low, sem tools: (#8941/#9081)", () => {
+    const fm = frontmatter(readFileSync(join(AGENTS_DIR, "adhoc-opus-low.md"), "utf8"));
+    assert.match(fm!, /^model:\s*claude-opus-5-5\s*$/m);
+    assert.match(fm!, /^effort:\s*low\s*$/m);
+    assert.doesNotMatch(fm!, /^tools:/m);
+  });
+  it("nenhuma skill despacha general-purpose com effort= (parâmetro inexistente no Agent tool, #9081)", () => {
+    for (const skillId of readdirSync(SKILLS_DIR)) {
+      const p = join(SKILLS_DIR, skillId, "SKILL.md");
+      if (!existsSync(p)) continue;
+      const body = readFileSync(p, "utf8");
+      assert.doesNotMatch(
+        body,
+        /subagent_type="general-purpose"[^)\n]*effort=/,
+        `${skillId}: dispatch general-purpose com effort= — usar agent dedicado (#9081)`,
+      );
+      assert.doesNotMatch(
+        body,
+        /`general-purpose`[^.\n]{0,80}`effort: "?low"?`/,
+        `${skillId}: prosa de dispatch general-purpose com effort — usar agent dedicado (#9081)`,
+      );
+    }
+  });
+});
+
 describe("#8941 — nenhum pin de Sonnet 5 com effort medium ou sem effort explícito", () => {
   const files = collectFrontmatterFiles();
 
@@ -81,6 +130,7 @@ describe("#8941 — nenhum pin de Sonnet 5 com effort medium ou sem effort expl�
         `${rel}: model resolve pra Sonnet mas frontmatter não tem effort: explícito (#8941)`,
       );
       const effortValue = effortMatch![1].trim().replace(/^["']|["']$/g, "");
+      if (SONNET_MEDIUM_DECIDED.has(rel)) return; // exceção decidida pelo editor — ver abaixo
       assert.notEqual(
         effortValue,
         "medium",
