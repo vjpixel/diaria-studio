@@ -24,8 +24,9 @@
  *
  * #9508: um post por (rede × história). As chaves sem sufixo `linkedin_pagina`
  * (post único da página, #9474) e `facebook`/`instagram`/`threads`/`x` (post
- * único, #9500) são LEGADO: lidas, nunca mais gravadas — a do LinkedIn
- * existe no ciclo 2609-10 e é o que `--replace-linkedin-single` cancela.
+ * único, #9500) são LEGADO: nenhum dispatch grava mais nelas — a do LinkedIn
+ * existe no ciclo 2609-10, e o `--replace-linkedin-single` só a rebaixa pra
+ * `pending` (com o motivo) ao cancelar o post no Worker.
  *
  * O canal `email` NÃO duplica o guard do publisher Kit: a fonte de verdade do
  * broadcast segue sendo `_internal/beehiiv-apoiadores-state.json`
@@ -62,7 +63,7 @@ export const RETROSPECTIVA_POST_KEYS: readonly RetrospectivaPostKey[] = RETROSPE
   RETROSPECTIVA_HISTORIAS.map((h) => retrospectivaPostKey(ch, h)),
 );
 
-export const RETROSPECTIVA_DIVULGACAO_CHANNELS: readonly RetrospectivaDivulgacaoChannel[] = [
+export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
   "pagina",
   "apoiase",
   // Sem sufixo: o post ÚNICO da página (#9474, legado desde #9508 — só lido,
@@ -79,19 +80,9 @@ export const RETROSPECTIVA_DIVULGACAO_CHANNELS: readonly RetrospectivaDivulgacao
   "x",
   // #9508 — um post por (rede × história).
   ...RETROSPECTIVA_POST_KEYS,
-];
-export type RetrospectivaDivulgacaoChannel =
-  | "pagina"
-  | "apoiase"
-  | "linkedin_pagina"
-  | "linkedin_perfil"
-  | "box"
-  | "email"
-  | "facebook"
-  | "instagram"
-  | "threads"
-  | "x"
-  | RetrospectivaPostKey;
+] as const;
+/** Derivado da lista (nunca mantido à mão em paralelo): canal fora dela seria descartado em silêncio pelo `parseChannelStates`. */
+export type RetrospectivaDivulgacaoChannel = (typeof RETROSPECTIVA_DIVULGACAO_CHANNELS)[number];
 
 export interface RetrospectivaDivulgacaoState {
   cycle: string;
