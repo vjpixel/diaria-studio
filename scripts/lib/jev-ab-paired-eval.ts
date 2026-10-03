@@ -13,19 +13,33 @@
  *  1. Dedup zona cinzenta (Pass 1c de `scripts/dedup.ts`): baseline =
  *     Jaccard + `thresholdForPair` (0.60, ou 0.55 com entidade compartilhada);
  *     Jev = `dedup-grayzone-jev.ts` em modo ATIVO (decide quando
- *     `confidence >= GRAYZONE_MIN_CONFIDENCE`, só na zona `[0.35, 0.85)`).
+ *     `confidence >= GRAYZONE_MIN_CONFIDENCE`, só na zona `[0.35, 0.85)`, só
+ *     nos até `GRAYZONE_MAX_PAIRS` pares que `collectGrayZonePairs` escolhe).
  *     A divergência é medida no nível do ARTIGO (o que de fato muda a
  *     edição): o artigo cai se QUALQUER par com título passado decidir
  *     "mesma história".
  *
- *  2. Brasil (`actor_brazil`): baseline = `detectBrazil()` (regex/host/
- *     categoria); Jev = `brazil_p >= JEV_BRAZIL_THRESHOLD`.
+ *  2. Brasil (`actor_brazil`): baseline = `detectBrazil()`; Jev =
+ *     `brazil_p >= JEV_BRAZIL_THRESHOLD`. Só informativo: nenhuma decisão do
+ *     pipeline diário consome `brazil_p`.
  *
  * Gabarito (nunca chutado): o editor só "vota" sobre o que chegou até ele.
- * Artigo divergente cuja URL está em `01-approved.json` ou `02-reviewed.md`
- * da edição → o editor MANTEVE → a resposta certa é "não é repetição"
- * (manter). Qualquer outro caso → `sem_gabarito`. Para Brasil não existe ato
- * do editor que revele a verdade → sempre `sem_gabarito`.
+ * Artigo divergente cuja URL está em `02-reviewed.md` (`publicado`) ou só em
+ * `01-approved.json` (`aprovado`) → o editor MANTEVE → a resposta certa é
+ * "não é repetição". Qualquer outro caso → `sem_gabarito`.
+ *
+ * VIÉS DE SOBREVIVÊNCIA (achado do review da PR, não escondido): o gabarito
+ * só existe para o que sobreviveu ao dedup que RODOU AO VIVO naquela edição.
+ *   - Braço A (baseline ao vivo): só "Jev descarta / baseline mantém" ganha
+ *     gabarito → mede FALSO DESCARTE do Jev (erro grave b), nunca acerto.
+ *   - Braço B (Jev ao vivo): só "Jev mantém / baseline descarta" ganha
+ *     gabarito → mede ACERTO do Jev; os falsos descartes do Jev ali ficam
+ *     invisíveis (b subcontado no B).
+ * Por isso o critério (a) (acerto Jev > baseline) NÃO é comparável somando os
+ * braços — `decide()` o declara "não demonstrável" e a decisão se apoia em
+ * (b), que no braço A é contrafactual válido (o editor publicou/aprovou de
+ * fato um item que o Jev teria descartado). A outra metade de (b) — "deixar
+ * passar repetição real" — não tem gabarito derivável e não é medida.
  *
  * Tudo aqui é puro (sem rede, sem fs) — I/O e chamadas Jev ficam no CLI
  * `scripts/jev-ab-paired-eval.ts`.
@@ -34,8 +48,10 @@
 import { jaccardSimilarity, thresholdForPair, tokenizeForJaccard } from "./title-similarity.ts";
 import {
   GRAYZONE_MIN_CONFIDENCE,
+  collectGrayZonePairs,
   inGrayZone,
   pairKey,
+  type GrayZonePair,
   type GrayZoneVerdict,
 } from "./dedup-grayzone-jev.ts";
 
@@ -49,8 +65,10 @@ export const SUBJECT_VS_PAST_THRESHOLD = 0.6;
 export const SUBJECT_VS_PAST_THRESHOLD_LOWERED = 0.55;
 /** Preço público do Jev (docs/jev.md): US$ 0,042 / 1M tokens de entrada, saída grátis. */
 export const JEV_USD_PER_MTOK_INPUT = 0.042;
-/** Heurística de tokens por caractere pra estimar custo (a API não devolve usage pelo nosso cliente). */
+/** Heurística de tokens por caractere — o cliente `askJev` descarta o `usage` que a API devolve. */
 export const CHARS_PER_TOKEN = 4;
+/** Abaixo desta fração de pares com veredito Jev o resultado é `inconclusivo` (falha silenciosa viraria "sem divergência"). */
+export const MIN_JEV_COVERAGE = 0.9;
 
 // Regra de decisão pré-registrada na #9531 (antes de ver o resultado).
 export const RULE_MAX_USD_PER_EDITION = 1;
@@ -72,7 +90,7 @@ export interface DedupPairEval {
   jaccard: number;
   threshold: number;
   heuristicSame: boolean;
-  /** Veredito Jev do par (ausente fora da zona ou se a chamada falhou). */
+  /** Veredito Jev do par (ausente fora da zona, fora do teto ou se a chamada falhou). */
   verdict?: GrayZoneVerdict;
   /** Decisão efetiva do perfil Jev (ativo) neste par. */
   jevSame: boolean;
@@ -87,6 +105,8 @@ export interface DedupPairEval {
  */
 export type Truth = "publicado" | "aprovado" | "sem_gabarito";
 
+export type Arm = "A" | "B" | "unknown";
+
 export interface DedupDivergence {
   url: string;
   title: string;
@@ -95,6 +115,7 @@ export interface DedupDivergence {
   /** Par que decidiu a queda do lado que derruba o artigo. */
   decisivePair: DedupPairEval;
   truth: Truth;
+  /** Derivados de `truth` + drops — sempre via `scoreAgainstTruth`, nunca à mão. */
   baselineCorrect: boolean | null;
   jevCorrect: boolean | null;
   /** Jev descartou item que o editor manteve/aprovou — erro grave (b). */
@@ -112,10 +133,14 @@ export interface BrazilDivergence {
 
 export interface EditionEval {
   edition: string;
-  arm: "A" | "B";
+  arm: Arm;
   poolSize: number;
   grayPairs: number;
+  /** Pares acima do teto `GRAYZONE_MAX_PAIRS` (em produção ficam com a heurística). */
+  grayPairsTruncated: number;
   jevVerdicts: number;
+  /** Vereditos lidos do artefato gravado AO VIVO (`dedup-grayzone-jev.json`, braço B). */
+  jevVerdictsRecorded: number;
   dedup: DedupDivergence[];
   brazilItems: number;
   brazilAnnotated: number;
@@ -123,7 +148,7 @@ export interface EditionEval {
   jevCalls: number;
   estTokens: number;
   estUsd: number;
-  /** Wall-clock das chamadas Jev desta edição (ms) — `null` quando tudo veio do cache. */
+  /** Soma do tempo das chamadas Jev que de fato foram à rede (ms) — `null` = nenhuma (tudo cache/artefato). */
   jevWallMs: number | null;
   notes: string[];
 }
@@ -178,27 +203,51 @@ interface ApprovedLike {
   url?: string;
   title?: string;
   summary?: string;
-  article?: { url?: string; title?: string; summary?: string };
+  category?: string;
+  brazil_p?: number;
+  article?: { url?: string; title?: string; summary?: string; category?: string; brazil_p?: number };
 }
 
-export const APPROVED_BUCKETS = ["highlights", "runners_up", "lancamento", "radar", "use_melhor", "video"] as const;
+/** Mesmos buckets que `readApprovedTitles` lê (novos + legados #1629). */
+export const APPROVED_BUCKETS = [
+  "highlights", "runners_up", "lancamento", "radar", "use_melhor", "video", "pesquisa", "noticias", "tutorial",
+] as const;
 
-/** Itens de um `01-approved.json`/`01-categorized.json` com o bucket de origem. */
-export function approvedItems(doc: unknown): Array<{ url: string; title: string; summary: string; bucket: string }> {
-  const out: Array<{ url: string; title: string; summary: string; bucket: string }> = [];
+export interface ApprovedItem {
+  url: string;
+  title: string;
+  summary: string;
+  bucket: string;
+  /** Categoria editorial do categorize (ex: `BRASIL`), quando gravada. */
+  category: string;
+  /** `brazil_p` gravado ao vivo pelo `annotate-actor-brazil` (braço B), quando presente. */
+  brazilP?: number;
+}
+
+/** Itens de um `01-approved.json`/`01-categorized.json`, dedup por URL (primeiro bucket vence). */
+export function approvedItems(doc: unknown): ApprovedItem[] {
+  const out: ApprovedItem[] = [];
   if (!doc || typeof doc !== "object") return out;
   const seen = new Set<string>();
   for (const bucket of APPROVED_BUCKETS) {
     const arr = (doc as Record<string, unknown>)[bucket];
     if (!Array.isArray(arr)) continue;
     for (const it of arr as ApprovedLike[]) {
-      const url = it?.article?.url ?? it?.url;
-      const title = it?.article?.title ?? it?.title ?? "";
+      const src = it?.article?.url ? it.article : it;
+      const url = src?.url;
       if (!url) continue;
       const key = normalizeUrlForMatch(url);
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ url, title, summary: it?.article?.summary ?? it?.summary ?? "", bucket });
+      const bp = src?.brazil_p;
+      out.push({
+        url,
+        title: src?.title ?? it?.title ?? "",
+        summary: src?.summary ?? "",
+        bucket,
+        category: src?.category ?? "",
+        brazilP: typeof bp === "number" && Number.isFinite(bp) ? bp : undefined,
+      });
     }
   }
   return out;
@@ -212,15 +261,20 @@ export function urlsInMarkdown(md: string): Set<string> {
 }
 
 /**
- * As `window` edições estritamente ANTERIORES a `current` (ordem decrescente) —
- * a janela que o dedup daquela edição viu (o `recentEditionDirs` de produção
- * pega "as mais recentes", que retroativamente incluiria edições futuras).
+ * As `window` edições estritamente ANTERIORES a `current` (ordem decrescente).
+ * Aproximação da janela que o dedup daquela edição viu: o `recentEditionDirs`
+ * de produção pega "as mais recentes" no momento da rodada — aplicado
+ * retroativamente, vazaria edições futuras.
  */
 export function pastWindow(all: string[], current: string, window: number): string[] {
   return [...new Set(all)].filter((d) => d < current).sort().reverse().slice(0, window);
 }
 
-/** `defaultWindowDays` do Stage 1, aplicado ao dia em que a pesquisa rodou (D-1 da edição). */
+/**
+ * `defaultWindowDays` do Stage 1, aplicado ao dia em que a pesquisa rodou
+ * (D-1 da edição, dia UTC — uma rodada depois das 21h BRT já cai no dia D em
+ * UTC e pode ter visto outra janela; aproximação aceita).
+ */
 export function windowForEdition(aammdd: string): number {
   const y = 2000 + Number(aammdd.slice(0, 2));
   const m = Number(aammdd.slice(2, 4)) - 1;
@@ -230,34 +284,44 @@ export function windowForEdition(aammdd: string): number {
   return day === 3 || day === 4 || day === 5 ? 3 : 4;
 }
 
-// ---------------------------------------------------------------------------
-// Dedup zona cinzenta
-// ---------------------------------------------------------------------------
-
-/** Pares (artigo × título passado) da zona cinzenta — o que o perfil B consulta. */
-export function grayZonePairs(pool: PoolArticle[], pastTitles: string[]): Array<{ article: PoolArticle; past: string; jaccard: number }> {
-  const pastTok = pastTitles.map((t) => ({ t, tok: tokenizeForJaccard(t) }));
-  const out: Array<{ article: PoolArticle; past: string; jaccard: number }> = [];
-  const seen = new Set<string>();
-  for (const a of pool) {
-    const tok = tokenizeForJaccard(a.title);
-    if (tok.size === 0) continue;
-    for (const p of pastTok) {
-      const sim = jaccardSimilarity(tok, p.tok);
-      if (!inGrayZone(sim)) continue;
-      const k = pairKey(a.title, p.t);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push({ article: a, past: p.t, jaccard: sim });
-    }
+/**
+ * Vereditos gravados ao vivo pelo braço B (`_internal/dedup-grayzone-jev.json`,
+ * `dedup.ts` #8421). Usá-los em vez de reconsultar evita inventar um erro que
+ * não aconteceu (a API `noul` não é determinística, docs/jev.md).
+ */
+export function verdictsFromRecordedArtifact(artifact: unknown): Map<string, GrayZoneVerdict> {
+  const out = new Map<string, GrayZoneVerdict>();
+  const recs = (artifact as { records?: unknown } | null | undefined)?.records;
+  if (!Array.isArray(recs)) return out;
+  for (const r of recs as Array<Record<string, unknown>>) {
+    if (typeof r?.candidate !== "string" || typeof r?.past !== "string") continue;
+    if (typeof r.jevSame !== "boolean" || !isFiniteNum(r.probability) || !isFiniteNum(r.confidence)) continue;
+    out.set(pairKey(r.candidate, r.past), { sameStory: r.jevSame, probability: r.probability, confidence: r.confidence });
   }
   return out;
 }
 
+function isFiniteNum(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+// ---------------------------------------------------------------------------
+// Dedup zona cinzenta
+// ---------------------------------------------------------------------------
+
 /**
- * Decisão por artigo nas duas lógicas. Pares fora da zona decidem igual nos
- * dois lados (é o que `createGrayZoneResolver` faz em produção); na zona, o
- * Jev decide quando há veredito com confiança suficiente.
+ * Pares (artigo × título passado) da zona cinzenta que o perfil B de fato
+ * consulta — delega em `collectGrayZonePairs` de produção (mesmo teto
+ * `GRAYZONE_MAX_PAIRS`, mesma ordem por proximidade do limiar).
+ */
+export function grayZonePairs(pool: PoolArticle[], pastTitles: string[]): { pairs: GrayZonePair[]; truncated: number } {
+  return collectGrayZonePairs(pool, pastTitles);
+}
+
+/**
+ * Decisão por artigo nas duas lógicas. Pares fora da zona (ou sem veredito)
+ * decidem igual nos dois lados (é o que `createGrayZoneResolver` faz em
+ * produção); na zona, o Jev decide quando há veredito com confiança suficiente.
  */
 export function evaluateDedupArticle(
   article: PoolArticle,
@@ -283,6 +347,17 @@ export function evaluateDedupArticle(
   };
 }
 
+/** Fonte única dos campos derivados do gabarito (usada no rótulo e na leitura estrita). */
+export function scoreAgainstTruth(
+  truth: Truth,
+  baselineDrops: boolean,
+  jevDrops: boolean,
+): Pick<DedupDivergence, "baselineCorrect" | "jevCorrect" | "jevGrave"> {
+  if (truth === "sem_gabarito") return { baselineCorrect: null, jevCorrect: null, jevGrave: false };
+  // Gabarito "o editor manteve" → a resposta certa é não descartar.
+  return { baselineCorrect: !baselineDrops, jevCorrect: !jevDrops, jevGrave: jevDrops };
+}
+
 export function labelDedupDivergence(
   article: PoolArticle,
   ev: { baselineDrops: boolean; jevDrops: boolean; pairs: DedupPairEval[] },
@@ -291,10 +366,11 @@ export function labelDedupDivergence(
   if (ev.baselineDrops === ev.jevDrops) return null;
   const decisive = [...ev.pairs]
     .filter((p) => (ev.jevDrops ? p.jevSame && !p.heuristicSame : p.heuristicSame && !p.jevSame))
-    .sort((a, b) => b.jaccard - a.jaccard)[0] ?? ev.pairs[0];
+    .sort((a, b) => b.jaccard - a.jaccard)[0];
+  // Divergência implica um par que decide diferente nos dois lados.
+  if (!decisive) throw new Error(`divergência sem par decisivo: ${article.url}`);
   const key = normalizeUrlForMatch(article.url);
   const truth: Truth = editorKept.published.has(key) ? "publicado" : editorKept.approved.has(key) ? "aprovado" : "sem_gabarito";
-  const kept = truth !== "sem_gabarito";
   return {
     url: article.url,
     title: article.title,
@@ -302,9 +378,7 @@ export function labelDedupDivergence(
     jevDrops: ev.jevDrops,
     decisivePair: decisive,
     truth,
-    baselineCorrect: kept ? !ev.baselineDrops : null,
-    jevCorrect: kept ? !ev.jevDrops : null,
-    jevGrave: kept && ev.jevDrops,
+    ...scoreAgainstTruth(truth, ev.baselineDrops, ev.jevDrops),
   };
 }
 
@@ -341,14 +415,26 @@ export function tokensToUsd(tokens: number): number {
 // Agregação + regra de decisão pré-registrada
 // ---------------------------------------------------------------------------
 
+export interface ArmStats {
+  divergences: number;
+  labeled: number;
+  jevHits: number;
+  baselineHits: number;
+  jevGrave: number;
+}
+
 export interface Verdict {
-  outcome: "adotar" | "nao_adotar" | "indiferente";
+  outcome: "adotar" | "nao_adotar" | "indiferente" | "inconclusivo";
+  strict: boolean;
   divergencesPerEdition: number;
   labeled: number;
   jevHits: number;
   baselineHits: number;
   jevGrave: number;
+  byArm: Record<Arm, ArmStats>;
+  jevCoverage: number;
   maxUsdPerEdition: number;
+  /** (a) é `null` por construção — ver VIÉS DE SOBREVIVÊNCIA no topo. (c) cobre só custo: wall-clock não é avaliável retroativamente. */
   criteria: { a: boolean | null; b: boolean; c: boolean };
   reasons: string[];
 }
@@ -359,61 +445,128 @@ export interface Verdict {
  * robustez — o resto vira `sem_gabarito`).
  */
 export function decide(evals: EditionEval[], opts: { strict?: boolean } = {}): Verdict {
+  if (evals.length === 0) throw new Error("decide(): nenhuma edição avaliada — sem dados não há veredito");
+  const strict = !!opts.strict;
   const n = evals.length;
-  const allDiv = evals.flatMap((e) => e.dedup).map((d) =>
-    opts.strict && d.truth === "aprovado"
-      ? { ...d, truth: "sem_gabarito" as const, baselineCorrect: null, jevCorrect: null, jevGrave: false }
-      : d,
+  const tagged = evals.flatMap((e) =>
+    e.dedup.map((d) => {
+      const truth: Truth = strict && d.truth === "aprovado" ? "sem_gabarito" : d.truth;
+      return { arm: e.arm, d: { ...d, truth, ...scoreAgainstTruth(truth, d.baselineDrops, d.jevDrops) } };
+    }),
   );
-  const decisionDivergences = allDiv.length; // Brasil não muda decisão no pipeline diário
-  const divergencesPerEdition = n === 0 ? 0 : decisionDivergences / n;
-  const labeled = allDiv.filter((d) => d.truth !== "sem_gabarito");
-  const jevHits = labeled.filter((d) => d.jevCorrect).length;
-  const baselineHits = labeled.filter((d) => d.baselineCorrect).length;
-  const jevGrave = allDiv.filter((d) => d.jevGrave).length;
+  const all = tagged.map((t) => t.d);
+  const statsOf = (ds: DedupDivergence[]): ArmStats => {
+    const labeled = ds.filter((d) => d.truth !== "sem_gabarito");
+    return {
+      divergences: ds.length,
+      labeled: labeled.length,
+      jevHits: labeled.filter((d) => d.jevCorrect).length,
+      baselineHits: labeled.filter((d) => d.baselineCorrect).length,
+      jevGrave: ds.filter((d) => d.jevGrave).length,
+    };
+  };
+  const total = statsOf(all);
+  const byArm = {
+    A: statsOf(tagged.filter((t) => t.arm === "A").map((t) => t.d)),
+    B: statsOf(tagged.filter((t) => t.arm === "B").map((t) => t.d)),
+    unknown: statsOf(tagged.filter((t) => t.arm === "unknown").map((t) => t.d)),
+  };
+  const grayPairs = evals.reduce((s, e) => s + e.grayPairs, 0);
+  const verdicts = evals.reduce((s, e) => s + e.jevVerdicts, 0);
+  const jevCoverage = grayPairs === 0 ? 1 : verdicts / grayPairs;
+  const divergencesPerEdition = total.divergences / n;
   const maxUsdPerEdition = Math.max(0, ...evals.map((e) => e.estUsd));
-  const a = labeled.length === 0 ? null : jevHits > baselineHits;
-  const b = jevGrave === 0;
+  // (a) não é comparável somando braços (viés de sobrevivência, ver topo) —
+  // nunca vira true, então a regra "se e somente se (a)∧(b)∧(c)" nunca chega
+  // a "adotar" retroativamente: com (b)∧(c) ok o resultado é "inconclusivo".
+  const a: boolean | null = null;
+  const b = total.jevGrave === 0;
   const c = maxUsdPerEdition < RULE_MAX_USD_PER_EDITION;
   const reasons: string[] = [];
   let outcome: Verdict["outcome"];
-  if (divergencesPerEdition <= RULE_INDIFFERENT_MAX_DIVERGENCES_PER_EDITION) {
+  if (jevCoverage < MIN_JEV_COVERAGE) {
+    outcome = "inconclusivo";
+    reasons.push(`cobertura Jev ${(jevCoverage * 100).toFixed(0)}% < ${MIN_JEV_COVERAGE * 100}% — vereditos ausentes viram "sem divergência" (chave/API/cache?)`);
+  } else if (divergencesPerEdition <= RULE_INDIFFERENT_MAX_DIVERGENCES_PER_EDITION) {
     outcome = "indiferente";
     reasons.push(`divergências raras: ${divergencesPerEdition.toFixed(2)}/edição (≤ ${RULE_INDIFFERENT_MAX_DIVERGENCES_PER_EDITION}) — decidir por custo/manutenção`);
-  } else if (a === true && b && c) {
-    outcome = "adotar";
-    reasons.push("(a), (b) e (c) satisfeitos");
+  } else if (b && c) {
+    outcome = a === true ? "adotar" : "inconclusivo";
+    reasons.push(a === true ? "(a), (b) e (c) satisfeitos" : "(b) e (c) ok, mas (a) não demonstrável sem viés — precisa de gabarito cego dos dois lados");
   } else {
     outcome = "nao_adotar";
-    if (a !== true) reasons.push(a === null ? "(a) sem divergência com gabarito — não demonstrável" : `(a) falhou: Jev ${jevHits} × baseline ${baselineHits}`);
-    if (!b) reasons.push(`(b) falhou: ${jevGrave} erro(s) grave(s) do Jev`);
+    if (!b) reasons.push(`(b) falhou: ${total.jevGrave} erro(s) grave(s) do Jev (descartou item que o editor ${strict ? "publicou" : "manteve/aprovou"})`);
+    reasons.push("(a) não demonstrável sem viés (gabarito só existe para o que sobreviveu ao dedup ao vivo)");
     if (!c) reasons.push(`(c) falhou: até US$ ${maxUsdPerEdition.toFixed(4)}/edição`);
   }
-  return { outcome, divergencesPerEdition, labeled: labeled.length, jevHits, baselineHits, jevGrave, maxUsdPerEdition, criteria: { a, b, c }, reasons };
+  if (outcome === "indiferente" || outcome === "inconclusivo") {
+    if (!b) reasons.push(`atenção: ${total.jevGrave} erro(s) grave(s) do Jev mesmo assim`);
+    if (!c) reasons.push(`atenção: custo até US$ ${maxUsdPerEdition.toFixed(4)}/edição`);
+  }
+  return {
+    outcome,
+    strict,
+    divergencesPerEdition,
+    labeled: total.labeled,
+    jevHits: total.jevHits,
+    baselineHits: total.baselineHits,
+    jevGrave: total.jevGrave,
+    byArm,
+    jevCoverage,
+    maxUsdPerEdition,
+    criteria: { a, b, c },
+    reasons,
+  };
 }
 
-export function renderPairedReport(evals: EditionEval[], verdict: Verdict, strictVerdict?: Verdict): string {
+export function renderPairedReport(
+  evals: EditionEval[],
+  verdict: Verdict,
+  strictVerdict?: Verdict,
+  skipped: Array<{ edition: string; reason: string }> = [],
+): string {
   const L: string[] = [];
   L.push(`# Jev A/B — avaliação pareada retroativa (#9531)`);
   L.push("");
   L.push(`**Veredito pela regra pré-registrada: \`${verdict.outcome}\`** — ${verdict.reasons.join("; ")}`);
   L.push("");
-  L.push(`- Edições: ${evals.length} (A=${evals.filter((e) => e.arm === "A").length}, B=${evals.filter((e) => e.arm === "B").length})`);
+  L.push(`- Edições: ${evals.length} (A=${evals.filter((e) => e.arm === "A").length}, B=${evals.filter((e) => e.arm === "B").length}, desconhecido=${evals.filter((e) => e.arm === "unknown").length})${skipped.length ? `; ${skipped.length} pulada(s) — ver Notas` : ""}`);
+  L.push(`- Cobertura Jev na zona cinzenta: ${(verdict.jevCoverage * 100).toFixed(0)}% dos pares com veredito`);
   L.push(`- Decisões divergentes (dedup, nível artigo): ${evals.reduce((s, e) => s + e.dedup.length, 0)} — ${verdict.divergencesPerEdition.toFixed(2)}/edição`);
-  L.push(`- Com gabarito: ${verdict.labeled} — acerto Jev ${verdict.jevHits}/${verdict.labeled}, baseline ${verdict.baselineHits}/${verdict.labeled}`);
   L.push(`- Erros graves do Jev (descartou item que o editor manteve): ${verdict.jevGrave}`);
   L.push(`- Custo Jev estimado: máx US$ ${verdict.maxUsdPerEdition.toFixed(4)}/edição`);
-  L.push(`- Critérios: (a) ${fmtBool(verdict.criteria.a)} · (b) ${fmtBool(verdict.criteria.b)} · (c) ${fmtBool(verdict.criteria.c)}`);
+  L.push(`- Critérios: (a) ${fmtBool(verdict.criteria.a)} · (b) ${fmtBool(verdict.criteria.b)} · (c, só custo) ${fmtBool(verdict.criteria.c)}`);
   if (strictVerdict) {
-    L.push(`- **Robustez (gabarito só = publicado em 02-reviewed.md): \`${strictVerdict.outcome}\`** — Jev ${strictVerdict.jevHits}/${strictVerdict.labeled}, baseline ${strictVerdict.baselineHits}/${strictVerdict.labeled}, ${strictVerdict.jevGrave} erro(s) grave(s)`);
+    L.push(`- **Robustez (gabarito só = publicado em 02-reviewed.md): \`${strictVerdict.outcome}\`** — ${strictVerdict.jevGrave} erro(s) grave(s)`);
   }
-  L.push("- Wall Jev = soma do tempo das chamadas da edição (concorrência 8); em produção o dedup só consulta a zona cinzenta, o que é uma fração disso.");
   L.push("");
-  L.push(`| edição | braço | pool | pares zona | vereditos | div. dedup | c/ gabarito | grave Jev | itens Brasil | div. Brasil | chamadas Jev | US$ est. | wall Jev |`);
+  L.push(`### Por braço (o gabarito de cada braço só enxerga um lado da divergência)`);
+  L.push("");
+  L.push(`| braço | divergências | c/ gabarito | Jev certo | baseline certo | grave Jev | o que o gabarito mede |`);
+  L.push(`|---|---|---|---|---|---|---|`);
+  const meaning: Record<Arm, string> = {
+    A: "falso descarte do Jev (b)",
+    B: "acerto do Jev ao manter",
+    unknown: "—",
+  };
+  for (const arm of ["A", "B", "unknown"] as Arm[]) {
+    const s = verdict.byArm[arm];
+    if (arm === "unknown" && s.divergences === 0) continue;
+    L.push(`| ${arm} | ${s.divergences} | ${s.labeled} | ${s.jevHits} | ${s.baselineHits} | ${s.jevGrave} | ${meaning[arm]} |`);
+  }
+  L.push("");
+  L.push(`### Limitações`);
+  L.push("");
+  L.push("- Viés de sobrevivência: gabarito só para o que passou pelo dedup ao vivo. (a) não é comparável somando braços; falsos descartes do Jev no braço B ficam invisíveis.");
+  L.push("- \"Deixar passar repetição real\" (metade de b) não tem gabarito derivável — não medido.");
+  L.push("- Pool reconstruído de `researcher-results.json` menos as URLs publicadas da janela (Pass 1); Pass 1b/1r e o dedup intra-lista não são modelados.");
+  L.push("- Wall-clock do Stage 1 não é avaliável retroativamente; a coluna wall Jev soma o tempo das chamadas reais desta avaliação (concorrência 8).");
+  L.push("");
+  L.push(`| edição | braço | pool | pares zona | vereditos (ao vivo) | div. dedup | c/ gabarito | grave Jev | itens Brasil | div. Brasil | chamadas Jev | US$ est. | wall Jev |`);
   L.push(`|---|---|---|---|---|---|---|---|---|---|---|---|---|`);
   for (const e of evals) {
     L.push(
-      `| ${e.edition} | ${e.arm} | ${e.poolSize} | ${e.grayPairs} | ${e.jevVerdicts} | ${e.dedup.length} | ${e.dedup.filter((d) => d.truth !== "sem_gabarito").length} | ${e.dedup.filter((d) => d.jevGrave).length} | ${e.brazilAnnotated}/${e.brazilItems} | ${e.brazil.length} | ${e.jevCalls} | ${e.estUsd.toFixed(4)} | ${e.jevWallMs === null ? "cache" : `${(e.jevWallMs / 1000).toFixed(1)}s`} |`,
+      `| ${e.edition} | ${e.arm} | ${e.poolSize} | ${e.grayPairs}${e.grayPairsTruncated ? ` (+${e.grayPairsTruncated} acima do teto)` : ""} | ${e.jevVerdicts}${e.jevVerdictsRecorded ? ` (${e.jevVerdictsRecorded})` : ""} | ${e.dedup.length} | ${e.dedup.filter((d) => d.truth !== "sem_gabarito").length} | ${e.dedup.filter((d) => d.jevGrave).length} | ${e.brazilAnnotated}/${e.brazilItems} | ${e.brazil.length} | ${e.jevCalls} | ${e.estUsd.toFixed(4)} | ${e.jevWallMs === null ? "—" : `${(e.jevWallMs / 1000).toFixed(1)}s`} |`,
     );
   }
   L.push("");
@@ -425,7 +578,7 @@ export function renderPairedReport(evals: EditionEval[], verdict: Verdict, stric
     const p = d.decisivePair;
     const v = p.verdict ? `p=${p.verdict.probability.toFixed(2)}, conf=${p.verdict.confidence.toFixed(2)}` : "sem veredito";
     L.push(
-      `- ${e.edition} — **${d.jevDrops ? "Jev descarta / baseline mantém" : "Jev mantém / baseline descarta"}** — gabarito: \`${d.truth}\`${d.jevGrave ? " — ⚠️ ERRO GRAVE" : ""}\n  - "${d.title}" (${d.url})\n  - vs. "${p.past}" (Jaccard ${p.jaccard.toFixed(2)}, limiar ${p.threshold}, ${v})`,
+      `- ${e.edition} (${e.arm}) — **${d.jevDrops ? "Jev descarta / baseline mantém" : "Jev mantém / baseline descarta"}** — gabarito: \`${d.truth}\`${d.jevGrave ? " — ⚠️ ERRO GRAVE" : ""}\n  - "${d.title}" (${d.url})\n  - vs. "${p.past}" (Jaccard ${p.jaccard.toFixed(2)}, limiar ${p.threshold}, ${v})`,
     );
   }
   L.push("");
@@ -436,7 +589,10 @@ export function renderPairedReport(evals: EditionEval[], verdict: Verdict, stric
   for (const { e, d } of bd) {
     L.push(`- ${e.edition} — regex=${d.baseline ? "BR" : "não"}, Jev=${d.jev ? "BR" : "não"} (p=${d.brazilP.toFixed(2)}) — "${d.title}"`);
   }
-  const notes = evals.flatMap((e) => e.notes.map((n) => `${e.edition}: ${n}`));
+  const notes = [
+    ...skipped.map((s) => `${s.edition}: PULADA — ${s.reason}`),
+    ...evals.flatMap((e) => e.notes.map((n) => `${e.edition}: ${n}`)),
+  ];
   if (notes.length > 0) {
     L.push("");
     L.push(`## Notas`);
