@@ -34,6 +34,7 @@ import {
   type AssetGroupAssetItem,
 } from "../scripts/lib/google-ads-asset-group-assets.ts";
 import { main as swapMain } from "../scripts/google-ads-swap-asset-group-creatives.ts";
+import { withStatefulSearch, PMAX_PLAN_OUT_TMP } from "./_helpers/pmax-stateful-search.ts";
 
 const AUTH_ENV = {
   GOOGLE_ADS_CLIENT_ID: "client-id",
@@ -42,6 +43,7 @@ const AUTH_ENV = {
   GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token",
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: "6236094249",
   GOOGLE_ADS_CUSTOMER_ID: "2369219639",
+  PMAX_SWAP_PLAN_OUT: PMAX_PLAN_OUT_TMP,
 };
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
@@ -286,6 +288,27 @@ const SAMPLE_SEARCH_RESULTS = [
   },
 ];
 
+/** Fase 2 com piso (#8550 sync): grupo já com 3 headlines novos APROVADOS
+ *  (desconhecidos → needsReview, contam como permanentes) + diar.ia.br, então
+ *  o stale "Newsletter de IA" pode sair sem deixar HEADLINE abaixo de 3. */
+function approvedHeadline(id: string, text: string) {
+  return {
+    asset: { resourceName: `customers/2369219639/assets/${id}`, id, type: "TEXT", textAsset: { text } },
+    assetGroupAsset: {
+      resourceName: `customers/2369219639/assetGroupAssets/g~${id}~HEADLINE`,
+      asset: `customers/2369219639/assets/${id}`,
+      fieldType: "HEADLINE",
+      status: "ENABLED",
+      policySummary: { approvalStatus: "APPROVED" },
+    },
+  };
+}
+const PHASE2_SEARCH_RESULTS = [
+  ...SAMPLE_SEARCH_RESULTS.map((r) => ({ ...r, assetGroupAsset: { ...r.assetGroupAsset, policySummary: { approvalStatus: "APPROVED" } } })),
+  approvedHeadline("21", "5 minutos por dia"),
+  approvedHeadline("22", "Também o lado ruim da IA"),
+];
+
 describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
   it("dry-run (default): lê e classifica, NÃO chama nenhum :mutate", async () => {
     const calls: string[] = [];
@@ -374,7 +397,7 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
         throw new Error(`chamada inesperada: ${input}`);
       };
       const code = await withEnv(AUTH_ENV, () =>
-        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock),
+        swapMain(["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", join(dir, "progress.json")], withStatefulSearch(fetchMock, SAMPLE_SEARCH_RESULTS) as unknown as typeof fetch, noAcaoAdiadaMock),
       );
       assert.equal(code, 0);
       // 3 assets:mutate de texto (headline/long headline/description) + 3 de imagem (1 por proporção)
@@ -408,7 +431,9 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
       }
       throw new Error(`chamada inesperada: ${input}`);
     };
-    const code = await withEnv(AUTH_ENV, () => swapMain(["--customer-id", "2369219639", "--send", "--remove-stale"], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock));
+    const code = await withEnv(AUTH_ENV, () =>
+      swapMain(["--customer-id", "2369219639", "--send", "--remove-stale"], withStatefulSearch(fetchMock, PHASE2_SEARCH_RESULTS) as unknown as typeof fetch, noAcaoAdiadaMock),
+    );
     assert.equal(code, 0);
     // Da amostra SAMPLE_SEARCH_RESULTS: só "Newsletter de IA" é stale (diar.ia.br é keep, logo_1.jpg é needsReview).
     assert.deepEqual(removedResourceNames, ["customers/2369219639/assetGroupAssets/g~1~HEADLINE"]);
@@ -518,7 +543,9 @@ describe("#8550 — CLI google-ads-swap-asset-group-creatives", () => {
       if (input.endsWith("assetGroupAssets:mutate")) return jsonResponse(200, { results: [] });
       throw new Error(`chamada inesperada: ${input}`);
     };
-    const code = await withEnv(AUTH_ENV, () => swapMain(["--customer-id", "2369219639", "--send", "--remove-stale"], fetchMock as unknown as typeof fetch, noAcaoAdiadaMock));
+    const code = await withEnv(AUTH_ENV, () =>
+      swapMain(["--customer-id", "2369219639", "--send", "--remove-stale"], withStatefulSearch(fetchMock, PHASE2_SEARCH_RESULTS) as unknown as typeof fetch, noAcaoAdiadaMock),
+    );
     assert.equal(code, 1);
   });
 

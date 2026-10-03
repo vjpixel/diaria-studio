@@ -26,6 +26,7 @@ import {
 } from "../scripts/lib/google-ads-asset-group-assets.ts";
 import { formatAcaoAdiadaMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
 import { main as swapMain, checkSwapCooldown } from "../scripts/google-ads-swap-asset-group-creatives.ts";
+import { withStatefulSearch, PMAX_PLAN_OUT_TMP } from "./_helpers/pmax-stateful-search.ts";
 
 const AUTH_ENV = {
   GOOGLE_ADS_CLIENT_ID: "client-id",
@@ -34,6 +35,7 @@ const AUTH_ENV = {
   GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token",
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: "6236094249",
   GOOGLE_ADS_CUSTOMER_ID: "2369219639",
+  PMAX_SWAP_PLAN_OUT: PMAX_PLAN_OUT_TMP,
 };
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
@@ -303,7 +305,7 @@ describe("#8960 — CLI: manifesto de progresso sobrevive falha parcial na Fase 
       const code2 = await withEnv(AUTH_ENV, () =>
         swapMain(
           ["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", progressFile],
-          fetchMockAttempt2 as unknown as typeof fetch,
+          withStatefulSearch(fetchMockAttempt2, SAMPLE_SEARCH_RESULTS) as unknown as typeof fetch,
           fetchCommentBodiesMock,
         ),
       );
@@ -377,7 +379,7 @@ describe("#8960 — CLI: manifesto de progresso sobrevive falha parcial na Fase 
       const code2 = await withEnv(AUTH_ENV, () =>
         swapMain(
           ["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", progressFile],
-          fetchMockAttempt2 as unknown as typeof fetch,
+          withStatefulSearch(fetchMockAttempt2, SAMPLE_SEARCH_RESULTS) as unknown as typeof fetch,
           fetchCommentBodiesMock,
         ),
       );
@@ -465,7 +467,7 @@ describe("#8960 — CLI: manifesto de progresso sobrevive falha parcial na Fase 
       const code2 = await withEnv(AUTH_ENV, () =>
         swapMain(
           ["--customer-id", "2369219639", "--send", "--images-manifest", manifestPath, "--progress-file", progressFile],
-          fetchMockAttempt2 as unknown as typeof fetch,
+          withStatefulSearch(fetchMockAttempt2, SAMPLE_SEARCH_RESULTS) as unknown as typeof fetch,
           fetchCommentBodiesMock,
         ),
       );

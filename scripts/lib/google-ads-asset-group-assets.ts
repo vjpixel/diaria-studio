@@ -14,19 +14,23 @@
  * `asset_group_asset` do grupo `6642889160` descritos na issue #8550 em
  * 20/09/2026 — nada mudou entre as duas leituras. Confirma que:
  *   - LOGO, LANDSCAPE_LOGO e BUSINESS_NAME estão todos `REMOVED` — nenhum
- *     recurso de logo/nome de empresa ativo no grupo hoje.
- *   - `logo_1.jpg` (id `315354815414`, `SQUARE_MARKETING_IMAGE`) é a única
- *     imagem quadrada "com cara de logo" ativa — pendência não resolvida
- *     (marcado como `needsReview`, nunca auto-classificado como stale).
+ *     recurso de logo/nome de empresa ativo no grupo (o nome e os logos
+ *     ativos ficam no nível da campanha, `campaign_asset`, lido em 03/10).
+ *   - `logo_1.jpg` (id `315354815414`, `SQUARE_MARKETING_IMAGE`) e
+ *     `logo_1.91:1.jpg` (id `318613044963`, `MARKETING_IMAGE`, achado na
+ *     leitura de 03/10/2026) são logos ativos como marketing image —
+ *     pendência não resolvida (`needsReview`: nunca removidos e, desde o
+ *     #8550 sync, também NÃO contam no piso da Fase 2).
  *   - O `HEADLINE` "diar.ia.br" (id `409202011006`) é o único texto não
- *     genérico — mantido (`keep`), não staleado.
+ *     genérico — mantido (`keep`), não staleado. Os textos novos do swap
+ *     (`NEW_TEXT_VALUES`) também são `keep`.
  *   - 4 `YOUTUBE_VIDEO` ativos — sempre protegidos.
  *
- * ## Por que a execução NÃO acontece neste módulo/CLI hoje (28/09/2026)
+ * ## Por que `--send` recusa enquanto as duas travas abaixo valerem
  *
  * Duas razões independentes — desde #8960 as DUAS são checadas em código:
  *   1. **[código desde #8960, `checkSwapCooldown` no script CLI] Editor
- *      declinou autorização hoje** via `/diaria-desbloqueia` ("ainda não" —
+ *      declinou autorização em 28/09/2026** via `/diaria-desbloqueia` ("ainda não" —
  *      ver marcador `acao-adiada` no comentário da issue, cooldown de 7
  *      dias, `scripts/lib/issue-decisions.ts` `isAcaoAdiadaAtiva`). `--send`
  *      recusa sozinho enquanto o cooldown estiver ativo (achado do review
@@ -35,7 +39,7 @@
  *      existem** — a decisão do editor (comentário de 20/09) pede overlays
  *      SEM o botão "Assine grátis" e SEM título/subtítulo queimados,
  *      gerados a partir dos masters (`04-dN-master.jpg`), mais o 1,91:1 que
- *      não existe em nenhum conjunto hoje. Geração de imagem é FORA do
+ *      não existia em nenhum conjunto em 20/09. Geração de imagem é FORA do
  *      escopo deste módulo (script de texto/API, não de edição de imagem)
  *      — `--send` exige um manifesto apontando pros arquivos finais e
  *      falha limpo se qualquer um estiver ausente (ver
@@ -67,6 +71,10 @@ export interface AssetGroupAssetApiRow {
     asset?: string;
     fieldType?: string;
     status?: string;
+    /** #8550 sync — lido pra a Fase 2 só contar no piso do PMax o que o
+     *  Google já APROVOU (nunca o que ainda está em revisão). */
+    primaryStatus?: string;
+    policySummary?: { approvalStatus?: string };
   };
 }
 
@@ -110,6 +118,11 @@ export interface AssetGroupAssetItem {
    *  do asset — é onde os marcadores "Generated image"/"Gemini_Generated_Image"
    *  aparecem, não no texto). */
   imageName?: string;
+  /** `asset_group_asset.policy_summary.approval_status` (APPROVED,
+   *  APPROVED_LIMITED, DISAPPROVED, UNKNOWN...). Ausente = não lido. */
+  approvalStatus?: string;
+  /** `asset_group_asset.primary_status` (ELIGIBLE, NOT_ELIGIBLE, PENDING...). */
+  primaryStatus?: string;
 }
 
 /** Monta a query GAQL de leitura de todos os `asset_group_asset` de um
@@ -128,6 +141,7 @@ export function buildAssetGroupAssetsQuery(assetGroupResourceName: string): stri
   }
   return (
     "SELECT asset_group_asset.asset, asset_group_asset.field_type, asset_group_asset.status, " +
+    "asset_group_asset.primary_status, asset_group_asset.policy_summary.approval_status, " +
     "asset.id, asset.name, asset.type, asset.text_asset.text, asset.image_asset.full_size.url " +
     `FROM asset_group_asset WHERE asset_group_asset.asset_group = '${assetGroupResourceName}'`
   );
@@ -152,6 +166,10 @@ export function parseAssetGroupAssetRows(rows: AssetGroupAssetApiRow[]): AssetGr
       assetType: asset.type ?? "UNKNOWN",
       text: asset.textAsset?.text,
       imageName: asset.name,
+      // Só presentes quando a API devolve — chave `undefined` explícita
+      // quebraria comparações estritas de quem já consome este shape.
+      ...(aga.policySummary?.approvalStatus ? { approvalStatus: aga.policySummary.approvalStatus } : {}),
+      ...(aga.primaryStatus ? { primaryStatus: aga.primaryStatus } : {}),
     });
   }
   return items;
@@ -164,7 +182,7 @@ export function parseAssetGroupAssetRows(rows: AssetGroupAssetApiRow[]): AssetGr
 /** Nunca tocados por este módulo, independente de conteúdo — vídeos do
  *  YouTube (fora de escopo da troca de criativos), CTA (não faz parte do
  *  pacote texto/imagem definido na issue), e os 3 tipos que já estão todos
- *  `REMOVED` hoje e cuja restauração é decisão separada (ver docstring do
+ *  `REMOVED` na leitura de 28/09 e cuja restauração é decisão separada (ver docstring do
  *  módulo — "verificar antes de retirar" ainda pendente, então também
  *  pendente pra ADICIONAR). */
 export const PROTECTED_FIELD_TYPES: ReadonlySet<AssetGroupFieldType> = new Set([
@@ -221,10 +239,12 @@ export function isStaleImageName(name: string | undefined): boolean {
   return STALE_IMAGE_NAME_PATTERNS.some((re) => re.test(name));
 }
 
-/** Nome de imagem que precisa de decisão humana antes de mexer — hoje só
- *  `logo_1.jpg` (a única imagem com cara de logo ativa como marketing
- *  image, ver docstring do módulo). @pure */
-const NEEDS_REVIEW_IMAGE_NAMES: ReadonlySet<string> = new Set(["logo_1.jpg"]);
+/** Nome de imagem que precisa de decisão humana antes de mexer — logos
+ *  ativos como marketing image: `logo_1.jpg` (quadrada, ver docstring do
+ *  módulo) e `logo_1.91:1.jpg` (id `318613044963`, MARKETING_IMAGE 724×378 —
+ *  achado na leitura de 03/10/2026; antes caía em `keep` por não bater com
+ *  nenhum padrão, sem aparecer no relatório de pendências). @pure */
+const NEEDS_REVIEW_IMAGE_NAMES: ReadonlySet<string> = new Set(["logo_1.jpg", "logo_1.91:1.jpg"]);
 
 export interface AssetGroupClassification {
   /** Recursos genéricos antigos — candidatos a REMOVER depois que os novos
@@ -271,7 +291,11 @@ export function classifyAssetGroupAssets(items: readonly AssetGroupAssetItem[]):
       continue;
     }
     if (item.assetType === "TEXT") {
-      if (item.text && KEEP_TEXT_VALUES.has(item.text)) {
+      // Os textos NOVOS deste swap (NEW_*) também são `keep`: depois da Fase 1
+      // eles estão no grupo e precisam contar no piso da Fase 2 — como
+      // `needsReview` (texto "desconhecido") ficariam fora do piso e a Fase 2
+      // nunca removeria o stale de texto.
+      if (item.text && (KEEP_TEXT_VALUES.has(item.text) || NEW_TEXT_VALUES.has(item.text))) {
         keep.push(item);
       } else if (item.text && STALE_TEXT_VALUES.has(item.text)) {
         stale.push(item);
@@ -340,6 +364,10 @@ export const NEW_DESCRIPTIONS: readonly string[] = [
   "Também o que dá errado: golpes, viés e impacto no trabalho. Sem euforia.",
   "Não basta saber o que a IA fez. Todo dia eu mando o que dá pra fazer com ela. Grátis.",
 ];
+
+/** Todos os textos novos do swap — classificados como `keep` (ver
+ *  `classifyAssetGroupAssets`). */
+export const NEW_TEXT_VALUES: ReadonlySet<string> = new Set([...NEW_HEADLINES, ...NEW_LONG_HEADLINES, ...NEW_DESCRIPTIONS]);
 
 /** Limites de contagem do PMax (documentação pública do Google Ads —
  *  "citados de memória" na issue original, confirmados aqui contra os
@@ -497,7 +525,7 @@ export interface FieldLinkPlan<F extends AssetGroupFieldType = AssetGroupFieldTy
   fieldType: F;
   /** Quantos recursos novos a Fase 1 vai linkar neste fieldType. */
   newCount: number;
-  /** ENABLED hoje no grupo neste fieldType (todos os buckets). */
+  /** ENABLED no grupo, na leitura que gerou o plano, neste fieldType (todos os buckets). */
   existingEnabled: number;
   /** Dos ENABLED, quantos NÃO são stale (keep + needsReview) — ficam no
    *  grupo de qualquer jeito, nenhuma fase os remove. */

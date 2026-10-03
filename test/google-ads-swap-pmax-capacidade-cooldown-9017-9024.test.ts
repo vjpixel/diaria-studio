@@ -36,6 +36,7 @@ import {
 } from "../scripts/lib/google-ads-asset-group-assets.ts";
 import { formatAcaoAdiadaMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
 import { main as swapMain, checkSwapCooldown } from "../scripts/google-ads-swap-asset-group-creatives.ts";
+import { withStatefulSearch, PMAX_PLAN_OUT_TMP } from "./_helpers/pmax-stateful-search.ts";
 
 const CUSTOMER = "2369219639";
 const GROUP = `customers/${CUSTOMER}/assetGroups/6642889160`;
@@ -47,6 +48,7 @@ const AUTH_ENV = {
   GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token",
   GOOGLE_ADS_LOGIN_CUSTOMER_ID: "6236094249",
   GOOGLE_ADS_CUSTOMER_ID: CUSTOMER,
+  PMAX_SWAP_PLAN_OUT: PMAX_PLAN_OUT_TMP,
 };
 
 async function withEnv<T>(overrides: Record<string, string>, fn: () => Promise<T>): Promise<T> {
@@ -223,7 +225,8 @@ describe("#9017 — CLI --send: Fase 1 nunca estoura o máximo por fieldType", (
       }
       throw new Error(`chamada inesperada: ${input}`);
     };
-    return { fetchMock, calls, enabled };
+    // Releitura pós-Fase 1 (#8550 sync) precisa ver os links aplicados.
+    return { fetchMock: withStatefulSearch(fetchMock, rows), calls, enabled };
   }
 
   it("grupo servindo (3 long headlines + 2 descriptions antigos): Fase 1 conclui, troca atômica, nenhuma rejeição de limite", async () => {
