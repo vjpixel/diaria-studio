@@ -10,18 +10,22 @@
  * `data/monthly/{ciclo}/_internal/divulgacao-published.json`, mesmo shape de
  * `data/artigo-especial/{ano}-{slug}/published.json` (reusa
  * `parseChannelStates`/`decideChannelAction`/`withChannelState`/builders de
- * `scripts/lib/artigo-especial-state.ts` — nada reimplementado), com 10 canais:
+ * `scripts/lib/artigo-especial-state.ts` — nada reimplementado):
  *
  *   | canal             | quem grava                                              |
  *   |-------------------|---------------------------------------------------------|
  *   | `pagina`          | `verify-retrospectiva-page.ts` (GET 200 + KV)            |
  *   | `apoiase`         | `mark-retrospectiva-channel.ts` (post via Claude in Chrome) |
- *   | `linkedin_pagina` | `publish-retrospectiva-linkedin.ts` (Worker)             |
  *   | `linkedin_perfil` | `mark-retrospectiva-channel.ts` (composer manual)         |
  *   | `box`             | `update-retrospectiva-box.ts`                             |
  *   | `email`           | `mark-retrospectiva-channel.ts --sync-email` (deriva do state do publisher) |
- *   | `facebook`/`instagram`/`threads` | `publish-retrospectiva-social.ts` (#9500)  |
- *   | `x`               | `mark-retrospectiva-channel.ts` (Buffer MCP, top-level, #9500) |
+ *   | `{linkedin_pagina,facebook,instagram,threads}:d{1,2,3}` | `publish-retrospectiva-social.ts` (#9508) |
+ *   | `x:d{1,2,3}`      | `mark-retrospectiva-channel.ts` (Buffer MCP, top-level)   |
+ *
+ * #9508: um post por (rede × história). As chaves sem sufixo `linkedin_pagina`
+ * (post único da página, #9474) e `facebook`/`instagram`/`threads`/`x` (post
+ * único, #9500) são LEGADO: lidas, nunca mais gravadas — a do LinkedIn
+ * existe no ciclo 2609-10 e é o que `--replace-linkedin-single` cancela.
  *
  * O canal `email` NÃO duplica o guard do publisher Kit: a fonte de verdade do
  * broadcast segue sendo `_internal/beehiiv-apoiadores-state.json`
@@ -40,20 +44,54 @@ import { DIARIA_RETROSPECTIVA_URL } from "../canonical-urls.ts";
 import { mensalPathFromCycle } from "../shared/retrospectiva-path.ts";
 import type { ApoiadoresState } from "./monthly-apoiadores-state.ts";
 
-export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
+/** #9508: as 3 histórias da retrospectiva (DESTAQUE 1/2/3 do `draft.md`) — um post por rede para cada. */
+export const RETROSPECTIVA_HISTORIAS = ["d1", "d2", "d3"] as const;
+export type RetrospectivaHistoria = (typeof RETROSPECTIVA_HISTORIAS)[number];
+
+/** #9508: redes com um post por história (o perfil LinkedIn segue com 1 post só, manual). */
+export const RETROSPECTIVA_POST_CHANNELS = ["linkedin_pagina", "facebook", "instagram", "threads", "x"] as const;
+export type RetrospectivaPostChannel = (typeof RETROSPECTIVA_POST_CHANNELS)[number];
+/** Chave de state de um post: `{rede}:{história}` (ex: `instagram:d2`). */
+export type RetrospectivaPostKey = `${RetrospectivaPostChannel}:${RetrospectivaHistoria}`;
+
+export function retrospectivaPostKey(channel: RetrospectivaPostChannel, historia: RetrospectivaHistoria): RetrospectivaPostKey {
+  return `${channel}:${historia}`;
+}
+
+export const RETROSPECTIVA_POST_KEYS: readonly RetrospectivaPostKey[] = RETROSPECTIVA_POST_CHANNELS.flatMap((ch) =>
+  RETROSPECTIVA_HISTORIAS.map((h) => retrospectivaPostKey(ch, h)),
+);
+
+export const RETROSPECTIVA_DIVULGACAO_CHANNELS: readonly RetrospectivaDivulgacaoChannel[] = [
   "pagina",
   "apoiase",
+  // Sem sufixo: o post ÚNICO da página (#9474, legado desde #9508 — só lido,
+  // pro `--replace-linkedin-single` cancelá-lo).
   "linkedin_pagina",
   "linkedin_perfil",
   "box",
   "email",
-  // #9500 — posts públicos de chamada fora do LinkedIn.
+  // #9500 — post ÚNICO por rede; legado desde #9508 (nunca mais gravado,
+  // mantido pra ler o state de quem rodou o #9500).
   "facebook",
   "instagram",
   "threads",
   "x",
-] as const;
-export type RetrospectivaDivulgacaoChannel = (typeof RETROSPECTIVA_DIVULGACAO_CHANNELS)[number];
+  // #9508 — um post por (rede × história).
+  ...RETROSPECTIVA_POST_KEYS,
+];
+export type RetrospectivaDivulgacaoChannel =
+  | "pagina"
+  | "apoiase"
+  | "linkedin_pagina"
+  | "linkedin_perfil"
+  | "box"
+  | "email"
+  | "facebook"
+  | "instagram"
+  | "threads"
+  | "x"
+  | RetrospectivaPostKey;
 
 export interface RetrospectivaDivulgacaoState {
   cycle: string;
@@ -117,21 +155,42 @@ export function writeRetrospectivaDivulgacaoState(path: string, state: Retrospec
 
 // ── --skip ──────────────────────────────────────────────────────────────
 
-/** Tokens aceitos em `--skip` → canais. `linkedin` cobre os dois LinkedIn. */
-const SKIP_TOKEN_TO_CHANNELS: Record<string, readonly RetrospectivaDivulgacaoChannel[]> = {
-  pagina: ["pagina"],
-  apoiase: ["apoiase"],
-  linkedin: ["linkedin_pagina", "linkedin_perfil"],
-  box: ["box"],
-  email: ["email"],
-  facebook: ["facebook"],
-  instagram: ["instagram"],
-  threads: ["threads"],
-  x: ["x"],
+/** Token de rede no `--skip`/`--force` → canal de post (#9508). */
+const POST_CHANNEL_TOKENS: Record<string, RetrospectivaPostChannel> = {
+  linkedin: "linkedin_pagina",
+  facebook: "facebook",
+  instagram: "instagram",
+  threads: "threads",
+  x: "x",
 };
 
 /**
- * Pura: `--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email` → conjunto de canais.
+ * Tokens aceitos em `--skip` → canais. `linkedin` cobre o perfil, a página
+ * legada e os 3 posts da página; cada rede cobre as 3 histórias (e a chave
+ * legada do #9500); `{rede}:d{N}` (#9508) mira 1 post só (`linkedin:d2` = a
+ * página da história 2).
+ */
+const SKIP_TOKEN_TO_CHANNELS: Record<string, readonly RetrospectivaDivulgacaoChannel[]> = {
+  pagina: ["pagina"],
+  apoiase: ["apoiase"],
+  box: ["box"],
+  email: ["email"],
+  ...Object.fromEntries(
+    Object.entries(POST_CHANNEL_TOKENS).flatMap(([token, ch]) => [
+      [
+        token,
+        [
+          ...(token === "linkedin" ? (["linkedin_pagina", "linkedin_perfil"] as const) : ([ch] as const)),
+          ...RETROSPECTIVA_HISTORIAS.map((h) => retrospectivaPostKey(ch, h)),
+        ],
+      ],
+      ...RETROSPECTIVA_HISTORIAS.map((h) => [`${token}:${h}`, [retrospectivaPostKey(ch, h)]]),
+    ]),
+  ),
+};
+
+/**
+ * Pura: `--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email` (e `{rede}:d{N}`, #9508) → conjunto de canais.
  * Token desconhecido LANÇA (typo nunca vira "não pulou nada" em silêncio —
  * mesma disciplina do `--only` de `publish-artigo-especial-linkedin.ts`).
  */
@@ -145,7 +204,9 @@ export function parseRetrospectivaSkip(skipArg: string | undefined): Set<Retrosp
   const invalid = tokens.filter((t) => !(t in SKIP_TOKEN_TO_CHANNELS));
   if (invalid.length > 0) {
     throw new Error(
-      `--skip contém valor(es) não reconhecido(s): ${invalid.join(", ")} (esperado: ${Object.keys(SKIP_TOKEN_TO_CHANNELS).join(", ")}).`,
+      `--skip contém valor(es) não reconhecido(s): ${invalid.join(", ")} (esperado: ${Object.keys(SKIP_TOKEN_TO_CHANNELS)
+        .filter((t) => !t.includes(":"))
+        .join(", ")}, ou {rede}:d{1,2,3} — ex: instagram:d2).`,
     );
   }
   for (const t of tokens) for (const ch of SKIP_TOKEN_TO_CHANNELS[t]) out.add(ch);
@@ -201,6 +262,11 @@ export const RETROSPECTIVA_PUBLIC_CTA = "Apoie nosso trabalho e leia a retrospec
 /** Hosts que servem a Retrospectiva paga — o canônico e o legado (301, #7658). */
 const PAYWALLED_HOSTS_RE = /\b(?:retrospectiva|artigo)\.diar\.ia\.br\b/i;
 
+/** Pura: o texto cita a URL da retrospectiva paywalled? (#9508: também usado no corpo dos slides) */
+export function citesPaywalledRetrospectiva(text: string): boolean {
+  return PAYWALLED_HOSTS_RE.test(text);
+}
+
 /**
  * Pura: problemas de um texto de post PÚBLICO da Retrospectiva (lista vazia =
  * ok). Regra herdada do Artigo Especial (decisão do editor no #9474): o CTA
@@ -212,7 +278,7 @@ const PAYWALLED_HOSTS_RE = /\b(?:retrospectiva|artigo)\.diar\.ia\.br\b/i;
  */
 export function publicPostCtaProblems(text: string, acceptedCtas: readonly string[] = [RETROSPECTIVA_PUBLIC_CTA]): string[] {
   const problems: string[] = [];
-  if (PAYWALLED_HOSTS_RE.test(text)) {
+  if (citesPaywalledRetrospectiva(text)) {
     problems.push("o texto cita a URL da retrospectiva paywalled (retrospectiva./artigo.diar.ia.br) — post público aponta só pro apoia.se");
   }
   const lines = text.replace(/\r\n/g, "\n").split("\n").map((l) => l.trim());

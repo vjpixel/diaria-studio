@@ -22,14 +22,21 @@
  * Reusa `resolveArtigoEspecialScheduledAts` (que reusa `computeScheduledAt`) —
  * nenhuma aritmética de data/fuso reimplementada aqui.
  *
- * #9500: Facebook/Instagram/Threads/X saem no mesmo D+1, escalonados 10 min
- * depois da página (`resolveRetrospectivaSocialScheduledAts`, abaixo) — a
- * âncora e o fuso continuam vindo de lá; a única aritmética nova é somar
- * minutos a um ISO com offset explícito (`addMinutesIso`).
+ * #9508: os posts por história (LinkedIn página, Facebook, Instagram, Threads,
+ * X × D1/D2/D3) saem no mesmo D+1 (`resolveRetrospectivaPostScheduledAts`,
+ * abaixo) — a âncora e o fuso continuam vindo de lá; a única aritmética nova é
+ * somar minutos a um ISO com offset explícito (`addMinutesIso`). O post da
+ * página LinkedIn deixou de ser 1 só: `pagina` abaixo virou só a âncora.
  */
 
 import { resolveArtigoEspecialScheduledAts, validateExplicitAt } from "../artigo-especial-schedule.ts";
 import { decideMonthlySendAt, DEFAULT_MONTHLY_SEND_SCHEDULE, type MonthlySendScheduleRule } from "./monthly-send-schedule.ts";
+import {
+  RETROSPECTIVA_HISTORIAS,
+  RETROSPECTIVA_POST_CHANNELS,
+  type RetrospectivaHistoria,
+  type RetrospectivaPostChannel,
+} from "./retrospectiva-divulgacao.ts";
 
 type ScheduleConfig = Parameters<typeof resolveArtigoEspecialScheduledAts>[0];
 
@@ -76,23 +83,34 @@ export function resolveRetrospectivaScheduledAts(
   return ats;
 }
 
-// ── #9500: Facebook, Instagram, Threads e X ─────────────────────────────
-
-/** Canais sociais fora do LinkedIn, na ordem do escalonamento. */
-export const RETROSPECTIVA_SOCIAL_CHANNELS = ["facebook", "instagram", "threads", "x"] as const;
-export type RetrospectivaSocialChannel = (typeof RETROSPECTIVA_SOCIAL_CHANNELS)[number];
+// ── #9508: um post por (rede × história), os 3 no mesmo dia ─────────────
 
 /**
- * Minutos depois da PÁGINA LinkedIn (D+1 09:00 BRT) — um canal a cada 10 min,
- * pra não saírem no mesmo minuto: `09:10 facebook | 09:20 instagram | 09:30
- * threads | 09:40 x`, tudo antes do `d1` das 10:00 (premissa do #9500).
+ * Minutos depois da âncora (D+1 09:00 BRT, ou `--at`) em que sai cada
+ * história — decisão do editor no #9508: os 3 posts de cada rede no MESMO
+ * dia, em horários livres, longe (≥15 min) dos slots da diária (10:00 d1 |
+ * 12:30 d2 | 17:30 d3): história 1 às 09:00, 2 às 14:30, 3 às 20:00.
  */
-export const RETROSPECTIVA_SOCIAL_STAGGER_MIN: Record<RetrospectivaSocialChannel, number> = {
+export const RETROSPECTIVA_HISTORIA_OFFSET_MIN: Record<RetrospectivaHistoria, number> = {
+  d1: 0,
+  d2: 5 * 60 + 30,
+  d3: 11 * 60,
+};
+
+/**
+ * Minutos depois do horário da história em que sai cada rede — uma a cada 10
+ * min, pra não saírem no mesmo minuto: `:00 linkedin | :10 facebook | :20
+ * instagram | :30 threads | :40 x` (o mesmo escalonamento do #9500).
+ */
+export const RETROSPECTIVA_CHANNEL_STAGGER_MIN: Record<RetrospectivaPostChannel, number> = {
+  linkedin_pagina: 0,
   facebook: 10,
   instagram: 20,
   threads: 30,
   x: 40,
 };
+
+export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
 
 /** Margem mínima até um slot da diária (`d{1,2,3}_time`) — post colado no d1 compete com ele no feed. */
 export const DAILY_SLOT_MARGIN_MIN = 15;
@@ -162,24 +180,36 @@ export function dailySlotCollisions(isos: Record<string, string>, config: Schedu
 }
 
 /**
- * Resolve o horário de cada canal social: horário da PÁGINA LinkedIn
- * (`resolveRetrospectivaScheduledAts`, mesma âncora D/`--at`/guard de passado)
- * + o escalonamento acima. Com `--at`, o escalonamento parte dele. Lança se
+ * Resolve o horário de cada post (rede × história): a âncora é o horário que
+ * a PÁGINA LinkedIn tinha no #9474 (`resolveRetrospectivaScheduledAts` —
+ * D+1 09:00 BRT, mesma âncora D/`--at`/guard de passado) + o deslocamento da
+ * história + o escalonamento da rede. Com `--at`, tudo parte dele. Lança se
  * algum horário colidir com a diária (`dailySlotCollisions`) — nunca agenda
  * colado num d1/d2/d3.
  */
-export function resolveRetrospectivaSocialScheduledAts(
+export function resolveRetrospectivaPostScheduledAts(
   config: ScheduleConfig,
   input: RetrospectivaScheduleInput = {},
-): Record<RetrospectivaSocialChannel, string> {
-  const { pagina } = resolveRetrospectivaScheduledAts(config, input);
+): RetrospectivaPostSchedule {
+  const { pagina: anchor } = resolveRetrospectivaScheduledAts(config, input);
   const tz = config.publishing?.social?.timezone ?? "America/Sao_Paulo";
   const out = Object.fromEntries(
-    RETROSPECTIVA_SOCIAL_CHANNELS.map((ch) => [ch, addMinutesIso(pagina, RETROSPECTIVA_SOCIAL_STAGGER_MIN[ch], tz)]),
-  ) as Record<RetrospectivaSocialChannel, string>;
-  const collisions = dailySlotCollisions(out, config);
+    RETROSPECTIVA_HISTORIAS.map((h) => [
+      h,
+      Object.fromEntries(
+        RETROSPECTIVA_POST_CHANNELS.map((ch) => [
+          ch,
+          addMinutesIso(anchor, RETROSPECTIVA_HISTORIA_OFFSET_MIN[h] + RETROSPECTIVA_CHANNEL_STAGGER_MIN[ch], tz),
+        ]),
+      ),
+    ]),
+  ) as RetrospectivaPostSchedule;
+  const flat = Object.fromEntries(
+    RETROSPECTIVA_HISTORIAS.flatMap((h) => RETROSPECTIVA_POST_CHANNELS.map((ch) => [`${ch}:${h}`, out[h][ch]])),
+  );
+  const collisions = dailySlotCollisions(flat, config);
   if (collisions.length > 0) {
-    throw new Error(`agenda dos posts sociais colide com a diária: ${collisions.join("; ")}. Passe outro --at.`);
+    throw new Error(`agenda dos posts da Retrospectiva colide com a diária: ${collisions.join("; ")}. Passe outro --at.`);
   }
   return out;
 }
@@ -187,8 +217,8 @@ export function resolveRetrospectivaSocialScheduledAts(
 /**
  * Pura: âncora D (`--base-date`) efetiva — a explícita; senão (sem `--at`) a
  * data do 1º sábado pela regra #9473, se o e-mail ainda sai agendado por ela;
- * senão `undefined` (= hoje, com banner no caller). Mesma decisão que o
- * `publish-retrospectiva-linkedin.ts` aplica, num lugar só.
+ * senão `undefined` (= hoje, com banner no caller). Usada por
+ * `publish-retrospectiva-social.ts` (#9508).
  */
 export function resolveRetrospectivaBaseDate(
   cycle: string,

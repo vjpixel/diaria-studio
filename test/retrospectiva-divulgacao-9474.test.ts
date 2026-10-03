@@ -89,10 +89,18 @@ describe("state por canal (divulgacao-published.json)", () => {
 });
 
 describe("parseRetrospectivaSkip", () => {
-  it("linkedin cobre página e perfil; vazio = nada", () => {
+  it("linkedin cobre perfil, página legada e os 3 posts da página (#9508); vazio = nada", () => {
     assert.deepEqual([...parseRetrospectivaSkip(undefined)], []);
     const s = parseRetrospectivaSkip("pagina, linkedin,email");
-    assert.deepEqual([...s].sort(), ["email", "linkedin_pagina", "linkedin_perfil", "pagina"]);
+    assert.deepEqual([...s].sort(), [
+      "email",
+      "linkedin_pagina",
+      "linkedin_pagina:d1",
+      "linkedin_pagina:d2",
+      "linkedin_pagina:d3",
+      "linkedin_perfil",
+      "pagina",
+    ]);
   });
   it("token desconhecido lança (typo nunca vira 'não pulou nada')", () => {
     assert.throws(() => parseRetrospectivaSkip("apoiase,linkdin"), /linkdin/);
@@ -308,27 +316,27 @@ describe("verify-retrospectiva-page — 200 sozinho não prova publicação", ()
   });
 });
 
-describe("check-retrospectiva-divulgacao — CTA nos DOIS posts públicos (o do perfil é colado à mão)", () => {
+describe("check-retrospectiva-divulgacao — CTA no post do PERFIL (colado à mão)", () => {
   function write(file: string, text: string) {
     mkdirSync(join(tmp, "divulgacao"), { recursive: true });
     writeFileSync(join(tmp, "divulgacao", file), text);
   }
   const OK = `Chamada.\n\n${RETROSPECTIVA_PUBLIC_CTA}\n`;
-  // #9500: os 4 canais sociais têm teste próprio (retrospectiva-social-9500).
-  const SOCIAL = "facebook,instagram,threads,x";
+  // #9508: os posts por história (página LinkedIn + 4 redes) têm teste próprio
+  // (retrospectiva-social-9500); aqui só o perfil.
+  const POSTS = "facebook,instagram,threads,x,linkedin:d1,linkedin:d2,linkedin:d3";
 
-  it("perfil com a URL paywalled reprova, mesmo com a página ok", () => {
-    write("linkedin-pagina.md", OK);
+  it("perfil com a URL paywalled reprova", () => {
     write("linkedin-perfil.md", `${OK}https://retrospectiva.diar.ia.br/2609\n`);
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, SOCIAL);
-    assert.equal(r.length, 2);
-    assert.equal(r[0].problems.length, 0);
-    assert.match(r[1].problems.join(), /paywalled/);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, POSTS);
+    assert.equal(r.length, 1);
+    assert.match(r[0].problems.join(), /paywalled/);
+    write("linkedin-perfil.md", OK);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, POSTS)[0].problems, []);
   });
   it("arquivo ausente reprova; --skip linkedin não checa nada; token inválido lança", () => {
-    write("linkedin-pagina.md", OK);
-    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, SOCIAL)[1].problems.join(), /ausente/);
-    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, `linkedin,${SOCIAL}`), []);
+    assert.match(checkRetrospectivaDivulgacaoTexts(tmp, POSTS)[0].problems.join(), /ausente/);
+    assert.deepEqual(checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook,instagram,threads,x"), []);
     assert.throws(() => checkRetrospectivaDivulgacaoTexts(tmp, "linkdin"), /linkdin/);
   });
   it("CTA tolera CRLF e espaços em volta; host sem esquema e maiúsculas também reprovam", () => {

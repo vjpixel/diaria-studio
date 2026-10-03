@@ -445,7 +445,13 @@ export async function generateCard(
    * o título com tamanho fixo pro carrossel semanal SEM sobrescrever o card
    * já publicado no feed diário (mesma arte-base, arquivo de saída diferente).
    */
-  opts: { fontSizeOverride?: number; outPath?: string; wrap?: OverlayWrap } = {},
+  /**
+   * `kicker` (#9508): linha de série acima do título sem precisar de
+   * `_internal/social-cover.json` (capas da Retrospectiva do Mês, geradas a
+   * partir do diretório do ciclo mensal). O `social-cover.json`, se houver,
+   * vence.
+   */
+  opts: { fontSizeOverride?: number; outPath?: string; wrap?: OverlayWrap; kicker?: string } = {},
 ): Promise<string | null> {
   // Ordem de preferência da fonte (decisão editorial 260727 — gerar duas vezes):
   //   1. 4:5 NATIVO — arte composta pro card, entra sem recorte nenhum;
@@ -469,7 +475,7 @@ export async function generateCard(
   const full = await sharp(src).resize(dims.w, dims.h, { fit: "cover", position: "top" }).toBuffer();
   const outOverlay = opts.outPath ?? resolve(editionDir, `04-${destaque}-${ratio}.jpg`);
   await sharp(full)
-    .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? "", opts.wrap)), top: 0, left: 0 }])
+    .composite([{ input: Buffer.from(buildOverlaySvg(title, dateLabel, dims, opts.fontSizeOverride, cover?.kicker ?? opts.kicker ?? "", opts.wrap)), top: 0, left: 0 }])
     .jpeg({ quality: 88 })
     .toFile(outOverlay);
   return outOverlay;
