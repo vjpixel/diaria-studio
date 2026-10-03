@@ -39,6 +39,25 @@ test("#9100: mesma URL canônica não gera warning (é trabalho do dedup por URL
   assert.equal(w.length, 0);
 });
 
+test("#9514: match por título num passado mais velho vence match por resumo num mais novo", () => {
+  const w = findSameFactMatches(
+    [{
+      kind: "radar",
+      title: "Anthropic launches Claude Sonnet 5.5 on Bedrock",
+      summary: "O modelo é mais rápido que o GPT-6.1 em código.",
+      url: "https://aws.amazon.com/blogs/sonnet-5-5-bedrock",
+    }],
+    [
+      { aammdd: "261002", title: "OpenAI releases GPT-6.1 Sol", url: "https://openai.com/gpt-6-1", bucket: "radar" },
+      { aammdd: "260929", title: "Claude Sonnet 5.5", url: "https://www.anthropic.com/claude-sonnet-5-5" },
+    ],
+  );
+  assert.equal(w.length, 1);
+  assert.equal(w[0].evidence, "title");
+  assert.equal(w[0].matched_edition, "260929");
+  assert.deepEqual(w[0].shared_products, ["sonnet 5.5"]);
+});
+
 test("#9100: versão diferente do mesmo produto não casa", () => {
   const w = findSameFactMatches(
     [{ kind: "highlight", rank: 1, title: "Anthropic lança Claude Sonnet 6", url: "https://x.com/a" }],
