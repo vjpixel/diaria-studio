@@ -433,7 +433,18 @@ export interface ApplyOptions {
   maxFailures?: number;
   /** Re-checagem de não-terminais a cada N listas. Default RECHECK_EVERY. */
   recheckEvery?: number;
+  /**
+   * Esperas entre re-tentativas da amostra por GET de contato. O add da Brevo
+   * propaga com atraso de segundos (achado ao vivo 03/10: contato ausente logo
+   * após o add, presente instantes depois). Default VERIFY_RETRY_DELAYS_MS.
+   */
+  verifyRetryDelaysMs?: readonly number[];
+  /** Injetável (testes). */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Esperas (ms) antes de cada nova tentativa da amostra — ~32s no total. */
+export const VERIFY_RETRY_DELAYS_MS: readonly number[] = [2000, 5000, 10_000, 15_000];
 
 function normEmail(e: string): string {
   return e.trim().toLowerCase();
@@ -542,9 +553,16 @@ export async function consolidateOneList(
   // Amostra por GET de contato — só entre os RECÉM-adicionados, não confiar
   // só no 2xx/`success` do POST.
   try {
+    const delays = opts.verifyRetryDelaysMs ?? VERIFY_RETRY_DELAYS_MS;
+    const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     for (const e of added.slice(0, SPOT_CHECK_SAMPLE)) {
-      if (!(await client.contactInList(e, historyListId))) {
-        throw new Error(`${e} não aparece na lista de histórico ${historyListId} após o add`);
+      let ok = await client.contactInList(e, historyListId);
+      for (let i = 0; !ok && i < delays.length; i++) {
+        await sleep(delays[i]);
+        ok = await client.contactInList(e, historyListId);
+      }
+      if (!ok) {
+        throw new Error(`${e} não aparece na lista de histórico ${historyListId} após o add (${delays.length + 1} tentativas)`);
       }
     }
   } catch (e) {
