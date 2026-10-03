@@ -1,6 +1,8 @@
 ---
 name: diaria-desbloqueia
 description: Sessão SÓ DE DESBLOQUEIO — lê a issue inteira (corpo + TODOS os comentários) antes de perguntar, pede ao editor as AÇÕES que destravam issues na hora (bloqueada + fora-de-rodada), faz uma bateria batchada de perguntas, tria o bucket `overnight ·sem sinal`, grava tudo como comentário durável e re-rotea. Não implementa, não abre PR. Uso — `/diaria-desbloqueia [--issues N,M] [--track bloqueada|develop|sem-sinal|fora-de-rodada] [--skip-sem-sinal] [--incluir-engavetadas]`.
+model: claude-opus-5-5
+effort: medium
 ---
 
 # /diaria-desbloqueia
@@ -13,6 +15,27 @@ pergunta já respondida num comentário.
 
 Produto desta skill: a fila fica mais gorda pro `300` (#5751) e o editor
 gasta minutos, não uma sessão inteira, destravando o backlog.
+
+**Modelo/effort (#9526).** O frontmatter fixa `model: claude-opus-5-5` +
+`effort: medium` — mesmo perfil do coordenador do `/diaria-develop` (#8941),
+pelos mesmos motivos: os scripts (`desbloqueia-scan.ts`, `route-issue.ts`)
+já fazem a parte mecânica, e o que sobra pro modelo é julgar texto (triar
+as `·sem sinal` no Passo 2b, separar "ação que o editor faz agora" de
+"espera com data" no Passo 3b, resumir cada thread com recomendação
+justificada, #8909); o editor está presente, então pergunta mal resumida ou
+issue mal triada sai caro; e quase todo o consumo é entrada (ler corpo e
+comentários das issues), não raciocínio, então `medium` custa pouco a mais
+que `low`. ID pinado, nunca alias (#9003). Antes do #9526 a skill herdava o
+modelo/effort da sessão do editor no momento da invocação.
+
+**Limitação conhecida (escopo de turno, #9124):** o `model:` de frontmatter
+de skill só vale até o fim do turno em que a skill foi invocada (docs do
+Claude Code) — no turno seguinte a sessão volta ao modelo dela. Respostas de
+`AskUserQuestion` continuam no mesmo turno, então a bateria de perguntas
+inteira roda no par pinado; se o editor digitar uma mensagem livre no meio
+da sessão, a partir dali vale o modelo/effort da sessão — esperado, não bug
+(mesma limitação do `/diaria-develop`). Workaround: escolher `/model` antes
+de invocar.
 
 ## Requisito central — ler tudo antes de perguntar QUALQUER coisa
 
