@@ -72,6 +72,23 @@ export function isAllowedClientSocialUtmSource(rawSource: unknown): boolean {
 }
 
 /**
+ * #9502: `utm_source` ORGÂNICOS INTERNOS — superfícies próprias que linkam
+ * pra `/assinar` (ex: CTA de cadastro da Retrospectiva do Mês). Mesma
+ * separação de `CLIENT_UTM_SOCIAL_SOURCE_PREFIXES`: NUNCA entra em
+ * `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES`, porque aquela alimenta `origemPaga`
+ * e um source interno nunca pode virar canal pago. Só consultada no caminho
+ * `source === "apex"` de `resolveSubscribeUtm`.
+ */
+export const CLIENT_UTM_INTERNAL_ORGANIC_SOURCES = ["retrospectiva-mensal", "retrospectiva-anual"] as const;
+
+/** Pure (#9502): mesma regra de fronteira de traço das outras listas. */
+export function isAllowedClientInternalUtmSource(rawSource: unknown): boolean {
+  const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
+  if (!s) return false;
+  return CLIENT_UTM_INTERNAL_ORGANIC_SOURCES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+}
+
+/**
  * #8553: mapeia o PREFIXO de `click_id` (#8003 — `gclid:`/`fbclid:`/
  * `msclkid:`, antes do `:`) pro `utm_source` CANÔNICO da mesma plataforma —
  * mesmos 3 valores pagos de `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES` (exceto
