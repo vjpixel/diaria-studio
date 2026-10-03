@@ -178,6 +178,12 @@ async function main(): Promise<void> {
         `\`${HISTORY_LIST_NAME}\` na conta Brevo da Clarice e preencha o id antes. Nada foi apagado.`,
     );
   }
+  // Snapshot é a cópia de segurança de um DELETE irreversível: nunca gravá-lo
+  // num `data/` criado agora (worktree sem a junction → some com o worktree).
+  // Checado ANTES de gravar o plano, que faria mkdir recursivo de data/.
+  if (apply && !existsSync(resolve(root, "data"))) {
+    throw new Error(`--apply: ${resolve(root, "data")} não existe — rode do checkout com data/ (ou --root). Nada foi apagado.`);
+  }
 
   const lists = await fetchAllListsWithCounts(apiKey);
   const campaigns = await fetchAllCampaigns(apiKey);
