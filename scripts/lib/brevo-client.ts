@@ -438,7 +438,7 @@ export async function brevoGetList(
   // (#4577/#4720). Opcional na leitura por segurança (aditivo, nunca deveria
   // faltar na resposta real da API, mas um shape inesperado não deve quebrar
   // callers existentes que só liam `totalSubscribers`).
-): Promise<{ id: number; name: string; totalSubscribers: number; totalBlacklisted?: number }> {
+): Promise<{ id: number; name: string; totalSubscribers: number; totalBlacklisted?: number; uniqueSubscribers?: number }> {
   return withBrevo429Retry(async () => {
     const res = await brevoRawFetch(`https://api.brevo.com/v3/contacts/lists/${listId}`, {
       method: "GET",
@@ -448,7 +448,7 @@ export async function brevoGetList(
       const text = await res.text();
       throw new Error(formatBrevoApiError("GET", `/contacts/lists/${listId}`, res.status, text));
     }
-    const data = await res.json() as { id: number; name: string; totalSubscribers: number; totalBlacklisted?: number };
+    const data = await res.json() as { id: number; name: string; totalSubscribers: number; totalBlacklisted?: number; uniqueSubscribers?: number };
     return data;
   }, _sleep);
 }

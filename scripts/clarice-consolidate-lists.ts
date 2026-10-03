@@ -78,6 +78,7 @@ import {
   applyListConsolidation,
   checkApplyPreconditions,
   HISTORY_LIST_NAME,
+  listMemberCount,
   type ConsolidationList,
   type ConsolidationCampaign,
   type ConsolidationClient,
@@ -161,7 +162,7 @@ export function makeBrevoConsolidationClient(apiKey: string, root: string, confi
   const dir = archiveDir(root);
   return {
     async getListCount(listId) {
-      return (await brevoGetList(apiKey, listId)).totalSubscribers;
+      return listMemberCount(await brevoGetList(apiKey, listId));
     },
     listContacts: (listId) => brevoListContacts(apiKey, listId),
     async writeSnapshot(s: ListArchiveSnapshot) {
