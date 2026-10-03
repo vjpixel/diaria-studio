@@ -33,4 +33,16 @@ describe("skipped-develop-track (#9463)", () => {
     ];
     assert.deepEqual(findUnroutedSkips(issues, new Map([[2, snap(["windows"])]])), []);
   });
+
+  it("#9516: pulada bloqueada/agendada/fechada não é acusada; overnight segue acusada", () => {
+    const issues = [4, 5, 6, 7, 8].map((number) => ({ number, status: "pulada", motivo: "guard-de-execucao" }));
+    const snaps = new Map([
+      [4, snap(["external-blocker"])],
+      [5, { labels: [], body: "", state: "closed" }],
+      [6, snap(["on-hold"])],
+      [7, { labels: [], body: "<!-- aguardando-ate: 2099-01-01 -->" }],
+      [8, { labels: [], body: "", state: "open" }],
+    ]);
+    assert.deepEqual(findUnroutedSkips(issues, snaps), [8]);
+  });
 });
