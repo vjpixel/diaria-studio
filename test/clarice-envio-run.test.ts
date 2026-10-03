@@ -21,6 +21,7 @@ import {
   detectExistingWaveForSendDate,
   sendDateBrt,
   EnvioAbort,
+  summarizeStderr,
   type EnvioRunDeps,
   type StepResult,
   type ExecFn,
@@ -573,6 +574,20 @@ describe("clarice-envio-run (#5026)", () => {
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 1);
       rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("summarizeStderr (#9506)", () => {
+    it("stack longo preserva a mensagem inicial do erro, não só o rabo de frames", () => {
+      const stderr = ["Error: Brevo POST /contacts/lists falhou: 400 duplicate_parameter", ...Array.from({ length: 10 }, (_, i) => `    at frame${i}`)].join("\n");
+      const out = summarizeStderr(stderr);
+      assert.match(out, /^Error: Brevo POST .*duplicate_parameter/);
+      assert.match(out, /frame9/);
+      assert.doesNotMatch(out, /frame2\b/);
+    });
+    it("stderr curto fica intacto e vazio vira (sem stderr)", () => {
+      assert.equal(summarizeStderr("a\nb"), "a | b");
+      assert.equal(summarizeStderr("  \n"), "(sem stderr)");
     });
   });
 
