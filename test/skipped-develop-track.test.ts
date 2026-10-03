@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findUnroutedSkips, requiresDevelopRouting } from "../scripts/lib/skipped-develop-track.ts";
+import { findUnroutedSkips, requiresDevelopRouting, type IssueSnapshot } from "../scripts/lib/skipped-develop-track.ts";
 
 const snap = (labels: string[]) => ({ labels, body: "" });
 
@@ -18,7 +18,7 @@ describe("skipped-develop-track (#9463)", () => {
       { number: 9431, status: "pulada", motivo: "requer-sessao-local" },
       { number: 1, status: "pulada", motivo: "ambigua" },
     ];
-    const snaps = new Map([
+    const snaps = new Map<number, IssueSnapshot>([
       [9379, snap([])],
       [9431, snap(["develop-track"])],
       [1, snap([])],
@@ -36,7 +36,7 @@ describe("skipped-develop-track (#9463)", () => {
 
   it("#9516: pulada bloqueada/agendada/fechada não é acusada; overnight segue acusada", () => {
     const issues = [4, 5, 6, 7, 8].map((number) => ({ number, status: "pulada", motivo: "guard-de-execucao" }));
-    const snaps = new Map([
+    const snaps = new Map<number, IssueSnapshot>([
       [4, snap(["external-blocker"])],
       [5, { labels: [], body: "", state: "closed" }],
       [6, snap(["on-hold"])],
