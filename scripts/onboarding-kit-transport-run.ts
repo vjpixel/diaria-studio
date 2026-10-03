@@ -673,7 +673,7 @@ async function main(): Promise<void> {
       }
     }
     try {
-      const outcome = await cancelKitLot(lot, (id) => deleteBroadcast(id, kitCfg));
+      const outcome = await cancelKitLot(lot, (id) => deleteBroadcast(id, kitCfg), memoizedKitAccountId(kitCfg));
       persistLotUpdate(storePath, lot);
       console.log(JSON.stringify({ mode: "cancel-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, ok: true, ...(outcome === "already_gone" ? { note: "broadcast já não existia no Kit (404)" } : {}) }, null, 2));
     } catch (e) {
@@ -1048,6 +1048,8 @@ export function isKitNotFoundError(e: unknown): boolean {
 export async function cancelKitLot(
   lot: OnboardingKitLot,
   deleteFn: (id: number) => Promise<void>,
+  /** #9512: 404 só prova deleção se a conta ATUAL é a dona do lote (ver `verifyLotAccount`). Ausente = 404 nunca cancela. */
+  getAccountId?: () => Promise<string>,
 ): Promise<"deleted" | "already_gone"> {
   const id = lot.broadcast_id as number;
   // Review PR #9478: lote já enviado nunca volta ao plano (e-mail em dobro).
@@ -1059,6 +1061,12 @@ export async function cancelKitLot(
     await deleteFn(id);
   } catch (e) {
     if (!isKitNotFoundError(e)) throw e;
+    // #9512: com a key de OUTRA conta todo DELETE dá 404 — cancelar devolveria
+    // as entradas ao plano enquanto o broadcast real segue agendado (e-mail em dobro).
+    const accountError = await verifyLotAccount(lot, getAccountId);
+    if (accountError != null) {
+      throw new Error(`--cancel-lot: DELETE do broadcast ${id} deu 404, mas não há prova de que a conta Kit atual é a dona do lote (${accountError}) — lote NÃO cancelado`);
+    }
     outcome = "already_gone";
   }
   lot.status = "cancelled";

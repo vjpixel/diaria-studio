@@ -688,8 +688,8 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9460: --cancel-lot com DELETE 404 → lote cancelled; outros erros propagam sem cancelar", async () => {
-    const gone = mkLot();
-    assert.equal(await cancelKitLot(gone, async () => { throw new KitApiError("/broadcasts/9", 404, "Not Found"); }), "already_gone");
+    const gone = { ...mkLot(), kit_account_id: "A1" };
+    assert.equal(await cancelKitLot(gone, async () => { throw new KitApiError("/broadcasts/9", 404, "Not Found"); }, async () => "A1"), "already_gone");
     assert.equal(gone.status, "cancelled");
     const ok = mkLot();
     assert.equal(await cancelKitLot(ok, async () => {}), "deleted");
@@ -700,6 +700,22 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     const sent = { ...mkLot(), status: "completed" as const };
     await assert.rejects(() => cancelKitLot(sent, async () => { throw new KitApiError("/broadcasts/9", 404, "x"); }));
     assert.equal(sent.status, "completed", "lote enviado nunca vira cancelled");
+  });
+
+  it("#9512: --cancel-lot com 404 mas conta diferente/indeterminada → lote NÃO cancelado", async () => {
+    const del404 = async () => { throw new KitApiError("/broadcasts/9", 404, "Not Found"); };
+    const other = { ...mkLot(), kit_account_id: "A1" };
+    await assert.rejects(() => cancelKitLot(other, del404, async () => "B2"), /não há prova/);
+    assert.equal(other.status, "created");
+    const probeFails = { ...mkLot(), kit_account_id: "A1" };
+    await assert.rejects(() => cancelKitLot(probeFails, del404, async () => { throw new Error("5xx"); }), /GET \/account falhou/);
+    assert.equal(probeFails.status, "created");
+    const legacy = mkLot();
+    await assert.rejects(() => cancelKitLot(legacy, del404, async () => "A1"), /legado/);
+    assert.equal(legacy.status, "created");
+    const noProbe = { ...mkLot(), kit_account_id: "A1" };
+    await assert.rejects(() => cancelKitLot(noProbe, del404), /probe de conta ausente/);
+    assert.equal(noProbe.status, "created");
   });
 
   it("#9367 item 2: DELETE 422 'already been sent' → enviado (completed), não schedule_failed nem volta ao plano", async () => {
