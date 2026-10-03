@@ -38,7 +38,7 @@
     "test_email": "vjpixel@gmail.com"
   },
   "clarice_list_history": {
-    "list_id": null,
+    "list_id": 313,
     "min_age_days": 45,
     "note": "#9532 — lista de HISTÓRICO ÚNICA na conta Brevo da Clarice (BREVO_CLARICE_API_KEY), nome `clarice-historico-envios`. A conta tem teto de 300 listas; scripts/clarice-consolidate-lists.ts copia os membros das listas de campanhas sent/archive há mais de min_age_days (piso 45, ciclo já fechado) pra esta lista (com snapshot local em data/clarice-subscribers/list-archive/) e só então apaga a original. Com list_id preenchido, fetchQueuedAndCommittedCampaignListIds (scripts/lib/brevo-client.ts) soma este id ao Set `committed` (nunca ao `queued`) — membros = já receberam, o guard por contato (#7406/#3682) continua valendo depois da deleção. null = sem lista de histórico (comportamento anterior; --apply recusa). Bloco ausente/malformado = TODO consumidor do guard lança, nunca guard reduzido em silêncio. `consolidated_at` (gravado pelo --apply antes do 1º DELETE) é irreversível: com ele presente, list_id null é rejeitado."
   },
