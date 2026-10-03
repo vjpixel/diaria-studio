@@ -428,14 +428,15 @@ function writeAndRegisterReport(deps: EnvioRunDeps, reportId: string, title: str
  * #9506 — resumo do stderr de um sub-script que falhou. Só o rabo (últimas 6
  * linhas) perdia a mensagem do erro quando o stack é longo: o relatório de
  * 261002 mostrou só frames `at ...` de `brevo-client.ts`, sem o motivo da
- * Brevo. Mantém a 1ª linha não-vazia (a mensagem) + o rabo.
+ * Brevo. Mantém a 1ª linha `...Error`/❌ (ou a 1ª linha) + o rabo.
  */
 export function summarizeStderr(stderr: string): string {
   const lines = stderr.trim().split("\n");
   if (lines.length === 1 && lines[0] === "") return "(sem stderr)";
   const tail = lines.slice(-6);
-  if (lines.length <= 6) return tail.join(" | ");
-  return [lines[0], "[…]", ...tail].join(" | ");
+  if (lines.length <= 7) return lines.join(" | ");
+  const head = lines.slice(0, lines.length - 6).find((l) => /^\s*(\w*Error\b|❌)/.test(l)) ?? lines[0];
+  return [head.trim(), "[…]", ...tail].join(" | ");
 }
 
 function step<T = unknown>(
