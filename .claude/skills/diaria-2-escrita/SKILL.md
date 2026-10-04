@@ -136,6 +136,8 @@ Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legac
 
 ### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
 
+**Seleção do 4º post — item USE MELHOR (#9568), ANTES do dispatch abaixo:** `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDIR}/` (mesmo passo 0b de `orchestrator-stage-2.md`). Stdout JSON: `enabled: true` + `item` não-nulo → passar `use_melhor_post_path` ao `social-writer` e ao `social-curto` (eles escrevem `## um`); qualquer outro caso → omitir (4º post pulado, motivo no gate do Stage 4). Fail-soft: erro do script nunca aborta a Etapa 2.
+
 ```
 Agent({
   subagent_type: "writer-destaque",
@@ -160,13 +162,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal — + 1 post pessoal standalone (## post_pixel, D1). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3, ## post_pixel. Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3. Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -192,13 +194,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal — + 1 post pessoal standalone (## post_pixel, D1). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3, ## post_pixel. Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3. Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -473,7 +475,7 @@ ETAPA 2 — VERSÃO FINAL:
 ETAPA 3 — RESUMO:
 - Liste as principais mudanças
 
-Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Social, ## d1, ## d2, ## d3, ## post_pixel), não alterar URLs."
+Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Social, ## d1, ## d2, ## d3, ## um — e ## post_pixel só em edição antiga), não alterar URLs."
 })
 ```
 
@@ -518,7 +520,7 @@ Newsletter — Clarice: A aplicadas, B skipadas
 Social — Clarice: C aplicadas, D skipadas
 
 Posts gerados:
-- Social (texto único LinkedIn/Facebook/Instagram, #3991) d1 / d2 / d3 + post_pixel
+- Social (texto único LinkedIn/Facebook/Instagram, #3991) d1 / d2 / d3 + um (4º post USE MELHOR, #9568 — também vai no LinkedIn pessoal)
 - Curto (Twitter/X + Threads) d1 / d2 / d3
 
 (pode editar diretamente no arquivo, local ou via Studio, antes de aprovar)
@@ -585,7 +587,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 ## Outputs
 
 - `{EDIR}/02-reviewed.md` — newsletter final
-- `{EDIR}/03-social.md` — texto único LinkedIn/Facebook/Instagram (#3991) + Curto (opcional, #3992) (seções `# Social` com `## d1`/`## d2`/`## d3`/`## post_pixel`, e `# Curto` com `## d1`/`## d2`/`## d3`)
+- `{EDIR}/03-social.md` — texto único LinkedIn/Facebook/Instagram (#3991) + Curto (opcional, #3992) (seções `# Social` com `## d1`/`## d2`/`## d3`/`## um`, e `# Curto` com `## d1`/`## d2`/`## d3`/`## um` — `## um` só quando o 4º post está ligado e há item, #9568)
 - `{EDIR}/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
 - `{EDIR}/_internal/02-clarice-report.json` — relatório de sugestões newsletter
 - `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social

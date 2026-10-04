@@ -89,13 +89,24 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readSocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, readSocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #4309 — extração do `## dN` + guard de scaffolding
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { TWITTER_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import {
+  applyUseMelhorUtmToText,
+  findExistingUseMelhorEntry,
+  summarizeUseMelhor,
+  type UseMelhorDispatchSummary,
+  planUseMelhorDispatch,
+  reportUseMelhorPlan,
+  reportUseMelhorSkip,
+  resolveUseMelhorImages,
+  type UseMelhorDispatchPlan,
+} from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -183,6 +194,12 @@ export interface PrepResult {
   skipped: Array<{ destaque: string; reason: string }>;
   /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
   skipped_image: Array<{ destaque: string; reason: string }>;
+  /**
+   * #9568: estado do 4º post (USE MELHOR) nesta rodada — `off`/`skip` com
+   * motivo aparecem AQUI mesmo quando o item nunca chega a `skipped`
+   * (plano desligado/pulado antes de olhar o texto).
+   */
+  use_melhor?: UseMelhorDispatchSummary;
 }
 
 /**
@@ -288,6 +305,27 @@ export function resolveTwitterImages(
 }
 
 /**
+ * #9568: imagens do tweet do 4º post — mesmo critério dos destaques (#8202):
+ * carrossel tipográfico completo → capa + slides de PARÁGRAFO (sem o CTA), até
+ * `TWITTER_IMAGE_LIMIT`; senão só a capa; sem capa → `[]` (post só texto).
+ */
+export function resolveUseMelhorTwitterImages(
+  images: Record<string, { url?: string }> | undefined,
+  plan: UseMelhorDispatchPlan,
+  editionDate: string,
+): Array<{ url: string; altText: string }> {
+  const { carouselUrls, coverUrl } = resolveUseMelhorImages(images, plan);
+  const urls = carouselUrls ? carouselUrls.slice(0, -1).slice(0, TWITTER_IMAGE_LIMIT) : coverUrl ? [coverUrl] : [];
+  return urls.map((url, i) => ({
+    url,
+    altText:
+      i === 0
+        ? `Capa do Use Melhor da edição diar.ia.br de ${editionDate}`
+        : `Slide ${i} do Use Melhor da edição diar.ia.br de ${editionDate}`,
+  }));
+}
+
+/**
  * Deriva `editionDate` (AAMMDD) a partir do último segmento de `editionDir` —
  * mesmo padrão usado por `publish-facebook.ts`/`publish-linkedin.ts` (#270).
  */
@@ -297,11 +335,20 @@ function deriveEditionDate(editionDir: string): string {
 
 export function prepTwitterPosts(
   editionDir: string,
-  opts: { skipExisting?: boolean; editionDate?: string; now?: number } = {},
+  opts: {
+    skipExisting?: boolean;
+    editionDate?: string;
+    now?: number;
+    /** Só pra teste (#9568): config parseado no lugar de `platform.config.json` do repo. */
+    config?: unknown;
+    /** Só pra teste (#9568, mesmo motivo do #3311): raiz do `data/run-log.jsonl` dos warns do 4º post. */
+    logRootDir?: string;
+  } = {},
 ): PrepResult {
   const skipExisting = opts.skipExisting ?? true;
   const editionDate = opts.editionDate ?? deriveEditionDate(editionDir);
-  const gateConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const gateConfig: any = opts.config ?? JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const twitterGateConfig = gateConfig?.publishing?.social?.twitter;
   if (twitterGateConfig?.enabled === false) {
     return { enabled: false, published_path: null, posts: [], skipped: [], skipped_image: [] };
@@ -413,7 +460,84 @@ export function prepTwitterPosts(
     posts.push({ destaque: d, text, dueAt, imageUrl, altText, images });
   }
 
-  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
+  // ── 4º post (USE MELHOR, #9568) — `## um` de `# Curto`, slot use_melhor_time.
+  // Fail-soft: plano não-pronto ou texto faltando/estourando = só entra em
+  // `skipped` (motivo), nunca afeta os destaques acima.
+  const umPlan = planUseMelhorDispatch(editionDir, gateConfig);
+  const umLogRoot = opts.logRootDir ?? ROOT;
+  reportUseMelhorPlan("twitter", umPlan, { editionId: editionDate, rootDir: umLogRoot });
+  let useMelhor: UseMelhorDispatchSummary = summarizeUseMelhor(umPlan, null);
+  if (umPlan.status === "ready") {
+    const existing = skipExisting ? findExistingUseMelhorEntry(published.posts, "twitter") : undefined;
+    let umText: string | null = null;
+    let umReason: string | null = existing ? `already ${existing.status}` : null;
+    if (!umReason) {
+      try {
+        umText = extractCurtoText(socialMd, "um", editionUrl);
+        if (!umText) umReason = "'## um' ausente na seção '# Curto'";
+      } catch (e: any) {
+        umReason = `erro extraindo texto: ${e.message}`;
+      }
+    }
+    if (umText) {
+      if (editionUrl) umText = tagEditionUrlInText(umText, editionUrl, TWITTER_EDITION_UTM);
+      umText = applyUseMelhorUtmToText(umText);
+      const weighted = computeTwitterWeightedLength(umText);
+      if (weighted > TWITTER_CHAR_LIMIT) {
+        umReason = `texto com ${weighted} chars (peso X) excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`;
+      }
+    }
+    if (umReason) {
+      skipped.push({ destaque: "um", reason: umReason });
+      if (!existing) {
+        reportUseMelhorSkip("twitter", umReason, { editionId: editionDate, rootDir: umLogRoot });
+        useMelhor = { status: "skip", reason: umReason };
+      }
+    } else if (umText) {
+      let dueAt: string | null = null;
+      try {
+        dueAt = computeScheduledAt({ config: gateConfig, editionDate, destaque: "um", platform: "twitter", now: opts.now });
+      } catch (e: any) {
+        // Erro de agendamento = falha real (mesmo peso dos destaques): grava
+        // `failed` no store em vez de só pular — vira sinal do invariante pós-dispatch.
+        const reason = `schedule_error: ${e.message}`;
+        skipped.push({ destaque: "um", reason });
+        appendSocialPosts(publishedPath, [
+          { platform: "twitter", destaque: "um", url: null, status: "failed", scheduled_at: null, reason },
+        ]);
+        useMelhor = { status: "skip", reason };
+      }
+      if (dueAt) {
+        let publicImages: Record<string, { url?: string }> | undefined;
+        try {
+          publicImages = (
+            JSON.parse(readFileSync(resolve(editionDir, "06-public-images.json"), "utf8")) as {
+              images?: Record<string, { url?: string }>;
+            }
+          ).images;
+        } catch {
+          publicImages = undefined;
+        }
+        const images = resolveUseMelhorTwitterImages(publicImages, umPlan, editionDate);
+        if (images.length === 0) {
+          skippedImage.push({
+            destaque: "um",
+            reason: umPlan.imageWarning ?? "capa do 4º post ausente em 06-public-images.json — post só texto",
+          });
+        }
+        posts.push({
+          destaque: "um",
+          text: umText,
+          dueAt,
+          imageUrl: images[0]?.url ?? null,
+          altText: images[0]?.altText ?? null,
+          images,
+        });
+      }
+    }
+  }
+
+  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage, use_melhor: useMelhor };
 }
 
 async function main() {

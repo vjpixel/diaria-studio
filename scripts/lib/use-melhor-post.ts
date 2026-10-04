@@ -6,10 +6,10 @@
  * (carrossel tipográfico de N slides), Threads e X — num slot único, igual nas
  * 5 redes. Decisões do editor (04/10/2026) no corpo da #9568.
  *
- * ── Feature INERTE até o slot ser medido ───────────────────────────────────
- * O horário (`publishing.social.use_melhor_time`) ainda não foi escolhido —
- * o item 1 da #9568 pede que ele seja derivado de dado de engajamento por
- * horário antes de ser fixado. Enquanto a chave estiver ausente/`null` em
+ * ── Ligada/desligada pelo slot `use_melhor_time` ──────────────────────────
+ * O horário (`publishing.social.use_melhor_time`) foi fixado em 08:00 BRT
+ * pelo editor em 04/10/2026 (comentário `decisao-editor` na #9568). Se a
+ * chave voltar a ficar ausente/`null` em
  * `platform.config.json`, TODA a feature fica desligada: o Stage 2 não pede
  * a seção `## um` aos writers, o Stage 3 não gera cards, o Stage 4 mostra só
  * a linha "4º post desligado" e nada é agendado. O fluxo de D1/D2/D3 é o de
@@ -37,19 +37,22 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "
 import { dirname, resolve } from "node:path";
 import { parseSections } from "./newsletter-parse.ts";
 
-/** Id da seção do 4º post em `03-social.md` (`## um`, sob `# Social` e `# Curto`). */
-export const USE_MELHOR_POST_ID = "um";
+/** Id da seção do 4º post em `03-social.md` (`## um`) — definido no módulo folha. */
+export { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
+import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 
 /** `utm_content` próprio do 4º post — mede separado dos destaques. */
 export const USE_MELHOR_UTM_CONTENT = "usemelhor";
 
 /**
- * Os publicadores do Stage 5 (LinkedIn/Facebook/Instagram/Threads/X) ainda NÃO
- * despacham o `## um` — eles só enumeram `## d{N}` (`parseDestaqueHeaders`),
- * então mesmo com o slot definido nada é publicado. Virar `true` junto com o
- * PR que ligar o dispatch, pra o gate parar de avisar.
+ * Os publicadores do Stage 5 (LinkedIn página/Facebook/Instagram/Threads/X)
+ * despacham o `## um` desde o PR de Stage 5 da #9568 — ver
+ * `scripts/lib/use-melhor-dispatch.ts`. O LinkedIn PESSOAL (vjpixel) segue
+ * manual (lembrete no gate do Stage 6): o Worker `linkedin-cron` recusa
+ * `webhook_target=pixel` + `action=post` e a API direta só tem 1 autor
+ * (`LINKEDIN_AUTHOR_URN`, a página).
  */
-export const USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED = false;
+export const USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED = true;
 
 /** Linha do gate/preview enquanto o slot não foi definido. */
 export const USE_MELHOR_DISABLED_LABEL = "4º post desligado (use_melhor_time não definido)";
@@ -389,6 +392,11 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
   }
   if (!USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED) {
     lines.push(`   ℹ️ dispatch do 4º post no Stage 5 ainda não implementado (#9568) — nada é publicado/agendado por enquanto.`);
+  } else {
+    lines.push(
+      `   ℹ️ Stage 5 agenda às ${config.time} BRT em LinkedIn página/Facebook/Instagram/Threads/X; ` +
+        `LinkedIn pessoal (vjpixel) é manual, mesmo texto — lembrete no gate do Stage 6.`,
+    );
   }
   return { level, lines };
 }

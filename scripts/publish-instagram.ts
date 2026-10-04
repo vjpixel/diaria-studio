@@ -73,6 +73,18 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
+  USE_MELHOR_COVER_FILE,
+  applyUseMelhorUtmToText,
+  planUseMelhorDispatch,
+  reportUseMelhorImageFallback,
+  reportUseMelhorPlan,
+  reportUseMelhorSkip,
+  resolveUseMelhorImages,
+  summarizeUseMelhor,
+  useMelhorDispatchIds,
+  type UseMelhorReadyPlan,
+} from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
+import {
   postToWorkerQueue as sharedPostToWorkerQueue,
   type WorkerQueuePayload,
 } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
@@ -406,6 +418,47 @@ export async function postToWorkerQueue(
   return sharedPostToWorkerQueue(workerUrl, token, payload, maxAttempts, "publish-instagram");
 }
 
+/**
+ * #9568: peças do 4º post (item USE MELHOR, `## um`) pro Instagram. Pure —
+ * `fileExists` injetável. **Carrossel com quantos slides o conteúdo pedir**
+ * (capa → p1..pN → CTA, N variável — decisão do editor), tudo-ou-nada: se
+ * QUALQUER slide faltar em `06-public-images.json`, cai pra imagem única com a
+ * capa tipográfica (mesmo fallback dos destaques). Sem texto ou sem capa
+ * pública/local → `{ ok: false }` (o caller pula só o 4º post).
+ */
+export function buildUseMelhorInstagramPost(input: {
+  socialMd: string;
+  plan: UseMelhorReadyPlan;
+  images: Record<string, { url?: string }> | undefined;
+  editionDir: string;
+  fileExists?: (p: string) => boolean;
+}):
+  | { ok: true; caption: string; imageUrl: string; imageUrls: string[]; imageFile: string }
+  | { ok: false; reason: string } {
+  // Corpo vazio: só sobraria a linha de CTA injetada — não publicar.
+  if (!extractDestaqueBlock(extractSection(input.socialMd, "Social") ?? "", "um")?.trim()) {
+    return { ok: false, reason: "'## um' vazio ou ausente em '# Social'" };
+  }
+  let caption: string;
+  try {
+    caption = truncateCaption(applyUseMelhorUtmToText(extractPostText(input.socialMd, "um")));
+  } catch (e) {
+    return { ok: false, reason: `texto '## um' indisponível: ${(e as Error).message}` };
+  }
+  const { carouselUrls, coverUrl } = resolveUseMelhorImages(input.images, input.plan);
+  if (!coverUrl) {
+    return {
+      ok: false,
+      reason: input.plan.imageWarning ?? "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json",
+    };
+  }
+  const exists = input.fileExists ?? existsSync;
+  if (!exists(resolve(input.editionDir, USE_MELHOR_COVER_FILE))) {
+    return { ok: false, reason: `${USE_MELHOR_COVER_FILE} não encontrado na edição` };
+  }
+  return { ok: true, caption, imageUrl: coverUrl, imageUrls: carouselUrls ?? [coverUrl], imageFile: USE_MELHOR_COVER_FILE };
+}
+
 async function main() {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -572,7 +625,34 @@ async function main() {
     appendSocialPosts(publishedPath, [entry]);
   };
 
-  for (const d of destaques) {
+  // #9568: 4º post (USE MELHOR) — entra no MESMO loop como id "um", depois
+  // dos destaques. Plano não-pronto ou peça faltando = nada adicionado
+  // (motivo logado), D1/D2/D3 seguem idênticos.
+  const umPlan = planUseMelhorDispatch(editionDir, platformConfig);
+  reportUseMelhorPlan("instagram", umPlan, { editionId: editionDate, rootDir: ROOT });
+  const umPost =
+    umPlan.status === "ready"
+      ? buildUseMelhorInstagramPost({
+          socialMd,
+          plan: umPlan,
+          images: (publicImages as { images?: Record<string, { url?: string }> }).images,
+          editionDir,
+        })
+      : null;
+  if (umPost && !umPost.ok) reportUseMelhorSkip("instagram", umPost.reason, { editionId: editionDate, rootDir: ROOT });
+  if (umPlan.status === "ready" && umPost?.ok) {
+    reportUseMelhorImageFallback(
+      "instagram",
+      umPlan,
+      resolveUseMelhorImages((publicImages as { images?: Record<string, { url?: string }> }).images, umPlan),
+      { editionId: editionDate, rootDir: ROOT, usesCarousel: true },
+    );
+  }
+  const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
+  const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
+
+  for (const d of dispatchIds) {
+    const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
     // Releitura a cada iteração para detectar entradas concorrentes
     const published = loadPublished(publishedPath);
 
@@ -596,7 +676,9 @@ async function main() {
     try {
       const raw = testOverride?.caption
         ? stripMarkdownEmphasis(testOverride.caption) // #8681
-        : extractPostText(socialMd, d);
+        : umReady
+          ? umReady.caption // #9568 — já truncada, com utm_content=usemelhor
+          : extractPostText(socialMd, d);
       caption = truncateCaption(raw);
     } catch (e: any) {
       console.error(`ERROR extracting text for instagram/${d}: ${e.message}`);
@@ -616,7 +698,7 @@ async function main() {
     // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — é o
     // formato que mais ocupa tela no feed do Instagram. Fallback: 1:1 de
     // sempre. Seletor compartilhado com o Facebook (#4090 item 5).
-    const imageFile = selectSocialCardImageFile(editionDir, d);
+    const imageFile = umReady ? umReady.imageFile : selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Imagem ${imageFile} não encontrada em ${editionDir}`);
@@ -659,7 +741,7 @@ async function main() {
     // publish-linkedin.ts / resolvePublicCardImageUrl).
     const images = (publicImages as { images?: Record<string, { url?: string }> }).images;
     const heroKey = d === "d1" ? "cover" : `${d}_2x1`;
-    const imageUrl = images?.[`${d}_4x5`]?.url ?? images?.[heroKey]?.url;
+    const imageUrl = umReady ? umReady.imageUrl : images?.[`${d}_4x5`]?.url ?? images?.[heroKey]?.url;
     if (!imageUrl) {
       console.error(
         `ERROR: URL pública para ${d} não encontrada em 06-public-images.json.\n` +
@@ -682,7 +764,8 @@ async function main() {
     // slides sem foto foram gerados e subiram pro KV; senão, fallback pro
     // post single-image de sempre (`[imageUrl]`) — nunca bloqueia o canal
     // por causa do carrossel.
-    const imageUrls = resolveCarouselImageUrls(images, d) ?? [imageUrl];
+    // #9568: 4º post — carrossel de N slides (capa → p1..pN → CTA) ou [capa].
+    const imageUrls = umReady ? umReady.imageUrls : resolveCarouselImageUrls(images, d) ?? [imageUrl];
 
     // #3817 — modo --schedule: enfileira no Worker em vez de publicar agora.
     // scheduled_at vem da MESMA fonte usada por Facebook/LinkedIn
@@ -693,7 +776,7 @@ async function main() {
         scheduledIso = computeScheduledAt({
           config: platformConfig,
           editionDate,
-          destaque: d as "d1" | "d2" | "d3",
+          destaque: d as "d1" | "d2" | "d3" | "um",
           platform: "instagram",
         });
       } catch (e: any) {
@@ -829,7 +912,7 @@ async function main() {
     skipped: skippedCount,
   };
 
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
+  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {

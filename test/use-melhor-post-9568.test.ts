@@ -121,10 +121,9 @@ describe("config: use_melhor_time (#9568)", () => {
     assert.equal(useMelhorPostConfigState(null).enabled, false);
   });
 
-  it("platform.config.json do repo: feature DESLIGADA (slot ainda não medido)", () => {
+  it("platform.config.json do repo: feature LIGADA às 08:00 BRT (decisão do editor, 04/10/2026)", () => {
     const s = loadUseMelhorPostConfigState(ROOT);
-    assert.equal(s.enabled, false, "use_melhor_time deve continuar null até a medição do slot (item 1 da #9568)");
-    assert.equal(s.reason, USE_MELHOR_DISABLED_LABEL);
+    assert.deepEqual(s, { enabled: true, time: "08:00" });
   });
 
   it("formato inválido → desligado (fail-soft, nunca lança)", () => {
@@ -384,8 +383,11 @@ describe("invariante carousel-text-overflow cobre o `## um` só quando ligado (#
     assert.deepEqual(checkCarouselTextOverflow(overflowingEdition(), OFF), []);
   });
 
-  it("default (config do repo, desligado) → nenhuma violação nova", () => {
-    assert.deepEqual(checkCarouselTextOverflow(overflowingEdition()), []);
+  it("default (config do repo, ligado às 08:00 desde a #9568 Stage 5) → mesmo resultado que ligado", () => {
+    const viaRepo = checkCarouselTextOverflow(overflowingEdition()).map((v) => v.rule).sort();
+    const viaOn = checkCarouselTextOverflow(overflowingEdition(), ON).map((v) => v.rule).sort();
+    assert.deepEqual(viaRepo, viaOn);
+    assert.ok(viaRepo.includes("carousel-text-overflow"));
   });
 
   it("ligado → warning (nunca error)", () => {

@@ -417,7 +417,10 @@ describe("carrossel diário no dispatch do Facebook (#6095)", () => {
   // sem o arquivo local single-image falhava incorretamente, mesmo a via
   // carrossel não dependendo desse arquivo.
   it("resolveCarouselImageUrls(...) é calculado ANTES do guard de existsSync(imagePath) no loop de destaques", () => {
-    const carouselCallIdx = src.indexOf("const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);");
+    // #9568: o 4º post (id "um") usa o carrossel próprio (`umPost.carouselUrls`);
+    // os destaques seguem em `resolveCarouselImageUrls` — a ordem é a mesma.
+    const carouselCallIdx = src.indexOf("const carouselImageUrls =");
+    assert.ok(src.indexOf("resolveCarouselImageUrls(publicImages.images, d)") > carouselCallIdx);
     const guardIdx = src.indexOf("if (!carouselImageUrls && !existsSync(imagePath)) {");
     assert.ok(carouselCallIdx >= 0, "resolveCarouselImageUrls deve ser chamado no loop de destaques");
     assert.ok(guardIdx >= 0, "guard combinado carrossel+arquivo local deve existir");

@@ -450,7 +450,14 @@ export interface LinkedinSchemaResult {
 }
 
 /**
- * #595: Valida o corpo de cada `## d{N}` na seção LinkedIn do `03-social.md`.
+ * #9568: faixa de chars do `## um` (4º post, item USE MELHOR) — 2 a 6
+ * parágrafos de até ~260 chars + hashtags. [alvoMin, alvoMax, tolMin, tolMax].
+ */
+export const USE_MELHOR_CHAR_RANGE: [number, number, number, number] = [500, 1300, 300, 1800];
+
+/**
+ * #595: Valida o corpo de cada `## d{N}` na seção LinkedIn do `03-social.md`
+ * (+ `## um`, 4º post, #9568, com faixa própria `USE_MELHOR_CHAR_RANGE`).
  *
  * #3627: `### comment_diaria` e `### comment_pixel` deixaram de ser gerados
  * (decisão do editor, 260716 — postagem manual de comentários auxiliares não
@@ -481,8 +488,8 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     return { ok: true, errors, destaques }; // sem seção Social/LinkedIn = no-op
   }
 
-  // Splitar por `## d{N}`. Cada chunk começa após o header.
-  const chunks = linkedinSection.split(/\n## (d\d+)\n/);
+  // Splitar por `## d{N}` (+ `## um`, 4º post USE MELHOR, #9568). Cada chunk começa após o header.
+  const chunks = linkedinSection.split(/\n## (d\d+|um)\n/);
   // chunks[0] = preâmbulo (vazio ou irrelevante); chunks[1] = "d1", chunks[2] = body d1, chunks[3] = "d2", etc
   for (let i = 1; i < chunks.length; i += 2) {
     const destaque = chunks[i];
@@ -552,11 +559,14 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     // de presença aqui (ver nota na JSDoc da função).
     // Char count ranges (warning only — não bloqueia gate; lints estritos
     // apenas missing-section)
-    if (has_main && (mainText.length < tolMin || mainText.length > tolMax)) {
+    // #9568: `## um` tem 2-6 parágrafos (carrossel de N slides) — faixa própria.
+    const [dTargetMin, dTargetMax, dTolMin, dTolMax] =
+      destaque === "um" ? USE_MELHOR_CHAR_RANGE : [targetMin, targetMax, tolMin, tolMax];
+    if (has_main && (mainText.length < dTolMin || mainText.length > dTolMax)) {
       errors.push({
         destaque,
         rule: "main_chars_out_of_range",
-        detail: `${destaque}: main post ${mainText.length} chars (esperado ${targetMin}-${targetMax}, tolerância ${tolMin}-${tolMax})`,
+        detail: `${destaque}: main post ${mainText.length} chars (esperado ${dTargetMin}-${dTargetMax}, tolerância ${dTolMin}-${dTolMax})`,
       });
     }
 
@@ -736,7 +746,8 @@ const CHANNEL_SPECIFIC_LANGUAGE_RE =
  * destaque) — não há mais `### comment_*` subseções nesse formato.
  */
 function extractGenericDestaqueBodies(section: string): Array<{ destaque: string; text: string }> {
-  const chunks = ("\n" + section.replace(/\r\n/g, "\n")).split(/\n## (d\d+)\n/);
+  // #9568: `## um` (4º post) é texto genérico channel-neutral como os `## d{N}`.
+  const chunks = ("\n" + section.replace(/\r\n/g, "\n")).split(/\n## (d\d+|um)\n/);
   const out: Array<{ destaque: string; text: string }> = [];
   for (let i = 1; i < chunks.length; i += 2) {
     const destaque = chunks[i];
@@ -933,20 +944,20 @@ export function lintCredentialBio(md: string): CredentialBioResult {
   const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
-  // Checar ## post_pixel
-  const ppBlock = extractPostPixelBlock(linkedinSection);
-  if (ppBlock) {
-    const lines = ppBlock.text.split("\n");
+  // Checar os posts pessoais: ## um (4º post, #9568 — vai no LinkedIn
+  // pessoal) e ## post_pixel (legado).
+  for (const block of extractPersonalPostBlocks(linkedinSection)) {
+    const lines = block.text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       CREDENTIAL_BIO_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = CREDENTIAL_BIO_RE.exec(line)) !== null) {
         matches.push({
-          section: "post_pixel",
+          section: block.section,
           phrase: m[0],
           context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
-          line: ppBlock.lineOffset + i,
+          line: block.lineOffset + i,
         });
       }
     }
@@ -1434,7 +1445,8 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
   // destaque termina no próximo `## ` sibling (inclui `## post_pixel`).
   const socialSection = extractSection(md, "Social");
   if (socialSection) {
-    const chunks = ("\n" + socialSection).split(/\n## (d\d+)\n/);
+    // #9568: inclui `## um` (4º post USE MELHOR).
+    const chunks = ("\n" + socialSection).split(/\n## (d\d+|um)\n/);
     for (let i = 1; i < chunks.length; i += 2) {
       const destaque = chunks[i];
       let body = chunks[i + 1] ?? "";
@@ -1491,6 +1503,24 @@ const NEWSLETTER_DEIXIS_RE =
  * Exportado (#3052) para reuso por scripts/resolve-post-pixel.ts (Stage 6 —
  * resolução de {outros_count}/{edition_url} pro fluxo manual de publicação).
  */
+/**
+ * #9568: blocos postados no perfil PESSOAL do Pixel — o `## um` (4º post
+ * USE MELHOR, mesmo texto da página, vai também no LinkedIn pessoal) e o
+ * `## post_pixel` legado (edições anteriores à #9568). Os lints de post
+ * pessoal (#2148 deixis, #2494 credencial/bio) checam os dois.
+ */
+export function extractPersonalPostBlocks(
+  linkedinSection: string,
+): Array<{ section: "post_pixel" | "um"; text: string; lineOffset: number }> {
+  const out: Array<{ section: "post_pixel" | "um"; text: string; lineOffset: number }> = [];
+  const pp = extractPostPixelBlock(linkedinSection);
+  if (pp) out.push({ section: "post_pixel", ...pp });
+  const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
+  const m = text.match(/\n## um[ \t]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
+  if (m) out.push({ section: "um", text: m[1], lineOffset: text.slice(0, m.index ?? 0).split("\n").length });
+  return out;
+}
+
 export function extractPostPixelBlock(linkedinSection: string): { text: string; lineOffset: number } | null {
   const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
   const m = text.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
@@ -1532,20 +1562,20 @@ export function lintPersonalPostNewsletterDeixis(md: string): PersonalPostDeixis
   const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
-  // Checar ## post_pixel
-  const ppBlock = extractPostPixelBlock(linkedinSection);
-  if (ppBlock) {
-    const lines = ppBlock.text.split("\n");
+  // Checar os posts pessoais: ## um (4º post, #9568 — vai no LinkedIn
+  // pessoal) e ## post_pixel (legado).
+  for (const block of extractPersonalPostBlocks(linkedinSection)) {
+    const lines = block.text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       NEWSLETTER_DEIXIS_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = NEWSLETTER_DEIXIS_RE.exec(line)) !== null) {
         matches.push({
-          section: "post_pixel",
+          section: block.section,
           phrase: m[0],
           context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
-          line: ppBlock.lineOffset + i,
+          line: block.lineOffset + i,
         });
       }
     }
@@ -1617,8 +1647,9 @@ export function extractSocialSections(md: string): Record<string, string> {
   const result: Record<string, string> = {};
   const normalized = "\n" + section.replace(/\r\n/g, "\n");
 
-  // Blocos `## d{N}` (main text apenas — até o 1º `### comment_`)
-  const destaqueRe = /\n## (d\d+)[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
+  // Blocos `## d{N}` (main text apenas — até o 1º `### comment_`).
+  // #9568: `## um` (4º post USE MELHOR) entra como `main_um`.
+  const destaqueRe = /\n## (d\d+|um)[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/gi;
   let dm: RegExpExecArray | null;
   while ((dm = destaqueRe.exec(normalized)) !== null) {
     const destaque = dm[1];
@@ -1650,6 +1681,7 @@ export function extractSocialSections(md: string): Record<string, string> {
 export function checkHumanizerSectionCoverage(preMd: string, postMd: string): SectionCoverageResult {
   const SECTIONS_TO_CHECK = [
     "main_d1", "main_d2", "main_d3",
+    "main_um", // #9568 — 4º post (USE MELHOR)
     "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
     "post_pixel",
   ];
@@ -1692,6 +1724,7 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
 /** Nomes de seção verificados pela re-humanização scoped — mesmo conjunto de checkHumanizerSectionCoverage. */
 const SCOPED_SECTION_NAMES = [
   "main_d1", "main_d2", "main_d3",
+  "main_um", // #9568 — 4º post (USE MELHOR)
   "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
   "post_pixel",
 ] as const;
