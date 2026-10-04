@@ -97,8 +97,23 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
       "--output-format",
       "text",
       "--no-session-persistence",
+      "--",
       "meu prompt de crítica",
     ]);
+  });
+
+  it("prompt começando com '---' vai após '--' e nunca é lido como opção (#9577)", () => {
+    const capturedCalls: unknown[][] = [];
+    const execFn = ((bin: string, args: string[], opts: unknown) => {
+      capturedCalls.push([bin, args, opts]);
+      return "ok";
+    }) as unknown as typeof import("node:child_process").execFileSync;
+    const prompt = "---\nname: social-writer\n---\ncorpo";
+
+    callClaudeCli(prompt, { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet", effort: "low" });
+
+    const [, args] = capturedCalls[0] as [string, string[], unknown];
+    assert.deepEqual(args.slice(-2), ["--", prompt]);
   });
 
   it("com opts.model, inclui --model <valor> antes do prompt (achado de review do #7981: docstring afirmava Sonnet sem garantia em runtime)", () => {
@@ -111,7 +126,7 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet" });
 
     const [, args] = capturedCalls[0] as [string, string[], unknown];
-    assert.deepEqual(args.slice(-3), ["--model", "sonnet", "prompt"]);
+    assert.deepEqual(args.slice(-4), ["--model", "sonnet", "--", "prompt"]);
   });
 
   it("com opts.model + opts.effort, inclui --model e --effort antes do prompt (#8941)", () => {
@@ -124,7 +139,7 @@ describe("callClaudeCli — filtragem de ambiente NÃO-NEGOCIÁVEL (#7981, #5608
     callClaudeCli("prompt", { cwd: "/tmp", execFn, resolveClaudeBinFn: () => "/fake/claude", model: "sonnet", effort: "low" });
 
     const [, args] = capturedCalls[0] as [string, string[], unknown];
-    assert.deepEqual(args.slice(-5), ["--model", "sonnet", "--effort", "low", "prompt"]);
+    assert.deepEqual(args.slice(-6), ["--model", "sonnet", "--effort", "low", "--", "prompt"]);
   });
 
   it("sem opts.effort, --effort nunca aparece nos args", () => {
