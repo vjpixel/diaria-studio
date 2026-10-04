@@ -69,7 +69,7 @@ Resolve a janela, lê os dois caches, extrai os destaques de cada edição diár
 
 O `$SLUG` sai daqui — o script o imprime no stdout (`slug`).
 
-**Sinal Brasil (#9552):** a coleta pergunta ao Jev (pergunta Brasil do #8416) sobre cada destaque e decide `is_brazil` por `brazil_p >= 0,5`, gravando `brazil_p`/`brazil_signals`/`brazil_regex_signals` por destaque e `brazil_jev` no relatório. Sem `TYPESAFE_API_KEY` ou com a API fora, fica o `detectBrazil()` de sempre (warn no run-log) — nunca aborta.
+**Sinal Brasil (#9552):** a coleta pergunta ao Jev (pergunta Brasil do #8416) sobre cada destaque e decide `is_brazil` por `brazil_p >= 0,5`, gravando `brazil_p`/`brazil_signals`/`brazil_regex_signals` por destaque e `brazil_jev` no relatório. Sem `TYPESAFE_API_KEY` ou com a API fora, fica o `detectBrazil()` de sempre (warn no run-log) — nunca aborta. Se `brazil_jev.auth_error` for `true` (#9562 — key revogada, só os itens do cache responderam), avisar no gate que a `TYPESAFE_API_KEY` foi recusada (`brazil_jev.detail`), mesmo com `applied: true`.
 
 **Ler o relatório antes de seguir.** Um mês com `destaques_found: 0` significa cache faltando ou formato não reconhecido, e a retrospectiva sairia com um buraco. Medição de referência da 1ª rodada (07/09/2026): ~270 edições e ~670 destaques, com os 13 meses populados e cobertura de 60–100% por mês. **Esses números crescem** — o cache de edições continua recebendo arquivos novos —, então use-os como ordem de grandeza, não como valor esperado: o que importa é nenhum mês estar zerado.
 
