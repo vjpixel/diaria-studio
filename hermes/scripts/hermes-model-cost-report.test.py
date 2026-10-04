@@ -507,9 +507,16 @@ def main() -> int:
         mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"]["input_cache_read"] == 0.000000030,
     )
     assert_true(
-        "#9472: baseline vigente do glm-5.3-flash usa completion=0.0000005 (alarme não repete)",
+        "#9559/#9472: baseline vigente do glm-5.3-flash usa completion=0.0000005 (alarme não repete)",
         mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"]["completion"] == 0.0000005,
     )
+    # #9559: baseline vigente do deepseek-v4-flash (promo expirou).
+    for campo, valor in (("prompt", 0.0000000224), ("completion", 0.00000128),
+                         ("input_cache_read", 0.0000000224)):
+        assert_true(
+            f"#9559: baseline vigente do deepseek-v4-flash usa {campo}={valor}",
+            mod.PAID_PRICE_BASELINE["deepseek/deepseek-v4-flash"][campo] == valor,
+        )
 
     # --- #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna ---
     #
