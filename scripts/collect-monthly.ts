@@ -224,8 +224,10 @@ export interface BrazilSignalFields {
 export interface JevBrazilSummary {
   /** true = o Jev respondeu (ao menos parte dos itens). */
   applied: boolean;
-  /** `ok`, ou o motivo do fallback total pro `detectBrazil()` (`no-key`, `transport`, `empty`). */
+  /** `ok`, ou o motivo do fallback total pro `detectBrazil()` (`no-key`, `auth`, `transport`, `empty`). */
   reason: BrazilJevReason;
+  /** Status/mensagem (redigida) da falha total — só em `auth`/`transport` (#9558). */
+  detail?: string;
   total: number;
   /** Destaques com `brazil_p` — os demais ficaram com o `detectBrazil()`. */
   annotated: number;
@@ -250,7 +252,7 @@ export async function applyJevBrazilSignal<T extends BrazilSignalFields>(
   opts: FetchBrazilOptions = {},
 ): Promise<JevBrazilSummary> {
   const ids = destaques.map((d, i) => `${d.edition}#${d.position}#${i}`);
-  const { probabilities, applied, reason } = await fetchBrazilProbabilities(
+  const { probabilities, applied, reason, detail } = await fetchBrazilProbabilities(
     destaques.map((d, i) => ({ id: ids[i], title: d.title, url: d.url, summary: d.body })),
     opts,
   );
@@ -270,7 +272,15 @@ export async function applyJevBrazilSignal<T extends BrazilSignalFields>(
     d.brazil_regex_signals = regex.signals;
   });
 
-  return { applied, reason, total: destaques.length, annotated, changed, threshold: JEV_BRAZIL_THRESHOLD };
+  return {
+    applied,
+    reason,
+    ...(detail !== undefined ? { detail } : {}),
+    total: destaques.length,
+    annotated,
+    changed,
+    threshold: JEV_BRAZIL_THRESHOLD,
+  };
 }
 
 // ── Raw post discovery ─────────────────────────────────────────────
@@ -648,7 +658,7 @@ async function main() {
       brazilJev.applied
         ? `Brasil via Jev (#9552): ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
             `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
-        : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}, ver data/run-log.jsonl)`,
+        : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}${brazilJev.detail ? `: ${brazilJev.detail}` : ""}, ver data/run-log.jsonl)`,
   );
   if (result.source_counts.missing > 0) {
     console.log(`${result.source_counts.missing} edição(ões) sem local nem raw-post (ver warnings).`);

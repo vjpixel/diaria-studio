@@ -83,6 +83,12 @@ export function isApprovalConfirmed(item: Pick<AssetGroupAssetItem, "approvalSta
   return item.approvalStatus !== undefined && CONFIRMED_APPROVAL_STATUSES.has(item.approvalStatus);
 }
 
+/** Reprovação EXPLÍCITA — o único status que garante que o recurso não serve.
+ *  Ausente/`UNKNOWN`/`UNSPECIFIED`/em revisão podem estar valendo (#9557). */
+export function isApprovalRejected(item: Pick<AssetGroupAssetItem, "approvalStatus">): boolean {
+  return item.approvalStatus === "DISAPPROVED";
+}
+
 export type FieldCounts = Record<ManagedFieldType, number>;
 
 /** @pure */
@@ -180,7 +186,11 @@ export interface Phase2FieldPlan {
   /** Stale mantidos pelo piso (contagem e/ou regra de comprimento). */
   retain: string[];
   /** Regra de comprimento deste tipo (se houver) e como foi atendida. */
-  shortRule?: { maxChars: number; status: "permanent" | "retained" | "unmet" };
+  /** `retained-unconfirmed` (#9557): nenhum curto com aprovação confirmada —
+   *  mantém o stale curto de aprovação desconhecida (fail-closed, mesma lógica
+   *  do piso de contagem). `unmet`: não sobrou curto nem desconhecido; nunca
+   *  com curto não-reprovado no `remove` (isso é violação no relatório). */
+  shortRule?: { maxChars: number; status: "permanent" | "retained" | "retained-unconfirmed" | "unmet" };
 }
 
 export interface Phase2RemovalPlan {
@@ -196,7 +206,9 @@ export interface Phase2RemovalPlan {
  * não-stale e não-`needsReview` com aprovação confirmada; mantém do stale o
  * necessário pra (a) a contagem chegar ao mínimo e (b) a regra de comprimento
  * (`PMAX_SHORT_TEXT_RULES`) seguir atendida — mantendo o stale aprovado mais
- * curto que cabe. Se os novos ainda estão em revisão, o stale necessário
+ * curto que cabe; sem nenhum curto aprovado, mantém o stale curto de aprovação
+ * desconhecida (fail-closed, #9557 — só o reprovado explícito é descartável
+ * pela regra). Se os novos ainda estão em revisão, o stale necessário
  * fica; rodar a Fase 2 de novo depois da aprovação remove o resto.
  * @pure
  */
@@ -237,8 +249,24 @@ export function planPhase2Removal(
           retained.push(candidate);
           removable = removable.filter((i) => i !== candidate);
           shortRule = { maxChars: rule.maxChars, status: "retained" };
+        } else if (retained.some((i) => isShort(i) && !isApprovalRejected(i))) {
+          // #9557: nenhum curto CONFIRMADO, mas o piso de contagem já mantém
+          // um curto de aprovação desconhecida — fail-closed, ele fica.
+          shortRule = { maxChars: rule.maxChars, status: "retained-unconfirmed" };
         } else {
-          shortRule = { maxChars: rule.maxChars, status: "unmet" };
+          // #9557: sem curto aprovado, o stale curto de aprovação desconhecida
+          // (ex.: `policy_summary` ausente) pode ser o único que vale — reter o
+          // mais curto em vez de removê-lo. Só o reprovado explícito sai.
+          const unknownCandidate = removable
+            .filter((i) => isShort(i) && !isApprovalRejected(i))
+            .sort((a, b) => (a.text?.length ?? 0) - (b.text?.length ?? 0))[0];
+          if (unknownCandidate) {
+            retained.push(unknownCandidate);
+            removable = removable.filter((i) => i !== unknownCandidate);
+            shortRule = { maxChars: rule.maxChars, status: "retained-unconfirmed" };
+          } else {
+            shortRule = { maxChars: rule.maxChars, status: "unmet" };
+          }
         }
       }
     }
@@ -420,9 +448,26 @@ export function buildSyncPlanReport(input: {
     return ft !== undefined && s.remove.length > 0 && currentCounts[ft] - s.remove.length === 0;
   });
   const notes = fullTypeSwap ? [KNOWN_LIMITATION_FULL_TYPE_SWAP] : [];
+  const shortRuleViolations: string[] = [];
+  const itemByAga = new Map(phase2Items.map((i) => [i.assetGroupAssetResourceName, i]));
   for (const f of phase2Plan.fields) {
     if (f.shortRule?.status === "unmet") {
-      notes.push(`${f.fieldType}: nenhum recurso aprovado com ≤${f.shortRule.maxChars} chars no grupo — regra de comprimento não atendida (nada a preservar).`);
+      const maxChars = f.shortRule.maxChars;
+      // #9557: `unmet` com um curto não-reprovado no `remove` é o plano
+      // removendo justamente o recurso que poderia atender a regra.
+      const removableShort = f.remove.filter((rn) => {
+        const it = itemByAga.get(rn);
+        return it !== undefined && it.text !== undefined && it.text.length <= maxChars && !isApprovalRejected(it);
+      });
+      if (removableShort.length > 0) {
+        shortRuleViolations.push(
+          `Fase 2 — ${f.fieldType}: regra ≥1 com ≤${maxChars} chars não atendida e o plano remove recurso curto de aprovação não-reprovada (${removableShort.join(", ")}).`,
+        );
+      } else {
+        notes.push(`${f.fieldType}: nenhum recurso aprovado com ≤${maxChars} chars no grupo — regra de comprimento não atendida (nada a preservar).`);
+      }
+    } else if (f.shortRule?.status === "retained-unconfirmed") {
+      notes.push(`${f.fieldType}: nenhum recurso com ≤${f.shortRule.maxChars} chars tem aprovação confirmada — mantido o stale curto de aprovação desconhecida (fail-closed, #9557).`);
     }
   }
 
@@ -431,6 +476,7 @@ export function buildSyncPlanReport(input: {
     ...input.capacityErrors,
     ...snapshots.flatMap((s) => s.violations.map((v) => `${s.label}: ${v}`)),
     ...phase2Snapshot.violations.map((v) => `${phase2Snapshot.label}: ${v}`),
+    ...shortRuleViolations,
   ];
 
   return {

@@ -332,7 +332,56 @@ describe("#8550 sync — regras de comprimento e casos de aprovação", () => {
     const dplan = planPhase2Removal(desc, classifyAssetGroupAssets(desc));
     const d = dplan.fields.find((f) => f.fieldType === "DESCRIPTION")!;
     assert.equal(d.retain.length, 2, "mínimo 2 mesmo reprovados");
+    // Só o reprovado EXPLÍCITO justifica `unmet` (#9557): nada curto e
+    // não-reprovado sai no `remove`.
     assert.equal(d.shortRule?.status, "unmet", "reprovado não atende a regra curta");
+    assert.equal(d.remove.length, 0);
+  });
+
+  it("#9557: sem aprovação lida (policy_summary ausente), NÃO remove a única DESCRIPTION ≤60 — retém a curta de aprovação desconhecida", () => {
+    // Cenário da issue: `--send --remove-stale` sem policy_summary. O piso de
+    // contagem mantém as 2 primeiras stale (uma de 85 chars) e, antes do fix,
+    // a única ≤60 caía no `remove` com status `unmet` (só nota).
+    const longNew = NEW_DESCRIPTIONS.filter((t) => t.length > 60).slice(0, 2);
+    const stale85 = "As notícias mais importantes sobre IA chegando todos os dias na sua caixa de entrada.";
+    const stale61 = "Receba atualizações diárias sobre as últimas novidades em IA.";
+    const stale59 = "As notícias mais importantes sobre IA, resumidas para você.";
+    assert.ok(stale85.length > 60 && stale61.length > 60 && stale59.length <= 60, "premissa de comprimento do cenário");
+    const items = [
+      ...longNew.map((t, k) => item(`80${k}`, "DESCRIPTION", { text: t })), // sem approval
+      item("810", "DESCRIPTION", { text: stale85 }),
+      item("811", "DESCRIPTION", { text: stale61 }),
+      item("812", "DESCRIPTION", { text: stale59 }),
+    ];
+    const classification = classifyAssetGroupAssets(items);
+    assert.equal(classification.stale.length, 3, "premissa: as 3 antigas são stale");
+    const plan = planPhase2Removal(items, classification);
+    const d = plan.fields.find((f) => f.fieldType === "DESCRIPTION")!;
+    const short = items[4].assetGroupAssetResourceName;
+    assert.ok(!d.remove.includes(short), "a única DESCRIPTION ≤60 não pode sair");
+    assert.ok(d.retain.includes(short));
+    assert.equal(d.shortRule?.status, "retained-unconfirmed");
+    assert.ok(!plan.remove.includes(short));
+
+    // E o relatório em modo phase2 não declara violação nem trata como "nada a preservar".
+    const report = buildSyncPlanReport({
+      generatedAt: "x", assetGroup: GROUP, mode: "phase2-dry-run", items, classification,
+      text: { headlines: [], longHeadlines: [], descriptions: [], errors: [] },
+      images: { manifest: null, pending: [] }, phase1Plans: [], capacityErrors: [],
+    });
+    assert.deepEqual(report.violations.filter((v) => v.includes("DESCRIPTION")), []);
+    assert.ok(report.notes.some((n) => n.includes("DESCRIPTION") && n.includes("#9557")));
+    assert.ok(!report.notes.some((n) => n.startsWith("DESCRIPTION") && n.includes("nada a preservar")));
+  });
+
+  it("#9557: curto de aprovação desconhecida já mantido pelo piso de contagem conta como retained-unconfirmed (sem reter a mais)", () => {
+    const stale59 = "As notícias mais importantes sobre IA, resumidas para você.";
+    const stale61 = "Receba atualizações diárias sobre as últimas novidades em IA.";
+    const items = [item("820", "DESCRIPTION", { text: stale59 }), item("821", "DESCRIPTION", { text: stale61 })];
+    const plan = planPhase2Removal(items, classifyAssetGroupAssets(items));
+    const d = plan.fields.find((f) => f.fieldType === "DESCRIPTION")!;
+    assert.equal(d.retain.length, 2, "piso de contagem segura os 2");
+    assert.equal(d.shortRule?.status, "retained-unconfirmed");
   });
 
   it("simulateSteps: remove de tipo não resolvido vira violação explícita", () => {
