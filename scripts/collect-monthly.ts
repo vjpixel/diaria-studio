@@ -226,8 +226,16 @@ export interface JevBrazilSummary {
   applied: boolean;
   /** `ok`, ou o motivo do fallback total pro `detectBrazil()` (`no-key`, `auth`, `transport`, `empty`). */
   reason: BrazilJevReason;
-  /** Status/mensagem (redigida) da falha total — só em `auth`/`transport` (#9558). */
+  /**
+   * Status/mensagem (redigida) da falha — em `auth`/`transport` (#9558) e, com
+   * `applied: true`, quando `auth_error` (#9562).
+   */
   detail?: string;
+  /**
+   * #9562: `applied: true` mas os itens sem resposta falharam TODOS com
+   * 401/403 (key revogada, o resto veio do cache). Só presente quando `true`.
+   */
+  auth_error?: boolean;
   total: number;
   /** Destaques com `brazil_p` — os demais ficaram com o `detectBrazil()`. */
   annotated: number;
@@ -252,7 +260,7 @@ export async function applyJevBrazilSignal<T extends BrazilSignalFields>(
   opts: FetchBrazilOptions = {},
 ): Promise<JevBrazilSummary> {
   const ids = destaques.map((d, i) => `${d.edition}#${d.position}#${i}`);
-  const { probabilities, applied, reason, detail } = await fetchBrazilProbabilities(
+  const { probabilities, applied, reason, detail, auth_error } = await fetchBrazilProbabilities(
     destaques.map((d, i) => ({ id: ids[i], title: d.title, url: d.url, summary: d.body })),
     opts,
   );
@@ -276,11 +284,22 @@ export async function applyJevBrazilSignal<T extends BrazilSignalFields>(
     applied,
     reason,
     ...(detail !== undefined ? { detail } : {}),
+    ...(auth_error ? { auth_error: true } : {}),
     total: destaques.length,
     annotated,
     changed,
     threshold: JEV_BRAZIL_THRESHOLD,
   };
+}
+
+/**
+ * #9562: sufixo da linha de resumo quando o Jev aplicou mas a credencial foi
+ * recusada nos itens fora do cache — sem ele, a linha só dizia "N/M com
+ * brazil_p" e a key revogada passava como sucesso. Vazio fora desse caso. @pure
+ */
+export function formatJevAuthWarning(summary: Pick<JevBrazilSummary, "auth_error" | "detail">): string {
+  if (!summary.auth_error) return "";
+  return ` — ATENÇÃO: Jev recusou a credencial nos itens fora do cache (${summary.detail ?? "HTTP 401/403"}; TYPESAFE_API_KEY revogada/expirada?)`;
 }
 
 // ── Raw post discovery ─────────────────────────────────────────────
@@ -657,7 +676,8 @@ async function main() {
   console.log(
       brazilJev.applied
         ? `Brasil via Jev (#9552): ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
-            `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
+            `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()` +
+            formatJevAuthWarning(brazilJev)
         : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}${brazilJev.detail ? `: ${brazilJev.detail}` : ""}, ver data/run-log.jsonl)`,
   );
   if (result.source_counts.missing > 0) {
