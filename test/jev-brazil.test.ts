@@ -16,11 +16,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { classifyBrazil, describeJevError, fetchBrazilProbabilities } from "../scripts/lib/jev-brazil.ts";
+import { classifyBrazil, describeJevError, fetchBrazilProbabilities, formatJevError } from "../scripts/lib/jev-brazil.ts";
 import { JevHttpError } from "../scripts/lib/jev.ts";
 import {
   applyJevBrazilSignal,
   detectBrazil,
+  formatJevAuthWarning,
   JEV_BRAZIL_THRESHOLD,
   type BrazilSignalFields,
 } from "../scripts/collect-monthly.ts";
@@ -234,6 +235,96 @@ describe("fetchBrazilProbabilities — fail-soft", () => {
     });
     assert.equal(r.reason, "transport");
     assert.match(r.detail ?? "", /ECONNRESET/);
+  });
+});
+
+describe("#9562: cache parcial + key revogada", () => {
+  const secret = "sk-test-SEGREDO-9562";
+  const items = [
+    { id: "a", url: "u1", title: "t1", summary: "s" },
+    { id: "b", url: "u2", title: "t2", summary: "s" },
+    { id: "c", url: "u3", title: "t3", summary: "s" },
+  ];
+  /** 401 que ecoa a key no corpo — a redação precisa mascarar. */
+  const revoked = (async () =>
+    new Response(`{"error":"invalid api key ${secret}","auth":"Bearer ${secret}"}`, {
+      status: 401,
+    })) as unknown as typeof fetch;
+
+  it("itens novos todos 401 -> applied:true, auth_error + detail, warn de credencial — nunca a key", async () => {
+    const cacheDir = join(tmpDir, "jev-brazil-cache");
+    // 1ª coleta: key válida, só "a" entra no cache.
+    await fetchBrazilProbabilities(items.slice(0, 1), {
+      apiKey: secret,
+      fetchImpl: fetchByTitle({ t1: 0.8 }),
+      cacheDir,
+      rootDir: tmpDir,
+    });
+    // 2ª coleta: key revogada. "a" vem do cache (sem rede), "b"/"c" dão 401 —
+    // askJevBatch NÃO lança, então sem o #9562 o resumo saía "ok" sem detail.
+    const r = await fetchBrazilProbabilities(items, {
+      apiKey: secret,
+      fetchImpl: revoked,
+      cacheDir,
+      rootDir: tmpDir,
+      agent: "collect-monthly",
+    });
+    assert.equal(r.applied, true);
+    assert.equal(r.reason, "ok");
+    assert.equal(r.probabilities.get("a"), 0.8, "item do cache segue anotado");
+    assert.equal(r.probabilities.has("b"), false);
+    assert.equal(r.auth_error, true);
+    assert.match(r.detail ?? "", /^HTTP 401: /);
+    assert.doesNotMatch(r.detail ?? "", /HTTP 401 — HTTP 401/, "prefixo não duplica");
+    assert.ok(!(r.detail ?? "").includes(secret), "detail não pode carregar a key");
+    const log = runLog();
+    assert.match(log, /recusou a credencial/);
+    assert.match(log, /2\/3 item/);
+    assert.match(log, /"reason":"auth"/);
+    assert.ok(!log.includes(secret), "run-log não pode carregar a key");
+  });
+
+  it("chega ao resumo brazil_jev de applyJevBrazilSignal (mensal/anual)", async () => {
+    const cacheDir = join(tmpDir, "jev-brazil-cache");
+    const fx = fixtures();
+    await applyJevBrazilSignal(fx.slice(0, 1), {
+      apiKey: secret,
+      fetchImpl: fetchByTitle({ [fx[0].title]: 0.04 }),
+      cacheDir,
+      rootDir: tmpDir,
+    });
+    const summary = await applyJevBrazilSignal(fixtures(), { apiKey: secret, fetchImpl: revoked, cacheDir, rootDir: tmpDir });
+    assert.equal(summary.applied, true);
+    assert.equal(summary.annotated, 1);
+    assert.equal(summary.auth_error, true);
+    assert.match(summary.detail ?? "", /HTTP 401/);
+    assert.ok(!(summary.detail ?? "").includes(secret));
+    assert.match(formatJevAuthWarning(summary), /recusou a credencial/);
+  });
+
+  it("falha parcial mista (401 + 500) NÃO vira auth_error", async () => {
+    const mixed = (async (_url: string, init: { body: string }) => {
+      const t = (JSON.parse(init.body) as { state: { title: string } }).state.title;
+      if (t === "t1") return brazilResponse(0.3);
+      return new Response("x", { status: t === "t2" ? 401 : 500 });
+    }) as unknown as typeof fetch;
+    const r = await fetchBrazilProbabilities(items, { apiKey: "k", fetchImpl: mixed, rootDir: tmpDir });
+    assert.equal(r.applied, true);
+    assert.equal(r.auth_error, undefined);
+    assert.equal(r.detail, undefined);
+    assert.match(runLog(), /Jev respondeu 1\/3/);
+    assert.equal(formatJevAuthWarning({}), "");
+  });
+});
+
+describe("formatJevError (#9562)", () => {
+  it("não duplica o prefixo HTTP do JevHttpError", () => {
+    const info = describeJevError(new JevHttpError(401, "unauthorized"));
+    assert.equal(formatJevError(info), "HTTP 401: unauthorized");
+  });
+  it("prefixa o status quando a mensagem não o traz; sem status devolve a mensagem", () => {
+    assert.equal(formatJevError({ status: 503, message: "upstream" }), "HTTP 503 — upstream");
+    assert.equal(formatJevError({ message: "ECONNRESET" }), "ECONNRESET");
   });
 });
 

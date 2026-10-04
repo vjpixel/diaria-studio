@@ -86,7 +86,7 @@ npx tsx scripts/collect-monthly.ts --cycle $CYCLE
 ```
 Se `destaques_count < 3`, abortar.
 
-**Sinal Brasil (#9552):** o script pergunta ao Jev (pergunta Brasil do #8416) sobre cada destaque e decide `is_brazil` por `brazil_p >= 0,5`; grava `brazil_p`, `brazil_signals` e `brazil_regex_signals` (o que o regex teria dito) por destaque e o resumo `brazil_jev` no topo de `raw-destaques.json`. Sem `TYPESAFE_API_KEY` ou com a API fora, cai no `detectBrazil()` de sempre (warn no run-log, `brazil_jev.reason` diz o motivo) — nunca aborta. No gate da Etapa 4, citar quais destaques saíram marcados Brasil e os que o Jev inverteu (`brazil_jev.changed`).
+**Sinal Brasil (#9552):** o script pergunta ao Jev (pergunta Brasil do #8416) sobre cada destaque e decide `is_brazil` por `brazil_p >= 0,5`; grava `brazil_p`, `brazil_signals` e `brazil_regex_signals` (o que o regex teria dito) por destaque e o resumo `brazil_jev` no topo de `raw-destaques.json`. Sem `TYPESAFE_API_KEY` ou com a API fora, cai no `detectBrazil()` de sempre (warn no run-log, `brazil_jev.reason` diz o motivo) — nunca aborta. No gate da Etapa 4, citar quais destaques saíram marcados Brasil e os que o Jev inverteu (`brazil_jev.changed`). Se `brazil_jev.auth_error` for `true` (#9562 — key revogada, só os itens do cache responderam), avisar no gate que a `TYPESAFE_API_KEY` foi recusada (`brazil_jev.detail`), mesmo com `applied: true`.
 
 ### 1b. Scoring mensal
 

@@ -28,7 +28,9 @@
  * o resto `transport`, e o status/mensagem redigida vai no warn e em
  * `detail`. Falha PARCIAL (alguns itens falham, outros não) é
  * tratada por `askJevBatch`: os itens que falharam simplesmente não recebem
- * `brazil_p` e quem chama cai no `detectBrazil()` só para eles.
+ * `brazil_p` e quem chama cai no `detectBrazil()` só para eles. Se TODOS os
+ * erros da falha parcial forem 401/403 (key revogada com parte dos itens no
+ * cache), o resumo sai com `auth_error: true` + `detail` (#9562).
  */
 
 import { askJevBatch, JevHttpError, type JevNoulAnswer } from "./jev.ts";
@@ -95,8 +97,15 @@ export function isJevAuthError(info: JevErrorInfo | undefined): boolean {
   return info?.status === 401 || info?.status === 403;
 }
 
-function formatJevError(info: JevErrorInfo): string {
-  return info.status !== undefined ? `HTTP ${info.status} — ${info.message}` : info.message;
+/**
+ * `HTTP 401 — …` para diagnóstico. `JevHttpError` já inicia a mensagem com
+ * `HTTP ${status}` — nesse caso não repete o prefixo (#9562: saía
+ * `HTTP 401 — HTTP 401: {...}`). @pure
+ */
+export function formatJevError(info: JevErrorInfo): string {
+  if (info.status === undefined) return info.message;
+  if (info.message.startsWith(`HTTP ${info.status}`)) return info.message;
+  return `HTTP ${info.status} — ${info.message}`;
 }
 
 /**
@@ -171,8 +180,19 @@ export interface FetchBrazilResult {
   probabilities: Map<string, number>;
   applied: boolean;
   reason: BrazilJevReason;
-  /** Motivo concreto do fallback (`HTTP 401 — …`), redigido. Só em `auth`/`transport` (#9558). */
+  /**
+   * Motivo concreto do fallback (`HTTP 401: …`), redigido. Em `auth`/`transport`
+   * (#9558) e, com `applied: true`, quando a falha PARCIAL foi toda de
+   * credencial (`auth_error`, #9562).
+   */
   detail?: string;
+  /**
+   * #9562: falha PARCIAL em que TODOS os itens sem resposta deram 401/403 —
+   * típico de key revogada com parte dos itens servida pelo `jev-brazil-cache`
+   * (o cache responde sem chamar a API, então `askJevBatch` não lança e a
+   * falha não vira `reason: "auth"`). Só presente quando `true`.
+   */
+  auth_error?: boolean;
 }
 
 /** Quantos erros por item entram no warn de falha parcial. */
@@ -235,19 +255,35 @@ export async function fetchBrazilProbabilities(
   if (result.probabilities.size < items.length) {
     const sample = result.itemErrors.slice(0, PARTIAL_ERROR_SAMPLE);
     const sampleText = sample.map((e) => `${e.id}: ${formatJevError(e)}`).join("; ");
+    // #9562: cache parcial + key revogada — os itens em cache respondem sem
+    // chamar a API e TODOS os novos falham com 401/403. É credencial, não
+    // falha parcial genérica: warn de credencial + `auth_error`/`detail` no
+    // resumo, mesmo com `applied: true`.
+    const authOnly = result.itemErrors.length > 0 && result.itemErrors.every((e) => isJevAuthError(e));
+    const authDetail = authOnly ? formatJevError(result.itemErrors[0]) : undefined;
     logEvent(
       {
         edition: opts.edition ?? null,
         stage: 1,
         agent,
         level: "warn",
-        message:
-          `Jev respondeu ${result.probabilities.size}/${items.length} item(ns) — os demais caem no detectBrazil() (#9552)` +
-          (sampleText ? `. Erros (amostra ${sample.length}/${result.itemErrors.length}): ${sampleText}` : ""),
-        details: { item_errors: sample, item_errors_total: result.itemErrors.length },
+        message: authOnly
+          ? `Jev recusou a credencial (${authDetail}) em ${result.itemErrors.length}/${items.length} item(ns) — ` +
+            `os ${result.probabilities.size} restantes vieram do cache. TYPESAFE_API_KEY revogada/expirada? ` +
+            `Itens sem resposta caem no detectBrazil() (regex/host/categoria) (#9562)`
+          : `Jev respondeu ${result.probabilities.size}/${items.length} item(ns) — os demais caem no detectBrazil() (#9552)` +
+            (sampleText ? `. Erros (amostra ${sample.length}/${result.itemErrors.length}): ${sampleText}` : ""),
+        details: {
+          ...(authOnly ? { reason: "auth" } : {}),
+          item_errors: sample,
+          item_errors_total: result.itemErrors.length,
+        },
       },
       rootDir,
     );
+    if (authOnly) {
+      return { probabilities: result.probabilities, applied: true, reason: "ok", detail: authDetail, auth_error: true };
+    }
   }
 
   return { probabilities: result.probabilities, applied: true, reason: "ok" };

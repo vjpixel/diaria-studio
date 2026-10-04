@@ -85,7 +85,14 @@ import {
 // A fronteira de `test/lib-boundary.test.ts` cobre `scripts/lib/**`, não
 // script→script, então isto é legal; duplicar o parser (e deixar os dois
 // divergirem no 1º ajuste de formato) seria pior.
-import { parsePost, parseLocalEdition, detectBrazil, applyJevBrazilSignal, type JevBrazilSummary } from "./collect-monthly.ts";
+import {
+  parsePost,
+  parseLocalEdition,
+  detectBrazil,
+  applyJevBrazilSignal,
+  formatJevAuthWarning,
+  type JevBrazilSummary,
+} from "./collect-monthly.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_TOP_K = 10;
@@ -399,7 +406,8 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
   log(
     brazilJev.applied
       ? `Brasil via Jev: ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
-          `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
+          `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()` +
+          formatJevAuthWarning(brazilJev)
       : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}${brazilJev.detail ? `: ${brazilJev.detail}` : ""}, ver data/run-log.jsonl)`,
   );
 
