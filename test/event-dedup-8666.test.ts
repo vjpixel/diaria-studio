@@ -281,7 +281,8 @@ test("#8666 review P2.5: minDistanceByTitle ignora a própria edição e ediçõ
   assert.equal(m.has("self"), false);
   assert.equal(m.has("futuro"), false);
   assert.equal(m.get("passado"), 2);
-  assert.equal(m.get("misto"), 3);
+  // #9565: distância em dias úteis — sáb 260919 → ter 260922 = seg + ter = 2.
+  assert.equal(m.get("misto"), 2);
 });
 
 test("#8666 review P2.6: todo título de extractPastTitles tem entrada no mapa de distâncias", () => {
