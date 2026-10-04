@@ -39,7 +39,8 @@ afterEach(() => { globalThis.fetch = realFetch; });
 describe("threads token refresh", () => {
   it("renova, grava no KV e sobrepõe o secret", async () => {
     assert.equal(await maybeRefreshThreadsToken(mkEnv(), 1_000), "refreshed");
-    assert.match(calls[0].url, /refresh_access_token\?grant_type=th_refresh_token&access_token=OLD/);
+    assert.match(calls[0].url, /refresh_access_token\?grant_type=th_refresh_token$/);
+    assert.equal((calls[0].init?.headers as any).Authorization, "Bearer OLD");
     assert.equal((await withRefreshedThreadsToken(mkEnv())).THREADS_ACCESS_TOKEN, "NEW");
   });
   it("não renova de novo antes de 30 dias", async () => {
@@ -48,7 +49,7 @@ describe("threads token refresh", () => {
     assert.equal(await maybeRefreshThreadsToken(mkEnv(), 1_000 + 29 * 86400_000), "skipped");
     assert.equal(calls.length, 0);
     assert.equal(await maybeRefreshThreadsToken(mkEnv(), 1_000 + 31 * 86400_000), "refreshed");
-    assert.match(calls[0].url, /access_token=NEW/);
+    assert.equal((calls[0].init?.headers as any).Authorization, "Bearer NEW");
   });
   it("token vencido: falha sem trocar o token e sem inventar fluxo; retenta em 6h", async () => {
     respond = () => new Response(JSON.stringify({ error: { message: "Session has expired" } }), { status: 400 });
@@ -62,7 +63,7 @@ describe("threads token refresh", () => {
     const env2 = mkEnv({ THREADS_ACCESS_TOKEN: "MANUAL" });
     assert.equal((await withRefreshedThreadsToken(env2)).THREADS_ACCESS_TOKEN, "MANUAL");
     assert.equal(await maybeRefreshThreadsToken(env2, 2_000), "refreshed");
-    assert.match(calls.at(-1)!.url, /access_token=MANUAL/);
+    assert.equal((calls.at(-1)!.init?.headers as any).Authorization, "Bearer MANUAL");
   });
   it("sem secret Threads: não faz nada", async () => {
     assert.equal(await maybeRefreshThreadsToken(mkEnv({ THREADS_ACCESS_TOKEN: undefined })), "skipped");

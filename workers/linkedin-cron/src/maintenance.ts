@@ -60,11 +60,10 @@ export async function maybeRefreshThreadsToken(
   if (stored && now < Date.parse(stored.next_attempt_at)) return "skipped";
 
   const current = stored?.access_token ?? env.THREADS_ACCESS_TOKEN;
-  const url =
-    `https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token` +
-    `&access_token=${encodeURIComponent(current)}`;
+  // Token no header Authorization (guard #7893): nunca na query string.
+  const url = `https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token`;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${current}` }, signal: AbortSignal.timeout(15_000) });
     const data = (await res.json().catch(() => ({}))) as { access_token?: string; error?: { message?: string } };
     if (!res.ok || !data.access_token) {
       // Sem logar o token. "<24h" é esperado logo após uma renovação manual: tenta de novo mais tarde.
