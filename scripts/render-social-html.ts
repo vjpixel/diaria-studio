@@ -31,6 +31,12 @@ import {
   formatChannelLabels,
 } from "./lib/social-cta-lines.ts"; // #4091: fonte única de verdade dos canais
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 preview override
+import {
+  USE_MELHOR_POST_ID,
+  describeUseMelhorPostStatus,
+  loadUseMelhorPostConfigState,
+} from "./lib/use-melhor-post.ts"; // #9568
+import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #9568
 
 export interface ImageMap {
   [key: string]: {
@@ -152,7 +158,31 @@ export function isPostPixel(destaque: string): boolean {
   return /^post.?pixel/i.test(destaque.trim());
 }
 
+/**
+ * (#9568) Slides do carrossel tipográfico do 4º post (`## um`): capa → p1..pN
+ * → CTA, chaves `um_carousel_{slot}`. Tudo-ou-nada: sem capa, sem nenhum
+ * parágrafo ou sem CTA → `undefined`. N é variável (decisão do editor).
+ */
+function buildUseMelhorCarouselImages(imageUrls: ImageMap): { label: string; url: string }[] | undefined {
+  const key = (slot: string) => `${USE_MELHOR_POST_ID}_carousel_${slot}`;
+  const slots = ["cover"];
+  for (let i = 1; imageUrls[key(`p${i}`)]; i++) slots.push(`p${i}`);
+  slots.push("cta");
+  if (slots.length < 3 || slots.some((s) => !imageUrls[key(s)])) return undefined;
+  const total = slots.length;
+  const out = slots.map((slot, i) => ({
+    label: `${i + 1}/${total}${slot === "cover" ? " · Capa" : slot === "cta" ? " · CTA" : ""}`,
+    url: resolveSocialImageUrl(imageUrls[key(slot)], () => {}),
+  }));
+  return out.every((s) => s.url) ? out : undefined;
+}
+
 function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = "1"): string {
+  // #9568: o 4º post não tem foto — a "imagem" é a capa tipográfica do carrossel.
+  if (destaque.trim().toLowerCase() === USE_MELHOR_POST_ID) {
+    const cover = imageUrls[`${USE_MELHOR_POST_ID}_carousel_cover`];
+    return cover ? resolveSocialImageUrl(cover, () => {}) : "";
+  }
   // #1690: post_pixel reusa a imagem do D1 por padrão; #2549: override per-edição
   // (quando o post pessoal cobre outro destaque, ex: D2) via marker.
   const dNum = isPostPixel(destaque) ? postPixelImageNum : destaque.replace(/\D/g, "");
@@ -299,9 +329,12 @@ export function groupByDestaque(
       // #7678: "eia" não é mais um destaque gerado em 03-social.md.
       if (key === "eia") continue;
       if (!groups.has(key)) {
+        const isUseMelhor = key === USE_MELHOR_POST_ID; // #9568
         const label = isPostPixel(post.destaque)
           ? `POST PESSOAL — vjpixel (imagem do D${postPixelImageNum})`
-          : post.destaque;
+          : isUseMelhor
+            ? "4º POST — USE MELHOR"
+            : post.destaque;
         const isNumberedDestaque = /^d\d+$/.test(key);
         groups.set(key, {
           key,
@@ -309,7 +342,9 @@ export function groupByDestaque(
           imageUrl: getImageUrl(post.destaque, imageUrls, postPixelImageNum),
           carouselImages: isNumberedDestaque
             ? buildCarouselImages(key, imageUrls)
-            : undefined,
+            : isUseMelhor
+              ? buildUseMelhorCarouselImages(imageUrls)
+              : undefined,
           blocks: [],
         });
       }
@@ -318,6 +353,7 @@ export function groupByDestaque(
   }
   const order = (k: string): number => {
     if (/^d\d+$/.test(k)) return Number(k.slice(1));
+    if (k === USE_MELHOR_POST_ID) return 50; // #9568: 4º post depois dos destaques
     return 99; // post_pixel por último
   };
   return [...groups.values()].sort((a, b) => order(a.key) - order(b.key));
@@ -399,7 +435,14 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   </div>`;
 }
 
-export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1", editionDir?: string): string {
+export function buildSocialHtml(
+  platforms: Platform[],
+  imageUrls: ImageMap,
+  postPixelImageNum = "1",
+  editionDir?: string,
+  /** #9568: linha(s) de status do 4º post (USE MELHOR) — aviso no topo do preview. Omitido = nada. */
+  useMelhorNotice?: string[],
+): string {
   // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
   // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
   // compartilhada por LinkedIn/Facebook/Instagram — sobrescrever `post.main`
@@ -578,6 +621,7 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
 <body>
 <div class="container">
 <h1>Social Preview</h1>
+${useMelhorNotice?.length ? `<div class="platform-note use-melhor-notice">${useMelhorNotice.map((l) => escHtml(l)).join("<br>")}</div>` : ""}
 ${(() => {
   const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum);
   // #8681/#8809: injeta a legenda de override como bloco SEPARADO em todo
@@ -636,7 +680,18 @@ function main(): void {
   }
 
   const platforms = parsePlatforms(md);
-  const html = buildSocialHtml(platforms, imageUrls, postPixelImageNum);
+  // #9568: status do 4º post no topo do preview ("desligado" enquanto
+  // use_melhor_time não estiver definido). Fail-soft: erro aqui nunca derruba o render.
+  let useMelhorNotice: string[] | undefined;
+  try {
+    const editionDir = dirname(mdPath);
+    useMelhorNotice = describeUseMelhorPostStatus(
+      gatherUseMelhorStatusInput(editionDir, loadUseMelhorPostConfigState(resolve(import.meta.dirname, ".."))),
+    ).lines;
+  } catch (e) {
+    console.error(`[render-social-html] #9568: status do 4º post indisponível: ${(e as Error).message}`);
+  }
+  const html = buildSocialHtml(platforms, imageUrls, postPixelImageNum, undefined, useMelhorNotice);
   writeFileSync(outPath, html);
 
   // #1800: validação pós-render — preview com menos <img> que posts de destaque

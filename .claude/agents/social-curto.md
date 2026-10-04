@@ -26,6 +26,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
+- `use_melhor_post_path` (opcional, #9568): `_internal/use-melhor-post.json` — só presente quando o 4º post (item USE MELHOR) está ligado e há item. **Ausente = não escreva `## um`**; o output é exatamente o de sempre.
 
 ## Processo
 
@@ -39,6 +40,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - **CTA final = link da edição, nunca a home (#4285/#4264).** Use o placeholder literal `{edition_url}` (mesmo padrão do `## post_pixel` em `social-writer.md`) — nunca `"Mais em diar.ia.br"` nem qualquer variante hardcoded da raiz. `scripts/resolve-edition-url.ts` reescreve `03-social.md` inteiro no Stage 5 (Passo 5c-2), incluindo a seção `# Curto` — o placeholder é resolvido de graça, não escreva a URL você mesmo. Exemplo de fechamento: `Mais em {edition_url}` (sem `https://` redundante já embutido no placeholder, sem ponto final).
    - **Palavras-chave finais SEMPRE com `#` (#4285/#4264 adendo do editor).** Feche com um bloco de 1+ hashtags — toda palavra-chave que encerra o texto entra como hashtag (`#Anthropic`, `#ViésAlgorítmico`), nunca como palavra solta sem `#`. Use hashtags específicas do tema, nunca genéricas (`#Tecnologia`, `#IA` só se não houver termo mais específico). Se corpo + hashtags + link não couberem nos 280 chars, o sacrifício é **corpo → hashtags extras**: o link da edição e pelo menos 1 hashtag nunca caem.
    - **Orçamento rígido: ≤280 caracteres TOTAL** (hook + contexto + CTA + hashtags, tudo incluído) — mas conte o CTA como se `{edition_url}` já fosse a URL real resolvida, **pesada em 23 caracteres** (é assim que o X conta qualquer URL via t.co, #3994/#4285), não os 14 chars do placeholder literal escrito no arquivo nem o comprimento real do slug (`https://diar.ia.br/p/{slug}`, 40-80 chars). O `char_count` que você declara no comentário HTML deve refletir esse pior caso ponderado, não a contagem literal do placeholder. Conte antes de finalizar — estourar o orçamento ponderado quebra a publicação no X (Threads tolera, mas o texto é compartilhado).
+   - **4º post (#9568), só com `use_melhor_post_path`:** ler o JSON (`item.title`, `item.summary`, `item.url`) e escrever também `## um`, depois do último destaque, com as MESMAS regras acima (≤280 ponderados, `Mais em {edition_url}`, hashtags com `#`, sem números fora do title/summary). Ângulo prático — o que o leitor ganha usando aquilo.
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-curto.tmp.md` com o formato abaixo. O orchestrator fará o merge em `03-social.md` numa etapa seguinte.
 
 ```markdown
@@ -76,7 +78,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 ## Regras
 
-- O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3` e o conteúdo dos textos. Sem comentários HTML além do `char_count` opcional, sem linhas `Post N —`, sem cabeçalhos internos — qualquer linha além do separador e do texto aparecerá publicada.
+- O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3` (+ `## um` só com `use_melhor_post_path`) e o conteúdo dos textos. Sem comentários HTML além do `char_count` opcional, sem linhas `Post N —`, sem cabeçalhos internos — qualquer linha além do separador e do texto aparecerá publicada.
 - Cada texto deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 textos, nem repetir literalmente o hook já usado no LinkedIn/Facebook/Instagram — ângulo próprio, mesmo compacto.
 - **Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825)** — usar o sujeito concreto (o orçamento de caracteres torna isso ainda mais importante que nos outros canais). Exceções legítimas: o texto é sobre a categoria em si, ambiguidade real sem o termo, ou nome próprio/citação/nome de produto (ex: "Perplexity AI") — ver `context/editorial-rules.md` seção 5.

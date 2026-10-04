@@ -39,12 +39,28 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  USE_MELHOR_POST_ID,
+  loadUseMelhorPostConfigState,
+  readUseMelhorPostState,
+  type UseMelhorPostConfigState,
+} from "./lib/use-melhor-post.ts"; // #9568
+import {
+  buildUseMelhorSlides,
+  findOverflowingUseMelhorSlides,
+  hashUseMelhorSlides,
+  readUseMelhorCarouselStamp,
+  removeStaleUseMelhorSlides,
+  renderUseMelhorSlides,
+  useMelhorSlideFilename,
+  writeUseMelhorCarouselStamp,
+} from "./lib/use-melhor-carousel.ts"; // #9568
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
 import { readCoverOverride } from "./gen-social-card-4x5.ts";
-import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681
+import { readInstagramTestOverride, type CarouselCtaOverride } from "./lib/instagram-test-override.ts"; // #8681
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -64,7 +80,24 @@ export interface GenCarouselCardsResult {
   skipped: { destaque: string; reason: string }[];
   /** Destaques regerados porque o texto do social mudou desde o carimbo (#6064). */
   refreshed: string[];
+  /**
+   * (#9568) Carrossel tipográfico do 4º post (USE MELHOR). AUSENTE enquanto
+   * `publishing.social.use_melhor_time` não estiver definido — com a feature
+   * desligada o resultado é idêntico ao de antes.
+   */
+  use_melhor?: UseMelhorCarouselOutcome;
 }
+
+export interface UseMelhorCarouselOutcome {
+  status: "generated" | "unchanged" | "skipped";
+  slots?: string[];
+  files?: string[];
+  reason?: string;
+}
+
+export type RenderUseMelhorSlidesFn = typeof renderUseMelhorSlides;
+
+const REPO_ROOT = resolve(import.meta.dirname, "..");
 
 /**
  * Seam de render (#6068, review de cobertura): `renderCarouselSlides` chama
@@ -76,7 +109,13 @@ export type RenderCarouselSlidesFn = typeof renderCarouselSlides;
 
 export async function genCarouselCards(
   editionDir: string,
-  opts: { force?: boolean; render?: RenderCarouselSlidesFn } = {},
+  opts: {
+    force?: boolean;
+    render?: RenderCarouselSlidesFn;
+    /** #9568: estado do config do 4º post (default: lido de `platform.config.json`). */
+    useMelhorConfig?: UseMelhorPostConfigState;
+    renderUseMelhor?: RenderUseMelhorSlidesFn;
+  } = {},
 ): Promise<GenCarouselCardsResult> {
   const render = opts.render ?? renderCarouselSlides;
   const socialMdPath = resolve(editionDir, "03-social.md");
@@ -172,7 +211,72 @@ export async function genCarouselCards(
   // edição pré-#6064 cujo carimbo nasce agora, sem re-render.
   if (Object.keys(hashes).length > 0) writeCarouselSourceHashes(editionDir, hashes);
 
-  return { generated, skipped, refreshed };
+  const result: GenCarouselCardsResult = { generated, skipped, refreshed };
+  // #9568: 4º post — só quando o slot está definido. Desligado → nenhum campo
+  // novo, nenhum arquivo novo (D1/D2/D3 seguem exatamente como antes).
+  const umConfig = opts.useMelhorConfig ?? loadUseMelhorPostConfigState(REPO_ROOT);
+  if (umConfig.enabled) {
+    result.use_melhor = await genUseMelhorCarousel(editionDir, socialMd, {
+      force: opts.force,
+      ctaOverride,
+      render: opts.renderUseMelhor ?? renderUseMelhorSlides,
+    });
+    if (result.use_melhor.files) generated.push(...result.use_melhor.files);
+  }
+  return result;
+}
+
+/**
+ * (#9568) Carrossel do 4º post. FAIL-SOFT de ponta a ponta: sem item
+ * selecionado, sem `## um`, ou texto que não cabe → `skipped` com motivo
+ * (o publisher cai pro post de imagem única / pula), nunca lança — o 4º post
+ * não pode bloquear a edição. Falha do RENDER em si (sharp/fonte) continua
+ * propagando, mesma severidade dos destaques: se a fonte de marca falta,
+ * nenhum card sai certo.
+ */
+async function genUseMelhorCarousel(
+  editionDir: string,
+  socialMd: string,
+  opts: { force?: boolean; ctaOverride?: CarouselCtaOverride | null; render: RenderUseMelhorSlidesFn },
+): Promise<UseMelhorCarouselOutcome> {
+  const state = readUseMelhorPostState(editionDir);
+  if (!state?.item) {
+    return { status: "skipped", reason: state?.reason ?? "_internal/use-melhor-post.json ausente — Stage 2 não selecionou o item" };
+  }
+  const section = extractSection(socialMd, "Social");
+  const umText = section ? extractDestaqueBlock(section, USE_MELHOR_POST_ID) : null;
+  if (!umText || !umText.trim()) {
+    return { status: "skipped", reason: `bloco '## ${USE_MELHOR_POST_ID}' não encontrado em '# Social' de 03-social.md` };
+  }
+  const slides = buildUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
+  if (slides.length === 0) {
+    return { status: "skipped", reason: `'## ${USE_MELHOR_POST_ID}' sem corpo` };
+  }
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
+  if (overflow.length > 0) {
+    return {
+      status: "skipped",
+      reason:
+        `slide(s) do 4º post não cabem no card: ` +
+        overflow.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ") +
+        ` — reescrever '## ${USE_MELHOR_POST_ID}' em 03-social.md`,
+    };
+  }
+  const slots = slides.map((s) => s.slot);
+  const files = slots.map((slot) => resolve(editionDir, useMelhorSlideFilename(slot)));
+  const hash = hashUseMelhorSlides(slides);
+  const stamp = readUseMelhorCarouselStamp(editionDir);
+  const allExist = files.every((f) => existsSync(f));
+  if (!opts.force && allExist && stamp?.hash === hash) {
+    removeStaleUseMelhorSlides(editionDir, slots);
+    return { status: "unchanged", slots, files };
+  }
+  await opts.render(editionDir, slides);
+  writeUseMelhorCarouselStamp(editionDir, { hash, slots });
+  // Self-review #9572 (findings 2/3): `## um` com menos parágrafos que o render
+  // anterior deixaria `p{k}` antigos no disco — apaga a sobra.
+  removeStaleUseMelhorSlides(editionDir, slots);
+  return { status: "generated", slots, files };
 }
 
 /**

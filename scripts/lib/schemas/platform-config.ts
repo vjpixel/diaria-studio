@@ -53,6 +53,10 @@ export const PlatformConfigSchema = z.object({
         fallback_schedule: ScheduleSchema,
         day_offset: z.number().optional().default(0),
       }).optional(),
+      // #9568: slot "HH:MM" (BRT) do 4º post (USE MELHOR). null/ausente = feature
+      // desligada. Formato validado em `use-melhor-post.ts` (fail-soft — valor
+      // inválido desliga o 4º post, nunca derruba o parse do config).
+      use_melhor_time: z.string().nullable().optional(),
     }).optional(),
   }).optional(),
 }).passthrough();

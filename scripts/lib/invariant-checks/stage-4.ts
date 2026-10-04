@@ -27,6 +27,13 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+import {
+  USE_MELHOR_POST_ID,
+  loadUseMelhorPostConfigState,
+  readUseMelhorPostState,
+  type UseMelhorPostConfigState,
+} from "../use-melhor-post.ts"; // #9568
+import { findOverflowingUseMelhorSlides, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
@@ -1963,7 +1970,11 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
  * Severity "error", mesma classe do `carousel-cards-stale` em divergência:
  * não é formato degradado, é conteúdo que não pode ser rasterizado como está.
  */
-function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
+function checkCarouselTextOverflow(
+  editionDir: string,
+  /** #9568: injetável pra teste; default = `platform.config.json` do repo. */
+  useMelhorConfig?: UseMelhorPostConfigState,
+): InvariantViolation[] {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) return [];
 
@@ -2011,6 +2022,62 @@ function checkCarouselTextOverflow(editionDir: string): InvariantViolation[] {
       file: socialPath,
     });
   }
+  violations.push(...checkUseMelhorCarouselOverflow(editionDir, section, socialPath, useMelhorConfig, ctaOverride));
+  return violations;
+}
+
+/**
+ * (#9568) Mesma checagem de overflow, pro carrossel de N slides do 4º post
+ * (`## um`). Inerte enquanto `publishing.social.use_melhor_time` não estiver
+ * definido. Severity "warning", nunca "error": o 4º post é fail-soft por
+ * decisão do editor — texto que não cabe faz o Stage 3 PULAR o carrossel
+ * (`gen-carousel-cards.ts`), nunca bloqueia a edição.
+ */
+function checkUseMelhorCarouselOverflow(
+  editionDir: string,
+  section: string,
+  socialPath: string,
+  useMelhorConfig?: UseMelhorPostConfigState,
+  ctaOverride?: CarouselCtaOverride | null,
+): InvariantViolation[] {
+  const config = useMelhorConfig ?? loadUseMelhorPostConfigState(ROOT);
+  if (!config.enabled) return [];
+  const state = readUseMelhorPostState(editionDir);
+  if (!state?.item) return [];
+  const umText = extractDestaqueBlock(section, USE_MELHOR_POST_ID);
+  if (!umText || !umText.trim()) return [];
+  const violations: InvariantViolation[] = [];
+  // Self-review #9572 (finding 6): os lints sociais só enumeram `## d{N}` — a
+  // forma do `## um` é checada aqui (Stages 2 e 4), warning-only como o resto.
+  const shape = lintUseMelhorPostText(umText.trim());
+  if (shape.length > 0) {
+    violations.push({
+      rule: "use-melhor-um-shape",
+      message:
+        `'## ${USE_MELHOR_POST_ID}' (4º post, USE MELHOR) fora do formato do §3c do social-writer: ` +
+        shape.join("; ") +
+        `. Reescrever em 03-social.md (o 4º post é fail-soft, #9568 — não bloqueia a edição).`,
+      source_issue: "#9568",
+      severity: "warning",
+      file: socialPath,
+    });
+  }
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, ctaOverride);
+  if (overflow.length === 0) return violations;
+  violations.push(
+    {
+      rule: "carousel-text-overflow",
+      message:
+        `'## ${USE_MELHOR_POST_ID}' (4º post, USE MELHOR) tem ${overflow.length} slide(s) que não cabem no card: ` +
+        overflow.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ") +
+        `. Reescrever o parágrafo (ou encurtar o título da capa) e rodar ` +
+        `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}". Enquanto isso o ` +
+        `carrossel do 4º post é PULADO (fail-soft, #9568) — não bloqueia a edição.`,
+      source_issue: "#9568",
+      severity: "warning",
+      file: socialPath,
+    },
+  );
   return violations;
 }
 
@@ -2913,7 +2980,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
     description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078)",
     source_issue: "#6078",
     stage: 4,
-    run: checkCarouselTextOverflow,
+    run: (editionDir) => checkCarouselTextOverflow(editionDir),
   },
   {
     id: "instagram-comment-delivery-promise",
