@@ -261,26 +261,49 @@ export function eventConcepts(title: string): Set<string> {
 const STRONG_HACK_TOKENS = new Set([
   "hacked", "hackeada", "hackeado", "hackeadas", "hackeados", "hackearam", "hackeou",
   "invadida", "invadido", "invadidas", "invadidos", "invadiu", "invadiram",
-  "invasao", "invasoes", "ciberataque", "ciberataques", "cyberattack", "cyberattacks",
+  "invasao", "invasoes", "ciberataque", "cyberattack",
   "intrusion", "intrusao",
+  // Plurais `ciberataques`/`cyberattacks` ficam FORA de propósito (re-review
+  // #9560): no plural o termo é quase sempre genérico/defensivo ("evitar
+  // ciberataques", "risco de ciberataques autônomos"), não um incidente.
 ]);
 
 /**
+ * #8666 (re-review #9560): palavra defensiva/de risco nos 1–3 tokens ANTES do
+ * termo forte anula o termo — "proteção contra vazamento de dados", "defend
+ * against cyberattacks", "risco de ciberataque" falam de prevenção/ameaça, não
+ * de um incidente. "após" NÃO é defensivo ("após vazamento de dados internos"
+ * é incidente real).
+ */
+const DEFENSIVE_CUES = new Set([
+  "evitar", "evita", "evitam", "contra", "protecao", "proteger", "protege", "protegem",
+  "defender", "defende", "defend", "defends", "defending", "defense", "defence", "against",
+  "prevent", "prevents", "prevenir", "previne", "prevencao", "risco", "riscos", "risk", "risks",
+  "alerta", "alertas", "alerts", "warns", "warning", "ameaca", "ameacas", "threat", "threats",
+]);
+
+function defensiveBefore(toks: string[], i: number): boolean {
+  return toks.slice(Math.max(0, i - 3), i).some((x) => DEFENSIVE_CUES.has(x));
+}
+
+/**
  * #8666: formas de "invadir" ambíguas (literal × figurativo). Só contam como
- * forte com CONTEXTO de segurança no mesmo título:
- *   - "ajudou/ajuda/ajudar a invadir" (cúmplice de invasão — o caso real de
- *     260921: "Claude ajudou a invadir a OpenAI"); ou
- *   - objeto de segurança nos 3 tokens seguintes ("invadir contas",
- *     "invadem sistemas", "invade servidores").
- * Escolha documentada: "para invadir" sozinho NÃO basta ("chega para invadir
- * o mercado" é figurativo). Título com outro termo forte já conta por ele.
+ * forte com CONTEXTO de segurança logo DEPOIS do verbo (3 tokens seguintes):
+ *   - objeto de segurança inequívoco ("invadir contas", "invade servidores"); ou
+ *   - "ajudou/ajuda/ajudar a invadir" + EMPRESA ("Claude ajudou a invadir a
+ *     OpenAI" — o caso real de 260921, cúmplice de invasão).
+ * Escolhas documentadas (re-review #9560): "ajuda a invadir o mercado" não
+ * conta (sem empresa/objeto depois); "para invadir" sozinho não basta;
+ * `sistema(s)`, `banco(s)` e `rede(s)` ficaram fora dos objetos por serem
+ * ambíguos ("invadir sistemas de saúde", "bancos de dados", "redes sociais").
+ * Título com outro termo forte já conta por ele.
  */
 const CONTEXTUAL_INVADE_TOKENS = new Set(["invadir", "invade", "invadem", "invadirem"]);
 const INVADE_HELP_VERBS = new Set(["ajudou", "ajuda", "ajudar", "ajudam", "ajudaram", "ajudando"]);
 const INVADE_SECURITY_OBJECTS = new Set([
-  "conta", "contas", "sistema", "sistemas", "rede", "redes", "servidor", "servidores",
+  "conta", "contas", "servidor", "servidores",
   "computador", "computadores", "dispositivo", "dispositivos", "celular", "celulares",
-  "banco", "bancos", "email", "emails",
+  "email", "emails",
 ]);
 
 /**
@@ -309,14 +332,19 @@ export function strongEventConcepts(title: string): Set<string> {
   let leakWord = false;
   let leakCue = false;
   toks.forEach((t, i) => {
-    if (STRONG_HACK_TOKENS.has(t)) out.add("HACK");
-    else if (BREACH_TOKENS.has(t) && adjacentTo(toks, i, "data")) out.add("HACK");
-    else if (CONTEXTUAL_INVADE_TOKENS.has(t)) {
+    const defensive = defensiveBefore(toks, i);
+    if (STRONG_HACK_TOKENS.has(t)) {
+      if (!defensive) out.add("HACK");
+    } else if (BREACH_TOKENS.has(t) && adjacentTo(toks, i, "data")) {
+      if (!defensive) out.add("HACK");
+    } else if (CONTEXTUAL_INVADE_TOKENS.has(t) && !defensive) {
+      const after = toks.slice(i + 1, i + 4);
       const helped = toks[i - 1] === "a" && INVADE_HELP_VERBS.has(toks[i - 2] ?? "");
-      const object = toks.slice(i + 1, i + 4).some((x) => INVADE_SECURITY_OBJECTS.has(x));
-      if (helped || object) out.add("HACK");
+      const object = after.some((x) => INVADE_SECURITY_OBJECTS.has(x));
+      const company = after.some((x) => Object.hasOwn(EVENT_COMPANY_ALIASES, x));
+      if (object || (helped && company)) out.add("HACK");
     }
-    if (STRONG_LEAK_TOKENS.has(t)) {
+    if (STRONG_LEAK_TOKENS.has(t) && !defensive) {
       leakWord = true;
       // "data" só como cue colado a termo INGLÊS ("data leak", "leaked data") —
       // em PT "vaza data de lançamento" é data de calendário.

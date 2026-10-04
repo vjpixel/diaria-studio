@@ -204,7 +204,7 @@ test("#8666 review P2.2: 'invade'/'invadem' figurativo não é forte", () => {
   assertNoMatch("ChatGPT invade as escolas", "OpenAI foi invadida por hackers");
   assert.equal(strongEventConcepts("Gemini chega para invadir o mercado").size, 0);
   // Com objeto de segurança ou "ajudou a", conta.
-  assert.ok(strongEventConcepts("Hackers invadem sistemas da OpenAI").has("HACK"));
+  assert.ok(strongEventConcepts("Hackers invadem servidores da OpenAI").has("HACK"));
   assert.ok(strongEventConcepts(D1_260921).has("HACK"));
 });
 
@@ -213,6 +213,49 @@ test("#8666 review P2.3: vazamento de PRODUTO não é forte; de dados é", () =>
   assert.equal(strongEventConcepts("OpenAI vaza data de lançamento do GPT-6").size, 0);
   assert.ok(strongEventConcepts("OpenAI leaked user data").has("LEAK"));
   assert.ok(strongEventConcepts("Senhas de usuários do ChatGPT vazaram").has("LEAK"));
+});
+
+test("#8666 re-review P2: menção defensiva/de risco/produto não é incidente", () => {
+  assertNoMatch(
+    "Microsoft ajuda empresas a evitar ciberataques com Security Copilot",
+    "Microsoft sofre ciberataque russo",
+  );
+  assertNoMatch("How Claude helps defend against cyberattacks, says Anthropic", "Anthropic hacked by state actors");
+  assertNoMatch(
+    "Samsung lança Galaxy AI com proteção contra vazamento de dados",
+    "Samsung proíbe ChatGPT após vazamento de dados internos",
+  );
+  // Título real de 260813.
+  const risco = "OpenAI freia nova IA por risco de ciberataques autônomos";
+  assertNoMatch(risco, "OpenAI foi invadida por hackers");
+  assertNoMatch(risco, "OpenAI hacked by attackers using Claude Opus 5");
+  assertNoMatch(risco, D1_260921);
+  assert.equal(strongEventConcepts("OpenAI alerta para risco de ciberataque com IA").size, 0);
+  assert.equal(strongEventConcepts("Google protects users against data breach").size, 0);
+});
+
+test("#8666 re-review P2: incidentes reais seguem fortes ('após' não é defensivo)", () => {
+  assert.ok(strongEventConcepts("Samsung proíbe ChatGPT após vazamento de dados internos").has("LEAK"));
+  assert.ok(strongEventConcepts("Google sofre ciberataque e dados vazam").has("HACK"));
+  assert.ok(strongEventConcepts("Google sofre ciberataque e dados vazam").has("LEAK"));
+  assert.ok(strongEventConcepts("Microsoft sofre ciberataque russo").has("HACK"));
+  const m = sameEvent("Google sofre ciberataque e dados vazam", "Hackers invadem servidores do Google", { distanceDays: 1 });
+  assert.ok(m);
+  assert.equal(m.signal, "strong_concept");
+});
+
+test("#8666 re-review P3: 'invadir' figurativo com verbo de ajuda ou objeto ambíguo", () => {
+  assertNoMatch(
+    "Microsoft ajuda a invadir o mercado de PCs com Copilot",
+    "Microsoft foi invadida por hackers russos",
+    [0, 1],
+  );
+  assertNoMatch("Amazon quer invadir sistemas de saúde com IA", "Amazon sofre ciberataque", [1, 0]);
+  assert.equal(strongEventConcepts("Meta quer invadir as redes sociais rivais").size, 0);
+  assert.equal(strongEventConcepts("Nvidia ajudou a invadir o mercado de bancos de dados").size, 0);
+  // O trio continua: "ajudou a invadir" + empresa / objeto inequívoco.
+  assert.ok(strongEventConcepts("Rival do ChatGPT ajudou a invadir contas da OpenAI").has("HACK"));
+  assert.ok(strongEventConcepts(D1_260921).has("HACK"));
 });
 
 test("#8666 review: SAME_EDITION é distância 0 e habilita (C)", () => {
