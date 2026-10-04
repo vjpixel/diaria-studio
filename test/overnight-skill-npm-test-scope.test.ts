@@ -50,6 +50,19 @@ describe("diaria-overnight — subagente NUNCA roda a suíte completa local (#29
     );
   });
 
+  it("prompt do fixer (Fase 1 passo 3) manda só os testes afetados, nunca `npm test` (#9539)", () => {
+    assert.doesNotMatch(
+      overnightContent,
+      /aplique cada finding acion[áa]vel no c[óo]digo, rode `npm test`/,
+      "o prompt do dev-fixer não pode mandar rodar a suíte completa",
+    );
+    assert.match(
+      overnightContent,
+      /aplique cada finding acion[áa]vel no c[óo]digo, rode `npx tsc --noEmit` \+ s[óo] os testes afetados/,
+      "o prompt do dev-fixer deve seguir a disciplina do #2959",
+    );
+  });
+
   it("documenta o racional da causa raiz (auto-background dispara em 100% dos subagentes 260703+260704)", () => {
     assert.match(
       overnightContent,

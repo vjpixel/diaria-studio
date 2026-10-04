@@ -101,7 +101,29 @@ describe("#9530/#9081 — par do overnight e agents dedicados de dev", () => {
         /`general-purpose`[^.\n]{0,80}`effort: "?low"?`/,
         `${skillId}: prosa de dispatch general-purpose com effort — usar agent dedicado (#9081)`,
       );
+      // #9539 item 1: o guard acima só olhava `general-purpose`; o develop seguia
+      // mandando `effort: "low"` aos agentes `pr-review-toolkit:*`. Valor ENTRE
+      // ASPAS é a forma de parâmetro de dispatch — frontmatter citado em prosa
+      // (`effort: medium`, sem aspas) continua permitido.
+      assert.doesNotMatch(
+        body,
+        /`effort: "(?:low|medium|high|xhigh|max)"`/,
+        `${skillId}: prosa manda passar effort ao Agent tool (parâmetro inexistente, #9081/#9539)`,
+      );
     }
+  });
+});
+
+/** Caminho relativo à raiz com `/` — o SO pode devolver `\` (Windows), e as exceções nominais usam `/` (#9539 item 5). */
+function toRel(file: string): string {
+  return file.slice(ROOT.length + 1).replace(/\\/g, "/");
+}
+
+describe("#9539 item 5 — rel normalizado independe do separador do SO", () => {
+  it("caminho com `\\` casa a exceção nominal do overnight", () => {
+    const winPath = ROOT + "\\" + ".claude\\skills\\diaria-overnight\\SKILL.md";
+    assert.equal(toRel(winPath), ".claude/skills/diaria-overnight/SKILL.md");
+    assert.ok(SONNET_MEDIUM_DECIDED.has(toRel(winPath)));
   });
 });
 
@@ -113,7 +135,7 @@ describe("#8941 — nenhum pin de Sonnet 5 com effort medium ou sem effort expl�
   });
 
   for (const file of files) {
-    const rel = file.slice(ROOT.length + 1);
+    const rel = toRel(file);
     it(`${rel}: sem Sonnet+medium, sem Sonnet sem effort`, () => {
       const content = readFileSync(file, "utf8");
       const fm = frontmatter(content);
@@ -150,7 +172,7 @@ const APPROVED_MODELS = new Set(["claude-opus-5-5", "claude-sonnet-5-5", "claude
 
 describe("#9003 — model: pinado por ID aprovado e effort explícito (Haiku isento)", () => {
   for (const file of collectFrontmatterFiles()) {
-    const rel = file.slice(ROOT.length + 1);
+    const rel = toRel(file);
     it(`${rel}: model aprovado + effort`, () => {
       const fm = frontmatter(readFileSync(file, "utf8"));
       if (!fm) return;
