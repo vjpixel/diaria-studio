@@ -81,6 +81,9 @@ import { randomUUID, randomBytes } from "node:crypto";
  * (`pr-review-toolkit:code-reviewer`), os 4 do fleet `max`, e o fallback
  * `general-purpose` que o dispatch usa quando o plugin não está instalado
  * (sessão cloud, clone fresco — CLAUDE.md, "Effort do review automatizado").
+ * `dev-revisor` (#9081) é o fallback que as skills overnight/develop nomeiam
+ * desde a #9539 (model/effort fixos no frontmatter); `general-purpose` fica
+ * pelo fallback do próprio hook e por compatibilidade.
  */
 export const REVIEW_AGENT_TYPES = new Set([
   "pr-review-toolkit:code-reviewer",
@@ -89,6 +92,7 @@ export const REVIEW_AGENT_TYPES = new Set([
   "pr-review-toolkit:comment-analyzer",
   "pr-review-toolkit:type-design-analyzer",
   "pr-review-toolkit:code-simplifier",
+  "dev-revisor",
   "general-purpose",
 ]);
 
