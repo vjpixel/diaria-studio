@@ -1,6 +1,7 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
 import { type CouponUsageReport, type CouponCodeReport, commissionCents } from "../../../scripts/lib/stripe-coupons.ts";
 import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
+import { type CouponClariceClassPayload, clariceClassKey } from "../../../scripts/lib/coupon-clarice-class.ts";
 // #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
 // (sucessor do antigo tierRank — o fallback de render pro payload legado
 // by_tier foi removido na fase C, ver firstSendBreakdownRows abaixo).
@@ -1470,13 +1471,18 @@ interface FlatPayment {
   epoch: number;
 }
 
+const DETAIL_WINDOW_DAYS = 60;
+const CLARICE_CLASS_MAX_AGE_MS = 72 * 3600 * 1000;
+
 export function renderCouponTabPanel(
   usage: CouponUsageReport,
   headerNow: Date = new Date(),
   // #3415: `monthlyTitle` renomeia só o <h2> de "Total por mês" pra "Cupons"
   // quando embutido no bloco Presente da Visão Geral — a aba Cupons continua
   // usando o default (rename não pode vazar pra lá, ver caveat da issue).
-  opts: { monthlyTitle?: string } = {},
+  // #9571: `clariceClass` (KV `coupons:clarice-class`) alimenta a coluna
+  // "Clarice"; ausente/defasado → "—", nunca um "novo" falso.
+  opts: { monthlyTitle?: string; clariceClass?: CouponClariceClassPayload | null } = {},
 ): string {
   const fmtBRL = (cents: number): string => {
     const abs = Math.abs(cents);
@@ -1554,11 +1560,26 @@ export function renderCouponTabPanel(
     return escHtml(fmtDate(payEpoch) + forecastMark);
   };
 
-  const detailRows = allRows.map((r) => {
+  // #9571: corte de 60 dias SÓ na tabela de detalhe (relativo a headerNow) —
+  // `allRows` segue inteiro pro "Total por mês" e pro legado de pagamentos.
+  const cutoffEpoch = Math.floor(headerNow.getTime() / 1000) - DETAIL_WINDOW_DAYS * 86400;
+  const detailSource = allRows
+    .filter((r) => r.created >= cutoffEpoch)
+    .sort((a, b) => b.created - a.created);
+  const classMap = opts.clariceClass &&
+    headerNow.getTime() - Date.parse(opts.clariceClass.generated_at) <= CLARICE_CLASS_MAX_AGE_MS
+    ? opts.clariceClass.classes
+    : null;
+  const clariceCell = (r: (typeof allRows)[number]): string =>
+    escHtml(classMap?.[clariceClassKey(r.customer_email, r.created)] ?? "—");
+
+  const detailRows = detailSource.map((r) => {
     // #2743: pago (realizado, net, 12m desde o resgate) + comissão de 40%.
     return `<tr>
       <td>${escHtml(r.coupon_code)}</td>
       <td>${escHtml(r.customer_email)}</td>
+      <td>${escHtml(fmtDate(r.created))}</td>
+      <td>${clariceCell(r)}</td>
       <td>${escHtml(r.interval)}</td>
       <td>${escHtml(fmtBRL(r.paid_cents ?? 0))}</td>
       <td><strong>${escHtml(fmtBRL(r.commission_cents ?? 0))}</strong></td>
@@ -1570,7 +1591,7 @@ export function renderCouponTabPanel(
   // lista de pagamentos (a lista, quando presente e vazia, já usa a previsão).
   // #3053: exclui `status === "canceled"` — esse caso não renderiza mais o "*"
   // (vira "—" acima), então não deve contar pra decidir se a legenda aparece.
-  const hasForecast = allRows.some(
+  const hasForecast = detailSource.some(
     (r) => (!r.payments || r.payments.length === 0) && r.first_payment_is_forecast && r.status !== "canceled",
   );
   const forecastLegend = hasForecast
@@ -1646,6 +1667,10 @@ export function renderCouponTabPanel(
 </details>`;
       }).join("\n");
 
+  const detailEmpty = detailSource.length === 0
+    ? `<p class="section-note coupon-detail-empty">Nenhum resgate nos últimos ${DETAIL_WINDOW_DAYS} dias.</p>`
+    : "";
+
   return `
 ${generatedAtNote}
 <section class="phase2-section" id="coupon-monthly">
@@ -1661,6 +1686,8 @@ ${generatedAtNote}
       <tr>
         <th scope="col">Cupom</th>
         <th scope="col">Email</th>
+        <th scope="col">Resgate</th>
+        <th scope="col">Clarice</th>
         <th scope="col">Plano</th>
         <th scope="col">Pago (12m)</th>
         <th scope="col">Comissão (40%)</th>
@@ -1671,6 +1698,8 @@ ${generatedAtNote}
     <tbody>${detailRows}</tbody>
   </table>
   </div>
+  ${detailEmpty}
+  <p class="section-note coupon-detail-window">Mostra só resgates dos últimos ${DETAIL_WINDOW_DAYS} dias; a comissão de resgates mais antigos continua em "Total por mês".</p>
   ${forecastLegend}
 </section>`;
 }

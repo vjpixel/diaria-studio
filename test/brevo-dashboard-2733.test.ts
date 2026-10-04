@@ -62,7 +62,7 @@ const syntheticCoupons: CouponUsageReport = {
         customer_email: "test1@example.com",
         subscription: "sub_SYNTH1",
         status: "active",
-        created: 1782383062,
+        created: Math.floor(Date.now() / 1000) - 86400, // #9571: dentro da janela de 60d do detalhe
         plan_amount_cents: 44900,
         currency: "brl",
         interval: "year",

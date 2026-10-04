@@ -18,7 +18,19 @@ import {
   getCouponUsage,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { CouponUsageReport, RedemptionRow } from "../scripts/lib/stripe-coupons.ts";
+import { clariceClassKey, type CouponClariceClassPayload } from "../scripts/lib/coupon-clarice-class.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
+
+// ---------------------------------------------------------------------------
+
+// #9571: o detalhe corta em 60 dias relativo a headerNow — congela o "agora"
+// perto dos resgates sintéticos (jun/2026) pra os testes não dependerem do relógio.
+const FIXTURE_NOW = new Date("2026-07-10T12:00:00Z");
+const renderCoupons = (
+  usage: CouponUsageReport,
+  now: Date = FIXTURE_NOW,
+  opts?: Parameters<typeof renderCouponTabPanel>[2],
+) => renderCouponTabPanel(usage, now, opts);
 
 // ---------------------------------------------------------------------------
 // Fixture sintética — IDs e emails exclusivamente @example.com
@@ -226,7 +238,7 @@ describe("getCouponUsage — mode=kv-only (#2779: KV é a única fonte no caminh
 // ---------------------------------------------------------------------------
 
 describe("renderCouponTabPanel", () => {
-  const html = renderCouponTabPanel(syntheticUsage);
+  const html = renderCoupons(syntheticUsage);
 
   it("contém coupon-monthly e coupon-detail (#2758: 'Resumo por cupom' removido)", () => {
     assert.ok(html.includes("coupon-monthly"), "deve ter seção coupon-monthly (total por mês)");
@@ -265,7 +277,7 @@ describe("renderCouponTabPanel", () => {
         ],
       },
     };
-    const h = renderCouponTabPanel(malicious);
+    const h = renderCoupons(malicious);
     assert.ok(!h.includes("<script>"), "email malicioso deve ser escapado");
     assert.ok(h.includes("&lt;script&gt;"), "email escapado deve conter &lt;script&gt;");
   });
@@ -301,7 +313,7 @@ describe("renderCouponTabPanel", () => {
         ],
       },
     };
-    const h = renderCouponTabPanel(usage);
+    const h = renderCoupons(usage);
 
     it("cabeçalhos de Pago + Comissão presentes no detalhe", () => {
       assert.ok(h.includes("Pago (12m)"), "coluna Pago no detalhe");
@@ -325,7 +337,7 @@ describe("renderCouponTabPanel", () => {
           }],
         },
       } as unknown as CouponUsageReport;
-      const hLegacy = renderCouponTabPanel(legacy);
+      const hLegacy = renderCoupons(legacy);
       assert.ok(hLegacy.includes("R$0,00"), "campos ausentes renderizam R$0,00");
       assert.ok(hLegacy.includes("coupon-monthly"), "seção mensal ainda renderiza (vazia)");
     });
@@ -346,20 +358,20 @@ describe("renderCouponTabPanel", () => {
     });
 
     it("cabeçalho 'Pagamentos' substitui 'Criada' e '1º pagamento' (#2758)", () => {
-      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
+      const h = renderCoupons(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
       assert.ok(h.includes('<th scope="col">Pagamentos</th>'), "novo cabeçalho presente");
       assert.ok(!h.includes("<th>Criada</th>") && !h.includes('<th scope="col">Criada</th>'), "cabeçalho antigo (#2743) removido");
       assert.ok(!h.includes("<th>1º pagamento</th>") && !h.includes('<th scope="col">1º pagamento</th>'), "cabeçalho intermediário (#2749) removido");
     });
 
     it("previsão (trial) → data com '*' + legenda", () => {
-      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
+      const h = renderCoupons(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: true }));
       assert.match(h, /\d{2}\/\d{2}\/\d{4}\*/, "data seguida de asterisco");
       assert.ok(h.includes("previsão do 1º pagamento"), "legenda do asterisco presente");
     });
 
     it("pagamento real → data (sem '*') e sem legenda", () => {
-      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: false }));
+      const h = renderCoupons(mkUsage({ first_payment_epoch: 1783442446, first_payment_is_forecast: false }));
       // positivo: a linha renderizou de fato (não vacuamente vazia).
       assert.ok(h.includes("f@example.com"), "linha renderizada");
       assert.match(h, /\d{2}\/\d{2}\/\d{4}/, "há uma data na célula");
@@ -390,7 +402,7 @@ describe("renderCouponTabPanel", () => {
           ],
         },
       };
-      const h = renderCouponTabPanel(usage);
+      const h = renderCoupons(usage);
       const asterisks = h.match(/\d{2}\/\d{2}\/\d{4}\*/g) ?? [];
       assert.equal(asterisks.length, 1, "só a linha de previsão tem asterisco");
       const legendCount = (h.match(/previsão do 1º pagamento/g) ?? []).length;
@@ -401,12 +413,12 @@ describe("renderCouponTabPanel", () => {
     it("data formatada em BRT (America/Sao_Paulo), não UTC", () => {
       // epoch 2026-07-01T01:30:00Z = 2026-06-30 22:30 BRT (UTC-3) → dia BRT = 30/06.
       const epoch = Math.floor(Date.UTC(2026, 6, 1, 1, 30, 0) / 1000);
-      const h = renderCouponTabPanel(mkUsage({ first_payment_epoch: epoch, first_payment_is_forecast: true }));
+      const h = renderCoupons(mkUsage({ first_payment_epoch: epoch, first_payment_is_forecast: true }));
       assert.ok(h.includes("30/06/2026*"), "dia BRT (30/06), não UTC (01/07)");
     });
 
     it("KV legado sem first_payment_* → usa created, sem '*' nem legenda", () => {
-      const h = renderCouponTabPanel(mkUsage({}));
+      const h = renderCoupons(mkUsage({}));
       assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem asterisco no legado");
       assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda no legado");
     });
@@ -415,7 +427,7 @@ describe("renderCouponTabPanel", () => {
     // nunca vai se realizar, mostrar um indicador neutro em vez da data com "*".
     describe("cancelada sem pagamento real (#3053)", () => {
       it("status='canceled' + payments=[] → mostra '—', NÃO a data prevista com '*'", () => {
-        const h = renderCouponTabPanel(mkUsage({
+        const h = renderCoupons(mkUsage({
           status: "canceled",
           first_payment_epoch: 1783442446,
           first_payment_is_forecast: true,
@@ -427,7 +439,7 @@ describe("renderCouponTabPanel", () => {
       });
 
       it("status='canceled' + payments=undefined (KV legado) → mesmo comportamento neutro", () => {
-        const h = renderCouponTabPanel(mkUsage({
+        const h = renderCoupons(mkUsage({
           status: "canceled",
           first_payment_epoch: 1783442446,
           first_payment_is_forecast: true,
@@ -438,7 +450,7 @@ describe("renderCouponTabPanel", () => {
       });
 
       it("contraste: status='trialing' nas mesmas condições CONTINUA mostrando a previsão normalmente", () => {
-        const h = renderCouponTabPanel(mkUsage({
+        const h = renderCoupons(mkUsage({
           status: "trialing",
           first_payment_epoch: 1783442446,
           first_payment_is_forecast: true,
@@ -449,7 +461,7 @@ describe("renderCouponTabPanel", () => {
       });
 
       it("status='canceled' MAS payments TEM itens (cancelou depois de já ter pago) → mantém a lista real, sem '—'", () => {
-        const h = renderCouponTabPanel(mkUsage({
+        const h = renderCoupons(mkUsage({
           status: "canceled",
           first_payment_epoch: 1783442446,
           first_payment_is_forecast: true,
@@ -463,11 +475,15 @@ describe("renderCouponTabPanel", () => {
         // Não há asterisco enganoso pra corrigir aqui — o dado legado já não
         // promete nada (sem marcador de previsão). O fix é escopado só pro
         // caso que de fato mostra "previsão*" pra uma assinatura cancelada.
-        const h = renderCouponTabPanel(mkUsage({
+        const h = renderCoupons(mkUsage({
           status: "canceled",
           payments: [],
           // first_payment_epoch/first_payment_is_forecast ausentes (undefined)
-        }));
+        }), FIXTURE_NOW, {
+          // #9571: com classificação disponível a coluna Clarice não renderiza "—",
+          // então o `>—<` abaixo só pode vir da célula de pagamentos.
+          clariceClass: { generated_at: FIXTURE_NOW.toISOString(), classes: { [clariceClassKey("f@example.com", 1782383062)]: "novo" } },
+        });
         assert.ok(!/\d{2}\/\d{2}\/\d{4}\*/.test(h), "sem asterisco (nenhuma previsão foi feita)");
         assert.ok(!h.includes("previsão do 1º pagamento"), "sem legenda de previsão");
         assert.ok(!h.includes(">—<"), "não usa o indicador neutro aqui — não há nada enganoso a esconder");
@@ -490,14 +506,14 @@ describe("renderCouponTabPanel", () => {
     });
 
     it("com generatedAt: mostra 'Atualizado ... BRT'", () => {
-      const h = renderCouponTabPanel(mkUsage("2026-07-01T09:00:00.000Z"));
+      const h = renderCoupons(mkUsage("2026-07-01T09:00:00.000Z"));
       assert.ok(h.includes("Atualizado"), "texto de atualização presente");
       assert.ok(h.includes("BRT"), "formatado em BRT");
       assert.ok(!h.includes("indisponível"), "não deve mostrar o fallback quando o dado existe");
     });
 
     it("sem generatedAt (KV pré-#2766): fallback gracioso, sem crash", () => {
-      const h = renderCouponTabPanel(mkUsage(undefined));
+      const h = renderCoupons(mkUsage(undefined));
       assert.ok(h.includes("indisponível"), "mensagem de fallback presente");
       // #3092: nota não deve mais expor número de issue interna (#2750) pro
       // editor — o texto aponta pro refresh sem o jargão de tracking.
@@ -532,7 +548,7 @@ describe("renderCouponTabPanel", () => {
     };
 
     it("plano mensal com 3 pagamentos: célula mostra contagem + total, expande as 3 datas", () => {
-      const h = renderCouponTabPanel(mkUsageWithPayments([
+      const h = renderCoupons(mkUsageWithPayments([
         { epoch: 1782383062, amount_cents: 9990 },
         { epoch: 1785061462, amount_cents: 9990 },
         { epoch: 1787739862, amount_cents: 9990 },
@@ -546,7 +562,7 @@ describe("renderCouponTabPanel", () => {
     });
 
     it("1 pagamento: singular ('1 pagamento', não '1 pagamentos')", () => {
-      const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
+      const h = renderCoupons(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
       assert.ok(h.includes("1 pagamento"), "singular presente");
       assert.ok(!h.includes("1 pagamentos"), "sem plural incorreto");
     });
@@ -566,14 +582,14 @@ describe("renderCouponTabPanel", () => {
           }],
         },
       };
-      const h = renderCouponTabPanel(usage);
+      const h = renderCoupons(usage);
       assert.ok(!h.includes("0 pagamentos"), "não mostra '0 pagamentos' — usa a previsão");
       assert.match(h, /\d{2}\/\d{2}\/\d{4}\*/, "mostra a data prevista com asterisco");
     });
 
     describe("tabela mensal (coupon-monthly)", () => {
       it("sem nenhum pagamento em lugar nenhum → mensagem vazia graciosa", () => {
-        const h = renderCouponTabPanel(syntheticUsage); // fixture sem `payments` em nenhuma redemption
+        const h = renderCoupons(syntheticUsage); // fixture sem `payments` em nenhuma redemption
         assert.ok(h.includes("coupon-monthly"), "seção presente");
         assert.ok(h.includes("Nenhum pagamento registrado"), "mensagem vazia");
       });
@@ -582,7 +598,7 @@ describe("renderCouponTabPanel", () => {
         // jan/2026 e mar/2026 (BRT) — meses bem distantes, sem ambiguidade de fuso.
         const jan = Math.floor(Date.UTC(2026, 0, 15, 12, 0, 0) / 1000);
         const mar = Math.floor(Date.UTC(2026, 2, 15, 12, 0, 0) / 1000);
-        const h = renderCouponTabPanel(mkUsageWithPayments([
+        const h = renderCoupons(mkUsageWithPayments([
           { epoch: jan, amount_cents: 9990 },
           { epoch: mar, amount_cents: 9990 },
         ]));
@@ -593,7 +609,7 @@ describe("renderCouponTabPanel", () => {
       });
 
       it("drill-down do mês mostra cupom/email/plano/valor/comissão/data de cada pagamento", () => {
-        const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
+        const h = renderCoupons(mkUsageWithPayments([{ epoch: 1782383062, amount_cents: 9990 }]));
         assert.ok(h.includes("monthly@example.com"), "email do pagamento no drill-down");
         assert.ok(h.includes("NEWS25"), "cupom no drill-down");
         assert.ok(h.includes(fmtBRLTest(3996)), "comissão de 40% sobre R$99,90 (R$39,96) calculada por pagamento");
@@ -602,7 +618,7 @@ describe("renderCouponTabPanel", () => {
       it("total do mês soma pago + comissão corretamente (2 pagamentos no mesmo mês)", () => {
         const epochA = 1782383062; // 25/06/2026 07:24 BRT
         const epochB = epochA + 86400; // 26/06/2026 07:24 BRT — mesmo mês, longe do limite (dia 25→26)
-        const h = renderCouponTabPanel(mkUsageWithPayments([
+        const h = renderCoupons(mkUsageWithPayments([
           { epoch: epochA, amount_cents: 9990 },
           { epoch: epochB, amount_cents: 9990 },
         ]));
@@ -614,7 +630,7 @@ describe("renderCouponTabPanel", () => {
         const jan = Math.floor(Date.UTC(2026, 0, 15, 12, 0, 0) / 1000);
         const abr = Math.floor(Date.UTC(2026, 3, 15, 12, 0, 0) / 1000);
         const jul = Math.floor(Date.UTC(2026, 6, 15, 12, 0, 0) / 1000);
-        const h = renderCouponTabPanel(mkUsageWithPayments([
+        const h = renderCoupons(mkUsageWithPayments([
           { epoch: jan, amount_cents: 9990 },
           { epoch: jul, amount_cents: 9990 },
           { epoch: abr, amount_cents: 9990 },
@@ -628,7 +644,7 @@ describe("renderCouponTabPanel", () => {
         // 2026-07-01T01:30Z = 2026-06-30 22:30 BRT — deve agrupar em 06/2026, não 07/2026
         // (bug distinto do fmtDate/#2749 — brtMonthKey é função própria pro #2758).
         const epoch = Math.floor(Date.UTC(2026, 6, 1, 1, 30, 0) / 1000);
-        const h = renderCouponTabPanel(mkUsageWithPayments([{ epoch, amount_cents: 9990 }]));
+        const h = renderCoupons(mkUsageWithPayments([{ epoch, amount_cents: 9990 }]));
         assert.ok(h.includes("06/2026"), "agrupado no mês BRT (06/2026)");
         assert.ok(!h.includes("07/2026"), "NÃO agrupado no mês UTC (07/2026)");
       });
@@ -665,7 +681,7 @@ describe("renderCouponTabPanel", () => {
             }],
           },
         };
-        const h = renderCouponTabPanel(usage);
+        const h = renderCoupons(usage);
         assert.ok(h.includes("R$99,90"), "valor do pagamento único presente");
         assert.ok(!h.includes("R$199,80"), "NÃO soma 2× (deduplicado por charge id)");
       });
@@ -697,7 +713,7 @@ describe("renderCouponTabPanel", () => {
             }],
           },
         };
-        const h = renderCouponTabPanel(usage);
+        const h = renderCoupons(usage);
         assert.ok(h.includes("x@example.com") && h.includes("y@example.com"), "os 2 clientes aparecem no drill-down");
         assert.ok(h.includes("R$548,90"), "total do mês soma os 2 clientes (R$449,00 + R$99,90)");
       });
@@ -716,7 +732,7 @@ describe("renderCouponTabPanel", () => {
             }],
           },
         };
-        const h = renderCouponTabPanel(legacy);
+        const h = renderCoupons(legacy);
         assert.ok(h.includes("Nenhum pagamento registrado"), "seção mensal vazia (sem dados pra agregar)");
         assert.ok(h.includes("R$449,00"), "aviso menciona o valor real (não fica em silêncio parecendo R$0)");
         assert.ok(h.includes("formato antigo"), "aviso explica que é dado legado, não falta de receita");
@@ -736,7 +752,16 @@ function fmtBRLTest(cents: number): string {
 
 describe("renderDashboardHtml — couponUsage", () => {
   describe("(a) com fixture sintética (couponUsage != null)", () => {
-    const html = renderDashboardHtml(emptyCampaigns, [], null, null, null, syntheticUsage);
+    // #9571: renderDashboardHtml usa o relógio real e o detalhe corta em 60 dias —
+    // rebaseia os resgates sintéticos pra "agora" pra o e-mail aparecer na tabela.
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const recentUsage: CouponUsageReport = Object.fromEntries(
+      Object.entries(syntheticUsage).map(([code, rep]) => [
+        code,
+        { ...rep, redemptions: rep.redemptions.map((r) => ({ ...r, created: nowEpoch - 86400 })) },
+      ]),
+    );
+    const html = renderDashboardHtml(emptyCampaigns, [], null, null, null, recentUsage);
 
     it("contém o painel de cupons (div id=panel-cupons)", () => {
       // #2741: checa o DIV do painel, não a string crua — o seletor CSS
@@ -826,5 +851,86 @@ describe("renderDashboardHtml — couponUsage", () => {
         assert.ok(html.includes("panel-contatos"), `panel-contatos deve estar presente [${label}]`);
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9571 — Detalhe: coluna Resgate, ordem desc, corte de 60 dias, Clarice
+// ---------------------------------------------------------------------------
+
+describe("renderCouponTabPanel — detalhe por assinatura (#9571)", () => {
+  const DAY = 86400;
+  const nowEpoch = Math.floor(FIXTURE_NOW.getTime() / 1000);
+  const mkRow = (email: string, code: string, created: number, payments?: Array<{ id: string; epoch: number; amount_cents: number }>): RedemptionRow => ({
+    coupon_code: code, coupon_id: "cpn_" + code, percent_off: 50, duration: "once",
+    customer: "cus_" + email, customer_email: email, subscription: "sub_" + email,
+    status: "active", created, plan_amount_cents: 9990, currency: "brl", interval: "month",
+    discount_value_cents: 0, paid_cents: 9990, commission_cents: 3996, ...(payments ? { payments } : {}),
+  } as RedemptionRow);
+  const mk = (rows: RedemptionRow[]): CouponUsageReport => {
+    const byCode: Record<string, RedemptionRow[]> = {};
+    for (const r of rows) (byCode[r.coupon_code] ??= []).push(r);
+    return Object.fromEntries(Object.entries(byCode).map(([code, redemptions]) => [code, {
+      couponIds: ["cpn_" + code], timesRedeemed: redemptions.length, rowCount: redemptions.length,
+      totalProjectedDiscountCents: 0, totalPaidCents: 0, totalCommissionCents: 0, redemptions,
+    }])) as unknown as CouponUsageReport;
+  };
+  const detailEmails = (h: string): string[] => {
+    const detail = h.slice(h.indexOf('id="coupon-detail"'));
+    return [...detail.matchAll(/<td>([a-z0-9]+@example\.com)<\/td>/g)].map((m) => m[1]);
+  };
+
+  it("ordena do resgate mais novo pro mais antigo, independente do código", () => {
+    const h = renderCoupons(mk([
+      mkRow("meio@example.com", "NEWS50", nowEpoch - 20 * DAY),
+      mkRow("novo@example.com", "NEWS25", nowEpoch - 2 * DAY),
+      mkRow("velho@example.com", "NEWS50", nowEpoch - 40 * DAY),
+    ]));
+    assert.deepEqual(detailEmails(h), ["novo@example.com", "meio@example.com", "velho@example.com"]);
+  });
+
+  it("resgate com 61d fica fora do detalhe mas seus payments seguem no Total por mês", () => {
+    const h = renderCoupons(mk([
+      mkRow("fora@example.com", "NEWS50", nowEpoch - 61 * DAY, [{ id: "ch_old", epoch: nowEpoch - 5 * DAY, amount_cents: 9990 }]),
+      mkRow("dentro@example.com", "NEWS50", nowEpoch - 59 * DAY),
+    ]));
+    assert.deepEqual(detailEmails(h), ["dentro@example.com"]);
+    const monthly = h.slice(h.indexOf('id="coupon-monthly"'), h.indexOf('id="coupon-detail"'));
+    assert.ok(monthly.includes("fora@example.com"), "pagamento do resgate antigo continua no Total por mês");
+    assert.ok(h.includes("últimos 60 dias"), "nota sobre a janela");
+  });
+
+  it("cabeçalho 'Resgate' e data formatada em BRT (23h BRT de 9/jul = 02h UTC de 10/jul)", () => {
+    const epoch = Math.floor(Date.parse("2026-07-10T02:30:00Z") / 1000);
+    const h = renderCoupons(mk([mkRow("a@example.com", "NEWS50", epoch)]));
+    assert.ok(h.includes('<th scope="col">Resgate</th>'));
+    assert.ok(h.includes("<td>09/07/2026</td>"), "data em BRT, não UTC");
+  });
+
+  it("nenhum resgate em 60 dias → nota neutra de estado vazio", () => {
+    const h = renderCoupons(mk([mkRow("a@example.com", "NEWS50", nowEpoch - 90 * DAY)]));
+    assert.ok(h.includes("Nenhum resgate nos últimos 60 dias"));
+  });
+
+  describe("coluna Clarice novo/antigo", () => {
+    const cls = (m: Record<string, "novo" | "antigo">, generated = FIXTURE_NOW): CouponClariceClassPayload =>
+      ({ generated_at: generated.toISOString(), classes: m });
+    const created = nowEpoch - 3 * DAY;
+    const one = mk([mkRow("a@example.com", "NEWS50", created)]);
+
+    it("mostra novo/antigo conforme o KV", () => {
+      const h = renderCoupons(one, FIXTURE_NOW, { clariceClass: cls({ [clariceClassKey("A@example.com ", created)]: "antigo" }) });
+      assert.ok(h.includes("<td>antigo</td>"));
+    });
+    it("sem classificação pra linha → '—', nunca 'novo'", () => {
+      const h = renderCoupons(one, FIXTURE_NOW, { clariceClass: cls({}) });
+      assert.ok(!h.includes("<td>novo</td>"));
+      assert.ok(h.includes("<td>—</td>"));
+    });
+    it("KV ausente ou defasado (>72h) → '—'", () => {
+      assert.ok(!renderCoupons(one).includes("<td>novo</td>"));
+      const stale = cls({ [clariceClassKey("a@example.com", created)]: "novo" }, new Date(FIXTURE_NOW.getTime() - 100 * 3600 * 1000));
+      assert.ok(!renderCoupons(one, FIXTURE_NOW, { clariceClass: stale }).includes("<td>novo</td>"));
+    });
   });
 });
