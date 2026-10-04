@@ -37,8 +37,9 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "
 import { dirname, resolve } from "node:path";
 import { parseSections } from "./newsletter-parse.ts";
 
-/** Id da seção do 4º post em `03-social.md` (`## um`, sob `# Social` e `# Curto`). */
-export const USE_MELHOR_POST_ID = "um";
+/** Id da seção do 4º post em `03-social.md` (`## um`) — definido no módulo folha. */
+export { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
+import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 
 /** `utm_content` próprio do 4º post — mede separado dos destaques. */
 export const USE_MELHOR_UTM_CONTENT = "usemelhor";

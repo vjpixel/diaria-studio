@@ -195,19 +195,20 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
-**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agenda às `publishing.social.use_melhor_time` (08:00 BRT) — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Segue manual: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post` (ver `context/publishers/linkedin.md`). `resolve-post-pixel.ts` prefere `## um` e só cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`) em edição antiga sem `## um`:
+**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agendou no Stage 5 — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Segue manual: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post` (ver `context/publishers/linkedin.md`). `resolve-post-pixel.ts` só devolve o `## um` quando o plano do 4º post está `ready` (mesmo `planUseMelhorDispatch` do Stage 5 — item re-conferido contra o `02-reviewed.md` final); `## um` presente mas plano pulado → `(nao encontrado)` + motivo no stderr. Edição antiga sem `## um` cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`):
 
 ```bash
-npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/
-npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --image   # → POST_PIXEL_IMAGE (04-um-carousel-cover-4x5.jpg; edição antiga: 04-d1-1x1.jpg)
+npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/            # → POST_PIXEL_TEXT
+npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --image    # → POST_PIXEL_IMAGE (04-um-carousel-cover-4x5.jpg; edição antiga: 04-d1-1x1.jpg)
+npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --json     # → scheduled_at = POST_PIXEL_AT
 ```
 
-Exit code:
-- `0` → texto resolvido normalmente (`## um`, ou `## post_pixel` legado).
-- `1` → estrutura ausente (03-social.md ausente, ou nem `## um` nem `## post_pixel`) — mostrar `(nao encontrado)` no lembrete, não bloqueia o gate.
+Exit code (os três modos):
+- `0` → resolvido (`## um` com plano pronto, ou `## post_pixel` legado).
+- `1` → nada a mostrar: 03-social.md ausente, nem `## um` nem `## post_pixel`, plano do 4º post pulado (motivo no stderr — repetir o motivo no lembrete), ou, em `--image`, arquivo inexistente/carrossel defasado. stdout = `(nao encontrado)`. Sem imagem: omitir a linha `Imagem:` do lembrete. **Não bloqueia o gate.**
 - `2` → (só caminho legado `## post_pixel`) `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (#2153 — post pessoal é amplificação opcional).
 
-Guardar stdout em `POST_PIXEL_TEXT`.
+Guardar o stdout dos três em `POST_PIXEL_TEXT`, `POST_PIXEL_IMAGE` e `POST_PIXEL_AT` (`scheduled_at` do `--json` — o horário REAL da entry `linkedin`/`um` de `06-social-published.json`, que pode ter sido shiftado pelo past-slot guard; `null` → "mesmo horário do 4º post da página, ver resumo do Stage 5"). Nunca usar `use_melhor_time` do config como horário do lembrete. Se `use_melhor.status` da saída do `publish-linkedin.ts` (Stage 5) for `skip`, o lembrete diz que o 4º post não saiu e por quê.
 
 **Marcador de `gate_at` (#8866) — fail-soft, nunca bloqueia.** Imediatamente antes de apresentar o gate único, gravar o timestamp de apresentação (usado por `pipeline_ms` — tempo do pipeline até o gate, excluindo a espera pela resposta do editor):
 ```bash
@@ -240,8 +241,8 @@ Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel (4º post USE MELHOR, #9568)
-Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {use_melhor_time} BRT do dia da edição — mesmo horário do 4º post da página:
-  Imagem: {EDITION_DIR}/{POST_PIXEL_IMAGE}
+Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {POST_PIXEL_AT em BRT} — mesmo horário do 4º post da página:
+  Imagem: {EDITION_DIR}/{POST_PIXEL_IMAGE}   ← omitir a linha se --image saiu 1
 
 {POST_PIXEL_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

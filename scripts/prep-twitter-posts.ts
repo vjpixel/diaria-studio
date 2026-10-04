@@ -89,7 +89,7 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readSocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, readSocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #4309 — extração do `## dN` + guard de scaffolding
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -98,6 +98,9 @@ import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per
 import { TWITTER_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
   applyUseMelhorUtmToText,
+  findExistingUseMelhorEntry,
+  summarizeUseMelhor,
+  type UseMelhorDispatchSummary,
   planUseMelhorDispatch,
   reportUseMelhorPlan,
   reportUseMelhorSkip,
@@ -191,6 +194,12 @@ export interface PrepResult {
   skipped: Array<{ destaque: string; reason: string }>;
   /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
   skipped_image: Array<{ destaque: string; reason: string }>;
+  /**
+   * #9568: estado do 4º post (USE MELHOR) nesta rodada — `off`/`skip` com
+   * motivo aparecem AQUI mesmo quando o item nunca chega a `skipped`
+   * (plano desligado/pulado antes de olhar o texto).
+   */
+  use_melhor?: UseMelhorDispatchSummary;
 }
 
 /**
@@ -457,15 +466,9 @@ export function prepTwitterPosts(
   const umPlan = planUseMelhorDispatch(editionDir, gateConfig);
   const umLogRoot = opts.logRootDir ?? ROOT;
   reportUseMelhorPlan("twitter", umPlan, { editionId: editionDate, rootDir: umLogRoot });
+  let useMelhor: UseMelhorDispatchSummary = summarizeUseMelhor(umPlan, null);
   if (umPlan.status === "ready") {
-    const existing = skipExisting
-      ? published.posts.find(
-          (p) =>
-            p.platform === "twitter" &&
-            p.destaque === "um" &&
-            (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
-        )
-      : undefined;
+    const existing = skipExisting ? findExistingUseMelhorEntry(published.posts, "twitter") : undefined;
     let umText: string | null = null;
     let umReason: string | null = existing ? `already ${existing.status}` : null;
     if (!umReason) {
@@ -486,13 +489,23 @@ export function prepTwitterPosts(
     }
     if (umReason) {
       skipped.push({ destaque: "um", reason: umReason });
-      if (!existing) reportUseMelhorSkip("twitter", umReason, { editionId: editionDate, rootDir: umLogRoot });
+      if (!existing) {
+        reportUseMelhorSkip("twitter", umReason, { editionId: editionDate, rootDir: umLogRoot });
+        useMelhor = { status: "skip", reason: umReason };
+      }
     } else if (umText) {
       let dueAt: string | null = null;
       try {
         dueAt = computeScheduledAt({ config: gateConfig, editionDate, destaque: "um", platform: "twitter", now: opts.now });
       } catch (e: any) {
-        skipped.push({ destaque: "um", reason: `schedule_error: ${e.message}` });
+        // Erro de agendamento = falha real (mesmo peso dos destaques): grava
+        // `failed` no store em vez de só pular — vira sinal do invariante pós-dispatch.
+        const reason = `schedule_error: ${e.message}`;
+        skipped.push({ destaque: "um", reason });
+        appendSocialPosts(publishedPath, [
+          { platform: "twitter", destaque: "um", url: null, status: "failed", scheduled_at: null, reason },
+        ]);
+        useMelhor = { status: "skip", reason };
       }
       if (dueAt) {
         let publicImages: Record<string, { url?: string }> | undefined;
@@ -507,7 +520,10 @@ export function prepTwitterPosts(
         }
         const images = resolveUseMelhorTwitterImages(publicImages, umPlan, editionDate);
         if (images.length === 0) {
-          skippedImage.push({ destaque: "um", reason: "capa do 4º post ausente em 06-public-images.json — post só texto" });
+          skippedImage.push({
+            destaque: "um",
+            reason: umPlan.imageWarning ?? "capa do 4º post ausente em 06-public-images.json — post só texto",
+          });
         }
         posts.push({
           destaque: "um",
@@ -521,7 +537,7 @@ export function prepTwitterPosts(
     }
   }
 
-  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
+  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage, use_melhor: useMelhor };
 }
 
 async function main() {

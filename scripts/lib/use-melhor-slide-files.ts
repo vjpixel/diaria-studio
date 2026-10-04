@@ -8,16 +8,20 @@
  * `upload-images-public.ts` — importar o carrossel de lá fecharia um ciclo de
  * módulos (`ReferenceError: Cannot access 'WEEKLY_FLAT_CARD_LAYOUT' before
  * initialization`). `use-melhor-carousel.ts` re-exporta tudo daqui.
+ *
+ * Só importa `node:*` — travado em `test/use-melhor-dispatch-9568.test.ts`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
- * Id da seção do 4º post. Espelha `USE_MELHOR_POST_ID` de `use-melhor-post.ts`
- * (não importado daqui pra manter o módulo folha — paridade travada em teste).
+ * Id da seção do 4º post em `03-social.md` (`## um`, sob `# Social` e
+ * `# Curto`) — e o `destaque` das entries em `06-social-published.json` e na
+ * fila do Worker. Fonte única; `use-melhor-post.ts` re-exporta.
  */
-const POST_ID = "um";
+export const USE_MELHOR_POST_ID = "um";
+const POST_ID = USE_MELHOR_POST_ID;
 
 /** Nome do arquivo local (raiz da edição) de um slide do 4º post. */
 export function useMelhorSlideFilename(slot: string): string {

@@ -104,11 +104,15 @@ import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   applyUseMelhorUtmToText,
+  findExistingUseMelhorEntry,
   planUseMelhorDispatch,
+  reportUseMelhorImageFallback,
   reportUseMelhorPlan,
   reportUseMelhorSkip,
   resolveUseMelhorImages,
-  type UseMelhorDispatchPlan,
+  summarizeUseMelhor,
+  type UseMelhorDispatchSummary,
+  type UseMelhorReadyPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -211,12 +215,9 @@ export function extractPostText(socialMd: string, destaque: string): string {
  */
 export function buildUseMelhorLinkedInPost(input: {
   socialMd: string;
-  plan: UseMelhorDispatchPlan;
+  plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
-  /** `null` = fire-now (sem agendamento). */
-  computeAt: (() => string) | null;
-}): { ok: true; text: string; imageUrl: string; scheduledAt: string | null } | { ok: false; reason: string } {
-  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
+}): { ok: true; text: string; imageUrl: string } | { ok: false; reason: string } {
   let text: string;
   try {
     text = applyUseMelhorUtmToText(extractPostText(input.socialMd, "um"));
@@ -226,17 +227,12 @@ export function buildUseMelhorLinkedInPost(input: {
   if (!text.trim()) return { ok: false, reason: "'## um' vazio em '# Social'" };
   const { coverUrl } = resolveUseMelhorImages(input.images, input.plan);
   if (!coverUrl) {
-    return { ok: false, reason: "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json" };
+    return {
+      ok: false,
+      reason: input.plan.imageWarning ?? "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json",
+    };
   }
-  let scheduledAt: string | null = null;
-  if (input.computeAt) {
-    try {
-      scheduledAt = input.computeAt();
-    } catch (e) {
-      return { ok: false, reason: `schedule_error: ${(e as Error).message}` };
-    }
-  }
-  return { ok: true, text, imageUrl: coverUrl, scheduledAt };
+  return { ok: true, text, imageUrl: coverUrl };
 }
 
 /**
@@ -1262,21 +1258,18 @@ async function main(): Promise<void> {
 
   // ── 4º post (USE MELHOR, #9568) — página diar.ia.br, slot use_melhor_time.
   // Fail-soft: qualquer peça faltando pula SÓ este post (warning), nunca
-  // grava `failed` por ausência nem afeta D1/D2/D3 acima. O perfil PESSOAL
-  // (vjpixel) não sai daqui — o Worker recusa webhook_target=pixel com
-  // action=post; o mesmo texto vai no lembrete manual do gate do Stage 6.
+  // grava `failed` por ausência nem afeta D1/D2/D3 acima. Erro de agendamento
+  // grava `failed`, igual aos destaques. O perfil PESSOAL (vjpixel) não sai
+  // daqui — o Worker recusa webhook_target=pixel com action=post; o mesmo
+  // texto vai no lembrete manual do gate do Stage 6.
+  let useMelhorSummary: UseMelhorDispatchSummary = { status: "off", reason: "--only sem 'um'" };
   if (includeUseMelhor) {
     const umPlan = planUseMelhorDispatch(editionDir, config);
     reportUseMelhorPlan("linkedin", umPlan, { editionId: editionDate, rootDir: logRootDir });
+    useMelhorSummary = summarizeUseMelhor(umPlan, null);
     if (umPlan.status === "ready") {
       const existing = skipExisting
-        ? readSocialPublished(publishedPath).posts.find(
-            (p) =>
-              p.platform === "linkedin" &&
-              p.destaque === "um" &&
-              resolveSubtype(p) === "main" &&
-              (p.status === "draft" || p.status === "scheduled"),
-          )
+        ? findExistingUseMelhorEntry(readSocialPublished(publishedPath).posts, "linkedin")
         : undefined;
       if (existing) {
         console.log(`SKIP linkedin/um/main — already ${existing.status}`);
@@ -1289,33 +1282,57 @@ async function main(): Promise<void> {
         } catch {
           umImages = undefined;
         }
-        const built = buildUseMelhorLinkedInPost({
-          socialMd,
-          plan: umPlan,
-          images: umImages,
-          computeAt: doSchedule
-            ? () =>
-                computeScheduledAt({
-                  config: config as Parameters<typeof computeScheduledAt>[0]["config"],
-                  editionDate,
-                  destaque: "um",
-                  platform: "linkedin",
-                  dayOffsetOverride,
-                })
-            : null,
-        });
+        const built = buildUseMelhorLinkedInPost({ socialMd, plan: umPlan, images: umImages });
+        useMelhorSummary = summarizeUseMelhor(umPlan, built);
         if (!built.ok) {
           reportUseMelhorSkip("linkedin", built.reason, { editionId: editionDate, rootDir: logRootDir });
         } else {
-          results.push(await dispatchEntry({
-            destaque: "um",
-            subtype: "main",
-            text: built.text,
-            imageUrl: built.imageUrl,
-            scheduledAt: built.scheduledAt,
-            webhookTarget: "diaria",
-            action: "post",
-          }, ctx));
+          reportUseMelhorImageFallback("linkedin", umPlan, resolveUseMelhorImages(umImages, umPlan), {
+            editionId: editionDate,
+            rootDir: logRootDir,
+            usesCarousel: false,
+          });
+          let umAt: string | null = null;
+          let scheduleError: string | null = null;
+          if (doSchedule) {
+            try {
+              umAt = computeScheduledAt({
+                config: config as Parameters<typeof computeScheduledAt>[0]["config"],
+                editionDate,
+                destaque: "um",
+                platform: "linkedin",
+                dayOffsetOverride,
+              });
+            } catch (e) {
+              scheduleError = e instanceof Error ? e.message : String(e);
+            }
+          }
+          if (scheduleError !== null) {
+            // Mesmo tratamento dos destaques: erro de agendamento é falha real.
+            console.error(`SKIP linkedin/um: schedule_error: ${scheduleError}`);
+            const entry: PostEntry = {
+              platform: "linkedin",
+              destaque: "um",
+              subtype: "main",
+              url: null,
+              status: "failed",
+              scheduled_at: null,
+              reason: `schedule_error: ${scheduleError}`,
+            };
+            if (isTest) entry.is_test = true;
+            appendSocialPosts(publishedPath, [entry]);
+            results.push(entry);
+          } else {
+            results.push(await dispatchEntry({
+              destaque: "um",
+              subtype: "main",
+              text: built.text,
+              imageUrl: built.imageUrl,
+              scheduledAt: umAt,
+              webhookTarget: "diaria",
+              action: "post",
+            }, ctx));
+          }
         }
       }
     }
@@ -1329,7 +1346,7 @@ async function main(): Promise<void> {
     failed: results.filter((r) => r.status === "failed").length,
   };
 
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
+  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {

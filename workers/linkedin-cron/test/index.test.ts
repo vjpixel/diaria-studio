@@ -334,6 +334,30 @@ describe("#882 /queue payload size validation", () => {
     });
   }
 
+  // #9568: 4º post diário (item USE MELHOR) sai com destaque "um" em
+  // LinkedIn/Instagram/Threads — sem isso o Worker devolvia 400.
+  for (const channel of ["linkedin", "instagram", "threads"]) {
+    it(`destaque="um" (4º post USE MELHOR, #9568) channel=${channel} retorna 202`, async () => {
+      const { env, kv } = mkEnv();
+      const body = {
+        text: "4º post",
+        image_url: channel === "threads" ? null : "https://example.com/um-cover.jpg",
+        ...(channel !== "linkedin" && { image_urls: ["https://example.com/a.jpg", "https://example.com/b.jpg"] }),
+        scheduled_at: "2026-12-06T11:00:00Z",
+        destaque: "um",
+        channel,
+      };
+      const req = authedRequest("https://w.test/queue", {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await workerDefault.fetch(req, env);
+      assert.equal(res.status, 202, `esperava 202, veio ${res.status}: ${JSON.stringify(await res.clone().json().catch(() => null))}`);
+      assert.equal(kv.store.size, 1);
+    });
+  }
+
   it('destaque="d4" (fora de d1-d3 e fora do padrão weekly[-mode]) continua 400', async () => {
     const { env } = mkEnv();
     const body = {

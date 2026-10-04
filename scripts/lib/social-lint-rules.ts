@@ -450,7 +450,14 @@ export interface LinkedinSchemaResult {
 }
 
 /**
- * #595: Valida o corpo de cada `## d{N}` na seção LinkedIn do `03-social.md`.
+ * #9568: faixa de chars do `## um` (4º post, item USE MELHOR) — 2 a 6
+ * parágrafos de até ~260 chars + hashtags. [alvoMin, alvoMax, tolMin, tolMax].
+ */
+export const USE_MELHOR_CHAR_RANGE: [number, number, number, number] = [500, 1300, 300, 1800];
+
+/**
+ * #595: Valida o corpo de cada `## d{N}` na seção LinkedIn do `03-social.md`
+ * (+ `## um`, 4º post, #9568, com faixa própria `USE_MELHOR_CHAR_RANGE`).
  *
  * #3627: `### comment_diaria` e `### comment_pixel` deixaram de ser gerados
  * (decisão do editor, 260716 — postagem manual de comentários auxiliares não
@@ -465,12 +472,6 @@ export interface LinkedinSchemaResult {
  *   novo (`# Social`, texto único estilo Instagram): 600-900 (tolerância 400-1100,
  *     folga extra pro bloco de hashtags que faz parte do mesmo corpo)
  */
-/**
- * #9568: faixa de chars do `## um` (4º post, item USE MELHOR) — 2 a 6
- * parágrafos de até ~260 chars + hashtags. [alvoMin, alvoMax, tolMin, tolMax].
- */
-export const USE_MELHOR_CHAR_RANGE: [number, number, number, number] = [500, 1300, 300, 1800];
-
 export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
   // #3991: seção nova `# Social` tem precedência; fallback pro `# LinkedIn`
   // legado preserva comportamento byte-a-byte pra edições publicadas antes
@@ -943,20 +944,20 @@ export function lintCredentialBio(md: string): CredentialBioResult {
   const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
-  // Checar ## post_pixel
-  const ppBlock = extractPostPixelBlock(linkedinSection);
-  if (ppBlock) {
-    const lines = ppBlock.text.split("\n");
+  // Checar os posts pessoais: ## um (4º post, #9568 — vai no LinkedIn
+  // pessoal) e ## post_pixel (legado).
+  for (const block of extractPersonalPostBlocks(linkedinSection)) {
+    const lines = block.text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       CREDENTIAL_BIO_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = CREDENTIAL_BIO_RE.exec(line)) !== null) {
         matches.push({
-          section: "post_pixel",
+          section: block.section,
           phrase: m[0],
           context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
-          line: ppBlock.lineOffset + i,
+          line: block.lineOffset + i,
         });
       }
     }
@@ -1502,6 +1503,24 @@ const NEWSLETTER_DEIXIS_RE =
  * Exportado (#3052) para reuso por scripts/resolve-post-pixel.ts (Stage 6 —
  * resolução de {outros_count}/{edition_url} pro fluxo manual de publicação).
  */
+/**
+ * #9568: blocos postados no perfil PESSOAL do Pixel — o `## um` (4º post
+ * USE MELHOR, mesmo texto da página, vai também no LinkedIn pessoal) e o
+ * `## post_pixel` legado (edições anteriores à #9568). Os lints de post
+ * pessoal (#2148 deixis, #2494 credencial/bio) checam os dois.
+ */
+export function extractPersonalPostBlocks(
+  linkedinSection: string,
+): Array<{ section: "post_pixel" | "um"; text: string; lineOffset: number }> {
+  const out: Array<{ section: "post_pixel" | "um"; text: string; lineOffset: number }> = [];
+  const pp = extractPostPixelBlock(linkedinSection);
+  if (pp) out.push({ section: "post_pixel", ...pp });
+  const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
+  const m = text.match(/\n## um[ \t]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
+  if (m) out.push({ section: "um", text: m[1], lineOffset: text.slice(0, m.index ?? 0).split("\n").length });
+  return out;
+}
+
 export function extractPostPixelBlock(linkedinSection: string): { text: string; lineOffset: number } | null {
   const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");
   const m = text.match(/\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i);
@@ -1543,20 +1562,20 @@ export function lintPersonalPostNewsletterDeixis(md: string): PersonalPostDeixis
   const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
-  // Checar ## post_pixel
-  const ppBlock = extractPostPixelBlock(linkedinSection);
-  if (ppBlock) {
-    const lines = ppBlock.text.split("\n");
+  // Checar os posts pessoais: ## um (4º post, #9568 — vai no LinkedIn
+  // pessoal) e ## post_pixel (legado).
+  for (const block of extractPersonalPostBlocks(linkedinSection)) {
+    const lines = block.text.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       NEWSLETTER_DEIXIS_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = NEWSLETTER_DEIXIS_RE.exec(line)) !== null) {
         matches.push({
-          section: "post_pixel",
+          section: block.section,
           phrase: m[0],
           context: line.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20).trim(),
-          line: ppBlock.lineOffset + i,
+          line: block.lineOffset + i,
         });
       }
     }

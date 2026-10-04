@@ -76,11 +76,13 @@ import {
   USE_MELHOR_COVER_FILE,
   applyUseMelhorUtmToText,
   planUseMelhorDispatch,
+  reportUseMelhorImageFallback,
   reportUseMelhorPlan,
   reportUseMelhorSkip,
   resolveUseMelhorImages,
+  summarizeUseMelhor,
   useMelhorDispatchIds,
-  type UseMelhorDispatchPlan,
+  type UseMelhorReadyPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import {
   postToWorkerQueue as sharedPostToWorkerQueue,
@@ -426,14 +428,17 @@ export async function postToWorkerQueue(
  */
 export function buildUseMelhorInstagramPost(input: {
   socialMd: string;
-  plan: UseMelhorDispatchPlan;
+  plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
   editionDir: string;
   fileExists?: (p: string) => boolean;
 }):
   | { ok: true; caption: string; imageUrl: string; imageUrls: string[]; imageFile: string }
   | { ok: false; reason: string } {
-  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
+  // Corpo vazio: só sobraria a linha de CTA injetada — não publicar.
+  if (!extractDestaqueBlock(extractSection(input.socialMd, "Social") ?? "", "um")?.trim()) {
+    return { ok: false, reason: "'## um' vazio ou ausente em '# Social'" };
+  }
   let caption: string;
   try {
     caption = truncateCaption(applyUseMelhorUtmToText(extractPostText(input.socialMd, "um")));
@@ -442,7 +447,10 @@ export function buildUseMelhorInstagramPost(input: {
   }
   const { carouselUrls, coverUrl } = resolveUseMelhorImages(input.images, input.plan);
   if (!coverUrl) {
-    return { ok: false, reason: "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json" };
+    return {
+      ok: false,
+      reason: input.plan.imageWarning ?? "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json",
+    };
   }
   const exists = input.fileExists ?? existsSync;
   if (!exists(resolve(input.editionDir, USE_MELHOR_COVER_FILE))) {
@@ -632,6 +640,15 @@ async function main() {
         })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("instagram", umPost.reason, { editionId: editionDate, rootDir: ROOT });
+  if (umPlan.status === "ready" && umPost?.ok) {
+    reportUseMelhorImageFallback(
+      "instagram",
+      umPlan,
+      resolveUseMelhorImages((publicImages as { images?: Record<string, { url?: string }> }).images, umPlan),
+      { editionId: editionDate, rootDir: ROOT, usesCarousel: true },
+    );
+  }
+  const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
 
   for (const d of dispatchIds) {
@@ -895,7 +912,7 @@ async function main() {
     skipped: skippedCount,
   };
 
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
+  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {

@@ -87,11 +87,13 @@ import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
   applyUseMelhorUtmToText,
   planUseMelhorDispatch,
+  reportUseMelhorImageFallback,
   reportUseMelhorPlan,
   reportUseMelhorSkip,
   resolveUseMelhorImages,
+  summarizeUseMelhor,
   useMelhorDispatchIds,
-  type UseMelhorDispatchPlan,
+  type UseMelhorReadyPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
@@ -454,11 +456,10 @@ export async function fetchThreadsPermalink(
  */
 export function buildUseMelhorThreadsPost(input: {
   socialMd: string;
-  plan: UseMelhorDispatchPlan;
+  plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
   editionUrl: string | null;
 }): { ok: true; text: string; carouselUrls: string[] | null } | { ok: false; reason: string } {
-  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
   let text: string | null;
   try {
     text = extractPostText(input.socialMd, "um", input.editionUrl);
@@ -466,6 +467,13 @@ export function buildUseMelhorThreadsPost(input: {
     return { ok: false, reason: `texto '## um' de '# Curto' inválido: ${(e as Error).message}` };
   }
   if (!text) return { ok: false, reason: "'## um' ausente ou vazio em '# Curto'" };
+  // Mesmo guard não-fatal dos destaques (#4294): texto sem o link da edição
+  // sai assim mesmo, mas avisa (a checagem usa o texto ainda sem UTM).
+  if (input.editionUrl && !textContainsEditionUrl(text, input.editionUrl)) {
+    console.warn(
+      `AVISO (#4294 guard edition_url — não-fatal): texto do Threads (4º post 'um') não contém a URL da edição resolvida (${input.editionUrl}).`,
+    );
+  }
   if (input.editionUrl) text = tagEditionUrlInText(text, input.editionUrl, THREADS_EDITION_UTM);
   text = applyUseMelhorUtmToText(text);
   const { carouselUrls } = resolveUseMelhorImages(input.images, input.plan);
@@ -629,6 +637,14 @@ async function main() {
       ? buildUseMelhorThreadsPost({ socialMd, plan: umPlan, images: publicImages.images, editionUrl: resolvedEditionUrl })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("threads", umPost.reason, { editionId: editionDate, rootDir: logRootDir });
+  if (umPlan.status === "ready" && umPost?.ok) {
+    reportUseMelhorImageFallback("threads", umPlan, resolveUseMelhorImages(publicImages.images, umPlan), {
+      editionId: editionDate,
+      rootDir: logRootDir,
+      usesCarousel: true,
+    });
+  }
+  const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
 
   for (const d of dispatchIds) {
@@ -903,7 +919,7 @@ async function main() {
 
   console.log(
     JSON.stringify(
-      { out_path: publishedPath, summary, posts: results, skipped_no_curto: skippedNoCurto },
+      { out_path: publishedPath, summary, posts: results, skipped_no_curto: skippedNoCurto, use_melhor: useMelhorSummary },
       null,
       2,
     ),

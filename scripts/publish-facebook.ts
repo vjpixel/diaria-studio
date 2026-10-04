@@ -47,11 +47,13 @@ import {
   USE_MELHOR_COVER_FILE,
   applyUseMelhorUtmToText,
   planUseMelhorDispatch,
+  reportUseMelhorImageFallback,
   reportUseMelhorPlan,
   reportUseMelhorSkip,
   resolveUseMelhorImages,
+  summarizeUseMelhor,
   useMelhorDispatchIds,
-  type UseMelhorDispatchPlan,
+  type UseMelhorReadyPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -175,24 +177,31 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
  */
 export function buildUseMelhorFacebookPost(input: {
   socialMd: string;
-  plan: UseMelhorDispatchPlan;
+  plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
   editionDir: string;
   fileExists?: (p: string) => boolean;
 }):
   | { ok: true; caption: string; carouselUrls: string[] | null; imageFile: string }
   | { ok: false; reason: string } {
-  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
   let caption: string;
   try {
     caption = applyUseMelhorUtmToText(extractPostText(input.socialMd, "facebook", "um"));
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }
+  // Corpo vazio: só sobraria a linha de CTA injetada — não publicar.
+  if (!extractDestaqueBlock(extractSection(input.socialMd, "Social") ?? "", "um")?.trim()) {
+    return { ok: false, reason: "'## um' vazio em '# Social'" };
+  }
   const { carouselUrls } = resolveUseMelhorImages(input.images, input.plan);
+  // Capa local só vale com carimbo em dia (`plan.slots`) — arte defasada pode ser de outro item.
   const exists = input.fileExists ?? existsSync;
-  if (!carouselUrls && !exists(resolve(input.editionDir, USE_MELHOR_COVER_FILE))) {
-    return { ok: false, reason: `nem carrossel público nem ${USE_MELHOR_COVER_FILE} local` };
+  if (!carouselUrls && !(input.plan.slots && exists(resolve(input.editionDir, USE_MELHOR_COVER_FILE)))) {
+    return {
+      ok: false,
+      reason: input.plan.imageWarning ?? `nem carrossel público completo nem ${USE_MELHOR_COVER_FILE} local`,
+    };
   }
   return { ok: true, caption, carouselUrls, imageFile: USE_MELHOR_COVER_FILE };
 }
@@ -523,6 +532,15 @@ async function rescheduleFacebookPosts(opts: {
 
   for (const existing of fbPosts) {
     const d = existing.destaque;
+    // #9568: o 4º post ("um") não é re-alinhado aqui — o reschedule re-sobe a
+    // foto local do destaque e não conhece o carrossel/UTM do "um". Mantém o
+    // agendamento original; pra mudar, apagar e re-rodar o dispatch normal.
+    if (d === "um") {
+      console.log("SKIP facebook/um (reschedule): 4º post não é re-alinhado por --reschedule (#9568) — agendamento original mantido.");
+      skipped++;
+      results.push(existing);
+      continue;
+    }
     // #2575: usar slot canônico (sem shift) para COMPARAÇÃO de idempotência.
     // O shift só faz sentido no agendamento INICIAL — um slot canônico passado
     // é estável (mesmo valor a cada run), enquanto now+15min avança e gera churn.
@@ -830,6 +848,14 @@ async function main() {
       ? buildUseMelhorFacebookPost({ socialMd, plan: umPlan, images: publicImages.images, editionDir })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("facebook", umPost.reason, { editionId: editionDate, rootDir: ROOT });
+  if (umPlan.status === "ready" && umPost?.ok) {
+    reportUseMelhorImageFallback("facebook", umPlan, resolveUseMelhorImages(publicImages.images, umPlan), {
+      editionId: editionDate,
+      rootDir: ROOT,
+      usesCarousel: true,
+    });
+  }
+  const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
 
   for (const d of dispatchIds) {
@@ -904,10 +930,12 @@ async function main() {
     // Determine scheduling
     let scheduledAt: string | null = null;
     if (doSchedule) {
-      scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
       // #78: pre-schedule validation — fail fast com erro claro em vez de
       // silenciosamente publicar imediato (bug anterior).
+      // #9568: o cálculo entrou no try — erro de agendamento (ex.:
+      // use_melhor_time inválido pro "um") vira entry failed, não derruba o run.
       try {
+        scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
         validateScheduledTime(scheduledAt);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1002,7 +1030,7 @@ async function main() {
     failed: results.filter((r) => r.status === "failed").length,
   };
 
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
+  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {

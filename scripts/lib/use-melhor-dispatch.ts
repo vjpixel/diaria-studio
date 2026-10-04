@@ -4,14 +4,21 @@
  * Decide, no Stage 5, se o 4º post social (item de maior score do USE MELHOR,
  * `## um` em `03-social.md`) sai nesta edição e com quais peças. Consumido
  * pelos 5 publicadores (`publish-linkedin.ts`, `publish-facebook.ts`,
- * `publish-instagram.ts`, `publish-threads.ts`, `prep-twitter-posts.ts`) — um
- * ponto só, pra que as 5 redes concordem sobre o item e o horário.
+ * `publish-instagram.ts`, `publish-threads.ts`, `prep-twitter-posts.ts`), por
+ * `upload-images-public.ts` (quais slides subir) e pelo lembrete do post
+ * pessoal (`resolve-post-pixel.ts`) — um ponto só, pra que todos concordem
+ * sobre o item, o horário e as imagens.
  *
  * Contrato FAIL-SOFT (#9568 item 8): o 4º post nunca quebra D1/D2/D3. Toda
- * ausência (slot desligado, item não selecionado, item mudou no gate, texto
- * ausente na seção do canal, imagem ausente) vira `skip` com motivo logado —
- * nenhuma entry `failed` é gravada por falta de peça. Só erro de DISPATCH
- * (rede, Worker) grava `failed`, igual aos destaques.
+ * ausência (slot desligado, item não selecionado, item mudou no gate, edição
+ * final ilegível, texto ausente na seção do canal, imagem ausente) vira `skip`
+ * com motivo logado — nenhuma entry `failed` é gravada por falta de peça. Só
+ * erro de DISPATCH (rede, Worker) e erro de AGENDAMENTO gravam `failed`, igual
+ * aos destaques.
+ *
+ * Imagens: a capa e os slides só valem quando o carimbo do Stage 3 bate com o
+ * texto atual de `## um` + título do item (`isUseMelhorCarouselStale`). Carimbo
+ * defasado = a arte pode ser de OUTRO texto/item — nem a capa é usada.
  *
  * Horário: `publishing.social.use_melhor_time` (decisão do editor de
  * 04/10/2026: 08:00 BRT, slot único nas 5 redes), aplicado por
@@ -43,6 +50,20 @@ import {
 import { readUseMelhorBlock } from "./use-melhor-status.ts";
 import { readInstagramTestOverride, type CarouselCtaOverride } from "./instagram-test-override.ts";
 
+export type UseMelhorReadyPlan = {
+  status: "ready";
+  /** "HH:MM" BRT — `publishing.social.use_melhor_time`. */
+  time: string;
+  item: UseMelhorCandidate;
+  /**
+   * Slots do carrossel (capa → p1..pN → cta) quando o carimbo do Stage 3
+   * existe E bate com o texto atual; senão `null` — e aí nem a capa é usada.
+   */
+  slots: string[] | null;
+  /** Presente quando `slots === null`: por que as imagens não valem (vira warn por canal). */
+  imageWarning?: string;
+};
+
 export type UseMelhorDispatchPlan =
   | { status: "off"; reason: string }
   | {
@@ -55,14 +76,7 @@ export type UseMelhorDispatchPlan =
        */
       level?: "info" | "warn";
     }
-  | {
-      status: "ready";
-      /** "HH:MM" BRT — `publishing.social.use_melhor_time`. */
-      time: string;
-      item: UseMelhorCandidate;
-      /** Slots do carrossel (capa → p1..pN → cta) quando gerado E em dia com o texto; senão `null`. */
-      slots: string[] | null;
-    };
+  | UseMelhorReadyPlan;
 
 export interface UseMelhorPlanInput {
   config: unknown;
@@ -77,8 +91,10 @@ export interface UseMelhorPlanInput {
 /**
  * Pure: plano do 4º post a partir das peças já lidas do disco. Re-seleciona
  * contra o `02-reviewed.md` FINAL — se o editor mexeu no USE MELHOR no gate e
- * o item de maior score mudou, o texto de `## um` foi escrito pro item antigo:
- * pular (warning), nunca publicar texto de um item que não está na edição.
+ * o item de maior score mudou (ou a seção sumiu), o texto de `## um` foi
+ * escrito pro item antigo: pular (warning), nunca publicar texto de um item
+ * que não está na edição. Sem `02-reviewed.md` ou sem JSON aprovado a
+ * re-verificação é impossível → também pula (falha FECHADA).
  */
 export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorDispatchPlan {
   const cfg = useMelhorPostConfigState(input.config);
@@ -92,31 +108,52 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
     };
   }
   if (!state.item) return { status: "skip", reason: state.reason ?? "sem item USE MELHOR elegível" };
-  if (input.reviewedMd !== null && input.approved !== null) {
-    const final = selectUseMelhorItem(
-      useMelhorCandidatesFromApproved(input.approved),
-      renderedUseMelhorUrls(input.reviewedMd),
-    );
-    if (!final.item) return { status: "skip", reason: `na edição final: ${final.reason}` };
-    if (normalizeUseMelhorUrl(final.item.url) !== normalizeUseMelhorUrl(state.item.url)) {
-      return {
-        status: "skip",
-        reason:
-          `o item de maior score na edição final ("${final.item.title}") difere do item para o qual ` +
-          `'## ${USE_MELHOR_POST_ID}' foi escrito ("${state.item.title}") — re-rodar a seleção + social agents`,
-      };
-    }
+  if (input.reviewedMd === null || input.approved === null) {
+    return {
+      status: "skip",
+      reason:
+        `não dá pra re-verificar o item contra a edição final (${input.reviewedMd === null ? "02-reviewed.md" : "01-approved(-capped).json"} ausente/ilegível)`,
+    };
+  }
+  const final = selectUseMelhorItem(
+    useMelhorCandidatesFromApproved(input.approved),
+    renderedUseMelhorUrls(input.reviewedMd),
+  );
+  if (!final.item) return { status: "skip", reason: `na edição final: ${final.reason}` };
+  if (normalizeUseMelhorUrl(final.item.url) !== normalizeUseMelhorUrl(state.item.url)) {
+    return {
+      status: "skip",
+      reason:
+        `o item de maior score na edição final ("${final.item.title}") difere do item para o qual ` +
+        `'## ${USE_MELHOR_POST_ID}' foi escrito ("${state.item.title}") — re-rodar a seleção + social agents`,
+    };
   }
   let slots: string[] | null = null;
-  if (input.stamp && input.socialUm) {
-    const stale = isUseMelhorCarouselStale(input.stamp, input.socialUm, state.item.title, input.ctaOverride);
-    if (!stale) slots = input.stamp.slots;
+  let imageWarning: string | undefined;
+  if (!input.stamp) {
+    imageWarning = "carrossel do 4º post não gerado no Stage 3 (sem carimbo)";
+  } else if (!input.socialUm) {
+    imageWarning = `'## ${USE_MELHOR_POST_ID}' ausente em '# Social' — não dá pra conferir a arte`;
+  } else if (isUseMelhorCarouselStale(input.stamp, input.socialUm, state.item.title, input.ctaOverride)) {
+    imageWarning =
+      `carrossel do 4º post DEFASADO ('## ${USE_MELHOR_POST_ID}' mudou depois do Stage 3) — capa e slides ignorados; ` +
+      `re-rodar gen-carousel-cards.ts + upload-images-public.ts`;
+  } else {
+    slots = input.stamp.slots;
   }
-  return { status: "ready", time: cfg.time, item: state.item, slots };
+  return { status: "ready", time: cfg.time, item: state.item, slots, ...(imageWarning && { imageWarning }) };
 }
 
 function readIfExists(p: string): string | null {
   return existsSync(p) ? readFileSync(p, "utf8") : null;
+}
+
+function readCtaOverride(editionDir: string): CarouselCtaOverride | null {
+  try {
+    return readInstagramTestOverride(editionDir)?.cta_slide ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Lê do disco e devolve o plano. Nunca lança — erro inesperado vira `skip`. */
@@ -124,12 +161,6 @@ export function planUseMelhorDispatch(editionDir: string, config: unknown): UseM
   try {
     const cfg = useMelhorPostConfigState(config);
     if (!cfg.enabled) return { status: "off", reason: cfg.reason ?? "4º post desligado" };
-    let ctaOverride: CarouselCtaOverride | null = null;
-    try {
-      ctaOverride = readInstagramTestOverride(editionDir)?.cta_slide ?? null;
-    } catch {
-      ctaOverride = null;
-    }
     return planUseMelhorDispatchFrom({
       config,
       state: readUseMelhorPostState(editionDir),
@@ -137,10 +168,28 @@ export function planUseMelhorDispatch(editionDir: string, config: unknown): UseM
       approved: readApprovedForUseMelhor(editionDir),
       socialUm: readUseMelhorBlock(readIfExists(resolve(editionDir, "03-social.md")), "Social"),
       stamp: readUseMelhorCarouselStamp(editionDir),
-      ctaOverride,
+      ctaOverride: readCtaOverride(editionDir),
     });
   } catch (e) {
     return { status: "skip", reason: `erro ao montar o plano do 4º post: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * Slots do carrossel que valem subir (`upload-images-public.ts`): os do
+ * carimbo só quando ele bate com o texto/título atuais — nunca sobe arte de
+ * carimbo defasado. `[]` sem estado/carimbo/texto. Nunca lança.
+ */
+export function freshUseMelhorCarouselSlots(editionDir: string): string[] {
+  try {
+    const stamp = readUseMelhorCarouselStamp(editionDir);
+    const state = readUseMelhorPostState(editionDir);
+    const socialUm = readUseMelhorBlock(readIfExists(resolve(editionDir, "03-social.md")), "Social");
+    if (!stamp || !state?.item || !socialUm) return [];
+    if (isUseMelhorCarouselStale(stamp, socialUm, state.item.title, readCtaOverride(editionDir))) return [];
+    return stamp.slots;
+  } catch {
+    return [];
   }
 }
 
@@ -152,7 +201,7 @@ export function useMelhorDispatchIds(plan: UseMelhorDispatchPlan): string[] {
 export interface UseMelhorImages {
   /** URLs ordenadas do carrossel (tudo-ou-nada), ou `null`. */
   carouselUrls: string[] | null;
-  /** URL pública da capa tipográfica, ou `null`. */
+  /** URL pública da capa tipográfica — só quando o carimbo está em dia; senão `null`. */
   coverUrl: string | null;
 }
 
@@ -161,9 +210,9 @@ export function resolveUseMelhorImages(
   images: Record<string, { url?: string }> | undefined,
   plan: UseMelhorDispatchPlan,
 ): UseMelhorImages {
-  if (plan.status !== "ready") return { carouselUrls: null, coverUrl: null };
+  if (plan.status !== "ready" || !plan.slots) return { carouselUrls: null, coverUrl: null };
   const coverUrl = images?.[useMelhorSlideImageKey("cover")]?.url ?? null;
-  const carouselUrls = plan.slots ? resolveUseMelhorCarouselImageUrls(images, plan.slots) : null;
+  const carouselUrls = resolveUseMelhorCarouselImageUrls(images, plan.slots);
   return { carouselUrls, coverUrl };
 }
 
@@ -172,8 +221,12 @@ export const USE_MELHOR_COVER_FILE = useMelhorSlideFilename("cover");
 
 const URL_IN_TEXT_RE = /https?:\/\/[^\s<>"')\]]+/g;
 const TRAILING_PUNCT_RE = /[.,;:!?]+$/;
-/** Hosts do projeto (link da edição, CTA de assinatura, página Kit da edição). */
-const PROJECT_HOST_RE = /(^|\.)(diar\.ia\.br|kit\.com)$/i;
+/**
+ * Hosts do projeto: `diar.ia.br` (+ subdomínios) e a página pública da conta
+ * Kit da diária (`diariabr.kit.com`, onde o `public_url` da edição mora) —
+ * nunca `*.kit.com` inteiro, que inclui páginas de terceiros.
+ */
+const PROJECT_HOST_RE = /^(?:(?:[a-z0-9-]+\.)*diar\.ia\.br|diariabr\.kit\.com)$/i;
 
 /**
  * Pure: aplica `utm_content=usemelhor` a todo link do PROJETO no texto do 4º
@@ -200,9 +253,10 @@ export function applyUseMelhorUtmToText(text: string): string {
 }
 
 /**
- * Loga (stderr + `data/run-log.jsonl`, nível warn) que o 4º post foi pulado
- * num canal. `off` (feature desligada no config) só imprime uma linha, sem
- * warn — é o estado esperado, não um problema.
+ * Loga que o 4º post foi pulado (ou degradado) num canal. `warn` → stderr +
+ * `data/run-log.jsonl` (nível warn); `info` → só uma linha no stdout, sem
+ * run-log (ausência esperada ou já acusada no gate do Stage 4). Best-effort:
+ * falha de log nunca derruba o dispatch.
  */
 export function reportUseMelhorSkip(
   channel: string,
@@ -231,7 +285,7 @@ export function reportUseMelhorSkip(
   }
 }
 
-/** Loga o motivo do plano não-`ready` (off = info, skip = warn). No-op quando pronto. */
+/** Loga o motivo do plano não-`ready` (off = info, skip = level do plano). No-op quando pronto. */
 export function reportUseMelhorPlan(
   channel: string,
   plan: UseMelhorDispatchPlan,
@@ -242,4 +296,74 @@ export function reportUseMelhorPlan(
     ...opts,
     level: plan.status === "off" ? "info" : (plan.level ?? "warn"),
   });
+}
+
+/**
+ * Warn (stderr + run-log) quando o 4º post SAI, mas degradado: carrossel
+ * defasado/ausente, ou incompleto em `06-public-images.json` e o canal caiu
+ * pra capa única / só texto. `usesCarousel: false` (LinkedIn página, que só
+ * usa a capa) só avisa do carimbo, nunca de slide faltando.
+ */
+export function reportUseMelhorImageFallback(
+  channel: string,
+  plan: UseMelhorReadyPlan,
+  images: UseMelhorImages,
+  opts: { editionId?: string | null; rootDir?: string; usesCarousel: boolean },
+): void {
+  let msg: string | null = null;
+  if (plan.imageWarning) msg = plan.imageWarning;
+  else if (opts.usesCarousel && plan.slots && !images.carouselUrls) {
+    msg = "carrossel incompleto em 06-public-images.json (algum slide não subiu) — saindo com capa única/só texto";
+  }
+  if (!msg) return;
+  const line = `${channel}/${USE_MELHOR_POST_ID}: 4º post (USE MELHOR) degradado — ${msg}`;
+  console.warn(`WARN ${line}`);
+  try {
+    logEvent(
+      {
+        edition: opts.editionId && /^\d{6}$/.test(opts.editionId) ? opts.editionId : null,
+        stage: 5,
+        agent: `publish-${channel}`,
+        level: "warn",
+        message: `#9568: ${line}`,
+        details: { channel, reason: msg },
+      },
+      opts.rootDir,
+    );
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Idempotência em re-execução (resume): entry `um` já agendada/rascunho/
+ * publicada naquela plataforma → não despachar de novo. `failed` é retentado,
+ * igual aos destaques. Subtipo `main` só (LinkedIn): entry sem `subtype` conta
+ * como `main`, mesma regra de `resolveSubtype`.
+ */
+export function findExistingUseMelhorEntry<
+  T extends { platform: string; destaque: string; status: string; subtype?: string },
+>(posts: readonly T[], platform: string): T | undefined {
+  return posts.find(
+    (p) =>
+      p.platform === platform &&
+      p.destaque === USE_MELHOR_POST_ID &&
+      (p.subtype === undefined || p.subtype === "main") &&
+      (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+  );
+}
+
+/** Resumo do 4º post no JSON de saída dos publishers (Stage 5 → resumo/gate do Stage 6). */
+export interface UseMelhorDispatchSummary {
+  status: "ready" | "skip" | "off";
+  reason?: string;
+}
+
+export function summarizeUseMelhor(
+  plan: UseMelhorDispatchPlan,
+  built: { ok: true } | { ok: false; reason: string } | null,
+): UseMelhorDispatchSummary {
+  if (plan.status !== "ready") return { status: plan.status, reason: plan.reason };
+  if (built && !built.ok) return { status: "skip", reason: built.reason };
+  return { status: "ready" };
 }

@@ -124,6 +124,13 @@ export interface Env {
 }
 
 export type WebhookTarget = "diaria" | "pixel";
+
+/**
+ * `destaque` aceito em POST /queue. Exportado (#9568) pra o teste de contrato
+ * comparar com o que os publishers da diária emitem — `um` (4º post, item USE
+ * MELHOR) entrou aqui; sem ele o Worker devolvia 400 e o 4º post nunca agendava.
+ */
+export const QUEUE_DESTAQUE_RE = /^(d[123]|um|weekly(-[a-z]+)?|especial(-[a-z]+)?|eia-\d{6})$/;
 export type QueueAction = "post" | "comment";
 // #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
 // (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
@@ -133,7 +140,7 @@ export interface QueueEntry {
   text: string;
   image_url: string | null;
   scheduled_at: string; // ISO 8601
-  destaque: string; // d1 | d2 | d3
+  destaque: string; // d1 | d2 | d3 | um (#9568) | weekly[-mode] | especial[-mode] | eia-{AAMMDD}
   created_at: string;
   retry_count?: number; // #880 — incrementado a cada falha de fetch
   // #595 — fields opcionais pra suportar comments. Default `webhook_target`
@@ -321,8 +328,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // `eia-{AAMMDD}`: post avulso do quiz "É IA?" (`scripts/publish-eia-social.ts`).
   // Sufixo numérico e não `[a-z]` como os outros porque o discriminador aqui é
   // a EDIÇÃO, não um modo — dois posts do quiz só diferem pela data.
-  if (!/^(d[123]|weekly(-[a-z]+)?|especial(-[a-z]+)?|eia-\d{6})$/.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, d3, weekly[-mode], especial[-mode], or eia-{AAMMDD}" }, 400);
+  // `um`: 4º post diário (item USE MELHOR, #9568) — publish-linkedin/instagram/threads.
+  if (!QUEUE_DESTAQUE_RE.test(body.destaque as string)) {
+    return json({ error: "destaque must be d1, d2, d3, um, weekly[-mode], especial[-mode], or eia-{AAMMDD}" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados

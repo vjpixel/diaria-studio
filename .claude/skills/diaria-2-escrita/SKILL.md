@@ -168,7 +168,7 @@ Agent({
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -200,7 +200,7 @@ Agent({
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 

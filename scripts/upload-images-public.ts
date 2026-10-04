@@ -40,7 +40,6 @@ import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 import { hero2x1KeyFor, isDestaqueImagePresent } from "./lib/shared/public-image-keys.ts"; // #7596 — extraído pra módulo puro
 import {
-  readUseMelhorCarouselStamp,
   useMelhorSlideFilename,
   useMelhorSlideImageKey,
 } from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
@@ -176,6 +175,22 @@ export interface ImageSpec {
 }
 
 /**
+ * #9568: specs dos slides do carrossel do 4º post (`04-um-carousel-{slot}-4x5.jpg`
+ * → chave `um_carousel_{slot}`), na ordem dos `slots` recebidos. Pure — quem
+ * decide QUAIS slots valem (só os de carimbo em dia com o texto, nunca arte de
+ * carimbo defasado) é `freshUseMelhorCarouselSlots` em `use-melhor-dispatch.ts`,
+ * chamado por `uploadPublicImages` via import dinâmico (import estático fecharia
+ * o ciclo weekly-flat-card → upload-images-public → use-melhor-carousel).
+ */
+export function useMelhorSlideSpecs(slots: readonly string[]): ImageSpec[] {
+  return slots.map((slot) => ({
+    key: useMelhorSlideImageKey(slot),
+    filename: useMelhorSlideFilename(slot),
+    optional: true,
+  }));
+}
+
+/**
  * Especifica quais imagens fazer upload por modo. Quando `editionDir` é
  * passado e o modo inclui newsletter, detecta o naming É IA? em disco:
  * novas edições usam `01-eia-A.jpg`/`01-eia-B.jpg` (#192, random); edições
@@ -187,23 +202,12 @@ export interface ImageSpec {
  * (não requer nem espera imagens d3 nessa edição). Default 3 preserva o
  * comportamento anterior para edições 3-destaque e chamadas sem editionDir.
  */
-/**
- * #9568: specs dos slides do carrossel do 4º post (`04-um-carousel-{slot}-4x5.jpg`
- * → chave `um_carousel_{slot}`), na ordem do carimbo do Stage 3. `[]` sem
- * `editionDir` ou sem carimbo (carrossel não gerado).
- */
-export function useMelhorSlideSpecs(editionDir?: string): ImageSpec[] {
-  if (!editionDir) return [];
-  const stamp = readUseMelhorCarouselStamp(editionDir);
-  if (!stamp) return [];
-  return stamp.slots.map((slot) => ({
-    key: useMelhorSlideImageKey(slot),
-    filename: useMelhorSlideFilename(slot),
-    optional: true,
-  }));
-}
-
-export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
+export function imageSpecsFor(
+  mode: UploadMode,
+  editionDir?: string,
+  /** #9568: slots EM DIA do carrossel do 4º post (default: nenhum). */
+  opts: { useMelhorSlots?: readonly string[] } = {},
+): ImageSpec[] {
   // #2352: determine destaque count to conditionally include d3 specs.
   const destaqueCount: 2 | 3 = editionDir ? readDestaqueCount(editionDir) : 3;
 
@@ -236,12 +240,11 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
       })),
     ),
     // #9568: carrossel tipográfico do 4º post (USE MELHOR) — N slides
-    // variável (capa → p1..pN → cta), lista vinda do carimbo que o
-    // `gen-carousel-cards.ts` grava no Stage 3. optional: o 4º post é
-    // fail-soft (tudo-ou-nada em `resolveUseMelhorCarouselImageUrls`) e nunca
-    // pode bloquear o upload dos destaques. Sem carimbo (feature desligada,
-    // edição legada, sem editionDir) → nenhuma spec nova.
-    ...useMelhorSlideSpecs(editionDir),
+    // variável (capa → p1..pN → cta), só os slots de carimbo em dia
+    // (`opts.useMelhorSlots`). optional: o 4º post é fail-soft
+    // (tudo-ou-nada em `resolveUseMelhorCarouselImageUrls`) e nunca pode
+    // bloquear o upload dos destaques.
+    ...useMelhorSlideSpecs(opts.useMelhorSlots ?? []),
   ];
 
   const eaiSpecs = (() => {
@@ -504,7 +507,15 @@ export async function uploadPublicImages(
     // Retrocompat: destaques explícitos
     specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
   } else {
-    specs = imageSpecsFor(mode, editionDir);
+    // #9568: slots do 4º post só quando o carimbo do Stage 3 bate com o texto
+    // atual (import dinâmico — o estático fecharia ciclo de módulos, ver
+    // `useMelhorSlideSpecs`). Modo newsletter não sobe slides sociais.
+    let useMelhorSlots: string[] = [];
+    if (mode !== "newsletter") {
+      const { freshUseMelhorCarouselSlots } = await import("./lib/use-melhor-dispatch.ts");
+      useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
+    }
+    specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
   }
 
   const cachePath = resolve(editionDir, "06-public-images.json");

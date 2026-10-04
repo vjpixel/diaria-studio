@@ -62,7 +62,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
    **Sem `use_melhor_post_path` no prompt: não escreva `## um`, nem mencione o item** — a feature está desligada (`use_melhor_time` nulo no config) ou a edição não tem item elegível.
 
-   O mesmo `## um` vai pro **LinkedIn pessoal do Pixel** (lembrete manual no Stage 6) — por isso continua valendo, além do §3a: nada de "esta/essa/nossa newsletter" (#2148) nem frase de credencial/bio (#2494).
+   O mesmo `## um` vai pro **LinkedIn pessoal do Pixel** (lembrete manual no Stage 6) — por isso continua valendo, além do §3a: nada de "esta/essa/nossa newsletter" (#2148) nem frase de credencial/bio (#2494). Ambos são checados também no `## um` (`lint-social-md.ts --check personal-post-no-newsletter-deixis` / `no-credential-bio`). **O link da página `linkedin.com/company/diar.ia.br` (#2458) NÃO vai no `## um`** — descartado por decisão na #9568: o mesmo texto vai pra página, e o post principal da página não pode citar diar.ia.br (#595, `lintLinkedinSchema` reprova `main_post_mentions_diaria_url`); o `linkedin-page-link` só checa o `## post_pixel` legado.
 
    Com o path: ler o JSON; o item está em `item` (`title`, `summary`, `url`). Escrever `## um` (depois de `## d3`/último destaque) com **as mesmas regras do §3a** (tom, hook com contraste, negrito seletivo 1 por parágrafo, channel-neutral, sem URL, sem pergunta no fim, nunca inventar números — fonte é só `title`/`summary` do item, hashtags no bloco final), com 2 diferenças:
    - **Número de parágrafos livre (2 a 6)**, o que o conteúdo pedir — cada parágrafo vira 1 slide do carrossel do 4º post, que não tem os 5 slides fixos dos destaques. Mesmo teto de **~260 caracteres por parágrafo**.
