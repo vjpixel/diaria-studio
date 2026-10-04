@@ -144,6 +144,26 @@ export function extractPastTitles(md: string, window: number): string[] {
 }
 
 /**
+ * #8666: como `extractPastTitles`, mas com o AAMMDD da edição de cada título
+ * (derivado do cabeçalho `## YYYY-MM-DD`). Usado pelo dedup por evento pra
+ * saber a distância em dias até a edição corrente.
+ */
+export function extractPastTitlesWithEdition(
+  md: string,
+  window: number,
+): { title: string; aammdd: string }[] {
+  const out: { title: string; aammdd: string }[] = [];
+  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
+  for (const section of editionSections) {
+    const m = section.match(/^## \d{2}(\d{2})-(\d{2})-(\d{2})[^"]*"([^"]+)"/m);
+    if (m) out.push({ title: m[4], aammdd: `${m[1]}${m[2]}${m[3]}` });
+  }
+  return out;
+}
+
+/**
  * #1475: extrai entidades dos "Temas cobertos:" de past-editions.md.
  * Retorna Set de entidades lowercased das últimas `window` edições.
  */
@@ -522,12 +542,25 @@ export function extractPastEditionArticleTitles(
   window: number,
   currentAammdd?: string,
 ): string[] {
+  return [...new Set(extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd).map((e) => e.title))];
+}
+
+/**
+ * #8666: como `extractPastEditionArticleTitles`, mas com o AAMMDD da edição de
+ * cada título (mesmo título em 2 edições aparece 2x — o consumidor escolhe a
+ * mais próxima). Ordem: edição mais recente primeiro.
+ */
+export function extractPastEditionArticleTitlesWithEdition(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): { title: string; aammdd: string }[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
   // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd.
   const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
 
-  const titles = new Set<string>();
+  const titles: { title: string; aammdd: string }[] = [];
   for (const aammdd of recent) {
     const editionDir = editionDirsByAammdd.get(aammdd);
     if (!editionDir) continue;
@@ -537,7 +570,7 @@ export function extractPastEditionArticleTitles(
     ];
     for (const path of candidates) {
       if (!existsSync(path)) continue;
-      for (const t of readApprovedTitles(path)) titles.add(t);
+      for (const t of readApprovedTitles(path)) titles.push({ title: t, aammdd });
       break; // primeiro arquivo encontrado = source-of-truth da edição
     }
   }

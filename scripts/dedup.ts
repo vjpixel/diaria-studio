@@ -55,6 +55,8 @@ import {
   deriveCurrentEdition,
   extractPastDestaqueUrls,
   extractPastEditionArticleTitles,
+  extractPastTitlesWithEdition,
+  extractPastEditionArticleTitlesWithEdition,
 } from "./lib/past-editions-extract.ts";
 // #2833: extraido pra scripts/lib/inbox-title-resolve.ts (movimentacao pura)
 // -- re-exportado abaixo pra manter compat com importadores existentes.
@@ -70,7 +72,7 @@ import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // 
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
-import { findSameEvent } from "./lib/event-dedup.ts";
+import { findSameEvent, minDistanceByTitle } from "./lib/event-dedup.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 
 export { canonicalize };
@@ -180,6 +182,10 @@ export function dedup(
   // #9360: itens que o editor CORTOU no Stage 4 das últimas edições (nunca
   // publicados → ausentes de past-editions.md). Ver lib/editor-rejected-items.ts.
   editorRejected: EditorRejectedItem[] = [],
+  // #8666: título passado → distância em dias até a edição corrente. Habilita
+  // o sinal (C) do event-dedup (mesma empresa + 1 conceito forte) só para os
+  // títulos a ≤2 dias. Ausente/vazio → Pass-1f segue só com A1/A2/B.
+  pastEventDistanceDays: Map<string, number> = new Map(),
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -471,12 +477,18 @@ export function dedup(
   // reais 261001: "OpenAI launches Dots..." (Dots = D2 de 260930) e "OpenAI
   // Pauses Training..." (coberto em 260929). Sinais e limiar conservadores
   // documentados em lib/event-dedup.ts. Submissão do editor nunca é removida
-  // (#4192), só marcada com `event_dedup_flagged`.
+  // (#4192), só marcada com `event_dedup_flagged`. #8666: títulos a ≤2 dias
+  // da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
   if (pastEventTitles.length > 0) {
     for (const art of afterPass1e) {
-      const hit = art.title ? findSameEvent(art.title, pastEventTitles) : null;
+      const hit = art.title
+        ? findSameEvent(
+            art.title,
+            pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) })),
+          )
+        : null;
       if (!hit) {
         afterPass1f.push(art);
         continue;
@@ -859,6 +871,16 @@ async function main() {
     );
   }
 
+  // #8666: distância (dias) de cada título passado até a edição corrente —
+  // habilita o sinal (C) do Pass-1f (invasão/vazamento em D-1/D-2).
+  const pastEventDistanceDays = minDistanceByTitle(
+    [
+      ...extractPastTitlesWithEdition(pastMd, window),
+      ...extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd),
+    ],
+    currentAammdd,
+  );
+
   const result = dedup(
     articles,
     pastUrls,
@@ -872,6 +894,7 @@ async function main() {
     pastThemes,
     pastHighlightsData,
     editorRejected,
+    pastEventDistanceDays,
   );
 
   console.error(

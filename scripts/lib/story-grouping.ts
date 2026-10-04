@@ -24,7 +24,8 @@
  * roda antes dele, cruza buckets e usa sinais de evento.
  *
  * Sinais de "mesma história" (qualquer um basta; todos conservadores):
- *   (1) `sameEvent` removível (A1/B) de lib/event-dedup.ts (#9249) — nome
+ *   (1) `sameEvent` removível (A1/B/C) de lib/event-dedup.ts (#9249, C = #8666
+ *       com distância 0, mesma edição) — nome
  *       distintivo ("Dots", "Argon") ou ≥2 conceitos de evento + mesma empresa.
  *   (2) Mesmo MODELO VERSIONADO nos dois títulos ("Sonnet 5.5", "Gemini 4",
  *       "GPT-6.1") E os DOIS títulos com cara de anúncio de lançamento
@@ -147,7 +148,7 @@ export const LAUNCH_TITLE_RE =
 
 /** Sinal de mesma história entre dois títulos, ou null. */
 export function sameStorySignal(a: string, b: string): StorySignal | null {
-  const ev = sameEvent(a, b);
+  const ev = sameEvent(a, b, { distanceDays: 0 }); // #8666: mesma edição
   if (ev && ev.removable) return "event";
   if (LAUNCH_TITLE_RE.test(a) && LAUNCH_TITLE_RE.test(b)) {
     const mvB = modelVersionTokens(b);

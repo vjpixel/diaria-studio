@@ -30,6 +30,21 @@
  *       aquisição, demissão, vazamento...). Conceitos genéricos ("lança",
  *       "agente", "modelo") ficam FORA do léxico de propósito — "OpenAI lança
  *       agente A" vs "OpenAI lança agente B" não pode casar.
+ *   (C) #8666: MESMA EMPRESA + 1 CONCEITO FORTE compartilhado, SÓ em janela
+ *       curta (intra-edição ou ≤2 dias — `STRONG_CONCEPT_MAX_DISTANCE_DAYS`).
+ *       Conceito forte = evento raro e específico (invasão/hack, vazamento),
+ *       em que a mesma empresa sofrer DOIS desses em 48h é muito menos
+ *       provável que a mesma história reaparecer em outro veículo/idioma. Caso
+ *       real: D1 de 260922 ("OpenAI foi invadida por hackers...") repetiu o
+ *       D1 de 260921 ("Claude ajudou a invadir a OpenAI...") — só 1 conceito
+ *       em comum, (B) não casava. O conceito só conta como forte quando os
+ *       DOIS lados o expressam por um termo forte (`invadir`, `hacked`,
+ *       `breach`, `vazamento`...) — `ataque`/`attack` mapeiam pro mesmo
+ *       conceito em (B), mas são amplos demais ("OpenAI ataca Google") pra
+ *       decidir sozinhos. Sem informação de distância (`opts.distanceDays`
+ *       ausente) (C) nunca dispara: o default segue conservador (≥2
+ *       conceitos). "growth hack"/"life hack" não contam; "hackathon" é outro
+ *       token e nunca entra no léxico.
  *
  * Puro, sem I/O.
  */
@@ -181,28 +196,83 @@ addConcept("TRAIN", ["treino", "treinamento", "treinar", "treina", "training", "
 addConcept("LAWSUIT", ["processo", "processa", "processada", "processado", "sued", "sues", "lawsuit"]);
 addConcept("ACQUIRE", ["compra", "comprar", "comprou", "adquire", "adquiriu", "aquisicao", "acquires", "acquired", "acquisition", "acquiring", "buys", "bought"]);
 addConcept("LAYOFF", ["demite", "demitiu", "demissoes", "demissao", "layoffs", "layoff", "lays", "fires", "fired", "cortes"]);
-addConcept("LEAK", ["vazamento", "vaza", "vazou", "vazados", "leak", "leaks", "leaked"]);
-addConcept("HACK", ["invasao", "invadiu", "invade", "hack", "hacked", "hacks", "hacker", "hackers", "ataque", "attack", "attacks", "breach", "furar"]);
+const STRONG_LEAK_WORDS = ["vazamento", "vazamentos", "vaza", "vazou", "vazados", "vazadas", "vazaram", "leak", "leaks", "leaked"];
+addConcept("LEAK", STRONG_LEAK_WORDS);
+addConcept("HACK", ["ataque", "attack", "attacks", "furar"]);
+/**
+ * #8666: termos FORTES de invasão/hack — os únicos que habilitam o sinal (C).
+ * Mapeiam pro mesmo conceito HACK dos amplos acima, então valem em (B) também.
+ */
+const STRONG_HACK_WORDS = [
+  "invasao", "invasoes", "invadir", "invadiu", "invade", "invadem", "invadida", "invadido", "invadidas", "invadidos",
+  "hackear", "hackeou", "hackeada", "hackeado", "hackeadas", "hackeados", "hackeia",
+  "hack", "hacked", "hacks", "hacker", "hackers", "hacking",
+  "breach", "breached", "breaches", "violacao", "intrusion", "intrusao", "ciberataque", "cyberattack",
+];
+addConcept("HACK", STRONG_HACK_WORDS);
 addConcept("GOVT", ["governo", "governos", "government", "governments"]);
 addConcept("ROGUE", ["rogue", "desobedece", "desobedecia", "mentia", "misbehavior", "misaligned", "desalinhado"]);
 addConcept("IPO", ["ipo", "prospecto", "prospectus"]);
 addConcept("FUNDING", ["rodada", "investimento", "funding", "raises", "raised", "capta", "captou", "valuation", "avaliacao"]);
 addConcept("FINE", ["multa", "multada", "fined", "fine", "penalty"]);
 
+/** Termos fortes (token → conceito) que habilitam o sinal (C) (#8666). */
+const STRONG_CONCEPT_WORDS: Record<string, string> = {};
+for (const w of STRONG_HACK_WORDS) STRONG_CONCEPT_WORDS[w] = "HACK";
+for (const w of STRONG_LEAK_WORDS) STRONG_CONCEPT_WORDS[w] = "LEAK";
+
+/**
+ * #8666: "hack" coloquial — "growth hack", "life hack", "productivity hack"
+ * — não é invasão. Token anterior a "hack(s)" nesta lista anula o termo.
+ */
+const COLLOQUIAL_HACK_PREFIX = new Set(["growth", "life", "productivity", "produtividade", "career", "carreira", "study", "estudo"]);
+
+/** Tokens de conceito em ORDEM (precisa da vizinhança), sem o "hack" coloquial. */
+function conceptTokens(title: string): string[] {
+  const toks = rawWords(stripVehicle(title)).map(norm);
+  return toks.filter(
+    (t, i) => !((t === "hack" || t === "hacks") && i > 0 && COLLOQUIAL_HACK_PREFIX.has(toks[i - 1])),
+  );
+}
+
 export function eventConcepts(title: string): Set<string> {
   const out = new Set<string>();
-  for (const t of eventTokens(title)) {
+  for (const t of conceptTokens(title)) {
     const c = CONCEPT_LEXICON[t];
     if (c) out.add(c);
   }
   return out;
 }
 
+/** Conceitos FORTES (#8666) expressos no título por um termo forte. */
+export function strongEventConcepts(title: string): Set<string> {
+  const out = new Set<string>();
+  for (const t of conceptTokens(title)) {
+    const c = STRONG_CONCEPT_WORDS[t];
+    if (c) out.add(c);
+  }
+  return out;
+}
+
+/**
+ * #8666: distância máxima (em dias) entre os dois títulos para o sinal (C)
+ * — 0 = mesma edição, 1 = D-1, 2 = D-2.
+ */
+export const STRONG_CONCEPT_MAX_DISTANCE_DAYS = 2;
+
+export interface SameEventOptions {
+  /**
+   * Distância em dias entre as edições dos dois títulos (0 = intra-edição).
+   * Ausente = desconhecida → o sinal (C) não dispara (conservador).
+   */
+  distanceDays?: number;
+}
+
 /** Mínimo de conceitos de evento compartilhados no sinal (B). */
 export const EVENT_CONCEPT_MIN_SHARED = 2;
 
 export interface EventMatch {
-  signal: "distinctive_name" | "event_concepts";
+  signal: "distinctive_name" | "event_concepts" | "strong_concept";
   shared: string[];
   /**
    * #9293: `false` = evidência fraca (sinal A2 — só um lado nomeia empresa).
@@ -217,7 +287,7 @@ export interface EventMatch {
  * Decide se `a` e `b` cobrem o mesmo evento. `null` = não há evidência
  * suficiente (default seguro: na dúvida, NÃO remove).
  */
-export function sameEvent(a: string, b: string): EventMatch | null {
+export function sameEvent(a: string, b: string, opts: SameEventOptions = {}): EventMatch | null {
   if (!a || !b) return null;
   const compA = companiesIn(a);
   const compB = companiesIn(b);
@@ -252,6 +322,19 @@ export function sameEvent(a: string, b: string): EventMatch | null {
       return { signal: "event_concepts", shared: [...sharedCompanies, ...shared], removable: true };
     }
   }
+
+  // (C) #8666: mesma empresa + 1 conceito FORTE, só em janela curta conhecida.
+  const d = opts.distanceDays;
+  if (
+    sharedCompanies.length > 0 &&
+    typeof d === "number" && Number.isFinite(d) && d >= 0 && d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS
+  ) {
+    const sB = strongEventConcepts(b);
+    const strong = [...strongEventConcepts(a)].filter((c) => sB.has(c));
+    if (strong.length > 0) {
+      return { signal: "strong_concept", shared: [...sharedCompanies, ...strong], removable: true };
+    }
+  }
   return null;
 }
 
@@ -263,14 +346,56 @@ export function sameEvent(a: string, b: string): EventMatch | null {
  */
 export function findSameEvent(
   title: string,
-  others: string[],
+  others: ReadonlyArray<string | { title: string; distanceDays?: number }>,
 ): { title: string; match: EventMatch } | null {
   let weak: { title: string; match: EventMatch } | null = null;
-  for (const o of others) {
-    const m = sameEvent(title, o);
+  for (const entry of others) {
+    // #8666: entrada com `distanceDays` habilita o sinal (C) para aquele título.
+    const o = typeof entry === "string" ? entry : entry.title;
+    const distanceDays = typeof entry === "string" ? undefined : entry.distanceDays;
+    const m = sameEvent(title, o, { distanceDays });
     if (!m) continue;
     if (m.removable) return { title: o, match: m };
     weak ??= { title: o, match: m };
   }
   return weak;
+}
+
+/** #8666: distância em dias entre duas datas AAMMDD (≥0), ou undefined se alguma for inválida. */
+export function editionDistanceDays(a: string, b: string): number | undefined {
+  const toMs = (x: string): number | undefined => {
+    const m = /^(\d{2})(\d{2})(\d{2})$/.exec(x);
+    if (!m) return undefined;
+    const y = 2000 + Number(m[1]);
+    const mo = Number(m[2]) - 1;
+    const day = Number(m[3]);
+    const dt = new Date(Date.UTC(y, mo, day));
+    // Rejeita data que rolou (ex: 260231 → 03/03).
+    if (dt.getUTCMonth() !== mo || dt.getUTCDate() !== day) return undefined;
+    return dt.getTime();
+  };
+  const ma = toMs(a);
+  const mb = toMs(b);
+  if (ma === undefined || mb === undefined) return undefined;
+  return Math.round(Math.abs(ma - mb) / 86_400_000);
+}
+
+/**
+ * #8666: título → menor distância em dias até `currentAammdd`, a partir de
+ * pares (título, AAMMDD da edição). Título em mais de uma edição fica com a
+ * mais próxima. `currentAammdd` ausente/inválido → mapa vazio (sinal C off).
+ */
+export function minDistanceByTitle(
+  dated: ReadonlyArray<{ title: string; aammdd: string }>,
+  currentAammdd: string | null | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!currentAammdd) return out;
+  for (const { title, aammdd } of dated) {
+    const d = editionDistanceDays(aammdd, currentAammdd);
+    if (d === undefined) continue;
+    const prev = out.get(title);
+    if (prev === undefined || d < prev) out.set(title, d);
+  }
+  return out;
 }

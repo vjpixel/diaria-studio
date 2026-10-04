@@ -1016,8 +1016,10 @@ export function isIntraEditionDuplicate(
     // (CNN) duplicava o D1 "Gemini 4 Argon: our next era..." — Gemini não é
     // empresa no path (d) e "Argon" sozinho fica abaixo do mínimo de (b).
     // #9295: sinal fraco (A2, só um lado nomeia empresa) nunca remove aqui —
-    // só marca (ver `weakEventFlag`). Remoção apenas em A1/B.
-    const ev = sameEvent(artTitle, hTitle);
+    // só marca (ver `weakEventFlag`). Remoção apenas em A1/B/C.
+    // #8666: `distanceDays: 0` (mesma edição) habilita o sinal (C) — mesma
+    // empresa + 1 conceito forte (invasão/hack, vazamento).
+    const ev = sameEvent(artTitle, hTitle, { distanceDays: 0 });
     if (ev && ev.removable) {
       return {
         match_type: "event",
@@ -1041,7 +1043,7 @@ export function weakEventFlag(article: Article, highlights: HighlightEntry[]): s
   for (const h of highlights) {
     const hTitle = highlightTitle(h);
     if (!hTitle) continue;
-    const ev = sameEvent(artTitle, hTitle);
+    const ev = sameEvent(artTitle, hTitle, { distanceDays: 0 });
     if (ev && !ev.removable) {
       return `same-event fraco (#9295, ${ev.signal}: ${ev.shared.join(", ")}) com destaque "${hTitle}"`;
     }
