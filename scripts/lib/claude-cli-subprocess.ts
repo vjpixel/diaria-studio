@@ -178,7 +178,8 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", opts.outputFormat ?? "text", "--no-session-persistence"];
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
-  args.push(prompt);
+  // #9577: `--` encerra as opções — prompt que começa com `---` (frontmatter de agente no replay do eval) não vira flag.
+  args.push("--", prompt);
 
   const bin = resolveClaudeBinFn();
   const command = `${bin} ${args.map((a) => (a === prompt ? `<prompt ${prompt.length} chars>` : a)).join(" ")}`;
