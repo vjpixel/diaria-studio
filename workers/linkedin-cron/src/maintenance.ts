@@ -16,7 +16,6 @@ export const THREADS_TOKEN_KV_KEY = "meta:threads_token";
 export const DLQ_ALERT_KV_KEY = "meta:dlq_alerted";
 export const THREADS_REFRESH_AFTER_MS = 30 * 24 * 3600 * 1000; // renova a cada 30d (< 60d de vida)
 export const THREADS_REFRESH_RETRY_MS = 6 * 3600 * 1000; // falha: tenta de novo em 6h
-export const THREADS_MIN_TOKEN_AGE_MS = 24 * 3600 * 1000; // Threads recusa refresh de token <24h
 
 interface StoredThreadsToken {
   access_token: string;
@@ -77,7 +76,7 @@ export async function maybeRefreshThreadsToken(
     console.log("[threads-refresh] token renovado");
     return "refreshed";
   } catch (e) {
-    console.error(`[threads-refresh] erro de rede: ${(e as Error).message}`);
+    console.error(`[threads-refresh] erro de rede: ${(e as Error).name}`);
     await persist(env, current, stored?.refreshed_at ?? new Date(0).toISOString(), now + THREADS_REFRESH_RETRY_MS, seed);
     return "failed";
   }
@@ -93,15 +92,42 @@ async function persist(env: Env, token: string, refreshedAt: string, nextAttempt
   await env.LINKEDIN_QUEUE.put(THREADS_TOKEN_KV_KEY, JSON.stringify(rec));
 }
 
+async function listAllDlqKeys(env: Env): Promise<string[]> {
+  const names: string[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    const page = (await env.LINKEDIN_QUEUE.list({ prefix: "dlq:", cursor })) as {
+      keys: { name: string }[];
+      list_complete: boolean;
+      cursor?: string;
+    };
+    names.push(...page.keys.map((k) => k.name));
+    if (page.list_complete || !page.cursor) break;
+    cursor = page.cursor;
+  }
+  return names;
+}
+
 /**
- * Alerta de DLQ: notifica entries `dlq:` ainda não avisadas (cursor = maior key
- * já avisada; keys são lex-sortable por scheduled_at). Só avança o cursor se o
- * webhook respondeu 2xx, pra retentar na próxima rodada.
+ * Alerta de DLQ: notifica entries `dlq:` ainda não avisadas. Controle por
+ * IDENTIDADE (conjunto de keys já avisadas, podado às keys existentes): a key
+ * ordena por scheduled_at, não por hora de entrada na DLQ, então um cursor
+ * lex perderia entries que chegam tarde. Só marca como avisada se o webhook
+ * respondeu 2xx; sem webhook, marca após logar (evita log repetido a cada cron).
+ * Nota: o overlay do token não alcança alarms DO já armados (usam o token do
+ * enqueue; o antigo segue válido até expirar, margem ~30d).
  */
 export async function alertNewDlqEntries(env: Env): Promise<{ new_entries: number; alerted: boolean }> {
-  const list = await env.LINKEDIN_QUEUE.list({ prefix: "dlq:" });
-  const cursor = (await env.LINKEDIN_QUEUE.get(DLQ_ALERT_KV_KEY)) ?? "";
-  const fresh = list.keys.map((k) => k.name).filter((n) => n > cursor);
+  const all = await listAllDlqKeys(env);
+  let seen: string[] = [];
+  try {
+    seen = JSON.parse((await env.LINKEDIN_QUEUE.get(DLQ_ALERT_KV_KEY)) ?? "[]");
+    if (!Array.isArray(seen)) seen = [];
+  } catch {
+    seen = [];
+  }
+  const seenSet = new Set(seen);
+  const fresh = all.filter((n) => !seenSet.has(n));
   if (fresh.length === 0) return { new_entries: 0, alerted: false };
 
   const samples: { channel: string; destaque: string; reason: string }[] = [];
@@ -115,22 +141,26 @@ export async function alertNewDlqEntries(env: Env): Promise<{ new_entries: numbe
       /* entry ilegível: conta, mas sem amostra */
     }
   }
-  const text = `diar.ia.br: ${fresh.length} item(ns) novo(s) na DLQ do Worker linkedin-cron (total ${list.keys.length}). ` +
+  const text = `diar.ia.br: ${fresh.length} item(ns) novo(s) na DLQ do Worker linkedin-cron (total ${all.length}). ` +
     samples.map((s) => `[${s.channel}/${s.destaque}] ${s.reason}`).join(" | ");
   console.error(`[dlq-alert] ${text}`);
 
-  if (!env.ALERT_WEBHOOK_URL) return { new_entries: fresh.length, alerted: false };
-  try {
-    const res = await fetch(env.ALERT_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, content: text, new_entries: fresh.length, total: list.keys.length, samples }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) return { new_entries: fresh.length, alerted: false };
-  } catch {
-    return { new_entries: fresh.length, alerted: false };
+  let alerted = false;
+  if (env.ALERT_WEBHOOK_URL) {
+    try {
+      const res = await fetch(env.ALERT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, content: text, new_entries: fresh.length, total: all.length, samples }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) return { new_entries: fresh.length, alerted: false };
+      alerted = true;
+    } catch {
+      return { new_entries: fresh.length, alerted: false };
+    }
   }
-  await env.LINKEDIN_QUEUE.put(DLQ_ALERT_KV_KEY, fresh[fresh.length - 1]);
-  return { new_entries: fresh.length, alerted: true };
+  const existing = new Set(all);
+  await env.LINKEDIN_QUEUE.put(DLQ_ALERT_KV_KEY, JSON.stringify([...seen.filter((k) => existing.has(k)), ...fresh]));
+  return { new_entries: fresh.length, alerted };
 }

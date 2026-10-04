@@ -963,7 +963,7 @@ export default {
     // #1168 — POST /rearm re-arma DO alarms pra items KV legacy pós-deploy.
     // Editor chama 1x após deploy pra garantir que items pré-deploy tenham alarms.
     if (path === "/rearm" && request.method === "POST") {
-      return handleRearm(request, env);
+      return handleRearm(request, await withRefreshedThreadsToken(env));
     }
 
     return json(

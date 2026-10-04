@@ -82,6 +82,18 @@ describe("DLQ alert", () => {
     await dlq("2026-10-04T11:00:00.000Z");
     assert.equal((await alertNewDlqEntries(env)).new_entries, 1);
   });
+  it("entry que chega tarde com scheduled_at anterior ainda é avisada", async () => {
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    await dlq("2026-10-04T10:30:00.000Z");
+    await alertNewDlqEntries(env);
+    await dlq("2026-10-04T10:00:00.000Z");
+    assert.equal((await alertNewDlqEntries(env)).new_entries, 1);
+  });
+  it("sem webhook: não repete o log na rodada seguinte", async () => {
+    await dlq("2026-10-02T17:30:00.000Z");
+    await alertNewDlqEntries(mkEnv());
+    assert.equal((await alertNewDlqEntries(mkEnv())).new_entries, 0);
+  });
   it("webhook falha: cursor não avança (retenta)", async () => {
     await dlq("2026-10-02T17:30:00.000Z");
     respond = () => new Response("no", { status: 500 });
@@ -89,7 +101,7 @@ describe("DLQ alert", () => {
     assert.equal((await alertNewDlqEntries(env)).alerted, false);
     assert.equal(kv.store.has(DLQ_ALERT_KV_KEY), false);
   });
-  it("sem webhook: só loga, sem fetch", async () => {
+  it("sem webhook (1ª vez): só loga, sem fetch", async () => {
     await dlq("2026-10-02T17:30:00.000Z");
     assert.deepEqual(await alertNewDlqEntries(mkEnv()), { new_entries: 1, alerted: false });
     assert.equal(calls.length, 0);
