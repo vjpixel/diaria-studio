@@ -432,14 +432,24 @@ function removeWorktree(workRoot: string, branch: string): void {
   }
 }
 
+export const HUBS_WEEKLY_REGEN_USAGE =
+  "Uso: npx tsx scripts/hubs-weekly-regen.ts [--dry-run] [--session-id <id>] [--help]\n" +
+  "  --dry-run         planeja sem commit/push/deploy\n" +
+  "  --session-id <id> sessão dona do merge lock (obrigatório em regen com mudança de dados)\n" +
+  "  --help, -h        mostra esta ajuda e sai sem executar o regen\n";
+
 /**
  * Parseia os args de CLI deste script (#8932). Isolado do `main()` pra dar
  * cobertura de teste sem depender de `data/` (o script inteiro sai cedo se
  * o junction `data/` estiver ausente, então testar via processo real não
  * exercita este parsing em CI/worktree — ver `test/hubs-weekly-regen.test.ts`).
  */
-export function parseHubsWeeklyRegenArgs(argv: string[]): { dryRun: boolean; sessionId: string | undefined } {
+export function parseHubsWeeklyRegenArgs(
+  argv: string[],
+): { dryRun: boolean; sessionId: string | undefined; help: boolean } {
   return {
+    // #8931: `--help`/`-h` é modo informativo — sem isso o regen rodava de verdade.
+    help: argv.includes("--help") || argv.includes("-h"),
     dryRun: hasFlag(argv, "dry-run"),
     sessionId: getArg(argv, "session-id") || undefined,
   };
@@ -447,7 +457,11 @@ export function parseHubsWeeklyRegenArgs(argv: string[]): { dryRun: boolean; ses
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const { dryRun, sessionId } = parseHubsWeeklyRegenArgs(argv);
+  const { dryRun, sessionId, help } = parseHubsWeeklyRegenArgs(argv);
+  if (help) {
+    process.stdout.write(HUBS_WEEKLY_REGEN_USAGE);
+    return;
+  }
   dryRunActive = dryRun;
 
   const cachePath = resolve(ROOT, "data", "beehiiv-cache", "posts");
