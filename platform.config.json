@@ -276,7 +276,7 @@
         "d3_time": "17:30",
         "day_offset": 0
       },
-      "use_melhor_time": null,
+      "use_melhor_time": "08:00",
       "timezone": "America/Sao_Paulo"
     }
   },

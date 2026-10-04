@@ -1,9 +1,12 @@
 /**
  * resolve-post-pixel.ts (#3052)
  *
- * Resolve `{outros_count}` + `{edition_url}` no texto do `## post_pixel` de
- * `03-social.md`, para exibição no gate do Stage 6 (#2153 lembrete) e cópia
- * manual no Claude in Chrome (#1690).
+ * Texto do post PESSOAL do LinkedIn (vjpixel) pro lembrete do gate do
+ * Stage 6. Desde a #9568 é o `## um` (4º post, item USE MELHOR — mesmo texto
+ * da página, ver `extractPersonalPostText`); o resto deste arquivo é o
+ * caminho LEGADO do `## post_pixel` (edições antigas): resolve
+ * `{outros_count}` + `{edition_url}` no texto, para exibição no gate do
+ * Stage 6 (#2153 lembrete) e cópia manual no Claude in Chrome (#1690).
  *
  * `post_pixel` NUNCA passa por `publish-linkedin.ts` — é publicado 100%
  * manualmente (Make.com não tem endpoint pra post pessoal, ver §3b de
@@ -39,11 +42,15 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractPlatformSection, extractPostPixelBlock } from "./lib/social-lint-rules.ts";
-import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
+import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #9568 — `## um`
 import { resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { BEEHIIV_BASE_URL, appendUtmToEditionUrl } from "./lib/edition-url.ts"; // #4295 — appendUtmToEditionUrl
 import { LINKEDIN_POST_PIXEL_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #9568 — LinkedIn não renderiza markdown
+import { applyUseMelhorUtmToText } from "./lib/use-melhor-dispatch.ts"; // #9568
+import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #9568
+import { useMelhorSlideFilename } from "./lib/use-melhor-carousel.ts"; // #9568
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -80,6 +87,32 @@ export function extractPostPixelText(socialMd: string): string | null {
   return block.text.replace(/<!--[\s\S]*?-->/g, "").trim();
 }
 
+/**
+ * #9568: texto do post PESSOAL do LinkedIn (vjpixel). Desde a #9568 o post
+ * pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)
+ * que a página publica — o `## post_pixel` (standalone de D1, #1690) deixou de
+ * ser gerado. Prefere `## um`; edição antiga sem `## um` cai no `## post_pixel`
+ * legado (nunca quebra o parse de edição já publicada). O perfil pessoal segue
+ * MANUAL: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post`
+ * e a API direta tem um autor só (a página).
+ */
+export function extractPersonalPostText(
+  socialMd: string,
+): { source: "um" | "post_pixel"; text: string } | null {
+  const social = extractSection(socialMd, "Social");
+  const um = social ? extractDestaqueBlock(social, USE_MELHOR_POST_ID) : null;
+  if (um && um.trim()) {
+    return { source: "um", text: applyUseMelhorUtmToText(stripMarkdownEmphasis(um.trim())) };
+  }
+  const legacy = extractPostPixelText(socialMd);
+  return legacy === null ? null : { source: "post_pixel", text: legacy };
+}
+
+/** #9568: imagem sugerida pro lembrete do post pessoal, conforme a fonte do texto. */
+export function personalPostImageFile(source: "um" | "post_pixel"): string {
+  return source === "um" ? useMelhorSlideFilename("cover") : "04-d1-1x1.jpg";
+}
+
 function main(): void {
   const { values } = parseArgs(process.argv.slice(2));
   const editionDirRaw = values["edition-dir"];
@@ -103,6 +136,19 @@ function main(): void {
     process.exit(1);
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
+
+  // #9568: post pessoal = `## um` (Use Melhor) quando existe; `## post_pixel`
+  // só em edição antiga. `--image` imprime o arquivo de imagem do lembrete.
+  const personal = extractPersonalPostText(socialMd);
+  if (process.argv.includes("--image")) {
+    console.log(personalPostImageFile(personal?.source ?? "post_pixel"));
+    process.exit(personal ? 0 : 1);
+  }
+  if (personal?.source === "um") {
+    console.error("#9568: post pessoal = texto do 4º post (## um, Use Melhor) — mesmo texto da página.");
+    console.log(personal.text);
+    process.exit(0);
+  }
 
   const rawText = extractPostPixelText(socialMd);
   if (rawText === null) {

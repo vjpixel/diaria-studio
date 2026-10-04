@@ -195,16 +195,17 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
-**Pré-gate: ler post_pixel para o lembrete (#2153).** Extrair seção `## post_pixel` de `03-social.md` — `post_pixel` nunca passa pelo dispatch de `publish-linkedin.ts` (postagem 100% manual, #1690), então Stage 6 é o ponto de resolução equivalente **quando o texto ainda contém `{outros_count}`/`{edition_url}` literais**. **#3052 revertido (260814):** post_pixel normalmente não abre mais com esses placeholders (writer não os emite) — o passo abaixo vira no-op na maioria das edições, mas segue rodado por backward-compat (edições pré-260814 reprocessadas, ou qualquer texto que ainda os contenha):
+**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agenda às `publishing.social.use_melhor_time` (08:00 BRT) — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Segue manual: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post` (ver `context/publishers/linkedin.md`). `resolve-post-pixel.ts` prefere `## um` e só cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`) em edição antiga sem `## um`:
 
 ```bash
 npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/
+npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --image   # → POST_PIXEL_IMAGE (04-um-carousel-cover-4x5.jpg; edição antiga: 04-d1-1x1.jpg)
 ```
 
 Exit code:
-- `0` → texto resolvido normalmente.
-- `1` → estrutura ausente (03-social.md ou seção post_pixel não encontrada) — mostrar `(nao encontrado)` no lembrete, não bloqueia o gate.
-- `2` → `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (mesma regra de #2153 — post_pixel é amplificação opcional).
+- `0` → texto resolvido normalmente (`## um`, ou `## post_pixel` legado).
+- `1` → estrutura ausente (03-social.md ausente, ou nem `## um` nem `## post_pixel`) — mostrar `(nao encontrado)` no lembrete, não bloqueia o gate.
+- `2` → (só caminho legado `## post_pixel`) `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (#2153 — post pessoal é amplificação opcional).
 
 Guardar stdout em `POST_PIXEL_TEXT`.
 
@@ -231,16 +232,16 @@ Review automatico (review-test-email + lint-test-email-*): {review_status_block 
 {"📋 Pedidos editoriais aceitos: " + resumo de §6b2, SÓ se o arquivo existia}
 
 Social agendado:
-  LinkedIn  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
-  Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT}
+  LinkedIn  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT} · UM {hh:mm BRT, se o 4º post saiu — #9568}
+  Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT} · UM {hh:mm BRT, se o 4º post saiu}
 
 {bloco Brevo diária, SÓ se _internal/brevo-diaria-published.json existir:}
 Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv no mesmo horário abaixo (#5772)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel
-Poste manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia):
-  Imagem: {EDITION_DIR}/04-d1-1x1.jpg
+📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel (4º post USE MELHOR, #9568)
+Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {use_melhor_time} BRT do dia da edição — mesmo horário do 4º post da página:
+  Imagem: {EDITION_DIR}/{POST_PIXEL_IMAGE}
 
 {POST_PIXEL_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -102,6 +102,14 @@ import {
 // do #8303; publish-instagram.ts já delegava assim desde #3944 Parte B).
 import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import {
+  applyUseMelhorUtmToText,
+  planUseMelhorDispatch,
+  reportUseMelhorPlan,
+  reportUseMelhorSkip,
+  resolveUseMelhorImages,
+  type UseMelhorDispatchPlan,
+} from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -186,6 +194,49 @@ export function extractPostText(socialMd: string, destaque: string): string {
   // literal no post real). Ver docstring de lib/strip-markdown-emphasis.ts
   // (nunca fazer isso na fonte — 03-social.md alimenta o carrossel também).
   return stripMarkdownEmphasis(text);
+}
+
+/**
+ * #9568: monta o 4º post (item USE MELHOR, `## um`) pra página do LinkedIn.
+ * Pure (sem I/O) — o `main()` despacha o resultado pelo MESMO `dispatchEntry`
+ * dos destaques (Worker queue → Make, mesmo payload). Tudo-ou-nada: sem texto
+ * ou sem capa tipográfica pública → `{ ok: false, reason }` (o Make scenario
+ * da página exige Image URL, mesmo motivo do fail-fast #1275), e o caller
+ * pula SÓ o 4º post — D1/D2/D3 nunca são afetados.
+ *
+ * Imagem: a CAPA do carrossel tipográfico (single-image, mesmo formato dos
+ * destaques no LinkedIn — o carrossel por API direta exige credenciais que o
+ * dispatch diário não usa). Texto: o mesmo `## um` de `# Social`, sem markdown,
+ * com `utm_content=usemelhor` em qualquer link do projeto.
+ */
+export function buildUseMelhorLinkedInPost(input: {
+  socialMd: string;
+  plan: UseMelhorDispatchPlan;
+  images: Record<string, { url?: string }> | undefined;
+  /** `null` = fire-now (sem agendamento). */
+  computeAt: (() => string) | null;
+}): { ok: true; text: string; imageUrl: string; scheduledAt: string | null } | { ok: false; reason: string } {
+  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
+  let text: string;
+  try {
+    text = applyUseMelhorUtmToText(extractPostText(input.socialMd, "um"));
+  } catch (e) {
+    return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
+  }
+  if (!text.trim()) return { ok: false, reason: "'## um' vazio em '# Social'" };
+  const { coverUrl } = resolveUseMelhorImages(input.images, input.plan);
+  if (!coverUrl) {
+    return { ok: false, reason: "capa do carrossel do 4º post (um_carousel_cover) ausente em 06-public-images.json" };
+  }
+  let scheduledAt: string | null = null;
+  if (input.computeAt) {
+    try {
+      scheduledAt = input.computeAt();
+    } catch (e) {
+      return { ok: false, reason: `schedule_error: ${(e as Error).message}` };
+    }
+  }
+  return { ok: true, text, imageUrl: coverUrl, scheduledAt };
 }
 
 /**
@@ -723,13 +774,18 @@ async function main(): Promise<void> {
   // para suportar edições com 2 destaques (sem D3).
   const onlyArg = values["only"] || undefined;
   let destaques: string[];
+  let includeUseMelhor = true; // #9568 — sem --only, o 4º post entra (se pronto)
   if (onlyArg) {
-    destaques = onlyArg
+    const onlyIds = onlyArg
       .split(",")
       .map((s) => s.trim())
-      .filter((s) => /^d[123]$/.test(s));
-    if (destaques.length === 0) {
-      console.error("Erro: --only deve conter d1, d2 e/ou d3 (ex: --only d1,d2).");
+      .filter((s) => /^(d[123]|um)$/.test(s));
+    // #9568: `um` (4º post) é aceito em --only mas não entra em `destaques`
+    // (que alimenta o fail-fast de imagem e o loop dos destaques).
+    includeUseMelhor = onlyIds.includes("um");
+    destaques = onlyIds.filter((s) => s !== "um");
+    if (destaques.length === 0 && !includeUseMelhor) {
+      console.error("Erro: --only deve conter d1, d2, d3 e/ou um (ex: --only d1,d2).");
       process.exit(1);
     }
   } else {
@@ -1198,6 +1254,67 @@ async function main(): Promise<void> {
             webhookTarget: "pixel",
             action: "comment",
             parentDestaque: d,
+          }, ctx));
+        }
+      }
+    }
+  }
+
+  // ── 4º post (USE MELHOR, #9568) — página diar.ia.br, slot use_melhor_time.
+  // Fail-soft: qualquer peça faltando pula SÓ este post (warning), nunca
+  // grava `failed` por ausência nem afeta D1/D2/D3 acima. O perfil PESSOAL
+  // (vjpixel) não sai daqui — o Worker recusa webhook_target=pixel com
+  // action=post; o mesmo texto vai no lembrete manual do gate do Stage 6.
+  if (includeUseMelhor) {
+    const umPlan = planUseMelhorDispatch(editionDir, config);
+    reportUseMelhorPlan("linkedin", umPlan, { editionId: editionDate, rootDir: logRootDir });
+    if (umPlan.status === "ready") {
+      const existing = skipExisting
+        ? readSocialPublished(publishedPath).posts.find(
+            (p) =>
+              p.platform === "linkedin" &&
+              p.destaque === "um" &&
+              resolveSubtype(p) === "main" &&
+              (p.status === "draft" || p.status === "scheduled"),
+          )
+        : undefined;
+      if (existing) {
+        console.log(`SKIP linkedin/um/main — already ${existing.status}`);
+        results.push(existing);
+      } else {
+        let umImages: Record<string, { url?: string }> | undefined;
+        try {
+          umImages = (JSON.parse(readFileSync(resolve(editionDir, "06-public-images.json"), "utf8")) as ImageCacheFile)
+            .images as Record<string, { url?: string }> | undefined;
+        } catch {
+          umImages = undefined;
+        }
+        const built = buildUseMelhorLinkedInPost({
+          socialMd,
+          plan: umPlan,
+          images: umImages,
+          computeAt: doSchedule
+            ? () =>
+                computeScheduledAt({
+                  config: config as Parameters<typeof computeScheduledAt>[0]["config"],
+                  editionDate,
+                  destaque: "um",
+                  platform: "linkedin",
+                  dayOffsetOverride,
+                })
+            : null,
+        });
+        if (!built.ok) {
+          reportUseMelhorSkip("linkedin", built.reason, { editionId: editionDate, rootDir: logRootDir });
+        } else {
+          results.push(await dispatchEntry({
+            destaque: "um",
+            subtype: "main",
+            text: built.text,
+            imageUrl: built.imageUrl,
+            scheduledAt: built.scheduledAt,
+            webhookTarget: "diaria",
+            action: "post",
           }, ctx));
         }
       }

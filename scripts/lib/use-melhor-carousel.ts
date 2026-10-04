@@ -42,6 +42,12 @@ import {
 import type { CarouselCtaOverride } from "./instagram-test-override.ts";
 import { splitBodyAndTags } from "./social-cta-lines.ts";
 import { USE_MELHOR_POST_ID } from "./use-melhor-post.ts";
+import {
+  useMelhorSlideFilename,
+  useMelhorSlideImageKey,
+  useMelhorCarouselHashPath,
+  type UseMelhorCarouselStamp,
+} from "./use-melhor-slide-files.ts";
 
 /**
  * Teto de slides de parágrafo. O Instagram aceita até 10 itens por carrossel
@@ -63,15 +69,15 @@ export interface UseMelhorSlide {
   layout: FlatCardLayout;
 }
 
-/** Nome do arquivo local (raiz da edição) de um slide do 4º post. */
-export function useMelhorSlideFilename(slot: string): string {
-  return `04-${USE_MELHOR_POST_ID}-carousel-${slot}-4x5.jpg`;
-}
-
-/** Chave em `06-public-images.json` (`images`) de um slide do 4º post. */
-export function useMelhorSlideImageKey(slot: string): string {
-  return `${USE_MELHOR_POST_ID}_carousel_${slot}`;
-}
+// #9568 (Stage 5): nomes/carimbo moram no módulo FOLHA `use-melhor-slide-files.ts`
+// (importável por `upload-images-public.ts` sem ciclo) — re-exportados aqui.
+export {
+  useMelhorSlideFilename,
+  useMelhorSlideImageKey,
+  useMelhorCarouselHashPath,
+  readUseMelhorCarouselStamp,
+  type UseMelhorCarouselStamp,
+} from "./use-melhor-slide-files.ts";
 
 /** Pure: quantos parágrafos-slide o texto gera (1..USE_MELHOR_MAX_PARAGRAPH_SLIDES; 0 se vazio). */
 export function countUseMelhorParagraphs(genericText: string): number {
@@ -204,27 +210,6 @@ export function hashUseMelhorSlides(slides: UseMelhorSlide[]): string {
     })
     .join(" ~~ ");
   return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
-}
-
-/** Carimbo próprio — separado do `.carousel-source-hash.json` de D1/D2/D3. */
-export function useMelhorCarouselHashPath(editionDir: string): string {
-  return resolve(editionDir, "_internal", ".use-melhor-carousel-hash.json");
-}
-
-export interface UseMelhorCarouselStamp {
-  hash: string;
-  slots: string[];
-}
-
-export function readUseMelhorCarouselStamp(editionDir: string): UseMelhorCarouselStamp | null {
-  const p = useMelhorCarouselHashPath(editionDir);
-  if (!existsSync(p)) return null;
-  try {
-    const d = JSON.parse(readFileSync(p, "utf8")) as Partial<UseMelhorCarouselStamp>;
-    return typeof d.hash === "string" && Array.isArray(d.slots) ? { hash: d.hash, slots: d.slots } : null;
-  } catch {
-    return null;
-  }
 }
 
 export function writeUseMelhorCarouselStamp(editionDir: string, stamp: UseMelhorCarouselStamp): void {

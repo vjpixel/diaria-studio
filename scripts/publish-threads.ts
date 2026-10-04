@@ -84,6 +84,15 @@ import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
+import {
+  applyUseMelhorUtmToText,
+  planUseMelhorDispatch,
+  reportUseMelhorPlan,
+  reportUseMelhorSkip,
+  resolveUseMelhorImages,
+  useMelhorDispatchIds,
+  type UseMelhorDispatchPlan,
+} from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
@@ -435,6 +444,34 @@ export async function fetchThreadsPermalink(
   }
 }
 
+/**
+ * #9568: peças do 4º post (item USE MELHOR) pro Threads. Pure. Texto = `## um`
+ * de `# Curto` (mesmo texto curto do X), com `{edition_url}` resolvido, UTM
+ * do canal (`utm_source=threads`, igual aos destaques) e `utm_content=usemelhor`.
+ * Imagens: carrossel tipográfico de N slides quando completo, senão post só
+ * texto (mesmo comportamento dos destaques no Threads). Sem `## um` em
+ * `# Curto` → `{ ok: false }` (o caller pula só o 4º post).
+ */
+export function buildUseMelhorThreadsPost(input: {
+  socialMd: string;
+  plan: UseMelhorDispatchPlan;
+  images: Record<string, { url?: string }> | undefined;
+  editionUrl: string | null;
+}): { ok: true; text: string; carouselUrls: string[] | null } | { ok: false; reason: string } {
+  if (input.plan.status !== "ready") return { ok: false, reason: input.plan.reason };
+  let text: string | null;
+  try {
+    text = extractPostText(input.socialMd, "um", input.editionUrl);
+  } catch (e) {
+    return { ok: false, reason: `texto '## um' de '# Curto' inválido: ${(e as Error).message}` };
+  }
+  if (!text) return { ok: false, reason: "'## um' ausente ou vazio em '# Curto'" };
+  if (input.editionUrl) text = tagEditionUrlInText(text, input.editionUrl, THREADS_EDITION_UTM);
+  text = applyUseMelhorUtmToText(text);
+  const { carouselUrls } = resolveUseMelhorImages(input.images, input.plan);
+  return { ok: true, text, carouselUrls };
+}
+
 async function main() {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -582,7 +619,20 @@ async function main() {
     appendSocialPosts(publishedPath, [entry]);
   };
 
-  for (const d of destaques) {
+  // #9568: 4º post (USE MELHOR) — entra no MESMO loop como id "um", depois
+  // dos destaques. Plano não-pronto ou texto faltando = nada adicionado
+  // (motivo logado), D1/D2/D3 seguem idênticos.
+  const umPlan = planUseMelhorDispatch(editionDir, platformConfig);
+  reportUseMelhorPlan("threads", umPlan, { editionId: editionDate, rootDir: logRootDir });
+  const umPost =
+    umPlan.status === "ready"
+      ? buildUseMelhorThreadsPost({ socialMd, plan: umPlan, images: publicImages.images, editionUrl: resolvedEditionUrl })
+      : null;
+  if (umPost && !umPost.ok) reportUseMelhorSkip("threads", umPost.reason, { editionId: editionDate, rootDir: logRootDir });
+  const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
+
+  for (const d of dispatchIds) {
+    const umReady = d === "um" && umPost?.ok ? umPost : null; // #9568
     // Releitura a cada iteração para detectar entradas concorrentes
     const published = loadPublished(publishedPath);
 
@@ -615,7 +665,8 @@ async function main() {
     // mesmo padrão de status:"failed" já usado no resto deste arquivo.
     let text: string | null;
     try {
-      text = extractPostText(socialMd, d, resolvedEditionUrl);
+      // #9568: 4º post já vem resolvido/taggeado do builder (UTM + usemelhor).
+      text = umReady ? umReady.text : extractPostText(socialMd, d, resolvedEditionUrl);
     } catch (e: any) {
       console.error(`ERROR extracting text for threads/${d}: ${e.message}`);
       const entry: PostEntry = {
@@ -643,7 +694,7 @@ async function main() {
     // NUNCA bloqueia o dispatch — o post sai mesmo assim. A checagem usa o
     // texto AINDA SEM tag (#4295) — a tag muda a URL literal, então rodar a
     // checagem depois dela sempre acusaria falso-positivo.
-    if (existsSync(editionUrlFile)) {
+    if (!umReady && existsSync(editionUrlFile)) {
       const editionUrl = readFileSync(editionUrlFile, "utf8").trim();
       if (editionUrl) {
         if (!textContainsEditionUrl(text, editionUrl)) {
@@ -712,7 +763,7 @@ async function main() {
         scheduledIso = computeScheduledAt({
           config: platformConfig,
           editionDate,
-          destaque: d as "d1" | "d2" | "d3",
+          destaque: d as "d1" | "d2" | "d3" | "um",
           platform: "threads",
         });
       } catch (e: any) {
@@ -735,7 +786,8 @@ async function main() {
       // de sempre (image_url: null, post só-texto — Threads daily nunca
       // suportou imagem única, só o carrossel muda aqui). Tudo-ou-nada via
       // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
-      const carouselImageUrls = resolveCarouselImageUrls(publicImages.images, d);
+      // #9568: 4º post — carrossel tipográfico de N slides (ou só texto).
+      const carouselImageUrls = umReady ? umReady.carouselUrls : resolveCarouselImageUrls(publicImages.images, d);
 
       try {
         const response = await postToWorkerQueue(workerUrl, workerToken, {

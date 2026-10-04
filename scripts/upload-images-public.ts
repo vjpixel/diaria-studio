@@ -39,6 +39,11 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 import { hero2x1KeyFor, isDestaqueImagePresent } from "./lib/shared/public-image-keys.ts"; // #7596 — extraído pra módulo puro
+import {
+  readUseMelhorCarouselStamp,
+  useMelhorSlideFilename,
+  useMelhorSlideImageKey,
+} from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -182,6 +187,22 @@ export interface ImageSpec {
  * (não requer nem espera imagens d3 nessa edição). Default 3 preserva o
  * comportamento anterior para edições 3-destaque e chamadas sem editionDir.
  */
+/**
+ * #9568: specs dos slides do carrossel do 4º post (`04-um-carousel-{slot}-4x5.jpg`
+ * → chave `um_carousel_{slot}`), na ordem do carimbo do Stage 3. `[]` sem
+ * `editionDir` ou sem carimbo (carrossel não gerado).
+ */
+export function useMelhorSlideSpecs(editionDir?: string): ImageSpec[] {
+  if (!editionDir) return [];
+  const stamp = readUseMelhorCarouselStamp(editionDir);
+  if (!stamp) return [];
+  return stamp.slots.map((slot) => ({
+    key: useMelhorSlideImageKey(slot),
+    filename: useMelhorSlideFilename(slot),
+    optional: true,
+  }));
+}
+
 export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[] {
   // #2352: determine destaque count to conditionally include d3 specs.
   const destaqueCount: 2 | 3 = editionDir ? readDestaqueCount(editionDir) : 3;
@@ -214,6 +235,13 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
         optional: true,
       })),
     ),
+    // #9568: carrossel tipográfico do 4º post (USE MELHOR) — N slides
+    // variável (capa → p1..pN → cta), lista vinda do carimbo que o
+    // `gen-carousel-cards.ts` grava no Stage 3. optional: o 4º post é
+    // fail-soft (tudo-ou-nada em `resolveUseMelhorCarouselImageUrls`) e nunca
+    // pode bloquear o upload dos destaques. Sem carimbo (feature desligada,
+    // edição legada, sem editionDir) → nenhuma spec nova.
+    ...useMelhorSlideSpecs(editionDir),
   ];
 
   const eaiSpecs = (() => {

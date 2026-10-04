@@ -37,6 +37,8 @@ interface ScheduleConfig {
 
 interface SocialConfig {
   fallback_schedule?: ScheduleConfig;
+  /** #9568: slot "HH:MM" do 4º post (USE MELHOR, destaque "um"). */
+  use_melhor_time?: string | null;
   timezone?: string;
   [k: string]: unknown;
 }
@@ -50,7 +52,9 @@ interface PlatformConfig {
 export interface ComputeScheduleInput {
   config: PlatformConfig;
   editionDate: string;
-  destaque: "d1" | "d2" | "d3";
+  /** #9568: "um" = 4º post (item USE MELHOR) — horário de
+   *  `publishing.social.use_melhor_time` em vez de `fallback_schedule.d{N}_time`. */
+  destaque: "d1" | "d2" | "d3" | "um";
   /** Mantido para compatibilidade de API. O schedule é atualmente unificado entre
    *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma.
    *  #3817: "instagram" adicionado — mesmo fallback_schedule unificado, só muda
@@ -230,9 +234,14 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   const tz = social.timezone;
   if (!tz) throw new Error("config.publishing.social.timezone ausente.");
 
-  const timeKey = `${destaque}_time` as keyof ScheduleConfig;
+  // #9568: o 4º post ("um") lê o slot próprio `use_melhor_time` (irmão de
+  // `fallback_schedule`, não dentro dele) — o resto do cálculo (data da edição,
+  // day_offset, past-slot guard) é idêntico ao dos destaques.
+  const timeKey = destaque === "um" ? "use_melhor_time" : (`${destaque}_time` as keyof ScheduleConfig);
   const slot = readSlotOverride(destaque, editionDate);
-  const time = slot?.time ?? (sched[timeKey] as string | undefined);
+  const time =
+    slot?.time ??
+    (destaque === "um" ? (social.use_melhor_time ?? undefined) : (sched[timeKey as keyof ScheduleConfig] as string | undefined));
   if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
     throw new Error(
       `time inválido para ${platform}.${timeKey}: '${time}' (esperado HH:MM).`,
@@ -321,7 +330,8 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   const minFutureCutoffMs = nowMs + minFutureMs;
 
   // #2576: índice do destaque (0-based) pra espaçar slots shiftados
-  const destaqueIndex = destaque === "d1" ? 0 : destaque === "d2" ? 1 : 2;
+  // #9568: "um" (4º post) fica depois do d3 no espaçamento.
+  const destaqueIndex = destaque === "d1" ? 0 : destaque === "d2" ? 1 : destaque === "d3" ? 2 : 3;
 
   if (
     calculatedMs < minFutureCutoffMs &&
