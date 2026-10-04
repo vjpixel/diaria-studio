@@ -34,7 +34,9 @@
  *       review: "violação" em HACK fazia "processada por violação de direitos
  *       autorais" casar com "processada por violação de patentes").
  *   (C) #8666: MESMA EMPRESA + 1 CONCEITO FORTE compartilhado, SÓ em janela
- *       curta (intra-edição ou ≤2 dias — `STRONG_CONCEPT_MAX_DISTANCE_DAYS`).
+ *       curta (intra-edição ou ≤2 dias ÚTEIS seg–sex — a edição anterior e a
+ *       de antes dela, `STRONG_CONCEPT_MAX_DISTANCE_DAYS`; #9565: sexta →
+ *       segunda conta 1, não 3).
  *       Conceito forte = evento raro e específico (invasão SOFRIDA/realizada,
  *       vazamento de DADOS), em que a mesma empresa sofrer DOIS desses em 48h
  *       é muito menos provável que a mesma história reaparecer em outro
@@ -357,14 +359,19 @@ export function strongEventConcepts(title: string): Set<string> {
 }
 
 /**
- * #8666: distância máxima (em dias) entre os dois títulos para o sinal (C)
- * — 0 = mesma edição, 1 = D-1, 2 = D-2.
+ * #8666: distância máxima entre os dois títulos para o sinal (C) — 0 = mesma
+ * edição, 1 = edição anterior, 2 = a de antes dela. #9565: a unidade é DIA
+ * ÚTIL (seg–sex, `editionBusinessDaysBefore`), não dia de calendário — a
+ * diar.ia.br sai seg–sex, então sexta → segunda = 1 (eram 3 e o (C) não
+ * pegava a história de sexta repetida na segunda). Feriados não são
+ * descontados: após um feriado a janela encolhe em 1 edição (conservador).
  */
 export const STRONG_CONCEPT_MAX_DISTANCE_DAYS = 2;
 
 export interface SameEventOptions {
   /**
-   * Distância em dias entre as edições dos dois títulos (0 = intra-edição).
+   * Distância em dias ÚTEIS (seg–sex, #9565) entre as edições dos dois
+   * títulos (0 = intra-edição) — ver `editionBusinessDaysBefore`.
    * Ausente = desconhecida → o sinal (C) não dispara (conservador).
    */
   distanceDays?: number;
@@ -499,6 +506,27 @@ export function editionDaysBefore(past: string, current: string): number | undef
   return Math.round((mc - mp) / 86_400_000);
 }
 
+/**
+ * #9565: quantos dias ÚTEIS (seg–sex) `past` está antes de `current` — conta
+ * os dias de semana em (past, current]. Sexta → segunda = 1, quinta → segunda
+ * = 2, sexta → sexta seguinte = 5. Edição estritamente anterior nunca vale 0
+ * (piso 1, ex: edição especial de sábado → domingo), pra não virar
+ * "intra-edição". Mesma data = 0; futuro = valor negativo (dias de
+ * calendário, só o sinal importa); undefined se alguma data for inválida.
+ * Feriados não são descontados.
+ */
+export function editionBusinessDaysBefore(past: string, current: string): number | undefined {
+  const d = editionDaysBefore(past, current);
+  if (d === undefined || d <= 0) return d;
+  const startDow = new Date(aammddToMs(past)!).getUTCDay(); // 0 = domingo
+  let count = Math.floor(d / 7) * 5;
+  for (let i = 1; i <= d % 7; i++) {
+    const dow = (startDow + i) % 7;
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return Math.max(1, count);
+}
+
 /** #8666: distância em dias entre duas datas AAMMDD (≥0, sem sinal), ou undefined se alguma for inválida. */
 export function editionDistanceDays(a: string, b: string): number | undefined {
   const d = editionDaysBefore(a, b);
@@ -506,7 +534,8 @@ export function editionDistanceDays(a: string, b: string): number | undefined {
 }
 
 /**
- * #8666: título → menor distância em dias até `currentAammdd`, a partir de
+ * #8666: título → menor distância em dias ÚTEIS (#9565,
+ * `editionBusinessDaysBefore`) até `currentAammdd`, a partir de
  * pares (título, AAMMDD da edição). Título em mais de uma edição fica com a
  * mais próxima. `currentAammdd` ausente/inválido → mapa vazio (sinal C off).
  *
@@ -523,7 +552,7 @@ export function minDistanceByTitle(
   const out = new Map<string, number>();
   if (!currentAammdd) return out;
   for (const { title, aammdd } of dated) {
-    const d = editionDaysBefore(aammdd, currentAammdd);
+    const d = editionBusinessDaysBefore(aammdd, currentAammdd);
     if (d === undefined || d <= 0) continue;
     const prev = out.get(title);
     if (prev === undefined || d < prev) out.set(title, d);

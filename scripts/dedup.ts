@@ -182,9 +182,9 @@ export function dedup(
   // #9360: itens que o editor CORTOU no Stage 4 das últimas edições (nunca
   // publicados → ausentes de past-editions.md). Ver lib/editor-rejected-items.ts.
   editorRejected: EditorRejectedItem[] = [],
-  // #8666: título passado → distância em dias até a edição corrente. Habilita
-  // o sinal (C) do event-dedup (mesma empresa + 1 conceito forte) só para os
-  // títulos a ≤2 dias. Ausente/vazio → Pass-1f segue só com A1/A2/B.
+  // #8666: título passado → distância em dias úteis seg–sex (#9565) até a
+  // edição corrente. Habilita o sinal (C) do event-dedup (mesma empresa + 1
+  // conceito forte) só para os títulos a ≤2 dias úteis. Ausente/vazio → Pass-1f segue só com A1/A2/B.
   pastEventDistanceDays: Map<string, number> = new Map(),
 ): {
   kept: Article[];
@@ -478,7 +478,7 @@ export function dedup(
   // Pauses Training..." (coberto em 260929). Sinais e limiar conservadores
   // documentados em lib/event-dedup.ts. Submissão do editor nunca é removida
   // (#4192), só marcada com `event_dedup_flagged`. #8666: títulos a ≤2 dias
-  // da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
+  // úteis (#9565) da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
   if (pastEventTitles.length > 0) {
@@ -875,8 +875,9 @@ async function main() {
     );
   }
 
-  // #8666: distância (dias) de cada título passado até a edição corrente —
-  // habilita o sinal (C) do Pass-1f (invasão/vazamento em D-1/D-2).
+  // #8666: distância (dias úteis seg–sex, #9565) de cada título passado até a
+  // edição corrente — habilita o sinal (C) do Pass-1f (invasão/vazamento nas
+  // 2 edições anteriores; sexta → segunda conta 1).
   const pastEventDistanceDays = minDistanceByTitle(
     [
       ...extractPastTitlesWithEdition(pastMd, window),
@@ -895,7 +896,7 @@ async function main() {
     );
   } else {
     const near = [...pastEventDistanceDays.values()].filter((d) => d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS).length;
-    console.error(`dedup: #8666 ${near} título(s) passado(s) a ≤${STRONG_CONCEPT_MAX_DISTANCE_DAYS} dias habilitam o sinal (C)`);
+    console.error(`dedup: #8666 ${near} título(s) passado(s) a ≤${STRONG_CONCEPT_MAX_DISTANCE_DAYS} dias úteis habilitam o sinal (C)`);
   }
 
   const result = dedup(
