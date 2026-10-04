@@ -128,8 +128,8 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
     "agents de desenvolvimento das rodadas autônomas (#9081) — escrevem/revisam CÓDIGO do repo, não texto editorial; nenhum grader de prosa da #8143 se aplica.",
   ),
   ...excludedGroup(
-    ["adhoc-opus-low"],
-    "agent genérico só pra fixar model/effort de dispatches ad-hoc (#9081) — sem prompt próprio; a tarefa vem inteira do dispatch, não há comportamento do agent a avaliar por replay.",
+    ["adhoc-opus-low", "adhoc-opus-medium"],
+    "agent genérico só pra fixar model/effort de dispatches ad-hoc (#9081/#9526) — sem prompt próprio; a tarefa vem inteira do dispatch, não há comportamento do agent a avaliar por replay.",
   ),
   ...excludedGroup(["title-picker"], "fallback de escolha entre títulos JÁ escritos por writer-destaque — não gera texto novo, os graders de texto não discriminam nada aqui."),
 ];

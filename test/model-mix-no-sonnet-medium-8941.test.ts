@@ -86,6 +86,12 @@ describe("#9530/#9081 — par do overnight e agents dedicados de dev", () => {
     assert.match(fm!, /^effort:\s*low\s*$/m);
     assert.doesNotMatch(fm!, /^tools:/m);
   });
+  it("adhoc-opus-medium: claude-opus-5-5 + effort medium, sem tools: (#9081/#9526)", () => {
+    const fm = frontmatter(readFileSync(join(AGENTS_DIR, "adhoc-opus-medium.md"), "utf8"));
+    assert.match(fm!, /^model:\s*claude-opus-5-5\s*$/m);
+    assert.match(fm!, /^effort:\s*medium\s*$/m);
+    assert.doesNotMatch(fm!, /^tools:/m);
+  });
   it("nenhuma skill despacha general-purpose com effort= (parâmetro inexistente no Agent tool, #9081)", () => {
     for (const skillId of readdirSync(SKILLS_DIR)) {
       const p = join(SKILLS_DIR, skillId, "SKILL.md");

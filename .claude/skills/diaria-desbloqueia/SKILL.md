@@ -32,23 +32,36 @@ modelo/effort da sessão do editor no momento da invocação.
 de skill só vale até o fim do turno em que a skill foi invocada (docs do
 Claude Code) — no turno seguinte a sessão volta ao modelo dela. Respostas de
 `AskUserQuestion` continuam no mesmo turno, então a bateria de perguntas
-inteira roda no par pinado. **Não é só mensagem livre do editor que abre
-turno novo:** o `<task-notification>` de um `Agent` ou `Bash` em background
-também abre (#9527), e derruba o pin do mesmo jeito. Workaround para o caso
-da mensagem livre: escolher `/model` antes de invocar.
+inteira roda no par pinado. Abre turno novo — e derruba o pin — qualquer
+coisa que chegue com o turno JÁ ENCERRADO: mensagem livre do editor, a
+resposta a qualquer pausa fora do `AskUserQuestion` e um
+`<task-notification>` (#9527) que chega depois de o modelo ter terminado a
+resposta esperando por ele. A mesma notificação, chegando enquanto o modelo
+ainda trabalha no turno, entra nesse turno e não derruba nada (comentário de
+03/10 da #9526, transcript `c7b5cb5f`: depois de um task-notification a
+sessão seguiu em `claude-opus-5-5/medium`). Workaround para a mensagem
+livre: escolher `/model` antes de invocar.
 
-**A skill inteira roda num ÚNICO turno (#9526, regra obrigatória).** Todo
-`Agent` despachado pela skill vai com `run_in_background: false` (o default
-do harness é background), e todo `Bash` longo (`desbloqueia-scan.ts`,
-`route-issue.ts` em sequência) roda em foreground — nunca
-`run_in_background` ligado, nunca encerrar o turno esperando notificação.
-Por quê: na execução real de 04/10/2026 (evidência no último comentário da
-#9526, transcript `326bf368`) a skill despachou em background um `Agent` que
-lia as threads; quando ele terminou, o `task-notification` abriu um turno
-novo e todo o resto — triagem do Passo 2b, as 2 baterias de
+**A skill é projetada para rodar num único turno (#9526, regra
+obrigatória): nunca encerrar o turno esperando notificação — tudo em
+foreground.** Todo `Agent` despachado pela skill vai com
+`run_in_background: false` (o default do harness é background), e todo
+`Bash` longo roda em foreground com `timeout: 600000` —
+`desbloqueia-scan.ts` e sequências longas de `route-issue.ts` incluídos.
+Timeout nunca é motivo pra trocar por background: se o scan estourar,
+dividir por `--issues N,M` e rodar de novo, e **nunca perguntar nada a
+partir de saída parcial**. Mesmo em foreground, mensagem livre do editor ou
+qualquer pausa fora do `AskUserQuestion` (ex.: prompt de permissão
+respondido depois de o turno fechar) ainda quebra o pin — a sonda do
+Passo 5 é quem conta o que aconteceu. Por quê: na execução real de
+04/10/2026 (comentário de 04/10 da #9526, transcript `326bf368`, no `300`) a
+skill despachou em background um `Agent` que lia as threads e encerrou o
+turno esperando por ele; quando ele terminou, o `task-notification` abriu um
+turno novo e todo o resto — triagem do Passo 2b, as 2 baterias de
 `AskUserQuestion`, os comentários e um fechamento de issue — rodou em
-`claude-sonnet-5-5/medium`, o par da sessão, não no pinado. Sem fronteira
-de turno, o par pinado vale do scan até o resumo final.
+`claude-sonnet-5-5/medium`, o par da sessão, não no pinado. O mesmo vale,
+por inferência (não observado ao vivo), para um `Bash` em background: a
+notificação dele também chega depois de o turno ter sido encerrado à espera.
 
 ## Requisito central — ler tudo antes de perguntar QUALQUER coisa
 
@@ -127,8 +140,10 @@ real (medição de 08/09/2026: 26 issues sem sinal contra 9 do escopo antigo,
 sobre 68 abertas ⇒ ~4× mais chamadas `gh issue view` na passada 2);
 `--skip-sem-sinal` desliga quando o que se quer é só a varredura barata.
 
-O scan roda em **foreground** (nunca `run_in_background`) — ver a regra de
-turno único no topo (#9526).
+O scan roda em **foreground**, com `timeout: 600000` (nunca
+`run_in_background`) — ver a regra de turno único no topo (#9526). Se
+estourar o timeout, dividir por `--issues N,M`; nunca perguntar a partir
+de saída parcial.
 
 **Nenhuma pergunta é feita antes deste comando rodar e seu output ser lido
 por completo.** Se `erroLeitura` não estiver vazio, rodar o scan de novo
@@ -274,12 +289,12 @@ vira pergunta; (b) não tem ação do editor, e segue com o comentário de
 revisão do Passo 2; (c) resolve por default (#5321) e é roteada.
 
 Se a leitura das threads for delegada a um subagente (pool grande), o
-dispatch é `Agent` com `subagent_type: "general-purpose"`, `model: "opus"` e
-**`run_in_background: false`** — e esperar o retorno no mesmo turno (regra
-de turno único acima, #9526). O effort do subagente herda o do turno que o
-dispara, que é o pinado enquanto o turno não termina. Foi exatamente esta
-leitura, despachada em background, que derrubou o pin na execução de
-04/10/2026.
+dispatch é `Agent` com `subagent_type: "adhoc-opus-medium"`, `run_in_background: false`
+— e esperar o retorno no mesmo turno (regra de turno único acima, #9526).
+O agent dedicado fixa `claude-opus-5-5`/`medium` no frontmatter (#8941/#9081:
+o Agent tool não aceita `effort`, então subagente ad-hoc só tem effort
+explícito via agent dedicado). Foi exatamente esta leitura, despachada em
+background, que derrubou o pin na execução de 04/10/2026.
 
 **Vira pedido de ação imediata** quando o que falta é uma ação do editor no
 teclado, agora: reiniciar uma unit caída, recarregar uma conta, colar uma
@@ -385,21 +400,38 @@ cujo `track` mecânico, checado nesta mesma rodada, é `overnight`.
 `.claude/hooks/inject-session-id.mjs` só injeta o `--session-id` desta
 sessão em comando não-encadeado (por isso span inline, não bloco cercado). Os dois
 `--expect-*` são obrigatórios: o default da sonda é o par do overnight
-(`claude-sonnet-5-5`/`medium`), que inverteria o veredito (#9539). O `ok`
-olha a ÚLTIMA entrada `assistant` do transcript, ou seja, o turno atual: se
-vier `ok:false` (exit 2), o pin caiu em algum ponto da sessão e o resumo diz
-isso numa linha, com o `tally` do JSON (ex.: `Par efetivo: saiu do pinado —
-tally {claude-sonnet-5-5/medium: 10, claude-opus-5-5/medium: 4}`). O `tally`
-conta o transcript inteiro, inclusive as respostas de ANTES da invocação,
-que estão no par da sessão por definição — não confundir essas com queda do
-pin. Exit 1 (transcript não encontrado) não bloqueia o resumo: registrar
-"sonda indisponível".
+(`claude-sonnet-5-5`/`medium`), que inverteria o veredito (#9539).
+
+Ler o veredito pelo **JSON do stdout** (`ok`, `effective`, `tally`), nunca
+só pelo exit code:
+
+- `ok:true` (exit 0) — a ÚLTIMA entrada `assistant` do transcript (o turno
+  atual) está no par pinado. Só prova que o pin pegou quando a sessão estava
+  em OUTRO par antes da invocação: o `tally` mostra as respostas de antes
+  (no par da sessão por definição) — sessão já em `claude-opus-5-5/medium`
+  não discrimina nada.
+- `ok:false` (exit 2) — divergiu: o pin caiu em algum ponto. Citar o `tally`
+  (ex.: `{claude-sonnet-5-5/medium: 10, claude-opus-5-5/medium: 4}`),
+  lembrando que ele conta o transcript inteiro, inclusive as respostas de
+  ANTES da invocação — não confundir essas com queda do pin.
+- `effective.effort: "unknown"` — o transcript não gravou o effort:
+  inconclusivo, nunca "ok".
+- exit 1 **com** JSON e `effective:null` — transcript achado, mas sem
+  entrada `assistant` legível.
+- exit 1 **sem** JSON (só a mensagem no stderr) — transcript não resolvido;
+  causa provável: `--session-id` não injetado (comando encadeado ou
+  multi-linha).
+
+Nenhum desses bloqueia o resumo, mas o resultado vai **sempre** na linha
+`Par efetivo:` do resumo — sonda pulada ou indisponível também aparece lá,
+nunca some.
 
 Terminar com um resumo, não uma lista de comandos executados:
 
 ```
 /diaria-desbloqueia — resumo
 
+Par efetivo: {model}/{effort} — ok | saiu do pinado (tally …) | sonda indisponível ({motivo})
 Varridas: N candidatas (bloqueada/develop/·sem sinal/fora-de-rodada)
   {A} já destravadas pela thread — re-roteadas sem pergunta
   {B} bloqueio confirmado — sem mudança, comentário de revisão
