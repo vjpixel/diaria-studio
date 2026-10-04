@@ -55,6 +55,8 @@ import {
   deriveCurrentEdition,
   extractPastDestaqueUrls,
   extractPastEditionArticleTitles,
+  extractPastTitlesWithEdition,
+  extractPastEditionArticleTitlesWithEdition,
 } from "./lib/past-editions-extract.ts";
 // #2833: extraido pra scripts/lib/inbox-title-resolve.ts (movimentacao pura)
 // -- re-exportado abaixo pra manter compat com importadores existentes.
@@ -70,7 +72,7 @@ import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // 
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
-import { findSameEvent } from "./lib/event-dedup.ts";
+import { findSameEvent, minDistanceByTitle, STRONG_CONCEPT_MAX_DISTANCE_DAYS } from "./lib/event-dedup.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 
 export { canonicalize };
@@ -180,6 +182,10 @@ export function dedup(
   // #9360: itens que o editor CORTOU no Stage 4 das últimas edições (nunca
   // publicados → ausentes de past-editions.md). Ver lib/editor-rejected-items.ts.
   editorRejected: EditorRejectedItem[] = [],
+  // #8666: título passado → distância em dias até a edição corrente. Habilita
+  // o sinal (C) do event-dedup (mesma empresa + 1 conceito forte) só para os
+  // títulos a ≤2 dias. Ausente/vazio → Pass-1f segue só com A1/A2/B.
+  pastEventDistanceDays: Map<string, number> = new Map(),
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -471,27 +477,31 @@ export function dedup(
   // reais 261001: "OpenAI launches Dots..." (Dots = D2 de 260930) e "OpenAI
   // Pauses Training..." (coberto em 260929). Sinais e limiar conservadores
   // documentados em lib/event-dedup.ts. Submissão do editor nunca é removida
-  // (#4192), só marcada com `event_dedup_flagged`.
+  // (#4192), só marcada com `event_dedup_flagged`. #8666: títulos a ≤2 dias
+  // da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
   if (pastEventTitles.length > 0) {
+    let strongConceptRemoved = 0; // #8666: remoções pelo sinal (C), contadas à parte
+    const pastEventEntries = pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) }));
     for (const art of afterPass1e) {
-      const hit = art.title ? findSameEvent(art.title, pastEventTitles) : null;
+      const hit = art.title ? findSameEvent(art.title, pastEventEntries) : null;
       if (!hit) {
         afterPass1f.push(art);
         continue;
       }
       const note = `same-event (#9249, ${hit.match.signal}: ${hit.match.shared.join(", ")}) com artigo de edição anterior "${hit.title}"`;
-      // #9293: sinal fraco (A2) só marca — remoção apenas em A1/B.
+      // #9293: sinal fraco (A2) só marca — remoção apenas em A1/B/C.
       if (art.flag === "editor_submitted" || !hit.match.removable) {
         afterPass1f.push({ ...art, event_dedup_flagged: note });
         continue;
       }
+      if (hit.match.signal === "strong_concept") strongConceptRemoved++;
       pushRemoved(removed, art, note);
     }
     if (afterPass1e.length > afterPass1f.length) {
       console.error(
-        `dedup Pass-1f (#9249): ${afterPass1e.length - afterPass1f.length} artigo(s) removido(s) por same-event contra edição anterior`,
+        `dedup Pass-1f (#9249): ${afterPass1e.length - afterPass1f.length} artigo(s) removido(s) por same-event contra edição anterior (${strongConceptRemoved} pelo sinal C strong_concept #8666)`,
       );
     }
   } else {
@@ -803,6 +813,12 @@ async function main() {
   // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
   // removia os próprios destaques). Deriva do --out/--articles quando o caller
   // não passa --current-edition explícito.
+  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
+  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
+  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
+    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
+    process.exit(1);
+  }
   const currentAammdd =
     args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
   if (!args["current-edition"] && currentAammdd) {
@@ -859,6 +875,29 @@ async function main() {
     );
   }
 
+  // #8666: distância (dias) de cada título passado até a edição corrente —
+  // habilita o sinal (C) do Pass-1f (invasão/vazamento em D-1/D-2).
+  const pastEventDistanceDays = minDistanceByTitle(
+    [
+      ...extractPastTitlesWithEdition(pastMd, window),
+      ...extractPastEditionArticleTitlesWithEdition(editionsDir, window, currentAammdd),
+    ],
+    currentAammdd,
+  );
+  // #8666: observabilidade do sinal (C) — desligado em silêncio era o risco.
+  if (!currentAammdd) {
+    console.error(
+      "dedup: #8666 edição corrente desconhecida — sinal (C) do event-dedup (invasão/vazamento em D-1/D-2) DESLIGADO; passe --current-edition AAMMDD",
+    );
+  } else if (pastEventDistanceDays.size === 0 && (pastTitles.length > 0 || pastArticleTitles.length > 0)) {
+    console.error(
+      `dedup: #8666 mapa de distâncias vazio apesar de ${pastTitles.length + pastArticleTitles.length} título(s) passado(s) — sinal (C) sem efeito (edição corrente ${currentAammdd})`,
+    );
+  } else {
+    const near = [...pastEventDistanceDays.values()].filter((d) => d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS).length;
+    console.error(`dedup: #8666 ${near} título(s) passado(s) a ≤${STRONG_CONCEPT_MAX_DISTANCE_DAYS} dias habilitam o sinal (C)`);
+  }
+
   const result = dedup(
     articles,
     pastUrls,
@@ -872,6 +911,7 @@ async function main() {
     pastThemes,
     pastHighlightsData,
     editorRejected,
+    pastEventDistanceDays,
   );
 
   console.error(

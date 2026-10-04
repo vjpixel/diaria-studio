@@ -14,7 +14,7 @@
  *   3. RADAR "Após meses de atrasos, Google anuncia Argon, seu principal modelo
  *      de IA" (CNN) — duplicava o D1 da própria edição ("Gemini 4 Argon: ...").
  *
- * Dois sinais, ambos conservadores (o limiar é deliberadamente alto pra evitar
+ * Três sinais, todos conservadores (o limiar é deliberadamente alto pra evitar
  * falso positivo — duas histórias DIFERENTES da mesma empresa nunca casam só
  * pela empresa):
  *
@@ -29,7 +29,27 @@
  *       bilíngue PT/EN pequeno e específico (pausa/cancela, treino, processo,
  *       aquisição, demissão, vazamento...). Conceitos genéricos ("lança",
  *       "agente", "modelo") ficam FORA do léxico de propósito — "OpenAI lança
- *       agente A" vs "OpenAI lança agente B" não pode casar.
+ *       agente A" vs "OpenAI lança agente B" não pode casar. Vale sem limite
+ *       de tempo, por isso o léxico de (B) NÃO ganhou os termos do (C) (#8666
+ *       review: "violação" em HACK fazia "processada por violação de direitos
+ *       autorais" casar com "processada por violação de patentes").
+ *   (C) #8666: MESMA EMPRESA + 1 CONCEITO FORTE compartilhado, SÓ em janela
+ *       curta (intra-edição ou ≤2 dias — `STRONG_CONCEPT_MAX_DISTANCE_DAYS`).
+ *       Conceito forte = evento raro e específico (invasão SOFRIDA/realizada,
+ *       vazamento de DADOS), em que a mesma empresa sofrer DOIS desses em 48h
+ *       é muito menos provável que a mesma história reaparecer em outro
+ *       veículo/idioma. Caso real: D1 de 260922 ("OpenAI foi invadida por
+ *       hackers...") repetiu o D1 de 260921 ("Claude ajudou a invadir a
+ *       OpenAI...") — só 1 conceito em comum, (B) não casava. Como (C) REMOVE
+ *       artigo, o léxico forte é estreito (na dúvida, fica fora) e os DOIS
+ *       lados precisam expressar o conceito por um termo forte — ver
+ *       `strongEventConcepts`. Fora do forte: `hack`/`hacks`/`hacking`/
+ *       `hacker` puros ("5 ChatGPT hacks", "growth hacking", "reward
+ *       hacking"), `invade`/`invadem` figurativos ("Gemini invade o Android"),
+ *       `ataque`/`attack`, `violação`, `breach` sem "data", e vazamento sem
+ *       pista de dados ("OpenAI vaza detalhes do GPT-6"). Sem informação de
+ *       distância (`opts.distanceDays` ausente) (C) nunca dispara: o default
+ *       segue conservador (≥2 conceitos).
  *
  * Puro, sem I/O.
  */
@@ -181,6 +201,10 @@ addConcept("TRAIN", ["treino", "treinamento", "treinar", "treina", "training", "
 addConcept("LAWSUIT", ["processo", "processa", "processada", "processado", "sued", "sues", "lawsuit"]);
 addConcept("ACQUIRE", ["compra", "comprar", "comprou", "adquire", "adquiriu", "aquisicao", "acquires", "acquired", "acquisition", "acquiring", "buys", "bought"]);
 addConcept("LAYOFF", ["demite", "demitiu", "demissoes", "demissao", "layoffs", "layoff", "lays", "fires", "fired", "cortes"]);
+// LEAK/HACK de (B): idênticos ao léxico anterior ao #8666, menos `breach`
+// fora de "data breach" (filtrado em `conceptTokens` — "breach of contract"
+// não é invasão). (B) vale sem limite de tempo, então nenhum termo novo entra
+// aqui: só pode REMOVER casamento que existia, nunca criar um (#8666 review).
 addConcept("LEAK", ["vazamento", "vaza", "vazou", "vazados", "leak", "leaks", "leaked"]);
 addConcept("HACK", ["invasao", "invadiu", "invade", "hack", "hacked", "hacks", "hacker", "hackers", "ataque", "attack", "attacks", "breach", "furar"]);
 addConcept("GOVT", ["governo", "governos", "government", "governments"]);
@@ -189,20 +213,176 @@ addConcept("IPO", ["ipo", "prospecto", "prospectus"]);
 addConcept("FUNDING", ["rodada", "investimento", "funding", "raises", "raised", "capta", "captou", "valuation", "avaliacao"]);
 addConcept("FINE", ["multa", "multada", "fined", "fine", "penalty"]);
 
+/**
+ * #8666: "hack" coloquial — "growth hack", "life hack", "productivity hack"
+ * — não é invasão. Token anterior a "hack(s)" nesta lista anula o termo.
+ */
+const COLLOQUIAL_HACK_PREFIX = new Set(["growth", "life", "productivity", "produtividade", "career", "carreira", "study", "estudo"]);
+
+/** `breach` só conta como invasão colado em "data" ("data breach", "breached data"). */
+const BREACH_TOKENS = new Set(["breach", "breached", "breaches"]);
+
+/** Tokens normalizados em ORDEM (o sinal C precisa da vizinhança). */
+function orderedTokens(title: string): string[] {
+  return rawWords(stripVehicle(title)).map(norm);
+}
+
+function adjacentTo(toks: string[], i: number, word: string): boolean {
+  return toks[i - 1] === word || toks[i + 1] === word;
+}
+
+/** Tokens de conceito, sem o "hack" coloquial e sem `breach` fora de "data breach". */
+function conceptTokens(title: string): string[] {
+  const toks = orderedTokens(title);
+  return toks.filter((t, i) => {
+    if ((t === "hack" || t === "hacks") && i > 0 && COLLOQUIAL_HACK_PREFIX.has(toks[i - 1])) return false;
+    if (BREACH_TOKENS.has(t) && !adjacentTo(toks, i, "data")) return false;
+    return true;
+  });
+}
+
 export function eventConcepts(title: string): Set<string> {
   const out = new Set<string>();
-  for (const t of eventTokens(title)) {
+  for (const t of conceptTokens(title)) {
     const c = CONCEPT_LEXICON[t];
     if (c) out.add(c);
   }
   return out;
 }
 
+/**
+ * #8666: léxico FORTE de HACK do sinal (C) — só formas que significam invasão
+ * SOFRIDA ou REALIZADA. Fora de propósito: `hack`/`hacks`/`hacking`/`hacker`/
+ * `hackers` puros (coloquial: "5 ChatGPT hacks", "growth hacking", "reward
+ * hacking"), `ataque`/`attack` (amplo: "OpenAI ataca Google"), `violação`
+ * (jurídico: "violação de patentes") e `invade`/`invadem` sem contexto
+ * (figurativo: "Gemini invade o Android").
+ */
+const STRONG_HACK_TOKENS = new Set([
+  "hacked", "hackeada", "hackeado", "hackeadas", "hackeados", "hackearam", "hackeou",
+  "invadida", "invadido", "invadidas", "invadidos", "invadiu", "invadiram",
+  "invasao", "invasoes", "ciberataque", "cyberattack",
+  "intrusion", "intrusao",
+  // Plurais `ciberataques`/`cyberattacks` ficam FORA de propósito (re-review
+  // #9560): no plural o termo é quase sempre genérico/defensivo ("evitar
+  // ciberataques", "risco de ciberataques autônomos"), não um incidente.
+]);
+
+/**
+ * #8666 (re-review #9560): palavra defensiva/de risco nos 1–3 tokens ANTES do
+ * termo forte anula o termo — "proteção contra vazamento de dados", "defend
+ * against cyberattacks", "risco de ciberataque" falam de prevenção/ameaça, não
+ * de um incidente. "após" NÃO é defensivo ("após vazamento de dados internos"
+ * é incidente real).
+ */
+const DEFENSIVE_CUES = new Set([
+  "evitar", "evita", "evitam", "contra", "protecao", "proteger", "protege", "protegem",
+  "defender", "defende", "defend", "defends", "defending", "defense", "defence", "against",
+  "prevent", "prevents", "prevenir", "previne", "prevencao", "risco", "riscos", "risk", "risks",
+  "alerta", "alertas", "alerts", "warns", "warning", "ameaca", "ameacas", "threat", "threats",
+]);
+
+function defensiveBefore(toks: string[], i: number): boolean {
+  return toks.slice(Math.max(0, i - 3), i).some((x) => DEFENSIVE_CUES.has(x));
+}
+
+/**
+ * #8666: formas de "invadir" ambíguas (literal × figurativo). Só contam como
+ * forte com CONTEXTO de segurança logo DEPOIS do verbo (3 tokens seguintes):
+ *   - objeto de segurança inequívoco ("invadir contas", "invade servidores"); ou
+ *   - "ajudou/ajuda/ajudar a invadir" + EMPRESA ("Claude ajudou a invadir a
+ *     OpenAI" — o caso real de 260921, cúmplice de invasão).
+ * Escolhas documentadas (re-review #9560): "ajuda a invadir o mercado" não
+ * conta (sem empresa/objeto depois); "para invadir" sozinho não basta;
+ * `sistema(s)`, `banco(s)` e `rede(s)` ficaram fora dos objetos por serem
+ * ambíguos ("invadir sistemas de saúde", "bancos de dados", "redes sociais").
+ * Título com outro termo forte já conta por ele.
+ */
+const CONTEXTUAL_INVADE_TOKENS = new Set(["invadir", "invade", "invadem", "invadirem"]);
+const INVADE_HELP_VERBS = new Set(["ajudou", "ajuda", "ajudar", "ajudam", "ajudaram", "ajudando"]);
+const INVADE_SECURITY_OBJECTS = new Set([
+  "conta", "contas", "servidor", "servidores",
+  "computador", "computadores", "dispositivo", "dispositivos", "celular", "celulares",
+  "email", "emails",
+]);
+
+/**
+ * #8666: vazamento só é forte com pista de DADOS/segurança no mesmo título —
+ * "OpenAI vaza detalhes do GPT-6" (vazamento de produto) não é. "data" (EN)
+ * só vale colado num termo INGLÊS de vazamento ("data leak", "leaked data"):
+ * em PT "data" é DATA DE CALENDÁRIO ("vaza data de lançamento").
+ */
+const STRONG_LEAK_TOKENS = new Set([
+  "vazamento", "vazamentos", "vaza", "vazam", "vazou", "vazaram", "vazados", "vazadas", "leak", "leaks", "leaked",
+]);
+const ENGLISH_LEAK_TOKENS = new Set(["leak", "leaks", "leaked"]);
+const LEAK_DATA_CUES = new Set([
+  "dados", "credenciais", "senha", "senhas", "credentials", "password", "passwords",
+  "usuario", "usuarios", "user", "users",
+]);
+
+/**
+ * Conceitos FORTES (#8666) expressos no título — habilitam o sinal (C).
+ * HACK: termo de `STRONG_HACK_TOKENS`, "data breach", ou "invadir" com
+ * contexto de segurança. LEAK: termo de vazamento + pista de dados.
+ */
+export function strongEventConcepts(title: string): Set<string> {
+  const toks = orderedTokens(title);
+  const out = new Set<string>();
+  let leakWord = false;
+  let leakCue = false;
+  toks.forEach((t, i) => {
+    const defensive = defensiveBefore(toks, i);
+    if (STRONG_HACK_TOKENS.has(t)) {
+      if (!defensive) out.add("HACK");
+    } else if (BREACH_TOKENS.has(t) && adjacentTo(toks, i, "data")) {
+      if (!defensive) out.add("HACK");
+    } else if (CONTEXTUAL_INVADE_TOKENS.has(t) && !defensive) {
+      const after = toks.slice(i + 1, i + 4);
+      const helped = toks[i - 1] === "a" && INVADE_HELP_VERBS.has(toks[i - 2] ?? "");
+      const object = after.some((x) => INVADE_SECURITY_OBJECTS.has(x));
+      const company = after.some((x) => Object.hasOwn(EVENT_COMPANY_ALIASES, x));
+      if (object || (helped && company)) out.add("HACK");
+    }
+    if (STRONG_LEAK_TOKENS.has(t) && !defensive) {
+      leakWord = true;
+      // "data" só como cue colado a termo INGLÊS ("data leak", "leaked data") —
+      // em PT "vaza data de lançamento" é data de calendário.
+      if (ENGLISH_LEAK_TOKENS.has(t) && adjacentTo(toks, i, "data")) leakCue = true;
+    }
+    if (LEAK_DATA_CUES.has(t)) leakCue = true;
+  });
+  if (leakWord && leakCue) out.add("LEAK");
+  return out;
+}
+
+/**
+ * #8666: distância máxima (em dias) entre os dois títulos para o sinal (C)
+ * — 0 = mesma edição, 1 = D-1, 2 = D-2.
+ */
+export const STRONG_CONCEPT_MAX_DISTANCE_DAYS = 2;
+
+export interface SameEventOptions {
+  /**
+   * Distância em dias entre as edições dos dois títulos (0 = intra-edição).
+   * Ausente = desconhecida → o sinal (C) não dispara (conservador).
+   */
+  distanceDays?: number;
+}
+
+/** #8666: opções para comparar dois títulos da MESMA edição (habilita o sinal C). */
+export const SAME_EDITION: Readonly<SameEventOptions> = Object.freeze({ distanceDays: 0 });
+
 /** Mínimo de conceitos de evento compartilhados no sinal (B). */
 export const EVENT_CONCEPT_MIN_SHARED = 2;
 
 export interface EventMatch {
-  signal: "distinctive_name" | "event_concepts";
+  /**
+   * Sinal que casou: `distinctive_name` (A1/A2), `event_concepts` (B) ou
+   * `strong_concept` (C, #8666 — só com `opts.distanceDays` ≤
+   * `STRONG_CONCEPT_MAX_DISTANCE_DAYS`).
+   */
+  signal: "distinctive_name" | "event_concepts" | "strong_concept";
   shared: string[];
   /**
    * #9293: `false` = evidência fraca (sinal A2 — só um lado nomeia empresa).
@@ -215,9 +395,12 @@ export interface EventMatch {
 
 /**
  * Decide se `a` e `b` cobrem o mesmo evento. `null` = não há evidência
- * suficiente (default seguro: na dúvida, NÃO remove).
+ * suficiente (default seguro: na dúvida, NÃO remove). Sinais A1/A2/B valem
+ * sempre; o (C) (#8666, mesma empresa + 1 conceito forte) só com
+ * `opts.distanceDays` conhecido e ≤ `STRONG_CONCEPT_MAX_DISTANCE_DAYS` —
+ * use `SAME_EDITION` para dois títulos da mesma edição.
  */
-export function sameEvent(a: string, b: string): EventMatch | null {
+export function sameEvent(a: string, b: string, opts: SameEventOptions = {}): EventMatch | null {
   if (!a || !b) return null;
   const compA = companiesIn(a);
   const compB = companiesIn(b);
@@ -252,25 +435,98 @@ export function sameEvent(a: string, b: string): EventMatch | null {
       return { signal: "event_concepts", shared: [...sharedCompanies, ...shared], removable: true };
     }
   }
+
+  // (C) #8666: mesma empresa + 1 conceito FORTE, só em janela curta conhecida.
+  const d = opts.distanceDays;
+  if (
+    sharedCompanies.length > 0 &&
+    typeof d === "number" && Number.isFinite(d) && d >= 0 && d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS
+  ) {
+    const sB = strongEventConcepts(b);
+    const strong = [...strongEventConcepts(a)].filter((c) => sB.has(c));
+    if (strong.length > 0) {
+      return { signal: "strong_concept", shared: [...sharedCompanies, ...strong], removable: true };
+    }
+  }
   return null;
 }
 
 /**
  * Título de `others` que cobre o mesmo evento que `title`. Prefere um match
- * REMOVÍVEL (A1/B) a qualquer match fraco (A2) — #9328: devolver o 1º match
+ * REMOVÍVEL (A1/B/C) a qualquer match fraco (A2) — #9328: devolver o 1º match
  * deixava um A2 anterior esconder um A1 posterior, e o Pass-1f só marcava.
- * Sem match removível, devolve o 1º fraco.
+ * Sem match removível, devolve o 1º fraco. #8666: entrada como objeto
+ * `{ title, distanceDays }` repassa a distância a `sameEvent` (habilita C);
+ * string pura = distância desconhecida (C desligado).
  */
 export function findSameEvent(
   title: string,
-  others: string[],
+  others: ReadonlyArray<string | { title: string; distanceDays?: number }>,
 ): { title: string; match: EventMatch } | null {
   let weak: { title: string; match: EventMatch } | null = null;
-  for (const o of others) {
-    const m = sameEvent(title, o);
+  for (const entry of others) {
+    // #8666: entrada com `distanceDays` habilita o sinal (C) para aquele título.
+    const o = typeof entry === "string" ? entry : entry.title;
+    const distanceDays = typeof entry === "string" ? undefined : entry.distanceDays;
+    const m = sameEvent(title, o, { distanceDays });
     if (!m) continue;
     if (m.removable) return { title: o, match: m };
     weak ??= { title: o, match: m };
   }
   return weak;
+}
+
+/** AAMMDD → epoch ms (UTC), ou undefined se inválida (inclusive data que "rola", ex: 260231). */
+function aammddToMs(x: string): number | undefined {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(x);
+  if (!m) return undefined;
+  const y = 2000 + Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo, day));
+  if (dt.getUTCMonth() !== mo || dt.getUTCDate() !== day) return undefined;
+  return dt.getTime();
+}
+
+/**
+ * #8666: quantos dias `past` está ANTES de `current` (positivo = passado,
+ * 0 = mesma data, negativo = futuro), ou undefined se alguma for inválida.
+ */
+export function editionDaysBefore(past: string, current: string): number | undefined {
+  const mp = aammddToMs(past);
+  const mc = aammddToMs(current);
+  if (mp === undefined || mc === undefined) return undefined;
+  return Math.round((mc - mp) / 86_400_000);
+}
+
+/** #8666: distância em dias entre duas datas AAMMDD (≥0, sem sinal), ou undefined se alguma for inválida. */
+export function editionDistanceDays(a: string, b: string): number | undefined {
+  const d = editionDaysBefore(a, b);
+  return d === undefined ? undefined : Math.abs(d);
+}
+
+/**
+ * #8666: título → menor distância em dias até `currentAammdd`, a partir de
+ * pares (título, AAMMDD da edição). Título em mais de uma edição fica com a
+ * mais próxima. `currentAammdd` ausente/inválido → mapa vazio (sinal C off).
+ *
+ * Só edições ESTRITAMENTE anteriores à corrente entram: a própria edição
+ * corrente (self-match num re-run, quando ela já está em past-editions.md) e
+ * edições MAIS NOVAS que ela (re-run de uma edição antiga) ficam fora — com
+ * distância absoluta elas virariam "passado ≤2 dias" e o sinal (C) removeria
+ * artigos contra o futuro.
+ */
+export function minDistanceByTitle(
+  dated: ReadonlyArray<{ title: string; aammdd: string }>,
+  currentAammdd: string | null | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!currentAammdd) return out;
+  for (const { title, aammdd } of dated) {
+    const d = editionDaysBefore(aammdd, currentAammdd);
+    if (d === undefined || d <= 0) continue;
+    const prev = out.get(title);
+    if (prev === undefined || d < prev) out.set(title, d);
+  }
+  return out;
 }

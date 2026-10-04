@@ -24,8 +24,10 @@
  * roda antes dele, cruza buckets e usa sinais de evento.
  *
  * Sinais de "mesma história" (qualquer um basta; todos conservadores):
- *   (1) `sameEvent` removível (A1/B) de lib/event-dedup.ts (#9249) — nome
- *       distintivo ("Dots", "Argon") ou ≥2 conceitos de evento + mesma empresa.
+ *   (1) `sameEvent` removível (A1/B/C) de lib/event-dedup.ts (#9249) — nome
+ *       distintivo ("Dots", "Argon"), ≥2 conceitos de evento + mesma empresa,
+ *       ou (C, #8666, habilitado por `SAME_EDITION`) 1 conceito FORTE
+ *       (invasão, vazamento de dados) + mesma empresa.
  *   (2) Mesmo MODELO VERSIONADO nos dois títulos ("Sonnet 5.5", "Gemini 4",
  *       "GPT-6.1") E os DOIS títulos com cara de anúncio de lançamento
  *       (`LAUNCH_TITLE_RE`). Versão sozinha não basta (review da PR #9430):
@@ -61,7 +63,7 @@
 
 import { OFFICIAL_SOURCES } from "./official-domains.ts";
 import { isOfficialLancamentoUrl } from "./launch-heuristics.ts";
-import { sameEvent, companiesIn, EVENT_COMPANY_ALIASES } from "./event-dedup.ts";
+import { sameEvent, companiesIn, EVENT_COMPANY_ALIASES, SAME_EDITION } from "./event-dedup.ts";
 import { canonicalize } from "./url-utils.ts";
 import { coverageBonus } from "./coverage-bonus.ts";
 import { articleNewsletterMentions, newsletterMentionBonus } from "./newsletter-mention-bonus.ts";
@@ -147,7 +149,7 @@ export const LAUNCH_TITLE_RE =
 
 /** Sinal de mesma história entre dois títulos, ou null. */
 export function sameStorySignal(a: string, b: string): StorySignal | null {
-  const ev = sameEvent(a, b);
+  const ev = sameEvent(a, b, SAME_EDITION); // #8666: mesma edição habilita (C)
   if (ev && ev.removable) return "event";
   if (LAUNCH_TITLE_RE.test(a) && LAUNCH_TITLE_RE.test(b)) {
     const mvB = modelVersionTokens(b);
