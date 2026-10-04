@@ -165,16 +165,18 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
     # baseline aqui e o que impede o mesmo alarme de repetir todo dia sobre
     # um aumento ja visto, medido e autorizado.
     "deepseek/deepseek-v4-flash": {
-        "prompt": 0.00000008708,             # $0,08708/M (era $0,084/M, +3,7%)
-        "completion": 0.00000017416,         # $0,17416/M (era $0,168/M, +3,7%)
-        "input_cache_read": 0.000000017416,  # $0,017416/M (era $0,0168/M, +3,7%)
+        # Preco vigente medido em 04/10/2026 (#9559): promo expirou — prompt
+        # caiu 3,9x, completion subiu 7,35x. Decisao do editor: MANTER o modelo
+        # (+23% no mix real, ~US$ 0,66/mes).
+        "prompt": 0.0000000224,           # $0,0224/M
+        "completion": 0.00000128,         # $1,28/M
+        "input_cache_read": 0.0000000224,  # $0,0224/M
     },
     "z-ai/glm-5.3-flash": {
         "prompt": 0.00000015,            # $0,15/M — preco de lista, promo caiu
-        # $0,90/M desde 02/10/2026 (era $0,50/M, 1,8x) — #9472, decisao do
-        # editor no briefing 261002b: MANTER o modelo ao preco novo.
-        "completion": 0.0000009,
-        "input_cache_read": 0.000000050,  # $0,05/M — preço vigente 2026-09-22 (promo expirou 09/09, #8716) — 90% do mix
+        # $0,50/M vigente em 04/10/2026 (#9559; baixou dos $0,90/M de #9472).
+        "completion": 0.0000005,
+        "input_cache_read": 0.000000030,  # $0,03/M — preço vigente 2026-10-04 (#9559)
     },
 }
 
