@@ -600,7 +600,7 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
     );
   });
 
-  it("#8504: --diaria-edicao-jev exporta JEV_FORCE_ACTOR_BRAZIL=1 pro subprocesso; ausente por default", () => {
+  it("#9551: perfil Jev aposentado — env do subprocesso é o recebido, sem JEV_FORCE_*/DIARIA_JEV_PROFILE, com ou sem a flag antiga", () => {
     const envsSeen: NodeJS.ProcessEnv[] = [];
     const execFn = ((_cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
       envsSeen.push(opts.env ?? {});
@@ -610,28 +610,21 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
       return "";
     }) as unknown as typeof import("node:child_process").execFileSync;
 
-    W = sentinelWorld(0);
-    const withFlag = makeDeps({ execFn, env: { SAFE: "1" } as NodeJS.ProcessEnv });
-    cliMain(["--edition", "260820", "--through", "3", "--diaria-edicao-jev"], withFlag.deps);
-    assert.ok(envsSeen.length > 0, "deveria ter spawnado ao menos 1 stage");
-    assert.ok(
-      envsSeen.every((e) => e.JEV_FORCE_ACTOR_BRAZIL === "1"),
-      "com --diaria-edicao-jev, TODO subprocesso spawnado deveria receber JEV_FORCE_ACTOR_BRAZIL=1",
-    );
-    assert.ok(
-      envsSeen.every((e) => e.SAFE === "1"),
-      "o env override é aditivo — não deveria descartar o resto do env original",
-    );
-
-    envsSeen.length = 0;
-    W = sentinelWorld(0);
-    const withoutFlag = makeDeps({ execFn, env: { SAFE: "1" } as NodeJS.ProcessEnv });
-    cliMain(["--edition", "260820", "--through", "3"], withoutFlag.deps);
-    assert.ok(envsSeen.length > 0);
-    assert.ok(
-      envsSeen.every((e) => e.JEV_FORCE_ACTOR_BRAZIL === undefined),
-      "sem a flag, nenhum subprocesso deveria receber JEV_FORCE_ACTOR_BRAZIL — comportamento pré-#8504 preservado",
-    );
+    for (const argv of [
+      ["--edition", "260820", "--through", "3"],
+      ["--edition", "260820", "--through", "3", "--diaria-edicao-jev"],
+    ]) {
+      envsSeen.length = 0;
+      W = sentinelWorld(0);
+      const d = makeDeps({ execFn, env: { SAFE: "1" } as NodeJS.ProcessEnv });
+      cliMain(argv, d.deps);
+      assert.ok(envsSeen.length > 0, "deveria ter spawnado ao menos 1 stage");
+      for (const e of envsSeen) {
+        assert.equal(e.SAFE, "1", "o env recebido chega intacto ao subprocesso");
+        assert.equal(e.JEV_FORCE_ACTOR_BRAZIL, undefined, `${argv.join(" ")}: JEV_FORCE_ACTOR_BRAZIL não existe mais (#9551)`);
+        assert.equal(e.DIARIA_JEV_PROFILE, undefined, `${argv.join(" ")}: DIARIA_JEV_PROFILE não existe mais (#9551)`);
+      }
+    }
   });
 });
 

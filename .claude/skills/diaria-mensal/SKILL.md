@@ -86,6 +86,8 @@ npx tsx scripts/collect-monthly.ts --cycle $CYCLE
 ```
 Se `destaques_count < 3`, abortar.
 
+**Sinal Brasil (#9552):** o script pergunta ao Jev (pergunta Brasil do #8416) sobre cada destaque e decide `is_brazil` por `brazil_p >= 0,5`; grava `brazil_p`, `brazil_signals` e `brazil_regex_signals` (o que o regex teria dito) por destaque e o resumo `brazil_jev` no topo de `raw-destaques.json`. Sem `TYPESAFE_API_KEY` ou com a API fora, cai no `detectBrazil()` de sempre (warn no run-log, `brazil_jev.reason` diz o motivo) — nunca aborta. No gate da Etapa 4, citar quais destaques saíram marcados Brasil e os que o Jev inverteu (`brazil_jev.changed`).
+
 ### 1b. Scoring mensal
 
 **Resume check:** verificar se todos os destaques em `_internal/raw-destaques.json` já têm o campo `score` não-nulo. Se sim, pular.

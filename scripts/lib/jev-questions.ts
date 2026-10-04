@@ -205,6 +205,11 @@ export const POOL_RELEVANCE_8418_AUDIENCE_FIT: JevQuestionSpec = {
  * (Brasil, McNemar p<0,01 em 3 rodadas) / adotar-com-ressalva (ator — 6-way é
  * capacidade nova, binário big-tech não foi significativo em n=64). Issue de
  * implementação: #8504 (`jev.features.actor_brazil`).
+ *
+ * #9551/#9552 (04/10/2026): a pergunta de ATOR foi aposentada pelo editor —
+ * fica aqui só como registro da medição, nenhum código de produção a chama.
+ * A de BRASIL segue em produção na coleta do mensal e do anual
+ * (`scripts/lib/jev-brazil.ts`, `applyJevBrazilSignal` em `collect-monthly.ts`).
  */
 export const ACTOR_BRAZIL_8416_ACTOR: JevQuestionSpec = {
   id: "actor-brazil-8416-actor",

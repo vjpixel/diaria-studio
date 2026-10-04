@@ -50,6 +50,14 @@ export interface AnnualDestaque {
   why: string;
   is_brazil: boolean;
   /**
+   * #9552: preenchidos pela pergunta Brasil do Jev na coleta
+   * (`applyJevBrazilSignal`) quando o Jev respondeu pro item — ausentes
+   * quando o sinal veio do `detectBrazil()` (key ausente, API fora).
+   */
+  brazil_p?: number;
+  brazil_signals?: string[];
+  brazil_regex_signals?: string[];
+  /**
    * Preenchido pelo `scorer-monthly` na Etapa 1; ausente antes disso.
    * Opcional e NÃO nullable de propósito: `undefined` e `null` significariam
    * a mesma coisa ("ainda não pontuado") e todo consumidor os fundia com

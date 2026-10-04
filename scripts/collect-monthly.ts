@@ -14,6 +14,9 @@
  * do scorer diário). Reforçado por host (`.br` + lista BR_HOSTS) e palavras-
  * chave no título/body com word boundary (evita false-positives de tokens
  * curtos como `stf`, `cade` casando dentro de palavras maiores).
+ * Desde o #9552 o `main()` pergunta ao Jev (pergunta Brasil do #8416) sobre
+ * cada destaque e decide por `brazil_p >= JEV_BRAZIL_THRESHOLD` — o regex
+ * acima vira o fallback (sem `TYPESAFE_API_KEY`, API fora, item sem resposta).
  *
  * Uso (#1962 — novo):
  *   npx tsx scripts/collect-monthly.ts --cycle 2605-06
@@ -34,6 +37,12 @@ import {
 import { parseEdition, normalizeHeader } from "./monthly-click-sections.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import { loadProjectEnv } from "./lib/env-loader.ts";
+import {
+  fetchBrazilProbabilities,
+  type BrazilJevReason,
+  type FetchBrazilOptions,
+} from "./lib/jev-brazil.ts";
 
 // Alias para compat com usos internos (path join na MONTHLY_BASE).
 const MONTHLY_DIR = MONTHLY_BASE;
@@ -50,7 +59,11 @@ export interface MonthlyDestaque {
   body: string;             // corpo do destaque (excluindo "View image:" / "Caption:")
   why: string;              // texto após "Por que isso importa:"
   is_brazil: boolean;
-  brazil_signals: string[]; // motivos da flag (category, host, keyword)
+  brazil_signals: string[]; // motivos da flag (category, host, keyword) — ou `jev:brazil_p=…` (#9552)
+  /** #9552: probabilidade Jev de o assunto envolver o Brasil, quando o Jev respondeu. */
+  brazil_p?: number;
+  /** #9552: sinais do `detectBrazil()` guardados ao lado quando o Jev decidiu, pra conferência no gate. */
+  brazil_regex_signals?: string[];
 }
 
 interface MonthlyOutput {
@@ -60,6 +73,8 @@ interface MonthlyOutput {
   destaques_count: number;
   destaques: MonthlyDestaque[];
   warnings: string[];
+  /** #9552: resumo da pergunta Brasil do Jev nesta coleta. */
+  brazil_jev: JevBrazilSummary;
 }
 
 // ── Brasil detection ────────────────────────────────────────────────
@@ -163,24 +178,17 @@ export function detectBrazil(args: {
 export const JEV_BRAZIL_THRESHOLD = 0.5;
 
 /**
- * #8504 (implementação a partir do veredito ADOTAR de #8416) — resolve o
- * sinal de Brasil usando `brazil_p` (probabilidade Jev, shadow mode de
- * `jev.features.actor_brazil`) quando presente, com FALLBACK pro
- * `detectBrazil()` atual (regex/host/category) quando ausente. NÃO
- * substitui `detectBrazil()` em si (método comum #8412: shadow antes de
- * trocar) — só decide qual dos dois sinais vence quando ambos existem pro
- * MESMO item.
+ * Sinal de Brasil de UM destaque: `brazil_p` (probabilidade Jev, pergunta
+ * `ACTOR_BRAZIL_8416_BRAZIL`, veredito ADOTAR do #8416) quando presente; senão
+ * o `detectBrazil()` de sempre (regex/host/categoria).
  *
- * Limitação conhecida (honesta, não escondida): `brazil_p` é gravado por
- * `annotate-actor-brazil.ts` em `_internal/01-categorized.json` durante o
- * Stage 1 da edição — um artefato interno que não sobrevive até o texto
- * publicado que `parsePost`/`parseLocalEdition` leem aqui (raw-post
- * baixado da Beehiiv, ou `02-reviewed.md` local). Sem um elo que carregue
- * esse campo até o post publicado (fora de escopo desta issue — mudaria
- * `stitch-newsletter.ts`/o formato publicado), `brazil_p` chega sempre
- * `undefined` nestas duas chamadas em produção HOJE, e o resultado é
- * idêntico a chamar `detectBrazil()` direto. A função existe pronta pro
- * dia em que esse elo for implementado (issue própria, se justificar).
+ * Desde o #9552 quem traz o `brazil_p` é a própria coleta
+ * (`applyJevBrazilSignal`, abaixo, chamada no `main()` deste script e no de
+ * `collect-annual.ts`). Antes, o valor vinha de uma anotação do Stage 1
+ * diário que nunca chegava ao post publicado — esta função recebia sempre
+ * `undefined` e o mensal decidia Brasil pelo regex, que marca Brasil por
+ * domínio .com.br em matéria que não fala do Brasil (313 das 319
+ * divergências da avaliação pareada da #9531).
  */
 export function resolveBrazilSignal(args: {
   category: string;
@@ -196,6 +204,73 @@ export function resolveBrazilSignal(args: {
     };
   }
   return detectBrazil(args);
+}
+
+/** Campos de um destaque coletado (mensal ou anual) que a pergunta Brasil lê e reescreve. */
+export interface BrazilSignalFields {
+  edition: string;
+  position: number;
+  category: string;
+  title: string;
+  url: string;
+  body: string;
+  is_brazil: boolean;
+  brazil_signals?: string[];
+  brazil_p?: number;
+  brazil_regex_signals?: string[];
+}
+
+/** Resumo gravado no artefato da coleta (#9552). */
+export interface JevBrazilSummary {
+  /** true = o Jev respondeu (ao menos parte dos itens). */
+  applied: boolean;
+  /** `ok`, ou o motivo do fallback total pro `detectBrazil()` (`no-key`, `transport`, `empty`). */
+  reason: BrazilJevReason;
+  total: number;
+  /** Destaques com `brazil_p` — os demais ficaram com o `detectBrazil()`. */
+  annotated: number;
+  /** Destaques cuja decisão Brasil o Jev inverteu em relação ao `detectBrazil()`. */
+  changed: number;
+  threshold: number;
+}
+
+/**
+ * #9552: chama o Jev (pergunta Brasil) sobre os destaques coletados e
+ * reescreve `is_brazil`/`brazil_signals` via `resolveBrazilSignal()`, gravando
+ * `brazil_p` e — pra conferência no gate — os sinais do regex em
+ * `brazil_regex_signals`. MUTA os itens recebidos.
+ *
+ * Fail-soft: sem `TYPESAFE_API_KEY` ou com a API fora, nenhum item é tocado
+ * (resultado idêntico ao `detectBrazil()` de sempre) e o motivo vai pro
+ * run-log e pro resumo devolvido. Item sem resposta numa falha parcial
+ * também fica intocado.
+ */
+export async function applyJevBrazilSignal<T extends BrazilSignalFields>(
+  destaques: T[],
+  opts: FetchBrazilOptions = {},
+): Promise<JevBrazilSummary> {
+  const ids = destaques.map((d, i) => `${d.edition}#${d.position}#${i}`);
+  const { probabilities, applied, reason } = await fetchBrazilProbabilities(
+    destaques.map((d, i) => ({ id: ids[i], title: d.title, url: d.url, summary: d.body })),
+    opts,
+  );
+
+  let annotated = 0;
+  let changed = 0;
+  destaques.forEach((d, i) => {
+    const p = probabilities.get(ids[i]);
+    if (typeof p !== "number") return;
+    const regex = detectBrazil(d);
+    const resolved = resolveBrazilSignal({ ...d, brazil_p: p });
+    annotated++;
+    if (resolved.is_brazil !== regex.is_brazil) changed++;
+    d.is_brazil = resolved.is_brazil;
+    d.brazil_signals = resolved.signals;
+    d.brazil_p = p;
+    d.brazil_regex_signals = regex.signals;
+  });
+
+  return { applied, reason, total: destaques.length, annotated, changed, threshold: JEV_BRAZIL_THRESHOLD };
 }
 
 // ── Raw post discovery ─────────────────────────────────────────────
@@ -506,7 +581,7 @@ export function collectMonth(
 
 // ── Main ────────────────────────────────────────────────────────────
 
-function main() {
+async function main() {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
   if (!cycle) {
@@ -537,6 +612,17 @@ function main() {
 
   const { destaques: allDestaques, warnings } = result;
 
+  // #9552: pergunta Brasil do Jev na coleta (fail-soft → detectBrazil()).
+  // `TYPESAFE_API_KEY` vem do `.env`/Doppler (mesmo caminho do `jev-eval.ts`).
+  loadProjectEnv(ROOT);
+  const internalDir = join(editionDir, "_internal");
+  const brazilJev = await applyJevBrazilSignal(allDestaques, {
+    cacheDir: join(internalDir, "jev-brazil-cache"),
+    edition: cycle,
+    agent: "collect-monthly",
+    rootDir: ROOT,
+  });
+
   const output: MonthlyOutput = {
     yymm,
     generated_at: new Date().toISOString(),
@@ -544,6 +630,7 @@ function main() {
     destaques_count: allDestaques.length,
     destaques: allDestaques,
     warnings,
+    brazil_jev: brazilJev,
   };
 
   mkdirSync(editionDir, { recursive: true });
@@ -557,6 +644,12 @@ function main() {
       `(local: ${result.source_counts.local}, raw: ${result.source_counts.raw}, ` +
       `${brCount} marcados Brasil) → ${outPath}`,
   );
+  console.log(
+      brazilJev.applied
+        ? `Brasil via Jev (#9552): ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
+            `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
+        : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}, ver data/run-log.jsonl)`,
+  );
   if (result.source_counts.missing > 0) {
     console.log(`${result.source_counts.missing} edição(ões) sem local nem raw-post (ver warnings).`);
   }
@@ -567,5 +660,8 @@ function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((err) => {
+    console.error(`[collect-monthly] ERRO: ${(err as Error).message}`);
+    process.exit(1);
+  });
 }

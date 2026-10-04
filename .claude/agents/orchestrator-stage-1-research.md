@@ -592,14 +592,6 @@ npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD}
 ```
 Isso executa, em sequência: sumarização de mínimos (1t, warn-only), remoção do campo `verifier` (1u, produz `tmp-categorized.json` — arquivo que o gate lê), dedup intra-edição (1u-bis) e filtro evergreen (1u-ter). Nenhum passo bloqueia; saídas são logadas como info/warn.
 
-### 1u-quat. Anotação actor/brazil via Jev (#8504, shadow mode)
-
-Script `scripts/annotate-actor-brazil.ts` — softStep sempre exit 0, atrás de
-`jev.features.actor_brazil` (default OFF; perfil `--diaria-edicao-jev` liga
-via `JEV_FORCE_ACTOR_BRAZIL=1` no ambiente do subprocesso). Grava
-`actor`/`actor_p`/`brazil_p` por artigo em `01-categorized.json` — sinal
-ADITIVO, nunca altera `category`/bucket. Ver `scripts/lib/jev-actor-brazil.ts`.
-
 ### 1v. Render MD (categorized + approved)
 
 ```bash
