@@ -30,6 +30,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
+- `use_melhor_post_path` (opcional, #9568): `_internal/use-melhor-post.json` — só presente quando o 4º post está ligado e há item; ver §3c.
 - `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output, nunca pelo texto genérico `## d{N}`. **(#3052 revertido, 260814):** o `## post_pixel` não abre mais com `{outros_count}`/`{edition_url}` (ver §3b abaixo) — `resolve-post-pixel.ts` continua existindo pra edições antigas/backward-compat, mas normalmente é um no-op sem placeholders no texto.
 
 ## Processo
@@ -72,7 +73,15 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a diar.ia.br", "como alguém que acompanha o setor" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. Validado por `lint-social-md.ts --check no-credential-bio`.
    - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 (09:00 BRT). Ver `context/publishers/linkedin.md`.
 
-4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-social.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`, `## post_pixel`. O orchestrator fará o merge (seção `# Social`) numa etapa seguinte.
+   ### 3c. 4º post — item USE MELHOR (`## um`, #9568) — SÓ se o prompt trouxer `use_melhor_post_path`
+
+   **Sem `use_melhor_post_path` no prompt: não escreva `## um`, nem mencione o item** — a feature está desligada (slot de horário ainda não definido) e o output tem que ser exatamente o de sempre.
+
+   Com o path: ler o JSON; o item está em `item` (`title`, `summary`, `url`). Escrever `## um` (depois de `## d3`/último destaque, antes de `## post_pixel`) com **as mesmas regras do §3a** (tom, hook com contraste, negrito seletivo 1 por parágrafo, channel-neutral, sem URL, sem pergunta no fim, nunca inventar números — fonte é só `title`/`summary` do item, hashtags no bloco final), com 2 diferenças:
+   - **Número de parágrafos livre (2 a 6)**, o que o conteúdo pedir — cada parágrafo vira 1 slide do carrossel do 4º post, que não tem os 5 slides fixos dos destaques. Mesmo teto de **~260 caracteres por parágrafo**.
+   - É um item **prático** (tutorial/guia): o ângulo é o que o leitor ganha usando aquilo, não notícia.
+
+4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-social.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`, `## post_pixel` (+ `## um`, só no caso do §3c). O orchestrator fará o merge (seção `# Social`) numa etapa seguinte.
 
 ```markdown
 ## d1
@@ -123,7 +132,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 ## Regras
 
-- O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3`, `## post_pixel` e o conteúdo dos textos. Sem comentários HTML além do `char_count`/`destaque` opcionais, sem linhas `Post N —`, sem cabeçalhos internos de nenhum tipo, sem `# Social` embutido (só `merge-social-md.ts` escreve esse header) — qualquer linha além do separador e do texto aparecerá publicada.
+- O arquivo temporário deve conter **apenas** os separadores `## d1`, `## d2`, `## d3`, `## post_pixel` (+ `## um` só com `use_melhor_post_path`, §3c) e o conteúdo dos textos. Sem comentários HTML além do `char_count`/`destaque` opcionais, sem linhas `Post N —`, sem cabeçalhos internos de nenhum tipo, sem `# Social` embutido (só `merge-social-md.ts` escreve esse header) — qualquer linha além do separador e do texto aparecerá publicada.
 - Cada texto deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 textos genéricos.
 - Evitar "IA"/"inteligência artificial"/"AI" sempre que possível — inclusive no hook (#4825) — usar o sujeito concreto. Exceções: ver §3a.

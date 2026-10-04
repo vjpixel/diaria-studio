@@ -585,6 +585,7 @@ LinkedIn  D3  "{hook_d3_linkedin}"
 Facebook  D1  "{hook_d1_facebook}"
 Facebook  D2  "{hook_d2_facebook}"
 Facebook  D3  "{hook_d3_facebook}"
+{use_melhor_post_block}
 
 ━━━ IMAGENS ━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -626,6 +627,7 @@ Regras de apresentação:
 - `{verify_verdict}` = `✅ acessível` / `⚠️ inacessível` / `⏱ timeout`.
 - `{violations_block}` = uma linha por violation com ❌ (crítico) ou ⚠️ (warning) + mensagem.
 - `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência/indisponibilidade do fact-check** (exit 1) — decisão final é sempre do editor. **Exceção (#4361):** claims `NOT_FOUND_IN_SOURCE` não-superlativos SÃO gate-blocking (exit 2 de `--check-blocking`, ver §4c.6) — o gate não deve nem ser montado enquanto esses claims não forem resolvidos (ver ação em §4c.6).
+- `{use_melhor_post_block}` (#9568) = stdout de `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDITION_DIR}/ --status`, rodado logo antes de apresentar o resumo (e a cada re-apresentação após `ajustar` — o editor pode ter mexido no USE MELHOR). Enquanto `publishing.social.use_melhor_time` for `null` imprime só `4º post desligado (use_melhor_time não definido)` — mostrar assim, sem ação. Ligado: item escolhido (maior score entre os USE MELHOR renderizados no `02-reviewed.md` final) + carrossel; linhas `⚠️` (item mudou no gate, `## um` ausente, carrossel não gerado, sem item elegível) são AVISO visível, **nunca bloqueiam o gate** — o 4º post é fail-soft. Se o item mudou, `select-use-melhor-post.ts --reviewed` re-seleciona; re-disparar `social-writer`/`social-curto` só pro `## um` é opcional (decisão do editor). Erro do comando = omitir a linha e seguir.
 - `{social_critic_block}` = stdout de `scripts/run-social-critic.ts --input-json` (§4c.6d) — só presente quando `social_critic_pass.enabled === true`; string vazia (linha omitida) quando desabilitado (exit 2) ou indisponível. Nunca bloqueia o gate.
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
