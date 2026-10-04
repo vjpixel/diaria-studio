@@ -567,8 +567,10 @@ describe("clarice_list_history config (#9532)", () => {
     const real = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8");
     const listIdRe = /("clarice_list_history":\s*\{\s*\n\s*"list_id":\s*)(null|\d+)/;
     assert.match(real, listIdRe, "bloco clarice_list_history com list_id no formato esperado");
-    const withNull = real.replace(listIdRe, "$1null");
-    const withId = real.replace(listIdRe, "$1313");
+    // Independe também do marcador `consolidated_at` já gravado no config real (#9544).
+    const base = real.replace(/\n[ \t]*"consolidated_at":[^\n]*\n/, "\n");
+    const withNull = base.replace(listIdRe, "$1null");
+    const withId = base.replace(listIdRe, "$1313");
     const out = insertConsolidatedAt(withId, "2026-10-04T00:00:00.000Z");
     assert.equal(out.split("\n").length, withId.split("\n").length + 1);
     assert.equal(loadFromText(out).consolidatedAt, "2026-10-04T00:00:00.000Z");
