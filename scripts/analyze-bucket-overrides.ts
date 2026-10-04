@@ -300,7 +300,7 @@ const EDITION_DIR_RE = /^\d{6}$/;
  * uma edição real. Uma mesma edição encontrada nos dois formatos (raiz E
  * dentro de um mês) não é contada 2x — a 1ª ocorrência encontrada vence.
  */
-function discoverEditionPaths(editionsDir: string): Map<string, string> {
+export function discoverEditionPaths(editionsDir: string): Map<string, string> {
   const paths = new Map<string, string>();
 
   for (const entry of readdirSync(editionsDir, { withFileTypes: true })) {
