@@ -47,3 +47,33 @@ describe("#9526 — /diaria-desbloqueia pina model/effort no frontmatter", () =>
     assert.match(body, /AskUserQuestion/);
   });
 });
+
+describe("#9526 — /diaria-desbloqueia roda num único turno (pin não cai em task-notification)", () => {
+  const content = readFileSync(SKILL, "utf8");
+
+  it("exige run_in_background: false para Agent despachado pela skill", () => {
+    assert.match(content, /run_in_background: false/);
+  });
+
+  it("nunca instrui run_in_background: true", () => {
+    assert.doesNotMatch(content, /run_in_background:\s*true/);
+  });
+
+  it("explica que o task-notification abre turno novo (#9527), não só mensagem livre", () => {
+    assert.match(content, /task-notification/);
+    assert.match(content, /#9527/);
+    assert.match(content, /ÚNICO turno/);
+  });
+
+  it("cita a sonda do par efetivo com os dois --expect-* do par da skill", () => {
+    assert.match(
+      content,
+      /npx tsx scripts\/lib\/effective-model-probe\.ts --expect-model claude-opus-5-5 --expect-effort medium/,
+    );
+  });
+
+  it("a sonda não vem em bloco cercado (o hook não injeta --session-id em comando multi-linha)", () => {
+    const fences = [...content.matchAll(/```[a-z]*\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    for (const f of fences) assert.doesNotMatch(f, /effective-model-probe/);
+  });
+});
