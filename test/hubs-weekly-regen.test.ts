@@ -12,6 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 
 import {
   hasHubDataChange,
@@ -397,5 +398,25 @@ describe("Diaria-Hub-Weekly-Regen no registro de scheduled-tasks (bug achado ao 
       "step precisa de --session-id com valor não-vazio nos args declarados — sem isso, o job desassistido " +
         "aborta com o alarme session-id-ausente toda sexta que encontrar dado novo",
     );
+  });
+});
+
+describe("--help é informativo (#8931)", () => {
+  it("parseHubsWeeklyRegenArgs reconhece --help e -h", () => {
+    assert.equal(parseHubsWeeklyRegenArgs(["--help"]).help, true);
+    assert.equal(parseHubsWeeklyRegenArgs(["-h"]).help, true);
+    assert.equal(parseHubsWeeklyRegenArgs(["--dry-run"]).help, false);
+  });
+
+  it("processo real: --help imprime uso e sai 0 antes de qualquer efeito (sem regen/worktree)", () => {
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/hubs-weekly-regen.ts", "--help"],
+      { encoding: "utf8", cwd: process.cwd() },
+    );
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /Uso: npx tsx scripts\/hubs-weekly-regen\.ts/);
+    // nenhuma das mensagens de execução do regen pode aparecer
+    assert.doesNotMatch(r.stderr, /session-id-ausente|worktree|data\/beehiiv-cache/);
   });
 });
