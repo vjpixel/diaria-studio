@@ -36,7 +36,7 @@ import {
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
 } from "./lib/use-melhor-post.ts"; // #9568
-import { gatherUseMelhorStatusInput } from "./select-use-melhor-post.ts"; // #9568
+import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #9568
 
 export interface ImageMap {
   [key: string]: {

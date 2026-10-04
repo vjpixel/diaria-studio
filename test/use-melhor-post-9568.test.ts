@@ -39,9 +39,12 @@ import {
   USE_MELHOR_MAX_PARAGRAPH_SLIDES,
   buildUseMelhorSlides,
   findOverflowingUseMelhorSlides,
+  lintUseMelhorPostText,
+  removeStaleUseMelhorSlides,
   resolveUseMelhorCarouselImageUrls,
   useMelhorSlideFilename,
 } from "../scripts/lib/use-melhor-carousel.ts";
+import { gatherUseMelhorStatusInput } from "../scripts/lib/use-melhor-status.ts";
 import { genCarouselCards } from "../scripts/gen-carousel-cards.ts";
 import { checkCarouselTextOverflow } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { runSelection } from "../scripts/select-use-melhor-post.ts";
@@ -386,7 +389,10 @@ describe("invariante carousel-text-overflow cobre o `## um` só quando ligado (#
   });
 
   it("ligado → warning (nunca error)", () => {
-    const v = checkCarouselTextOverflow(overflowingEdition(), ON);
+    // O texto de overflow tem 1 parágrafo só → também cai no `use-melhor-um-shape` (warning).
+    const all = checkCarouselTextOverflow(overflowingEdition(), ON);
+    assert.ok(all.every((x) => x.severity === "warning"));
+    const v = all.filter((x) => x.rule === "carousel-text-overflow");
     assert.equal(v.length, 1);
     assert.equal(v[0].severity, "warning");
     assert.equal(v[0].source_issue, "#9568");
@@ -499,5 +505,99 @@ describe("preview social (#9568)", () => {
     assert.equal(um.label, "4º POST — USE MELHOR");
     assert.equal(um.imageUrl, "https://k/cover.jpg");
     assert.deepEqual(um.carouselImages?.map((s) => s.label), ["1/4 · Capa", "2/4", "3/4", "4/4 · CTA"]);
+  });
+});
+
+describe("self-review #9572 — follow-ups do 4º post", () => {
+  const fakeRender = async (_t: string, outPaths: Record<string, string>) => {
+    for (const p of Object.values(outPaths)) writeFileSync(p, "x");
+    return outPaths as never;
+  };
+  const writingRenderUm = async (d: string, slides: { slot: string }[]) =>
+    slides.map((s) => {
+      const p = join(d, useMelhorSlideFilename(s.slot));
+      writeFileSync(p, "x");
+      return p;
+    });
+  const STATE_ITEM = { url: "u", title: "Guia B", summary: "", score: 83 };
+
+  function setUm(dir: string, text: string): void {
+    const social = readFileSync(join(dir, "03-social.md"), "utf8");
+    const next = social.replace(/## um\n\n[\s\S]*?\n\n## post_pixel/, `## um\n\n${text}\n\n## post_pixel`);
+    assert.notEqual(next, social, "fixture: bloco `## um` deveria existir");
+    writeFileSync(join(dir, "03-social.md"), next);
+  }
+
+  it("finding 1: `## um` editado depois do Stage 3 → status avisa carrossel DEFASADO", async () => {
+    const dir = makeEdition({ um: true, curtoUm: true });
+    writeUseMelhorPostState(dir, { enabled: true, time: "19:00", item: STATE_ITEM, generated_at: "x" });
+    await genCarouselCards(dir, { render: fakeRender, useMelhorConfig: ON, renderUseMelhor: writingRenderUm });
+    const fresh = gatherUseMelhorStatusInput(dir, ON);
+    assert.equal(fresh.carouselStale, false);
+    assert.ok(!describeUseMelhorPostStatus(fresh).lines.some((l) => l.includes("DEFASADO")));
+
+    setUm(dir, [P("Texto reescrito no painel."), P("Segundo novo.")].join("\n\n"));
+    const stale = gatherUseMelhorStatusInput(dir, ON);
+    assert.equal(stale.carouselStale, true);
+    const st = describeUseMelhorPostStatus(stale);
+    assert.equal(st.level, "warn");
+    assert.ok(st.lines.some((l) => l.includes("DEFASADO")));
+  });
+
+  it("finding 1: desligado → carouselStale nunca calculado (inerte)", () => {
+    const dir = makeEdition({ um: true });
+    assert.equal(gatherUseMelhorStatusInput(dir, OFF).carouselStale, false);
+  });
+
+  it("findings 2/3: `## um` encolhe → gen apaga o p{k} excedente do render anterior", async () => {
+    const dir = makeEdition({ um: true });
+    writeUseMelhorPostState(dir, { enabled: true, time: "19:00", item: STATE_ITEM, generated_at: "x" });
+    setUm(dir, [P("Um."), P("Dois."), P("Três."), "#Tag"].join("\n\n"));
+    await genCarouselCards(dir, { render: fakeRender, useMelhorConfig: ON, renderUseMelhor: writingRenderUm });
+    assert.ok(existsSync(join(dir, useMelhorSlideFilename("p3"))));
+
+    setUm(dir, [P("Um."), P("Dois."), "#Tag"].join("\n\n"));
+    const r = await genCarouselCards(dir, { render: fakeRender, useMelhorConfig: ON, renderUseMelhor: writingRenderUm });
+    assert.deepEqual(r.use_melhor?.slots, ["cover", "p1", "p2", "cta"]);
+    assert.equal(existsSync(join(dir, useMelhorSlideFilename("p3"))), false, "slide fantasma removido");
+    assert.ok(existsSync(join(dir, useMelhorSlideFilename("p2"))));
+  });
+
+  it("findings 2/3: removeStaleUseMelhorSlides só toca arquivos do 4º post fora dos slots", () => {
+    const dir = makeEdition();
+    for (const f of [useMelhorSlideFilename("p4"), useMelhorSlideFilename("p1"), "04-d1-carousel-p1-4x5.jpg"]) {
+      writeFileSync(join(dir, f), "x");
+    }
+    const removed = removeStaleUseMelhorSlides(dir, ["cover", "p1", "cta"]);
+    assert.deepEqual(removed, [useMelhorSlideFilename("p4")]);
+    assert.ok(existsSync(join(dir, "04-d1-carousel-p1-4x5.jpg")));
+  });
+
+  it("finding 4: override de teste do CTA (#8681) chega ao slide CTA do 4º post", () => {
+    const slides = buildUseMelhorSlides(TEXTO_UM, "Guia", { kicker: "TESTE", title: "CTA de teste" });
+    const cta = slides[slides.length - 1];
+    assert.equal(cta.slot, "cta");
+    assert.equal(cta.text.title, "CTA de teste");
+    assert.notEqual(buildUseMelhorSlides(TEXTO_UM, "Guia").at(-1)!.text.title, "CTA de teste");
+  });
+
+  it("finding 6: lint de forma do `## um` (nº de parágrafos, channel-neutral, pergunta no fim)", () => {
+    assert.deepEqual(lintUseMelhorPostText(TEXTO_UM), []);
+    assert.match(lintUseMelhorPostText(P("Só um parágrafo."))[0], /1 parágrafo/);
+    const sete = Array.from({ length: 7 }, (_, i) => P(`Parágrafo ${i}.`)).join("\n\n");
+    assert.match(lintUseMelhorPostText(sete).join(" "), /7 parágrafo/);
+    assert.match(lintUseMelhorPostText([P("Veja em https://x.com."), P("Dois.")].join("\n\n")).join(" "), /URL/);
+    assert.match(lintUseMelhorPostText([P("Assine a diar.ia.br."), P("Dois.")].join("\n\n")).join(" "), /CTA de canal/);
+    assert.match(lintUseMelhorPostText([P("Um."), "E você, já testou?"].join("\n\n")).join(" "), /pergunta/);
+  });
+
+  it("finding 6: invariante emite `use-melhor-um-shape` (warning) só quando ligado", () => {
+    const dir = makeEdition({ um: true });
+    setUm(dir, P("Só um parágrafo."));
+    writeUseMelhorPostState(dir, { enabled: true, time: "19:00", item: STATE_ITEM, generated_at: "x" });
+    assert.deepEqual(checkCarouselTextOverflow(dir, OFF), []);
+    const v = checkCarouselTextOverflow(dir, ON).filter((x) => x.rule === "use-melhor-um-shape");
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
   });
 });

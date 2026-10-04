@@ -21,7 +21,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   renderFlatCard,
@@ -39,6 +39,7 @@ import {
   DAILY_CAROUSEL_HANDLE,
   DAILY_CAROUSEL_MICRO_CTA,
 } from "./daily-carousel-card.ts";
+import type { CarouselCtaOverride } from "./instagram-test-override.ts";
 import { splitBodyAndTags } from "./social-cta-lines.ts";
 import { USE_MELHOR_POST_ID } from "./use-melhor-post.ts";
 
@@ -88,14 +89,24 @@ export function countUseMelhorParagraphs(genericText: string): number {
  * do título do item. `[]` quando o corpo é vazio — o chamador trata como
  * "sem carrossel" (fail-soft), nunca renderiza só capa + CTA.
  */
-export function buildUseMelhorSlides(genericText: string, itemTitle: string): UseMelhorSlide[] {
+export function buildUseMelhorSlides(
+  genericText: string,
+  itemTitle: string,
+  /**
+   * #8681: override de TESTE do slide CTA (`_internal/instagram-test.json`).
+   * Propagado pro 4º post também — o teste é da arte do CTA no Instagram, e
+   * o 4º post sai no mesmo perfil; sem isso a edição de teste misturaria os
+   * dois CTAs (self-review #9572, finding 4).
+   */
+  ctaOverride?: CarouselCtaOverride | null,
+): UseMelhorSlide[] {
   const n = countUseMelhorParagraphs(genericText);
   if (n === 0) return [];
   const { body } = splitBodyAndTags(genericText);
   const paragraphs = splitIntoParagraphCards(body, n);
   const total = paragraphs.length;
   // CTA reusado do carrossel diário (mesmo kicker/copy/rodapé) — fonte única.
-  const dailyCta = buildCarouselSlideTexts("x").cta;
+  const dailyCta = buildCarouselSlideTexts("x", ctaOverride).cta;
   return [
     {
       slot: "cover",
@@ -128,9 +139,13 @@ export interface UseMelhorSlideOverflow {
 }
 
 /** Pure: slides do 4º post que não cabem no card (mesma medição do carrossel diário). */
-export function findOverflowingUseMelhorSlides(genericText: string, itemTitle: string): UseMelhorSlideOverflow[] {
+export function findOverflowingUseMelhorSlides(
+  genericText: string,
+  itemTitle: string,
+  ctaOverride?: CarouselCtaOverride | null,
+): UseMelhorSlideOverflow[] {
   const out: UseMelhorSlideOverflow[] = [];
-  for (const s of buildUseMelhorSlides(genericText, itemTitle)) {
+  for (const s of buildUseMelhorSlides(genericText, itemTitle, ctaOverride)) {
     const m = measureFlatCardBody(s.text.title, s.layout);
     if (m.overflows) {
       out.push({
@@ -142,6 +157,42 @@ export function findOverflowingUseMelhorSlides(genericText: string, itemTitle: s
     }
   }
   return out;
+}
+
+/** Faixa de parágrafos do `## um` pedida ao `social-writer` (§3c). */
+export const USE_MELHOR_MIN_PARAGRAPHS = 2;
+export const USE_MELHOR_MAX_PARAGRAPHS = 6;
+
+/**
+ * Pure: lint de FORMA do `## um` (self-review #9572, finding 6). Os lints
+ * sociais existentes (`linkedin-schema`, `no-email-cta-instagram`,
+ * `no-trailing-question`) só enumeram `## d{N}`/`post_pixel`, e a faixa de
+ * 600–900 chars do §3a não serve pra um texto de 2–6 parágrafos — então o
+ * `## um` ganha checagem própria, com as regras do §3c do `social-writer`:
+ * nº de parágrafos, channel-neutral (sem URL, sem `diar.ia.br`/"link na
+ * bio"/"segue @") e sem pergunta no fim. Devolve 1 mensagem por problema
+ * (vazio = ok). Warning-only no chamador: o 4º post é fail-soft.
+ */
+export function lintUseMelhorPostText(genericText: string): string[] {
+  const { body } = splitBodyAndTags(genericText);
+  const paras = body
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const problems: string[] = [];
+  if (paras.length < USE_MELHOR_MIN_PARAGRAPHS || paras.length > USE_MELHOR_MAX_PARAGRAPHS) {
+    problems.push(
+      `${paras.length} parágrafo(s) — o §3c pede ${USE_MELHOR_MIN_PARAGRAPHS} a ${USE_MELHOR_MAX_PARAGRAPHS} (1 slide por parágrafo)`,
+    );
+  }
+  if (/https?:\/\/|\bwww\./i.test(body)) problems.push("contém URL — o texto é channel-neutral (link entra só no publish)");
+  if (/diar\.ia\.br|link na bio|\bsegue @/i.test(body)) {
+    problems.push(`contém CTA de canal ("diar.ia.br"/"link na bio"/"segue @") — injetado só no publish`);
+  }
+  const last = paras[paras.length - 1] ?? "";
+  if (/\?["'”’)\]*_]*\s*$/.test(last)) problems.push("termina em pergunta — mesma regra do no-trailing-question");
+  return problems;
 }
 
 /** Pure: carimbo do texto RENDERIZADO (kicker + título + rodapé + layout de cada slide). */
@@ -190,6 +241,46 @@ export async function renderUseMelhorSlides(editionDir: string, slides: UseMelho
     out.push(await renderFlatCard(s.text, resolve(editionDir, useMelhorSlideFilename(s.slot)), s.layout));
   }
   return out;
+}
+
+/**
+ * Remove slides do 4º post que sobraram de um render anterior com MAIS
+ * parágrafos (ex.: `## um` encolheu de 4 pra 3 → `p4` antigo fica no disco).
+ * Quem lê o carimbo já ignora a sobra, mas quem lista por glob (preview do
+ * Studio, um upload futuro do Stage 5) mostraria um slide fantasma
+ * (self-review #9572, findings 2/3). Devolve os arquivos removidos.
+ */
+export function removeStaleUseMelhorSlides(editionDir: string, keepSlots: string[]): string[] {
+  if (!existsSync(editionDir)) return [];
+  const keep = new Set(keepSlots.map((s) => useMelhorSlideFilename(s)));
+  const re = new RegExp(`^04-${USE_MELHOR_POST_ID}-carousel-(cover|p\\d+|cta)-4x5\\.jpg$`);
+  const removed: string[] = [];
+  for (const f of readdirSync(editionDir)) {
+    if (re.test(f) && !keep.has(f)) {
+      unlinkSync(resolve(editionDir, f));
+      removed.push(f);
+    }
+  }
+  return removed;
+}
+
+/**
+ * Pure: o carrossel gerado está defasado em relação ao texto atual?
+ * `true` quando o `## um` (ou o título do item / override de CTA) mudou
+ * depois do Stage 3 — mesmo papel do `carousel-cards-stale` dos destaques
+ * (self-review #9572, finding 1). `false` quando bate ou quando não dá pra
+ * comparar (sem carimbo / texto vazio — outros avisos já cobrem).
+ */
+export function isUseMelhorCarouselStale(
+  stamp: UseMelhorCarouselStamp | null,
+  genericText: string | null,
+  itemTitle: string | null,
+  ctaOverride?: CarouselCtaOverride | null,
+): boolean {
+  if (!stamp || !genericText || !genericText.trim() || itemTitle === null) return false;
+  const slides = buildUseMelhorSlides(genericText.trim(), itemTitle, ctaOverride);
+  if (slides.length === 0) return false;
+  return hashUseMelhorSlides(slides) !== stamp.hash;
 }
 
 /**

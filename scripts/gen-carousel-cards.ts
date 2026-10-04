@@ -50,6 +50,7 @@ import {
   findOverflowingUseMelhorSlides,
   hashUseMelhorSlides,
   readUseMelhorCarouselStamp,
+  removeStaleUseMelhorSlides,
   renderUseMelhorSlides,
   useMelhorSlideFilename,
   writeUseMelhorCarouselStamp,
@@ -59,7 +60,7 @@ import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
 import { readCoverOverride } from "./gen-social-card-4x5.ts";
-import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681
+import { readInstagramTestOverride, type CarouselCtaOverride } from "./lib/instagram-test-override.ts"; // #8681
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -217,6 +218,7 @@ export async function genCarouselCards(
   if (umConfig.enabled) {
     result.use_melhor = await genUseMelhorCarousel(editionDir, socialMd, {
       force: opts.force,
+      ctaOverride,
       render: opts.renderUseMelhor ?? renderUseMelhorSlides,
     });
     if (result.use_melhor.files) generated.push(...result.use_melhor.files);
@@ -235,7 +237,7 @@ export async function genCarouselCards(
 async function genUseMelhorCarousel(
   editionDir: string,
   socialMd: string,
-  opts: { force?: boolean; render: RenderUseMelhorSlidesFn },
+  opts: { force?: boolean; ctaOverride?: CarouselCtaOverride | null; render: RenderUseMelhorSlidesFn },
 ): Promise<UseMelhorCarouselOutcome> {
   const state = readUseMelhorPostState(editionDir);
   if (!state?.item) {
@@ -246,11 +248,11 @@ async function genUseMelhorCarousel(
   if (!umText || !umText.trim()) {
     return { status: "skipped", reason: `bloco '## ${USE_MELHOR_POST_ID}' não encontrado em '# Social' de 03-social.md` };
   }
-  const slides = buildUseMelhorSlides(umText.trim(), state.item.title);
+  const slides = buildUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
   if (slides.length === 0) {
     return { status: "skipped", reason: `'## ${USE_MELHOR_POST_ID}' sem corpo` };
   }
-  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title);
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
   if (overflow.length > 0) {
     return {
       status: "skipped",
@@ -266,10 +268,14 @@ async function genUseMelhorCarousel(
   const stamp = readUseMelhorCarouselStamp(editionDir);
   const allExist = files.every((f) => existsSync(f));
   if (!opts.force && allExist && stamp?.hash === hash) {
+    removeStaleUseMelhorSlides(editionDir, slots);
     return { status: "unchanged", slots, files };
   }
   await opts.render(editionDir, slides);
   writeUseMelhorCarouselStamp(editionDir, { hash, slots });
+  // Self-review #9572 (findings 2/3): `## um` com menos parágrafos que o render
+  // anterior deixaria `p{k}` antigos no disco — apaga a sobra.
+  removeStaleUseMelhorSlides(editionDir, slots);
   return { status: "generated", slots, files };
 }
 

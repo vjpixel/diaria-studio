@@ -68,7 +68,8 @@ import { substituteImagePlaceholders } from "../substitute-image-urls.ts";
 // de reimplementar o parsing de `## d1/d2/d3` por plataforma aqui.
 import { parsePlatforms, buildSocialHtml, type ImageMap } from "../render-social-html.ts";
 import { USE_MELHOR_POST_ID, describeUseMelhorPostStatus, loadUseMelhorPostConfigState } from "../lib/use-melhor-post.ts"; // #9568
-import { gatherUseMelhorStatusInput } from "../select-use-melhor-post.ts"; // #9568
+import { gatherUseMelhorStatusInput } from "../lib/use-melhor-status.ts"; // #9568
+import { readUseMelhorCarouselStamp } from "../lib/use-melhor-carousel.ts"; // #9568
 import {
   countTitlesPerHighlight,
   checkTitleLengths,
@@ -916,10 +917,14 @@ function buildLocalSocialImageMap(editionDir: string, aammdd: string): ImageMap 
   }
   // #9568: slides do carrossel tipográfico do 4º post (`04-um-carousel-{slot}-4x5.jpg`),
   // só quando o Stage 3 os gerou — sem eles, nenhuma entry (feature desligada = mapa igual ao de antes).
+  // Self-review #9572 (finding 2): só os slots do CARIMBO — slide `p{k}` de um
+  // render anterior com mais parágrafos não pode aparecer como slide fantasma.
+  // Sem carimbo, nenhum slide (o publish também não teria lista de slots).
+  const umSlots = new Set(readUseMelhorCarouselStamp(editionDir)?.slots ?? []);
   const umRe = new RegExp(`^04-${USE_MELHOR_POST_ID}-carousel-(cover|p\\d+|cta)-4x5\\.jpg$`, "i");
   for (const f of filenames) {
     const m = f.match(umRe);
-    if (m) map[`${USE_MELHOR_POST_ID}_carousel_${m[1].toLowerCase()}`] = { url: `/api/editions/${aammdd}/image/${f}`, filename: f };
+    if (m && umSlots.has(m[1].toLowerCase())) map[`${USE_MELHOR_POST_ID}_carousel_${m[1].toLowerCase()}`] = { url: `/api/editions/${aammdd}/image/${f}`, filename: f };
   }
   return map;
 }

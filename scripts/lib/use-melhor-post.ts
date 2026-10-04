@@ -315,6 +315,11 @@ export interface UseMelhorPostStatusInput {
   hasCurtoSection: boolean;
   /** Slots do carrossel gerado no Stage 3 (carimbo), ou `null` se não gerado. */
   carouselSlots: string[] | null;
+  /**
+   * `true` quando o `## um` mudou depois do Stage 3 (hash do texto atual ≠
+   * carimbo) — a arte gerada tem o texto antigo. Self-review #9572, finding 1.
+   */
+  carouselStale?: boolean;
 }
 
 export interface UseMelhorPostStatus {
@@ -373,6 +378,12 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
   if (input.carouselSlots === null) {
     level = "warn";
     lines.push(`   ⚠️ carrossel tipográfico não gerado (Stage 3) — Instagram cai pra imagem única/pula.`);
+  } else if (input.carouselStale) {
+    level = "warn";
+    lines.push(
+      `   ⚠️ carrossel (${input.carouselSlots.length} slides) DEFASADO: '## ${USE_MELHOR_POST_ID}' mudou depois do Stage 3 — ` +
+        `a arte tem o texto antigo. Re-rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir {edição}".`,
+    );
   } else {
     lines.push(`   carrossel: ${input.carouselSlots.length} slides (${input.carouselSlots.join(" → ")})`);
   }

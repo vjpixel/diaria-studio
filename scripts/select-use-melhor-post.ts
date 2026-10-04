@@ -27,23 +27,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
 import {
-  USE_MELHOR_POST_ID,
   computeStage2UseMelhorPostState,
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
   readApprovedForUseMelhor,
-  readUseMelhorPostState,
   renderedUseMelhorUrls,
   selectUseMelhorItem,
   useMelhorCandidatesFromApproved,
   writeUseMelhorPostState,
   type UseMelhorPostConfigState,
   type UseMelhorPostState,
-  type UseMelhorPostStatusInput,
 } from "./lib/use-melhor-post.ts";
-import { readUseMelhorCarouselStamp } from "./lib/use-melhor-carousel.ts";
+import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -51,29 +47,9 @@ function readIfExists(p: string): string | null {
   return existsSync(p) ? readFileSync(p, "utf8") : null;
 }
 
-function hasSection(socialMd: string | null, title: string): boolean {
-  if (!socialMd) return false;
-  const section = extractSection(socialMd, title);
-  const block = section ? extractDestaqueBlock(section, USE_MELHOR_POST_ID) : null;
-  return !!block && block.trim().length > 0;
-}
-
-/** Junta, do disco, tudo que `describeUseMelhorPostStatus` precisa. */
-export function gatherUseMelhorStatusInput(
-  editionDir: string,
-  config: UseMelhorPostConfigState,
-): UseMelhorPostStatusInput {
-  const socialMd = readIfExists(resolve(editionDir, "03-social.md"));
-  return {
-    config,
-    state: config.enabled ? readUseMelhorPostState(editionDir) : null,
-    reviewedMd: readIfExists(resolve(editionDir, "02-reviewed.md")),
-    approved: readApprovedForUseMelhor(editionDir),
-    hasSocialSection: hasSection(socialMd, "Social"),
-    hasCurtoSection: hasSection(socialMd, "Curto"),
-    carouselSlots: readUseMelhorCarouselStamp(editionDir)?.slots ?? null,
-  };
-}
+// Self-review #9572 (finding 5): o helper de I/O mudou pra `scripts/lib/use-melhor-status.ts`
+// (dois consumidores além deste CLI). Re-export mantém o import antigo funcionando.
+export { gatherUseMelhorStatusInput };
 
 /**
  * Seleção. `useReviewed` = re-seleção contra o `02-reviewed.md` final.

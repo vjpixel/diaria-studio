@@ -33,7 +33,7 @@ import {
   readUseMelhorPostState,
   type UseMelhorPostConfigState,
 } from "../use-melhor-post.ts"; // #9568
-import { findOverflowingUseMelhorSlides } from "../use-melhor-carousel.ts"; // #9568
+import { findOverflowingUseMelhorSlides, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
@@ -2022,7 +2022,7 @@ function checkCarouselTextOverflow(
       file: socialPath,
     });
   }
-  violations.push(...checkUseMelhorCarouselOverflow(editionDir, section, socialPath, useMelhorConfig));
+  violations.push(...checkUseMelhorCarouselOverflow(editionDir, section, socialPath, useMelhorConfig, ctaOverride));
   return violations;
 }
 
@@ -2038,6 +2038,7 @@ function checkUseMelhorCarouselOverflow(
   section: string,
   socialPath: string,
   useMelhorConfig?: UseMelhorPostConfigState,
+  ctaOverride?: CarouselCtaOverride | null,
 ): InvariantViolation[] {
   const config = useMelhorConfig ?? loadUseMelhorPostConfigState(ROOT);
   if (!config.enabled) return [];
@@ -2045,9 +2046,25 @@ function checkUseMelhorCarouselOverflow(
   if (!state?.item) return [];
   const umText = extractDestaqueBlock(section, USE_MELHOR_POST_ID);
   if (!umText || !umText.trim()) return [];
-  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title);
-  if (overflow.length === 0) return [];
-  return [
+  const violations: InvariantViolation[] = [];
+  // Self-review #9572 (finding 6): os lints sociais só enumeram `## d{N}` — a
+  // forma do `## um` é checada aqui (Stages 2 e 4), warning-only como o resto.
+  const shape = lintUseMelhorPostText(umText.trim());
+  if (shape.length > 0) {
+    violations.push({
+      rule: "use-melhor-um-shape",
+      message:
+        `'## ${USE_MELHOR_POST_ID}' (4º post, USE MELHOR) fora do formato do §3c do social-writer: ` +
+        shape.join("; ") +
+        `. Reescrever em 03-social.md (o 4º post é fail-soft, #9568 — não bloqueia a edição).`,
+      source_issue: "#9568",
+      severity: "warning",
+      file: socialPath,
+    });
+  }
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, ctaOverride);
+  if (overflow.length === 0) return violations;
+  violations.push(
     {
       rule: "carousel-text-overflow",
       message:
@@ -2060,7 +2077,8 @@ function checkUseMelhorCarouselOverflow(
       severity: "warning",
       file: socialPath,
     },
-  ];
+  );
+  return violations;
 }
 
 /**
