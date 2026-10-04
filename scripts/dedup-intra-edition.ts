@@ -60,7 +60,7 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 // #4185: mesmo mecanismo de preservação do Pass-2b de dedup.ts (#3920) —
 // aqui aplicado no ponto destaque-vs-pool (pós-scorer), não no pool bruto.
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
-import { sameEvent } from "./lib/event-dedup.ts";
+import { sameEvent, SAME_EDITION } from "./lib/event-dedup.ts";
 // #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
 import { groupSameStory } from "./lib/story-grouping.ts";
 
@@ -1017,9 +1017,9 @@ export function isIntraEditionDuplicate(
     // empresa no path (d) e "Argon" sozinho fica abaixo do mínimo de (b).
     // #9295: sinal fraco (A2, só um lado nomeia empresa) nunca remove aqui —
     // só marca (ver `weakEventFlag`). Remoção apenas em A1/B/C.
-    // #8666: `distanceDays: 0` (mesma edição) habilita o sinal (C) — mesma
+    // #8666: `SAME_EDITION` (distância 0) habilita o sinal (C) — mesma
     // empresa + 1 conceito forte (invasão/hack, vazamento).
-    const ev = sameEvent(artTitle, hTitle, { distanceDays: 0 });
+    const ev = sameEvent(artTitle, hTitle, SAME_EDITION);
     if (ev && ev.removable) {
       return {
         match_type: "event",
@@ -1043,7 +1043,7 @@ export function weakEventFlag(article: Article, highlights: HighlightEntry[]): s
   for (const h of highlights) {
     const hTitle = highlightTitle(h);
     if (!hTitle) continue;
-    const ev = sameEvent(artTitle, hTitle, { distanceDays: 0 });
+    const ev = sameEvent(artTitle, hTitle, SAME_EDITION);
     if (ev && !ev.removable) {
       return `same-event fraco (#9295, ${ev.signal}: ${ev.shared.join(", ")}) com destaque "${hTitle}"`;
     }

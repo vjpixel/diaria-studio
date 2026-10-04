@@ -132,15 +132,9 @@ export function extractPastUrlsUnbounded(md: string): Set<string> {
  * difere (mesma notícia, fonte diferente).
  */
 export function extractPastTitles(md: string, window: number): string[] {
-  const titles: string[] = [];
-  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
-  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
-  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
-  for (const section of editionSections) {
-    const titleMatch = section.match(/^## \d{4}-\d{2}-\d{2}[^"]*"([^"]+)"/m);
-    if (titleMatch) titles.push(titleMatch[1]);
-  }
-  return titles;
+  // #8666: delega para a variante com data — uma única regex de parsing, pra as
+  // chaves do mapa de distâncias do event-dedup nunca divergirem destes títulos.
+  return extractPastTitlesWithEdition(md, window).map((e) => e.title);
 }
 
 /**

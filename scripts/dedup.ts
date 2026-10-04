@@ -72,7 +72,7 @@ import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // 
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
-import { findSameEvent, minDistanceByTitle } from "./lib/event-dedup.ts";
+import { findSameEvent, minDistanceByTitle, STRONG_CONCEPT_MAX_DISTANCE_DAYS } from "./lib/event-dedup.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 
 export { canonicalize };
@@ -482,28 +482,26 @@ export function dedup(
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
   if (pastEventTitles.length > 0) {
+    let strongConceptRemoved = 0; // #8666: remoções pelo sinal (C), contadas à parte
+    const pastEventEntries = pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) }));
     for (const art of afterPass1e) {
-      const hit = art.title
-        ? findSameEvent(
-            art.title,
-            pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) })),
-          )
-        : null;
+      const hit = art.title ? findSameEvent(art.title, pastEventEntries) : null;
       if (!hit) {
         afterPass1f.push(art);
         continue;
       }
       const note = `same-event (#9249, ${hit.match.signal}: ${hit.match.shared.join(", ")}) com artigo de edição anterior "${hit.title}"`;
-      // #9293: sinal fraco (A2) só marca — remoção apenas em A1/B.
+      // #9293: sinal fraco (A2) só marca — remoção apenas em A1/B/C.
       if (art.flag === "editor_submitted" || !hit.match.removable) {
         afterPass1f.push({ ...art, event_dedup_flagged: note });
         continue;
       }
+      if (hit.match.signal === "strong_concept") strongConceptRemoved++;
       pushRemoved(removed, art, note);
     }
     if (afterPass1e.length > afterPass1f.length) {
       console.error(
-        `dedup Pass-1f (#9249): ${afterPass1e.length - afterPass1f.length} artigo(s) removido(s) por same-event contra edição anterior`,
+        `dedup Pass-1f (#9249): ${afterPass1e.length - afterPass1f.length} artigo(s) removido(s) por same-event contra edição anterior (${strongConceptRemoved} pelo sinal C strong_concept #8666)`,
       );
     }
   } else {
@@ -815,6 +813,12 @@ async function main() {
   // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
   // removia os próprios destaques). Deriva do --out/--articles quando o caller
   // não passa --current-edition explícito.
+  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
+  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
+  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
+    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
+    process.exit(1);
+  }
   const currentAammdd =
     args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
   if (!args["current-edition"] && currentAammdd) {
@@ -880,6 +884,19 @@ async function main() {
     ],
     currentAammdd,
   );
+  // #8666: observabilidade do sinal (C) — desligado em silêncio era o risco.
+  if (!currentAammdd) {
+    console.error(
+      "dedup: #8666 edição corrente desconhecida — sinal (C) do event-dedup (invasão/vazamento em D-1/D-2) DESLIGADO; passe --current-edition AAMMDD",
+    );
+  } else if (pastEventDistanceDays.size === 0 && (pastTitles.length > 0 || pastArticleTitles.length > 0)) {
+    console.error(
+      `dedup: #8666 mapa de distâncias vazio apesar de ${pastTitles.length + pastArticleTitles.length} título(s) passado(s) — sinal (C) sem efeito (edição corrente ${currentAammdd})`,
+    );
+  } else {
+    const near = [...pastEventDistanceDays.values()].filter((d) => d <= STRONG_CONCEPT_MAX_DISTANCE_DAYS).length;
+    console.error(`dedup: #8666 ${near} título(s) passado(s) a ≤${STRONG_CONCEPT_MAX_DISTANCE_DAYS} dias habilitam o sinal (C)`);
+  }
 
   const result = dedup(
     articles,

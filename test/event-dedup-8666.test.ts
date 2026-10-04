@@ -14,10 +14,12 @@ import {
   strongEventConcepts,
   eventConcepts,
   STRONG_CONCEPT_MAX_DISTANCE_DAYS,
+  SAME_EDITION,
+  editionDaysBefore,
 } from "../scripts/lib/event-dedup.ts";
 import { dedup } from "../scripts/dedup.ts";
 import { isIntraEditionDuplicate } from "../scripts/dedup-intra-edition.ts";
-import { extractPastTitlesWithEdition } from "../scripts/lib/past-editions-extract.ts";
+import { extractPastTitles, extractPastTitlesWithEdition } from "../scripts/lib/past-editions-extract.ts";
 
 const D1_260921 = "Claude ajudou a invadir a OpenAI em menos de 3 dias";
 const TRIO = [
@@ -32,7 +34,7 @@ test("#8666: o trio de 260922 casa contra o D1 de 260921 com distância D-1", ()
     assert.ok(m, `deveria casar: ${t}`);
     assert.equal(m.removable, true);
     assert.ok(m.shared.includes("openai"));
-    assert.ok(m.signal === "strong_concept" || m.signal === "event_concepts", m.signal);
+    assert.equal(m.signal, "strong_concept", t);
   }
 });
 
@@ -83,7 +85,7 @@ test("#8666: 'ataque'/'attack' sozinho é amplo demais para o sinal forte", () =
   );
 });
 
-test("#8666: vazamento é conceito forte (mesma empresa, D-1)", () => {
+test("#8666: vazamento de DADOS é conceito forte (mesma empresa, D-1)", () => {
   const m = sameEvent("Meta vazou dados de usuários do Instagram", "Meta data leak exposes millions of accounts", { distanceDays: 1 });
   assert.ok(m);
   assert.equal(m.signal, "strong_concept");
@@ -152,4 +154,109 @@ test("#8666: intra-edição (distância 0) remove o item duplicado contra o dest
   );
   assert.ok(res);
   assert.equal(res.match_type, "event");
+});
+
+// ---------------------------------------------------------------------------
+// Review do PR #9560: o sinal (C) REMOVE artigo — léxico forte estreito, e
+// nenhum termo novo pode mudar o (B), que vale sem limite de tempo.
+// ---------------------------------------------------------------------------
+
+/** Par que NÃO pode casar — nem sem distância, nem nas distâncias dadas. */
+function assertNoMatch(a: string, b: string, days: number[] = [1, 0]): void {
+  assert.equal(sameEvent(a, b), null, `sem distância: ${a} × ${b}`);
+  for (const d of days) {
+    assert.equal(sameEvent(a, b, { distanceDays: d }), null, `D-${d}: ${a} × ${b}`);
+    assert.equal(sameEvent(b, a, { distanceDays: d }), null, `D-${d} (invertido): ${b} × ${a}`);
+  }
+}
+
+test("#8666 review P1: 'violação' jurídico não vira HACK (pares processo/multa)", () => {
+  assertNoMatch(
+    "OpenAI é processada por violação de direitos autorais",
+    "OpenAI é processada por violação de patentes",
+  );
+  assertNoMatch(
+    "Meta recebe multa por violação da LGPD",
+    "Meta é multada por violação de privacidade na Europa",
+  );
+  assert.equal(eventConcepts("OpenAI é processada por violação de patentes").has("HACK"), false);
+  assert.equal(strongEventConcepts("OpenAI é processada por violação de patentes").size, 0);
+});
+
+test("#8666 review P1: 'breach' fora de 'data breach' não é invasão (nem em B)", () => {
+  assert.equal(eventConcepts("OpenAI sued for breach of contract").has("HACK"), false);
+  assert.equal(strongEventConcepts("OpenAI sued for breach of contract").size, 0);
+  assert.ok(strongEventConcepts("OpenAI confirms data breach").has("HACK"));
+  assert.ok(eventConcepts("OpenAI confirms data breach").has("HACK"));
+});
+
+test("#8666 review P2.1: 'hacks'/'hacking' coloquiais não casam com invasão real", () => {
+  assertNoMatch("5 ChatGPT hacks para economizar horas", "OpenAI foi invadida por hackers");
+  assertNoMatch("Growth hacking com ChatGPT: guia", "OpenAI hacked by state actors", [2, 1, 0]);
+  assertNoMatch("Anthropic publica estudo sobre reward hacking no Claude", D1_260921);
+  for (const t of ["hack", "hacks", "hacking", "hacker", "hackers"]) {
+    assert.equal(strongEventConcepts(`OpenAI e o ${t} do dia`).size, 0, t);
+  }
+});
+
+test("#8666 review P2.2: 'invade'/'invadem' figurativo não é forte", () => {
+  assertNoMatch("Gemini invade o Android e o Chrome", "Google sofre ciberataque e dados vazam");
+  assertNoMatch("ChatGPT invade as escolas", "OpenAI foi invadida por hackers");
+  assert.equal(strongEventConcepts("Gemini chega para invadir o mercado").size, 0);
+  // Com objeto de segurança ou "ajudou a", conta.
+  assert.ok(strongEventConcepts("Hackers invadem sistemas da OpenAI").has("HACK"));
+  assert.ok(strongEventConcepts(D1_260921).has("HACK"));
+});
+
+test("#8666 review P2.3: vazamento de PRODUTO não é forte; de dados é", () => {
+  assertNoMatch("OpenAI vaza detalhes do GPT-6", "Documento interno da OpenAI vazou");
+  assert.equal(strongEventConcepts("OpenAI vaza data de lançamento do GPT-6").size, 0);
+  assert.ok(strongEventConcepts("OpenAI leaked user data").has("LEAK"));
+  assert.ok(strongEventConcepts("Senhas de usuários do ChatGPT vazaram").has("LEAK"));
+});
+
+test("#8666 review: SAME_EDITION é distância 0 e habilita (C)", () => {
+  assert.equal(SAME_EDITION.distanceDays, 0);
+  const m = sameEvent(TRIO[2], D1_260921, SAME_EDITION);
+  assert.ok(m);
+  assert.equal(m.signal, "strong_concept");
+});
+
+test("#8666 review P2.5: minDistanceByTitle ignora a própria edição e edições futuras", () => {
+  assert.equal(editionDaysBefore("260921", "260922"), 1);
+  assert.equal(editionDaysBefore("260923", "260922"), -1);
+  const m = minDistanceByTitle(
+    [
+      { title: "self", aammdd: "260922" },
+      { title: "futuro", aammdd: "260923" },
+      { title: "passado", aammdd: "260920" },
+      { title: "misto", aammdd: "260923" },
+      { title: "misto", aammdd: "260919" },
+    ],
+    "260922",
+  );
+  assert.equal(m.has("self"), false);
+  assert.equal(m.has("futuro"), false);
+  assert.equal(m.get("passado"), 2);
+  assert.equal(m.get("misto"), 3);
+});
+
+test("#8666 review P2.6: todo título de extractPastTitles tem entrada no mapa de distâncias", () => {
+  const md = [
+    "# Past",
+    "",
+    '## 2026-09-21 — "Título com — travessão e: dois-pontos"',
+    "- https://example.com/a",
+    "",
+    '## 2026-09-20 (republicada) — "Outro título"',
+    "",
+    "## 2026-09-19 — sem aspas",
+    "",
+    '## 2026-09-18 — "Fora da janela"',
+  ].join("\n");
+  const titles = extractPastTitles(md, 3);
+  assert.deepEqual(titles, extractPastTitlesWithEdition(md, 3).map((e) => e.title));
+  const dist = minDistanceByTitle(extractPastTitlesWithEdition(md, 3), "260922");
+  for (const t of titles) assert.ok(dist.has(t), `sem distância: ${t}`);
+  assert.equal(titles.includes("Fora da janela"), false);
 });
