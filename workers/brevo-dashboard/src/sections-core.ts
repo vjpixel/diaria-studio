@@ -1,4 +1,5 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry, ClariceHourTestKvState, MonthlyTotalsArchive } from "./types.ts"; // #5189: ClariceHourTestKvState; #8115: MonthlyTotalsArchive
+import type { CouponClariceClassPayload } from "../../../scripts/lib/coupon-clarice-class.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #4405: desempate de ciclo por conteúdo em resolveCampaignCycle (abaixo) — mesma
 // função que render-links.ts já usa pra classificar URL→conteúdo.
@@ -96,6 +97,8 @@ export interface RenderDashboardOptions {
    * Worker de produção nunca passa este parâmetro, então nada muda lá.
    */
   studioMode?: boolean;
+  /** #9571: classificação Clarice novo/antigo dos resgates (KV `coupons:clarice-class`); ausente → coluna "—". */
+  couponClariceClass?: CouponClariceClassPayload | null;
   /**
    * #4184: mapa de seção editorial (Destaques/Use Melhor/Radar) por CICLO
    * mensal (`"AAMM-MM"`, ex: `"2606-07"`), usado para popular a coluna
@@ -857,7 +860,7 @@ ${monthlyAbcSectionsByDate}
   // inteira sem explicação (era o bug do #4173) — mostra o aviso no lugar do
   // conteúdo PII-gated (showCuponsTab decide se a aba existe, ver template abaixo).
   const couponTabHtml = couponUsage
-    ? renderCouponTabPanel(couponUsage, nowDate)
+    ? renderCouponTabPanel(couponUsage, nowDate, { clariceClass: opts.couponClariceClass })
     : (opts.studioMode ? renderKvUnavailableNote("panel-cupons") : "");
   const showCuponsTab = couponUsage !== null || opts.studioMode === true;
   // #4515: aba brevo_diaria — canal Brevo PRÓPRIO do editor, conta SEPARADA
@@ -870,7 +873,7 @@ ${monthlyAbcSectionsByDate}
   // #3415: variante scoped só pra Visão Geral — mesmo painel, header "Total
   // por mês" → "Cupons" (rename que não pode vazar pra aba Cupons, fonte
   // compartilhada — ver renderCouponTabPanel opts.monthlyTitle).
-  const couponVisaoGeralHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate, { monthlyTitle: "Cupons" }) : "";
+  const couponVisaoGeralHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate, { monthlyTitle: "Cupons", clariceClass: opts.couponClariceClass }) : "";
   // #2974: aba "Rampa"/Agendamento — plano de envio semanal (maturação >48h →
   // agregado → semáforo → 3 volumes) + #3010: campanhas agendadas (`scheduled`)
   // logo abaixo da recomendação dos próximos 3 envios.
