@@ -244,6 +244,48 @@ export const ACTOR_BRAZIL_8416_BRAZIL: JevQuestionSpec = {
 };
 
 /**
+ * Medição 6 do epic #8412 (#8419, item 2) — a Choice do tie-breaker #8211
+ * estendida de `{lancamento, radar}` para `{lancamento, radar, use_melhor,
+ * pesquisa, video}`, exatamente o conjunto que a issue propõe. Instruções e
+ * os dois critérios originais são os de `BUCKET_TIEBREAKER_8211` (texto de
+ * produção); os 3 critérios novos descrevem as seções da newsletter. Só é
+ * perguntada sobre artigos que caíram nos dois defaults silenciosos
+ * (regra fraca) — nunca sobre as regras fortes. Medição apenas: nada em
+ * produção usa esta pergunta.
+ */
+export const TIEBREAKER_EXTENDED_8419: JevQuestionSpec = {
+  id: "tiebreaker-extended-8419",
+  issue: "#8419",
+  expectedState: ["title", "url", "summary"],
+  expectedOutcome:
+    "acerto contra a seção publicada em 02-reviewed.md maior que o tie-breaker de produção (McNemar), sobre os mesmos itens",
+  question: {
+    id: "bucket",
+    type: "choice",
+    instructions:
+      "Em qual seção de uma newsletter de IA este link se encaixa melhor: " +
+      "LANÇAMENTO de produto/feature/modelo que o leitor pode usar, notícia " +
+      "(RADAR), tutorial/guia prático de uso (USE MELHOR), pesquisa/estudo " +
+      "científico, ou vídeo?",
+    criteria: {
+      lancamento:
+        "Anúncio OFICIAL, feito pela própria empresa que o criou, de um produto, " +
+        "ferramenta, modelo ou feature NOVA que o leitor pode começar a usar.",
+      radar:
+        "Notícia, análise, entrevista, ensaio, relatório, marco corporativo ou " +
+        "anúncio institucional — sem lançar um produto usável e sem ser um guia prático.",
+      use_melhor:
+        "Tutorial, guia prático, passo a passo, lista de prompts/dicas ou " +
+        "comparativo voltado a ensinar o leitor a USAR melhor uma ferramenta de IA.",
+      pesquisa:
+        "Artigo científico, paper, preprint ou estudo acadêmico/de laboratório " +
+        "apresentando resultados de pesquisa.",
+      video: "Vídeo (YouTube, Vimeo ou similar) como conteúdo principal do link.",
+    },
+  },
+};
+
+/**
  * Registro por id — cada medição futura adiciona sua entrada aqui (#8414+).
  * `jev-eval.ts --feature X` resolve a pergunta por este mapa.
  */
@@ -256,6 +298,7 @@ export const JEV_QUESTION_REGISTRY: Record<string, JevQuestionSpec> = {
   [POOL_RELEVANCE_8418_AUDIENCE_FIT.id]: POOL_RELEVANCE_8418_AUDIENCE_FIT,
   [ACTOR_BRAZIL_8416_ACTOR.id]: ACTOR_BRAZIL_8416_ACTOR,
   [ACTOR_BRAZIL_8416_BRAZIL.id]: ACTOR_BRAZIL_8416_BRAZIL,
+  [TIEBREAKER_EXTENDED_8419.id]: TIEBREAKER_EXTENDED_8419,
 };
 
 export function getJevQuestionSpec(id: string): JevQuestionSpec | undefined {

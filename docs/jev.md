@@ -164,3 +164,28 @@ vendor, não do harness). **Consequência prática pra medições futuras
 (#8414+):** rodar `jev-eval.ts` UMA vez e ler o número não é suficiente
 pra decidir "adotar" perto do limiar — rodar 2-3x e olhar a FAIXA, não o
 ponto, antes de registrar um veredito na issue da medição.
+
+## Medição de PRODUÇÃO do tie-breaker (#8419)
+
+`scripts/jev-tiebreaker-production-8419.ts` mede o #8211 já ligado, sem
+rotulagem nova: o gabarito é a seção em que cada item SAIU publicado em
+`02-reviewed.md` (decisão final do editor). Destaques e itens cortados não
+entram (não dizem o bucket). O "mecanismo atual" do McNemar é o default
+silencioso que o determinístico teria aplicado, recomputado com
+`categorizeWithRule` (o tie-breaker sobrescreve `category_rule`). O veredito
+do tie-breaker é lido da REGRA, não do bucket do arquivo — passos
+posteriores do Stage 1 movem item de bucket sem reescrever a regra.
+
+```
+npx tsx scripts/jev-tiebreaker-production-8419.ts [--since 260917]
+npx tsx scripts/jev-tiebreaker-production-8419.ts --extended --runs 3   # item 2, chama a API
+```
+
+Resultado em 04/10/2026 (10 edições, 260921–261002): 440 decisões, 33
+gabaritáveis; tie-breaker 27/33 (81,8%), 27/29 dentro da Choice
+{lancamento, radar} (93,1%) — IGUAL ao default nos itens publicados (zero
+discordância). As 12 decisões em que o tie-breaker mudou o default foram
+todas cortadas pelo editor. A Choice estendida (`TIEBREAKER_EXTENDED_8419`)
+ganhou 1–2 itens em 3 rodadas, sem regressão e sem significância (p ≥ 0,5):
+não adotar. Pra uma rodada futura ter poder estatístico, são precisas ≥6
+discordâncias a favor da estendida (p exato < 0,05 com 0 contra).
