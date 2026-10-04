@@ -16,7 +16,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { classifyBrazil, fetchBrazilProbabilities } from "../scripts/lib/jev-brazil.ts";
+import { classifyBrazil, describeJevError, fetchBrazilProbabilities } from "../scripts/lib/jev-brazil.ts";
+import { JevHttpError } from "../scripts/lib/jev.ts";
 import {
   applyJevBrazilSignal,
   detectBrazil,
@@ -171,6 +172,78 @@ describe("fetchBrazilProbabilities — fail-soft", () => {
     assert.equal(r.probabilities.get("a"), 0.7);
     assert.equal(r.probabilities.has("b"), false);
     assert.match(runLog(), /1\/2 item/);
+    // #9558: amostra dos erros por item, com status.
+    assert.match(runLog(), /b: HTTP 500/);
+  });
+
+  it("regressão #9558: key revogada (401) -> reason auth, detail com o status, warn de credencial — nunca a key", async () => {
+    const secret = "sk-test-SEGREDO-123";
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      // Corpo que ecoa a credencial: a redação precisa mascarar.
+      return new Response(`{"error":"invalid api key ${secret}","auth":"Bearer ${secret}"}`, { status: 401 });
+    }) as unknown as typeof fetch;
+    const r = await fetchBrazilProbabilities(
+      [
+        { id: "i1", url: "u1", title: "t1", summary: "s" },
+        { id: "i2", url: "u2", title: "t2", summary: "s" },
+      ],
+      { apiKey: secret, fetchImpl, rootDir: tmpDir, agent: "collect-monthly" },
+    );
+    assert.ok(calls > 0);
+    assert.equal(r.applied, false);
+    assert.equal(r.reason, "auth");
+    assert.match(r.detail ?? "", /HTTP 401/);
+    assert.ok(!(r.detail ?? "").includes(secret), "detail não pode carregar a key");
+    const log = runLog();
+    assert.match(log, /recusou a credencial/);
+    assert.match(log, /HTTP 401/);
+    assert.match(log, /"reason":"auth"/);
+    assert.doesNotMatch(log, /Jev indisponível/, "401 não é queda temporária");
+    assert.ok(!log.includes(secret), "run-log não pode carregar a key");
+  });
+
+  it("#9558: 403 também é auth; 503 continua transport, com o status no detail", async () => {
+    const forbidden = (async () => new Response("forbidden", { status: 403 })) as unknown as typeof fetch;
+    const r403 = await fetchBrazilProbabilities([{ id: "i1", url: "u", title: "t", summary: "s" }], {
+      apiKey: "k",
+      fetchImpl: forbidden,
+      rootDir: tmpDir,
+    });
+    assert.equal(r403.reason, "auth");
+    const down = (async () => new Response("erro", { status: 503 })) as unknown as typeof fetch;
+    const r503 = await fetchBrazilProbabilities([{ id: "i1", url: "u", title: "t", summary: "s" }], {
+      apiKey: "k",
+      fetchImpl: down,
+      rootDir: tmpDir,
+    });
+    assert.equal(r503.reason, "transport");
+    assert.match(r503.detail ?? "", /HTTP 503/);
+    assert.match(runLog(), /Jev indisponível \(HTTP 503/);
+  });
+
+  it("#9558: erro de rede (sem status) -> transport com a mensagem", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("ECONNRESET socket hang up");
+    }) as unknown as typeof fetch;
+    const r = await fetchBrazilProbabilities([{ id: "i1", url: "u", title: "t", summary: "s" }], {
+      apiKey: "k",
+      fetchImpl,
+      rootDir: tmpDir,
+    });
+    assert.equal(r.reason, "transport");
+    assert.match(r.detail ?? "", /ECONNRESET/);
+  });
+});
+
+describe("describeJevError (#9558)", () => {
+  it("mascara a key e Bearer, trunca mensagem longa, preserva status de JevHttpError", () => {
+    const info = describeJevError(new JevHttpError(401, `key abc123 Bearer abc123 ${"x".repeat(400)}`), "abc123");
+    assert.equal(info.status, 401);
+    assert.ok(!info.message.includes("abc123"));
+    assert.ok(info.message.length <= 201);
+    assert.equal(describeJevError("falhou").status, undefined);
   });
 });
 
@@ -201,6 +274,15 @@ describe("applyJevBrazilSignal — off ⇒ idêntico ao detectBrazil()", () => {
     const summary = await applyJevBrazilSignal(items, { apiKey: "k", fetchImpl, rootDir: tmpDir });
     assert.deepEqual(items, before);
     assert.equal(summary.reason, "transport");
+    assert.match(summary.detail ?? "", /HTTP 500/, "#9558: brazil_jev.detail carrega o motivo");
+  });
+
+  it("#9558: key revogada chega ao resumo brazil_jev como auth", async () => {
+    const items = fixtures();
+    const fetchImpl = (async () => new Response("unauthorized", { status: 401 })) as unknown as typeof fetch;
+    const summary = await applyJevBrazilSignal(items, { apiKey: "k", fetchImpl, rootDir: tmpDir });
+    assert.equal(summary.reason, "auth");
+    assert.match(summary.detail ?? "", /HTTP 401/);
   });
 });
 

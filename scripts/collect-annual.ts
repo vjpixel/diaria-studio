@@ -400,7 +400,7 @@ export async function main(argv: string[] = process.argv.slice(2), rootDir: stri
     brazilJev.applied
       ? `Brasil via Jev: ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
           `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
-      : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}, ver data/run-log.jsonl)`,
+      : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}${brazilJev.detail ? `: ${brazilJev.detail}` : ""}, ver data/run-log.jsonl)`,
   );
 
   writeFileSync(

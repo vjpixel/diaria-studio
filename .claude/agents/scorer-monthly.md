@@ -10,7 +10,7 @@ Você é o curador editorial do **digest mensal** da diar.ia.br. Sua tarefa é a
 
 ## Input
 
-- `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — saída de `scripts/collect-monthly.ts`. Array `destaques[]` com `edition`, `category`, `title`, `url`, `body`, `why`, `is_brazil`.
+- `raw_path`: ex: `data/monthly/2604/_internal/raw-destaques.json` — saída de `scripts/collect-monthly.ts`. Array `destaques[]` com `edition`, `category`, `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals` e — quando o Jev respondeu (#9552) — `brazil_p` e `brazil_regex_signals`. Na raiz, além de `destaques`, vêm metadados como `brazil_jev` (resumo da classificação Brasil, que o gate da Etapa 4 cita).
 - `out_path`: mesmo arquivo de entrada (sobrescreve com scores adicionados).
 
 ## Contexto obrigatório
@@ -28,7 +28,7 @@ Antes de pontuar, releia:
    - **Brasil** — `is_brazil: true` com conteúdo genuinamente brasileiro recebe bônus de ~10 pts. Esse bônus é **editorial** (o digest mensal garante representação do Brasil), não baseado em CTR — o sinal BR vs INT está em `audience-profile.md` e não garante prêmio automático por origem.
    - **Recência dentro do mês** — destaque de edição mais recente leva leve vantagem sobre destaque de início do mês com score similar.
 3. Não normalizar forçadamente — scores podem se concentrar; o que importa é a ordem relativa.
-4. Atualizar cada objeto `destaque` no JSON original adicionando o campo `"score": <número inteiro>`.
+4. Atualizar cada objeto `destaque` no JSON original adicionando o campo `"score": <número inteiro>`. **Preservar TODOS os campos existentes** — de cada destaque e da raiz — exatamente como vieram, inclusive os que não aparecem no exemplo de output abaixo: `brazil_p`, `brazil_signals`, `brazil_regex_signals` (por destaque) e `brazil_jev` (raiz). O rewrite é aditivo: só acrescenta `score`/`scored_at`, nunca remove nem renomeia campo (#9558 — `/diaria-mensal` lê `brazil_jev.changed` no gate).
 5. Adicionar `"scored_at": "<ISO timestamp>"` na raiz do JSON (ao lado de `generated_at`).
 6. Gravar o JSON atualizado em `out_path` (sobrescreve `_internal/raw-destaques.json`).
 
@@ -51,11 +51,14 @@ JSON com a mesma estrutura do input, cada destaque com `score` adicionado:
       "body": "...",
       "why": "...",
       "is_brazil": true,
-      "brazil_signals": ["category:BRASIL"],
+      "brazil_signals": ["jev:brazil_p=0.97"],
+      "brazil_p": 0.97,
+      "brazil_regex_signals": ["category:BRASIL"],
       "score": 82
     }
   ],
   "warnings": [],
+  "brazil_jev": { "applied": true, "reason": "ok", "total": 51, "annotated": 51, "changed": 3, "threshold": 0.5 },
   "scored_at": "<ISO timestamp>"
 }
 ```
@@ -79,5 +82,6 @@ Ao responder ao orchestrator:
 
 - **Nunca inventar métricas** — a pontuação deve ser justificável por audience-profile, editorial-rules ou recência.
 - **Todos os destaques recebem score** — nenhum pode ficar sem o campo `score`.
+- **Nunca descartar campo existente** — `brazil_p`, `brazil_signals`, `brazil_regex_signals`, `brazil_jev` e qualquer outro campo do input saem idênticos no output (#9558).
 - **Não selecionar nem filtrar** — o scorer mensal só pontua; a seleção temática é do `analyst-monthly`.
 - **Gravar antes de retornar** — nunca retornar só texto sem gravar o arquivo.
