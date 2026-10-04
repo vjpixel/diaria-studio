@@ -110,6 +110,18 @@ describe("#9530/#9081 — par do overnight e agents dedicados de dev", () => {
         /`effort: "(?:low|medium|high|xhigh|max)"`/,
         `${skillId}: prosa manda passar effort ao Agent tool (parâmetro inexistente, #9081/#9539)`,
       );
+      // #9547: a forma SEM aspas escapava do assert acima — o develop seguia
+      // dizendo que "a implementação continua sempre `claude-opus-5-5` +
+      // `effort: low`". Implementador é `dev-implementador` (medium, #9081/#9530).
+      // Escopo estreito de propósito: só `implementa*` na mesma frase (sem `.`
+      // nem quebra de linha no meio). `effort: low` legítimo — frontmatter da
+      // própria skill, `adhoc-opus-low`, coordenador do continuo — não cita
+      // implementação e segue permitido.
+      assert.doesNotMatch(
+        body,
+        /implementa[^.\n]{0,160}`effort: low`|`effort: low`[^.\n]{0,160}implementa/i,
+        `${skillId}: prosa atribui effort low à implementação — implementador é dev-implementador/medium (#9081/#9547)`,
+      );
     }
   });
 });
