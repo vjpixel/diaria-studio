@@ -111,7 +111,7 @@ describe("extractEditorRejectedItems + dedup Pass 1r (#9360)", () => {
       { url: GEMMA, title: "Gemma 4", flag: "editor_submitted" },
     ];
     const { kept, removed } = dedup(
-      articles, new Set(), 0.85, [], 0.7, [], 0.6, undefined, 0.55, new Set(), [], undefined, rejected,
+      articles, new Set(), 0.85, [], 0.7, [], 0.6, undefined, 0.55, new Set(), [], rejected,
     );
     assert.deepEqual(kept.map((a) => a.url), ["https://example.com/novidade", GEMMA]);
     assert.equal(removed.length, 2);

@@ -35,6 +35,13 @@
  * `editorialDate()` (`displayed_date ?? publish_date`) — nunca mexer nisso
  * sem ler `UnifiedCachedPost.displayed_date`.
  *
+ * ## Sinal Brasil (#9552)
+ *
+ * Depois da coleta, cada destaque passa pela pergunta Brasil do Jev
+ * (`applyJevBrazilSignal`, `collect-monthly.ts`) e `is_brazil` passa a ser
+ * `brazil_p >= JEV_BRAZIL_THRESHOLD`. Sem `TYPESAFE_API_KEY` ou com a API fora,
+ * fica o `detectBrazil()` de sempre, com warn no run-log.
+ *
  * Uso:
  *   npx tsx scripts/collect-annual.ts --tipo aniversario --desde 2508 --ate 2608
  *   npx tsx scripts/collect-annual.ts --tipo janeiro
@@ -49,6 +56,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadUnifiedEditionCache, type UnifiedCachedPost } from "./lib/shared/edition-cache-reader.ts";
 import { convertBeehiivHtmlToMarkdown } from "./lib/shared/edition-html-convert.ts";
 import { parseLegacyEditionHtml } from "./lib/shared/legacy-edition-parse.ts";
@@ -77,7 +85,7 @@ import {
 // A fronteira de `test/lib-boundary.test.ts` cobre `scripts/lib/**`, não
 // script→script, então isto é legal; duplicar o parser (e deixar os dois
 // divergirem no 1º ajuste de formato) seria pior.
-import { parsePost, parseLocalEdition, detectBrazil } from "./collect-monthly.ts";
+import { parsePost, parseLocalEdition, detectBrazil, applyJevBrazilSignal, type JevBrazilSummary } from "./collect-monthly.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_TOP_K = 10;
@@ -95,6 +103,8 @@ export interface CollectAnnualResult {
    * que a janela existe.
    */
   counts: AnnualCounts;
+  /** #9552: resumo da pergunta Brasil do Jev (ausente em relatórios gravados antes do #9552). */
+  brazil_jev?: JevBrazilSummary;
   warnings: string[];
 }
 
@@ -308,7 +318,7 @@ export function selectTopK(rootDir: string, slug: string, topK: number): { selec
   return { selected: selected.length, byMonth };
 }
 
-export function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT): CollectAnnualResult {
+export async function main(argv: string[] = process.argv.slice(2), rootDir: string = ROOT): Promise<CollectAnnualResult> {
   const args = parseCliArgs(argv);
   const window = resolveAnnualWindow({
     tipo: args.values.tipo,
@@ -378,6 +388,21 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
   const { destaques, months, warnings } = collectAnnual({ window, posts, localEditionDirs });
 
   mkdirSync(paths.internal, { recursive: true });
+
+  // #9552: pergunta Brasil do Jev na coleta (fail-soft → detectBrazil()).
+  const brazilJev = await applyJevBrazilSignal(destaques, {
+    cacheDir: join(paths.internal, "jev-brazil-cache"),
+    edition: slug,
+    agent: "collect-annual",
+    rootDir,
+  });
+  log(
+    brazilJev.applied
+      ? `Brasil via Jev: ${brazilJev.annotated}/${brazilJev.total} destaques com brazil_p, ` +
+          `${brazilJev.changed} decisão(ões) diferente(s) do detectBrazil()`
+      : `Brasil via detectBrazil() — Jev não aplicado (${brazilJev.reason}, ver data/run-log.jsonl)`,
+  );
+
   writeFileSync(
     paths.rawDestaques,
     JSON.stringify(
@@ -387,6 +412,7 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
         generated_at: new Date().toISOString(),
         top_k_per_month: topK,
         destaques_count: destaques.length,
+        brazil_jev: brazilJev,
         destaques,
       },
       null,
@@ -412,6 +438,7 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
       months: window.months,
       edicoesDiarias: months.reduce((n, m) => n + m.editions_found, 0),
     }),
+    brazil_jev: brazilJev,
     warnings: [...window.warnings, ...warnings],
   };
   writeFileSync(paths.collectReport, JSON.stringify(result, null, 2));
@@ -450,11 +477,13 @@ export function main(argv: string[] = process.argv.slice(2), rootDir: string = R
 }
 
 if (isMainModule(import.meta.url)) {
-  try {
-    process.stdout.write(JSON.stringify(main(), null, 2) + "\n");
-  } catch (err) {
-    process.stderr.write(`[collect-annual] ERRO: ${(err as Error).message}\n`);
-    process.exitCode = 1;
-  }
+  // #9552: `TYPESAFE_API_KEY` (pergunta Brasil do Jev) vem do `.env`/Doppler.
+  loadProjectEnv(ROOT);
+  main()
+    .then((r) => process.stdout.write(JSON.stringify(r, null, 2) + "\n"))
+    .catch((err) => {
+      process.stderr.write(`[collect-annual] ERRO: ${(err as Error).message}\n`);
+      process.exitCode = 1;
+    });
 }
 

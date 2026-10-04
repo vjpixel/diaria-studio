@@ -25,7 +25,7 @@ Antes de agrupar, releia:
 
 ### 1. Carregar input
 
-Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id`. O campo `score` (0–100) estará presente se o `scorer-monthly` rodou antes; caso contrário será `null` ou ausente — trate ambos como "sem score" e use julgamento editorial como fallback.
+Ler `raw_path`. Você receberá um array `destaques[]` com objetos contendo: `edition` (AAMMDD), `position` (1/2/3), `category` (UPPERCASE), `title`, `url`, `body`, `why`, `is_brazil`, `brazil_signals`, `beehiiv_post_id` — e, quando o Jev respondeu na coleta (#9552), `brazil_p` (probabilidade 0-1 de o assunto envolver o Brasil; `is_brazil` = `brazil_p >= 0,5`) e `brazil_regex_signals`. O campo `score` (0–100) estará presente se o `scorer-monthly` rodou antes; caso contrário será `null` ou ausente — trate ambos como "sem score" e use julgamento editorial como fallback.
 
 ### 2. Agrupar por tema
 

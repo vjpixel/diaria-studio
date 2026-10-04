@@ -1,5 +1,16 @@
 # Runbook A/B Jev (#8421)
 
+> **ENCERRADO em 04/10/2026 (#9551).** O editor encerrou o A/B ao vivo e
+> aposentou o perfil Jev a partir da avaliação consolidada do epic #8412
+> (veredito do dedup na #9531). `/diaria-edicao-jev`, `DIARIA_JEV_PROFILE`,
+> `JEV_FORCE_*`, o dedup da zona cinzenta (`dedup-grayzone-jev.ts`) e a anotação
+> actor/brazil do Stage 1 foram removidos do código; nenhuma edição nova grava
+> `_internal/.jev-profile.json` nem `dedup-grayzone-jev.json`. O que segue abaixo
+> é o registro histórico de como o A/B rodou. `scripts/jev-ab-report.ts` continua
+> no repo para reler as edições da janela 260921..261003, que guardam os marcadores
+> — edição sem marcador conta como braço A, então rodar o relatório em edições
+> novas só acrescenta braço A.
+
 Objetivo: acumular >=5 edições por braço e publicar o relatório no epic #8412.
 Braço A = `/diaria-edicao AAMMDD` (sem marcador). Braço B = `/diaria-edicao-jev AAMMDD`
 (grava `_internal/.jev-profile.json`, Jev decide com `DIARIA_JEV_PROFILE=all`).

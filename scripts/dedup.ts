@@ -15,7 +15,6 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { isAggregator } from "./lib/aggregators";
 import { isEditoriallyBlocked } from "./lib/editorial-blocklist.ts";
 import { isUrlBlocked } from "./lib/url-blocklist.ts";
@@ -72,8 +71,6 @@ import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // 
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
 import { findSameEvent } from "./lib/event-dedup.ts";
-// #8505: tie-breaker Jev da zona cinzenta do Pass 1c (atrás de flag, fail-soft).
-import { buildGrayZoneResolver, type GrayZoneResolver } from "./lib/dedup-grayzone-jev.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 
 export { canonicalize };
@@ -180,9 +177,6 @@ export function dedup(
   // different URLs/titles (e.g., "DeepSeek corta 75%" vs "IA concorrente
   // do Gemini derruba preco em 75%").
   pastHighlights: { title: string; url: string; themes?: string[] }[] = [],
-  // #8505: resolver opcional da zona cinzenta do Pass 1c (Jev). Ausente =
-  // comportamento idêntico ao histórico (`sim >= threshold`).
-  grayZone?: GrayZoneResolver,
   // #9360: itens que o editor CORTOU no Stage 4 das últimas edições (nunca
   // publicados → ausentes de past-editions.md). Ver lib/editor-rejected-items.ts.
   editorRejected: EditorRejectedItem[] = [],
@@ -348,7 +342,7 @@ export function dedup(
         continue;
       }
       let isDupVsPastSubject = false;
-      let bestMatch: { title: string; sim: number; entitiesShared: string[]; effectiveThreshold: number; viaJev: boolean } | null = null;
+      let bestMatch: { title: string; sim: number; entitiesShared: string[]; effectiveThreshold: number } | null = null;
       for (const pt of pastTokens) {
         const sim = jaccardSimilarity(candidateTokens, pt.tokens);
         // #1331: lower threshold (default 0.55) quando candidato e past
@@ -359,17 +353,12 @@ export function dedup(
           subjectVsPastThreshold,
           subjectVsPastThresholdLowered,
         );
-        const heuristicSame = sim >= effThreshold;
-        const { same, viaJev } = grayZone
-          ? grayZone.decide(art.title, pt.title, sim, heuristicSame)
-          : { same: heuristicSame, viaJev: false };
-        if (same && (bestMatch === null || sim > bestMatch.sim)) {
+        if (sim >= effThreshold && (bestMatch === null || sim > bestMatch.sim)) {
           bestMatch = {
             title: pt.title,
             sim,
             entitiesShared: sharedEntities,
             effectiveThreshold: effThreshold,
-            viaJev,
           };
         }
       }
@@ -377,11 +366,10 @@ export function dedup(
         const entitiesNote = bestMatch.entitiesShared.length > 0
           ? ` [entidade compartilhada: ${bestMatch.entitiesShared.join(", ")}]`
           : "";
-        const jevNote = bestMatch.viaJev ? " [Jev: mesma história, zona cinzenta #8505]" : "";
         pushRemoved(
           removed,
           art,
-          `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}${jevNote}`,
+          `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}`,
         );
         isDupVsPastSubject = true;
       }
@@ -871,13 +859,6 @@ async function main() {
     );
   }
 
-  // #8505: zona cinzenta via Jev. `undefined` (flag off, o default) → dedup idêntico.
-  const grayZone = await buildGrayZoneResolver(
-    articles.map((a) => ({ title: a.title ?? "", summary: a.summary, source: a.source })),
-    pastArticleTitles,
-    { rootDir: logRootDir, edition: currentAammdd ?? null },
-  );
-
   const result = dedup(
     articles,
     pastUrls,
@@ -890,39 +871,8 @@ async function main() {
     subjectVsPastThresholdLowered,
     pastThemes,
     pastHighlightsData,
-    grayZone,
     editorRejected,
   );
-
-  // #8505: decisões Jev × heurística (shadow ou ativo) ao lado do resultado.
-  const grayZoneRecords = grayZone?.records() ?? [];
-  if (grayZone) {
-    console.error(`dedup zona cinzenta (#8505): ${grayZoneRecords.length} par(es) com veredito Jev registrado(s)`);
-    logEvent({
-      edition: currentAammdd ?? null,
-      stage: 1,
-      agent: "dedup-grayzone-jev",
-      level: "info",
-      message: `dedup zona cinzenta: ${grayZoneRecords.length} veredito(s) Jev, ${grayZoneRecords.filter((r) => r.jevSame !== r.heuristicSame).length} divergente(s) da heurística (#8505)`,
-      details: { ...grayZone.stats, records: grayZoneRecords },
-    }, logRootDir);
-    if (outPath) {
-      try {
-        // #8421: envelope com o env/shadow efetivos (o A/B confere que o braço B decidiu de fato).
-        const artifact = { profile_env: process.env.DIARIA_JEV_PROFILE ?? null, shadow: grayZone.mode !== "active", records: grayZoneRecords };
-        writeFileSync(join(dirname(outPath), "dedup-grayzone-jev.json"), JSON.stringify(artifact, null, 2), "utf8");
-      } catch (err) {
-        // best-effort — nunca trava o dedup, mas a perda do artefato fica auditável.
-        logEvent({
-          edition: currentAammdd ?? null,
-          stage: 1,
-          agent: "dedup-grayzone-jev",
-          level: "warn",
-          message: `falha gravando dedup-grayzone-jev.json (#8505): ${err instanceof Error ? err.message : String(err)}`,
-        }, logRootDir);
-      }
-    }
-  }
 
   console.error(
     `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold}, subject-vs-past-lowered=${subjectVsPastThresholdLowered})`

@@ -133,9 +133,10 @@ não paga custo de rede de novo. `cacheKey` default é
    Saída em markdown (acurácia dos dois, matriz de confusão, McNemar,
    curva confiança×acerto) — pronta pra colar na issue da medição.
 5. **Veredito.** Sem ganho medido → a fase fecha "não adotar", registrado na
-   issue. Com ganho → issue de implementação separada, atrás de flag
-   `platform.config.json` → `jev.features.{nome}` (default OFF em
-   `/diaria-edicao`), shadow mode primeiro (grava em `_internal/01-jev.json`
+   issue. Com ganho → issue de implementação separada, atrás de uma flag
+   própria em `platform.config.json` (o bloco `jev.features` foi removido na
+   aposentadoria do perfil Jev, #9551 — recriá-lo na própria issue de
+   implementação), shadow mode primeiro (grava em `_internal/01-jev.json`
    sem tocar produção), fail-soft obrigatório. Ver #8412 "Método comum".
 
 ## Reprodução do #8211 (prova de que o harness não introduz viés)

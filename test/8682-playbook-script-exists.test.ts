@@ -14,7 +14,7 @@ const PLAYBOOK = ".claude/agents/orchestrator-stage-1-research.md";
 const SECTION_START = "### 1t / 1u / 1u-bis / 1u-ter";
 
 /** Extrai o trecho do playbook coberto por #8682: da seção 1t até o próximo
- * cabeçalho `### ` (1u-quat), que não foi alterado. */
+ * cabeçalho `### `, que não foi alterado. */
 function section8682(): string {
   const t = readFileSync(PLAYBOOK, "utf-8");
   const start = t.indexOf(SECTION_START);

@@ -60,7 +60,6 @@ import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { resolveClaudeBin } from "./lib/resolve-claude-bin.ts";
 import { claudeCliEnv } from "./overnight/run-scheduled-edicao.ts";
-import { JEV_PROFILE_ENV, jevBArmGuardWarning } from "./lib/jev-profile.ts";
 import { intentionalErrorHeadlessWarning } from "./lib/intentional-errors.ts";
 import {
   STAGE_PLAN,
@@ -134,28 +133,10 @@ export function main(
   const aammdd = values["edition"];
   if (!aammdd || !AAMMDD_RE.test(aammdd)) {
     stderr(
-      "Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised] [--diaria-edicao-jev]",
+      "Uso: npx tsx scripts/run-edition-stages.ts --edition AAMMDD [--through N] [--json] [--session-supervised]",
     );
     return 2;
   }
-
-  // #8504 item 5 — perfil de teste em produção de `jev.features.actor_brazil`
-  // (implementação a partir do veredito adotar de #8416). Escopado ao
-  // ambiente do subprocesso `claude` spawnado por stage (`env` abaixo),
-  // NUNCA `export` persistente no shell da sessão-mãe — mesmo padrão de
-  // isolamento de env a subprocesso já usado no projeto (ver princípio
-  // "NUNCA trocar a conta claude.ai pela API" no CLAUDE.md). Sem esta flag,
-  // `env` segue idêntico ao comportamento pré-#8504.
-  //
-  // #8564: `JEV_FORCE_ACTOR_BRAZIL` sozinho ligava só `actor_brazil` — o
-  // perfil completo do braço B (`.claude/skills/diaria-edicao-jev/SKILL.md`)
-  // exige TODAS as `jev.features.*` ligadas (`dedup_grayzone` incluída), o
-  // que só acontece via `DIARIA_JEV_PROFILE=all` (`isJevFeatureOn`,
-  // `jev-profile.ts`). Sem propagar essa var também, `dedup_grayzone` nunca
-  // rodava no Stage 1 spawnado por este CLI — achado ao vivo, edição 260921.
-  const jevEnv = flags.has("diaria-edicao-jev")
-    ? { ...env, JEV_FORCE_ACTOR_BRAZIL: "1", [JEV_PROFILE_ENV]: "all" }
-    : env;
 
   let plan: EditionStage[];
   try {
@@ -185,7 +166,7 @@ export function main(
     editionDir,
     repoRootAbs,
     resolveClaudeBin: resolveClaudeBinFn,
-    env: jevEnv,
+    env,
     plan,
     execFn,
     sessionSupervised: flags.has("session-supervised"),
@@ -196,13 +177,6 @@ export function main(
     // stdout do processo `claude` filho dentro de `runEditionStages`.
     onProgress: stderr,
   });
-
-  // #8564 guard: aviso (nunca bloqueia) quando o marcador B existe mas o
-  // dedup da zona cinzenta não rodou com o perfil. stderr mantém o --json limpo.
-  if (plan.some((s) => s.stage === 1)) {
-    const warn = jevBArmGuardWarning(editionDir);
-    if (warn) stderr(`AVISO: ${warn}`);
-  }
 
   // #8592: aviso (nunca bloqueante) quando o plano alcança o Stage 2 (o
   // stage que escreve `_internal/intentional-error.json`) e a rodada
