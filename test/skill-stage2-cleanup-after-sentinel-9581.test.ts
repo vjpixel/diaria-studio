@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
 const md = readFileSync(join(ROOT, ".claude", "skills", "diaria-2-escrita", "SKILL.md"), "utf8");
-const SNAPS = ["02-pre-clarice.md", "02-normalized.md", "02-humanized.md"];
+const SNAPS = ["02-pre-clarice.md", "02-normalized.md", "02-humanized.md", "03-social-pre-humanizador.md"];
 
 describe("#9581 — cleanup de snapshots do Stage 2 vem depois do sentinel", () => {
   const sentinelIdx = md.indexOf("pipeline-sentinel.ts write");

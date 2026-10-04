@@ -367,7 +367,7 @@ Se o Agent retornar erro OU se uma checagem rápida pós-humanize indicar corrup
 cp {EDIR}/_internal/02-draft.pre-humanize.md {EDIR}/_internal/02-draft.md
 ```
 
-Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
+Falha não bloqueia o Passo 3c — fallback restaura o snapshot pré-humanize —, mas **sem `02-humanized.md` os invariantes `humanizer-ran`/`newsletter-humanizador-diff-ran` bloqueiam o sentinel (Passo 7c)**. Nesse caso, re-rodar o humanizador e, se persistir, render halt banner (`render-halt-banner.ts`) em vez de forçar o sentinel.
 
 Após o humanize bem-sucedido (sem rollback), gravar a saída como `02-humanized.md` (#9581; `assert-humanized.ts`/`humanizer-ran` esperam esse nome). Se houve rollback, **não** gravar — o guard deve acusar o pulo:
 
@@ -604,6 +604,7 @@ done
 
 **Outputs intermediários (mid-stage, removidos no fim):**
 - `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido no Passo 7d, após o sentinel.
+- `{EDIR}/_internal/02-normalized.md` e `{EDIR}/_internal/02-humanized.md` — par pré/pós-humanizador lido por `newsletter-humanizador-diff-ran` (#9581). Removidos no Passo 7d.
 
 ## Notas
 
