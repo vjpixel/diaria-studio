@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 02 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 05 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Cloudflare lança modelos que decidem, não conversam</title>
+      <link>https://diar.ia.br/p/cloudflare-lanca-modelos-que-decidem-nao-conversam</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/cloudflare-lanca-modelos-que-decidem-nao-conversam</guid>
+      <pubDate>Mon, 05 Oct 2026 09:00:00 GMT</pubDate>
+      <description>A cultura da OpenAI está quebrada, diz quem saiu | Aleph Alpha abre um modelo que admite &quot;não sei&quot;</description>
+    </item>
     <item>
       <title>Você viu Bonner anunciar pesquisa? Era deepfake</title>
       <link>https://diar.ia.br/p/voce-viu-bonner-anunciar-pesquisa-era-deepfake</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5</guid>
       <pubDate>Mon, 27 Jul 2026 09:00:00 GMT</pubDate>
       <description>Todas as melhores IAs vão precisar de aval dos EUA? | Modelos superam humanos em viés ao contratar</description>
-    </item>
-    <item>
-      <title>Reddit e jornais cogitam banir o Google</title>
-      <link>https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/reddit-e-jornais-cogitam-banir-o-google</guid>
-      <pubDate>Fri, 24 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Clientes preferem IA, empresas cortam vagas | OpenAI conecta prontuário médico ao ChatGPT</description>
     </item>
   </channel>
 </rss>
