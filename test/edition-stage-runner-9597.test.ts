@@ -12,6 +12,7 @@ import { join } from "node:path";
 import {
   runEditionStages,
   looksLikeBackgroundWaitExit,
+  shouldRetryBackgroundWait,
   formatRunMetaLabel,
   MAX_TURNS,
   STAGE_PLAN,
@@ -113,5 +114,64 @@ describe("#9597 failureTail nomeia terminal_reason/num_turns", () => {
     assert.equal(r.exitCode, 1);
     assert.match(r.outcomes[0].failureTail ?? "", /^terminal_reason=error_max_turns, num_turns=121 \(estourou/);
     rmSync(tmpRepo, { recursive: true, force: true });
+  });
+});
+
+describe("#9605 review: retry não dispara em error_max_turns; frase só no fim", () => {
+  const maxTurnsWithWait = JSON.stringify({
+    type: "result",
+    subtype: "error_max_turns",
+    num_turns: 121,
+    result: "Dispatched the writers.\nWaiting for the writers to finish.",
+  });
+
+  it("shouldRetryBackgroundWait: max_turns no envelope bloqueia o retry", () => {
+    assert.equal(shouldRetryBackgroundWait("Waiting for this to complete.", maxTurnsWithWait), false);
+    assert.equal(
+      shouldRetryBackgroundWait(
+        "Waiting for this to complete.",
+        JSON.stringify({ subtype: "success", result: "Waiting for this to complete." }),
+      ),
+      true,
+    );
+    assert.equal(shouldRetryBackgroundWait("Waiting for this to complete.", undefined), true);
+  });
+
+  it("exit 0 sem sentinela + error_max_turns + 'waiting for…' → 1 só execução (sem re-rodar ~US$ 10)", () => {
+    const { tmpRepo, editionDir } = setup();
+    let calls = 0;
+    const r = run(editionDir, tmpRepo, () => (calls++, maxTurnsWithWait), 1);
+    assert.equal(calls, 1);
+    assert.equal(r.exitCode, 1);
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it("exit != 0 + error_max_turns + 'waiting for…' → 1 só execução", () => {
+    const { tmpRepo, editionDir } = setup();
+    let calls = 0;
+    const r = run(
+      editionDir,
+      tmpRepo,
+      () => {
+        calls++;
+        throw Object.assign(new Error("exit 1"), { status: 1, stdout: maxTurnsWithWait, stderr: "" });
+      },
+      1,
+    );
+    assert.equal(calls, 1);
+    assert.equal(r.exitCode, 1);
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  it("frase 'waiting for X to finish' no meio do texto (fora das últimas linhas) não casa", () => {
+    const body = [
+      "Primeiro passo: rodei o scorer, waiting for the chunks to finish antes de seguir.",
+      "Depois gravei 01-approved.json.",
+      "Rodei o lint.",
+      "Gravei a sentinela.",
+      "Stage 1 concluído.",
+    ].join("\n");
+    assert.equal(looksLikeBackgroundWaitExit(body), false);
+    assert.equal(looksLikeBackgroundWaitExit(body + "\n\nWaiting for this to complete.\n"), true);
   });
 });

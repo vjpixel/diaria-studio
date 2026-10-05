@@ -171,9 +171,38 @@ export function looksLikeBackgroundWaitExit(stdout: string): boolean {
     // retry único do #6045 nunca disparou e a re-execução foi manual. A frase
     // "esperando X terminar" como encerramento de uma sessão single-turn é o
     // mesmo sintoma. Só é consultado com a sentinela AUSENTE, e o custo de um
-    // falso positivo é um retry (que pula o que já está em disco).
-    WAIT_FOR_COMPLETION_RE.test(s)
+    // falso positivo é um retry (que pula o que já está em disco). Só as
+    // últimas linhas não-vazias (finding P3 do self-review da PR #9605): a
+    // frase é sintoma quando ENCERRA a sessão, não quando aparece no meio de
+    // um relatório de conclusão.
+    WAIT_FOR_COMPLETION_RE.test(lastNonEmptyLines(s, WAIT_PHRASE_TAIL_LINES))
   );
+}
+
+/** Quantas linhas não-vazias finais a regex do #9597 inspeciona. */
+export const WAIT_PHRASE_TAIL_LINES = 3;
+
+function lastNonEmptyLines(text: string, n: number): string {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => l.trim() !== "")
+    .slice(-n)
+    .join("\n");
+}
+
+/**
+ * Decide o retry único do #6045/#9597. Nunca re-roda um stage que terminou por
+ * estouro de turnos (`terminal_reason` com `max_turns`, lido do envelope JSON
+ * cru): a frase "waiting for…" ali é incidental, e o retry custaria mais 120
+ * turnos (~US$ 10 na medição da 261005) para bater no mesmo teto — finding P2
+ * do self-review da PR #9605.
+ */
+export function shouldRetryBackgroundWait(diagnosticText: string, rawStdout: string | undefined): boolean {
+  if (rawStdout) {
+    const reason = parseCliRunMeta(rawStdout)?.terminalReason ?? "";
+    if (/max_turns/i.test(reason)) return false;
+  }
+  return looksLikeBackgroundWaitExit(diagnosticText);
 }
 
 /** Tentativas por stage quando o sintoma do #6045 é detectado (1 original + 1 retry). */
@@ -723,7 +752,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         // #9222/#9312: persiste num_turns/terminal_reason/custo da tentativa
         // ANTES do `continue` do retry — senão a tentativa 1 nem era gravada.
         recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
-        if (looksLikeBackgroundWaitExit(diagnosticText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+        if (shouldRetryBackgroundWait(diagnosticText, stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
         const denials = summarizePermissionDenials(stdoutText);
@@ -773,7 +802,10 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       }
       // #6045: mesmo tratamento no caminho de exceção — retry único quando a
       // assinatura background-wait está presente.
-      if (looksLikeBackgroundWaitExit(combined) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+      if (
+        shouldRetryBackgroundWait(combined, typeof err.stdout === "string" ? err.stdout : undefined) &&
+        attempt < BACKGROUND_WAIT_MAX_ATTEMPTS
+      ) {
         continue;
       }
       exitCode = err.status ?? 1;
