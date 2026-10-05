@@ -8,6 +8,7 @@ import {
   recordRun,
   recordRunsBatch,
   appendFileWithRetry,
+  RECENT_OUTCOMES_MAX,
   type SourceEntry,
   type RunRecord,
 } from "../scripts/lib/source-runs.ts";
@@ -68,12 +69,13 @@ describe("applyRun", () => {
     assert.equal(next.last_failure_iso, now);
   });
 
-  it("recent_outcomes cresce e trunca em 10", () => {
+  it("recent_outcomes cresce e trunca em RECENT_OUTCOMES_MAX (30, #9652)", () => {
     let entry = emptyEntry();
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 32; i++) {
       entry = applyRun(entry, { source: "X", outcome: "ok" }, `2026-04-24T12:${String(i).padStart(2, "0")}:00.000Z`);
     }
-    assert.equal(entry.recent_outcomes.length, 10);
+    assert.equal(RECENT_OUTCOMES_MAX, 30);
+    assert.equal(entry.recent_outcomes.length, 30);
     assert.equal(entry.recent_outcomes[0].timestamp, "2026-04-24T12:02:00.000Z");
   });
 

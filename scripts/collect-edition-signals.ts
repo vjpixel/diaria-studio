@@ -49,7 +49,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
-import { isHardFailure } from "./lib/source-runs.ts";
+import { isHardFailure, roundDryStreak, roundFailureStreak, type OutcomeLike } from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
@@ -589,7 +589,7 @@ interface SourceHealthEntry {
   attempts?: number;
   successes?: number;
   total_articles?: number;
-  recent_outcomes?: Array<{ outcome: string; timestamp?: string }>;
+  recent_outcomes?: Array<OutcomeLike & { outcome: string }>;
 }
 
 interface SourceHealthFile {
@@ -653,7 +653,10 @@ function isStaleOutcome(
  * Dois sinais distintos a partir do source-health (#1576):
  *
  * - `source_streak`: streak de falhas DURAS (`fail`/`timeout`) — fetch quebrado
- *   (HTTP 404/500, parse, timeout). `empty` e `ok` encerram o streak.
+ *   (HTTP 404/500, parse, timeout). `empty` e `ok` encerram o streak. Desde o
+ *   #9652 a unidade é a RODADA (outcomes agrupados por edição/timestamp), não a
+ *   linha de log: rodada com qualquer `ok` é saudável, e falha por cota/limite
+ *   da API de busca (402/429) não conta como falha da fonte.
  * - `source_dry`: fonte que NUNCA produziu artigo (zero successes na vida) e
  *   acumulou uma janela longa sem `ok` — feed/URL provavelmente errada ou fonte
  *   descontinuada. Distingue "fonte parada" de "blog de baixa frequência sem
@@ -662,10 +665,18 @@ function isStaleOutcome(
  * Antes do #1576 ambos colapsavam num único streak que contava qualquer não-`ok`
  * (incluindo `empty`), gerando ~10 falsos positivos por edição com blogs quietos.
  */
+/**
+ * #9652 (review): limiar de `source_dry` em RODADAS. Era 6 quando o streak
+ * contava LINHAS de log — com ~2 linhas por rodada (RSS + busca `site:`), 6
+ * linhas ≈ 3 edições. Contando rodadas, manter 6 dobraria a espera pra
+ * sinalizar uma fonte que nunca produziu; 3 rodadas preserva a semântica.
+ */
+export const SOURCE_DRY_THRESHOLD_ROUNDS = 3;
+
 export function signalsFromSourceHealth(
   health: SourceHealthFile,
   minStreak = 3,
-  dryThreshold = 6,
+  dryThreshold = SOURCE_DRY_THRESHOLD_ROUNDS,
   activeSources?: Set<string>,
   now: Date = new Date(),
   discoveryStaleDays = DISCOVERY_STALE_DAYS,
@@ -697,14 +708,11 @@ export function signalsFromSourceHealth(
     if (isDiscovery && isStaleOutcome(recent[recent.length - 1], now, discoveryStaleDays)) {
       continue;
     }
-    const reversed = recent.slice().reverse();
-
     // --- Falhas duras consecutivas (fetch quebrado) ---
-    let hardStreak = 0;
-    for (const r of reversed) {
-      if (!isHardFailure(r.outcome)) break;
-      hardStreak++;
-    }
+    // #9652: conta RODADAS, não linhas de log. Uma rodada grava várias linhas
+    // por fonte (RSS + busca `site:` + fallback de fetch); rodada com qualquer
+    // `ok` é saudável, e rodada só com 402/429 da API de busca não conta.
+    const hardStreak = roundFailureStreak(recent).consecutive_failures;
     if (hardStreak >= minStreak) {
       out.push({
         kind: "source_streak",
@@ -728,18 +736,14 @@ export function signalsFromSourceHealth(
     // --- Fonte seca: nunca produziu + janela longa sem ok ---
     const hasRecentOk = recent.some((r) => r.outcome === "ok");
     const lifetimeSuccesses = entry.successes ?? 0;
-    let dryStreak = 0;
-    for (const r of reversed) {
-      if (r.outcome === "ok") break;
-      dryStreak++;
-    }
+    const dryStreak = roundDryStreak(recent); // #9652: rodadas, não linhas
     if (!hasRecentOk && lifetimeSuccesses === 0 && dryStreak >= dryThreshold) {
       const hardCount = recent.filter((r) => isHardFailure(r.outcome)).length;
       const emptyCount = recent.filter((r) => r.outcome === "empty").length;
       out.push({
         kind: "source_dry",
         severity: "medium",
-        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} sem nenhum artigo em ${dryStreak} execuções`,
+        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} sem nenhum artigo em ${dryStreak} rodadas`,
         details: {
           source,
           ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
@@ -1612,7 +1616,7 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
         ...signalsFromSourceHealth(
           health,
           opts.minStreak ?? 3,
-          6,
+          SOURCE_DRY_THRESHOLD_ROUNDS,
           activeSources,
           now,
           DISCOVERY_STALE_DAYS,

@@ -90,10 +90,12 @@ describe("#9644 — sinal de falha de fonte primária não sugere desativar", ()
     sources: {
       OpenAI: {
         successes: 130,
+        // #9652: 3 RODADAS com falha (timestamps distintos, sem ok). O caso real
+        // de 27/08 (1 ok + 3 fail no MESMO timestamp) deixou de ser streak —
+        // coberto em test/source-streak-rounds-9652.test.ts.
         recent_outcomes: [
-          { outcome: "ok", timestamp: "2026-08-27T23:14:49.327Z" },
-          { outcome: "fail", timestamp: "2026-08-27T23:14:49.327Z" },
-          { outcome: "fail", timestamp: "2026-08-27T23:14:49.327Z" },
+          { outcome: "fail", timestamp: "2026-08-25T15:27:35.373Z" },
+          { outcome: "fail", timestamp: "2026-08-26T15:52:20.189Z" },
           { outcome: "fail", timestamp: "2026-08-27T23:14:49.327Z" },
         ],
       },

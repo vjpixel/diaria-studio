@@ -28,6 +28,187 @@ export function isHardFailure(outcome: string): boolean {
 export interface OutcomeEntry {
   outcome: Outcome;
   timestamp: string;
+  /**
+   * #9652: edição da rodada (agrupa as várias linhas que UMA rodada grava por
+   * fonte — RSS + busca `site:` + fallback de fetch). Ausente no histórico
+   * anterior; aí o agrupamento cai no `timestamp` (o batch grava todas as
+   * linhas da rodada com o mesmo `now`).
+   */
+  edition?: string;
+  /** #9652: motivo da falha dura, truncado em `OUTCOME_REASON_MAX` chars. */
+  reason?: string;
+  /** #9652: falha por cota/limite da API de busca (402/429) — não é falha da fonte. */
+  search_quota?: boolean;
+}
+
+/** #9652: teto de `recent_outcomes` por fonte. Era 10 — com 3-4 linhas por rodada,
+ * 10 linhas guardavam só 2-3 rodadas, pouco pra um streak de 3 rodadas. */
+export const RECENT_OUTCOMES_MAX = 30;
+
+/** #9652: teto do `reason` guardado em `recent_outcomes` (o log por fonte guarda o inteiro). */
+export const OUTCOME_REASON_MAX = 200;
+
+/**
+ * #9652: a falha veio da cota/limite da API de busca, não da fonte. Caso real
+ * 27/08/2026: a cota mensal de US$ 5 da API de busca acabou e TODA fonte com
+ * caminho `site:` passou a gravar `fail` — sinal de infraestrutura
+ * compartilhada, não de fonte quebrada.
+ *
+ * Reconhece SÓ os formatos que `fetch-websearch-batch.ts` grava
+ * (`${response.status}: ${error_message}`): `rate_limited: ...` (429 da busca),
+ * `error: {..."status":402|429...}` (corpo JSON da API) e "Usage limit
+ * exceeded". Nunca `HTTP 429`/`http_429`/`Too Many Requests` — esses vêm do
+ * PRÓPRIO feed da fonte (`fetch-rss.ts`, `fetch-sitemap.ts`) e são falha real
+ * dela (VentureBeat (IA), RSS em `HTTP 429` desde 04/09/2026). Usado como
+ * fallback pro histórico sem `method`/`query_used`; com origem conhecida,
+ * `buildOutcomeEntry` só marca cota no caminho da busca.
+ */
+export function isSearchQuotaFailure(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return (
+    /^\s*rate_limited\s*:/i.test(reason) ||
+    /usage limit exceeded/i.test(reason) ||
+    /^\s*error\s*:.*"status"\s*:\s*(?:402|429)\b/is.test(reason)
+  );
+}
+
+/** #9652 (review): origem da linha — `method` do batch e/ou `query_used`. */
+export interface OutcomeOrigin {
+  method?: string | null;
+  query_used?: string | null;
+}
+
+/**
+ * #9652 (review): a linha veio do caminho da API de busca? `true`/`false` quando
+ * a origem é conhecida; `undefined` quando não há `method` nem `query_used`.
+ * `method` vence (`websearch_*` = busca; `rss`/`sitemap`/outros = não); sem
+ * `method`, `query_used` começando em `site:` é a busca e uma URL não é.
+ */
+export function isSearchPath(origin: OutcomeOrigin | undefined): boolean | undefined {
+  const method = origin?.method?.trim();
+  if (method) return /^websearch/i.test(method);
+  const q = origin?.query_used?.trim();
+  if (q) return /^site:/i.test(q);
+  return undefined;
+}
+
+/** Forma mínima de um outcome lido do disco (campos podem faltar no histórico). */
+export interface OutcomeLike {
+  outcome?: string;
+  timestamp?: string;
+  edition?: string | null;
+  reason?: string | null;
+  search_quota?: boolean;
+}
+
+/**
+ * Veredito de uma RODADA de uma fonte (#9652):
+ * - `ok`: algum caminho trouxe artigo → fonte saudável na rodada;
+ * - `empty`: nenhum ok, mas algum caminho respondeu sem novidade → não é falha;
+ * - `fail`: só falhas duras, e pelo menos uma NÃO é de cota da API de busca;
+ * - `quota`: só falhas de cota/limite da API de busca → neutra (não conta nem zera);
+ * - `unknown`: só linhas sem `outcome` (registro malformado) → neutra.
+ */
+export type RoundVerdict = "ok" | "empty" | "fail" | "quota" | "unknown";
+
+export interface OutcomeRound {
+  key: string;
+  timestamp: string | undefined;
+  verdict: RoundVerdict;
+  entries: OutcomeLike[];
+}
+
+function roundKey(o: OutcomeLike, index: number): string {
+  if (o.edition) return `e:${o.edition}`;
+  if (o.timestamp) return `t:${o.timestamp}`;
+  return `i:${index}`; // sem edição nem timestamp: rodada própria
+}
+
+function roundVerdict(entries: OutcomeLike[]): RoundVerdict {
+  if (entries.some((e) => e.outcome === "ok")) return "ok";
+  if (entries.some((e) => e.outcome === "empty")) return "empty";
+  const hard = entries.filter((e) => e.outcome !== undefined && isHardFailure(e.outcome));
+  if (hard.length === 0) return "unknown";
+  const allQuota = hard.every((e) => e.search_quota === true || isSearchQuotaFailure(e.reason));
+  return allQuota ? "quota" : "fail";
+}
+
+/**
+ * #9652: agrupa outcomes CONSECUTIVOS da mesma rodada. Uma rodada grava várias
+ * linhas por fonte (RSS e busca `site:` em paralelo, mais o fallback de
+ * fetch); contar linhas transformou 1 rodada com RSS ok em "3 falhas
+ * consecutivas" (OpenAI, 27/08/2026 23:14:49 → #6601 → fonte removida).
+ * Chave: `edition` quando presente; senão `timestamp` (histórico antigo).
+ */
+export function groupOutcomesIntoRounds(outcomes: OutcomeLike[]): OutcomeRound[] {
+  const rounds: OutcomeRound[] = [];
+  outcomes.forEach((o, i) => {
+    const key = roundKey(o, i);
+    const last = rounds[rounds.length - 1];
+    if (last && last.key === key) {
+      last.entries.push(o);
+    } else {
+      rounds.push({ key, timestamp: o.timestamp, verdict: "unknown", entries: [o] });
+    }
+  });
+  for (const r of rounds) r.verdict = roundVerdict(r.entries);
+  return rounds;
+}
+
+/**
+ * #9652: streak de RODADAS com falha dura, do mais recente pra trás. `ok`/`empty`
+ * encerram; `quota`/`unknown` são puladas (não contam nem zeram).
+ */
+export function roundFailureStreak(outcomes: OutcomeLike[]): {
+  consecutive_failures: number;
+  failure_timestamps: string[];
+} {
+  const rounds = groupOutcomesIntoRounds(outcomes);
+  const failure_timestamps: string[] = [];
+  let count = 0;
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    const v = rounds[i].verdict;
+    if (v === "ok" || v === "empty") break;
+    if (v !== "fail") continue;
+    count++;
+    if (rounds[i].timestamp) failure_timestamps.unshift(rounds[i].timestamp as string);
+  }
+  return { consecutive_failures: count, failure_timestamps };
+}
+
+/**
+ * #9652: rodadas sem nenhum `ok`, do mais recente pra trás (pra o sinal de fonte
+ * seca). `quota`/`unknown` são puladas — a cota esgotada não diz nada da fonte.
+ */
+export function roundDryStreak(outcomes: OutcomeLike[]): number {
+  const rounds = groupOutcomesIntoRounds(outcomes);
+  let count = 0;
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    const v = rounds[i].verdict;
+    if (v === "ok") break;
+    if (v === "quota" || v === "unknown") continue;
+    count++;
+  }
+  return count;
+}
+
+/** #9652: monta o item de `recent_outcomes` (edição + motivo curto + flag de cota). */
+export function buildOutcomeEntry<O extends Outcome>(
+  outcome: O,
+  timestamp: string,
+  edition?: string | null,
+  reason?: string | null,
+  origin?: OutcomeOrigin,
+): OutcomeEntry & { outcome: O } {
+  const e: OutcomeEntry & { outcome: O } = { outcome, timestamp };
+  if (edition) e.edition = edition;
+  if (isHardFailure(outcome) && reason) {
+    e.reason = reason.slice(0, OUTCOME_REASON_MAX);
+    // Origem conhecida e fora da busca (RSS/sitemap/fetch) → nunca é cota da
+    // busca, mesmo que o texto pareça (#9652 review).
+    if (isSearchPath(origin) !== false && isSearchQuotaFailure(reason)) e.search_quota = true;
+  }
+  return e;
 }
 
 export interface SourceEntry {
@@ -53,6 +234,8 @@ export interface RunRecord {
   outcome: Outcome;
   duration_ms?: number | null;
   query_used?: string | null;
+  /** Caminho que gerou a linha (`rss`, `sitemap`, `websearch_brave`...), quando o batch informa. */
+  method?: string | null;
   articles?: Array<{ title?: string; url?: string; published_at?: string }>;
   reason?: string | null;
 }
@@ -119,9 +302,14 @@ export function applyRun(
     entry.timeouts += 1;
     entry.last_failure_iso = now;
   }
-  entry.recent_outcomes.push({ outcome: run.outcome, timestamp: now });
-  if (entry.recent_outcomes.length > 10) {
-    entry.recent_outcomes.splice(0, entry.recent_outcomes.length - 10);
+  entry.recent_outcomes.push(
+    buildOutcomeEntry(run.outcome, now, run.edition, run.reason, {
+      method: run.method,
+      query_used: run.query_used,
+    }),
+  );
+  if (entry.recent_outcomes.length > RECENT_OUTCOMES_MAX) {
+    entry.recent_outcomes.splice(0, entry.recent_outcomes.length - RECENT_OUTCOMES_MAX);
   }
   return entry;
 }
@@ -133,21 +321,16 @@ export function applyRun(
  * `empty` (fetch OK, zero artigos) e `ok` encerram o streak: nenhum dos dois é
  * falha. Antes (#1576) qualquer não-`ok` contava, o que inflava o streak de
  * blogs de baixa frequência que só retornaram `empty` por falta de novidade.
+ *
+ * #9652: conta RODADAS, não linhas — ver `roundFailureStreak`. Rodada com
+ * qualquer `ok` é saudável; rodada só com falha de cota da API de busca
+ * (402/429) não conta. `failure_timestamps` traz 1 timestamp por rodada.
  */
 export function computeFailureStreak(entry: SourceEntry): {
   consecutive_failures: number;
   failure_timestamps: string[];
 } {
-  const failure_timestamps: string[] = [];
-  for (let i = entry.recent_outcomes.length - 1; i >= 0; i--) {
-    const e = entry.recent_outcomes[i];
-    if (!isHardFailure(e.outcome)) break;
-    failure_timestamps.unshift(e.timestamp);
-  }
-  return {
-    consecutive_failures: failure_timestamps.length,
-    failure_timestamps,
-  };
+  return roundFailureStreak(entry.recent_outcomes);
 }
 
 export type SourceStatus = "verde" | "amarelo" | "vermelho";

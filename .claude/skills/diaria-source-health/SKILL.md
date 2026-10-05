@@ -21,7 +21,10 @@ npx tsx scripts/source-health-report.ts --json              # qualquer um dos do
 uma entrada `empty` (fetch OK, zero artigos) NÃO conta como falha dura pro
 streak de `consecutive_failures` — só `fail`/`timeout` contam, e `empty`
 encerra o streak (mesmo efeito de `ok`). Antes disso viver só em prosa no
-SKILL.md, sem teste travando o comportamento.
+SKILL.md, sem teste travando o comportamento. Desde #9652 o streak conta
+RODADAS (outcomes agrupados por edição, ou timestamp no histórico antigo), não
+linhas de log: rodada com qualquer `ok` é saudável, e falha por cota/limite da
+API de busca (402/429) não conta (`test/source-streak-rounds-9652.test.ts`).
 
 ## Depois de rodar
 
