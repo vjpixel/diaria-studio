@@ -33,6 +33,7 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkUseMelhorItemInFinal,
   computeStage2UseMelhorPostState,
+  enrichUseMelhorItem,
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
   readApprovedForUseMelhor,
@@ -44,6 +45,7 @@ import {
   type UseMelhorPostConfigState,
   type UseMelhorPostState,
 } from "./lib/use-melhor-post.ts";
+import { fetchSourceText } from "./fetch-source-text.ts";
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts";
 import {
   describeDiscontinuedMatch,
@@ -118,7 +120,32 @@ export function runSelection(
   return { state, written: writeUseMelhorPostState(editionDir, state) };
 }
 
-function main(): void {
+/**
+ * #9585: seleção + corpo/passos da fonte no item gravado. Fail-soft — fetch
+ * falho mantém o item sem `steps`/`body` (post no formato atual).
+ */
+export async function runSelectionWithSteps(
+  editionDir: string,
+  config: UseMelhorPostConfigState,
+  opts: { useReviewed?: boolean; now?: Date; fetchImpl?: typeof fetch } = {},
+): Promise<{ state: UseMelhorPostState; written: string | null }> {
+  const res = runSelection(editionDir, config, opts);
+  if (!res.state.enabled || !res.state.item) return res;
+  try {
+    const r = await fetchSourceText(res.state.item.url, opts.fetchImpl ?? fetch);
+    if (!r.ok) {
+      console.error(`select-use-melhor-post: fonte sem corpo (${r.message}) — item sem passos`);
+      return res;
+    }
+    const state = { ...res.state, item: enrichUseMelhorItem(res.state.item, r.text) };
+    return { state, written: writeUseMelhorPostState(editionDir, state) };
+  } catch (e) {
+    console.error(`select-use-melhor-post: erro ao buscar a fonte (${(e as Error).message}) — item sem passos`);
+    return res;
+  }
+}
+
+async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
   const editionDir = args.values["edition-dir"];
   if (!editionDir) {
@@ -134,7 +161,7 @@ function main(): void {
     return;
   }
 
-  const { state, written, preserved } = runSelection(editionDir, config, {
+  const { state, written, preserved } = await runSelectionWithSteps(editionDir, config, {
     useReviewed: args.flags.has("reviewed"),
     forceReselect: args.flags.has("force"),
   });
@@ -148,7 +175,7 @@ function main(): void {
 
 if (isMainModule(import.meta.url)) {
   try {
-    main();
+    await main();
   } catch (e) {
     // Fail-soft (#9568): o 4º post nunca derruba o stage. O erro aparece no
     // stderr e o orchestrator segue sem o 4º post.
