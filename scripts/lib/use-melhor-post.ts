@@ -126,6 +126,47 @@ export interface UseMelhorCandidate {
   title: string;
   summary: string;
   score: number;
+  /** #9585: passos do tutorial extraídos da fonte, na ordem. Ausente = fonte sem passos (formato atual). */
+  steps?: string[];
+  /** #9585: trecho do corpo da fonte (contexto pro writer; nunca fonte de fatos além dos passos). */
+  body?: string;
+}
+
+const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{8,})$/i;
+
+/**
+ * Pure (#9585): extrai os passos numerados do texto da fonte, na ordem.
+ * Aceita "Passo 1: ...", "Etapa 2 ...", "Step 3 ..." e "1. ..."/"1) ...".
+ * Só devolve uma sequência que comece em 1 e seja consecutiva (>=2 passos) —
+ * numeração solta (ano, ranking) não vira passo. Sem passos → `[]`.
+ */
+export function extractUseMelhorSteps(text: string): string[] {
+  const steps: string[] = [];
+  let expected = 1;
+  for (const raw of text.split(/\r?\n/)) {
+    const m = raw.trim().match(STEP_LINE);
+    if (!m) continue;
+    const n = Number(m[1] ?? m[2]);
+    if (n === expected) {
+      steps.push(m[3].trim());
+      expected++;
+    } else if (n === 1 && steps.length < 2) {
+      steps.length = 0; // falso começo (ex.: lista anterior de 1 item) — recomeça
+      steps.push(m[3].trim());
+      expected = 2;
+    }
+  }
+  return steps.length >= 2 ? steps : [];
+}
+
+export const USE_MELHOR_BODY_MAX_CHARS = 6000;
+
+/** Pure (#9585): anexa `steps` (só se houver) e `body` ao item. */
+export function enrichUseMelhorItem(item: UseMelhorCandidate, text: string): UseMelhorCandidate {
+  const steps = extractUseMelhorSteps(text);
+  const out: UseMelhorCandidate = { ...item, body: text.slice(0, USE_MELHOR_BODY_MAX_CHARS) };
+  if (steps.length) out.steps = steps;
+  return out;
 }
 
 /**
