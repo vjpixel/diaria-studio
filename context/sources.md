@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 51 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 53 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -55,6 +55,11 @@
 - URL: https://ai.meta.com/blog/
 - Site query: `site:ai.meta.com`
 
+### Meta Newsroom (IA)
+- URL: https://about.fb.com/news/tag/ai/
+- Site query: `site:about.fb.com`
+- RSS: https://about.fb.com/news/tag/ai/feed/
+
 ### Google
 - URL: https://blog.google/
 - Site query: `site:blog.google`
@@ -86,11 +91,17 @@
 ### Mistral AI News
 - URL: https://mistral.ai/news/
 - Site query: `site:mistral.ai`
+- RSS: https://mistral.ai/news/rss
 
 ### Nvidia
 - URL: https://blogs.nvidia.com/
 - Site query: `site:blogs.nvidia.com`
 - RSS: https://blogs.nvidia.com/feed/
+
+### OpenAI
+- URL: https://openai.com/news/company-announcements/
+- Site query: `site:openai.com`
+- RSS: https://openai.com/news/rss.xml
 
 ### Anthropic
 - URL: https://www.anthropic.com/news/
