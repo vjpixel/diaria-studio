@@ -13,10 +13,12 @@
  * editor tornaram o proxy desnecessário e removem o risco de asset relativo
  * quebrado.
  *
- * Teste A/B: a página tem duas versões, `a/index.html` e `b/index.html`, e o
- * `index.html` da raiz só sorteia uma delas por visitante e redireciona
- * levando a query string (UTMs e fbclid precisam chegar à página e ao
- * checkout). Os anúncios continuam apontando para `/evento/agente-ia`.
+ * Versões: a página tem quatro versões, `a/` a `d/` (cada uma com seu
+ * `index.html`). O teste A/B entre `a` e `b` acabou em 30/09/2026; hoje o
+ * `index.html` da raiz manda todo mundo para a versão vigente (`d`) e
+ * redireciona levando a query string (UTMs e fbclid precisam chegar à
+ * página e ao checkout). As outras versões continuam no ar para links
+ * antigos. Os anúncios continuam apontando para `/evento/agente-ia`.
  *
  * Este teste cobre só os arquivos COMMITTED (guard de regressão, mesmo
  * padrão de `site-worker-routes-6359.test.ts`) — o roteamento em si
@@ -25,7 +27,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
@@ -66,6 +68,15 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     assert.match(html, /url=\/evento\/agente-ia\/d"/);
   });
 
+  it("toda versão publicada (subdiretório com index.html) está em VARIANTS — versão nova sem GTM não passa despercebida", () => {
+    const onDisk = readdirSync(PAGE_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && existsSync(resolve(PAGE_DIR, d.name, "index.html")))
+      .map((d) => d.name)
+      .sort();
+    const missing = onDisk.filter((name) => !(VARIANTS as readonly string[]).includes(name));
+    assert.deepEqual(missing, [], `versões fora de VARIANTS (acrescente-as para cobrir GTM/pixel): ${missing.join(", ")}`);
+  });
+
   for (const v of VARIANTS) {
     describe(`versão ${v.toUpperCase()}`, () => {
       const page = resolve(PAGE_DIR, v, "index.html");
@@ -104,13 +115,13 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
         assert.equal(countOccurrences(html, "googletagmanager.com/gtm.js"), 1);
         // Ordem: o dataLayer precisa já ter external_id quando o GTM inicializa.
         const vidAt = html.indexOf(`<script>${visitorIdBootstrapJs()}</script>`);
-        assert.ok(vidAt >= 0);
+        assert.ok(vidAt >= 0, "bootstrap _dia_vid inline não bate com visitorIdBootstrapJs()");
         assert.ok(html.indexOf(loader) > vidAt, "GTM carregado antes do bootstrap _dia_vid");
         // Sem 2º bootstrap: o GTM entrou sozinho, não o renderAnalyticsHead() inteiro.
         assert.equal(countOccurrences(html, "var COOKIE=\"_dia_vid\""), 1);
       });
 
-      it("#9590: o PageView do Meta continua saindo uma vez só (pixel direto) — o GTM não ganhou um 2º init/PageView na página", () => {
+      it("#9590: o HTML do repo tem um único init/PageView do Meta inline (pixel direto, nenhum snippet do pixel colado junto com o GTM) — o container GTM em si fica fora do alcance deste teste", () => {
         // A tag PageView do Meta no container é restrita a
         // cursos|livros.diar.ia.br (medido no gtm.js publicado em 05/10/2026);
         // aqui o guard é do lado do repo: um único init e um único PageView
