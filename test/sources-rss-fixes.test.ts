@@ -73,7 +73,8 @@ describe("sources RSS fixes (#1266)", () => {
     "Meta AI Blog",       // sem feed oficial conhecido
     "Cohere Blog",        // /blog/rss retornava HTML
     "Microsoft",          // feed 200 mas 0 items (stale)
-    "Mistral AI News",    // sem feed oficial conhecido
+    // "Mistral AI News" saiu desta lista em #9644: ganhou mistral.ai/news/rss
+    // (achado em #9424, 02/10/2026) — assertion positiva abaixo.
     "Anthropic",          // sem feed oficial conhecido
     // "Agent Pulse" removida em #1637-39: roundup newsletter no aggregator-blocklist
     // (agentpulse.beehiiv.com), conteúdo sempre filtrado → desativada de sources.csv.
@@ -104,6 +105,10 @@ describe("sources RSS fixes (#1266)", () => {
       undefined,
       "Agent Pulse não deve mais existir em sources.md (roundup newsletter no aggregator-blocklist)",
     );
+  });
+
+  it("#9644: Mistral AI News usa o feed oficial mistral.ai/news/rss (mesmo do late-refresh)", () => {
+    assert.equal(byName.get("Mistral AI News")?.rss, "https://mistral.ai/news/rss");
   });
 
   it("DeepMind mantida com RSS oficial (baixa cadência mas válido)", () => {

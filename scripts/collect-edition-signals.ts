@@ -44,6 +44,7 @@ import {
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import Papa from "papaparse";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { isHardFailure } from "./lib/source-runs.ts";
@@ -586,6 +587,42 @@ interface SourceHealthFile {
   sources?: Record<string, SourceHealthEntry>;
 }
 
+/**
+ * #9644: nomes das fontes do tipo `Primária` (blogs oficiais de laboratório) em
+ * `seed/sources.csv`. Retorna `undefined` se o CSV não existir/não parsear —
+ * aí nenhum aviso de fonte primária é aplicado (back-compat).
+ */
+export function loadPrimarySourceNames(rootDir: string): Set<string> | undefined {
+  const csvPath = resolve(rootDir, "seed/sources.csv");
+  if (!existsSync(csvPath)) return undefined;
+  try {
+    const { data } = Papa.parse<{ Nome?: string; Tipo?: string }>(readFileSync(csvPath, "utf8"), {
+      header: true,
+      skipEmptyLines: true,
+    });
+    return new Set(
+      data
+        .filter((r) => r.Tipo?.trim() === PRIMARY_SOURCE_TYPE && r.Nome?.trim())
+        .map((r) => (r.Nome as string).trim()),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Valor da coluna `Tipo` de `seed/sources.csv` pra blog oficial de laboratório. */
+export const PRIMARY_SOURCE_TYPE = "Primária";
+
+/**
+ * #9644: ação sugerida pra falha de fonte PRIMÁRIA. Desativar uma fonte
+ * primária tira do Stage 1 o anúncio oficial de laboratório (OpenAI saiu do
+ * seed em 28/08 por 3 falhas que eram do caminho de busca `site:` — Brave 402 +
+ * WebFetch 403 —, com o RSS respondendo ok na mesma execução, e ficou fora 5
+ * semanas). Por isso o sinal pede investigação, nunca desativação.
+ */
+export const PRIMARY_SOURCE_ACTION =
+  "Fonte PRIMÁRIA (blog oficial de laboratório) — NÃO desativar em seed/sources.csv. Investigar: (1) o RSS respondeu ok na mesma execução? (a falha pode ser só do caminho de busca `site:` — ex.: 402 usage limit da API de busca, 403 do WebFetch); (2) testar o feed com curl e User-Agent de navegador; (3) corrigir o método de coleta (URL do RSS, sitemap) em vez de remover a fonte.";
+
 /** #8769: janela além da qual o streak de uma query `discovery:*` é tratado como congelado. */
 export const DISCOVERY_STALE_DAYS = 14;
 
@@ -623,10 +660,12 @@ export function signalsFromSourceHealth(
   activeSources?: Set<string>,
   now: Date = new Date(),
   discoveryStaleDays = DISCOVERY_STALE_DAYS,
+  primarySources?: Set<string>,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
     const isDiscovery = source.startsWith("discovery:");
+    const isPrimary = !isDiscovery && (primarySources?.has(source) ?? false);
     // #1637/#1638/#1639: não sinalizar fontes que já foram REMOVIDAS de
     // seed/sources.csv — o histórico de falhas em source-health.json persiste
     // e geraria issues "nunca produziu artigos" toda edição mesmo após a
@@ -661,15 +700,18 @@ export function signalsFromSourceHealth(
       out.push({
         kind: "source_streak",
         severity: hardStreak >= 5 ? "high" : "medium",
-        title: `Source ${source} com ${hardStreak} falhas consecutivas`,
+        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} com ${hardStreak} falhas consecutivas`,
         details: {
           source,
+          ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
           consecutive_failures: hardStreak,
           last_outcomes: recent.slice(-Math.min(5, recent.length)),
         },
         suggested_action: isDiscovery
           ? DISCOVERY_STREAK_ACTION
-          : `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
+          : isPrimary
+            ? PRIMARY_SOURCE_ACTION
+            : `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
       });
       continue; // já sinalizado como quebrado; não duplicar como "dry"
     }
@@ -688,9 +730,10 @@ export function signalsFromSourceHealth(
       out.push({
         kind: "source_dry",
         severity: "medium",
-        title: `Source ${source} sem nenhum artigo em ${dryStreak} execuções`,
+        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} sem nenhum artigo em ${dryStreak} execuções`,
         details: {
           source,
+          ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
           dry_streak: dryStreak,
           hard_failures: hardCount,
           empty: emptyCount,
@@ -699,7 +742,9 @@ export function signalsFromSourceHealth(
         },
         suggested_action: isDiscovery
           ? `${source} nunca produziu artigos — query de discovery (montada em runtime, fora de seed/sources.csv): reformular o tema ou aceitar como tema sem cobertura.`
-          : `${source} nunca produziu artigos — feed/URL provavelmente errada ou fonte descontinuada. Verifique a URL em seed/sources.csv ou desative.`,
+          : isPrimary
+            ? PRIMARY_SOURCE_ACTION
+            : `${source} nunca produziu artigos — feed/URL provavelmente errada ou fonte descontinuada. Verifique a URL em seed/sources.csv ou desative.`,
       });
     }
   }
@@ -1473,7 +1518,15 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
       );
       const activeSources = loadActiveSourceNames(rootDir);
       signals.push(
-        ...signalsFromSourceHealth(health, opts.minStreak ?? 3, 6, activeSources),
+        ...signalsFromSourceHealth(
+          health,
+          opts.minStreak ?? 3,
+          6,
+          activeSources,
+          now,
+          DISCOVERY_STALE_DAYS,
+          loadPrimarySourceNames(rootDir),
+        ),
       );
     } catch {
       // ignore malformed health file
