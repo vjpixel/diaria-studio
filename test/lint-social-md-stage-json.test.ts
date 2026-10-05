@@ -221,7 +221,7 @@ describe("runStage2SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("5 checks presentes, severities batem com a prosa do playbook (#2b/#2c)", () => {
+  it("6 checks presentes, severities batem com a prosa do playbook (#2b/#2c, #9619)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2SocialLintReport(editionDir);
     const byId = new Map(report.checks.map((c) => [c.id, c]));
@@ -233,6 +233,7 @@ describe("runStage2SocialLintReport (#5416)", () => {
         "no-trailing-question",
         "personal-post-no-newsletter-deixis",
         "relative-time",
+        "use-melhor-um-fail-soft",
       ],
     );
     // Re-disparo automático do social-writer (prosa: "Exit 1 = re-disparar
@@ -244,6 +245,8 @@ describe("runStage2SocialLintReport (#5416)", () => {
     assert.equal(byId.get("relative-time")?.severity, "warn-only");
     assert.equal(byId.get("no-trailing-question")?.severity, "warn-only");
     assert.equal(byId.get("personal-post-no-newsletter-deixis")?.severity, "warn-only");
+    // #9619: `## um` é fail-soft — só aviso.
+    assert.equal(byId.get("use-melhor-um-fail-soft")?.severity, "warn-only");
     rmSync(editionDir, { recursive: true, force: true });
   });
 

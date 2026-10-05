@@ -97,6 +97,8 @@ import {
   computeSectionHashes,
   type ScopedCoverageResult,
   checkScopedHumanizerCoverage,
+  isFailSoftSocialSection,
+  lintUseMelhorFailSoft,
 } from "./lib/social-lint-rules.ts"; // #2833: extraído — movimentação pura
 import {
   checkNoXmlArtifacts,
@@ -141,7 +143,7 @@ export type { PlatformHeaderDuplicateError, PlatformHeaderUniqueResult };
 export { lintPlatformHeadersUnique };
 export { extractSocialSections, computeSectionHashes };
 export type { ScopedCoverageResult };
-export { checkScopedHumanizerCoverage };
+export { checkScopedHumanizerCoverage, isFailSoftSocialSection, lintUseMelhorFailSoft };
 export { checkNoXmlArtifacts };
 export type { NoXmlArtifactsError, NoXmlArtifactsReport };
 export { checkBannedLexicon };
@@ -304,7 +306,9 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
  * automaticamente (gate-blocking); `relative-time`, `no-trailing-question` e
  * `personal-post-no-newsletter-deixis` são mostrados no gate como aviso e o
  * editor decide se reescreve (warn-only, prosa explícita "não bloquear
- * automaticamente — editor decide" nos 3 casos).
+ * automaticamente — editor decide" nos 3 casos). `use-melhor-um-fail-soft`
+ * (#9619) é warn-only: reporta o que `linkedin-schema`/`no-credential-bio`
+ * acham no `## um` (4º post, fail-soft) sem derrubar `passed`.
  */
 export function runStage2SocialLintReport(editionDir: string): SocialStageLintReport {
   const mdPath = resolve(editionDir, "03-social.md");
@@ -347,6 +351,12 @@ export function runStage2SocialLintReport(editionDir: string): SocialStageLintRe
     "#2148",
     "warn-only",
     () => lintPersonalPostNewsletterDeixis(md),
+  );
+
+  // #9619: violações do `## um` (4º post USE MELHOR) não derrubam
+  // `linkedin-schema` (fail-soft) — aparecem aqui como aviso.
+  runSocialCheckSafely(push, "use-melhor-um-fail-soft", "#9619", "warn-only", () =>
+    lintUseMelhorFailSoft(md),
   );
 
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
@@ -449,11 +459,20 @@ function main(): void {
   if (args.check === "linkedin-schema") {
     const result = lintLinkedinSchema(md);
     console.log(JSON.stringify(result, null, 2));
+    // #9619: erros do `## um` (4º post, fail-soft) são só aviso — nunca exit 1.
+    const blocking = result.errors.filter((e) => !isFailSoftSocialSection(e.destaque));
+    const failSoft = result.errors.filter((e) => isFailSoftSocialSection(e.destaque));
+    if (failSoft.length > 0) {
+      console.error(
+        `\n⚠️ ${failSoft.length} aviso(s) no ## um (4º post USE MELHOR, fail-soft #9619 — não bloqueia):`,
+      );
+      for (const e of failSoft) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
+    }
     if (!result.ok) {
       console.error(
-        `\n❌ ${result.errors.length} erro(s) no schema LinkedIn (main post por destaque):`,
+        `\n❌ ${blocking.length} erro(s) no schema LinkedIn (main post por destaque):`,
       );
-      for (const e of result.errors) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
+      for (const e of blocking) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
       process.exit(1);
     }
     return;
@@ -506,6 +525,13 @@ function main(): void {
     const preMd = readFileSync(prePath, "utf8");
     const result = checkHumanizerSectionCoverage(preMd, md);
     console.log(JSON.stringify(result, null, 2));
+    // #9619: `main_um` não tocado (4º post, fail-soft) é só aviso.
+    const failSoftUntouched = result.untouched.filter((s) => isFailSoftSocialSection(s));
+    if (failSoftUntouched.length > 0) {
+      console.error(
+        `\n⚠️ ${failSoftUntouched.join(", ")} não coberta(s) pelo humanizador (4º post USE MELHOR, fail-soft #9619 — não bloqueia).`,
+      );
+    }
     if (!result.ok) {
       if (result.deleted.length > 0) {
         console.error(
@@ -515,14 +541,15 @@ function main(): void {
           console.error(`  ${s}: presente antes do humanizador, ausente depois`);
         }
       }
-      if (result.untouched.length > 0) {
+      const blockingUntouched = result.untouched.filter((s) => !isFailSoftSocialSection(s));
+      if (blockingUntouched.length > 0) {
         console.error(
-          `\n❌ ${result.untouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,
+          `\n❌ ${blockingUntouched.length} seção(ões) não coberta(s) pelo humanizador (#2148):`,
         );
-        for (const s of result.untouched) {
+        for (const s of blockingUntouched) {
           console.error(`  ${s}: idêntica antes/depois do humanizador`);
         }
-        console.error(`\n  Re-invocar humanizador mirando: ${result.untouched.join(", ")}`);
+        console.error(`\n  Re-invocar humanizador mirando: ${blockingUntouched.join(", ")}`);
       }
       process.exit(1);
     }
@@ -585,11 +612,20 @@ function main(): void {
   if (args.check === "no-credential-bio") {
     const result = lintCredentialBio(md);
     console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) {
+    // #9619: match no `## um` (4º post, fail-soft) é só aviso — nunca exit 1.
+    const failSoft = result.matches.filter((m) => isFailSoftSocialSection(m.section));
+    if (failSoft.length > 0) {
       console.error(
-        `\n❌ ${result.matches.length} frase(s) de credencial/bio auto-referencial detectada(s) em post/comment pessoal (#2494):`,
+        `\n⚠️ ${failSoft.length} frase(s) de credencial/bio no ## um (4º post USE MELHOR, fail-soft #9619 — não bloqueia):`,
       );
-      for (const m of result.matches) {
+      for (const m of failSoft) console.error(`  [${m.section}] linha ${m.line}: '${m.phrase}'`);
+    }
+    if (!result.ok) {
+      const blocking = result.matches.filter((m) => !isFailSoftSocialSection(m.section));
+      console.error(
+        `\n❌ ${blocking.length} frase(s) de credencial/bio auto-referencial detectada(s) em post/comment pessoal (#2494):`,
+      );
+      for (const m of blocking) {
         console.error(
           `  [${m.section}] linha ${m.line}: '${m.phrase}' — o ponto se sustenta pelo conteúdo, não pela bio\n    contexto: "...${m.context}..."`,
         );

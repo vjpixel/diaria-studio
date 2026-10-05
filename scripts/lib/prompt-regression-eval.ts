@@ -175,7 +175,9 @@ function gradeCarouselOverflow(agent: PromptEvalAgent, editionDir: string): Grad
     return notEvaluableVerdict("carousel-text-overflow", "03-social.md ausente no diretório de fixture — grader não avaliável.");
   }
   try {
-    const violations = checkCarouselTextOverflow(editionDir);
+    // #9619: só severity "error" reprova — warnings do `## um` (4º post,
+    // fail-soft #9568) não são overflow do carrossel diário.
+    const violations = checkCarouselTextOverflow(editionDir).filter((v) => v.severity === "error");
     return evaluableVerdict("carousel-text-overflow", violations.length === 0, violations);
   } catch (err) {
     // #8168 fleet review: ver comentário equivalente em gradeBannedLexicon acima.

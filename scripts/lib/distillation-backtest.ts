@@ -101,7 +101,10 @@ export function runDistillationBacktest(editionsRoot: string, rootDir: string): 
   const carouselOverflow = backtestCheck(editionDirsByAammdd, "carousel-text-overflow", (_edition, dir) => {
     if (!existsSync(join(dir, "03-social.md"))) return null;
     try {
-      return checkCarouselTextOverflow(dir).length > 0;
+      // #9619: só severity "error" conta — os warnings do 4º post (`## um`,
+      // `use-melhor-um-shape`/overflow, fail-soft #9568) não são overflow do
+      // carrossel diário e inflariam a taxa que distill-prompt-corrections lê.
+      return checkCarouselTextOverflow(dir).some((v) => v.severity === "error");
     } catch {
       return null; // estrutura inesperada (destaque_count ausente etc.) — não avaliável, nunca fabricado
     }
