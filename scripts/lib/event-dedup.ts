@@ -257,12 +257,15 @@ export function eventConcepts(title: string): Set<string> {
  * SOFRIDA ou REALIZADA. Fora de propósito: `hack`/`hacks`/`hacking`/`hacker`/
  * `hackers` puros (coloquial: "5 ChatGPT hacks", "growth hacking", "reward
  * hacking"), `ataque`/`attack` (amplo: "OpenAI ataca Google"), `violação`
- * (jurídico: "violação de patentes") e `invade`/`invadem` sem contexto
- * (figurativo: "Gemini invade o Android").
+ * (jurídico: "violação de patentes") e qualquer forma de `invadir` sem
+ * contexto (figurativo: "Gemini invade o Android", "ChatGPT invadiu as
+ * escolas" — #9615 estendeu ao pretérito/particípio).
  */
 const STRONG_HACK_TOKENS = new Set([
   "hacked", "hackeada", "hackeado", "hackeadas", "hackeados", "hackearam", "hackeou",
-  "invadida", "invadido", "invadidas", "invadidos", "invadiu", "invadiram",
+  // `invadiu`/`invadiram`/`invadida(s)`/`invadido(s)` saíram daqui no #9615 —
+  // o pretérito é tão figurativo quanto o presente ("ChatGPT invadiu as
+  // escolas") e agora passa pelo caminho contextual (`CONTEXTUAL_INVADE_TOKENS`).
   "invasao", "invasoes", "ciberataque", "cyberattack",
   "intrusion", "intrusao",
   // Plurais `ciberataques`/`cyberattacks` ficam FORA de propósito (re-review
@@ -290,8 +293,10 @@ function defensiveBefore(toks: string[], i: number): boolean {
 
 /**
  * #8666: formas de "invadir" ambíguas (literal × figurativo). Só contam como
- * forte com CONTEXTO de segurança logo DEPOIS do verbo (3 tokens seguintes):
- *   - objeto de segurança inequívoco ("invadir contas", "invade servidores"); ou
+ * forte com CONTEXTO de segurança perto do verbo (3 tokens):
+ *   - objeto de segurança inequívoco DEPOIS ("invadir contas", "invade
+ *     servidores") ou, no particípio, ANTES ("contas invadidas", #9615); ou
+ *   - agente de segurança em qualquer lado ("invadida por hackers", #9615); ou
  *   - "ajudou/ajuda/ajudar a invadir" + EMPRESA ("Claude ajudou a invadir a
  *     OpenAI" — o caso real de 260921, cúmplice de invasão).
  * Escolhas documentadas (re-review #9560): "ajuda a invadir o mercado" não
@@ -300,7 +305,28 @@ function defensiveBefore(toks: string[], i: number): boolean {
  * ambíguos ("invadir sistemas de saúde", "bancos de dados", "redes sociais").
  * Título com outro termo forte já conta por ele.
  */
-const CONTEXTUAL_INVADE_TOKENS = new Set(["invadir", "invade", "invadem", "invadirem"]);
+const CONTEXTUAL_INVADE_TOKENS = new Set([
+  "invadir", "invade", "invadem", "invadirem",
+  // #9615: pretérito e particípio também são ambíguos ("ChatGPT invadiu as
+  // escolas", "salas de aula invadidas pela IA").
+  "invadiu", "invadiram", "invadida", "invadido", "invadidas", "invadidos",
+]);
+/**
+ * #9615: particípio = voz passiva — o objeto invadido vem ANTES ("contas da
+ * OpenAI foram invadidas"), então para estas formas o objeto de segurança
+ * também vale nos 4 tokens anteriores (cabe "{objeto} da {empresa} foram").
+ */
+const PARTICIPLE_INVADE_TOKENS = new Set(["invadida", "invadido", "invadidas", "invadidos"]);
+/**
+ * #9615: AGENTE de segurança a até 3 tokens do verbo (qualquer lado) torna a
+ * invasão literal — "OpenAI foi invadida por hackers", "Hackers invadiram a
+ * Microsoft". `hacker(s)` sozinho não é forte (coloquial), mas colado a
+ * "invadir" é inequívoco.
+ */
+const INVADE_SECURITY_AGENTS = new Set([
+  "hacker", "hackers", "criminosos", "cibercriminosos", "invasores", "atacantes",
+  "attackers", "ransomware", "malware",
+]);
 const INVADE_HELP_VERBS = new Set(["ajudou", "ajuda", "ajudar", "ajudam", "ajudaram", "ajudando"]);
 const INVADE_SECURITY_OBJECTS = new Set([
   "conta", "contas", "servidor", "servidores",
@@ -311,8 +337,8 @@ const INVADE_SECURITY_OBJECTS = new Set([
 /**
  * #8666: vazamento só é forte com pista de DADOS/segurança no mesmo título —
  * "OpenAI vaza detalhes do GPT-6" (vazamento de produto) não é. "data" (EN)
- * só vale colado num termo INGLÊS de vazamento ("data leak", "leaked data"):
- * em PT "data" é DATA DE CALENDÁRIO ("vaza data de lançamento").
+ * só vale perto de um termo INGLÊS de vazamento ("data leak", "leaked user
+ * data"): em PT "data" é DATA DE CALENDÁRIO ("vaza data de lançamento").
  */
 const STRONG_LEAK_TOKENS = new Set([
   "vazamento", "vazamentos", "vaza", "vazam", "vazou", "vazaram", "vazados", "vazadas", "leak", "leaks", "leaked",
@@ -320,19 +346,37 @@ const STRONG_LEAK_TOKENS = new Set([
 const ENGLISH_LEAK_TOKENS = new Set(["leak", "leaks", "leaked"]);
 const LEAK_DATA_CUES = new Set([
   "dados", "credenciais", "senha", "senhas", "credentials", "password", "passwords",
-  "usuario", "usuarios", "user", "users",
 ]);
+/**
+ * #9615: `usuário(s)`/`user(s)` só é pista de dados como POSSUIDOR ("dados de
+ * usuários", "senhas de usuários", "users' data" via `data`) — com
+ * "de/dos/das/of" logo antes. "vaza recurso do Gemini para usuários beta" é
+ * vazamento de PRODUTO.
+ */
+const LEAK_USER_CUES = new Set(["usuario", "usuarios", "user", "users"]);
+const LEAK_USER_POSSESSIVE = new Set(["de", "dos", "das", "of"]);
+/**
+ * #9615: a pista de dados precisa estar a até 4 tokens do termo de vazamento
+ * (qualquer lado) — antes, qualquer posição do título acendia a pista.
+ */
+const LEAK_CUE_WINDOW = 4;
+
+function leakCueAt(toks: string[], j: number): boolean {
+  const x = toks[j];
+  if (LEAK_DATA_CUES.has(x)) return true;
+  return LEAK_USER_CUES.has(x) && LEAK_USER_POSSESSIVE.has(toks[j - 1] ?? "");
+}
 
 /**
  * Conceitos FORTES (#8666) expressos no título — habilitam o sinal (C).
  * HACK: termo de `STRONG_HACK_TOKENS`, "data breach", ou "invadir" com
- * contexto de segurança. LEAK: termo de vazamento + pista de dados.
+ * contexto de segurança. LEAK: termo de vazamento + pista de dados na
+ * vizinhança (`LEAK_CUE_WINDOW` tokens, #9615).
  */
 export function strongEventConcepts(title: string): Set<string> {
   const toks = orderedTokens(title);
   const out = new Set<string>();
-  let leakWord = false;
-  let leakCue = false;
+  let leak = false;
   toks.forEach((t, i) => {
     const defensive = defensiveBefore(toks, i);
     if (STRONG_HACK_TOKENS.has(t)) {
@@ -341,20 +385,28 @@ export function strongEventConcepts(title: string): Set<string> {
       if (!defensive) out.add("HACK");
     } else if (CONTEXTUAL_INVADE_TOKENS.has(t) && !defensive) {
       const after = toks.slice(i + 1, i + 4);
+      const before = toks.slice(Math.max(0, i - 3), i);
       const helped = toks[i - 1] === "a" && INVADE_HELP_VERBS.has(toks[i - 2] ?? "");
-      const object = after.some((x) => INVADE_SECURITY_OBJECTS.has(x));
+      const object =
+        after.some((x) => INVADE_SECURITY_OBJECTS.has(x)) ||
+        (PARTICIPLE_INVADE_TOKENS.has(t) &&
+          toks.slice(Math.max(0, i - 4), i).some((x) => INVADE_SECURITY_OBJECTS.has(x)));
+      const agent = [...before, ...after].some((x) => INVADE_SECURITY_AGENTS.has(x));
       const company = after.some((x) => Object.hasOwn(EVENT_COMPANY_ALIASES, x));
-      if (object || (helped && company)) out.add("HACK");
+      if (object || agent || (helped && company)) out.add("HACK");
     }
     if (STRONG_LEAK_TOKENS.has(t) && !defensive) {
-      leakWord = true;
-      // "data" só como cue colado a termo INGLÊS ("data leak", "leaked data") —
-      // em PT "vaza data de lançamento" é data de calendário.
-      if (ENGLISH_LEAK_TOKENS.has(t) && adjacentTo(toks, i, "data")) leakCue = true;
+      // #9615: pistas só na vizinhança do termo de vazamento. "data" só vale
+      // perto de termo INGLÊS ("data leak", "leaked user data") — em PT "vaza
+      // data de lançamento" é data de calendário.
+      const english = ENGLISH_LEAK_TOKENS.has(t);
+      for (let j = Math.max(0, i - LEAK_CUE_WINDOW); j <= Math.min(toks.length - 1, i + LEAK_CUE_WINDOW); j++) {
+        if (j === i) continue;
+        if (leakCueAt(toks, j) || (english && toks[j] === "data")) leak = true;
+      }
     }
-    if (LEAK_DATA_CUES.has(t)) leakCue = true;
   });
-  if (leakWord && leakCue) out.add("LEAK");
+  if (leak) out.add("LEAK");
   return out;
 }
 
