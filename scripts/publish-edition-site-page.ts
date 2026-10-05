@@ -270,11 +270,11 @@
  * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync, openSync, closeSync } from "node:fs";
 import { resolve, dirname, join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -426,8 +426,10 @@ export interface PublishPageDeps {
     slug: string,
     sitemapRelPath: string,
   ): { seoImageAdded: boolean; archiveIndexRegenerated: boolean };
-  /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo. */
-  publish(slug: string, sitemapRelPath?: string): PublishResult;
+  /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo.
+   * `editionDir` (#9593) só serve pro waiter em background saber qual state
+   * file atualizar quando o CI não fecha dentro da espera síncrona. */
+  publish(slug: string, sitemapRelPath?: string, editionDir?: string): PublishResult;
   log(line: string): void;
 }
 
@@ -851,6 +853,150 @@ export function buildSitePagePrBody(slug: string): string {
   ].join("\n");
 }
 
+/** Espera síncrona do CI dentro da chamada do Stage 6 (#8158). */
+export const SITE_PAGE_CI_SYNC_WAIT_MS = 120_000;
+/**
+ * #9593: janela do waiter em background — cobre o job `test` (~12min medido
+ * no PR #9588) com folga de quase 3×. Ainda termina horas antes do envio das
+ * 06:00 BRT (o Stage 6 roda na véspera).
+ */
+export const SITE_PAGE_CI_BACKGROUND_WAIT_MS = 35 * 60_000;
+/** #9593: intervalo de poll do waiter — 15s basta pra um job de ~12min e
+ * mantém o total de chamadas `gh pr view` em ~140 no pior caso. */
+export const SITE_PAGE_CI_BACKGROUND_POLL_MS = 15_000;
+
+export interface MergeAttemptResult {
+  merged: boolean;
+  reason: string;
+  /** #9593: `true` só quando o CI seguia `pending` no fim da janela — o
+   * único desfecho em que esperar mais pode resolver (vermelho, conflito,
+   * erro de `gh` e PR fechado não se resolvem esperando). */
+  timedOut?: boolean;
+}
+
+/**
+ * #9593: dispara o waiter destacado que continua esperando o CI depois que
+ * a chamada síncrona do Stage 6 devolveu. Devolve o PID (informativo) ou
+ * lança se o spawn falhar — o caller trata como fail-soft.
+ */
+export type MergeWaiterSpawner = (args: { rootDir: string; prNumber: number; editionDir?: string }) => {
+  pid?: number;
+};
+
+/**
+ * Spawner real: o PRÓPRIO script em modo `--merge-pr`, com o mesmo node e os
+ * mesmos `execArgv` (o loader do tsx vem neles — `npx tsx` roda o script num
+ * node filho com `--import`/`--require` do tsx), `detached` + `unref` pra
+ * sobreviver ao fim do processo pai (e da chamada Bash do harness). stdout/
+ * stderr vão pra `_internal/site-page-merge-waiter.log` da edição quando há
+ * `editionDir`; senão, descartados.
+ *
+ * **Por que não o auto-merge nativo do GitHub (`gh pr merge --auto`)** —
+ * premissa registrada no #9593: o ruleset de `master` não tem
+ * `required_status_checks` (só `deletion`/`non_fast_forward`/`pull_request`,
+ * conferido via `gh api repos/vjpixel/diaria-studio/rules/branches/master`
+ * em 05/10/2026). Sem check obrigatório, o auto-merge não tem o que esperar
+ * — o PR mergearia na hora, com o CI ainda rodando, pulando exatamente o
+ * gate que o #8158 exige (`evaluatePrChecksGate` sobre TODOS os checks).
+ */
+export const defaultMergeWaiterSpawner: MergeWaiterSpawner = ({ rootDir, prNumber, editionDir }) => {
+  const scriptPath = fileURLToPath(import.meta.url);
+  const args = [...process.execArgv, scriptPath, "--merge-pr", String(prNumber)];
+  let out: number | "ignore" = "ignore";
+  if (editionDir) {
+    args.push("--edition-dir", editionDir);
+    try {
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      out = openSync(join(editionDir, "_internal", "site-page-merge-waiter.log"), "a");
+    } catch {
+      out = "ignore";
+    }
+  }
+  const child = spawn(process.execPath, args, {
+    cwd: rootDir,
+    detached: true,
+    stdio: ["ignore", out, out],
+  });
+  child.unref();
+  if (typeof out === "number") {
+    try {
+      closeSync(out);
+    } catch {
+      // fail-soft: o filho já herdou o fd.
+    }
+  }
+  return { pid: child.pid };
+};
+
+/**
+ * #9593: aplica o desfecho do waiter ao `_internal/site-page-published.json`
+ * que a chamada síncrona gravou. Puro (testável sem disco). Só altera o state
+ * quando o `prUrl` dele aponta pro MESMO PR — uma republicação posterior (outro
+ * slug/PR) não pode ser sobrescrita por um waiter antigo. Devolve `null`
+ * quando não há o que atualizar.
+ */
+export function applyMergeWaiterResult(
+  state: Record<string, unknown>,
+  prNumber: number,
+  result: MergeAttemptResult,
+  now: Date = new Date(),
+): Record<string, unknown> | null {
+  const statePr = parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
+  if (statePr !== prNumber) return null;
+  const mergeReason = `waiter em background (#9593): ${result.reason}`;
+  const next: Record<string, unknown> = {
+    ...state,
+    merged: result.merged,
+    mergeReason,
+    merge_waiter_finished_at: now.toISOString(),
+  };
+  const blocker = sitePageMergeBlocker({
+    published: state.published === true,
+    merged: result.merged,
+    mergeReason,
+    prUrl: typeof state.prUrl === "string" ? state.prUrl : undefined,
+    slug: typeof state.slug === "string" ? state.slug : undefined,
+  });
+  if (blocker) next.mergeBlocker = blocker;
+  else delete next.mergeBlocker;
+  return next;
+}
+
+/**
+ * #9593: modo `--merge-pr N [--edition-dir D]` — o corpo do waiter. Espera o
+ * CI com a janela longa, mergeia se verde, e reflete o desfecho no state file
+ * da edição. Nunca lança; exit 0 só quando mergeado.
+ */
+export function runMergeWaiter(
+  rootDir: string,
+  prNumber: number,
+  editionDirAbs: string | undefined,
+  gh: GhRunner = defaultGhRunner,
+  sleep: SleepFn = defaultSleep,
+  maxWaitMs: number = SITE_PAGE_CI_BACKGROUND_WAIT_MS,
+  pollIntervalMs: number = SITE_PAGE_CI_BACKGROUND_POLL_MS,
+): MergeAttemptResult {
+  // Pausa inicial: o CI estava `pending` há instantes (é por isso que o
+  // waiter existe), e o processo pai ainda vai gravar o state file DEPOIS de
+  // disparar este waiter — sem a pausa, um merge relâmpago aqui poderia ser
+  // sobrescrito pelo `merged:false` que o pai grava logo em seguida.
+  sleep(pollIntervalMs);
+  const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs);
+  process.stderr.write(`[site-page] waiter PR #${prNumber}: merged=${result.merged} — ${result.reason}\n`);
+  if (editionDirAbs) {
+    const path = join(editionDirAbs, "_internal", "site-page-published.json");
+    try {
+      const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      const next = applyMergeWaiterResult(state, prNumber, result);
+      if (next) writeFileSync(path, JSON.stringify(next, null, 2), "utf8");
+      else process.stderr.write(`[site-page] waiter: state file aponta pra outro PR — não alterado\n`);
+    } catch (e) {
+      process.stderr.write(`[site-page] waiter: falha ao atualizar ${path} (${(e as Error).message})\n`);
+    }
+  }
+  return result;
+}
+
 /**
  * #8158 (revoga #6598): espera o CI do PR ficar verde e mergeia sozinho —
  * fecha o laço que antes exigia ação humana/de outra sessão pra um diff que
@@ -863,9 +1009,19 @@ export function buildSitePagePrBody(slug: string): string {
  * Poll simples (sem lock — a janela protegida de `commitAndPushSitePage` já
  * terminou e o checkout já voltou pro branch original; `gh pr merge` é
  * operação remota via API, não precisa do checkout na branch do PR).
- * `maxWaitMs`/`pollIntervalMs` (2min/5s default) refletem a duração real
- * medida na issue (#8158: 19-44s por check, ~10 checks, historicamente
- * sempre convergindo em menos de 1min) com folga generosa.
+ * `maxWaitMs`/`pollIntervalMs` (2min/5s default) refletem a duração
+ * medida no #8158 (19-44s por check) — **premissa que caiu (#9593)**: o job
+ * `test` leva ~12min (PR #9588, 261005: 11m45s), então a espera síncrona de
+ * 2min quase nunca vê o CI fechar. Em vez de esticar a espera síncrona (que
+ * segura o gate do Stage 6 e esbarra no teto de 10min de um Bash foreground
+ * do harness), o timeout `pending` agora devolve `timedOut: true` e o
+ * `publish()` delega o merge a um waiter destacado (`spawnSitePageMergeWaiter`,
+ * modo `--merge-pr` deste mesmo script) com janela de
+ * `SITE_PAGE_CI_BACKGROUND_WAIT_MS`.
+ *
+ * PR já `MERGED` (waiter/editor/2ª chamada chegou antes) devolve
+ * `merged: true` sem chamar `gh pr merge` de novo; `CLOSED` devolve
+ * `merged: false` sem esperar.
  *
  * **Sempre fail-soft**: qualquer desfecho que não seja "CI verde + merge
  * confirmado" devolve `merged: false` com o motivo — o PR fica aberto,
@@ -878,20 +1034,31 @@ export function waitAndMergeSitePagePr(
   prNumber: number,
   gh: GhRunner = defaultGhRunner,
   sleep: SleepFn = defaultSleep,
-  maxWaitMs: number = 120_000,
+  maxWaitMs: number = SITE_PAGE_CI_SYNC_WAIT_MS,
   pollIntervalMs: number = 5_000,
-): { merged: boolean; reason: string } {
+): MergeAttemptResult {
   const deadline = Date.now() + maxWaitMs;
   for (;;) {
     let payload: unknown;
     try {
-      const raw = gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable"], rootDir);
+      const raw = gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable,state"], rootDir);
       payload = JSON.parse(raw);
     } catch (e) {
       return {
         merged: false,
         reason: `gh pr view falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
       };
+    }
+    // #9593: o waiter em background (ou o editor à mão, ou uma 2ª chamada do
+    // Stage 6) pode já ter mergeado este PR — `gh pr merge` num PR MERGED
+    // lança, e sem isto o desfecho viraria "merge falhou" (merged:false),
+    // sobrescrevendo no state file um merge que de fato aconteceu.
+    const prState = (payload as { state?: string }).state;
+    if (prState === "MERGED") {
+      return { merged: true, reason: `PR #${prNumber} já estava MERGED` };
+    }
+    if (prState === "CLOSED") {
+      return { merged: false, reason: `PR #${prNumber} foi FECHADO sem merge — nada a mergear` };
     }
     const rollup = (payload as { statusCheckRollup?: unknown }).statusCheckRollup;
     const mergeable = (payload as { mergeable?: string }).mergeable;
@@ -932,6 +1099,7 @@ export function waitAndMergeSitePagePr(
     if (Date.now() >= deadline) {
       return {
         merged: false,
+        timedOut: true,
         reason: `CI não convergiu em ${maxWaitMs}ms — PR #${prNumber} fica aberto pra revisão manual (fail-soft, mesmo comportamento pré-#8158)`,
       };
     }
@@ -1404,6 +1572,7 @@ export function productionDeps(
   lock: LockRunner = defaultLockRunner,
   sleep: SleepFn = defaultSleep,
   worktreeDir?: string,
+  spawnWaiter: MergeWaiterSpawner = defaultMergeWaiterSpawner,
 ): PublishPageDeps {
   return {
     readEditionInputs,
@@ -1528,7 +1697,7 @@ export function productionDeps(
 
       return { seoImageAdded, archiveIndexRegenerated };
     },
-    publish: (slug, sitemapPath?: string) => {
+    publish: (slug, sitemapPath?: string, editionDir?: string) => {
       const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
         rootDir,
         slug,
@@ -1545,8 +1714,24 @@ export function productionDeps(
       if (prNumber === undefined) {
         return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear", fetchStale };
       }
-      const { merged, reason: mergeReason } = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep);
-      return { pushed, prUrl, prNumber, prCreated, merged, mergeReason, fetchStale };
+      const attempt = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep);
+      let mergeReason = attempt.reason;
+      if (!attempt.merged && attempt.timedOut) {
+        // #9593: o job `test` leva ~12min — a espera síncrona de 2min quase
+        // nunca o vê fechar. Delega a um waiter destacado em vez de deixar o
+        // PR parado até alguém mergear à mão. Fail-soft: spawn falho só vira
+        // texto no motivo (o PR fica aberto, mesmo fallback de antes).
+        try {
+          const { pid } = spawnWaiter({ rootDir, prNumber, editionDir });
+          mergeReason =
+            `${attempt.reason}; merge delegado ao waiter em background (pid ${pid ?? "?"}, até ` +
+            `${Math.round(SITE_PAGE_CI_BACKGROUND_WAIT_MS / 60_000)}min) — ele grava o desfecho em ` +
+            `_internal/site-page-published.json (#9593)`;
+        } catch (e) {
+          mergeReason = `${attempt.reason}; waiter em background NÃO disparou (${(e as Error).message}) (#9593)`;
+        }
+      }
+      return { pushed, prUrl, prNumber, prCreated, merged: attempt.merged, mergeReason, fetchStale };
     },
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
@@ -1667,7 +1852,7 @@ export function publishEditionSitePage(
 
   let publishResult: PublishResult;
   try {
-    publishResult = deps.publish(built.post.slug, sitemapRelPath);
+    publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir);
   } catch (e) {
     // A página JÁ está escrita (e pode já estar commitada, se só o push
     // falhou) — a próxima rodada/push manual a leva junto. Por isso a
@@ -1817,9 +2002,25 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
 export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const editionDir = getArg(argv, "edition-dir");
+  // #9593: modo waiter (disparado por `defaultMergeWaiterSpawner`, não pelo
+  // Stage 6 diretamente) — só espera o CI do PR e mergeia; não escreve página.
+  const mergePrRaw = getArg(argv, "merge-pr");
+  if (mergePrRaw) {
+    const prNumber = Number(mergePrRaw);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) {
+      console.error(`--merge-pr precisa de um número de PR positivo (recebido: ${mergePrRaw})`);
+      process.exitCode = 1;
+      return;
+    }
+    const result = runMergeWaiter(ROOT, prNumber, editionDir ? resolve(ROOT, editionDir) : undefined);
+    console.log(JSON.stringify(result, null, 2));
+    process.exitCode = result.merged ? 0 : 1;
+    return;
+  }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>]",
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>]\n" +
+        "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
     return;
