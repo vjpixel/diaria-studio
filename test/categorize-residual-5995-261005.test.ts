@@ -173,3 +173,101 @@ describe("#5995 261005 — Apple Machine Learning Research é pesquisa", () => {
     assert.equal(bucketOf(a), "radar");
   });
 });
+
+describe("#5995 261005 — fixes do review da PR #9649 (notícia que MENCIONA a expressão não vira guia)", () => {
+  it("'aproveitar ao máximo' em notícia de pesquisa (type_hint=noticia) → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://exame.com/inteligencia-artificial/empresas-brasileiras-ia-pesquisa/",
+        title: "Empresas brasileiras não conseguem aproveitar ao máximo a IA, aponta pesquisa",
+        type_hint: "noticia",
+      }),
+      "radar",
+    );
+  });
+
+  it("'get the most out of' em notícia de survey (type_hint=noticia) → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://www.reuters.com/technology/companies-struggle-ai-agents-gartner-2026-10-01/",
+        title: "Companies struggle to get the most out of AI agents, Gartner survey finds",
+        type_hint: "noticia",
+      }),
+      "radar",
+    );
+  });
+
+  it("forma de guia segue positiva: 'Como aproveitar ao máximo o Gemini no celular' → use_melhor", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://example.com/gemini-no-celular",
+        title: "Como aproveitar ao máximo o Gemini no celular",
+      }),
+      "use_melhor",
+    );
+  });
+
+  it("slug de notícia 'stf-discute-como-usar-ia-em-julgamentos' (type_hint=noticia) → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://g1.globo.com/politica/noticia/2026/10/05/stf-discute-como-usar-ia-em-julgamentos.ghtml",
+        title: "STF discute uso de IA em julgamentos",
+        type_hint: "noticia",
+      }),
+      "radar",
+    );
+  });
+
+  it("slug: diretório '/como-fazer/' não transforma o item em tutorial → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://www.example.com.br/como-fazer/governo-anuncia-regulacao-da-ia/",
+        title: "Governo anuncia regulação da IA",
+        type_hint: "noticia",
+      }),
+      "radar",
+    );
+  });
+
+  it("slug: id numérico no fim — usa o último segmento NÃO-numérico (sympla) → use_melhor", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://www.sympla.com.br/evento-online/ia-produtividade-como-usar-inteligencia-artificial-no-trabalho/3530019",
+        title: "IA e produtividade",
+      }),
+      "use_melhor",
+    );
+  });
+
+  it("'3 ways to think about the AI bubble' (opiniao) → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://www.ft.com/content/ai-bubble-three-ways",
+        title: "3 ways to think about the AI bubble",
+        type_hint: "opiniao",
+      }),
+      "radar",
+    );
+  });
+
+  it("'Três prompts que quebraram a segurança do ChatGPT, segundo pesquisadores' (noticia) → radar", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://www.tecmundo.com.br/seguranca/tres-prompts-quebraram-seguranca-chatgpt.htm",
+        title: "Três prompts que quebraram a segurança do ChatGPT, segundo pesquisadores",
+        type_hint: "noticia",
+      }),
+      "radar",
+    );
+  });
+
+  it("'New Gemini features to help you get the most out of your day' (blog.google) segue LANÇAMENTO", () => {
+    assert.equal(
+      bucketOf({
+        url: "https://blog.google/products/gemini/new-gemini-features-day/",
+        title: "New Gemini features to help you get the most out of your day",
+      }),
+      "lancamento",
+    );
+  });
+});

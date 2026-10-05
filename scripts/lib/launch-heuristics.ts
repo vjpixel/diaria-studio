@@ -173,7 +173,7 @@ const PESQUISA_PATTERNS: RegExp[] = [
   // OpenAI research (não blog)
   /^openai\.com\/research\//,
   // #5995 (05/10/2026): Apple Machine Learning Research — /research/ é a
-  // listagem de papers do laboratório (56 de 57 itens no corpus já iam pra
+  // listagem de papers do laboratório (no corpus, os 58 itens em /research/ estão em
   // RADAR). Sem o path aqui, um abstract que diz "choosing which positions"
   // caía em USE MELHOR via keyword de tutorial (caso real 261005, "Limits of
   // Confidence in Diffusion", movido pelo editor pra RADAR).
@@ -1546,14 +1546,44 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
 // fora por regredir contra o corpus: "N prompts do ChatGPT para…", "melhores
 // prompts", "^Prompts para…", "N dicas para <qualquer verbo>" (16 itens desse
 // formato que o editor manteve em RADAR sem mover).
+//
+// Fixes do review (PR #9649): cada alternativa precisa ter forma de GUIA
+// (imperativo, 2ª pessoa, "como/how to"), não só conter a expressão — senão
+// notícia que a MENCIONA vira tutorial:
+//   - "aproveitar ao máximo"/"get the most out of" só em "como|para aproveitar",
+//     "aproveite ao máximo", "how to get" ou "Getting…" abrindo o título/frase.
+//     "Empresas brasileiras não conseguem aproveitar ao máximo a IA, aponta
+//     pesquisa" e "Companies struggle to get the most out of AI agents" não
+//     casam; "New Gemini features to help you get the most out of your day"
+//     (blog.google) segue LANÇAMENTO;
+//   - "N ways to <verbo>" só com verbo de USO (lista fechada) — "3 ways to think
+//     about the AI bubble" (opinião) não casa;
+//   - "N prompts que…" é anulado por atribuição de reportagem no título
+//     (NEWS_REPORT_TITLE_RE) — "Três prompts que quebraram a segurança do
+//     ChatGPT, segundo pesquisadores" relata um achado, não ensina a usar.
+//     Só nessa alternativa: aplicada às demais, a exclusão rebaixava "5 dicas
+//     para usar o ChatGPT melhor, segundo ele mesmo" (260723), que o critério
+//     de 17/09 do editor põe em USE MELHOR.
 const PT_LISTICLE_COUNT = "(?:\\d+|dois|duas|tr[êe]s|quatro|cinco|seis|sete|oito|nove|dez)";
+const EN_WAYS_TO_USAGE_VERBS =
+  "use|get|make|try|build|boost|save|start|kick-start|organize|create|improve|prep|plan|learn|write|master|automate|customize|personalize|level\\s+up|speed\\s+up";
 const USAGE_GUIDE_TITLE_RE = new RegExp(
-  `\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+(?:para|que)\\b` +
+  `\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+para\\b` +
     `|\\b${PT_LISTICLE_COUNT}\\s+(?:dicas|ideias|truques)\\s+(?:para|de)\\s+(?:usar|utilizar)\\b` +
-    "|\\bget(?:ting)?\\s+the\\s+most\\s+out\\s+of\\b|\\baproveitar\\s+ao\\s+m[áa]ximo\\b" +
-    "|\\b\\d+\\s+ways\\s+to\\s+[a-z]",
+    "|(?:^|[:—–|]\\s*)getting\\s+the\\s+most\\s+out\\s+of\\b|\\bhow\\s+to\\s+get\\s+the\\s+most\\s+out\\s+of\\b" +
+    "|\\b(?:como|para)\\s+aproveitar\\s+ao\\s+m[áa]ximo\\b|\\baproveite\\s+ao\\s+m[áa]ximo\\b" +
+    `|\\b\\d+\\s+ways\\s+to\\s+(?:${EN_WAYS_TO_USAGE_VERBS})\\b`,
   "i",
 );
+const PROMPTS_QUE_TITLE_RE = new RegExp(`\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+que\\b`, "i");
+// Atribuição típica de reportagem ("segundo X", "aponta pesquisa", "revela").
+const NEWS_REPORT_TITLE_RE = /\b(?:segundo|pesquisadores?|revelam?|apontam?|estudo|levantamento)\b/i;
+
+function isUsageGuideTitle(title: string): boolean {
+  return (
+    USAGE_GUIDE_TITLE_RE.test(title) || (PROMPTS_QUE_TITLE_RE.test(title) && !NEWS_REPORT_TITLE_RE.test(title))
+  );
+}
 
 // #5995 (05/10/2026): "como <verbo acionável>" no SLUG da URL. Portal PT-BR
 // (canaltech sobretudo) encurta a manchete e deixa o how-to só no slug:
@@ -1561,11 +1591,43 @@ const USAGE_GUIDE_TITLE_RE = new RegExp(
 // (261005); "O que é o Canvas do ChatGPT e como ele funciona?" →
 // `…/o-que-e-chatgpt-canvas-e-como-usar/` (260825). Mesma lista fechada de
 // verbos do "como <verbo>" do título (TUTORIAL_ACTION_VERBS_PT) — "como-
-// funciona"/"como-sera" não casam. Corpus: 5 melhorias, 0 regressões.
+// funciona"/"como-sera" não casam.
+//
+// Fixes do review (PR #9649):
+//   - olha só o ÚLTIMO segmento não-numérico do path (sem .ghtml/.html), nunca
+//     os diretórios — uma seção `/como-fazer/` não transforma todo item dela
+//     em tutorial; `sympla…/ia-produtividade-como-usar-…/3530019` (id numérico
+//     no fim) segue positivo;
+//   - com type_hint noticia/opiniao, "como <verbo>" logo depois de verbo de
+//     deliberação/reportagem ("discute|debate|define|decide|avalia|estuda|
+//     analisa|propõe|regulamenta|investiga|questiona como usar") é pergunta
+//     indireta de notícia, não chamada ao leitor — "stf-discute-como-usar-ia-
+//     em-julgamentos" não casa; "…-veja-como-personalizar-terminal…" e
+//     "chega-de-decorar-formulas-como-usar-…" (notícias, USE MELHOR no
+//     gabarito) seguem positivos. Lista NEGATIVA de propósito: a alternativa
+//     positiva (só "veja|saiba|aprenda|confira como" ou "como-" no início)
+//     perdia o caso michelfabiano (260814) no corpus.
 const SLUG_HOWTO_RE = new RegExp(`\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b`, "i");
+const SLUG_NEWS_DELIBERATION_RE = new RegExp(
+  "\\b(?:discut|debat|defin|decid|avali|estud|analis|prop[õo]|regulament|investig|question|vot)[a-zà-ú]*\\s+" +
+    `como\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b`,
+  "i",
+);
 
-function hasHowToSlug(url: string): boolean {
-  return SLUG_HOWTO_RE.test(rawUrlSlug(url).replace(/[-_/]+/g, " "));
+/** Último segmento não-numérico do path, sem extensão de página, com `-`/`_` → espaço. */
+function lastSlugSegment(url: string): string {
+  const segs = rawUrlSlug(url)
+    .split("/")
+    .map((s) => s.replace(/\.(?:s?html?|ghtml|php|aspx?)$/i, ""))
+    .filter((s) => s !== "" && !/^\d+$/.test(s));
+  return (segs.at(-1) ?? "").replace(/[-_]+/g, " ").trim();
+}
+
+function hasHowToSlug(url: string, typeHint: string | null | undefined): boolean {
+  const slug = lastSlugSegment(url);
+  if (!SLUG_HOWTO_RE.test(slug)) return false;
+  if (typeHint === "noticia" || typeHint === "opiniao") return !SLUG_NEWS_DELIBERATION_RE.test(slug);
+  return true;
 }
 
 function isTutorialByKeyword(article: Article): boolean {
@@ -1573,8 +1635,8 @@ function isTutorialByKeyword(article: Article): boolean {
   return (
     TUTORIAL_KEYWORDS_RE.test(hay) ||
     DISCOVERY_LISTICLE_RE.test(hay) ||
-    USAGE_GUIDE_TITLE_RE.test(article.title ?? "") ||
-    hasHowToSlug(article.url ?? "")
+    isUsageGuideTitle(article.title ?? "") ||
+    hasHowToSlug(article.url ?? "", article.type_hint)
   );
 }
 
