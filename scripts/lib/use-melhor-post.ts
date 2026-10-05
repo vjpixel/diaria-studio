@@ -141,22 +141,26 @@ const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\
  * numeração solta (ano, ranking) não vira passo. Sem passos → `[]`.
  */
 export function extractUseMelhorSteps(text: string): string[] {
-  const steps: string[] = [];
-  let expected = 1;
+  // Várias listas numeradas (sumário, requisitos, passos): coleta cada run 1..N
+  // consecutivo e fica com a mais longa (empate → a última). Linha não-passo
+  // entre dois passos não quebra o run (passos têm parágrafos de explicação).
+  const runs: string[][] = [];
+  let cur: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
     const m = raw.trim().match(STEP_LINE);
     if (!m) continue;
     const n = Number(m[1] ?? m[2]);
-    if (n === expected) {
-      steps.push(m[3].trim());
-      expected++;
-    } else if (n === 1 && steps.length < 2) {
-      steps.length = 0; // falso começo (ex.: lista anterior de 1 item) — recomeça
-      steps.push(m[3].trim());
-      expected = 2;
+    if (n === 1) {
+      if (cur.length) runs.push(cur);
+      cur = [m[3].trim()];
+    } else if (cur.length && n === cur.length + 1) {
+      cur.push(m[3].trim());
     }
   }
-  return steps.length >= 2 ? steps : [];
+  if (cur.length) runs.push(cur);
+  let best: string[] = [];
+  for (const r of runs) if (r.length >= best.length) best = r;
+  return best.length >= 2 ? best : [];
 }
 
 export const USE_MELHOR_BODY_MAX_CHARS = 6000;
