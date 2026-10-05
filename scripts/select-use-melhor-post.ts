@@ -15,7 +15,10 @@
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir data/editions/AAMMDD/
  *
  *   # Re-seleção contra o 02-reviewed.md final (editor mexeu no USE MELHOR no gate).
- *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --reviewed
+ *   # Preserva o item já escolhido (Stage 2 ou troca manual `editor-override-*`)
+ *   # enquanto ele seguir renderizado no USE MELHOR final — só re-seleciona por
+ *   # score quando ele saiu da edição (#9610). `--force` re-seleciona sempre.
+ *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --reviewed [--force]
  *
  *   # Stage 4: linha(s) do 4º post pro resumo do gate ({use_melhor_post_block}).
  *   npx tsx scripts/select-use-melhor-post.ts --edition-dir ... --status [--json]
@@ -28,10 +31,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
+  checkUseMelhorItemInFinal,
   computeStage2UseMelhorPostState,
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
   readApprovedForUseMelhor,
+  readUseMelhorPostState,
   renderedUseMelhorUrls,
   selectUseMelhorItem,
   useMelhorCandidatesFromApproved,
@@ -66,20 +71,40 @@ export function runSelection(
   config: UseMelhorPostConfigState,
   opts: {
     useReviewed?: boolean;
+    /**
+     * #9610: com `useReviewed`, re-seleciona por score mesmo quando o item já
+     * escolhido segue na edição (descarta troca manual do editor). Default false.
+     */
+    forceReselect?: boolean;
     now?: Date;
     /** #9599: tópicos de descontinuação; default = lidos de `data/past-editions.md`. */
     discontinuationTopics?: readonly DiscontinuationTopic[];
   } = {},
-): { state: UseMelhorPostState; written: string | null } {
+): { state: UseMelhorPostState; written: string | null; preserved?: boolean } {
   const topics = opts.discontinuationTopics ?? loadDiscontinuationTopics(ROOT);
   const exclude = (c: { url: string; title: string }): string | null => {
     const m = findDiscontinuedTopic(c, topics);
     return m ? describeDiscontinuedMatch(m) : null;
   };
+  // #9610: lido ANTES de qualquer recomputação — é o item para o qual o `## um`
+  // foi escrito (seleção do Stage 2 ou troca manual do editor).
+  const previous = opts.useReviewed ? readUseMelhorPostState(editionDir) : null;
   let state = computeStage2UseMelhorPostState(editionDir, config, opts.now, { exclude });
   if (!state.enabled) return { state, written: null };
   if (opts.useReviewed) {
     const reviewed = readIfExists(resolve(editionDir, "02-reviewed.md"));
+    // #9610: o item escolhido ainda está no USE MELHOR final → preserva-o
+    // (inclusive `selected_from: editor-override-*` e `cover_title`). Re-selecionar
+    // por maior score aqui desfaria a troca do editor e descasaria o `## um`.
+    if (
+      !opts.forceReselect &&
+      reviewed !== null &&
+      previous?.enabled &&
+      previous.item &&
+      checkUseMelhorItemInFinal(previous.item, reviewed).ok
+    ) {
+      return { state: previous, written: null, preserved: true };
+    }
     const approved = readApprovedForUseMelhor(editionDir);
     if (reviewed !== null && approved !== null) {
       const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewed), {
@@ -109,8 +134,16 @@ function main(): void {
     return;
   }
 
-  const { state, written } = runSelection(editionDir, config, { useReviewed: args.flags.has("reviewed") });
-  console.log(JSON.stringify({ ...state, path: written }, null, 2));
+  const { state, written, preserved } = runSelection(editionDir, config, {
+    useReviewed: args.flags.has("reviewed"),
+    forceReselect: args.flags.has("force"),
+  });
+  if (preserved) {
+    console.error(
+      "select-use-melhor-post: item escolhido segue no USE MELHOR final — preservado (passe --force para re-selecionar por score).",
+    );
+  }
+  console.log(JSON.stringify({ ...state, path: written, ...(preserved ? { preserved: true } : {}) }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {

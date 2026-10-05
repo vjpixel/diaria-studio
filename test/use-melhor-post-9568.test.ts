@@ -224,7 +224,7 @@ describe("seleção do item (#9568)", () => {
 describe("Stage 2: seleção grava estado só quando ligado (#9568)", () => {
   it("desligado → NÃO grava _internal/use-melhor-post.json", () => {
     const dir = makeEdition();
-    const { state, written } = runSelection(dir, OFF);
+    const { state, written } = runSelection(dir, OFF, { discontinuationTopics: [] });
     assert.equal(state.enabled, false);
     assert.equal(written, null);
     assert.equal(existsSync(useMelhorPostStatePath(dir)), false);
@@ -232,7 +232,7 @@ describe("Stage 2: seleção grava estado só quando ligado (#9568)", () => {
 
   it("ligado → grava o item de maior score", () => {
     const dir = makeEdition();
-    const { state, written } = runSelection(dir, ON);
+    const { state, written } = runSelection(dir, ON, { discontinuationTopics: [] });
     assert.equal(state.item?.title, "Guia B");
     assert.equal(written, useMelhorPostStatePath(dir));
     assert.equal(JSON.parse(readFileSync(written!, "utf8")).item.url, "https://www.fast.com/b?utm_source=x");

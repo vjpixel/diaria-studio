@@ -178,6 +178,46 @@ describe("#9592 — a escolha gravada vale enquanto o item estiver na edição",
   });
 });
 
+describe("#9610 — `--reviewed` não desfaz a troca manual do editor", () => {
+  function edition261005(): string {
+    const dir = tmpEdition();
+    writeFileSync(join(dir, "_internal", "01-approved-capped.json"), JSON.stringify(APPROVED_261005));
+    writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_261005);
+    writeUseMelhorPostState(dir, EDITOR_STATE);
+    return dir;
+  }
+  const statePath = (dir: string) => join(dir, "_internal", "use-melhor-post.json");
+
+  it("REGRESSÃO: item escolhido (score 60) segue no USE MELHOR → preservado, arquivo intocado", () => {
+    const dir = edition261005();
+    const before = readFileSync(statePath(dir), "utf8");
+    const r = runSelection(dir, ON, { useReviewed: true, discontinuationTopics: [] });
+    assert.equal(r.preserved, true);
+    assert.equal(r.written, null);
+    assert.equal(r.state.item?.url, INSTA_URL);
+    assert.equal(r.state.item?.title, EDITOR_ITEM.title);
+    assert.equal(r.state.selected_from, "editor-override-passo-a-passo");
+    assert.equal(readFileSync(statePath(dir), "utf8"), before);
+  });
+
+  it("item escolhido saiu da edição → re-seleciona pelo maior score renderizado", () => {
+    const dir = edition261005();
+    writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_261005.split("\n").filter((l) => !l.includes(INSTA_URL)).join("\n"));
+    const r = runSelection(dir, ON, { useReviewed: true, discontinuationTopics: [] });
+    assert.notEqual(r.preserved, true);
+    assert.equal(r.state.item?.url, MODS.url);
+    assert.equal(r.state.selected_from, "reviewed");
+    assert.ok(r.written);
+  });
+
+  it("forceReselect: re-seleciona por score mesmo com o item escolhido na edição", () => {
+    const dir = edition261005();
+    const r = runSelection(dir, ON, { useReviewed: true, forceReselect: true, discontinuationTopics: [] });
+    assert.notEqual(r.preserved, true);
+    assert.equal(r.state.item?.url, MODS.url);
+  });
+});
+
 // ── #9599 ────────────────────────────────────────────────────────────────────
 const CANALTECH_FIM_GPTS =
   "https://canaltech.com.br/inteligencia-artificial/fim-dos-gpts-personalizados-openai-vai-matar-recurso-no-chatgpt-saiba-como-salvar-o-seu/";
