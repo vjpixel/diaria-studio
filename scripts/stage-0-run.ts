@@ -274,6 +274,31 @@ export function defaultWindowDays(now: Date): number {
   return 4; // seg/ter + fim de semana (fallback conservador)
 }
 
+/**
+ * #9584: janela default (`since_hours`) efetiva do auto-capture de
+ * newsletters (0b-bis), derivada do dia da semana da EDIÇÃO.
+ *
+ * Edições de segunda e terça têm janela de pesquisa de 4 dias (regra
+ * "Dentro da janela de publicação", `context/editorial-rules.md` — segunda:
+ * quinta→segunda; terça: sexta→terça). A captura roda na véspera (domingo /
+ * segunda à noite) e, com o `since_hours` fixo de 48h, só enxergava ~2 dias —
+ * o que as newsletters mandaram na quinta/sexta ficava de fora (edição 261005:
+ * 6 de 15 senders perdidos). Nessas edições a janela vira
+ * `max(since_hours, windowDays * 24)`; nas de quarta a sexta (janela de 3 dias)
+ * segue `since_hours` puro — comportamento inalterado.
+ *
+ * `max` (nunca substituição): um `since_hours` configurado maior que a janela
+ * de pesquisa continua valendo. Overrides de `since_hours_by_sender` não passam
+ * por aqui — seguem como override explícito por sender.
+ */
+export function captureSinceHoursForEdition(editionIso: string, windowDays: number, sinceHours: number): number {
+  const day = new Date(`${editionIso}T00:00:00Z`).getUTCDay(); // 0=Dom..6=Sáb
+  if (Number.isNaN(day)) return sinceHours;
+  if (day !== 1 && day !== 2) return sinceHours; // só segunda/terça
+  if (!Number.isFinite(windowDays) || windowDays <= 0) return sinceHours;
+  return Math.max(sinceHours, windowDays * 24);
+}
+
 // ---------------------------------------------------------------------------
 // Opções da CLI
 // ---------------------------------------------------------------------------
@@ -514,8 +539,16 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       // seguras (não se sobrescrevem).
       const overrideSenders = senders.filter((s) => typeof sinceHoursBySender[s] === "number");
       const defaultSenders = senders.filter((s) => typeof sinceHoursBySender[s] !== "number");
+      // #9584: edição de segunda/terça (janela de pesquisa de 4 dias) alarga a
+      // janela default até cobrir a janela de pesquisa inteira.
+      const effectiveSinceHours = captureSinceHoursForEdition(editionIso, windowDays, sinceHours);
+      if (effectiveSinceHours !== sinceHours) {
+        logEvent(deps, opts.edition, "info", `0b-bis: since_hours ${sinceHours}h → ${effectiveSinceHours}h (edição seg/ter, janela de ${windowDays} dias, #9584)`, {
+          informational: true,
+        });
+      }
       const fetchGroups: Array<{ senders: string[]; hours: number }> = [];
-      if (defaultSenders.length > 0) fetchGroups.push({ senders: defaultSenders, hours: sinceHours });
+      if (defaultSenders.length > 0) fetchGroups.push({ senders: defaultSenders, hours: effectiveSinceHours });
       for (const s of overrideSenders) fetchGroups.push({ senders: [s], hours: sinceHoursBySender[s] });
 
       // #7871 review (PR #7871, findings inline em stage-0-run.ts:533): com
