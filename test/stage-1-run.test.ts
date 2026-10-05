@@ -1278,6 +1278,24 @@ describe("runStage1 --phase post-gate", () => {
     });
   });
 
+  it("#9595 --auto: MESMO FATO em destaque aprovado sobe pro relatório do Stage 1", async () => {
+    return withTmpRoot("stage-1-run-p5-samefact-", (root, editionDir) => {
+      const url = "https://www.bra1.com.br/tecnologia/id-702240/deepfakes";
+      writeJson(root, `${editionDir}/_internal/01-highlight-theme-check.json`, {
+        same_fact_warnings: [
+          { kind: "highlight", rank: 1, item_title: "Deepfakes com IA explodem", item_url: url, matched_edition: "261002", matched_title: "VigIA: 1º turno", shared_products: [], matched_bucket: "highlight", evidence: "numbers", shared_numbers: ["190", "379"] },
+        ],
+      });
+      writeJson(root, `${editionDir}/_internal/01-approved.json`, { highlights: [{ url, article: { url, title: "Deepfakes com IA explodem" } }] });
+      const { exec } = makeFakeExec(happyHandlers({ "apply-same-fact-removal.ts": () => ok("{}") }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(result.notes.some((n) => n.includes("MESMO FATO — D1") && n.includes("261002") && n.includes("190, 379")));
+      });
+    });
+  });
+
   it("--md: aplica gate + re-renderiza MD + valida lançamentos", async () => {
     return withTmpRoot("stage-1-run-p5-md-", (root, editionDir) => {
       writeFileSync(resolve(root, "data", "inbox.md"), "conteúdo", "utf8");

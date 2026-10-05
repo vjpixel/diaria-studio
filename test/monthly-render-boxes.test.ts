@@ -220,30 +220,32 @@ describe("parseUseMelhorCount", () => {
   });
 });
 
-describe("DIVULGAÇÃO com imagem no topo (box da imersão 10/10)", () => {
+// #9591: fixture com a copy ATUAL da caixa da imersão de 17/10 (a de 10/10,
+// "Quero criar meu agente!", foi substituída em #9587).
+describe("DIVULGAÇÃO com imagem no topo (box da imersão 17/10)", () => {
   const draft = [
     "**ASSUNTO**",
     "1. Teste",
     "",
     "**DIVULGAÇÃO**",
     "",
-    "![Crie seu agente de IA](https://eia.diar.ia.br/img/x.jpg)",
+    "![Homem toma água de coco numa poltrona enquanto braços robóticos trabalham no computador](https://eia.diar.ia.br/img/x.jpg)",
     "",
-    "Crie seu agente de IA sem programar",
+    "IA não é só pra bater papo. Crie conteúdo com identidade.",
     "",
-    "Sábado, 10/10, das 14h às 18h.",
+    "Em uma tarde, sem programar, você monta um comando no ChatGPT.",
     "",
-    "→ [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)",
+    "→ [Saiba mais](https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-voz)",
   ].join("\n");
 
   it("imagem vira <img> no topo, título mantido, parágrafo preservado", () => {
     const { html } = draftToEmail(draft, "Teste", "2608");
     assert.ok(html.includes('<img src="https://eia.diar.ia.br/img/x.jpg"'), "imagem no topo");
-    assert.ok(html.includes('alt="Crie seu agente de IA"'), "alt vem do markdown");
-    assert.ok(/<h3[^>]*>Crie seu agente de IA sem programar<\/h3>/.test(html), "título mantido");
-    assert.ok(/<p[^>]*>Sábado, 10\/10/.test(html), "parágrafo renderizado");
+    assert.ok(html.includes('alt="Homem toma água de coco numa poltrona'), "alt vem do markdown");
+    assert.ok(/<h3[^>]*>IA não é só pra bater papo\. Crie conteúdo com identidade\.<\/h3>/.test(html), "título mantido");
+    assert.ok(/<p[^>]*>Em uma tarde, sem programar/.test(html), "parágrafo renderizado");
     assert.ok(!html.includes("!["), "markdown de imagem não vaza");
-    assert.ok(html.includes("Quero criar meu agente!"), "CTA");
+    assert.ok(html.includes("Saiba mais"), "CTA");
   });
 
   it("sem imagem, 1ª linha segue sendo título (regressão)", () => {

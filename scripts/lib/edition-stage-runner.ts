@@ -152,6 +152,10 @@ export const NO_BACKGROUND_DIRECTIVE =
   "com sleep/while/tasklist/ls em loop para esperar subagentes — esses comandos são negados " +
   "aqui e cada tentativa consome um turno do teto --max-turns.";
 
+/** #9597: "waiting for this/it/the subagents… to complete/finish" (texto já em minúsculas). */
+const WAIT_FOR_COMPLETION_RE =
+  /\bwait(?:ing)? for (?:this|it|that|them|these|those|the [a-z0-9 _./-]{1,60}?) to (?:complete|finish)/;
+
 /**
  * Detecta a assinatura do #6045 no stdout de uma sub-sessão que saiu sem
  * completar: ela despachou uma task em background e encerrou "esperando" a
@@ -161,8 +165,44 @@ export function looksLikeBackgroundWaitExit(stdout: string): boolean {
   const s = stdout.toLowerCase();
   return (
     (s.includes("background") && (s.includes("waiting") || s.includes("wait for"))) ||
-    s.includes("waiting for the background task")
+    s.includes("waiting for the background task") ||
+    // #9597 (edição 261005): o Stage 1 saiu 0 após 21 min com a última linha
+    // "Waiting for this to complete." — sem a palavra "background", então o
+    // retry único do #6045 nunca disparou e a re-execução foi manual. A frase
+    // "esperando X terminar" como encerramento de uma sessão single-turn é o
+    // mesmo sintoma. Só é consultado com a sentinela AUSENTE, e o custo de um
+    // falso positivo é um retry (que pula o que já está em disco). Só as
+    // últimas linhas não-vazias (finding P3 do self-review da PR #9605): a
+    // frase é sintoma quando ENCERRA a sessão, não quando aparece no meio de
+    // um relatório de conclusão.
+    WAIT_FOR_COMPLETION_RE.test(lastNonEmptyLines(s, WAIT_PHRASE_TAIL_LINES))
   );
+}
+
+/** Quantas linhas não-vazias finais a regex do #9597 inspeciona. */
+export const WAIT_PHRASE_TAIL_LINES = 3;
+
+function lastNonEmptyLines(text: string, n: number): string {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => l.trim() !== "")
+    .slice(-n)
+    .join("\n");
+}
+
+/**
+ * Decide o retry único do #6045/#9597. Nunca re-roda um stage que terminou por
+ * estouro de turnos (`terminal_reason` com `max_turns`, lido do envelope JSON
+ * cru): a frase "waiting for…" ali é incidental, e o retry custaria mais 120
+ * turnos (~US$ 10 na medição da 261005) para bater no mesmo teto — finding P2
+ * do self-review da PR #9605.
+ */
+export function shouldRetryBackgroundWait(diagnosticText: string, rawStdout: string | undefined): boolean {
+  if (rawStdout) {
+    const reason = parseCliRunMeta(rawStdout)?.terminalReason ?? "";
+    if (/max_turns/i.test(reason)) return false;
+  }
+  return looksLikeBackgroundWaitExit(diagnosticText);
 }
 
 /** Tentativas por stage quando o sintoma do #6045 é detectado (1 original + 1 retry). */
@@ -327,6 +367,24 @@ export function summarizePermissionDenials(raw: string): string | null {
   }
   const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
   return `${list.length} permission_denials (${parts.join(", ")})`;
+}
+
+/**
+ * #9597 (pure): rótulo do envelope `--output-format json` para o failureTail —
+ * `terminal_reason=error_max_turns, num_turns=121 (estourou o teto --max-turns 120)`.
+ * `null` quando o stdout não é JSON ou não traz nem motivo nem turnos. Antes o
+ * `terminal_reason` só ia pro `stage-status.json` (#9222): o resumo que o
+ * editor lê dizia "sentinela não foi escrita" sem dizer que o stage estourou
+ * o teto de turnos (edição 261005, Stage 2).
+ */
+export function formatRunMetaLabel(raw: string): string | null {
+  const meta = parseCliRunMeta(raw);
+  if (!meta || (meta.terminalReason === undefined && meta.numTurns === undefined)) return null;
+  const parts: string[] = [];
+  if (meta.terminalReason) parts.push(`terminal_reason=${meta.terminalReason}`);
+  if (meta.numTurns !== undefined) parts.push(`num_turns=${meta.numTurns}`);
+  const hitCap = /max_turns/i.test(meta.terminalReason ?? "");
+  return parts.join(", ") + (hitCap ? ` (estourou o teto --max-turns ${MAX_TURNS})` : "");
 }
 
 /** #9223: a partir de quantas tentativas de polling negadas o failureTail rotula o padrão. */
@@ -694,7 +752,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
         // #9222/#9312: persiste num_turns/terminal_reason/custo da tentativa
         // ANTES do `continue` do retry — senão a tentativa 1 nem era gravada.
         recordStageRun(editionDir, aammdd, stage, stdoutText, onProgress);
-        if (looksLikeBackgroundWaitExit(diagnosticText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+        if (shouldRetryBackgroundWait(diagnosticText, stdoutText) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
           continue;
         }
         const denials = summarizePermissionDenials(stdoutText);
@@ -704,6 +762,8 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
             ? ` | polling negado ×${deniedPolling} (#9223 — Agent é síncrono, não há o que esperar)`
             : "";
         const tail = summarizeFailure(diagnosticText);
+        // #9597: motivo de término/turnos do envelope no próprio resumo.
+        const runMeta = formatRunMetaLabel(stdoutText);
         exitCode = 1;
         failedStage = stage;
         stageOutcome = {
@@ -712,7 +772,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
-          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${denials ? ` | ${denials}` : ""}${pollingPart} | últimas linhas de stdout: ${tail}`,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${runMeta ? ` | ${runMeta}` : ""}${denials ? ` | ${denials}` : ""}${pollingPart} | últimas linhas de stdout: ${tail}`,
         };
         break;
       }
@@ -742,18 +802,24 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       }
       // #6045: mesmo tratamento no caminho de exceção — retry único quando a
       // assinatura background-wait está presente.
-      if (looksLikeBackgroundWaitExit(combined) && attempt < BACKGROUND_WAIT_MAX_ATTEMPTS) {
+      if (
+        shouldRetryBackgroundWait(combined, typeof err.stdout === "string" ? err.stdout : undefined) &&
+        attempt < BACKGROUND_WAIT_MAX_ATTEMPTS
+      ) {
         continue;
       }
       exitCode = err.status ?? 1;
       failedStage = stage;
+      // #9597: idem caminho de sucesso-sem-sentinela — error_max_turns com
+      // exit != 0 também nomeia o motivo no resumo.
+      const runMeta = typeof err.stdout === "string" && err.stdout ? formatRunMetaLabel(err.stdout) : null;
       stageOutcome = {
         stage,
         skill,
         status: "failed",
         exitCode,
         durationMs: nowMs() - startedAt,
-        failureTail: summarizeFailure(combined),
+        failureTail: `${runMeta ? `${runMeta} | ` : ""}${summarizeFailure(combined)}`,
       };
       break;
     }
