@@ -30,6 +30,22 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
 import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts";
+import { GTM_CONTAINER_ID, renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
+
+/**
+ * #9590 — o `<script>` do loader do GTM exatamente como `renderAnalyticsHead()`
+ * o gera hoje (as páginas do evento são estáticas, então o HTML é literal; o
+ * teste compara contra o helper pra cópia colada não ficar pra trás).
+ */
+function gtmLoaderScript(): string {
+  const m = renderAnalyticsHead().match(/<script>\(function\(w,d,s,l,i\)[\s\S]*?<\/script>/);
+  assert.ok(m, "renderAnalyticsHead() não emitiu mais o loader do GTM — regex desatualizada?");
+  return m[0];
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
@@ -44,6 +60,8 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
+    // #9590: idem pro GTM/GA4 — a sessão é contada na versão de destino, que recebe as UTMs via location.search.
+    assert.doesNotMatch(html, /googletagmanager\.com/);
     // Sem JavaScript, cai na versão D em vez de ficar numa página vazia.
     assert.match(html, /url=\/evento\/agente-ia\/d"/);
   });
@@ -72,6 +90,36 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
       it("fbq('init', ...) inicializa o pixel com external_id: window.__DIA_VID__ — advanced matching no PRIMEIRO disparo, sem esperar o GTM", () => {
         const html = readFileSync(page, "utf8");
         assert.match(html, /fbq\('init', '1285191740325112', \{ external_id: window\.__DIA_VID__ \}\);/);
+      });
+
+      it("#9590: carrega o container GTM (é por ele que o GA4 recebe a sessão com as UTMs) — byte a byte igual ao de renderAnalyticsHead(), uma vez só, DEPOIS do bootstrap _dia_vid", () => {
+        // Regressão: a página do evento não carregava o GTM, então o GA4
+        // (destino da Google tag AW-… dentro do container) nunca via as
+        // sessões vindas da Clarice News (utm_source=clarice, utm_content
+        // caixa-*) — só o pixel Meta direto rodava.
+        const html = readFileSync(page, "utf8");
+        const loader = gtmLoaderScript();
+        assert.ok(loader.includes(`'${GTM_CONTAINER_ID}'`));
+        assert.equal(countOccurrences(html, loader), 1, "loader do GTM ausente, divergente do helper ou duplicado");
+        assert.equal(countOccurrences(html, "googletagmanager.com/gtm.js"), 1);
+        // Ordem: o dataLayer precisa já ter external_id quando o GTM inicializa.
+        const vidAt = html.indexOf(`<script>${visitorIdBootstrapJs()}</script>`);
+        assert.ok(vidAt >= 0);
+        assert.ok(html.indexOf(loader) > vidAt, "GTM carregado antes do bootstrap _dia_vid");
+        // Sem 2º bootstrap: o GTM entrou sozinho, não o renderAnalyticsHead() inteiro.
+        assert.equal(countOccurrences(html, "var COOKIE=\"_dia_vid\""), 1);
+      });
+
+      it("#9590: o PageView do Meta continua saindo uma vez só (pixel direto) — o GTM não ganhou um 2º init/PageView na página", () => {
+        // A tag PageView do Meta no container é restrita a
+        // cursos|livros.diar.ia.br (medido no gtm.js publicado em 05/10/2026);
+        // aqui o guard é do lado do repo: um único init e um único PageView
+        // inline, sem outro snippet do pixel colado junto com o GTM.
+        const html = readFileSync(page, "utf8");
+        // Conta a CHAMADA (com o pixel ID), não a menção no comentário do #8978.
+        assert.equal(countOccurrences(html, "fbq('init', '"), 1);
+        assert.equal(countOccurrences(html, "fbq('track', 'PageView')"), 1);
+        assert.equal(countOccurrences(html, "connect.facebook.net/en_US/fbevents.js"), 1);
       });
 
       it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
