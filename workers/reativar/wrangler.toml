@@ -108,8 +108,12 @@ KIT_REFERRING_SITE_FIELD = "referring_site"
 # único sinal MEDÍVEL de "clicou no botão" pra quem entrou por
 # google-ads/clarice/diaria-apex (a UTM de reativação só carimba campos
 # VAZIOS, #8235). VAR, não secret (mesmo tratamento dos demais
-# KIT_*_FIELD acima). Custom field já existe na conta Kit de produção
-# (criado 26/09/2026, ver scripts/lib/shared/reativar-confirmou-via.ts).
+# KIT_*_FIELD acima). CORREÇÃO (#9663): esta linha dizia que o custom field
+# já existia no Kit desde 26/09/2026 — não existia (GET /v4/custom_fields em
+# 05/10/2026), e o Kit descarta em silêncio chave de `fields` desconhecida, então
+# nada foi gravado de 28/09 a 05/10. Guard: scripts/check-kit-worker-custom-fields.ts
+# (armado no check-brevo-diaria-guardrail) alarma se algum KIT_*_FIELD daqui
+# apontar pra field inexistente.
 KIT_CONFIRMOU_VIA_FIELD = "confirmou_via"
 
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
