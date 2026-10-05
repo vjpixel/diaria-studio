@@ -685,7 +685,7 @@ Chamada idempotente — reapresentações (após "rejeitar e re-rodar") não sob
    - `lancamentosWarnings` (do enrich-primary-source)
    - `validateOutput.assertions` (do 1w-bis, status=warn)
    - `payload sizes` (do 1w-ter)
-   - `same_fact_warnings` (do 1w-quint-b, #9100) — **apresentar PRIMEIRO e destacado**: produto+versão em comum com um DESTAQUE recente (ex: "Sonnet 5.5"), candidato a destaque ou pool. Alta precisão; só sinaliza, o editor decide trocar/remover.
+   - `same_fact_warnings` (do 1w-quint-b, #9100) — **apresentar PRIMEIRO e destacado**: produto+versão em comum com um DESTAQUE recente (ex: "Sonnet 5.5"), candidato a destaque ou pool. Desde #9595 também `evidence: "numbers"` — candidato a destaque com ≥2 cifras distintivas em comum (`shared_numbers`) com um destaque recente: a mesma história de outro veículo (ex: "554 deepfakes", Lula 379/Flávio 190). Alta precisão; só sinaliza, o editor decide trocar/remover. Em `--auto` o aviso dos destaques aprovados sai nas notas do `stage-1-run.ts` pós-gate.
    - `repeatTheme` (do 1w-quint-b, se houver)
    - `editorSubmittedLost` (do 1l, se houver — item 4a do gate)
    - `stats.editorSubmittedLost` do research-review-dates (1p1) — item 4b do gate (deveria ser vazio)

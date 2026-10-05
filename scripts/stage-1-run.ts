@@ -169,6 +169,7 @@ import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-ca
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
+import { formatHighlightSameFactNotes } from "./lib/same-fact-check.ts"; // #9595
 
 // Mesma disciplina do #4983 — carregar .env ANTES de qualquer outro código.
 loadProjectEnv();
@@ -701,6 +702,23 @@ function resolveEditionDir(deps: Stage1RunDeps, edition: string): string {
 
 function internalPath(editionDir: string, file: string): string {
   return `${editionDir}/_internal/${file}`;
+}
+
+/**
+ * #9595: avisos de MESMO FATO nos destaques aprovados, lidos de
+ * `01-highlight-theme-check.json` × `01-approved.json`. Fail-soft: arquivo
+ * ausente/ilegível → nenhuma linha (o check em si já é fail-soft).
+ */
+function highlightSameFactNotes(deps: Stage1RunDeps, editionDir: string, approvedPath: string): string[] {
+  const themePath = resolve(deps.rootDir, internalPath(editionDir, "01-highlight-theme-check.json"));
+  const approvedAbs = resolve(deps.rootDir, approvedPath);
+  try {
+    if (!deps.existsSync(themePath) || !deps.existsSync(approvedAbs)) return [];
+    return formatHighlightSameFactNotes(JSON.parse(deps.readFile(themePath)), JSON.parse(deps.readFile(approvedAbs)));
+  } catch (err) {
+    console.error(`⚠️  #9595: aviso de MESMO FATO nos destaques não lido (${(err as Error).message}) — fail-soft.`);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1464,6 +1482,9 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
       "--out-log",
       internalPath(editionDir, "01-same-fact-removed.json"),
     ]);
+    // #9595: sem gate 1, o 🚨 MESMO FATO dos DESTAQUES (que nunca são
+    // removidos) só aparecia no gate 4 — sobe pro relatório do Stage 1 também.
+    for (const line of highlightSameFactNotes(deps, editionDir, approvedPath)) report.note(line);
   } else {
     step(deps, report, "apply-gate-edits (1y)", "scripts/apply-gate-edits.ts", ["--md", opts.md as string, "--json", categorizedJsonPath, "--out", approvedPath]);
     step(deps, report, "render-categorized-md pós-gate (1y)", "scripts/render-categorized-md.ts", ["--in", approvedPath, "--out", mdPath, "--edition", opts.edition, "--source-health", "data/source-health.json"]);
