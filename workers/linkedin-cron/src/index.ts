@@ -122,7 +122,8 @@ export interface Env {
   LINKEDIN_AUTHOR_URN?: string;
   LINKEDIN_API_VERSION?: string; // default "202401" aplicado em dispatch.ts
   // #9569 — webhook opcional (Slack/Discord/etc., aceita JSON com `text`) pro
-  // alarme de DLQ. Ausente = só console.error.
+  // alarme de DLQ e (#9618) pro refresh do token Threads falhando com o token
+  // já perto de vencer. Ausente = só console.error.
   ALERT_WEBHOOK_URL?: string;
 }
 
@@ -298,7 +299,7 @@ export * from "./durable-object";
 import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
 export * from "./maintenance";
-import { withRefreshedThreadsToken, maybeRefreshThreadsToken, alertNewDlqEntries } from "./maintenance";
+import { withRefreshedThreadsToken, maybeRefreshThreadsToken, alertNewDlqEntries, shouldSweepDlq } from "./maintenance";
 import { resolveInstagramCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
@@ -992,14 +993,17 @@ export default {
     );
   },
 
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
         // #9569 — refresh do token Threads (ainda válido) + overlay do KV antes de disparar.
         await maybeRefreshThreadsToken(env).catch((e) => console.error(`[cron] threads-refresh: ${e}`));
         const result = await fireDueItems(await withRefreshedThreadsToken(env));
         console.log(`[cron] fired=${result.fired} errors=${result.errors} dlq=${result.dlq}`);
-        await alertNewDlqEntries(env).catch((e) => console.error(`[cron] dlq-alert: ${e}`));
+        // #9618 — varredura de DLQ custa KV `list`: só no topo da hora ou quando este disparo gerou DLQ.
+        if (shouldSweepDlq(event?.scheduledTime ?? NaN, result.dlq)) {
+          await alertNewDlqEntries(env).catch((e) => console.error(`[cron] dlq-alert: ${e}`));
+        }
       })(),
     );
   },

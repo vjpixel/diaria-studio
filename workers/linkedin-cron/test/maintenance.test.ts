@@ -5,6 +5,7 @@ import workerDefault, {
   maybeRefreshThreadsToken,
   withRefreshedThreadsToken,
   alertNewDlqEntries,
+  shouldSweepDlq,
   THREADS_TOKEN_KV_KEY,
   DLQ_ALERT_KV_KEY,
   type Env,
@@ -12,10 +13,12 @@ import workerDefault, {
 
 class MockKV {
   store = new Map<string, string>();
+  listCalls: string[] = [];
   async get(k: string) { return this.store.get(k) ?? null; }
   async put(k: string, v: string) { this.store.set(k, v); }
   async delete(k: string) { this.store.delete(k); }
   async list(o: { prefix?: string }) {
+    this.listCalls.push(o.prefix ?? "");
     const names = [...this.store.keys()].filter((k) => k.startsWith(o.prefix ?? "")).sort();
     return { keys: names.map((name) => ({ name })), list_complete: true as const };
   }
@@ -115,5 +118,99 @@ describe("DLQ alert", () => {
     await p;
     assert.ok(calls.some((c) => c.url.includes("refresh_access_token")));
     assert.ok(calls.some((c) => c.url === "https://hook.test/x"));
+  });
+});
+
+// #9618 — regressão: (1) varredura de DLQ não pode rodar em todo cron */5
+// (dobrava o KV list/dia); (2) refresh do Threads falhando persistentemente alerta.
+describe("#9618 — gate da varredura de DLQ", () => {
+  const at = (iso: string) => Date.parse(iso);
+  it("shouldSweepDlq: só no topo da hora ou quando houve DLQ neste disparo", () => {
+    assert.equal(shouldSweepDlq(at("2026-10-05T12:00:00Z"), 0), true);
+    assert.equal(shouldSweepDlq(at("2026-10-05T12:05:00Z"), 0), false);
+    assert.equal(shouldSweepDlq(at("2026-10-05T12:55:00Z"), 0), false);
+    assert.equal(shouldSweepDlq(at("2026-10-05T12:35:00Z"), 1), true);
+    assert.equal(shouldSweepDlq(NaN, 0), true); // fail-open
+  });
+  it("um dia de cron */5 lista dlq: ~24x, não 288x", () => {
+    const start = at("2026-10-05T00:00:00Z");
+    let sweeps = 0;
+    for (let i = 0; i < 288; i++) if (shouldSweepDlq(start + i * 5 * 60_000, 0)) sweeps++;
+    assert.equal(sweeps, 24);
+  });
+  const runCron = async (env: Env, scheduledTime: number) => {
+    let p: Promise<unknown> = Promise.resolve();
+    await workerDefault.scheduled({ scheduledTime } as any, env, { waitUntil: (x: Promise<unknown>) => { p = x; } } as any);
+    await p;
+  };
+  it("scheduled fora do topo da hora (sem DLQ no disparo) NÃO lista dlq:", async () => {
+    const env = mkEnv({ THREADS_ACCESS_TOKEN: undefined, LINKEDIN_SCHEDULER: {} as any });
+    await runCron(env, at("2026-10-05T12:10:00Z"));
+    assert.deepEqual(kv.listCalls.filter((p) => p === "dlq:"), []);
+    assert.deepEqual(kv.listCalls, ["queue:"]);
+  });
+  it("scheduled no topo da hora lista dlq: e avisa", async () => {
+    await kv.put("dlq:2026-10-02T17:30:00.000Z:u", JSON.stringify({ channel: "threads", destaque: "d1", last_error: "x" }));
+    const env = mkEnv({ THREADS_ACCESS_TOKEN: undefined, ALERT_WEBHOOK_URL: "https://hook.test/x", LINKEDIN_SCHEDULER: {} as any });
+    await runCron(env, at("2026-10-05T13:00:00Z"));
+    assert.equal(kv.listCalls.filter((p) => p === "dlq:").length, 1);
+    assert.ok(calls.some((c) => c.url === "https://hook.test/x"));
+  });
+});
+
+describe("#9618 — alerta de refresh do Threads falhando", () => {
+  const DAY = 86_400_000;
+  const fail = () => { respond = (u) => u.includes("hook") ? new Response("ok") : new Response(JSON.stringify({ error: { message: "scope revogado" } }), { status: 400 }); };
+  const hookCalls = () => calls.filter((c) => c.url === "https://hook.test/x");
+  it("falha com token novo não alerta; falha com token > 45d alerta (1x/dia)", async () => {
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    const t0 = 1_000_000;
+    assert.equal(await maybeRefreshThreadsToken(env, t0), "refreshed");
+    fail();
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 31 * DAY), "failed");
+    assert.equal(hookCalls().length, 0);
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 46 * DAY), "failed");
+    assert.equal(hookCalls().length, 1);
+    assert.match(String(hookCalls()[0].init!.body), /46 dias/);
+    assert.match(String(hookCalls()[0].init!.body), /scope revogado/);
+    assert.doesNotMatch(String(hookCalls()[0].init!.body), /NEW|OLD/); // nunca vaza o token
+    // 6h depois: falha de novo, mas não re-alerta antes de 24h
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 46 * DAY + 7 * 3600_000), "failed");
+    assert.equal(hookCalls().length, 1);
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 47 * DAY + 1), "failed");
+    assert.equal(hookCalls().length, 2);
+  });
+  it("nunca renovou: idade conta desde a semeadura", async () => {
+    fail();
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    const t0 = 5_000_000;
+    assert.equal(await maybeRefreshThreadsToken(env, t0), "failed");
+    assert.equal(hookCalls().length, 0); // refreshed_at no epoch não pode contar como "velho"
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 46 * DAY), "failed");
+    assert.equal(hookCalls().length, 1);
+  });
+  it("webhook falhou: não marca como avisado e re-tenta na próxima falha", async () => {
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    const t0 = 1_000_000;
+    await maybeRefreshThreadsToken(env, t0);
+    respond = () => new Response("no", { status: 500 });
+    await maybeRefreshThreadsToken(env, t0 + 46 * DAY);
+    assert.equal(hookCalls().length, 1);
+    const rec = JSON.parse(kv.store.get(THREADS_TOKEN_KV_KEY)!);
+    assert.equal(rec.stale_alerted_at, undefined);
+    assert.equal(rec.access_token, "NEW"); // token preservado
+    await maybeRefreshThreadsToken(env, t0 + 46 * DAY + 7 * 3600_000);
+    assert.equal(hookCalls().length, 2);
+  });
+  it("renovação bem-sucedida zera o estado de alerta", async () => {
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    const t0 = 1_000_000;
+    await maybeRefreshThreadsToken(env, t0);
+    fail();
+    await maybeRefreshThreadsToken(env, t0 + 46 * DAY);
+    respond = () => new Response(JSON.stringify({ access_token: "NEWER" }), { status: 200 });
+    assert.equal(await maybeRefreshThreadsToken(env, t0 + 47 * DAY), "refreshed");
+    const rec = JSON.parse(kv.store.get(THREADS_TOKEN_KV_KEY)!);
+    assert.equal(rec.stale_alerted_at, undefined);
   });
 });
