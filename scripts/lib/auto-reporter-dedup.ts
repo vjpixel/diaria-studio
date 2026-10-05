@@ -12,7 +12,12 @@
  * Refs #91 (follow-up to #90 / PR #86).
  */
 
-export type SignalKind = "source_streak" | "source_dry" | "unfixed_issue" | "chrome_disconnects";
+export type SignalKind =
+  | "source_streak"
+  | "source_dry"
+  | "source_feed_broken"
+  | "unfixed_issue"
+  | "chrome_disconnects";
 export type Severity = "low" | "medium" | "high";
 
 export interface Signal {
@@ -42,6 +47,8 @@ export interface DraftFile {
  *   across editions become a single signal.
  * - `source_dry`: keyed by `details.source` (same scheme) so a source that
  *   never yields articles merges across editions.
+ * - `source_feed_broken` (#9657): keyed by `details.source` (same scheme) —
+ *   the RSS path of a source broken across editions merges into one entry.
  * - `unfixed_issue`: keyed by `details.reason` + `details.section` so the
  *   same recurring problem (e.g. "unicode_corruption" in "subtitle") merges.
  * - `chrome_disconnects`: a single shared key — always consolidate counts.
@@ -61,6 +68,12 @@ export function dedupKey(signal: Signal): string | null {
       const source = signal.details?.source;
       return typeof source === "string" && source.length > 0
         ? `source_dry:${source}`
+        : null;
+    }
+    case "source_feed_broken": {
+      const source = signal.details?.source;
+      return typeof source === "string" && source.length > 0
+        ? `source_feed_broken:${source}`
         : null;
     }
     case "unfixed_issue": {

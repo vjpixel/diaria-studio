@@ -39,6 +39,12 @@ export interface OutcomeEntry {
   reason?: string;
   /** #9652: falha por cota/limite da API de busca (402/429) — não é falha da fonte. */
   search_quota?: boolean;
+  /**
+   * #9657: caminho que gerou a linha — `feed` (RSS/sitemap direto da fonte) ou
+   * `search` (busca `site:`). Ausente quando a origem não é conhecida (histórico
+   * anterior, ou método que não é nem um nem outro).
+   */
+  path?: OutcomePath;
 }
 
 /** #9652: teto de `recent_outcomes` por fonte. Era 10 — com 3-4 linhas por rodada,
@@ -92,6 +98,28 @@ export function isSearchPath(origin: OutcomeOrigin | undefined): boolean | undef
   return undefined;
 }
 
+/** #9657: caminho de coleta de uma linha de outcome. */
+export type OutcomePath = "feed" | "search";
+
+/**
+ * #9657: classifica a origem da linha. `method` vence: `rss`/`sitemap` = `feed`,
+ * `websearch*` = `search`, qualquer outro método = desconhecido. Sem `method`,
+ * `query_used` `site:...` = `search` e uma URL http(s) = `feed` (é como o batch
+ * de RSS grava a linha — `query_used` é a URL do feed).
+ */
+export function outcomePathFromOrigin(origin: OutcomeOrigin | undefined): OutcomePath | undefined {
+  const method = origin?.method?.trim();
+  if (method) {
+    if (/^websearch/i.test(method)) return "search";
+    if (/^(rss|sitemap)$/i.test(method)) return "feed";
+    return undefined;
+  }
+  const q = origin?.query_used?.trim();
+  if (q && /^site:/i.test(q)) return "search";
+  if (q && /^https?:\/\//i.test(q)) return "feed";
+  return undefined;
+}
+
 /** Forma mínima de um outcome lido do disco (campos podem faltar no histórico). */
 export interface OutcomeLike {
   outcome?: string;
@@ -99,6 +127,25 @@ export interface OutcomeLike {
   edition?: string | null;
   reason?: string | null;
   search_quota?: boolean;
+  path?: string | null;
+}
+
+/**
+ * #9657: caminho de uma linha já gravada. Usa `path` quando presente; no
+ * histórico sem `path`, uma falha cujo motivo é EXATAMENTE `HTTP NNN` é do
+ * feed — é o formato literal que `fetch-rss.ts` grava (`error: \`HTTP ${status}\``,
+ * repassado por `fetch-rss-batch.ts`). A busca grava `${status}: ${mensagem}`
+ * ou `rate_limited: ...` (ver `isSearchQuotaFailure`). Match exato, sem prefixo
+ * nem sufixo: um fallback de fetch fora do feed (agent/WebFetch) que grave
+ * "HTTP 403 Forbidden" ou similar não vira "RSS falhou" por acidente (review
+ * do PR #9664). Linhas novas trazem `path` explícito e não dependem disto.
+ */
+export function outcomePath(o: OutcomeLike): OutcomePath | undefined {
+  if (o.path === "feed" || o.path === "search") return o.path;
+  if (o.outcome && isHardFailure(o.outcome) && o.reason && /^HTTP \d{3}$/.test(o.reason.trim())) {
+    return "feed";
+  }
+  return undefined;
 }
 
 /**
@@ -192,6 +239,55 @@ export function roundDryStreak(outcomes: OutcomeLike[]): number {
   return count;
 }
 
+/**
+ * #9657: streak de RODADAS em que o caminho FEED (RSS/sitemap) da fonte falhou,
+ * do mais recente pra trás — independente do veredito da rodada. Existe porque
+ * o veredito de rodada (#9652) considera a fonte saudável se QUALQUER caminho
+ * trouxe artigo, e aí um feed quebrado fica invisível enquanto a busca `site:`
+ * (paga, com cota) cobre a fonte (VentureBeat (IA): RSS em `HTTP 429` de 04/09
+ * a 04/10/2026, busca ok).
+ *
+ * - rodada sem linha de feed identificável → pulada (não conta nem zera);
+ * - rodada com alguma linha de feed `ok`/`empty` → encerra o streak;
+ * - rodada em que toda linha de feed é falha dura → conta.
+ *
+ * `healthy_rounds` conta, dentro do streak, as rodadas cujo veredito geral foi
+ * `ok`/`empty` (a busca cobriu) — é o que distingue "feed quebrado escondido"
+ * de "fonte inteira fora do ar" (essa já é o `source_streak`).
+ * `latest_round_healthy` diz se a rodada MAIS RECENTE do streak foi coberta
+ * pela busca: o sinal exige isso, senão uma fonte que saiu do ar inteira nas
+ * últimas 1-2 rodadas (ainda abaixo do `source_streak`) sairia como "busca
+ * cobrindo" (review do PR #9664).
+ */
+export function roundFeedFailureStreak(outcomes: OutcomeLike[]): {
+  consecutive_failures: number;
+  healthy_rounds: number;
+  latest_round_healthy: boolean;
+  last_reason: string | null;
+} {
+  const rounds = groupOutcomesIntoRounds(outcomes);
+  let count = 0;
+  let healthy = 0;
+  let latestHealthy = false;
+  let lastReason: string | null = null;
+  for (let i = rounds.length - 1; i >= 0; i--) {
+    const feed = rounds[i].entries.filter((e) => outcomePath(e) === "feed");
+    if (feed.length === 0) continue;
+    if (!feed.every((e) => e.outcome !== undefined && isHardFailure(e.outcome))) break;
+    const roundHealthy = rounds[i].verdict === "ok" || rounds[i].verdict === "empty";
+    if (count === 0) latestHealthy = roundHealthy;
+    count++;
+    if (roundHealthy) healthy++;
+    if (lastReason === null) lastReason = feed.find((e) => e.reason)?.reason ?? null;
+  }
+  return {
+    consecutive_failures: count,
+    healthy_rounds: healthy,
+    latest_round_healthy: latestHealthy,
+    last_reason: lastReason,
+  };
+}
+
 /** #9652: monta o item de `recent_outcomes` (edição + motivo curto + flag de cota). */
 export function buildOutcomeEntry<O extends Outcome>(
   outcome: O,
@@ -202,6 +298,8 @@ export function buildOutcomeEntry<O extends Outcome>(
 ): OutcomeEntry & { outcome: O } {
   const e: OutcomeEntry & { outcome: O } = { outcome, timestamp };
   if (edition) e.edition = edition;
+  const path = outcomePathFromOrigin(origin); // #9657
+  if (path) e.path = path;
   if (isHardFailure(outcome) && reason) {
     e.reason = reason.slice(0, OUTCOME_REASON_MAX);
     // Origem conhecida e fora da busca (RSS/sitemap/fetch) → nunca é cota da
