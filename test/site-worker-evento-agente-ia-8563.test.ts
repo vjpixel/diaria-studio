@@ -33,7 +33,7 @@ import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
-const VARIANTS = ["a", "b", "c"] as const;
+const VARIANTS = ["a", "b", "c", "d"] as const;
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
   it("index.html da raiz manda todo mundo para /c (versão C desde 01/10, #9334) e preserva a query string", () => {
