@@ -16,6 +16,9 @@
  * pra separar **cortes** (fora da contagem enquanto a pipeline entrega >10
  * itens — decisão do editor de 01/10/2026 na #7972) de **inclusões**.
  *
+ * Desde o #9647, casa os DESTAQUES por URL (`extractDestaques`,
+ * `matchDestaquesByUrl`): troca × reposicionamento, em vez de D1 com D1.
+ *
  * ## Mutações da pipeline descontadas (e por quê)
  *
  * | Mutação | Onde acontece | Desconto |
@@ -405,6 +408,168 @@ export function findIncludedItems(final: string, pipelineUrls: ReadonlySet<strin
     seen.add(it.url);
     return true;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Destaques por URL (#9647): troca × reposicionamento
+// ---------------------------------------------------------------------------
+
+export interface DestaqueEntry {
+  /** N de `DESTAQUE N`. */
+  position: number;
+  /** URL da 1ª linha de título. */
+  url: string;
+  /** Texto da 1ª linha de título. */
+  title: string;
+  /** Todas as opções de título (3 na saída do writer, 1 depois do title-picker). */
+  titleOptions: string[];
+}
+
+/**
+ * Destaques do texto, com as opções de título — as linhas `**[...](url)**`
+ * contíguas (separadas só por linha em branco) logo depois do cabeçalho
+ * `DESTAQUE N`, mesmo critério de `countTitleOptions`. Destaque sem linha de
+ * título fica de fora. Pura.
+ */
+export function extractDestaques(md: string): DestaqueEntry[] {
+  const out: DestaqueEntry[] = [];
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = sectionHeaderName(lines[i])?.match(/^DESTAQUE (\d+)$/);
+    if (!m) continue;
+    const options: Array<{ title: string; url: string }> = [];
+    for (let j = i + 1; j < lines.length && (lines[j].trim() === "" || /^\*\*\[.+?\]\(/.test(lines[j].trim())); j++) {
+      const t = lines[j].trim().match(ITEM_LINE_RE);
+      if (t) options.push({ title: t[1].trim(), url: t[2] });
+    }
+    if (options.length === 0) continue;
+    out.push({ position: Number(m[1]), url: options[0].url, title: options[0].title, titleOptions: options.map((o) => o.title) });
+  }
+  return out;
+}
+
+/**
+ * Chave de comparação da URL de um destaque: a normalização do baseline
+ * (`normalizeItemUrl`) sem `/` final nem fragmento. Pura.
+ */
+export function destaqueUrlKey(url: string): string {
+  return normalizeItemUrl(url).replace(/#.*$/, "").replace(/\/+$/, "");
+}
+
+/**
+ * Mesma página com a URL corrigida: mesmo host (sem `www.`) e mesmo slug
+ * final (último segmento do caminho, ≥ 8 caracteres — evita `index`, `news`).
+ * Ex.: 261001 D1, `…/models-and-research/gemini-4-argon/` →
+ * `…/models-and-research/gemini-models/gemini-4-argon/`. Pura.
+ */
+export function isCorrectedUrl(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a.trim());
+    const ub = new URL(b.trim());
+    const host = (u: URL) => u.hostname.replace(/^www\./, "");
+    const slug = (u: URL) => u.pathname.split("/").filter((x) => x !== "").pop() ?? "";
+    return host(ua) === host(ub) && slug(ua).length >= 8 && slug(ua) === slug(ub);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Estado de um destaque do final em relação à saída da pipeline:
+ * `same` = mesma URL na mesma posição; `moved` = mesma URL em outra posição;
+ * `new` = URL que não era destaque na saída da pipeline.
+ */
+export type DestaqueStatus = "same" | "moved" | "new";
+
+export interface DestaqueMatch {
+  /** Destaque da pipeline que saiu × destaque novo que entrou, pareados na ordem. */
+  swaps: Array<{ out: DestaqueEntry; in: DestaqueEntry }>;
+  /** Destaques da pipeline que saíram sem par (final com menos destaques). */
+  cuts: DestaqueEntry[];
+  /** Destaques novos sem par (final com mais destaques). */
+  promotes: DestaqueEntry[];
+  /**
+   * Destaques mantidos cuja ORDEM RELATIVA mudou — os que ficam fora da maior
+   * subsequência crescente das posições da pipeline (empate: preserva quem
+   * ficou na mesma posição). Mantido que só desceu porque um destaque novo
+   * entrou acima dele não é reordenação: a ordem entre os mantidos é a da
+   * pipeline, e a entrada já conta como troca.
+   */
+  reorders: Array<{ entry: DestaqueEntry; from: number; to: number }>;
+  /** Estado de cada destaque do final, por posição. */
+  statusByFinalPosition: Map<number, DestaqueStatus>;
+  /** Destaque da saída da pipeline de cada destaque mantido, por posição no final. */
+  pipelineEntryOf: Map<number, DestaqueEntry>;
+}
+
+/**
+ * Casa os destaques da saída da pipeline com os do final POR URL (#9647). URL
+ * corrigida da mesma página (`isCorrectedUrl`) casa como o mesmo destaque —
+ * não é troca. Pura.
+ */
+export function matchDestaquesByUrl(pipeline: readonly DestaqueEntry[], final: readonly DestaqueEntry[]): DestaqueMatch {
+  const sortedPipeline = [...pipeline].sort((a, b) => a.position - b.position);
+  const sortedFinal = [...final].sort((a, b) => a.position - b.position);
+  const pairOf = new Map<DestaqueEntry, DestaqueEntry>();
+  const used = new Set<DestaqueEntry>();
+  for (const d of sortedFinal) {
+    const p = sortedPipeline.find((x) => !used.has(x) && destaqueUrlKey(x.url) === destaqueUrlKey(d.url));
+    if (p) {
+      pairOf.set(d, p);
+      used.add(p);
+    }
+  }
+  for (const d of sortedFinal) {
+    if (pairOf.has(d)) continue;
+    const p = sortedPipeline.find((x) => !used.has(x) && isCorrectedUrl(x.url, d.url));
+    if (p) {
+      pairOf.set(d, p);
+      used.add(p);
+    }
+  }
+  const statusByFinalPosition = new Map<number, DestaqueStatus>();
+  const pipelineEntryOf = new Map<number, DestaqueEntry>();
+  const kept: Array<{ entry: DestaqueEntry; from: number; to: number }> = [];
+  const added: DestaqueEntry[] = [];
+  for (const d of sortedFinal) {
+    const p = pairOf.get(d);
+    if (!p) {
+      statusByFinalPosition.set(d.position, "new");
+      added.push(d);
+      continue;
+    }
+    statusByFinalPosition.set(d.position, p.position === d.position ? "same" : "moved");
+    pipelineEntryOf.set(d.position, p);
+    kept.push({ entry: d, from: p.position, to: d.position });
+  }
+  const dropped = sortedPipeline.filter((d) => !used.has(d));
+
+  // Maior subsequência crescente de `from` (na ordem do final); empate → mais itens na mesma posição.
+  const best: Array<{ len: number; same: number; prev: number }> = kept.map((k) => ({ len: 1, same: k.from === k.to ? 1 : 0, prev: -1 }));
+  for (let i = 0; i < kept.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (kept[j].from >= kept[i].from) continue;
+      const len = best[j].len + 1;
+      const same = best[j].same + (kept[i].from === kept[i].to ? 1 : 0);
+      if (len > best[i].len || (len === best[i].len && same > best[i].same)) best[i] = { len, same, prev: j };
+    }
+  }
+  let end = -1;
+  for (let i = 0; i < kept.length; i++) {
+    if (end < 0 || best[i].len > best[end].len || (best[i].len === best[end].len && best[i].same > best[end].same)) end = i;
+  }
+  const inOrder = new Set<number>();
+  for (let i = end; i >= 0; i = best[i].prev) inOrder.add(i);
+
+  const pairs = Math.min(dropped.length, added.length);
+  return {
+    swaps: Array.from({ length: pairs }, (_, i) => ({ out: dropped[i], in: added[i] })),
+    cuts: dropped.slice(pairs),
+    promotes: added.slice(pairs),
+    reorders: kept.filter((_, i) => !inOrder.has(i)),
+    statusByFinalPosition,
+    pipelineEntryOf,
+  };
 }
 
 function isBlockBoundary(line: string): boolean {

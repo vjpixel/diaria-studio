@@ -10,11 +10,22 @@
  *
  * | Gate | Comparação | Conta como modificação |
  * |---|---|---|
- * | `stage1` | `01-categorized.json` × `01-approved.json` | destaque trocado/promovido/cortado, item de pool cortado/adicionado/movido |
+ * | `stage1` | `01-categorized.json` × `01-approved.json` | no gate humano do Stage 1: destaque trocado/promovido/cortado e pool; depois do Stage 2: item de pool cortado/adicionado/movido |
+ * | `destaques` | destaques da saída da pipeline (baseline da newsletter, ou `02-draft.md`) × `02-reviewed.md`, POR URL | `destaque-swap`/`-cut`/`-promote`, e `destaque-reorder` (ordem relativa dos mantidos mudou) |
  * | `newsletter` | baseline (snapshot `stage2-post-gate` ou reconstruído) × `02-reviewed.md` | qualquer linha de texto adicionada/removida, por seção |
- * | `titles` | `02-title-picks.json` (escolha do `title-picker`) × título final | título final ≠ o escolhido pela pipeline, ou poda manual (sem pick) |
+ * | `titles` | `02-title-picks.json` (escolha do `title-picker`, ligada ao destaque pela URL) × título final | destaque MANTIDO com título ≠ o escolhido pela pipeline, ou poda manual (sem pick) |
  * | `social` | snapshot `stage2-post-gate/03-social.md` × `03-social.md` | qualquer linha de texto |
- * | `images` | mtime das artes × `completed_at` do sentinel do Stage 3 | arte/recorte regerado depois do Stage 3 |
+ * | `images` | mtime das artes × `completed_at` do sentinel do Stage 3 | arte/recorte regerado depois do Stage 3 de destaque mantido na mesma posição |
+ *
+ * **Destaques por URL (#9647).** Até aqui destaque, título e arte eram
+ * comparados POR POSIÇÃO (D1 com D1): reordenar virava "título" e "imagem",
+ * e a troca era lida de `01-approved.json`, que nem sempre é regravado no
+ * Stage 4 (260917, 260918) e carrega o recorte da própria pipeline
+ * (`apply-gate-edits`, `itens_movidos > 0` sob auto-aprovação — 260916,
+ * 260929). Agora a referência é o texto que a pipeline entregou (já depois
+ * do recorte), casado por URL (URL corrigida da mesma página — mesmo host e
+ * slug — é o mesmo destaque). Título e arte de destaque trocado ou mudado de
+ * posição são CASCATA: vão pra `cascades` do gate, fora da contagem.
  *
  * `zero_manual_edits`:
  * - `false` — algum gate medido tem mudança;
@@ -76,21 +87,23 @@ import {
 import {
   applyAutofixReplacements,
   applyIntentionalError,
-  countTitleOptions,
   diffBySection,
-  extractDestaqueTitles,
+  extractDestaques,
   extractNewsletterItems,
   findCutItems,
   findIncludedItems,
+  destaqueUrlKey,
+  matchDestaquesByUrl,
   normalizeItemUrl,
   normalizeNewsletterForComparison,
   normalizeSelfUrls,
   removeCutItemBlocks,
   sectionNames,
+  type DestaqueEntry,
+  type DestaqueMatch,
 } from "./lib/manual-edit-diff.ts";
 import {
   buildReconstructedNewsletterBaseline,
-  classifyApprovedDiff,
   classifyPoolDiff,
   classifyStage1DestaqueDiff,
   findPipelineNewsletterOutput,
@@ -120,8 +133,13 @@ export interface ManualChange {
 export interface GateResult {
   status: "measured" | "unmeasured";
   /** De onde veio a referência (quando medido). */
-  baseline?: "snapshot" | "reconstructed" | "categorized" | "title-picks" | "stage3-sentinel";
+  baseline?: "snapshot" | "reconstructed" | "draft" | "categorized" | "title-picks" | "stage3-sentinel";
   changes: ManualChange[];
+  /**
+   * #9647: mudança que é consequência de outra já contada (título/arte de
+   * destaque trocado ou mudado de posição). Fica fora de `changes`.
+   */
+  cascades?: ManualChange[];
   /** #9641: cortes vistos por este gate e tirados de `changes` (só sem `countCuts`). */
   cuts?: ManualChange[];
   note?: string;
@@ -144,7 +162,7 @@ export interface ManualEditsOptions {
   countCuts?: boolean;
 }
 
-export type GateName = "stage1" | "newsletter" | "titles" | "social" | "images";
+export type GateName = "stage1" | "destaques" | "newsletter" | "titles" | "social" | "images";
 
 export interface EditionManualEdits {
   edition: string;
@@ -204,11 +222,32 @@ function splitCuts(gate: GateResult, countCuts: boolean): GateResult {
   return { ...gate, changes: gate.changes.filter((c) => c.kind !== "pool-cut"), cuts };
 }
 
-function stage1Gate(editionDir: string, health: BaselineHealth, snapshotApproved: string | undefined, countCuts: boolean): GateResult {
-  return splitCuts(stage1GateRaw(editionDir, health, snapshotApproved), countCuts);
+function stage1Gate(
+  editionDir: string,
+  health: BaselineHealth,
+  snapshotApproved: string | undefined,
+  pipelineDestaques: readonly DestaqueEntry[] | null,
+  countCuts: boolean,
+): GateResult {
+  return splitCuts(stage1GateRaw(editionDir, health, snapshotApproved, pipelineDestaques), countCuts);
 }
 
-function stage1GateRaw(editionDir: string, health: BaselineHealth, snapshotApproved: string | undefined): GateResult {
+/**
+ * Gate do Stage 1: só o que o EDITOR decidiu na seleção — destaques e pool no
+ * gate humano do Stage 1, e movimentações do pool depois do Stage 2.
+ *
+ * #9647: troca de destaque depois do Stage 2 NÃO é medida aqui — sai do gate
+ * `destaques` (saída da pipeline × final, por URL). `01-approved.json` nem
+ * sempre é regravado numa troca do Stage 4 (260917, 260918), e o recorte da
+ * pipeline (`apply-gate-edits`, `itens_movidos > 0` sob auto-aprovação,
+ * #4943) apareceria como troca (260916, 260929).
+ */
+function stage1GateRaw(
+  editionDir: string,
+  health: BaselineHealth,
+  snapshotApproved: string | undefined,
+  pipelineDestaques: readonly DestaqueEntry[] | null,
+): GateResult {
   const categorized = readJson(join(editionDir, "_internal", "01-categorized.json"));
   const approvedRaw = existsSync(join(editionDir, "_internal", "01-approved.json"))
     ? readFileSync(join(editionDir, "_internal", "01-approved.json"), "utf8")
@@ -230,32 +269,84 @@ function stage1GateRaw(editionDir: string, health: BaselineHealth, snapshotAppro
     });
 
   if (health.status === "ok" && snapshotApproved !== undefined) {
+    let atStage2: any = null;
+    try {
+      atStage2 = JSON.parse(snapshotApproved);
+    } catch {
+      /* cai no aprovado final abaixo */
+    }
     // Gate humano do Stage 1: categorizado × aprovado no fim do Stage 2.
     if (humanGate) {
-      let atStage2: any = null;
-      try {
-        atStage2 = JSON.parse(snapshotApproved);
-      } catch {
-        /* cai no aprovado final abaixo */
-      }
       const ref = atStage2 ?? approved;
       changes.push(...toChanges(classifyStage1DestaqueDiff(categorized, ref)), ...toChanges(classifyPoolDiff(categorized, ref)));
     }
-    // Mudanças de seleção depois do Stage 2 (troca de destaque/bucket no Stage 4).
-    changes.push(...toChanges(classifyApprovedDiff(snapshotApproved, approvedRaw)));
+    // Movimentações do POOL depois do Stage 2 (destaques: gate `destaques`).
+    if (atStage2) changes.push(...toChanges(classifyPoolDiff(atStage2, approved)));
     return { status: "measured", baseline: "snapshot", changes };
   }
 
-  // Sem baseline confiável: categorizado × aprovado FINAL. Sob auto-aprovação
-  // o recorte top-3 do `apply-gate-edits` não conta (mesma regra de
-  // `classifyStage1DestaqueDiff`); o que sobrar é troca feita depois.
-  changes.push(...toChanges(classifyStage1DestaqueDiff(categorized, approved)));
-  if (humanGate) changes.push(...toChanges(classifyPoolDiff(categorized, approved)));
+  // Sem baseline confiável. Sob auto-aprovação não há decisão do editor no
+  // Stage 1; o recorte top-3 do `apply-gate-edits` é da pipeline e as trocas
+  // posteriores saem do gate `destaques`. Gate humano: os destaques que
+  // chegaram ao texto do Stage 2 são a escolha do editor (o aprovado FINAL
+  // misturaria as trocas do Stage 4, contadas de novo em `destaques`).
+  // Sem texto da pipeline, o gate `destaques` cai no categorizado × aprovado
+  // final (`destaquesFallback`) e já cobre os destaques.
+  if (humanGate) {
+    if (pipelineDestaques) {
+      const ref = { highlights: pipelineDestaques.map((d) => ({ url: d.url, title: d.title })) };
+      changes.push(...toChanges(classifyStage1DestaqueDiff(categorized, ref)));
+    }
+    changes.push(...toChanges(classifyPoolDiff(categorized, approved)));
+  }
   return {
     status: "measured",
     baseline: "categorized",
     changes,
-    note: humanGate ? undefined : "auto-aprovado sem baseline: pool não comparado (recorte/cap da pipeline indistinguível de corte manual)",
+    note: humanGate ? undefined : "auto-aprovado sem baseline: nada do editor no Stage 1 (trocas de destaque: gate destaques)",
+  };
+}
+
+/**
+ * #9647: destaques da saída da pipeline × final, POR URL. Troca, corte,
+ * promoção e reordenação (`destaque-reorder`: ordem relativa dos mantidos).
+ */
+function destaquesGate(
+  editionDir: string,
+  pipeline: { destaques: readonly DestaqueEntry[]; source: "snapshot" | "reconstructed" | "draft" } | null,
+  finalDestaques: readonly DestaqueEntry[],
+  match: DestaqueMatch | null,
+): GateResult {
+  if (pipeline === null || match === null) return destaquesFallback(editionDir);
+  if (finalDestaques.length === 0) return unmeasured("nenhum destaque encontrado em 02-reviewed.md");
+  const changes: ManualChange[] = [
+    ...match.swaps.map((s) => ({
+      kind: "destaque-swap",
+      detail: `D${s.out.position} "${s.out.title}" → D${s.in.position} "${s.in.title}"`,
+      url: s.in.url,
+    })),
+    ...match.cuts.map((d) => ({ kind: "destaque-cut", detail: `D${d.position} removido: "${d.title}"`, url: d.url })),
+    ...match.promotes.map((d) => ({ kind: "destaque-promote", detail: `D${d.position} promovido: "${d.title}"`, url: d.url })),
+    ...match.reorders.map((r) => ({ kind: "destaque-reorder", detail: `"${r.entry.title}" D${r.from} → D${r.to}`, url: r.entry.url })),
+  ];
+  return { status: "measured", baseline: pipeline.source, changes };
+}
+
+/**
+ * Edição sem texto da pipeline legível (formato antigo, sem `**DESTAQUE N**`):
+ * categorizado × aprovado final, como antes do #9647 — inclui o recorte da
+ * pipeline e perde troca sem `01-approved.json` regravado, por isso rotulado
+ * `categorized`. Sem os dois JSONs, não medido.
+ */
+function destaquesFallback(editionDir: string): GateResult {
+  const categorized = readJson(join(editionDir, "_internal", "01-categorized.json"));
+  const approved = readJson(join(editionDir, "_internal", "01-approved.json"));
+  if (!categorized || !approved) return unmeasured("sem saída da pipeline da newsletter nem 01-categorized/01-approved");
+  return {
+    status: "measured",
+    baseline: "categorized",
+    changes: classifyStage1DestaqueDiff(categorized, approved).map((e) => ({ kind: e.request_type, detail: e.description })),
+    note: "sem texto da pipeline: categorizado × aprovado final (aproximação anterior ao #9647)",
   };
 }
 
@@ -271,13 +362,10 @@ interface NewsletterMeasurement {
  * itens do baseline, menos o que o editor incluiu num gate humano do Stage 1).
  */
 function newsletterGate(
-  editionDir: string,
-  health: BaselineHealth,
-  snapshotMd: string | undefined,
+  raw: { baseline: string; source: "snapshot" | "reconstructed" } | null,
   finalMd: string,
   opts: { countCuts: boolean; stage1EditorAddedUrls: ReadonlySet<string> },
 ): NewsletterMeasurement {
-  const raw = newsletterBaseline(editionDir, health, snapshotMd, finalMd);
   if (raw === null) {
     return { gate: unmeasured("sem snapshot confiável nem arquivo da pipeline (02-humanized/02-clarice-corrected)"), cuts: [], inclusions: null };
   }
@@ -333,25 +421,83 @@ function newsletterBaseline(
   return baseline === null ? null : { baseline, source };
 }
 
-function titlesGate(editionDir: string, finalMd: string): GateResult {
-  const picks = readTitlePicks(editionDir);
-  const finalTitles = extractDestaqueTitles(finalMd);
-  const pipelinePath = findPipelineNewsletterOutput(editionDir);
-  // Quantas opções de título cada destaque tinha na saída da pipeline.
-  const optionCounts = pipelinePath ? countTitleOptions(readFileSync(pipelinePath, "utf8")) : new Map<number, number>();
-  if (finalTitles.size === 0) return unmeasured("nenhum destaque encontrado em 02-reviewed.md");
-  const changes: ManualChange[] = [];
-  for (const [n, title] of finalTitles) {
-    const pick = picks.find((p) => p.destaque === n);
-    if (pick) {
-      if (pick.chosen.trim() !== title.trim()) {
-        changes.push({ kind: "title-choice", detail: `D${n}: pipeline escolheu "${pick.chosen}", saiu "${title}"` });
-      }
-    } else if ((optionCounts.get(n) ?? 0) > 1) {
-      changes.push({ kind: "title-choice", detail: `D${n}: título escolhido à mão (sem pick do title-picker)` });
+/** Pick do title-picker com a URL do destaque a que ele se refere (#9647). */
+interface ResolvedPick {
+  destaque: number;
+  chosen: string;
+  /** URL do destaque da pipeline cujas opções contêm `chosen` (ou o da mesma posição); `null` sem saída da pipeline. */
+  url: string | null;
+}
+
+/**
+ * Liga cada pick do `title-picker` à URL do destaque: o destaque da saída da
+ * pipeline cujas opções de título contêm o escolhido; sem casamento, o da
+ * mesma posição na saída da pipeline. Pura.
+ */
+export function resolvePickUrls(
+  picks: ReadonlyArray<{ destaque: number; chosen: string }>,
+  pipelineOptions: readonly DestaqueEntry[],
+  pipelineDestaques: readonly DestaqueEntry[],
+): ResolvedPick[] {
+  return picks.map((p) => {
+    const byTitle = pipelineOptions.find((d) => d.titleOptions.some((t) => t.trim() === p.chosen.trim()));
+    const byPosition = pipelineOptions.find((d) => d.position === p.destaque) ?? pipelineDestaques.find((d) => d.position === p.destaque);
+    return { destaque: p.destaque, chosen: p.chosen, url: (byTitle ?? byPosition)?.url ?? null };
+  });
+}
+
+/** Saída do writer com as 3 opções de título (pra casar os picks e contar opções). */
+function readPipelineTitleOptions(editionDir: string): DestaqueEntry[] {
+  const candidates = [findPipelineNewsletterOutput(editionDir), join(editionDir, "_internal", "02-draft.md")];
+  for (const p of candidates) {
+    if (p && existsSync(p)) {
+      const ds = extractDestaques(readFileSync(p, "utf8"));
+      if (ds.length > 0) return ds;
     }
   }
-  return { status: "measured", baseline: "title-picks", changes };
+  return [];
+}
+
+/**
+ * Títulos (#9647): só destaque MANTIDO (mesma URL da saída da pipeline) conta,
+ * e o pick comparado é o daquele destaque, não o da posição. Destaque novo
+ * (troca) tem título novo por construção — vai pra `cascades`.
+ */
+function titlesGate(
+  editionDir: string,
+  finalDestaques: readonly DestaqueEntry[],
+  pipelineDestaques: readonly DestaqueEntry[] | null,
+  match: DestaqueMatch | null,
+): GateResult {
+  if (finalDestaques.length === 0) return unmeasured("nenhum destaque encontrado em 02-reviewed.md");
+  const options = readPipelineTitleOptions(editionDir);
+  const picks = resolvePickUrls(readTitlePicks(editionDir), options, pipelineDestaques ?? []);
+  const changes: ManualChange[] = [];
+  const cascades: ManualChange[] = [];
+  for (const d of finalDestaques) {
+    const n = d.position;
+    if (match?.statusByFinalPosition.get(n) === "new") {
+      cascades.push({ kind: "title-choice", detail: `D${n}: título de destaque trocado "${d.title}" (cascata de destaque-swap)`, url: d.url });
+      continue;
+    }
+    // Sem saída da pipeline (`match` nulo): casa o pick pela posição, como antes do #9647.
+    const pipelineEntry = match?.pipelineEntryOf.get(n);
+    const key = destaqueUrlKey(pipelineEntry?.url ?? d.url);
+    const pick = match ? picks.find((p) => p.url !== null && destaqueUrlKey(p.url) === key) : picks.find((p) => p.destaque === n);
+    const from = pipelineEntry?.position;
+    const where = from !== undefined && from !== n ? `D${n} (era D${from})` : `D${n}`;
+    if (pick) {
+      if (pick.chosen.trim() !== d.title.trim()) {
+        changes.push({ kind: "title-choice", detail: `${where}: pipeline escolheu "${pick.chosen}", saiu "${d.title}"`, url: d.url });
+      }
+      continue;
+    }
+    const optionCount = (match ? options.find((o) => destaqueUrlKey(o.url) === key) : options.find((o) => o.position === n))?.titleOptions.length ?? 0;
+    if (optionCount > 1) {
+      changes.push({ kind: "title-choice", detail: `${where}: título escolhido à mão (sem pick do title-picker)`, url: d.url });
+    }
+  }
+  return { status: "measured", baseline: "title-picks", changes, ...(cascades.length > 0 ? { cascades } : {}) };
 }
 
 function splitSocialLines(md: string): Map<string, string[]> {
@@ -390,21 +536,37 @@ function socialGate(editionDir: string, health: BaselineHealth, snapshotSocial: 
   return { status: "measured", baseline: "snapshot", changes };
 }
 
-function imagesGate(editionDir: string): GateResult {
+/**
+ * Imagens (#9647): a arte `04-dN-*` é do destaque que está em `DESTAQUE N` no
+ * final. Refação de destaque trocado ou mudado de posição é cascata (vai pra
+ * `cascades`); só conta a refação de destaque mantido na mesma posição.
+ * Limite: arte movida com `mv` preserva o mtime e não aparece (261005 D1) — o
+ * reposicionamento em si já conta em `destaques`.
+ */
+function imagesGate(editionDir: string, finalDestaques: readonly DestaqueEntry[], match: DestaqueMatch | null): GateResult {
   const step3 = readJson(join(editionDir, "_internal", ".step-3-done.json"));
   const completedMs = typeof step3?.completed_at === "string" ? Date.parse(step3.completed_at) : NaN;
   if (Number.isNaN(completedMs)) return unmeasured("sentinel do Stage 3 ausente");
   const changes: ManualChange[] = [];
+  const cascades: ManualChange[] = [];
   for (const n of [1, 2, 3]) {
     const regenerated = ["2x1", "1x1", "4x5-nativo"].filter((ratio) => {
       const p = join(editionDir, `04-d${n}-${ratio}.jpg`);
       return existsSync(p) && statSync(p).mtimeMs > completedMs + IMAGE_MTIME_TOLERANCE_MS;
     });
-    if (regenerated.length > 0) {
-      changes.push({ kind: "image-redo", detail: `D${n}: ${regenerated.join(", ")} regerado(s) depois do Stage 3` });
+    if (regenerated.length === 0) continue;
+    const detail = `D${n}: ${regenerated.join(", ")} regerado(s) depois do Stage 3`;
+    const d = finalDestaques.find((x) => x.position === n);
+    const status = match?.statusByFinalPosition.get(n);
+    if (status === "new") {
+      cascades.push({ kind: "image-redo", detail: `${detail} (cascata de destaque-swap)`, url: d?.url });
+    } else if (status === "moved") {
+      cascades.push({ kind: "image-redo", detail: `${detail} (cascata: destaque era D${match!.pipelineEntryOf.get(n)?.position})`, url: d?.url });
+    } else {
+      changes.push(d ? { kind: "image-redo", detail, url: d.url } : { kind: "image-redo", detail });
     }
   }
-  return { status: "measured", baseline: "stage3-sentinel", changes };
+  return { status: "measured", baseline: "stage3-sentinel", changes, ...(cascades.length > 0 ? { cascades } : {}) };
 }
 
 /** Lê `_internal/.jev-profile.json` como Tri (ausente/corrompido/ok). */
@@ -453,6 +615,21 @@ export function stage1EditorAddedUrls(editionDir: string, snapshotApproved: stri
   return new Set([...selectionUrls(approved)].map(normalizeItemUrl).filter((u) => !pipeline.has(u)));
 }
 
+/** Destaques da saída da pipeline: baseline da newsletter, ou `02-draft.md`; `null` sem nenhum. */
+function pipelineDestaques(
+  editionDir: string,
+  raw: { baseline: string; source: "snapshot" | "reconstructed" } | null,
+): { destaques: DestaqueEntry[]; source: "snapshot" | "reconstructed" | "draft" } | null {
+  if (raw !== null) {
+    const ds = extractDestaques(raw.baseline);
+    if (ds.length > 0) return { destaques: ds, source: raw.source };
+  }
+  const draft = join(editionDir, "_internal", "02-draft.md");
+  if (!existsSync(draft)) return null;
+  const ds = extractDestaques(normalizeNewsletterForComparison(readFileSync(draft, "utf8")));
+  return ds.length > 0 ? { destaques: ds, source: "draft" } : null;
+}
+
 /** Mede uma edição. Somente leitura. */
 export function computeEditionManualEdits(editionDir: string, edition: string, opts: ManualEditsOptions = {}): EditionManualEdits {
   const countCuts = opts.countCuts === true;
@@ -462,19 +639,26 @@ export function computeEditionManualEdits(editionDir: string, edition: string, o
   const finalMd = existsSync(finalPath) ? readFileSync(finalPath, "utf8") : null;
   const snapshotApproved = snapshots.get("_internal/01-approved.json");
 
+  const rawBaseline = finalMd === null ? null : newsletterBaseline(editionDir, health, snapshots.get("02-reviewed.md"), finalMd);
   const newsletter: NewsletterMeasurement =
     finalMd === null
       ? { gate: unmeasured("02-reviewed.md ausente"), cuts: [], inclusions: null }
-      : newsletterGate(editionDir, health, snapshots.get("02-reviewed.md"), finalMd, {
+      : newsletterGate(rawBaseline, finalMd, {
           countCuts,
           stage1EditorAddedUrls: stage1EditorAddedUrls(editionDir, snapshotApproved),
         });
+  // #9647: destaques da saída da pipeline (o mesmo baseline da newsletter; sem
+  // ele, o `02-draft.md` do writer) × final, casados por URL.
+  const pipeline = pipelineDestaques(editionDir, rawBaseline);
+  const finalDestaques = finalMd === null ? [] : extractDestaques(finalMd);
+  const match = pipeline === null || finalMd === null ? null : matchDestaquesByUrl(pipeline.destaques, finalDestaques);
   const gates: Record<GateName, GateResult> = {
-    stage1: stage1Gate(editionDir, health, snapshotApproved, countCuts),
+    stage1: stage1Gate(editionDir, health, snapshotApproved, pipeline?.destaques ?? null, countCuts),
+    destaques: finalMd === null ? unmeasured("02-reviewed.md ausente") : destaquesGate(editionDir, pipeline, finalDestaques, match),
     newsletter: newsletter.gate,
-    titles: finalMd === null ? unmeasured("02-reviewed.md ausente") : titlesGate(editionDir, finalMd),
+    titles: finalMd === null ? unmeasured("02-reviewed.md ausente") : titlesGate(editionDir, finalDestaques, pipeline?.destaques ?? null, match),
     social: socialGate(editionDir, health, snapshots.get("03-social.md")),
-    images: imagesGate(editionDir),
+    images: imagesGate(editionDir, finalDestaques, match),
   };
   // Cortes: os da newsletter (por URL) + `pool-cut` do Stage 1 que o texto não
   // mostrou (ex.: cortado no gate 1, nunca chegou ao baseline do Stage 2).
