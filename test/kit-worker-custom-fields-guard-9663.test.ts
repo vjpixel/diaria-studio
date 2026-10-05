@@ -26,6 +26,7 @@ import {
   buildMissingKitFieldsAlarmBody,
   type KitWorkerFieldsCheckResult,
 } from "../scripts/lib/kit-worker-custom-fields-guard.ts";
+import { kitWorkerFieldsGuardPreflight } from "../scripts/check-kit-worker-custom-fields.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -137,6 +138,38 @@ test("runKitWorkerFieldsGuard: falha de leitura vira null + AVISO, nunca lança 
   assert.equal(n, null);
   assert.ok(logs.some((l) => l.startsWith("AVISO") && l.includes("NÃO rodou")));
   assert.ok(!logs.some((l) => l.includes("OK")));
+});
+
+test("runKitWorkerFieldsGuard: config ausente (preflight) alarma 'desarmado' e não lê o Kit (review #9665)", async () => {
+  const disarmed: string[] = [];
+  const logs: string[] = [];
+  const n = await runKitWorkerFieldsGuard({
+    check: async () => assert.fail("não deveria ler o Kit sem config"),
+    alarm: async () => assert.fail("não é alarme de field ausente"),
+    preflight: () => "KIT_API_KEY ausente no ambiente",
+    alarmDisarmed: async (r) => void disarmed.push(r),
+    isDryRun: false,
+    log: (s) => logs.push(s),
+  });
+  assert.equal(n, null);
+  assert.deepEqual(disarmed, ["KIT_API_KEY ausente no ambiente"]);
+  assert.ok(logs.some((l) => l.startsWith("ERRO") && l.includes("DESARMADO")));
+  // dry-run: loga, não alarma
+  const n2 = await runKitWorkerFieldsGuard({
+    check: async () => assert.fail("não deveria ler o Kit"),
+    alarm: async () => {},
+    preflight: () => "x",
+    alarmDisarmed: async () => assert.fail("dry-run não alarma"),
+    isDryRun: true,
+    log: () => {},
+  });
+  assert.equal(n2, null);
+});
+
+test("kitWorkerFieldsGuardPreflight: acusa KIT_API_KEY ausente/vazia, aceita presente", () => {
+  assert.match(kitWorkerFieldsGuardPreflight({}) ?? "", /KIT_API_KEY/);
+  assert.match(kitWorkerFieldsGuardPreflight({ KIT_API_KEY: "  " }) ?? "", /KIT_API_KEY/);
+  assert.equal(kitWorkerFieldsGuardPreflight({ KIT_API_KEY: "k" }), null);
 });
 
 test("runKitWorkerFieldsGuard: falha do alarme não lança", async () => {

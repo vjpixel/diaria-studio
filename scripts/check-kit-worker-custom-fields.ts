@@ -56,11 +56,41 @@ export async function alarmMissingKitWorkerFields(missing: WorkerKitFieldVar[]):
   if (result.issue?.action === "failed") throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
 }
 
+/** Alarme do guard desarmado por config (review #9665) — fingerprint estável, 1 issue só. */
+export async function alarmKitWorkerFieldsGuardDisarmed(reason: string): Promise<void> {
+  const result = await notifyEditor(
+    {
+      check: "check-kit-worker-custom-fields-disarmed",
+      fingerprint: "disarmed:config",
+      severity: "acao",
+      priority: "P2",
+      subject: "[diar.ia.br] Guard de custom fields do Kit (#9663) desarmado — config ausente",
+      body: [
+        `O guard que confere os KIT_*_FIELD dos workers contra o Kit não roda: ${reason}.`,
+        "",
+        "Enquanto isso, um worker gravando em custom field inexistente perde o dado em silêncio (#9663).",
+        "Correção: disponibilizar a variável no ambiente da task `check-brevo-diaria-guardrail` (Doppler/.env).",
+        "",
+        `(alarme automático — ${new Date().toISOString()})`,
+      ].join("\n"),
+    },
+    { cwd: ROOT },
+  );
+  if (result.issue?.action === "failed") throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+}
+
+/** Puro — motivo de config que desarma o guard, ou `null`. */
+export function kitWorkerFieldsGuardPreflight(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.KIT_API_KEY?.trim() ? null : "KIT_API_KEY ausente no ambiente";
+}
+
 /** Deps de produção do guard — reusado pelo `check-brevo-diaria-guardrail.ts`. */
 export function kitWorkerFieldsGuardProdDeps(isDryRun: boolean, log: (msg: string) => void) {
   return {
     check: () => checkKitWorkerCustomFields({ workersDir: WORKERS_DIR, kitGet: (p: string) => kitFetch(p) }),
     alarm: alarmMissingKitWorkerFields,
+    preflight: () => kitWorkerFieldsGuardPreflight(),
+    alarmDisarmed: alarmKitWorkerFieldsGuardDisarmed,
     isDryRun,
     log,
   };

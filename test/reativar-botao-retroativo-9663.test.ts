@@ -62,7 +62,7 @@ test("findReativarClickBefore: pega o clique mais antigo ≤ promoted_at; ignora
   assert.equal(findReativarClickBefore(null, "2026-09-29T12:00:00Z"), null);
 });
 
-test("selectRetroCandidates: só promoted_beehiiv + self_confirmed_kit a partir de since", () => {
+test("selectRetroCandidates: só origem kit: + promoted_beehiiv + self_confirmed_kit a partir de since", () => {
   const store: BrevoDiariaStore = {
     contacts: [
       contact({ email: "ok@x.com" }),
@@ -70,6 +70,7 @@ test("selectRetroCandidates: só promoted_beehiiv + self_confirmed_kit a partir 
       contact({ email: "botao@x.com", resolution_reason: "self_confirmed_kit_botao" }),
       contact({ email: "beehiiv@x.com", resolution_reason: "self_confirmed_beehiiv" }),
       contact({ email: "inbrevo@x.com", status: "in_brevo" }),
+      contact({ email: "naokit@x.com", beehiiv_subscription_id: "sub_123" }),
     ],
   };
   assert.deepEqual(selectRetroCandidates(store, "2026-09-16").map((c) => c.email), ["ok@x.com"]);

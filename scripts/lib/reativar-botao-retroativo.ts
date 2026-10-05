@@ -17,6 +17,7 @@
  * `scripts/reclassify-reativar-botao-retroativo.ts`.
  */
 import type { BrevoDiariaContact, BrevoDiariaStore } from "./brevo-diaria-store.ts";
+import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts";
 
 /** Host do worker `reativar` (só `workers_dev`, sem domínio de marca). */
 export const REATIVAR_LINK_HOST = "reativar.diaria.workers.dev";
@@ -68,7 +69,7 @@ export function findReativarClickBefore(
 }
 
 /**
- * Puro — contatos elegíveis: `promoted_beehiiv` + `self_confirmed_kit` com
+ * Puro — contatos elegíveis: origem Kit (`kit:`) + `promoted_beehiiv` + `self_confirmed_kit` com
  * `promoted_at` ≥ `since` (ISO/AAAA-MM-DD). Fora da janela de 90 dias da
  * Brevo o `campaignStats` não responde — `since` é limitado por quem chama.
  */
@@ -76,6 +77,10 @@ export function selectRetroCandidates(store: BrevoDiariaStore, since: string): B
   const sinceT = Date.parse(since);
   return store.contacts.filter((c) => {
     if (c.status !== "promoted_beehiiv" || c.resolution_reason !== "self_confirmed_kit") return false;
+    // Mesmo critério de origem de `isButtonConfirm` (brevo-diaria-store.ts):
+    // hoje redundante (`self_confirmed_kit` só nasce de origem Kit), mas não
+    // depende disso continuar verdade (review #9665).
+    if (!c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT)) return false;
     const t = Date.parse(c.promoted_at ?? "");
     return !Number.isNaN(t) && (Number.isNaN(sinceT) || t >= sinceT);
   });

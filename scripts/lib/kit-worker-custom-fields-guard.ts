@@ -170,18 +170,43 @@ export interface KitWorkerFieldsAlarmDeps {
   alarm: (missing: WorkerKitFieldVar[]) => Promise<void>;
   isDryRun: boolean;
   log: (msg: string) => void;
+  /**
+   * Opcional (review #9665) — erro de CONFIGURAÇÃO que desarma o guard de
+   * forma permanente (ex.: `KIT_API_KEY` ausente no ambiente da task).
+   * Devolve o motivo, ou `null` se a config está ok. Distinto de falha de
+   * rede: blip transitório continua só AVISO (não abre issue a cada 4h);
+   * config ausente nunca se resolve sozinha, então vira alarme.
+   */
+  preflight?: () => string | null;
+  /** Alarme do guard DESARMADO por config (só chamado se `preflight` acusar). */
+  alarmDisarmed?: (reason: string) => Promise<void>;
 }
 
 /**
  * Roda o guard e alarma se houver field ausente. Retorna o número de fields
- * ausentes, ou `null` se a checagem não pôde rodar (leitura do Kit falhou —
- * logado como AVISO, nunca como "tudo ok").
+ * ausentes, ou `null` se a checagem não pôde rodar — leitura do Kit falhou
+ * (AVISO, sem alarme: pode ser blip) ou config ausente via `preflight` (ERRO +
+ * `alarmDisarmed`: não se resolve sozinha). Nunca "tudo ok".
  *
  * Nunca lança: chamado de dentro do `check-brevo-diaria-guardrail.ts`, cujos
  * outros alarmes (conta suspensa, seed) não podem ser derrubados por uma falha
  * na leitura do Kit.
  */
 export async function runKitWorkerFieldsGuard(deps: KitWorkerFieldsAlarmDeps): Promise<number | null> {
+  const configError = deps.preflight?.() ?? null;
+  if (configError) {
+    deps.log(`ERRO: guard de custom fields do Kit (#9663) DESARMADO por config — ${configError}`);
+    if (deps.isDryRun) {
+      deps.log("--dry-run: NÃO registra alarme.");
+    } else if (deps.alarmDisarmed) {
+      try {
+        await deps.alarmDisarmed(configError);
+      } catch (e) {
+        deps.log(`AVISO: falha ao registrar alarme de guard desarmado: ${(e as Error).message}`);
+      }
+    }
+    return null;
+  }
   let result: KitWorkerFieldsCheckResult;
   try {
     result = await deps.check();
