@@ -42,6 +42,7 @@ import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaO
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
 import { lintIntroCount } from "../newsletter-count.ts";
+import { checkTituloSubtituloNotProvisional } from "../titulo-provisional.ts"; // #9601 review PR #9666
 import {
   extractEiaMirrorBlock,
   parseEiaMirrorBlock,
@@ -2910,6 +2911,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkIntroCountConsistent,
   },
   {
+    id: "titulo-subtitulo-not-provisional",
+    description:
+      "TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601)",
+    source_issue: "#9601",
+    stage: 4,
+    run: checkTituloSubtituloNotProvisional,
+  },
+  {
     id: "use-melhor-sentinel",
     description: "itens USE MELHOR sem descrição real (sentinel [DESCRIÇÃO PENDENTE] presente, #2464)",
     source_issue: "#2464",
@@ -3148,6 +3157,7 @@ export {
   checkImageContentFresh,
   checkEiaCreditSynced,
   checkIntroCountConsistent,
+  checkTituloSubtituloNotProvisional,
   checkNarrativeNotGenericPlaceholder,
   checkIntentionalErrorPresentInFinal,
   checkTruncatedSecondaryItemSummary,

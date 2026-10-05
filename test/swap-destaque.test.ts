@@ -33,7 +33,17 @@ import {
   deleteDestaqueImages,
   deleteDestaquePrompts,
   parseSwapArgs,
+  toHighlightItem,
+  toBucketItem,
+  defaultDemoteBucket,
+  removePoolItemFromMd,
+  replaceTitleInTituloSubtitulo,
+  applySwapToReviewedMd,
 } from "../scripts/swap-destaque.ts";
+import {
+  checkTituloSubtituloNotProvisional,
+  finalizeProvisionalTitulos,
+} from "../scripts/lib/titulo-provisional.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1071,5 +1081,380 @@ describe("swap-destaque.ts × social-hash-fresh (#9169)", () => {
     assert.ok(!steps.some((s) => /merge-social-md/.test(s)));
     // comando de imagem completo e válido (review #9177): prompt reescrito + --destaque d{N}
     assert.ok(steps.some((s) => /02-d3-prompt\.md/.test(s) && /--editorial .* --out-dir .* --destaque d3/.test(s)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9601 — swap pool→destaque faz i+ii do §4d.1b e mantém o MD coerente
+// ---------------------------------------------------------------------------
+
+/** Recorte do 02-reviewed.md da edição 261005 (Kolibri promovida de LANÇAMENTOS a D3). */
+function makeMd261005(): string {
+  return [
+    "TÍTULO",
+    "",
+    "Cloudflare lança modelos que decidem",
+    "",
+    "SUBTÍTULO",
+    "",
+    "A cultura da OpenAI está quebrada | Você viu um dos 554 deepfakes desta eleição?",
+    "",
+    "---",
+    "Olá! Eu sou o Pixel.",
+    "",
+    "Nesta edição, a IA analisou 333 conteúdos e selecionei os 6 mais relevantes.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    "",
+    "**[Cloudflare lança modelos que decidem](https://blog.cloudflare.com/clef)**  ",
+    "",
+    "Texto 1.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 2 | 🛡️ SEGURANÇA**",
+    "",
+    "**[A cultura da OpenAI está quebrada](https://www.theguardian.com/x)**  ",
+    "",
+    "Texto 2.",
+    "",
+    "---",
+    "",
+    "**DESTAQUE 3 | 🔬 PESQUISA**",
+    "",
+    "**[Você viu um dos 554 deepfakes desta eleição?](https://www.bra1.com.br/deepfakes)**  ",
+    "",
+    "Texto 3.",
+    "",
+    "---",
+    "",
+    "**🛠️ USE MELHOR**",
+    "",
+    "**[Tutorial A](https://a.com/tut)**",
+    "Descrição A. (5 min)",
+    "",
+    "---",
+    "",
+    "**🚀 LANÇAMENTOS**",
+    "",
+    "**[Kolibri Has Landed: A Sovereign Open-Weight Model](https://aleph-alpha.com/en/blog/kolibri)**  ",
+    "Kolibri é um modelo Mixture-of-Experts.",
+    "",
+    "---",
+    "",
+    "**📡 RADAR**",
+    "",
+    "**[Radar 1](https://r.com/1)**  ",
+    "Descrição 1.",
+    "",
+    "**[Radar 2](https://r.com/2)**  ",
+    "Descrição 2.",
+    "",
+    "---",
+    "",
+    "**ERRO INTENCIONAL**",
+    "",
+    "Texto do erro.",
+    "",
+  ].join("\n");
+}
+
+describe("#9601 — shape do §4d.1b em 01-approved.json", () => {
+  it("item FLAT do pool sobe envolvido no wrapper de highlight; rebaixado desce FLAT", () => {
+    const wrapped = (url: string, t: string) => ({
+      rank: 3,
+      score: 70,
+      bucket: "radar",
+      reason: "r",
+      url,
+      title_options: [`Manchete ${t}`],
+      article: { url, title: `Fonte ${t}`, title_options: [`Manchete ${t}`], score: 70 },
+    });
+    const data: Record<string, unknown> = {
+      highlights: [wrapped("https://h/1", "1"), wrapped("https://h/2", "2"), wrapped("https://h/3", "3")],
+      lancamento: [{ url: "https://k", title: "Kolibri", category: "lancamento", score: 66 }],
+      radar: [{ url: "https://r/1", title: "R1" }],
+    };
+    const r = swapInApprovedJson(data, "lancamento", 0, 2, false);
+    assert.ok(r.ok);
+    const h = data.highlights as Record<string, unknown>[];
+    assert.equal(h[2].url, "https://k");
+    assert.equal(h[2].bucket, "lancamento");
+    assert.equal(h[2].score, 66);
+    assert.equal((h[2].article as Record<string, unknown>).title, "Kolibri");
+    assert.deepEqual(h.map((x) => x.rank), [1, 2, 3]);
+    // lancamento → default radar (LANÇAMENTOS só aceita link oficial, #160)
+    assert.deepEqual(data.lancamento, []);
+    const radar = data.radar as Record<string, unknown>[];
+    assert.equal(radar.length, 2);
+    assert.equal(radar[0].url, "https://h/3");
+    assert.equal(radar[0].title, "Fonte 3");
+    assert.equal(radar[0].article, undefined, "item de pool não leva o wrapper");
+    assert.equal(radar[0].rank, undefined);
+  });
+
+  it("--demote-to explícito manda o rebaixado pro bucket pedido", () => {
+    const data: Record<string, unknown> = {
+      highlights: [{ url: "https://h/1", rank: 1, article: { url: "https://h/1", title: "T1" } }],
+      radar: [{ url: "https://r/0", title: "R0" }],
+      use_melhor: [],
+    };
+    const r = swapInApprovedJson(data, "radar", 0, 0, false, "use_melhor");
+    assert.ok(r.ok);
+    assert.deepEqual(data.radar, []);
+    assert.equal((data.use_melhor as Record<string, unknown>[])[0].title, "T1");
+  });
+
+  it("runners_up (já wrapper) sobe só com rank novo e o rebaixado volta wrapper", () => {
+    const runner = { rank: 9, score: 50, bucket: "radar", url: "https://ru", article: { url: "https://ru", title: "RU" } };
+    const data: Record<string, unknown> = {
+      highlights: [{ rank: 1, url: "https://h/1", article: { url: "https://h/1", title: "T1" } }],
+      runners_up: [runner],
+    };
+    swapInApprovedJson(data, "runners_up", 0, 0, false);
+    const h = data.highlights as Record<string, unknown>[];
+    assert.equal(h[0].rank, 1);
+    assert.equal(h[0].article, runner.article);
+    const ru = data.runners_up as Record<string, unknown>[];
+    assert.equal(extractUrl(ru[0]), "https://h/1");
+    assert.ok(ru[0].article, "runners_up guarda o wrapper");
+  });
+
+  it("defaultDemoteBucket só desvia lancamento", () => {
+    assert.equal(defaultDemoteBucket("lancamento"), "radar");
+    assert.equal(defaultDemoteBucket("use_melhor"), "use_melhor");
+    assert.equal(defaultDemoteBucket("runners_up"), "runners_up");
+  });
+
+  it("toHighlightItem/toBucketItem são inversos no shape", () => {
+    const flat = { url: "https://x", title: "X", category: "radar" };
+    const up = toHighlightItem(flat, 2, "radar");
+    assert.equal(up.rank, 2);
+    assert.equal(up.article, flat);
+    const down = toBucketItem(up, "radar");
+    assert.equal(down.url, "https://x");
+    assert.equal(down.title, "X");
+    assert.equal(down.article, undefined);
+  });
+});
+
+describe("#9601 — 02-reviewed.md coerente após o swap (caso 261005)", () => {
+  it("SUBTÍTULO troca o título do D3 antigo, LANÇAMENTOS esvaziada some, intro recontada", () => {
+    const { md: out, updates } = applySwapToReviewedMd(
+      makeMd261005(),
+      3,
+      "Kolibri Has Landed: A Sovereign Open-Weight Model",
+      "https://aleph-alpha.com/en/blog/kolibri",
+    );
+    const header = out.split("\n---\n")[0];
+    assert.match(header, /A cultura da OpenAI está quebrada \| Kolibri Has Landed/);
+    assert.doesNotMatch(header, /deepfakes/);
+    assert.equal(updates.titulo_subtitulo, "updated");
+    // seção LANÇAMENTOS saiu inteira, sem deixar `---` duplicado
+    assert.equal(updates.pool_item_removed, true);
+    assert.equal(updates.section_removed, "LANÇAMENTOS");
+    assert.doesNotMatch(out, /LANÇAMENTOS/);
+    assert.doesNotMatch(out, /---\n\n---/);
+    assert.match(out, /\(5 min\)\n\n---\n\n\*\*📡 RADAR\*\*/);
+    // URL do item promovido aparece uma vez só (no placeholder do D3)
+    assert.equal(out.split("https://aleph-alpha.com/en/blog/kolibri").length - 1, 1);
+    // 3 destaques + 1 use melhor + 2 radar = 6
+    assert.equal(updates.intro_count.changed, false);
+    assert.match(out, /selecionei os 6 mais relevantes/);
+  });
+
+  it("intro errada antes do swap é corrigida pela contagem real", () => {
+    const md = makeMd261005().replace("selecionei os 6", "selecionei os 16");
+    const { md: out, updates } = applySwapToReviewedMd(md, 3, "Kolibri", "https://aleph-alpha.com/en/blog/kolibri");
+    assert.equal(updates.intro_count.before, 16);
+    assert.equal(updates.intro_count.after, 6);
+    assert.match(out, /selecionei os 6 mais relevantes/);
+  });
+
+  it("seção com outros itens perde só o item promovido", () => {
+    const { md: out, removed, section_removed } = removePoolItemFromMd(makeMd261005(), "https://r.com/1");
+    assert.equal(removed, true);
+    assert.equal(section_removed, null);
+    assert.doesNotMatch(out, /Radar 1/);
+    assert.match(out, /\*\*📡 RADAR\*\*\n\n\*\*\[Radar 2\]/);
+  });
+
+  it("URL que só existe num bloco DESTAQUE não é tocada", () => {
+    const md = makeMd261005();
+    const r = removePoolItemFromMd(md, "https://www.bra1.com.br/deepfakes");
+    assert.equal(r.removed, false);
+    assert.equal(r.md, md);
+  });
+
+  it("TÍTULO/SUBTÍTULO escrito à mão (sem o título antigo) fica intocado", () => {
+    const md = makeMd261005().replace(
+      "A cultura da OpenAI está quebrada | Você viu um dos 554 deepfakes desta eleição?",
+      "Um subtítulo do editor",
+    );
+    const r = replaceTitleInTituloSubtitulo(md, "Você viu um dos 554 deepfakes desta eleição?", "Kolibri");
+    assert.equal(r.status, "old_title_not_found");
+    assert.equal(r.md, md);
+    assert.equal(replaceTitleInTituloSubtitulo("sem bloco", "x", "y").status, "no_block");
+  });
+
+  it("CLI: --promote lancamento:0 --demote d3 grava o MD coerente e reporta md_updates", () => {
+    const dir = makeTempEdition({
+      customApproved: {
+        highlights: [
+          { rank: 1, url: "https://blog.cloudflare.com/clef", article: { url: "https://blog.cloudflare.com/clef", title: "Clef" } },
+          { rank: 2, url: "https://www.theguardian.com/x", article: { url: "https://www.theguardian.com/x", title: "OpenAI" } },
+          { rank: 3, url: "https://www.bra1.com.br/deepfakes", article: { url: "https://www.bra1.com.br/deepfakes", title: "Deepfakes" } },
+        ],
+        lancamento: [{ url: "https://aleph-alpha.com/en/blog/kolibri", title: "Kolibri Has Landed: A Sovereign Open-Weight Model" }],
+        radar: [{ url: "https://r.com/1", title: "Radar 1" }, { url: "https://r.com/2", title: "Radar 2" }],
+        use_melhor: [{ url: "https://a.com/tut", title: "Tutorial A" }],
+        video: [],
+        runners_up: [],
+      },
+    });
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), makeMd261005());
+      const { status, stdout, stderr } = runCli([
+        "--edition", "261005", "--edition-dir", dir,
+        "--promote", "lancamento:0", "--demote", "d3",
+      ]);
+      assert.equal(status, 0, stderr);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.demoted.to_bucket, "radar");
+      assert.equal(parsed.md_updates.section_removed, "LANÇAMENTOS");
+      assert.equal(parsed.md_updates.titulo_subtitulo, "updated");
+      assert.ok(parsed.rerenders_needed.some((s: string) => /seção radar/.test(s) && /sync-intro-count/.test(s)));
+      const out = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+      assert.doesNotMatch(out, /LANÇAMENTOS/);
+      const approved = JSON.parse(readFileSync(join(dir, "_internal", "01-approved.json"), "utf8"));
+      assert.equal(approved.highlights[2].article.url, "https://aleph-alpha.com/en/blog/kolibri");
+      assert.equal(approved.radar[0].url, "https://www.bra1.com.br/deepfakes");
+      assert.equal(approved.radar[0].article, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review PR #9666 — troca por segmento inteiro + título provisório não escapa
+// ---------------------------------------------------------------------------
+
+describe("review PR #9666 — TÍTULO/SUBTÍTULO por segmento e título provisório", () => {
+  const KOLIBRI = "Kolibri Has Landed: A Sovereign Open-Weight Model";
+
+  function makeApprovedKolibri() {
+    return {
+      highlights: [
+        { rank: 1, url: "https://blog.cloudflare.com/clef", article: { url: "https://blog.cloudflare.com/clef", title: "Clef" } },
+        { rank: 2, url: "https://www.theguardian.com/x", article: { url: "https://www.theguardian.com/x", title: "OpenAI" } },
+        { rank: 3, url: "https://www.bra1.com.br/deepfakes", article: { url: "https://www.bra1.com.br/deepfakes", title: "Deepfakes" } },
+      ],
+      lancamento: [{ url: "https://aleph-alpha.com/en/blog/kolibri", title: KOLIBRI }],
+      radar: [{ url: "https://r.com/1", title: "Radar 1" }, { url: "https://r.com/2", title: "Radar 2" }],
+      use_melhor: [{ url: "https://a.com/tut", title: "Tutorial A" }],
+      video: [],
+      runners_up: [],
+    };
+  }
+
+  it("título antigo que é substring de outro destaque não altera o vizinho (só o segmento inteiro)", () => {
+    const md = [
+      "TÍTULO",
+      "",
+      "OpenAI",
+      "",
+      "SUBTÍTULO",
+      "",
+      "A cultura da OpenAI está quebrada | OpenAI",
+      "",
+      "---",
+      "corpo",
+    ].join("\n");
+    const r = replaceTitleInTituloSubtitulo(md, "OpenAI", "Kolibri", 3);
+    assert.equal(r.status, "updated");
+    // D1 (linha do TÍTULO) e o segmento do D2 ficam intocados
+    assert.match(r.md, /TÍTULO\n\nOpenAI\n/);
+    assert.match(r.md, /A cultura da OpenAI está quebrada \| Kolibri\n/);
+    // posição 1 mexe só na linha do TÍTULO
+    const r1 = replaceTitleInTituloSubtitulo(md, "OpenAI", "Novo D1", 1);
+    assert.match(r1.md, /TÍTULO\n\nNovo D1\n/);
+    assert.match(r1.md, /A cultura da OpenAI está quebrada \| OpenAI\n/);
+  });
+
+  it("CLI grava marcador do provisório; invariante barra até --finalize-titulo trocar pelo título final", () => {
+    const dir = makeTempEdition({ customApproved: makeApprovedKolibri() });
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), makeMd261005());
+      const swap = runCli([
+        "--edition", "261005", "--edition-dir", dir,
+        "--promote", "lancamento:0", "--demote", "d3",
+      ]);
+      assert.equal(swap.status, 0, swap.stderr);
+      const markerPath = join(dir, "_internal", "swap-destaque-titulo-pending.json");
+      assert.ok(existsSync(markerPath));
+      assert.deepEqual(JSON.parse(readFileSync(markerPath, "utf8")).pending, [
+        { position: 3, provisional_title: KOLIBRI },
+      ]);
+      const parsed = JSON.parse(swap.stdout);
+      assert.ok(parsed.rerenders_needed.some((s: string) => s.includes("--finalize-titulo")));
+
+      // Ainda em placeholder: o invariante acusa (error) e o finalize recusa.
+      let v = checkTituloSubtituloNotProvisional(dir);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /placeholder/);
+      const early = runCli(["--finalize-titulo", "--edition-dir", dir]);
+      assert.equal(early.status, 1);
+      assert.ok(existsSync(markerPath));
+
+      // writer-destaque integrado: bloco D3 com o título final em PT.
+      const mdPath = join(dir, "02-reviewed.md");
+      const withWriter = readFileSync(mdPath, "utf8").replace(
+        /\*\*DESTAQUE 3 \| \[RASCUNHO PENDENTE — swap-destaque\]\*\*\n\n\*\*\[[^\]]+\]\(([^)]+)\)\*\*\n\n\[TEXTO PENDENTE[^\]]*\]/,
+        "**DESTAQUE 3 | 🚀 LANÇAMENTO**\n\n**[Alemanha lança modelo aberto soberano]($1)**  \n\nTexto novo.",
+      );
+      assert.notEqual(withWriter, readFileSync(mdPath, "utf8"));
+      writeFileSync(mdPath, withWriter);
+
+      // Passo pós-writer pulado → gate barrado, com o comando de fix.
+      v = checkTituloSubtituloNotProvisional(dir);
+      assert.equal(v.length, 1);
+      assert.match(v[0].message, /Kolibri Has Landed/);
+      assert.match(v[0].message, /--finalize-titulo/);
+
+      const fin = runCli(["--finalize-titulo", "--edition-dir", dir]);
+      assert.equal(fin.status, 0, fin.stderr);
+      const header = readFileSync(mdPath, "utf8").split("\n---\n")[0];
+      assert.match(header, /A cultura da OpenAI está quebrada \| Alemanha lança modelo aberto soberano/);
+      assert.doesNotMatch(header, /Kolibri/);
+      assert.equal(existsSync(markerPath), false);
+      assert.deepEqual(checkTituloSubtituloNotProvisional(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("D{N} que manteve o título provisório como final não é acusado", () => {
+    const md = makeMd261005().replaceAll("Você viu um dos 554 deepfakes desta eleição?", KOLIBRI);
+    const r = finalizeProvisionalTitulos(md, [{ position: 3, provisional_title: KOLIBRI }]);
+    assert.equal(r.remaining.length, 0);
+    assert.equal(r.finalized[0].status, "already_final");
+    assert.equal(r.md, md);
+  });
+
+  it("mirrorCappedSwapFallback sem demoteTo usa o mesmo default do swapInApprovedJson (lancamento → radar)", () => {
+    const capped: Record<string, unknown> = {
+      highlights: [
+        { rank: 1, url: "https://a", article: { url: "https://a", title: "A" } },
+        { rank: 2, url: "https://b", article: { url: "https://b", title: "B" } },
+      ],
+    };
+    const fb = mirrorCappedSwapFallback(capped, "lancamento", 1, false, { url: "https://k", title: "K" });
+    assert.equal(fb.synced, true);
+    assert.equal(capped.lancamento, undefined);
+    assert.equal((capped.radar as Array<{ url: string }>)[0].url, "https://b");
   });
 });

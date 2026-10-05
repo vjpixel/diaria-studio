@@ -267,6 +267,16 @@ export function captureUsageForWindow(
   };
 }
 
+/**
+ * #9594: a row já tem custo/tokens gravados? Mesmo critério do invariante
+ * `stage-usage-captured` (#5475) — basta um dos dois.
+ *
+ * @pure
+ */
+export function hasCapturedUsage(row: Pick<StageRow, "cost_usd" | "tokens_in">): boolean {
+  return row.cost_usd !== undefined || row.tokens_in !== undefined;
+}
+
 async function main(): Promise<void> {
   const { values, flags } = parseArgsLib(process.argv.slice(2));
   const editionDirRaw = values["edition-dir"];
@@ -275,7 +285,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: npx tsx scripts/capture-stage-usage.ts --edition-dir <path> --stage N " +
         "[--start ISO] [--end ISO] [--transcripts-dir <path>] [--dry-run] " +
-        "[--session-id <id>] [--all-sessions]",
+        "[--session-id <id>] [--all-sessions] [--if-missing]",
     );
     process.exit(2);
   }
@@ -296,6 +306,14 @@ async function main(): Promise<void> {
   // (sucesso) sem gravar nada, o que seria enganoso pro caller.
   if (!row) {
     console.log(JSON.stringify({ source: "unavailable", reason: "stage_not_tracked", stage }));
+    return;
+  }
+
+  // #9594: `--if-missing` = backstop idempotente. O §6b-7 do Stage 6 re-captura o
+  // Stage 5 (mesma sessão em /diaria-5-publicacao) só quando ele ficou sem
+  // custo — nunca sobrescreve uma captura que já deu certo.
+  if (flags.has("if-missing") && hasCapturedUsage(row)) {
+    console.log(JSON.stringify({ source: "skipped", reason: "already_captured", stage }));
     return;
   }
 
