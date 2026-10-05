@@ -456,7 +456,26 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
  * Sentinel + auto-reporter rodaram, edition-report gerado, MAS o loop
  * verify→fix nunca foi disparado.
  */
-function checkStage4ReviewCompleted(editionDir: string): InvariantViolation[] {
+function checkStage4ReviewCompleted(editionDir: string, backendOverride?: string): InvariantViolation[] {
+  // #9594: backend Kit nunca escreve 05-published.json — o resultado do §5f
+  // vive em `_internal/05-review-kit.json`. Ausente = loop não rodou
+  // (antes: retorno [] silencioso e o gate apresentava "review automático" sem dado).
+  if ((backendOverride ?? loadNewsletterBackend()) === "kit") {
+    const kitPath = resolve(editionDir, "_internal", "05-review-kit.json");
+    if (existsSync(kitPath)) return [];
+    return [
+      {
+        rule: "stage-5-review-completed",
+        message:
+          "backend Kit: _internal/05-review-kit.json ausente — review-test-email (§5f) " +
+          "não rodou ou não registrou resultado. Rodar o loop e gravar o arquivo " +
+          "(review_status, review_attempts) antes do gate do Stage 6.",
+        source_issue: "#9594",
+        severity: "warning",
+        file: kitPath,
+      },
+    ];
+  }
   const path = resolve(editionDir, "_internal", "05-published.json");
   if (!existsSync(path)) return [];
   let data: { review_completed?: boolean; review_status?: string };

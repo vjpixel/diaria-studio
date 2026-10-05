@@ -45,7 +45,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
     const dir = makeEditionDir();
     try {
       writePublished(dir, { review_completed: true, review_status: "ok" });
-      assert.equal(checkStage4ReviewCompleted(dir).length, 0);
+      assert.equal(checkStage4ReviewCompleted(dir, "beehiiv").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -58,7 +58,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
         review_completed: false,
         review_status: "issues_unfixable",
       });
-      assert.equal(checkStage4ReviewCompleted(dir).length, 0);
+      assert.equal(checkStage4ReviewCompleted(dir, "beehiiv").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -71,7 +71,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
         review_completed: false,
         review_status: "inconclusive",
       });
-      assert.equal(checkStage4ReviewCompleted(dir).length, 0);
+      assert.equal(checkStage4ReviewCompleted(dir, "beehiiv").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -81,7 +81,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
     const dir = makeEditionDir();
     try {
       writePublished(dir, { review_completed: false, review_status: "pending" });
-      const violations = checkStage4ReviewCompleted(dir);
+      const violations = checkStage4ReviewCompleted(dir, "beehiiv");
       assert.equal(violations.length, 1);
       assert.match(violations[0].message, /Loop verify→fix do test email não rodou/);
     } finally {
@@ -93,7 +93,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
     const dir = makeEditionDir();
     try {
       writePublished(dir, {});
-      assert.ok(checkStage4ReviewCompleted(dir).length > 0);
+      assert.ok(checkStage4ReviewCompleted(dir, "beehiiv").length > 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -102,7 +102,7 @@ describe("checkStage4ReviewCompleted (#1577)", () => {
   it("05-published.json ausente → no-op (outro check pega)", () => {
     const dir = makeEditionDir();
     try {
-      assert.equal(checkStage4ReviewCompleted(dir).length, 0);
+      assert.equal(checkStage4ReviewCompleted(dir, "beehiiv").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -181,6 +181,33 @@ describe("blockReasonForMarkingStageDone — Stage 5 + #1577 review_completed (#
       assert.equal(blockReasonForMarkingStageDone(dir, 1), null);
       assert.equal(blockReasonForMarkingStageDone(dir, 2), null);
       assert.equal(blockReasonForMarkingStageDone(dir, 3), null);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("checkStage4ReviewCompleted — backend Kit (#9594)", () => {
+  it("kit sem 05-review-kit.json → warning (antes: [] silencioso)", () => {
+    const dir = makeEditionDir();
+    try {
+      const v = checkStage4ReviewCompleted(dir, "kit");
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "stage-5-review-completed");
+      assert.equal(v[0].severity, "warning");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("kit com 05-review-kit.json → ok", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        resolve(dir, "_internal", "05-review-kit.json"),
+        JSON.stringify({ review_status: "ok", review_attempts: 1 }),
+      );
+      assert.equal(checkStage4ReviewCompleted(dir, "kit").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
     }
