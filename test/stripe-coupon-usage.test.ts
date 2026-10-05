@@ -35,6 +35,7 @@ import {
   type RedemptionRow,
   type InvoiceRaw,
 } from "../scripts/stripe-coupon-usage.ts";
+import { redemptionEpoch } from "../scripts/lib/stripe-coupons.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures sintéticas — IDs gerados: nenhum id real commitado
@@ -549,6 +550,15 @@ describe("comissão (#2743)", () => {
       const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers, charges });
       const row = r["NEWS50"].redemptions.find((x) => x.subscription === "sub_TEST1");
       assert.equal(row!.paid_cents, 44900);
+    });
+
+    it("#9617: redeemed_at = discount.start (data do resgate), created segue sub.created", () => {
+      const r = aggregateCouponUsage({ codes: promos, coupons, subscriptions, customers, charges: [] });
+      const row = r["NEWS50"].redemptions.find((x) => x.subscription === "sub_TEST1")!;
+      assert.equal(row.redeemed_at, subscriptions[0].discounts[0].start);
+      assert.equal(row.created, subscriptions[0].created);
+      assert.equal(redemptionEpoch(row), subscriptions[0].discounts[0].start);
+      assert.equal(redemptionEpoch({ created: 5 }), 5, "KV legado sem redeemed_at cai em created");
     });
   });
 

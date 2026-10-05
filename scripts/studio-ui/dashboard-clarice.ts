@@ -364,7 +364,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
     const fetchedAt = typeof staleCampaignsRaw?.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
 
-    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "kv-only"); // #5189
+    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } = await readKvTabs(env, "kv-only"); // #5189 / #9617
     const contactsSummary = buildContactsSummaryLocal();
     // #6394: `resolvePlanTotal` serve o `planTotal` já snapshot-consistente do
     // KV direto — antes, `fetchPlanCredits(env, "kv-only")` devolvia o
@@ -410,7 +410,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       fetchedAt,
       staleCampaignsLimit,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive, couponClariceClass }, // #5189 / #8115 / #9617
     );
     return injectKvOnlyBanner(html, fetchedAt);
   } catch (e) {
@@ -529,7 +529,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     // removeu a seção correspondente da composição, ver docstring do módulo).
     // contactsSummary é sobrescrito pela leitura local do store SQLite
     // (melhor fidelidade que o KV, #3553).
-    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "cached"); // #5189
+    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } = await readKvTabs(env, "cached"); // #5189 / #9617
     const contactsSummary = buildContactsSummaryLocal();
     // #4184: mapa de seção montado localmente (sem KV) a partir do
     // prioritized.md em disco — ver docstring de buildLinkSectionsByCycleLocal.
@@ -554,7 +554,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
       dataGeneratedAt,
       CAMPAIGNS_FETCH_LIMIT,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive, couponClariceClass }, // #5189 / #8115 / #9617
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {

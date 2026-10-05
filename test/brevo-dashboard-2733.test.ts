@@ -44,6 +44,7 @@ import {
   type ContactsSummary,
 } from "../workers/brevo-dashboard/src/index.ts";
 import type { CouponUsageReport } from "../scripts/lib/stripe-coupons.ts";
+import { COUPON_CLARICE_CLASS_KV_KEY, clariceClassKey } from "../scripts/lib/coupon-clarice-class.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
 const syntheticCoupons: CouponUsageReport = {
@@ -718,5 +719,39 @@ describe("normalizeEiaEngagement (#3077 — eia:engagement)", () => {
     const html = renderEiaEngagementSection(s);
     assert.ok(html.includes("260418"), "edição renderizada");
     assert.ok(!html.includes("Dados ainda não gerados"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9617: a classificação Clarice (KV `coupons:clarice-class`) era lida só no
+// caminho ao vivo do index.ts — no fallback de 429 a coluna saía sempre "—".
+// Agora vem de readKvTabs, comum a todos os caminhos (inclusive o Studio).
+// ---------------------------------------------------------------------------
+describe("#9617 — coluna Clarice também nos fallbacks (readKvTabs)", () => {
+  const r0 = syntheticCoupons.NEWS50.redemptions[0];
+  const classPayload = () => ({
+    generated_at: new Date().toISOString(),
+    classes: { [clariceClassKey(r0.customer_email, r0.created)]: "antigo" },
+  });
+
+  it("readKvTabs devolve couponClariceClass normalizado (e null quando malformado)", async () => {
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeKv({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify(classPayload()) }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { couponClariceClass } = await readKvTabs(env as any, "kv-only");
+    assert.equal(Object.values(couponClariceClass?.classes ?? {})[0], "antigo");
+    const bad = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: makeKv({ [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify({ classes: [] }) }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    assert.equal((await readKvTabs(bad as any, "kv-only")).couponClariceClass, null);
+  });
+
+  it("buildRateLimitFallback renderiza novo/antigo em vez de '—'", async () => {
+    const kv = makeKv({
+      [COUPONS_KV_KEY]: JSON.stringify(syntheticCoupons),
+      [COUPON_CLARICE_CLASS_KV_KEY]: JSON.stringify(classPayload()),
+    });
+    const env = { COUPONS_TAB_ENABLED: "true", STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = await (await buildRateLimitFallback(env as any, 120)).text();
+    assert.ok(body.includes("<td>antigo</td>"), "classificação do KV chega ao fallback de 429");
   });
 });

@@ -38,7 +38,6 @@
  *   - Tabela de totais por mês (#2369)
  */
 
-import { COUPON_CLARICE_CLASS_KV_KEY, type CouponClariceClassPayload } from "../../../scripts/lib/coupon-clarice-class.ts";
 import type { Env } from "./types.ts";
 export * from "./types.ts";
 export * from "./render-links.ts";
@@ -552,7 +551,7 @@ async function buildDashboardResponse(
 
     // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
     // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, isFresh ? "fresh" : "cached"); // #5189: hourTestState
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } = await readKvTabs(env, isFresh ? "fresh" : "cached"); // #5189: hourTestState
     // #4184: só ciclos MENSAIS (naming "Clarice News AAMM-MM — X", ver
     // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
     // diárias não entram aqui e caem no fallback "—" sem custo extra.
@@ -569,7 +568,7 @@ async function buildDashboardResponse(
     // #8115: histórico backfillado (fora da janela ao vivo) pra "Totais por
     // mês" — ZERO chamadas Brevo, só leitura do KV; roda em paralelo com o
     // resto, mesmo racional do brevoDiaria acima.
-    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, monthlyArchive, couponClariceClass] = await Promise.all([
+    const [linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, monthlyArchive] = await Promise.all([
       readLinkSectionsByCycle(env, monthlyCycles),
       readLinkTitlesByCycle(env, monthlyCycles), // #4198
       fetchBrevoDiariaTabData(env, isFresh).catch((e) => {
@@ -580,10 +579,8 @@ async function buildDashboardResponse(
         console.error("[#8115] loadMonthlyTotalsArchive falhou — 'Totais por mês' cai pro comportamento pré-#8115 (só janela ao vivo):", e instanceof Error ? e.message : e);
         return null;
       }),
-      // #9571: classificação novo/antigo (escrita no `300`); falha/ausência → coluna "—"
-      env.STATS_CACHE
-        ? env.STATS_CACHE.get<CouponClariceClassPayload>(COUPON_CLARICE_CLASS_KV_KEY, "json").catch(() => null)
-        : Promise.resolve(null),
+      // #9571/#9617: a classificação novo/antigo (`couponClariceClass`) vem de
+      // readKvTabs acima — mesma leitura que os fallbacks e o Studio usam.
     ]);
     const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle, brevoDiaria, hourTestState, monthlyArchive, couponClariceClass }); // #5189 / #8115 / #9571
     const response = new Response(html, {
