@@ -95,6 +95,7 @@ import {
   parsePendingTitulos,
   serializePendingTitulos,
   upsertPendingTitulo,
+  toProvisionalTitulo,
   finalizeProvisionalTitulos,
   type PendingTitulo,
 } from "./lib/titulo-provisional.ts"; // #9601 review PR #9666
@@ -145,6 +146,8 @@ export interface SwapResult {
     pool_item_removed: boolean;
     section_removed: string | null;
     titulo_subtitulo: "updated" | "no_block" | "old_title_not_found";
+    /** #9668: título provisório efetivamente gravado (fonte normalizada, sem `|`). */
+    provisional_title: string;
     intro_count: { before: number | null; after: number | null; changed: boolean };
   };
   modified: {
@@ -417,7 +420,7 @@ export function buildSwapDestaqueSteps(
   return [
     `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — antes do writer-destaque (#9102).`,
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
-    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${promotedTitle}" pelo título final do D${position} — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9601)`,
+    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${toProvisionalTitulo(promotedTitle)}" pelo título final do D${position} — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9601)`,
     ...poolStep,
     `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
@@ -523,9 +526,14 @@ export function applySwapToReviewedMd(
 ): { md: string; updates: NonNullable<SwapResult["md_updates"]> } {
   const titles = extractTitlesFromMd(md);
   const oldTitle = position === 1 ? titles.d1 : position === 2 ? titles.d2 : titles.d3;
-  const withPlaceholder = removeDestaqueBlockFromMd(md, position, promotedTitle, promotedUrl);
+  // #9668: o título da FONTE pode trazer sufixo de veículo com ` | `
+  // ("X | TechCrunch") — gravado cru, partia o segmento do SUBTÍTULO e o guard
+  // do provisório nunca o achava. Placeholder, bloco e marcador usam o mesmo
+  // provisório normalizado.
+  const provisional = toProvisionalTitulo(promotedTitle);
+  const withPlaceholder = removeDestaqueBlockFromMd(md, position, provisional, promotedUrl);
   const pool = removePoolItemFromMd(withPlaceholder, promotedUrl);
-  const titulo = replaceTitleInTituloSubtitulo(pool.md, oldTitle, promotedTitle, position);
+  const titulo = replaceTitleInTituloSubtitulo(pool.md, oldTitle, provisional, position);
   const intro = syncIntroCountInMd(titulo.md);
   return {
     md: intro.md,
@@ -533,6 +541,7 @@ export function applySwapToReviewedMd(
       pool_item_removed: pool.removed,
       section_removed: pool.section_removed,
       titulo_subtitulo: titulo.status,
+      provisional_title: provisional,
       intro_count: { before: intro.before, after: intro.after, changed: intro.changed },
     },
   };
@@ -1120,7 +1129,7 @@ function main(): void {
       pendingWrites.push({
         path: markerPath,
         content: serializePendingTitulos(
-          upsertPendingTitulo(existing, { position: demotePosition, provisional_title: promotedTitle }),
+          upsertPendingTitulo(existing, { position: demotePosition, provisional_title: applied.updates.provisional_title }),
         ),
       });
     }

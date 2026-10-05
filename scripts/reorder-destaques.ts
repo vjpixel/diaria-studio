@@ -114,6 +114,12 @@ import {
   type CarouselSourceHashes,
   type DailyDestaqueId,
 } from "./lib/daily-carousel-card.ts"; // #6068
+import {
+  tituloPendingPath,
+  parsePendingTitulos,
+  serializePendingTitulos,
+  remapPendingTitulosForReorder,
+} from "./lib/titulo-provisional.ts"; // #9669
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1282,6 +1288,25 @@ function main(): void {
     } else if (derived.action !== "no_change") {
       queueWrite(mdPath, derived.md);
       reorderedReviewedMd = derived.md;
+    }
+  }
+
+  // 3e. (#9669) Marcador de título provisório do swap-destaque guarda a
+  // POSIÇÃO do destaque trocado; o bloco TÍTULO/SUBTÍTULO acabou de ser
+  // re-derivado na ordem nova, então a posição precisa seguir junto (senão
+  // invariante/finalize olham a linha errada). Marcador ilegível: avisa e não
+  // toca — invariante e finalize já reportam o marcador quebrado.
+  const tituloMarkerPath = tituloPendingPath(editionDir);
+  if (existsSync(tituloMarkerPath)) {
+    const raw = readFileSync(tituloMarkerPath, "utf8");
+    try {
+      const entries = parsePendingTitulos(raw);
+      const remapped = serializePendingTitulos(remapPendingTitulosForReorder(entries, args.newOrder));
+      if (remapped !== raw) queueWrite(tituloMarkerPath, remapped);
+    } catch (e) {
+      warnings.push(
+        `marcador ${tituloMarkerPath} ilegível (${(e as Error).message}) — posição do título provisório NÃO remapeada (#9669)`,
+      );
     }
   }
 
