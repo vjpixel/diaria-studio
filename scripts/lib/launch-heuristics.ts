@@ -172,6 +172,12 @@ const PESQUISA_PATTERNS: RegExp[] = [
   /^anthropic\.com\/research\//,
   // OpenAI research (não blog)
   /^openai\.com\/research\//,
+  // #5995 (05/10/2026): Apple Machine Learning Research — /research/ é a
+  // listagem de papers do laboratório (56 de 57 itens no corpus já iam pra
+  // RADAR). Sem o path aqui, um abstract que diz "choosing which positions"
+  // caía em USE MELHOR via keyword de tutorial (caso real 261005, "Limits of
+  // Confidence in Diffusion", movido pelo editor pra RADAR).
+  /^machinelearning\.apple\.com\/research\//,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1439,8 +1445,14 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // continuar em RADAR/NOTÍCIAS (distinção editorial deliberada, ver teste
 // negativo em test/categorize-tutorial-video.test.ts).
 const DISCOVERY_LISTICLE_NOUN = "(?:ferramentas?|apps?|ias?|intelig[êe]ncias?\\s+artificiais?|plataformas?)";
+// #5995 (05/10/2026): "escondid[ao]s" só no PLURAL. No singular o adjetivo
+// qualifica um objeto da notícia, não uma lista de ferramentas — "Comando
+// escondido em laudo para influenciar IA é encontrado no TJRN" (260915) caía
+// em USE MELHOR e o editor moveu pra RADAR; mesma forma em "Professor coloca
+// prompt escondido…" e "Você já usou IA escondido?". Corpus: 1 melhoria, 0
+// regressões.
 const DISCOVERY_LISTICLE_ADJ =
-  "(?:pouco\\s+conhecid[ao]s?|menos\\s+conhecid[ao]s?|desconhecid[ao]s?|que\\s+voc[êe]\\s+n[ãa]o\\s+conhece|escondid[ao]s?)";
+  "(?:pouco\\s+conhecid[ao]s?|menos\\s+conhecid[ao]s?|desconhecid[ao]s?|que\\s+voc[êe]\\s+n[ãa]o\\s+conhece|escondid[ao]s)";
 const DISCOVERY_LISTICLE_RE = new RegExp(
   `\\b${DISCOVERY_LISTICLE_NOUN}\\b.{0,40}\\b${DISCOVERY_LISTICLE_ADJ}\\b|\\b${DISCOVERY_LISTICLE_ADJ}\\b.{0,40}\\b${DISCOVERY_LISTICLE_NOUN}\\b`,
   "i",
@@ -1456,7 +1468,9 @@ const DISCOVERY_LISTICLE_RE = new RegExp(
 // após "como"/"aprenda a" — não casa em "Como a IA está mudando X" (informativo,
 // não instrutivo) porque "a" não está na lista.
 const TUTORIAL_ACTION_VERBS_PT =
-  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar";
+  // #5995 (05/10/2026): `personalizar` — "veja-como-personalizar-terminal"
+  // (261005, slug, ver SLUG_HOWTO_RE).
+  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar|personalizar";
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1510,9 +1524,58 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
   "i",
 );
 
+// #5995 (05/10/2026): guia de USO de ferramenta pelo TÍTULO — critério do
+// editor de 01/10 ("aprender a usar melhor uma ferramenta, como leitor final →
+// USE MELHOR") e de 17/09 ("listicle de dicas/prompts em portal de notícias →
+// USE MELHOR"). Cada alternativa tem caso real movido RADAR/LANÇAMENTO → USE
+// MELHOR pelo editor e foi medida contra o corpus inteiro (ver PR):
+//   - contagem por extenso + "prompts para|que" — "Três prompts que ajudam em
+//     processos seletivos…" (260909); algarismo + "prompts para" já vive em
+//     TUTORIAL_KEYWORDS_RE;
+//   - "N dicas|ideias|truques para|de usar|utilizar" — "Prompt para foto de
+//     perfil do Instagram: 10 ideias para usar no ChatGPT" (261005);
+//   - "getting the most out of" / "aproveitar ao máximo" — "Getting the most
+//     out of Opus 5.5 in Claude and Claude Code" (260924);
+//   - "N ways to <verbo>" — "7 ways to kick-start back to school using Gemini
+//     in Workspace" (260831, blog.google; sem isto caía em LANÇAMENTO por
+//     domínio oficial). "N ways {sujeito} {verbo}" ("4 ways Gemini makes…")
+//     não casa: exige "to" logo depois de "ways".
+// Só o TÍTULO, de propósito: a 1ª tentativa olhava o summary também e casava
+// em resumo de notícia comum ("Busca clássica vai ser trocada por IA?",
+// "Notion vai fechar seu app de e-mail") — revertida. Testado e deixado de
+// fora por regredir contra o corpus: "N prompts do ChatGPT para…", "melhores
+// prompts", "^Prompts para…", "N dicas para <qualquer verbo>" (16 itens desse
+// formato que o editor manteve em RADAR sem mover).
+const PT_LISTICLE_COUNT = "(?:\\d+|dois|duas|tr[êe]s|quatro|cinco|seis|sete|oito|nove|dez)";
+const USAGE_GUIDE_TITLE_RE = new RegExp(
+  `\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+(?:para|que)\\b` +
+    `|\\b${PT_LISTICLE_COUNT}\\s+(?:dicas|ideias|truques)\\s+(?:para|de)\\s+(?:usar|utilizar)\\b` +
+    "|\\bget(?:ting)?\\s+the\\s+most\\s+out\\s+of\\b|\\baproveitar\\s+ao\\s+m[áa]ximo\\b" +
+    "|\\b\\d+\\s+ways\\s+to\\s+[a-z]",
+  "i",
+);
+
+// #5995 (05/10/2026): "como <verbo acionável>" no SLUG da URL. Portal PT-BR
+// (canaltech sobretudo) encurta a manchete e deixa o how-to só no slug:
+// "Claude Code ganha suporte a mods" → `…-veja-como-personalizar-terminal-e-mais/`
+// (261005); "O que é o Canvas do ChatGPT e como ele funciona?" →
+// `…/o-que-e-chatgpt-canvas-e-como-usar/` (260825). Mesma lista fechada de
+// verbos do "como <verbo>" do título (TUTORIAL_ACTION_VERBS_PT) — "como-
+// funciona"/"como-sera" não casam. Corpus: 5 melhorias, 0 regressões.
+const SLUG_HOWTO_RE = new RegExp(`\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b`, "i");
+
+function hasHowToSlug(url: string): boolean {
+  return SLUG_HOWTO_RE.test(rawUrlSlug(url).replace(/[-_/]+/g, " "));
+}
+
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_KEYWORDS_RE.test(hay) || DISCOVERY_LISTICLE_RE.test(hay);
+  return (
+    TUTORIAL_KEYWORDS_RE.test(hay) ||
+    DISCOVERY_LISTICLE_RE.test(hay) ||
+    USAGE_GUIDE_TITLE_RE.test(article.title ?? "") ||
+    hasHowToSlug(article.url ?? "")
+  );
 }
 
 /**
