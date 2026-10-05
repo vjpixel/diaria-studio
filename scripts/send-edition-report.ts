@@ -50,7 +50,15 @@ import {
 } from "./update-stage-status.ts";
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
 import { registerReport, reportId } from "./studio-ui/studio-reports.ts"; // #3714
-import { computeEditionManualEdits, type EditionManualEdits, type GateName } from "./edition-manual-edits.ts"; // #9357
+import {
+  STREAK_GOAL,
+  computeEditionManualEdits,
+  editionsRootOf,
+  trailingSeriesSummary,
+  type EditionManualEdits,
+  type GateName,
+  type SeriesSummary,
+} from "./edition-manual-edits.ts"; // #9357, #9641
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -359,6 +367,7 @@ export function renderHtmlReport(
   socialPreviewUrl: string | null = null, // #1739
   newsletterUrl: string | null = null, // #3466
   manualEdits: EditionManualEdits | null = null, // #9357
+  manualEditsSeries: SeriesSummary | null = null, // #9641
 ): string {
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
   // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
@@ -502,7 +511,7 @@ export function renderHtmlReport(
 
   ${warnings.length === 0 && errors.length === 0 ? "<p>Nenhum warning ou error registrado.</p>" : ""}
 
-  ${manualEdits ? renderManualEditsSection(manualEdits) : ""}
+  ${manualEdits ? renderManualEditsSection(manualEdits, manualEditsSeries) : ""}
 
   ${braveCredits && braveCredits.queries_this_month > 0 ? `
   <h2>Brave Search API (#1558)</h2>
@@ -532,7 +541,7 @@ export function renderHtmlReport(
  * pra esta edição. `null` em `zero_manual_edits` = algum gate sem baseline
  * confiável (ver `scripts/edition-manual-edits.ts`).
  */
-export function renderManualEditsSection(m: EditionManualEdits): string {
+export function renderManualEditsSection(m: EditionManualEdits, series: SeriesSummary | null = null): string {
   const verdict =
     m.zero_manual_edits === true
       ? "&#10003; Nenhuma modificação manual"
@@ -553,19 +562,51 @@ export function renderManualEditsSection(m: EditionManualEdits): string {
       return `<tr><td>${escapeHtml(name)}${g.baseline ? ` <small>(${escapeHtml(g.baseline)})</small>` : ""}</td><td>${status}</td></tr>`;
     })
     .join("\n");
+  // #9641: sequência da meta da #7972 + inclusões (meta intermediária) + cortes (fora da contagem).
+  const streakLine = series
+    ? `<p>Sequência sem modificação: <strong>${series.consecutive_zero}/${STREAK_GOAL}</strong> · sem inclusão: ${series.consecutive_zero_inclusions} · média de inclusões (últimas 10): ${
+        series.avg_inclusions_last_10 === null ? "n/d" : series.avg_inclusions_last_10.toFixed(1).replace(".", ",")
+      }</p>`
+    : "";
+  const ITEM_LIST_MAX = 12;
+  const itemList = (items: readonly { section: string; title: string }[]) =>
+    `<ul>${items
+      .slice(0, ITEM_LIST_MAX)
+      .map((it) => `<li>${escapeHtml(it.section)}: ${escapeHtml(it.title)}</li>`)
+      .join("")}${items.length > ITEM_LIST_MAX ? `<li>+${items.length - ITEM_LIST_MAX}</li>` : ""}</ul>`;
+  const inclusions =
+    m.inclusions === null
+      ? `<p>Inclusões: <em>não medidas (newsletter sem baseline)</em></p>`
+      : m.inclusions.length === 0
+        ? `<p>Inclusões: 0</p>`
+        : `<p>Inclusões: <strong>${m.inclusions.length}</strong></p>${itemList(m.inclusions)}`;
+  const cuts = `<p>Cortes ${m.cuts_counted ? "(contados como modificação)" : "(não contam — decisão de 01/10/2026, #7972)"}: ${m.cuts.length}</p>`;
   return `
   <h2>Modificações manuais (#9357)</h2>
   <p><strong>${verdict}</strong> — baseline: ${escapeHtml(m.baseline_status)}</p>
+  ${streakLine}
+  ${inclusions}
+  ${cuts}
   <table><tbody>${rows}</tbody></table>`;
 }
 
-/** Fail-soft: a métrica nunca derruba o relatório. */
-function loadManualEdits(editionDir: string, edition: string): EditionManualEdits | null {
+/**
+ * Fail-soft: a métrica nunca derruba o relatório. A série (#9641) é medida à
+ * parte — falhar nela só tira a linha de sequência, não a seção da edição.
+ */
+function loadManualEdits(editionDir: string, edition: string): { edits: EditionManualEdits; series: SeriesSummary | null } | null {
+  let edits: EditionManualEdits;
   try {
-    return computeEditionManualEdits(editionDir, edition);
+    edits = computeEditionManualEdits(editionDir, edition);
   } catch (err) {
     console.warn(`[send-edition-report] métrica de modificações manuais falhou (#9357): ${err instanceof Error ? err.message : String(err)}`);
     return null;
+  }
+  try {
+    return { edits, series: trailingSeriesSummary(editionsRootOf(editionDir), edits) };
+  } catch (err) {
+    console.warn(`[send-edition-report] série de modificações manuais falhou (#9641): ${err instanceof Error ? err.message : String(err)}`);
+    return { edits, series: null };
   }
 }
 
@@ -723,6 +764,7 @@ export function writeEditionReport(
   const social = loadSocial(editionDir);
   const { warnings, errors } = loadRunLogEntries(edition, stageDoc.run_started_at);
   const braveCredits = computeBraveCreditStats(edition);
+  const manualEdits = loadManualEdits(editionDir, edition);
   const html = renderHtmlReport(
     edition,
     stageDoc,
@@ -733,7 +775,8 @@ export function writeEditionReport(
     braveCredits,
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
-    loadManualEdits(editionDir, edition), // #9357
+    manualEdits?.edits ?? null, // #9357
+    manualEdits?.series ?? null, // #9641
   );
   const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition, notify);
   return { md5, outPath: absOut, registered };
@@ -775,6 +818,7 @@ async function main(): Promise<void> {
   );
 
   const braveCredits = computeBraveCreditStats(edition); // #1558
+  const manualEdits = loadManualEdits(editionDir, edition); // #9357
   const html = renderHtmlReport(
     edition,
     stageDoc,
@@ -785,7 +829,8 @@ async function main(): Promise<void> {
     braveCredits,
     loadSocialPreviewUrl(editionDir), // #1739
     loadNewsletterUrl(editionDir), // #3466
-    loadManualEdits(editionDir, edition), // #9357
+    manualEdits?.edits ?? null, // #9357
+    manualEdits?.series ?? null, // #9641
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5

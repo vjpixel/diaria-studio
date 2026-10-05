@@ -231,6 +231,9 @@ describe("métrica editorial estratificada por braço (#9374)", () => {
       gates: {} as EditionManualEdits["gates"],
       manual_edit_count: zero === false ? 1 : 0,
       zero_manual_edits: zero,
+      cuts_counted: false,
+      cuts: [],
+      inclusions: [],
     });
     const s = summarizeSeries([mk("260921", "B", false), mk("260922", "A", true), mk("260923", "B", true)]);
     assert.deepEqual(s.by_arm.B, { editions: 2, zero: 1, with_edits: 1, unknown: 0 });

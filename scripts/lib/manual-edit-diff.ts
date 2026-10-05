@@ -12,6 +12,10 @@
  * - `derive-editor-requests.ts backfill-stage4` (#9356): reconstrói um
  *   baseline aproximado pras edições cujo snapshot foi gravado tarde.
  *
+ * Desde o #9641, também identifica itens por URL (`extractNewsletterItems`)
+ * pra separar **cortes** (fora da contagem enquanto a pipeline entrega >10
+ * itens — decisão do editor de 01/10/2026 na #7972) de **inclusões**.
+ *
  * ## Mutações da pipeline descontadas (e por quê)
  *
  * | Mutação | Onde acontece | Desconto |
@@ -296,4 +300,212 @@ export function diffBySection(baseline: string, final: string): SectionChange[] 
     });
   }
   return changes;
+}
+
+// ---------------------------------------------------------------------------
+// Itens por URL (#9641): cortes × inclusões
+// ---------------------------------------------------------------------------
+
+/**
+ * Normaliza uma URL de item com a MESMA normalização que o baseline da
+ * newsletter recebe (`normalizeNewsletterForComparison`: espaço nas pontas e
+ * URL própria → `{edition_url}`). Toda URL vinda de fora do markdown (ex.:
+ * `01-approved.json`) passa por aqui antes de ser comparada com as URLs
+ * extraídas do baseline/final (#9641). Pura e idempotente.
+ */
+export function normalizeItemUrl(url: string): string {
+  return normalizeSelfUrls(url.trim());
+}
+
+/** Linha de item/título: `**[Título](https://…)**` (espaços de quebra no fim tolerados). */
+const ITEM_LINE_RE = /^\*\*\[(.+)\]\((https?:\/\/[^\s)]+)\)\*\*$/;
+const LINK_TARGET_RE = /\]\((https?:\/\/[^\s)]+)\)/g;
+
+export interface NewsletterItem {
+  url: string;
+  title: string;
+  /** Nome da seção (`sectionHeaderName`), ex.: `RADAR`, `DESTAQUE 1`. */
+  section: string;
+}
+
+/** Seção do pool = nem intro, nem destaque, nem bloco da pipeline. */
+export function isPoolSection(section: string): boolean {
+  return (
+    section !== "intro" &&
+    !/^DESTAQUE \d+$/.test(section) &&
+    !(PIPELINE_OWNED_SECTIONS as readonly string[]).includes(section)
+  );
+}
+
+/**
+ * Itens da newsletter — toda linha `**[Título](url)**` fora dos blocos da
+ * pipeline (É IA?, ERRO INTENCIONAL, SORTEIO, PARA ENCERRAR). Nos destaques
+ * é a linha de título; no pool, a linha do item. Pura.
+ */
+export function extractNewsletterItems(md: string): NewsletterItem[] {
+  const items: NewsletterItem[] = [];
+  let section = "intro";
+  for (const raw of md.split("\n")) {
+    const header = sectionHeaderName(raw);
+    if (header) {
+      section = header;
+      continue;
+    }
+    if ((PIPELINE_OWNED_SECTIONS as readonly string[]).includes(section)) continue;
+    const m = raw.trim().match(ITEM_LINE_RE);
+    if (m) items.push({ url: m[2], title: m[1].trim(), section });
+  }
+  return items;
+}
+
+/** Nomes das seções (`sectionHeaderName`) presentes no texto. */
+export function sectionNames(md: string): Set<string> {
+  const names = new Set<string>();
+  for (const line of md.split("\n")) {
+    const h = sectionHeaderName(line);
+    if (h) names.add(h);
+  }
+  return names;
+}
+
+/** Todo alvo de link markdown `](url)` do texto. */
+export function linkTargets(md: string): Set<string> {
+  return new Set([...md.matchAll(LINK_TARGET_RE)].map((m) => m[1]));
+}
+
+/**
+ * Cortes (#9641): item de SEÇÃO DO POOL presente na saída da pipeline cuja
+ * URL não aparece em lugar nenhum do final (nem como item de outra seção, nem
+ * como link no corpo de um destaque). Item que muda de seção ou vira destaque
+ * NÃO é corte — segue aparecendo no diff das duas seções. Destaque que sai
+ * também não entra aqui (é troca de destaque, conta como modificação). Pura.
+ */
+export function findCutItems(baseline: string, final: string): NewsletterItem[] {
+  const finalTargets = linkTargets(final);
+  const seen = new Set<string>();
+  return extractNewsletterItems(baseline).filter((it) => {
+    if (!isPoolSection(it.section) || finalTargets.has(it.url) || seen.has(it.url)) return false;
+    seen.add(it.url);
+    return true;
+  });
+}
+
+/**
+ * Inclusões (#9641): item do final cuja URL não estava entre os itens da
+ * saída da pipeline (`pipelineUrls`). **Premissa registrada:** a URL é a
+ * identidade do item, então trocar a URL da mesma história (fonte primária no
+ * lugar da imprensa) conta como inclusão — é como o editor mediu à mão em
+ * 01/10/2026 na #7972 ("parte das inclusões é troca de URL da mesma
+ * história"). Pura.
+ */
+export function findIncludedItems(final: string, pipelineUrls: ReadonlySet<string>): NewsletterItem[] {
+  const seen = new Set<string>();
+  return extractNewsletterItems(final).filter((it) => {
+    if (pipelineUrls.has(it.url) || seen.has(it.url)) return false;
+    seen.add(it.url);
+    return true;
+  });
+}
+
+function isBlockBoundary(line: string): boolean {
+  const t = line.trim();
+  return t === "" || t === "---" || sectionHeaderName(line) !== null || ITEM_LINE_RE.test(t);
+}
+
+/**
+ * Formato de um item a partir da sua linha (`idx`): resumo colado na linha
+ * seguinte (`inline`), resumo depois de linha(s) em branco (`blank-summary`)
+ * ou só o título (`title-only`).
+ */
+type ItemFormat = "inline" | "blank-summary" | "title-only";
+function itemFormatAt(lines: readonly string[], idx: number): ItemFormat {
+  if (idx + 1 < lines.length && !isBlockBoundary(lines[idx + 1])) return "inline";
+  let k = idx + 1;
+  while (k < lines.length && lines[k].trim() === "") k++;
+  return k > idx + 1 && k < lines.length && !isBlockBoundary(lines[k]) ? "blank-summary" : "title-only";
+}
+
+/** Formato de cada item do texto, por índice de linha, agrupado por seção. */
+function itemFormatsBySection(lines: readonly string[]): Map<string, Map<number, ItemFormat>> {
+  const bySection = new Map<string, Map<number, ItemFormat>>();
+  let section = "intro";
+  for (let i = 0; i < lines.length; i++) {
+    const header = sectionHeaderName(lines[i]);
+    if (header) {
+      section = header;
+      continue;
+    }
+    if (!ITEM_LINE_RE.test(lines[i].trim())) continue;
+    if (!bySection.has(section)) bySection.set(section, new Map());
+    bySection.get(section)!.set(i, itemFormatAt(lines, i));
+  }
+  return bySection;
+}
+
+/**
+ * Tira do baseline o bloco de cada item cortado (linha do item + resumo até
+ * a próxima linha em branco/item/cabeçalho/`---`; se o resumo vier depois de
+ * uma linha em branco, sai também — mas só quando os OUTROS itens da seção
+ * também usam o formato "título, linha em branco, resumo": numa seção de
+ * resumo colado ou de títulos soltos, o parágrafo depois de um título solto
+ * não é do item e fica. **Premissa registrada:** item sozinho na seção conta
+ * como "título, branco, resumo" — é o formato do USE MELHOR, a seção que mais
+ * aparece com um item só). Seção do pool que fica sem nenhum item
+ * perde o cabeçalho — senão cortar uma seção inteira ainda apareceria como
+ * `-1` —, a menos que a seção exista no final (`finalSections`: o editor
+ * cortou tudo e incluiu outro item ali; o cabeçalho não é mudança). Só atua
+ * em seções do pool. Pura.
+ */
+export function removeCutItemBlocks(
+  md: string,
+  cutUrls: ReadonlySet<string>,
+  finalSections: ReadonlySet<string> = new Set(),
+): string {
+  if (cutUrls.size === 0) return md;
+  const lines = md.split("\n");
+  const formats = itemFormatsBySection(lines);
+  const othersUseBlankSummary = (sec: string, idx: number): boolean =>
+    [...(formats.get(sec) ?? new Map<number, ItemFormat>()).entries()].every(([k, f]) => k === idx || f === "blank-summary");
+  const out: string[] = [];
+  const touchedSections = new Set<string>();
+  let section = "intro";
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const header = sectionHeaderName(line);
+    if (header) section = header;
+    const m = header ? null : line.trim().match(ITEM_LINE_RE);
+    if (m && isPoolSection(section) && cutUrls.has(m[2])) {
+      touchedSections.add(section);
+      let j = i + 1;
+      while (j < lines.length && !isBlockBoundary(lines[j])) j++;
+      if (j === i + 1 && othersUseBlankSummary(section, i)) {
+        // Formato "título, linha em branco, resumo" (a seção inteira o usa).
+        let k = j;
+        while (k < lines.length && lines[k].trim() === "") k++;
+        if (k < lines.length && !isBlockBoundary(lines[k])) {
+          j = k;
+          while (j < lines.length && !isBlockBoundary(lines[j])) j++;
+        }
+      }
+      i = j;
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  if (touchedSections.size === 0) return out.join("\n");
+
+  // Cabeçalho de seção do pool que ficou vazia.
+  const kept: string[] = [];
+  for (let k = 0; k < out.length; k++) {
+    const header = sectionHeaderName(out[k]);
+    if (header && touchedSections.has(header) && !finalSections.has(header)) {
+      let n = k + 1;
+      while (n < out.length && out[n].trim() === "") n++;
+      if (n >= out.length || out[n].trim() === "---" || sectionHeaderName(out[n]) !== null) continue;
+    }
+    kept.push(out[k]);
+  }
+  return kept.join("\n");
 }
