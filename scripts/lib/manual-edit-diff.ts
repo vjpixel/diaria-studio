@@ -306,6 +306,17 @@ export function diffBySection(baseline: string, final: string): SectionChange[] 
 // Itens por URL (#9641): cortes × inclusões
 // ---------------------------------------------------------------------------
 
+/**
+ * Normaliza uma URL de item com a MESMA normalização que o baseline da
+ * newsletter recebe (`normalizeNewsletterForComparison`: espaço nas pontas e
+ * URL própria → `{edition_url}`). Toda URL vinda de fora do markdown (ex.:
+ * `01-approved.json`) passa por aqui antes de ser comparada com as URLs
+ * extraídas do baseline/final (#9641). Pura e idempotente.
+ */
+export function normalizeItemUrl(url: string): string {
+  return normalizeSelfUrls(url.trim());
+}
+
 /** Linha de item/título: `**[Título](https://…)**` (espaços de quebra no fim tolerados). */
 const ITEM_LINE_RE = /^\*\*\[(.+)\]\((https?:\/\/[^\s)]+)\)\*\*$/;
 const LINK_TARGET_RE = /\]\((https?:\/\/[^\s)]+)\)/g;
@@ -402,9 +413,44 @@ function isBlockBoundary(line: string): boolean {
 }
 
 /**
+ * Formato de um item a partir da sua linha (`idx`): resumo colado na linha
+ * seguinte (`inline`), resumo depois de linha(s) em branco (`blank-summary`)
+ * ou só o título (`title-only`).
+ */
+type ItemFormat = "inline" | "blank-summary" | "title-only";
+function itemFormatAt(lines: readonly string[], idx: number): ItemFormat {
+  if (idx + 1 < lines.length && !isBlockBoundary(lines[idx + 1])) return "inline";
+  let k = idx + 1;
+  while (k < lines.length && lines[k].trim() === "") k++;
+  return k > idx + 1 && k < lines.length && !isBlockBoundary(lines[k]) ? "blank-summary" : "title-only";
+}
+
+/** Formato de cada item do texto, por índice de linha, agrupado por seção. */
+function itemFormatsBySection(lines: readonly string[]): Map<string, Map<number, ItemFormat>> {
+  const bySection = new Map<string, Map<number, ItemFormat>>();
+  let section = "intro";
+  for (let i = 0; i < lines.length; i++) {
+    const header = sectionHeaderName(lines[i]);
+    if (header) {
+      section = header;
+      continue;
+    }
+    if (!ITEM_LINE_RE.test(lines[i].trim())) continue;
+    if (!bySection.has(section)) bySection.set(section, new Map());
+    bySection.get(section)!.set(i, itemFormatAt(lines, i));
+  }
+  return bySection;
+}
+
+/**
  * Tira do baseline o bloco de cada item cortado (linha do item + resumo até
  * a próxima linha em branco/item/cabeçalho/`---`; se o resumo vier depois de
- * uma linha em branco, sai também). Seção do pool que fica sem nenhum item
+ * uma linha em branco, sai também — mas só quando os OUTROS itens da seção
+ * também usam o formato "título, linha em branco, resumo": numa seção de
+ * resumo colado ou de títulos soltos, o parágrafo depois de um título solto
+ * não é do item e fica. **Premissa registrada:** item sozinho na seção conta
+ * como "título, branco, resumo" — é o formato do USE MELHOR, a seção que mais
+ * aparece com um item só). Seção do pool que fica sem nenhum item
  * perde o cabeçalho — senão cortar uma seção inteira ainda apareceria como
  * `-1` —, a menos que a seção exista no final (`finalSections`: o editor
  * cortou tudo e incluiu outro item ali; o cabeçalho não é mudança). Só atua
@@ -417,6 +463,9 @@ export function removeCutItemBlocks(
 ): string {
   if (cutUrls.size === 0) return md;
   const lines = md.split("\n");
+  const formats = itemFormatsBySection(lines);
+  const othersUseBlankSummary = (sec: string, idx: number): boolean =>
+    [...(formats.get(sec) ?? new Map<number, ItemFormat>()).entries()].every(([k, f]) => k === idx || f === "blank-summary");
   const out: string[] = [];
   const touchedSections = new Set<string>();
   let section = "intro";
@@ -430,8 +479,8 @@ export function removeCutItemBlocks(
       touchedSections.add(section);
       let j = i + 1;
       while (j < lines.length && !isBlockBoundary(lines[j])) j++;
-      if (j === i + 1) {
-        // Formato "título, linha em branco, resumo".
+      if (j === i + 1 && othersUseBlankSummary(section, i)) {
+        // Formato "título, linha em branco, resumo" (a seção inteira o usa).
         let k = j;
         while (k < lines.length && lines[k].trim() === "") k++;
         if (k < lines.length && !isBlockBoundary(lines[k])) {

@@ -568,11 +568,12 @@ export function renderManualEditsSection(m: EditionManualEdits, series: SeriesSu
         series.avg_inclusions_last_10 === null ? "n/d" : series.avg_inclusions_last_10.toFixed(1).replace(".", ",")
       }</p>`
     : "";
+  const ITEM_LIST_MAX = 12;
   const itemList = (items: readonly { section: string; title: string }[]) =>
     `<ul>${items
-      .slice(0, 12)
+      .slice(0, ITEM_LIST_MAX)
       .map((it) => `<li>${escapeHtml(it.section)}: ${escapeHtml(it.title)}</li>`)
-      .join("")}</ul>`;
+      .join("")}${items.length > ITEM_LIST_MAX ? `<li>+${items.length - ITEM_LIST_MAX}</li>` : ""}</ul>`;
   const inclusions =
     m.inclusions === null
       ? `<p>Inclusões: <em>não medidas (newsletter sem baseline)</em></p>`

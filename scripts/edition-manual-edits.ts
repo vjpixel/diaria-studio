@@ -82,6 +82,7 @@ import {
   extractNewsletterItems,
   findCutItems,
   findIncludedItems,
+  normalizeItemUrl,
   normalizeNewsletterForComparison,
   normalizeSelfUrls,
   removeCutItemBlocks,
@@ -284,7 +285,7 @@ function newsletterGate(
   const cutItems = findCutItems(raw.baseline, final);
   const pipelineUrls = new Set(
     extractNewsletterItems(raw.baseline)
-      .map((it) => it.url)
+      .map((it) => normalizeItemUrl(it.url))
       .filter((u) => !opts.stage1EditorAddedUrls.has(u)),
   );
   const inclusions = findIncludedItems(final, pipelineUrls);
@@ -433,8 +434,10 @@ function selectionUrls(json: any): Set<string> {
  * URLs que o EDITOR pôs na seleção num gate humano do Stage 1 (aprovado ×
  * categorizado). Já estão no baseline da newsletter, mas não são saída da
  * pipeline — contam como inclusão (#9641). Gate auto-aprovado → vazio.
+ * As URLs saem NORMALIZADAS (`normalizeItemUrl`, a mesma normalização do
+ * baseline da newsletter), pra casar com as URLs extraídas do markdown.
  */
-function stage1EditorAddedUrls(editionDir: string, snapshotApproved: string | undefined): Set<string> {
+export function stage1EditorAddedUrls(editionDir: string, snapshotApproved: string | undefined): Set<string> {
   const gate = readJson(join(editionDir, "_internal", ".step-1-gate.json"));
   if (gate?.auto_approved !== false) return new Set();
   const categorized = readJson(join(editionDir, "_internal", "01-categorized.json"));
@@ -446,8 +449,8 @@ function stage1EditorAddedUrls(editionDir: string, snapshotApproved: string | un
     /* cai no aprovado final */
   }
   approved ??= readJson(join(editionDir, "_internal", "01-approved.json"));
-  const pipeline = selectionUrls(categorized);
-  return new Set([...selectionUrls(approved)].filter((u) => !pipeline.has(u)));
+  const pipeline = new Set([...selectionUrls(categorized)].map(normalizeItemUrl));
+  return new Set([...selectionUrls(approved)].map(normalizeItemUrl).filter((u) => !pipeline.has(u)));
 }
 
 /** Mede uma edição. Somente leitura. */

@@ -19,15 +19,20 @@ import {
   extractDestaqueTitles,
   findCutItems,
   findIncludedItems,
+  normalizeItemUrl,
   normalizeNewsletterForComparison,
   pruneTitleOptions,
   removeCutItemBlocks,
   sectionHeaderName,
 } from "../scripts/lib/manual-edit-diff.ts";
 import {
+  INCLUSIONS_WINDOW,
   computeEditionManualEdits,
   decideZeroManualEdits,
+  editionsRootOf,
+  stage1EditorAddedUrls,
   summarizeSeries,
+  trailingSeriesSummary,
   type EditionManualEdits,
 } from "../scripts/edition-manual-edits.ts";
 import { captureStage2Baseline } from "../scripts/lib/editor-request-snapshots.ts";
@@ -136,8 +141,12 @@ describe("manual-edit-diff (#9357) — normalização", () => {
   });
 });
 
-function makeEdition(root: string, opts: { editNewsletter?: boolean; withBaseline?: boolean; redoImage?: boolean }): string {
-  const dir = join(root, "2609", "260930");
+function makeEdition(
+  root: string,
+  opts: { editNewsletter?: boolean; withBaseline?: boolean; redoImage?: boolean; edition?: string; stage4Done?: boolean },
+): string {
+  const edition = opts.edition ?? "260930";
+  const dir = join(root, edition.slice(0, 4), edition);
   const internal = join(dir, "_internal");
   mkdirSync(internal, { recursive: true });
   const categorized = {
@@ -159,6 +168,7 @@ function makeEdition(root: string, opts: { editNewsletter?: boolean; withBaselin
   const imgTime = opts.redoImage ? new Date("2026-09-29T22:13:00.000Z") : new Date("2026-09-29T20:49:00.000Z");
   utimesSync(img, imgTime, imgTime);
   if (opts.editNewsletter) writeFileSync(join(dir, "02-reviewed.md"), FINAL.replace("Resumo.", "Resumo do editor."), "utf8");
+  if (opts.stage4Done) writeFileSync(join(internal, ".step-4-done.json"), JSON.stringify({ step: 4 }), "utf8");
   return dir;
 }
 
@@ -337,6 +347,42 @@ describe("cortes × inclusões (#9641)", () => {
     assert.doesNotMatch(keepHeader, /Resumo A/);
   });
 
+  it("corte de X + resumo de Y reescrito na MESMA seção → a seção segue no diff e zero_manual_edits=false", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9641-"));
+    try {
+      const dir = makeItemEdition(root, { pipelineMd: PIPELINE, finalMd: FINAL.replace("Resumo.", "Resumo reescrito.") });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.deepEqual(r.cuts.map((c) => c.url).sort(), ["https://example.com/cut", "https://example.com/um"]);
+      assert.equal(r.zero_manual_edits, false, JSON.stringify(r.gates, null, 2));
+      assert.deepEqual(
+        r.gates.newsletter.changes.map((c) => c.detail),
+        ['RADAR: +1/-1 (ex.: "Resumo reescrito.")'],
+        "o corte sai do diff, a reescrita do resumo do item mantido fica",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removeCutItemBlocks: título solto numa seção de resumo colado NÃO engole o parágrafo seguinte", () => {
+    // RADAR em formato "resumo colado"; o item cortado veio só com título e,
+    // depois da linha em branco, há uma nota que não é dele.
+    const md = "**📡 RADAR**\n\n**[A](https://e/a)**\nResumo A.\n\n**[B](https://e/b)**\n\nNota do editor sobre a seção.\n\n**[C](https://e/c)**\nResumo C.\n";
+    const out = removeCutItemBlocks(md, new Set(["https://e/b"]));
+    assert.doesNotMatch(out, /e\/b/);
+    assert.match(out, /Nota do editor sobre a seção\./);
+    assert.match(out, /Resumo A\./);
+    assert.match(out, /Resumo C\./);
+    // Seção de títulos soltos: idem.
+    const titles = "**📡 RADAR**\n\n**[A](https://e/a)**\n\n**[B](https://e/b)**\n\nParágrafo de fecho.\n";
+    assert.match(removeCutItemBlocks(titles, new Set(["https://e/b"])), /Parágrafo de fecho\./);
+    // Seção toda em "título, branco, resumo": o resumo do cortado sai junto.
+    const blank = "**📡 RADAR**\n\n**[A](https://e/a)**\n\nResumo A.\n\n**[B](https://e/b)**\n\nResumo B.\n";
+    const outBlank = removeCutItemBlocks(blank, new Set(["https://e/b"]));
+    assert.doesNotMatch(outBlank, /Resumo B/);
+    assert.match(outBlank, /Resumo A\./);
+  });
+
   it("findCutItems ignora destaque e item que reaparece como link em outro lugar", () => {
     const baseline = "**DESTAQUE 1 | X**\n\n**[D1](https://e/d1)**\n\nCorpo.\n\n---\n\n**📡 RADAR**\n\n**[R](https://e/r)**\nResumo.\n";
     assert.deepEqual(findCutItems(baseline, "**DESTAQUE 1 | X**\n\n**[Outro](https://e/x)**\n\nCorpo com [link](https://e/r).\n"), []);
@@ -345,6 +391,102 @@ describe("cortes × inclusões (#9641)", () => {
       ["https://e/r"],
     );
     assert.deepEqual(findIncludedItems("**📡 RADAR**\n\n**[N](https://e/n)**\n", new Set(["https://e/r"])).map((i) => i.url), ["https://e/n"]);
+  });
+});
+
+describe("stage1EditorAddedUrls (#9641)", () => {
+  it("normalizeItemUrl: mesma normalização do baseline (espaço nas pontas, URL própria)", () => {
+    assert.equal(normalizeItemUrl("  https://example.com/x \n"), "https://example.com/x");
+    assert.equal(normalizeItemUrl("https://diar.ia.br/p/edicao-260930"), "{edition_url}");
+    assert.equal(normalizeItemUrl(normalizeItemUrl(" https://e/x ")), "https://e/x");
+  });
+
+  it("gate humano: URL incluída pelo editor sai normalizada; auto-aprovado → vazio", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9641-"));
+    try {
+      const dir = makeEdition(root, {});
+      const internal = join(dir, "_internal");
+      // auto_approved: true (default do fixture) → nada é do editor.
+      writeFileSync(join(internal, "01-approved.json"), JSON.stringify(pool([" https://example.com/novo "])), "utf8");
+      assert.deepEqual([...stage1EditorAddedUrls(dir, undefined)], []);
+      writeFileSync(join(internal, ".step-1-gate.json"), JSON.stringify({ auto_approved: false }), "utf8");
+      assert.deepEqual([...stage1EditorAddedUrls(dir, undefined)], ["https://example.com/novo"]);
+      // Snapshot do Stage 2 tem precedência sobre o aprovado final.
+      const snap = JSON.stringify(pool(["https://example.com/do-snapshot"]));
+      assert.deepEqual([...stage1EditorAddedUrls(dir, snap)], ["https://example.com/do-snapshot"]);
+      // URL que a pipeline já tinha (mesmo com espaço sobrando no categorizado) não é do editor.
+      writeFileSync(join(internal, "01-categorized.json"), JSON.stringify(pool(["https://example.com/novo  "])), "utf8");
+      assert.deepEqual([...stage1EditorAddedUrls(dir, undefined)], []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("URL crua do 01-approved.json casa com a URL normalizada do baseline → conta como inclusão", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9641-"));
+    try {
+      const included = "**[Do gate 1](https://example.com/novo)**\nResumo novo.";
+      const md = FINAL.replace(RADAR_KEPT, `${RADAR_KEPT}\n\n${included}`);
+      const dir = makeItemEdition(root, {
+        pipelineMd: md,
+        finalMd: md,
+        approvedAtStage2: pool(["https://example.com/r", " https://example.com/novo "]),
+      });
+      writeFileSync(join(dir, "_internal", "01-categorized.json"), JSON.stringify(pool(["https://example.com/r"])), "utf8");
+      writeFileSync(join(dir, "_internal", ".step-1-gate.json"), JSON.stringify({ auto_approved: false }), "utf8");
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.deepEqual(r.inclusions?.map((i) => i.url), ["https://example.com/novo"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("editionsRootOf / trailingSeriesSummary (#9641)", () => {
+  it("editionsRootOf: layout nested (AAMM/AAMMDD) e flat (AAMMDD)", () => {
+    assert.equal(editionsRootOf("/x/data/editions/2609/260930"), "/x/data/editions");
+    assert.equal(editionsRootOf("/x/data/editions/260930"), "/x/data/editions");
+    assert.equal(editionsRootOf("/x/data/editions/2609/260930/"), "/x/data/editions");
+  });
+
+  const editionNames = (n: number) =>
+    Array.from({ length: n }, (_, i) => `2609${String(i + 1).padStart(2, "0")}`);
+
+  it("lê o histórico inteiro enquanto a sequência segue aberta; edições futuras ficam fora", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-series-"));
+    try {
+      const names = editionNames(14); // 260901..260914
+      for (const e of names) makeEdition(root, { edition: e, withBaseline: true, stage4Done: true });
+      const current = computeEditionManualEdits(join(root, "2609", "260913"), "260913");
+      assert.equal(current.zero_manual_edits, true);
+      const s = trailingSeriesSummary(root, current);
+      assert.equal(s.editions, 13, "260914 (futura) não entra");
+      assert.equal(s.consecutive_zero, 13);
+      assert.equal(s.consecutive_zero_inclusions, 13);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("parada antecipada: sequências fechadas na edição atual → só a janela das últimas 10", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-series-"));
+    try {
+      const names = editionNames(13);
+      for (const e of names) makeEdition(root, { edition: e, withBaseline: true, stage4Done: true });
+      const measured = computeEditionManualEdits(join(root, "2609", "260913"), "260913");
+      const current: EditionManualEdits = {
+        ...measured,
+        zero_manual_edits: false,
+        inclusions: [{ url: "https://e/n", title: "Novo", section: "RADAR" }],
+      };
+      const s = trailingSeriesSummary(root, current);
+      assert.equal(s.editions, INCLUSIONS_WINDOW);
+      assert.equal(s.consecutive_zero, 0);
+      assert.equal(s.consecutive_zero_inclusions, 0);
+      assert.equal(s.avg_inclusions_last_10, 0.1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -406,6 +548,13 @@ describe("série e veredito (#9357)", () => {
       assert.match(withSeries, /Sequência sem modificação: <strong>2\/3<\/strong>/);
       assert.match(withSeries, /Inclusões: <strong>1<\/strong>/);
       assert.match(withSeries, /RADAR: Novo do editor/);
+      assert.doesNotMatch(withSeries, /<li>\+\d+<\/li>/, "até 12 itens, sem o +N");
+      // #9641: lista cortada em 12 mostra quantos ficaram de fora.
+      const many = Array.from({ length: 15 }, (_, i) => ({ url: `https://e/${i}`, title: `Item ${i}`, section: "RADAR" }));
+      const truncated = renderManualEditsSection({ ...edits, inclusions: many });
+      assert.match(truncated, /Inclusões: <strong>15<\/strong>/);
+      assert.equal((truncated.match(/<li>RADAR: /g) ?? []).length, 12);
+      assert.match(truncated, /<li>\+3<\/li>/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
