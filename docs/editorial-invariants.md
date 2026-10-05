@@ -88,7 +88,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
-| `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only); aviso de imagem já regerada/trocada (md5 divergente) vira nota "desatualizado" (#9598) | #3951 |
+| `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
 | `instagram-comment-delivery-promise` | override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide) | #8681 |
 | `intentional-error-not-recent-repeat-final` | erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101) | #9101 |
 | `intentional-error-present-in-final` | item que carrega o erro intencional (wrong_value) ainda está em 02-reviewed.md — detecta poda silenciosa no gate (#7243) | #7243 |
