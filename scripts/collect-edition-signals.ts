@@ -656,10 +656,18 @@ function isStaleOutcome(
  * Antes do #1576 ambos colapsavam num único streak que contava qualquer não-`ok`
  * (incluindo `empty`), gerando ~10 falsos positivos por edição com blogs quietos.
  */
+/**
+ * #9652 (review): limiar de `source_dry` em RODADAS. Era 6 quando o streak
+ * contava LINHAS de log — com ~2 linhas por rodada (RSS + busca `site:`), 6
+ * linhas ≈ 3 edições. Contando rodadas, manter 6 dobraria a espera pra
+ * sinalizar uma fonte que nunca produziu; 3 rodadas preserva a semântica.
+ */
+export const SOURCE_DRY_THRESHOLD_ROUNDS = 3;
+
 export function signalsFromSourceHealth(
   health: SourceHealthFile,
   minStreak = 3,
-  dryThreshold = 6,
+  dryThreshold = SOURCE_DRY_THRESHOLD_ROUNDS,
   activeSources?: Set<string>,
   now: Date = new Date(),
   discoveryStaleDays = DISCOVERY_STALE_DAYS,
@@ -726,7 +734,7 @@ export function signalsFromSourceHealth(
       out.push({
         kind: "source_dry",
         severity: "medium",
-        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} sem nenhum artigo em ${dryStreak} execuções`,
+        title: `Source ${source}${isPrimary ? " (fonte PRIMÁRIA)" : ""} sem nenhum artigo em ${dryStreak} rodadas`,
         details: {
           source,
           ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
@@ -1517,7 +1525,7 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
         ...signalsFromSourceHealth(
           health,
           opts.minStreak ?? 3,
-          6,
+          SOURCE_DRY_THRESHOLD_ROUNDS,
           activeSources,
           now,
           DISCOVERY_STALE_DAYS,

@@ -17,6 +17,8 @@
  *     --query-used "site:technologyreview.com AI OR ..." \
  *     --articles-json '[{"title":"...","url":"...","published_at":"..."}]' \
  *     --reason "consecutive_fetch_errors"   (opcional)
+ *     --method rss|sitemap|websearch_brave  (opcional — #9652: só o caminho da
+ *       busca marca falha de cota; sem --method, `--query-used site:` decide)
  */
 
 import {
@@ -179,7 +181,12 @@ function main(): void {
   }
 
   // #9652: edição + motivo curto + flag de cota, pro streak contar RODADAS.
-  entry.recent_outcomes.push(buildOutcomeEntry(outcome, now, args.edition, args.reason));
+  entry.recent_outcomes.push(
+    buildOutcomeEntry(outcome, now, args.edition, args.reason, {
+      method: args.method,
+      query_used: args["query-used"],
+    }),
+  );
   if (entry.recent_outcomes.length > RECENT_OUTCOMES_MAX) {
     entry.recent_outcomes.splice(0, entry.recent_outcomes.length - RECENT_OUTCOMES_MAX);
   }

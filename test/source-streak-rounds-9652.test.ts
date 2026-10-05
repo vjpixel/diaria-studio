@@ -24,7 +24,7 @@ import {
   type OutcomeLike,
   type SourceEntry,
 } from "../scripts/lib/source-runs.ts";
-import { signalsFromSourceHealth } from "../scripts/collect-edition-signals.ts";
+import { signalsFromSourceHealth, SOURCE_DRY_THRESHOLD_ROUNDS } from "../scripts/collect-edition-signals.ts";
 import { renderSourceHealth } from "../scripts/render-categorized-md.ts";
 
 /** Reason real gravado em data/sources/openai.jsonl (busca devolveu 402). */
@@ -172,17 +172,16 @@ describe("#9652 — falha REAL em rodadas seguidas continua sinalizada", () => {
 });
 
 describe("#9652 — cota/limite da API de busca (402/429) não é falha da fonte", () => {
-  it("isSearchQuotaFailure reconhece 402/429 e não confunde com 403/404/5xx", () => {
-    for (const r of [
-      REASON_402,
-      "HTTP 429 Too Many Requests",
-      "status: 429",
-      "rate limit exceeded",
-      'error: {"status":429}',
-    ]) {
+  it("isSearchQuotaFailure reconhece só os formatos da busca (402/429) — nunca o 429 do feed", () => {
+    for (const r of [REASON_402, "rate_limited: unknown", 'error: {"status":429}', "Usage limit exceeded."]) {
       assert.equal(isSearchQuotaFailure(r), true, r);
     }
     for (const r of [
+      // review #9652: 429 do PRÓPRIO feed (fetch-rss.ts/fetch-sitemap.ts) é falha da fonte.
+      "HTTP 429 Too Many Requests",
+      "HTTP 429",
+      "http_429",
+      "consecutive_fetch_errors_429",
       "consecutive_fetch_errors (403)",
       "consecutive_fetch_errors (403 Forbidden)",
       "consecutive_fetch_errors (5xx/404)",
@@ -258,8 +257,102 @@ describe("#9652 — o que vai pro recent_outcomes", () => {
 
   it("applyRun usa buildOutcomeEntry", () => {
     const next = applyRun(emptyEntry(), { source: "X", edition: "260828", outcome: "fail", reason: "HTTP 429" }, "t");
-    assert.deepEqual(next.recent_outcomes, [
-      { outcome: "fail", timestamp: "t", edition: "260828", reason: "HTTP 429", search_quota: true },
+    assert.deepEqual(next.recent_outcomes, [{ outcome: "fail", timestamp: "t", edition: "260828", reason: "HTTP 429" }]);
+  });
+
+  it("origem decide: só o caminho da busca marca cota", () => {
+    const rss = buildOutcomeEntry("fail", "t", "e", REASON_402, { method: "rss", query_used: "https://x/feed" });
+    assert.equal(rss.search_quota, undefined);
+    const sitemap = buildOutcomeEntry("fail", "t", "e", "rate_limited: unknown", { method: "sitemap" });
+    assert.equal(sitemap.search_quota, undefined);
+    const web = buildOutcomeEntry("fail", "t", "e", REASON_402, { method: "websearch_brave" });
+    assert.equal(web.search_quota, true);
+    // sem method: `site:` no query_used identifica a busca; URL identifica o feed
+    assert.equal(buildOutcomeEntry("fail", "t", "e", REASON_402, { query_used: "site:x.com AI" }).search_quota, true);
+    assert.equal(
+      buildOutcomeEntry("fail", "t", "e", REASON_402, { query_used: "https://x.com/feed" }).search_quota,
+      undefined,
+    );
+  });
+});
+
+describe("#9652 review — 429 do feed da fonte + cota da busca esgotada", () => {
+  // VentureBeat (IA): RSS em `HTTP 429` desde 04/09/2026. Se a cota da busca
+  // esgota, cada rodada tem RSS 429 + busca 402 — a fonte tem que seguir sinalizada.
+  const rounds = ["261001", "261002", "261003", "261004"].flatMap((ed) => [
+    {
+      source: NON_PRIMARY,
+      edition: ed,
+      outcome: "fail" as const,
+      reason: "HTTP 429",
+      method: "rss",
+      query_used: "https://venturebeat.com/category/ai/feed/",
+    },
+    {
+      source: NON_PRIMARY,
+      edition: ed,
+      outcome: "fail" as const,
+      reason: REASON_402,
+      method: "websearch_brave",
+      query_used: "site:venturebeat.com AI",
+    },
+  ]);
+
+  it("4 rodadas de RSS 429 + busca 402 → streak 4, sinalizada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "streak-9652-"));
+    try {
+      const results = recordRunsBatch(dir, rounds, "2026-10-04T21:39:51.740Z");
+      assert.equal(results[results.length - 1].consecutive_failures, 4);
+      const health = JSON.parse(readFileSync(join(dir, "data/source-health.json"), "utf8"));
+      const recent = health.sources[NON_PRIMARY].recent_outcomes as OutcomeLike[];
+      assert.deepEqual(
+        groupOutcomesIntoRounds(recent).map((r) => r.verdict),
+        ["fail", "fail", "fail", "fail"],
+      );
+      const signals = signalsFromSourceHealth({
+        sources: { [NON_PRIMARY]: { successes: 5, recent_outcomes: recent as never } },
+      });
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].kind, "source_streak");
+      assert.equal(signals[0].details.consecutive_failures, 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("histórico sem method (só reason): `HTTP 429` conta, 402 da busca não", () => {
+    const legacy: OutcomeLike[] = ["a", "b", "c", "d"].flatMap((t) => [
+      { outcome: "fail", timestamp: t, reason: "HTTP 429" },
+      { outcome: "fail", timestamp: t, reason: REASON_402 },
     ]);
+    assert.equal(roundFailureStreak(legacy).consecutive_failures, 4);
+  });
+});
+
+describe("#9652 review — limiar de source_dry em rodadas", () => {
+  const dryRounds = (n: number): OutcomeLike[] =>
+    Array.from({ length: n }, (_, i) => `2610${String(i + 1).padStart(2, "0")}`).flatMap((ed) => [
+      { outcome: "empty", timestamp: `t-${ed}`, edition: ed },
+      { outcome: "empty", timestamp: `t-${ed}`, edition: ed },
+    ]);
+
+  it("SOURCE_DRY_THRESHOLD_ROUNDS = 3 (≈ 6 linhas do regime antigo)", () => {
+    assert.equal(SOURCE_DRY_THRESHOLD_ROUNDS, 3);
+  });
+
+  it("3 rodadas (6 linhas) sem ok numa fonte que nunca produziu → source_dry", () => {
+    const signals = signalsFromSourceHealth({
+      sources: { [NON_PRIMARY]: { successes: 0, recent_outcomes: dryRounds(3) as never } },
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "source_dry");
+    assert.equal(signals[0].details.dry_streak, 3);
+  });
+
+  it("2 rodadas (4 linhas) → ainda não", () => {
+    const signals = signalsFromSourceHealth({
+      sources: { [NON_PRIMARY]: { successes: 0, recent_outcomes: dryRounds(2) as never } },
+    });
+    assert.deepEqual(signals, []);
   });
 });

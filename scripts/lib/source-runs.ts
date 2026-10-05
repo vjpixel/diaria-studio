@@ -49,18 +49,47 @@ export const RECENT_OUTCOMES_MAX = 30;
 export const OUTCOME_REASON_MAX = 200;
 
 /**
- * #9652: a falha veio da cota/limite da API de busca (HTTP 402 "Usage limit
- * exceeded", HTTP 429 / rate limit), não da fonte. Caso real 27/08/2026: a cota
- * mensal de US$ 5 da API de busca acabou e TODA fonte com caminho `site:`
- * passou a gravar `fail` — sinal de infraestrutura compartilhada, não de fonte
- * quebrada.
+ * #9652: a falha veio da cota/limite da API de busca, não da fonte. Caso real
+ * 27/08/2026: a cota mensal de US$ 5 da API de busca acabou e TODA fonte com
+ * caminho `site:` passou a gravar `fail` — sinal de infraestrutura
+ * compartilhada, não de fonte quebrada.
+ *
+ * Reconhece SÓ os formatos que `fetch-websearch-batch.ts` grava
+ * (`${response.status}: ${error_message}`): `rate_limited: ...` (429 da busca),
+ * `error: {..."status":402|429...}` (corpo JSON da API) e "Usage limit
+ * exceeded". Nunca `HTTP 429`/`http_429`/`Too Many Requests` — esses vêm do
+ * PRÓPRIO feed da fonte (`fetch-rss.ts`, `fetch-sitemap.ts`) e são falha real
+ * dela (VentureBeat (IA), RSS em `HTTP 429` desde 04/09/2026). Usado como
+ * fallback pro histórico sem `method`/`query_used`; com origem conhecida,
+ * `buildOutcomeEntry` só marca cota no caminho da busca.
  */
 export function isSearchQuotaFailure(reason: string | null | undefined): boolean {
   if (!reason) return false;
   return (
-    /usage limit exceeded|rate[ _-]?limit|too many requests|quota exceeded/i.test(reason) ||
-    /(?:"status"\s*:\s*|\bstatus\s*[:=]?\s*|\bHTTP\s*)(?:402|429)\b/i.test(reason)
+    /^\s*rate_limited\s*:/i.test(reason) ||
+    /usage limit exceeded/i.test(reason) ||
+    /^\s*error\s*:.*"status"\s*:\s*(?:402|429)\b/is.test(reason)
   );
+}
+
+/** #9652 (review): origem da linha — `method` do batch e/ou `query_used`. */
+export interface OutcomeOrigin {
+  method?: string | null;
+  query_used?: string | null;
+}
+
+/**
+ * #9652 (review): a linha veio do caminho da API de busca? `true`/`false` quando
+ * a origem é conhecida; `undefined` quando não há `method` nem `query_used`.
+ * `method` vence (`websearch_*` = busca; `rss`/`sitemap`/outros = não); sem
+ * `method`, `query_used` começando em `site:` é a busca e uma URL não é.
+ */
+export function isSearchPath(origin: OutcomeOrigin | undefined): boolean | undefined {
+  const method = origin?.method?.trim();
+  if (method) return /^websearch/i.test(method);
+  const q = origin?.query_used?.trim();
+  if (q) return /^site:/i.test(q);
+  return undefined;
 }
 
 /** Forma mínima de um outcome lido do disco (campos podem faltar no histórico). */
@@ -169,12 +198,15 @@ export function buildOutcomeEntry<O extends Outcome>(
   timestamp: string,
   edition?: string | null,
   reason?: string | null,
+  origin?: OutcomeOrigin,
 ): OutcomeEntry & { outcome: O } {
   const e: OutcomeEntry & { outcome: O } = { outcome, timestamp };
   if (edition) e.edition = edition;
   if (isHardFailure(outcome) && reason) {
     e.reason = reason.slice(0, OUTCOME_REASON_MAX);
-    if (isSearchQuotaFailure(reason)) e.search_quota = true;
+    // Origem conhecida e fora da busca (RSS/sitemap/fetch) → nunca é cota da
+    // busca, mesmo que o texto pareça (#9652 review).
+    if (isSearchPath(origin) !== false && isSearchQuotaFailure(reason)) e.search_quota = true;
   }
   return e;
 }
@@ -202,6 +234,8 @@ export interface RunRecord {
   outcome: Outcome;
   duration_ms?: number | null;
   query_used?: string | null;
+  /** Caminho que gerou a linha (`rss`, `sitemap`, `websearch_brave`...), quando o batch informa. */
+  method?: string | null;
   articles?: Array<{ title?: string; url?: string; published_at?: string }>;
   reason?: string | null;
 }
@@ -268,7 +302,12 @@ export function applyRun(
     entry.timeouts += 1;
     entry.last_failure_iso = now;
   }
-  entry.recent_outcomes.push(buildOutcomeEntry(run.outcome, now, run.edition, run.reason));
+  entry.recent_outcomes.push(
+    buildOutcomeEntry(run.outcome, now, run.edition, run.reason, {
+      method: run.method,
+      query_used: run.query_used,
+    }),
+  );
   if (entry.recent_outcomes.length > RECENT_OUTCOMES_MAX) {
     entry.recent_outcomes.splice(0, entry.recent_outcomes.length - RECENT_OUTCOMES_MAX);
   }
