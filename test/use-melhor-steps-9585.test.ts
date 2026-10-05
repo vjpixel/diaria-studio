@@ -37,6 +37,10 @@ describe("extractUseMelhorSteps", () => {
     assert.deepEqual(extractUseMelhorSteps("1. Só um passo sozinho aqui"), []);
     assert.deepEqual(extractUseMelhorSteps("1. Primeiro passo aqui\n3. Terceiro passo aqui"), []);
   });
+  it("sumário numerado antes dos passos reais: fica com a lista mais longa", () => {
+    const t = "1. Introdução geral\n2. Configuração\nPasso 1: Abra o app agora\nPasso 2: Ligue o modo X\nPasso 3: Salve tudo";
+    assert.deepEqual(extractUseMelhorSteps(t), ["Abra o app agora", "Ligue o modo X", "Salve tudo"]);
+  });
   it("enrich só põe steps quando há", () => {
     const base = { url: "u", title: "t", summary: "s", score: 1 };
     assert.equal(enrichUseMelhorItem(base, "texto").steps, undefined);
@@ -53,6 +57,13 @@ describe("runSelectionWithSteps", () => {
     const st = JSON.parse(readFileSync(written!, "utf8"));
     assert.deepEqual(st.item.steps, ["Crie o formulário", "Conecte ao GPT"]);
     assert.ok(st.item.body.includes("Passo 1"));
+  });
+  it("<ol><li> sem numeração literal vira passos", async () => {
+    const d = edition();
+    const { state } = await runSelectionWithSteps(d, ON, {
+      fetchImpl: html("<ol><li>Crie o formulário</li><li>Conecte ao GPT</li></ol>") as never,
+    });
+    assert.deepEqual(state.item!.steps, ["Crie o formulário", "Conecte ao GPT"]);
   });
   it("fonte sem passos → item sem steps", async () => {
     const d = edition();

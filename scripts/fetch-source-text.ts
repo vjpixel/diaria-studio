@@ -40,8 +40,16 @@ function safeCodePoint(n: number): string {
 }
 
 /** HTML -> texto do corpo: remove script/style/nav/footer/aside/comentários/tags, decodifica entidades, normaliza espaços. */
+/** #9585: o texto de `<ol><li>` não traz o número (o browser desenha) — prefixa "N. " pra os passos sobreviverem ao strip de tags. */
+function numberOrderedLists(html: string): string {
+  return html.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol\s*>/gi, (_m, inner: string) => {
+    let n = 0;
+    return inner.replace(/<li\b([^>]*)>/gi, (_l, attrs: string) => `<li${attrs}>${++n}. `);
+  });
+}
+
 export function htmlToText(html: string): string {
-  let s = html.replace(/<!--[\s\S]*?-->/g, " ");
+  let s = numberOrderedLists(html).replace(/<!--[\s\S]*?-->/g, " ");
   s = s.replace(/<(script|style|noscript|svg|template|nav|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ");
   s = s.replace(/\r?\n/g, " ");
   s = s.replace(/<\/(p|div|li|h[1-6]|tr|section|article|blockquote)\s*>|<br\s*\/?>/gi, "\n");
