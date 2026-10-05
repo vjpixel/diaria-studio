@@ -39,15 +39,31 @@ function safeCodePoint(n: number): string {
   return String.fromCodePoint(n);
 }
 
-/** HTML -> texto do corpo: remove script/style/nav/footer/aside/comentários/tags, decodifica entidades, normaliza espaços. */
-/** #9585: o texto de `<ol><li>` não traz o número (o browser desenha) — prefixa "N. " pra os passos sobreviverem ao strip de tags. */
+/**
+ * #9585: o texto de `<ol><li>` não traz o número (o browser desenha) — prefixa
+ * "N. " pra os passos sobreviverem ao strip de tags. Pilha por `<ol>`/`</ol>`
+ * (listas aninhadas contam cada nível à parte) e respeita `start=` e `value=`.
+ */
 function numberOrderedLists(html: string): string {
-  return html.replace(/<ol\b[^>]*>([\s\S]*?)<\/ol\s*>/gi, (_m, inner: string) => {
-    let n = 0;
-    return inner.replace(/<li\b([^>]*)>/gi, (_l, attrs: string) => `<li${attrs}>${++n}. `);
+  const counters: number[] = [];
+  return html.replace(/<(\/?)(ol|li)\b([^>]*)>/gi, (m, close: string, tag: string, attrs: string) => {
+    if (tag.toLowerCase() === "ol") {
+      if (close) counters.pop();
+      else {
+        const start = attrs.match(/\bstart\s*=\s*["']?(-?\d+)/i);
+        counters.push(start ? Number(start[1]) - 1 : 0);
+      }
+      return m;
+    }
+    if (close || !counters.length) return m;
+    const value = attrs.match(/\bvalue\s*=\s*["']?(-?\d+)/i);
+    const n = value ? Number(value[1]) : counters[counters.length - 1] + 1;
+    counters[counters.length - 1] = n;
+    return `${m}${n}. `;
   });
 }
 
+/** HTML -> texto do corpo: remove script/style/nav/footer/aside/comentários/tags, decodifica entidades, normaliza espaços. */
 export function htmlToText(html: string): string {
   let s = numberOrderedLists(html).replace(/<!--[\s\S]*?-->/g, " ");
   s = s.replace(/<(script|style|noscript|svg|template|nav|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ");

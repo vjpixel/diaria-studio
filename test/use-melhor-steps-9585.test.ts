@@ -8,6 +8,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { extractUseMelhorSteps, enrichUseMelhorItem } from "../scripts/lib/use-melhor-post.ts";
+import { htmlToText } from "../scripts/fetch-source-text.ts";
 import { runSelectionWithSteps } from "../scripts/select-use-melhor-post.ts";
 
 const ON = { enabled: true, time: "08:00" } as never;
@@ -75,5 +76,22 @@ describe("runSelectionWithSteps", () => {
     const { state } = await runSelectionWithSteps(d, ON, { fetchImpl: (async () => { throw new Error("rede"); }) as never });
     assert.equal(state.item!.url, "https://example.com/tut");
     assert.equal(state.item!.steps, undefined);
+  });
+});
+
+describe("achados do review #9602", () => {
+  it("<ol> aninhado: cada nível numera à parte", () => {
+    const t = htmlToText("<ol><li>Abra o app<ol><li>sub um</li><li>sub dois</li></ol></li><li>Salve tudo</li></ol>");
+    assert.match(t, /1\. Abra o app/);
+    assert.match(t, /1\. sub um/);
+    assert.match(t, /2\. sub dois/);
+    assert.match(t, /2\. Salve tudo/);
+  });
+  it("<ol start> e <li value> respeitados", () => {
+    assert.match(htmlToText('<ol start="3"><li>Terceiro</li><li>Quarto</li></ol>'), /3\. Terceiro[\s\S]*4\. Quarto/);
+    assert.match(htmlToText('<ol><li value="5">Quinto</li></ol>'), /5\. Quinto/);
+  });
+  it("passo curto não é descartado nem trunca a lista", () => {
+    assert.deepEqual(extractUseMelhorSteps("1. Abra o app agora\n2. Salve\n3. Envie o link"), ["Abra o app agora", "Salve", "Envie o link"]);
   });
 });

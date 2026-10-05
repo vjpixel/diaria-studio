@@ -122,15 +122,17 @@ export function runSelection(
 
 /**
  * #9585: seleção + corpo/passos da fonte no item gravado. Fail-soft — fetch
- * falho mantém o item sem `steps`/`body` (post no formato atual).
+ * falho mantém o item sem `steps`/`body` (post no formato atual). O fetch
+ * tem timeout de 20s dentro de `fetchSourceText`.
  */
 export async function runSelectionWithSteps(
   editionDir: string,
   config: UseMelhorPostConfigState,
-  opts: { useReviewed?: boolean; now?: Date; fetchImpl?: typeof fetch } = {},
-): Promise<{ state: UseMelhorPostState; written: string | null }> {
+  opts: { useReviewed?: boolean; forceReselect?: boolean; now?: Date; fetchImpl?: typeof fetch } = {},
+): Promise<{ state: UseMelhorPostState; written: string | null; preserved?: boolean }> {
   const res = runSelection(editionDir, config, opts);
-  if (!res.state.enabled || !res.state.item) return res;
+  // `preserved` (#9610): item já enriquecido numa rodada anterior — não rebusca.
+  if (!res.state.enabled || !res.state.item || res.preserved) return res;
   try {
     const r = await fetchSourceText(res.state.item.url, opts.fetchImpl ?? fetch);
     if (!r.ok) {

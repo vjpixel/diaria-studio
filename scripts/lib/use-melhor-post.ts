@@ -154,7 +154,7 @@ export interface UseMelhorCandidate {
   body?: string;
 }
 
-const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{8,})$/i;
+const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{3,})$/i;
 
 /**
  * Pure (#9585): extrai os passos numerados do texto da fonte, na ordem.
