@@ -279,7 +279,17 @@ function withClariceUtm(url: string, posicao: string): string {
   if (!isOwnedHost(parsed.hostname)) return url;
   parsed.searchParams.set("utm_source", currentUtmProfile.source);
   parsed.searchParams.set("utm_medium", currentUtmProfile.medium);
-  parsed.searchParams.set("utm_campaign", currentUtmProfile.buildCampaign(currentMonthlyUtmCiclo, posicao));
+  // #9589: botão CTA (`→ [texto](url)`) cujo link já traz `utm_campaign`
+  // explícito — caso da caixa da imersão (`utm_campaign=agente-ia`) — mantém a
+  // campanha do template, senão o evento some no relatório por campanha e
+  // colide com a do botão LIVROS. `utm_source`/`utm_medium` continuam vindo do
+  // perfil (o envio Kit dos apoiadores segue com `mensal-apoiadores-kit`).
+  // Restrito à posição `cta` de propósito: as pills do PARA ENCERRAR carregam
+  // `utm_campaign=*-rodape` copiado do diário e DEVEM ser reescritas (#4040,
+  // posição por pill), idem links de título/inline vindos das edições diárias.
+  if (!(posicao === "cta" && parsed.searchParams.get("utm_campaign"))) {
+    parsed.searchParams.set("utm_campaign", currentUtmProfile.buildCampaign(currentMonthlyUtmCiclo, posicao));
+  }
   return parsed.toString();
 }
 

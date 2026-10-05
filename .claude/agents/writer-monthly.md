@@ -67,7 +67,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
    [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link. CTA no formato `→ [texto](url)` — vira botão no render (renderCtaButton), um `[texto](url)` sem o `→` sai como link de texto comum.]
    ```
-   Após D2, antes de LIVROS, emitir o box **DIVULGAÇÃO** da imersão de 17/10 — texto FIXO (pedido do editor, 25/09/2026), emitir literalmente, sem parafrasear. Remover deste passo e do template depois de 17/10/2026:
+   Após D2, antes de LIVROS, emitir o box **DIVULGAÇÃO** da imersão de 17/10 — texto FIXO (pedido do editor, 25/09/2026), emitir literalmente, sem parafrasear. Remover deste passo e do template depois de 17/10/2026 (remoção rastreada na #8895; as duas cópias são travadas idênticas por `test/monthly-divulgacao-box-sync-9591.test.ts` — editar sempre as duas):
    ```
    **DIVULGAÇÃO**
 
