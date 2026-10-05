@@ -168,9 +168,12 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
         # Preco vigente medido em 04/10/2026 (#9559): promo expirou — prompt
         # caiu 3,9x, completion subiu 7,35x. Decisao do editor: MANTER o modelo
         # (+23% no mix real, ~US$ 0,66/mes).
-        "prompt": 0.0000000224,           # $0,0224/M
+        # #9633 (05/10/2026): prompt e input_cache_read subiram 1,34x
+        # ($0,0224/M -> $0,03/M) no catalogo; decisao do editor: MANTER o
+        # modelo ao preco novo. Completion inalterado.
+        "prompt": 0.000000030,            # $0,03/M
         "completion": 0.00000128,         # $1,28/M
-        "input_cache_read": 0.0000000224,  # $0,0224/M
+        "input_cache_read": 0.000000030,  # $0,03/M
     },
     "z-ai/glm-5.3-flash": {
         "prompt": 0.00000015,            # $0,15/M — preco de lista, promo caiu

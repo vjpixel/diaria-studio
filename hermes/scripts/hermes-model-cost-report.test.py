@@ -510,13 +510,44 @@ def main() -> int:
         "#9559/#9472: baseline vigente do glm-5.3-flash usa completion=0.0000005 (alarme não repete)",
         mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"]["completion"] == 0.0000005,
     )
-    # #9559: baseline vigente do deepseek-v4-flash (promo expirou).
-    for campo, valor in (("prompt", 0.0000000224), ("completion", 0.00000128),
-                         ("input_cache_read", 0.0000000224)):
+    # #9559 -> #9633: baseline vigente do deepseek-v4-flash. Em 05/10/2026
+    # prompt/input_cache_read subiram 0,0224 -> 0,03/M e o editor decidiu
+    # manter o modelo; o baseline acompanha o preço vigente.
+    for campo, valor in (("prompt", 0.000000030), ("completion", 0.00000128),
+                         ("input_cache_read", 0.000000030)):
         assert_true(
-            f"#9559: baseline vigente do deepseek-v4-flash usa {campo}={valor}",
+            f"#9633: baseline vigente do deepseek-v4-flash usa {campo}={valor}",
             mod.PAID_PRICE_BASELINE["deepseek/deepseek-v4-flash"][campo] == valor,
         )
+
+    # #9633 (regressão): com o catálogo no preço reportado pela issue, o
+    # --price-check de produção sai LIMPO (sem aumento, exit 0) — senão o
+    # alarme repete todo dia sobre um aumento já visto e autorizado.
+    cat_9633 = mod.extract_catalog_pricing(_catalog(
+        {"id": "deepseek/deepseek-v4-flash",
+         "pricing": {"prompt": "0.000000030", "completion": "0.00000128",
+                     "input_cache_read": "0.000000030"}},
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
+                     "input_cache_read": "0.000000030"}},
+    ))
+    f_9633 = mod.detect_price_changes(cat_9633)
+    assert_true(
+        "#9633: catálogo no preço vigente do deepseek-v4-flash -> sem aumento, sem unverifiable, exit 0",
+        not f_9633["increases"] and not f_9633["unverifiable"]
+        and mod.price_check_exit_code(f_9633) == 0,
+    )
+    # E o baseline ANTIGO (0,0224/M) teria alarmado com esse mesmo catálogo —
+    # prova que o teste discrimina.
+    f_9633_old = mod.detect_price_changes(cat_9633, baseline={
+        "deepseek/deepseek-v4-flash": {"prompt": 0.0000000224, "completion": 0.00000128,
+                                       "input_cache_read": 0.0000000224},
+    }, not_on_openrouter=set())
+    assert_true(
+        "#9633: baseline antigo (0,0224/M) com o mesmo catálogo alarmaria (exit 3)",
+        mod.price_check_exit_code(f_9633_old) == 3
+        and {i["campo"] for i in f_9633_old["increases"]} == {"prompt", "input_cache_read"},
+    )
 
     # --- #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna ---
     #
