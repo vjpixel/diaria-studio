@@ -22,8 +22,8 @@
  * O núcleo é puro; os helpers de disco (`read*`) são finos e fail-soft.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { parseDestaques } from "../extract-destaques.ts";
 
 export const DEMOTED_LOG = "01-generic-study-demoted.json";
@@ -98,9 +98,22 @@ export function readShadowItems(editionDir: string): ShadowItem[] {
 // Pergunta do gate
 // ---------------------------------------------------------------------------
 
-/** Linha de pergunta por item — texto exigido pelo editor (#9673). */
+/** Aspas do título escapadas — senão `"a "b" c"` fica ambíguo na pergunta. */
+export function escapeTitleQuotes(titulo: string): string {
+  return titulo.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * Texto da pergunta por item — exigido pelo editor (#9673). Fonte única do
+ * gate no terminal (`formatQuestion`) e do painel do Studio (`/revisao`).
+ */
+export function questionText(item: ShadowItem): string {
+  return `Concorda que "${escapeTitleQuotes(item.titulo)}" sairia do destaque? responda sim/não`;
+}
+
+/** Linha de pergunta numerada para o gate no terminal. */
 export function formatQuestion(item: ShadowItem, index: number): string {
-  return `  ${index}. Concorda que "${item.titulo}" sairia do destaque? responda sim/não`;
+  return `  ${index}. ${questionText(item)}`;
 }
 
 /**
@@ -183,6 +196,8 @@ export function destaqueUrls(reviewedMd: string): Set<string> {
 export function buildFeedback(opts: {
   items: ShadowItem[];
   answers: Map<number, "sim" | "nao">;
+  /** Respostas por URL (painel do Studio). Índice e URL podem coexistir; índice vence. */
+  answersByUrl?: Map<string, "sim" | "nao">;
   reviewedMd: string | null;
   now: string;
   previous?: GenericStudyFeedbackItem[];
@@ -193,7 +208,7 @@ export function buildFeedback(opts: {
     if (p.resposta === "sim" || p.resposta === "nao") prevByUrl.set(p.url, p);
   }
   return opts.items.map((it, i) => {
-    const given = opts.answers.get(i + 1);
+    const given = opts.answers.get(i + 1) ?? opts.answersByUrl?.get(it.url);
     const prev = prevByUrl.get(it.url);
     const resposta: GenericStudyAnswer = given ?? prev?.resposta ?? "nao_lido";
     const respondido_em = given ? opts.now : prev ? prev.respondido_em : null;
@@ -201,6 +216,67 @@ export function buildFeedback(opts: {
       finalUrls === null ? null : finalUrls.has(normUrl(it.url)) ? "manteve" : "tirou";
     return { url: it.url, titulo: it.titulo, resposta, respondido_em, acao_no_final };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Registro em disco (CLI do gate e painel do Studio)
+// ---------------------------------------------------------------------------
+
+export function feedbackPath(editionDir: string): string {
+  return join(editionDir, "_internal", FEEDBACK_FILE);
+}
+
+/** Lê o registro gravado. Ausente/ilegível ⇒ null. */
+export function readFeedbackFile(editionDir: string): GenericStudyFeedbackFile | null {
+  const p = feedbackPath(editionDir);
+  if (!existsSync(p)) return null;
+  try {
+    const f = JSON.parse(readFileSync(p, "utf8")) as Partial<GenericStudyFeedbackFile>;
+    if (!Array.isArray(f.items)) return null;
+    return { edition: f.edition ?? null, recorded_at: f.recorded_at ?? "", items: f.items };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Grava `_internal/04-generic-study-feedback.json`. Retorna o arquivo
+ * gravado, ou `null` quando a edição não tem item em modo sombra. Lança em
+ * resposta inválida (nada é gravado). Respostas explícitas anteriores para a
+ * mesma URL são preservadas quando esta chamada não traz resposta para ela.
+ */
+export function recordGenericStudyFeedback(opts: {
+  editionDir: string;
+  /** `--answers "1=sim,2=nao"` do gate no terminal. */
+  answers?: string;
+  /** Respostas por URL (painel do Studio). */
+  answersByUrl?: Map<string, "sim" | "nao">;
+  now?: string;
+}): GenericStudyFeedbackFile | null {
+  const items = readShadowItems(opts.editionDir);
+  if (items.length === 0) return null;
+  const answers = parseAnswersArg(opts.answers, items.length);
+  for (const url of opts.answersByUrl?.keys() ?? []) {
+    if (!items.some((it) => it.url === url)) throw new Error(`URL não está entre os itens 🔎 em modo sombra: ${url}`);
+  }
+  const reviewedPath = join(opts.editionDir, "02-reviewed.md");
+  const reviewedMd = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
+  const now = opts.now ?? new Date().toISOString();
+  const edition = basename(opts.editionDir.replace(/[\\/]+$/, ""));
+  const file: GenericStudyFeedbackFile = {
+    edition: /^\d{6}$/.test(edition) ? edition : null,
+    recorded_at: now,
+    items: buildFeedback({
+      items,
+      answers,
+      answersByUrl: opts.answersByUrl,
+      reviewedMd,
+      now,
+      previous: readFeedbackFile(opts.editionDir)?.items ?? [],
+    }),
+  };
+  writeFileSync(feedbackPath(opts.editionDir), JSON.stringify(file, null, 2) + "\n", "utf8");
+  return file;
 }
 
 // ---------------------------------------------------------------------------

@@ -15,12 +15,15 @@ import {
   buildFeedback,
   formatGateQuestions,
   parseAnswersArg,
+  questionText,
   shadowItemsFromLog,
   shadowVerdict,
   type GenericStudyFeedbackItem,
 } from "../scripts/lib/generic-study-feedback.ts";
 import { feedbackPath, recordGenericStudyFeedback } from "../scripts/generic-study-gate-feedback.ts";
 import { collectShadowFeedback } from "../scripts/generic-study-shadow-report.ts";
+import { buildGenericStudyQuestions, recordGenericStudyAnswerFromPanel } from "../scripts/studio-ui/studio-gate.ts";
+import { startStudioServer } from "../scripts/studio-ui/server.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -234,5 +237,76 @@ describe("playbook do Stage 4 (guard textual)", () => {
 
   it("modo sombra não fica mais perdido no violations_block", () => {
     assert.doesNotMatch(md, /listar `demoted\[\]` como 🔎 "seria rebaixado"/);
+  });
+});
+
+describe("painel do Studio /revisao (gate/generic-study)", () => {
+  it("escapa aspas do título na pergunta", () => {
+    assert.equal(
+      questionText({ url: "u", titulo: 'Estudo diz "IA" muda tudo' }),
+      'Concorda que "Estudo diz \\"IA\\" muda tudo" sairia do destaque? responda sim/não',
+    );
+  });
+
+  it("handler: sem resposta = nao_lido; resposta gravada pela mesma lógica; erros 400/404", () => {
+    const root = mkdtempSync(join(tmpdir(), "gsp-"));
+    const dir = makeEdition(root, "261006", { log: SHADOW_LOG, reviewed: [URL_A, URL_OTHER] });
+    const before = buildGenericStudyQuestions(dir);
+    assert.deepEqual(before.map((q) => q.resposta), ["nao_lido", "nao_lido"]);
+    assert.match(before[0].pergunta, /^Concorda que ".*" sairia do destaque\? responda sim\/não$/);
+
+    const ok = recordGenericStudyAnswerFromPanel(dir, { url: URL_B, resposta: "nao" }, "2026-10-06T12:00:00.000Z");
+    assert.equal(ok.status, 200);
+    const disk = JSON.parse(readFileSync(feedbackPath(dir), "utf8"));
+    assert.deepEqual(
+      disk.items.map((i: GenericStudyFeedbackItem) => [i.url, i.resposta, i.respondido_em, i.acao_no_final]),
+      [
+        [URL_A, "nao_lido", null, "manteve"], // não clicado: nao_lido mesmo mantido no destaque
+        [URL_B, "nao", "2026-10-06T12:00:00.000Z", "tirou"],
+      ],
+    );
+    // 2º clique em outro item preserva a resposta anterior.
+    recordGenericStudyAnswerFromPanel(dir, { url: URL_A, resposta: "sim" });
+    assert.deepEqual(buildGenericStudyQuestions(dir).map((q) => q.resposta), ["sim", "nao"]);
+
+    assert.equal(recordGenericStudyAnswerFromPanel(dir, { url: URL_A, resposta: "talvez" }).status, 400);
+    assert.equal(recordGenericStudyAnswerFromPanel(dir, { resposta: "sim" }).status, 400);
+    assert.equal(recordGenericStudyAnswerFromPanel(dir, { url: URL_OTHER, resposta: "sim" }).status, 404);
+  });
+
+  it("endpoint HTTP grava a resposta e GET .../gate devolve as perguntas", async () => {
+    const root = mkdtempSync(join(tmpdir(), "gss-"));
+    const dir = join(root, "data", "editions", "261006");
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "01-generic-study-demoted.json"), JSON.stringify(SHADOW_LOG));
+    const server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+    try {
+      const g0 = await (await fetch(new URL("/api/editions/261006/gate", server.url))).json();
+      assert.deepEqual(g0.genericStudy.map((q: { resposta: string }) => q.resposta), ["nao_lido", "nao_lido"]);
+      const res = await fetch(new URL("/api/editions/261006/gate/generic-study", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: URL_A, resposta: "sim" }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.genericStudy.map((q: { resposta: string }) => q.resposta), ["sim", "nao_lido"]);
+      const disk = JSON.parse(readFileSync(join(dir, "_internal", "04-generic-study-feedback.json"), "utf8"));
+      assert.equal(disk.items[0].resposta, "sim");
+      assert.equal(disk.items[1].resposta, "nao_lido");
+      const bad = await fetch(new URL("/api/editions/261006/gate/generic-study", server.url), {
+        method: "POST",
+        body: "{not json",
+      });
+      assert.equal(bad.status, 400);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("revisao.html tem o bloco de perguntas antes do checklist", () => {
+    const html = readFileSync(join(ROOT, "scripts/studio-ui/public/revisao.html"), "utf8");
+    const gs = html.indexOf('id="rv-gate-generic-study"');
+    assert.ok(gs > 0 && gs < html.indexOf('id="rv-gate-checklist"'));
   });
 });

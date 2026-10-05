@@ -26,59 +26,17 @@
  * Exit: 0 ok; 1 uso inválido ou `--answers` mal formado (nada é gravado).
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import {
-  FEEDBACK_FILE,
-  buildFeedback,
   formatGateQuestions,
-  parseAnswersArg,
   readShadowItems,
+  recordGenericStudyFeedback,
   type GenericStudyFeedbackFile,
-  type GenericStudyFeedbackItem,
 } from "./lib/generic-study-feedback.ts";
 
-export function feedbackPath(editionDir: string): string {
-  return join(editionDir, "_internal", FEEDBACK_FILE);
-}
-
-function readPrevious(path: string): GenericStudyFeedbackItem[] {
-  if (!existsSync(path)) return [];
-  try {
-    const f = JSON.parse(readFileSync(path, "utf8")) as { items?: unknown };
-    return Array.isArray(f.items) ? (f.items as GenericStudyFeedbackItem[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Núcleo testável do `--record`. Retorna o arquivo gravado, ou `null` quando
- * a edição não tem item em modo sombra. Lança em `--answers` inválido.
- */
-export function recordGenericStudyFeedback(opts: {
-  editionDir: string;
-  answers?: string;
-  now?: string;
-}): GenericStudyFeedbackFile | null {
-  const items = readShadowItems(opts.editionDir);
-  if (items.length === 0) return null;
-  const answers = parseAnswersArg(opts.answers, items.length);
-  const reviewedPath = join(opts.editionDir, "02-reviewed.md");
-  const reviewedMd = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
-  const now = opts.now ?? new Date().toISOString();
-  const out = feedbackPath(opts.editionDir);
-  const edition = basename(opts.editionDir.replace(/[\\/]+$/, ""));
-  const file: GenericStudyFeedbackFile = {
-    edition: /^\d{6}$/.test(edition) ? edition : null,
-    recorded_at: now,
-    items: buildFeedback({ items, answers, reviewedMd, now, previous: readPrevious(out) }),
-  };
-  writeFileSync(out, JSON.stringify(file, null, 2) + "\n", "utf8");
-  return file;
-}
+// Núcleo do `--record` vive na lib (compartilhado com o painel do Studio).
+export { feedbackPath, recordGenericStudyFeedback } from "./lib/generic-study-feedback.ts";
 
 async function main(): Promise<void> {
   const { flags, values } = parseCliArgs(process.argv.slice(2));

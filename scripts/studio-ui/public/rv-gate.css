@@ -134,3 +134,29 @@
   .rv-gate-header button { min-height: 44px; }
   #rv-gate-approve-btn { min-height: 44px; }
 }
+
+/* #9673: pergunta explícita sim/não por item 🔎 — destaque no topo. */
+.rv-gate-generic-study {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  border: 2px solid var(--status-warn, var(--ink));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--status-warn, var(--ink)) 10%, transparent);
+}
+.rv-gate-generic-study h3 { margin: 0; font-size: 0.95rem; }
+.rv-gate-gs-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; font-size: 0.85rem; }
+.rv-gate-gs-question { flex: 1 1 100%; font-weight: 600; overflow-wrap: anywhere; }
+.rv-gate-gs-btn {
+  font: inherit;
+  padding: 0.25rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-gate-gs-btn[aria-pressed="true"] { border-color: var(--ink); font-weight: 700; }
+.rv-gate-gs-state { color: var(--ink-muted, inherit); }
+.rv-gate-gs-row.nao_lido .rv-gate-gs-state { font-weight: 700; }

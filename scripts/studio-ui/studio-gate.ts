@@ -66,6 +66,13 @@ import type { AutofixResult } from "../apply-factcheck-autofix.ts";
 import type { SlotSelectionRecord } from "../select-boxes-by-clicks.ts";
 import type { RenderWarningEvent } from "../lib/newsletter-render-html.ts";
 import { runReviewLints, type LintReport } from "./studio-review.ts";
+import {
+  questionText,
+  readFeedbackFile,
+  readShadowItems,
+  recordGenericStudyFeedback,
+  type GenericStudyAnswer,
+} from "../lib/generic-study-feedback.ts";
 
 // ── Leituras individuais de arquivo — cada uma fail-soft ───────────────────
 
@@ -184,6 +191,67 @@ export interface GateSummary {
    * arquivo pelo orchestrator real está fora de escopo, ver docstring de
    * `stage4-decision.ts`). */
   decision: Stage4DecisionState | null;
+  /** #9673: pergunta explícita sim/não por item 🔎 (modo sombra da penalidade
+   * de estudo/case genérico, #9462). Vazio = nada a perguntar. */
+  genericStudy: GateGenericStudyQuestion[];
+}
+
+export interface GateGenericStudyQuestion {
+  index: number;
+  url: string;
+  titulo: string;
+  /** Mesmo texto do gate no terminal (`questionText`). */
+  pergunta: string;
+  /** `nao_lido` enquanto o editor não responder sim/não. */
+  resposta: GenericStudyAnswer;
+  respondido_em: string | null;
+}
+
+/** Perguntas 🔎 do gate + resposta já gravada (fail-soft: sem log ⇒ []). */
+export function buildGenericStudyQuestions(editionDir: string): GateGenericStudyQuestion[] {
+  const items = readShadowItems(editionDir);
+  if (items.length === 0) return [];
+  const prev = new Map((readFeedbackFile(editionDir)?.items ?? []).map((f) => [f.url, f]));
+  return items.map((it, i) => {
+    const f = prev.get(it.url);
+    return {
+      index: i + 1,
+      url: it.url,
+      titulo: it.titulo,
+      pergunta: questionText(it),
+      resposta: f?.resposta ?? "nao_lido",
+      respondido_em: f?.respondido_em ?? null,
+    };
+  });
+}
+
+/**
+ * #9673: núcleo do `POST /api/editions/:aammdd/gate/generic-study` — grava a
+ * resposta sim/não de UM item pela mesma lógica do gate no terminal
+ * (`recordGenericStudyFeedback`). Os demais itens mantêm a resposta já
+ * gravada ou ficam `nao_lido`. Nunca lança: devolve status + corpo.
+ */
+export function recordGenericStudyAnswerFromPanel(
+  editionDir: string,
+  body: unknown,
+  now?: string,
+): { status: number; body: Record<string, unknown> } {
+  const b = (body ?? {}) as { url?: unknown; resposta?: unknown };
+  if (typeof b.url !== "string" || b.url === "") {
+    return { status: 400, body: { ok: false, error: "campo `url` obrigatório" } };
+  }
+  if (b.resposta !== "sim" && b.resposta !== "nao") {
+    return { status: 400, body: { ok: false, error: "campo `resposta` precisa ser \"sim\" ou \"nao\"" } };
+  }
+  if (!readShadowItems(editionDir).some((it) => it.url === b.url)) {
+    return { status: 404, body: { ok: false, error: "item não está entre as perguntas 🔎 desta edição" } };
+  }
+  try {
+    recordGenericStudyFeedback({ editionDir, answersByUrl: new Map([[b.url, b.resposta]]), now });
+  } catch (err) {
+    return { status: 500, body: { ok: false, error: (err as Error).message } };
+  }
+  return { status: 200, body: { ok: true, genericStudy: buildGenericStudyQuestions(editionDir) } };
 }
 
 /** Lê um `.md` fail-soft — mesma disciplina de `readJsonFile` acima (#6449
@@ -429,6 +497,7 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
       lintSocial: { ok: true, checks: [], skipped: [] },
       checklist: [],
       decision: null,
+      genericStudy: [],
     };
   }
 
@@ -457,5 +526,6 @@ export function buildGateSummary(rootDir: string, aammdd: string): GateSummary {
     lintSocial,
     checklist,
     decision: readStage4Decision(editionDir),
+    genericStudy: buildGenericStudyQuestions(editionDir),
   };
 }
