@@ -383,7 +383,7 @@ describe("invariante carousel-text-overflow cobre o `## um` só quando ligado (#
     assert.deepEqual(checkCarouselTextOverflow(overflowingEdition(), OFF), []);
   });
 
-  it("default (config do repo, ligado às 08:00 desde a #9568 Stage 5) → mesmo resultado que ligado", () => {
+  it("default (config do repo, ligado às 07:45 desde 05/10/2026) → mesmo resultado que ligado", () => {
     const viaRepo = checkCarouselTextOverflow(overflowingEdition()).map((v) => v.rule).sort();
     const viaOn = checkCarouselTextOverflow(overflowingEdition(), ON).map((v) => v.rule).sort();
     assert.deepEqual(viaRepo, viaOn);

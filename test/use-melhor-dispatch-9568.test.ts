@@ -3,7 +3,7 @@
  *
  * Dispatch do 4º post social (item USE MELHOR, `## um`). Cobre:
  *   - horário: `computeScheduledAt({ destaque: "um" })` → `use_melhor_time`
- *     (08:00 BRT no config do repo), mesmo cálculo de data dos destaques;
+ *     (07:45 BRT no config do repo), mesmo cálculo de data dos destaques;
  *   - contrato com o Worker `linkedin-cron`: `destaque` emitido aceito pelo
  *     regex de POST /queue (sem isso, 400 em LinkedIn/Instagram/Threads);
  *   - UTM: `utm_content=usemelhor` por cima do UTM do canal, só em link do projeto;

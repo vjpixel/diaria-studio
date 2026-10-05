@@ -90,7 +90,7 @@ export function resolveRetrospectivaScheduledAts(
  * `compute-social-schedule.ts`), com as 5 redes ao mesmo tempo, sem
  * escalonar. Default quando o config não traz o slot.
  */
-export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "10:00", d2: "12:30", d3: "17:30" };
+export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "09:45", d2: "12:15", d3: "17:15" };
 
 export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
 
