@@ -99,8 +99,10 @@
  *   --send-now         #4347 G7/D7: dispara a campanha IMEDIATAMENTE (POST
  *                      /emailCampaigns/{id}/sendNow) — sem agendamento, sem
  *                      trava de janela. Mesmo guard É IA? do --schedule.
- *                      GET-verify pós-disparo (com retry+backoff curto,
- *                      #4718 item 1 — "queued" costuma resolver em segundos)
+ *                      GET-verify pós-disparo (com retry+backoff, #4718
+ *                      item 1; #9634: "queued" E "draft" logo após o POST
+ *                      aceito seguem sendo reconsultados por até ~15 min —
+ *                      a Brevo leva até ~14 min pra sair de "draft")
  *                      confirma status terminal ("sent"/"inProcess") antes
  *                      de marcar sucesso — nunca confia só no 2xx do POST.
  *                      Idempotente por estado AO VIVO da Brevo (#4718 —
@@ -1280,6 +1282,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         // com retry+backoff curto (pollTerminalSendStatus) em vez de um único
         // GET imediato — "queued" costuma resolver em segundos, e um GET
         // cedo demais era o próprio motivo do falso alarme reportado.
+        // #9634: "draft" pós-POST aceito também é reconsultado (janela default
+        // de ~15 min) — era a causa de ~59% de "disparo INCERTO" falsos.
         const verified = await pollTerminalSendStatus(apiKey, c.campaignId);
         applySendNowVerifyResults(
           [{ status: "fulfilled", value: verified }],

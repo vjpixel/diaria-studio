@@ -1133,45 +1133,89 @@ export function describeUncertainSendStatus(status: string): string {
 }
 
 /**
- * #4718 (item 1 da issue) — GET-verify pós-`sendNow` com retry curto e
- * backoff fixo (default: 3 tentativas, 5s entre elas) antes de declarar o
- * disparo incerto. `"queued"` costuma resolver pra `"sent"`/`"inProcess"` em
- * segundos — um único GET imediatamente após o POST (comportamento anterior
- * a este fix) capturava a campanha nesse limbo assíncrono e produzia um
- * falso "disparo não confirmado" mesmo quando o disparo funcionou desde o
- * início (confirmado ao vivo: campanha #121 — GET imediato leu "queued",
- * consulta minutos depois já mostrava "sent", 88 entregues, 0 bounce).
+ * #4718 (item 1 da issue) — GET-verify pós-`sendNow` com retry e backoff
+ * antes de declarar o disparo incerto. `"queued"` costuma resolver pra
+ * `"sent"`/`"inProcess"` em segundos — um único GET imediatamente após o POST
+ * (comportamento anterior a este fix) capturava a campanha nesse limbo
+ * assíncrono e produzia um falso "disparo não confirmado" mesmo quando o
+ * disparo funcionou desde o início (confirmado ao vivo: campanha #121 — GET
+ * imediato leu "queued", consulta minutos depois já mostrava "sent", 88
+ * entregues, 0 bounce).
  *
- * Só insiste enquanto o status for especificamente `"queued"` — outros
- * status não-terminais (`"draft"`, `"in_review"`, etc.) não têm motivo pra
- * virar terminal sozinhos com a passagem do tempo, então retorna já na 1ª
- * leitura sem gastar retries à toa. `getCampaignFn`/`sleepFn` injetáveis pra
- * testabilidade sem rede/tempo real (mesmo padrão de `_sleep` no resto deste
- * arquivo).
+ * #9634 — `"draft"` logo depois de um POST `sendNow` ACEITO (2xx) também é
+ * "em processamento", não "nada aconteceu": medido em 05/10/2026, 53 rodadas
+ * do `clarice-novos` (~59%) gravaram "disparo INCERTO (status=draft)" e as 99
+ * campanhas `grupo:novos-*` estavam `sent` na Brevo, com `sentDate` até
+ * ~14 min depois do `createdAt`. A versão anterior devolvia `"draft"` já na
+ * 1ª leitura (só insistia em `"queued"`) e a janela total era de ~10s. Agora
+ * `"draft"` e `"queued"` (`SEND_NOW_IN_FLIGHT_STATUSES`) continuam sendo
+ * reconsultados, com backoff exponencial (5s, 10s, 20s, ... teto
+ * `maxDelayMs`, default 120s — a família `/v3/emailCampaigns*` da Brevo tem
+ * só 100 req/HORA por conta, #5215; a janela default custa ~12 GETs) até
+ * `maxWaitMs` (default 15 min) de espera acumulada. Esgotada a janela,
+ * devolve o último status lido — o chamador continua tratando como INCERTO
+ * (exit 2), nunca como enviado: esta função só ESPERA mais, não muda o
+ * critério de sucesso (`isTerminalSendStatus`). Não emite POST nenhum — o
+ * guard de reenvio (`checkSendNowGuard` em `clarice-schedule-group.ts`)
+ * segue intocado.
+ *
+ * Outros status não-terminais (`"in_review"`, etc.) não têm motivo pra virar
+ * terminal sozinhos com a passagem do tempo, então retornam já na 1ª leitura
+ * sem gastar retries à toa.
+ *
+ * Erro num GET de RETENTATIVA (rede, 5xx — o 429 já tem retry próprio em
+ * `brevoGetCampaign`) não aborta a espera: a próxima leitura é tentada
+ * normalmente, e se a janela acabar sem leitura nova bem-sucedida, devolve o
+ * último status lido (não-terminal → incerto). Erro na 1ª leitura propaga
+ * (comportamento anterior — sem nenhuma leitura não há o que devolver).
+ *
+ * `attempts` (opcional) limita também o número de GETs — mantido pra
+ * compatibilidade com os testes do #4718. `getCampaignFn`/`sleepFn`
+ * injetáveis pra testabilidade sem rede/tempo real (mesmo padrão de `_sleep`
+ * no resto deste arquivo).
  */
+export const SEND_NOW_IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["queued", "draft"]);
+
 export async function pollTerminalSendStatus(
   apiKey: string,
   campaignId: number,
   opts: {
     attempts?: number;
     delayMs?: number;
+    maxDelayMs?: number;
+    maxWaitMs?: number;
     getCampaignFn?: (apiKey: string, campaignId: number) => Promise<{ status: string; scheduledAt?: string | null }>;
     sleepFn?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{ status: string; scheduledAt?: string | null }> {
-  const attempts = opts.attempts ?? 3;
-  const delayMs = opts.delayMs ?? 5000;
+  const maxAttempts = opts.attempts ?? Number.POSITIVE_INFINITY;
+  const maxDelayMs = opts.maxDelayMs ?? 120_000;
+  const maxWaitMs = opts.maxWaitMs ?? 15 * 60_000;
   const getCampaignFn = opts.getCampaignFn ?? brevoGetCampaign;
   const sleepFn = opts.sleepFn ?? _defaultSleep;
 
-  let last: { status: string; scheduledAt?: string | null } = { status: "unknown" };
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    last = await getCampaignFn(apiKey, campaignId);
+  let delay = opts.delayMs ?? 5000;
+  let waited = 0;
+  // 1ª leitura: erro propaga (sem leitura nenhuma, não há status a devolver).
+  let last: { status: string; scheduledAt?: string | null } = await getCampaignFn(apiKey, campaignId);
+  for (let attempt = 1; ; attempt++) {
     if (isTerminalSendStatus(last.status)) return last;
-    if (last.status !== "queued") return last;
-    if (attempt < attempts) await sleepFn(delayMs);
+    if (!SEND_NOW_IN_FLIGHT_STATUSES.has(last.status)) return last;
+    if (attempt >= maxAttempts || waited + delay > maxWaitMs) return last;
+    await sleepFn(delay);
+    waited += delay;
+    delay = Math.min(delay * 2, maxDelayMs);
+    try {
+      last = await getCampaignFn(apiKey, campaignId);
+    } catch (err) {
+      // Retentativa falhou — mantém o último status lido e segue esperando
+      // (a janela ainda limita o total). Nunca vira "sucesso".
+      console.error(
+        `⚠ GET-verify pós-sendNow (campanha #${campaignId}): retentativa falhou (${String(err)}) — ` +
+          `mantendo último status lido ("${last.status}") e seguindo a espera.`,
+      );
+    }
   }
-  return last;
 }
 
 // ---------------------------------------------------------------------------
