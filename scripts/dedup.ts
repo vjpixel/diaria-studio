@@ -49,6 +49,9 @@ import {
   extractPastTitles,
   extractPastThemeEntities,
   matchesRecentTheme,
+  extractPastThemeFacts,
+  matchesRecentThemeFact,
+  extractPastDestaqueTitles,
   readReviewedDestaqueUrls,
   readNewsletterHtmlDestaqueUrls,
   recentEditionDirs,
@@ -186,6 +189,10 @@ export function dedup(
   // edição corrente. Habilita o sinal (C) do event-dedup (mesma empresa + 1
   // conceito forte) só para os títulos a ≤2 dias úteis. Ausente/vazio → Pass-1f segue só com A1/A2/B.
   pastEventDistanceDays: Map<string, number> = new Map(),
+  // #9646: entidade de tema → texto do FATO da edição que a gerou (manchete +
+  // D1). Presente → Pass-1d exige entidade (palavra inteira) E ≥1 termo em
+  // comum com esse fato. Vazio (callers legados) → regra antiga só-entidade.
+  pastThemeFacts: Map<string, string> = new Map(),
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -402,15 +409,34 @@ export function dedup(
   // 260728: artigo ZDNet (summary vazio) foi descartado porque a entidade
   // "reddit" — citada de passagem no corpo — casou com o destaque "Reddit e
   // jornais cogitam banir o Google" de outra edição, assuntos sem relação.
+  //
+  // #9646: com `pastThemeFacts`, só a entidade não basta — precisa aparecer
+  // como palavra inteira E dividir ≥1 termo com o fato da edição que a gerou.
+  // Desdobramento novo da mesma saga (Guardian "Senate inquiry" citando
+  // Amodei, 260928) passa; repetição do mesmo fato (Gemini 4 Argon) segue
+  // barrada.
   const afterPass1d: Article[] = [];
   let pass1dEditorSubmittedSpared = 0;
-  if (pastThemeEntities.size > 0) {
+  const useThemeFacts = pastThemeFacts.size > 0;
+  if (useThemeFacts || pastThemeEntities.size > 0) {
     for (const art of afterPass1c) {
-      const matchedEntity = matchesRecentTheme(
-        art.title ?? "",
-        String(art.summary ?? ""),
-        pastThemeEntities,
-      );
+      let matchedEntity: string | null;
+      let factNote = "";
+      if (useThemeFacts) {
+        const m = matchesRecentThemeFact(
+          art.title ?? "",
+          String(art.summary ?? ""),
+          pastThemeFacts,
+        );
+        matchedEntity = m?.entity ?? null;
+        if (m) factNote = ` + fato em comum [${m.sharedTerms.slice(0, 5).join(", ")}] (#9646)`;
+      } else {
+        matchedEntity = matchesRecentTheme(
+          art.title ?? "",
+          String(art.summary ?? ""),
+          pastThemeEntities,
+        );
+      }
       if (matchedEntity) {
         if (art.flag === "editor_submitted") {
           afterPass1d.push({ ...art, theme_entity_flagged: matchedEntity });
@@ -420,7 +446,7 @@ export function dedup(
         pushRemoved(
           removed,
           art,
-          `theme-entity match: "${matchedEntity}" apareceu em highlight de edição recente (#1475)`,
+          `theme-entity match: "${matchedEntity}" apareceu em highlight de edição recente (#1475)${factNote}`,
         );
       } else {
         afterPass1d.push(art);
@@ -856,6 +882,14 @@ async function main() {
       `dedup: ${pastThemes.size} entidade(s) de tema carregadas (#1475 theme-dedup)`,
     );
   }
+  // #9646: fato (manchete + D1) de cada entidade — Pass-1d exige termo em comum.
+  // Janela de destaques folgada (2x) pra cobrir edição sem pasta local na
+  // contagem de `recentEditionDirs`; sem D1 local, o fato é só a manchete.
+  const pastThemeFacts = extractPastThemeFacts(
+    pastMd,
+    window,
+    extractPastDestaqueTitles(editionsDir, window * 2, currentAammdd),
+  );
 
   // #1492: extrair highlights (título + URL) das edições recentes para
   // entity-based dedup. Detecta cobertura duplicada do mesmo evento quando
@@ -913,6 +947,7 @@ async function main() {
     pastHighlightsData,
     editorRejected,
     pastEventDistanceDays,
+    pastThemeFacts,
   );
 
   console.error(

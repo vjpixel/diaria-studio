@@ -212,6 +212,131 @@ export function matchesRecentTheme(
 }
 
 // ---------------------------------------------------------------------------
+// #9646: theme-entity exige FATO em comum, não só a entidade
+//
+// `matchesRecentTheme` (acima) descarta o candidato que só CITA a entidade —
+// e por substring. Medição da #9646 (6 edições com tmp-dedup-output,
+// 260827–261005): 99 itens derrubados, 75 pela "entidade" `agente` (1ª
+// palavra da manchete "Agente rebelde invade sistema de governo") — quase
+// todos sem relação com aquele fato —, e o desdobramento novo da saga Amodei
+// (Guardian "Senate inquiry", 260928) que o editor recolocou à mão.
+// A regra nova exige (a) a entidade como PALAVRA inteira e (b) ao menos 1
+// termo em comum com o FATO da edição que gerou a entidade (manchete + título
+// e summary do D1 em `01-approved.json`). Repetição real (Gemini 4 Argon em
+// 261002/261005 vs D1 de 261001) segue barrada: compartilha "gemini", "4"…
+// ---------------------------------------------------------------------------
+
+const THEME_FACT_STOPWORDS = new Set([
+  // PT
+  "de","da","do","das","dos","em","no","na","nos","nas","um","uma","uns","umas",
+  "para","pra","por","com","que","se","ao","aos","os","as","é","são","foi","ser",
+  "seu","sua","seus","suas","mais","como","sobre","após","entre","sem","mas",
+  "não","nao","já","pode","podem","ter","tem","têm","isso","esse","essa","este",
+  "esta","ele","ela","eles","elas","quem","onde","quando","qual","the","ia","ai",
+  "diz","dizem","novo","nova","novos","novas",
+  // EN
+  "of","and","to","in","for","on","with","an","is","are","by","at","from","its",
+  "it","this","that","after","has","have","be","was","were","will","our","out",
+  "new","can","not","but","you","your","more","into","over","than","their","they",
+  "about","how","what","why","who","now",
+]);
+
+/** #9646: tokens de conteúdo (≥3 letras, ou número de qualquer tamanho). */
+export function themeFactTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  const normalized = text.toLowerCase().replace(/&#x27;|&#39;/g, "'");
+  for (const w of normalized.match(/[\p{L}\p{N}]+/gu) ?? []) {
+    if (THEME_FACT_STOPWORDS.has(w)) continue;
+    if (w.length >= 3 || /^\p{N}+$/u.test(w)) out.add(w);
+  }
+  return out;
+}
+
+/** Palavra inteira, aceitando plural regular (`agente` ↔ `agentes`). */
+function containsWholeWord(hay: string, word: string): boolean {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?:e?s)?(?![\\p{L}\\p{N}])`, "u").test(hay);
+}
+
+/** Destaque passado (subset de `PastDestaqueTitle`) usado como fato do tema. */
+export interface ThemeFactDestaque {
+  aammdd: string;
+  title: string;
+  summary?: string;
+}
+
+/**
+ * #9646: entidade de tema (lowercased) → texto do FATO das edições que a
+ * geraram: manchete da edição + título/summary do D1 (`highlights[0]` do
+ * `01-approved.json`, quando `destaques` traz a edição). Mesma janela e mesma
+ * extração de entidades de `extractPastThemeEntities`.
+ */
+export function extractPastThemeFacts(
+  md: string,
+  window: number,
+  destaques: ThemeFactDestaque[] = [],
+): Map<string, string> {
+  const d1ByEdition = new Map<string, ThemeFactDestaque>();
+  for (const d of destaques) {
+    if (!d1ByEdition.has(d.aammdd)) d1ByEdition.set(d.aammdd, d); // 1º = D1
+  }
+  const facts = new Map<string, string>();
+  const sectionRe = /^## \d{4}-\d{2}-\d{2}/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const editionSections = parts.filter((s) => sectionRe.test(s)).slice(0, window);
+  for (const section of editionSections) {
+    const themeStart = section.indexOf("Temas cobertos:");
+    if (themeStart < 0) continue;
+    const head = section.match(/^## \d{2}(\d{2})-(\d{2})-(\d{2})[^"\n]*(?:"([^"]+)")?/m);
+    const aammdd = head ? `${head[1]}${head[2]}${head[3]}` : "";
+    const d1 = d1ByEdition.get(aammdd);
+    const factText = [head?.[4] ?? "", d1?.title ?? "", d1?.summary ?? ""].join(" ").trim();
+    for (const line of section.slice(themeStart).split("\n")) {
+      const m = line.match(/^-\s+(.+)/);
+      if (!m) continue;
+      const entity = m[1].trim().toLowerCase();
+      const prev = facts.get(entity);
+      facts.set(entity, prev ? `${prev} ${factText}` : factText);
+    }
+  }
+  return facts;
+}
+
+export interface ThemeFactMatch {
+  entity: string;
+  /** Termos do candidato que também estão no fato passado (além da entidade). */
+  sharedTerms: string[];
+}
+
+/**
+ * #9646: como `matchesRecentTheme`, mas só casa quando o candidato (a) tem a
+ * entidade como palavra inteira (plural regular incluso) e (b) divide ≥1
+ * termo de conteúdo com o fato da edição que gerou a entidade. Mesmo filtro
+ * de entidade curta/genérica.
+ */
+export function matchesRecentThemeFact(
+  title: string,
+  summary: string,
+  pastFacts: Map<string, string>,
+): ThemeFactMatch | null {
+  const hay = `${title} ${summary}`.toLowerCase();
+  let candTokens: Set<string> | null = null;
+  for (const [entity, factText] of pastFacts) {
+    if (entity.length < 5) continue;
+    if (GENERIC_THEME_WORDS.has(entity)) continue;
+    if (!containsWholeWord(hay, entity)) continue;
+    candTokens ??= themeFactTokens(hay);
+    const factTokens = themeFactTokens(factText);
+    const entityForms = new Set([entity, `${entity}s`, `${entity}es`]);
+    const shared = [...candTokens].filter(
+      (t) => factTokens.has(t) && !entityForms.has(t),
+    );
+    if (shared.length > 0) return { entity, sharedTerms: shared };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // #897: Subject-level dedup contra past editions
 //
 // Além de URL match e headline match, comparar título do artigo candidato
