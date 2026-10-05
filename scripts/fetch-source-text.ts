@@ -42,7 +42,8 @@ function safeCodePoint(n: number): string {
 /**
  * #9585: o texto de `<ol><li>` não traz o número (o browser desenha) — prefixa
  * "N. " pra os passos sobreviverem ao strip de tags. Pilha por `<ol>`/`</ol>`
- * (listas aninhadas contam cada nível à parte) e respeita `start=` e `value=`.
+ * (só o nível 1 é numerado; sub-listas viram "•", pra não se misturarem aos
+ * passos) e respeita `start=` e `value=`.
  */
 function numberOrderedLists(html: string): string {
   const counters: number[] = [];
@@ -52,6 +53,7 @@ function numberOrderedLists(html: string): string {
       else {
         const start = attrs.match(/\bstart\s*=\s*["']?(-?\d+)/i);
         counters.push(start ? Number(start[1]) - 1 : 0);
+        return counters.length > 1 ? `<br>${m}` : m;
       }
       return m;
     }
@@ -59,7 +61,8 @@ function numberOrderedLists(html: string): string {
     const value = attrs.match(/\bvalue\s*=\s*["']?(-?\d+)/i);
     const n = value ? Number(value[1]) : counters[counters.length - 1] + 1;
     counters[counters.length - 1] = n;
-    return `${m}${n}. `;
+    // Sub-lista: marcador "•" (nunca casa STEP_LINE) pra não virar passo de nível 1.
+    return counters.length > 1 ? `${m}• ` : `${m}${n}. `;
   });
 }
 

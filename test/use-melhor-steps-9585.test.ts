@@ -80,12 +80,9 @@ describe("runSelectionWithSteps", () => {
 });
 
 describe("achados do review #9602", () => {
-  it("<ol> aninhado: cada nível numera à parte", () => {
-    const t = htmlToText("<ol><li>Abra o app<ol><li>sub um</li><li>sub dois</li></ol></li><li>Salve tudo</li></ol>");
-    assert.match(t, /1\. Abra o app/);
-    assert.match(t, /1\. sub um/);
-    assert.match(t, /2\. sub dois/);
-    assert.match(t, /2\. Salve tudo/);
+  it("<ol> aninhado: sub-lista não vira passo nem consome o número do pai", () => {
+    const t = htmlToText("<ol><li>Abra o app<ol><li>sub um</li><li>sub dois</li></ol></li><li>Salve tudo</li><li>Envie o link</li></ol>");
+    assert.deepEqual(extractUseMelhorSteps(t), ["Abra o app", "Salve tudo", "Envie o link"]);
   });
   it("<ol start> e <li value> respeitados", () => {
     assert.match(htmlToText('<ol start="3"><li>Terceiro</li><li>Quarto</li></ol>'), /3\. Terceiro[\s\S]*4\. Quarto/);
@@ -93,5 +90,29 @@ describe("achados do review #9602", () => {
   });
   it("passo curto não é descartado nem trunca a lista", () => {
     assert.deepEqual(extractUseMelhorSteps("1. Abra o app agora\n2. Salve\n3. Envie o link"), ["Abra o app agora", "Salve", "Envie o link"]);
+  });
+});
+
+describe("preserved/forceReselect (#9610)", () => {
+  const body = html("<p>Passo 1: Crie o formulário</p><p>Passo 2: Conecte ao GPT</p>");
+  const reviewed = "**🛠️ USE MELHOR**\n\n**[T](https://example.com/tut)**\nDescrição (5 min)\n";
+  it("item preservado: não rebusca a fonte", async () => {
+    const d = edition();
+    await runSelectionWithSteps(d, ON, { fetchImpl: body as never });
+    writeFileSync(join(d, "02-reviewed.md"), reviewed);
+    let calls = 0;
+    const spy = (async () => { calls++; return body(); }) as never;
+    const r = await runSelectionWithSteps(d, ON, { useReviewed: true, fetchImpl: spy });
+    assert.equal(r.preserved, true);
+    assert.equal(calls, 0);
+  });
+  it("forceReselect rebusca", async () => {
+    const d = edition();
+    await runSelectionWithSteps(d, ON, { fetchImpl: body as never });
+    writeFileSync(join(d, "02-reviewed.md"), reviewed);
+    let calls = 0;
+    const spy = (async () => { calls++; return body(); }) as never;
+    await runSelectionWithSteps(d, ON, { useReviewed: true, forceReselect: true, fetchImpl: spy });
+    assert.equal(calls, 1);
   });
 });

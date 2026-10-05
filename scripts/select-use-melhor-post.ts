@@ -131,7 +131,7 @@ export async function runSelectionWithSteps(
   opts: { useReviewed?: boolean; forceReselect?: boolean; now?: Date; fetchImpl?: typeof fetch } = {},
 ): Promise<{ state: UseMelhorPostState; written: string | null; preserved?: boolean }> {
   const res = runSelection(editionDir, config, opts);
-  // `preserved` (#9610): item já enriquecido numa rodada anterior — não rebusca.
+  // `preserved` (#9610): não rebusca, mesmo sem `steps` — o `## um` foi escrito pro estado preservado.
   if (!res.state.enabled || !res.state.item || res.preserved) return res;
   try {
     const r = await fetchSourceText(res.state.item.url, opts.fetchImpl ?? fetch);
