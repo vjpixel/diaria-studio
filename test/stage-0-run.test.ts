@@ -20,6 +20,7 @@ import {
   isoDateOnly,
   subtractDaysIso,
   defaultWindowDays,
+  captureSinceHoursForEdition,
   parseStepJson,
   Stage0Abort,
   type Stage0RunDeps,
@@ -149,6 +150,27 @@ describe("defaultWindowDays", () => {
     assert.equal(defaultWindowDays(new Date("2026-04-21T00:00:00Z")), 4); // tue
     assert.equal(defaultWindowDays(new Date("2026-04-25T00:00:00Z")), 4); // sat
     assert.equal(defaultWindowDays(new Date("2026-04-26T00:00:00Z")), 4); // sun
+  });
+});
+
+describe("captureSinceHoursForEdition (#9584)", () => {
+  it("edição de segunda/terça alarga o since_hours até a janela de pesquisa (4 dias → 96h)", () => {
+    assert.equal(captureSinceHoursForEdition("2026-10-05", 4, 48), 96); // seg (edição 261005, caso da issue)
+    assert.equal(captureSinceHoursForEdition("2026-10-06", 4, 48), 96); // ter
+  });
+  it("edição de quarta a sexta mantém o since_hours configurado (48h)", () => {
+    assert.equal(captureSinceHoursForEdition("2026-10-07", 3, 48), 48); // qua
+    assert.equal(captureSinceHoursForEdition("2026-10-08", 3, 48), 48); // qui
+    assert.equal(captureSinceHoursForEdition("2026-10-09", 3, 48), 48); // sex
+    // Mesmo que window_days venha 4 (override/fallback), quarta-sexta não alarga.
+    assert.equal(captureSinceHoursForEdition("2026-10-07", 4, 48), 48);
+  });
+  it("nunca encolhe: since_hours configurado maior que a janela continua valendo", () => {
+    assert.equal(captureSinceHoursForEdition("2026-10-05", 4, 168), 168);
+  });
+  it("window_days inválido cai no since_hours configurado", () => {
+    assert.equal(captureSinceHoursForEdition("2026-10-05", 0, 48), 48);
+    assert.equal(captureSinceHoursForEdition("2026-10-05", Number.NaN, 48), 48);
   });
 });
 
@@ -821,6 +843,77 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(overrideCall, "chamada com since-hours do override (168) existe");
     assert.ok(defaultCall!.args[defaultCall!.args.indexOf("--senders") + 1].includes("b@example.com"));
     assert.equal(overrideCall!.args[overrideCall!.args.indexOf("--senders") + 1], "email@newsletter.7min.ai");
+  });
+
+  it("#9584 — edição de segunda (261005, captura no domingo) busca os senders default com 96h, override por sender preservado", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 1, threads_written: 1, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({
+      exec,
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({
+            newsletter_auto_capture: {
+              enabled: true,
+              senders: ["email@newsletter.7min.ai", "dan@tldrnewsletter.com"],
+              since_hours: 48,
+              since_hours_by_sender: { "email@newsletter.7min.ai": 168 },
+            },
+          });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "261005", "--phase", "continue", "--now", "2026-10-04T21:00:00Z", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    const hoursOf = (c: { args: string[] }) => c.args[c.args.indexOf("--since-hours") + 1];
+    const sendersOf = (c: { args: string[] }) => c.args[c.args.indexOf("--senders") + 1];
+    const defaultCall = fetchCalls.find((c) => sendersOf(c).includes("dan@tldrnewsletter.com"));
+    const overrideCall = fetchCalls.find((c) => sendersOf(c) === "email@newsletter.7min.ai");
+    assert.equal(hoursOf(defaultCall!), "96", "segunda: janela de 4 dias → 96h, não o 48h fixo");
+    assert.equal(hoursOf(overrideCall!), "168", "override por sender segue valendo");
+  });
+
+  it("#9584 — edição de quinta mantém since_hours 48h (comportamento inalterado)", async () => {
+    const { exec, calls } = makeFakeExec(
+      happyExecHandlers({
+        "fetch-newsletter-threads.ts": () => ok(JSON.stringify({ threads_found: 1, threads_written: 1, skipped_no_body: 0 })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({
+      exec,
+      execAsync,
+      existsSync: () => true,
+      readFile: (p) => {
+        if (p.endsWith("platform.config.json")) {
+          return JSON.stringify({ newsletter_auto_capture: { enabled: true, senders: ["dan@tldrnewsletter.com"], since_hours: 48 } });
+        }
+        return "[]";
+      },
+    });
+
+    const result = await runStage0(
+      ["--edition", "261008", "--phase", "continue", "--now", "2026-10-07T21:00:00Z", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const fetchCalls = calls.filter((c) => c.script.includes("fetch-newsletter-threads"));
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0].args[fetchCalls[0].args.indexOf("--since-hours") + 1], "48");
   });
 
   it("#7662 — since_hours_by_sender com sender ausente de senders[] gera warn via log-event, nunca falha em silêncio", async () => {
