@@ -32,6 +32,7 @@
  */
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { KitApiError } from "./kit-client.ts";
 
 /** Uma var `KIT_*_FIELD` declarada num worker. */
 export interface WorkerKitFieldVar {
@@ -172,21 +173,51 @@ export interface KitWorkerFieldsAlarmDeps {
   log: (msg: string) => void;
   /**
    * Opcional (review #9665) — erro de CONFIGURAÇÃO que desarma o guard de
-   * forma permanente (ex.: `KIT_API_KEY` ausente no ambiente da task).
+   * forma permanente (ex.: `KIT_API_KEY` ausente no ambiente da task). A key
+   * presente mas rejeitada (401/403) é detectada depois, na leitura (#9670).
    * Devolve o motivo, ou `null` se a config está ok. Distinto de falha de
    * rede: blip transitório continua só AVISO (não abre issue a cada 4h);
    * config ausente nunca se resolve sozinha, então vira alarme.
    */
   preflight?: () => string | null;
-  /** Alarme do guard DESARMADO por config (só chamado se `preflight` acusar). */
+  /** Alarme do guard DESARMADO por config (`preflight` acusou, ou o Kit devolveu 401/403). */
   alarmDisarmed?: (reason: string) => Promise<void>;
 }
 
 /**
+ * Puro (#9670) — erro de leitura do Kit que é de CONFIGURAÇÃO, não blip:
+ * `KitApiError` 401/403 = `KIT_API_KEY` presente mas revogada/inválida/sem
+ * permissão. Não se resolve sozinho (igual à key ausente do `preflight`), então
+ * desarma o guard e alarma. Rede, 5xx e 429 seguem transitórios (só AVISO).
+ * Devolve o motivo, ou `null` se o erro é transitório.
+ */
+export function kitReadConfigError(err: unknown): string | null {
+  if (err instanceof KitApiError && (err.status === 401 || err.status === 403)) {
+    return `KIT_API_KEY rejeitada pelo Kit (HTTP ${err.status} em ${err.path}) — key revogada, inválida ou sem permissão`;
+  }
+  return null;
+}
+
+async function reportDisarmed(deps: KitWorkerFieldsAlarmDeps, reason: string): Promise<null> {
+  deps.log(`ERRO: guard de custom fields do Kit (#9663) DESARMADO por config — ${reason}`);
+  if (deps.isDryRun) {
+    deps.log("--dry-run: NÃO registra alarme.");
+  } else if (deps.alarmDisarmed) {
+    try {
+      await deps.alarmDisarmed(reason);
+    } catch (e) {
+      deps.log(`AVISO: falha ao registrar alarme de guard desarmado: ${(e as Error).message}`);
+    }
+  }
+  return null;
+}
+
+/**
  * Roda o guard e alarma se houver field ausente. Retorna o número de fields
- * ausentes, ou `null` se a checagem não pôde rodar — leitura do Kit falhou
- * (AVISO, sem alarme: pode ser blip) ou config ausente via `preflight` (ERRO +
- * `alarmDisarmed`: não se resolve sozinha). Nunca "tudo ok".
+ * ausentes, ou `null` se a checagem não pôde rodar — leitura do Kit falhou por
+ * rede/5xx/429 (AVISO, sem alarme: pode ser blip) ou por config: ausente via
+ * `preflight`, ou key rejeitada (401/403, #9670) — ERRO + `alarmDisarmed`, não
+ * se resolve sozinha. Nunca "tudo ok".
  *
  * Nunca lança: chamado de dentro do `check-brevo-diaria-guardrail.ts`, cujos
  * outros alarmes (conta suspensa, seed) não podem ser derrubados por uma falha
@@ -194,23 +225,13 @@ export interface KitWorkerFieldsAlarmDeps {
  */
 export async function runKitWorkerFieldsGuard(deps: KitWorkerFieldsAlarmDeps): Promise<number | null> {
   const configError = deps.preflight?.() ?? null;
-  if (configError) {
-    deps.log(`ERRO: guard de custom fields do Kit (#9663) DESARMADO por config — ${configError}`);
-    if (deps.isDryRun) {
-      deps.log("--dry-run: NÃO registra alarme.");
-    } else if (deps.alarmDisarmed) {
-      try {
-        await deps.alarmDisarmed(configError);
-      } catch (e) {
-        deps.log(`AVISO: falha ao registrar alarme de guard desarmado: ${(e as Error).message}`);
-      }
-    }
-    return null;
-  }
+  if (configError) return reportDisarmed(deps, configError);
   let result: KitWorkerFieldsCheckResult;
   try {
     result = await deps.check();
   } catch (e) {
+    const readConfigError = kitReadConfigError(e);
+    if (readConfigError) return reportDisarmed(deps, readConfigError);
     deps.log(`AVISO: guard de custom fields do Kit (#9663) NÃO rodou — ${(e as Error).message}`);
     return null;
   }
