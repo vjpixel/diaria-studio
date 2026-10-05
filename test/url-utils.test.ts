@@ -395,3 +395,85 @@ describe("extractUrls (#626)", () => {
     );
   });
 });
+
+import { cleanUrlTail, cutAtUnbalancedClose } from "../scripts/lib/url-utils.ts";
+
+// #9645: URLs REAIS de data/editions/2610/261005/_internal/captured-newsletter-articles.json
+// (cauda de markdown em negrito `)**` + variantes) e o caso de parênteses balanceados.
+describe("cleanUrlTail (#9645)", () => {
+  const REAL_261005: Array<[string, string]> = [
+    ["https://runway.com/news/research/introducing-solaris)**", "https://runway.com/news/research/introducing-solaris"],
+    [
+      "https://www.meta.com/muse-charm?srsltid=AU7gw4VPPUk5MNqM3QXE3lXz8za9BZtY4m1WZxKmCaPrSA7iYHUgr7xi)**",
+      "https://www.meta.com/muse-charm?srsltid=AU7gw4VPPUk5MNqM3QXE3lXz8za9BZtY4m1WZxKmCaPrSA7iYHUgr7xi",
+    ],
+    ["https://sudo.music/)**", "https://sudo.music/"],
+    [
+      "https://www.scientificamerican.com/article/the-secret-cold-war-history-of-tetris/)**",
+      "https://www.scientificamerican.com/article/the-secret-cold-war-history-of-tetris/",
+    ],
+    [
+      "https://www.planet.com/pulse/celebrating-one-year-of-tanager-1/)**[__1__",
+      "https://www.planet.com/pulse/celebrating-one-year-of-tanager-1/",
+    ],
+    [
+      "https://www.planet.com/pulse/celebrating-one-year-of-tanager-1/)**_,%E2%80%9D_",
+      "https://www.planet.com/pulse/celebrating-one-year-of-tanager-1/",
+    ],
+    [
+      "https://science.nasa.gov/earth/explore/earth-indicators/methane/)**[__x__",
+      "https://science.nasa.gov/earth/explore/earth-indicators/methane/",
+    ],
+  ];
+  for (const [dirty, clean] of REAL_261005) {
+    it(`limpa ${dirty}`, () => {
+      assert.equal(cleanUrlTail(dirty), clean);
+      // idempotente
+      assert.equal(cleanUrlTail(clean), clean);
+    });
+  }
+
+  it("outras caudas medidas em 260915→261005", () => {
+    assert.equal(cleanUrlTail("https://github.com/google-research/rrsi)****"), "https://github.com/google-research/rrsi");
+    assert.equal(cleanUrlTail("https://pxllnk.co/mndv9i)**:"), "https://pxllnk.co/mndv9i");
+    assert.equal(cleanUrlTail("https://pxllnk.co/cu1ghtj)Approved"), "https://pxllnk.co/cu1ghtj");
+    assert.equal(cleanUrlTail("https://www.meco.app/get/4i7l)(free"), "https://www.meco.app/get/4i7l");
+    assert.equal(
+      cleanUrlTail("https://store.google.com/us/product/google_home_speaker)_**:**=="),
+      "https://store.google.com/us/product/google_home_speaker",
+    );
+    assert.equal(cleanUrlTail("https://www.passionfroot.me/heyronir)|"), "https://www.passionfroot.me/heyronir");
+    assert.equal(cleanUrlTail("https://x.com/a?utm_term=book-2027-planning)=="), "https://x.com/a?utm_term=book-2027-planning");
+    assert.equal(cleanUrlTail("https://en.wikipedia.org/wiki/Diatom)_”_"), "https://en.wikipedia.org/wiki/Diatom");
+    assert.equal(cleanUrlTail("https://x.com/a**"), "https://x.com/a");
+  });
+
+  it("preserva parênteses BALANCEADOS (Wikipedia) — com e sem lixo depois", () => {
+    assert.equal(cleanUrlTail("https://en.wikipedia.org/wiki/Foo_(film)"), "https://en.wikipedia.org/wiki/Foo_(film)");
+    assert.equal(cleanUrlTail("https://en.wikipedia.org/wiki/Foo_(film))**"), "https://en.wikipedia.org/wiki/Foo_(film)");
+    assert.equal(cleanUrlTail("https://x.com/q?n=Key%20number(s)%3A)**"), "https://x.com/q?n=Key%20number(s)%3A");
+  });
+
+  it("preserva colchetes balanceados em query (PHP-style)", () => {
+    assert.equal(
+      cleanUrlTail("https://api.example.com/data?filter[status]=open"),
+      "https://api.example.com/data?filter[status]=open",
+    );
+    assert.equal(cutAtUnbalancedClose("https://api.x.com/q?arr[]="), "https://api.x.com/q?arr[]=");
+  });
+
+  it("URL limpa não muda", () => {
+    for (const u of ["https://x.com/", "https://x.com/a?b=c", "https://x.com/a?b=", "https://x.com/path_(x)/y"]) {
+      assert.equal(cleanUrlTail(u), u);
+    }
+  });
+
+  it("extractUrls aplica a limpeza em texto markdown real", () => {
+    const md =
+      "**[Solaris](https://runway.com/news/research/introducing-solaris)**, e [Tetris](https://www.scientificamerican.com/article/the-secret-cold-war-history-of-tetris/)**.";
+    assert.deepEqual(extractUrlsFromText(md), [
+      "https://runway.com/news/research/introducing-solaris",
+      "https://www.scientificamerican.com/article/the-secret-cold-war-history-of-tetris/",
+    ]);
+  });
+});

@@ -158,6 +158,58 @@ export function stripUrlTrailingPunct(url: string): string {
 }
 
 /**
+ * #9645: corta a URL no PRIMEIRO fechamento (`)` ou `]`) desbalanceado,
+ * varrendo da esquerda pra direita. Num corpo de e-mail convertido pra
+ * markdown, o link vem como `[texto](https://x.com/a)**` (negrito), e o regex
+ * de extração (que inclui `()` pra preservar Wikipedia `Foo_(film)`) engole o
+ * fechamento + o lixo de formatação colado depois: `)**`, `)**[__1__`,
+ * `)_**:**==`, `)Approved`, `)(free`, `)**_%E2%80%9D_` (catálogo medido nas
+ * capturas 260915→261005). Um `)`/`]` que fecha mais do que abriu nunca é
+ * parte de uma URL bem-formada (o caractere literal nesse papel vem
+ * percent-encoded, `%29`/`%5D`) — é o fim do link markdown. Parênteses e
+ * colchetes BALANCEADOS são preservados: `Foo_(film)`, `?filter[status]=`.
+ */
+export function cutAtUnbalancedClose(url: string): string {
+  let paren = 0;
+  let bracket = 0;
+  for (let i = 0; i < url.length; i++) {
+    const ch = url[i];
+    if (ch === "(") paren++;
+    else if (ch === "[") bracket++;
+    else if (ch === ")") {
+      if (paren === 0) return url.slice(0, i);
+      paren--;
+    } else if (ch === "]") {
+      if (bracket === 0) return url.slice(0, i);
+      bracket--;
+    }
+  }
+  return url;
+}
+
+/**
+ * #9645: limpeza de cauda de URL extraída de corpo de newsletter/e-mail.
+ * Compõe `cutAtUnbalancedClose` (fechamento de link markdown + lixo colado)
+ * com `stripUrlTrailingPunct` (pontuação de sentença, `_==_` do #4280) e
+ * remove marcadores de ênfase markdown (`*`, `_`) e aspas soltas no fim —
+ * `https://x.com/a**`, `https://x.com/a_”`. Pura e idempotente.
+ *
+ * `_` final legítimo numa URL é raro o bastante pra que o custo (perder o
+ * `_` de um path real) seja menor que o de perder o item inteiro na
+ * verificação, que é o que acontece hoje (148 URLs em 15 edições, #9645).
+ */
+export function cleanUrlTail(url: string): string {
+  let cleaned = cutAtUnbalancedClose(url);
+  let prev: string;
+  do {
+    prev = cleaned;
+    cleaned = stripUrlTrailingPunct(cleaned);
+    cleaned = cleaned.replace(/[*_|"'\u201C\u201D\u2018\u2019]+$/, "");
+  } while (cleaned !== prev);
+  return cleaned;
+}
+
+/**
  * #1863: percorre recursivamente um objeto/array e aplica `stripUrlTrailingPunct`
  * a TODO campo `url` string (in-place). Limpa sufixos de markdown (`)=`, `]=`,
  * `)` desbalanceado) que o agent às vezes anexa à URL. Idempotente — URL já
@@ -193,7 +245,8 @@ export function sanitizeUrlsDeep(node: unknown): void {
 export const URL_REGEX_RAW = /https?:\/\/[^\s<>"\]]+/g;
 
 /**
- * Extrai todos os URLs de um texto, aplicando trim de pontuação trailing
+ * Extrai todos os URLs de um texto, aplicando limpeza de cauda (`cleanUrlTail`,
+ * #9645: fechamento de link markdown + ênfase `**`/`_` + pontuação trailing)
  * de forma cautelosa (preserva parênteses balanceados de Wikipedia).
  *
  * Filter: descarta URLs com menos de 11 chars (provavelmente truncadas).
@@ -201,6 +254,6 @@ export const URL_REGEX_RAW = /https?:\/\/[^\s<>"\]]+/g;
 export function extractUrls(text: string): string[] {
   const matches = text.match(URL_REGEX_RAW) ?? [];
   return matches
-    .map(stripUrlTrailingPunct)
+    .map(cleanUrlTail)
     .filter((u) => u.length > 10);
 }
