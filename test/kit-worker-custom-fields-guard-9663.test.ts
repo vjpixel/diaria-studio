@@ -24,8 +24,10 @@ import {
   runKitWorkerFieldsGuard,
   missingFieldsFingerprint,
   buildMissingKitFieldsAlarmBody,
+  kitReadConfigError,
   type KitWorkerFieldsCheckResult,
 } from "../scripts/lib/kit-worker-custom-fields-guard.ts";
+import { KitApiError } from "../scripts/lib/kit-client.ts";
 import { kitWorkerFieldsGuardPreflight } from "../scripts/check-kit-worker-custom-fields.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -164,6 +166,72 @@ test("runKitWorkerFieldsGuard: config ausente (preflight) alarma 'desarmado' e n
     log: () => {},
   });
   assert.equal(n2, null);
+});
+
+test("#9670 runKitWorkerFieldsGuard: key presente mas revogada (KitApiError 401/403) alarma 'desarmado', não fica AVISO eterno", async () => {
+  for (const status of [401, 403]) {
+    const disarmed: string[] = [];
+    const logs: string[] = [];
+    const n = await runKitWorkerFieldsGuard({
+      check: async () => {
+        throw new KitApiError("/custom_fields?per_page=500", status, '{"errors":["The access token is invalid"]}');
+      },
+      alarm: async () => assert.fail("não é alarme de field ausente"),
+      preflight: () => null,
+      alarmDisarmed: async (r) => void disarmed.push(r),
+      isDryRun: false,
+      log: (s) => logs.push(s),
+    });
+    assert.equal(n, null);
+    assert.equal(disarmed.length, 1, `HTTP ${status} precisa alarmar desarmado`);
+    assert.match(disarmed[0], new RegExp(`HTTP ${status}`));
+    assert.ok(logs.some((l) => l.startsWith("ERRO") && l.includes("DESARMADO")));
+    assert.ok(!logs.some((l) => l.startsWith("AVISO") && l.includes("NÃO rodou")));
+  }
+  // dry-run: loga ERRO, não alarma
+  const n2 = await runKitWorkerFieldsGuard({
+    check: async () => {
+      throw new KitApiError("/custom_fields", 401, "unauthorized");
+    },
+    alarm: async () => {},
+    alarmDisarmed: async () => assert.fail("dry-run não alarma"),
+    isDryRun: true,
+    log: () => {},
+  });
+  assert.equal(n2, null);
+});
+
+test("#9670 runKitWorkerFieldsGuard: rede, 5xx e 429 seguem AVISO transitório, sem alarme", async () => {
+  const transient: Error[] = [
+    new TypeError("fetch failed"),
+    new KitApiError("/custom_fields", 500, "boom"),
+    new KitApiError("/custom_fields", 503, "unavailable"),
+    new KitApiError("/custom_fields", 429, "rate limited"),
+    new Error("GET /custom_fields não devolveu `custom_fields` como array"),
+  ];
+  for (const err of transient) {
+    const logs: string[] = [];
+    const n = await runKitWorkerFieldsGuard({
+      check: async () => {
+        throw err;
+      },
+      alarm: async () => assert.fail("não deveria alarmar"),
+      preflight: () => null,
+      alarmDisarmed: async () => assert.fail(`${err.message} é transitório, não desarma`),
+      isDryRun: false,
+      log: (s) => logs.push(s),
+    });
+    assert.equal(n, null);
+    assert.ok(logs.some((l) => l.startsWith("AVISO") && l.includes("NÃO rodou")));
+  }
+});
+
+test("#9670 kitReadConfigError: só 401/403 de KitApiError são config", () => {
+  assert.ok(kitReadConfigError(new KitApiError("/x", 401, "")));
+  assert.ok(kitReadConfigError(new KitApiError("/x", 403, "")));
+  for (const st of [400, 404, 429, 500, 502]) assert.equal(kitReadConfigError(new KitApiError("/x", st, "")), null);
+  assert.equal(kitReadConfigError(new Error("401")), null);
+  assert.equal(kitReadConfigError("401"), null);
 });
 
 test("kitWorkerFieldsGuardPreflight: acusa KIT_API_KEY ausente/vazia, aceita presente", () => {
