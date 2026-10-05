@@ -757,22 +757,24 @@ export function signalsFromSourceHealth(
     // --- #9657: caminho RSS/sitemap quebrado, escondido pela busca ---
     // O veredito de rodada considera a fonte saudável se QUALQUER caminho
     // trouxe artigo; sem este sinal o feed quebrado só aparece quando a cota
-    // da busca esgota. Exige ao menos 1 rodada do streak coberta pela busca
-    // (fonte inteira fora do ar já saiu acima como source_streak).
+    // da busca esgota. Exige que a rodada MAIS RECENTE do streak tenha sido
+    // coberta pela busca: fonte inteira fora do ar agora não é "busca
+    // cobrindo" (com 3+ rodadas ela já saiu acima como source_streak).
     if (!isDiscovery) {
       const feed = roundFeedFailureStreak(recent);
       if (
         feed.consecutive_failures >= feedBrokenThreshold &&
-        feed.healthy_rounds >= 1
+        feed.latest_round_healthy
       ) {
         out.push({
           kind: "source_feed_broken",
           severity: "low",
-          title: `Source ${source}: RSS falhou em ${feed.consecutive_failures} rodadas seguidas (busca site: cobrindo)`,
+          title: `Source ${source}: RSS/sitemap falhou em ${feed.consecutive_failures} rodadas seguidas (busca site: cobrindo)`,
           details: {
             source,
             ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
             feed_failure_rounds: feed.consecutive_failures,
+            search_covered_rounds: feed.healthy_rounds,
             last_feed_reason: feed.last_reason,
             last_outcomes: recent.slice(-Math.min(6, recent.length)),
           },

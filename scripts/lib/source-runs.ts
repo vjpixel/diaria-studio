@@ -132,13 +132,17 @@ export interface OutcomeLike {
 
 /**
  * #9657: caminho de uma linha já gravada. Usa `path` quando presente; no
- * histórico sem `path`, uma falha com motivo `HTTP NNN` é do feed — é o formato
- * que `fetch-rss.ts`/`fetch-sitemap.ts` gravam (a busca grava
- * `${status}: ${mensagem}` ou `rate_limited: ...`, ver `isSearchQuotaFailure`).
+ * histórico sem `path`, uma falha cujo motivo é EXATAMENTE `HTTP NNN` é do
+ * feed — é o formato literal que `fetch-rss.ts` grava (`error: \`HTTP ${status}\``,
+ * repassado por `fetch-rss-batch.ts`). A busca grava `${status}: ${mensagem}`
+ * ou `rate_limited: ...` (ver `isSearchQuotaFailure`). Match exato, sem prefixo
+ * nem sufixo: um fallback de fetch fora do feed (agent/WebFetch) que grave
+ * "HTTP 403 Forbidden" ou similar não vira "RSS falhou" por acidente (review
+ * do PR #9664). Linhas novas trazem `path` explícito e não dependem disto.
  */
 export function outcomePath(o: OutcomeLike): OutcomePath | undefined {
   if (o.path === "feed" || o.path === "search") return o.path;
-  if (o.outcome && isHardFailure(o.outcome) && o.reason && /^\s*HTTP \d{3}\b/.test(o.reason)) {
+  if (o.outcome && isHardFailure(o.outcome) && o.reason && /^HTTP \d{3}$/.test(o.reason.trim())) {
     return "feed";
   }
   return undefined;
@@ -250,25 +254,38 @@ export function roundDryStreak(outcomes: OutcomeLike[]): number {
  * `healthy_rounds` conta, dentro do streak, as rodadas cujo veredito geral foi
  * `ok`/`empty` (a busca cobriu) — é o que distingue "feed quebrado escondido"
  * de "fonte inteira fora do ar" (essa já é o `source_streak`).
+ * `latest_round_healthy` diz se a rodada MAIS RECENTE do streak foi coberta
+ * pela busca: o sinal exige isso, senão uma fonte que saiu do ar inteira nas
+ * últimas 1-2 rodadas (ainda abaixo do `source_streak`) sairia como "busca
+ * cobrindo" (review do PR #9664).
  */
 export function roundFeedFailureStreak(outcomes: OutcomeLike[]): {
   consecutive_failures: number;
   healthy_rounds: number;
+  latest_round_healthy: boolean;
   last_reason: string | null;
 } {
   const rounds = groupOutcomesIntoRounds(outcomes);
   let count = 0;
   let healthy = 0;
+  let latestHealthy = false;
   let lastReason: string | null = null;
   for (let i = rounds.length - 1; i >= 0; i--) {
     const feed = rounds[i].entries.filter((e) => outcomePath(e) === "feed");
     if (feed.length === 0) continue;
     if (!feed.every((e) => e.outcome !== undefined && isHardFailure(e.outcome))) break;
+    const roundHealthy = rounds[i].verdict === "ok" || rounds[i].verdict === "empty";
+    if (count === 0) latestHealthy = roundHealthy;
     count++;
-    if (rounds[i].verdict === "ok" || rounds[i].verdict === "empty") healthy++;
+    if (roundHealthy) healthy++;
     if (lastReason === null) lastReason = feed.find((e) => e.reason)?.reason ?? null;
   }
-  return { consecutive_failures: count, healthy_rounds: healthy, last_reason: lastReason };
+  return {
+    consecutive_failures: count,
+    healthy_rounds: healthy,
+    latest_round_healthy: latestHealthy,
+    last_reason: lastReason,
+  };
 }
 
 /** #9652: monta o item de `recent_outcomes` (edição + motivo curto + flag de cota). */

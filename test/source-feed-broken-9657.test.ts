@@ -91,6 +91,16 @@ describe("#9657 — origem do caminho gravada em recent_outcomes", () => {
     assert.equal(outcomePath({ outcome: "fail", reason: "rate_limited: too many" }), undefined);
     assert.equal(outcomePath({ outcome: "ok" }), undefined);
   });
+
+  it("histórico sem path: só o formato EXATO `HTTP NNN` do fetch-rss conta como feed (review PR #9664)", () => {
+    // Fallback de fetch fora do feed (agent/WebFetch) com texto livre não vira "RSS falhou".
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 403 Forbidden" }), undefined);
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 403: blocked by WebFetch" }), undefined);
+    assert.equal(outcomePath({ outcome: "fail", reason: "WebFetch: HTTP 403" }), undefined);
+    assert.equal(outcomePath({ outcome: "fail", reason: " HTTP 503 " }), "feed");
+    // `path` explícito sempre vence.
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 403 Forbidden", path: "feed" }), "feed");
+  });
 });
 
 describe("#9657 — caso real VentureBeat: RSS 429, busca ok", () => {
@@ -105,7 +115,27 @@ describe("#9657 — caso real VentureBeat: RSS 429, busca ok", () => {
     const r = roundFeedFailureStreak(ventureBeatEntry().recent_outcomes);
     assert.equal(r.consecutive_failures, 4);
     assert.equal(r.healthy_rounds, 4);
+    assert.equal(r.latest_round_healthy, true);
     assert.equal(r.last_reason, "HTTP 429");
+  });
+
+  it("rodada mais recente com a fonte inteira fora do ar não sai como 'busca cobrindo' (review PR #9664)", () => {
+    // Streak de feed = 3: só a mais antiga teve a busca cobrindo; as 2 mais
+    // recentes falharam inteiras (abaixo do source_streak).
+    let entry = { ...emptyEntry(), successes: 50 };
+    const runs = VENTUREBEAT_RUNS.slice(0, 3);
+    entry = applyRun(entry, { source: SOURCE, edition: runs[0].edition, outcome: "fail", reason: "HTTP 429", method: "rss" }, runs[0].ts);
+    entry = applyRun(entry, { source: SOURCE, edition: runs[0].edition, outcome: "ok", method: "websearch_brave", articles: [{ title: "x", url: "https://venturebeat.com/x" }] }, runs[0].ts);
+    for (const r of runs.slice(1)) {
+      entry = applyRun(entry, { source: SOURCE, edition: r.edition, outcome: "fail", reason: "HTTP 429", method: "rss" }, r.ts);
+      entry = applyRun(entry, { source: SOURCE, edition: r.edition, outcome: "fail", reason: "500: boom", method: "websearch_brave" }, r.ts);
+    }
+    const feed = roundFeedFailureStreak(entry.recent_outcomes);
+    assert.equal(feed.consecutive_failures, 3);
+    assert.equal(feed.healthy_rounds, 1);
+    assert.equal(feed.latest_round_healthy, false);
+    const kinds = signalsFromSourceHealth({ sources: { [SOURCE]: entry } }).map((s) => s.kind);
+    assert.ok(!kinds.includes("source_feed_broken"), `kinds=${kinds.join(",")}`);
   });
 
   it("emite source_feed_broken de severidade baixa que sugere consertar o feed, nunca desativar", () => {
@@ -116,6 +146,8 @@ describe("#9657 — caso real VentureBeat: RSS 429, busca ok", () => {
     assert.equal(s.severity, "low");
     assert.equal(s.details.source, SOURCE);
     assert.equal(s.details.feed_failure_rounds, 4);
+    assert.equal(s.details.search_covered_rounds, 4);
+    assert.match(s.title, /RSS\/sitemap falhou em 4 rodadas/);
     assert.equal(s.details.last_feed_reason, "HTTP 429");
     assert.match(s.suggested_action, /NÃO desativar/);
   });
