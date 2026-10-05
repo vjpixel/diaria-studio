@@ -33,6 +33,23 @@
  * reusado via `persistFieldToJsonFile`. `--stop-pid <PID>` encerra um
  * servidor iniciado anteriormente (teardown pós-gate).
  *
+ * `--detach` (#9678) — sobe o servidor num processo DESANEXADO do chamador
+ * (`spawn(..., { detached: true })` = `setsid` no Linux, novo grupo de
+ * processo no Windows; stdio redirecionado pra um log em `os.tmpdir()`) e
+ * SAI assim que o filho imprimir a URL. Motivo: no Stage 4 o servidor subia
+ * como background task do harness (`run_in_background: true`), e o harness
+ * mata essas tasks no teto de tempo (2h no máximo) — num gate longo os links
+ * `127.0.0.1` morriam com o editor ainda revisando (edição 261006). Com
+ * `--detach` o comando retorna em segundos e o servidor não pertence à
+ * árvore de processos da task; o teardown continua sendo `--stop-pid`, com o
+ * PID do FILHO (é ele que grava `{field}_pid` no `--persist-to`).
+ *
+ * `--ensure` (#9678) — re-servir sob demanda, idempotente: se o
+ * `--persist-to`/`--field` já aponta pra um servidor vivo (PID existe E a URL
+ * responde 200), só imprime o JSON dele (`reused: true`) e sai; senão sobe um
+ * novo, desanexado, como `--detach`. É o comando a rodar antes de reapresentar
+ * o gate, ou quando o editor diz que o link não abre.
+ *
  * O servidor serve o DIRETÓRIO que contém `--file` (não só o arquivo) —
  * funciona tanto com a variante preferida `*-embedded.html` (imagens em
  * `data:` URI, standalone, sem asset externo) quanto com HTML que referencie
@@ -50,8 +67,21 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { exec } from "node:child_process";
-import { readFileSync, existsSync, statSync, watch, type FSWatcher } from "node:fs";
+import { exec, spawn } from "node:child_process";
+import {
+  readFileSync,
+  existsSync,
+  statSync,
+  watch,
+  openSync,
+  closeSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+  type FSWatcher,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { resolve, dirname, basename, join, extname, normalize, sep } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
@@ -422,12 +452,204 @@ function stopByPid(pidArg: string): void {
   }
 }
 
+// ── #9678: servidor desanexado do harness + re-serve sob demanda ──────────
+
+/** Flags que só fazem sentido no processo PAI (o que desanexa) — nunca são
+ *  repassadas ao filho, senão o filho desanexaria de novo, em loop. */
+const PARENT_ONLY_FLAGS = new Set(["--detach", "--ensure"]);
+
+/**
+ * Pure: argv do processo FILHO a partir do argv do pai — remove
+ * `--detach`/`--ensure` e qualquer `--ready-file` herdado, e acrescenta o
+ * `--ready-file` novo (onde o filho grava o JSON de start assim que bindar).
+ */
+export function buildDetachedChildArgs(argv: string[], readyFile: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (PARENT_ONLY_FLAGS.has(a)) continue;
+    if (a === "--ready-file") {
+      i++; // descarta o valor também
+      continue;
+    }
+    if (a.startsWith("--ready-file=")) continue;
+    out.push(a);
+  }
+  out.push("--ready-file", readyFile);
+  return out;
+}
+
+/** `true` se existe um processo com esse PID (sinal 0 não mata nada).
+ *  EPERM = existe, mas é de outro usuário — conta como vivo. */
+export function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** `true` se a URL responde 200 dentro do timeout. Qualquer erro = `false`. */
+export async function probePreviewUrl(url: string, timeoutMs = 2000): Promise<boolean> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    // Drena o corpo pra não deixar o socket pendurado.
+    await res.arrayBuffer().catch(() => undefined);
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+export interface PersistedPreview {
+  url: string;
+  pid: number;
+}
+
+/** Lê `{field}` + `{field}_pid` do JSON de persist. `null` se faltar algo. */
+export function readPersistedPreview(persistPath: string, field: string): PersistedPreview | null {
+  try {
+    const j = JSON.parse(readFileSync(persistPath, "utf8")) as Record<string, unknown>;
+    const url = j[field];
+    const pid = Number(j[`${field}_pid`]);
+    if (typeof url !== "string" || !url || !Number.isInteger(pid) || pid <= 0) return null;
+    return { url, pid };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Servidor persistido ainda vivo? PID vivo E URL respondendo — os dois,
+ * porque PID reaproveitado pelo SO (outro processo qualquer) responderia ao
+ * sinal 0 sem servir nada, e URL respondendo com PID morto seria outro
+ * servidor na mesma porta (improvável com porta efêmera, mas não impossível).
+ */
+export async function findLivePersistedPreview(
+  persistPath: string,
+  field: string,
+  probe: (url: string) => Promise<boolean> = probePreviewUrl,
+): Promise<PersistedPreview | null> {
+  const p = readPersistedPreview(persistPath, field);
+  if (!p) return null;
+  if (!isPidAlive(p.pid)) return null;
+  if (!(await probe(p.url))) return null;
+  return p;
+}
+
+/** Espera o filho gravar o JSON de start no `readyFile`. */
+export async function waitForReadyFile(
+  readyFile: string,
+  timeoutMs = 20_000,
+  pollMs = 100,
+): Promise<{ url: string; port: number; file: string; pid: number }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(readyFile)) {
+      try {
+        return JSON.parse(readFileSync(readyFile, "utf8"));
+      } catch {
+        // escrita ainda em curso (o filho grava via rename atômico, mas
+        // tolera-se mesmo assim) — tenta de novo no próximo poll.
+      }
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  throw new Error(`[serve-preview] filho desanexado não ficou pronto em ${timeoutMs}ms (${readyFile})`);
+}
+
+/**
+ * Sobe `serve-preview.ts` como processo desanexado e devolve o JSON de start
+ * do FILHO. Usa o mesmo binário Node + os mesmos `execArgv` do pai (o
+ * `--import tsx` de `npx tsx` vive ali), e o path real deste módulo.
+ */
+export async function spawnDetachedPreview(argv: string[]): Promise<{
+  url: string;
+  port: number;
+  file: string;
+  pid: number;
+  log: string;
+}> {
+  const stamp = `${process.pid}-${Date.now()}`;
+  const readyFile = join(tmpdir(), `diaria-serve-preview-${stamp}.ready.json`);
+  // Log FORA do diretório servido de propósito: o watcher (`--watch`) observa
+  // o diretório do arquivo recursivamente, e um log escrito ali dispararia
+  // reload no browser a cada linha.
+  const log = join(tmpdir(), `diaria-serve-preview-${stamp}.log`);
+  const fd = openSync(log, "a");
+  try {
+    const child = spawn(
+      process.execPath,
+      [...process.execArgv, fileURLToPath(import.meta.url), ...buildDetachedChildArgs(argv, readyFile)],
+      { detached: true, stdio: ["ignore", fd, fd], windowsHide: true, cwd: process.cwd() },
+    );
+    child.unref();
+    let exitedEarly: number | null = null;
+    child.once("exit", (code) => {
+      exitedEarly = code ?? -1;
+    });
+    const json = await Promise.race([
+      waitForReadyFile(readyFile),
+      new Promise<never>((_, reject) => {
+        const t = setInterval(() => {
+          if (exitedEarly !== null) {
+            clearInterval(t);
+            reject(
+              new Error(`[serve-preview] filho desanexado saiu com código ${exitedEarly} antes de servir — ver ${log}`),
+            );
+          }
+        }, 100);
+        t.unref();
+      }),
+    ]);
+    return { ...json, log };
+  } finally {
+    closeSync(fd);
+    rmSync(readyFile, { force: true });
+  }
+}
+
+/** Grava o JSON de start no ready-file via tmp + rename (o pai nunca lê meio arquivo). */
+function writeReadyFile(readyFile: string, payload: unknown): void {
+  const tmp = `${readyFile}.tmp`;
+  writeFileSync(tmp, JSON.stringify(payload));
+  renameSync(tmp, readyFile);
+}
+
 async function main(): Promise<void> {
-  const { values, flags } = parseCliArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const { values, flags } = parseCliArgs(argv);
 
   const stopPid = values["stop-pid"];
   if (stopPid) {
     stopByPid(stopPid);
+    return;
+  }
+
+  // #9678: --ensure reusa um servidor persistido ainda vivo; senão cai no
+  // mesmo caminho do --detach.
+  if (flags.has("ensure")) {
+    const persistTo = values["persist-to"];
+    if (!persistTo || !values["file"]) {
+      console.error("[serve-preview] --ensure exige --file e --persist-to (é lá que o servidor vivo é procurado)");
+      process.exit(2);
+    }
+    const field = values["field"] ?? "url";
+    const live = await findLivePersistedPreview(resolve(persistTo), field);
+    if (live) {
+      console.log(JSON.stringify({ url: live.url, pid: live.pid, reused: true }, null, 2));
+      return;
+    }
+  }
+  if (flags.has("detach") || flags.has("ensure")) {
+    if (!values["file"]) {
+      console.error("[serve-preview] --detach exige --file");
+      process.exit(2);
+    }
+    const child = await spawnDetachedPreview(argv);
+    console.log(JSON.stringify({ ...child, detached: true, reused: false }, null, 2));
     return;
   }
 
@@ -482,6 +704,22 @@ async function main(): Promise<void> {
         `[serve-preview] WARN: servidor OK mas persist falhou (${(e as Error).message}). ` +
           `URL não registrada em ${persistTo}, mas está live: ${server.url}`,
       );
+    }
+  }
+
+  // #9678: filho de um --detach — sinaliza o pai DEPOIS do persist, pra que o
+  // `{field}_pid` já esteja gravado quando o pai devolver o controle.
+  const readyFile = values["ready-file"];
+  if (readyFile) {
+    try {
+      writeReadyFile(resolve(readyFile), {
+        url: server.url,
+        port: server.port,
+        file: server.filePath,
+        pid: process.pid,
+      });
+    } catch (e) {
+      console.error(`[serve-preview] WARN: falha ao gravar --ready-file: ${(e as Error).message}`);
     }
   }
 
