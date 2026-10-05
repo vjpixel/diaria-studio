@@ -17,8 +17,10 @@
  * aos destaques.
  *
  * Imagens: a capa e os slides só valem quando o carimbo do Stage 3 bate com o
- * texto atual de `## um` + título do item (`isUseMelhorCarouselStale`). Carimbo
- * defasado = a arte pode ser de OUTRO texto/item — nem a capa é usada.
+ * texto atual de `## um` + título da capa GRAVADO no carimbo
+ * (`isUseMelhorCarouselStale`; #9630 — carimbo antigo sem o campo cai no
+ * título resolvido na hora). Carimbo defasado = a arte pode ser de OUTRO
+ * texto/item — nem a capa é usada.
  *
  * Horário: `publishing.social.use_melhor_time` (decisão do editor de
  * 04/10/2026: 08:00 BRT, slot único nas 5 redes), aplicado por

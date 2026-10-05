@@ -255,6 +255,11 @@ export function removeStaleUseMelhorSlides(editionDir: string, keepSlots: string
  * depois do Stage 3 — mesmo papel do `carousel-cards-stale` dos destaques
  * (self-review #9572, finding 1). `false` quando bate ou quando não dá pra
  * comparar (sem carimbo / texto vazio — outros avisos já cobrem).
+ *
+ * #9630: com `stamp.cover_title` gravado, o título da conferência é o GRAVADO
+ * (o que está de fato na capa), não `itemTitle` — editar o título do item no
+ * gate 4 não invalida mais a arte; só o `## um`/CTA mudando invalida.
+ * `itemTitle` só vale para carimbos antigos, sem o campo.
  */
 export function isUseMelhorCarouselStale(
   stamp: UseMelhorCarouselStamp | null,
@@ -262,8 +267,10 @@ export function isUseMelhorCarouselStale(
   itemTitle: string | null,
   ctaOverride?: CarouselCtaOverride | null,
 ): boolean {
-  if (!stamp || !genericText || !genericText.trim() || itemTitle === null) return false;
-  const slides = buildUseMelhorSlides(genericText.trim(), itemTitle, ctaOverride);
+  if (!stamp || !genericText || !genericText.trim()) return false;
+  const title = stamp.cover_title ?? itemTitle;
+  if (title === null) return false;
+  const slides = buildUseMelhorSlides(genericText.trim(), title, ctaOverride);
   if (slides.length === 0) return false;
   return hashUseMelhorSlides(slides) !== stamp.hash;
 }
