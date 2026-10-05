@@ -87,6 +87,8 @@ describe("#9086 runEditionStages", () => {
     // senão engole o prompt posicional e o `--print` fica sem input.
     assert.ok(!calls[0].includes("--add-dir"));
     assert.ok(calls[0].at(-1)?.startsWith("/diaria-2-escrita 260930"));
+    // #9579: `--` imediatamente antes do prompt posicional.
+    assert.equal(calls[0].at(-2), "--");
   });
 
   it("exit 0 sem sentinela -> falha explícita com permission_denials no tail", () => {

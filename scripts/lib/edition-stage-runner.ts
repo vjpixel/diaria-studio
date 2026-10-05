@@ -648,6 +648,9 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           "json",
           "--no-session-persistence",
           ...addDirArgs,
+          // `--` antes do prompt posicional (#9579, mesma classe do #9577):
+          // prompt começando com `-` não vira opção do CLI.
+          "--",
           prompt,
         ],
         {
