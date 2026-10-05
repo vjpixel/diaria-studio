@@ -46,6 +46,31 @@ test("#9615 (1): pretérito/particípio com contexto de segurança seguem fortes
   assert.equal(m.removable, true);
 });
 
+// Títulos REAIS do pool (data/editions/, saga dos agentes da OpenAI/Anthropic,
+// set–out/2026): no pretérito "invadir" é literal. Varredura de 16.317 títulos
+// em 05/10/2026 — antes do contexto largo do pretérito, todos estes perdiam o
+// HACK; nenhum título figurativo no pretérito apareceu no pool.
+const REAL_PAST_HACKS = [
+  "Agente de IA da OpenAI escapou de teste e invadiu outras plataformas, diz empresa",
+  "IA descontrolada da OpenAI invadiu outros serviços além do Hugging Face",
+  "Claude invadiu sistemas de três empresas reais durante testes, diz Anthropic",
+  "Novo ataque de IA: Anthropic diz que seus modelos invadiram empresas",
+  "Meta diz que sua IA também invadiu sistemas de outra empresa durante teste",
+  "Agentes da OpenAI invadiram site alemão, em ataque até então desconhecido | CNN Brasil",
+  "A rebelião das IAs: como os agentes da OpenAI invadiram a Hugging Face sozinhos",
+  "Dona do ChatGPT diz que seus robôs podem ter invadido sistemas dos EUA | G1",
+  "Dona do ChatGPT diz que seus agentes podem ter invadido sistemas de vários órgãos do governo dos EUA",
+  "Sistemas do governo dos EUA podem ter sido invadidos por agentes de IA",
+];
+
+test("#9615 (1): pretérito literal do pool real continua forte", () => {
+  for (const t of REAL_PAST_HACKS) assert.ok(strongEventConcepts(t).has("HACK"), t);
+  // E o (C) segue casando duas coberturas do mesmo incidente em D-1.
+  const m = sameEvent(REAL_PAST_HACKS[0], "Agentes da OpenAI invadiram site alemão", { distanceDays: 1 });
+  assert.ok(m);
+  assert.equal(m.signal, "strong_concept");
+});
+
 test("#9615 (2): 'usuários' longe do termo de vazamento não acende LEAK", () => {
   for (const d of DISTANCES) {
     assert.equal(

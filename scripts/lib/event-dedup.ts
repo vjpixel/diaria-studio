@@ -327,6 +327,24 @@ const INVADE_SECURITY_AGENTS = new Set([
   "hacker", "hackers", "criminosos", "cibercriminosos", "invasores", "atacantes",
   "attackers", "ransomware", "malware",
 ]);
+/**
+ * #9615: pretérito/particípio de "invadir" (`invadiu`, `invadiram`, `invadido`
+ * etc.). Medido no pool real (16.317 títulos de `data/editions/`, 05/10/2026):
+ * no pretérito o uso é quase sempre literal — a saga dos agentes da OpenAI
+ * ("invadiu outras plataformas", "invadiram empresas", "podem ter invadido
+ * sistemas dos EUA", "invadidos por agentes de IA") — e zero figurativo. Por
+ * isso estas formas aceitam um contexto mais largo que o presente:
+ * `INVADE_PAST_EXTRA_OBJECTS`, `agente(s)` como agente e, nas ativas
+ * (`invadiu`/`invadiram`), empresa logo depois ("invadiu a OpenAI"). O
+ * figurativo "ChatGPT invadiu as escolas" segue de fora.
+ */
+const PAST_INVADE_TOKENS = new Set(["invadiu", "invadiram", ...PARTICIPLE_INVADE_TOKENS]);
+const ACTIVE_PAST_INVADE_TOKENS = new Set(["invadiu", "invadiram"]);
+const INVADE_PAST_EXTRA_OBJECTS = new Set([
+  "sistema", "sistemas", "plataforma", "plataformas", "servico", "servicos",
+  "site", "sites", "empresa", "empresas",
+]);
+const INVADE_PAST_EXTRA_AGENTS = new Set(["agente", "agentes"]);
 const INVADE_HELP_VERBS = new Set(["ajudou", "ajuda", "ajudar", "ajudam", "ajudaram", "ajudando"]);
 const INVADE_SECURITY_OBJECTS = new Set([
   "conta", "contas", "servidor", "servidores",
@@ -386,14 +404,16 @@ export function strongEventConcepts(title: string): Set<string> {
     } else if (CONTEXTUAL_INVADE_TOKENS.has(t) && !defensive) {
       const after = toks.slice(i + 1, i + 4);
       const before = toks.slice(Math.max(0, i - 3), i);
+      const past = PAST_INVADE_TOKENS.has(t);
+      const isObject = (x: string) => INVADE_SECURITY_OBJECTS.has(x) || (past && INVADE_PAST_EXTRA_OBJECTS.has(x));
+      const isAgent = (x: string) => INVADE_SECURITY_AGENTS.has(x) || (past && INVADE_PAST_EXTRA_AGENTS.has(x));
       const helped = toks[i - 1] === "a" && INVADE_HELP_VERBS.has(toks[i - 2] ?? "");
       const object =
-        after.some((x) => INVADE_SECURITY_OBJECTS.has(x)) ||
-        (PARTICIPLE_INVADE_TOKENS.has(t) &&
-          toks.slice(Math.max(0, i - 4), i).some((x) => INVADE_SECURITY_OBJECTS.has(x)));
-      const agent = [...before, ...after].some((x) => INVADE_SECURITY_AGENTS.has(x));
+        after.some(isObject) ||
+        (PARTICIPLE_INVADE_TOKENS.has(t) && toks.slice(Math.max(0, i - 4), i).some(isObject));
+      const agent = [...before, ...after].some(isAgent);
       const company = after.some((x) => Object.hasOwn(EVENT_COMPANY_ALIASES, x));
-      if (object || agent || (helped && company)) out.add("HACK");
+      if (object || agent || (company && (helped || ACTIVE_PAST_INVADE_TOKENS.has(t)))) out.add("HACK");
     }
     if (STRONG_LEAK_TOKENS.has(t) && !defensive) {
       // #9615: pistas só na vizinhança do termo de vazamento. "data" só vale
