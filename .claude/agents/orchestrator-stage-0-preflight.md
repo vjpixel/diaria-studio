@@ -161,7 +161,7 @@ Substitui o forward manual que o editor fazia diariamente.
 **Por que após 0b (resume check):** se o pipeline está retomando uma edição que já passou do Stage 0, o resume (0b) pula direto para o stage pendente — evitando 30-40s de chamadas Gmail MCP desnecessárias. Mover este passo para antes do resume desperdiçaria esse tempo em todo resume.
 
 1. Ler `platform.config.json > newsletter_auto_capture`. Se `enabled !== true`, skip silencioso.
-2. Montar lista de senders como string separada por vírgulas a partir de `newsletter_auto_capture.senders[]`.
+2. Montar lista de senders como string separada por vírgulas a partir de `newsletter_auto_capture.senders[]`. **Janela (#9584):** `{since_hours}` é `newsletter_auto_capture.since_hours`, exceto em edição de **segunda/terça** (janela de pesquisa de 4 dias), onde vira `max(since_hours, window_days × 24)` — ~96h, pra cobrir o que as newsletters mandaram na quinta/sexta. Regra em `captureSinceHoursForEdition` (`scripts/stage-0-run.ts`); `since_hours_by_sender` segue como override por sender.
 3. **Usar script TS em vez de MCP direto (#2452 — token-reduction):** chamar via Bash:
    ```bash
    npx tsx scripts/fetch-newsletter-threads.ts \
