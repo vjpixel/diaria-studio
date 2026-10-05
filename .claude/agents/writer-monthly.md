@@ -71,13 +71,13 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **DIVULGAÇÃO**
 
-   ![Seu agente de IA trabalha enquanto você almoça](https://eia.diar.ia.br/img/img-260831-04-agente-promo-v3.jpg)
+   ![Homem toma água de coco numa poltrona enquanto braços robóticos trabalham no computador](https://eia.diar.ia.br/img/img-2609-10-04-caixa-agente-b.jpg)
 
-   Crie seu agente de IA sem programar
+   IA não é só pra bater papo. Crie conteúdo com identidade.
 
-   Sábado, 17/10, das 14h às 18h, ao vivo e online. Você cria seu primeiro agente de IA, com acompanhamento do início ao fim, e sai com ele funcionando.
+   Em uma tarde, sem programar, você monta um comando no ChatGPT que transforma uma pauta em conteúdo na sua voz e, depois que você revisa, publica em cada rede.
 
-   → [Quero criar meu agente!](https://diar.ia.br/evento/agente-ia)
+   → [Saiba mais](https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-voz)
    ```
    Em seguida, ainda antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
    ```
