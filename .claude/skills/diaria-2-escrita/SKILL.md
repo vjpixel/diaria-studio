@@ -323,7 +323,10 @@ Snapshot pré-Humanize antes de dispatchar o agent — usado para rollback se o 
 
 ```bash
 cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-draft.pre-humanize.md
+cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-normalized.md
 ```
+
+`02-normalized.md` é o par que `check-stage2-invariants.ts` (`newsletter-humanizador-diff-ran`, #6337) compara com `02-humanized.md` (#9581) — nunca apagado antes do sentinel (Passo 7c).
 
 ```
 Agent({
@@ -364,7 +367,13 @@ Se o Agent retornar erro OU se uma checagem rápida pós-humanize indicar corrup
 cp {EDIR}/_internal/02-draft.pre-humanize.md {EDIR}/_internal/02-draft.md
 ```
 
-Falha **não bloqueia** — fallback restaura o snapshot pré-humanize.
+Falha não bloqueia o Passo 3c — fallback restaura o snapshot pré-humanize —, mas **sem `02-humanized.md` os invariantes `humanizer-ran`/`newsletter-humanizador-diff-ran` bloqueiam o sentinel (Passo 7c)**. Nesse caso, re-rodar o humanizador e, se persistir, render halt banner (`render-halt-banner.ts`) em vez de forçar o sentinel.
+
+Após o humanize bem-sucedido (sem rollback), gravar a saída como `02-humanized.md` (#9581; `assert-humanized.ts`/`humanizer-ran` esperam esse nome). Se houve rollback, **não** gravar — o guard deve acusar o pulo:
+
+```bash
+cp {EDIR}/_internal/02-draft.md {EDIR}/_internal/02-humanized.md
+```
 
 ### 3d. Validações finais
 
@@ -489,15 +498,7 @@ Falha **não bloqueia**.
 
 ## Passo 5 — Cleanup dos snapshots intermediários
 
-Limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`/`--no-gates`):
-
-```bash
-for f in \
-  {EDIR}/_internal/02-draft.pre-humanize.md \
-  {EDIR}/_internal/03-social-pre-humanizador.md; do
-  [ -f "$f" ] && rm "$f"
-done
-```
+**Não limpar nada aqui (#9581).** Os snapshots `02-pre-clarice.md`, `02-normalized.md`, `02-humanized.md`, `02-draft.pre-humanize.md` e `03-social-pre-humanizador.md` são lidos por `pipeline-sentinel.ts write --step 2` (invariantes `clarice-ran`, `humanizer-ran`, `newsletter-humanizador-diff-ran`, #2148); a limpeza acontece no Passo 7d, DEPOIS do sentinel.
 
 ## Passo 6 — Gate humano unificado
 
@@ -568,12 +569,6 @@ Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs que
 
 Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
 
-**Cleanup do snapshot pré-Clarice (#874).** Após o gate fechar (com ou sem title-picker), o snapshot `_internal/02-pre-clarice.md` pode ser removido — não há mais resume mid-Clarice possível pra essa edição:
-
-```bash
-[ -f {EDIR}/_internal/02-pre-clarice.md ] && rm {EDIR}/_internal/02-pre-clarice.md
-```
-
 ## Passo 7c — Escrever sentinel de conclusão (#5792)
 
 Ponto de convergência dos dois caminhos de finalização da Etapa 2 — gate humano aprovado no Passo 6 ("sim") **e** `--no-gate`/`--no-gates` (que pula o Passo 6 direto pro Passo 7) chegam ambos aqui, depois do title-picker fallback (Passo 7) e do insert de TÍTULO/SUBTÍTULO (Passo 7b) já terem rodado. Escrever o sentinel **só neste ponto** — nunca antes do title-picker, para não gerar sentinel prematuro:
@@ -582,6 +577,21 @@ Ponto de convergência dos dois caminhos de finalização da Etapa 2 — gate hu
 npx tsx scripts/pipeline-sentinel.ts write \
   --edition $1 --step 2 \
   --outputs "02-reviewed.md,03-social.md"
+```
+
+## Passo 7d — Cleanup dos snapshots (#874, #9581)
+
+Só **depois** do sentinel gravado (os invariantes o exigem presente no write). Sem mais resume mid-Clarice possível:
+
+```bash
+for f in \
+  {EDIR}/_internal/02-pre-clarice.md \
+  {EDIR}/_internal/02-normalized.md \
+  {EDIR}/_internal/02-humanized.md \
+  {EDIR}/_internal/02-draft.pre-humanize.md \
+  {EDIR}/_internal/03-social-pre-humanizador.md; do
+  [ -f "$f" ] && rm "$f"
+done
 ```
 
 ## Outputs
@@ -593,7 +603,8 @@ npx tsx scripts/pipeline-sentinel.ts write \
 - `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social
 
 **Outputs intermediários (mid-stage, removidos no fim):**
-- `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido após o gate fechar.
+- `{EDIR}/_internal/02-pre-clarice.md` — snapshot do input do Clarice (#874 — sinal pra resume mid-Clarice; #873 — input pro check de estabilidade de URLs). Removido no Passo 7d, após o sentinel.
+- `{EDIR}/_internal/02-normalized.md` e `{EDIR}/_internal/02-humanized.md` — par pré/pós-humanizador lido por `newsletter-humanizador-diff-ran` (#9581). Removidos no Passo 7d.
 
 ## Notas
 
