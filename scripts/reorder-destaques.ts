@@ -55,30 +55,21 @@
  *     como [2,1,3]; 3-cycles como [3,1,2] precisam 3 aplicações pra fechar).
  *     Editor que quer desfazer reorder anterior deve usar o inverso explícito.
  *
- * ⚠️  BOXES DE DIVULGAÇÃO VIAJAM JUNTO COM O DESTAQUE ANTERIOR (#5585).
- *   O parser de `02-reviewed.md` (`reorderDestaquesInMd` abaixo) captura cada
- *   bloco como "do header `**DESTAQUE N |...**` até o próximo header
- *   reconhecido" (`DESTAQUE N+1`, `LANÇAMENTOS`, `RADAR`, etc — ver
- *   `blockRe`). Qualquer conteúdo que caia numa lacuna entre destaques —
- *   incluindo os boxes de divulgação/CTA dos slots 1/2/3
- *   (`boxes_divulgacao` em `platform.config.json`, ver
- *   `context/snippets/README.md`) — NÃO tem header próprio, então é tratado
- *   como parte do "chunk" de texto do destaque que o precede e É
- *   REORDENADO/ROTACIONADO JUNTO com ele. Isso não é ancoragem por
- *   posição/lacuna — é um acidente de implementação do parser regex, que
- *   não tem como saber (sem um formato de marcador dedicado, hoje
- *   inexistente) onde termina o destaque e onde começa o box.
+ * BOXES DE DIVULGAÇÃO SÃO POSICIONAIS (#9596, revisa o #5585).
+ *   Os slots pertencem às LACUNAS (slot 1 = entre D1 e D2; slot 2 = entre D2
+ *   e D3), não ao destaque. O parser de `02-reviewed.md` (`blockRe` em
+ *   `reorderDestaquesInMd`) captura cada chunk do header `**DESTAQUE N |...**`
+ *   até o próximo header reconhecido, o que inclui a lacuna seguinte; desde o
+ *   #9596 `splitDestaqueAndGap` corta o chunk no primeiro `---` e só o
+ *   destaque permuta — a lacuna (box, Retrospectiva, etc) fica na posição.
+ *   Até o #9596 o box viajava junto com o destaque anterior (edição 261005:
+ *   `--new-order 3,2,1` levou o box do slot 1 pra depois do D3).
  *
- *   Se o editor pedir mudança de boxes E reorder de destaques no mesmo
- *   turno: aplicar a mudança de boxes DEPOIS do reorder, nunca antes — do
- *   contrário o reorder desfaz/embaralha a mudança manual (caso real: Stage
- *   4 da edição 260818, boxes 1↔3 trocados manualmente e depois "levados"
- *   de volta pela rotação D3→D1 do reorder, exigindo correção manual com
- *   uma segunda rotação). `reorderDestaquesInMd` emite um `console.warn`
- *   best-effort (`detectTrailingNonDestaqueContent`) quando encontra
- *   conteúdo sobrando após a seção "Aprofunde:" de um bloco — sinal de que
- *   há algo além do destaque ali —, mas é heurística estrutural, não
- *   garantia: silêncio não significa "sem box".
+ *   Resíduo: conteúdo COLADO no destaque sem `---` isolando (formato que
+ *   `stitch-newsletter.ts` não produz, só edição manual) ainda viaja junto;
+ *   `reorderDestaquesInMd` emite um `console.warn` best-effort
+ *   (`detectTrailingNonDestaqueContent`) quando encontra conteúdo sobrando
+ *   após a seção "Aprofunde:" — heurística estrutural, não garantia.
  */
 
 import {
@@ -534,6 +525,28 @@ export function detectTrailingNonDestaqueContent(block: string): boolean {
 }
 
 /**
+ * #9596: separa um chunk capturado por `blockRe` em `core` (o destaque em si,
+ * do header até antes do primeiro separador `---`) e `gap` (o separador +
+ * tudo que vem depois dele no chunk — boxes de divulgação da lacuna seguinte,
+ * Retrospectiva, etc; só whitespace final, ou `""`, quando a lacuna está
+ * vazia). Concatenar `core + gap`
+ * devolve o chunk original byte a byte.
+ *
+ * Premissa: o corpo de um destaque nunca contém `---` em linha própria — o
+ * template (`context/templates/newsletter.md`) usa `---` só ENTRE seções, e
+ * `stitch-newsletter.ts` isola todo box de lacuna com `---` antes e depois.
+ */
+export function splitDestaqueAndGap(block: string): { core: string; gap: string } {
+  const m = /\n[ \t]*---[ \t]*(?:\n|$)/.exec(block);
+  // Recua até o início das linhas em branco que precedem o separador (ou o
+  // fim do chunk), pra que o whitespace entre o destaque e o `---` acompanhe
+  // a lacuna (não o core) — senão um core movido carregaria \n extra.
+  let cut = m ? m.index : block.length;
+  while (cut > 0 && /\s/.test(block[cut - 1])) cut--;
+  return { core: block.slice(0, cut), gap: block.slice(cut) };
+}
+
+/**
  * Reordena blocos DESTAQUE N em 02-reviewed.md. Renumera headers no
  * resultado (`DESTAQUE 1 | …` no top, `DESTAQUE 2 | …`, etc).
  *
@@ -564,9 +577,11 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   // #2352: require at least as many blocks as positions in newOrder (2 or 3).
   if (blocks.length < newOrder.length) return md;
 
-  // #5585: aviso best-effort — conteúdo (ex: box de divulgação) capturado
-  // dentro do chunk de um destaque vai ser reordenado/rotacionado junto com
-  // ele. Nunca bloqueia; puramente informativo (ver docstring do topo).
+  // #5585: aviso best-effort — conteúdo (ex: box de divulgação) COLADO no
+  // destaque, sem `---` isolando (formato que `stitch-newsletter.ts` não
+  // produz, mas edição manual pode), vai ser reordenado junto com ele. Box
+  // isolado por `---` já fica na lacuna desde o #9596 e não entra aqui
+  // (a heurística só olha o `core` do chunk). Nunca bloqueia.
   // Só avalia blocos que de fato MUDAM de posição sob este `newOrder` —
   // `n - 1 === i` é a posição original ficando igual à posição final (o
   // bloco não se move, então não há nada "viajando" pra avisar); blocos fora
@@ -574,23 +589,31 @@ export function reorderDestaquesInMd(md: string, newOrder: number[]): string {
   newOrder.forEach((n, i) => {
     if (n - 1 === i) return;
     const block = blocks[n - 1];
-    if (block && detectTrailingNonDestaqueContent(block)) {
+    if (block && detectTrailingNonDestaqueContent(splitDestaqueAndGap(block).core)) {
       console.warn(
         `WARN: reorder-destaques — bloco DESTAQUE ${n} parece conter conteúdo além do destaque ` +
-          `(ex: box de divulgação na lacuna seguinte) — esse conteúdo viaja para a posição ${i + 1} ` +
-          `junto com o destaque. Se você também mudou boxes neste turno, confira o resultado.`,
+          `colado sem \`---\` (ex: box de divulgação) — esse conteúdo viaja para a posição ${i + 1} ` +
+          `junto com o destaque. Boxes isolados por \`---\` ficam na lacuna (#9596); confira o resultado.`,
       );
     }
   });
 
+  // #9596: boxes nas lacunas são POSICIONAIS — slot 1 = entre D1 e D2,
+  // slot 2 = entre D2 e D3, seja qual for o destaque que ocupa a posição.
+  // Cada chunk capturado por `blockRe` = destaque + (opcional) conteúdo da
+  // lacuna seguinte isolado por `---`. Só o destaque permuta; o trailer da
+  // lacuna i fica na posição i.
+  const split = blocks.map(splitDestaqueAndGap);
+
   // Reorder + renumerar
   const reorderedBlocks = newOrder.map((n, i) => {
-    const block = blocks[n - 1];
+    const core = split[n - 1].core;
     // Substitui "DESTAQUE N |" pra "DESTAQUE i+1 |" no header
-    return block.replace(
+    const renumbered = core.replace(
       /^\*\*DESTAQUE\s+\d+(\s*\|)/m,
       `**DESTAQUE ${i + 1}$1`,
     );
+    return renumbered + split[i].gap;
   });
   // #2352: tail = blocks beyond the N reordered ones (e.g. slot 3 in a 3-block
   // MD when newOrder has 2 elements is intentionally not included here, because

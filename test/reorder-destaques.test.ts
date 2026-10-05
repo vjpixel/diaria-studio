@@ -24,6 +24,7 @@ import {
   reorderHighlightsInJson,
   reorderDestaquesInMd,
   detectTrailingNonDestaqueContent,
+  splitDestaqueAndGap,
   updateIntentionalErrorLocationJson,
   reorderSocialMd,
   renameDestaqueImages,
@@ -466,6 +467,114 @@ Aprofunde:
       !warnings.some((w) => /DESTAQUE 2/.test(w) || /DESTAQUE 3/.test(w)),
       `não esperava warning para DESTAQUE 2/3. Warnings capturados: ${JSON.stringify(warnings)}`,
     );
+  });
+});
+
+describe("boxes de divulgação são posicionais no reorder (#9596)", () => {
+  // Formato real da edição 261005: box do slot 1 (texto puro + link) e a
+  // Retrospectiva (slot 2, abre com bold-line não reconhecido por blockRe)
+  // isolados por `---` nas lacunas D1/D2 e D2/D3.
+  const md = `Intro.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Cloudflare](https://a.com)**
+
+Texto A.
+
+Por que isso importa:
+
+Impacto A.
+
+---
+
+IA não é só pra bater papo. Crie conteúdo com identidade.
+
+[Saiba mais](https://diar.ia.br/evento/agente-ia)
+
+---
+
+**DESTAQUE 2 | 🛡️ SEGURANÇA**
+
+**[OpenAI](https://b.com)**
+
+Texto B.
+
+Por que isso importa:
+
+Impacto B.
+
+---
+
+**Retrospectiva de Setembro**
+
+Quem apoia recebe a Retrospectiva.
+
+[Ler a Retrospectiva](https://retrospectiva.diar.ia.br/2609)
+
+---
+
+**DESTAQUE 3 | 🚀 LANÇAMENTO**
+
+**[Kolibri](https://c.com)**
+
+Texto C.
+
+Por que isso importa:
+
+Impacto C.
+
+---
+
+**🛠️ USE MELHOR**
+
+**[Item](https://u.com)**
+Descrição.
+`;
+
+  it("--new-order 3,2,1 permuta só os destaques; cada box continua na sua lacuna", () => {
+    const out = reorderDestaquesInMd(md, [3, 2, 1]);
+    const idx = (s: string) => {
+      const i = out.indexOf(s);
+      assert.ok(i >= 0, `esperava encontrar ${JSON.stringify(s)} no resultado:\n${out}`);
+      return i;
+    };
+    const d1 = idx("**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n**[Kolibri]");
+    const box1 = idx("IA não é só pra bater papo");
+    const d2 = idx("**DESTAQUE 2 | 🛡️ SEGURANÇA**");
+    const box2 = idx("**Retrospectiva de Setembro**");
+    const d3 = idx("**DESTAQUE 3 | 🚀 LANÇAMENTO**\n\n**[Cloudflare]");
+    const useMelhor = idx("**🛠️ USE MELHOR**");
+    assert.ok(d1 < box1 && box1 < d2 && d2 < box2 && box2 < d3 && d3 < useMelhor, out);
+    // Cada box aparece uma única vez (nenhum duplicado/perdido).
+    assert.equal(out.split("IA não é só pra bater papo").length, 2);
+    assert.equal(out.split("**Retrospectiva de Setembro**").length, 2);
+  });
+
+  it("estrutura de separadores preservada: reorder + inverso = identidade", () => {
+    const once = reorderDestaquesInMd(md, [3, 2, 1]);
+    assert.equal(reorderDestaquesInMd(once, [3, 2, 1]), md);
+  });
+
+  it("swap 2,1,3 mantém o box do slot 1 entre as posições 1 e 2", () => {
+    const out = reorderDestaquesInMd(md, [2, 1, 3]);
+    const d1 = out.indexOf("**DESTAQUE 1 | 🛡️ SEGURANÇA**");
+    const box1 = out.indexOf("IA não é só pra bater papo");
+    const d2 = out.indexOf("**DESTAQUE 2 | 🚀 LANÇAMENTO**\n\n**[Cloudflare]");
+    assert.ok(d1 >= 0 && d1 < box1 && box1 < d2, out);
+  });
+
+  it("splitDestaqueAndGap: core + gap reconstitui o chunk byte a byte", () => {
+    const chunk = "**DESTAQUE 1 | X**\n\nTexto.\n\n---\n\nBox.\n\n[link](https://x.com)";
+    const { core, gap } = splitDestaqueAndGap(chunk);
+    assert.equal(core, "**DESTAQUE 1 | X**\n\nTexto.");
+    assert.equal(gap, "\n\n---\n\nBox.\n\n[link](https://x.com)");
+    assert.equal(core + gap, chunk);
+    const noGap = splitDestaqueAndGap("**DESTAQUE 2 | Y**\n\nTexto.\n");
+    assert.equal(noGap.core, "**DESTAQUE 2 | Y**\n\nTexto.");
+    assert.equal(noGap.gap, "\n");
   });
 });
 
