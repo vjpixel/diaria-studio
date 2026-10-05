@@ -554,6 +554,11 @@ try:
     comments = data.get('comments') or []
     verdict = None
     for c in comments:
+        # #9632: repo público — marcador de review de conta sem vínculo
+        # (authorAssociation fora de OWNER/MEMBER/COLLABORATOR) não conta,
+        # mesmo filtro de scripts/lib/trusted-comment-author.ts.
+        if (c.get('authorAssociation') or c.get('author_association')) not in ('OWNER', 'MEMBER', 'COLLABORATOR'):
+            continue
         body = c.get('body') or ''
         if 'continuo-review:' in body:
             for part in body.splitlines():
@@ -632,8 +637,12 @@ if [ "$QUEUE_GH_RC" -eq 0 ] && [ -n "$QUEUE_RAW_JSON" ]; then
   QUEUE_ENRICH='{}'
   while IFS= read -r EN; do
     [ -z "$EN" ] && continue
+    # #9632: só marcador postado por autor com vínculo ao repo conta — um
+    # terceiro (repo público) não pode silenciar o alarme de fila postando o
+    # marcador do head atual. select = TRUSTED_AUTHOR_JQ_SELECT
+    # (scripts/lib/trusted-comment-author.ts).
     ESC_HEAD=$(gh api "repos/{owner}/{repo}/issues/$EN/comments" --paginate \
-      --jq '.[].body | capture("<!-- continuo-escalate: head=(?<s>[0-9a-f]{7,40}) -->"; "g") | .s' 2>/dev/null | tail -n 1)
+      --jq '.[] | select((.authorAssociation // .author_association // "") as $a | $a == "OWNER" or $a == "MEMBER" or $a == "COLLABORATOR") | .body | capture("<!-- continuo-escalate: head=(?<s>[0-9a-f]{7,40}) -->"; "g") | .s' 2>/dev/null | tail -n 1)
     HEAD_SHA_Q=$(gh pr view "$EN" --json headRefOid --jq '.headRefOid // empty' 2>/dev/null)
     QUEUE_ENRICH=$(printf '%s' "$QUEUE_ENRICH" | jq -c --arg n "$EN" --arg e "$ESC_HEAD" --arg c "$HEAD_SHA_Q" \
       '. + {($n): {escalatedHead: (if $e == "" then null else $e end), headSha: (if $c == "" then null else $c end)}}' 2>/dev/null || printf '%s' "$QUEUE_ENRICH")

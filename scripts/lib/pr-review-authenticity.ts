@@ -119,7 +119,23 @@
  * hooks sobre `Agent` for confirmado (ou a telemetria de dispatch da
  * Direção 2 existir), reabrir esta questão — não reabrir "porque parece
  * simples", reabrir com um caso real observado do payload do hook.
+ *
+ * ## #9632 (05/10/2026) — só comentário de autor confiável conta, nos dois sentidos
+ *
+ * O repo é público: qualquer conta comenta em PR. Até aqui a varredura
+ * classificava o comentário mais recente só pelo TEXTO — um terceiro que
+ * postasse o marcador independente com `verdict=approve` (o formato é
+ * público, ver "Limitação residual") satisfazia o gate e destravava o
+ * auto-merge; um `reject` ou self-review dele, como último comentário,
+ * bloqueava. Agora todo comentário cujo autor não seja OWNER/MEMBER/
+ * COLLABORATOR (`isTrustedCommentAuthor`, `scripts/lib/trusted-comment-
+ * author.ts`) é PULADO na varredura: nunca satisfaz, nunca bloqueia, nunca
+ * "encerra" a busca pelo review mais recente. Associação ausente no payload
+ * conta como não confiável (fail-closed) — por isso os chamadores precisam
+ * do campo `authorAssociation`, que `gh pr view --json comments` já inclui.
  */
+
+import { isTrustedCommentAuthor } from "./trusted-comment-author.ts";
 
 /** Marcador literal que a instrução do hook manda postar quando o Agent tool
  *  não está disponível — nunca reformular sem atualizar as duas pontas
@@ -247,6 +263,9 @@ function findMostRecentIndependentReviewMarker(comments: unknown): MostRecentInd
 
   for (let i = comments.length - 1; i >= 0; i--) {
     const node = comments[i] as PrCommentNode;
+    // #9632: comentário de autor sem vínculo com o repo nunca fornece
+    // veredito/SHA nem encerra a varredura.
+    if (!isTrustedCommentAuthor(node)) continue;
     const body = typeof node?.body === "string" ? node.body : "";
     const lines = body.split("\n").map((line) => line.trim());
 
@@ -296,6 +315,10 @@ export interface PrReviewAuthenticityResult {
 export interface PrCommentNode {
   id?: unknown;
   body?: unknown;
+  /** GraphQL (`gh pr view --json comments`). #9632: obrigatório na prática — ausente = autor não confiável. */
+  authorAssociation?: unknown;
+  /** REST (`gh api .../comments`), aceito pelo mesmo filtro. */
+  author_association?: unknown;
 }
 
 /**
@@ -322,8 +345,15 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
     };
   }
 
+  let ignoredUntrusted = 0;
   for (let i = comments.length - 1; i >= 0; i--) {
     const node = comments[i] as PrCommentNode;
+    // #9632: autor sem vínculo com o repo (repo público) nunca satisfaz nem
+    // bloqueia o gate — pula e segue procurando um review de autor confiável.
+    if (!isTrustedCommentAuthor(node)) {
+      if (classifyReviewComment(node?.body) !== "other") ignoredUntrusted++;
+      continue;
+    }
     const kind = classifyReviewComment(node?.body);
     if (kind === "independent-review") {
       return {
@@ -350,7 +380,11 @@ export function evaluatePrReviewAuthenticity(comments: unknown): PrReviewAuthent
       "\"não revisado\" em geral — uma review real despachada por sessão interativa via ferramenta " +
       "Agent, com findings postados em prosa, também sai como 'no_review' porque só o script externo " +
       "sabe gerar o marcador com identidade de execução que este gate reconhece; ver docstring do " +
-      "módulo, seção 'Escopo do veredito no_review')",
+      "módulo, seção 'Escopo do veredito no_review')" +
+      (ignoredUntrusted > 0
+        ? `; ${ignoredUntrusted} marcador(es) de review postado(s) por autor sem vínculo com o repo ` +
+          "(author_association fora de OWNER/MEMBER/COLLABORATOR) ignorado(s) — #9632"
+        : ""),
   };
 }
 

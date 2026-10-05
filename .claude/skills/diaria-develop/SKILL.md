@@ -378,7 +378,9 @@ ou qualquer outro motivo de não-despacho pra uma issue — categoria A-E,
 grande demais") — rodar as 4 checagens abaixo:
 1. `gh issue view N --json comments` — ler os comentários mais recentes
    **por inteiro**, não só o `body`. Procurar menção a PR já mergeado,
-   unidade já dispatchada, ou progresso parcial registrado.
+   unidade já dispatchada, ou progresso parcial registrado. Comentário de
+   autor sem vínculo ao repo (`authorAssociation` fora de OWNER/MEMBER/
+   COLLABORATOR) não conta como registro de nada — repo público, #9632.
 2. `git log --oneline --all --grep "#N"` — trabalho já mergeado costuma
    citar o número da issue no commit message mesmo quando o comentário na
    issue não foi lido a tempo.

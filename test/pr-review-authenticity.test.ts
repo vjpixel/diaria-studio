@@ -46,8 +46,10 @@ describe("SELF_REVIEW_MARKER — as duas cópias duplicadas nunca divergem (#682
   });
 });
 
+// #9632: só comentário de autor confiável conta — os fixtures deste arquivo
+// representam comentários da conta dona do repo (como no payload real).
 function comment(id: string, body: string): PrCommentNode {
-  return { id, body };
+  return { id, body, authorAssociation: "OWNER" };
 }
 
 const MARKER = "<!-- continuo-review: run=abc123 at=2026-09-01T02:00:00Z -->";

@@ -267,13 +267,16 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
 
   it("a expressão --jq real de captura do marcador pega o ÚLTIMO SHA (vários por comentário, vários comentários)", () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    const m = section.match(/--jq '(\.\[\]\.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
+    const m = section.match(/--jq '(\.\[\] \| select\([^\n]*\| \.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
     assert.ok(m, "expressão de captura do marcador não encontrada");
     const comments = [
-      { body: "texto <!-- continuo-escalate: head=aaaaaaa1 --> mais <!-- continuo-escalate: head=bbbbbbb2 -->" },
-      { body: "sem marcador" },
-      { body: "<!-- continuo-escalate: head=ccccccc3 -->" },
-      { body: "outro sem marcador" },
+      { author_association: "OWNER", body: "texto <!-- continuo-escalate: head=aaaaaaa1 --> mais <!-- continuo-escalate: head=bbbbbbb2 -->" },
+      { author_association: "OWNER", body: "sem marcador" },
+      { author_association: "OWNER", body: "<!-- continuo-escalate: head=ccccccc3 -->" },
+      { author_association: "OWNER", body: "outro sem marcador" },
+      // #9632: marcador de conta sem vínculo (repo público) nunca conta —
+      // senão um terceiro silenciaria o alarme de fila postando o head atual.
+      { author_association: "NONE", body: "<!-- continuo-escalate: head=ddddddd4 -->" },
     ];
     const res = spawnSync("jq", ["-r", m![1]], { input: JSON.stringify(comments), encoding: "utf8" });
     assert.equal(res.status, 0, `jq falhou: ${res.stderr}`);
@@ -285,8 +288,8 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
   it("o marcador que o watcher lê é o mesmo que check-continuo-escalate-label.ts grava", () => {
     const out = formatEscalateHeadMarker("0123abcd");
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
-    const m = section.match(/--jq '(\.\[\]\.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
-    const res = spawnSync("jq", ["-r", m![1]], { input: JSON.stringify([{ body: out }]), encoding: "utf8" });
+    const m = section.match(/--jq '(\.\[\] \| select\([^\n]*\| \.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
+    const res = spawnSync("jq", ["-r", m![1]], { input: JSON.stringify([{ author_association: "OWNER", body: out }]), encoding: "utf8" });
     assert.equal(res.stdout.trim(), "0123abcd");
   });
 
