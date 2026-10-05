@@ -18,6 +18,7 @@ import {
   type GenericStudyHighlight,
 } from "../scripts/lib/generic-study-penalty.ts";
 import {
+  DEFAULT_CONFIG_PATH,
   readGenericStudyPenaltyConfig,
   runGenericStudyPenalty,
 } from "../scripts/demote-generic-study-highlights.ts";
@@ -35,6 +36,7 @@ const REMOVED_GENERIC: string[] = [
   "Quase metade dos alunos no Brasil usa chatbots de IA para estudar; índice é maior que média global", // 260910
   "IA já domina a rotina dos funcionários, mas só 27% dos líderes confiam na própria empresa", // 260903
   "ChatGPT está mudando quem faz o quê nas empresas, aponta estudo da OpenAI", // 260807
+  "Claude já escreve 80% do código da Anthropic e assusta a empresa", // 260609 — fatia do trabalho feita por IA
 ];
 
 // Destaques que o editor MANTEVE ou PROMOVEU — não podem ser penalizados.
@@ -55,6 +57,83 @@ const KEPT_NOT_GENERIC: Array<[string, string | undefined]> = [
   ["Introducing Gemini 3.8 Live with Live Avatar", "lancamento"],
   ["Quase um Opus por uma fração do preço: novo Claude Sonnet 5.5 chega 30% mais barato", "radar"],
 ];
+
+// Review da PR #9667 (alta): notícia concreta que a 1ª versão marcava como
+// genérica — preço/limite, empresa de IA adotando algo, recurso chegando a
+// usuários, "Pesquisa" como produto, % que não é de população, IA trapaceando.
+const CONCRETE_NEWS: string[] = [
+  "OpenAI reduz preço da API do GPT-5 em 80%",
+  "Anthropic reduz limites de uso do Claude Code",
+  "Apple adota Gemini na Siri",
+  "Meta adota marca d'água em imagens geradas por IA",
+  "ChatGPT ganha pesquisa profunda para todos os usuários",
+  "Google leva Pesquisa com IA a mais 40 países",
+  "Nvidia perde 17% do valor de mercado após DeepSeek",
+  "Estudo da Anthropic: Claude aprende a trapacear em testes",
+];
+
+describe("classifyGenericStudy (#9462) — notícia concreta não é estudo genérico (review #9667)", () => {
+  for (const title of CONCRETE_NEWS) {
+    it(`não penaliza: ${title}`, () => {
+      const v = classifyGenericStudy({ title, bucket: "radar" });
+      assert.equal(v.generic, false, `sinais=${v.signals} vetos=${v.vetoes}`);
+    });
+  }
+
+  it("preço do CLIENTE do case não absolve (McDonald's segue genérico)", () => {
+    const v = classifyGenericStudy({ title: "McDonald's adota IA para calcular preço de seus lanches; entenda estratégia" });
+    assert.equal(v.generic, true, `vetos=${v.vetoes}`);
+  });
+
+  it("OCDE como régua de comparação não vira decisão (260910 segue genérico)", () => {
+    const v = classifyGenericStudy({
+      title: "Quase metade dos alunos no Brasil usa chatbots de IA para estudar; índice é maior do que em países da OCDE",
+    });
+    assert.equal(v.generic, true, `vetos=${v.vetoes}`);
+  });
+
+  it("'eu' pronome não é a UE: só a sigla em maiúscula conta como ator", () => {
+    assert.equal(classifyGenericStudy({ title: "Pesquisa: eu e mais 70% dos profissionais já usamos IA" }).generic, true);
+    assert.equal(classifyGenericStudy({ title: "EU publica relatório sobre IA generativa" }).generic, false);
+  });
+});
+
+describe("classifyGenericStudy (#9462) — instituição como ator é simétrica (review #9667)", () => {
+  // Mesmo título, só a INSTITUIÇÃO muda — nacional, estrangeira, genérica.
+  const INSTITUTIONS = [
+    "STF",
+    "ANPD",
+    "Ministério da Saúde",
+    "Senado",
+    "Casa Branca",
+    "FTC",
+    "SEC",
+    "Comissão Europeia",
+    "Parlamento Europeu",
+    "UE",
+    "Governo",
+    "Tribunal",
+    "Agência reguladora",
+    "Regulador",
+    "Congresso",
+  ];
+  const TEMPLATES = [
+    "{X} divulga relatório sobre IA",
+    "{X} publica relatório sobre IA generativa",
+    "{X} investiga estudo sobre chatbots e crianças",
+  ];
+  for (const tpl of TEMPLATES) {
+    it(`mesmo veredito para toda instituição: "${tpl}"`, () => {
+      for (const x of INSTITUTIONS) {
+        assert.equal(classifyGenericStudy({ title: tpl.replace("{X}", x) }).generic, false, `${x}: ${tpl}`);
+      }
+    });
+  }
+
+  it("sem instituição, o mesmo estudo é genérico (o veto vem do ator, não do país)", () => {
+    assert.equal(classifyGenericStudy({ title: "Consultoria divulga relatório sobre IA" }).generic, true);
+  });
+});
 
 describe("classifyGenericStudy (#9462) — gabarito do editor", () => {
   for (const title of REMOVED_GENERIC) {
@@ -224,6 +303,8 @@ describe("demote-generic-study-highlights CLI core (#9462) — flag + fail-soft"
   it("config: chave ausente = desligada; enabled:true = ligada", () => {
     const a = setup("{}");
     assert.deepEqual(readGenericStudyPenaltyConfig(a.cfg), { enabled: false });
+    const m = setup(null);
+    assert.deepEqual(readGenericStudyPenaltyConfig(m.cfg), { enabled: false, missing: true });
     const b = setup(JSON.stringify({ selection: { generic_study_penalty: { enabled: true } } }));
     assert.deepEqual(readGenericStudyPenaltyConfig(b.cfg), { enabled: true });
   });
@@ -269,6 +350,55 @@ describe("demote-generic-study-highlights CLI core (#9462) — flag + fail-soft"
     assert.equal(runLog[0].level, "warn");
     assert.equal(runLog[0].edition, "260925");
     assert.match(runLog[0].message, /#9462/);
+  });
+
+  it("config default resolvida pela raiz do repo, não pelo cwd", () => {
+    assert.equal(DEFAULT_CONFIG_PATH, join(import.meta.dirname, "..", "platform.config.json"));
+  });
+
+  it("config ausente: desligada (sombra) + warn no run-log", () => {
+    const s = setup(null);
+    const res = runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir, edition: "260925" });
+    assert.equal(res.error, undefined);
+    assert.equal(res.applied, false);
+    const runLog = readFileSync(join(s.dir, "data", "run-log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(runLog[0].level, "warn");
+    assert.match(runLog[0].message, /não encontrada/);
+  });
+
+  it("desligada: rerun SEM rebaixamento regrava o log (não sobra 'seria rebaixado' velho)", () => {
+    const s = setup(JSON.stringify({ selection: { generic_study_penalty: { enabled: false } } }));
+    runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir });
+    assert.equal(JSON.parse(readFileSync(s.log, "utf8")).demoted.length, 1);
+    // Seleção mudou (rerun do Stage 1): o genérico saiu dos candidatos.
+    const cat = JSON.parse(readFileSync(s.cat, "utf8"));
+    cat.highlights = cat.highlights.filter((x: GenericStudyHighlight) => x.url !== ED_260925[2].url);
+    writeFileSync(s.cat, JSON.stringify(cat));
+    runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir });
+    const log = JSON.parse(readFileSync(s.log, "utf8"));
+    assert.equal(log.demoted.length, 0);
+    assert.equal(log.applied, false);
+  });
+
+  it("ligada: resume sobre o JSON já reordenado preserva o log aplicado", () => {
+    const s = setup(JSON.stringify({ selection: { generic_study_penalty: { enabled: true } } }));
+    runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir });
+    const first = readFileSync(s.log, "utf8");
+    const res = runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir });
+    assert.equal(res.demoted, 0);
+    assert.equal(readFileSync(s.log, "utf8"), first);
+  });
+
+  it("ligada: log de sombra antigo não sobrevive a uma rodada aplicada sem nada", () => {
+    const s = setup(JSON.stringify({ selection: { generic_study_penalty: { enabled: true } } }));
+    const cat = JSON.parse(readFileSync(s.cat, "utf8"));
+    cat.highlights = cat.highlights.filter((x: GenericStudyHighlight) => x.url !== ED_260925[2].url);
+    writeFileSync(s.cat, JSON.stringify(cat));
+    writeFileSync(s.log, JSON.stringify({ applied: false, demoted: [{ url: ED_260925[2].url }], kept: [] }));
+    runGenericStudyPenalty({ categorizedPath: s.cat, configPath: s.cfg, outLog: s.log, rootDir: s.dir });
+    const log = JSON.parse(readFileSync(s.log, "utf8"));
+    assert.equal(log.applied, true);
+    assert.equal(log.demoted.length, 0);
   });
 
   it("categorized ilegível: fail-soft", () => {

@@ -60,10 +60,24 @@ const STUDY_TITLE = rx(
     "(?:os|segundo|de acordo com)\\s+dados|dados\\s+(?:mostram|revelam|apontam|indicam)",
 );
 
-/** Estatística como manchete: "17,8% do mundo", "70% dos médicos", "x em cada y". */
+/**
+ * Estatística como manchete: "17,8% do mundo", "70% dos médicos", "x em cada
+ * y". O percentual precisa vir de uma POPULAÇÃO (pessoas, empresas, mundo…):
+ * "perde 17% do valor de mercado", "reduz preço em 80%" é número de um fato
+ * concreto, não estatística de adoção (review da PR #9667).
+ */
+const POPULATION =
+  "(?:empresas|profissionais|pessoas|trabalhadores|m[ée]dicos|executivos|usu[áa]rios|companhias|consumidores|" +
+  "jovens|alunos|estudantes|brasileiros|americanos|europeus|adultos|funcion[áa]rios|l[íi]deres|ceos|gestores|" +
+  "startups|organiza[çc][õo]es|desenvolvedores|programadores|internautas|entrevistados|respondentes|professores|" +
+  "fam[íi]lias|popula[çc][ãa]o|mundo|pa[íi]s|planeta|mercado de trabalho|for[çc]a de trabalho|" +
+  // fatia do TRABALHO feita por IA ("80% do código", "31% da jornada")
+  "jornada|vendas|c[óo]digo|trabalho|tarefas|atendimentos|code|work|tasks|" +
+  "people|companies|workers|employees|users|adults|developers|businesses|firms|respondents)";
 const STAT_TITLE = new RegExp(
-  `${B}\\d+(?:[.,]\\d+)?\\s?%\\s+(?:d[oa]s?|de|das|dos)${E}|` +
-    `${B}(?:quase|mais de|menos de|metade|maioria|um terço|dois terços)\\s+(?:d[oa]s?\\s+)?(?:\\d+(?:[.,]\\d+)?\\s?%\\s+)?(?:d[oa]s\\s+)?(?:empresas|profissionais|pessoas|trabalhadores|médicos|executivos|usuários|companhias|consumidores|jovens|alunos|estudantes)${E}|` +
+  `${B}\\d+(?:[.,]\\d+)?\\s?%\\s+(?:d[oa]s?|de)\\s+(?:\\p{L}+\\s+)?${POPULATION}${E}|` +
+    `${B}\\d+(?:[.,]\\d+)?\\s?%\\s+(?:of|of all)\\s+(?:\\p{L}+\\s+)?${POPULATION}${E}|` +
+    `${B}(?:quase|mais de|menos de|metade|maioria|um terço|dois terços)\\s+(?:d[oa]s?\\s+)?(?:\\d+(?:[.,]\\d+)?\\s?%\\s+)?(?:d[oa]s\\s+)?${POPULATION}${E}|` +
     `${B}\\d+\\s+em\\s+cada\\s+\\d+${E}`,
   "iu",
 );
@@ -74,7 +88,11 @@ const STAT_TITLE = new RegExp(
  * acelerando…", "…o uso da IA nas empresas").
  */
 const CASE_TITLE = rx(
-  "adota|adotam|adotou|reduz|reduzem|reduziu|economiza|economizam|" +
+  // "adota" só vira case quando o objeto é IA/agentes/automação genérica:
+  // "Apple adota Gemini na Siri" e "Meta adota marca d'água…" são decisão de
+  // produto de uma empresa de IA, não empresa usuária adotando IA.
+  "(?:adota|adotam|adotou)\\s+(?:a\\s+|o\\s+|uso\\s+d[ae]\\s+)?(?:ia|intelig[êe]ncia artificial|agentes?|automa[çc][ãa]o|ferramentas?\\s+de\\s+ia|ai)|" +
+    "reduz|reduzem|reduziu|economiza|economizam|" +
     "como\\s+(?:as|os)\\s+(?:pmes|empresas|bancos|varejistas|startups|companhias|hospitais)|" +
     "nas\\s+empresas|nos\\s+neg[óo]cios|" +
     "j[áa]\\s+(?:devolve|decide|decidem|usa|usam|substitui|transforma)",
@@ -98,15 +116,57 @@ const VETO_INCIDENT = rx(
 
 /**
  * Decisão: governo, regulação, justiça, transação, cancelamento. Nome de
- * país/bloco (EUA, UE, Brasil…) NÃO entra — seria tratar o ângulo
- * geográfico como sinal, nos dois sentidos.
+ * país/bloco como LUGAR (EUA, Brasil…) NÃO entra — seria tratar o ângulo
+ * geográfico como sinal. Instituição como ATOR entra, simétrica: órgão
+ * brasileiro (STF, ANPD…) e estrangeiro (FTC, Casa Branca, Comissão
+ * Europeia…) absolvem igual (review da PR #9667: só os BR protegiam).
  */
 const VETO_DECISION = rx(
   "aprova\\p{L}*|lei|leis|regra|regras|regula\\p{L}*|proib\\p{L}*|pro[íi]be|ban(?:e|iu|s|ned)?|" +
-    "decis[ãa]o|cancela\\p{L}*|suspende\\p{L}*|governo|tribunal|justi[çc]a|" +
-    "stf|tse|senado|congresso|minist[ée]rio|anpd|" +
+    "decis[ãa]o|cancela\\p{L}*|suspende\\p{L}*|" +
+    // instituições — genérico
+    "governos?|government|tribuna(?:l|is)|justi[çc]a|courts?|ju[íi]z(?:a|es)?|judge|" +
+    "regulador\\p{L}*|regulator\\p{L}*|ag[êe]ncias?\\s+regulador\\p{L}*|parlamentos?|parliament|" +
+    "congresso|congress|senado|senate|minist[ée]rios?|ministry|ministro|prefeitura|" +
+    // instituições — nomeadas (BR e estrangeiras, mesmo peso)
+    "stf|stj|tse|tcu|anpd|anatel|cade|ftc|fcc|doj|casa\\s+branca|white\\s+house|" +
+    "comiss[ãa]o\\s+europeia|european\\s+commission|parlamento\\s+europeu|european\\s+parliament|" +
     "acordo|adquire|aquisi[çc][ãa]o|compra|ipo|rodada|investe|investimento|bilh(?:ão|ões)|" +
-    "acquir\\p{L}*|deal|ruling|court|regulator\\p{L}*",
+    "acquir\\p{L}*|deal|ruling",
+);
+
+/**
+ * Siglas de instituição que colidem com palavra comum em minúscula ("sec",
+ * "eu" = pronome): só casam em MAIÚSCULA (SEC, UE, EU como ator regulatório).
+ * OCDE/OECD fica de fora: aparece como régua de comparação ("maior do que
+ * em países da OCDE"), não como quem decide.
+ */
+const VETO_DECISION_ACRONYM = new RegExp(`${B}(?:SEC|UE|EU|ONU|UN)${E}`, "u");
+
+/**
+ * Fato de produto concreto: preço, limite/cota, recurso novo chegando a
+ * usuários ("ChatGPT ganha…", "Google leva… a mais 40 países"), valor de
+ * mercado. Review da PR #9667: sem isso "reduz preço" e "adota" de empresa
+ * de IA saíam como case corporativo.
+ */
+const VETO_PRODUCT = rx(
+  // preço/limite como FATO (mudou, é da API/plano) — "McDonald's adota IA
+  // para calcular preço de seus lanches" segue case, o preço ali é do cliente.
+  "(?:reduz\\p{L}*|corta\\p{L}*|baixa\\p{L}*|aumenta\\p{L}*|sobe|dobra\\p{L}*|muda\\p{L}*|cuts?|raises?|slash\\p{L}*|lowers?)\\s+" +
+    "(?:(?:o|os|a|as|seus?|suas?|its|the)\\s+)?(?:pre[çc]os?|prices?|pricing|limites?|cotas?|quotas?|rate\\s+limits?)|" +
+    "(?:pre[çc]os?|prices?|pricing|limites?|cotas?|quotas?)\\s+(?:(?:d[aeo]s?|of|for)\\s+(?:the\\s+)?)?(?:api|planos?|plans?|assinaturas?|uso|usage|tokens?)|" +
+    "ganha|ganham|ganhou|leva|levam|levou|expande|expandem|expandiu|integra|integram|integrou|" +
+    "valor\\s+de\\s+mercado|market\\s+(?:cap|value)|a[çc][õo]es|shares",
+);
+
+/**
+ * "Pesquisa" como NOME DE PRODUTO (Pesquisa Google, Pesquisa com IA,
+ * pesquisa profunda / deep research) não é estudo: removido do título antes
+ * de testar o sinal de estudo.
+ */
+const PRODUCT_SEARCH = new RegExp(
+  `${B}(?:pesquisa\\s+(?:google|com\\s+ia|profunda|avan[çc]ada)|deep\\s+research|google\\s+search|ai\\s+mode|modo\\s+ia)${E}`,
+  "giu",
 );
 
 /** Ângulo de serviço ao leitor ("veja como", "quem sabe usar…", "você"). */
@@ -125,6 +185,7 @@ const VETO_CONSEQUENCE = rx(
 /** Comportamento do próprio sistema de IA como achado (pesquisa de laboratório). */
 const VETO_AI_BEHAVIOR = rx(
   "replic\\p{L}*|autorreplic\\p{L}*|self-replicat\\p{L}*|engan\\p{L}*|mente|mentiu|chantage\\p{L}*|" +
+    "trapace\\p{L}*|cheat\\p{L}*|" +
     "sabot\\p{L}*|rogue|rebel\\p{L}*|deceiv\\p{L}*|deception|misalign\\p{L}*|desalinh\\p{L}*",
 );
 
@@ -138,14 +199,15 @@ export function classifyGenericStudy(input: GenericStudyInput): GenericStudyVerd
   const vetoes: string[] = [];
   if (!title) return { generic: false, signals, vetoes };
 
-  if (STUDY_TITLE.test(title)) signals.push("estudo");
+  if (STUDY_TITLE.test(title.replace(PRODUCT_SEARCH, " "))) signals.push("estudo");
   if (STAT_TITLE.test(title)) signals.push("estatistica");
   if (CASE_TITLE.test(title)) signals.push("case");
 
   if (input.bucket === "lancamento") vetoes.push("bucket:lancamento");
   if (VETO_LAUNCH.test(title)) vetoes.push("fato:lancamento");
   if (VETO_INCIDENT.test(title)) vetoes.push("fato:incidente");
-  if (VETO_DECISION.test(title)) vetoes.push("fato:decisao");
+  if (VETO_DECISION.test(title) || VETO_DECISION_ACRONYM.test(title)) vetoes.push("fato:decisao");
+  if (VETO_PRODUCT.test(title)) vetoes.push("fato:produto");
   if (VETO_CONSEQUENCE.test(title)) vetoes.push("fato:consequencia");
   if (VETO_AI_BEHAVIOR.test(title)) vetoes.push("fato:comportamento-de-ia");
   if (VETO_SERVICE.test(title)) vetoes.push("servico-ao-leitor");

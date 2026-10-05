@@ -15,6 +15,8 @@
  *   - `false` / ausente → modo sombra: NÃO reordena, só grava o log com
  *     `applied: false` (o gate 4 mostra "seria rebaixado"), para o editor
  *     acompanhar o que a regra faria antes de ligá-la.
+ *   - config ausente → desligado + warn em `data/run-log.jsonl`. Default
+ *     resolvido pela raiz do repo (não pelo cwd).
  *   - erro lendo config/JSON/classificando → comportamento atual (nada muda),
  *     warn em `data/run-log.jsonl`, exit 0 (fail-soft).
  *
@@ -28,6 +30,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runMain } from "./lib/exit-handler.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
@@ -39,8 +43,14 @@ import {
 
 type Rec = Record<string, unknown>;
 
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** Default resolvido pela raiz do repo, não pelo cwd (review da PR #9667). */
+export const DEFAULT_CONFIG_PATH = resolve(ROOT, "platform.config.json");
+
 export interface GenericStudyPenaltyConfig {
   enabled: boolean;
+  /** true quando o arquivo de config não existe (o caller avisa no run-log). */
+  missing?: boolean;
 }
 
 /**
@@ -49,7 +59,7 @@ export interface GenericStudyPenaltyConfig {
  * arquivo ou chave ausente → desligado.
  */
 export function readGenericStudyPenaltyConfig(configPath: string): GenericStudyPenaltyConfig {
-  if (!existsSync(configPath)) return { enabled: false };
+  if (!existsSync(configPath)) return { enabled: false, missing: true };
   const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
     selection?: { generic_study_penalty?: { enabled?: unknown } };
   };
@@ -65,6 +75,33 @@ export interface RunResult {
 }
 
 /**
+ * Decide se o log é regravado.
+ *  - Flag DESLIGADA: sempre — o JSON não foi reordenado, então o rerun
+ *    reproduz fielmente o que a regra faria; manter um log antigo mostraria no
+ *    gate 4 um "seria rebaixado" de candidatos que já não estão lá.
+ *  - Flag LIGADA com rebaixamento/aviso: sempre.
+ *  - Flag LIGADA sem nada (resume): o JSON já reordenado não reproduz o
+ *    rebaixamento, então o log anterior é preservado SÓ se for de modo
+ *    aplicado e todas as URLs dele ainda estiverem nos highlights desta
+ *    edição; senão (log de sombra, de outra seleção, ilegível) é regravado.
+ */
+function shouldWriteLog(outLog: string, enabled: boolean, changes: number, highlights: GenericStudyHighlight[]): boolean {
+  if (!enabled || changes > 0 || !existsSync(outLog)) return true;
+  try {
+    const prev = JSON.parse(readFileSync(outLog, "utf8")) as { applied?: unknown; demoted?: unknown; kept?: unknown };
+    if (prev.applied !== true) return true;
+    const urls = [...(Array.isArray(prev.demoted) ? prev.demoted : []), ...(Array.isArray(prev.kept) ? prev.kept : [])].map(
+      (d) => (d as { url?: unknown }).url,
+    );
+    if (urls.length === 0) return true;
+    const current = new Set(highlights.map((h) => h.url ?? h.article?.url));
+    return !urls.every((u) => typeof u === "string" && current.has(u));
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Núcleo testável: lê config + categorized, aplica (ou simula) e grava.
  * Nunca lança — qualquer erro vira `{ error }` com o JSON intocado.
  */
@@ -77,7 +114,19 @@ export function runGenericStudyPenalty(opts: {
   rootDir?: string;
 }): RunResult {
   try {
-    const { enabled } = readGenericStudyPenaltyConfig(opts.configPath);
+    const { enabled, missing } = readGenericStudyPenaltyConfig(opts.configPath);
+    if (missing) {
+      logEvent(
+        {
+          edition: opts.edition ?? null,
+          stage: 1,
+          agent: "demote-generic-study-highlights",
+          level: "warn",
+          message: `config ${opts.configPath} não encontrada — penalidade de estudo/case genérico (#9462) segue desligada (modo sombra)`,
+        },
+        opts.rootDir,
+      );
+    }
     const categorized = JSON.parse(readFileSync(opts.categorizedPath, "utf8")) as Rec;
     const highlights = (Array.isArray(categorized.highlights) ? categorized.highlights : []) as GenericStudyHighlight[];
     const result = demoteGenericStudyHighlights(highlights);
@@ -91,9 +140,7 @@ export function runGenericStudyPenalty(opts: {
       if (enabled && result.demoted.length > 0) {
         writeFileSync(opts.categorizedPath, JSON.stringify({ ...categorized, highlights: result.highlights }, null, 2) + "\n", "utf8");
       }
-      // Resume: rodada sem nada novo não apaga o registro de uma rodada
-      // anterior (o JSON já reordenado não reproduz o rebaixamento).
-      if (opts.outLog && (result.demoted.length > 0 || result.kept.length > 0 || !existsSync(opts.outLog))) {
+      if (opts.outLog && shouldWriteLog(opts.outLog, enabled, result.demoted.length + result.kept.length, highlights)) {
         writeFileSync(
           opts.outLog,
           JSON.stringify({ applied: enabled, demoted: result.demoted, kept: result.kept }, null, 2) + "\n",
@@ -132,7 +179,7 @@ async function main(): Promise<void> {
   }
   const res = runGenericStudyPenalty({
     categorizedPath,
-    configPath: args["config"] ?? "platform.config.json",
+    configPath: args["config"] ? resolve(args["config"]) : DEFAULT_CONFIG_PATH,
     outLog: args["out-log"],
     dryRun,
     edition: args["edition"] ?? null,
