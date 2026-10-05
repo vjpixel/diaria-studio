@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -69,8 +69,10 @@ describe("shadowItemsFromLog", () => {
 describe("formatGateQuestions", () => {
   it("pergunta explícita sim/não por item, e nada sem item", () => {
     const block = formatGateQuestions(shadowItemsFromLog(SHADOW_LOG));
-    assert.match(block, /1\. Concorda que "Quase 70% dos médicos já usam IA, aponta estudo" sairia do destaque\? responda sim\/não/);
-    assert.match(block, /2\. Concorda que "Grupo Sabin .*" sairia do destaque\? responda sim\/não/);
+    assert.match(block, /1\. Concorda que "Quase 70% dos médicos já usam IA, aponta estudo" sairia do destaque\? responda "1 sim" ou "1 não"/);
+    assert.match(block, /2\. Concorda que "Grupo Sabin .*" sairia do destaque\? responda "2 sim" ou "2 não"/);
+    // "sim" solto é aprovação do gate, nunca resposta 🔎.
+    assert.match(block, /O sim\/editar\/\n\s+ajustar\/abortar do gate NÃO responde estas perguntas/);
     assert.match(block, /Sem resposta = "não lido"/);
     assert.equal(formatGateQuestions([]), "");
   });
@@ -155,6 +157,19 @@ describe("recordGenericStudyFeedback (CLI --record)", () => {
     assert.ok(disk.items.every((i: GenericStudyFeedbackItem) => "titulo" in i && "respondido_em" in i));
   });
 
+  it("feedback existente mas ilegível: recusa gravar (não apaga respostas); escrita atômica sem .tmp", () => {
+    const root = mkdtempSync(join(tmpdir(), "gsf-"));
+    const dir = makeEdition(root, "261009", { log: SHADOW_LOG });
+    writeFileSync(feedbackPath(dir), "{corrompido");
+    assert.throws(() => recordGenericStudyFeedback({ editionDir: dir, answers: "1=sim" }), /recuso sobrescrever/);
+    assert.equal(readFileSync(feedbackPath(dir), "utf8"), "{corrompido");
+    writeFileSync(feedbackPath(dir), JSON.stringify({ foo: 1 }));
+    assert.throws(() => recordGenericStudyFeedback({ editionDir: dir }), /items/);
+    const ok = makeEdition(root, "261010", { log: SHADOW_LOG });
+    recordGenericStudyFeedback({ editionDir: ok, answers: "1=sim" });
+    assert.deepEqual(readdirSync(join(ok, "_internal")).filter((f) => f.endsWith(".tmp")), []);
+  });
+
   it("sem item em modo sombra não grava nada; --answers inválido não grava", () => {
     const root = mkdtempSync(join(tmpdir(), "gsf-"));
     const noShadow = makeEdition(root, "261007", { log: { ...SHADOW_LOG, applied: true } });
@@ -195,6 +210,19 @@ describe("agregador (decisão da #9673)", () => {
     assert.equal(r.nao_items.length, 1);
   });
 
+  it("collectShadowFeedback: item 🔎 do log ausente do feedback conta como nao_lido", () => {
+    const root = mkdtempSync(join(tmpdir(), "gsr-"));
+    const dir = makeEdition(root, "261006", { log: SHADOW_LOG });
+    writeFileSync(
+      feedbackPath(dir),
+      JSON.stringify({ edition: "261006", recorded_at: "x", items: [{ url: URL_A, titulo: "a", resposta: "sim", respondido_em: "x", acao_no_final: null }] }),
+    );
+    const r = aggregateShadowFeedback(collectShadowFeedback(root, "261006"));
+    assert.equal(r.total, 2);
+    assert.equal(r.sim, 1);
+    assert.equal(r.nao_lido, 1);
+  });
+
   it("collectShadowFeedback: ≥since, sem registro conta como nao_lido", () => {
     const root = mkdtempSync(join(tmpdir(), "gsr-"));
     makeEdition(root, "261005", { log: SHADOW_LOG }); // antes do corte
@@ -226,7 +254,18 @@ describe("playbook do Stage 4 (guard textual)", () => {
 
   it("pergunta explícita sim/não por item, gerada pelo script", () => {
     assert.match(md, /generic-study-gate-feedback\.ts --edition-dir \{EDITION_DIR\} --questions/);
-    assert.match(md, /Concorda que "<título>" sairia do destaque\? responda sim\/não/);
+    assert.match(md, /N\. Concorda que "<título>" sairia do destaque\? responda "N sim" ou "N não"/);
+  });
+
+  it("sim/editar/ajustar/abortar do gate nunca vira --answers; só sim/não ligado a índice", () => {
+    assert.match(md, /Só conta como resposta 🔎 um sim\/não ligado a um índice ou item/);
+    assert.match(md, /o `sim`\/`editar`\/`ajustar`\/`abortar` do gate NUNCA vira `--answers`/);
+    assert.match(md, /o `sim` de aprovação do gate NUNCA entra/);
+  });
+
+  it("resposta do terminal é gravada assim que chega (não só no §4e)", () => {
+    assert.match(md, /Gravar assim que a resposta chega/);
+    assert.match(md, /--record --answers "N=sim"/);
   });
 
   it("registro na aprovação, sem resposta ⇒ nao_lido, ação no texto não é resposta", () => {

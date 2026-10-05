@@ -59,11 +59,18 @@ export function collectShadowFeedback(editionsDir: string, since = DEFAULT_SINCE
         items = null;
       }
     }
+    const shadow = readShadowItems(dir);
     if (items) {
-      if (items.length > 0) out.push({ edition: aammdd, items });
+      // Item 🔎 do log que não aparece no feedback (registro antigo/parcial)
+      // conta como nao_lido — nunca some da contagem.
+      const recorded = new Set(items.map((i) => i.url));
+      const missing = shadow
+        .filter((s) => !recorded.has(s.url))
+        .map((s) => ({ ...s, resposta: "nao_lido" as const, respondido_em: null, acao_no_final: null }));
+      const all = [...items, ...missing];
+      if (all.length > 0) out.push({ edition: aammdd, items: all });
       continue;
     }
-    const shadow = readShadowItems(dir);
     if (shadow.length === 0) continue;
     const reviewedPath = join(dir, "02-reviewed.md");
     const reviewedMd = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;

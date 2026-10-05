@@ -22,7 +22,7 @@
  * O núcleo é puro; os helpers de disco (`read*`) são finos e fail-soft.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseDestaques } from "../extract-destaques.ts";
 
@@ -111,9 +111,13 @@ export function questionText(item: ShadowItem): string {
   return `Concorda que "${escapeTitleQuotes(item.titulo)}" sairia do destaque? responda sim/não`;
 }
 
-/** Linha de pergunta numerada para o gate no terminal. */
+/**
+ * Linha de pergunta numerada para o gate no terminal. Pede a forma
+ * "N sim"/"N não": um "sim" solto é a aprovação do gate, nunca resposta 🔎.
+ */
 export function formatQuestion(item: ShadowItem, index: number): string {
-  return `  ${index}. ${questionText(item)}`;
+  const base = questionText(item).replace(/ responda sim\/não$/, "");
+  return `  ${index}. ${base} responda "${index} sim" ou "${index} não"`;
 }
 
 /**
@@ -131,7 +135,8 @@ export function formatGateQuestions(items: ShadowItem[]): string {
     "",
     ...items.map((it, i) => formatQuestion(it, i + 1)),
     "",
-    '   Responda junto com o gate, ex.: "sim; 1 sim, 2 não".',
+    '   Responda com o NÚMERO do item, ex.: "1 sim, 2 não". O sim/editar/',
+    "   ajustar/abortar do gate NÃO responde estas perguntas.",
   ];
   return lines.join("\n");
 }
@@ -226,7 +231,7 @@ export function feedbackPath(editionDir: string): string {
   return join(editionDir, "_internal", FEEDBACK_FILE);
 }
 
-/** Lê o registro gravado. Ausente/ilegível ⇒ null. */
+/** Lê o registro gravado. Ausente/ilegível ⇒ null (leitura fail-soft, para exibição). */
 export function readFeedbackFile(editionDir: string): GenericStudyFeedbackFile | null {
   const p = feedbackPath(editionDir);
   if (!existsSync(p)) return null;
@@ -240,7 +245,26 @@ export function readFeedbackFile(editionDir: string): GenericStudyFeedbackFile |
 }
 
 /**
- * Grava `_internal/04-generic-study-feedback.json`. Retorna o arquivo
+ * Leitura ESTRITA para regravar: ausente ⇒ []; existe mas ilegível/inválido
+ * ⇒ lança. Tratar um arquivo corrompido como vazio apagaria respostas
+ * explícitas já dadas pelo editor.
+ */
+function readPreviousStrict(editionDir: string): GenericStudyFeedbackItem[] {
+  const p = feedbackPath(editionDir);
+  if (!existsSync(p)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(p, "utf8"));
+  } catch (err) {
+    throw new Error(`${p} existe mas não pôde ser lido (${(err as Error).message}) — recuso sobrescrever respostas já gravadas`);
+  }
+  const items = (parsed as { items?: unknown } | null)?.items;
+  if (!Array.isArray(items)) throw new Error(`${p} existe mas não tem items[] — recuso sobrescrever respostas já gravadas`);
+  return items as GenericStudyFeedbackItem[];
+}
+
+/**
+ * Grava `_internal/04-generic-study-feedback.json` (atômico: .tmp + rename). Retorna o arquivo
  * gravado, ou `null` quando a edição não tem item em modo sombra. Lança em
  * resposta inválida (nada é gravado). Respostas explícitas anteriores para a
  * mesma URL são preservadas quando esta chamada não traz resposta para ela.
@@ -272,10 +296,13 @@ export function recordGenericStudyFeedback(opts: {
       answersByUrl: opts.answersByUrl,
       reviewedMd,
       now,
-      previous: readFeedbackFile(opts.editionDir)?.items ?? [],
+      previous: readPreviousStrict(opts.editionDir),
     }),
   };
-  writeFileSync(feedbackPath(opts.editionDir), JSON.stringify(file, null, 2) + "\n", "utf8");
+  const out = feedbackPath(opts.editionDir);
+  const tmp = `${out}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", "utf8");
+  renameSync(tmp, out);
   return file;
 }
 
