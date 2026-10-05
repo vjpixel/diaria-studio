@@ -193,6 +193,28 @@ describe("splitParagraphIntoTwoBlocks (pure, #6136 item 2)", () => {
     assert.equal((result.match(/\*\*/g) ?? []).length % 2, 0);
   });
 
+  it("#9675 (USE MELHOR da 261006): marcador de lista '1.' no início NÃO é fronteira de corte", () => {
+    const texto = "1. Dar instruções claras sobre o formato que você espera receber da ferramenta";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    assert.equal(result, texto, "o ponto do marcador '1.' não é fim de frase — não deve dividir");
+    assert.doesNotMatch(result, /^\d+\.\n/);
+  });
+
+  it("#9675: marcador no meio ('… algo. 2. Outro') não fica pendurado no fim do 1º bloco", () => {
+    // 2º item mais longo que o 1º: o corte logo após "2." fica mais perto do
+    // meio que o corte após "agora." — no código antigo, o 1º bloco terminava em "2.".
+    const texto = "1. Faça isto agora. 2. Peça exemplos concretos antes da resposta final, sempre com contexto do seu caso.";
+    const result = splitParagraphIntoTwoBlocks(texto);
+    const blocks = result.split("\n\n");
+    assert.equal(blocks.length, 2);
+    for (const b of blocks) {
+      assert.doesNotMatch(b, /^\d+[.)]$/, `bloco não pode ser só o marcador: ${JSON.stringify(b)}`);
+      assert.doesNotMatch(b, /\s\d+[.)]$/, `marcador não pode ficar pendurado no fim: ${JSON.stringify(b)}`);
+    }
+    assert.ok(blocks[1].startsWith("2."), "2º bloco deveria começar pelo marcador '2.'");
+    assert.equal(result.replace(/\n\n/g, " "), texto);
+  });
+
   it("resultado sempre reconstrói o texto original (sem perder nem duplicar conteúdo)", () => {
     const texto = "Frase A com algum conteúdo. Frase B com mais conteúdo ainda pra garantir tamanho.";
     const result = splitParagraphIntoTwoBlocks(texto);

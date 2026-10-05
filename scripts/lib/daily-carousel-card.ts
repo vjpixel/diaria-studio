@@ -245,9 +245,19 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
   // sem aumentar overflow (1 caso antes, 1 caso depois) — o respiro perdido é
   // absorvido pela linha em branco que o bloco único não precisa mais gastar.
   const sentenceRe = /[.!?]+(?:["'”’)\]]*)\s+/g;
+  // #9675: o ponto de um marcador de lista numerada ("1. Dar instruções…")
+  // casa `sentenceRe`, mas não é fim de frase — cortar ali deixava "1."
+  // sozinho no 1º bloco (ou pendurado no fim dele, no caso "…algo. 2. Outro").
+  // Candidato cujo trecho anterior (desde a fronteira de sentença anterior, ou
+  // o início do texto) seja só o marcador é descartado.
+  const listMarkerRe = /^\d+[.)]$/;
+  let prevEnd = 0;
   let sm: RegExpExecArray | null;
   while ((sm = sentenceRe.exec(trimmed)) !== null) {
     const pos = sm.index + sm[0].length;
+    const segment = trimmed.slice(prevEnd, pos).trim();
+    prevEnd = pos;
+    if (listMarkerRe.test(segment)) continue;
     if (pos > 0 && pos < trimmed.length && !insideBold(pos)) candidates.push(pos);
   }
 
