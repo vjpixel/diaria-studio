@@ -290,6 +290,9 @@ export function removeSameFactSecondary(
       if (w.evidence !== "title") return true;
       // #9456: submissão do editor nunca é removida automaticamente (#4192, #5080).
       if ((it as { flag?: unknown }).flag === "editor_submitted") return true;
+      // #9100: destaque rebaixado por MESMO FATO fica no pool — rebaixar
+      // nunca é descartar (decisão do editor de 05/10/2026).
+      if ((it as { same_fact_demoted?: unknown }).same_fact_demoted) return true;
       const title = rec.article?.title ?? rec.title;
       removed.push({
         bucket,
@@ -407,7 +410,9 @@ export function formatHighlightSameFactNotes(themeCheck: unknown, approved: unkn
   const pos = new Map<string, number>();
   highlights.forEach((h, i) => {
     if (!h || typeof h !== "object") return;
-    const rec = h as { url?: unknown; article?: { url?: unknown } };
+    const rec = h as { url?: unknown; article?: { url?: unknown }; same_fact_demoted?: unknown };
+    // #9100: rebaixado já sai como ⬇️ (01-same-fact-demoted.json) — sem 🚨 duplicado.
+    if (rec.same_fact_demoted) return;
     const url = rec.article?.url ?? rec.url;
     if (typeof url === "string" && url) pos.set(canonicalize(url), i + 1);
   });

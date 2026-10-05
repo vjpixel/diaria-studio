@@ -105,7 +105,8 @@
  *     (fallback) → §1r (promoção de runners_up até 6, in-JS) → §1s
  *     (finalize-stage1) → §1t (avisos de mínimo por seção, in-JS) → §1u
  *     (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup
- *     intra-edição + evergreen) → §1v (render MD) → §1v-scoring-features
+ *     intra-edição + evergreen) → §1u-quater (rebaixa destaque com MESMO
+ *     FATO, #9100, fail-soft) → §1v (render MD) → §1v-scoring-features
  *     (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies
  *     (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis
  *     (validate-stage-1-output, blocker vira HALT) → §1w-quat
@@ -1357,6 +1358,23 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
 
   // --- §1u-ter dedup evergreen ---
   step(deps, report, "dedup-evergreen-buckets (1u-ter)", "scripts/dedup-evergreen-buckets.ts", ["--in", categorizedPath, "--out", categorizedPath, "--past-editions", "data/past-editions.md"]);
+
+  // --- §1u-quater rebaixa destaque com MESMO FATO (#9100) ---
+  // Antes do render: o gate 1 e o --auto já veem a ordem nova. O item
+  // rebaixado nunca sai do pool (decisão do editor de 05/10/2026). Fail-soft.
+  const demotion = softStep(deps, report, "demote-same-fact-highlights (1u-quater, #9100)", "scripts/demote-same-fact-highlights.ts", [
+    "--categorized",
+    categorizedPath,
+    "--current-edition",
+    opts.edition,
+    "--editions-dir",
+    "data/editions",
+    "--out-log",
+    internalPath(editionDir, "01-same-fact-demoted.json"),
+  ]);
+  for (const line of ((demotion.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
+    if (typeof line === "string") report.note(line);
+  }
 
   // --- §1v renderizar MD ---
   const mdPath = `${editionDir}/01-categorized.md`;
