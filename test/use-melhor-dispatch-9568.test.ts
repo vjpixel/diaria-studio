@@ -210,6 +210,21 @@ describe("plano do 4º post (fail-soft, falha fechada, #9568)", () => {
     assert.equal(plan.status === "skip" && plan.level, "info");
   });
 
+  it("`## um` que cita a marca/URL → skip warn (#9628), não publica; sem menção segue pronto", () => {
+    for (const um of [
+      `${UM_SOCIAL}\n\nLeia mais na Diar.ia.`,
+      `${UM_SOCIAL}\n\nTudo em https://diar.ia.br/p/x`,
+      `${UM_SOCIAL}\n\nveja a diar.ia.br`,
+    ]) {
+      const plan = planUseMelhorDispatchFrom({ ...base, socialUm: um });
+      assert.equal(plan.status, "skip", um);
+      assert.equal(plan.status === "skip" ? plan.level : "x", undefined); // default warn
+      assert.match(plan.status === "skip" ? plan.reason : "", /marca\/URL.*#9628/);
+      assert.deepEqual(useMelhorDispatchIds(plan), []);
+    }
+    assert.equal(planUseMelhorDispatchFrom(base).status, "ready");
+  });
+
   it("sem 02-reviewed.md ou sem JSON aprovado → skip warn (nunca 'ready' sem re-verificar)", () => {
     for (const patch of [{ reviewedMd: null }, { approved: null }]) {
       const plan = planUseMelhorDispatchFrom({ ...base, ...patch });
