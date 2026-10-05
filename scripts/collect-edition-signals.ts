@@ -49,7 +49,13 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
-import { isHardFailure, roundDryStreak, roundFailureStreak, type OutcomeLike } from "./lib/source-runs.ts";
+import {
+  isHardFailure,
+  roundDryStreak,
+  roundFailureStreak,
+  roundFeedFailureStreak,
+  type OutcomeLike,
+} from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
@@ -87,6 +93,7 @@ export interface Signal {
   kind:
     | "source_streak"
     | "source_dry"
+    | "source_feed_broken"
     | "unfixed_issue"
     | "chrome_disconnects"
     | "mcp_unavailable"
@@ -673,6 +680,19 @@ function isStaleOutcome(
  */
 export const SOURCE_DRY_THRESHOLD_ROUNDS = 3;
 
+/**
+ * #9657: rodadas seguidas com o caminho FEED (RSS/sitemap) falhando — com a
+ * fonte saudável pela busca `site:` — pra emitir `source_feed_broken`.
+ */
+export const SOURCE_FEED_BROKEN_THRESHOLD_ROUNDS = 3;
+
+/**
+ * #9657: ação sugerida pra `source_feed_broken`. Consertar o feed, nunca
+ * desativar a fonte — ela está trazendo artigo pela busca.
+ */
+export const SOURCE_FEED_BROKEN_ACTION =
+  "O caminho RSS/sitemap desta fonte falha há várias rodadas, mas a busca `site:` cobre a fonte — NÃO desativar em seed/sources.csv. Consertar o feed: (1) testar a URL do RSS com curl (com e sem User-Agent de navegador); (2) se mudou de endereço, atualizar a coluna RSS em seed/sources.csv; (3) se o site bloqueia leitura automatizada do feed (ex.: 429/403 da Cloudflare), registrar e manter a busca como caminho — sem burlar o bloqueio. Enquanto isso, a cobertura da fonte depende só da cota da API de busca.";
+
 export function signalsFromSourceHealth(
   health: SourceHealthFile,
   minStreak = 3,
@@ -681,6 +701,7 @@ export function signalsFromSourceHealth(
   now: Date = new Date(),
   discoveryStaleDays = DISCOVERY_STALE_DAYS,
   primarySources?: Set<string>,
+  feedBrokenThreshold = SOURCE_FEED_BROKEN_THRESHOLD_ROUNDS,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
@@ -731,6 +752,33 @@ export function signalsFromSourceHealth(
             : `Considere desativar ${source} temporariamente em seed/sources.csv até investigar.`,
       });
       continue; // já sinalizado como quebrado; não duplicar como "dry"
+    }
+
+    // --- #9657: caminho RSS/sitemap quebrado, escondido pela busca ---
+    // O veredito de rodada considera a fonte saudável se QUALQUER caminho
+    // trouxe artigo; sem este sinal o feed quebrado só aparece quando a cota
+    // da busca esgota. Exige ao menos 1 rodada do streak coberta pela busca
+    // (fonte inteira fora do ar já saiu acima como source_streak).
+    if (!isDiscovery) {
+      const feed = roundFeedFailureStreak(recent);
+      if (
+        feed.consecutive_failures >= feedBrokenThreshold &&
+        feed.healthy_rounds >= 1
+      ) {
+        out.push({
+          kind: "source_feed_broken",
+          severity: "low",
+          title: `Source ${source}: RSS falhou em ${feed.consecutive_failures} rodadas seguidas (busca site: cobrindo)`,
+          details: {
+            source,
+            ...(isPrimary ? { source_type: PRIMARY_SOURCE_TYPE } : {}),
+            feed_failure_rounds: feed.consecutive_failures,
+            last_feed_reason: feed.last_reason,
+            last_outcomes: recent.slice(-Math.min(6, recent.length)),
+          },
+          suggested_action: SOURCE_FEED_BROKEN_ACTION,
+        });
+      }
     }
 
     // --- Fonte seca: nunca produziu + janela longa sem ok ---
@@ -1766,6 +1814,7 @@ function main(): void {
         by_kind: {
           source_streak: draft.signals.filter((s) => s.kind === "source_streak").length,
           source_dry: draft.signals.filter((s) => s.kind === "source_dry").length,
+          source_feed_broken: draft.signals.filter((s) => s.kind === "source_feed_broken").length,
           unfixed_issue: draft.signals.filter((s) => s.kind === "unfixed_issue").length,
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
           mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
