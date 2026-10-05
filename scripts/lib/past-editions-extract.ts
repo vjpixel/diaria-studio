@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { canonicalize } from "./url-utils.ts";
 import { isValidEditionDir } from "./edition-utils.ts"; // #1680: validador consolidado
 import { enumerateEditionDirs } from "./find-current-edition.ts"; // #2463/#3025: layout flat+nested
+import { decodeHtmlEntities } from "./clean-summary.ts"; // #9646: entidade HTML não vira token
 
 export { isValidEditionDir };
 
@@ -241,13 +242,24 @@ const THEME_FACT_STOPWORDS = new Set([
   "about","how","what","why","who","now",
 ]);
 
-/** #9646: tokens de conteúdo (≥3 letras, ou número de qualquer tamanho). */
+/** Texto pronto pra comparar: entidades HTML decodificadas, NFC, minúsculo. */
+function normalizeThemeText(text: string): string {
+  return decodeHtmlEntities(text).normalize("NFC").toLowerCase();
+}
+
+const NUMERIC_TOKEN = /^\p{N}+$/u;
+
+/**
+ * #9646: tokens de conteúdo (≥3 letras, ou número de qualquer tamanho).
+ * Entidades HTML (`&ccedil;`, `&#8230;`) são decodificadas antes — senão
+ * viram tokens espúrios ("ccedil", "8230") que corroboram o fato à toa.
+ */
 export function themeFactTokens(text: string): Set<string> {
   const out = new Set<string>();
-  const normalized = text.toLowerCase().replace(/&#x27;|&#39;/g, "'");
+  const normalized = normalizeThemeText(text);
   for (const w of normalized.match(/[\p{L}\p{N}]+/gu) ?? []) {
     if (THEME_FACT_STOPWORDS.has(w)) continue;
-    if (w.length >= 3 || /^\p{N}+$/u.test(w)) out.add(w);
+    if (w.length >= 3 || NUMERIC_TOKEN.test(w)) out.add(w);
   }
   return out;
 }
@@ -319,21 +331,39 @@ export function matchesRecentThemeFact(
   summary: string,
   pastFacts: Map<string, string>,
 ): ThemeFactMatch | null {
-  const hay = `${title} ${summary}`.toLowerCase();
+  const hay = normalizeThemeText(`${title} ${summary}`);
   let candTokens: Set<string> | null = null;
-  for (const [entity, factText] of pastFacts) {
+  for (const [rawEntity, factText] of pastFacts) {
+    const entity = normalizeThemeText(rawEntity);
     if (entity.length < 5) continue;
     if (GENERIC_THEME_WORDS.has(entity)) continue;
     if (!containsWholeWord(hay, entity)) continue;
     candTokens ??= themeFactTokens(hay);
     const factTokens = themeFactTokens(factText);
-    const entityForms = new Set([entity, `${entity}s`, `${entity}es`]);
+    const entityParts = [...themeFactTokens(entity), entity];
     const shared = [...candTokens].filter(
-      (t) => factTokens.has(t) && !entityForms.has(t),
+      (t) => factTokens.has(t) && !isEntityFamily(t, entityParts),
     );
-    if (shared.length > 0) return { entity, sharedTerms: shared };
+    // Número curto/ano ("4", "2026") só corrobora junto com termo não-numérico.
+    if (shared.some((t) => !NUMERIC_TOKEN.test(t))) return { entity, sharedTerms: shared };
   }
   return null;
+}
+
+/**
+ * #9646: o termo é a própria entidade (ou pedaço dela, p/ "gpt-5" → "gpt",
+ * "5"), um plural/derivado dela ("agentes") ou o cognato que ela estende
+ * ("agent" ⊂ "agente", D1 em inglês). Família da entidade não é fato em
+ * comum — contar isso reintroduz o "só cita a entidade" que a #9646 tirou.
+ */
+function isEntityFamily(token: string, entityParts: string[]): boolean {
+  for (const part of entityParts) {
+    if (token === part) return true;
+    if (NUMERIC_TOKEN.test(part)) continue;
+    if (part.length >= 4 && token.startsWith(part)) return true;
+    if (token.length >= 4 && part.startsWith(token)) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------

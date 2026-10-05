@@ -234,3 +234,67 @@ describe("dedup Pass-1d com fato (#9646) — casos reais medidos", () => {
     assert.equal(r.removed.length, 1);
   });
 });
+
+// --- Findings P2 do review da PR #9658 ---------------------------------------
+// Real (260929, Exame): só divide com o fato de 260925 o cognato "agent"
+// ("Open Agent Safety Platform" × "rogue OpenAI agent" do D1 em inglês).
+const NVIDIA_EXAME = {
+  url: "https://exame.com/inteligencia-artificial/nvidia-cria-plataforma-para-impedir-fuga-de-agentes-de-ia/",
+  title: "Nvidia cria plataforma para impedir 'fuga' de agentes de IA | Exame",
+  summary:
+    "A Nvidia lançou nesta segunda-feira, 28, a Open Agent Safety Platform, conjunto de ferramentas para impedir que agentes de inteligência artificial (IA) saiam dos limites definidos para eles.",
+};
+
+describe("matchesRecentThemeFact — findings P2 da PR #9658", () => {
+  it("entidades HTML são decodificadas antes de tokenizar (não viram 'ccedil')", () => {
+    const t = themeFactTokens("Servi&ccedil;o de sa&uacute;de &#8230; &quot;rebelde&quot;");
+    assert.ok(t.has("serviço") && t.has("saúde") && t.has("rebelde"), [...t].join(","));
+    assert.ok(!t.has("ccedil") && !t.has("uacute") && !t.has("8230") && !t.has("quot"));
+    const facts = new Map([["agente", "Agente rebelde invade servi&ccedil;o de sa&uacute;de"]]);
+    assert.equal(
+      matchesRecentThemeFact("Agentes de IA chegam &agrave; educa&ccedil;&atilde;o", "", facts),
+      null,
+    );
+  });
+
+  it("entidade escrita com entidade HTML no candidato ainda é reconhecida", () => {
+    const facts = new Map([["agência", "Agência invade sistema"]]);
+    assert.equal(
+      matchesRecentThemeFact("Ag&ecirc;ncia invade outro sistema", "", facts)?.entity,
+      "agência",
+    );
+  });
+
+  it("cognato inglês da entidade ('agent' ⊂ 'agente') não é fato em comum (Nvidia/Exame, 260929)", () => {
+    const facts = new Map([["agente", "Rogue OpenAI agent hacks government system"]]);
+    assert.equal(
+      matchesRecentThemeFact("Agentes de IA ganham plataforma", "Open Agent Safety Platform", facts),
+      null,
+    );
+    const r = runPass1d([NVIDIA_EXAME]);
+    assert.equal(r.removed.length, 0, r.removed.map((x) => x.dedup_note).join(" / "));
+  });
+
+  it("número curto/ano sozinho não corrobora; junto com termo de conteúdo, sim", () => {
+    const facts = new Map([["agente", "Agente invade 4 sistemas em 2026"]]);
+    assert.equal(matchesRecentThemeFact("Agentes de IA: 4 tendências para 2026", "", facts), null);
+    const m = matchesRecentThemeFact("4 agentes invadem sistemas", "", facts);
+    assert.equal(m?.entity, "agente");
+    assert.ok(m!.sharedTerms.includes("sistemas"));
+  });
+
+  it("entidade com hífen/ponto não se corrobora pelos próprios pedaços ('gpt-5' → 'gpt', '5')", () => {
+    const facts = new Map([["gpt-5", "OpenAI lança GPT-5 para todos"]]);
+    assert.equal(matchesRecentThemeFact("Benchmark compara GPT-5 e GPT-6", "", facts), null);
+    assert.equal(
+      matchesRecentThemeFact("OpenAI corta preço do GPT-5", "", facts)?.entity,
+      "gpt-5",
+    );
+  });
+
+  it("caractere especial de regex na entidade é literal ('gpt-5.1' não casa 'gpt-5x1')", () => {
+    const facts = new Map([["gpt-5.1", "OpenAI lança GPT-5.1"]]);
+    assert.equal(matchesRecentThemeFact("OpenAI testa gpt-5x1", "", facts), null);
+    assert.equal(matchesRecentThemeFact("OpenAI anuncia GPT-5.1", "", facts)?.entity, "gpt-5.1");
+  });
+});

@@ -125,6 +125,15 @@ function safeFromCodePoint(cp: number): string {
 }
 
 /**
+ * Decodifica entidades HTML (nomeadas da tabela acima, decimais e hex) sem
+ * mexer em tags. Reusado pelo theme-fact do dedup (#9646), que tokeniza
+ * title/summary crus de feed — `&ccedil;` não pode virar o token "ccedil".
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (_, ref) => decodeEntity(ref));
+}
+
+/**
  * stripHtml — remove HTML tags de um campo de texto livre antes do stitch (#2151).
  *
  * Regras:
@@ -165,7 +174,7 @@ export function stripHtml(text: string): string {
   //    - Named entities: mapped to Unicode (PT-BR accents preserved, not deleted).
   //    - Decimal numeric &#N;: safe code point conversion (RangeError guarded).
   //    - Hex numeric &#xN;: now also decoded (was silently passed through before).
-  out = out.replace(/&(#[xX][0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (_, ref) => decodeEntity(ref));
+  out = decodeHtmlEntities(out);
 
   // 5. Finding #7: collapse ALL whitespace (including \n, \r, \t, multiple spaces).
   //    Original only collapsed [ \t]{2,} — newlines from multi-line og:descriptions
