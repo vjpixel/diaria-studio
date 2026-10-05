@@ -559,7 +559,9 @@ export function renderManualEditsSection(m: EditionManualEdits, series: SeriesSu
                 .slice(0, 8)
                 .map((c) => `<li>${escapeHtml(c.kind)}: ${escapeHtml(c.detail)}</li>`)
                 .join("")}</ul>`;
-      return `<tr><td>${escapeHtml(name)}${g.baseline ? ` <small>(${escapeHtml(g.baseline)})</small>` : ""}</td><td>${status}</td></tr>`;
+      // #9647: título/arte de destaque trocado ou reposicionado — consequência, não conta.
+      const cascades = g.cascades?.length ? ` <small>(+${g.cascades.length} em cascata, não contam)</small>` : "";
+      return `<tr><td>${escapeHtml(name)}${g.baseline ? ` <small>(${escapeHtml(g.baseline)})</small>` : ""}</td><td>${status}${cascades}</td></tr>`;
     })
     .join("\n");
   // #9641: sequência da meta da #7972 + inclusões (meta intermediária) + cortes (fora da contagem).

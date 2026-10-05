@@ -24,12 +24,17 @@ import {
   pruneTitleOptions,
   removeCutItemBlocks,
   sectionHeaderName,
+  extractDestaques,
+  isCorrectedUrl,
+  matchDestaquesByUrl,
+  type DestaqueEntry,
 } from "../scripts/lib/manual-edit-diff.ts";
 import {
   INCLUSIONS_WINDOW,
   computeEditionManualEdits,
   decideZeroManualEdits,
   editionsRootOf,
+  resolvePickUrls,
   stage1EditorAddedUrls,
   summarizeSeries,
   trailingSeriesSummary,
@@ -528,8 +533,14 @@ describe("série e veredito (#9357)", () => {
   it("decideZeroManualEdits: mudança medida vence gate não medido", () => {
     const measured = (n: number) => ({ status: "measured" as const, changes: Array.from({ length: n }, () => ({ kind: "x", detail: "y" })) });
     const un = { status: "unmeasured" as const, changes: [] };
-    assert.equal(decideZeroManualEdits({ stage1: measured(0), newsletter: measured(1), titles: measured(0), social: un, images: measured(0) }), false);
-    assert.equal(decideZeroManualEdits({ stage1: measured(0), newsletter: measured(0), titles: measured(0), social: un, images: measured(0) }), null);
+    assert.equal(
+      decideZeroManualEdits({ stage1: measured(0), destaques: measured(0), newsletter: measured(1), titles: measured(0), social: un, images: measured(0) }),
+      false,
+    );
+    assert.equal(
+      decideZeroManualEdits({ stage1: measured(0), destaques: measured(0), newsletter: measured(0), titles: measured(0), social: un, images: measured(0) }),
+      null,
+    );
   });
 
   it("relatório de edição renderiza o veredito e o gate não medido", () => {
@@ -555,6 +566,264 @@ describe("série e veredito (#9357)", () => {
       assert.match(truncated, /Inclusões: <strong>15<\/strong>/);
       assert.equal((truncated.match(/<li>RADAR: /g) ?? []).length, 12);
       assert.match(truncated, /<li>\+3<\/li>/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9647: destaques, títulos e artes casados por URL, não por posição
+// ---------------------------------------------------------------------------
+
+const DU = (id: string) => `https://example.com/destaque-${id}`;
+
+/** Texto com os destaques dados (`titles[0]` é o título exibido; 3 opções = saída do writer). */
+function destaquesMd(ds: Array<{ id: string; titles: string[] }>): string {
+  const parts = ["Olá!", "", "---", ""];
+  ds.forEach((d, i) => {
+    parts.push(`**DESTAQUE ${i + 1} | 📰 NOTÍCIAS**`, "");
+    for (const t of d.titles) parts.push(`**[${t}](${DU(d.id)})**  `, "");
+    parts.push(`Parágrafo do destaque ${d.id}.`, "", "---", "");
+  });
+  parts.push("**📡 RADAR**", "", "**[Item](https://example.com/r)**", "Resumo.", "");
+  return parts.join("\n");
+}
+
+const opts3 = (id: string) => [`${id} opção 1`, `${id} opção 2`, `${id} opção 3`];
+/** Final: 1 título por destaque — o pick (opção 2) do destaque da pipeline, ou o título do destaque novo. */
+const finalOf = (ids: string[]) => destaquesMd(ids.map((id) => ({ id, titles: [`${id} opção 2`] })));
+const picksFor = (ids: string[]) => ({ picks: ids.map((id, i) => ({ destaque: i + 1, chosen: `${id} opção 2` })) });
+const highlights = (ids: string[]) => ({ highlights: ids.map((id, i) => ({ rank: i + 1, url: DU(id), article: { url: DU(id), title: id } })) });
+
+/**
+ * Edição com 3 destaques. `pipeline` = destaques que a pipeline entregou
+ * (3 opções de título cada); `final` = os do `02-reviewed.md`. `snapshot`:
+ * baseline carimbado (`ok`) ou só `02-humanized.md` (reconstruído).
+ * `redo`: posições cujas artes foram regeradas depois do Stage 3.
+ */
+function makeDestaqueEdition(
+  root: string,
+  o: {
+    pipeline: string[];
+    final: string[];
+    snapshot?: boolean;
+    categorizedTop?: string[];
+    itensMovidos?: number;
+    approvedFinal?: string[];
+    redo?: number[];
+    finalMd?: string;
+  },
+): string {
+  const dir = makeEdition(root, {});
+  const internal = join(dir, "_internal");
+  writeFileSync(join(internal, "01-categorized.json"), JSON.stringify(highlights(o.categorizedTop ?? o.pipeline)), "utf8");
+  writeFileSync(join(internal, "01-approved.json"), JSON.stringify(highlights(o.pipeline)), "utf8");
+  writeFileSync(join(internal, ".step-1-gate.json"), JSON.stringify({ auto_approved: true, itens_movidos: o.itensMovidos ?? 0 }), "utf8");
+  writeFileSync(join(internal, "02-title-picks.json"), JSON.stringify(picksFor(o.pipeline)), "utf8");
+  const pipelineMd = destaquesMd(o.pipeline.map((id) => ({ id, titles: opts3(id) })));
+  writeFileSync(join(internal, "02-draft.md"), pipelineMd, "utf8");
+  writeFileSync(join(internal, "02-humanized.md"), pipelineMd, "utf8");
+  if (o.snapshot) {
+    writeFileSync(join(dir, "02-reviewed.md"), finalOf(o.pipeline), "utf8");
+    captureStage2Baseline(dir, "pipeline-sentinel-step-2", new Date("2026-09-29T20:43:04.000Z"));
+  }
+  writeFileSync(join(dir, "02-reviewed.md"), o.finalMd ?? finalOf(o.final), "utf8");
+  // Stage 4 nem sempre regrava o 01-approved.json (260917, 260918): só quando pedido.
+  if (o.approvedFinal) writeFileSync(join(internal, "01-approved.json"), JSON.stringify(highlights(o.approvedFinal)), "utf8");
+  const before = new Date("2026-09-29T20:49:00.000Z");
+  const after = new Date("2026-09-29T22:13:00.000Z");
+  for (const n of [1, 2, 3]) {
+    const img = join(dir, `04-d${n}-2x1.jpg`);
+    writeFileSync(img, "jpg", "utf8");
+    const t = o.redo?.includes(n) ? after : before;
+    utimesSync(img, t, t);
+  }
+  return dir;
+}
+
+const kinds = (g: { changes: Array<{ kind: string }> }) => g.changes.map((c) => c.kind).sort();
+
+describe("destaques por URL (#9647)", () => {
+  const e = (id: string, position: number): DestaqueEntry => ({ position, url: DU(id), title: id, titleOptions: [id] });
+
+  it("extractDestaques: 3 opções de título por destaque; 1º título é o exibido", () => {
+    const ds = extractDestaques(destaquesMd([{ id: "a", titles: opts3("a") }, { id: "b", titles: ["b só"] }]));
+    assert.deepEqual(
+      ds.map((d) => [d.position, d.url, d.title, d.titleOptions.length]),
+      [
+        [1, DU("a"), "a opção 1", 3],
+        [2, DU("b"), "b só", 1],
+      ],
+    );
+  });
+
+  it("matchDestaquesByUrl: destaque novo inserido acima NÃO reordena os mantidos (260916)", () => {
+    const m = matchDestaquesByUrl([e("a", 1), e("b", 2), e("c", 3)], [e("x", 1), e("a", 2), e("c", 3)]);
+    assert.equal(m.swaps.length, 1);
+    assert.equal(m.swaps[0].out.url, DU("b"));
+    assert.equal(m.reorders.length, 0);
+    assert.equal(m.statusByFinalPosition.get(2), "moved");
+    assert.equal(m.statusByFinalPosition.get(3), "same");
+  });
+
+  it("matchDestaquesByUrl: D1↔D2 é UMA reordenação, não duas (260922)", () => {
+    const m = matchDestaquesByUrl([e("a", 1), e("b", 2), e("c", 3)], [e("b", 1), e("a", 2), e("c", 3)]);
+    assert.equal(m.swaps.length, 0);
+    assert.equal(m.reorders.length, 1);
+  });
+
+  it("isCorrectedUrl: mesma página com o caminho corrigido casa; slug curto ou host diferente não (261001)", () => {
+    const fixedUrl = "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-argon/";
+    assert.equal(isCorrectedUrl("https://blog.google/innovation-and-ai/models-and-research/gemini-4-argon/", fixedUrl), true);
+    assert.equal(isCorrectedUrl("https://a.com/x/news", "https://a.com/y/news"), false);
+    assert.equal(isCorrectedUrl("https://a.com/x/gemini-4-argon", "https://b.com/x/gemini-4-argon"), false);
+    const m = matchDestaquesByUrl(
+      [{ position: 1, url: "https://blog.google/innovation-and-ai/models-and-research/gemini-4-argon/", title: "t", titleOptions: ["t"] }],
+      [{ position: 1, url: fixedUrl, title: "t", titleOptions: ["t"] }],
+    );
+    assert.equal(m.swaps.length, 0, "URL corrigida não é troca");
+    assert.equal(m.statusByFinalPosition.get(1), "same");
+  });
+
+  it("resolvePickUrls: o pick vai pro destaque cujas opções contêm o título escolhido", () => {
+    const opts = extractDestaques(destaquesMd([{ id: "a", titles: opts3("a") }, { id: "b", titles: opts3("b") }]));
+    const r = resolvePickUrls([{ destaque: 1, chosen: "b opção 3" }], opts, []);
+    assert.equal(r[0].url, DU("b"));
+  });
+
+  it("260917/260918: troca do Stage 4 sem 01-approved regravado é vista; título e arte do novo são cascata", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      // Pipeline A,B,C → final B,X,Y (A e C trocados; B sobe pra D1 com o pick dele).
+      const dir = makeDestaqueEdition(root, { pipeline: ["a", "b", "c"], final: ["b", "x", "y"], redo: [2, 3] });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.destaques.status, "measured");
+      assert.equal(r.gates.destaques.baseline, "reconstructed");
+      assert.deepEqual(kinds(r.gates.destaques), ["destaque-swap", "destaque-swap"]);
+      assert.equal(r.gates.stage1.changes.length, 0, "a troca não é contada de novo no stage1");
+      assert.equal(r.gates.titles.changes.length, 0, JSON.stringify(r.gates.titles, null, 2));
+      assert.equal(r.gates.titles.cascades?.length, 2);
+      assert.equal(r.gates.images.changes.length, 0);
+      assert.equal(r.gates.images.cascades?.length, 2);
+      assert.equal(r.zero_manual_edits, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("260916/260929: rebaixamento do apply-gate-edits (itens_movidos sob auto) não é troca", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      // Scorer: A,G,C; pipeline rebaixou G e entregou A,C,D. Editor não mexeu.
+      const dir = makeDestaqueEdition(root, {
+        pipeline: ["a", "c", "d"],
+        final: ["a", "c", "d"],
+        categorizedTop: ["a", "g", "c"],
+        itensMovidos: 1,
+        snapshot: true,
+      });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.destaques.changes.length, 0, JSON.stringify(r.gates.destaques, null, 2));
+      assert.equal(r.gates.stage1.changes.length, 0, JSON.stringify(r.gates.stage1, null, 2));
+      assert.equal(r.gates.titles.changes.length, 0);
+      assert.equal(r.zero_manual_edits, true, JSON.stringify(r.gates, null, 2));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("260916 sem baseline carimbado: categorizado × aprovado final também não conta o rebaixamento", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      const dir = makeDestaqueEdition(root, { pipeline: ["a", "c", "d"], final: ["a", "c", "d"], categorizedTop: ["a", "g", "c"], itensMovidos: 1 });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.stage1.baseline, "categorized");
+      assert.equal(r.gates.stage1.changes.length, 0, JSON.stringify(r.gates.stage1, null, 2));
+      assert.equal(r.gates.destaques.changes.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("261005: D3→D1 é 1 reordenação + 1 troca (não 2 trocas); título mantido não conta; arte do novo é cascata", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      // Pipeline A,B,C → final C,B,K. 01-approved regravado. Arte de C movida com `mv`
+      // pra D1 (mtime preservado, não detectada); D3 regerada pro K.
+      const dir = makeDestaqueEdition(root, {
+        pipeline: ["a", "b", "c"],
+        final: ["c", "b", "k"],
+        approvedFinal: ["c", "b", "k"],
+        snapshot: true,
+        redo: [3],
+      });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.destaques.baseline, "snapshot");
+      assert.deepEqual(kinds(r.gates.destaques), ["destaque-reorder", "destaque-swap"], JSON.stringify(r.gates.destaques, null, 2));
+      const swap = r.gates.destaques.changes.find((c) => c.kind === "destaque-swap")!;
+      assert.equal(swap.url, DU("k"));
+      assert.equal(r.gates.stage1.changes.length, 0, JSON.stringify(r.gates.stage1, null, 2));
+      assert.equal(r.gates.titles.changes.length, 0, "C saiu em D1 com o pick dele (era D3)");
+      assert.equal(r.gates.images.changes.length, 0);
+      assert.equal(r.gates.images.cascades?.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("destaque mantido na mesma posição: título reescrito e arte regerada CONTAM", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      const finalMd = finalOf(["a", "b", "c"]).replace("b opção 2", "b reescrito pelo editor");
+      const dir = makeDestaqueEdition(root, { pipeline: ["a", "b", "c"], final: ["a", "b", "c"], snapshot: true, redo: [2], finalMd });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.destaques.changes.length, 0);
+      assert.deepEqual(kinds(r.gates.titles), ["title-choice"]);
+      assert.match(r.gates.titles.changes[0].detail, /^D2: pipeline escolheu "b opção 2"/);
+      assert.deepEqual(kinds(r.gates.images), ["image-redo"]);
+      assert.equal(r.gates.images.cascades, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("destaque reposicionado com título reescrito: conta como título, comparado com o pick DELE", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      const finalMd = finalOf(["b", "a", "c"]).replace("b opção 2", "b reescrito");
+      const dir = makeDestaqueEdition(root, { pipeline: ["a", "b", "c"], final: ["b", "a", "c"], snapshot: true, finalMd });
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.deepEqual(kinds(r.gates.destaques), ["destaque-reorder"]);
+      assert.equal(r.gates.titles.changes.length, 1, JSON.stringify(r.gates.titles, null, 2));
+      assert.match(r.gates.titles.changes[0].detail, /^D1 \(era D2\): pipeline escolheu "b opção 2", saiu "b reescrito"/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("sem texto da pipeline legível (formato antigo): destaques caem no categorizado × aprovado final", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      const dir = makeEdition(root, {});
+      writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify(highlights(["x", "d2", "d3"])), "utf8");
+      writeFileSync(join(dir, "_internal", "01-categorized.json"), JSON.stringify(highlights(["d1", "d2", "d3"])), "utf8");
+      const r = computeEditionManualEdits(dir, "260930");
+      assert.equal(r.gates.destaques.baseline, "categorized");
+      assert.deepEqual(kinds(r.gates.destaques), ["destaque-swap"]);
+      assert.equal(r.zero_manual_edits, false, "edição antiga com troca não vira null");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("relatório mostra as cascatas sem contá-las", () => {
+    const root = mkdtempSync(join(tmpdir(), "manual-edits-9647-"));
+    try {
+      const dir = makeDestaqueEdition(root, { pipeline: ["a", "b", "c"], final: ["b", "x", "y"], redo: [2, 3] });
+      const html = renderManualEditsSection(computeEditionManualEdits(dir, "260930"));
+      assert.match(html, /destaques/);
+      assert.match(html, /\+2 em cascata, não contam/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
