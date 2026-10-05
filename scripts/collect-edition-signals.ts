@@ -26,7 +26,9 @@
  * test_email_unconfirmed (#3839), recurring_editor_request (#4966, cross-edição),
  * session1_handoff (#9374, lê `_internal/session-1-handoff.json` — o que a 1ª
  * sessão das Etapas 1–4 registrou antes de encerrar; sem ele o Stage 6, que
- * roda numa sessão nova desde o #6171, não via nada das Etapas 1–4).
+ * roda numa sessão nova desde o #6171, não via nada das Etapas 1–4),
+ * writer_source_text_gap (#9648, lê `_internal/02-writer-inputs.json` —
+ * destaque escrito no Stage 2 sem texto-fonte ou com texto truncado).
  *
  * Uso:
  *   npx tsx scripts/collect-edition-signals.ts --edition-dir data/editions/260424/
@@ -55,6 +57,11 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
+import {
+  findWriterInputGaps,
+  readWriterInputsRecord,
+  type ReadWriterInputs,
+} from "./lib/writer-inputs-record.ts";
 
 /**
  * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
@@ -89,7 +96,8 @@ export interface Signal {
     | "placeholder_guard_warning"
     | "test_email_unconfirmed"
     | "recurring_editor_request"
-    | "session1_handoff";
+    | "session1_handoff"
+    | "writer_source_text_gap";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -852,6 +860,52 @@ export function signalsFromTestEmailReview(
 }
 
 // ===========================================================================
+// Signal 9 (#9648): writer-destaque escrito sem texto-fonte / com texto truncado
+// ===========================================================================
+//
+// Lê o registro que o Stage 2 grava ANTES do dispatch dos writer-destaque
+// (`_internal/02-writer-inputs.json`, `refresh-destaque-sources.ts
+// --record-writer-inputs`). Só warning pro auto-reporter — nunca bloqueia
+// nada. Registro ausente = edição anterior ao #9648 (ou Stage 2 rodado sem a
+// flag): sem sinal, pra não inundar o reporter com edições antigas.
+
+export function signalsFromWriterInputs(read: ReadWriterInputs): Signal[] {
+  if (read.kind === "absent") return [];
+  if (read.kind === "corrupt") {
+    return [
+      {
+        kind: "writer_source_text_gap",
+        severity: "low",
+        title: "Registro de texto-fonte do writer-destaque ilegível (02-writer-inputs.json)",
+        details: { error: read.error },
+        suggested_action:
+          "Sem o registro não dá pra saber se fato ausente no corpo foi falha de insumo ou de prompt (#9648). Conferir por que `_internal/02-writer-inputs.json` foi corrompido.",
+        related_issue: "#9648",
+      },
+    ];
+  }
+  const gaps = findWriterInputGaps(read.record);
+  if (gaps.length === 0) return [];
+  const missing = gaps.filter((g) => g.status === "missing");
+  const labels = gaps.map((g) => `D${g.destaque} (${g.status === "missing" ? "sem texto" : `${g.bytes} bytes`})`);
+  return [
+    {
+      kind: "writer_source_text_gap",
+      severity: missing.length > 0 ? "medium" : "low",
+      title: `writer-destaque escrito sem texto-fonte completo: ${labels.join(", ")}`,
+      details: {
+        min_source_text_bytes: read.record.min_source_text_bytes,
+        recorded_at: read.record.recorded_at,
+        gaps,
+      },
+      suggested_action:
+        "O writer-destaque escreveu esses destaques só com title+summary (sem texto) ou de um texto curto demais (teaser de paywall/página de vídeo) — risco de fato inventado ou fato central ausente. Conferir o corpo contra a fonte; se a fonte é recorrente, avaliar fonte equivalente (#9648).",
+      related_issue: "#9648",
+    },
+  ];
+}
+
+// ===========================================================================
 // Signal 3: Chrome disconnections
 // ===========================================================================
 
@@ -1596,6 +1650,10 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   // Signal 8 (#9374): handoff da 1ª sessão (Etapas 1–4). Fail-soft: o
   // próprio `readHandoff` devolve "corrupt" em vez de lançar.
   signals.push(...signalsFromSessionHandoff(readHandoff(editionDir)));
+
+  // Signal 9 (#9648): texto-fonte do writer-destaque ausente/truncado.
+  // Fail-soft: `readWriterInputsRecord` devolve "corrupt" em vez de lançar.
+  signals.push(...signalsFromWriterInputs(readWriterInputsRecord(editionDir)));
 
   // Signal 7 (#4966): recurring_editor_request — cross-edição, últimas 7
   // (atual + 6 anteriores). Fail-soft: erro de IO/parse nunca derruba o
