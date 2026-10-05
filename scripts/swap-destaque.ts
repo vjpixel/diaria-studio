@@ -15,8 +15,11 @@
  *   - `02-reviewed.md` (`applySwapToReviewedMd`, #9601): bloco DESTAQUE vira
  *     placeholder; o item promovido sai da seção de pool de origem (seção
  *     esvaziada sai inteira); o título antigo é trocado pelo novo no
- *     TÍTULO/SUBTÍTULO (cirúrgico — bloco escrito à mão fica intocado, com
- *     aviso); contagem da intro re-sincronizada
+ *     TÍTULO/SUBTÍTULO (cirúrgico, por segmento inteiro na linha da posição —
+ *     bloco escrito à mão fica intocado, com aviso; o provisório fica em
+ *     `_internal/swap-destaque-titulo-pending.json` até `--finalize-titulo`,
+ *     e o invariante `titulo-subtitulo-not-provisional` barra o gate 4
+ *     enquanto isso); contagem da intro re-sincronizada
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -53,6 +56,10 @@
  *     --demote d2 \
  *     --dry-run
  *
+ *   # Depois do writer-destaque: trocar o título provisório (da fonte) pelo
+ *   # final no TÍTULO/SUBTÍTULO e limpar o marcador (review PR #9666):
+ *   npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir <path>
+ *
  *   # Custom edition-dir:
  *   npx tsx scripts/swap-destaque.ts \
  *     --edition 260623 \
@@ -82,6 +89,15 @@ import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verifi
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
+import {
+  replaceTitleInTituloSubtitulo,
+  tituloPendingPath,
+  parsePendingTitulos,
+  serializePendingTitulos,
+  upsertPendingTitulo,
+  finalizeProvisionalTitulos,
+  type PendingTitulo,
+} from "./lib/titulo-provisional.ts"; // #9601 review PR #9666
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -350,49 +366,10 @@ export function removePoolItemFromMd(
   return { md, removed: false, section_removed: null };
 }
 
-/**
- * #9601: troca, só dentro do bloco TÍTULO/SUBTÍTULO do topo, o título do
- * destaque que saiu pelo do que entrou. Substituição CIRÚRGICA (#495/#7401):
- * nunca regenera o bloco inteiro — se o editor escreveu um TÍTULO/SUBTÍTULO
- * próprio (o título antigo não aparece literalmente no bloco), não toca nada
- * e devolve `old_title_not_found` pra o chamador avisar.
- *
- * @pure
- */
-export function replaceTitleInTituloSubtitulo(
-  md: string,
-  oldTitle: string | null,
-  newTitle: string,
-): { md: string; status: "updated" | "no_block" | "old_title_not_found" } {
-  const lines = md.split("\n");
-  const scan = Math.min(lines.length, 40);
-  let tIdx = -1;
-  for (let i = 0; i < scan; i++) {
-    if (lines[i].trim() === "TÍTULO") {
-      tIdx = i;
-      break;
-    }
-  }
-  if (tIdx < 0) return { md, status: "no_block" };
-  let endIdx = lines.length;
-  for (let i = tIdx + 1; i < lines.length; i++) {
-    if (/^---\s*$/.test(lines[i])) {
-      endIdx = i;
-      break;
-    }
-  }
-  const old = (oldTitle ?? "").trim();
-  if (!old) return { md, status: "old_title_not_found" };
-  let hit = false;
-  for (let i = tIdx + 1; i < endIdx; i++) {
-    if (lines[i].includes(old)) {
-      lines[i] = lines[i].split(old).join(newTitle);
-      hit = true;
-    }
-  }
-  if (!hit) return { md, status: "old_title_not_found" };
-  return { md: lines.join("\n"), status: "updated" };
-}
+// #9601: `replaceTitleInTituloSubtitulo` (troca por SEGMENTO inteiro, só na
+// linha da posição — review da PR #9666) vive em `lib/titulo-provisional.ts`,
+// junto do marcador de título provisório e do invariante do Stage 4.
+export { replaceTitleInTituloSubtitulo };
 
 /**
  * #9601: re-sincroniza "selecionei os N" da intro com a contagem real, depois
@@ -440,7 +417,7 @@ export function buildSwapDestaqueSteps(
   return [
     `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — antes do writer-destaque (#9102).`,
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
-    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${promotedTitle}" pelo título final do D${position} (o swap já pôs o provisório no lugar do antigo, #9601)`,
+    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${promotedTitle}" pelo título final do D${position} — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9601)`,
     ...poolStep,
     `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
@@ -548,7 +525,7 @@ export function applySwapToReviewedMd(
   const oldTitle = position === 1 ? titles.d1 : position === 2 ? titles.d2 : titles.d3;
   const withPlaceholder = removeDestaqueBlockFromMd(md, position, promotedTitle, promotedUrl);
   const pool = removePoolItemFromMd(withPlaceholder, promotedUrl);
-  const titulo = replaceTitleInTituloSubtitulo(pool.md, oldTitle, promotedTitle);
+  const titulo = replaceTitleInTituloSubtitulo(pool.md, oldTitle, promotedTitle, position);
   const intro = syncIntroCountInMd(titulo.md);
   return {
     md: intro.md,
@@ -723,7 +700,7 @@ export function mirrorCappedSwapFallback(
   demotePos: number,
   drop: boolean,
   promotedItem: Record<string, unknown>,
-  /** #9601: bucket que recebe o rebaixado (default: `bucket`, comportamento antigo). */
+  /** #9601: bucket que recebe o rebaixado. Default: `defaultDemoteBucket(bucket)` — o mesmo de `swapInApprovedJson`. */
   demoteTo?: string,
 ): { synced: boolean; warning?: string } {
   const cappedHighlights = approvedCappedData.highlights as
@@ -734,7 +711,7 @@ export function mirrorCappedSwapFallback(
     cappedHighlights[demotePos] = toHighlightItem(promotedItem, demotePos + 1, bucket); // #9601
     renumberRanks(cappedHighlights);
     if (!drop) {
-      const target = demoteTo ?? bucket;
+      const target = demoteTo ?? defaultDemoteBucket(bucket as SourceBucket);
       const cappedBucket = approvedCappedData[target];
       const demotedForBucket = toBucketItem(cappedDemotedItem, target); // #9381 + #9601
       if (Array.isArray(cappedBucket)) {
@@ -863,7 +840,66 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * `--finalize-titulo` (review PR #9666): troca no TÍTULO/SUBTÍTULO cada título
+ * provisório registrado pelo swap pelo título ATUAL do D{N} (já reescrito pelo
+ * writer-destaque) e limpa o marcador. Exit 1 se algum ainda não dá pra
+ * finalizar (D{N} em placeholder) — o marcador fica com o que restou.
+ */
+function finalizeTituloMain(argv: string[]): void {
+  const get = (k: string): string | undefined => {
+    const i = argv.indexOf(k);
+    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+  };
+  const editionDirArg = get("--edition-dir");
+  const edition = get("--edition");
+  if (!editionDirArg && !edition) {
+    console.error("Uso: swap-destaque.ts --finalize-titulo (--edition-dir <path> | --edition AAMMDD)");
+    process.exit(2);
+  }
+  const editionDir = editionDirArg
+    ? resolve(editionDirArg)
+    : resolveEditionDir(resolve(ROOT, "data", "editions"), edition as string);
+  const markerPath = tituloPendingPath(editionDir);
+  if (!existsSync(markerPath)) {
+    console.log(JSON.stringify({ finalized: [], remaining: [], note: "nenhum título provisório pendente" }, null, 2));
+    return;
+  }
+  const mdPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(mdPath)) {
+    console.error(`Erro: ${mdPath} não encontrado`);
+    process.exit(1);
+  }
+  let entries: PendingTitulo[];
+  try {
+    entries = parsePendingTitulos(readFileSync(markerPath, "utf8"));
+  } catch (e) {
+    console.error(`Erro: marcador ${markerPath} ilegível: ${(e as Error).message}`);
+    process.exit(1);
+  }
+  const md = readFileSync(mdPath, "utf8");
+  const r = finalizeProvisionalTitulos(md, entries);
+  if (r.md !== md) writeFilesVerified([{ path: mdPath, content: r.md }], "swap-destaque --finalize-titulo");
+  if (r.remaining.length === 0) {
+    unlinkSync(markerPath);
+  } else {
+    writeFilesVerified(
+      [{ path: markerPath, content: serializePendingTitulos(r.remaining.map(({ position, provisional_title }) => ({ position, provisional_title }))) }],
+      "swap-destaque --finalize-titulo",
+    );
+  }
+  console.log(JSON.stringify({ finalized: r.finalized, remaining: r.remaining }, null, 2));
+  if (r.remaining.length > 0) {
+    for (const x of r.remaining) console.error(`PENDENTE D${x.position}: ${x.reason}`);
+    process.exit(1);
+  }
+}
+
 function main(): void {
+  if (process.argv.includes("--finalize-titulo")) {
+    finalizeTituloMain(process.argv.slice(2));
+    return;
+  }
   const args = parseSwapArgs(process.argv.slice(2));
   const { edition, editionDir, promote, demote, drop, demoteTo, dryRun } = args;
 
@@ -1067,6 +1103,26 @@ function main(): void {
     result.md_updates = applied.updates;
     if (applied.md !== md) {
       pendingWrites.push({ path: mdPath, content: applied.md });
+    }
+    // Review PR #9666: o provisório (título da FONTE) fica registrado num
+    // marcador; o invariante `titulo-subtitulo-not-provisional` do Stage 4
+    // barra o gate até `--finalize-titulo` trocá-lo pelo título final.
+    if (applied.updates.titulo_subtitulo === "updated") {
+      const markerPath = tituloPendingPath(editionDir);
+      let existing: PendingTitulo[] = [];
+      if (existsSync(markerPath)) {
+        try {
+          existing = parsePendingTitulos(readFileSync(markerPath, "utf8"));
+        } catch (e) {
+          console.error(`AVISO: marcador ${markerPath} ilegível (${(e as Error).message}) — sobrescrito.`);
+        }
+      }
+      pendingWrites.push({
+        path: markerPath,
+        content: serializePendingTitulos(
+          upsertPendingTitulo(existing, { position: demotePosition, provisional_title: promotedTitle }),
+        ),
+      });
     }
     if (applied.updates.titulo_subtitulo === "old_title_not_found") {
       console.error(

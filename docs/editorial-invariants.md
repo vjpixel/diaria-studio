@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 104 invariants.
+**Total**: 105 invariants.
 
 ## Static (estrutura do repo)
 
@@ -105,6 +105,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
+| `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
 | `truncated-secondary-item-summary` | descrição de item secundário não termina em reticências de truncamento (#2596) | #2596 |
 | `use-melhor-post-item-rendered` | item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only) | #9592 |
 | `use-melhor-sentinel` | itens USE MELHOR sem descrição real (sentinel [DESCRIÇÃO PENDENTE] presente, #2464) | #2464 |

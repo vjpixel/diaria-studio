@@ -40,6 +40,10 @@ import {
   replaceTitleInTituloSubtitulo,
   applySwapToReviewedMd,
 } from "../scripts/swap-destaque.ts";
+import {
+  checkTituloSubtituloNotProvisional,
+  finalizeProvisionalTitulos,
+} from "../scripts/lib/titulo-provisional.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1331,5 +1335,126 @@ describe("#9601 — 02-reviewed.md coerente após o swap (caso 261005)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review PR #9666 — troca por segmento inteiro + título provisório não escapa
+// ---------------------------------------------------------------------------
+
+describe("review PR #9666 — TÍTULO/SUBTÍTULO por segmento e título provisório", () => {
+  const KOLIBRI = "Kolibri Has Landed: A Sovereign Open-Weight Model";
+
+  function makeApprovedKolibri() {
+    return {
+      highlights: [
+        { rank: 1, url: "https://blog.cloudflare.com/clef", article: { url: "https://blog.cloudflare.com/clef", title: "Clef" } },
+        { rank: 2, url: "https://www.theguardian.com/x", article: { url: "https://www.theguardian.com/x", title: "OpenAI" } },
+        { rank: 3, url: "https://www.bra1.com.br/deepfakes", article: { url: "https://www.bra1.com.br/deepfakes", title: "Deepfakes" } },
+      ],
+      lancamento: [{ url: "https://aleph-alpha.com/en/blog/kolibri", title: KOLIBRI }],
+      radar: [{ url: "https://r.com/1", title: "Radar 1" }, { url: "https://r.com/2", title: "Radar 2" }],
+      use_melhor: [{ url: "https://a.com/tut", title: "Tutorial A" }],
+      video: [],
+      runners_up: [],
+    };
+  }
+
+  it("título antigo que é substring de outro destaque não altera o vizinho (só o segmento inteiro)", () => {
+    const md = [
+      "TÍTULO",
+      "",
+      "OpenAI",
+      "",
+      "SUBTÍTULO",
+      "",
+      "A cultura da OpenAI está quebrada | OpenAI",
+      "",
+      "---",
+      "corpo",
+    ].join("\n");
+    const r = replaceTitleInTituloSubtitulo(md, "OpenAI", "Kolibri", 3);
+    assert.equal(r.status, "updated");
+    // D1 (linha do TÍTULO) e o segmento do D2 ficam intocados
+    assert.match(r.md, /TÍTULO\n\nOpenAI\n/);
+    assert.match(r.md, /A cultura da OpenAI está quebrada \| Kolibri\n/);
+    // posição 1 mexe só na linha do TÍTULO
+    const r1 = replaceTitleInTituloSubtitulo(md, "OpenAI", "Novo D1", 1);
+    assert.match(r1.md, /TÍTULO\n\nNovo D1\n/);
+    assert.match(r1.md, /A cultura da OpenAI está quebrada \| OpenAI\n/);
+  });
+
+  it("CLI grava marcador do provisório; invariante barra até --finalize-titulo trocar pelo título final", () => {
+    const dir = makeTempEdition({ customApproved: makeApprovedKolibri() });
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), makeMd261005());
+      const swap = runCli([
+        "--edition", "261005", "--edition-dir", dir,
+        "--promote", "lancamento:0", "--demote", "d3",
+      ]);
+      assert.equal(swap.status, 0, swap.stderr);
+      const markerPath = join(dir, "_internal", "swap-destaque-titulo-pending.json");
+      assert.ok(existsSync(markerPath));
+      assert.deepEqual(JSON.parse(readFileSync(markerPath, "utf8")).pending, [
+        { position: 3, provisional_title: KOLIBRI },
+      ]);
+      const parsed = JSON.parse(swap.stdout);
+      assert.ok(parsed.rerenders_needed.some((s: string) => s.includes("--finalize-titulo")));
+
+      // Ainda em placeholder: o invariante acusa (error) e o finalize recusa.
+      let v = checkTituloSubtituloNotProvisional(dir);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /placeholder/);
+      const early = runCli(["--finalize-titulo", "--edition-dir", dir]);
+      assert.equal(early.status, 1);
+      assert.ok(existsSync(markerPath));
+
+      // writer-destaque integrado: bloco D3 com o título final em PT.
+      const mdPath = join(dir, "02-reviewed.md");
+      const withWriter = readFileSync(mdPath, "utf8").replace(
+        /\*\*DESTAQUE 3 \| \[RASCUNHO PENDENTE — swap-destaque\]\*\*\n\n\*\*\[[^\]]+\]\(([^)]+)\)\*\*\n\n\[TEXTO PENDENTE[^\]]*\]/,
+        "**DESTAQUE 3 | 🚀 LANÇAMENTO**\n\n**[Alemanha lança modelo aberto soberano]($1)**  \n\nTexto novo.",
+      );
+      assert.notEqual(withWriter, readFileSync(mdPath, "utf8"));
+      writeFileSync(mdPath, withWriter);
+
+      // Passo pós-writer pulado → gate barrado, com o comando de fix.
+      v = checkTituloSubtituloNotProvisional(dir);
+      assert.equal(v.length, 1);
+      assert.match(v[0].message, /Kolibri Has Landed/);
+      assert.match(v[0].message, /--finalize-titulo/);
+
+      const fin = runCli(["--finalize-titulo", "--edition-dir", dir]);
+      assert.equal(fin.status, 0, fin.stderr);
+      const header = readFileSync(mdPath, "utf8").split("\n---\n")[0];
+      assert.match(header, /A cultura da OpenAI está quebrada \| Alemanha lança modelo aberto soberano/);
+      assert.doesNotMatch(header, /Kolibri/);
+      assert.equal(existsSync(markerPath), false);
+      assert.deepEqual(checkTituloSubtituloNotProvisional(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("D{N} que manteve o título provisório como final não é acusado", () => {
+    const md = makeMd261005().replaceAll("Você viu um dos 554 deepfakes desta eleição?", KOLIBRI);
+    const r = finalizeProvisionalTitulos(md, [{ position: 3, provisional_title: KOLIBRI }]);
+    assert.equal(r.remaining.length, 0);
+    assert.equal(r.finalized[0].status, "already_final");
+    assert.equal(r.md, md);
+  });
+
+  it("mirrorCappedSwapFallback sem demoteTo usa o mesmo default do swapInApprovedJson (lancamento → radar)", () => {
+    const capped: Record<string, unknown> = {
+      highlights: [
+        { rank: 1, url: "https://a", article: { url: "https://a", title: "A" } },
+        { rank: 2, url: "https://b", article: { url: "https://b", title: "B" } },
+      ],
+    };
+    const fb = mirrorCappedSwapFallback(capped, "lancamento", 1, false, { url: "https://k", title: "K" });
+    assert.equal(fb.synced, true);
+    assert.equal(capped.lancamento, undefined);
+    assert.equal((capped.radar as Array<{ url: string }>)[0].url, "https://b");
   });
 });
