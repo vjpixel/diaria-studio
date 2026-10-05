@@ -265,7 +265,7 @@ export function themeFactTokens(text: string): Set<string> {
 }
 
 /** Palavra inteira, aceitando plural regular (`agente` ↔ `agentes`). */
-function containsWholeWord(hay: string, word: string): boolean {
+export function containsWholeWord(hay: string, word: string): boolean {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?:e?s)?(?![\\p{L}\\p{N}])`, "u").test(hay);
 }

@@ -46,7 +46,7 @@ Design de 5 fases (o script é um processo Node puro — não alcança MCP, Skil
    npx tsx scripts/stage-1-run.ts --phase post-score --edition {AAMMDD} --chunk-count N
    ```
 
-4. **Fase `post-select-render`** — Exatamente um dos dois: §1q.5 (assemble-scored, caminho chunked) OU aceita o `tmp-scored.json` do scorer single-call diretamente (fallback) → §1r (promoção de runners_up até 6, in-JS) → §1s (finalize-stage1) → §1t (avisos de mínimo por seção, in-JS) → §1u (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup intra-edição + evergreen) → §1v (render MD) → §1v-scoring-features (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis (validate-stage-1-output, blocker vira HALT) → §1w-quat (check-invariants categorized-has-eia-section, BLOQUEIA) → §1w-ter (payload sizes) → §1w-quint-b (repeat-de-tema, fail-soft). Devolve tudo que o gate humano (§1x) precisa mostrar — a apresentação em si (texto formatado pro editor) continua do orchestrator.
+4. **Fase `post-select-render`** — Exatamente um dos dois: §1q.5 (assemble-scored, caminho chunked) OU aceita o `tmp-scored.json` do scorer single-call diretamente (fallback) → §1r (promoção de runners_up até 6, in-JS) → §1s (finalize-stage1) → §1t (avisos de mínimo por seção, in-JS) → §1u (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup intra-edição + evergreen) → §1u-quater (rebaixa destaque com MESMO FATO, #9100, fail-soft) → §1v (render MD) → §1v-scoring-features (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis (validate-stage-1-output, blocker vira HALT) → §1w-quat (check-invariants categorized-has-eia-section, BLOQUEIA) → §1w-ter (payload sizes) → §1w-quint-b (repeat-de-tema, fail-soft). Devolve tudo que o gate humano (§1x) precisa mostrar — a apresentação em si (texto formatado pro editor) continua do orchestrator.
    ```bash
    # Caminho chunked:
    npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD} \
@@ -592,6 +592,8 @@ npx tsx scripts/stage-1-run.ts --phase post-select-render --edition {AAMMDD}
 ```
 Isso executa, em sequência: sumarização de mínimos (1t, warn-only), remoção do campo `verifier` (1u, produz `tmp-categorized.json` — arquivo que o gate lê), dedup intra-edição (1u-bis) e filtro evergreen (1u-ter). Nenhum passo bloqueia; saídas são logadas como info/warn.
 
+**1u-quater (#9100, decisão do editor de 05/10/2026)** — `scripts/demote-same-fact-highlights.ts`, também dentro do `post-select-render`, antes do render: candidato a destaque no top-3 que repete fato dos D1–D3 publicados nas 3 últimas edições (mesma URL, ou mesma entidade + ≥2 números idênticos) é **rebaixado, nunca descartado** — o próximo candidato sobe, o item fica no pool marcado `same_fact_demoted` e a lista vai para `_internal/01-same-fact-demoted.json` (`demoted[]`/`kept[]`). Preserva ≥1 destaque negativo (#3916): sem substituto negativo, o repetido fica (só aviso, `kept[]`).
+
 ### 1v. Render MD (categorized + approved)
 
 ```bash
@@ -685,7 +687,7 @@ Chamada idempotente — reapresentações (após "rejeitar e re-rodar") não sob
    - `lancamentosWarnings` (do enrich-primary-source)
    - `validateOutput.assertions` (do 1w-bis, status=warn)
    - `payload sizes` (do 1w-ter)
-   - `same_fact_warnings` (do 1w-quint-b, #9100) — **apresentar PRIMEIRO e destacado**: produto+versão em comum com um DESTAQUE recente (ex: "Sonnet 5.5"), candidato a destaque ou pool. Desde #9595 também `evidence: "numbers"` — candidato a destaque com ≥2 cifras distintivas em comum (`shared_numbers`) com um destaque recente: a mesma história de outro veículo (ex: "554 deepfakes", Lula 379/Flávio 190). Alta precisão; só sinaliza, o editor decide trocar/remover. Em `--auto` o aviso dos destaques aprovados sai nas notas do `stage-1-run.ts` pós-gate.
+   - `same_fact_warnings` (do 1w-quint-b, #9100) — **apresentar PRIMEIRO e destacado**: produto+versão em comum com um DESTAQUE recente (ex: "Sonnet 5.5"), candidato a destaque ou pool. Desde #9595 também `evidence: "numbers"` — candidato a destaque com ≥2 cifras distintivas em comum (`shared_numbers`) com um destaque recente: a mesma história de outro veículo (ex: "554 deepfakes", Lula 379/Flávio 190). Alta precisão; só sinaliza, o editor decide trocar/remover. Em `--auto` o aviso dos destaques aprovados sai nas notas do `stage-1-run.ts` pós-gate. Desde #9100, mostrar também `_internal/01-same-fact-demoted.json` (`demoted[]`): itens já rebaixados do top-3 por MESMO FATO, que seguem no pool — o editor pode promovê-los de volta se for ângulo novo.
    - `repeatTheme` (do 1w-quint-b, se houver)
    - `editorSubmittedLost` (do 1l, se houver — item 4a do gate)
    - `stats.editorSubmittedLost` do research-review-dates (1p1) — item 4b do gate (deveria ser vazio)

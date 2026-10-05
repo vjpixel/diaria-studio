@@ -290,6 +290,9 @@ export function removeSameFactSecondary(
       if (w.evidence !== "title") return true;
       // #9456: submissão do editor nunca é removida automaticamente (#4192, #5080).
       if ((it as { flag?: unknown }).flag === "editor_submitted") return true;
+      // #9100: destaque rebaixado por MESMO FATO fica no pool — rebaixar
+      // nunca é descartar (decisão do editor de 05/10/2026).
+      if ((it as { same_fact_demoted?: unknown }).same_fact_demoted) return true;
       const title = rec.article?.title ?? rec.title;
       removed.push({
         bucket,

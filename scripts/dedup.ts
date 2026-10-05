@@ -164,12 +164,10 @@ export function dedup(
   titleVsPastThreshold = 0.70,
   pastArticleTitles: string[] = [],
   subjectVsPastThreshold = 0.6,
-  // #1068: URLs que foram destaques (highlights) em edições passadas.
-  // Quando fornecido, dedup distingue:
-  //   - URL em pastDestaqueUrlsSet → bloqueia (já foi destaque, evita repetição)
-  //   - URL em pastUrlsSet mas NÃO em pastDestaqueUrlsSet → permite
-  //     (foi só secondary passado, permite promoção a destaque agora)
-  // Quando ausente (legacy callers), comportamento antigo: bloqueia tudo em pastUrlsSet.
+  // #1068: URLs que foram destaques (D1–D3, lidas de 02-reviewed.md) em
+  // edições passadas. Desde #1512 qualquer URL de pastUrlsSet bloqueia; desde
+  // #9100 uma URL deste Set também bloqueia mesmo ausente de pastUrlsSet
+  // (past-editions.md defasado/incompleto — caso 260918 × 260917).
   pastDestaqueUrlsSet?: Set<string>,
   // #1331: threshold mais permissivo quando candidato e past compartilham
   // entidades nomeadas (default 0.55 vs 0.6 do baseline). Cobre cross-domain
@@ -244,14 +242,24 @@ export function dedup(
   for (const art of afterPass0) {
     const canon = canonicalize(art.url);
     const wasInPast = pastUrlsSet.has(canon);
-    if (!wasInPast) {
+    // #9100: URL de D1–D3 publicado (02-reviewed.md local) bloqueia mesmo
+    // quando `past-editions.md` não a tem — caso 260918 × 260917
+    // (claude.com/blog/cowork-is-now-claude): o D2 entrou por troca pós-gate
+    // 1, o past-editions.md da época só listava os links do 01-approved.json
+    // (#8298) e a URL passou. Esse Set já era carregado e não era usado.
+    const wasPastDestaque = !wasInPast && (pastDestaqueUrlsSet?.has(canon) ?? false);
+    if (!wasInPast && !wasPastDestaque) {
       afterPass1.push(art);
       continue;
     }
     // #1512: removed #1068 secondary→destaque promotion at dedup time.
     // URL that appeared in ANY past edition is blocked — same URL in a
     // published newsletter should never re-appear regardless of section.
-    pushRemoved(removed, art, "url-match com edição anterior");
+    pushRemoved(
+      removed,
+      art,
+      wasPastDestaque ? "url-match com destaque de edição anterior (02-reviewed.md, #9100)" : "url-match com edição anterior",
+    );
   }
   // #1512: promotedFromSecondary counter removed — promotion no longer applies.
 
