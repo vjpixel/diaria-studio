@@ -31,7 +31,13 @@
  * Uso:
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir data/editions/2609/260930/
  *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --check   # só diz se está defasado
- *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --approved .../_internal/01-approved-capped.json  # Stage 2 (#9252)
+ *   npx tsx scripts/refresh-destaque-sources.ts --edition-dir ... --approved .../_internal/01-approved-capped.json --record-writer-inputs  # Stage 2 (#9252, #9648)
+ *
+ * `--record-writer-inputs` (#9648, SÓ no Stage 2): grava também
+ * `_internal/02-writer-inputs.json` + cópia de cada texto em
+ * `_internal/02-writer-inputs/d{N}.txt` — o registro do que cada
+ * writer-destaque recebeu, que as trocas do Stage 4 (que rodam este script
+ * SEM a flag) não sobrescrevem. Ver `scripts/lib/writer-inputs-record.ts`.
  *
  * Exit codes:
  *   0 — cache em dia (após refresh, ou já estava em dia no --check)
@@ -47,6 +53,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
 import {
   highlightSourceUrls,
   isHighlightSourcesCacheFresh,
@@ -54,6 +61,12 @@ import {
   readExistingManifest,
   type PrefetchedSource,
 } from "./run-fact-checker.ts";
+import {
+  buildWriterInputsRecord,
+  findWriterInputGaps,
+  writeWriterInputsRecord,
+  type WriterInputGap,
+} from "./lib/writer-inputs-record.ts";
 
 export interface RefreshResult {
   /** true se as URLs do manifest em disco NÃO correspondiam às dos destaques atuais (ou manifest/txt ausente). */
@@ -63,6 +76,10 @@ export interface RefreshResult {
   /** Destaques (1-based) cuja fonte está com download falho (blocked/error) — estado final aceito, não defasagem. */
   failed: number[];
   sources: PrefetchedSource[];
+  /** (#9648) Só com `recordWriterInputs`: path do registro gravado + destaques sem texto/truncados. */
+  writer_inputs?: { path: string; gaps: WriterInputGap[] };
+  /** (#9648) Falha ao gravar o registro (fail-soft). */
+  writer_inputs_error?: string;
 }
 
 /**
@@ -91,9 +108,25 @@ function failedDestaques(internalDir: string): number[] {
   return manifest.filter((e) => e.status !== "ok").map((e) => e.destaque);
 }
 
+/** Prefixo do evento `warn` no run-log quando o registro #9648 não é gravado. */
+export const WRITER_INPUTS_LOG_PREFIX = "writer_inputs_record_failed:";
+
+function editionIdFromDir(editionDir: string): string | null {
+  const name = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop();
+  return name && /^\d{6}$/.test(name) ? name : null;
+}
+
 export async function refreshDestaqueSources(
   editionDir: string,
-  opts: { check?: boolean; fetchImpl?: typeof fetch; approvedPath?: string } = {},
+  opts: {
+    check?: boolean;
+    fetchImpl?: typeof fetch;
+    approvedPath?: string;
+    recordWriterInputs?: boolean;
+    now?: Date;
+    /** Raiz onde fica `data/run-log.jsonl` (default: cwd). Injetável pra teste. */
+    runLogRootDir?: string;
+  } = {},
 ): Promise<RefreshResult> {
   const internalDir = join(editionDir, "_internal");
   // #9252: Stage 2 passa o 01-approved-capped.json (o mesmo que writer e lint
@@ -105,13 +138,41 @@ export async function refreshDestaqueSources(
   if (opts.check) return { stale_before: stale, refetched: false, failed: failedDestaques(internalDir), sources: [] };
   const refetched = !isHighlightSourcesCacheFresh(approved, internalDir);
   const sources = await prefetchHighlightSources(approved, internalDir, opts.fetchImpl ?? fetch);
-  return { stale_before: stale, refetched, failed: failedDestaques(internalDir), sources };
+  const result: RefreshResult = { stale_before: stale, refetched, failed: failedDestaques(internalDir), sources };
+  if (opts.recordWriterInputs) {
+    // Fail-soft: o registro é auditoria — falha ao gravá-lo nunca derruba o
+    // download das fontes nem o dispatch dos writers. Vira `error` no stdout.
+    try {
+      const record = buildWriterInputsRecord(editionDir, sources, { approvedPath, now: opts.now });
+      result.writer_inputs = { path: writeWriterInputsRecord(editionDir, record), gaps: findWriterInputGaps(record) };
+    } catch (e) {
+      const msg = (e as Error).message;
+      result.writer_inputs_error = msg;
+      console.error(`refresh-destaque-sources: WARN — 02-writer-inputs.json não gravado: ${msg}`);
+      // Rastro durável (#9648 review): o stdout do Stage 2 some com a sessão.
+      // O Stage 6 não depende deste evento pra emitir o signal — registro
+      // ausente em edição pós-cutover já vira `writer_source_text_gap` em
+      // `collect-edition-signals.ts` —, mas o evento diz o PORQUÊ.
+      logEvent(
+        {
+          edition: editionIdFromDir(editionDir),
+          stage: 2,
+          agent: "refresh-destaque-sources",
+          level: "warn",
+          message: `${WRITER_INPUTS_LOG_PREFIX} ${msg}`,
+          details: { edition_dir: editionDir, error: msg },
+        },
+        opts.runLogRootDir,
+      );
+    }
+  }
+  return result;
 }
 
 async function main(): Promise<void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
-    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check]");
+    console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check | --record-writer-inputs]");
     process.exit(1);
   }
   const check = flags.has("check");
@@ -119,6 +180,7 @@ async function main(): Promise<void> {
   try {
     result = await refreshDestaqueSources(resolve(process.cwd(), args["edition-dir"]), {
       check,
+      recordWriterInputs: flags.has("record-writer-inputs"),
       approvedPath: args.approved ? resolve(process.cwd(), args.approved) : undefined,
     });
   } catch (e) {
