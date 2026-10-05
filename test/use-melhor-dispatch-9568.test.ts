@@ -112,22 +112,22 @@ const STATE = { enabled: true, time: "08:00", item: ITEM, generated_at: "x" };
 const CONFIG_ON = { publishing: { social: { use_melhor_time: "08:00", fallback_schedule: { d1_time: "10:00" } } } };
 
 describe("horário do 4º post (#9568)", () => {
-  it("config do repo: use_melhor_time = 08:00 (decisão do editor, 04/10/2026)", () => {
-    assert.equal(REPO_CONFIG.publishing.social.use_melhor_time, "08:00");
+  it("config do repo: use_melhor_time = 07:45 (decisão do editor, 05/10/2026 — 15min antes da hora cheia)", () => {
+    assert.equal(REPO_CONFIG.publishing.social.use_melhor_time, "07:45");
   });
 
-  it("destaque 'um' agenda às 08:00 BRT na data da edição, em todas as plataformas", () => {
+  it("destaque 'um' agenda às 07:45 BRT na data da edição, em todas as plataformas", () => {
     const now = Date.parse("2030-10-14T12:00:00-03:00");
     for (const platform of ["linkedin", "facebook", "instagram", "threads", "twitter"] as const) {
       const iso = computeScheduledAt({ config: REPO_CONFIG, editionDate: "301015", destaque: "um", platform, now });
-      assert.equal(iso, "2030-10-15T08:00:00-03:00", platform);
+      assert.equal(iso, "2030-10-15T07:45:00-03:00", platform);
     }
   });
 
   it("d1 continua no fallback_schedule (não é afetado)", () => {
     const now = Date.parse("2030-10-14T12:00:00-03:00");
     const iso = computeScheduledAt({ config: REPO_CONFIG, editionDate: "301015", destaque: "d1", platform: "linkedin", now });
-    assert.equal(iso, "2030-10-15T10:00:00-03:00");
+    assert.equal(iso, "2030-10-15T09:45:00-03:00");
   });
 
   it("use_melhor_time ausente → lança (o plano já pula antes; nunca agenda no horário errado)", () => {
