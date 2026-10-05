@@ -214,6 +214,30 @@ describe("#9669 — marcador envelhece após reorder-destaques", () => {
     assert.equal(titleLine(out.md), "Titulo Tres", "TÍTULO (D1) intocado — nada de usar o título do D1 errado");
   });
 
+  it("SUBTÍTULO com 3+ segmentos: posição do marcador desempata o índice ambíguo", () => {
+    const prov = "Kolibri Has Landed";
+    const md = baseMd().replace("Titulo Dois | Titulo Tres", `Titulo Dois | Extra | ${prov}`);
+    // índice 2 → D3 por padrão; marcador D2 vence porque o bloco não é `{d2} | {d3}`.
+    assert.equal(locateProvisionalTitulo(md, prov), 3);
+    assert.equal(locateProvisionalTitulo(md, prov, 2), 2);
+    assert.equal(locateProvisionalTitulo(md, prov, 3), 3);
+    // marcador D1 (envelhecido) não serve de desempate no SUBTÍTULO → índice.
+    assert.equal(locateProvisionalTitulo(md, prov, 1), 3);
+    // bloco no formato canônico: o índice continua decidindo (#9669).
+    const canon = baseMd().replace("Titulo Dois | Titulo Tres", `Titulo Dois | ${prov}`);
+    assert.equal(locateProvisionalTitulo(canon, prov, 2), 3);
+  });
+
+  it("finalize: título final com '|' que sanitiza igual ao provisório conta como already_final", () => {
+    const prov = "OpenAI DevDay – Keynote";
+    const md = baseMd()
+      .replace("Titulo Dois | Titulo Tres", `${prov} | Titulo Tres`)
+      .replace("**[Titulo Dois](https://a.com/2)**", "**[OpenAI DevDay | Keynote](https://a.com/2)**");
+    const out = finalizeProvisionalTitulos(md, [{ position: 2, provisional_title: prov }]);
+    assert.equal(out.finalized[0].status, "already_final");
+    assert.equal(out.md, md);
+  });
+
   it("CLI reorder-destaques remapeia o position do marcador", () => {
     const dir = mkdtempSync(join(tmpdir(), "reorder-titulo-prov-"));
     try {

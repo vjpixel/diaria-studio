@@ -188,10 +188,16 @@ export function tituloSegmentsFor(md: string, position?: 1 | 2 | 3): string[] | 
  * #9669/#9668: onde o provisório está no bloco, e a POSIÇÃO que esse lugar
  * representa — linha do TÍTULO → D1; SUBTÍTULO, 1º segmento → D2, depois → D3
  * (`renderTituloSubtituloBlock`: `{d2} | {d3}`). Independe do `position`
- * gravado no marcador, que envelhece após `reorder-destaques.ts`. `null` =
- * provisório ausente do bloco. @pure
+ * gravado no marcador, que envelhece após `reorder-destaques.ts` — exceto
+ * quando o SUBTÍTULO não tem exatamente 2 segmentos: aí o índice é ambíguo e
+ * `hintPosition` (D2/D3 do marcador) decide. `null` = provisório ausente do
+ * bloco. @pure
  */
-export function locateProvisionalTitulo(md: string, provisionalTitle: string): 1 | 2 | 3 | null {
+export function locateProvisionalTitulo(
+  md: string,
+  provisionalTitle: string,
+  hintPosition?: 1 | 2 | 3,
+): 1 | 2 | 3 | null {
   const prov = provisionalTitle.trim();
   if (!prov) return null;
   const lines = md.split("\n");
@@ -200,8 +206,17 @@ export function locateProvisionalTitulo(md: string, provisionalTitle: string): 1
   const segsOf = (i: number) => lines[i].split("|").map((x) => x.trim());
   if (loc.titleIdx >= 0 && findSegmentRun(segsOf(loc.titleIdx), prov) >= 0) return 1;
   if (loc.subtitleIdx >= 0) {
-    const at = findSegmentRun(segsOf(loc.subtitleIdx), prov);
-    if (at >= 0) return at === 0 ? 2 : 3;
+    const segs = segsOf(loc.subtitleIdx);
+    const at = findSegmentRun(segs, prov);
+    if (at >= 0) {
+      const byIndex = at === 0 ? 2 : 3;
+      // SUBTÍTULO fora do formato `{d2} | {d3}` (escrito à mão com 3+
+      // segmentos, ou título legado com `|`): o índice não identifica o
+      // destaque com segurança — vale a posição do marcador, se for D2/D3.
+      const units = segs.length - (prov.split("|").length - 1);
+      if (units !== 2 && (hintPosition === 2 || hintPosition === 3)) return hintPosition;
+      return byIndex;
+    }
   }
   return null;
 }
@@ -297,7 +312,7 @@ export function finalizeProvisionalTitulos(md: string, entries: PendingTitulo[])
   for (const entry of entries) {
     // #9669: posição real = onde o provisório está no bloco (o marcador pode
     // ter envelhecido num reorder); #9668: busca por sequência de segmentos.
-    const where = locateProvisionalTitulo(out, entry.provisional_title);
+    const where = locateProvisionalTitulo(out, entry.provisional_title, entry.position);
     if (where === null) {
       finalized.push({ ...entry, final_title: null, status: "already_final" });
       continue;
@@ -312,7 +327,9 @@ export function finalizeProvisionalTitulos(md: string, entries: PendingTitulo[])
       remaining.push({ ...e, reason: `título do D${e.position} não encontrado em 02-reviewed.md` });
       continue;
     }
-    if (final === e.provisional_title.trim()) {
+    // `|` no título final vira ` – ` no bloco (sanitizeTituloSegment): compara
+    // na forma que o bloco gravaria.
+    if (sanitizeTituloSegment(final) === e.provisional_title.trim()) {
       finalized.push({ ...e, final_title: final, status: "already_final" });
       continue;
     }
@@ -354,7 +371,7 @@ export function checkTituloSubtituloNotProvisional(editionDir: string): Invarian
   for (const e of entries) {
     const prov = e.provisional_title.trim();
     // #9668/#9669: sequência de segmentos + posição derivada do bloco.
-    const where = locateProvisionalTitulo(md, prov);
+    const where = locateProvisionalTitulo(md, prov, e.position);
     if (where === null) continue;
     const pos = where;
     const stale = pos !== e.position ? ` (marcador dizia D${e.position}; reorder depois do swap?)` : "";
@@ -371,7 +388,7 @@ export function checkTituloSubtituloNotProvisional(editionDir: string): Invarian
       continue;
     }
     const final = currentTitle(md, pos);
-    if (final && final !== prov) {
+    if (final && sanitizeTituloSegment(final) !== prov) {
       violations.push({
         rule: "titulo-subtitulo-not-provisional",
         message:
