@@ -121,6 +121,9 @@ export interface Env {
   LINKEDIN_ACCESS_TOKEN?: string;
   LINKEDIN_AUTHOR_URN?: string;
   LINKEDIN_API_VERSION?: string; // default "202401" aplicado em dispatch.ts
+  // #9569 — webhook opcional (Slack/Discord/etc., aceita JSON com `text`) pro
+  // alarme de DLQ. Ausente = só console.error.
+  ALERT_WEBHOOK_URL?: string;
 }
 
 export type WebhookTarget = "diaria" | "pixel";
@@ -294,6 +297,8 @@ export function isLegacyKey(key: string): boolean {
 export * from "./durable-object";
 import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
+export * from "./maintenance";
+import { withRefreshedThreadsToken, maybeRefreshThreadsToken, alertNewDlqEntries } from "./maintenance";
 import { resolveInstagramCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
@@ -932,7 +937,7 @@ export default {
     const path = url.pathname;
 
     if (path === "/queue" && request.method === "POST") {
-      return handleEnqueue(request, env);
+      return handleEnqueue(request, await withRefreshedThreadsToken(env));
     }
     if (path === "/health" && request.method === "GET") {
       return handleHealth(env);
@@ -960,13 +965,13 @@ export default {
       if (!isAuthorized(request, env)) {
         return json({ error: "unauthorized" }, 401);
       }
-      const result = await fireDueItems(env);
+      const result = await fireDueItems(await withRefreshedThreadsToken(env));
       return json({ ok: true, ...result });
     }
     // #1168 — POST /rearm re-arma DO alarms pra items KV legacy pós-deploy.
     // Editor chama 1x após deploy pra garantir que items pré-deploy tenham alarms.
     if (path === "/rearm" && request.method === "POST") {
-      return handleRearm(request, env);
+      return handleRearm(request, await withRefreshedThreadsToken(env));
     }
 
     return json(
@@ -990,8 +995,11 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
-        const result = await fireDueItems(env);
+        // #9569 — refresh do token Threads (ainda válido) + overlay do KV antes de disparar.
+        await maybeRefreshThreadsToken(env).catch((e) => console.error(`[cron] threads-refresh: ${e}`));
+        const result = await fireDueItems(await withRefreshedThreadsToken(env));
         console.log(`[cron] fired=${result.fired} errors=${result.errors} dlq=${result.dlq}`);
+        await alertNewDlqEntries(env).catch((e) => console.error(`[cron] dlq-alert: ${e}`));
       })(),
     );
   },
