@@ -191,12 +191,14 @@ export function cutAtUnbalancedClose(url: string): string {
  * #9645: limpeza de cauda de URL extraída de corpo de newsletter/e-mail.
  * Compõe `cutAtUnbalancedClose` (fechamento de link markdown + lixo colado)
  * com `stripUrlTrailingPunct` (pontuação de sentença, `_==_` do #4280) e
- * remove marcadores de ênfase markdown (`*`, `_`) e aspas soltas no fim —
- * `https://x.com/a**`, `https://x.com/a_”`. Pura e idempotente.
+ * remove marcadores de ênfase (`*`), `|` e aspas tipográficas/duplas soltas
+ * no fim — `https://x.com/a**`, `https://x.com/a”`. Pura e idempotente.
  *
- * `_` final legítimo numa URL é raro o bastante pra que o custo (perder o
- * `_` de um path real) seja menor que o de perder o item inteiro na
- * verificação, que é o que acontece hoje (148 URLs em 15 edições, #9645).
+ * `_` só sai quando vem DEPOIS de um desses marcadores (`a”_`, `a**_`) —
+ * nunca sozinho: `_` final é legítimo em IDs/handles (`youtu.be/dQw4w9WgXc_`,
+ * `x.com/some_user_`, `instagram.com/reel/C8abc_`), e o catálogo `)**`/`)_**`
+ * do #9645 já é resolvido por `cutAtUnbalancedClose`. Pelo mesmo motivo a aspa
+ * simples ASCII `'` não é removida (aparece em paths reais, `O'Brien`).
  */
 export function cleanUrlTail(url: string): string {
   let cleaned = cutAtUnbalancedClose(url);
@@ -204,7 +206,7 @@ export function cleanUrlTail(url: string): string {
   do {
     prev = cleaned;
     cleaned = stripUrlTrailingPunct(cleaned);
-    cleaned = cleaned.replace(/[*_|"'\u201C\u201D\u2018\u2019]+$/, "");
+    cleaned = cleaned.replace(/[*|"\u201C\u201D\u2018\u2019]+_*$/, "");
   } while (cleaned !== prev);
   return cleaned;
 }

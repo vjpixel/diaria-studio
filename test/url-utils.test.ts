@@ -462,6 +462,29 @@ describe("cleanUrlTail (#9645)", () => {
     assert.equal(cutAtUnbalancedClose("https://api.x.com/q?arr[]="), "https://api.x.com/q?arr[]=");
   });
 
+  it("preserva `_` final legítimo em IDs/handles (review #9651)", () => {
+    for (const u of [
+      "https://www.youtube.com/watch?v=dQw4w9WgXc_",
+      "https://youtu.be/dQw4w9WgXc_",
+      "https://x.com/some_user_",
+      "https://www.instagram.com/reel/C8abc_",
+    ]) {
+      assert.equal(cleanUrlTail(u), u);
+      assert.deepEqual(extractUrlsFromText(`veja ${u} hoje`), [u]);
+    }
+    // forma markdown em negrito: corta no `)` e mantém o `_` do ID
+    assert.equal(cleanUrlTail("https://youtu.be/dQw4w9WgXc_)**"), "https://youtu.be/dQw4w9WgXc_");
+    assert.deepEqual(extractUrlsFromText("[v](https://youtu.be/dQw4w9WgXc_)**"), ["https://youtu.be/dQw4w9WgXc_"]);
+    // ênfase colada a URL que termina em `_`: sai a ênfase, fica o `_`
+    assert.equal(cleanUrlTail("https://x.com/some_user_**"), "https://x.com/some_user_");
+    // `_` DEPOIS de marcador removido continua saindo
+    assert.equal(cleanUrlTail("https://x.com/a\u201D_"), "https://x.com/a");
+  });
+
+  it("preserva aspa simples ASCII no fim (review #9651)", () => {
+    assert.equal(cleanUrlTail("https://en.wikipedia.org/wiki/O'"), "https://en.wikipedia.org/wiki/O'");
+  });
+
   it("URL limpa não muda", () => {
     for (const u of ["https://x.com/", "https://x.com/a?b=c", "https://x.com/a?b=", "https://x.com/path_(x)/y"]) {
       assert.equal(cleanUrlTail(u), u);
