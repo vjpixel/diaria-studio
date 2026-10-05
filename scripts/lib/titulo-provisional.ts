@@ -22,11 +22,26 @@
  * A troca é por SEGMENTO INTEIRO e só na linha da posição: D1 → linha do
  * TÍTULO; D2/D3 → linha do SUBTÍTULO, segmentos separados por ` | `. Nunca
  * por substring (um título que fosse substring de outro alteraria o vizinho).
+ *
+ * #9668: o título da fonte pode conter ` | ` (`"OpenAI DevDay | TechCrunch"`).
+ * Gravado cru, ele virava 2 segmentos e `segs.includes(prov)` nunca casava —
+ * invariante mudo e finalize apagando o marcador como `already_final`. Agora
+ * (1) o provisório passa por `normalizeItemTitle` + troca de `|` remanescente
+ * (`toProvisionalTitulo`) antes de ir pro bloco e pro marcador, e (2) a busca
+ * compara a SEQUÊNCIA de segmentos (`findSegmentRun`), o que cobre marcador
+ * legado gravado antes deste fix.
+ *
+ * #9669: a posição do marcador envelhece se `reorder-destaques.ts` roda entre
+ * o swap e o finalize (o bloco é re-derivado e o provisório muda de linha).
+ * `reorder-destaques.ts` remapeia o marcador (`remapPendingTitulosForReorder`)
+ * e, como defesa, invariante/finalize derivam a posição de ONDE o provisório
+ * está no bloco (`locateProvisionalTitulo`), não só do campo `position`.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { extractTitlesFromMd } from "../insert-titulo-subtitulo.ts";
+import { normalizeItemTitle } from "./strip-publisher-suffix.ts"; // #9668
 import type { InvariantViolation } from "./invariant-checks/types.ts";
 
 export const TITULO_PENDING_MARKER = "swap-destaque-titulo-pending.json";
@@ -66,6 +81,45 @@ export function upsertPendingTitulo(entries: PendingTitulo[], entry: PendingTitu
   return [...entries.filter((e) => e.position !== entry.position), entry].sort(
     (a, b) => a.position - b.position,
   );
+}
+
+/**
+ * #9668: `|` é o separador de segmento do bloco TÍTULO/SUBTÍTULO — um título
+ * que o carregue viraria 2 segmentos. Troca por ` – `. Idempotente. @pure
+ */
+export function sanitizeTituloSegment(title: string): string {
+  return title.replace(/\s*\|\s*/g, " – ").replace(/\s{2,}/g, " ").trim();
+}
+
+/**
+ * #9668: título da FONTE → provisório gravado no bloco e no marcador. Tira o
+ * sufixo de veículo (`normalizeItemTitle`) e troca qualquer `|` que sobrar
+ * (prefixo curto demais pro strip, pipe no meio do título). @pure
+ */
+export function toProvisionalTitulo(sourceTitle: string): string {
+  const out = sanitizeTituloSegment(normalizeItemTitle(sourceTitle));
+  return out || sanitizeTituloSegment(sourceTitle);
+}
+
+/**
+ * #9668: posição inicial da sequência contígua de segmentos de `title`
+ * (quebrado em `|`) dentro de `segs`; `-1` = ausente. Compara sequência, não
+ * `includes` — título com `|` ocupa vários segmentos. @pure
+ */
+export function findSegmentRun(segs: string[], title: string, from = 0): number {
+  const want = title.split("|").map((s) => s.trim());
+  if (want.length === 0 || want.every((w) => w === "")) return -1;
+  for (let i = from; i + want.length <= segs.length; i++) {
+    let ok = true;
+    for (let j = 0; j < want.length; j++) {
+      if (segs[i + j] !== want[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return i;
+  }
+  return -1;
 }
 
 /**
@@ -123,11 +177,64 @@ function targetLineIdxs(
 }
 
 /** Segmentos (trim) da(s) linha(s) da posição. @pure */
-export function tituloSegmentsFor(md: string, position?: 1 | 2 | 3): string[] | null {
+function tituloSegmentsFor(md: string, position?: 1 | 2 | 3): string[] | null {
   const lines = md.split("\n");
   const loc = locateTituloSubtituloLines(lines);
   if (!loc) return null;
   return targetLineIdxs(loc, position).flatMap((i) => lines[i].split("|").map((s) => s.trim()));
+}
+
+/**
+ * #9669/#9668: onde o provisório está no bloco, e a POSIÇÃO que esse lugar
+ * representa — linha do TÍTULO → D1; SUBTÍTULO, 1º segmento → D2, depois → D3
+ * (`renderTituloSubtituloBlock`: `{d2} | {d3}`). Independe do `position`
+ * gravado no marcador, que envelhece após `reorder-destaques.ts` — exceto
+ * quando o SUBTÍTULO não tem exatamente 2 segmentos: aí o índice é ambíguo e
+ * `hintPosition` (D2/D3 do marcador) decide. `null` = provisório ausente do
+ * bloco. @pure
+ */
+export function locateProvisionalTitulo(
+  md: string,
+  provisionalTitle: string,
+  hintPosition?: 1 | 2 | 3,
+): 1 | 2 | 3 | null {
+  const prov = provisionalTitle.trim();
+  if (!prov) return null;
+  const lines = md.split("\n");
+  const loc = locateTituloSubtituloLines(lines);
+  if (!loc) return null;
+  const segsOf = (i: number) => lines[i].split("|").map((x) => x.trim());
+  if (loc.titleIdx >= 0 && findSegmentRun(segsOf(loc.titleIdx), prov) >= 0) return 1;
+  if (loc.subtitleIdx >= 0) {
+    const segs = segsOf(loc.subtitleIdx);
+    const at = findSegmentRun(segs, prov);
+    if (at >= 0) {
+      const byIndex = at === 0 ? 2 : 3;
+      // SUBTÍTULO fora do formato `{d2} | {d3}` (escrito à mão com 3+
+      // segmentos, ou título legado com `|`): o índice não identifica o
+      // destaque com segurança — vale a posição do marcador, se for D2/D3.
+      const units = segs.length - (prov.split("|").length - 1);
+      if (units !== 2 && (hintPosition === 2 || hintPosition === 3)) return hintPosition;
+      return byIndex;
+    }
+  }
+  return null;
+}
+
+/**
+ * #9669: remapeia `position` das entradas do marcador conforme o `newOrder`
+ * de `reorder-destaques.ts` (`newOrder[i]` = destaque antigo que vai pra
+ * posição `i+1`). Entrada cuja posição não está no `newOrder` fica como está.
+ * @pure
+ */
+export function remapPendingTitulosForReorder(entries: PendingTitulo[], newOrder: number[]): PendingTitulo[] {
+  return entries
+    .map((e) => {
+      const idx = newOrder.indexOf(e.position);
+      const next = idx >= 0 ? idx + 1 : e.position;
+      return { ...e, position: next as 1 | 2 | 3 };
+    })
+    .sort((a, b) => a.position - b.position);
 }
 
 /**
@@ -147,17 +254,29 @@ export function replaceTitleInTituloSubtitulo(
   if (!loc) return { md, status: "no_block" };
   const old = (oldTitle ?? "").trim();
   if (!old) return { md, status: "old_title_not_found" };
+  // #9668: troca a SEQUÊNCIA de segmentos do título antigo (que pode ter `|`)
+  // por um segmento só; o novo título nunca leva `|` pro bloco.
+  const safeNew = sanitizeTituloSegment(newTitle);
   let hit = false;
   for (const i of targetLineIdxs(loc, position)) {
-    const segs = lines[i].split("|");
-    const next = segs.map((seg) => {
-      if (seg.trim() !== old) return seg;
-      hit = true;
-      const lead = seg.match(/^\s*/)?.[0] ?? "";
-      const trail = seg.match(/\s*$/)?.[0] ?? "";
-      return lead + newTitle + trail;
-    });
-    lines[i] = next.join("|");
+    const raw = lines[i].split("|");
+    const trimmed = raw.map((seg) => seg.trim());
+    const wantLen = old.split("|").length;
+    const out: string[] = [];
+    let k = 0;
+    while (k < raw.length) {
+      if (findSegmentRun(trimmed.slice(k, k + wantLen), old) === 0) {
+        hit = true;
+        const lead = raw[k].match(/^\s*/)?.[0] ?? "";
+        const trail = raw[k + wantLen - 1].match(/\s*$/)?.[0] ?? "";
+        out.push(lead + safeNew + trail);
+        k += wantLen;
+      } else {
+        out.push(raw[k]);
+        k++;
+      }
+    }
+    lines[i] = out.join("|");
   }
   if (!hit) return { md, status: "old_title_not_found" };
   return { md: lines.join("\n"), status: "updated" };
@@ -190,12 +309,15 @@ export function finalizeProvisionalTitulos(md: string, entries: PendingTitulo[])
   let out = md;
   const finalized: FinalizeResult["finalized"] = [];
   const remaining: FinalizeResult["remaining"] = [];
-  for (const e of entries) {
-    const segs = tituloSegmentsFor(out, e.position) ?? [];
-    if (!segs.includes(e.provisional_title.trim())) {
-      finalized.push({ ...e, final_title: null, status: "already_final" });
+  for (const entry of entries) {
+    // #9669: posição real = onde o provisório está no bloco (o marcador pode
+    // ter envelhecido num reorder); #9668: busca por sequência de segmentos.
+    const where = locateProvisionalTitulo(out, entry.provisional_title, entry.position);
+    if (where === null) {
+      finalized.push({ ...entry, final_title: null, status: "already_final" });
       continue;
     }
+    const e: PendingTitulo = { ...entry, position: where };
     if (isSwapPlaceholder(out, e.position)) {
       remaining.push({ ...e, reason: `D${e.position} ainda é o placeholder do swap — rodar o writer-destaque antes` });
       continue;
@@ -205,7 +327,9 @@ export function finalizeProvisionalTitulos(md: string, entries: PendingTitulo[])
       remaining.push({ ...e, reason: `título do D${e.position} não encontrado em 02-reviewed.md` });
       continue;
     }
-    if (final === e.provisional_title.trim()) {
+    // `|` no título final vira ` – ` no bloco (sanitizeTituloSegment): compara
+    // na forma que o bloco gravaria.
+    if (sanitizeTituloSegment(final) === e.provisional_title.trim()) {
       finalized.push({ ...e, final_title: final, status: "already_final" });
       continue;
     }
@@ -246,26 +370,30 @@ export function checkTituloSubtituloNotProvisional(editionDir: string): Invarian
   const violations: InvariantViolation[] = [];
   for (const e of entries) {
     const prov = e.provisional_title.trim();
-    if (!(tituloSegmentsFor(md, e.position) ?? []).includes(prov)) continue;
-    if (isSwapPlaceholder(md, e.position)) {
+    // #9668/#9669: sequência de segmentos + posição derivada do bloco.
+    const where = locateProvisionalTitulo(md, prov, e.position);
+    if (where === null) continue;
+    const pos = where;
+    const stale = pos !== e.position ? ` (marcador dizia D${e.position}; reorder depois do swap?)` : "";
+    if (isSwapPlaceholder(md, pos)) {
       violations.push({
         rule: "titulo-subtitulo-not-provisional",
         message:
-          `D${e.position} ainda é o placeholder do swap-destaque e o TÍTULO/SUBTÍTULO carrega o título provisório ` +
-          `"${prov}" (título da fonte). Rodar o writer-destaque do D${e.position} e depois ${fix}`,
+          `D${pos} ainda é o placeholder do swap-destaque e o TÍTULO/SUBTÍTULO carrega o título provisório ` +
+          `"${prov}" (título da fonte)${stale}. Rodar o writer-destaque do D${pos} e depois ${fix}`,
         source_issue: "#9601",
         severity: "error",
         file: mdPath,
       });
       continue;
     }
-    const final = currentTitle(md, e.position);
-    if (final && final !== prov) {
+    const final = currentTitle(md, pos);
+    if (final && sanitizeTituloSegment(final) !== prov) {
       violations.push({
         rule: "titulo-subtitulo-not-provisional",
         message:
           `TÍTULO/SUBTÍTULO ainda carrega o título provisório "${prov}" (título da fonte, do swap-destaque), ` +
-          `mas o D${e.position} agora é "${final}" — o subject/preview do e-mail sairia com o título da fonte. Fix: ${fix}`,
+          `mas o D${pos} agora é "${final}"${stale} — o subject/preview do e-mail sairia com o título da fonte. Fix: ${fix}`,
         source_issue: "#9601",
         severity: "error",
         file: mdPath,
