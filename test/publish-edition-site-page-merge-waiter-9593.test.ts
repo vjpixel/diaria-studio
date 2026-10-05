@@ -189,7 +189,7 @@ describe("applyMergeWaiterResult (#9593)", () => {
 });
 
 describe("runMergeWaiter — fim a fim com state file real (#9593)", () => {
-  it("pending → verde: mergeia e o state file deixa de bloquear o gate", () => {
+  it("pending → verde: mergeia e o state file deixa de bloquear o gate", async () => {
     const dir = mkdtempSync(join(tmpdir(), "site-waiter-9593-"));
     try {
       mkdirSync(join(dir, "_internal"));
@@ -216,10 +216,16 @@ describe("runMergeWaiter — fim a fim com state file real (#9593)", () => {
         }
         throw new Error(`gh inesperado: ${args.join(" ")}`);
       };
-      const r = withFakeClock((sleep) =>
-        runMergeWaiter("/repo", 9588, dir, gh, sleep, SITE_PAGE_CI_BACKGROUND_WAIT_MS, 15_000),
+      let alerts = 0;
+      // `withFakeClock` restaura `Date.now` no `finally` síncrono — o waiter
+      // só é síncrono até o `await alert`, que não ocorre no caminho mergeado.
+      const r = await withFakeClock((sleep) =>
+        runMergeWaiter("/repo", 9588, dir, gh, sleep, SITE_PAGE_CI_BACKGROUND_WAIT_MS, 15_000, async () => {
+          alerts++;
+        }),
       );
       assert.equal(r.merged, true);
+      assert.equal(alerts, 0, "merge confirmado não alerta (#9616)");
       assert.equal(merges.length, 1);
       const after = JSON.parse(readFileSync(statePath, "utf8"));
       assert.equal(after.merged, true);

@@ -288,6 +288,8 @@ import {
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
+import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
+import { logEvent } from "./lib/run-log.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
 // deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
@@ -915,6 +917,9 @@ export const defaultMergeWaiterSpawner: MergeWaiterSpawner = ({ rootDir, prNumbe
   const child = spawn(process.execPath, args, {
     cwd: rootDir,
     detached: true,
+    // #9616: sem isto, no Windows o filho destacado ganha console próprio por
+    // até 35min (classe do #7106).
+    windowsHide: true,
     stdio: ["ignore", out, out],
   });
   child.unref();
@@ -943,6 +948,11 @@ export function applyMergeWaiterResult(
 ): Record<string, unknown> | null {
   const statePr = parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
   if (statePr !== prNumber) return null;
+  // #9616: idempotência — um merge já registrado (por um 2º waiter que chegou
+  // antes, ou pela própria chamada síncrona) nunca é rebaixado pra
+  // `merged:false`. Merge é irreversível; o desfecho ruim de um waiter tardio
+  // não pode apagá-lo do state file nem ressuscitar o `mergeBlocker`.
+  if (state.merged === true && !result.merged) return null;
   const mergeReason = `waiter em background (#9593): ${result.reason}`;
   const next: Record<string, unknown> = {
     ...state,
@@ -963,11 +973,120 @@ export function applyMergeWaiterResult(
 }
 
 /**
+ * #9616: o que o waiter sabe quando termina sem merge — insumo do alerta.
+ */
+export interface MergeWaiterFailure {
+  prNumber: number;
+  result: MergeAttemptResult;
+  /** Diretório absoluto da edição, quando o waiter recebeu `--edition-dir`. */
+  editionDirAbs?: string;
+  slug?: string;
+  prUrl?: string;
+  /** Falha ao regravar `_internal/site-page-published.json`, se houve. */
+  stateWriteError?: string;
+}
+
+/** #9616: canal de alerta do waiter — injetável (testes nunca tocam gh/Gmail). */
+export type MergeWaiterAlerter = (failure: MergeWaiterFailure) => Promise<void>;
+
+/** AAMMDD da edição a partir do path dela (`.../2610/261005`), ou `null`. */
+function editionIdFromDir(editionDirAbs: string | undefined): string | null {
+  if (!editionDirAbs) return null;
+  const id = basename(editionDirAbs);
+  return /^\d{6}$/.test(id) ? id : null;
+}
+
+/**
+ * #9616: monta o achado do alerta (puro). `urgente` porque há envio em risco:
+ * o `/p/{slug}` do e-mail das 06:00 dá 404 enquanto o PR não for mergeado, e
+ * o gate do Stage 6 quase sempre já foi aprovado quando o waiter termina (o
+ * job `test` leva ~12min) — não há mais ninguém olhando o state file.
+ * `evento` porque o waiter roda uma vez só: ninguém re-checa a condição pra
+ * auto-resolver a issue, então quem fecha é o humano que mergear.
+ * Fingerprint por PR: 2 waiters do mesmo PR (resume do Stage 6) caem na mesma
+ * issue, nunca em duas.
+ */
+export function buildMergeWaiterAlertFinding(failure: MergeWaiterFailure): NotifyEditorFinding {
+  const { prNumber, result } = failure;
+  const edition = editionIdFromDir(failure.editionDirAbs);
+  const slug = failure.slug ?? "?";
+  const prRef = failure.prUrl ?? `PR #${prNumber}`;
+  const lines = [
+    `O waiter em background (#9593) terminou SEM mergear o PR da página do site.`,
+    ``,
+    `- Edição: ${edition ?? "?"}`,
+    `- PR: ${prRef}`,
+    `- Página: /p/${slug}`,
+    `- Motivo: ${result.reason}`,
+  ];
+  if (failure.stateWriteError) {
+    lines.push(`- State file NÃO foi atualizado: ${failure.stateWriteError}`);
+  }
+  if (failure.editionDirAbs) {
+    lines.push(`- Log do waiter: ${join(failure.editionDirAbs, "_internal", "site-page-merge-waiter.log")}`);
+  }
+  lines.push(
+    ``,
+    `Efeito: enquanto o PR não for mergeado, /p/${slug} (link de WhatsApp do e-mail) dá 404 no envio das 06:00.`,
+    ``,
+    `Ação: conferir o CI com \`gh pr view ${prNumber} --json state,statusCheckRollup\`, corrigir se vermelho/conflito e mergear com \`gh pr merge ${prNumber} --squash\`. Fechar esta issue depois do merge.`,
+    ``,
+    `Achado automático de \`scripts/publish-edition-site-page.ts --merge-pr\` (#9616).`,
+  );
+  return {
+    check: "site-page-merge-waiter",
+    fingerprint: `site-page-merge-waiter:pr-${prNumber}`,
+    severity: "urgente",
+    family: "evento",
+    priority: "P1",
+    subject: `Página do site: PR #${prNumber} não mergeado — /p/${slug} dá 404 no envio${edition ? ` (${edition})` : ""}`,
+    body: lines.join("\n"),
+  };
+}
+
+/**
+ * #9616: alerta real — `log-event` nível error no `data/run-log.jsonl` (lido
+ * pelo auto-reporter e por `/diaria-log`) + `notifyEditor` urgente (issue de
+ * alarme; e-mail na criação). Nunca lança: o alerta é observabilidade, e o
+ * waiter já terminou o trabalho dele.
+ */
+export function makeDefaultMergeWaiterAlerter(rootDir: string): MergeWaiterAlerter {
+  return async (failure) => {
+    const finding = buildMergeWaiterAlertFinding(failure);
+    logEvent(
+      {
+        edition: editionIdFromDir(failure.editionDirAbs),
+        stage: 6,
+        agent: "publish-edition-site-page",
+        level: "error",
+        message: finding.subject,
+        details: { pr: failure.prNumber, reason: failure.result.reason, stateWriteError: failure.stateWriteError },
+      },
+      rootDir,
+    );
+    try {
+      const r = await notifyEditor(finding, { cwd: rootDir, rootDir });
+      process.stderr.write(
+        `[site-page] waiter: alerta registrado (issue ${r.issue?.action ?? "?"} #${r.issue?.issueNumber ?? "?"}, e-mail ${r.emailSent ? "enviado" : "não enviado"})\n`,
+      );
+    } catch (e) {
+      process.stderr.write(`[site-page] waiter: alerta falhou (${(e as Error).message})\n`);
+    }
+  };
+}
+
+/**
  * #9593: modo `--merge-pr N [--edition-dir D]` — o corpo do waiter. Espera o
  * CI com a janela longa, mergeia se verde, e reflete o desfecho no state file
  * da edição. Nunca lança; exit 0 só quando mergeado.
+ *
+ * #9616: terminando SEM merge, dispara `alert` — o gate do Stage 6 já passou
+ * quando o waiter termina, e sem isto o desfecho ruim só existia no state
+ * file e no log, que ninguém lê depois do gate. Não alerta quando o state
+ * file aponta pra OUTRO PR (republicação posterior assumiu a página) nem
+ * quando ele já registra um merge (outro waiter chegou antes).
  */
-export function runMergeWaiter(
+export async function runMergeWaiter(
   rootDir: string,
   prNumber: number,
   editionDirAbs: string | undefined,
@@ -975,7 +1094,8 @@ export function runMergeWaiter(
   sleep: SleepFn = defaultSleep,
   maxWaitMs: number = SITE_PAGE_CI_BACKGROUND_WAIT_MS,
   pollIntervalMs: number = SITE_PAGE_CI_BACKGROUND_POLL_MS,
-): MergeAttemptResult {
+  alert: MergeWaiterAlerter = makeDefaultMergeWaiterAlerter(rootDir),
+): Promise<MergeAttemptResult> {
   // Pausa inicial: o CI estava `pending` há instantes (é por isso que o
   // waiter existe), e o processo pai ainda vai gravar o state file DEPOIS de
   // disparar este waiter — sem a pausa, um merge relâmpago aqui poderia ser
@@ -983,18 +1103,51 @@ export function runMergeWaiter(
   sleep(pollIntervalMs);
   const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs);
   process.stderr.write(`[site-page] waiter PR #${prNumber}: merged=${result.merged} — ${result.reason}\n`);
+  let shouldAlert = !result.merged;
+  let slug: string | undefined;
+  let prUrl: string | undefined;
+  let stateWriteError: string | undefined;
   if (editionDirAbs) {
     const path = join(editionDirAbs, "_internal", "site-page-published.json");
     try {
+      // Relido AGORA (não no início do waiter): é o estado mais recente que um
+      // 2º waiter ou uma republicação podem ter gravado nos últimos 35min.
       const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      slug = typeof state.slug === "string" ? state.slug : undefined;
+      prUrl = typeof state.prUrl === "string" ? state.prUrl : undefined;
       const next = applyMergeWaiterResult(state, prNumber, result);
-      if (next) writeFileSync(path, JSON.stringify(next, null, 2), "utf8");
-      else process.stderr.write(`[site-page] waiter: state file aponta pra outro PR — não alterado\n`);
+      if (next) {
+        writeFileSync(path, JSON.stringify(next, null, 2), "utf8");
+      } else if (parsePrNumberFromUrl(prUrl) !== prNumber) {
+        process.stderr.write(`[site-page] waiter: state file aponta pra outro PR — não alterado\n`);
+        shouldAlert = false;
+      } else {
+        process.stderr.write(`[site-page] waiter: state file já registra merge deste PR — não rebaixado\n`);
+        shouldAlert = false;
+      }
     } catch (e) {
-      process.stderr.write(`[site-page] waiter: falha ao atualizar ${path} (${(e as Error).message})\n`);
+      stateWriteError = `${path}: ${(e as Error).message}`;
+      process.stderr.write(`[site-page] waiter: falha ao atualizar ${stateWriteError}\n`);
+    }
+  }
+  if (shouldAlert) {
+    try {
+      await alert({ prNumber, result, editionDirAbs, slug, prUrl, stateWriteError });
+    } catch (e) {
+      process.stderr.write(`[site-page] waiter: alerta falhou (${(e as Error).message})\n`);
     }
   }
   return result;
+}
+
+/** #9616: `true` só quando o `gh` confirma `state: MERGED`; falha do `gh` → `false`. */
+function isPrMerged(rootDir: string, prNumber: number, gh: GhRunner): boolean {
+  try {
+    const raw = gh(["pr", "view", String(prNumber), "--json", "state"], rootDir);
+    return (JSON.parse(raw) as { state?: string }).state === "MERGED";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1041,7 +1194,7 @@ export function waitAndMergeSitePagePr(
   for (;;) {
     let payload: unknown;
     try {
-      const raw = gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable,state"], rootDir);
+      const raw = gh(["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable,state,headRefOid"], rootDir);
       payload = JSON.parse(raw);
     } catch (e) {
       return {
@@ -1080,9 +1233,30 @@ export function waitAndMergeSitePagePr(
         // separado — `git checkout -B` já recria a branch do zero a cada
         // chamada de qualquer forma, então uma branch local órfã não
         // acumula problema real.
-        gh(["pr", "merge", String(prNumber), "--squash"], rootDir);
+        //
+        // #9616: `--match-head-commit` amarra o merge ao head cujo CI acabou
+        // de ser avaliado — um push na branch entre o poll e o merge (o waiter
+        // roda até 35min depois) faz o GitHub recusar em vez de mergear um
+        // head não verificado.
+        const headSha = (payload as { headRefOid?: string }).headRefOid;
+        const mergeArgs = ["pr", "merge", String(prNumber), "--squash"];
+        if (typeof headSha === "string" && /^[0-9a-f]{40}$/i.test(headSha)) {
+          mergeArgs.push("--match-head-commit", headSha);
+        }
+        gh(mergeArgs, rootDir);
         return { merged: true, reason: "CI verde — mergeado automaticamente (#8158, revoga #6598)" };
       } catch (e) {
+        // #9616: o `gh pr merge` lança também quando OUTRO processo mergeou o
+        // PR no mesmo intervalo de poll (2 waiters num resume do Stage 6, ou o
+        // editor à mão). Sem re-checar, o desfecho virava `merged:false` e
+        // sobrescrevia um merge real no state file. Re-lê o estado do PR antes
+        // de declarar falha.
+        if (isPrMerged(rootDir, prNumber, gh)) {
+          return {
+            merged: true,
+            reason: `gh pr merge falhou (${(e as Error).message}), mas o PR #${prNumber} já está MERGED — merge concorrente`,
+          };
+        }
         return {
           merged: false,
           reason: `CI verde mas gh pr merge falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
@@ -2012,7 +2186,7 @@ export async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const result = runMergeWaiter(ROOT, prNumber, editionDir ? resolve(ROOT, editionDir) : undefined);
+    const result = await runMergeWaiter(ROOT, prNumber, editionDir ? resolve(ROOT, editionDir) : undefined);
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.merged ? 0 : 1;
     return;
