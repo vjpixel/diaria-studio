@@ -730,3 +730,26 @@ describe("#9368 — cursor por edição (regressão 260921: threads consumidas, 
     assert.equal(c.threads, undefined);
   });
 });
+
+describe("regressão #9645: cauda markdown `)**` em urls_extraidas persistido", () => {
+  it("limpa e deduplica contra a versão limpa do body", () => {
+    const threads = [
+      makeThread({
+        body: "Veja [Solaris](https://runway.com/news/research/introducing-solaris)** hoje.",
+        urls_extraidas: [
+          "https://runway.com/news/research/introducing-solaris)**",
+          "https://www.planet.com/pulse/celebrating-one-year-of-tanager-1/)**[__1__",
+        ],
+      }),
+    ];
+    const { articles } = processThreads(threads, { processed_thread_ids: [] });
+    const urls = articles.map((a) => a.url);
+    assert.ok(urls.includes("https://runway.com/news/research/introducing-solaris"), urls.join(" "));
+    assert.ok(urls.includes("https://www.planet.com/pulse/celebrating-one-year-of-tanager-1"), urls.join(" "));
+    assert.ok(
+      urls.every((u) => !/[*)\]]/.test(u)),
+      `cauda suja sobrou: ${urls.join(" ")}`,
+    );
+    assert.equal(urls.filter((u) => u.includes("runway.com")).length, 1);
+  });
+});

@@ -39,7 +39,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { extractUrls, canonicalize } from "./lib/url-utils.ts";
+import { extractUrls, canonicalize, cleanUrlTail } from "./lib/url-utils.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import {
   isTrackingUrl,
@@ -232,7 +232,12 @@ export function processThreads(
     const plainText = isHtml ? stripHtml(thread.body) : thread.body;
     // #8710: o body chega truncado — links do fim de newsletters longas só
     // existem em urls_extraidas. União com dedup, ordem do body primeiro.
-    const urls = [...new Set([...extractUrls(plainText), ...(thread.urls_extraidas ?? [])])];
+    // #9645: urls_extraidas vem persistido do fetch (captured-newsletters.json)
+    // e pode carregar a cauda de markdown `)**` de capturas anteriores ao fix —
+    // limpa aqui também, antes do dedup, pra que a versão suja e a limpa colapsem.
+    const urls = [
+      ...new Set([...extractUrls(plainText), ...(thread.urls_extraidas ?? []).map(cleanUrlTail).filter((u) => u.length > 10)]),
+    ];
     totalUrls += urls.length;
 
     // Derive sender metadata for filtering
