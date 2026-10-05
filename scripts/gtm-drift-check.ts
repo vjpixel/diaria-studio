@@ -11,7 +11,10 @@
  * compara os campos relevantes do evento `CompleteRegistration` (pixel ID,
  * nome do evento, value/currency, presença de `vtp_eventId`) contra a
  * proposta versionada + `META_CAPI_COMPLETE_REGISTRATION_VALUE`/`_CURRENCY`
- * (`scripts/lib/shared/meta-capi.ts`). Divergência dispara alarme por
+ * (`scripts/lib/shared/meta-capi.ts`). Desde #9612 checa também que nenhuma
+ * tag Meta PageView do container dispara nas páginas que já têm o pixel
+ * inline (`findInlinePixelPageUrls`, hoje `evento/agente-ia/*`) — senão o
+ * PageView conta 2x. Divergência dispara alarme por
  * e-mail + issue GitHub — mesmo molde de `home-meta-check.ts`/
  * `subscribe-redirect-drift-check.ts`.
  *
@@ -46,8 +49,8 @@
  * leitura) — validado só via `test/gtm-drift-check.test.ts` com a lógica
  * pura + fetch mockado (sem rede real).
  */
-import { existsSync, readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
@@ -174,12 +177,58 @@ export async function fetchGtmJs(
   }
 }
 
+// ─── Páginas com pixel inline + GTM (#9612) ─────────────────────────────────
+
+/** Raiz dos estáticos do Worker `site` (servido em `https://diar.ia.br`). */
+export const SITE_PUBLIC_DIR = resolve(ROOT, "workers", "site", "public");
+export const SITE_ORIGIN = "https://diar.ia.br";
+
+const INLINE_PAGEVIEW_RE = /fbq\(\s*['"]track['"]\s*,\s*['"]PageView['"]/;
+
+/** O HTML carrega o pixel Meta inline (com PageView) E o container GTM? É a
+ * combinação que dá PageView em dobro se a tag do container disparar. @pure */
+export function hasInlinePixelAndGtm(html: string): boolean {
+  return INLINE_PAGEVIEW_RE.test(html) && html.includes(GTM_CONTAINER_ID);
+}
+
+/** `evento/agente-ia/a/index.html` → `https://diar.ia.br/evento/agente-ia/a/`. @pure */
+export function sitePublicPathToUrl(relPath: string): string {
+  const posix = relPath.split(sep).join("/");
+  const path = posix === "index.html" ? "" : posix.endsWith("/index.html") ? posix.slice(0, -"index.html".length) : posix;
+  return `${SITE_ORIGIN}/${path}`;
+}
+
+/**
+ * Varre `workers/site/public/**.html` e devolve as URLs das páginas com pixel
+ * inline + GTM (hoje as 4 variantes de `evento/agente-ia/`). Derivado do repo
+ * em vez de lista fixa: página nova com o mesmo padrão entra no eixo sozinha.
+ * Só cobre o Worker `site` — outros Workers não têm pixel inline hoje
+ * (conferido em 05/10/2026). Diretório ausente → lista vazia (o eixo então
+ * sai `not-found`, nunca `match` silencioso).
+ */
+export function findInlinePixelPageUrls(publicDir: string = SITE_PUBLIC_DIR): string[] {
+  if (!existsSync(publicDir)) return [];
+  const urls: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".html") && hasInlinePixelAndGtm(readFileSync(full, "utf8"))) {
+        urls.push(sitePublicPathToUrl(relative(publicDir, full)));
+      }
+    }
+  };
+  walk(publicDir);
+  return urls.sort();
+}
+
 function buildExpectedConfig(): GtmExpectedConfig {
   return {
     pixelId: META_CAPI_DEFAULT_DATASET_ID,
     eventName: "CompleteRegistration",
     value: String(META_CAPI_COMPLETE_REGISTRATION_VALUE),
     currency: META_CAPI_COMPLETE_REGISTRATION_CURRENCY,
+    inlinePixelPageUrls: findInlinePixelPageUrls(),
   };
 }
 
