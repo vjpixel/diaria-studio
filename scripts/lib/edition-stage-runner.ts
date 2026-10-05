@@ -152,6 +152,10 @@ export const NO_BACKGROUND_DIRECTIVE =
   "com sleep/while/tasklist/ls em loop para esperar subagentes — esses comandos são negados " +
   "aqui e cada tentativa consome um turno do teto --max-turns.";
 
+/** #9597: "waiting for this/it/the subagents… to complete/finish" (texto já em minúsculas). */
+const WAIT_FOR_COMPLETION_RE =
+  /\bwait(?:ing)? for (?:this|it|that|them|these|those|the [a-z0-9 _./-]{1,60}?) to (?:complete|finish)/;
+
 /**
  * Detecta a assinatura do #6045 no stdout de uma sub-sessão que saiu sem
  * completar: ela despachou uma task em background e encerrou "esperando" a
@@ -161,7 +165,14 @@ export function looksLikeBackgroundWaitExit(stdout: string): boolean {
   const s = stdout.toLowerCase();
   return (
     (s.includes("background") && (s.includes("waiting") || s.includes("wait for"))) ||
-    s.includes("waiting for the background task")
+    s.includes("waiting for the background task") ||
+    // #9597 (edição 261005): o Stage 1 saiu 0 após 21 min com a última linha
+    // "Waiting for this to complete." — sem a palavra "background", então o
+    // retry único do #6045 nunca disparou e a re-execução foi manual. A frase
+    // "esperando X terminar" como encerramento de uma sessão single-turn é o
+    // mesmo sintoma. Só é consultado com a sentinela AUSENTE, e o custo de um
+    // falso positivo é um retry (que pula o que já está em disco).
+    WAIT_FOR_COMPLETION_RE.test(s)
   );
 }
 
@@ -327,6 +338,24 @@ export function summarizePermissionDenials(raw: string): string | null {
   }
   const parts = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n}×${c}`);
   return `${list.length} permission_denials (${parts.join(", ")})`;
+}
+
+/**
+ * #9597 (pure): rótulo do envelope `--output-format json` para o failureTail —
+ * `terminal_reason=error_max_turns, num_turns=121 (estourou o teto --max-turns 120)`.
+ * `null` quando o stdout não é JSON ou não traz nem motivo nem turnos. Antes o
+ * `terminal_reason` só ia pro `stage-status.json` (#9222): o resumo que o
+ * editor lê dizia "sentinela não foi escrita" sem dizer que o stage estourou
+ * o teto de turnos (edição 261005, Stage 2).
+ */
+export function formatRunMetaLabel(raw: string): string | null {
+  const meta = parseCliRunMeta(raw);
+  if (!meta || (meta.terminalReason === undefined && meta.numTurns === undefined)) return null;
+  const parts: string[] = [];
+  if (meta.terminalReason) parts.push(`terminal_reason=${meta.terminalReason}`);
+  if (meta.numTurns !== undefined) parts.push(`num_turns=${meta.numTurns}`);
+  const hitCap = /max_turns/i.test(meta.terminalReason ?? "");
+  return parts.join(", ") + (hitCap ? ` (estourou o teto --max-turns ${MAX_TURNS})` : "");
 }
 
 /** #9223: a partir de quantas tentativas de polling negadas o failureTail rotula o padrão. */
@@ -704,6 +733,8 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
             ? ` | polling negado ×${deniedPolling} (#9223 — Agent é síncrono, não há o que esperar)`
             : "";
         const tail = summarizeFailure(diagnosticText);
+        // #9597: motivo de término/turnos do envelope no próprio resumo.
+        const runMeta = formatRunMetaLabel(stdoutText);
         exitCode = 1;
         failedStage = stage;
         stageOutcome = {
@@ -712,7 +743,7 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
           status: "failed",
           exitCode: 1,
           durationMs: nowMs() - startedAt,
-          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${denials ? ` | ${denials}` : ""}${pollingPart} | últimas linhas de stdout: ${tail}`,
+          failureTail: `stage ${stage} saiu com código 0 mas não completou — ${detail}${runMeta ? ` | ${runMeta}` : ""}${denials ? ` | ${denials}` : ""}${pollingPart} | últimas linhas de stdout: ${tail}`,
         };
         break;
       }
@@ -747,13 +778,16 @@ export function runEditionStages(opts: RunEditionStagesOptions): RunEditionStage
       }
       exitCode = err.status ?? 1;
       failedStage = stage;
+      // #9597: idem caminho de sucesso-sem-sentinela — error_max_turns com
+      // exit != 0 também nomeia o motivo no resumo.
+      const runMeta = typeof err.stdout === "string" && err.stdout ? formatRunMetaLabel(err.stdout) : null;
       stageOutcome = {
         stage,
         skill,
         status: "failed",
         exitCode,
         durationMs: nowMs() - startedAt,
-        failureTail: summarizeFailure(combined),
+        failureTail: `${runMeta ? `${runMeta} | ` : ""}${summarizeFailure(combined)}`,
       };
       break;
     }
