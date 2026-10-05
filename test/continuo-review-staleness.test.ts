@@ -28,6 +28,7 @@ describe("#8445 — review de SHA antigo não é review da PR", () => {
   it("integração com o extrator real: usa o review MAIS RECENTE, então um review novo no SHA B zera o stale", () => {
     const marker = (verdict: string, head: string, run: string) => ({
       id: run,
+      authorAssociation: "OWNER",
       body: `<!-- continuo-review: run=${run} at=2026-09-19T10:00:00Z verdict=${verdict} head=${head} -->\nreview`,
     });
     const before = [marker("reject", A, "r1")];

@@ -35,6 +35,7 @@ import {
   type StuckPrAction,
   type StuckPrInput,
 } from "./lib/continuo-stuck-pr.ts";
+import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG = "[continuo-resolve-stuck-prs]";
@@ -99,14 +100,17 @@ function gatherInput(pr: PrListRaw): StuckPrInput | null {
     linked.push({ number: n, state });
   }
 
-  const view = ghJson<{ comments?: { body: string }[]; commits?: PrCommitEntry[] }>([
+  const view = ghJson<{ comments?: unknown; commits?: PrCommitEntry[] }>([
     "pr",
     "view",
     String(pr.number),
     "--json",
     "comments,commits",
   ]);
-  const comments = view?.comments?.map((c) => c.body) ?? null;
+  // #9632: repo público — só comentário de autor com vínculo ao repo conta.
+  // Sem o filtro, um terceiro postando marcadores `verdict=reject` estourava
+  // o reject-cap e FECHAVA uma PR nossa.
+  const comments = view ? trustedCommentBodies(view.comments) : null;
   const last = view?.commits ? latestCommitDate(view.commits) : null;
   const hoursSinceLastCommit = last ? (Date.now() - Date.parse(last)) / 3_600_000 : null;
 

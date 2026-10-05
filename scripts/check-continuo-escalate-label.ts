@@ -36,6 +36,7 @@
 
 import { execFileSync } from "node:child_process";
 import { formatEscalateHeadMarker, isAlreadyEscalated, needsEscalateHeadMarker } from "./lib/continuo-escalate-owner.ts";
+import { TRUSTED_AUTHOR_JQ_SELECT } from "./lib/trusted-comment-author.ts";
 import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
 
@@ -118,7 +119,10 @@ function markEscalatedHead(pr: string, head: string | null): void {
   try {
     const bodies = execFileSync(
       "gh",
-      ["api", `repos/{owner}/{repo}/issues/${pr}/comments`, "--paginate", "--jq", ".[].body | @json"],
+      // #9632: só marcador de autor com vínculo ao repo conta como "já
+      // gravado" — um terceiro (repo público) postando o marcador do head
+      // atual não pode impedir que o NOSSO seja gravado.
+      ["api", `repos/{owner}/{repo}/issues/${pr}/comments`, "--paginate", "--jq", `.[] | ${TRUSTED_AUTHOR_JQ_SELECT} | .body | @json`],
       { encoding: "utf8", timeout: 60_000 },
     )
       .split("\n")

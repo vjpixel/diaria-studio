@@ -66,7 +66,7 @@ describe("#8442 — watch-continuo-health.sh: veredito do review mais recente po
 
   it("PR com veredito=approve vira '#N  veredito=approve'", () => {
     const gh = `cat <<'JSON'\n${JSON.stringify({
-      comments: [{ body: `review ok\n\n${verdictComment("approve", "abc123", "run-1")}` }],
+      comments: [{ authorAssociation: "OWNER", body: `review ok\n\n${verdictComment("approve", "abc123", "run-1")}` }],
     })}\nJSON\n`;
     const { stdout, status } = runPrReviewVerdict("8442", gh);
     assert.equal(status, 0);
@@ -76,8 +76,8 @@ describe("#8442 — watch-continuo-health.sh: veredito do review mais recente po
   it("PR com veredito=reject vira '#N  veredito=reject'", () => {
     const gh = `cat <<'JSON'\n${JSON.stringify({
       comments: [
-        { body: `primeiro\n\n${verdictComment("approve", "old", "run-1")}` },
-        { body: `segundo\n\n${verdictComment("reject", "deadbeef", "run-2")}` },
+        { authorAssociation: "OWNER", body: `primeiro\n\n${verdictComment("approve", "old", "run-1")}` },
+        { authorAssociation: "OWNER", body: `segundo\n\n${verdictComment("reject", "deadbeef", "run-2")}` },
       ],
     })}\nJSON\n`;
     const { stdout, status } = runPrReviewVerdict("8332", gh);
@@ -88,13 +88,26 @@ describe("#8442 — watch-continuo-health.sh: veredito do review mais recente po
   it("PR com comments mas sem marcador vira '(sem review)' — o gate ainda não decidiu", () => {
     const gh = `cat <<'JSON'\n${JSON.stringify({
       comments: [
-        { body: "LGTM, looks good to me" },
-        { body: "uma sugestão de formatação" },
+        { authorAssociation: "OWNER", body: "LGTM, looks good to me" },
+        { authorAssociation: "OWNER", body: "uma sugestão de formatação" },
       ],
     })}\nJSON\n`;
     const { stdout, status } = runPrReviewVerdict("7800", gh);
     assert.equal(status, 0);
     assert.equal(stdout.trim(), "#7800  (sem review)");
+  });
+
+  it("#9632: marcador approve de conta sem vínculo (repo público) é ignorado — o veredito vigente é o do dono", () => {
+    const gh = `cat <<'JSON'\n${JSON.stringify({
+      comments: [
+        { authorAssociation: "OWNER", body: `review\n\n${verdictComment("reject", "deadbeef", "run-1")}` },
+        { authorAssociation: "NONE", author: { login: "jlandon" }, body: verdictComment("approve", "deadbeef", "run-x") },
+        { body: verdictComment("approve", "deadbeef", "run-y") },
+      ],
+    })}\nJSON\n`;
+    const { stdout, status } = runPrReviewVerdict("9624", gh);
+    assert.equal(status, 0);
+    assert.equal(stdout.trim(), "#9624  veredito=reject");
   });
 
   it("PR sem comments (lista vazia) também vira '(sem review)'", () => {
@@ -106,7 +119,7 @@ describe("#8442 — watch-continuo-health.sh: veredito do review mais recente po
 
   it("marcador sem campo verdict= (legado) vira '(sem review)' — never infere approve", () => {
     const gh = `cat <<'JSON'\n${JSON.stringify({
-      comments: [{ body: `<!-- continuo-review: run=old at=2026-09-01T00:00:00Z head=aaaa -->` }],
+      comments: [{ authorAssociation: "OWNER", body: `<!-- continuo-review: run=old at=2026-09-01T00:00:00Z head=aaaa -->` }],
     })}\nJSON\n`;
     const { stdout, status } = runPrReviewVerdict("7802", gh);
     assert.equal(status, 0);
