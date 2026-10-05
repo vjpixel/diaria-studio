@@ -42,6 +42,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -88,6 +89,13 @@ export interface CropReviewEntry {
   categoria?: CropReviewCategory;
   motivo?: string;
   sugestao?: string;
+  /**
+   * #9598: md5 de `04-{destaque}-{ratio}.jpg` no momento do persist
+   * (`stampCropReviewImageHashes`). O invariante `image-crop-warn` descarta a
+   * entrada quando o md5 atual diverge — imagem regerada/trocada depois da
+   * revisão. Ausente = imagem não existia no persist, ou entrada pré-#9598.
+   */
+  image_md5?: string;
 }
 
 export interface CropReviewSummary {
@@ -208,6 +216,24 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
 }
 
 /**
+ * #9598: carimba em cada entrada o md5 da imagem que ela revisou
+ * (`04-{destaque}-{ratio}.jpg`, o mesmo `crop_path` de `discoverCropPairs`).
+ * Sem esse carimbo, uma regeração/troca de imagem depois do Stage 3 deixava o
+ * gate citando avisos da imagem antiga. Imagem ausente → entrada sem carimbo
+ * (o invariante trata como legado, não como desatualizada).
+ */
+export function stampCropReviewImageHashes(result: CropReviewResult, editionDir: string): CropReviewResult {
+  return {
+    ...result,
+    results: result.results.map((r) => {
+      const imgPath = join(editionDir, `04-${r.destaque}-${r.ratio}.jpg`);
+      if (!existsSync(imgPath)) return r;
+      return { ...r, image_md5: md5OfFile(imgPath) };
+    }),
+  };
+}
+
+/**
  * Formata a seção do revisor de crop pro gate do Stage 4.
  * Warning-only: nunca inclui linguagem de bloqueio, sempre fecha com a nota
  * de que a decisão final é do editor (#3951).
@@ -286,7 +312,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
-    const result = normalizeCropReviewResult(raw, edition);
+    const result = stampCropReviewImageHashes(normalizeCropReviewResult(raw, edition), editionDir);
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     console.log(formatGateSummary(result));

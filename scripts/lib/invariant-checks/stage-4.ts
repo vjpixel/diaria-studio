@@ -1410,19 +1410,63 @@ function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolati
  * (#3916/#3918): nunca bloqueia o gate, só avisa. Se o arquivo não existe
  * (revisor não rodou nesta edição — ex: retomada de checkpoint pré-#3951),
  * não é violação — o revisor é assistido, não obrigatório.
+ *
+ * #9598: entrada cujo `image_md5` (carimbado por `run-image-crop-reviewer.ts`
+ * no persist) não bate mais com o md5 atual de `04-{destaque}-{ratio}.jpg` é
+ * de uma versão ANTERIOR da imagem (regerada, trocada por swap/promote) — o
+ * aviso antigo é descartado e vira uma nota "desatualizado, re-rodar o
+ * revisor" em vez de citar uma imagem que não existe mais. O md5 viaja com a
+ * entrada no `reorder-destaques.ts` (o conteúdo da imagem também viaja), então
+ * reorder não invalida nada. Entrada sem `image_md5`/`ratio` (persistida antes
+ * do #9598) segue o comportamento antigo — sem como saber de qual imagem era.
  */
+export function isCropReviewEntryStale(
+  editionDir: string,
+  entry: { destaque?: string; ratio?: string; image_md5?: string },
+): boolean {
+  if (typeof entry.image_md5 !== "string" || !entry.destaque || !entry.ratio) return false;
+  const imgPath = resolve(editionDir, `04-${entry.destaque}-${entry.ratio}.jpg`);
+  if (!existsSync(imgPath)) return true;
+  try {
+    return md5OfFile(imgPath) !== entry.image_md5;
+  } catch {
+    return false; // ilegível agora — não descarta o aviso por falha de I/O
+  }
+}
+
 function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "04-crop-review.json");
   if (!existsSync(path)) return [];
-  let data: { results?: Array<{ destaque?: string; status?: string; motivo?: string; sugestao?: string }> };
+  let data: {
+    results?: Array<{
+      destaque?: string;
+      ratio?: string;
+      status?: string;
+      motivo?: string;
+      sugestao?: string;
+      image_md5?: string;
+    }>;
+  };
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return [];
   }
   const results = Array.isArray(data.results) ? data.results : [];
-  return results
-    .filter((r) => r && r.status === "warn")
+  const warns = results.filter((r) => r && r.status === "warn");
+  const stale = warns.filter((r) => isCropReviewEntryStale(editionDir, r));
+  const staleKeys = [...new Set(stale.map((r) => `${(r.destaque ?? "?").toUpperCase()} (${r.ratio})`))];
+  const staleNotices: InvariantViolation[] = staleKeys.map((key) => ({
+    rule: "image-crop-warn",
+    message:
+      `Destaque ${key}: aviso do revisor de crop descartado — a imagem mudou depois da revisão ` +
+      `(regerada ou trocada). Re-rodar image-crop-reviewer pra revisar a imagem atual (#9598).`,
+    source_issue: "#9598",
+    severity: "warning" as const,
+    file: path,
+  }));
+  const current: InvariantViolation[] = warns
+    .filter((r) => !stale.includes(r))
     .map((r) => ({
       rule: "image-crop-warn",
       message:
@@ -1432,6 +1476,7 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
       severity: "warning" as const,
       file: path,
     }));
+  return [...current, ...staleNotices];
 }
 
 /**

@@ -162,6 +162,30 @@ describe("#7633 — draftToEmailApoiadoresKit", () => {
     assert.equal(APOIADORES_KIT_UTM_PROFILE.pollMergeTag, "{{ subscriber.email_address }}");
     assert.equal(APOIADORES_KIT_UTM_PROFILE.pollBrand, "mensal-apoiadores-kit");
   });
+
+  it("#9589: caixa DIVULGAÇÃO (CTA com utm_campaign próprio) mantém a campanha mas o utm_source segue o do Kit", () => {
+    const draft = FULL_DRAFT.replace(
+      "**É IA?**",
+      [
+        "**DIVULGAÇÃO**",
+        "",
+        "IA não é só pra bater papo.",
+        "",
+        "→ [Saiba mais](https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-voz)",
+        "",
+        "**É IA?**",
+      ].join("\n"),
+    );
+    const { html } = draftToEmailApoiadoresKit(draft, "Assunto", "2607");
+    const plain = html.replace(/&amp;/g, "&");
+    const m = plain.match(/href="(https:\/\/diar\.ia\.br\/evento\/agente-ia\?[^"]+)"/);
+    assert.ok(m, "caixa DIVULGAÇÃO sumiu do e-mail dos apoiadores");
+    const p = new URL(m[1]).searchParams;
+    assert.equal(p.get("utm_source"), MENSAL_APOIADORES_KIT_UTM_SOURCE);
+    assert.equal(p.get("utm_medium"), MENSAL_APOIADORES_KIT_UTM_MEDIUM);
+    assert.equal(p.get("utm_campaign"), "agente-ia");
+    assert.equal(p.get("utm_content"), "caixa-voz");
+  });
 });
 
 describe("#7633 — isolamento entre os 3 perfis que coexistem no repo", () => {

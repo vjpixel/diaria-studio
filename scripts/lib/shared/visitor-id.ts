@@ -140,10 +140,12 @@ export function resolveVisitorId(
  *    descartado pelo browser de qualquer forma).
  * 2. Expõe `window.__DIA_VID__` pra qualquer script na MESMA página que
  *    precise do valor síncrono (ex: `fbq('init', PIXEL, {external_id: ...})`
- *    nas páginas que inicializam o pixel diretamente, sem passar por GTM —
- *    ver `workers/site/public/evento/agente-ia/{a,b}/index.html`).
+ *    nas páginas que inicializam o pixel Meta inline em vez de pela tag do
+ *    GTM — o GTM também carrega nelas, mas só pro GA4, #9590 — ver
+ *    `workers/site/public/evento/agente-ia/{a,b,c,d}/index.html`).
  * 3. Empurra `{ external_id: <valor> }` pro `dataLayer` ANTES do GTM
- *    carregar (`renderAnalyticsHead` embute este snippet primeiro) — é o
+ *    carregar (`renderAnalyticsHead` embute este snippet primeiro; as
+ *    páginas do evento colam o bootstrap à mão antes do loader do GTM) — é o
  *    contrato que a variável do GTM (Data Layer Variable `external_id`) lê
  *    pra alimentar o campo "External ID" da tag Meta Pixel (User-Provided
  *    Data / Advanced Matching). **A configuração dessa variável/campo no

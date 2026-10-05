@@ -227,7 +227,8 @@ export function matchesRecentTheme(
 interface ApprovedArticleLike {
   url?: string;
   title?: string;
-  article?: { url?: string; title?: string };
+  summary?: unknown;
+  article?: { url?: string; title?: string; summary?: unknown };
 }
 
 interface ApprovedJsonShape {
@@ -575,6 +576,8 @@ export interface PastDestaqueTitle {
   title: string;
   aammdd: string;
   url?: string;
+  /** #9595: resumo do destaque (sinal de MESMO FATO por cifras). */
+  summary?: string;
 }
 
 /**
@@ -622,8 +625,14 @@ export function extractPastDestaqueTitles(
       for (const item of parsed.highlights ?? []) {
         const t = item?.article?.title ?? item?.title;
         const u = item?.url ?? item?.article?.url;
+        const sm = item?.article?.summary ?? item?.summary;
         if (t && typeof t === "string" && t.trim()) {
-          out.push({ title: t.trim(), aammdd, url: typeof u === "string" ? u : undefined });
+          out.push({
+            title: t.trim(),
+            aammdd,
+            url: typeof u === "string" ? u : undefined,
+            ...(typeof sm === "string" && sm.trim() ? { summary: sm.trim() } : {}),
+          });
         }
       }
       break; // primeiro arquivo encontrado = source-of-truth da edição
