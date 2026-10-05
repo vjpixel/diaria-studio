@@ -188,9 +188,30 @@ describe("blockReasonForMarkingStageDone — Stage 5 + #1577 review_completed (#
 });
 
 describe("checkStage4ReviewCompleted — backend Kit (#9594)", () => {
-  it("kit sem 05-review-kit.json → warning (antes: [] silencioso)", () => {
+  it("kit sem newsletter-kit-published.json → ok (nada despachado)", () => {
     const dir = makeEditionDir();
     try {
+      assert.equal(checkStage4ReviewCompleted(dir, "kit").length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("kit com status pending → warning", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), "{}");
+      writeFileSync(resolve(dir, "_internal", "05-review-kit.json"), '{"review_status":"pending"}');
+      assert.equal(checkStage4ReviewCompleted(dir, "kit").length, 1);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("kit publicado sem 05-review-kit.json → warning (antes: [] silencioso)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), "{}");
       const v = checkStage4ReviewCompleted(dir, "kit");
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "stage-5-review-completed");
@@ -203,6 +224,7 @@ describe("checkStage4ReviewCompleted — backend Kit (#9594)", () => {
   it("kit com 05-review-kit.json → ok", () => {
     const dir = makeEditionDir();
     try {
+      writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), "{}");
       writeFileSync(
         resolve(dir, "_internal", "05-review-kit.json"),
         JSON.stringify({ review_status: "ok", review_attempts: 1 }),

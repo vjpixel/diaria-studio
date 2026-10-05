@@ -462,7 +462,14 @@ function checkStage4ReviewCompleted(editionDir: string, backendOverride?: string
   // (antes: retorno [] silencioso e o gate apresentava "review automático" sem dado).
   if ((backendOverride ?? loadNewsletterBackend()) === "kit") {
     const kitPath = resolve(editionDir, "_internal", "05-review-kit.json");
-    if (existsSync(kitPath)) return [];
+    // Newsletter nunca despachada (--skip newsletter, aborto) → nada a revisar.
+    if (!existsSync(resolve(editionDir, "_internal", "newsletter-kit-published.json"))) return [];
+    try {
+      const st = (JSON.parse(readFileSync(kitPath, "utf8")) as { review_status?: string }).review_status;
+      if (st === "ok" || st === "inconclusive" || st === "issues_unfixable") return [];
+    } catch {
+      // ausente/não parseável → cai no warning abaixo
+    }
     return [
       {
         rule: "stage-5-review-completed",
