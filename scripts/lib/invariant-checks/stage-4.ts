@@ -29,8 +29,12 @@ import {
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
 import {
   USE_MELHOR_POST_ID,
+  checkUseMelhorItemInFinal,
   loadUseMelhorPostConfigState,
+  readApprovedForUseMelhor,
   readUseMelhorPostState,
+  resolveUseMelhorCoverTitle,
+  useMelhorPostStatePath,
   type UseMelhorPostConfigState,
 } from "../use-melhor-post.ts"; // #9568
 import { findOverflowingUseMelhorSlides, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568
@@ -2107,7 +2111,12 @@ function checkUseMelhorCarouselOverflow(
       file: socialPath,
     });
   }
-  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, ctaOverride);
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const coverTitle = resolveUseMelhorCoverTitle(state.item, {
+    reviewedMd: existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null,
+    approved: readApprovedForUseMelhor(editionDir),
+  }); // #9600 — mesmo título que o Stage 3 renderiza
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), coverTitle, ctaOverride);
   if (overflow.length === 0) return violations;
   violations.push(
     {
@@ -2124,6 +2133,44 @@ function checkUseMelhorCarouselOverflow(
     },
   );
   return violations;
+}
+
+/**
+ * (#9592) O 4º post (USE MELHOR) só sai se o item ESCOLHIDO — o de
+ * `_internal/use-melhor-post.json`, pro qual o `## um` foi escrito — seguir
+ * renderizado no USE MELHOR do `02-reviewed.md` final. Edição 261005: os 5
+ * canais pularam o 4º post no Stage 5 sem que nada no gate deixasse claro que
+ * ele não ia sair. Este check acusa ANTES do gate quando o item saiu da edição
+ * (editor tirou/trocou no painel), com o comando que realinha. Warning, nunca
+ * error: o 4º post é fail-soft (#9568) e a edição não bloqueia por ele.
+ * Item de score maior na edição final NÃO é violação — a escolha gravada vale.
+ */
+function checkUseMelhorPostItemRendered(
+  editionDir: string,
+  /** Injetável pra teste; default = `platform.config.json` do repo. */
+  useMelhorConfig?: UseMelhorPostConfigState,
+): InvariantViolation[] {
+  const config = useMelhorConfig ?? loadUseMelhorPostConfigState(ROOT);
+  if (!config.enabled) return [];
+  const state = readUseMelhorPostState(editionDir);
+  if (!state?.item) return []; // ausência já aparece no resumo do gate ({use_melhor_post_block})
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  const final = checkUseMelhorItemInFinal(state.item, readFileSync(reviewedPath, "utf8"));
+  if (final.ok) return [];
+  return [
+    {
+      rule: "use-melhor-post-item-rendered",
+      message:
+        `4º post (USE MELHOR) vai ser PULADO nos 5 canais: ${final.reason}. Para manter o 4º post: ` +
+        `"npx tsx scripts/select-use-melhor-post.ts --edition-dir ${editionDir} --reviewed" e re-rodar ` +
+        `social-writer/social-curto só pro '## ${USE_MELHOR_POST_ID}' (ou gravar à mão em ` +
+        `_internal/use-melhor-post.json o item que ficou na edição, junto com o texto de '## ${USE_MELHOR_POST_ID}').`,
+      source_issue: "#9592",
+      severity: "warning",
+      file: useMelhorPostStatePath(editionDir),
+    },
+  ];
 }
 
 /**
@@ -3028,6 +3075,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: (editionDir) => checkCarouselTextOverflow(editionDir),
   },
   {
+    id: "use-melhor-post-item-rendered",
+    description: "item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only)",
+    source_issue: "#9592",
+    stage: 4,
+    run: (editionDir) => checkUseMelhorPostItemRendered(editionDir),
+  },
+  {
     id: "instagram-comment-delivery-promise",
     description: "override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide)",
     source_issue: "#8681",
@@ -3111,6 +3165,7 @@ export {
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
+  checkUseMelhorPostItemRendered,
   checkInstagramCommentDeliveryPromise,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,

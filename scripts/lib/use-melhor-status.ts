@@ -17,6 +17,7 @@ import {
   USE_MELHOR_POST_ID,
   readApprovedForUseMelhor,
   readUseMelhorPostState,
+  resolveUseMelhorCoverTitle,
   type UseMelhorPostConfigState,
   type UseMelhorPostStatusInput,
 } from "./use-melhor-post.ts";
@@ -44,6 +45,8 @@ export function gatherUseMelhorStatusInput(
   const state = config.enabled ? readUseMelhorPostState(editionDir) : null;
   const socialUm = readUseMelhorBlock(socialMd, "Social");
   const stamp = readUseMelhorCarouselStamp(editionDir);
+  const reviewedMd = readIfExists(resolve(editionDir, "02-reviewed.md"));
+  const approved = readApprovedForUseMelhor(editionDir);
   let carouselStale = false;
   if (config.enabled && stamp && state?.item && socialUm) {
     // Fail-soft: override de teste malformado não pode derrubar o status.
@@ -53,13 +56,14 @@ export function gatherUseMelhorStatusInput(
     } catch {
       ctaOverride = null;
     }
-    carouselStale = isUseMelhorCarouselStale(stamp, socialUm, state.item.title, ctaOverride);
+    const coverTitle = resolveUseMelhorCoverTitle(state.item, { reviewedMd, approved }); // #9600
+    carouselStale = isUseMelhorCarouselStale(stamp, socialUm, coverTitle, ctaOverride);
   }
   return {
     config,
     state,
-    reviewedMd: readIfExists(resolve(editionDir, "02-reviewed.md")),
-    approved: readApprovedForUseMelhor(editionDir),
+    reviewedMd,
+    approved,
     hasSocialSection: socialUm !== null,
     hasCurtoSection: readUseMelhorBlock(socialMd, "Curto") !== null,
     carouselSlots: stamp?.slots ?? null,

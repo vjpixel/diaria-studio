@@ -42,7 +42,9 @@ import { resolve } from "node:path";
 import {
   USE_MELHOR_POST_ID,
   loadUseMelhorPostConfigState,
+  readApprovedForUseMelhor,
   readUseMelhorPostState,
+  resolveUseMelhorCoverTitle,
   type UseMelhorPostConfigState,
 } from "./lib/use-melhor-post.ts"; // #9568
 import {
@@ -248,11 +250,19 @@ async function genUseMelhorCarousel(
   if (!umText || !umText.trim()) {
     return { status: "skipped", reason: `bloco '## ${USE_MELHOR_POST_ID}' não encontrado em '# Social' de 03-social.md` };
   }
-  const slides = buildUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
+  // #9600: capa com o título da EDIÇÃO (cover_title manual > título editado >
+  // título do item em 02-reviewed.md > título da fonte), não o da fonte cru.
+  const coverTitle = resolveUseMelhorCoverTitle(state.item, {
+    reviewedMd: existsSync(resolve(editionDir, "02-reviewed.md"))
+      ? readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8")
+      : null,
+    approved: readApprovedForUseMelhor(editionDir),
+  });
+  const slides = buildUseMelhorSlides(umText.trim(), coverTitle, opts.ctaOverride);
   if (slides.length === 0) {
     return { status: "skipped", reason: `'## ${USE_MELHOR_POST_ID}' sem corpo` };
   }
-  const overflow = findOverflowingUseMelhorSlides(umText.trim(), state.item.title, opts.ctaOverride);
+  const overflow = findOverflowingUseMelhorSlides(umText.trim(), coverTitle, opts.ctaOverride);
   if (overflow.length > 0) {
     return {
       status: "skipped",
