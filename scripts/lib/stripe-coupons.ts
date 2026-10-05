@@ -225,6 +225,21 @@ export interface RedemptionRow {
   // `first_payment_is_forecast` seguem carregando a previsão. OPCIONAL —
   // backward-compat com KV populado antes do #2758.
   payments?: PaymentEntry[];
+  // #9617: data REAL do resgate (`windowAnchor` = discount.start ao vivo, ou
+  // start/created da invoice), distinta de `created` (= `sub.created`, data da
+  // ASSINATURA) quando o cupom foi aplicado a uma assinatura já existente.
+  // OPCIONAL — KV populado antes do #9617 não tem; ler via `redemptionEpoch`.
+  redeemed_at?: number;
+}
+
+/**
+ * #9617: epoch (s) do RESGATE — `redeemed_at` quando presente, senão `created`
+ * (KV legado, pré-#9617). Fonte única pra coluna "Resgate", corte de 60d,
+ * ordenação do Detalhe e chave da classificação Clarice novo/antigo — worker e
+ * `scripts/coupon-clarice-class.ts` precisam derivar a MESMA chave.
+ */
+export function redemptionEpoch(r: Pick<RedemptionRow, "created" | "redeemed_at">): number {
+  return r.redeemed_at ?? r.created;
 }
 
 export interface CouponCodeReport {
@@ -464,6 +479,7 @@ function buildRedemptionRow(params: {
     first_payment_epoch: firstPayment.epoch,
     first_payment_is_forecast: firstPayment.isForecast,
     payments,
+    redeemed_at: windowAnchor,
   };
 }
 

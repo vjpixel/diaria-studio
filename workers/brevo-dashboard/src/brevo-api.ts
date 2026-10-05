@@ -38,6 +38,7 @@ export const BREVO_RATE_LIMIT_CONTACTS_RPH = 36000; // /v3/contacts/*
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, PostmasterCampaignSpamRecord, LinkSectionMap, ClariceHourTestKvState, MonthlyTotalsArchive } from "./types.ts"; // #4970: PostmasterCampaignSpamRecord; #5189: ClariceHourTestKvState; #8115: MonthlyTotalsArchive
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, HOUR_TEST_KV_KEY, RECENT_STATS_TTL, MID_RANGE_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey; #5189: HOUR_TEST_KV_KEY; #6720 Fatia C: MID_RANGE_STATS_TTL
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
+import { COUPON_CLARICE_CLASS_KV_KEY, normalizeClariceClassPayload, type CouponClariceClassPayload } from "../../../scripts/lib/coupon-clarice-class.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles, calcCumulativeSentInBillingWindow } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles; #6394: calcCumulativeSentInBillingWindow
 import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
 import { fmtTimeBRT, fmtClockBRT } from "./render-links.ts"; // #4251: timestamp "defasado desde X"; #5218: horário-alvo do banner de rate-limit
@@ -1451,13 +1452,14 @@ export async function readKvTabs(
   eiaEngagement: EiaEngagementSummary | null;
   postmasterSpam: PostmasterSpamEntry | null; // #4063
   hourTestState: ClariceHourTestKvState | null; // #5189
+  couponClariceClass: CouponClariceClassPayload | null; // #9617
 }> {
   // As 7 leituras são independentes → paralelas (importa no fallback de 429,
   // que está no caminho crítico do render stale).
   // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 6
   // seções sempre leem o KV direto, sem noção de fresh/kv-only.
   const kv = env.STATS_CACHE;
-  const [rawCohorts, rawMvStatus, rawContactsSummary, couponUsage, rawEiaEngagement, rawPostmasterSpam, rawHourTestState] = await Promise.all([
+  const [rawCohorts, rawMvStatus, rawContactsSummary, couponUsage, rawEiaEngagement, rawPostmasterSpam, rawHourTestState, rawClariceClass] = await Promise.all([
     kv ? kv.get(COHORTS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
@@ -1465,6 +1467,9 @@ export async function readKvTabs(
     kv ? kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(POSTMASTER_SPAM_KV_KEY, "json").catch(() => null) : Promise.resolve(null), // #4063
     kv ? kv.get(HOUR_TEST_KV_KEY, "json").catch(() => null) : Promise.resolve(null), // #5189
+    // #9617: lida aqui (e não só no caminho ao vivo do index.ts) pra que os
+    // fallbacks de 429/indisponibilidade e o Studio também recebam a coluna Clarice.
+    kv ? kv.get(COUPON_CLARICE_CLASS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
   ]);
   const cohorts = normalizeEngagementCohorts(rawCohorts);
   const mvStatus = normalizeMvStatus(rawMvStatus);
@@ -1472,7 +1477,8 @@ export async function readKvTabs(
   const eiaEngagement = normalizeEiaEngagement(rawEiaEngagement);
   const postmasterSpam = normalizePostmasterSpamEntry(rawPostmasterSpam); // #4063
   const hourTestState = normalizeClariceHourTestState(rawHourTestState); // #5189
-  return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState };
+  const couponClariceClass = normalizeClariceClassPayload(rawClariceClass); // #9617
+  return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass };
 }
 
 /**
@@ -1608,7 +1614,7 @@ export async function buildRateLimitFallback(
   // no render de fallback de rate-limit. Ausente (KV pré-#3080) → null (sem aviso).
   const staleCampaignsLimit =
     typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "kv-only");
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } = await readKvTabs(env, "kv-only");
   // Créditos do plano: o render principal busca /v3/account ANTES das campanhas
   // (janela de rate-limit fresca) e passa o valor em memória aqui. Sem isso o
   // fallback lia "kv-only" e o KV nunca era populado (a linha que populava rodava
@@ -1649,7 +1655,7 @@ export async function buildRateLimitFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
       postmasterSpam, // #4063
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #4184 / #4198 / #5189 / #8115
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive, couponClariceClass }, // #4184 / #4198 / #5189 / #8115 / #9617
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1696,7 +1702,7 @@ export async function buildUpstreamErrorFallback(
   const staleCampaignsLimit =
     typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
   const staleGeneratedAt = typeof staleCampaignsRaw.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } = await readKvTabs(env, "kv-only");
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } = await readKvTabs(env, "kv-only");
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
@@ -1727,7 +1733,7 @@ export async function buildUpstreamErrorFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui (o banner usa staleGeneratedAt à parte)
       staleCampaignsLimit,
       postmasterSpam,
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #5189 / #8115
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive, couponClariceClass }, // #5189 / #8115 / #9617
     );
     return buildUpstreamErrorStaleResponse(html, status, staleGeneratedAt);
   } catch (renderErr) {
@@ -1863,7 +1869,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
     if (!staleCampaignsRaw) return genericFatalErrorResponse();
     const staleCampaignsLimit =
       typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } =
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } =
       await readKvTabs(env, "kv-only");
     const planCredits = await resolvePlanTotal(env, "kv-only").catch(() => null);
     const rawCampaigns = staleCampaignsRaw.campaigns;
@@ -1895,7 +1901,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
       null,
       staleCampaignsLimit,
       postmasterSpam,
-      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive }, // #4184 / #4198 / #5189 / #8115
+      { linkSectionsByCycle, linkTitlesByCycle, hourTestState, monthlyArchive, couponClariceClass }, // #4184 / #4198 / #5189 / #8115 / #9617
     );
     return new Response(injectFatalErrorBanner(html), {
       headers: {
@@ -1955,7 +1961,7 @@ export async function buildInflightCoalescedFallback(
   if (!staleCampaignsRaw) return null;
   const staleCampaignsLimit =
     typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState } =
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam, hourTestState, couponClariceClass } =
     await readKvTabs(env, "kv-only");
   const planCredits =
     typeof planCreditsOverride === "number"
@@ -1985,7 +1991,7 @@ export async function buildInflightCoalescedFallback(
       null,
       staleCampaignsLimit,
       postmasterSpam, // #4063
-      { hourTestState, monthlyArchive }, // #5189 / #8115 self-review: fallback de coalescing também escopa (linkSectionsByCycle/linkTitlesByCycle seguem fora — gap pré-existente, não fechado aqui)
+      { hourTestState, monthlyArchive, couponClariceClass }, // #5189 / #8115 / #9617 self-review: fallback de coalescing também escopa (linkSectionsByCycle/linkTitlesByCycle seguem fora — gap pré-existente, não fechado aqui)
     );
     return new Response(injectInflightBanner(html), {
       headers: {

@@ -393,6 +393,32 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8857, #8115",
   },
   {
+    name: "Diaria-Coupon-Clarice-Class",
+    // #9617: o #9571 entregou `coupon-clarice-class.ts` (classificação Clarice
+    // novo/antigo de quem resgatou cupom → KV `coupons:clarice-class`) e o
+    // consumo no painel, mas nada o agendava — e o worker descarta o payload
+    // com mais de 72h (`CLARICE_CLASS_MAX_AGE_MS` em sections-kv.ts), então a
+    // coluna "Clarice" voltava a "—" três dias depois de qualquer rodada
+    // manual. Precisa do store local (`data/`), por isso roda aqui e não no
+    // GitHub Actions junto do refresh de `coupons:usage`.
+    description: "classificação Clarice novo/antigo dos resgates de cupom (KV coupons:clarice-class do painel)",
+    steps: [{ key: "classify", script: "scripts/coupon-clarice-class.ts" }],
+    logPath: "clarice-dashboard/.coupon-clarice-class.log",
+    // Diária: cadência < 72h é o requisito (folga de 3 rodadas antes da
+    // coluna cair pra "—"). 11:25 BRT fica depois do refresh de
+    // `coupons:usage` (refresh-coupons-kv.yml, cron 09:00 UTC = 06:00 BRT) e
+    // do Diaria-Clarice-Sync (08:30), então classifica resgates e store do
+    // dia. Slot livre — não colide com nenhuma outra `daily` do registro.
+    schedule: { kind: "daily", hour: 11, minute: 25 },
+    guard: {
+      requiredFile: "clarice-subscribers/clarice-users.db",
+      abortMessage:
+        "clarice-users.db nao encontrado (data/clarice-subscribers/clarice-users.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando sem gravar coupons:clarice-class (um store vazio classificaria todo mundo como novo).",
+    },
+    issue: "#9617, #9571",
+  },
+  {
     name: "Diaria-Clarice-Guardrail-Alarm",
     description: "alarme de guardrail furado do ramp Clarice",
     steps: [{ key: "alarm", script: "scripts/clarice-guardrail-alarm.ts" }],

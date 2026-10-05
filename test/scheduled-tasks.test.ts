@@ -961,6 +961,35 @@ describe("#8857 — Diaria-Clarice-Backfill-Campaigns registrada, diária, syste
   });
 });
 
+describe("#9617 — Diaria-Coupon-Clarice-Class registrada, diária, < 72h do TTL do worker", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária 11:25", () => {
+    const t = getScheduledTaskByName("Diaria-Coupon-Clarice-Class");
+    assert.ok(t, "Diaria-Coupon-Clarice-Class ausente de SCHEDULED_TASKS — o #9571 entregou o script sem task, e a coluna Clarice cai pra '—' após 72h (#9617)");
+    assert.deepEqual(t!.steps.map((s) => s.script), ["scripts/coupon-clarice-class.ts"]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 11, minute: 25 });
+  });
+
+  it("guard exige o store Clarice — sem ele todo resgate viraria 'novo'", () => {
+    const t = getScheduledTaskByName("Diaria-Coupon-Clarice-Class")!;
+    assert.equal(t.guard?.requiredFile, "clarice-subscribers/clarice-users.db");
+  });
+
+  it("nenhum outro step do registro aponta pro mesmo script", () => {
+    const t = getScheduledTaskByName("Diaria-Coupon-Clarice-Class")!;
+    const script = t.steps[0].script;
+    const others = SCHEDULED_TASKS.filter((o) => o.name !== t.name && o.steps.some((s) => s.script === script));
+    assert.deepEqual(others, []);
+  });
+
+  it("11:25 diária não colide com nenhuma outra task diária do registro", () => {
+    const t = getScheduledTaskByName("Diaria-Coupon-Clarice-Class")!;
+    const collisions = SCHEDULED_TASKS.filter(
+      (o) => o.name !== t.name && o.schedule.kind === "daily" && o.schedule.hour === 11 && o.schedule.minute === 25,
+    );
+    assert.deepEqual(collisions, []);
+  });
+});
+
 describe("#5249 — Diaria-Acquisition-Health-Alarm registrada, semanal, systemd-only", () => {
   it("está presente no registro, com o step apontando pro script correto, domingo 03:30", () => {
     const t = getScheduledTaskByName("Diaria-Acquisition-Health-Alarm");

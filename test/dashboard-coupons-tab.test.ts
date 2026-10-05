@@ -912,6 +912,43 @@ describe("renderCouponTabPanel — detalhe por assinatura (#9571)", () => {
     assert.ok(h.includes("Nenhum resgate nos últimos 60 dias"));
   });
 
+  // #9617: cupom aplicado a uma assinatura ANTIGA — `created` = sub.created
+  // (março), `redeemed_at` = discount.start (2 dias atrás). Antes do fix a
+  // coluna mostrava março, a linha sumia do Detalhe (>60d) e a chave Clarice
+  // era derivada da data da assinatura.
+  describe("data do resgate = redeemed_at, não sub.created (#9617)", () => {
+    const subCreated = Math.floor(Date.parse("2026-03-10T15:00:00Z") / 1000);
+    const redeemedAt = nowEpoch - 2 * DAY;
+    const late = { ...mkRow("tarde@example.com", "NEWS50", subCreated), redeemed_at: redeemedAt } as RedemptionRow;
+
+    it("assinatura antiga com resgate recente continua no Detalhe, com a data do resgate", () => {
+      const h = renderCoupons(mk([late]));
+      assert.deepEqual(detailEmails(h), ["tarde@example.com"]);
+      const detail = h.slice(h.indexOf('id="coupon-detail"'));
+      const brt = new Date(redeemedAt * 1000).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric" });
+      assert.match(detail, new RegExp(`<td>tarde@example\\.com</td>\\s*<td>${brt.replace(/\//g, "\\/")}</td>`), "coluna Resgate = data do resgate");
+      assert.ok(!detail.includes("<td>10/03/2026</td>"), "não mostra a data da assinatura em nenhuma célula");
+    });
+
+    it("ordena pelo resgate, não pela assinatura", () => {
+      const h = renderCoupons(mk([mkRow("meio@example.com", "NEWS25", nowEpoch - 10 * DAY), late]));
+      assert.deepEqual(detailEmails(h), ["tarde@example.com", "meio@example.com"]);
+    });
+
+    it("chave Clarice usa redeemed_at", () => {
+      const cls: CouponClariceClassPayload = {
+        generated_at: FIXTURE_NOW.toISOString(),
+        classes: { [clariceClassKey("tarde@example.com", redeemedAt)]: "antigo" },
+      };
+      assert.ok(renderCoupons(mk([late]), FIXTURE_NOW, { clariceClass: cls }).includes("<td>antigo</td>"));
+    });
+
+    it("KV legado sem redeemed_at cai em created (backward-compat)", () => {
+      const h = renderCoupons(mk([mkRow("velho@example.com", "NEWS50", subCreated)]));
+      assert.deepEqual(detailEmails(h), [], "fora dos 60d pela data de created");
+    });
+  });
+
   describe("coluna Clarice novo/antigo", () => {
     const cls = (m: Record<string, "novo" | "antigo">, generated = FIXTURE_NOW): CouponClariceClassPayload =>
       ({ generated_at: generated.toISOString(), classes: m });

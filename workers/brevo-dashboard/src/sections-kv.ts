@@ -1,5 +1,5 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementEdition, EiaEngagementSummary, CohortStatsRow } from "./types.ts";
-import { type CouponUsageReport, type CouponCodeReport, commissionCents } from "../../../scripts/lib/stripe-coupons.ts";
+import { type CouponUsageReport, type CouponCodeReport, commissionCents, redemptionEpoch } from "../../../scripts/lib/stripe-coupons.ts";
 import { cohortLabel } from "../../../scripts/lib/clarice-segment.ts";
 import { type CouponClariceClassPayload, clariceClassKey } from "../../../scripts/lib/coupon-clarice-class.ts";
 // #2857 fase B: cohortSendRank ordena as sub-linhas do breakdown de 1º envio
@@ -1555,30 +1555,32 @@ export function renderCouponTabPanel(
     if (r.status === "canceled" && r.first_payment_is_forecast) {
       return "—";
     }
-    const payEpoch = r.first_payment_epoch ?? r.created;
+    const payEpoch = r.first_payment_epoch ?? redemptionEpoch(r); // #9617: nunca antes do resgate
     const forecastMark = r.first_payment_is_forecast ? "*" : "";
     return escHtml(fmtDate(payEpoch) + forecastMark);
   };
 
   // #9571: corte de 60 dias SÓ na tabela de detalhe (relativo a headerNow) —
   // `allRows` segue inteiro pro "Total por mês" e pro legado de pagamentos.
+  // #9617: data do RESGATE (`redeemed_at` = discount.start), não da assinatura
+  // (`created` = sub.created) — cupom aplicado a assinatura antiga é resgate novo.
   const cutoffEpoch = Math.floor(headerNow.getTime() / 1000) - DETAIL_WINDOW_DAYS * 86400;
   const detailSource = allRows
-    .filter((r) => r.created >= cutoffEpoch)
-    .sort((a, b) => b.created - a.created);
+    .filter((r) => redemptionEpoch(r) >= cutoffEpoch)
+    .sort((a, b) => redemptionEpoch(b) - redemptionEpoch(a));
   const classMap = opts.clariceClass &&
     headerNow.getTime() - Date.parse(opts.clariceClass.generated_at) <= CLARICE_CLASS_MAX_AGE_MS
     ? opts.clariceClass.classes
     : null;
   const clariceCell = (r: (typeof allRows)[number]): string =>
-    escHtml(classMap?.[clariceClassKey(r.customer_email, r.created)] ?? "—");
+    escHtml(classMap?.[clariceClassKey(r.customer_email, redemptionEpoch(r))] ?? "—");
 
   const detailRows = detailSource.map((r) => {
     // #2743: pago (realizado, net, 12m desde o resgate) + comissão de 40%.
     return `<tr>
       <td>${escHtml(r.coupon_code)}</td>
       <td>${escHtml(r.customer_email)}</td>
-      <td>${escHtml(fmtDate(r.created))}</td>
+      <td>${escHtml(fmtDate(redemptionEpoch(r)))}</td>
       <td>${clariceCell(r)}</td>
       <td>${escHtml(r.interval)}</td>
       <td>${escHtml(fmtBRL(r.paid_cents ?? 0))}</td>
@@ -1640,7 +1642,7 @@ export function renderCouponTabPanel(
     .filter((r) => (!r.payments || r.payments.length === 0) && (r.paid_cents ?? 0) > 0)
     .reduce((sum, r) => sum + (r.paid_cents ?? 0), 0);
   const legacyNote = legacyPaidCents > 0
-    ? `<p class="section-note coupon-monthly-legacy-note">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh. Ver "Detalhe por assinatura" abaixo pro total real.</p>`
+    ? `<p class="section-note coupon-monthly-legacy-note">Há ${escHtml(fmtBRL(legacyPaidCents))} em pagamentos registrados no formato antigo (sem quebra por mês ainda) — some após o próximo refresh. O valor já entra no "Pago" de cada linha de "Detalhe por assinatura" abaixo, que só lista resgates dos últimos ${DETAIL_WINDOW_DAYS} dias.</p>`
     : "";
 
   const monthlySectionBody = monthKeysDesc.length === 0
