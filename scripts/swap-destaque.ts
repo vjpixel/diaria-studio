@@ -71,6 +71,11 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9381
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
+import {
+  extractTitlesFromMd,
+  hasTituloSubtituloBlock,
+  insertOrUpdateTituloSubtitulo,
+} from "./insert-titulo-subtitulo.ts"; // #9601
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -198,6 +203,7 @@ export function buildSwapDestaqueSteps(
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
     `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
     `gen-carousel-cards.ts + upload-images-public.ts (após gerar imagem nova)`,
+    `Depois do writer-destaque: npx tsx scripts/insert-titulo-subtitulo.ts --in ${dir}/02-reviewed.md (re-deriva TÍTULO/SUBTÍTULO do título final) e npx tsx scripts/sync-intro-count.ts --md ${dir}/02-reviewed.md (contagem da intro; seção de origem esvaziada, ex. LANÇAMENTOS, é decisão do editor) (#9601)`,
     `fact-checker completo antes do gate (destaque novo, sem checagem prévia)`,
     `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
   ];
@@ -278,6 +284,19 @@ export function removeDestaqueBlockFromMd(
   const suffix = md.slice(lastEnd);
   const blocksSerialized = newBlocks.join("\n\n---\n\n");
   return prefix + blocksSerialized + suffix;
+}
+
+/**
+ * (#9601) Re-deriva o bloco TÍTULO/SUBTÍTULO do topo a partir dos DESTAQUES
+ * atuais do MD (o placeholder já carrega o título do item promovido). Sem isso
+ * o SUBTÍTULO continuava listando o título do destaque que saiu. No-op quando
+ * o MD não tem o bloco ou algum D1/D2 não é reconhecível.
+ */
+export function refreshTituloSubtituloInMd(md: string): string {
+  if (!hasTituloSubtituloBlock(md)) return md;
+  const { d1, d2, d3 } = extractTitlesFromMd(md);
+  if (!d1 || !d2) return md;
+  return insertOrUpdateTituloSubtitulo(md, d1, d2, d3 ?? "").md;
 }
 
 // ---------------------------------------------------------------------------
@@ -750,7 +769,9 @@ function main(): void {
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(mdPath)) {
     const md = readFileSync(mdPath, "utf8");
-    const updatedMd = removeDestaqueBlockFromMd(md, demotePosition, promotedTitle, promotedUrl);
+    const updatedMd = refreshTituloSubtituloInMd(
+      removeDestaqueBlockFromMd(md, demotePosition, promotedTitle, promotedUrl),
+    );
     if (updatedMd !== md) {
       pendingWrites.push({ path: mdPath, content: updatedMd });
     }

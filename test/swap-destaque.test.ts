@@ -27,6 +27,7 @@ import {
   extractUrl,
   extractTitle,
   buildSwapDestaqueSteps,
+  refreshTituloSubtituloInMd,
   swapInApprovedJson,
   mirrorCappedSwapFallback,
   removeDestaqueBlockFromMd,
@@ -1071,5 +1072,25 @@ describe("swap-destaque.ts × social-hash-fresh (#9169)", () => {
     assert.ok(!steps.some((s) => /merge-social-md/.test(s)));
     // comando de imagem completo e válido (review #9177): prompt reescrito + --destaque d{N}
     assert.ok(steps.some((s) => /02-d3-prompt\.md/.test(s) && /--editorial .* --out-dir .* --destaque d3/.test(s)));
+  });
+});
+
+describe("refreshTituloSubtituloInMd (#9601)", () => {
+  const md = (d3: string) =>
+    `TÍTULO\n\nTitulo D1\n\nSUBTÍTULO\n\nTitulo D2 | ${d3}\n\n---\n\n` +
+    `**DESTAQUE 1 | PESQUISA**\n\n**[Titulo D1](https://a.com/1)**\n\ncorpo\n\n---\n\n` +
+    `**DESTAQUE 2 | MERCADO**\n\n**[Titulo D2](https://a.com/2)**\n\ncorpo\n\n---\n\n` +
+    `**DESTAQUE 3 | IA**\n\n**[${d3}](https://a.com/3)**\n\ncorpo\n\n---\n\n**📰 RADAR**\n\nx\n`;
+
+  it("SUBTÍTULO acompanha o placeholder do swap", () => {
+    const swapped = removeDestaqueBlockFromMd(md("D3 antigo"), 3, "Kolibri novo", "https://k.com");
+    const out = refreshTituloSubtituloInMd(swapped);
+    assert.match(out, /Titulo D2 \| Kolibri novo/);
+    assert.doesNotMatch(out.split("---")[0], /D3 antigo/);
+  });
+
+  it("sem bloco TÍTULO/SUBTÍTULO é no-op", () => {
+    const bare = "**DESTAQUE 1 | X**\n\n**[A](https://a.com)**\n";
+    assert.equal(refreshTituloSubtituloInMd(bare), bare);
   });
 });
