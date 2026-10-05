@@ -26,11 +26,11 @@
  *
  * Dois sinais, cada um fail-soft/warning-only:
  *
- * 1. **Subject-theme substring match** (mecanismo original #1475, via
+ * 1. **Subject-theme whole-word match (#9660)** (mecanismo original #1475, via
  *    `matchesRecentThemeWholeWord`/`extractPastThemeEntities` de
  *    `past-editions-extract.ts`) — candidato cujo título/summary cita uma
  *    entidade capitalizada do SUBJECT LINE de uma edição das últimas
- *    `window`. Reusa infra existente, sem mudança.
+ *    `window`. Entidade como palavra inteira, não substring.
  *
  * 2. **Cross-source event overlap** (#8896, o gap concreto do incidente
  *    real) — Jaccard de título do candidato × título de cada DESTAQUE

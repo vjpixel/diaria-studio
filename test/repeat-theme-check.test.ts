@@ -91,7 +91,8 @@ describe("detectSubjectThemeOverlap — palavra inteira (#9660)", () => {
   it("decodifica entidades HTML antes de casar (&ccedil;)", () => {
     assert.equal(match("Regula&ccedil;&atilde;o avan&ccedil;a", ["regulação"]).length, 0); // genérica
     assert.equal(match("Pol&iacute;tica de soberania digital", ["soberania"]).length, 1);
-    assert.equal(match("Novas ferramentas", ["ccedil"]).length, 0);
+    assert.equal(match("Avan&ccedil;os em soberania", ["avanços"]).length, 1); // só casa após decodificar
+    assert.equal(match("Subagente&ccedil;", ["agente"]).length, 0); // decodificado, cola na palavra
   });
 
   it("encontra a entidade também no summary", () => {
