@@ -9,6 +9,11 @@
  *   - `_internal/intentional-error.json` (campo `location`, #3222 — não mora
  *     mais no frontmatter de `02-reviewed.md`)
  *   - `_internal/02-d{N}-prompt.md` (rename files)
+ *   - `04-d{N}-sd-prompt.json` (raiz ou `_internal/`) e
+ *     `_internal/04-d{N}-generator.json` (#9679) — o prompt SD e o sidecar do
+ *     gerador descrevem a IMAGEM, então seguem o rename dela. Conteúdo intacto:
+ *     `destaque_url` continua certo (é a URL do artigo, que se moveu junto) e
+ *     `position_at_write` é histórico por definição ("posição quando escrito").
  *   - `04-d{N}-*.jpg` (rename files — 2x1, 1x1, 4x5, 4x5-nativo, master; #5085
  *     cobriu 4x5-nativo, que o regex antigo excluía por causa do hífen no
  *     sufixo; #5564 trocou o mecanismo de rename-em-2-passos por staging
@@ -29,7 +34,14 @@
  *   - `_internal/fact-check-sources/manifest.json` + `_internal/fact-check-
  *     sources/d{N}.txt` — remapeados por posição (`reorderFactCheckSources`).
  *   - `_internal/04-crop-review.json` — `results[].destaque` remapeado
- *     (`reorderCropReviewJson`).
+ *     (`reorderCropReviewJson`); desde o #9679 também as menções `D{N}` no
+ *     texto livre (`motivo`/`sugestao`), senão o gate mandava regenerar o
+ *     destaque errado.
+ *
+ * (#9679) `_internal/.humanizer-social-done.json` é re-selado quando o social
+ * batia com o selo antes do reorder (só headers mudaram) — ver
+ * `lib/humanizer-social-seal.ts`. O que o script não resolve sozinho sai em
+ * `next_steps` no JSON.
  *   - `06-public-images.json` — chaves (`cover`, `d{N}_2x1`, `d{N}_4x5`,
  *     `d{N}_carousel_{p1,p2,p3,cta}`) das posições afetadas são REMOVIDAS
  *     (`invalidatePublicImagesForReorder`), com warning pedindo re-upload —
@@ -106,6 +118,7 @@ import {
 } from "./insert-titulo-subtitulo.ts"; // #3980
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
+import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -744,7 +757,8 @@ export function renameDestaqueImages(
 ): Array<{ from: string; to: string }> {
   if (!deps.existsSync(editionDir)) return [];
   const files = readdirSync(editionDir).filter((f) =>
-    /^04-d[123]-[a-z0-9-]+\.(?:jpg|png|jpeg)$/i.test(f),
+    // #9679: `.json` cobre `04-d{N}-sd-prompt.json` na raiz (layout legado).
+    /^04-d[123]-[a-z0-9-]+\.(?:jpg|png|jpeg|json)$/i.test(f),
   );
   const oldToNew = new Map<number, number>();
   for (let i = 0; i < newOrder.length; i++) {
@@ -788,6 +802,7 @@ export function deriveTituloSubtitulo(
 /**
  * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`
  * — via `stageAndWriteVerified` (#5564), mesmo padrão de `renameDestaqueImages`.
+ * #9679: também `_internal/04-d{N}-sd-prompt.json` e `_internal/04-d{N}-generator.json`.
  */
 export function renameDestaquePrompts(
   internalDir: string,
@@ -797,7 +812,8 @@ export function renameDestaquePrompts(
 ): Array<{ from: string; to: string }> {
   if (!deps.existsSync(internalDir)) return [];
   const files = readdirSync(internalDir).filter((f) =>
-    /^02-d[123]-(?:prompt\.md|sd-prompt\.json|draft\.md)$/.test(f),
+    /^02-d[123]-(?:prompt\.md|sd-prompt\.json|draft\.md)$/.test(f) ||
+    /^04-d[123]-(?:sd-prompt|generator)\.json$/.test(f), // #9679
   );
   const oldToNew = new Map<number, number>();
   for (let i = 0; i < newOrder.length; i++) {
@@ -805,12 +821,12 @@ export function renameDestaquePrompts(
   }
   const pending: PendingFileRename[] = [];
   for (const f of files) {
-    const m = f.match(/^02-d([123])-(.+)$/);
+    const m = f.match(/^(0[24])-d([123])-(.+)$/);
     if (!m) continue;
-    const oldN = parseInt(m[1], 10);
+    const oldN = parseInt(m[2], 10);
     const newN = oldToNew.get(oldN);
     if (!newN || newN === oldN) continue;
-    pending.push({ originalName: f, finalName: `02-d${newN}-${m[2]}` });
+    pending.push({ originalName: f, finalName: `${m[1]}-d${newN}-${m[3]}` });
   }
   if (dryRun) {
     return pending.map((p) => ({ from: p.originalName, to: p.finalName }));
@@ -1045,11 +1061,48 @@ export function reorderFactCheckSources(
 }
 
 /**
+ * (#9679) Remapeia menções `D{N}`/`d{N}` num texto livre conforme `newOrder`
+ * (o conteúdo que estava em `newOrder[i]` passa a ser `i+1`). Números fora da
+ * permutação ficam intactos.
+ */
+export function remapDestaqueRefsInText(text: string, newOrder: number[]): string {
+  const oldToNew = new Map<number, number>();
+  for (let i = 0; i < newOrder.length; i++) oldToNew.set(newOrder[i], i + 1);
+  // Passada única (callback) — sem oscilação D1→D2→D1 de replaces encadeados.
+  return text.replace(/\b([Dd])([1-9])\b/g, (full, letter: string, n: string) => {
+    const newN = oldToNew.get(parseInt(n, 10));
+    return newN ? `${letter}${newN}` : full;
+  });
+}
+
+/** Mesma entrada se nenhum campo string (fora `destaque`) mudou; cópia caso contrário. */
+function remapStringFields(
+  entry: Record<string, unknown>,
+  newOrder: number[],
+): Record<string, unknown> {
+  let out: Record<string, unknown> | null = null;
+  for (const [k, v] of Object.entries(entry)) {
+    if (k === "destaque" || typeof v !== "string") continue;
+    const nv = remapDestaqueRefsInText(v, newOrder);
+    if (nv !== v) {
+      out = out ?? { ...entry };
+      out[k] = nv;
+    }
+  }
+  return out ?? entry;
+}
+
+/**
  * (#8679) Remapeia `_internal/04-crop-review.json` — `results[].destaque`
  * é `"d1"`/`"d2"`/`"d3"` (string, não número, ao contrário do manifest de
  * fact-check acima). O resto de cada entrada (`ratio`, `status`) segue o
  * destaque, já que o crop review descreve o CONTEÚDO, e o conteúdo se
  * moveu junto com a posição.
+ *
+ * #9679: o texto livre (`motivo`, `sugestao`, qualquer campo string além de
+ * `destaque`) cita destaques por número ("Regenerar D3…") — remapeado com
+ * `remapDestaqueRefsInText`, senão o aviso de crop do gate manda regenerar o
+ * destaque errado (edição 261006, reorder 3,1,2).
  *
  * Ausente ou sem `results[]` reconhecível → no-op.
  */
@@ -1079,7 +1132,9 @@ export function reorderCropReviewJson(
     if (!entries) continue;
     for (const e of entries) {
       if (e.destaque !== newKey) changed = true;
-      reorderedResults.push({ ...e, destaque: newKey });
+      const remapped = remapStringFields(e, newOrder);
+      if (remapped !== e) changed = true;
+      reorderedResults.push({ ...remapped, destaque: newKey });
     }
   }
   // Chaves fora do range de destaques desta edição — preserva, fail-soft.
@@ -1313,14 +1368,21 @@ function main(): void {
   // 4. 03-social.md
   const socialPath = resolve(editionDir, "03-social.md");
   let socialReordered = false;
+  // #9679: conteúdo antes/depois, pro re-selo do humanizador (passo 4d).
+  let socialBefore: string | null = null;
+  let socialAfter: string | null = null;
   if (existsSync(socialPath)) {
     const md = readFileSync(socialPath, "utf8");
     const reordered = reorderSocialMd(md, args.newOrder);
     if (reordered !== md) {
       queueWrite(socialPath, reordered);
       socialReordered = true;
+      socialBefore = md;
+      socialAfter = reordered;
     }
   }
+  // #9679: o que o script não resolve sozinho — impresso no JSON final.
+  const nextSteps: string[] = [];
 
   if (!args.dryRun) {
     try {
@@ -1369,6 +1431,29 @@ function main(): void {
   // rename mesmo numa edição cujo `03-social.md` nem existe ainda.
   const carouselReindex = reindexCarouselSourceHashes(editionDir, args.newOrder, args.dryRun);
   if (carouselReindex) modified.rewritten.push(carouselReindex.path);
+
+  // 4d. _internal/.humanizer-social-done.json (#9679) — o reorder só renumera
+  // headers `## d{N}`, mas o sha256 do arquivo muda e `check-humanizer-social
+  // --check` acusava hash_mismatch. Re-sela SÓ se o selo batia com o social
+  // pré-reorder; se já divergia, não lava a edição não humanizada.
+  if (socialBefore !== null && socialAfter !== null) {
+    const plan = planHumanizerReseal(
+      editionDir,
+      socialBefore,
+      socialAfter,
+      `reorder-destaques --new-order ${args.newOrder.join(",")} (#9679): só headers ## d{N} renumerados, texto intacto`,
+    );
+    if (plan.status === "reseal") {
+      if (!args.dryRun) writePostBatchVerified([{ path: plan.path, content: plan.content }], args.newOrder);
+      modified.rewritten.push(plan.path);
+    } else if (plan.status === "stale_before") {
+      nextSteps.push(
+        `03-social.md já divergia do selo do humanizador ANTES do reorder (editado depois da humanização) — ` +
+          `selo NÃO refeito. Re-humanizar as seções alteradas e gravar: npx tsx scripts/check-humanizer-social.ts ` +
+          `--write --bypass-reason "<motivo>" --edition-dir ${editionDir}`,
+      );
+    }
+  }
   } catch (err) {
     // Em --dry-run nada foi gravado — não afirmar "JÁ aplicado".
     throw args.dryRun ? err : annotateMainBatchAlreadyApplied(err, args.newOrder); // #9461
@@ -1487,6 +1572,29 @@ function main(): void {
     }
   }
 
+  // #9679: o carimbo do social (.social-source-hash.json) precisa bater com o
+  // approved já reordenado. Recarimbado em 4b quando o social foi reordenado;
+  // se ainda diverge (social sem headers `## d{N}`, ou carimbo já stale antes),
+  // o próximo passo vai explícito em vez de o editor descobrir pelo invariante.
+  const socialHashPath = resolve(internalDir, ".social-source-hash.json");
+  const approvedPath = resolve(internalDir, "01-approved.json");
+  if (!args.dryRun && existsSync(socialHashPath) && existsSync(approvedPath)) {
+    try {
+      const cached = (JSON.parse(readFileSync(socialHashPath, "utf8")) as { hash?: unknown }).hash;
+      if (cached !== hashFromApprovedFile(approvedPath)) {
+        nextSteps.push(
+          `social-hash-fresh vai acusar: o carimbo de .social-source-hash.json não bate com o approved reordenado. ` +
+            `Se 03-social.md já está na ordem nova, recarimbar: npx tsx scripts/refresh-social-hash.ts --edition-dir ${editionDir}`,
+        );
+      }
+    } catch (e) {
+      warnings.push(`.social-source-hash.json ilegível pós-reorder (${(e as Error).message ?? e})`);
+    }
+  }
+  if (modified.rewritten.includes(publicImagesPath)) {
+    nextSteps.push(`Re-subir as imagens das posições afetadas: npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}/`);
+  }
+
   // #3982: validação PÓS-reorder do limite de chars por slot (janela única
   // 900–1000 desde #6061; antes era D1=1200,
   // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
@@ -1516,6 +1624,7 @@ function main(): void {
         modified,
         max_chars_warnings: maxCharsWarnings,
         warnings,
+        next_steps: nextSteps,
       },
       null,
       2,

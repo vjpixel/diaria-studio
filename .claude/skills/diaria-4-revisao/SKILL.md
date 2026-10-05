@@ -55,6 +55,8 @@ Respostas aceitas: `sim` (aprovar), `editar` (halt para edição local/Studio, r
 
 **Reordenação/swap de destaques dentro do `ajustar` usa SEMPRE `npx tsx scripts/reorder-destaques.ts` — nunca rename manual de `04-d{N}-*` em `data/` (#8679).** Ver `.claude/agents/orchestrator-stage-4.md` §4d.1 passo 4 para o fluxo completo (post_pixel, ratio de imagem) e o porquê: `data/` sincroniza por OneDrive, e um rename manual em rodízio pode ser silenciosamente descartado pelo provedor de sync minutos depois.
 
+**Mover item ENTRE seções do pool (ex.: RADAR → USE MELHOR) usa `npx tsx scripts/move-pool-item.ts --edition-dir {EDITION_DIR} --url {url} --to {lancamento|radar|use_melhor|video} [--tempo N]` (#9680)** — atualiza `02-reviewed.md`, `01-approved.json` e `01-approved-capped.json` (senão `url-bucket` reprova) e a contagem da intro; indo pro USE MELHOR sem "(N min)" exige `--tempo` com os minutos que o editor informar (o script não estima). Seguir o `next_steps` do JSON — inclusive a re-seleção do 4º post `## um` quando o item escolhido saiu do USE MELHOR.
+
 Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel.
 
 ### Etapa 4d. Escrever sentinel de conclusão

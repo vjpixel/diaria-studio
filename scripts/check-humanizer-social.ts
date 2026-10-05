@@ -47,11 +47,11 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
 import { computeSectionHashes } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
+import { hashSocialContent } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -69,14 +69,18 @@ export interface HumanizerSocialSentinel {
    * computeChangedSections() trata esse caso como fallback pra full-file.
    */
   section_hashes?: Record<string, string>;
+  /**
+   * #9679: presente quando o selo foi refeito por um script que só renumerou
+   * headers `## d{N}` (reorder/promote) sobre um social que já batia com o selo.
+   */
+  resealed_by?: string;
 }
 
 /**
  * Calcula sha256 do arquivo 03-social.md.
  */
 export function computeSocialHash(socialPath: string): string {
-  const content = readFileSync(socialPath, "utf8");
-  return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
+  return hashSocialContent(readFileSync(socialPath, "utf8"));
 }
 
 /**
