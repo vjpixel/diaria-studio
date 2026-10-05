@@ -1019,7 +1019,11 @@ export function isIntraEditionDuplicate(
     // só marca (ver `weakEventFlag`). Remoção apenas em A1/B/C.
     // #8666: `SAME_EDITION` (distância 0) habilita o sinal (C) — mesma
     // empresa + 1 conceito forte (invasão/hack, vazamento).
-    const ev = sameEvent(artTitle, hTitle, SAME_EDITION);
+    // #9615: em `crossEditionMode` (check-highlight-themes contra até 10
+    // edições passadas) a distância real não chega aqui — passar
+    // `SAME_EDITION` faria o (C) disparar fora da janela de ≤2 dias úteis.
+    // Sem distância, `sameEvent` desliga o (C) (conservador); A1/A2/B seguem.
+    const ev = sameEvent(artTitle, hTitle, options.crossEditionMode ? {} : SAME_EDITION);
     if (ev && ev.removable) {
       return {
         match_type: "event",
