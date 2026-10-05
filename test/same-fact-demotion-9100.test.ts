@@ -15,6 +15,8 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   extractDemotionNumbers,
+  extractDemotionEntities,
+  isVersionLikeNumber,
   findSameFactDemotionMatch,
   candidateOf,
   demoteSameFactHighlights,
@@ -22,8 +24,9 @@ import {
   type PublishedDestaque,
 } from "../scripts/lib/same-fact-demotion.ts";
 import { readRecentPublishedDestaques, markPoolArticles } from "../scripts/demote-same-fact-highlights.ts";
-import { removeSameFactSecondary, type SameFactWarning } from "../scripts/lib/same-fact-check.ts";
+import { removeSameFactSecondary, formatHighlightSameFactNotes, type SameFactWarning } from "../scripts/lib/same-fact-check.ts";
 import { dedup } from "../scripts/dedup.ts";
+import { extractPastDestaqueUrls, recentEditionDirs } from "../scripts/lib/past-editions-extract.ts";
 import { canonicalize } from "../scripts/lib/url-utils.ts";
 
 // --- D1–D3 publicados (02-reviewed.md reais) -------------------------------
@@ -33,6 +36,7 @@ const D1_261002: PublishedDestaque = {
   n: 1,
   title: "Você viu Bonner anunciar pesquisa? Era deepfake",
   url: "https://www.agencialupa.org/noticias/2026/10/01/vigia-1o-turno-tem-quase-um-conteudo-eleitoral-com-ia-por-hora-nas-redes/",
+  source_title: "VigIA: 1º turno tem quase um conteúdo eleitoral com IA por hora nas redes",
   text:
     "O VigIA, projeto da Agência Lupa que monitora o uso de IA nas eleições, identificou 920 publicações eleitorais criadas ou alteradas com a tecnologia entre 16 de agosto e 28 de setembro. A média é de 20 por dia, quase uma por hora, ao longo do primeiro turno.\n\n" +
     "Em 554 casos (60%), eram deepfakes. Ao menos 30 usavam jornalistas da TV Globo, como William Bonner e Renata Lo Prete, \"noticiando\" pesquisas e resultados falsos. Lula apareceu em 379 conteúdos, quase o dobro dos 190 que retratavam Flávio Bolsonaro.\n\n" +
@@ -181,8 +185,49 @@ describe("findSameFactDemotionMatch — casos reais (#9100)", () => {
   });
 
   it("entidade + só 1 número em comum ⇒ não casa", () => {
-    const cand = { url: "https://x.com/a", title: "Lula aparece em 379 posts", text: "" };
+    const cand = { url: "https://x.com/a", title: "VigIA aponta 379 posts", text: "" };
     assert.equal(findSameFactDemotionMatch(cand, [D1_261002]), null);
+  });
+
+  // Finding do review da PR #9662: palavra capitalizada só por abrir frase
+  // ("Modelos") virava entidade e versões ("3.5") contavam como fato.
+  const GEMINI_PAST: PublishedDestaque = {
+    aammdd: "261001",
+    n: 1,
+    title: "Google lança Gemini 3.5 Pro",
+    url: "https://blog.google/gemini-3-5-pro",
+    text: "O modelo chega a 100 países. Modelos ficam 40% mais baratos para desenvolvedores.",
+  };
+  const LLAMA_CAND = {
+    url: "https://ai.meta.com/llama-3-5",
+    title: "Meta lança Llama 3.5 aberto para 100 países",
+    text: "Modelos da Meta custam 40% menos.",
+  };
+
+  it("Gemini 3.5 × Llama 3.5 (início de frase 'Modelos' + versão 3.5) ⇒ não casa", () => {
+    assert.equal(findSameFactDemotionMatch(LLAMA_CAND, [GEMINI_PAST]), null);
+  });
+
+  it("entidade só vem dos TÍTULOS: palavra capitalizada do corpo não conta", () => {
+    const ents = extractDemotionEntities([GEMINI_PAST.title], GEMINI_PAST.text);
+    assert.ok(!ents.has("modelos"));
+    assert.ok(ents.has("gemini"));
+    // "Você"/"Era" abrem frase no título e não reaparecem no meio de frase.
+    const vigia = extractDemotionEntities([D1_261002.title, D1_261002.source_title!], D1_261002.text);
+    assert.ok(!vigia.has("você") && !vigia.has("era"));
+    assert.ok(vigia.has("vigia") && vigia.has("bonner"));
+  });
+
+  it("versão só conta colada à entidade em comum nos dois textos", () => {
+    assert.ok(isVersionLikeNumber("3.5") && isVersionLikeNumber("2.0"));
+    assert.ok(!isVersionLikeNumber("30%") && !isVersionLikeNumber("554"));
+    // Mesma entidade (Gemini no título passado), mas 3.5 do candidato é do Llama:
+    // sobram só 2 números se a versão não contar → precisa de mais 1 para casar.
+    const past: PublishedDestaque = { ...GEMINI_PAST, text: "Gemini 3.5 Pro chega a 100 países." };
+    const cand = { url: "https://x.com/a", title: "Gemini perde para Llama 3.5 em 100 países", text: "" };
+    assert.equal(findSameFactDemotionMatch(cand, [past]), null);
+    const anchored = { url: "https://x.com/b", title: "Gemini 3.5 Pro chega a 100 países", text: "" };
+    assert.deepEqual(findSameFactDemotionMatch(anchored, [past])?.shared_numbers, ["100", "3.5"]);
   });
 });
 
@@ -269,6 +314,20 @@ describe("demoteSameFactHighlights (#9100)", () => {
 });
 
 describe("rebaixado nunca é descartado em --no-gates (#9100 × #9386)", () => {
+  it("formatHighlightSameFactNotes não duplica o 🚨 para destaque já rebaixado (⬇️)", () => {
+    const w = {
+      same_fact_warnings: [
+        { kind: "highlight", rank: 3, item_title: "Sonnet", item_url: SONNET_260930.article.url, matched_edition: "260929", matched_title: D2_260929.title, shared_products: ["sonnet 5.5"], evidence: "title" },
+      ],
+    };
+    const h = { url: SONNET_260930.article.url, article: { url: SONNET_260930.article.url } };
+    assert.equal(formatHighlightSameFactNotes(w, { highlights: [h] }).length, 1);
+    assert.deepEqual(
+      formatHighlightSameFactNotes(w, { highlights: [{ ...h, same_fact_demoted: { matched_edition: "260929" } }] }),
+      [],
+    );
+  });
+
   it("removeSameFactSecondary poupa item marcado same_fact_demoted", () => {
     const approved = {
       highlights: [],
@@ -335,7 +394,9 @@ function seedEditions(root: string): string {
     writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify(approved));
   };
   mk("261001", reviewed(1, "Argon", "https://g.com/argon", "Gemini 4 Argon."), { highlights: [] });
-  mk("261002", reviewed(1, D1_261002.title, D1_261002.url, D1_261002.text), { highlights: [] });
+  mk("261002", reviewed(1, D1_261002.title, D1_261002.url, D1_261002.text), {
+    highlights: [{ url: D1_261002.url, article: { url: D1_261002.url, title: D1_261002.source_title, summary: "" } }],
+  });
   // 260930: sem 02-reviewed.md → fallback para os highlights do approved
   mk("260930", "", { highlights: [{ url: "https://h.com/x", article: { url: "https://h.com/x", title: "OpenAI cancela GPT-6.1 Astra", summary: "s" } }] });
   mk("260929", reviewed(2, D2_260929.title, D2_260929.url, D2_260929.text), { highlights: [] });
@@ -356,6 +417,22 @@ describe("readRecentPublishedDestaques (#9100)", () => {
       assert.equal(d1.url, D1_261002.url);
       assert.match(d1.text, /554/);
       assert.equal(past.find((p) => p.aammdd === "260930")!.title, "OpenAI cancela GPT-6.1 Astra");
+      assert.equal(d1.source_title, D1_261002.source_title, "título da fonte vem do approved");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replay de edição antiga: janela do dedup não inclui edição POSTERIOR (review #9662)", () => {
+    const root = mkdtempSync(join(tmpdir(), "demote-9100-future-"));
+    try {
+      const editionsDir = seedEditions(root);
+      // Rerun de 261001: 261002 e 261006 são posteriores, nunca "passadas".
+      assert.deepEqual(recentEditionDirs(editionsDir, 3, "261001"), ["260930", "260929"]);
+      const urls = extractPastDestaqueUrls(editionsDir, 3, "261001");
+      assert.ok(!urls.has(canonicalize(D1_261002.url)), "URL de edição futura não bloqueia");
+      assert.ok(!urls.has(canonicalize("https://f.com")));
+      assert.ok(urls.has(canonicalize(D2_260929.url)));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

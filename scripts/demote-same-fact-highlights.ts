@@ -83,9 +83,7 @@ export function readRecentPublishedDestaques(
 ): PublishedDestaque[] {
   if (!existsSync(editionsDir)) return [];
   const dirsByAammdd = enumerateEditionDirs(editionsDir);
-  const recent = recentEditionDirs(editionsDir, Number.MAX_SAFE_INTEGER, currentAammdd)
-    .filter((d) => d < currentAammdd)
-    .slice(0, window);
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
   const out: PublishedDestaque[] = [];
   for (const aammdd of recent) {
     const dir = dirsByAammdd.get(aammdd);
@@ -102,7 +100,8 @@ export function readRecentPublishedDestaques(
             n: d.n,
             title: d.title,
             url: d.url,
-            text: [d.body, extra?.title, extra?.summary].filter(Boolean).join("\n"),
+            text: [d.body, extra?.summary].filter(Boolean).join("\n"),
+            ...(extra?.title ? { source_title: extra.title } : {}),
           });
           got = true;
         }

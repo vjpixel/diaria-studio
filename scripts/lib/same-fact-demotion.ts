@@ -10,9 +10,11 @@
  * Sinal (determinístico, alta precisão):
  *   - mesma URL canônica de um D1–D3 recente (defesa em profundidade do
  *     dedup por URL — caso 260918 × 260917, `claude.com/blog/cowork-is-now-claude`); OU
- *   - mesma ENTIDADE (palavra inteira, `containsWholeWord` da #9646) E ≥2
- *     NÚMEROS idênticos no título+resumo. Casos reais: 261005 × 261002 (VigIA:
- *     554, 379, 190) e 260930 × 260929 (Sonnet 5.5, 30%).
+ *   - mesma ENTIDADE (nome próprio dos TÍTULOS do destaque passado, casado
+ *     como palavra inteira — `containsWholeWord` da #9646) E ≥2 NÚMEROS
+ *     idênticos no título+resumo. Número de versão ("3.5") só conta quando
+ *     colado à entidade em comum nos dois textos. Casos reais: 261005 ×
+ *     261002 (VigIA: 554, 379, 190) e 260930 × 260929 (Sonnet 5.5, 30%).
  *
  * Números: inteiros ≥10 (1 dígito é ruído), decimais ("5.5" = "5,5"),
  * percentuais ("30%" = "30 %") e valores monetários ("US$ 899" → "899").
@@ -43,6 +45,8 @@ export interface PublishedDestaque {
   url: string;
   /** Corpo publicado do destaque e/ou resumo da fonte. */
   text: string;
+  /** Título da fonte (`01-approved.json`) — também fonte de entidade. */
+  source_title?: string;
 }
 
 export interface SameFactDemotionMatch {
@@ -127,22 +131,86 @@ const ENTITY_STOPWORDS = new Set([
   "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ]);
 
-/**
- * Entidades prováveis (nomes próprios/siglas) de um texto: tokens com letra
- * maiúscula (inicial ou interna — "VigIA", "OpenAI"), ≥3 caracteres, fora
- * da stoplist. Minúsculas, para comparação via `containsWholeWord`.
- */
-export function extractDemotionEntities(text: string): Set<string> {
+/** Token em início de frase (início do texto, ou depois de `.!?:;` / quebra de linha, aspas/parênteses à parte). */
+function isSentenceInitial(text: string, index: number): boolean {
+  const before = text.slice(0, index).replace(/["'“‘(\[\s]+$/u, "");
+  return before === "" || /[.!?:;]$/u.test(before) || /\n["'“‘(\[\s]*$/u.test(text.slice(0, index));
+}
+
+/** Maiúscula interna ou sigla ("VigIA", "OpenAI", "GPT") — nome próprio em qualquer posição. */
+function hasInternalUpper(w: string): boolean {
+  return /\p{Lu}/u.test(w.slice(1));
+}
+
+/** Título em Title Case ("Google Releases Three New Gemini Models"): a maiúscula ali não é evidência. */
+function isTitleCase(title: string): boolean {
+  const words = [...prepare(title).matchAll(/\p{L}{4,}/gu)].map((m) => m[0]);
+  // Título curto com 2 nomes ("Google lança Gemini 3.5 Pro") não é Title Case.
+  if (words.length < 4) return false;
+  return words.filter((w) => /^\p{Lu}/u.test(w)).length / words.length >= 0.75;
+}
+
+/** Palavras (minúsculas) capitalizadas FORA de início de frase em `text`. */
+function midSentenceCapitalized(text: string): Set<string> {
+  const t = prepare(text);
   const out = new Set<string>();
-  for (const m of prepare(text).matchAll(/[\p{L}][\p{L}\p{N}]*/gu)) {
-    const w = m[0];
-    if (w.length < 3) continue;
-    if (!/\p{Lu}/u.test(w)) continue;
-    const lower = w.toLowerCase();
-    if (ENTITY_STOPWORDS.has(lower)) continue;
-    out.add(lower);
+  for (const m of t.matchAll(/\p{L}[\p{L}\p{N}]*/gu)) {
+    if (!/^\p{Lu}/u.test(m[0])) continue;
+    if (isSentenceInitial(t, m.index ?? 0)) continue;
+    out.add(m[0].toLowerCase());
   }
   return out;
+}
+
+/**
+ * Entidades (nomes próprios/siglas) de um destaque passado — tiradas SÓ dos
+ * TÍTULOS (título publicado + título da fonte), nunca do corpo. Antes, toda
+ * palavra capitalizada do corpo virava entidade, inclusive início de frase
+ * ("Modelos ficam 40% mais baratos"), e a condição de entidade quase sempre
+ * passava (finding do review da #9100). Um token do título conta se:
+ *   - tem maiúscula interna/é sigla ("VigIA", "OpenAI", "GPT"); ou
+ *   - aparece capitalizado FORA de início de frase num título em sentence
+ *     case ou no corpo/resumo (`evidence`) — descarta a palavra capitalizada
+ *     só por abrir a frase ("Você", "Modelos").
+ * ≥3 caracteres, fora da stoplist. Minúsculas, para `containsWholeWord`.
+ */
+export function extractDemotionEntities(titles: string[], evidence = ""): Set<string> {
+  const proper = midSentenceCapitalized([...titles.filter((t) => t && !isTitleCase(t)), evidence].join("\n"));
+  const out = new Set<string>();
+  for (const title of titles) {
+    for (const m of prepare(title ?? "").matchAll(/\p{L}[\p{L}\p{N}]*/gu)) {
+      const w = m[0];
+      if (w.length < 3) continue;
+      if (!/\p{Lu}/u.test(w)) continue;
+      const lower = w.toLowerCase();
+      if (ENTITY_STOPWORDS.has(lower)) continue;
+      if (!hasInternalUpper(w) && !proper.has(lower)) continue;
+      out.add(lower);
+    }
+  }
+  return out;
+}
+
+/** "3.5", "4.5", "2.0": número de versão — sozinho não é fato (Gemini 3.5 ≠ Llama 3.5). */
+export function isVersionLikeNumber(norm: string): boolean {
+  return /^\d{1,2}\.\d{1,2}$/.test(norm);
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A versão aparece colada a uma das entidades ("Sonnet 5.5", "GPT-5.5", "3.6 Flash")? */
+function versionAnchoredTo(text: string, version: string, entities: string[]): boolean {
+  const t = prepare(text).toLowerCase();
+  const num = version.split(".").map(escapeRe).join("[.,]");
+  return entities.some((e) => {
+    const ent = escapeRe(e);
+    return (
+      new RegExp(`(?<![\\p{L}\\p{N}])${ent}[\\s-]*${num}(?![\\p{N}])`, "u").test(t) ||
+      new RegExp(`(?<![\\p{L}\\p{N}.,])${num}[\\s-]*${ent}(?![\\p{L}\\p{N}])`, "u").test(t)
+    );
+  });
 }
 
 export interface DemotionCandidate {
@@ -180,11 +248,19 @@ export function findSameFactDemotionMatch(
   if (candNumbers.size < DEMOTION_MIN_SHARED_NUMBERS) return null;
   const candHay = prepare(candText).toLowerCase();
   for (const p of sorted) {
-    const pastText = `${p.title}\n${p.text}`;
-    const sharedNumbers = [...extractDemotionNumbers(pastText)].filter((x) => candNumbers.has(x));
-    if (sharedNumbers.length < DEMOTION_MIN_SHARED_NUMBERS) continue;
-    const sharedEntities = [...extractDemotionEntities(pastText)].filter((e) => containsWholeWord(candHay, e));
+    const pastText = `${p.title}\n${p.source_title ?? ""}\n${p.text}`;
+    const sharedRaw = [...extractDemotionNumbers(pastText)].filter((x) => candNumbers.has(x));
+    if (sharedRaw.length < DEMOTION_MIN_SHARED_NUMBERS) continue;
+    const sharedEntities = [...extractDemotionEntities([p.title, p.source_title ?? ""], p.text)]
+      .filter((e) => containsWholeWord(candHay, e));
     if (sharedEntities.length === 0) continue;
+    // Versão ("3.5") só conta como fato se colada a uma entidade em comum nos dois textos.
+    const sharedNumbers = sharedRaw.filter(
+      (x) =>
+        !isVersionLikeNumber(x) ||
+        (versionAnchoredTo(candText, x, sharedEntities) && versionAnchoredTo(pastText, x, sharedEntities)),
+    );
+    if (sharedNumbers.length < DEMOTION_MIN_SHARED_NUMBERS) continue;
     return {
       matched_edition: p.aammdd,
       matched_destaque: p.n,

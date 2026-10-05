@@ -410,7 +410,9 @@ export function formatHighlightSameFactNotes(themeCheck: unknown, approved: unkn
   const pos = new Map<string, number>();
   highlights.forEach((h, i) => {
     if (!h || typeof h !== "object") return;
-    const rec = h as { url?: unknown; article?: { url?: unknown } };
+    const rec = h as { url?: unknown; article?: { url?: unknown }; same_fact_demoted?: unknown };
+    // #9100: rebaixado já sai como ⬇️ (01-same-fact-demoted.json) — sem 🚨 duplicado.
+    if (rec.same_fact_demoted) return;
     const url = rec.article?.url ?? rec.url;
     if (typeof url === "string" && url) pos.set(canonicalize(url), i + 1);
   });
