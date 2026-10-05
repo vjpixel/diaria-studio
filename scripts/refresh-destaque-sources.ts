@@ -53,6 +53,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
 import {
   highlightSourceUrls,
   isHighlightSourcesCacheFresh,
@@ -107,9 +108,25 @@ function failedDestaques(internalDir: string): number[] {
   return manifest.filter((e) => e.status !== "ok").map((e) => e.destaque);
 }
 
+/** Prefixo do evento `warn` no run-log quando o registro #9648 não é gravado. */
+export const WRITER_INPUTS_LOG_PREFIX = "writer_inputs_record_failed:";
+
+function editionIdFromDir(editionDir: string): string | null {
+  const name = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop();
+  return name && /^\d{6}$/.test(name) ? name : null;
+}
+
 export async function refreshDestaqueSources(
   editionDir: string,
-  opts: { check?: boolean; fetchImpl?: typeof fetch; approvedPath?: string; recordWriterInputs?: boolean; now?: Date } = {},
+  opts: {
+    check?: boolean;
+    fetchImpl?: typeof fetch;
+    approvedPath?: string;
+    recordWriterInputs?: boolean;
+    now?: Date;
+    /** Raiz onde fica `data/run-log.jsonl` (default: cwd). Injetável pra teste. */
+    runLogRootDir?: string;
+  } = {},
 ): Promise<RefreshResult> {
   const internalDir = join(editionDir, "_internal");
   // #9252: Stage 2 passa o 01-approved-capped.json (o mesmo que writer e lint
@@ -129,8 +146,24 @@ export async function refreshDestaqueSources(
       const record = buildWriterInputsRecord(editionDir, sources, { approvedPath, now: opts.now });
       result.writer_inputs = { path: writeWriterInputsRecord(editionDir, record), gaps: findWriterInputGaps(record) };
     } catch (e) {
-      result.writer_inputs_error = (e as Error).message;
-      console.error(`refresh-destaque-sources: WARN — 02-writer-inputs.json não gravado: ${(e as Error).message}`);
+      const msg = (e as Error).message;
+      result.writer_inputs_error = msg;
+      console.error(`refresh-destaque-sources: WARN — 02-writer-inputs.json não gravado: ${msg}`);
+      // Rastro durável (#9648 review): o stdout do Stage 2 some com a sessão.
+      // O Stage 6 não depende deste evento pra emitir o signal — registro
+      // ausente em edição pós-cutover já vira `writer_source_text_gap` em
+      // `collect-edition-signals.ts` —, mas o evento diz o PORQUÊ.
+      logEvent(
+        {
+          edition: editionIdFromDir(editionDir),
+          stage: 2,
+          agent: "refresh-destaque-sources",
+          level: "warn",
+          message: `${WRITER_INPUTS_LOG_PREFIX} ${msg}`,
+          details: { edition_dir: editionDir, error: msg },
+        },
+        opts.runLogRootDir,
+      );
     }
   }
   return result;

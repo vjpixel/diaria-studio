@@ -16,9 +16,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
+import { spawnSync } from "node:child_process";
+import { WRITER_INPUTS_LOG_PREFIX, refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
 import {
   MIN_SOURCE_TEXT_BYTES,
+  WRITER_INPUTS_CUTOVER_EDITION,
   WRITER_INPUTS_FILE,
   buildWriterInputsRecord,
   findWriterInputGaps,
@@ -177,6 +179,114 @@ describe("02-writer-inputs.json (#9648)", () => {
       assert.equal(corrupt[0].severity, "low");
     } finally {
       rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("CLI --record-writer-inputs grava 02-writer-inputs.json (cache semeado, sem rede)", async () => {
+    const urls = ["https://ex.com/a", "https://ex.com/b", "https://ex.com/c"];
+    const ed = setup(urls);
+    const approvedPath = join(ed, "_internal", "01-approved-capped.json");
+    try {
+      // Semeia o cache in-process; o subprocesso reusa (URLs batem) sem tocar a rede.
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), approvedPath });
+      assert.equal(existsSync(recordPath(ed)), false, "sem a flag, nada de registro");
+      const script = join(import.meta.dirname, "..", "scripts", "refresh-destaque-sources.ts");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", script, "--edition-dir", ed, "--approved", approvedPath, "--record-writer-inputs"],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.refetched, false, "cache semeado reusado");
+      assert.equal(out.writer_inputs.path, recordPath(ed));
+      assert.equal(existsSync(recordPath(ed)), true);
+      const rec = JSON.parse(readFileSync(recordPath(ed), "utf8"));
+      assert.equal(rec.destaques.length, 3);
+      assert.ok(rec.destaques.every((d: { status: string }) => d.status === "ok"));
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("guard textual: flag só no passo 0 do Stage 2, nunca no Stage 4 nem nos next_steps das trocas", () => {
+    const root = join(import.meta.dirname, "..");
+    const read = (p: string) => readFileSync(join(root, p), "utf8");
+    const stage2 = read(".claude/agents/orchestrator-stage-2.md");
+    const passo0 = stage2.slice(stage2.indexOf("**0. Baixar as fontes dos destaques"), stage2.indexOf("**0b."));
+    assert.ok(passo0.length > 0, "passo 0 do Stage 2 localizado");
+    assert.match(passo0, /refresh-destaque-sources\.ts [^\n]*--record-writer-inputs/);
+    for (const p of [
+      ".claude/agents/orchestrator-stage-4.md",
+      "scripts/swap-destaque.ts",
+      "scripts/swap-destaques.ts",
+      "scripts/promote-to-destaque.ts",
+    ]) {
+      assert.doesNotMatch(read(p), /record-writer-inputs/, `${p} não pode passar a flag (sobrescreveria o registro do Stage 2)`);
+    }
+  });
+
+  it("fail-soft: falha ao gravar o registro preserva sources/failed, preenche writer_inputs_error e grava warn no run-log", async () => {
+    const root = mkdtempSync(join(tmpdir(), "writer-inputs-9648-root-"));
+    const ed = join(root, "data", "editions", "2610", "261010");
+    mkdirSync(join(ed, "_internal"), { recursive: true });
+    const urls = ["https://ex.com/a", "https://ex.com/b"];
+    writeApproved(ed, urls, "01-approved-capped.json");
+    const approvedPath = join(ed, "_internal", "01-approved-capped.json");
+    try {
+      const baseline = await refreshDestaqueSources(ed, { fetchImpl: fakeFetch({ blocked: [urls[1]] }), approvedPath });
+      // Diretório no lugar do JSON: writeFileSync lança EISDIR. (Um ARQUIVO em
+      // `02-writer-inputs/` não serve: o build faz rmSync recursivo antes do
+      // mkdir e o apagaria.)
+      mkdirSync(recordPath(ed));
+      const r = await refreshDestaqueSources(ed, {
+        fetchImpl: fakeFetch({ blocked: [urls[1]] }),
+        approvedPath,
+        recordWriterInputs: true,
+        runLogRootDir: root,
+      });
+      assert.deepEqual(r.sources, baseline.sources);
+      assert.deepEqual(r.failed, [2]);
+      assert.equal(r.writer_inputs, undefined);
+      assert.match(r.writer_inputs_error ?? "", /EISDIR|illegal operation/i);
+
+      const events = readFileSync(join(root, "data", "run-log.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l));
+      assert.equal(events.length, 1);
+      assert.equal(events[0].level, "warn");
+      assert.equal(events[0].edition, "261010");
+      assert.equal(events[0].stage, 2);
+      assert.ok(events[0].message.startsWith(WRITER_INPUTS_LOG_PREFIX));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("registro ausente pós-cutover com fontes baixadas = signal low; pré-cutover ou sem manifest = nada", async () => {
+    const root = mkdtempSync(join(tmpdir(), "writer-inputs-9648-root-"));
+    try {
+      const mk = async (edition: string, seed: boolean) => {
+        const ed = join(root, "data", "editions", edition.slice(0, 4), edition);
+        mkdirSync(join(ed, "_internal"), { recursive: true });
+        writeApproved(ed, ["https://ex.com/a"], "01-approved.json");
+        if (seed) await refreshDestaqueSources(ed, { fetchImpl: fakeFetch() });
+        return ed;
+      };
+      const gapKinds = (ed: string) =>
+        collectSignals({ rootDir: root, editionDir: ed }).signals.filter((s) => s.kind === "writer_source_text_gap");
+
+      const post = await mk(WRITER_INPUTS_CUTOVER_EDITION, true);
+      const sigs = gapKinds(post);
+      assert.equal(sigs.length, 1);
+      assert.equal(sigs[0].severity, "low");
+      assert.match(sigs[0].title, /ausente/);
+
+      assert.deepEqual(gapKinds(await mk("261001", true)), [], "pré-cutover = edição antiga");
+      assert.deepEqual(gapKinds(await mk("261020", false)), [], "sem manifest = Stage 2 nem baixou fontes");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

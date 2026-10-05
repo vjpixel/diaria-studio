@@ -58,6 +58,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
 import {
+  WRITER_INPUTS_CUTOVER_EDITION,
   findWriterInputGaps,
   readWriterInputsRecord,
   type ReadWriterInputs,
@@ -866,11 +867,47 @@ export function signalsFromTestEmailReview(
 // Lê o registro que o Stage 2 grava ANTES do dispatch dos writer-destaque
 // (`_internal/02-writer-inputs.json`, `refresh-destaque-sources.ts
 // --record-writer-inputs`). Só warning pro auto-reporter — nunca bloqueia
-// nada. Registro ausente = edição anterior ao #9648 (ou Stage 2 rodado sem a
-// flag): sem sinal, pra não inundar o reporter com edições antigas.
+// nada. Registro ausente:
+//   - edição < WRITER_INPUTS_CUTOVER_EDITION (ou sem fontes baixadas, ou
+//     edição não identificável) = anterior ao #9648 → sem sinal, pra não
+//     inundar o reporter com edições antigas;
+//   - edição >= cutover COM `_internal/fact-check-sources/manifest.json` =
+//     o Stage 2 baixou as fontes mas o registro não foi gravado (falha
+//     fail-soft em `refresh-destaque-sources.ts`, que também grava um `warn`
+//     `writer_inputs_record_failed:` no run-log, ou Stage 2 rodado sem a
+//     flag) → signal `low`. Regra puramente por data + presença de arquivo,
+//     sem depender de achar o evento no run-log (que pode ter sido perdido).
 
-export function signalsFromWriterInputs(read: ReadWriterInputs): Signal[] {
-  if (read.kind === "absent") return [];
+export interface WriterInputsContext {
+  /** AAMMDD da edição; null = não identificável (sem sinal de ausência). */
+  edition: string | null;
+  /** `_internal/fact-check-sources/manifest.json` existe. */
+  sourcesManifestPresent: boolean;
+}
+
+export function signalsFromWriterInputs(read: ReadWriterInputs, ctx?: WriterInputsContext): Signal[] {
+  if (read.kind === "absent") {
+    if (
+      !ctx ||
+      !ctx.sourcesManifestPresent ||
+      !ctx.edition ||
+      !/^\d{6}$/.test(ctx.edition) ||
+      ctx.edition < WRITER_INPUTS_CUTOVER_EDITION
+    ) {
+      return [];
+    }
+    return [
+      {
+        kind: "writer_source_text_gap",
+        severity: "low",
+        title: "Registro de texto-fonte do writer-destaque ausente (02-writer-inputs.json)",
+        details: { edition: ctx.edition, cutover_edition: WRITER_INPUTS_CUTOVER_EDITION },
+        suggested_action:
+          "As fontes dos destaques foram baixadas mas `_internal/02-writer-inputs.json` não existe — falha ao gravar o registro (ver evento `writer_inputs_record_failed:` em data/run-log.jsonl) ou Stage 2 rodado sem `--record-writer-inputs` (#9648).",
+        related_issue: "#9648",
+      },
+    ];
+  }
   if (read.kind === "corrupt") {
     return [
       {
@@ -1653,7 +1690,12 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
 
   // Signal 9 (#9648): texto-fonte do writer-destaque ausente/truncado.
   // Fail-soft: `readWriterInputsRecord` devolve "corrupt" em vez de lançar.
-  signals.push(...signalsFromWriterInputs(readWriterInputsRecord(editionDir)));
+  signals.push(
+    ...signalsFromWriterInputs(readWriterInputsRecord(editionDir), {
+      edition,
+      sourcesManifestPresent: existsSync(resolve(editionDir, "_internal/fact-check-sources/manifest.json")),
+    }),
+  );
 
   // Signal 7 (#4966): recurring_editor_request — cross-edição, últimas 7
   // (atual + 6 anteriores). Fail-soft: erro de IO/parse nunca derruba o

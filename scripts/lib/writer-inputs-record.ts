@@ -41,6 +41,16 @@ export const WRITER_INPUTS_SNAPSHOT_DIR = "02-writer-inputs";
  */
 export const MIN_SOURCE_TEXT_BYTES = 2000;
 
+/**
+ * 1ª edição (AAMMDD) cujo Stage 2 roda obrigatoriamente com
+ * `--record-writer-inputs` (#9648). A partir dela, registro AUSENTE com as
+ * fontes baixadas (`fact-check-sources/manifest.json` presente) não é
+ * "edição antiga": é falha de gravação, e vira signal. 261007 e não 261006
+ * porque o Stage 2 da 261006 roda em 05/10/2026, possivelmente antes do merge
+ * desta flag — preferimos perder 1 edição a acusar falso positivo.
+ */
+export const WRITER_INPUTS_CUTOVER_EDITION = "261007";
+
 /** Formato mínimo de uma entrada de `prefetchHighlightSources` (run-fact-checker.ts). */
 export interface WriterSourceInput {
   destaque: number;
