@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureUsageForWindow } from "../scripts/capture-stage-usage.ts";
+import { captureUsageForWindow, hasCapturedUsage } from "../scripts/capture-stage-usage.ts";
 import { makeInitialDoc, applyUpdate, saveDoc, loadDoc } from "../scripts/update-stage-status.ts";
 
 function usageLine(overrides: Record<string, unknown> = {}): string {
@@ -228,6 +228,28 @@ describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", 
       const doc = loadDoc(editionDir, "260508");
       const row = doc.rows.find((row) => row.stage === 1)!;
       assert.equal(row.cost_usd, undefined); // confirma que nada foi persistido
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9594: --if-missing captura o stage ainda sem custo e pula o que já tem (backstop do §6b-7)", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    try {
+      writeFileSync(join(transcriptsDir, "session.jsonl"), usageLine(), "utf8");
+      const args = ["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir, "--if-missing"];
+      const first = runCli(args);
+      assert.equal(first.status, 0, first.stderr);
+      assert.equal(JSON.parse(first.stdout).source, "session_transcript");
+      const before = loadDoc(editionDir, "260508").rows.find((row) => row.stage === 1)!;
+      assert.equal(before.cost_usd, 7.5);
+
+      const second = runCli(args);
+      assert.equal(second.status, 0, second.stderr);
+      assert.deepEqual(JSON.parse(second.stdout), { source: "skipped", reason: "already_captured", stage: 1 });
+      const after = loadDoc(editionDir, "260508").rows.find((row) => row.stage === 1)!;
+      assert.deepEqual(after, before);
     } finally {
       rmSync(editionRoot, { recursive: true, force: true });
       rmSync(transcriptsDir, { recursive: true, force: true });
@@ -704,5 +726,13 @@ describe("captureUsageForWindow — mapeamento dos campos do #5413", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe("hasCapturedUsage (#9594)", () => {
+  it("basta cost_usd OU tokens_in (mesmo critério do stage-usage-captured)", () => {
+    assert.equal(hasCapturedUsage({}), false);
+    assert.equal(hasCapturedUsage({ cost_usd: 0.9 }), true);
+    assert.equal(hasCapturedUsage({ tokens_in: 10 }), true);
   });
 });

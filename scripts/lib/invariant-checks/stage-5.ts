@@ -15,6 +15,7 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
+import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -445,6 +446,49 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
  * net pra caso filter falhe ou novo tipo de issue apareça.
  */
 /**
+ * #9594: ramo Kit do `stage-5-review-completed`. Newsletter nunca despachada
+ * (`--skip newsletter`, aborto antes do publish) → nada a revisar. Senão
+ * exige `_internal/05-review-kit.json` com `review_status` terminal válido —
+ * ausente, ilegível ou com status fora do vocabulário vira warning (nunca
+ * bloqueia o sentinel: no Kit o review é não-bloqueante, #3839), e a mensagem
+ * diz QUAL dos três casos é, pra não mascarar arquivo corrompido como "não
+ * rodou".
+ */
+function checkKitReviewRecorded(editionDir: string): InvariantViolation[] {
+  if (!existsSync(resolve(editionDir, "_internal", "newsletter-kit-published.json"))) return [];
+  const kitPath = resolve(editionDir, "_internal", KIT_REVIEW_FILENAME);
+  let problem: string;
+  if (!existsSync(kitPath)) {
+    problem = `${KIT_REVIEW_FILENAME} ausente — o loop review-test-email (§5f) não rodou ou não registrou o resultado`;
+  } else {
+    let parsed: { review_status?: unknown } | null = null;
+    let parseError: string | null = null;
+    try {
+      parsed = JSON.parse(readFileSync(kitPath, "utf8")) as { review_status?: unknown };
+    } catch (e) {
+      parseError = (e as Error).message;
+    }
+    if (parsed && isKitReviewStatus(parsed.review_status)) return [];
+    problem =
+      parseError !== null
+        ? `${KIT_REVIEW_FILENAME} ilegível (${parseError})`
+        : `${KIT_REVIEW_FILENAME} com review_status inválido (${JSON.stringify(parsed?.review_status ?? null)})`;
+  }
+  return [
+    {
+      rule: "stage-5-review-completed",
+      message:
+        `backend Kit: ${problem}. Rodar o §5f e registrar com ` +
+        `"npx tsx scripts/record-kit-review.ts --edition-dir ${editionDir} --status <ok|inconclusive|issues_unfixable>"; ` +
+        `até lá o gate do Stage 6 deve avisar que o review automático NÃO rodou.`,
+      source_issue: "#9594",
+      severity: "warning",
+      file: kitPath,
+    },
+  ];
+}
+
+/**
  * #1577: garante que review-test-email loop de fato rodou antes do stage 4 fechar.
  * Distinto de checkStage4ReviewLoop (#1410) — aquele cobre o caso
  * "issues_unfixable + review_attempts < 2". Este aqui cobre o caso mais
@@ -456,7 +500,14 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
  * Sentinel + auto-reporter rodaram, edition-report gerado, MAS o loop
  * verify→fix nunca foi disparado.
  */
-function checkStage4ReviewCompleted(editionDir: string): InvariantViolation[] {
+function checkStage4ReviewCompleted(editionDir: string, backendOverride?: string): InvariantViolation[] {
+  // #9594: backend Kit nunca escreve 05-published.json — antes este check
+  // devolvia [] em silêncio e o gate do Stage 6 apresentava "review
+  // automático" sem dado nenhum (edição 261005). No Kit o resultado do §5f
+  // vive em `_internal/05-review-kit.json` (gravado por record-kit-review.ts).
+  if ((backendOverride ?? loadNewsletterBackend()) === "kit") {
+    return checkKitReviewRecorded(editionDir);
+  }
   const path = resolve(editionDir, "_internal", "05-published.json");
   if (!existsSync(path)) return [];
   let data: { review_completed?: boolean; review_status?: string };
