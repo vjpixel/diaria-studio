@@ -177,7 +177,7 @@ function targetLineIdxs(
 }
 
 /** Segmentos (trim) da(s) linha(s) da posição. @pure */
-export function tituloSegmentsFor(md: string, position?: 1 | 2 | 3): string[] | null {
+function tituloSegmentsFor(md: string, position?: 1 | 2 | 3): string[] | null {
   const lines = md.split("\n");
   const loc = locateTituloSubtituloLines(lines);
   if (!loc) return null;
