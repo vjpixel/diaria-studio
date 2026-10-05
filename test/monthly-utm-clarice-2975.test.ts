@@ -38,6 +38,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   draftToEmail,
   normalizeKnownUrl,
@@ -409,5 +410,77 @@ describe("#4040 — helpers do registry compartilhado", () => {
   it("buildMensalCampaign compõe clarice-{ciclo}-{posicao}", () => {
     assert.equal(buildMensalCampaign("2606-07", "cta"), "clarice-2606-07-cta");
     assert.equal(buildMensalCampaign("2606-07", "wordmark-RADAR"), "clarice-2606-07-wordmark-radar");
+  });
+});
+
+describe("#9589 — CTA com utm_campaign explícito preserva a campanha", () => {
+  // Link da caixa da imersão LIDO do template (não copiado) — se o template
+  // trocar a URL, o teste acompanha em vez de ficar verde sobre uma cópia velha.
+  const TEMPLATE_BOX_URL = (() => {
+    const tpl = readFileSync(
+      new URL("../context/templates/newsletter-monthly.md", import.meta.url),
+      "utf8",
+    );
+    const m = tpl.match(/→ \[[^\]]+\]\((https:\/\/diar\.ia\.br\/evento\/agente-ia\?[^)]+)\)/);
+    assert.ok(m, "caixa DIVULGAÇÃO da imersão não encontrada no template mensal");
+    return m[1];
+  })();
+
+  function hrefParams(html: string): URLSearchParams {
+    const m = html.replace(/&amp;/g, "&").match(/href="([^"]+)"/);
+    assert.ok(m, "nenhum href no HTML");
+    return new URL(m[1]).searchParams;
+  }
+
+  it("botão CTA da caixa da imersão sai com utm_campaign=agente-ia (perfil Clarice)", () => {
+    setMonthlyUtmCiclo("2609-10");
+    try {
+      const p = hrefParams(renderCtaButton(`→ [Saiba mais](${TEMPLATE_BOX_URL})`));
+      assert.equal(p.get("utm_campaign"), "agente-ia");
+      assert.equal(p.get("utm_content"), "caixa-voz");
+      assert.equal(p.get("utm_source"), "clarice");
+      assert.equal(p.get("utm_medium"), "email");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  it("CTA SEM utm_campaign continua recebendo o default clarice-{ciclo}-cta", () => {
+    setMonthlyUtmCiclo("2609-10");
+    try {
+      const p = hrefParams(renderCtaButton("→ [Assine](https://diar.ia.br/?utm_source=clarice)"));
+      assert.equal(p.get("utm_campaign"), "clarice-2609-10-cta");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  it("CTA com utm_campaign VAZIO recebe o default (vazio não conta como explícito)", () => {
+    setMonthlyUtmCiclo("2609-10");
+    try {
+      const p = hrefParams(renderCtaButton("→ [Assine](https://diar.ia.br/?utm_campaign=)"));
+      assert.equal(p.get("utm_campaign"), "clarice-2609-10-cta");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  it("pill e link inline com utm_campaign explícito SEGUEM sendo reescritos (#4040)", () => {
+    setMonthlyUtmCiclo("2609-10");
+    try {
+      const pill = new URL(
+        normalizeKnownUrl(
+          "https://cursos.diar.ia.br?utm_source=newsletter&utm_medium=email&utm_campaign=cursos-rodape",
+          "pill-cursos",
+        ),
+      ).searchParams;
+      assert.equal(pill.get("utm_campaign"), "clarice-2609-10-pill-cursos");
+      assert.equal(pill.get("utm_source"), "clarice");
+
+      const inline = hrefParams(renderInline("veja [aqui](https://diar.ia.br/x?utm_campaign=outra)."));
+      assert.equal(inline.get("utm_campaign"), "clarice-2609-10-inline-geral");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
   });
 });
