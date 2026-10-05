@@ -172,6 +172,12 @@ const PESQUISA_PATTERNS: RegExp[] = [
   /^anthropic\.com\/research\//,
   // OpenAI research (não blog)
   /^openai\.com\/research\//,
+  // #5995 (05/10/2026): Apple Machine Learning Research — /research/ é a
+  // listagem de papers do laboratório (no corpus, os 58 itens em /research/ estão em
+  // RADAR). Sem o path aqui, um abstract que diz "choosing which positions"
+  // caía em USE MELHOR via keyword de tutorial (caso real 261005, "Limits of
+  // Confidence in Diffusion", movido pelo editor pra RADAR).
+  /^machinelearning\.apple\.com\/research\//,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1439,8 +1445,14 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // continuar em RADAR/NOTÍCIAS (distinção editorial deliberada, ver teste
 // negativo em test/categorize-tutorial-video.test.ts).
 const DISCOVERY_LISTICLE_NOUN = "(?:ferramentas?|apps?|ias?|intelig[êe]ncias?\\s+artificiais?|plataformas?)";
+// #5995 (05/10/2026): "escondid[ao]s" só no PLURAL. No singular o adjetivo
+// qualifica um objeto da notícia, não uma lista de ferramentas — "Comando
+// escondido em laudo para influenciar IA é encontrado no TJRN" (260915) caía
+// em USE MELHOR e o editor moveu pra RADAR; mesma forma em "Professor coloca
+// prompt escondido…" e "Você já usou IA escondido?". Corpus: 1 melhoria, 0
+// regressões.
 const DISCOVERY_LISTICLE_ADJ =
-  "(?:pouco\\s+conhecid[ao]s?|menos\\s+conhecid[ao]s?|desconhecid[ao]s?|que\\s+voc[êe]\\s+n[ãa]o\\s+conhece|escondid[ao]s?)";
+  "(?:pouco\\s+conhecid[ao]s?|menos\\s+conhecid[ao]s?|desconhecid[ao]s?|que\\s+voc[êe]\\s+n[ãa]o\\s+conhece|escondid[ao]s)";
 const DISCOVERY_LISTICLE_RE = new RegExp(
   `\\b${DISCOVERY_LISTICLE_NOUN}\\b.{0,40}\\b${DISCOVERY_LISTICLE_ADJ}\\b|\\b${DISCOVERY_LISTICLE_ADJ}\\b.{0,40}\\b${DISCOVERY_LISTICLE_NOUN}\\b`,
   "i",
@@ -1456,7 +1468,9 @@ const DISCOVERY_LISTICLE_RE = new RegExp(
 // após "como"/"aprenda a" — não casa em "Como a IA está mudando X" (informativo,
 // não instrutivo) porque "a" não está na lista.
 const TUTORIAL_ACTION_VERBS_PT =
-  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar";
+  // #5995 (05/10/2026): `personalizar` — "veja-como-personalizar-terminal"
+  // (261005, slug, ver SLUG_HOWTO_RE).
+  "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar|personalizar";
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1510,9 +1524,120 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
   "i",
 );
 
+// #5995 (05/10/2026): guia de USO de ferramenta pelo TÍTULO — critério do
+// editor de 01/10 ("aprender a usar melhor uma ferramenta, como leitor final →
+// USE MELHOR") e de 17/09 ("listicle de dicas/prompts em portal de notícias →
+// USE MELHOR"). Cada alternativa tem caso real movido RADAR/LANÇAMENTO → USE
+// MELHOR pelo editor e foi medida contra o corpus inteiro (ver PR):
+//   - contagem por extenso + "prompts para|que" — "Três prompts que ajudam em
+//     processos seletivos…" (260909); algarismo + "prompts para" já vive em
+//     TUTORIAL_KEYWORDS_RE;
+//   - "N dicas|ideias|truques para|de usar|utilizar" — "Prompt para foto de
+//     perfil do Instagram: 10 ideias para usar no ChatGPT" (261005);
+//   - "getting the most out of" / "aproveitar ao máximo" — "Getting the most
+//     out of Opus 5.5 in Claude and Claude Code" (260924);
+//   - "N ways to <verbo>" — "7 ways to kick-start back to school using Gemini
+//     in Workspace" (260831, blog.google; sem isto caía em LANÇAMENTO por
+//     domínio oficial). "N ways {sujeito} {verbo}" ("4 ways Gemini makes…")
+//     não casa: exige "to" logo depois de "ways".
+// Só o TÍTULO, de propósito: a 1ª tentativa olhava o summary também e casava
+// em resumo de notícia comum ("Busca clássica vai ser trocada por IA?",
+// "Notion vai fechar seu app de e-mail") — revertida. Testado e deixado de
+// fora por regredir contra o corpus: "N prompts do ChatGPT para…", "melhores
+// prompts", "^Prompts para…", "N dicas para <qualquer verbo>" (16 itens desse
+// formato que o editor manteve em RADAR sem mover).
+//
+// Fixes do review (PR #9649): cada alternativa precisa ter forma de GUIA
+// (imperativo, 2ª pessoa, "como/how to"), não só conter a expressão — senão
+// notícia que a MENCIONA vira tutorial:
+//   - "aproveitar ao máximo"/"get the most out of" só em "como|para aproveitar",
+//     "aproveite ao máximo", "how to get" ou "Getting…" abrindo o título/frase.
+//     "Empresas brasileiras não conseguem aproveitar ao máximo a IA, aponta
+//     pesquisa" e "Companies struggle to get the most out of AI agents" não
+//     casam; "New Gemini features to help you get the most out of your day"
+//     (blog.google) segue LANÇAMENTO;
+//   - "N ways to <verbo>" só com verbo de USO (lista fechada) — "3 ways to think
+//     about the AI bubble" (opinião) não casa;
+//   - "N prompts que…" é anulado por atribuição de reportagem no título
+//     (NEWS_REPORT_TITLE_RE) — "Três prompts que quebraram a segurança do
+//     ChatGPT, segundo pesquisadores" relata um achado, não ensina a usar.
+//     Só nessa alternativa: aplicada às demais, a exclusão rebaixava "5 dicas
+//     para usar o ChatGPT melhor, segundo ele mesmo" (260723), que o critério
+//     de 17/09 do editor põe em USE MELHOR.
+const PT_LISTICLE_COUNT = "(?:\\d+|dois|duas|tr[êe]s|quatro|cinco|seis|sete|oito|nove|dez)";
+const EN_WAYS_TO_USAGE_VERBS =
+  "use|get|make|try|build|boost|save|start|kick-start|organize|create|improve|prep|plan|learn|write|master|automate|customize|personalize|level\\s+up|speed\\s+up";
+const USAGE_GUIDE_TITLE_RE = new RegExp(
+  `\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+para\\b` +
+    `|\\b${PT_LISTICLE_COUNT}\\s+(?:dicas|ideias|truques)\\s+(?:para|de)\\s+(?:usar|utilizar)\\b` +
+    "|(?:^|[:—–|]\\s*)getting\\s+the\\s+most\\s+out\\s+of\\b|\\bhow\\s+to\\s+get\\s+the\\s+most\\s+out\\s+of\\b" +
+    "|\\b(?:como|para)\\s+aproveitar\\s+ao\\s+m[áa]ximo\\b|\\baproveite\\s+ao\\s+m[áa]ximo\\b" +
+    `|\\b\\d+\\s+ways\\s+to\\s+(?:${EN_WAYS_TO_USAGE_VERBS})\\b`,
+  "i",
+);
+const PROMPTS_QUE_TITLE_RE = new RegExp(`\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+que\\b`, "i");
+// Atribuição típica de reportagem ("segundo X", "aponta pesquisa", "revela").
+const NEWS_REPORT_TITLE_RE = /\b(?:segundo|pesquisadores?|revelam?|apontam?|estudo|levantamento)\b/i;
+
+function isUsageGuideTitle(title: string): boolean {
+  return (
+    USAGE_GUIDE_TITLE_RE.test(title) || (PROMPTS_QUE_TITLE_RE.test(title) && !NEWS_REPORT_TITLE_RE.test(title))
+  );
+}
+
+// #5995 (05/10/2026): "como <verbo acionável>" no SLUG da URL. Portal PT-BR
+// (canaltech sobretudo) encurta a manchete e deixa o how-to só no slug:
+// "Claude Code ganha suporte a mods" → `…-veja-como-personalizar-terminal-e-mais/`
+// (261005); "O que é o Canvas do ChatGPT e como ele funciona?" →
+// `…/o-que-e-chatgpt-canvas-e-como-usar/` (260825). Mesma lista fechada de
+// verbos do "como <verbo>" do título (TUTORIAL_ACTION_VERBS_PT) — "como-
+// funciona"/"como-sera" não casam.
+//
+// Fixes do review (PR #9649):
+//   - olha só o ÚLTIMO segmento não-numérico do path (sem .ghtml/.html), nunca
+//     os diretórios — uma seção `/como-fazer/` não transforma todo item dela
+//     em tutorial; `sympla…/ia-produtividade-como-usar-…/3530019` (id numérico
+//     no fim) segue positivo;
+//   - com type_hint noticia/opiniao, "como <verbo>" logo depois de verbo de
+//     deliberação/reportagem ("discute|debate|define|decide|avalia|estuda|
+//     analisa|propõe|regulamenta|investiga|questiona como usar") é pergunta
+//     indireta de notícia, não chamada ao leitor — "stf-discute-como-usar-ia-
+//     em-julgamentos" não casa; "…-veja-como-personalizar-terminal…" e
+//     "chega-de-decorar-formulas-como-usar-…" (notícias, USE MELHOR no
+//     gabarito) seguem positivos. Lista NEGATIVA de propósito: a alternativa
+//     positiva (só "veja|saiba|aprenda|confira como" ou "como-" no início)
+//     perdia o caso michelfabiano (260814) no corpus.
+const SLUG_HOWTO_RE = new RegExp(`\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b`, "i");
+const SLUG_NEWS_DELIBERATION_RE = new RegExp(
+  "\\b(?:discut|debat|defin|decid|avali|estud|analis|prop[õo]|regulament|investig|question|vot)[a-zà-ú]*\\s+" +
+    `como\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b`,
+  "i",
+);
+
+/** Último segmento não-numérico do path, sem extensão de página, com `-`/`_` → espaço. */
+function lastSlugSegment(url: string): string {
+  const segs = rawUrlSlug(url)
+    .split("/")
+    .map((s) => s.replace(/\.(?:s?html?|ghtml|php|aspx?)$/i, ""))
+    .filter((s) => s !== "" && !/^\d+$/.test(s));
+  return (segs.at(-1) ?? "").replace(/[-_]+/g, " ").trim();
+}
+
+function hasHowToSlug(url: string, typeHint: string | null | undefined): boolean {
+  const slug = lastSlugSegment(url);
+  if (!SLUG_HOWTO_RE.test(slug)) return false;
+  if (typeHint === "noticia" || typeHint === "opiniao") return !SLUG_NEWS_DELIBERATION_RE.test(slug);
+  return true;
+}
+
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_KEYWORDS_RE.test(hay) || DISCOVERY_LISTICLE_RE.test(hay);
+  return (
+    TUTORIAL_KEYWORDS_RE.test(hay) ||
+    DISCOVERY_LISTICLE_RE.test(hay) ||
+    isUsageGuideTitle(article.title ?? "") ||
+    hasHowToSlug(article.url ?? "", article.type_hint)
+  );
 }
 
 /**
