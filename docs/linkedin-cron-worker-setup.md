@@ -173,7 +173,9 @@ Cloudflare Workers (free tier):
 - Cron triggers ilimitados no free tier (Workers Paid só pesa em CPU time)
 - 1GB KV storage (mais que suficiente)
 
-Cron `*/5` consome ~8.640 fires/mês. Cada fire é 1 KV `list` (queue lookup) + 0–1 KV `delete` por item maduro. Negligível dentro do free tier.
+Cron `*/5` consome ~8.640 fires/mês. Cada fire é 1 KV `list` (queue lookup) + 0–1 KV `delete` por item maduro = **288 `list`/dia**. O alarme de DLQ (#9569) lista `dlq:` só no disparo do topo da hora ou quando o próprio disparo moveu item pra DLQ (#9618) — **~24 `list`/dia a mais**, total ~312/dia (~31% do teto de 1.000 `list`/dia do KV free tier, que é por CONTA e soma `/health`, `/list` e os outros Workers). Não voltar a varrer a DLQ em todo disparo: somaria 288 `list`/dia (≥576 no total), a margem que a decisão de 2026-05-12 (`*/3` → `*/5`, ver `wrangler.toml`) exigiu preservar.
+
+`ALERT_WEBHOOK_URL` (opcional) recebe dois alertas: entries novas na DLQ e (#9618) refresh do token Threads falhando com o token sem renovar há mais de 45 dias (vence aos 60; re-alerta no máximo 1x/dia). Sem a var, os dois só vão pro `wrangler tail`.
 
 Make.com (free tier 1.000 ops/mês):
 - Cron empty (sem item maduro): 0 ops Make.
