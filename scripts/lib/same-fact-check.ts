@@ -42,6 +42,13 @@ export interface SameFactPastDestaque {
    * escapava porque só destaques eram comparados.
    */
   bucket?: string;
+  /**
+   * #9595: resumo do destaque passado. Usado só pelo sinal de NÚMEROS
+   * (`findSameFactNumberMatches`) — a mesma história de outro veículo repete
+   * as cifras centrais ("554 deepfakes", "Lula 379, Flávio 190") mesmo com
+   * manchete e URL diferentes.
+   */
+  summary?: string;
 }
 
 export interface SameFactItem {
@@ -56,6 +63,12 @@ export interface SameFactItem {
    * o resumo traz ("...GPT-6.1 Astra..."). Produtos do resumo também casam.
    */
   summary?: string;
+  /**
+   * #9595: texto factual extra do item corrente (ex: `summary_rejected` — o
+   * resumo original guardado quando o refetch o substituiu por um trecho
+   * truncado/mojibake). Só alimenta o sinal de NÚMEROS.
+   */
+  fact_text?: string;
 }
 
 export interface SameFactWarning {
@@ -70,8 +83,15 @@ export interface SameFactWarning {
   shared_products: string[];
   /** #9386: bucket do item passado ("highlight" = destaque). */
   matched_bucket: string;
-  /** #9386: onde o produto apareceu no item corrente — "title" ou "summary". */
-  evidence: "title" | "summary";
+  /**
+   * #9386: onde o produto apareceu no item corrente — "title" ou "summary".
+   * #9595: "numbers" = mesmo fato detectado por cifras centrais em comum
+   * (`shared_numbers`), sem produto+versão (`shared_products` vazio). Nunca
+   * remove nada (`removeSameFactSecondary` só age em "title").
+   */
+  evidence: "title" | "summary" | "numbers";
+  /** #9595: cifras distintivas em comum (normalizadas, sem separador). */
+  shared_numbers?: string[];
 }
 
 /**
@@ -230,7 +250,7 @@ export interface SameFactRemoval {
   matched_title: string;
   matched_bucket: string;
   shared_products: string[];
-  evidence: "title" | "summary";
+  evidence: "title" | "summary" | "numbers";
 }
 
 /**
@@ -285,4 +305,128 @@ export function removeSameFactSecondary(
     });
   }
   return { approved: out, removed };
+}
+
+// ---------------------------------------------------------------------------
+// #9595: MESMO FATO por cifras centrais (a mesma história de outro veículo)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mínimo de cifras distintivas em comum para sinalizar MESMO FATO (#9595).
+ * 2 e não 1: uma cifra isolada coincide por acaso (ex: "128" mil tokens em
+ * dois lançamentos diferentes); duas cifras não-redondas iguais entre um
+ * candidato e um destaque recente é a assinatura de um mesmo levantamento.
+ */
+export const SAME_FACT_MIN_SHARED_NUMBERS = 2;
+
+/**
+ * Extrai as cifras "distintivas" de um texto (#9595): inteiros ≥ 100 que não
+ * sejam ano (1900–2100), número redondo (múltiplo de 100), percentual nem
+ * parte decimal/versão ("5.5"). Separador de milhar ("1.234", "1,234") é
+ * normalizado ("1234"). Premissa: cifra redonda/pequena é ruído de manchete
+ * ("100 milhões", "top 10"); a cifra de um levantamento (554, 920, 379) é o
+ * que outros veículos copiam literalmente ao recontar a mesma história.
+ */
+export function extractFactNumbers(text: string): Set<string> {
+  const out = new Set<string>();
+  const re = /(?<![\p{L}\p{N}.,])(\d{1,3}(?:[.,]\d{3})+|\d+)(?![\p{N}]|[.,]\d|\s?%)/gu;
+  for (const m of text.matchAll(re)) {
+    const digits = m[1].replace(/[.,]/g, "");
+    const n = Number(digits);
+    if (!Number.isFinite(n) || n < 100) continue;
+    if (n >= 1900 && n <= 2100) continue; // ano
+    if (n % 100 === 0) continue; // redondo
+    out.add(String(n));
+  }
+  return out;
+}
+
+/**
+ * #9595: MESMO FATO por cifras — candidato a destaque × destaque recente que
+ * compartilham ≥ `SAME_FACT_MIN_SHARED_NUMBERS` cifras distintivas no
+ * título+resumo (+ `fact_text`). Caso real: D1 de 261005 (bra1, "554
+ * deepfakes... Lula em 379, Flávio Bolsonaro em 190") repetia o D1 de 261002
+ * (Agência Lupa/VigIA, "920 posts... Lula 379... 190 de Bolsonaro") — URL,
+ * título e veículo diferentes, nenhum produto+versão, dedup limpo.
+ *
+ * Só destaques passados (`bucket` ausente/"highlight") entram: a premissa da
+ * issue é "a mesma história virar destaque de novo". 1 warning por item (o
+ * destaque passado mais recente que casa). Mesma URL canônica é pulada
+ * (trabalho do dedup por URL). Evidence "numbers" — só aviso, nunca remoção.
+ */
+export function findSameFactNumberMatches(
+  items: SameFactItem[],
+  pastDestaques: SameFactPastDestaque[],
+): SameFactWarning[] {
+  const past = pastDestaques
+    .filter((p) => p.bucket === undefined || p.bucket === "highlight")
+    .map((p) => ({ ...p, numbers: extractFactNumbers(`${p.title}\n${p.summary ?? ""}`) }))
+    .filter((p) => p.numbers.size >= SAME_FACT_MIN_SHARED_NUMBERS)
+    .sort((a, b) => b.aammdd.localeCompare(a.aammdd));
+  const warnings: SameFactWarning[] = [];
+  if (past.length === 0) return warnings;
+  for (const item of items) {
+    const numbers = extractFactNumbers(`${item.title}\n${item.summary ?? ""}\n${item.fact_text ?? ""}`);
+    if (numbers.size < SAME_FACT_MIN_SHARED_NUMBERS) continue;
+    const itemUrl = item.url ? canonicalize(item.url) : "";
+    for (const p of past) {
+      if (itemUrl && p.url && canonicalize(p.url) === itemUrl) continue;
+      const shared = [...numbers].filter((x) => p.numbers.has(x));
+      if (shared.length < SAME_FACT_MIN_SHARED_NUMBERS) continue;
+      warnings.push({
+        kind: item.kind,
+        ...(item.rank !== undefined ? { rank: item.rank } : {}),
+        item_title: item.title,
+        item_url: item.url,
+        matched_edition: p.aammdd,
+        matched_title: p.title,
+        ...(p.url ? { matched_url: p.url } : {}),
+        shared_products: [],
+        matched_bucket: "highlight",
+        evidence: "numbers",
+        shared_numbers: shared.sort((a, b) => Number(a) - Number(b)),
+      });
+      break;
+    }
+  }
+  return warnings;
+}
+
+/**
+ * #9595: linhas de aviso para o relatório do Stage 1 em `--no-gates` (sem
+ * gate 1, o 🚨 MESMO FATO dos DESTAQUES só aparecia no gate 4). Recebe o JSON
+ * cru de `01-highlight-theme-check.json` e de `01-approved.json`; devolve uma
+ * linha por warning cujo `item_url` ainda é destaque no approved. Pura e
+ * fail-soft: shape inesperada → lista vazia.
+ */
+export function formatHighlightSameFactNotes(themeCheck: unknown, approved: unknown): string[] {
+  if (!themeCheck || typeof themeCheck !== "object" || !approved || typeof approved !== "object") return [];
+  const warnings = (themeCheck as { same_fact_warnings?: unknown }).same_fact_warnings;
+  const highlights = (approved as { highlights?: unknown }).highlights;
+  if (!Array.isArray(warnings) || !Array.isArray(highlights)) return [];
+  const pos = new Map<string, number>();
+  highlights.forEach((h, i) => {
+    if (!h || typeof h !== "object") return;
+    const rec = h as { url?: unknown; article?: { url?: unknown } };
+    const url = rec.article?.url ?? rec.url;
+    if (typeof url === "string" && url) pos.set(canonicalize(url), i + 1);
+  });
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const w of warnings) {
+    if (!w || typeof w !== "object") continue;
+    const ww = w as Partial<SameFactWarning>;
+    if (typeof ww.item_url !== "string" || !ww.item_url) continue;
+    const key = canonicalize(ww.item_url);
+    const d = pos.get(key);
+    if (d === undefined || seen.has(key)) continue;
+    seen.add(key);
+    const why = ww.evidence === "numbers"
+      ? `cifras: ${(ww.shared_numbers ?? []).join(", ")}`
+      : `produto: ${(ww.shared_products ?? []).join(", ")}`;
+    out.push(
+      `🚨 MESMO FATO — D${d} "${ww.item_title ?? ""}" repete o destaque de ${ww.matched_edition ?? "?"} "${ww.matched_title ?? ""}" (${why}). Trocar o destaque no gate 4 se não for follow-up.`,
+    );
+  }
+  return out;
 }

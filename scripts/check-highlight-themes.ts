@@ -120,7 +120,7 @@ import {
 import type { PastDestaqueTitle } from "./lib/past-editions-extract.ts";
 // #9100: gatilho "MESMO FATO" (produto+versão em comum com destaque recente),
 // aplicado a candidatos a destaque E ao pool secundário.
-import { findSameFactMatches } from "./lib/same-fact-check.ts";
+import { findSameFactMatches, findSameFactNumberMatches } from "./lib/same-fact-check.ts";
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
@@ -404,6 +404,8 @@ interface HighlightCandidate {
   url: string;
   /** #9386: resumo (MESMO FATO quando a manchete omite a versão). */
   summary?: string;
+  /** #9595: `summary_rejected` (resumo original guardado pelo refetch). */
+  fact_text?: string;
 }
 
 export function extractHighlightCandidates(
@@ -425,7 +427,18 @@ export function extractHighlightCandidates(
       const rank = h.rank ?? idx + 1;
       const rawSummary = (art as { summary?: unknown }).summary ?? (h as { summary?: unknown }).summary;
       const summary = typeof rawSummary === "string" ? rawSummary.trim() : "";
-      return { rank, title: title.trim(), url: url.trim(), ...(summary ? { summary } : {}) };
+      // #9595: o refetch troca o resumo por um trecho da página (às vezes
+      // truncado/mojibake) e guarda o original em `summary_rejected` — é ali
+      // que estavam as cifras do caso real (Lula 379, Flávio 190).
+      const rawRejected = (art as { summary_rejected?: unknown }).summary_rejected ?? (h as { summary_rejected?: unknown }).summary_rejected;
+      const factText = typeof rawRejected === "string" ? rawRejected.trim() : "";
+      return {
+        rank,
+        title: title.trim(),
+        url: url.trim(),
+        ...(summary ? { summary } : {}),
+        ...(factText ? { fact_text: factText } : {}),
+      };
     })
     .filter((h) => h.title.length > 0);
 }
@@ -1509,10 +1522,23 @@ async function main(): Promise<void> {
       ...pastSecondaryRecent.map((p) => ({ title: p.title, aammdd: p.edition, bucket: p.bucket })),
     ],
   );
+  // #9595: MESMO FATO por cifras centrais — a mesma história de outro
+  // veículo (D1 261005 bra1 × D1 261002 Lupa/VigIA: sem produto+versão, URL e
+  // título diferentes). Só candidatos a destaque × destaques recentes, e só
+  // para quem o sinal de produto já não pegou (1 warning por item).
+  const productWarned = new Set(sameFactWarnings.map((w) => w.item_url));
+  sameFactWarnings.push(
+    ...findSameFactNumberMatches(
+      candidates
+        .filter((c) => !productWarned.has(c.url))
+        .map((c) => ({ kind: "highlight", rank: c.rank, title: c.title, url: c.url, summary: c.summary, fact_text: c.fact_text })),
+      pastDestaques.map((p) => ({ ...p, bucket: "highlight" })),
+    ),
+  );
   for (const w of sameFactWarnings) {
     const where = w.kind === "highlight" ? `Candidato a destaque #${w.rank}` : `[${w.kind}]`;
     console.error(
-      `[check-highlight-themes] 🚨 MESMO FATO ${where} "${w.item_title}" (${w.item_url}) repete ${w.matched_bucket === "highlight" ? "o DESTAQUE" : `o item [${w.matched_bucket}]`} de ${w.matched_edition} "${w.matched_title}" (produto: ${w.shared_products.join(", ")}, via ${w.evidence})`,
+      `[check-highlight-themes] 🚨 MESMO FATO ${where} "${w.item_title}" (${w.item_url}) repete ${w.matched_bucket === "highlight" ? "o DESTAQUE" : `o item [${w.matched_bucket}]`} de ${w.matched_edition} "${w.matched_title}" (${w.evidence === "numbers" ? `cifras: ${(w.shared_numbers ?? []).join(", ")}` : `produto: ${w.shared_products.join(", ")}`}, via ${w.evidence})`,
     );
   }
 
