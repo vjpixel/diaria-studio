@@ -39,9 +39,36 @@ function safeCodePoint(n: number): string {
   return String.fromCodePoint(n);
 }
 
+/**
+ * #9585: o texto de `<ol><li>` não traz o número (o browser desenha) — prefixa
+ * "N. " pra os passos sobreviverem ao strip de tags. Pilha por `<ol>`/`</ol>`
+ * (só o nível 1 é numerado; sub-listas viram "•", pra não se misturarem aos
+ * passos) e respeita `start=` e `value=`.
+ */
+function numberOrderedLists(html: string): string {
+  const counters: number[] = [];
+  return html.replace(/<(\/?)(ol|li)\b([^>]*)>/gi, (m, close: string, tag: string, attrs: string) => {
+    if (tag.toLowerCase() === "ol") {
+      if (close) counters.pop();
+      else {
+        const start = attrs.match(/\bstart\s*=\s*["']?(-?\d+)/i);
+        counters.push(start ? Number(start[1]) - 1 : 0);
+        return counters.length > 1 ? `<br>${m}` : m;
+      }
+      return m;
+    }
+    if (close || !counters.length) return m;
+    const value = attrs.match(/\bvalue\s*=\s*["']?(-?\d+)/i);
+    const n = value ? Number(value[1]) : counters[counters.length - 1] + 1;
+    counters[counters.length - 1] = n;
+    // Sub-lista: marcador "•" (nunca casa STEP_LINE) pra não virar passo de nível 1.
+    return counters.length > 1 ? `${m}• ` : `${m}${n}. `;
+  });
+}
+
 /** HTML -> texto do corpo: remove script/style/nav/footer/aside/comentários/tags, decodifica entidades, normaliza espaços. */
 export function htmlToText(html: string): string {
-  let s = html.replace(/<!--[\s\S]*?-->/g, " ");
+  let s = numberOrderedLists(html).replace(/<!--[\s\S]*?-->/g, " ");
   s = s.replace(/<(script|style|noscript|svg|template|nav|footer|aside|form)\b[\s\S]*?<\/\1\s*>/gi, " ");
   s = s.replace(/\r?\n/g, " ");
   s = s.replace(/<\/(p|div|li|h[1-6]|tr|section|article|blockquote)\s*>|<br\s*\/?>/gi, "\n");

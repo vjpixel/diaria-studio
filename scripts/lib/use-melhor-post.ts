@@ -148,6 +148,51 @@ export interface UseMelhorCandidate {
    * em `_internal/use-melhor-post.json`. Ver `resolveUseMelhorCoverTitle`.
    */
   cover_title?: string;
+  /** #9585: passos do tutorial extraídos da fonte, na ordem. Ausente = fonte sem passos (formato atual). */
+  steps?: string[];
+  /** #9585: trecho do corpo da fonte (contexto pro writer; nunca fonte de fatos além dos passos). */
+  body?: string;
+}
+
+const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{3,})$/i;
+
+/**
+ * Pure (#9585): extrai os passos numerados do texto da fonte, na ordem.
+ * Aceita "Passo 1: ...", "Etapa 2 ...", "Step 3 ..." e "1. ..."/"1) ...".
+ * Só devolve uma sequência que comece em 1 e seja consecutiva (>=2 passos) —
+ * numeração solta (ano, ranking) não vira passo. Sem passos → `[]`.
+ */
+export function extractUseMelhorSteps(text: string): string[] {
+  // Várias listas numeradas (sumário, requisitos, passos): coleta cada run 1..N
+  // consecutivo e fica com a mais longa (empate → a última). Linha não-passo
+  // entre dois passos não quebra o run (passos têm parágrafos de explicação).
+  const runs: string[][] = [];
+  let cur: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const m = raw.trim().match(STEP_LINE);
+    if (!m) continue;
+    const n = Number(m[1] ?? m[2]);
+    if (n === 1) {
+      if (cur.length) runs.push(cur);
+      cur = [m[3].trim()];
+    } else if (cur.length && n === cur.length + 1) {
+      cur.push(m[3].trim());
+    }
+  }
+  if (cur.length) runs.push(cur);
+  let best: string[] = [];
+  for (const r of runs) if (r.length >= best.length) best = r;
+  return best.length >= 2 ? best : [];
+}
+
+export const USE_MELHOR_BODY_MAX_CHARS = 6000;
+
+/** Pure (#9585): anexa `steps` (só se houver) e `body` ao item. */
+export function enrichUseMelhorItem(item: UseMelhorCandidate, text: string): UseMelhorCandidate {
+  const steps = extractUseMelhorSteps(text);
+  const out: UseMelhorCandidate = { ...item, body: text.slice(0, USE_MELHOR_BODY_MAX_CHARS) };
+  if (steps.length) out.steps = steps;
+  return out;
 }
 
 /**
