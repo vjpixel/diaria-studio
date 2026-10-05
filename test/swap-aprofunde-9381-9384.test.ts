@@ -40,10 +40,10 @@ test("#9381: swapInApprovedJson devolve o rebaixado ao bucket sem manchete", () 
   assert.ok(r.ok);
   const radar = data.radar as Record<string, unknown>[];
   assert.equal(radar[0].title_options, undefined);
-  assert.equal(
-    (radar[0].article as Record<string, unknown>).title,
-    "The Future Is for Everyone: Muse for Small Business",
-  );
+  // #9601: item de pool é FLAT (shape de `article`, sem wrapper de highlight).
+  assert.equal(radar[0].article, undefined);
+  assert.equal(radar[0].url, "https://meta.com/a");
+  assert.equal(radar[0].title, "The Future Is for Everyone: Muse for Small Business");
 });
 
 test("#9381: fallback do capped também converte para item de pool", () => {

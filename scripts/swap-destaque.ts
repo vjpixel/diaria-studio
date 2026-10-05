@@ -6,9 +6,17 @@
  * runners_up) a destaque, substituindo/rebaixando um destaque existente.
  *
  * Propaga atomicamente para:
- *   - `_internal/01-approved.json` (highlights[] + bucket de origem)
+ *   - `_internal/01-approved.json` (highlights[] + bucket de origem) — é o
+ *     §4d.1b i+ii do playbook do Stage 4 (#9601): o item que sobe entra no
+ *     wrapper de highlight (`toHighlightItem`), o que desce vai FLAT pro
+ *     bucket `--demote-to` (`toBucketItem`; default = bucket de origem, exceto
+ *     `lancamento` → `radar`), `rank` renumerado
  *   - `_internal/01-approved-capped.json` (highlights[])
- *   - `02-reviewed.md` (bloco DESTAQUE removido, texto sinalizado)
+ *   - `02-reviewed.md` (`applySwapToReviewedMd`, #9601): bloco DESTAQUE vira
+ *     placeholder; o item promovido sai da seção de pool de origem (seção
+ *     esvaziada sai inteira); o título antigo é trocado pelo novo no
+ *     TÍTULO/SUBTÍTULO (cirúrgico — bloco escrito à mão fica intocado, com
+ *     aviso); contagem da intro re-sincronizada
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -71,6 +79,9 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9381
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
+import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
+import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
+import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -96,6 +107,8 @@ export interface SwapArgs {
   demote: DemoteTarget;
   /** if true, the demoted highlight is dropped (not returned to its source bucket) */
   drop: boolean;
+  /** #9601: bucket que recebe o rebaixado (`--demote-to`); default `defaultDemoteBucket(promote.bucket)`. */
+  demoteTo: SourceBucket;
   dryRun: boolean;
 }
 
@@ -103,7 +116,21 @@ export interface SwapResult {
   edition: string;
   dry_run: boolean;
   promoted: { bucket: SourceBucket; idx: number; url: string; title: string };
-  demoted: { position: DemoteTarget; url: string; title: string; dropped: boolean };
+  demoted: {
+    position: DemoteTarget;
+    url: string;
+    title: string;
+    dropped: boolean;
+    /** #9601: bucket de destino (ausente quando `dropped`). */
+    to_bucket?: SourceBucket;
+  };
+  /** #9601: o que o swap ajustou no `02-reviewed.md` além do placeholder. */
+  md_updates?: {
+    pool_item_removed: boolean;
+    section_removed: string | null;
+    titulo_subtitulo: "updated" | "no_block" | "old_title_not_found";
+    intro_count: { before: number | null; after: number | null; changed: boolean };
+  };
   modified: {
     rewritten: string[];
     renamed: Array<{ from: string; to: string }>;
@@ -179,6 +206,217 @@ export function toPoolItem(item: Record<string, unknown>): Record<string, unknow
 }
 
 /**
+ * #9601 (§4d.1b passo i): converte o destaque rebaixado no shape do bucket de
+ * DESTINO. Itens de pool (`radar`/`lancamento`/`use_melhor`/`video`) são FLAT —
+ * o shape de `article`, sem o wrapper `{rank, score, bucket, reason, url,
+ * article}` de `highlights[]`; só `runners_up[]` guarda o wrapper (é o shape
+ * que `apply-gate-edits.ts::normalizeRunnerUp` produz). Antes o wrapper
+ * inteiro ia pro pool, sem `title` no topo.
+ *
+ * @pure
+ */
+export function toBucketItem(
+  item: Record<string, unknown>,
+  bucket: string,
+): Record<string, unknown> {
+  const pooled = toPoolItem(item); // #9381: tira a manchete, usa o título da fonte
+  if (bucket === "runners_up") return pooled;
+  const article = pooled.article as Record<string, unknown> | undefined;
+  if (!article || typeof article !== "object") return pooled;
+  const flat: Record<string, unknown> = { ...article };
+  if (typeof flat.url !== "string" || flat.url.length === 0) {
+    const url = extractUrl(item);
+    if (url) flat.url = url;
+  }
+  return flat;
+}
+
+/**
+ * #9601 (§4d.1b passo ii): envolve o item que sobe no wrapper de `highlights[]`
+ * — o mesmo shape de `promoteInApprovedJson` (`promote-to-destaque.ts`) e de
+ * `buildHighlight` (`apply-gate-edits.ts`), que writer-destaque/publishers leem
+ * via `article`. Item que já é wrapper (vindo de `runners_up[]`) só ganha o
+ * `rank` novo. Antes o item FLAT do pool entrava cru em `highlights[]`.
+ *
+ * @pure
+ */
+export function toHighlightItem(
+  item: Record<string, unknown>,
+  rank: number,
+  bucket: string,
+): Record<string, unknown> {
+  const article = item.article as Record<string, unknown> | undefined;
+  if (article && typeof article === "object") return { ...item, rank };
+  const category =
+    typeof item.category === "string" && item.category.length > 0
+      ? item.category
+      : bucket === "runners_up"
+        ? "radar"
+        : bucket;
+  return {
+    rank,
+    score: (item.score as number | undefined) ?? null,
+    bucket: category,
+    reason: "promovido do pool pelo editor (swap-destaque, #9601)",
+    url: extractUrl(item),
+    article: item,
+  };
+}
+
+/** #9601: renumera `rank` 1..N (só em itens objeto — mesmo laço do promote-to-destaque). */
+function renumberRanks(highlights: unknown[]): void {
+  highlights.forEach((x, i) => {
+    if (x && typeof x === "object") (x as { rank?: number }).rank = i + 1;
+  });
+}
+
+/**
+ * #9601: bucket default do destaque rebaixado quando `--demote-to` não vem.
+ * Mantém o comportamento antigo (mesmo bucket do item promovido), EXCETO
+ * `lancamento`: LANÇAMENTOS só aceita link oficial (#160), e um destaque
+ * rebaixado (tipicamente notícia/cobertura) quebraria `validate-lancamentos`
+ * — vai pro RADAR, o destino "típico" do §4d.1b passo i.
+ *
+ * @pure
+ */
+export function defaultDemoteBucket(promoteBucket: SourceBucket): SourceBucket {
+  return promoteBucket === "lancamento" ? "radar" : promoteBucket;
+}
+
+/** Normalização mínima pra comparar URL do MD com a do JSON. */
+function normUrl(u: string): string {
+  return u.trim().replace(/\/+$/, "");
+}
+
+/**
+ * #9601: remove do `02-reviewed.md` a entrada do item PROMOVIDO na seção de
+ * pool de onde ele saiu (RADAR/LANÇAMENTOS/USE MELHOR/VÍDEOS) — senão a URL
+ * aparece 2× (placeholder do destaque + item do pool) e a contagem da intro
+ * fica errada. Só olha seções cujo header é de pool (nunca o bloco DESTAQUE,
+ * que agora carrega o placeholder com a mesma URL). Se a seção fica sem
+ * nenhum item, ela sai inteira, junto com o separador `---` que a abria
+ * (caso 261005: LANÇAMENTOS só tinha a Kolibri).
+ *
+ * @pure
+ */
+export function removePoolItemFromMd(
+  md: string,
+  url: string,
+): { md: string; removed: boolean; section_removed: string | null } {
+  const target = normUrl(url);
+  const lines = md.split("\n");
+  const headerRe = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, { capture: "name", flags: "u" });
+  const itemRe = /^(?:\*\*)?\[.*\]\((https?:\/\/[^)\s]+)\)/;
+  const seps: number[] = [];
+  lines.forEach((l, i) => {
+    if (/^---\s*$/.test(l)) seps.push(i);
+  });
+  // Fronteiras de seção: [-1, ...seps, lines.length]
+  const bounds = [-1, ...seps, lines.length];
+  for (let b = 0; b < bounds.length - 1; b++) {
+    const start = bounds[b] + 1;
+    const end = bounds[b + 1]; // exclusivo
+    let h = start;
+    while (h < end && lines[h].trim() === "") h++;
+    if (h >= end) continue;
+    const hm = headerRe.exec(lines[h].trim());
+    if (!hm) continue;
+    for (let i = h + 1; i < end; i++) {
+      const m = itemRe.exec(lines[i]);
+      if (!m || normUrl(m[1]) !== target) continue;
+      // Item = linha do link até a próxima linha em branco; leva junto as
+      // linhas em branco seguintes (sem cruzar o fim da seção).
+      let j = i + 1;
+      while (j < end && lines[j].trim() !== "") j++;
+      while (j < end && lines[j].trim() === "") j++;
+      const remaining = [...lines.slice(h + 1, i), ...lines.slice(j, end)];
+      const hasItems = remaining.some((l) => itemRe.test(l));
+      if (hasItems) {
+        // Item do meio/fim: a linha em branco antes dele (ou depois do header)
+        // continua separando o que sobra — basta cortar [i, j).
+        const out = [...lines.slice(0, i), ...lines.slice(j)];
+        return { md: out.join("\n"), removed: true, section_removed: null };
+      }
+      // Seção esvaziada: corta do `---` que a ABRE até o fim dela; o `---` que
+      // a FECHA passa a separar a seção anterior da seguinte. Sem `---` de
+      // abertura (seção no topo), corta até o de fechamento, inclusive.
+      const out =
+        bounds[b] >= 0
+          ? [...lines.slice(0, bounds[b]), ...lines.slice(end)]
+          : [...lines.slice(0, start), ...lines.slice(Math.min(end + 1, lines.length))];
+      return { md: out.join("\n"), removed: true, section_removed: hm[1] };
+    }
+  }
+  return { md, removed: false, section_removed: null };
+}
+
+/**
+ * #9601: troca, só dentro do bloco TÍTULO/SUBTÍTULO do topo, o título do
+ * destaque que saiu pelo do que entrou. Substituição CIRÚRGICA (#495/#7401):
+ * nunca regenera o bloco inteiro — se o editor escreveu um TÍTULO/SUBTÍTULO
+ * próprio (o título antigo não aparece literalmente no bloco), não toca nada
+ * e devolve `old_title_not_found` pra o chamador avisar.
+ *
+ * @pure
+ */
+export function replaceTitleInTituloSubtitulo(
+  md: string,
+  oldTitle: string | null,
+  newTitle: string,
+): { md: string; status: "updated" | "no_block" | "old_title_not_found" } {
+  const lines = md.split("\n");
+  const scan = Math.min(lines.length, 40);
+  let tIdx = -1;
+  for (let i = 0; i < scan; i++) {
+    if (lines[i].trim() === "TÍTULO") {
+      tIdx = i;
+      break;
+    }
+  }
+  if (tIdx < 0) return { md, status: "no_block" };
+  let endIdx = lines.length;
+  for (let i = tIdx + 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i])) {
+      endIdx = i;
+      break;
+    }
+  }
+  const old = (oldTitle ?? "").trim();
+  if (!old) return { md, status: "old_title_not_found" };
+  let hit = false;
+  for (let i = tIdx + 1; i < endIdx; i++) {
+    if (lines[i].includes(old)) {
+      lines[i] = lines[i].split(old).join(newTitle);
+      hit = true;
+    }
+  }
+  if (!hit) return { md, status: "old_title_not_found" };
+  return { md: lines.join("\n"), status: "updated" };
+}
+
+/**
+ * #9601: re-sincroniza "selecionei os N" da intro com a contagem real, depois
+ * do swap (mesma lógica de `sync-intro-count.ts`, sem o I/O). `actual === 0`
+ * é bug de parser (#973) — não mexe.
+ *
+ * @pure
+ */
+export function syncIntroCountInMd(md: string): {
+  md: string;
+  before: number | null;
+  after: number | null;
+  changed: boolean;
+} {
+  const check = lintIntroCount(md);
+  const before = check.claimed ?? null;
+  if (check.ok || check.claimed === undefined || check.actual === undefined || check.actual === 0) {
+    return { md, before, after: before, changed: false };
+  }
+  const r = replaceIntroClaimedCount(md, check.actual);
+  return { md: r.md, before, after: r.changed ? check.actual : before, changed: r.changed };
+}
+
+/**
  * Re-renders impressos após a troca, em ORDEM de execução (#9169, espelho do
  * `buildSwapNextSteps` do swap-destaques.ts, #9149): 1º o refresh de fontes do
  * #9102 (sem ele o writer-destaque escreve só do título e o fact-checker lê o
@@ -189,11 +427,21 @@ export function buildSwapDestaqueSteps(
   editionDir: string,
   position: 1 | 2 | 3,
   promotedTitle: string,
+  /** #9601: bucket que recebeu o rebaixado (`null` = `--drop`). */
+  demotedTo: SourceBucket | null = null,
 ): string[] {
   const dir = editionDir.replace(/\/+$/, "");
+  const poolStep =
+    demotedTo && demotedTo !== "runners_up"
+      ? [
+          `Incluir o destaque rebaixado como item da seção ${demotedTo} em 02-reviewed.md (formato de item de pool, título da fonte) e re-sincronizar a intro: npx tsx scripts/sync-intro-count.ts --md ${dir}/02-reviewed.md (#9601)`,
+        ]
+      : [];
   return [
     `Re-baixar a fonte do destaque promovido (d${position}) e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${dir} — antes do writer-destaque (#9102).`,
     `writer-destaque DESTAQUE ${position} (novo item: "${promotedTitle}", source_text_path = path da entrada de sources com destaque === ${position} no stdout do refresh)`,
+    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório "${promotedTitle}" pelo título final do D${position} (o swap já pôs o provisório no lugar do antigo, #9601)`,
+    ...poolStep,
     `social-writer + social-curto em escopo reduzido (d${position}), splice em 03-social.md`,
     `Só DEPOIS do splice: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9169)`,
     `Escrever _internal/02-d${position}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${dir}/_internal/02-d${position}-prompt.md --out-dir ${dir}/ --destaque d${position}`,
@@ -278,6 +526,39 @@ export function removeDestaqueBlockFromMd(
   const suffix = md.slice(lastEnd);
   const blocksSerialized = newBlocks.join("\n\n---\n\n");
   return prefix + blocksSerialized + suffix;
+}
+
+/**
+ * #9601: aplica ao `02-reviewed.md` TUDO que o swap muda no texto, na ordem:
+ * (1) placeholder no bloco DESTAQUE N; (2) tira o item promovido da seção de
+ * pool de origem (e a seção, se esvaziar); (3) troca o título antigo pelo novo
+ * no TÍTULO/SUBTÍTULO (cirúrgico); (4) re-sincroniza a contagem da intro.
+ * O título antigo é lido do MD ANTES do placeholder (é o que o bloco do topo
+ * cita, não o `title_options` do JSON).
+ *
+ * @pure
+ */
+export function applySwapToReviewedMd(
+  md: string,
+  position: 1 | 2 | 3,
+  promotedTitle: string,
+  promotedUrl: string,
+): { md: string; updates: NonNullable<SwapResult["md_updates"]> } {
+  const titles = extractTitlesFromMd(md);
+  const oldTitle = position === 1 ? titles.d1 : position === 2 ? titles.d2 : titles.d3;
+  const withPlaceholder = removeDestaqueBlockFromMd(md, position, promotedTitle, promotedUrl);
+  const pool = removePoolItemFromMd(withPlaceholder, promotedUrl);
+  const titulo = replaceTitleInTituloSubtitulo(pool.md, oldTitle, promotedTitle);
+  const intro = syncIntroCountInMd(titulo.md);
+  return {
+    md: intro.md,
+    updates: {
+      pool_item_removed: pool.removed,
+      section_removed: pool.section_removed,
+      titulo_subtitulo: titulo.status,
+      intro_count: { before: intro.before, after: intro.after, changed: intro.changed },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +651,8 @@ export function swapInApprovedJson(
   promoteIdx: number,
   demotePos: number,
   drop: boolean,
+  /** #9601: bucket que recebe o rebaixado. Default: `defaultDemoteBucket(promoteBucket)`. */
+  demoteTo?: SourceBucket,
 ): {
   ok: true;
   promotedItem: Record<string, unknown>;
@@ -402,18 +685,22 @@ export function swapInApprovedJson(
   newBucket.splice(promoteIdx, 1);
   data[promoteBucket] = newBucket;
 
-  // Build new highlights array: replace demoted position with promoted item
+  // Build new highlights array: replace demoted position with promoted item,
+  // wrapped in the highlight shape (#9601, §4d.1b ii) and ranks renumbered.
   const newHighlights = [...highlights];
-  newHighlights[demotePos] = promotedItem;
+  newHighlights[demotePos] = toHighlightItem(promotedItem, demotePos + 1, promoteBucket);
+  renumberRanks(newHighlights);
   data.highlights = newHighlights;
 
-  // If not dropping, prepend demoted item back to its origin bucket
+  // If not dropping, prepend demoted item to the destination bucket, in that
+  // bucket's shape (#9601, §4d.1b i — flat for pool buckets).
   if (!drop) {
-    // Demoted items come from highlights — they were originally selected by the
-    // scorer from one of the buckets. We send them to the source bucket that
-    // accepted the promoted item (i.e., the same bucket category).
-    const demotedBucket = data[promoteBucket] as Record<string, unknown>[];
-    data[promoteBucket] = [toPoolItem(demotedItem), ...demotedBucket]; // #9381
+    const target = demoteTo ?? defaultDemoteBucket(promoteBucket);
+    const existing = data[target];
+    data[target] = [
+      toBucketItem(demotedItem, target), // #9381 + #9601
+      ...(Array.isArray(existing) ? (existing as Record<string, unknown>[]) : []),
+    ];
   }
 
   return { ok: true, promotedItem, demotedItem };
@@ -436,19 +723,24 @@ export function mirrorCappedSwapFallback(
   demotePos: number,
   drop: boolean,
   promotedItem: Record<string, unknown>,
+  /** #9601: bucket que recebe o rebaixado (default: `bucket`, comportamento antigo). */
+  demoteTo?: string,
 ): { synced: boolean; warning?: string } {
   const cappedHighlights = approvedCappedData.highlights as
     | Record<string, unknown>[]
     | undefined;
   if (Array.isArray(cappedHighlights) && cappedHighlights.length > demotePos) {
     const cappedDemotedItem = cappedHighlights[demotePos];
-    cappedHighlights[demotePos] = promotedItem;
+    cappedHighlights[demotePos] = toHighlightItem(promotedItem, demotePos + 1, bucket); // #9601
+    renumberRanks(cappedHighlights);
     if (!drop) {
-      const cappedBucket = approvedCappedData[bucket];
+      const target = demoteTo ?? bucket;
+      const cappedBucket = approvedCappedData[target];
+      const demotedForBucket = toBucketItem(cappedDemotedItem, target); // #9381 + #9601
       if (Array.isArray(cappedBucket)) {
-        approvedCappedData[bucket] = [toPoolItem(cappedDemotedItem), ...cappedBucket]; // #9381
+        approvedCappedData[target] = [demotedForBucket, ...cappedBucket];
       } else {
-        approvedCappedData[bucket] = [toPoolItem(cappedDemotedItem)];
+        approvedCappedData[target] = [demotedForBucket];
       }
     }
     return { synced: true };
@@ -489,7 +781,7 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
   if (!args.edition) {
     console.error("Erro: --edition AAMMDD é obrigatório");
     console.error(
-      "Uso: swap-destaque.ts --edition AAMMDD --promote bucket:idx --demote d{1|2|3} [--drop] [--dry-run] [--edition-dir <path>]",
+      "Uso: swap-destaque.ts --edition AAMMDD --promote bucket:idx --demote d{1|2|3} [--demote-to bucket] [--drop] [--dry-run] [--edition-dir <path>]",
     );
     process.exit(2);
   }
@@ -537,6 +829,18 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
   }
   const demote = demoteRaw as DemoteTarget;
 
+  // #9601: --demote-to bucket (opcional)
+  let demoteTo = defaultDemoteBucket(promote.bucket);
+  if (args["demote-to"] !== undefined) {
+    if (!validBuckets.includes(args["demote-to"] as SourceBucket)) {
+      console.error(
+        `Erro: --demote-to "${args["demote-to"]}" inválido. Válidos: ${validBuckets.join(", ")}`,
+      );
+      process.exit(2);
+    }
+    demoteTo = args["demote-to"] as SourceBucket;
+  }
+
   // #3491: sem --edition-dir (o override "cru" de path COMPLETO, já existente),
   // o default construía `data/editions/{AAMMDD}` à mão (layout FLAT) — mesma
   // classe de bug de #3483/#3484. Este é um comando editor-invocado
@@ -552,7 +856,7 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
   const editionDir =
     args["edition-dir"] ?? resolveEditionDir(editionsRootDir, args.edition);
 
-  return { edition: args.edition, editionDir, promote, demote, drop, dryRun };
+  return { edition: args.edition, editionDir, promote, demote, drop, demoteTo, dryRun };
 }
 
 // ---------------------------------------------------------------------------
@@ -561,7 +865,7 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
 
 function main(): void {
   const args = parseSwapArgs(process.argv.slice(2));
-  const { edition, editionDir, promote, demote, drop, dryRun } = args;
+  const { edition, editionDir, promote, demote, drop, demoteTo, dryRun } = args;
 
   if (!existsSync(editionDir)) {
     console.error(`Edition dir não encontrado: ${editionDir}`);
@@ -660,9 +964,15 @@ function main(): void {
     edition,
     dry_run: dryRun,
     promoted: { bucket: promote.bucket, idx: promote.idx, url: promotedUrl, title: promotedTitle },
-    demoted: { position: demote, url: demotedUrl, title: demotedTitle, dropped: drop },
+    demoted: {
+      position: demote,
+      url: demotedUrl,
+      title: demotedTitle,
+      dropped: drop,
+      ...(drop ? {} : { to_bucket: demoteTo }),
+    },
     modified: { rewritten: [], renamed: [], deleted: [] },
-    rerenders_needed: buildSwapDestaqueSteps(editionDir, demotePosition, promotedTitle),
+    rerenders_needed: buildSwapDestaqueSteps(editionDir, demotePosition, promotedTitle, drop ? null : demoteTo),
   };
 
   if (dryRun) {
@@ -672,9 +982,9 @@ function main(): void {
           ...result,
           dry_run_plan: {
             approved_json: `highlights[${demotePos}] ← ${promote.bucket}[${promote.idx}] ("${promotedTitle}")`,
-            demoted_item: drop ? `descartado` : `devolvido a ${promote.bucket}[0]`,
+            demoted_item: drop ? `descartado` : `devolvido a ${demoteTo}[0] (flat, #9601)`,
             social_hash: "NÃO regravado (#9169) — recarimbar via refresh-social-hash.ts depois do splice do social",
-            md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder`,
+            md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
             images_deleted: `04-d${demotePosition}-*.jpg removidos (precisam regenerar)`,
             prompts_deleted: `02-d${demotePosition}-*.md/json removidos (precisam regenerar)`,
           },
@@ -697,6 +1007,7 @@ function main(): void {
     promote.idx,
     demotePos,
     drop,
+    demoteTo,
   );
   if (!swapResult.ok) {
     console.error(`Erro ao aplicar swap em 01-approved.json: ${swapResult.reason}`);
@@ -719,6 +1030,7 @@ function main(): void {
       promote.idx,
       demotePos,
       drop,
+      demoteTo,
     );
     if (!cappedSwap.ok) {
       // #2521: capped JSON pode ter o bucket ausente/curto — espelhar o swap via
@@ -731,6 +1043,7 @@ function main(): void {
         demotePos,
         drop,
         promotedItem,
+        demoteTo,
       );
       if (warning) console.error(`AVISO: ${warning}`);
     }
@@ -750,9 +1063,16 @@ function main(): void {
   const mdPath = resolve(editionDir, "02-reviewed.md");
   if (existsSync(mdPath)) {
     const md = readFileSync(mdPath, "utf8");
-    const updatedMd = removeDestaqueBlockFromMd(md, demotePosition, promotedTitle, promotedUrl);
-    if (updatedMd !== md) {
-      pendingWrites.push({ path: mdPath, content: updatedMd });
+    const applied = applySwapToReviewedMd(md, demotePosition, promotedTitle, promotedUrl);
+    result.md_updates = applied.updates;
+    if (applied.md !== md) {
+      pendingWrites.push({ path: mdPath, content: applied.md });
+    }
+    if (applied.updates.titulo_subtitulo === "old_title_not_found") {
+      console.error(
+        `AVISO (#9601): o título antigo do D${demotePosition} não aparece no bloco TÍTULO/SUBTÍTULO — ` +
+          `bloco escrito à mão? Não foi alterado; conferir antes do gate.`,
+      );
     }
   }
 
@@ -783,7 +1103,7 @@ function main(): void {
       "",
       `✓ swap-destaque concluído (edição ${edition})`,
       `  Promovido:  [${promote.bucket}:${promote.idx}] "${promotedTitle}"  →  DESTAQUE ${demotePosition}`,
-      `  Rebaixado:  [${demote}] "${demotedTitle}"  →  ${drop ? "DESCARTADO" : `${promote.bucket}[0]`}`,
+      `  Rebaixado:  [${demote}] "${demotedTitle}"  →  ${drop ? "DESCARTADO" : `${demoteTo}[0]`}`,
       "",
       "  Re-renders necessários (NESTA ordem):",
       ...result.rerenders_needed.map((r, i) => `    ${i + 1}. ${r}`),
