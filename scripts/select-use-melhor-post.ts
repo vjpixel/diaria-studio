@@ -40,6 +40,12 @@ import {
   type UseMelhorPostState,
 } from "./lib/use-melhor-post.ts";
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts";
+import {
+  describeDiscontinuedMatch,
+  findDiscontinuedTopic,
+  loadDiscontinuationTopics,
+  type DiscontinuationTopic,
+} from "./lib/use-melhor-discontinued.ts"; // #9599
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -58,16 +64,29 @@ export { gatherUseMelhorStatusInput };
 export function runSelection(
   editionDir: string,
   config: UseMelhorPostConfigState,
-  opts: { useReviewed?: boolean; now?: Date } = {},
+  opts: {
+    useReviewed?: boolean;
+    now?: Date;
+    /** #9599: tópicos de descontinuação; default = lidos de `data/past-editions.md`. */
+    discontinuationTopics?: readonly DiscontinuationTopic[];
+  } = {},
 ): { state: UseMelhorPostState; written: string | null } {
-  let state = computeStage2UseMelhorPostState(editionDir, config, opts.now);
+  const topics = opts.discontinuationTopics ?? loadDiscontinuationTopics(ROOT);
+  const exclude = (c: { url: string; title: string }): string | null => {
+    const m = findDiscontinuedTopic(c, topics);
+    return m ? describeDiscontinuedMatch(m) : null;
+  };
+  let state = computeStage2UseMelhorPostState(editionDir, config, opts.now, { exclude });
   if (!state.enabled) return { state, written: null };
   if (opts.useReviewed) {
     const reviewed = readIfExists(resolve(editionDir, "02-reviewed.md"));
     const approved = readApprovedForUseMelhor(editionDir);
     if (reviewed !== null && approved !== null) {
-      const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewed));
+      const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewed), {
+        exclude,
+      });
       state = { ...state, ...sel, reason: sel.reason };
+      if (!sel.excluded) delete state.excluded;
       if (sel.item) delete state.reason;
     }
   }

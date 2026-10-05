@@ -31,12 +31,10 @@ import { logEvent } from "./run-log.ts";
 import {
   USE_MELHOR_POST_ID,
   USE_MELHOR_UTM_CONTENT,
-  normalizeUseMelhorUrl,
+  checkUseMelhorItemInFinal,
   readApprovedForUseMelhor,
   readUseMelhorPostState,
-  renderedUseMelhorUrls,
-  selectUseMelhorItem,
-  useMelhorCandidatesFromApproved,
+  resolveUseMelhorCoverTitle,
   useMelhorPostConfigState,
   type UseMelhorCandidate,
 } from "./use-melhor-post.ts";
@@ -89,11 +87,11 @@ export interface UseMelhorPlanInput {
 }
 
 /**
- * Pure: plano do 4º post a partir das peças já lidas do disco. Re-seleciona
- * contra o `02-reviewed.md` FINAL — se o editor mexeu no USE MELHOR no gate e
- * o item de maior score mudou (ou a seção sumiu), o texto de `## um` foi
- * escrito pro item antigo: pular (warning), nunca publicar texto de um item
- * que não está na edição. Sem `02-reviewed.md` ou sem JSON aprovado a
+ * Pure: plano do 4º post a partir das peças já lidas do disco. Confere contra
+ * o `02-reviewed.md` FINAL — se o item escolhido saiu do USE MELHOR (ou a
+ * seção sumiu), o texto de `## um` fala de um item que não está na edição:
+ * pular (warning). Item de score maior na edição final NÃO pula mais (#9592):
+ * a escolha gravada — inclusive troca manual do editor — vale. Sem `02-reviewed.md` ou sem JSON aprovado a
  * re-verificação é impossível → também pula (falha FECHADA).
  */
 export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorDispatchPlan {
@@ -115,26 +113,19 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
         `não dá pra re-verificar o item contra a edição final (${input.reviewedMd === null ? "02-reviewed.md" : "01-approved(-capped).json"} ausente/ilegível)`,
     };
   }
-  const final = selectUseMelhorItem(
-    useMelhorCandidatesFromApproved(input.approved),
-    renderedUseMelhorUrls(input.reviewedMd),
-  );
-  if (!final.item) return { status: "skip", reason: `na edição final: ${final.reason}` };
-  if (normalizeUseMelhorUrl(final.item.url) !== normalizeUseMelhorUrl(state.item.url)) {
-    return {
-      status: "skip",
-      reason:
-        `o item de maior score na edição final ("${final.item.title}") difere do item para o qual ` +
-        `'## ${USE_MELHOR_POST_ID}' foi escrito ("${state.item.title}") — re-rodar a seleção + social agents`,
-    };
-  }
+  // #9592: basta o item ESCOLHIDO seguir no USE MELHOR final — não precisa ser
+  // o de maior score (o editor pode ter trocado o item à mão; o `## um` foi
+  // escrito pra ele). Pular só quando ele saiu da edição.
+  const final = checkUseMelhorItemInFinal(state.item, input.reviewedMd);
+  if (!final.ok) return { status: "skip", reason: `na edição final: ${final.reason}` };
+  const coverTitle = resolveUseMelhorCoverTitle(state.item, { reviewedMd: input.reviewedMd, approved: input.approved });
   let slots: string[] | null = null;
   let imageWarning: string | undefined;
   if (!input.stamp) {
     imageWarning = "carrossel do 4º post não gerado no Stage 3 (sem carimbo)";
   } else if (!input.socialUm) {
     imageWarning = `'## ${USE_MELHOR_POST_ID}' ausente em '# Social' — não dá pra conferir a arte`;
-  } else if (isUseMelhorCarouselStale(input.stamp, input.socialUm, state.item.title, input.ctaOverride)) {
+  } else if (isUseMelhorCarouselStale(input.stamp, input.socialUm, coverTitle, input.ctaOverride)) {
     imageWarning =
       `carrossel do 4º post DEFASADO ('## ${USE_MELHOR_POST_ID}' mudou depois do Stage 3) — capa e slides ignorados; ` +
       `re-rodar gen-carousel-cards.ts + upload-images-public.ts`;
@@ -186,7 +177,11 @@ export function freshUseMelhorCarouselSlots(editionDir: string): string[] {
     const state = readUseMelhorPostState(editionDir);
     const socialUm = readUseMelhorBlock(readIfExists(resolve(editionDir, "03-social.md")), "Social");
     if (!stamp || !state?.item || !socialUm) return [];
-    if (isUseMelhorCarouselStale(stamp, socialUm, state.item.title, readCtaOverride(editionDir))) return [];
+    const coverTitle = resolveUseMelhorCoverTitle(state.item, {
+      reviewedMd: readIfExists(resolve(editionDir, "02-reviewed.md")),
+      approved: readApprovedForUseMelhor(editionDir),
+    });
+    if (isUseMelhorCarouselStale(stamp, socialUm, coverTitle, readCtaOverride(editionDir))) return [];
     return stamp.slots;
   } catch {
     return [];

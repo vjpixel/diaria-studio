@@ -40,6 +40,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, existsSync
 import { resolve, join } from "node:path";
 import { annotateUseMelhorBucket, annotateHandsOnAllBuckets, annotatePrimarySourceAllBuckets, loadAudienceSignals } from "./lib/audience-affinity.ts"; // #2063, #4843, #5665
 import { dedupeUseMelhorBucket } from "./lib/use-melhor-curation.ts"; // #2276
+import { annotateDiscontinuedUseMelhor, loadDiscontinuationTopics } from "./lib/use-melhor-discontinued.ts"; // #9599
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -195,6 +196,18 @@ export function main(): void {
     }
   } catch (e) {
     console.error(`[split-articles-for-scoring] WARN: primary_source annotation falhou (${(e as Error).message}) — seguindo sem anotação`);
+  }
+
+  // #9599: tutorial USE MELHOR sobre recurso que as últimas edições noticiaram
+  // como descontinuado ganha `discontinued_topic:true` — o scorer penaliza.
+  // Fail-soft: sem data/past-editions.md (CI, worktree fresco), nada é anotado.
+  try {
+    const discontinuedAnnotated = annotateDiscontinuedUseMelhor(categorized, loadDiscontinuationTopics(ROOT));
+    if (discontinuedAnnotated > 0) {
+      console.error(`[split-articles-for-scoring] discontinued_topic anotado em ${discontinuedAnnotated} artigo(s) use_melhor (#9599)`);
+    }
+  } catch (e) {
+    console.error(`[split-articles-for-scoring] WARN: discontinued_topic annotation falhou (${(e as Error).message}) — seguindo sem anotação`);
   }
 
   // #2276: de-dup temático + cap por domínio antes de distribuir nos chunks.

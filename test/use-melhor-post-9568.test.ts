@@ -430,7 +430,7 @@ describe("Stage 4: status do gate (#9568)", () => {
     assert.match(st.lines[0], /PULADO: edição sem item/);
   });
 
-  it("ligado, editor tirou o item no gate → warn apontando o novo item", () => {
+  it("ligado, editor tirou o item no gate → warn: 4º post será pulado (#9592)", () => {
     const reviewed = "**🛠️ USE MELHOR**\n\n**[Guia A](https://exame.com/a/)**\nDescrição (5 min)\n";
     const st = describeUseMelhorPostStatus({
       config: ON,
@@ -447,7 +447,7 @@ describe("Stage 4: status do gate (#9568)", () => {
       carouselSlots: ["cover", "p1", "cta"],
     });
     assert.equal(st.level, "warn");
-    assert.ok(st.lines.some((l) => l.includes('agora é "Guia A"')));
+    assert.ok(st.lines.some((l) => l.includes("não está mais no USE MELHOR") && l.includes("será pulado")), st.lines.join("\n"));
   });
 
   it("ligado e consistente → ok + carrossel listado", () => {

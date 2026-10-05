@@ -27,6 +27,23 @@
  * Score vem sempre do JSON aprovado: item que o editor colou à mão no
  * `02-reviewed.md`, sem entrada no JSON, não tem score e não é elegível.
  *
+ * ── A escolha gravada vale enquanto o item estiver na edição (#9592) ──────
+ * O maior score só decide a 1ª escolha. Depois de gravada em
+ * `_internal/use-melhor-post.json` — e o `## um` escrito pra ela —, os
+ * Stages 4/5 só exigem que o item ESCOLHIDO continue renderizado no USE
+ * MELHOR final. Edição 261005: o editor trocou o item à mão (preferiu um
+ * passo a passo de score 60 a um de 62) e os 5 canais pularam o 4º post
+ * porque a re-seleção por score apontava o outro. Item de score maior na
+ * edição final vira só nota informativa no gate; pular continua reservado ao
+ * caso em que o item escolhido saiu da edição (o texto falaria de um link que
+ * o leitor não vê).
+ *
+ * ── Tutorial de recurso em descontinuação (#9599) ─────────────────────────
+ * A seleção do Stage 2 aceita um filtro de exclusão (`selectUseMelhorItem`
+ * `opts.exclude`); o CLI passa o casamento contra notícias de descontinuação
+ * das últimas edições (`use-melhor-discontinued.ts`). Item excluído nunca vira
+ * o 4º post, mas continua no USE MELHOR (quem tira da edição é o editor).
+ *
  * ── Fail-soft ──────────────────────────────────────────────────────────────
  * Sem item elegível → `item: null` + `reason`, o 4º post é pulado com aviso
  * no gate. Nada aqui lança por falta de item: a edição nunca bloqueia por
@@ -126,6 +143,11 @@ export interface UseMelhorCandidate {
   title: string;
   summary: string;
   score: number;
+  /**
+   * Título da capa do carrossel (#9600), opcional — o editor pode gravar à mão
+   * em `_internal/use-melhor-post.json`. Ver `resolveUseMelhorCoverTitle`.
+   */
+  cover_title?: string;
 }
 
 /**
@@ -188,6 +210,16 @@ export interface UseMelhorSelection {
   reason?: string;
   /** De onde veio a lista de elegíveis. */
   selected_from: "approved" | "reviewed";
+  /** Candidatos que o filtro `opts.exclude` tirou da disputa (#9599). */
+  excluded?: Array<{ url: string; title: string; reason: string }>;
+}
+
+export interface UseMelhorSelectOptions {
+  /**
+   * Devolve um motivo (string) pra tirar o candidato da disputa do 4º post, ou
+   * `null` pra mantê-lo. Usado pelo filtro de recurso em descontinuação (#9599).
+   */
+  exclude?: (c: UseMelhorCandidate) => string | null;
 }
 
 /**
@@ -201,8 +233,20 @@ export interface UseMelhorSelection {
 export function selectUseMelhorItem(
   candidates: UseMelhorCandidate[],
   renderedUrls: string[] | null,
+  opts: UseMelhorSelectOptions = {},
 ): UseMelhorSelection {
   const selected_from = renderedUrls === null ? "approved" : "reviewed";
+  const excluded: NonNullable<UseMelhorSelection["excluded"]> = [];
+  if (opts.exclude) {
+    candidates = candidates.filter((c) => {
+      const why = opts.exclude!(c);
+      if (why === null) return true;
+      excluded.push({ url: c.url, title: c.title, reason: why });
+      return false;
+    });
+  }
+  const withExcluded = (sel: UseMelhorSelection): UseMelhorSelection =>
+    excluded.length > 0 ? { ...sel, excluded } : sel;
   let pool: UseMelhorCandidate[];
   if (renderedUrls === null) {
     pool = candidates;
@@ -215,19 +259,105 @@ export function selectUseMelhorItem(
       .map((u) => byUrl.get(normalizeUseMelhorUrl(u)))
       .filter((c): c is UseMelhorCandidate => c !== undefined);
     if (pool.length === 0) {
-      return {
+      return withExcluded({
         item: null,
-        reason: "nenhum item USE MELHOR renderizado tem score no JSON aprovado (itens colados à mão não são elegíveis)",
+        reason:
+          excluded.length > 0
+            ? "nenhum item USE MELHOR renderizado elegível (os com score foram excluídos: " +
+              excluded.map((e) => `"${e.title}" — ${e.reason}`).join("; ") +
+              ")"
+            : "nenhum item USE MELHOR renderizado tem score no JSON aprovado (itens colados à mão não são elegíveis)",
         selected_from,
-      };
+      });
     }
   }
   if (pool.length === 0) {
-    return { item: null, reason: "edição sem item USE MELHOR com score", selected_from };
+    return withExcluded({
+      item: null,
+      reason:
+        excluded.length > 0
+          ? "todos os itens USE MELHOR com score foram excluídos (" +
+            excluded.map((e) => `"${e.title}" — ${e.reason}`).join("; ") +
+            ")"
+          : "edição sem item USE MELHOR com score",
+      selected_from,
+    });
   }
   let best = pool[0];
   for (const c of pool.slice(1)) if (c.score > best.score) best = c;
-  return { item: best, selected_from };
+  return withExcluded({ item: best, selected_from });
+}
+
+export type UseMelhorFinalCheck =
+  | { ok: true; rendered_urls: string[] }
+  | { ok: false; reason: string };
+
+/**
+ * Pure (#9592): o item ESCOLHIDO (gravado no Stage 2, ou trocado à mão pelo
+ * editor) ainda está renderizado no USE MELHOR do `02-reviewed.md` final?
+ * É essa a condição pra o 4º post sair — não "ser o de maior score".
+ */
+export function checkUseMelhorItemInFinal(item: UseMelhorCandidate, reviewedMd: string): UseMelhorFinalCheck {
+  const rendered = renderedUseMelhorUrls(reviewedMd);
+  if (rendered.length === 0) return { ok: false, reason: "edição sem seção USE MELHOR renderizada" };
+  const target = normalizeUseMelhorUrl(item.url);
+  if (!rendered.some((u) => normalizeUseMelhorUrl(u) === target)) {
+    return {
+      ok: false,
+      reason:
+        `o item para o qual '## ${USE_MELHOR_POST_ID}' foi escrito ("${item.title}") não está mais no USE MELHOR ` +
+        `da edição final — re-rodar a seleção (select-use-melhor-post.ts --reviewed) + social-writer/social-curto ` +
+        `só pro '## ${USE_MELHOR_POST_ID}'`,
+    };
+  }
+  return { ok: true, rendered_urls: rendered };
+}
+
+/**
+ * Pure (#9592): quando o item escolhido segue na edição mas NÃO é o de maior
+ * score entre os renderizados (escolha do editor, ou item novo colado no
+ * gate), devolve o de maior score pra uma nota informativa. `null` caso
+ * contrário.
+ */
+export function higherScoredRenderedItem(
+  item: UseMelhorCandidate,
+  approved: unknown,
+  reviewedMd: string,
+): UseMelhorCandidate | null {
+  const top = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewedMd)).item;
+  if (!top || normalizeUseMelhorUrl(top.url) === normalizeUseMelhorUrl(item.url)) return null;
+  return top;
+}
+
+/**
+ * Pure (#9600): título da capa do carrossel do 4º post. Ordem:
+ *   1. `item.cover_title` — gravado à mão em `use-melhor-post.json`;
+ *   2. `item.title`, quando o editor o editou (difere do título do mesmo link
+ *      no JSON aprovado) — o contorno usado na 261005 continua valendo;
+ *   3. o título do item no USE MELHOR do `02-reviewed.md` — é o texto que o
+ *      leitor vê na edição (revisado/traduzido no gate), não o da fonte;
+ *   4. `item.title` (título da fonte).
+ * Mesma função pra quem GERA (Stage 3) e pra quem confere o carimbo
+ * (Stages 4/5) — divergir aqui marcaria toda arte como defasada.
+ */
+export function resolveUseMelhorCoverTitle(
+  item: UseMelhorCandidate,
+  ctx: { reviewedMd: string | null; approved: unknown | null },
+): string {
+  const manual = typeof item.cover_title === "string" ? item.cover_title.trim() : "";
+  if (manual) return manual;
+  const key = normalizeUseMelhorUrl(item.url);
+  if (ctx.approved !== null) {
+    const source = useMelhorCandidatesFromApproved(ctx.approved).find((c) => normalizeUseMelhorUrl(c.url) === key);
+    if (source && source.title.trim() && source.title.trim() !== item.title.trim()) return item.title;
+  }
+  if (ctx.reviewedMd !== null) {
+    const section = parseSections(ctx.reviewedMd).find((s) => s.name === "USE MELHOR");
+    const rendered = section?.items.find((i) => normalizeUseMelhorUrl(i.url) === key);
+    const t = rendered?.title.replace(/\*\*/g, "").trim();
+    if (t) return t;
+  }
+  return item.title;
 }
 
 export interface UseMelhorPostState {
@@ -235,7 +365,12 @@ export interface UseMelhorPostState {
   time: string | null;
   item: UseMelhorCandidate | null;
   reason?: string;
-  selected_from?: "approved" | "reviewed";
+  /**
+   * `approved`/`reviewed` quando gravado pelo seletor. Outros valores (ex.:
+   * `editor-override-*`) marcam troca manual do editor — vale igual (#9592).
+   */
+  selected_from?: string;
+  excluded?: UseMelhorSelection["excluded"];
   generated_at: string;
 }
 
@@ -286,6 +421,7 @@ export function computeStage2UseMelhorPostState(
   editionDir: string,
   configState: UseMelhorPostConfigState,
   now: Date = new Date(),
+  selectOpts: UseMelhorSelectOptions = {},
 ): UseMelhorPostState {
   const generated_at = now.toISOString();
   if (!configState.enabled) {
@@ -301,7 +437,7 @@ export function computeStage2UseMelhorPostState(
       generated_at,
     };
   }
-  const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), null);
+  const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), null, selectOpts);
   return { enabled: true, time: configState.time, ...sel, generated_at };
 }
 
@@ -352,22 +488,22 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
   const lines: string[] = [`${head}: "${item.title}" (score ${item.score})`, `   ${item.url}`];
   let level: "ok" | "warn" = "ok";
 
-  // Re-seleção contra a edição FINAL — o editor pode ter mexido no USE MELHOR no gate.
-  if (input.reviewedMd !== null && input.approved !== null) {
-    const final = selectUseMelhorItem(
-      useMelhorCandidatesFromApproved(input.approved),
-      renderedUseMelhorUrls(input.reviewedMd),
-    );
-    if (!final.item) {
+  // Conferência contra a edição FINAL (#9592): o item ESCOLHIDO precisa seguir
+  // renderizado no USE MELHOR. Ser o de maior score não é exigido — a escolha
+  // do editor vale; score maior vira só nota.
+  if (input.reviewedMd !== null) {
+    const final = checkUseMelhorItemInFinal(item, input.reviewedMd);
+    if (!final.ok) {
       level = "warn";
       lines.push(`   ⚠️ na edição final: ${final.reason} — 4º post será pulado.`);
-    } else if (normalizeUseMelhorUrl(final.item.url) !== normalizeUseMelhorUrl(item.url)) {
-      level = "warn";
-      lines.push(
-        `   ⚠️ o item de maior score na edição FINAL agora é "${final.item.title}" (score ${final.item.score}) — ` +
-          `o texto de '## ${USE_MELHOR_POST_ID}' foi escrito pro item antigo. Re-rodar a seleção ` +
-          `(select-use-melhor-post.ts --reviewed) + social-writer/social-curto só pro '## ${USE_MELHOR_POST_ID}'.`,
-      );
+    } else if (input.approved !== null) {
+      const top = higherScoredRenderedItem(item, input.approved, input.reviewedMd);
+      if (top) {
+        lines.push(
+          `   ℹ️ "${top.title}" (score ${top.score}) tem score maior na edição final — o 4º post segue com o ` +
+            `item escolhido, pro qual '## ${USE_MELHOR_POST_ID}' foi escrito.`,
+        );
+      }
     }
   }
   if (!input.hasSocialSection) {

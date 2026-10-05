@@ -225,14 +225,14 @@ describe("plano do 4º post (fail-soft, falha fechada, #9568)", () => {
     assert.match(plan.status === "skip" ? plan.reason : "", /na edição final/);
   });
 
-  it("item mudou no gate (maior score do 02-reviewed final é outro) → skip", () => {
+  it("item escolhido saiu da edição no gate (só outro item renderizado) → skip (#9592)", () => {
     const approved = {
       use_melhor: [...APPROVED.use_melhor, { url: "https://exame.com/outro", title: "Outro guia", summary: "", score: 95 }],
     };
     const reviewedMd = "**USE MELHOR**\n\n[Outro guia](https://exame.com/outro)\nResumo.\n";
     const plan = planUseMelhorDispatchFrom({ ...base, approved, reviewedMd });
     assert.equal(plan.status, "skip", JSON.stringify(plan));
-    assert.match(plan.status === "skip" ? plan.reason : "", /difere/);
+    assert.match(plan.status === "skip" ? plan.reason : "", /não está mais no USE MELHOR/);
   });
 
   it("carrossel defasado → pronto, sem slots E com imageWarning (nem a capa vale)", () => {
