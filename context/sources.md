@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 53 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 54 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -25,6 +25,12 @@
 - URL: https://mittechreview.com.br/category/inteligencia-artificial/
 - Site query: `site:mittechreview.com.br`
 - RSS: https://mittechreview.com.br/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
+
+### Tecnoblog (IA)
+- URL: https://tecnoblog.net/tema/inteligencia-artificial/
+- Site query: `site:tecnoblog.net`
+- RSS: https://tecnoblog.net/tema/inteligencia-artificial/feed/
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 
 ### CNN

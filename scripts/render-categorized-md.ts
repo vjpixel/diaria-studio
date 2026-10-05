@@ -38,6 +38,7 @@ import {
   renderCaptureFailedLine,
 } from "./lib/inbox-stats.ts";
 import { readEiaAnswer } from "./lib/eia-answer.ts";
+import { roundFailureStreak, type OutcomeLike } from "./lib/source-runs.ts";
 import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
@@ -61,7 +62,7 @@ interface SourceHealth {
   sources: Record<
     string,
     {
-      recent_outcomes?: Array<{ outcome: string; timestamp: string }>;
+      recent_outcomes?: OutcomeLike[];
       last_outcome?: string;
       last_reason?: string;
     }
@@ -434,7 +435,7 @@ function loadStoryGroupDiscarded(internalDir: string): string {
   }
 }
 
-function renderSourceHealth(path?: string): string {
+export function renderSourceHealth(path?: string): string {
   if (!path || !existsSync(path)) return "";
   try {
     const health: SourceHealth = JSON.parse(readFileSync(path, "utf8"));
@@ -447,15 +448,15 @@ function renderSourceHealth(path?: string): string {
         const reason = info.last_reason || last;
         warnings.push(`⚠️ ${name} — ${reason}`);
       }
-      // streak 3+ não-ok consecutivos
-      const last3 = recent.slice(-3);
-      if (
-        last3.length === 3 &&
-        last3.every((o) => o.outcome && o.outcome !== "ok")
-      ) {
-        const times = last3.map((o) => o.timestamp).join(", ");
+      // streak de 3+ RODADAS com falha dura (#9652). Antes contava as 3
+      // últimas LINHAS não-ok — 1 rodada com RSS ok + 3 falhas do caminho de
+      // busca virava "3 falhas seguidas" (OpenAI, 27/08/2026), e `empty`
+      // (sem novidade) também contava como falha.
+      const { consecutive_failures, failure_timestamps } = roundFailureStreak(recent);
+      if (consecutive_failures >= 3) {
+        const times = failure_timestamps.slice(-3).join(", ");
         streaks.push(
-          `🔴 ${name} — 3 falhas seguidas: ${times} — considere desativar em seed/sources.csv`
+          `🔴 ${name} — ${consecutive_failures} rodadas seguidas com falha: ${times} — considere desativar em seed/sources.csv`
         );
       }
     }

@@ -27,7 +27,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { computeFailureStreak } from "./lib/source-runs.ts";
+import { buildOutcomeEntry, computeFailureStreak, RECENT_OUTCOMES_MAX } from "./lib/source-runs.ts";
 import { parseArgs as parseArgsShared, isMainModule } from "./lib/cli-args.ts";
 
 type Outcome = "ok" | "fail" | "timeout";
@@ -35,6 +35,9 @@ type Outcome = "ok" | "fail" | "timeout";
 interface OutcomeEntry {
   outcome: Outcome;
   timestamp: string;
+  edition?: string;
+  reason?: string;
+  search_quota?: boolean;
 }
 
 interface SourceEntry {
@@ -175,9 +178,10 @@ function main(): void {
     entry.last_failure_iso = now;
   }
 
-  entry.recent_outcomes.push({ outcome, timestamp: now });
-  if (entry.recent_outcomes.length > 10) {
-    entry.recent_outcomes.splice(0, entry.recent_outcomes.length - 10);
+  // #9652: edição + motivo curto + flag de cota, pro streak contar RODADAS.
+  entry.recent_outcomes.push(buildOutcomeEntry(outcome, now, args.edition, args.reason));
+  if (entry.recent_outcomes.length > RECENT_OUTCOMES_MAX) {
+    entry.recent_outcomes.splice(0, entry.recent_outcomes.length - RECENT_OUTCOMES_MAX);
   }
 
   health.sources[src] = entry;
