@@ -435,7 +435,29 @@ export interface LinkedinSchemaError {
   detail: string;
 }
 
+/**
+ * #9619: seções FAIL-SOFT de `03-social.md` — hoje só o `## um` (4º post
+ * USE MELHOR, #9568). O contrato da feature (`use-melhor-dispatch.ts`,
+ * "Contrato FAIL-SOFT") é que o 4º post nunca quebra D1/D2/D3: violação
+ * nestas seções continua REPORTADA pelos lints (em `errors`/`matches`/
+ * `untouched`), mas não derruba o `ok` — senão o Stage 2 re-dispara o
+ * `social-writer` e reescreve d1–d3 por causa de um post opcional.
+ * O lint de forma do Stage 4 (`use-melhor-um-shape`, warning) segue sendo o
+ * aviso ao editor; no pior caso o Stage 3/5 pula o 4º post.
+ */
+export const FAIL_SOFT_SOCIAL_SECTIONS: ReadonlySet<string> = new Set(["um"]);
+
+/** #9619: `true` se a seção (`um`, `main_um`, …) é fail-soft — ver `FAIL_SOFT_SOCIAL_SECTIONS`. */
+export function isFailSoftSocialSection(section: string): boolean {
+  return FAIL_SOFT_SOCIAL_SECTIONS.has(section.replace(/^main_/, ""));
+}
+
 export interface LinkedinSchemaResult {
+  /**
+   * `true` quando não há erro em seção BLOQUEANTE (d1/d2/d3, post_pixel).
+   * Erros em seção fail-soft (`## um`, #9619) continuam em `errors`, mas não
+   * entram neste veredito.
+   */
   ok: boolean;
   errors: LinkedinSchemaError[];
   destaques: Array<{
@@ -557,8 +579,8 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     }
     // #3627: comment_diaria/comment_pixel não são mais gerados — sem checks
     // de presença aqui (ver nota na JSDoc da função).
-    // Char count ranges (warning only — não bloqueia gate; lints estritos
-    // apenas missing-section)
+    // Char count ranges — entram em `errors` e bloqueiam (`ok: false`) para
+    // d1/d2/d3; no `## um` são só reportados (fail-soft, #9619).
     // #9568: `## um` tem 2-6 parágrafos (carrossel de N slides) — faixa própria.
     const [dTargetMin, dTargetMax, dTolMin, dTolMax] =
       destaque === "um" ? USE_MELHOR_CHAR_RANGE : [targetMin, targetMax, tolMin, tolMax];
@@ -654,7 +676,8 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     }
   }
 
-  return { ok: errors.length === 0, errors, destaques };
+  // #9619: erros do `## um` (fail-soft) ficam reportados, mas não bloqueiam.
+  return { ok: !errors.some((e) => !isFailSoftSocialSection(e.destaque)), errors, destaques };
 }
 
 // ---------------------------------------------------------------------------
@@ -981,7 +1004,43 @@ export function lintCredentialBio(md: string): CredentialBioResult {
     }
   }
 
-  return { ok: matches.length === 0, matches };
+  // #9619: match no `## um` (fail-soft) fica reportado, mas não bloqueia.
+  return { ok: !matches.some((m) => !isFailSoftSocialSection(m.section)), matches };
+}
+
+// ---------------------------------------------------------------------------
+// #9619: relatório warn-only do `## um` (4º post USE MELHOR, fail-soft)
+// ---------------------------------------------------------------------------
+
+export interface UseMelhorFailSoftResult {
+  /** `true` = nenhuma violação no `## um`. Check warn-only: nunca bloqueia. */
+  ok: boolean;
+  issues: Array<{ source: "linkedin-schema" | "no-credential-bio"; rule: string; detail: string }>;
+}
+
+/**
+ * #9619: junta as violações do `## um` que `lintLinkedinSchema` e
+ * `lintCredentialBio` reportam mas não contam no `ok` (fail-soft), pra que o
+ * relatório do Stage 2 (`lint-social-md --stage 2 --json`) as mostre como
+ * aviso em vez de escondê-las.
+ */
+export function lintUseMelhorFailSoft(md: string): UseMelhorFailSoftResult {
+  const issues: UseMelhorFailSoftResult["issues"] = [];
+  for (const e of lintLinkedinSchema(md).errors) {
+    if (isFailSoftSocialSection(e.destaque)) {
+      issues.push({ source: "linkedin-schema", rule: e.rule, detail: e.detail });
+    }
+  }
+  for (const m of lintCredentialBio(md).matches) {
+    if (isFailSoftSocialSection(m.section)) {
+      issues.push({
+        source: "no-credential-bio",
+        rule: "credential_bio",
+        detail: `${m.section} linha ${m.line}: '${m.phrase}' — "...${m.context}..."`,
+      });
+    }
+  }
+  return { ok: issues.length === 0, issues };
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,7 +1685,10 @@ export interface SectionCoverageResult {
    * Seções verificadas e se foram alteradas (true = touched pelo humanizador).
    */
   sections: Array<{ name: string; touched: boolean }>;
-  /** Seções que ficaram idênticas antes vs depois. */
+  /**
+   * Seções que ficaram idênticas antes vs depois. Inclui seções fail-soft
+   * (`main_um`, #9619), que são reportadas aqui mas não derrubam `ok`.
+   */
   untouched: string[];
   /** Seções presentes no pre mas ausentes no post (corrupção estrutural). */
   deleted: string[];
@@ -1714,7 +1776,12 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
     if (!touched) untouched.push(name);
   }
 
-  return { ok: untouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
+  // #9619: `main_um` não tocado fica reportado em `untouched`, mas não bloqueia
+  // (fail-soft — senão o loop retry→abort do humanizador para o Stage 2 por
+  // causa do 4º post). Seção DELETADA continua bloqueando: é corrupção
+  // estrutural do arquivo, não qualidade do post opcional.
+  const blockingUntouched = untouched.filter((s) => !isFailSoftSocialSection(s));
+  return { ok: blockingUntouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
 }
 
 // ---------------------------------------------------------------------------

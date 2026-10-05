@@ -282,8 +282,9 @@ function main(): void {
 
   const editionDir = resolve(ROOT, editionDirArg);
   // #3991: agent único `social-writer` substitui social-linkedin/facebook/
-  // instagram — 1 texto genérico por destaque + `## post_pixel`, sem CTA de
-  // canal. Único tmp FATAL do merge.
+  // instagram — 1 texto genérico por destaque (+ `## um`, 4º post USE MELHOR,
+  // #9568, que substituiu o `## post_pixel`), sem CTA de canal. Único tmp
+  // FATAL do merge.
   const socialTmp: TmpCheck = {
     agent: "social-writer",
     path: resolve(editionDir, "_internal/03-social.tmp.md"),
@@ -351,12 +352,14 @@ function main(): void {
 
   // #3991: seção única `# Social` — substitui `# LinkedIn`/`# Facebook`/
   // `# Instagram`. Banner explica que a linha de CTA por canal é injetada só
-  // no publish (nunca aparece aqui) e que `post_pixel` continua manual.
+  // no publish (nunca aparece aqui) e o papel do `## um` (4º post, #9568 —
+  // substituiu o `post_pixel`, que não é mais gerado; #9619 corrigiu o banner).
   const socialHeader =
     `# Social\n\n> **Texto único (#3991)** — o mesmo corpo + hashtags vai para LinkedIn, ` +
     `Facebook e Instagram. Cada publisher injeta sua própria linha de CTA/canal no momento ` +
     `do publish (\`scripts/lib/social-cta-lines.ts\`) — esta seção nunca contém CTA de canal. ` +
-    `\`post_pixel\` é publicado manualmente no feed pessoal via Claude in Chrome (#1690).\n`;
+    `\`## um\` (quando existe) é o 4º post, do item USE MELHOR (#9568): fail-soft, sai nos ` +
+    `mesmos canais e o mesmo texto vai manualmente no LinkedIn pessoal (lembrete no Stage 6).\n`;
   // #3992: seção `# Curto` só entra quando o tmp opcional existe — texto único
   // compartilhado por Twitter/X (dispatch via Buffer MCP, #3994) e Threads
   // (publish-threads.ts, que passa a preferir esta seção ao fallback Facebook).
