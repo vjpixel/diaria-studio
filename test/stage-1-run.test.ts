@@ -1152,6 +1152,50 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // #9462 (review da PR #9667): a penalidade de estudo/case genérico roda
+  // DEPOIS do MESMO FATO (§1u-quater — nunca re-promove item rebaixado por
+  // ele) e ANTES do render (§1v — o MD tem que refletir o top-3 reordenado).
+  it("§1u-quinquies: demote-generic-study roda entre §1u-quater e §1v, com --out-log, e repassa as notas (#9462)", async () => {
+    return withTmpRoot("stage-1-run-p4-generic-study-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(
+        happyHandlers({ "demote-generic-study-highlights.ts": () => ok(JSON.stringify({ applied: false, demoted: 1, kept: 0, notes: ["🔎 nota-9462"] })) }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const idx = (name: string) => calls.findIndex((c) => c.script.endsWith(name));
+        const sameFact = idx("demote-same-fact-highlights.ts");
+        const generic = idx("demote-generic-study-highlights.ts");
+        const render = idx("render-categorized-md.ts");
+        assert.ok(sameFact >= 0 && generic >= 0 && render >= 0, `same-fact=${sameFact} generic=${generic} render=${render}`);
+        assert.ok(sameFact < generic, "penalidade genérica tem que vir DEPOIS do MESMO FATO");
+        assert.ok(generic < render, "penalidade genérica tem que vir ANTES do render do MD");
+        const args = calls[generic].args;
+        assert.ok(args[args.indexOf("--categorized") + 1].endsWith("_internal/01-categorized.json"));
+        assert.equal(args[args.indexOf("--edition") + 1], "260423");
+        assert.ok(args[args.indexOf("--out-log") + 1].endsWith("_internal/01-generic-study-demoted.json"));
+        assert.ok(result.notes.includes("🔎 nota-9462"), "notas do passo vão pro relatório do Stage 1");
+      });
+    });
+  });
+
+  it("§1u-quinquies falhando NÃO bloqueia o Stage 1 (fail-soft, #9462)", async () => {
+    return withTmpRoot("stage-1-run-p4-generic-study-soft-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(happyHandlers({ "demote-generic-study-highlights.ts": () => fail(1, "boom") }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(!result.haltRequired);
+        assert.ok(result.notes.some((n) => n.includes("demote-generic-study-highlights") && n.includes("fail-soft")));
+        assert.ok(calls.some((c) => c.script.endsWith("render-categorized-md.ts")), "render segue depois da falha");
+      });
+    });
+  });
+
   it("validate-stage-1-completeness exit 1 -> HALT (code 2)", async () => {
     return withTmpRoot("stage-1-run-p4-completeness-", (root, editionDir) => {
       seedScored(root, editionDir);
