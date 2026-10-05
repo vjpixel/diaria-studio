@@ -13,10 +13,12 @@
  * editor tornaram o proxy desnecessário e removem o risco de asset relativo
  * quebrado.
  *
- * Teste A/B: a página tem duas versões, `a/index.html` e `b/index.html`, e o
- * `index.html` da raiz só sorteia uma delas por visitante e redireciona
- * levando a query string (UTMs e fbclid precisam chegar à página e ao
- * checkout). Os anúncios continuam apontando para `/evento/agente-ia`.
+ * Versões: a página tem quatro versões, `a/` a `d/` (cada uma com seu
+ * `index.html`). O teste A/B entre `a` e `b` acabou em 30/09/2026; hoje o
+ * `index.html` da raiz manda todo mundo para a versão vigente (`d`) e
+ * redireciona levando a query string (UTMs e fbclid precisam chegar à
+ * página e ao checkout). As outras versões continuam no ar para links
+ * antigos. Os anúncios continuam apontando para `/evento/agente-ia`.
  *
  * Este teste cobre só os arquivos COMMITTED (guard de regressão, mesmo
  * padrão de `site-worker-routes-6359.test.ts`) — o roteamento em si
@@ -25,11 +27,27 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
 import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts";
+import { GTM_CONTAINER_ID, renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
+
+/**
+ * #9590 — o `<script>` do loader do GTM exatamente como `renderAnalyticsHead()`
+ * o gera hoje (as páginas do evento são estáticas, então o HTML é literal; o
+ * teste compara contra o helper pra cópia colada não ficar pra trás).
+ */
+function gtmLoaderScript(): string {
+  const m = renderAnalyticsHead().match(/<script>\(function\(w,d,s,l,i\)[\s\S]*?<\/script>/);
+  assert.ok(m, "renderAnalyticsHead() não emitiu mais o loader do GTM — regex desatualizada?");
+  return m[0];
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
@@ -44,8 +62,19 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
+    // #9590: idem pro GTM/GA4 — a sessão é contada na versão de destino, que recebe as UTMs via location.search.
+    assert.doesNotMatch(html, /googletagmanager\.com/);
     // Sem JavaScript, cai na versão D em vez de ficar numa página vazia.
     assert.match(html, /url=\/evento\/agente-ia\/d"/);
+  });
+
+  it("toda versão publicada (subdiretório com index.html) está em VARIANTS — versão nova sem GTM não passa despercebida", () => {
+    const onDisk = readdirSync(PAGE_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && existsSync(resolve(PAGE_DIR, d.name, "index.html")))
+      .map((d) => d.name)
+      .sort();
+    const missing = onDisk.filter((name) => !(VARIANTS as readonly string[]).includes(name));
+    assert.deepEqual(missing, [], `versões fora de VARIANTS (acrescente-as para cobrir GTM/pixel): ${missing.join(", ")}`);
   });
 
   for (const v of VARIANTS) {
@@ -72,6 +101,36 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
       it("fbq('init', ...) inicializa o pixel com external_id: window.__DIA_VID__ — advanced matching no PRIMEIRO disparo, sem esperar o GTM", () => {
         const html = readFileSync(page, "utf8");
         assert.match(html, /fbq\('init', '1285191740325112', \{ external_id: window\.__DIA_VID__ \}\);/);
+      });
+
+      it("#9590: carrega o container GTM (é por ele que o GA4 recebe a sessão com as UTMs) — byte a byte igual ao de renderAnalyticsHead(), uma vez só, DEPOIS do bootstrap _dia_vid", () => {
+        // Regressão: a página do evento não carregava o GTM, então o GA4
+        // (destino da Google tag AW-… dentro do container) nunca via as
+        // sessões vindas da Clarice News (utm_source=clarice, utm_content
+        // caixa-*) — só o pixel Meta direto rodava.
+        const html = readFileSync(page, "utf8");
+        const loader = gtmLoaderScript();
+        assert.ok(loader.includes(`'${GTM_CONTAINER_ID}'`));
+        assert.equal(countOccurrences(html, loader), 1, "loader do GTM ausente, divergente do helper ou duplicado");
+        assert.equal(countOccurrences(html, "googletagmanager.com/gtm.js"), 1);
+        // Ordem: o dataLayer precisa já ter external_id quando o GTM inicializa.
+        const vidAt = html.indexOf(`<script>${visitorIdBootstrapJs()}</script>`);
+        assert.ok(vidAt >= 0, "bootstrap _dia_vid inline não bate com visitorIdBootstrapJs()");
+        assert.ok(html.indexOf(loader) > vidAt, "GTM carregado antes do bootstrap _dia_vid");
+        // Sem 2º bootstrap: o GTM entrou sozinho, não o renderAnalyticsHead() inteiro.
+        assert.equal(countOccurrences(html, "var COOKIE=\"_dia_vid\""), 1);
+      });
+
+      it("#9590: o HTML do repo tem um único init/PageView do Meta inline (pixel direto, nenhum snippet do pixel colado junto com o GTM) — o container GTM em si fica fora do alcance deste teste", () => {
+        // A tag PageView do Meta no container é restrita a
+        // cursos|livros.diar.ia.br (medido no gtm.js publicado em 05/10/2026);
+        // aqui o guard é do lado do repo: um único init e um único PageView
+        // inline, sem outro snippet do pixel colado junto com o GTM.
+        const html = readFileSync(page, "utf8");
+        // Conta a CHAMADA (com o pixel ID), não a menção no comentário do #8978.
+        assert.equal(countOccurrences(html, "fbq('init', '"), 1);
+        assert.equal(countOccurrences(html, "fbq('track', 'PageView')"), 1);
+        assert.equal(countOccurrences(html, "connect.facebook.net/en_US/fbevents.js"), 1);
       });
 
       it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
