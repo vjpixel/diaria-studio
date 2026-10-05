@@ -278,11 +278,15 @@ async function genUseMelhorCarousel(
   const stamp = readUseMelhorCarouselStamp(editionDir);
   const allExist = files.every((f) => existsSync(f));
   if (!opts.force && allExist && stamp?.hash === hash) {
+    // #9630: carimbo anterior ao campo — mesmo hash implica mesmo título, então
+    // só completa o `cover_title` sem re-renderizar.
+    if (stamp.cover_title !== coverTitle) writeUseMelhorCarouselStamp(editionDir, { hash, slots, cover_title: coverTitle });
     removeStaleUseMelhorSlides(editionDir, slots);
     return { status: "unchanged", slots, files };
   }
   await opts.render(editionDir, slides);
-  writeUseMelhorCarouselStamp(editionDir, { hash, slots });
+  // #9630: grava o título da capa — a conferência pós-gate compara contra ele.
+  writeUseMelhorCarouselStamp(editionDir, { hash, slots, cover_title: coverTitle });
   // Self-review #9572 (findings 2/3): `## um` com menos parágrafos que o render
   // anterior deixaria `p{k}` antigos no disco — apaga a sobra.
   removeStaleUseMelhorSlides(editionDir, slots);

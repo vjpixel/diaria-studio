@@ -27,8 +27,18 @@ import {
   writeUseMelhorPostState,
   type UseMelhorPostConfigState,
 } from "../scripts/lib/use-melhor-post.ts";
-import { planUseMelhorDispatchFrom } from "../scripts/lib/use-melhor-dispatch.ts";
-import { buildUseMelhorSlides, hashUseMelhorSlides } from "../scripts/lib/use-melhor-carousel.ts";
+import {
+  freshUseMelhorCarouselSlots,
+  planUseMelhorDispatch,
+  planUseMelhorDispatchFrom,
+} from "../scripts/lib/use-melhor-dispatch.ts";
+import {
+  buildUseMelhorSlides,
+  hashUseMelhorSlides,
+  isUseMelhorCarouselStale,
+  readUseMelhorCarouselStamp,
+} from "../scripts/lib/use-melhor-carousel.ts";
+import { gatherUseMelhorStatusInput } from "../scripts/lib/use-melhor-status.ts";
 import { checkUseMelhorPostItemRendered, STAGE_4_RULES } from "../scripts/lib/invariant-checks/stage-4.ts";
 import {
   DISCONTINUED_TOPIC_MATCH,
@@ -364,5 +374,91 @@ describe("#9600 — título da capa do carrossel do 4º post", () => {
       },
     });
     assert.equal(coverTitle, "O que é um GPT personalizado");
+  });
+});
+
+// ── #9630 ────────────────────────────────────────────────────────────────────
+describe("#9630 — título editado no gate 4 não invalida o carimbo do 4º post", () => {
+  const JOT_ITEM = { url: JOTFORM.url, title: JOTFORM.title, summary: "", score: 45 };
+  const APPROVED_JOT = { use_melhor: [JOT_ITEM] };
+  const reviewedWith = (t: string) => `**USE MELHOR**\n\n**[${t}](${JOTFORM.url})**\nDescrição. (5 min)\n`;
+  const D = [P("Primeiro."), P("Segundo."), P("Terceiro."), "#IA"].join("\n\n");
+  const socialWith = (um: string) =>
+    ["# Social", "", "## d1", "", D, "", "## d2", "", D, "", "## d3", "", D, "", "## um", "", um, "", "# Curto", "", "## d1", "", "x", "", "## um", "", "curto", ""].join("\n");
+
+  async function stage3(dir: string): Promise<void> {
+    writeFileSync(join(dir, "_internal", "01-approved-capped.json"), JSON.stringify(APPROVED_JOT));
+    writeFileSync(join(dir, "02-reviewed.md"), reviewedWith("O que é um GPT personalizado"));
+    writeUseMelhorPostState(dir, { enabled: true, time: "08:00", item: JOT_ITEM, generated_at: "x" });
+    writeFileSync(join(dir, "03-social.md"), socialWith(UM_TEXT));
+    await genCarouselCards(dir, {
+      render: (async (_t: string, outPaths: Record<string, string>) => {
+        for (const p of Object.values(outPaths)) writeFileSync(p, "x");
+        return outPaths;
+      }) as never,
+      useMelhorConfig: ON,
+      renderUseMelhor: async (d, slides) => {
+        for (const s of slides) writeFileSync(join(d, `04-um-carousel-${s.slot}-4x5.jpg`), "x");
+        return [];
+      },
+    });
+  }
+
+  it("Stage 3 grava no carimbo o título da capa usado no render", async () => {
+    const dir = tmpEdition();
+    await stage3(dir);
+    assert.equal(readUseMelhorCarouselStamp(dir)?.cover_title, "O que é um GPT personalizado");
+  });
+
+  it("REGRESSÃO: título editado em 02-reviewed.md depois do Stage 3 → carrossel segue valendo (Stages 4/5)", async () => {
+    const dir = tmpEdition();
+    await stage3(dir);
+    writeFileSync(join(dir, "02-reviewed.md"), reviewedWith("Como criar um GPT personalizado"));
+    const plan = planUseMelhorDispatch(dir, CONFIG_ON);
+    assert.equal(plan.status, "ready", JSON.stringify(plan));
+    if (plan.status !== "ready") return;
+    assert.equal(plan.imageWarning, undefined);
+    assert.deepEqual(plan.slots, readUseMelhorCarouselStamp(dir)?.slots);
+    assert.ok(freshUseMelhorCarouselSlots(dir).length > 0, "upload ainda sobe os slides");
+    assert.equal(gatherUseMelhorStatusInput(dir, ON).carouselStale, false);
+  });
+
+  it("`## um` editado depois do Stage 3 → continua defasado", async () => {
+    const dir = tmpEdition();
+    await stage3(dir);
+    writeFileSync(join(dir, "03-social.md"), socialWith(UM_TEXT.replace("três passos", "quatro passos")));
+    const plan = planUseMelhorDispatch(dir, CONFIG_ON);
+    assert.equal(plan.status, "ready");
+    if (plan.status !== "ready") return;
+    assert.equal(plan.slots, null);
+    assert.match(plan.imageWarning ?? "", /DEFASADO/);
+    assert.deepEqual(freshUseMelhorCarouselSlots(dir), []);
+    assert.equal(gatherUseMelhorStatusInput(dir, ON).carouselStale, true);
+  });
+
+  it("compat: carimbo antigo sem cover_title → título recalculado (comportamento anterior)", () => {
+    const slides = buildUseMelhorSlides(UM_TEXT, "Título antigo");
+    const legacy = { hash: hashUseMelhorSlides(slides), slots: slides.map((s) => s.slot) };
+    assert.equal(isUseMelhorCarouselStale(legacy, UM_TEXT, "Título antigo"), false);
+    assert.equal(isUseMelhorCarouselStale(legacy, UM_TEXT, "Título novo"), true);
+    assert.equal(isUseMelhorCarouselStale({ ...legacy, cover_title: "Título antigo" }, UM_TEXT, "Título novo"), false);
+  });
+
+  it("re-rodar o Stage 3 sem mudança completa o cover_title de carimbo antigo sem re-renderizar", async () => {
+    const dir = tmpEdition();
+    await stage3(dir);
+    const { cover_title: _omit, ...legacy } = readUseMelhorCarouselStamp(dir)!;
+    writeFileSync(join(dir, "_internal", ".use-melhor-carousel-hash.json"), JSON.stringify(legacy));
+    let rendered = false;
+    await genCarouselCards(dir, {
+      render: (async (_t: string, o: Record<string, string>) => o) as never,
+      useMelhorConfig: ON,
+      renderUseMelhor: async () => {
+        rendered = true;
+        return [];
+      },
+    });
+    assert.equal(rendered, false);
+    assert.equal(readUseMelhorCarouselStamp(dir)?.cover_title, "O que é um GPT personalizado");
   });
 });

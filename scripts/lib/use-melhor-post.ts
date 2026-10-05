@@ -338,7 +338,9 @@ export function higherScoredRenderedItem(
  *      leitor vê na edição (revisado/traduzido no gate), não o da fonte;
  *   4. `item.title` (título da fonte).
  * Mesma função pra quem GERA (Stage 3) e pra quem confere o carimbo
- * (Stages 4/5) — divergir aqui marcaria toda arte como defasada.
+ * (Stages 4/5) — divergir aqui marcaria toda arte como defasada. Desde o
+ * #9630 o Stage 3 grava o título resolvido no carimbo (`cover_title`) e a
+ * conferência usa o gravado; o resolvido aqui só vale pra carimbo antigo.
  */
 export function resolveUseMelhorCoverTitle(
   item: UseMelhorCandidate,

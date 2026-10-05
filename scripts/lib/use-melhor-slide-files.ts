@@ -41,6 +41,15 @@ export function useMelhorCarouselHashPath(editionDir: string): string {
 export interface UseMelhorCarouselStamp {
   hash: string;
   slots: string[];
+  /**
+   * (#9630) Título da capa usado no render que gerou `hash`. A conferência de
+   * staleness compara o `## um` atual contra ESTE título — não recalcula o
+   * título a partir do `02-reviewed.md`, senão editar o título do item no
+   * gate 4 (depois do Stage 3) marcaria a arte como defasada e derrubaria o
+   * 4º post. Ausente em carimbos anteriores ao #9630 → quem confere usa o
+   * título resolvido na hora (comportamento antigo).
+   */
+  cover_title?: string;
 }
 
 export function readUseMelhorCarouselStamp(editionDir: string): UseMelhorCarouselStamp | null {
@@ -48,7 +57,12 @@ export function readUseMelhorCarouselStamp(editionDir: string): UseMelhorCarouse
   if (!existsSync(p)) return null;
   try {
     const d = JSON.parse(readFileSync(p, "utf8")) as Partial<UseMelhorCarouselStamp>;
-    return typeof d.hash === "string" && Array.isArray(d.slots) ? { hash: d.hash, slots: d.slots } : null;
+    if (typeof d.hash !== "string" || !Array.isArray(d.slots)) return null;
+    return {
+      hash: d.hash,
+      slots: d.slots,
+      ...(typeof d.cover_title === "string" && { cover_title: d.cover_title }),
+    };
   } catch {
     return null;
   }
