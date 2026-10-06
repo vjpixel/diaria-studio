@@ -406,6 +406,79 @@ describe("main() — ponta a ponta com deps injetadas (fixture de /subscribers/f
   });
 });
 
+describe("main() — exclui lotes de onboarding do transporte Kit (#7916, compat #7922)", () => {
+  function tmpRun(storeJson: string | null, enabled: boolean) {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-onb-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    writeFileSync(
+      resolve(tmp, "platform.config.json"),
+      JSON.stringify({ onboarding: { store_path: "data/onboarding/store.json", kit_transport: { enabled } } }),
+    );
+    if (storeJson != null) {
+      mkdirSync(resolve(tmp, "data/onboarding"), { recursive: true });
+      writeFileSync(resolve(tmp, "data/onboarding/store.json"), storeJson);
+    }
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    return {
+      argv: ["--db", dbPath, "--manifest", manifestPath, "--config", resolve(tmp, "platform.config.json")],
+      dbPath,
+      manifestPath,
+    };
+  }
+
+  it("broadcast de onboarding (id 2 num lote do store) não vira evento nem entra no manifest; o de edição segue ingerido", async () => {
+    const store = JSON.stringify({
+      entries: {},
+      kit_transport: { lots: { "email1-2026-10-01-1": { lot_id: "email1-2026-10-01-1", broadcast_id: 2 } } },
+    });
+    const { argv, dbPath, manifestPath } = tmpRun(store, true);
+    const original = console.log;
+    let captured = "";
+    console.log = ((msg: string) => {
+      captured = msg;
+    }) as typeof console.log;
+    try {
+      await main(argv, fakeDeps());
+    } finally {
+      console.log = original;
+    }
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    assert.deepEqual(
+      manifest.entries.map((e: { id: string }) => e.id),
+      ["1"],
+      "lote de onboarding nunca entra no manifest (não fica pendente pra sempre)",
+    );
+    const db = openDiariaSubscribersDb(dbPath);
+    // só broadcast 1: 2 sent + 1 delivered + 1 open = 4 (sem os 2 eventos do broadcast 2)
+    assert.equal(getStoreCounts(db).events, 4);
+    db.close();
+    assert.deepEqual(JSON.parse(captured).onboarding_broadcasts_excluded, ["2"]);
+  });
+
+  it("store de onboarding ausente com o switch OFF não quebra — ingere tudo", async () => {
+    const { argv, dbPath } = tmpRun(null, false);
+    await main(argv, fakeDeps());
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).events, 6);
+    db.close();
+  });
+
+  it("store ilegível com o switch ON → aborta antes de listar broadcasts (nunca infla leitor-v1 em silêncio)", async () => {
+    const { argv } = tmpRun("{nao-json", true);
+    let listed = false;
+    const deps = fakeDeps();
+    const inner = deps.listAllBroadcasts;
+    deps.listAllBroadcasts = async () => {
+      listed = true;
+      return inner();
+    };
+    await assert.rejects(() => main(argv, deps), /leitor-v1/);
+    assert.equal(listed, false);
+  });
+});
+
 describe("main() — detector de identidade duplicada na mesma plataforma (#8236 item 3)", () => {
   /** Captura a última chamada de `console.log` (o JSON summary final do
    *  CLI) sem depender de mock library — restaura no `finally`. */

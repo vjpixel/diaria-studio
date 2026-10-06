@@ -55,7 +55,10 @@
  * Uso:
  *   npx tsx scripts/diaria-subscribers-ingest-kit.ts [--db <p>] [--manifest <p>]
  *     [--limit N] [--broadcast <id>] [--write] [--skip-roster] [--captura-log <p>]
- *     [--kit-active-history <p>]
+ *     [--kit-active-history <p>] [--config <platform.config.json>]
+ *
+ * Broadcasts de onboarding (lotes do transporte Kit, #7922) ficam FORA da
+ * ingestão — ver `scripts/lib/onboarding-broadcast-exclusion.ts` (#7916).
  *
  * Requer `KIT_API_KEY` no env (`resolveKitConfig`, lança se ausente — mesmo
  * fail-fast do resto da camada Kit). Stdout: JSON summary. Stderr: progresso.
@@ -97,6 +100,14 @@ import {
   type IngestManifest,
   type IngestManifestEntry,
 } from "./lib/diaria-subscribers-ingest-manifest.ts";
+import {
+  excludeOnboardingBroadcasts,
+  readOnboardingBroadcastExclusion,
+  type OnboardingBroadcastExclusion,
+} from "./lib/onboarding-broadcast-exclusion.ts";
+
+/** Config de onde sai `onboarding.store_path`/`kit_transport.enabled` (#7916 — compat #7922). */
+export const DEFAULT_CONFIG_PATH = resolve(import.meta.dirname, "..", "platform.config.json");
 
 export const DEFAULT_MANIFEST_PATH = resolve(dirname(DEFAULT_DB_PATH), "kit-ingest-manifest.json");
 
@@ -151,6 +162,14 @@ export interface KitIngestDeps {
    */
   getBroadcastLinkClicks?: (id: number) => Promise<{ clicks: KitBroadcastClick[] }>;
   fetchUrlClicks?: (broadcastId: number, url: string) => Promise<DrainResult>;
+  /**
+   * #7916 (compat #7922): conjunto de `broadcast_id`s que são LOTES de
+   * onboarding do transporte Kit — excluídos da ingestão pra não virarem
+   * "edições" no `leitor-v1`. Opcional: ausente, `main()` lê do disco via
+   * `readOnboardingBroadcastExclusion(--config)`. Pode lançar (store ilegível
+   * com o switch ligado) — ver `scripts/lib/onboarding-broadcast-exclusion.ts`.
+   */
+  readOnboardingExclusion?: () => OnboardingBroadcastExclusion;
 }
 
 /**
@@ -422,6 +441,7 @@ export async function main(
   const manifestPath = getArg(argv, "manifest") || DEFAULT_MANIFEST_PATH;
   const limit = getIntArg(argv, "limit", { min: 1 });
   const broadcastFilter = getIntArg(argv, "broadcast", { min: 1 });
+  const configPath = getArg(argv, "config") || DEFAULT_CONFIG_PATH;
 
   const dbDir = dirname(dbPath);
   const dataRoot = dirname(dbDir);
@@ -595,9 +615,31 @@ export async function main(
     }
   }
 
+  // #7916 (compat #7922): lotes de onboarding do transporte Kit são
+  // broadcasts `completed` como qualquer edição — sem este filtro virariam
+  // eventos com `edicao=broadcast_id` e inflariam o leitor-v1 da coorte nova.
+  // Lido ANTES de listar: store ilegível com o switch ligado aborta aqui.
+  let onboardingExclusion: OnboardingBroadcastExclusion;
+  try {
+    onboardingExclusion = (deps.readOnboardingExclusion ?? (() => readOnboardingBroadcastExclusion(configPath)))();
+  } catch (e) {
+    db.close();
+    throw e;
+  }
+  if (onboardingExclusion.warning) console.error(`⚠️  ${onboardingExclusion.warning}`);
+
   console.error("📇 listando broadcasts completados do Kit…");
-  const broadcasts = await deps.listAllBroadcasts();
+  const { kept: broadcasts, excluded: onboardingBroadcasts } = excludeOnboardingBroadcasts(
+    await deps.listAllBroadcasts(),
+    onboardingExclusion.ids,
+  );
   console.error(`  …${broadcasts.length} broadcast(s) completados.`);
+  if (onboardingBroadcasts.length > 0) {
+    console.error(
+      `  …${onboardingBroadcasts.length} broadcast(s) de onboarding (lotes do transporte Kit, #7922) fora da ingestão: ` +
+        onboardingBroadcasts.map((b) => b.id).join(", "),
+    );
+  }
 
   let manifest = loadManifest(manifestPath);
   manifest = mergeManifestEntries(
@@ -674,6 +716,7 @@ export async function main(
         manifest: manifestPath,
         roster: rosterSummary,
         broadcasts_total: broadcasts.length,
+        onboarding_broadcasts_excluded: onboardingBroadcasts.map((b) => String(b.id)),
         processed_this_run: processed,
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
