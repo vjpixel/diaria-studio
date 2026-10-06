@@ -27,7 +27,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, relative, sep } from "node:path";
 import ts from "typescript";
-import { ARROW_GLYPH, arrowHitAt, findArrowGlyphs } from "./shared/arrow-glyph.ts";
+import { arrowFormsRegex, arrowHitAt, findArrowGlyphs, hasArrowForm } from "./shared/arrow-glyph.ts";
 
 /** Diretórios publicados como estão (assets estáticos de Workers). */
 export const TEXT_ROOTS: readonly string[] = [
@@ -65,9 +65,14 @@ export const GENERATOR_SPECS: readonly string[] = [
   "scripts/build-cursos-page.ts",
   "scripts/build-livros-page.ts",
   "workers/cursos/src/*.generated.ts",
-  // É IA? (jogo e embed)
-  "workers/poll/src/embed.ts",
-  "workers/poll/src/jogar.ts",
+  // Workers que servem HTML/copy direto ao leitor (#9727 resíduo b): É IA?
+  // (jogo, embed, ranking, confirmação), artigos especiais, retrospectiva,
+  // reativação e acervo. Só literais contam (ver `scanGeneratorSource`).
+  "workers/poll/src/*.ts",
+  "workers/artigos/src/*.ts",
+  "workers/retrospectiva/src/*.ts",
+  "workers/reativar/src/*.ts",
+  "workers/arquivo/src/*.ts",
   // copy social
   "scripts/lib/weekly-linkedin-render.ts",
 ];
@@ -133,7 +138,7 @@ export function scanPublishedText(path: string, content: string, allowlist: read
  * ENTRADA e a remove) não contam.
  */
 export function scanGeneratorSource(path: string, source: string): Finding[] {
-  if (!source.includes(ARROW_GLYPH)) return [];
+  if (!hasArrowForm(source)) return [];
   const sf = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
   const out: Finding[] = [];
   const visit = (node: ts.Node): void => {
@@ -147,8 +152,9 @@ export function scanGeneratorSource(path: string, source: string): Finding[] {
     ) {
       const start = node.getStart(sf);
       const raw = source.slice(start, node.getEnd());
-      for (let j = raw.indexOf(ARROW_GLYPH); j !== -1; j = raw.indexOf(ARROW_GLYPH, j + 1)) {
-        out.push({ kind: "generator", path, ...arrowHitAt(source, start + j) });
+      // `→` literal e as formas escapadas (`&rarr;`, `\u2192`…, #9727 resíduo a)
+      for (const m of raw.matchAll(arrowFormsRegex())) {
+        out.push({ kind: "generator", path, ...arrowHitAt(source, start + m.index) });
       }
     }
     ts.forEachChild(node, visit);

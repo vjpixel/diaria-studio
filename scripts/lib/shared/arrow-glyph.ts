@@ -11,25 +11,81 @@
  *    rótulo de link/botão, `<span aria-hidden>→</span>`, prefixo de
  *    parágrafo `→ [label](url)`, lead-in `texto → <a>`). Usada em runtime
  *    pelo carregador de caixas (`data/snippets/` é gitignored: o repo não
- *    edita o conteúdo, mas o render nunca deixa a seta passar) e pelo
- *    `renderHTML` da newsletter. Foi também a regra aplicada uma vez aos
- *    HTML já versionados do site.
+ *    edita o conteúdo, mas o render nunca deixa a seta passar) e pelos
+ *    blocos de CTA da newsletter (callouts e caixas). Foi também a regra
+ *    aplicada uma vez aos HTML já versionados do site.
+ *  - `stripUnambiguousCtaArrows`: só as posições que NUNCA são texto
+ *    editorial (fim de rótulo, span decorativo, prefixo). Sem o lead-in, que
+ *    é ambíguo: `A Meta → <a>Llama</a>` no corpo de um destaque é notação
+ *    editorial e virar `A Meta: Llama` troca o sentido (#9727). É o que o
+ *    `renderHTML` aplica no HTML INTEIRO da newsletter.
+ *  - `normalizeNumericArrows`: transição numérica (`5,4% → 18%`) vira
+ *    `5,4% para 18%`. Compartilhado pelo `renderHTML` e pelo
+ *    `normalizeArrowsForSite` (#9727: antes só o segundo tinha, e a página
+ *    `/p/` é construída do HTML que o primeiro já tinha estragado).
  *  - `findArrowGlyphs`: detecção usada pelo check de CI
  *    `scripts/check-no-arrow-glyph.ts` (a varredura AST dos geradores fica em
  *    `scripts/lib/no-arrow-glyph-scan.ts`, que depende de `typescript`).
+ *    Pega também as formas escapadas (#9727 resíduo a).
  */
 
 export const ARROW_GLYPH = "→";
 
 /**
- * Remove a seta das posições de CTA, preservando o resto do texto. Idempotente.
- * Setas fora de posição de CTA (ex.: "87% → 68%" no corpo de uma edição
- * antiga) ficam intactas; quem decide sobre elas é o check, não esta função.
+ * Formas escapadas da seta que viram `→` no navegador ou no runtime JS:
+ * entidade nomeada/decimal/hex do HTML e escape `→` / `\u{2192}` em
+ * literal de JS/TS (#9727 resíduo a). Case-insensitive.
  */
-export function stripCtaArrows(text: string): string {
-  if (!text.includes(ARROW_GLYPH)) return text;
+const ARROW_ESCAPE_SOURCE = String.raw`&rarr;|&#0*8594;|&#x0*2192;|\\u2192|\\u\{0*2192\}`;
+
+/** `→` e as formas escapadas. Global; sempre usar com `matchAll`/`replace`. */
+export function arrowFormsRegex(): RegExp {
+  return new RegExp(`${ARROW_GLYPH}|${ARROW_ESCAPE_SOURCE}`, "gi");
+}
+
+/** `true` se o texto tem a seta em qualquer forma (literal ou escapada). */
+export function hasArrowForm(text: string): boolean {
+  return arrowFormsRegex().test(text);
+}
+
+/**
+ * Entidades HTML da seta (`&rarr;`, `&#8594;`, `&#x2192;`) viram o glifo,
+ * pra os normalizadores tratarem uma forma só. Renderização idêntica no
+ * navegador. O escape `→` de código-fonte NÃO é decodificado aqui:
+ * estes normalizadores rodam sobre HTML/markdown, não sobre fonte JS.
+ */
+export function decodeArrowEntities(text: string): string {
+  if (!text.includes("&")) return text;
+  return text.replace(/&rarr;|&#0*8594;|&#x0*2192;/gi, ARROW_GLYPH);
+}
+
+/**
+ * Transição numérica (número dos dois lados, tags inline permitidas no
+ * meio): `5,4% → 18%`, `5,4% → <b>18%</b>`, `5,4% → <a …>18%</a>`,
+ * `US$ 20 → <a>US$ 10</a>` viram `… para …` ("de 5,4% para 18%" é como o
+ * português lê a notação). Roda ANTES de qualquer passe de lead-in de CTA:
+ * senão `5,4% → <a>18%</a>` viraria `5,4%: 18%`, trocando o sentido
+ * (#9721 review, #9727). Idempotente. Puro.
+ */
+export function normalizeNumericArrows(text: string): string {
+  const t = decodeArrowEntities(text);
+  if (!t.includes(ARROW_GLYPH)) return t;
+  return t.replace(
+    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
+    "$1 para ",
+  );
+}
+
+/**
+ * Só as posições de CTA que nunca são texto editorial: fim de rótulo de
+ * link/botão, span decorativo, prefixo de linha e prefixo logo após abrir a
+ * tag. Não mexe em `texto → <a>` (ver `stripCtaArrows`). Idempotente.
+ */
+export function stripUnambiguousCtaArrows(text: string): string {
+  const t = decodeArrowEntities(text);
+  if (!t.includes(ARROW_GLYPH)) return t;
   return (
-    text
+    t
       // `Ver curso <span aria-hidden="true">→</span>` vira `Ver curso`
       .replace(/[ \t]*<span aria-hidden="true">→<\/span>/g, "")
       // seta no fim do rótulo: `Ver →</a>`, `Próxima →</button>`, `[Ver →](url)`
@@ -38,8 +94,36 @@ export function stripCtaArrows(text: string): string {
       .replace(/^([ \t]*)→[ \t]*/gm, "$1")
       // prefixo logo após abrir a tag: `<p style="…">→ <a href…>`
       .replace(/>[ \t]*→[ \t]*(?=<a[\s>]|\[)/g, ">")
-      // lead-in antes do link: `Veja o ranking → <a>`, `apoiar → [apoia.se](…)`
-      .replace(/[ \t]+→[ \t]+(?=<a[\s>]|\[)/g, ": ")
+  );
+}
+
+/**
+ * Remove a seta das posições de CTA, preservando o resto do texto. Idempotente.
+ * Setas fora de posição de CTA (ex.: "87% → 68%" no corpo de uma edição
+ * antiga) ficam intactas; quem decide sobre elas é o check, não esta função.
+ *
+ * Inclui o lead-in `texto → <a>` (vira `texto: <a>`), que é AMBÍGUO fora de
+ * um bloco de CTA (#9727). Por isso só roda onde o texto é sabidamente CTA:
+ * caixas (`readSnippetFile`) e callouts/caixas da newsletter
+ * (`renderIntroCallout`/`renderMidCallout`). O HTML inteiro da newsletter
+ * usa `stripUnambiguousCtaArrows`.
+ *
+ * Duas exceções no lead-in: transição numérica (`5,4% → [18%](u)`) não é
+ * lead-in, fica para `normalizeNumericArrows`; e seta logo depois de um
+ * separador de lista de links (`[A](u) · → [B](u)`) só some, sem virar
+ * `·:` (#9727 resíduo c, que fazia `isCtaOnlyParagraph` deixar de
+ * reconhecer o parágrafo como só-CTA).
+ */
+export function stripCtaArrows(text: string): string {
+  const t = stripUnambiguousCtaArrows(text);
+  if (!t.includes(ARROW_GLYPH)) return t;
+  return (
+    t
+      // separador antes da seta: `[A](u) · → [B](u)` vira `[A](u) · [B](u)`
+      .replace(/([·•|])[ \t]*→[ \t]+(?=<a[\s>]|\[)/g, "$1 ")
+      // lead-in antes do link: `Veja o ranking → <a>`, `apoiar → [apoia.se](…)`;
+      // não depois de número (transição numérica, ver normalizeNumericArrows)
+      .replace(/(?<![\d%](?:<\/[a-z][^>]*>)*)[ \t]+→[ \t]+(?=<a[\s>]|\[)/gi, ": ")
   );
 }
 
@@ -51,12 +135,12 @@ export function stripCtaArrows(text: string): string {
  * (`5,4% → 18%`) passaria intacta por `stripCtaArrows` e travaria o PR,
  * deixando `/p/{slug}` em 404. Aqui nenhuma seta sobra, em 3 passes:
  *
- *  1. Transição numérica (número dos dois lados, tags inline permitidas no
- *     meio): `5,4% → 18%`, `5,4% → <b>18%</b>`, `5,4% → <a …>18%</a>` viram
- *     `… para …` ("de 5,4% para 18%" é como o português lê a notação). Roda
- *     ANTES do passe de CTA de propósito: senão o lead-in `texto → <a>`
- *     transformaria `5,4% → <a>18%</a>` em `5,4%: 18%`, trocando o sentido.
- *  2. `stripCtaArrows` (posições de CTA, mesmo critério da newsletter).
+ *  1. `normalizeNumericArrows` (transição numérica vira `para`).
+ *  2. `stripUnambiguousCtaArrows` (fim de rótulo, span, prefixo). O lead-in
+ *     `texto → <a>` NÃO vira `texto: <a>` aqui (#9727): a página é feita do
+ *     `newsletter-final.html`, cujos blocos de CTA o `renderHTML` já limpou,
+ *     então uma seta antes de link que sobrou é do corpo editorial
+ *     (`A Meta → <a>Llama</a>`) e cai no passe 3.
  *  3. Qualquer seta restante (encadeamento editorial, `A → B → C`): a
  *     cercada de espaço vira ` – ` (meia-risca, a notação de sequência mais
  *     neutra), a solta vira `–`. Perde a direção visual da seta, mas a
@@ -66,12 +150,9 @@ export function stripCtaArrows(text: string): string {
  * Idempotente. Puro.
  */
 export function normalizeArrowsForSite(text: string): string {
-  if (!text.includes(ARROW_GLYPH)) return text;
-  const numeric = text.replace(
-    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
-    "$1 para ",
-  );
-  return stripCtaArrows(numeric)
+  const t = decodeArrowEntities(text);
+  if (!t.includes(ARROW_GLYPH)) return t;
+  return stripUnambiguousCtaArrows(normalizeNumericArrows(t))
     .replace(/[ \t]+→[ \t]+/g, " – ")
     .replaceAll(ARROW_GLYPH, "–");
 }
@@ -97,22 +178,18 @@ export function arrowHitAt(text: string, index: number): ArrowHit {
 }
 
 /**
- * Todas as ocorrências de `→` em `text`. `allowedFragments` são trechos
- * EXATOS (cada um contendo a seta) liberados: cada ocorrência de um fragmento
- * liberado é mascarada antes da busca, então uma seta NOVA no mesmo arquivo
- * continua sendo pega.
+ * Todas as ocorrências da seta em `text`, literal (`→`) ou escapada
+ * (`&rarr;`, `&#8594;`, `&#x2192;`, `→`, `\u{2192}` — #9727 resíduo a).
+ * `allowedFragments` são trechos EXATOS (cada um contendo a seta em alguma
+ * forma) liberados: cada ocorrência de um fragmento liberado é mascarada
+ * antes da busca, então uma seta NOVA no mesmo arquivo continua sendo pega.
  */
 export function findArrowGlyphs(text: string, allowedFragments: readonly string[] = []): ArrowHit[] {
   let masked = text;
   for (const frag of allowedFragments) {
-    if (!frag.includes(ARROW_GLYPH)) continue;
-    masked = masked.split(frag).join(frag.replaceAll(ARROW_GLYPH, "\u0000"));
+    if (!hasArrowForm(frag)) continue;
+    // máscara de MESMO comprimento, pra os índices continuarem batendo com `text`
+    masked = masked.split(frag).join(frag.replace(arrowFormsRegex(), (m) => "\u0000".repeat(m.length)));
   }
-  const hits: ArrowHit[] = [];
-  let i = masked.indexOf(ARROW_GLYPH);
-  while (i !== -1) {
-    hits.push(arrowHitAt(text, i));
-    i = masked.indexOf(ARROW_GLYPH, i + 1);
-  }
-  return hits;
+  return [...masked.matchAll(arrowFormsRegex())].map((m) => arrowHitAt(text, m.index));
 }

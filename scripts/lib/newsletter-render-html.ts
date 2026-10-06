@@ -32,7 +32,7 @@ import {
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
-import { stripCtaArrows } from "./shared/arrow-glyph.ts"; // #9721: a seta nunca chega ao leitor
+import { normalizeNumericArrows, stripCtaArrows, stripUnambiguousCtaArrows } from "./shared/arrow-glyph.ts"; // #9721/#9727: a seta nunca chega ao leitor
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
@@ -962,6 +962,10 @@ export function renderIntroCallout(
   bold = true,
   plainFirstParagraph = false,
 ): string {
+  // #9727: bloco de CTA conhecido (callout/caixa) — aqui o lead-in
+  // `texto → [link](u)` é CTA e vira `texto: [link](u)`. Fora destes blocos o
+  // `renderHTML` não aplica o lead-in (ver docstring dele).
+  text = stripCtaArrows(normalizeNumericArrows(text));
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
@@ -1084,7 +1088,7 @@ export function renderIntroCallout(
         for (let k = links.length - 1; k >= 0; k--) {
           rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
         }
-        const onlyCtas = rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
+        const onlyCtas = rem.replace(/[·•|,.:!?…\s→]/gu, "").trim() === "";
         if (!onlyCtas) continue;
 
         if (links.length > 1) {
@@ -1242,7 +1246,8 @@ export function isCtaOnlyParagraph(p: string): boolean {
   for (let k = links.length - 1; k >= 0; k--) {
     rem = rem.slice(0, links[k].start) + rem.slice(links[k].end);
   }
-  return rem.replace(/[·•|,.!?…\s→]/gu, "").trim() === "";
+  // #9727 resíduo c: `:` também é pontuação de sobra (lead-in já convertido)
+  return rem.replace(/[·•|,.:!?…\s→]/gu, "").trim() === "";
 }
 
 function shouldForceCtaPill(box: string): boolean {
@@ -1325,6 +1330,8 @@ export function renderBoxDivulgacao(
  * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
 export function renderMidCallout(text: string, imageUrl: string | null, bold = true, portrait = false, plainBody = false, altOverride: string | null = null): string {
+  // #9727: bloco de CTA conhecido, mesmo critério do `renderIntroCallout`.
+  text = stripCtaArrows(normalizeNumericArrows(text));
   // #5882: `plainBody` tinha que sobreviver também neste early-return
   // (sem imagem) — antes descartado, um box "sem título" (`plainBody=true`
   // repassado pelo dispatcher) que caísse aqui (ex: perdeu a estrutura
@@ -2634,11 +2641,22 @@ export function capDivulgacaoBoxes(
  * #9721: a seta `→` nunca chega ao leitor. Rede de segurança sobre o HTML
  * final: o texto vindo do reviewed.md (caixa colada à mão, sintaxe legada
  * `→ [label](url)`) pode trazer a seta em posição de CTA mesmo com os
- * templates já limpos. `stripCtaArrows` só mexe nessas posições (fim de
- * rótulo de link, prefixo/lead-in de link) — seta editorial no corpo fica.
+ * templates já limpos.
+ *
+ * #9727: aqui, sobre o HTML INTEIRO (corpo editorial incluso), só rodam os
+ * passes que não trocam o sentido de texto editorial:
+ *  1. `normalizeNumericArrows`: `5,4% → <a>18%</a>` vira `5,4% para <a>18%</a>`
+ *     (o mesmo passo do `normalizeArrowsForSite`; a página `/p/` é feita
+ *     deste HTML, então ele precisa vir certo daqui);
+ *  2. `stripUnambiguousCtaArrows`: fim de rótulo de link/botão, span
+ *     decorativo, prefixo `→ <a>`.
+ * O lead-in `texto → <a>` vira `texto: <a>` SÓ dentro dos blocos de CTA
+ * (`renderIntroCallout`/`renderMidCallout`, que aplicam `stripCtaArrows`
+ * na entrada). No corpo, `A Meta → <a>Llama</a>` é notação editorial e fica
+ * como está; antes virava `A Meta: Llama`, trocando o sentido.
  */
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
-  return stripCtaArrows(renderHTMLUnsanitized(content, opts));
+  return stripUnambiguousCtaArrows(normalizeNumericArrows(renderHTMLUnsanitized(content, opts)));
 }
 
 function renderHTMLUnsanitized(content: NewsletterContent, opts: RenderOpts): string {

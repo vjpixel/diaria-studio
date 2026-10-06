@@ -1365,7 +1365,7 @@ export function resolveSetNameConfirmationBanner(url: URL): string | null {
  * (index.ts) e por `renderLeaderboardHtml` (leaderboard-routes.ts, #4232).
  */
 export function renderNicknameFormStyles(): string {
-  return `  /* #1675/#1779: nickname form + textos como classes (eram inline → media query
+  return `  /* #1675/#1779: nickname form + textos como classes (eram inline, então a media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
   /* #4418: Caixa B (assinatura) carrega mais texto que a Caixa A — max-width
