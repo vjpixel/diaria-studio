@@ -270,9 +270,13 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
           const text = (l: string) => l.match(/^\*\*\[(.+)\]\(/)?.[1]?.trim();
           if (text(oldTitleLine!) !== text(newTitleLine!)) urlClass = { type: "title-choice", kind: "titulo-reescrito" };
         } else {
-          const elsewhere = [...oldSections].some(
-            ([k, t]) => k !== section && k.startsWith("destaque-") && titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "") === newKey,
-          );
+          const keyOf = (t: string) => titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "");
+          const destaqueKeys = (m: Map<string, string>, skip?: string) =>
+            [...m].filter(([k]) => k.startsWith("destaque-") && k !== skip).map(([, t]) => keyOf(t));
+          // Reordenação só se o item novo já existia em outro slot ANTES e o item
+          // antigo deste slot ainda existe DEPOIS; senão houve troca (mesmo com movimentação junto).
+          const elsewhere =
+            destaqueKeys(oldSections, section).includes(newKey) && destaqueKeys(newSections, section).includes(oldKey);
           urlClass = elsewhere
             ? { type: "section-order", kind: "reordenado" }
             : { type: "destaque-swap", kind: "item-trocado" };
@@ -329,7 +333,12 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       requestType = "destaque-swap";
     }
 
-    if (urlClass) requestType = urlClass.type;
+    // item-trocado/reordenado vencem tudo; titulo-reescrito/categoria-trocada só
+    // valem se nenhum sinal posterior (lead-rewrite, length-cut, link-swap) agiu.
+    if (urlClass) {
+      const strong = urlClass.kind === "item-trocado" || urlClass.kind === "reordenado";
+      if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
+    }
 
     // Verificar se destaque foi removido (swap/cut)
     if (!newSections.has(section) && oldSections.has(section)) {

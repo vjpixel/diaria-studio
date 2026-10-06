@@ -46,4 +46,24 @@ describe("classifyNewsletterDiff por URL (#9717)", () => {
       ["d1:bucket-move:categoria-trocada"],
     );
   });
+
+  it("P2: título reescrito + 'Por que isso importa' reescrito → lead-rewrite, não title-choice", () => {
+    const old = d(1, "🚀 LANÇAMENTO", "Título A", U1);
+    const neu = old.replace("Título A", "Título A novo").replace("texto estável.", "outro texto.");
+    const out = classifyNewsletterDiff(old, neu).map((r) => r.request_type);
+    assert.deepEqual(out, ["lead-rewrite"]);
+  });
+
+  it("P2: título reescrito + corte grande → length-cut", () => {
+    const old = d(1, "🚀 LANÇAMENTO", "Título A", U1).replace("texto estável.", "x".repeat(400));
+    const neu = d(1, "🚀 LANÇAMENTO", "Título A novo", U1);
+    assert.deepEqual(classifyNewsletterDiff(old, neu).map((r) => r.request_type), ["length-cut"]);
+  });
+
+  it("P2: mover + trocar juntos (D1=A,D2=B → D1=B,D2=X) → item-trocado, não só reordenado", () => {
+    const old = [d(1, "🚀 LANÇAMENTO", "Título A", U1), d(2, "🔬 PESQUISA", "Título B", U2)].join("\n");
+    const neu = [d(1, "🔬 PESQUISA", "Título B", U2), d(2, "🚀 LANÇAMENTO", "Título X", U4)].join("\n");
+    const out = kinds(old, neu);
+    assert.deepEqual(out, ["d1:destaque-swap:item-trocado", "d2:destaque-swap:item-trocado"]);
+  });
 });
