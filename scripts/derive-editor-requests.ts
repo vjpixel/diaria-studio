@@ -136,6 +136,18 @@ function isDifferentArticleUrl(oldLine: string, newLine: string): boolean {
   }
 }
 
+/** Chave host+path (sem www/query/tracking, como `isDifferentArticleUrl`) do link do título `**[t](url)**`; `null` sem link. */
+function titleLineUrlKey(line: string): string | null {
+  const m = line.match(/\]\((https?:[^)\s]+)\)/);
+  if (!m) return null;
+  try {
+    const u = new URL(canonicalizeUrl(m[1]));
+    return `${u.hostname.replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Classifica diferenças no 02-reviewed.md (newsletter)
  */
@@ -244,6 +256,41 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       requestType = "title-choice";
     }
 
+    // #9717: casar por URL, nunca por posição. Comparar `destaque-N` com
+    // `destaque-N` rotulava troca de item e reordenação como "title-choice"
+    // (medição #9693: 15/18 eram item trocado, 2/18 reordenação, 1/18 título).
+    // `urlClass` vence as checagens posteriores desta seção (como `destaque-swap`).
+    let urlClass: { type: RequestType; kind: string } | null = null;
+    if (section.startsWith("destaque-") && titleChanged) {
+      const oldKey = titleLineUrlKey(oldTitleLine!);
+      const newKey = titleLineUrlKey(newTitleLine!);
+      if (oldKey && newKey) {
+        if (oldKey === newKey) {
+          // Mesma página: só é título reescrito se o TEXTO do link mudou (query/tracking é link-swap).
+          const text = (l: string) => l.match(/^\*\*\[(.+)\]\(/)?.[1]?.trim();
+          if (text(oldTitleLine!) !== text(newTitleLine!)) urlClass = { type: "title-choice", kind: "titulo-reescrito" };
+        } else {
+          const keyOf = (t: string) => titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "");
+          const destaqueKeys = (m: Map<string, string>, skip?: string) =>
+            [...m].filter(([k]) => k.startsWith("destaque-") && k !== skip).map(([, t]) => keyOf(t));
+          // Reordenação só se o item novo já existia em outro slot ANTES e o item
+          // antigo deste slot ainda existe DEPOIS; senão houve troca (mesmo com movimentação junto).
+          const elsewhere =
+            destaqueKeys(oldSections, section).includes(newKey) && destaqueKeys(newSections, section).includes(oldKey);
+          urlClass = elsewhere
+            ? { type: "section-order", kind: "reordenado" }
+            : { type: "destaque-swap", kind: "item-trocado" };
+        }
+      }
+    } else if (
+      section.startsWith("destaque-") &&
+      !titleChanged &&
+      oldLines[0] !== newLines[0] &&
+      oldLines.slice(1).join("\n") === newLines.slice(1).join("\n")
+    ) {
+      urlClass = { type: "bucket-move", kind: "categoria-trocada" };
+    }
+
     // Verificar se "Por que isso importa" mudou
     const oldWhyIdx = oldLines.findIndex(l => l.includes("Por que isso importa"));
     const newWhyIdx = newLines.findIndex(l => l.includes("Por que isso importa"));
@@ -286,6 +333,13 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       requestType = "destaque-swap";
     }
 
+    // item-trocado/reordenado vencem tudo; titulo-reescrito/categoria-trocada só
+    // valem se nenhum sinal posterior (lead-rewrite, length-cut, link-swap) agiu.
+    if (urlClass) {
+      const strong = urlClass.kind === "item-trocado" || urlClass.kind === "reordenado";
+      if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
+    }
+
     // Verificar se destaque foi removido (swap/cut)
     if (!newSections.has(section) && oldSections.has(section)) {
       requestType = "destaque-cut";
@@ -308,7 +362,7 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       target,
       description: `Mudança detectada em ${section}: ${oldText.slice(0, 100)}... → ${newText.slice(0, 100)}...`,
       resolution: "accepted",
-      context: { section, old_length: oldLen, new_length: newLen, url: articleUrl },
+      context: { section, old_length: oldLen, new_length: newLen, url: articleUrl, ...(urlClass ? { change_kind: urlClass.kind } : {}) },
     });
   }
 
