@@ -334,6 +334,47 @@ describe("parseSections — strip pontuação trailing na URL (#443)", () => {
   });
 });
 
+describe("resolveDestaques (#9750) — rebaixado por MESMO FATO não volta pelo fill", () => {
+  const sections = (radar: string[]) => ({ destaques: [], lancamento: [], radar, use_melhor: [], video: [] });
+
+  it("pula item com same_fact_demoted no highlight (01-categorized.json)", () => {
+    const highlights = [
+      { rank: 1, url: "https://a.com/1" },
+      { rank: 2, url: "https://b.com/2" },
+      { rank: 3, url: "https://x.com/repete", same_fact_demoted: { matched_edition: "261001" } },
+      { rank: 4, url: "https://d.com/4" },
+    ];
+    const result = resolveDestaques(
+      sections(["https://a.com/1", "https://b.com/2", "https://x.com/repete", "https://d.com/4"]),
+      highlights,
+    );
+    assert.deepEqual(result, ["https://a.com/1", "https://b.com/2", "https://d.com/4"]);
+  });
+
+  it("pula item com same_fact_demoted em article (01-approved.json)", () => {
+    // Editor tirou o rank 2 dos buckets: o fill passa do rank 3 e alcançaria o
+    // rebaixado (rank 4) antes do rank 5.
+    const highlights = [
+      { rank: 1, url: "https://a.com/1" },
+      { rank: 2, url: "https://b.com/2" },
+      { rank: 3, url: "https://c.com/3" },
+      { rank: 4, url: "https://x.com/repete", article: { url: "https://x.com/repete", same_fact_demoted: { matched_edition: "261001" } } },
+      { rank: 5, url: "https://e.com/5" },
+    ];
+    const result = resolveDestaques(
+      sections(["https://a.com/1", "https://c.com/3", "https://x.com/repete", "https://e.com/5"]),
+      highlights,
+    );
+    assert.deepEqual(result, ["https://a.com/1", "https://c.com/3", "https://e.com/5"]);
+  });
+
+  it("editor pondo o rebaixado na seção Destaques continua valendo", () => {
+    const highlights = [{ rank: 4, url: "https://x.com/repete", same_fact_demoted: { matched_edition: "261001" } }];
+    const s = { ...sections(["https://x.com/repete"]), destaques: ["https://x.com/repete", "https://a.com/1"] };
+    assert.deepEqual(resolveDestaques(s, highlights), ["https://x.com/repete", "https://a.com/1"]);
+  });
+});
+
 describe("resolveDestaques (#663) — fallback respeita intenção do editor", () => {
   const highlights = [
     { rank: 1, url: "https://a.com/1" },

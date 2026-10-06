@@ -21,9 +21,11 @@
  * exatamente o fato que outlets diferentes cobrem em dias seguidos — então
  * o sinal é de alta precisão e pode ser apresentado destacado.
  *
- * Premissa editorial (#9100): SINALIZA, nunca bloqueia/demove. Um follow-up
- * legítimo (ex: benchmark independente do Sonnet 5.5 dias depois) ainda é
- * decisão do editor no gate. Exceção #9386: em `--no-gates` (sem gate 1 para
+ * Este módulo SINALIZA, nunca bloqueia/demove. Quem rebaixa candidato a
+ * destaque com MESMO FATO desde 05/10/2026 é `same-fact-demotion.ts`
+ * (§1u-quater do Stage 1, #9100) — aqui só sai o aviso. Um follow-up
+ * legítimo (ex: benchmark independente do Sonnet 5.5 dias depois) que não foi
+ * rebaixado segue decisão do editor no gate. Exceção #9386: em `--no-gates` (sem gate 1 para
  * o editor agir) itens de RADAR/LANÇAMENTOS com MESMO FATO são removidos do
  * `01-approved.json` (`removeSameFactSecondary`) e listados no gate 4.
  * Destaques continuam só com aviso.
@@ -410,9 +412,12 @@ export function formatHighlightSameFactNotes(themeCheck: unknown, approved: unkn
   const pos = new Map<string, number>();
   highlights.forEach((h, i) => {
     if (!h || typeof h !== "object") return;
-    const rec = h as { url?: unknown; article?: { url?: unknown }; same_fact_demoted?: unknown };
+    const rec = h as { url?: unknown; article?: { url?: unknown; same_fact_demoted?: unknown }; same_fact_demoted?: unknown };
     // #9100: rebaixado já sai como ⬇️ (01-same-fact-demoted.json) — sem 🚨 duplicado.
-    if (rec.same_fact_demoted) return;
+    // #9750: no 01-approved.json a flag vive em `article` (markPoolArticles
+    // marca o artigo do pool e buildHighlight o põe em `article`); o nível de
+    // cima cobre o highlight do 01-categorized.json.
+    if (rec.article?.same_fact_demoted ?? rec.same_fact_demoted) return;
     const url = rec.article?.url ?? rec.url;
     if (typeof url === "string" && url) pos.set(canonicalize(url), i + 1);
   });
