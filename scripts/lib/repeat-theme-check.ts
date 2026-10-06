@@ -26,11 +26,11 @@
  *
  * Dois sinais, cada um fail-soft/warning-only:
  *
- * 1. **Subject-theme substring match** (mecanismo original #1475, via
- *    `matchesRecentTheme`/`extractPastThemeEntities` de
+ * 1. **Subject-theme whole-word match (#9660)** (mecanismo original #1475, via
+ *    `matchesRecentThemeWholeWord`/`extractPastThemeEntities` de
  *    `past-editions-extract.ts`) — candidato cujo título/summary cita uma
  *    entidade capitalizada do SUBJECT LINE de uma edição das últimas
- *    `window`. Reusa infra existente, sem mudança.
+ *    `window`. Entidade como palavra inteira, não substring.
  *
  * 2. **Cross-source event overlap** (#8896, o gap concreto do incidente
  *    real) — Jaccard de título do candidato × título de cada DESTAQUE
@@ -51,7 +51,7 @@ import {
   jaccardSimilarity,
   thresholdForPair,
 } from "./title-similarity.ts";
-import { matchesRecentTheme } from "./past-editions-extract.ts";
+import { matchesRecentThemeWholeWord } from "./past-editions-extract.ts";
 import type { PastDestaqueTitle } from "./past-editions-extract.ts";
 
 /** Piso de Jaccard pra warning quando candidato e past NÃO compartilham entidade nomeada. */
@@ -148,7 +148,7 @@ export function detectEventOverlap(
 
 /**
  * Sinal 1 (mecanismo original #1475): entidade de tema recente citada no
- * título/summary do candidato. Reusa `matchesRecentTheme` sem alteração.
+ * título/summary do candidato. Palavra inteira (#9660), não substring.
  */
 export function detectSubjectThemeOverlap(
   candidates: RepeatThemeCandidate[],
@@ -157,7 +157,7 @@ export function detectSubjectThemeOverlap(
   if (pastThemeEntities.size === 0) return [];
   const matches: RepeatThemeSubjectMatch[] = [];
   for (const c of candidates) {
-    const entity = matchesRecentTheme(c.title ?? "", c.summary ?? "", pastThemeEntities);
+    const entity = matchesRecentThemeWholeWord(c.title ?? "", c.summary ?? "", pastThemeEntities);
     if (entity) {
       matches.push({
         candidateTitle: c.title ?? "(sem título)",

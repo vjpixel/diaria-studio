@@ -67,6 +67,40 @@ describe("detectEventOverlap (#8896)", () => {
   });
 });
 
+describe("detectSubjectThemeOverlap — palavra inteira (#9660)", () => {
+  const match = (title: string, ents: string[], summary = "") =>
+    detectSubjectThemeOverlap([{ title, summary, url: "https://x.com" }], new Set(ents));
+
+  it("NÃO casa substring dentro de outra palavra (agentic, reagente, agenteX)", () => {
+    assert.equal(match("Startup lança plataforma agentic para vendas", ["agente"]).length, 0);
+    assert.equal(match("Novo reagente acelera diagnóstico", ["agente"]).length, 0);
+    assert.equal(match("Os agentes de IA chegam ao varejo", ["agente"]).length, 1); // plural regular segue casando
+  });
+
+  it("casa a palavra inteira, inclusive com pontuação ao redor", () => {
+    assert.equal(match("Agente rebelde invade sistema", ["agente"]).length, 1);
+    assert.equal(match("O que é um agente? Entenda", ["agente"]).length, 1);
+  });
+
+  it("hífen delimita palavra; ponto na entidade é literal", () => {
+    assert.equal(match("Modelo gpt-4.5 chega ao ChatGPT", ["gpt-4.5"]).length, 1);
+    assert.equal(match("Modelo gpt-4x5 chega", ["gpt-4.5"]).length, 0);
+    assert.equal(match("Plataforma anti-agente lançada", ["agente"]).length, 1);
+  });
+
+  it("decodifica entidades HTML antes de casar (&ccedil;)", () => {
+    assert.equal(match("Regula&ccedil;&atilde;o avan&ccedil;a", ["regulação"]).length, 0); // genérica
+    assert.equal(match("Pol&iacute;tica de soberania digital", ["soberania"]).length, 1);
+    assert.equal(match("Avan&ccedil;os em soberania", ["avanços"]).length, 1); // só casa após decodificar
+    assert.equal(match("Subagente&ccedil;", ["agente"]).length, 0); // decodificado, cola na palavra
+  });
+
+  it("encontra a entidade também no summary", () => {
+    assert.equal(match("Sem relação", ["amodei"], "Dario Amodei anunciou").length, 1);
+    assert.equal(match("Sem relação", ["amodei"], "amodeix anunciou").length, 0);
+  });
+});
+
 describe("buildRepeatThemeResult", () => {
   it("flagged=true e theme descreve o melhor match quando há eventMatches", () => {
     const eventMatches = detectEventOverlap(

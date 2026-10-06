@@ -270,6 +270,27 @@ export function containsWholeWord(hay: string, word: string): boolean {
   return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?:e?s)?(?![\\p{L}\\p{N}])`, "u").test(hay);
 }
 
+/**
+ * #9660: variante de `matchesRecentTheme` com a entidade como PALAVRA inteira
+ * (mesmo `containsWholeWord` + decodificação de entidades HTML da #9646;
+ * hífen e ponto delimitam/escapam como lá). Sem o filtro de fato — é o que o
+ * check de tema repetido do gate (warning-only) usa.
+ */
+export function matchesRecentThemeWholeWord(
+  title: string,
+  summary: string,
+  pastEntities: Set<string>,
+): string | null {
+  const hay = normalizeThemeText(`${title} ${summary}`);
+  for (const rawEntity of pastEntities) {
+    const entity = normalizeThemeText(rawEntity);
+    if (entity.length < 5) continue;
+    if (GENERIC_THEME_WORDS.has(entity)) continue;
+    if (containsWholeWord(hay, entity)) return rawEntity;
+  }
+  return null;
+}
+
 /** Destaque passado (subset de `PastDestaqueTitle`) usado como fato do tema. */
 export interface ThemeFactDestaque {
   aammdd: string;
