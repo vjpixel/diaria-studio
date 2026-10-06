@@ -27,7 +27,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { shouldSkipDuplicateRejectComment } from "./lib/continuo-reject-comment.ts";
+import { lastTrustedCommentBodyFromPrViewJson, shouldSkipDuplicateRejectComment } from "./lib/continuo-reject-comment.ts";
 
 function parseArgs(argv: string[]): { pr: string; candidate: string } | null {
   let pr: string | null = null;
@@ -40,18 +40,20 @@ function parseArgs(argv: string[]): { pr: string; candidate: string } | null {
   return { pr, candidate };
 }
 
-/** `ok: false` = `gh` falhou de verdade (rede, auth, PR sumiu) — distinto de
- *  "PR sem comentários ainda" (`ok: true, body: null`), que é estado válido,
- *  não erro. */
+/** `ok: false` = `gh` falhou de verdade (rede, auth, PR sumiu) ou devolveu
+ *  payload inesperado — distinto de "PR sem comentário confiável ainda"
+ *  (`ok: true, body: null`), que é estado válido, não erro.
+ *
+ *  #9776: só comentário de autor confiável conta como "último" — ver
+ *  `lastTrustedCommentBodyFromPrViewJson`. */
 function fetchLastCommentBody(pr: string): { ok: boolean; body: string | null } {
   try {
-    const out = execFileSync(
-      "gh",
-      ["pr", "view", pr, "--json", "comments", "--jq", ".comments[-1].body // empty"],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    const trimmed = out.replace(/\n$/, "");
-    return { ok: true, body: trimmed.length > 0 ? trimmed : null };
+    const out = execFileSync("gh", ["pr", "view", pr, "--json", "comments"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return lastTrustedCommentBodyFromPrViewJson(out);
   } catch {
     return { ok: false, body: null };
   }

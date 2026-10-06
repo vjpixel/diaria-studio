@@ -27,6 +27,34 @@
  * @see scripts/lib/continuo-merge-gate.ts (decide a ação `reject`, não o texto)
  */
 
+import { trustedCommentBodies } from "./trusted-comment-author.ts";
+
+/**
+ * Último corpo de comentário de autor CONFIÁVEL (`trustedCommentBodies`,
+ * #9632) a partir do stdout de `gh pr view N --json comments` (#9776).
+ *
+ * O repo é público: sem o filtro, um terceiro que postasse texto idêntico ao
+ * reject do contínuo como comentário mais recente faria o dedup achar que o
+ * reject já tinha sido postado — e o contínuo calaria o dele. Comentário de
+ * conta externa é ignorado; vale o último comentário do dono/colaborador.
+ *
+ * `ok: false` = payload inesperado (JSON inválido, sem array `comments`) — o
+ * chamador trata igual a falha do `gh` (fail-open: posta). `body: null` =
+ * nenhum comentário confiável ainda (estado válido, não erro).
+ */
+export function lastTrustedCommentBodyFromPrViewJson(stdout: string): { ok: boolean; body: string | null } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { ok: false, body: null };
+  }
+  const bodies = trustedCommentBodies((parsed as { comments?: unknown } | null)?.comments);
+  if (bodies === null) return { ok: false, body: null };
+  const last = bodies[bodies.length - 1];
+  return { ok: true, body: last !== undefined && last.length > 0 ? last : null };
+}
+
 /**
  * `true` quando o comentário de rejeição que este tick está prestes a postar
  * é idêntico ao último comentário já presente na PR — nesse caso o chamador
