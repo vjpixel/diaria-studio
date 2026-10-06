@@ -43,6 +43,39 @@ export function stripCtaArrows(text: string): string {
   );
 }
 
+/**
+ * Backstop TOTAL das páginas do site (`/p/{slug}`, review do PR #9724): a
+ * página de uma edição nova sai por PR automático (`publish-edition-site-page.ts`,
+ * auto-merge #8158) e o check `check-no-arrow-glyph` reprova qualquer `→` em
+ * `workers/site/public/**`. Uma seta EDITORIAL no corpo de um destaque
+ * (`5,4% → 18%`) passaria intacta por `stripCtaArrows` e travaria o PR,
+ * deixando `/p/{slug}` em 404. Aqui nenhuma seta sobra, em 3 passes:
+ *
+ *  1. Transição numérica (número dos dois lados, tags inline permitidas no
+ *     meio): `5,4% → 18%`, `5,4% → <b>18%</b>`, `5,4% → <a …>18%</a>` viram
+ *     `… para …` ("de 5,4% para 18%" é como o português lê a notação). Roda
+ *     ANTES do passe de CTA de propósito: senão o lead-in `texto → <a>`
+ *     transformaria `5,4% → <a>18%</a>` em `5,4%: 18%`, trocando o sentido.
+ *  2. `stripCtaArrows` (posições de CTA, mesmo critério da newsletter).
+ *  3. Qualquer seta restante (encadeamento editorial, `A → B → C`): a
+ *     cercada de espaço vira ` – ` (meia-risca, a notação de sequência mais
+ *     neutra), a solta vira `–`. Perde a direção visual da seta, mas a
+ *     sequência continua legível, e a alternativa (PR travado, página fora
+ *     do ar) é pior.
+ *
+ * Idempotente. Puro.
+ */
+export function normalizeArrowsForSite(text: string): string {
+  if (!text.includes(ARROW_GLYPH)) return text;
+  const numeric = text.replace(
+    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
+    "$1 para ",
+  );
+  return stripCtaArrows(numeric)
+    .replace(/[ \t]+→[ \t]+/g, " – ")
+    .replaceAll(ARROW_GLYPH, "–");
+}
+
 export interface ArrowHit {
   /** 1-based. */
   line: number;
