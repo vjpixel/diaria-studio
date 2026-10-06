@@ -398,7 +398,7 @@ function newsletterGate(
 }
 
 /** Baseline NORMALIZADO da newsletter (snapshot ou reconstruído), ou `null`. */
-function newsletterBaseline(
+export function newsletterBaseline(
   editionDir: string,
   health: BaselineHealth,
   snapshotMd: string | undefined,
@@ -447,7 +447,7 @@ export function resolvePickUrls(
 }
 
 /** Saída do writer com as 3 opções de título (pra casar os picks e contar opções). */
-function readPipelineTitleOptions(editionDir: string): DestaqueEntry[] {
+export function readPipelineTitleOptions(editionDir: string): DestaqueEntry[] {
   const candidates = [findPipelineNewsletterOutput(editionDir), join(editionDir, "_internal", "02-draft.md")];
   for (const p of candidates) {
     if (p && existsSync(p)) {
