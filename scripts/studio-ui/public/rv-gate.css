@@ -158,5 +158,5 @@
   cursor: pointer;
 }
 .rv-gate-gs-btn[aria-pressed="true"] { border-color: var(--ink); font-weight: 700; }
-.rv-gate-gs-state { color: var(--ink-muted, inherit); }
-.rv-gate-gs-row.nao_lido .rv-gate-gs-state { font-weight: 700; }
+.rv-gate-gs-state { color: var(--ink); }
+.rv-gate-gs-row.nao_lido .rv-gate-gs-state { font-weight: 700; color: var(--status-warn-ink); }
