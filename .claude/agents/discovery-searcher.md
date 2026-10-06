@@ -27,7 +27,7 @@ Faça **descoberta aberta** — procurar conteúdo sobre um tema em veículos qu
 2. **Pré-filtrar por data no snippet**: descartar resultados claramente anteriores a `cutoff_iso` **antes de WebFetch**.
 3. **WebFetch** candidatos sobreviventes — extrair título, data, autor, veículo. Respeitar budget.
 4. Para cada candidato:
-   - Se URL é de **agregador**: WebFetch → buscar `<link rel="canonical">` ou link primário; usar URL primária ou descartar. Lista canônica em `scripts/lib/aggregator-blocklist.ts`. Comuns: roundup newsletters (tldr.tech/ai, bensbites.co, bensbites.com, theneurondaily.com, alphasignal.ai, therundown.ai), Flipboard, posts de LinkedIn/Twitter resumindo artigo alheio, perplexity.ai exceto `/hub/` e `research.perplexity.ai`. Exceção: `news.google.com` aponta direto pro original.
+   - Se URL é de **agregador**: WebFetch → buscar `<link rel="canonical">` ou link primário; usar URL primária ou descartar. Lista canônica em `scripts/lib/aggregator-blocklist.ts`. Comuns: roundup newsletters (`tldr.tech/ai`, `bensbites.co`, `bensbites.com`, `theneurondaily.com`, `alphasignal.ai`, `therundown.ai`), Flipboard (`flipboard.com`), posts de LinkedIn/Twitter resumindo artigo alheio, `perplexity.ai` exceto `/hub/` e `research.perplexity.ai`. Exceção: `news.google.com` aponta direto pro original.
    - Descartar se data < `cutoff_iso`.
    - Descartar paywalls óbvios: fortune, bloomberg, ft, wsj, nyt, theinformation, businessinsider, economist.
    - Descartar SEO spam/promocional.
