@@ -842,7 +842,7 @@ ${renderSubscribeCtaBlock()}
      (/leaderboard/{year}/arquivo?brand=clarice, ver votePageHtml em
      index.ts) — /jogar/arquivo hoje é só concern do brand web, não mais
      destino de ponte cross-brand nenhuma. -->
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -2275,7 +2275,7 @@ ${bodyHtml}
      Texto do link antigo evitado de propósito aqui: esta é uma HTML comment
      que SOBREVIVE no response body — repeti-la faria os testes de regex
      regressão/(doesNotMatch) falsearem positivo contra o próprio comentário. -->
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
 ${scriptHtml}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
@@ -2850,7 +2850,7 @@ ${renderBrandShellStyles()}
 <p class="sub">Pares de dias anteriores — vote e veja na hora se acertou. Só edições já reveladas entram aqui, o par de hoje fica em <a href="/jogar">/jogar</a>.</p>
 ${rows}
 ${renderArchiveSubscribeReinforcement()}
-<p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
+<p class="footer-links"><a href="/jogar">Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 <script>
 (function () {
@@ -3240,7 +3240,7 @@ ${renderBrandShellStyles()}
 <h1>Quiz relâmpago</h1>
 ${quizBodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 ${renderLightboxMarkup()}

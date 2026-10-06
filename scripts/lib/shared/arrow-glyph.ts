@@ -27,23 +27,40 @@
  *    `scripts/check-no-arrow-glyph.ts` (a varredura AST dos geradores fica em
  *    `scripts/lib/no-arrow-glyph-scan.ts`, que depende de `typescript`).
  *    Pega também as formas escapadas (#9727 resíduo a).
+ *
+ * #9723 (decisão do editor, 05/10/2026): a regra vale também para a seta
+ * para a esquerda `←` (links de volta/anterior). Detecção, decodificação de
+ * entidade, remoção no início de rótulo de link e o backstop do site cobrem
+ * as duas setas; a normalização numérica e o lead-in de CTA continuam só
+ * para `→`, que é a única com esses usos.
  */
 
 export const ARROW_GLYPH = "→";
 
 /**
- * Formas escapadas da seta que viram `→` no navegador ou no runtime JS:
- * entidade nomeada/decimal/hex do HTML e escape `→` / `\u{2192}` em
- * literal de JS/TS (#9727 resíduo a). Case-insensitive.
+ * Seta para a esquerda (#9723): a regra do #9721 foi estendida a ela por
+ * decisão do editor (05/10/2026). Era o glifo dos links de volta/anterior do
+ * site (`← diar.ia.br`, `← anterior`, `← {edição anterior}`); sem a `→` do
+ * "próximo", a nav tinha ficado assimétrica.
  */
-const ARROW_ESCAPE_SOURCE = String.raw`&rarr;|&#0*8594;|&#x0*2192;|\\u2192|\\u\{0*2192\}`;
+export const LEFT_ARROW_GLYPH = "←";
 
-/** `→` e as formas escapadas. Global; sempre usar com `matchAll`/`replace`. */
+/**
+ * Formas escapadas das setas que viram `→`/`←` no navegador ou no runtime
+ * JS: entidade nomeada/decimal/hex do HTML e escape `\u2192` / `\u{2192}`
+ * em literal de JS/TS (#9727 resíduo a; `←` = `&larr;`/`&#8592;`/`&#x2190;`/
+ * `\u2190`, #9723). Case-insensitive.
+ */
+const ARROW_ESCAPE_SOURCE =
+  String.raw`&rarr;|&#0*8594;|&#x0*2192;|\\u2192|\\u\{0*2192\}` +
+  String.raw`|&larr;|&#0*8592;|&#x0*2190;|\\u2190|\\u\{0*2190\}`;
+
+/** `→`, `←` e as formas escapadas. Global; sempre usar com `matchAll`/`replace`. */
 export function arrowFormsRegex(): RegExp {
-  return new RegExp(`${ARROW_GLYPH}|${ARROW_ESCAPE_SOURCE}`, "gi");
+  return new RegExp(`${ARROW_GLYPH}|${LEFT_ARROW_GLYPH}|${ARROW_ESCAPE_SOURCE}`, "gi");
 }
 
-/** `true` se o texto tem a seta em qualquer forma (literal ou escapada). */
+/** `true` se o texto tem uma das setas em qualquer forma (literal ou escapada). */
 export function hasArrowForm(text: string): boolean {
   return arrowFormsRegex().test(text);
 }
@@ -56,7 +73,14 @@ export function hasArrowForm(text: string): boolean {
  */
 export function decodeArrowEntities(text: string): string {
   if (!text.includes("&")) return text;
-  return text.replace(/&rarr;|&#0*8594;|&#x0*2192;/gi, ARROW_GLYPH);
+  return text
+    .replace(/&rarr;|&#0*8594;|&#x0*2192;/gi, ARROW_GLYPH)
+    .replace(/&larr;|&#0*8592;|&#x0*2190;/gi, LEFT_ARROW_GLYPH);
+}
+
+/** `true` se o texto (já com entidades decodificadas) tem `→` ou `←`. */
+function hasGlyph(text: string): boolean {
+  return text.includes(ARROW_GLYPH) || text.includes(LEFT_ARROW_GLYPH);
 }
 
 /**
@@ -83,9 +107,14 @@ export function normalizeNumericArrows(text: string): string {
  */
 export function stripUnambiguousCtaArrows(text: string): string {
   const t = decodeArrowEntities(text);
-  if (!t.includes(ARROW_GLYPH)) return t;
+  if (!hasGlyph(t)) return t;
   return (
     t
+      // #9723, seta para a esquerda no INÍCIO do rótulo (links de volta/anterior):
+      // `<a href="/">← Voltar</a>`, `<a rel="prev">← anterior</a>`, `[← Voltar](u)`
+      .replace(/(<a\b[^>]*>|<button\b[^>]*>|\[)[ \t]*←[ \t]*/g, "$1")
+      .replace(/<span aria-hidden="true">←<\/span>[ \t]*/g, "")
+      .replace(/^([ \t]*)←[ \t]*/gm, "$1")
       // `Ver curso <span aria-hidden="true">→</span>` vira `Ver curso`
       .replace(/[ \t]*<span aria-hidden="true">→<\/span>/g, "")
       // seta no fim do rótulo: `Ver →</a>`, `Próxima →</button>`, `[Ver →](url)`
@@ -124,7 +153,7 @@ const NUMERIC_LINK_TARGET = String.raw`(?:<[a-z][^>]*>|\[)+[ \t]*(?:R\$|US\$|\$|
  */
 export function stripCtaArrows(text: string): string {
   const t = stripUnambiguousCtaArrows(text);
-  if (!t.includes(ARROW_GLYPH)) return t;
+  if (!t.includes(ARROW_GLYPH)) return t; // o lead-in só existe pra `→`
   return (
     t
       // separador antes da seta: `[A](u) · → [B](u)` vira `[A](u) · [B](u)`
@@ -152,7 +181,7 @@ export function stripCtaArrows(text: string): string {
  *     `newsletter-final.html`, cujos blocos de CTA o `renderHTML` já limpou,
  *     então uma seta antes de link que sobrou é do corpo editorial
  *     (`A Meta → <a>Llama</a>`) e cai no passe 3.
- *  3. Qualquer seta restante (encadeamento editorial, `A → B → C`): a
+ *  3. Qualquer seta restante (`→` ou `←`, #9723; encadeamento editorial, `A → B → C`): a
  *     cercada de espaço vira ` – ` (meia-risca, a notação de sequência mais
  *     neutra), a solta vira `–`. Perde a direção visual da seta, mas a
  *     sequência continua legível, e a alternativa (PR travado, página fora
@@ -162,10 +191,11 @@ export function stripCtaArrows(text: string): string {
  */
 export function normalizeArrowsForSite(text: string): string {
   const t = decodeArrowEntities(text);
-  if (!t.includes(ARROW_GLYPH)) return t;
+  if (!hasGlyph(t)) return t;
   return stripUnambiguousCtaArrows(normalizeNumericArrows(t))
-    .replace(/[ \t]+→[ \t]+/g, " – ")
-    .replaceAll(ARROW_GLYPH, "–");
+    .replace(/[ \t]+[→←][ \t]+/g, " – ")
+    .replaceAll(ARROW_GLYPH, "–")
+    .replaceAll(LEFT_ARROW_GLYPH, "–");
 }
 
 export interface ArrowHit {

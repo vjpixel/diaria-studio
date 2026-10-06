@@ -1740,7 +1740,7 @@ ${renderBrandShellStyles()}
     <div class="choice"><img src="${imgB}" width="800" height="450" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
-<p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
+<p><a href="${archiveHref(brand, year)}">voltar ao arquivo de ${htmlEscape(year)}</a></p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
 ${renderBrandFooter(brand)}

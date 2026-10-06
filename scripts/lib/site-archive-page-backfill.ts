@@ -43,6 +43,8 @@
 import {
   type ArchivePost,
   type ArchiveNeighbor,
+  ARCHIVE_NAV_NEXT_LABEL,
+  ARCHIVE_NAV_PREV_LABEL,
   ARCHIVE_ROBOTS_META,
   archiveUrlForSlug,
   buildArchiveNeighborNavHtml,
@@ -223,6 +225,42 @@ function backfillNav(html: string, ctx: BackfillContext): { html: string; change
   if (!navHtml) return { html, changed: false };
   const out = html.replace(/<body[^>]*>/i, (full) => `${full}${navHtml}`);
   return { html: out, changed: true };
+}
+
+const ARCHIVE_NAV_BLOCK_RE = /<nav class="archive-nav"[^>]*>[\s\S]*?<\/nav>/i;
+const ARCHIVE_NAV_LINK_RE = /<a href="([^"]*)" rel="(prev|next)">([\s\S]*?)<\/a>/gi;
+
+/**
+ * #9723 — re-renderiza a nav prev/next JÁ gravada numa página com o
+ * `buildArchiveNeighborNavHtml` atual (hoje: sem a seta `←`, com os rótulos
+ * `Anterior: ` / `Próxima: `). Os vizinhos saem da PRÓPRIA nav existente
+ * (href + texto), nunca do sitemap: muda só a marcação, nunca qual edição é
+ * vizinha. O texto antigo perde a seta `←` inicial (formato pré-#9723) ou o
+ * rótulo atual (idempotência) antes de virar o título.
+ *
+ * No-op (fail-closed, HTML intocado) quando: não há nav, há link de forma
+ * inesperada (href fora de `/p/{slug}` do apex, texto com tag HTML) ou o
+ * re-render dá o mesmo HTML.
+ */
+export function refreshArchiveNeighborNav(html: string): { html: string; changed: boolean } {
+  const block = html.match(ARCHIVE_NAV_BLOCK_RE);
+  if (!block) return { html, changed: false };
+  const base = archiveUrlForSlug("");
+  const neighbors: { prev?: ArchiveNeighbor; next?: ArchiveNeighbor } = {};
+  for (const m of block[0].matchAll(ARCHIVE_NAV_LINK_RE)) {
+    const [, href, rel, text] = m;
+    if (!href.startsWith(base) || /[<>]/.test(text)) return { html, changed: false };
+    const slug = href.slice(base.length);
+    if (!slug || slug.includes("/")) return { html, changed: false };
+    const label = rel === "prev" ? ARCHIVE_NAV_PREV_LABEL : ARCHIVE_NAV_NEXT_LABEL;
+    let raw = text.replace(/^\s*(?:←|&larr;)\s*/i, "");
+    if (raw.startsWith(label)) raw = raw.slice(label.length);
+    neighbors[rel as "prev" | "next"] = { slug, title: unescapeHtmlEntities(raw) };
+  }
+  if (!neighbors.prev && !neighbors.next) return { html, changed: false };
+  const fresh = buildArchiveNeighborNavHtml(neighbors.prev, neighbors.next);
+  if (fresh === block[0]) return { html, changed: false };
+  return { html: html.replace(block[0], () => fresh), changed: true };
 }
 
 /**

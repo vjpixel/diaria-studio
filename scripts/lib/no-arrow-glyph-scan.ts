@@ -1,7 +1,9 @@
 /**
  * no-arrow-glyph-scan.ts (#9721): varredura do check de CI
  * `scripts/check-no-arrow-glyph.ts` ("nunca a seta `→` em botão, link, CTA
- * ou copy que chega ao leitor").
+ * ou copy que chega ao leitor"), estendido à seta `←` em #9723 (links de
+ * volta/anterior; a detecção vem de `arrowFormsRegex`, que cobre as duas
+ * setas e as formas escapadas `&larr;`/`&#8592;`/`&#x2190;`/`\u2190`).
  *
  * Três superfícies, cada uma com um critério:
  *

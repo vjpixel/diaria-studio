@@ -89,7 +89,7 @@ ${renderAnalyticsHead()}
 <h2>Privacidade</h2>
 <p>O tratamento de dados de leitores da newsletter está descrito na <a href="https://arquivo.diar.ia.br/privacidade">Política de Privacidade</a>.</p>
 
-<footer><p><a href="https://diar.ia.br">← diar.ia.br</a> · <a href="https://arquivo.diar.ia.br/">Arquivo de edições</a> · <a href="https://arquivo.diar.ia.br/privacidade">Política de Privacidade</a></p></footer>
+<footer><p><a href="https://diar.ia.br">diar.ia.br</a> · <a href="https://arquivo.diar.ia.br/">Arquivo de edições</a> · <a href="https://arquivo.diar.ia.br/privacidade">Política de Privacidade</a></p></footer>
 </body>
 </html>`;
 }

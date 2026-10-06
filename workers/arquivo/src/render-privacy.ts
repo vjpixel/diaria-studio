@@ -112,7 +112,7 @@ ${renderAnalyticsHead()}
 <h2>Contato</h2>
 <p>Dúvidas sobre privacidade ou sobre esta política: <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>.</p>
 
-<footer><p><a href="https://diar.ia.br">← diar.ia.br</a> · <a href="https://arquivo.diar.ia.br/">Arquivo de edições</a></p></footer>
+<footer><p><a href="https://diar.ia.br">diar.ia.br</a> · <a href="https://arquivo.diar.ia.br/">Arquivo de edições</a></p></footer>
 </body>
 </html>`;
 }

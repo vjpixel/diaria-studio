@@ -1327,7 +1327,7 @@ ${eiaMetaHtml}
 ${identityBoxHtml}
 ${shareCardHtml}
 ${archiveButtonHtml}
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
 ${renderBrandFooter(brand)}

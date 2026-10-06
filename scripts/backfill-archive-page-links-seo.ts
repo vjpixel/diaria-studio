@@ -40,6 +40,12 @@
  *
  * Uso:
  *   npx tsx scripts/backfill-archive-page-links-seo.ts [--pages-dir workers/site/public/p] [--sitemap workers/site/public/sitemap.xml] [--dry-run]
+ *   npx tsx scripts/backfill-archive-page-links-seo.ts --refresh-nav-only [--pages-dir ...] [--dry-run]
+ *
+ * `--refresh-nav-only` (#9723): só re-renderiza a nav prev/next que a página
+ * JÁ tem com o `buildArchiveNeighborNavHtml` atual (`refreshArchiveNeighborNav`),
+ * sem nenhum dos outros backfills. Foi como a seta `←` saiu das ~270 páginas
+ * já gravadas; serve pra qualquer mudança futura de marcação da nav.
  *
  * Saída (stdout): contagem de páginas alteradas (SEO / nav / total) sobre o
  * total de páginas listadas no sitemap. Exit 0 sempre que o processo
@@ -51,7 +57,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { backfillArchivePageOnDisk, extractPageTitle } from "./lib/site-archive-page-backfill.ts";
+import { backfillArchivePageOnDisk, extractPageTitle, refreshArchiveNeighborNav } from "./lib/site-archive-page-backfill.ts";
 import type { ArchiveNeighbor } from "./lib/site-archive-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -263,6 +269,38 @@ export function runBackfill(
   };
 }
 
+/**
+ * #9723 — `--refresh-nav-only`: re-renderiza a nav existente de toda página
+ * `{pagesDir}/{slug}/index.html`, sem os demais backfills (o menu global do
+ * #8497, por exemplo, ainda não foi aplicado às páginas gravadas e não deve
+ * entrar de carona). Devolve quantas páginas mudaram.
+ */
+export function runRefreshNav(
+  pagesDir: string,
+  opts: {
+    dryRun?: boolean;
+    readPage?: (path: string) => string;
+    writePage?: (path: string, html: string) => void;
+    listSlugs?: () => string[];
+  } = {},
+): { scanned: number; changed: number } {
+  const readPage = opts.readPage ?? ((p: string) => readFileSync(p, "utf8"));
+  const writePage = opts.writePage ?? ((p: string, html: string) => writeFileSync(p, html, "utf8"));
+  const slugs = opts.listSlugs ? opts.listSlugs() : readdirSync(pagesDir).sort();
+  let scanned = 0;
+  let changed = 0;
+  for (const slug of slugs) {
+    const p = join(pagesDir, slug, "index.html");
+    if (!opts.listSlugs && !existsSync(p)) continue;
+    scanned++;
+    const result = refreshArchiveNeighborNav(readPage(p));
+    if (!result.changed) continue;
+    changed++;
+    if (!opts.dryRun) writePage(p, result.html);
+  }
+  return { scanned, changed };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const pagesDirArg = getStringArg(args, "pages-dir");
@@ -270,6 +308,15 @@ async function main() {
   const pagesDir = pagesDirArg ? resolve(ROOT, pagesDirArg) : DEFAULT_PAGES_DIR;
   const sitemapPath = sitemapArg ? resolve(ROOT, sitemapArg) : DEFAULT_SITEMAP_PATH;
   const dryRun = hasFlag(args, "dry-run");
+
+  if (hasFlag(args, "refresh-nav-only")) {
+    const r = runRefreshNav(pagesDir, { dryRun });
+    console.log(
+      `backfill-archive-page-links-seo --refresh-nav-only: ${r.changed}/${r.scanned} páginas com a nav re-renderizada` +
+        `${dryRun ? " [dry-run]" : ""}`,
+    );
+    return;
+  }
 
   const sitemapXml = readFileSync(sitemapPath, "utf8");
   const result = runBackfill(pagesDir, sitemapXml, { dryRun });
