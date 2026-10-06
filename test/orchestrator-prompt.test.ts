@@ -296,7 +296,11 @@ describe("orchestrator-prompt (#634)", () => {
       // #9370: +6 linhas (§4c.9 refresh tardio pré-gate — 1 parágrafo + a
       // seção `━━━ SAIU DEPOIS DA PESQUISA` com `{late_refresh_block}` no
       // resumo do gate). Arquivo foi a 941 linhas. Teto bumped de 935→945.
-      "orchestrator-stage-4.md": 945,
+      // #9678: +7 linhas (§4d passo "garantir os dois previews vivos + os
+      // dois Artifacts" — `serve-preview.ts --ensure` antes de cada
+      // apresentação do gate, já que os servidores agora sobem desanexados).
+      // Arquivo foi a 951 linhas. Teto bumped de 945→955.
+      "orchestrator-stage-4.md": 955,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser

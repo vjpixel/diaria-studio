@@ -126,7 +126,9 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator -
 
 **Rodar PRIMEIRO, antes de ler `orchestrator.md`:**
 
-**Rodar em BACKGROUND** (`run_in_background: true` no tool Bash):
+**Rodar em BACKGROUND com timeout explícito** (`run_in_background: true` **e** `timeout: 7200000` no tool Bash — os dois parâmetros na MESMA chamada, #9677):
+
+(Bash tool: `run_in_background: true`, `timeout: 7200000`)
 
 ```bash
 npx tsx scripts/run-edition-stages.ts --edition $1 --through 3{ --session-supervised se --no-gates NÃO foi passado à invocação ORIGINAL de /diaria-edicao}
@@ -136,7 +138,9 @@ Este comando roda os Stages 1, 2 e 3 **cada um num processo `claude` próprio**.
 
 **`--session-supervised` (#6719) — sempre que o EDITOR está presente nesta sessão.** Todo spawn deste comando passa `--no-gates` a cada stage (é o que permite o subprocesso terminar sem ninguém ali para responder ao gate INTERNO dele) — mas isso não significa que a sessão é desassistida. Quando a invocação original de `/diaria-edicao` (esta conversa) **não** trazia `--no-gates`, o editor está presente e supervisionando, mesmo que os Stages 1-3 rodem headless por isolamento de contexto (#5744). **`--session-supervised` NÃO controla mais `orchestrator-stage-0-preflight.md` § 0-replies (#7166)** — essa seção já rodou no Passo 1b acima, no top-level, antes de qualquer spawn; o Stage 1 spawnado NUNCA tenta § 0-replies, independente desta flag (MCP não existe ali) — `pre_gate` fica sem consumidor dentro do Stage 1 spawnado a partir daqui (§ 0-replies era o único ponto que o lia). Continuar passando a flag é inofensivo (nenhum outro trecho do Stage 1 lê `pre_gate`) e preserva o sinal pra um futuro segundo consumidor; não vale a pena remover a plumbing por um campo vestigial. Omitir esta flag quando `--no-gates` FOI passado a `/diaria-edicao` — aí a sessão é de fato desassistida (comportamento inalterado).
 
-**Por que background e não `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
+**Por que background e não uma chamada síncrona com `timeout:`.** Os três stages somam tipicamente ~40min (na edição 260814: 13min + 34min + 3min). O teto do tool Bash em FOREGROUND é 600000ms — **10 minutos**, e não há valor maior a passar. Uma chamada síncrona seria cortada no meio em praticamente toda invocação, e o pior não é a demora: cortada, a sessão não recebe nem o resumo nem o exit code, e fica sem saber se o stage em andamento terminou, morreu ou continua rodando órfão. Em background o comando roda até o fim e a sessão é reinvocada quando ele sai.
+
+**Por que background E `timeout: 7200000` (#9677).** Background sem `timeout` não é "sem limite": o comando em background também tem um default de **30 minutos**, e o harness mata o processo (`[killed]`) quando ele estoura. Na edição 261006 um Stage 1 longo seguido de ~21min de Stage 2 passou dos 30min e o run foi morto no meio do Stage 2 — recuperável reinvocando (resume por sentinela), mas o trabalho do stage interrompido se perde (~30min). `7200000` (2h) é o teto que cobre os ~40min típicos com folga para um Stage 1/2 anormalmente longo. Nunca omitir o `timeout` desta chamada.
 
 Enquanto roda, **não ficar consultando o progresso** — cada consulta traz saída para a conversa, que é o contexto que este passo existe para não carregar. Esperar a notificação de término.
 
