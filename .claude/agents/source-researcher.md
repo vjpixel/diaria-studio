@@ -32,7 +32,7 @@ Excedendo qualquer limite → devolver o que tem com `status: "ok"`. Sem exceç�
 4. Para cada candidato:
    - Se URL é de **agregador** (redistribui sem produção própria): WebFetch → procurar `<link rel="canonical">` ou link primário; usar URL primária ou descartar. Lista canônica em `scripts/lib/aggregator-blocklist.ts`:
      - Agregadores clássicos: `crescendo.ai`, `flipboard.com`, `techstartups.com`
-     - Roundup newsletters AI: `therundown.ai`, `tldr.tech/ai`, `bensbites.co`, `theneurondaily.com`, `superhuman.ai`, `theaipulse.beehiiv.com`, `agentpulse.beehiiv.com`, `aibreakfast.beehiiv.com`, `alphasignal.ai`, `archive.thedeepview.com`, `recaply.co`, `7min.ai`, `evolvingai.io`, `datamachina.com`, `cyberman.ai`
+     - Roundup newsletters AI: `therundown.ai`, `tldr.tech/ai`, `bensbites.co`, `bensbites.com`, `theneurondaily.com`, `superhuman.ai`, `theaipulse.beehiiv.com`, `agentpulse.beehiiv.com`, `aibreakfast.beehiiv.com`, `alphasignal.ai`, `archive.thedeepview.com`, `recaply.co`, `7min.ai`, `evolvingai.io`, `datamachina.com`, `cyberman.ai`
      - Republishers BR: `docmanagement.com.br`
      - Posts de LinkedIn/Twitter resumindo artigo alheio
      - `perplexity.ai/*` exceto `/hub/` e `research.perplexity.ai`

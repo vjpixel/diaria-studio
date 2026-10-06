@@ -64,6 +64,12 @@ describe("isAggregator (#717 hyp 5)", () => {
     assert.equal(r.blocked, true);
     assert.equal(r.category, "br_republisher");
   });
+
+  it("bensbites.com bloqueado como ai_roundup_newsletter (#9655)", () => {
+    const r = isAggregator("https://www.bensbites.com/p/who-let-the-agents-in");
+    assert.equal(r.blocked, true);
+    assert.equal(r.category, "ai_roundup_newsletter");
+  });
 });
 
 describe("filterSources (#717 hyp 5)", () => {
