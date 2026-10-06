@@ -72,7 +72,10 @@ describe("#9721 página /p/ de edição com seta passa no check-no-arrow-glyph",
     const html = runPublish(INPUTS_COM_SETA);
     assert.match(html, />Leia mais<\/a>/);
     assert.match(html, /<p><a href="https:\/\/exemplo\.com\/c">Garanta seu ingresso<\/a>/);
-    assert.match(html, /Veja o ranking: <a/);
+    // #9727: na página o lead-in `texto → <a>` não vira `texto: <a>` (ambíguo:
+    // `A Meta → <a>Llama</a>` mudaria de sentido). Os CTAs reais já chegam
+    // limpos do renderHTML; o que sobra é tratado como sequência editorial.
+    assert.match(html, /Veja o ranking – <a/);
     assert.match(html, /prompt – modelo – resposta/);
   });
 

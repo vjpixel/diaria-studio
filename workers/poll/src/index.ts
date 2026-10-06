@@ -1300,7 +1300,7 @@ ${renderNicknameFormStyles()}
      form empilhado, botão full-width, tap targets ~44px. */
   /* #1779: tráfego majoritariamente mobile. Breakpoint 600px cobre celulares
      grandes/landscape também. Aqui AMPLIAMOS texto/elementos (a queixa do editor
-     era "miúdo") — antes o #1675 encolhia .msg (1.3→1.15), contraproducente. */
+     era "miúdo") — antes o #1675 encolhia .msg (de 1.3 para 1.15), contraproducente. */
   @media (max-width: 600px) {
     body { margin: 24px auto; padding: 0 16px; font-size: 18px; }
     .msg { font-size: 1.5rem; }
