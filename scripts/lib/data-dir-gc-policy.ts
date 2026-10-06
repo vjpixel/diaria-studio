@@ -16,7 +16,11 @@
  *      derivado, regenerável).
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-NNNN`, sufixo de
  *      nome de máquina como `-Neo`/`-predator`/`-Zenbook`, `.bak[-data]`) —
- *      em QUALQUER lugar sob `data/`, não só edições.
+ *      em QUALQUER lugar sob `data/`, não só edições. **OPT-IN desde #9732**
+ *      (`OPT_IN_BUCKETS`): a cópia de conflito pode ser a ÚNICA cópia do
+ *      lado que perdeu uma escrita concorrente; o `--apply` só a remove com
+ *      `--include-bucket backup-sibling`, e mesmo assim nunca store
+ *      (`*.db*`/`*.sqlite*`) nem arquivo editorial (`isBackupSiblingProtected`).
  *   5. `.mv-cache-*.json` (cache MillionVerifier). **OPT-IN desde #9725**
  *      (`OPT_IN_BUCKETS`): o cache pode guardar resultado pago ainda não
  *      persistido nos CSVs, então o `--apply` só o remove com
@@ -88,8 +92,16 @@ export const ALL_GC_BUCKETS: readonly GcBucket[] = [
  * — a premissa "resultado pago já vive em outro lugar" de `classifyMvCache`
  * não é garantida, e o `--apply` agendado (semanal, sem supervisão) não pode
  * apostar nela.
+ *
+ * `backup-sibling` entra pelo #9732 pela mesma razão: uma cópia de conflito
+ * do OneDrive (`diaria-subscribers-Neo.db`, `02-reviewed-Neo.md`) pode ser a
+ * ÚNICA cópia do lado que perdeu uma escrita concorrente, a idade derivável
+ * do filesystem não é confiável (a renomeação de conflito preserva o mtime
+ * do original) e a remoção propaga pelo OneDrive às 3 máquinas. Apagar é
+ * irreversível, então o default que erra é o que apaga: a task agendada não
+ * o inclui, só uma execução manual com `--include-bucket backup-sibling`.
  */
-export const OPT_IN_BUCKETS: readonly GcBucket[] = ["mv-cache"];
+export const OPT_IN_BUCKETS: readonly GcBucket[] = ["mv-cache", "backup-sibling"];
 
 /**
  * @pure — conjunto de buckets que o `--apply` remove: todos os não-opt-in +
@@ -173,25 +185,78 @@ export function isEmbeddedHtmlFilename(name: string): boolean {
  *  `-Neo-10` (OneDrive numera conflitos repetidos), `-helios`, `-300`,
  *  `-predator-safeBackup-0001`, `-fromWindows-260817-0146`, `.db.bak`,
  *  `.db.bak-260728-pre-build`. */
+const MACHINE_SUFFIX_RE =
+  // #9732: `-do-zenbook`/`-no-zenbook` (`coletar-do-zenbook.ps1`,
+  // `aplicar-no-zenbook.ps1`) é PROSA em português, não sufixo de conflito —
+  // o OneDrive nunca põe preposição antes do nome da máquina.
+  /(?<!-(?:do|no|da|na|de|em|pro|para))-(predator|neo|zenbook|helios|300)(-\d+)?(?=\.[^./]+$)/i;
+
 const BACKUP_SIBLING_PATTERNS: readonly RegExp[] = [
   /-safeBackup-\d+(?=\.[^./]+$|$)/i,
-  /-(predator|neo|zenbook|helios|300)(-\d+)?(?=\.[^./]+$)/i,
+  MACHINE_SUFFIX_RE,
   /-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i,
   /\.bak(-\d{6}[-\w]*)?$/i,
 ];
 
 /** @pure — `true` se `name` (basename, sem diretório) é uma cópia-irmã de
  *  conflito, nunca o arquivo canônico em si (o canônico não tem nenhum
- *  desses sufixos). */
+ *  desses sufixos). Casar o NOME é necessário, nunca suficiente: um nome
+ *  como `run-Zenbook.log` casa, mas só vira candidato se o arquivo canônico
+ *  (`run.log`) existir no mesmo diretório (`classifyBackupSiblings`, #9732). */
 export function isBackupSiblingFilename(name: string): boolean {
   return BACKUP_SIBLING_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * @pure — nome do arquivo CANÔNICO de uma cópia-irmã (#9732): remove os
+ * sufixos de conflito do fim do nome, repetidamente, até estabilizar
+ * (`clarice-users-predator-safeBackup-0001.db` → `clarice-users.db`,
+ * `run-log-Neo-2.jsonl` → `run-log.jsonl`, `x.db.bak-260728-pre-build` →
+ * `x.db`). `null` se o nome não carrega sufixo de conflito nenhum.
+ */
+export function backupSiblingCanonicalName(name: string): string | null {
+  let cur = name;
+  for (;;) {
+    const next = cur
+      .replace(/\.bak(-\d{6}[-\w]*)?$/i, "")
+      .replace(/-safeBackup-\d+(?=\.[^./]+$|$)/i, "")
+      .replace(/-fromWindows-\d{6}-\d{4}(?=\.[^./]+$)/i, "")
+      .replace(MACHINE_SUFFIX_RE, "");
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur === name || cur === "" ? null : cur;
+}
+
+/**
+ * @pure — cópia-irmã que NUNCA é candidata, nem com o opt-in (#9732):
+ *   - store SQLite (`*.db*`, `*.sqlite*` — inclui `-wal`/`-shm`/`.bak`): a
+ *     cópia de conflito de um store pode ser o único registro das escritas
+ *     de uma máquina (`diaria-subscribers-Neo.db`, `clarice-users-Neo.db`);
+ *   - arquivo editorial: `0N-*.md` em qualquer lugar e qualquer `*.md` sob
+ *     `editions/` (`02-reviewed-Neo.md` pode ser a revisão do editor).
+ * Decide pelo nome da cópia E pelo canônico — uma cópia `x.db.bak` ou
+ * `02-reviewed-Neo.md` é protegida pelos dois lados.
+ */
+export function isBackupSiblingProtected(relPath: string): boolean {
+  const p = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const base = p.slice(p.lastIndexOf("/") + 1);
+  const names = [base, backupSiblingCanonicalName(base) ?? base];
+  for (const n of names) {
+    if (/\.(db|sqlite3?)([.-]|$)/i.test(n)) return true;
+    if (/^0\d-.*\.md$/i.test(n)) return true;
+    if (/\.md$/i.test(n) && /(^|\/)editions\//i.test(p)) return true;
+  }
+  return false;
 }
 
 export interface AgedFile {
   /** path relativo à raiz `data/`, "/"-separated. */
   relPath: string;
   sizeBytes: number;
-  /** idade em dias (mtime), calculada pelo caller — mantém esta função pura/testável sem `Date.now()` embutido. */
+  /** idade em dias, calculada pelo caller — mantém esta função pura/testável sem `Date.now()` embutido.
+   *  Para cópias-irmãs (#9732) o script passa a idade CONSERVADORA (mais
+   *  recente entre mtime/ctime/birthtime), não o mtime cru. */
   ageDays: number;
   /** mtime bruto em ms (epoch) — usado só pra DESEMPATAR ordem dentro do
    *  mesmo dia (`classifyBackupSiblings`). `ageDays` sozinho (arredondado
@@ -201,54 +266,68 @@ export interface AgedFile {
   mtimeMs: number;
 }
 
-/** Retenção default pra cópias-irmãs — folgada o bastante pra sobreviver a
- *  uma máquina fora do ar por 1-2 semanas sem perder o backup mais recente
- *  dela, curta o bastante pra não deixar lixo de meses acumular (medição da
- *  issue: 23 dos 33 `run-log-*.jsonl` eram de jun/jul, muito além disso). */
-export const BACKUP_SIBLING_RETENTION_DAYS = 14;
+/** Retenção default pra cópias-irmãs. **Dobrada de 14 para 28 dias no
+ *  #9732:** nenhuma idade derivável do filesystem é confiável aqui — a
+ *  renomeação de conflito do OneDrive PRESERVA o mtime do original, então
+ *  uma cópia pode nascer com "mais de 14 dias" e ser elegível na 1ª rodada.
+ *  O script mitiga pela idade CONSERVADORA (o mais recente entre mtime,
+ *  ctime e birthtime — rename e criação atualizam ctime/birthtime, ver
+ *  `conservativeTimestampMs` em `gc-data-dir.ts`) e o dobro da janela cobre
+ *  o resíduo (plataforma/cliente de sync que reescreva esses campos). */
+export const BACKUP_SIBLING_RETENTION_DAYS = 28;
+
+export interface ClassifyBackupSiblingsOptions {
+  /**
+   * `true` se o arquivo CANÔNICO (path relativo a `data/`, "/"-separated)
+   * existe. Cópia cujo canônico não existe NUNCA é candidata (#9732): ou é
+   * a única cópia sobrevivente daquele dado, ou o nome casou o padrão por
+   * acaso (`run-Zenbook.log` sem `run.log` ao lado). Default `() => false`
+   * — sem a informação, nada sai (fail-closed).
+   */
+  canonicalExists?: (canonicalRelPath: string) => boolean;
+}
 
 /**
- * Classifica cópias-irmãs candidatas a remoção — agrupadas por DIRETÓRIO
- * (não por "família" de nome canônico, ver nota de desenho abaixo). Dentro
- * de cada diretório, a cópia MAIS RECENTE (por `mtimeMs` real, não
- * `ageDays` arredondado — ver docstring de `AgedFile`) nunca é candidata —
- * mesmo se velha (issue: "sempre preservando o mais recente de cada
- * família") — as demais só entram se `ageDays > retentionDays`.
+ * Classifica cópias-irmãs candidatas a remoção — agrupadas por FAMÍLIA
+ * (diretório + nome canônico, `backupSiblingCanonicalName`), desde o #9732;
+ * antes era só por diretório, e um diretório com cópias de 2 canônicos
+ * distintos preservava 1 cópia só, de 1 deles. Dentro de cada família, a
+ * cópia MAIS RECENTE (por `mtimeMs` real, não `ageDays` arredondado — ver
+ * docstring de `AgedFile`) nunca é candidata, mesmo se velha; as demais só
+ * entram se `ageDays > retentionDays`.
+ *
+ * Nunca candidatas, em nenhuma família (#9732): cópias protegidas
+ * (`isBackupSiblingProtected` — store e arquivo editorial), cópias sem nome
+ * canônico derivável, e cópias cujo canônico não existe
+ * (`opts.canonicalExists`).
  *
  * `files` deve conter só arquivos já filtrados por `isBackupSiblingFilename`
  * (esta função não filtra de novo — separação de responsabilidade: achar
- * vs. decidir retenção).
- *
- * **Premissa assumida, registrada e não resolvida (achado de review,
- * confiança média):** agrupar por DIRETÓRIO em vez de por família de nome
- * canônico (ex: extrair o stem antes do 1º sufixo de conflito) assume que
- * um diretório nunca mistura backups de mais de 1 arquivo canônico
- * distinto — verdadeiro em todo caso medido no projeto (`clarice-users.db`
- * sozinho em `clarice-subscribers/`, `run-log.jsonl` sozinho na raiz),
- * mas não é garantido em geral: um diretório com 2 arquivos canônicos
- * diferentes, cada um com suas próprias cópias-irmãs, faria esta função
- * tratá-las como 1 família só — "a mais recente do diretório" preservaria
- * só 1 cópia (de 1 dos 2 canônicos), quando deveria preservar 1 de CADA.
- * Critério pra revisitar: se uma varredura real (`--dry-run --json`)
- * mostrar um diretório com 3+ cópias-irmãs cujos nomes, ao remover o
- * sufixo de conflito, não convergem pro MESMO stem — sinal de mistura —
- * trocar pra agrupamento por família (stem canônico) em vez de diretório.
+ * vs. decidir retenção). O bucket é OPT-IN no `--apply` (`OPT_IN_BUCKETS`).
  */
 export function classifyBackupSiblings(
   files: readonly AgedFile[],
   retentionDays: number = BACKUP_SIBLING_RETENTION_DAYS,
+  opts: ClassifyBackupSiblingsOptions = {},
 ): GcCandidate[] {
-  const byDir = new Map<string, AgedFile[]>();
+  const canonicalExists = opts.canonicalExists ?? (() => false);
+  const byFamily = new Map<string, AgedFile[]>();
   for (const f of files) {
     const norm = f.relPath.replace(/\\/g, "/");
-    const dir = norm.includes("/") ? norm.slice(0, norm.lastIndexOf("/")) : "";
-    const list = byDir.get(dir) ?? [];
+    if (isBackupSiblingProtected(norm)) continue;
+    const slash = norm.lastIndexOf("/");
+    const dir = slash === -1 ? "" : norm.slice(0, slash);
+    const canonical = backupSiblingCanonicalName(norm.slice(slash + 1));
+    if (canonical === null) continue;
+    const canonicalRel = dir === "" ? canonical : `${dir}/${canonical}`;
+    if (!canonicalExists(canonicalRel)) continue;
+    const list = byFamily.get(canonicalRel) ?? [];
     list.push(f);
-    byDir.set(dir, list);
+    byFamily.set(canonicalRel, list);
   }
 
   const out: GcCandidate[] = [];
-  for (const list of byDir.values()) {
+  for (const [canonicalRel, list] of byFamily) {
     // mtimeMs REAL, não ageDays arredondado (achado de review) — cópias-
     // irmãs do OneDrive nascem no mesmo evento de conflito, então empatar
     // no mesmo DIA é o caso comum, não a exceção; ageDays (Math.floor)
@@ -256,13 +335,15 @@ export function classifyBackupSiblings(
     // de fato mais recente.
     const sorted = [...list].sort((a, b) => b.mtimeMs - a.mtimeMs); // mais nova primeiro
     sorted.forEach((f, idx) => {
-      if (idx === 0) return; // mais recente do diretório — nunca candidata
+      if (idx === 0) return; // mais recente da família — nunca candidata
       if (f.ageDays <= retentionDays) return;
       out.push({
         relPath: f.relPath,
         bucket: "backup-sibling",
         sizeBytes: f.sizeBytes,
-        reason: `cópia-irmã de conflito do OneDrive, ${f.ageDays}d (>${retentionDays}d) e não é a mais recente do diretório`,
+        reason:
+          `cópia-irmã de conflito do OneDrive de ${canonicalRel}, ${f.ageDays}d (>${retentionDays}d) e não é a mais ` +
+          `recente da família — opt-in no --apply (#9732): pode ser a única cópia de uma escrita concorrente`,
       });
     });
   }

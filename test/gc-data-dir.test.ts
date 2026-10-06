@@ -11,13 +11,18 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { collectCandidates, main, type RmFn } from "../scripts/gc-data-dir.ts";
 import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 
 const DAY_MS = 86_400_000;
+
+/** #9732: a idade de produção das cópias-irmãs é o mais recente entre
+ *  mtime/ctime/birthtime, e `utimesSync` não recua ctime — as fixtures
+ *  envelhecem só o mtime, então os testes de retenção injetam o mtime. */
+const MTIME = (st: Stats): number => st.mtimeMs;
 
 function ageFile(path: string, ageDays: number): void {
   const t = (Date.now() - ageDays * DAY_MS) / 1000;
@@ -38,7 +43,7 @@ describe("collectCandidates — ponta a ponta contra fixture de disco", () => {
     writeAged(resolve(editionDir, "_internal/tmp-articles-raw.json"), "[]", 999);
     // NÃO grava .step-6-done.json — edição em andamento.
 
-    const { candidates } = collectCandidates(tmp);
+    const { candidates } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
     assert.deepEqual(candidates, [], "edição aberta nunca é tocada, por mais velha que esteja");
   });
 
@@ -51,7 +56,7 @@ describe("collectCandidates — ponta a ponta contra fixture de disco", () => {
     writeAged(resolve(editionDir, "01-categorized.md"), "conteúdo final — nunca tocar", 5);
     writeSentinel(editionDir, 6, []);
 
-    const { candidates } = collectCandidates(tmp);
+    const { candidates } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
     const byBucket = new Map(candidates.map((c) => [c.bucket, c]));
     assert.equal(byBucket.get("forensic-cache")?.relPath, "editions/2609/260901/_internal/_forensic");
     assert.equal(byBucket.get("tmp-intermediate")?.relPath, "editions/2609/260901/_internal/tmp-articles-raw.json");
@@ -72,7 +77,7 @@ describe("collectCandidates — ponta a ponta contra fixture de disco", () => {
       writeSentinel(dir, 6, []);
     }
 
-    const { candidates } = collectCandidates(tmp);
+    const { candidates } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
     const paths = candidates.filter((c) => c.bucket === "tmp-intermediate").map((c) => c.relPath);
     assert.deepEqual(
       new Set(paths),
@@ -82,13 +87,13 @@ describe("collectCandidates — ponta a ponta contra fixture de disco", () => {
 
   it("cópia-irmã de conflito do OneDrive (bucket 4) — em qualquer lugar sob data/, não só editions/", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gc-data-dir-siblings-"));
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users.db"), "canônico", 400); // nunca candidato
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-predator-safeBackup-0001.db"), "velho", 400);
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-Neo.db"), "recente", 1); // mais novo do diretório
+    writeAged(resolve(tmp, "logs/run-log.jsonl"), "canônico", 400); // nunca candidato
+    writeAged(resolve(tmp, "logs/run-log-predator-safeBackup-0001.jsonl"), "velho", 400);
+    writeAged(resolve(tmp, "logs/run-log-Neo.jsonl"), "recente", 1); // mais novo do diretório
 
-    const { candidates } = collectCandidates(tmp);
+    const { candidates } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
     const siblingPaths = candidates.filter((c) => c.bucket === "backup-sibling").map((c) => c.relPath);
-    assert.deepEqual(siblingPaths, ["clarice-subscribers/clarice-users-predator-safeBackup-0001.db"]);
+    assert.deepEqual(siblingPaths, ["logs/run-log-predator-safeBackup-0001.jsonl"]);
   });
 
   it("guard (#7137): arquivo excluído nunca aparece, mesmo dentro de um diretório com candidatos legítimos ao lado", () => {
@@ -101,7 +106,7 @@ describe("collectCandidates — ponta a ponta contra fixture de disco", () => {
     writeSentinel(editionDir, 6, []);
     writeAged(resolve(tmp, "beehiiv-backup/subscriber-engagement/manifest.json"), "{}", 999);
 
-    const { candidates } = collectCandidates(tmp);
+    const { candidates } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
     assert.equal(
       candidates.some((c) => c.relPath.includes("04-d1-2x1.jpg")),
       false,
@@ -159,10 +164,10 @@ describe("main() — dry-run NUNCA escreve, --apply remove só os candidatos", (
     const excludedImg = resolve(closedEdition, "04-d1-2x1.jpg");
     writeAged(excludedImg, "capa", 999);
 
-    const dbDir = resolve(tmp, "clarice-subscribers");
-    const oldBackup = resolve(dbDir, "clarice-users-predator-safeBackup-0001.db");
-    const newestBackup = resolve(dbDir, "clarice-users-Neo.db");
-    const canonicalDb = resolve(dbDir, "clarice-users.db");
+    const dbDir = resolve(tmp, "logs");
+    const oldBackup = resolve(dbDir, "run-log-predator-safeBackup-0001.jsonl");
+    const newestBackup = resolve(dbDir, "run-log-Neo.jsonl");
+    const canonicalDb = resolve(dbDir, "run-log.jsonl");
     writeAged(oldBackup, "velho", 400);
     writeAged(newestBackup, "recente", 1);
     writeAged(canonicalDb, "canônico", 400);
@@ -171,7 +176,7 @@ describe("main() — dry-run NUNCA escreve, --apply remove só os candidatos", (
     const originalLog = console.log;
     console.log = (msg: unknown) => logs.push(String(msg));
     try {
-      main(["--data-root", tmp, "--apply"]);
+      main(["--data-root", tmp, "--apply", "--include-bucket", "backup-sibling"], undefined, MTIME);
     } finally {
       console.log = originalLog;
     }
@@ -221,10 +226,11 @@ describe("varredura fail-soft — entrada ilegível não derruba o inventário i
 
     // Dado VÁLIDO em outro canto de data/ — precisa continuar aparecendo
     // no inventário mesmo com a árvore acima quebrada.
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-predator-safeBackup-0001.db"), "velho", 400);
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-Neo.db"), "recente", 1);
+    writeAged(resolve(tmp, "logs/run-log-predator-safeBackup-0001.jsonl"), "velho", 400);
+    writeAged(resolve(tmp, "logs/run-log-Neo.jsonl"), "recente", 1);
+    writeAged(resolve(tmp, "logs/run-log.jsonl"), "canônico", 400);
 
-    const { candidates, scanErrors } = collectCandidates(tmp);
+    const { candidates, scanErrors } = collectCandidates(tmp, Date.now(), { siblingTimestamp: MTIME });
 
     assert.ok(scanErrors.length > 0, "a falha de leitura foi registrada, não engolida em silêncio");
     assert.ok(
@@ -244,7 +250,7 @@ describe("varredura fail-soft — entrada ilegível não derruba o inventário i
     // O resto do inventário (bucket 4, em outro diretório) não foi afetado.
     assert.deepEqual(
       candidates.filter((c) => c.bucket === "backup-sibling").map((c) => c.relPath),
-      ["clarice-subscribers/clarice-users-predator-safeBackup-0001.db"],
+      ["logs/run-log-predator-safeBackup-0001.jsonl"],
       "dado válido em outro lugar de data/ continua no inventário mesmo com 1 árvore quebrada em outro lugar",
     );
   });
@@ -276,11 +282,12 @@ describe("varredura fail-soft — entrada ilegível não derruba o inventário i
 describe("--apply: exit code e --json refletem o resultado da remoção (achado de review)", () => {
   it("process.exitCode = 1 quando QUALQUER remoção falha — nunca sucesso silencioso sob supervisão automática", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gc-data-dir-exitcode-"));
-    const dbDir = resolve(tmp, "clarice-subscribers");
-    const oldBackup = resolve(dbDir, "clarice-users-predator-safeBackup-0001.db");
-    const newestBackup = resolve(dbDir, "clarice-users-Neo.db");
+    const dbDir = resolve(tmp, "logs");
+    const oldBackup = resolve(dbDir, "run-log-predator-safeBackup-0001.jsonl");
+    const newestBackup = resolve(dbDir, "run-log-Neo.jsonl");
     writeAged(oldBackup, "velho", 400);
     writeAged(newestBackup, "recente", 1);
+    writeAged(resolve(dbDir, "run-log.jsonl"), "canônico", 400); // #9732: só sai cópia cujo canônico existe
 
     const failingRm: RmFn = () => {
       throw new Error("falha simulada de remoção (achado de review)");
@@ -292,7 +299,7 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
     console.log = () => {};
     console.error = () => {};
     try {
-      main(["--data-root", tmp, "--apply"], failingRm);
+      main(["--data-root", tmp, "--apply", "--include-bucket", "backup-sibling"], failingRm, MTIME);
     } finally {
       console.log = originalLog;
       console.error = originalError;
@@ -306,16 +313,17 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
 
   it("--apply SEM falha nenhuma não mexe em process.exitCode", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gc-data-dir-exitcode-ok-"));
-    const dbDir = resolve(tmp, "clarice-subscribers");
-    writeAged(resolve(dbDir, "clarice-users-predator-safeBackup-0001.db"), "velho", 400);
-    writeAged(resolve(dbDir, "clarice-users-Neo.db"), "recente", 1);
+    const dbDir = resolve(tmp, "logs");
+    writeAged(resolve(dbDir, "run-log-predator-safeBackup-0001.jsonl"), "velho", 400);
+    writeAged(resolve(dbDir, "run-log-Neo.jsonl"), "recente", 1);
+    writeAged(resolve(dbDir, "run-log.jsonl"), "canônico", 400);
 
     const originalExit = process.exitCode;
     process.exitCode = undefined;
     const originalLog = console.log;
     console.log = () => {};
     try {
-      main(["--data-root", tmp, "--apply"]);
+      main(["--data-root", tmp, "--apply", "--include-bucket", "backup-sibling"], undefined, MTIME);
     } finally {
       console.log = originalLog;
     }
@@ -325,11 +333,12 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
 
   it("--json --apply reflete o resultado REAL da remoção — não é mais impresso antes do loop de --apply rodar", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gc-data-dir-json-apply-"));
-    const dbDir = resolve(tmp, "clarice-subscribers");
-    const oldBackup = resolve(dbDir, "clarice-users-predator-safeBackup-0001.db");
-    const newestBackup = resolve(dbDir, "clarice-users-Neo.db");
+    const dbDir = resolve(tmp, "logs");
+    const oldBackup = resolve(dbDir, "run-log-predator-safeBackup-0001.jsonl");
+    const newestBackup = resolve(dbDir, "run-log-Neo.jsonl");
     writeAged(oldBackup, "velho", 400);
     writeAged(newestBackup, "recente", 1);
+    writeAged(resolve(dbDir, "run-log.jsonl"), "canônico", 400); // #9732: só sai cópia cujo canônico existe
 
     let printed: string | undefined;
     const originalLog = console.log;
@@ -337,7 +346,7 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
       printed = String(msg);
     };
     try {
-      main(["--data-root", tmp, "--apply", "--json"]);
+      main(["--data-root", tmp, "--apply", "--json", "--include-bucket", "backup-sibling"], undefined, MTIME);
     } finally {
       console.log = originalLog;
     }
@@ -350,7 +359,7 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
     assert.ok(Array.isArray(parsed.removals));
     assert.deepEqual(
       parsed.removals.map((r: { rel_path: string; removed: boolean }) => r.rel_path).sort(),
-      ["clarice-subscribers/clarice-users-predator-safeBackup-0001.db"],
+      ["logs/run-log-predator-safeBackup-0001.jsonl"],
     );
     assert.equal(parsed.removals[0].removed, true);
     // E o efeito de fato aconteceu no disco, condizente com o que o JSON afirma.
@@ -359,8 +368,9 @@ describe("--apply: exit code e --json refletem o resultado da remoção (achado 
 
   it("--json SEM --apply (dry-run) não carrega removed/failed/removals — não afirma remoção que não aconteceu", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gc-data-dir-json-dryrun-"));
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-predator-safeBackup-0001.db"), "velho", 400);
-    writeAged(resolve(tmp, "clarice-subscribers/clarice-users-Neo.db"), "recente", 1);
+    writeAged(resolve(tmp, "logs/run-log-predator-safeBackup-0001.jsonl"), "velho", 400);
+    writeAged(resolve(tmp, "logs/run-log-Neo.jsonl"), "recente", 1);
+    writeAged(resolve(tmp, "logs/run-log.jsonl"), "canônico", 400);
 
     let printed: string | undefined;
     const originalLog = console.log;

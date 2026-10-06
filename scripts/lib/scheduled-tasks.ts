@@ -3077,7 +3077,10 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // parar o sync de data/ entre as maquinas). `--apply` SEM
     // `--include-bucket`: o bucket opt-in `mv-cache` (pode guardar resultado
     // MillionVerifier ja pago, ainda nao persistido nos CSVs) fica de fora
-    // por design; `beehiiv-backup/` nunca e tocado (guard do script). Sem
+    // por design, e desde #9732 tambem o opt-in `backup-sibling` (copia de
+    // conflito do OneDrive pode ser a unica copia de uma escrita concorrente
+    // -- a task agendada nunca a remove); `beehiiv-backup/` nunca e tocado
+    // (guard do script). Sem
     // `--data-root` -- argv estatico, sempre o data/ do checkout.
     // Sabado 03:40 BRT: nenhuma outra weekly no sabado, nenhuma daily as
     // 03:40 (Diaria-Tmp-Cleanup e 03:20), fora das batidas :00 das tasks
@@ -3086,7 +3089,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Gc-Data-Dir-Weekly",
     description:
       "GC semanal de cache/intermediario/backup redundante sob data/ (gc-data-dir.ts --apply) -- " +
-      "mv-cache opt-in fica de fora, beehiiv-backup nunca e tocado, #9725",
+      "mv-cache e backup-sibling (opt-in) ficam de fora, beehiiv-backup nunca e tocado, #9725/#9732",
     steps: [
       { key: "gc", script: "scripts/gc-data-dir.ts", args: ["--apply"] },
       // #9730 (review P3): o relatório de `beehiiv-backup/` só sai no
