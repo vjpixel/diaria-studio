@@ -156,7 +156,7 @@ export const SET_GUARDS: readonly SetGuardRule[] = [
   {
     id: "orchestrator-prompt-snapshot",
     description:
-      "hash agregado de .claude/agents/orchestrator*.md contra o snapshot committed (#634 frente C)",
+      "hash por playbook de .claude/agents/orchestrator*.md contra o snapshot committed (#634 frente C, #9709)",
     testFiles: ["test/orchestrator-prompt.test.ts"],
     // Basenames de ORCHESTRATOR_FILES (scripts/lib/orchestrator-files.ts, fonte
     // única compartilhada com o teste — #7277) viram patterns exatos sob
