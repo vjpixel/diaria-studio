@@ -299,8 +299,10 @@ describe("orchestrator-prompt (#634)", () => {
       // #9678: +7 linhas (§4d passo "garantir os dois previews vivos + os
       // dois Artifacts" — `serve-preview.ts --ensure` antes de cada
       // apresentação do gate, já que os servidores agora sobem desanexados).
-      // Arquivo foi a 951 linhas. Teto bumped de 945→955.
-      "orchestrator-stage-4.md": 955,
+      // #9673: +2 linhas (`{generic_study_questions_block}` no topo do resumo
+      // do gate — pergunta sim/não explícita por item 🔎 — + a regra de
+      // apresentação). Com as duas, o arquivo foi a 954 linhas. Teto 960.
+      "orchestrator-stage-4.md": 960,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser

@@ -325,7 +325,7 @@ import {
 // #6447 Fatia 1: painel "Gate" — resumo consolidado do Stage 4 (títulos
 // original/final, checklist, lints estendidos) lido só de disco. Arquivo
 // próprio (`studio-gate.ts`), mesma convenção de import isolado do #3559.
-import { buildGateSummary } from "./studio-gate.ts";
+import { buildGateSummary, recordGenericStudyAnswerFromPanel } from "./studio-gate.ts";
 // #6447 Fatia 4: galeria de imagens por destaque + regeneração assíncrona
 // (achados 6 + 9), e escrita da decisão "aprovado pelo painel" (achado 7).
 import { buildImagesGallery, startRegenerateJob } from "./studio-images.ts";
@@ -759,6 +759,37 @@ async function handleGateApprove(
   }
   const decision = writeStage4ApprovedDecision(editionDir);
   sendJson(res, 200, { ok: true, decision });
+}
+
+/** #9673: `POST /api/editions/:aammdd/gate/generic-study` — corpo
+ * `{url, resposta: "sim"|"nao"}`; grava a resposta explícita do editor à
+ * pergunta 🔎 em `_internal/04-generic-study-feedback.json` (lógica em
+ * `recordGenericStudyAnswerFromPanel`). Sem clique, o item segue `nao_lido`. */
+async function handleGateGenericStudy(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+): Promise<void> {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido" });
+    return;
+  }
+  const editionDir = editionDirFor(rootDir, aammdd);
+  if (!existsSync(editionDir)) {
+    sendJson(res, 404, { error: "edição não encontrada" });
+    return;
+  }
+  let body: unknown;
+  try {
+    const raw = await readRequestBody(req, REVIEW_MAX_BODY_BYTES);
+    body = raw.trim() === "" ? {} : JSON.parse(raw);
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const out = recordGenericStudyAnswerFromPanel(editionDir, body);
+  sendJson(res, out.status, out.body);
 }
 
 /** #6447 Fatia 4 (achado 9): `GET /api/editions/:aammdd/images` — galeria de
@@ -1532,6 +1563,14 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const gateApproveMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate\/approve$/);
       if (req.method === "POST" && gateApproveMatch) {
         handleGateApprove(rootDir, req, res, gateApproveMatch[1]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #9673: resposta sim/não do editor à pergunta 🔎 de estudo genérico.
+      const gateGenericStudyMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/gate\/generic-study$/);
+      if (req.method === "POST" && gateGenericStudyMatch) {
+        handleGateGenericStudy(rootDir, req, res, gateGenericStudyMatch[1]).catch((e) =>
           sendJson(res, 500, { error: (e as Error).message }),
         );
         return;

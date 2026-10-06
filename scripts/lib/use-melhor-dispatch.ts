@@ -41,9 +41,11 @@ import {
   type UseMelhorCandidate,
 } from "./use-melhor-post.ts";
 import {
+  describeUseMelhorCoverTitleDrift,
   isUseMelhorCarouselStale,
   readUseMelhorCarouselStamp,
   resolveUseMelhorCarouselImageUrls,
+  useMelhorCoverTitleDrift,
   useMelhorSlideFilename,
   useMelhorSlideImageKey,
 } from "./use-melhor-carousel.ts";
@@ -62,6 +64,12 @@ export type UseMelhorReadyPlan = {
   slots: string[] | null;
   /** Presente quando `slots === null`: por que as imagens não valem (vira warn por canal). */
   imageWarning?: string;
+  /**
+   * #9635: presente quando o carrossel VALE (`slots` não-nulo) mas a capa traz
+   * o título gravado no Stage 3 (`stamp.cover_title`), diferente do título do
+   * item na edição final. Só aviso — o post sai com essa capa.
+   */
+  coverTitleWarning?: string;
 };
 
 export type UseMelhorDispatchPlan =
@@ -143,7 +151,16 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
   } else {
     slots = input.stamp.slots;
   }
-  return { status: "ready", time: cfg.time, item: state.item, slots, ...(imageWarning && { imageWarning }) };
+  const drift = slots ? useMelhorCoverTitleDrift(input.stamp, coverTitle) : null;
+  const coverTitleWarning = drift ? describeUseMelhorCoverTitleDrift(drift) : undefined;
+  return {
+    status: "ready",
+    time: cfg.time,
+    item: state.item,
+    slots,
+    ...(imageWarning && { imageWarning }),
+    ...(coverTitleWarning && { coverTitleWarning }),
+  };
 }
 
 function readIfExists(p: string): string | null {
@@ -320,7 +337,7 @@ export function reportUseMelhorImageFallback(
   if (plan.imageWarning) msg = plan.imageWarning;
   else if (opts.usesCarousel && plan.slots && !images.carouselUrls) {
     msg = "carrossel incompleto em 06-public-images.json (algum slide não subiu) — saindo com capa única/só texto";
-  }
+  } else if (plan.coverTitleWarning) msg = plan.coverTitleWarning; // #9635
   if (!msg) return;
   const line = `${channel}/${USE_MELHOR_POST_ID}: 4º post (USE MELHOR) degradado — ${msg}`;
   console.warn(`WARN ${line}`);
