@@ -132,6 +132,10 @@ describe("#9726 sitemap/home de edição com seta no título passam no check-no-
 
   it("nav prev/next (também injetada pelo backfill em página já gravada) sai sem seta no título do vizinho", () => {
     const nav = buildArchiveNeighborNavHtml({ slug: "a", title: "X → Y" }, { slug: "b", title: "1 → 2" });
-    assert.ok(!nav.includes(ARROW_GLYPH), nav);
+    // #9743: só a seta de direção da nav sobra (`Próxima: … →`); a do título some
+    assert.match(nav, /rel="prev">← Anterior: X – Y<\/a>/);
+    assert.match(nav, /rel="next">Próxima: 1 para 2 →<\/a>/);
+    assert.equal(nav.split(ARROW_GLYPH).length - 1, 1, nav);
+    assert.deepEqual(scanPublishedText("workers/site/public/p/x/index.html", nav, []), []);
   });
 });

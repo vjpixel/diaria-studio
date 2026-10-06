@@ -33,6 +33,10 @@
  * entidade, remoção no início de rótulo de link e o backstop do site cobrem
  * as duas setas; a normalização numérica e o lead-in de CTA continuam só
  * para `→`, que é a única com esses usos.
+ *
+ * #9743 (decisão do editor, 06/10/2026): exceção estreita e contextual, só
+ * no site, pra seta de direção na nav entre edições e na paginação do acervo
+ * (`← Anterior: …` / `Próxima: … →`). Ver `maskSiteNavArrows`.
  */
 
 export const ARROW_GLYPH = "→";
@@ -121,9 +125,60 @@ export function stripUnambiguousCtaArrows(text: string): string {
       .replace(/[ \t]*→[ \t]*(?=<\/a>|<\/button>|\]\()/g, "")
       // prefixo de linha: `→ [label](url)` (sintaxe legada de CTA)
       .replace(/^([ \t]*)→[ \t]*/gm, "$1")
-      // prefixo logo após abrir a tag: `<p style="…">→ <a href…>`
-      .replace(/>[ \t]*→[ \t]*(?=<a[\s>]|\[)/g, ">")
+      // prefixo logo após ABRIR a tag: `<p style="…">→ <a href…>`. Só tag de
+      // abertura (#9749): `</strong> → <a>` e `</a> → <a>` são notação
+      // editorial (`**Meta** → [Llama](u)`) e tirar a seta ali colava as
+      // palavras ("MetaLlama") no e-mail e no site.
+      .replace(/(<[a-z][^>]*>)[ \t]*→[ \t]*(?=<a[\s>]|\[)/gi, "$1")
   );
+}
+
+/** Placeholders de uso privado do Unicode: nunca aparecem no HTML das edições. */
+const SITE_NAV_PREV_MASK = "\uE000";
+const SITE_NAV_NEXT_MASK = "\uE001";
+
+/**
+ * Exceção da nav do site (#9743, decisão do editor de 06/10/2026): a seta
+ * volta como indicador de direção SÓ nos links de navegação do site, e só na
+ * posição que aponta pro lado certo:
+ *
+ *  - `←` no INÍCIO do rótulo de um `<a … rel="prev">` (`← Anterior: {título}`,
+ *    `← anterior`);
+ *  - `→` no FIM do rótulo de um `<a … rel="next">` (`Próxima: {título} →`,
+ *    `próxima →`).
+ *
+ * Contextual, não allowlist por arquivo: `→` no link anterior, `←` no
+ * próximo, seta no meio do rótulo ou fora desses links continuam reprovando
+ * no check e sendo removidas pelo `normalizeArrowsForSite`. O rótulo não pode
+ * ter tag (o builder emite só texto escapado). Quem emite a seta é
+ * `navPrevLinkText`/`navNextLinkText`, pra nenhum gerador precisar de literal
+ * com seta (os literais dos geradores seguem proibidos pelo check).
+ */
+const SITE_NAV_PREV_ARROW_RE = /(<a\b[^>]*\brel="prev"[^>]*>)←(?= [^<]*<\/a>)/g;
+const SITE_NAV_NEXT_ARROW_RE = /(<a\b[^>]*\brel="next"[^>]*>[^<]* )→(?=<\/a>)/g;
+
+/** Rótulo do link `rel="prev"` da nav do site, com a seta da exceção #9743. */
+export function navPrevLinkText(label: string): string {
+  return `${LEFT_ARROW_GLYPH} ${label}`;
+}
+
+/** Rótulo do link `rel="next"` da nav do site, com a seta da exceção #9743. */
+export function navNextLinkText(label: string): string {
+  return `${label} ${ARROW_GLYPH}`;
+}
+
+/**
+ * Troca as setas permitidas da nav do site (#9743) por `mask` (mesmo
+ * comprimento: 1 caractere por seta), pra os normalizadores e o check não as
+ * enxergarem. `unmaskSiteNavArrows` desfaz. Puro.
+ */
+export function maskSiteNavArrows(text: string, prevMask = SITE_NAV_PREV_MASK, nextMask = SITE_NAV_NEXT_MASK): string {
+  if (!hasGlyph(text)) return text;
+  return text.replace(SITE_NAV_PREV_ARROW_RE, `$1${prevMask}`).replace(SITE_NAV_NEXT_ARROW_RE, `$1${nextMask}`);
+}
+
+function unmaskSiteNavArrows(text: string): string {
+  return text.replaceAll(SITE_NAV_PREV_MASK, LEFT_ARROW_GLYPH).replaceAll(SITE_NAV_NEXT_MASK, ARROW_GLYPH);
 }
 
 /** Lookbehind: posição NÃO precedida de número (`18`, `5,4%`, `18%</b>`). */
@@ -187,15 +242,22 @@ export function stripCtaArrows(text: string): string {
  *     sequência continua legível, e a alternativa (PR travado, página fora
  *     do ar) é pior.
  *
+ * Exceção (#9743): as setas da nav do site na posição de direção
+ * (`maskSiteNavArrows`) passam intactas pelos 3 passes.
+ *
  * Idempotente. Puro.
  */
 export function normalizeArrowsForSite(text: string): string {
   const t = decodeArrowEntities(text);
   if (!hasGlyph(t)) return t;
-  return stripUnambiguousCtaArrows(normalizeNumericArrows(t))
-    .replace(/[ \t]+[→←][ \t]+/g, " – ")
-    .replaceAll(ARROW_GLYPH, "–")
-    .replaceAll(LEFT_ARROW_GLYPH, "–");
+  // #9743: as setas da nav (`← Anterior`, `Próxima →`) ficam; o resto some.
+  const masked = maskSiteNavArrows(t);
+  return unmaskSiteNavArrows(
+    stripUnambiguousCtaArrows(normalizeNumericArrows(masked))
+      .replace(/[ \t]+[→←][ \t]+/g, " – ")
+      .replaceAll(ARROW_GLYPH, "–")
+      .replaceAll(LEFT_ARROW_GLYPH, "–"),
+  );
 }
 
 export interface ArrowHit {
@@ -224,9 +286,16 @@ export function arrowHitAt(text: string, index: number): ArrowHit {
  * `allowedFragments` são trechos EXATOS (cada um contendo a seta em alguma
  * forma) liberados: cada ocorrência de um fragmento liberado é mascarada
  * antes da busca, então uma seta NOVA no mesmo arquivo continua sendo pega.
+ * `allowSiteNavArrows` aplica a exceção contextual da nav do site (#9743,
+ * `maskSiteNavArrows`).
  */
-export function findArrowGlyphs(text: string, allowedFragments: readonly string[] = []): ArrowHit[] {
-  let masked = text;
+export function findArrowGlyphs(
+  text: string,
+  allowedFragments: readonly string[] = [],
+  opts: { allowSiteNavArrows?: boolean } = {},
+): ArrowHit[] {
+  // #9743: só pras páginas do site; a seta na posição de direção da nav passa.
+  let masked = opts.allowSiteNavArrows ? maskSiteNavArrows(text, "\u0000", "\u0000") : text;
   for (const frag of allowedFragments) {
     if (!hasArrowForm(frag)) continue;
     // máscara de MESMO comprimento, pra os índices continuarem batendo com `text`

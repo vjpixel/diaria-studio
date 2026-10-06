@@ -46,7 +46,7 @@ export function formatReport(result: ScanResult): { ok: boolean; text: string } 
     lines.push(`  - [${KIND_LABEL[f.kind]}] ${where}  …${f.context}…`);
   }
   lines.push(
-    "Tire a seta (→ ou ←) do botão/link/CTA/copy (regra do editor, #9721/#9723). Exceção legítima (texto editorial antigo, não UI) vai em ALLOWLIST de scripts/lib/no-arrow-glyph-scan.ts com o trecho exato e o motivo.",
+    "Tire a seta (→ ou ←) do botão/link/CTA/copy (regra do editor, #9721/#9723). A única seta permitida é a de direção da nav do site (← no início de <a rel=prev>, → no fim de <a rel=next>, #9743). Exceção legítima (texto editorial antigo, não UI) vai em ALLOWLIST de scripts/lib/no-arrow-glyph-scan.ts com o trecho exato e o motivo.",
   );
   return { ok: false, text: lines.join("\n") };
 }

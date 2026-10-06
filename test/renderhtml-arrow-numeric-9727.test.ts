@@ -37,6 +37,7 @@ import {
   normalizeArrowsForSite,
   normalizeNumericArrows,
   stripCtaArrows,
+  stripUnambiguousCtaArrows,
 } from "../scripts/lib/shared/arrow-glyph.ts";
 
 const EIA = `**É IA?**
@@ -50,6 +51,9 @@ const BODY_D1 = [
   "Antes 5,4% → [18%](https://example.com/n1) do tráfego.",
   "O plano caiu de US$ 20 → [US$ 10](https://example.com/n2) por mês.",
   "A Meta → [Llama](https://example.com/n3) é a aposta aberta.",
+  // #9749: seta depois de tag de FECHAMENTO (negrito, link) é editorial
+  "Do **Google** → [Gemini](https://example.com/n4) em um ano.",
+  "Primeiro [Sora](https://example.com/n5) → [Veo](https://example.com/n6) depois.",
 ].join(" ");
 
 const BOX = `Apoie a diar.ia.br
@@ -169,6 +173,34 @@ describe("#9727 renderHTML: seta antes de link no corpo editorial não vira ': '
       // e a página continua passando no check de CI
       assert.deepEqual(scanPublishedText("workers/site/public/p/gemini-sobe/index.html", page, []), []);
     });
+  });
+});
+
+describe("#9749 seta depois de tag de fechamento não cola palavras", () => {
+  it("REGRESSÃO: stripUnambiguousCtaArrows só tira a seta logo após tag de ABERTURA", () => {
+    // os 2 casos da issue
+    assert.equal(
+      stripUnambiguousCtaArrows('<p><strong>Meta</strong> → <a href="u">Llama</a></p>'),
+      '<p><strong>Meta</strong> → <a href="u">Llama</a></p>',
+    );
+    assert.equal(
+      stripUnambiguousCtaArrows('<a href="u">A</a> → <a href="v">B</a>'),
+      '<a href="u">A</a> → <a href="v">B</a>',
+    );
+    assert.equal(stripUnambiguousCtaArrows("</em> → [B](u)"), "</em> → [B](u)");
+    // o caso legítimo (prefixo logo após abrir a tag) continua sendo removido
+    assert.equal(stripUnambiguousCtaArrows('<p style="x">→ <a href="u">Ver</a></p>'), '<p style="x"><a href="u">Ver</a></p>');
+    assert.equal(stripUnambiguousCtaArrows("<p>→ [Ver](u)</p>"), "<p>[Ver](u)</p>");
+    assert.equal(stripUnambiguousCtaArrows('<P CLASS="x">→ <a href="u">Ver</a></P>'), '<P CLASS="x"><a href="u">Ver</a></P>');
+  });
+
+  it("e-mail (renderHTML) mantém a seta editorial e a página /p/ vira meia-risca, sem colar palavras", () => {
+    const text = SEM_TAGS(withEdition((dir) => renderHTML(extractContent(dir))));
+    assert.match(text, /Do Google → Gemini em um ano/);
+    assert.match(text, /Primeiro Sora → Veo depois/);
+    assert.doesNotMatch(text, /GoogleGemini|SoraVeo/);
+    const site = SEM_TAGS(normalizeArrowsForSite('<p><strong>Meta</strong> → <a href="u">Llama</a></p>'));
+    assert.equal(site, "Meta – Llama");
   });
 });
 

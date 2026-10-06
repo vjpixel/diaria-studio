@@ -498,7 +498,7 @@ describe("buildArchiveNeighborNavHtml", () => {
     assert.match(html, /class="archive-nav"/);
     assert.match(html, /rel="prev"/);
     assert.match(html, /href="https:\/\/diar\.ia\.br\/p\/mais-antiga"/);
-    assert.match(html, />Anterior: Edição mais antiga<\/a>/); // #9723: sem seta ←
+    assert.match(html, />← Anterior: Edição mais antiga<\/a>/); // #9723 rótulo + #9743 seta de direção
     assert.doesNotMatch(html, /rel="next"/);
   });
 

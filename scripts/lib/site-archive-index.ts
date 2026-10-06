@@ -58,6 +58,7 @@ import { GEO_AUTHOR } from "./shared/geo-faq.ts";
 import { ARCHIVE_BASE_URL } from "./site-archive-pages.ts";
 import { SITE_FEED_URL } from "./site-feed.ts";
 import { renderSiteNav } from "./shared/site-nav.ts"; // #8497: menu global
+import { navNextLinkText, navPrevLinkText } from "./shared/arrow-glyph.ts"; // #9743: seta de direção da paginação
 import {
   buildHomeFeed,
   extractHeroImage,
@@ -406,7 +407,7 @@ function renderPagination(page: number, totalPages: number): string {
   if (totalPages <= 1) return "";
   const links: string[] = [];
   if (page > 1) {
-    links.push(`<a class="page-nav" rel="prev" href="${archiveIndexPath(page - 1)}">anterior</a>`);
+    links.push(`<a class="page-nav" rel="prev" href="${archiveIndexPath(page - 1)}">${navPrevLinkText("anterior")}</a>`);
   }
   for (let n = 1; n <= totalPages; n++) {
     links.push(
@@ -416,7 +417,7 @@ function renderPagination(page: number, totalPages: number): string {
     );
   }
   if (page < totalPages) {
-    links.push(`<a class="page-nav" rel="next" href="${archiveIndexPath(page + 1)}">próxima</a>`);
+    links.push(`<a class="page-nav" rel="next" href="${archiveIndexPath(page + 1)}">${navNextLinkText("próxima")}</a>`);
   }
   return `<nav class="pagination" aria-label="Paginação do acervo">\n      ${links.join("\n      ")}\n    </nav>`;
 }

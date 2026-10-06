@@ -32,7 +32,7 @@ import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { loadArchiveImageMigrationMap, rewriteMigratedBeehiivImages } from "./archive-image-migration.ts"; // #8364
 import { injectSiteNavAfterBodyOpen } from "./shared/site-nav.ts"; // #8497: menu global
-import { normalizeArrowsForSite } from "./shared/arrow-glyph.ts"; // #9721: página /p/ sem seta
+import { navNextLinkText, navPrevLinkText, normalizeArrowsForSite } from "./shared/arrow-glyph.ts"; // #9721: página /p/ sem seta
 
 export interface ArchivePost {
   slug: string;
@@ -503,7 +503,11 @@ export interface ArchiveNeighbor {
   title: string;
 }
 
-/** Rótulos da nav entre edições (#9723): substituem a seta `←` do link anterior. */
+/**
+ * Rótulos da nav entre edições (#9723). Desde o #9743 a seta de direção
+ * volta em volta deles (`← Anterior: {título}` / `Próxima: {título} →`), via
+ * `navPrevLinkText`/`navNextLinkText`.
+ */
 export const ARCHIVE_NAV_PREV_LABEL = "Anterior: ";
 export const ARCHIVE_NAV_NEXT_LABEL = "Próxima: ";
 
@@ -524,13 +528,14 @@ export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: Archi
   // página JÁ gravada, fora do `normalizeArrowsForSite` de
   // `buildArchivePageHtml` — o título do vizinho precisa sair sem seta aqui.
   if (!prev && !next) return "";
-  // #9723: sem setas (nem `←` nem `→`), a direção vem do rótulo, simétrico
-  // nos dois lados. O título do vizinho continua sendo o texto clicável.
+  // #9723 rótulo simétrico + #9743 seta de direção (`← Anterior: {título}` /
+  // `Próxima: {título} →`), a única seta permitida no site. O título do
+  // vizinho continua sendo o texto clicável.
   const prevLink = prev
-    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">${ARCHIVE_NAV_PREV_LABEL}${escHtml(normalizeArrowsForSite(prev.title))}</a>`
+    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">${navPrevLinkText(ARCHIVE_NAV_PREV_LABEL + escHtml(normalizeArrowsForSite(prev.title)))}</a>`
     : "";
   const nextLink = next
-    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${ARCHIVE_NAV_NEXT_LABEL}${escHtml(normalizeArrowsForSite(next.title))}</a>`
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${navNextLinkText(ARCHIVE_NAV_NEXT_LABEL + escHtml(normalizeArrowsForSite(next.title)))}</a>`
     : "";
   return (
     `<nav class="archive-nav" aria-label="Navegação entre edições" ` +
