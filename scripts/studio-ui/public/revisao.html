@@ -56,6 +56,10 @@
         <button type="button" id="rv-gate-refresh-btn">Atualizar</button>
       </div>
       <p class="hint" id="rv-gate-status">Carregando…</p>
+      <!-- #9673: pergunta explícita sim/não por item 🔎 (estudo/case genérico
+           em modo sombra). No topo, antes do checklist: sem clique = "não
+           lido", nunca concordância. Render em rv-gate.js. -->
+      <div id="rv-gate-generic-study" class="rv-gate-generic-study" role="region" aria-label="Responda: estudo/case genérico" hidden></div>
       <div id="rv-gate-checklist" class="rv-gate-checklist"></div>
       <div id="rv-gate-body" class="rv-gate-body" hidden>
         <details class="rv-gate-section" open>
