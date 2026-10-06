@@ -3052,6 +3052,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "interval", hours: 6 },
     issue: "#8828",
   },
+  {
+    // #9621 item 1 — rede de segurança do waiter da página do site (#9593/
+    // #9616): se o waiter morreu (reboot/kill) na janela de 35min após o
+    // Stage 6, `_internal/site-page-published.json` fica em "merge delegado"
+    // e nada mais lê o arquivo antes do envio. 05:15 BRT: 45min antes das
+    // 06:00 (tempo pro editor mergear à mão), fora das batidas :00 das tasks
+    // `interval` e entre Diaria-Clarice-Envio-Guard (05:00) e
+    // Diaria-Brevo-Diaria-Evaluate (05:30). SEM guard de requiredFile: sem
+    // state file o script já sai 0 sozinho (dia sem edição), e um guard aqui
+    // só esconderia o caso data/ não montada atrás de um AVISO.
+    name: "Diaria-Site-Page-Merge-Check",
+    description: "check pre-envio (05:15 BRT): alerta urgente se o PR da pagina do site da edicao do dia nao estiver MERGED (/p/{slug} daria 404 no envio)",
+    steps: [{ key: "check", script: "scripts/check-site-page-merge.ts" }],
+    logPath: "site-page-merge-check/.check.log",
+    schedule: { kind: "daily", hour: 5, minute: 15 },
+    issue: "#9621",
+  },
 ];
 
 /**
