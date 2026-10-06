@@ -617,7 +617,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
 
     if (sendNow.code === 2) {
       report.note(
-        `⚠️  disparo INCERTO — POST sendNow aceito mas GET-verify não confirmou status terminal ` +
+        `⚠️  disparo INCERTO — POST sendNow aceito (ou com erro de rede após possível aceite, #9699) mas GET-verify não confirmou status terminal ` +
           `(status="${sendJson?.status ?? "?"}"). NÃO declarado como sucesso. A rodada de amanhã reconcilia ` +
           `(idempotente por key/campanha, re-tentar --send-now é seguro).`,
       );
