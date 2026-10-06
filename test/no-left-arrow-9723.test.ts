@@ -7,8 +7,9 @@
  *
  *  1. o check de CI (`findArrowGlyphs`/`scanPublishedText`/`scanGeneratorSource`)
  *     reprova `←` e as formas escapadas;
- *  2. a nav entre edições é simétrica e sem seta (`Anterior: ` / `Próxima: `),
- *     e a paginação do acervo idem (`anterior` / `próxima`);
+ *  2. a nav entre edições é simétrica (`Anterior: ` / `Próxima: `), e a
+ *     paginação do acervo idem; desde o #9743 com a seta de direção
+ *     (`← Anterior: …` / `Próxima: … →`, `← anterior` / `próxima →`);
  *  3. os geradores do site, das páginas de confirmação e dos Workers que
  *     tinham `←` não o têm mais (o "repo real passa no check" mora em
  *     `check-no-arrow-glyph.test.ts`, hermético, #9739);
@@ -24,7 +25,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  LEFT_ARROW_GLYPH,
   findArrowGlyphs,
   hasArrowForm,
   normalizeArrowsForSite,
@@ -67,27 +67,30 @@ describe("#9723 check de CI reprova a seta ←", () => {
   // test/check-no-arrow-glyph.test.ts, hermético desde o #9739.
 });
 
-describe("#9723 nav simétrica, sem seta", () => {
-  it("nav entre edições: 'Anterior: ' / 'Próxima: ' com o título clicável", () => {
+describe("#9723 nav simétrica (#9743: com a seta de direção)", () => {
+  // #9743 (decisão do editor, 06/10/2026): a seta volta SÓ como direção na
+  // nav: `← Anterior: {título}` / `Próxima: {título} →`, e na paginação
+  // `← anterior` / `próxima →`. O check aceita (exceção contextual).
+  it("nav entre edições: '← Anterior: ' / 'Próxima: … →' com o título clicável", () => {
     const html = buildArchiveNeighborNavHtml({ slug: "velha", title: "Edição velha" }, { slug: "nova", title: "Edição nova" });
-    assert.ok(!html.includes(LEFT_ARROW_GLYPH), html);
-    assert.ok(!hasArrowForm(html), html);
-    assert.match(html, /rel="prev">Anterior: Edição velha<\/a>/);
-    assert.match(html, /rel="next">Próxima: Edição nova<\/a>/);
+    assert.match(html, /rel="prev">← Anterior: Edição velha<\/a>/);
+    assert.match(html, /rel="next">Próxima: Edição nova →<\/a>/);
+    assert.deepEqual(findArrowGlyphs(html, [], { allowSiteNavArrows: true }), []);
     assert.equal(ARCHIVE_NAV_PREV_LABEL, "Anterior: ");
     assert.equal(ARCHIVE_NAV_NEXT_LABEL, "Próxima: ");
   });
 
-  it("título de vizinho com seta sai normalizado", () => {
+  it("título de vizinho com seta sai normalizado (só a seta de direção sobra)", () => {
     const html = buildArchiveNeighborNavHtml({ slug: "a", title: "A ← B" });
-    assert.ok(!hasArrowForm(html), html);
+    assert.match(html, /rel="prev">← Anterior: A – B<\/a>/);
+    assert.equal(findArrowGlyphs(html).length, 1, html);
   });
 
-  it("paginação do acervo: 'anterior' / 'próxima', sem seta", () => {
+  it("paginação do acervo: '← anterior' / 'próxima →'", () => {
     const html = buildArchiveIndexHtml({ entries: archiveIndexPageEntries([], 2, 30), page: 2, totalPages: 3, totalEditions: 65 });
-    assert.ok(!hasArrowForm(html), "índice do acervo ainda tem seta");
-    assert.match(html, /rel="prev" href="\/archive">anterior<\/a>/);
-    assert.match(html, /rel="next" href="\/archive\/3">próxima<\/a>/);
+    assert.match(html, /rel="prev" href="\/archive">← anterior<\/a>/);
+    assert.match(html, /rel="next" href="\/archive\/3">próxima →<\/a>/);
+    assert.deepEqual(scanPublishedText("workers/site/public/archive/2/index.html", html, []), []);
   });
 });
 
@@ -149,12 +152,12 @@ describe("#9723 refreshArchiveNeighborNav (limpeza das páginas já gravadas)", 
     '<a href="https://diar.ia.br/p/velha" rel="prev">← Título &quot;velho&quot; &amp; cia</a>' +
     '<a href="https://diar.ia.br/p/nova" rel="next">Título novo</a></nav><p>corpo</p></body>';
 
-  it("troca a seta pelos rótulos, preserva vizinhos e escape, e é idempotente", () => {
+  it("troca a seta pelos rótulos (#9743: com a seta de direção), preserva vizinhos e escape, e é idempotente", () => {
     const r = refreshArchiveNeighborNav(OLD);
     assert.ok(r.changed);
-    assert.ok(!hasArrowForm(r.html), r.html);
-    assert.match(r.html, /href="https:\/\/diar\.ia\.br\/p\/velha" rel="prev">Anterior: Título &quot;velho&quot; &amp; cia<\/a>/);
-    assert.match(r.html, /href="https:\/\/diar\.ia\.br\/p\/nova" rel="next">Próxima: Título novo<\/a>/);
+    assert.deepEqual(findArrowGlyphs(r.html, [], { allowSiteNavArrows: true }), [], r.html);
+    assert.match(r.html, /href="https:\/\/diar\.ia\.br\/p\/velha" rel="prev">← Anterior: Título &quot;velho&quot; &amp; cia<\/a>/);
+    assert.match(r.html, /href="https:\/\/diar\.ia\.br\/p\/nova" rel="next">Próxima: Título novo →<\/a>/);
     assert.match(r.html, /<\/nav><p>corpo<\/p>/);
     const again = refreshArchiveNeighborNav(r.html);
     assert.equal(again.changed, false);

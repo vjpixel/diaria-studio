@@ -20,6 +20,11 @@
  *     (caixas aposentadas) também. Em runtime, `readSnippetFile` já remove a
  *     seta nas posições de CTA (`scripts/lib/shared/arrow-glyph.ts`).
  *
+ * Exceção contextual (#9743): nos HTML publicados, `←` no início do rótulo de
+ * um `<a rel="prev">` e `→` no fim do de um `<a rel="next">` (nav entre
+ * edições e paginação do acervo) passam (`maskSiteNavArrows`). Nos geradores
+ * não há exceção: a seta vem de `navPrevLinkText`/`navNextLinkText`.
+ *
  * Exceções: `ALLOWLIST`, por arquivo + trecho EXATO. Hoje só texto editorial
  * de edições antigas (corpo de destaque, não UI) que cita a seta como
  * notação. Entrada cujo trecho sumiu do arquivo é reportada como obsoleta,
@@ -131,7 +136,8 @@ export interface Finding {
 /** Seta em qualquer lugar do arquivo publicado, menos os trechos liberados. */
 export function scanPublishedText(path: string, content: string, allowlist: readonly AllowEntry[] = ALLOWLIST): Finding[] {
   const frags = allowlist.filter((a) => a.path === path).map((a) => a.fragment);
-  return findArrowGlyphs(content, frags).map((h) => ({ kind: "published" as const, path, ...h }));
+  // #9743: a seta de direção da nav do site (`← Anterior`, `Próxima →`) passa
+  return findArrowGlyphs(content, frags, { allowSiteNavArrows: true }).map((h) => ({ kind: "published" as const, path, ...h }));
 }
 
 /**

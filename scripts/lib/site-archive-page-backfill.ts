@@ -232,11 +232,13 @@ const ARCHIVE_NAV_LINK_RE = /<a href="([^"]*)" rel="(prev|next)">([\s\S]*?)<\/a>
 
 /**
  * #9723 — re-renderiza a nav prev/next JÁ gravada numa página com o
- * `buildArchiveNeighborNavHtml` atual (hoje: sem a seta `←`, com os rótulos
- * `Anterior: ` / `Próxima: `). Os vizinhos saem da PRÓPRIA nav existente
+ * `buildArchiveNeighborNavHtml` atual (hoje, #9743: `← Anterior: {título}` /
+ * `Próxima: {título} →`). Os vizinhos saem da PRÓPRIA nav existente
  * (href + texto), nunca do sitemap: muda só a marcação, nunca qual edição é
- * vizinha. O texto antigo perde a seta `←` inicial (formato pré-#9723) ou o
- * rótulo atual (idempotência) antes de virar o título.
+ * vizinha. O texto antigo perde a seta de direção (`←` inicial, `→` final no
+ * `next`) e o rótulo (idempotência) antes de virar o título. Lê os três
+ * formatos já gravados: pré-#9723 (`← título`), #9723 (`Anterior: título`)
+ * e o atual.
  *
  * No-op (fail-closed, HTML intocado) quando: não há nav, há link de forma
  * inesperada (href fora de `/p/{slug}` do apex, texto com tag HTML) ou o
@@ -253,7 +255,11 @@ export function refreshArchiveNeighborNav(html: string): { html: string; changed
     const slug = href.slice(base.length);
     if (!slug || slug.includes("/")) return { html, changed: false };
     const label = rel === "prev" ? ARCHIVE_NAV_PREV_LABEL : ARCHIVE_NAV_NEXT_LABEL;
+    // seta de direção (#9743: `← Anterior: …` / `Próxima: … →`; pré-#9723: `← título`)
     let raw = text.replace(/^\s*(?:←|&larr;)\s*/i, "");
+    // só o ` →` que `navNextLinkText` põe: título com quebra de linha no fim
+    // (há páginas assim) não perde o `\n`, senão a 2ª passada mudaria de novo
+    if (rel === "next") raw = raw.replace(/ (?:→|&rarr;)$/i, "");
     if (raw.startsWith(label)) raw = raw.slice(label.length);
     neighbors[rel as "prev" | "next"] = { slug, title: unescapeHtmlEntities(raw) };
   }
