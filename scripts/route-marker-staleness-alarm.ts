@@ -34,6 +34,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
+import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 import {
   findRouteMarkerStaleness,
   describeConsultorCoverage,
@@ -52,7 +53,7 @@ interface GhIssueListEntry {
   labels?: Array<{ name?: string }>;
   body: string | null;
   state?: string;
-  comments?: Array<{ body?: string }>;
+  comments?: Array<{ body?: string; authorAssociation?: string }>;
   url?: string;
   title?: string;
 }
@@ -60,6 +61,30 @@ interface GhIssueListEntry {
 interface FetchedIssue extends RouteMarkerStalenessIssueInput {
   url: string;
   title: string;
+}
+
+/** Pure: converte o stdout de `gh issue list --json ...,comments,...` nas
+ * entradas avaliadas pelo módulo puro. `null` em JSON inválido.
+ *
+ * #9775: `comments` só carrega corpos de autor CONFIÁVEL
+ * (`trustedCommentBodies`, #9632) — o repo é público, e um marcador
+ * `bloqueio-execucao`/de rota postado por conta externa como comentário
+ * mais recente faria o alarme sumir ou disparar falso. Exportado pra teste. */
+export function parseOpenIssuesForStaleness(stdout: string): FetchedIssue[] | null {
+  try {
+    const entries = JSON.parse(stdout) as GhIssueListEntry[];
+    return entries.map((e) => ({
+      number: e.number,
+      labels: (e.labels ?? []).map((l) => l.name ?? "").filter((n) => n.length > 0),
+      body: e.body ?? "",
+      state: (e.state ?? "OPEN").toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN",
+      comments: trustedCommentBodies(e.comments) ?? [],
+      url: e.url ?? "",
+      title: e.title ?? "",
+    }));
+  } catch {
+    return null;
+  }
 }
 
 /** Lista TODAS as issues abertas (labels/body/state/comments/url/title) via
@@ -71,20 +96,7 @@ export function listOpenIssuesForStaleness(cwd: string = ROOT): FetchedIssue[] |
     cwd,
   );
   if (res.status !== 0) return null;
-  try {
-    const entries = JSON.parse(res.stdout) as GhIssueListEntry[];
-    return entries.map((e) => ({
-      number: e.number,
-      labels: (e.labels ?? []).map((l) => l.name ?? "").filter((n) => n.length > 0),
-      body: e.body ?? "",
-      state: (e.state ?? "OPEN").toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN",
-      comments: (e.comments ?? []).map((c) => c.body ?? ""),
-      url: e.url ?? "",
-      title: e.title ?? "",
-    }));
-  } catch {
-    return null;
-  }
+  return parseOpenIssuesForStaleness(res.stdout);
 }
 
 /** Consultor real — memoiza `gh issue view --json state` por issue (várias

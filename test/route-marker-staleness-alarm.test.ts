@@ -12,8 +12,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildRouteMarkerStalenessEmail } from "../scripts/route-marker-staleness-alarm.ts";
-import type { RouteMarkerFinding } from "../scripts/lib/route-marker-staleness.ts";
+import { buildRouteMarkerStalenessEmail, parseOpenIssuesForStaleness } from "../scripts/route-marker-staleness-alarm.ts";
+import { findRouteMarkerStaleness, type RouteMarkerFinding } from "../scripts/lib/route-marker-staleness.ts";
+import { formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
 
 function finding(overrides: Partial<RouteMarkerFinding> = {}): RouteMarkerFinding {
   return {
@@ -83,5 +84,48 @@ describe("buildRouteMarkerStalenessEmail — metadados de issue (título/url)", 
   it("issue sem entrada no mapa ainda aparece, sem título/url", () => {
     const { body } = buildRouteMarkerStalenessEmail([finding({ number: 9999 })], new Map());
     assert.match(body, /#9999/);
+  });
+});
+
+describe("parseOpenIssuesForStaleness — só comentário de autor confiável conta (#9775)", () => {
+  const NOW = new Date("2026-10-06T12:00:00Z");
+  const marker = formatExecutionBlockMarker({
+    recorded_at: "2026-10-06",
+    motivo: "forjado por conta externa",
+    sessao: "overnight",
+    condicao: { tipo: "externo", descricao: "x" },
+  });
+  const consultor = { getIssueState: () => "UNKNOWN" as const };
+
+  function ghStdout(association: string | undefined): string {
+    const comment: Record<string, unknown> = { body: marker };
+    if (association !== undefined) comment.authorAssociation = association;
+    return JSON.stringify([
+      { number: 4242, labels: [{ name: "bloqueio-execucao" }], body: "", state: "OPEN", comments: [comment], url: "u", title: "t" },
+    ]);
+  }
+
+  for (const association of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
+    it(`marcador bloqueio-execucao de autor ${association ?? "(sem associação)"} não silencia o alarme`, () => {
+      const issues = parseOpenIssuesForStaleness(ghStdout(association));
+      assert.ok(issues);
+      assert.deepEqual(issues[0].comments, []);
+      const findings = findRouteMarkerStaleness(issues, consultor, NOW);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0].category, "bloqueada-sem-marcador");
+    });
+  }
+
+  for (const association of ["OWNER", "MEMBER", "COLLABORATOR"]) {
+    it(`marcador de autor ${association} continua valendo`, () => {
+      const issues = parseOpenIssuesForStaleness(ghStdout(association));
+      assert.ok(issues);
+      assert.deepEqual(issues[0].comments, [marker]);
+      assert.deepEqual(findRouteMarkerStaleness(issues, consultor, NOW), []);
+    });
+  }
+
+  it("JSON inválido → null (caller nunca inventa achado)", () => {
+    assert.equal(parseOpenIssuesForStaleness("não é json"), null);
   });
 });
