@@ -3070,6 +3070,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     schedule: { kind: "daily", hour: 5, minute: 15 },
     issue: "#9621",
   },
+  {
+    // #9725 — o #7278 entregou scripts/gc-data-dir.ts mas fechou sem
+    // agendamento: em 06/10/2026 o dry-run achou 1,08 GB acumulados em ~1
+    // mes desde a ultima limpeza manual (risco: cota do OneDrive estourar e
+    // parar o sync de data/ entre as maquinas). `--apply` SEM
+    // `--include-bucket`: o bucket opt-in `mv-cache` (pode guardar resultado
+    // MillionVerifier ja pago, ainda nao persistido nos CSVs) fica de fora
+    // por design; `beehiiv-backup/` nunca e tocado (guard do script). Sem
+    // `--data-root` -- argv estatico, sempre o data/ do checkout.
+    // Sabado 03:40 BRT: nenhuma outra weekly no sabado, nenhuma daily as
+    // 03:40 (Diaria-Tmp-Cleanup e 03:20), fora das batidas :00 das tasks
+    // `interval` e longe do bloco de domingo (Diaria-Beehiiv-Backup 03:00).
+    // Edicao em andamento nunca e tocada (so edicao com .step-6-done.json).
+    name: "Diaria-Gc-Data-Dir-Weekly",
+    description:
+      "GC semanal de cache/intermediario/backup redundante sob data/ (gc-data-dir.ts --apply) -- " +
+      "mv-cache opt-in fica de fora, beehiiv-backup nunca e tocado, #9725",
+    steps: [{ key: "gc", script: "scripts/gc-data-dir.ts", args: ["--apply"] }],
+    logPath: "gc-data-dir/.gc.log",
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 40 },
+    // Guard: data/ montada mas sem editions/ (junction do OneDrive ainda nao
+    // sincronizada) -- aborta antes de varrer, mesmo sinal das tasks irmas.
+    guard: {
+      requiredFile: "editions",
+      abortMessage: "data/editions ausente (junction data/ nao montada?) -- GC semanal abortado sem varrer nada.",
+    },
+    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
+    // disciplina do resto do registro) -- armar via
+    // `scripts/setup-systemd-timers.ts --task Diaria-Gc-Data-Dir-Weekly` na
+    // checkout compartilhada (`300`) e acao POSTERIOR do editor/remediate.
+    issue: "#9725",
+  },
 ];
 
 /**

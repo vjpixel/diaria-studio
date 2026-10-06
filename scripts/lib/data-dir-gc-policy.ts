@@ -17,11 +17,19 @@
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-NNNN`, sufixo de
  *      nome de máquina como `-Neo`/`-predator`/`-Zenbook`, `.bak[-data]`) —
  *      em QUALQUER lugar sob `data/`, não só edições.
- *   5. `.mv-cache-*.json` (cache MillionVerifier — o resultado pago vive
- *      nos `-verified`/`-rejected`/`-unknown`/`-error`, #4353).
+ *   5. `.mv-cache-*.json` (cache MillionVerifier). **OPT-IN desde #9725**
+ *      (`OPT_IN_BUCKETS`): o cache pode guardar resultado pago ainda não
+ *      persistido nos CSVs, então o `--apply` só o remove com
+ *      `--include-bucket mv-cache`.
+ *   6. `diaria-subscribers/*.db.backup-*` (#9725) — retenção dos N
+ *      conjuntos mais recentes por `.db` (`classifyDbBackups`, N=3).
  *
- * Fora desta fatia (itens 4-6 do "O que fazer" da issue, follow-up
- * separado): agendamento armado em `scheduled-tasks.ts`, alarme de cota, e
+ * `beehiiv-backup/` segue no guard (nunca candidato); desde #9725 o
+ * dry-run só RELATA os snapshots semanais que uma retenção por N
+ * liberaria (`planBeehiivSnapshotReport`) — apagar é decisão do editor.
+ *
+ * Agendamento: `Diaria-Gc-Data-Dir-Weekly` em `scheduled-tasks.ts` (#9725).
+ * Fora desta fatia (follow-up separado da #7278): alarme de cota, e
  * normalização dos 15 diretórios `editions/{AAMMDD}` no layout antigo
  * (mover 3, apagar 12 shells duplicados).
  *
@@ -53,7 +61,54 @@ export function isExcludedPath(relPath: string): boolean {
   return false;
 }
 
-export type GcBucket = "forensic-cache" | "tmp-intermediate" | "embedded-html" | "backup-sibling" | "mv-cache";
+export type GcBucket =
+  | "forensic-cache"
+  | "tmp-intermediate"
+  | "embedded-html"
+  | "backup-sibling"
+  | "mv-cache"
+  | "db-backup";
+
+/** Todos os buckets conhecidos — vocabulário aceito por `--include-bucket`. */
+export const ALL_GC_BUCKETS: readonly GcBucket[] = [
+  "forensic-cache",
+  "tmp-intermediate",
+  "embedded-html",
+  "backup-sibling",
+  "mv-cache",
+  "db-backup",
+];
+
+/**
+ * Buckets OPT-IN (#9725): inventariados sempre (dry-run lista), mas fora do
+ * default do `--apply` — só removidos com `--include-bucket {nome}`
+ * explícito. `mv-cache` entra aqui porque `.mv-cache-*.json` pode guardar
+ * resultado MillionVerifier JÁ PAGO que ainda não foi persistido nos CSVs
+ * `-verified`/`-rejected`/... (caso de 260728: 13k e-mails recuperados dali)
+ * — a premissa "resultado pago já vive em outro lugar" de `classifyMvCache`
+ * não é garantida, e o `--apply` agendado (semanal, sem supervisão) não pode
+ * apostar nela.
+ */
+export const OPT_IN_BUCKETS: readonly GcBucket[] = ["mv-cache"];
+
+/**
+ * @pure — conjunto de buckets que o `--apply` remove: todos os não-opt-in +
+ * os opt-in pedidos em `include`. Nome desconhecido LANÇA (fail-closed: um
+ * typo em `--include-bucket mvcache` não pode virar "nada incluído" em
+ * silêncio, nem o contrário).
+ */
+export function resolveEnabledBuckets(include: readonly string[] = []): Set<GcBucket> {
+  const enabled = new Set<GcBucket>(ALL_GC_BUCKETS.filter((b) => !OPT_IN_BUCKETS.includes(b)));
+  for (const raw of include) {
+    const name = raw.trim();
+    if (name === "") continue;
+    if (!(ALL_GC_BUCKETS as readonly string[]).includes(name)) {
+      throw new Error(`--include-bucket: bucket desconhecido "${name}" (válidos: ${ALL_GC_BUCKETS.join(", ")})`);
+    }
+    enabled.add(name as GcBucket);
+  }
+  return enabled;
+}
 
 export interface GcCandidate {
   /** path relativo à raiz `data/`, sempre "/"-separated. */
@@ -234,6 +289,140 @@ export function classifyMvCache(files: readonly AgedFile[], retentionDays: numbe
       relPath: f.relPath,
       bucket: "mv-cache" as const,
       sizeBytes: f.sizeBytes,
-      reason: `cache MillionVerifier, ${f.ageDays}d (>${retentionDays}d) — resultado pago já persistido em outro lugar (#4353)`,
+      reason: `cache MillionVerifier, ${f.ageDays}d (>${retentionDays}d) — opt-in no --apply (#9725): pode guardar resultado pago ainda não persistido nos CSVs`,
     }));
+}
+
+// ---------------------------------------------------------------------------
+// Bucket 6: backups do store `diaria-subscribers` (#9725) — retenção por N
+// ---------------------------------------------------------------------------
+
+/** Quantos backups (conjuntos `{db}.backup-{stamp}` + sidecars) do mesmo
+ *  `.db` são preservados — os N mais recentes, por `stamp`. Default 3,
+ *  configurável via `--db-backup-keep`. */
+export const DB_BACKUP_KEEP_DEFAULT = 3;
+
+/** Único diretório onde o bucket `db-backup` atua (escopo da #9725). */
+export const DB_BACKUP_DIR = "diaria-subscribers";
+
+export interface DbBackupName {
+  /** basename do `.db` canônico (ex: `diaria-subscribers.db`). */
+  base: string;
+  /** timestamp do backup (`backupFileSuffix`, ex: `2026-09-05T01-24-38-264Z`). */
+  stamp: string;
+}
+
+/**
+ * @pure — reconhece `{base}.db.backup-{stamp}` e seus sidecars SQLite
+ * (`-shm`/`-wal`/`-journal`), formato gravado por `backupStoreFile`
+ * (`scripts/lib/diaria-subscribers-identity-resolve.ts`). O sidecar
+ * pertence ao MESMO conjunto do backup (mesmo `stamp`) e sai junto com ele —
+ * nunca fica órfão. `null` = não é backup (inclui o `.db` canônico).
+ */
+export function parseDbBackupFilename(name: string): DbBackupName | null {
+  const m = /^(.+\.db)\.backup-(.+?)(?:-(?:shm|wal|journal))?$/i.exec(name);
+  if (!m) return null;
+  return { base: m[1], stamp: m[2] };
+}
+
+/**
+ * Classifica backups do store: agrupa por (diretório, `.db` base), depois
+ * por `stamp` (conjunto = backup + sidecars). Preserva os `keep` conjuntos
+ * mais recentes — ordenados por `stamp` desc (ISO, ordena lexicalmente;
+ * mtime não serve como critério primário porque a cópia via OneDrive entre
+ * máquinas reescreve mtime), desempate por mtime — e devolve TODOS os
+ * arquivos dos demais conjuntos. Sem limiar de idade: o critério é "os N
+ * últimos", mesmo que todos velhos.
+ *
+ * Arquivos que `parseDbBackupFilename` não reconhece são ignorados (o
+ * caller já filtra; defesa em profundidade).
+ */
+export function classifyDbBackups(files: readonly AgedFile[], keep: number = DB_BACKUP_KEEP_DEFAULT): GcCandidate[] {
+  if (!Number.isInteger(keep) || keep < 1) {
+    throw new Error(`classifyDbBackups: keep deve ser inteiro ≥ 1, recebido ${keep}`);
+  }
+  // (dir|base) → stamp → arquivos do conjunto
+  const groups = new Map<string, Map<string, AgedFile[]>>();
+  for (const f of files) {
+    const norm = f.relPath.replace(/\\/g, "/");
+    const slash = norm.lastIndexOf("/");
+    const dir = slash === -1 ? "" : norm.slice(0, slash);
+    const parsed = parseDbBackupFilename(norm.slice(slash + 1));
+    if (!parsed) continue;
+    const key = `${dir}|${parsed.base}`;
+    const sets = groups.get(key) ?? new Map<string, AgedFile[]>();
+    const list = sets.get(parsed.stamp) ?? [];
+    list.push(f);
+    sets.set(parsed.stamp, list);
+    groups.set(key, sets);
+  }
+
+  const out: GcCandidate[] = [];
+  for (const sets of groups.values()) {
+    const ordered = [...sets.entries()].sort(([sa, fa], [sb, fb]) => {
+      if (sa !== sb) return sa < sb ? 1 : -1; // stamp desc
+      return Math.max(...fb.map((f) => f.mtimeMs)) - Math.max(...fa.map((f) => f.mtimeMs));
+    });
+    for (const [stamp, list] of ordered.slice(keep)) {
+      for (const f of list) {
+        out.push({
+          relPath: f.relPath,
+          bucket: "db-backup",
+          sizeBytes: f.sizeBytes,
+          reason: `backup do store (${stamp}) fora dos ${keep} mais recentes do mesmo .db`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// `beehiiv-backup/` — SÓ RELATÓRIO, nunca candidato (#9725)
+// ---------------------------------------------------------------------------
+
+/** N de snapshots semanais que o RELATÓRIO trata como "manter" — só muda o
+ *  que é listado como candidato hipotético; nada é removido. */
+export const BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT = 4;
+
+/** @pure — snapshot semanal de `beehiiv-backup/` (`YYYY-MM-DD`). */
+export function isBeehiivSnapshotDirName(name: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(name);
+}
+
+export interface SnapshotDirInfo {
+  /** path relativo à raiz `data/` (ex: `beehiiv-backup/2026-09-06`). */
+  relPath: string;
+  sizeBytes: number;
+}
+
+export interface BeehiivSnapshotReport {
+  keep: number;
+  kept: SnapshotDirInfo[];
+  /** Candidatos HIPOTÉTICOS — nunca entram em `GcCandidate[]` nem são
+   *  removidos por este script (o guard `isExcludedPath` também os barra).
+   *  `beehiiv-backup/` é o único backup de dado que some junto com o acesso
+   *  à Beehiiv (#6465); apagar é decisão do editor. */
+  wouldRemove: SnapshotDirInfo[];
+  wouldRemoveBytes: number;
+  totalBytes: number;
+}
+
+/** @pure — ordena por nome (data ISO) desc e separa os `keep` mais recentes. */
+export function planBeehiivSnapshotReport(
+  snapshots: readonly SnapshotDirInfo[],
+  keep: number = BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
+): BeehiivSnapshotReport {
+  if (!Number.isInteger(keep) || keep < 1) {
+    throw new Error(`planBeehiivSnapshotReport: keep deve ser inteiro ≥ 1, recebido ${keep}`);
+  }
+  const ordered = [...snapshots].sort((a, b) => (a.relPath < b.relPath ? 1 : a.relPath > b.relPath ? -1 : 0));
+  const wouldRemove = ordered.slice(keep);
+  return {
+    keep,
+    kept: ordered.slice(0, keep),
+    wouldRemove,
+    wouldRemoveBytes: wouldRemove.reduce((s, x) => s + x.sizeBytes, 0),
+    totalBytes: ordered.reduce((s, x) => s + x.sizeBytes, 0),
+  };
 }
