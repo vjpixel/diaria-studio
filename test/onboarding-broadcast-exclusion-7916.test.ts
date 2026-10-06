@@ -14,13 +14,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   collectOnboardingBroadcastIds,
+  collectOrphanOnboardingLots,
   decideOnboardingBroadcastExclusion,
   excludeOnboardingBroadcasts,
   readOnboardingBroadcastExclusion,
 } from "../scripts/lib/onboarding-broadcast-exclusion.ts";
 import type { OnboardingKitLot } from "../scripts/lib/onboarding-kit-transport.ts";
 
-function lot(lotId: string, broadcastId: number | null): OnboardingKitLot {
+function lot(
+  lotId: string,
+  broadcastId: number | null,
+  status: OnboardingKitLot["status"] = broadcastId == null ? "pending" : "completed",
+): OnboardingKitLot {
   return {
     lot_id: lotId,
     kind: "email1",
@@ -29,7 +34,7 @@ function lot(lotId: string, broadcastId: number | null): OnboardingKitLot {
     broadcast_id: broadcastId,
     recipient_subscription_ids: ["s1"],
     recipient_emails: ["a@x.com"],
-    status: broadcastId == null ? "pending" : "completed",
+    status,
     created_at: "2026-10-01T09:00:00.000Z",
     send_at: null,
     last_reconciled_at: null,
@@ -57,6 +62,18 @@ describe("collectOnboardingBroadcastIds", () => {
   });
   it("lots ausente → vazio, nunca lança", () => {
     assert.equal(collectOnboardingBroadcastIds(undefined).size, 0);
+  });
+});
+
+describe("collectOrphanOnboardingLots", () => {
+  it("pending/created sem id contam; cancelado e com id não", () => {
+    const orphans = collectOrphanOnboardingLots({
+      a: lot("a", null),
+      b: lot("b", null, "created"),
+      c: lot("c", null, "cancelled"),
+      d: lot("d", 5),
+    });
+    assert.deepEqual(orphans, ["a", "b"]);
   });
 });
 
@@ -93,6 +110,29 @@ describe("decideOnboardingBroadcastExclusion — política de falha", () => {
       decideOnboardingBroadcastExclusion({ ...base, storeExists: true, corrupted: true, kitTransportEnabled: true }),
     );
   });
+  it("store ilegível + switch OFF (pós-rollback) → lança também: o arquivo existir prova que pode haver lotes", () => {
+    assert.throws(
+      () => decideOnboardingBroadcastExclusion({ ...base, storeExists: true, corrupted: true, kitTransportEnabled: false }),
+      /ilegível.*leitor-v1/s,
+    );
+  });
+  it("aviso de store ausente não promete que não há lote algum (rollback perde o store)", () => {
+    const r = decideOnboardingBroadcastExclusion({ ...base, storeExists: false, corrupted: false, kitTransportEnabled: false });
+    assert.doesNotMatch(r.warning!, /nenhum lote de produção possível/);
+    assert.match(r.warning!, /janela anterior/);
+  });
+  it("lote sem broadcast_id e não cancelado → orphanLots + aviso alto; cancelado não conta", () => {
+    const r = decideOnboardingBroadcastExclusion({
+      ...base,
+      storeExists: true,
+      corrupted: false,
+      lots: { a: lot("a", 777), b: lot("b", null), c: lot("c", null, "cancelled") },
+      kitTransportEnabled: true,
+    });
+    assert.deepEqual([...r.ids], ["777"]);
+    assert.deepEqual(r.orphanLots, ["b"]);
+    assert.match(r.warning!, /gap #1/);
+  });
   it("store legível + switch OFF (rollback) → ainda exclui os lotes persistidos", () => {
     const r = decideOnboardingBroadcastExclusion({
       ...base,
@@ -123,5 +163,8 @@ describe("readOnboardingBroadcastExclusion — lê config + store do disco", () 
   });
   it("store corrompido + switch ON → lança", () => {
     assert.throws(() => readOnboardingBroadcastExclusion(writeFixture({ enabled: true, store: "{nao-json" })));
+  });
+  it("store corrompido + switch OFF → lança (independe do switch)", () => {
+    assert.throws(() => readOnboardingBroadcastExclusion(writeFixture({ enabled: false, store: "{nao-json" })));
   });
 });

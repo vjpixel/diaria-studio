@@ -166,7 +166,7 @@ export interface KitIngestDeps {
    * #7916 (compat #7922): conjunto de `broadcast_id`s que são LOTES de
    * onboarding do transporte Kit — excluídos da ingestão pra não virarem
    * "edições" no `leitor-v1`. Opcional: ausente, `main()` lê do disco via
-   * `readOnboardingBroadcastExclusion(--config)`. Pode lançar (store ilegível
+   * `readOnboardingBroadcastExclusion(--config)`. Pode lançar (store ilegível sempre, ou ausente
    * com o switch ligado) — ver `scripts/lib/onboarding-broadcast-exclusion.ts`.
    */
   readOnboardingExclusion?: () => OnboardingBroadcastExclusion;
@@ -618,7 +618,7 @@ export async function main(
   // #7916 (compat #7922): lotes de onboarding do transporte Kit são
   // broadcasts `completed` como qualquer edição — sem este filtro virariam
   // eventos com `edicao=broadcast_id` e inflariam o leitor-v1 da coorte nova.
-  // Lido ANTES de listar: store ilegível com o switch ligado aborta aqui.
+  // Lido ANTES de listar: store ilegível (sempre) ou ausente com o switch ligado aborta aqui.
   let onboardingExclusion: OnboardingBroadcastExclusion;
   try {
     onboardingExclusion = (deps.readOnboardingExclusion ?? (() => readOnboardingBroadcastExclusion(configPath)))();
@@ -633,7 +633,7 @@ export async function main(
     await deps.listAllBroadcasts(),
     onboardingExclusion.ids,
   );
-  console.error(`  …${broadcasts.length} broadcast(s) completados.`);
+  console.error(`  …${broadcasts.length} broadcast(s) completados de edição (lotes de onboarding já excluídos).`);
   if (onboardingBroadcasts.length > 0) {
     console.error(
       `  …${onboardingBroadcasts.length} broadcast(s) de onboarding (lotes do transporte Kit, #7922) fora da ingestão: ` +
@@ -715,8 +715,20 @@ export async function main(
         db: dbPath,
         manifest: manifestPath,
         roster: rosterSummary,
+        // #7916: só broadcasts de EDIÇÃO — os lotes de onboarding já saíram
+        // (listados em `onboarding_broadcasts_excluded`).
         broadcasts_total: broadcasts.length,
         onboarding_broadcasts_excluded: onboardingBroadcasts.map((b) => String(b.id)),
+        // #7916: de onde veio a exclusão — distingue "store lido, sem lotes"
+        // (`source: "store"`) de "exclusão desligada" (`store-absent`).
+        onboarding_exclusion: {
+          source: onboardingExclusion.source,
+          kit_transport_enabled: onboardingExclusion.kitTransportEnabled,
+          warning: onboardingExclusion.warning,
+        },
+        // #7916: lotes sem broadcast_id e não cancelados — possíveis
+        // broadcasts órfãos (gap #1 da #7922) que NÃO foram excluídos.
+        onboarding_orphan_lots: [...(onboardingExclusion.orphanLots ?? [])],
         processed_this_run: processed,
         events_new: eventsNewTotal,
         events_already_known: eventsAlreadyKnownTotal,
