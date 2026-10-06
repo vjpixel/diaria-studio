@@ -2,7 +2,7 @@
  * artigo-especial-schedule.ts (#5979)
  *
  * Resolve o `--at` (agendamento LinkedIn) da skill `/diaria-artigo-especial`.
- * Default = **D+1 17:30 BRT a partir de HOJE** (decisão do editor, 23/08/2026
+ * Default = **D+1 no `d3_time` (hoje 17:15 BRT; era 17:30 em 23/08/2026) a partir de HOJE** (decisão do editor, 23/08/2026
  * — mesmo horário `d3_time` de `publishing.social.fallback_schedule`, "os
  * posts de edição").
  *
@@ -10,9 +10,9 @@
  * reimplementa** — mas essa função é parametrizada por `editionDate` (AAMMDD)
  * + `destaque` (d1/d2/d3), que não é bem o vocabulário do artigo especial
  * (não há "edição" nem "destaque" aqui). Este módulo faz só a ponte: converte
- * "hoje + 1 dia, 17:30 BRT" pro vocabulário que `computeScheduledAt` entende
+ * "hoje + 1 dia, no horário de `d3_time`" pro vocabulário que `computeScheduledAt` entende
  * (`editionDate = AAMMDD de hoje`, `dayOffset = 1`, `destaque = "d3"` — é o
- * slot cujo horário configurado, `d3_time`, já é 17:30) e devolve o ISO
+ * slot cujo horário configurado, `d3_time`, hoje é 17:15) e devolve o ISO
  * pronto. Escolher `destaque: "d3"` aqui é só uma forma de apontar pro slot
  * de horário certo em `fallback_schedule` — não implica nenhuma relação com
  * um "3º destaque" de edição.
@@ -75,7 +75,7 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
 /**
  * Resolve o `scheduled_at` final:
  *   - `at` explícito (já validado por `validateExplicitAt`) → usa como está.
- *   - omitido → D+1 17:30 BRT a partir de `now` (default `Date.now()`),
+ *   - omitido → página D+1 09:00 / perfil D+2 09:30 BRT a partir de `now` (default `Date.now()`),
  *     via `computeScheduledAt` (reuso, ver docstring do módulo). "Hoje" é
  *     derivado no fuso de `config.publishing.social.timezone` (fallback BRT
  *     se ausente) — mesmo fuso que `computeScheduledAt` usa pro resto do
@@ -84,9 +84,9 @@ export function validateExplicitAt(at: string, now: number = Date.now()): string
  * **#6014 item 1:** o default único D+1 17:30 foi SUBSTITUÍDO — nasceu
  * colidindo com o `d3` da edição diária (mesmo minuto, mesma página; visto
  * na fila do Worker em 23/08). Decisão do editor ao vivo:
- *   - **Página: D+1 09:00 BRT** (abre o dia, 1h antes do `d1` das 10:00);
+ *   - **Página: D+1 09:00 BRT** (abre o dia, 45min antes do `d1` das 09:45);
  *   - **Perfil: D+2 09:30 BRT** (dia seguinte ao da página).
- * Agenda resultante: `09:00 weekly-pagina | 10:00 d1 | 12:30 d2 | 17:30 d3`.
+ * Agenda resultante: `09:00 weekly-pagina | 09:45 d1 | 12:15 d2 | 17:15 d3`.
  * `resolveArtigoEspecialScheduledAt` (singular) continua existindo por
  * compat e agora devolve o horário da PÁGINA; o par completo vem de
  * `resolveArtigoEspecialScheduledAts`.
