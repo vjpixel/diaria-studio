@@ -117,6 +117,9 @@
  *                      local logo após o 2xx) também recusa um novo POST.
  *                      #9699: idem `sendNowAttemptedAt` (gravado ANTES do
  *                      POST); erro no POST/poll vira exit 2 (incerto).
+ *                      #9706: exceto 4xx definitivo da Brevo no POST (a
+ *                      resposta chegou e recusou) — exit 1 (falhou), com a
+ *                      marca de tentativa restaurada.
  *
  * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
  *                      gabarito É IA?) quando diverge do --cycle de
@@ -189,7 +192,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, BrevoHttpError, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
@@ -753,7 +756,11 @@ export function applySendNowVerifyResults(
     if (result.status === "rejected") {
       logFn(
         `⚠ GET-verify pós-sendNow ${c.key} (campanha #${c.campaignId}) falhou: ${String(result.reason)}. ` +
-          `Status local NÃO atualizado — re-tente --send-now.`,
+          // #9706: mesma ressalva do ramo "draft" — o POST já foi ACEITO
+          // (este ramo só roda depois dele) e o envio pode estar saindo.
+          `Status local NÃO atualizado — o POST sendNow foi ACEITO, pode ser envio em processamento: re-rodar --send-now em até ` +
+          `${Math.round(SEND_NOW_GUARD_WINDOW_MS / 60_000)} min desde o POST aceito é recusado pelo guard (#9638); ` +
+          `DEPOIS disso um novo POST é liberado — confira na Brevo que o 1º não saiu antes de re-tentar.`,
       );
       continue;
     }
@@ -1013,6 +1020,21 @@ export function resolveGroupCampaignHtmlPath(monthlyDir: string, key: string): s
 }
 
 /**
+ * #9706 — o erro do POST sendNow é uma RECUSA DEFINITIVA da Brevo (resposta
+ * HTTP recebida, sem aceite)? Só 4xx tipado (`BrevoHttpError`) conta. Ficam
+ * de fora, e portanto INCERTOS: rede/timeout (sem resposta), 5xx (o gateway
+ * pode ter repassado antes de falhar), 429 (chega como `BrevoRateLimitError`,
+ * não `BrevoHttpError`), 408 (timeout do lado servidor), 409 (conflito pode
+ * ser um envio concorrente em curso) e 425 (too early). Na dúvida, incerto —
+ * o lado irreversível é o envio duplicado.
+ */
+export function isDefinitiveSendNowRejection(err: unknown): err is BrevoHttpError {
+  if (!(err instanceof BrevoHttpError)) return false;
+  if (err.status < 400 || err.status >= 500) return false;
+  return ![408, 409, 425, 429].includes(err.status);
+}
+
+/**
  * #9638 — miolo AO VIVO do `--send-now` pra UMA campanha local em "draft":
  * GET ao vivo → `checkSendNowGuard` → (se liberado) POST sendNow → grava
  * `sendNowAcceptedAt` → poll → `applySendNowVerifyResults`. Extraído de
@@ -1026,7 +1048,10 @@ export function resolveGroupCampaignHtmlPath(monthlyDir: string, key: string): s
  * que lançou erro depois de possivelmente aceito; o caller sinaliza exit 2,
  * #4347). `sendNowAttemptedAt` é gravado ANTES do POST (#9699); falha nessa
  * escrita lança antes de qualquer envio, falha de escrita DEPOIS do POST só
- * loga.
+ * loga. "failed" (#9706): a Brevo RECUSOU o POST com 4xx definitivo
+ * (`isDefinitiveSendNowRejection`) — nada saiu; o `sendNowAttemptedAt` volta
+ * ao valor anterior pra não travar o reenvio legítimo depois do conserto; o
+ * caller sinaliza exit 1.
  */
 export async function runSendNowLive(
   c: CampaignEntry,
@@ -1041,7 +1066,7 @@ export async function runSendNowLive(
     logFn?: (msg: string) => void;
     nowFn?: () => Date;
   } = {},
-): Promise<"skipped" | "sent" | "unconfirmed"> {
+): Promise<"skipped" | "sent" | "unconfirmed" | "failed"> {
   const getCampaignFn = deps.getCampaignFn ?? ((k, id) => brevoGetCampaign(k, id));
   const sendNowFn = deps.sendNowFn ?? ((k, id) => brevoSendNow(k, id));
   const pollFn = deps.pollFn ?? ((k, id) => pollTerminalSendStatus(k, id));
@@ -1074,6 +1099,7 @@ export async function runSendNowLive(
   // "draft" sem registro nenhum → 2º POST (envio duplicado, irreversível).
   // Esta escrita NÃO é fail-soft de propósito: se não der pra registrar a
   // tentativa, o POST não sai (lança antes de qualquer envio).
+  const previousAttemptedAt = c.sendNowAttemptedAt;
   c.sendNowAttemptedAt = nowFn().toISOString();
   writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
 
@@ -1094,6 +1120,24 @@ export async function runSendNowLive(
   try {
     await sendNowFn(apiKey, c.campaignId);
   } catch (err) {
+    // #9706: 4xx definitivo = a Brevo respondeu e NÃO aceitou (remetente
+    // inválido, lista vazia, IP fora da allowlist...). Nada saiu: é "falhou"
+    // (exit 1), não "incerto". Restaura a marca de tentativa ao valor de
+    // ANTES deste POST (não apaga às cegas: uma marca de tentativa anterior
+    // incerta continua valendo) pra que o reenvio depois do conserto não seja
+    // barrado pelo guard. Se essa escrita falhar, a marca fica — o guard
+    // segura por até a janela, lado seguro. O GET ao vivo do guard segue
+    // barrando qualquer reenvio de campanha que de fato saiu.
+    if (isDefinitiveSendNowRejection(err)) {
+      if (previousAttemptedAt === undefined) delete c.sendNowAttemptedAt;
+      else c.sendNowAttemptedAt = previousAttemptedAt;
+      writeAfterPost(campaignsPath, JSON.stringify(campaigns, null, 2));
+      logFn(
+        `❌ ${key} (campanha #${c.campaignId}): a Brevo RECUSOU o POST sendNow (HTTP ${err.status}) — disparo FALHOU, ` +
+          `nada foi enviado. Corrija a causa (${String(err.message)}) e re-rode --send-now.`,
+      );
+      return "failed";
+    }
     // #9699: erro no POST (rede, timeout, 5xx de gateway) pode ter vindo
     // DEPOIS do aceite — não dá pra distinguir "não saiu" de "saiu e a
     // resposta se perdeu". Erra pro lado conservador: incerto (exit 2), nunca
@@ -1466,6 +1510,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // mesma campanha (incidente ao vivo 260806, campanha #121).
       const outcome = await runSendNowLive(c, campaigns, campaignsPath, apiKey);
       if (outcome === "unconfirmed") process.exitCode = 2;
+      // #9706: recusa definitiva da Brevo (4xx) — falha determinística, não incerteza.
+      else if (outcome === "failed") process.exitCode = 1;
     }
   }
 

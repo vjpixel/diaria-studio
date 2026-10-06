@@ -243,6 +243,24 @@ export class BrevoRateLimitError extends Error {
   }
 }
 
+/**
+ * #9706 — erro TIPADO pra uma resposta HTTP não-2xx (não-429) da Brevo:
+ * carrega o `status` da resposta pra que o chamador decida pela CLASSE
+ * ("a Brevo respondeu e recusou" vs "rede/timeout, não se sabe") sem parsing
+ * de mensagem. Mensagem idêntica ao `Error` genérico anterior
+ * (`formatBrevoApiError`) — `assert.rejects(fn, /regex/)` e `instanceof Error`
+ * continuam valendo. Hoje só `brevoSendNow` lança este tipo.
+ */
+export class BrevoHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "BrevoHttpError";
+  }
+}
+
 /** #6137: extrai o valor do header `api-key` de um `RequestInit.headers` —
  * todos os call sites deste módulo passam um objeto plano com a chave
  * lowercase (`{"api-key": ...}`; confirmado via grep — nenhum call site usa
@@ -1061,7 +1079,12 @@ export async function brevoSendNow(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(formatBrevoApiError("POST", `/emailCampaigns/${campaignId}/sendNow`, res.status, text));
+      // #9706: tipado com `status` — o chamador distingue 4xx definitivo
+      // (resposta recebida, sem aceite) de rede/5xx (incerto).
+      throw new BrevoHttpError(
+        formatBrevoApiError("POST", `/emailCampaigns/${campaignId}/sendNow`, res.status, text),
+        res.status,
+      );
     }
     await res.body?.cancel().catch(() => {});
   }, _sleep);
