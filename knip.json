@@ -44,5 +44,9 @@
   // test/continuo-merger-8445-8446-8447.test.ts (#8868) roda o `jq` real
   // (spawnSync) pra validar a expressão --jq embutida no shell script contra
   // um fixture -- binário do SO usado só em teste, não uma dependência npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd"]
+  // scripts/serve-preview.ts (#9700) invoca `ps -p` (macOS/BSD) pra ler a
+  // linha de comando de um PID antes de sinalizá-lo -- no Linux lê
+  // /proc/{pid}/cmdline e no Windows usa PowerShell; `ps` é utilitário do
+  // SO, só o fallback das demais plataformas, não uma dependência npm.
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps"]
 }

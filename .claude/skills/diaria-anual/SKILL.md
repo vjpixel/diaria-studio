@@ -174,11 +174,15 @@ npx tsx scripts/embed-images-base64.ts \
   --out data/annual/$SLUG/_internal/04-preview-embedded.html
 ```
 
-Servir com `scripts/serve-preview.ts` no padrão stop-old → serve-new da mensal (`run_in_background: true`), e persistir o `tabId` para o teardown:
+Servir com `scripts/serve-preview.ts` no padrão stop-old → serve-new da mensal, **em foreground com `--detach` — nunca `run_in_background: true` nem `&`** (#9686, mesmo bug do Stage 4 diário #9678: o harness mata a background task no teto de tempo e o link morre com o editor ainda revisando; com `--detach` o comando sai em ~1-2s e o servidor vive até o `--stop-pid` do teardown ou, se ele nunca rodar, até o idle-exit/TTL do #9700), e persistir o `tabId` para o teardown:
 ```bash
 npx tsx scripts/serve-preview.ts \
-  --file data/annual/$SLUG/_internal/04-preview-embedded.html --port 0 --watch --edition $SLUG \
-  --persist-to data/annual/$SLUG/_internal/preview-server-url.json --field preview_url &
+  --file data/annual/$SLUG/_internal/04-preview-embedded.html --port 0 --watch --edition $SLUG --detach \
+  --persist-to data/annual/$SLUG/_internal/preview-server-url.json --field preview_url
+```
+Se o editor disser que o link não abre (ou antes de reapresentar o gate), re-servir sob demanda — idempotente, reusa o servidor se ainda estiver vivo:
+```bash
+npx tsx scripts/serve-preview.ts --ensure --file data/annual/$SLUG/_internal/04-preview-embedded.html --port 0 --watch --edition $SLUG --persist-to data/annual/$SLUG/_internal/preview-server-url.json --field preview_url
 ```
 
 ### 4b. Lints
