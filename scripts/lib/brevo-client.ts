@@ -1176,6 +1176,14 @@ export function describeUncertainSendStatus(status: string): string {
  */
 export const SEND_NOW_IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["queued", "draft"]);
 
+/**
+ * Janela default de espera pós-`sendNow` aceito (#9634): a Brevo leva até
+ * ~14 min pra tirar a campanha de "draft". Compartilhada com
+ * `checkSendNowGuard` (clarice-schedule-group.ts, #9638), que trata "draft"
+ * dentro desta janela desde o POST aceito como envio em processamento.
+ */
+export const SEND_NOW_PROCESSING_WINDOW_MS = 15 * 60_000;
+
 export async function pollTerminalSendStatus(
   apiKey: string,
   campaignId: number,
@@ -1190,7 +1198,7 @@ export async function pollTerminalSendStatus(
 ): Promise<{ status: string; scheduledAt?: string | null }> {
   const maxAttempts = opts.attempts ?? Number.POSITIVE_INFINITY;
   const maxDelayMs = opts.maxDelayMs ?? 120_000;
-  const maxWaitMs = opts.maxWaitMs ?? 15 * 60_000;
+  const maxWaitMs = opts.maxWaitMs ?? SEND_NOW_PROCESSING_WINDOW_MS;
   const getCampaignFn = opts.getCampaignFn ?? brevoGetCampaign;
   const sleepFn = opts.sleepFn ?? _defaultSleep;
 

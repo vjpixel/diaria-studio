@@ -112,6 +112,9 @@
  *                      a um novo POST, mesmo que o registro local (que pode
  *                      ficar defasado justo quando o GET-verify anterior
  *                      pegou a campanha em "queued") ainda diga "draft".
+ *                      #9638: "draft" ao vivo em até ~15 min desde o POST
+ *                      aceito (`sendNowAcceptedAt`, gravado no registro
+ *                      local logo após o 2xx) também recusa um novo POST.
  *
  * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
  *                      gabarito É IA?) quando diverge do --cycle de
@@ -184,7 +187,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_PROCESSING_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
@@ -223,6 +226,11 @@ export interface CampaignEntry {
   subject: string;
   scheduledAt?: string;
   status: "draft" | "scheduled" | "sent";
+  /** #9638: ISO do instante em que um POST `sendNow` foi ACEITO (2xx) pra
+   *  esta campanha. Gravado antes do GET-verify, pra que uma re-execução
+   *  manual de `--send-now` dentro de `SEND_NOW_PROCESSING_WINDOW_MS` leia
+   *  "draft" ao vivo como envio em processamento, não como "nunca disparou". */
+  sendNowAcceptedAt?: string;
 }
 
 /** Shape exato que `applyVerifyResults`/`isScheduledStatus` (clarice-schedule-sends.ts)
@@ -794,10 +802,20 @@ export function applySendNowVerifyResults(
  * sinaliza quando vale corrigir o registro local NESTA invocação — só quando
  * o status AO VIVO já é TERMINAL; "queued" ainda pode virar outra coisa (ex:
  * "in_review"), então não persiste sucesso ainda, só recusa o reenvio.
+ *
+ * #9638: `"draft"` AO VIVO é ambíguo — tanto "nunca disparou" quanto "POST
+ * aceito, a Brevo ainda processando" (#9634: até ~14 min). `opts.sendNowAcceptedAt`
+ * (gravado localmente por campanha logo após o POST aceito) desambigua:
+ * "draft" dentro de `SEND_NOW_PROCESSING_WINDOW_MS` desde esse instante =
+ * em processamento → recusa. Timestamp ilegível também recusa (o erro
+ * conservador é não disparar de novo — envio duplicado é irreversível).
+ * Depois da janela, "draft" volta a liberar o POST (a Brevo de fato não
+ * processou o 1º).
  */
 export function checkSendNowGuard(
   localStatus: CampaignEntry["status"],
   liveStatus: string,
+  opts: { sendNowAcceptedAt?: string; now?: Date; windowMs?: number } = {},
 ): { send: true } | { send: false; reason: string; syncLocalAsSent: boolean } {
   if (localStatus === "sent") {
     return { send: false, reason: `já disparada (registro local)`, syncLocalAsSent: false };
@@ -815,6 +833,31 @@ export function checkSendNowGuard(
       reason: `disparo já ACEITO e na fila da Brevo (status ao vivo="queued") — NÃO re-dispare, só reconsulte em instantes`,
       syncLocalAsSent: false,
     };
+  }
+  if (liveStatus === "draft" && opts.sendNowAcceptedAt) {
+    const windowMs = opts.windowMs ?? SEND_NOW_PROCESSING_WINDOW_MS;
+    const acceptedMs = Date.parse(opts.sendNowAcceptedAt);
+    const elapsedMs = (opts.now ?? new Date()).getTime() - acceptedMs;
+    if (Number.isNaN(acceptedMs)) {
+      return {
+        send: false,
+        reason:
+          `status ao vivo="draft" e registro local de POST sendNow aceito ilegível ("${opts.sendNowAcceptedAt}") — ` +
+          `pode ser envio em processamento; NÃO re-dispare sem conferir a Brevo (corrija/remova sendNowAcceptedAt no registro local)`,
+        syncLocalAsSent: false,
+      };
+    }
+    if (elapsedMs < windowMs) {
+      const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60_000));
+      return {
+        send: false,
+        reason:
+          `POST sendNow já ACEITO há ${elapsedMin} min (${opts.sendNowAcceptedAt}) e status ao vivo="draft" — ` +
+          `a Brevo leva até ~${Math.round(windowMs / 60_000)} min pra sair de "draft" (#9634), é envio em processamento; ` +
+          `NÃO re-dispare, só reconsulte depois`,
+        syncLocalAsSent: false,
+      };
+    }
   }
   return { send: true };
 }
@@ -1263,7 +1306,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // da mensagem de erro anterior levava direto a um 2º POST sendNow na
       // mesma campanha (incidente ao vivo 260806, campanha #121).
       const live = await brevoGetCampaign(apiKey, c.campaignId);
-      const guard = checkSendNowGuard(c.status, live.status);
+      const guard = checkSendNowGuard(c.status, live.status, { sendNowAcceptedAt: c.sendNowAcceptedAt });
       if (!guard.send) {
         console.error(`↷ ${key} (campanha #${c.campaignId}): ${guard.reason} — sem novo POST sendNow.`);
         // #4718: `c.status` só chega até aqui como "draft" (os `if`s acima já
@@ -1278,6 +1321,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         }
       } else {
         await brevoSendNow(apiKey, c.campaignId);
+        // #9638: registra o POST aceito ANTES do GET-verify (que pode levar
+        // ~15 min) — se esta invocação for interrompida ou terminar incerta,
+        // uma re-execução dentro da janela lê "draft" como em processamento.
+        c.sendNowAcceptedAt = new Date().toISOString();
+        writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
         // #4347: NUNCA confiar só no 2xx do POST. #4718 (item 1): re-verifica
         // com retry+backoff curto (pollTerminalSendStatus) em vez de um único
         // GET imediato — "queued" costuma resolver em segundos, e um GET
@@ -1306,7 +1354,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           console.error(
             `❌ ${key}: sendNow disparado mas GET-verify (com retry) não confirmou status terminal — NÃO declare sucesso. ` +
               `Reconsulte a Brevo antes de agir de novo — o guard ao vivo acima (#4718) já impede um 2º POST enquanto ` +
-              `o status real for "queued"/"inProcess"/"sent", então re-rodar --send-now é seguro, mas provavelmente redundante.`,
+              `o status real for "queued"/"inProcess"/"sent", ou "draft" em até ${Math.round(SEND_NOW_PROCESSING_WINDOW_MS / 60_000)} min ` +
+              `desde o POST aceito (#9638, registrado em sendNowAcceptedAt), então re-rodar --send-now é seguro, mas provavelmente redundante. ` +
+              `"draft" DEPOIS dessa janela libera um novo POST — confira a Brevo antes.`,
           );
           process.exitCode = 2;
         }
