@@ -822,7 +822,7 @@ except Exception:
   file_issue "[watch-continuo] fabricação de conclusão pelo coordenador" \
     "[watch-continuo] fabricação de conclusão pelo coordenador do contínuo detectada" \
     "bug,P1" \
-    "Detectado por watch-continuo-health.sh via hermes/scripts/detect-tick-claim-fabrication.py (#7537) — o coordenador (modelo local, qwen) relatou ter concluído passos do tick (relatório escrito, N issues classificadas/reivindicadas) sem ter de fato executado; este detector compara o estado real (data/continuo/last-tick-report.md, gh issue list, data/sessions/continuo-*.json) contra o que o protocolo exige de todo tick.
+    "Detectado por watch-continuo-health.sh via hermes/scripts/detect-tick-claim-fabrication.py (#7537) — o coordenador do tick (qualquer modelo — conferir a composição do tick em data/continuo/watch-health.log; o alarme nasceu para o modelo local, #7537) relatou ter concluído passos do tick (relatório escrito, N issues classificadas/reivindicadas) sem ter de fato executado; este detector compara o estado real (data/continuo/last-tick-report.md, gh issue list, data/sessions/continuo-*.json) contra o que o protocolo exige de todo tick.
 
 \`\`\`
 $FAB_DETAILS

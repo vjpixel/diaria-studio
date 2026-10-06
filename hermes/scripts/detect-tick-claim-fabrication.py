@@ -305,7 +305,11 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 # si — por isso a distância entre a preposição/verbo e o ator tolera
 # palavras no meio (ver `_OTHERS_CLAIM`/`_OTHERS_CLAIM_HELD`), não um
 # vocabulário mais amplo aqui.
-_ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
+# #9778: "interativa"/"concorrente" (PT) — "#9761 está reivindicada por
+# sessão interativa concorrente" é claim de OUTRA sessão (a interativa no 300
+# que abriu a PR #9763), mas só "interactive" (EN) estava na lista; o tick
+# 122552 de 06/10 virou `fabrication_suspected` (falso positivo).
+_ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|interativ[oa]s?|concorrentes?|terceir[oa]s?)"
 # #9026: `pel[oa]s?` — "pela" (feminino: "reivindicada pela sessão
 # overnight") e "pelos" faltavam na alternância original (por|pelo|pelas).
 # #9210: no caminho com até 4 palavras intermediárias, o `outr[oa]s?` solto
@@ -322,7 +326,7 @@ _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
 _ACTOR_STRICT = (
     r"(?:outr[oa]s?\s+(?:sess\w+|rodadas?|coordenador\w*|ticks?"
     r"|inst[âa]ncias?|agentes?|workers?)"
-    r"|overnight|develop|interactive|terceir[oa]s?)"
+    r"|overnight|develop|interactive|interativ[oa]s?|concorrentes?|terceir[oa]s?)"
 )
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
