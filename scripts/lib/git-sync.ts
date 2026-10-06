@@ -293,6 +293,90 @@ export interface GitSyncResult {
   stale_autostash_count: number;
   /** #9276: arquivos de `PROTECTED_CONFIG_PATHS` sujos (só no outcome `protected_config_dirty`). */
   dirty_config?: string[];
+  /**
+   * #9690: por que o `merge --ff-only` DIRETO (tree suja, #8719) recusou —
+   * preenchido sempre que essa recusa aconteceu, independente do outcome final
+   * (`protected_config_dirty`, os que criam stash, `stash_failed`...). Antes
+   * disso o stderr da recusa era descartado: um checkout que ficava dias
+   * defasado (33 commits na #9690) não dizia se a colisão era a própria config,
+   * outro arquivo, ou divergência genuína. Ver `classifyFfRefusal()`.
+   */
+  ff_refusal?: FfRefusal;
+}
+
+/**
+ * #9690: classificação da recusa do `git merge --ff-only`.
+ * - `local_changes_collide`: mudança rastreada local seria sobrescrita
+ *   (`paths` = arquivos que o git listou).
+ * - `untracked_collide`: arquivo não-rastreado seria sobrescrito.
+ * - `diverged`: HEAD não é ancestral de origin/master (commit local).
+ * - `unknown`: stderr fora dos formatos conhecidos (locale, versão do git).
+ * `stderr` guarda o texto cru (aparado, até 2000 chars) pra diagnóstico.
+ */
+export type FfRefusalKind = "local_changes_collide" | "untracked_collide" | "diverged" | "unknown";
+
+export interface FfRefusal {
+  kind: FfRefusalKind;
+  paths: string[];
+  stderr: string;
+}
+
+const FF_REFUSAL_STDERR_MAX = 2000;
+
+/**
+ * #9690: classifica o stderr de uma recusa do `git merge --ff-only`. Puro.
+ * Formato do git (EN; PT-BR coberto de forma tolerante):
+ *   error: Your local changes to the following files would be overwritten by merge:
+ *   \t<caminho>
+ *   Please commit your changes or stash them before you merge.
+ *   error: The following untracked working tree files would be overwritten by merge:
+ *   \t<caminho>
+ *   fatal: Not possible to fast-forward, aborting.
+ * Os caminhos são as linhas indentadas logo após o cabeçalho. Se ambos os
+ * blocos aparecem, `local_changes_collide` vence (é o que bloqueia primeiro) e
+ * `paths` traz os dois conjuntos.
+ */
+export function classifyFfRefusal(stderr: string): FfRefusal {
+  const text = stderr.replace(/\r/g, "");
+  const trimmed = text.trim().slice(0, FF_REFUSAL_STDERR_MAX);
+  const lines = text.split("\n");
+  const collect = (headerRe: RegExp): string[] | null => {
+    const idx = lines.findIndex((l) => headerRe.test(l));
+    if (idx === -1) return null;
+    const out: string[] = [];
+    for (const l of lines.slice(idx + 1)) {
+      if (!/^\s+\S/.test(l)) break;
+      out.push(l.trim());
+    }
+    return out;
+  };
+  const local = collect(/local changes to the following files would be overwritten|altera[çc][õo]es locais .*seriam sobrescrit/i);
+  const untracked = collect(/untracked working tree files would be (overwritten|removed)|arquivos n[ãa]o (rastreados|monitorados) .*seriam (sobrescrit|removid)/i);
+  if (local !== null) {
+    return { kind: "local_changes_collide", paths: [...local, ...(untracked ?? [])], stderr: trimmed };
+  }
+  if (untracked !== null) {
+    return { kind: "untracked_collide", paths: untracked, stderr: trimmed };
+  }
+  if (/not possible to fast-forward|n[ãa]o [ée] poss[ií]vel avan[çc]ar/i.test(text)) {
+    return { kind: "diverged", paths: [], stderr: trimmed };
+  }
+  return { kind: "unknown", paths: [], stderr: trimmed };
+}
+
+/** #9690: resumo de 1 linha da recusa, pra mensagens/warnings. */
+export function describeFfRefusal(r: FfRefusal): string {
+  const shown = r.paths.slice(0, 10).join(", ") + (r.paths.length > 10 ? ` (+${r.paths.length - 10})` : "");
+  switch (r.kind) {
+    case "local_changes_collide":
+      return `mudança local rastreada colide com origin/master em: ${shown || "(caminhos não listados)"}`;
+    case "untracked_collide":
+      return `arquivo não-rastreado colide com origin/master em: ${shown || "(caminhos não listados)"}`;
+    case "diverged":
+      return `divergência — HEAD tem commit(s) que origin/master não tem (não é fast-forward)`;
+    default:
+      return `motivo não reconhecido — stderr: ${r.stderr || "(vazio)"}`;
+  }
 }
 
 /**
@@ -1219,7 +1303,11 @@ export function syncCode(
   }
 
   try {
-    const result = syncCodeLocked(spawn);
+    // #9690: `ctx.ffRefusal` é preenchido por syncCodeLocked quando o ff
+    // direto recusa — anexado aqui pra cobrir TODO outcome dali em diante sem
+    // repetir o campo em cada `return`.
+    const ctx: { ffRefusal?: FfRefusal } = {};
+    const result = syncCodeLocked(spawn, ctx);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
     // #8719: mesma disciplina para `stale_autostash_count` via
@@ -1230,6 +1318,7 @@ export function syncCode(
       ...result,
       ...measureSyncState(spawn),
       stale_autostash_count: countStaleAutostashes(spawn),
+      ...(ctx.ffRefusal ? { ff_refusal: ctx.ffRefusal } : {}),
     };
     return out;
   } finally {
@@ -1248,6 +1337,7 @@ export function syncCode(
  */
 function syncCodeLocked(
   spawn: SpawnFn,
+  ctx: { ffRefusal?: FfRefusal } = {},
 ): Omit<GitSyncResult, "up_to_date" | "commits_behind" | "stale_autostash_count"> {
   const warnings: string[] = [];
 
@@ -1437,17 +1527,38 @@ function syncCodeLocked(
       };
     }
 
+    // #9690: registra POR QUE o ff direto recusou — antes o stderr era
+    // descartado, e um checkout preso por dias (33 commits atrás, 15
+    // autostashes na #9690) não dizia se a colisão era a config, outro
+    // arquivo ou divergência. Vai em `ff_refusal` em todo outcome daqui pra
+    // baixo (via `withRefusal`) e numa linha de warning.
+    const ffRefusal = classifyFfRefusal(directFfRes.stderr);
+    ctx.ffRefusal = ffRefusal;
+    warnings.push(`[git-sync] INFO: ff-only direto recusou (#9690) — ${describeFfRefusal(ffRefusal)}.`);
+
     // #9276: config consumida pela edição suja → NÃO stasha. Stashar tiraria
     // a config do working tree (a publicação seguiria com a do master em
     // silêncio, incidente 261001). Fail-soft: código fica defasado, config
     // intacta, warning explícito.
     const dirtyConfig = statusRes.status === 0 ? findDirtyProtectedConfig(statusRes.stdout) : [];
     if (dirtyConfig.length > 0) {
+      // #9690: a config suja pode ser a colisão (o upstream também mexeu nela)
+      // ou só estar junto de outra colisão — a ação de destravar muda.
+      const configCollides =
+        ffRefusal.kind === "local_changes_collide" && dirtyConfig.some((c) => ffRefusal.paths.includes(c));
+      const others = ffRefusal.paths.filter((p) => !dirtyConfig.includes(p));
+      const hint = configCollides
+        ? ` A própria config colide: origin/master também alterou ${dirtyConfig.join(", ")} — commite/abra PR ` +
+          `da edição local (ou descarte-a) para destravar.` +
+          (others.length > 0 ? ` Também colidem: ${others.join(", ")}.` : "")
+        : ffRefusal.kind === "local_changes_collide" || ffRefusal.kind === "untracked_collide"
+          ? ` A config NÃO é a colisão — o bloqueio está em: ${others.join(", ") || "(caminhos não listados)"}. ` +
+            `Resolva esses arquivos e rode o sync de novo; a config pode continuar editada.`
+          : ` Motivo da recusa: ${describeFfRefusal(ffRefusal)}.`;
       const msg =
         `[git-sync] WARN: ff-only recusou com config local editada (${dirtyConfig.join(", ")}) — ` +
         `sync PULADO para não stashar config de que a edição depende (#9276). Working tree e HEAD ` +
-        `intocados; o código segue defasado de origin/master. Commite/abra PR da config (ou ` +
-        `descarte-a) e rode o sync de novo.`;
+        `intocados; o código segue defasado de origin/master.${hint}`;
       warnings.push(msg);
       return {
         outcome: "protected_config_dirty",

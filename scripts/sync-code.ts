@@ -49,7 +49,7 @@
  * escopo por decisão explícita da própria issue #8719.
  */
 
-import { GIT_SYNC_STASH_MESSAGE, syncCode } from "./lib/git-sync.ts";
+import { GIT_SYNC_STASH_MESSAGE, describeFfRefusal, syncCode } from "./lib/git-sync.ts";
 import { writeSyncCodeMarker } from "./lib/sync-code-marker.ts";
 
 /**
@@ -165,7 +165,9 @@ if (result.outcome === "protected_config_dirty") {
     `\n🛑 SYNC PULADO — config local editada (${result.dirty_config?.join(", ") ?? "config"}).\n` +
       `   O ff-only recusou e stashar tiraria a config de que esta edição depende (#9276).\n` +
       `   Config e HEAD intocados; o código segue defasado de origin/master.\n` +
-      `   Commite/abra PR da config (ou descarte-a) e rode o sync de novo.\n\n`,
+      // #9690: o motivo da recusa decide a ação — a config pode nem ser a colisão.
+      (result.ff_refusal ? `   Motivo da recusa (#9690): ${describeFfRefusal(result.ff_refusal)}.\n` : "") +
+      `   Commite/abra PR da config (ou descarte-a) — ou resolva o arquivo que colide — e rode o sync de novo.\n\n`,
   );
 }
 
