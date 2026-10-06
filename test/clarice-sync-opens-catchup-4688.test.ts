@@ -89,6 +89,23 @@ test("collectDeliveredStats: conta campanhas entregues e usa a data mais recente
   assert.equal(stats.has("b@x.com"), false);
 });
 
+// REGRESSÃO #9762: a Brevo devolve `Delivered_Date` em DD-MM-AAAA nas linhas
+// dos exports (medido ao vivo, 2609-10). `deliveredAt ?? sentDate` não caía
+// pro `sentDate` (string presente, só que inválida) e `last_sent_at` ficava
+// NULL no store. Fallback agora é por validade.
+test("collectDeliveredStats #9762: deliveredAt em DD-MM-AAAA cai pro sentDate da campanha", () => {
+  const stats = collectDeliveredStats([
+    {
+      campaignId: 317,
+      campaignName: "caixa A",
+      sentDate: "2026-10-03T06:04:21.000-03:00",
+      exportedAt: "2026-10-05T12:09:47.357Z",
+      recipients: { "a@x.com": { delivered: true, deliveredAt: "03-10-2026 06:04:41", opened: false, bounced: false, unsubscribed: false } },
+    },
+  ]);
+  assert.deepEqual(stats.get("a@x.com"), { count: 1, lastSentAt: "2026-10-03T06:04:21.000-03:00" });
+});
+
 // REGRESSÃO (review da PR #6887, P2 média confiança): `deliveredAt`
 // malformado como PRIMEIRO candidato processado passava direto (o
 // curto-circuito `!current.lastSentAt` pulava a validação), corrompendo

@@ -336,8 +336,15 @@ export function collectDeliveredStats(caches: CampaignCache[]): Map<string, Deli
       // `Date.parse`; qualquer outro formato (incluindo o ambíguo) é
       // descartado como se fosse `NaN` — mesma categoria de "não confiável"
       // do guard do #6887, não uma exceção nova.
-      const rawCandidate = flags.deliveredAt ?? cache.sentDate ?? null;
-      const candidate = rawCandidate && ISO_LIKE_DATE_RE.test(rawCandidate) ? rawCandidate : null;
+      //
+      // #9762: `??` só cai pra `cache.sentDate` quando `deliveredAt` é
+      // null/undefined — mas a Brevo devolve `Delivered_Date` em DD-MM-AAAA
+      // em TODAS as linhas dos exports de 2609-10 (medido ao vivo), que o
+      // regex rejeita; o candidato virava null e `last_sent_at` nunca era
+      // preenchido. Fallback agora por VALIDADE: primeiro candidato ISO-like
+      // entre `deliveredAt` e `sentDate` (a data de envio da campanha).
+      const candidate =
+        [flags.deliveredAt, cache.sentDate].find((d): d is string => !!d && ISO_LIKE_DATE_RE.test(d)) ?? null;
       const candidateTime = candidate ? Date.parse(candidate) : NaN;
       if (!Number.isNaN(candidateTime)) {
         const currentTime = current.lastSentAt ? Date.parse(current.lastSentAt) : NaN;
