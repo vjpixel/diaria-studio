@@ -184,6 +184,7 @@ import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { latestAcaoAdiadaFor, isAcaoAdiadaAtiva } from "./lib/issue-decisions.ts";
+import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 
 const DEFAULT_ASSET_GROUP_ID = "6642889160";
 const DEFAULT_PROGRESS_FILE = "_internal/pmax-swap-progress.json";
@@ -258,10 +259,6 @@ export function checkSwapCooldown(
   return { active, pedidoEm: adiada.pedido_em, motivo: adiada.motivo };
 }
 
-interface GhIssueComment {
-  body?: string;
-}
-
 /**
  * Busca os comentários da issue via `gh` — devolve `null` (nunca `[]`) em
  * QUALQUER falha de leitura (processo, JSON, forma inesperada), pra
@@ -282,9 +279,9 @@ export function fetchCooldownCommentsOrNull(issueNumber: number, cwd: string): s
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const comments = (parsed as { comments?: GhIssueComment[] }).comments;
-  if (!Array.isArray(comments)) return null;
-  return comments.map((c) => c.body).filter((b): b is string => typeof b === "string");
+  // #9752: só autor confiável (OWNER/MEMBER/COLLABORATOR) — repo público.
+  // `null` (payload sem array) segue fail-closed como antes.
+  return trustedCommentBodies((parsed as { comments?: unknown }).comments);
 }
 
 // Mesma ordem que `planImageFieldLinks` usa pra simular os mutates (#9080):
