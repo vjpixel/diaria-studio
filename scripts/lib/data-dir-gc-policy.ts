@@ -11,7 +11,9 @@
  *   1. `_internal/_forensic/` de edição FECHADA (cache intra-edição do
  *      `url-body-cache.ts`, #959 já proíbe expor a agentes).
  *   2. `tmp-*` em `_internal/` de edição FECHADA (intermediários do Stage 1
- *      — o resultado vive em `01-approved.json`/`01-categorized.md`).
+ *      — o resultado vive em `01-approved.json`/`01-categorized.md`), exceto
+ *      os que ainda são input de replay/medição
+ *      (`TMP_PRESERVED_INPUT_FILENAMES`, #9751).
  *   3. `*-embedded.html` em `_internal/` de edição FECHADA (render
  *      derivado, regenerável).
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-NNNN`, sufixo de
@@ -46,6 +48,8 @@
  * (export de origem não regenerável sem a Stripe), `snippets/` (conteúdo
  * editorial, #5227). Travado por `test/data-dir-gc-policy.test.ts`.
  */
+
+import { STAGE_INPUT_FILES } from "./replay-stage-input.ts";
 
 // ---------------------------------------------------------------------------
 // Guard — prefixos/padrões NUNCA elegíveis, goste o caller ou não
@@ -148,10 +152,36 @@ export function isForensicCacheDir(relPath: string): boolean {
   return /(^|\/)_internal\/_forensic$/i.test(relPath.replace(/\\/g, "/"));
 }
 
+/**
+ * `tmp-*` que, apesar do prefixo, ainda são INPUT de outra ferramenta depois
+ * que a edição fecha (#9751) — a premissa "resultado já vive em
+ * `01-approved.json`" do bucket `tmp-intermediate` é falsa para eles, e o GC
+ * semanal os apagaria de toda edição de referência sem aviso:
+ *   - todo `_internal/tmp-*` listado em `STAGE_INPUT_FILES`
+ *     (`replay-stage-input.ts` — presets de replay dos evals #3442/#3444,
+ *     que sempre usam edição FECHADA; hoje `tmp-dates-reviewed.json`).
+ *     Derivado do preset, não copiado, para que um arquivo novo no preset
+ *     fique protegido sem lembrar deste guard;
+ *   - `tmp-allscored.json` — lido por `measure-gate4-highlight-changes.ts`
+ *     (medição da #9693).
+ * Comparação case-insensitive, como o regex do bucket.
+ */
+export const TMP_PRESERVED_INPUT_FILENAMES: ReadonlySet<string> = new Set(
+  [
+    ...Object.values(STAGE_INPUT_FILES)
+      .flat()
+      .filter((p) => /^_internal\/tmp-[^/]+$/i.test(p))
+      .map((p) => p.slice("_internal/".length)),
+    "tmp-allscored.json",
+  ].map((n) => n.toLowerCase()),
+);
+
 /** Intermediários do Stage 1 (`tmp-articles-raw.json`, `tmp-categorized.json`,
  *  `tmp-dedup-output.json`, `tmp-kept.json`, `tmp-filtered.json`, …) —
- *  qualquer `tmp-*` diretamente em `_internal/`. */
+ *  qualquer `tmp-*` diretamente em `_internal/`, EXCETO os que ainda são
+ *  input de replay/medição (`TMP_PRESERVED_INPUT_FILENAMES`, #9751). */
 export function isTmpIntermediateFilename(name: string): boolean {
+  if (TMP_PRESERVED_INPUT_FILENAMES.has(name.toLowerCase())) return false;
   return /^tmp-[\w.-]+$/i.test(name);
 }
 
