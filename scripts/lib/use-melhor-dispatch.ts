@@ -38,6 +38,7 @@ import {
   readUseMelhorPostState,
   resolveUseMelhorCoverTitle,
   useMelhorPostConfigState,
+  useMelhorUmMentionsBrand,
   type UseMelhorCandidate,
 } from "./use-melhor-post.ts";
 import {
@@ -86,9 +87,6 @@ export type UseMelhorDispatchPlan =
     }
   | UseMelhorReadyPlan;
 
-/** Mesma regra de `main_post_mentions_diaria(_url)` (#595): "Diar.ia" ou "diar.ia.br". */
-const UM_BRAND_RE = /\bdiar\.ia\b/i;
-
 export interface UseMelhorPlanInput {
   config: unknown;
   state: ReturnType<typeof readUseMelhorPostState>;
@@ -134,7 +132,8 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
   // #9628: o lint do `## um` é fail-soft no Stage 2 (#9619) — menção à marca/URL
   // só vira aviso lá, e o texto vai pra página da diar.ia.br. No Stage 5 isso
   // pula o 4º post (mesmo plano `skip` do #9568), nunca publica.
-  if (input.socialUm && UM_BRAND_RE.test(input.socialUm)) {
+  // #9756: regra compartilhada com o status do gate 4 (`describeUseMelhorPostStatus`).
+  if (useMelhorUmMentionsBrand(input.socialUm)) {
     return { status: "skip", reason: `'## ${USE_MELHOR_POST_ID}' menciona a marca/URL diar.ia (#9628) — main post fica 100% editorial` };
   }
   const coverTitle = resolveUseMelhorCoverTitle(state.item, { reviewedMd: input.reviewedMd, approved: input.approved });

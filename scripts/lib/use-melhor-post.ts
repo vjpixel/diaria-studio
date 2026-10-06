@@ -72,6 +72,19 @@ export const USE_MELHOR_UTM_CONTENT = "usemelhor";
  */
 export const USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED = true;
 
+/**
+ * Menção à marca/URL no `## um` (#9628): mesma regra de
+ * `main_post_mentions_diaria(_url)` (#595) — "Diar.ia" ou "diar.ia.br". O
+ * Stage 5 pula o 4º post quando casa; o gate do Stage 4 avisa antes (#9756).
+ * Fonte única pros dois — nunca duplicar a regex.
+ */
+export const USE_MELHOR_BRAND_RE = /\bdiar\.ia\b/i;
+
+/** Pure: o texto do `## um` cita a marca/URL (→ 4º post pulado no Stage 5)? */
+export function useMelhorUmMentionsBrand(text: string | null | undefined): boolean {
+  return !!text && USE_MELHOR_BRAND_RE.test(text);
+}
+
 /** Linha do gate/preview enquanto o slot não foi definido. */
 export const USE_MELHOR_DISABLED_LABEL = "4º post desligado (use_melhor_time não definido)";
 
@@ -500,6 +513,12 @@ export interface UseMelhorPostStatusInput {
   /** `## um` presente em `# Social` / `# Curto` de `03-social.md`. */
   hasSocialSection: boolean;
   hasCurtoSection: boolean;
+  /**
+   * #9756: `## um` de `# Social` cita a marca/URL (`useMelhorUmMentionsBrand`).
+   * O Stage 5 pula o 4º post nesse caso (#9628) — o gate precisa mostrar isso
+   * enquanto o editor ainda pode reescrever. Ausente = `false`.
+   */
+  socialUmMentionsBrand?: boolean;
   /** Slots do carrossel gerado no Stage 3 (carimbo), ou `null` se não gerado. */
   carouselSlots: string[] | null;
   /**
@@ -563,6 +582,13 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
   if (!input.hasSocialSection) {
     level = "warn";
     lines.push(`   ⚠️ '## ${USE_MELHOR_POST_ID}' ausente em '# Social' — LinkedIn/Facebook/Instagram pulam o 4º post.`);
+  } else if (input.socialUmMentionsBrand) {
+    // #9756: mesmo critério do skip do Stage 5 (`planUseMelhorDispatchFrom`, #9628).
+    level = "warn";
+    lines.push(
+      `   ⚠️ 4º post será pulado: '## ${USE_MELHOR_POST_ID}' cita a marca/URL diar.ia (#9628) — ` +
+        `reescrever o '## ${USE_MELHOR_POST_ID}' de '# Social' sem a menção pra ele sair.`,
+    );
   }
   if (!input.hasCurtoSection) {
     level = "warn";
