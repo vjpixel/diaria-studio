@@ -141,7 +141,7 @@ export function formatCampaignSpamReport(rows: CampaignSpamReportRow[], windowDa
 
 async function fetchFeedbackLoopIdsByDay(
   range: DateRangeV2,
-): Promise<{ ids: string[] }[]> {
+): Promise<{ date: string; ids: string[] }[]> {
   const response = await queryDomainStatsV2(
     POSTMASTER_DOMAIN,
     [{ name: FEEDBACK_LOOP_ID_METRIC_NAME, standardMetric: "FEEDBACK_LOOP_ID" }],
@@ -168,7 +168,7 @@ async function fetchCampaignSpamReadings(
     gFetch,
   );
   const readings = extractSpamRateReadingsV2(response, SPAM_RATE_METRIC_NAME);
-  return aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, readings);
+  return aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, readings, parsed.firstSeenDate);
 }
 
 async function resolveBrevoCampaignMetadata(campaignId: number): Promise<{ name?: string; subject?: string } | null> {
