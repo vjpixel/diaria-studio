@@ -63,8 +63,8 @@ export const SNAPSHOT_PR_GUARD_BYPASS_ENV = "DIARIA_ALLOW_PR_WITH_STALE_ORCHESTR
  *     tratado como "snapshot desatualizado".
  *   - `infra: false, ok: true` — snapshot em dia (exit 0).
  *   - `infra: false, ok: false` — snapshot desatualizado; `output` carrega o
- *     stdout+stderr combinado do teste (inclui a mensagem "Orchestrator
- *     content changed" com os 2 hashes e o comando de correção).
+ *     stdout+stderr combinado do teste (inclui a mensagem "Snapshot do orchestrator
+ *     desatualizado" com o playbook divergente, os 2 hashes e o comando de correção).
  */
 export function runOrchestratorSnapshotCheck(cwd, spawnFn = spawnSync) {
   const result = spawnFn(
