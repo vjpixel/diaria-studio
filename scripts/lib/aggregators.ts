@@ -13,6 +13,12 @@
  * Quando adicionar/remover um domínio aqui, atualizar também os prompts.
  * Os prompts usam a lista como instrução ao Haiku; este módulo é o
  * enforcement em código (safety net no dedup).
+ *
+ * #9746: há uma 2ª lista paralela em `scripts/lib/aggregator-blocklist.ts`
+ * (`AGGREGATOR_BLOCKLIST`, pre-flight de fontes no Stage 1). A paridade
+ * entre as duas é travada por `test/aggregator-lists-parity.test.ts`, com
+ * as exceções declaradas lá — adicionar um domínio só de um lado quebra o
+ * teste (foi exatamente a classe de bug do #9655).
  */
 
 /**
@@ -35,8 +41,7 @@ export const AGGREGATOR_HOSTS = new Set<string>([
   "alphasignal.ai",
   "archive.thedeepview.com",
   "recaply.co",
-  "7min.ai",
-  "track.newsletter.7min.ai",
+  "7min.ai", // cobre também track.newsletter.7min.ai (match de subdomínio, #9746)
   "evolvingai.io",
   "datamachina.com",
   "cyberman.ai",
@@ -84,13 +89,28 @@ function isThirdPartyBeehiivHost(host: string): boolean {
 }
 
 /**
+ * #9746: `true` se o host é uma entrada de `AGGREGATOR_HOSTS` ou subdomínio
+ * dela — mesma semântica de `matchesDomain` em `aggregator-blocklist.ts`.
+ * Antes o match era exato (só tirava `www.`), então `news.bensbites.com`
+ * escapava do dedup enquanto o pre-flight do blocklist o pegava. Sufixo
+ * textual sem ponto (`fake-crescendo.ai`) continua não casando.
+ */
+function matchesAggregatorHost(host: string): boolean {
+  if (AGGREGATOR_HOSTS.has(host)) return true;
+  for (let i = host.indexOf("."); i >= 0; i = host.indexOf(".", i + 1)) {
+    if (AGGREGATOR_HOSTS.has(host.slice(i + 1))) return true;
+  }
+  return false;
+}
+
+/**
  * Retorna `true` se a URL deve ser tratada como agregador/roundup.
  */
 export function isAggregator(url: string): boolean {
   try {
     const u = new URL(url);
     const host = u.hostname.replace(/^www\./, "").toLowerCase();
-    if (AGGREGATOR_HOSTS.has(host)) return true;
+    if (matchesAggregatorHost(host)) return true;
     if (isThirdPartyBeehiivHost(host)) return true;
     const full = host + u.pathname;
     return AGGREGATOR_PATTERNS.some((p) => p.test(full));

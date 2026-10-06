@@ -205,6 +205,64 @@ describe("isAggregator — substring FP fix (#838)", () => {
   });
 });
 
+/**
+ * #9746: `true` se `pattern` aparece no texto como token cercado por crases
+ * (opcionalmente com sufixo `/*`, forma usada pro `perplexity.ai/*`). Match
+ * por substring cru deixava `bensbites.co` "presente" só por existir
+ * `bensbites.com` no prompt.
+ */
+function mentionsDelimited(text: string, pattern: string): boolean {
+  return text.includes("`" + pattern + "`") || text.includes("`" + pattern + "/*`");
+}
+
+describe("mentionsDelimited (#9746)", () => {
+  it("não aceita pattern que só existe como prefixo de outro token", () => {
+    assert.equal(mentionsDelimited("lista: `bensbites.com`", "bensbites.co"), false);
+    assert.equal(mentionsDelimited("lista: `bensbites.co`, `bensbites.com`", "bensbites.co"), true);
+  });
+
+  it("aceita a forma `host/*`", () => {
+    assert.equal(mentionsDelimited("`perplexity.ai/*` exceto", "perplexity.ai"), true);
+  });
+
+  it("não aceita menção sem crases", () => {
+    assert.equal(mentionsDelimited("Comuns: bensbites.co, x", "bensbites.co"), false);
+  });
+});
+
+describe("discovery-searcher.md drift detection (#9746)", () => {
+  // O prompt do discovery-searcher cita um SUBCONJUNTO ("Comuns: ...") da
+  // lista canônica — não precisa listar tudo, mas não pode citar domínio que
+  // não está na lib (lista em prosa atualizada à mão envelhece em silêncio).
+  const EXCEPTIONS = new Set(["news.google.com", "research.perplexity.ai"]);
+
+  function aggregatorLine(): string {
+    const md = readFileSync(".claude/agents/discovery-searcher.md", "utf8");
+    const line = md
+      .split("\n")
+      .find((l) => l.includes("`scripts/lib/aggregator-blocklist.ts`"));
+    assert.ok(line, "discovery-searcher.md perdeu a referência à lista canônica");
+    return line;
+  }
+
+  it("todo domínio citado na linha de agregadores está em AGGREGATOR_BLOCKLIST (ou nas exceções)", () => {
+    const known = new Set(AGGREGATOR_BLOCKLIST.map((e) => e.pattern.toLowerCase()));
+    const tokenRe = /`([a-z0-9][a-z0-9.\-]*\.[a-z]{2,}(?:\/[a-z0-9./*-]+)?)`/gi;
+    const tokens = [...aggregatorLine().matchAll(tokenRe)].map((m) => m[1].toLowerCase());
+    assert.ok(tokens.length >= 5, `poucos domínios entre crases na linha: ${tokens.join(", ")}`);
+    const drift = tokens.filter(
+      (t) => !t.startsWith("scripts/") && !known.has(t) && !EXCEPTIONS.has(t),
+    );
+    assert.deepEqual(drift, [], `Domínios em discovery-searcher.md ausentes da lib: ${drift.join(", ")}`);
+  });
+
+  it("os dois domínios do bensbites aparecem delimitados (regressão #9655)", () => {
+    const line = aggregatorLine();
+    assert.ok(mentionsDelimited(line, "bensbites.co"));
+    assert.ok(mentionsDelimited(line, "bensbites.com"));
+  });
+});
+
 describe("AGGREGATOR_BLOCKLIST drift detection (#838)", () => {
   // Garante que cada entry da lib aparece textualmente no source-researcher.md
   // e vice-versa. Catch silent drift quando alguém atualiza um lado e esquece
@@ -224,8 +282,10 @@ describe("AGGREGATOR_BLOCKLIST drift detection (#838)", () => {
     const md = readSourceResearcherMd();
     const missing: string[] = [];
     for (const entry of AGGREGATOR_BLOCKLIST) {
-      // For path_prefix, check the full pattern; for domain, check exactly.
-      if (!md.includes(entry.pattern)) {
+      // #9746: casa com delimitador (crases), não por substring — senão
+      // `bensbites.co` era encontrado dentro de `bensbites.com` e remover o
+      // `.co` do prompt não era pego.
+      if (!mentionsDelimited(md, entry.pattern)) {
         missing.push(entry.pattern);
       }
     }
