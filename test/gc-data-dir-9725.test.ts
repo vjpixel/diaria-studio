@@ -220,6 +220,25 @@ describe("#9725 — mv-cache opt-in no --apply (ponta a ponta)", () => {
     assert.ok(out.some((l) => l.includes("--include-bucket mv-cache")), "output explica como incluir");
   });
 
+  it("cópia-irmã de conflito DO mv-cache (-safeBackup-) não vaza pelo bucket backup-sibling (achado no dry-run real)", () => {
+    const { tmp } = fixture();
+    const dir = resolve(tmp, "clarice-subscribers/2607-08");
+    const old = resolve(dir, ".mv-cache-mv-export-leads-2024h1-predator-safeBackup-0001.json");
+    const newer = resolve(dir, ".mv-cache-mv-export-leads-2024h1-predator-safeBackup-0002.json");
+    writeAged(old, "{\"pago\":true}", 90);
+    writeAged(newer, "{\"pago\":true}", 60);
+
+    const { candidates } = collectCandidates(tmp);
+    assert.equal(
+      candidates.some((c) => c.bucket === "backup-sibling" && c.relPath.includes(".mv-cache-")),
+      false,
+      "arquivo .mv-cache-* só pode cair no bucket mv-cache",
+    );
+    runMain(["--data-root", tmp, "--apply"]);
+    assert.equal(existsSync(old), true, "default do --apply preserva também as cópias-irmãs do cache MV");
+    assert.equal(existsSync(newer), true);
+  });
+
   it("--apply --include-bucket mv-cache remove", () => {
     const { tmp, mvCache } = fixture();
     runMain(["--data-root", tmp, "--apply", "--include-bucket", "mv-cache"]);

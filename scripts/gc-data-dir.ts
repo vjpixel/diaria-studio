@@ -226,8 +226,16 @@ function walkForSiblingsAndCache(
       dbBackups.push(aged);
       continue;
     }
+    // mv-cache tem PRECEDÊNCIA e é exclusivo (#9725, achado no dry-run real
+    // de 06/10/2026): `.mv-cache-…-predator-safeBackup-0001.json` também
+    // casa `isBackupSiblingFilename`, e cair no bucket `backup-sibling`
+    // (default do --apply) furaria o opt-in do mv-cache — a cópia-irmã de
+    // conflito do cache pode ser justamente a que guarda o resultado pago.
+    if (isMvCacheFilename(entry.name)) {
+      mvCache.push(aged);
+      continue;
+    }
     if (isBackupSiblingFilename(entry.name)) siblings.push(aged);
-    if (isMvCacheFilename(entry.name)) mvCache.push(aged);
   }
 }
 
