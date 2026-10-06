@@ -1507,7 +1507,8 @@ async function main(): Promise<void> {
   // destaque das últimas edições. Alta precisão; roda contra candidatos a
   // destaque E contra o pool secundário (o check secundário acima só compara
   // secundário×secundário, então RADAR repetindo destaque passado escapava).
-  // Sinaliza, nunca demove (premissa #9100).
+  // Aqui só sinaliza; quem rebaixa é `demote-same-fact-highlights.ts`
+  // (§1u-quater do Stage 1, #9100, desde 05/10/2026).
   // #9386: também contra o pool secundário (RADAR/LANÇAMENTOS...) das mesmas
   // últimas edições — fato saído como RADAR ontem escapava — e usando o
   // resumo do item corrente (manchete de outro veículo omite a versão).

@@ -1181,6 +1181,36 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Regressão #9750: o dedup intra-edição (§1u-bis) compara os buckets só com
+  // o top-3 por rank do MOMENTO em que roda (#2397). Rodando antes dos
+  // rebaixamentos, o novo D3 (quem subiu no lugar do rebaixado) nunca era
+  // comparado: a mesma história saía como D3 e de novo no RADAR. Antes do fix
+  // dedup-intra-edition era chamado ANTES de demote-same-fact.
+  it("§1u-bis: dedup intra-edição roda DEPOIS dos rebaixamentos §1u-quater/§1u-quinquies (#9750)", async () => {
+    return withTmpRoot("stage-1-run-p4-dedup-after-demote-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(happyHandlers());
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const idx = (name: string) => calls.findIndex((c) => c.script.endsWith(name));
+        const sameFact = idx("demote-same-fact-highlights.ts");
+        const generic = idx("demote-generic-study-highlights.ts");
+        const dedup = idx("dedup-intra-edition.ts");
+        const evergreen = idx("dedup-evergreen-buckets.ts");
+        const render = idx("render-categorized-md.ts");
+        assert.ok(
+          [sameFact, generic, dedup, evergreen, render].every((i) => i >= 0),
+          `same-fact=${sameFact} generic=${generic} dedup=${dedup} evergreen=${evergreen} render=${render}`,
+        );
+        assert.ok(sameFact < dedup, "dedup intra-edição tem que ver o top-3 já rebaixado por MESMO FATO");
+        assert.ok(generic < dedup, "dedup intra-edição tem que ver o top-3 já rebaixado por estudo genérico");
+        assert.ok(dedup < evergreen && evergreen < render, "dedup → evergreen → render");
+      });
+    });
+  });
+
   it("§1u-quinquies falhando NÃO bloqueia o Stage 1 (fail-soft, #9462)", async () => {
     return withTmpRoot("stage-1-run-p4-generic-study-soft-", (root, editionDir) => {
       seedScored(root, editionDir);

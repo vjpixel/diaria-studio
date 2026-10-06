@@ -105,6 +105,29 @@ test("#9595: formatHighlightSameFactNotes — aviso para destaque ainda aprovado
   assert.deepEqual(formatHighlightSameFactNotes({ same_fact_warnings: "x" }, { highlights: [] }), []);
 });
 
+// Regressão #9750: no 01-approved.json a flag `same_fact_demoted` vive em
+// `article` (markPoolArticles marca o artigo do pool; buildHighlight o põe em
+// `article`). O guard só olhava o nível de cima e nunca casava.
+test("#9750: formatHighlightSameFactNotes pula destaque com same_fact_demoted em article", () => {
+  const w = findSameFactNumberMatches([BRA1], PAST_261002);
+  const mark = { matched_edition: "261002", matched_destaque: 1 };
+  assert.deepEqual(
+    formatHighlightSameFactNotes(
+      { same_fact_warnings: w },
+      { highlights: [{ url: BRA1_URL, article: { url: BRA1_URL, title: BRA1.title, same_fact_demoted: mark } }] },
+    ),
+    [],
+  );
+  // Flag no nível de cima (shape do 01-categorized.json) segue funcionando.
+  assert.deepEqual(
+    formatHighlightSameFactNotes(
+      { same_fact_warnings: w },
+      { highlights: [{ url: BRA1_URL, same_fact_demoted: mark, article: { url: BRA1_URL, title: BRA1.title } }] },
+    ),
+    [],
+  );
+});
+
 test("#9595: extractPastDestaqueTitles devolve o resumo; extractHighlightCandidates lê summary_rejected", () => {
   const root = mkdtempSync(join(tmpdir(), "same-fact-9595-"));
   try {

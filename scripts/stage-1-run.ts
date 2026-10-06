@@ -1354,12 +1354,12 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   const finalCategorized = assembleFinalCategorized(finalized);
   deps.writeFile(resolve(deps.rootDir, categorizedPath), JSON.stringify(finalCategorized, null, 2) + "\n");
 
-  // --- §1u-bis dedup intra-edição ---
-  step(deps, report, "dedup-intra-edition (1u-bis)", "scripts/dedup-intra-edition.ts", ["--in", categorizedPath, "--out", categorizedPath]);
-
-  // --- §1u-ter dedup evergreen ---
-  step(deps, report, "dedup-evergreen-buckets (1u-ter)", "scripts/dedup-evergreen-buckets.ts", ["--in", categorizedPath, "--out", categorizedPath, "--past-editions", "data/past-editions.md"]);
-
+  // #9750: os rebaixamentos (§1u-quater/§1u-quinquies) rodam ANTES do dedup
+  // intra-edição (§1u-bis). O dedup compara os buckets só com o top-3 por
+  // `rank` do momento em que roda (#2397); rodando depois, o novo D3 (quem
+  // subiu no lugar do rebaixado) nunca era comparado — a mesma história saía
+  // como D3 e de novo no RADAR — e a cobertura que duplicava o rebaixado era
+  // dobrada em `cluster_sources` de um item que deixou de ser destaque.
   // --- §1u-quater rebaixa destaque com MESMO FATO (#9100) ---
   // Antes do render: o gate 1 e o --auto já veem a ordem nova. O item
   // rebaixado nunca sai do pool (decisão do editor de 05/10/2026). Fail-soft.
@@ -1392,6 +1392,12 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   for (const line of ((genericStudy.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
     if (typeof line === "string") report.note(line);
   }
+
+  // --- §1u-bis dedup intra-edição ---
+  step(deps, report, "dedup-intra-edition (1u-bis)", "scripts/dedup-intra-edition.ts", ["--in", categorizedPath, "--out", categorizedPath]);
+
+  // --- §1u-ter dedup evergreen ---
+  step(deps, report, "dedup-evergreen-buckets (1u-ter)", "scripts/dedup-evergreen-buckets.ts", ["--in", categorizedPath, "--out", categorizedPath, "--past-editions", "data/past-editions.md"]);
 
   // --- §1v renderizar MD ---
   const mdPath = `${editionDir}/01-categorized.md`;

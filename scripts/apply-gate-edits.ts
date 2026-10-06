@@ -157,6 +157,12 @@ export interface DestaqueSkip {
   url: string;
 }
 
+/** #9750: flag do rebaixamento por MESMO FATO, no highlight ou no `article`. */
+function isSameFactDemoted(h: { same_fact_demoted?: unknown; article?: { same_fact_demoted?: unknown } | null }): boolean {
+  const flag = h.same_fact_demoted ?? h.article?.same_fact_demoted;
+  return flag !== undefined && flag !== null && flag !== false;
+}
+
 /**
  * Resolve a lista final de URLs para a seção Destaques (#663, #2333).
  *
@@ -179,7 +185,12 @@ export interface DestaqueSkip {
  */
 export function resolveDestaques(
   sections: Record<BucketName, string[]>,
-  originalHighlights: Array<{ rank?: number; url?: string; article?: { url?: string } | null }>,
+  originalHighlights: Array<{
+    rank?: number;
+    url?: string;
+    same_fact_demoted?: unknown;
+    article?: { url?: string; same_fact_demoted?: unknown } | null;
+  }>,
   onSkip?: (skip: DestaqueSkip) => void,
 ): string[] {
   let destaquesUrls = [...sections.destaques];
@@ -200,6 +211,10 @@ export function resolveDestaques(
       if (destaquesUrls.length >= 3) break;
       const url = h.url ?? (h.article as { url?: string } | null)?.url;
       if (!url || destaquesUrls.includes(url)) continue;
+      // #9750: item rebaixado por MESMO FATO (§1u-quater, #9100) nunca volta a
+      // destaque pelo preenchimento automático — só o editor o promove, pondo-o
+      // na seção Destaques do MD.
+      if (isSameFactDemoted(h)) continue;
       if (mdBucketUrls.has(url)) {
         destaquesUrls.push(url);
       } else {
