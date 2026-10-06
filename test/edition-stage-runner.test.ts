@@ -662,6 +662,35 @@ describe("wiring da skill /diaria-edicao (#5744)", () => {
       "sem esta instrução, §0-replies (#6719) fica pulado mesmo em invocação totalmente interativa",
     );
   });
+
+  // #9677: background sem timeout não é "sem limite" — o default de um Bash
+  // em background é 30min e o harness mata o run no meio do Stage 2 numa
+  // edição com Stage 1 longo (261006). O Passo 2 precisa mandar
+  // run_in_background E timeout: 7200000 na mesma instrução.
+  it("#9677: Passo 2 manda timeout: 7200000 junto do run_in_background", () => {
+    const skill = readFileSync(
+      join(import.meta.dirname, "..", ".claude", "skills", "diaria-edicao", "SKILL.md"),
+      "utf8",
+    );
+    const start = skill.indexOf("## Passo 2 ");
+    assert.ok(start >= 0, "SKILL.md precisa ter a seção ## Passo 2");
+    const end = skill.indexOf("\n## ", start + 1);
+    const passo2 = skill.slice(start, end === -1 ? undefined : end);
+    const cmdIdx = passo2.search(/npx tsx scripts\/run-edition-stages\.ts/);
+    assert.ok(cmdIdx >= 0, "Passo 2 precisa invocar run-edition-stages.ts");
+    // A instrução de parâmetros do Bash tem que vir ANTES do bloco do comando
+    // (é o que a sessão lê ao montar a chamada) e carregar os dois juntos.
+    const before = passo2.slice(0, cmdIdx);
+    const bgLines = before.split("\n").filter((l) => /run_in_background:\s*true/.test(l));
+    assert.ok(bgLines.length > 0, "Passo 2 precisa mandar run_in_background: true antes do comando");
+    for (const l of bgLines) {
+      assert.match(
+        l,
+        /timeout:\s*7200000/,
+        `instrução de background sem timeout explícito (default 30min mata o run, #9677): ${l}`,
+      );
+    }
+  });
 });
 
 // #6827: a skill /diaria-1-pesquisa deve instruir EXPLICITAMENTE o top-level
