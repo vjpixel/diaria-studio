@@ -261,7 +261,7 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|claim", re.IGNORECASE)
 #   3. **Claim attribuído a outro ator** — "#8355 está reivindicada pelo
 #      Overnight" descreve quem DETÉM o claim, não o coordenador do tick
 #      declarando-o. Só exclui quando o actor é explicitamente outro
-#      (outro/outros/outra/outraz/overnight/terceiro) — "reivindicada pelo
+#      (ver `_ACTOR`/`_ACTOR_STRICT`/`_ACTOR_NOUN_ADJ`) — "reivindicada pelo
 #      mesmo tick" (#8356, linha 5 do relatório real) é claim PRÓPRIO.
 #   4. **Cobertura de outro issue** — "#7807: o trabalho já estava coberto
 #      por #7808" (caso de teste #7996) é cobertura, não claim.
@@ -306,6 +306,24 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 # palavras no meio (ver `_OTHERS_CLAIM`/`_OTHERS_CLAIM_HELD`), não um
 # vocabulário mais amplo aqui.
 _ACTOR = r"(?:outr[oa]s?|overnight|develop|interactive|terceir[oa]s?)"
+# #9778: "#9761 está reivindicada por sessão interativa concorrente" é claim
+# de OUTRA sessão (a interativa no 300, PR #9763), mas só "interactive" (EN)
+# era ator — o tick 122552 de 06/10 virou `fabrication_suspected` (falso
+# positivo). Diferente de `outr[oa]s?`, "interativa"/"concorrente" são
+# ADJETIVOS comuns nos relatórios ("sem claim concorrente", "checar claims
+# concorrentes"): soltos no caminho de 1-4 palavras escondiam claim PRÓPRIO
+# (o mesmo risco do #9210). Por isso só contam como ator (a) colados à
+# preposição ("pela interativa", "por concorrente") ou (b) qualificando um
+# substantivo de ator ("sessão interativa", "tick concorrente") não precedido
+# de "sem"/"nenhum(a)" — "por este tick sem sessão concorrente" é claim
+# próprio. Ficam FORA de `_ACTOR` de propósito: `_OTHERS_CLAIM_HELD` não
+# olha negação ("Nenhuma sessão concorrente tem claim em #N").
+_ACTOR_ADJ = r"(?:interativ[oa]s?|concorrentes?)"
+_ACTOR_NOUN_ADJ = (
+    r"(?<!\bsem\s)(?<!\bnenhum\s)(?<!\bnenhuma\s)"
+    r"(?:sess\w+|rodadas?|coordenador\w*|ticks?|inst[âa]ncias?|agentes?|workers?)"
+    r"\s+" + _ACTOR_ADJ
+)
 # #9026: `pel[oa]s?` — "pela" (feminino: "reivindicada pela sessão
 # overnight") e "pelos" faltavam na alternância original (por|pelo|pelas).
 # #9210: no caminho com até 4 palavras intermediárias, o `outr[oa]s?` solto
@@ -327,7 +345,9 @@ _ACTOR_STRICT = (
 _OTHERS_CLAIM = re.compile(
     r"(?P<refs>" + _REF_LIST.pattern + r")"
     r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+"
-    r"(?:" + _ACTOR + r"|(?:\w+\s+){1,4}" + _ACTOR_STRICT + r")\b",
+    r"(?:" + _ACTOR + r"|" + _ACTOR_ADJ
+    + r"|(?:\w+\s+){1,4}" + _ACTOR_STRICT
+    + r"|(?:\w+\s+){0,3}" + _ACTOR_NOUN_ADJ + r")\b",
     re.IGNORECASE,
 )
 # #8974 (28/09/2026): FALSO POSITIVO real — o relatório do tick descreveu

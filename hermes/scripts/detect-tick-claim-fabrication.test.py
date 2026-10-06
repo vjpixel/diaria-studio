@@ -524,6 +524,41 @@ def test_regressao_9322_outro_colado_a_preposicao_e_ator():
     print("regressão #9322: 'outr*' colado à preposição é ator — OK")
 
 
+def test_regressao_9778_sessao_interativa_concorrente_e_ator():
+    """#9778: o relatório real do tick 122552 (06/10) dizia "#9761 está
+    reivindicada por sessão interativa concorrente" — claim da sessão
+    interativa no 300 (PR #9763) — e o detector o contou como claim PRÓPRIO
+    (só "interactive", em inglês, estava em `_ACTOR`)."""
+    mod = _load_module()
+    linha = ("PRs #9766 e #9774 aguardam o fluxo de review/merge autorizado. "
+             "#9761 está reivindicada por sessão interativa concorrente e tem "
+             "PR #9763 aberta.")
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert 9761 not in refs, refs
+    for n, linha in (
+        (9301, "#9301 reivindicada pela sessão interativa."),
+        (9302, "#9302 reivindicada por uma sessão concorrente no 300."),
+        (9303, "#9303 reivindicada por concorrente."),
+        (9305, "#9305 reivindicada pelas interativas."),
+        (9306, "#9306 reivindicada por outra rodada concorrente."),
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n not in refs, f"#{n} (outro ator) indevido: {linha!r} -> {refs}"
+    # Claim PRÓPRIO continua contando — inclusive com os adjetivos novos no
+    # meio da frase (review do PR #9781: soltos, escondiam claim próprio).
+    for n, linha in (
+        (9304, "#9304 reivindicada neste tick."),
+        (9500, "#9500 reivindicada por este tick sem claim concorrente."),
+        (9501, "#9501 reivindicada por mim após checar claims concorrentes."),
+        (9502, "#9502 reivindicada por este tick sem sessão concorrente."),
+        (9503, "#9503 reivindicada por este tick antes da interativa."),
+        (9504, "#9504 reivindicada por este tick, nenhuma sessão interativa."),
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n in refs, f"#{n} (claim próprio) sumiu: {linha!r} -> {refs}"
+    print("regressão #9778: 'interativa'/'concorrente' é ator — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -1013,6 +1048,7 @@ def main() -> int:
         test_regressao_9026_pela_feminino()
         test_regressao_9210_outros_solto_nao_e_ator()
         test_regressao_9322_outro_colado_a_preposicao_e_ator()
+        test_regressao_9778_sessao_interativa_concorrente_e_ator()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
