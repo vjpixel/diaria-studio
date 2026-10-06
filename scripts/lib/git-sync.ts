@@ -364,6 +364,16 @@ export function classifyFfRefusal(stderr: string): FfRefusal {
   return { kind: "unknown", paths: [], stderr: trimmed };
 }
 
+/** #9690: teto do stderr cru na descrição de 1 linha (warning/banner). */
+export const FF_REFUSAL_DESCRIBE_MAX = 200;
+
+function truncateFfStderr(stderr: string): string {
+  const oneLine = stderr.replace(/\s+/g, " ").trim();
+  return oneLine.length > FF_REFUSAL_DESCRIBE_MAX
+    ? `${oneLine.slice(0, FF_REFUSAL_DESCRIBE_MAX)}… (+${oneLine.length - FF_REFUSAL_DESCRIBE_MAX} chars, completo em ff_refusal.stderr)`
+    : oneLine;
+}
+
 /** #9690: resumo de 1 linha da recusa, pra mensagens/warnings. */
 export function describeFfRefusal(r: FfRefusal): string {
   const shown = r.paths.slice(0, 10).join(", ") + (r.paths.length > 10 ? ` (+${r.paths.length - 10})` : "");
@@ -375,7 +385,8 @@ export function describeFfRefusal(r: FfRefusal): string {
     case "diverged":
       return `divergência — HEAD tem commit(s) que origin/master não tem (não é fast-forward)`;
     default:
-      return `motivo não reconhecido — stderr: ${r.stderr || "(vazio)"}`;
+      // Resumo de 1 linha: o stderr completo fica só em `ff_refusal.stderr`.
+      return `motivo não reconhecido — stderr: ${truncateFfStderr(r.stderr) || "(vazio)"}`;
   }
 }
 
@@ -1551,8 +1562,11 @@ function syncCodeLocked(
         ? ` A própria config colide: origin/master também alterou ${dirtyConfig.join(", ")} — commite/abra PR ` +
           `da edição local (ou descarte-a) para destravar.` +
           (others.length > 0 ? ` Também colidem: ${others.join(", ")}.` : "")
-        : ffRefusal.kind === "local_changes_collide" || ffRefusal.kind === "untracked_collide"
-          ? ` A config NÃO é a colisão — o bloqueio está em: ${others.join(", ") || "(caminhos não listados)"}. ` +
+        : (ffRefusal.kind === "local_changes_collide" || ffRefusal.kind === "untracked_collide") &&
+            ffRefusal.paths.length > 0
+          ? // Só afirma "a config NÃO é a colisão" com a lista de caminhos em mãos;
+            // lista vazia (parser não extraiu) é indeterminado → ramo genérico.
+            ` A config NÃO é a colisão — o bloqueio está em: ${others.join(", ")}. ` +
             `Resolva esses arquivos e rode o sync de novo; a config pode continuar editada.`
           : ` Motivo da recusa: ${describeFfRefusal(ffRefusal)}.`;
       const msg =

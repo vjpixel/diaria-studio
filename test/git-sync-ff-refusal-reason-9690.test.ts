@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import {
   classifyFfRefusal,
   describeFfRefusal,
+  FF_REFUSAL_DESCRIBE_MAX,
   syncCode,
   type SpawnFn,
   type SpawnResult,
@@ -66,6 +67,16 @@ describe("#9690 classifyFfRefusal — puro", () => {
     const r = classifyFfRefusal("fatal: algo inesperado");
     assert.equal(r.kind, "unknown");
     assert.match(describeFfRefusal(r), /algo inesperado/);
+  });
+
+  it("unknown com stderr longo → descrição truncada, stderr completo preservado no FfRefusal", () => {
+    const long = "fatal: " + "x".repeat(1500);
+    const r = classifyFfRefusal(long);
+    assert.equal(r.kind, "unknown");
+    assert.equal(r.stderr, long, "texto completo continua em ff_refusal.stderr");
+    const d = describeFfRefusal(r);
+    assert.ok(d.length < FF_REFUSAL_DESCRIBE_MAX + 150, `descrição longa demais: ${d.length}`);
+    assert.match(d, /completo em ff_refusal\.stderr/);
   });
 });
 
@@ -134,6 +145,32 @@ describe("#9690 syncCode — motivo da recusa registrado (git real)", () => {
       assert.equal(r.outcome, "protected_config_dirty");
       assert.deepEqual(r.ff_refusal?.paths, ["foo.ts"]);
       assert.match(r.message, /config NÃO é a colisão — o bloqueio está em: foo\.ts/);
+      assert.equal(stashCount(p.git), 0);
+    } finally {
+      rmSync(p.root, { recursive: true, force: true });
+    }
+  });
+
+  it("colisão sem caminhos extraídos (lista vazia) → não afirma que a config NÃO é a colisão", () => {
+    const p = realPair();
+    try {
+      writeFileSync(join(p.upDir, "foo.ts"), "export const x = 5;\n");
+      p.up("commit", "-qam", "upstream foo");
+      p.up("push", "-q", "origin", "master");
+      writeFileSync(join(p.dir, "platform.config.json"), '{"a":"local"}\n');
+      // Cabeçalho reconhecido, mas sem linhas indentadas de caminho (formato inesperado).
+      const spawn: SpawnFn = (cmd, args) =>
+        cmd === "git" && args.includes("--ff-only")
+          ? { status: 1, stdout: "", stderr: "error: Your local changes to the following files would be overwritten by merge:\nAborting\n" }
+          : p.spawn(cmd, args);
+
+      const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+      assert.equal(r.outcome, "protected_config_dirty");
+      assert.equal(r.ff_refusal?.kind, "local_changes_collide");
+      assert.deepEqual(r.ff_refusal?.paths, []);
+      assert.doesNotMatch(r.message, /config NÃO é a colisão/);
+      assert.doesNotMatch(r.message, /A própria config colide/);
+      assert.match(r.message, /Motivo da recusa: /);
       assert.equal(stashCount(p.git), 0);
     } finally {
       rmSync(p.root, { recursive: true, force: true });
