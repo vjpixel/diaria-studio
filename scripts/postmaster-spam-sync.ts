@@ -540,7 +540,7 @@ export async function collectWorstCampaignSpam(
     try {
       const response = await queryCampaignSpamRate(parsed, range);
       const campaignReadings = extractSpamRateReadingsV2(response, CAMPAIGN_SPAM_RATE_METRIC_NAME);
-      const agg = aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, campaignReadings);
+      const agg = aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, campaignReadings, parsed.firstSeenDate);
       if (agg) aggregates.push(agg);
     } catch (e) {
       failed++;

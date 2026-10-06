@@ -68,6 +68,13 @@ export interface ParsedFeedbackLoopId {
   feedbackLoopId: string;
   account: string;
   campaignId: number;
+  /**
+   * #9779: YYYY-MM-DD do PRIMEIRO dia (cronológico) em que este id apareceu
+   * na lista de `FEEDBACK_LOOP_ID` — preenchido só por
+   * `collectCampaignFeedbackLoopIds` quando os dias trazem `date`. Serve de
+   * piso pra `aggregateCampaignSpamReadings` (ver `firstSeenDate` lá).
+   */
+  firstSeenDate?: string;
 }
 
 /**
@@ -97,7 +104,7 @@ export function parseFeedbackLoopId(id: string): ParsedFeedbackLoopId | null {
  * final do relatório (essa vem de `sortCampaignSpamReport`, por severidade).
  */
 export function collectCampaignFeedbackLoopIds(
-  idsByDay: { ids: string[] }[],
+  idsByDay: { date?: string; ids: string[] }[],
   accountId?: string,
 ): ParsedFeedbackLoopId[] {
   const seen = new Map<number, ParsedFeedbackLoopId>();
@@ -106,7 +113,13 @@ export function collectCampaignFeedbackLoopIds(
       const parsed = parseFeedbackLoopId(rawId);
       if (!parsed) continue;
       if (accountId && parsed.account !== accountId) continue;
-      if (!seen.has(parsed.campaignId)) seen.set(parsed.campaignId, parsed);
+      const prev = seen.get(parsed.campaignId);
+      if (!prev) {
+        seen.set(parsed.campaignId, day.date ? { ...parsed, firstSeenDate: day.date } : parsed);
+      } else if (day.date && (!prev.firstSeenDate || day.date < prev.firstSeenDate)) {
+        // #9779: a ordem de `idsByDay` não é garantida cronológica — guarda o MENOR.
+        prev.firstSeenDate = day.date;
+      }
     }
   }
   return [...seen.values()].sort((a, b) => a.campaignId - b.campaignId);
@@ -132,16 +145,40 @@ export interface CampaignSpamAggregate {
  * — nunca inventar uma média/pico de zero elementos).
  *
  * Ver docstring do arquivo pro porquê de reportar PICO além da média.
+ *
+ * ── `firstSeenDate`: recorte da cobertura (#9779) ──
+ *
+ * A query de `FEEDBACK_LOOP_SPAM_RATE` filtrada por um `feedback_loop_id`
+ * devolve uma leitura (tipicamente 0) para TODO dia da janela sondada,
+ * inclusive dias anteriores ao envio da campanha — o id nem existia ainda.
+ * Achado ao vivo em 06/10/2026: as 95 campanhas do KV tinham
+ * `daysWithData: 37` (a 317, enviada em 03/10, também), a média ficava
+ * diluída por dezenas de zeros e, com pico 0, `peakDate` caía no 1º dia da
+ * janela — antes do envio. Quando `firstSeenDate` (1º dia em que o id
+ * apareceu na lista de `FEEDBACK_LOOP_ID`) é passado, as leituras anteriores
+ * ao PISO são descartadas antes de calcular avg/peak/daysWithData, onde
+ * piso = `min(firstSeenDate, data da 1ª leitura > 0)`. O `min` com a 1ª
+ * leitura não-zero existe porque o Postmaster só publica o id nos dias em
+ * que ele cruza um limiar (publicação esparsa, ver #5446): uma leitura
+ * positiva anterior ao 1º aparecimento do id é sinal real e nunca é
+ * descartada — só zeros anteriores aos dois marcos saem. Sem
+ * `firstSeenDate`, comportamento antigo (todas as leituras contam).
  */
 export function aggregateCampaignSpamReadings(
   campaignId: number,
   feedbackLoopId: string,
   readings: DayReadingV2[],
+  firstSeenDate?: string,
 ): CampaignSpamAggregate | null {
-  if (readings.length === 0) return null;
-  const dailyReadings = [...readings]
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    .map((r) => ({ date: r.date, spamRatePct: r.ratio * 100 }));
+  const sorted = [...readings].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  let floor: string | undefined;
+  if (firstSeenDate) {
+    const firstPositive = sorted.find((r) => r.ratio > 0)?.date;
+    floor = firstPositive && firstPositive < firstSeenDate ? firstPositive : firstSeenDate;
+  }
+  const kept = floor ? sorted.filter((r) => r.date >= floor) : sorted;
+  if (kept.length === 0) return null;
+  const dailyReadings = kept.map((r) => ({ date: r.date, spamRatePct: r.ratio * 100 }));
   const avgSpamRatePct = dailyReadings.reduce((sum, r) => sum + r.spamRatePct, 0) / dailyReadings.length;
   const peak = dailyReadings.reduce((max, r) => (r.spamRatePct > max.spamRatePct ? r : max), dailyReadings[0]);
   return {

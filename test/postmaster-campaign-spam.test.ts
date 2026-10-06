@@ -165,6 +165,68 @@ test("aggregateCampaignSpamReadings — empate no pico usa o primeiro em ordem c
   assert.equal(agg!.peakDate, "2026-08-01");
 });
 
+// ── #9779: recorte da cobertura pelo 1º aparecimento do feedback_loop_id ──
+
+/** 37 dias (2026-08-29 .. 2026-10-04) de leitura, como a API devolve: zero em todo dia antes do envio. */
+function fullWindowReadings(overrides: Record<string, number>): Array<{ date: string; ratio: number }> {
+  const out: Array<{ date: string; ratio: number }> = [];
+  const start = Date.UTC(2026, 7, 29);
+  for (let i = 0; i < 37; i++) {
+    const date = new Date(start + i * 86_400_000).toISOString().slice(0, 10);
+    out.push({ date, ratio: overrides[date] ?? 0 });
+  }
+  return out;
+}
+
+test("collectCampaignFeedbackLoopIds — firstSeenDate é o MENOR dia em que o id aparece, mesmo com dias fora de ordem (#9779)", () => {
+  const idsByDay = [
+    { date: "2026-10-04", ids: ["11130585_317", "11130585_316"] },
+    { date: "2026-10-03", ids: ["11130585_317"] },
+  ];
+  const result = collectCampaignFeedbackLoopIds(idsByDay);
+  assert.equal(result.find((r) => r.campaignId === 317)?.firstSeenDate, "2026-10-03");
+  assert.equal(result.find((r) => r.campaignId === 316)?.firstSeenDate, "2026-10-04");
+});
+
+test("aggregateCampaignSpamReadings — regressão #9779: campanha presente só nos 2 últimos dias → daysWithData=2 e peakDate dentro deles", () => {
+  // Cenário real da #9779: janela de 37 dias, id só existe nos 2 últimos dias.
+  const readings = fullWindowReadings({ "2026-10-04": 0.00575 });
+  const idsByDay = [
+    { date: "2026-10-03", ids: ["11130585_317"] },
+    { date: "2026-10-04", ids: ["11130585_317"] },
+  ];
+  const [parsed] = collectCampaignFeedbackLoopIds(idsByDay, "11130585");
+  const agg = aggregateCampaignSpamReadings(parsed.campaignId, parsed.feedbackLoopId, readings, parsed.firstSeenDate);
+  assert.ok(agg);
+  assert.equal(agg!.daysWithData, 2, "só os 2 dias em que a campanha existe contam — nunca os 37 da janela");
+  assert.ok(["2026-10-03", "2026-10-04"].includes(agg!.peakDate));
+  assert.equal(agg!.peakDate, "2026-10-04");
+  assert.equal(Math.round(agg!.avgSpamRatePct * 10000) / 10000, 0.2875, "média sobre os 2 dias, não diluída por 35 zeros");
+  assert.deepEqual(agg!.dailyReadings.map((d) => d.date), ["2026-10-03", "2026-10-04"]);
+});
+
+test("aggregateCampaignSpamReadings — regressão #9779: pico 0 nunca cai em data anterior ao 1º aparecimento do id", () => {
+  // Campanha 316 do achado: tudo zero → antes peakDate = 1º dia da janela (2026-08-29), antes do envio.
+  const agg = aggregateCampaignSpamReadings(316, "11130585_316", fullWindowReadings({}), "2026-10-03");
+  assert.equal(agg!.peakDate, "2026-10-03");
+  assert.equal(agg!.daysWithData, 2);
+});
+
+test("aggregateCampaignSpamReadings — #9779: leitura POSITIVA anterior ao 1º aparecimento do id é preservada (publicação esparsa)", () => {
+  // O Postmaster só publica o id no dia em que cruza um limiar (#5446) — uma
+  // leitura > 0 antes disso é sinal real, nunca descartado.
+  const readings = fullWindowReadings({ "2026-10-01": 0.01 });
+  const agg = aggregateCampaignSpamReadings(318, "11130585_318", readings, "2026-10-03");
+  assert.equal(agg!.peakDate, "2026-10-01");
+  assert.equal(agg!.peakSpamRatePct, 1);
+  assert.equal(agg!.daysWithData, 4, "piso = 1ª leitura positiva (01/10), não o 1º aparecimento do id (03/10)");
+});
+
+test("aggregateCampaignSpamReadings — #9779: sem firstSeenDate mantém o comportamento antigo (todas as leituras contam)", () => {
+  const agg = aggregateCampaignSpamReadings(1, "x_1", fullWindowReadings({}));
+  assert.equal(agg!.daysWithData, 37);
+});
+
 // ── sortCampaignSpamReport ──
 
 test("sortCampaignSpamReport — desc por pico, não por média", () => {
