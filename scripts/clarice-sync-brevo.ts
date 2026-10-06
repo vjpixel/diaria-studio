@@ -59,10 +59,12 @@
  * Requer BREVO_CLARICE_API_KEY no env. Stdout: JSON summary. Stderr: progresso.
  */
 
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoGetWithNetworkRetry } from "./lib/brevo-client.ts";
+import { brevoGetWithNetworkRetry, BrevoRateLimitError } from "./lib/brevo-client.ts";
+import { PollBudgetExhaustedError, type PollOptions } from "./lib/brevo-process-poll.ts";
 import { pool, poolAbortOnError } from "./lib/pool.ts";
 import { parseBrevoContact, type BrevoColumns } from "./lib/brevo-stats.ts";
 import {
@@ -76,9 +78,11 @@ import { retryOnSqliteBusy } from "./lib/sqlite-busy-retry.ts";
 import { ISO_LIKE_DATE_RE } from "./lib/iso-like-date.ts";
 import {
   makeRealCampaignExportClient,
-  getOrFetchCampaignCache,
   isWithinRefetchWindow,
   loadCampaignCache,
+  saveCampaignCache,
+  campaignCacheFromCsv,
+  pollExportUntilDone,
   CAMPAIGN_CACHE_DIR,
   type CampaignExportClient,
   type CampaignCache,
@@ -100,11 +104,14 @@ import {
 export function checkpointPathsForDb(dbPath: string): {
   checkpoint: string;
   checkpointInc: string;
+  watermark: string;
 } {
   const dir = resolve(dbPath, "..");
   return {
     checkpoint: resolve(dir, ".brevo-sync-checkpoint.json"),
     checkpointInc: resolve(dir, ".brevo-sync-checkpoint-inc.json"),
+    // #9762: marca d'água do incremental — ver `anchorForIncremental`.
+    watermark: resolve(dir, ".brevo-sync-watermark.json"),
   };
 }
 const BATCH = 200; // flush no DB + checkpoint a cada N contatos (durabilidade)
@@ -118,6 +125,12 @@ interface Checkpoint {
   // #2928: qual modifiedSince gerou esta enumeração (null = full). Resume só é
   // válido pra mesma data; datas/modos diferentes descartam o checkpoint.
   modifiedSince?: string | null;
+  /**
+   * #9762: instante (relógio local, ISO) em que a enumeração DESTE run
+   * começou. Vira a marca d'água do próximo incremental quando o run termina
+   * — ver `anchorForIncremental`. Ausente em checkpoint legado.
+   */
+  listingStartedAt?: string;
 }
 
 function loadCheckpoint(path: string): Checkpoint | null {
@@ -170,9 +183,47 @@ export function anchorForIncremental(
   checkpointModifiedSince: string | null | undefined,
   maxBrevoModifiedAt: string | null | undefined,
   bufferMs = 5 * 60_000,
+  watermark?: string | null,
 ): string | null {
   if (checkpointModifiedSince) return checkpointModifiedSince;
+  // #9762: a marca d'água (início da enumeração do último run CONCLUÍDO) vence
+  // o MAX(brevo_modified_at). O MAX avança com contatos buscados DEPOIS da
+  // listagem (o catch-up re-busca dezenas de milhares de contatos minutos ou
+  // horas mais tarde), então derivar dele pulava todo contato modificado
+  // entre o fim da listagem e o último GET do run — medido no log do `300`:
+  // run de 03/10 às 11:30 → âncora do dia seguinte em 13:22; run de 05/10 às
+  // 11:30 → âncora em 13:54. Um descadastro/blacklist nessa faixa, de quem não
+  // estava entre os destinatários re-buscados pelo catch-up, nunca chegava ao
+  // store (`send_eligible` seguia 1). Sem marca d'água (1º run pós-deploy,
+  // checkpoint legado) → cai no MAX, comportamento anterior.
+  const fromWatermark = deriveIncrementalSince(watermark, bufferMs);
+  if (fromWatermark) return fromWatermark;
   return deriveIncrementalSince(maxBrevoModifiedAt, bufferMs);
+}
+
+/**
+ * #9762: lê a marca d'água gravada pelo último run concluído. null se ausente
+ * — ou se o arquivo existe mas é ilegível/inválido, caso em que loga ⚠️ (a
+ * âncora cai no MAX(brevo_modified_at), que pode pular contatos).
+ */
+export function loadWatermark(path: string): string | null {
+  if (!existsSync(path)) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"))?.listingStartedAt;
+    if (typeof raw === "string" && ISO_LIKE_DATE_RE.test(raw) && Number.isFinite(Date.parse(raw))) return raw;
+  } catch (e) {
+    raw = `ilegível: ${(e as Error).message}`;
+  }
+  console.error(
+    `⚠️  marca d'água ${path} inválida (${String(raw).slice(0, 80)}) — incremental cai no MAX(brevo_modified_at).`,
+  );
+  return null;
+}
+
+/** #9762: grava a marca d'água (atômico — um arquivo truncado viraria "inválida" e cairia no MAX). */
+export function saveWatermark(path: string, listingStartedAt: string): void {
+  writeFileAtomic(path, JSON.stringify({ listingStartedAt }), { fsync: false });
 }
 
 // ─── Opens catch-up (#4688) ──────────────────────────────────────────────
@@ -358,6 +409,332 @@ export function collectDeliveredStats(caches: CampaignCache[]): Map<string, Deli
   return out;
 }
 
+// ─── Export pendente retomável (#9762) ─────────────────────────────────────
+//
+// Log do `300` (30/09–04/10): de 6 a 16 campanhas por run caíam em
+// `PollBudgetExhaustedError` (90 polls × 2s sem status terminal — inclusive
+// campanhas de 17 destinatários, então não é tamanho: é a FILA de export da
+// conta) e outras em `Download do CSV ... (404)` logo após o processo
+// completar. O run seguinte disparava um export NOVO pra cada uma — mais um
+// POST na família de 100 req/h e mais um processo na mesma fila que já não
+// andava, enquanto o export anterior terminava sozinho e ninguém o lia.
+//
+// Agora o `processId` de todo export disparado é gravado em disco ANTES do
+// poll. Se o run não o vê terminar, ele continua PENDENTE: a campanha conta
+// como falha (o alarme do #5339 segue vendo), o `exportedAt` não é tocado
+// (nunca vira "sincronizada"), e o próximo run consulta o MESMO processo
+// antes de pensar em disparar outro — mesmo que a campanha já tenha saído da
+// janela de dias, que não pode mais engolir um export que nunca foi lido.
+
+/** Idade máxima de um export pendente antes de ser descartado e redisparado. */
+export const PENDING_EXPORT_MAX_AGE_MS = 7 * 86_400_000;
+
+/**
+ * Quantos runs seguidos um export pendente aguenta 5xx da Brevo ao ser
+ * consultado antes de ser descartado (e, dentro da janela, redisparado).
+ * Curto de propósito: 5xx não é a fila andando devagar (isso é
+ * `PollBudgetExhaustedError`, que não conta aqui) — é o endpoint do processo
+ * falhando, e um processo que dá 5xx em 2 runs seguidos provavelmente não
+ * volta.
+ */
+export const PENDING_EXPORT_MAX_5XX_RUNS = 2;
+
+/** Espera entre tentativas de baixar o CSV quando o link assinado ainda devolve 404. */
+export const CSV_404_RETRY_DELAYS_MS = [5_000, 15_000];
+
+export interface PendingExport {
+  campaignId: number;
+  processId: number | string;
+  requestedAt: string;
+  /** Runs seguidos em que a consulta do processo esgotou o retry com 5xx. */
+  serverErrors?: number;
+}
+
+export function pendingExportPath(campaignId: number, cacheDir: string): string {
+  return resolve(cacheDir, "pending", `${campaignId}.json`);
+}
+
+/**
+ * Lê o export pendente da campanha. `null` se ausente — ou se o arquivo
+ * existe mas é ilegível/inválido (JSON corrompido, `campaignId` de outra
+ * campanha, `requestedAt` que não é data, `processId` ausente): nesse caso
+ * loga ⚠️ — o chamador (`fetchCampaignForCatchup`) descarta o arquivo.
+ */
+export function loadPendingExport(campaignId: number, cacheDir: string): PendingExport | null {
+  const path = pendingExportPath(campaignId, cacheDir);
+  if (!existsSync(path)) return null;
+  let reason: string;
+  try {
+    const p = JSON.parse(readFileSync(path, "utf8")) as Partial<PendingExport> | null;
+    const pidOk = typeof p?.processId === "number" || (typeof p?.processId === "string" && p.processId !== "");
+    if (
+      p &&
+      p.campaignId === campaignId &&
+      pidOk &&
+      typeof p.requestedAt === "string" &&
+      Number.isFinite(Date.parse(p.requestedAt))
+    ) {
+      return p as PendingExport;
+    }
+    reason = `conteúdo inválido (${JSON.stringify(p).slice(0, 120)})`;
+  } catch (e) {
+    reason = `ilegível: ${(e as Error).message}`;
+  }
+  console.error(`⚠️  catch-up: export pendente da campanha ${campaignId} em ${path} ${reason} — descartado.`);
+  return null;
+}
+
+function savePendingExport(p: PendingExport, cacheDir: string): void {
+  mkdirSync(resolve(cacheDir, "pending"), { recursive: true });
+  writeFileAtomic(pendingExportPath(p.campaignId, cacheDir), JSON.stringify(p), { fsync: false });
+}
+
+function clearPendingExport(campaignId: number, cacheDir: string): void {
+  const path = pendingExportPath(campaignId, cacheDir);
+  if (existsSync(path)) unlinkSync(path);
+}
+
+/**
+ * Varre `pending/*.json` e apaga o que passou de `PENDING_EXPORT_MAX_AGE_MS`
+ * — independente da lista de campanhas (uma campanha que sumiu da listagem
+ * da Brevo deixaria o arquivo órfão pra sempre). Idade por `requestedAt`;
+ * arquivo ilegível usa o mtime. Fail-soft: erro de I/O vira warning.
+ */
+export function sweepExpiredPendingExports(cacheDir: string, nowMs: number): number {
+  const dir = resolve(cacheDir, "pending");
+  if (!existsSync(dir)) return 0;
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json")) continue;
+    const path = resolve(dir, name);
+    try {
+      let requestedMs = NaN;
+      try {
+        requestedMs = Date.parse(JSON.parse(readFileSync(path, "utf8"))?.requestedAt);
+      } catch {
+        // ilegível — cai no mtime abaixo
+      }
+      if (!Number.isFinite(requestedMs)) requestedMs = statSync(path).mtimeMs;
+      if (nowMs - requestedMs > PENDING_EXPORT_MAX_AGE_MS) {
+        unlinkSync(path);
+        removed++;
+        console.error(
+          `⚠️  catch-up: export pendente ${name} expirado (> ${PENDING_EXPORT_MAX_AGE_MS / 86_400_000}d) — descartado.`,
+        );
+      }
+    } catch (e) {
+      console.error(`⚠️  catch-up: varredura de pendente ${name} falhou: ${(e as Error).message}`);
+    }
+  }
+  return removed;
+}
+
+/**
+ * 429 REAL da conta (rate limit por CONTA/HORA) — o único sinal que abre o
+ * circuito de "exports novos suspensos". `brevoGet` lança o mesmo
+ * `BrevoRateLimitError` para 5xx repetidos; esses NÃO contam (`status`
+ * distingue). `status` null = construção legada sem a informação → tratado
+ * como 429 (comportamento anterior, conservador).
+ */
+export function isAccountRateLimit(e: unknown): boolean {
+  return e instanceof BrevoRateLimitError && (e.status === 429 || e.status == null);
+}
+
+/** 5xx repetido da Brevo (retry de `brevoGet` esgotado sem nenhum 429). */
+function isBrevoServerError(e: unknown): boolean {
+  return e instanceof BrevoRateLimitError && e.status != null && e.status >= 500;
+}
+
+/**
+ * Falha LOCAL depois de o CSV já ter sido baixado (parse, gravação do cache):
+ * o export do lado da Brevo está bom — o pendente fica, e o próximo run o lê
+ * de novo em vez de disparar outro.
+ */
+export class CatchupLocalError extends Error {
+  constructor(campaignId: number, cause: unknown) {
+    super(`campanha ${campaignId}: falha local ao processar o export (${(cause as Error)?.message ?? String(cause)})`);
+    this.name = "CatchupLocalError";
+  }
+}
+
+/** Erro que deixa o export PENDENTE (o processo pode ainda terminar do lado da Brevo). */
+function keepsExportPending(e: unknown): boolean {
+  return e instanceof PollBudgetExhaustedError || isAccountRateLimit(e) || e instanceof CatchupLocalError;
+}
+
+/** Circuito aberto: a conta já devolveu 429 neste run — nenhum export NOVO é disparado nem pendente consultado. */
+export class CatchupRateLimitedError extends Error {
+  constructor(campaignId: number) {
+    super(
+      `campanha ${campaignId}: export não disparado/consultado — a Brevo já devolveu 429 neste run ` +
+        `(rate limit por CONTA/HORA, docs/brevo-rate-limits.md); fica para o próximo run.`,
+    );
+    this.name = "CatchupRateLimitedError";
+  }
+}
+
+async function downloadCsvWithRetry(
+  client: CampaignExportClient,
+  url: string,
+  sleepFn: (ms: number) => Promise<void>,
+): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.downloadCsv(url);
+    } catch (e) {
+      // 404 logo após o processo completar = arquivo ainda não publicado no
+      // storage (visto em 01/10: 8 campanhas). Outros erros não se resolvem esperando.
+      if (attempt >= CSV_404_RETRY_DELAYS_MS.length || !/\(404\)/.test((e as Error).message)) throw e;
+      await sleepFn(CSV_404_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+export interface CatchupFetchOptions {
+  cacheDir: string;
+  forceRefresh: boolean;
+  /**
+   * false = circuito aberto (429 já visto neste run) ou campanha fora da
+   * janela: nunca dispara export NOVO — só retoma pendente / lê cache.
+   */
+  allowNewExport: boolean;
+  /** false = circuito aberto: nem consulta o pendente (o GET /processes também gasta quota). */
+  allowPoll?: boolean;
+  /** Campanha dentro da janela de dias? Fora dela só um pendente é retomado — nunca export novo. */
+  inWindow?: boolean;
+  nowMs: number;
+  now?: () => string;
+  poll?: PollOptions;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Busca o export de UMA campanha para o catch-up. Ordem:
+ *   1. export PENDENTE de um run anterior → consulta o mesmo processo;
+ *   2. sem refresh forçado e com cache em disco → cache;
+ *   3. export novo (gravando o `processId` como pendente antes do poll).
+ * Lança se não conseguiu um export FRESCO quando precisava de um — inclusive
+ * quando um pendente falhou e não há como redisparar (o chamador conta a
+ * falha e decide se cai no cache antigo).
+ */
+export async function fetchCampaignForCatchup(
+  client: CampaignExportClient,
+  campaign: SentCampaignRef,
+  opts: CatchupFetchOptions,
+): Promise<{ cache: CampaignCache; source: "cache" | "pending" | "export" }> {
+  const { cacheDir } = opts;
+  const sleepFn = opts.sleep ?? sleep;
+  const allowPoll = opts.allowPoll ?? true;
+  const inWindow = opts.inWindow ?? true;
+  const finish = async (processId: number | string, exportedAt: string): Promise<CampaignCache> => {
+    const exportUrl = await pollExportUntilDone(client, processId, opts.poll);
+    const csvText = await downloadCsvWithRetry(client, exportUrl, sleepFn);
+    let cache: CampaignCache;
+    try {
+      cache = campaignCacheFromCsv(csvText, campaign, exportedAt);
+      saveCampaignCache(cache, cacheDir);
+    } catch (e) {
+      throw new CatchupLocalError(campaign.id, e);
+    }
+    // O cache já está gravado: falhar aqui não pode derrubar a campanha. O
+    // pendente que sobrar é retomado no próximo run (idempotente).
+    try {
+      clearPendingExport(campaign.id, cacheDir);
+    } catch (e) {
+      console.error(
+        `⚠️  catch-up: cache da campanha ${campaign.id} gravado, mas o pendente não foi limpo: ${(e as Error).message}`,
+      );
+    }
+    return cache;
+  };
+
+  let pendingFailed = false;
+  const pendingFileExists = existsSync(pendingExportPath(campaign.id, cacheDir));
+  const pending = pendingFileExists ? loadPendingExport(campaign.id, cacheDir) : null;
+  if (pending) {
+    const age = opts.nowMs - Date.parse(pending.requestedAt);
+    if (age <= PENDING_EXPORT_MAX_AGE_MS) {
+      if (!allowPoll) throw new CatchupRateLimitedError(campaign.id);
+      try {
+        // exportedAt = quando o export foi PEDIDO: o snapshot da Brevo é desse
+        // instante, não de agora (senão a rotação do #5946 o trataria como
+        // mais fresco do que é).
+        return { cache: await finish(pending.processId, pending.requestedAt), source: "pending" };
+      } catch (e) {
+        // Ainda processando, 429, ou falha local: continua pendente, NÃO
+        // dispara outro export na mesma fila — tenta de novo no próximo run.
+        if (keepsExportPending(e)) throw e;
+        if (isBrevoServerError(e)) {
+          const serverErrors = (pending.serverErrors ?? 0) + 1;
+          if (serverErrors < PENDING_EXPORT_MAX_5XX_RUNS) {
+            savePendingExport({ ...pending, serverErrors }, cacheDir);
+            throw e;
+          }
+        }
+        // Processo falhou/sumiu/CSV inacessível (ou 5xx persistente): descarta.
+        console.error(
+          `⚠️  catch-up: export pendente da campanha ${campaign.id} (processo ${pending.processId}) ` +
+            `descartado: ${(e as Error).message}`,
+        );
+        pendingFailed = true;
+      }
+    } else {
+      console.error(
+        `⚠️  catch-up: export pendente da campanha ${campaign.id} (processo ${pending.processId}, ` +
+          `pedido em ${pending.requestedAt}) expirado — descartado.`,
+      );
+    }
+  }
+  if (pendingFileExists) clearPendingExport(campaign.id, cacheDir);
+
+  if (!inWindow) {
+    // Fora da janela só um pendente justifica processar a campanha — nunca
+    // um export novo. Chegar aqui é perda: contar como falha (alarme vê).
+    throw new Error(
+      `campanha ${campaign.id} fora da janela: export pendente ${pendingFailed ? "falhou" : "expirado/inválido"} ` +
+        `e não é redisparado.`,
+    );
+  }
+  // Pendente que FALHOU não cai no cache antigo como se fosse sucesso: a
+  // campanha precisa de um export fresco (ou conta como falha).
+  if (!opts.forceRefresh && !pendingFailed) {
+    const cached = loadCampaignCache(campaign.id, cacheDir);
+    if (cached) return { cache: cached, source: "cache" };
+  }
+  if (!opts.allowNewExport) throw new CatchupRateLimitedError(campaign.id);
+
+  const { processId } = await client.exportRecipients(campaign.id);
+  const requestedAt = new Date(opts.nowMs).toISOString();
+  savePendingExport({ campaignId: campaign.id, processId, requestedAt }, cacheDir);
+  try {
+    return { cache: await finish(processId, (opts.now ?? (() => new Date().toISOString()))()), source: "export" };
+  } catch (e) {
+    if (isBrevoServerError(e)) {
+      savePendingExport({ campaignId: campaign.id, processId, requestedAt, serverErrors: 1 }, cacheDir);
+    } else if (!keepsExportPending(e)) {
+      clearPendingExport(campaign.id, cacheDir);
+    }
+    throw e;
+  }
+}
+
+/**
+ * #9762: destinatários com SUPRESSÃO registrada no export da campanha (hard/soft
+ * bounce ou descadastro). Quem dá bounce não aparece como entregue nem como
+ * abertura — antes ficava fora da re-busca do catch-up, e um hard bounce vira
+ * `emailBlacklisted=true` na Brevo sem necessariamente passar pelo
+ * `modifiedSince` do incremental: `send_eligible` seguia 1 no store. Pura.
+ */
+export function collectSuppressedEmails(caches: CampaignCache[]): Set<string> {
+  const out = new Set<string>();
+  for (const cache of caches) {
+    for (const [email, flags] of Object.entries(cache.recipients)) {
+      if (flags.bounced || flags.unsubscribed) out.add(email);
+    }
+  }
+  return out;
+}
+
 export interface OpensCatchupDeps {
   /** Cliente de export de campanha — real (`makeRealCampaignExportClient`) ou fake em teste. */
   client: CampaignExportClient;
@@ -384,6 +761,10 @@ export interface OpensCatchupDeps {
    */
   now?: () => string;
   concurrency?: number;
+  /** #9762: opções de poll do processo de export (teste injeta sleep/maxAttempts). */
+  poll?: PollOptions;
+  /** #9762: sleep injetável (retry de download 404). */
+  sleep?: (ms: number) => Promise<void>;
   /**
    * #5946: teto de campanhas JÁ CACHEADAS forçadas a re-exportar nesta run
    * (ver docstring de `DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN`). Campanha
@@ -432,8 +813,23 @@ export interface OpensCatchupResult {
    */
   campaignsSkippedRefresh: number;
   campaignsFailed: number;
+  /**
+   * #9762: das `campaignsFailed`, quantas tiveram os destinatários lidos do
+   * cache ANTIGO em disco (o export fresco falhou, mas os dados de envio já
+   * conhecidos continuam valendo). O `exportedAt` não muda — a campanha segue
+   * no topo da fila do próximo run.
+   */
+  campaignsStaleFallback: number;
+  /** #9762: exports que seguem pendentes do lado da Brevo — retomados no próximo run. */
+  campaignsPending: number;
+  /** #9762: campanhas fora da janela de dias processadas só porque tinham export pendente. */
+  campaignsPendingOutsideWindow: number;
+  /** #9762: o run viu 429 e parou de disparar exports novos. */
+  rateLimited: boolean;
   openersFound: number;
   deliveredFound: number;
+  /** #9762: destinatários com bounce/descadastro no export, re-buscados pra trazer a supressão ao store. */
+  suppressedFound: number;
   deliveredBackfilled: number;
   contactsUpdated: number;
   contactsFailed: number;
@@ -476,6 +872,15 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
 
   const campaigns = await deps.client.listSentCampaigns();
   const recent = campaigns.filter((c) => isWithinRefetchWindow(c, nowMs, windowDays));
+  // #9762: pendente velho demais sai antes de tudo — inclusive de campanha que
+  // nem aparece mais na listagem (senão o arquivo ficava órfão pra sempre).
+  sweepExpiredPendingExports(cacheDir, nowMs);
+  const hasPending = (id: number): boolean => existsSync(pendingExportPath(id, cacheDir));
+  // #9762: export pendente de um run anterior não some porque a campanha saiu
+  // da janela — senão uma campanha que falhou 7 dias seguidos nunca seria lida.
+  const recentIds = new Set(recent.map((c) => c.id));
+  const pendingOutside = campaigns.filter((c) => !recentIds.has(c.id) && hasPending(c.id));
+  const pendingInWindow = recent.filter((c) => hasPending(c.id));
 
   // #5946: fatia QUAIS campanhas da janela são forçadas a re-exportar nesta
   // run (ver docstring de DEFAULT_OPENS_CATCHUP_MAX_REFRESH_PER_RUN/
@@ -487,10 +892,26 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   const exportedAtById = new Map<number, string | undefined>(
     recent.map((c) => [c.id, loadCampaignCache(c.id, cacheDir)?.exportedAt]),
   );
-  const toForceRefresh = pickCampaignsToRefresh(recent, exportedAtById, maxRefreshPerRun);
+  // #9762: retomar um pendente também gasta requisições da mesma família
+  // (GET /processes) — pendentes (dentro e fora da janela) consomem o teto
+  // antes das re-exportações forçadas. Campanha com pendente não entra na
+  // seleção: o pendente é o export dela neste run.
+  const pendingCount = pendingInWindow.length + pendingOutside.length;
+  const refreshCandidates = recent.filter((c) => !hasPending(c.id));
+  const toForceRefresh =
+    maxRefreshPerRun > 0 && pendingCount >= maxRefreshPerRun
+      ? new Set<number>()
+      : pickCampaignsToRefresh(
+          refreshCandidates,
+          exportedAtById,
+          maxRefreshPerRun > 0 ? maxRefreshPerRun - pendingCount : 0,
+        );
 
   const caches: CampaignCache[] = [];
   let campaignsFailed = 0;
+  let campaignsStaleFallback = 0;
+  let campaignsPending = 0;
+  let rateLimited = false;
   // #5401: era um `for` SEQUENCIAL — 1 export+poll+download de CSV por vez.
   // Quando a feature nasceu (#4688) a janela de 30 dias cobria ~8 campanhas;
   // medido ao vivo em 260816, a mesma janela hoje cobre 49 (a cadência de
@@ -507,20 +928,41 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   // ~`concurrency`× sem aumentar o volume de chamadas à Brevo — o rate-limit
   // já é respeitado por `brevoGet`/`brevoPost` via `Retry-After`, não pelo
   // loop estar sequencial.
-  await pool(recent, concurrency, async (campaign) => {
+  await pool([...recent, ...pendingOutside], concurrency, async (campaign) => {
     try {
       // #5946: só as `maxRefreshPerRun` campanhas mais estagnadas (ou sem
       // cache ainda) forçam re-export nesta run — as demais reusam o cache
       // em disco (forceRefresh: false só bate a rede se NÃO houver cache,
       // então uma campanha nova é sempre buscada mesmo fora do teto).
-      const { cache } = await getOrFetchCampaignCache(deps.client, campaign, {
+      // #9762: export pendente de run anterior é retomado antes de tudo.
+      const inWindow = recentIds.has(campaign.id);
+      const { cache } = await fetchCampaignForCatchup(deps.client, campaign, {
         cacheDir,
         forceRefresh: toForceRefresh.has(campaign.id),
+        allowNewExport: !rateLimited && inWindow,
+        allowPoll: !rateLimited,
+        inWindow,
+        nowMs,
         now: deps.now,
+        poll: deps.poll,
+        sleep: deps.sleep,
       });
       caches.push(cache);
     } catch (e) {
       campaignsFailed++;
+      // Só 429 REAL abre o circuito — 5xx repetido também chega como
+      // BrevoRateLimitError, mas não diz nada sobre a quota da conta.
+      if (isAccountRateLimit(e)) rateLimited = true;
+      if (hasPending(campaign.id)) campaignsPending++;
+      // #9762: o export fresco falhou, mas o cache antigo em disco (se houver)
+      // ainda diz quem recebeu/abriu — usá-lo mantém o backfill de envios
+      // desses destinatários. `exportedAt` intocado: a campanha não conta
+      // como sincronizada e segue prioritária no próximo run.
+      const stale = loadCampaignCache(campaign.id, cacheDir);
+      if (stale) {
+        caches.push(stale);
+        campaignsStaleFallback++;
+      }
       // #4717 follow-up (achado 2): logar a mensagem, não só incrementar o
       // contador — um contador anônimo esconderia erro real (escrita SQLite,
       // regressão de escopo OAuth, timeout de polling) atrás de um número,
@@ -536,10 +978,11 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
   const deliveredStats = collectDeliveredStats(caches);
   // #4722 item 2: --limit trunca o PROCESSAMENTO (fetch+upsert), não a
   // contagem reportada — openersFound/deliveredFound usam os conjuntos completos.
+  const suppressed = collectSuppressedEmails(caches);
+  // Supressões primeiro: com --limit, são elas que mudam `send_eligible`.
+  const allContacts = new Set([...suppressed, ...openersFull, ...deliveredStats.keys()]);
   const contactEmails =
-    deps.limit && deps.limit > 0
-      ? new Set([...new Set([...openersFull, ...deliveredStats.keys()])].slice(0, deps.limit))
-      : new Set([...openersFull, ...deliveredStats.keys()]);
+    deps.limit && deps.limit > 0 ? new Set([...allContacts].slice(0, deps.limit)) : allContacts;
 
   let contactsUpdated = 0;
   let contactsFailed = 0;
@@ -637,8 +1080,13 @@ export async function runOpensCatchup(deps: OpensCatchupDeps): Promise<OpensCatc
       (c) => exportedAtById.get(c.id) !== undefined && !toForceRefresh.has(c.id),
     ).length,
     campaignsFailed,
+    campaignsStaleFallback,
+    campaignsPending,
+    campaignsPendingOutsideWindow: pendingOutside.length,
+    rateLimited,
     openersFound: openersFull.size,
     deliveredFound: deliveredStats.size,
+    suppressedFound: suppressed.size,
     deliveredBackfilled,
     contactsUpdated,
     contactsFailed,
@@ -659,6 +1107,9 @@ async function enumerateContacts(
   if (existing?.listingComplete) return existing;
   const ids: Array<{ id: number; email: string }> = existing?.ids ?? [];
   const doneIds = existing?.doneIds ?? [];
+  // #9762: retomada preserva o início ORIGINAL da enumeração (é ele que cobre
+  // os contatos já listados); run novo marca agora.
+  const listingStartedAt = existing ? existing.listingStartedAt : new Date().toISOString();
   let offset = ids.length;
   for (;;) {
     const { body } = await brevoGetWithNetworkRetry(apiKey, contactsListPath(offset, modifiedSince));
@@ -668,13 +1119,13 @@ async function enumerateContacts(
     const complete = cs.length < 500;
     // checkpoint POR PÁGINA → se o listing cair no meio (rate-limit), re-rodar
     // retoma de offset=ids.length em vez de re-enumerar do zero.
-    saveCheckpoint({ listingComplete: complete, ids, doneIds, modifiedSince }, checkpointPath);
+    saveCheckpoint({ listingComplete: complete, ids, doneIds, modifiedSince, listingStartedAt }, checkpointPath);
     console.error(`📇 listando contatos${modifiedSince ? " (incremental)" : ""}… ${ids.length}`);
     if (complete) break;
     offset += 500;
     await sleep(PAGE_PACING_MS);
   }
-  return { listingComplete: true, ids, doneIds, modifiedSince };
+  return { listingComplete: true, ids, doneIds, modifiedSince, listingStartedAt };
 }
 
 
@@ -716,7 +1167,7 @@ export async function main(
   // diretório (mkdtempSync); em produção cai no subdiretório próprio do
   // catch-up (achado 5), nunca no CAMPAIGN_CACHE_DIR real compartilhado.
   const opensCatchupCacheDir = getArg(argv, "cache-dir") || OPENS_CATCHUP_CACHE_DIR;
-  const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
+  const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC, watermark: WATERMARK } =
     checkpointPathsForDb(dbPath);
 
   const db = openClariceDb(dbPath);
@@ -734,9 +1185,14 @@ export async function main(
     const row = db
       .prepare("SELECT MAX(brevo_modified_at) AS m FROM clarice_users")
       .get() as { m: string | null };
-    modifiedSince = anchorForIncremental(incCp?.modifiedSince, row?.m);
+    const watermark = loadWatermark(WATERMARK);
+    modifiedSince = anchorForIncremental(incCp?.modifiedSince, row?.m, undefined, watermark);
     if (incCp?.modifiedSince) {
       console.error(`⏩ incremental: retomando modifiedSince=${modifiedSince} (do checkpoint)`);
+    } else if (watermark && modifiedSince) {
+      console.error(
+        `⏩ incremental: modifiedSince=${modifiedSince} (marca d'água: listagem do último run concluído − 5min)`,
+      );
     } else if (modifiedSince) {
       console.error(`⏩ incremental: modifiedSince=${modifiedSince} (MAX(brevo_modified_at) − 5min)`);
     } else {
@@ -897,7 +1353,11 @@ export async function main(
       });
       console.error(
         `✅ catch-up: ${result.campaignsInWindow}/${result.campaignsConsidered} campanhas na janela ` +
-          `(${result.campaignsFailed} falharam, ${result.campaignsSkippedRefresh} do cache sem re-export) · ` +
+          `(${result.campaignsFailed} falharam — ${result.campaignsPending} pendente(s) pro próximo run, ` +
+          `${result.campaignsStaleFallback} com cache antigo${result.rateLimited ? ", 429: exports novos suspensos" : ""}; ` +
+          `${result.campaignsPendingOutsideWindow} pendente(s) fora da janela; ` +
+          `${result.campaignsSkippedRefresh} do cache sem re-export) · ` +
+          `${result.suppressedFound} com bounce/descadastro · ` +
           `${result.openersFound} openers · ` +
           `${result.deliveredFound} entregues · ` +
           `${result.deliveredBackfilled} envios backfilled · ` +
@@ -915,6 +1375,24 @@ export async function main(
   console.error(`⚙️  recomputando derivados (send_eligible + priority_points)…`);
   const derived = recomputeDerived(db);
   if (existsSync(checkpointPath)) unlinkSync(checkpointPath);
+
+  // #9762: marca d'água = início da listagem deste run (não o MAX do que foi
+  // buscado depois). Gravada só DEPOIS do recompute + limpeza do checkpoint
+  // (um run que morre antes não pode avançá-la) e só quando o run cobriu o
+  // intervalo inteiro desde a âncora derivada: nunca com `--limit` (processa
+  // uma fatia) nem com `--modified-since` explícito (a âncora pode ser mais
+  // recente que a marca atual — avançar pularia o intervalo entre as duas),
+  // nem com checkpoint legado sem `listingStartedAt`. Falhar aqui não derruba
+  // o run: o próximo cai na marca anterior (ou no MAX), só re-busca mais.
+  if (cp.listingStartedAt && limitArg <= 0 && !explicitSince) {
+    try {
+      saveWatermark(WATERMARK, cp.listingStartedAt);
+    } catch (e) {
+      console.error(`⚠️  marca d'água não gravada (${(e as Error).message}) — o próximo incremental re-busca mais.`);
+    }
+  } else if (explicitSince) {
+    console.error("ℹ️  --modified-since explícito: marca d'água do incremental não avançada.");
+  }
 
   const total = (
     db.prepare("SELECT COUNT(*) AS n FROM clarice_users").get() as { n: number }

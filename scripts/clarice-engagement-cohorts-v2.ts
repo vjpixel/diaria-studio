@@ -313,7 +313,10 @@ export function loadCampaignCache(campaignId: number, cacheDir: string): Campaig
   }
 }
 
-function saveCampaignCache(cache: CampaignCache, cacheDir: string): void {
+// #9762: exportado — o catch-up de `clarice-sync-brevo.ts` passou a montar o
+// próprio fluxo de export (com processo PENDENTE retomável entre execuções) e
+// precisa gravar o cache no mesmo formato/caminho.
+export function saveCampaignCache(cache: CampaignCache, cacheDir: string): void {
   mkdirSync(cacheDir, { recursive: true });
   writeFileAtomic(campaignCachePath(cache.campaignId, cacheDir), JSON.stringify(cache), { fsync: false });
 }
@@ -502,11 +505,16 @@ export async function getOrFetchCampaignCache(
   const { processId } = await client.exportRecipients(campaign.id);
   const exportUrl = await pollExportUntilDone(client, processId, opts.poll);
   const csvText = await client.downloadCsv(exportUrl);
-  const rows = Papa.parse<CampaignRecipientRow>(csvText, { header: true, skipEmptyLines: true }).data;
   const exportedAt = (opts.now ?? (() => new Date().toISOString()))();
-  const cache = buildCampaignCache(rows, campaign.id, campaign.name, exportedAt, campaign.sentDate);
+  const cache = campaignCacheFromCsv(csvText, campaign, exportedAt);
   saveCampaignCache(cache, cacheDir);
   return { cache, fromCache: false };
+}
+
+/** #9762: CSV cru de `exportRecipients` → `CampaignCache`. Pura — reusada pelo catch-up de `clarice-sync-brevo.ts`. */
+export function campaignCacheFromCsv(csvText: string, campaign: SentCampaignRef, exportedAt: string): CampaignCache {
+  const rows = Papa.parse<CampaignRecipientRow>(csvText, { header: true, skipEmptyLines: true }).data;
+  return buildCampaignCache(rows, campaign.id, campaign.name, exportedAt, campaign.sentDate);
 }
 
 // ─── Concorrência limitada, throttling conservador ──────────────────────────
