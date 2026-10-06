@@ -272,7 +272,7 @@ const ALLOWLIST: readonly DangerousMatch[] = [
   // docstring novo (+4 linhas) acima dela — #6814, que adicionou
   // `deliveredAt`/`sentDate` acima dela — e o review da PR #6887, que
   // removeu `collectDeliveredEmails` (código morto, -11 linhas)).
-  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 787 }, // #9330: docstring do item 4 encurtado (-3) deslocou 790→787
+  { file: "scripts/clarice-engagement-cohorts-v2.ts", line: 795 }, // #9762: export de saveCampaignCache + campaignCacheFromCsv (+8) deslocou 787→795
 ] as const;
 
 function isAllowlisted(m: DangerousMatch): boolean {
