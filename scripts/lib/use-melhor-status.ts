@@ -18,6 +18,7 @@ import {
   readApprovedForUseMelhor,
   readUseMelhorPostState,
   resolveUseMelhorCoverTitle,
+  useMelhorUmMentionsBrand,
   type UseMelhorPostConfigState,
   type UseMelhorPostStatusInput,
 } from "./use-melhor-post.ts";
@@ -75,6 +76,7 @@ export function gatherUseMelhorStatusInput(
     approved,
     hasSocialSection: socialUm !== null,
     hasCurtoSection: readUseMelhorBlock(socialMd, "Curto") !== null,
+    socialUmMentionsBrand: useMelhorUmMentionsBrand(socialUm), // #9756
     carouselSlots: stamp?.slots ?? null,
     carouselStale,
     coverTitleDrift,
