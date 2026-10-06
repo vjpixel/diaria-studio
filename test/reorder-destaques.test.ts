@@ -33,6 +33,7 @@ import {
   deriveTituloSubtitulo,
   parseArgs,
   refreshSocialSourceHash,
+  assessSocialStampBeforeReorder,
   reindexCarouselSourceHashes,
   reorderFactCheckManifest,
   reorderFactCheckSources,
@@ -1724,6 +1725,95 @@ describe("reorder-destaques CLI (#6062): .social-source-hash.json", () => {
       assert.equal(existsSync(hashPath), false, "--dry-run não pode tocar o disco");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #9688: carimbo já stale ANTES do reorder não é lavado ───────────────
+//
+// Bug: o reorder recarimbava `.social-source-hash.json` sempre que o social
+// era reordenado, sem olhar se o carimbo já divergia do approved pré-reorder
+// (ex: D1 trocado depois de o social ser gerado). O recarimbo mascarava o
+// `social-hash-fresh` que deveria acusar o social desatualizado.
+describe("reorder-destaques CLI (#9688): carimbo stale pré-reorder", () => {
+  it("carimbo que já divergia do approved fica intocado e o motivo sai em next_steps", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const approvedPath = writeApprovedFixture(dir, [
+        "https://a.com/1",
+        "https://b.com/2",
+        "https://c.com/3",
+      ]);
+      const hashPath = join(dir, "_internal", ".social-source-hash.json");
+      // carimbo de um approved ANTERIOR (D1 era outro artigo quando o social foi gerado)
+      const staleStamp = "aaaaaaaaaaaaaaaa";
+      assert.notEqual(staleStamp, hashFromApprovedFile(approvedPath));
+      writeFileSync(hashPath, JSON.stringify({ hash: staleStamp, generated_at: "2026-10-05T00:00:00.000Z" }), "utf8");
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+
+      const result = runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "3,2,1"]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+
+      const gravado = JSON.parse(readFileSync(hashPath, "utf8")) as { hash: string };
+      assert.equal(gravado.hash, staleStamp, "recarimbar lavaria o social-hash-fresh que deveria acusar");
+      assert.notEqual(gravado.hash, hashFromApprovedFile(approvedPath), "o invariante continua acusando");
+
+      const report = JSON.parse(result.stdout) as { modified: { rewritten: string[] }; next_steps: string[] };
+      assert.ok(
+        !report.modified.rewritten.some((f) => f.endsWith(".social-source-hash.json")),
+        "o carimbo não pode constar como reescrito",
+      );
+      const stale = report.next_steps.filter((s) => /social-source-hash/.test(s));
+      assert.equal(stale.length, 1, `exatamente 1 next_step sobre o carimbo: ${JSON.stringify(report.next_steps)}`);
+      assert.match(stale[0], /ANTES do reorder/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem carimbo prévio não cria um — não declara frescor sem evidência", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      writeApprovedFixture(dir, ["https://a.com/1", "https://b.com/2", "https://c.com/3"]);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD_FIXTURE, "utf8");
+      const result = runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "3,2,1"]);
+      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+      assert.equal(existsSync(join(dir, "_internal", ".social-source-hash.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("assessSocialStampBeforeReorder (#9688, unidade)", () => {
+  function setup(stamp: string | null, approved: string | null): string {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-stamp-"));
+    const internal = join(dir, "_internal");
+    mkdirSync(internal, { recursive: true });
+    if (approved !== null) writeFileSync(join(internal, "01-approved.json"), approved, "utf8");
+    if (stamp !== null) writeFileSync(join(internal, ".social-source-hash.json"), stamp, "utf8");
+    return internal;
+  }
+  const approved = JSON.stringify({ highlights: [{ url: "https://a", title_options: ["A"] }] });
+
+  it("fresh / stale / absent / unreadable", () => {
+    const fresh = setup(null, approved);
+    const realHash = hashFromApprovedFile(join(fresh, "01-approved.json"));
+    writeFileSync(join(fresh, ".social-source-hash.json"), JSON.stringify({ hash: realHash }), "utf8");
+    const cases: Array<[string, string]> = [
+      [fresh, "fresh"],
+      [setup(JSON.stringify({ hash: "outro" }), approved), "stale"],
+      [setup(null, approved), "absent"],
+      [setup(JSON.stringify({ hash: "x" }), null), "absent"],
+      [setup("{ nao json", approved), "unreadable"],
+      [setup(JSON.stringify({ hash: 42 }), approved), "unreadable"],
+    ];
+    try {
+      for (const [internal, expected] of cases) {
+        assert.equal(assessSocialStampBeforeReorder(internal), expected, internal);
+      }
+    } finally {
+      for (const [internal] of cases) rmSync(join(internal, ".."), { recursive: true, force: true });
     }
   });
 });

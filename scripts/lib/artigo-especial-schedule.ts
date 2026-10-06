@@ -2,19 +2,23 @@
  * artigo-especial-schedule.ts (#5979)
  *
  * Resolve o `--at` (agendamento LinkedIn) da skill `/diaria-artigo-especial`.
- * Default = **D+1 no `d3_time` (hoje 17:15 BRT; era 17:30 em 23/08/2026) a partir de HOJE** (decisão do editor, 23/08/2026
- * — mesmo horário `d3_time` de `publishing.social.fallback_schedule`, "os
- * posts de edição").
+ * Default = **página D+1 09:00 BRT + perfil D+2 09:30 BRT, a partir de HOJE**
+ * (#6014 item 1 — ver `resolveArtigoEspecialScheduledAts`). O default
+ * original (decisão do editor, 23/08/2026) era D+1 no `d3_time` de
+ * `publishing.social.fallback_schedule`, e foi trocado por colidir com o `d3`
+ * da edição diária. O slot `d3` segue como veículo da ponte abaixo, mas com
+ * `d3_time` sobrescrito (09:00/09:30) num config derivado — o 17:15 real do
+ * `d3_time` não entra mais no cálculo.
  *
  * **Reusa `computeScheduledAt` (`scripts/compute-social-schedule.ts`), não
  * reimplementa** — mas essa função é parametrizada por `editionDate` (AAMMDD)
  * + `destaque` (d1/d2/d3), que não é bem o vocabulário do artigo especial
  * (não há "edição" nem "destaque" aqui). Este módulo faz só a ponte: converte
- * "hoje + 1 dia, no horário de `d3_time`" pro vocabulário que `computeScheduledAt` entende
- * (`editionDate = AAMMDD de hoje`, `dayOffset = 1`, `destaque = "d3"` — é o
- * slot cujo horário configurado, `d3_time`, hoje é 17:15) e devolve o ISO
- * pronto. Escolher `destaque: "d3"` aqui é só uma forma de apontar pro slot
- * de horário certo em `fallback_schedule` — não implica nenhuma relação com
+ * "hoje + N dias, no horário X" pro vocabulário que `computeScheduledAt` entende
+ * (`editionDate = AAMMDD de hoje`, `dayOffset = 1` página / `2` perfil,
+ * `destaque = "d3"` com `d3_time` sobrescrito pelo horário X) e devolve o ISO
+ * pronto. Escolher `destaque: "d3"` aqui é só uma forma de apontar pra um slot
+ * de horário de `fallback_schedule` — não implica nenhuma relação com
  * um "3º destaque" de edição.
  *
  * **`toAammdd` deriva "hoje" no fuso configurado via `Intl` (`datePartsInTz`,
