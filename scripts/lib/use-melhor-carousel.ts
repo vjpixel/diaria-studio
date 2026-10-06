@@ -276,6 +276,40 @@ export function isUseMelhorCarouselStale(
 }
 
 /**
+ * Pure (#9635): o título GRAVADO na capa (`stamp.cover_title`, #9630) difere
+ * do título que a edição resolve agora (`resolveUseMelhorCoverTitle`)? Caso
+ * típico: o editor traduziu/editou o título do item USE MELHOR no gate 4
+ * depois do Stage 3 — o carrossel segue valendo (o `## um` não mudou), mas a
+ * capa sai com o título anterior. `null` quando bate, quando o carimbo é
+ * antigo (sem `cover_title` — aí `isUseMelhorCarouselStale` já compara pelo
+ * título atual) ou quando não há título atual. Comparação ignora espaços nas
+ * pontas. Nunca bloqueia nada: quem chama só AVISA.
+ */
+export function useMelhorCoverTitleDrift(
+  stamp: UseMelhorCarouselStamp | null,
+  currentTitle: string | null,
+): { stamped: string; current: string } | null {
+  if (!stamp || typeof stamp.cover_title !== "string" || currentTitle === null) return null;
+  const stamped = stamp.cover_title.trim();
+  const current = currentTitle.trim();
+  if (!current || stamped === current) return null;
+  return { stamped, current };
+}
+
+/** Texto do aviso de #9635 (compartilhado pelo status do gate 4 e pelo Stage 5). */
+export function describeUseMelhorCoverTitleDrift(
+  drift: { stamped: string; current: string },
+  editionDir = "{edição}",
+): string {
+  return (
+    `capa do carrossel com o título anterior ("${drift.stamped}") — o item na edição agora é ` +
+    `"${drift.current}". O post sai assim mesmo; pra atualizar a capa, re-rodar ` +
+    `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir} --force" + ` +
+    `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}".`
+  );
+}
+
+/**
  * Resolve as URLs públicas ORDENADAS do carrossel do 4º post a partir de
  * `06-public-images.json` (`images`) e da lista de slots gravada no carimbo.
  * `null` se QUALQUER slide faltar — tudo-ou-nada, mesma regra de

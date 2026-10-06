@@ -21,7 +21,12 @@ import {
   type UseMelhorPostConfigState,
   type UseMelhorPostStatusInput,
 } from "./use-melhor-post.ts";
-import { isUseMelhorCarouselStale, readUseMelhorCarouselStamp } from "./use-melhor-carousel.ts";
+import {
+  describeUseMelhorCoverTitleDrift,
+  isUseMelhorCarouselStale,
+  readUseMelhorCarouselStamp,
+  useMelhorCoverTitleDrift,
+} from "./use-melhor-carousel.ts";
 import { readInstagramTestOverride, type CarouselCtaOverride } from "./instagram-test-override.ts";
 
 function readIfExists(p: string): string | null {
@@ -48,6 +53,7 @@ export function gatherUseMelhorStatusInput(
   const reviewedMd = readIfExists(resolve(editionDir, "02-reviewed.md"));
   const approved = readApprovedForUseMelhor(editionDir);
   let carouselStale = false;
+  let coverTitleDrift: string | null = null;
   if (config.enabled && stamp && state?.item && socialUm) {
     // Fail-soft: override de teste malformado não pode derrubar o status.
     let ctaOverride: CarouselCtaOverride | null = null;
@@ -58,6 +64,9 @@ export function gatherUseMelhorStatusInput(
     }
     const coverTitle = resolveUseMelhorCoverTitle(state.item, { reviewedMd, approved }); // #9600
     carouselStale = isUseMelhorCarouselStale(stamp, socialUm, coverTitle, ctaOverride);
+    // #9635: capa em dia com o `## um`, mas com título diferente do item atual.
+    const drift = carouselStale ? null : useMelhorCoverTitleDrift(stamp, coverTitle);
+    if (drift) coverTitleDrift = describeUseMelhorCoverTitleDrift(drift, editionDir);
   }
   return {
     config,
@@ -68,5 +77,6 @@ export function gatherUseMelhorStatusInput(
     hasCurtoSection: readUseMelhorBlock(socialMd, "Curto") !== null,
     carouselSlots: stamp?.slots ?? null,
     carouselStale,
+    coverTitleDrift,
   };
 }
