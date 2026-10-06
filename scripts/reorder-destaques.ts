@@ -882,6 +882,35 @@ export function refreshSocialSourceHash(
 }
 
 /**
+ * (#9688) Estado do carimbo `_internal/.social-source-hash.json` ANTES do
+ * reorder, comparado contra o `01-approved.json` também pré-reorder:
+ *   - `fresh`      — o carimbo batia: o social estava em dia, recarimbar
+ *                    depois do reorder só acompanha a renumeração;
+ *   - `stale`      — o carimbo já divergia (approved mudou depois de o social
+ *                    ser gerado). Recarimbar aqui MASCARARIA o
+ *                    `social-hash-fresh` que deveria acusar — o carimbo fica;
+ *   - `absent`     — sem carimbo (ou sem approved): nada a preservar, e criar
+ *                    um do nada também declararia frescor sem evidência;
+ *   - `unreadable` — carimbo/approved ilegível: tratado como não-fresco.
+ * Mesmo critério do re-selo do humanizador (#9679, `planHumanizerReseal`).
+ * Precisa rodar ANTES do lote principal gravar o approved reordenado.
+ */
+export type SocialStampBefore = "fresh" | "stale" | "absent" | "unreadable";
+
+export function assessSocialStampBeforeReorder(internalDir: string): SocialStampBefore {
+  const hashPath = resolve(internalDir, ".social-source-hash.json");
+  const approvedPath = resolve(internalDir, "01-approved.json");
+  if (!existsSync(hashPath) || !existsSync(approvedPath)) return "absent";
+  try {
+    const cached = (JSON.parse(readFileSync(hashPath, "utf8")) as { hash?: unknown }).hash;
+    if (typeof cached !== "string") return "unreadable";
+    return cached === hashFromApprovedFile(approvedPath) ? "fresh" : "stale";
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
  * (#6068) Reindexa `_internal/.carousel-source-hash.json` conforme `newOrder`.
  *
  * Os slides do carrossel (`04-d{N}-carousel-{slot}-4x5.jpg`) já são
@@ -1297,6 +1326,9 @@ function main(): void {
   // verificado (writeFilesVerified: snapshot → escrita → verificação final
   // byte a byte → rollback do lote) no fim do passo 4, antes do carimbo do
   // social (4b), que relê o disco.
+  // #9688: estado do carimbo do social ANTES do lote gravar o approved
+  // reordenado — decide no passo 4b se o recarimbo é legítimo.
+  const socialStampBefore = assessSocialStampBeforeReorder(internalDir);
   const pendingWrites: VerifiedWrite[] = [];
   const queueWrite = (path: string, content: string): void => {
     const existing = pendingWrites.find((w) => w.path === path);
@@ -1407,6 +1439,9 @@ function main(): void {
   }
   // #9679: o que o script não resolve sozinho — impresso no JSON final.
   const nextSteps: string[] = [];
+  // #9688: carimbo do social já stale antes do reorder (passo 4b) — evita o
+  // next_step genérico de "recarimbar" no fim, que contradiria o específico.
+  let socialStampStaleBefore = false;
 
   if (!args.dryRun) {
     try {
@@ -1444,9 +1479,22 @@ function main(): void {
   // invariante `social-hash-fresh` num carimbo automático: diria "fresco" pra
   // um social que continua na ordem velha — exatamente o estado que o #1413
   // existe pra pegar.
+  // #9688: e SÓ quando o carimbo batia com o approved pré-reorder. Carimbo já
+  // stale antes (approved mudou depois de o social ser gerado) fica como está
+  // — recarimbar lavaria a divergência — e o próximo passo sai em next_steps.
   if (socialReordered) {
-    const refreshed = refreshSocialSourceHash(editionDir, args.dryRun);
-    if (refreshed) modified.rewritten.push(refreshed.path);
+    if (socialStampBefore === "fresh") {
+      const refreshed = refreshSocialSourceHash(editionDir, args.dryRun);
+      if (refreshed) modified.rewritten.push(refreshed.path);
+    } else if (socialStampBefore === "stale" || socialStampBefore === "unreadable") {
+      socialStampStaleBefore = true;
+      nextSteps.push(
+        `.social-source-hash.json já não batia com 01-approved.json ANTES do reorder ` +
+          `(destaques mudaram depois de o 03-social.md ser gerado) — carimbo NÃO refeito, ` +
+          `social-hash-fresh vai acusar. Conferir/regenerar o 03-social.md contra os destaques atuais e só então recarimbar: ` +
+          `npx tsx scripts/refresh-social-hash.ts --edition-dir ${editionDir}`,
+      );
+    }
   }
 
   // 4c. _internal/.carousel-source-hash.json (#6068) — INCONDICIONAL, ao
@@ -1602,7 +1650,7 @@ function main(): void {
   // o próximo passo vai explícito em vez de o editor descobrir pelo invariante.
   const socialHashPath = resolve(internalDir, ".social-source-hash.json");
   const approvedPath = resolve(internalDir, "01-approved.json");
-  if (!args.dryRun && existsSync(socialHashPath) && existsSync(approvedPath)) {
+  if (!args.dryRun && !socialStampStaleBefore && existsSync(socialHashPath) && existsSync(approvedPath)) {
     try {
       const cached = (JSON.parse(readFileSync(socialHashPath, "utf8")) as { hash?: unknown }).hash;
       if (cached !== hashFromApprovedFile(approvedPath)) {
