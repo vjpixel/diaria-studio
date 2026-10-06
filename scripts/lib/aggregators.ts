@@ -41,7 +41,7 @@ export const AGGREGATOR_HOSTS = new Set<string>([
   "alphasignal.ai",
   "archive.thedeepview.com",
   "recaply.co",
-  "7min.ai", // cobre também track.newsletter.7min.ai (match de subdomínio, #9746)
+  "7min.ai", // cobre também track.newsletter.7min.ai (match de subdomínio, #9746); newsletter.7min.ai isento (#7662, ver SUBDOMAIN_MATCH_EXEMPT)
   "evolvingai.io",
   "datamachina.com",
   "cyberman.ai",
@@ -89,14 +89,34 @@ function isThirdPartyBeehiivHost(host: string): boolean {
 }
 
 /**
+ * #9746: subdomínios de host listado que NÃO herdam o bloqueio do pai.
+ *
+ * `newsletter.7min.ai`: é o host das edições do sender `email@newsletter.7min.ai`,
+ * que o editor pôs em `newsletter_auto_capture.always_consider_senders`
+ * (#7662, "sempre todos os links de @newsletter.7min.ai serem considerados").
+ * Antes do match de subdomínio, o dedup só bloqueava `7min.ai` e
+ * `track.newsletter.7min.ai` (exatos), e `newsletter.7min.ai/...` passava —
+ * comportamento travado por `test/dedup.test.ts` (#7662). Subdomínios dele
+ * (`track.newsletter.7min.ai`, o wrapper de tracking) continuam bloqueados.
+ *
+ * Divergência intencional com `aggregator-blocklist.ts` (pre-flight de
+ * fontes), declarada em `test/aggregator-lists-parity.test.ts`.
+ */
+export const SUBDOMAIN_MATCH_EXEMPT: ReadonlySet<string> = new Set(["newsletter.7min.ai"]);
+
+/**
  * #9746: `true` se o host é uma entrada de `AGGREGATOR_HOSTS` ou subdomínio
  * dela — mesma semântica de `matchesDomain` em `aggregator-blocklist.ts`.
  * Antes o match era exato (só tirava `www.`), então `news.bensbites.com`
  * escapava do dedup enquanto o pre-flight do blocklist o pegava. Sufixo
  * textual sem ponto (`fake-crescendo.ai`) continua não casando.
+ *
+ * Exceção: hosts em `SUBDOMAIN_MATCH_EXEMPT` nunca são bloqueados por herança
+ * do pai (só se estivessem listados por si mesmos).
  */
 function matchesAggregatorHost(host: string): boolean {
   if (AGGREGATOR_HOSTS.has(host)) return true;
+  if (SUBDOMAIN_MATCH_EXEMPT.has(host)) return false;
   for (let i = host.indexOf("."); i >= 0; i = host.indexOf(".", i + 1)) {
     if (AGGREGATOR_HOSTS.has(host.slice(i + 1))) return true;
   }

@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import {
   AGGREGATOR_HOSTS,
   AGGREGATOR_PATTERNS,
+  SUBDOMAIN_MATCH_EXEMPT,
   isAggregator as isAggregatorDedup,
 } from "../scripts/lib/aggregators.ts";
 import {
@@ -38,6 +39,13 @@ import { AI_RELEVANT_DOMAINS } from "../scripts/lib/ai-relevance.ts";
  * dedup.
  */
 const BLOCKLIST_ONLY = new Set(["perplexity.ai"]);
+
+/*
+ * Divergência intencional de SUBDOMÍNIO: `SUBDOMAIN_MATCH_EXEMPT` em
+ * `aggregators.ts` (hoje `newsletter.7min.ai`, #7662) não herda o bloqueio do
+ * pai no dedup, enquanto o pre-flight do blocklist o bloquearia como fonte
+ * cadastrada. Por isso o teste de concordância abaixo usa `news.{domínio}`.
+ */
 
 /** Entradas de `AGGREGATOR_HOSTS` que não existem no blocklist. Hoje nenhuma. */
 const HOSTS_ONLY = new Set<string>([]);
@@ -115,6 +123,21 @@ describe("aggregators.ts isAggregator — match de subdomínio (#9746)", () => {
   it("sufixo textual sem ponto não casa", () => {
     assert.equal(isAggregatorDedup("https://fake-crescendo.ai/x"), false);
     assert.equal(isAggregatorDedup("https://sometechstartups.com/x"), false);
+  });
+
+  it("newsletter.7min.ai NÃO herda o bloqueio de 7min.ai (#7662, sender always_consider)", () => {
+    assert.equal(isAggregatorDedup("https://newsletter.7min.ai/edition-43"), false);
+    // o pai e o wrapper de tracking continuam bloqueados
+    assert.equal(isAggregatorDedup("https://7min.ai/x"), true);
+    assert.equal(isAggregatorDedup("https://track.newsletter.7min.ai/c/abc"), true);
+  });
+
+  it("SUBDOMAIN_MATCH_EXEMPT só lista subdomínios de host cadastrado (sem exceção órfã)", () => {
+    for (const h of SUBDOMAIN_MATCH_EXEMPT) {
+      const parents = [...AGGREGATOR_HOSTS].filter((p) => h.endsWith("." + p));
+      assert.ok(parents.length > 0, `${h} não é subdomínio de nenhum AGGREGATOR_HOSTS — exceção órfã`);
+      assert.ok(!AGGREGATOR_HOSTS.has(h), `${h} está listado e isento ao mesmo tempo`);
+    }
   });
 
   it("perplexity.ai não é bloqueado no dedup (exceção declarada)", () => {
