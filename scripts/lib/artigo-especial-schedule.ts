@@ -2,7 +2,7 @@
  * artigo-especial-schedule.ts (#5979)
  *
  * Resolve o `--at` (agendamento LinkedIn) da skill `/diaria-artigo-especial`.
- * Default = **D+1 17:30 BRT a partir de HOJE** (decisão do editor, 23/08/2026
+ * Default = **D+1 no `d3_time` (hoje 17:15 BRT; era 17:30 em 23/08/2026) a partir de HOJE** (decisão do editor, 23/08/2026
  * — mesmo horário `d3_time` de `publishing.social.fallback_schedule`, "os
  * posts de edição").
  *
@@ -10,9 +10,9 @@
  * reimplementa** — mas essa função é parametrizada por `editionDate` (AAMMDD)
  * + `destaque` (d1/d2/d3), que não é bem o vocabulário do artigo especial
  * (não há "edição" nem "destaque" aqui). Este módulo faz só a ponte: converte
- * "hoje + 1 dia, 17:30 BRT" pro vocabulário que `computeScheduledAt` entende
+ * "hoje + 1 dia, no horário de `d3_time`" pro vocabulário que `computeScheduledAt` entende
  * (`editionDate = AAMMDD de hoje`, `dayOffset = 1`, `destaque = "d3"` — é o
- * slot cujo horário configurado, `d3_time`, já é 17:30) e devolve o ISO
+ * slot cujo horário configurado, `d3_time`, hoje é 17:15) e devolve o ISO
  * pronto. Escolher `destaque: "d3"` aqui é só uma forma de apontar pro slot
  * de horário certo em `fallback_schedule` — não implica nenhuma relação com
  * um "3º destaque" de edição.
