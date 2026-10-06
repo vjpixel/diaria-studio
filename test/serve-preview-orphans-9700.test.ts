@@ -57,6 +57,28 @@ function spawnSleeper(marker: string): number {
   return child.pid;
 }
 
+/**
+ * Dublê de um serve-preview REAL do ponto de vista da linha de comando
+ * (#9705): processo node cujo script é um arquivo chamado `serve-preview.ts`
+ * (em dir temporário, só um `setInterval`) — o que `isServePreviewCmdline`
+ * exige. Substring solta no argv não basta mais.
+ */
+const fakeDirs: string[] = [];
+function spawnFakeServePreview(): number {
+  const dir = mkdtempSync(join(tmpdir(), "serve-preview-9705-fake-"));
+  fakeDirs.push(dir);
+  const script = join(dir, "serve-preview.ts");
+  writeFileSync(script, "setInterval(() => {}, 1000);\n");
+  const child = spawn(process.execPath, ["--import", "tsx", script, "--file", "x.html"], {
+    cwd: ROOT,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  assert.ok(child.pid);
+  return child.pid;
+}
+
 function killQuietly(pid: number | undefined): void {
   if (!pid) return;
   try {
@@ -88,6 +110,7 @@ async function waitCmdline(pid: number, includes: string, timeoutMs = 5000): Pro
 const spawned: number[] = [];
 after(() => {
   for (const pid of spawned) killQuietly(pid);
+  for (const d of fakeDirs) rmSync(d, { recursive: true, force: true });
 });
 
 describe("stopPreviewPid — valida a linha de comando antes do SIGTERM (#9700 c)", () => {
@@ -108,11 +131,11 @@ describe("stopPreviewPid — valida a linha de comando antes do SIGTERM (#9700 c
     assert.equal(sig, "SIGTERM");
   });
 
-  it("linha de comando ilegível → sinaliza (comportamento pré-#9700, com warning no CLI)", () => {
+  it("linha de comando ilegível → NÃO sinaliza (#9705; antes do #9705 sinalizava às cegas)", () => {
     let killed = false;
     const r = stopPreviewPid(42, { readCmdline: () => null, kill: () => void (killed = true) });
-    assert.equal(r.outcome, "stopped");
-    assert.equal(killed, true);
+    assert.equal(r.outcome, "unverifiable");
+    assert.equal(killed, false);
   });
 
   it("CLI --stop-pid em processo ALHEIO vivo não o mata (cenário real do PID reaproveitado)", async () => {
@@ -128,9 +151,9 @@ describe("stopPreviewPid — valida a linha de comando antes do SIGTERM (#9700 c
   });
 
   it("CLI --stop-pid num serve-preview encerra", async () => {
-    const pid = spawnSleeper("fake-serve-preview-9700");
+    const pid = spawnFakeServePreview();
     spawned.push(pid);
-    await waitCmdline(pid, "fake-serve-preview-9700");
+    await waitCmdline(pid, "serve-preview.ts");
     const r = runCli(["--stop-pid", String(pid)]);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /"stopped"/);
@@ -161,9 +184,9 @@ describe("--ensure com PID vivo mas URL muda (#9700 a)", () => {
     const persistPath = join(dir, "persist.json");
     // "Servidor" travado: processo vivo, linha de comando de serve-preview,
     // mas a URL persistida não responde (porta 1 = nada escutando).
-    const stuck = spawnSleeper("stuck-serve-preview-9700");
+    const stuck = spawnFakeServePreview();
     spawned.push(stuck);
-    await waitCmdline(stuck, "stuck-serve-preview-9700");
+    await waitCmdline(stuck, "serve-preview.ts");
     writeFileSync(persistPath, JSON.stringify({ preview_url: "http://127.0.0.1:1/preview.html", preview_url_pid: String(stuck) }));
 
     const r = runCli(["--file", htmlPath, "--port", "0", "--ensure", "--persist-to", persistPath, "--field", "preview_url"]);

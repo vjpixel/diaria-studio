@@ -63,8 +63,11 @@
  * Endurecimento contra órfãos (#9700):
  *   - `--stop-pid` valida a linha de comando do PID antes de sinalizar — só
  *     mata se for um `serve-preview` (PID reaproveitado pelo SO depois que o
- *     servidor morreu nunca é atingido). Linha de comando ilegível (plataforma
- *     sem `/proc`/`ps`/PowerShell) = sinaliza como antes, com warning;
+ *     servidor morreu nunca é atingido). "É um serve-preview" = processo
+ *     node/tsx cujo SCRIPT (1º argumento posicional) é `serve-preview.ts` —
+ *     nunca substring solta (#9705: `tail -f diaria-serve-preview-*.log` ou
+ *     `node --test test/serve-preview-*.test.ts` passavam). Linha de comando
+ *     ilegível = NÃO sinaliza (#9705; antes sinalizava sem validar);
  *   - `--ensure` com PID vivo mas URL muda: SIGTERM no PID antigo (com a mesma
  *     validação) ANTES de subir o novo — senão o antigo ficava órfão, fora do
  *     alcance de `--stop-pid` (o persist passa a apontar pro novo);
@@ -76,6 +79,8 @@
  *     default `DETACHED_DEFAULT_IDLE_EXIT_MIN`/`DETACHED_DEFAULT_TTL_MIN` —
  *     se o teardown nunca rodar (sessão caiu, abort), o processo não vive até
  *     o reboot. `--ensure` re-serve sob demanda se o editor ainda precisar.
+ *     Teto: `MAX_LIFETIME_MIN` (limite de 2^31-1 ms do `setTimeout`) — acima
+ *     disso o timer dispararia em ~1 ms, então o valor é rejeitado (#9705).
  *
  * Programmatic (usado por testes e por outros scripts):
  *   import { startPreviewServer } from "./serve-preview.ts";
@@ -113,6 +118,35 @@ import { logEvent } from "./lib/run-log.ts";
 
 // #3546: SEMPRE loopback — nunca 0.0.0.0, nunca exposto na rede local.
 const HOST = "127.0.0.1";
+
+/** Maior delay que `setTimeout` honra (2^31-1 ms); acima, o Node usa 1 ms. */
+export const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+/** #9705: teto de `--idle-exit-min`/`--ttl-min` (~35.791 min ≈ 24,8 dias). */
+export const MAX_LIFETIME_MIN = Math.floor(MAX_TIMEOUT_MS / 60_000);
+
+/**
+ * Pure (#9705): valida o valor de `--idle-exit-min`/`--ttl-min`. Ausente = 0
+ * (desligado). Negativo, não numérico ou acima de `MAX_LIFETIME_MIN` = erro —
+ * rejeitado em vez de truncado, pra quem pediu "nunca morrer" saber que o
+ * pedido não foi atendido (0 é o "desligado").
+ */
+export function parseLifetimeMinutes(
+  key: string,
+  raw: string | undefined,
+): { ok: true; minutes: number } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, minutes: 0 };
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isFinite(n) || n < 0) {
+    return { ok: false, error: `--${key} inválido: ${raw}` };
+  }
+  if (n > MAX_LIFETIME_MIN) {
+    return {
+      ok: false,
+      error: `--${key} ${raw} acima do teto de ${MAX_LIFETIME_MIN} min (limite do setTimeout) — use 0 para desligar`,
+    };
+  }
+  return { ok: true, minutes: n };
+}
 
 const EXT_MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -339,7 +373,10 @@ export async function startPreviewServer(
   // #9700: idle-exit — o timer rearma a cada request; ao disparar com aba
   // conectada no live-reload, só rearma (a aba aberta é uso, não ociosidade).
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const idleExitMs = opts.idleExitMs ?? 0;
+  // #9705: acima de 2^31-1 ms o Node troca o delay por 1 ms — o servidor
+  // sairia logo após subir. O CLI já rejeita; aqui o teto protege o caller
+  // programático.
+  const idleExitMs = Math.min(opts.idleExitMs ?? 0, MAX_TIMEOUT_MS);
   const armIdle = () => {
     if (!(idleExitMs > 0) || !opts.onIdle) return;
     if (idleTimer) clearTimeout(idleTimer);
@@ -490,12 +527,16 @@ function stopByPid(pidArg: string): void {
   }
   const r = stopPreviewPid(pid);
   if (r.outcome === "stopped") {
-    if (r.cmdline === null) {
-      console.error(
-        `[serve-preview] WARN: linha de comando do PID ${pid} ilegível nesta plataforma — sinalizado sem validar (#9700)`,
-      );
-    }
     console.log(JSON.stringify({ stopped: pid }, null, 2));
+  } else if (r.outcome === "unverifiable") {
+    // #9705: sem linha de comando não há como provar que o PID é nosso —
+    // recusa. No Linux/macOS isso quase sempre = processo já morto; no
+    // Windows pode ser PowerShell lento/indisponível, e aí o idle-exit/TTL
+    // do próprio servidor é a rede de segurança.
+    console.error(
+      `[serve-preview] WARN: linha de comando do PID ${pid} ilegível (processo morto, ou leitura indisponível) — NÃO sinalizado (#9705)`,
+    );
+    console.log(JSON.stringify({ skipped: pid, reason: "unverifiable" }, null, 2));
   } else if (r.outcome === "not-serve-preview") {
     // #9700: PID reaproveitado — o servidor já morreu e o SO deu o número a
     // outro processo. Nunca sinalizar; não fatal (teardown é best-effort).
@@ -509,8 +550,113 @@ function stopByPid(pidArg: string): void {
   }
 }
 
-/** Marcador procurado na linha de comando pra reconhecer um servidor nosso. */
-export const SERVE_PREVIEW_CMDLINE_MARKER = "serve-preview";
+/** Nome do script que identifica um servidor nosso (basename do 1º argumento
+ *  posicional de um processo node/tsx — ver `isServePreviewCmdline`). */
+export const SERVE_PREVIEW_SCRIPT_BASENAME = "serve-preview.ts";
+
+/** Flags do node que consomem o PRÓXIMO argumento como valor (sem `=`). */
+const NODE_VALUE_FLAGS = new Set([
+  "--require",
+  "-r",
+  "--import",
+  "--loader",
+  "--experimental-loader",
+  "--env-file",
+  "--env-file-if-exists",
+  "--conditions",
+  "-C",
+  "--input-type",
+  "--title",
+  "--inspect-port",
+  "--debug-port",
+  "--stack-trace-limit",
+  "--max-old-space-size",
+  "--max-semi-space-size",
+  "--openssl-config",
+  "--icu-data-dir",
+  "--redirect-warnings",
+  "--report-dir",
+  "--report-directory",
+  "--report-filename",
+  "--diagnostic-dir",
+  "--secure-heap",
+  "--secure-heap-min",
+  "--disable-warning",
+  "--watch-path",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-name-pattern",
+  "--test-skip-pattern",
+]);
+
+/** Flags em que o node NÃO roda script (código inline / modo especial). */
+const NODE_NO_SCRIPT_FLAGS = new Set(["-e", "--eval", "-p", "--print", "--test", "-i", "--interactive", "-c", "--check"]);
+
+/**
+ * Pure: quebra uma linha de comando em tokens respeitando aspas duplas (o
+ * formato do Windows `CommandLine` e o que `readProcessCmdline` monta no
+ * Linux pra argumento com espaço). Não implementa as regras completas de
+ * barra invertida do Windows — basta pra achar argv0 e o script; um caso
+ * exótico mal tokenizado vira "não reconhecido" (fail-closed: não mata).
+ */
+export function tokenizeCmdline(cmdline: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  let has = false;
+  for (const ch of cmdline) {
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      has = true;
+    } else if (!inQuotes && /\s/.test(ch)) {
+      if (has) out.push(cur);
+      cur = "";
+      has = false;
+    } else {
+      cur += ch;
+      has = true;
+    }
+  }
+  if (has) out.push(cur);
+  return out;
+}
+
+function pathBasename(p: string): string {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+
+/**
+ * Pure (#9705): a linha de comando é de um serve-preview? Exige (1) argv0 ser
+ * node/tsx (com ou sem `.exe`/`.cmd`, com ou sem sufixo de versão) e (2) o
+ * SCRIPT — 1º argumento posicional depois das flags do node — ter basename
+ * `serve-preview.ts`. Substring solta não basta: o log/ready-file do
+ * `--detach` se chamam `diaria-serve-preview-*`, e um `tail -f`, `grep` ou
+ * `node --test test/serve-preview-*.test.ts` com PID reaproveitado passaria.
+ */
+export function isServePreviewCmdline(cmdline: string): boolean {
+  const tokens = tokenizeCmdline(cmdline);
+  if (tokens.length < 2) return false;
+  const exe = pathBasename(tokens[0]).toLowerCase().replace(/\.(exe|cmd)$/, "");
+  if (!/^(node|nodejs|tsx)[\d.]*$/.test(exe)) return false;
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === "--") {
+      const next = tokens[i + 1];
+      return next !== undefined && pathBasename(next) === SERVE_PREVIEW_SCRIPT_BASENAME;
+    }
+    if (t.startsWith("-")) {
+      const flag = t.split("=", 1)[0];
+      if (NODE_NO_SCRIPT_FLAGS.has(flag)) return false;
+      if (!t.includes("=") && NODE_VALUE_FLAGS.has(flag)) i++;
+      continue;
+    }
+    // 1º posicional = o script. Qualquer outro token (valor de `--file`,
+    // argumento do script) nunca conta.
+    return pathBasename(t) === SERVE_PREVIEW_SCRIPT_BASENAME;
+  }
+  return false;
+}
 
 /**
  * Linha de comando do PID, ou `null` se não der pra ler (processo morto,
@@ -522,7 +668,16 @@ export function readProcessCmdline(pid: number): string | null {
   try {
     if (process.platform === "linux") {
       const raw = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-      return raw.split("\0").join(" ").trim() || null;
+      // Argumento com espaço vai entre aspas, pra `tokenizeCmdline` remontar
+      // o argv exato (o `/proc` separa por NUL, sem ambiguidade).
+      return (
+        raw
+          .split("\0")
+          .filter((a) => a !== "")
+          .map((a) => (/\s/.test(a) ? `"${a}"` : a))
+          .join(" ")
+          .trim() || null
+      );
     }
     if (process.platform === "win32") {
       const out = execFileSync(
@@ -549,16 +704,19 @@ export function readProcessCmdline(pid: number): string | null {
 }
 
 export type StopPreviewOutcome =
-  | { outcome: "stopped"; cmdline: string | null }
+  | { outcome: "stopped"; cmdline: string }
   | { outcome: "not-serve-preview"; cmdline: string }
+  | { outcome: "unverifiable" }
   | { outcome: "error"; error: string };
 
 /**
- * #9700: SIGTERM no PID só se ele for de fato um serve-preview. Linha de
- * comando conhecida sem o marcador = PID reaproveitado → não sinaliza.
- * Linha de comando ilegível (`null`) = sinaliza como antes do #9700 — no
- * Linux (`300`) o `/proc` existe sempre, então isso só ocorre em plataforma
- * sem mecanismo ou com o processo já morto (e aí o kill falha inofensivo).
+ * #9700/#9705: SIGTERM no PID só se ele for comprovadamente um serve-preview
+ * (`isServePreviewCmdline`). Linha de comando de outro processo = PID
+ * reaproveitado → não sinaliza. Linha de comando ilegível (`null`) → também
+ * NÃO sinaliza (#9705): até o #9705 sinalizava sem validar, e no Windows
+ * (`TerminateProcess`, PowerShell lento/ausente) isso atingia um processo
+ * alheio que tivesse herdado o PID. Vale pro `--stop-pid` e pro reap
+ * automático do `--ensure` (este sem pedido humano, por isso mais grave).
  */
 export function stopPreviewPid(
   pid: number,
@@ -570,7 +728,8 @@ export function stopPreviewPid(
   const readCmdline = deps.readCmdline ?? readProcessCmdline;
   const kill = deps.kill ?? ((p: number, sig: NodeJS.Signals) => void process.kill(p, sig));
   const cmdline = readCmdline(pid);
-  if (cmdline !== null && !cmdline.includes(SERVE_PREVIEW_CMDLINE_MARKER)) {
+  if (cmdline === null) return { outcome: "unverifiable" };
+  if (!isServePreviewCmdline(cmdline)) {
     return { outcome: "not-serve-preview", cmdline };
   }
   try {
@@ -674,7 +833,8 @@ export async function findLivePersistedPreview(
  * o timeout), encerra-o (validando que é um serve-preview) ANTES de subir o
  * novo: o persist vai passar a apontar pro novo, e o antigo ficaria órfão,
  * fora do alcance de qualquer `--stop-pid`. Devolve o PID sinalizado, ou
- * `null` se não havia nada a encerrar (ou o PID não era nosso).
+ * `null` se não havia nada a encerrar, o PID não era nosso, ou a linha de
+ * comando não pôde ser lida (#9705: reap automático nunca mata às cegas).
  */
 export function reapUnresponsivePersisted(
   persistPath: string,
@@ -860,6 +1020,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  // #9700/#9705: tempo de vida — `--idle-exit-min`/`--ttl-min` (0/ausente =
+  // nunca). Validado ANTES do --detach/--ensure: no pai, o erro sai na hora
+  // e claro, em vez de "filho saiu com código 2 antes de servir".
+  const lifetime = (key: string): number => {
+    const r = parseLifetimeMinutes(key, values[key]);
+    if (!r.ok) {
+      console.error(`[serve-preview] ${r.error}`);
+      process.exit(2);
+    }
+    return r.minutes;
+  };
+  const idleExitMin = lifetime("idle-exit-min");
+  const ttlMin = lifetime("ttl-min");
+
   // #9678: --ensure reusa um servidor persistido ainda vivo; senão cai no
   // mesmo caminho do --detach.
   if (flags.has("ensure")) {
@@ -908,19 +1082,6 @@ async function main(): Promise<void> {
   // conta própria (só reflete o que outro processo já escreveu em disco).
   const watchFlag = flags.has("watch");
 
-  // #9700: tempo de vida — `--idle-exit-min`/`--ttl-min` (0/ausente = nunca).
-  const minutesArg = (key: string): number => {
-    const raw = values[key];
-    if (raw === undefined) return 0;
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0) {
-      console.error(`[serve-preview] --${key} inválido: ${raw}`);
-      process.exit(2);
-    }
-    return n;
-  };
-  const idleExitMin = minutesArg("idle-exit-min");
-  const ttlMin = minutesArg("ttl-min");
   let selfExitReason: string | null = null;
   let shutdownImpl: () => void = () => process.exit(0);
   const exitFor = (reason: string) => {
