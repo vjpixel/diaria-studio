@@ -92,6 +92,7 @@ Retorna `{ signals, drafts_consumed, signals_in, signals_out }` em stdout. Use `
 
 **Critério de dedup (referência — fonte de verdade é o módulo):**
 - `source_streak`: mesmo `details.source` → consolidar.
+- `source_feed_broken` (#9657): mesmo `details.source` → consolidar. Severidade `low` (P3): o RSS/sitemap da fonte falhou em 3+ rodadas seguidas enquanto a busca `site:` cobria — a ação é consertar o feed, nunca desativar a fonte.
 - `unfixed_issue`: mesmo `details.reason + details.section` → consolidar.
 - `chrome_disconnects`: sempre consolidar (counts somados).
 - Signal consolidado ganha `_editions: ["260422", "260423"]` (sorted, deduped). Severity escala pra worst observed. Title/suggested_action do primeiro signal são preservados — ajustar texto manualmente se quiser refletir a sequência (ex: "Source X com falhas em 3 edições seguidas").
@@ -122,6 +123,7 @@ Baseada em `kind` + `details`. **Sem qualificador `state:` na query** (#4177
 qualifier na query; ver 3b pro motivo):
 
 - `source_streak`: `"{source}" label:post-mortem`
+- `source_feed_broken` (#9657): `"{source}" RSS` — busca pela fonte, sem `label:post-mortem` (não é incidente, é feed quebrado coberto pela busca).
 - `unfixed_issue` com `related_issue`: pular busca, usar issue number direto (ex: `#39`).
 - `unfixed_issue` sem `related_issue`: `"{reason}"`
 - `chrome_disconnects`: `"chrome_disconnected"`

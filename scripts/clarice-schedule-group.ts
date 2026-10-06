@@ -112,6 +112,14 @@
  *                      a um novo POST, mesmo que o registro local (que pode
  *                      ficar defasado justo quando o GET-verify anterior
  *                      pegou a campanha em "queued") ainda diga "draft".
+ *                      #9638: "draft" ao vivo em até ~30 min desde o POST
+ *                      aceito (`sendNowAcceptedAt`, gravado no registro
+ *                      local logo após o 2xx) também recusa um novo POST.
+ *                      #9699: idem `sendNowAttemptedAt` (gravado ANTES do
+ *                      POST); erro no POST/poll vira exit 2 (incerto).
+ *                      #9706: exceto 4xx definitivo da Brevo no POST (a
+ *                      resposta chegou e recusou) — exit 1 (falhou), com a
+ *                      marca de tentativa restaurada.
  *
  * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
  *                      gabarito É IA?) quando diverge do --cycle de
@@ -184,7 +192,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, BrevoHttpError, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
@@ -223,6 +231,16 @@ export interface CampaignEntry {
   subject: string;
   scheduledAt?: string;
   status: "draft" | "scheduled" | "sent";
+  /** #9638: ISO do instante em que um POST `sendNow` foi ACEITO (2xx) pra
+   *  esta campanha. Gravado antes do GET-verify, pra que uma re-execução
+   *  manual de `--send-now` dentro de `SEND_NOW_GUARD_WINDOW_MS` leia
+   *  "draft" ao vivo como envio em processamento, não como "nunca disparou". */
+  sendNowAcceptedAt?: string;
+  /** #9699: ISO do instante em que um POST `sendNow` foi TENTADO — gravado
+   *  ANTES do POST. Se a Brevo aceitar e a resposta se perder (reset/timeout),
+   *  `sendNowAcceptedAt` nunca é gravado; este campo é o que impede o guard de
+   *  liberar um 2º POST dentro de `SEND_NOW_GUARD_WINDOW_MS`. */
+  sendNowAttemptedAt?: string;
 }
 
 /** Shape exato que `applyVerifyResults`/`isScheduledStatus` (clarice-schedule-sends.ts)
@@ -738,7 +756,11 @@ export function applySendNowVerifyResults(
     if (result.status === "rejected") {
       logFn(
         `⚠ GET-verify pós-sendNow ${c.key} (campanha #${c.campaignId}) falhou: ${String(result.reason)}. ` +
-          `Status local NÃO atualizado — re-tente --send-now.`,
+          // #9706: mesma ressalva do ramo "draft" — o POST já foi ACEITO
+          // (este ramo só roda depois dele) e o envio pode estar saindo.
+          `Status local NÃO atualizado — o POST sendNow foi ACEITO, pode ser envio em processamento: re-rodar --send-now em até ` +
+          `${Math.round(SEND_NOW_GUARD_WINDOW_MS / 60_000)} min desde o POST aceito é recusado pelo guard (#9638); ` +
+          `DEPOIS disso um novo POST é liberado — confira na Brevo que o 1º não saiu antes de re-tentar.`,
       );
       continue;
     }
@@ -754,7 +776,14 @@ export function applySendNowVerifyResults(
       const followUp =
         verified.status === "queued"
           ? `Status local NÃO atualizado — reconsulte a Brevo em instantes, NÃO re-dispare.`
-          : `Status local NÃO atualizado — re-tente --send-now após checar o Brevo.`;
+          : verified.status === "draft"
+            ? // #9638: "draft" pós-POST aceito pode ser envio em processamento.
+              // O guard ao vivo recusa novo POST dentro da janela; a orientação
+              // precisa dizer isso, senão quem lê só esta linha re-dispara.
+              `Status local NÃO atualizado — pode ser envio em processamento: re-rodar --send-now em até ` +
+              `${Math.round(SEND_NOW_GUARD_WINDOW_MS / 60_000)} min desde o POST aceito é recusado pelo guard (#9638); ` +
+              `DEPOIS disso um novo POST é liberado — confira na Brevo que o 1º não saiu antes de re-tentar.`
+            : `Status local NÃO atualizado — re-tente --send-now após checar o Brevo.`;
       logFn(
         `⚠ GET-verify pós-sendNow ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
           `(esperado "sent"/"inProcess" após POST sendNow) — o 2xx do POST não é suficiente. ` +
@@ -794,10 +823,26 @@ export function applySendNowVerifyResults(
  * sinaliza quando vale corrigir o registro local NESTA invocação — só quando
  * o status AO VIVO já é TERMINAL; "queued" ainda pode virar outra coisa (ex:
  * "in_review"), então não persiste sucesso ainda, só recusa o reenvio.
+ *
+ * #9638: `"draft"` AO VIVO é ambíguo — tanto "nunca disparou" quanto "POST
+ * aceito, a Brevo ainda processando" (#9634: até ~14 min). `opts.sendNowAcceptedAt`
+ * (gravado localmente por campanha logo após o POST aceito) desambigua:
+ * "draft" dentro de `SEND_NOW_GUARD_WINDOW_MS` (2x a janela do polling — ver
+ * a constante) desde esse instante = em processamento → recusa. Timestamp ilegível também recusa (o erro
+ * conservador é não disparar de novo — envio duplicado é irreversível).
+ * Depois da janela, "draft" volta a liberar o POST (a Brevo de fato não
+ * processou o 1º).
+ *
+ * #9699: `opts.sendNowAttemptedAt` (gravado ANTES do POST) vale igual ao
+ * `sendNowAcceptedAt` — um POST cuja resposta se perdeu (reset/timeout depois
+ * do aceite) deixa só o "tentado" no registro, e "draft" ao vivo dentro da
+ * janela continua sendo tratado como em processamento. Com os dois presentes,
+ * a janela conta a partir do MAIS RECENTE.
  */
 export function checkSendNowGuard(
   localStatus: CampaignEntry["status"],
   liveStatus: string,
+  opts: { sendNowAcceptedAt?: string; sendNowAttemptedAt?: string; now?: Date; windowMs?: number } = {},
 ): { send: true } | { send: false; reason: string; syncLocalAsSent: boolean } {
   if (localStatus === "sent") {
     return { send: false, reason: `já disparada (registro local)`, syncLocalAsSent: false };
@@ -815,6 +860,36 @@ export function checkSendNowGuard(
       reason: `disparo já ACEITO e na fila da Brevo (status ao vivo="queued") — NÃO re-dispare, só reconsulte em instantes`,
       syncLocalAsSent: false,
     };
+  }
+  const marks = [
+    { field: "sendNowAcceptedAt", label: "ACEITO", value: opts.sendNowAcceptedAt },
+    { field: "sendNowAttemptedAt", label: "TENTADO (resposta pode ter se perdido, #9699)", value: opts.sendNowAttemptedAt },
+  ].filter((m): m is { field: string; label: string; value: string } => typeof m.value === "string" && m.value !== "");
+  if (liveStatus === "draft" && marks.length > 0) {
+    const windowMs = opts.windowMs ?? SEND_NOW_GUARD_WINDOW_MS;
+    const unreadable = marks.find((m) => Number.isNaN(Date.parse(m.value)));
+    if (unreadable) {
+      return {
+        send: false,
+        reason:
+          `status ao vivo="draft" e registro local de POST sendNow ilegível (${unreadable.field}="${unreadable.value}") — ` +
+          `pode ser envio em processamento; NÃO re-dispare sem conferir a Brevo (corrija/remova ${unreadable.field} no registro local)`,
+        syncLocalAsSent: false,
+      };
+    }
+    const latest = marks.reduce((a, b) => (Date.parse(b.value) > Date.parse(a.value) ? b : a));
+    const elapsedMs = (opts.now ?? new Date()).getTime() - Date.parse(latest.value);
+    if (elapsedMs < windowMs) {
+      const elapsedMin = Math.max(0, Math.floor(elapsedMs / 60_000));
+      return {
+        send: false,
+        reason:
+          `POST sendNow já ${latest.label} há ${elapsedMin} min (${latest.value}) e status ao vivo="draft" — ` +
+          `a Brevo leva até ~14 min pra sair de "draft" (#9634) e o guard espera ${Math.round(windowMs / 60_000)} min, é envio em processamento; ` +
+          `NÃO re-dispare, só reconsulte depois`,
+        syncLocalAsSent: false,
+      };
+    }
   }
   return { send: true };
 }
@@ -942,6 +1017,177 @@ export function applyRescheduleVerifyResults(
 export function resolveGroupCampaignHtmlPath(monthlyDir: string, key: string): string {
   const abTestConfig = variantArmFromKey(key) !== null ? readClariceAbTest(monthlyDir) : null;
   return resolveCampaignHtmlPath(monthlyDir, key, abTestConfig);
+}
+
+/**
+ * #9706 — o erro do POST sendNow é uma RECUSA DEFINITIVA da Brevo (resposta
+ * HTTP recebida, sem aceite)? Só 4xx tipado (`BrevoHttpError`) conta. Ficam
+ * de fora, e portanto INCERTOS: rede/timeout (sem resposta), 5xx (o gateway
+ * pode ter repassado antes de falhar), 429 (chega como `BrevoRateLimitError`,
+ * não `BrevoHttpError`), 408 (timeout do lado servidor), 409 (conflito pode
+ * ser um envio concorrente em curso) e 425 (too early). Na dúvida, incerto —
+ * o lado irreversível é o envio duplicado.
+ */
+export function isDefinitiveSendNowRejection(err: unknown): err is BrevoHttpError {
+  if (!(err instanceof BrevoHttpError)) return false;
+  if (err.status < 400 || err.status >= 500) return false;
+  return ![408, 409, 425, 429].includes(err.status);
+}
+
+/**
+ * #9638 — miolo AO VIVO do `--send-now` pra UMA campanha local em "draft":
+ * GET ao vivo → `checkSendNowGuard` → (se liberado) POST sendNow → grava
+ * `sendNowAcceptedAt` → poll → `applySendNowVerifyResults`. Extraído de
+ * `main()` com I/O injetável pra que a ORDEM "grava o POST aceito ANTES do
+ * poll" seja testável sem envio real — um refactor que movesse a gravação
+ * pra depois do poll (ou a removesse) reabriria a #9638 sem quebrar o teste
+ * do guard puro.
+ *
+ * Retorna "skipped" (guard recusou), "sent" (GET-verify confirmou terminal)
+ * ou "unconfirmed" (POST aceito sem status terminal, OU — #9699 — POST/poll
+ * que lançou erro depois de possivelmente aceito; o caller sinaliza exit 2,
+ * #4347). `sendNowAttemptedAt` é gravado ANTES do POST (#9699); falha nessa
+ * escrita lança antes de qualquer envio, falha de escrita DEPOIS do POST só
+ * loga. "failed" (#9706): a Brevo RECUSOU o POST com 4xx definitivo
+ * (`isDefinitiveSendNowRejection`) — nada saiu; o `sendNowAttemptedAt` volta
+ * ao valor anterior pra não travar o reenvio legítimo depois do conserto; o
+ * caller sinaliza exit 1.
+ */
+export async function runSendNowLive(
+  c: CampaignEntry,
+  campaigns: CampaignEntry[],
+  campaignsPath: string,
+  apiKey: string,
+  deps: {
+    getCampaignFn?: (apiKey: string, campaignId: number) => Promise<{ status: string }>;
+    sendNowFn?: (apiKey: string, campaignId: number) => Promise<void>;
+    pollFn?: (apiKey: string, campaignId: number) => Promise<{ status: string; scheduledAt?: string | null }>;
+    writeFn?: (path: string, content: string) => void;
+    logFn?: (msg: string) => void;
+    nowFn?: () => Date;
+  } = {},
+): Promise<"skipped" | "sent" | "unconfirmed" | "failed"> {
+  const getCampaignFn = deps.getCampaignFn ?? ((k, id) => brevoGetCampaign(k, id));
+  const sendNowFn = deps.sendNowFn ?? ((k, id) => brevoSendNow(k, id));
+  const pollFn = deps.pollFn ?? ((k, id) => pollTerminalSendStatus(k, id));
+  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const logFn = deps.logFn ?? ((m) => console.error(m));
+  const nowFn = deps.nowFn ?? (() => new Date());
+  const key = c.key;
+  const live = await getCampaignFn(apiKey, c.campaignId);
+  const guard = checkSendNowGuard(c.status, live.status, {
+    sendNowAcceptedAt: c.sendNowAcceptedAt,
+    sendNowAttemptedAt: c.sendNowAttemptedAt,
+    now: nowFn(),
+  });
+  if (!guard.send) {
+    logFn(`↷ ${key} (campanha #${c.campaignId}): ${guard.reason} — sem novo POST sendNow.`);
+    // #4718: `c.status` só chega até aqui como "draft" (o caller em `main()`
+    // já excluiu "sent"/"scheduled") — `guard.syncLocalAsSent` sozinho já
+    // basta pra decidir se vale corrigir o registro local.
+    if (guard.syncLocalAsSent) {
+      c.status = "sent";
+      writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+      logFn(`   (registro local corrigido pra "sent" — estava defasado)`);
+    }
+    return "skipped";
+  }
+
+  // #9699: registra a TENTATIVA ANTES do POST. Se a Brevo aceitar e a
+  // resposta se perder (connection reset / timeout de headers), o
+  // `sendNowAcceptedAt` abaixo nunca seria gravado e uma re-execução leria
+  // "draft" sem registro nenhum → 2º POST (envio duplicado, irreversível).
+  // Esta escrita NÃO é fail-soft de propósito: se não der pra registrar a
+  // tentativa, o POST não sai (lança antes de qualquer envio).
+  const previousAttemptedAt = c.sendNowAttemptedAt;
+  c.sendNowAttemptedAt = nowFn().toISOString();
+  writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+
+  // Depois do POST, uma falha de escrita local não pode virar "falhou" (o
+  // envio pode ter saído): loga e segue — o `sendNowAttemptedAt` já em disco
+  // mantém o guard fechado durante a janela.
+  const writeAfterPost = (p: string, content: string) => {
+    try {
+      writeFn(p, content);
+    } catch (err) {
+      logFn(
+        `⚠ ${key}: falha ao gravar o registro local pós-POST sendNow (${String(err)}) — ` +
+          `o sendNowAttemptedAt gravado antes do POST segue protegendo contra um 2º disparo na janela do guard (#9699).`,
+      );
+    }
+  };
+
+  try {
+    await sendNowFn(apiKey, c.campaignId);
+  } catch (err) {
+    // #9706: 4xx definitivo = a Brevo respondeu e NÃO aceitou (remetente
+    // inválido, lista vazia, IP fora da allowlist...). Nada saiu: é "falhou"
+    // (exit 1), não "incerto". Restaura a marca de tentativa ao valor de
+    // ANTES deste POST (não apaga às cegas: uma marca de tentativa anterior
+    // incerta continua valendo) pra que o reenvio depois do conserto não seja
+    // barrado pelo guard. Se essa escrita falhar, a marca fica — o guard
+    // segura por até a janela, lado seguro. O GET ao vivo do guard segue
+    // barrando qualquer reenvio de campanha que de fato saiu.
+    if (isDefinitiveSendNowRejection(err)) {
+      if (previousAttemptedAt === undefined) delete c.sendNowAttemptedAt;
+      else c.sendNowAttemptedAt = previousAttemptedAt;
+      writeAfterPost(campaignsPath, JSON.stringify(campaigns, null, 2));
+      logFn(
+        `❌ ${key} (campanha #${c.campaignId}): a Brevo RECUSOU o POST sendNow (HTTP ${err.status}) — disparo FALHOU, ` +
+          `nada foi enviado. Corrija a causa (${String(err.message)}) e re-rode --send-now.`,
+      );
+      return "failed";
+    }
+    // #9699: erro no POST (rede, timeout, 5xx de gateway) pode ter vindo
+    // DEPOIS do aceite — não dá pra distinguir "não saiu" de "saiu e a
+    // resposta se perdeu". Erra pro lado conservador: incerto (exit 2), nunca
+    // "falhou" (que convidaria a re-disparar).
+    logFn(
+      `❌ ${key} (campanha #${c.campaignId}): POST sendNow lançou erro (${String(err)}) — disparo INCERTO, ` +
+        `a Brevo pode ter aceitado antes da falha. NÃO declare falha nem sucesso: confira a Brevo. ` +
+        `Re-rodar --send-now em até ${Math.round(SEND_NOW_GUARD_WINDOW_MS / 60_000)} min desde a tentativa ` +
+        `(${c.sendNowAttemptedAt}) é recusado pelo guard enquanto o status ao vivo for "draft" (#9699).`,
+    );
+    return "unconfirmed";
+  }
+  // #9638: registra o POST aceito ANTES do GET-verify (que pode levar
+  // ~15 min) — se esta invocação for interrompida ou terminar incerta,
+  // uma re-execução dentro da janela lê "draft" como em processamento.
+  c.sendNowAcceptedAt = nowFn().toISOString();
+  writeAfterPost(campaignsPath, JSON.stringify(campaigns, null, 2));
+  // #4347: NUNCA confiar só no 2xx do POST. #4718 (item 1): re-verifica
+  // com retry+backoff curto (pollTerminalSendStatus) em vez de um único
+  // GET imediato — "queued" costuma resolver em segundos, e um GET
+  // cedo demais era o próprio motivo do falso alarme reportado.
+  // #9634: "draft" pós-POST aceito também é reconsultado (janela default
+  // de ~15 min) — era a causa de ~59% de "disparo INCERTO" falsos.
+  // #9699: poll que lança (rede) vira "rejected" → incerto, não exceção.
+  let settled: PromiseSettledResult<{ status: string }>;
+  try {
+    settled = { status: "fulfilled", value: await pollFn(apiKey, c.campaignId) };
+  } catch (err) {
+    settled = { status: "rejected", reason: err };
+  }
+  applySendNowVerifyResults([settled], [c], campaigns, campaignsPath, writeAfterPost, logFn);
+  // #4347: sem gate humano (D6), a skill /diaria-clarice-novos precisa de
+  // um sinal MÁQUINA-VERIFICÁVEL de "disparo não confirmado" — não só o
+  // texto de warning que applySendNowVerifyResults já loga. "unconfirmed"
+  // vira process.exitCode = 2 no caller (não process.exit — deixa o JSON de
+  // resumo imprimir normalmente), pra este --send-now não ser tratado como
+  // sucesso mesmo com stdout válido.
+  // Cast: applySendNowVerifyResults pode MUTAR c.status pra "sent" por
+  // referência; o cast mantém a comparação honesta caso o TS estreite o tipo.
+  if ((c.status as CampaignEntry["status"]) !== "sent") {
+    logFn(
+      `❌ ${key}: sendNow disparado mas GET-verify (com retry) não confirmou status terminal — NÃO declare sucesso. ` +
+        `Reconsulte a Brevo antes de agir de novo — o guard ao vivo acima (#4718) já impede um 2º POST enquanto ` +
+        `o status real for "queued"/"inProcess"/"sent", ou "draft" em até ${Math.round(SEND_NOW_GUARD_WINDOW_MS / 60_000)} min ` +
+        `desde o POST aceito (#9638, registrado em sendNowAcceptedAt), então re-rodar --send-now é seguro, mas provavelmente redundante. ` +
+        `"draft" DEPOIS dessa janela libera um novo POST — confira a Brevo antes.`,
+    );
+    return "unconfirmed";
+  }
+  return "sent";
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -1262,55 +1508,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // `checkSendNowGuard` acima. Sem esta consulta, a orientação de retry
       // da mensagem de erro anterior levava direto a um 2º POST sendNow na
       // mesma campanha (incidente ao vivo 260806, campanha #121).
-      const live = await brevoGetCampaign(apiKey, c.campaignId);
-      const guard = checkSendNowGuard(c.status, live.status);
-      if (!guard.send) {
-        console.error(`↷ ${key} (campanha #${c.campaignId}): ${guard.reason} — sem novo POST sendNow.`);
-        // #4718: `c.status` só chega até aqui como "draft" (os `if`s acima já
-        // excluíram "sent"/"scheduled") — `guard.syncLocalAsSent` sozinho já
-        // basta pra decidir se vale corrigir o registro local, sem checar
-        // `c.status !== "sent"` de novo (redundante e o TS estreita o tipo
-        // pra "draft" aqui, marcando essa comparação como sempre-verdadeira).
-        if (guard.syncLocalAsSent) {
-          c.status = "sent";
-          writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
-          console.error(`   (registro local corrigido pra "sent" — estava defasado)`);
-        }
-      } else {
-        await brevoSendNow(apiKey, c.campaignId);
-        // #4347: NUNCA confiar só no 2xx do POST. #4718 (item 1): re-verifica
-        // com retry+backoff curto (pollTerminalSendStatus) em vez de um único
-        // GET imediato — "queued" costuma resolver em segundos, e um GET
-        // cedo demais era o próprio motivo do falso alarme reportado.
-        // #9634: "draft" pós-POST aceito também é reconsultado (janela default
-        // de ~15 min) — era a causa de ~59% de "disparo INCERTO" falsos.
-        const verified = await pollTerminalSendStatus(apiKey, c.campaignId);
-        applySendNowVerifyResults(
-          [{ status: "fulfilled", value: verified }],
-          [c],
-          campaigns,
-          campaignsPath,
-        );
-        // #4347: sem gate humano (D6), a skill /diaria-clarice-novos precisa de
-        // um sinal MÁQUINA-VERIFICÁVEL de "disparo não confirmado" — não só o
-        // texto de warning que applySendNowVerifyResults já loga. process.exitCode
-        // (não process.exit — deixa o JSON de resumo abaixo imprimir normalmente,
-        // útil pro diagnóstico) sinaliza a um caller automatizado que este
-        // --send-now NÃO deve ser tratado como sucesso, mesmo com stdout válido.
-        // Cast: TS estreitou c.status pra "draft" neste branch (os `if`s acima
-        // já excluíram "sent"/"scheduled") e não enxerga que
-        // applySendNowVerifyResults pode MUTAR c.status pra "sent" por
-        // referência — sem o cast, a comparação vira "sempre true" pro
-        // typechecker, mascarando o próprio propósito do guard.
-        if ((c.status as CampaignEntry["status"]) !== "sent") {
-          console.error(
-            `❌ ${key}: sendNow disparado mas GET-verify (com retry) não confirmou status terminal — NÃO declare sucesso. ` +
-              `Reconsulte a Brevo antes de agir de novo — o guard ao vivo acima (#4718) já impede um 2º POST enquanto ` +
-              `o status real for "queued"/"inProcess"/"sent", então re-rodar --send-now é seguro, mas provavelmente redundante.`,
-          );
-          process.exitCode = 2;
-        }
-      }
+      const outcome = await runSendNowLive(c, campaigns, campaignsPath, apiKey);
+      if (outcome === "unconfirmed") process.exitCode = 2;
+      // #9706: recusa definitiva da Brevo (4xx) — falha determinística, não incerteza.
+      else if (outcome === "failed") process.exitCode = 1;
     }
   }
 

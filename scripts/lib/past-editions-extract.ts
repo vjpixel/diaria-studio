@@ -265,7 +265,7 @@ export function themeFactTokens(text: string): Set<string> {
 }
 
 /** Palavra inteira, aceitando plural regular (`agente` ↔ `agentes`). */
-function containsWholeWord(hay: string, word: string): boolean {
+export function containsWholeWord(hay: string, word: string): boolean {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?:e?s)?(?![\\p{L}\\p{N}])`, "u").test(hay);
 }
@@ -600,7 +600,7 @@ function hasEditionArtifact(editionDir: string): boolean {
 
 /**
  * As `window` edições REAIS mais recentes em `editionsDir` (ordem decrescente),
- * excluindo `currentAammdd`, dirs com nome inválido (ex: `260999`) e dirs sem
+ * anteriores a `currentAammdd` (a corrente e as posteriores ficam fora), dirs com nome inválido (ex: `260999`) e dirs sem
  * artefato de edição (markers de teste). Centraliza a seleção de janela usada
  * pelo dedup contra past-editions locais — antes o filtro `/^\d{6}$/` sozinho
  * deixava um dir sintético poluir a janela de 3 edições (#1567 audit).
@@ -619,7 +619,10 @@ export function recentEditionDirs(
     (d) => isValidEditionDir(d) && hasEditionArtifact(editionDirsByAammdd.get(d)!),
   );
   dirs.sort().reverse();
-  if (currentAammdd) dirs = dirs.filter((d) => d !== currentAammdd);
+  // Só edições ANTERIORES à corrente (#9100 review): `!==` deixava passar as
+  // POSTERIORES — rerun/replay de uma edição antiga deduplicava contra URLs de
+  // edições futuras.
+  if (currentAammdd) dirs = dirs.filter((d) => d < currentAammdd);
   return dirs.slice(0, window);
 }
 

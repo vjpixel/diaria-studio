@@ -5,11 +5,13 @@
  * Objetivo: detectar remoção acidental de seções ou invariantes críticos
  * durante refactors. Não testa comportamento — testa presença de conteúdo.
  *
- * Para atualizar snapshot intencionalmente após refactor legítimo:
- *   npm test -- --test-name-pattern "orchestrator-prompt" --update-snapshots
+ * Para atualizar o snapshot intencionalmente após refactor legítimo:
+ *   NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts
  *
- * Ou via node-test built-in snapshot update (Node 22):
- *   NODE_TEST_SNAPSHOTS=1 npm test
+ * Desde o #9709 o snapshot tem uma entrada (hash + linhas) POR playbook, uma
+ * linha cada, separadas por linha em branco — PRs concorrentes que mexem em
+ * playbooks diferentes fazem merge limpo do .snap.json. Formato e comparação:
+ * scripts/lib/orchestrator-snapshot.ts.
  */
 
 import { describe, it } from "node:test";
@@ -17,8 +19,15 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { ORCHESTRATOR_FILES } from "../scripts/lib/orchestrator-files.ts";
+import {
+  buildSnapshot,
+  diffSnapshot,
+  formatSnapshotFailure,
+  isCleanDiff,
+  parseSnapshot,
+  serializeSnapshot,
+} from "../scripts/lib/orchestrator-snapshot.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const AGENTS_DIR = resolve(ROOT, ".claude/agents");
@@ -75,30 +84,8 @@ function readOrchestratorFiles(): Record<string, string> {
   return contents;
 }
 
-function computeHash(contents: Record<string, string>): string {
-  // Normalize CRLF → LF before hashing for cross-platform consistency.
-  // Windows writes CRLF, Linux/CI uses LF — without normalization hashes differ.
-  const combined = ORCHESTRATOR_FILES
-    .map((f) => `=== ${f} ===\n${contents[f].replace(/\r\n/g, "\n")}`)
-    .join("\n\n");
-  return createHash("sha256").update(combined).digest("hex").slice(0, 16);
-}
-
-function loadSnapshot(): { hash: string; file_sizes: Record<string, number> } | null {
-  if (!existsSync(SNAPSHOT_PATH)) return null;
-  try {
-    return JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function saveSnapshot(hash: string, fileSizes: Record<string, number>): void {
-  writeFileSync(
-    SNAPSHOT_PATH,
-    JSON.stringify({ hash, file_sizes: fileSizes, updated_at: new Date().toISOString() }, null, 2) + "\n",
-    "utf8",
-  );
+function writeSnapshot(contents: Record<string, string>): void {
+  writeFileSync(SNAPSHOT_PATH, serializeSnapshot(ORCHESTRATOR_FILES, buildSnapshot(ORCHESTRATOR_FILES, contents)), "utf8");
 }
 
 describe("orchestrator-prompt (#634)", () => {
@@ -296,7 +283,13 @@ describe("orchestrator-prompt (#634)", () => {
       // #9370: +6 linhas (§4c.9 refresh tardio pré-gate — 1 parágrafo + a
       // seção `━━━ SAIU DEPOIS DA PESQUISA` com `{late_refresh_block}` no
       // resumo do gate). Arquivo foi a 941 linhas. Teto bumped de 935→945.
-      "orchestrator-stage-4.md": 945,
+      // #9678: +7 linhas (§4d passo "garantir os dois previews vivos + os
+      // dois Artifacts" — `serve-preview.ts --ensure` antes de cada
+      // apresentação do gate, já que os servidores agora sobem desanexados).
+      // #9673: +2 linhas (`{generic_study_questions_block}` no topo do resumo
+      // do gate — pergunta sim/não explícita por item 🔎 — + a regra de
+      // apresentação). Com as duas, o arquivo foi a 954 linhas. Teto 960.
+      "orchestrator-stage-4.md": 960,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
@@ -499,35 +492,25 @@ describe("orchestrator-prompt (#634)", () => {
   });
 
   it("snapshot hash — detecta mudanças não-intencionais", () => {
-    const hash = computeHash(contents);
-    const fileSizes = Object.fromEntries(
-      Object.entries(contents).map(([f, c]) => [f, c.split("\n").length]),
-    );
-
-    const snap = loadSnapshot();
-    if (!snap) {
-      // Primeira vez: criar snapshot
-      saveSnapshot(hash, fileSizes);
-      console.log(`  [snapshot] criado: ${hash}`);
+    // O nome contém "snapshot hash" de propósito: o hook
+    // block-pr-create-orchestrator-snapshot-stale.mjs (#8732) roda só este
+    // teste via --test-name-pattern "snapshot.hash".
+    const actual = buildSnapshot(ORCHESTRATOR_FILES, contents);
+    if (!existsSync(SNAPSHOT_PATH)) {
+      writeSnapshot(contents);
+      console.log("  [snapshot] criado");
       return;
     }
-
-    // Verificar se hash mudou — se sim, exigir update intencional
-    if (snap.hash !== hash) {
-      // Check if running with update flag
-      const updating = process.env.NODE_TEST_SNAPSHOTS === "1" ||
-                       process.argv.includes("--update-snapshots");
-      if (updating) {
-        saveSnapshot(hash, fileSizes);
-        console.log(`  [snapshot] atualizado: ${snap.hash} → ${hash}`);
-      } else {
-        assert.fail(
-          `Orchestrator content changed (${snap.hash} → ${hash}).\n` +
-          `Se o refactor é intencional, atualize o snapshot:\n` +
-          `  NODE_TEST_SNAPSHOTS=1 npm test`
-        );
-      }
+    const expected = parseSnapshot(readFileSync(SNAPSHOT_PATH, "utf8"));
+    const diff = diffSnapshot(ORCHESTRATOR_FILES, expected, actual);
+    if (isCleanDiff(diff)) return;
+    const updating = process.env.NODE_TEST_SNAPSHOTS === "1" || process.argv.includes("--update-snapshots");
+    if (updating) {
+      writeSnapshot(contents);
+      console.log(`  [snapshot] atualizado: ${[...diff.changed.map((c) => c.file), ...diff.missing].join(", ") || "entradas extras removidas"}`);
+      return;
     }
+    assert.fail(formatSnapshotFailure(diff));
   });
 });
 

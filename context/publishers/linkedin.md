@@ -194,7 +194,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 
-- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 08:00 BRT) — os dois saem juntos. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga = `04-d1-1x1.jpg`).
+- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 07:45 BRT) — os dois saem juntos. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga = `04-d1-1x1.jpg`).
 - **⚠️ GUARD INVERTIDO (espelho do Passo 3):** o post da página exige `has_company_name===true` e aborta se cair no perfil pessoal. O post pessoal exige o **inverso** — confirmar que o composer está no **perfil pessoal (vjpixel)**, e abortar se cair na página Diar.ia:
   ```javascript
   const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();

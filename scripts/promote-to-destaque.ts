@@ -70,6 +70,7 @@ import {
   writeIntentionalErrorJson,
   intentionalErrorJsonPath,
 } from "./lib/intentional-errors.ts";
+import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 
 /** Pure: newOrder que insere o slot vazio (3) na `position` (1..3). */
 export function insertionOrder(position: number): number[] {
@@ -213,11 +214,13 @@ export function promoteToDestaque(
 
   // 3b. 03-social.md — conteúdo computado aqui, gravado no mesmo lote.
   const socialPath = resolve(editionDir, "03-social.md");
+  let socialShift: { before: string; after: string } | null = null;
   if (existsSync(socialPath)) {
     const md = readFileSync(socialPath, "utf8");
     const shifted = reorderSocialMd(md, newOrder);
     if (shifted !== md) {
       pendingWrites.push({ path: socialPath, content: shifted });
+      socialShift = { before: md, after: shifted };
     }
   }
 
@@ -248,6 +251,25 @@ export function promoteToDestaque(
   //    O recarimbo é um next_step, só depois do splice social.
   const carousel = reindexCarouselSourceHashes(editionDir, newOrder, dryRun);
   if (carousel) rewritten.push(carousel.path);
+
+  // 5b. Selo do humanizador (#9679): a renumeração dos headers não muda texto.
+  //     Re-selar aqui (só se o selo batia antes) faz o check pós-splice apontar
+  //     SÓ a seção nova (`main_d{pos}`) em vez de todas as permutadas.
+  let humanizerStaleBefore = false;
+  if (socialShift) {
+    const plan = planHumanizerReseal(
+      editionDir,
+      socialShift.before,
+      socialShift.after,
+      `promote-to-destaque --position ${position} (#9679): só headers ## d{N} renumerados, texto intacto`,
+    );
+    if (plan.status === "reseal") {
+      if (!dryRun) writeFilesVerified([{ path: plan.path, content: plan.content }], "promote-to-destaque");
+      rewritten.push(plan.path);
+    } else if (plan.status === "stale_before") {
+      humanizerStaleBefore = true;
+    }
+  }
 
   // 6. fact-check-sources (secundário: falha vira warning, igual ao reorder).
   try {
@@ -289,6 +311,10 @@ export function promoteToDestaque(
     `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
     `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido.`,
     `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto).`,
+    `Humanizar a seção nova ## ${d} e gravar o selo: npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "seção ${d} nova (promote)" --edition-dir ${editionDir}` +
+      (humanizerStaleBefore
+        ? ` — ATENÇÃO: o 03-social.md já divergia do selo ANTES do promote, então as outras seções editadas depois da humanização também precisam passar pelo humanizador.`
+        : ` (as demais seções já estão seladas, #9679).`),
     `Só DEPOIS do splice social: recarimbar o hash social — npx tsx scripts/refresh-social-hash.ts --edition-dir ${editionDir} (até lá o social-hash-fresh do Stage 4 acusa de propósito, #9321)`,
     `Escrever _internal/02-${d}-prompt.md e gerar a imagem: npx tsx scripts/image-generate.ts --editorial ${editionDir}/_internal/02-${d}-prompt.md --out-dir ${editionDir}/ --destaque ${d}`,
     `Regerar cards/carrossel e subir as imagens: gen-carousel-cards.ts + upload-images-public.ts.`,

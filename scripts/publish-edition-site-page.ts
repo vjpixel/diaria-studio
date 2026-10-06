@@ -290,6 +290,7 @@ import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-ho
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
 // deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
@@ -589,7 +590,7 @@ const defaultGitRunner: GitRunner = (args, cwd) =>
 /** Roda `gh`, síncrono, capturando stdout como string. Injetável pra teste. */
 export type GhRunner = (args: string[], cwd: string) => string;
 
-const defaultGhRunner: GhRunner = (args, cwd) =>
+export const defaultGhRunner: GhRunner = (args, cwd) =>
   execFileSync("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
 /** Nome da branch dedicada de publicação de página, sempre determinístico a partir do slug. */
@@ -877,6 +878,50 @@ export interface MergeAttemptResult {
 }
 
 /**
+ * #9621 item 2: o merge lock que o waiter segura em volta do `gh pr merge`.
+ * `acquire` devolve `false` quando outro dono segura o lock (ou em erro de
+ * I/O — nunca assumir posse de um estado que não deu pra ler); `release` só
+ * libera o que é deste dono. Injetável: testes nunca tocam `data/sessions/`.
+ */
+export interface SitePageMergeLock {
+  acquire: () => boolean;
+  release: () => void;
+}
+
+/**
+ * Lock real: o MESMO arquivo de `session-registry merge-lock-acquire`
+ * (`data/sessions/.merge-lock.json`, TTL 2min), com um dono próprio por
+ * processo — o waiter não é sessão registrada, então o id é sintético e
+ * nunca colide com o `session_id` de um coordenador. Serializa com os merges
+ * de overnight/develop/continuo NESTA máquina; entre máquinas o lock segue
+ * advisory (`docs/coordenacao-merges.md`), mesmo limite de todo merge.
+ *
+ * `data/` ausente no `rootDir` (junction não montada) = lock indisponível
+ * (`acquire` → `false`, com aviso no stderr/log do waiter): o
+ * `mkdirSync(recursive)` do session-registry criaria um `data/sessions/`
+ * REAL no lugar da junction, mascarando a junction ausente (review do PR
+ * #9695). O waiter segue no poll até o deadline e termina `timedOut`, que
+ * dispara o alerta do #9616 — falha alta, nunca merge fora do lock.
+ */
+export function makeSessionRegistryMergeLock(rootDir: string, prNumber: number): SitePageMergeLock {
+  const owner = `site-page-merge-waiter:pr-${prNumber}:pid-${process.pid}`;
+  return {
+    acquire: () => {
+      if (!existsSync(join(rootDir, "data"))) {
+        process.stderr.write(
+          `[site-page-merge-waiter] ${join(rootDir, "data")} ausente — junction data/ não montada; merge lock indisponível, não mergeio fora dele\n`,
+        );
+        return false;
+      }
+      return acquireMergeLock(rootDir, owner);
+    },
+    release: () => {
+      releaseMergeLock(rootDir, owner);
+    },
+  };
+}
+
+/**
  * #9593: dispara o waiter destacado que continua esperando o CI depois que
  * a chamada síncrona do Stage 6 devolveu. Devolve o PID (informativo) ou
  * lança se o spawn falhar — o caller trata como fail-soft.
@@ -1095,13 +1140,16 @@ export async function runMergeWaiter(
   maxWaitMs: number = SITE_PAGE_CI_BACKGROUND_WAIT_MS,
   pollIntervalMs: number = SITE_PAGE_CI_BACKGROUND_POLL_MS,
   alert: MergeWaiterAlerter = makeDefaultMergeWaiterAlerter(rootDir),
+  // #9621 item 2: opcional aqui (testes passam rootDir fictício); o `main()`
+  // sempre injeta `makeSessionRegistryMergeLock`.
+  mergeLock?: SitePageMergeLock,
 ): Promise<MergeAttemptResult> {
   // Pausa inicial: o CI estava `pending` há instantes (é por isso que o
   // waiter existe), e o processo pai ainda vai gravar o state file DEPOIS de
   // disparar este waiter — sem a pausa, um merge relâmpago aqui poderia ser
   // sobrescrito pelo `merged:false` que o pai grava logo em seguida.
   sleep(pollIntervalMs);
-  const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs);
+  const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs, mergeLock);
   process.stderr.write(`[site-page] waiter PR #${prNumber}: merged=${result.merged} — ${result.reason}\n`);
   let shouldAlert = !result.merged;
   let slug: string | undefined;
@@ -1189,8 +1237,10 @@ export function waitAndMergeSitePagePr(
   sleep: SleepFn = defaultSleep,
   maxWaitMs: number = SITE_PAGE_CI_SYNC_WAIT_MS,
   pollIntervalMs: number = 5_000,
+  mergeLock?: SitePageMergeLock,
 ): MergeAttemptResult {
   const deadline = Date.now() + maxWaitMs;
+  let lockBusySeen = false;
   for (;;) {
     let payload: unknown;
     try {
@@ -1217,6 +1267,34 @@ export function waitAndMergeSitePagePr(
     const mergeable = (payload as { mergeable?: string }).mergeable;
     const result = evaluatePrChecksGate(rollup, { mergeable });
 
+    // #9621 item 2: com lock injetado (o waiter em background), o merge só
+    // acontece segurando o merge lock da máquina (`data/sessions/.merge-lock.json`,
+    // o mesmo de `session-registry merge-lock-acquire`, #636). Lock ocupado
+    // não é falha: volta pro poll (o CI é reavaliado na próxima volta) até o
+    // deadline — o TTL do lock é 2min, então um hold real termina bem antes
+    // dos 35min da janela do waiter.
+    let lockHeld = false;
+    if (result.verdict === "pass" && mergeLock) {
+      let acquired = false;
+      try {
+        acquired = mergeLock.acquire();
+      } catch {
+        acquired = false;
+      }
+      if (!acquired) {
+        lockBusySeen = true;
+        if (Date.now() >= deadline) {
+          return {
+            merged: false,
+            timedOut: true,
+            reason: `CI verde, mas o merge lock seguiu ocupado até o fim da janela de ${maxWaitMs}ms — PR #${prNumber} fica aberto pra revisão manual (#9621)`,
+          };
+        }
+        sleep(pollIntervalMs);
+        continue;
+      }
+      lockHeld = true;
+    }
     if (result.verdict === "pass") {
       try {
         // #8158 fleet review, finding 2: SEM `--delete-branch` de propósito.
@@ -1244,7 +1322,12 @@ export function waitAndMergeSitePagePr(
           mergeArgs.push("--match-head-commit", headSha);
         }
         gh(mergeArgs, rootDir);
-        return { merged: true, reason: "CI verde — mergeado automaticamente (#8158, revoga #6598)" };
+        return {
+          merged: true,
+          reason:
+            "CI verde — mergeado automaticamente (#8158, revoga #6598)" +
+            (mergeLock ? `, sob o merge lock${lockBusySeen ? " (esperou o lock liberar)" : ""} (#9621)` : ""),
+        };
       } catch (e) {
         // #9616: o `gh pr merge` lança também quando OUTRO processo mergeou o
         // PR no mesmo intervalo de poll (2 waiters num resume do Stage 6, ou o
@@ -1261,6 +1344,14 @@ export function waitAndMergeSitePagePr(
           merged: false,
           reason: `CI verde mas gh pr merge falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
         };
+      } finally {
+        if (lockHeld && mergeLock) {
+          try {
+            mergeLock.release();
+          } catch {
+            // fail-soft: lock não liberado expira sozinho pelo TTL (2min).
+          }
+        }
       }
     }
     if (result.verdict === "fail" || result.verdict === "blocked_by_conflict" || result.verdict === "error") {
@@ -2186,7 +2277,17 @@ export async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const result = await runMergeWaiter(ROOT, prNumber, editionDir ? resolve(ROOT, editionDir) : undefined);
+    const result = await runMergeWaiter(
+      ROOT,
+      prNumber,
+      editionDir ? resolve(ROOT, editionDir) : undefined,
+      defaultGhRunner,
+      defaultSleep,
+      SITE_PAGE_CI_BACKGROUND_WAIT_MS,
+      SITE_PAGE_CI_BACKGROUND_POLL_MS,
+      makeDefaultMergeWaiterAlerter(ROOT),
+      makeSessionRegistryMergeLock(ROOT, prNumber),
+    );
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.merged ? 0 : 1;
     return;

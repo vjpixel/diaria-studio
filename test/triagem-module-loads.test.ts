@@ -253,6 +253,13 @@ describe("triagem.js — guard de carga (#5462) + estado de carregamento (#5472)
     // O "carregando…" fica no DOM, invisível; é `hidden` que importa aqui.
     assert.equal(nodesById.get("issues-empty")?.hidden, true, "com 1 issue renderizada, o estado-vazio deve sumir");
     assert.equal(nodesById.get("prs-empty")?.hidden, true);
+    // #9711 — as linhas passaram a ser escritas numa única atribuição de
+    // `innerHTML` no <tbody> (antes: `createElement` + `appendChild` por
+    // linha). Este assert prova que a linha de fato chega à tabela pelo
+    // caminho novo, e que o aviso de truncamento fica escondido com 1 linha.
+    assert.match(String(nodesById.get("issues-tbody")?.innerHTML), /#1<\/a>/);
+    assert.match(String(nodesById.get("prs-tbody")?.innerHTML), /#2<\/a>/);
+    assert.equal(nodesById.get("issues-truncated")?.hidden, true, "aviso de truncamento não pode aparecer com 1 issue");
 
     assert.deepEqual(
       asyncErrors.map((e) => (e instanceof Error ? e.message : String(e))),

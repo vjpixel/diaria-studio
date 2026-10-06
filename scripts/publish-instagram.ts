@@ -769,7 +769,7 @@ async function main() {
 
     // #3817 — modo --schedule: enfileira no Worker em vez de publicar agora.
     // scheduled_at vem da MESMA fonte usada por Facebook/LinkedIn
-    // (fallback_schedule: d1 10:00, d2 12:30, d3 17:30 — compute-social-schedule.ts).
+    // (fallback_schedule: d1 09:45, d2 12:15, d3 17:15 — compute-social-schedule.ts).
     if (doSchedule) {
       let scheduledIso: string;
       try {

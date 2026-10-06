@@ -8,7 +8,8 @@
  *
  * ── Ligada/desligada pelo slot `use_melhor_time` ──────────────────────────
  * O horário (`publishing.social.use_melhor_time`) foi fixado em 08:00 BRT
- * pelo editor em 04/10/2026 (comentário `decisao-editor` na #9568). Se a
+ * pelo editor em 04/10/2026 (comentário `decisao-editor` na #9568) e movido
+ * para 07:45 em 05/10/2026 (15min antes da hora cheia). Se a
  * chave voltar a ficar ausente/`null` em
  * `platform.config.json`, TODA a feature fica desligada: o Stage 2 não pede
  * a seção `## um` aos writers, o Stage 3 não gera cards, o Stage 4 mostra só
@@ -506,6 +507,12 @@ export interface UseMelhorPostStatusInput {
    * carimbo) — a arte gerada tem o texto antigo. Self-review #9572, finding 1.
    */
   carouselStale?: boolean;
+  /**
+   * #9635: aviso pronto quando a capa gravada no carimbo (`cover_title`, #9630)
+   * traz um título diferente do item na edição final — o carrossel segue
+   * valendo, mas a capa está no título anterior. `null`/ausente = sem aviso.
+   */
+  coverTitleDrift?: string | null;
 }
 
 export interface UseMelhorPostStatus {
@@ -572,6 +579,10 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
     );
   } else {
     lines.push(`   carrossel: ${input.carouselSlots.length} slides (${input.carouselSlots.join(" → ")})`);
+    if (input.coverTitleDrift) {
+      level = "warn";
+      lines.push(`   ⚠️ ${input.coverTitleDrift}`);
+    }
   }
   if (!USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED) {
     lines.push(`   ℹ️ dispatch do 4º post no Stage 5 ainda não implementado (#9568) — nada é publicado/agendado por enquanto.`);

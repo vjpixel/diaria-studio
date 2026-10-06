@@ -64,6 +64,18 @@
  * radius nunca rodava enquanto a decisão do editor ficasse pendente — o
  * guard foi reordenado para depois, preservando o `exit(2)`.
  *
+ * ## Guard de custom field inexistente no Kit (#9663)
+ *
+ * Logo depois do alarme de conta suspensa e ANTES do guard de seed (que pode
+ * `exit(2)`), roda `runKitWorkerFieldsGuard`: todo `KIT_*_FIELD` declarado em
+ * `workers/*\/wrangler.toml` precisa existir como custom field no Kit, senão o
+ * Kit descarta o valor em silêncio (2xx). Alarma via `notifyEditor`
+ * (severidade `acao`, P1). Requer `KIT_API_KEY`: key ausente ou rejeitada
+ * pelo Kit (401/403) é erro de CONFIG — loga ERRO e alarma o guard desarmado
+ * (#9665/#9670); leitura falhando por rede/5xx/429 loga AVISO e segue. Nunca
+ * derruba os outros alarmes deste script.
+ * Ver `scripts/check-kit-worker-custom-fields.ts`.
+ *
  * ## Latch — não despausa sozinho
  *
  * Uma vez pausado, o estado permanece pausado até `--unpause` explícito
@@ -95,6 +107,8 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { brevoGet } from "./lib/brevo-client.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
+import { runKitWorkerFieldsGuard } from "./lib/kit-worker-custom-fields-guard.ts"; // #9663
+import { kitWorkerFieldsGuardProdDeps } from "./check-kit-worker-custom-fields.ts"; // #9663
 import {
   evaluateBrevoDiariaRolloutGuardrail,
   describeBreaches,
@@ -388,6 +402,16 @@ async function main(): Promise<void> {
     isDryRun,
     log,
   });
+
+  // #9663: `KIT_*_FIELD` dos workers apontando pra custom field inexistente no
+  // Kit — o Kit descarta a chave em silêncio (2xx sem gravar), então o worker
+  // `reativar` passou uma semana sem medir `confirmou_via`. Aqui (e não num
+  // script à parte sem agendamento) pra ficar ARMADO na task de 4 em 4h.
+  // Também ANTES do `exit(2)` do guard de seed abaixo, pelo mesmo motivo do
+  // #8516. Nunca lança: key ausente ou 401/403 viram ERRO + alarme de guard
+  // desarmado (#9665/#9670); falha transitória (rede/5xx/429) vira AVISO; em
+  // todos os casos o resto segue.
+  await runKitWorkerFieldsGuard(kitWorkerFieldsGuardProdDeps(isDryRun, log));
 
   // #8436: seed blacklisted/inexistente quebra o caminho de teste
   // (`--send-test`) e a sonda de inbox placement em silêncio, sem nenhum

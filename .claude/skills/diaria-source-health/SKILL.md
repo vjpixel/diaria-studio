@@ -26,6 +26,17 @@ RODADAS (outcomes agrupados por edição, ou timestamp no histórico antigo), n�
 linhas de log: rodada com qualquer `ok` é saudável, e falha por cota/limite da
 API de busca (402/429) não conta (`test/source-streak-rounds-9652.test.ts`).
 
+**Feed quebrado escondido pela busca (#9657):** como a rodada é saudável se
+QUALQUER caminho trouxe artigo, um RSS/sitemap quebrado fica invisível neste
+relatório enquanto a busca `site:` cobre a fonte. Quem detecta é
+`collect-edition-signals.ts`, com o sinal `source_feed_broken` (P3): caminho
+`feed` em falha dura por 3+ rodadas seguidas e a rodada mais recente coberta
+pela busca (`roundFeedFailureStreak` em `scripts/lib/source-runs.ts`). O
+caminho de cada linha vem do campo `path` (`feed`/`search`) de
+`recent_outcomes`; histórico sem `path` só é atribuído ao feed quando o motivo
+é exatamente `HTTP NNN`. Este relatório ainda não exibe o estado do feed
+separado da busca.
+
 ## Depois de rodar
 
 - Se houver fontes 🔴 no overview, ofereça inspecionar (`--source "Nome"`) ou

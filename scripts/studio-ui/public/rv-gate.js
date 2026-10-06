@@ -47,6 +47,7 @@ const el = {
   refreshBtn: document.getElementById("rv-gate-refresh-btn"),
   approveBtn: document.getElementById("rv-gate-approve-btn"),
   approveStatus: document.getElementById("rv-gate-approve-status"),
+  genericStudy: document.getElementById("rv-gate-generic-study"),
 };
 
 function clear(node) {
@@ -180,8 +181,59 @@ function renderApproveButton(summary) {
   el.approveStatus.className = decisionInfo.approved ? "rv-gate-approve-status approved" : "rv-gate-approve-status";
 }
 
+const GENERIC_STUDY_LABEL = { sim: "sim", nao: "não", nao_lido: "não lido" };
+
+/** #9673: pergunta explícita sim/não por item 🔎, no topo do painel. Sem
+ * clique o item fica "não lido" — manter/tirar o destaque no texto não é
+ * resposta. Cada clique grava via POST .../gate/generic-study. */
+function renderGenericStudy(questions) {
+  if (!el.genericStudy) return;
+  clear(el.genericStudy);
+  const list = Array.isArray(questions) ? questions : [];
+  el.genericStudy.hidden = list.length === 0;
+  if (list.length === 0) return;
+  el.genericStudy.appendChild(el_("h3", { text: "❓ Responda: estudo/case genérico (#9673)" }));
+  el.genericStudy.appendChild(el_("p", {
+    className: "hint",
+    text: "Modo sombra: a regra tiraria estes itens do destaque. Responda sim ou não para CADA um — sem resposta conta como \"não lido\", nunca como concordância.",
+  }));
+  for (const q of list) {
+    const row = el_("div", { className: `rv-gate-gs-row ${q.resposta}` });
+    row.appendChild(el_("span", { className: "rv-gate-gs-question", text: `${q.index}. ${q.pergunta}` }));
+    for (const resposta of ["sim", "nao"]) {
+      const btn = el_("button", { className: "rv-gate-gs-btn", text: GENERIC_STUDY_LABEL[resposta] });
+      btn.type = "button";
+      btn.setAttribute("aria-pressed", String(q.resposta === resposta));
+      btn.addEventListener("click", () => { answerGenericStudy(q.url, resposta); });
+      row.appendChild(btn);
+    }
+    row.appendChild(el_("span", { className: "rv-gate-gs-state", text: `resposta: ${GENERIC_STUDY_LABEL[q.resposta] || q.resposta}` }));
+    el.genericStudy.appendChild(row);
+  }
+}
+
+async function answerGenericStudy(url, resposta) {
+  if (!aammdd) return;
+  try {
+    const res = await fetch(`/api/editions/${encodeURIComponent(aammdd)}/gate/generic-study`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, resposta }),
+    });
+    const body = await res.json().catch(() => null);
+    if (res.ok && body && body.ok) {
+      renderGenericStudy(body.genericStudy);
+      return;
+    }
+    window.alert(`Falha ao gravar a resposta: ${(body && body.error) || `HTTP ${res.status}`}`);
+  } catch (err) {
+    window.alert(`Erro de rede ao gravar a resposta: ${(err && err.message) || err}`);
+  }
+}
+
 function renderGate(summary) {
   el.body.hidden = false;
+  renderGenericStudy(summary.genericStudy);
   renderChecklist(summary.checklist);
   el.status.className = summary.ok ? "gate-ok" : "gate-fail";
   el.status.textContent = summary.ok
@@ -290,4 +342,4 @@ loadGate();
 // Exportado pro suite de testes de contrato do server (ver
 // test/studio-review-server.test.ts, mesmo padrão já usado por revisao.js —
 // asserts sobre o SOURCE servido, não um harness de DOM).
-export { loadGate, renderGate, approveGate };
+export { loadGate, renderGate, approveGate, renderGenericStudy, answerGenericStudy };

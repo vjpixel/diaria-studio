@@ -9,7 +9,7 @@
  *   - **Perfil pessoal LinkedIn (manual): D+2 09:30 BRT**
  *
  * Os 15 posts por história (#9508, abaixo) saem em D+1 nos MESMOS slots da
- * diária (`10:00 d1 | 12:30 d2 | 17:30 d3`).
+ * diária (`09:45 d1 | 12:15 d2 | 17:15 d3`, de `fallback_schedule`).
  *
  * **A diferença pro Artigo Especial é a âncora "D"**: aqui D é a data do
  * ENVIO do e-mail pros apoiadores, não o dia em que a skill rodou — explícita
@@ -90,7 +90,7 @@ export function resolveRetrospectivaScheduledAts(
  * `compute-social-schedule.ts`), com as 5 redes ao mesmo tempo, sem
  * escalonar. Default quando o config não traz o slot.
  */
-export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "10:00", d2: "12:30", d3: "17:30" };
+export const RETROSPECTIVA_DEFAULT_SLOTS: Record<RetrospectivaHistoria, string> = { d1: "09:45", d2: "12:15", d3: "17:15" };
 
 export type RetrospectivaPostSchedule = Record<RetrospectivaHistoria, Record<RetrospectivaPostChannel, string>>;
 
@@ -181,7 +181,7 @@ export function retrospectivaPostDay(input: RetrospectivaScheduleInput, timeZone
 /**
  * Resolve o horário de cada post (rede × história) — decisão do editor no
  * #9508: o dia é D+1 do envio (`retrospectivaPostDay`); história N sai no slot
- * d{N} da diária (`fallback_schedule.d{N}_time`: 10:00 | 12:30 | 17:30) e as
+ * d{N} da diária (`fallback_schedule.d{N}_time`: 09:45 | 12:15 | 17:15) e as
  * 5 redes de uma história saem no MESMO horário. Não lança por horário no
  * passado: quem decide é o pré-voo do publisher, por post (≥10 min), pra que
  * `--skip {rede}:d1` destrave as histórias 2/3 quando só a 1 já passou.

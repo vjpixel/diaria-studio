@@ -243,6 +243,24 @@ export class BrevoRateLimitError extends Error {
   }
 }
 
+/**
+ * #9706 — erro TIPADO pra uma resposta HTTP não-2xx (não-429) da Brevo:
+ * carrega o `status` da resposta pra que o chamador decida pela CLASSE
+ * ("a Brevo respondeu e recusou" vs "rede/timeout, não se sabe") sem parsing
+ * de mensagem. Mensagem idêntica ao `Error` genérico anterior
+ * (`formatBrevoApiError`) — `assert.rejects(fn, /regex/)` e `instanceof Error`
+ * continuam valendo. Hoje só `brevoSendNow` lança este tipo.
+ */
+export class BrevoHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "BrevoHttpError";
+  }
+}
+
 /** #6137: extrai o valor do header `api-key` de um `RequestInit.headers` —
  * todos os call sites deste módulo passam um objeto plano com a chave
  * lowercase (`{"api-key": ...}`; confirmado via grep — nenhum call site usa
@@ -1061,7 +1079,12 @@ export async function brevoSendNow(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(formatBrevoApiError("POST", `/emailCampaigns/${campaignId}/sendNow`, res.status, text));
+      // #9706: tipado com `status` — o chamador distingue 4xx definitivo
+      // (resposta recebida, sem aceite) de rede/5xx (incerto).
+      throw new BrevoHttpError(
+        formatBrevoApiError("POST", `/emailCampaigns/${campaignId}/sendNow`, res.status, text),
+        res.status,
+      );
     }
     await res.body?.cancel().catch(() => {});
   }, _sleep);
@@ -1176,6 +1199,25 @@ export function describeUncertainSendStatus(status: string): string {
  */
 export const SEND_NOW_IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["queued", "draft"]);
 
+/**
+ * Janela default de espera pós-`sendNow` aceito (#9634): a Brevo leva até
+ * ~14 min pra tirar a campanha de "draft". É a janela do POLLING
+ * (`pollTerminalSendStatus`); o guard anti-reenvio usa uma janela maior,
+ * `SEND_NOW_GUARD_WINDOW_MS` abaixo.
+ */
+export const SEND_NOW_PROCESSING_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Janela do GUARD anti-reenvio (`checkSendNowGuard`, #9638) — de propósito
+ * MAIOR que a do polling (`SEND_NOW_PROCESSING_WINDOW_MS`, 2x). Se as duas
+ * fossem iguais, quem re-roda `--send-now` logo depois de um poll que esgotou
+ * os 15 min já estaria fora da janela e o POST seria liberado com só ~1 min de
+ * folga sobre os ~14 min medidos na #9634. A assimetria de custo decide o
+ * tamanho: recusar um retry legítimo custa uma reconsulta; um 2º POST sendNow
+ * é envio duplicado, irreversível.
+ */
+export const SEND_NOW_GUARD_WINDOW_MS = 2 * SEND_NOW_PROCESSING_WINDOW_MS;
+
 export async function pollTerminalSendStatus(
   apiKey: string,
   campaignId: number,
@@ -1190,7 +1232,7 @@ export async function pollTerminalSendStatus(
 ): Promise<{ status: string; scheduledAt?: string | null }> {
   const maxAttempts = opts.attempts ?? Number.POSITIVE_INFINITY;
   const maxDelayMs = opts.maxDelayMs ?? 120_000;
-  const maxWaitMs = opts.maxWaitMs ?? 15 * 60_000;
+  const maxWaitMs = opts.maxWaitMs ?? SEND_NOW_PROCESSING_WINDOW_MS;
   const getCampaignFn = opts.getCampaignFn ?? brevoGetCampaign;
   const sleepFn = opts.sleepFn ?? _defaultSleep;
 
