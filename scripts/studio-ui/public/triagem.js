@@ -28,6 +28,8 @@ import {
   classificationScopeNotice,
   activeFilterSummary,
   emptyStateMessage,
+  capRows,
+  truncatedNotice,
 } from "./triagem-filters.js";
 
 const el = {
@@ -49,7 +51,17 @@ const el = {
   prsEmpty: document.getElementById("prs-empty"),
   prsScopeNotice: document.getElementById("prs-scope-notice"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
+  issuesTruncated: document.getElementById("issues-truncated"),
+  issuesTruncatedText: document.getElementById("issues-truncated-text"),
+  issuesShowAll: document.getElementById("issues-show-all"),
+  prsTruncated: document.getElementById("prs-truncated"),
+  prsTruncatedText: document.getElementById("prs-truncated-text"),
+  prsShowAll: document.getElementById("prs-show-all"),
 };
+
+/** #9711 — "mostrar todas" por tabela: desliga o teto de `capRows` até o
+ * próximo snapshot (um refresh volta ao teto, que é o default seguro). */
+const showAll = { issues: false, prs: false };
 
 /** `true` enquanto um fetch de /api/issues está em voo (#5472). Começa em
  * `true`: a página monta antes do 1º fetch voltar, e nesse intervalo os
@@ -67,16 +79,24 @@ const filters = {
   labels: new Set(),
 };
 
+/** #9711 — formatter único, criado na 1ª chamada. `toLocaleString` com
+ * `timeZone` constrói um `Intl.DateTimeFormat` novo a CADA chamada, e a tabela
+ * chama isso 1x por linha a cada re-render (troca de filtro incluída). */
+let timeFormatter = null;
+
 function fmtTime(iso) {
   if (!iso) return "—";
   try {
-    return new Date(iso).toLocaleString("pt-BR", {
+    timeFormatter ??= new Intl.DateTimeFormat("pt-BR", {
       timeZone: "America/Sao_Paulo",
       day: "2-digit",
       month: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
     });
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return timeFormatter.format(d);
   } catch {
     return iso;
   }
@@ -322,7 +342,7 @@ function renderLabelFilters() {
     input.addEventListener("change", () => {
       if (input.checked) filters.labels.add(label);
       else filters.labels.delete(label);
-      renderTables();
+      scheduleRenderTables();
     });
     el.filterLabels.appendChild(wrap);
   }
@@ -375,20 +395,46 @@ function renderIssuesTable() {
     "Nenhuma issue aberta.",
     activeFilterSummary(filters, "issues"),
   );
-  el.issuesBody.innerHTML = "";
-  for (const i of filtered) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
+  const { visible, hiddenCount } = capRows(filtered, { showAll: showAll.issues });
+  // #9711 — 1 escrita de `innerHTML` por tabela (antes: 1 `createElement` +
+  // `innerHTML` + `appendChild` POR LINHA, cada um invalidando o layout).
+  el.issuesBody.innerHTML = visible.map(issueRowHtml).join("");
+  updateTruncatedNotice(el.issuesTruncated, el.issuesTruncatedText, hiddenCount, visible.length);
+}
+
+/** #9711 — HTML de UMA linha da tabela de issues. Exportada só pra teste
+ * (mesmo padrão de `dispatchBadge`/`reasonCell`). */
+export function issueRowHtml(i) {
+  return `<tr>
+      <td><a href="${escapeHtml(i.url)}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
       <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
       <td>${reasonCell(i.execTrack, i.execTrackMatched, undefined, i.execTrackWaitUntilLabel, i.execTrackReason)}</td>
       <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
-    `;
-    el.issuesBody.appendChild(tr);
-  }
+    </tr>`;
+}
+
+/** #9711 — HTML de UMA linha da tabela de PRs. */
+export function prRowHtml(p) {
+  const draftTag = p.isDraft ? ' <span class="draft-tag">draft</span>' : "";
+  return `<tr>
+      <td><a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">#${p.number}</a></td>
+      <td>${escapeHtml(p.title)}${draftTag}</td>
+      <td>${trackBadge(p.track)}</td>
+      <td>${priorityBadge(p.priority)}</td>
+      <td>${ciBadge(p.ciState)}</td>
+      <td class="mono">${escapeHtml(p.reviewDecision ?? "—")}</td>
+      <td class="mono">${fmtTime(p.updatedAt)}</td>
+    </tr>`;
+}
+
+function updateTruncatedNotice(wrapEl, textEl, hiddenCount, shownCount) {
+  if (!wrapEl) return;
+  const notice = truncatedNotice(hiddenCount, shownCount);
+  wrapEl.hidden = notice === null;
+  if (textEl) textEl.textContent = notice ?? "";
 }
 
 function renderPrsTable() {
@@ -402,21 +448,9 @@ function renderPrsTable() {
     "Nenhum PR aberto.",
     activeFilterSummary(filters, "prs"),
   );
-  el.prsBody.innerHTML = "";
-  for (const p of filtered) {
-    const tr = document.createElement("tr");
-    const draftTag = p.isDraft ? ' <span class="draft-tag">draft</span>' : "";
-    tr.innerHTML = `
-      <td><a href="${p.url}" target="_blank" rel="noopener">#${p.number}</a></td>
-      <td>${escapeHtml(p.title)}${draftTag}</td>
-      <td>${trackBadge(p.track)}</td>
-      <td>${priorityBadge(p.priority)}</td>
-      <td>${ciBadge(p.ciState)}</td>
-      <td class="mono">${escapeHtml(p.reviewDecision ?? "—")}</td>
-      <td class="mono">${fmtTime(p.updatedAt)}</td>
-    `;
-    el.prsBody.appendChild(tr);
-  }
+  const { visible, hiddenCount } = capRows(filtered, { showAll: showAll.prs });
+  el.prsBody.innerHTML = visible.map(prRowHtml).join("");
+  updateTruncatedNotice(el.prsTruncated, el.prsTruncatedText, hiddenCount, visible.length);
 }
 
 // #5212: o chip no <h2> ("Classificação: overnight") só existe na tabela de
@@ -448,6 +482,22 @@ function renderTables() {
   renderClassificationScopeUI();
   renderIssuesTable();
   renderPrsTable();
+}
+
+/** #9711 — troca de filtro agenda UM re-render no próximo frame em vez de
+ * re-renderizar na hora: várias mudanças em sequência (marcar 3 labels
+ * rápido, segurar a seta num <select>) viram um desenho só. Fora do browser
+ * (testes com DOM stubbado) cai pra `setTimeout(0)`. */
+let renderScheduled = false;
+
+function scheduleRenderTables() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
+  raf(() => {
+    renderScheduled = false;
+    renderTables();
+  });
 }
 
 function renderError() {
@@ -523,6 +573,8 @@ async function fetchIssues() {
     };
   } else {
     data = payload;
+    showAll.issues = false;
+    showAll.prs = false;
     setFetchStatus(data.error ? "down" : "ok", data.error ? "erro no gh" : "ok");
   }
   renderAll();
@@ -530,14 +582,22 @@ async function fetchIssues() {
 
 el.filterPriority.addEventListener("change", () => {
   filters.priority = el.filterPriority.value;
-  renderTables();
+  scheduleRenderTables();
 });
 // #5175: lógica de mapeamento é pura (applyDispatchTrackFilterValue,
 // triagem-filters.js) — testável sem harness de DOM; aqui só aplica o
 // resultado ao objeto `filters` compartilhado e re-renderiza.
 el.filterDispatchTrack.addEventListener("change", () => {
   Object.assign(filters, applyDispatchTrackFilterValue(filters, el.filterDispatchTrack.value));
-  renderTables();
+  scheduleRenderTables();
+});
+el.issuesShowAll?.addEventListener("click", () => {
+  showAll.issues = true;
+  scheduleRenderTables();
+});
+el.prsShowAll?.addEventListener("click", () => {
+  showAll.prs = true;
+  scheduleRenderTables();
 });
 el.refreshBtn.addEventListener("click", () => fetchIssues());
 

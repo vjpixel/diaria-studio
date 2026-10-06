@@ -25,6 +25,9 @@ import {
   classificationScopeNotice,
   activeFilterSummary,
   emptyStateMessage,
+  capRows,
+  truncatedNotice,
+  ROW_RENDER_CAP,
 } from "../scripts/studio-ui/public/triagem-filters.js";
 
 const none = () => ({ priority: "", dispatch: "", labels: new Set<string>() });
@@ -226,5 +229,76 @@ describe("countLabel — placeholder só quando não há o que mostrar (#5478 re
       emptyStateMessage({ ...args, totalCount: 5, filterActive: false, filterSummary: null, emptyLabel: "x" }),
       null,
     );
+  });
+});
+
+/*
+ * #9711 — teto de linhas da Triagem.
+ *
+ * A Triagem desenhava o snapshot INTEIRO a cada troca de filtro, sem teto.
+ * Medido em Chrome headless (PR da #9711): com 2.160 issues, ~650ms por troca
+ * e ~115k nós no DOM; com o backlog real (54) é barato. `capRows` é a cerca
+ * contra esse crescimento linear. Estes testes travam: (1) acima do teto só
+ * `ROW_RENDER_CAP` linhas são desenhadas e a contagem escondida é exata;
+ * (2) abaixo dele nada muda; (3) "mostrar todas" desliga o teto; (4) config
+ * inválido degrada pra "desenha tudo", nunca esconde linha; (5) o aviso só
+ * aparece quando algo foi de fato cortado.
+ */
+const rows = (n: number) => Array.from({ length: n }, (_, k) => ({ number: k + 1 }));
+
+describe("capRows (#9711)", () => {
+  it("acima do teto desenha só ROW_RENDER_CAP linhas, na ordem, e conta as escondidas", () => {
+    const input = rows(2160);
+    const { visible, hiddenCount } = capRows(input);
+    assert.equal(visible.length, ROW_RENDER_CAP);
+    assert.equal(hiddenCount, 2160 - ROW_RENDER_CAP);
+    assert.equal(visible[0].number, 1);
+    assert.equal(visible[ROW_RENDER_CAP - 1].number, ROW_RENDER_CAP);
+  });
+
+  it("teto é um valor que o backlog real (dezenas de issues) não atinge", () => {
+    assert.ok(ROW_RENDER_CAP >= 200, "teto baixo demais esconderia issue reais do editor");
+    const { visible, hiddenCount } = capRows(rows(54));
+    assert.equal(visible.length, 54);
+    assert.equal(hiddenCount, 0);
+  });
+
+  it("exatamente no teto não corta nada", () => {
+    const { visible, hiddenCount } = capRows(rows(ROW_RENDER_CAP));
+    assert.equal(visible.length, ROW_RENDER_CAP);
+    assert.equal(hiddenCount, 0);
+  });
+
+  it("showAll desliga o teto", () => {
+    const { visible, hiddenCount } = capRows(rows(1000), { showAll: true });
+    assert.equal(visible.length, 1000);
+    assert.equal(hiddenCount, 0);
+  });
+
+  it("limit inválido degrada pra desenhar tudo", () => {
+    for (const limit of [0, -5, Number.NaN]) {
+      const { visible, hiddenCount } = capRows(rows(500), { limit });
+      assert.equal(visible.length, 500, `limit=${limit}`);
+      assert.equal(hiddenCount, 0, `limit=${limit}`);
+    }
+  });
+
+  it("limit explícito é respeitado", () => {
+    const { visible, hiddenCount } = capRows(rows(10), { limit: 3 });
+    assert.equal(visible.length, 3);
+    assert.equal(hiddenCount, 7);
+  });
+});
+
+describe("truncatedNotice (#9711)", () => {
+  it("null quando nada foi cortado", () => {
+    assert.equal(truncatedNotice(0, 54), null);
+  });
+
+  it("nomeia mostradas, total e escondidas", () => {
+    const msg = truncatedNotice(1860, 300);
+    assert.ok(msg);
+    assert.match(msg!, /Mostrando 300 de 2160/);
+    assert.match(msg!, /1860 oculta/);
   });
 });
