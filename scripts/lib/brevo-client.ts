@@ -1094,7 +1094,9 @@ export async function brevoSendNow(
  * Status TERMINAL de um disparo imediato — `sent` (já processado) OU
  * `inProcess`/`in_process` (a Brevo aceitou e está enviando; "terminal" aqui
  * significa "confirmadamente em curso", não necessariamente concluído —
- * distinto de `draft`/`queued`, que indicariam que o `sendNow` NÃO pegou).
+ * distinto de `draft`/`queued`: logo depois de um POST aceito esses dois são
+ * envio em curso (`SEND_NOW_IN_FLIGHT_STATUSES`, #9634/#9638), NÃO prova de
+ * que o `sendNow` falhou — nunca reenviar só por vê-los).
  * Usado pelo GET-verify pós-`sendNow` — nunca confiar só no 2xx do POST (#4347).
  *
  * #5050 — achado ao vivo (260811): a Brevo devolveu `"in_process"`
