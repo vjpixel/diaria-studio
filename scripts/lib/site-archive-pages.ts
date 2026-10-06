@@ -520,7 +520,7 @@ export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: Archi
     ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(prev.title)}</a>`
     : "";
   const nextLink = next
-    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)} →</a>`
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)}</a>`
     : "";
   return (
     `<nav class="archive-nav" aria-label="Navegação entre edições" ` +

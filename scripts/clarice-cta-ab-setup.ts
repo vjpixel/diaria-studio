@@ -92,7 +92,7 @@ const TOPO_B =
   `E pra não esperar um mês: a ${WORDMARK_PLAIN} entrega isso todo dia — 5 minutos pra se manter ` +
   `atualizado e usar melhor as IAs. ` +
   `<a href="https://diar.ia.br/?utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=clarice-2606-07-inline" ` +
-  `style="color:#171411;text-decoration:underline;text-decoration-color:#00A0A0;">Assine grátis a edição diária →</a>`;
+  `style="color:#171411;text-decoration:underline;text-decoration-color:#00A0A0;">Assine grátis a edição diária</a>`;
 
 /**
  * Reescreve os 7 links do Beehiiv: sufixo de braço no utm_campaign + utm_term

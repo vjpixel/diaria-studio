@@ -36,6 +36,7 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
+import { ARROW_GLYPH, stripCtaArrows } from "./arrow-glyph.ts";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -55,8 +56,22 @@ export function readSnippetFile(filename: string, rootDir?: string): string | nu
   const p = join(root, "data", "snippets", filename);
   if (!existsSync(p)) return null;
   const raw = readFileSync(p, "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
-  return raw || null;
+  if (!raw) return null;
+  // #9721: a seta `→` nunca chega ao leitor. `data/snippets/` é conteúdo do
+  // editor (gitignored), então o repo não o reescreve em disco; a seta em
+  // posição de CTA (`→ [label](url)`, `[Ver →](url)`) sai aqui, em runtime.
+  // Fail-soft: seta fora de posição de CTA só gera aviso, nunca aborta.
+  const clean = stripCtaArrows(raw);
+  if (clean.includes(ARROW_GLYPH) && !warnedArrowSnippets.has(p)) {
+    warnedArrowSnippets.add(p);
+    console.warn(
+      `[snippet-loader] data/snippets/${filename} ainda tem a seta "${ARROW_GLYPH}" fora de posição de CTA (#9721). Reescreva a caixa sem ela; rode \`npx tsx scripts/check-no-arrow-glyph.ts\` pra ver onde.`,
+    );
+  }
+  return clean;
 }
+
+const warnedArrowSnippets = new Set<string>();
 
 /**
  * Conteúdo CRU de `data/snippets/{filename}` (header de comentário `<!--

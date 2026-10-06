@@ -26,6 +26,11 @@ name: PR Checks (#970)
 #    ci.yml de propósito — ci.yml ignora diff só-de-.md (paths-ignore acima),
 #    e agente/skill É markdown; ligar só em ci.yml deixaria todo PR que só
 #    toca frontmatter de agent sem nenhum guard rodando (#7299).
+# 9. No arrow glyph (#9721): a seta `→` não pode voltar ao que chega ao
+#    leitor (HTML publicado do site/cursos/livros, literais de string dos
+#    geradores/templates). Roda como passo do job "Static invariants check"
+#    (todo PR, inclusive docs-only). Allowlist documentada em
+#    scripts/lib/no-arrow-glyph-scan.ts.
 #
 # Não substitui ci.yml — roda em paralelo com escopo focado.
 
@@ -78,6 +83,8 @@ jobs:
       - run: npm ci
       - name: Run check-invariants --static
         run: npx tsx scripts/check-invariants.ts --static
+      - name: No arrow glyph in reader-facing copy (#9721)
+        run: npx tsx scripts/check-no-arrow-glyph.ts
 
   regression-test-gate:
     name: Regression test gate (PR de bugfix exige teste novo)

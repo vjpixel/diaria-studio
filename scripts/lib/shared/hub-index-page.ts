@@ -111,7 +111,7 @@ ${entries
           </div>
           <p class="hub-index-note">${esc(e.coverageLabel)}</p>
           <p class="summary">${esc(e.metaDescription)}</p>
-          <a class="cta" href="${esc(pageUrl(e.slug))}">Ver cobertura completa →</a>
+          <a class="cta" href="${esc(pageUrl(e.slug))}">Ver cobertura completa</a>
         </article>`,
   )
   .join("\n")}

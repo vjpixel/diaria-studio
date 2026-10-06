@@ -1914,7 +1914,7 @@ ${renderIdentityFormBlock()}`;
     resultEl.innerHTML =
       '<p class="result-msg">' + result.msgHtml + "</p>" +
       (result.eiaMetaHtml || "") +
-      '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
+      '<button type="button" class="seq-next-btn">Próxima rodada</button>';
     resultEl.hidden = false;
     // #4036 (item 1): o bloco de resultado já ficava DEPOIS do par no DOM —
     // o problema real era visibilidade: no mobile, o par (imagem A + botão +
@@ -1936,7 +1936,7 @@ ${renderIdentityFormBlock()}`;
       // mais na 1ª — faz 1 fetch leve pro próprio /jogar pra deixar o
       // SERVIDOR decidir — se ele responder com o gate, troca a página pro
       // gate em vez de continuar a sequência. Sessão já válida (assinante
-      // identificado) → resposta normal do jogo, fetch descartado,
+      // identificado) -> resposta normal do jogo, fetch descartado,
       // advance() roda igual sempre rodou — zero fricção extra pra quem já
       // não precisa do gate.
       //
@@ -2154,7 +2154,7 @@ ${renderIdentityFormBlock()}`;
         }
       }
       playIndices = idx;
-      renderRound(); // playIndices vazio (tudo já votado) → renderRound já dispara showFinal
+      renderRound(); // playIndices vazio (tudo já votado) -> renderRound já dispara showFinal
     }).catch(function () {
       playIndices = editions.map(function (_, i) { return i; });
       renderRound();

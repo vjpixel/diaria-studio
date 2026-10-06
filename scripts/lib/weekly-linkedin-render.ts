@@ -104,9 +104,9 @@ const CTA_ABERTURA_LABEL = "Assinar a edição diária";
  * essas constantes sem nova decisão do editor.
  */
 
-/** Âncora do CTA final. Única das três que carrega "grátis" + seta: está no fim
+/** Âncora do CTA final. Única das três que carrega "grátis" (a seta saiu no #9721): está no fim
  * da peça, longe da dobra, onde a densidade promocional não custa entrega. */
-const CTA_FIM_LABEL = "Assine grátis, é rapidinho →";
+const CTA_FIM_LABEL = "Assine grátis, é rapidinho";
 
 export interface WeeklyLinkedinHeadlineInput {
   /** Título literal (copiado do bloco de origem — nunca reescrito). */

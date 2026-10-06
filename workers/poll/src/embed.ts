@@ -272,7 +272,7 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
   <a class="subscribe-btn" href="${htmlEscape(subscribeUrl)}" target="_blank" rel="noopener">Assinar a diar.ia.br</a>
 </div>
 
-<p class="widget-footer"><a href="${htmlEscape(jogarUrl)}" target="_blank" rel="noopener">Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST} →</a></p>
+<p class="widget-footer"><a href="${htmlEscape(jogarUrl)}" target="_blank" rel="noopener">Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST}</a></p>
 
 <script>
 (function () {

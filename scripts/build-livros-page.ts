@@ -214,7 +214,7 @@ function renderCard(b: Book): string {
   const rating = fmtRating(b.rating);
   const note = rating ? `<span class="note">★ ${rating}</span>` : "";
   const cta = isSafeUrl(b.link)
-    ? `<a class="cta" href="${esc(b.link)}" target="_blank" rel="noopener noreferrer sponsored">Ver livro <span aria-hidden="true">→</span></a>`
+    ? `<a class="cta" href="${esc(b.link)}" target="_blank" rel="noopener noreferrer sponsored">Ver livro</a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
   const titleInner = isSafeUrl(b.link)
     ? `<a href="${esc(b.link)}" target="_blank" rel="noopener noreferrer sponsored">${esc(b.title)}</a>`
@@ -563,7 +563,7 @@ ${renderGeoFaqSection(buildLivrosFaq(books), { sectionId: "faq-livros" })}
   )}
 <script>
   (function () {
-    // #3118 item 6: mapa slug→label completo — data-themes/option value agora
+    // #3118 item 6: mapa slug -> label completo — data-themes/option value agora
     // são slugs (kebab-case); THEME_LABELS resolve o label legível pro rebuild
     // (mesmo padrão de build-cursos-page.ts, #1891).
     var THEME_LABELS = ${themeLabelJson};
@@ -583,7 +583,7 @@ ${renderGeoFaqSection(buildLivrosFaq(books), { sectionId: "faq-livros" })}
           (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
         }
       });
-      // value→label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
+      // value -> label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
       // atuais — senão um rebuild anterior que encolheu as options apagaria o label.
       var themes = Object.keys(set).sort(function (a, b) { return (THEME_LABELS[a] || a).localeCompare(THEME_LABELS[b] || b, 'pt-BR'); });
       var cur = fTheme.value;

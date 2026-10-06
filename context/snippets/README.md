@@ -106,7 +106,9 @@ pelo slot nem pelo emoji:
   `**...**`. Formato de `clarice-divulgacao.md` e `livros-divulgacao.md`.
 - **carrinho / CTA pill** (`renderIntroCallout` com `forceCtaPill=true`) —
   multi-parágrafo SEM bold-wrap, acionado quando (a) tem 2+ links no total,
-  ou (b) algum parágrafo é SÓ um link (`[label](url)` ou `→ [label](url)`) —
+  ou (b) algum parágrafo é SÓ um link (`[label](url)`; a forma legada com
+  seta na frente ainda é aceita, mas a seta é removida no load e o check
+  `scripts/check-no-arrow-glyph.ts` a acusa: escreva sem ela, #9721) —
   o último link vira botão pill centralizado no HTML (legado #3204: um
   marcador `🛒` de abertura também acionava este formato; removido em #3475
   por ser redundante com o sinal (b) em todo conteúdo real observado).

@@ -193,7 +193,7 @@ describe("renderEmbedPageHtml (#3521)", () => {
   });
 
   it("#3766: texto visível do link 'jogar mais' usa PUBLIC_GAME_DISPLAY_HOST (eia.diar.ia.br), não a string hardcoded 'diar.ia.br' (mesma inconsistência que #3717 corrigiu em share.ts — href já usava o domínio certo, a copy visível não)", () => {
-    assert.match(html, new RegExp(`Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST} →`));
+    assert.match(html, new RegExp(`Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST}</a>`)); // #9721: sem a seta
     assert.doesNotMatch(html, /Jogar mais em diar\.ia\.br/);
   });
 

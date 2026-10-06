@@ -178,19 +178,19 @@ ${renderCuradoriaFooterStyles()}
         <h2>Enquanto isso</h2>
         <ul>
           <li>
-            <a href="${DIARIA_CURSOS_URL}/">Cursos gratuitos de IA →</a>
+            <a href="${DIARIA_CURSOS_URL}/">Cursos gratuitos de IA</a>
             <p>Cursos verificados sobre inteligência artificial, a maioria gratuita, filtráveis por idioma, nível e plataforma.</p>
           </li>
           <li>
-            <a href="${DIARIA_LIVROS_URL}/">Livros sobre IA →</a>
+            <a href="${DIARIA_LIVROS_URL}/">Livros sobre IA</a>
             <p>Uma lista curada de livros sobre inteligência artificial, filtrável por idioma, nível e tema.</p>
           </li>
           <li>
-            <a href="${DIARIA_EIA_URL}/jogar">Jogue "É IA?" →</a>
+            <a href="${DIARIA_EIA_URL}/jogar">Jogue "É IA?"</a>
             <p>Adivinhe se cada imagem foi gerada por inteligência artificial ou é real.</p>
           </li>
           <li>
-            <a href="${DIARIA_ARQUIVO_URL}/">Arquivo de edições →</a>
+            <a href="${DIARIA_ARQUIVO_URL}/">Arquivo de edições</a>
             <p>Todas as edições já publicadas da diar.ia.br, agrupadas por mês.</p>
           </li>
         </ul>

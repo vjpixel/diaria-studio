@@ -71,7 +71,7 @@ Edições da semana
 
 [Fecho — prosa nova, 1 parágrafo curto antes do CTA final]
 
-[CTA de assinatura #2 — "Assine grátis, é rapidinho →"]
+[CTA de assinatura #2 — "Assine grátis, é rapidinho"]
 ```
 
 **1 a 3 headlines**, nunca mais — semana reduzida (feriado, `editionsFound
@@ -148,7 +148,7 @@ guard determinístico: se o RÓTULO de um link termina exatamente no domínio
 nu (ex: "assine em diar.ia.br"), o auto-linkificador do LinkedIn **parte o
 link em dois** e a parte clicável perde o `href`/UTM original. Por isso
 todo rótulo gerado por este template é um rótulo de AÇÃO, nunca o domínio
-cru — "Assinar a edição diária", "Assine grátis, é rapidinho →". A menção
+cru — "Assinar a edição diária", "Assine grátis, é rapidinho". A menção
 automática ao wordmark em prosa (`linkifyWordmark`) é a ÚNICA exceção
 deliberada a essa regra — ancora exatamente "diar.ia.br" (sem estender além
 do domínio desde #8819, que reverte a extensão de 3 palavras: estender só
