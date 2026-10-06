@@ -189,6 +189,31 @@ describe("#9618 — alerta de refresh do Threads falhando", () => {
     assert.equal(await maybeRefreshThreadsToken(env, t0 + 46 * DAY), "failed");
     assert.equal(hookCalls().length, 1);
   });
+  it("#9758: registro legado (pré-#9618, sem seeded_at, nunca renovou) alerta já na falha e não zera a idade", async () => {
+    fail();
+    const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
+    // Fingerprint do secret "OLD" casando: semeia um registro novo e depois
+    // remove seeded_at, reproduzindo exatamente o formato gravado pelo #9569.
+    const t0 = 5_000_000;
+    await maybeRefreshThreadsToken(env, t0);
+    assert.equal(hookCalls().length, 0);
+    const legacy = JSON.parse(kv.store.get(THREADS_TOKEN_KV_KEY)!);
+    delete legacy.seeded_at;
+    legacy.next_attempt_at = new Date(0).toISOString();
+    kv.store.set(THREADS_TOKEN_KV_KEY, JSON.stringify(legacy));
+
+    const t1 = t0 + 40 * DAY;
+    assert.equal(await maybeRefreshThreadsToken(env, t1), "failed");
+    assert.equal(hookCalls().length, 1, "idade desconhecida tem de alertar já, não esperar 45d a partir de agora");
+    assert.match(String(hookCalls()[0].init!.body), /idade desconhecida/);
+    const rec = JSON.parse(kv.store.get(THREADS_TOKEN_KV_KEY)!);
+    assert.equal(rec.seeded_at, undefined, "falha não pode gravar seeded_at = now num registro legado");
+    // Dedup diário continua valendo.
+    assert.equal(await maybeRefreshThreadsToken(env, t1 + 7 * 3600_000), "failed");
+    assert.equal(hookCalls().length, 1);
+    assert.equal(await maybeRefreshThreadsToken(env, t1 + DAY + 1), "failed");
+    assert.equal(hookCalls().length, 2);
+  });
   it("webhook falhou: não marca como avisado e re-tenta na próxima falha", async () => {
     const env = mkEnv({ ALERT_WEBHOOK_URL: "https://hook.test/x" });
     const t0 = 1_000_000;

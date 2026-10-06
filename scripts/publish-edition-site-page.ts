@@ -290,6 +290,7 @@ import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-ho
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // #8645: backfill de SEO (image no JSON-LD a partir do hero) restrito a 1
 // slug + regeneração do índice paginado do acervo — ambos rodam como parte
@@ -1165,7 +1166,9 @@ export async function runMergeWaiter(
       prUrl = typeof state.prUrl === "string" ? state.prUrl : undefined;
       const next = applyMergeWaiterResult(state, prNumber, result);
       if (next) {
-        writeFileSync(path, JSON.stringify(next, null, 2), "utf8");
+        // #9760: atômico (tmp + rename) — reboot no meio da escrita não pode
+        // deixar o state vazio/truncado pro check das 05:15.
+        writeFileAtomic(path, JSON.stringify(next, null, 2));
       } else if (parsePrNumberFromUrl(prUrl) !== prNumber) {
         process.stderr.write(`[site-page] waiter: state file aponta pra outro PR — não alterado\n`);
         shouldAlert = false;
@@ -2255,7 +2258,7 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
   };
   try {
     mkdirSync(join(editionDirAbs, "_internal"), { recursive: true });
-    writeFileSync(path, JSON.stringify(state, null, 2), "utf8");
+    writeFileAtomic(path, JSON.stringify(state, null, 2)); // #9760: tmp + rename
   } catch (e) {
     process.stderr.write(
       `[site-page] aviso: falha ao gravar _internal/site-page-published.json (${(e as Error).message}) — ` +
