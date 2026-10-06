@@ -182,6 +182,7 @@ export async function withBrevo429Retry<T>(
             `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
             `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
             retryAfterSecs,
+            429,
           );
         }
         if (attempt < MAX_ATTEMPTS - 1) {
@@ -196,6 +197,7 @@ export async function withBrevo429Retry<T>(
           `Brevo API 429 após ${MAX_ATTEMPTS} tentativas. ` +
           `Retry-After: ${e.response.headers.get("retry-after") ?? e.response.headers.get("x-sib-ratelimit-reset") ?? "n/a"}`,
           retryAfterSecs,
+          429,
         );
       }
       throw e; // erros não-429 propagam imediatamente
@@ -237,6 +239,14 @@ export class BrevoRateLimitError extends Error {
   constructor(
     message: string,
     readonly retryAfterSecs: number | null,
+    /**
+     * #9762 — status HTTP que esgotou o retry: 429 (rate limit por CONTA/HORA)
+     * ou 5xx (instabilidade do lado da Brevo). `brevoGet` lança este mesmo
+     * tipo nos dois casos; quem precisa distinguir ("abro um circuito de rate
+     * limit?") lê este campo. `429` sempre que ALGUMA tentativa da invocação
+     * viu 429. `null` = origem não informou (construção legada).
+     */
+    readonly status: number | null = null,
   ) {
     super(message);
     this.name = "BrevoRateLimitError";
@@ -657,6 +667,9 @@ export async function brevoGet(
   // esgotar `RETRY_MS`, este valor reflete SEMPRE a última tentativa 429/5xx,
   // nunca um resquício de uma falha de tipo diferente.
   let lastRetryAfterSecs: number | null = null;
+  // #9762 — status que esgotou o retry (429 vence: uma tentativa 429 basta
+  // pra a conta estar em rate limit, mesmo que a última tenha sido 5xx).
+  let failStatus: number | null = null;
   for (let attempt = 0; attempt <= RETRY_MS.length; attempt++) {
     const r = await fetch(`https://api.brevo.com/v3${path}`, {
       headers: { "api-key": apiKey, Accept: "application/json" },
@@ -694,6 +707,7 @@ export async function brevoGet(
       });
     }
     if (r.status === 429 || r.status >= 500) {
+      if (failStatus !== 429) failStatus = r.status;
       // #6288 (espelha #6035/#5942 em withBrevo429Retry): Retry-After real
       // excede o orçamento que este loop está disposto a dormir por
       // tentativa (MAX_WAIT_MS, mesmo teto de withBrevo429Retry) — dormir o
@@ -717,6 +731,7 @@ export async function brevoGet(
           `${BREVO_RETRY_GIVE_UP_MS / 1000}s por tentativa — desistindo agora em vez de dormir ` +
           `e falhar igual (rate limit é por CONTA/HORA, ver docs/brevo-rate-limits.md).`,
           retryAfterSecs,
+          failStatus,
         );
       }
       // #2307: honrar Retry-After / x-sib-ratelimit-reset (header-aware backoff).
@@ -752,6 +767,7 @@ export async function brevoGet(
   throw new BrevoRateLimitError(
     `Brevo GET ${path} falhou após ${RETRY_MS.length + 1} tentativas: ${String(lastErr)}`,
     lastRetryAfterSecs,
+    failStatus,
   );
 }
 

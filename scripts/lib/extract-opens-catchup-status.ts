@@ -115,7 +115,11 @@ export function extractOpensCatchupStatus(logText: string, now: Date = new Date(
   if (!summary) return { status: "not_run", checked_at };
 
   const catchup = summary.opens_catchup as
-    | { ok?: boolean; error?: string; result?: { campaignsFailed?: number; campaignsInWindow?: number } }
+    | {
+        ok?: boolean;
+        error?: string;
+        result?: { campaignsFailed?: number; campaignsInWindow?: number; campaignsPendingOutsideWindow?: number };
+      }
     | null
     | undefined;
   if (catchup === null || catchup === undefined) return { status: "not_run", checked_at };
@@ -127,11 +131,17 @@ export function extractOpensCatchupStatus(logText: string, now: Date = new Date(
         checked_at,
       };
     }
-    const { campaignsFailed, campaignsInWindow } = catchup.result;
+    const { campaignsFailed, campaignsInWindow, campaignsPendingOutsideWindow } = catchup.result;
     if (campaignsFailed > 0) {
+      // #9762: campanhas fora da janela com export pendente também são
+      // processadas (e podem falhar) — o denominador as inclui, senão o
+      // alarme lia "3/2 falharam".
+      const outside = typeof campaignsPendingOutsideWindow === "number" ? campaignsPendingOutsideWindow : 0;
+      const denom = typeof campaignsInWindow === "number" ? String(campaignsInWindow + outside) : "?";
+      const scope = outside > 0 ? `processada(s) (${outside} pendente(s) fora da janela)` : "na janela";
       return {
         status: "error",
-        error: `cobertura parcial: ${campaignsFailed}/${campaignsInWindow ?? "?"} campanha(s) na janela falharam no export`,
+        error: `cobertura parcial: ${campaignsFailed}/${denom} campanha(s) ${scope} falharam no export`,
         checked_at,
       };
     }
