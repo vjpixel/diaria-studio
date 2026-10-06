@@ -131,6 +131,12 @@ interface Checkpoint {
    * — ver `anchorForIncremental`. Ausente em checkpoint legado.
    */
   listingStartedAt?: string;
+  /**
+   * #9783: a enumeração veio de `--modified-since` explícito. Um resume por
+   * `--incremental` herda esse cutoff (possivelmente posterior à marca d'água)
+   * e por isso NÃO pode avançar a marca ao concluir.
+   */
+  explicit?: boolean;
 }
 
 function loadCheckpoint(path: string): Checkpoint | null {
@@ -540,8 +546,14 @@ export function isAccountRateLimit(e: unknown): boolean {
   return e instanceof BrevoRateLimitError && (e.status === 429 || e.status == null);
 }
 
-/** 5xx repetido da Brevo (retry de `brevoGet` esgotado sem nenhum 429). */
+/**
+ * 5xx repetido da Brevo (retry de `brevoGet` esgotado sem nenhum 429) ou falha
+ * de rede (`TypeError` do fetch/undici — #9783: `pollProcess`/download não têm
+ * retry de rede; um blip não pode descartar o pendente de uma campanha fora da
+ * janela, que nunca mais seria exportada). Mesmo contador do 5xx.
+ */
 function isBrevoServerError(e: unknown): boolean {
+  if (e instanceof TypeError) return true;
   return e instanceof BrevoRateLimitError && e.status != null && e.status >= 500;
 }
 
@@ -1103,8 +1115,10 @@ async function enumerateContacts(
   existing: Checkpoint | null,
   modifiedSince: string | null,
   checkpointPath: string,
+  explicit = false,
 ): Promise<Checkpoint> {
   if (existing?.listingComplete) return existing;
+  explicit = explicit || !!existing?.explicit;
   const ids: Array<{ id: number; email: string }> = existing?.ids ?? [];
   const doneIds = existing?.doneIds ?? [];
   // #9762: retomada preserva o início ORIGINAL da enumeração (é ele que cobre
@@ -1119,13 +1133,13 @@ async function enumerateContacts(
     const complete = cs.length < 500;
     // checkpoint POR PÁGINA → se o listing cair no meio (rate-limit), re-rodar
     // retoma de offset=ids.length em vez de re-enumerar do zero.
-    saveCheckpoint({ listingComplete: complete, ids, doneIds, modifiedSince, listingStartedAt }, checkpointPath);
+    saveCheckpoint({ listingComplete: complete, ids, doneIds, modifiedSince, listingStartedAt, explicit }, checkpointPath);
     console.error(`📇 listando contatos${modifiedSince ? " (incremental)" : ""}… ${ids.length}`);
     if (complete) break;
     offset += 500;
     await sleep(PAGE_PACING_MS);
   }
-  return { listingComplete: true, ids, doneIds, modifiedSince, listingStartedAt };
+  return { listingComplete: true, ids, doneIds, modifiedSince, listingStartedAt, explicit };
 }
 
 
@@ -1207,7 +1221,8 @@ export async function main(
     console.error("ℹ️  checkpoint de outra data/modo — recomeçando enumeração.");
     loaded = null;
   }
-  let cp = await enumerateContacts(apiKey, loaded, modifiedSince, checkpointPath);
+  let cp = await enumerateContacts(apiKey, loaded, modifiedSince, checkpointPath, !!explicitSince);
+  const explicitRun = !!explicitSince || !!cp.explicit;
   const done = new Set<number>(cp.doneIds);
   let pending = cp.ids.filter((c) => c.id && c.email && !done.has(c.id));
   if (limitArg > 0) pending = pending.slice(0, limitArg);
@@ -1384,13 +1399,13 @@ export async function main(
   // recente que a marca atual — avançar pularia o intervalo entre as duas),
   // nem com checkpoint legado sem `listingStartedAt`. Falhar aqui não derruba
   // o run: o próximo cai na marca anterior (ou no MAX), só re-busca mais.
-  if (cp.listingStartedAt && limitArg <= 0 && !explicitSince) {
+  if (cp.listingStartedAt && limitArg <= 0 && !explicitRun) {
     try {
       saveWatermark(WATERMARK, cp.listingStartedAt);
     } catch (e) {
       console.error(`⚠️  marca d'água não gravada (${(e as Error).message}) — o próximo incremental re-busca mais.`);
     }
-  } else if (explicitSince) {
+  } else if (explicitRun) {
     console.error("ℹ️  --modified-since explícito: marca d'água do incremental não avançada.");
   }
 
