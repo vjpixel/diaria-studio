@@ -1176,6 +1176,25 @@ export function describeUncertainSendStatus(status: string): string {
  */
 export const SEND_NOW_IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set(["queued", "draft"]);
 
+/**
+ * Janela default de espera pós-`sendNow` aceito (#9634): a Brevo leva até
+ * ~14 min pra tirar a campanha de "draft". É a janela do POLLING
+ * (`pollTerminalSendStatus`); o guard anti-reenvio usa uma janela maior,
+ * `SEND_NOW_GUARD_WINDOW_MS` abaixo.
+ */
+export const SEND_NOW_PROCESSING_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Janela do GUARD anti-reenvio (`checkSendNowGuard`, #9638) — de propósito
+ * MAIOR que a do polling (`SEND_NOW_PROCESSING_WINDOW_MS`, 2x). Se as duas
+ * fossem iguais, quem re-roda `--send-now` logo depois de um poll que esgotou
+ * os 15 min já estaria fora da janela e o POST seria liberado com só ~1 min de
+ * folga sobre os ~14 min medidos na #9634. A assimetria de custo decide o
+ * tamanho: recusar um retry legítimo custa uma reconsulta; um 2º POST sendNow
+ * é envio duplicado, irreversível.
+ */
+export const SEND_NOW_GUARD_WINDOW_MS = 2 * SEND_NOW_PROCESSING_WINDOW_MS;
+
 export async function pollTerminalSendStatus(
   apiKey: string,
   campaignId: number,
@@ -1190,7 +1209,7 @@ export async function pollTerminalSendStatus(
 ): Promise<{ status: string; scheduledAt?: string | null }> {
   const maxAttempts = opts.attempts ?? Number.POSITIVE_INFINITY;
   const maxDelayMs = opts.maxDelayMs ?? 120_000;
-  const maxWaitMs = opts.maxWaitMs ?? 15 * 60_000;
+  const maxWaitMs = opts.maxWaitMs ?? SEND_NOW_PROCESSING_WINDOW_MS;
   const getCampaignFn = opts.getCampaignFn ?? brevoGetCampaign;
   const sleepFn = opts.sleepFn ?? _defaultSleep;
 
