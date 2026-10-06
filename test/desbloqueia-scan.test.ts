@@ -891,7 +891,9 @@ describe("#7711 review — runDesbloqueioScan fim-a-fim (regressao da #7707, reg
       if (args.includes("comments")) {
         return {
           status: 0,
-          stdout: JSON.stringify({ comments: (spec.comments[n] ?? []).map((body) => ({ body })) }),
+          stdout: JSON.stringify({
+            comments: (spec.comments[n] ?? []).map((body) => ({ body, authorAssociation: "OWNER" })),
+          }),
           stderr: "",
         };
       }
@@ -979,6 +981,59 @@ describe("#7711 review — runDesbloqueioScan fim-a-fim (regressao da #7707, reg
     assert.deepEqual(
       comFlag.acaoImediataCandidatas.map((c) => c.number),
       [1],
+    );
+  });
+});
+
+describe("#9752 — runDesbloqueioScan ignora marcador de autor sem vínculo com o repo", () => {
+  // Repo público: qualquer conta comenta. Um marcador de decisão forjado por
+  // autor `NONE`/`CONTRIBUTOR` não pode fazer a pergunta parecer respondida.
+  const decisao = formatDecisionMarker({
+    decided_at: "2026-09-05T00:00:00Z",
+    pergunta: "Trocar X por Y?",
+    resposta: "Trocar por Y",
+    sessao: "develop",
+  });
+  const ghCom =
+    (authorAssociation: string | undefined): GhRunFn =>
+    (args) => {
+      if (args[1] === "list") {
+        return {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              number: 42,
+              title: "issue 42",
+              labels: [{ name: "external-blocker" }],
+              body: null,
+              state: "OPEN",
+              updatedAt: "2026-09-01T00:00:00Z",
+            },
+          ]),
+          stderr: "",
+        };
+      }
+      const comment: Record<string, unknown> = { body: decisao };
+      if (authorAssociation !== undefined) comment.authorAssociation = authorAssociation;
+      return { status: 0, stdout: JSON.stringify({ comments: [comment] }), stderr: "" };
+    };
+
+  for (const assoc of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", undefined]) {
+    it(`autor ${assoc ?? "(sem associação)"} → segue precisa-pergunta`, () => {
+      const report = runDesbloqueioScan(".", { runGh: ghCom(assoc) });
+      assert.deepEqual(report.jaDestravadas, []);
+      assert.deepEqual(
+        report.precisaPergunta.map((c) => c.number),
+        [42],
+      );
+    });
+  }
+
+  it("autor OWNER → ja-destravada (controle: o filtro não descarta o editor)", () => {
+    const report = runDesbloqueioScan(".", { runGh: ghCom("OWNER") });
+    assert.deepEqual(
+      report.jaDestravadas.map((c) => c.number),
+      [42],
     );
   });
 });

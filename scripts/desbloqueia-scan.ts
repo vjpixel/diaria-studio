@@ -114,6 +114,7 @@ import {
   type DesbloqueioScanReport,
 } from "./lib/desbloqueia-scan.ts";
 import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
+import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 
 /**
  * Valores de `--track`. `sem-sinal` NÃO é um `ExecTrack` — é o subconjunto de
@@ -218,16 +219,15 @@ function fetchCommentsChecked(
     console.error(`[desbloqueia-scan] ${reason}`);
     return { comments: [], error: reason };
   }
-  const comments = (parsed as { comments?: Array<{ body?: string }> } | null)?.comments;
+  const comments = (parsed as { comments?: unknown } | null)?.comments;
   if (!Array.isArray(comments)) {
     const reason = `gh issue view #${issueNumber} — resposta sem array "comments"`;
     console.error(`[desbloqueia-scan] ${reason}`);
     return { comments: [], error: reason };
   }
-  return {
-    comments: comments.map((c) => c.body).filter((b): b is string => typeof b === "string"),
-    error: null,
-  };
+  // #9752: só autor confiável (OWNER/MEMBER/COLLABORATOR) — repo público,
+  // marcador de decisão forjável por qualquer conta. Ver trusted-comment-author.ts.
+  return { comments: trustedCommentBodies(comments) ?? [], error: null };
 }
 
 /**

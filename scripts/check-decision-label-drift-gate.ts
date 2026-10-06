@@ -33,6 +33,7 @@ import {
   type SuppressedFinding,
 } from "./lib/decision-label-drift.ts";
 import { buildGateEvaluations, type GatePlanIssue } from "./lib/decision-label-drift-gate.ts";
+import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 
 interface GhIssueListItem {
   number: number;
@@ -97,8 +98,9 @@ function fetchIssueComments(
   }
   if (!result.stdout) return { comments: null, error: "gh retornou stdout vazio" };
   try {
-    const parsed = JSON.parse(result.stdout) as { comments?: Array<{ body?: string }> };
-    const comments = (parsed.comments ?? []).map((c) => c.body ?? "").filter((b): b is string => typeof b === "string" && b.length > 0);
+    const parsed = JSON.parse(result.stdout) as { comments?: unknown };
+    // #9752: só autor confiável (OWNER/MEMBER/COLLABORATOR) — repo público.
+    const comments = (trustedCommentBodies(parsed?.comments ?? []) ?? []).filter((b) => b.length > 0);
     return { comments };
   } catch (e) {
     return { comments: null, error: `JSON malformado: ${(e as Error).message}` };

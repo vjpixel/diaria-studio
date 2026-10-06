@@ -41,6 +41,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule } from "./cli-args.ts";
+import { trustedCommentBodies } from "./trusted-comment-author.ts";
 
 export type SessionKind = "continuo" | "overnight" | "develop" | "interactive";
 
@@ -513,8 +514,30 @@ export function isAcaoAdiadaAtiva(
 
 // ─── CLI wrapper (busca via gh, imprime a decisão mais recente ou nada) ────
 
-interface GhComment {
-  body?: string;
+/**
+ * Corpos dos comentários de autor CONFIÁVEL (OWNER/MEMBER/COLLABORATOR,
+ * `trusted-comment-author.ts`) a partir do stdout de `gh issue view --json
+ * comments` — pura, nunca lança, fail-soft (`[]`) em payload inválido.
+ *
+ * #9752: o repo é público e o marcador de decisão/bloqueio/adiamento é JSON
+ * em base64 com formato documentado — qualquer conta do GitHub podia postar
+ * um marcador válido e fazer o `/diaria-desbloqueia` tratar a pergunta como
+ * respondida, o gate `check-trade-off-label-cleared` passar, ou o
+ * route-issue/overnight agir numa "decisão" que o editor nunca tomou. O
+ * `gh issue view --json comments` já traz `authorAssociation` por
+ * comentário; o filtro é por esse campo (fail-closed: ausente = descarta).
+ * Ordem cronológica preservada (consumidores dependem dela, ver
+ * `decision-label-drift.ts`).
+ */
+export function trustedCommentBodiesFromIssueViewJson(stdout: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  return trustedCommentBodies((parsed as { comments?: unknown }).comments) ?? [];
 }
 
 /** Exportada (#5560) — reusada por `scripts/check-campaign-docs-sync.ts`, que
@@ -522,7 +545,10 @@ interface GhComment {
  * resolver a decisão mais recente (`latestDecisionFor`). Sem exportar, o
  * outro módulo duplicava esta função verbatim — duas cópias da mesma lógica
  * de I/O podendo divergir silenciosamente se uma fosse corrigida sem a
- * outra (achado do review dedicado do PR #5560). */
+ * outra (achado do review dedicado do PR #5560).
+ *
+ * Desde o #9752 devolve só comentários de autor confiável — ver
+ * `trustedCommentBodiesFromIssueViewJson`. */
 export function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
   const result = spawnSync(
     "gh",
@@ -530,18 +556,7 @@ export function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
     { cwd, encoding: "utf8", timeout: 15_000 },
   );
   if (result.status !== 0 || !result.stdout) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch {
-    return [];
-  }
-  if (typeof parsed !== "object" || parsed === null) return [];
-  const comments = (parsed as { comments?: GhComment[] }).comments;
-  if (!Array.isArray(comments)) return [];
-  return comments
-    .map((c) => c.body)
-    .filter((b): b is string => typeof b === "string");
+  return trustedCommentBodiesFromIssueViewJson(result.stdout);
 }
 
 async function main() {

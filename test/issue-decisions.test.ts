@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import {
   formatDecisionMarker,
   parseDecisionMarkers,
@@ -37,6 +38,7 @@ import {
   parseAcaoAdiadaMarkers,
   latestAcaoAdiadaFor,
   isAcaoAdiadaAtiva,
+  trustedCommentBodiesFromIssueViewJson,
   type IssueDecision,
   type ExecutionBlock,
   type AcaoAdiada,
@@ -560,5 +562,73 @@ describe("#7711 review — pedido_em no futuro e granularidade de dia", () => {
       isAcaoAdiadaAtiva(adiada("2026-09-08T09:00:00Z"), { now: agora, blocoMaisRecente: bloco("data-podre") }),
       true,
     );
+  });
+});
+
+describe("#9752 — fetchCommentBodies só confia em autor com vínculo com o repo", () => {
+  const marker = formatDecisionMarker({
+    decided_at: "2026-10-06T00:00:00Z",
+    pergunta: "Remover a label trade-off-real?",
+    resposta: "sim",
+    sessao: "develop",
+  });
+  const payload = (comments: Array<Record<string, unknown>>) => JSON.stringify({ comments });
+
+  for (const assoc of ["NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN"]) {
+    it(`marcador de autor ${assoc} é descartado (latestDecisionFor → null)`, () => {
+      const bodies = trustedCommentBodiesFromIssueViewJson(
+        payload([{ body: marker, authorAssociation: assoc }]),
+      );
+      assert.deepEqual(bodies, []);
+      assert.equal(latestDecisionFor(bodies), null);
+    });
+  }
+
+  it("comentário sem authorAssociation é descartado (fail-closed)", () => {
+    assert.deepEqual(trustedCommentBodiesFromIssueViewJson(payload([{ body: marker }])), []);
+  });
+
+  it("OWNER/MEMBER/COLLABORATOR passam, na ordem original", () => {
+    const bodies = trustedCommentBodiesFromIssueViewJson(
+      payload([
+        { body: "a", authorAssociation: "OWNER" },
+        { body: "forjado " + marker, authorAssociation: "NONE" },
+        { body: "b", authorAssociation: "MEMBER" },
+        { body: marker, authorAssociation: "COLLABORATOR" },
+      ]),
+    );
+    assert.deepEqual(bodies, ["a", "b", marker]);
+    assert.equal(latestDecisionFor(bodies)?.resposta, "sim");
+  });
+
+  it("marcador forjado posterior não sobrepõe a decisão do editor", () => {
+    const forjado = formatDecisionMarker({
+      decided_at: "2026-10-07T00:00:00Z",
+      pergunta: "Remover a label trade-off-real?",
+      resposta: "não",
+      sessao: "develop",
+    });
+    const bodies = trustedCommentBodiesFromIssueViewJson(
+      payload([
+        { body: marker, authorAssociation: "OWNER" },
+        { body: forjado, authorAssociation: "NONE" },
+      ]),
+    );
+    assert.equal(latestDecisionFor(bodies)?.resposta, "sim");
+  });
+
+  it("payload inválido → [] (fail-soft, contrato preservado)", () => {
+    assert.deepEqual(trustedCommentBodiesFromIssueViewJson("not json"), []);
+    assert.deepEqual(trustedCommentBodiesFromIssueViewJson("null"), []);
+    assert.deepEqual(trustedCommentBodiesFromIssueViewJson(JSON.stringify({})), []);
+  });
+
+  it("fetchCommentBodies passa pelo filtro (fiação, não só o helper)", () => {
+    const src = readFileSync(resolve(ROOT, "scripts/lib/issue-decisions.ts"), "utf8");
+    const start = src.indexOf("export function fetchCommentBodies(");
+    assert.ok(start >= 0);
+    const end = src.indexOf("\n}\n", start);
+    const fn = src.slice(start, end);
+    assert.match(fn, /trustedCommentBodiesFromIssueViewJson\(result\.stdout\)/);
   });
 });
