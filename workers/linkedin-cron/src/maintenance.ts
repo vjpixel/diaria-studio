@@ -123,18 +123,26 @@ export async function maybeRefreshThreadsToken(
  * nunca renovou (`refreshed_at` no epoch), conta desde a semeadura a partir do
  * secret. Limitação: a idade REAL do secret na semeadura é desconhecida — o
  * alerta pode chegar mais tarde que 45d se o secret já era velho ao semear.
+ *
+ * `null` = idade DESCONHECIDA (#9758): registro legado, gravado pelo
+ * código do #9569 antes do #9618, que nunca renovou e não tem `seeded_at`. Não
+ * dá pra contar a partir de `now` (zeraria a idade de um token que pode já ter
+ * ~40 dias e o alerta de 45d só sairia depois de ele vencer aos 60).
  */
-function tokenAgeMs(stored: StoredThreadsToken | null, now: number): number {
+function tokenAgeMs(stored: StoredThreadsToken | null, now: number): number | null {
   const refreshed = stored ? Date.parse(stored.refreshed_at) : NaN;
   if (Number.isFinite(refreshed) && refreshed > 0) return now - refreshed;
   const seeded = stored?.seeded_at ? Date.parse(stored.seeded_at) : NaN;
-  return Number.isFinite(seeded) ? now - seeded : 0;
+  if (Number.isFinite(seeded)) return now - seeded;
+  return stored ? null : 0;
 }
 
 /**
  * Falha do refresh (#9618): preserva o token atual, reagenda em 6h e — se o
  * token já passou de 45d sem renovar — alerta (no máximo 1x/24h). Falha
  * transitória num token novo (ex.: "<24h" logo após renovação manual) não alerta.
+ * #9758: registro legado sem `seeded_at` (idade desconhecida) alerta já na
+ * falha — conservador — e NÃO ganha `seeded_at = now` (isso zeraria a idade).
  */
 async function recordFailure(
   env: Env,
@@ -149,16 +157,23 @@ async function recordFailure(
     refreshed_at: stored?.refreshed_at ?? new Date(0).toISOString(),
     next_attempt_at: new Date(now + THREADS_REFRESH_RETRY_MS).toISOString(),
     seeded_from: seed,
-    seeded_at: stored?.seeded_at ?? new Date(now).toISOString(),
+    // Só semeia a baseline quando o registro nasce AGORA (sem registro, ou
+    // secret rotacionado — `stored` já veio null). Registro legado mantém a
+    // ausência: a idade dele é desconhecida, não zero (#9758).
+    seeded_at: stored ? stored.seeded_at : new Date(now).toISOString(),
     stale_alerted_at: stored?.stale_alerted_at,
   };
   const age = tokenAgeMs(rec, now);
   const lastAlert = rec.stale_alerted_at ? Date.parse(rec.stale_alerted_at) : NaN;
   const alertDue = !Number.isFinite(lastAlert) || now - lastAlert >= THREADS_STALE_REALERT_MS;
-  if (age > THREADS_STALE_ALERT_MS && alertDue) {
-    const days = Math.floor(age / 86_400_000);
+  if ((age === null || age > THREADS_STALE_ALERT_MS) && alertDue) {
+    const days = age === null ? null : Math.floor(age / 86_400_000);
+    const ageText =
+      days === null
+        ? "token sem renovar desde antes do #9618, idade desconhecida (pode estar perto de vencer)"
+        : `token sem renovar há ${days} dias`;
     const text =
-      `[threads-refresh] diar.ia.br: refresh do token Threads falhando há tempo — token sem renovar há ${days} dias ` +
+      `[threads-refresh] diar.ia.br: refresh do token Threads falhando há tempo — ${ageText} ` +
       `(vence aos 60). Último erro: ${reason}. Renove o token (OAuth manual) e rode ` +
       `\`wrangler secret put THREADS_ACCESS_TOKEN\` antes que vença.`;
     if (await sendAlert(env, text, { kind: "threads-token-stale", token_age_days: days })) {

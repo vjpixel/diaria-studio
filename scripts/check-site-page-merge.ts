@@ -26,7 +26,9 @@
  *   - 1 — `data/editions/` ausente (junction `data/` não montada: sem isso o
  *         "sem state file" seria indistinguível de dia sem edição e o check
  *         passaria em silêncio justo quando devia alertar, review do PR
- *         #9695), não deu pra verificar (`gh pr view` falhou) ou o alerta
+ *         #9695), state file PRESENTE mas ilegível (vazio/truncado por
+ *         reboot no meio da escrita — justamente o cenário-alvo deste check,
+ *         #9760), não deu pra verificar (`gh pr view` falhou) ou o alerta
  *         falhou — a unit sai `failed` e o
  *         `Diaria-Systemd-Failed-Units-Alarm` pega.
  *
@@ -58,6 +60,7 @@ const LOG_PREFIX = "[site-page-merge-check]";
 export type SitePageMergeCheckVerdict =
   | { kind: "no-data-dir"; reason: string }
   | { kind: "no-state"; reason: string }
+  | { kind: "unreadable-state"; reason: string }
   | { kind: "not-published"; reason: string }
   | { kind: "no-pr"; reason: string }
   | { kind: "ok"; prNumber: number; reason: string }
@@ -155,13 +158,36 @@ export function buildSitePageMergeCheckFinding(
   };
 }
 
-function readState(editionDirAbs: string): Record<string, unknown> | null {
+/**
+ * Lê o state file. #9760: "ausente" (`absent` → `no-state`, dia sem edição)
+ * e "presente mas ilegível" (`unreadable` → exit 1) são desfechos DISTINTOS —
+ * antes os dois viravam `null` e um arquivo vazio/truncado por reboot no meio
+ * da escrita passava como dia sem edição, em silêncio, com `/p/{slug}` em 404.
+ */
+export type SitePageStateRead =
+  | { kind: "absent" }
+  | { kind: "unreadable"; reason: string }
+  | { kind: "ok"; state: Record<string, unknown> };
+
+export function readSitePageState(editionDirAbs: string): SitePageStateRead {
+  const path = join(editionDirAbs, "_internal", "site-page-published.json");
+  if (!existsSync(path)) return { kind: "absent" };
+  let raw: string;
   try {
-    const parsed = JSON.parse(readFileSync(join(editionDirAbs, "_internal", "site-page-published.json"), "utf8"));
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    return { kind: "unreadable", reason: `falha ao ler ${path} (${(e as Error).message})` };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { kind: "unreadable", reason: `${path} não é JSON válido (${raw.length} bytes; ${(e as Error).message})` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "unreadable", reason: `${path} não contém um objeto JSON` };
+  }
+  return { kind: "ok", state: parsed as Record<string, unknown> };
 }
 
 export interface RunSitePageMergeCheckDeps {
@@ -188,7 +214,16 @@ export async function runSitePageMergeCheck(
     process.stderr.write(`${LOG_PREFIX} edição ${ed}: ${verdict.kind} — ${verdict.reason}\n`);
     return { exitCode: 1, verdict, edition: ed };
   }
-  const verdict = evaluateSitePageMergeCheck(readState(editionDirAbs), rootDir, deps.gh ?? defaultGhRunner);
+  const read = readSitePageState(editionDirAbs);
+  if (read.kind === "unreadable") {
+    const verdict: SitePageMergeCheckVerdict = {
+      kind: "unreadable-state",
+      reason: `${read.reason} — state corrompido (escrita interrompida?), não dá pra saber se o PR da página foi mergeado; conferir à mão antes do envio das 06:00`,
+    };
+    process.stderr.write(`${LOG_PREFIX} edição ${ed}: ${verdict.kind} — ${verdict.reason}\n`);
+    return { exitCode: 1, verdict, edition: ed };
+  }
+  const verdict = evaluateSitePageMergeCheck(read.kind === "ok" ? read.state : null, rootDir, deps.gh ?? defaultGhRunner);
   const reason = verdict.kind === "alert" ? `PR #${verdict.prNumber} em ${verdict.prState}` : verdict.reason;
   process.stderr.write(`${LOG_PREFIX} edição ${ed}: ${verdict.kind} — ${reason}\n`);
   if (verdict.kind === "cannot-verify") return { exitCode: 1, verdict, edition: ed };

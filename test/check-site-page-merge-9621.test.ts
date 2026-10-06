@@ -163,6 +163,24 @@ describe("runSitePageMergeCheck (#9621)", () => {
     assert.equal(n, 0);
   });
 
+  for (const [label, content] of [
+    ["vazio", ""],
+    ["truncado", '{"code":0,"slug":"meu-slug","published":tr'],
+    ["JSON não-objeto", "null"],
+  ] as const) {
+    it(`#9760: state ${label} (escrita interrompida por reboot) → unreadable-state, exit 1, sem gh — não vira no-state`, async () => {
+      const root = makeRoot("261006", null);
+      writeFileSync(join(root, "data", "editions", "2610", "261006", "_internal", "site-page-published.json"), content);
+      const calls: string[][] = [];
+      let n = 0;
+      const r = await runSitePageMergeCheck(root, "261006", { gh: ghState("OPEN", calls), notify: async () => void n++ });
+      assert.equal(r.verdict.kind, "unreadable-state");
+      assert.equal(r.exitCode, 1);
+      assert.equal(calls.length, 0);
+      assert.equal(n, 0);
+    });
+  }
+
   it("data/editions/ ausente (junction data/ não montada) → exit 1, sem notificar e sem chamar gh (review PR #9695)", async () => {
     const root = mkdtempSync(join(tmpdir(), "site-merge-check-nodata-9621-"));
     const calls: string[][] = [];

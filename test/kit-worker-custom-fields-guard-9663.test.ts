@@ -268,3 +268,20 @@ test("guard está ARMADO no check-brevo-diaria-guardrail, antes do exit(2) do gu
   assert.ok(seedIdx >= 0);
   assert.ok(guardIdx < seedIdx, "guard do #9663 precisa rodar antes do guard de seed, que pode exit(2)");
 });
+
+test("guard roda ANTES de toda precondição Brevo que faz exit(2) — config/brevo_diaria/key ausente não desarma o Kit (#9757)", () => {
+  const src = readFileSync(join(ROOT, "scripts/check-brevo-diaria-guardrail.ts"), "utf8");
+  const mainBody = src.slice(src.indexOf("async function main(): Promise<void> {"));
+  const guardIdx = mainBody.indexOf("await runKitWorkerFieldsGuard(");
+  assert.ok(guardIdx >= 0, "runKitWorkerFieldsGuard não é chamado em main()");
+  const configIdx = mainBody.indexOf("loadPlatformConfig(");
+  assert.ok(configIdx >= 0, "loadPlatformConfig não encontrado em main()");
+  assert.ok(guardIdx < configIdx, "guard do Kit precisa rodar antes de carregar a config Brevo");
+  const firstExit2 = mainBody.indexOf("process.exit(2)");
+  assert.ok(firstExit2 >= 0);
+  assert.ok(
+    guardIdx < firstExit2,
+    "guard do Kit precisa rodar antes do 1º process.exit(2) de main() — senão uma precondição " +
+      "Brevo quebrada (key sumida do .env/Doppler) desliga a vigilância do Kit em silêncio (#9757)",
+  );
+});
