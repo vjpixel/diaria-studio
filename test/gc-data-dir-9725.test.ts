@@ -23,6 +23,8 @@ import {
   resolveEnabledBuckets,
   parseDbBackupFilename,
   classifyDbBackups,
+  dbBackupStampToMs,
+  DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
   planBeehiivSnapshotReport,
   isBeehiivSnapshotDirName,
   type AgedFile,
@@ -68,6 +70,17 @@ const STAMPS = [
   "2026-10-04T03-00-00-000Z",
 ];
 
+/** "Agora" das asserções puras — longe o bastante dos STAMPS pra todos
+ *  passarem do piso de idade, salvo quando o teste quer o contrário. */
+const NOW_FAR = Date.parse("2027-01-01T00:00:00Z");
+
+/** Stamp no formato de `backupFileSuffix` para `daysAgo` dias atrás (a
+ *  idade do bucket db-backup vem do NOME, então fixture de disco precisa de
+ *  stamps relativos ao relógio real, nunca datas fixas). */
+function stampDaysAgo(daysAgo: number, offsetMs = 0): string {
+  return new Date(Date.now() - daysAgo * DAY_MS + offsetMs).toISOString().replace(/[:.]/g, "-");
+}
+
 // ---------------------------------------------------------------------------
 // Política pura
 // ---------------------------------------------------------------------------
@@ -108,6 +121,26 @@ describe("#9725 — parseDbBackupFilename", () => {
     assert.equal(parseDbBackupFilename("diaria-subscribers.db-wal"), null);
     assert.equal(parseDbBackupFilename("kit-ingest-manifest.json"), null);
     assert.equal(parseDbBackupFilename("diaria-subscribers.db.backup-"), null);
+    // stamp fora do formato de backupFileSuffix: idade indeterminável → não é backup deste bucket
+    assert.equal(parseDbBackupFilename("diaria-subscribers.db.backup-manual"), null);
+  });
+
+  it("cópia de conflito do OneDrive entra no conjunto de ORIGEM (mesmo stamp), não num conjunto próprio (#9730)", () => {
+    const stamp = "2026-09-05T01-24-38-264Z";
+    for (const conflict of ["-Neo", "-neo-2", "-predator-safeBackup-0001", "-safeBackup-0003", "-300", "-fromWindows-260817-0146"]) {
+      for (const sidecar of ["", "-wal"]) {
+        assert.deepEqual(parseDbBackupFilename(`diaria-subscribers.db.backup-${stamp}${sidecar}${conflict}`), {
+          base: "diaria-subscribers.db",
+          stamp,
+          conflictSuffix: conflict,
+        });
+      }
+    }
+  });
+
+  it("dbBackupStampToMs converte o stamp de volta pro instante ISO", () => {
+    assert.equal(dbBackupStampToMs("2026-09-05T01-24-38-264Z"), Date.parse("2026-09-05T01:24:38.264Z"));
+    assert.equal(dbBackupStampToMs("2026-09-05"), null);
   });
 });
 
@@ -125,7 +158,7 @@ describe("#9725 — classifyDbBackups: mantém os N conjuntos mais recentes", ()
     // sidecar de conjunto preservado — nunca sai
     files.push(aged(`diaria-subscribers.db.backup-${STAMPS[2]}-shm`, 2));
 
-    const out = classifyDbBackups(files, 3);
+    const out = classifyDbBackups(files, 3, { nowMs: NOW_FAR });
     assert.deepEqual(
       out.map((c) => c.relPath).sort(),
       [
@@ -146,7 +179,7 @@ describe("#9725 — classifyDbBackups: mantém os N conjuntos mais recentes", ()
       ageDays: 1,
       mtimeMs: (STAMPS.length - i) * 1000,
     }));
-    const out = classifyDbBackups(files, 1);
+    const out = classifyDbBackups(files, 1, { nowMs: NOW_FAR });
     assert.equal(out.some((c) => c.relPath.endsWith(STAMPS[4])), false, "stamp mais novo sempre preservado");
     assert.equal(out.length, 4);
   });
@@ -157,16 +190,66 @@ describe("#9725 — classifyDbBackups: mantém os N conjuntos mais recentes", ()
       aged(`a.db.backup-${STAMPS[1]}`, 1),
       aged(`b.db.backup-${STAMPS[0]}`, 0),
     ];
-    assert.deepEqual(classifyDbBackups(files, 3), []);
+    assert.deepEqual(classifyDbBackups(files, 3, { nowMs: NOW_FAR }), []);
     assert.deepEqual(
-      classifyDbBackups(files, 1).map((c) => c.relPath),
+      classifyDbBackups(files, 1, { nowMs: NOW_FAR }).map((c) => c.relPath),
       [`diaria-subscribers/a.db.backup-${STAMPS[0]}`],
     );
   });
 
   it("keep < 1 ou não-inteiro LANÇA (nunca apaga todos os backups)", () => {
-    assert.throws(() => classifyDbBackups([], 0));
-    assert.throws(() => classifyDbBackups([], 1.5));
+    assert.throws(() => classifyDbBackups([], 0, { nowMs: NOW_FAR }));
+    assert.throws(() => classifyDbBackups([], 1.5, { nowMs: NOW_FAR }));
+    assert.throws(() => classifyDbBackups([], 1, { nowMs: NOW_FAR, minAgeDays: 0 }));
+    assert.throws(() => classifyDbBackups([], 1, { nowMs: Number.NaN }));
+  });
+
+  it("regressão #9730: N+1 backups TODOS recentes (< piso de idade) → nada é apagado", () => {
+    assert.equal(DB_BACKUP_MIN_AGE_DAYS_DEFAULT, 14);
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    // 4 backups numa mesma sessão de manutenção, 1 dia atrás; keep 3
+    const files = ["T01-00-00-000Z", "T02-00-00-000Z", "T03-00-00-000Z", "T04-00-00-000Z"].map((t, i) => ({
+      relPath: `diaria-subscribers/diaria-subscribers.db.backup-2026-10-05${t}`,
+      sizeBytes: 1,
+      ageDays: 400, // mtime velho (OneDrive) — irrelevante: a idade vem do NOME
+      mtimeMs: i,
+    }));
+    assert.deepEqual(classifyDbBackups(files, 3, { nowMs: now }), []);
+  });
+
+  it("piso de idade usa o stamp: fora do top N só sai quem tem ≥ minAgeDays", () => {
+    const now = Date.parse("2026-10-06T12:00:00Z");
+    const mk = (stamp: string) => ({ relPath: `diaria-subscribers/x.db.backup-${stamp}`, sizeBytes: 1, ageDays: 0, mtimeMs: 0 });
+    const files = [
+      mk("2026-09-01T00-00-00-000Z"), // 35d — sai
+      mk("2026-09-30T00-00-00-000Z"), // 6d — fica (piso 14)
+      mk("2026-10-04T00-00-00-000Z"), // top 1
+    ];
+    assert.deepEqual(
+      classifyDbBackups(files, 1, { nowMs: now }).map((c) => c.relPath),
+      ["diaria-subscribers/x.db.backup-2026-09-01T00-00-00-000Z"],
+    );
+    // piso configurável: com 5d, o de 6d também sai
+    assert.equal(classifyDbBackups(files, 1, { nowMs: now, minAgeDays: 5 }).length, 2);
+  });
+
+  it("cópia de conflito do OneDrive não empurra backup real pra fora do top N (#9730)", () => {
+    const mk = (name: string) => ({ relPath: `diaria-subscribers/${name}`, sizeBytes: 1, ageDays: 0, mtimeMs: 0 });
+    const files = [
+      mk(`d.db.backup-${STAMPS[0]}`),
+      mk(`d.db.backup-${STAMPS[1]}`),
+      mk(`d.db.backup-${STAMPS[1]}-Neo`), // cópia de conflito do 2º — mesmo conjunto
+      mk(`d.db.backup-${STAMPS[2]}`),
+    ];
+    const out = classifyDbBackups(files, 2, { nowMs: NOW_FAR }).map((c) => c.relPath);
+    // keep 2 → preserva STAMPS[2] e STAMPS[1] (com a cópia); só STAMPS[0] sai
+    assert.deepEqual(out, [`diaria-subscribers/d.db.backup-${STAMPS[0]}`]);
+    // e quando o conjunto de origem sai, a cópia sai junto (nunca fica órfã)
+    const out1 = classifyDbBackups(files, 1, { nowMs: NOW_FAR }).map((c) => c.relPath).sort();
+    assert.deepEqual(
+      out1,
+      [`d.db.backup-${STAMPS[0]}`, `d.db.backup-${STAMPS[1]}`, `d.db.backup-${STAMPS[1]}-Neo`].map((n) => `diaria-subscribers/${n}`).sort(),
+    );
   });
 });
 
@@ -268,14 +351,17 @@ describe("#9725 — mv-cache opt-in no --apply (ponta a ponta)", () => {
 });
 
 describe("#9725 — bucket db-backup (ponta a ponta)", () => {
+  // Stamps relativos ao relógio real (40..36 dias atrás) — todos acima do
+  // piso de idade (#9730), em ordem crescente como os STAMPS fixos.
+  const E2E_STAMPS = [40, 39, 38, 37, 36].map((d) => stampDaysAgo(d));
   function fixture(): string {
     const tmp = mkdtempSync(join(tmpdir(), "gc-9725-db-"));
     const dir = resolve(tmp, "diaria-subscribers");
     writeAged(resolve(dir, "diaria-subscribers.db"), "canônico", 1);
     writeAged(resolve(dir, "kit-ingest-manifest.json"), "{}", 400);
-    STAMPS.forEach((s, i) => writeAged(resolve(dir, `diaria-subscribers.db.backup-${s}`), "bkp", 40 - i));
-    writeAged(resolve(dir, `diaria-subscribers.db.backup-${STAMPS[0]}-shm`), "", 40);
-    writeAged(resolve(dir, `diaria-subscribers.db.backup-${STAMPS[0]}-wal`), "", 40);
+    E2E_STAMPS.forEach((s, i) => writeAged(resolve(dir, `diaria-subscribers.db.backup-${s}`), "bkp", 40 - i));
+    writeAged(resolve(dir, `diaria-subscribers.db.backup-${E2E_STAMPS[0]}-shm`), "", 40);
+    writeAged(resolve(dir, `diaria-subscribers.db.backup-${E2E_STAMPS[0]}-wal`), "", 40);
     return tmp;
   }
 
@@ -287,7 +373,7 @@ describe("#9725 — bucket db-backup (ponta a ponta)", () => {
       left,
       [
         "diaria-subscribers.db",
-        ...STAMPS.slice(2).map((s) => `diaria-subscribers.db.backup-${s}`),
+        ...E2E_STAMPS.slice(2).map((s) => `diaria-subscribers.db.backup-${s}`),
         "kit-ingest-manifest.json",
       ].sort(),
     );
@@ -297,7 +383,21 @@ describe("#9725 — bucket db-backup (ponta a ponta)", () => {
     const tmp = fixture();
     runMain(["--data-root", tmp, "--apply", "--db-backup-keep", "1"]);
     const backups = readdirSync(resolve(tmp, "diaria-subscribers")).filter((n) => n.includes(".backup-"));
-    assert.deepEqual(backups, [`diaria-subscribers.db.backup-${STAMPS[4]}`]);
+    assert.deepEqual(backups, [`diaria-subscribers.db.backup-${E2E_STAMPS[4]}`]);
+  });
+
+  it("regressão #9730: --apply com N+1 backups recentes (sessão de manutenção) não apaga nenhum", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "gc-9725-db-recent-"));
+    const dir = resolve(tmp, "diaria-subscribers");
+    const recent = [0, 1, 2, 3].map((i) => stampDaysAgo(1, i * 60_000));
+    // mtime velho de propósito: a idade vem do nome, nunca do mtime
+    recent.forEach((s) => writeAged(resolve(dir, `diaria-subscribers.db.backup-${s}`), "bkp", 400));
+    runMain(["--data-root", tmp, "--apply"]);
+    assert.equal(readdirSync(dir).length, 4, "os 4 backups de ontem sobrevivem, mesmo com keep 3");
+    // piso configurável pela CLI
+    const { exitCode } = runMain(["--data-root", tmp, "--apply", "--db-backup-min-age-days", "0"]);
+    assert.equal(exitCode, 2, "piso < 1 aborta");
+    assert.equal(readdirSync(dir).length, 4);
   });
 
   it("--db-backup-keep 0 aborta com exit 2 sem apagar nada", () => {
@@ -362,15 +462,24 @@ describe("#9725 — agendamento Diaria-Gc-Data-Dir-Weekly", () => {
   it("registrado, semanal, rodando gc-data-dir.ts --apply", () => {
     assert.ok(task, "task presente em SCHEDULED_TASKS");
     assert.equal(task!.schedule.kind, "weekly");
-    assert.equal(task!.steps.length, 1);
     assert.equal(task!.steps[0].script, "scripts/gc-data-dir.ts");
     assert.ok(task!.steps[0].args?.includes("--apply"));
   });
 
+  it("#9730: 2º passo best-effort é dry-run (relatório de beehiiv-backup/ no log), nunca --apply", () => {
+    assert.equal(task!.steps.length, 2);
+    const report = task!.steps[1];
+    assert.equal(report.script, "scripts/gc-data-dir.ts");
+    assert.equal(report.bestEffort, true);
+    assert.equal((report.args ?? []).includes("--apply"), false);
+  });
+
   it("a task agendada NUNCA inclui mv-cache nem troca --data-root", () => {
-    const args = task!.steps[0].args ?? [];
-    assert.equal(args.some((a) => a.startsWith("--include-bucket")), false);
-    assert.equal(args.some((a) => a.startsWith("--data-root")), false);
+    for (const step of task!.steps) {
+      const args = step.args ?? [];
+      assert.equal(args.some((a) => a.startsWith("--include-bucket")), false);
+      assert.equal(args.some((a) => a.startsWith("--data-root")), false);
+    }
   });
 
   it("horário não colide com outra weekly do mesmo dia nem com daily no mesmo minuto", () => {

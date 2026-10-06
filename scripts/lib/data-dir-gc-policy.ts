@@ -302,6 +302,16 @@ export function classifyMvCache(files: readonly AgedFile[], retentionDays: numbe
  *  configurável via `--db-backup-keep`. */
 export const DB_BACKUP_KEEP_DEFAULT = 3;
 
+/** Piso de IDADE (#9730, review P2): nenhum backup com menos de N dias sai,
+ *  mesmo fora dos `keep` mais recentes. Esses backups são o ponto de
+ *  restauração ANTES de operações irreversíveis (`backupStoreFile`,
+ *  resolve-identity/backfill) — uma sessão de manutenção que gere 4+
+ *  backups seguidos não pode fazer o GC de sábado apagar o 1º deles, que é
+ *  justamente o anterior a tudo. A idade vem do timestamp NO NOME (`stamp`),
+ *  nunca do mtime (o OneDrive reescreve mtime ao copiar entre máquinas).
+ *  Configurável via `--db-backup-min-age-days`. */
+export const DB_BACKUP_MIN_AGE_DAYS_DEFAULT = 14;
+
 /** Único diretório onde o bucket `db-backup` atua (escopo da #9725). */
 export const DB_BACKUP_DIR = "diaria-subscribers";
 
@@ -310,36 +320,83 @@ export interface DbBackupName {
   base: string;
   /** timestamp do backup (`backupFileSuffix`, ex: `2026-09-05T01-24-38-264Z`). */
   stamp: string;
+  /** Sufixo de cópia de conflito do OneDrive (ex: `-Neo`, `-predator-safeBackup-0001`),
+   *  presente só quando o arquivo é uma cópia de conflito — ela pertence ao
+   *  MESMO conjunto do backup de origem (mesmo `stamp`), nunca a um conjunto
+   *  próprio que disputaria o top N (#9730, review P3). */
+  conflictSuffix?: string;
 }
+
+/** Formato de `backupFileSuffix` (`new Date().toISOString()` com `:`/`.` → `-`). */
+const DB_BACKUP_STAMP_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/;
+
+/** Sufixo de cópia de conflito do OneDrive — mesmo vocabulário de
+ *  `BACKUP_SIBLING_PATTERNS` (nome de máquina, `-safeBackup-NNNN`,
+ *  `-fromWindows-…`), ancorado no FIM do nome do backup. */
+const DB_BACKUP_CONFLICT_SUFFIX_RE =
+  /(-(?:safeBackup-\d+|(?:predator|neo|zenbook|helios|300)(?:-\d+)?(?:-safeBackup-\d+)?|fromWindows-\d{6}-\d{4}))$/i;
 
 /**
  * @pure — reconhece `{base}.db.backup-{stamp}` e seus sidecars SQLite
  * (`-shm`/`-wal`/`-journal`), formato gravado por `backupStoreFile`
  * (`scripts/lib/diaria-subscribers-identity-resolve.ts`). O sidecar
  * pertence ao MESMO conjunto do backup (mesmo `stamp`) e sai junto com ele —
- * nunca fica órfão. `null` = não é backup (inclui o `.db` canônico).
+ * nunca fica órfão. Cópia de conflito do OneDrive (`…Z-Neo`, `…Z-shm-Neo`)
+ * também entra no conjunto de origem (`conflictSuffix`). `stamp` precisa
+ * estar no formato ISO de `backupFileSuffix` — sem isso a idade não é
+ * derivável e o arquivo não é tratado como backup (nunca removido por este
+ * bucket). `null` = não é backup (inclui o `.db` canônico).
  */
 export function parseDbBackupFilename(name: string): DbBackupName | null {
-  const m = /^(.+\.db)\.backup-(.+?)(?:-(?:shm|wal|journal))?$/i.exec(name);
+  const conflict = DB_BACKUP_CONFLICT_SUFFIX_RE.exec(name);
+  const core = conflict ? name.slice(0, conflict.index) : name;
+  const m = /^(.+\.db)\.backup-(.+?)(?:-(?:shm|wal|journal))?$/i.exec(core);
+  if (!m || !DB_BACKUP_STAMP_RE.test(m[2])) return null;
+  return conflict ? { base: m[1], stamp: m[2], conflictSuffix: conflict[1] } : { base: m[1], stamp: m[2] };
+}
+
+/** @pure — epoch ms do `stamp` (formato de `backupFileSuffix`), ou `null`. */
+export function dbBackupStampToMs(stamp: string): number | null {
+  const m = DB_BACKUP_STAMP_RE.exec(stamp);
   if (!m) return null;
-  return { base: m[1], stamp: m[2] };
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+export interface ClassifyDbBackupsOptions {
+  /** "agora" em epoch ms — injetado pelo caller pra manter a função pura. */
+  nowMs: number;
+  /** Piso de idade em dias (pelo `stamp`). Default `DB_BACKUP_MIN_AGE_DAYS_DEFAULT`. */
+  minAgeDays?: number;
 }
 
 /**
  * Classifica backups do store: agrupa por (diretório, `.db` base), depois
- * por `stamp` (conjunto = backup + sidecars). Preserva os `keep` conjuntos
- * mais recentes — ordenados por `stamp` desc (ISO, ordena lexicalmente;
- * mtime não serve como critério primário porque a cópia via OneDrive entre
- * máquinas reescreve mtime), desempate por mtime — e devolve TODOS os
- * arquivos dos demais conjuntos. Sem limiar de idade: o critério é "os N
- * últimos", mesmo que todos velhos.
+ * por `stamp` (conjunto = backup + sidecars + cópias de conflito do
+ * OneDrive). Preserva os `keep` conjuntos mais recentes — ordenados por
+ * `stamp` desc (ISO, ordena lexicalmente; mtime não serve como critério
+ * primário porque a cópia via OneDrive entre máquinas reescreve mtime),
+ * desempate por mtime. Dos demais, só sai o conjunto cujo `stamp` tem
+ * idade ≥ `minAgeDays` (#9730): "fora do top N" é necessário, nunca
+ * suficiente.
  *
  * Arquivos que `parseDbBackupFilename` não reconhece são ignorados (o
  * caller já filtra; defesa em profundidade).
  */
-export function classifyDbBackups(files: readonly AgedFile[], keep: number = DB_BACKUP_KEEP_DEFAULT): GcCandidate[] {
+export function classifyDbBackups(
+  files: readonly AgedFile[],
+  keep: number = DB_BACKUP_KEEP_DEFAULT,
+  opts: ClassifyDbBackupsOptions,
+): GcCandidate[] {
   if (!Number.isInteger(keep) || keep < 1) {
     throw new Error(`classifyDbBackups: keep deve ser inteiro ≥ 1, recebido ${keep}`);
+  }
+  const minAgeDays = opts.minAgeDays ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT;
+  if (!Number.isInteger(minAgeDays) || minAgeDays < 1) {
+    throw new Error(`classifyDbBackups: minAgeDays deve ser inteiro ≥ 1, recebido ${minAgeDays}`);
+  }
+  if (!Number.isFinite(opts.nowMs)) {
+    throw new Error(`classifyDbBackups: nowMs inválido (${opts.nowMs})`);
   }
   // (dir|base) → stamp → arquivos do conjunto
   const groups = new Map<string, Map<string, AgedFile[]>>();
@@ -364,12 +421,16 @@ export function classifyDbBackups(files: readonly AgedFile[], keep: number = DB_
       return Math.max(...fb.map((f) => f.mtimeMs)) - Math.max(...fa.map((f) => f.mtimeMs));
     });
     for (const [stamp, list] of ordered.slice(keep)) {
+      const stampMs = dbBackupStampToMs(stamp);
+      if (stampMs === null) continue; // idade indeterminável — nunca remover
+      const ageDays = Math.floor((opts.nowMs - stampMs) / 86_400_000);
+      if (ageDays < minAgeDays) continue; // piso de idade (#9730)
       for (const f of list) {
         out.push({
           relPath: f.relPath,
           bucket: "db-backup",
           sizeBytes: f.sizeBytes,
-          reason: `backup do store (${stamp}) fora dos ${keep} mais recentes do mesmo .db`,
+          reason: `backup do store (${stamp}, ${ageDays}d ≥ ${minAgeDays}d) fora dos ${keep} mais recentes do mesmo .db`,
         });
       }
     }

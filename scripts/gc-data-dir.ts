@@ -34,7 +34,9 @@
  *      ainda não persistido nos CSVs — caso de 260728, 13k e-mails).
  *   6. `diaria-subscribers/*.db.backup-*` (+ sidecars `-shm`/`-wal`) —
  *      mantém os N conjuntos mais recentes por `.db` (`--db-backup-keep`,
- *      default 3, #9725).
+ *      default 3, #9725) e, fora deles, só remove backup com ≥ 14 dias pelo
+ *      timestamp do NOME (`--db-backup-min-age-days`, #9730). Cópia de
+ *      conflito do OneDrive de um backup entra no conjunto de origem.
  *
  * `beehiiv-backup/` NUNCA é removido (guard). Desde #9725 o dry-run imprime
  * um RELATÓRIO dos snapshots semanais (`YYYY-MM-DD/`) com tamanho e quais
@@ -42,7 +44,9 @@
  * apagar é decisão do editor, fora deste script.
  *
  * **Agendado (#9725):** `Diaria-Gc-Data-Dir-Weekly` em
- * `scripts/lib/scheduled-tasks.ts` roda `--apply` semanal na `300`, sem
+ * `scripts/lib/scheduled-tasks.ts` roda `--apply` semanal na `300` (seguido
+ * de um passo best-effort de dry-run que deixa o relatório de
+ * `beehiiv-backup/` no log, #9730), sem
  * `--include-bucket` (mv-cache fica de fora) e sem `--data-root` (argv
  * estático do registro — a premissa de "humano digitando o path" abaixo
  * continua valendo pro único caminho que aceita `--data-root`).
@@ -67,7 +71,8 @@
  *
  * Uso:
  *   npx tsx scripts/gc-data-dir.ts [--apply] [--json] [--data-root <path>]
- *     [--include-bucket mv-cache[,...]] [--db-backup-keep N] [--beehiiv-keep N]
+ *     [--include-bucket mv-cache[,...]] [--db-backup-keep N]
+ *     [--db-backup-min-age-days N] [--beehiiv-keep N]
  *
  * Flag malformada (bucket desconhecido, N < 1, sem valor) aborta com exit 2
  * antes de qualquer varredura — nunca cai no default em silêncio.
@@ -117,6 +122,7 @@ import {
   guardCandidates,
   DB_BACKUP_DIR,
   DB_BACKUP_KEEP_DEFAULT,
+  DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
   BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
 } from "./lib/data-dir-gc-policy.ts";
 
@@ -297,6 +303,8 @@ export interface CollectResult {
 export interface CollectOptions {
   /** Conjuntos de backup do store preservados por `.db` (#9725). Default 3. */
   dbBackupKeep?: number;
+  /** Piso de idade (dias, pelo stamp no nome) pra remover backup do store (#9730). Default 14. */
+  dbBackupMinAgeDays?: number;
 }
 
 /** Inventário COMPLETO — inclui buckets opt-in (`mv-cache`); quem decide o
@@ -352,7 +360,12 @@ export function collectCandidates(
   walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache, dbBackups, scanErrors);
   candidates.push(...classifyBackupSiblings(siblings));
   candidates.push(...classifyMvCache(mvCache));
-  candidates.push(...classifyDbBackups(dbBackups, opts.dbBackupKeep ?? DB_BACKUP_KEEP_DEFAULT));
+  candidates.push(
+    ...classifyDbBackups(dbBackups, opts.dbBackupKeep ?? DB_BACKUP_KEEP_DEFAULT, {
+      nowMs,
+      minAgeDays: opts.dbBackupMinAgeDays ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
+    }),
+  );
 
   return { candidates: guardCandidates(candidates), scanErrors };
 }
@@ -387,11 +400,13 @@ export function main(
   // virar "rodou sem incluir"; um `--db-backup-keep 0` não pode apagar todos).
   let enabledBuckets: Set<GcBucket>;
   let dbBackupKeep: number;
+  let dbBackupMinAgeDays: number;
   let beehiivKeep: number;
   try {
     const includeRaw = getStringArg(argv, "include-bucket", { example: "mv-cache" });
     enabledBuckets = resolveEnabledBuckets(includeRaw ? includeRaw.split(",") : []);
     dbBackupKeep = getIntArg(argv, "db-backup-keep", { min: 1 }) ?? DB_BACKUP_KEEP_DEFAULT;
+    dbBackupMinAgeDays = getIntArg(argv, "db-backup-min-age-days", { min: 1 }) ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT;
     beehiivKeep = getIntArg(argv, "beehiiv-keep", { min: 1 }) ?? BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT;
   } catch (e) {
     console.error(`[gc-data-dir] ${e instanceof Error ? e.message : String(e)}`);
@@ -404,7 +419,7 @@ export function main(
     return;
   }
 
-  const collected = collectCandidates(dataRoot, Date.now(), { dbBackupKeep });
+  const collected = collectCandidates(dataRoot, Date.now(), { dbBackupKeep, dbBackupMinAgeDays });
   const scanErrors = collected.scanErrors;
   // `candidates` = o que o `--apply` remove; `optInSkipped` = inventariado
   // mas fora do default (ex: `mv-cache`), só removido com --include-bucket.

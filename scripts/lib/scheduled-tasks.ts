@@ -3087,7 +3087,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description:
       "GC semanal de cache/intermediario/backup redundante sob data/ (gc-data-dir.ts --apply) -- " +
       "mv-cache opt-in fica de fora, beehiiv-backup nunca e tocado, #9725",
-    steps: [{ key: "gc", script: "scripts/gc-data-dir.ts", args: ["--apply"] }],
+    steps: [
+      { key: "gc", script: "scripts/gc-data-dir.ts", args: ["--apply"] },
+      // #9730 (review P3): o relatório de `beehiiv-backup/` só sai no
+      // dry-run — este passo (sem `--apply`, nunca remove nada) deixa o
+      // tamanho acumulado no log semanal. Best-effort: falha aqui não
+      // marca o GC como falho.
+      { key: "beehiiv-report", script: "scripts/gc-data-dir.ts", args: [], bestEffort: true },
+    ],
     logPath: "gc-data-dir/.gc.log",
     schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 3, minute: 40 },
     // Guard: data/ montada mas sem editions/ (junction do OneDrive ainda nao
