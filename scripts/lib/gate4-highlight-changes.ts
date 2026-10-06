@@ -84,6 +84,7 @@ export interface HighlightRecord {
   pipeline: { position: number; url: string; title: string; category: string | null } | null;
   item_swapped: boolean;
   origin: SwapOrigin | null;
+  /** Ordem relativa entre os mantidos mudou (`matchDestaquesByUrl.reorders`, LIS — #9754). */
   reordered: boolean;
   title_change: TitleChange | null;
   category_change: { from: string | null; to: string | null } | null;
@@ -167,6 +168,7 @@ export function compareHighlights(
   const keptPipeline = new Set([...match.pipelineEntryOf.values()]);
   const droppedPipeline = pipeline.filter((p) => !keptPipeline.has(p));
   const samePautaUsed = new Map<DestaqueEntry, number>();
+  const reorderedFinal = new Set(match.reorders.map((r) => r.entry));
 
   const highlights: HighlightRecord[] = [...final]
     .sort((a, b) => a.position - b.position)
@@ -211,7 +213,9 @@ export function compareHighlights(
         pipeline: { position: p.position, url: p.url, title: p.title, category: pipeCategory },
         item_swapped: false,
         origin: null,
-        reordered: p.position !== d.position,
+        // #9754: semântica de LIS (`match.reorders`), a mesma da métrica do #9647 —
+        // mantido que só desceu porque um destaque novo entrou acima NÃO é reordenado.
+        reordered: reorderedFinal.has(d),
         title_change,
         category_change: pipeCategory !== category ? { from: pipeCategory, to: category } : null,
       };
