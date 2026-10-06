@@ -64,3 +64,13 @@ describe("isAggregator — *.beehiiv.com blanket block (#6440)", () => {
     assert.equal(isAggregator("https://aibreakfast.beehiiv.com/p/x"), true);
   });
 });
+
+describe("isAggregator — bensbites.com (#9655)", () => {
+  // Caso real: www.bensbites.com/p/who-let-the-agents-in passou pelo filtro
+  // porque só bensbites.co estava cadastrado.
+  it("bloqueia bensbites.com (com e sem www) e mantém bensbites.co", () => {
+    assert.equal(isAggregator("https://www.bensbites.com/p/who-let-the-agents-in"), true);
+    assert.equal(isAggregator("https://bensbites.com/p/x"), true);
+    assert.equal(isAggregator("https://bensbites.co/p/x"), true);
+  });
+});

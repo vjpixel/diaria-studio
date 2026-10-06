@@ -69,6 +69,7 @@ export const AGGREGATOR_BLOCKLIST: readonly BlocklistEntry[] = [
   { type: "domain", pattern: "therundown.ai", category: "ai_roundup_newsletter" },
   { type: "path_prefix", pattern: "tldr.tech/ai", category: "ai_roundup_newsletter" },
   { type: "domain", pattern: "bensbites.co", category: "ai_roundup_newsletter" },
+  { type: "domain", pattern: "bensbites.com", category: "ai_roundup_newsletter" }, // #9655
   { type: "domain", pattern: "theneurondaily.com", category: "ai_roundup_newsletter" },
   { type: "domain", pattern: "superhuman.ai", category: "ai_roundup_newsletter" },
   { type: "domain", pattern: "theaipulse.beehiiv.com", category: "ai_roundup_newsletter" },

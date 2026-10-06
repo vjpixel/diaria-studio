@@ -26,6 +26,7 @@ export const AGGREGATOR_HOSTS = new Set<string>([
   // Newsletters de roundup AI (curadoria/resumo de notícias alheias)
   "therundown.ai",
   "bensbites.co",
+  "bensbites.com", // #9655 — mesma newsletter, domínio .com
   "theneurondaily.com",
   "superhuman.ai",
   "theaipulse.beehiiv.com",
