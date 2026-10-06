@@ -448,3 +448,55 @@ test("#9762 E: checkpoint legado (sem listingStartedAt) não grava marca d'água
   assert.equal(existsSync(checkpointInc), false, "run concluído limpou o checkpoint");
   assert.equal(existsSync(watermark), false);
 });
+
+// ─── #9783: resíduos do re-review ─────────────────────────────────────────
+
+test("#9783 1: resume por --incremental de checkpoint de --modified-since explícito não avança a marca d'água", async (t) => {
+  const { dbPath, watermark, checkpointInc } = await withMainMocks(t, [], okContact);
+  writeFileSync(watermark, JSON.stringify({ listingStartedAt: "2026-09-01T00:00:00.000Z" }));
+  writeFileSync(
+    checkpointInc,
+    JSON.stringify({
+      listingComplete: true,
+      ids: [{ id: 1, email: "a@x.com" }],
+      doneIds: [],
+      modifiedSince: "2026-10-05T00:00:00.000Z",
+      listingStartedAt: "2026-10-06T00:00:00.000Z",
+      explicit: true,
+    }),
+  );
+  await main(["--db", dbPath, "--incremental", "--no-catch-opens"]);
+  assert.equal(existsSync(checkpointInc), false, "run concluiu");
+  assert.equal(JSON.parse(readFileSync(watermark, "utf8")).listingStartedAt, "2026-09-01T00:00:00.000Z");
+});
+
+test("#9783 1: checkpoint incremental sem `explicit` ainda avança a marca d'água", async (t) => {
+  const { dbPath, watermark, checkpointInc } = await withMainMocks(t, [], okContact);
+  writeFileSync(
+    checkpointInc,
+    JSON.stringify({
+      listingComplete: true,
+      ids: [{ id: 1, email: "a@x.com" }],
+      doneIds: [],
+      modifiedSince: "2026-09-30T00:00:00.000Z",
+      listingStartedAt: "2026-10-06T00:00:00.000Z",
+    }),
+  );
+  await main(["--db", dbPath, "--incremental", "--no-catch-opens"]);
+  assert.equal(JSON.parse(readFileSync(watermark, "utf8")).listingStartedAt, "2026-10-06T00:00:00.000Z");
+});
+
+test("#9783 2: blip de rede (TypeError) no poll mantém o pendente fora da janela", async () => {
+  const cacheDir = tmp("catchup-9783-net-");
+  writePending(cacheDir, 1, 77, 86_400_000);
+  const { client, calls } = fakeClient({
+    campaigns: [campaign(1, 60)],
+    poll: async () => {
+      throw new TypeError("fetch failed");
+    },
+  });
+  const r = await runOpensCatchup({ ...baseDeps(client, cacheDir), windowDays: 7 } as never);
+  assert.equal(r.campaignsFailed, 1);
+  assert.equal(calls.exports.length, 0);
+  assert.equal(loadPendingExport(1, cacheDir)?.serverErrors, 1, "pendente preservado com contador");
+});
