@@ -15,6 +15,7 @@
  *   npx tsx scripts/serve-preview.ts --file <path/para/preview.html> [--port N] [--open] [--watch] \
  *     [--persist-to <json> --field <nome>]
  *   npx tsx scripts/serve-preview.ts --stop-pid <PID>   # teardown (#3546)
+ *   [--detach | --ensure] [--idle-exit-min N] [--ttl-min N]   # #9678 / #9700
  *
  * `--watch` (#8123 Fatia 1) — fallback quando o Studio /revisao não está
  * rodando: observa o diretório servido e injeta live-reload (SSE em
@@ -57,7 +58,24 @@
  *
  * Teardown: SIGINT/SIGTERM fecha o servidor antes de sair (processo roda em
  * foreground/background até o caller matá-lo — o orchestrator dispara via
- * `run_in_background` e derruba o processo ao fim do gate).
+ * `--detach` e derruba o processo ao fim do gate com `--stop-pid`).
+ *
+ * Endurecimento contra órfãos (#9700):
+ *   - `--stop-pid` valida a linha de comando do PID antes de sinalizar — só
+ *     mata se for um `serve-preview` (PID reaproveitado pelo SO depois que o
+ *     servidor morreu nunca é atingido). Linha de comando ilegível (plataforma
+ *     sem `/proc`/`ps`/PowerShell) = sinaliza como antes, com warning;
+ *   - `--ensure` com PID vivo mas URL muda: SIGTERM no PID antigo (com a mesma
+ *     validação) ANTES de subir o novo — senão o antigo ficava órfão, fora do
+ *     alcance de `--stop-pid` (o persist passa a apontar pro novo);
+ *   - `--detach` cujo filho não grava o ready-file a tempo: o pai mata o
+ *     `child.pid` antes de lançar, em vez de deixá-lo vivo;
+ *   - `--idle-exit-min N` / `--ttl-min N` (0 = desligado): o servidor sai
+ *     sozinho após N minutos sem request e sem aba conectada no live-reload,
+ *     ou após N minutos de vida. Filho de `--detach`/`--ensure` recebe por
+ *     default `DETACHED_DEFAULT_IDLE_EXIT_MIN`/`DETACHED_DEFAULT_TTL_MIN` —
+ *     se o teardown nunca rodar (sessão caiu, abort), o processo não vive até
+ *     o reboot. `--ensure` re-serve sob demanda se o editor ainda precisar.
  *
  * Programmatic (usado por testes e por outros scripts):
  *   import { startPreviewServer } from "./serve-preview.ts";
@@ -67,7 +85,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { exec, spawn } from "node:child_process";
+import { exec, execFileSync, spawn } from "node:child_process";
 import {
   readFileSync,
   existsSync,
@@ -139,6 +157,11 @@ export interface PreviewServerOptions {
   /** Só pra teste: aponta o run-log pra um tmpdir isolado, mesmo parâmetro
    *  que `logEvent` já expõe. Em produção nunca é passado. */
   timingLogRootDir?: string;
+  /** #9700: chama `onIdle` depois de `idleExitMs` sem nenhuma request E sem
+   *  cliente SSE conectado (aba aberta com live-reload conta como em uso).
+   *  Ausente ou `0` = nunca. */
+  idleExitMs?: number;
+  onIdle?: () => void;
 }
 
 /**
@@ -313,7 +336,26 @@ export async function startPreviewServer(
     }
   }
 
+  // #9700: idle-exit — o timer rearma a cada request; ao disparar com aba
+  // conectada no live-reload, só rearma (a aba aberta é uso, não ociosidade).
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const idleExitMs = opts.idleExitMs ?? 0;
+  const armIdle = () => {
+    if (!(idleExitMs > 0) || !opts.onIdle) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (liveReloadClients.size > 0) {
+        armIdle();
+        return;
+      }
+      opts.onIdle?.();
+    }, idleExitMs);
+    idleTimer.unref?.();
+  };
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    armIdle();
     try {
       const urlPath = decodeURIComponent((req.url ?? "/").split("?")[0]);
       if (opts.watch && urlPath === "/__live-reload") {
@@ -375,6 +417,7 @@ export async function startPreviewServer(
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : (opts.port ?? 0);
   const url = `http://${HOST}:${port}/${encodeURIComponent(fileName)}`;
+  armIdle();
 
   let closed = false;
   return {
@@ -392,6 +435,7 @@ export async function startPreviewServer(
         // indefinidamente por design — sem encerrá-las aqui, `server.close()`
         // nunca chamaria o callback (aguarda TODAS as conexões fecharem).
         if (debounceTimer) clearTimeout(debounceTimer);
+        if (idleTimer) clearTimeout(idleTimer);
         try {
           fileWatcher?.close();
         } catch {
@@ -444,12 +488,96 @@ function stopByPid(pidArg: string): void {
     process.exitCode = 2;
     return;
   }
-  try {
-    process.kill(pid, "SIGTERM");
+  const r = stopPreviewPid(pid);
+  if (r.outcome === "stopped") {
+    if (r.cmdline === null) {
+      console.error(
+        `[serve-preview] WARN: linha de comando do PID ${pid} ilegível nesta plataforma — sinalizado sem validar (#9700)`,
+      );
+    }
     console.log(JSON.stringify({ stopped: pid }, null, 2));
-  } catch (e) {
-    console.error(`[serve-preview] WARN: falha ao encerrar PID ${pid}: ${(e as Error).message}`);
+  } else if (r.outcome === "not-serve-preview") {
+    // #9700: PID reaproveitado — o servidor já morreu e o SO deu o número a
+    // outro processo. Nunca sinalizar; não fatal (teardown é best-effort).
+    console.error(
+      `[serve-preview] WARN: PID ${pid} não é um serve-preview (PID reaproveitado?) — NÃO sinalizado. cmdline: ${r.cmdline.slice(0, 200)}`,
+    );
+    console.log(JSON.stringify({ skipped: pid, reason: "not-serve-preview" }, null, 2));
+  } else {
+    console.error(`[serve-preview] WARN: falha ao encerrar PID ${pid}: ${r.error}`);
     // Não fatal — processo já morto/pid inexistente não deve travar o caller.
+  }
+}
+
+/** Marcador procurado na linha de comando pra reconhecer um servidor nosso. */
+export const SERVE_PREVIEW_CMDLINE_MARKER = "serve-preview";
+
+/**
+ * Linha de comando do PID, ou `null` se não der pra ler (processo morto,
+ * plataforma sem o mecanismo, permissão). Linux: `/proc/{pid}/cmdline`;
+ * macOS/BSD: `ps -p`; Windows: PowerShell `Win32_Process`. Nunca lança.
+ */
+export function readProcessCmdline(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      const raw = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      return raw.split("\0").join(" ").trim() || null;
+    }
+    if (process.platform === "win32") {
+      const out = execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+        ],
+        { encoding: "utf8", timeout: 10_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      return out.trim() || null;
+    }
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export type StopPreviewOutcome =
+  | { outcome: "stopped"; cmdline: string | null }
+  | { outcome: "not-serve-preview"; cmdline: string }
+  | { outcome: "error"; error: string };
+
+/**
+ * #9700: SIGTERM no PID só se ele for de fato um serve-preview. Linha de
+ * comando conhecida sem o marcador = PID reaproveitado → não sinaliza.
+ * Linha de comando ilegível (`null`) = sinaliza como antes do #9700 — no
+ * Linux (`300`) o `/proc` existe sempre, então isso só ocorre em plataforma
+ * sem mecanismo ou com o processo já morto (e aí o kill falha inofensivo).
+ */
+export function stopPreviewPid(
+  pid: number,
+  deps: {
+    readCmdline?: (pid: number) => string | null;
+    kill?: (pid: number, sig: NodeJS.Signals) => void;
+  } = {},
+): StopPreviewOutcome {
+  const readCmdline = deps.readCmdline ?? readProcessCmdline;
+  const kill = deps.kill ?? ((p: number, sig: NodeJS.Signals) => void process.kill(p, sig));
+  const cmdline = readCmdline(pid);
+  if (cmdline !== null && !cmdline.includes(SERVE_PREVIEW_CMDLINE_MARKER)) {
+    return { outcome: "not-serve-preview", cmdline };
+  }
+  try {
+    kill(pid, "SIGTERM");
+    return { outcome: "stopped", cmdline };
+  } catch (e) {
+    return { outcome: "error", error: (e as Error).message };
   }
 }
 
@@ -540,6 +668,26 @@ export async function findLivePersistedPreview(
   return p;
 }
 
+/**
+ * #9700: `--ensure` achou o servidor persistido NÃO vivo. Se o PID ainda
+ * existe (processo vivo mas a URL não responde — travado, ou probe que estourou
+ * o timeout), encerra-o (validando que é um serve-preview) ANTES de subir o
+ * novo: o persist vai passar a apontar pro novo, e o antigo ficaria órfão,
+ * fora do alcance de qualquer `--stop-pid`. Devolve o PID sinalizado, ou
+ * `null` se não havia nada a encerrar (ou o PID não era nosso).
+ */
+export function reapUnresponsivePersisted(
+  persistPath: string,
+  field: string,
+  deps: { isAlive?: (pid: number) => boolean; stop?: (pid: number) => StopPreviewOutcome } = {},
+): number | null {
+  const p = readPersistedPreview(persistPath, field);
+  if (!p) return null;
+  if (!(deps.isAlive ?? isPidAlive)(p.pid)) return null;
+  const r = (deps.stop ?? stopPreviewPid)(p.pid);
+  return r.outcome === "stopped" ? p.pid : null;
+}
+
 /** Espera o filho gravar o JSON de start no `readyFile`. */
 export async function waitForReadyFile(
   readyFile: string,
@@ -599,7 +747,34 @@ export function pruneOldDetachedLogs(dir: string, maxAgeMs = DETACHED_LOG_MAX_AG
  * do FILHO. Usa o mesmo binário Node + os mesmos `execArgv` do pai (o
  * `--import tsx` de `npx tsx` vive ali), e o path real deste módulo.
  */
-export async function spawnDetachedPreview(argv: string[]): Promise<{
+/** #9700: defaults de vida do filho desanexado (minutos) — injetados quando o
+ *  chamador não passa `--idle-exit-min`/`--ttl-min`. Ociosidade só conta sem
+ *  aba conectada no live-reload; o TTL é o teto absoluto (gate passando de 2
+ *  dias é anomalia, e `--ensure` re-serve sob demanda). */
+export const DETACHED_DEFAULT_IDLE_EXIT_MIN = 12 * 60;
+export const DETACHED_DEFAULT_TTL_MIN = 48 * 60;
+
+/** Pure: acrescenta os defaults de vida ao argv do filho, sem sobrescrever o
+ *  que o chamador já passou (nas duas sintaxes, `--x N` e `--x=N`). */
+export function withDetachedLifetimeDefaults(childArgs: string[]): string[] {
+  const has = (flag: string) => childArgs.some((a) => a === flag || a.startsWith(`${flag}=`));
+  const out = [...childArgs];
+  if (!has("--idle-exit-min")) out.push("--idle-exit-min", String(DETACHED_DEFAULT_IDLE_EXIT_MIN));
+  if (!has("--ttl-min")) out.push("--ttl-min", String(DETACHED_DEFAULT_TTL_MIN));
+  return out;
+}
+
+export interface SpawnDetachedOptions {
+  /** Timeout do ready-file (default 20s, o de `waitForReadyFile`). */
+  readyTimeoutMs?: number;
+  /** Só pra teste: script a rodar no filho no lugar deste módulo. */
+  childScript?: string;
+}
+
+export async function spawnDetachedPreview(
+  argv: string[],
+  opts: SpawnDetachedOptions = {},
+): Promise<{
   url: string;
   port: number;
   file: string;
@@ -615,19 +790,25 @@ export async function spawnDetachedPreview(argv: string[]): Promise<{
   pruneOldDetachedLogs(tmpdir());
   const fd = openSync(log, "a");
   let exitWatch: ReturnType<typeof setInterval> | undefined;
+  let childPid: number | undefined;
+  let exitedEarly: number | null = null;
   try {
     const child = spawn(
       process.execPath,
-      [...process.execArgv, fileURLToPath(import.meta.url), ...buildDetachedChildArgs(argv, readyFile)],
+      [
+        ...process.execArgv,
+        opts.childScript ?? fileURLToPath(import.meta.url),
+        ...withDetachedLifetimeDefaults(buildDetachedChildArgs(argv, readyFile)),
+      ],
       { detached: true, stdio: ["ignore", fd, fd], windowsHide: true, cwd: process.cwd() },
     );
+    childPid = child.pid;
     child.unref();
-    let exitedEarly: number | null = null;
     child.once("exit", (code) => {
       exitedEarly = code ?? -1;
     });
     const json = await Promise.race([
-      waitForReadyFile(readyFile),
+      waitForReadyFile(readyFile, opts.readyTimeoutMs),
       new Promise<never>((_, reject) => {
         exitWatch = setInterval(() => {
           if (exitedEarly !== null) {
@@ -640,6 +821,19 @@ export async function spawnDetachedPreview(argv: string[]): Promise<{
       }),
     ]);
     return { ...json, log };
+  } catch (e) {
+    // #9700: filho que não ficou pronto a tempo continua vivo (desanexado,
+    // fora da árvore do chamador) — matar antes de lançar, senão cada
+    // `--detach` repetido deixa um órfão. É o PID que ACABAMOS de spawnar,
+    // então dispensa a validação de linha de comando do `--stop-pid`.
+    if (childPid && exitedEarly === null) {
+      try {
+        process.kill(childPid, "SIGTERM");
+      } catch {
+        // já morreu entre o timeout e aqui
+      }
+    }
+    throw e;
   } finally {
     // Limpa o vigia de saída precoce nos dois desfechos (ready-file venceu ou
     // o filho morreu antes) — self-review #5 do PR #9685.
@@ -680,6 +874,11 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ url: live.url, pid: live.pid, reused: true }, null, 2));
       return;
     }
+    // #9700: PID vivo sem resposta → encerra antes de sobrescrever o persist.
+    const reaped = reapUnresponsivePersisted(resolve(persistTo), field);
+    if (reaped !== null) {
+      console.error(`[serve-preview] --ensure: PID ${reaped} vivo mas sem resposta — encerrado antes de re-servir (#9700)`);
+    }
   }
   if (flags.has("detach") || flags.has("ensure")) {
     if (!values["file"]) {
@@ -709,6 +908,28 @@ async function main(): Promise<void> {
   // conta própria (só reflete o que outro processo já escreveu em disco).
   const watchFlag = flags.has("watch");
 
+  // #9700: tempo de vida — `--idle-exit-min`/`--ttl-min` (0/ausente = nunca).
+  const minutesArg = (key: string): number => {
+    const raw = values[key];
+    if (raw === undefined) return 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      console.error(`[serve-preview] --${key} inválido: ${raw}`);
+      process.exit(2);
+    }
+    return n;
+  };
+  const idleExitMin = minutesArg("idle-exit-min");
+  const ttlMin = minutesArg("ttl-min");
+  let selfExitReason: string | null = null;
+  let shutdownImpl: () => void = () => process.exit(0);
+  const exitFor = (reason: string) => {
+    if (selfExitReason) return;
+    selfExitReason = reason;
+    console.error(`[serve-preview] encerrando sozinho: ${reason} (#9700)`);
+    shutdownImpl();
+  };
+
   // `--edition` só etiqueta as medições de reload do watcher no run-log
   // (#8123 residual). Sem ela a medição continua sendo gravada — o tempo
   // edição→preview não depende de saber qual edição era.
@@ -717,7 +938,12 @@ async function main(): Promise<void> {
     port: portArg,
     watch: watchFlag,
     edition: values["edition"] ?? null,
+    idleExitMs: idleExitMin * 60_000,
+    onIdle: () => exitFor(`${idleExitMin} min sem request e sem aba conectada`),
   });
+  if (ttlMin > 0) {
+    setTimeout(() => exitFor(`TTL de ${ttlMin} min atingido`), ttlMin * 60_000).unref();
+  }
 
   console.log(
     JSON.stringify(
@@ -778,6 +1004,7 @@ async function main(): Promise<void> {
   const shutdown = () => {
     server.close().finally(() => process.exit(0));
   };
+  shutdownImpl = shutdown;
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }

@@ -376,10 +376,22 @@ OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/m
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
 npx tsx scripts/serve-preview.ts \
-  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE \
-  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE --detach \
+  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url
 ```
-Rodar com `run_in_background: true` no Bash tool. Ler `preview_url` (e
+**`--detach` não é opcional, e o comando roda em FOREGROUND — NUNCA com
+`run_in_background: true` nem `&` (#9686, mesmo bug do Stage 4 diário #9678).**
+O harness mata background task no teto de tempo (2h no máximo) — num gate
+longo o link `127.0.0.1` morria com o editor ainda revisando. Com `--detach` o
+servidor sobe num processo desanexado e o comando SAI em ~1-2s imprimindo o
+JSON do filho; o servidor vive até o teardown da Etapa 4e (`--stop-pid`) ou,
+se ele nunca rodar, até o idle-exit/TTL (#9700). Se o editor disser que o link
+não abre (ou antes de reapresentar o gate), re-servir sob demanda — idempotente,
+reusa o servidor se ainda estiver vivo:
+```bash
+npx tsx scripts/serve-preview.ts --ensure --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url
+```
+Ler `preview_url` (e
 `preview_url_pid`, pra teardown) de `preview-server-url.json`. Em modo `local`
 (`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL:
 `mcp__claude-in-chrome__tabs_context_mcp` (obter/criar o `tabId` do grupo MCP)
@@ -477,10 +489,10 @@ OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/m
 [ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
 
 npx tsx scripts/serve-preview.ts \
-  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE \
-  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 --watch --edition $CYCLE --detach \
+  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url
 ```
-Rodar com `run_in_background: true`. Ler `preview_url` novo de `preview-server-url.json` pra popular `{preview_url}` no resumo do gate (4e) — diferente do Artifact, a URL muda a cada re-render (porta efêmera nova), nunca fica igual entre 3c e 4b.
+Rodar em foreground com `--detach` (nunca em background nem com `&`, #9686 — mesmo motivo da Etapa 3c; o `--ensure` de lá vale também pra re-servir o gate desta etapa). Ler `preview_url` novo de `preview-server-url.json` pra popular `{preview_url}` no resumo do gate (4e) — diferente do Artifact, a URL muda a cada re-render (porta efêmera nova), nunca fica igual entre 3c e 4b.
 
 **Checar `livros_promo` no manifest (#7862).** `monthly-preview-cloudflare.ts` já loga `warn: 04-livros-promo.jpg ausente` no stderr quando a captura (Chrome, roda só no `neo`) não rodou pro ciclo — mas esse warning saía só no log do script, DEPOIS do ponto em que o editor aprovaria o gate, então passava batido (2 ciclos seguidos, 2607-08 e 2608-09). Extrair pro banner do gate (4e) em vez de deixar só no log:
 ```bash
