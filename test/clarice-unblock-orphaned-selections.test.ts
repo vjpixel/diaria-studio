@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -15,6 +15,7 @@ import {
 import { appendSentOrQueuedEmails, sentOrQueuedFilePath, type SentOrQueuedFile } from "../scripts/clarice-build-segment.ts";
 import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio-lock.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
+import { isWaveReleased } from "../scripts/lib/clarice-wave-released.ts";
 
 function makeJsonResponse(body: unknown) {
   return Promise.resolve({
@@ -383,4 +384,62 @@ test("findNeverImportedWaveEmails: -lists.json ilegível → não libera nada (f
   writeFileSync(resolve(dir, "d1-seg05-lists.json"), "{corrompido");
   const r = findNeverImportedWaveEmails(dir, new Set(["preso@x.com", "duplo@x.com"]), 0, Date.now() + HOUR);
   assert.deepEqual(r.emails, []);
+});
+
+test("findNeverImportedWaveGroups: grupo já liberado (-released.json) não é reportado de novo; casa key-base e células -H06/-A; d1 ≠ d10", () => {
+  const age = () => 30 * HOUR;
+  assert.deepEqual(findNeverImportedWaveGroups(["d1-sab03-manifest.json", "d1-sab03-released.json"], [], age, 0), []);
+  assert.deepEqual(findNeverImportedWaveGroups(["d2-ter06-manifest.json"], ["d2-ter06"], age, 0), []);
+  assert.deepEqual(findNeverImportedWaveGroups(["d2-ter06-manifest.json"], ["d2-ter06-H06"], age, 0), []);
+  assert.deepEqual(findNeverImportedWaveGroups(["d1-sab03-manifest.json"], ["d10-sab03-A"], age, 0), ["d1-sab03"]);
+});
+
+test("findNeverImportedWaveEmails: key reescrita por --key (novos-261001) — o CSV-base do grupo importado protege", () => {
+  const dir = waveDir();
+  writeFileSync(resolve(dir, "novos-manifest.json"), JSON.stringify([{ key: "novos", file: "novos.csv" }]));
+  writeFileSync(resolve(dir, "novos-lists.json"), JSON.stringify({ lists: [{ key: "novos-261001", listId: 9 }] }));
+  writeFileSync(resolve(dir, "novos.csv"), "email,NOME\npreso@x.com,P\n");
+  const r = findNeverImportedWaveEmails(dir, new Set(["preso@x.com", "raw@x.com"]), 0, Date.now() + HOUR);
+  assert.deepEqual(r.emails, ["raw@x.com"]);
+});
+
+test("findNeverImportedWaveEmails: group-campaigns.json corrompido → não libera nada (fail-safe)", () => {
+  const dir = waveDir();
+  writeFileSync(resolve(dir, "group-campaigns.json"), "{corrompido");
+  const r = findNeverImportedWaveEmails(dir, new Set(["preso@x.com"]), 0, Date.now() + HOUR);
+  assert.deepEqual(r.emails, []);
+});
+
+function neverImportedMainFixture(manifestAgeHours: number) {
+  const baseDir = mkdtempSync(resolve(tmpdir(), "unblock-never-main-"));
+  const segDir = clariceSegmentsDir(CYCLE, baseDir);
+  mkdirSync(segDir, { recursive: true });
+  const lockRoot = mkdtempSync(resolve(tmpdir(), "unblock-never-main-lock-"));
+  appendSentOrQueuedEmails(segDir, CYCLE, "daily", ["preso@x.com"]);
+  writeFileSync(resolve(segDir, "d1-sab03-manifest.json"), JSON.stringify([{ key: "d1-sab03", file: "d1-sab03.csv" }]));
+  writeFileSync(resolve(segDir, "d1-sab03.csv"), "email\npreso@x.com\n");
+  const t = (Date.now() - manifestAgeHours * HOUR) / 1000;
+  utimesSync(resolve(segDir, "d1-sab03-manifest.json"), t, t);
+  return { baseDir, segDir, lockRoot };
+}
+
+test("main: sem --min-age-hours a margem default é 2h (manifest de 10min não é liberado)", async () => {
+  const { baseDir, segDir, lockRoot } = neverImportedMainFixture(10 / 60);
+  await main(["--cycle", CYCLE, "--base-dir", baseDir, "--lock-root-dir", lockRoot, "--apply"]);
+  const after = JSON.parse(readFileSync(sentOrQueuedFilePath(segDir), "utf8")) as SentOrQueuedFile;
+  assert.deepEqual(after.emails, ["preso@x.com"]);
+  assert.equal(isWaveReleased(segDir, "d1-sab03"), false);
+});
+
+test("main --apply: onda nunca importada com 3h é liberada e marcada -released.json", async () => {
+  const { baseDir, segDir, lockRoot } = neverImportedMainFixture(3);
+  await main(["--cycle", CYCLE, "--base-dir", baseDir, "--lock-root-dir", lockRoot, "--apply"]);
+  const after = JSON.parse(readFileSync(sentOrQueuedFilePath(segDir), "utf8")) as SentOrQueuedFile;
+  assert.deepEqual(after.emails, []);
+  assert.equal(isWaveReleased(segDir, "d1-sab03"), true);
+});
+
+test("main: --min-age-hours inválido lança em vez de zerar a margem", async () => {
+  const { baseDir, lockRoot } = neverImportedMainFixture(3);
+  await assert.rejects(main(["--cycle", CYCLE, "--base-dir", baseDir, "--lock-root-dir", lockRoot, "--min-age-hours", "abc"]));
 });

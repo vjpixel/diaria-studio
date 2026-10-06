@@ -45,13 +45,23 @@
  * `sent-or-queued.json` e a checagem seguinte não o encontra mais lá — não
  * precisa de um registro à parte de "campanha já reconciliada".
  *
+ * #9761 — ONDA MONTADA E NUNCA IMPORTADA: sempre roda (com ou sem
+ * `--check-suspended`). Onda (`dN-diaDD`) com manifest, sem `-lists.json`,
+ * sem campanha e sem `-released.json`, com manifest mais velho que
+ * `--min-age-hours` (default 2) → libera os contatos dela que não estejam em
+ * nenhuma célula de grupo importado, e sob `--apply` grava
+ * `{onda}-released.json` (import-waves/schedule-group passam a recusar a onda).
+ * Achado que motivou: Brevo 405 "list creation limit" em 02-03/10/2026 prendeu
+ * 43.325 contatos do ciclo 2609-10. Isso MUDA o comportamento da task diária
+ * `Diaria-Clarice-Unblock-Suspended` (que roda com `--apply`).
+ *
  * Uso:
- *   npx tsx scripts/clarice-unblock-orphaned-selections.ts --cycle 2608-09 [--apply] [--check-suspended]
+ *   npx tsx scripts/clarice-unblock-orphaned-selections.ts --cycle 2608-09 [--apply] [--check-suspended] [--min-age-hours N]
  *   (default: dry-run — lista os órfãos encontrados, não escreve)
  *
  * `--check-suspended` requer `BREVO_CLARICE_API_KEY` — sem ela, ABORTA (não
  * degrada silenciosamente pra "nenhum suspenso encontrado", que seria pior
- * que não checar). Sem a flag, comportamento inalterado (só o gap de CSV).
+ * que não checar). Sem a flag: gap de CSV + ondas nunca importadas (#9761).
  *
  * Concorrência: adquire o MESMO lock cycle-wide de `clarice-envio-lock.ts`
  * (usado por `clarice-envio-run.ts`/`clarice-envio-guard.ts`) antes de tocar
@@ -61,13 +71,15 @@
  * um mecanismo, não só um comentário). `--dry-run` não adquire lock (só
  * leitura).
  *
- * Stdout: JSON com `{ orphansFound, suspendedCampaignsFound, apply, emails }`.
+ * Stdout: JSON com `{ orphansFound, suspendedCampaignsFound, suspendedEmailsFound,
+ * neverImportedWaves, neverImportedEmailsFound, totalToUnblock, apply, emails }`.
  * Stderr: progresso.
  */
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { isWaveReleased, writeWaveReleasedMarker } from "./lib/clarice-wave-released.ts"; // #9761
 import { clariceSegmentsDir, CLARICE_BASE, REPO_ROOT } from "./lib/clarice-paths.ts";
 import { acquireEnvioLock, releaseEnvioLock, LockHeldError } from "./lib/clarice-envio-lock.ts";
 import { fetchCampaignsByStatus } from "./lib/brevo-client.ts";
@@ -198,6 +210,7 @@ export function findNeverImportedWaveGroups(
   manifestAgeMs: (fileName: string) => number,
   minAgeMs: number,
 ): string[] {
+  // Grupo com `{grupo}-released.json` (#9761) já foi liberado: não é reportado de novo.
   const names = new Set(fileNames);
   const out: string[] = [];
   for (const f of fileNames) {
@@ -208,6 +221,7 @@ export function findNeverImportedWaveGroups(
     // também têm manifest, mas são filas de seleção, não ondas importáveis.
     if (!WAVE_GROUP_RE.test(group)) continue;
     if (names.has(`${group}-lists.json`)) continue;
+    if (names.has(`${group}-released.json`)) continue;
     if (campaignKeys.some((k) => k === group || k.startsWith(`${group}-`))) continue;
     if (manifestAgeMs(f) < minAgeMs) continue;
     out.push(group);
@@ -246,6 +260,17 @@ export function findNeverImportedWaveEmails(
   } catch {
     return { groups: [], emails: [] };
   }
+  // Fail-safe (F5 do review): `loadGroupCampaigns` devolve [] pra arquivo
+  // corrompido, o que aqui faria TODA onda com campanha parecer "nunca
+  // importada". Arquivo presente mas ilegível → não libera nada.
+  const campaignsPath = resolve(segmentsDir, "group-campaigns.json");
+  if (existsSync(campaignsPath)) {
+    try {
+      if (!Array.isArray(JSON.parse(readFileSync(campaignsPath, "utf8")))) return { groups: [], emails: [] };
+    } catch {
+      return { groups: [], emails: [] };
+    }
+  }
   const campaignKeys = loadGroupCampaigns(segmentsDir).map((c) => c.key);
   const groups = findNeverImportedWaveGroups(
     files,
@@ -268,9 +293,15 @@ export function findNeverImportedWaveEmails(
   // #9761 tinha um `daily-d4-raw27000.csv` manual cobrindo 26 mil dos presos.
   // Liberar aqui não arrisca envio duplo: a montagem seguinte ainda exclui
   // quem está numa lista Brevo queued/sent AO VIVO (#7406).
+  // Além das `key`s, o CSV-base do grupo (`{grupo}.csv`) e os CSVs do manifest
+  // dele: `--key` reescreve a key da lista (ex: `novos-261001`) sem existir
+  // `novos-261001.csv` — só `novos.csv` (F4 do review).
   const liveKeys = new Set<string>(campaignKeys);
   for (const f of files) {
     if (!f.endsWith("-lists.json")) continue;
+    const importedGroup = f.slice(0, -"-lists.json".length);
+    liveKeys.add(importedGroup);
+    for (const mf of readManifestCsvFiles(segmentsDir, importedGroup)) liveKeys.add(mf.replace(/\.csv$/, ""));
     try {
       const parsed = JSON.parse(readFileSync(resolve(segmentsDir, f), "utf8")) as { lists?: { key?: unknown }[] };
       for (const l of parsed.lists ?? []) if (typeof l.key === "string") liveKeys.add(l.key);
@@ -347,9 +378,11 @@ export async function main(argv: string[] = process.argv.slice(2)) {
   const suspendedEmails = suspendedFound.flatMap((c) => c.emails).filter((e) => sentOrQueued.has(e));
 
   // #9761: ondas montadas cujo import falhou (sem lista nem campanha).
-  const minAgeHours = Number(getArg(argv, "min-age-hours") ?? "2");
+  // getIntArg (não `getArg ?? "2"`: getArg devolve "" quando ausente, e
+  // Number("") = 0 zeraria a margem — F1 do review). Inválido → lança.
+  const minAgeHours = getIntArg(argv, "min-age-hours") ?? 2;
   const neverImported = findNeverImportedWaveEmails(segDir, sentOrQueued, minAgeHours * 3_600_000, Date.now());
-  if (neverImported.groups.length > 0) {
+  if (neverImported.emails.length > 0) {
     console.error(
       `[clarice-unblock-orphaned-selections] ⚠️  ${neverImported.groups.length} onda(s) montada(s) e nunca importada(s) ` +
         `(sem -lists.json nem campanha): ${neverImported.groups.join(", ")} — ${neverImported.emails.length} contato(s) presos.`,
@@ -397,6 +430,17 @@ export async function main(argv: string[] = process.argv.slice(2)) {
   }
   try {
     const removed = unblockOrphanedSentOrQueuedEmails(segDir, cycle, orphans);
+    // #9761: marca as ondas nunca importadas como LIBERADAS — import-waves e
+    // schedule-group passam a recusá-las (retomar = envio duplo).
+    for (const group of neverImported.groups) {
+      if (isWaveReleased(segDir, group)) continue;
+      writeWaveReleasedMarker(segDir, {
+        group,
+        releasedAt: new Date().toISOString(),
+        count: neverImported.emails.length,
+        reason: "onda montada e nunca importada (clarice-unblock-orphaned-selections)",
+      });
+    }
     console.error(`[clarice-unblock-orphaned-selections] ${removed} email(s) desbloqueado(s) — voltam a ser elegíveis na próxima montagem de fila.`);
   } finally {
     releaseEnvioLock(lockPath);
