@@ -115,9 +115,10 @@ test("REGRESSÃO (#9638): sendNowAcceptedAt é gravado em disco ANTES do poll", 
   const m = mockRun({ liveStatus: "draft", pollStatus: "draft", now: new Date(ACCEPTED) });
   const outcome = await runSendNowLive(m.c, m.campaigns, "/fake/group-campaigns.json", "k", m.deps);
   assert.equal(outcome, "unconfirmed");
-  assert.deepEqual(m.events.slice(0, 4), ["get", "sendNow", "write", "poll"]);
-  assert.equal(m.writes[0][0].sendNowAcceptedAt, ACCEPTED);
-  assert.equal(m.writes[0][0].status, "draft");
+  // #9699: a 1ª escrita (sendNowAttemptedAt) vem ANTES do POST.
+  assert.deepEqual(m.events.slice(0, 5), ["get", "write", "sendNow", "write", "poll"]);
+  assert.equal(m.writes[1][0].sendNowAcceptedAt, ACCEPTED);
+  assert.equal(m.writes[1][0].status, "draft");
 });
 
 test("#9638: re-execução dentro da janela após 'unconfirmed' NÃO faz 2º POST", async () => {
