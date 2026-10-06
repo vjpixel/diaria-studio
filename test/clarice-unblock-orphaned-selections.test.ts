@@ -8,6 +8,8 @@ import {
   readGroupCsvEmails,
   loadGroupCampaigns,
   findSuspendedCampaignEmails,
+  findNeverImportedWaveGroups,
+  findNeverImportedWaveEmails,
   main,
 } from "../scripts/clarice-unblock-orphaned-selections.ts";
 import { appendSentOrQueuedEmails, sentOrQueuedFilePath, type SentOrQueuedFile } from "../scripts/clarice-build-segment.ts";
@@ -322,4 +324,63 @@ test("main SEM --check-suspended: comportamento inalterado, mesmo com campanha s
 
   const parsed = JSON.parse(readFileSync(sentOrQueuedFilePath(segDir), "utf8")) as SentOrQueuedFile;
   assert.deepEqual(parsed.emails, ["a@x.com"], "sem a flag, nada muda — a@x.com continua bloqueado");
+});
+
+// #9761 — onda montada (manifest + CSVs) cujo import falhou: sem
+// `{grupo}-lists.json` e sem campanha. A detecção por CSV (#8038) não a vê
+// porque o CSV continua no disco.
+
+const HOUR = 3_600_000;
+
+test("findNeverImportedWaveGroups: só onda (dN-diaDD) com manifest, sem lists.json, sem campanha e velha o bastante", () => {
+  const files = [
+    "d1-sab03-manifest.json", // nunca importada → órfã
+    "d1-seg05-manifest.json", "d1-seg05-lists.json", // importada
+    "d2-ter06-manifest.json", // sem lists.json mas COM campanha
+    "d3-qua07-manifest.json", // recente demais (montando agora)
+    "daily-manifest.json", // fila de seleção, não onda
+    "novos-manifest.json",
+  ];
+  const age = (f: string) => (f.startsWith("d3-") ? 10 * 60_000 : 30 * HOUR);
+  assert.deepEqual(findNeverImportedWaveGroups(files, ["d2-ter06-VA"], age, 2 * HOUR), ["d1-sab03"]);
+});
+
+function waveDir(): string {
+  const dir = mkdtempSync(resolve(tmpdir(), "unblock-never-imported-"));
+  // d1-sab03: montada, import falhou (sem -lists.json).
+  writeFileSync(resolve(dir, "d1-sab03-manifest.json"), JSON.stringify([
+    { key: "d1-sab03-VA", file: "d1-sab03-VA.csv" },
+    { key: "d1-sab03-VB", file: "d1-sab03-VB.csv" },
+  ]));
+  writeFileSync(resolve(dir, "d1-sab03-VA.csv"), "email,NOME\npreso@x.com,P\nduplo@x.com,D\n");
+  writeFileSync(resolve(dir, "d1-sab03-VB.csv"), "email,NOME\nRaw@X.com,R\n");
+  // d1-seg05: importada — duplo@ também está nela, então está comprometido.
+  writeFileSync(resolve(dir, "d1-seg05-manifest.json"), JSON.stringify([{ key: "d1-seg05", file: "d1-seg05.csv" }]));
+  writeFileSync(resolve(dir, "d1-seg05-lists.json"), JSON.stringify({ lists: [{ key: "d1-seg05", listId: 1 }] }));
+  writeFileSync(resolve(dir, "d1-seg05.csv"), "email,NOME\nduplo@x.com,D\nok@x.com,O\n");
+  // CSV avulso de montagem manual cobrindo raw@ — NÃO conta como vivo (achado real: daily-d4-raw27000.csv).
+  writeFileSync(resolve(dir, "daily-d4-raw27000.csv"), "email,NOME\nraw@x.com,R\n");
+  writeFileSync(resolve(dir, "daily.csv"), "email,NOME\npreso@x.com,P\n");
+  return dir;
+}
+
+test("findNeverImportedWaveEmails: libera quem está só na onda órfã; mantém quem também está em onda importada", () => {
+  const dir = waveDir();
+  const soq = new Set(["preso@x.com", "duplo@x.com", "raw@x.com", "ok@x.com"]);
+  const r = findNeverImportedWaveEmails(dir, soq, 0, Date.now() + HOUR);
+  assert.deepEqual(r.groups, ["d1-sab03"]);
+  assert.deepEqual(r.emails, ["preso@x.com", "raw@x.com"]);
+});
+
+test("findNeverImportedWaveEmails: email fora de sent-or-queued não é 'liberado'", () => {
+  const dir = waveDir();
+  const r = findNeverImportedWaveEmails(dir, new Set(["preso@x.com"]), 0, Date.now() + HOUR);
+  assert.deepEqual(r.emails, ["preso@x.com"]);
+});
+
+test("findNeverImportedWaveEmails: -lists.json ilegível → não libera nada (fail-safe)", () => {
+  const dir = waveDir();
+  writeFileSync(resolve(dir, "d1-seg05-lists.json"), "{corrompido");
+  const r = findNeverImportedWaveEmails(dir, new Set(["preso@x.com", "duplo@x.com"]), 0, Date.now() + HOUR);
+  assert.deepEqual(r.emails, []);
 });

@@ -577,6 +577,64 @@ describe("clarice-envio-run (#5026)", () => {
     });
   });
 
+  describe("rollback de sent-or-queued quando o import falha (#9761)", () => {
+    // Regressão: import falhou (Brevo 405 "list creation limit") DEPOIS do
+    // build-segment reservar a seleção → 43k contatos presos no ciclo 2609-10.
+    it("falha do import devolve a seleção à fila e segue exit 1, sem criar campanha", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-import-waves.ts"] = {
+        code: 1,
+        stdout: "",
+        stderr: 'Error: Brevo API POST /contacts/lists falhou (405): {"message":"You have reached your list creation limit"}',
+      };
+      const { exec, calls } = makeFakeExec(h);
+      const released: string[] = [];
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          releaseWaveSelection: (cycle) => {
+            released.push(cycle);
+            return 18700;
+          },
+        }),
+      );
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.deepEqual(released, [CYCLE]);
+      assert.match(r.reportMarkdown, /18700 contato\(s\) devolvido\(s\) à fila/);
+      assert.equal(calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), false);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha do split também dispara o rollback; rollback que lança vira aviso sem mascarar o erro original", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-split-group-cells.ts"] = { code: 1, stdout: "", stderr: "boom" };
+      const { exec } = makeFakeExec(h);
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          releaseWaveSelection: () => {
+            throw new Error("disco cheio");
+          },
+        }),
+      );
+      assert.equal(r.code, 1);
+      assert.match(r.reportMarkdown, /rollback de sent-or-queued\.json também falhou \(disco cheio\)/);
+      assert.match(r.reportMarkdown, /clarice-split-group-cells falhou/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("import OK não chama releaseWaveSelection", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      let called = false;
+      await runEnvio(baseDeps(root, { exec, releaseWaveSelection: () => ((called = true), 0) }));
+      assert.equal(called, false);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
   describe("summarizeStderr (#9506)", () => {
     it("stack longo preserva a mensagem inicial do erro, não só o rabo de frames", () => {
       const stderr = ["Error: Brevo POST /contacts/lists falhou: 400 duplicate_parameter", ...Array.from({ length: 10 }, (_, i) => `    at frame${i}`)].join("\n");

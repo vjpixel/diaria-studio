@@ -64,7 +64,7 @@
  * Stdout: JSON com `{ orphansFound, suspendedCampaignsFound, apply, emails }`.
  * Stderr: progresso.
  */
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -171,6 +171,126 @@ export function findSuspendedCampaignEmails(
   return out;
 }
 
+/**
+ * #9761 — onda MONTADA mas nunca IMPORTADA. `clarice-envio-run.ts` roda
+ * build-segment (que grava os selecionados em `sent-or-queued.json`) →
+ * split (escreve `{grupo}-manifest.json` + CSVs das células) → import (que
+ * escreve `{grupo}-lists.json`) → create/schedule (`group-campaigns.json`).
+ * Se o import falhar (achado ao vivo 02 e 03/10/2026: Brevo `405 "You have
+ * reached your list creation limit"`), o CSV da onda continua no disco — a
+ * detecção por CSV (#8038) o conta como "vivo" — e nenhuma campanha existe,
+ * então `--check-suspended` (#8117) também não o vê: 43.325 contatos ficaram
+ * presos o resto do ciclo 2609-10.
+ *
+ * Pura: recebe a lista de nomes de arquivo do diretório, as `key`s de
+ * `group-campaigns.json` e a idade (ms) de cada manifest; devolve os grupos
+ * com manifest, SEM `{grupo}-lists.json` e SEM nenhuma campanha cuja key seja
+ * do grupo, e com manifest mais velho que `minAgeMs` (folga pra não pegar uma
+ * onda que está sendo montada AGORA — sob `--apply` o lock do envio já
+ * impede isso, a idade é defesa extra pro dry-run e pra rodadas manuais).
+ */
+/** Formato de `waveKey()` (`scripts/lib/clarice-wave-plan.ts`) sem célula: `d1-sab03`. */
+const WAVE_GROUP_RE = /^d\d+-[a-z]{3}\d{2}$/;
+
+export function findNeverImportedWaveGroups(
+  fileNames: readonly string[],
+  campaignKeys: readonly string[],
+  manifestAgeMs: (fileName: string) => number,
+  minAgeMs: number,
+): string[] {
+  const names = new Set(fileNames);
+  const out: string[] = [];
+  for (const f of fileNames) {
+    const m = /^(.+)-manifest\.json$/.exec(f);
+    if (!m) continue;
+    const group = m[1];
+    // Só ONDAS (`waveKey`: `d{N}-{dia}{dd}`) — `daily`/`novos`/`engajados`
+    // também têm manifest, mas são filas de seleção, não ondas importáveis.
+    if (!WAVE_GROUP_RE.test(group)) continue;
+    if (names.has(`${group}-lists.json`)) continue;
+    if (campaignKeys.some((k) => k === group || k.startsWith(`${group}-`))) continue;
+    if (manifestAgeMs(f) < minAgeMs) continue;
+    out.push(group);
+  }
+  return out.sort();
+}
+
+/** Lê `{grupo}-manifest.json` e devolve os nomes de CSV das células (`file`).
+ *  Tolerante: ilegível → `[]`. */
+export function readManifestCsvFiles(segmentsDir: string, group: string): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(resolve(segmentsDir, `${group}-manifest.json`), "utf8"));
+    return Array.isArray(parsed)
+      ? parsed.map((e: { file?: unknown }) => e?.file).filter((f): f is string => typeof f === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #9761 — emails a desbloquear por ondas nunca importadas: estão num CSV de
+ * onda nunca importada, estão em `sent-or-queued.json`, e NÃO aparecem em
+ * nenhum OUTRO CSV do ciclo (uma onda viva que também os contenha vence —
+ * nesse caso o contato está de fato comprometido e não é liberado).
+ */
+export function findNeverImportedWaveEmails(
+  segmentsDir: string,
+  sentOrQueued: ReadonlySet<string>,
+  minAgeMs: number,
+  nowMs: number,
+): { groups: string[]; emails: string[] } {
+  let files: string[];
+  try {
+    files = readdirSync(segmentsDir);
+  } catch {
+    return { groups: [], emails: [] };
+  }
+  const campaignKeys = loadGroupCampaigns(segmentsDir).map((c) => c.key);
+  const groups = findNeverImportedWaveGroups(
+    files,
+    campaignKeys,
+    (f) => {
+      try {
+        return nowMs - statSync(resolve(segmentsDir, f)).mtimeMs;
+      } catch {
+        return 0; // idade desconhecida = trata como recente (não libera).
+      }
+    },
+    minAgeMs,
+  );
+  if (groups.length === 0) return { groups, emails: [] };
+
+  const deadCsvs = new Set(groups.flatMap((g) => readManifestCsvFiles(segmentsDir, g)));
+  // "Vivo" = célula de grupo IMPORTADO (`{grupo}-lists.json`, uma `key` por
+  // lista) ou de grupo com campanha. CSV avulso (raw de montagem manual,
+  // snapshot de prioridade, `daily.csv` intermediário) NÃO conta: o achado do
+  // #9761 tinha um `daily-d4-raw27000.csv` manual cobrindo 26 mil dos presos.
+  // Liberar aqui não arrisca envio duplo: a montagem seguinte ainda exclui
+  // quem está numa lista Brevo queued/sent AO VIVO (#7406).
+  const liveKeys = new Set<string>(campaignKeys);
+  for (const f of files) {
+    if (!f.endsWith("-lists.json")) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(resolve(segmentsDir, f), "utf8")) as { lists?: { key?: unknown }[] };
+      for (const l of parsed.lists ?? []) if (typeof l.key === "string") liveKeys.add(l.key);
+    } catch {
+      // ilegível: sem chaves vivas dele — e sem como saber o que ele cobria,
+      // então aborta a liberação inteira (fail-safe: não libera nada).
+      return { groups, emails: [] };
+    }
+  }
+  const live = new Set<string>();
+  for (const key of liveKeys) for (const e of readGroupCsvEmails(segmentsDir, key)) live.add(e);
+  const out = new Set<string>();
+  for (const f of deadCsvs) {
+    for (const e of readGroupCsvEmails(segmentsDir, f.replace(/\.csv$/, ""))) {
+      if (sentOrQueued.has(e) && !live.has(e)) out.add(e);
+    }
+  }
+  return { groups, emails: [...out].sort() };
+}
+
 export async function main(argv: string[] = process.argv.slice(2)) {
   // #8117: --cycle vira OPCIONAL — default computeExpectedEnvioCycle(now),
   // mesmo resolvedor que clarice-envio-run.ts já usa pra achar "o ciclo de
@@ -225,7 +345,18 @@ export async function main(argv: string[] = process.argv.slice(2)) {
     }
   }
   const suspendedEmails = suspendedFound.flatMap((c) => c.emails).filter((e) => sentOrQueued.has(e));
-  const orphans = [...new Set([...csvOrphans, ...suspendedEmails])].sort();
+
+  // #9761: ondas montadas cujo import falhou (sem lista nem campanha).
+  const minAgeHours = Number(getArg(argv, "min-age-hours") ?? "2");
+  const neverImported = findNeverImportedWaveEmails(segDir, sentOrQueued, minAgeHours * 3_600_000, Date.now());
+  if (neverImported.groups.length > 0) {
+    console.error(
+      `[clarice-unblock-orphaned-selections] ⚠️  ${neverImported.groups.length} onda(s) montada(s) e nunca importada(s) ` +
+        `(sem -lists.json nem campanha): ${neverImported.groups.join(", ")} — ${neverImported.emails.length} contato(s) presos.`,
+    );
+  }
+
+  const orphans = [...new Set([...csvOrphans, ...suspendedEmails, ...neverImported.emails])].sort();
 
   console.log(
     JSON.stringify(
@@ -234,6 +365,8 @@ export async function main(argv: string[] = process.argv.slice(2)) {
         orphansFound: csvOrphans.length,
         suspendedCampaignsFound: suspendedFound.filter((c) => c.emails.length > 0).length,
         suspendedEmailsFound: suspendedEmails.length,
+        neverImportedWaves: neverImported.groups,
+        neverImportedEmailsFound: neverImported.emails.length,
         totalToUnblock: orphans.length,
         apply,
         emails: orphans,
