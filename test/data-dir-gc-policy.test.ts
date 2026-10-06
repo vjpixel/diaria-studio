@@ -157,12 +157,15 @@ describe("isMvCacheFilename", () => {
   });
 });
 
-describe("classifyBackupSiblings — retenção por diretório", () => {
+/** Canônico sempre presente — isola a regra de retenção da regra de existência (#9732). */
+const ALL_EXIST = { canonicalExists: () => true };
+
+describe("classifyBackupSiblings — retenção por família (#9732: diretório + nome canônico)", () => {
   it("nunca marca o arquivo mais recente do diretório, mesmo se velho", () => {
     const files: AgedFile[] = [
-      { relPath: "clarice-subscribers/clarice-users-predator-safeBackup-0001.db", sizeBytes: 100, ageDays: 400, mtimeMs: mtimeFor(400)  },
+      { relPath: "clarice-subscribers/clarice-users-predator-safeBackup-0001.jsonl", sizeBytes: 100, ageDays: 400, mtimeMs: mtimeFor(400)  },
     ];
-    const out = classifyBackupSiblings(files);
+    const out = classifyBackupSiblings(files, 14, ALL_EXIST);
     assert.deepEqual(out, [], "único arquivo do diretório é sempre 'o mais recente' — nunca removido");
   });
 
@@ -172,7 +175,7 @@ describe("classifyBackupSiblings — retenção por diretório", () => {
       { relPath: "d/run-log-Neo-2.jsonl", sizeBytes: 100, ageDays: 20, mtimeMs: mtimeFor(20)  }, // > retenção (14d default)
       { relPath: "d/run-log-Neo-3.jsonl", sizeBytes: 100, ageDays: 5, mtimeMs: mtimeFor(5)  }, // dentro da retenção
     ];
-    const out = classifyBackupSiblings(files);
+    const out = classifyBackupSiblings(files, 14, ALL_EXIST);
     assert.deepEqual(
       out.map((c) => c.relPath),
       ["d/run-log-Neo-2.jsonl"],
@@ -194,34 +197,34 @@ describe("classifyBackupSiblings — retenção por diretório", () => {
       // Entra no array primeiro mas é o MAIS ANTIGO das duas (mtimeMs menor) —
       // se o desempate usasse ageDays (ambas "2"), a ordem de entrada
       // decidiria quem sobrevive, o que é o bug que este teste trava.
-      { relPath: "d/x-safeBackup-0001.db", sizeBytes: 10, ageDays: 2, mtimeMs: sameDayOlder },
-      { relPath: "d/x-safeBackup-0002.db", sizeBytes: 10, ageDays: 2, mtimeMs: sameDayNewer },
+      { relPath: "d/x-safeBackup-0001.json", sizeBytes: 10, ageDays: 2, mtimeMs: sameDayOlder },
+      { relPath: "d/x-safeBackup-0002.json", sizeBytes: 10, ageDays: 2, mtimeMs: sameDayNewer },
     ];
-    const out = classifyBackupSiblings(files, 0); // retenção 0 — os dois "velhos o bastante" se não forem a mais recente
+    const out = classifyBackupSiblings(files, 0, ALL_EXIST); // retenção 0 — os dois "velhos o bastante" se não forem a mais recente
     // Só a mais ANTIGA das duas (0001, mtimeMs menor) deveria virar
     // candidata — a mais nova (0002) é preservada por ser a mais recente
     // do diretório, mesmo com ageDays idêntico.
-    assert.deepEqual(out.map((c) => c.relPath), ["d/x-safeBackup-0001.db"]);
+    assert.deepEqual(out.map((c) => c.relPath), ["d/x-safeBackup-0001.json"]);
   });
 
   it("agrupa por diretório — famílias em diretórios diferentes não se misturam", () => {
     const files: AgedFile[] = [
-      { relPath: "a/x-Neo.db", sizeBytes: 10, ageDays: 30, mtimeMs: mtimeFor(30)  }, // único em "a" — preservado (mais recente de "a")
-      { relPath: "b/x-Neo.db", sizeBytes: 10, ageDays: 30, mtimeMs: mtimeFor(30)  }, // único em "b" — preservado (mais recente de "b")
+      { relPath: "a/x-Neo.json", sizeBytes: 10, ageDays: 30, mtimeMs: mtimeFor(30)  }, // único em "a" — preservado (mais recente de "a")
+      { relPath: "b/x-Neo.json", sizeBytes: 10, ageDays: 30, mtimeMs: mtimeFor(30)  }, // único em "b" — preservado (mais recente de "b")
     ];
-    const out = classifyBackupSiblings(files);
+    const out = classifyBackupSiblings(files, 14, ALL_EXIST);
     assert.deepEqual(out, [], "cada diretório tem seu próprio 'mais recente', nenhum é candidato");
   });
 
   it("retentionDays custom respeitado", () => {
     const files: AgedFile[] = [
-      { relPath: "d/x-Neo.db", sizeBytes: 10, ageDays: 1, mtimeMs: mtimeFor(1)  },
-      { relPath: "d/x-Neo-2.db", sizeBytes: 10, ageDays: 3, mtimeMs: mtimeFor(3)  },
+      { relPath: "d/x-Neo.json", sizeBytes: 10, ageDays: 1, mtimeMs: mtimeFor(1)  },
+      { relPath: "d/x-Neo-2.json", sizeBytes: 10, ageDays: 3, mtimeMs: mtimeFor(3)  },
     ];
-    assert.deepEqual(classifyBackupSiblings(files, 14), [], "3d < 14d — dentro da retenção default");
+    assert.deepEqual(classifyBackupSiblings(files, 14, ALL_EXIST), [], "3d < 14d");
     assert.deepEqual(
-      classifyBackupSiblings(files, 2).map((c) => c.relPath),
-      ["d/x-Neo-2.db"],
+      classifyBackupSiblings(files, 2, ALL_EXIST).map((c) => c.relPath),
+      ["d/x-Neo-2.json"],
       "3d > 2d de retenção custom",
     );
   });

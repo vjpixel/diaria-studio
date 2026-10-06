@@ -27,7 +27,14 @@
  *   2. `tmp-*` em `_internal/` de edição FECHADA.
  *   3. `*-embedded.html` em `_internal/` de edição FECHADA.
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-*`, sufixo de
- *      máquina, `.bak[-data]`) em QUALQUER lugar sob `data/`.
+ *      máquina, `.bak[-data]`) em QUALQUER lugar sob `data/` — **OPT-IN
+ *      desde #9732**: listadas no inventário, mas o `--apply` só remove com
+ *      `--include-bucket backup-sibling`. Mesmo com o opt-in: nunca store
+ *      (`*.db*`/`*.sqlite*`) nem arquivo editorial (`0N-*.md`, `*.md` sob
+ *      `editions/`), só cópia cujo arquivo canônico existe ao lado, agrupadas
+ *      por família (nome canônico) e com idade conservadora (> 28d pelo mais
+ *      recente entre mtime/ctime/birthtime — a renomeação de conflito
+ *      preserva o mtime do original).
  *   5. `.mv-cache-*.json` (cache MillionVerifier, qualquer idade > 30d) —
  *      **OPT-IN desde #9725**: listado no inventário, mas o `--apply` só
  *      remove com `--include-bucket mv-cache` (pode guardar resultado pago
@@ -47,7 +54,7 @@
  * `scripts/lib/scheduled-tasks.ts` roda `--apply` semanal na `300` (seguido
  * de um passo best-effort de dry-run que deixa o relatório de
  * `beehiiv-backup/` no log, #9730), sem
- * `--include-bucket` (mv-cache fica de fora) e sem `--data-root` (argv
+ * `--include-bucket` (mv-cache e backup-sibling ficam de fora, #9732) e sem `--data-root` (argv
  * estático do registro — a premissa de "humano digitando o path" abaixo
  * continua valendo pro único caminho que aceita `--data-root`).
  *
@@ -71,7 +78,7 @@
  *
  * Uso:
  *   npx tsx scripts/gc-data-dir.ts [--apply] [--json] [--data-root <path>]
- *     [--include-bucket mv-cache[,...]] [--db-backup-keep N]
+ *     [--include-bucket mv-cache,backup-sibling] [--db-backup-keep N]
  *     [--db-backup-min-age-days N] [--beehiiv-keep N]
  *
  * Flag malformada (bucket desconhecido, N < 1, sem valor) aborta com exit 2
@@ -121,6 +128,7 @@ import {
   resolveEnabledBuckets,
   guardCandidates,
   DB_BACKUP_DIR,
+  BACKUP_SIBLING_RETENTION_DAYS,
   DB_BACKUP_KEEP_DEFAULT,
   DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
   BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
@@ -140,6 +148,19 @@ function toRelPath(dataRoot: string, absPath: string): string {
 function ageDaysOf(mtimeMs: number, nowMs: number): number {
   return Math.floor((nowMs - mtimeMs) / 86_400_000);
 }
+
+/** Timestamp de onde sai a IDADE de uma cópia-irmã (#9732). Injetável só
+ *  pra teste: `utimesSync` não recua ctime/birthtime, então uma fixture não
+ *  consegue envelhecer o arquivo pelo critério de produção. */
+export type SiblingTimestampFn = (st: import("node:fs").Stats) => number;
+
+/** @default de `SiblingTimestampFn` — o MAIS RECENTE entre mtime, ctime e
+ *  birthtime (#9732). A renomeação de conflito do OneDrive preserva o mtime
+ *  do original (uma cópia nasce "velha"); rename/criação atualizam ctime
+ *  (Linux e NTFS) e a cópia que chega por sync nasce com birthtime novo.
+ *  Pegar o máximo erra só pro lado seguro (arquivo parece mais novo). */
+export const conservativeTimestampMs: SiblingTimestampFn = (st) =>
+  Math.max(st.mtimeMs, st.ctimeMs, Number.isFinite(st.birthtimeMs) ? st.birthtimeMs : 0);
 
 /** `readdirSync` fail-soft (achado de review) — o mesmo comportamento do
  *  cliente OneDrive documentado em `data-dir-gc-policy.ts` (arquivo
@@ -209,6 +230,7 @@ function walkForSiblingsAndCache(
   mvCache: AgedFile[],
   dbBackups: AgedFile[],
   scanErrors: string[],
+  siblingTimestamp: SiblingTimestampFn,
 ): void {
   if (!existsSync(absDir)) return;
   for (const entry of tryReaddir(absDir, scanErrors)) {
@@ -218,7 +240,7 @@ function walkForSiblingsAndCache(
       if (rel === "beehiiv-backup" || rel.startsWith("beehiiv-backup/")) continue;
       if (rel === "snippets" || rel.startsWith("snippets/")) continue;
       if (isForensicCacheDir(rel)) continue; // contado à parte, pelo passo de edições
-      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache, dbBackups, scanErrors);
+      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache, dbBackups, scanErrors, siblingTimestamp);
       continue;
     }
     if (!entry.isFile()) continue;
@@ -241,7 +263,11 @@ function walkForSiblingsAndCache(
       mvCache.push(aged);
       continue;
     }
-    if (isBackupSiblingFilename(entry.name)) siblings.push(aged);
+    // Idade CONSERVADORA (#9732) — nunca o mtime cru, que a renomeação de
+    // conflito herda do original.
+    if (isBackupSiblingFilename(entry.name)) {
+      siblings.push({ ...aged, ageDays: ageDaysOf(siblingTimestamp(st), nowMs) });
+    }
   }
 }
 
@@ -305,6 +331,9 @@ export interface CollectOptions {
   dbBackupKeep?: number;
   /** Piso de idade (dias, pelo stamp no nome) pra remover backup do store (#9730). Default 14. */
   dbBackupMinAgeDays?: number;
+  /** De onde sai a idade das cópias-irmãs (#9732). Default
+   *  `conservativeTimestampMs`; só teste sobrescreve. */
+  siblingTimestamp?: SiblingTimestampFn;
 }
 
 /** Inventário COMPLETO — inclui buckets opt-in (`mv-cache`); quem decide o
@@ -357,8 +386,21 @@ export function collectCandidates(
   const siblings: AgedFile[] = [];
   const mvCache: AgedFile[] = [];
   const dbBackups: AgedFile[] = [];
-  walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache, dbBackups, scanErrors);
-  candidates.push(...classifyBackupSiblings(siblings));
+  walkForSiblingsAndCache(
+    dataRoot,
+    dataRoot,
+    nowMs,
+    siblings,
+    mvCache,
+    dbBackups,
+    scanErrors,
+    opts.siblingTimestamp ?? conservativeTimestampMs,
+  );
+  candidates.push(
+    ...classifyBackupSiblings(siblings, BACKUP_SIBLING_RETENTION_DAYS, {
+      canonicalExists: (rel) => existsSync(resolve(dataRoot, rel)),
+    }),
+  );
   candidates.push(...classifyMvCache(mvCache));
   candidates.push(
     ...classifyDbBackups(dbBackups, opts.dbBackupKeep ?? DB_BACKUP_KEEP_DEFAULT, {
@@ -389,6 +431,8 @@ export type RmFn = (path: string, opts: { recursive: boolean; force: boolean }) 
 export function main(
   argv: string[] = process.argv.slice(2),
   rmFn: RmFn = rmSync,
+  /** Só teste (#9732): idade das cópias-irmãs — ver `SiblingTimestampFn`. */
+  siblingTimestamp: SiblingTimestampFn = conservativeTimestampMs,
 ): void {
   const apply = hasFlag(argv, "apply");
   const asJson = hasFlag(argv, "json");
@@ -419,7 +463,7 @@ export function main(
     return;
   }
 
-  const collected = collectCandidates(dataRoot, Date.now(), { dbBackupKeep, dbBackupMinAgeDays });
+  const collected = collectCandidates(dataRoot, Date.now(), { dbBackupKeep, dbBackupMinAgeDays, siblingTimestamp });
   const scanErrors = collected.scanErrors;
   // `candidates` = o que o `--apply` remove; `optInSkipped` = inventariado
   // mas fora do default (ex: `mv-cache`), só removido com --include-bucket.
