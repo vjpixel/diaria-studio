@@ -20,6 +20,8 @@
  *   `_internal/editor-requests.jsonl` (o que alimentou a #9693),
  *   reclassificados um a um pela comparação por URL.
  *
+ * @one-off-validity: expira=2027-01-06 pergunta="o sinal title-choice do auto-reporter no gate 4 é troca de título real ou troca/reordenação de item, e isso justifica mudar o title-picker/scorer-select? (#9693)"
+ *
  * Uso:
  *   npx tsx scripts/measure-gate4-highlight-changes.ts --from 260928 --to 261006
  *   npx tsx scripts/measure-gate4-highlight-changes.ts --editions-root /caminho/data/editions --json
