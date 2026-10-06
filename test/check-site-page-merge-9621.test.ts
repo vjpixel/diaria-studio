@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -163,6 +163,17 @@ describe("runSitePageMergeCheck (#9621)", () => {
     assert.equal(n, 0);
   });
 
+  it("data/editions/ ausente (junction data/ não montada) → exit 1, sem notificar e sem chamar gh (review PR #9695)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "site-merge-check-nodata-9621-"));
+    const calls: string[][] = [];
+    let n = 0;
+    const r = await runSitePageMergeCheck(root, "261006", { gh: ghState("OPEN", calls), notify: async () => void n++ });
+    assert.equal(r.exitCode, 1);
+    assert.equal(r.verdict.kind, "no-data-dir");
+    assert.equal(n, 0);
+    assert.equal(calls.length, 0);
+  });
+
   it("gh falha → exit 1 (unit failed, alarme de units pega)", async () => {
     const root = makeRoot("261006", delegated);
     const r = await runSitePageMergeCheck(root, "261006", {
@@ -315,8 +326,17 @@ describe("waitAndMergeSitePagePr sob merge lock (#9621 item 2)", () => {
 });
 
 describe("makeSessionRegistryMergeLock (#9621 item 2)", () => {
+  it("data/ ausente (junction não montada) → acquire false e NÃO cria data/sessions/ real (review PR #9695)", () => {
+    const root = mkdtempSync(join(tmpdir(), "site-merge-lock-nodata-9621-"));
+    const lock = makeSessionRegistryMergeLock(root, 9588);
+    assert.equal(lock.acquire(), false);
+    assert.equal(existsSync(join(root, "data")), false);
+  });
+
+
   it("usa o MESMO lock do session-registry: enquanto o waiter segura, coordenador não adquire (e vice-versa)", () => {
     const root = mkdtempSync(join(tmpdir(), "site-merge-lock-9621-"));
+    mkdirSync(join(root, "data"));
     const lock = makeSessionRegistryMergeLock(root, 9588);
     assert.equal(lock.acquire(), true);
     assert.equal(acquireMergeLock(root, "coordenador"), false);

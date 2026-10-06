@@ -23,8 +23,12 @@
  *   - 0 — sem state file (dia sem edição / página não publicada pelo script),
  *         página não publicada, sem PR identificável, PR MERGED, ou alerta
  *         registrado com sucesso.
- *   - 1 — não deu pra verificar (`gh pr view` falhou) ou o alerta falhou —
- *         a unit sai `failed` e o `Diaria-Systemd-Failed-Units-Alarm` pega.
+ *   - 1 — `data/editions/` ausente (junction `data/` não montada: sem isso o
+ *         "sem state file" seria indistinguível de dia sem edição e o check
+ *         passaria em silêncio justo quando devia alertar, review do PR
+ *         #9695), não deu pra verificar (`gh pr view` falhou) ou o alerta
+ *         falhou — a unit sai `failed` e o
+ *         `Diaria-Systemd-Failed-Units-Alarm` pega.
  *
  * ## Uso
  *
@@ -37,12 +41,12 @@
  * Só leitura (state file + `gh pr view`). Nunca mergeia nem fecha o PR —
  * mergear é ação do editor (ou do waiter), o check só avisa.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { editionDir } from "./lib/edition-paths.ts";
+import { editionDir, editionsRoot } from "./lib/edition-paths.ts";
 import { BRT_TIMEZONE, datePartsInTz, toAammdd } from "./lib/next-edition-date.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
@@ -52,6 +56,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[site-page-merge-check]";
 
 export type SitePageMergeCheckVerdict =
+  | { kind: "no-data-dir"; reason: string }
   | { kind: "no-state"; reason: string }
   | { kind: "not-published"; reason: string }
   | { kind: "no-pr"; reason: string }
@@ -174,6 +179,15 @@ export async function runSitePageMergeCheck(
 ): Promise<{ exitCode: number; verdict: SitePageMergeCheckVerdict; edition: string }> {
   const ed = edition ?? todayEditionBrt(deps.now);
   const editionDirAbs = resolve(rootDir, editionDir(ed));
+  const editionsRootAbs = resolve(rootDir, editionsRoot());
+  if (!existsSync(editionsRootAbs)) {
+    const verdict: SitePageMergeCheckVerdict = {
+      kind: "no-data-dir",
+      reason: `${editionsRootAbs} ausente — junction data/ não montada? Sem ela não dá pra distinguir "dia sem edição" de "state ilegível"`,
+    };
+    process.stderr.write(`${LOG_PREFIX} edição ${ed}: ${verdict.kind} — ${verdict.reason}\n`);
+    return { exitCode: 1, verdict, edition: ed };
+  }
   const verdict = evaluateSitePageMergeCheck(readState(editionDirAbs), rootDir, deps.gh ?? defaultGhRunner);
   const reason = verdict.kind === "alert" ? `PR #${verdict.prNumber} em ${verdict.prState}` : verdict.reason;
   process.stderr.write(`${LOG_PREFIX} edição ${ed}: ${verdict.kind} — ${reason}\n`);

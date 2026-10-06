@@ -3061,7 +3061,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `interval` e entre Diaria-Clarice-Envio-Guard (05:00) e
     // Diaria-Brevo-Diaria-Evaluate (05:30). SEM guard de requiredFile: sem
     // state file o script já sai 0 sozinho (dia sem edição), e um guard aqui
-    // só esconderia o caso data/ não montada atrás de um AVISO.
+    // só esconderia o caso data/ não montada atrás de um AVISO — esse caso o
+    // próprio script trata: `data/editions/` ausente sai 1 (unit failed).
     name: "Diaria-Site-Page-Merge-Check",
     description: "check pre-envio (05:15 BRT): alerta urgente se o PR da pagina do site da edicao do dia nao estiver MERGED (/p/{slug} daria 404 no envio)",
     steps: [{ key: "check", script: "scripts/check-site-page-merge.ts" }],

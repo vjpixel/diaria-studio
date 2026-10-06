@@ -895,11 +895,26 @@ export interface SitePageMergeLock {
  * nunca colide com o `session_id` de um coordenador. Serializa com os merges
  * de overnight/develop/continuo NESTA máquina; entre máquinas o lock segue
  * advisory (`docs/coordenacao-merges.md`), mesmo limite de todo merge.
+ *
+ * `data/` ausente no `rootDir` (junction não montada) = lock indisponível
+ * (`acquire` → `false`, com aviso no stderr/log do waiter): o
+ * `mkdirSync(recursive)` do session-registry criaria um `data/sessions/`
+ * REAL no lugar da junction, mascarando a junction ausente (review do PR
+ * #9695). O waiter segue no poll até o deadline e termina `timedOut`, que
+ * dispara o alerta do #9616 — falha alta, nunca merge fora do lock.
  */
 export function makeSessionRegistryMergeLock(rootDir: string, prNumber: number): SitePageMergeLock {
   const owner = `site-page-merge-waiter:pr-${prNumber}:pid-${process.pid}`;
   return {
-    acquire: () => acquireMergeLock(rootDir, owner),
+    acquire: () => {
+      if (!existsSync(join(rootDir, "data"))) {
+        process.stderr.write(
+          `[site-page-merge-waiter] ${join(rootDir, "data")} ausente — junction data/ não montada; merge lock indisponível, não mergeio fora dele\n`,
+        );
+        return false;
+      }
+      return acquireMergeLock(rootDir, owner);
+    },
     release: () => {
       releaseMergeLock(rootDir, owner);
     },
