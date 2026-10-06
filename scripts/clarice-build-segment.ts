@@ -742,6 +742,8 @@ export function unblockOrphanedSentOrQueuedEmails(
   segmentsDir: string,
   cycle: string,
   orphanEmails: string[],
+  /** #9761: rótulo do `history` — `rollback-{onda}` separa rollback de import de limpeza de órfão. */
+  label = "unblock-orphans",
 ): number {
   const file = sentOrQueuedFilePath(segmentsDir);
   if (!existsSync(file)) return 0;
@@ -762,7 +764,7 @@ export function unblockOrphanedSentOrQueuedEmails(
   const merged: SentOrQueuedFile = {
     cycle,
     emails: kept.sort(),
-    history: [...history, { group: "unblock-orphans", count: -removedCount, at: new Date().toISOString() }],
+    history: [...history, { group: label, count: -removedCount, at: new Date().toISOString() }],
   };
   writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
   return removedCount;

@@ -187,6 +187,7 @@
  * {group}-lists.json (registro de listas, #3228), todos em segments/.
  */
 
+import { isWaveReleased, waveReleasedRefusal } from "./lib/clarice-wave-released.ts"; // #9761
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1215,6 +1216,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const keyArg = getArg(argv, "key") || undefined;
 
   const segmentsDir = clariceSegmentsDir(cycle);
+  // #9761: onda liberada (seleção devolvida à fila após import falho) nunca é retomada.
+  if (groupArg && isWaveReleased(segmentsDir, groupArg)) {
+    console.error(waveReleasedRefusal(segmentsDir, groupArg));
+    process.exit(1);
+  }
   let listId: number;
   let listNameHint: string | undefined;
   let key: string;

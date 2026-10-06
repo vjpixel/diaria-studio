@@ -100,6 +100,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
+import { isWaveReleased, waveReleasedRefusal } from "./lib/clarice-wave-released.ts"; // #9761
 
 loadProjectEnv();
 
@@ -987,6 +988,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const args = parseArgs(argv);
   if (!args.cycle) {
     console.error("--cycle {conteúdo}-{envio} é obrigatório (ex: --cycle 2605-06).");
+    process.exit(1);
+  }
+  // #9761: onda liberada (seleção devolvida à fila após import falho) nunca é retomada.
+  if (args.group && isWaveReleased(clariceSegmentsDir(args.cycle), args.group)) {
+    console.error(waveReleasedRefusal(clariceSegmentsDir(args.cycle), args.group));
     process.exit(1);
   }
   const plans = buildPlan(args.label, args.cycle, undefined, args.group);

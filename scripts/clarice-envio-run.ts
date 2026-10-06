@@ -119,6 +119,9 @@ import { SCHEDULE_AT_WARNING_PREFIX, type InvocationSummary } from "./clarice-sc
 import type { WaveCollision } from "./lib/clarice-wave-audit.ts"; // #7880
 import { readClariceAbTest, type ClariceAbTestConfig } from "./lib/clarice-ab-test.ts"; // #9308
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts"; // #9308
+import { unblockOrphanedSentOrQueuedEmails } from "./clarice-build-segment.ts"; // #9761
+import { readGroupCsvEmails } from "./clarice-unblock-orphaned-selections.ts"; // #9761
+import { writeWaveReleasedMarker } from "./lib/clarice-wave-released.ts"; // #9761
 
 // #5048 — mesmo achado do #4983 (script irmão clarice-novos-run.ts): este é o
 // processo ORQUESTRADOR, invocado sob systemd --user (task Diaria-Clarice-Envio,
@@ -307,6 +310,11 @@ export interface EnvioRunDeps {
   readAbTest?: (cycle: string) => ClariceAbTestConfig | null;
   /** #9333 — `true` se o manifest `{key}-manifest.json` da onda já existe em disco no ciclo. */
   waveManifestExists?: (cycle: string, key: string) => boolean;
+  /** #9761 — devolve à fila os contatos que o build-segment desta rodada
+   * reservou em `sent-or-queued.json` (lidos de `daily.csv`), quando o split
+   * ou o import falha ANTES de existir lista/campanha. Retorna quantos saíram.
+   * Opcional: ausente = sem rollback (comportamento anterior). */
+  releaseWaveSelection?: (cycle: string, waveKeyBase: string) => number;
 }
 
 /**
@@ -354,6 +362,27 @@ export interface EnvioPlanProposal {
   subjects: InheritedSubjects;
 }
 
+/**
+ * #9761 — implementação de `releaseWaveSelection`: tira de
+ * `sent-or-queued.json` os emails de `daily.csv` (a seleção DESTA rodada) e
+ * marca a onda como liberada (import-waves/schedule-group passam a recusá-la —
+ * retomar à mão = envio duplo — e o detector de órfãos para de reportá-la).
+ * Roda DENTRO do lock do envio já adquirido por runEnvio, por isso usa a
+ * função de baixo nível e não o CLI de desbloqueio (LockHeldError).
+ */
+export function releaseWaveSelectionIn(segDir: string, cycle: string, waveKeyBase: string): number {
+  const released = unblockOrphanedSentOrQueuedEmails(
+    segDir, cycle, readGroupCsvEmails(segDir, "daily"), `rollback-${waveKeyBase}`,
+  );
+  writeWaveReleasedMarker(segDir, {
+    group: waveKeyBase,
+    releasedAt: new Date().toISOString(),
+    count: released,
+    reason: "rollback do envio-run (import/split falhou)",
+  });
+  return released;
+}
+
 export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
   return {
     rootDir,
@@ -367,6 +396,11 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     readAbTest: (cycle: string) => readClariceAbTest(resolveMonthlyDir(cycle)),
     waveManifestExists: (cycle: string, key: string) =>
       existsSync(resolve(clariceSegmentsDir(cycle), cellManifestFileName(key))),
+    // Roda DENTRO do lock do envio (já adquirido por runEnvio) — por isso
+    // chama a função de baixo nível direto, sem o CLI de desbloqueio (que
+    // tentaria o mesmo lock e falharia com LockHeldError).
+    releaseWaveSelection: (cycle: string, waveKeyBase: string) =>
+      releaseWaveSelectionIn(clariceSegmentsDir(cycle), cycle, waveKeyBase),
   };
 }
 
@@ -1487,12 +1521,38 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     } else if (abcAction === "travar") {
       splitArgs.push("--no-cells");
     }
-    step(deps, report, "clarice-split-group-cells", "scripts/clarice-split-group-cells.ts", splitArgs);
-
     const label = `${cycle} ${waveKeyBase}`;
-    step(deps, report, "clarice-import-waves", "scripts/clarice-import-waves.ts", [
-      "--cycle", cycle, "--group", waveKeyBase, "--label", label, "--execute",
-    ]);
+    try {
+      step(deps, report, "clarice-split-group-cells", "scripts/clarice-split-group-cells.ts", splitArgs);
+      step(deps, report, "clarice-import-waves", "scripts/clarice-import-waves.ts", [
+        "--cycle", cycle, "--group", waveKeyBase, "--label", label, "--execute",
+      ]);
+    } catch (importError) {
+      // #9761 — o build-segment acima JÁ gravou os selecionados em
+      // sent-or-queued.json. Sem lista/campanha criada, eles ficariam fora de
+      // toda montagem seguinte do ciclo (achado ao vivo 02-03/10/2026: Brevo
+      // 405 "list creation limit" prendeu 43.325 contatos). Nenhuma campanha
+      // existe neste ponto (create/schedule é o Passo 7), então devolver à fila
+      // não arrisca envio duplo — e a montagem seguinte ainda exclui quem
+      // estiver numa lista Brevo queued/sent ao vivo (#7406).
+      if (deps.releaseWaveSelection) {
+        try {
+          const released = deps.releaseWaveSelection(cycle, waveKeyBase);
+          report.note(
+            `↩️  import da onda "${waveKeyBase}" falhou — ${released} contato(s) devolvido(s) à fila ` +
+              "(removidos de sent-or-queued.json, #9761) e a onda marcada como LIBERADA: import-waves/schedule-group " +
+              "passam a recusá-la. Se o import chegou a criar alguma lista na Brevo antes de falhar, APAGUE-A " +
+              "(não reutilize — ocupa a cota de criação de listas que causou o #9761).",
+          );
+        } catch (releaseError) {
+          report.note(
+            `⚠️  import da onda "${waveKeyBase}" falhou E o rollback de sent-or-queued.json também falhou ` +
+              `(${(releaseError as Error).message}) — rode clarice-unblock-orphaned-selections.ts --apply (#9761).`,
+          );
+        }
+      }
+      throw importError;
+    }
 
     // #7880 — auditoria PÓS-montagem contra a Brevo AO VIVO: as duas camadas
     // acima (`sent-or-queued.json`, filtro de recência) leem só o STORE

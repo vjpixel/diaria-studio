@@ -22,6 +22,7 @@ import {
   sendDateBrt,
   EnvioAbort,
   summarizeStderr,
+  releaseWaveSelectionIn,
   type EnvioRunDeps,
   type StepResult,
   type ExecFn,
@@ -31,6 +32,8 @@ import type { WaveProposal, WaveState } from "../scripts/lib/clarice-wave-plan.t
 import type { ResolveLatestMonthlyCycleResult } from "../scripts/lib/mensal/monthly-paths.ts";
 import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
 import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio-lock.ts";
+import { appendSentOrQueuedEmails, sentOrQueuedFilePath } from "../scripts/clarice-build-segment.ts"; // #9761
+import { isWaveReleased } from "../scripts/lib/clarice-wave-released.ts"; // #9761
 import {
   riskUtilization,
   type RiskMetrics,
@@ -573,6 +576,88 @@ describe("clarice-envio-run (#5026)", () => {
       const { exec } = makeFakeExec(h);
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 1);
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  describe("rollback de sent-or-queued quando o import falha (#9761)", () => {
+    // Regressão: import falhou (Brevo 405 "list creation limit") DEPOIS do
+    // build-segment reservar a seleção → 43k contatos presos no ciclo 2609-10.
+    it("falha do import devolve a seleção à fila e segue exit 1, sem criar campanha", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-import-waves.ts"] = {
+        code: 1,
+        stdout: "",
+        stderr: 'Error: Brevo API POST /contacts/lists falhou (405): {"message":"You have reached your list creation limit"}',
+      };
+      const { exec, calls } = makeFakeExec(h);
+      const released: string[] = [];
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          releaseWaveSelection: (cycle) => {
+            released.push(cycle);
+            return 18700;
+          },
+        }),
+      );
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.deepEqual(released, [CYCLE]);
+      assert.match(r.reportMarkdown, /18700 contato\(s\) devolvido\(s\) à fila/);
+      assert.equal(calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), false);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha do split também dispara o rollback; rollback que lança vira aviso sem mascarar o erro original", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-split-group-cells.ts"] = { code: 1, stdout: "", stderr: "boom" };
+      const { exec } = makeFakeExec(h);
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          releaseWaveSelection: () => {
+            throw new Error("disco cheio");
+          },
+        }),
+      );
+      assert.equal(r.code, 1);
+      assert.match(r.reportMarkdown, /rollback de sent-or-queued\.json também falhou \(disco cheio\)/);
+      assert.match(r.reportMarkdown, /clarice-split-group-cells falhou/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("falha do build-segment (antes da seleção existir) NÃO dispara o rollback", async () => {
+      const root = freshRoot();
+      const h = goldenHandlers();
+      h["scripts/clarice-build-segment.ts"] = { code: 1, stdout: "", stderr: "0 selecionados" };
+      const { exec } = makeFakeExec(h);
+      let called = false;
+      const r = await runEnvio(baseDeps(root, { exec, releaseWaveSelection: () => ((called = true), 0) }));
+      assert.equal(r.code, 1);
+      assert.equal(called, false);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("releaseWaveSelectionIn (implementação real): tira daily.csv de sent-or-queued, rotula o history e grava -released.json", () => {
+      const segDir = mkdtempSync(join(tmpdir(), "release-wave-"));
+      appendSentOrQueuedEmails(segDir, CYCLE, "daily", ["a@x.com", "b@x.com", "outro@x.com"]);
+      writeFileSync(resolve(segDir, "daily.csv"), "email,NOME\na@x.com,A\nB@x.com,B\n");
+      assert.equal(releaseWaveSelectionIn(segDir, CYCLE, "d1-sab03"), 2);
+      const after = JSON.parse(readFileSync(sentOrQueuedFilePath(segDir), "utf8"));
+      assert.deepEqual(after.emails, ["outro@x.com"]);
+      assert.equal(after.history.at(-1).group, "rollback-d1-sab03");
+      assert.equal(isWaveReleased(segDir, "d1-sab03"), true);
+      rmSync(segDir, { recursive: true, force: true });
+    });
+
+    it("import OK não chama releaseWaveSelection", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers());
+      let called = false;
+      await runEnvio(baseDeps(root, { exec, releaseWaveSelection: () => ((called = true), 0) }));
+      assert.equal(called, false);
       rmSync(root, { recursive: true, force: true });
     });
   });
