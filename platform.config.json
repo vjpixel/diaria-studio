@@ -277,12 +277,12 @@
         "diaria_linkedin_page_url": "https://www.linkedin.com/company/diar.ia.br/"
       },
       "fallback_schedule": {
-        "d1_time": "10:00",
-        "d2_time": "12:30",
-        "d3_time": "17:30",
+        "d1_time": "09:45",
+        "d2_time": "12:15",
+        "d3_time": "17:15",
         "day_offset": 0
       },
-      "use_melhor_time": "08:00",
+      "use_melhor_time": "07:45",
       "timezone": "America/Sao_Paulo"
     }
   },

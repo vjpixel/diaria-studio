@@ -247,12 +247,12 @@ describe("agenda: D+1, slots da diária, 5 redes no mesmo horário (decisão do 
     }
     assert.deepEqual(resolveRetrospectivaPostScheduledAts(CONFIG, { baseDate: "261010", now: NOW }), s);
   });
-  it("slots vêm do fallback_schedule do config (fonte do compute-social-schedule); sem ele, 10:00/12:30/17:30", () => {
+  it("slots vêm do fallback_schedule do config (fonte do compute-social-schedule); sem ele, 09:45/12:15/17:15", () => {
     const outro = { publishing: { social: { timezone: "America/Sao_Paulo", fallback_schedule: { d1_time: "09:15", d2_time: "13:00", d3_time: "18:45" } } } };
     const s = resolveRetrospectivaPostScheduledAts(outro, { baseDate: "2026-10-10", now: NOW });
     assert.deepEqual([s.d1.x, s.d2.x, s.d3.x], ["2026-10-11T09:15:00-03:00", "2026-10-11T13:00:00-03:00", "2026-10-11T18:45:00-03:00"]);
     const semConfig = resolveRetrospectivaPostScheduledAts({}, { baseDate: "2026-10-10", now: NOW });
-    assert.equal(semConfig.d2.facebook, "2026-10-11T12:30:00-03:00");
+    assert.equal(semConfig.d2.facebook, "2026-10-11T12:15:00-03:00");
   });
   it("--at define só o DIA (local); sem base-date nem --at, D+1 de hoje no fuso", () => {
     const s = resolveRetrospectivaPostScheduledAts(CONFIG, { at: "2026-10-12T02:00:00Z", now: NOW }); // 23:00 de 11/10 em BRT
