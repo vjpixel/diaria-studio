@@ -6,6 +6,8 @@
  * rotulando cada mudança com heurísticas transparentes (ver
  * `scripts/lib/social-rewrite-diff.ts`). Só leitura de `data/` — nada ao vivo.
  *
+ * @one-off-validity: expira=2027-01-06 pergunta="as reescritas de social no gate 4 têm padrão comum que justifique mudar o prompt do social-writer/social-curto? (#9692)"
+ *
  * Uso:
  *   npx tsx scripts/measure-social-rewrite-diff.ts                       # 260928,261005,261006
  *   npx tsx scripts/measure-social-rewrite-diff.ts --editions 261005,261006
