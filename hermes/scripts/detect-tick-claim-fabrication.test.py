@@ -539,12 +539,23 @@ def test_regressao_9778_sessao_interativa_concorrente_e_ator():
         (9301, "#9301 reivindicada pela sessão interativa."),
         (9302, "#9302 reivindicada por uma sessão concorrente no 300."),
         (9303, "#9303 reivindicada por concorrente."),
+        (9305, "#9305 reivindicada pelas interativas."),
+        (9306, "#9306 reivindicada por outra rodada concorrente."),
     ):
         refs = mod.extract_claimed_issue_refs(linha)
         assert n not in refs, f"#{n} (outro ator) indevido: {linha!r} -> {refs}"
-    # Claim próprio continua contando.
-    refs = mod.extract_claimed_issue_refs("#9304 reivindicada neste tick.")
-    assert 9304 in refs, refs
+    # Claim PRÓPRIO continua contando — inclusive com os adjetivos novos no
+    # meio da frase (review do PR #9781: soltos, escondiam claim próprio).
+    for n, linha in (
+        (9304, "#9304 reivindicada neste tick."),
+        (9500, "#9500 reivindicada por este tick sem claim concorrente."),
+        (9501, "#9501 reivindicada por mim após checar claims concorrentes."),
+        (9502, "#9502 reivindicada por este tick sem sessão concorrente."),
+        (9503, "#9503 reivindicada por este tick antes da interativa."),
+        (9504, "#9504 reivindicada por este tick, nenhuma sessão interativa."),
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n in refs, f"#{n} (claim próprio) sumiu: {linha!r} -> {refs}"
     print("regressão #9778: 'interativa'/'concorrente' é ator — OK")
 
 
