@@ -252,13 +252,23 @@ export function replaceTitleInTituloSubtitulo(
   const lines = md.split("\n");
   const loc = locateTituloSubtituloLines(lines);
   if (!loc) return { md, status: "no_block" };
-  const old = (oldTitle ?? "").trim();
-  if (!old) return { md, status: "old_title_not_found" };
+  const rawOld = (oldTitle ?? "").trim();
+  if (!rawOld) return { md, status: "old_title_not_found" };
+  // #9674: o bloco grava títulos já sanitizados (`renderTituloSubtituloBlock`
+  // e o finalize), mas `oldTitle` costuma vir cru do `**DESTAQUE N |` — com
+  // `|` ele não casaria. Procura o cru (bloco legado/à mão) e, sem achar, a
+  // forma sanitizada.
+  const sanitizedOld = sanitizeTituloSegment(rawOld);
+  const targets = targetLineIdxs(loc, position);
+  const rawFound = targets.some(
+    (i) => findSegmentRun(lines[i].split("|").map((x) => x.trim()), rawOld) >= 0,
+  );
+  const old = rawFound || sanitizedOld === rawOld ? rawOld : sanitizedOld;
   // #9668: troca a SEQUÊNCIA de segmentos do título antigo (que pode ter `|`)
   // por um segmento só; o novo título nunca leva `|` pro bloco.
   const safeNew = sanitizeTituloSegment(newTitle);
   let hit = false;
-  for (const i of targetLineIdxs(loc, position)) {
+  for (const i of targets) {
     const raw = lines[i].split("|");
     const trimmed = raw.map((seg) => seg.trim());
     const wantLen = old.split("|").length;
