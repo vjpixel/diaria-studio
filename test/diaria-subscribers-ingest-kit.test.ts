@@ -300,6 +300,19 @@ describe("ingestOneBroadcast", () => {
   });
 });
 
+/**
+ * #7916: exclusão de onboarding neutra — sem ela, `main()` leria o
+ * `platform.config.json` e o store de onboarding REAIS da máquina (teste
+ * dependente do ambiente). Os testes que exercitam a leitura de disco via
+ * `--config` removem esta injeção (`delete deps.readOnboardingExclusion`).
+ */
+const neutralOnboardingExclusion = () => ({
+  ids: new Set<string>(),
+  source: "store" as const,
+  kitTransportEnabled: false,
+  warning: null,
+});
+
 /** Constrói `KitIngestDeps` fake — 2 broadcasts fixture, sem rede real. */
 function fakeDeps(): KitIngestDeps {
   const broadcasts: KitBroadcastSummary[] = [
@@ -346,6 +359,7 @@ function fakeDeps(): KitIngestDeps {
     // (pré-existente) — roster fica em `kit-subscribers-ingest.test.ts`.
     // dry-run por padrão (sem --write), então uma lista vazia é inerte aqui.
     listAllRosterSubscribers: async () => [],
+    readOnboardingExclusion: neutralOnboardingExclusion,
   };
 }
 
@@ -403,6 +417,182 @@ describe("main() — ponta a ponta com deps injetadas (fixture de /subscribers/f
     assert.equal(process.exitCode, 1);
     assert.equal(calledFetch, false, "guard de data/ ausente roda ANTES de qualquer chamada de rede");
     process.exitCode = originalExit;
+  });
+});
+
+describe("main() — exclui lotes de onboarding do transporte Kit (#7916, compat #7922)", () => {
+  function tmpRun(storeJson: string | null, enabled: boolean) {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-onb-"));
+    mkdirSync(resolve(tmp, "data"), { recursive: true });
+    writeFileSync(
+      resolve(tmp, "platform.config.json"),
+      JSON.stringify({ onboarding: { store_path: "data/onboarding/store.json", kit_transport: { enabled } } }),
+    );
+    if (storeJson != null) {
+      mkdirSync(resolve(tmp, "data/onboarding"), { recursive: true });
+      writeFileSync(resolve(tmp, "data/onboarding/store.json"), storeJson);
+    }
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    return {
+      argv: ["--db", dbPath, "--manifest", manifestPath, "--config", resolve(tmp, "platform.config.json")],
+      dbPath,
+      manifestPath,
+    };
+  }
+
+  /** `fakeDeps()` SEM a exclusão neutra — força a leitura real do `--config`/store. */
+  function diskDeps(): KitIngestDeps {
+    const deps = fakeDeps();
+    delete deps.readOnboardingExclusion;
+    return deps;
+  }
+
+  async function captureSummary(run: () => Promise<void>): Promise<Record<string, unknown>> {
+    const original = console.log;
+    let captured = "";
+    console.log = ((msg: string) => {
+      captured = msg;
+    }) as typeof console.log;
+    try {
+      await run();
+    } finally {
+      console.log = original;
+    }
+    return JSON.parse(captured) as Record<string, unknown>;
+  }
+
+  it("broadcast de onboarding (id 2 num lote do store) não vira evento nem entra no manifest; o de edição segue ingerido", async () => {
+    const store = JSON.stringify({
+      entries: {},
+      kit_transport: { lots: { "email1-2026-10-01-1": { lot_id: "email1-2026-10-01-1", broadcast_id: 2 } } },
+    });
+    const { argv, dbPath, manifestPath } = tmpRun(store, true);
+    const original = console.log;
+    let captured = "";
+    console.log = ((msg: string) => {
+      captured = msg;
+    }) as typeof console.log;
+    try {
+      await main(argv, diskDeps());
+    } finally {
+      console.log = original;
+    }
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    assert.deepEqual(
+      manifest.entries.map((e: { id: string }) => e.id),
+      ["1"],
+      "lote de onboarding nunca entra no manifest (não fica pendente pra sempre)",
+    );
+    const db = openDiariaSubscribersDb(dbPath);
+    // só broadcast 1: 2 sent + 1 delivered + 1 open = 4 (sem os 2 eventos do broadcast 2)
+    assert.equal(getStoreCounts(db).events, 4);
+    db.close();
+    assert.deepEqual(JSON.parse(captured).onboarding_broadcasts_excluded, ["2"]);
+  });
+
+  it("store de onboarding ausente com o switch OFF não quebra — ingere tudo", async () => {
+    const { argv, dbPath } = tmpRun(null, false);
+    await main(argv, diskDeps());
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).events, 6);
+    db.close();
+  });
+
+  it("store ilegível com o switch ON → aborta antes de listar broadcasts (nunca infla leitor-v1 em silêncio)", async () => {
+    const { argv } = tmpRun("{nao-json", true);
+    let listed = false;
+    const deps = diskDeps();
+    const inner = deps.listAllBroadcasts;
+    deps.listAllBroadcasts = async () => {
+      listed = true;
+      return inner();
+    };
+    await assert.rejects(() => main(argv, deps), /leitor-v1/);
+    assert.equal(listed, false);
+  });
+
+  it("store ilegível com o switch OFF (pós-rollback) → aborta também, nunca ingere tudo", async () => {
+    const { argv } = tmpRun("{nao-json", false);
+    let listed = false;
+    const deps = diskDeps();
+    const inner = deps.listAllBroadcasts;
+    deps.listAllBroadcasts = async () => {
+      listed = true;
+      return inner();
+    };
+    await assert.rejects(() => main(argv, deps), /ilegível.*leitor-v1/s);
+    assert.equal(listed, false);
+  });
+
+  it("resumo JSON registra a fonte da exclusão — 'store lido sem lotes' ≠ 'exclusão desligada'", async () => {
+    const lido = tmpRun(JSON.stringify({ entries: {}, kit_transport: { lots: {} } }), false);
+    const lidoOut = await captureSummary(() => main(lido.argv, diskDeps()));
+    assert.deepEqual(lidoOut.onboarding_exclusion, { source: "store", kit_transport_enabled: false, warning: null });
+
+    const ausente = tmpRun(null, false);
+    const ausenteOut = await captureSummary(() => main(ausente.argv, diskDeps()));
+    const ex = ausenteOut.onboarding_exclusion as { source: string; kit_transport_enabled: boolean; warning: string | null };
+    assert.equal(ex.source, "store-absent");
+    assert.equal(ex.kit_transport_enabled, false);
+    assert.match(ex.warning ?? "", /janela anterior/);
+  });
+
+  it("lote órfão (sem broadcast_id, não cancelado) → onboarding_orphan_lots + aviso; ingestão segue", async () => {
+    const store = JSON.stringify({
+      entries: {},
+      kit_transport: {
+        lots: {
+          "email1-2026-10-01-1": { lot_id: "email1-2026-10-01-1", broadcast_id: null, status: "pending" },
+          "email1-2026-10-02-1": { lot_id: "email1-2026-10-02-1", broadcast_id: null, status: "cancelled" },
+        },
+      },
+    });
+    const { argv, dbPath } = tmpRun(store, true);
+    const originalErr = console.error;
+    const errs: string[] = [];
+    console.error = ((msg: string) => {
+      errs.push(String(msg));
+    }) as typeof console.error;
+    let out: Record<string, unknown>;
+    try {
+      out = await captureSummary(() => main(argv, diskDeps()));
+    } finally {
+      console.error = originalErr;
+    }
+    assert.deepEqual(out.onboarding_orphan_lots, ["email1-2026-10-01-1"]);
+    assert.ok(errs.some((m) => /gap #1/.test(m)), "aviso alto no stderr");
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).events, 6, "órfão não identificável — nada excluído, ingestão não aborta");
+    db.close();
+  });
+
+  it("manifest pré-existente com o broadcast de onboarding (partial) → nunca reprocessado; coverage segue contando a entrada velha", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "diaria-kit-ingest-onb-manifest-"));
+    mkdirSync(resolve(tmp, "data/diaria-subscribers"), { recursive: true });
+    const dbPath = resolve(tmp, "data/diaria-subscribers/diaria-subscribers.db");
+    const manifestPath = resolve(tmp, "data/diaria-subscribers/kit-ingest-manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({ generated_at: "2026-10-01T00:00:00.000Z", entries: [{ id: "2", status: "partial" }] }),
+    );
+    const deps = fakeDeps();
+    deps.readOnboardingExclusion = () => ({ ids: new Set(["2"]), source: "store", kitTransportEnabled: true, warning: null });
+    const out = await captureSummary(() => main(["--db", dbPath, "--manifest", manifestPath], deps));
+
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.equal(getStoreCounts(db).events, 4, "só o broadcast 1 — o 2 (onboarding) não é reprocessado");
+    db.close();
+    // Efeito documentado: a entrada pré-existente do broadcast 2 fica no
+    // manifest como `partial` (mergeManifestEntries nunca remove entradas) e
+    // `manifestCoverageSummary` continua contando-a — coverage nunca fecha
+    // até alguém limpar a entrada à mão. Preferível a reprocessá-la como edição.
+    const coverage = out.coverage as { total: number; ok: number; partial: number; closed: boolean };
+    assert.equal(coverage.total, 2);
+    assert.equal(coverage.ok, 1);
+    assert.equal(coverage.partial, 1);
+    assert.equal(coverage.closed, false);
   });
 });
 
@@ -625,6 +815,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
 
     await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath], {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
@@ -646,6 +837,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
 
     await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
@@ -680,6 +872,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
       ["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath, "--write"],
       {
         listAllBroadcasts: async () => [],
+        readOnboardingExclusion: neutralOnboardingExclusion,
         fetchAudience: async () => ({ emails: [], descartadas: 0 }),
         getBroadcastStats: async () => makeStats(0),
         sleep: async () => {},
@@ -705,6 +898,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
 
     await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath], {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
@@ -722,6 +916,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     const capturaLogPath = resolve(tmp, "data/metrics/captura-log.jsonl");
     const deps: KitIngestDeps = {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
@@ -755,6 +950,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     const originalExit = process.exitCode;
     await main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
@@ -778,6 +974,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     await assert.rejects(
       main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
         listAllBroadcasts: async () => [],
+        readOnboardingExclusion: neutralOnboardingExclusion,
         fetchAudience: async () => ({ emails: [], descartadas: 0 }),
         getBroadcastStats: async () => makeStats(0),
         sleep: async () => {},
@@ -806,6 +1003,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     await assert.rejects(
       main(["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--write"], {
         listAllBroadcasts: async () => [],
+        readOnboardingExclusion: neutralOnboardingExclusion,
         fetchAudience: async () => ({ emails: [], descartadas: 0 }),
         getBroadcastStats: async () => makeStats(0),
         sleep: async () => {},
@@ -844,6 +1042,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
         ["--db", dbPath, "--manifest", manifestPath, "--captura-log", capturaLogPath, "--kit-active-history", kitActiveHistoryPath, "--write"],
         {
           listAllBroadcasts: async () => [],
+          readOnboardingExclusion: neutralOnboardingExclusion,
           fetchAudience: async () => ({ emails: [], descartadas: 0 }),
           getBroadcastStats: async () => makeStats(0),
           sleep: async () => {},
@@ -868,6 +1067,7 @@ describe("main() — Passo 1, ingestão de roster (#7174)", () => {
     let calledRoster = false;
     await main(["--db", dbPath, "--manifest", manifestPath, "--skip-roster"], {
       listAllBroadcasts: async () => [],
+      readOnboardingExclusion: neutralOnboardingExclusion,
       fetchAudience: async () => ({ emails: [], descartadas: 0 }),
       getBroadcastStats: async () => makeStats(0),
       sleep: async () => {},
