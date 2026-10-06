@@ -516,12 +516,15 @@ export interface ArchiveNeighbor {
  * já tem nav" e não duplicar numa 2ª passada (idempotência do backfill).
  */
 export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: ArchiveNeighbor): string {
+  // #9726: o backfill (`site-archive-page-backfill.ts`) injeta esta nav em
+  // página JÁ gravada, fora do `normalizeArrowsForSite` de
+  // `buildArchivePageHtml` — o título do vizinho precisa sair sem seta aqui.
   if (!prev && !next) return "";
   const prevLink = prev
-    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(prev.title)}</a>`
+    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(normalizeArrowsForSite(prev.title))}</a>`
     : "";
   const nextLink = next
-    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)}</a>`
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(normalizeArrowsForSite(next.title))}</a>`
     : "";
   return (
     `<nav class="archive-nav" aria-label="Navegação entre edições" ` +
@@ -915,7 +918,10 @@ export function newsEntryForPost(post: ArchivePost, nowMs: number = Date.now()):
   const ms = resolvePublishTimestampMs(post);
   if (ms === undefined) return undefined;
   if (nowMs - ms >= NEWS_SITEMAP_WINDOW_MS) return undefined;
-  return { title: derivePageTitle(post), publicationDate: new Date(ms).toISOString() };
+  // #9726: o `<news:title>` é texto de leitor publicado em
+  // `workers/site/public/sitemap.xml`, onde o check `check-no-arrow-glyph`
+  // reprova qualquer `→` — mesma normalização da página (#9721).
+  return { title: normalizeArrowsForSite(derivePageTitle(post)), publicationDate: new Date(ms).toISOString() };
 }
 
 export function sitemapEntriesForPosts(posts: ArchivePost[], opts: { now?: number } = {}): SitemapEntry[] {
@@ -1016,7 +1022,10 @@ function renderNewsBlock(news: SitemapNewsEntry): string {
     `\n        <news:language>${NEWS_PUBLICATION_LANGUAGE}</news:language>` +
     `\n      </news:publication>` +
     `\n      <news:publication_date>${escXml(news.publicationDate)}</news:publication_date>` +
-    `\n      <news:title>${escXml(news.title)}</news:title>` +
+    // #9726: normaliza também aqui (ponto único de escrita do bloco, usado por
+    // `buildSitemapXml` E `addSitemapEntry`) — uma `SitemapEntry` montada
+    // fora de `newsEntryForPost` não pode levar a seta pro sitemap.
+    `\n      <news:title>${escXml(normalizeArrowsForSite(news.title))}</news:title>` +
     `\n    </news:news>`
   );
 }
