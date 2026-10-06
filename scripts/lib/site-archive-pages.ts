@@ -503,6 +503,10 @@ export interface ArchiveNeighbor {
   title: string;
 }
 
+/** Rótulos da nav entre edições (#9723): substituem a seta `←` do link anterior. */
+export const ARCHIVE_NAV_PREV_LABEL = "Anterior: ";
+export const ARCHIVE_NAV_NEXT_LABEL = "Próxima: ";
+
 /**
  * Nav prev/next por data (#8353 item 1) — link pra edição publicada
  * imediatamente ANTES (`prev`) e DEPOIS (`next`) da atual, na mesma ordem
@@ -520,11 +524,13 @@ export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: Archi
   // página JÁ gravada, fora do `normalizeArrowsForSite` de
   // `buildArchivePageHtml` — o título do vizinho precisa sair sem seta aqui.
   if (!prev && !next) return "";
+  // #9723: sem setas (nem `←` nem `→`), a direção vem do rótulo, simétrico
+  // nos dois lados. O título do vizinho continua sendo o texto clicável.
   const prevLink = prev
-    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(normalizeArrowsForSite(prev.title))}</a>`
+    ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">${ARCHIVE_NAV_PREV_LABEL}${escHtml(normalizeArrowsForSite(prev.title))}</a>`
     : "";
   const nextLink = next
-    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(normalizeArrowsForSite(next.title))}</a>`
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${ARCHIVE_NAV_NEXT_LABEL}${escHtml(normalizeArrowsForSite(next.title))}</a>`
     : "";
   return (
     `<nav class="archive-nav" aria-label="Navegação entre edições" ` +

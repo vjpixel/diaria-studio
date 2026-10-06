@@ -174,7 +174,7 @@ ${renderAnalyticsHead()}
       <p class="status" role="status" aria-live="polite"></p>
     </form>
 
-    <a class="back" href="/">← Voltar pra diar.ia.br</a> · <a class="back" href="https://arquivo.diar.ia.br/privacidade">Privacidade</a>
+    <a class="back" href="/">Voltar pra diar.ia.br</a> · <a class="back" href="https://arquivo.diar.ia.br/privacidade">Privacidade</a>
   </main>
 
   <script>

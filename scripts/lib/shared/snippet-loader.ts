@@ -36,7 +36,7 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { ARROW_GLYPH, normalizeNumericArrows, stripCtaArrows } from "./arrow-glyph.ts";
+import { ARROW_GLYPH, LEFT_ARROW_GLYPH, normalizeNumericArrows, stripCtaArrows } from "./arrow-glyph.ts";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -64,10 +64,11 @@ export function readSnippetFile(filename: string, rootDir?: string): string | nu
   // #9731: transição numérica (`5,4% → [18%](u)`) vira `para` antes, como nos
   // callouts — senão ela sobra e cai no aviso abaixo.
   const clean = stripCtaArrows(normalizeNumericArrows(raw));
-  if (clean.includes(ARROW_GLYPH) && !warnedArrowSnippets.has(p)) {
+  // #9723: `←` no início de rótulo (`[← Voltar](u)`) também sai em `stripCtaArrows`.
+  if ((clean.includes(ARROW_GLYPH) || clean.includes(LEFT_ARROW_GLYPH)) && !warnedArrowSnippets.has(p)) {
     warnedArrowSnippets.add(p);
     console.warn(
-      `[snippet-loader] data/snippets/${filename} ainda tem a seta "${ARROW_GLYPH}" fora de posição de CTA (#9721). Reescreva a caixa sem ela; rode \`npx tsx scripts/check-no-arrow-glyph.ts\` pra ver onde.`,
+      `[snippet-loader] data/snippets/${filename} ainda tem a seta "${ARROW_GLYPH}" ou "${LEFT_ARROW_GLYPH}" fora de posição de CTA (#9721, #9723). Reescreva a caixa sem ela; rode \`npx tsx scripts/check-no-arrow-glyph.ts\` pra ver onde.`,
     );
   }
   return clean;

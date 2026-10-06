@@ -406,7 +406,7 @@ function renderPagination(page: number, totalPages: number): string {
   if (totalPages <= 1) return "";
   const links: string[] = [];
   if (page > 1) {
-    links.push(`<a class="page-nav" rel="prev" href="${archiveIndexPath(page - 1)}">← anterior</a>`);
+    links.push(`<a class="page-nav" rel="prev" href="${archiveIndexPath(page - 1)}">anterior</a>`);
   }
   for (let n = 1; n <= totalPages; n++) {
     links.push(
@@ -540,7 +540,7 @@ ${renderAnalyticsHead()}
 <body>
   ${renderSiteNav({ active: "edicoes", inheritHostTokens: true })}
   <main class="wrap">
-    <p class="top"><a href="/">← diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
+    <p class="top"><a href="/">diar<span class="dot">.</span>ia<span class="dot">.</span>br</a></p>
     <h1>Todas as edições</h1>
     <p class="lede">${escHtml(String(totalEditions))} edições da diar.ia.br — a newsletter diária de inteligência artificial em português, por ${escHtml(GEO_AUTHOR.name)}. Da mais recente à mais antiga${page > 1 ? `, página ${page} de ${totalPages}` : ""}.</p>
 ${renderEntries(entries)}

@@ -206,7 +206,7 @@ ${renderAnalyticsHead()}
 
     <div class="back-row">
       <a class="btn btn-teal" href="${ctaUrl}">Assinar a Clarice com desconto</a>
-      <a class="back" href="/">← Voltar pra diar.ia.br</a>
+      <a class="back" href="/">Voltar pra diar.ia.br</a>
     </div>
 
     <a class="back" href="https://arquivo.diar.ia.br/privacidade" style="display:block;margin-top:24px;">Privacidade</a>
