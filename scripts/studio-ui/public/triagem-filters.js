@@ -136,3 +136,34 @@ export function emptyStateMessage({ filteredCount, totalCount, filterActive, fil
   }
   return "0 resultados para este filtro.";
 }
+
+/**
+ * #9711 — teto de linhas desenhadas por tabela. A Triagem renderiza o
+ * snapshot inteiro de forma síncrona a cada troca de filtro; medido em Chrome
+ * headless (ver PR da #9711), com o backlog real (54 issues) isso custa ~5ms
+ * por troca, mas cresce linearmente — com 2.160 issues já são ~650ms por
+ * troca e ~115k nós no DOM. O teto é a cerca contra esse crescimento: acima
+ * dele a tabela mostra as primeiras `limit` linhas e um aviso com a contagem
+ * escondida, e o editor pode pedir "mostrar todas" (o contador do <h2>
+ * continua sendo o total filtrado, nunca o número desenhado).
+ *
+ * Pura: recebe a lista já filtrada, devolve o recorte + quantas ficaram de
+ * fora. `showAll` desliga o teto. `limit` inválido (não-positivo/NaN) não
+ * corta nada — degradar pra "desenha tudo" é o comportamento de antes, nunca
+ * esconder linha por um config errado.
+ */
+export const ROW_RENDER_CAP = 300;
+
+export function capRows(rows, { limit = ROW_RENDER_CAP, showAll = false } = {}) {
+  if (showAll || !Number.isFinite(limit) || limit <= 0 || rows.length <= limit) {
+    return { visible: rows, hiddenCount: 0 };
+  }
+  return { visible: rows.slice(0, limit), hiddenCount: rows.length - limit };
+}
+
+/** Texto do aviso de linhas escondidas pelo teto (`null` quando nada foi
+ * cortado). Separado do DOM pra ser testável sem harness. */
+export function truncatedNotice(hiddenCount, shownCount) {
+  if (!hiddenCount || hiddenCount <= 0) return null;
+  return `Mostrando ${shownCount} de ${shownCount + hiddenCount} — ${hiddenCount} oculta(s) para manter a página leve. Refine o filtro ou mostre a lista inteira.`;
+}
