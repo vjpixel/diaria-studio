@@ -35,7 +35,13 @@ import { createHash } from "node:crypto";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { appendEditorRequest, type EditorRequestEntry, type RequestType, type RequestTarget, type Resolution, type RequestSource } from "./log-editor-request.ts";
-import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
+import {
+  destaqueUrlMapFromApproved,
+  isDestaqueSection,
+  matchSections,
+  parseSocialSections,
+  type SectionPair,
+} from "./lib/social-rewrite-diff.ts";
 import { canonicalizeUrl } from "./apply-gate-edits.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
@@ -383,45 +389,41 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
 }
 
 /**
- * Normaliza toda URL própria do site (BEEHIIV_BASE_URL, ex: diar.ia.br)
- * pra um placeholder estável, ANTES de comparar seções de `03-social.md`.
- *
- * Causa do falso-positivo #7974 Fix 2: `resolve-edition-url.ts` reescreve
- * `{edition_url}` (literal no snapshot pós-Stage-2) pela URL real da edição
- * no Stage 5, em toda seção que usa o placeholder (`# Curto`, `## d1/d2/d3`,
- * `## post_pixel`) — isso acontece DEPOIS do snapshot `stage2-post-gate` e
- * ANTES do diff do Stage 6 (`deriveStage6`), então toda edição publicada
- * virava `social-rewrite` em massa mesmo sem nenhuma edição humana (medido:
- * 5 de 10 edições reais, #7964). Normalizar de volta pro placeholder elimina
- * o ruído sem perder detecção de troca de link de TERCEIROS (domínio
- * diferente do site, preservado intacto).
- */
-const SELF_URL_RE = new RegExp(
-  `${BEEHIIV_BASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^\\s)]*`,
-  "g",
-);
-function normalizeSelfUrls(content: string): string {
-  return content.replace(SELF_URL_RE, "{edition_url}");
-}
-
-/**
  * Classifica diferenças no 03-social.md (social)
  *
- * `destaqueUrls` (#7981 follow-up, opcional) — mapa `"d1"/"d2"/"d3"` → URL
- * do artigo daquele destaque, derivado de `_internal/01-approved.json`
- * (`buildDestaqueUrlMap` abaixo) — populado em `context.url` das entradas
- * de destaque, mesmo motivo do fix em `classifyNewsletterDiff` (achado ao
- * vivo: `distill-prompt-corrections.ts`/#7981 nunca conseguia medir "≥2
- * histórias distintas" sem isso). Diferente de `classifyNewsletterDiff`
- * (que já tem a URL na própria linha do markdown), o texto social não
- * embute URL — o mapa precisa vir de FORA. Sem o parâmetro (chamador
- * antigo/teste que não o passa), `context.url` fica `null` — nunca
- * fabricado, nunca quebra o comportamento anterior.
+ * #9718: parsing, normalização e casamento vêm de `lib/social-rewrite-diff.ts`
+ * (a medição da #9692) — este classificador não tem mais lógica própria de
+ * seção. Três defeitos corrigidos em relação ao `Map` por nome de seção:
+ *
+ * 1. **Chave = bloco + seção.** `# Social ## d1` e `# Curto ## d1` são
+ *    seções distintas; antes o Curto sobrescrevia o texto longo e o diff do
+ *    social comparava só o Curto (a correção factual do d2 de 261005 no texto
+ *    longo não entrava na contagem).
+ * 2. **Casamento de destaque por URL**, com o `01-approved.json` de CADA lado
+ *    (`baselineDestaqueUrls` = o do snapshot; `destaqueUrls` = o atual) —
+ *    nunca por posição. Reordenar sem editar não gera nada; destaque trocado
+ *    (sem par) também não, porque a troca já é registrada como
+ *    `destaque-swap` pelo diff do `01-approved.json`. `context.url` é a URL
+ *    do destaque no lado aprovado, da MESMA história que foi comparada.
+ * 3. **Normalização** (`normalizeSocialMd`): CRLF→LF, espaço no fim da linha
+ *    e URL própria do site → `{edition_url}` (#7974 Fix 2: o Stage 5 resolve
+ *    o placeholder depois do snapshot).
+ *
+ * Item trocado fora dos destaques (`um`, `post_pixel` com texto sem
+ * semelhança) também não vira `social-rewrite`: é texto novo, não reescrita
+ * (mesmo critério de `isRealRewrite` na medição).
+ *
+ * Fallback sem URL (snapshot ou `01-approved.json` ausente de um dos lados):
+ * o casamento cai pra similaridade; um destaque que não casou por
+ * similaridade mas tem a seção de MESMO NOME sem par do outro lado é
+ * comparado por nome (comportamento anterior) — sem URL não há como afirmar
+ * que foi troca, e perder uma reescrita real é pior que registrar uma troca.
  */
 export function classifySocialDiff(
   oldContentRaw: string,
   newContentRaw: string,
   destaqueUrls?: ReadonlyMap<string, string>,
+  baselineDestaqueUrls?: ReadonlyMap<string, string>,
 ): Array<{
   request_type: RequestType;
   target: RequestTarget;
@@ -429,67 +431,53 @@ export function classifySocialDiff(
   resolution: Resolution;
   context?: Record<string, unknown>;
 }> {
-  const oldContent = normalizeSelfUrls(oldContentRaw);
-  const newContent = normalizeSelfUrls(newContentRaw);
+  const haveUrls = (destaqueUrls?.size ?? 0) > 0 && (baselineDestaqueUrls?.size ?? 0) > 0;
+  const pairs = matchSections(
+    parseSocialSections(oldContentRaw),
+    parseSocialSections(newContentRaw),
+    baselineDestaqueUrls,
+    destaqueUrls,
+  );
 
-  const results: Array<{
-    request_type: RequestType;
-    target: RequestTarget;
-    description: string;
-    resolution: Resolution;
-    context?: Record<string, unknown>;
-  }> = [];
+  // Fallback por nome (ver docstring) — só sem URL dos dois lados.
+  const removed = pairs.filter((p) => p.kind === "historia-removida");
+  const byName = (p: SectionPair) =>
+    !haveUrls && p.kind === "historia-trocada" && isDestaqueSection(p.section)
+      ? removed.find((r) => r.block === p.block && r.section === p.section)
+      : undefined;
 
-  const extractSections = (content: string): Map<string, string> => {
-    const sections = new Map<string, string>();
-    const lines = content.split("\n");
-    let currentSection = "intro";
-    let currentContent: string[] = [];
-
-    for (const line of lines) {
-      const headerMatch = line.match(/^##\s+(.+)$/);
-      if (headerMatch) {
-        if (currentContent.length > 0) {
-          sections.set(currentSection, currentContent.join("\n"));
-        }
-        currentSection = headerMatch[1].toLowerCase().replace(/\s+/g, "-");
-        currentContent = [line];
-      } else {
-        currentContent.push(line);
-      }
+  const results: ReturnType<typeof classifySocialDiff> = [];
+  for (const p of pairs) {
+    let before: string;
+    let matchedBy: string | undefined = p.matchedBy;
+    if (p.kind === "mesma-historia") before = p.before ?? "";
+    else {
+      const r = byName(p);
+      if (!r) continue; // troca/remoção: não é reescrita (#9718)
+      before = r.before ?? "";
+      matchedBy = "nome";
     }
-    if (currentContent.length > 0) {
-      sections.set(currentSection, currentContent.join("\n"));
-    }
-    return sections;
-  };
+    const after = p.after ?? "";
+    if (before === after) continue; // idêntico (inclusive só reordenado)
 
-  const oldSections = extractSections(oldContent);
-  const newSections = extractSections(newContent);
-
-  for (const [section, newText] of newSections) {
-    const oldText = oldSections.get(section) ?? "";
-    if (oldText === newText) continue;
-
-    let target: RequestTarget = "social";
-    let requestType: RequestType = "social-rewrite";
-
-    if (section.startsWith("d")) {
-      target = section as RequestTarget;
-    } else if (section === "post-pixel" || section === "post_pixel") {
-      target = "social";
-      requestType = "social-rewrite";
-    }
-
+    const target: RequestTarget = isDestaqueSection(p.section) ? (p.section as RequestTarget) : "social";
     results.push({
-      request_type: requestType,
+      request_type: "social-rewrite",
       target,
-      description: `Mudança em social ${section}: reescrita/ajuste de texto`,
+      description: `Mudança em social ${p.block}/${p.baselineSection ? `${p.baselineSection}→` : ""}${p.section}: reescrita/ajuste de texto`,
       resolution: "accepted",
-      context: { section, old_length: oldText.length, new_length: newText.length, url: destaqueUrls?.get(target) ?? null },
+      context: {
+        section: p.section,
+        block: p.block,
+        old_length: before.length,
+        new_length: after.length,
+        url: isDestaqueSection(p.section) ? (destaqueUrls?.get(p.section) ?? null) : null,
+        ...(matchedBy ? { matched_by: matchedBy } : {}),
+        ...(p.baselineSection ? { baseline_section: p.baselineSection } : {}),
+        ...(p.sourceChanged ? { source_changed: true } : {}),
+      },
     });
   }
-
   return results;
 }
 
@@ -951,28 +939,33 @@ function snapshotStage4(editionDir: string): void {
  * comportamento de antes deste fix.
  */
 export function buildDestaqueUrlMap(editionDir: string): Map<string, string> {
-  const map = new Map<string, string>();
   try {
     const approvedPath = join(editionDir, "_internal", "01-approved.json");
-    if (!existsSync(approvedPath)) return map;
-    const json = JSON.parse(readFileSync(approvedPath, "utf8"));
-    const highlights = Array.isArray(json?.highlights) ? json.highlights : [];
-    highlights.forEach((h: any, i: number) => {
-      const url = h?.article?.url ?? h?.url;
-      if (typeof url === "string" && url !== "") map.set(`d${i + 1}`, url);
-    });
+    if (!existsSync(approvedPath)) return new Map();
+    return destaqueUrlMapFromApproved(readFileSync(approvedPath, "utf8"));
   } catch {
-    // fail-soft — ver docstring
+    return new Map(); // fail-soft — ver docstring
   }
-  return map;
 }
 
-/** Classificadores compartilhados por deriveStage4/deriveStage6 (mesmos arquivos-fonte). */
-function buildStage2FilesClassifierMap(editionDir: string): Map<string, (oldC: string, newC: string) => any[]> {
+/**
+ * Classificadores compartilhados por deriveStage4/deriveStage6 (mesmos arquivos-fonte).
+ *
+ * `baselineLabel` (#9718): o snapshot contra o qual o diff roda — o
+ * `01-approved.json` DELE dá as URLs dos destaques do lado antigo, pra o
+ * social casar destaque por URL dos dois lados (nunca por posição).
+ */
+function buildStage2FilesClassifierMap(
+  editionDir: string,
+  baselineLabel: string,
+): Map<string, (oldC: string, newC: string) => any[]> {
   const destaqueUrls = buildDestaqueUrlMap(editionDir);
+  const baselineDestaqueUrls = destaqueUrlMapFromApproved(
+    readSnapshots(editionDir, baselineLabel, ["_internal/01-approved.json"]).get("_internal/01-approved.json"),
+  );
   return new Map<string, (oldC: string, newC: string) => any[]>([
     ["02-reviewed.md", classifyNewsletterDiff],
-    ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls)],
+    ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls, baselineDestaqueUrls)],
     ["_internal/01-approved.json", classifyApprovedDiff],
   ]);
 }
@@ -1017,7 +1010,7 @@ function deriveStage4(editionDir: string, edition: string, runLogRoot: string = 
   const baselineLabel = resumed ? STAGE4_POST_GATE_LABEL : STAGE2_BASELINE_LABEL;
   if (!resumed) reportBaselineHealth(editionDir, edition, runLogRoot);
 
-  const stage2ClassifierMap = buildStage2FilesClassifierMap(editionDir);
+  const stage2ClassifierMap = buildStage2FilesClassifierMap(editionDir, baselineLabel);
   const derived = diffAndClassify(editionDir, baselineLabel, STAGE2_SNAPSHOT_FILES, stage2ClassifierMap, 4);
 
   const stage4ClassifierMap = buildStage4FilesClassifierMap();
@@ -1052,7 +1045,7 @@ function deriveStage6(editionDir: string, edition: string): number {
   const baselineLabel = hasSnapshot(editionDir, STAGE4_POST_GATE_LABEL, STAGE2_SNAPSHOT_FILES)
     ? STAGE4_POST_GATE_LABEL
     : STAGE2_BASELINE_LABEL;
-  const classifierMap = buildStage2FilesClassifierMap(editionDir);
+  const classifierMap = buildStage2FilesClassifierMap(editionDir, baselineLabel);
   const derived = diffAndClassify(editionDir, baselineLabel, STAGE2_SNAPSHOT_FILES, classifierMap, 6);
 
   let count = 0;

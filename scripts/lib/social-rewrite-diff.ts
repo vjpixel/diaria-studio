@@ -52,10 +52,10 @@ export function normalizeSocialMd(md: string): string {
 }
 
 /**
- * Quebra o arquivo em (bloco, seção). Diferente de `classifySocialDiff`
- * (derive-editor-requests), a chave inclui o BLOCO — `# Social ## d1` e
- * `# Curto ## d1` são seções distintas (lá o `Map` por nome de seção fazia o
- * Curto sobrescrever o texto longo).
+ * Quebra o arquivo em (bloco, seção). A chave inclui o BLOCO — `# Social ## d1`
+ * e `# Curto ## d1` são seções distintas (o antigo `Map` por nome de seção de
+ * `classifySocialDiff` fazia o Curto sobrescrever o texto longo; desde o
+ * #9718 aquele classificador usa este parser).
  */
 export function parseSocialSections(md: string): SocialSection[] {
   const out: SocialSection[] = [];
