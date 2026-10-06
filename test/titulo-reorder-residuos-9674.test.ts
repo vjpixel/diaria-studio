@@ -119,4 +119,14 @@ describe("#9674 item 2 — renderTituloSubtituloBlock limpa `|` dos títulos", (
     assert.equal(r.status, "updated");
     assert.match(r.md, /\nNovo \| Titulo Tres\n/);
   });
+
+  it("swap com o título antigo CRU (com `|`) acha o segmento sanitizado do bloco", () => {
+    const md = reviewedMd(3).replace("**[Titulo Dois](", "**[OpenAI DevDay | Keynote](");
+    const derived = deriveTituloSubtitulo(md);
+    assert.ok(derived);
+    // `applySwapToReviewedMd` passa o título do **DESTAQUE N |** como veio.
+    const r = replaceTitleInTituloSubtitulo(derived.md, "OpenAI DevDay | Keynote", "Novo", 2);
+    assert.equal(r.status, "updated");
+    assert.match(r.md, /\nNovo \| Titulo Tres\n/);
+  });
 });
