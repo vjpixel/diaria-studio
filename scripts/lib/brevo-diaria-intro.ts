@@ -63,7 +63,7 @@ export function renderPendingIntroHtml(rootDir?: string): string | null {
   const ctaIdx = paras.findIndex(isCtaOnlyParagraph);
   if (ctaIdx === -1) {
     throw new Error(
-      `renderPendingIntroHtml: ${PENDING_INTRO_SNIPPET_FILENAME} não tem parágrafo CTA isolado (→ [texto](url)) — bloco sem botão de cadastro é inseguro pro segmento Pending.`,
+      `renderPendingIntroHtml: ${PENDING_INTRO_SNIPPET_FILENAME} não tem parágrafo CTA isolado ([texto](url) sozinho no parágrafo) — bloco sem botão de cadastro é inseguro pro segmento Pending.`,
     );
   }
   const links = findMarkdownLinks(paras[ctaIdx]);

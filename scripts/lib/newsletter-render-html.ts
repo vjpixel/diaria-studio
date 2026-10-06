@@ -32,6 +32,7 @@ import {
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
+import { stripCtaArrows } from "./shared/arrow-glyph.ts"; // #9721: a seta nunca chega ao leitor
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
 import { VOTE_TOKEN_DOMAIN } from "./shared/poll-token.ts"; // #4487: domínio reservado do token opaco de voto
 import { deriveEditionUrl, appendUtmToEditionUrl, BEEHIIV_BASE_URL } from "./edition-url.ts"; // #4570: bloco WhatsApp aponta pra URL da edição (seoSlug(D1)), não mais pra home; BEEHIIV_BASE_URL (#5794): bloco "Convide um amigo" aponta pra HOME, não pra edição
@@ -1676,7 +1677,7 @@ export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
       </table>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
         <!-- #3103: crédito da imagem continua 12px (linha secundária, não faz
-             parte do loop de engajamento resultado→leaderboard). -->
+             parte do loop de engajamento resultado-leaderboard). -->
         <p style="margin:16px 0 0;font-family:${FONT_BODY};font-size:12px;line-height:1.5;color:${TEXT_COLOR};">${creditHtml}</p>
       </td></tr>${prevResultHtml}
 ${leaderboardRow}
@@ -1787,7 +1788,7 @@ export function renderLeaderboardLinkRow(paragraphStyle: string): string {
   // (era só o texto do link, sem padding — alvo de toque apertado em mobile).
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">ranking</a></p>
+        <p style="${paragraphStyle}">Veja o ranking de quem mais acerta: <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">ranking</a></p>
       </td></tr>`;
 }
 
@@ -1811,7 +1812,7 @@ export function renderJogarArchiveLinkRow(paragraphStyle: string): string {
   const url = buildJogarArchiveUrl();
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
-        <p style="${paragraphStyle}">Quer mais? Jogue os pares anteriores → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">arquivo do É IA?</a></p>
+        <p style="${paragraphStyle}">Quer mais? Jogue os pares anteriores: <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">arquivo do É IA?</a></p>
       </td></tr>`;
 }
 
@@ -2144,7 +2145,7 @@ export function renderWhatsappShare(destaques: RenderDestaque[], edition: string
   return `<!-- Compartilhe no WhatsApp -->
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr><td>
     <div style="text-align:center;">
-      <a href="${esc(shareLink)}" style="${CTA_BUTTON_STYLE}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp →</a>
+      <a href="${esc(shareLink)}" style="${CTA_BUTTON_STYLE}" target="_blank" rel="noopener noreferrer">Compartilhar no WhatsApp</a>
     </div>
   </td></tr></table>`;
 }
@@ -2629,7 +2630,18 @@ export function capDivulgacaoBoxes(
   return sorted.filter((s) => !dropped.has(s));
 }
 
+/**
+ * #9721: a seta `→` nunca chega ao leitor. Rede de segurança sobre o HTML
+ * final: o texto vindo do reviewed.md (caixa colada à mão, sintaxe legada
+ * `→ [label](url)`) pode trazer a seta em posição de CTA mesmo com os
+ * templates já limpos. `stripCtaArrows` só mexe nessas posições (fim de
+ * rótulo de link, prefixo/lead-in de link) — seta editorial no corpo fica.
+ */
 export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): string {
+  return stripCtaArrows(renderHTMLUnsanitized(content, opts));
+}
+
+function renderHTMLUnsanitized(content: NewsletterContent, opts: RenderOpts): string {
   // #4673: reseta o coletor no início de CADA chamada — `getRenderWarnings()`
   // depois desta chamada reflete só esta invocação, nunca acumula entre
   // chamadas (ex: --split roda renderHTML 1x; um caller de teste que chama

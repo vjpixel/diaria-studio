@@ -1,7 +1,7 @@
 # workers/site/public/_redirects (#6359)
 #
 # `/subscribe` — stub do cutover (#467/#6359). O cadastro real hoje é feito
-# pelo backend Kit (platform.config.json → publishing.newsletter.backend =
+# pelo backend Kit (platform.config.json, publishing.newsletter.backend =
 # "kit", switchover #6114) e a única superfície de cadastro HOSPEDADA que a
 # conta Kit já expõe publicamente e confirmada ao vivo (26/08/2026, `curl`
 # com User-Agent de navegador — sem UA a Cloudflare devolve challenge, ver

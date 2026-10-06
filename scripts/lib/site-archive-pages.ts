@@ -32,6 +32,7 @@ import { renderSeoMeta } from "./shared/seo-meta.ts";
 import { COVER_IMAGE_WIDTH, COVER_IMAGE_HEIGHT } from "./shared/cover-image.ts";
 import { loadArchiveImageMigrationMap, rewriteMigratedBeehiivImages } from "./archive-image-migration.ts"; // #8364
 import { injectSiteNavAfterBodyOpen } from "./shared/site-nav.ts"; // #8497: menu global
+import { normalizeArrowsForSite } from "./shared/arrow-glyph.ts"; // #9721: página /p/ sem seta
 
 export interface ArchivePost {
   slug: string;
@@ -520,7 +521,7 @@ export function buildArchiveNeighborNavHtml(prev?: ArchiveNeighbor, next?: Archi
     ? `<a href="${archiveUrlForSlug(prev.slug)}" rel="prev">← ${escHtml(prev.title)}</a>`
     : "";
   const nextLink = next
-    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)} →</a>`
+    ? `<a href="${archiveUrlForSlug(next.slug)}" rel="next">${escHtml(next.title)}</a>`
     : "";
   return (
     `<nav class="archive-nav" aria-label="Navegação entre edições" ` +
@@ -805,7 +806,19 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   // acima NÃO cobre — que é exatamente o que o #6210 pediu.
   verifyNoUnresolvedMergeTags(html, post.slug);
 
-  return html;
+  // #9721 (review do PR #9724): nenhuma seta `→` sai numa página `/p/`. O
+  // check de CI `check-no-arrow-glyph` reprova `→` em `workers/site/public/**`,
+  // e a página de edição nova sai por PR automático (#8158): uma seta
+  // editorial no texto de um destaque travaria esse PR e deixaria
+  // `/p/{slug}` em 404. Aplicado AQUI (e não só em
+  // `publish-edition-site-page.ts`) pra cobrir também a regeneração em lote
+  // (`gen-archive-pages.ts`) e os backfills, que passam pelo mesmo builder.
+  // Home e índice paginado do acervo derivam do HTML desta página, então
+  // herdam a normalização. Efeito colateral aceito: uma regeneração em lote
+  // reescreve também as 5 páginas antigas da ALLOWLIST de
+  // `no-arrow-glyph-scan.ts`, e o check acusa essas entradas como obsoletas,
+  // pedindo pra removê-las na mesma PR (revisão humana do texto convertido).
+  return normalizeArrowsForSite(html);
 }
 
 /**

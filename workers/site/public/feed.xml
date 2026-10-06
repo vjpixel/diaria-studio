@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Mon, 05 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Tue, 06 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Seu GPT personalizado tem data para acabar</title>
+      <link>https://diar.ia.br/p/seu-gpt-personalizado-tem-data-para-acabar</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/seu-gpt-personalizado-tem-data-para-acabar</guid>
+      <pubDate>Tue, 06 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Seu agente autônomo sobrevive até 2027? | Agentes da OpenAI entraram no Medicare sem aval</description>
+    </item>
     <item>
       <title>Cloudflare lança modelos que decidem, não conversam</title>
       <link>https://diar.ia.br/p/cloudflare-lanca-modelos-que-decidem-nao-conversam</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/itau-lanca-ia-nativa-para-300-mil-clientes</guid>
       <pubDate>Tue, 28 Jul 2026 09:00:00 GMT</pubDate>
       <description>Professor flagra 90% da turma colando com IA | Modelos chineses ganham espaço</description>
-    </item>
-    <item>
-      <title>Anthropic lança o Claude Opus 5</title>
-      <link>https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5</guid>
-      <pubDate>Mon, 27 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Todas as melhores IAs vão precisar de aval dos EUA? | Modelos superam humanos em viés ao contratar</description>
     </item>
   </channel>
 </rss>

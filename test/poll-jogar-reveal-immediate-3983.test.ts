@@ -380,7 +380,7 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
 
   it("renderRoundResult tem botão 'Próxima rodada' — SEM auto-avanço (pedido do editor 260724: só passa clicando)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /class="seq-next-btn">Próxima rodada →<\/button>/);
+    assert.match(html, /class="seq-next-btn">Próxima rodada<\/button>/); // #9721: sem a seta
     assert.doesNotMatch(html, /setTimeout\(goNext/);
   });
 

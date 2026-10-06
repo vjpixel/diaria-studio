@@ -261,8 +261,8 @@ UTM) — a auto-linkagem "rouba" o fim do rótulo.
 **Regra aplicada mecanicamente por `renderLinkedinWeeklyHtml`
 (`scripts/lib/weekly-linkedin-render.ts`):** todo rótulo de link que este
 módulo gera é um rótulo de AÇÃO, nunca o domínio — "Receba todo dia, é
-grátis →" (CTA do meio, fecha o bloco Use Melhor) e "Assine grátis, é
-rapidinho →" (CTA do fim). `endsInBareDomainLabel()` no mesmo módulo é o
+grátis" (CTA do meio, fecha o bloco Use Melhor) e "Assine grátis, é
+rapidinho" (CTA do fim; sem a seta desde #9721). `endsInBareDomainLabel()` no mesmo módulo é o
 guard determinístico — se algum dia um rótulo dinâmico (ex: título de
 Use Melhor levantado literal) terminar coincidentemente em algo que
 pareça domínio, o render emite warning em vez de deixar passar em

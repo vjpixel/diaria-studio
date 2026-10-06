@@ -140,7 +140,7 @@ describe("asset gerado — data/snippets/hub-divulgacao-rotativo.md (#5263, path
     const markdown = buildHubDivulgacaoBoxMarkdown(source);
     const content = renderGeneratedSnippet("260814", markdown);
     assert.match(content, /GERADO, NÃO EDITAR À MÃO/);
-    assert.match(content, /\*\*A cobertura completa de .+ → \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
+    assert.match(content, /\*\*A cobertura completa de .+: \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
   });
 
   it("renderGeneratedSnippet é determinístico — mesmo input, mesmo output byte-a-byte", () => {

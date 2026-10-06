@@ -2526,7 +2526,7 @@ describe("regenerateHubDivulgacaoBoxForEdition (#5263 — wiring que faltava: ma
       assert.ok(result.slug && result.slug.length > 0);
       const content = readFileSync(join(dir, "hub-divulgacao-rotativo.md"), "utf8");
       assert.match(content, /GERADO, NÃO EDITAR À MÃO/);
-      assert.match(content, /\*\*A cobertura completa de .+ → \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
+      assert.match(content, /\*\*A cobertura completa de .+: \[arquivo\.diar\.ia\.br\/temas\/.+\]\(.+\)\*\*/);
       // conteúdo gerado precisa citar a edição pedida, pra confirmar que
       // não é um arquivo velho de outra rodada (o bug original do #5263).
       assert.match(content, /pra edição 260814/);

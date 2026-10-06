@@ -416,7 +416,7 @@ function renderPagination(page: number, totalPages: number): string {
     );
   }
   if (page < totalPages) {
-    links.push(`<a class="page-nav" rel="next" href="${archiveIndexPath(page + 1)}">próxima →</a>`);
+    links.push(`<a class="page-nav" rel="next" href="${archiveIndexPath(page + 1)}">próxima</a>`);
   }
   return `<nav class="pagination" aria-label="Paginação do acervo">\n      ${links.join("\n      ")}\n    </nav>`;
 }

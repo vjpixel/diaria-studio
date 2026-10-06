@@ -110,5 +110,5 @@ export function buildHubDivulgacaoBoxUrl(slug: string): string {
  */
 export function buildHubDivulgacaoBoxMarkdown(source: HubDivulgacaoBoxSource): string {
   const url = buildHubDivulgacaoBoxUrl(source.slug);
-  return `**A cobertura completa de ${source.label} desde ${source.since}: ${source.totalEditions} edições, cronologia e fontes → [arquivo.diar.ia.br/temas/${source.slug}](${url})**`;
+  return `**A cobertura completa de ${source.label} desde ${source.since}: ${source.totalEditions} edições, cronologia e fontes: [arquivo.diar.ia.br/temas/${source.slug}](${url})**`;
 }

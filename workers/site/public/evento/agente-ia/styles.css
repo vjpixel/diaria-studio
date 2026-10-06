@@ -55,6 +55,8 @@ p{color:var(--muted)}
 .preview-input{border:1px solid var(--line);border-radius:14px;padding:18px;background:var(--bg)}.preview-input span{display:block;color:var(--cyan);font-size:10px;letter-spacing:.14em;font-weight:700;margin-bottom:10px}.preview-input strong{font-size:17px;line-height:1.3;display:block}.preview-input p{font-size:14px;line-height:1.45;margin:8px 0 0}
 .preview-highlight{border-color:var(--gold)}
 .preview-arrow{align-self:center;text-align:center;color:var(--gold);font-size:22px;transform:rotate(90deg);line-height:1}
+/* #9721: conector sem a seta (glifo removido do HTML); linha curta, vertical no mobile via o rotate acima */
+.preview-arrow::before{content:"";display:inline-block;width:18px;height:2px;background:currentColor;vertical-align:middle}
 .agent-output{margin:0 15px 15px;padding:16px 18px;border:1px solid var(--box-line);border-radius:14px;background:var(--surface2)}
 .agent-output>span{display:block;color:var(--cyan);font-size:10px;letter-spacing:.14em;font-weight:700;margin-bottom:10px}
 .agent-output p{margin:0;color:var(--text);font-size:15px;line-height:1.55}

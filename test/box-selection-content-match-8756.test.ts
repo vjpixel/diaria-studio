@@ -58,4 +58,19 @@ describe("boxSnippetSignature / normalizeBoxTextForMatch (#8756)", () => {
     assert.equal(boxSnippetSignature("---\n\n**Ação já!**\n\nParticipe da votação agora"), "participe da votacao agora");
     assert.equal(normalizeBoxTextForMatch("**Olá, Mundo!** 📚"), "ola mundo");
   });
+
+  // #9721 (review do PR #9724, finding 3): `readSnippetFile` passou a tirar a
+  // seta de CTA. Um `02-reviewed.md` costurado ANTES disso ainda traz
+  // `→ [label](url)`; a normalização já descarta `→`/`:` dos dois lados, então
+  // o casamento por conteúdo não depende de a seta estar (ou não) no texto.
+  it("seta de CTA presente só de um lado não quebra o casamento (#9721)", () => {
+    const semSeta = (f: string) => (f === "cta.md" ? "Apoie a diar.ia.br: [apoia.se](https://apoia.se/diaria)" : null);
+    const boxComSeta = "Apoie a diar.ia.br → [apoia.se](https://apoia.se/diaria)";
+    assert.equal(matchBoxSelectionFileByContent([{ file: "cta.md" }], boxComSeta, semSeta), "cta.md");
+    const prefixo = (f: string) => (f === "cta.md" ? "[Garanta seu ingresso no workshop](https://x.y)" : null);
+    assert.equal(
+      matchBoxSelectionFileByContent([{ file: "cta.md" }], "→ [Garanta seu ingresso no workshop](https://x.y)", prefixo),
+      "cta.md",
+    );
+  });
 });

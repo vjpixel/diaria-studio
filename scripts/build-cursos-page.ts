@@ -374,7 +374,7 @@ ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}
 function renderCard(c: Course): string {
   const dur = `<span class="note">${esc(fmtDuration(c.duration_hours, c.duration_estimated))}</span>`;
   const cta = isSafeUrl(c.url)
-    ? `<a class="cta" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>`
+    ? `<a class="cta" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Ver curso</a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
   const titleInner = isSafeUrl(c.url)
     ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a>`
@@ -538,7 +538,7 @@ function renderPageBody(
         <button type="submit" id="gate-banner-submit">Desbloquear</button>
       </form>
       <p class="gate-banner-msg" id="gate-banner-msg" role="status"></p>
-      <p class="gate-banner-alt"><a href="/gate">Ainda não assina a diar.ia.br? Cadastre-se aqui →</a></p>
+      <p class="gate-banner-alt"><a href="/gate">Ainda não assina a diar.ia.br? Cadastre-se aqui</a></p>
     </div>
   </div>
 `
@@ -556,7 +556,7 @@ function renderPageBody(
     mode === "teaser" && hiddenCount > 0
       ? `Nenhum dos cursos abertos bate com esses filtros. O catálogo completo tem ${
           visible.length + hiddenCount
-        } cursos. <a href="/gate">Assine para ver todos →</a>`
+        } cursos. <a href="/gate">Assine para ver todos</a>`
       : "Nenhum curso com esses filtros.";
 
   // #8470: as 6 opções de enum fechado vêm do CATÁLOGO COMPLETO (`facetOpts`,
@@ -706,7 +706,7 @@ ${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
     // #3107: label do botão mobile "Filtrar (N cursos)" — mesma contagem
     // filtrada de countEl, reusada abaixo em apply().
     var summaryLabelEl = document.getElementById('filters-summary-label');
-    // Filtros simples (1 valor por card): id do select → dataset key.
+    // Filtros simples (1 valor por card): id do select -> dataset key.
     var SIMPLE = { 'f-lang': 'lang', 'f-level': 'level', 'f-cost': 'cost', 'f-format': 'format', 'f-duration': 'duration', 'f-platform': 'platform', 'f-cert': 'cert' };
     function el(id) { return document.getElementById(id); }
     function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
@@ -726,7 +726,7 @@ ${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
       cards.forEach(function (c) {
         if (matchesExceptTheme(c)) (c.dataset.themes || '').split(' ').forEach(function (t) { if (t) set[t] = 1; });
       });
-      // value→label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
+      // value -> label vem do mapa COMPLETO embutido (THEME_LABELS), não das options
       // atuais — senão um rebuild anterior que encolheu as options apagaria o label.
       var themes = Object.keys(set).sort(function (a, b) { return (THEME_LABELS[a] || a).localeCompare(THEME_LABELS[b] || b, 'pt-BR'); });
       var cur = fTheme.value;
@@ -753,7 +753,7 @@ ${renderGeoFaqSection(geoFaq, { sectionId: "faq-cursos" })}
     if (fTheme) fTheme.addEventListener('change', apply);
     apply();
   })();
-  // #4052 (banner de gate): tenta /gate/verify (assinante já ativo →
+  // #4052 (banner de gate): tenta /gate/verify (assinante já ativo ->
   // desbloqueia sem sair da página). Sem match, manda pro /gate completo
   // (que tem o form de cadastro com opt-in) em vez de tentar caber o
   // cadastro inteiro no banner.
@@ -812,7 +812,7 @@ function renderGenFullModule(courses: Course[]): string {
   return `/**
  * courses-full.generated.ts (#4052) — GERADO, NÃO EDITAR À MÃO.
  *
- * Fonte: seed/courses/cursos-ia.json → scripts/build-cursos-page.ts --gen-full.
+ * Fonte: seed/courses/cursos-ia.json -> scripts/build-cursos-page.ts --gen-full.
  * HTML completo (todos os cursos, sem gate) servido pelo Worker cursos SÓ
  * depois que o gate passa (verificação de assinante ativo ou cookie de
  * sessão válido) — nunca exposto como asset estático fetchable. Regenerar:
