@@ -177,7 +177,9 @@ describe("measureEdition (fixture em disco)", () => {
       const m = measureEdition(dir, "261099");
       assert.equal(m.status, "measured");
       assert.equal(m.baseline_source, "reconstructed");
-      assert.deepEqual(m.events.map((e) => e.class), ["reordenado", "item-trocado"]);
+      // #9754: B só subiu de D2 pra D1 porque A saiu — a ordem entre os
+      // mantidos é a da pipeline (LIS de `matchDestaquesByUrl`), então não é reordenação.
+      assert.deepEqual(m.events.map((e) => e.class), ["mantido", "item-trocado"]);
       assert.equal(m.comparison!.highlights[1].origin?.kind, "candidato-pontuado");
       const md = renderMarkdown([m]);
       assert.match(md, /Reclassificação dos 2 eventos/);

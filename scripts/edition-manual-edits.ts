@@ -14,7 +14,7 @@
  * | `destaques` | destaques da saída da pipeline (baseline da newsletter, ou `02-draft.md`) × `02-reviewed.md`, POR URL | `destaque-swap`/`-cut`/`-promote`, e `destaque-reorder` (ordem relativa dos mantidos mudou) |
  * | `newsletter` | baseline (snapshot `stage2-post-gate` ou reconstruído) × `02-reviewed.md` | qualquer linha de texto adicionada/removida, por seção |
  * | `titles` | `02-title-picks.json` (escolha do `title-picker`, ligada ao destaque pela URL) × título final | destaque MANTIDO com título ≠ o escolhido pela pipeline, ou poda manual (sem pick) |
- * | `social` | snapshot `stage2-post-gate/03-social.md` × `03-social.md` | qualquer linha de texto |
+ * | `social` | snapshot `stage2-post-gate/03-social.md` × `03-social.md`, por (bloco, seção), destaque POR URL (#9754) | qualquer linha de texto de seção mantida; texto de destaque trocado é cascata |
  * | `images` | mtime das artes × `completed_at` do sentinel do Stage 3 | arte/recorte regerado depois do Stage 3 de destaque mantido na mesma posição |
  *
  * **Destaques por URL (#9647).** Até aqui destaque, título e arte eram
@@ -96,7 +96,6 @@ import {
   matchDestaquesByUrl,
   normalizeItemUrl,
   normalizeNewsletterForComparison,
-  normalizeSelfUrls,
   removeCutItemBlocks,
   sectionNames,
   type DestaqueEntry,
@@ -111,6 +110,13 @@ import {
   readIntentionalError,
   readTitlePicks,
 } from "./derive-editor-requests.ts";
+import {
+  destaqueUrlMapFromApproved,
+  isDestaqueSection,
+  matchSections,
+  parseSocialSections,
+  type SectionPair,
+} from "./lib/social-rewrite-diff.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -500,40 +506,89 @@ function titlesGate(
   return { status: "measured", baseline: "title-picks", changes, ...(cascades.length > 0 ? { cascades } : {}) };
 }
 
-function splitSocialLines(md: string): Map<string, string[]> {
-  const sections = new Map<string, string[]>();
-  let current = "_topo";
-  sections.set(current, []);
-  for (const line of normalizeSelfUrls(md).split("\n")) {
-    const h = line.match(/^#{1,2}\s+(.+)$/);
-    if (h) {
-      current = h[1].trim();
-      if (!sections.has(current)) sections.set(current, []);
+/** Linhas não-vazias (trim) de um corpo de seção — unidade do `+N/-M`. */
+const socialLines = (body: string | undefined): string[] =>
+  (body ?? "").split("\n").map((l) => l.trim()).filter((l) => l !== "");
+
+/**
+ * Diff do social por (bloco, seção), destaque casado por URL (#9754).
+ *
+ * Reusa `parseSocialSections` + `matchSections` de `lib/social-rewrite-diff.ts`
+ * — o mesmo casamento de `classifySocialDiff` (#9718):
+ * - chave = bloco + seção (`# Social ## d1` ≠ `# Curto ## d1`);
+ * - destaque casado pela URL do `01-approved.json` de cada lado (snapshot ×
+ *   atual), então reordenar D1↔D3 sem mudar texto não é edição;
+ * - CRLF/espaço final/URL própria normalizados (`normalizeSocialMd`).
+ *
+ * Destaque sem par com URL conhecida dos dois lados é troca de destaque: o
+ * texto novo é CASCATA (`cascades`), já contada no gate `destaques`. Sem URL
+ * de um dos lados, o destaque sem par é comparado com o de MESMO NOME (como
+ * `classifySocialDiff`). Seção não-destaque sem par conta como edição.
+ * Pura.
+ */
+export function diffSocialSections(
+  baselineMd: string,
+  finalMd: string,
+  baselineUrls?: ReadonlyMap<string, string>,
+  finalUrls?: ReadonlyMap<string, string>,
+): { changes: ManualChange[]; cascades: ManualChange[] } {
+  const haveUrls = (baselineUrls?.size ?? 0) > 0 && (finalUrls?.size ?? 0) > 0;
+  const pairs = matchSections(parseSocialSections(baselineMd), parseSocialSections(finalMd), baselineUrls, finalUrls);
+  const changes: ManualChange[] = [];
+  const cascades: ManualChange[] = [];
+  const consumed = new Set<SectionPair>();
+  const lineDiff = (name: string, before: string | undefined, after: string | undefined, url?: string | null) => {
+    const a = socialLines(before);
+    const b = socialLines(after);
+    const removed = a.filter((l) => !b.includes(l)).length;
+    const added = b.filter((l) => !a.includes(l)).length;
+    if (removed || added) changes.push({ kind: "text-edit", detail: `${name}: +${added}/-${removed}`, ...(url ? { url } : {}) });
+  };
+  for (const p of pairs) {
+    if (consumed.has(p)) continue;
+    const name = `${p.block}/${p.baselineSection ? `${p.baselineSection}→` : ""}${p.section}`;
+    if (p.kind === "mesma-historia") {
+      lineDiff(name, p.before, p.after, p.url);
       continue;
     }
-    if (line.trim() !== "") sections.get(current)!.push(line.trim());
+    if (isDestaqueSection(p.section)) {
+      if (haveUrls) {
+        cascades.push({
+          kind: "text-edit",
+          detail: `${name}: texto de destaque ${p.kind === "historia-trocada" ? "novo" : "removido"} (cascata de destaque-swap)`,
+          ...(p.url ? { url: p.url } : {}),
+        });
+        continue;
+      }
+      // Sem URL: pareia trocada × removida pelo nome (comportamento anterior).
+      const twin = pairs.find(
+        (q) => q !== p && !consumed.has(q) && q.kind !== "mesma-historia" && q.kind !== p.kind && q.block === p.block && q.section === p.section,
+      );
+      if (twin) {
+        consumed.add(twin);
+        const [before, after] = p.kind === "historia-removida" ? [p.before, twin.after] : [twin.before, p.after];
+        lineDiff(name, before, after);
+        continue;
+      }
+    }
+    lineDiff(name, p.before, p.after);
   }
-  return sections;
+  return { changes, cascades };
 }
 
-function socialGate(editionDir: string, health: BaselineHealth, snapshotSocial: string | undefined): GateResult {
+function socialGate(editionDir: string, health: BaselineHealth, snapshots: ReadonlyMap<string, string>): GateResult {
+  const snapshotSocial = snapshots.get("03-social.md");
   const finalPath = join(editionDir, "03-social.md");
   if (!existsSync(finalPath)) return unmeasured("03-social.md ausente");
   if (health.status !== "ok" || snapshotSocial === undefined) {
     return unmeasured("sem baseline confiável — a saída da pipeline pro social só é preservada desde o #9356");
   }
   const baseline = applyAutofixReplacements(snapshotSocial, readAppliedAutofixes(editionDir), "social");
-  const a = splitSocialLines(baseline);
-  const b = splitSocialLines(readFileSync(finalPath, "utf8"));
-  const changes: ManualChange[] = [];
-  for (const name of new Set([...a.keys(), ...b.keys()])) {
-    const before = a.get(name) ?? [];
-    const after = b.get(name) ?? [];
-    const removed = before.filter((l) => !after.includes(l)).length;
-    const added = after.filter((l) => !before.includes(l)).length;
-    if (removed || added) changes.push({ kind: "text-edit", detail: `${name}: +${added}/-${removed}` });
-  }
-  return { status: "measured", baseline: "snapshot", changes };
+  const approvedPath = join(editionDir, "_internal", "01-approved.json");
+  const finalUrls = destaqueUrlMapFromApproved(existsSync(approvedPath) ? readFileSync(approvedPath, "utf8") : undefined);
+  const baselineUrls = destaqueUrlMapFromApproved(snapshots.get("_internal/01-approved.json"));
+  const { changes, cascades } = diffSocialSections(baseline, readFileSync(finalPath, "utf8"), baselineUrls, finalUrls);
+  return { status: "measured", baseline: "snapshot", changes, ...(cascades.length > 0 ? { cascades } : {}) };
 }
 
 /**
@@ -657,7 +712,7 @@ export function computeEditionManualEdits(editionDir: string, edition: string, o
     destaques: finalMd === null ? unmeasured("02-reviewed.md ausente") : destaquesGate(editionDir, pipeline, finalDestaques, match),
     newsletter: newsletter.gate,
     titles: finalMd === null ? unmeasured("02-reviewed.md ausente") : titlesGate(editionDir, finalDestaques, pipeline?.destaques ?? null, match),
-    social: socialGate(editionDir, health, snapshots.get("03-social.md")),
+    social: socialGate(editionDir, health, snapshots),
     images: imagesGate(editionDir, finalDestaques, match),
   };
   // Cortes: os da newsletter (por URL) + `pool-cut` do Stage 1 que o texto não

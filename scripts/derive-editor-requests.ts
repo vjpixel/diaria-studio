@@ -142,6 +142,20 @@ function isDifferentArticleUrl(oldLine: string, newLine: string): boolean {
   }
 }
 
+/**
+ * Chave de identidade do artigo: host (sem www) + path (sem barra final),
+ * via `canonicalizeUrl` — query/hash/protocolo não entram, como em
+ * `isDifferentArticleUrl`. URL que não parseia vira a própria string crua.
+ */
+function articleUrlKey(url: string): string {
+  try {
+    const u = new URL(canonicalizeUrl(url));
+    return `${u.hostname.replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url.trim();
+  }
+}
+
 /** Chave host+path (sem www/query/tracking, como `isDifferentArticleUrl`) do link do título `**[t](url)**`; `null` sem link. */
 function titleLineUrlKey(line: string): string | null {
   const m = line.match(/\]\((https?:[^)\s]+)\)/);
@@ -211,8 +225,11 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
     return sections;
   };
 
-  const oldSections = extractSections(oldContent);
-  const newSections = extractSections(newContent);
+  // #9753: CRLF→LF antes de tudo — com `\r` no fim da linha o regex de
+  // cabeçalho (`\*\*$`) não casa nenhuma seção e o arquivo inteiro vira um
+  // único `other` em `intro` (dado real: 260903/02-reviewed.md, 165 linhas CRLF).
+  const oldSections = extractSections(oldContent.replace(/\r\n?/g, "\n"));
+  const newSections = extractSections(newContent.replace(/\r\n?/g, "\n"));
 
   // Detectar mudanças por seção
   for (const [section, newText] of newSections) {
@@ -274,7 +291,9 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
         if (oldKey === newKey) {
           // Mesma página: só é título reescrito se o TEXTO do link mudou (query/tracking é link-swap).
           const text = (l: string) => l.match(/^\*\*\[(.+)\]\(/)?.[1]?.trim();
+          // #9753: sem este `else`, URL trocada da mesma página ficava `title-choice`.
           if (text(oldTitleLine!) !== text(newTitleLine!)) urlClass = { type: "title-choice", kind: "titulo-reescrito" };
+          else urlClass = { type: "link-swap", kind: "link-trocado" };
         } else {
           const keyOf = (t: string) => titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "");
           const destaqueKeys = (m: Map<string, string>, skip?: string) =>
@@ -403,7 +422,8 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
  *    (`baselineDestaqueUrls` = o do snapshot; `destaqueUrls` = o atual) —
  *    nunca por posição. Reordenar sem editar não gera nada; destaque trocado
  *    (sem par) também não, porque a troca já é registrada como
- *    `destaque-swap` pelo diff do `01-approved.json`. `context.url` é a URL
+ *    `destaque-swap` pelo diff do `02-reviewed.md`/`01-approved.json`
+ *    (uma vez só, `dedupeDestaqueSwaps`, #9753). `context.url` é a URL
  *    do destaque no lado aprovado, da MESMA história que foi comparada.
  * 3. **Normalização** (`normalizeSocialMd`): CRLF→LF, espaço no fim da linha
  *    e URL própria do site → `{edition_url}` (#7974 Fix 2: o Stage 5 resolve
@@ -710,55 +730,68 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
     const oldHighlights = oldJson.highlights ?? [];
     const newHighlights = newJson.highlights ?? [];
 
-    // Detectar swap de destaque
-    if (oldHighlights.length === newHighlights.length && oldHighlights.length > 0) {
-      for (let i = 0; i < oldHighlights.length; i++) {
-        const oldUrl = oldHighlights[i]?.article?.url;
-        const newUrl = newHighlights[i]?.article?.url;
-        if (oldUrl && newUrl && oldUrl !== newUrl) {
-          results.push({
-            request_type: "destaque-swap",
-            target: `d${i + 1}` as RequestTarget,
-            description: `Destaque D${i + 1} trocado: ${oldHighlights[i]?.article?.title} → ${newHighlights[i]?.article?.title}`,
-            resolution: "accepted",
-            context: { old_url: oldUrl, new_url: newUrl, position: i + 1 },
-          });
-        }
-      }
+    // #9753: casar destaques POR URL canônica, nunca por posição. Comparar
+    // `highlights[i]` com `highlights[i]` transformava reordenação pura (D1↔D3)
+    // em 2× `destaque-swap`. Agora: URL que saiu × URL que entrou, pareadas na
+    // ordem → `destaque-swap` (target = posição do item novo); saiu sem par →
+    // `destaque-cut`; entrou sem par → `destaque-promote`. Permutação pura não
+    // gera nada aqui (a reordenação sai como `section-order` abaixo).
+    const keyOf = (h: any): string | null => {
+      const url = h?.article?.url ?? h?.url;
+      return typeof url === "string" && url !== "" ? articleUrlKey(url) : null;
+    };
+    const oldKeys = oldHighlights.map(keyOf);
+    const newKeys = newHighlights.map(keyOf);
+    const titleOf = (h: any) => h?.article?.title ?? h?.title;
+    const urlOf = (h: any) => h?.article?.url ?? h?.url;
+    const left = oldHighlights
+      .map((h: any, i: number) => ({ h, position: i + 1, key: oldKeys[i] }))
+      .filter((x: { key: string | null }) => x.key !== null && !newKeys.includes(x.key));
+    const entered = newHighlights
+      .map((h: any, i: number) => ({ h, position: i + 1, key: newKeys[i] }))
+      .filter((x: { key: string | null }) => x.key !== null && !oldKeys.includes(x.key));
+    const pairs = Math.min(left.length, entered.length);
+    for (let i = 0; i < pairs; i++) {
+      const out = left[i];
+      const inn = entered[i];
+      results.push({
+        request_type: "destaque-swap",
+        target: `d${inn.position}` as RequestTarget,
+        description: `Destaque D${inn.position} trocado: ${titleOf(out.h)} → ${titleOf(inn.h)}`,
+        resolution: "accepted",
+        context: { old_url: urlOf(out.h), new_url: urlOf(inn.h), position: inn.position, old_position: out.position },
+      });
     }
 
-    // Detectar corte de destaque
-    if (newHighlights.length < oldHighlights.length) {
-      for (let i = newHighlights.length; i < oldHighlights.length; i++) {
-        results.push({
-          request_type: "destaque-cut",
-          target: `d${i + 1}` as RequestTarget,
-          description: `Destaque D${i + 1} removido: ${oldHighlights[i]?.article?.title}`,
-          resolution: "accepted",
-          context: { old_url: oldHighlights[i]?.article?.url, position: i + 1 },
-        });
-      }
+    // Destaque que saiu sem item novo no lugar
+    for (const out of left.slice(pairs)) {
+      results.push({
+        request_type: "destaque-cut",
+        target: `d${out.position}` as RequestTarget,
+        description: `Destaque D${out.position} removido: ${titleOf(out.h)}`,
+        resolution: "accepted",
+        context: { old_url: urlOf(out.h), position: out.position },
+      });
     }
 
-    // Detectar promoção (aumento de destaques - não deve acontecer pois max 3)
-    if (newHighlights.length > oldHighlights.length) {
-      for (let i = oldHighlights.length; i < newHighlights.length; i++) {
-        results.push({
-          request_type: "destaque-promote",
-          target: "radar",
-          description: `Item promovido a destaque D${i + 1}: ${newHighlights[i]?.article?.title}`,
-          resolution: "accepted",
-          context: { new_url: newHighlights[i]?.article?.url, position: i + 1 },
-        });
-      }
+    // Item novo sem destaque que tenha saído (aumento de destaques)
+    for (const inn of entered.slice(pairs)) {
+      results.push({
+        request_type: "destaque-promote",
+        target: "radar",
+        description: `Item promovido a destaque D${inn.position}: ${titleOf(inn.h)}`,
+        resolution: "accepted",
+        context: { new_url: urlOf(inn.h), position: inn.position },
+      });
     }
 
     // Detectar mudança de ordem
     if (oldHighlights.length === newHighlights.length && oldHighlights.length > 1) {
       const oldUrls = oldHighlights.map((h: any) => h?.article?.url);
       const newUrls = newHighlights.map((h: any) => h?.article?.url);
-      const sameSet = oldUrls.length === newUrls.length && oldUrls.every((u: string) => newUrls.includes(u));
-      if (sameSet && JSON.stringify(oldUrls) !== JSON.stringify(newUrls)) {
+      // Por chave canônica (#9753), coerente com o casamento de swap acima.
+      const sameSet = oldKeys.every((k: string | null) => k !== null && newKeys.includes(k));
+      if (sameSet && JSON.stringify(oldKeys) !== JSON.stringify(newKeys)) {
         results.push({
           request_type: "section-order",
           target: "newsletter",
@@ -863,7 +896,29 @@ function diffAndClassify(
     }
   }
 
-  return results;
+  return dedupeDestaqueSwaps(results);
+}
+
+/**
+ * #9753: a MESMA troca de destaque é vista por dois diffs na mesma passada —
+ * `02-reviewed.md` (`classifyNewsletterDiff`, `context.section`) e
+ * `_internal/01-approved.json` (`classifyApprovedDiff`, `context.new_url`).
+ * Sem dedupe, cada troca real contava 2x em `recurring_editor_request`.
+ * Mantém a entrada da newsletter (traz `context.url`/`change_kind`) e descarta
+ * a do approved com o mesmo `target`; a do approved só fica quando a
+ * newsletter não registrou a troca daquele slot (ex.: markdown sem a linha de
+ * título com link). Pura.
+ */
+export function dedupeDestaqueSwaps<T extends { request_type: RequestType; target: RequestTarget; context?: Record<string, unknown> }>(
+  entries: T[],
+): T[] {
+  const isFromApproved = (e: T) => e.context !== undefined && "new_url" in e.context && !("section" in e.context);
+  const newsletterSwapTargets = new Set(
+    entries.filter((e) => e.request_type === "destaque-swap" && !isFromApproved(e)).map((e) => e.target),
+  );
+  return entries.filter(
+    (e) => !(e.request_type === "destaque-swap" && isFromApproved(e) && newsletterSwapTargets.has(e.target)),
+  );
 }
 
 /**
@@ -1220,9 +1275,9 @@ function backfillStage4(editionDir: string, edition: string, write: boolean): nu
  * `scorer-select`, sempre 6 candidatos, ANTES de qualquer gate) e
  * `01-approved.json` (2-3 finais, pós-gate do Stage 1) — #7964.
  *
- * Comparação NUNCA posicional (diferente de `classifyApprovedDiff`, que
- * compara dois `01-approved.json` de tamanho igual em pontos distintos do
- * tempo): os arrays aqui têm tamanhos estruturalmente diferentes (6 vs 2-3)
+ * Não reusa `classifyApprovedDiff` (que compara dois `01-approved.json` em
+ * pontos distintos do tempo, por URL desde o #9753): os arrays aqui têm
+ * tamanhos estruturalmente diferentes (6 vs 2-3)
  * por DESIGN, mesmo sem nenhuma ação do editor — `apply-gate-edits.ts`
  * sempre corta os 6 candidatos do scorer para os top-3 por rank quando a
  * seção Destaques do MD não foi tocada (`resolveDestaques`, `--auto` ou
