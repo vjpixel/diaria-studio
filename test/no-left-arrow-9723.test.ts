@@ -10,7 +10,8 @@
  *  2. a nav entre edições é simétrica e sem seta (`Anterior: ` / `Próxima: `),
  *     e a paginação do acervo idem (`anterior` / `próxima`);
  *  3. os geradores do site, das páginas de confirmação e dos Workers que
- *     tinham `←` não o têm mais; o repo real passa no check;
+ *     tinham `←` não o têm mais (o "repo real passa no check" mora em
+ *     `check-no-arrow-glyph.test.ts`, hermético, #9739);
  *  4. a página `/p/` gerada (e o backstop `normalizeArrowsForSite`) não deixa
  *     `←` passar;
  *  5. `refreshArchiveNeighborNav` (a limpeza das ~280 páginas já gravadas)
@@ -30,8 +31,7 @@ import {
   stripCtaArrows,
   stripUnambiguousCtaArrows,
 } from "../scripts/lib/shared/arrow-glyph.ts";
-import { scanGeneratorSource, scanPublishedText, scanRepo } from "../scripts/lib/no-arrow-glyph-scan.ts";
-import { formatReport } from "../scripts/check-no-arrow-glyph.ts";
+import { scanGeneratorSource, scanPublishedText } from "../scripts/lib/no-arrow-glyph-scan.ts";
 import {
   ARCHIVE_NAV_NEXT_LABEL,
   ARCHIVE_NAV_PREV_LABEL,
@@ -63,10 +63,8 @@ describe("#9723 check de CI reprova a seta ←", () => {
     assert.deepEqual(scanGeneratorSource("scripts/lib/site-x.ts", "// ← nota interna\nexport const a = 1;"), []);
   });
 
-  it("o repo real passa no check (nenhuma ← publicada nem em gerador)", () => {
-    const { ok, text } = formatReport(scanRepo(ROOT));
-    assert.ok(ok, text);
-  });
+  // "o repo real passa no check" (← incluída) vive em
+  // test/check-no-arrow-glyph.test.ts, hermético desde o #9739.
 });
 
 describe("#9723 nav simétrica, sem seta", () => {

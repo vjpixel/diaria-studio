@@ -261,7 +261,18 @@ export interface ScanResult {
   snippetsPresent: boolean;
 }
 
-export function scanRepo(rootDir: string): ScanResult {
+export interface ScanRepoOptions {
+  /**
+   * `false` pula `data/snippets/` (conteúdo do editor, gitignored) e varre só
+   * o que é versionado. Default `true`: o check de CLI segue varrendo as
+   * caixas quando existem. Os testes que afirmam "o repo real está limpo"
+   * passam `false` pra não depender do `data/` montado na máquina (#9739).
+   */
+  includeSnippets?: boolean;
+}
+
+export function scanRepo(rootDir: string, opts: ScanRepoOptions = {}): ScanResult {
+  const includeSnippets = opts.includeSnippets ?? true;
   const findings: Finding[] = [];
   let scannedPublished = 0;
   for (const root of TEXT_ROOTS) {
@@ -279,7 +290,7 @@ export function scanRepo(rootDir: string): ScanResult {
     findings.push(...scanGeneratorSource(rel, readFileSync(join(rootDir, rel), "utf8")));
   }
   const snippetsAbs = join(rootDir, SNIPPETS_DIR);
-  const snippetsPresent = existsSync(snippetsAbs);
+  const snippetsPresent = includeSnippets && existsSync(snippetsAbs);
   let scannedSnippets = 0;
   if (snippetsPresent) {
     for (const file of walk(snippetsAbs, new Set(["_arquivo"]))) {

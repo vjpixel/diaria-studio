@@ -154,12 +154,37 @@ describe("resolveGeneratorFiles (#9721)", () => {
 });
 
 describe("check-no-arrow-glyph: repo real e reintrodução (#9721, regressão #633)", () => {
-  it("o repo real está limpo (só as exceções editoriais documentadas)", () => {
-    const result = scanRepo(ROOT);
+  // Hermético (#9739): só o conteúdo VERSIONADO (workers/*/public, geradores,
+  // templates) — nunca o `data/snippets/` do disco da máquina, que é conteúdo
+  // do editor e não é o que este teste está afirmando. Cobre `→` e `←` (#9723).
+  it("o repo real versionado está limpo de → e ← (só as exceções editoriais documentadas)", () => {
+    const result = scanRepo(ROOT, { includeSnippets: false });
     const { ok, text } = formatReport(result);
     assert.ok(ok, text);
+    assert.equal(result.snippetsPresent, false, "data/snippets/ do disco não pode entrar neste teste");
+    assert.equal(result.scannedSnippets, 0);
     assert.ok(result.scannedPublished > 100, "varredura de workers/site/public não rodou");
     assert.ok(result.scannedGenerators >= 20, "lista de geradores encolheu");
+  });
+
+  it("includeSnippets:false ignora data/snippets/ mas segue reprovando → e ← em arquivo versionado (#9739)", () => {
+    const root = tempRoot();
+    try {
+      put(root, "data/snippets/caixa.md", "**Caixa**\n\n→ [Ver](https://x.y)\n");
+      put(root, "workers/site/public/index.html", "<a>Ver todas as edições</a>");
+      const clean = scanRepo(root, { includeSnippets: false });
+      assert.equal(clean.snippetsPresent, false);
+      assert.deepEqual(clean.findings.filter((f) => f.kind === "snippet" || f.kind === "published"), []);
+      // o default (CLI) continua varrendo as caixas quando existem
+      assert.equal(scanRepo(root).findings.filter((f) => f.kind === "snippet").length, 1);
+
+      put(root, "workers/site/public/index.html", '<a href="/">← Voltar</a> <a>Ver →</a>');
+      const dirty = scanRepo(root, { includeSnippets: false });
+      assert.equal(dirty.findings.filter((f) => f.kind === "published").length, 2, JSON.stringify(dirty.findings));
+      assert.equal(formatReport(dirty).ok, false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("reintroduzir a seta num botão publicado, num gerador ou numa caixa faz o check falhar", () => {
