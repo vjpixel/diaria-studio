@@ -70,8 +70,10 @@
  * `exit(2)`), roda `runKitWorkerFieldsGuard`: todo `KIT_*_FIELD` declarado em
  * `workers/*\/wrangler.toml` precisa existir como custom field no Kit, senão o
  * Kit descarta o valor em silêncio (2xx). Alarma via `notifyEditor`
- * (severidade `acao`, P1). Requer `KIT_API_KEY`; sem ela (ou com a leitura
- * falhando) loga AVISO e segue — nunca derruba os outros alarmes deste script.
+ * (severidade `acao`, P1). Requer `KIT_API_KEY`: key ausente ou rejeitada
+ * pelo Kit (401/403) é erro de CONFIG — loga ERRO e alarma o guard desarmado
+ * (#9665/#9670); leitura falhando por rede/5xx/429 loga AVISO e segue. Nunca
+ * derruba os outros alarmes deste script.
  * Ver `scripts/check-kit-worker-custom-fields.ts`.
  *
  * ## Latch — não despausa sozinho
@@ -406,7 +408,9 @@ async function main(): Promise<void> {
   // `reativar` passou uma semana sem medir `confirmou_via`. Aqui (e não num
   // script à parte sem agendamento) pra ficar ARMADO na task de 4 em 4h.
   // Também ANTES do `exit(2)` do guard de seed abaixo, pelo mesmo motivo do
-  // #8516. Nunca lança: falha de leitura do Kit vira AVISO e o resto segue.
+  // #8516. Nunca lança: key ausente ou 401/403 viram ERRO + alarme de guard
+  // desarmado (#9665/#9670); falha transitória (rede/5xx/429) vira AVISO; em
+  // todos os casos o resto segue.
   await runKitWorkerFieldsGuard(kitWorkerFieldsGuardProdDeps(isDryRun, log));
 
   // #8436: seed blacklisted/inexistente quebra o caminho de teste

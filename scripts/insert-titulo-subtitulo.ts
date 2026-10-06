@@ -48,6 +48,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseDestaques, type Destaque } from "./extract-destaques.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { sanitizeTituloSegment } from "./lib/titulo-provisional.ts"; // #9674
 
 const TITULO_HEADER = "TÍTULO";
 const SUBTITULO_HEADER = "SUBTÍTULO";
@@ -82,12 +83,15 @@ export function renderTituloSubtituloBlock(
   d2Title: string,
   d3Title: string,
 ): string {
-  const subtitleParts = [d2Title, d3Title].filter((t) => t.trim().length > 0);
+  // #9674: `|` é o separador de segmento do SUBTÍTULO — título com `|` cru
+  // virava 3 segmentos e quebrava o swap seguinte (`old_title_not_found`).
+  // Mesma limpeza que o finalize do swap aplica (`sanitizeTituloSegment`).
+  const subtitleParts = [d2Title, d3Title].map(sanitizeTituloSegment).filter((t) => t.length > 0);
   const subtitle = subtitleParts.join(" | ");
   const lines = [
     TITULO_HEADER,
     "",
-    d1Title,
+    sanitizeTituloSegment(d1Title),
     "",
     SUBTITULO_HEADER,
     "",

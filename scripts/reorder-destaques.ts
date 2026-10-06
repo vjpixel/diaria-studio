@@ -1316,11 +1316,18 @@ function main(): void {
   // sem precisar reler o disco (que em dry-run continuaria com o conteúdo
   // ANTIGO, pré-reorder).
   let reorderedReviewedMd: string | null = null;
+  // #9674: o MD foi DE FATO reordenado? `reorderDestaquesInMd` devolve o md
+  // intacto quando há menos blocos que o `newOrder` — aí o bloco TÍTULO/
+  // SUBTÍTULO continua na ordem velha e o marcador (3e) não pode seguir a nova.
+  let reviewedMdReordered = false;
   if (existsSync(mdPath)) {
     let md = readFileSync(mdPath, "utf8");
     const before = md;
     md = reorderDestaquesInMd(md, args.newOrder);
-    if (md !== before) queueWrite(mdPath, md);
+    if (md !== before) {
+      queueWrite(mdPath, md);
+      reviewedMdReordered = true;
+    }
     reorderedReviewedMd = md;
   }
 
@@ -1330,6 +1337,8 @@ function main(): void {
   // duplica a lógica de extração/render. Idempotente: no-op se o bloco já
   // reflete a ordem atual (ex: reorder de um campo que não afeta o header,
   // ou 2ª invocação acidental).
+  // #9674: o bloco foi re-derivado da ordem nova (ou já estava nela)?
+  let tituloRederived = false;
   if (reorderedReviewedMd !== null) {
     const derived = deriveTituloSubtitulo(reorderedReviewedMd);
     if (derived === null) {
@@ -1340,9 +1349,12 @@ function main(): void {
         "WARN: reorder-destaques — TÍTULO/SUBTÍTULO não re-derivado (DESTAQUE 1 não reconhecível em " +
           `${mdPath}). O bloco pode ficar desatualizado em relação à nova ordem D1/D2/D3.`,
       );
-    } else if (derived.action !== "no_change") {
-      queueWrite(mdPath, derived.md);
-      reorderedReviewedMd = derived.md;
+    } else {
+      tituloRederived = true;
+      if (derived.action !== "no_change") {
+        queueWrite(mdPath, derived.md);
+        reorderedReviewedMd = derived.md;
+      }
     }
   }
 
@@ -1351,8 +1363,20 @@ function main(): void {
   // re-derivado na ordem nova, então a posição precisa seguir junto (senão
   // invariante/finalize olham a linha errada). Marcador ilegível: avisa e não
   // toca — invariante e finalize já reportam o marcador quebrado.
+  // #9674: só remapeia se o MD foi de fato reordenado E o bloco re-derivado —
+  // com `02-reviewed.md` ausente, blocos de menos ou DESTAQUE 1 irreconhecível
+  // o bloco fica na ordem velha, e o marcador precisa ficar junto com ele.
   const tituloMarkerPath = tituloPendingPath(editionDir);
-  if (existsSync(tituloMarkerPath)) {
+  const identityOrder = args.newOrder.every((n, i) => n === i + 1);
+  if (existsSync(tituloMarkerPath) && identityOrder) {
+    // ordem identidade: nada a remapear
+  } else if (existsSync(tituloMarkerPath) && !(reviewedMdReordered && tituloRederived)) {
+    warnings.push(
+      `marcador ${tituloMarkerPath} NÃO remapeado: 02-reviewed.md ${
+        reorderedReviewedMd === null ? "ausente" : !reviewedMdReordered ? "não reordenado" : "sem TÍTULO/SUBTÍTULO re-derivado"
+      } — o bloco segue na ordem antiga e o marcador fica junto (#9674)`,
+    );
+  } else if (existsSync(tituloMarkerPath)) {
     const raw = readFileSync(tituloMarkerPath, "utf8");
     try {
       const entries = parsePendingTitulos(raw);
