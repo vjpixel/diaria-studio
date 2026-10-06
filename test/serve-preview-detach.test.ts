@@ -20,7 +20,7 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,7 @@ import {
   readPersistedPreview,
   findLivePersistedPreview,
   isPidAlive,
+  pruneOldDetachedLogs,
 } from "../scripts/serve-preview.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -172,5 +173,30 @@ describe("serve-preview.ts --detach / --ensure CLI (#9678)", () => {
   it("--ensure sem --persist-to é erro de uso (exit 2)", () => {
     const r = runCli(["--file", htmlPath, "--ensure"]);
     assert.equal(r.status, 2);
+  });
+});
+
+describe("pruneOldDetachedLogs (self-review #4 do PR #9685)", () => {
+  it("remove só logs diaria-serve-preview-*.log mais velhos que o limite", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prune-logs-"));
+    try {
+      const old = join(dir, "diaria-serve-preview-1-1.log");
+      const fresh = join(dir, "diaria-serve-preview-2-2.log");
+      const otherOld = join(dir, "outro.log");
+      for (const f of [old, fresh, otherOld]) writeFileSync(f, "x");
+      const tenDaysAgo = (Date.now() - 10 * 24 * 3600 * 1000) / 1000;
+      utimesSync(old, tenDaysAgo, tenDaysAgo);
+      utimesSync(otherOld, tenDaysAgo, tenDaysAgo);
+      assert.equal(pruneOldDetachedLogs(dir), 1);
+      assert.equal(existsSync(old), false);
+      assert.equal(existsSync(fresh), true);
+      assert.equal(existsSync(otherOld), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("diretório inexistente é fail-soft (0, sem lançar)", () => {
+    assert.equal(pruneOldDetachedLogs(join(tmpdir(), "nao-existe-prune-9685")), 0);
   });
 });

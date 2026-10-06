@@ -78,6 +78,7 @@ import {
   writeFileSync,
   renameSync,
   rmSync,
+  readdirSync,
   type FSWatcher,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -560,6 +561,39 @@ export async function waitForReadyFile(
   throw new Error(`[serve-preview] filho desanexado não ficou pronto em ${timeoutMs}ms (${readyFile})`);
 }
 
+/** Idade a partir da qual um log `diaria-serve-preview-*.log` é podado. */
+export const DETACHED_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Remove logs de servidores desanexados mais velhos que `maxAgeMs` (self-review
+ * #4 do PR #9685 — sem isso acumulam um por `--detach`, edição após edição).
+ * Fail-soft: qualquer erro (dir ilegível, arquivo aberto no Windows) é ignorado
+ * — a poda é higiene, nunca motivo pra não subir o preview. Devolve quantos
+ * arquivos removeu.
+ */
+export function pruneOldDetachedLogs(dir: string, maxAgeMs = DETACHED_LOG_MAX_AGE_MS, now = Date.now()): number {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!/^diaria-serve-preview-.+\.log$/.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      if (now - statSync(path).mtimeMs > maxAgeMs) {
+        rmSync(path, { force: true });
+        removed++;
+      }
+    } catch {
+      // arquivo sumiu/está aberto — segue
+    }
+  }
+  return removed;
+}
+
 /**
  * Sobe `serve-preview.ts` como processo desanexado e devolve o JSON de start
  * do FILHO. Usa o mesmo binário Node + os mesmos `execArgv` do pai (o
@@ -578,7 +612,9 @@ export async function spawnDetachedPreview(argv: string[]): Promise<{
   // o diretório do arquivo recursivamente, e um log escrito ali dispararia
   // reload no browser a cada linha.
   const log = join(tmpdir(), `diaria-serve-preview-${stamp}.log`);
+  pruneOldDetachedLogs(tmpdir());
   const fd = openSync(log, "a");
+  let exitWatch: ReturnType<typeof setInterval> | undefined;
   try {
     const child = spawn(
       process.execPath,
@@ -593,19 +629,21 @@ export async function spawnDetachedPreview(argv: string[]): Promise<{
     const json = await Promise.race([
       waitForReadyFile(readyFile),
       new Promise<never>((_, reject) => {
-        const t = setInterval(() => {
+        exitWatch = setInterval(() => {
           if (exitedEarly !== null) {
-            clearInterval(t);
             reject(
               new Error(`[serve-preview] filho desanexado saiu com código ${exitedEarly} antes de servir — ver ${log}`),
             );
           }
         }, 100);
-        t.unref();
+        exitWatch.unref();
       }),
     ]);
     return { ...json, log };
   } finally {
+    // Limpa o vigia de saída precoce nos dois desfechos (ready-file venceu ou
+    // o filho morreu antes) — self-review #5 do PR #9685.
+    if (exitWatch) clearInterval(exitWatch);
     closeSync(fd);
     rmSync(readyFile, { force: true });
   }
