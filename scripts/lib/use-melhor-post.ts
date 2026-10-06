@@ -458,6 +458,26 @@ export function writeUseMelhorPostState(editionDir: string, state: UseMelhorPost
 }
 
 /**
+ * #9755: passo de re-seleção do 4º post social (`## um`, #9568) quando `url`
+ * — um item que SAIU do pool (promovido a destaque por `swap-destaque.ts` /
+ * `promote-to-destaque.ts`) — era o item escolhido para esse post. `null`
+ * quando não há estado gravado ou o escolhido é outro. Mesmo texto-base que
+ * `move-pool-item.ts` já imprime.
+ */
+export function useMelhorPostReselectStep(editionDir: string, url: string): string | null {
+  const state = readUseMelhorPostState(editionDir);
+  const chosen = state?.item && typeof state.item.url === "string" ? state.item.url : null;
+  if (!chosen || normalizeUseMelhorUrl(chosen) !== normalizeUseMelhorUrl(url)) return null;
+  const dir = editionDir.replace(/\/+$/, "");
+  return (
+    `O item promovido era o do 4º post social (## um, #9568) e saiu do USE MELHOR. Re-selecionar: ` +
+    `npx tsx scripts/select-use-melhor-post.ts --edition-dir ${dir}/ --reviewed — depois reescrever ` +
+    `## um em # Social e # Curto (social-writer/social-curto com use_melhor_post_path), humanizar e ` +
+    `regerar os cards (gen-carousel-cards.ts).`
+  );
+}
+
+/**
  * Lê o JSON aprovado da edição — `01-approved-capped.json` (o que o stitch
  * renderiza) com fallback pro `01-approved.json`. `null` se nenhum existir.
  */

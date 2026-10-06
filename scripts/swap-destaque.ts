@@ -89,6 +89,7 @@ import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verifi
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
+import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import {
   replaceTitleInTituloSubtitulo,
   tituloPendingPath,
@@ -436,6 +437,21 @@ export function buildSwapDestaqueSteps(
 // ---------------------------------------------------------------------------
 
 /**
+ * Bloco placeholder do destaque que ainda precisa do writer-destaque. O header
+ * `[RASCUNHO PENDENTE — swap-destaque]` é o que `isSwapPlaceholder`
+ * (lib/titulo-provisional.ts) reconhece — #9755: `promote-to-destaque.ts`
+ * reusa o mesmo bloco, então o finalize/invariante do título provisório vale
+ * igual nas duas operações. @pure
+ */
+export function renderDestaquePlaceholder(position: 1 | 2 | 3, title: string, url: string): string {
+  return (
+    `**DESTAQUE ${position} | [RASCUNHO PENDENTE — swap-destaque]**\n\n` +
+    `**[${title}](${url})**\n\n` +
+    `[TEXTO PENDENTE — re-rodar writer-destaque para DESTAQUE ${position}]`
+  );
+}
+
+/**
  * Removes the DESTAQUE block at `position` from 02-reviewed.md and replaces
  * it with a placeholder indicating the new highlight needs writing.
  * Renumbers the remaining blocks to stay sequential.
@@ -481,10 +497,7 @@ export function removeDestaqueBlockFromMd(
   const zeroIdx = position - 1;
 
   // Replace the target block with placeholder
-  const placeholder =
-    `**DESTAQUE ${position} | [RASCUNHO PENDENTE — swap-destaque]**\n\n` +
-    `**[${promotedTitle}](${promotedUrl})**\n\n` +
-    `[TEXTO PENDENTE — re-rodar writer-destaque para DESTAQUE ${position}]`;
+  const placeholder = renderDestaquePlaceholder(position, promotedTitle, promotedUrl);
 
   const newBlocks = blocks.map((block, idx) => {
     // #9254: o lookahead do blockRe só corta antes de `---` seguido de
@@ -554,6 +567,13 @@ export function applySwapToReviewedMd(
 /**
  * Deletes image files for a given destaque position (d1/d2/d3).
  * The position that gets a new promoted highlight needs fresh images from Stage 3.
+ *
+ * #9755: o sufixo aceita hífen (`[a-z0-9-]+`, mesmo padrão de
+ * `renameDestaqueImages` em reorder-destaques.ts, #5085/#9679) — sem isso
+ * `04-d{N}-4x5-nativo.jpg` e `04-d{N}-carousel-{slot}-4x5.jpg` sobreviviam ao
+ * swap e `image-generate.ts` (que pula slot com imagem final, #4989) deixava a
+ * arte do destaque ANTIGO grudada no novo. `.json` cobre o
+ * `04-d{N}-sd-prompt.json` na raiz (layout legado).
  */
 export function deleteDestaqueImages(
   editionDir: string,
@@ -564,7 +584,7 @@ export function deleteDestaqueImages(
   if (!existsSync(editionDir)) return deleted;
 
   const files = readdirSync(editionDir).filter((f) =>
-    new RegExp(`^04-d${position}-[a-z0-9]+\\.(?:jpg|png|jpeg)$`, "i").test(f),
+    new RegExp(`^04-d${position}-[a-z0-9-]+\\.(?:jpg|png|jpeg|json)$`, "i").test(f),
   );
 
   for (const f of files) {
@@ -579,6 +599,10 @@ export function deleteDestaqueImages(
 /**
  * Deletes prompt files for the given destaque position (in _internal/).
  * The position's prompt needs regeneration from Stage 3.
+ *
+ * #9755: também os sidecars `04-d{N}-{sd-prompt,generator}.json` que o
+ * reorder já remapeia (#9679) — senão o sidecar do gerador do destaque antigo
+ * fica atribuído ao novo.
  */
 export function deleteDestaquePrompts(
   internalDir: string,
@@ -589,7 +613,9 @@ export function deleteDestaquePrompts(
   if (!existsSync(internalDir)) return deleted;
 
   const files = readdirSync(internalDir).filter((f) =>
-    new RegExp(`^02-d${position}-(?:prompt\\.md|sd-prompt\\.json|draft\\.md)$`).test(f),
+    new RegExp(
+      `^(?:02-d${position}-(?:prompt\\.md|sd-prompt\\.json|draft\\.md)|04-d${position}-(?:sd-prompt|generator)\\.json)$`,
+    ).test(f),
   );
 
   for (const f of files) {
@@ -1017,7 +1043,11 @@ function main(): void {
       ...(drop ? {} : { to_bucket: demoteTo }),
     },
     modified: { rewritten: [], renamed: [], deleted: [] },
-    rerenders_needed: buildSwapDestaqueSteps(editionDir, demotePosition, promotedTitle, drop ? null : demoteTo),
+    rerenders_needed: [
+      ...buildSwapDestaqueSteps(editionDir, demotePosition, promotedTitle, drop ? null : demoteTo),
+      // #9755: item promovido era o do 4º post social → re-selecionar.
+      ...[useMelhorPostReselectStep(editionDir, promotedUrl)].filter((x): x is string => x !== null),
+    ],
   };
 
   if (dryRun) {
@@ -1030,8 +1060,8 @@ function main(): void {
             demoted_item: drop ? `descartado` : `devolvido a ${demoteTo}[0] (flat, #9601)`,
             social_hash: "NÃO regravado (#9169) — recarimbar via refresh-social-hash.ts depois do splice do social",
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
-            images_deleted: `04-d${demotePosition}-*.jpg removidos (precisam regenerar)`,
-            prompts_deleted: `02-d${demotePosition}-*.md/json removidos (precisam regenerar)`,
+            images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
+            prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
           },
         },
         null,

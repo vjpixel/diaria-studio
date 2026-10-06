@@ -27,7 +27,12 @@
  *   2. `01-approved.json` + `01-approved-capped.json`: item removido do
  *      bucket de origem e inserido em `highlights[]` na posição, ranks
  *      renumerados 1..3;
- *   3. `02-reviewed.md`: headers `**DESTAQUE N |` renumerados (N≥posição → N+1);
+ *   3. `02-reviewed.md` (#9755, mesma limpeza que o swap ganhou no #9601):
+ *      headers `**DESTAQUE N |` renumerados (N≥posição → N+1), placeholder do
+ *      destaque novo inserido na posição, item promovido tirado da seção de
+ *      pool de origem (senão a URL fica 2×), título provisório inserido no
+ *      TÍTULO/SUBTÍTULO (marcador `swap-destaque-titulo-pending.json` →
+ *      `swap-destaque.ts --finalize-titulo`) e contagem da intro re-sincronizada;
  *   4. `03-social.md`: seções `## d{N}` renumeradas;
  *   5. `_internal/intentional-error.json` (`location`), carimbos de social/
  *      carrossel, `fact-check-sources/`, `04-crop-review.json`,
@@ -35,8 +40,9 @@
  *
  * O que NÃO faz (exige LLM, geração de imagem ou decisão editorial — sai
  * como `next_steps` no JSON):
- *   - escrever o bloco `**DESTAQUE {posição}**` em `02-reviewed.md`
- *     (`writer-destaque`) e o `## d{posição}` em `03-social.md`;
+ *   - escrever o texto do bloco `**DESTAQUE {posição}**` (substituindo o
+ *     placeholder) em `02-reviewed.md` (`writer-destaque`) e o `## d{posição}`
+ *     em `03-social.md`;
  *   - escrever `_internal/02-d{posição}-prompt.md` e gerar a imagem
  *     (`image-generate.ts --destaque d{posição}`), cards, carrossel e upload.
  *
@@ -71,6 +77,22 @@ import {
   intentionalErrorJsonPath,
 } from "./lib/intentional-errors.ts";
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
+import {
+  removePoolItemFromMd,
+  syncIntroCountInMd,
+  renderDestaquePlaceholder,
+} from "./swap-destaque.ts"; // #9755
+import {
+  locateTituloSubtituloLines,
+  parsePendingTitulos,
+  sanitizeTituloSegment,
+  serializePendingTitulos,
+  toProvisionalTitulo,
+  tituloPendingPath,
+  upsertPendingTitulo,
+  type PendingTitulo,
+} from "./lib/titulo-provisional.ts"; // #9755
+import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 
 /** Pure: newOrder que insere o slot vazio (3) na `position` (1..3). */
 export function insertionOrder(position: number): number[] {
@@ -136,6 +158,107 @@ export function shiftDestaqueHeadersInMd(md: string, position: number): string {
   });
 }
 
+/**
+ * #9755: insere o bloco placeholder do destaque novo na `position`, DEPOIS de
+ * `shiftDestaqueHeadersInMd` (os existentes já renumerados). Posição com
+ * vizinho seguinte → entra antes do header `**DESTAQUE {position+1} |`;
+ * posição final → depois do último bloco DESTAQUE, antes do `---` que abre a
+ * próxima seção (uma caixa de divulgação na lacuna fica antes do novo,
+ * mesma fronteira do `blockRe` do swap, #9254). Sem âncora → md intacto,
+ * `inserted: false`. @pure
+ */
+export function insertDestaquePlaceholderInMd(
+  md: string,
+  position: 1 | 2 | 3,
+  title: string,
+  url: string,
+): { md: string; inserted: boolean } {
+  const placeholder = renderDestaquePlaceholder(position, title, url);
+  const next = new RegExp(`^\\*\\*DESTAQUE\\s+${position + 1}\\s*\\|`, "m").exec(md);
+  if (next) {
+    return { md: md.slice(0, next.index) + placeholder + "\n\n---\n\n" + md.slice(next.index), inserted: true };
+  }
+  if (position === 1) return { md, inserted: false };
+  const prev = new RegExp(`^\\*\\*DESTAQUE\\s+${position - 1}\\s*\\|`, "m").exec(md);
+  if (!prev) return { md, inserted: false };
+  const rest = md.slice(prev.index);
+  const end = /\n+---[ \t]*\n+(?=\*\*(?:DESTAQUE\s+\d|🚀|🔬|📰|📡|🛠️|VÍDEOS?|🎁|🙋|ERRO\s+INTENCIONAL|ASSINE))/u.exec(rest);
+  if (end) {
+    const at = prev.index + end.index;
+    return { md: md.slice(0, at) + "\n\n---\n\n" + placeholder + md.slice(at), inserted: true };
+  }
+  const trimmed = md.replace(/\s+$/, "");
+  return { md: trimmed + "\n\n---\n\n" + placeholder + "\n", inserted: true };
+}
+
+/**
+ * #9755: re-deriva o bloco TÍTULO/SUBTÍTULO de uma edição de 2 destaques
+ * inserindo o título `provisional` na `position` — os segmentos existentes
+ * (inclusive se o editor os reescreveu) são preservados e só deslocados:
+ * TÍTULO = D1, SUBTÍTULO = `D2 | D3`. Bloco ausente → `no_block`; bloco que
+ * não tem exatamente 2 títulos (escrito à mão) → `unexpected_shape`, intacto.
+ * @pure
+ */
+export function insertTitleInTituloSubtitulo(
+  md: string,
+  position: 1 | 2 | 3,
+  provisional: string,
+): { md: string; status: "updated" | "no_block" | "unexpected_shape" } {
+  const lines = md.split("\n");
+  const loc = locateTituloSubtituloLines(lines);
+  if (!loc || loc.titleIdx < 0) return { md, status: "no_block" };
+  if (loc.subtitleIdx < 0) return { md, status: "unexpected_shape" };
+  const units = [
+    lines[loc.titleIdx].trim(),
+    ...lines[loc.subtitleIdx].split("|").map((x) => x.trim()),
+  ].filter((x) => x.length > 0);
+  if (units.length !== 2) return { md, status: "unexpected_shape" };
+  units.splice(position - 1, 0, sanitizeTituloSegment(provisional));
+  lines[loc.titleIdx] = units[0];
+  lines[loc.subtitleIdx] = units.slice(1).join(" | ");
+  return { md: lines.join("\n"), status: "updated" };
+}
+
+export interface PromoteMdUpdates {
+  placeholder_inserted: boolean;
+  pool_item_removed: boolean;
+  section_removed: string | null;
+  titulo_subtitulo: "updated" | "no_block" | "unexpected_shape";
+  provisional_title: string;
+  intro_count: { before: number | null; after: number | null; changed: boolean };
+}
+
+/**
+ * #9755: tudo que o promote muda no texto de `02-reviewed.md`, na ordem:
+ * (1) renumera headers; (2) placeholder do destaque novo; (3) tira o item
+ * promovido do pool de origem (`removePoolItemFromMd` do swap); (4) título
+ * provisório no TÍTULO/SUBTÍTULO; (5) contagem da intro. @pure
+ */
+export function applyPromoteToReviewedMd(
+  md: string,
+  position: 1 | 2 | 3,
+  promotedTitle: string,
+  promotedUrl: string,
+): { md: string; updates: PromoteMdUpdates } {
+  const provisional = toProvisionalTitulo(promotedTitle);
+  const shifted = shiftDestaqueHeadersInMd(md, position);
+  const ph = insertDestaquePlaceholderInMd(shifted, position, provisional, promotedUrl);
+  const pool = removePoolItemFromMd(ph.md, promotedUrl);
+  const titulo = insertTitleInTituloSubtitulo(pool.md, position, provisional);
+  const intro = syncIntroCountInMd(titulo.md);
+  return {
+    md: intro.md,
+    updates: {
+      placeholder_inserted: ph.inserted,
+      pool_item_removed: pool.removed,
+      section_removed: pool.section_removed,
+      titulo_subtitulo: titulo.status,
+      provisional_title: provisional,
+      intro_count: { before: intro.before, after: intro.after, changed: intro.changed },
+    },
+  };
+}
+
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, "utf8"));
 }
@@ -158,6 +281,8 @@ export interface PromoteResult {
   renamed: Array<{ from: string; to: string }>;
   warnings: string[];
   next_steps: string[];
+  /** #9755: o que mudou no texto de 02-reviewed.md (`null` = md ausente). */
+  md_updates: PromoteMdUpdates | null;
 }
 
 export function promoteToDestaque(
@@ -180,6 +305,7 @@ export function promoteToDestaque(
   if (approvedPaths.length === 0) throw new Error(`nenhum 01-approved*.json em ${internalDir}`);
   const updated: Array<{ path: string; data: ApprovedJson }> = [];
   let sourceBucket: string | null = null;
+  let promotedTitle: string | null = null;
   for (const p of approvedPaths) {
     const data = readJson(p) as ApprovedJson;
     const r = promoteInApprovedJson(data, url, position);
@@ -187,8 +313,13 @@ export function promoteToDestaque(
       throw new Error(`URL não encontrada em nenhum bucket de ${p}: ${url}`);
     }
     sourceBucket = sourceBucket ?? r.sourceBucket;
+    if (promotedTitle === null) {
+      const art = (data.highlights![position - 1] as { article?: { title?: unknown } }).article;
+      promotedTitle = typeof art?.title === "string" && art.title.trim() ? art.title.trim() : url;
+    }
     updated.push({ path: p, data });
   }
+  const pos = position as 1 | 2 | 3; // validado por insertionOrder()
 
   // 1. Arquivos binários/prompt primeiro (única etapa capaz de abortar no
   //    meio — mesmo sequenciamento de reorder-destaques.ts, #5087).
@@ -204,12 +335,47 @@ export function promoteToDestaque(
     pendingWrites.push({ path, content: jsonContent(data) });
   }
 
-  // 3. 02-reviewed.md — só renumera; o bloco novo é do writer-destaque.
+  // 3. 02-reviewed.md (#9755): renumera, placeholder do destaque novo, tira o
+  //    item do pool, título provisório no TÍTULO/SUBTÍTULO e contagem da intro.
+  //    O TEXTO do bloco novo continua sendo do writer-destaque.
   const mdPath = resolve(editionDir, "02-reviewed.md");
+  let mdUpdates: PromoteMdUpdates | null = null;
   if (existsSync(mdPath)) {
     const md = readFileSync(mdPath, "utf8");
-    const shifted = shiftDestaqueHeadersInMd(md, position);
-    if (shifted !== md) pendingWrites.push({ path: mdPath, content: shifted });
+    const applied = applyPromoteToReviewedMd(md, pos, promotedTitle!, url);
+    mdUpdates = applied.updates;
+    if (applied.md !== md) pendingWrites.push({ path: mdPath, content: applied.md });
+    if (!applied.updates.placeholder_inserted) {
+      warnings.push(`02-reviewed.md: âncora do DESTAQUE ${position} não encontrada — placeholder NÃO inserido; escrever o bloco à mão.`);
+    }
+    if (!applied.updates.pool_item_removed) {
+      warnings.push(`02-reviewed.md: o item promovido não foi achado em nenhuma seção de pool — conferir se a URL ficou duplicada.`);
+    }
+    if (applied.updates.titulo_subtitulo === "updated") {
+      // Mesmo marcador do swap: o invariante titulo-subtitulo-not-provisional
+      // barra o gate até `swap-destaque.ts --finalize-titulo`.
+      const markerPath = tituloPendingPath(editionDir);
+      let existing: PendingTitulo[] = [];
+      if (existsSync(markerPath)) {
+        try {
+          existing = parsePendingTitulos(readFileSync(markerPath, "utf8"));
+        } catch (e) {
+          warnings.push(`marcador ${markerPath} ilegível (${(e as Error).message}) — sobrescrito.`);
+        }
+      }
+      // Entradas pendentes de posições deslocadas acompanham a renumeração.
+      const shiftedEntries = existing.map((e) =>
+        e.position >= pos ? { ...e, position: (e.position + 1) as 1 | 2 | 3 } : e,
+      ).filter((e) => e.position <= 3);
+      pendingWrites.push({
+        path: markerPath,
+        content: serializePendingTitulos(
+          upsertPendingTitulo(shiftedEntries, { position: pos, provisional_title: applied.updates.provisional_title }),
+        ),
+      });
+    } else if (applied.updates.titulo_subtitulo === "unexpected_shape") {
+      warnings.push(`02-reviewed.md: bloco TÍTULO/SUBTÍTULO fora do formato de 2 destaques (escrito à mão?) — não alterado; incluir o D${position} à mão.`);
+    }
   }
 
   // 3b. 03-social.md — conteúdo computado aqui, gravado no mesmo lote.
@@ -309,7 +475,8 @@ export function promoteToDestaque(
   const nextSteps = [
     // #9102: sem isto o writer-destaque escreve sem texto-fonte e o fact-checker lê manifest defasado.
     `Re-baixar a fonte do destaque novo e invalidar o manifest do fact-check: npx tsx scripts/refresh-destaque-sources.ts --edition-dir ${editionDir}/ — rodar UMA vez; passar o path da entrada de sources com destaque === ${position} como source_text_path ao writer-destaque.`,
-    `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido.`,
+    `Escrever o bloco **DESTAQUE ${position}** em 02-reviewed.md (writer-destaque) a partir do item promovido, substituindo o placeholder [RASCUNHO PENDENTE].`,
+    `Depois de integrar o texto do writer-destaque: trocar no TÍTULO/SUBTÍTULO o título provisório pelo final — npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${editionDir} (até lá o invariante titulo-subtitulo-not-provisional do Stage 4 barra o gate, #9755)`,
     `Escrever a seção ## ${d} em 03-social.md (# Social e # Curto).`,
     `Humanizar a seção nova ## ${d} e gravar o selo: npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "seção ${d} nova (promote)" --edition-dir ${editionDir}` +
       (humanizerStaleBefore
@@ -320,6 +487,9 @@ export function promoteToDestaque(
     `Regerar cards/carrossel e subir as imagens: gen-carousel-cards.ts + upload-images-public.ts.`,
     `Rodar check-invariants.ts --stage 4.`,
   ];
+  // #9755: o item promovido era o do 4º post social → re-selecionar.
+  const umStep = useMelhorPostReselectStep(editionDir, url);
+  if (umStep) nextSteps.push(umStep);
 
   return {
     position,
@@ -330,6 +500,7 @@ export function promoteToDestaque(
     renamed,
     warnings,
     next_steps: nextSteps,
+    md_updates: mdUpdates,
   };
 }
 
