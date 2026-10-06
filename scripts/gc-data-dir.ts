@@ -28,7 +28,28 @@
  *   3. `*-embedded.html` em `_internal/` de edição FECHADA.
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-*`, sufixo de
  *      máquina, `.bak[-data]`) em QUALQUER lugar sob `data/`.
- *   5. `.mv-cache-*.json` (cache MillionVerifier, qualquer idade > 30d).
+ *   5. `.mv-cache-*.json` (cache MillionVerifier, qualquer idade > 30d) —
+ *      **OPT-IN desde #9725**: listado no inventário, mas o `--apply` só
+ *      remove com `--include-bucket mv-cache` (pode guardar resultado pago
+ *      ainda não persistido nos CSVs — caso de 260728, 13k e-mails).
+ *   6. `diaria-subscribers/*.db.backup-*` (+ sidecars `-shm`/`-wal`) —
+ *      mantém os N conjuntos mais recentes por `.db` (`--db-backup-keep`,
+ *      default 3, #9725) e, fora deles, só remove backup com ≥ 14 dias pelo
+ *      timestamp do NOME (`--db-backup-min-age-days`, #9730). Cópia de
+ *      conflito do OneDrive de um backup entra no conjunto de origem.
+ *
+ * `beehiiv-backup/` NUNCA é removido (guard). Desde #9725 o dry-run imprime
+ * um RELATÓRIO dos snapshots semanais (`YYYY-MM-DD/`) com tamanho e quais
+ * uma retenção dos `--beehiiv-keep` (default 4) mais recentes liberaria —
+ * apagar é decisão do editor, fora deste script.
+ *
+ * **Agendado (#9725):** `Diaria-Gc-Data-Dir-Weekly` em
+ * `scripts/lib/scheduled-tasks.ts` roda `--apply` semanal na `300` (seguido
+ * de um passo best-effort de dry-run que deixa o relatório de
+ * `beehiiv-backup/` no log, #9730), sem
+ * `--include-bucket` (mv-cache fica de fora) e sem `--data-root` (argv
+ * estático do registro — a premissa de "humano digitando o path" abaixo
+ * continua valendo pro único caminho que aceita `--data-root`).
  *
  * "Edição fechada" = `_internal/.step-6-done.json` existe (Stage 6/
  * Agendamento concluído, `scripts/lib/pipeline-state.ts::sentinelExists`) —
@@ -50,6 +71,11 @@
  *
  * Uso:
  *   npx tsx scripts/gc-data-dir.ts [--apply] [--json] [--data-root <path>]
+ *     [--include-bucket mv-cache[,...]] [--db-backup-keep N]
+ *     [--db-backup-min-age-days N] [--beehiiv-keep N]
+ *
+ * Flag malformada (bucket desconhecido, N < 1, sem valor) aborta com exit 2
+ * antes de qualquer varredura — nunca cai no default em silêncio.
  *
  * Sem `--apply`: lista cada candidato (path, bucket, tamanho, motivo) +
  * total por bucket. Com `--apply`: remove de fato, best-effort por arquivo
@@ -73,19 +99,31 @@
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { sentinelExists } from "./lib/pipeline-state.ts";
 import {
   type GcCandidate,
+  type GcBucket,
   type AgedFile,
+  type BeehiivSnapshotReport,
+  type SnapshotDirInfo,
   isForensicCacheDir,
   isTmpIntermediateFilename,
   isEmbeddedHtmlFilename,
   isBackupSiblingFilename,
   isMvCacheFilename,
+  parseDbBackupFilename,
+  isBeehiivSnapshotDirName,
   classifyBackupSiblings,
   classifyMvCache,
+  classifyDbBackups,
+  planBeehiivSnapshotReport,
+  resolveEnabledBuckets,
   guardCandidates,
+  DB_BACKUP_DIR,
+  DB_BACKUP_KEEP_DEFAULT,
+  DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
+  BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
 } from "./lib/data-dir-gc-policy.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -169,6 +207,7 @@ function walkForSiblingsAndCache(
   nowMs: number,
   siblings: AgedFile[],
   mvCache: AgedFile[],
+  dbBackups: AgedFile[],
   scanErrors: string[],
 ): void {
   if (!existsSync(absDir)) return;
@@ -179,16 +218,50 @@ function walkForSiblingsAndCache(
       if (rel === "beehiiv-backup" || rel.startsWith("beehiiv-backup/")) continue;
       if (rel === "snippets" || rel.startsWith("snippets/")) continue;
       if (isForensicCacheDir(rel)) continue; // contado à parte, pelo passo de edições
-      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache, scanErrors);
+      walkForSiblingsAndCache(dataRoot, p, nowMs, siblings, mvCache, dbBackups, scanErrors);
       continue;
     }
     if (!entry.isFile()) continue;
     const st = tryStat(p, scanErrors);
     if (!st) continue;
     const aged: AgedFile = { relPath: rel, sizeBytes: st.size, ageDays: ageDaysOf(st.mtimeMs, nowMs), mtimeMs: st.mtimeMs };
+    // Bucket 6 (#9725): só arquivos DIRETAMENTE sob `diaria-subscribers/`.
+    // Exclusivo com os demais — um backup do store nunca é tratado como
+    // cópia-irmã (retenção por N, não por idade).
+    if (rel === `${DB_BACKUP_DIR}/${entry.name}` && parseDbBackupFilename(entry.name)) {
+      dbBackups.push(aged);
+      continue;
+    }
+    // mv-cache tem PRECEDÊNCIA e é exclusivo (#9725, achado no dry-run real
+    // de 06/10/2026): `.mv-cache-…-predator-safeBackup-0001.json` também
+    // casa `isBackupSiblingFilename`, e cair no bucket `backup-sibling`
+    // (default do --apply) furaria o opt-in do mv-cache — a cópia-irmã de
+    // conflito do cache pode ser justamente a que guarda o resultado pago.
+    if (isMvCacheFilename(entry.name)) {
+      mvCache.push(aged);
+      continue;
+    }
     if (isBackupSiblingFilename(entry.name)) siblings.push(aged);
-    if (isMvCacheFilename(entry.name)) mvCache.push(aged);
   }
+}
+
+/** Relatório (#9725) dos snapshots semanais `beehiiv-backup/YYYY-MM-DD/` —
+ *  SÓ LEITURA: soma tamanho e diz quais uma retenção por N liberaria. Nada
+ *  aqui vira `GcCandidate`; `--apply` nunca toca `beehiiv-backup/`. */
+export function collectBeehiivBackupReport(
+  dataRoot: string,
+  keep: number = BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
+  scanErrors: string[] = [],
+): BeehiivSnapshotReport | null {
+  const root = resolve(dataRoot, "beehiiv-backup");
+  if (!existsSync(root)) return null;
+  const snapshots: SnapshotDirInfo[] = [];
+  for (const entry of tryReaddir(root, scanErrors)) {
+    if (!entry.isDirectory() || !isBeehiivSnapshotDirName(entry.name)) continue;
+    const abs = resolve(root, entry.name);
+    snapshots.push({ relPath: toRelPath(dataRoot, abs), sizeBytes: dirSizeBytes(abs, scanErrors) });
+  }
+  return planBeehiivSnapshotReport(snapshots, keep);
 }
 
 /** Enumera diretórios de edição, nos DOIS layouts (#7278 achado colateral):
@@ -227,7 +300,20 @@ export interface CollectResult {
   scanErrors: string[];
 }
 
-export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: number = Date.now()): CollectResult {
+export interface CollectOptions {
+  /** Conjuntos de backup do store preservados por `.db` (#9725). Default 3. */
+  dbBackupKeep?: number;
+  /** Piso de idade (dias, pelo stamp no nome) pra remover backup do store (#9730). Default 14. */
+  dbBackupMinAgeDays?: number;
+}
+
+/** Inventário COMPLETO — inclui buckets opt-in (`mv-cache`); quem decide o
+ *  que o `--apply` remove é `main()` via `resolveEnabledBuckets`. */
+export function collectCandidates(
+  dataRoot: string = DEFAULT_DATA_ROOT,
+  nowMs: number = Date.now(),
+  opts: CollectOptions = {},
+): CollectResult {
   if (!existsSync(dataRoot)) return { candidates: [], scanErrors: [] };
   const candidates: GcCandidate[] = [];
   const scanErrors: string[] = [];
@@ -267,12 +353,19 @@ export function collectCandidates(dataRoot: string = DEFAULT_DATA_ROOT, nowMs: n
     }
   }
 
-  // Buckets 4-5: qualquer lugar sob `data/`.
+  // Buckets 4-5: qualquer lugar sob `data/`; bucket 6: `diaria-subscribers/`.
   const siblings: AgedFile[] = [];
   const mvCache: AgedFile[] = [];
-  walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache, scanErrors);
+  const dbBackups: AgedFile[] = [];
+  walkForSiblingsAndCache(dataRoot, dataRoot, nowMs, siblings, mvCache, dbBackups, scanErrors);
   candidates.push(...classifyBackupSiblings(siblings));
   candidates.push(...classifyMvCache(mvCache));
+  candidates.push(
+    ...classifyDbBackups(dbBackups, opts.dbBackupKeep ?? DB_BACKUP_KEEP_DEFAULT, {
+      nowMs,
+      minAgeDays: opts.dbBackupMinAgeDays ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT,
+    }),
+  );
 
   return { candidates: guardCandidates(candidates), scanErrors };
 }
@@ -301,13 +394,43 @@ export function main(
   const asJson = hasFlag(argv, "json");
   const dataRoot = getArg(argv, "data-root") || DEFAULT_DATA_ROOT;
 
+  // Flags novas (#9725) validadas ANTES de qualquer varredura/remoção —
+  // fail-closed: flag malformada aborta com exit 2, nunca degrada pro
+  // default em silêncio (um `--include-bucket mvcache` com typo não pode
+  // virar "rodou sem incluir"; um `--db-backup-keep 0` não pode apagar todos).
+  let enabledBuckets: Set<GcBucket>;
+  let dbBackupKeep: number;
+  let dbBackupMinAgeDays: number;
+  let beehiivKeep: number;
+  try {
+    const includeRaw = getStringArg(argv, "include-bucket", { example: "mv-cache" });
+    enabledBuckets = resolveEnabledBuckets(includeRaw ? includeRaw.split(",") : []);
+    dbBackupKeep = getIntArg(argv, "db-backup-keep", { min: 1 }) ?? DB_BACKUP_KEEP_DEFAULT;
+    dbBackupMinAgeDays = getIntArg(argv, "db-backup-min-age-days", { min: 1 }) ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT;
+    beehiivKeep = getIntArg(argv, "beehiiv-keep", { min: 1 }) ?? BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT;
+  } catch (e) {
+    console.error(`[gc-data-dir] ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 2;
+    return;
+  }
+
   if (!existsSync(dataRoot)) {
     console.error(`[gc-data-dir] ${dataRoot} não existe — nada a fazer (ver CLAUDE.md setup, passo 2b).`);
     return;
   }
 
-  const { candidates, scanErrors } = collectCandidates(dataRoot);
+  const collected = collectCandidates(dataRoot, Date.now(), { dbBackupKeep, dbBackupMinAgeDays });
+  const scanErrors = collected.scanErrors;
+  // `candidates` = o que o `--apply` remove; `optInSkipped` = inventariado
+  // mas fora do default (ex: `mv-cache`), só removido com --include-bucket.
+  const candidates = collected.candidates.filter((c) => enabledBuckets.has(c.bucket));
+  const optInSkipped = collected.candidates.filter((c) => !enabledBuckets.has(c.bucket));
   const totalBytes = candidates.reduce((sum, c) => sum + c.sizeBytes, 0);
+  const optInSkippedBytes = optInSkipped.reduce((sum, c) => sum + c.sizeBytes, 0);
+  // Relatório de `beehiiv-backup/` só no dry-run (#9725): o `--apply`
+  // agendado não precisa andar ~1 GB de snapshots toda semana pra um
+  // relatório que ninguém lê no log do timer.
+  const beehiivReport = apply ? null : collectBeehiivBackupReport(dataRoot, beehiivKeep, scanErrors);
 
   // Remoção acontece ANTES de qualquer output — achado de review: o
   // `--json` saía ANTES do loop de `--apply` e nunca refletia o que de
@@ -340,8 +463,12 @@ export function main(
       JSON.stringify(
         {
           apply,
+          enabled_buckets: [...enabledBuckets],
           total_bytes: totalBytes,
           candidates,
+          opt_in_skipped: optInSkipped,
+          opt_in_skipped_bytes: optInSkippedBytes,
+          ...(apply ? {} : { beehiiv_backup_report: beehiivReport }),
           scan_errors: scanErrors,
           ...(apply ? { removed, failed, removals } : {}),
         },
@@ -363,6 +490,27 @@ export function main(
     console.log("");
     for (const [bucket, { count, bytes }] of byBucket) {
       console.log(`  ${bucket}: ${count} item(ns), ${formatBytes(bytes)}`);
+    }
+    if (optInSkipped.length > 0) {
+      const names = [...new Set(optInSkipped.map((c) => c.bucket))].join(",");
+      console.log(
+        `\nℹ️  ${optInSkipped.length} item(ns), ${formatBytes(optInSkippedBytes)} em bucket(s) opt-in (${names}) — ` +
+          `inventariados mas NÃO removidos sem --include-bucket ${names} (#9725):`,
+      );
+      for (const c of optInSkipped) {
+        console.log(`    [${c.bucket}] ${formatBytes(c.sizeBytes).padStart(9)}  ${c.relPath}`);
+      }
+    }
+    if (beehiivReport) {
+      console.log(
+        `\n📦 beehiiv-backup/ (SÓ RELATÓRIO — nunca removido por este script, decisão do editor, #9725): ` +
+          `${beehiivReport.kept.length + beehiivReport.wouldRemove.length} snapshot(s), ${formatBytes(beehiivReport.totalBytes)}; ` +
+          `mantendo os ${beehiivReport.keep} mais recentes, ${beehiivReport.wouldRemove.length} liberariam ` +
+          `${formatBytes(beehiivReport.wouldRemoveBytes)}:`,
+      );
+      for (const s of beehiivReport.wouldRemove) {
+        console.log(`    ${formatBytes(s.sizeBytes).padStart(9)}  ${s.relPath}`);
+      }
     }
     if (scanErrors.length > 0) {
       console.log(

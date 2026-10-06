@@ -17,11 +17,19 @@
  *   4. Cópias-irmãs de conflito do OneDrive (`-safeBackup-NNNN`, sufixo de
  *      nome de máquina como `-Neo`/`-predator`/`-Zenbook`, `.bak[-data]`) —
  *      em QUALQUER lugar sob `data/`, não só edições.
- *   5. `.mv-cache-*.json` (cache MillionVerifier — o resultado pago vive
- *      nos `-verified`/`-rejected`/`-unknown`/`-error`, #4353).
+ *   5. `.mv-cache-*.json` (cache MillionVerifier). **OPT-IN desde #9725**
+ *      (`OPT_IN_BUCKETS`): o cache pode guardar resultado pago ainda não
+ *      persistido nos CSVs, então o `--apply` só o remove com
+ *      `--include-bucket mv-cache`.
+ *   6. `diaria-subscribers/*.db.backup-*` (#9725) — retenção dos N
+ *      conjuntos mais recentes por `.db` (`classifyDbBackups`, N=3).
  *
- * Fora desta fatia (itens 4-6 do "O que fazer" da issue, follow-up
- * separado): agendamento armado em `scheduled-tasks.ts`, alarme de cota, e
+ * `beehiiv-backup/` segue no guard (nunca candidato); desde #9725 o
+ * dry-run só RELATA os snapshots semanais que uma retenção por N
+ * liberaria (`planBeehiivSnapshotReport`) — apagar é decisão do editor.
+ *
+ * Agendamento: `Diaria-Gc-Data-Dir-Weekly` em `scheduled-tasks.ts` (#9725).
+ * Fora desta fatia (follow-up separado da #7278): alarme de cota, e
  * normalização dos 15 diretórios `editions/{AAMMDD}` no layout antigo
  * (mover 3, apagar 12 shells duplicados).
  *
@@ -53,7 +61,54 @@ export function isExcludedPath(relPath: string): boolean {
   return false;
 }
 
-export type GcBucket = "forensic-cache" | "tmp-intermediate" | "embedded-html" | "backup-sibling" | "mv-cache";
+export type GcBucket =
+  | "forensic-cache"
+  | "tmp-intermediate"
+  | "embedded-html"
+  | "backup-sibling"
+  | "mv-cache"
+  | "db-backup";
+
+/** Todos os buckets conhecidos — vocabulário aceito por `--include-bucket`. */
+export const ALL_GC_BUCKETS: readonly GcBucket[] = [
+  "forensic-cache",
+  "tmp-intermediate",
+  "embedded-html",
+  "backup-sibling",
+  "mv-cache",
+  "db-backup",
+];
+
+/**
+ * Buckets OPT-IN (#9725): inventariados sempre (dry-run lista), mas fora do
+ * default do `--apply` — só removidos com `--include-bucket {nome}`
+ * explícito. `mv-cache` entra aqui porque `.mv-cache-*.json` pode guardar
+ * resultado MillionVerifier JÁ PAGO que ainda não foi persistido nos CSVs
+ * `-verified`/`-rejected`/... (caso de 260728: 13k e-mails recuperados dali)
+ * — a premissa "resultado pago já vive em outro lugar" de `classifyMvCache`
+ * não é garantida, e o `--apply` agendado (semanal, sem supervisão) não pode
+ * apostar nela.
+ */
+export const OPT_IN_BUCKETS: readonly GcBucket[] = ["mv-cache"];
+
+/**
+ * @pure — conjunto de buckets que o `--apply` remove: todos os não-opt-in +
+ * os opt-in pedidos em `include`. Nome desconhecido LANÇA (fail-closed: um
+ * typo em `--include-bucket mvcache` não pode virar "nada incluído" em
+ * silêncio, nem o contrário).
+ */
+export function resolveEnabledBuckets(include: readonly string[] = []): Set<GcBucket> {
+  const enabled = new Set<GcBucket>(ALL_GC_BUCKETS.filter((b) => !OPT_IN_BUCKETS.includes(b)));
+  for (const raw of include) {
+    const name = raw.trim();
+    if (name === "") continue;
+    if (!(ALL_GC_BUCKETS as readonly string[]).includes(name)) {
+      throw new Error(`--include-bucket: bucket desconhecido "${name}" (válidos: ${ALL_GC_BUCKETS.join(", ")})`);
+    }
+    enabled.add(name as GcBucket);
+  }
+  return enabled;
+}
 
 export interface GcCandidate {
   /** path relativo à raiz `data/`, sempre "/"-separated. */
@@ -234,6 +289,201 @@ export function classifyMvCache(files: readonly AgedFile[], retentionDays: numbe
       relPath: f.relPath,
       bucket: "mv-cache" as const,
       sizeBytes: f.sizeBytes,
-      reason: `cache MillionVerifier, ${f.ageDays}d (>${retentionDays}d) — resultado pago já persistido em outro lugar (#4353)`,
+      reason: `cache MillionVerifier, ${f.ageDays}d (>${retentionDays}d) — opt-in no --apply (#9725): pode guardar resultado pago ainda não persistido nos CSVs`,
     }));
+}
+
+// ---------------------------------------------------------------------------
+// Bucket 6: backups do store `diaria-subscribers` (#9725) — retenção por N
+// ---------------------------------------------------------------------------
+
+/** Quantos backups (conjuntos `{db}.backup-{stamp}` + sidecars) do mesmo
+ *  `.db` são preservados — os N mais recentes, por `stamp`. Default 3,
+ *  configurável via `--db-backup-keep`. */
+export const DB_BACKUP_KEEP_DEFAULT = 3;
+
+/** Piso de IDADE (#9730, review P2): nenhum backup com menos de N dias sai,
+ *  mesmo fora dos `keep` mais recentes. Esses backups são o ponto de
+ *  restauração ANTES de operações irreversíveis (`backupStoreFile`,
+ *  resolve-identity/backfill) — uma sessão de manutenção que gere 4+
+ *  backups seguidos não pode fazer o GC de sábado apagar o 1º deles, que é
+ *  justamente o anterior a tudo. A idade vem do timestamp NO NOME (`stamp`),
+ *  nunca do mtime (o OneDrive reescreve mtime ao copiar entre máquinas).
+ *  Configurável via `--db-backup-min-age-days`. */
+export const DB_BACKUP_MIN_AGE_DAYS_DEFAULT = 14;
+
+/** Único diretório onde o bucket `db-backup` atua (escopo da #9725). */
+export const DB_BACKUP_DIR = "diaria-subscribers";
+
+export interface DbBackupName {
+  /** basename do `.db` canônico (ex: `diaria-subscribers.db`). */
+  base: string;
+  /** timestamp do backup (`backupFileSuffix`, ex: `2026-09-05T01-24-38-264Z`). */
+  stamp: string;
+  /** Sufixo de cópia de conflito do OneDrive (ex: `-Neo`, `-predator-safeBackup-0001`),
+   *  presente só quando o arquivo é uma cópia de conflito — ela pertence ao
+   *  MESMO conjunto do backup de origem (mesmo `stamp`), nunca a um conjunto
+   *  próprio que disputaria o top N (#9730, review P3). */
+  conflictSuffix?: string;
+}
+
+/** Formato de `backupFileSuffix` (`new Date().toISOString()` com `:`/`.` → `-`). */
+const DB_BACKUP_STAMP_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/;
+
+/** Sufixo de cópia de conflito do OneDrive — mesmo vocabulário de
+ *  `BACKUP_SIBLING_PATTERNS` (nome de máquina, `-safeBackup-NNNN`,
+ *  `-fromWindows-…`), ancorado no FIM do nome do backup. */
+const DB_BACKUP_CONFLICT_SUFFIX_RE =
+  /(-(?:safeBackup-\d+|(?:predator|neo|zenbook|helios|300)(?:-\d+)?(?:-safeBackup-\d+)?|fromWindows-\d{6}-\d{4}))$/i;
+
+/**
+ * @pure — reconhece `{base}.db.backup-{stamp}` e seus sidecars SQLite
+ * (`-shm`/`-wal`/`-journal`), formato gravado por `backupStoreFile`
+ * (`scripts/lib/diaria-subscribers-identity-resolve.ts`). O sidecar
+ * pertence ao MESMO conjunto do backup (mesmo `stamp`) e sai junto com ele —
+ * nunca fica órfão. Cópia de conflito do OneDrive (`…Z-Neo`, `…Z-shm-Neo`)
+ * também entra no conjunto de origem (`conflictSuffix`). `stamp` precisa
+ * estar no formato ISO de `backupFileSuffix` — sem isso a idade não é
+ * derivável e o arquivo não é tratado como backup (nunca removido por este
+ * bucket). `null` = não é backup (inclui o `.db` canônico).
+ */
+export function parseDbBackupFilename(name: string): DbBackupName | null {
+  const conflict = DB_BACKUP_CONFLICT_SUFFIX_RE.exec(name);
+  const core = conflict ? name.slice(0, conflict.index) : name;
+  const m = /^(.+\.db)\.backup-(.+?)(?:-(?:shm|wal|journal))?$/i.exec(core);
+  if (!m || !DB_BACKUP_STAMP_RE.test(m[2])) return null;
+  return conflict ? { base: m[1], stamp: m[2], conflictSuffix: conflict[1] } : { base: m[1], stamp: m[2] };
+}
+
+/** @pure — epoch ms do `stamp` (formato de `backupFileSuffix`), ou `null`. */
+export function dbBackupStampToMs(stamp: string): number | null {
+  const m = DB_BACKUP_STAMP_RE.exec(stamp);
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+export interface ClassifyDbBackupsOptions {
+  /** "agora" em epoch ms — injetado pelo caller pra manter a função pura. */
+  nowMs: number;
+  /** Piso de idade em dias (pelo `stamp`). Default `DB_BACKUP_MIN_AGE_DAYS_DEFAULT`. */
+  minAgeDays?: number;
+}
+
+/**
+ * Classifica backups do store: agrupa por (diretório, `.db` base), depois
+ * por `stamp` (conjunto = backup + sidecars + cópias de conflito do
+ * OneDrive). Preserva os `keep` conjuntos mais recentes — ordenados por
+ * `stamp` desc (ISO, ordena lexicalmente; mtime não serve como critério
+ * primário porque a cópia via OneDrive entre máquinas reescreve mtime),
+ * desempate por mtime. Dos demais, só sai o conjunto cujo `stamp` tem
+ * idade ≥ `minAgeDays` (#9730): "fora do top N" é necessário, nunca
+ * suficiente.
+ *
+ * Arquivos que `parseDbBackupFilename` não reconhece são ignorados (o
+ * caller já filtra; defesa em profundidade).
+ */
+export function classifyDbBackups(
+  files: readonly AgedFile[],
+  keep: number = DB_BACKUP_KEEP_DEFAULT,
+  opts: ClassifyDbBackupsOptions,
+): GcCandidate[] {
+  if (!Number.isInteger(keep) || keep < 1) {
+    throw new Error(`classifyDbBackups: keep deve ser inteiro ≥ 1, recebido ${keep}`);
+  }
+  const minAgeDays = opts.minAgeDays ?? DB_BACKUP_MIN_AGE_DAYS_DEFAULT;
+  if (!Number.isInteger(minAgeDays) || minAgeDays < 1) {
+    throw new Error(`classifyDbBackups: minAgeDays deve ser inteiro ≥ 1, recebido ${minAgeDays}`);
+  }
+  if (!Number.isFinite(opts.nowMs)) {
+    throw new Error(`classifyDbBackups: nowMs inválido (${opts.nowMs})`);
+  }
+  // (dir|base) → stamp → arquivos do conjunto
+  const groups = new Map<string, Map<string, AgedFile[]>>();
+  for (const f of files) {
+    const norm = f.relPath.replace(/\\/g, "/");
+    const slash = norm.lastIndexOf("/");
+    const dir = slash === -1 ? "" : norm.slice(0, slash);
+    const parsed = parseDbBackupFilename(norm.slice(slash + 1));
+    if (!parsed) continue;
+    const key = `${dir}|${parsed.base}`;
+    const sets = groups.get(key) ?? new Map<string, AgedFile[]>();
+    const list = sets.get(parsed.stamp) ?? [];
+    list.push(f);
+    sets.set(parsed.stamp, list);
+    groups.set(key, sets);
+  }
+
+  const out: GcCandidate[] = [];
+  for (const sets of groups.values()) {
+    const ordered = [...sets.entries()].sort(([sa, fa], [sb, fb]) => {
+      if (sa !== sb) return sa < sb ? 1 : -1; // stamp desc
+      return Math.max(...fb.map((f) => f.mtimeMs)) - Math.max(...fa.map((f) => f.mtimeMs));
+    });
+    for (const [stamp, list] of ordered.slice(keep)) {
+      const stampMs = dbBackupStampToMs(stamp);
+      if (stampMs === null) continue; // idade indeterminável — nunca remover
+      const ageDays = Math.floor((opts.nowMs - stampMs) / 86_400_000);
+      if (ageDays < minAgeDays) continue; // piso de idade (#9730)
+      for (const f of list) {
+        out.push({
+          relPath: f.relPath,
+          bucket: "db-backup",
+          sizeBytes: f.sizeBytes,
+          reason: `backup do store (${stamp}, ${ageDays}d ≥ ${minAgeDays}d) fora dos ${keep} mais recentes do mesmo .db`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// `beehiiv-backup/` — SÓ RELATÓRIO, nunca candidato (#9725)
+// ---------------------------------------------------------------------------
+
+/** N de snapshots semanais que o RELATÓRIO trata como "manter" — só muda o
+ *  que é listado como candidato hipotético; nada é removido. */
+export const BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT = 4;
+
+/** @pure — snapshot semanal de `beehiiv-backup/` (`YYYY-MM-DD`). */
+export function isBeehiivSnapshotDirName(name: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(name);
+}
+
+export interface SnapshotDirInfo {
+  /** path relativo à raiz `data/` (ex: `beehiiv-backup/2026-09-06`). */
+  relPath: string;
+  sizeBytes: number;
+}
+
+export interface BeehiivSnapshotReport {
+  keep: number;
+  kept: SnapshotDirInfo[];
+  /** Candidatos HIPOTÉTICOS — nunca entram em `GcCandidate[]` nem são
+   *  removidos por este script (o guard `isExcludedPath` também os barra).
+   *  `beehiiv-backup/` é o único backup de dado que some junto com o acesso
+   *  à Beehiiv (#6465); apagar é decisão do editor. */
+  wouldRemove: SnapshotDirInfo[];
+  wouldRemoveBytes: number;
+  totalBytes: number;
+}
+
+/** @pure — ordena por nome (data ISO) desc e separa os `keep` mais recentes. */
+export function planBeehiivSnapshotReport(
+  snapshots: readonly SnapshotDirInfo[],
+  keep: number = BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
+): BeehiivSnapshotReport {
+  if (!Number.isInteger(keep) || keep < 1) {
+    throw new Error(`planBeehiivSnapshotReport: keep deve ser inteiro ≥ 1, recebido ${keep}`);
+  }
+  const ordered = [...snapshots].sort((a, b) => (a.relPath < b.relPath ? 1 : a.relPath > b.relPath ? -1 : 0));
+  const wouldRemove = ordered.slice(keep);
+  return {
+    keep,
+    kept: ordered.slice(0, keep),
+    wouldRemove,
+    wouldRemoveBytes: wouldRemove.reduce((s, x) => s + x.sizeBytes, 0),
+    totalBytes: ordered.reduce((s, x) => s + x.sizeBytes, 0),
+  };
 }
