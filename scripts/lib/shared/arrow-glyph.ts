@@ -62,7 +62,7 @@ export function decodeArrowEntities(text: string): string {
 /**
  * Transição numérica (número dos dois lados, tags inline permitidas no
  * meio): `5,4% → 18%`, `5,4% → <b>18%</b>`, `5,4% → <a …>18%</a>`,
- * `US$ 20 → <a>US$ 10</a>` viram `… para …` ("de 5,4% para 18%" é como o
+ * `US$ 20 → <a>US$ 10</a>` e o markdown `5,4% → [18%](u)` (#9731) viram `… para …` ("de 5,4% para 18%" é como o
  * português lê a notação). Roda ANTES de qualquer passe de lead-in de CTA:
  * senão `5,4% → <a>18%</a>` viraria `5,4%: 18%`, trocando o sentido
  * (#9721 review, #9727). Idempotente. Puro.
@@ -71,7 +71,7 @@ export function normalizeNumericArrows(text: string): string {
   const t = decodeArrowEntities(text);
   if (!t.includes(ARROW_GLYPH)) return t;
   return t.replace(
-    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
+    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>|\[)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
     "$1 para ",
   );
 }
@@ -97,6 +97,14 @@ export function stripUnambiguousCtaArrows(text: string): string {
   );
 }
 
+/** Lookbehind: posição NÃO precedida de número (`18`, `5,4%`, `18%</b>`). */
+const NOT_AFTER_NUMBER = String.raw`(?<![\d%](?:<\/[a-z][^>]*>)*)`;
+/**
+ * Alvo de link numérico logo após a seta: `<a …>18%</a>`, `<a><b>US$ 10`,
+ * `[18%](u)`, `[R$ 5](u)`, `[-3](u)` (#9731).
+ */
+const NUMERIC_LINK_TARGET = String.raw`(?:<[a-z][^>]*>|\[)+[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d`;
+
 /**
  * Remove a seta das posições de CTA, preservando o resto do texto. Idempotente.
  * Setas fora de posição de CTA (ex.: "87% → 68%" no corpo de uma edição
@@ -108,8 +116,8 @@ export function stripUnambiguousCtaArrows(text: string): string {
  * (`renderIntroCallout`/`renderMidCallout`). O HTML inteiro da newsletter
  * usa `stripUnambiguousCtaArrows`.
  *
- * Duas exceções no lead-in: transição numérica (`5,4% → [18%](u)`) não é
- * lead-in, fica para `normalizeNumericArrows`; e seta logo depois de um
+ * Duas exceções no lead-in: transição numérica (`5,4% → [18%](u)`, número
+ * dos DOIS lados, #9731) não é lead-in, fica para `normalizeNumericArrows`; e seta logo depois de um
  * separador de lista de links (`[A](u) · → [B](u)`) só some, sem virar
  * `·:` (#9727 resíduo c, que fazia `isCtaOnlyParagraph` deixar de
  * reconhecer o parágrafo como só-CTA).
@@ -121,9 +129,12 @@ export function stripCtaArrows(text: string): string {
     t
       // separador antes da seta: `[A](u) · → [B](u)` vira `[A](u) · [B](u)`
       .replace(/([·•|])[ \t]*→[ \t]+(?=<a[\s>]|\[)/g, "$1 ")
-      // lead-in antes do link: `Veja o ranking → <a>`, `apoiar → [apoia.se](…)`;
-      // não depois de número (transição numérica, ver normalizeNumericArrows)
-      .replace(/(?<![\d%](?:<\/[a-z][^>]*>)*)[ \t]+→[ \t]+(?=<a[\s>]|\[)/gi, ": ")
+      // lead-in antes do link: `Veja o ranking → <a>`, `apoiar → [apoia.se](…)`,
+      // `cupom NEWS50 → [Assine](u)`. Só NÃO converte a transição numérica de
+      // verdade, número dos DOIS lados (`5,4% → [18%](u)`, ver
+      // normalizeNumericArrows). #9731: antes bastava o texto anterior terminar
+      // em dígito (`Leia as 3 → [dicas](u)`) pra seta passar crua ao leitor.
+      .replace(new RegExp(`(?:${NOT_AFTER_NUMBER}|(?![ \\t]+→[ \\t]+${NUMERIC_LINK_TARGET}))[ \\t]+→[ \\t]+(?=<a[\\s>]|\\[)`, "gi"), ": ")
   );
 }
 

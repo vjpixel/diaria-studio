@@ -36,7 +36,7 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { ARROW_GLYPH, stripCtaArrows } from "./arrow-glyph.ts";
+import { ARROW_GLYPH, normalizeNumericArrows, stripCtaArrows } from "./arrow-glyph.ts";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -61,7 +61,9 @@ export function readSnippetFile(filename: string, rootDir?: string): string | nu
   // editor (gitignored), então o repo não o reescreve em disco; a seta em
   // posição de CTA (`→ [label](url)`, `[Ver →](url)`) sai aqui, em runtime.
   // Fail-soft: seta fora de posição de CTA só gera aviso, nunca aborta.
-  const clean = stripCtaArrows(raw);
+  // #9731: transição numérica (`5,4% → [18%](u)`) vira `para` antes, como nos
+  // callouts — senão ela sobra e cai no aviso abaixo.
+  const clean = stripCtaArrows(normalizeNumericArrows(raw));
   if (clean.includes(ARROW_GLYPH) && !warnedArrowSnippets.has(p)) {
     warnedArrowSnippets.add(p);
     console.warn(
