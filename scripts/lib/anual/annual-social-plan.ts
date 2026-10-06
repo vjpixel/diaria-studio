@@ -141,7 +141,7 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
  * Um post por dia, todos no mesmo horário, a partir de `start` (inclusive) —
  * decisão do editor (12/09/2026): a série sai em dias seguidos, na ordem dos
  * temas, com as previsões no último dia, sempre às `time` (default 09:00,
- * antes da grade da diária: 10:00 / 12:30 / 17:30).
+ * antes da grade da diária: 09:45 / 12:15 / 17:15, `fallback_schedule`).
  *
  * Os publicadores da diária só aceitam diretório com 2 ou 3 destaques
  * (`readDestaqueCount`), então os posts são agrupados em LOTES de 2–3

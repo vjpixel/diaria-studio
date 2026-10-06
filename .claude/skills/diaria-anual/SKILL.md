@@ -281,7 +281,7 @@ cp data/annual/$SLUG/social/_img-previsoes/04-d1-2x1.jpg data/annual/$SLUG/socia
 npx tsx scripts/prep-annual-social.ts --slug $SLUG [--start AAMMDD] [--time HH:MM]
 ```
 
-**Um post por dia, em dias seguidos, sempre no mesmo horário** (decisão do editor, 12/09/2026): a partir de `--start` (default: amanhã, Brasília), às `--time` (default 09:00 — antes da grade da diária, 10:00 / 12:30 / 17:30), na ordem dos temas, previsões no último dia. A série fecha em N+1 dias; começar no dia do envio da edição aproveita o e-mail ainda fresco.
+**Um post por dia, em dias seguidos, sempre no mesmo horário** (decisão do editor, 12/09/2026): a partir de `--start` (default: amanhã, Brasília), às `--time` (default 09:00 — antes da grade da diária, `publishing.social.fallback_schedule`, hoje 09:45 / 12:15 / 17:15), na ordem dos temas, previsões no último dia. A série fecha em N+1 dias; começar no dia do envio da edição aproveita o e-mail ainda fresco.
 
 Os publicadores só aceitam diretório com 2–3 destaques, então o script agrupa os posts em **lotes** de 2–3 (6 temas + previsões → 3/2/2) — o lote é só a unidade de arquivo. A data e a hora de cada post ficam em `_internal/social-slots.json` do lote, e os publicadores as leem quando rodam com `DIARIA_SOCIAL_SLOTS_FILE` apontando para ele (`compute-social-schedule.ts`; sem a variável, a diária segue a grade de sempre). Grava também `social/plan.json` e, por lote, `02-reviewed.md`, `03-social.md` (`## d1..d3`) e as imagens 2:1 — a do tema sai pelo índice da URL em `public-images.json`, que continua certo mesmo se o editor reordenou os temas.
 
@@ -300,7 +300,7 @@ Publicar um artefato de revisão (via `artifact-design`) com, por dia: horário 
 
 ### 6e. Agendamento
 
-Para cada lote do plano, na ordem — **cada publicador com `DIARIA_SOCIAL_SLOTS_FILE` na própria linha** (prefixo de comando, nunca `export`: fica escopado ao processo e não sobra no shell). Sem ela, os posts caem na grade da diária (data do lote, 10:00 / 12:30 / 17:30). O arquivo (`{"edition": "AAMMDD", "slots": {...}}`) só vale para a edição que nomeia, então mesmo esquecido não mexe em outra edição:
+Para cada lote do plano, na ordem — **cada publicador com `DIARIA_SOCIAL_SLOTS_FILE` na própria linha** (prefixo de comando, nunca `export`: fica escopado ao processo e não sobra no shell). Sem ela, os posts caem na grade da diária (data do lote, hoje 09:45 / 12:15 / 17:15). O arquivo (`{"edition": "AAMMDD", "slots": {...}}`) só vale para a edição que nomeia, então mesmo esquecido não mexe em outra edição:
 
 ```bash
 D=data/annual/$SLUG/social/$LOTE

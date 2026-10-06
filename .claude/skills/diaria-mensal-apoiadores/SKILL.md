@@ -1,6 +1,6 @@
 ---
 name: diaria-mensal-apoiadores
-description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada (CTA pro apoia.se) — 3 por rede, um por história D1/D2/D3, no formato dos destaques diários, em LinkedIn página, Facebook, Instagram, Threads e X (D+1 nos slots da diária, 10:00/12:30/17:30 BRT, as 5 redes juntas, #9508) + 1 no perfil LinkedIn (D+2 09:30, manual) — e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email,{rede}:dN] [--dry-run] [--force canal[:dN][,canal]] [--replace-linkedin-single] [--schedule "AAAA-MM-DDTHH:mm" | --draft] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
+description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada (CTA pro apoia.se) — 3 por rede, um por história D1/D2/D3, no formato dos destaques diários, em LinkedIn página, Facebook, Instagram, Threads e X (D+1 nos slots da diária, `publishing.social.fallback_schedule`, hoje 09:45/12:15/17:15 BRT, as 5 redes juntas, #9508) + 1 no perfil LinkedIn (D+2 09:30, manual) — e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email,{rede}:dN] [--dry-run] [--force canal[:dN][,canal]] [--replace-linkedin-single] [--schedule "AAAA-MM-DDTHH:mm" | --draft] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
 ---
 
 # /diaria-mensal-apoiadores
@@ -61,7 +61,7 @@ fecha de ponta a ponta com `--skip apoiase`.
 | Posts públicos (editor, 02/10/2026) | **Sim — LinkedIn página + perfil.** CTA aponta pro apoia.se, **NUNCA** pra URL direta da retrospectiva paywalled: linha literal `Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria` (adaptação da frase do editor no Artigo Especial — não reescrever, não passar por Clarice/humanizador). Texto de chamada, não recorte. |
 | Facebook/Instagram/Threads/X (editor, 02/10/2026, #9500) | **Sim, os quatro**, mesma regra de CTA. X/Threads (≤280) aceitam a linha curta `Apoie e leia a retrospectiva completa: apoia.se/diaria` (premissa do #9500: mantém o "Apoie", corta o resto pra caber); LinkedIn/Facebook/Instagram, a longa. |
 | Um post por história (editor, 02/10/2026, #9508) | **3 posts por rede, um por história** (DESTAQUE 1/2/3 do `draft.md`), no **formato dos destaques diários**: Instagram e Threads = carrossel de 5 slides fixos (capa 4:5 com o título + 3 parágrafos + CTA, #6005 Parte B); X = até 4 imagens (capa + 3 parágrafos, **sem** o slide de CTA, #8202); Facebook e página LinkedIn = 1 imagem (a capa 4:5 da história, como a diária prefere) + texto. O **perfil LinkedIn segue com 1 post só**, manual. Textos (premissa do #9508, espelho da diária `# Social`/`# Curto`): por história, `d{N}.md` = **exatamente 3 parágrafos** (≤260 cada; os slides E o corpo da legenda de LinkedIn/Facebook/Instagram — o script soma a linha longa de CTA) e `d{N}-curto.md` = ≤280 com a linha curta (Threads e X). Parágrafo que não cabe no card é **REESCRITO**, nunca encolhido nem truncado (#6078). Slide de CTA = a linha longa, faixa "Exclusivo para apoiadores". Capa = `04-d{N}-2x1.jpg` do ciclo recortada em 4:5, título da história, linha "Retrospectiva de {Mês}". Tudo por `publish-retrospectiva-social.ts`; X via Buffer MCP pelo top-level (o script só monta os 3 payloads). |
-| Agenda (editor, 02/10/2026, #9508) | D = data do ENVIO do e-mail (`--base-date`). Os 15 posts no **dia D+1**, nos **mesmos slots dos dias de semana da diária** (`publishing.social.fallback_schedule`, fonte do `compute-social-schedule.ts`): **história 1 às 10:00, 2 às 12:30, 3 às 17:30 BRT**, com as **5 redes no mesmo horário** (sem escalonar). Por isso o dia **não pode ter edição diária agendada**: post vivo no store da diária desse dia (`editionDir(AAMMDD)/_internal/06-social-published.json` (`data/editions/{AAMM}/{AAMMDD}/`)) recusa o pré-voo; pasta da edição sem posts (edição em curso) ou dia útil sem edição viram **aviso** no JSON (`warnings`) e no gate. Sábado/domingo não têm edição — o envio do e-mail no 1º sábado (#9473) cai os posts no domingo. Perfil LinkedIn **D+2 09:30 BRT**, manual (o Worker rejeita `pixel` + `post`). Página `webhook_target: "diaria"`. |
+| Agenda (editor, 02/10/2026, #9508) | D = data do ENVIO do e-mail (`--base-date`). Os 15 posts no **dia D+1**, nos **mesmos slots dos dias de semana da diária** (`publishing.social.fallback_schedule`, fonte do `compute-social-schedule.ts`): **história 1 às 09:45, 2 às 12:15, 3 às 17:15 BRT** (valores de hoje — a fonte é o config), com as **5 redes no mesmo horário** (sem escalonar). Por isso o dia **não pode ter edição diária agendada**: post vivo no store da diária desse dia (`editionDir(AAMMDD)/_internal/06-social-published.json` (`data/editions/{AAMM}/{AAMMDD}/`)) recusa o pré-voo; pasta da edição sem posts (edição em curso) ou dia útil sem edição viram **aviso** no JSON (`warnings`) e no gate. Sábado/domingo não têm edição — o envio do e-mail no 1º sábado (#9473) cai os posts no domingo. Perfil LinkedIn **D+2 09:30 BRT**, manual (o Worker rejeita `pixel` + `post`). Página `webhook_target: "diaria"`. |
 | Post único legado da página (#9474 → #9508) | O ciclo 2609-10 já tem 1 post geral da página agendado. Enquanto ele estiver vivo no Worker e algum post da página estiver pedido, o pré-voo **inteiro** é recusado (tudo-ou-nada; sairiam 4 na página). O post único do #9500 nas outras redes (`divulgacao-social-published.json`), se existir vivo, também recusa — sem cancelamento por script. `--replace-linkedin-single` cancela a entry (DELETE `/queue/:key`) antes de despachar os 3; se ela já saiu da fila (provavelmente publicada), os 3 seguem e o resultado avisa (`legacy_linkedin.action: "already-gone"`). |
 | Box (editor, 02/10/2026) | **Slot 2, o mesmo do Artigo Especial — os dois se ALTERNAM.** Mecanismo: pin last-writer-wins (quem publica por último ocupa o slot); `--unpin` de um só solta o slot se ele ainda aponta pro arquivo dele, nunca derruba o pin do outro (`scripts/lib/box-slot-pin.ts`). Trade-off do #6748: em edição de 2 destaques o slot 2 não aparece. CTA do box leva à página da Retrospectiva (trecho + paywall, a página feita pra vender o apoio) — mesma escolha do box do Artigo Especial. |
 | Horário do e-mail | **1º sábado do mês de envio, 06:00 BRT** (#9473, `monthly_send_schedule` no config; regra única em `lib/mensal/monthly-send-schedule.ts`). O 4b agenda por ela por padrão (rascunho se faltar <24h ou com `--draft`; `--schedule` sobrepõe). O LinkedIn herda a âncora D dessa mesma data (`ruleBaseDateForCycle`) quando o e-mail ainda sai agendado pela regra. |
@@ -101,7 +101,7 @@ fecha de ponta a ponta com `--skip apoiase`.
   pré-voo, por post (nunca reagenda pra daqui a minutos): `--skip {rede}:dN`
   das histórias vencidas, ou outro dia.
 - `--at ISO` — escolhe o DIA dos posts por história (o dia local do ISO; os
-  horários continuam sendo os slots 10:00/12:30/17:30) e o horário do perfil.
+  horários continuam sendo os slots de `fallback_schedule`, hoje 09:45/12:15/17:15) e o horário do perfil.
 - `--replace-linkedin-single` (#9508) — cancela no Worker o post ÚNICO legado
   da página LinkedIn (#9474) antes de despachar os 3 por história. Sem ele, um
   post único ainda agendado faz o pré-voo recusar a execução inteira.
@@ -286,7 +286,7 @@ npx tsx scripts/publish-retrospectiva-social.ts --cycle $CYCLE --base-date {D} [
 
 Com post único legado da página vivo (ciclo 2609-10), sem
 `--replace-linkedin-single` o dry-run é recusado inteiro. Se o horário de
-alguma história já passou (ex: D+1 = hoje e já passou das 10:00), o pré-voo
+alguma história já passou (ex: D+1 = hoje e já passou das 09:45), o pré-voo
 também recusa tudo: `--skip linkedin:d1,facebook:d1,instagram:d1,threads:d1,x:d1`
 libera as histórias 2/3, ou escolha outro dia (`--base-date`/`--at`). Dia com
 edição diária agendada é recusado (mesmos slots); os avisos de `warnings`
@@ -319,13 +319,13 @@ LinkedIn perfil (MANUAL, 1 post só, agenda {perfil}):
 
 Posts por história (3 × 5 = 15, dia {D+1}, slots da diária, 5 redes no mesmo horário; slides em divulgacao/04-d{N}-*.jpg):
   Edição diária em {D+1}: {nenhuma (fim de semana) | aviso de warnings}
-  História 1 — {título do DESTAQUE 1} — 10:00:
+  História 1 — {título do DESTAQUE 1} — 09:45:
     LinkedIn página + Facebook (capa) + Instagram (carrossel 5):
       {d1.md + linha longa de CTA}
     Threads (carrossel 5) + X via Buffer (capa + 3 slides):
       {d1-curto.md}
-  História 2 — {título} — 12:30, mesmo formato ({d2.md} / {d2-curto.md})
-  História 3 — {título} — 17:30, mesmo formato ({d3.md} / {d3-curto.md})
+  História 2 — {título} — 12:15, mesmo formato ({d2.md} / {d2-curto.md})
+  História 3 — {título} — 17:15, mesmo formato ({d3.md} / {d3-curto.md})
   Post único legado da página: {cancelar e substituir (--replace-linkedin-single) | nenhum}
 
 Box (slot 2, alterna com o Artigo Especial — substitui o pin atual: {slot2 hoje}):

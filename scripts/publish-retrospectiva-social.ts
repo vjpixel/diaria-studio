@@ -31,8 +31,8 @@
  *   gerados localmente em `divulgacao/` e subidos pro KV (só fora do
  *   `--dry-run`, só depois do pré-voo).
  * - Agenda (`resolveRetrospectivaPostScheduledAts`, decisão do editor): dia
- *   D+1 do envio do e-mail, nos slots da diária — história 1 às 10:00, 2 às
- *   12:30, 3 às 17:30 BRT — com as 5 redes NO MESMO horário. Por isso o dia
+ *   D+1 do envio do e-mail, nos slots da diária — história 1 às 09:45, 2 às
+ *   12:15, 3 às 17:15 BRT (`fallback_schedule` do config) — com as 5 redes NO MESMO horário. Por isso o dia
  *   não pode ter edição diária agendada: post vivo no store da diária desse
  *   dia (`editionDir(AAMMDD)/_internal/06-social-published.json`, ou seja `data/editions/{AAMM}/{AAMMDD}/`) barra o
  *   pré-voo; dia útil sem edição (ainda) vira aviso.
