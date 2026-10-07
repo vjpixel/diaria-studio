@@ -68,7 +68,16 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     company: "OpenAI",
     // #354: alto volume — só /blog/, /index/, /news/ (excl. principles, reports, etc.)
-    path_patterns: [/^openai\.com\/(blog|index|news)\/(?!our-principles|safety-report|transparency|fedram|fido)/],
+    // #9788: developers.openai.com = docs oficiais (Decisions API etc.);
+    // community.openai.com é fórum aberto, então só a categoria Announcements
+    // (/c/announcements/...) — domínio inteiro NUNCA. Limite conhecido: URL de
+    // tópico (/t/{slug}/{id}) não carrega a categoria no path, então um post
+    // de staff linkado direto não é distinguível de post de usuário por regex.
+    path_patterns: [
+      /^openai\.com\/(blog|index|news)\/(?!our-principles|safety-report|transparency|fedram|fido)/,
+      /^developers\.openai\.com\//,
+      /^community\.openai\.com\/c\/announcements(\/|$)/,
+    ],
     detection_keywords: /\b(openai|chatgpt|gpt-?[0-9]+(\.[0-9]+)?o?|sora)\b/i,
     primary_domain: "openai.com",
   },
