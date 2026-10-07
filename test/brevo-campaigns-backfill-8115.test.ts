@@ -397,10 +397,12 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
     assert.equal(result.statsFetched, 1);
     assert.ok(putCalls.some((p) => p.key === "stats:301"));
     assert.ok(!putCalls.some((p) => p.key === "stats:303"));
-    // Offset avança só até a campanha que causou o break (2 processadas:
-    // c1 + c2) — NUNCA até 3, que pularia c3 permanentemente.
+    // 2 processadas (c1 + c2) — NUNCA 3, que pularia c3 permanentemente.
+    // #9852: c2 ficou sem stats, então a posição DELA volta a ser lacuna
+    // pendente: o cursor reabre em LIMIT + 1, não em LIMIT + 2.
     assert.equal(result.scanned, 2);
-    assert.equal(result.cursor.offset, CAMPAIGNS_FETCH_LIMIT + 2);
+    assert.equal(result.cursor.offset, CAMPAIGNS_FETCH_LIMIT + 1);
+    assert.deepEqual(result.cursor.gaps?.[0], { start: CAMPAIGNS_FETCH_LIMIT + 1, end: 303 });
     assert.equal(result.cursor.done, false); // ainda falta c3 — não é o fim do total
     // c3 nem entrou no índice de arquivo ainda (nunca foi examinada).
     const archive = await readCampaignsArchiveIndex({ STATS_CACHE: kv as any });

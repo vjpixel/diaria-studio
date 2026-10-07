@@ -2762,10 +2762,19 @@ export interface CampaignsBackfillCursor {
    * Presente só enquanto `done` é `false`. Cada campanha nova empurra tudo
    * `+1` — `advanceBackfillGaps` desloca as faixas pendentes e abre a faixa
    * `[LIMIT, LIMIT + s)` das `s` que saíram da janela ao vivo. Ausente num
-   * cursor não-done = formato antigo: `[offset, totalCount)`. */
+   * cursor sem `version` = formato antigo, relido inteiro (#9851, ver
+   * `backfillGapsFromCursor`). */
   gaps?: BackfillGap[];
+  /** #9851: formato do cursor. Todo cursor gravado a partir do #9851 leva
+   * `CAMPAIGNS_BACKFILL_CURSOR_VERSION`. Ausente E sem `gaps` = cursor
+   * ANTIGO (#8115/#9841), cujo `offset`/`resumeAt`/`done` não são confiáveis
+   * — ver `backfillGapsFromCursor`. */
+  version?: number;
   updatedAt: string;
 }
+
+/** #9851: versão atual do formato do cursor (`CampaignsBackfillCursor.version`). */
+export const CAMPAIGNS_BACKFILL_CURSOR_VERSION = 2;
 
 /** #9837: teto de páginas de listagem por chamada de
  * `runCampaignsBackfillBatch` (1 por lacuna pendente). O orçamento de
@@ -2828,21 +2837,41 @@ export function advanceBackfillGaps(
   return merged;
 }
 
-/** Pura (#9837): lacunas pendentes de um cursor, aceitando os 3 formatos já
- * gravados no KV — `gaps` (atual), `resumeAt` (#9841) e só `offset` (#8115,
- * varredura inicial até `totalCount`). `done` → nenhuma. */
+/** Pura (#9851): cursor gravado antes do #9851 SEM `gaps` — `offset`
+ * (#8115) ou `resumeAt` (#9841), `done` ou não. */
+export function isLegacyBackfillCursor(cursor: CampaignsBackfillCursor): boolean {
+  return cursor.version !== CAMPAIGNS_BACKFILL_CURSOR_VERSION && !cursor.gaps;
+}
+
+/** Pura (#9837): lacunas pendentes de um cursor, nas coordenadas do
+ * `totalCount` gravado. `done` (formato atual) → nenhuma.
+ *
+ * #9851: cursor ANTIGO (`isLegacyBackfillCursor`) vira a lacuna inteira
+ * `[CAMPAIGNS_FETCH_LIMIT, totalCount)`, `done` ou não. O #8115/#9841 nunca
+ * atualizava `totalCount` durante a varredura (fixava a 1ª medição) e lia
+ * cada página no offset ATUAL da conta, então `offset`/`resumeAt` ficam em
+ * coordenadas misturadas: deslocá-los por `fresh − totalCount` passa do
+ * ponto e pula as campanhas que chegaram no meio da varredura antiga (e um
+ * `done` antigo nunca leu o rabo empurrado além do total velho). Reler tudo
+ * custa só listagem — `stats:{id}` já cacheado não gera GET e o índice
+ * deduplica por id. */
 export function backfillGapsFromCursor(cursor: CampaignsBackfillCursor): BackfillGap[] {
-  if (cursor.done || cursor.totalCount == null) return [];
-  const raw: BackfillGap[] = cursor.gaps
-    ? cursor.gaps
-    : [{ start: cursor.offset, end: cursor.resumeAt ?? cursor.totalCount }];
+  if (cursor.totalCount == null) return [];
+  const legacy = isLegacyBackfillCursor(cursor);
+  if (cursor.done && !legacy) return [];
+  const raw: BackfillGap[] = legacy
+    ? [{ start: CAMPAIGNS_FETCH_LIMIT, end: cursor.totalCount }]
+    : cursor.gaps ?? [{ start: cursor.offset, end: cursor.resumeAt ?? cursor.totalCount }];
   return advanceBackfillGaps(raw, {
     shift: 0, processedStart: 0, processedCount: 0, total: cursor.totalCount, liveWindow: CAMPAIGNS_FETCH_LIMIT,
   });
 }
 
 function defaultCampaignsBackfillCursor(nowMs: number): CampaignsBackfillCursor {
-  return { offset: CAMPAIGNS_FETCH_LIMIT, totalCount: null, done: false, updatedAt: new Date(nowMs).toISOString() };
+  return {
+    offset: CAMPAIGNS_FETCH_LIMIT, totalCount: null, done: false,
+    version: CAMPAIGNS_BACKFILL_CURSOR_VERSION, updatedAt: new Date(nowMs).toISOString(),
+  };
 }
 
 /** Pura: normaliza um cursor lido do KV. `null` se ausente/shape inválido —
@@ -2854,6 +2883,7 @@ export function normalizeCampaignsBackfillCursor(raw: unknown): CampaignsBackfil
   const totalCount = typeof r.totalCount === "number" ? r.totalCount : null;
   const base: CampaignsBackfillCursor = { offset: r.offset, totalCount, done: r.done, updatedAt: r.updatedAt };
   if (typeof r.resumeAt === "number") base.resumeAt = r.resumeAt;
+  if (typeof r.version === "number") base.version = r.version;
   if (Array.isArray(r.gaps)) {
     const gaps = r.gaps.filter(
       (g): g is BackfillGap =>
@@ -2876,8 +2906,9 @@ export function parseCampaignsCount(raw: unknown): number | null {
 
 /**
  * Mede o total de campanhas `sent` da conta com 1 GET barato (`limit=1`) —
- * passo 1 da issue #8115 ("medir antes de varrer"). Não usa cache: é
- * chamado no máximo 1x por cursor (só quando `totalCount` ainda é `null`).
+ * passo 1 da issue #8115 ("medir antes de varrer"). Não usa cache: desde o
+ * #9837 é chamado 1x por invocação de `runCampaignsBackfillBatch` (toda
+ * chamada remede, pra deslocar as lacunas pelas campanhas novas).
  */
 export async function fetchCampaignsCount(
   env: Env,
@@ -3052,7 +3083,9 @@ export async function runCampaignsBackfillBatch(
 
   if (gaps.length === 0 || cursor.totalCount == null) {
     const { resumeAt: _drop, gaps: _dropGaps, ...rest } = cursor;
-    const doneCursor: CampaignsBackfillCursor = { ...rest, done: true, updatedAt: new Date(nowMs).toISOString() };
+    const doneCursor: CampaignsBackfillCursor = {
+      ...rest, done: true, version: CAMPAIGNS_BACKFILL_CURSOR_VERSION, updatedAt: new Date(nowMs).toISOString(),
+    };
     await writeCampaignsBackfillCursor(env, doneCursor);
     return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
   }
@@ -3098,6 +3131,12 @@ export async function runCampaignsBackfillBatch(
     /** #9837: offsets (desta página) de campanhas ainda mutáveis — voltam pro
      * conjunto de lacunas em vez de serem dadas como varridas. */
     const stillMutable: number[] = [];
+    /** #9852: offsets (desta página) de campanhas imutáveis cujo GET de
+     * stats falhou por 429 esgotado ou indisponibilidade — voltam pro
+     * conjunto de lacunas pelo mesmo caminho das mutáveis. Sem isso a
+     * campanha ficava no índice SEM `stats:{id}`, e `loadMonthlyTotalsArchive`
+     * a descarta: fora de "Totais por mês" pra sempre. */
+    const statsPending: number[] = [];
 
     for (const c of page.campaigns) {
       processedCount++;
@@ -3135,6 +3174,7 @@ export async function runCampaignsBackfillBatch(
           statsFetched++;
         }
       } catch (e) {
+        const offsetHere = gapStart + processedCount - 1;
         if (e instanceof BrevoRateLimitError) {
           // #8115 (achado de self-review): a cota REAL se esgotou no meio do
           // batch (`withRateLimitRetry` já tentou 3x e desistiu) — mesmo que
@@ -3145,22 +3185,26 @@ export async function runCampaignsBackfillBatch(
           // seu próprio backoff de até 3 tentativas) — puro desperdício de
           // tempo e pressão adicional sobre uma janela que já está no teto.
           // Para o loop AQUI: o índice de arquivo já registrou nome+data desta
-          // campanha acima; ela fica sem `stats:{id}` até a próxima invocação.
-          // `processedCount` inclui ESTA campanha (ela foi examinada, só a
-          // busca de stats falhou) mas NÃO as seguintes na página — o offset
-          // avança só até aqui (ver `advanceBackfillGaps` abaixo), pra que a próxima
-          // chamada retome exatamente das campanhas nunca examinadas.
+          // campanha acima, mas ela segue sem `stats:{id}` — #9852: a posição
+          // dela volta pras lacunas pendentes (`statsPending`), e a próxima
+          // chamada a relê e busca os stats. `processedCount` inclui ESTA
+          // campanha mas NÃO as seguintes na página — essas nunca foram
+          // examinadas e continuam pendentes (ver `advanceBackfillGaps`
+          // abaixo).
+          statsPending.push(offsetHere);
           rateLimited = true;
           break;
         }
-        // Erro de rede pontual (não rate-limit) — o índice de arquivo já
-        // registrou nome+data desta campanha acima; só os números ficam
-        // pendentes. Ela permanece SEM `stats:{id}`, então a PRÓXIMA chamada
-        // (depois que o offset avançar) não a re-visita automaticamente —
-        // aceito: o índice basta pra listar a campanha, e um backfill futuro
-        // com `--batch-size` maior ou um script de reconciliação dedicado
-        // pode preencher lacunas por id, se algum dia importar (fora do
-        // escopo desta fatia — ver PR #8115).
+        // #9852: erro de rede (fetch lançou algo que não é resposta HTTP) ou
+        // indisponibilidade da Brevo (403/5xx, `isBrevoOutageStatus`) — a
+        // posição volta pras lacunas pendentes e a próxima chamada tenta de
+        // novo. 4xx "normal" (400/404) não é transitório: re-tentar seguraria
+        // o cursor aberto pra sempre; a campanha fica no índice sem stats e
+        // aparece em `archivedWithoutStats` de
+        // `scripts/verify-clarice-monthly-coverage.ts`.
+        if (!(e instanceof BrevoUpstreamError) || isBrevoOutageStatus(e.status)) {
+          statsPending.push(offsetHere);
+        }
       }
     }
 
@@ -3195,8 +3239,9 @@ export async function runCampaignsBackfillBatch(
       gaps = gaps.filter((g) => g.start < gapStart);
       break;
     }
-    if (stillMutable.length > 0) {
-      gaps = advanceBackfillGaps([...gaps, ...stillMutable.map((o) => ({ start: o, end: o + 1 }))], {
+    const requeue = [...stillMutable, ...statsPending];
+    if (requeue.length > 0) {
+      gaps = advanceBackfillGaps([...gaps, ...requeue.map((o) => ({ start: o, end: o + 1 }))], {
         shift: 0, processedStart: 0, processedCount: 0, total: totalCount, liveWindow: CAMPAIGNS_FETCH_LIMIT,
       });
     }
@@ -3213,6 +3258,7 @@ export async function runCampaignsBackfillBatch(
     offset: done ? Math.max(lastEnd, cursor.offset) : gaps[0].start,
     totalCount,
     done,
+    version: CAMPAIGNS_BACKFILL_CURSOR_VERSION,
     updatedAt: new Date(nowMs).toISOString(),
   };
   if (!done) nextCursor.gaps = gaps;
@@ -3238,9 +3284,10 @@ export async function runCampaignsBackfillBatch(
  * mesmo comportamento (nunca lança).
  *
  * Só entram campanhas cujo `stats:{id}` já está cacheado (globalStats
- * gravado) — uma entrada do índice sem stats ainda (erro de rede pontual
+ * gravado) — uma entrada do índice sem stats ainda (429/erro de rede
  * DURANTE o backfill, ver comentário no `catch` de `runCampaignsBackfillBatch`)
- * fica de fora até uma invocação futura do backfill preenchê-la; não
+ * fica de fora até a próxima chamada do backfill relê-la (#9852: a posição
+ * volta pras lacunas pendentes); não
  * corrompe a agregação com um globalStats ausente.
  */
 export async function loadMonthlyTotalsArchive(
