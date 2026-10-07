@@ -57,6 +57,7 @@ import {
   useMelhorSlideFilename,
   writeUseMelhorCarouselStamp,
 } from "./lib/use-melhor-carousel.ts"; // #9568
+import { pruneStaleUseMelhorPublicImages } from "./lib/use-melhor-slide-files.ts"; // #9795
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
@@ -95,6 +96,8 @@ export interface UseMelhorCarouselOutcome {
   slots?: string[];
   files?: string[];
   reason?: string;
+  /** #9795: chaves `um_carousel_*` removidas de `06-public-images.json` (slides que não existem mais). */
+  pruned_image_keys?: string[];
 }
 
 export type RenderUseMelhorSlidesFn = typeof renderUseMelhorSlides;
@@ -282,7 +285,8 @@ async function genUseMelhorCarousel(
     // só completa o `cover_title` sem re-renderizar.
     if (stamp.cover_title !== coverTitle) writeUseMelhorCarouselStamp(editionDir, { hash, slots, cover_title: coverTitle });
     removeStaleUseMelhorSlides(editionDir, slots);
-    return { status: "unchanged", slots, files };
+    const prunedKeys = pruneStaleUseMelhorPublicImages(editionDir, slots); // #9795
+    return { status: "unchanged", slots, files, ...(prunedKeys.length > 0 && { pruned_image_keys: prunedKeys }) };
   }
   await opts.render(editionDir, slides);
   // #9630: grava o título da capa — a conferência pós-gate compara contra ele.
@@ -290,7 +294,10 @@ async function genUseMelhorCarousel(
   // Self-review #9572 (findings 2/3): `## um` com menos parágrafos que o render
   // anterior deixaria `p{k}` antigos no disco — apaga a sobra.
   removeStaleUseMelhorSlides(editionDir, slots);
-  return { status: "generated", slots, files };
+  // #9795: e as chaves desses slides antigos em `06-public-images.json` — sem
+  // isso o upload/preview seguiam listando `um_carousel_p{k}` de slide apagado.
+  const prunedKeys = pruneStaleUseMelhorPublicImages(editionDir, slots);
+  return { status: "generated", slots, files, ...(prunedKeys.length > 0 && { pruned_image_keys: prunedKeys }) };
 }
 
 /**

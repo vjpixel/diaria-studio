@@ -37,7 +37,8 @@ import {
   useMelhorPostStatePath,
   type UseMelhorPostConfigState,
 } from "../use-melhor-post.ts"; // #9568
-import { findOverflowingUseMelhorSlides, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568
+import { findOverflowingUseMelhorSlides, lintUseMelhorPostList, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568, #9789/#9791
+import { readUseMelhorCarouselStamp, staleUseMelhorImageKeys } from "../use-melhor-slide-files.ts"; // #9795
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
@@ -2099,7 +2100,8 @@ function checkUseMelhorCarouselOverflow(
   const violations: InvariantViolation[] = [];
   // Self-review #9572 (finding 6): os lints sociais só enumeram `## d{N}` — a
   // forma do `## um` é checada aqui (Stages 2 e 4), warning-only como o resto.
-  const shape = lintUseMelhorPostText(umText.trim());
+  // #9789/#9791: + lista numerada direto ao ponto, até 2 itens por card.
+  const shape = [...lintUseMelhorPostText(umText.trim()), ...lintUseMelhorPostList(umText.trim())];
   if (shape.length > 0) {
     violations.push({
       rule: "use-melhor-um-shape",
@@ -2134,6 +2136,44 @@ function checkUseMelhorCarouselOverflow(
     },
   );
   return violations;
+}
+
+/**
+ * (#9795) `06-public-images.json` com chave de slide do 4º post
+ * (`um_carousel_*`) cujo arquivo local não existe — sobra de um render com
+ * mais slides (`## um` reescrito mais curto, edição 261007). O publish montaria
+ * o carrossel com URL de slide que não faz mais parte dele, e o preview social
+ * listava o slide fantasma. Não depende do config do 4º post: chave órfã é
+ * lixo mesmo com a feature desligada. Warning (o 4º post é fail-soft, #9568);
+ * `upload-images-public.ts` e `gen-carousel-cards.ts` já podam sozinhos —
+ * isto acusa o estado quando nenhum dos dois rodou depois da sobra.
+ */
+function checkUseMelhorPublicImageKeysHaveFiles(editionDir: string): InvariantViolation[] {
+  const p = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(p)) return [];
+  let images: Record<string, unknown>;
+  try {
+    const data = JSON.parse(readFileSync(p, "utf8")) as { images?: Record<string, unknown> };
+    if (!data?.images || typeof data.images !== "object") return [];
+    images = data.images;
+  } catch {
+    return [];
+  }
+  const keep = readUseMelhorCarouselStamp(editionDir)?.slots ?? [];
+  const stale = staleUseMelhorImageKeys(images, editionDir, keep);
+  if (stale.length === 0) return [];
+  return [
+    {
+      rule: "use-melhor-image-key-without-file",
+      message:
+        `06-public-images.json tem ${stale.length} chave(s) de slide do 4º post sem arquivo local: ` +
+        `${stale.join(", ")} (sobra de um carrossel com mais slides). Re-rodar ` +
+        `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}" — ele remove as chaves órfãs.`,
+      source_issue: "#9795",
+      severity: "warning",
+      file: p,
+    },
+  ];
 }
 
 /**
@@ -3091,6 +3131,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: (editionDir) => checkUseMelhorPostItemRendered(editionDir),
   },
   {
+    id: "use-melhor-image-key-without-file",
+    description: "06-public-images.json com chave um_carousel_* de slide que não existe mais no disco — sobra de carrossel do 4º post com mais slides (#9795, warning-only)",
+    source_issue: "#9795",
+    stage: 4,
+    run: checkUseMelhorPublicImageKeysHaveFiles,
+  },
+  {
     id: "instagram-comment-delivery-promise",
     description: "override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide)",
     source_issue: "#8681",
@@ -3176,6 +3223,7 @@ export {
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
   checkUseMelhorPostItemRendered,
+  checkUseMelhorPublicImageKeysHaveFiles,
   checkInstagramCommentDeliveryPromise,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,

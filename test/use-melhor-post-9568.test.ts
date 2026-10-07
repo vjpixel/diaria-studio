@@ -339,6 +339,30 @@ describe("Stage 3: gen-carousel-cards (#9568)", () => {
     assert.equal(again.use_melhor?.status, "unchanged");
   });
 
+  it("#9795: regerar com menos slides poda as chaves antigas de 06-public-images.json", async () => {
+    const dir = makeEdition({ um: true });
+    writeUseMelhorPostState(dir, { enabled: true, time: "19:00", item: { url: "u", title: "Guia B", summary: "", score: 83 }, generated_at: "x" });
+    // Render anterior tinha 4 parágrafos: p3/p4 subiram, e os arquivos já não existem.
+    writeFileSync(
+      join(dir, "06-public-images.json"),
+      JSON.stringify({ images: { um_carousel_p3: { url: "https://w/p3" }, um_carousel_p4: { url: "https://w/p4" }, d1_4x5: { url: "https://w/d1" } } }),
+    );
+    const result = await genCarouselCards(dir, {
+      render: fakeRender,
+      useMelhorConfig: ON,
+      renderUseMelhor: async (d, slides) =>
+        slides.map((s) => {
+          const p = join(d, useMelhorSlideFilename(s.slot));
+          writeFileSync(p, "x");
+          return p;
+        }),
+    });
+    assert.equal(result.use_melhor?.status, "generated");
+    assert.deepEqual(result.use_melhor?.pruned_image_keys?.sort(), ["um_carousel_p3", "um_carousel_p4"]);
+    const images = JSON.parse(readFileSync(join(dir, "06-public-images.json"), "utf8")).images;
+    assert.deepEqual(Object.keys(images), ["d1_4x5"]);
+  });
+
   it("ligado sem `## um` → skipped com motivo, sem lançar", async () => {
     const dir = makeEdition({ um: false });
     writeUseMelhorPostState(dir, { enabled: true, time: "19:00", item: { url: "u", title: "Guia B", summary: "", score: 83 }, generated_at: "x" });
