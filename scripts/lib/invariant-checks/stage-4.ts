@@ -526,14 +526,17 @@ export function findImageContentMismatches(
  * reescrito no gate do Stage 4 (lead/ângulo novo, mesmo título — §4d.1 passo 3
  * dizia "corpo sem mudar título não cascateia"), o `03-social.md` e o `# Curto`
  * ficaram com o ângulo antigo e o `.step-4-done` foi gravado 1 min depois. Só o
- * `check-staleness.ts --stage 6` do Stage 5 pegou. Este invariante roda a MESMA
- * comparação (mtime como gatilho barato + supressão por conteúdo do #4832/#9114,
- * `findSocialContentMismatches`) dentro do Stage 4 — e por estar em
- * `STAGE_4_RULES` com severity `error`, `pipeline-sentinel.ts write --step 4`
- * (#6009) recusa o sentinel enquanto ele não passar. Edição cosmética fora dos
- * destaques (box, intro) não acusa: o conteúdo dos `## dN` ainda bate. Quando a
- * comparação de conteúdo não consegue rodar (`findSocialContentMismatches` →
- * `undefined`) e só sobra o mtime, a violação sai como `warning` — não bloqueia.
+ * `check-staleness.ts --stage 6` do Stage 5 pegou. Este invariante roda dentro
+ * do Stage 4 a comparação de conteúdo `findSocialContentMismatches` (#4832/#9114)
+ * — e por estar em `STAGE_4_RULES` com severity `error`, `pipeline-sentinel.ts
+ * write --step 4` (#6009) recusa o sentinel enquanto ele não passar. Desde o
+ * #9829 a comparação de conteúdo decide SOZINHA quando roda: qualquer `## dN`
+ * divergente é `error` mesmo com o social mais novo que o reviewed (cascata de
+ * outro destaque, reorder, autofix e save do Studio regravam o arquivo
+ * inteiro). Edição cosmética fora dos destaques (box, intro) não acusa: o
+ * conteúdo dos `## dN` ainda bate. Quando a comparação não consegue rodar
+ * (`findSocialContentMismatches` → `undefined`), só sobra o mtime e a violação
+ * sai como `warning` — não bloqueia.
  *
  * `mtimes` (opcional): override pra teste — evita depender de `utimes` no fs.
  */
@@ -548,37 +551,57 @@ export function checkSocialNotBehindReviewed(
       return existsSync(full) ? statSync(full).mtimeMs : null;
     });
   const mismatches = findSocialContentMismatches(editionDir);
-  const contentFresh =
-    mismatches === undefined ? undefined : (rel: string) => rel === "03-social.md" && mismatches.length === 0;
+  const fix =
+    ` — o post social sairia com o ângulo antigo. Rodar a cascata §4d.1a com --pieces social,carousel ` +
+    `pra cada destaque afetado (social-writer + social-curto pro # Curto, re-humanizar scoped, ` +
+    `gen-carousel-cards.ts + upload-images-public.ts) antes do sentinel. Falso-positivo conhecido ` +
+    `(social já correto): pipeline-sentinel.ts write --bypass-reason "<motivo>".`;
+
+  // #9829: a comparação de conteúdo é o sinal autoritativo — quando ela RODA,
+  // decide sozinha, independente do mtime. Antes o mismatch só era consultado
+  // se o mtime já dissesse que o social estava atrás: uma cascata de OUTRO
+  // destaque (troca de título do D1 → regera só `## d1`, mas regrava o
+  // 03-social.md inteiro), `reorder-destaques.ts`, o autofix do fact-check no
+  // social ou um save do Studio deixavam o social mais novo que o reviewed e o
+  // `## d3` reescrito no gate passava calado. Medido nas 25 edições de
+  // 2609/2610: zero falso positivo da comparação de conteúdo.
+  if (mismatches !== undefined) {
+    if (mismatches.length === 0) return [];
+    return [
+      {
+        rule: "social-not-behind-reviewed",
+        message:
+          `o texto social de ${mismatches.join(", ")} em 03-social.md não bate mais com o destaque ` +
+          `correspondente de 02-reviewed.md (reescrito depois do social)` +
+          fix,
+        source_issue: "#9820",
+        severity: "error",
+        file: resolve(editionDir, "03-social.md"),
+      },
+    ];
+  }
+
+  // Fallback: comparação de conteúdo não rodou (sem `# Social`, layout legado,
+  // parse sem destaques) — só sobra o mtime. Warning: o mtime de
+  // 02-reviewed.md costuma avançar sozinho (fact-check autofix,
+  // sync-intro-count, save do Studio) e o write --step 4 viraria
+  // falso-positivo só contornável com --bypass-reason.
   const stale = evaluateStaleness(
     [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }],
     getMtime,
     1000,
-    undefined,
-    contentFresh,
   );
   if (stale.length === 0) return [];
   const s = stale[0];
-  const slots = mismatches && mismatches.length > 0 ? mismatches.join(", ") : null;
   return [
     {
       rule: "social-not-behind-reviewed",
       message:
         `03-social.md (${s.downstream_mtime}) é anterior a 02-reviewed.md (${s.upstream_mtime}, +${s.lag_minutes} min)` +
-        (slots
-          ? ` e o texto social de ${slots} não bate mais com o destaque reescrito`
-          : ` e não deu pra comparar o conteúdo dos destaques (só mtime)`) +
-        ` — o post social sairia com o ângulo antigo. Rodar a cascata §4d.1a com --pieces social,carousel ` +
-        `pra cada destaque afetado (social-writer + social-curto pro # Curto, re-humanizar scoped, ` +
-        `gen-carousel-cards.ts + upload-images-public.ts) antes do sentinel. Falso-positivo conhecido ` +
-        `(social já correto): pipeline-sentinel.ts write --bypass-reason "<motivo>".`,
+        ` e não deu pra comparar o conteúdo dos destaques (só mtime)` +
+        fix,
       source_issue: "#9820",
-      // Só a comparação de conteúdo que RODOU e acusou divergência bloqueia o
-      // sentinel. Fallback de mtime puro (sem `# Social`, layout legado, parse
-      // sem destaques) vira warning: o mtime de 02-reviewed.md costuma avançar
-      // sozinho (fact-check autofix, sync-intro-count, save do Studio) e o
-      // write --step 4 viraria falso-positivo só contornável com --bypass-reason.
-      severity: slots ? "error" : "warning",
+      severity: "warning",
       file: resolve(editionDir, "03-social.md"),
     },
   ];

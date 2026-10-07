@@ -26,10 +26,12 @@ import { join, resolve } from "node:path";
 import {
   runStage4PostEditChecks,
   computeInputsHash,
+  HUMANIZER_SEAL_RULE_ID,
 } from "../scripts/lib/stage4-post-edit-checks-core.ts";
 import { runStage4LintReport } from "../scripts/lint-newsletter-md.ts";
 import { runStage4SocialLintReport } from "../scripts/lint-social-md.ts";
 import { writeSentinel } from "../scripts/check-humanizer-social.ts";
+import { getRulesForStage } from "../scripts/lib/invariant-checks/index.ts";
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 
@@ -178,6 +180,45 @@ describe("runStage4PostEditChecks", () => {
     } finally {
       cleanup();
     }
+  });
+
+  it("#9830: selo ausente aparece UMA vez no sweep, gate-blocking — sem a regra social-humanizer-seal-fresh duplicada (warning)", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nPost sem selo do humanizador.\n", "utf8");
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      const seal = report.findings.filter(
+        (f) => f.source === "humanizer-social" || f.id === HUMANIZER_SEAL_RULE_ID,
+      );
+      assert.equal(seal.length, 1, JSON.stringify(seal));
+      assert.equal(seal[0].id, "humanizer-social-sentinel_missing");
+      assert.equal(seal[0].severity, "error");
+      assert.equal(seal[0].gate_blocking, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#9830: hash divergente aparece UMA vez no sweep", () => {
+    const { dir, cleanup } = makeEditionDir();
+    try {
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nPost humanizado original.\n", "utf8");
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), "# LinkedIn\n## d1\nPost editado depois do selo.\n", "utf8");
+      const report = runStage4PostEditChecks(dir, PROJECT_ROOT);
+      const seal = report.findings.filter(
+        (f) => f.source === "humanizer-social" || f.id === HUMANIZER_SEAL_RULE_ID,
+      );
+      assert.equal(seal.length, 1, JSON.stringify(seal));
+      assert.equal(seal[0].id, "humanizer-social-hash_mismatch");
+      assert.equal(seal[0].gate_blocking, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#9830: a regra pulada no sweep segue existindo no registry do Stage 4", () => {
+    assert.ok(getRulesForStage(4).some((r) => r.id === HUMANIZER_SEAL_RULE_ID));
   });
 
   it("validate-lancamentos: URL não-oficial em LANÇAMENTOS vira achado gate-blocking (#160)", () => {
