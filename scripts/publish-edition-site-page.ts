@@ -588,6 +588,73 @@ export type GitRunner = (args: string[], cwd: string) => string;
 const defaultGitRunner: GitRunner = (args, cwd) =>
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
 
+/**
+ * #9821: estado do CÓDIGO que está rodando (o checkout em `rootDir`) frente a
+ * `origin/master`.
+ *
+ * O worktree do #8636 isola só o COMMIT/PUSH — os geradores (página, home,
+ * `archive/`) rodam a partir do checkout em disco e escrevem em `rootDir`
+ * antes de o resultado ser copiado pro worktree. Checkout defasado = páginas
+ * geradas com o gerador VELHO e empurradas como se fossem atuais. Incidente
+ * 261007: `sync-code.ts` saiu `protected_config_dirty` (#9276), o checkout
+ * ficou 97 commits atrás e o PR #9797 regerou 12 páginas com a seta `→` que o
+ * #9721/#9723 já proibia (CI vermelho, gate atrasado).
+ */
+export interface CodeFreshness {
+  /** `true` quando `HEAD` não contém `origin/master` (ou não deu pra medir). */
+  stale: boolean;
+  /** Commits em `origin/master` ausentes de `HEAD`; `-1` = não mediu. */
+  behindBy: number;
+  /** `true` quando o `git fetch origin master` best-effort falhou. */
+  fetchFailed: boolean;
+  /** Detalhe do erro quando `behindBy === -1`. */
+  error?: string;
+}
+
+/**
+ * Mede a defasagem do checkout. Fail-CLOSED quando não consegue medir
+ * (`origin/master` ausente, git quebrado): o caminho de publicação cria o
+ * worktree a partir de `origin/master` de qualquer forma, então sem esse ref
+ * ele falharia mais adiante — recusar aqui só antecipa com motivo melhor.
+ * Fetch falho é fail-soft: compara contra o ref local e sinaliza `fetchFailed`.
+ */
+export function checkCodeFreshness(rootDir: string, git: GitRunner = defaultGitRunner): CodeFreshness {
+  let fetchFailed = false;
+  try {
+    git(["fetch", "origin", "master"], rootDir);
+  } catch {
+    fetchFailed = true;
+  }
+  try {
+    const raw = git(["rev-list", "--count", "HEAD..origin/master"], rootDir).trim();
+    const behindBy = Number(raw);
+    if (!Number.isInteger(behindBy) || behindBy < 0) {
+      return { stale: true, behindBy: -1, fetchFailed, error: `saída inesperada de rev-list: '${raw}'` };
+    }
+    return { stale: behindBy > 0, behindBy, fetchFailed };
+  } catch (e) {
+    return { stale: true, behindBy: -1, fetchFailed, error: (e as Error).message };
+  }
+}
+
+/** Motivo acionável (vira `reason` do `code: 3`) — `null` quando o código está em dia. */
+export function staleCodeRefusalReason(f: CodeFreshness): string | null {
+  if (!f.stale) return null;
+  const what =
+    f.behindBy > 0
+      ? `checkout ${f.behindBy} commit(s) atrás de origin/master`
+      : `não foi possível medir a defasagem do checkout contra origin/master (${f.error ?? "erro desconhecido"})`;
+  return (
+    `código defasado (#9821): ${what} — publicação recusada antes de gerar qualquer página, porque ` +
+    `página/home/archive seriam gerados com o gerador velho (incidente 261007: seta proibida pelo #9721 ` +
+    `regerada em 12 páginas). Rode \`npx tsx scripts/sync-code.ts\` e confira que saiu em dia ` +
+    `(\`commits_behind: 0\`); se o outcome for \`protected_config_dirty\` (#9276), commite ou descarte a ` +
+    `edição local de platform.config.json e rode de novo. Depois re-rode este script. ` +
+    `Emergência consciente: \`--allow-stale-code\` pula este guard.` +
+    (f.fetchFailed ? " (aviso: `git fetch origin master` falhou — comparação feita contra o ref local.)" : "")
+  );
+}
+
 /** Roda `gh`, síncrono, capturando stdout como string. Injetável pra teste. */
 export type GhRunner = (args: string[], cwd: string) => string;
 
@@ -2267,6 +2334,26 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
   }
 }
 
+/**
+ * #9821: guard de código defasado do `main`. Só vale quando a página vai ser
+ * PUBLICADA (`--skip-publish` só escreve local, nada sai do disco) e pode ser
+ * desligado conscientemente com `--allow-stale-code`. Retorna o resultado
+ * `code: 3` a gravar/imprimir, ou `null` pra seguir.
+ */
+export function codeFreshnessPreflight(
+  argv: string[],
+  rootDir: string,
+  git: GitRunner = defaultGitRunner,
+): { code: 3; reason: string } | null {
+  if (hasFlag(argv, "skip-publish")) return null;
+  if (hasFlag(argv, "allow-stale-code")) {
+    process.stderr.write("[site-page] aviso: --allow-stale-code — guard de código defasado (#9821) desligado.\n");
+    return null;
+  }
+  const reason = staleCodeRefusalReason(checkCodeFreshness(rootDir, git));
+  return reason ? { code: 3, reason } : null;
+}
+
 export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const editionDir = getArg(argv, "edition-dir");
@@ -2297,7 +2384,7 @@ export async function main(): Promise<void> {
   }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>]\n" +
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code]\n" +
         "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
@@ -2319,6 +2406,15 @@ export async function main(): Promise<void> {
     return;
   }
   const editionDirAbs = resolve(ROOT, editionDir);
+  // #9821: recusa ANTES de gerar qualquer coisa quando o código em disco está
+  // defasado — o worktree do #8636 não protege os geradores (ver CodeFreshness).
+  const staleRefusal = codeFreshnessPreflight(argv, ROOT);
+  if (staleRefusal) {
+    writeSitePageState(editionDirAbs, staleRefusal);
+    console.log(JSON.stringify(staleRefusal, null, 2));
+    process.exitCode = staleRefusal.code;
+    return;
+  }
   // #8636: worktree temporário. Cria ANTES de chamar publishEditionSitePage
   // (que chama productionDeps → commitAndPushSitePage) e passa o path em
   // `worktreeDir`. `--skip-publish` não precisa de worktree (não roda git,

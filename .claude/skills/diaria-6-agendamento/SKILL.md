@@ -30,7 +30,7 @@ npx tsx scripts/sync-code.ts --edition-dir "$EDITION_DIR"
 ```
 (Bash tool: `timeout: 570000` — mesmo motivo/valor do Passo -3 de `/diaria-5-publicacao` e do Passo 0 de `/diaria-edicao`.)
 
-`--edition-dir` grava `_internal/05-sync-code.json`; o invariant `sync-code-ran` (agora também registrado no Stage 6, não só no Stage 5) avisa (warning) quando o marker falta ou o checkout ficou defasado. **Fail-soft, igual aos demais pontos de sync**: qualquer falha (offline, divergência, conflito de stash) vira warning — nunca bloqueia esta skill.
+`--edition-dir` grava `_internal/05-sync-code.json`; o invariant `sync-code-ran` (agora também registrado no Stage 6, não só no Stage 5) avisa (warning) quando o marker falta; no Stage 6, checkout comprovadamente defasado (`commits_behind > 0` ou outcome `protected_config_dirty`, #9276) vira `error` (#9821), porque §6b-site gera a página com o código em disco. O próprio `publish-edition-site-page.ts` recusa (exit 3, motivo acionável) quando o checkout está atrás de `origin/master` — `--allow-stale-code` só em emergência consciente. **Fail-soft, igual aos demais pontos de sync**: qualquer falha (offline, divergência, conflito de stash) vira warning — nunca bloqueia esta skill.
 
 ## Pre-requisitos
 
