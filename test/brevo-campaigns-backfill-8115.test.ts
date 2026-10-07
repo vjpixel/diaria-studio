@@ -271,7 +271,7 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
     assert.equal(calls.length, 1);
   });
 
-  test("cursor já done não gasta nenhuma request nova", async () => {
+  test("cursor done com total inalterado só remede (1 request) e segue done", async () => {
     const { fetchFn, calls } = makeFakeFetch({ campaignsByOffset: {}, totalCount: 100 });
     const { kv } = makeKvMock({
       [CAMPAIGNS_BACKFILL_CURSOR_KV_KEY]: {
@@ -286,9 +286,38 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
     const result = await runCampaignsBackfillBatch(env, { _fetchFn: fetchFn as any, nowMs: NOW });
 
     assert.equal(result.scanned, 0);
-    assert.equal(result.requestsUsed, 0);
-    assert.equal(calls.length, 0);
+    assert.equal(result.requestsUsed, 1);
+    assert.equal(calls.length, 1);
     assert.equal(result.cursor.done, true);
+  });
+
+  test("#9837: cursor done + N campanhas novas — as N que saíram da janela entram no arquivo", async () => {
+    const g1 = makeCampaign(201, 20 * DAY);
+    const g2 = makeCampaign(202, 21 * DAY);
+    const { fetchFn, calls } = makeFakeFetch({
+      campaignsByOffset: { [CAMPAIGNS_FETCH_LIMIT]: [g1, g2] },
+      totalCount: 102, // era 100 quando ficou done; 2 campanhas novas
+    });
+    const { kv } = makeKvMock({
+      [CAMPAIGNS_BACKFILL_CURSOR_KV_KEY]: {
+        offset: 100,
+        totalCount: 100,
+        done: true,
+        updatedAt: new Date(NOW).toISOString(),
+      },
+    });
+    const env = { BREVO_API_KEY: "x", STATS_CACHE: kv } as any;
+
+    const result = await runCampaignsBackfillBatch(env, { _fetchFn: fetchFn as any, nowMs: NOW });
+
+    assert.equal(result.scanned, 2);
+    assert.equal(result.cursor.done, true);
+    assert.equal(result.cursor.totalCount, 102);
+    assert.equal(result.cursor.resumeAt, undefined);
+    // lista só a lacuna (limit=2), não re-varre o já arquivado
+    assert.ok(calls.some((c) => c.includes("limit=2&offset=100")));
+    const archive = await readCampaignsArchiveIndex({ STATS_CACHE: kv as any });
+    assert.deepEqual(archive.map((a) => a.id).sort(), [201, 202]);
   });
 
   test("página vazia (offset além do fim) marca done mesmo sem totalCount bater exato", async () => {

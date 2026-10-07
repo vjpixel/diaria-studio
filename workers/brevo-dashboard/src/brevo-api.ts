@@ -2747,8 +2747,14 @@ export interface CampaignsBackfillCursor {
    * `fetchCampaignsCount` na 1ª chamada. `null` até a 1ª medição. */
   totalCount: number | null;
   /** `true` quando `offset` alcançou `totalCount` — nada mais a backfillar
-   * (até uma campanha nova elevar o total; não há re-medição automática). */
+   * (#9837: com `done`, cada chamada REMEDE o total — campanha nova reabre
+   * o cursor via `resumeAt`, ver `runCampaignsBackfillBatch`). */
   done: boolean;
+  /** #9837: quando definido, o backfill está cobrindo só a lacuna
+   * `[offset, resumeAt)` — campanhas que saíram da janela ao vivo depois do
+   * `done` sem nunca entrar no arquivo. Além de `resumeAt` já foi varrido
+   * (só deslocado por campanhas novas), então ao alcançá-lo vira `done`. */
+  resumeAt?: number;
   updatedAt: string;
 }
 
@@ -2763,7 +2769,9 @@ export function normalizeCampaignsBackfillCursor(raw: unknown): CampaignsBackfil
   const r = raw as Partial<CampaignsBackfillCursor>;
   if (typeof r.offset !== "number" || typeof r.done !== "boolean" || typeof r.updatedAt !== "string") return null;
   const totalCount = typeof r.totalCount === "number" ? r.totalCount : null;
-  return { offset: r.offset, totalCount, done: r.done, updatedAt: r.updatedAt };
+  const base: CampaignsBackfillCursor = { offset: r.offset, totalCount, done: r.done, updatedAt: r.updatedAt };
+  if (typeof r.resumeAt === "number") base.resumeAt = r.resumeAt;
+  return base;
 }
 
 /** Pura: extrai o campo `count` (total de campanhas na conta, presente em
@@ -2926,13 +2934,34 @@ export async function runCampaignsBackfillBatch(
     cursor = { ...cursor, totalCount, updatedAt: new Date(nowMs).toISOString() };
   }
 
+  // #9837: cursor `done` remede o total. Campanhas novas empurram as antigas
+  // pra offsets maiores; as `delta` que saíram da janela ao vivo
+  // (`[LIMIT, LIMIT + delta)`) nunca foram varridas — reabre o cursor só pra
+  // essa lacuna (o resto, deslocado, já está no arquivo).
+  if (cursor.done && cursor.totalCount != null) {
+    const fresh = await fetchCampaignsCount(env, _fetchFn);
+    requestsUsed++;
+    if (fresh != null && fresh > cursor.totalCount) {
+      const delta = fresh - cursor.totalCount;
+      cursor = {
+        offset: CAMPAIGNS_FETCH_LIMIT,
+        totalCount: fresh,
+        done: false,
+        resumeAt: CAMPAIGNS_FETCH_LIMIT + delta,
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+    }
+  }
+
   if (cursor.done || cursor.totalCount == null || cursor.offset >= cursor.totalCount) {
-    const doneCursor: CampaignsBackfillCursor = { ...cursor, done: true, updatedAt: new Date(nowMs).toISOString() };
+    const { resumeAt: _drop, ...rest } = cursor;
+    const doneCursor: CampaignsBackfillCursor = { ...rest, done: true, updatedAt: new Date(nowMs).toISOString() };
     await writeCampaignsBackfillCursor(env, doneCursor);
     return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
   }
 
-  const page = await fetchCampaignsListPage(env, { limit: batchSize, offset: cursor.offset }, _fetchFn);
+  const pageLimit = cursor.resumeAt != null ? Math.min(batchSize, Math.max(1, cursor.resumeAt - cursor.offset)) : batchSize;
+  const page = await fetchCampaignsListPage(env, { limit: pageLimit, offset: cursor.offset }, _fetchFn);
   requestsUsed++;
 
   const archive = await readCampaignsArchiveIndex(env);
@@ -3024,13 +3053,15 @@ export async function runCampaignsBackfillBatch(
   // de antes desta correção.
   const nextOffset = cursor.offset + processedCount;
   const totalCount = cursor.totalCount ?? page.count;
-  const done = page.campaigns.length === 0 || (totalCount != null && nextOffset >= totalCount);
+  const gapCovered = cursor.resumeAt != null && nextOffset >= cursor.resumeAt;
+  const done = page.campaigns.length === 0 || gapCovered || (totalCount != null && nextOffset >= totalCount);
   const nextCursor: CampaignsBackfillCursor = {
     offset: nextOffset,
     totalCount,
     done,
     updatedAt: new Date(nowMs).toISOString(),
   };
+  if (!done && cursor.resumeAt != null) nextCursor.resumeAt = cursor.resumeAt;
   await writeCampaignsBackfillCursor(env, nextCursor);
 
   return { scanned: processedCount, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
