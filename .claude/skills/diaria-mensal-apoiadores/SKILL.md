@@ -549,6 +549,9 @@ npx tsx scripts/update-retrospectiva-box.ts --cycle $CYCLE \
 
 `--temas` = as 3 linhas de `divulgacao/box-temas.md` unidas por `|`
 (exatamente 3 — outro número aborta antes de tocar em qualquer arquivo).
+Ciclo cujo Passo 1 rodou antes do #9845 (só tem `box-gancho.md`): gerar só o
+`box-temas.md` com a mesma instrução do item 3 do Passo 1, sem refazer os
+outros textos.
 Reescreve só o corpo de `data/snippets/retrospectiva-apoiadores.md` (título,
 parágrafo dos temas, URL do CTA — edição cirúrgica, #495; o bloco do tier,
 parágrafo + lista de benefícios de R$25, fica estável; arquivo ainda no
