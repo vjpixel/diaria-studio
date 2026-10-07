@@ -427,7 +427,7 @@ export function promoteToDestaque(
       editionDir,
       socialShift.before,
       socialShift.after,
-      `promote-to-destaque --position ${position} (#9679): só headers ## d{N} renumerados, texto intacto`,
+      `promote-to-destaque --position ${position} (#9679, #9796): headers ## d{N} renumerados e seções reordenadas, texto intacto`,
     );
     if (plan.status === "reseal") {
       if (!dryRun) writeFilesVerified([{ path: plan.path, content: plan.content }], "promote-to-destaque");
