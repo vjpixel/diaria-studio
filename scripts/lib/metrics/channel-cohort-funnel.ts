@@ -518,13 +518,22 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
     return rate("primeiro-clique-14d", janela, src, null, null, "nao-observavel", "nenhum membro com engajamento observável");
   }
   const r = computePrimeiroClique14d(inputs, Math.floor(nowMs / 1000));
+  const nota = naoObservaveisNota(members.length - inputs.length, members.length, "engajamento/entrega");
   if (r.denom === 0) {
     // Ninguém da coorte recebeu edição: não há denominador. Coorte nova →
     // ainda em observação; madura → a pergunta não se aplica (o problema está
     // na etapa de entrega, que já mostra isso). Nunca "medido 0/0".
     const youngest = Math.max(...members.map((m) => m.enteredMs));
     if (nowMs - youngest < PRIMEIRO_CLIQUE_JANELA_DIAS * DAY_MS) {
-      return rate("primeiro-clique-14d", janela, src, null, null, "em-observacao", "nenhum membro recebeu edição ainda — coorte com menos de 14 dias");
+      return rate(
+        "primeiro-clique-14d",
+        janela,
+        src,
+        null,
+        null,
+        "em-observacao",
+        joinMotivo("nenhum membro recebeu edição ainda — coorte com menos de 14 dias", nota),
+      );
     }
     return rate(
       "primeiro-clique-14d",
@@ -533,16 +542,27 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
       null,
       null,
       "nao-observavel",
-      "nenhum membro recebeu edição — sem denominador (ver a etapa de entrega)",
+      joinMotivo("nenhum membro recebeu edição — sem denominador (ver a etapa de entrega)", nota),
     );
   }
   if (r.qualidade === "indeterminado") {
     // `denom > 0` + indeterminado = coorte imatura, ou 1º post 100% stub.
     const imaturo = members.some((m) => nowMs - m.enteredMs < PRIMEIRO_CLIQUE_JANELA_DIAS * DAY_MS);
-    return rate("primeiro-clique-14d", janela, src, null, r.denom, imaturo ? "em-observacao" : "sem-dados", r.motivo);
+    return rate("primeiro-clique-14d", janela, src, null, r.denom, imaturo ? "em-observacao" : "sem-dados", joinMotivo(r.motivo, nota));
   }
   const numerador = Math.round((r.valor ?? 0) * r.denom);
-  return rate("primeiro-clique-14d", janela, src, numerador, r.denom, "medido", r.motivo, r.qualidade);
+  return rate("primeiro-clique-14d", janela, src, numerador, r.denom, "medido", joinMotivo(r.motivo, nota), r.qualidade);
+}
+
+/** "N/M sem {o quê} observável (fora do denominador)" — mesmo formato de
+ *  `entregaRate`/`confirmacaoRate`; `null` quando N = 0. @pure */
+function naoObservaveisNota(n: number, total: number, oQue: string): string | null {
+  return n > 0 ? `${n}/${total} sem ${oQue} observável (fora do denominador)` : null;
+}
+
+function joinMotivo(...partes: (string | null | undefined)[]): string | null {
+  const ok = partes.filter((p): p is string => !!p);
+  return ok.length ? ok.join("; ") : null;
 }
 
 function leitorRate(members: readonly Member[], nowMs: number, src: FunnelSourceStatus): FunnelRate {
@@ -551,6 +571,7 @@ function leitorRate(members: readonly Member[], nowMs: number, src: FunnelSource
   if (!src.disponivel) return semDados("leitor-v1", janela, src);
   const obs = members.filter((m) => m.p.engajamento.observavel);
   if (obs.length === 0) return rate("leitor-v1", janela, src, null, null, "nao-observavel", "nenhum membro com engajamento observável");
+  const nota = naoObservaveisNota(members.length - obs.length, members.length, "engajamento");
   const youngest = Math.max(...obs.map((m) => m.enteredMs));
   if (nowMs - youngest < LEITOR_V1_MATURACAO_DIAS * DAY_MS) {
     return rate(
@@ -560,11 +581,11 @@ function leitorRate(members: readonly Member[], nowMs: number, src: FunnelSource
       null,
       obs.length,
       "em-observacao",
-      `coorte com menos de ${LEITOR_V1_MATURACAO_DIAS} dias — leitor-v1 é praticamente zero antes de ${t.receivedMin} recebidas`,
+      joinMotivo(`coorte com menos de ${LEITOR_V1_MATURACAO_DIAS} dias — leitor-v1 é praticamente zero antes de ${t.receivedMin} recebidas`, nota),
     );
   }
   const n = obs.filter((m) => m.p.engajamento.observavel && isLeitorV1(m.p.engajamento.leitor)).length;
-  return rate("leitor-v1", janela, src, n, obs.length, "medido", null);
+  return rate("leitor-v1", janela, src, n, obs.length, "medido", nota);
 }
 
 // ---------------------------------------------------------------------------
@@ -921,10 +942,11 @@ export function buildCohortSpendInputs(
     // `gastoJanela: 0` em computeRollingWindow — usar isso daria "R$ 0,00".
     // CSV que termina antes de `ate` dividiria gasto até X por população até Y.
     let bloqueioGasto: string | null = null;
-    if (w.dias.length === 0) bloqueioGasto = `gasto indisponível: ${w.motivo ?? `sem linha de apuração entre ${de} e ${opts.ate}`}`;
+    // Sem prefixo "indisponível": quem renderiza (CLI) já o põe na frente.
+    if (w.dias.length === 0) bloqueioGasto = w.motivo ?? `sem nenhuma linha de apuração entre ${de} e ${opts.ate}`;
     else if (!cobreUltimoDia) {
       bloqueioGasto =
-        `gasto indisponível: a última linha de apuração do braço é de ${ultimoDia}, antes de ${opts.ate} — ` +
+        `a última linha de apuração do braço é de ${ultimoDia}, antes de ${opts.ate} — ` +
         "dividir esse gasto pela população até o fim da janela misturaria períodos";
     }
     // Ressalvas: o gasto pode cobrir MAIS dias que a janela. Só os motivos de

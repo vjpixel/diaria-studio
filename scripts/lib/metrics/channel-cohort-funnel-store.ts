@@ -30,7 +30,10 @@
  *   edição canônica, `delivered` ou `sent − bounce`). Se NENHUMA plataforma
  *   da pessoa tem envio no store depois do cadastro dela (store defasado
  *   naquela plataforma), entrega e engajamento são não observáveis para ela
- *   — senão "não recebeu" seria uma ausência fabricada.
+ *   — senão "não recebeu" seria uma ausência fabricada. Engajamento exige
+ *   mais: envio E clique depois do cadastro na MESMA plataforma
+ *   (`resolveFreshnessObservability`) — ingestão de clique parada torna
+ *   "nunca clicou" não observável, mesmo com envio fresco.
  * - 1º clique: `firstClickAtOrAfter` — o 1º clique com `ts >= cadastro`
  *   (clique anterior ao cadastro é descartado, nunca "dia 0"). Os broadcasts
  *   de onboarding do Kit já são excluídos na ingestão (#7916/#7922, PR
@@ -204,6 +207,34 @@ function status(fonte: string, frescor: string | null, disponivel: boolean, moti
   return disponivel ? { fonte, frescor, disponivel: true } : { fonte, frescor, disponivel: false, motivo };
 }
 
+/**
+ * Guarda de frescor por pessoa, plataforma a plataforma:
+ * - entrega observável ⇔ ALGUMA plataforma da pessoa tem envio com
+ *   `ts >= cadastro`;
+ * - engajamento observável ⇔ ALGUMA plataforma da pessoa tem envio E clique
+ *   com `ts >= cadastro` NA MESMA plataforma — uma plataforma que segue
+ *   enviando mas parou de ingerir clique não pode tornar "nunca clicou"
+ *   observável, nem o clique fresco de outra plataforma em que a pessoa não
+ *   recebe.
+ * Cadastro ilegível: ambos `true` (a pessoa sai da coorte no módulo puro de
+ * qualquer forma). @pure
+ */
+export function resolveFreshnessObservability(
+  plataformas: readonly string[],
+  enteredAt: string | null,
+  lastDelivery: ReadonlyMap<string, string>,
+  lastClick: ReadonlyMap<string, string>,
+): { entrega: boolean; engajamento: boolean } {
+  const enteredMs = enteredAt ? Date.parse(enteredAt) : NaN;
+  if (!Number.isFinite(enteredMs)) return { entrega: true, engajamento: true };
+  const fresh = (m: ReadonlyMap<string, string>, p: string) => {
+    const v = m.get(p);
+    return v != null && Date.parse(v) >= enteredMs;
+  };
+  const comEnvio = plataformas.filter((p) => fresh(lastDelivery, p));
+  return { entrega: comEnvio.length > 0, engajamento: comEnvio.some((p) => fresh(lastClick, p)) };
+}
+
 export interface FunnelStoreOptions {
   /** `edicao` (broadcast id) de envios de ONBOARDING a desconsiderar —
    *  `readOnboardingBroadcastExclusion(...).ids`. Vale para eventos Kit. */
@@ -231,10 +262,21 @@ export function loadFunnelInputFromStore(db: DatabaseSync, opts: FunnelStoreOpti
   const clicks = clicksBySubscriber(db);
   const firstConfirm = firstTsByType(db, "confirm");
   const lastDelivery = maxTsByPlatform(db, ["delivered", "sent"]);
-  const lastClick = maxTsByPlatform(db, ["click"]);
+  // Último clique por plataforma SEM os de onboarding — um clique só em
+  // boas-vindas não prova que a ingestão de clique em EDIÇÃO está em dia.
+  const lastClick = new Map<string, string>();
+  for (const list of clicks.values()) {
+    for (const c of list) {
+      if (isOnboarding(c)) continue;
+      const prev = lastClick.get(c.platform);
+      const ms = Date.parse(c.ts);
+      if (Number.isFinite(ms) && (prev == null || ms > Date.parse(prev))) lastClick.set(c.platform, c.ts);
+    }
+  }
 
   const people: FunnelPersonInput[] = [];
   let semEnvioDepoisDoCadastro = 0;
+  let semCliqueDepoisDoCadastro = 0;
   for (const [subscriberId, platformSet] of platformsBySub) {
     const aliases = aliasesBySub.get(subscriberId) ?? [];
     const subs = subsBySub.get(subscriberId) ?? [];
@@ -248,18 +290,15 @@ export function loadFunnelInputFromStore(db: DatabaseSync, opts: FunnelStoreOpti
       events.filter((e) => e.platform === "kit" && (e.type === "delivered" || e.type === "sent")).map((e) => e.edicao ?? e.external_event_id),
     ).size;
 
-    // A plataforma da pessoa tem envio registrado DEPOIS do cadastro dela?
-    // Se nenhuma tem, "não recebeu" não é observável — é store defasado.
-    const enteredMs = enteredAt ? Date.parse(enteredAt) : NaN;
     const plataformas = new Set<string>([...platformSet, ...subs.map((s) => s.platform)]);
-    const temEnvioDepois =
-      !Number.isFinite(enteredMs) ||
-      [...plataformas].some((p) => {
-        const last = lastDelivery.get(p);
-        return last != null && Date.parse(last) >= enteredMs;
-      });
-    if (!temEnvioDepois) semEnvioDepoisDoCadastro++;
+    const obs = resolveFreshnessObservability([...plataformas], enteredAt, lastDelivery, lastClick);
+    if (!obs.entrega) semEnvioDepoisDoCadastro++;
+    else if (!obs.engajamento) semCliqueDepoisDoCadastro++;
+    const temEnvioDepois = obs.entrega;
     const motivoSemEnvio = `nenhuma plataforma da pessoa (${[...plataformas].join(", ")}) tem envio no store depois do cadastro — store defasado nessa plataforma`;
+    const motivoSemClique =
+      `nenhuma plataforma da pessoa (${[...plataformas].join(", ")}) tem envio E clique no store depois do cadastro — ` +
+      "ingestão de clique defasada nessa plataforma";
 
     people.push({
       personKey: String(subscriberId),
@@ -277,7 +316,7 @@ export function loadFunnelInputFromStore(db: DatabaseSync, opts: FunnelStoreOpti
       reativado: subs.some((s) => s.reativado === 1),
       confirmacao: resolveConfirmacaoFromStore(subs, firstConfirm.get(subscriberId) ?? null, kitRecebidas),
       entrega: temEnvioDepois ? { observavel: true, edicoesRecebidas: leitor.totalReceived } : { observavel: false, motivo: motivoSemEnvio },
-      engajamento: temEnvioDepois
+      engajamento: obs.engajamento
         ? {
             observavel: true,
             primeiroCliqueEm: firstClickAtOrAfter(
@@ -286,7 +325,7 @@ export function loadFunnelInputFromStore(db: DatabaseSync, opts: FunnelStoreOpti
             ),
             leitor,
           }
-        : { observavel: false, motivo: motivoSemEnvio },
+        : { observavel: false, motivo: temEnvioDepois ? motivoSemClique : motivoSemEnvio },
     });
   }
 
@@ -332,6 +371,11 @@ export function loadFunnelInputFromStore(db: DatabaseSync, opts: FunnelStoreOpti
   if (semEnvioDepoisDoCadastro > 0) {
     avisos.push(
       `${semEnvioDepoisDoCadastro} pessoa(s) sem envio de nenhuma das suas plataformas depois do cadastro — entrega/engajamento delas marcados como não observáveis`,
+    );
+  }
+  if (semCliqueDepoisDoCadastro > 0) {
+    avisos.push(
+      `${semCliqueDepoisDoCadastro} pessoa(s) com envio mas sem clique coletado em nenhuma das suas plataformas depois do cadastro — engajamento delas marcado como não observável`,
     );
   }
   return { people, fontes, avisos };

@@ -28,6 +28,7 @@ import {
   loadFunnelInputFromStore,
   openFunnelStoreReadOnly,
   resolveConfirmacaoFromStore,
+  resolveFreshnessObservability,
 } from "../scripts/lib/metrics/channel-cohort-funnel-store.ts";
 import { computePrimeiroClique14d } from "../scripts/lib/metrics/ativacao-coorte.ts";
 import { computeRollingWindow } from "../scripts/lib/ads-rolling-window.ts";
@@ -383,7 +384,8 @@ test("janela de gasto sem nenhuma linha no CSV: custo indisponível, nunca R$ 0,
   assert.equal(c.estado, "indisponivel");
   assert.equal(c.custoPorCadastro, null);
   assert.equal(c.custoPorConfirmado, null);
-  assert.match(c.motivo ?? "", /gasto indisponível/);
+  assert.match(c.motivo ?? "", /^sem nenhuma linha de apuração/);
+  assert.doesNotMatch(c.motivo ?? "", /indisponível/, "o prefixo fica com quem renderiza, nunca duplicado");
 });
 
 test("CSV que termina antes de `ate` bloqueia o custo (gasto até X ÷ população até Y)", () => {
@@ -815,8 +817,13 @@ test("store: clique e envio de broadcast de onboarding não contam como edição
     recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s-onb", edicao: "onb1", ts: "2026-09-01T13:00:00.000Z" });
     recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "c-onb", edicao: "onb1", ts: "2026-09-01T14:00:00.000Z" });
     recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s-ed", edicao: "ed1", ts: "2026-09-03T09:00:00.000Z" });
-    const sem = loadFunnelInputFromStore(db).people[0];
-    const com = loadFunnelInputFromStore(db, { edicoesExcluidas: new Set(["onb1"]) }).people[0];
+    // Outra pessoa clicou numa EDIÇÃO: a ingestão de clique do Kit está em dia.
+    const id2 = ensureSubscriber(db, "kit", "k2", "dois@exemplo.com.br", NOW);
+    upsertSubscription(db, id2, "kit", { status: "active", enteredAt: "2026-09-01T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: id2, platform: "kit", type: "click", externalEventId: "c-ed", edicao: "ed1", ts: "2026-09-03T10:00:00.000Z" });
+    const um = (r: ReturnType<typeof loadFunnelInputFromStore>) => r.people.find((p) => p.email === "um@exemplo.com.br")!;
+    const sem = um(loadFunnelInputFromStore(db));
+    const com = um(loadFunnelInputFromStore(db, { edicoesExcluidas: new Set(["onb1"]) }));
     db.close();
     assert.ok(sem.engajamento.observavel && sem.engajamento.primeiroCliqueEm === "2026-09-01T14:00:00.000Z");
     assert.ok(com.engajamento.observavel && com.engajamento.primeiroCliqueEm === null);
@@ -825,6 +832,63 @@ test("store: clique e envio de broadcast de onboarding não contam como edição
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("resolveFreshnessObservability: engajamento exige envio E clique depois do cadastro na MESMA plataforma", () => {
+  const ent = "2026-09-10T12:00:00.000Z";
+  const d = (o: Record<string, string>) => new Map(Object.entries(o));
+  // kit envia em dia mas o clique parou antes do cadastro; beehiiv tem clique
+  // fresco mas nenhum envio fresco → engajamento NÃO observável.
+  assert.deepEqual(
+    resolveFreshnessObservability(["kit", "beehiiv"], ent, d({ kit: "2026-10-01T00:00:00Z" }), d({ kit: "2026-09-01T00:00:00Z", beehiiv: "2026-10-01T00:00:00Z" })),
+    { entrega: true, engajamento: false },
+  );
+  assert.deepEqual(
+    resolveFreshnessObservability(["kit"], ent, d({ kit: "2026-10-01T00:00:00Z" }), d({ kit: "2026-10-02T00:00:00Z" })),
+    { entrega: true, engajamento: true },
+  );
+  assert.deepEqual(resolveFreshnessObservability(["kit"], ent, d({}), d({ kit: "2026-10-02T00:00:00Z" })), { entrega: false, engajamento: false });
+  assert.deepEqual(resolveFreshnessObservability(["kit"], null, d({}), d({})), { entrega: true, engajamento: true });
+});
+
+test("store: ingestão de clique parada torna engajamento não observável mesmo com envio fresco", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-click-stale-"));
+  try {
+    const db = openDiariaSubscribersDb(join(root, "s.db"));
+    const velho = ensureSubscriber(db, "kit", "k0", "velho@exemplo.com.br", NOW);
+    upsertSubscription(db, velho, "kit", { status: "active", enteredAt: "2026-08-26T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: velho, platform: "kit", type: "click", externalEventId: "c0", edicao: "e0", ts: "2026-08-28T10:00:00.000Z" });
+    const novo = ensureSubscriber(db, "kit", "k1", "novo@exemplo.com.br", NOW);
+    upsertSubscription(db, novo, "kit", { status: "active", enteredAt: "2026-09-10T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: novo, platform: "kit", type: "sent", externalEventId: "s1", edicao: "e1", ts: "2026-09-11T09:00:00.000Z" });
+    const { people, avisos } = loadFunnelInputFromStore(db);
+    db.close();
+    const p = people.find((x) => x.email === "novo@exemplo.com.br")!;
+    assert.equal(p.entrega.observavel, true);
+    assert.equal(p.engajamento.observavel, false);
+    assert.ok(!p.engajamento.observavel && /clique/.test(p.engajamento.motivo));
+    assert.ok(avisos.some((a) => /sem clique coletado/.test(a)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("primeiro-clique-14d e leitor-v1 registram N/M sem engajamento observável no motivo", () => {
+  const entered = daysAgo(40);
+  const { row } = onlyRow([
+    person({ personKey: "1", enteredAt: entered }),
+    person({ personKey: "2", enteredAt: entered, engajamento: { observavel: false, motivo: "clique defasado" } }),
+  ]);
+  assert.equal(row.leitorV1.denominador, 1);
+  assert.match(row.leitorV1.motivo ?? "", /1\/2 sem engajamento observável/);
+  assert.equal(row.primeiroClique14d.denominador, 1);
+  assert.match(row.primeiroClique14d.motivo ?? "", /1\/2 sem engajamento\/entrega observável/);
+  const imatura = onlyRow([
+    person({ personKey: "1", enteredAt: daysAgo(5) }),
+    person({ personKey: "2", enteredAt: daysAgo(5), engajamento: { observavel: false, motivo: "x" } }),
+  ]).row;
+  assert.match(imatura.leitorV1.motivo ?? "", /1\/2 sem engajamento observável/);
+  assert.match(imatura.primeiroClique14d.motivo ?? "", /1\/2 sem engajamento\/entrega observável/);
 });
 
 test("openFunnelStoreReadOnly: arquivo ausente lança com mensagem e não cria nada", () => {
