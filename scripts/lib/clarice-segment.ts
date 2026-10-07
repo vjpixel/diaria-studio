@@ -796,7 +796,7 @@ export function isNamedGroupKey(key: string): key is NamedGroupKey {
  * `2608-09`): o filtro reduzia a fila de ~268k pra 9 contatos.
  *
  *   - `sends_count > 0` (já recebeu): elegível independente do score —
- *     quem decaiu a score ≤ 0 continua na fila, só ordenado por último
+ *     quem decaiu a score ≤ 0 continua na fila, ordenado por score DESC (#9824)
  *     (`compareDailyQueueOrder`). Não distinguir "reativação" como público
  *     à parte é intencional aqui: a #7406 pediu UMA fila; se um predicado
  *     de reativação separado vier a ser necessário, é decisão de escopo
