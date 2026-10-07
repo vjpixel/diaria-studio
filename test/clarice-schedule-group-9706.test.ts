@@ -30,6 +30,7 @@ function mockRun(opts: { now: Date; sendNowError: unknown; entry?: Partial<Campa
   const logs: string[] = [];
   const c = { key: "novos", campaignId: 121, listId: 7, subject: "s", status: "draft", ...opts.entry } as CampaignEntry;
   const campaigns = [c];
+  let disk = JSON.stringify(campaigns);
   const deps = {
     getCampaignFn: async () => {
       events.push("get");
@@ -46,11 +47,16 @@ function mockRun(opts: { now: Date; sendNowError: unknown; entry?: Partial<Campa
     writeFn: (_p: string, content: string) => {
       events.push("write");
       writes.push(JSON.parse(content));
+      disk = content;
     },
+    readFn: () => disk,
     logFn: (m: string) => logs.push(m),
     nowFn: () => opts.now,
   };
-  return { c, campaigns, deps, events, writes, logs };
+  const setDisk = (v: CampaignEntry[]) => {
+    disk = JSON.stringify(v);
+  };
+  return { c, campaigns, deps, setDisk, events, writes, logs };
 }
 
 // --- classificação pura ---

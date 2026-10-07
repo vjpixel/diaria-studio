@@ -1050,8 +1050,8 @@ export function isDefinitiveSendNowRejection(err: unknown): err is BrevoHttpErro
  * #4347). `sendNowAttemptedAt` é gravado ANTES do POST (#9699); falha nessa
  * escrita lança antes de qualquer envio, falha de escrita DEPOIS do POST só
  * loga. "failed" (#9706): a Brevo RECUSOU o POST com 4xx definitivo
- * (`isDefinitiveSendNowRejection`) — nada saiu; o `sendNowAttemptedAt` volta
- * ao valor anterior pra não travar o reenvio legítimo depois do conserto; o
+ * (`isDefinitiveSendNowRejection`) — este POST não foi aceito; o `sendNowAttemptedAt`
+ * volta (relido do disco, só se ainda for a marca deste processo, #9714) ao valor anterior pra não travar o reenvio legítimo depois do conserto; o
  * caller sinaliza exit 1.
  */
 export async function runSendNowLive(
@@ -1064,6 +1064,7 @@ export async function runSendNowLive(
     sendNowFn?: (apiKey: string, campaignId: number) => Promise<void>;
     pollFn?: (apiKey: string, campaignId: number) => Promise<{ status: string; scheduledAt?: string | null }>;
     writeFn?: (path: string, content: string) => void;
+    readFn?: (path: string) => string;
     logFn?: (msg: string) => void;
     nowFn?: () => Date;
   } = {},
@@ -1072,6 +1073,7 @@ export async function runSendNowLive(
   const sendNowFn = deps.sendNowFn ?? ((k, id) => brevoSendNow(k, id));
   const pollFn = deps.pollFn ?? ((k, id) => pollTerminalSendStatus(k, id));
   const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const readFn = deps.readFn ?? ((p) => readFileSync(p, "utf8"));
   const logFn = deps.logFn ?? ((m) => console.error(m));
   const nowFn = deps.nowFn ?? (() => new Date());
   const key = c.key;
@@ -1130,12 +1132,35 @@ export async function runSendNowLive(
     // segura por até a janela, lado seguro. O GET ao vivo do guard segue
     // barrando qualquer reenvio de campanha que de fato saiu.
     if (isDefinitiveSendNowRejection(err)) {
-      if (previousAttemptedAt === undefined) delete c.sendNowAttemptedAt;
-      else c.sendNowAttemptedAt = previousAttemptedAt;
-      writeAfterPost(campaignsPath, JSON.stringify(campaigns, null, 2));
+      // #9714: NÃO regrava a cópia em memória (lida antes do POST) — um
+      // `--send-now` concorrente pode ter gravado marca/aceite no disco nesse
+      // meio-tempo. Relê o disco e só mexe na marca se ainda for a DESTE
+      // processo; qualquer dúvida (leitura falha, marca de outro, aceite
+      // gravado) deixa o disco intacto — lado seguro (guard segura o reenvio).
+      const ownMark = c.sendNowAttemptedAt;
+      try {
+        const onDisk = JSON.parse(readFn(campaignsPath)) as CampaignEntry[];
+        const entry = onDisk.find((e) => e.key === key && e.campaignId === c.campaignId);
+        if (entry && entry.sendNowAttemptedAt === ownMark && entry.sendNowAcceptedAt === undefined) {
+          if (previousAttemptedAt === undefined) delete entry.sendNowAttemptedAt;
+          else entry.sendNowAttemptedAt = previousAttemptedAt;
+          writeAfterPost(campaignsPath, JSON.stringify(onDisk, null, 2));
+        } else {
+          logFn(
+            `⚠ ${key}: a marca de tentativa no disco não é mais a deste processo (execução concorrente?) — ` +
+              `registro local mantido como está; confira a Brevo antes de re-rodar --send-now (#9714).`,
+          );
+        }
+      } catch (readErr) {
+        logFn(
+          `⚠ ${key}: não foi possível reler o registro local pra restaurar a marca de tentativa (${String(readErr)}) — ` +
+            `marca mantida (guard segura o reenvio na janela) (#9714).`,
+        );
+      }
       logFn(
-        `❌ ${key} (campanha #${c.campaignId}): a Brevo RECUSOU o POST sendNow (HTTP ${err.status}) — disparo FALHOU, ` +
-          `nada foi enviado. Corrija a causa (${String(err.message)}) e re-rode --send-now.`,
+        `❌ ${key} (campanha #${c.campaignId}): a Brevo RECUSOU o POST sendNow (HTTP ${err.status}) — disparo FALHOU. ` +
+          `Corrija a causa (${String(err.message)}) e re-rode --send-now. Um 4xx do tipo "campanha já em envio" ` +
+          `pode vir de outro disparo (anterior ou concorrente): na dúvida, confira o status na Brevo antes de re-rodar.`,
       );
       return "failed";
     }
