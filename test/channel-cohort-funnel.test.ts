@@ -8,12 +8,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CONFIRMACAO_JANELA_HORAS,
   LEITOR_V1_MATURACAO_DIAS,
+  PRIMEIRO_CLIQUE_JANELA_DIAS,
   buildChannelCohortFunnel,
   buildCohortSpendInputs,
   computeCohortCost,
@@ -22,7 +23,13 @@ import {
   type FunnelPersonInput,
   type FunnelSources,
 } from "../scripts/lib/metrics/channel-cohort-funnel.ts";
-import { firstClickAtOrAfter, loadFunnelInputFromStore, resolveConfirmacaoFromStore } from "../scripts/lib/metrics/channel-cohort-funnel-store.ts";
+import {
+  firstClickAtOrAfter,
+  loadFunnelInputFromStore,
+  openFunnelStoreReadOnly,
+  resolveConfirmacaoFromStore,
+} from "../scripts/lib/metrics/channel-cohort-funnel-store.ts";
+import { computePrimeiroClique14d } from "../scripts/lib/metrics/ativacao-coorte.ts";
 import { computeRollingWindow } from "../scripts/lib/ads-rolling-window.ts";
 import type { ClicksCsvRow } from "../scripts/lib/ads-test-watch.ts";
 import { ensureSubscriber, openDiariaSubscribersDb, recordEvent, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
@@ -32,7 +39,8 @@ const NOW = "2026-10-07T15:00:00.000Z";
 const DAY = 86_400_000;
 const daysAgo = (n: number) => new Date(Date.parse(NOW) - n * DAY).toISOString();
 
-const SRC = (disponivel = true): FunnelSources["cadastro"] => ({ fonte: "fixture", frescor: NOW, disponivel, ...(disponivel ? {} : { motivo: "coleta falhou" }) });
+const SRC = (disponivel = true): FunnelSources["cadastro"] =>
+  disponivel ? { fonte: "fixture", frescor: NOW, disponivel: true } : { fonte: "fixture", frescor: NOW, disponivel: false, motivo: "coleta falhou" };
 const FONTES: FunnelSources = { cadastro: SRC(), confirmacao: SRC(), entrega: SRC(), engajamento: SRC() };
 
 function person(over: Partial<FunnelPersonInput> & { personKey: string }): FunnelPersonInput {
@@ -351,12 +359,111 @@ test("buildCohortSpendInputs reusa exatamente o gasto da janela do relatório de
   assert.equal(out[0].gasto, 160);
   assert.deepEqual([out[0].de, out[0].ate, out[0].cobreUltimoDia], ["2026-09-02", "2026-09-04", true]);
   assert.deepEqual(out[0].origens, ["meta-ads"]);
+  // Sem `cadastros_acumulado`, computeRollingWindow dá motivo de cadastro
+  // (denominador do relatório de 3 dias) — NÃO é ressalva de gasto aqui.
+  assert.ok(w.motivo);
   assert.equal(out[0].ressalvaGasto, null);
+  assert.equal(out[0].bloqueioGasto, null);
   const semUltimo = buildCohortSpendInputs(rows, { ate: "2026-09-05", dias: 3, fonte: "csv" });
   assert.equal(semUltimo[0].cobreUltimoDia, false);
+  assert.match(semUltimo[0].bloqueioGasto ?? "", /2026-09-04, antes de 2026-09-05/);
   const semBase = buildCohortSpendInputs(rows, { ate: "2026-09-02", dias: 3, fonte: "csv" });
   assert.equal(semBase[0].gasto, 150);
   assert.match(semBase[0].ressalvaGasto ?? "", /2026-09-01/);
+});
+
+test("janela de gasto sem nenhuma linha no CSV: custo indisponível, nunca R$ 0,00 calculado", () => {
+  const rows = [
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-01", gasto_acumulado: 100 },
+  ] as ClicksCsvRow[];
+  const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
+  assert.equal(s.gasto, 0);
+  assert.match(s.bloqueioGasto ?? "", /sem nenhuma linha de apuração/);
+  const c = computeCohortCost([person({ personKey: "1", enteredAt: "2026-08-20T15:00:00.000Z" })], s, { now: NOW, fontes: FONTES });
+  assert.equal(c.estado, "indisponivel");
+  assert.equal(c.custoPorCadastro, null);
+  assert.equal(c.custoPorConfirmado, null);
+  assert.match(c.motivo ?? "", /gasto indisponível/);
+});
+
+test("CSV que termina antes de `ate` bloqueia o custo (gasto até X ÷ população até Y)", () => {
+  const rows = [
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-18", gasto_acumulado: 100 },
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-19", gasto_acumulado: 150 },
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-20", gasto_acumulado: 200 },
+  ] as ClicksCsvRow[];
+  const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
+  const c = computeCohortCost([person({ personKey: "1", enteredAt: "2026-08-21T15:00:00.000Z" })], s, { now: NOW, fontes: FONTES });
+  assert.equal(c.estado, "indisponivel");
+  assert.match(c.motivo ?? "", /antes de 2026-08-21/);
+});
+
+test("linha-base recuada por buraco antes da janela (#7790) vira ressalva e impede 'calculado'", () => {
+  const rows = [
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-15", gasto_acumulado: 100, cadastrosAcumulado: 1 },
+    // buraco: 16..18 sem linha
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-19", gasto_acumulado: 150, cadastrosAcumulado: 10 },
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-20", gasto_acumulado: 200, cadastrosAcumulado: 20 },
+    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-21", gasto_acumulado: 300, cadastrosAcumulado: 21 },
+  ] as ClicksCsvRow[];
+  const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
+  assert.equal(s.gasto, 200, "300 − 100 (base recuada para 15/08 em vez de 18/08)");
+  assert.match(s.ressalvaGasto ?? "", /linha-base é de 2026-08-15/);
+  const dentro = "2026-08-20T15:00:00.000Z";
+  const c = computeCohortCost(
+    [person({ personKey: "1", enteredAt: dentro, engajamento: { observavel: true, primeiroCliqueEm: null, leitor: { status: "active", totalReceived: 25, totalUniqueClicked: 3 } } })],
+    s,
+    { now: NOW, fontes: FONTES },
+  );
+  assert.equal(c.estado, "parcial");
+  assert.match(c.motivo ?? "", /linha-base/);
+  // Janela íntegra com poucos cadastros: o motivo de amostra mínima NÃO vira ressalva.
+  const wOk = computeRollingWindow(rows, { canal: "Meta Ads (teste 2608)", ate: "2026-08-21", dias: 1 });
+  assert.match(wOk.motivo ?? "", /abaixo do piso/);
+  const [ok] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 1, fonte: "csv" });
+  assert.equal(ok.ressalvaGasto, null);
+  assert.equal(ok.bloqueioGasto, null);
+});
+
+test("computeCohortCost: ramos indisponível/parcial", () => {
+  const dentro = "2026-08-20T15:00:00.000Z";
+  const pop = [person({ personKey: "1", enteredAt: dentro })];
+  const w = { ...SPEND, de: "2026-08-19", ate: "2026-08-21" };
+  assert.equal(computeCohortCost(pop, { ...w, gasto: Number.NaN }, { now: NOW, fontes: FONTES }).estado, "indisponivel");
+  assert.equal(computeCohortCost(pop, { ...w, gasto: -1 }, { now: NOW, fontes: FONTES }).estado, "indisponivel");
+  assert.match(computeCohortCost(pop, { ...w, de: "2026-08-22" }, { now: NOW, fontes: FONTES }).motivo ?? "", /janela inválida/);
+  assert.equal(computeCohortCost(pop, w, { now: NOW, fontes: { ...FONTES, cadastro: SRC(false) } }).estado, "indisponivel");
+
+  const semFonteConf = computeCohortCost(pop, w, { now: NOW, fontes: { ...FONTES, confirmacao: SRC(false) } });
+  assert.equal(semFonteConf.custoPorConfirmado, null);
+  assert.match(semFonteConf.motivoConfirmado ?? "", /coleta falhou/);
+
+  const zeroConf = computeCohortCost(
+    [person({ personKey: "1", enteredAt: dentro, confirmacao: { observavel: true, confirmado: false, confirmadoEm: null } })],
+    w,
+    { now: NOW, fontes: FONTES },
+  );
+  assert.equal(zeroConf.confirmados, 0);
+  assert.equal(zeroConf.custoPorConfirmado, null);
+  assert.match(zeroConf.motivoConfirmado ?? "", /indefinido/);
+  assert.equal(zeroConf.estado, "parcial");
+
+  // Último dia da janela a menos de 48h de "agora" (NOW = 07/10 12h BRT).
+  const recente = computeCohortCost([person({ personKey: "1", enteredAt: "2026-10-06T15:00:00.000Z" })], { ...SPEND, de: "2026-10-06", ate: "2026-10-06" }, { now: NOW, fontes: FONTES });
+  assert.equal(recente.custoPorConfirmado, null);
+  assert.match(recente.motivoConfirmado ?? "", /48h/);
+});
+
+test("fronteira BRT na janela de custo: 23h BRT de 21/08 (02h UTC de 22/08) está dentro de [19/08, 21/08]", () => {
+  const c = computeCohortCost(
+    [
+      person({ personKey: "dentro", enteredAt: "2026-08-22T02:00:00.000Z" }),
+      person({ personKey: "fora", enteredAt: "2026-08-19T02:00:00.000Z" }), // 18/08 23h BRT
+    ],
+    { ...SPEND, de: "2026-08-19", ate: "2026-08-21" },
+    { now: NOW, fontes: FONTES },
+  );
+  assert.equal(c.populacao, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -496,21 +603,72 @@ test("CLI: uso inválido e store ausente saem com exit 1; store válido sem CSV 
   try {
     console.error = () => {};
     console.warn = () => {};
-    assert.equal(cliMain(["--db", join(root, "nao-existe", "s.db")]), 1);
+    // Flag sem valor (no fim, ou seguida de outra flag) é uso inválido.
+    assert.equal(cliMain(["--db"]), 1);
+    assert.equal(cliMain(["--csv", "--json"]), 1);
+    // Store ausente: exit 1 e NADA é criado (abertura só-leitura).
+    const ausente = join(root, "nao-existe.db");
+    assert.equal(cliMain(["--db", ausente, "--config", join(root, "x.json")]), 1);
+    assert.equal(existsSync(ausente), false);
     const dbPath = join(root, "s.db");
     const db = openDiariaSubscribersDb(dbPath);
     const id = ensureSubscriber(db, "kit", "k1", "um@exemplo.com.br", NOW);
     upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-01T12:00:00.000Z", exitedAt: null, source: null, utmSource: "meta-ads" }, NOW);
     db.close();
     console.log = (s: string) => logs.push(s);
-    assert.equal(cliMain(["--db", dbPath, "--csv", join(root, "sem.csv"), "--json"]), 0);
+    assert.equal(cliMain(["--db", dbPath, "--csv", join(root, "sem.csv"), "--config", join(root, "x.json"), "--json"]), 0);
     const out = JSON.parse(logs.join("\n"));
     assert.equal(out.rows.length, 1);
     assert.equal(out.custos.length, 0);
-    assert.match(out.avisos[0], /CSV de gasto ausente/);
+    assert.match(out.custoIndisponivel, /CSV de gasto ausente/);
+    assert.ok(out.avisos.some((a: string) => /custo indisponível: CSV de gasto ausente/.test(a)));
   } finally {
     console.log = origLog;
     console.error = origErr;
+    console.warn = origWarn;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI com CSV presente: custo por coorte calculado e canal sem spec avisado", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-cli-csv-"));
+  const logs: string[] = [];
+  const origLog = console.log;
+  const origWarn = console.warn;
+  try {
+    console.warn = () => {};
+    const dbPath = join(root, "s.db");
+    const db = openDiariaSubscribersDb(dbPath);
+    for (const [i, email] of ["a@exemplo.com.br", "b@exemplo.com.br"].entries()) {
+      const id = ensureSubscriber(db, "kit", `k${i}`, email, NOW);
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-02T15:00:00.000Z", exitedAt: null, source: null, utmSource: "meta-ads" }, NOW);
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: `s${i}`, edicao: "b1", ts: "2026-09-03T09:00:00.000Z" });
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: `c${i}`, edicao: "b1", ts: "2026-09-03T10:00:00.000Z" });
+    }
+    db.close();
+    const csv = join(root, "clicks.csv");
+    writeFileSync(
+      csv,
+      "canal,data_apuracao,gasto_acumulado,cadastros_acumulado\n" +
+        "Meta Ads (teste 2608),2026-08-31,10,1\n" +
+        "Meta Ads (teste 2608),2026-09-01,20,2\n" +
+        "Meta Ads (teste 2608),2026-09-02,30,3\n" +
+        "Meta Ads (teste 2608),2026-09-03,70,5\n" +
+        "Canal Novo,2026-09-03,5,0\n",
+    );
+    console.log = (s: string) => logs.push(s);
+    assert.equal(cliMain(["--db", dbPath, "--csv", csv, "--config", join(root, "x.json"), "--ate", "2026-09-03", "--json"]), 0);
+    const out = JSON.parse(logs.join("\n"));
+    assert.equal(out.custoIndisponivel, null);
+    assert.equal(out.custos.length, 1);
+    const c = out.custos[0];
+    assert.equal(c.canal, "Meta Ads (teste 2608)");
+    assert.equal(c.gasto, 60);
+    assert.equal(c.populacao, 2);
+    assert.equal(c.custoPorConfirmado, 30);
+    assert.ok(out.avisos.some((a: string) => /Canal Novo/.test(a)));
+  } finally {
+    console.log = origLog;
     console.warn = origWarn;
     rmSync(root, { recursive: true, force: true });
   }
@@ -525,7 +683,161 @@ test("store vazio: fontes indisponíveis (falta de dado), não zero", () => {
     assert.equal(people.length, 0);
     assert.equal(fontes.cadastro.disponivel, false);
     assert.equal(fontes.entrega.disponivel, false);
-    assert.ok(fontes.entrega.motivo);
+    assert.ok(!fontes.entrega.disponivel && fontes.entrega.motivo);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fleet review da PR #9839
+// ---------------------------------------------------------------------------
+
+test("primeiro-clique-14d com denominador vazio: em observação (nova) ou não observável (madura), nunca medido 0/0", () => {
+  const semEntrega = (enteredAt: string) =>
+    person({ personKey: "1", enteredAt, entrega: { observavel: true, edicoesRecebidas: 0 } });
+  const nova = onlyRow([semEntrega(daysAgo(5))]).row.primeiroClique14d;
+  assert.equal(nova.estado, "em-observacao");
+  assert.equal(nova.denominador, null);
+  const madura = onlyRow([semEntrega(daysAgo(40))]).row.primeiroClique14d;
+  assert.equal(madura.estado, "nao-observavel");
+  assert.equal(madura.numerador, null);
+  assert.match(madura.motivo ?? "", /entrega/);
+});
+
+test("qualidade piso de computePrimeiroClique14d é propagada, nunca vira exato", () => {
+  const entered = daysAgo(40);
+  const { row } = onlyRow([
+    person({ personKey: "1", enteredAt: entered, engajamento: { observavel: true, primeiroCliqueEm: new Date(Date.parse(entered) + DAY).toISOString(), leitor: { status: "active", totalReceived: 25, totalUniqueClicked: 1 } } }),
+    person({ personKey: "2", enteredAt: entered, engajamento: { observavel: true, primeiroCliqueEm: null, leitor: { status: "active", totalReceived: 25, totalUniqueClicked: 0 }, primeiraEdicaoDadosDisponiveis: false } }),
+  ]);
+  assert.equal(row.primeiroClique14d.estado, "medido");
+  assert.equal(row.primeiroClique14d.qualidade, "piso");
+  assert.equal(row.leitorV1.qualidade, "exato");
+  assert.equal(row.confirmacao.qualidade, "exato");
+});
+
+test("coorte de idade mista: o membro mais novo define a maturidade", () => {
+  const rep = buildChannelCohortFunnel(
+    [person({ personKey: "velho", enteredAt: "2026-09-28T15:00:00.000Z" }), person({ personKey: "novo", enteredAt: "2026-10-02T15:00:00.000Z" })],
+    { now: NOW, fontes: FONTES, granularidade: "semana" },
+  );
+  assert.equal(rep.rows.length, 1);
+  const r = rep.rows[0];
+  assert.equal(r.idadeDias, 5);
+  assert.equal(r.primeiroClique14d.estado, "em-observacao");
+  assert.equal(r.leitorV1.estado, "em-observacao");
+  assert.equal(r.emObservacao, true);
+});
+
+test("PRIMEIRO_CLIQUE_JANELA_DIAS espelha a maturação de computePrimeiroClique14d", () => {
+  const now = Math.floor(Date.parse(NOW) / 1000);
+  const membro = (diasAtras: number) => ({
+    email: "x@exemplo.com.br",
+    created: now - Math.round(diasAtras * 86400),
+    recebeuAoMenosUma: true,
+    primeiraEdicaoDadosDisponiveis: true,
+    abriuPrimeiraEdicao: false,
+    diasAtePrimeiroClique: null,
+  });
+  assert.equal(computePrimeiroClique14d([membro(PRIMEIRO_CLIQUE_JANELA_DIAS - 0.1)], now).qualidade, "indeterminado");
+  assert.equal(computePrimeiroClique14d([membro(PRIMEIRO_CLIQUE_JANELA_DIAS + 0.1)], now).qualidade, "exato");
+});
+
+test("dedupePeople: atribuição inteira vem da entrada mais antiga, reativado é pegajoso", () => {
+  const { people } = dedupePeople([
+    person({ personKey: "x", enteredAt: daysAgo(5), utmSource: "google-ads", utmCampaign: "nova", destino: "livros", reativado: true }),
+    person({ personKey: "x", enteredAt: daysAgo(50), utmSource: "meta-ads", utmCampaign: "antiga", destino: "home" }),
+  ]);
+  assert.equal(people.length, 1);
+  assert.deepEqual([people[0].utmSource, people[0].utmCampaign, people[0].destino], ["meta-ads", "antiga", "home"]);
+  assert.equal(people[0].reativado, true);
+});
+
+test("referrer sem utm_source é atribuição distinta de 'sem atribuição' e não funde referrers", () => {
+  const rep = buildChannelCohortFunnel(
+    [
+      person({ personKey: "a", utmSource: null, utmCampaign: null, referringSite: "site-a.com" }),
+      person({ personKey: "b", utmSource: null, utmCampaign: null, referringSite: "site-b.com" }),
+    ],
+    { now: NOW, fontes: FONTES },
+  );
+  assert.equal(rep.rows.length, 2);
+  assert.ok(rep.rows.every((r) => r.atribuido && r.origem == null && r.referrer != null));
+});
+
+test("Kit cancelled/bounced: com edição Kit recebida conta como confirmado; sem, é não observável", () => {
+  const sub = [{ platform: "kit", status: "cancelled", entered_at: "2026-09-01T12:00:00.000Z" }] as const;
+  assert.deepEqual(resolveConfirmacaoFromStore(sub, null, 3), { observavel: true, confirmado: true, confirmadoEm: null });
+  assert.equal(resolveConfirmacaoFromStore(sub, null, 0).observavel, false);
+  const { row } = onlyRow([person({ personKey: "1" }), person({ personKey: "2", confirmacao: { observavel: false, motivo: "cancelled sem envio" } })]);
+  assert.match(row.confirmacao.motivo ?? "", /superestimar/);
+});
+
+test("store: engajamento indisponível sem nenhum click; frescor por plataforma e aviso de plataforma parada", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-fresh-"));
+  try {
+    const db = openDiariaSubscribersDb(join(root, "s.db"));
+    const k = ensureSubscriber(db, "kit", "k1", "kit@exemplo.com.br", NOW);
+    upsertSubscription(db, k, "kit", { status: "active", enteredAt: "2026-09-01T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: k, platform: "kit", type: "sent", externalEventId: "s1", edicao: "b1", ts: "2026-09-02T09:00:00.000Z" });
+    // Beehiiv parou de ingerir em 01/08; pessoa entrou em 10/09.
+    const b = ensureSubscriber(db, "beehiiv", "b1", "bee@exemplo.com.br", NOW);
+    upsertSubscription(db, b, "beehiiv", { status: "active", enteredAt: "2026-09-10T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    const old = ensureSubscriber(db, "beehiiv", "b0", "old@exemplo.com.br", NOW);
+    upsertSubscription(db, old, "beehiiv", { status: "active", enteredAt: "2026-07-01T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: old, platform: "beehiiv", type: "delivered", externalEventId: "d0", edicao: "p0", ts: "2026-08-01T09:00:00.000Z" });
+    const { people, fontes, avisos } = loadFunnelInputFromStore(db);
+    db.close();
+    assert.equal(fontes.engajamento.disponivel, false);
+    assert.ok(!fontes.engajamento.disponivel && /click/.test(fontes.engajamento.motivo));
+    assert.equal(fontes.entrega.disponivel, true);
+    assert.equal(fontes.porPlataforma?.beehiiv.ultimaEntrega, "2026-08-01T09:00:00.000Z");
+    assert.equal(fontes.porPlataforma?.kit.ultimaEntrega, "2026-09-02T09:00:00.000Z");
+    assert.equal(fontes.porPlataforma?.brevo_diaria.ultimaEntrega, null);
+    const bee = people.find((p) => p.email === "bee@exemplo.com.br")!;
+    assert.equal(bee.entrega.observavel, false);
+    assert.equal(bee.engajamento.observavel, false);
+    assert.equal(people.find((p) => p.email === "kit@exemplo.com.br")!.entrega.observavel, true);
+    assert.ok(avisos.some((a) => /1 pessoa/.test(a)));
+    assert.ok(avisos.some((a) => /brevo_diaria/.test(a)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("store: clique e envio de broadcast de onboarding não contam como edição", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-onb-"));
+  try {
+    const db = openDiariaSubscribersDb(join(root, "s.db"));
+    const id = ensureSubscriber(db, "kit", "k1", "um@exemplo.com.br", NOW);
+    upsertSubscription(db, id, "kit", { status: "active", enteredAt: "2026-09-01T12:00:00.000Z", exitedAt: null, source: null }, NOW);
+    recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s-onb", edicao: "onb1", ts: "2026-09-01T13:00:00.000Z" });
+    recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "c-onb", edicao: "onb1", ts: "2026-09-01T14:00:00.000Z" });
+    recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s-ed", edicao: "ed1", ts: "2026-09-03T09:00:00.000Z" });
+    const sem = loadFunnelInputFromStore(db).people[0];
+    const com = loadFunnelInputFromStore(db, { edicoesExcluidas: new Set(["onb1"]) }).people[0];
+    db.close();
+    assert.ok(sem.engajamento.observavel && sem.engajamento.primeiroCliqueEm === "2026-09-01T14:00:00.000Z");
+    assert.ok(com.engajamento.observavel && com.engajamento.primeiroCliqueEm === null);
+    assert.ok(com.entrega.observavel && com.entrega.edicoesRecebidas === 1);
+    assert.ok(sem.entrega.observavel && sem.entrega.edicoesRecebidas === 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openFunnelStoreReadOnly: arquivo ausente lança com mensagem e não cria nada", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-ro-"));
+  try {
+    const p = join(root, "nada.db");
+    assert.throws(() => openFunnelStoreReadOnly(p), /store não encontrado/);
+    assert.equal(existsSync(p), false);
+    const db0 = openDiariaSubscribersDb(join(root, "s.db"));
+    db0.close();
+    const ro = openFunnelStoreReadOnly(join(root, "s.db"));
+    assert.throws(() => ro.exec("CREATE TABLE z (a INTEGER)"), /readonly|read-only|read only/i);
+    ro.close();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -86,15 +86,19 @@ export const CONFIRMACAO_JANELA_HORAS = 48;
  *  sem feriado. Coorte mais nova que isso fica `em-observacao`. */
 export const ENTREGA_JANELA_DIAS = 3;
 
-/** Janela de `primeiro-clique-14d` (`ativacao-coorte.ts`). Só reexposta
- *  aqui para a idade da coorte e o rótulo; a maturação efetiva quem decide
- *  é `computePrimeiroClique14d`. */
+/** Janela de `primeiro-clique-14d`. ESPELHO de `FOURTEEN_DAYS_SECONDS` de
+ *  `ativacao-coorte.ts` (constante privada lá) — usado aqui só no rótulo e
+ *  na decisão de `em-observacao` quando o denominador é vazio; a maturação
+ *  do caso com denominador é sempre de `computePrimeiroClique14d`. Se a
+ *  janela de lá mudar, esta tem que acompanhar (teste de paridade em
+ *  `test/channel-cohort-funnel.test.ts`). */
 export const PRIMEIRO_CLIQUE_JANELA_DIAS = 14;
 
 /** `leitor-v1` exige ≥20 edições recebidas (`LEITOR_V1_THRESHOLDS`); na
  *  cadência seg-sex isso são 4 semanas corridas. Coorte mais nova que isso
- *  tem `leitor-v1` zero POR CONSTRUÇÃO — reportar a taxa compararia uma
- *  coorte imatura como se tivesse completado a janela. */
+ *  tem `leitor-v1` praticamente zero (só quem já tinha recebidas de outra
+ *  plataforma passaria) — reportar a taxa compararia uma coorte imatura
+ *  como se tivesse completado a janela. */
 export const LEITOR_V1_MATURACAO_DIAS = Math.ceil((LEITOR_V1_THRESHOLDS.receivedMin / 5) * 7);
 
 const DAY_MS = 86_400_000;
@@ -128,6 +132,11 @@ export type FunnelEngajamentoInput =
       primeiroCliqueEm: string | null;
       /** Insumo de `isLeitorV1` — sempre calculado pela fonte canônica. */
       leitor: LeitorInput;
+      /** `false` quando o 1º envio depois do cadastro não tem dado de clique
+       *  confiável (post stub, #7181 F9) — repassado a
+       *  `computePrimeiroClique14d`, que rebaixa a taxa a `piso`. Default
+       *  `true` (o store do #6464 não tem esse conceito). */
+      primeiraEdicaoDadosDisponiveis?: boolean;
     };
 
 export interface FunnelPersonInput {
@@ -152,12 +161,16 @@ export interface FunnelPersonInput {
 }
 
 /** Estado de UMA fonte do relatório — `disponivel: false` é "falta de
- *  dado", diferente de "nenhum evento". */
-export interface FunnelSourceStatus {
-  fonte: string;
-  frescor: string | null;
-  disponivel: boolean;
-  motivo?: string;
+ *  dado", diferente de "nenhum evento", e sempre carrega o motivo. */
+export type FunnelSourceStatus =
+  | { fonte: string; frescor: string | null; disponivel: true }
+  | { fonte: string; frescor: string | null; disponivel: false; motivo: string };
+
+/** Último evento visto por plataforma — o frescor global esconde uma
+ *  plataforma parada enquanto outra segue ingerindo. */
+export interface FunnelPlatformFreshness {
+  ultimaEntrega: string | null;
+  ultimoClique: string | null;
 }
 
 export interface FunnelSources {
@@ -165,6 +178,8 @@ export interface FunnelSources {
   confirmacao: FunnelSourceStatus;
   entrega: FunnelSourceStatus;
   engajamento: FunnelSourceStatus;
+  /** Opcional: frescor por plataforma (preenchido pelo loader do store). */
+  porPlataforma?: Readonly<Record<string, FunnelPlatformFreshness>>;
 }
 
 export type FunnelGranularidade = "dia" | "semana";
@@ -196,6 +211,10 @@ export interface FunnelRate {
   fonte: string;
   frescor: string | null;
   estado: FunnelRateEstado;
+  /** `piso` quando a medição tem membros sem dado resolvido (a taxa real só
+   *  pode ser maior) — propagado de `computePrimeiroClique14d`, nunca
+   *  rebaixado a exato. `null` fora de `medido`. */
+  qualidade: "exato" | "piso" | null;
   motivo: string | null;
 }
 
@@ -208,6 +227,10 @@ export interface FunnelCohortRow {
   campanha: string | null;
   destino: string | null;
   segmento: FunnelSegmento;
+  /** `referring_site` quando não há `utm_source` (senão `null`) — a
+   *  atribuição por referrer, distinta de "sem atribuição". */
+  referrer: string | null;
+  /** `true` com `utm_source` OU referrer; `false` = sem atribuição. */
   atribuido: boolean;
   classe: AcquisitionClass;
   /** Dias desde o cadastro do membro MAIS NOVO — a coorte só é tão madura
@@ -345,6 +368,8 @@ export function dedupePeople(people: readonly FunnelPersonInput[]): { people: Fu
         observavel: true,
         primeiroCliqueEm: minIso(prev.engajamento.primeiroCliqueEm, p.engajamento.primeiroCliqueEm),
         leitor: richer,
+        primeiraEdicaoDadosDisponiveis:
+          (prev.engajamento.primeiraEdicaoDadosDisponiveis ?? true) && (p.engajamento.primeiraEdicaoDadosDisponiveis ?? true),
       };
     } else {
       engajamento = prev.engajamento.observavel ? prev.engajamento : p.engajamento;
@@ -368,13 +393,15 @@ function rate(
   denominador: number | null,
   estado: FunnelRateEstado,
   motivo: string | null,
+  qualidadeMedida: "exato" | "piso" = "exato",
 ): FunnelRate {
   const taxa = numerador != null && denominador != null && denominador > 0 ? numerador / denominador : null;
-  return { etapa, numerador, denominador, taxa, janela, fonte: src.fonte, frescor: src.frescor, estado, motivo };
+  const qualidade = estado === "medido" ? qualidadeMedida : null;
+  return { etapa, numerador, denominador, taxa, janela, fonte: src.fonte, frescor: src.frescor, estado, qualidade, motivo };
 }
 
 function semDados(etapa: FunnelRate["etapa"], janela: string, src: FunnelSourceStatus): FunnelRate {
-  return rate(etapa, janela, src, null, null, "sem-dados", src.motivo ?? `fonte ${src.fonte} indisponível`);
+  return rate(etapa, janela, src, null, null, "sem-dados", src.disponivel ? null : src.motivo);
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +444,17 @@ function confirmacaoRate(members: readonly Member[], nowMs: number, src: FunnelS
   const youngest = Math.max(...obs.map((m) => m.enteredMs));
   const imaturo = nowMs - youngest < CONFIRMACAO_JANELA_HORAS * 3600_000;
   const partes: string[] = [];
-  if (naoObs > 0) partes.push(`${naoObs}/${members.length} sem confirmação observável (fora do denominador)`);
+  if (naoObs > 0) {
+    // Direção do viés declarada: quem saiu do Kit DEPOIS de receber edição já
+    // conta como confirmado (o Kit só envia a quem confirmou — ver
+    // `resolveConfirmacaoFromStore`); quem sobra sem estado legível tende a
+    // ser quem nunca confirmou, então tirá-lo do denominador pode
+    // SUPERESTIMAR a taxa.
+    partes.push(
+      `${naoObs}/${members.length} sem confirmação observável, fora do denominador ` +
+        "(sem Kit, importados, ou saída do Kit sem nenhuma edição recebida — tende a superestimar a taxa)",
+    );
+  }
   if (imaturo) partes.push(`coorte com menos de ${CONFIRMACAO_JANELA_HORAS}h — contagem parcial`);
   return {
     r: rate("confirmacao", janela, src, confirmados, obs.length, imaturo ? "em-observacao" : "medido", partes.length ? partes.join("; ") : null),
@@ -451,7 +488,8 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
       null,
       null,
       "nao-observavel",
-      "migração em massa (utm_channel=import) fica fora da definição de primeiro-clique-14d (isBulkImport)",
+      `migração (utm_channel=import ou cadastro em ${KIT_IMPORT_DAY}, dia do import Beehiiv→Kit) fica fora da ` +
+        "definição de primeiro-clique-14d — a data de cadastro não é a de aquisição",
     );
   }
   const inputs: AtivacaoCoorteSubscriberInput[] = [];
@@ -468,7 +506,7 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
       utm_channel: m.p.utmChannel,
       referring_site: m.p.referringSite,
       recebeuAoMenosUma: ent.edicoesRecebidas >= 1,
-      primeiraEdicaoDadosDisponiveis: true,
+      primeiraEdicaoDadosDisponiveis: e.primeiraEdicaoDadosDisponiveis ?? true,
       abriuPrimeiraEdicao: false,
       // Clique ANTERIOR ao cadastro é dado inconsistente — descartado, nunca
       // "clique no dia 0" (o loader já pede o 1º clique >= cadastro; isto é
@@ -480,15 +518,31 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
     return rate("primeiro-clique-14d", janela, src, null, null, "nao-observavel", "nenhum membro com engajamento observável");
   }
   const r = computePrimeiroClique14d(inputs, Math.floor(nowMs / 1000));
+  if (r.denom === 0) {
+    // Ninguém da coorte recebeu edição: não há denominador. Coorte nova →
+    // ainda em observação; madura → a pergunta não se aplica (o problema está
+    // na etapa de entrega, que já mostra isso). Nunca "medido 0/0".
+    const youngest = Math.max(...members.map((m) => m.enteredMs));
+    if (nowMs - youngest < PRIMEIRO_CLIQUE_JANELA_DIAS * DAY_MS) {
+      return rate("primeiro-clique-14d", janela, src, null, null, "em-observacao", "nenhum membro recebeu edição ainda — coorte com menos de 14 dias");
+    }
+    return rate(
+      "primeiro-clique-14d",
+      janela,
+      src,
+      null,
+      null,
+      "nao-observavel",
+      "nenhum membro recebeu edição — sem denominador (ver a etapa de entrega)",
+    );
+  }
   if (r.qualidade === "indeterminado") {
-    // `denom > 0` + indeterminado = coorte imatura (o único caso possível
-    // aqui: `primeiraEdicaoDadosDisponiveis` é sempre `true` vindo do store).
-    // `denom === 0` = ninguém recebeu edição — ausência medida, não falta de dado.
-    if (r.denom > 0) return rate("primeiro-clique-14d", janela, src, null, r.denom, "em-observacao", r.motivo);
-    return rate("primeiro-clique-14d", janela, src, 0, 0, "medido", r.motivo);
+    // `denom > 0` + indeterminado = coorte imatura, ou 1º post 100% stub.
+    const imaturo = members.some((m) => nowMs - m.enteredMs < PRIMEIRO_CLIQUE_JANELA_DIAS * DAY_MS);
+    return rate("primeiro-clique-14d", janela, src, null, r.denom, imaturo ? "em-observacao" : "sem-dados", r.motivo);
   }
   const numerador = Math.round((r.valor ?? 0) * r.denom);
-  return rate("primeiro-clique-14d", janela, src, numerador, r.denom, "medido", r.motivo);
+  return rate("primeiro-clique-14d", janela, src, numerador, r.denom, "medido", r.motivo, r.qualidade);
 }
 
 function leitorRate(members: readonly Member[], nowMs: number, src: FunnelSourceStatus): FunnelRate {
@@ -506,7 +560,7 @@ function leitorRate(members: readonly Member[], nowMs: number, src: FunnelSource
       null,
       obs.length,
       "em-observacao",
-      `coorte com menos de ${LEITOR_V1_MATURACAO_DIAS} dias — leitor-v1 é zero por construção antes de ${t.receivedMin} recebidas`,
+      `coorte com menos de ${LEITOR_V1_MATURACAO_DIAS} dias — leitor-v1 é praticamente zero antes de ${t.receivedMin} recebidas`,
     );
   }
   const n = obs.filter((m) => m.p.engajamento.observavel && isLeitorV1(m.p.engajamento.leitor)).length;
@@ -586,7 +640,7 @@ export function buildChannelCohortFunnel(people: readonly FunnelPersonInput[], o
   const porDestino = opts.porDestino ?? true;
   const { members, resumo } = prepare(people);
 
-  type GroupKey = Pick<FunnelCohortRow, "periodo" | "origem" | "campanha" | "destino" | "segmento" | "atribuido" | "classe">;
+  type GroupKey = Pick<FunnelCohortRow, "periodo" | "origem" | "referrer" | "campanha" | "destino" | "segmento" | "atribuido" | "classe">;
   const groups = new Map<string, { key: GroupKey; members: Member[] }>();
   for (const m of members) {
     const periodo = granularidade === "dia" ? m.dia : mondayOf(m.dia);
@@ -594,11 +648,14 @@ export function buildChannelCohortFunnel(people: readonly FunnelPersonInput[], o
     const campanha = porCampanha ? clean(m.p.utmCampaign) : null;
     const destino = porDestino ? clean(m.p.destino) : null;
     const segmento = m.segmento;
-    const atribuido = origem != null || clean(m.p.referringSite) != null;
-    const k = [periodo, origem ?? "", campanha ?? "", destino ?? "", segmento, m.classe].join("|");
+    // Sem utm_source, o referrer É a atribuição — vira parte da chave para
+    // dois referrers distintos não se fundirem numa linha "sem origem".
+    const referrer = origem == null ? clean(m.p.referringSite) : null;
+    const atribuido = origem != null || referrer != null;
+    const k = [periodo, origem ?? "", referrer ?? "", campanha ?? "", destino ?? "", segmento, m.classe].join("|");
     let g = groups.get(k);
     if (!g) {
-      g = { key: { periodo, origem, campanha, destino, segmento, atribuido, classe: m.classe }, members: [] };
+      g = { key: { periodo, origem, referrer, campanha, destino, segmento, atribuido, classe: m.classe }, members: [] };
       groups.set(k, g);
     }
     g.members.push(m);
@@ -647,10 +704,15 @@ export interface CohortSpendInput {
   gasto: number;
   fonte: string;
   frescor: string | null;
-  /** Limitação do próprio número de gasto, repassada ao resultado (ex.: sem
-   *  linha-base antes da janela — o gasto é o acumulado desde o 1º registro
-   *  do braço, e só é da mesma coorte se o braço começou dentro da janela). */
+  /** Limitação do próprio número de gasto, repassada ao resultado e que
+   *  impede o estado `calculado` (ex.: sem linha-base antes da janela, ou
+   *  linha-base recuada por buraco no CSV — o gasto cobre mais dias que
+   *  [de, ate]). */
   ressalvaGasto?: string | null;
+  /** O gasto NÃO pertence a [de, ate] e não pode ser usado (janela sem
+   *  nenhuma linha de apuração; CSV termina antes de `ate`). Presente →
+   *  custo `indisponivel` com este motivo, nunca R$ 0,00 "calculado". */
+  bloqueioGasto?: string | null;
 }
 
 export type CohortCostEstado = "calculado" | "parcial" | "indisponivel";
@@ -685,10 +747,20 @@ export interface CohortCostResult {
 /**
  * Custo da coorte do gasto: população = pessoas NOVAS cuja origem está em
  * `spend.origens` E cujo cadastro (dia BRT) cai em [de, ate]. Nunca divide
- * gasto de um período por assinantes de outro. Cada custo sai `null` com
- * motivo quando a etapa não pode ser atribuída à mesma população inteira
- * (confirmação não observável em parte dela, coorte imatura, população
- * vazia = gasto sem correspondência). @pure
+ * gasto de um período por assinantes de outro.
+ *
+ * - `indisponivel` (tudo `null`): gasto bloqueado (`bloqueioGasto`), gasto
+ *   inválido, janela com o dia em curso, `de > ate`, fonte de cadastro
+ *   indisponível, ou população vazia (gasto sem correspondência).
+ * - Custo por confirmado `null`: fonte de confirmação indisponível, NINGUÉM
+ *   da população com confirmação observável, janela com menos de 48h, ou
+ *   zero confirmados (indefinido — não é infinito nem zero).
+ * - Custo por confirmado `teto`: PARTE da população sem estado DOI legível,
+ *   contada como não confirmada — o custo real só pode ser menor.
+ * - Custo por leitor `null`: engajamento indisponível/não observável em
+ *   parte da população, coorte com menos de 28 dias, ou zero leitores.
+ * - `calculado` só quando os dois custos são exatos e o gasto não tem
+ *   ressalva; qualquer outra combinação com população é `parcial`. @pure
  */
 export function computeCohortCost(
   people: readonly FunnelPersonInput[],
@@ -721,6 +793,7 @@ export function computeCohortCost(
     motivo,
   });
 
+  if (spend.bloqueioGasto) return indisponivel(spend.bloqueioGasto);
   if (!Number.isFinite(spend.gasto) || spend.gasto < 0) return indisponivel(`gasto inválido (${spend.gasto})`);
   const hojeBrt = unixSecondsToBrtDate(Math.floor(nowMs / 1000));
   if (spend.ate >= hojeBrt) return indisponivel(`janela do gasto inclui o dia em curso (${spend.ate} ≥ ${hojeBrt}) — gasto parcial`);
@@ -815,11 +888,16 @@ export function computeCohortCost(
 
 /**
  * Monta 1 `CohortSpendInput` por canal pago com spec não-ambígua em
- * `CHANNEL_KEY_SPECS`, usando `computeRollingWindow` (a MESMA aritmética do
- * relatório de 3 dias — `último − linha anterior à janela`) para o gasto de
- * [ate − dias + 1, ate]. Canal sem linha no CSV fica de fora (nada a
- * atribuir); canal cujo CSV não cobre o último dia da janela entra com
- * `cobreUltimoDia: false` para o chamador avisar. @pure
+ * `CHANNEL_KEY_SPECS`, a partir de `data/aquisicao/clicks-2608.csv`
+ * (`gasto_acumulado` reconciliado à mão contra os painéis, §8.3), usando
+ * `computeRollingWindow` — a MESMA aritmética do relatório de 3 dias
+ * (`último − linha anterior à janela`) — para o gasto de [ate − dias + 1,
+ * ate]. Só o GASTO é reaproveitado: o denominador do relatório de 3 dias
+ * (`cadastrosJanela`, vindo de `cadastros_acumulado` do CSV) é substituído
+ * pela população da coorte no store. Canal do CSV sem spec fica de fora (ver
+ * `canaisSemSpec`); janela sem linha ou CSV que termina antes de `ate` sai
+ * com `bloqueioGasto`; linha-base ausente ou recuada sai com `ressalvaGasto`.
+ * @pure
  */
 export function buildCohortSpendInputs(
   rows: readonly ClicksCsvRow[],
@@ -837,6 +915,31 @@ export function buildCohortSpendInputs(
     if (!canais.has(canal)) continue;
     const w = computeRollingWindow([...rows], { canal, ate: opts.ate, dias: opts.dias });
     const de = shiftDate(opts.ate, -(opts.dias - 1));
+    const ultimoDia = w.dias.at(-1) ?? null;
+    const cobreUltimoDia = ultimoDia === opts.ate;
+    // Bloqueios: o número de gasto não é de [de, ate]. Janela sem linha vira
+    // `gastoJanela: 0` em computeRollingWindow — usar isso daria "R$ 0,00".
+    // CSV que termina antes de `ate` dividiria gasto até X por população até Y.
+    let bloqueioGasto: string | null = null;
+    if (w.dias.length === 0) bloqueioGasto = `gasto indisponível: ${w.motivo ?? `sem linha de apuração entre ${de} e ${opts.ate}`}`;
+    else if (!cobreUltimoDia) {
+      bloqueioGasto =
+        `gasto indisponível: a última linha de apuração do braço é de ${ultimoDia}, antes de ${opts.ate} — ` +
+        "dividir esse gasto pela população até o fim da janela misturaria períodos";
+    }
+    // Ressalvas: o gasto pode cobrir MAIS dias que a janela. Só os motivos de
+    // GASTO de computeRollingWindow importam aqui — o de amostra mínima
+    // (MIN_CADASTROS_PARA_COMPARAR) e os de cadastros_acumulado são do
+    // denominador do relatório de 3 dias, que esta visão não usa.
+    let ressalvaGasto: string | null = null;
+    if (w.baseData == null && w.dias.length > 0) {
+      ressalvaGasto =
+        `sem linha de apuração antes de ${de}: o gasto é o acumulado desde o 1º registro do braço (${w.dias[0]}) — ` +
+        "só é da mesma coorte se o braço começou dentro da janela";
+    } else if (w.baseData != null && w.baseData !== shiftDate(de, -1)) {
+      // #7790 (baseCruzaBorda): linha-base recuada por buraco antes da janela.
+      ressalvaGasto = w.motivo ?? `linha-base de ${w.baseData}, não de ${shiftDate(de, -1)} — gasto cobre mais dias que a janela`;
+    }
     out.push({
       canal,
       origens,
@@ -844,14 +947,19 @@ export function buildCohortSpendInputs(
       ate: opts.ate,
       gasto: w.gastoJanela,
       fonte: opts.fonte,
-      frescor: w.dias.at(-1) ?? null,
-      ressalvaGasto:
-        w.baseData == null && w.dias.length > 0
-          ? `sem linha de apuração antes de ${de}: o gasto é o acumulado desde o 1º registro do braço (${w.dias[0]}) — ` +
-            `só é da mesma coorte se o braço começou dentro da janela`
-          : null,
-      cobreUltimoDia: w.dias.at(-1) === opts.ate,
+      frescor: ultimoDia,
+      ressalvaGasto,
+      bloqueioGasto,
+      cobreUltimoDia,
     });
   }
   return out;
+}
+
+/** Canais presentes no CSV de gasto sem spec não-ambígua em
+ *  `CHANNEL_KEY_SPECS` — o gasto deles não tem como ser atribuído a uma
+ *  origem, então não entra no custo; o chamador avisa. @pure */
+export function canaisSemSpec(rows: readonly ClicksCsvRow[], specs: readonly ChannelKeySpec[] = CHANNEL_KEY_SPECS): string[] {
+  const comSpec = new Set(specs.filter((s) => !s.ambigua).map((s) => s.canal));
+  return [...new Set(rows.map((r) => r.canal))].filter((c) => !comSpec.has(c)).sort();
 }
