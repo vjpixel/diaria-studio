@@ -402,6 +402,14 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
   constructor(
     private cfg: CloudflareKVConfig,
     private fetchImpl: typeof fetch = fetch,
+    /** #9856: `strictReads: true` faz `get` LANÇAR em falha de leitura (rede,
+     * 5xx, timeout, JSON inválido) em vez de degradar pra `null` — `null` fica
+     * reservado pra chave ausente (404). Opt-in, só pra quem REGRAVA a partir
+     * do que leu (o backfill de campanhas, `clarice-backfill-campaigns.ts`):
+     * ali "falhou a leitura" lido como "vazio" sobrescreve o histórico. O
+     * default segue fail-soft (painel local, #4165/#4173). `put`/`delete` não
+     * mudam. */
+    private opts: { strictReads?: boolean } = {},
   ) {}
 
   async get(key: string, type?: "json" | "text"): Promise<unknown> {
@@ -409,6 +417,7 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
     try {
       raw = await getTextFromWorkerKV(key, this.cfg, this.fetchImpl);
     } catch (e) {
+      if (this.opts.strictReads) throw e;
       console.error(
         `[RemoteKvNamespace] get('${key}') falhou — degradando pra null (fail-soft, #4165/#4173):`,
         e instanceof Error ? e.message : e,
@@ -419,7 +428,8 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
     if (type === "json") {
       try {
         return JSON.parse(raw);
-      } catch {
+      } catch (e) {
+        if (this.opts.strictReads) throw e;
         return null;
       }
     }
@@ -461,9 +471,10 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
 export function createRemoteKvNamespace(
   kvNamespaceId: string,
   cfg: Partial<Pick<CloudflareKVConfig, "accountId" | "token">> = {},
+  opts: { strictReads?: boolean } = {},
 ): RemoteKvNamespace | null {
   const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
   if (!accountId || !token) return null;
-  return new RemoteKvNamespace({ accountId, token, kvNamespaceId });
+  return new RemoteKvNamespace({ accountId, token, kvNamespaceId }, fetch, opts);
 }

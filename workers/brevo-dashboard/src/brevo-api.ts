@@ -2946,7 +2946,9 @@ export async function fetchCampaignsListPage(
 }
 
 /** Fail-soft: `env.STATS_CACHE` ausente (dev local sem KV) devolve array
- * vazio em vez de lançar — mesmo padrão do resto do arquivo. */
+ * vazio em vez de lançar — mesmo padrão do resto do arquivo. Só pra LEITURA
+ * (render); quem regrava o índice usa `readCampaignsArchiveIndexStrict`
+ * (#9856). */
 export async function readCampaignsArchiveIndex(
   env: Pick<Env, "STATS_CACHE">,
 ): Promise<ArchivedCampaignMeta[]> {
@@ -2957,6 +2959,53 @@ export async function readCampaignsArchiveIndex(
   } catch {
     return [];
   }
+}
+
+/** #9856: falha de LEITURA do índice de arquivo — distinta de "chave ausente". */
+export class CampaignsArchiveIndexReadError extends Error {
+  constructor(message: string, readonly kvError?: unknown) {
+    super(message);
+    this.name = "CampaignsArchiveIndexReadError";
+  }
+}
+
+/**
+ * #9856: leitura ESTRITA do índice, usada pelo backfill (o único caminho que
+ * REGRAVA o índice). A variante fail-soft acima serve o render, onde `[]` só
+ * esconde histórico na tela; aqui `[]` numa falha transitória fazia o
+ * backfill gravar `[...[], ...lote]` por cima das 147+ entradas — o índice
+ * inteiro trocado pelas ~20 do lote, com o cursor avançando e nunca relendo
+ * o que sumiu.
+ *
+ * Contrato: chave ausente (`null`) = índice vazio legítimo (1ª execução) →
+ * `[]`. Qualquer outra coisa que não seja array — exceção do KV (rede, 5xx,
+ * timeout) ou valor de shape inválido — LANÇA `CampaignsArchiveIndexReadError`.
+ * O KV real do Worker já lança em falha; no Node, o backfill usa
+ * `createRemoteKvNamespace(..., { strictReads: true })`, que deixa a falha
+ * subir em vez de virar `null`. `env.STATS_CACHE` ausente segue `[]` (sem KV
+ * não há índice a destruir: `writeCampaignsArchiveIndex` também é no-op).
+ */
+export async function readCampaignsArchiveIndexStrict(
+  env: Pick<Env, "STATS_CACHE">,
+): Promise<ArchivedCampaignMeta[]> {
+  if (!env.STATS_CACHE) return [];
+  let raw: unknown;
+  try {
+    raw = await env.STATS_CACHE.get(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY, "json");
+  } catch (e) {
+    throw new CampaignsArchiveIndexReadError(
+      `leitura de '${CAMPAIGNS_ARCHIVE_INDEX_KV_KEY}' falhou — backfill abortado sem gravar índice nem cursor: ` +
+        (e instanceof Error ? e.message : String(e)),
+      e,
+    );
+  }
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) {
+    throw new CampaignsArchiveIndexReadError(
+      `'${CAMPAIGNS_ARCHIVE_INDEX_KV_KEY}' não é um array (${typeof raw}) — backfill abortado sem sobrescrever`,
+    );
+  }
+  return raw as ArchivedCampaignMeta[];
 }
 
 async function writeCampaignsArchiveIndex(
@@ -3090,7 +3139,11 @@ export async function runCampaignsBackfillBatch(
     return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
   }
 
-  const archive = await readCampaignsArchiveIndex(env);
+  // #9856: leitura ESTRITA — falha do KV lança aqui, antes de qualquer
+  // gravação de índice ou cursor nesta chamada (o cron falha alto e a próxima
+  // rodada recomeça do mesmo ponto). Nunca a variante fail-soft: `[]` numa
+  // falha transitória sobrescrevia o índice inteiro pelo lote.
+  const archive = await readCampaignsArchiveIndexStrict(env);
   const archiveIds = new Set(archive.map((a) => a.id));
   const newArchiveEntries: ArchivedCampaignMeta[] = [];
 
