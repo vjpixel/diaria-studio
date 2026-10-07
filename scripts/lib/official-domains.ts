@@ -73,6 +73,11 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     path_patterns: [
       /^anthropic\.com\/(news|blog|claude|research)\//,
       /^claude\.com\/blog\//,
+      // Decisão do editor, 07/10/2026 (edição 261008, gate do Stage 4):
+      // claude.com/resources/articles/ é link oficial da Anthropic (ex:
+      // .../claude-now-works-in-google-docs-sheets-and-slides). Só /articles/
+      // — /resources/ solto, /product/*, /news e /release-notes seguem fora.
+      /^claude\.com\/resources\/articles\//,
     ],
     detection_keywords: /\b(anthropic|claude)\b/i,
     primary_domain: "anthropic.com",

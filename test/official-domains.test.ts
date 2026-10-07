@@ -152,6 +152,26 @@ describe("official-domains registry (#566)", () => {
       }
     });
 
+    // Decisão do editor 07/10/2026 (edição 261008): claude.com/resources/articles/
+    // é link oficial da Anthropic; o resto de /resources/ e /product/* seguem fora.
+    it("claude.com/resources/articles/ reconhecido como lançamento oficial Anthropic", () => {
+      const url = "https://claude.com/resources/articles/claude-now-works-in-google-docs-sheets-and-slides";
+      assert.equal(isOfficialLancamentoUrl(url), true);
+      assert.ok(patterns.some((p) => p.test("claude.com/resources/articles/claude-now-works-in-google-docs-sheets-and-slides")));
+    });
+
+    it("claude.com/resources/ sem articles/, /resourcesevil/ e /product/ seguem fora", () => {
+      for (const url of [
+        "https://claude.com/product/x",
+        "https://claude.com/resources/",
+        "https://claude.com/resources/guides/x",
+        "https://claude.com/resourcesevil/articles/x",
+        "https://claude.com/resources/articlesevil/x",
+      ]) {
+        assert.equal(isOfficialLancamentoUrl(url), false, `${url} NÃO deve ser lancamento`);
+      }
+    });
+
     it("#2370 — anthropic.com/news/ continua reconhecido (não regrediu)", () => {
       const matches = patterns.some(
         (p) => p.test("anthropic.com/news/claude-opus-4-5"),
