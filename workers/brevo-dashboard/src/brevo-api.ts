@@ -3195,15 +3195,24 @@ export async function runCampaignsBackfillBatch(
           rateLimited = true;
           break;
         }
-        // #9852: erro de rede (fetch lançou algo que não é resposta HTTP) ou
-        // indisponibilidade da Brevo (403/5xx, `isBrevoOutageStatus`) — a
-        // posição volta pras lacunas pendentes e a próxima chamada tenta de
-        // novo. 4xx "normal" (400/404) não é transitório: re-tentar seguraria
-        // o cursor aberto pra sempre; a campanha fica no índice sem stats e
-        // aparece em `archivedWithoutStats` de
-        // `scripts/verify-clarice-monthly-coverage.ts`.
-        if (!(e instanceof BrevoUpstreamError) || isBrevoOutageStatus(e.status)) {
+        // #9852: erro de rede/timeout REAL (`isNetworkOrTimeoutError` — só
+        // TypeError com mensagem de falha de rede conhecida, ou
+        // AbortError/TimeoutError) ou indisponibilidade da Brevo (403/5xx,
+        // `isBrevoOutageStatus`) — a posição volta pras lacunas pendentes e a
+        // próxima chamada tenta de novo. 4xx "normal" (400/404) não é
+        // transitório: re-tentar seguraria o cursor aberto pra sempre; a
+        // campanha fica no índice sem stats e aparece em
+        // `archivedWithoutStats` de `scripts/verify-clarice-monthly-coverage.ts`.
+        // Qualquer OUTRA exceção (SyntaxError de JSON malformado, TypeError de
+        // bug nosso) é re-lançada (self-review da PR #9854): tratá-la como
+        // transitória seguraria o cursor aberto pra sempre, sem teto e sem
+        // log. Re-lançar é o mesmo caminho de um erro na listagem da página
+        // (`fetchCampaignsListPage` acima) — o cursor não é gravado, o cron
+        // falha alto e a próxima chamada recomeça do mesmo ponto.
+        if (isNetworkOrTimeoutError(e) || (e instanceof BrevoUpstreamError && isBrevoOutageStatus(e.status))) {
           statsPending.push(offsetHere);
+        } else if (!(e instanceof BrevoUpstreamError)) {
+          throw e;
         }
       }
     }

@@ -308,6 +308,21 @@ describe("#9852 — campanha sem stats por 429/erro de rede volta às lacunas pe
     }
   });
 
+  test("exceção que não é rede nem HTTP (SyntaxError, TypeError de bug) é re-lançada, nunca vira lacuna pendente", async () => {
+    // Self-review da PR #9854: tratar qualquer não-HTTP como transitória
+    // seguraria o cursor aberto pra sempre, em silêncio. Re-lançar não grava
+    // cursor nenhum — o estado anterior fica intacto e o erro aparece.
+    for (const failure of [
+      () => new SyntaxError("Unexpected token < in JSON at position 0"),
+      () => new TypeError("Cannot read properties of undefined (reading 'globalStats')"),
+    ]) {
+      const { kv, run } = setup(failure, Infinity);
+      const before = await kv.get(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, "json");
+      await assert.rejects(run(), (e: unknown) => e instanceof Error && e.constructor === failure().constructor);
+      assert.deepEqual(await kv.get(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, "json"), before, "cursor não pode ganhar a posição como lacuna pendente");
+    }
+  });
+
   test("4xx não-transitório (404) não segura o cursor aberto pra sempre", async () => {
     const { run } = setup(() => new BrevoUpstreamError(404, "not found"), Infinity);
     assert.equal((await run()).cursor.done, true);
