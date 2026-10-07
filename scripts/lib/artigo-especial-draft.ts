@@ -22,7 +22,8 @@
  *   - o marcador `<!-- ESPECIAL:GATE_CUT -->` (`GATE_CUT_MARKER`) — por
  *     padrão logo antes da 2ª seção nomeada (convenção do README do
  *     Worker: teaser = abertura + 1ª seção), ou onde o rascunho pedir com
- *     uma linha `<!-- corte -->`.
+ *     uma linha `<!-- corte -->` — só DENTRO da 1ª seção (encurta o
+ *     teaser; mais tarde o teaser público entregaria o artigo pago).
  *
  * Formato do `draft.md` — frontmatter simples `chave: valor` (sem YAML
  * aninhado) + corpo em markdown restrito:
@@ -43,19 +44,24 @@
  *   1º parágrafo = lede.
  *
  *   ## O que é o Jev
+ *   <!-- corte -->               (opcional, só na 1ª seção — encurta o teaser)
  *   ## Onde ele começou: lançamento ou notícia? {toc: Onde ele começou}
- *   <!-- corte -->               (opcional — força o ponto do teaser)
  *   ## Fontes e notas de método  (heading que começa com "Fontes" vira a
  *                                 seção de fontes, fora da numeração)
  *
- * Markdown aceito no corpo: parágrafo, `- `/`1. ` (listas), `**negrito**`,
- * `*itálico*`, `` `código` ``, `[texto](url)`, e parágrafo que abre com
+ * Markdown aceito no corpo: parágrafo, `- `/`1. ` (listas — pode ter linha
+ * introdutória antes e continuação depois do item), `**negrito**`,
+ * `*itálico*`, `` `código` ``, `[texto](url)` e `[texto](url "título")`
+ * (URL com 1 nível de parêntese), e parágrafo que abre com
  * `**Rótulo.**` vira `<span class="lead-in">`. Bloco que começa com `<` é
  * HTML CRU, copiado sem escape — é a porta pra tabela/infográfico próprio
  * do artigo (o o-jev tem tabela de placar, o o-agente tem infográficos);
  * o CSS desses componentes vai num bloco `<style>` cru no próprio rascunho.
- * Todo o resto é escapado. Rótulo do sumário: `{toc: ...}` no fim do
- * heading, ou o trecho antes do 1º `:` do heading.
+ * Bloco cru que a seção termina sem fechar é erro. Todo o resto é
+ * escapado; `#`, `###`+, `##Título` sem espaço e linha `---` no corpo são
+ * erro (nunca texto literal no artigo). Frontmatter: chave fora de
+ * `FRONTMATTER_KEYS` ou repetida é erro. Rótulo do sumário: `{toc: ...}`
+ * no fim do heading, ou o trecho antes do 1º `:` do heading.
  */
 
 import { escHtml } from "./html-escape.ts";
@@ -127,8 +133,12 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── parse ──────────────────────────────────────────────────────────────
 
+/** Chaves aceitas no frontmatter — qualquer outra é erro (pega typo como `capa-alt`). */
+export const FRONTMATTER_KEYS = ["titulo", "dek", "slug", "ano", "data", "autor", "capa", "capa_alt", "leitura", "atualizado"] as const;
+const CAPA_RE = /^[\w.-]+\.(jpg|png|webp)$/;
+
 function parseFrontmatter(raw: string): { fields: Record<string, string>; body: string } {
-  const text = raw.replace(/^﻿/, "").replace(/\r\n?/g, "\n");
+  const text = raw.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m) throw new ArtigoEspecialDraftError("draft.md sem frontmatter (bloco entre linhas `---` no topo).");
   const fields: Record<string, string> = {};
@@ -137,6 +147,10 @@ function parseFrontmatter(raw: string): { fields: Record<string, string>; body: 
     const idx = line.indexOf(":");
     if (idx <= 0) throw new ArtigoEspecialDraftError(`frontmatter: linha sem "chave: valor" — "${line}"`);
     const key = line.slice(0, idx).trim().toLowerCase();
+    if (!(FRONTMATTER_KEYS as readonly string[]).includes(key)) {
+      throw new ArtigoEspecialDraftError(`frontmatter: chave desconhecida "${key}" — aceitas: ${FRONTMATTER_KEYS.join(", ")}.`);
+    }
+    if (key in fields) throw new ArtigoEspecialDraftError(`frontmatter: chave "${key}" repetida.`);
     fields[key] = line.slice(idx + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
   }
   return { fields, body: m[2] };
@@ -148,9 +162,16 @@ function requireField(fields: Record<string, string>, key: string): string {
   return v;
 }
 
+/** Pura: `AAAA-MM-DD` válido de calendário (31/02 é recusado). */
+export function isCalendarDate(value: string): boolean {
+  if (!DATE_RE.test(value)) return false;
+  const d = new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
 function validDate(value: string, key: string): string {
-  if (!DATE_RE.test(value) || Number.isNaN(Date.parse(`${value}T12:00:00Z`))) {
-    throw new ArtigoEspecialDraftError(`frontmatter: "${key}" precisa ser AAAA-MM-DD (veio "${value}").`);
+  if (!isCalendarDate(value)) {
+    throw new ArtigoEspecialDraftError(`frontmatter: "${key}" precisa ser uma data AAAA-MM-DD válida (veio "${value}").`);
   }
   return value;
 }
@@ -173,6 +194,12 @@ function toFrontmatter(fields: Record<string, string>): DraftFrontmatter {
       throw new ArtigoEspecialDraftError(`frontmatter: leitura "${fields.leitura}" precisa ser um inteiro positivo (minutos).`);
     }
   }
+  const capa = fields.capa || DEFAULT_CAPA;
+  if (!CAPA_RE.test(capa)) {
+    throw new ArtigoEspecialDraftError(`frontmatter: capa "${capa}" precisa ser só um nome de arquivo .jpg/.png/.webp (ela mora em public/${ano}/${slug}/).`);
+  }
+  const atualizado = fields.atualizado ? validDate(fields.atualizado, "atualizado") : data;
+  if (atualizado < data) throw new ArtigoEspecialDraftError(`frontmatter: atualizado (${atualizado}) é anterior à data (${data}).`);
   return {
     titulo: requireField(fields, "titulo"),
     dek: requireField(fields, "dek"),
@@ -180,33 +207,11 @@ function toFrontmatter(fields: Record<string, string>): DraftFrontmatter {
     ano,
     data,
     autor: fields.autor || DEFAULT_AUTOR,
-    capa: fields.capa || DEFAULT_CAPA,
+    capa,
     capaAlt: requireField(fields, "capa_alt"),
     leitura,
-    atualizado: fields.atualizado ? validDate(fields.atualizado, "atualizado") : data,
+    atualizado,
   };
-}
-
-function splitBlocks(body: string): string[] {
-  const blocks: string[] = [];
-  let current: string[] = [];
-  let inRaw = false;
-  for (const line of body.split("\n")) {
-    // Bloco HTML cru segue até a próxima linha em branco que NÃO esteja
-    // dentro de um <style>/<table>/<div>... aberto — simplificação: um
-    // bloco cru termina na 1ª linha em branco depois que as tags de abertura
-    // e fechamento de nível de bloco se equilibram.
-    if (line.trim() === "" && !inRaw) {
-      if (current.length) blocks.push(current.join("\n"));
-      current = [];
-      continue;
-    }
-    if (current.length === 0 && line.trimStart().startsWith("<") && !isCutLine(line)) inRaw = true;
-    current.push(line);
-    if (inRaw && rawBalanced(current.join("\n"))) inRaw = false;
-  }
-  if (current.length) blocks.push(current.join("\n"));
-  return blocks;
 }
 
 const BLOCK_TAGS = ["style", "table", "div", "figure", "section", "aside", "ul", "ol", "svg", "blockquote", "details"];
@@ -224,18 +229,102 @@ function isCutLine(line: string): boolean {
   return (DRAFT_CUT_LINES as readonly string[]).includes(line.trim());
 }
 
-function parseBlock(block: string): DraftBlock {
-  const trimmed = block.trim();
-  if (isCutLine(trimmed)) return { kind: "cut" };
-  if (trimmed.startsWith("<")) return { kind: "raw", html: block.replace(/\s+$/, "") };
-  const lines = trimmed.split("\n");
-  if (lines.every((l) => /^[-*] /.test(l.trim()))) {
-    return { kind: "ul", items: lines.map((l) => l.trim().replace(/^[-*] /, "")) };
+const LIST_ITEM_RE = /^\s*([-*]|\d+[.)])\s+/;
+
+/**
+ * Pura: divide o conteúdo de UMA seção em blocos. Linha de corte é sempre
+ * um bloco à parte, mesmo sem linha em branco em volta. Bloco HTML cru
+ * (começa com `<`) vai até as tags de bloco se equilibrarem — e se a seção
+ * acabar com ele aberto, é erro (senão engoliria o resto em silêncio).
+ */
+export function splitSectionBlocks(body: string, where: string): DraftBlock[] {
+  const blocks: DraftBlock[] = [];
+  let current: string[] = [];
+  let inRaw = false;
+  const flushText = () => {
+    if (current.length) blocks.push(...parseTextBlock(current));
+    current = [];
+  };
+  const closeRaw = () => {
+    blocks.push({ kind: "raw", html: current.join("\n").replace(/\s+$/, "") });
+    current = [];
+    inRaw = false;
+  };
+  for (const line of body.split("\n")) {
+    if (inRaw) {
+      const balanced = rawBalanced(current.join("\n"));
+      if (isCutLine(line)) {
+        if (!balanced) throw new ArtigoEspecialDraftError(`${where}: marcador de corte dentro de um bloco HTML cru ainda aberto.`);
+        closeRaw();
+        blocks.push({ kind: "cut" });
+        continue;
+      }
+      // Bloco cru termina na 1ª linha em branco com as tags de bloco
+      // equilibradas; desequilibrado, a linha em branco é parte dele.
+      if (line.trim() === "" && balanced) {
+        closeRaw();
+        continue;
+      }
+      current.push(line);
+      continue;
+    }
+    if (isCutLine(line)) {
+      flushText();
+      blocks.push({ kind: "cut" });
+      continue;
+    }
+    if (line.trim() === "") {
+      flushText();
+      continue;
+    }
+    if (current.length === 0 && line.trimStart().startsWith("<")) inRaw = true;
+    current.push(line);
   }
-  if (lines.every((l) => /^\d+[.)] /.test(l.trim()))) {
-    return { kind: "ol", items: lines.map((l) => l.trim().replace(/^\d+[.)] /, "")) };
+  if (inRaw) {
+    if (!rawBalanced(current.join("\n"))) {
+      throw new ArtigoEspecialDraftError(`${where}: bloco HTML cru aberto e nunca fechado (confira as tags ${BLOCK_TAGS.join("/")}).`);
+    }
+    closeRaw();
   }
-  return { kind: "paragraph", text: lines.map((l) => l.trim()).join(" ") };
+  flushText();
+  return blocks;
+}
+
+/**
+ * Pura: um bloco de texto (sem linha em branco) → parágrafo(s) e lista(s).
+ * Linhas antes do 1º item viram parágrafo; linha sem marcador depois de um
+ * item é continuação dele.
+ */
+function parseTextBlock(lines: string[]): DraftBlock[] {
+  const out: DraftBlock[] = [];
+  let para: string[] = [];
+  let list: { kind: "ul" | "ol"; items: string[] } | null = null;
+  const flushPara = () => {
+    if (para.length) out.push({ kind: "paragraph", text: para.map((l) => l.trim()).join(" ") });
+    para = [];
+  };
+  const flushList = () => {
+    if (list) out.push(list);
+    list = null;
+  };
+  for (const line of lines) {
+    const m = line.match(LIST_ITEM_RE);
+    if (m) {
+      const kind = /^[-*]$/.test(m[1]) ? "ul" : "ol";
+      flushPara();
+      if (list && list.kind !== kind) flushList();
+      if (!list) list = { kind, items: [] };
+      list.items.push(line.slice(m[0].length).trim());
+    } else if (list) {
+      const items = list.items;
+      items[items.length - 1] = `${items[items.length - 1]} ${line.trim()}`;
+    } else {
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+  return out;
 }
 
 function parseHeading(line: string): { heading: string; tocLabel: string } {
@@ -259,17 +348,27 @@ export function parseArtigoEspecialDraft(raw: string): ParsedDraft {
   const { fields, body } = parseFrontmatter(raw);
   const meta = toFrontmatter(fields);
 
-  if (/^#\s/m.test(body)) {
+  // Fora de bloco cru as linhas de markup não suportado são erro — nunca
+  // texto literal no artigo publicado.
+  const bodyNoStyle = body.replace(/<style[\s\S]*?<\/style>/gi, "");
+  if (/^#\s/m.test(bodyNoStyle)) {
     throw new ArtigoEspecialDraftError("draft.md: não use `# ` no corpo — o título vem do frontmatter (`titulo:`); seções são `## `.");
   }
-  if (/^###\s/m.test(body)) {
-    throw new ArtigoEspecialDraftError("draft.md: subseção `### ` não é suportada — use `## ` (seção numerada) ou um rótulo em negrito.");
+  if (/^#{3,}/m.test(bodyNoStyle)) {
+    throw new ArtigoEspecialDraftError("draft.md: subseção `###`/`####` não é suportada — use `## ` (seção numerada) ou um rótulo em negrito.");
+  }
+  if (/^##[^#\s]/m.test(bodyNoStyle)) {
+    throw new ArtigoEspecialDraftError("draft.md: heading sem espaço depois de `##` — escreva `## Título`.");
+  }
+  if (/^\s*(---|\*\*\*|___)\s*$/m.test(bodyNoStyle)) {
+    throw new ArtigoEspecialDraftError("draft.md: linha horizontal (`---`) não é suportada — as seções já separam o texto.");
   }
 
   const intro: DraftBlock[] = [];
   const sections: DraftSection[] = [];
   let sources: DraftSection | null = null;
   let target: DraftBlock[] = intro;
+  let where = "abertura";
 
   // Separa por headings `## ` mantendo a ordem.
   const chunks = body.split(/^(?=##\s)/m);
@@ -289,8 +388,9 @@ export function parseArtigoEspecialDraft(raw: string): ParsedDraft {
         sections.push(section);
       }
       target = section.blocks;
+      where = `seção "${heading}"`;
     }
-    for (const b of splitBlocks(content)) target.push(parseBlock(b));
+    target.push(...splitSectionBlocks(content, where));
   }
 
   const firstIntro = intro.find((b) => b.kind !== "raw");
@@ -304,11 +404,16 @@ export function parseArtigoEspecialDraft(raw: string): ParsedDraft {
   }
   const cuts = [...intro, ...sections.flatMap((s) => s.blocks), ...(sources?.blocks ?? [])].filter((b) => b.kind === "cut").length;
   if (cuts > 1) throw new ArtigoEspecialDraftError(`draft.md: ${cuts} marcadores de corte — deixe só um.`);
-  if (sources?.blocks.some((b) => b.kind === "cut")) {
-    throw new ArtigoEspecialDraftError("draft.md: o corte do teaser não pode ficar dentro das fontes.");
-  }
   if (intro.some((b) => b.kind === "cut")) {
     throw new ArtigoEspecialDraftError("draft.md: o corte do teaser não pode ficar antes da 1ª seção — o teaser ficaria sem nenhuma seção.");
+  }
+  // O corte explícito só pode ENCURTAR o teaser dentro da 1ª seção (ou cair
+  // no fim dela, que é o padrão). Mais tarde que isso publicaria o artigo
+  // pago quase inteiro como teaser público.
+  if (cuts === 1 && !sections[0].blocks.some((b) => b.kind === "cut")) {
+    throw new ArtigoEspecialDraftError(
+      "draft.md: o corte do teaser só pode ficar dentro da 1ª seção — depois dela, o teaser público entregaria o conteúdo dos apoiadores.",
+    );
   }
 
   return { meta, intro, sections, sources };
@@ -316,25 +421,36 @@ export function parseArtigoEspecialDraft(raw: string): ParsedDraft {
 
 // ── render ─────────────────────────────────────────────────────────────
 
+/** URL de link: um nível de parêntese balanceado (Wikipedia, DOI) + título opcional `"..."`. */
+const LINK_RE = /\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+"([^"]*)")?\)/g;
+
 /** Pura: markdown inline restrito → HTML, com escape de todo o resto. */
 export function renderInline(text: string): string {
+  // Lista ÚNICA de tokens para o texto todo (inclusive o rótulo do link,
+  // que pode ter `código` dentro) — tokens de níveis diferentes nunca se
+  // confundem.
   const tokens: string[] = [];
   const stash = (html: string): string => {
     tokens.push(html);
     return `\u0000${tokens.length - 1}\u0000`;
   };
-  let s = text;
-  s = s.replace(/`([^`]+)`/g, (_m, code: string) => stash(`<code>${escHtml(code)}</code>`));
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
+  const unstash = (s: string): string => s.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => tokens[Number(i)]);
+  const emphasis = (s: string): string =>
+    s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, "$1<em>$2</em>");
+
+  let s = text.replace(/`([^`]+)`/g, (_m, code: string) => stash(`<code>${escHtml(code)}</code>`));
+  s = s.replace(LINK_RE, (_m, label: string, url: string, title: string | undefined) => {
     if (!/^(https?:\/\/|\/|#|mailto:)/i.test(url)) {
       throw new ArtigoEspecialDraftError(`link com URL não suportada: "${url}" (use http(s)://, /, # ou mailto:).`);
     }
-    return stash(`<a href="${escHtml(url)}">${renderInline(label)}</a>`);
+    const t = title !== undefined ? ` title="${escHtml(title)}"` : "";
+    return stash(`<a href="${escHtml(url)}"${t}>${emphasis(escHtml(label))}</a>`);
   });
-  s = escHtml(s);
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\w)/g, "$1<em>$2</em>");
-  return s.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => tokens[Number(i)]);
+  if (/\]\(/.test(s)) {
+    throw new ArtigoEspecialDraftError(`link markdown malformado em "${text.slice(0, 80)}" — URL com espaço ou mais de um nível de parêntese? Codifique como %28/%29.`);
+  }
+  // unstash 2x: o rótulo do link pode carregar token de código.
+  return unstash(unstash(emphasis(escHtml(s))));
 }
 
 function renderParagraph(text: string, cls?: string): string {

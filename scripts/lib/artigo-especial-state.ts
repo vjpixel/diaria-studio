@@ -224,7 +224,12 @@ export function parseProducaoState(raw: unknown, path: string): ProducaoState | 
     return undefined;
   }
   const r = raw as { tema?: unknown; etapas?: unknown };
-  const etapasRaw = r.etapas && typeof r.etapas === "object" ? (r.etapas as Record<string, unknown>) : {};
+  let etapasRaw: Record<string, unknown> = {};
+  if (r.etapas && typeof r.etapas === "object" && !Array.isArray(r.etapas)) {
+    etapasRaw = r.etapas as Record<string, unknown>;
+  } else if (r.etapas !== undefined) {
+    process.stderr.write(`[artigo-especial-state] AVISO: ${path} — "producao.etapas" malformado — tratado como nenhuma etapa feita.\n`);
+  }
   return {
     tema: typeof r.tema === "string" ? r.tema : null,
     etapas: parseChannelStates(etapasRaw, PRODUCAO_ETAPAS, path, "artigo-especial-state:producao"),
@@ -259,6 +264,15 @@ export function withProducaoEtapa(
 ): ArtigoEspecialState {
   const idx = PRODUCAO_ETAPAS.indexOf(etapa);
   const prev = state.producao ?? { tema: null, etapas: {} };
+  if (tema !== undefined && etapa !== "tema") {
+    throw new Error(`tema só pode ser gravado com a etapa "tema" (veio com "${etapa}").`);
+  }
+  if (etapa === "tema" && etapaState.status === "done" && !tema?.trim()) {
+    throw new Error('etapa "tema" como feita exige o tema confirmado.');
+  }
+  if (etapa === "pr" && etapaState.status === "done" && !etapaState.url) {
+    throw new Error('etapa "pr" como feita exige a URL do PR.');
+  }
   if (etapaState.status === "done") {
     const pendente = PRODUCAO_ETAPAS.slice(0, idx).find((e) => prev.etapas[e]?.status !== "done");
     if (pendente) {
@@ -273,4 +287,27 @@ export function withProducaoEtapa(
     for (const e of PRODUCAO_ETAPAS.slice(idx + 1)) if (prev.etapas[e]) etapas[e] = prev.etapas[e];
   }
   return { ...state, producao: { tema: tema ?? prev.tema, etapas } };
+}
+
+/**
+ * Leitura ESTRITA para quem vai GRAVAR etapa de produção: ausente → vazio;
+ * existente mas ilegível ou fora do shape → lança. A leitura fail-soft de
+ * `readArtigoEspecialState` trataria um arquivo corrompido como vazio, e a
+ * escrita seguinte apagaria os canais e as etapas que ele tinha.
+ */
+export function readArtigoEspecialStateStrict(path: string, ano: string, slug: string): ArtigoEspecialState {
+  if (!existsSync(path)) return { ano, slug, channels: {} };
+  let parsed: Partial<ArtigoEspecialState>;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<ArtigoEspecialState>;
+  } catch (e) {
+    throw new Error(`${path} existe mas não é JSON válido (${(e as Error).message}) — conserte à mão antes de gravar (nada foi escrito).`);
+  }
+  if (typeof parsed?.ano !== "string" || typeof parsed.slug !== "string" || typeof parsed.channels !== "object" || parsed.channels === null) {
+    throw new Error(`${path} tem shape inesperado (ano/slug/channels) — conserte à mão antes de gravar (nada foi escrito).`);
+  }
+  if (parsed.ano !== ano || parsed.slug !== slug) {
+    throw new Error(`${path} é de ${parsed.ano}/${parsed.slug}, não de ${ano}/${slug} — nada foi escrito.`);
+  }
+  return readArtigoEspecialState(path, ano, slug);
 }

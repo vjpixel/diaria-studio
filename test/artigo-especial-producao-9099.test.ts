@@ -161,12 +161,21 @@ describe("#9099 (a) — draft.md → HTML no template dos artigos existentes", (
     assert.ok(html.includes("<ol>\n    <li>passo</li>"));
   });
 
-  it("corte explícito (<!-- corte -->) substitui o padrão", () => {
-    const d = DRAFT.replace("## Terceira", "<!-- corte -->\n\n## Terceira");
+  it("corte explícito (<!-- corte -->) dentro da 1ª seção substitui o padrão — conferido no TEASER", () => {
+    const d = DRAFT.replace("- item um", "<!-- corte -->\n- item um");
     const h = renderArtigoEspecialHtml(parseArtigoEspecialDraft(d), base);
     assert.equal(h.split(GATE_CUT_MARKER).length - 1, 1);
-    assert.ok(h.indexOf(GATE_CUT_MARKER) > h.indexOf('id="s02"'));
-    assert.ok(h.indexOf(GATE_CUT_MARKER) < h.indexOf('id="s03"'));
+    assert.ok(h.indexOf(GATE_CUT_MARKER) > h.indexOf('id="s01"'));
+    assert.ok(h.indexOf(GATE_CUT_MARKER) < h.indexOf("item um"));
+    const { teaser } = buildArticleArtifacts(h, { slug: "teste-x", year: "2026" });
+    assert.ok(teaser.includes("Texto com lead-in"), "o que vem antes do corte fica no teaser");
+    assert.ok(!teaser.includes("item um"), "o que vem depois do corte fica só para apoiadores");
+    assert.ok(!teaser.includes("<!-- corte -->"), "o marcador do draft nunca vaza literal");
+  });
+
+  it("corte explícito depois da 1ª seção é recusado (o teaser entregaria o artigo pago)", () => {
+    const d = DRAFT.replace("## Terceira", "<!-- corte -->\n\n## Terceira");
+    assert.throws(() => parseArtigoEspecialDraft(d), /só pode ficar dentro da 1ª seção/);
   });
 
   it("formato inválido falha com mensagem acionável (nunca gera artigo sem gate)", () => {
@@ -222,10 +231,16 @@ describe("#9099 (a) — registro nos 5 arquivos do Worker (contra os arquivos re
     const idx = registerInIndexHtml(read("workers/artigos/public/index.html"), reg).text;
     const firstLi = idx.indexOf("<li>", idx.indexOf('<ul class="article-list">'));
     assert.ok(idx.slice(firstLi, firstLi + 200).includes('href="/2026/teste-x/">Título &amp; cia</a>'));
-    const sm = registerInSitemap(read("workers/artigos/public/sitemap.xml"), reg);
-    assert.ok(sm.text.includes("<loc>https://especial.diar.ia.br/2026/teste-x/</loc>\n    <lastmod>2026-10-15</lastmod>"));
-    assert.match(sm.text, /<loc>https:\/\/especial\.diar\.ia\.br\/<\/loc>\s*<lastmod>2026-10-15<\/lastmod>/);
+    const real = read("workers/artigos/public/sitemap.xml");
+    const homeLastmod = (s: string) => s.match(/<loc>https:\/\/especial\.diar\.ia\.br\/<\/loc>\s*<lastmod>([^<]+)<\/lastmod>/)![1];
+    const before = homeLastmod(real);
+    const sm = registerInSitemap(real, reg);
+    assert.ok(sm.text.includes(`<loc>https://especial.diar.ia.br/2026/teste-x/</loc>\n    <lastmod>${reg.data}</lastmod>`));
+    assert.equal(homeLastmod(sm.text), before > reg.data ? before : reg.data, "home: max(lastmod real, data do artigo)");
     assert.equal(registerInSitemap(sm.text, reg).changed, false);
+    // Data anterior à home real nunca recua o lastmod dela.
+    const old = registerInSitemap(real, { ...reg, slug: "antigo", data: "2000-01-01" });
+    assert.equal(homeLastmod(old.text), before);
   });
 });
 
@@ -275,7 +290,43 @@ describe("#9099 (a) — runRenderArtigoEspecialHtml ponta a ponta numa cópia do
       "workers/artigos/wrangler.toml",
     ]);
     assert.ok(readFileSync(resolve(root, "workers/artigos/public/2026/teste-x/index.html"), "utf8").includes(GATE_CTA_ID));
+    // 2ª execução: ARTICLES (no arquivo de `root`) já termina em teste-x —
+    // o default do --reference tem de pular o próprio artigo.
+    assert.match(readFileSync(resolve(root, "scripts/build-artigo-especial-teaser.ts"), "utf8"), /slug: "teste-x", year: "2026" \},\n\];/);
     assert.deepEqual(runRenderArtigoEspecialHtml({ root, ano: "2026", slug: "teste-x" }).changed, []);
+    assert.deepEqual(runRenderArtigoEspecialHtml({ root, ano: "2026", slug: "teste-x", reference: "o-jev" }).changed, []);
+    assert.throws(() => runRenderArtigoEspecialHtml({ root, ano: "2026", slug: "teste-x", reference: "teste-x" }), /não pode ser o próprio artigo/);
+  });
+
+  it("re-render depois de ajuste no draft: substitui o item do índice e avança o lastmod, sem duplicar", () => {
+    mkdirSync(resolve(root, "workers/artigos/public/2026/teste-x"), { recursive: true });
+    writeFileSync(resolve(root, "workers/artigos/public/2026/teste-x/capa.jpg"), "jpg");
+    runRenderArtigoEspecialHtml({ root, ano: "2026", slug: "teste-x", reference: "o-jev" });
+    const draftPath = resolve(root, "data/artigo-especial/2026-teste-x/draft.md");
+    writeFileSync(draftPath, DRAFT.replace('titulo: Teste: "aspas" & coisas', "titulo: Título revisto").replace("data: 2026-10-15", "data: 2026-10-15\natualizado: 2026-10-20"));
+    const r = runRenderArtigoEspecialHtml({ root, ano: "2026", slug: "teste-x" });
+    assert.ok(r.changed.includes("workers/artigos/public/index.html"));
+    const idx = readFileSync(resolve(root, "workers/artigos/public/index.html"), "utf8");
+    assert.equal(idx.split('href="/2026/teste-x/"').length - 1, 1, "um item só");
+    assert.ok(idx.includes(">Título revisto</a>") && !idx.includes("aspas"));
+    const sm = readFileSync(resolve(root, "workers/artigos/public/sitemap.xml"), "utf8");
+    assert.equal(sm.split("<loc>https://especial.diar.ia.br/2026/teste-x/</loc>").length - 1, 1);
+    assert.ok(sm.includes("<loc>https://especial.diar.ia.br/2026/teste-x/</loc>\n    <lastmod>2026-10-20</lastmod>"));
+  });
+
+  it("slug já usado em OUTRO ano → recusa antes de escrever", () => {
+    mkdirSync(resolve(root, "workers/artigos/public/2027/o-jev"), { recursive: true });
+    writeFileSync(resolve(root, "workers/artigos/public/2027/o-jev/capa.jpg"), "jpg");
+    mkdirSync(resolve(root, "data/artigo-especial/2027-o-jev"), { recursive: true });
+    writeFileSync(
+      resolve(root, "data/artigo-especial/2027-o-jev/draft.md"),
+      DRAFT.replace("slug: teste-x", "slug: o-jev").replace("ano: 2026", "ano: 2027").replace("data: 2026-10-15", "data: 2027-01-10"),
+    );
+    const before = readFileSync(resolve(root, "workers/artigos/src/gated-articles.ts"), "utf8");
+    cpSync(resolve(root, "workers/artigos/articles-src/o-jev.html"), resolve(root, "workers/artigos/articles-src/base.html"));
+    assert.throws(() => runRenderArtigoEspecialHtml({ root, ano: "2027", slug: "o-jev", reference: "base" }), /já é do artigo de 2026/);
+    assert.equal(readFileSync(resolve(root, "workers/artigos/src/gated-articles.ts"), "utf8"), before);
+    assert.equal(existsSync(resolve(root, "workers/artigos/src/o-jev-full.generated.ts")), false, "nada escrito");
   });
 
   it("slug da chamada diferente do frontmatter → recusa", () => {

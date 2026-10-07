@@ -36,6 +36,7 @@ import {
   buildFailedChannelState,
   nextProducaoEtapa,
   readArtigoEspecialState,
+  readArtigoEspecialStateStrict,
   withProducaoEtapa,
   writeArtigoEspecialState,
   type ArtigoEspecialState,
@@ -63,8 +64,11 @@ export function runMarkProducaoEtapa(o: MarkEtapaOptions): { statePath: string; 
   if (o.etapa === "tema" && o.status === "done" && !o.tema) {
     throw new Error('--etapa tema --status done exige --tema "..." (o tema confirmado fica gravado para as etapas seguintes).');
   }
+  if (o.etapa === "pr" && o.status === "done" && !o.url) {
+    throw new Error("--etapa pr --status done exige --url com o link do PR.");
+  }
   const statePath = artigoEspecialStatePath(o.dataDir, o.ano, o.slug);
-  const state = readArtigoEspecialState(statePath, o.ano, o.slug);
+  const state = readArtigoEspecialStateStrict(statePath, o.ano, o.slug);
   const at = (o.now ?? new Date()).toISOString();
   const etapaState = o.status === "done" ? buildDoneChannelState(at, o.url ?? null) : buildFailedChannelState(at, o.reason!);
   const next = withProducaoEtapa(state, o.etapa, etapaState, o.tema);
@@ -102,7 +106,8 @@ function main(): void {
     const ballotPath = getStringArg(argv, "ballot", { example: "data/artigo-especial/votacao/2610/ballot.json" });
     try {
       const stats = JSON.parse(readFileSync(statsPath, "utf8")) as TemaStatsLike;
-      const ballot = ballotPath && existsSync(ballotPath) ? (JSON.parse(readFileSync(ballotPath, "utf8")) as BallotLike) : null;
+      if (ballotPath && !existsSync(ballotPath)) throw new TemaVencedorError(`--ballot ${ballotPath} não existe.`);
+      const ballot = ballotPath ? (JSON.parse(readFileSync(ballotPath, "utf8")) as BallotLike) : null;
       const v = resolveTemaVencedor(stats, ballot);
       const out = { ...v, slugSugerido: suggestSlug(v.titulo) };
       console.log(hasFlag(argv, "json") ? JSON.stringify(out, null, 2) : `vencedor (opção ${v.n}): ${v.titulo}\nslug sugerido: ${out.slugSugerido}${v.descricao ? `\ndescrição: ${v.descricao}` : ""}`);

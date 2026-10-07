@@ -55,7 +55,9 @@ import {
   type RegisterArticle,
 } from "./lib/artigo-especial-register.ts";
 import { parseArtigoMetaHtml } from "./lib/artigo-especial-meta.ts";
-import { ARTICLES, buildArticleArtifacts, renderGeneratedTsModule } from "./build-artigo-especial-teaser.ts";
+import { buildArticleArtifacts, renderGeneratedTsModule } from "./build-artigo-especial-teaser.ts";
+import { listRegisteredArticles } from "./lib/artigo-especial-register.ts";
+import { GATE_CUT_MARKER } from "./lib/shared/html-teaser-split.ts";
 
 export class RenderArtigoGuardError extends Error {
   constructor(message: string) {
@@ -70,7 +72,9 @@ export interface RenderArtigoOptions {
   ano: string;
   slug: string;
   draftPath?: string;
-  /** Slug do artigo de referência do CSS base. Default: último de ARTICLES. */
+  /** Slug do artigo de referência do CSS base. Default: o último de ARTICLES
+   *  que NÃO seja o próprio artigo (lido do arquivo em `root`, não do import —
+   *  depois da 1ª execução o próprio artigo já é o último da lista). */
   reference?: string;
   dryRun?: boolean;
 }
@@ -100,16 +104,23 @@ export function runRenderArtigoEspecialHtml(opts: RenderArtigoOptions): RenderAr
     );
   }
 
-  const reference = opts.reference ?? ARTICLES[ARTICLES.length - 1].slug;
+  const buildScriptPath = resolve(root, "scripts", "build-artigo-especial-teaser.ts");
+  const registered = listRegisteredArticles(readFileSync(buildScriptPath, "utf8"));
+  const reference = opts.reference ?? [...registered].reverse().find((a) => a.slug !== slug)?.slug;
+  if (!reference) throw new RenderArtigoGuardError("nenhum artigo de referência em ARTICLES para tirar o CSS base — passe --reference.");
   if (reference === slug) throw new RenderArtigoGuardError("--reference não pode ser o próprio artigo (o CSS base vem de um artigo já publicado).");
   const refPath = resolve(worker, "articles-src", `${reference}.html`);
   if (!existsSync(refPath)) throw new RenderArtigoGuardError(`artigo de referência ausente: ${refPath}`);
   const html = renderArtigoEspecialHtml(draft, extractBaseStyle(readFileSync(refPath, "utf8")));
+  const cutCount = html.split(GATE_CUT_MARKER).length - 1;
+  if (cutCount !== 1) {
+    throw new RenderArtigoGuardError(`HTML gerado tem ${cutCount} marcador(es) ${GATE_CUT_MARKER} — precisa de exatamente 1 (bloco HTML cru do rascunho carrega o marcador?).`);
+  }
 
   // Auto-conferência com o MESMO leitor que a divulgação usa depois.
   const meta = parseArtigoMetaHtml(html);
   const url = artigoUrl(ano, slug);
-  if (meta.url !== url || !meta.image || meta.leadParagraphs.length === 0 || meta.title !== draft.meta.titulo) {
+  if (meta.url !== url || !meta.image || meta.leadParagraphs.length === 0 || meta.title !== draft.meta.titulo || meta.datePublished !== draft.meta.data) {
     throw new RenderArtigoGuardError(`HTML gerado não passa no leitor de metadados (url=${meta.url}, image=${meta.image}, lede=${meta.leadParagraphs.length}).`);
   }
 
@@ -131,6 +142,7 @@ export function runRenderArtigoEspecialHtml(opts: RenderArtigoOptions): RenderAr
     autor: draft.meta.autor,
     dataLonga: formatDataPt(draft.meta.data).longa,
     data: draft.meta.data,
+    lastmod: draft.meta.atualizado,
   };
 
   const writes: Array<{ path: string; content: string }> = [
@@ -139,7 +151,7 @@ export function runRenderArtigoEspecialHtml(opts: RenderArtigoOptions): RenderAr
     { path: resolve(worker, "src", `${slug}-full.generated.ts`), content: renderGeneratedTsModule(article, artifacts.full) },
   ];
   const edits: Array<{ path: string; apply: (t: string) => { text: string; changed: boolean } }> = [
-    { path: resolve(root, "scripts", "build-artigo-especial-teaser.ts"), apply: (t) => registerInArticlesList(t, reg) },
+    { path: buildScriptPath, apply: (t) => registerInArticlesList(t, reg) },
     { path: resolve(worker, "src", "gated-articles.ts"), apply: (t) => registerInGatedArticles(t, reg) },
     { path: resolve(worker, "wrangler.toml"), apply: (t) => registerInWranglerToml(t, reg) },
     { path: resolve(worker, "public", "index.html"), apply: (t) => registerInIndexHtml(t, reg) },

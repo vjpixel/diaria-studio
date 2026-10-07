@@ -103,12 +103,28 @@ npx tsx scripts/artigo-especial-producao.ts mark --ano {ano} --slug {slug} \
   [--url ...] [--reason "..."] [--tema "..."]
 ```
 
-**Resume.** Toda invocação começa por `status`: a skill retoma da etapa que
-ele aponta como próxima. `produção concluída` → Passo 0. `done` fora de ordem
-é recusado pelo script (nenhum PR sai de um rascunho que o editor não
-aprovou), e refazer uma etapa já `done` (ex.: o editor pede outra tese depois
-do HTML) **apaga as posteriores** — o HTML de um rascunho velho não vale
-para o novo. `failed` é sempre retentável.
+**Resume**, nesta ordem:
+
+1. **Artigo feito por fora?** `--so-divulgacao`, OU o state file não tem
+   bloco `producao` E `workers/artigos/public/{ano}/{slug}/index.html` já
+   existe (os artigos escritos à mão antes do #9099) → Passo 0 direto. Esta
+   checagem vem ANTES do `status`, que para esses artigos responderia
+   "próxima etapa: tema" e recomeçaria a produção de um artigo já no ar.
+2. Senão, `status`: a skill retoma da etapa que ele aponta como próxima.
+   `produção concluída` → Passo 0.
+
+`done` fora de ordem é recusado pelo script (nenhum PR sai de um rascunho
+que o editor não aprovou), e refazer uma etapa já `done` (ex.: o editor
+pede outra tese depois do HTML) **apaga todas as posteriores** — refazer o
+`rascunho` invalida `html`, `pr` e `publicado`: o HTML de um rascunho velho
+não vale para o novo. `failed` é sempre retentável. `mark` recusa gravar
+se o `published.json` estiver ilegível (conserte à mão antes: a leitura
+tolerante o trataria como vazio e a escrita apagaria os canais).
+
+**Onde o state mora.** Sempre no `data/` do checkout PRINCIPAL (a junction
+do OneDrive). Todo `mark`, `status` e `probe --mark` roda com cwd no
+checkout principal — nunca num worktree, cujo `data/` é outro diretório (ou
+nem existe) e esconderia o progresso do próximo resume.
 
 **Gates A-C são perguntas legítimas** (critérios 2 e 4 de "Perguntar é
 exceção", `CLAUDE.md`): tema, tese e texto mudam o que o apoiador lê, e cada
@@ -177,9 +193,14 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
      explicação). Regras de context/editorial-rules.md valem (sem seta,
      sem markdown no texto que chega ao leitor além do formato do draft).
      O dek tem 1-2 frases e serve de og:description. capa_alt descreve a
-     ilustração Van Gogh impasto 2:1 que você propõe em
-     data/artigo-especial/{ano}-{slug}/capa-prompt.md (sem resolução em
-     pixels, sem Noite Estrelada).
+     ilustração que você propõe em data/artigo-especial/{ano}-{slug}/capa-prompt.md.
+     Formato do capa-prompt.md (é o que scripts/image-generate.ts --editorial
+     lê, igual aos _internal/02-d{N}-prompt.md da diária): só a DESCRIÇÃO DA
+     CENA, em texto corrido, 1 parágrafo, uma cena concreta que traduza a
+     tese. Sem título, sem lista, sem markdown (o script remove negrito/
+     heading/link e junta as linhas). Não escreva estilo nem proporção: o
+     script acrescenta o sufixo Van Gogh impasto e o 2:1 sozinho. Nunca
+     resolução em pixels, nunca Noite Estrelada.
    >)
    ```
 
@@ -198,10 +219,22 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
    humanizador só no trecho reescrito.
 
 4. **Gate C**: "rascunho aprovado". → `mark --etapa rascunho --status done`.
-   Pedido de ajuste depois disso (inclusive já na Etapa D) é refazer a
-   Etapa C: o `mark` invalida `html`/`pr` sozinho.
+   Pedido de ajuste depois disso (inclusive já na Etapa D ou E) é refazer a
+   Etapa C: o `mark` invalida `html`, `pr` e `publicado` sozinho (ver os
+   casos de PR aberto/mergeado em "Casos de borda").
 
 ### Etapa D — HTML no template dos artigos + capa
+
+0. **Branch PRIMEIRO, no checkout principal** (é lá que está o `data/` com o
+   `draft.md` e o state). Antes de copiar qualquer coisa para `workers/`:
+
+   ```bash
+   git fetch origin && git checkout -b artigo-especial/{ano}-{slug} origin/master
+   ```
+
+   Checkout principal sujo de outra sessão → não trocar de branch; halt
+   banner pedindo ao editor para liberar o checkout. Nunca um worktree: o
+   render leria o `draft.md` e o `mark` gravaria o state no `data/` errado.
 
 1. **Capa** (2:1, obrigatória — o teste `artigo-especial-registry-sync-9226`
    reprova artigo gateado sem `capa.jpg`):
@@ -217,8 +250,7 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
    Mostrar a capa ao editor junto com o resultado do passo 2 (não é um gate
    à parte).
 
-2. **Branch + conversão**, num worktree/branch próprio a partir de
-   `origin/master` (`artigo-especial/{ano}-{slug}`):
+2. **Conversão**, na branch do passo 0:
 
    ```bash
    npx tsx scripts/render-artigo-especial-html.ts --ano {ano} --slug {slug} --dry-run
@@ -234,7 +266,11 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
    `GATED_ARTICLES`, `run_worker_first`, `public/index.html` e
    `public/sitemap.xml`; gera o teaser e o `{slug}-full.generated.ts`; e
    relê a fonte com o mesmo `parseArtigoMetaHtml` da divulgação. Exit 2 =
-   rascunho/capa/âncora inválidos (a mensagem diz qual). Componente próprio
+   rascunho/capa/âncora inválidos, slug já usado em outro ano, ou HTML sem
+   exatamente 1 marcador de corte (a mensagem diz qual). O CSS base vem do
+   último artigo de `ARTICLES` que não seja este (`--reference slug` para
+   outro). Corte explícito só vale dentro da 1ª seção: mais tarde que isso o
+   teaser público entregaria o artigo pago. Componente próprio
    do artigo (tabela, infográfico) entra no `draft.md` como bloco HTML cru.
 
 3. **Conferência local**: `npx tsx scripts/build-artigo-especial-teaser.ts --check`
@@ -665,6 +701,14 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
   (`mark --etapa rascunho --status done` de novo invalida `html`/`pr`),
   rodar de novo o `render-artigo-especial-html.ts` (idempotente: só reescreve
   o que mudou) e dar push no MESMO PR.
+- **Ajuste com o PR ainda ABERTO** → refazer a Etapa C, rodar o render de
+  novo na mesma branch (substitui o item do índice e avança o `lastmod`),
+  `git push` no mesmo PR e regravar `mark --etapa html` e
+  `mark --etapa pr --status done --url {mesma URL}`.
+- **Ajuste depois do PR MERGEADO** (artigo já no ar) → refazer a Etapa C
+  com `atualizado:` no frontmatter, branch nova a partir de `origin/master`,
+  render, **PR novo** (`mark --etapa pr` com a URL nova) e probe de novo.
+  Canal de divulgação já `done` não é refeito.
 - **Probe falha** (deploy pulado pelo guard de KV, job vermelho, edge com
   404 antigo) → etapa `publicado` fica `failed` com o motivo; nenhum canal
   de divulgação roda. Resume depois do conserto: só o probe de novo.

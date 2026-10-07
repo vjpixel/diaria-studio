@@ -14,10 +14,13 @@
  * `test/artigo-especial-registry-sync-9226.test.ts` (esquecer o toml vaza o
  * conteúdo pago sem alarme); os 2 últimos por `test/artigos-sitemap-5126.test.ts`.
  *
- * Cada função é PURA (texto → texto) e IDEMPOTENTE: rodar de novo pro mesmo
- * slug devolve o texto intacto (`changed: false`). Âncora ausente → lança,
- * nunca insere "em algum lugar" — o arquivo mudou de forma e precisa de
- * olho humano, não de um palpite.
+ * Cada função é PURA (texto → texto) e IDEMPOTENTE: rodar de novo com os
+ * mesmos dados devolve o texto intacto (`changed: false`). Re-registro com
+ * título/dek/data novos (o editor ajustou o rascunho) SUBSTITUI a entrada
+ * do índice e atualiza o `lastmod` do sitemap — nunca para trás. Âncora
+ * ausente → lança, nunca insere "em algum lugar". Slug já registrado em
+ * OUTRO ano → lança: `{slug}-full.generated.ts` não tem ano no nome e
+ * sobrescreveria o artigo do outro ano.
  */
 
 import { escHtml } from "./html-escape.ts";
@@ -30,8 +33,10 @@ export interface RegisterArticle {
   autor: string;
   /** "30 de setembro de 2026" */
   dataLonga: string;
-  /** AAAA-MM-DD */
+  /** AAAA-MM-DD — datePublished. */
   data: string;
+  /** AAAA-MM-DD — dateModified; vira o `lastmod` do sitemap. Default = data. */
+  lastmod?: string;
 }
 
 export interface RegisterEdit {
@@ -51,6 +56,22 @@ export function fullHtmlConstName(slug: string): string {
   return `${slug.toUpperCase().replace(/-/g, "_")}_FULL_HTML`;
 }
 
+/** Pura: `{slug, year}` registrados em `ARTICLES`/`GATED_ARTICLES` (texto do arquivo). */
+export function listRegisteredArticles(text: string): Array<{ slug: string; year: string }> {
+  return [...text.matchAll(/\{\s*slug:\s*"([^"]+)",\s*year:\s*"(\d{4})"/g)].map((m) => ({ slug: m[1], year: m[2] }));
+}
+
+function assertNoYearConflict(text: string, a: { slug: string; ano: string }, file: string): boolean {
+  const found = listRegisteredArticles(text).filter((r) => r.slug === a.slug);
+  const other = found.find((r) => r.year !== a.ano);
+  if (other) {
+    throw new ArtigoEspecialRegisterError(
+      `${file}: o slug "${a.slug}" já é do artigo de ${other.year} — escolha outro slug (${a.slug}-full.generated.ts sobrescreveria aquele artigo).`,
+    );
+  }
+  return found.length > 0;
+}
+
 function insertBeforeArrayClose(text: string, arrayDecl: RegExp, line: string, file: string): string {
   const m = arrayDecl.exec(text);
   if (!m) throw new ArtigoEspecialRegisterError(`${file}: declaração do array não encontrada (${arrayDecl}).`);
@@ -62,7 +83,7 @@ function insertBeforeArrayClose(text: string, arrayDecl: RegExp, line: string, f
 
 /** 1. `ARTICLES` em scripts/build-artigo-especial-teaser.ts. */
 export function registerInArticlesList(text: string, a: Pick<RegisterArticle, "slug" | "ano">): RegisterEdit {
-  if (new RegExp(`slug:\\s*"${a.slug}"`).test(text)) return { text, changed: false };
+  if (assertNoYearConflict(text, a, "build-artigo-especial-teaser.ts")) return { text, changed: false };
   const line = `  { slug: "${a.slug}", year: "${a.ano}" },`;
   return {
     text: insertBeforeArrayClose(text, /export const ARTICLES: readonly ArticleConfig\[\] = \[/, line, "build-artigo-especial-teaser.ts"),
@@ -72,8 +93,8 @@ export function registerInArticlesList(text: string, a: Pick<RegisterArticle, "s
 
 /** 2. import + entrada em `GATED_ARTICLES` (workers/artigos/src/gated-articles.ts). */
 export function registerInGatedArticles(text: string, a: Pick<RegisterArticle, "slug" | "ano">): RegisterEdit {
+  if (assertNoYearConflict(text, a, "gated-articles.ts")) return { text, changed: false };
   const constName = fullHtmlConstName(a.slug);
-  if (new RegExp(`slug:\\s*"${a.slug}"`).test(text)) return { text, changed: false };
   const imports = [...text.matchAll(/^import \{ \w+ \} from "\.\/[\w-]+-full\.generated\.ts";$/gm)];
   if (imports.length === 0) throw new ArtigoEspecialRegisterError("gated-articles.ts: nenhum import de *-full.generated.ts para ancorar o novo.");
   const last = imports[imports.length - 1];
@@ -99,31 +120,54 @@ export function registerInWranglerToml(text: string, a: Pick<RegisterArticle, "s
   return { text: `${text.slice(0, insertAt)}${lines}${text.slice(insertAt)}`, changed: true };
 }
 
-/** 4. item no TOPO da lista de `public/index.html` (mais recente primeiro). */
-export function registerInIndexHtml(text: string, a: RegisterArticle): RegisterEdit {
-  const href = `/${a.ano}/${a.slug}/`;
-  if (text.includes(`href="${href}"`)) return { text, changed: false };
-  const anchor = '<ul class="article-list">';
-  const idx = text.indexOf(anchor);
-  if (idx === -1) throw new ArtigoEspecialRegisterError(`public/index.html: âncora ${anchor} não encontrada.`);
-  const item = `
-    <li>
-      <h2><a href="${href}">${escHtml(a.titulo)}</a></h2>
+function renderIndexItem(a: RegisterArticle): string {
+  return `    <li>
+      <h2><a href="/${a.ano}/${a.slug}/">${escHtml(a.titulo)}</a></h2>
       <p>${escHtml(a.dek)}</p>
       <div class="meta">Por ${escHtml(a.autor)} · ${escHtml(a.dataLonga)}</div>
     </li>`;
-  const at = idx + anchor.length;
-  return { text: `${text.slice(0, at)}${item}${text.slice(at)}`, changed: true };
 }
 
-/** 5. `<url>` logo depois da home no sitemap + `lastmod` da home atualizado. */
-export function registerInSitemap(text: string, a: Pick<RegisterArticle, "slug" | "ano" | "data">): RegisterEdit {
+/** 4. item no TOPO da lista de `public/index.html` (mais recente primeiro); re-registro substitui o item no lugar. */
+export function registerInIndexHtml(text: string, a: RegisterArticle): RegisterEdit {
+  const href = `href="/${a.ano}/${a.slug}/"`;
+  const item = renderIndexItem(a);
+  const hrefIdx = text.indexOf(href);
+  if (hrefIdx !== -1) {
+    const liStart = text.lastIndexOf("    <li>", hrefIdx);
+    const liEndTag = text.indexOf("</li>", hrefIdx);
+    if (liStart === -1 || liEndTag === -1) throw new ArtigoEspecialRegisterError(`public/index.html: item de ${href} fora do formato <li> esperado.`);
+    const liEnd = liEndTag + "</li>".length;
+    if (text.slice(liStart, liEnd) === item) return { text, changed: false };
+    return { text: `${text.slice(0, liStart)}${item}${text.slice(liEnd)}`, changed: true };
+  }
+  const anchor = '<ul class="article-list">';
+  const idx = text.indexOf(anchor);
+  if (idx === -1) throw new ArtigoEspecialRegisterError(`public/index.html: âncora ${anchor} não encontrada.`);
+  const at = idx + anchor.length;
+  return { text: `${text.slice(0, at)}\n${item}${text.slice(at)}`, changed: true };
+}
+
+const maxDate = (a: string, b: string) => (a > b ? a : b);
+
+/** 5. `<url>` logo depois da home no sitemap + `lastmod` da home; re-registro só AVANÇA o lastmod. */
+export function registerInSitemap(text: string, a: Pick<RegisterArticle, "slug" | "ano" | "data" | "lastmod">): RegisterEdit {
   const loc = `https://especial.diar.ia.br/${a.ano}/${a.slug}/`;
-  if (text.includes(`<loc>${loc}</loc>`)) return { text, changed: false };
+  const lastmod = a.lastmod ?? a.data;
   const homeRe = /(<url>\s*<loc>https:\/\/especial\.diar\.ia\.br\/<\/loc>\s*<lastmod>)([^<]*)(<\/lastmod>\s*<\/url>)/;
-  const m = homeRe.exec(text);
-  if (!m) throw new ArtigoEspecialRegisterError("sitemap.xml: entrada da home (https://especial.diar.ia.br/) não encontrada.");
-  const home = `${m[1]}${a.data > m[2] ? a.data : m[2]}${m[3]}`;
-  const entry = `\n  <url>\n    <loc>${loc}</loc>\n    <lastmod>${a.data}</lastmod>\n  </url>`;
-  return { text: `${text.slice(0, m.index)}${home}${entry}${text.slice(m.index + m[0].length)}`, changed: true };
+  const home = homeRe.exec(text);
+  if (!home) throw new ArtigoEspecialRegisterError("sitemap.xml: entrada da home (https://especial.diar.ia.br/) não encontrada.");
+  const withHome = `${text.slice(0, home.index)}${home[1]}${maxDate(home[2], lastmod)}${home[3]}${text.slice(home.index + home[0].length)}`;
+
+  const escLoc = loc.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  const existing = new RegExp(`(<loc>${escLoc}</loc>\\s*<lastmod>)([^<]*)(</lastmod>)`).exec(withHome);
+  let out: string;
+  if (existing) {
+    out = `${withHome.slice(0, existing.index)}${existing[1]}${maxDate(existing[2], lastmod)}${existing[3]}${withHome.slice(existing.index + existing[0].length)}`;
+  } else {
+    const h = homeRe.exec(withHome)!;
+    const at = h.index + h[0].length;
+    out = `${withHome.slice(0, at)}\n  <url>\n    <loc>${loc}</loc>\n    <lastmod>${lastmod}</lastmod>\n  </url>${withHome.slice(at)}`;
+  }
+  return { text: out, changed: out !== text };
 }
