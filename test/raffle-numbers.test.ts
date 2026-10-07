@@ -595,3 +595,43 @@ describe("matchesIntentionalError (#9021) — correct_value e fallback de contex
     assert.equal(matchesIntentionalError("A capital é Brasília, não São Paulo.", e), true);
   });
 });
+
+describe("matchesIntentionalError (#9792) — reply cita o wrong_value de várias palavras", () => {
+  const ERR_261006 = {
+    category: "ortografico",
+    location: "DESTAQUE 3, parágrafo 2",
+    description: "plataforma de IA citada com o nome grafado errado",
+    correct_value: "Hugging Face",
+    wrong_value: "Hugging Race",
+  };
+
+  it("caso real silvanosp 261006: cita 'Hugging Race' e 'Hugging Face' entre aspas → acerto", () => {
+    const body =
+      'O erro na edição de hoje é "Hugging Race" quando deveria ser "Hugging Face", na seção de Segurança.';
+    assert.equal(matchesIntentionalError(body, ERR_261006), true);
+  });
+
+  it("só o wrong_value de várias palavras, sem o correto nem contexto → acerto", () => {
+    assert.equal(matchesIntentionalError("Seria hugging-race?", ERR_261006), true);
+  });
+
+  it("wrong_value multi-palavra só dentro da citação do e-mail original → sem crédito", () => {
+    const body = [
+      "Obrigado!",
+      "",
+      "Em ter., 6 de out. de 2026 às 06:00, diar.ia.br escreveu:",
+      "> ... Hugging Race ...",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, ERR_261006), false);
+  });
+
+  it("tokens do wrong_value separados (não contíguos) não contam como citação", () => {
+    assert.equal(matchesIntentionalError("hugging é legal, race também", ERR_261006), false);
+  });
+
+  it("wrong e correct de palavra única citados juntos → acerto; só um dos dois, sem contexto, não", () => {
+    const e = { description: "valor errado", location: "radar", correct_value: "bilhões", wrong_value: "milhões" };
+    assert.equal(matchesIntentionalError("é bilhões e não milhões", e), true);
+    assert.equal(matchesIntentionalError("é milhões mesmo", e), false);
+  });
+});

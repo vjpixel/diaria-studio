@@ -7,12 +7,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
+  mergeCapturedReplies,
   extractEmail,
   stripQuotedAndSignature,
   isTrivialReply,
@@ -827,5 +828,134 @@ describe("campaign-reply-subjects (#9313)", () => {
     const out = JSON.parse(res.stdout);
     assert.equal(out.replies.length, 1);
     assert.equal(out.droppedByToCount, 0);
+  });
+});
+
+describe("#9792: --exclude-captured / previouslyCaptured (2ª passada de §0-replies no Stage 6)", () => {
+  const morning = {
+    thread_id: "t-manha",
+    from: "Leitor <leitor@x.com>",
+    to: "oi@news.diar.ia.br",
+    subject: "Re: diar.ia.br — 06/10",
+    date: "2026-10-06T10:00:00Z",
+    body: "Achei o erro: Hugging Race",
+  };
+  const evening = {
+    thread_id: "t-noite",
+    from: "Silvano <silvanosp@gmail.com>",
+    to: "oi@news.diar.ia.br",
+    subject: "Re: diar.ia.br — 06/10",
+    date: "2026-10-06T22:00:00Z",
+    body: 'O erro na edição de hoje é "Hugging Race" quando deveria ser "Hugging Face", na seção de Segurança.',
+  };
+
+  it("exclui a thread já processada (mesma thread_id + date) e mantém a que chegou depois", () => {
+    const r = filterSubscriberReplies([morning, evening], { previouslyCaptured: [morning] });
+    assert.deepEqual(
+      r.replies.map((x) => x.thread_id),
+      ["t-noite"],
+    );
+    assert.equal(r.alreadyProcessedCount, 1);
+  });
+
+  it("mesma thread com mensagem NOVA (date diferente) volta a ser processada", () => {
+    const r = filterSubscriberReplies([{ ...morning, date: "2026-10-06T21:00:00Z" }], {
+      previouslyCaptured: [morning],
+    });
+    assert.equal(r.replies.length, 1);
+    assert.equal(r.alreadyProcessedCount, 0);
+  });
+
+  it("sem previouslyCaptured, alreadyProcessedCount = 0 e nada muda", () => {
+    const r = filterSubscriberReplies([morning, evening]);
+    assert.equal(r.replies.length, 2);
+    assert.equal(r.alreadyProcessedCount, 0);
+  });
+
+  it("CLI: --exclude-captured lê a captura anterior; arquivo ausente não exclui nada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9792-"));
+    const inPath = join(dir, "late.json");
+    const prevPath = join(dir, "early.json");
+    writeFileSync(inPath, JSON.stringify([morning, evening]));
+    writeFileSync(prevPath, JSON.stringify([morning]));
+    const run = (prev: string) =>
+      spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/filter-subscriber-replies.ts", "--in", inPath, "--exclude-captured", prev],
+        { encoding: "utf8" },
+      );
+    const res = run(prevPath);
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.replies.length, 1);
+    assert.equal(out.alreadyProcessedCount, 1);
+    assert.match(res.stderr, /🔁 1 thread\(s\) já processada\(s\)/);
+
+    const res2 = run(join(dir, "nao-existe.json"));
+    assert.equal(res2.status, 0, res2.stderr);
+    assert.equal(JSON.parse(res2.stdout).replies.length, 2);
+  });
+
+  it("date em formatos diferentes (ISO vs RFC 2822) da mesma mensagem ainda casa", () => {
+    const r = filterSubscriberReplies([{ ...morning, date: "Tue, 06 Oct 2026 10:00:00 +0000" }], {
+      previouslyCaptured: [morning],
+    });
+    assert.equal(r.replies.length, 0);
+    assert.equal(r.alreadyProcessedCount, 1);
+  });
+
+  it("mergeCapturedReplies une sem duplicar e preserva o que já estava no ledger", () => {
+    const merged = mergeCapturedReplies([morning], [morning, evening]);
+    assert.deepEqual(
+      merged.map((x) => x.thread_id),
+      ["t-manha", "t-noite"],
+    );
+  });
+
+  it("CLI: re-execução do Stage 6 não re-rascunha a captura tardia da execução anterior (ledger --accumulate-into)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9792-rerun-"));
+    const early = join(dir, "captured-replies.json");
+    const pass = join(dir, "captured-replies-late-pass.json");
+    const ledger = join(dir, "captured-replies-late.json");
+    writeFileSync(early, JSON.stringify([morning]));
+    const runPass = () =>
+      spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/filter-subscriber-replies.ts",
+          "--in",
+          pass,
+          "--exclude-captured",
+          `${early},${ledger}`,
+          "--accumulate-into",
+          ledger,
+        ],
+        { encoding: "utf8" },
+      );
+    // 1ª execução do Stage 6: chega a reply da noite.
+    writeFileSync(pass, JSON.stringify([morning, evening]));
+    const r1 = runPass();
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(
+      JSON.parse(r1.stdout).replies.map((x: { thread_id: string }) => x.thread_id),
+      ["t-noite"],
+    );
+    // 2ª execução (retomada): a mesma captura + uma reply nova.
+    const later = { ...evening, thread_id: "t-madrugada", date: "2026-10-07T02:00:00Z" };
+    writeFileSync(pass, JSON.stringify([morning, evening, later]));
+    const r2 = runPass();
+    assert.equal(r2.status, 0, r2.stderr);
+    const out2 = JSON.parse(r2.stdout);
+    assert.deepEqual(
+      out2.replies.map((x: { thread_id: string }) => x.thread_id),
+      ["t-madrugada"],
+    );
+    assert.equal(out2.alreadyProcessedCount, 2);
+    assert.deepEqual(
+      JSON.parse(readFileSync(ledger, "utf8")).map((x: { thread_id: string }) => x.thread_id),
+      ["t-manha", "t-noite", "t-madrugada"],
+    );
   });
 });
