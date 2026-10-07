@@ -122,7 +122,7 @@ describe("official-domains registry (#566)", () => {
     });
 
     // #2370: claude.com/blog/ como caminho de anúncio oficial da Anthropic.
-    // Restrito a /blog/ — verificado contra dado real: /news e /release-notes
+    // Restrito a /blog/ (+ /resources/articles/, testes abaixo) — verificado contra dado real: /news e /release-notes
     // redirecionam pra claude.ai; /product/* são marketing estático evergreen.
     it("#2370 — claude.com/blog/ reconhecido como lançamento oficial Anthropic", () => {
       const matches = patterns.some(

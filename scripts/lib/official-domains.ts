@@ -63,7 +63,7 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     company: "Anthropic",
     // #2370: claude.com é domínio de produto da Anthropic e publica anúncios
     // oficiais em /blog/ (ex: claude.com/blog/claude-design-stays-on-brand-for-daily-work,
-    // categoria "Product announcements"). Restrito a /blog/ de propósito —
+    // categoria "Product announcements"). Restrito a /blog/ (+ /resources/articles/, ver abaixo) de propósito —
     // verificado contra dado real em 2026-06-18:
     //   - claude.com/news e /release-notes redirecionam (302) pra claude.ai
     //     (não são paths de conteúdo de claude.com)
