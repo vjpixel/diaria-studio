@@ -11,7 +11,9 @@ import {
   fitOls,
   groupClicksByEdition,
   indexApproved,
+  inestimableFeatures,
   parseNewsletterLinks,
+  pocBonusPoints,
   runCalibration,
   sectionSlug,
   withinCellConcordance,
@@ -26,6 +28,7 @@ const MD = [
   "",
   "**[ONU alerta](https://news.un.org/story/1)**  ",
   "Texto com [link de corpo](https://corpo.example.com/x).",
+  "**[Leia também, em negrito](https://outro.example.com/y)**",
   "",
   "**DESTAQUE 2 | 🚀 LANÇAMENTO**",
   "**[Googlebook](https://blog.google/googlebook/?utm_source=x)**",
@@ -33,12 +36,13 @@ const MD = [
   "**📡 RADAR**",
   "**[Radar 1](https://a.example.com/r1)**",
   "**[Radar 2](https://a.example.com/r2)**",
-  "**[ONU de novo](https://news.un.org/story/1)**",
+  "**[Repetida](https://a.example.com/dup)**",
+  "**[Repetida de novo](https://a.example.com/dup)**",
   "**É IA?**",
 ].join("\n");
 
 describe("parseNewsletterLinks / sectionSlug", () => {
-  it("extrai só manchetes, com seção e posição", () => {
+  it("extrai só manchetes, com seção e posição — 1 por bloco DESTAQUE", () => {
     const links = parseNewsletterLinks(MD);
     assert.deepEqual(
       links.map((l) => [l.section, l.position, l.url]),
@@ -47,7 +51,8 @@ describe("parseNewsletterLinks / sectionSlug", () => {
         ["destaque", 2, "https://blog.google/googlebook/?utm_source=x"],
         ["radar", 1, "https://a.example.com/r1"],
         ["radar", 2, "https://a.example.com/r2"],
-        ["radar", 3, "https://news.un.org/story/1"],
+        ["radar", 3, "https://a.example.com/dup"],
+        ["radar", 4, "https://a.example.com/dup"],
       ],
     );
   });
@@ -119,15 +124,22 @@ describe("buildEditionRows", () => {
       },
     ],
     lancamento: [{ url: "https://blog.google/googlebook", title: "Googlebook", score: 80, score_base: 70, bonuses_applied: ["primary_source:+10"] }],
-    radar: [{ url: "https://a.example.com/r1", title: "Trump hack", score: 60, score_base: 60 }],
+    radar: [
+      { url: "https://a.example.com/r1", title: "Trump hack", score: 60, score_base: 60 },
+      { url: "https://a.example.com/dup", title: "Repetida", score: 60, score_base: 60 },
+    ],
   };
 
   it("junta link publicado ↔ artigo aprovado ↔ cliques, sem o viral: do POC no score atual", () => {
-    const clicks = { delivered: 1000, sends: 1, clicks: new Map([["https://news.un.org/story/1", 9]]) };
-    const stats = { links: 0, unmatched_links: 0 };
+    const clicks = { delivered: 1000, sends: 1, clicks: new Map([["https://news.un.org/story/1", 9], ["https://a.example.com/dup", 7]]) };
+    const stats = { links: 0, unmatched_links: 0, duplicate_links: 0 };
     const rows = buildEditionRows({ edition: "260922", reviewedMd: MD, approved, newsletterBodies: null }, clicks, stats);
-    assert.equal(stats.links, 4); // a 2ª ocorrência da URL da ONU não conta de novo
+    assert.equal(stats.links, 6);
     assert.equal(stats.unmatched_links, 1); // r2 não está no approved
+    // URL publicada 2x: clique agregado não é atribuível a uma posição → as 2 ficam de fora.
+    assert.equal(stats.duplicate_links, 2);
+    assert.ok(!rows.some((r) => r.url === "https://a.example.com/dup"));
+    assert.equal(rows.length, 3);
     const onu = rows.find((r) => r.url === "https://news.un.org/story/1")!;
     assert.equal(onu.score_current, 72);
     assert.deepEqual(onu.bonuses, ["primary_source:+2"]);
@@ -232,6 +244,7 @@ describe("runCalibration / decide", () => {
     const m = (name: string, conc: number, coef = 0, ci: [number, number] = [0, 0]): ModelResult => ({
       name,
       features: ["viral:x"],
+      inestimable: [],
       coefficients: { "viral:x": coef },
       ci95: { "viral:x": ci },
       holdout_concordance: conc,
@@ -242,5 +255,41 @@ describe("runCalibration / decide", () => {
     });
     const v = decide([m("A score", 0.5), m("B score+viral", 0.6, -0.3, [-0.5, -0.1])]);
     assert.equal(v.viral_predicts, false);
+  });
+
+  it("feature sem variância dentro da célula sai marcada como inestimável, não como efeito zero", () => {
+    const rows = synthetic(0.5).map((r) => ({ ...r, signals: { ...r.signals, money_scale: true } }));
+    const res = runCalibration(rows, { holdoutFrac: 0.3, bootstrap: 5, seed: 1 });
+    const B = res.models.find((m) => m.name.startsWith("B "))!;
+    assert.ok(B.inestimable.includes("viral:money_scale"));
+    assert.ok(!B.inestimable.includes("viral:people_gov"));
+    assert.deepEqual(inestimableFeatures([[0, 1], [0, -1]], ["a", "b"]), ["a"]);
+  });
+});
+
+describe("pocBonusPoints (réplica congelada do POC descartado)", () => {
+  const none = {
+    people_gov: false,
+    big_company: false,
+    conflict_harm: false,
+    money_scale: false,
+    policy_geo: false,
+    newsletter_mentions: 0,
+    recent_36h: false,
+  };
+  const opts = { guard: null, negativeImpact: false, scoreCurrent: 60 };
+
+  it("pesos e tetos do POC", () => {
+    assert.equal(pocBonusPoints({ ...none, people_gov: true, big_company: true, recent_36h: true }, opts), 6);
+    assert.equal(pocBonusPoints({ ...none, conflict_harm: true, money_scale: true, policy_geo: true }, opts), 8);
+    assert.equal(pocBonusPoints({ ...none, newsletter_mentions: 5 }, opts), 6);
+    const all = { people_gov: true, big_company: true, conflict_harm: true, money_scale: true, policy_geo: true, newsletter_mentions: 3, recent_36h: true };
+    assert.equal(pocBonusPoints(all, opts), 15);
+    assert.equal(pocBonusPoints(all, { ...opts, scoreCurrent: 96 }), 4);
+  });
+
+  it("guarda zera; dano não soma em negative_impact", () => {
+    assert.equal(pocBonusPoints({ ...none, people_gov: true }, { ...opts, guard: "social_post" }), 0);
+    assert.equal(pocBonusPoints({ ...none, conflict_harm: true }, { ...opts, negativeImpact: true }), 0);
   });
 });

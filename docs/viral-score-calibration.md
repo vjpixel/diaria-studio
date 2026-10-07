@@ -1,139 +1,148 @@
 # Calibração do bônus "viral" contra clique real (#8672)
 
-Rodada de 07/10/2026, sessão `/diaria-develop 261007`. Script reprodutível:
+**Decisão: o bônus de viralização foi descartado em 07/10/2026 por decisão
+do editor, com base nesta calibração.** O POC (`scripts/lib/viral-score.ts`,
+`scripts/apply-viral-poc.ts`, PR #8673) saiu do repo. Ficam o script de
+calibração e os sinais crus em `scripts/lib/viral-signals.ts`, para que um
+sinal novo passe pela mesma régua antes de qualquer nova proposta de bônus.
+
+Rodada de 07/10/2026, sessão `/diaria-develop 261007`. O script é reprodutível:
 `npx tsx scripts/calibrate-viral-score.ts --bootstrap 1000 --out report.json`
-(read-only; lê `data/`, não escreve nada lá).
+(read-only; lê `data/` e não escreve nada lá).
 
 ## Conclusão
 
-**Os sinais "viral" não preveem clique melhor que os bônus atuais. Proposta:
-descartar o bônus e não levá-lo para produção.**
+**Os sinais "viral" não preveem clique melhor que os bônus atuais.**
 
-- Nenhum dos 7 sinais tem efeito positivo com IC 95% acima de zero.
-- Seis dos sete coeficientes saem negativos. O único positivo,
-  `newsletter_mentions`, tem IC que cruza zero com folga (−0,13 a +0,27).
-- O bônus do POC do jeito que foi especificado, com pesos e tetos, tem efeito
-  **negativo** e robusto: −0,32 por 10 pontos de bônus (IC 95% −0,59 a −0,06),
-  na escala log-CTR. Na mesma edição, seção e posição, e com o mesmo score
-  atual, cada 10 pontos de "viral" vêm com cerca de 28% **menos** CTR.
-- No holdout, o modelo B (score atual + sinais viral) empata com o modelo de
-  só posição (C0: 0,5826 × 0,5826). O ganho de B sobre A (+2,3 p.p.) vem dos
-  coeficientes negativos que o ajuste aprende, e não de um sinal que premie
-  o artigo. Ligar o bônus com o sinal positivo do POC piora a ordenação.
+- Nenhum dos 7 sinais tem efeito positivo com IC 95% acima de zero. Seis dos
+  sete coeficientes são negativos. O único positivo, `newsletter_mentions`, tem
+  IC que cruza zero com folga (−0,13 a +0,26).
+- O bônus do POC, com os pesos e tetos do POC (reproduzido por uma réplica
+  congelada, `pocBonusPoints`), tem efeito **negativo** e robusto: −0,34 por 10
+  pontos de bônus (IC 95% −0,61 a −0,07), em log-CTR. Na mesma edição, seção e
+  posição, e com o mesmo score atual, cada 10 pontos de "viral" correspondem a
+  cerca de 29% **menos** CTR.
+- No holdout, o modelo B (score atual + sinais viral) fica 0,46 p.p. abaixo do
+  modelo que usa só a posição (C0). O ganho de B sobre A (+1,8 p.p.) e o de P
+  sobre A (+3,7 p.p.) vêm dos coeficientes negativos que o ajuste aprende, não
+  de um sinal que premie o artigo. Ligar o bônus com o sinal positivo do POC
+  pioraria a ordenação.
 
 Ressalva sobre poder estatístico: o holdout tem 218 pares comparáveis, o que dá
-um erro-padrão de cerca de 3,4 p.p. na concordância. A amostra não descarta um
-efeito positivo pequeno. Pegando `people_gov`, o limite superior do IC (+0,17)
-equivale a uns 18% a mais de CTR. O que a amostra descarta é o seguinte: não há
-evidência positiva, e a direção observada é contrária à do bônus.
+um erro-padrão de uns 3,4 p.p. na concordância. A amostra não descarta um
+efeito positivo pequeno: em `people_gov`, o limite superior do IC (+0,16)
+equivale a uns 17% a mais de CTR. O que ela mostra é que não há evidência
+positiva, e que a direção observada é a contrária à do bônus.
 
 ## Amostra
 
 | | |
 |---|---|
-| Edições | 92 (260514 a 261002; as edições dos últimos 3 dias ficam de fora, CTR imaturo) |
+| Edições | 92 (260514 a 261002; as edições dos últimos 3 dias ficam de fora porque o CTR ainda está imaturo) |
 | Edições com inbox capturado (`captured-newsletters.json`) | 85 |
-| Links de artigo publicados com cliques casados | 1.000 (de 1.049 manchetes; 49 sem artigo correspondente em `01-approved.json`) |
-| Cliques únicos somados | 1.985 |
+| Links de artigo publicados, com cliques casados | 999 (de 1.044 manchetes; 43 sem artigo correspondente em `01-approved.json` e 2 ocorrências de URL repetida na mesma edição) |
 | Entregues por edição | 271 a 1.153 (mediana 544), Beehiiv e Kit somados |
 | Holdout cronológico | 28 edições mais recentes (260825 a 261002), 254 links |
 
-Os sinais foram recalculados retroativamente em todo o histórico com
-`extractViralSignals`, e não só nas edições depois do POC: só uma edição
-(260922) teve o bônus aplicado de verdade. Prevalência na amostra, já com as
-guardas: `recent_36h` 432, `big_company` 340, `conflict_harm` 63,
-`policy_geo` 57, `people_gov` 47, `newsletter_mentions` 34, `money_scale` 24.
+Os sinais foram recalculados retroativamente em todo o histórico
+(`extractViralSignals`), não só depois do POC: só uma edição (260922) teve o
+bônus aplicado de verdade. Prevalência na amostra, já com as guardas:
+`recent_36h` 432, `big_company` 339, `conflict_harm` 63, `policy_geo` 57,
+`people_gov` 47, `newsletter_mentions` 34, `money_scale` 24.
 
-Fontes: `02-reviewed.md` (o texto que chegou ao leitor, com a seção de cada
-link), `_internal/01-approved.json` (título, resumo, data, score e bônus que o
-scorer viu), `data/beehiiv-cache/posts` + `data/kit-cache/broadcasts`
-(cliques únicos por link e entregues). Ficam fora: envio com menos de 50
-destinatários (teste), envio não publicado e envio sem cliques buscados ou com
-zero clique em todos os links. Esse último é enriquecimento que falhou (por
-exemplo, 260820: 641 entregues e `clicks: []`), e não leitor que deixou de clicar.
+Fontes:
+
+- `02-reviewed.md`: o texto que foi ao leitor, com a seção de cada link e uma
+  manchete por bloco DESTAQUE.
+- `_internal/01-approved.json`: título, resumo, data, score e bônus que o
+  scorer viu.
+- `data/beehiiv-cache/posts` e `data/kit-cache/broadcasts`: cliques únicos por
+  link e entregues.
+
+Ficam de fora: envio com menos de 50 destinatários (teste), envio não
+publicado, envio sem cliques buscados ou com zero clique em todos os links (é
+enriquecimento que falhou, como na 260820, com 641 entregues e `clicks: []`, e
+não leitor que não clicou), e URL publicada duas vezes na mesma edição (o
+clique vem agregado por URL e não dá pra atribuí-lo a uma posição).
 
 ## Método
 
 - **Desfecho:** CTR sobre **entregues**, ou seja, cliques únicos do link
-  (Beehiiv + Kit) / entregues (Beehiiv `delivered` + Kit `recipients`). Nunca
-  `click_rate` da Beehiiv, que é click-to-open. A regressão usa
-  `log(CTR + 0,5/entregues)`.
-- **Confusão de posição:** a posição domina o clique (CTR médio de Use Melhor
-  0,49%, destaque 0,31%, Radar 0,18%). Por isso todo modelo é estimado
-  **dentro da célula edição × seção** (efeito fixo: y e features centrados na
-  célula) e ainda controla `log(posição na seção)`. Como o denominador é o
-  mesmo para todos os links de uma edição, o efeito fixo também deixa o
-  resultado igual com entregues ou com aberturas.
-- **Validação:** holdout cronológico (30% das edições mais recentes) que nunca
-  entra no ajuste. A métrica é a concordância par a par dentro da célula
-  (fração dos pares com CTR diferente que o modelo ordena certo; 0,5 é o mesmo
-  que tirar no cara ou coroa). Os ICs saem de bootstrap de edições (1.000
-  sorteios, seed 8672) sobre a amostra inteira.
-- **Regra de decisão, fixada antes de olhar o resultado:** "viral prevê" se o
-  modelo B ganha pelo menos 1 p.p. de concordância no holdout sobre A **e** pelo
-  menos um sinal viral tem coeficiente positivo com IC 95% inteiro acima de zero.
+  (Beehiiv + Kit) divididos pelos entregues (Beehiiv `delivered` + Kit
+  `recipients`). Nunca o `click_rate` da Beehiiv, que é click-to-open. A
+  regressão usa `log(CTR + 0,5/entregues)`.
+- **Confusão de posição:** a posição domina o clique (CTR médio de 0,49% em
+  Use Melhor, 0,31% no destaque e 0,18% no Radar). Por isso todo modelo é
+  estimado **dentro da célula edição × seção**, com efeito fixo (y e features
+  centrados na célula), e ainda controla `log(posição na seção)`. Como o
+  denominador é o mesmo para todos os links de uma edição, o efeito fixo também
+  torna o resultado insensível à escolha entre entregues e aberturas.
+- **Validação:** holdout cronológico com os 30% de edições mais recentes, que
+  nunca entram no ajuste. A métrica é a concordância par a par dentro da célula:
+  a fração dos pares com CTR diferente que o modelo ordena certo (0,5 equivale a
+  cara ou coroa). Os ICs vêm de bootstrap de edições (1.000 sorteios, seed 8672)
+  sobre a amostra inteira. Uma feature sem variância dentro da célula sai
+  marcada como `inestimable`, e não como efeito zero. Nesta rodada, nenhuma saiu
+  assim.
+- **Regra de decisão, fixada antes de olhar o resultado:** "viral prevê" se B
+  ganhar pelo menos 1 p.p. de concordância no holdout sobre A **e** pelo menos um
+  sinal viral tiver coeficiente positivo com IC 95% inteiro acima de zero.
+- **Premissa de recência:** o "agora" da recência é D 00:00 UTC (D-1 às 21h
+  BRT, perto da hora em que a pesquisa roda). A hora real de cada execução não
+  fica gravada de forma uniforme no histórico. O desvio só afeta `recent_36h`
+  perto do limite de 36h, e esse sinal sai negativo de qualquer forma.
 
 Por que não usar `calibrate-scoring-weights.ts` (#7990) direto: o rótulo dele
 é a decisão do editor no gate (`kept`, `lib/calibration-labels.ts`), não o
 clique do leitor, que é o que a #8672 pede. O script novo segue as mesmas
-disciplinas (holdout cronológico nunca usado no treino, read-only, regra
-explícita de rejeição) com o desfecho de leitor.
+disciplinas (holdout nunca usado no treino, read-only, regra explícita de
+rejeição), mas com desfecho de leitor.
 
 ## Coeficientes (amostra inteira, IC 95% por bootstrap)
 
-Escala: log-CTR. Um coeficiente de +0,10 equivale a uns 10,5% a mais de CTR.
+Escala log-CTR: +0,10 equivale a uns 10,5% a mais de CTR.
 
 | Modelo | Concordância holdout | Coeficientes |
 |---|---|---|
-| C0 só posição | 0,5826 | log_position −0,223 (−0,294 a −0,151) |
+| C0 só posição | 0,5826 | log_position −0,225 (−0,295 a −0,153) |
 | A score atual | 0,5596 | score_current/10 +0,032 (−0,004 a +0,064) |
-| A' bônus atuais decompostos | 0,5183 | score_base/10 +0,032; impact_routine −0,065; impact_routine_br +0,085 (todos com IC cruzando zero) |
+| A' bônus atuais decompostos | 0,5183 | score_base/10 +0,032; impact_routine −0,067; impact_routine_br +0,085 (todos com IC cruzando zero) |
 | V só sinais viral | 0,5826 | ver B |
-| **B score atual + sinais viral** | **0,5826** | score_current/10 +0,039 (+0,001 a +0,075) |
-| | | people_gov −0,103 (−0,369 a +0,170) |
-| | | big_company −0,062 (−0,164 a +0,048) |
-| | | conflict_harm −0,021 (−0,204 a +0,170) |
-| | | money_scale −0,145 (−0,303 a +0,036) |
-| | | policy_geo −0,113 (−0,354 a +0,114) |
-| | | newsletter_mentions +0,051 (−0,130 a +0,267) |
-| | | recent_36h −0,116 (−0,226 a −0,008) |
-| P score atual + bônus do POC | 0,5872 | viral_poc_points/10 **−0,323 (−0,592 a −0,057)** |
+| **B score atual + sinais viral** | **0,5780** | score_current/10 +0,039 (+0,001 a +0,074) |
+| | | people_gov −0,113 (−0,379 a +0,163) |
+| | | big_company −0,057 (−0,159 a +0,057) |
+| | | conflict_harm −0,028 (−0,218 a +0,161) |
+| | | money_scale −0,147 (−0,304 a +0,038) |
+| | | policy_geo −0,115 (−0,356 a +0,111) |
+| | | newsletter_mentions +0,049 (−0,133 a +0,264) |
+| | | recent_36h −0,120 (−0,230 a −0,010) |
+| P score atual + bônus do POC | 0,5963 | viral_poc_points/10 **−0,340 (−0,613 a −0,070)** |
 
-Sensibilidade com holdout de 50%: a direção é a mesma. Nenhum sinal sai com IC
-positivo, e B fica a +1,4 p.p. de C0, abaixo do erro-padrão de ~2,6 p.p.
+Sensibilidade com holdout de 50% (antes dos ajustes finais de amostra): a
+direção é a mesma, nenhum sinal sai com IC positivo, e B fica +1,4 p.p. acima de
+C0, dentro do erro-padrão de uns 2,6 p.p.
 
-Um achado à parte, que fica registrado aqui e não vira mudança: dentro da
-célula, o próprio score atual prevê clique só de leve (+3,9% de CTR por 10
-pontos, IC raspando zero), e ordenar o holdout por ele sai pior que ordenar só
-por posição. Isso não é motivo para premiar "viral" (que vai na direção
-contrária), mas deixa claro que o rubrico atual também tem pouco poder sobre o
-clique depois que a posição é controlada.
+Achado lateral, registrado aqui e não transformado em mudança: dentro da
+célula, o próprio score atual quase não prevê clique (+3,9% de CTR por 10
+pontos, com IC raspando zero), e ordenar o holdout por ele sai pior do que
+ordenar só por posição. Isso não justifica premiar "viral", que vai na direção
+contrária, mas indica que o rubrico atual também tem pouco poder sobre o clique
+depois que a posição é controlada.
 
-## O que mudou no código (não ligado em produção)
+## O que ficou no repo
 
-- `scripts/lib/viral-score.ts`: `extractViralSignals` (sinais crus, insumo da
-  calibração) separado de `computeViralBonus`. As guardas do item 3 entram no
-  módulo para o modo de auditoria e para a calibração medir o que a produção
-  mediria: sem bônus para rede social (o falso positivo do tweet em 260922),
-  `verify_verdict` `paywall`/`anti_bot`, tutorial/vídeo e base abaixo de 40.
-  O gancho de dano não conta quando o artigo já é `negative_impact`, porque o
-  requisito de impacto negativo é garantido por backstop e é
-  `NON_CALIBRATABLE_FEATURES`. O teto de +15 continua, agora com clamp do score
-  em 100 e sinais que fecham com o bônus gravado (`cap:-N`). Também foram
-  resolvidas as pendências P3 do review da #8673: menção de URL não casa mais
-  por prefixo, a newsletter de origem não conta como menção e
-  "meta"/"processo"/"lei" genéricos deixaram de ser falso positivo em PT.
-- `scripts/apply-viral-poc.ts`: a auditoria (`viral-poc-audit.json`) passa a
-  registrar `selection_changes`, isto é, quem entrou ou saiu do top-N de
-  finalistas (`--top`, padrão 15, o mesmo do `merge-scored-chunks.ts`) por
-  causa do bônus (item 5).
+- `scripts/calibrate-viral-score.ts`: dataset, os 6 modelos, a regra de
+  decisão e `pocBonusPoints`, uma réplica congelada do bônus descartado, só para
+  o modelo P continuar reproduzível.
+- `scripts/lib/viral-signals.ts`: os sinais crus (`extractViralSignals`) e as
+  guardas que uma produção teria (`viralGuard`: rede social, `paywall` e
+  `anti_bot`, tutorial e vídeo, base abaixo de 40). Inclui as correções P3 do
+  review da #8673: menção de URL não casa mais por prefixo, a newsletter de
+  origem não conta como menção, e "meta", "processo" e "lei" genéricos deixaram
+  de dar falso positivo em PT.
 
-## Pendências
+## Fora do escopo (encerrado com o descarte)
 
-- **Decisão de descarte (editor):** com este resultado, o próximo passo natural
-  é remover `viral-score.ts`/`apply-viral-poc.ts`. O script de calibração
-  continua útil para testar sinais novos.
-- Item 2 (sinais melhores que regex: cobertura por história/cluster, atenção
-  externa, `actor_p` do Jev) e item 4 (braço do A/B do Jev) não foram feitos.
-  Com sinal negativo nos sinais lexicais, um braço de A/B só se justifica se
-  um sinal do item 2 passar primeiro por esta mesma calibração.
+- Item 2 (sinais melhores que regex: cobertura por cluster, atenção externa,
+  `actor_p` do Jev) e item 4 (braço do A/B do Jev). Uma proposta nova parte de
+  uma issue nova, e o sinal passa primeiro por esta calibração.

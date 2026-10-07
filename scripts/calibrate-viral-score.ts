@@ -3,6 +3,11 @@
  * scripts/calibrate-viral-score.ts (#8672 item 1) — os sinais "viral"
  * preveem clique melhor que os bônus atuais?
  *
+ * Resposta (07/10/2026): não — e o bônus foi DESCARTADO por decisão do
+ * editor com base nesta calibração (`docs/viral-score-calibration.md`). O
+ * script fica como bancada para testar sinais novos (`lib/viral-signals.ts`)
+ * contra clique real antes de qualquer proposta de bônus.
+ *
  * Read-only: lê `data/editions/**` + `data/beehiiv-cache/posts` +
  * `data/kit-cache/broadcasts` e escreve SÓ o relatório pedido em `--out`
  * (JSON). Nunca toca `data/`, rubrico, prompt de scorer ou config.
@@ -56,15 +61,26 @@ import {
   loadKitCache,
   type UnifiedCachedPost,
 } from "./lib/shared/edition-cache-reader.ts";
-import {
-  computeViralBonus,
-  extractViralSignals,
-  viralGuard,
-  VIRAL_SIGNAL_NAMES,
-  type ViralSignals,
-} from "./lib/viral-score.ts";
+import { extractViralSignals, viralGuard, VIRAL_SIGNAL_NAMES, type ViralSignals } from "./lib/viral-signals.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
+
+/**
+ * Réplica CONGELADA do bônus do POC (#8673, removido do repo em 07/10/2026
+ * quando o editor descartou o bônus) — existe só para o modelo "P" deste
+ * relatório continuar reproduzível. Pesos e tetos exatamente os do POC:
+ * atores (pessoa/governo +3, big tech +1), ganchos (dano +4 — não conta em
+ * `negative_impact` —, dinheiro +3, política +3; teto +8), cobertura cruzada
+ * (+3/menção, teto +6), recência +2, teto total +15 e score ≤ 100.
+ */
+export function pocBonusPoints(s: ViralSignals, opts: { guard: string | null; negativeImpact: boolean; scoreCurrent: number }): number {
+  if (opts.guard) return 0;
+  const actors = (s.people_gov ? 3 : 0) + (s.big_company ? 1 : 0);
+  const hooks = Math.min((s.conflict_harm && !opts.negativeImpact ? 4 : 0) + (s.money_scale ? 3 : 0) + (s.policy_geo ? 3 : 0), 8);
+  const cross = Math.min(s.newsletter_mentions * 3, 6);
+  const total = actors + hooks + cross + (s.recent_36h ? 2 : 0);
+  return Math.max(0, Math.min(total, 15, 100 - opts.scoreCurrent));
+}
 
 /** Envio com menos destinatários que isso é teste/probe, não edição. */
 export const MIN_RECIPIENTS = 50;
@@ -106,16 +122,22 @@ export function parseNewsletterLinks(md: string): PublishedLink[] {
   const out: PublishedLink[] = [];
   let section = "intro";
   const counts = new Map<string, number>();
+  /** Bloco "DESTAQUE N" corrente já teve sua manchete — outra linha `**[..](..)**` no mesmo bloco não é destaque. */
+  let destaqueTaken = false;
   for (const raw of md.split(/\r?\n/)) {
     const line = raw.trim();
     const h = line.match(HEADING_RE);
     if (h) {
       section = sectionSlug(h[1]);
+      destaqueTaken = false;
       continue;
     }
     const l = line.match(HEADLINE_LINK_RE);
     if (!l) continue;
-    // Destaque: só a 1ª manchete de cada bloco "DESTAQUE N" é o destaque.
+    if (section === "destaque") {
+      if (destaqueTaken) continue;
+      destaqueTaken = true;
+    }
     const pos = (counts.get(section) ?? 0) + 1;
     counts.set(section, pos);
     out.push({ url: l[1], section, position: pos });
@@ -261,19 +283,33 @@ export interface EditionInput {
 export interface BuildStats {
   links: number;
   unmatched_links: number;
+  /** Ocorrências de URL repetida na mesma edição (todas ficam de fora). */
+  duplicate_links: number;
 }
 
 export function buildEditionRows(input: EditionInput, clicks: EditionClicks, stats?: BuildStats): DatasetRow[] {
   const idx = indexApproved(input.approved);
+  // Premissa declarada: "agora" da recência = D 00:00 UTC (D-1 21h BRT, perto
+  // da hora em que a pesquisa roda). A hora real de cada run não fica gravada
+  // de forma uniforme no histórico; o desvio afeta só `recent_36h` na borda.
   const now = `20${input.edition.slice(0, 2)}-${input.edition.slice(2, 4)}-${input.edition.slice(4, 6)}T00:00:00Z`;
   const ctx = { newsletterBodies: input.newsletterBodies ?? [], now };
   const rows: DatasetRow[] = [];
-  const seen = new Set<string>();
-  for (const link of parseNewsletterLinks(input.reviewedMd)) {
+  const links = parseNewsletterLinks(input.reviewedMd);
+  const occurrences = new Map<string, number>();
+  for (const l of links) {
+    const k = canonicalize(l.url);
+    occurrences.set(k, (occurrences.get(k) ?? 0) + 1);
+  }
+  for (const link of links) {
     const key = canonicalize(link.url);
-    if (seen.has(key)) continue; // mesma URL 2x (destaque + lançamento): conta 1x, na 1ª posição
-    seen.add(key);
     if (stats) stats.links++;
+    // URL publicada 2x na edição (ex.: destaque + lançamento): o clique vem
+    // agregado por URL e não dá pra atribuir a uma posição — fica de fora.
+    if ((occurrences.get(key) ?? 0) > 1) {
+      if (stats) stats.duplicate_links++;
+      continue;
+    }
     const art = idx.get(key);
     if (!art) {
       if (stats) stats.unmatched_links++;
@@ -294,6 +330,9 @@ export function buildEditionRows(input: EditionInput, clicks: EditionClicks, sta
       from_newsletter: art.flag === "newsletter_extracted",
     };
     const c = clicks.clicks.get(key) ?? 0;
+    const signals = extractViralSignals(viralInput, ctx);
+    // Piso medido sobre o score de base, como no POC (a guarda nunca olhou bônus).
+    const guard = viralGuard({ url: art.url, score_base: scoreBase, category: art.category, verify_verdict: art.verify_verdict });
     rows.push({
       edition: input.edition,
       section: link.section,
@@ -305,9 +344,9 @@ export function buildEditionRows(input: EditionInput, clicks: EditionClicks, sta
       score_current: scoreCurrent,
       score_base: scoreBase,
       bonuses,
-      signals: extractViralSignals(viralInput, ctx),
-      viral_poc_points: computeViralBonus({ ...viralInput, score_base: scoreCurrent }, ctx).bonus,
-      viral_guard: viralGuard({ ...viralInput, score_base: scoreCurrent }),
+      signals,
+      viral_poc_points: pocBonusPoints(signals, { guard, negativeImpact: viralInput.negative_impact, scoreCurrent }),
+      viral_guard: guard,
       has_inbox: input.newsletterBodies !== null,
     });
   }
@@ -350,7 +389,16 @@ export function demeanWithinCells(rows: readonly DatasetRow[], features: readonl
   return { X, y, cells };
 }
 
-/** OLS com ridge mínimo (estabilidade numérica), via eliminação de Gauss. */
+/** Colunas de X (já centradas na célula) sem variância nenhuma — o coeficiente delas não é estimável. */
+export function inestimableFeatures(X: readonly number[][], names: readonly string[]): string[] {
+  return names.filter((_, j) => !X.some((row) => Math.abs(row[j]) > 1e-12));
+}
+
+/**
+ * OLS com ridge mínimo (estabilidade numérica), via eliminação de Gauss.
+ * Coluna sem pivô sai 0 — use `inestimableFeatures` para distinguir isso de
+ * efeito nulo.
+ */
 export function fitOls(X: readonly number[][], y: readonly number[], ridge = 1e-6): number[] {
   const p = X[0]?.length ?? 0;
   const A = Array.from({ length: p }, () => new Array<number>(p + 1).fill(0));
@@ -418,6 +466,11 @@ export interface ModelSpec {
 export interface ModelResult {
   name: string;
   features: string[];
+  /**
+   * Features sem variância dentro da célula na amostra inteira: o OLS devolve
+   * 0 para elas, que NÃO quer dizer "efeito nulo" — quer dizer "inestimável".
+   */
+  inestimable: string[];
   coefficients: Record<string, number>;
   ci95: Record<string, [number, number]>;
   holdout_concordance: number | null;
@@ -494,10 +547,15 @@ export function evaluateModel(
   // o do treino só serve pra predizer o holdout acima.
   const full = demeanWithinCells(all, fns);
   const betaFull = fitOls(full.X, full.y);
+  const inestimable = inestimableFeatures(full.X, names);
+  if (inestimable.length) {
+    process.stderr.write(`[calibrate-viral-score] ⚠ ${spec.name}: sem variância dentro da célula (coeficiente sem sentido): ${inestimable.join(", ")}\n`);
+  }
 
   return {
     name: spec.name,
     features: names,
+    inestimable,
     coefficients: Object.fromEntries(names.map((n, j) => [n, betaFull[j]])),
     ci95,
     holdout_concordance: conc.concordance,
@@ -558,6 +616,7 @@ export interface CalibrationReport {
     rows: number;
     links_parsed: number;
     unmatched_links: number;
+    duplicate_links: number;
     first_edition: string | null;
     last_edition: string | null;
     holdout_editions: string[];
@@ -619,7 +678,7 @@ export function loadDataset(dataDir: string, minAgeDays: number, today = new Dat
   const posts = [...loadBeehiivCache(join(dataDir, "beehiiv-cache/posts")), ...loadKitCache(join(dataDir, "kit-cache/broadcasts"))];
   const clicksByEd = groupClicksByEdition(posts);
   const cutoff = aammddBrt(Math.floor(today.getTime() / 1000) - minAgeDays * 86400);
-  const stats: BuildStats = { links: 0, unmatched_links: 0 };
+  const stats: BuildStats = { links: 0, unmatched_links: 0, duplicate_links: 0 };
   const rows: DatasetRow[] = [];
   for (const [ed, dir] of [...enumerateEditionDirs(join(dataDir, "editions")).entries()].sort()) {
     if (ed > cutoff) continue; // CTR ainda imaturo
@@ -667,6 +726,7 @@ function main(): void {
       rows: rows.length,
       links_parsed: stats.links,
       unmatched_links: stats.unmatched_links,
+      duplicate_links: stats.duplicate_links,
       first_edition: eds[0] ?? null,
       last_edition: eds[eds.length - 1] ?? null,
       holdout_editions: res.holdout,
