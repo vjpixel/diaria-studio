@@ -315,3 +315,31 @@ describe("Cloudflare no gate de LANÇAMENTOS (#9390)", () => {
     assert.ok(!companyToDomain().some((c) => c.domain === "blog.cloudflare.com"));
   });
 });
+
+describe("OpenAI developers/community no gate de LANÇAMENTOS (#9788)", () => {
+  it("developers.openai.com (docs oficiais) é oficial", () => {
+    assert.equal(isOfficialLancamentoUrl("https://developers.openai.com/api/docs/guides/decisions"), true);
+  });
+
+  it("community.openai.com: só a categoria Announcements", () => {
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/c/announcements/6"), true);
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/c/announcements"), true);
+  });
+
+  it("community.openai.com fora de Announcements segue NÃO-oficial", () => {
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/"), false);
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/c/api/42"), false);
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/c/announcements-fake/9"), false);
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com/t/some-topic/123"), false);
+  });
+
+  it("não vaza pra host parecido", () => {
+    assert.equal(isOfficialLancamentoUrl("https://developers.openai.com.evil.io/x"), false);
+    assert.equal(isOfficialLancamentoUrl("https://community.openai.com.evil.io/c/announcements/6"), false);
+  });
+
+  it("não registra domínio inteiro", () => {
+    const d = lancamentoDomains();
+    assert.ok(!d.has("developers.openai.com") && !d.has("community.openai.com"));
+  });
+});
