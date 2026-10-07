@@ -2786,7 +2786,9 @@ export interface BackfillGap {
  *
  *   1. `shift = totalNovo − totalVelho` campanhas chegaram (ou, negativo,
  *      sumiram) desde a última gravação do cursor — cada lacuna pendente anda
- *      `shift` posições (nunca pra dentro da janela ao vivo);
+ *      `shift` posições (nunca pra dentro da janela ao vivo); com `shift < 0`
+ *      só o `start` recua e o `end` fica (a remoção pode ter sido mais antiga
+ *      que a lacuna, e então as posições reais não mudaram — #9853);
  *   2. se `shift > 0`, as `shift` campanhas que estavam no fim da janela ao
  *      vivo agora ocupam `[liveWindow, liveWindow + shift)` e nunca foram
  *      varridas — entram como lacuna nova (é o buraco de setembro da issue);
@@ -2804,7 +2806,7 @@ export function advanceBackfillGaps(
   opts: { shift: number; processedStart: number; processedCount: number; total: number; liveWindow: number },
 ): BackfillGap[] {
   const { shift, processedStart, processedCount, total, liveWindow } = opts;
-  const shifted: BackfillGap[] = gaps.map((g) => ({ start: Math.max(liveWindow, g.start + shift), end: g.end + shift }));
+  const shifted: BackfillGap[] = gaps.map((g) => ({ start: Math.max(liveWindow, g.start + shift), end: shift > 0 ? g.end + shift : g.end }));
   if (shift > 0) shifted.push({ start: liveWindow, end: liveWindow + shift });
   const pEnd = processedStart + processedCount;
   const cut: BackfillGap[] = [];
