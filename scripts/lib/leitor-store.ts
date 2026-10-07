@@ -423,8 +423,11 @@ function clickedEditionKeysForPlatformBatched(
  * recebendo `events`/`aliases`/`subs` JÁ carregados (de
  * `getAllEventsBySubscriber`/`getAllAliasesBySubscriber`/
  * `getAllSubscriptionsBySubscriber`, cada 1 scan do store inteiro) em vez
- * de consultar o DB por subscriber — 0 queries por chamada. Usada só por
- * `buildCacCompatibleSubscribersFromStore` (#8292); os demais consumidores
+ * de consultar o DB por subscriber — 0 queries por chamada. Usada por
+ * `buildCacCompatibleSubscribersFromStore` (#8292) e por
+ * `loadFunnelInputFromStore` (`scripts/lib/metrics/channel-cohort-funnel-store.ts`,
+ * #7918 — que passa `events` já sem os broadcasts de onboarding, então
+ * mudar o que esta função conta muda as duas leituras); os demais consumidores
  * (ficha de identidade de 1 subscriber no painel, #6590) seguem com a
  * versão não-batched acima, onde 1 lookup pontual não justifica pré-carregar
  * o store inteiro.
