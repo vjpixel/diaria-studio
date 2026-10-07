@@ -127,7 +127,10 @@ export async function main(): Promise<void> {
     throw e;
   }
 
-  const kv = createRemoteKvNamespace(STATS_CACHE_KV_NAMESPACE_ID);
+  // #9856: `strictReads` — falha de leitura do KV LANÇA em vez de virar
+  // `null`. Sem isso, uma falha transitória ao ler o índice de arquivo virava
+  // "índice vazio" e o lote sobrescrevia o histórico inteiro.
+  const kv = createRemoteKvNamespace(STATS_CACHE_KV_NAMESPACE_ID, {}, { strictReads: true });
   if (!kv) {
     console.error(
       `${LOG_PREFIX} CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN ausentes — sem acesso ao KV de ` +
