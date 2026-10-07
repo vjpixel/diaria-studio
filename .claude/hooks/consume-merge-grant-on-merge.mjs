@@ -1,5 +1,6 @@
 // PostToolUse hook — consome AUTOMATICAMENTE uma concessão de janela de merge
-// viva (#6296) assim que `gh pr merge` SUCEDE (#6303 fleet review, Finding T).
+// viva (#6296) assim que um comando Bash com `gh pr merge` sai com status 0
+// (#6303 fleet review, Finding T; o que isso prova ou não, ver #8793 abaixo).
 //
 // Wired em .claude/settings.json sob hooks.PostToolUse:
 //   matcher "Bash", if "Bash(gh pr merge*)".
@@ -36,16 +37,23 @@
 //
 // #8793: "sucesso" aqui é o exit 0 do comando Bash INTEIRO, não do `gh pr
 // merge` — `gh pr merge N | tail` sai 0 mesmo com o merge recusado. E o
-// filtro `if` do settings é a única coisa que restringe o hook a `gh pr
-// merge`. Por isso o corpo confere as duas coisas sozinho antes de consumir
-// (`decideConsumeAfterBash`): comando real de merge + PR não segue aberto.
+// filtro `if` do settings era a única coisa que restringia o hook a `gh pr
+// merge`. Regra atual (`decideConsumeAfterBash`): consome quando o comando
+// tem um `gh pr merge` real E a sessão tem concessão viva candidata — salvo
+// quando essa concessão é ESCOPADA ao PR alvo e o GitHub mostra o PR ainda
+// aberto sem auto-merge/fila, ou fechado. Concessão genérica (sem `--pr`),
+// PR indeterminado ou GitHub inacessível: consome, como antes.
+//
+// Limitação conhecida: `gh pr merge` SEM número (infere o PR pela branch)
+// + pipe com merge recusado ainda consome — sem número não há PR pra
+// consultar, e o caminho seguro aqui é fechar a janela (pr-undetermined).
 //
 // ─────────────────────────────────────────────────────────────────────────
 // FAIL-OPEN TOTAL, E POR QUÊ
 // ─────────────────────────────────────────────────────────────────────────
 //
 // Este hook NUNCA emite `hookSpecificOutput` nenhum — não há decisão pra
-// tomar em `PostToolUse` aqui (o merge já aconteceu), só um efeito colateral
+// tomar em `PostToolUse` aqui (o comando Bash já saiu com status 0), só um efeito colateral
 // em disco (marcar `consumedAt`). Qualquer exceção é engolida em silêncio: um
 // hook quebrado aqui pode, na pior hipótese, deixar uma concessão sem marcar
 // como consumida (ela expira pelo TTL de qualquer forma, 10 min) — nunca pode
@@ -162,6 +170,12 @@ export function sessionsDir(repoRoot) {
  */
 export { stripQuotedSpans };
 
+/** Uma invocação REAL de `gh pr merge`: início da string ou depois de
+ * separador (`&&`/`;`/`||`/`|`/newline). Fonte única de
+ * `extractGhPrMergeTargetPr` e `isGhPrMergeCommand` (#8793) — mesma
+ * expressão de `block-gh-pr-merge-subagent.mjs`, paridade travada por teste. */
+const GH_PR_MERGE_INVOCATION_SRC = String.raw`(?:^\s*|(?:&&|;|\|\||\||\n)\s*)gh\s+pr\s+merge\b`;
+
 /**
  * Extrai o número do PR alvo de um comando `gh pr merge` real. `undefined`
  * quando não dá pra determinar (comando sem número — infere a PR pela
@@ -172,7 +186,7 @@ export { stripQuotedSpans };
 export function extractGhPrMergeTargetPr(command) {
   if (typeof command !== "string") return undefined;
   const stripped = stripQuotedSpans(command);
-  const invocationRe = /(?:^\s*|(?:&&|;|\|\||\||\n)\s*)gh\s+pr\s+merge\b/g;
+  const invocationRe = new RegExp(GH_PR_MERGE_INVOCATION_SRC, "g");
   let end = -1;
   let m;
   while ((m = invocationRe.exec(stripped))) end = m.index + m[0].length;
@@ -201,61 +215,115 @@ export function extractGhPrMergeTargetPr(command) {
  */
 export function isGhPrMergeCommand(command) {
   if (typeof command !== "string") return false;
-  const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+merge\b/.test(stripped);
+  return new RegExp(GH_PR_MERGE_INVOCATION_SRC).test(stripQuotedSpans(command));
 }
 
+/** Consulta GraphQL do estado de merge (#8793). `gh pr view --json` não expõe
+ * `mergeQueueEntry` (medido no gh 2.92: "Unknown JSON field"); `gh api
+ * graphql` expõe, e resolve `{owner}`/`{repo}` pelo repositório do cwd. */
+const MERGE_STATE_QUERY =
+  "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name)" +
+  "{pullRequest(number:$number){state autoMergeRequest{enabledAt} mergeQueueEntry{id}}}}";
+
 /**
- * #8793: `true` só quando há evidência POSITIVA de que o merge de `targetPr`
- * NÃO aconteceu — PR ainda `OPEN` sem auto-merge enfileirado, ou `CLOSED`.
+ * Orçamento de tempo do `gh` (#8793). O hook tem `timeout: 10` no settings.
+ * Pior caso: ~0,5s de startup do Node + resolução da raiz do repo + 2s desta
+ * consulta + até 3 tentativas x 2s de lock (`CAS_ATTEMPTS` x
+ * `LOCK_TIMEOUT_MS`) = ~8,5s. Estourar os 10s mataria o hook antes de
+ * consumir.
+ */
+const GH_MERGE_STATE_TIMEOUT_MS = 2_000;
+
+/**
+ * #8793: estado do merge de `targetPr` segundo o GitHub, em 4 valores:
+ *   - `"merged"`      — `state: MERGED`;
+ *   - `"auto-queued"` — `OPEN` com `autoMergeRequest` ou `mergeQueueEntry`
+ *                       (o `--auto` ou a fila de merge já comprometeram o merge);
+ *   - `"not-merged"`  — `OPEN` sem nenhum dos dois, ou `CLOSED`;
+ *   - `"unknown"`     — `targetPr` não inteiro, `gh` ausente/offline/timeout,
+ *                       resposta ilegível ou sem `pullRequest`.
  *
  * Por que é preciso: `PostToolUse` dispara quando o comando Bash sai com 0,
- * não quando o `gh pr merge` sucede. `gh pr merge 123 --squash 2>&1 | tail -5`
+ * não quando o merge acontece. `gh pr merge 123 --squash 2>&1 | tail -5`
  * sai com o status do `tail` — um merge recusado ("base branch policy
- * prohibits the merge", threads de review não resolvidas) chega aqui como
- * sucesso, a janela é queimada, e o retry depois de resolver as threads é
- * bloqueado pelo guard do #5716 com "concessão já consumida".
+ * prohibits the merge", threads de review não resolvidas) chegava aqui como
+ * sucesso, a janela era queimada, e o retry era bloqueado pelo guard do
+ * #5716 com "concessão já consumida".
  *
- * Fail-open na direção pré-#8793 (consumir): `targetPr` indeterminado, `gh`
- * ausente/offline/timeout ou JSON ilegível devolvem `false`. `MERGED`, ou
- * `OPEN` com `autoMergeRequest` (o `--auto` já comprometeu o merge), também
- * devolvem `false`.
+ * `log(level, message, details)` opcional: falha da consulta sai como
+ * `warn merge_state_check_failed {pr, code}`. Devolve `{ state, raw }`.
  */
-export function mergeEvidentlyDidNotHappen(targetPr, execFn = execFileSync) {
-  if (!Number.isInteger(targetPr)) return false;
-  let parsed;
+export function resolveMergeState(targetPr, execFn = execFileSync, log = () => {}) {
+  if (!Number.isInteger(targetPr)) return { state: "unknown", raw: undefined };
+  let pr;
   try {
-    const out = execFn("gh", ["pr", "view", String(targetPr), "--json", "state,autoMergeRequest"], {
-      encoding: "utf8",
-      // 3s: o hook inteiro tem `timeout: 10` no settings e o lock pode gastar
-      // até 3 x 2s em contenção — estourar mataria o hook antes de consumir.
-      timeout: 3_000,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    parsed = JSON.parse(String(out));
-  } catch {
-    return false;
+    const out = execFn(
+      "gh",
+      [
+        "api", "graphql",
+        "-F", "owner={owner}", "-F", "name={repo}", "-F", `number=${targetPr}`,
+        "-f", `query=${MERGE_STATE_QUERY}`,
+        "-q", ".data.repository.pullRequest",
+      ],
+      { encoding: "utf8", timeout: GH_MERGE_STATE_TIMEOUT_MS, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    pr = JSON.parse(String(out));
+  } catch (e) {
+    const code = typeof e?.code === "string" && e.code ? e.code : e instanceof SyntaxError ? "JSON_PARSE" : "UNKNOWN";
+    log("warn", "merge_state_check_failed", { pr: targetPr, code });
+    return { state: "unknown", raw: undefined };
   }
-  if (parsed?.state === "CLOSED") return true;
-  if (parsed?.state === "OPEN" && !parsed.autoMergeRequest) return true;
-  return false;
+  const raw = pr?.state;
+  if (raw === "MERGED") return { state: "merged", raw };
+  if (raw === "OPEN" && (pr.autoMergeRequest || pr.mergeQueueEntry)) return { state: "auto-queued", raw };
+  if (raw === "OPEN" || raw === "CLOSED") return { state: "not-merged", raw };
+  log("warn", "merge_state_check_failed", { pr: targetPr, code: "UNEXPECTED_RESPONSE" });
+  return { state: "unknown", raw };
 }
 
 /**
- * Decisão do corpo do hook (#8793): consome só quando (1) o comando é um
- * `gh pr merge` real, (2) existe concessão viva candidata pra este PR
- * (`hasLiveGrant`, checagem barata em disco — feita ANTES do `gh pr view`
- * pra que o caso comum, coordenadora mergeando sem concessão nenhuma, nunca
- * pague uma chamada de rede) e (3) não há evidência de que o merge falhou.
- * Devolve `{ consume, targetPr, reason }` — `reason` só pra teste/diagnóstico.
+ * Decisão do corpo do hook (#8793). Devolve `{ consume, targetPr, reason }`.
+ *
+ * `findLiveGrant(targetPr)` é OBRIGATÓRIO: devolve a concessão viva
+ * candidata (ou `null`), checada em disco ANTES de qualquer rede — a
+ * coordenadora mergeando sem concessão nunca paga uma consulta.
+ *
+ * Não consome (`consume: false`):
+ *   - `not-a-merge-command` — o comando não tem `gh pr merge` real (o filtro
+ *     `if` do settings deixou de ser o único portão);
+ *   - `no-live-grant` — não há concessão viva candidata;
+ *   - `merge-not-happened` — concessão ESCOPADA ao PR alvo
+ *     (`grant.pr === targetPr`) e estado `not-merged`. Só neste ramo a
+ *     janela fica viva — é o retry legítimo depois de um merge recusado, e
+ *     o escopo por PR limita o que ela ainda autoriza. Loga
+ *     `info merge_grant_kept {pr, state, reason}`.
+ *
+ * Consome (`consume: true`):
+ *   - `pr-undetermined` — `gh pr merge` sem número. Limitação conhecida:
+ *     com pipe e merge recusado, ainda consome;
+ *   - `generic-grant` — concessão sem `pr` (grant-merge sem `--pr`): segue
+ *     consumida como antes, sem consulta — ela autoriza qualquer PR, então
+ *     deixá-la viva seria o lado perigoso;
+ *   - `merged` — estado `merged`;
+ *   - `auto-merge-queued` — estado `auto-queued`;
+ *   - `unverified-fail-open` — estado `unknown` (direção pré-#8793).
  */
-export function decideConsumeAfterBash(command, { hasLiveGrant = () => true, execFn = execFileSync } = {}) {
+export function decideConsumeAfterBash(command, { findLiveGrant, execFn = execFileSync, log = () => {} }) {
+  if (typeof findLiveGrant !== "function") throw new TypeError("decideConsumeAfterBash: findLiveGrant é obrigatório");
   if (!isGhPrMergeCommand(command)) return { consume: false, targetPr: undefined, reason: "not-a-merge-command" };
   const targetPr = extractGhPrMergeTargetPr(command);
-  if (!hasLiveGrant(targetPr)) return { consume: false, targetPr, reason: "no-live-grant" };
-  if (mergeEvidentlyDidNotHappen(targetPr, execFn)) return { consume: false, targetPr, reason: "merge-did-not-happen" };
-  return { consume: true, targetPr, reason: "merged" };
+  const grant = findLiveGrant(targetPr);
+  if (!grant) return { consume: false, targetPr, reason: "no-live-grant" };
+  if (targetPr === undefined) return { consume: true, targetPr, reason: "pr-undetermined" };
+  if (grant.pr !== targetPr) return { consume: true, targetPr, reason: "generic-grant" };
+  const { state, raw } = resolveMergeState(targetPr, execFn, log);
+  if (state === "merged") return { consume: true, targetPr, reason: "merged" };
+  if (state === "auto-queued") return { consume: true, targetPr, reason: "auto-merge-queued" };
+  if (state === "not-merged") {
+    log("info", "merge_grant_kept", { pr: targetPr, state: raw, reason: "merge-not-happened" });
+    return { consume: false, targetPr, reason: "merge-not-happened" };
+  }
+  return { consume: true, targetPr, reason: "unverified-fail-open" };
 }
 
 /**
@@ -353,7 +421,8 @@ function writeJsonAtomic(path, value) {
 // classifica como pior que a perda.
 //
 // Orçamento de bloqueio pequeno pelo mesmo motivo do beacon: isto é um
-// PostToolUse que roda logo depois de um `gh pr merge` bem-sucedido, e não
+// PostToolUse que roda logo depois de um comando Bash com `gh pr merge` que
+// saiu com status 0, e não
 // pode segurar o editor. Fail-open igual ao resto do arquivo.
 
 // #9203: `breakStaleLock`/`tryAcquireOwnedLock` vêm de ./lib/registry-lock.mjs
@@ -513,7 +582,8 @@ if (
       // traz número, preservando o comportamento pré-#8188 nesse caso (ver
       // docblock de `consumeGrantUnderLock`).
       const decision = decideConsumeAfterBash(payload.tool_input?.command, {
-        hasLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr) !== null,
+        findLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr)?.grant ?? null,
+        log: (level, message, details) => appendHookRunLog(repoRoot, "consume-merge-grant", level, message, details),
       });
       if (!decision.consume) return;
       const targetPr = decision.targetPr;
