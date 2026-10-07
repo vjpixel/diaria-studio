@@ -2,7 +2,7 @@
  * scripts/update-retrospectiva-box.ts (#9474)
  *
  * Canal `box` de `/diaria-mensal-apoiadores`: reescreve o CORPO de
- * `data/snippets/retrospectiva-apoiadores.md` com o mês/título/gancho da
+ * `data/snippets/retrospectiva-apoiadores.md` com o mês e os 3 temas da
  * Retrospectiva do ciclo e (por padrão) pina o box no **slot 2** de
  * `platform.config.json` — análogo a `update-artigo-especial-box.ts` (#5979),
  * de quem reusa a lógica de pin (`scripts/lib/box-slot-pin.ts`).
@@ -15,20 +15,34 @@
  * nunca derruba o pin do Artigo Especial (ver docstring de `box-slot-pin.ts`).
  * Trade-off do #6748 vale igual: em edição de 2 destaques o slot 2 não existe.
  *
- * ## Formato do snippet (spec em `context/snippets/README.md`)
+ * ## Formato do snippet (#9845, texto aprovado pelo editor na edição 261008)
  *
  *   **Retrospectiva de {Mês}**
  *
- *   A Retrospectiva de {Mês} é: **"{título}"**. {gancho}.
+ *   Três temas marcaram o mês: {tema 1}, {tema 2} e {tema 3}. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
  *
- *   Quem apoia a partir de R$25/mês recebe a Retrospectiva do Mês por e-mail e lê a edição completa na web.
+ *   Quem apoia a partir de R$25/mês recebe:
+ *
+ *   - a Retrospectiva do Mês por e-mail, com a edição completa na web
+ *   - o Artigo Especial mensal
+ *   - voto no tema do próximo Artigo Especial
+ *   - nome na página "Quem torna a Diar.ia possível" (opcional)
  *
  *   [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/{AAMM})
  *
+ * Regras do editor (#9845): o TÍTULO da retrospectiva não entra no box; entram
+ * os 3 temas principais do ciclo (frases curtas, minúsculas, sem ponto final —
+ * `--temas "a|b|c"`), a frase sobre ligar os pontos e as tendências, e a lista
+ * completa de benefícios de R$25 (`TIER_BLOCK`, estável entre ciclos).
+ *
  * Edição cirúrgica (#495): num arquivo PRÉ-EXISTENTE só 3 linhas são trocadas
- * (título, frase-padrão, URL do CTA); header de comentário e parágrafo do tier
- * ficam intocados. Linha não encontrada → `RetrospectivaBoxFormatError`
- * (nunca adivinhar onde inserir). Arquivo ausente → seed completo.
+ * (título, parágrafo dos temas, URL do CTA); header de comentário e bloco do
+ * tier ficam intocados. **Migração:** um arquivo ainda no formato anterior
+ * (#9474 — parágrafo `A Retrospectiva de {Mês} é: **"{título}"**. {gancho}.`
+ * + tier de uma linha) é aceito e convertido: o parágrafo do título vira o dos
+ * temas e o tier de uma linha vira o `TIER_BLOCK`. Arquivo que não bate com
+ * nenhum dos dois formatos → `RetrospectivaBoxFormatError` (nunca adivinhar
+ * onde inserir). Arquivo ausente → seed completo.
  *
  * O CTA do BOX aponta pra página da Retrospectiva (trecho + paywall, a página
  * feita pra vender o apoio, #7580) — mesma escolha do box do Artigo Especial
@@ -38,11 +52,11 @@
  *
  * Uso:
  *   npx tsx scripts/update-retrospectiva-box.ts --cycle 2609-10 \
- *     --titulo "{título do D1}" --gancho "{1 frase}" [--no-pin] [--force] [--dry-run]
+ *     --temas "{tema 1}|{tema 2}|{tema 3}" [--no-pin] [--force] [--dry-run]
  *   npx tsx scripts/update-retrospectiva-box.ts --unpin [--cycle 2609-10] [--dry-run]
  *   [--snippets-file path] [--config path]
  *
- * `--unpin` não exige título/gancho, não toca no snippet nem no state por
+ * `--unpin` não exige `--temas`, não toca no snippet nem no state por
  * canal — só no pin. Fora do `--unpin`, `--cycle` é obrigatório e o canal
  * `box` é gravado em `divulgacao-published.json`.
  *
@@ -84,24 +98,69 @@ retrospectiva-apoiadores.md — box de divulgação da Retrospectiva do Mês
 (recompensa Mantenedor/Patrono, R$25+). Slot 2, ALTERNANDO com
 artigo-especial-apoiadores.md (quem publica por último ocupa o slot, #9474).
 Reescrito por scripts/update-retrospectiva-box.ts (/diaria-mensal-apoiadores)
-a cada ciclo — não editar título/frase-padrão/URL do CTA à mão aqui, o
-próximo ciclo sobrescreve (o parágrafo do tier segue estável). Formato:
-context/snippets/README.md.
+a cada ciclo — não editar título/parágrafo dos temas/URL do CTA à mão aqui, o
+próximo ciclo sobrescreve (o bloco do tier, parágrafo + lista de benefícios,
+segue estável). Formato: context/snippets/README.md.
 -->`;
 
-const TIER_PARAGRAPH =
-  "Quem apoia a partir de R$25/mês recebe a Retrospectiva do Mês por e-mail e lê a edição completa na web.";
+/**
+ * Bloco do tier (#9845): parágrafo + lista completa de benefícios de quem
+ * apoia a partir de R$25 (Mantenedor = tudo dos planos anteriores, mais a
+ * Retrospectiva e a votação). Estável entre ciclos — o script só o escreve no
+ * seed e na migração do formato antigo; num arquivo já no formato novo ele
+ * fica intocado (o editor pode ajustá-lo à mão).
+ */
+export const TIER_BLOCK = [
+  "Quem apoia a partir de R$25/mês recebe:",
+  "",
+  "- a Retrospectiva do Mês por e-mail, com a edição completa na web",
+  "- o Artigo Especial mensal",
+  "- voto no tema do próximo Artigo Especial",
+  '- nome na página "Quem torna a Diar.ia possível" (opcional)',
+].join("\n");
+
+/** Frase fixa que fecha o parágrafo dos temas (texto aprovado, #9845). */
+const TEMAS_CLOSING = "A Retrospectiva liga esses pontos e mostra as tendências por trás deles.";
 
 const TITLE_LINE_RE = /^\*\*Retrospectiva de [^*\n]+\*\*$/m;
-const QUOTE_PARAGRAPH_RE = /^A Retrospectiva de [^:\n]+ é:.*$/m;
+const TEMAS_PARAGRAPH_RE = /^Três temas marcaram o mês: .*$/m;
 const CTA_LINE_RE = /^\[Ler a Retrospectiva\]\([^)\n]+\)$/m;
+// Formato anterior (#9474) — só pra migração.
+const LEGACY_QUOTE_PARAGRAPH_RE = /^A Retrospectiva de [^:\n]+ é:.*$/m;
+const LEGACY_TIER_PARAGRAPH_RE = /^Quem apoia a partir de R\$25\/mês recebe [^\n]+$/m;
+/** Header de comentário gerado por este script (qualquer versão), no topo. */
+const GENERATED_HEADER_RE = /^<!--\r?\nnome: Retrospectiva do Mês\r?\n(?:(?!-->)[\s\S])*?Reescrito por scripts\/update-retrospectiva-box\.ts(?:(?!-->)[\s\S])*-->/;
+
+/** Quantidade exata de temas do parágrafo (texto aprovado: "Três temas"). */
+export const RETROSPECTIVA_TEMAS_COUNT = 3;
+
+/**
+ * Pura: normaliza e valida os temas (trim, sem ponto final). Lança se não
+ * vierem exatamente 3 temas não vazios — o parágrafo diz "Três temas".
+ */
+export function normalizeTemas(temas: readonly string[]): string[] {
+  const out = temas.map((t) => t.trim().replace(/\.+$/, "").trim());
+  if (out.length !== RETROSPECTIVA_TEMAS_COUNT || out.some((t) => t.length === 0)) {
+    throw new Error(
+      `--temas precisa de exatamente ${RETROSPECTIVA_TEMAS_COUNT} temas não vazios separados por "|" ` +
+        `(recebi ${out.length}${out.some((t) => t.length === 0) ? ", com tema vazio" : ""}): ` +
+        '--temas "tema 1|tema 2|tema 3".',
+    );
+  }
+  return out;
+}
+
+/** Pura: `--temas "a|b|c"` → `["a","b","c"]` (validado por `normalizeTemas`). */
+export function parseTemasArg(raw: string): string[] {
+  return normalizeTemas(raw.split("|"));
+}
 
 function buildTitleLine(mesLabel: string): string {
   return `**Retrospectiva de ${mesLabel}**`;
 }
-function buildQuoteParagraph(mesLabel: string, titulo: string, gancho: string): string {
-  const ganchoTrimmed = gancho.trim().replace(/\.+$/, "");
-  return `A Retrospectiva de ${mesLabel} é: **"${titulo.trim()}"**. ${ganchoTrimmed}.`;
+function buildTemasParagraph(temas: readonly string[]): string {
+  const [t1, t2, t3] = normalizeTemas(temas);
+  return `Três temas marcaram o mês: ${t1}, ${t2} e ${t3}. ${TEMAS_CLOSING}`;
 }
 function buildCtaLine(url: string): string {
   return `[Ler a Retrospectiva](${url})`;
@@ -109,8 +168,8 @@ function buildCtaLine(url: string): string {
 
 export interface RetrospectivaBoxInput {
   mesLabel: string;
-  titulo: string;
-  gancho: string;
+  /** Exatamente 3 frases curtas, minúsculas, sem ponto final (#9845). */
+  temas: readonly string[];
   url: string;
 }
 
@@ -123,20 +182,34 @@ export function buildDefaultRetrospectivaBox(input: RetrospectivaBoxInput): stri
     "",
     buildTitleLine(input.mesLabel),
     "",
-    buildQuoteParagraph(input.mesLabel, input.titulo, input.gancho),
+    buildTemasParagraph(input.temas),
     "",
-    TIER_PARAGRAPH,
+    TIER_BLOCK,
     "",
     buildCtaLine(input.url),
     "",
   ].join("\n");
 }
 
-/** Pura: atualização cirúrgica de um conteúdo EXISTENTE (ver docstring). */
+/**
+ * Pura: atualização cirúrgica de um conteúdo EXISTENTE (ver docstring).
+ * Formato novo → troca título, parágrafo dos temas e URL. Formato anterior
+ * (#9474) → migra: parágrafo do título vira o dos temas e o tier de uma linha
+ * vira o `TIER_BLOCK`. Nenhum dos dois → `RetrospectivaBoxFormatError`.
+ */
 export function applyRetrospectivaBoxUpdate(content: string, input: RetrospectivaBoxInput): string {
+  const temasParagraph = buildTemasParagraph(input.temas);
+  const isNew = TEMAS_PARAGRAPH_RE.test(content);
+  const isLegacy = !isNew && LEGACY_QUOTE_PARAGRAPH_RE.test(content) && LEGACY_TIER_PARAGRAPH_RE.test(content);
+
   const missing: string[] = [];
   if (!TITLE_LINE_RE.test(content)) missing.push('linha de título "**Retrospectiva de {Mês}**"');
-  if (!QUOTE_PARAGRAPH_RE.test(content)) missing.push('parágrafo "A Retrospectiva de {Mês} é: ..."');
+  if (!isNew && !isLegacy) {
+    missing.push(
+      'parágrafo "Três temas marcaram o mês: ..." (ou, no formato anterior, o par ' +
+        '"A Retrospectiva de {Mês} é: ..." + "Quem apoia a partir de R$25/mês recebe ...")',
+    );
+  }
   if (!CTA_LINE_RE.test(content)) missing.push('linha de CTA "[Ler a Retrospectiva](url)"');
   if (missing.length > 0) {
     throw new RetrospectivaBoxFormatError(
@@ -144,12 +217,18 @@ export function applyRetrospectivaBoxUpdate(content: string, input: Retrospectiv
         "Ajuste manualmente uma vez (ver context/snippets/README.md) antes de rodar de novo.",
     );
   }
-  // Replacers como FUNÇÃO: título/gancho vêm de texto editorial, e numa
-  // string de substituição `$&`, `$'` etc. seriam interpretados como padrões.
-  return content
-    .replace(TITLE_LINE_RE, () => buildTitleLine(input.mesLabel))
-    .replace(QUOTE_PARAGRAPH_RE, () => buildQuoteParagraph(input.mesLabel, input.titulo, input.gancho))
-    .replace(CTA_LINE_RE, () => buildCtaLine(input.url));
+  // Replacers como FUNÇÃO: os temas vêm de texto editorial, e numa string de
+  // substituição `$&`, `$'` etc. seriam interpretados como padrões.
+  let next = content.replace(TITLE_LINE_RE, () => buildTitleLine(input.mesLabel));
+  next = isNew
+    ? next.replace(TEMAS_PARAGRAPH_RE, () => temasParagraph)
+    : next
+        .replace(LEGACY_QUOTE_PARAGRAPH_RE, () => temasParagraph)
+        .replace(LEGACY_TIER_PARAGRAPH_RE, () => TIER_BLOCK)
+        // Header gerado pelo próprio script (descreve o formato antigo) vira o
+        // atual; header editado à mão (não bate) fica intocado (#495).
+        .replace(GENERATED_HEADER_RE, () => RETROSPECTIVA_BOX_HEADER);
+  return next.replace(CTA_LINE_RE, () => buildCtaLine(input.url));
 }
 
 export function renderRetrospectivaBox(existing: string | null, input: RetrospectivaBoxInput): string {
@@ -161,8 +240,8 @@ export function renderRetrospectivaBox(existing: string | null, input: Retrospec
 export interface RunRetrospectivaBoxOptions {
   /** Ciclo `YYMM-MM` — obrigatório no modo update; opcional no `--unpin`. */
   cycle?: string;
-  titulo?: string;
-  gancho?: string;
+  /** Exatamente 3 temas (#9845) — obrigatório fora do `--unpin`. */
+  temas?: readonly string[];
   unpin: boolean;
   pin: boolean;
   force: boolean;
@@ -181,9 +260,12 @@ export type RunRetrospectivaBoxResult =
   | { action: "updated"; snippetWritten: boolean; configChanged: boolean };
 
 export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRetrospectivaBoxResult {
-  if (!o.unpin && (!o.cycle || !o.titulo || !o.gancho)) {
-    throw new Error("--cycle, --titulo e --gancho são obrigatórios (exceto com --unpin).");
+  if (!o.unpin && (!o.cycle || !o.temas)) {
+    throw new Error('--cycle e --temas "tema 1|tema 2|tema 3" são obrigatórios (exceto com --unpin).');
   }
+  // Valida a contagem ANTES de tocar em state/arquivo: erro de uso não é
+  // falha do canal.
+  const temas = o.unpin ? null : normalizeTemas(o.temas!);
   const statePath = o.cycle ? retrospectivaDivulgacaoStatePath(o.cycleDir ?? monthlyDir(o.cycle)) : null;
   let state = o.cycle && statePath ? readRetrospectivaDivulgacaoState(statePath, o.cycle) : null;
 
@@ -201,8 +283,7 @@ export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRet
     try {
       nextSnippet = renderRetrospectivaBox(existing, {
         mesLabel: contentMonthLabel(o.cycle!),
-        titulo: o.titulo!,
-        gancho: o.gancho!,
+        temas: temas!,
         url: retrospectivaUrl(o.cycle!),
       });
     } catch (e) {
@@ -284,8 +365,7 @@ function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   runUpdateRetrospectivaBox({
     cycle: values["cycle"],
-    titulo: values["titulo"],
-    gancho: values["gancho"],
+    temas: values["temas"] !== undefined ? parseTemasArg(values["temas"]) : undefined,
     unpin: flags.has("unpin"),
     pin: !flags.has("no-pin"),
     force: flags.has("force"),

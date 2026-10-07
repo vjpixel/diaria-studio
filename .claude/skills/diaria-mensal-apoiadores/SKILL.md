@@ -230,7 +230,12 @@ Agent(subagent_type="adhoc-opus-low", prompt=<
      formato de post LinkedIn comum (context/publishers/linkedin.md seções
      1-8). Termine com a linha literal, sozinha:
      Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria
-  3. box-gancho.md — 1 frase (≤ 160 caracteres) de gancho pro box da diária.
+  3. box-temas.md — os 3 temas do mês pro box da diária (#9845), 1 por linha,
+     na ordem DESTAQUE 1, 2, 3: cada um é o título do DESTAQUE N do draft
+     reescrito como frase curta, minúscula (exceto siglas/nomes próprios),
+     sem ponto final, que caiba em "Três temas marcaram o mês: {1}, {2} e
+     {3}." (ex.: "agentes de IA que saíram do teste e invadiram governos e
+     empresas"). Nunca o título da Retrospectiva; nada além das 3 linhas.
 
   Um par de textos POR HISTÓRIA (N = 1, 2, 3; leia o DESTAQUE N inteiro, mas
   chame só pelo caso concreto mais forte DELE — cada história é um post
@@ -539,12 +544,16 @@ Pulado se `--skip box` ou já `done` sem `--force`.
 
 ```bash
 npx tsx scripts/update-retrospectiva-box.ts --cycle $CYCLE \
-  --titulo "{título do D1}" --gancho "{divulgacao/box-gancho.md}" [--no-pin] [--force] [--dry-run]
+  --temas "{tema 1}|{tema 2}|{tema 3}" [--no-pin] [--force] [--dry-run]
 ```
 
+`--temas` = as 3 linhas de `divulgacao/box-temas.md` unidas por `|`
+(exatamente 3 — outro número aborta antes de tocar em qualquer arquivo).
 Reescreve só o corpo de `data/snippets/retrospectiva-apoiadores.md` (título,
-frase-padrão, URL do CTA — edição cirúrgica, #495;
-`RetrospectivaBoxFormatError` se o formato divergiu: ajustar à mão 1x, ver
+parágrafo dos temas, URL do CTA — edição cirúrgica, #495; o bloco do tier,
+parágrafo + lista de benefícios de R$25, fica estável; arquivo ainda no
+formato anterior, com `A Retrospectiva de {Mês} é: ...`, é migrado sozinho,
+#9845; `RetrospectivaBoxFormatError` se o formato divergiu: ajustar à mão 1x, ver
 `context/snippets/README.md`) e pina o **slot 2**
 (`boxes_divulgacao.slot2 = "retrospectiva-apoiadores.md"` + `2` em
 `pinned_slots`), substituindo o pin do Artigo Especial se ele estiver lá
@@ -568,7 +577,7 @@ Com o canal `box` já `done`, rodar de novo pula — inclusive quando o Artigo
 Especial assumiu o slot 2 depois. Devolver o slot à Retrospectiva é decisão
 consciente: `--force box`.
 
-`--unpin` (standalone, sem título/gancho, não toca snippet nem state):
+`--unpin` (standalone, sem `--temas`, não toca snippet nem state):
 devolve o slot 2 ao auto-select por cliques (#4626) quando a Retrospectiva
 envelhecer — **no-op** (resultado `noop`) se o Artigo Especial já assumiu o
 slot; um 3º valor no slot (drift de config) também é no-op, com aviso. Mesmo
@@ -611,7 +620,7 @@ data/monthly/{ciclo}/
     d{N}-curto.md                      ≤280 com CTA curto — Threads/X (Passo 1, #9508)
     04-d{N}-4x5.jpg                    capa da história N (Passo 1 dry-run / Passo 6, #9508)
     04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg  slides da história N (idem)
-    box-gancho.md                      gancho do box (Passo 1)
+    box-temas.md                       3 temas do box, 1 por linha (Passo 1, #9845)
   _internal/
     divulgacao-published.json          status por canal — pagina/apoiase/linkedin_perfil/box/email + {linkedin_pagina,facebook,instagram,threads,x}:d{1,2,3} (#9508; chaves sem sufixo = legado)
     divulgacao-social-d{N}-published.json  detalhe do dispatch da história N (worker_queue_key, fb_post_id, buffer_post_id)
