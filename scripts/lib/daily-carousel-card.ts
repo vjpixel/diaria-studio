@@ -218,6 +218,50 @@ export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
  * sem nenhum ponto de corte viável fora de um trecho marcado volta
  * INALTERADO — nunca produz um segundo bloco vazio.
  */
+/**
+ * (#9790) Tamanho mínimo, em caracteres visíveis (sem os `**` de marcação),
+ * de cada um dos 2 blocos que `splitParagraphIntoTwoBlocks` produz. Abaixo
+ * disso o corte é descartado — rede de segurança contra qualquer "N." ou
+ * abreviação que escape das regras específicas e vire bloco isolado.
+ */
+export const MIN_CAROUSEL_BLOCK_CHARS = 12;
+
+/**
+ * (#9790) Abreviações comuns em PT-BR (e algumas em inglês que aparecem em
+ * notícia de tecnologia) cujo ponto NÃO fecha frase. Comparação em
+ * minúsculas, sem o ponto final.
+ */
+const NON_TERMINAL_ABBREVIATIONS = new Set([
+  "dr", "dra", "drs", "dras", "sr", "sra", "srs", "sras", "srta", "prof", "profa",
+  "eng", "adv", "gen", "cel", "cap", "ten", "sto", "sta", "st", "jr", "mr", "mrs", "ms",
+  "etc", "ex", "obs", "p", "pág", "pag", "pp", "vol", "inc", "ltd", "ltda",
+  "corp", "vs", "aprox", "núm", "n", "nº", "tel", "av",
+]);
+
+function visibleLength(s: string): number {
+  return s.replace(/\*\*/g, "").trim().length;
+}
+
+/**
+ * (#9790) Pure: o match `punct` de `sentenceRe` em `index` (terminando em
+ * `end`) é um ponto que NÃO fecha frase? Duas regras, ambas conservadoras
+ * (na dúvida, não cortar — bloco único é sempre preferível a frase partida,
+ * #7253):
+ *   1. a palavra imediatamente antes de um `.` simples é abreviação conhecida
+ *      ("Dr. Fulano", "p. ex.", "etc. e outros");
+ *   2. a próxima letra depois do espaço é minúscula ("... etc. e outros",
+ *      "GPT-6 vs. o rival") — frase em português não começa em minúscula.
+ */
+function isNonTerminalPeriod(text: string, index: number, punct: string, end: number): boolean {
+  const next = text.slice(end).replace(/^[*"'“‘(\[]+/, "").charAt(0);
+  if (next && next !== next.toUpperCase() && next === next.toLowerCase()) return true;
+  if (!/^\.(?:\s|$)/.test(punct)) return false; // só `.` simples, sem `!`/`?`/aspas
+  const before = text.slice(0, index);
+  const word = /([\p{L}º]+)$/u.exec(before)?.[1];
+  if (!word) return false;
+  return NON_TERMINAL_ABBREVIATIONS.has(word.toLowerCase());
+}
+
 export function splitParagraphIntoTwoBlocks(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return trimmed;
@@ -255,15 +299,28 @@ export function splitParagraphIntoTwoBlocks(text: string): string {
   let sm: RegExpExecArray | null;
   while ((sm = sentenceRe.exec(trimmed)) !== null) {
     const pos = sm.index + sm[0].length;
+    // #9790: ponto que não fecha frase — abreviação ("Dr. Fulano", "etc. e")
+    // ou próxima palavra em minúscula. Não é fronteira: nem candidato, nem
+    // início de segmento pro teste de marcador de lista abaixo.
+    if (isNonTerminalPeriod(trimmed, sm.index, sm[0], pos)) continue;
     const segment = trimmed.slice(prevEnd, pos).trim();
     prevEnd = pos;
     if (listMarkerRe.test(segment)) continue;
     if (pos > 0 && pos < trimmed.length && !insideBold(pos)) candidates.push(pos);
   }
 
-  if (candidates.length === 0) return trimmed; // sem fronteira de sentença — não divide (#7253)
+  // #9790: nunca produzir um bloco quase vazio ("5." sozinho, "Sim.") — o
+  // respiro visual não compensa um bloco que não se lê como frase. Candidato
+  // que deixaria qualquer lado abaixo do limiar (texto visível, sem `**`) é
+  // descartado; sem candidato restante, o texto volta inteiro (#7253).
+  const viable = candidates.filter(
+    (pos) =>
+      visibleLength(trimmed.slice(0, pos)) >= MIN_CAROUSEL_BLOCK_CHARS &&
+      visibleLength(trimmed.slice(pos)) >= MIN_CAROUSEL_BLOCK_CHARS,
+  );
+  if (viable.length === 0) return trimmed; // sem fronteira de sentença — não divide (#7253)
 
-  const splitAt = candidates.reduce((best, pos) => (Math.abs(pos - mid) < Math.abs(best - mid) ? pos : best));
+  const splitAt = viable.reduce((best, pos) => (Math.abs(pos - mid) < Math.abs(best - mid) ? pos : best));
   const first = trimmed.slice(0, splitAt).trim();
   const second = trimmed.slice(splitAt).trim();
   if (!first || !second) return trimmed;

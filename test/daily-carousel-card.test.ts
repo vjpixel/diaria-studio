@@ -27,6 +27,7 @@ import {
   DAILY_CAROUSEL_MICRO_CTA,
   DAILY_CAROUSEL_CTA_KICKER,
   hashCarouselSlideTexts,
+  MIN_CAROUSEL_BLOCK_CHARS,
 } from "../scripts/lib/daily-carousel-card.ts";
 import { measureFlatCardBody, buildFlatCardSvg } from "../scripts/lib/weekly-flat-card.ts";
 import { createHash } from "node:crypto";
@@ -213,6 +214,45 @@ describe("splitParagraphIntoTwoBlocks (pure, #6136 item 2)", () => {
     }
     assert.ok(blocks[1].startsWith("2."), "2º bloco deveria começar pelo marcador '2.'");
     assert.equal(result.replace(/\n\n/g, " "), texto);
+  });
+
+  it("#9790 (USE MELHOR da 261007): '5. **Aprenda ...**' com frase única não isola o '5.'", () => {
+    const texto =
+      '5. **Aprenda mais rápido** contando o seu nível: "explique IA generativa como se eu fosse de marketing, sem formação técnica".';
+    assert.equal(splitParagraphIntoTwoBlocks(texto), texto);
+  });
+
+  it("#9790 (USE MELHOR da 261007): '3. **Prepare reuniões:** ...' não isola o '3.'", () => {
+    const texto = "3. **Prepare reuniões:** peça a pauta, as objeções possíveis e uma resposta para cada uma.";
+    assert.equal(splitParagraphIntoTwoBlocks(texto), texto);
+  });
+
+  it("#9790: abreviação ('Dr. Fulano') não é fronteira de frase", () => {
+    const texto = "O Dr. Fulano disse que a IA vai mudar tudo no setor de saúde até o fim da década.";
+    assert.equal(splitParagraphIntoTwoBlocks(texto), texto);
+  });
+
+  it("#9790: ponto seguido de minúscula ('etc. e outros') não é fronteira de frase", () => {
+    const texto = "Funciona com GPT-6, Claude etc. e outros modelos parecidos do mercado atual.";
+    assert.equal(splitParagraphIntoTwoBlocks(texto), texto);
+  });
+
+  it("#9790: abreviação no meio não desloca o corte da fronteira real", () => {
+    const texto = "A Sra. Silva assinou o contrato ontem à tarde. O acordo vale por dois anos inteiros.";
+    const [first, second] = splitParagraphIntoTwoBlocks(texto).split("\n\n");
+    assert.equal(first, "A Sra. Silva assinou o contrato ontem à tarde.");
+    assert.equal(second, "O acordo vale por dois anos inteiros.");
+  });
+
+  it(`#9790: nunca produz bloco com menos de ${MIN_CAROUSEL_BLOCK_CHARS} caracteres visíveis`, () => {
+    // "Sim." é fim de frase legítimo, mas um bloco de 4 caracteres não se lê.
+    const texto = "Sim. A empresa confirmou o lançamento para a semana que vem em todo o país.";
+    assert.equal(splitParagraphIntoTwoBlocks(texto), texto);
+    // Com outra fronteira viável, ela é usada em vez da curta.
+    const texto2 = "Sim. A empresa confirmou o lançamento. O preço ainda não foi divulgado oficialmente.";
+    for (const b of splitParagraphIntoTwoBlocks(texto2).split("\n\n")) {
+      assert.ok(b.replace(/\*\*/g, "").length >= MIN_CAROUSEL_BLOCK_CHARS, `bloco curto: ${JSON.stringify(b)}`);
+    }
   });
 
   it("resultado sempre reconstrói o texto original (sem perder nem duplicar conteúdo)", () => {
