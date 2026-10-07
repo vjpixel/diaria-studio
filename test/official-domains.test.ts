@@ -122,7 +122,7 @@ describe("official-domains registry (#566)", () => {
     });
 
     // #2370: claude.com/blog/ como caminho de anúncio oficial da Anthropic.
-    // Restrito a /blog/ — verificado contra dado real: /news e /release-notes
+    // Restrito a /blog/ (+ /resources/articles/, testes abaixo) — verificado contra dado real: /news e /release-notes
     // redirecionam pra claude.ai; /product/* são marketing estático evergreen.
     it("#2370 — claude.com/blog/ reconhecido como lançamento oficial Anthropic", () => {
       const matches = patterns.some(
@@ -149,6 +149,26 @@ describe("official-domains registry (#566)", () => {
           !patterns.some((p) => p.test(`claude.com/${path}`)),
           `claude.com/${path} NÃO deve ser lancamento`,
         );
+      }
+    });
+
+    // Decisão do editor 07/10/2026 (edição 261008): claude.com/resources/articles/
+    // é link oficial da Anthropic; o resto de /resources/ e /product/* seguem fora.
+    it("claude.com/resources/articles/ reconhecido como lançamento oficial Anthropic", () => {
+      const url = "https://claude.com/resources/articles/claude-now-works-in-google-docs-sheets-and-slides";
+      assert.equal(isOfficialLancamentoUrl(url), true);
+      assert.ok(patterns.some((p) => p.test("claude.com/resources/articles/claude-now-works-in-google-docs-sheets-and-slides")));
+    });
+
+    it("claude.com/resources/ sem articles/, /resourcesevil/ e /product/ seguem fora", () => {
+      for (const url of [
+        "https://claude.com/product/x",
+        "https://claude.com/resources/",
+        "https://claude.com/resources/guides/x",
+        "https://claude.com/resourcesevil/articles/x",
+        "https://claude.com/resources/articlesevil/x",
+      ]) {
+        assert.equal(isOfficialLancamentoUrl(url), false, `${url} NÃO deve ser lancamento`);
       }
     });
 
