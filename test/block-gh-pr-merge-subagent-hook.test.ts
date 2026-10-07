@@ -568,7 +568,10 @@ describe("buildBlockReason — CONSUMED_GRANT_HINT (#7171, reprodução ao vivo 
   it("blockCause 'not-authorized' + grantWasConsumed:true → acrescenta o hint de janela auto-consumida", () => {
     const reason = buildBlockReason({ blockCause: "not-authorized", grantWasConsumed: true });
     assert.match(reason, /já está CONSUMIDA/);
-    assert.match(reason, /consume-merge-grant.*ANTES do.*gh pr merge/s);
+    assert.match(reason, /consume-merge-grant` rodado à mão antes do merge/);
+    // #8793: o hint lista causas conhecidas, nunca afirma uma como a provável.
+    assert.doesNotMatch(reason, /muito provavelmente/);
+    assert.match(reason, /`check-merge-grant` e `merge-lock-acquire` nunca o escrevem/);
     assert.equal(reason, `${BLOCK_REASON} ${CONSUMED_GRANT_HINT}`);
   });
 

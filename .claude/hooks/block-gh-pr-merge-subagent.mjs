@@ -1377,14 +1377,13 @@ export const LOCK_CONTENTION_HINT =
  */
 export const CONSUMED_GRANT_HINT =
   "Você TINHA uma concessão de merge válida para este PR, mas ela já está CONSUMIDA (`consumedAt` " +
-  "presente) — muito provavelmente porque `consume-merge-grant` foi chamado ANTES do `gh pr merge`, não " +
-  "depois. `consumedAt` é o carimbo que o MERGE bem-sucedido deixa (automaticamente, via " +
-  "`.claude/hooks/consume-merge-grant-on-merge.mjs`, #6303) — nunca um passo que quem recebe a janela " +
-  "roda antes de mergear. Chamar `consume-merge-grant` manualmente antes do merge queima a janela e " +
-  "produz exatamente este bloqueio, mesmo com `check-merge-grant` tendo confirmado `granted: true` " +
-  "segundos antes. A janela é de uso único e não pode ser 'reativada' — a única saída é pedir uma NOVA " +
-  "concessão à coordenadora (`grant-merge --granted-to {seu session_id} --pr N`) e, desta vez, NÃO " +
-  "chamar `consume-merge-grant` — deixe o hook automático cuidar disso depois que `gh pr merge` suceder.";
+  "presente). `consumedAt` é o carimbo que um `gh pr merge` deixa (automaticamente, via " +
+  "`.claude/hooks/consume-merge-grant-on-merge.mjs`, #6303) — `check-merge-grant` e `merge-lock-acquire` " +
+  "nunca o escrevem (#8793). Causas conhecidas: `consume-merge-grant` rodado à mão antes do merge (#7171), " +
+  "ou um `gh pr merge` anterior desta sessão para este PR já ter passado pelo hook (#8793). Confira " +
+  "`gh pr view N --json state` — se o PR já está MERGED, não há nada a refazer. A janela é de uso único e " +
+  "não pode ser 'reativada': a saída é pedir uma NOVA concessão à coordenadora (`grant-merge --granted-to " +
+  "{seu session_id} --pr N`) e NÃO chamar `consume-merge-grant` — o hook cuida disso depois do merge.";
 
 /**
  * Monta a mensagem de bloqueio final. Três hints aditivos, independentes:

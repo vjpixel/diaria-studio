@@ -33,6 +33,12 @@
 // concessão viva, ela é consumida ali mesmo — nenhuma skill precisa lembrar
 // de nada, mesmo argumento que justifica o beacon inteiro.
 //
+// #8793: "sucesso" aqui é o exit 0 do comando Bash INTEIRO, não do `gh pr
+// merge` — `gh pr merge N | tail` sai 0 mesmo com o merge recusado. E o
+// filtro `if` do settings é a única coisa que restringe o hook a `gh pr
+// merge`. Por isso o corpo confere as duas coisas sozinho antes de consumir
+// (`decideConsumeAfterBash`): comando real de merge + PR não segue aberto.
+//
 // ─────────────────────────────────────────────────────────────────────────
 // FAIL-OPEN TOTAL, E POR QUÊ
 // ─────────────────────────────────────────────────────────────────────────
@@ -175,6 +181,78 @@ export function extractGhPrMergeTargetPr(command) {
   if (!numMatch) return undefined;
   const n = Number(numMatch[1]);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/**
+ * `true` se `command` contém `gh pr merge` como comando REAL (início da
+ * string ou depois de separador, fora de aspas). Duplicado de
+ * `block-gh-pr-merge-subagent.mjs` (`isGhPrMergeCommand`) pela mesma razão
+ * "self-contained" — paridade travada por
+ * `test/consume-merge-grant-only-after-real-merge-8793.test.ts`.
+ *
+ * #8793: até aqui o hook confiava 100% no filtro `if: "Bash(gh pr merge*)"`
+ * do `.claude/settings.json` pra só rodar depois de um merge. Se esse filtro
+ * não for aplicado (CLI que ignora o campo `if`, matcher alterado, payload
+ * de outro comando), `extractGhPrMergeTargetPr` devolve `undefined` também
+ * pra comando SEM `gh pr merge` nenhum, e `undefined` casa com qualquer
+ * concessão: um `check-merge-grant` ou `merge-lock-acquire` consumia a
+ * janela antes do merge. Este é o portão local, independente do settings.
+ */
+export function isGhPrMergeCommand(command) {
+  if (typeof command !== "string") return false;
+  const stripped = stripQuotedSpans(command);
+  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+merge\b/.test(stripped);
+}
+
+/**
+ * #8793: `true` só quando há evidência POSITIVA de que o merge de `targetPr`
+ * NÃO aconteceu — PR ainda `OPEN` sem auto-merge enfileirado, ou `CLOSED`.
+ *
+ * Por que é preciso: `PostToolUse` dispara quando o comando Bash sai com 0,
+ * não quando o `gh pr merge` sucede. `gh pr merge 123 --squash 2>&1 | tail -5`
+ * sai com o status do `tail` — um merge recusado ("base branch policy
+ * prohibits the merge", threads de review não resolvidas) chega aqui como
+ * sucesso, a janela é queimada, e o retry depois de resolver as threads é
+ * bloqueado pelo guard do #5716 com "concessão já consumida".
+ *
+ * Fail-open na direção pré-#8793 (consumir): `targetPr` indeterminado, `gh`
+ * ausente/offline/timeout ou JSON ilegível devolvem `false`. `MERGED`, ou
+ * `OPEN` com `autoMergeRequest` (o `--auto` já comprometeu o merge), também
+ * devolvem `false`.
+ */
+export function mergeEvidentlyDidNotHappen(targetPr, execFn = execFileSync) {
+  if (!Number.isInteger(targetPr)) return false;
+  let parsed;
+  try {
+    const out = execFn("gh", ["pr", "view", String(targetPr), "--json", "state,autoMergeRequest"], {
+      encoding: "utf8",
+      timeout: 6_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    parsed = JSON.parse(String(out));
+  } catch {
+    return false;
+  }
+  if (parsed?.state === "CLOSED") return true;
+  if (parsed?.state === "OPEN" && !parsed.autoMergeRequest) return true;
+  return false;
+}
+
+/**
+ * Decisão do corpo do hook (#8793): consome só quando (1) o comando é um
+ * `gh pr merge` real, (2) existe concessão viva candidata pra este PR
+ * (`hasLiveGrant`, checagem barata em disco — feita ANTES do `gh pr view`
+ * pra que o caso comum, coordenadora mergeando sem concessão nenhuma, nunca
+ * pague uma chamada de rede) e (3) não há evidência de que o merge falhou.
+ * Devolve `{ consume, targetPr, reason }` — `reason` só pra teste/diagnóstico.
+ */
+export function decideConsumeAfterBash(command, { hasLiveGrant = () => true, execFn = execFileSync } = {}) {
+  if (!isGhPrMergeCommand(command)) return { consume: false, targetPr: undefined, reason: "not-a-merge-command" };
+  const targetPr = extractGhPrMergeTargetPr(command);
+  if (!hasLiveGrant(targetPr)) return { consume: false, targetPr, reason: "no-live-grant" };
+  if (mergeEvidentlyDidNotHappen(targetPr, execFn)) return { consume: false, targetPr, reason: "merge-did-not-happen" };
+  return { consume: true, targetPr, reason: "merged" };
 }
 
 /**
@@ -424,11 +502,18 @@ if (
       const sessionId = payload.session_id;
       if (!sessionId) return; // sem identidade não há concessão pra procurar
       const repoRoot = resolveMainRepoRoot();
-      // #8188: qual PR este `gh pr merge` de fato mergeou — `undefined`
-      // quando indeterminado (comando sem número, payload sem
-      // `tool_input.command`), preservando o comportamento pré-#8188 nesse
-      // caso (ver docblock de `consumeGrantUnderLock`).
-      const targetPr = extractGhPrMergeTargetPr(payload.tool_input?.command);
+      // #8793: só consome depois de um `gh pr merge` REAL (nunca de um
+      // `check-merge-grant`/`merge-lock-acquire` que chegue aqui por falha
+      // do filtro `if` do settings) e sem evidência de que o merge falhou
+      // (pipe pro `tail` mascarando o exit code). `targetPr` (#8188) é o PR
+      // que este `gh pr merge` mergeou — `undefined` quando o comando não
+      // traz número, preservando o comportamento pré-#8188 nesse caso (ver
+      // docblock de `consumeGrantUnderLock`).
+      const decision = decideConsumeAfterBash(payload.tool_input?.command, {
+        hasLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr) !== null,
+      });
+      if (!decision.consume) return;
+      const targetPr = decision.targetPr;
       // #6952: sob o lock compartilhado, relendo fresco lá dentro — nunca o
       // read-modify-write solto que apagava a escrita concorrente do beacon.
       consumeGrantUnderLock(repoRoot, sessionId, new Date().toISOString(), CAS_ATTEMPTS, LOCK_TIMEOUT_MS, targetPr);
