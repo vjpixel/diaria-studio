@@ -16,6 +16,7 @@ export const EDITORIAL_BLOCKLIST: ReadonlySet<string> = new Set<string>([
   "sempreupdate.com.br", // editor 260730 — conteúdo genérico tipo listicle sem profundidade (ex: "Como construir seu fluxo de trabalho automatizado com agentes de IA: guia passo a passo para iniciantes")
   "langchain.com", // editor 260806 — blog corporativo publica case study/anúncio de produto sob a categoria "Tutoriais" do seed/sources.csv; review-use-melhor.ts flagou repetidamente como não-tutorial (ex: edição 260806, "Evaluating code review agents with ReviewBench")
   "tiktok.com", // editor 260821 — vídeo de terceiro sem substância verificável como tutorial (ex: edição 260821, "Como Usar O Chat Gpt Para Estudar Para Concurso" no USE MELHOR)
+  "chatprd.ai", // editor 261006 — pedido direto do editor (ex: edição 261007, "How to Build a Real-Time Incident Command Dashboard with ChatGPT Sites" no USE MELHOR)
 ]);
 
 /**

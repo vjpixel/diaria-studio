@@ -53,4 +53,12 @@ describe("isEditoriallyBlocked (#1760)", () => {
     );
     assert.ok(EDITORIAL_BLOCKLIST.has("langchain.com"));
   });
+
+  it("bloqueia chatprd.ai (editor 261006)", () => {
+    assert.equal(
+      isEditoriallyBlocked("https://www.chatprd.ai/how-i-ai/workflows/real-time-incident-command-dashboard"),
+      true,
+    );
+    assert.ok(EDITORIAL_BLOCKLIST.has("chatprd.ai"));
+  });
 });
