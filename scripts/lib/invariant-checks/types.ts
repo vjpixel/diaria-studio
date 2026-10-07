@@ -39,7 +39,9 @@ export interface InvariantRule {
    * dispara SEMPRE, em toda edição, travando a Etapa 5 na 1ª tentativa
    * (achado #4516). `§5i` (pós-publicação) continua rodando sem `--phase`,
    * cobrindo o conjunto completo. Ausente/`false` = regra roda em qualquer
-   * fase (comportamento de sempre).
+   * fase (comportamento de sempre). #9822: também marca regra cujo artefato é
+   * escrito DEPOIS do próprio sentinel do stage (Stage 6 `edition-report-exists`)
+   * — `pipeline-sentinel.ts write` roda com `phase: "pre-dispatch"` e a pula.
    */
   postDispatchOnly?: boolean;
   run: (editionDir: string) => InvariantViolation[];

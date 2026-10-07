@@ -179,16 +179,20 @@ describe("invariant-checks registry (#1007)", () => {
     assert.deepEqual(idsExplicit.sort(), ids.sort(), "opts={} deve se comportar igual a omitir opts");
   });
 
-  it("#4516: --phase pre-dispatch não afeta outros stages (nenhuma regra marcada postDispatchOnly fora do Stage 5)", () => {
-    for (const stage of [0, 1, 2, 3, 4, 6] as const) {
+  it("#4516: --phase pre-dispatch não afeta outros stages (nenhuma regra marcada postDispatchOnly fora dos Stages 5/6)", () => {
+    for (const stage of [0, 1, 2, 3, 4] as const) {
       const full = getRulesForStage(stage);
       const preDispatch = getRulesForStage(stage, { phase: "pre-dispatch" });
       assert.equal(
         preDispatch.length,
         full.length,
-        `Stage ${stage}: --phase pre-dispatch não deveria remover nenhuma regra (nenhuma é postDispatchOnly fora do Stage 5)`,
+        `Stage ${stage}: --phase pre-dispatch não deveria remover nenhuma regra (nenhuma é postDispatchOnly fora dos Stages 5/6)`,
       );
     }
+    // #9822: no Stage 6 só `edition-report-exists` (gerado depois do sentinel) sai.
+    const full6 = getRulesForStage(6).map((r) => r.id);
+    const pre6 = getRulesForStage(6, { phase: "pre-dispatch" }).map((r) => r.id);
+    assert.deepEqual(full6.filter((id) => !pre6.includes(id)), ["edition-report-exists"]);
   });
 
   // --- #4690: consent-binding também é estruturalmente pós-dispatch ---

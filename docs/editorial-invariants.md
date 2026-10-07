@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 107 invariants.
+**Total**: 109 invariants.
 
 ## Static (estrutura do repo)
 
@@ -103,6 +103,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only) | #4673 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
+| `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
+| `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
