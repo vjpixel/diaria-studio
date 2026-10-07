@@ -1,12 +1,13 @@
 ---
 name: diaria-artigo-especial
-description: Fecha as 4 ações manuais que seguem o deploy de um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
+description: Produz e divulga um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`). Produção (#9099, Etapas A-E, gate humano entre elas) — tema da votação dos apoiadores, briefing (fontes, estrutura, tese), rascunho em `data/artigo-especial/{ano}-{slug}/draft.md` iterado no chat com passada do humanizador, HTML no template dos artigos (`articles-src/{slug}.html` + registros), PR, deploy pelo `deploy-artigos.yml` e probe da URL. Divulgação (Passos 0-6) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Resumível pelo state file. A divulgação requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--ciclo AAMM | --tema "..."] [--so-divulgacao] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
 # /diaria-artigo-especial
 
-Fecha o loop de divulgação de um Artigo Especial já **deployado** (issue
-#5979). Todo mês o artigo sai com 4 ações manuais repetidas pelo editor:
+Cobre o ciclo inteiro de um Artigo Especial: a **produção** (Etapas A-E,
+#9099 — do tema ao artigo no ar) e a **divulgação** (Passos 0-6, #5979).
+Na divulgação, todo mês o artigo sai com 4 ações manuais repetidas pelo editor:
 post teaser no apoia.se, posts agendados no LinkedIn (página + perfil),
 e-mail pros apoiadores R$10+ (#7659) e atualização do box "Artigo
 Especial" da diária pinado no slot 2 (desde
@@ -21,10 +22,13 @@ contagem). Esta skill empacota as 4 ações num único playbook, com gate
 humano único antes de qualquer publicação e state file por canal pra
 resumir com segurança.
 
-**Pré-requisito fora do escopo desta skill**: o artigo já precisa estar
-deployado em `especial.diar.ia.br/{ano}/{slug}/` (`cd workers/artigos && npx
-wrangler deploy` — ver `workers/artigos/README.md`). Esta skill só LÊ o
-artigo publicado, nunca gera/edita o HTML dele.
+**Produção e divulgação, nesta ordem (#9099).** Até o #9099 a skill
+pressupunha o artigo já deployado e nunca gerava o HTML — os três artigos
+publicados até então (`o-agente`, `engenharia-de-ilusao`, `o-jev`) foram
+escritos à mão em HTML (o último no PR #9225). Agora as Etapas A-E produzem
+o artigo e só entregam pra divulgação depois que a URL pública responde com
+ele. Artigo já publicado por fora (feito à mão, sem bloco `producao` no
+state file) ou `--so-divulgacao` → pular direto pro Passo 0, como antes.
 
 ## Classificação de execução
 
@@ -32,11 +36,15 @@ artigo publicado, nunca gera/edita o HTML dele.
 e do próprio #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
 Claude in Chrome com o editor logado — sem navegador utilizável, a skill
 inteira não fecha de ponta a ponta.
+As Etapas A-E (produção) não precisam de navegador logado, mas têm gates
+editoriais — rodam com o editor presente, em qualquer máquina com `data/`.
 
 ## Decisões já tomadas (editor, 23/08/2026 — não reabrir, issue #5979)
 
 | Pergunta | Decisão |
 |---|---|
+| **Onde fica o rascunho do artigo** (#9099, editor 07/10/2026) | Markdown local `data/artigo-especial/{ano}-{slug}/draft.md`, iterado no chat como uma edição, com passada do `humanizador` antes do HTML. Formato: docstring de `scripts/lib/artigo-especial-draft.ts`. |
+| **Como o artigo é publicado** (#9099, editor 07/10/2026) | **Por PR**: a skill gera `workers/artigos/articles-src/{slug}.html` (+ registros), abre o PR, e depois do merge o `.github/workflows/deploy-artigos.yml` publica. A skill confere com um probe HTTP que a URL responde com o artigo antes das 4 ações de divulgação. Nunca `wrangler deploy` à mão. |
 | Conteúdo do post apoia.se | **CHAMADA, não recorte (revisto pelo editor 23/08/2026, 1ª execução ao vivo — substitui a decisão original de reaproveitar os `leadParagraphs`).** Título + 2 parágrafos curtos que despertem curiosidade + URL. O texto levanta uma tensão e para; o mecanismo/a tese fica no artigo, que é o que a pessoa vai lá buscar. Nunca o texto integral nem o conteúdo do paywall (`retrospectiva.diar.ia.br/AAMM`, `workers/retrospectiva` — canal separado). |
 | Conteúdo dos posts LinkedIn | Mesma regra de chamada acima (editor, 23/08/2026): o post não entrega a tese completa no feed. Isca concreta (o caso real) + promessa do que o artigo responde, sem responder. |
 | **Link do artigo no LinkedIn** | **NUNCA divulgar a URL direta de `especial.diar.ia.br` nos posts de LinkedIn** (editor, 23/08/2026; justificativa corrigida em #6014/#6013: o artigo é PÚBLICO e indexado de propósito — está no `sitemap.xml` com `robots.txt` liberando crawlers de IA. O que o tier R$10+ compra é antecedência, entrega por e-mail e arquivo, não exclusividade de leitura). O CTA fecha no apoia.se porque é lá que a conversão acontece, não porque o artigo seja inacessível. Os 2 posts de LinkedIn fecham com a linha literal `Apoie nosso trabalho e leia o artigo completo em: apoia.se/diaria` (frase do editor, não reescrever, não passar por Clarice/humanizador). Só `apoiase.md` leva a URL direta, porque ali o público já é apoiador. Vale pra qualquer canal público futuro (Facebook, Instagram, X): CTA aponta pro apoia.se, nunca pro artigo. |
@@ -50,7 +58,17 @@ inteira não fecha de ponta a ponta.
 ## Argumentos
 
 - `--slug` **obrigatório** — nunca inferido (mesma regra de todas as
-  `/diaria-*`: data/identificador sempre explícito).
+  `/diaria-*`: data/identificador sempre explícito). Única exceção: a 1ª
+  chamada de um artigo novo com `--ciclo`, em que a Etapa A sugere o slug a
+  partir do tema e o editor confirma no Gate A.
+- `--ciclo AAMM` — ciclo da votação de tema (`/diaria-voto-tema`) de onde a
+  Etapa A lê o vencedor.
+- `--tema "..."` — tema dado direto (artigo fora do ciclo de voto); vence
+  `--ciclo`.
+- `--so-divulgacao` — pula as Etapas A-E (artigo já publicado por fora) e
+  começa no Passo 0. Sem a flag, artigo cujo state file não tem bloco
+  `producao` e cujo `public/{ano}/{slug}/index.html` já existe é tratado do
+  mesmo jeito (os artigos feitos à mão antes do #9099).
 - `--ano AAAA` — default: ano corrente.
 - `--at ISO` — horário do agendamento LinkedIn quando quiser os DOIS
   canais no mesmo instante. Default (#6014 item 1): cada canal tem o seu —
@@ -68,6 +86,241 @@ inteira não fecha de ponta a ponta.
   deve voltar pro auto-select por cliques (#4626). Não mexe em nenhum outro
   canal; ignora `--slug`/`--ano` (não precisa do artigo).
 - `--force` — reexecuta um canal já `done` no state file (ver Passo 0).
+
+## Produção — Etapas A-E (#9099)
+
+As etapas rodam em ordem, cada uma termina num **gate humano** (A-C) ou num
+fato externo conferido por script (D-E), e cada uma é gravada no bloco
+`producao` do mesmo `published.json` dos canais
+(`scripts/lib/artigo-especial-state.ts` — `PRODUCAO_ETAPAS`,
+`nextProducaoEtapa`, `withProducaoEtapa`). Gravar é sempre pelo CLI, nunca
+editando o JSON à mão (mesma razão do `mark-artigo-especial-channel.ts`):
+
+```bash
+npx tsx scripts/artigo-especial-producao.ts status --ano {ano} --slug {slug}
+npx tsx scripts/artigo-especial-producao.ts mark --ano {ano} --slug {slug} \
+  --etapa {tema|briefing|rascunho|html|pr|publicado} --status {done|failed} \
+  [--url ...] [--reason "..."] [--tema "..."]
+```
+
+**Resume**, nesta ordem:
+
+1. **Artigo feito por fora?** `--so-divulgacao`, OU o state file não tem
+   bloco `producao` E `workers/artigos/public/{ano}/{slug}/index.html` já
+   existe (os artigos escritos à mão antes do #9099) → Passo 0 direto. Esta
+   checagem vem ANTES do `status`, que para esses artigos responderia
+   "próxima etapa: tema" e recomeçaria a produção de um artigo já no ar.
+2. Senão, `status`: a skill retoma da etapa que ele aponta como próxima.
+   `produção concluída` → Passo 0.
+
+`done` fora de ordem é recusado pelo script (nenhum PR sai de um rascunho
+que o editor não aprovou), e refazer uma etapa já `done` (ex.: o editor
+pede outra tese depois do HTML) **apaga todas as posteriores** — refazer o
+`rascunho` invalida `html`, `pr` e `publicado`: o HTML de um rascunho velho
+não vale para o novo. `failed` é sempre retentável. `mark` recusa gravar
+se o `published.json` estiver ilegível (conserte à mão antes: a leitura
+tolerante o trataria como vazio e a escrita apagaria os canais).
+
+**Onde o state mora.** Sempre no `data/` do checkout PRINCIPAL (a junction
+do OneDrive). Todo `mark`, `status` e `probe --mark` roda com cwd no
+checkout principal — nunca num worktree, cujo `data/` é outro diretório (ou
+nem existe) e esconderia o progresso do próximo resume.
+
+**Gates A-C são perguntas legítimas** (critérios 2 e 4 de "Perguntar é
+exceção", `CLAUDE.md`): tema, tese e texto mudam o que o apoiador lê, e cada
+resposta muda o trabalho seguinte. `AskUserQuestion` falhando → halt banner
+(#3938). Fora dos gates, decidir e registrar a premissa.
+
+### Etapa A — tema e slug
+
+1. **Tema.** Com `--tema "..."`, usar o texto dado (artigo fora do ciclo de
+   voto). Senão, com `--ciclo AAMM`, ler o resultado da votação
+   (`/diaria-voto-tema`):
+
+   ```bash
+   npx tsx scripts/voto-tema-stats.ts --ciclo {AAMM} --json > {scratchpad}/stats.json
+   npx tsx scripts/artigo-especial-producao.ts tema --stats-json {scratchpad}/stats.json \
+     --ballot data/artigo-especial/votacao/{AAMM}/ballot.json
+   ```
+
+   O 2º comando (`lib/artigo-especial-tema.ts::resolveTemaVencedor`) recusa
+   votação aberta, empatada ou sem voto (exit 2, a mensagem traz o comando
+   que destrava — fechar/forçar vencedor é do `voto-tema-close.ts`, nunca
+   desta skill) e devolve título, descrição da cédula e um **slug sugerido**
+   (`suggestSlug`). Sem `--tema` e sem `--ciclo` → halt banner pedindo um
+   dos dois.
+
+2. **Slug.** `--slug` passado vence; senão vale a sugestão. O slug vira URL
+   pública e não muda depois do deploy — por isso entra no gate.
+
+3. **Gate A**: tema + slug + ano. Aprovado →
+   `mark --etapa tema --status done --tema "{tema}"`.
+
+### Etapa B — briefing (fontes, estrutura, tese)
+
+Pesquisa feita pelo top-level (WebSearch/WebFetch; dados do próprio projeto
+quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
+`data/artigo-especial/{ano}-{slug}/briefing.md`:
+
+- **Tese** — a frase que o artigo defende, em 1-2 linhas.
+- **Estrutura** — abertura (lede) + 4-7 seções com 1 linha cada; marcar qual
+  é a 1ª (o teaser público vai até ela, o resto é dos apoiadores — a 1ª
+  seção precisa se sustentar sozinha e deixar a pergunta aberta).
+- **Fontes** — URLs primárias abertas e conferidas (sem agregador, sem
+  paywall marcado como acessível — `context/editorial-rules.md`), e para
+  cada número que o texto vai citar, de onde ele sai.
+- **O que falta** — dado que só o editor tem (medição interna, opinião,
+  história pessoal). Os artigos são em 1ª pessoa do Pixel.
+
+**Gate B**: o editor aprova, ajusta ou troca a tese. Aprovado →
+`mark --etapa briefing --status done`.
+
+### Etapa C — rascunho (`draft.md`), iterado como uma edição
+
+1. **Escrita: 1 dispatch** de `adhoc-opus-low` (agent dedicado,
+   `claude-opus-5-5` + `effort: low` no frontmatter, #9081):
+
+   ```
+   Agent(subagent_type="adhoc-opus-low", prompt=<
+     Escreva o Artigo Especial descrito em data/artigo-especial/{ano}-{slug}/briefing.md
+     (aprovado pelo editor) em data/artigo-especial/{ano}-{slug}/draft.md.
+     Formato do arquivo: docstring de scripts/lib/artigo-especial-draft.ts
+     (frontmatter titulo/dek/slug/ano/data/capa_alt, 1º parágrafo = lede,
+     seções "## ", fontes em "## Fontes ..."). Siga a estrutura e a tese do
+     briefing; só afirme o que as fontes do briefing sustentam. Tom e
+     extensão: leia workers/artigos/articles-src/o-jev.html como referência
+     (1ª pessoa do Pixel, ~9 min de leitura, frases curtas, sem jargão sem
+     explicação). Regras de context/editorial-rules.md valem (sem seta,
+     sem markdown no texto que chega ao leitor além do formato do draft).
+     O dek tem 1-2 frases e serve de og:description. capa_alt descreve a
+     ilustração que você propõe em data/artigo-especial/{ano}-{slug}/capa-prompt.md.
+     Formato do capa-prompt.md (é o que scripts/image-generate.ts --editorial
+     lê, igual aos _internal/02-d{N}-prompt.md da diária): só a DESCRIÇÃO DA
+     CENA, em texto corrido, 1 parágrafo, uma cena concreta que traduza a
+     tese. Sem título, sem lista, sem markdown (o script remove negrito/
+     heading/link e junta as linhas). Não escreva estilo nem proporção: o
+     script acrescenta o sufixo Van Gogh impasto e o 2:1 sozinho. Nunca
+     resolução em pixels, nunca Noite Estrelada.
+   >)
+   ```
+
+2. **Passada do humanizador** (decisão do editor, 07/10/2026) sobre o corpo
+   inteiro do `draft.md` — `Skill("humanizador", ...)`, passada completa
+   (todos os padrões, não amostra), preservando o frontmatter e as linhas
+   `## ` como estão. Depois `mcp__clarice__correct_text` parágrafo a
+   parágrafo, aceitando as sugestões (mesma disciplina do Stage 2, #4514),
+   exceto as que quebram marca, nome próprio ou a sintaxe do draft.
+
+3. **Iteração no chat.** Mostrar o texto ao editor e iterar como uma edição
+   (não como PR): ele pede ajustes, a skill aplica no `draft.md` e mostra de
+   novo. O editor pode editar o arquivo direto — reler antes de cada ajuste
+   e editar **cirurgicamente** (#495), nunca reescrever o arquivo inteiro
+   por cima de uma edição dele. Ajuste grande de texto → nova passada do
+   humanizador só no trecho reescrito.
+
+4. **Gate C**: "rascunho aprovado". → `mark --etapa rascunho --status done`.
+   Pedido de ajuste depois disso (inclusive já na Etapa D ou E) é refazer a
+   Etapa C: o `mark` invalida `html`, `pr` e `publicado` sozinho (ver os
+   casos de PR aberto/mergeado em "Casos de borda").
+
+### Etapa D — HTML no template dos artigos + capa
+
+0. **Branch PRIMEIRO, no checkout principal** (é lá que está o `data/` com o
+   `draft.md` e o state). Antes de copiar qualquer coisa para `workers/`:
+
+   ```bash
+   git fetch origin && git checkout -b artigo-especial/{ano}-{slug} origin/master
+   ```
+
+   Checkout principal sujo de outra sessão → não trocar de branch; halt
+   banner pedindo ao editor para liberar o checkout. Nunca um worktree: o
+   render leria o `draft.md` e o `mark` gravaria o state no `data/` errado.
+
+1. **Capa** (2:1, obrigatória — o teste `artigo-especial-registry-sync-9226`
+   reprova artigo gateado sem `capa.jpg`):
+
+   ```bash
+   npx tsx scripts/image-generate.ts --editorial data/artigo-especial/{ano}-{slug}/capa-prompt.md \
+     --out-dir data/artigo-especial/{ano}-{slug}/ --destaque d1 --ratio 2x1
+   mkdir -p workers/artigos/public/{ano}/{slug}
+   cp data/artigo-especial/{ano}-{slug}/04-d1-2x1.jpg workers/artigos/public/{ano}/{slug}/capa.jpg
+   cp data/artigo-especial/{ano}-{slug}/04-d1-1x1.jpg workers/artigos/public/{ano}/{slug}/capa-quadrada.jpg
+   ```
+
+   Mostrar a capa ao editor junto com o resultado do passo 2 (não é um gate
+   à parte).
+
+2. **Conversão**, na branch do passo 0:
+
+   ```bash
+   npx tsx scripts/render-artigo-especial-html.ts --ano {ano} --slug {slug} --dry-run
+   npx tsx scripts/render-artigo-especial-html.ts --ano {ano} --slug {slug}
+   ```
+
+   Faz de uma vez o que o PR #9225 fez à mão: escreve
+   `workers/artigos/articles-src/{slug}.html` no template dos artigos
+   existentes (CSS base extraído do artigo mais recente, menu global,
+   masthead, capa, sumário, `<p class="lede">`, seções `h3.sect`, fontes,
+   JSON-LD, marcador `<!-- ESPECIAL:GATE_CUT -->` antes da 2ª seção ou onde
+   o draft tiver `<!-- corte -->`); registra o artigo em `ARTICLES`,
+   `GATED_ARTICLES`, `run_worker_first`, `public/index.html` e
+   `public/sitemap.xml`; gera o teaser e o `{slug}-full.generated.ts`; e
+   relê a fonte com o mesmo `parseArtigoMetaHtml` da divulgação. Exit 2 =
+   rascunho/capa/âncora inválidos, slug já usado em outro ano, ou HTML sem
+   exatamente 1 marcador de corte (a mensagem diz qual). O CSS base vem do
+   último artigo de `ARTICLES` que não seja este (`--reference slug` para
+   outro). Corte explícito só vale dentro da 1ª seção: mais tarde que isso o
+   teaser público entregaria o artigo pago. Componente próprio
+   do artigo (tabela, infográfico) entra no `draft.md` como bloco HTML cru.
+
+3. **Conferência local**: `npx tsx scripts/build-artigo-especial-teaser.ts --check`
+   (sem drift) e os testes do Worker de artigos
+   (`npx tsx --test test/artigo-especial-registry-sync-9226.test.ts test/artigo-especial-teaser-drift.test.ts test/artigos-sitemap-5126.test.ts test/site-global-nav-8497.test.ts`).
+   Abrir `workers/artigos/public/{ano}/{slug}/index.html` (teaser) no
+   navegador e mostrar ao editor. → `mark --etapa html --status done`.
+
+### Etapa E — PR, deploy e probe
+
+1. **PR** com os 8 arquivos (+ capas) do passo D2. `git add` só deles —
+   nunca `-A` (`data/` não entra):
+
+   ```bash
+   gh pr create --title "Artigo Especial {AAMM}: {título curto}" --body "..."
+   ```
+
+   → `mark --etapa pr --status done --url {URL do PR}`. Review automatizado
+   + merge seguem a regra geral de sessão interativa (#5251): review limpo
+   + CI verde → mergear. Esta skill **nunca** roda `wrangler deploy` à mão.
+
+2. **Deploy**: o merge dispara `.github/workflows/deploy-artigos.yml`
+   (push em `workers/artigos/**`). Acompanhar:
+   `gh run list --workflow deploy-artigos.yml -L 3`. O job pode sair verde
+   tendo **pulado** o deploy (guard de KV placeholder) — por isso o passo 3
+   não confia no status do job.
+
+3. **Probe**:
+
+   ```bash
+   npx tsx scripts/probe-artigo-especial.ts --ano {ano} --slug {slug} --attempts 10 --interval 30 --mark
+   ```
+
+   Exige 200 + `og:url` deste artigo + o bloco do gate (`especial-gate-cta`)
+   — prova de que é o teaser gerado que está no ar, não cache velho nem o
+   artigo completo vazando (`lib/artigo-especial-probe.ts`). `--mark` grava
+   a etapa `publicado` (`done`, ou `failed` com o motivo). Falhou → halt
+   banner com o motivo; **não seguir para a divulgação** com o artigo fora
+   do ar (o post do apoia.se publica na hora).
+
+4. Produção concluída → seguir para o Passo 0 na mesma sessão, com o
+   checkout em `master` atualizado (o Passo 0 lê
+   `workers/artigos/public/{ano}/{slug}/index.html` do disco). O preflight
+   relê o artigo publicado, então nada do que veio antes precisa ser
+   repassado.
+
+## Divulgação — Passos 0-6
+
+Artigo no ar (Etapa E `done`, ou publicado por fora). Daqui em diante o
+fluxo é o mesmo de antes do #9099.
 
 ## Passo 0 — preflight
 
@@ -89,14 +342,14 @@ inteira não fecha de ponta a ponta.
    `scripts/lib/artigo-especial-meta.ts::readArtigoMeta` — `{title,
    description, url, image, datePublished, h1, leadParagraphs}`. Arquivo
    ausente → erro claro: `"Artigo não encontrado em
-   workers/artigos/public/{ano}/{slug}/index.html — rode 'cd
-   workers/artigos && npx wrangler deploy' antes desta skill (pré-requisito
-   fora do escopo)."`
+   workers/artigos/public/{ano}/{slug}/index.html — produza o artigo pelas
+   Etapas A-E (ou atualize o checkout pra master, se o PR já mergeou)."`
 
-3. **Confirmar que o Worker está servindo o artigo ao vivo.** `GET`/`HEAD`
-   em `meta.url` (o `og:url` extraído acima) → precisa `200`. Deploy é
-   pré-requisito manual — `404`/erro de rede aqui é a mesma mensagem do
-   item 2 (aponta pro `wrangler deploy`).
+3. **Confirmar que o Worker está servindo o artigo ao vivo.**
+   `npx tsx scripts/probe-artigo-especial.ts --ano {ano} --slug {slug} --attempts 1`
+   (200 + `og:url` + bloco do gate, #9099). Quem veio da Etapa E já passou
+   por ele; aqui ele cobre o artigo publicado por fora. Falha → halt, aponta
+   pra Etapa E (run do `deploy-artigos.yml`).
 
 4. **Mural do apoia.se ANTES de criar post (#6014 item 3).** O guard de
    idempotência abaixo só enxerga o que ESTA skill fez — um post publicado
@@ -441,8 +694,26 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 
 ## Casos de borda
 
+- **Votação aberta/empatada/sem voto** → Etapa A para com a mensagem do
+  `artigo-especial-producao.ts tema` (fechar/forçar vencedor é do
+  `/diaria-voto-tema`), ou o editor passa `--tema`.
+- **Editor pede ajuste no texto depois do HTML/PR** → refazer a Etapa C
+  (`mark --etapa rascunho --status done` de novo invalida `html`/`pr`),
+  rodar de novo o `render-artigo-especial-html.ts` (idempotente: só reescreve
+  o que mudou) e dar push no MESMO PR.
+- **Ajuste com o PR ainda ABERTO** → refazer a Etapa C, rodar o render de
+  novo na mesma branch (substitui o item do índice e avança o `lastmod`),
+  `git push` no mesmo PR e regravar `mark --etapa html` e
+  `mark --etapa pr --status done --url {mesma URL}`.
+- **Ajuste depois do PR MERGEADO** (artigo já no ar) → refazer a Etapa C
+  com `atualizado:` no frontmatter, branch nova a partir de `origin/master`,
+  render, **PR novo** (`mark --etapa pr` com a URL nova) e probe de novo.
+  Canal de divulgação já `done` não é refeito.
+- **Probe falha** (deploy pulado pelo guard de KV, job vermelho, edge com
+  404 antigo) → etapa `publicado` fica `failed` com o motivo; nenhum canal
+  de divulgação roda. Resume depois do conserto: só o probe de novo.
 - **Artigo não deployado** (`index.html` ausente ou `og:url` não responde
-  200) → erro no Passo 0, aponta pro `wrangler deploy` — não segue pro
+  200) → erro no Passo 0, aponta pras Etapas D-E — não segue pro
   Passo 1.
 - **Canal individual falha** (apoia.se DOM mudou, Worker LinkedIn fora do
   ar) → grava `failed` naquele canal, segue pros outros (fail-soft por
@@ -465,11 +736,15 @@ implícito `false` — mesmo fluxo de branch/PR, sem tocar em
 
 ```
 data/artigo-especial/{ano}-{slug}/
+  briefing.md                 tese, estrutura, fontes (Etapa B)
+  draft.md                    rascunho aprovado, já humanizado (Etapa C)
+  capa-prompt.md              prompt da capa 2:1 (Etapa C/D)
+  04-d1-2x1.jpg, 04-d1-1x1.jpg  capa gerada, copiada pro Worker (Etapa D)
   apoiase.md                  chamada publica (Passo 1)
   linkedin-pagina.md          post pagina diar.ia.br (Passo 1)
   linkedin-perfil.md          post perfil pessoal (Passo 1)
   email.md                    chamada do e-mail pros apoiadores R$10+ (Passo 1)
-  published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box/email (Passo 0 guard, atualizado nos Passos 3-5)
+  published.json              status agregado por canal — apoiase/linkedin_pagina/linkedin_perfil/box/email (Passo 0 guard, atualizado nos Passos 3-5) + bloco `producao` (Etapas A-E)
   linkedin-published.json     detalhe do dispatch LinkedIn (worker_queue_key, route, scheduled_at — Passo 4)
   email-published.json        detalhe do broadcast Kit (broadcastId, tag + nº de membros, audienceVerification com a razão — Passo 4b)
 ```

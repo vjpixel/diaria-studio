@@ -63,6 +63,18 @@ Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
 
 ## Adicionar um artigo novo
 
+**Caminho normal desde #9099: `/diaria-artigo-especial`** (Etapas A-E). O
+rascunho em markdown (`data/artigo-especial/{ano}-{slug}/draft.md`) vira o
+HTML e os registros abaixo com
+`npx tsx scripts/render-artigo-especial-html.ts --ano AAAA --slug slug`
+(passos 1-3 de uma vez), o artigo sai por PR, o
+`.github/workflows/deploy-artigos.yml` publica no merge e
+`scripts/probe-artigo-especial.ts` confere a URL. O procedimento manual
+abaixo segue valendo para artigo com layout que o conversor não cobre.
+A capa 2:1 precisa estar em `public/{ano}/{slug}/capa.jpg` antes do
+render (o script recusa sem ela, e `artigo-especial-registry-sync-9226`
+reprova artigo gateado sem capa).
+
 1. Criar `articles-src/{slug}.html` (documento HTML completo e
    autocontido — sem dependências externas, CSS inline; é AQUI que se
    edita o texto, não em `public/`, ver "Gate por apoio" acima). Incluir
@@ -80,10 +92,11 @@ Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
 3. Adicionar o artigo em `public/index.html` (raiz do host — índice de
    todos os artigos especiais, #5126 item 3) e em `public/sitemap.xml`
    (#5126 item 1) — os dois são mantidos manualmente, não gerados.
-4. Deploy:
-   ```
-   cd workers/artigos && npx wrangler deploy
-   ```
+4. Deploy: por PR. O merge em `master` dispara
+   `.github/workflows/deploy-artigos.yml` (push em `workers/artigos/**`),
+   que roda o `wrangler deploy`. Não rodar `wrangler deploy` à mão. O job
+   pode sair verde tendo PULADO o deploy (guard de KV placeholder), então
+   confira com `npx tsx scripts/probe-artigo-especial.ts --ano AAAA --slug slug`.
 5. Verificar ao vivo: abrir a URL publicada E a home `diar.ia.br`
    (confirmar que o Beehiiv continua servindo o resto do domínio sem
    interferência), e testar o gate (teaser sem cookie, completo com um
