@@ -34,7 +34,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fetchRss } from "./fetch-rss.ts";
+import { fetchRss, parseFeed } from "./fetch-rss.ts";
 import { enrichEntry, parseSitemap } from "./lib/fetch-sitemap.ts";
 import { processThreads, type CapturedThread } from "./capture-newsletter-urls.ts";
 import { extractPastUrlsUnbounded, readPastEditionsMd, readReviewedDestaqueUrls } from "./lib/past-editions-extract.ts";
@@ -45,15 +45,23 @@ import {
   LATE_REFRESH_FEEDS,
   LATE_REFRESH_UNCOVERED_LABS,
   canonicalUrlSet,
+  feedReportRow,
   filterLateArticles,
   formatLateRefreshBlock,
+  githubHttpError,
+  postProcessFeedArticles,
   resolveCutoffs,
+  uncoveredLabsAtRuntime,
   selectSitemapEntries,
   suggestSubstitution,
   summarizeLateThreads,
+  type FeedProcessed,
+  type GithubNewReposFeed,
+  type GithubReleasesFeed,
   type HighlightLike,
   type LateArticle,
   type LateRefreshFeed,
+  type SitemapFeed,
   type LateRefreshReport,
   type LateThreadInput,
 } from "./lib/late-refresh.ts";
@@ -78,7 +86,7 @@ function readText(path: string): string {
   }
 }
 
-async function fetchSitemapAfter(feed: LateRefreshFeed, cutoffIso: string): Promise<LateArticle[]> {
+async function fetchSitemapAfter(feed: SitemapFeed, cutoffIso: string): Promise<LateArticle[]> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FEED_TIMEOUT_MS);
   let xml: string;
@@ -101,15 +109,69 @@ async function fetchSitemapAfter(feed: LateRefreshFeed, cutoffIso: string): Prom
   }));
 }
 
-async function fetchFeed(feed: LateRefreshFeed, cutoffIso: string, now: Date): Promise<{ articles: LateArticle[]; error?: string }> {
+const GITHUB_HEADERS = { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } as const;
+
+/**
+ * #9424: GET no GitHub com erro acionável (rate limit com horário de reset,
+ * 404 nomeando o que não existe). `fetchImpl` injetável pra teste.
+ */
+async function githubGet(
+  feed: GithubReleasesFeed | GithubNewReposFeed,
+  accept: string,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FEED_TIMEOUT_MS);
   try {
-    if (feed.method === "sitemap") return { articles: await fetchSitemapAfter(feed, cutoffIso) };
+    const res = await fetchImpl(feed.url, { headers: { ...GITHUB_HEADERS, Accept: accept }, signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(githubHttpError(res.status, res.headers, await res.text().catch(() => ""), feed.method));
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface FetchFeedResult {
+  articles: LateArticle[];
+  processed?: FeedProcessed;
+  error?: string;
+}
+
+/**
+ * Busca + pós-processa um feed. Nunca lança: falha vira `error` (o relatório
+ * marca `ok: false`). `fetchImpl` injetável — usado pelos métodos do GitHub
+ * (o RSS genérico segue no `fetchRss`, que tem o fetch dele).
+ */
+export async function fetchFeed(feed: LateRefreshFeed, cutoffIso: string, now: Date, fetchImpl: typeof fetch = fetch): Promise<FetchFeedResult> {
+  try {
+    if (feed.method === "sitemap") {
+      const articles = await fetchSitemapAfter(feed, cutoffIso);
+      return { articles, processed: postProcessFeedArticles(feed, articles) };
+    }
+    if (feed.method === "github-new-repos") {
+      // #9424: repos públicos da org pela API REST oficial (sem token: 60 req/h por IP, 3 chamadas por gate).
+      const res = await githubGet(feed, "application/vnd.github+json", fetchImpl);
+      const processed = postProcessFeedArticles(feed, await res.json());
+      return { articles: processed.articles, processed };
+    }
+    const toLate = (a: { url: string; title: string; published_at?: string | null; summary?: string }): LateArticle => ({
+      url: a.url,
+      title: a.title,
+      published_at: a.published_at ?? null,
+      summary: a.summary,
+      lab: feed.lab,
+      source: feed.name,
+    });
+    if (feed.method === "github-releases") {
+      // Atom de releases do GitHub — corta nightly/rc/patch pela tag (o corte por data é do filterLateArticles).
+      const res = await githubGet(feed, "application/atom+xml, application/xml, */*", fetchImpl);
+      const processed = postProcessFeedArticles(feed, parseFeed(await res.text()).articles.map(toLate));
+      return { articles: processed.articles, processed };
+    }
     const days = Math.max(1, Math.ceil((now.getTime() - new Date(cutoffIso).getTime() + IMPRECISE_DATE_LOOKBACK_MS) / 86_400_000));
     const r = await fetchRss({ url: feed.url, sourceName: feed.name, days, timeoutMs: FEED_TIMEOUT_MS, now });
-    return {
-      articles: r.articles.map((a) => ({ url: a.url, title: a.title, published_at: a.published_at ?? null, summary: a.summary, lab: feed.lab, source: feed.name })),
-      ...(r.error ? { error: r.error } : {}),
-    };
+    const processed = postProcessFeedArticles(feed, r.articles.map(toLate));
+    return { articles: processed.articles, processed, ...(r.error ? { error: r.error } : {}) };
   } catch (e) {
     return { articles: [], error: e instanceof Error ? e.message : String(e) };
   }
@@ -187,9 +249,11 @@ export async function buildLateRefreshReport(opts: {
     results.forEach((r, i) => {
       const feed = LATE_REFRESH_FEEDS[i];
       const after = filterLateArticles(r.articles, cutoffs.research_cutoff as string, new Set(), new Set(), opts.now.toISOString()).fresh;
-      base.feeds.push({ name: feed.name, lab: feed.lab, ok: !r.error, items_after_cutoff: after.length, ...(r.error ? { error: r.error } : {}) });
+      base.feeds.push(feedReportRow(feed, r, after.length));
       all.push(...r.articles);
     });
+    // #9424: lab com TODOS os feeds falhando nesta rodada também está descoberto.
+    base.uncovered_labs = uncoveredLabsAtRuntime(base.feeds);
     const filtered = filterLateArticles(all, cutoffs.research_cutoff, inEdition, published, opts.now.toISOString());
     base.candidates = filtered.fresh.map((a) => ({ ...a, suggestion: suggestSubstitution(a, highlights, currentOrder) }));
     base.already_in_edition = filtered.already_in_edition.length;

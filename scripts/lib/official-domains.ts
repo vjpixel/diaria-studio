@@ -43,6 +43,18 @@ export interface OfficialSource {
   primary_domain?: string;
 }
 
+/**
+ * #9424: raiz do repo de uma org oficial no GitHub, ou a página de UMA release
+ * com tag ESTÁVEL (`v1.20.0`, `dsh-v0.2.0`, `sdk-typescript-v0.1.18`, `1.2`).
+ * Tag com sufixo (`-nightly.…`, `-rc.2`, `-alpha.1`, `-preview.0`) não conta:
+ * build noturno não é link de lançamento. Issues/PRs/blobs e a lista de
+ * releases também não. `github.com` inteiro nunca é oficial.
+ */
+export function githubOrgRepoPattern(org: string): RegExp {
+  const o = org.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^github\\.com\\/${o}\\/[^/]+(?:\\/releases\\/tag\\/(?:[a-z][a-z0-9-]*-)?v?\\d+(?:\\.\\d+)*)?\\/?$`, "i");
+}
+
 export const OFFICIAL_SOURCES: OfficialSource[] = [
   // -----------------------------------------------------------------------
   // Domínios com path-restriction (qualquer URL no host NÃO basta)
@@ -204,6 +216,10 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // #566: estava em COMPANY_TO_DOMAIN mas não em LANCAMENTO_DOMAINS — drift corrigido
     company: "DeepSeek",
     domains: ["deepseek.com", "api-docs.deepseek.com"],
+    // #9424: repo da org oficial no GitHub (raiz ou página de UMA release de tag
+    // estável) — pesos/código de modelo saem como repo novo da org (DeepSeek-V3,
+    // DeepSeek-OCR-2). Mesmo recorte do Qwen: issues/PRs/blobs não contam.
+    path_patterns: [githubOrgRepoPattern("deepseek-ai")],
     detection_keywords: /\b(deepseek)\b/i,
   },
   {
@@ -255,7 +271,9 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // 260922): lançamentos de modelo saem aqui. Restrito à RAIZ do repo da org
     // (issues/PRs/blobs não são página de lançamento) — github.com inteiro NÃO
     // é oficial.
-    path_patterns: [/^github\.com\/qwenlm\/[^/]+\/?$/i],
+    // #9424: também a página de UMA release de tag estável (`/releases/tag/v0.25.0`)
+    // — é o link que o refresh tardio do gate 4 lê do Atom de releases da org.
+    path_patterns: [githubOrgRepoPattern("qwenlm")],
     detection_keywords: /\b(qwen|alibaba)\b/i,
   },
   {
@@ -311,6 +329,9 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     company: "xAI",
     domains: ["x.ai"],
+    // #9424: repo da org oficial no GitHub (raiz ou página de UMA release de tag
+    // estável), mesmo recorte do Qwen — grok-build, xai-sdk-python.
+    path_patterns: [githubOrgRepoPattern("xai-org")],
     detection_keywords: /\b(xai|grok)\b/i,
   },
   {
