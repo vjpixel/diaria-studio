@@ -40,6 +40,7 @@ import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 import { hero2x1KeyFor, isDestaqueImagePresent } from "./lib/shared/public-image-keys.ts"; // #7596 — extraído pra módulo puro
 import {
+  staleUseMelhorImageKeys,
   useMelhorSlideFilename,
   useMelhorSlideImageKey,
 } from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
@@ -503,6 +504,7 @@ export async function uploadPublicImages(
 
   // Determinar lista de imagens a upload
   let specs: ImageSpec[];
+  let useMelhorSlots: string[] = [];
   if (opts.destaques) {
     // Retrocompat: destaques explícitos
     specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
@@ -510,7 +512,6 @@ export async function uploadPublicImages(
     // #9568: slots do 4º post só quando o carimbo do Stage 3 bate com o texto
     // atual (import dinâmico — o estático fecharia ciclo de módulos, ver
     // `useMelhorSlideSpecs`). Modo newsletter não sobe slides sociais.
-    let useMelhorSlots: string[] = [];
     if (mode !== "newsletter") {
       const { freshUseMelhorCarouselSlots } = await import("./lib/use-melhor-dispatch.ts");
       useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
@@ -634,6 +635,16 @@ export async function uploadPublicImages(
         ...(preservedCloudflare ? { cloudflare_url: preservedCloudflare } : {}),
       };
     }
+  }
+
+  // #9795: chaves de slide do 4º post sem arquivo local (sobra de um render
+  // com mais slides — `## um` reescrito mais curto) saem do cache; senão o
+  // publish/preview seguiam montando o carrossel com slides que não existem.
+  // Slots do carimbo atual (quando fresco) nunca são podados aqui (arquivo
+  // atual sumido é o caso #5085, que já avisa e mantém).
+  for (const key of staleUseMelhorImageKeys(images, editionDir, useMelhorSlots)) {
+    delete images[key];
+    warnings.push(`${key}: slide do 4º post sem arquivo local (render anterior com mais slides) — removido de 06-public-images.json (#9795).`);
   }
 
   writeFileSync(

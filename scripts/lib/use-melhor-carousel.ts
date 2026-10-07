@@ -33,7 +33,6 @@ import {
 } from "./weekly-flat-card.ts";
 import {
   buildCarouselSlideTexts,
-  splitIntoParagraphCards,
   splitParagraphIntoTwoBlocks,
   DAILY_CAROUSEL_LAYOUT,
   DAILY_CAROUSEL_HANDLE,
@@ -79,6 +78,74 @@ export {
   type UseMelhorCarouselStamp,
 } from "./use-melhor-slide-files.ts";
 
+/**
+ * Pure (#9791): parágrafos do `## um` PRESERVANDO as quebras de linha simples
+ * dentro de cada um — um card pode agrupar 2 itens da lista numerada em linhas
+ * consecutivas ("1) ...\n2) ..."), e o slide precisa saber onde cada item
+ * começa. Acima de `USE_MELHOR_MAX_PARAGRAPH_SLIDES` a cauda é fundida no
+ * último card (mesma regra de `splitIntoParagraphCards`, nunca descarta).
+ */
+export function splitUseMelhorParagraphs(body: string): string[] {
+  const paras = body
+    .replace(/\r\n/g, "\n")
+    .split(/\n\s*\n/)
+    .map((p) =>
+      p
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .filter(Boolean);
+  if (paras.length <= USE_MELHOR_MAX_PARAGRAPH_SLIDES) return paras;
+  const head = paras.slice(0, USE_MELHOR_MAX_PARAGRAPH_SLIDES - 1);
+  return [...head, paras.slice(USE_MELHOR_MAX_PARAGRAPH_SLIDES - 1).join("\n")];
+}
+
+/** Marcador de item de lista numerada no início da linha: "1. ", "2) ". */
+const USE_MELHOR_LIST_MARKER = /^(\d{1,2})[.)]\s+(\S.*)$/;
+
+export interface UseMelhorListItem {
+  n: number;
+  text: string;
+}
+
+/**
+ * Pure (#9789/#9791): itens numerados de UM parágrafo do `## um`, ou `null`
+ * quando o parágrafo não abre com marcador de lista ("1. ", "1) ") — é
+ * introdução, fechamento ou texto corrido. Linha sem marcador depois de um
+ * item é continuação dele (quebra manual), nunca item novo.
+ */
+export function parseUseMelhorListItems(paragraph: string): UseMelhorListItem[] | null {
+  const lines = paragraph
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  const items: UseMelhorListItem[] = [];
+  for (const line of lines) {
+    const m = line.match(USE_MELHOR_LIST_MARKER);
+    if (m) items.push({ n: Number(m[1]), text: line.replace(/\s+/g, " ") });
+    else if (items.length === 0) return null;
+    else items[items.length - 1].text += ` ${line.replace(/\s+/g, " ")}`;
+  }
+  return items;
+}
+
+/**
+ * Pure: texto do corpo de um slide de parágrafo do 4º post. Parágrafo que
+ * agrupa 2+ itens numerados (#9791) vira 1 bloco por item (separados por
+ * linha em branco, mesmo respiro do `\n\n` de `wrapBody`) — o corte cai na
+ * fronteira entre itens, nunca no meio de um. Qualquer outro parágrafo segue
+ * exatamente o caminho de sempre (espaços colapsados +
+ * `splitParagraphIntoTwoBlocks`), então o carimbo de textos antigos não muda.
+ */
+export function useMelhorSlideBody(paragraph: string): string {
+  const items = parseUseMelhorListItems(paragraph);
+  if (items && items.length >= 2) return items.map((i) => i.text).join("\n\n");
+  return splitParagraphIntoTwoBlocks(paragraph.replace(/\s+/g, " ").trim());
+}
+
 /** Pure: quantos parágrafos-slide o texto gera (1..USE_MELHOR_MAX_PARAGRAPH_SLIDES; 0 se vazio). */
 export function countUseMelhorParagraphs(genericText: string): number {
   const { body } = splitBodyAndTags(genericText);
@@ -109,7 +176,7 @@ export function buildUseMelhorSlides(
   const n = countUseMelhorParagraphs(genericText);
   if (n === 0) return [];
   const { body } = splitBodyAndTags(genericText);
-  const paragraphs = splitIntoParagraphCards(body, n);
+  const paragraphs = splitUseMelhorParagraphs(body);
   const total = paragraphs.length;
   // CTA reusado do carrossel diário (mesmo kicker/copy/rodapé) — fonte única.
   const dailyCta = buildCarouselSlideTexts("x", ctaOverride).cta;
@@ -124,7 +191,7 @@ export function buildUseMelhorSlides(
         slot: `p${i + 1}`,
         text: {
           kicker: `${String(i + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}`,
-          title: splitParagraphIntoTwoBlocks(p),
+          title: useMelhorSlideBody(p),
           footer: "diar.ia.br",
           handle: DAILY_CAROUSEL_HANDLE,
           compactHandle: true,
@@ -198,6 +265,81 @@ export function lintUseMelhorPostText(genericText: string): string[] {
   }
   const last = paras[paras.length - 1] ?? "";
   if (/\?["'”’)\]*_]*\s*$/.test(last)) problems.push("termina em pergunta — mesma regra do no-trailing-question");
+  return problems;
+}
+
+/** Teto de itens da lista numerada num mesmo card (#9791). */
+export const USE_MELHOR_MAX_ITEMS_PER_CARD = 2;
+
+/**
+ * Pure (#9789/#9791): lint de LISTA do `## um` — complementa
+ * `lintUseMelhorPostText` com as regras de formato pedidas pelo editor no
+ * gate da 261007:
+ *   - direto ao ponto: o 1º parágrafo (1º slide) já é o item 1, nunca uma
+ *     introdução/gancho — a capa (kicker + título) faz a abertura;
+ *   - etapas/recomendações em lista numerada ("1. "/"1) "), numeração
+ *     contínua a partir de 1, sem parágrafo fora da lista;
+ *   - no máximo `USE_MELHOR_MAX_ITEMS_PER_CARD` itens por card, e 2 cards
+ *     vizinhos de 1 item que caberiam juntos (mesma medição do overflow,
+ *     62px fixo) devem ser agrupados — sem reduzir abaixo do mínimo de
+ *     parágrafos do §3c.
+ * Devolve 1 mensagem por problema (vazio = ok). Warning-only no chamador,
+ * como o resto do 4º post (fail-soft, #9568).
+ */
+export function lintUseMelhorPostList(genericText: string): string[] {
+  const { body } = splitBodyAndTags(genericText);
+  const paras = splitUseMelhorParagraphs(body);
+  if (paras.length === 0) return [];
+  const parsed = paras.map(parseUseMelhorListItems);
+  const problems: string[] = [];
+
+  if (parsed[0] === null) {
+    problems.push(
+      "1º parágrafo não é item da lista numerada — o §3c pede ir direto ao ponto (sem introdução: a capa já abre o post; o 1º slide é o item 1)",
+    );
+  }
+  const outside = parsed
+    .map((p, i) => (p === null && i > 0 ? i + 1 : null))
+    .filter((i): i is number => i !== null);
+  if (outside.length > 0) {
+    problems.push(`parágrafo(s) ${outside.join(", ")} fora da lista numerada — cada parágrafo é 1 ou 2 itens "N. ..."`);
+  }
+  const numbers = parsed.flatMap((p) => (p ?? []).map((i) => i.n));
+  if (numbers.length > 0 && numbers.some((n, i) => n !== i + 1)) {
+    problems.push(`numeração da lista não é contínua a partir de 1 (${numbers.join(", ")})`);
+  }
+  const crowded = parsed
+    .map((p, i) => (p && p.length > USE_MELHOR_MAX_ITEMS_PER_CARD ? i + 1 : null))
+    .filter((i): i is number => i !== null);
+  if (crowded.length > 0) {
+    problems.push(
+      `parágrafo(s) ${crowded.join(", ")} com mais de ${USE_MELHOR_MAX_ITEMS_PER_CARD} itens — no máximo ${USE_MELHOR_MAX_ITEMS_PER_CARD} por card`,
+    );
+  }
+
+  // #9791: pares vizinhos de 1 item que caberiam no mesmo card. Guloso, da
+  // esquerda pra direita; nunca sugere fundir abaixo do mínimo de parágrafos.
+  const mergeable: string[] = [];
+  let remaining = paras.length;
+  for (let i = 0; i + 1 < paras.length && remaining > USE_MELHOR_MIN_PARAGRAPHS; ) {
+    const a = parsed[i];
+    const b = parsed[i + 1];
+    if (a?.length === 1 && b?.length === 1) {
+      const merged = useMelhorSlideBody(`${paras[i]}\n${paras[i + 1]}`);
+      if (!measureFlatCardBody(merged, DAILY_CAROUSEL_LAYOUT).overflows) {
+        mergeable.push(`${i + 1}+${i + 2}`);
+        remaining -= 1;
+        i += 2;
+        continue;
+      }
+    }
+    i += 1;
+  }
+  if (mergeable.length > 0) {
+    problems.push(
+      `parágrafos ${mergeable.join(", ")} cabem no mesmo card — agrupar os 2 itens em linhas consecutivas do mesmo parágrafo (#9791)`,
+    );
+  }
   return problems;
 }
 

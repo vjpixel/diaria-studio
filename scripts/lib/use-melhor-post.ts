@@ -389,6 +389,40 @@ export function higherScoredRenderedItem(
 }
 
 /**
+ * Segmento final de título que descreve o FORMATO da peça no veículo, não o
+ * assunto (#9789): "guia prático para profissionais em 2026", "passo a passo",
+ * "tutorial completo", "a complete guide", "for beginners". Só é removido
+ * quando vem depois de um separador (`: `, ` - `, ` – `, ` — `, ` | `).
+ */
+const FORMAT_SUFFIX_RE =
+  /^(?:(?:um|uma|o|a|seu|the|an|your)\s+)?(?:(?:guia|tutorial|manual|passo a passo|dicas|guide|step[- ]by[- ]step|how[- ]to|cheat ?sheet|checklist)\b|(?:(?:complete|ultimate|practical|definitive|beginner'?s?)\s+guide)\b|(?:for|para)\s+(?:beginners|iniciantes|leigos|profissionais)\b)/i;
+const TITLE_SEPARATOR_RE = /\s*(?::|\s[-–—|])\s+/g;
+/** Abaixo disso o título que sobra é curto demais pra ser capa — mantém o original. */
+const MIN_COVER_TITLE_CHARS = 12;
+
+/**
+ * Pure (#9789): tira do título da capa o sufixo de formato do veículo
+ * ("Como usar IA no trabalho: guia prático para profissionais em 2026" →
+ * "Como usar IA no trabalho"). Remove só o ÚLTIMO segmento, e só quando ele
+ * casa `FORMAT_SUFFIX_RE` e o que sobra tem pelo menos `MIN_COVER_TITLE_CHARS`
+ * — título sem separador, ou cujo sufixo é assunto, volta intacto.
+ */
+export function stripUseMelhorTitleFormatSuffix(title: string): string {
+  const t = title.trim();
+  let lastSepStart = -1;
+  let lastSepEnd = -1;
+  for (const m of t.matchAll(TITLE_SEPARATOR_RE)) {
+    lastSepStart = m.index ?? -1;
+    lastSepEnd = lastSepStart + m[0].length;
+  }
+  if (lastSepStart <= 0) return t;
+  const head = t.slice(0, lastSepStart).trim();
+  const tail = t.slice(lastSepEnd).trim();
+  if (!FORMAT_SUFFIX_RE.test(tail) || head.length < MIN_COVER_TITLE_CHARS) return t;
+  return head;
+}
+
+/**
  * Pure (#9600): título da capa do carrossel do 4º post. Ordem:
  *   1. `item.cover_title` — gravado à mão em `use-melhor-post.json`;
  *   2. `item.title`, quando o editor o editou (difere do título do mesmo link
@@ -400,6 +434,10 @@ export function higherScoredRenderedItem(
  * (Stages 4/5) — divergir aqui marcaria toda arte como defasada. Desde o
  * #9630 o Stage 3 grava o título resolvido no carimbo (`cover_title`) e a
  * conferência usa o gravado; o resolvido aqui só vale pra carimbo antigo.
+ *
+ * #9789: nos passos 3 e 4 (títulos automáticos) o sufixo de formato do
+ * veículo sai (`stripUseMelhorTitleFormatSuffix`); os passos 1 e 2 são
+ * escolha do editor e voltam intactos.
  */
 export function resolveUseMelhorCoverTitle(
   item: UseMelhorCandidate,
@@ -416,9 +454,9 @@ export function resolveUseMelhorCoverTitle(
     const section = parseSections(ctx.reviewedMd).find((s) => s.name === "USE MELHOR");
     const rendered = section?.items.find((i) => normalizeUseMelhorUrl(i.url) === key);
     const t = rendered?.title.replace(/\*\*/g, "").trim();
-    if (t) return t;
+    if (t) return stripUseMelhorTitleFormatSuffix(t);
   }
-  return item.title;
+  return stripUseMelhorTitleFormatSuffix(item.title);
 }
 
 export interface UseMelhorPostState {

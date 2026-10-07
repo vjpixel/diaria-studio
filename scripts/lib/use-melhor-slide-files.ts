@@ -12,7 +12,7 @@
  * Só importa `node:*` — travado em `test/use-melhor-dispatch-9568.test.ts`.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -66,4 +66,62 @@ export function readUseMelhorCarouselStamp(editionDir: string): UseMelhorCarouse
   } catch {
     return null;
   }
+}
+
+/** Casa uma chave de slide do 4º post em `06-public-images.json` e devolve o slot. */
+const USE_MELHOR_IMAGE_KEY_RE = new RegExp(`^${POST_ID}_carousel_(cover|p\\d+|cta)$`);
+
+/** Pure: slot de uma chave `um_carousel_{slot}`, ou `null` se não for chave do 4º post. */
+export function useMelhorSlotFromImageKey(key: string): string | null {
+  return key.match(USE_MELHOR_IMAGE_KEY_RE)?.[1] ?? null;
+}
+
+/**
+ * Pure (#9795): chaves de slide do 4º post em `images` (`06-public-images.json`)
+ * cujo arquivo local não existe mais. Caso típico (edição 261007): o `## um`
+ * foi reescrito com menos parágrafos, `gen-carousel-cards.ts` apagou
+ * `04-um-carousel-p4/p5`, mas o cache de upload seguia com
+ * `um_carousel_p4`/`p5` — URLs de slides que não fazem mais parte do
+ * carrossel. `keepSlots` (os slots do carimbo atual) nunca entram na lista:
+ * slide ATUAL com arquivo sumido é outro problema (#5085 — o upload já avisa
+ * e mantém), não sobra de render antigo.
+ */
+export function staleUseMelhorImageKeys(
+  images: Record<string, unknown>,
+  editionDir: string,
+  keepSlots: readonly string[] = [],
+  fileExists: (p: string) => boolean = existsSync,
+): string[] {
+  const keep = new Set(keepSlots);
+  return Object.keys(images).filter((key) => {
+    const slot = useMelhorSlotFromImageKey(key);
+    if (slot === null || keep.has(slot)) return false;
+    return !fileExists(resolve(editionDir, useMelhorSlideFilename(slot)));
+  });
+}
+
+/**
+ * (#9795) Remove de `{editionDir}/06-public-images.json` as chaves de slide do
+ * 4º post que sobraram de um render com mais slides (ver
+ * `staleUseMelhorImageKeys`). Escrita atômica (tmp + rename). Fail-soft:
+ * arquivo ausente/ilegível → `[]` sem tocar em nada. Devolve as chaves removidas.
+ */
+export function pruneStaleUseMelhorPublicImages(editionDir: string, keepSlots: readonly string[] = []): string[] {
+  const p = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(p)) return [];
+  let data: { images?: Record<string, unknown> };
+  try {
+    data = JSON.parse(readFileSync(p, "utf8")) as { images?: Record<string, unknown> };
+  } catch {
+    return [];
+  }
+  const images = data?.images;
+  if (!images || typeof images !== "object") return [];
+  const stale = staleUseMelhorImageKeys(images, editionDir, keepSlots);
+  if (stale.length === 0) return [];
+  for (const k of stale) delete images[k];
+  const tmp = p + ".tmp";
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+  renameSync(tmp, p);
+  return stale;
 }
