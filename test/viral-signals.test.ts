@@ -82,6 +82,36 @@ describe("viralGuard", () => {
     assert.equal(viralGuard({ ...ok, verify_verdict: "anti_bot" }), "verdict:anti_bot");
     assert.equal(viralGuard({ ...ok, verify_verdict: "accessible" }), null);
     assert.equal(viralGuard({ ...ok, category: "tutorial" }), "category:tutorial");
+    assert.equal(viralGuard({ ...ok, category: "video" }), "category:video");
     assert.equal(viralGuard({ ...ok, score_base: VIRAL_MIN_BASE_SCORE - 1 }), "below_min_base");
+    assert.equal(viralGuard({ ...ok, score_base: VIRAL_MIN_BASE_SCORE }), null); // fronteira: 40 passa
+  });
+
+  it("piso de score é checado por último: guarda de tipo vence com score baixo", () => {
+    const low = { ...ok, score_base: 10 };
+    assert.equal(viralGuard({ ...low, url: "https://x.com/a/status/1" }), "social_post");
+    assert.equal(viralGuard({ ...low, verify_verdict: "paywall" }), "verdict:paywall");
+    assert.equal(viralGuard({ ...low, category: "video" }), "category:video");
+    assert.equal(viralGuard(low), "below_min_base");
+  });
+});
+
+describe("recência", () => {
+  const at = (published_at: string) => extractViralSignals({ url: "u", published_at }, ctx).recent_36h;
+  it("só [0, 36h] conta; futuro, > 36h e data inválida não", () => {
+    assert.equal(at("2026-09-21T06:00:00Z"), true); // 12h
+    assert.equal(at("2026-09-20T06:00:00Z"), true); // exatamente 36h
+    assert.equal(at("2026-09-20T05:59:00Z"), false); // > 36h
+    assert.equal(at("2026-09-22T00:00:00Z"), false); // negativa (depois do "agora")
+    assert.equal(at("não é data"), false);
+    assert.equal(extractViralSignals({ url: "u" }, ctx).recent_36h, false);
+  });
+});
+
+describe("mentionsUrl — casos de borda", () => {
+  it("casa com query string depois da URL e acha a exata depois de um prefixo", () => {
+    assert.ok(mentionsUrl("https://site.com/p/x?utm_source=nl", "site.com/p/x"));
+    assert.ok(mentionsUrl("https://site.com/p/x#frag", "site.com/p/x"));
+    assert.ok(mentionsUrl("veja site.com/p/xyz e também site.com/p/x hoje", "site.com/p/x"));
   });
 });

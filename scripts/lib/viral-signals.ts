@@ -53,9 +53,7 @@ export interface ViralSignals {
   recent_36h: boolean;
 }
 
-export type ViralSignalName = keyof ViralSignals;
-
-export const VIRAL_SIGNAL_NAMES: readonly ViralSignalName[] = [
+export const VIRAL_SIGNAL_NAMES = [
   "people_gov",
   "big_company",
   "conflict_harm",
@@ -63,7 +61,23 @@ export const VIRAL_SIGNAL_NAMES: readonly ViralSignalName[] = [
   "policy_geo",
   "newsletter_mentions",
   "recent_36h",
-];
+] as const satisfies readonly (keyof ViralSignals)[];
+
+export type ViralSignalName = (typeof VIRAL_SIGNAL_NAMES)[number];
+
+/** Falha de COMPILAÇÃO se `ViralSignals` ganhar campo que não está em `VIRAL_SIGNAL_NAMES`. */
+type MissingSignalNames = Exclude<keyof ViralSignals, ViralSignalName>;
+const _signalNamesExhaustive: [MissingSignalNames] extends [never] ? true : never = true;
+void _signalNamesExhaustive;
+
+/** Motivo de uma guarda — união literal, não string solta. */
+export type ViralGuard =
+  | "category:tutorial"
+  | "category:video"
+  | "verdict:paywall"
+  | "verdict:anti_bot"
+  | "social_post"
+  | "below_min_base";
 
 /** Domínios registráveis de rede social (falso positivo do POC: um tweet ganhou +8 em 260922). */
 export const SOCIAL_DOMAINS: ReadonlySet<string> = new Set([
@@ -80,8 +94,6 @@ export const SOCIAL_DOMAINS: ReadonlySet<string> = new Set([
   "mastodon.social",
 ]);
 
-/** Vereditos do link-verifier que bloqueariam um bônus. */
-export const VIRAL_BLOCKED_VERDICTS: ReadonlySet<string> = new Set(["paywall", "anti_bot"]);
 
 const PEOPLE_AND_GOV =
   /\b(trump|musk|altman|amodei|huang|zuckerberg|nadella|pichai|putin|xi jinping|lula|casa branca|white house|pent[áa]gono|pentagon|congress|senate|senado|governo|government)\b/i;
@@ -145,11 +157,21 @@ export function extractViralSignals(a: ViralSignalInput, ctx: ViralContext): Vir
 }
 
 /** Guarda que impediria um bônus, ou `null`. Ordem fixa — a 1ª que casa é a registrada. */
-export function viralGuard(a: ViralGuardInput): string | null {
-  if (a.category === "tutorial" || a.category === "video") return `category:${a.category}`;
-  if (a.score_base < VIRAL_MIN_BASE_SCORE) return "below_min_base";
-  if (a.verify_verdict && VIRAL_BLOCKED_VERDICTS.has(a.verify_verdict)) return `verdict:${a.verify_verdict}`;
+/**
+ * O piso de score é checado POR ÚLTIMO de propósito: as outras guardas dizem
+ * "este tipo de link nunca teria bônus" (a calibração zera os sinais dele), o
+ * piso só diz "este artigo não teria bônus por estar fraco" — a calibração
+ * mede os sinais dele mesmo assim. Com o piso por último, um post de rede
+ * social com score baixo sai como `social_post` (zerado), e não como
+ * `below_min_base` (que manteria os sinais).
+ */
+export function viralGuard(a: ViralGuardInput): ViralGuard | null {
+  if (a.category === "tutorial") return "category:tutorial";
+  if (a.category === "video") return "category:video";
+  if (a.verify_verdict === "paywall") return "verdict:paywall";
+  if (a.verify_verdict === "anti_bot") return "verdict:anti_bot";
   const domain = registrableDomain(a.url);
   if (domain && SOCIAL_DOMAINS.has(domain)) return "social_post";
+  if (a.score_base < VIRAL_MIN_BASE_SCORE) return "below_min_base";
   return null;
 }

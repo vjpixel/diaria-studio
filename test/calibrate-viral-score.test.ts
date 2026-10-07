@@ -3,23 +3,37 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   aammddBrt,
+  absentIsZero,
+  assignSends,
   buildEditionRows,
+  cellKey,
+  combineSends,
   decide,
   demeanWithinCells,
+  editionHintFromUrls,
   fitOls,
-  groupClicksByEdition,
   indexApproved,
   inestimableFeatures,
+  loadDataset,
+  MIN_CONCORDANCE_GAIN,
+  parseCliOptions,
   parseNewsletterLinks,
   pocBonusPoints,
+  readJson,
   runCalibration,
   sectionSlug,
+  signalFeature,
+  toSend,
   withinCellConcordance,
   mulberry32,
   type DatasetRow,
   type ModelResult,
+  type Send,
 } from "../scripts/calibrate-viral-score.ts";
 import type { UnifiedCachedPost } from "../scripts/lib/shared/edition-cache-reader.ts";
 
@@ -74,38 +88,115 @@ describe("aammddBrt", () => {
 });
 
 function post(over: Partial<UnifiedCachedPost> & { delivered?: number; clicks?: [string, number][] }): UnifiedCachedPost {
+  const { delivered, clicks, ...rest } = over;
   return {
     origin: "kit",
     status: "confirmed",
     publish_date: Date.parse("2026-09-22T09:00:00Z") / 1000,
     stats: {
-      email: { recipients: over.delivered ?? 500 },
-      clicks: over.clicks?.map(([url, n]) => ({ url, email: { unique_clicks: n, unique_verified_clicks: n, verified_clicks: n } })),
+      email: { recipients: delivered ?? 500 },
+      clicks: clicks?.map(([url, n]) => ({ url, email: { unique_clicks: n, unique_verified_clicks: n, verified_clicks: n } })),
     },
-    ...over,
+    ...rest,
   } as UnifiedCachedPost;
 }
 
-describe("groupClicksByEdition", () => {
-  it("soma Beehiiv + Kit do mesmo dia por URL canônica", () => {
-    const g = groupClicksByEdition([
-      post({ clicks: [["https://a.example.com/r1?utm_source=newsletter", 3]] }),
-      post({ origin: "beehiiv", delivered: 200, clicks: [["https://a.example.com/r1", 2]] }),
-    ]);
-    const e = g.get("260922")!;
-    assert.equal(e.delivered, 700);
-    assert.equal(e.sends, 2);
-    assert.equal(e.clicks.get("https://a.example.com/r1"), 5);
+function sendOf(p: UnifiedCachedPost, id = "s"): Send {
+  const s = toSend(p, id);
+  assert.equal(typeof s, "object", `envio descartado: ${String(s)}`);
+  return s as Send;
+}
+
+describe("toSend / editionHintFromUrls", () => {
+  it("descarta envio pequeno (teste ou variante), não publicado, sem cliques buscados e zero-clique total", () => {
+    assert.equal(toSend(post({ delivered: 1, clicks: [["https://a.example.com/r1", 1]] }), "a"), "small_send");
+    assert.equal(toSend(post({ status: "draft", clicks: [["https://a.example.com/r1", 1]] }), "b"), "not_confirmed");
+    assert.equal(toSend(post({}), "c"), "no_click_data");
+    assert.equal(toSend(post({ clicks: [["https://a.example.com/r1", 0]] }), "d"), "all_zero_clicks");
   });
 
-  it("descarta teste (poucos destinatários), não publicado, sem cliques buscados e zero-clique total", () => {
-    const g = groupClicksByEdition([
-      post({ delivered: 1, clicks: [["https://a.example.com/r1", 1]] }),
-      post({ status: "draft", clicks: [["https://a.example.com/r1", 1]] }),
-      post({}),
-      post({ clicks: [["https://a.example.com/r1", 0]] }),
+  it("canoniza URL de clique, guarda a data BRT e o hint do poll", () => {
+    const s = sendOf(
+      post({
+        clicks: [
+          ["https://a.example.com/r1?utm_source=newsletter", 3],
+          ["https://poll.diar.ia.br/vote?edition=260922&choice=A", 1],
+        ],
+      }),
+    );
+    assert.equal(s.clicks.get("https://a.example.com/r1"), 3);
+    assert.equal(s.date, "260922");
+    assert.equal(s.editionHint, "260922");
+    assert.equal(editionHintFromUrls(["https://x/?edition=260922", "https://x/?edition=260923"]), null);
+    assert.equal(editionHintFromUrls(["https://x/?edition=abc", "nao-e-url"]), null);
+  });
+});
+
+describe("assignSends", () => {
+  const links = new Map([
+    ["260921", new Set(["https://a.example.com/old1", "https://a.example.com/old2"])],
+    ["260922", new Set(["https://a.example.com/r1", "https://a.example.com/r2", "https://a.example.com/r3"])],
+  ]);
+
+  it("usa o hint do poll quando a edição existe e há overlap", () => {
+    const s = sendOf(post({ clicks: [["https://a.example.com/old1", 1], ["https://p/?edition=260921", 1]] }));
+    const a = assignSends([s], links);
+    assert.equal(a.byEdition.get("260921")?.[0].method, "poll_hint");
+  });
+
+  it("sem hint, atribui pelo maior overlap — não pela data", () => {
+    // publish_date diz 260922, mas as URLs são da 260921
+    const s = sendOf(post({ clicks: [["https://a.example.com/old1", 2], ["https://a.example.com/old2", 1]] }));
+    const a = assignSends([s], links);
+    assert.equal(a.byEdition.get("260921")?.[0].method, "overlap");
+    assert.equal(a.byEdition.has("260922"), false);
+  });
+
+  it("cache de fixture (URLs que não casam com edição nenhuma) fica sem atribuição", () => {
+    const s = sendOf(post({ origin: "beehiiv", clicks: [["https://example0.com/a", 5], ["https://example1.com/b", 2]] }));
+    const a = assignSends([s], links);
+    assert.equal(a.unassigned, 1);
+    assert.equal(a.byEdition.size, 0);
+  });
+
+  it("empate de overlap desempata pela data; sem desempate é ambíguo", () => {
+    const tie = new Map([
+      ["260921", new Set(["https://a.example.com/x", "https://a.example.com/y"])],
+      ["260922", new Set(["https://a.example.com/x", "https://a.example.com/y"])],
     ]);
-    assert.equal(g.size, 0);
+    const s = sendOf(post({ clicks: [["https://a.example.com/x", 1], ["https://a.example.com/y", 1]] }));
+    assert.ok(assignSends([s], tie).byEdition.has("260922"));
+    const other = sendOf(post({ publish_date: Date.parse("2026-09-25T09:00:00Z") / 1000, clicks: [["https://a.example.com/x", 1], ["https://a.example.com/y", 1]] }));
+    assert.equal(assignSends([other], tie).ambiguous, 1);
+  });
+});
+
+describe("combineSends — ausente na lista ≠ zero (por origem)", () => {
+  const urls = ["https://a.example.com/r1", "https://a.example.com/r2"];
+
+  it("Kit: ausente = sem dado; presente com 0 = zero medido", () => {
+    const k = sendOf(post({ clicks: [["https://a.example.com/r1", 3], ["https://a.example.com/r9", 0]] }));
+    const c = combineSends([k], [...urls, "https://a.example.com/r9"]);
+    assert.equal(c.clicks.get("https://a.example.com/r1"), 3);
+    assert.equal(c.clicks.has("https://a.example.com/r2"), false);
+    assert.equal(c.clicks.get("https://a.example.com/r9"), 0);
+  });
+
+  it("Beehiiv: lista só traz link clicado, então ausente = zero — salvo em modo estrito", () => {
+    const b = sendOf(post({ origin: "beehiiv", clicks: [["https://a.example.com/r1", 2]] }));
+    assert.equal(absentIsZero(b, false), true);
+    assert.equal(combineSends([b], urls).clicks.get("https://a.example.com/r2"), 0);
+    assert.equal(combineSends([b], urls, true).clicks.has("https://a.example.com/r2"), false);
+  });
+
+  it("Beehiiv + Kit somam; link sem dado no Kit fica sem dado na edição", () => {
+    const b = sendOf(post({ origin: "beehiiv", delivered: 200, clicks: [["https://a.example.com/r1", 2]] }), "b");
+    const k = sendOf(post({ clicks: [["https://a.example.com/r1", 3]] }), "k");
+    const c = combineSends([b, k], urls);
+    assert.equal(c.delivered, 700);
+    assert.equal(c.sends, 2);
+    assert.equal(c.clicks.get("https://a.example.com/r1"), 5);
+    assert.equal(c.clicks.has("https://a.example.com/r2"), false);
   });
 });
 
@@ -125,30 +216,47 @@ describe("buildEditionRows", () => {
     ],
     lancamento: [{ url: "https://blog.google/googlebook", title: "Googlebook", score: 80, score_base: 70, bonuses_applied: ["primary_source:+10"] }],
     radar: [
-      { url: "https://a.example.com/r1", title: "Trump hack", score: 60, score_base: 60 },
+      { url: "https://a.example.com/r1", title: "Trump hack" },
       { url: "https://a.example.com/dup", title: "Repetida", score: 60, score_base: 60 },
     ],
   };
 
-  it("junta link publicado ↔ artigo aprovado ↔ cliques, sem o viral: do POC no score atual", () => {
-    const clicks = { delivered: 1000, sends: 1, clicks: new Map([["https://news.un.org/story/1", 9], ["https://a.example.com/dup", 7]]) };
-    const stats = { links: 0, unmatched_links: 0, duplicate_links: 0 };
-    const rows = buildEditionRows({ edition: "260922", reviewedMd: MD, approved, newsletterBodies: null }, clicks, stats);
-    assert.equal(stats.links, 6);
-    assert.equal(stats.unmatched_links, 1); // r2 não está no approved
-    // URL publicada 2x: clique agregado não é atribuível a uma posição → as 2 ficam de fora.
-    assert.equal(stats.duplicate_links, 2);
-    assert.ok(!rows.some((r) => r.url === "https://a.example.com/dup"));
-    assert.equal(rows.length, 3);
-    const onu = rows.find((r) => r.url === "https://news.un.org/story/1")!;
+  it("junta link publicado ↔ artigo aprovado ↔ cliques e conta cada descarte", () => {
+    const clicks = {
+      delivered: 1000,
+      sends: 1,
+      clicks: new Map([
+        ["https://news.un.org/story/1", 9],
+        ["https://a.example.com/dup", 7],
+        ["https://a.example.com/r1", 4],
+      ]),
+    };
+    const b = buildEditionRows({ edition: "260922", reviewedMd: MD, approved, newsletterBodies: null }, clicks);
+    assert.equal(b.counts.links, 6);
+    assert.equal(b.counts.unmatched_links, 1); // r2 não está no approved
+    assert.equal(b.counts.duplicate_links, 2); // URL publicada 2x: clique não atribuível
+    assert.equal(b.counts.links_without_click_data, 1); // googlebook sem dado — NÃO vira zero
+    assert.equal(b.counts.rows_missing_score, 1); // r1 sem score nem score_base
+    assert.equal(b.rows.length, 1);
+    assert.equal(b.coverage, 2 / 3); // casados: onu, googlebook, r1; com dado: onu, r1
+    const onu = b.rows[0];
     assert.equal(onu.score_current, 72);
     assert.deepEqual(onu.bonuses, ["primary_source:+2"]);
     assert.equal(onu.clicks, 9);
     assert.ok(Math.abs(onu.y - Math.log(9.5 / 1000)) < 1e-12);
     assert.equal(onu.signals.policy_geo, true);
     assert.equal(onu.has_inbox, false);
-    const g = rows.find((r) => r.url === "https://blog.google/googlebook")!;
-    assert.equal(g.clicks, 0); // ausente da lista de cliques = zero
+  });
+
+  it("aceita manchete no formato antigo [**título**](url)", () => {
+    const md = "**DESTAQUE 1 | X**\n[**ONU alerta**](https://news.un.org/story/1)\n**📡 RADAR**\n[**R1**](https://a.example.com/r1)";
+    assert.deepEqual(
+      parseNewsletterLinks(md).map((l) => [l.section, l.url]),
+      [
+        ["destaque", "https://news.un.org/story/1"],
+        ["radar", "https://a.example.com/r1"],
+      ],
+    );
   });
 
   it("indexApproved aceita {article, score} e artigo direto", () => {
@@ -232,7 +340,7 @@ describe("runCalibration / decide", () => {
     const res = runCalibration(synthetic(0.5), { holdoutFrac: 0.3, bootstrap: 60, seed: 1 });
     assert.equal(res.verdict.viral_predicts, true, res.verdict.reasons.join(" | "));
     const B = res.models.find((m) => m.name.startsWith("B "))!;
-    assert.ok(B.coefficients["viral:people_gov"] > 0.4);
+    assert.ok((B.coefficients["viral:people_gov"] ?? 0) > 0.4);
   });
 
   it("sinal sem efeito → não prevê (regra de descarte)", () => {
@@ -255,6 +363,15 @@ describe("runCalibration / decide", () => {
     });
     const v = decide([m("A score", 0.5), m("B score+viral", 0.6, -0.3, [-0.5, -0.1])]);
     assert.equal(v.viral_predicts, false);
+    // limiar de ganho: exatamente 1 p.p. passa, abaixo não
+    assert.equal(MIN_CONCORDANCE_GAIN, 0.01);
+    assert.equal(decide([m("A score", 0.5), m("B score+viral", 0.5 + MIN_CONCORDANCE_GAIN, 0.3, [0.1, 0.5])]).viral_predicts, true);
+    assert.equal(decide([m("A score", 0.5), m("B score+viral", 0.5 + MIN_CONCORDANCE_GAIN - 0.001, 0.3, [0.1, 0.5])]).viral_predicts, false);
+    // inestimável: coeficiente/IC null não conta como sinal e aparece nas razões
+    const inest: ModelResult = { ...m("B score+viral", 0.9), inestimable: ["viral:x"], coefficients: { "viral:x": null }, ci95: { "viral:x": null } };
+    const vi = decide([m("A score", 0.5), inest]);
+    assert.equal(vi.viral_predicts, false);
+    assert.ok(vi.reasons.some((r) => r.startsWith("inestimáveis")));
   });
 
   it("feature sem variância dentro da célula sai marcada como inestimável, não como efeito zero", () => {
@@ -263,6 +380,8 @@ describe("runCalibration / decide", () => {
     const B = res.models.find((m) => m.name.startsWith("B "))!;
     assert.ok(B.inestimable.includes("viral:money_scale"));
     assert.ok(!B.inestimable.includes("viral:people_gov"));
+    assert.equal(B.coefficients["viral:money_scale"], null);
+    assert.equal(B.ci95["viral:money_scale"], null);
     assert.deepEqual(inestimableFeatures([[0, 1], [0, -1]], ["a", "b"]), ["a"]);
   });
 });
@@ -291,5 +410,135 @@ describe("pocBonusPoints (réplica congelada do POC descartado)", () => {
   it("guarda zera; dano não soma em negative_impact", () => {
     assert.equal(pocBonusPoints({ ...none, people_gov: true }, { ...opts, guard: "social_post" }), 0);
     assert.equal(pocBonusPoints({ ...none, conflict_harm: true }, { ...opts, negativeImpact: true }), 0);
+  });
+});
+
+describe("cellKey / signalFeature", () => {
+  const base = synthetic(0)[0];
+
+  it("mesma edição, seções diferentes = células diferentes (não se misturam no efeito fixo)", () => {
+    const a = { ...base, edition: "260922", section: "radar", y: 1, score_current: 10 };
+    const b = { ...base, edition: "260922", section: "radar", y: 3, score_current: 30 };
+    const c = { ...base, edition: "260922", section: "destaque", y: 100, score_current: 0 };
+    const d = { ...base, edition: "260922", section: "destaque", y: 102, score_current: 20 };
+    assert.notEqual(cellKey(a), cellKey(c));
+    const dm = demeanWithinCells([a, b, c, d], [(r) => r.score_current]);
+    assert.deepEqual(dm.y, [-1, 1, -1, 1]);
+    assert.equal(new Set(dm.cells).size, 2);
+  });
+
+  it("guarda de tipo zera o sinal; piso de score não zera", () => {
+    const on = { ...base, signals: { ...base.signals, people_gov: true } };
+    const f = signalFeature("people_gov");
+    assert.equal(f({ ...on, viral_guard: null }), 1);
+    assert.equal(f({ ...on, viral_guard: "below_min_base" }), 1);
+    assert.equal(f({ ...on, viral_guard: "social_post" }), 0);
+    assert.equal(f({ ...on, viral_guard: "verdict:paywall" }), 0);
+    assert.equal(signalFeature("newsletter_mentions")({ ...on, signals: { ...on.signals, newsletter_mentions: 5 } }), 2);
+  });
+});
+
+describe("parseCliOptions / readJson", () => {
+  it("defaults e validação", () => {
+    const o = parseCliOptions({});
+    assert.equal(o.holdoutFrac, 0.3);
+    assert.equal(o.bootstrap, 500);
+    assert.equal(o.strictMissing, false);
+    assert.equal(parseCliOptions({}, new Set(["absent-is-missing"])).strictMissing, true);
+    assert.throws(() => parseCliOptions({ "holdout-frac": "1" }), /holdout-frac/);
+    assert.throws(() => parseCliOptions({ "holdout-frac": "0" }), /holdout-frac/);
+    assert.throws(() => parseCliOptions({ bootstrap: "0" }), /bootstrap/);
+    assert.throws(() => parseCliOptions({ bootstrap: "2.5" }), /bootstrap/);
+    assert.throws(() => parseCliOptions({ seed: "abc" }), /finito/);
+    assert.throws(() => parseCliOptions({ "min-age-days": "-1" }), /min-age-days/);
+    assert.throws(() => parseCliOptions({ "min-coverage": "1.5" }), /min-coverage/);
+  });
+
+  it("ausente, inválido e ok são distintos", () => {
+    const dir = mkdtempSync(join(tmpdir(), "calib-viral-json-"));
+    try {
+      writeFileSync(join(dir, "bad.json"), "{ nao json");
+      writeFileSync(join(dir, "ok.json"), '{"a":1}');
+      assert.deepEqual(readJson(join(dir, "nope.json")), { ok: false, reason: "missing" });
+      assert.deepEqual(readJson(join(dir, "bad.json")), { ok: false, reason: "invalid" });
+      assert.deepEqual(readJson(join(dir, "ok.json")), { ok: true, value: { a: 1 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadDataset (fixture em diretório temporário)", () => {
+  it("atribui envio por overlap, ignora fixture, separa sem-dado de zero e conta edições puladas", () => {
+    const root = mkdtempSync(join(tmpdir(), "calib-viral-data-"));
+    try {
+      const mkEdition = (ed: string, md: string, approved: unknown) => {
+        mkdirSync(join(root, "editions", ed, "_internal"), { recursive: true });
+        writeFileSync(join(root, "editions", ed, "02-reviewed.md"), md);
+        writeFileSync(join(root, "editions", ed, "_internal", "01-approved.json"), JSON.stringify(approved));
+      };
+      const md = [
+        "**DESTAQUE 1 | X**",
+        "**[A](https://a.example.com/1)**",
+        "**DESTAQUE 2 | X**",
+        "**[B](https://a.example.com/2)**",
+        "**📡 RADAR**",
+        "**[C](https://a.example.com/3)**",
+        "**[D](https://a.example.com/4)**",
+      ].join("\n");
+      const art = (n: number, title: string) => ({ url: `https://a.example.com/${n}`, title, score: 60, score_base: 60 });
+      mkEdition("260922", md, { highlights: [art(1, "Trump hack"), art(2, "neutro")], radar: [art(3, "neutro"), art(4, "neutro")] });
+      mkEdition("260923", "**📡 RADAR**\nsem manchete nenhuma", { radar: [] }); // no_headlines
+      mkEdition("261006", md, { radar: [] }); // too_recent
+      mkdirSync(join(root, "beehiiv-cache", "posts"), { recursive: true });
+      mkdirSync(join(root, "kit-cache", "broadcasts"), { recursive: true });
+      // Beehiiv: só lista link clicado; 4 ausente = zero. Data errada de propósito (260925).
+      writeFileSync(
+        join(root, "beehiiv-cache", "posts", "post_1.json"),
+        JSON.stringify({
+          slug: "real",
+          status: "confirmed",
+          publish_date: Date.parse("2026-09-25T09:00:00Z") / 1000,
+          stats: {
+            email: { delivered: 400 },
+            clicks: [
+              { url: "https://a.example.com/1", email: { unique_clicks: 5 } },
+              { url: "https://a.example.com/2", email: { unique_clicks: 2 } },
+              { url: "https://a.example.com/3", email: { unique_clicks: 1 } },
+            ],
+          },
+        }),
+      );
+      // Fixture poluindo o cache: mesma data, URLs que não casam.
+      writeFileSync(
+        join(root, "beehiiv-cache", "posts", "post_fixture.json"),
+        JSON.stringify({
+          slug: "fixture",
+          status: "confirmed",
+          publish_date: Date.parse("2026-09-22T09:00:00Z") / 1000,
+          stats: { email: { delivered: 900 }, clicks: [{ url: "https://example0.com/x", email: { unique_clicks: 50 } }] },
+        }),
+      );
+      const ds = loadDataset(root, { minAgeDays: 3, minCoverage: 0.5, today: new Date("2026-10-07T12:00:00Z") });
+      assert.equal(ds.sends_unassigned, 1); // fixture
+      assert.equal(ds.assign_methods.overlap, 1);
+      assert.deepEqual(ds.editions_skipped.no_headlines, ["260923"]);
+      assert.deepEqual(ds.editions_skipped.too_recent, ["261006"]);
+      assert.equal(ds.rows.length, 4);
+      assert.equal(ds.rows.every((r) => r.delivered === 400), true);
+      assert.equal(ds.rows.find((r) => r.url === "https://a.example.com/4")?.clicks, 0);
+      assert.equal(ds.coverage_by_edition["260922"], 1);
+
+      // Modo estrito: o 4 vira sem-dado e sai do ajuste.
+      const strict = loadDataset(root, { minAgeDays: 3, minCoverage: 0.5, strictMissing: true, today: new Date("2026-10-07T12:00:00Z") });
+      assert.equal(strict.rows.length, 3);
+      assert.equal(strict.counts.links_without_click_data, 1);
+      // Cobertura abaixo do limiar derruba a edição inteira.
+      const high = loadDataset(root, { minAgeDays: 3, minCoverage: 0.9, strictMissing: true, today: new Date("2026-10-07T12:00:00Z") });
+      assert.deepEqual(high.editions_skipped.low_click_coverage, ["260922"]);
+      assert.equal(high.rows.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
