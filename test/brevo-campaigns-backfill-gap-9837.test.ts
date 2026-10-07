@@ -469,7 +469,14 @@ describe("#9837 — advanceBackfillGaps (pura)", () => {
   test("total que DIMINUI (campanha removida) desloca pra trás sem atravessar a janela ao vivo", () => {
     assert.deepEqual(
       advanceBackfillGaps([{ start: 101, end: 150 }], { shift: -2, processedStart: 100, processedCount: 0, total: 200, liveWindow: L }),
-      [{ start: 100, end: 148 }],
+      [{ start: 100, end: 150 }],
+    );
+  });
+
+  test("#9853: remoção antes de lacuna interna não a encolhe (só o start recua)", () => {
+    assert.deepEqual(
+      advanceBackfillGaps([{ start: 150, end: 180 }], { shift: -3, processedStart: 0, processedCount: 0, total: 297, liveWindow: L }),
+      [{ start: 147, end: 180 }],
     );
   });
 });
