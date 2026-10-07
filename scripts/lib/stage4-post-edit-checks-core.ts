@@ -49,6 +49,9 @@ import { getRulesForStage } from "./invariant-checks/index.ts";
 import { checkSentinel } from "../check-humanizer-social.ts";
 import { hashContent } from "./stage4-cas.ts";
 
+/** #9830: regra de invariante coberta pelo item 6 do sweep (`checkSentinel`) — pulada no item 5. */
+export const HUMANIZER_SEAL_RULE_ID = "social-humanizer-seal-fresh";
+
 export interface Stage4Finding {
   /** Qual sub-checagem originou o achado — útil pra "onde eu corrijo isso". */
   source:
@@ -308,6 +311,14 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
   // present-in-final, image-crop-warn, etc.)
   safely("invariants:stage-4", "invariants", () => {
     for (const rule of getRulesForStage(4)) {
+      // #9830: o selo do humanizador já é checado pelo item 6 abaixo
+      // (`checkSentinel`, selo ausente E hash divergente gate-blocking, mesma
+      // severidade do `check-humanizer-social.ts --check` síncrono de §4c.2b).
+      // Rodar também a regra `social-humanizer-seal-fresh` aqui duplicava o
+      // achado no resumo do gate — e, com selo ausente, ela diz `warning`
+      // enquanto o item 6 diz `error`. A regra continua no `check-invariants
+      // --stage 4` e no `pipeline-sentinel.ts write --step 4`.
+      if (rule.id === HUMANIZER_SEAL_RULE_ID) continue;
       const violations = rule.run(editionDir);
       for (const v of violations) {
         findings.push({

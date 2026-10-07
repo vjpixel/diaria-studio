@@ -61,6 +61,11 @@ function reviewedMd(d2: typeof D2_ORIGINAL, intro = "Intro da edição."): strin
   return [intro, "", "---", "", ...block(1, D1), "", "---", "", ...block(2, d2)].join("\n");
 }
 
+const SOCIAL_D2_ORIGINAL =
+  "A Mistral apresentou um modelo de pesos abertos para empresas europeias, com licença comercial permissiva e desempenho competitivo em programação. Uma alternativa soberana aos modelos americanos.";
+const SOCIAL_D2_REWRITTEN =
+  "O governo francês anunciou subsídios bilionários para datacenters que hospedarem a Mistral, transformando a startup num instrumento de política industrial. Críticos apontam concentração de recursos públicos numa única companhia, e a concorrência entre startups locais muda de natureza.";
+
 const SOCIAL_MD = [
   "# Social",
   "",
@@ -70,7 +75,7 @@ const SOCIAL_MD = [
   "",
   "## d2",
   "",
-  "A Mistral apresentou um modelo de pesos abertos para empresas europeias, com licença comercial permissiva e desempenho competitivo em programação. Uma alternativa soberana aos modelos americanos.",
+  SOCIAL_D2_ORIGINAL,
   "",
   "# Curto",
   "",
@@ -107,7 +112,6 @@ describe("#9820 social-not-behind-reviewed", () => {
       assert.equal(v[0].rule, "social-not-behind-reviewed");
       assert.equal(v[0].severity, "error");
       assert.match(v[0].message, /d2/);
-      assert.match(v[0].message, /\+6 min/);
       assert.deepEqual(findSocialContentMismatches(dir), ["d2"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -126,6 +130,38 @@ describe("#9820 social-not-behind-reviewed", () => {
   it("social regenerado DEPOIS da reescrita (cascata rodou) → nada", () => {
     const dir = setup(reviewedMd(D2_REWRITTEN), REVIEWED_T + 60_000, REVIEWED_T);
     try {
+      writeFileSync(join(dir, "03-social.md"), SOCIAL_MD.replace(SOCIAL_D2_ORIGINAL, SOCIAL_D2_REWRITTEN));
+      utimesSync(join(dir, "03-social.md"), (REVIEWED_T + 60_000) / 1000, (REVIEWED_T + 60_000) / 1000);
+      assert.deepEqual(findSocialContentMismatches(dir), []);
+      assert.deepEqual(checkSocialNotBehindReviewed(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9829: social MAIS NOVO que o reviewed mas com o ## d2 no ângulo antigo → error mesmo assim", () => {
+    // Cenário da issue: D2 reescrito no gate; depois uma cascata de OUTRO
+    // destaque (ou reorder, autofix do fact-check, save do Studio) regrava o
+    // 03-social.md inteiro — o mtime fica mais novo, o ## d2 segue velho.
+    const dir = setup(reviewedMd(D2_REWRITTEN), REVIEWED_T + 60_000, REVIEWED_T);
+    try {
+      assert.deepEqual(findSocialContentMismatches(dir), ["d2"]);
+      const v = checkSocialNotBehindReviewed(dir);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "social-not-behind-reviewed");
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /d2/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9829: sem comparação de conteúdo e social mais novo → nada (fallback de mtime inalterado)", () => {
+    const dir = setup(reviewedMd(D2_REWRITTEN), REVIEWED_T + 60_000, REVIEWED_T);
+    try {
+      writeFileSync(join(dir, "03-social.md"), "Texto social sem seções de destaque.\n");
+      utimesSync(join(dir, "03-social.md"), (REVIEWED_T + 60_000) / 1000, (REVIEWED_T + 60_000) / 1000);
+      assert.equal(findSocialContentMismatches(dir), undefined);
       assert.deepEqual(checkSocialNotBehindReviewed(dir), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
