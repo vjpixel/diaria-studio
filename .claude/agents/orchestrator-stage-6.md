@@ -75,7 +75,7 @@ Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de r
   - Test email: `test_email_sent_at` formatado em BRT.
   - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo ({review_reason})` (desde #8902, `review_reason` distingue `mcp_unavailable` — conector Gmail indisponível/renomeado, checagem automática ficou OFF, ver #7279 — de `not_found_timeout`/`truncated_fetch` — Gmail respondeu, email só não foi localizado/veio truncado; ausência de `review_reason` em edições pré-#8902 → mostrar só `⚠ review inconclusivo`); se issues → listar.
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
-- **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`) **+ achados dos lints determinísticos `lint-test-email-*`** que o `review-test-email` já roda internamente (link tracking, structure, encoding, image freshness — ver `.claude/agents/review-test-email.md`).
+- **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`) **+ achados dos lints determinísticos `lint-test-email-*`** que o `review-test-email` já roda internamente (link tracking, structure, encoding, image freshness — ver `.claude/agents/review-test-email.md`) **+ `issues[]` de `_internal/lint-size-{AAMMDD}.json`** (gravado no §5f passo 0 do Stage 5 mesmo quando o agente não é despachado — inclui o alarme `delivered_size_near_clip`, e-mail acima de 95 KB, perto do corte de 102 KB do Gmail, #9823).
 - **Rascunho Kit defasado (#9428, só backend `"kit"`):** rodar `npx tsx scripts/check-invariants.ts --stage 6 --rule kit-draft-fresh --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`). Se o JSON trouxer violação `kit-draft-fresh`, o editor mexeu em `02-reviewed.md`/`01-eia.md`/`06-public-images.json` depois do publish e o rascunho/e-mail de teste estão com o conteúdo velho: incluir a mensagem como **aviso destacado** no gate de §6c, com o comando de correção `npx tsx scripts/publish-newsletter-kit.ts {EDITION_DIR}/ --send-test` (idempotente — PATCH do mesmo broadcast + novo teste; a própria mensagem já traz o path real). Se a mensagem disser que o broadcast já saiu, só registrar. Não re-publicar sozinho; nunca um 2º gate.
 - **Guard de slug do bloco WhatsApp (§6b-slug):** se `SLUG_CHECK_OK === false`, incluir aviso destacado com a instrução de correção manual — nunca um gate próprio.
 - **Brevo diária (#5772):** se `_internal/brevo-diaria-published.json` existe, `campaign_id` + status atual ("rascunho pronto pra agendar"). Se ausente, omitir esta linha (canal pulado/falhou na Etapa 5).
@@ -521,7 +521,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
   --outputs "_internal/newsletter-kit-published.json"
 ```
 
-Sentinel ausente = Stage 6 incompleto para fins de resume. Falha → logar warn, nao bloquear auto-reporter.
+Sentinel ausente = Stage 6 incompleto para fins de resume. Falha → logar warn, nao bloquear auto-reporter. **O `write` NAO exige `_internal/edition-report.html` (#9822)** — a regra `edition-report-exists` e `postDispatchOnly` (o report so nasce em 6b-6, depois deste passo); quem exige o report e o `--status done` de 6b-7.
 
 **NAO marcar Stage 6 `done` aqui (#2800).** `blockReasonForMarkingStageDone` (stage 6) exige
 `_internal/edition-report.html`, que so e gerado no passo 6b-6 (Etapa 6b — Auto-reporter,
@@ -533,10 +533,10 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 ### 6g. Check invariants Stage 6
 
 ```bash
-npx tsx scripts/check-invariants.ts --stage 6 --edition-dir {EDITION_DIR}/
+npx tsx scripts/check-invariants.ts --stage 6 --phase pre-dispatch --edition-dir {EDITION_DIR}/
 ```
 
-Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — se falhou, já apareceu como aviso destacado no gate de §6c (§6b-site, #8221) e o editor seguiu ciente; `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio) além disso, mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
+`--phase pre-dispatch` pula so `edition-report-exists` (#9822 — o report ainda nao existe aqui; 6b-7 o exige). Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — se falhou, já apareceu como aviso destacado no gate de §6c (§6b-site, #8221) e o editor seguiu ciente; `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio) além disso, mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 

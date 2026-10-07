@@ -686,6 +686,12 @@ export const STAGE_6_RULES: InvariantRule[] = [
     description: "_internal/edition-report.html escrito pelo send-edition-report.ts (#1510)",
     source_issue: "#1510",
     stage: 6,
+    // #9822: o report é gerado DEPOIS do sentinel (§6b-6, após o auto-reporter)
+    // — sem isto, `pipeline-sentinel.ts write --step 6` (que roda as regras com
+    // `phase: "pre-dispatch"`, #6009) recusava sempre. A exigência real de
+    // fechamento continua em `blockReasonForMarkingStageDone` (stage 6), no
+    // `update-stage-status --status done` de §6b-7, já depois do report.
+    postDispatchOnly: true,
     run: checkEditionReport,
   },
   {

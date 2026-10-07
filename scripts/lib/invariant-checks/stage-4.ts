@@ -86,6 +86,8 @@ import {
 import { urlsMatch, canonicalize } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
 import { extractUrlsWithLines } from "../../validate-domains.ts"; // #8993
+import { evaluateStaleness, findSocialContentMismatches } from "../../check-staleness.ts"; // #9820
+import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-humanizer-social.ts"; // #9820
 import { isNonEditorialHost } from "../ctr-utils.ts"; // #8993
 import {
   readPastEditionsMd,
@@ -517,6 +519,97 @@ export function findImageContentMismatches(
     }
   });
   return { mismatches, missingFrontmatter, haveFrontmatter };
+}
+
+/**
+ * #9820 — `03-social.md` atrás de `02-reviewed.md`. Edição 261007: o D3 foi
+ * reescrito no gate do Stage 4 (lead/ângulo novo, mesmo título — §4d.1 passo 3
+ * dizia "corpo sem mudar título não cascateia"), o `03-social.md` e o `# Curto`
+ * ficaram com o ângulo antigo e o `.step-4-done` foi gravado 1 min depois. Só o
+ * `check-staleness.ts --stage 6` do Stage 5 pegou. Este invariante roda a MESMA
+ * comparação (mtime como gatilho barato + supressão por conteúdo do #4832/#9114,
+ * `findSocialContentMismatches`) dentro do Stage 4 — e por estar em
+ * `STAGE_4_RULES` com severity `error`, `pipeline-sentinel.ts write --step 4`
+ * (#6009) recusa o sentinel enquanto ele não passar. Edição cosmética fora dos
+ * destaques (box, intro) não acusa: o conteúdo dos `## dN` ainda bate. Quando a
+ * comparação de conteúdo não consegue rodar (`findSocialContentMismatches` →
+ * `undefined`) e só sobra o mtime, a violação sai como `warning` — não bloqueia.
+ *
+ * `mtimes` (opcional): override pra teste — evita depender de `utimes` no fs.
+ */
+export function checkSocialNotBehindReviewed(
+  editionDir: string,
+  mtimes?: (relPath: string) => number | null,
+): InvariantViolation[] {
+  const getMtime =
+    mtimes ??
+    ((relPath: string): number | null => {
+      const full = resolve(editionDir, relPath);
+      return existsSync(full) ? statSync(full).mtimeMs : null;
+    });
+  const mismatches = findSocialContentMismatches(editionDir);
+  const contentFresh =
+    mismatches === undefined ? undefined : (rel: string) => rel === "03-social.md" && mismatches.length === 0;
+  const stale = evaluateStaleness(
+    [{ downstream: "03-social.md", upstreams: ["02-reviewed.md"] }],
+    getMtime,
+    1000,
+    undefined,
+    contentFresh,
+  );
+  if (stale.length === 0) return [];
+  const s = stale[0];
+  const slots = mismatches && mismatches.length > 0 ? mismatches.join(", ") : null;
+  return [
+    {
+      rule: "social-not-behind-reviewed",
+      message:
+        `03-social.md (${s.downstream_mtime}) é anterior a 02-reviewed.md (${s.upstream_mtime}, +${s.lag_minutes} min)` +
+        (slots
+          ? ` e o texto social de ${slots} não bate mais com o destaque reescrito`
+          : ` e não deu pra comparar o conteúdo dos destaques (só mtime)`) +
+        ` — o post social sairia com o ângulo antigo. Rodar a cascata §4d.1a com --pieces social,carousel ` +
+        `pra cada destaque afetado (social-writer + social-curto pro # Curto, re-humanizar scoped, ` +
+        `gen-carousel-cards.ts + upload-images-public.ts) antes do sentinel. Falso-positivo conhecido ` +
+        `(social já correto): pipeline-sentinel.ts write --bypass-reason "<motivo>".`,
+      source_issue: "#9820",
+      // Só a comparação de conteúdo que RODOU e acusou divergência bloqueia o
+      // sentinel. Fallback de mtime puro (sem `# Social`, layout legado, parse
+      // sem destaques) vira warning: o mtime de 02-reviewed.md costuma avançar
+      // sozinho (fact-check autofix, sync-intro-count, save do Studio) e o
+      // write --step 4 viraria falso-positivo só contornável com --bypass-reason.
+      severity: slots ? "error" : "warning",
+      file: resolve(editionDir, "03-social.md"),
+    },
+  ];
+}
+
+/**
+ * #9820 — selo do humanizador (`_internal/.humanizer-social-done.json`) atrás
+ * do `03-social.md` atual. No Stage 2 isso já é invariante (`social-humanizer-
+ * sentinel-written`, #6305); no Stage 4 era só o `check-humanizer-social.ts
+ * --check` em prosa (§4c.2b, §4d.1 passo 6.8) — uma cascata do social que
+ * reescreve o `## dN` sem re-humanizar passava pelo sentinel. Selo ausente vira
+ * warning (edição anterior ao #6305, nada a comparar); hash divergente é error.
+ */
+export function checkSocialHumanizerSealFresh(editionDir: string): InvariantViolation[] {
+  if (!existsSync(resolve(editionDir, "03-social.md"))) return [];
+  const result = checkSocialHumanizerSentinel(editionDir);
+  if (result.ok) return [];
+  const missing = result.reason === "sentinel_missing";
+  return [
+    {
+      rule: "social-humanizer-seal-fresh",
+      message: missing
+        ? `_internal/.humanizer-social-done.json ausente — não dá pra afirmar que o 03-social.md atual passou pelo humanizador.`
+        : `03-social.md mudou depois do selo do humanizador (stored=${result.stored.slice(0, 12)}… ` +
+          `current=${result.current.slice(0, 12)}…) — re-humanizar as seções alteradas (§4d.1 passo 6) e ` +
+          `gravar: npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "<ajuste>" --edition-dir ${editionDir}/`,
+      source_issue: "#9820",
+      severity: missing ? "warning" : "error",
+      file: resolve(editionDir, "03-social.md"),
+    },
+  ];
 }
 
 function checkImageContentFresh(editionDir: string): InvariantViolation[] {
@@ -2962,6 +3055,20 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#1413",
     stage: 4,
     run: checkSocialHashFresh,
+  },
+  {
+    id: "social-not-behind-reviewed",
+    description: "03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820)",
+    source_issue: "#9820",
+    stage: 4,
+    run: (editionDir) => checkSocialNotBehindReviewed(editionDir),
+  },
+  {
+    id: "social-humanizer-seal-fresh",
+    description: "selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820)",
+    source_issue: "#9820",
+    stage: 4,
+    run: checkSocialHumanizerSealFresh,
   },
   {
     id: "image-content-fresh",

@@ -636,6 +636,26 @@ export function extractSocialDestaqueSections(
 export function buildGetSocialContentFresh(
   editionDir: string,
 ): ((relPath: string) => boolean) | undefined {
+  const mismatches = findSocialContentMismatches(editionDir);
+  if (mismatches === undefined) return undefined; // nada comparável — degradar pra mtime puro
+  const fresh = mismatches.length === 0;
+  return (relPath: string) => relPath === "03-social.md" && fresh;
+}
+
+/**
+ * #9820: slots (`d1`/`d2`/`d3`) cujo `## dN` do `# Social` em `03-social.md`
+ * NÃO bate mais com o destaque correspondente de `02-reviewed.md`
+ * (`destaqueContentMatches`). Mesma comparação que `buildGetSocialContentFresh`
+ * usa pra suprimir o falso-positivo de mtime — exposta por slot pra que o
+ * invariante `social-not-behind-reviewed` do Stage 4 diga QUAL destaque
+ * precisa da cascata do social, em vez de só "algum".
+ *
+ * `undefined` = nada comparável (arquivo ausente/ilegível, sem destaques,
+ * nenhuma seção correspondente) — o caller degrada pra mtime puro.
+ */
+export function findSocialContentMismatches(
+  editionDir: string,
+): string[] | undefined {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(reviewedPath) || !existsSync(socialPath)) return undefined;
@@ -654,20 +674,14 @@ export function buildGetSocialContentFresh(
 
   const slots = ["d1", "d2", "d3"] as const;
   let comparedAny = false;
-  let allMatch = true;
+  const mismatches: string[] = [];
   for (let i = 0; i < destaques.length && i < slots.length; i++) {
     const socialText = socialSections[slots[i]];
     if (socialText === undefined) continue; // seção ausente — não dá pra comparar esse slot
     comparedAny = true;
-    if (!destaqueContentMatches(destaques[i], socialText)) {
-      allMatch = false;
-      break;
-    }
+    if (!destaqueContentMatches(destaques[i], socialText)) mismatches.push(slots[i]);
   }
-  if (!comparedAny) return undefined; // nada comparável — degradar pra mtime puro
-
-  const fresh = allMatch;
-  return (relPath: string) => relPath === "03-social.md" && fresh;
+  return comparedAny ? mismatches : undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -27,11 +27,12 @@ export const ALL_INVARIANT_RULES: InvariantRule[] = [
 
 /**
  * #4516: `opts.phase === "pre-dispatch"` exclui regras marcadas
- * `postDispatchOnly: true` (hoje só 2, no Stage 5 — `social-published-complete`/
+ * `postDispatchOnly: true` (no Stage 5 — `social-published-complete`/
  * `step-5-sentinel-exists`, que só podem passar DEPOIS que o dispatch já
- * rodou). Sem `opts`/`phase` omitido = comportamento de sempre (todas as
+ * rodou; no Stage 6 — `edition-report-exists`, gerado depois do sentinel,
+ * #9822). Sem `opts`/`phase` omitido = comportamento de sempre (todas as
  * regras do stage, independente de fase) — usado por `§5i` (pós-publicação)
- * e por qualquer outro stage, nenhum dos quais tem regra marcada hoje.
+ * e pelos demais stages.
  */
 export function getRulesForStage(
   stage: 0 | 1 | 2 | 3 | 4 | 5 | 6,

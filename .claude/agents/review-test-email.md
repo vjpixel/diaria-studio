@@ -615,6 +615,7 @@ decisão editorial, e um re-paste não muda o tamanho. O achado aparece no
 gate 6 para o editor decidir:
 - `category:delivered_size_over_clip` → `"info:delivered_size_over_clip: {detail}"`
 - `category:delivered_size_may_clip` → `"info:delivered_size_may_clip: {detail}"`
+- `category:delivered_size_near_clip` → `"info:delivered_size_near_clip: {detail}"` (#9823 — acima de 95 KB, perto do corte)
 - `category:delivered_size_unmeasured` → `"info:delivered_size_unmeasured"`
 
 ### 3b. Image freshness via lint determinístico (#1212)

@@ -30,6 +30,10 @@
  *     [--local-html .../_internal/newsletter-final-kit.html] \
  *     [--out .../_internal/lint-size-{AAMMDD}.json]
  *
+ * #9823: entre `GMAIL_NEAR_CLIP_BYTES` (95 KB) e o corte sai o alarme
+ * `delivered_size_near_clip` (warning com parte HTML/dump; info com sizeEstimate,
+ * que é teto) — sem mudar o exit code.
+ *
  * Exit: 0 = dentro do limite, só "pode cortar", ou sem medida; 1 = acima do
  * corte com medida da parte HTML (ou do dump); 2 = uso.
  * Nunca bloqueia sozinho — o resultado é exibido no gate 6 (parada única).
@@ -45,11 +49,22 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 /** Corte de clipping do Gmail — mesmo valor de `KIT_HTML_SIZE_ERROR_BYTES` (#6506). */
 export const GMAIL_CLIP_BYTES = 102 * 1024;
 
+/**
+ * #9823 — alarme ANTES do corte: a 261007 chegou com 98,8 KB, a ~3% do limite,
+ * e nada avisou (só o corte em si acusava). Acima deste piso e até o corte, o
+ * achado `delivered_size_near_clip` sai no gate 6 — informativo, nunca blocker.
+ */
+export const GMAIL_NEAR_CLIP_BYTES = 95 * 1024;
+
 export type SizeSource = "gmail_html_part" | "gmail_size_estimate" | "email_file" | "none";
 
 export interface DeliveredSizeIssue {
   type: "warning" | "info";
-  category: "delivered_size_over_clip" | "delivered_size_may_clip" | "delivered_size_unmeasured";
+  category:
+    | "delivered_size_over_clip"
+    | "delivered_size_may_clip"
+    | "delivered_size_near_clip"
+    | "delivered_size_unmeasured";
   detail: string;
 }
 
@@ -62,6 +77,8 @@ export interface DeliveredSizeResult {
   over_limit: boolean;
   /** #9311: só o `sizeEstimate` (MIME inteiro, teto) passou do corte — inconclusivo. */
   may_clip: boolean;
+  /** #9823: medida entre `GMAIL_NEAR_CLIP_BYTES` e o corte — perto de cortar. */
+  near_clip: boolean;
   issues: DeliveredSizeIssue[];
 }
 
@@ -76,8 +93,10 @@ export function evaluateDeliveredSize(input: {
   emailFileBytes?: number | null;
   localHtmlBytes?: number | null;
   limitBytes?: number;
+  nearClipBytes?: number;
 }): DeliveredSizeResult {
   const limit = input.limitBytes ?? GMAIL_CLIP_BYTES;
+  const nearClip = input.nearClipBytes ?? GMAIL_NEAR_CLIP_BYTES;
   const local = input.localHtmlBytes ?? null;
   let delivered: number | null = null;
   let source: SizeSource = "none";
@@ -99,7 +118,7 @@ export function evaluateDeliveredSize(input: {
       category: "delivered_size_unmeasured",
       detail: "tamanho do e-mail entregue não medido (sem parte HTML, sizeEstimate nem dump) — o guard local não cobre o que o ESP acrescenta",
     });
-    return { ...base, over_limit: false, may_clip: false, issues };
+    return { ...base, over_limit: false, may_clip: false, near_clip: false, issues };
   }
   if (source === "email_file") {
     issues.push({
@@ -108,9 +127,23 @@ export function evaluateDeliveredSize(input: {
       detail: "sem medida do Gmail — tamanho veio do dump (corpo extraído, sem headers/MIME): estimativa por BAIXO",
     });
   }
-  if (delivered <= limit) return { ...base, over_limit: false, may_clip: false, issues };
-
   const localPart = local !== null ? ` (HTML local: ${kb(local)} KB — a diferença é o que o ESP acrescenta)` : "";
+  if (delivered <= limit) {
+    if (delivered <= nearClip) return { ...base, over_limit: false, may_clip: false, near_clip: false, issues };
+    issues.push({
+      // sizeEstimate é teto (MIME inteiro) — perto do corte vira info; parte
+      // HTML/dump perto do corte é o sinal real de que falta pouco pro Gmail cortar.
+      type: source === "gmail_size_estimate" ? "info" : "warning",
+      category: "delivered_size_near_clip",
+      detail:
+        `e-mail entregue com ${delivered} bytes (${kb(delivered)} KB, fonte ${source}) — acima do alarme de ` +
+        `${kb(nearClip)} KB e a ${(((limit - delivered) / limit) * 100).toFixed(1)}% do corte do Gmail ` +
+        `(${kb(limit)} KB)${localPart}. Uma edição um pouco mais longa corta ("Mensagem cortada") e some o pixel de ` +
+        `abertura. Cortar conteúdo é decisão editorial.`,
+    });
+    return { ...base, over_limit: false, may_clip: false, near_clip: true, issues };
+  }
+
   if (source === "gmail_size_estimate") {
     // #9311: sizeEstimate é a mensagem MIME inteira — passar do corte não
     // prova que a parte HTML passou. Informativo, nunca over_limit.
@@ -122,7 +155,7 @@ export function evaluateDeliveredSize(input: {
         `mas mede a mensagem MIME inteira (text/plain + headers + inflação de quoted-printable/base64), não só a parte HTML ` +
         `que o Gmail corta. PODE cortar: conferir no e-mail de teste se aparece "Mensagem cortada". Cortar conteúdo é decisão editorial.`,
     });
-    return { ...base, over_limit: false, may_clip: true, issues };
+    return { ...base, over_limit: false, may_clip: true, near_clip: false, issues };
   }
   issues.push({
     type: "warning",
@@ -132,7 +165,7 @@ export function evaluateDeliveredSize(input: {
       `(${kb(limit)} KB)${localPart}. O Gmail vai cortar ("Mensagem cortada") e o pixel de abertura no fim some — ` +
       `abertura Gmail subcontada. Cortar conteúdo é decisão editorial.`,
   });
-  return { ...base, over_limit: true, may_clip: false, issues };
+  return { ...base, over_limit: true, may_clip: false, near_clip: false, issues };
 }
 
 function fileBytes(p: string | undefined): number | null {

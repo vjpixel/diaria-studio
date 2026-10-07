@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { evaluateDeliveredSize, GMAIL_CLIP_BYTES } from "../scripts/lint-test-email-size.ts";
+import { evaluateDeliveredSize, GMAIL_CLIP_BYTES, GMAIL_NEAR_CLIP_BYTES } from "../scripts/lint-test-email-size.ts";
 import { sitePageMergeBlocker, writeSitePageState } from "../scripts/publish-edition-site-page.ts";
 
 // #9277 — o caso real da 261001: HTML local 43 KB, entregue 106.488 bytes.
@@ -38,10 +38,29 @@ test("#9311: parte HTML acima do corte é veredito definitivo (over_clip, over_l
 });
 
 test("#9311: sizeEstimate abaixo do corte → ok (o teto já prova que a parte HTML cabe)", () => {
-  const r = evaluateDeliveredSize({ sizeEstimate: GMAIL_CLIP_BYTES });
+  // #9823: no alarme de 95 KB ainda é silêncio; entre ele e o corte vira near_clip (teste abaixo).
+  const r = evaluateDeliveredSize({ sizeEstimate: GMAIL_NEAR_CLIP_BYTES });
   assert.equal(r.over_limit, false);
   assert.equal(r.may_clip, false);
+  assert.equal(r.near_clip, false);
   assert.deepEqual(r.issues, []);
+});
+
+// #9823 — caso real da 261007: e-mail de teste com 98,8 KB, a ~3% do corte, sem nenhum aviso.
+test("#9823: entre 95 KB e o corte acusa near_clip (warning com parte HTML, info com sizeEstimate), exit inalterado", () => {
+  const html = evaluateDeliveredSize({ htmlPartBytes: Math.round(98.8 * 1024) });
+  assert.equal(html.near_clip, true);
+  assert.equal(html.over_limit, false);
+  assert.equal(html.issues.length, 1);
+  assert.equal(html.issues[0].category, "delivered_size_near_clip");
+  assert.equal(html.issues[0].type, "warning");
+  const est = evaluateDeliveredSize({ sizeEstimate: GMAIL_CLIP_BYTES });
+  assert.equal(est.near_clip, true);
+  assert.equal(est.may_clip, false);
+  assert.equal(est.issues[0].category, "delivered_size_near_clip");
+  assert.equal(est.issues[0].type, "info");
+  const over = evaluateDeliveredSize({ htmlPartBytes: GMAIL_CLIP_BYTES + 1 });
+  assert.equal(over.near_clip, false, "acima do corte é over_clip, não near_clip");
 });
 
 test("#9311: review-test-email roteia TODOS os achados de tamanho como info:, nunca email: (blocker do fix loop)", () => {
@@ -49,7 +68,7 @@ test("#9311: review-test-email roteia TODOS os achados de tamanho como info:, nu
   const sec = md.slice(md.indexOf("### 3f. Tamanho do e-mail ENTREGUE"), md.indexOf("### 3b. Image freshness"));
   assert.ok(sec.length > 0, "seção 3f não encontrada");
   assert.doesNotMatch(sec, /"email:delivered_size/, "achado de tamanho com prefixo email: dispara o fix loop do Stage 5");
-  for (const cat of ["delivered_size_over_clip", "delivered_size_may_clip", "delivered_size_unmeasured"]) {
+  for (const cat of ["delivered_size_over_clip", "delivered_size_may_clip", "delivered_size_near_clip", "delivered_size_unmeasured"]) {
     assert.ok(sec.includes(`"info:${cat}`), `${cat} deveria mapear para info:`);
   }
 });
