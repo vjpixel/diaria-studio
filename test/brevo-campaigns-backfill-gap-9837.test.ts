@@ -29,7 +29,11 @@ import {
   CAMPAIGNS_BACKFILL_CURSOR_KV_KEY,
   CAMPAIGNS_FETCH_LIMIT,
 } from "../workers/brevo-dashboard/src/index.ts";
-import { advanceBackfillGaps } from "../workers/brevo-dashboard/src/brevo-api.ts";
+import {
+  advanceBackfillGaps,
+  backfillScannedFrontier,
+  BrevoRateLimitError,
+} from "../workers/brevo-dashboard/src/brevo-api.ts";
 
 const HOUR = 3600 * 1000;
 const DAY = 24 * HOUR;
@@ -200,6 +204,57 @@ describe("#9837 — backfill não deixa buraco com campanhas novas entre chamada
       await runCampaignsBackfillBatch(env, { _fetchFn: account.fetchFn as any, nowMs: now, batchSize: 20 }); // eslint-disable-line @typescript-eslint/no-explicit-any
     }
     assert.deepEqual(await coverageHoles(account, kv), []);
+  });
+});
+
+describe("#9837 — rate-limit com várias lacunas (achado de self-review)", () => {
+  test("429 esgotado na 1ª página encerra o laço: nenhuma 2ª listagem, lacunas restantes ficam pendentes", async () => {
+    const now = T0 + 60 * DAY;
+    const account = makeAccount(150, now);
+    // A 2ª campanha da 1ª lacuna esgota o retry de rate-limit
+    // (retryAfterSecs=0 → sem sleep real).
+    const rateLimitedId = account.campaigns[101].id;
+    const listings: string[] = [];
+    const fetchFn = async (path: string) => {
+      if (path.includes(`emailCampaigns/${rateLimitedId}?`)) throw new BrevoRateLimitError(0);
+      if (path.includes("offset=")) listings.push(path);
+      return account.fetchFn(path);
+    };
+    const { kv } = makeKv({
+      [CAMPAIGNS_BACKFILL_CURSOR_KV_KEY]: {
+        offset: 100, totalCount: 150, done: false, gaps: [{ start: 100, end: 103 }, { start: 130, end: 150 }],
+        updatedAt: new Date(now).toISOString(),
+      },
+    });
+    const env = { BREVO_API_KEY: "x", STATS_CACHE: kv } as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const r = await runCampaignsBackfillBatch(env, { _fetchFn: fetchFn as any, nowMs: now, batchSize: 20 }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    assert.equal(listings.length, 1, "o laço de páginas para no rate-limit — a 2ª lacuna não é listada nesta chamada");
+    assert.equal(r.scanned, 2, "1ª campanha + a que bateu o 429; a 3ª nunca foi examinada");
+    assert.equal(r.cursor.done, false);
+    assert.deepEqual(r.cursor.gaps, [{ start: 102, end: 103 }, { start: 130, end: 150 }]);
+  });
+});
+
+describe("#9837 — backfillScannedFrontier (pura, achado de self-review)", () => {
+  test("done reaberto: lacuna pequena perto da janela não puxa o N pra 100", () => {
+    assert.equal(
+      backfillScannedFrontier({ offset: 100, totalCount: 400, done: false, gaps: [{ start: 100, end: 103 }], updatedAt: "x" }),
+      400,
+    );
+  });
+
+  test("varredura em curso: N é o início da lacuna do rabo", () => {
+    assert.equal(
+      backfillScannedFrontier({
+        offset: 100, totalCount: 400, done: false, gaps: [{ start: 100, end: 103 }, { start: 250, end: 400 }], updatedAt: "x",
+      }),
+      250,
+    );
+  });
+
+  test("cursor legado (só offset) e cursor default mantêm o offset", () => {
+    assert.equal(backfillScannedFrontier({ offset: 130, totalCount: 500, done: false, updatedAt: "x" }), 130);
+    assert.equal(backfillScannedFrontier({ offset: 100, totalCount: null, done: false, updatedAt: "x" }), 100);
   });
 });
 

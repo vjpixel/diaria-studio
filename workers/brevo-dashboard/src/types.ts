@@ -114,7 +114,8 @@ export interface MonthlyTotalsArchive {
    * vivo). `false` = cursor "done", histórico completo conhecido. */
   backfillIncomplete: boolean;
   /** Quantas campanhas (mais recentes → mais antigas) já foram INSPECIONADAS
-   * pelo backfill (`CampaignsBackfillCursor.offset`) — usado como o "N" do
+   * pelo backfill (`backfillScannedFrontier`: início da lacuna do rabo, não
+   * da 1ª lacuna pendente, #9837) — usado como o "N" do
    * aviso de janela parcial no lugar do `CAMPAIGNS_FETCH_LIMIT` fixo, quando
    * o backfill já avançou além da janela ao vivo. */
   knownOffset: number;

@@ -3252,7 +3252,7 @@ export async function loadMonthlyTotalsArchive(
   ]);
   const backfillIncomplete = !cursor.done;
   if (archive.length === 0 || !env.STATS_CACHE) {
-    return { campaigns: [], backfillIncomplete, knownOffset: cursor.offset };
+    return { campaigns: [], backfillIncomplete, knownOffset: backfillScannedFrontier(cursor) };
   }
   const cache = env.STATS_CACHE;
   const entries = await Promise.all(
@@ -3275,7 +3275,27 @@ export async function loadMonthlyTotalsArchive(
   const campaigns = entries.filter(
     (c): c is BrevoCampaign & { listName?: string; listSize?: number } => c != null,
   );
-  return { campaigns, backfillIncomplete, knownOffset: cursor.offset };
+  return { campaigns, backfillIncomplete, knownOffset: backfillScannedFrontier(cursor) };
+}
+
+/**
+ * Pura (#9837, achado de self-review): o "N" do aviso de janela parcial —
+ * até onde (mais recente → mais antiga) o backfill já varreu. Com lacunas
+ * (`gaps`), `cursor.offset` é o início da 1ª lacuna pendente: depois de um
+ * `done` reaberto por campanha nova (ou de uma campanha mutável pendente),
+ * isso é tipicamente 100, e o aviso diria "janela de 100 campanhas" com o
+ * arquivo cobrindo centenas. A fronteira é o início da lacuna do RABO (a que
+ * vai até `totalCount`, o trecho mais antigo ainda não varrido); sem rabo
+ * pendente, só restam lacunas internas pequenas e o histórico inteiro
+ * (`totalCount`) já foi alcançado. Nunca menor que `cursor.offset`.
+ */
+export function backfillScannedFrontier(cursor: CampaignsBackfillCursor): number {
+  if (cursor.done || cursor.totalCount == null) return cursor.offset;
+  const gaps = backfillGapsFromCursor(cursor);
+  if (gaps.length === 0) return Math.max(cursor.offset, cursor.totalCount);
+  const tail = gaps[gaps.length - 1];
+  const frontier = tail.end >= cursor.totalCount ? tail.start : cursor.totalCount;
+  return Math.max(cursor.offset, frontier);
 }
 
 /**
