@@ -2,10 +2,10 @@
  * resolve-post-pixel.ts (#3052, reescopado na #9568)
  *
  * Texto (e imagem) do post PESSOAL do LinkedIn (vjpixel) pro lembrete
- * não-bloqueante do gate do Stage 6. O perfil pessoal é postado À MÃO (Claude
- * in Chrome): o Worker `linkedin-cron` recusa `webhook_target=pixel` com
- * `action=post` e a API direta tem um autor só (a página) — ver
- * `context/publishers/linkedin.md`.
+ * não-bloqueante do gate do Stage 6. Sem token do app pessoal o perfil é
+ * postado À MÃO (o Worker `linkedin-cron` recusa `webhook_target=pixel` com
+ * `action=post`); com token, `publish-linkedin-personal.ts` reusa este mesmo
+ * texto e publica sozinho no slot (#9568) — ver `context/publishers/linkedin.md`.
  *
  * Duas fontes, na ordem:
  *   1. `## um` de `# Social` (#9568) — o 4º post do item USE MELHOR, MESMO
@@ -152,8 +152,9 @@ export function resolvePersonalPost(input: {
   };
 }
 
-/** Horário que a PÁGINA agendou pro 4º post (entry linkedin/um, `06-social-published.json`). */
-function readUseMelhorScheduledAt(editionDir: string): string | null {
+/** Horário que a PÁGINA agendou pro 4º post (entry linkedin/um, `06-social-published.json`).
+ * Exportada pra `publish-linkedin-personal.ts` (#9568 — mesmo horário no perfil pessoal). */
+export function readUseMelhorScheduledAt(editionDir: string): string | null {
   for (const p of [resolve(editionDir, "_internal", "06-social-published.json"), resolve(editionDir, "06-social-published.json")]) {
     if (!existsSync(p)) continue;
     try {

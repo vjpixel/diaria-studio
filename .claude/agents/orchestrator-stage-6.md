@@ -218,7 +218,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6d (executar Schedule).
 
-**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agendou no Stage 5 — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Segue manual: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post` (ver `context/publishers/linkedin.md`). `resolve-post-pixel.ts` só devolve o `## um` quando o plano do 4º post está `ready` (mesmo `planUseMelhorDispatch` do Stage 5 — item re-conferido contra o `02-reviewed.md` final); `## um` presente mas plano pulado → `(nao encontrado)` + motivo no stderr. Edição antiga sem `## um` cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`):
+**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agendou no Stage 5 — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Sem token do app pessoal segue manual (o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post`, ver `context/publishers/linkedin.md`); com token, sai automático (§6d-pessoal). `resolve-post-pixel.ts` só devolve o `## um` quando o plano do 4º post está `ready` (mesmo `planUseMelhorDispatch` do Stage 5 — item re-conferido contra o `02-reviewed.md` final); `## um` presente mas plano pulado → `(nao encontrado)` + motivo no stderr. Edição antiga sem `## um` cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`):
 
 ```bash
 npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/            # → POST_PIXEL_TEXT
@@ -230,6 +230,8 @@ Exit code (os três modos):
 - `0` → resolvido (`## um` com plano pronto, ou `## post_pixel` legado).
 - `1` → nada a mostrar: 03-social.md ausente, nem `## um` nem `## post_pixel`, plano do 4º post pulado (motivo no stderr — repetir o motivo no lembrete), ou, em `--image`, arquivo inexistente/carrossel defasado. stdout = `(nao encontrado)`. Sem imagem: omitir a linha `Imagem:` do lembrete. **Não bloqueia o gate.**
 - `2` → (só caminho legado `## post_pixel`) `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (#2153 — post pessoal é amplificação opcional).
+
+**Post pessoal automático (#9568, app LinkedIn pessoal separado).** Rodar também `npx tsx scripts/publish-linkedin-personal.ts --check` → `PERSONAL_AUTO` (exit `0` = token do perfil pessoal disponível; exit `3` = ausente/expirado, motivo no stderr — modo manual, lembrete igual a antes). Com `PERSONAL_AUTO` disponível E `resolve-post-pixel.ts` tendo devolvido o `## um` (exit 0, fonte `um`), o lembrete abaixo troca o "Agende manualmente" por "Sai AUTOMÁTICO no perfil pessoal às {POST_PIXEL_AT em BRT} (armado após o `ok`, §6d-pessoal) — não postar à mão". Edição legada (`## post_pixel`) segue manual sempre. Setup: `docs/linkedin-personal-setup.md`.
 
 Guardar o stdout dos três em `POST_PIXEL_TEXT`, `POST_PIXEL_IMAGE` e `POST_PIXEL_AT` (`scheduled_at` do `--json` — o horário REAL da entry `linkedin`/`um` de `06-social-published.json`, que pode ter sido shiftado pelo past-slot guard; `null` → "mesmo horário do 4º post da página, ver resumo do Stage 5"). Nunca usar `use_melhor_time` do config como horário do lembrete. Se `use_melhor.status` da saída do `publish-linkedin.ts` (Stage 5) for `skip`, o lembrete diz que o 4º post não saiu e por quê.
 
@@ -264,7 +266,7 @@ Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel (4º post USE MELHOR, #9568)
-Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {POST_PIXEL_AT em BRT} — mesmo horário do 4º post da página:
+Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {POST_PIXEL_AT em BRT} — mesmo horário do 4º post da página:   ← com PERSONAL_AUTO: "Sai AUTOMATICO no LinkedIn PESSOAL as {POST_PIXEL_AT em BRT} (armado apos o ok) — nao postar a mao"
   Imagem: {EDITION_DIR}/{POST_PIXEL_IMAGE}   ← omitir a linha se --image saiu 1
 
 {POST_PIXEL_TEXT}
@@ -479,6 +481,10 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 **Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
 **Publicação da página do site: já feita, antes do gate.** Ver §6b-site — o #8221 moveu esse passo inteiro (validação + publicação) pra antes da parada única de §6c, junto do guard de slug. Não roda de novo aqui.
+
+### 6d-pessoal. Armar o post pessoal automático do LinkedIn (#9568)
+
+Depois do `ok` (ou direto, com `--no-gates`), em qualquer backend, só se o pré-gate deu `PERSONAL_AUTO` disponível: `npx tsx scripts/publish-linkedin-personal.ts --arm --edition-dir {EDITION_DIR}/` grava `_internal/06-linkedin-personal.json` (`armed`); quem publica é a task `Diaria-LinkedIn-Personal` no `300`, no slot. Exit `0` = armado/já publicado; `1` = nada a postar (4º post pulado); `3` = token indisponível → repetir ao editor o lembrete MANUAL com `POST_PIXEL_TEXT`. **Nunca bloqueia o Stage 6** — outro erro: logar warn e seguir.
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 

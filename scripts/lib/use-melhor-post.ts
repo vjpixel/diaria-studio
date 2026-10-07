@@ -65,10 +65,10 @@ export const USE_MELHOR_UTM_CONTENT = "usemelhor";
 /**
  * Os publicadores do Stage 5 (LinkedIn página/Facebook/Instagram/Threads/X)
  * despacham o `## um` desde o PR de Stage 5 da #9568 — ver
- * `scripts/lib/use-melhor-dispatch.ts`. O LinkedIn PESSOAL (vjpixel) segue
- * manual (lembrete no gate do Stage 6): o Worker `linkedin-cron` recusa
- * `webhook_target=pixel` + `action=post` e a API direta só tem 1 autor
- * (`LINKEDIN_AUTHOR_URN`, a página).
+ * `scripts/lib/use-melhor-dispatch.ts`. O LinkedIn PESSOAL (vjpixel) não passa
+ * pelo Worker (`linkedin-cron` recusa `webhook_target=pixel` + `action=post`):
+ * com o token do app pessoal sai pela task `Diaria-LinkedIn-Personal`
+ * (`publish-linkedin-personal.ts`); sem token, lembrete no gate do Stage 6.
  */
 export const USE_MELHOR_STAGE5_DISPATCH_IMPLEMENTED = true;
 
@@ -673,7 +673,7 @@ export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): Us
   } else {
     lines.push(
       `   ℹ️ Stage 5 agenda às ${config.time} BRT em LinkedIn página/Facebook/Instagram/Threads/X; ` +
-        `LinkedIn pessoal (vjpixel) é manual, mesmo texto — lembrete no gate do Stage 6.`,
+        `LinkedIn pessoal (vjpixel): mesmo texto, automático com o token do app pessoal (#9568), senão lembrete no gate do Stage 6.`,
     );
   }
   return { level, lines };

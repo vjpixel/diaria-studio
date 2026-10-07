@@ -934,6 +934,25 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7250",
   },
   {
+    name: "Diaria-LinkedIn-Personal",
+    description:
+      "publica no LinkedIn PESSOAL o 4º post (USE MELHOR) armado pelo Stage 6 e alarma a expiração do token pessoal (60 dias)",
+    steps: [
+      { key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] },
+      { key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" },
+    ],
+    logPath: "linkedin-personal/.task.log",
+    // Diária 07:46 BRT (#9568) — 1 minuto DEPOIS de
+    // `publishing.social.use_melhor_time` (07:45), o slot em que a página
+    // publica o mesmo texto. A Posts API da LinkedIn não agenda, então o
+    // post sai quando a task roda; `--fire-due` só publica intenção cujo
+    // `scheduled_at` já passou (até 3h de atraso). Mudou o slot no config?
+    // Mudar este horário junto — `test/publish-linkedin-personal.test.ts`
+    // trava o par (minuto = use_melhor_time + 1).
+    schedule: { kind: "daily", hour: 7, minute: 46 },
+    issue: "#9568",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],
