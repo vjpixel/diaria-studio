@@ -26,10 +26,11 @@
 // Isto contradiz o próprio argumento de desenho central desta issue —
 // "o que depende de skill lembrar, não acontece" (ver docblock de
 // `session-beacon.mjs`) — bem na peça que mais precisava de mecanismo em vez
-// de prosa. Este hook fecha isso: `PostToolUse` roda depois que `gh pr merge`
-// SUCEDE (o próprio harness só dispara este evento em sucesso — uma falha
-// vai pra `PostToolUseFailure`, nunca aqui, mesmo padrão documentado em
-// `pr-create-review.mjs`), e se a sessão que rodou o comando tem uma
+// de prosa. Este hook fecha isso: `PostToolUse` roda depois que o comando
+// Bash sai com 0 (uma saída não-zero vai pra `PostToolUseFailure`, nunca
+// aqui, mesmo padrão documentado em `pr-create-review.mjs` — mas exit 0 do
+// comando não prova que o `gh pr merge` sucedeu, ver #8793 abaixo), e se a
+// sessão que rodou o comando tem uma
 // concessão viva, ela é consumida ali mesmo — nenhuma skill precisa lembrar
 // de nada, mesmo argumento que justifica o beacon inteiro.
 //
@@ -226,7 +227,9 @@ export function mergeEvidentlyDidNotHappen(targetPr, execFn = execFileSync) {
   try {
     const out = execFn("gh", ["pr", "view", String(targetPr), "--json", "state,autoMergeRequest"], {
       encoding: "utf8",
-      timeout: 6_000,
+      // 3s: o hook inteiro tem `timeout: 10` no settings e o lock pode gastar
+      // até 3 x 2s em contenção — estourar mataria o hook antes de consumir.
+      timeout: 3_000,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });

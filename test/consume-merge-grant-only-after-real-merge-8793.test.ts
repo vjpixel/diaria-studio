@@ -75,8 +75,14 @@ function runCli(root: string, ...args: string[]) {
 }
 
 function runHook(root: string, sessionId: string, command: string) {
+  // Sem GH_REPO/GH_HOST: o `gh pr view` do hook precisa falhar no repo
+  // temporário sem remote, nunca consultar um PR real por herança do ambiente.
+  const env = { ...process.env };
+  delete env.GH_REPO;
+  delete env.GH_HOST;
   return spawnSync(process.execPath, [CONSUME_HOOK], {
     cwd: root,
+    env,
     input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", tool_input: { command } }),
     encoding: "utf8",
     timeout: 15_000,
