@@ -102,12 +102,17 @@ O prazo do concurso "ache o erro" é "antes do envio da edição seguinte", ent�
 Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0-replies" com 2 ajustes:
 
 1. Gravar a captura desta passada em `{EDITION_DIR}/_internal/captured-replies-late-pass.json` (sobrescrito a cada execução; nunca sobrescrever `captured-replies.json` do Passo 1b nem o ledger `captured-replies-late.json`).
-2. Filtrar excluindo o que o Passo 1b E execuções anteriores deste Stage 6 já processaram (mesma `thread_id` + `date`), e acumular a passada no ledger — re-executar o Stage 6 (ex.: retomada via `/diaria-6-agendamento`) não pode rascunhar de novo as replies tardias da execução anterior:
+2. Filtrar (passo 3) excluindo o que o Passo 1b E execuções anteriores deste Stage 6 já processaram (mesma `thread_id` + `date`) — re-executar o Stage 6 (ex.: retomada via `/diaria-6-agendamento`) não pode rascunhar de novo as replies tardias da execução anterior:
    ```bash
    npx tsx scripts/filter-subscriber-replies.ts --in {EDITION_DIR}/_internal/captured-replies-late-pass.json \
-     --exclude-captured {EDITION_DIR}/_internal/captured-replies.json,{EDITION_DIR}/_internal/captured-replies-late.json \
-     --accumulate-into {EDITION_DIR}/_internal/captured-replies-late.json
+     --exclude-captured {EDITION_DIR}/_internal/captured-replies.json,{EDITION_DIR}/_internal/captured-replies-late.json
    ```
+   **Só DEPOIS do passo 4 (draft + sorteio) concluído**, registrar a passada no ledger (#9807 — nunca na hora do filtro: se a sessão cair entre o filtro e o draft, a reply constaria como processada e a retomada a perderia em silêncio):
+   ```bash
+   npx tsx scripts/filter-subscriber-replies.ts --in {EDITION_DIR}/_internal/captured-replies-late-pass.json \
+     --record-processed {EDITION_DIR}/_internal/captured-replies-late.json
+   ```
+   Se alguma reply ficou sem tratamento (ex.: `create_draft` falhou), passar `--thread-ids {ids tratados, separados por vírgula}` — a que ficou de fora volta na retomada. Reprocessar gera no máximo um rascunho duplicado (desfazível; a alocação de número é idempotente por ciclo+email+edição), perder a reply não tem desfazer.
 
 Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
 
