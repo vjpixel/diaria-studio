@@ -49,6 +49,21 @@ const LATE_REFRESH_ONLY_ALLOWLIST: Record<string, string> = {
     "Subconjunto do feed geral https://blog.google/rss/ já lido pela fonte `Google` do Stage 1 (janela de dias da pesquisa coberta pelo geral, conferido em 05/10/2026).",
   "https://microsoft.ai/feed/":
     "Feed responde 200 mas sem nenhum <item> (05/10/2026). Stage 1 cobre via fonte `Microsoft` (site:microsoft.ai).",
+  // #9424: GitHub oficial das orgs. Repos novos vêm da API REST (JSON, não RSS)
+  // e as releases precisam do `tagPattern` contra nightly/rc — o fetch-rss do
+  // Stage 1 não filtra por tag e encheria o pool de nightly. Sinal de gate tardio.
+  "https://api.github.com/orgs/QwenLM/repos?sort=created&direction=desc&per_page=30&type=public":
+    "API REST do GitHub (JSON), não RSS — o Stage 1 não lê esse formato. Repo novo da org é o sinal de lançamento de modelo do Qwen (#9424).",
+  "https://api.github.com/orgs/deepseek-ai/repos?sort=created&direction=desc&per_page=30&type=public":
+    "API REST do GitHub (JSON), não RSS — o Stage 1 não lê esse formato. Repo novo da org é o sinal de lançamento de modelo da DeepSeek (#9424).",
+  "https://api.github.com/orgs/xai-org/repos?sort=created&direction=desc&per_page=30&type=public":
+    "API REST do GitHub (JSON), não RSS — o Stage 1 não lê esse formato. Repo novo da org é o sinal de lançamento de código da xAI (#9424).",
+  "https://github.com/QwenLM/qwen-code/releases.atom":
+    "Atom de releases com nightly/preview diários; o filtro de tag estável (tagPattern) só existe no late-refresh, o fetch-rss do Stage 1 encheria o pool de ruído (#9424).",
+  "https://github.com/deepseek-ai/deepseek-harness/releases.atom":
+    "Atom de releases quase só de alpha/rc; o filtro de tag estável (tagPattern) só existe no late-refresh, o fetch-rss do Stage 1 encheria o pool de ruído (#9424).",
+  "https://github.com/xai-org/xai-sdk-python/releases.atom":
+    "Atom de releases com bumps de patch do SDK; o filtro de tag estável (tagPattern) só existe no late-refresh, o fetch-rss do Stage 1 traria os patches (#9424).",
 };
 
 describe("#9644 — fontes do late-refresh também no Stage 1", () => {

@@ -21,7 +21,7 @@
 import { canonicalize, extractUrls } from "./url-utils.ts";
 import { FLAGSHIP_MODEL_RE, detectFrontierLaunch, frontierLabOfUrl } from "./frontier-signals.ts";
 import { hasLaunchVerb } from "./launch-detect.ts";
-import { lancamentoDomains } from "./official-domains.ts";
+import { lancamentoDomains, lancamentoPatterns } from "./official-domains.ts";
 
 // ---------------------------------------------------------------------------
 // Fontes
@@ -31,9 +31,30 @@ export interface LateRefreshFeed {
   lab: string;
   name: string;
   url: string;
-  method: "rss" | "sitemap";
+  /**
+   * - `github-releases`: Atom oficial de releases de UM repo (`/{org}/{repo}/releases.atom`).
+   * - `github-new-repos`: repositórios públicos da org criados depois do corte, pela
+   *   API REST oficial do GitHub (`/orgs/{org}/repos?sort=created`) — é como os
+   *   labs abertos lançam MODELO (repo novo por modelo; repo de pesos não publica release).
+   */
+  method: "rss" | "sitemap" | "github-releases" | "github-new-repos";
   /** Só sitemap: mantém só entradas cujo path começa com este prefixo (o sitemap lista o site inteiro). */
   pathPrefix?: string;
+  /**
+   * Só github-releases: a tag (último segmento de `/releases/tag/{tag}`) precisa
+   * casar — filtro de ruído (nightly, preview, rc, alpha, sub-pacote de SDK,
+   * bump de patch). O Atom não expõe o flag `prerelease`; a tag é o que sobra.
+   */
+  tagPattern?: RegExp;
+  /** Só github-new-repos: login da org no GitHub. */
+  org?: string;
+}
+
+/** Tag semver ESTÁVEL de minor/major (`v1.20.0`, `dsh-v0.2.0`) — corta patch, nightly, preview, rc, alpha, beta. */
+const STABLE_MINOR_TAG = /^v\d+\.\d+\.0$/;
+
+function githubNewReposUrl(org: string): string {
+  return `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=public`;
 }
 
 /**
@@ -50,17 +71,112 @@ export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
   { lab: "Microsoft AI", name: "Microsoft AI", url: "https://microsoft.ai/feed/", method: "rss" },
   { lab: "Mistral", name: "Mistral Blog", url: "https://mistral.ai/news/rss", method: "rss" },
   { lab: "Meta", name: "Meta Newsroom (tag AI)", url: "https://about.fb.com/news/tag/ai/feed/", method: "rss" },
+  // #9424 (decisão do editor 07/10/2026: GitHub oficial da org, nunca scraping).
+  // Sondado ao vivo em 07/10/2026 — ver docs/late-refresh-github-feeds.md:
+  // repo de PESOS de modelo (Qwen3, Qwen3.8, Qwen-Image-2.1, DeepSeek-V3,
+  // grok-1) não publica release no GitHub; o lançamento de modelo aparece como
+  // REPO NOVO da org. Release só existe nos repos de ferramenta/SDK, com muito
+  // nightly/rc — daí o `tagPattern` estável.
+  { lab: "Qwen", name: "Qwen GitHub (repos novos)", url: githubNewReposUrl("QwenLM"), method: "github-new-repos", org: "QwenLM" },
+  { lab: "Qwen", name: "Qwen Code (releases)", url: "https://github.com/QwenLM/qwen-code/releases.atom", method: "github-releases", tagPattern: STABLE_MINOR_TAG },
+  { lab: "DeepSeek", name: "DeepSeek GitHub (repos novos)", url: githubNewReposUrl("deepseek-ai"), method: "github-new-repos", org: "deepseek-ai" },
+  { lab: "DeepSeek", name: "DeepSeek Harness (releases)", url: "https://github.com/deepseek-ai/deepseek-harness/releases.atom", method: "github-releases", tagPattern: /^dsh-v\d+\.\d+\.0$/ },
+  { lab: "xAI", name: "xAI GitHub (repos novos)", url: githubNewReposUrl("xai-org"), method: "github-new-repos", org: "xai-org" },
+  { lab: "xAI", name: "xAI SDK Python (releases)", url: "https://github.com/xai-org/xai-sdk-python/releases.atom", method: "github-releases", tagPattern: STABLE_MINOR_TAG },
 ];
 
 /**
- * Laboratórios da lista da #9370 SEM feed máquina-legível (sondado em
- * 2026-10-01: Meta `ai.meta.com/blog/rss/` 400, xAI `rss.xml` 404 e sitemap
- * 403, DeepSeek sitemap só de docs, Qwen sitemap serve HTML; reavaliado em
- * 2026-10-02 (#9424): Mistral ganhou `mistral.ai/news/rss` e Meta o feed da tag AI do Newsroom (`about.fb.com/news/tag/ai/feed/`); o feed do blog
- * Qwen (`qwenlm.github.io`) parou em set/2025 e `qwen.ai` não tem RSS). Ficam cobertos só indiretamente pelas newsletters — reportado
- * no output em vez de omitido em silêncio.
+ * Laboratórios da lista da #9370 SEM feed máquina-legível. Histórico: em
+ * 2026-10-01 Meta, xAI, DeepSeek, Qwen e Mistral não tinham feed; em
+ * 2026-10-02 (#9424) Mistral ganhou `mistral.ai/news/rss` e Meta o feed da tag
+ * AI do Newsroom; em 2026-10-07 (#9424) xAI, DeepSeek e Qwen passaram a ser
+ * lidos pelo GitHub oficial da org (repos novos + releases). Lista vazia hoje;
+ * fica como contrato do relatório (lab que perder a fonte volta pra cá e é
+ * reportado no output em vez de omitido em silêncio).
  */
-export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = ["xAI", "DeepSeek", "Qwen"];
+export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = [];
+
+// ---------------------------------------------------------------------------
+// GitHub (#9424)
+// ---------------------------------------------------------------------------
+
+/** `{org}/{repo}` e tag de uma URL `github.com/{org}/{repo}/releases/tag/{tag}`; `null` fora desse formato. */
+export function parseGithubReleaseUrl(url: string): { repo: string; tag: string } | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  if (u.hostname.toLowerCase().replace(/^www\./, "") !== "github.com") return null;
+  const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/releases\/tag\/([^/]+)\/?$/);
+  if (!m) return null;
+  return { repo: `${m[1]}/${m[2]}`, tag: decodeURIComponent(m[3]) };
+}
+
+/**
+ * Releases de um Atom do GitHub que são LANÇAMENTO: tag casa `tagPattern`
+ * (sem padrão = todas). Título ganha o repo na frente — "Release v0.25.0"
+ * sozinho não diz de quem é. Entrada fora de `/releases/tag/` sai. @pure
+ */
+export function filterGithubReleases(articles: readonly LateArticle[], tagPattern: RegExp | undefined): LateArticle[] {
+  const out: LateArticle[] = [];
+  for (const a of articles) {
+    const rel = parseGithubReleaseUrl(a.url);
+    if (!rel) continue;
+    if (tagPattern && !tagPattern.test(rel.tag)) continue;
+    const title = a.title.trim();
+    out.push({ ...a, title: title.toLowerCase().includes(rel.repo.toLowerCase()) ? title : `${rel.repo}: ${title || rel.tag}` });
+  }
+  return out;
+}
+
+const INTERNAL_REPO_RE = /\binternal (?:component|tool|use|library)\b/i;
+
+interface GithubRepoJson {
+  name?: unknown;
+  full_name?: unknown;
+  html_url?: unknown;
+  description?: unknown;
+  created_at?: unknown;
+  fork?: unknown;
+  archived?: unknown;
+  private?: unknown;
+}
+
+/**
+ * Resposta de `GET /orgs/{org}/repos` → artigos (data = `created_at`). Fork,
+ * arquivado e privado saem — fork da org (vllm, zed-extensions) não é
+ * lançamento dela. O corte por data é do `filterLateArticles`. Resposta que
+ * não é array (erro da API, rate limit) lança: o chamador vira nota de feed
+ * com falha, nunca "nada novo". @pure
+ */
+export function parseGithubNewRepos(json: unknown, feed: Pick<LateRefreshFeed, "lab" | "name">): LateArticle[] {
+  if (!Array.isArray(json)) {
+    const msg = typeof (json as { message?: unknown })?.message === "string" ? (json as { message: string }).message : "resposta não é lista";
+    throw new Error(`GitHub API: ${msg}`);
+  }
+  const out: LateArticle[] = [];
+  for (const r of json as GithubRepoJson[]) {
+    if (r?.fork === true || r?.archived === true || r?.private === true) continue;
+    if (typeof r?.html_url !== "string" || typeof r?.created_at !== "string") continue;
+    const full = typeof r.full_name === "string" ? r.full_name : String(r.name ?? "");
+    const desc = typeof r.description === "string" ? r.description.trim() : "";
+    // Sub-repo que a própria org declara interno ("An internal component used by
+    // DeepSeek Harness", 2 casos em 30/09/2026) — infraestrutura, não lançamento.
+    if (INTERNAL_REPO_RE.test(desc)) continue;
+    const shortDesc = desc.length > 140 ? `${desc.slice(0, 137).trimEnd()}...` : desc;
+    out.push({
+      url: r.html_url,
+      title: `Novo repositório ${full}${shortDesc ? `: ${shortDesc}` : ""}`,
+      published_at: r.created_at,
+      summary: desc,
+      lab: feed.lab,
+      source: feed.name,
+    });
+  }
+  return out;
+}
 
 /**
  * Entradas de sitemap modificadas depois do corte, no `pathPrefix` do feed,
@@ -344,24 +460,35 @@ export function currentHighlights(
  * - Resto (case de cliente, ensaio, imprensa) → RADAR.
  */
 const OFFICIAL_LANCAMENTO_DOMAINS = lancamentoDomains();
+const OFFICIAL_LANCAMENTO_PATTERNS = lancamentoPatterns();
 
 /**
  * #9457: host oficial = laboratório de fronteira (`FRONTIER_LABS`) OU domínio
- * de `official-domains.ts` (about.fb.com, mistral.ai…). Não
- * mexe em `FRONTIER_LABS` para não alterar o scorer-select (#9359). @pure
+ * de `official-domains.ts` (about.fb.com, mistral.ai…). #9424: OU padrão de
+ * path de `official-domains.ts` (repo/release da org oficial no GitHub — o
+ * host `github.com` sozinho nunca é oficial). Não mexe em `FRONTIER_LABS`
+ * para não alterar o scorer-select (#9359). @pure
  */
 export function isOfficialHost(url: string): boolean {
   if (frontierLabOfUrl(url) !== undefined) return true;
   let host: string;
+  let full: string;
   try {
-    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+    const u = new URL(url);
+    host = u.hostname.toLowerCase().replace(/^www\./, "");
+    full = host + u.pathname;
   } catch {
     return false;
   }
   for (const d of OFFICIAL_LANCAMENTO_DOMAINS) {
     if (host === d || host.endsWith(`.${d}`)) return true;
   }
-  return false;
+  return OFFICIAL_LANCAMENTO_PATTERNS.some((p) => p.test(full));
+}
+
+/** Repo novo ou release na org OFICIAL do lab no GitHub — já é, por definição, algo sendo lançado. */
+function isOfficialGithubLaunch(url: string): boolean {
+  return /^https?:\/\/(?:www\.)?github\.com\//i.test(url) && isOfficialHost(url);
 }
 
 export function suggestSubstitution(
@@ -392,6 +519,10 @@ export function suggestSubstitution(
   const announces = hasLaunchVerb(article.title) !== undefined || /^\s*introducing\b/i.test(article.title);
   if (signal?.route === "official" || (official && announces)) {
     return { target: "pool", slot: "LANÇAMENTOS", reason: "anúncio em host oficial do laboratório" };
+  }
+  // #9424: repo novo/release da org oficial no GitHub — link oficial (#160).
+  if (isOfficialGithubLaunch(article.url)) {
+    return { target: "pool", slot: "LANÇAMENTOS", reason: "repositório/release no GitHub oficial do laboratório" };
   }
   return { target: "pool", slot: "RADAR", reason: official ? "post oficial que não anuncia lançamento" : "fonte não oficial" };
 }

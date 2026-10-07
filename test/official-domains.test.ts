@@ -299,6 +299,33 @@ describe("Qwen no GitHub é lançamento oficial (260922)", () => {
   });
 });
 
+describe("GitHub oficial de xAI, DeepSeek e Qwen: repo e release (#9424)", () => {
+  it("raiz do repo e página de UMA release da org oficial contam", () => {
+    for (const url of [
+      "https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0",
+      "https://github.com/deepseek-ai/DeepSeek-V3",
+      "https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0",
+      "https://github.com/xai-org/grok-build",
+      "https://github.com/xai-org/xai-sdk-python/releases/tag/v1.20.0/",
+    ]) {
+      assert.equal(isOfficialLancamentoUrl(url), true, url);
+    }
+  });
+  it("lista de releases, issues, blobs, perfil da org e org parecida não contam", () => {
+    for (const url of [
+      "https://github.com/xai-org/xai-sdk-python/releases",
+      "https://github.com/xai-org/xai-sdk-python/releases/tag/v1.20.0/extra",
+      "https://github.com/deepseek-ai/DeepSeek-V3/issues/1",
+      "https://github.com/deepseek-ai/DeepSeek-V3/blob/main/README.md",
+      "https://github.com/deepseek-ai",
+      "https://github.com/deepseek-ai-fan/DeepSeek-V3",
+      "https://github.com/xai-orgx/grok",
+    ]) {
+      assert.equal(isOfficialLancamentoUrl(url), false, url);
+    }
+  });
+});
+
 describe("Cloudflare no gate de LANÇAMENTOS (#9390)", () => {
   it("isOfficialLancamentoUrl aceita o anúncio real do Pay Per Use", () => {
     assert.ok(lancamentoDomains().has("blog.cloudflare.com"));

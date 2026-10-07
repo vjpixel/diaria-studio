@@ -204,6 +204,10 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // #566: estava em COMPANY_TO_DOMAIN mas não em LANCAMENTO_DOMAINS — drift corrigido
     company: "DeepSeek",
     domains: ["deepseek.com", "api-docs.deepseek.com"],
+    // #9424: repo da org oficial no GitHub (raiz ou página de UMA release) —
+    // pesos/código de modelo saem como repo novo da org (DeepSeek-V3,
+    // DeepSeek-OCR-2). Mesmo recorte do Qwen: issues/PRs/blobs não contam.
+    path_patterns: [/^github\.com\/deepseek-ai\/[^/]+(?:\/releases\/tag\/[^/]+)?\/?$/i],
     detection_keywords: /\b(deepseek)\b/i,
   },
   {
@@ -255,7 +259,9 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // 260922): lançamentos de modelo saem aqui. Restrito à RAIZ do repo da org
     // (issues/PRs/blobs não são página de lançamento) — github.com inteiro NÃO
     // é oficial.
-    path_patterns: [/^github\.com\/qwenlm\/[^/]+\/?$/i],
+    // #9424: também a página de UMA release (`/releases/tag/{tag}`) — é o link
+    // que o refresh tardio do gate 4 lê do Atom de releases da org.
+    path_patterns: [/^github\.com\/qwenlm\/[^/]+(?:\/releases\/tag\/[^/]+)?\/?$/i],
     detection_keywords: /\b(qwen|alibaba)\b/i,
   },
   {
@@ -311,6 +317,9 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
   {
     company: "xAI",
     domains: ["x.ai"],
+    // #9424: repo da org oficial no GitHub (raiz ou página de UMA release),
+    // mesmo recorte do Qwen — grok-build, xai-sdk-python.
+    path_patterns: [/^github\.com\/xai-org\/[^/]+(?:\/releases\/tag\/[^/]+)?\/?$/i],
     detection_keywords: /\b(xai|grok)\b/i,
   },
   {

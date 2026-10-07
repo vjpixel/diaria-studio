@@ -45,8 +45,10 @@ import {
   LATE_REFRESH_FEEDS,
   LATE_REFRESH_UNCOVERED_LABS,
   canonicalUrlSet,
+  filterGithubReleases,
   filterLateArticles,
   formatLateRefreshBlock,
+  parseGithubNewRepos,
   resolveCutoffs,
   selectSitemapEntries,
   suggestSubstitution,
@@ -101,13 +103,32 @@ async function fetchSitemapAfter(feed: LateRefreshFeed, cutoffIso: string): Prom
   }));
 }
 
+/** #9424: repos públicos da org pela API REST oficial do GitHub (sem token: 60 req/h por IP, 3 chamadas por gate). */
+async function fetchGithubNewRepos(feed: LateRefreshFeed): Promise<LateArticle[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FEED_TIMEOUT_MS);
+  try {
+    const res = await fetch(feed.url, {
+      headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)", Accept: "application/vnd.github+json" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return parseGithubNewRepos(await res.json(), feed);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchFeed(feed: LateRefreshFeed, cutoffIso: string, now: Date): Promise<{ articles: LateArticle[]; error?: string }> {
   try {
     if (feed.method === "sitemap") return { articles: await fetchSitemapAfter(feed, cutoffIso) };
+    if (feed.method === "github-new-repos") return { articles: await fetchGithubNewRepos(feed) };
     const days = Math.max(1, Math.ceil((now.getTime() - new Date(cutoffIso).getTime() + IMPRECISE_DATE_LOOKBACK_MS) / 86_400_000));
     const r = await fetchRss({ url: feed.url, sourceName: feed.name, days, timeoutMs: FEED_TIMEOUT_MS, now });
+    const mapped: LateArticle[] = r.articles.map((a) => ({ url: a.url, title: a.title, published_at: a.published_at ?? null, summary: a.summary, lab: feed.lab, source: feed.name }));
     return {
-      articles: r.articles.map((a) => ({ url: a.url, title: a.title, published_at: a.published_at ?? null, summary: a.summary, lab: feed.lab, source: feed.name })),
+      // Atom de releases do GitHub (rss/atom pelo mesmo parser) — corta nightly/rc/patch pela tag.
+      articles: feed.method === "github-releases" ? filterGithubReleases(mapped, feed.tagPattern) : mapped,
       ...(r.error ? { error: r.error } : {}),
     };
   } catch (e) {

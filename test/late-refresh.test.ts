@@ -13,10 +13,15 @@ import {
   selectSitemapEntries,
   suggestSubstitution,
   summarizeLateThreads,
+  filterGithubReleases,
+  parseGithubNewRepos,
+  parseGithubReleaseUrl,
   type LateArticle,
   type LateRefreshReport,
 } from "../scripts/lib/late-refresh.ts";
 import { threadsToLateInputs } from "../scripts/late-refresh-candidates.ts";
+import { parseFeed } from "../scripts/fetch-rss.ts";
+import { isOfficialLancamentoUrl } from "../scripts/lib/launch-heuristics.ts";
 
 const CUTOFF = "2026-09-29T19:42:10.973Z";
 
@@ -203,7 +208,6 @@ test("#9424: Mistral tem feed RSS oficial e sai da lista de labs sem cobertura",
   assert.equal(m.url, "https://mistral.ai/news/rss");
   assert.equal(m.method, "rss");
   assert.ok(!LATE_REFRESH_UNCOVERED_LABS.includes("Mistral"));
-  for (const lab of ["xAI", "DeepSeek", "Qwen"]) assert.ok(LATE_REFRESH_UNCOVERED_LABS.includes(lab), lab);
 });
 
 test("#9424: Meta tem feed RSS oficial (tag AI do Newsroom) e sai da lista de labs sem cobertura", () => {
@@ -229,8 +233,144 @@ test("#9457: posts oficiais de Meta (about.fb.com) e Mistral anunciando lançame
 test("LATE_REFRESH_FEEDS: todo host de feed satisfaz isOfficialHost (#9515)", () => {
   for (const f of LATE_REFRESH_FEEDS) {
     const u = new URL(f.url);
-    const post = `${u.protocol}//${u.host}${f.pathPrefix ?? "/"}post-exemplo`;
+    // #9424: feeds do GitHub emitem URL de release/repo da org, não do host do feed.
+    const post =
+      f.method === "github-releases"
+        ? f.url.replace(/\/releases\.atom$/, "/releases/tag/v1.0.0")
+        : f.method === "github-new-repos"
+          ? `https://github.com/${f.org}/repo-exemplo`
+          : `${u.protocol}//${u.host}${f.pathPrefix ?? "/"}post-exemplo`;
     assert.equal(isOfficialHost(post), true, `${f.name}: ${post} deveria ser oficial`);
   }
   assert.equal(isOfficialHost("https://microsoft.ai/news/introducing-mai-voice-2/"), true);
+});
+
+// ---------------------------------------------------------------------------
+// #9424 — GitHub oficial das orgs (xAI, DeepSeek, Qwen)
+// ---------------------------------------------------------------------------
+
+/** Fixture no formato real do Atom de releases do GitHub (estrutura do qwen-code, 07/10/2026). */
+const GITHUB_RELEASES_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/QwenLM/qwen-code/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/QwenLM/qwen-code/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/QwenLM/qwen-code/releases.atom"/>
+  <title>Release notes from qwen-code</title>
+  <updated>2026-10-06T18:45:47Z</updated>
+  ${[
+    ["v0.25.1-preview.0", "Release v0.25.1-preview.0", "2026-10-06T18:45:47Z"],
+    ["v0.25.0", "Release v0.25.0", "2026-10-05T10:01:23Z"],
+    ["sdk-typescript-v0.1.18", "SDK TypeScript Release v0.1.18", "2026-10-05T10:23:32Z"],
+    ["desktop-v0.25.0", "Qwen Code Desktop v0.25.0", "2026-10-05T10:45:59Z"],
+    ["v0.24.7-nightly.20261004.9915c7ff8f", "Release v0.24.7-nightly.20261004.9915c7ff8f", "2026-10-04T22:14:03Z"],
+    ["v0.24.7", "Release v0.24.7", "2026-09-29T14:24:45Z"],
+  ]
+    .map(
+      ([tag, title, updated]) => `<entry>
+    <id>tag:github.com,2008:Repository/1008713177/${tag}</id>
+    <updated>${updated}</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/QwenLM/qwen-code/releases/tag/${tag}"/>
+    <title>${title}</title>
+    <content type="html">&lt;h2&gt;Changes&lt;/h2&gt;</content>
+    <author><name>github-actions[bot]</name></author>
+  </entry>`,
+    )
+    .join("\n  ")}
+</feed>`;
+
+test("#9424: parseGithubReleaseUrl extrai repo e tag; fora de /releases/tag/ → null", () => {
+  assert.deepEqual(parseGithubReleaseUrl("https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0"), { repo: "QwenLM/qwen-code", tag: "v0.25.0" });
+  assert.deepEqual(parseGithubReleaseUrl("https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0"), { repo: "deepseek-ai/deepseek-harness", tag: "dsh-v0.2.0" });
+  assert.equal(parseGithubReleaseUrl("https://github.com/QwenLM/qwen-code/releases"), null);
+  assert.equal(parseGithubReleaseUrl("https://github.com/QwenLM/qwen-code"), null);
+  assert.equal(parseGithubReleaseUrl("https://gitlab.com/a/b/releases/tag/v1.0.0"), null);
+  assert.equal(parseGithubReleaseUrl("não é url"), null);
+});
+
+test("#9424: Atom de releases do GitHub → só release estável de minor/major, título com o repo", () => {
+  const { articles, kind } = parseFeed(GITHUB_RELEASES_ATOM);
+  assert.equal(kind, "atom");
+  assert.equal(articles.length, 6, "parser lê todas as entradas do Atom do GitHub");
+  const late: LateArticle[] = articles.map((a) => ({ ...a, published_at: a.published_at ?? null, lab: "Qwen", source: "Qwen Code (releases)" }));
+  const feed = LATE_REFRESH_FEEDS.find((f) => f.url === "https://github.com/QwenLM/qwen-code/releases.atom");
+  assert.ok(feed, "feed de releases do qwen-code ausente");
+  const kept = filterGithubReleases(late, feed.tagPattern);
+  assert.deepEqual(kept.map((a) => a.url), ["https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0"], "preview, nightly, sdk, desktop e patch saem");
+  assert.equal(kept[0].title, "QwenLM/qwen-code: Release v0.25.0");
+  assert.equal(kept[0].published_at, "2026-10-05T10:01:23.000Z");
+  // Sem padrão, nada é filtrado (só o que não é /releases/tag/ sai).
+  assert.equal(filterGithubReleases(late, undefined).length, 6);
+});
+
+test("#9424: tagPattern do DeepSeek Harness corta alpha/rc e aceita a estável", () => {
+  const feed = LATE_REFRESH_FEEDS.find((f) => f.url.endsWith("/deepseek-harness/releases.atom"));
+  assert.ok(feed?.tagPattern);
+  for (const t of ["dsh-v0.2.1-alpha.1", "dsh-v0.2.0-rc.2", "dsh-v0.1.5-rc.3", "v0.1.7-alpha.1", "dsh-v0.2.1"]) assert.equal(feed.tagPattern.test(t), false, t);
+  for (const t of ["dsh-v0.2.0", "dsh-v1.0.0"]) assert.equal(feed.tagPattern.test(t), true, t);
+});
+
+test("#9424: parseGithubNewRepos tira fork, arquivado, privado e repo interno; resposta de erro lança", () => {
+  const feed = { lab: "DeepSeek", name: "DeepSeek GitHub (repos novos)" };
+  const out = parseGithubNewRepos(
+    [
+      { name: "DeepGEMM-Ascend", full_name: "deepseek-ai/DeepGEMM-Ascend", html_url: "https://github.com/deepseek-ai/DeepGEMM-Ascend", description: "Matrix multiplication kernels for Ascend NPUs", created_at: "2026-09-29T15:49:55Z", fork: false },
+      { name: "DeepSeek-V4", full_name: "deepseek-ai/DeepSeek-V4", html_url: "https://github.com/deepseek-ai/DeepSeek-V4", description: null, created_at: "2026-10-07T01:00:00Z", fork: false },
+      { name: "vllm", full_name: "deepseek-ai/vllm", html_url: "https://github.com/deepseek-ai/vllm", description: "fork", created_at: "2026-10-07T01:00:00Z", fork: true },
+      { name: "old", full_name: "deepseek-ai/old", html_url: "https://github.com/deepseek-ai/old", created_at: "2026-10-07T01:00:00Z", archived: true },
+      { name: "priv", full_name: "deepseek-ai/priv", html_url: "https://github.com/deepseek-ai/priv", created_at: "2026-10-07T01:00:00Z", private: true },
+      { name: "dsh-libreoffice-kit", full_name: "deepseek-ai/dsh-libreoffice-kit", html_url: "https://github.com/deepseek-ai/dsh-libreoffice-kit", description: "An internal component used by DeepSeek Harness", created_at: "2026-09-30T06:28:16Z" },
+      { name: "sem-data", html_url: "https://github.com/deepseek-ai/sem-data" },
+    ],
+    feed,
+  );
+  assert.deepEqual(out.map((a) => a.url), ["https://github.com/deepseek-ai/DeepGEMM-Ascend", "https://github.com/deepseek-ai/DeepSeek-V4"]);
+  assert.equal(out[0].title, "Novo repositório deepseek-ai/DeepGEMM-Ascend: Matrix multiplication kernels for Ascend NPUs");
+  assert.equal(out[1].title, "Novo repositório deepseek-ai/DeepSeek-V4");
+  assert.equal(out[1].published_at, "2026-10-07T01:00:00Z");
+  assert.equal(out[1].lab, "DeepSeek");
+  assert.throws(() => parseGithubNewRepos({ message: "API rate limit exceeded" }, feed), /rate limit/);
+});
+
+test("#9424: repo novo entra pelo corte de data do filterLateArticles (created_at preciso)", () => {
+  const repos = parseGithubNewRepos(
+    [
+      { full_name: "QwenLM/antes", html_url: "https://github.com/QwenLM/antes", created_at: "2026-09-29T19:12:34Z" },
+      { full_name: "QwenLM/Qwen4", html_url: "https://github.com/QwenLM/Qwen4", created_at: "2026-09-29T23:10:00Z" },
+    ],
+    { lab: "Qwen", name: "Qwen GitHub (repos novos)" },
+  );
+  const r = filterLateArticles(repos, CUTOFF, new Set(), new Set());
+  assert.deepEqual(r.fresh.map((a) => a.url), ["https://github.com/QwenLM/Qwen4"]);
+});
+
+test("#9424: mapeamento lab → feed — xAI, DeepSeek e Qwen têm repos novos + releases da org oficial; ninguém fica sem cobertura", () => {
+  const expected: Record<string, string> = { xAI: "xai-org", DeepSeek: "deepseek-ai", Qwen: "QwenLM" };
+  for (const [lab, org] of Object.entries(expected)) {
+    const feeds = LATE_REFRESH_FEEDS.filter((f) => f.lab === lab);
+    const repos = feeds.find((f) => f.method === "github-new-repos");
+    const releases = feeds.find((f) => f.method === "github-releases");
+    assert.ok(repos, `${lab}: feed de repos novos ausente`);
+    assert.equal(repos.org, org);
+    assert.equal(repos.url, `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=public`);
+    assert.ok(releases, `${lab}: feed de releases ausente`);
+    assert.match(releases.url, new RegExp(`^https://github\\.com/${org}/[^/]+/releases\\.atom$`));
+    assert.ok(releases.tagPattern, `${lab}: release sem filtro de ruído`);
+  }
+  assert.deepEqual([...LATE_REFRESH_UNCOVERED_LABS], []);
+});
+
+test("#9424: release/repo da org oficial no GitHub é link oficial (#160) → LANÇAMENTOS; org alheia não", () => {
+  for (const url of [
+    "https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0",
+    "https://github.com/deepseek-ai/DeepSeek-V4",
+    "https://github.com/xai-org/xai-sdk-python/releases/tag/v1.20.0",
+  ]) {
+    assert.equal(isOfficialHost(url), true, url);
+    assert.equal(isOfficialLancamentoUrl(url), true, `validate-lancamentos aceita ${url}`);
+    assert.equal(suggestSubstitution({ url, title: "Novo repositório x" }, []).slot, "LANÇAMENTOS", url);
+  }
+  for (const url of ["https://github.com/someone/qwen-fork/releases/tag/v1.0.0", "https://github.com/deepseek-ai/DeepSeek-V3/issues/1", "https://github.com/xai-org"]) {
+    assert.equal(isOfficialHost(url), false, url);
+    assert.equal(suggestSubstitution({ url, title: "Release v1.0.0" }, []).slot, "RADAR", url);
+  }
 });
