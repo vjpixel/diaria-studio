@@ -132,6 +132,22 @@ describe("#9820 social-not-behind-reviewed", () => {
     }
   });
 
+  it("sem # Social (comparação de conteúdo não roda, só mtime) → warning, nunca bloqueia o sentinel", () => {
+    const dir = setup(reviewedMd(D2_REWRITTEN), SOCIAL_T, REVIEWED_T);
+    try {
+      writeFileSync(join(dir, "03-social.md"), "Texto social sem seções de destaque.\n");
+      utimesSync(join(dir, "03-social.md"), SOCIAL_T / 1000, SOCIAL_T / 1000);
+      assert.equal(findSocialContentMismatches(dir), undefined);
+      const v = checkSocialNotBehindReviewed(dir);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "social-not-behind-reviewed");
+      assert.equal(v[0].severity, "warning");
+      assert.match(v[0].message, /só mtime/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("está no conjunto que pipeline-sentinel write --step 4 roda (phase pre-dispatch)", () => {
     const ids = getRulesForStage(4, { phase: "pre-dispatch" }).map((r) => r.id);
     assert.ok(ids.includes("social-not-behind-reviewed"));

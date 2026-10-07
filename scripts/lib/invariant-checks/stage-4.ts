@@ -531,7 +531,9 @@ export function findImageContentMismatches(
  * `findSocialContentMismatches`) dentro do Stage 4 — e por estar em
  * `STAGE_4_RULES` com severity `error`, `pipeline-sentinel.ts write --step 4`
  * (#6009) recusa o sentinel enquanto ele não passar. Edição cosmética fora dos
- * destaques (box, intro) não acusa: o conteúdo dos `## dN` ainda bate.
+ * destaques (box, intro) não acusa: o conteúdo dos `## dN` ainda bate. Quando a
+ * comparação de conteúdo não consegue rodar (`findSocialContentMismatches` →
+ * `undefined`) e só sobra o mtime, a violação sai como `warning` — não bloqueia.
  *
  * `mtimes` (opcional): override pra teste — evita depender de `utimes` no fs.
  */
@@ -571,7 +573,12 @@ export function checkSocialNotBehindReviewed(
         `gen-carousel-cards.ts + upload-images-public.ts) antes do sentinel. Falso-positivo conhecido ` +
         `(social já correto): pipeline-sentinel.ts write --bypass-reason "<motivo>".`,
       source_issue: "#9820",
-      severity: "error",
+      // Só a comparação de conteúdo que RODOU e acusou divergência bloqueia o
+      // sentinel. Fallback de mtime puro (sem `# Social`, layout legado, parse
+      // sem destaques) vira warning: o mtime de 02-reviewed.md costuma avançar
+      // sozinho (fact-check autofix, sync-intro-count, save do Studio) e o
+      // write --step 4 viraria falso-positivo só contornável com --bypass-reason.
+      severity: slots ? "error" : "warning",
       file: resolve(editionDir, "03-social.md"),
     },
   ];
