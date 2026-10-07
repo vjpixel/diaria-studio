@@ -40,7 +40,9 @@
  * tier ficam intocados. **Migração:** um arquivo ainda no formato anterior
  * (#9474 — parágrafo `A Retrospectiva de {Mês} é: **"{título}"**. {gancho}.`
  * + tier de uma linha) é aceito e convertido: o parágrafo do título vira o dos
- * temas e o tier de uma linha vira o `TIER_BLOCK`. Arquivo que não bate com
+ * temas, o tier de uma linha vira o `TIER_BLOCK` e o header literal gravado
+ * pelo #9474 vira o atual (também num corpo já no formato novo; header editado
+ * à mão fica intocado). Fim de linha CRLF e BOM são preservados. Arquivo que não bate com
  * nenhum dos dois formatos → `RetrospectivaBoxFormatError` (nunca adivinhar
  * onde inserir). Arquivo ausente → seed completo.
  *
@@ -127,16 +129,35 @@ const TEMAS_PARAGRAPH_RE = /^Três temas marcaram o mês: .*$/m;
 const CTA_LINE_RE = /^\[Ler a Retrospectiva\]\([^)\n]+\)$/m;
 // Formato anterior (#9474) — só pra migração.
 const LEGACY_QUOTE_PARAGRAPH_RE = /^A Retrospectiva de [^:\n]+ é:.*$/m;
-const LEGACY_TIER_PARAGRAPH_RE = /^Quem apoia a partir de R\$25\/mês recebe [^\n]+$/m;
-/** Header de comentário gerado por este script (qualquer versão), no topo. */
-const GENERATED_HEADER_RE = /^<!--\r?\nnome: Retrospectiva do Mês\r?\n(?:(?!-->)[\s\S])*?Reescrito por scripts\/update-retrospectiva-box\.ts(?:(?!-->)[\s\S])*-->/;
+const LEGACY_TIER_PARAGRAPH_RE = /^Quem apoia a partir de R\$25\/mês recebe [^\r\n]+$/m;
+/**
+ * Header que o script do #9474 gravava — trocado pelo atual quando aparece
+ * LITERAL no topo (formato novo ou migração). Header com qualquer edição à mão
+ * não bate e fica intocado (#495).
+ */
+const LEGACY_HEADER_9474 = `<!--
+nome: Retrospectiva do Mês
+categoria: Retrospectiva
+retrospectiva-apoiadores.md — box de divulgação da Retrospectiva do Mês
+(recompensa Mantenedor/Patrono, R$25+). Slot 2, ALTERNANDO com
+artigo-especial-apoiadores.md (quem publica por último ocupa o slot, #9474).
+Reescrito por scripts/update-retrospectiva-box.ts (/diaria-mensal-apoiadores)
+a cada ciclo — não editar título/frase-padrão/URL do CTA à mão aqui, o
+próximo ciclo sobrescreve (o parágrafo do tier segue estável). Formato:
+context/snippets/README.md.
+-->`;
+
+/** Teto por tema — o parágrafo é 1 frase no box da diária, não um resumo. */
+export const RETROSPECTIVA_TEMA_MAX_CHARS = 120;
 
 /** Quantidade exata de temas do parágrafo (texto aprovado: "Três temas"). */
 export const RETROSPECTIVA_TEMAS_COUNT = 3;
 
 /**
  * Pura: normaliza e valida os temas (trim, sem ponto final). Lança se não
- * vierem exatamente 3 temas não vazios — o parágrafo diz "Três temas".
+ * vierem exatamente 3 temas não vazios — o parágrafo diz "Três temas" —, se
+ * algum tiver quebra de linha (partiria o parágrafo, e o próximo ciclo só
+ * trocaria a 1ª linha) ou passar de `RETROSPECTIVA_TEMA_MAX_CHARS`.
  */
 export function normalizeTemas(temas: readonly string[]): string[] {
   const out = temas.map((t) => t.trim().replace(/\.+$/, "").trim());
@@ -145,6 +166,17 @@ export function normalizeTemas(temas: readonly string[]): string[] {
       `--temas precisa de exatamente ${RETROSPECTIVA_TEMAS_COUNT} temas não vazios separados por "|" ` +
         `(recebi ${out.length}${out.some((t) => t.length === 0) ? ", com tema vazio" : ""}): ` +
         '--temas "tema 1|tema 2|tema 3".',
+    );
+  }
+  const multiline = out.find((t) => /[\r\n]/.test(t));
+  if (multiline !== undefined) {
+    throw new Error(`--temas: tema com quebra de linha não é aceito: ${JSON.stringify(multiline)}.`);
+  }
+  const long = out.find((t) => t.length > RETROSPECTIVA_TEMA_MAX_CHARS);
+  if (long !== undefined) {
+    throw new Error(
+      `--temas: tema com ${long.length} caracteres (máx. ${RETROSPECTIVA_TEMA_MAX_CHARS}) — ` +
+        `encurte a frase: ${JSON.stringify(long)}.`,
     );
   }
   return out;
@@ -198,6 +230,9 @@ export function buildDefaultRetrospectivaBox(input: RetrospectivaBoxInput): stri
  * vira o `TIER_BLOCK`. Nenhum dos dois → `RetrospectivaBoxFormatError`.
  */
 export function applyRetrospectivaBoxUpdate(content: string, input: RetrospectivaBoxInput): string {
+  // Blocos de várias linhas inseridos seguem o fim de linha do arquivo.
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const withEol = (s: string): string => (eol === "\n" ? s : s.replace(/\n/g, eol));
   const temasParagraph = buildTemasParagraph(input.temas);
   const isNew = TEMAS_PARAGRAPH_RE.test(content);
   const isLegacy = !isNew && LEGACY_QUOTE_PARAGRAPH_RE.test(content) && LEGACY_TIER_PARAGRAPH_RE.test(content);
@@ -224,11 +259,17 @@ export function applyRetrospectivaBoxUpdate(content: string, input: Retrospectiv
     ? next.replace(TEMAS_PARAGRAPH_RE, () => temasParagraph)
     : next
         .replace(LEGACY_QUOTE_PARAGRAPH_RE, () => temasParagraph)
-        .replace(LEGACY_TIER_PARAGRAPH_RE, () => TIER_BLOCK)
-        // Header gerado pelo próprio script (descreve o formato antigo) vira o
-        // atual; header editado à mão (não bate) fica intocado (#495).
-        .replace(GENERATED_HEADER_RE, () => RETROSPECTIVA_BOX_HEADER);
-  return next.replace(CTA_LINE_RE, () => buildCtaLine(input.url));
+        .replace(LEGACY_TIER_PARAGRAPH_RE, () => withEol(TIER_BLOCK));
+  next = next.replace(CTA_LINE_RE, () => buildCtaLine(input.url));
+  // Header gerado pelo #9474 (descreve o formato antigo) vira o atual nos dois
+  // caminhos — inclusive num arquivo cujo corpo já foi trocado à mão pro
+  // formato novo (caso real da 261008). BOM no início é preservado.
+  const bom = next.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const legacyHeader = withEol(LEGACY_HEADER_9474);
+  if (next.startsWith(legacyHeader, bom.length)) {
+    next = bom + withEol(RETROSPECTIVA_BOX_HEADER) + next.slice(bom.length + legacyHeader.length);
+  }
+  return next;
 }
 
 export function renderRetrospectivaBox(existing: string | null, input: RetrospectivaBoxInput): string {
@@ -365,7 +406,8 @@ function main(): void {
   const { values, flags } = parseArgs(process.argv.slice(2));
   runUpdateRetrospectivaBox({
     cycle: values["cycle"],
-    temas: values["temas"] !== undefined ? parseTemasArg(values["temas"]) : undefined,
+    // `--unpin` ignora `--temas` — não validar o que não vai ser usado.
+    temas: !flags.has("unpin") && values["temas"] !== undefined ? parseTemasArg(values["temas"]) : undefined,
     unpin: flags.has("unpin"),
     pin: !flags.has("no-pin"),
     force: flags.has("force"),

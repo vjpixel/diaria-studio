@@ -9,6 +9,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyBoxPin, isBoxSlotOwnedBy, type BoxesDivulgacaoConfig } from "../scripts/lib/box-slot-pin.ts";
@@ -16,6 +17,7 @@ import { runUpdateArtigoEspecialBox } from "../scripts/update-artigo-especial-bo
 import {
   RETROSPECTIVA_BOX_FILENAME,
   RETROSPECTIVA_BOX_HEADER,
+  RETROSPECTIVA_TEMA_MAX_CHARS,
   RetrospectivaBoxFormatError,
   TIER_BLOCK,
   applyRetrospectivaBoxUpdate,
@@ -160,6 +162,28 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.ok(next.includes(TIER_BLOCK));
   });
 
+  it("corpo já no formato novo com o header antigo (estado real pós-261008): header atualizado, resto cirúrgico", () => {
+    const legacyHeader = LEGACY_FILE.slice(0, LEGACY_FILE.indexOf("-->") + 3);
+    const live = `${legacyHeader}\n\n${APPROVED_BODY_2609}`;
+    assert.equal(applyRetrospectivaBoxUpdate(live, INPUT), `${RETROSPECTIVA_BOX_HEADER}\n\n${APPROVED_BODY_2609}`);
+  });
+
+  it("header antigo com uma linha acrescentada à mão NÃO é sobrescrito (só o literal gerado é trocado)", () => {
+    const edited = LEGACY_FILE.replace("categoria: Retrospectiva\n", "categoria: Retrospectiva\nnota: revisar em novembro\n");
+    const next = applyRetrospectivaBoxUpdate(edited, INPUT);
+    assert.ok(next.includes("nota: revisar em novembro"));
+    assert.ok(next.includes(TIER_BLOCK));
+  });
+
+  it("CRLF: migração mantém CRLF em todas as linhas; BOM é preservado e o header ainda migra", () => {
+    const crlf = LEGACY_FILE.replace(/\n/g, "\r\n");
+    const next = applyRetrospectivaBoxUpdate(crlf, INPUT);
+    assert.equal(next, `${RETROSPECTIVA_BOX_HEADER}\n\n${APPROVED_BODY_2609}`.replace(/\n/g, "\r\n"));
+    assert.equal(applyRetrospectivaBoxUpdate(next, INPUT), next);
+    const withBom = applyRetrospectivaBoxUpdate(`﻿${LEGACY_FILE}`, INPUT);
+    assert.equal(withBom, `﻿${RETROSPECTIVA_BOX_HEADER}\n\n${APPROVED_BODY_2609}`);
+  });
+
   it("temas com padrões de substituição ($&, $') entram literais (novo e migração)", () => {
     const temas = ["IA custa $& por mês", "preço $' de verdade", "fim $1"];
     const expected = "Três temas marcaram o mês: IA custa $& por mês, preço $' de verdade e fim $1.";
@@ -181,6 +205,32 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.throws(() => buildDefaultRetrospectivaBox({ ...INPUT, temas: ["a", "b"] }), /exatamente 3 temas/);
     assert.throws(() => buildDefaultRetrospectivaBox({ ...INPUT, temas: ["a", "b", "c", "d"] }), /exatamente 3 temas/);
     assert.throws(() => normalizeTemas(["a", " ", "c"]), /tema vazio/);
+    assert.throws(() => normalizeTemas(["a", "b\nc", "d"]), /quebra de linha/);
+    assert.throws(() => normalizeTemas(["a", "x".repeat(RETROSPECTIVA_TEMA_MAX_CHARS + 1), "c"]), /máx\. 120/);
+    assert.doesNotThrow(() => normalizeTemas(TEMAS));
+  });
+
+  it("CLI: --unpin ignora --temas inválido; sem --unpin, --temas com 2 itens sai com erro claro", () => {
+    const dir = mkdtempSync(join(tmpdir(), "retro-cli-9845-"));
+    try {
+      const cfg = join(dir, "platform.config.json");
+      writeFileSync(cfg, JSON.stringify(base, null, 2) + "\n");
+      const script = join(import.meta.dirname, "..", "scripts", "update-retrospectiva-box.ts");
+      const run = (...args: string[]) =>
+        spawnSync(process.execPath, ["--import", "tsx", script, ...args, "--config", cfg, "--snippets-file", join(dir, RETRO), "--dry-run"], {
+          encoding: "utf8",
+        });
+      const unpin = run("--unpin", "--temas", "a|b");
+      assert.equal(unpin.status, 0, unpin.stderr);
+      const bad = run("--cycle", "2609-10", "--temas", "a|b");
+      assert.equal(bad.status, 1);
+      assert.match(bad.stderr, /exatamente 3 temas/);
+      const missing = run("--cycle", "2609-10");
+      assert.equal(missing.status, 1);
+      assert.match(missing.stderr, /--temas/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("parseTemasArg: separa por | e valida a contagem", () => {
