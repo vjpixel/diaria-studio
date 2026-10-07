@@ -50,6 +50,30 @@ export interface ArtigoEspecialState {
   ano: string;
   slug: string;
   channels: Partial<Record<ArtigoEspecialChannel, ChannelState>>;
+  /** Etapas de PRODUÇÃO (#9099) — antes dos canais de divulgação. Ausente em
+   *  state files de artigos produzidos à mão (o-agente, engenharia-de-ilusao,
+   *  o-jev); `nextProducaoEtapa` trata ausência como "nenhuma etapa feita". */
+  producao?: ProducaoState;
+}
+
+/**
+ * Etapas de produção de `/diaria-artigo-especial` (#9099), na ordem em que
+ * rodam — cada uma termina num gate humano (ou, `pr`/`publicado`, num fato
+ * externo verificado), e um resume retoma da 1ª não-`done`:
+ *   tema      — tema + slug confirmados (votação ou `--tema`)
+ *   briefing  — fontes, estrutura e tese aprovadas (`briefing.md`)
+ *   rascunho  — `draft.md` aprovado, já com a passada do humanizador
+ *   html      — `articles-src/{slug}.html` + registros gerados e conferidos
+ *   pr        — PR do artigo aberto (url gravada)
+ *   publicado — PR mergeado + probe da URL pública OK
+ */
+export const PRODUCAO_ETAPAS = ["tema", "briefing", "rascunho", "html", "pr", "publicado"] as const;
+export type ProducaoEtapa = (typeof PRODUCAO_ETAPAS)[number];
+
+export interface ProducaoState {
+  /** Tema confirmado na etapa `tema` (texto livre — título do candidato vencedor ou `--tema`). */
+  tema: string | null;
+  etapas: Partial<Record<ProducaoEtapa, ChannelState>>;
 }
 
 const STATE_FILENAME = "published.json";
@@ -78,7 +102,13 @@ export function readArtigoEspecialState(
       return empty;
     }
     const channels = parseChannelStates(parsed.channels as Record<string, unknown>, ARTIGO_ESPECIAL_CHANNELS, path, "artigo-especial-state");
-    return { ano: parsed.ano, slug: parsed.slug, channels };
+    const state: ArtigoEspecialState = { ano: parsed.ano, slug: parsed.slug, channels };
+    // #9099: preservar `producao` — sem isto, qualquer escrita de canal
+    // (mark-artigo-especial-channel.ts, publish-*) apagava o progresso da
+    // produção ao regravar o arquivo.
+    const producao = parseProducaoState(parsed.producao, path);
+    if (producao) state.producao = producao;
+    return state;
   } catch (e) {
     process.stderr.write(
       `[artigo-especial-state] AVISO: ${path} existe mas não pôde ser lido/parseado (${(e as Error).message}) — tratando como vazio.\n`,
@@ -184,4 +214,63 @@ export function withChannelState<C extends string, S extends { channels: Partial
   channelState: ChannelState,
 ): S {
   return { ...state, channels: { ...state.channels, [channel]: channelState } };
+}
+
+/** Pura (exceto aviso em stderr): valida o bloco `producao` cru. Ausente → `undefined`. */
+export function parseProducaoState(raw: unknown, path: string): ProducaoState | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object") {
+    process.stderr.write(`[artigo-especial-state] AVISO: ${path} — "producao" com shape inesperado — descartado.\n`);
+    return undefined;
+  }
+  const r = raw as { tema?: unknown; etapas?: unknown };
+  const etapasRaw = r.etapas && typeof r.etapas === "object" ? (r.etapas as Record<string, unknown>) : {};
+  return {
+    tema: typeof r.tema === "string" ? r.tema : null,
+    etapas: parseChannelStates(etapasRaw, PRODUCAO_ETAPAS, path, "artigo-especial-state:producao"),
+  };
+}
+
+/**
+ * Pura: 1ª etapa de produção ainda não `done`, na ordem de `PRODUCAO_ETAPAS`
+ * — é de onde um resume retoma. `null` = produção concluída, seguir pros
+ * canais de divulgação. Etapa `failed` conta como não feita (retentável).
+ */
+export function nextProducaoEtapa(state: Pick<ArtigoEspecialState, "producao">): ProducaoEtapa | null {
+  for (const etapa of PRODUCAO_ETAPAS) {
+    if (state.producao?.etapas[etapa]?.status !== "done") return etapa;
+  }
+  return null;
+}
+
+/**
+ * Pura: grava o resultado de uma etapa (imutável). Marcar uma etapa como
+ * `done` exige as anteriores `done` — a ordem é o que garante, por exemplo,
+ * que nenhum PR saia de um rascunho que o editor não aprovou. Refazer uma
+ * etapa já feita (`done` de novo, ex: o editor pediu ajuste no rascunho
+ * depois do HTML) INVALIDA as posteriores — o HTML de um rascunho velho não
+ * vale para o novo.
+ */
+export function withProducaoEtapa(
+  state: ArtigoEspecialState,
+  etapa: ProducaoEtapa,
+  etapaState: ChannelState,
+  tema?: string,
+): ArtigoEspecialState {
+  const idx = PRODUCAO_ETAPAS.indexOf(etapa);
+  const prev = state.producao ?? { tema: null, etapas: {} };
+  if (etapaState.status === "done") {
+    const pendente = PRODUCAO_ETAPAS.slice(0, idx).find((e) => prev.etapas[e]?.status !== "done");
+    if (pendente) {
+      throw new Error(`etapa "${etapa}" não pode ser marcada como feita antes de "${pendente}".`);
+    }
+  }
+  const etapas: Partial<Record<ProducaoEtapa, ChannelState>> = {};
+  for (const e of PRODUCAO_ETAPAS.slice(0, idx)) if (prev.etapas[e]) etapas[e] = prev.etapas[e];
+  etapas[etapa] = etapaState;
+  // Etapas posteriores só sobrevivem se esta não foi refeita como `done`.
+  if (etapaState.status !== "done") {
+    for (const e of PRODUCAO_ETAPAS.slice(idx + 1)) if (prev.etapas[e]) etapas[e] = prev.etapas[e];
+  }
+  return { ...state, producao: { tema: tema ?? prev.tema, etapas } };
 }

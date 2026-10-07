@@ -63,6 +63,15 @@ Setup manual antes do 1º deploy (mesmo procedimento do `cursos`):
 
 ## Adicionar um artigo novo
 
+**Caminho normal desde #9099: `/diaria-artigo-especial`** (Etapas A-E). O
+rascunho em markdown (`data/artigo-especial/{ano}-{slug}/draft.md`) vira o
+HTML e os registros abaixo com
+`npx tsx scripts/render-artigo-especial-html.ts --ano AAAA --slug slug`
+(passos 1-3 de uma vez), o artigo sai por PR, o
+`.github/workflows/deploy-artigos.yml` publica no merge e
+`scripts/probe-artigo-especial.ts` confere a URL. O procedimento manual
+abaixo segue valendo para artigo com layout que o conversor não cobre.
+
 1. Criar `articles-src/{slug}.html` (documento HTML completo e
    autocontido — sem dependências externas, CSS inline; é AQUI que se
    edita o texto, não em `public/`, ver "Gate por apoio" acima). Incluir
