@@ -55,7 +55,7 @@ Exit code handling:
     --in {EDITION_DIR}/_internal/01-approved.json \
     --out {EDITION_DIR}/_internal/01-approved-capped.json
   ```
-  Writer recebe `01-approved-capped.json`. Lint pós-writer (`--check section-counts`) valida que o output respeitou os caps; falha = re-disparar writer.
+  Por último, o mesmo script aplica o **teto global de 13 conteúdos (#9785)** — destaques + todas as seções secundárias, corte por score sem cota por seção, destaques e itens pinados pelo editor nunca saem; cada corte vai pro stderr e pro run-log. Writer recebe `01-approved-capped.json`. Lint pós-writer (`--check section-counts`) valida que o output respeitou os caps; falha = re-disparar writer.
 
 - **Limpar/truncar summaries em inglês (#1490 / #1572).** Antes de stitch, rodar:
   ```bash

@@ -135,6 +135,27 @@ export const STAGE_2_MIN_USE_MELHOR = 2;
 export const STAGE_2_MAX_USE_MELHOR = 4;
 
 /**
+ * Teto GLOBAL de conteúdos da edição (#9785, decisão do editor no briefing
+ * overnight 261007): o rascunho que chega ao Gate 4 tem no máximo 13
+ * conteúdos — destaques + USE MELHOR + LANÇAMENTOS + RADAR (+ VÍDEOS, que
+ * também é item editorial com link e já entra em `countSelectedItems`/
+ * `outrosCount`). Boxes, É IA?, erro intencional, sorteio e rodapé não contam.
+ *
+ * Corte por SCORE, SEM cota por seção: destaques nunca saem (2–3, #3369, e o
+ * destaque de impacto negativo #3916 mora neles); o resto disputa as vagas
+ * restantes só pelo score. Os pisos por seção (RADAR ≥5, USE MELHOR ≥2) seguem
+ * valendo como PREENCHIMENTO antes do corte, mas não protegem item do corte
+ * global — "sem cota por seção" foi a escolha explícita. Cortar só remove, então
+ * domínio ≤2 (#5735) e LANÇAMENTOS só oficial (#160) continuam satisfeitos.
+ *
+ * Itens pinados pelo editor (`flag: "editor_submitted"`, `flag`/`source`
+ * começando com "editor") nunca são cortados — contam no teto, mas o editor os
+ * pediu explicitamente. Se só eles já estouram, o teto fica excedido e o
+ * invariante `max-content-items` (Stage 4) acusa antes do gate.
+ */
+export const MAX_EDITION_CONTENT_ITEMS = 13;
+
+/**
  * Cap pra Radar dado contagem dos outros buckets já capados (#1629).
  *
  *   max(5, 12 - destaques - lançamentos)
@@ -166,7 +187,29 @@ export interface DomainLimitRemoval {
   reason: string;
 }
 
+export interface GlobalCapRemoval {
+  bucket: DomainLimitRemoval["bucket"];
+  url: string;
+  title?: string;
+  score?: number;
+}
+
+export interface GlobalCapReport {
+  /** Teto aplicado (MAX_EDITION_CONTENT_ITEMS). */
+  max: number;
+  /** Total de conteúdos (destaques + seções) antes do corte global. */
+  before: number;
+  /** Total depois do corte. > max só quando itens pinados pelo editor estouram sozinhos. */
+  after: number;
+  /** Itens cortados pelo teto, em ordem de score crescente de corte. */
+  removed: GlobalCapRemoval[];
+  /** Quantos itens pinados pelo editor foram preservados apesar do teto. */
+  editor_pinned: number;
+}
+
 export interface CapReport {
+  /** #9785: teto global de 13 conteúdos por score, sem cota por seção. */
+  global_cap: GlobalCapReport;
   /** #8593: itens removidos das seções secundárias por excederem 2 URLs/domínio. */
   domain_limit: { max: number; removed: DomainLimitRemoval[]; warnings: string[] };
   before: { lancamento: number; radar: number };
@@ -443,10 +486,19 @@ export function applyStage2Caps(
     }
   }
 
+  // #9785: teto global de conteúdos, por score, sem cota por seção — roda por
+  // último, depois de todos os caps/pisos por seção, sobre o que sobrou.
+  const globalCut = applyGlobalContentCap(dest, {
+    lancamento: lDeduped.kept.slice(0, lFinal),
+    use_melhor: umFinal,
+    video: pool.video,
+    radar: rDeduped.kept.slice(0, rFinal),
+  });
+
   // #2353: compute composition (casual/dev-iniciante/dev-avancado counts) for observability.
   // review-use-melhor.ts has the gate-level guard for 0-casual/0-beginner — this is additive logging.
   const umComposition = { casual: 0, dev_iniciante: 0, dev_avancado: 0 };
-  for (const item of umFinal) {
+  for (const item of globalCut.buckets.use_melhor) {
     const cls = classifyAudienceClass(item as Parameters<typeof classifyAudienceClass>[0]);
     if (cls === "casual") umComposition.casual++;
     else if (cls === "dev-iniciante") umComposition.dev_iniciante++;
@@ -475,10 +527,10 @@ export function applyStage2Caps(
   const out: ApprovedJson = {
     ...approved,
     ...(highlightsOut !== undefined ? { highlights: highlightsOut } : {}),
-    lancamento: lDeduped.kept.slice(0, lFinal),
-    radar: rDeduped.kept.slice(0, rFinal),
-    use_melhor: umFinal,
-    ...(approved.video !== undefined ? { video: pool.video } : {}),
+    lancamento: globalCut.buckets.lancamento,
+    radar: globalCut.buckets.radar,
+    use_melhor: globalCut.buckets.use_melhor,
+    ...(approved.video !== undefined ? { video: globalCut.buckets.video } : {}),
   };
 
   // #8593: avisa quando o limite de domínio deixou RADAR/USE MELHOR abaixo do piso.
@@ -499,14 +551,17 @@ export function applyStage2Caps(
   return {
     approved: out,
     report: {
+      global_cap: globalCut.report,
       domain_limit: { max: DEFAULT_MAX_PER_DOMAIN, removed: domainRemoved, warnings: domainWarnings },
       before: {
         lancamento: lOriginal,
         radar: rOriginal,
       },
+      // #9785: `after` é o estado FINAL (pós teto global); `truncated` segue
+      // contando só o corte do cap por seção — o corte global vai em `global_cap`.
       after: {
-        lancamento: lFinal,
-        radar: rFinal,
+        lancamento: globalCut.buckets.lancamento.length,
+        radar: globalCut.buckets.radar.length,
       },
       caps: { lancamento: lCap, radar: rCap },
       truncated: {
@@ -521,7 +576,7 @@ export function applyStage2Caps(
         before: umBefore,
         removed_overlap: umDeduped.removed,
         promoted: um.promoted,
-        after: umFinal.length,
+        after: globalCut.buckets.use_melhor.length,
         truncated: umTruncated,
         shortfall: um.shortfall,
         composition: umComposition,
@@ -608,6 +663,91 @@ function filterRunnersUpByDomainRoom(
     const d = u ? editorialDomain(u) : null;
     return !d || !d.includes(".") || (counts.get(d) ?? 0) < DEFAULT_MAX_PER_DOMAIN;
   });
+}
+
+/**
+ * #9785: item pinado pelo editor — nunca sai pelo teto global. Cobre a
+ * submissão por e-mail (`flag: "editor_submitted"`) e o item incluído à mão no
+ * gate (`flag: "editor_added"`, `source: "editor: incluído no gate"`, visto na
+ * 261007 sem `score`).
+ */
+export function isEditorPinned(a: StageArticle): boolean {
+  const flag = typeof a.flag === "string" ? a.flag : "";
+  const source = typeof a.source === "string" ? a.source : "";
+  return flag.startsWith("editor") || /^editor\b/i.test(source);
+}
+
+type ContentBuckets = Record<DomainLimitRemoval["bucket"], StageArticle[]>;
+
+/**
+ * Desempate entre buckets com o MESMO score (#9785): mesma ordem do limite de
+ * domínio (#8593) — LANÇAMENTOS > USE MELHOR > VÍDEO > RADAR. Só desempata;
+ * quem decide é o score.
+ */
+const GLOBAL_CAP_TIEBREAK = ["lancamento", "use_melhor", "video", "radar"] as const;
+
+/**
+ * Pure (#9785): corta as seções secundárias até `destaques + seções ≤ max`,
+ * mantendo os de MAIOR score (sem cota por seção). Item sem `score` numérico
+ * conta como 0 (perde pra qualquer item pontuado). Itens pinados pelo editor
+ * nunca saem. Não muta os inputs; preserva a ordem original dentro de cada
+ * bucket.
+ */
+export function applyGlobalContentCap(
+  destaques: number,
+  buckets: ContentBuckets,
+  max: number = MAX_EDITION_CONTENT_ITEMS,
+): { buckets: ContentBuckets; report: GlobalCapReport } {
+  const all: Array<{ bucket: DomainLimitRemoval["bucket"]; item: StageArticle; idx: number; tie: number }> = [];
+  GLOBAL_CAP_TIEBREAK.forEach((bucket, tie) => {
+    buckets[bucket].forEach((item, idx) => all.push({ bucket, item, idx, tie }));
+  });
+  const before = destaques + all.length;
+  const pinned = all.filter((e) => isEditorPinned(e.item));
+  const copy = (): ContentBuckets => ({
+    lancamento: [...buckets.lancamento],
+    use_melhor: [...buckets.use_melhor],
+    video: [...buckets.video],
+    radar: [...buckets.radar],
+  });
+  if (before <= max) {
+    return {
+      buckets: copy(),
+      report: { max, before, after: before, removed: [], editor_pinned: pinned.length },
+    };
+  }
+
+  const scoreOf = (a: StageArticle) =>
+    typeof a.score === "number" && Number.isFinite(a.score) ? a.score : 0;
+  const ranked = all
+    .filter((e) => !isEditorPinned(e.item))
+    .sort((a, b) => scoreOf(b.item) - scoreOf(a.item) || a.tie - b.tie || a.idx - b.idx);
+  const room = Math.max(0, max - destaques - pinned.length);
+  const keep = new Set<StageArticle>([...pinned.map((e) => e.item), ...ranked.slice(0, room).map((e) => e.item)]);
+  const dropped = ranked.slice(room);
+
+  const out: ContentBuckets = {
+    lancamento: buckets.lancamento.filter((a) => keep.has(a)),
+    use_melhor: buckets.use_melhor.filter((a) => keep.has(a)),
+    video: buckets.video.filter((a) => keep.has(a)),
+    radar: buckets.radar.filter((a) => keep.has(a)),
+  };
+  const after = destaques + keep.size;
+  return {
+    buckets: out,
+    report: {
+      max,
+      before,
+      after,
+      removed: dropped.map((e) => ({
+        bucket: e.bucket,
+        url: e.item.url ?? "",
+        title: e.item.title,
+        score: e.item.score,
+      })),
+      editor_pinned: pinned.length,
+    },
+  };
 }
 
 /**

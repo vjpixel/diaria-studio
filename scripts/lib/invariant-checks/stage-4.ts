@@ -41,7 +41,8 @@ import { findOverflowingUseMelhorSlides, lintUseMelhorPostText } from "../use-me
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
-import { lintIntroCount } from "../newsletter-count.ts";
+import { lintIntroCount, countSelectedItems } from "../newsletter-count.ts";
+import { MAX_EDITION_CONTENT_ITEMS } from "../apply-stage2-caps.ts"; // #9785
 import { checkTituloSubtituloNotProvisional } from "../titulo-provisional.ts"; // #9601 review PR #9666
 import {
   extractEiaMirrorBlock,
@@ -600,6 +601,39 @@ function checkIntroCountConsistent(editionDir: string): InvariantViolation[] {
         `(consome tmp-articles-raw.json — pode mudar mais que Z).`,
       source_issue: "#1578",
       severity: "error",
+      file: path,
+    },
+  ];
+}
+
+/**
+ * #9785: o rascunho que chega ao Gate 4 tem no máximo 13 conteúdos
+ * (`MAX_EDITION_CONTENT_ITEMS`) — destaques + USE MELHOR + LANÇAMENTOS + RADAR
+ * (+ VÍDEOS). Contagem pela fonte única `countSelectedItems` (a mesma do
+ * `intro-count-consistent`), que já ignora É IA?, sorteio, erro intencional,
+ * boxes e rodapé. O corte de fato acontece cedo, no `apply-stage2-caps.ts`
+ * (Stage 2, por score); este guard acusa o que escapou dele — itens pinados
+ * pelo editor que estouram sozinhos, ou conteúdo inserido depois do Stage 2.
+ *
+ * severity: warning — entra no `{violations_block}` do gate e nunca pausa: o
+ * corte que falta é escolha editorial do editor, no próprio gate (pausar aqui
+ * travaria `--no-gates` sem nada que o pipeline pudesse consertar sozinho).
+ */
+export function checkMaxContentItems(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const counts = countSelectedItems(readFileSync(path, "utf8"));
+  if (counts.total <= MAX_EDITION_CONTENT_ITEMS) return [];
+  return [
+    {
+      rule: "max-content-items",
+      message:
+        `rascunho com ${counts.total} conteúdos, teto é ${MAX_EDITION_CONTENT_ITEMS} (#9785) — ` +
+        `destaques=${counts.destaques}, use_melhor=${counts.use_melhor}, lançamentos=${counts.lancamentos}, ` +
+        `radar=${counts.radar + counts.pesquisas}, vídeos=${counts.videos}. Cortar ${counts.total - MAX_EDITION_CONTENT_ITEMS} ` +
+        `item(ns) no gate (menor score primeiro; o corte automático do Stage 2 não remove itens pinados pelo editor).`,
+      source_issue: "#9785",
+      severity: "warning",
       file: path,
     },
   ];
@@ -2909,6 +2943,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#1578",
     stage: 4,
     run: checkIntroCountConsistent,
+  },
+  {
+    id: "max-content-items",
+    description: "rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785)",
+    source_issue: "#9785",
+    stage: 4,
+    run: checkMaxContentItems,
   },
   {
     id: "titulo-subtitulo-not-provisional",
