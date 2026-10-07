@@ -271,7 +271,7 @@
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync, openSync, closeSync } from "node:fs";
-import { resolve, dirname, join, basename } from "node:path";
+import { resolve, dirname, join, basename, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, spawn } from "node:child_process";
@@ -601,48 +601,145 @@ const defaultGitRunner: GitRunner = (args, cwd) =>
  * #9721/#9723 já proibia (CI vermelho, gate atrasado).
  */
 export interface CodeFreshness {
-  /** `true` quando `HEAD` não contém `origin/master` (ou não deu pra medir). */
+  /**
+   * `true` quando `origin/master` tem mudança ausente de `HEAD` em algum
+   * caminho do gerador (`siteGeneratorDependencyPaths`), ou quando não deu pra
+   * medir. Commits atrás que NÃO tocam o gerador não contam (#9828).
+   */
   stale: boolean;
   /** Commits em `origin/master` ausentes de `HEAD`; `-1` = não mediu. */
   behindBy: number;
   /** `true` quando o `git fetch origin master` best-effort falhou. */
   fetchFailed: boolean;
-  /** Detalhe do erro quando `behindBy === -1`. */
+  /**
+   * #9828: arquivos do gerador que `origin/master` mudou e `HEAD` não tem
+   * (diff `HEAD...origin/master`). Vazio com `behindBy > 0` = defasagem
+   * irrelevante pra página (segue).
+   */
+  generatorFilesChanged?: string[];
+  /** Detalhe do erro quando a medição falhou (`stale: true` fail-closed). */
   error?: string;
 }
 
 /**
- * Mede a defasagem do checkout. Fail-CLOSED quando não consegue medir
- * (`origin/master` ausente, git quebrado): o caminho de publicação cria o
- * worktree a partir de `origin/master` de qualquer forma, então sem esse ref
- * ele falharia mais adiante — recusar aqui só antecipa com motivo melhor.
- * Fetch falho é fail-soft: compara contra o ref local e sinaliza `fetchFailed`.
+ * #9828: caminhos fora do grafo de imports que também mudam a SAÍDA do
+ * gerador — dependências npm (`package*.json`), resolução do tsx
+ * (`tsconfig.json`), config lida em runtime (`platform.config.json`, URLs e
+ * backend) e o worker do site inteiro (`workers/site/`: a home e o `archive/`
+ * são montados a partir de `public/` local — sitemap, páginas já publicadas).
+ * Conservador de propósito: na dúvida, o caminho entra.
  */
-export function checkCodeFreshness(rootDir: string, git: GitRunner = defaultGitRunner): CodeFreshness {
+export const SITE_GENERATOR_EXTRA_PATHS: readonly string[] = [
+  "workers/site/",
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "platform.config.json",
+];
+
+/** Entrada do grafo de imports do gerador (relativo à raiz do repo). */
+export const SITE_GENERATOR_ENTRY = "scripts/publish-edition-site-page.ts";
+
+const RELATIVE_IMPORT_RE = /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g;
+
+/**
+ * #9828: caminhos (relativos à raiz, forward-slash) cujo conteúdo decide o que
+ * a página/home/archive saem: o FECHO TRANSITIVO de imports relativos a partir
+ * de `publish-edition-site-page.ts` (hoje ~55 arquivos em `scripts/` +
+ * `workers/arquivo/src/hubs/meta.ts`) mais `SITE_GENERATOR_EXTRA_PATHS`.
+ * Derivado do código em disco em vez de lista fixa pra não envelhecer quando
+ * um import novo entra — e um import novo que `origin/master` adicione
+ * aparece como mudança num arquivo que JÁ está no fecho local, então é pego.
+ * O scan é textual (casa `from "./x"` até em comentário): sobra = mais
+ * conservador, nunca menos. Specifier relativo que não resolve pra arquivo é
+ * ignorado (comentário de exemplo); entrada ausente lança (fail-closed no
+ * chamador).
+ */
+export function siteGeneratorDependencyPaths(rootDir: string, entry: string = SITE_GENERATOR_ENTRY): string[] {
+  const rootAbs = resolve(rootDir);
+  const start = resolve(rootAbs, entry);
+  if (!existsSync(start)) throw new Error(`entrada do gerador ausente: ${entry}`);
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(RELATIVE_IMPORT_RE)) {
+      const target = resolve(dirname(file), m[1]);
+      if (existsSync(target) && statSync(target).isFile() && !seen.has(target)) queue.push(target);
+    }
+  }
+  const rel = [...seen].map((f) => relative(rootAbs, f).split(sep).join("/"));
+  return [...new Set([...rel, ...SITE_GENERATOR_EXTRA_PATHS])].sort();
+}
+
+/**
+ * Mede a defasagem do checkout. Fail-CLOSED quando não consegue medir
+ * (`origin/master` ausente, git quebrado, fecho de imports ilegível): o
+ * caminho de publicação cria o worktree a partir de `origin/master` de
+ * qualquer forma, então sem esse ref ele falharia mais adiante — recusar aqui
+ * só antecipa com motivo melhor. Fetch falho é fail-soft: compara contra o
+ * ref local e sinaliza `fetchFailed`.
+ *
+ * #9828: estar N commits atrás só é `stale` se algum desses commits mexe num
+ * caminho do gerador (`git diff --name-only HEAD...origin/master -- <paths>`,
+ * três pontos = só o que `origin/master` trouxe desde o merge-base, ignorando
+ * commits locais). Antes, qualquer merge entre o `sync-code.ts` do Stage 5 e
+ * o §6b-site (10-50 min) recusava a página — 261001/261005/261006 teriam
+ * saído com exit 3 por commits que não tocavam o gerador.
+ * `generatorPaths` é injetável pra teste; default = `siteGeneratorDependencyPaths(rootDir)`.
+ */
+export function checkCodeFreshness(
+  rootDir: string,
+  git: GitRunner = defaultGitRunner,
+  generatorPaths?: readonly string[],
+): CodeFreshness {
   let fetchFailed = false;
   try {
     git(["fetch", "origin", "master"], rootDir);
   } catch {
     fetchFailed = true;
   }
+  let behindBy: number;
   try {
     const raw = git(["rev-list", "--count", "HEAD..origin/master"], rootDir).trim();
-    const behindBy = Number(raw);
-    if (!Number.isInteger(behindBy) || behindBy < 0) {
+    behindBy = Number(raw);
+    if (raw === "" || !Number.isInteger(behindBy) || behindBy < 0) {
       return { stale: true, behindBy: -1, fetchFailed, error: `saída inesperada de rev-list: '${raw}'` };
     }
-    return { stale: behindBy > 0, behindBy, fetchFailed };
   } catch (e) {
     return { stale: true, behindBy: -1, fetchFailed, error: (e as Error).message };
+  }
+  if (behindBy === 0) return { stale: false, behindBy, fetchFailed, generatorFilesChanged: [] };
+  try {
+    const paths = generatorPaths ?? siteGeneratorDependencyPaths(rootDir);
+    if (paths.length === 0) throw new Error("lista de caminhos do gerador vazia");
+    const out = git(["diff", "--name-only", "HEAD...origin/master", "--", ...paths], rootDir);
+    const changed = out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return { stale: changed.length > 0, behindBy, fetchFailed, generatorFilesChanged: changed };
+  } catch (e) {
+    return {
+      stale: true,
+      behindBy,
+      fetchFailed,
+      error: `não deu pra medir se os ${behindBy} commit(s) tocam o gerador: ${(e as Error).message}`,
+    };
   }
 }
 
 /** Motivo acionável (vira `reason` do `code: 3`) — `null` quando o código está em dia. */
 export function staleCodeRefusalReason(f: CodeFreshness): string | null {
   if (!f.stale) return null;
+  const changed = f.generatorFilesChanged ?? [];
+  const shown = changed.slice(0, 5).join(", ") + (changed.length > 5 ? `, +${changed.length - 5}` : "");
   const what =
-    f.behindBy > 0
-      ? `checkout ${f.behindBy} commit(s) atrás de origin/master`
+    f.behindBy > 0 && !f.error
+      ? `checkout ${f.behindBy} commit(s) atrás de origin/master, mudando o gerador da página (${shown})`
       : `não foi possível medir a defasagem do checkout contra origin/master (${f.error ?? "erro desconhecido"})`;
   return (
     `código defasado (#9821): ${what} — publicação recusada antes de gerar qualquer página, porque ` +
@@ -2344,13 +2441,22 @@ export function codeFreshnessPreflight(
   argv: string[],
   rootDir: string,
   git: GitRunner = defaultGitRunner,
+  generatorPaths?: readonly string[],
 ): { code: 3; reason: string } | null {
   if (hasFlag(argv, "skip-publish")) return null;
   if (hasFlag(argv, "allow-stale-code")) {
     process.stderr.write("[site-page] aviso: --allow-stale-code — guard de código defasado (#9821) desligado.\n");
     return null;
   }
-  const reason = staleCodeRefusalReason(checkCodeFreshness(rootDir, git));
+  const freshness = checkCodeFreshness(rootDir, git, generatorPaths);
+  if (!freshness.stale && freshness.behindBy > 0) {
+    // #9828: atrás, mas nada do gerador mudou — segue, com rastro no stderr.
+    process.stderr.write(
+      `[site-page] checkout ${freshness.behindBy} commit(s) atrás de origin/master, ` +
+        "nenhum tocando o gerador da página — segue (#9828).\n",
+    );
+  }
+  const reason = staleCodeRefusalReason(freshness);
   return reason ? { code: 3, reason } : null;
 }
 

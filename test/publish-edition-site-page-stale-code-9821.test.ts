@@ -77,7 +77,8 @@ describe("checkCodeFreshness — git real (#9821)", () => {
     commit(other, "b.txt", "2");
     commit(other, "c.txt", "3");
     git(["push", "-q", "origin", "master"], other);
-    const f = checkCodeFreshness(stale);
+    // #9828: só conta como defasado se os commits tocam o gerador — aqui b.txt faz esse papel.
+    const f = checkCodeFreshness(stale, undefined, ["b.txt"]);
     assert.equal(f.fetchFailed, false);
     assert.equal(f.stale, true);
     assert.equal(f.behindBy, 2);
@@ -96,7 +97,10 @@ describe("checkCodeFreshness — git real (#9821)", () => {
 });
 
 describe("codeFreshnessPreflight (#9821)", () => {
-  const behind: GitRunner = (args) => (args[0] === "rev-list" ? "97\n" : "");
+  // #9828: o diff dos caminhos do gerador acusa mudança.
+  const behind: GitRunner = (args) =>
+    args[0] === "rev-list" ? "97\n" : args[0] === "diff" ? "scripts/lib/site-home-page.ts\n" : "";
+  const paths = ["scripts/lib/site-home-page.ts"];
   const upToDate: GitRunner = (args) => (args[0] === "rev-list" ? "0\n" : "");
   const broken: GitRunner = (args) => {
     if (args[0] === "rev-list") throw new Error("unknown revision origin/master");
@@ -104,7 +108,7 @@ describe("codeFreshnessPreflight (#9821)", () => {
   };
 
   it("defasado → code 3 com motivo (cenário real: 97 commits)", () => {
-    const r = codeFreshnessPreflight(["--edition-dir", "x", "--slug", "s"], "/r", behind);
+    const r = codeFreshnessPreflight(["--edition-dir", "x", "--slug", "s"], "/r", behind, paths);
     assert.equal(r?.code, 3);
     assert.match(r!.reason, /97 commit/);
   });
