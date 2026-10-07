@@ -39,7 +39,7 @@
  *     destaque errado.
  *
  * (#9679) `_internal/.humanizer-social-done.json` é re-selado quando o social
- * batia com o selo antes do reorder (só headers mudaram) — ver
+ * batia com o selo antes do reorder (só headers renumerados e seções reordenadas, #9796) — ver
  * `lib/humanizer-social-seal.ts`. O que o script não resolve sozinho sai em
  * `next_steps` no JSON.
  *   - `06-public-images.json` — chaves (`cover`, `d{N}_2x1`, `d{N}_4x5`,
@@ -701,7 +701,7 @@ export function updateIntentionalErrorLocationJson(
 }
 
 /**
- * Reordena sections `## d{N}` em 03-social.md. Sintaxe é repetida por
+ * Reordena sections `## d{N}` em 03-social.md (renomeia E move fisicamente, #9796). Sintaxe é repetida por
  * plataforma (LinkedIn, Facebook), então re-aplicar pra cada bloco.
  *
  * Header pattern: `^## d(\d)\b` (case-insensitive). Renumerar igual ao MD.
@@ -732,7 +732,74 @@ export function reorderSocialMd(md: string, newOrder: number[]): string {
     return newN ? `## TEMP_D${newN}` : full;
   });
   result = temp.replace(/^##\s+TEMP_D(\d)[ \t]*(?=\r?$)/gim, "## d$1");
-  return result;
+  // #9796: renomear não basta — sem mover, `--new-order 3,1,2` deixava os
+  // blocos na ordem física d2, d3, d1 (em `# Social` E em `# Curto`). Os
+  // parsers leem por rótulo, mas quem revisa o arquivo via D1 por último.
+  return sortDestaqueSectionsPhysically(result);
+}
+
+/**
+ * (#9796) Reordena fisicamente as seções `## d{N}` de cada seção de topo
+ * (`# Social`, `# Curto`, `# LinkedIn`...) em ordem crescente de N.
+ *
+ * Só as POSIÇÕES ocupadas por seções `## d{N}` são reocupadas — qualquer
+ * outra seção `##` (ex: `## um`) fica exatamente onde estava. O whitespace
+ * final de cada seção (linhas em branco antes do próximo header) é
+ * POSICIONAL: fica no slot, não viaja com o conteúdo, pra que mover a última
+ * seção do arquivo (sem linha em branco no fim) pro meio não cole dois
+ * headers. Ordenação estável — rótulos duplicados mantêm a ordem relativa.
+ * Arquivo já em ordem volta byte a byte idêntico.
+ */
+export function sortDestaqueSectionsPhysically(md: string): string {
+  // Linhas preservando o terminador (\n ou \r\n) de cada uma.
+  const lines = md.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const isTop = (l: string) => /^#\s/.test(l);
+  const isSub = (l: string) => /^##\s/.test(l);
+  const dNum = (l: string): number | null => {
+    const m = l.match(/^##\s+d(\d+)[ \t]*\r?\n?$/i);
+    return m ? parseInt(m[1], 10) : null;
+  };
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isSub(lines[i])) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+    // Run de seções `##` consecutivas até o próximo `# ` (ou fim).
+    const sections: string[][] = [];
+    while (i < lines.length && !isTop(lines[i])) {
+      if (isSub(lines[i])) sections.push([]);
+      sections[sections.length - 1].push(lines[i]);
+      i++;
+    }
+    const split = sections.map((sec) => {
+      let end = sec.length;
+      while (end > 1 && sec[end - 1].trim() === "") end--;
+      return { core: sec.slice(0, end), gap: sec.slice(end), n: dNum(sec[0]) };
+    });
+    const dSlots = split.map((s, idx) => (s.n !== null ? idx : -1)).filter((idx) => idx >= 0);
+    const sortedD = dSlots
+      .map((idx) => split[idx])
+      .map((s, k) => ({ s, k }))
+      .sort((a, b) => (a.s.n! - b.s.n!) || (a.k - b.k))
+      .map(({ s }) => s);
+    const cores = split.map((s) => s.core);
+    dSlots.forEach((slot, k) => {
+      cores[slot] = sortedD[k].core;
+    });
+    cores.forEach((core, idx) => {
+      out.push(...core, ...split[idx].gap);
+    });
+  }
+  // Só a última linha do arquivo pode vir sem terminador; se ela foi movida
+  // pro meio, garantir o `\n` pra não colar no header seguinte.
+  const eol = md.includes("\r\n") ? "\r\n" : "\n";
+  return out
+    .map((p, idx) => (idx < out.length - 1 && !p.endsWith("\n") ? p + eol : p))
+    .join("");
 }
 
 /**
@@ -1513,7 +1580,7 @@ function main(): void {
       editionDir,
       socialBefore,
       socialAfter,
-      `reorder-destaques --new-order ${args.newOrder.join(",")} (#9679): só headers ## d{N} renumerados, texto intacto`,
+      `reorder-destaques --new-order ${args.newOrder.join(",")} (#9679, #9796): headers ## d{N} renumerados e seções reordenadas, texto intacto`,
     );
     if (plan.status === "reseal") {
       if (!args.dryRun) writePostBatchVerified([{ path: plan.path, content: plan.content }], args.newOrder);

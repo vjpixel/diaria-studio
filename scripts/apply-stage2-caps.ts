@@ -80,6 +80,31 @@ function main(): void {
     });
   }
 
+  // #9785: teto global de conteúdos — mesma regra do #8593, nunca em silêncio.
+  const gc = report.global_cap;
+  for (const r of gc.removed) {
+    console.error(
+      `[apply-stage2-caps] teto de ${gc.max} conteúdos (#9785): removido ${r.bucket}: ${r.url} (score ${r.score ?? "?"})`,
+    );
+  }
+  if (gc.after > gc.max) {
+    console.error(
+      `[apply-stage2-caps] ⚠️ teto de ${gc.max} conteúdos excedido (${gc.after}) só por itens pinados pelo editor ` +
+        `(${gc.editor_pinned}) — nada mais a cortar; o invariante max-content-items acusa no Stage 4.`,
+    );
+  }
+  if (gc.removed.length > 0 || gc.after > gc.max) {
+    const m = inPath.match(/(\d{6})[\\/]_internal[\\/]/);
+    logEvent({
+      edition: m ? m[1] : null,
+      stage: 2,
+      agent: "apply-stage2-caps",
+      level: gc.after > gc.max ? "warn" : "info",
+      message: `teto global de ${gc.max} conteúdos (#9785): ${gc.before} → ${gc.after} (${gc.removed.length} cortado(s) por score)`,
+      details: { removed: gc.removed, editor_pinned: gc.editor_pinned },
+    });
+  }
+
   // #906 — recalcular coverage.line com o `selected` real pós-caps. Sem
   // isso, o writer copia coverage.line literal e a intro fica com "30
   // mais relevantes" mesmo quando a edição publica 12 artigos.
@@ -136,7 +161,8 @@ function main(): void {
       `radar=${report.before.radar}→${report.after.radar} (cap ${report.caps.radar}), ` +
       `use_melhor=${report.use_melhor.before}→${report.use_melhor.after}` +
       (report.use_melhor.promoted > 0 ? ` (+${report.use_melhor.promoted} promovidos)` : "") +
-      (report.use_melhor.truncated > 0 ? ` (−${report.use_melhor.truncated} pelo cap máximo ${STAGE_2_MAX_USE_MELHOR}, #2313)` : ""),
+      (report.use_melhor.truncated > 0 ? ` (−${report.use_melhor.truncated} pelo cap máximo ${STAGE_2_MAX_USE_MELHOR}, #2313)` : "") +
+      `, total=${gc.before}→${gc.after} (teto ${gc.max}, #9785)`,
   );
   // #1855: warn loud quando nem com runners-up dá pra bater o mínimo de USE
   // MELHOR — o orchestrator surfa no gate. NUNCA preencher com não-tutorial.

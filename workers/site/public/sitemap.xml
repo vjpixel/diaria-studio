@@ -1157,14 +1157,6 @@
   <url>
     <loc>https://diar.ia.br/p/cloudflare-lanca-modelos-que-decidem-nao-conversam</loc>
     <lastmod>2026-10-05</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-05T00:00:00.000Z</news:publication_date>
-      <news:title>Cloudflare lança modelos que decidem, não conversam</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/seu-gpt-personalizado-tem-data-para-acabar</loc>
@@ -1176,6 +1168,18 @@
       </news:publication>
       <news:publication_date>2026-10-06T00:00:00.000Z</news:publication_date>
       <news:title>Seu GPT personalizado tem data para acabar</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/meta-poe-o-muse-para-fichar-seus-amigos-e-familia</loc>
+    <lastmod>2026-10-07</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-07T09:00:00.000Z</news:publication_date>
+      <news:title>Meta põe o Muse para fichar seus amigos e família</news:title>
     </news:news>
   </url>
 </urlset>

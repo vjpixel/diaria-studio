@@ -88,20 +88,47 @@ function hasGlyph(text: string): boolean {
 }
 
 /**
+ * Fechamentos permitidos entre o número da esquerda e a seta: tag HTML de
+ * fechamento (`18%</b>`) e ênfase markdown (`**18%**`, `_18%_`, #9735).
+ */
+const NUMBER_CLOSERS = String.raw`(?:<\/[a-z][^>]*>|\*\*|__|\*|_)*`;
+/** Número com moeda/sinal opcional: `18%`, `US$ 10`, `R$ 5`, `-3`. */
+const SIGNED_NUMBER = String.raw`(?:R\$|US\$|\$|[-+−])?[ \t]*\d`;
+/**
+ * Alvo numérico logo após a seta (#9731, restrito no #9735):
+ *  - link markdown cujo rótulo é SÓ número: `[18%](u)`, `[R$ 5](u)`, `[-3](u)`;
+ *  - `<a>` cujo rótulo é SÓ número (tags inline permitidas): `<a …>18%</a>`,
+ *    `<a><b>US$ 10</b></a>`;
+ *  - fora de link, número logo após tags inline opcionais: `18%`, `<b>18%</b>`.
+ * Um rótulo de link que só COMEÇA com dígito (`[2026: o ano](u)`,
+ * `<a>10 ferramentas</a>`) não é alvo numérico.
+ */
+const NUMERIC_ARROW_TARGET =
+  String.raw`(?:\[[ \t]*${SIGNED_NUMBER}[\d.,]*%?[ \t]*\]\(` +
+  String.raw`|(?:<(?!a\b)[a-z][^>]*>)*<a\b[^>]*>(?:<[a-z][^>]*>)*[ \t]*${SIGNED_NUMBER}[\d.,]*%?[ \t]*(?:<\/[a-z][^>]*>)*<\/a>` +
+  String.raw`|(?:<(?!a\b)[a-z][^>]*>)*[ \t]*${SIGNED_NUMBER})`;
+/** `normalizeNumericArrows`: número (com fechamentos) + seta + alvo numérico. */
+const NUMERIC_TRANSITION_RE = (): RegExp =>
+  new RegExp(String.raw`(\d%?${NUMBER_CLOSERS})[ \t]*→[ \t]*(?=${NUMERIC_ARROW_TARGET})`, "gi");
+
+/**
  * Transição numérica (número dos dois lados, tags inline permitidas no
  * meio): `5,4% → 18%`, `5,4% → <b>18%</b>`, `5,4% → <a …>18%</a>`,
  * `US$ 20 → <a>US$ 10</a>` e o markdown `5,4% → [18%](u)` (#9731) viram `… para …` ("de 5,4% para 18%" é como o
  * português lê a notação). Roda ANTES de qualquer passe de lead-in de CTA:
  * senão `5,4% → <a>18%</a>` viraria `5,4%: 18%`, trocando o sentido
  * (#9721 review, #9727). Idempotente. Puro.
+ *
+ * #9735: o número da esquerda pode vir em negrito/itálico MARKDOWN
+ * (`**5,4%** → [18%](u)`, os callouts recebem markdown), não só fechado por
+ * tag HTML. E o alvo LINK (markdown ou `<a>`) só conta se o rótulo for só
+ * numérico: `Passo 1 → [2026: o ano](u)` e `Top 5 → <a>10 ferramentas</a>`
+ * não são transição e ficam como estão.
  */
 export function normalizeNumericArrows(text: string): string {
   const t = decodeArrowEntities(text);
   if (!t.includes(ARROW_GLYPH)) return t;
-  return t.replace(
-    /(\d%?(?:<\/[a-z][^>]*>)*)[ \t]*→[ \t]*(?=(?:<[a-z][^>]*>|\[)*[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d)/gi,
-    "$1 para ",
-  );
+  return t.replace(NUMERIC_TRANSITION_RE(), "$1 para ");
 }
 
 /**
@@ -181,13 +208,10 @@ function unmaskSiteNavArrows(text: string): string {
   return text.replaceAll(SITE_NAV_PREV_MASK, LEFT_ARROW_GLYPH).replaceAll(SITE_NAV_NEXT_MASK, ARROW_GLYPH);
 }
 
-/** Lookbehind: posição NÃO precedida de número (`18`, `5,4%`, `18%</b>`). */
-const NOT_AFTER_NUMBER = String.raw`(?<![\d%](?:<\/[a-z][^>]*>)*)`;
-/**
- * Alvo de link numérico logo após a seta: `<a …>18%</a>`, `<a><b>US$ 10`,
- * `[18%](u)`, `[R$ 5](u)`, `[-3](u)` (#9731).
- */
-const NUMERIC_LINK_TARGET = String.raw`(?:<[a-z][^>]*>|\[)+[ \t]*(?:R\$|US\$|\$|[-+−])?[ \t]*\d`;
+/** Lookbehind: posição NÃO precedida de número (`18`, `5,4%`, `18%</b>`,
+ *  `**18%**`, #9735), nem de número seguido de espaço (`5,4%  → [18%](u)`,
+ *  #9735 item 4: senão a 2ª posição de espaço passava como lead-in). */
+const NOT_AFTER_NUMBER = String.raw`(?<![\d%]${NUMBER_CLOSERS}[ \t]*)`;
 
 /**
  * Remove a seta das posições de CTA, preservando o resto do texto. Idempotente.
@@ -218,7 +242,7 @@ export function stripCtaArrows(text: string): string {
       // verdade, número dos DOIS lados (`5,4% → [18%](u)`, ver
       // normalizeNumericArrows). #9731: antes bastava o texto anterior terminar
       // em dígito (`Leia as 3 → [dicas](u)`) pra seta passar crua ao leitor.
-      .replace(new RegExp(`(?:${NOT_AFTER_NUMBER}|(?![ \\t]+→[ \\t]+${NUMERIC_LINK_TARGET}))[ \\t]+→[ \\t]+(?=<a[\\s>]|\\[)`, "gi"), ": ")
+      .replace(new RegExp(`(?:${NOT_AFTER_NUMBER}|(?![ \\t]+→[ \\t]+${NUMERIC_ARROW_TARGET}))[ \\t]+→[ \\t]+(?=<a[\\s>]|\\[)`, "gi"), ": ")
   );
 }
 

@@ -191,6 +191,17 @@ function significantWords(s: string): string[] {
  *
  * Sem `correct_value` declarado: cai só no overlap de description/location
  * (sinal mais fraco, mas ainda exige pelo menos 1 termo em comum).
+ *
+ * Atalhos que dispensam o overlap de description/location (avaliados antes da
+ * regra geral acima, todos sobre o corpo já sem citação/assinatura, #9021):
+ *   - (#8751) `correct_value` com token distintivo (caixa mista ou
+ *     letras+dígitos, ver `hasDistinctiveCorrectMatch`) citado como palavra
+ *     inteira;
+ *   - (#8877) idem para `wrong_value` — reply que aponta só a grafia plantada;
+ *   - (#9792) `wrong_value` de 2+ palavras (>=6 chars úteis) citado inteiro e
+ *     contíguo (`containsWholePhrase`);
+ *   - (#9792) `wrong_value` E `correct_value` (distintos) citados os dois como
+ *     palavras inteiras — "X quando deveria ser Y", vale até pra palavra única.
  */
 /**
  * (#8751) Token de `correctValue` que identifica o erro sozinho: >=4 chars e
@@ -208,6 +219,34 @@ function hasDistinctiveCorrectMatch(correctValue: string | undefined | null, bod
     const norm = normalizeText(t);
     return new RegExp(`(^|[^a-z0-9])${norm}([^a-z0-9]|$)`).test(bodyNorm);
   });
+}
+
+/** (#9792) Normaliza um valor (wrong/correct) pra sequência de tokens alfanuméricos separados por espaço. */
+function normalizePhrase(value: string): string {
+  return normalizeText(value)
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0)
+    .join(" ");
+}
+
+/** (#9792) `true` quando o valor tem >=2 tokens alfanuméricos e >=6 chars úteis no total. */
+function isMultiWordPhrase(value: string | undefined | null): value is string {
+  if (!value) return false;
+  const phrase = normalizePhrase(value);
+  const tokens = phrase.split(" ").filter(Boolean);
+  return tokens.length >= 2 && phrase.replace(/ /g, "").length >= 6;
+}
+
+/**
+ * (#9792) `true` quando a sequência de tokens de `value` aparece na reply como
+ * palavras inteiras e contíguas — pontuação/aspas/espaço entre os tokens são
+ * ignorados (`"Hugging Race"`, `Hugging-Race` e `hugging race` casam igual).
+ */
+function containsWholePhrase(value: string, bodyNorm: string): boolean {
+  const phrase = normalizePhrase(value);
+  if (!phrase) return false;
+  const bodyTokens = ` ${bodyNorm.split(/[^a-z0-9]+/).filter(Boolean).join(" ")} `;
+  return bodyTokens.includes(` ${phrase} `);
 }
 
 export function matchesIntentionalError(
@@ -250,6 +289,24 @@ export function matchesIntentionalError(
   // ele aparece como palavra inteira na reply (fora da citação), é acerto — a
   // reply está citando exatamente o texto errado que o editor plantou.
   if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
+
+  // #9792: wrong_value de VÁRIAS palavras citado inteiro ("Hugging Race") é
+  // prova de acerto mesmo sem token distintivo — a sequência exata plantada
+  // pelo editor não aparece por acaso numa reply (já sem citação). Palavra
+  // única comum ("numero") segue exigindo contexto (ver #8877).
+  if (isMultiWordPhrase(error.wrong_value) && containsWholePhrase(error.wrong_value, bodyNorm)) return true;
+
+  // #9792: reply que cita as DUAS formas, a errada e a certa ("X quando
+  // deveria ser Y"), está apontando a correção — vale mesmo pra palavra única.
+  if (
+    error.wrong_value &&
+    error.correct_value &&
+    normalizePhrase(error.wrong_value) !== normalizePhrase(error.correct_value) &&
+    containsWholePhrase(error.wrong_value, bodyNorm) &&
+    containsWholePhrase(error.correct_value, bodyNorm)
+  ) {
+    return true;
+  }
 
   // Exige sinal real de cada conjunto que existir — quando um conjunto está
   // vazio (ex: sem correct_value), o flag correspondente já é `true` por

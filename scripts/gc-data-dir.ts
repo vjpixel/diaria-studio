@@ -264,9 +264,13 @@ function walkForSiblingsAndCache(
       continue;
     }
     // Idade CONSERVADORA (#9732) — nunca o mtime cru, que a renomeação de
-    // conflito herda do original.
+    // conflito herda do original. #9735: o MESMO timestamp vale pra ordem
+    // (`mtimeMs`, que `classifyBackupSiblings` usa pra escolher a cópia mais
+    // recente da família) — com o mtime cru ali, a cópia preservada podia ser
+    // a mais ANTIGA, justamente a que herdou o mtime do original.
     if (isBackupSiblingFilename(entry.name)) {
-      siblings.push({ ...aged, ageDays: ageDaysOf(siblingTimestamp(st), nowMs) });
+      const ts = siblingTimestamp(st);
+      siblings.push({ ...aged, ageDays: ageDaysOf(ts, nowMs), mtimeMs: ts });
     }
   }
 }
