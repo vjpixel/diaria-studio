@@ -68,8 +68,9 @@ function installFetch(k: FakeKit) {
       return jsonRes(k.formStatus ?? 201, { subscriber: { id: 77 } });
     }
     if (u.includes("api.kit.com/v4/subscribers") && u.includes("email_address=")) {
+      const email = new URL(u).searchParams.get("email_address") ?? "leitor@x.com";
       return jsonRes(200, {
-        subscribers: [{ id: 77, email_address: "leitor@x.com", state: k.state, created_at: "2026-09-01T00:00:00.000Z" }],
+        subscribers: [{ id: 77, email_address: email, state: k.state, created_at: "2026-09-01T00:00:00.000Z" }],
       });
     }
     if (u.includes("api.kit.com") && method !== "GET") {
@@ -81,8 +82,8 @@ function installFetch(k: FakeKit) {
   return calls;
 }
 
-async function run(c: BrevoDiariaContact, opts: { push?: boolean; kitDoiFormId?: string } = {}) {
-  const contacts = [c];
+async function run(c: BrevoDiariaContact | BrevoDiariaContact[], opts: { push?: boolean; kitDoiFormId?: string; log?: (m: string) => void } = {}) {
+  const contacts = Array.isArray(c) ? c : [c];
   return runEvaluation({
     contacts,
     store: { contacts },
@@ -91,7 +92,7 @@ async function run(c: BrevoDiariaContact, opts: { push?: boolean; kitDoiFormId?:
     beehiivApiKey: "bkey",
     brevoApiKey: "brkey",
     listId: 7,
-    log: () => {},
+    log: opts.log ?? (() => {}),
     newsletterBackend: "kit",
     kitApiKey: "kkey",
     kitDoiFormId: "kitDoiFormId" in opts ? opts.kitDoiFormId : DOI_FORM,
@@ -294,6 +295,74 @@ describe("runEvaluation — reenvio do DOI no ramo await_self_confirmation (#983
       const stored = findContact(result.store, "leitor@x.com")!;
       assert.equal(stored.status, "in_brevo");
       assert.equal(stored.doi_resent_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("vínculo com 429 → failed marcado kitRateLimited (#9291)", async () => {
+    installFetch({ state: "inactive", formStatus: 429 });
+    try {
+      const result = await run(contact("leitor@x.com"));
+      assert.equal(result.failed, 1);
+      assert.equal(result.failedContacts[0]!.kitRateLimited, true);
+      assert.equal(result.kitRateLimited, 1);
+      assert.equal(findContact(result.store, "leitor@x.com")!.doi_resent_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("exceção de rede no vínculo → failed, sem doi_resent_at, nunca lança", async () => {
+    installFetch({ state: "inactive" });
+    const inner = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).includes("/forms/")) throw new Error("ECONNRESET");
+      return inner(url, init);
+    }) as typeof fetch;
+    try {
+      const result = await run(contact("leitor@x.com"));
+      assert.equal(result.failed, 1);
+      assert.match(result.failedContacts[0]!.reason, /ECONNRESET/);
+      assert.equal(findContact(result.store, "leitor@x.com")!.doi_resent_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("form de sistema no config → 1 warn por rodada, zero vínculo, zero failed (nunca N falhas idênticas)", async () => {
+    const calls = installFetch({ state: "inactive" });
+    const logs: string[] = [];
+    try {
+      const result = await run([contact("leitor@x.com"), contact("leitor2@x.com")], { kitDoiFormId: "9839463", log: (m) => logs.push(m) });
+      assert.equal(calls.formPosts.length, 0);
+      assert.equal(result.failed, 0);
+      assert.equal(result.doiResent, 0);
+      assert.equal(logs.filter((l) => l.includes("reenvio do double opt-in desligado")).length, 1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("vínculo 200 (já vinculado) conta como reenvio mas o log avisa que o Kit pode não reenviar", async () => {
+    installFetch({ state: "inactive", formStatus: 200 });
+    const logs: string[] = [];
+    try {
+      const result = await run(contact("leitor@x.com"), { log: (m) => logs.push(m) });
+      assert.equal(result.doiResent, 1);
+      assert.ok(logs.some((l) => l.includes("HTTP 200") && l.includes("pode não reenviar")));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("qualifica mas está dentro da janela → log com o motivo do não-reenvio", async () => {
+    installFetch({ state: "inactive" });
+    const logs: string[] = [];
+    try {
+      const recent = new Date(Date.now() - 86_400_000).toISOString();
+      await run(contact("leitor@x.com", { doi_resent_at: recent }), { log: (m) => logs.push(m) });
+      assert.ok(logs.some((l) => l.includes("NÃO reenviado") && l.includes(recent)));
     } finally {
       globalThis.fetch = origFetch;
     }

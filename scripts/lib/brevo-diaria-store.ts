@@ -98,7 +98,10 @@ export interface BrevoDiariaContact {
   /** #9835 — ISO do último reenvio do double opt-in do Kit (vínculo ao
    * designer form de DOI) pra um contato que qualifica por abertura mas está
    * `inactive` no Kit. Base do anti-spam (`needsDoiResend`): no máximo 1
-   * reenvio a cada `DOI_RESEND_INTERVAL_DAYS`. */
+   * reenvio a cada `DOI_RESEND_INTERVAL_DAYS`. Só é gravado com vínculo 2xx;
+   * falha não grava, então a tentativa se repete na rodada seguinte. Não é
+   * limpo quando o contato sai de `in_brevo` (mesmo tratamento de
+   * `awaiting_kit_confirmation_since`); `needsDoiResend` checa o status. */
   doi_resent_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
@@ -522,11 +525,11 @@ export function findStaleAwaitingKitConfirmation(
   return out;
 }
 
-
 /**
  * #9835 — intervalo mínimo entre dois reenvios do double opt-in do Kit pro
  * mesmo contato. Mesmo prazo do alarme de espera (#8753): quem não clicou no
- * botão em uma semana recebe no máximo mais um e-mail por semana. Literal
+ * botão em uma semana recebe no máximo mais um e-mail por semana (mesmo
+ * valor; aqui a comparação é `>=`, no alarme é `>`). Literal
  * em vez de alias (knip acusa export duplicado); a igualdade com
  * `AWAITING_KIT_CONFIRMATION_STALE_DAYS` é travada por teste.
  */
@@ -551,7 +554,8 @@ export function needsDoiResend(
   return (Date.parse(now) - lastMs) / 86_400_000 >= days;
 }
 
-/** #9835 — grava `doi_resent_at` (sobrescreve: é o timestamp do ÚLTIMO reenvio). */
+/** #9835 — grava `doi_resent_at` (sobrescreve: é o timestamp do ÚLTIMO
+ * reenvio). No-op silencioso pra contato ausente ou fora de `in_brevo`. */
 export function markDoiResent(
   store: BrevoDiariaStore,
   email: string,
