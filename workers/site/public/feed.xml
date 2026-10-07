@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 06 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 07 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Meta põe o Muse para fichar seus amigos e família</title>
+      <link>https://diar.ia.br/p/meta-poe-o-muse-para-fichar-seus-amigos-e-familia</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/meta-poe-o-muse-para-fichar-seus-amigos-e-familia</guid>
+      <pubDate>Wed, 07 Oct 2026 09:00:00 GMT</pubDate>
+      <description>ChatGPT vai carimbar o texto que escreve por você | Mistral Large 4 faz o que Claude e GPT recusam</description>
+    </item>
     <item>
       <title>Seu GPT personalizado tem data para acabar</title>
       <link>https://diar.ia.br/p/seu-gpt-personalizado-tem-data-para-acabar</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/1-134-funcion-rios-da-ia-pedem-freio-ao-setor</guid>
       <pubDate>Wed, 29 Jul 2026 09:00:00 GMT</pubDate>
       <description>Starbucks desliga IA de estoque após falhas | IA do Google já domina 43% das buscas nos EUA</description>
-    </item>
-    <item>
-      <title>Itaú lança IA nativa para 300 mil clientes</title>
-      <link>https://diar.ia.br/p/itau-lanca-ia-nativa-para-300-mil-clientes</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/itau-lanca-ia-nativa-para-300-mil-clientes</guid>
-      <pubDate>Tue, 28 Jul 2026 09:00:00 GMT</pubDate>
-      <description>Professor flagra 90% da turma colando com IA | Modelos chineses ganham espaço</description>
     </item>
   </channel>
 </rss>
