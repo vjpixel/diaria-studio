@@ -22,7 +22,7 @@ import {
   type FunnelPersonInput,
   type FunnelSources,
 } from "../scripts/lib/metrics/channel-cohort-funnel.ts";
-import { loadFunnelInputFromStore, resolveConfirmacaoFromStore } from "../scripts/lib/metrics/channel-cohort-funnel-store.ts";
+import { firstClickAtOrAfter, loadFunnelInputFromStore, resolveConfirmacaoFromStore } from "../scripts/lib/metrics/channel-cohort-funnel-store.ts";
 import { computeRollingWindow } from "../scripts/lib/ads-rolling-window.ts";
 import type { ClicksCsvRow } from "../scripts/lib/ads-test-watch.ts";
 import { ensureSubscriber, openDiariaSubscribersDb, recordEvent, upsertSubscription } from "../scripts/lib/diaria-subscribers-db.ts";
@@ -364,15 +364,88 @@ test("buildCohortSpendInputs reusa exatamente o gasto da janela do relatório de
 // ---------------------------------------------------------------------------
 
 test("resolveConfirmacaoFromStore: só sinal real confirma; sem Kit ou estado de saída é não observável", () => {
-  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "inactive" }], null), { observavel: true, confirmado: false, confirmadoEm: null });
-  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "active" }], null), { observavel: true, confirmado: true, confirmadoEm: null });
-  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "inactive" }], "2026-09-01T00:00:00Z"), {
+  const ent = "2026-09-01T12:00:00.000Z";
+  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "inactive", entered_at: ent }], null), { observavel: true, confirmado: false, confirmadoEm: null });
+  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at: ent }], null), { observavel: true, confirmado: true, confirmadoEm: null });
+  assert.deepEqual(resolveConfirmacaoFromStore([{ platform: "kit", status: "inactive", entered_at: ent }], "2026-09-01T00:00:00Z"), {
     observavel: true,
     confirmado: true,
     confirmadoEm: "2026-09-01T00:00:00Z",
   });
-  assert.equal(resolveConfirmacaoFromStore([{ platform: "beehiiv", status: "active" }], null).observavel, false);
-  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "cancelled" }], null).observavel, false);
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "beehiiv", status: "active", entered_at: ent }], null).observavel, false);
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "cancelled", entered_at: ent }], null).observavel, false);
+});
+
+test("inscrição no Kit antes de KIT_SERIES_FLOOR (importação) é não observável, nunca confirmada", () => {
+  for (const entered_at of ["2026-08-24T15:00:00.000Z", "2026-08-01T15:00:00.000Z"]) {
+    const r = resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at }], null);
+    assert.equal(r.observavel, false, entered_at);
+    assert.ok(!r.observavel && /importação/.test(r.motivo));
+  }
+  // 23h BRT de 24/08 ainda é 24/08 (fronteira BRT, não UTC).
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at: "2026-08-25T02:00:00.000Z" }], null).observavel, false);
+  // 1º dia da série nativa: observável.
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at: "2026-08-25T12:00:00.000Z" }], null).observavel, true);
+  // entered_at ilegível: não observável (não dá pra saber se passou pelo DOI).
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at: null }], null).observavel, false);
+  // evento confirm explícito vence a importação.
+  assert.equal(resolveConfirmacaoFromStore([{ platform: "kit", status: "active", entered_at: "2026-08-24T15:00:00.000Z" }], "2026-09-02T00:00:00Z").observavel, true);
+});
+
+test("coorte pré-Kit (Beehiiv 2025 + importada no Kit 24/08 como active) não sai com confirmação de 100%", () => {
+  const root = mkdtempSync(join(tmpdir(), "channel-funnel-prekit-"));
+  try {
+    const db = openDiariaSubscribersDb(join(root, "s.db"));
+    const t = "2026-08-24T15:00:00.000Z";
+    for (const [i, email] of ["a@exemplo.com.br", "b@exemplo.com.br"].entries()) {
+      const id = ensureSubscriber(db, "kit", `k${i}`, email, t);
+      upsertSubscription(db, id, "beehiiv", { status: "unsubscribed", enteredAt: "2025-10-01T12:00:00.000Z", exitedAt: null, source: null, utmSource: "linkedin" }, t);
+      upsertSubscription(db, id, "kit", { status: "active", enteredAt: t, exitedAt: null, source: null }, t);
+    }
+    const { people, fontes } = loadFunnelInputFromStore(db);
+    db.close();
+    assert.ok(people.every((p) => !p.confirmacao.observavel));
+    const rep = buildChannelCohortFunnel(people, { now: NOW, fontes: { ...fontes, entrega: SRC(), engajamento: SRC() } });
+    assert.equal(rep.rows.length, 1);
+    assert.equal(rep.rows[0].cobertura, "pre-kit");
+    assert.equal(rep.rows[0].confirmacao.estado, "nao-observavel");
+    assert.equal(rep.rows[0].confirmacao.taxa, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("firstClickAtOrAfter descarta clique anterior ao cadastro e ts malformado", () => {
+  const ent = "2026-09-10T12:00:00.000Z";
+  assert.equal(firstClickAtOrAfter(["2026-09-01T00:00:00Z", "lixo", "2026-09-15T00:00:00Z", "2026-09-12T00:00:00Z"], ent), "2026-09-12T00:00:00Z");
+  assert.equal(firstClickAtOrAfter(["2026-09-01T00:00:00Z"], ent), null);
+  assert.equal(firstClickAtOrAfter(["2026-09-12T00:00:00Z"], null), null);
+});
+
+test("clique com ts anterior ao cadastro não conta como 1º clique no dia 0", () => {
+  const entered = daysAgo(40);
+  const antes = daysAgo(45);
+  const { row } = onlyRow([
+    person({
+      personKey: "1",
+      enteredAt: entered,
+      engajamento: { observavel: true, primeiroCliqueEm: antes, leitor: { status: "active", totalReceived: 25, totalUniqueClicked: 0 } },
+    }),
+  ]);
+  assert.equal(row.primeiroClique14d.estado, "medido");
+  assert.equal(row.primeiroClique14d.numerador, 0);
+});
+
+test("pessoa sem e-mail é excluída (não passa pelo filtro interno/teste) e contada em resumo.semEmail", () => {
+  const rep = buildChannelCohortFunnel([person({ personKey: "1" }), person({ personKey: "2", email: "" }), person({ personKey: "3", email: "  " })], {
+    now: NOW,
+    fontes: FONTES,
+  });
+  assert.equal(rep.resumo.semEmail, 2);
+  assert.equal(rep.rows.length, 1);
+  assert.equal(rep.rows[0].cadastrosAceitos, 1);
+  const c = computeCohortCost([person({ personKey: "2", email: "", enteredAt: "2026-08-20T15:00:00.000Z" })], { ...SPEND_BASE, de: "2026-08-19", ate: "2026-08-21" }, { now: NOW, fontes: FONTES });
+  assert.equal(c.populacao, 0);
 });
 
 test("loadFunnelInputFromStore: 1 pessoa por subscriber, ingestão repetida não duplica, fontes com frescor", () => {
@@ -385,6 +458,8 @@ test("loadFunnelInputFromStore: 1 pessoa por subscriber, ingestão repetida não
       upsertSubscription(db, id, "kit", { status: "inactive", enteredAt: t, exitedAt: null, source: null, utmSource: "meta-ads", utmCampaign: "c1", origemCadastro: "livros" }, t);
       recordEvent(db, { subscriberId: id, platform: "kit", type: "sent", externalEventId: "s1", edicao: "b1", ts: "2026-09-02T09:00:00.000Z" });
       recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "c1", edicao: "b1", ts: "2026-09-03T09:00:00.000Z" });
+      // clique com ts ANTERIOR ao cadastro: descartado pelo loader.
+      recordEvent(db, { subscriberId: id, platform: "kit", type: "click", externalEventId: "c0", edicao: "b0", ts: "2026-08-20T09:00:00.000Z" });
     }
     const id2 = ensureSubscriber(db, "beehiiv", "b2", "dois@exemplo.com.br", t);
     upsertSubscription(db, id2, "beehiiv", { status: "active", enteredAt: t, exitedAt: null, source: null }, t);

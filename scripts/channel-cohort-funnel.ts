@@ -150,7 +150,7 @@ export function main(argv = process.argv.slice(2)): number {
     console.log(`  fonte ${k}: ${f.fonte} · frescor ${f.frescor ?? "—"}${f.disponivel ? "" : ` · INDISPONÍVEL (${f.motivo})`}`);
   }
   console.log(
-    `  pessoas ${r.pessoasRecebidas} · duplicatas fundidas ${r.duplicatasFundidas} · interno/teste ${r.internasOuTesteExcluidas} · ` +
+    `  pessoas ${r.pessoasRecebidas} · duplicatas fundidas ${r.duplicatasFundidas} · interno/teste ${r.internasOuTesteExcluidas} · sem e-mail ${r.semEmail} · ` +
       `sem data ${r.semDataDeCadastro} · sem atribuição ${r.semAtribuicao} · migrados ${r.migrados} · reativados ${r.reativados}`,
   );
   console.log("\nperíodo    origem / campanha / destino                segmento  cad.     confirmação          entrega       1º clique 14d        leitor-v1");

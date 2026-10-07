@@ -236,6 +236,8 @@ export interface FunnelSummary {
   pessoasRecebidas: number;
   duplicatasFundidas: number;
   internasOuTesteExcluidas: number;
+  /** Excluídas por não ter e-mail (não passam pelo filtro interno/teste). */
+  semEmail: number;
   semDataDeCadastro: number;
   semAtribuicao: number;
   migrados: number;
@@ -468,7 +470,10 @@ function primeiroCliqueRate(members: readonly Member[], segmento: FunnelSegmento
       recebeuAoMenosUma: ent.edicoesRecebidas >= 1,
       primeiraEdicaoDadosDisponiveis: true,
       abriuPrimeiraEdicao: false,
-      diasAtePrimeiroClique: clickMs == null ? null : Math.max(0, (clickMs - m.enteredMs) / DAY_MS),
+      // Clique ANTERIOR ao cadastro é dado inconsistente — descartado, nunca
+      // "clique no dia 0" (o loader já pede o 1º clique >= cadastro; isto é
+      // a mesma regra aplicada a qualquer chamador).
+      diasAtePrimeiroClique: clickMs == null || clickMs < m.enteredMs ? null : (clickMs - m.enteredMs) / DAY_MS,
     });
   }
   if (inputs.length === 0) {
@@ -519,7 +524,12 @@ interface Prepared {
 
 function prepare(people: readonly FunnelPersonInput[]): Prepared {
   const { people: deduped, duplicatasFundidas } = dedupePeople(people);
-  const { kept, removedCount } = filterInternalAndTestSubscribers(deduped);
+  // Sem e-mail não há como passar pelo filtro interno/teste (que é por
+  // e-mail) — sai antes, contado, mesmo destino do loader vizinho
+  // `buildCacCompatibleSubscribersFromStore` (que pula esses registros).
+  const comEmail = deduped.filter((p) => p.email.trim() !== "");
+  const semEmail = deduped.length - comEmail.length;
+  const { kept, removedCount } = filterInternalAndTestSubscribers(comEmail);
   const members: Member[] = [];
   let semData = 0;
   let semAtribuicao = 0;
@@ -551,6 +561,7 @@ function prepare(people: readonly FunnelPersonInput[]): Prepared {
       pessoasRecebidas: people.length,
       duplicatasFundidas,
       internasOuTesteExcluidas: removedCount,
+      semEmail,
       semDataDeCadastro: semData,
       semAtribuicao,
       migrados,

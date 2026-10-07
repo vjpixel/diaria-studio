@@ -43,19 +43,36 @@ import {
 } from "../diaria-subscribers-db.ts";
 import { buildCanonicalEdicaoMapFromEvents } from "../diaria-subscribers-edicao-canonica.ts";
 import { computeStoreLeitorInputCanonicalDedupBatched, detectPlatformCapabilities } from "../leitor-store.ts";
-import type { FunnelConfirmacaoInput, FunnelPersonInput, FunnelSources } from "./channel-cohort-funnel.ts";
+import { brtDayOfIso, type FunnelConfirmacaoInput, type FunnelPersonInput, type FunnelSources } from "./channel-cohort-funnel.ts";
+import { KIT_SERIES_FLOOR } from "./registry.ts";
 
 export const STORE_FONTE = "data/diaria-subscribers/diaria-subscribers.db";
 
 /** Confirmação a partir das `subscription` + instante do evento `confirm`
- *  (se houver). @pure */
+ *  (se houver).
+ *
+ *  Inscrição no Kit anterior a `KIT_SERIES_FLOOR` (o import Beehiiv→Kit de
+ *  24/08/2026 e qualquer cópia anterior) é NÃO OBSERVÁVEL: a pessoa nasceu
+ *  `active` no Kit por importação, sem passar pelo double opt-in — ler esse
+ *  `active` como confirmação fazia as coortes pré-Kit saírem com ~100%
+ *  (self-review da PR #9839). Só o evento `confirm` explícito vence isso. @pure */
 export function resolveConfirmacaoFromStore(
-  subs: readonly Pick<SubscriptionRecord, "platform" | "status">[],
+  subs: readonly Pick<SubscriptionRecord, "platform" | "status" | "entered_at">[],
   confirmTs: string | null,
 ): FunnelConfirmacaoInput {
   if (confirmTs) return { observavel: true, confirmado: true, confirmadoEm: confirmTs };
   const kit = subs.find((s) => s.platform === "kit");
   if (!kit) return { observavel: false, motivo: "sem subscription no Kit — DOI não observável" };
+  const kitDia = brtDayOfIso(kit.entered_at);
+  if (kitDia == null) {
+    return { observavel: false, motivo: "subscription Kit sem entered_at legível — não dá pra saber se passou pelo DOI" };
+  }
+  if (kitDia < KIT_SERIES_FLOOR) {
+    return {
+      observavel: false,
+      motivo: `entrou no Kit em ${kitDia}, antes de ${KIT_SERIES_FLOOR} (importação) — estado Kit não é sinal de DOI`,
+    };
+  }
   if (kit.status === "active") return { observavel: true, confirmado: true, confirmadoEm: null };
   if (kit.status === "inactive") return { observavel: true, confirmado: false, confirmadoEm: null };
   return { observavel: false, motivo: `estado Kit "${kit.status ?? "null"}" não diz se a pessoa confirmou` };
@@ -82,6 +99,42 @@ function firstTsByType(db: DatabaseSync, type: string): Map<number, string> {
   return new Map(rows.map((r) => [r.subscriber_id, r.ts]));
 }
 
+/** Todos os `ts` de clique por subscriber — o 1º clique VÁLIDO depende do
+ *  cadastro resolvido da pessoa (ver `firstClickAtOrAfter`), então não dá
+ *  pra resolver com um `MIN(ts)` cego no SQL. */
+function clickTsBySubscriber(db: DatabaseSync): Map<number, string[]> {
+  const rows = db
+    .prepare(`SELECT subscriber_id, ts FROM event WHERE subscriber_id IS NOT NULL AND type = 'click'`)
+    .all() as unknown as Array<{ subscriber_id: number; ts: string }>;
+  const map = new Map<number, string[]>();
+  for (const r of rows) {
+    const list = map.get(r.subscriber_id);
+    if (list) list.push(r.ts);
+    else map.set(r.subscriber_id, [r.ts]);
+  }
+  return map;
+}
+
+/** 1º clique com `ts >= enteredAt` — clique anterior ao cadastro resolvido
+ *  (dado inconsistente entre plataformas) é descartado, nunca vira "clique
+ *  no dia 0". `ts` malformado também é descartado. Sem `enteredAt` legível,
+ *  `null` (a pessoa sai da coorte de qualquer forma). @pure */
+export function firstClickAtOrAfter(clickTs: readonly string[], enteredAt: string | null): string | null {
+  const enteredMs = enteredAt ? Date.parse(enteredAt) : NaN;
+  if (!Number.isFinite(enteredMs)) return null;
+  let best: string | null = null;
+  let bestMs = Infinity;
+  for (const ts of clickTs) {
+    const ms = Date.parse(ts);
+    if (!Number.isFinite(ms) || ms < enteredMs) continue;
+    if (ms < bestMs) {
+      bestMs = ms;
+      best = ts;
+    }
+  }
+  return best;
+}
+
 function maxEventTs(db: DatabaseSync, types: readonly string[]): string | null {
   const ph = types.map(() => "?").join(", ");
   const row = db.prepare(`SELECT MAX(ts) AS ts FROM event WHERE type IN (${ph})`).get(...types) as { ts: string | null };
@@ -101,7 +154,7 @@ export function loadFunnelInputFromStore(db: DatabaseSync): FunnelStoreInput {
   const subsBySub = getAllSubscriptionsBySubscriber(db);
   const aliasesBySub = getAllAliasesBySubscriber(db);
   const eventsBySub = getAllEventsBySubscriber(db);
-  const firstClick = firstTsByType(db, "click");
+  const clicks = clickTsBySubscriber(db);
   const firstConfirm = firstTsByType(db, "confirm");
 
   const people: FunnelPersonInput[] = [];
@@ -119,10 +172,14 @@ export function loadFunnelInputFromStore(db: DatabaseSync): FunnelStoreInput {
       canonicalMap,
       PLATFORMS,
     );
+    const enteredAt = earliestIso(subs.map((s) => s.entered_at));
     people.push({
       personKey: String(subscriberId),
+      // Sem e-mail: passa vazio e o módulo puro exclui (resumo.semEmail) —
+      // mesmo destino de `buildCacCompatibleSubscribersFromStore`, que pula,
+      // mas com a exclusão contada em vez de silenciosa.
       email: aliases.find((a) => a.email)?.email ?? "",
-      enteredAt: earliestIso(subs.map((s) => s.entered_at)),
+      enteredAt,
       utmSource: attribution.utmSource,
       utmMedium: attribution.utmMedium,
       utmCampaign: attribution.utmCampaign,
@@ -132,7 +189,7 @@ export function loadFunnelInputFromStore(db: DatabaseSync): FunnelStoreInput {
       reativado: subs.some((s) => s.reativado === 1),
       confirmacao: resolveConfirmacaoFromStore(subs, firstConfirm.get(subscriberId) ?? null),
       entrega: { observavel: true, edicoesRecebidas: leitor.totalReceived },
-      engajamento: { observavel: true, primeiroCliqueEm: firstClick.get(subscriberId) ?? null, leitor },
+      engajamento: { observavel: true, primeiroCliqueEm: firstClickAtOrAfter(clicks.get(subscriberId) ?? [], enteredAt), leitor },
     });
   }
 
