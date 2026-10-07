@@ -829,3 +829,69 @@ describe("campaign-reply-subjects (#9313)", () => {
     assert.equal(out.droppedByToCount, 0);
   });
 });
+
+describe("#9792: --exclude-captured / previouslyCaptured (2ª passada de §0-replies no Stage 6)", () => {
+  const morning = {
+    thread_id: "t-manha",
+    from: "Leitor <leitor@x.com>",
+    to: "oi@news.diar.ia.br",
+    subject: "Re: diar.ia.br — 06/10",
+    date: "2026-10-06T10:00:00Z",
+    body: "Achei o erro: Hugging Race",
+  };
+  const evening = {
+    thread_id: "t-noite",
+    from: "Silvano <silvanosp@gmail.com>",
+    to: "oi@news.diar.ia.br",
+    subject: "Re: diar.ia.br — 06/10",
+    date: "2026-10-06T22:00:00Z",
+    body: 'O erro na edição de hoje é "Hugging Race" quando deveria ser "Hugging Face", na seção de Segurança.',
+  };
+
+  it("exclui a thread já processada (mesma thread_id + date) e mantém a que chegou depois", () => {
+    const r = filterSubscriberReplies([morning, evening], { previouslyCaptured: [morning] });
+    assert.deepEqual(
+      r.replies.map((x) => x.thread_id),
+      ["t-noite"],
+    );
+    assert.equal(r.alreadyProcessedCount, 1);
+  });
+
+  it("mesma thread com mensagem NOVA (date diferente) volta a ser processada", () => {
+    const r = filterSubscriberReplies([{ ...morning, date: "2026-10-06T21:00:00Z" }], {
+      previouslyCaptured: [morning],
+    });
+    assert.equal(r.replies.length, 1);
+    assert.equal(r.alreadyProcessedCount, 0);
+  });
+
+  it("sem previouslyCaptured, alreadyProcessedCount = 0 e nada muda", () => {
+    const r = filterSubscriberReplies([morning, evening]);
+    assert.equal(r.replies.length, 2);
+    assert.equal(r.alreadyProcessedCount, 0);
+  });
+
+  it("CLI: --exclude-captured lê a captura anterior; arquivo ausente não exclui nada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9792-"));
+    const inPath = join(dir, "late.json");
+    const prevPath = join(dir, "early.json");
+    writeFileSync(inPath, JSON.stringify([morning, evening]));
+    writeFileSync(prevPath, JSON.stringify([morning]));
+    const run = (prev: string) =>
+      spawnSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/filter-subscriber-replies.ts", "--in", inPath, "--exclude-captured", prev],
+        { encoding: "utf8" },
+      );
+    const res = run(prevPath);
+    assert.equal(res.status, 0, res.stderr);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.replies.length, 1);
+    assert.equal(out.alreadyProcessedCount, 1);
+    assert.match(res.stderr, /🔁 1 thread\(s\) já processada\(s\)/);
+
+    const res2 = run(join(dir, "nao-existe.json"));
+    assert.equal(res2.status, 0, res2.stderr);
+    assert.equal(JSON.parse(res2.stdout).replies.length, 2);
+  });
+});

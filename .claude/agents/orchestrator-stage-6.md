@@ -93,6 +93,23 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 A lista (resumida a ~80 chars por entrada, `[{stage}] {request_type} · {target} — "{description}" ({resolution})`) entra como contexto informativo dentro do gate único de §6c — não como pergunta separada. Prosseguir para §6c.
 
+### 6b-replies. 2ª passada de §0-replies — respostas chegadas depois do Passo 1b (#9792)
+
+O prazo do concurso "ache o erro" é "antes do envio da edição seguinte", então chegam replies o dia inteiro — e o Passo 1b de `/diaria-edicao` (§0-replies) captura uma vez só, no início da edição. Esta 2ª passada roda aqui, perto do envio, antes do gate de §6c.
+
+**Condição:** mesma do Passo 1b — só com o editor presente (sem `--no-gates`/`auto_approve`) e com Gmail MCP disponível. Fora disso, logar o skip com as mesmas mensagens de `buildRepliesSkipLogArgs()` (`scripts/lib/replies-skip-log.ts` — `"0-replies skipped: Gmail MCP unavailable"` / `"0-replies skipped: headless --no-gates"`), trocando só `--stage 0` por `--stage 6`, e seguir — nunca em silêncio, nunca bloqueia.
+
+Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0-replies" com 2 ajustes:
+
+1. Gravar a captura em `{EDITION_DIR}/_internal/captured-replies-late.json` (nunca sobrescrever `captured-replies.json` do Passo 1b).
+2. Filtrar excluindo o que o Passo 1b já processou (mesma `thread_id` + `date`), pra não criar rascunho duplicado:
+   ```bash
+   npx tsx scripts/filter-subscriber-replies.ts --in {EDITION_DIR}/_internal/captured-replies-late.json \
+     --exclude-captured {EDITION_DIR}/_internal/captured-replies.json
+   ```
+
+Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
+
 ### 6b-slug. Guard de slug do bloco WhatsApp — roda ANTES do gate, nunca bloqueia sozinho (#4570, não-bloqueante desde #8205)
 
 **Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção inteira — problema específico da UI de SEO/URL slug da Beehiiv, sem equivalente no Kit (`public_url` do broadcast já é a URL final).

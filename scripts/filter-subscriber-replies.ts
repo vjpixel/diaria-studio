@@ -66,7 +66,11 @@
  *    duplicado.
  *
  * Uso:
- *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json]
+ *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json] [--exclude-captured anterior.json]
+ *
+ * `--exclude-captured` (#9792): 2ª passada de §0-replies (Stage 6) — exclui
+ * threads já presentes (mesma `thread_id` + `date`) na captura anterior do
+ * Passo 1b, pra não rascunhar a mesma reply duas vezes.
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
  * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
@@ -474,14 +478,42 @@ export interface FilterResult {
    * ordem de entrada) dos e-mails dos remetentes descartados pelo check de
    * `to` — pra o editor conferir no Gmail se alguma era assinante real. */
   droppedByToSenders: string[];
+  /**
+   * #9792: quantas threads foram excluídas por já terem sido processadas numa
+   * captura ANTERIOR (`opts.previouslyCaptured` — mesma `thread_id` + mesma
+   * `date`). Usado pela 2ª passada de §0-replies no Stage 6 (replies que
+   * chegam depois do Passo 1b de `/diaria-edicao`): sem essa exclusão, a
+   * reply já rascunhada de manhã ganharia um 2º rascunho. 0 sem
+   * `previouslyCaptured`.
+   */
+  alreadyProcessedCount: number;
+}
+
+/**
+ * #9792: chave de identidade de uma reply capturada — `thread_id` + `date` da
+ * mensagem do assinante. Thread nova na mesma conversa (o assinante escreveu
+ * de novo) muda a `date` e volta a ser processada. Sem `thread_id`, `null`
+ * (nunca excluída — sem identidade, preferimos reprocessar a perder).
+ */
+export function capturedReplyKey(r: { thread_id?: string; date?: string }): string | null {
+  if (!r.thread_id) return null;
+  return `${r.thread_id}|${r.date ?? ""}`;
 }
 
 export function filterSubscriberReplies(
   threads: CapturedReply[],
-  opts: { campaignSubjects?: Iterable<string> } = {},
+  opts: { campaignSubjects?: Iterable<string>; previouslyCaptured?: CapturedReply[] } = {},
 ): FilterResult {
   const campaignSubjects = normalizeSubjectSet(opts.campaignSubjects);
-  const baseCandidates = threads.filter((t) => passesSenderAndSubjectChecks(t));
+  const seenKeys = new Set(
+    (opts.previouslyCaptured ?? []).map(capturedReplyKey).filter((k): k is string => k !== null),
+  );
+  const isAlreadyProcessed = (t: CapturedReply): boolean => {
+    const k = capturedReplyKey(t);
+    return k !== null && seenKeys.has(k);
+  };
+  const alreadyProcessedCount = threads.filter(isAlreadyProcessed).length;
+  const baseCandidates = threads.filter((t) => !isAlreadyProcessed(t) && passesSenderAndSubjectChecks(t));
   const droppedByTo = baseCandidates.filter((t) => isDroppedByTo(t, campaignSubjects));
   const droppedByToSenders = [...new Set(droppedByTo.map((t) => extractEmail(t.from ?? "")))].slice(
     0,
@@ -512,6 +544,7 @@ export function filterSubscriberReplies(
     possibleStaleAutomatedSubjects,
     droppedByToCount: droppedByTo.length,
     droppedByToSenders,
+    alreadyProcessedCount,
   };
 }
 
@@ -520,7 +553,9 @@ function main(): void {
   const { values } = parseCliArgs(process.argv.slice(2));
   const inArg = values["in"];
   if (!inArg) {
-    console.error("Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>]");
+    console.error(
+      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <captured-replies.json anterior>]",
+    );
     process.exit(2);
   }
   const inPath = resolve(ROOT, inArg);
@@ -555,7 +590,25 @@ function main(): void {
       process.exit(2);
     }
   }
-  const result = filterSubscriberReplies(threads, { campaignSubjects });
+  // #9792: 2ª passada (Stage 6) exclui o que a 1ª captura (Passo 1b) já processou.
+  // Arquivo ausente = nada a excluir (a 1ª passada pode ter sido pulada, ex: --no-gates).
+  let previouslyCaptured: CapturedReply[] = [];
+  const excludeArg = values["exclude-captured"];
+  if (typeof excludeArg === "string" && excludeArg) {
+    const excludePath = resolve(ROOT, excludeArg);
+    if (existsSync(excludePath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(excludePath, "utf8"));
+        previouslyCaptured = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.threads) ? parsed.threads : [];
+      } catch (err) {
+        console.error(`Falha ao parsear --exclude-captured ${excludePath}: ${(err as Error).message}`);
+        process.exit(2);
+      }
+    } else {
+      console.error(`ℹ️  --exclude-captured ${excludePath} não existe — nenhuma thread excluída por captura anterior.`);
+    }
+  }
+  const result = filterSubscriberReplies(threads, { campaignSubjects, previouslyCaptured });
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     // #8997: as duas contagens são mutuamente exclusivas (trivial tem
@@ -580,6 +633,10 @@ function main(): void {
     if (alreadyRepliedCount > 0) {
       console.error(`  ✅ ${alreadyRepliedCount} resposta(s) já respondida(s) pelo editor ignorada(s) (sem rascunho duplicado)`);
     }
+  }
+  // #9792: excluídas por já terem passado pela captura anterior.
+  if (result.alreadyProcessedCount > 0) {
+    console.error(`  🔁 ${result.alreadyProcessedCount} thread(s) já processada(s) na captura anterior ignorada(s)`);
   }
   // #4324: reply ao e-mail de automação da Beehiiv (ex: boas-vindas) é
   // excluída de replies[] por completo — reportada aqui mesmo quando
