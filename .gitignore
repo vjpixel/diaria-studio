@@ -77,3 +77,11 @@ __pycache__/
 # #8281, 123 linhas cujo conteúdo já tinha virado a issue #8106 e reviews
 # de 4 PRs já mergeadas. ATENÇÃO: comentário em linha PRÓPRIA (ver #6691).
 .dr-*
+# #9833: rascunhos temporários de comentário de review (`.rev9801.md`,
+# `.review-i1.md`) gravados na RAIZ do checkout pelo reviewer só para alimentar
+# `gh pr comment --body-file`. Mesma classe do `.dr-*` acima: o rescue do
+# contínuo (`git add -A`) os empacotou na PR #9806 (e `.review-i1.md` na #7438,
+# #7484). Âncora na raiz — não pega nada em subdiretório. Comentário em linha
+# PRÓPRIA (ver #6691).
+/.rev*.md
+/.review*.md

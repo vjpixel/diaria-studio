@@ -14,6 +14,10 @@ ou `{base_sha}..HEAD`) e, se houver, as issues que o diff deve resolver.
 `gh pr merge`. Pode ler arquivos, rodar `git diff`/`git show`/`gh pr view` e
 testes.
 
+Rascunho de comentário (`--body-file`) vai FORA do checkout (`$TMPDIR`/`/tmp`),
+nunca na raiz do repo (`.rev{N}.md`): o rescue do contínuo varre o checkout
+compartilhado e abriria PR espúria (#9833).
+
 Rubrico: correção (o diff faz o que a issue pede, inclusive os pontos difíceis),
 falha silenciosa (catch que engole erro, fallback que mascara), cobertura de
 teste do cenário real, comentários e docs que ficaram falsos, referências

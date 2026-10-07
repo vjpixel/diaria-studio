@@ -764,6 +764,7 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     "Tag every finding with its confidence (alta/média/baixa) and severity (P0..P3): ranking and filtering are a " +
     "SEPARATE downstream step (the auto-merge gate of #5251 reads those tags), never the reviewing agent's job (#5304). " +
     "Then post the findings as inline PR comments (`gh pr comment`/`gh api`). " +
+    "If you need a scratch file for the comment body (`--body-file`), write it OUTSIDE the checkout (`$TMPDIR`/`/tmp`), never in the repo root (e.g. `.rev{N}.md`): the shared checkout is swept by the continuo rescue, which would open a spurious PR (#9833). " +
     "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched). " +
     "IF the Agent tool is NOT available to you in THIS session (e.g. the `hermes-diaria-continuo` delegation, which " +
     "intentionally omits it, #6712): do not dispatch anything, and do NOT label your own reading of the diff as an " +
