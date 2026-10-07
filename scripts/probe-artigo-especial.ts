@@ -2,6 +2,8 @@
 /**
  * scripts/probe-artigo-especial.ts (#9099)
  *
+ * @one-off-validity: permanente motivo="Etapa E de /diaria-artigo-especial: confere a URL publicada a cada artigo"
+ *
  * Etapa E de `/diaria-artigo-especial`: depois do merge do PR do artigo, o
  * `.github/workflows/deploy-artigos.yml` publica o Worker. Este script
  * confere que `https://especial.diar.ia.br/{ano}/{slug}/` responde COM o
