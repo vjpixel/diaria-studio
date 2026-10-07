@@ -292,7 +292,9 @@ export interface AgedFile {
    *  mesmo dia (`classifyBackupSiblings`). `ageDays` sozinho (arredondado
    *  pra baixo) empataria cópias-irmãs nascidas no mesmo dia — o caso
    *  COMUM pra conflito do OneDrive, já que as cópias nascem no mesmo
-   *  evento de sync, não em dias diferentes. */
+   *  evento de sync, não em dias diferentes. Para cópias-irmãs o script
+   *  passa aqui o MESMO timestamp conservador de `ageDays` (#9735), não o
+   *  mtime cru — senão idade e ordem divergem. */
   mtimeMs: number;
 }
 
