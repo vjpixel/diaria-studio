@@ -732,7 +732,9 @@ export const STAGE_6_RULES: InvariantRule[] = [
       "defasado e reproduzir o exit 3 do #8786/#8684 mesmo já tendo o fix de #8636 em origin/master.",
     source_issue: "#8786",
     stage: 6,
-    run: checkSyncCodeMarker,
+    // #9821: Stage 6 sempre publica o site (§6b-site) com o código em disco —
+    // checkout comprovadamente defasado vira `error`, não só aviso.
+    run: (editionDir: string) => checkSyncCodeMarker(editionDir, { staleIsError: true }),
   },
 ];
 
