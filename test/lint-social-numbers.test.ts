@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ import {
   computeOutrosCount,
   parseCommentDiariaByDestaque,
   lintCommentDiariaCount,
+  loadHighlightSourceTexts,
 } from "../scripts/lint-social-numbers.ts";
 
 describe("normalizeMagnitude (#1711)", () => {
@@ -1061,6 +1062,76 @@ A rodada de investimento levantou US$ 777 bilhões, segundo a caption.
       });
       assert.equal(parsed!.ok, true, "#3504: cifra sourced na caption de Instagram não deve gerar finding");
       assert.deepEqual(parsed!.num_findings, []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#9809 — cifra só no texto da fonte (fact-check-sources/d{N}.txt) não é falso positivo", () => {
+  const URL_D1 = "https://exemplo.com/anuncio";
+  const approved = {
+    highlights: [{ url: URL_D1, article: { url: URL_D1, title: "Startup anuncia rodada", summary: "A empresa fechou nova rodada de investimento." } }],
+  };
+  const social = "# Social\n\n## d1\n\nA rodada somou US$ 2 bilhões, segundo o anúncio.\n";
+
+  function writeSources(dir: string, entryUrl: string, status = "ok") {
+    const src = join(dir, "fact-check-sources");
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, "d1.txt"), "Hoje anunciamos uma rodada de US$ 2 bilhões liderada por fundos.", "utf8");
+    writeFileSync(
+      join(src, "manifest.json"),
+      JSON.stringify([{ destaque: 1, url: entryUrl, status, erro: null, bytes: 60, fetched_at: "2026-10-07T00:00:00Z" }]),
+      "utf8",
+    );
+    return src;
+  }
+
+  it("sem o texto da fonte, a cifra é flagada (comportamento anterior preservado)", () => {
+    const f = lintSocialNumbers(social, approved);
+    assert.equal(f.length, 1);
+    assert.equal(f[0].unsourced[0].key, "2B");
+  });
+
+  it("com o texto da fonte via manifest, a cifra NÃO é flagada", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-9809a-"));
+    try {
+      const texts = loadHighlightSourceTexts(approved, writeSources(tmp, URL_D1));
+      assert.equal(texts.size, 1);
+      assert.deepEqual(lintSocialNumbers(social, approved, texts), []);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("manifest defasado (URL de outro destaque) ou status != ok não empresta texto", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-9809b-"));
+    try {
+      assert.equal(loadHighlightSourceTexts(approved, writeSources(tmp, "https://outra.com/antigo")).size, 0);
+      assert.equal(loadHighlightSourceTexts(approved, writeSources(tmp, URL_D1, "error")).size, 0);
+      assert.equal(loadHighlightSourceTexts(approved, join(tmp, "inexistente")).size, 0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("CLI usa por default o fact-check-sources/ irmão do approved", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-9809c-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      writeFileSync(socialPath, social, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(approved), "utf8");
+      writeSources(tmp, URL_D1);
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "lint-social-numbers.ts"), "--social", socialPath, "--approved", approvedPath],
+        { encoding: "utf8", cwd: join(import.meta.dirname, "..") },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      const parsed = JSON.parse(r.stdout) as { ok: boolean; num_findings: unknown[] };
+      assert.deepEqual(parsed.num_findings, []);
+      assert.equal(parsed.ok, true);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

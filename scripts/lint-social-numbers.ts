@@ -18,13 +18,20 @@
  * Uso:
  *   npx tsx scripts/lint-social-numbers.ts \
  *     --social data/editions/260602/03-social.md \
- *     --approved data/editions/260602/_internal/01-approved-capped.json
+ *     --approved data/editions/260602/_internal/01-approved-capped.json \
+ *     [--sources-dir data/editions/260602/_internal/fact-check-sources]
+ *
+ * #9809: além de title/summary, a fonte de dN inclui o texto BRUTO baixado em
+ * `_internal/fact-check-sources/d{N}.txt` (o mesmo que o social-writer recebe
+ * como `source_text_paths` desde #9794) — só entradas `ok` do manifest cuja URL
+ * bate com a do destaque atual. Default de `--sources-dir`: irmão do approved.
  *
  * Output (stdout JSON): { ok: boolean, num_findings: DestaqueFinding[], count_findings: CommentCountFinding[] }
  */
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname, join } from "node:path";
+import { readExistingManifest, highlightSourceUrls } from "./run-fact-checker.ts";
 import { outrosCount as _outrosCount } from "./lib/outros-count.ts";
 import { parseArgs as parseArgsStructured, isMainModule } from "./lib/cli-args.ts"; // #2834
 
@@ -224,15 +231,52 @@ export interface DestaqueFinding {
  * Roda o lint per-destaque: pra cada dN no social, flaga cifras de dinheiro
  * ausentes da fonte do destaque N. Pure — exportada pra teste.
  */
-export function lintSocialNumbers(socialMd: string, approved: ApprovedShape): DestaqueFinding[] {
+export function lintSocialNumbers(
+  socialMd: string,
+  approved: ApprovedShape,
+  sourceTexts: Map<number, string> = new Map(),
+): DestaqueFinding[] {
   const byDestaque = parseSocialByDestaque(socialMd);
   const findings: DestaqueFinding[] = [];
   for (const [n, postText] of [...byDestaque.entries()].sort((a, b) => a[0] - b[0])) {
-    const source = highlightSourceText(approved, n);
+    // #9809: o texto bruto da fonte (quando baixado) conta como fonte do dN —
+    // o social-writer escreve a partir dele desde #9794.
+    const source = `${highlightSourceText(approved, n)}\n${sourceTexts.get(n) ?? ""}`;
     const unsourced = findUnsourcedFigures(postText, source);
     if (unsourced.length > 0) findings.push({ destaque: n, unsourced });
   }
   return findings;
+}
+
+/**
+ * (#9809) Lê o texto bruto de cada destaque em `{sourcesDir}/d{N}.txt`, via
+ * `manifest.json` (o mesmo de `run-fact-checker.ts`/`refresh-destaque-sources.ts`).
+ * Só usa entrada `status: "ok"` cuja URL bate com a do destaque N ATUAL do
+ * approved — manifest defasado (destaque trocado no Stage 4) nunca empresta o
+ * texto da história antiga. Fail-soft: manifest/arquivo ausente ou ilegível →
+ * entrada omitida (o lint segue só com title/summary, comportamento anterior).
+ */
+export function loadHighlightSourceTexts(
+  approved: ApprovedShape,
+  sourcesDir: string,
+): Map<number, string> {
+  const out = new Map<number, string>();
+  const manifest = readExistingManifest(sourcesDir);
+  if (!manifest) return out;
+  const urls = highlightSourceUrls(approved);
+  for (const entry of manifest) {
+    if (!entry || entry.status !== "ok" || typeof entry.destaque !== "number") continue;
+    const currentUrl = urls[entry.destaque - 1];
+    if (!currentUrl || entry.url !== currentUrl) continue;
+    const p = join(sourcesDir, `d${entry.destaque}.txt`);
+    if (!existsSync(p)) continue;
+    try {
+      out.set(entry.destaque, readFileSync(p, "utf8"));
+    } catch {
+      // fail-soft: sem texto da fonte, compara só com title/summary
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +435,7 @@ function main(): void {
   const args = parsed.values;
   if (!args.social || !args.approved) {
     console.error(
-      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved-capped.json> [--fix]",
+      "Uso: lint-social-numbers.ts --social <03-social.md> --approved <01-approved-capped.json> [--sources-dir <fact-check-sources>] [--fix]",
     );
     process.exit(1);
   }
@@ -415,7 +459,12 @@ function main(): void {
   const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedShape;
 
   // --- lint 1: cifras financeiras alucinadas (#1711) ---
-  const numFindings = lintSocialNumbers(socialMd, approved);
+  // #9809: texto bruto da fonte (default: `fact-check-sources/` irmão do approved).
+  const sourcesDir = args["sources-dir"]
+    ? resolve(process.cwd(), args["sources-dir"])
+    : join(dirname(approvedPath), "fact-check-sources");
+  const sourceTexts = loadHighlightSourceTexts(approved, sourcesDir);
+  const numFindings = lintSocialNumbers(socialMd, approved, sourceTexts);
   const totalNums = numFindings.reduce((acc, f) => acc + f.unsourced.length, 0);
 
   if (totalNums > 0) {
