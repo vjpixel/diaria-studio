@@ -95,6 +95,11 @@ export interface BrevoDiariaContact {
    * limpo enquanto o contato segue `in_brevo`; só é lido pra contatos
    * `in_brevo` (ver `findStaleAwaitingKitConfirmation`). */
   awaiting_kit_confirmation_since?: string;
+  /** #9835 — ISO do último reenvio do double opt-in do Kit (vínculo ao
+   * designer form de DOI) pra um contato que qualifica por abertura mas está
+   * `inactive` no Kit. Base do anti-spam (`needsDoiResend`): no máximo 1
+   * reenvio a cada `DOI_RESEND_INTERVAL_DAYS`. */
+  doi_resent_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -517,3 +522,46 @@ export function findStaleAwaitingKitConfirmation(
   return out;
 }
 
+
+/**
+ * #9835 — intervalo mínimo entre dois reenvios do double opt-in do Kit pro
+ * mesmo contato. Mesmo prazo do alarme de espera (#8753): quem não clicou no
+ * botão em uma semana recebe no máximo mais um e-mail por semana. Literal
+ * em vez de alias (knip acusa export duplicado); a igualdade com
+ * `AWAITING_KIT_CONFIRMATION_STALE_DAYS` é travada por teste.
+ */
+export const DOI_RESEND_INTERVAL_DAYS = 7;
+
+/**
+ * #9835 — pura. `true` quando o contato pode receber um novo reenvio do DOI:
+ * segue `in_brevo` e nunca recebeu reenvio, ou o último foi há `days` dias ou
+ * mais. Timestamp ilegível conta como "já reenviado agora" (fail-safe pro
+ * lado do anti-spam: na dúvida, não reenvia). Não olha o estado no Kit nem a
+ * taxa de abertura; isso é do caller (`shouldResendKitDoi`).
+ */
+export function needsDoiResend(
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at">,
+  now: string = new Date().toISOString(),
+  days: number = DOI_RESEND_INTERVAL_DAYS,
+): boolean {
+  if (contact.status !== "in_brevo") return false;
+  if (!contact.doi_resent_at) return true;
+  const lastMs = Date.parse(contact.doi_resent_at);
+  if (!Number.isFinite(lastMs)) return false;
+  return (Date.parse(now) - lastMs) / 86_400_000 >= days;
+}
+
+/** #9835 — grava `doi_resent_at` (sobrescreve: é o timestamp do ÚLTIMO reenvio). */
+export function markDoiResent(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    ...store,
+    contacts: store.contacts.map((c) =>
+      c.email === norm && c.status === "in_brevo" ? { ...c, doi_resent_at: now } : c,
+    ),
+  };
+}
