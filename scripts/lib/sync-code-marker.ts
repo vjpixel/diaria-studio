@@ -29,10 +29,21 @@ export function writeSyncCodeMarker(editionDir: string, marker: SyncCodeMarker):
 }
 
 /**
- * Warning (não error): o sync é fail-soft por desenho (#2686) — o que este
- * check garante é que pular o passo deixe rastro, não bloquear a publicação.
+ * Warning (não error) por padrão: o sync é fail-soft por desenho (#2686) — o
+ * que este check garante é que pular o passo deixe rastro, não bloquear a
+ * publicação.
+ *
+ * #9821: `staleIsError` promove a `error` o caso em que o sync RODOU e o
+ * checkout ficou comprovadamente defasado (`commits_behind > 0`, ou outcome
+ * `protected_config_dirty` do #9276). Usado pelo Stage 6, que sempre publica
+ * a página do site (§6b-site) — e o site é gerado pelo código em disco
+ * (incidente 261007: 97 commits atrás, seta `→` proibida regerada em 12
+ * páginas). Marker ausente/ilegível/sem medição continua `warning`.
  */
-export function checkSyncCodeMarker(editionDir: string): InvariantViolation[] {
+export function checkSyncCodeMarker(
+  editionDir: string,
+  opts: { staleIsError?: boolean } = {},
+): InvariantViolation[] {
   const path = syncCodeMarkerPath(editionDir);
   if (!existsSync(path)) {
     return [
@@ -75,15 +86,24 @@ export function checkSyncCodeMarker(editionDir: string): InvariantViolation[] {
       },
     ];
   }
-  if (typeof marker.commits_behind === "number" && marker.commits_behind > 0) {
+  const behind = typeof marker.commits_behind === "number" && marker.commits_behind > 0;
+  if (behind || marker.outcome === "protected_config_dirty") {
+    const staleError = opts.staleIsError === true;
     return [
       {
         rule: "sync-code-ran",
         message:
-          `sync-code.ts rodou mas o checkout ficou ${marker.commits_behind} commit(s) atrás de ` +
-          `origin/master (outcome '${marker.outcome}') — Etapa 5/6 rodou com código defasado.`,
-        source_issue: "#8690",
-        severity: "warning",
+          (behind
+            ? `sync-code.ts rodou mas o checkout ficou ${marker.commits_behind} commit(s) atrás de ` +
+              `origin/master (outcome '${marker.outcome}') — Etapa 5/6 rodou com código defasado.`
+            : `sync-code.ts saiu '${marker.outcome}' (#9276) — o ff foi recusado e o código pode ter ficado defasado.`) +
+          (staleError
+            ? " Stage 6 publica a página do site com o código em disco: commite/descarte a edição local de " +
+              "platform.config.json, rode `npx tsx scripts/sync-code.ts --edition-dir {EDITION_DIR}` até " +
+              "`commits_behind: 0` e re-rode publish-edition-site-page.ts (#9821)."
+            : ""),
+        source_issue: staleError ? "#9821" : "#8690",
+        severity: staleError ? "error" : "warning",
         file: path,
       },
     ];

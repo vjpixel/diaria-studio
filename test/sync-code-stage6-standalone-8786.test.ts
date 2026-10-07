@@ -58,6 +58,10 @@ describe("STAGE_6_RULES inclui sync-code-ran (#8786)", () => {
     const rule = STAGE_6_RULES.find((r) => r.id === "sync-code-ran");
     assert.ok(rule, "sync-code-ran deve estar em STAGE_6_RULES");
     assert.equal(rule?.stage, 6);
-    assert.equal(rule?.run, checkSyncCodeMarker, "deve reusar o mesmo checker do Stage 5 (#8690), não uma cópia");
+    // #9821: o Stage 6 passou a chamar o MESMO checker do Stage 5 (#8690)
+    // com `staleIsError` — wrapper, não cópia. Conferido por comportamento:
+    // marker ausente segue idêntico ao checker cru.
+    const missingDir = resolve(ROOT, "test/__nonexistent-edition-8786__");
+    assert.deepEqual(rule?.run(missingDir), checkSyncCodeMarker(missingDir));
   });
 });
