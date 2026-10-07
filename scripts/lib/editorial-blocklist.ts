@@ -10,6 +10,10 @@
  * scoring/categorização.
  *
  * MANTER CURADA — uma entrada por linha, com motivo + data da decisão.
+ *
+ * #9787: candidatos vêm do monitor de cortes por domínio no gate 4
+ * (`scripts/editorial-domain-cuts.ts` — retirado > mantido, ≥ 10 ocorrências);
+ * a decisão é sempre do editor, e `--apply-to-code` insere aqui as registradas.
  */
 export const EDITORIAL_BLOCKLIST: ReadonlySet<string> = new Set<string>([
   "simonwillison.net", // editor 260603 (#1760) — não incluir conteúdo do Simon Willison
@@ -31,8 +35,17 @@ export function isEditoriallyBlocked(url: string): boolean {
   } catch {
     return false;
   }
-  for (const domain of EDITORIAL_BLOCKLIST) {
-    if (host === domain || host.endsWith("." + domain)) return true;
+  return isDomainEditoriallyBlocked(host);
+}
+
+/**
+ * #9787: mesmo match de `isEditoriallyBlocked`, mas recebendo o DOMÍNIO/host
+ * já extraído (ex. `chatprd.ai`, `blog.chatprd.ai`) em vez de uma URL.
+ */
+export function isDomainEditoriallyBlocked(domain: string): boolean {
+  const host = domain.replace(/^www\./, "").toLowerCase();
+  for (const blocked of EDITORIAL_BLOCKLIST) {
+    if (host === blocked || host.endsWith("." + blocked)) return true;
   }
   return false;
 }
