@@ -224,9 +224,13 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
     assert.equal(result.statsFetched, 2); // c1 + c3 (imutáveis, sem cache prévio)
     assert.equal(result.alreadyCached, 0);
     assert.equal(result.skippedMutable, 1); // c2
-    assert.equal(result.cursor.offset, CAMPAIGNS_FETCH_LIMIT + 3);
     assert.equal(result.cursor.totalCount, 103);
-    assert.equal(result.cursor.done, true); // offset (103) >= totalCount (103)
+    // #9837: a posição da mutável (offset 101) continua PENDENTE — antes ela
+    // era dada como varrida e o cursor ficava `done` com c2 fora do arquivo
+    // pra sempre. Volta a ser lida numa chamada futura, já imutável.
+    assert.equal(result.cursor.done, false);
+    assert.equal(result.cursor.offset, CAMPAIGNS_FETCH_LIMIT + 1);
+    assert.deepEqual(result.cursor.gaps, [{ start: CAMPAIGNS_FETCH_LIMIT + 1, end: CAMPAIGNS_FETCH_LIMIT + 2 }]);
 
     // stats:{id} gravado (sem TTL) só pras imutáveis.
     const statsWrites = putCalls.filter((p) => p.key.startsWith("stats:"));
@@ -265,10 +269,14 @@ describe("#8115 — runCampaignsBackfillBatch", () => {
 
     assert.equal(result.statsFetched, 0);
     assert.equal(result.alreadyCached, 1);
-    // totalCount já conhecido no cursor — não re-mede (sem GET limit=1).
-    assert.ok(!calls.some((c) => c.includes("limit=1") && !c.includes("offset")));
-    // Só o GET de listagem — nenhum GET de stats (já cacheado).
-    assert.equal(calls.length, 1);
+    // #9837: com totalCount já conhecido, toda chamada REMEDE (1 GET
+    // limit=1) antes de ler a página — campanhas novas desde a última
+    // chamada deslocam as lacunas pendentes (ver
+    // test/brevo-campaigns-backfill-gap-9837.test.ts). Antes do #9837 isto
+    // era "não re-mede", e o deslocamento abria buraco no arquivo.
+    assert.equal(calls.filter((c) => c.includes("limit=1&sort=desc") && !c.includes("offset")).length, 1);
+    // Remedição + GET de listagem — nenhum GET de stats (já cacheado).
+    assert.equal(calls.length, 2);
   });
 
   test("cursor done com total inalterado só remede (1 request) e segue done", async () => {

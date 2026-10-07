@@ -2743,19 +2743,102 @@ export interface CampaignsBackfillCursor {
   /** Próximo offset a buscar em `/v3/emailCampaigns?status=sent`. Começa em
    * `CAMPAIGNS_FETCH_LIMIT` — a janela ao vivo já cobre `[0, 100)`. */
   offset: number;
-  /** `count` total de campanhas `sent` na conta, medido por
-   * `fetchCampaignsCount` na 1ª chamada. `null` até a 1ª medição. */
+  /** `count` total de campanhas `sent` na conta na última gravação do
+   * cursor — as `gaps` estão nas coordenadas DESTE total. `null` até a 1ª
+   * medição. #9837: remedido no início de toda chamada. */
   totalCount: number | null;
-  /** `true` quando `offset` alcançou `totalCount` — nada mais a backfillar
-   * (#9837: com `done`, cada chamada REMEDE o total — campanha nova reabre
-   * o cursor via `resumeAt`, ver `runCampaignsBackfillBatch`). */
+  /** `true` quando não há lacuna pendente — nada mais a backfillar até
+   * chegar campanha nova (#9837: com `done`, cada chamada remede o total e
+   * reabre o cursor só pras que saíram da janela ao vivo). */
   done: boolean;
-  /** #9837: quando definido, o backfill está cobrindo só a lacuna
-   * `[offset, resumeAt)` — campanhas que saíram da janela ao vivo depois do
-   * `done` sem nunca entrar no arquivo. Além de `resumeAt` já foi varrido
-   * (só deslocado por campanhas novas), então ao alcançá-lo vira `done`. */
+  /** LEGADO (#9841, só leitura): lacuna única `[offset, resumeAt)`. Um
+   * cursor gravado nesse formato é migrado pra `gaps` na leitura
+   * (`backfillGapsFromCursor`) e nunca mais é escrito — o formato de 1
+   * lacuna só não deixava buraco quando nenhuma campanha nova chegava no
+   * meio da varredura (#9837, resíduo). */
   resumeAt?: number;
+  /** #9837: faixas de offset AINDA NÃO varridas, nas coordenadas do
+   * `totalCount` gravado (`[start, end)`, ordenadas, sem sobreposição).
+   * Presente só enquanto `done` é `false`. Cada campanha nova empurra tudo
+   * `+1` — `advanceBackfillGaps` desloca as faixas pendentes e abre a faixa
+   * `[LIMIT, LIMIT + s)` das `s` que saíram da janela ao vivo. Ausente num
+   * cursor não-done = formato antigo: `[offset, totalCount)`. */
+  gaps?: BackfillGap[];
   updatedAt: string;
+}
+
+/** #9837: teto de páginas de listagem por chamada de
+ * `runCampaignsBackfillBatch` (1 por lacuna pendente). O orçamento de
+ * campanhas continua sendo `batchSize`; isto só limita quantas requests de
+ * listagem uma chamada gasta quando as lacunas estão fragmentadas. */
+export const BACKFILL_MAX_PAGES_PER_CALL = 4;
+
+/** #9837: faixa `[start, end)` de offsets de `/v3/emailCampaigns?status=sent`
+ * ainda por varrer. */
+export interface BackfillGap {
+  start: number;
+  end: number;
+}
+
+/**
+ * Pura (#9837): avança o conjunto de lacunas pendentes depois de 1 página do
+ * backfill. Tudo em coordenadas do total NOVO:
+ *
+ *   1. `shift = totalNovo − totalVelho` campanhas chegaram (ou, negativo,
+ *      sumiram) desde a última gravação do cursor — cada lacuna pendente anda
+ *      `shift` posições (nunca pra dentro da janela ao vivo);
+ *   2. se `shift > 0`, as `shift` campanhas que estavam no fim da janela ao
+ *      vivo agora ocupam `[liveWindow, liveWindow + shift)` e nunca foram
+ *      varridas — entram como lacuna nova (é o buraco de setembro da issue);
+ *   3. o trecho lido nesta chamada (`[processedStart, processedStart +
+ *      processedCount)`, já nas coordenadas novas porque a página foi pedida
+ *      depois das chegadas) sai do conjunto;
+ *   4. tudo é cortado em `total` e faixas que se tocam são fundidas.
+ *
+ * Varrer de novo uma faixa já arquivada é inofensivo (o índice deduplica por
+ * id e `stats:{id}` cacheado não gera GET); deixar de varrer é o que vira
+ * buraco permanente, então na dúvida o conjunto cresce, nunca encolhe.
+ */
+export function advanceBackfillGaps(
+  gaps: readonly BackfillGap[],
+  opts: { shift: number; processedStart: number; processedCount: number; total: number; liveWindow: number },
+): BackfillGap[] {
+  const { shift, processedStart, processedCount, total, liveWindow } = opts;
+  const shifted: BackfillGap[] = gaps.map((g) => ({ start: Math.max(liveWindow, g.start + shift), end: g.end + shift }));
+  if (shift > 0) shifted.push({ start: liveWindow, end: liveWindow + shift });
+  const pEnd = processedStart + processedCount;
+  const cut: BackfillGap[] = [];
+  for (const g of shifted) {
+    const end = Math.min(g.end, total);
+    if (end <= g.start) continue;
+    if (processedCount <= 0 || pEnd <= g.start || processedStart >= end) {
+      cut.push({ start: g.start, end });
+      continue;
+    }
+    if (g.start < processedStart) cut.push({ start: g.start, end: processedStart });
+    if (pEnd < end) cut.push({ start: pEnd, end });
+  }
+  cut.sort((a, b) => a.start - b.start);
+  const merged: BackfillGap[] = [];
+  for (const g of cut) {
+    const last = merged[merged.length - 1];
+    if (last && g.start <= last.end) last.end = Math.max(last.end, g.end);
+    else merged.push({ ...g });
+  }
+  return merged;
+}
+
+/** Pura (#9837): lacunas pendentes de um cursor, aceitando os 3 formatos já
+ * gravados no KV — `gaps` (atual), `resumeAt` (#9841) e só `offset` (#8115,
+ * varredura inicial até `totalCount`). `done` → nenhuma. */
+export function backfillGapsFromCursor(cursor: CampaignsBackfillCursor): BackfillGap[] {
+  if (cursor.done || cursor.totalCount == null) return [];
+  const raw: BackfillGap[] = cursor.gaps
+    ? cursor.gaps
+    : [{ start: cursor.offset, end: cursor.resumeAt ?? cursor.totalCount }];
+  return advanceBackfillGaps(raw, {
+    shift: 0, processedStart: 0, processedCount: 0, total: cursor.totalCount, liveWindow: CAMPAIGNS_FETCH_LIMIT,
+  });
 }
 
 function defaultCampaignsBackfillCursor(nowMs: number): CampaignsBackfillCursor {
@@ -2771,6 +2854,15 @@ export function normalizeCampaignsBackfillCursor(raw: unknown): CampaignsBackfil
   const totalCount = typeof r.totalCount === "number" ? r.totalCount : null;
   const base: CampaignsBackfillCursor = { offset: r.offset, totalCount, done: r.done, updatedAt: r.updatedAt };
   if (typeof r.resumeAt === "number") base.resumeAt = r.resumeAt;
+  if (Array.isArray(r.gaps)) {
+    const gaps = r.gaps.filter(
+      (g): g is BackfillGap =>
+        g != null && typeof g === "object" && Number.isFinite((g as BackfillGap).start) && Number.isFinite((g as BackfillGap).end),
+    );
+    // Entrada malformada descarta `gaps` inteiro (cai em `[offset, total)`,
+    // que re-varre mais) em vez de ficar só com as válidas (perderia faixa).
+    if (gaps.length === r.gaps.length) base.gaps = gaps.map((g) => ({ start: g.start, end: g.end }));
+  }
   return base;
 }
 
@@ -2890,8 +2982,9 @@ export interface CampaignsBackfillBatchResult {
    * = false) — o backfill só persiste imutáveis; essas continuam cobertas
    * pela janela ao vivo até completarem 7 dias. */
   skippedMutable: number;
-  /** Requests HTTP à Brevo gastos nesta chamada (1 listagem + até N stats;
-   * +1 se mediu `totalCount` pela 1ª vez) — pra log/observabilidade do
+  /** Requests HTTP à Brevo gastos nesta chamada (1 medição de `count` + 1
+   * listagem por lacuna lida, até `BACKFILL_MAX_PAGES_PER_CALL`, + até N
+   * stats) — pra log/observabilidade do
    * caller, que é quem decide quando parar de chamar (orçamento próprio). */
   requestsUsed: number;
   cursor: CampaignsBackfillCursor;
@@ -2899,8 +2992,9 @@ export interface CampaignsBackfillBatchResult {
 
 /**
  * Passo incremental único do backfill (issue #8115). Lê o cursor, mede
- * `totalCount` se ainda não souber, busca 1 página de até `batchSize`
- * campanhas a partir do offset salvo, e para cada uma IMUTÁVEL sem
+ * `totalCount` (#9837: em toda chamada, pra deslocar as lacunas pendentes
+ * pelas campanhas novas), busca até `batchSize` campanhas das lacunas
+ * pendentes, e para cada uma IMUTÁVEL sem
  * `stats:{id}` ainda cacheado, faz 1 GET de `globalStats` e grava
  * permanentemente. Avança e persiste o cursor antes de retornar — chamar de
  * novo continua exatamente de onde parou (idempotente: campanha já
@@ -2928,41 +3022,40 @@ export async function runCampaignsBackfillBatch(
   let cursor = await readCampaignsBackfillCursor(env, nowMs);
   let requestsUsed = 0;
 
+  let gaps: BackfillGap[];
   if (cursor.totalCount == null) {
     const totalCount = await fetchCampaignsCount(env, _fetchFn);
     requestsUsed++;
     cursor = { ...cursor, totalCount, updatedAt: new Date(nowMs).toISOString() };
-  }
-
-  // #9837: cursor `done` remede o total. Campanhas novas empurram as antigas
-  // pra offsets maiores; as `delta` que saíram da janela ao vivo
-  // (`[LIMIT, LIMIT + delta)`) nunca foram varridas — reabre o cursor só pra
-  // essa lacuna (o resto, deslocado, já está no arquivo).
-  if (cursor.done && cursor.totalCount != null) {
+    gaps = backfillGapsFromCursor(cursor);
+  } else {
+    // #9837: TODA chamada com total já conhecido remede antes de ler a
+    // página (1 GET barato). Campanhas novas empurram as antigas pra offsets
+    // maiores: as `delta` que saíram da janela ao vivo (`[LIMIT, LIMIT +
+    // delta)`) nunca foram varridas, e as lacunas pendentes andaram `delta`
+    // posições. Com o cursor `done` isso reabre só a faixa nova (o resto,
+    // deslocado, já está no arquivo); no meio de uma varredura, desloca o
+    // que falta. Medir DEPOIS de ler a página (só pelo `count` dela) não
+    // basta: a página já teria sido pedida no offset velho, lendo campanhas
+    // da janela no lugar das da lacuna — com ~3 envios/dia e lacunas
+    // pequenas, a varredura nunca avançava.
+    gaps = backfillGapsFromCursor(cursor);
     const fresh = await fetchCampaignsCount(env, _fetchFn);
     requestsUsed++;
-    if (fresh != null && fresh > cursor.totalCount) {
-      const delta = fresh - cursor.totalCount;
-      cursor = {
-        offset: CAMPAIGNS_FETCH_LIMIT,
-        totalCount: fresh,
-        done: false,
-        resumeAt: CAMPAIGNS_FETCH_LIMIT + delta,
-        updatedAt: new Date(nowMs).toISOString(),
-      };
+    if (fresh != null && fresh !== cursor.totalCount) {
+      gaps = advanceBackfillGaps(gaps, {
+        shift: fresh - cursor.totalCount, processedStart: 0, processedCount: 0, total: fresh, liveWindow: CAMPAIGNS_FETCH_LIMIT,
+      });
+      cursor = { ...cursor, totalCount: fresh };
     }
   }
 
-  if (cursor.done || cursor.totalCount == null || cursor.offset >= cursor.totalCount) {
-    const { resumeAt: _drop, ...rest } = cursor;
+  if (gaps.length === 0 || cursor.totalCount == null) {
+    const { resumeAt: _drop, gaps: _dropGaps, ...rest } = cursor;
     const doneCursor: CampaignsBackfillCursor = { ...rest, done: true, updatedAt: new Date(nowMs).toISOString() };
     await writeCampaignsBackfillCursor(env, doneCursor);
     return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
   }
-
-  const pageLimit = cursor.resumeAt != null ? Math.min(batchSize, Math.max(1, cursor.resumeAt - cursor.offset)) : batchSize;
-  const page = await fetchCampaignsListPage(env, { limit: pageLimit, offset: cursor.offset }, _fetchFn);
-  requestsUsed++;
 
   const archive = await readCampaignsArchiveIndex(env);
   const archiveIds = new Set(archive.map((a) => a.id));
@@ -2971,100 +3064,161 @@ export async function runCampaignsBackfillBatch(
   let statsFetched = 0;
   let alreadyCached = 0;
   let skippedMutable = 0;
-  // #8115 (achado de self-review): conta só as campanhas de fato
-  // INSPECIONADAS neste loop — distinto de `page.campaigns.length`, que é
-  // quanto a API devolveu na página. Divergem quando o loop `break`a cedo
-  // (rate-limit real esgotado no meio do batch, ver o `catch` abaixo): as
-  // campanhas restantes da página NUNCA foram examinadas, então o offset
-  // não pode avançar por cima delas — senão a próxima invocação pularia
-  // campanhas que jamais tiveram nome/data registrados no índice de
-  // arquivo, um buraco permanente (o cursor só anda pra frente).
-  let processedCount = 0;
+  let scannedTotal = 0;
+  let totalCount: number = cursor.totalCount;
+  let rateLimited = false;
+  let lastEnd = 0;
 
-  for (const c of page.campaigns) {
-    processedCount++;
-    if (!isImmutableCampaign(c.sentDate, nowMs)) {
-      // Mutável: nem entra no índice de arquivo (a janela ao vivo já cobre
-      // seu período; entrará quando o backfill re-passar por ela, >7d
-      // depois, com sentDate já imutável).
-      skippedMutable++;
-      continue;
-    }
-    if (!archiveIds.has(c.id)) {
-      newArchiveEntries.push({ id: c.id, name: c.name, sentDate: c.sentDate, listIds: c.recipients?.lists ?? [] });
-    }
-    const kvKey = `stats:${c.id}`;
-    const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
-    if (cached) {
-      alreadyCached++;
-      continue;
-    }
-    try {
-      const detail = await withRateLimitRetry(() =>
-        _fetchFn<BrevoCampaign>(`/v3/emailCampaigns/${c.id}?statistics=globalStats`, env),
-      );
-      requestsUsed++;
-      const gs = detail.statistics?.globalStats;
-      // #1141: mesmo guard de `fetchRecentCampaigns` — Brevo pode devolver
-      // globalStats zerado; persistir isso sem TTL criaria entrada
-      // permanente e errada, impossível de recuperar sem intervenção manual.
-      if (gs && gs.sent > 0 && env.STATS_CACHE) {
-        await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs })).catch(() => {});
-        statsFetched++;
+  // #9837: o orçamento `batchSize` é repartido entre as lacunas pendentes,
+  // da menor offset pra maior, 1 página por lacuna (teto
+  // `BACKFILL_MAX_PAGES_PER_CALL`). Uma página só por chamada travava a
+  // varredura: a faixa das que saíram da janela ao vivo (`[LIMIT, LIMIT+s)`,
+  // tipicamente ~3/dia) consumia a chamada inteira e a lacuna grande nunca
+  // andava.
+  for (let pageNo = 0; pageNo < BACKFILL_MAX_PAGES_PER_CALL && scannedTotal < batchSize && !rateLimited; pageNo++) {
+    // `lastEnd`: fim do trecho já lido NESTA chamada — nunca relê o mesmo
+    // trecho (as posições mutáveis que voltaram pro conjunto ficam pra
+    // próxima chamada).
+    const gap = gaps.find((g) => g.end > lastEnd);
+    if (!gap) break;
+    const gapStart = Math.max(gap.start, lastEnd);
+    const pageLimit = Math.min(batchSize - scannedTotal, Math.max(1, gap.end - gapStart));
+    const page = await fetchCampaignsListPage(env, { limit: pageLimit, offset: gapStart }, _fetchFn);
+    requestsUsed++;
+
+    // #8115 (achado de self-review): conta só as campanhas de fato
+    // INSPECIONADAS neste loop — distinto de `page.campaigns.length`, que é
+    // quanto a API devolveu na página. Divergem quando o loop `break`a cedo
+    // (rate-limit real esgotado no meio do batch, ver o `catch` abaixo): as
+    // campanhas restantes da página NUNCA foram examinadas, então o offset
+    // não pode avançar por cima delas — senão a próxima invocação pularia
+    // campanhas que jamais tiveram nome/data registrados no índice de
+    // arquivo, um buraco permanente (o cursor só anda pra frente).
+    let processedCount = 0;
+    /** #9837: offsets (desta página) de campanhas ainda mutáveis — voltam pro
+     * conjunto de lacunas em vez de serem dadas como varridas. */
+    const stillMutable: number[] = [];
+
+    for (const c of page.campaigns) {
+      processedCount++;
+      if (!isImmutableCampaign(c.sentDate, nowMs)) {
+        // Mutável: nem entra no índice de arquivo (a janela ao vivo já cobre
+        // seu período). #9837: a posição volta a ser lacuna pendente — antes
+        // ela era dada como varrida e a campanha nunca entrava no arquivo
+        // (o comentário prometia "entra quando o backfill re-passar", mas o
+        // cursor só andava pra frente). `sentDate` ausente/inválido não é
+        // "ainda mutável", é dado ruim: não fica pendente pra sempre.
+        if (c.sentDate && !Number.isNaN(Date.parse(c.sentDate))) stillMutable.push(gapStart + processedCount - 1);
+        skippedMutable++;
+        continue;
       }
-    } catch (e) {
-      if (e instanceof BrevoRateLimitError) {
-        // #8115 (achado de self-review): a cota REAL se esgotou no meio do
-        // batch (`withRateLimitRetry` já tentou 3x e desistiu) — mesmo que
-        // `assertCampaignQuotaHeadroom` tivesse dado sinal verde no início
-        // desta chamada (ex: outra sessão/cron consumiu a cota em paralelo
-        // entre o assert e agora). Continuar o loop bateria 429 de novo em
-        // CADA campanha restante do batch (até `batchSize`, cada uma com
-        // seu próprio backoff de até 3 tentativas) — puro desperdício de
-        // tempo e pressão adicional sobre uma janela que já está no teto.
-        // Para o loop AQUI: o índice de arquivo já registrou nome+data desta
-        // campanha acima; ela fica sem `stats:{id}` até a próxima invocação.
-        // `processedCount` inclui ESTA campanha (ela foi examinada, só a
-        // busca de stats falhou) mas NÃO as seguintes na página — o offset
-        // avança só até aqui (ver `nextOffset` abaixo), pra que a próxima
-        // chamada retome exatamente das campanhas nunca examinadas.
-        break;
+      if (!archiveIds.has(c.id)) {
+        newArchiveEntries.push({ id: c.id, name: c.name, sentDate: c.sentDate, listIds: c.recipients?.lists ?? [] });
       }
-      // Erro de rede pontual (não rate-limit) — o índice de arquivo já
-      // registrou nome+data desta campanha acima; só os números ficam
-      // pendentes. Ela permanece SEM `stats:{id}`, então a PRÓXIMA chamada
-      // (depois que o offset avançar) não a re-visita automaticamente —
-      // aceito: o índice basta pra listar a campanha, e um backfill futuro
-      // com `--batch-size` maior ou um script de reconciliação dedicado
-      // pode preencher lacunas por id, se algum dia importar (fora do
-      // escopo desta fatia — ver PR #8115).
+      const kvKey = `stats:${c.id}`;
+      const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
+      if (cached) {
+        alreadyCached++;
+        continue;
+      }
+      try {
+        const detail = await withRateLimitRetry(() =>
+          _fetchFn<BrevoCampaign>(`/v3/emailCampaigns/${c.id}?statistics=globalStats`, env),
+        );
+        requestsUsed++;
+        const gs = detail.statistics?.globalStats;
+        // #1141: mesmo guard de `fetchRecentCampaigns` — Brevo pode devolver
+        // globalStats zerado; persistir isso sem TTL criaria entrada
+        // permanente e errada, impossível de recuperar sem intervenção manual.
+        if (gs && gs.sent > 0 && env.STATS_CACHE) {
+          await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs })).catch(() => {});
+          statsFetched++;
+        }
+      } catch (e) {
+        if (e instanceof BrevoRateLimitError) {
+          // #8115 (achado de self-review): a cota REAL se esgotou no meio do
+          // batch (`withRateLimitRetry` já tentou 3x e desistiu) — mesmo que
+          // `assertCampaignQuotaHeadroom` tivesse dado sinal verde no início
+          // desta chamada (ex: outra sessão/cron consumiu a cota em paralelo
+          // entre o assert e agora). Continuar o loop bateria 429 de novo em
+          // CADA campanha restante do batch (até `batchSize`, cada uma com
+          // seu próprio backoff de até 3 tentativas) — puro desperdício de
+          // tempo e pressão adicional sobre uma janela que já está no teto.
+          // Para o loop AQUI: o índice de arquivo já registrou nome+data desta
+          // campanha acima; ela fica sem `stats:{id}` até a próxima invocação.
+          // `processedCount` inclui ESTA campanha (ela foi examinada, só a
+          // busca de stats falhou) mas NÃO as seguintes na página — o offset
+          // avança só até aqui (ver `advanceBackfillGaps` abaixo), pra que a próxima
+          // chamada retome exatamente das campanhas nunca examinadas.
+          rateLimited = true;
+          break;
+        }
+        // Erro de rede pontual (não rate-limit) — o índice de arquivo já
+        // registrou nome+data desta campanha acima; só os números ficam
+        // pendentes. Ela permanece SEM `stats:{id}`, então a PRÓXIMA chamada
+        // (depois que o offset avançar) não a re-visita automaticamente —
+        // aceito: o índice basta pra listar a campanha, e um backfill futuro
+        // com `--batch-size` maior ou um script de reconciliação dedicado
+        // pode preencher lacunas por id, se algum dia importar (fora do
+        // escopo desta fatia — ver PR #8115).
+      }
     }
+
+    // #8115: avança só pelas campanhas de fato INSPECIONADAS (`processedCount`)
+    // — nunca por `page.campaigns.length` bruto, que sobre-avançaria por cima
+    // de campanhas nunca examinadas quando o loop `break`ou cedo por
+    // rate-limit real (ver o `catch` acima). Nos casos comuns (sem break),
+    // `processedCount === page.campaigns.length` — comportamento idêntico ao
+    // de antes desta correção.
+    //
+    // #9837: o `count` desta página é o total NO MOMENTO da leitura. Normalmente
+    // bate com o recém-medido acima; se uma campanha chegou entre as duas
+    // requests, `advanceBackfillGaps` desloca as lacunas pendentes, abre a
+    // faixa das que saíram da janela ao vivo e estende o rabo até o total novo
+    // (antes do #9837, o rabo além do `totalCount` velho e essas saídas viravam
+    // buraco permanente). A página já foi pedida nas coordenadas do `count`
+    // dela, então o trecho processado é `[gapStart, gapStart +
+    // processedCount)` sem ajuste.
+    const prevTotal = totalCount;
+    totalCount = page.count ?? prevTotal;
+    const shift = totalCount - prevTotal;
+    gaps = advanceBackfillGaps(gaps, {
+      shift,
+      processedStart: gapStart,
+      processedCount,
+      total: totalCount,
+      liveWindow: CAMPAIGNS_FETCH_LIMIT,
+    });
+    // Página vazia = não existe nada a partir de `gapStart` (contagem
+    // defasada ou ausente) — descarta essa faixa e as seguintes.
+    if (page.campaigns.length === 0) {
+      gaps = gaps.filter((g) => g.start < gapStart);
+      break;
+    }
+    if (stillMutable.length > 0) {
+      gaps = advanceBackfillGaps([...gaps, ...stillMutable.map((o) => ({ start: o, end: o + 1 }))], {
+        shift: 0, processedStart: 0, processedCount: 0, total: totalCount, liveWindow: CAMPAIGNS_FETCH_LIMIT,
+      });
+    }
+    scannedTotal += processedCount;
+    lastEnd = gapStart + processedCount;
   }
 
   if (newArchiveEntries.length > 0) {
     await writeCampaignsArchiveIndex(env, [...archive, ...newArchiveEntries]);
   }
 
-  // #8115: avança só pelas campanhas de fato INSPECIONADAS (`processedCount`)
-  // — nunca por `page.campaigns.length` bruto, que sobre-avançaria por cima
-  // de campanhas nunca examinadas quando o loop `break`ou cedo por
-  // rate-limit real (ver o `catch` acima). Nos casos comuns (sem break),
-  // `processedCount === page.campaigns.length` — comportamento idêntico ao
-  // de antes desta correção.
-  const nextOffset = cursor.offset + processedCount;
-  const totalCount = cursor.totalCount ?? page.count;
-  const gapCovered = cursor.resumeAt != null && nextOffset >= cursor.resumeAt;
-  const done = page.campaigns.length === 0 || gapCovered || (totalCount != null && nextOffset >= totalCount);
+  const done = gaps.length === 0;
   const nextCursor: CampaignsBackfillCursor = {
-    offset: nextOffset,
+    offset: done ? Math.max(lastEnd, cursor.offset) : gaps[0].start,
     totalCount,
     done,
     updatedAt: new Date(nowMs).toISOString(),
   };
-  if (!done && cursor.resumeAt != null) nextCursor.resumeAt = cursor.resumeAt;
+  if (!done) nextCursor.gaps = gaps;
   await writeCampaignsBackfillCursor(env, nextCursor);
 
-  return { scanned: processedCount, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
+  return { scanned: scannedTotal, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
 }
 
 /**
