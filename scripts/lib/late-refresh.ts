@@ -27,38 +27,70 @@ import { lancamentoDomains, lancamentoPatterns } from "./official-domains.ts";
 // Fontes
 // ---------------------------------------------------------------------------
 
-export interface LateRefreshFeed {
+interface LateRefreshFeedBase {
   lab: string;
   name: string;
   url: string;
-  /**
-   * - `github-releases`: Atom oficial de releases de UM repo (`/{org}/{repo}/releases.atom`).
-   * - `github-new-repos`: repositórios públicos da org criados depois do corte, pela
-   *   API REST oficial do GitHub (`/orgs/{org}/repos?sort=created`) — é como os
-   *   labs abertos lançam MODELO (repo novo por modelo; repo de pesos não publica release).
-   */
-  method: "rss" | "sitemap" | "github-releases" | "github-new-repos";
-  /** Só sitemap: mantém só entradas cujo path começa com este prefixo (o sitemap lista o site inteiro). */
-  pathPrefix?: string;
-  /**
-   * Só github-releases: a tag (último segmento de `/releases/tag/{tag}`) precisa
-   * casar — filtro de ruído (nightly, preview, rc, alpha, sub-pacote de SDK,
-   * bump de patch). O Atom não expõe o flag `prerelease`; a tag é o que sobra.
-   */
-  tagPattern?: RegExp;
-  /** Só github-new-repos: login da org no GitHub. */
-  org?: string;
 }
 
-/** Tag semver ESTÁVEL de minor/major (`v1.20.0`, `dsh-v0.2.0`) — corta patch, nightly, preview, rc, alpha, beta. */
-const STABLE_MINOR_TAG = /^v\d+\.\d+\.0$/;
+export interface RssFeed extends LateRefreshFeedBase {
+  method: "rss";
+}
 
-function githubNewReposUrl(org: string): string {
-  return `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=public`;
+export interface SitemapFeed extends LateRefreshFeedBase {
+  method: "sitemap";
+  /** Mantém só entradas cujo path começa com este prefixo (o sitemap lista o site inteiro). */
+  pathPrefix?: string;
+}
+
+/** Atom oficial de releases de UM repo (`/{org}/{repo}/releases.atom`), #9424. */
+export interface GithubReleasesFeed extends LateRefreshFeedBase {
+  method: "github-releases";
+  /**
+   * A tag (último segmento de `/releases/tag/{tag}`) precisa casar — filtro de
+   * ruído (nightly, preview, rc, alpha, sub-pacote de SDK, bump de patch). O
+   * Atom não expõe o flag `prerelease`; a tag é o que sobra.
+   */
+  tagPattern: RegExp;
 }
 
 /**
- * Feeds oficiais verificados ao vivo em 2026-10-01 (HTTP 200 + parse ok).
+ * Repositórios públicos da org criados depois do corte, pela API REST oficial
+ * do GitHub (`/orgs/{org}/repos?sort=created`), #9424 — é como os labs abertos
+ * lançam MODELO (repo novo por modelo; repo de pesos não publica release).
+ * `url` é sempre derivada de `org` (`githubNewReposFeed`), nunca escrita à mão.
+ */
+export interface GithubNewReposFeed extends LateRefreshFeedBase {
+  method: "github-new-repos";
+  /** Login da org no GitHub. */
+  org: string;
+}
+
+export type LateRefreshFeed = RssFeed | SitemapFeed | GithubReleasesFeed | GithubNewReposFeed;
+
+/**
+ * Tag semver ESTÁVEL de minor/major com prefixo `v` (`v1.20.0`, `v0.25.0`) —
+ * corta patch, nightly, preview, rc, alpha, beta. Repo com prefixo próprio
+ * na tag (deepseek-harness: `dsh-v…`) declara o padrão dele.
+ */
+const STABLE_MINOR_TAG = /^v\d+\.\d+\.0$/;
+
+/**
+ * `type=sources` = só repos que NÃO são fork (a API já exclui; o filtro de
+ * `fork` em `parseGithubNewRepos` fica como defesa). Fonte única da URL.
+ */
+export function githubNewReposUrl(org: string): string {
+  return `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=sources`;
+}
+
+function githubNewReposFeed(lab: string, name: string, org: string): GithubNewReposFeed {
+  return { lab, name, org, url: githubNewReposUrl(org), method: "github-new-repos" };
+}
+
+/**
+ * Feeds oficiais verificados ao vivo em 2026-10-01 (HTTP 200 + parse ok);
+ * Mistral e Meta em 2026-10-02; os do GitHub (xAI, DeepSeek, Qwen) em
+ * 2026-10-07 (#9424, `docs/late-refresh-github-feeds.md`).
  * Anthropic não publica RSS — o sitemap tem `lastmod` por página, filtrado
  * por prefixo de path pra não listar landing/solutions/localizações.
  */
@@ -72,29 +104,44 @@ export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
   { lab: "Mistral", name: "Mistral Blog", url: "https://mistral.ai/news/rss", method: "rss" },
   { lab: "Meta", name: "Meta Newsroom (tag AI)", url: "https://about.fb.com/news/tag/ai/feed/", method: "rss" },
   // #9424 (decisão do editor 07/10/2026: GitHub oficial da org, nunca scraping).
-  // Sondado ao vivo em 07/10/2026 — ver docs/late-refresh-github-feeds.md:
-  // repo de PESOS de modelo (Qwen3, Qwen3.8, Qwen-Image-2.1, DeepSeek-V3,
-  // grok-1) não publica release no GitHub; o lançamento de modelo aparece como
-  // REPO NOVO da org. Release só existe nos repos de ferramenta/SDK, com muito
+  // Sondado ao vivo em 07/10/2026: repo de PESOS de modelo (Qwen3, Qwen3.8,
+  // Qwen-Image-2.1, grok-1) não publica release, e DeepSeek-V3 quase não
+  // publica (uma release, 06/2025) — o lançamento de modelo aparece como REPO
+  // NOVO da org. Release só existe nos repos de ferramenta/SDK, com muito
   // nightly/rc — daí o `tagPattern` estável.
-  { lab: "Qwen", name: "Qwen GitHub (repos novos)", url: githubNewReposUrl("QwenLM"), method: "github-new-repos", org: "QwenLM" },
+  githubNewReposFeed("Qwen", "Qwen GitHub (repos novos)", "QwenLM"),
   { lab: "Qwen", name: "Qwen Code (releases)", url: "https://github.com/QwenLM/qwen-code/releases.atom", method: "github-releases", tagPattern: STABLE_MINOR_TAG },
-  { lab: "DeepSeek", name: "DeepSeek GitHub (repos novos)", url: githubNewReposUrl("deepseek-ai"), method: "github-new-repos", org: "deepseek-ai" },
+  githubNewReposFeed("DeepSeek", "DeepSeek GitHub (repos novos)", "deepseek-ai"),
   { lab: "DeepSeek", name: "DeepSeek Harness (releases)", url: "https://github.com/deepseek-ai/deepseek-harness/releases.atom", method: "github-releases", tagPattern: /^dsh-v\d+\.\d+\.0$/ },
-  { lab: "xAI", name: "xAI GitHub (repos novos)", url: githubNewReposUrl("xai-org"), method: "github-new-repos", org: "xai-org" },
+  githubNewReposFeed("xAI", "xAI GitHub (repos novos)", "xai-org"),
   { lab: "xAI", name: "xAI SDK Python (releases)", url: "https://github.com/xai-org/xai-sdk-python/releases.atom", method: "github-releases", tagPattern: STABLE_MINOR_TAG },
 ];
 
 /**
- * Laboratórios da lista da #9370 SEM feed máquina-legível. Histórico: em
- * 2026-10-01 Meta, xAI, DeepSeek, Qwen e Mistral não tinham feed; em
- * 2026-10-02 (#9424) Mistral ganhou `mistral.ai/news/rss` e Meta o feed da tag
- * AI do Newsroom; em 2026-10-07 (#9424) xAI, DeepSeek e Qwen passaram a ser
- * lidos pelo GitHub oficial da org (repos novos + releases). Lista vazia hoje;
- * fica como contrato do relatório (lab que perder a fonte volta pra cá e é
- * reportado no output em vez de omitido em silêncio).
+ * Laboratórios da lista da #9370 SEM feed máquina-legível CONFIGURADO.
+ * Histórico: em 2026-10-01 Meta, xAI, DeepSeek, Qwen e Mistral não tinham
+ * feed; em 2026-10-02 (#9424) Mistral ganhou `mistral.ai/news/rss` e Meta o
+ * feed da tag AI do Newsroom; em 2026-10-07 (#9424) xAI, DeepSeek e Qwen
+ * passaram a ser lidos pelo GitHub oficial da org (repos novos + releases).
+ * Lista vazia hoje. O relatório soma a ela, em runtime, todo lab cujos feeds
+ * falharam TODOS na rodada (`uncoveredLabsAtRuntime`).
  */
 export const LATE_REFRESH_UNCOVERED_LABS: readonly string[] = [];
+
+/**
+ * Labs sem cobertura NESTA rodada: os sem feed configurado + os que tiveram
+ * todos os feeds com falha. Sem rodada de feeds (`--skip-feeds`), só a lista
+ * estática. Ordem estável, sem duplicata. @pure
+ */
+export function uncoveredLabsAtRuntime(
+  feeds: ReadonlyArray<{ lab: string; ok: boolean }>,
+  staticUncovered: readonly string[] = LATE_REFRESH_UNCOVERED_LABS,
+): string[] {
+  const okByLab = new Map<string, boolean>();
+  for (const f of feeds) okByLab.set(f.lab, (okByLab.get(f.lab) ?? false) || f.ok);
+  const down = [...okByLab].filter(([, ok]) => !ok).map(([lab]) => lab);
+  return [...new Set([...staticUncovered, ...down])];
+}
 
 // ---------------------------------------------------------------------------
 // GitHub (#9424)
@@ -111,13 +158,19 @@ export function parseGithubReleaseUrl(url: string): { repo: string; tag: string 
   if (u.hostname.toLowerCase().replace(/^www\./, "") !== "github.com") return null;
   const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/releases\/tag\/([^/]+)\/?$/);
   if (!m) return null;
-  return { repo: `${m[1]}/${m[2]}`, tag: decodeURIComponent(m[3]) };
+  try {
+    return { repo: `${m[1]}/${m[2]}`, tag: decodeURIComponent(m[3]) };
+  } catch {
+    // `%` solto na tag (URIError) — não dá pra saber a tag, então não é release legível.
+    return null;
+  }
 }
 
 /**
  * Releases de um Atom do GitHub que são LANÇAMENTO: tag casa `tagPattern`
  * (sem padrão = todas). Título ganha o repo na frente — "Release v0.25.0"
- * sozinho não diz de quem é. Entrada fora de `/releases/tag/` sai. @pure
+ * sozinho não diz de quem é; título vazio vira a tag. Entrada fora de
+ * `/releases/tag/` sai. @pure
  */
 export function filterGithubReleases(articles: readonly LateArticle[], tagPattern: RegExp | undefined): LateArticle[] {
   const out: LateArticle[] = [];
@@ -131,6 +184,11 @@ export function filterGithubReleases(articles: readonly LateArticle[], tagPatter
   return out;
 }
 
+/**
+ * Descrição em que a própria org declara o repo interno. Calibrado em
+ * 07/10/2026 contra os 2 casos reais de 30/09/2026 (`dsh-libreoffice-kit`,
+ * `dsh-node-addon-require-builtin`: "An internal component used by DeepSeek Harness").
+ */
 const INTERNAL_REPO_RE = /\binternal (?:component|tool|use|library)\b/i;
 
 interface GithubRepoJson {
@@ -146,10 +204,11 @@ interface GithubRepoJson {
 
 /**
  * Resposta de `GET /orgs/{org}/repos` → artigos (data = `created_at`). Fork,
- * arquivado e privado saem — fork da org (vllm, zed-extensions) não é
- * lançamento dela. O corte por data é do `filterLateArticles`. Resposta que
- * não é array (erro da API, rate limit) lança: o chamador vira nota de feed
- * com falha, nunca "nada novo". @pure
+ * arquivado, privado, repo interno e entrada sem nome/URL/data saem — fork da
+ * org (vllm, zed-extensions) não é lançamento dela. O corte por data é do
+ * `filterLateArticles`. Corpo que NÃO é array lança — o caso é um 200 com
+ * objeto (o fetch já tratou o status ≠ 2xx antes): sem lista não dá pra dizer
+ * "nada novo", então o chamador registra feed com falha. @pure
  */
 export function parseGithubNewRepos(json: unknown, feed: Pick<LateRefreshFeed, "lab" | "name">): LateArticle[] {
   if (!Array.isArray(json)) {
@@ -160,10 +219,9 @@ export function parseGithubNewRepos(json: unknown, feed: Pick<LateRefreshFeed, "
   for (const r of json as GithubRepoJson[]) {
     if (r?.fork === true || r?.archived === true || r?.private === true) continue;
     if (typeof r?.html_url !== "string" || typeof r?.created_at !== "string") continue;
-    const full = typeof r.full_name === "string" ? r.full_name : String(r.name ?? "");
+    const full = typeof r.full_name === "string" && r.full_name ? r.full_name : typeof r.name === "string" ? r.name : "";
+    if (!full) continue;
     const desc = typeof r.description === "string" ? r.description.trim() : "";
-    // Sub-repo que a própria org declara interno ("An internal component used by
-    // DeepSeek Harness", 2 casos em 30/09/2026) — infraestrutura, não lançamento.
     if (INTERNAL_REPO_RE.test(desc)) continue;
     const shortDesc = desc.length > 140 ? `${desc.slice(0, 137).trimEnd()}...` : desc;
     out.push({
@@ -176,6 +234,94 @@ export function parseGithubNewRepos(json: unknown, feed: Pick<LateRefreshFeed, "
     });
   }
   return out;
+}
+
+/** Resultado do pós-processamento de um feed: artigos + contagens pra detectar mudança de formato. */
+export interface FeedProcessed {
+  articles: LateArticle[];
+  /** Entradas brutas devolvidas pela fonte (antes de qualquer filtro). */
+  raw_entries: number;
+  /** Entradas que sobraram depois do filtro do método (tag, fork, interno…), antes do corte por data. */
+  after_filter: number;
+  /**
+   * `true` quando havia entradas brutas e NENHUMA foi reconhecida no formato
+   * esperado (release sem `/releases/tag/`, repo sem nome/URL/data). Filtro
+   * de tag que zera tudo por só haver nightly NÃO conta — é o filtro
+   * funcionando (deepseek-harness só publica alpha/rc hoje).
+   */
+  format_suspect: boolean;
+}
+
+/**
+ * Pós-processamento puro de um feed já baixado. `payload` = artigos do parser
+ * RSS/Atom (rss, sitemap, github-releases) ou o JSON cru da API (github-new-repos).
+ * Lança no mesmo caso de `parseGithubNewRepos`. @pure
+ */
+export function postProcessFeedArticles(feed: LateRefreshFeed, payload: unknown): FeedProcessed {
+  if (feed.method === "github-new-repos") {
+    const articles = parseGithubNewRepos(payload, feed);
+    const raw = (payload as unknown[]).length;
+    const recognized = (payload as GithubRepoJson[]).filter(
+      (r) => typeof r?.html_url === "string" && typeof r?.created_at === "string" && (typeof r?.full_name === "string" || typeof r?.name === "string"),
+    ).length;
+    return { articles, raw_entries: raw, after_filter: articles.length, format_suspect: raw > 0 && recognized === 0 };
+  }
+  const arts = (Array.isArray(payload) ? payload : []) as LateArticle[];
+  if (feed.method === "github-releases") {
+    const articles = filterGithubReleases(arts, feed.tagPattern);
+    const recognized = arts.filter((a) => parseGithubReleaseUrl(a.url) !== null).length;
+    return { articles, raw_entries: arts.length, after_filter: articles.length, format_suspect: arts.length > 0 && recognized === 0 };
+  }
+  return { articles: arts, raw_entries: arts.length, after_filter: arts.length, format_suspect: false };
+}
+
+/**
+ * Erro acionável de HTTP do GitHub. 403/429 com `x-ratelimit-remaining: 0`
+ * vira "rate limit, reset HH:MM BRT"; 404 diz o que não existe; resto leva o
+ * `message` do corpo quando houver. @pure
+ */
+export function githubHttpError(
+  status: number,
+  headers: { get(name: string): string | null },
+  body: string,
+  method: "github-releases" | "github-new-repos",
+): string {
+  if (status === 404) return `HTTP 404 (${method === "github-new-repos" ? "org não encontrada" : "repo não encontrado"})`;
+  let message = "";
+  try {
+    const j = JSON.parse(body) as { message?: unknown };
+    if (typeof j?.message === "string") message = j.message;
+  } catch {
+    // corpo não-JSON (Atom/HTML de erro) — segue sem message.
+  }
+  const remaining = headers.get("x-ratelimit-remaining");
+  const reset = Number(headers.get("x-ratelimit-reset"));
+  if ((status === 403 || status === 429) && (remaining === "0" || /rate limit/i.test(message))) {
+    if (Number.isFinite(reset) && reset > 0) {
+      const d = new Date(reset * 1000 - 3 * 3600_000);
+      return `HTTP ${status} (rate limit, reset ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} BRT)`;
+    }
+    return `HTTP ${status} (rate limit)`;
+  }
+  return message ? `HTTP ${status} (${message.slice(0, 120)})` : `HTTP ${status}`;
+}
+
+/** Linha do relatório de um feed. `ok` = sem erro. @pure */
+export function feedReportRow(
+  feed: LateRefreshFeed,
+  result: { processed?: FeedProcessed; error?: string },
+  itemsAfterCutoff: number,
+): LateRefreshReport["feeds"][number] {
+  return {
+    name: feed.name,
+    lab: feed.lab,
+    ok: !result.error,
+    items_after_cutoff: itemsAfterCutoff,
+    raw_entries: result.processed?.raw_entries ?? 0,
+    after_filter: result.processed?.after_filter ?? 0,
+    ...(result.processed?.format_suspect ? { format_suspect: true } : {}),
+    ...(result.error ? { error: result.error } : {}),
+  };
 }
 
 /**
@@ -464,10 +610,12 @@ const OFFICIAL_LANCAMENTO_PATTERNS = lancamentoPatterns();
 
 /**
  * #9457: host oficial = laboratório de fronteira (`FRONTIER_LABS`) OU domínio
- * de `official-domains.ts` (about.fb.com, mistral.ai…). #9424: OU padrão de
- * path de `official-domains.ts` (repo/release da org oficial no GitHub — o
- * host `github.com` sozinho nunca é oficial). Não mexe em `FRONTIER_LABS`
- * para não alterar o scorer-select (#9359). @pure
+ * de `official-domains.ts` (about.fb.com, mistral.ai…). #9424: OU qualquer
+ * `path_patterns` de `official-domains.ts` (vale para TODOS: /news/ da
+ * Anthropic, /index/ da OpenAI, repo/release da org oficial no GitHub…) —
+ * mesma regra do `isOfficialLancamentoUrl` do Stage 1, mais o subdomínio
+ * que esta função já aceitava. Não mexe em `FRONTIER_LABS` para não alterar
+ * o scorer-select (#9359). @pure
  */
 export function isOfficialHost(url: string): boolean {
   if (frontierLabOfUrl(url) !== undefined) return true;
@@ -486,7 +634,12 @@ export function isOfficialHost(url: string): boolean {
   return OFFICIAL_LANCAMENTO_PATTERNS.some((p) => p.test(full));
 }
 
-/** Repo novo ou release na org OFICIAL do lab no GitHub — já é, por definição, algo sendo lançado. */
+/**
+ * URL do GitHub que casa o padrão oficial de uma org de lab (raiz de repo ou
+ * release de tag estável). Só confere ORIGEM: não verifica se o repo é novo
+ * (isso é o corte por data) nem a tag do feed (`tagPattern`, aplicado antes).
+ * Repo/release da org é tratado como algo sendo lançado → LANÇAMENTOS.
+ */
 function isOfficialGithubLaunch(url: string): boolean {
   return /^https?:\/\/(?:www\.)?github\.com\//i.test(url) && isOfficialHost(url);
 }
@@ -538,7 +691,19 @@ export interface LateCandidate extends LateArticle {
 export interface LateRefreshReport {
   generated_at: string;
   cutoffs: CutoffResolution;
-  feeds: Array<{ name: string; lab: string; ok: boolean; items_after_cutoff: number; error?: string }>;
+  feeds: Array<{
+    name: string;
+    lab: string;
+    ok: boolean;
+    items_after_cutoff: number;
+    /** Entradas brutas da fonte (#9424) — com `after_filter`, denuncia mudança de formato. */
+    raw_entries?: number;
+    /** Entradas depois do filtro do método, antes do corte por data (#9424). */
+    after_filter?: number;
+    /** Havia entradas e nenhuma no formato esperado (#9424). */
+    format_suspect?: boolean;
+    error?: string;
+  }>;
   uncovered_labs: readonly string[];
   candidates: LateCandidate[];
   already_in_edition: number;
@@ -560,8 +725,14 @@ export function formatLateRefreshBlock(r: LateRefreshReport): string {
   const header = `Corte: pesquisa iniciada ${brt(r.cutoffs.research_cutoff)} BRT. Nada é alterado sozinho — inclusão é decisão sua (ajustar / §4d.1b).`;
   const failed = r.feeds.filter((f) => !f.ok);
   const lines: string[] = [header];
+  const failedNames = failed.map((f) => f.name).join(", ");
   if (r.candidates.length === 0 && r.newsletters.length === 0) {
-    lines.push("✅ Nada novo nas fontes oficiais nem nas newsletters desde a pesquisa.");
+    // #9424: com feed falhando, "nada novo" vale só para quem respondeu.
+    lines.push(
+      failed.length > 0
+        ? `✅ Nada novo nas fontes que responderam — ${failed.length} feed(s) com falha: ${failedNames}.`
+        : "✅ Nada novo nas fontes oficiais nem nas newsletters desde a pesquisa.",
+    );
   }
   for (const c of r.candidates) {
     lines.push(`🆕 [${c.lab}] ${c.title || "(sem título)"} — ${brt(c.published_at)} BRT`);
@@ -577,7 +748,12 @@ export function formatLateRefreshBlock(r: LateRefreshReport): string {
   if (r.already_in_edition + r.already_published > 0) {
     notes.push(`${r.already_in_edition} já na edição, ${r.already_published} já publicado(s) antes`);
   }
-  if (failed.length > 0) notes.push(`feeds com falha: ${failed.map((f) => f.name).join(", ")}`);
+  // Já dito na linha do "nada novo" quando não há candidato — não repetir.
+  if (failed.length > 0 && (r.candidates.length > 0 || r.newsletters.length > 0)) notes.push(`feeds com falha: ${failedNames}`);
+  const suspect = r.feeds.filter((f) => f.ok && f.format_suspect);
+  if (suspect.length > 0) {
+    notes.push(`formato mudou? entradas recebidas mas nenhuma reconhecida em: ${suspect.map((f) => `${f.name} (${f.raw_entries ?? "?"} brutas, ${f.after_filter ?? 0} após filtro)`).join(", ")}`);
+  }
   if (r.newsletter_error) notes.push(`newsletters indisponíveis: ${r.newsletter_error}`);
   if (r.uncovered_labs.length > 0) notes.push(`sem feed oficial (só via newsletter): ${r.uncovered_labs.join(", ")}`);
   if (notes.length > 0) lines.push(`ℹ️ ${notes.join(" · ")}`);

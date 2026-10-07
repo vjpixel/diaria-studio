@@ -6,7 +6,8 @@ import {
   lancamentoPatterns,
   companyToDomain,
 } from "../scripts/lib/official-domains.ts";
-import { isOfficialLancamentoUrl } from "../scripts/lib/launch-heuristics.ts";
+import { categorizeWithRule, isOfficialLancamentoUrl } from "../scripts/lib/launch-heuristics.ts";
+import { extractScoringFeatures } from "../scripts/lib/scoring-features.ts";
 
 describe("official-domains registry (#566)", () => {
   it("cada entry tem company não-vazia", () => {
@@ -323,6 +324,42 @@ describe("GitHub oficial de xAI, DeepSeek e Qwen: repo e release (#9424)", () =>
     ]) {
       assert.equal(isOfficialLancamentoUrl(url), false, url);
     }
+  });
+  it("release de tag com sufixo (nightly, rc, alpha, preview) não é link oficial no Stage 1", () => {
+    for (const tag of ["v0.24.7-nightly.20261004.9915c7ff8f", "v0.25.1-preview.0", "dsh-v0.2.0-rc.2", "dsh-v0.2.1-alpha.1"]) {
+      assert.equal(isOfficialLancamentoUrl(`https://github.com/QwenLM/qwen-code/releases/tag/${tag}`), false, tag);
+    }
+    for (const tag of ["v0.24.7", "dsh-v0.2.0", "sdk-typescript-v0.1.18", "1.2"]) {
+      assert.equal(isOfficialLancamentoUrl(`https://github.com/QwenLM/qwen-code/releases/tag/${tag}`), true, tag);
+    }
+  });
+});
+
+describe("Efeito no Stage 1 dos padrões GitHub de DeepSeek/xAI (#9424, intencional, igual ao QwenLM)", () => {
+  it("categorize: repo da org oficial vira lançamento; blob do mesmo repo não", () => {
+    assert.equal(categorizeWithRule({ url: "https://github.com/deepseek-ai/DeepSeek-V4", title: "DeepSeek-V4" } as never).category, "lancamento");
+    assert.equal(categorizeWithRule({ url: "https://github.com/xai-org/grok-build", title: "grok-build: coding agent harness" } as never).category, "lancamento");
+    assert.notEqual(categorizeWithRule({ url: "https://github.com/deepseek-ai/DeepSeek-V4/blob/main/README.md", title: "DeepSeek-V4" } as never).category, "lancamento");
+  });
+  it("scoring: has_official_link passa a true para repo de deepseek-ai/xai-org, false para org alheia", async () => {
+    const rows = await extractScoringFeatures(
+      {
+        highlights: [],
+        runners_up: [],
+        lancamento: [
+          { url: "https://github.com/deepseek-ai/DeepSeek-V4", title: "DeepSeek-V4" },
+          { url: "https://github.com/xai-org/xai-sdk-python/releases/tag/v1.20.0", title: "v1.20.0" },
+        ],
+        radar: [{ url: "https://github.com/someone/deepseek-fork", title: "fork" }],
+        use_melhor: [],
+        video: [],
+      },
+      null,
+    );
+    const by = Object.fromEntries(rows.map((r) => [r.url, r.has_official_link]));
+    assert.equal(by["https://github.com/deepseek-ai/DeepSeek-V4"], true);
+    assert.equal(by["https://github.com/xai-org/xai-sdk-python/releases/tag/v1.20.0"], true);
+    assert.equal(by["https://github.com/someone/deepseek-fork"], false);
   });
 });
 

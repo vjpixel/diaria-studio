@@ -14,12 +14,19 @@ import {
   suggestSubstitution,
   summarizeLateThreads,
   filterGithubReleases,
+  feedReportRow,
+  githubHttpError,
+  githubNewReposUrl,
   parseGithubNewRepos,
   parseGithubReleaseUrl,
+  postProcessFeedArticles,
+  uncoveredLabsAtRuntime,
+  type GithubNewReposFeed,
+  type GithubReleasesFeed,
   type LateArticle,
   type LateRefreshReport,
 } from "../scripts/lib/late-refresh.ts";
-import { threadsToLateInputs } from "../scripts/late-refresh-candidates.ts";
+import { fetchFeed, threadsToLateInputs } from "../scripts/late-refresh-candidates.ts";
 import { parseFeed } from "../scripts/fetch-rss.ts";
 import { isOfficialLancamentoUrl } from "../scripts/lib/launch-heuristics.ts";
 
@@ -140,10 +147,14 @@ test("formatLateRefreshBlock: skipped, vazio e com candidatos — sem markdown",
     newsletters: [],
   };
   assert.match(formatLateRefreshBlock({ ...base, skipped_reason: "x" }), /indisponível: x/);
+  // #9424: com feed falhando, "nada novo" vale só para as fontes que responderam.
   const empty = formatLateRefreshBlock(base);
-  assert.match(empty, /Nada novo/);
-  assert.match(empty, /feeds com falha: OpenAI News/);
+  assert.match(empty, /✅ Nada novo nas fontes que responderam — 1 feed\(s\) com falha: OpenAI News\./);
+  assert.doesNotMatch(empty, /Nada novo nas fontes oficiais nem nas newsletters/);
+  assert.equal((empty.match(/OpenAI News/g) ?? []).length, 1, "falha não é repetida na nota");
   assert.match(empty, /29\/09 16:42 BRT/);
+  const allOk = formatLateRefreshBlock({ ...base, feeds: [{ name: "OpenAI News", lab: "OpenAI", ok: true, items_after_cutoff: 0 }] });
+  assert.match(allOk, /✅ Nada novo nas fontes oficiais nem nas newsletters desde a pesquisa\./);
   const full = formatLateRefreshBlock({
     ...base,
     candidates: [{ ...art("https://openai.com/index/introducing-gpt-6-1-sol", "2026-09-29T10:00:00Z", "Introducing GPT-6.1 Sol"), suggestion: { target: "destaque", slot: "D2", reason: "r" } }],
@@ -151,6 +162,7 @@ test("formatLateRefreshBlock: skipped, vazio e com candidatos — sem markdown",
   });
   assert.match(full, /substituir D2/);
   assert.match(full, /⚡ TLDR AI/);
+  assert.match(full, /feeds com falha: OpenAI News/, "com candidato, a falha vai para a nota");
   assert.doesNotMatch(full, /\*\*|^#|^- /m);
 });
 
@@ -239,7 +251,7 @@ test("LATE_REFRESH_FEEDS: todo host de feed satisfaz isOfficialHost (#9515)", ()
         ? f.url.replace(/\/releases\.atom$/, "/releases/tag/v1.0.0")
         : f.method === "github-new-repos"
           ? `https://github.com/${f.org}/repo-exemplo`
-          : `${u.protocol}//${u.host}${f.pathPrefix ?? "/"}post-exemplo`;
+          : `${u.protocol}//${u.host}${(f.method === "sitemap" ? f.pathPrefix : undefined) ?? "/"}post-exemplo`;
     assert.equal(isOfficialHost(post), true, `${f.name}: ${post} deveria ser oficial`);
   }
   assert.equal(isOfficialHost("https://microsoft.ai/news/introducing-mai-voice-2/"), true);
@@ -293,7 +305,7 @@ test("#9424: Atom de releases do GitHub → só release estável de minor/major,
   assert.equal(articles.length, 6, "parser lê todas as entradas do Atom do GitHub");
   const late: LateArticle[] = articles.map((a) => ({ ...a, published_at: a.published_at ?? null, lab: "Qwen", source: "Qwen Code (releases)" }));
   const feed = LATE_REFRESH_FEEDS.find((f) => f.url === "https://github.com/QwenLM/qwen-code/releases.atom");
-  assert.ok(feed, "feed de releases do qwen-code ausente");
+  assert.ok(feed?.method === "github-releases", "feed de releases do qwen-code ausente");
   const kept = filterGithubReleases(late, feed.tagPattern);
   assert.deepEqual(kept.map((a) => a.url), ["https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0"], "preview, nightly, sdk, desktop e patch saem");
   assert.equal(kept[0].title, "QwenLM/qwen-code: Release v0.25.0");
@@ -304,7 +316,7 @@ test("#9424: Atom de releases do GitHub → só release estável de minor/major,
 
 test("#9424: tagPattern do DeepSeek Harness corta alpha/rc e aceita a estável", () => {
   const feed = LATE_REFRESH_FEEDS.find((f) => f.url.endsWith("/deepseek-harness/releases.atom"));
-  assert.ok(feed?.tagPattern);
+  assert.ok(feed?.method === "github-releases");
   for (const t of ["dsh-v0.2.1-alpha.1", "dsh-v0.2.0-rc.2", "dsh-v0.1.5-rc.3", "v0.1.7-alpha.1", "dsh-v0.2.1"]) assert.equal(feed.tagPattern.test(t), false, t);
   for (const t of ["dsh-v0.2.0", "dsh-v1.0.0"]) assert.equal(feed.tagPattern.test(t), true, t);
 });
@@ -347,11 +359,12 @@ test("#9424: mapeamento lab → feed — xAI, DeepSeek e Qwen têm repos novos +
   const expected: Record<string, string> = { xAI: "xai-org", DeepSeek: "deepseek-ai", Qwen: "QwenLM" };
   for (const [lab, org] of Object.entries(expected)) {
     const feeds = LATE_REFRESH_FEEDS.filter((f) => f.lab === lab);
-    const repos = feeds.find((f) => f.method === "github-new-repos");
-    const releases = feeds.find((f) => f.method === "github-releases");
+    const repos = feeds.find((f): f is GithubNewReposFeed => f.method === "github-new-repos");
+    const releases = feeds.find((f): f is GithubReleasesFeed => f.method === "github-releases");
     assert.ok(repos, `${lab}: feed de repos novos ausente`);
     assert.equal(repos.org, org);
-    assert.equal(repos.url, `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=public`);
+    assert.equal(repos.url, githubNewReposUrl(org), "url derivada de org (fonte única)");
+    assert.equal(repos.url, `https://api.github.com/orgs/${org}/repos?sort=created&direction=desc&per_page=30&type=sources`);
     assert.ok(releases, `${lab}: feed de releases ausente`);
     assert.match(releases.url, new RegExp(`^https://github\\.com/${org}/[^/]+/releases\\.atom$`));
     assert.ok(releases.tagPattern, `${lab}: release sem filtro de ruído`);
@@ -373,4 +386,135 @@ test("#9424: release/repo da org oficial no GitHub é link oficial (#160) → LA
     assert.equal(isOfficialHost(url), false, url);
     assert.equal(suggestSubstitution({ url, title: "Release v1.0.0" }, []).slot, "RADAR", url);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #9424 — fleet review da PR #9842
+// ---------------------------------------------------------------------------
+
+test("#9424: uncoveredLabsAtRuntime soma à lista estática os labs com TODOS os feeds falhando", () => {
+  const feeds = [
+    { lab: "Qwen", ok: false },
+    { lab: "Qwen", ok: true },
+    { lab: "xAI", ok: false },
+    { lab: "xAI", ok: false },
+    { lab: "OpenAI", ok: true },
+  ];
+  assert.deepEqual(uncoveredLabsAtRuntime(feeds, []), ["xAI"], "Qwen tem 1 feed ok, segue coberto");
+  assert.deepEqual(uncoveredLabsAtRuntime(feeds, ["Foo", "xAI"]), ["Foo", "xAI"], "sem duplicata");
+  assert.deepEqual(uncoveredLabsAtRuntime([], ["Foo"]), ["Foo"]);
+});
+
+test("#9424: formatLateRefreshBlock avisa quando o feed tem entradas mas nenhuma reconhecida (formato mudou)", () => {
+  const r: LateRefreshReport = {
+    generated_at: "2026-10-07T22:00:00Z",
+    cutoffs: { research_cutoff: CUTOFF, newsletter_cutoff: CUTOFF, origin: "stage-status" },
+    feeds: [
+      { name: "Qwen Code (releases)", lab: "Qwen", ok: true, items_after_cutoff: 0, raw_entries: 10, after_filter: 0, format_suspect: true },
+      { name: "DeepSeek Harness (releases)", lab: "DeepSeek", ok: true, items_after_cutoff: 0, raw_entries: 10, after_filter: 0 },
+    ],
+    uncovered_labs: [],
+    candidates: [],
+    already_in_edition: 0,
+    already_published: 0,
+    newsletters: [],
+  };
+  const out = formatLateRefreshBlock(r);
+  assert.match(out, /formato mudou\? entradas recebidas mas nenhuma reconhecida em: Qwen Code \(releases\) \(10 brutas, 0 após filtro\)/);
+  assert.doesNotMatch(out, /DeepSeek Harness/, "tag filtrada (só alpha/rc) é o filtro funcionando, não mudança de formato");
+});
+
+test("#9424: postProcessFeedArticles — contagens e format_suspect por método", () => {
+  const rel = LATE_REFRESH_FEEDS.find((f): f is GithubReleasesFeed => f.url.endsWith("/qwen-code/releases.atom"));
+  assert.ok(rel);
+  const nightlyOnly = [art("https://github.com/QwenLM/qwen-code/releases/tag/v0.24.7-nightly.1", "2026-10-04T22:14:03Z", "Release")];
+  const a = postProcessFeedArticles(rel, nightlyOnly);
+  assert.deepEqual([a.raw_entries, a.after_filter, a.format_suspect], [1, 0, false]);
+  const broken = postProcessFeedArticles(rel, [art("https://github.com/QwenLM/qwen-code/commit/abc", "2026-10-04T22:14:03Z")]);
+  assert.deepEqual([broken.raw_entries, broken.after_filter, broken.format_suspect], [1, 0, true]);
+
+  const repos = LATE_REFRESH_FEEDS.find((f): f is GithubNewReposFeed => f.method === "github-new-repos" && f.org === "QwenLM");
+  assert.ok(repos);
+  const ok = postProcessFeedArticles(repos, [{ full_name: "QwenLM/Qwen4", html_url: "https://github.com/QwenLM/Qwen4", created_at: "2026-10-07T01:02:03Z" }]);
+  assert.deepEqual([ok.raw_entries, ok.after_filter, ok.format_suspect], [1, 1, false]);
+  const renamed = postProcessFeedArticles(repos, [{ repo_name: "x", url: "https://api.github.com/repos/x" }]);
+  assert.deepEqual([renamed.raw_entries, renamed.after_filter, renamed.format_suspect], [1, 0, true]);
+  assert.equal(postProcessFeedArticles(repos, []).format_suspect, false, "lista vazia não é suspeita");
+});
+
+function headers(h: Record<string, string>): { get(name: string): string | null } {
+  return { get: (n) => h[n.toLowerCase()] ?? null };
+}
+
+test("#9424: githubHttpError — rate limit com reset em BRT, 404 nomeado, message do corpo", () => {
+  // 1791403200 = 2026-10-07T20:00:00Z → 17:00 BRT
+  assert.equal(
+    githubHttpError(403, headers({ "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1791403200" }), '{"message":"API rate limit exceeded"}', "github-new-repos"),
+    "HTTP 403 (rate limit, reset 17:00 BRT)",
+  );
+  assert.equal(githubHttpError(429, headers({}), '{"message":"API rate limit exceeded for 1.2.3.4"}', "github-releases"), "HTTP 429 (rate limit)");
+  assert.equal(githubHttpError(404, headers({}), "", "github-new-repos"), "HTTP 404 (org não encontrada)");
+  assert.equal(githubHttpError(404, headers({}), "", "github-releases"), "HTTP 404 (repo não encontrado)");
+  assert.equal(githubHttpError(500, headers({}), '{"message":"Server Error"}', "github-releases"), "HTTP 500 (Server Error)");
+  assert.equal(githubHttpError(502, headers({}), "<html>bad gateway</html>", "github-releases"), "HTTP 502");
+});
+
+test("#9424: fetchFeed com fetch injetado — 403 vira ok:false com erro acionável nos dois métodos do GitHub", async () => {
+  const fake403 = (async () =>
+    new Response('{"message":"API rate limit exceeded"}', {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1791403200" },
+    })) as unknown as typeof fetch;
+  for (const feed of LATE_REFRESH_FEEDS.filter((f) => f.method === "github-new-repos" || f.method === "github-releases")) {
+    const r = await fetchFeed(feed, CUTOFF, new Date("2026-10-07T20:00:00Z"), fake403);
+    assert.equal(r.error, "HTTP 403 (rate limit, reset 17:00 BRT)", feed.name);
+    assert.deepEqual(r.articles, []);
+    const row = feedReportRow(feed, r, 0);
+    assert.equal(row.ok, false, feed.name);
+    assert.equal(row.error, r.error);
+  }
+});
+
+test("#9424: fetchFeed com fetch injetado — 200 passa pelo parser e pelo filtro do método", async () => {
+  const relFeed = LATE_REFRESH_FEEDS.find((f): f is GithubReleasesFeed => f.url.endsWith("/qwen-code/releases.atom"));
+  const repoFeed = LATE_REFRESH_FEEDS.find((f): f is GithubNewReposFeed => f.method === "github-new-repos" && f.org === "xai-org");
+  assert.ok(relFeed && repoFeed);
+  const atom = (async () => new Response(GITHUB_RELEASES_ATOM, { status: 200 })) as unknown as typeof fetch;
+  const rel = await fetchFeed(relFeed, CUTOFF, new Date("2026-10-07T20:00:00Z"), atom);
+  assert.equal(rel.error, undefined);
+  assert.deepEqual(rel.articles.map((a) => a.url), ["https://github.com/QwenLM/qwen-code/releases/tag/v0.25.0"]);
+  assert.deepEqual([rel.processed?.raw_entries, rel.processed?.after_filter], [6, 1]);
+  const json = (async () =>
+    new Response(JSON.stringify([{ full_name: "xai-org/grok-5", html_url: "https://github.com/xai-org/grok-5", created_at: "2026-10-07T01:02:03Z" }]), {
+      status: 200,
+    })) as unknown as typeof fetch;
+  const rep = await fetchFeed(repoFeed, CUTOFF, new Date("2026-10-07T20:00:00Z"), json);
+  assert.equal(rep.error, undefined);
+  assert.equal(rep.articles[0].title, "Novo repositório xai-org/grok-5");
+  assert.equal(rep.articles[0].lab, "xAI");
+  const notList = (async () => new Response('{"message":"Not a list"}', { status: 200 })) as unknown as typeof fetch;
+  assert.match((await fetchFeed(repoFeed, CUTOFF, new Date(), notList)).error ?? "", /GitHub API: Not a list/);
+});
+
+test("#9424: ramos pequenos — % solto na tag, título já com o repo, título vazio, repo sem nome, descrição cortada em 140", () => {
+  assert.equal(parseGithubReleaseUrl("https://github.com/QwenLM/qwen-code/releases/tag/v1%E0"), null, "URIError vira null");
+  const kept = filterGithubReleases(
+    [
+      art("https://github.com/QwenLM/qwen-code/releases/tag/v0.26.0", "2026-10-07T01:02:03Z", "QwenLM/qwen-code v0.26.0"),
+      art("https://github.com/QwenLM/qwen-code/releases/tag/v0.27.0", "2026-10-07T01:02:03Z", "  "),
+    ],
+    undefined,
+  );
+  assert.deepEqual(kept.map((a) => a.title), ["QwenLM/qwen-code v0.26.0", "QwenLM/qwen-code: v0.27.0"]);
+  const long = "x".repeat(200);
+  const repos = parseGithubNewRepos(
+    [
+      { html_url: "https://github.com/QwenLM/sem-nome", created_at: "2026-10-07T01:02:03Z" },
+      { name: "SoNome", html_url: "https://github.com/QwenLM/SoNome", created_at: "2026-10-07T01:02:03Z", description: long },
+    ],
+    { lab: "Qwen", name: "Qwen GitHub (repos novos)" },
+  );
+  assert.deepEqual(repos.map((a) => a.url), ["https://github.com/QwenLM/SoNome"], "entrada sem full_name/name sai");
+  assert.equal(repos[0].title, `Novo repositório SoNome: ${"x".repeat(137)}...`);
+  assert.equal(repos[0].summary, long, "summary guarda a descrição inteira");
 });
