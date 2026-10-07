@@ -1489,10 +1489,13 @@ test("compareDailyQueueOrder: priority_points DESC — score alto sempre antes d
   assert.ok(compareDailyQueueOrder(zero, alto) > 0);
 });
 
-test("compareDailyQueueOrder: empate em score>0 desempata por email ASC (mesmo que segmentEngajados)", () => {
-  const b = row({ email: "b@x.com", priority_points: 50 });
-  const a = row({ email: "a@x.com", priority_points: 50 });
-  assert.ok(compareDailyQueueOrder(a, b) < 0);
+test("compareDailyQueueOrder: empate em score>0 desempata por cadastro mais recente (#9824), email ASC só com created igual", () => {
+  const b = row({ email: "b@x.com", priority_points: 50, created: "2026-01-01T00:00:00Z" });
+  const a = row({ email: "a@x.com", priority_points: 50, created: "2026-01-01T00:00:00Z" });
+  assert.ok(compareDailyQueueOrder(a, b) < 0, "mesmo score e mesmo created: email ASC");
+  const novoZ = row({ email: "z@x.com", priority_points: 50, created: "2026-06-01T00:00:00Z" });
+  const antigoA = row({ email: "a@x.com", priority_points: 50, created: "2021-06-01T00:00:00Z" });
+  assert.ok(compareDailyQueueOrder(novoZ, antigoA) < 0, "mesmo score: cadastro mais recente vence email ASC");
 });
 
 test("compareDailyQueueOrder: empate em score=0 desempata por compareContactRecency (mesmo que segmentRampWarm)", () => {
