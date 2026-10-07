@@ -66,14 +66,23 @@
  *    duplicado.
  *
  * Uso:
- *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json] [--exclude-captured a.json[,b.json]] [--accumulate-into ledger.json]
+ *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json] [--exclude-captured a.json[,b.json]]
  *
  * `--exclude-captured` (#9792): 2ª passada de §0-replies (Stage 6) — exclui
  * threads já presentes (mesma `thread_id` + `date`) nas capturas anteriores
  * (lista separada por vírgula: Passo 1b + ledger das execuções anteriores do
  * Stage 6), pra não rascunhar a mesma reply duas vezes.
- * `--accumulate-into` (#9792): une as threads de `--in` ao ledger indicado
- * (sem duplicar), pra que uma re-execução do Stage 6 as exclua também.
+ * `--record-processed <ledger.json>` (#9807, substitui o `--accumulate-into` do
+ * #9792): modo SEPARADO, rodado DEPOIS do passo 4 de §0-replies (draft +
+ * sorteio) — une as threads de `--in` ao ledger indicado (sem duplicar), pra
+ * que uma re-execução do Stage 6 as exclua. Não filtra nem imprime o
+ * resultado do filtro. `--thread-ids a,b` restringe às threads efetivamente
+ * tratadas. Gravar o ledger na hora do FILTRO (o `--accumulate-into` antigo)
+ * perdia a reply em silêncio quando a sessão caía entre o filtro e o draft:
+ * na retomada, a thread já constava como processada. `--accumulate-into`
+ * agora aborta com exit 2 apontando pro modo novo.
+ *
+ *   npx tsx scripts/filter-subscriber-replies.ts --in pass.json --record-processed ledger.json [--thread-ids a,b]
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
  * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
@@ -512,7 +521,7 @@ export function capturedReplyKey(r: { thread_id?: string; date?: string }): stri
 /**
  * #9792 (fixer PR #9801): une `incoming` ao ledger `existing` sem duplicar
  * (mesma `capturedReplyKey`). Threads sem chave entram sempre (nunca são
- * excluídas mesmo, ver `capturedReplyKey`). Usado por `--accumulate-into`:
+ * excluídas mesmo, ver `capturedReplyKey`). Usado por `--record-processed` (#9807):
  * re-executar o Stage 6 não pode perder a captura tardia da execução anterior
  * — senão as replies dela voltariam a gerar rascunho duplicado.
  */
@@ -528,6 +537,20 @@ export function mergeCapturedReplies(existing: CapturedReply[], incoming: Captur
     out.push(t);
   }
   return out;
+}
+
+/**
+ * #9807: escolhe, da captura de uma passada, as threads que de fato foram
+ * TRATADAS (rascunho criado, número alocado, ou pulada por trivial/já
+ * respondida) — só elas podem entrar no ledger `captured-replies-late.json`.
+ * Sem `threadIds`, a passada inteira foi tratada (passo 4 concluído pra todas).
+ * Com `threadIds`, só as listadas: uma thread cujo draft falhou fica de fora e
+ * volta a ser processada na retomada (preferimos reprocessar a perder a reply).
+ */
+export function selectProcessedThreads(pass: CapturedReply[], threadIds?: Iterable<string>): CapturedReply[] {
+  if (threadIds === undefined) return pass;
+  const wanted = new Set(threadIds);
+  return pass.filter((t) => t.thread_id !== undefined && wanted.has(t.thread_id));
 }
 
 function readCapturedFile(path: string): CapturedReply[] {
@@ -585,11 +608,24 @@ export function filterSubscriberReplies(
 
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const { values } = parseCliArgs(process.argv.slice(2));
+  const { values, flags } = parseCliArgs(process.argv.slice(2));
   const inArg = values["in"];
   if (!inArg) {
     console.error(
-      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <a.json>[,<b.json>...]] [--accumulate-into <ledger.json>]",
+      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <a.json>[,<b.json>...]]\n" +
+        "     filter-subscriber-replies.ts --in <pass.json> --record-processed <ledger.json> [--thread-ids <a,b>]",
+    );
+    process.exit(2);
+  }
+  // #9807: o `--accumulate-into` do #9792 gravava o ledger na hora do filtro,
+  // antes do draft — sessão que caísse entre os dois perdia a reply em silêncio
+  // na retomada. Abortar (em vez de ignorar) pra um playbook defasado nunca
+  // reintroduzir o bug nem pular o ledger sem aviso.
+  if (values["accumulate-into"] !== undefined || flags.has("accumulate-into")) {
+    console.error(
+      "--accumulate-into foi removido (#9807): gravar o ledger antes do draft perde a reply se a sessão cair. " +
+        "Filtre sem ele e, DEPOIS do passo 4 (draft + sorteio), rode: " +
+        "filter-subscriber-replies.ts --in <pass.json> --record-processed <ledger.json> [--thread-ids <a,b>]",
     );
     process.exit(2);
   }
@@ -605,6 +641,47 @@ function main(): void {
   } catch (err) {
     console.error(`Falha ao parsear ${inPath}: ${(err as Error).message}`);
     process.exit(2);
+  }
+
+  // #9807: modo `--record-processed` — roda DEPOIS do passo 4 de §0-replies
+  // (draft + sorteio). Só grava o ledger; não filtra nem imprime o filtro.
+  const recordArg = values["record-processed"];
+  if (recordArg !== undefined || flags.has("record-processed")) {
+    if (typeof recordArg !== "string" || !recordArg) {
+      console.error("--record-processed exige o caminho do ledger (ex: _internal/captured-replies-late.json)");
+      process.exit(2);
+    }
+    const idsArg = values["thread-ids"];
+    if (flags.has("thread-ids")) {
+      console.error("--thread-ids exige uma lista separada por vírgula (omita para gravar a passada inteira)");
+      process.exit(2);
+    }
+    const threadIds =
+      typeof idsArg === "string" ? idsArg.split(",").map((x) => x.trim()).filter(Boolean) : undefined;
+    const ledgerPath = resolve(ROOT, recordArg);
+    let existing: CapturedReply[] = [];
+    if (existsSync(ledgerPath)) {
+      try {
+        existing = readCapturedFile(ledgerPath);
+      } catch (err) {
+        console.error(`Falha ao parsear --record-processed ${ledgerPath}: ${(err as Error).message}`);
+        process.exit(2);
+      }
+    }
+    const processed = selectProcessedThreads(threads, threadIds);
+    if (threadIds !== undefined) {
+      const found = new Set(processed.map((t) => t.thread_id));
+      const missing = threadIds.filter((id) => !found.has(id));
+      if (missing.length > 0) {
+        console.error(`⚠️  --thread-ids sem correspondência em ${inPath}: ${missing.join(", ")} — não gravadas no ledger.`);
+      }
+    }
+    const merged = mergeCapturedReplies(existing, processed);
+    writeFileSync(ledgerPath, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    console.error(
+      `📒 ledger ${ledgerPath}: ${merged.length - existing.length} thread(s) nova(s) registrada(s) como processada(s) (total ${merged.length}).`,
+    );
+    return;
   }
 
   // #9313: assuntos de campanhas com reply-to `CAMPAIGN_REPLY_TO_ADDRESSES` — sem eles,
@@ -646,24 +723,6 @@ function main(): void {
     }
   }
   const result = filterSubscriberReplies(threads, { campaignSubjects, previouslyCaptured });
-  // #9792 (fixer PR #9801): `--accumulate-into` une a captura desta passada ao
-  // ledger cumulativo (ex: `captured-replies-late.json`), em vez de o playbook
-  // sobrescrevê-lo — re-executar o Stage 6 continua excluindo o que a execução
-  // anterior já rascunhou.
-  const accArg = values["accumulate-into"];
-  if (typeof accArg === "string" && accArg) {
-    const accPath = resolve(ROOT, accArg);
-    let existing: CapturedReply[] = [];
-    if (existsSync(accPath)) {
-      try {
-        existing = readCapturedFile(accPath);
-      } catch (err) {
-        console.error(`Falha ao parsear --accumulate-into ${accPath}: ${(err as Error).message}`);
-        process.exit(2);
-      }
-    }
-    writeFileSync(accPath, JSON.stringify(mergeCapturedReplies(existing, threads), null, 2) + "\n", "utf8");
-  }
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     // #8997: as duas contagens são mutuamente exclusivas (trivial tem

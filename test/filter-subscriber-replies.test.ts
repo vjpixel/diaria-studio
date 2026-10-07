@@ -7,13 +7,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
   mergeCapturedReplies,
+  selectProcessedThreads,
   extractEmail,
   stripQuotedAndSignature,
   isTrivialReply,
@@ -912,50 +913,108 @@ describe("#9792: --exclude-captured / previouslyCaptured (2ª passada de §0-rep
     );
   });
 
-  it("CLI: re-execução do Stage 6 não re-rascunha a captura tardia da execução anterior (ledger --accumulate-into)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "fsr-9792-rerun-"));
+  // #9807: o ledger só é gravado DEPOIS do draft, num modo separado
+  // (`--record-processed`) — nunca na hora do filtro.
+  const runCli = (args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/filter-subscriber-replies.ts", ...args], {
+      encoding: "utf8",
+    });
+  const setupStage6 = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
     const early = join(dir, "captured-replies.json");
     const pass = join(dir, "captured-replies-late-pass.json");
     const ledger = join(dir, "captured-replies-late.json");
     writeFileSync(early, JSON.stringify([morning]));
-    const runPass = () =>
-      spawnSync(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          "scripts/filter-subscriber-replies.ts",
-          "--in",
-          pass,
-          "--exclude-captured",
-          `${early},${ledger}`,
-          "--accumulate-into",
-          ledger,
-        ],
-        { encoding: "utf8" },
-      );
-    // 1ª execução do Stage 6: chega a reply da noite.
+    const filter = () => runCli(["--in", pass, "--exclude-captured", `${early},${ledger}`]);
+    const record = (extra: string[] = []) => runCli(["--in", pass, "--record-processed", ledger, ...extra]);
+    const ids = (res: ReturnType<typeof runCli>) =>
+      JSON.parse(res.stdout).replies.map((x: { thread_id: string }) => x.thread_id);
+    return { pass, ledger, filter, record, ids };
+  };
+
+  it("#9807 regressão: filtro sem drafting não grava o ledger — na retomada a reply volta", () => {
+    const { pass, ledger, filter, ids } = setupStage6("fsr-9807-crash-");
     writeFileSync(pass, JSON.stringify([morning, evening]));
-    const r1 = runPass();
+    // 1ª execução: filtro roda, a sessão cai antes do passo 4 (sem --record-processed).
+    const r1 = filter();
     assert.equal(r1.status, 0, r1.stderr);
-    assert.deepEqual(
-      JSON.parse(r1.stdout).replies.map((x: { thread_id: string }) => x.thread_id),
-      ["t-noite"],
-    );
+    assert.deepEqual(ids(r1), ["t-noite"]);
+    assert.equal(existsSync(ledger), false, "o filtro não pode gravar o ledger antes do draft");
+    // Retomada: a reply tardia tem que voltar.
+    const r2 = filter();
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(ids(r2), ["t-noite"]);
+    assert.equal(JSON.parse(r2.stdout).alreadyProcessedCount, 1);
+  });
+
+  it("#9807 regressão: o filtro do §6b-replies no playbook não grava ledger; o registro vem depois do passo 4", () => {
+    const md = readFileSync(".claude/agents/orchestrator-stage-6.md", "utf8");
+    const start = md.indexOf("### 6b-replies.");
+    const end = md.indexOf("### 6b-slug.");
+    assert.ok(start >= 0 && end > start, "seção §6b-replies não encontrada");
+    const section = md.slice(start, end);
+    const blocks = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+    const filterBlock = blocks.find((b) => b.includes("--exclude-captured"));
+    const recordBlock = blocks.find((b) => b.includes("--record-processed"));
+    assert.ok(filterBlock, "comando de filtro ausente");
+    assert.ok(recordBlock, "comando --record-processed ausente");
+    assert.doesNotMatch(filterBlock, /--accumulate-into|--record-processed/);
+    assert.match(recordBlock, /--record-processed \{EDITION_DIR\}\/_internal\/captured-replies-late\.json/);
+    assert.ok(section.indexOf(filterBlock) < section.indexOf(recordBlock));
+    assert.match(section, /DEPOIS do passo 4/);
+  });
+
+  it("CLI: re-execução do Stage 6 não re-rascunha a captura tardia registrada após o draft (--record-processed)", () => {
+    const { pass, ledger, filter, record, ids } = setupStage6("fsr-9807-rerun-");
+    // 1ª execução do Stage 6: chega a reply da noite, é rascunhada e registrada.
+    writeFileSync(pass, JSON.stringify([morning, evening]));
+    const r1 = filter();
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(ids(r1), ["t-noite"]);
+    const rec1 = record();
+    assert.equal(rec1.status, 0, rec1.stderr);
+    assert.equal(rec1.stdout, "", "--record-processed não imprime o resultado do filtro");
     // 2ª execução (retomada): a mesma captura + uma reply nova.
     const later = { ...evening, thread_id: "t-madrugada", date: "2026-10-07T02:00:00Z" };
     writeFileSync(pass, JSON.stringify([morning, evening, later]));
-    const r2 = runPass();
+    const r2 = filter();
     assert.equal(r2.status, 0, r2.stderr);
-    const out2 = JSON.parse(r2.stdout);
-    assert.deepEqual(
-      out2.replies.map((x: { thread_id: string }) => x.thread_id),
-      ["t-madrugada"],
-    );
-    assert.equal(out2.alreadyProcessedCount, 2);
+    assert.deepEqual(ids(r2), ["t-madrugada"]);
+    assert.equal(JSON.parse(r2.stdout).alreadyProcessedCount, 2);
+    assert.equal(record().status, 0);
     assert.deepEqual(
       JSON.parse(readFileSync(ledger, "utf8")).map((x: { thread_id: string }) => x.thread_id),
       ["t-manha", "t-noite", "t-madrugada"],
     );
+  });
+
+  it("CLI: --thread-ids registra só as threads tratadas; a não tratada volta na retomada", () => {
+    const { pass, ledger, filter, record, ids } = setupStage6("fsr-9807-ids-");
+    const other = { ...evening, thread_id: "t-outra", date: "2026-10-06T23:00:00Z" };
+    writeFileSync(pass, JSON.stringify([evening, other]));
+    // draft de t-outra falhou: só t-noite foi tratada.
+    const rec = record(["--thread-ids", "t-noite,t-inexistente"]);
+    assert.equal(rec.status, 0, rec.stderr);
+    assert.match(rec.stderr, /t-inexistente/);
+    assert.deepEqual(
+      JSON.parse(readFileSync(ledger, "utf8")).map((x: { thread_id: string }) => x.thread_id),
+      ["t-noite"],
+    );
+    assert.deepEqual(ids(filter()), ["t-outra"]);
+  });
+
+  it("CLI: --accumulate-into (gravava o ledger antes do draft) aborta com exit 2 e não grava nada", () => {
+    const { pass, ledger } = setupStage6("fsr-9807-legacy-");
+    writeFileSync(pass, JSON.stringify([evening]));
+    const res = runCli(["--in", pass, "--accumulate-into", ledger]);
+    assert.equal(res.status, 2);
+    assert.match(res.stderr, /--record-processed/);
+    assert.equal(existsSync(ledger), false);
+  });
+
+  it("selectProcessedThreads: sem ids devolve a passada inteira; com ids filtra por thread_id", () => {
+    assert.deepEqual(selectProcessedThreads([morning, evening]), [morning, evening]);
+    assert.deepEqual(selectProcessedThreads([morning, evening, { from: "x" }], ["t-noite"]), [evening]);
+    assert.deepEqual(selectProcessedThreads([morning], []), []);
   });
 });
