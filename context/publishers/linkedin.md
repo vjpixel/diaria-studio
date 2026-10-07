@@ -190,7 +190,9 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 **Desde a #9568 o post pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)** que a página publica — o `## post_pixel` (post standalone de D1 em voz pessoal) deixou de ser gerado. Edições antigas que ainda têm `## post_pixel` seguem com o fluxo antigo (o texto vem de `resolve-post-pixel.ts`, que prefere `## um` e cai no `## post_pixel` só quando `## um` não existe).
 
-**Por que segue manual:** o Worker `linkedin-cron` recusa `webhook_target: "pixel"` com `action: "post"` (`workers/linkedin-cron/src/index.ts`, 400 — o scenario Make "Pixel" só faz comentário) e a API direta do Worker (#8052) tem UM autor só (`LINKEDIN_AUTHOR_URN`, a página). Postar como pessoa exigiria um 2º token com `w_member_social` + URN `urn:li:person:{id}` no Worker — não configurado.
+**Automático desde #9568 (app LinkedIn pessoal separado):** com `LINKEDIN_PERSONAL_ACCESS_TOKEN` + `LINKEDIN_PERSONAL_PERSON_URN` no ambiente, o Stage 6 arma o post (`publish-linkedin-personal.ts --arm`) e a task `Diaria-LinkedIn-Personal` publica no slot pela Posts API, com `author` = a pessoa. O fluxo manual abaixo vale só sem token (ou token expirado) e para edição legada com `## post_pixel`. Setup: `docs/linkedin-personal-setup.md`.
+
+**Por que o Worker não serve (fluxo manual):** o Worker `linkedin-cron` recusa `webhook_target: "pixel"` com `action: "post"` (`workers/linkedin-cron/src/index.ts`, 400 — o scenario Make "Pixel" só faz comentário) e a API direta do Worker (#8052) tem UM autor só (`LINKEDIN_AUTHOR_URN`, a página). Postar como pessoa exigiria um 2º token com `w_member_social` + URN `urn:li:person:{id}` no Worker — não configurado.
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 

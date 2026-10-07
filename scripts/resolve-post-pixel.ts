@@ -2,10 +2,10 @@
  * resolve-post-pixel.ts (#3052, reescopado na #9568)
  *
  * Texto (e imagem) do post PESSOAL do LinkedIn (vjpixel) pro lembrete
- * não-bloqueante do gate do Stage 6. O perfil pessoal é postado À MÃO (Claude
- * in Chrome): o Worker `linkedin-cron` recusa `webhook_target=pixel` com
- * `action=post` e a API direta tem um autor só (a página) — ver
- * `context/publishers/linkedin.md`.
+ * não-bloqueante do gate do Stage 6. Sem token do app pessoal o perfil é
+ * postado À MÃO (o Worker `linkedin-cron` recusa `webhook_target=pixel` com
+ * `action=post`); com token, `publish-linkedin-personal.ts` reusa este mesmo
+ * texto e publica sozinho no slot (#9568) — ver `context/publishers/linkedin.md`.
  *
  * Duas fontes, na ordem:
  *   1. `## um` de `# Social` (#9568) — o 4º post do item USE MELHOR, MESMO
@@ -98,9 +98,11 @@ export function extractPostPixelText(socialMd: string): string | null {
  * pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)
  * que a página publica — o `## post_pixel` (standalone de D1, #1690) deixou de
  * ser gerado. Prefere `## um`; edição antiga sem `## um` cai no `## post_pixel`
- * legado (nunca quebra o parse de edição já publicada). O perfil pessoal segue
- * MANUAL: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post`
- * e a API direta tem um autor só (a página).
+ * legado (nunca quebra o parse de edição já publicada). O perfil pessoal não
+ * passa pelo Worker (`linkedin-cron` recusa `webhook_target=pixel` +
+ * `action=post`): sai automático com token do app pessoal (#9568,
+ * `publish-linkedin-personal.ts` reusa este texto), senão lembrete manual no
+ * Stage 6. `## post_pixel` legado é sempre manual.
  */
 export function extractPersonalPostText(
   socialMd: string,
@@ -152,8 +154,9 @@ export function resolvePersonalPost(input: {
   };
 }
 
-/** Horário que a PÁGINA agendou pro 4º post (entry linkedin/um, `06-social-published.json`). */
-function readUseMelhorScheduledAt(editionDir: string): string | null {
+/** Horário que a PÁGINA agendou pro 4º post (entry linkedin/um, `06-social-published.json`).
+ * Exportada pra `publish-linkedin-personal.ts` (#9568 — mesmo horário no perfil pessoal). */
+export function readUseMelhorScheduledAt(editionDir: string): string | null {
   for (const p of [resolve(editionDir, "_internal", "06-social-published.json"), resolve(editionDir, "06-social-published.json")]) {
     if (!existsSync(p)) continue;
     try {
