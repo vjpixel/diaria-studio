@@ -197,28 +197,6 @@ export const DAILY_CAROUSEL_MICRO_CTA = "Segue pra não perder amanhã";
 export const DAILY_CAROUSEL_CTA_KICKER = "Assine grátis, direto no seu e-mail";
 
 /**
- * (#6136 item 2) Pure: divide um bloco de texto em 2 sub-blocos, separados
- * por `\n\n`, pra abrir um respiro visual DENTRO do mesmo card de parágrafo
- * (não confundir com os 3 cards-parágrafo já existentes — isto é uma quebra
- * dentro de CADA um deles).
- *
- * ÚNICO ponto de corte aceito (#7253, decisão do editor 08/09/2026— remove
- * o nível de fronteira de ORAÇÃO que existiu aqui): fronteira de SENTENÇA,
- * fim de `.`/`!`/`?` seguido de espaço. Sem essa fronteira → **não divide**,
- * retorna o texto inteiro. Cortar por vírgula/ponto-e-vírgula/dois-pontos/
- * travessão (nível intermediário testado antes) ainda partia frase única de
- * forma visível ("...num site alemão," | "incluindo mensagens...") — não é
- * fronteira legível o bastante pro leitor, mesmo sendo sintaticamente real.
- * Um card com 1 bloco só (texto ancorado no topo desde o #6078) é sempre
- * preferível a um card com 2 blocos que partem a frase no meio.
- *
- * Nunca corta DENTRO de um trecho `**marcado**` (#6086 item c) — um corte
- * ali quebraria o par de delimitadores, deixando `**` órfão na saída
- * (regressão fácil de não perceber num teste que não testa marcação). Texto
- * sem nenhum ponto de corte viável fora de um trecho marcado volta
- * INALTERADO — nunca produz um segundo bloco vazio.
- */
-/**
  * (#9790) Tamanho mínimo, em caracteres visíveis (sem os `**` de marcação),
  * de cada um dos 2 blocos que `splitParagraphIntoTwoBlocks` produz. Abaixo
  * disso o corte é descartado — rede de segurança contra qualquer "N." ou
@@ -262,6 +240,32 @@ function isNonTerminalPeriod(text: string, index: number, punct: string, end: nu
   return NON_TERMINAL_ABBREVIATIONS.has(word.toLowerCase());
 }
 
+/**
+ * (#6136 item 2) Pure: divide um bloco de texto em 2 sub-blocos, separados
+ * por `\n\n`, pra abrir um respiro visual DENTRO do mesmo card de parágrafo
+ * (não confundir com os 3 cards-parágrafo já existentes — isto é uma quebra
+ * dentro de CADA um deles).
+ *
+ * ÚNICO ponto de corte aceito (#7253, decisão do editor 08/09/2026— remove
+ * o nível de fronteira de ORAÇÃO que existiu aqui): fronteira de SENTENÇA,
+ * fim de `.`/`!`/`?` seguido de espaço. Sem essa fronteira → **não divide**,
+ * retorna o texto inteiro. Cortar por vírgula/ponto-e-vírgula/dois-pontos/
+ * travessão (nível intermediário testado antes) ainda partia frase única de
+ * forma visível ("...num site alemão," | "incluindo mensagens...") — não é
+ * fronteira legível o bastante pro leitor, mesmo sendo sintaticamente real.
+ * Um card com 1 bloco só (texto ancorado no topo desde o #6078) é sempre
+ * preferível a um card com 2 blocos que partem a frase no meio.
+ *
+ * Nunca corta DENTRO de um trecho `**marcado**` (#6086 item c) — um corte
+ * ali quebraria o par de delimitadores, deixando `**` órfão na saída
+ * (regressão fácil de não perceber num teste que não testa marcação). Texto
+ * sem nenhum ponto de corte viável fora de um trecho marcado volta
+ * INALTERADO — nunca produz um segundo bloco vazio.
+ *
+ * Ponto que não fecha frase não é fronteira: marcador de lista "N." (#9675),
+ * abreviação ("Dr. Fulano") ou ponto seguido de minúscula (#9790). E nenhum
+ * dos 2 blocos pode ficar abaixo de `MIN_CAROUSEL_BLOCK_CHARS` (#9790).
+ */
 export function splitParagraphIntoTwoBlocks(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return trimmed;
