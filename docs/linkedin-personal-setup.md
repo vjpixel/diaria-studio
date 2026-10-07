@@ -56,38 +56,69 @@ valor, no Doppler e no `.env` local:
 Depois, no `300`: `npm run sync-env`. Opcional: `LINKEDIN_PERSONAL_API_VERSION`
 (YYYYMM); vazio usa a versão de dois meses atrás, que a LinkedIn sempre suporta.
 
-## 3. Armar a task no `300` (uma vez, depois do merge)
+## 3. Armar as tasks no `300` (uma vez, depois do merge)
 
-Task `Diaria-LinkedIn-Personal` (registro em `scripts/lib/scheduled-tasks.ts`),
-diária às 07:46 BRT, um minuto depois de `publishing.social.use_melhor_time`.
+Duas tasks (registro em `scripts/lib/scheduled-tasks.ts`):
+
+- `Diaria-LinkedIn-Personal`, diária às 07:46 BRT, um minuto depois de
+  `publishing.social.use_melhor_time`: dispara o post e roda o alarme;
+- `Diaria-LinkedIn-Personal-Catchup`, de hora em hora: só dispara. Cobre o
+  post cujo horário foi deslocado (past-slot guard, Stage 5/6 atrasados).
+
 Armar como as outras (`scripts/setup-systemd-timers.ts`, ver
 `docs/scheduled-tasks-registry.md`).
 
+Se o Doppler recusar a gravação no passo 2, o script mostra o stderr do
+Doppler e o diretório: as causas comuns são `doppler login` vencido ou o
+diretório sem `doppler setup` (projeto/config errado, ver `doppler configure`).
+Nesse caso as chaves ficam só no `.env` local e o próximo `npm run sync-env`
+nessa máquina aborta (guard de chave só-local, #5155) até o vault ter as
+mesmas chaves.
+
 ## Como funciona
 
-1. **Stage 6, antes do gate:** `publish-linkedin-personal.ts --check` diz se o
-   automático está disponível (token presente, URN válida, não expirado). Se
-   não está, o lembrete manual aparece igual a antes.
-2. **Stage 6, depois do `ok`:** `publish-linkedin-personal.ts --arm
-   --edition-dir {dir}` grava `_internal/06-linkedin-personal.json` com o
-   texto (o mesmo que `resolve-post-pixel.ts` devolve: `## um`, sem markdown,
-   com a UTM do Use Melhor), a capa do carrossel quando o carimbo está em dia, e
-   o `scheduled_at` real da entry `linkedin`/`um` da página. Só arma se o plano
-   do 4º post está `ready` e se o token vale até o horário do post.
-3. **Task das 07:46:** `--fire-due` publica toda intenção `armed` de hoje ou
-   ontem (BRT) cujo horário já passou, com até 3h de atraso. Antes da chamada
-   grava `posting`, e por isso um crash nunca vira post duplicado. Resultado
-   (`published` + `post_url`, ou `failed`/`expired` + motivo) fica no mesmo
-   arquivo e no run-log; falha sai com exit 1 (o alarme de units systemd
-   falhas pega).
-4. **Alarme:** `linkedin-personal-token-alarm.ts`, 2º passo da mesma task.
-   Abre issue P2 a 14 dias do vencimento e sobe para P1 a 3 dias ou depois de
-   expirado. Fecha sozinha quando o token novo chega ao `.env` do `300`.
+1. **Stage 6, antes do gate:** `publish-linkedin-personal.ts --check
+   --edition-dir {dir}` simula o arme sem gravar nada. Só diz AUTOMÁTICO (exit
+   0) quando: o token existe, a URN é válida, o token não expira antes do
+   post e responde em `GET /v2/userinfo` (401/403 = revogado), o `## um` tem
+   plano `ready`, a página agendou o 4º post (`scheduled_at` não nulo) e uma
+   das duas tasks roda entre esse horário e 3h depois dele. Qualquer outra
+   resposta: lembrete manual, igual a antes.
+2. **Stage 6, depois do `ok`:** `--arm --edition-dir {dir}` grava
+   `_internal/06-linkedin-personal.json` com o texto (o mesmo que
+   `resolve-post-pixel.ts` devolve: `## um`, sem markdown, com a UTM do Use
+   Melhor), a capa do carrossel quando o carimbo está em dia, o `scheduled_at`
+   real da entry `linkedin`/`um` da página e a impressão digital do token (a
+   expiração). Exit ≠ 0 depois de um pré-gate AUTOMÁTICO reexibe o lembrete
+   manual.
+3. **Disparo:** `--fire-due` publica toda intenção `armed` de hoje ou ontem
+   (BRT) cujo horário já passou, com até 3h de atraso (3h exatas ainda saem;
+   além disso vira `expired`, exit 1). Criar o lock
+   `_internal/06-linkedin-personal.lock` (exclusivo) é a passagem para
+   `posting`, gravado antes da chamada: duas execuções ao mesmo tempo ou um
+   crash nunca geram post duplicado. Resultados:
+   - `published` + `post_url`;
+   - `failed_before_send`: nada foi criado (token ausente nesta máquina,
+     token revogado, imagem ausente, upload falho, 4xx). Pode ser re-armado;
+   - `send_unknown`: o POST pode ter saído (timeout, erro de rede, 5xx).
+     Terminal: conferir o perfil antes de qualquer ação;
+   - `expired`: passou da janela. Pode ser re-armado.
+   Token desta máquina diferente do que armou: o post sai, com aviso para
+   rodar `npm run sync-env` no `300`. Falha sai com exit 1, e o alarme de
+   units systemd falhas pega.
+4. **Alarme** (`linkedin-personal-token-alarm.ts`, 2º passo da task das
+   07:46):
+   - token: P2 a 14 dias do vencimento; P1 a 3 dias ou menos, expirado, ou
+     revogado (`/v2/userinfo` 401/403); P2 "expiração desconhecida" quando
+     `LINKEDIN_PERSONAL_TOKEN_EXPIRES_AT` está ausente ou ilegível. Fecha
+     sozinho quando o token novo chega ao `.env` do `300`;
+   - intenções dos últimos 7 dias: `posting`/`send_unknown` há mais de 1h,
+     `armed` vencido há mais de 3h, `armed` sem token nesta máquina.
 
 ## Limitações
 
-- A Posts API não agenda: se a task não rodar (máquina fora), o post não sai.
-  O status fica `armed` até passar o limite de 3h e então vira `expired`.
+- A Posts API não agenda: se nenhuma task rodar na janela de 3h (máquina
+  fora, timer desarmado), o post não sai e vira `expired`.
 - Só o 4º post (`## um`) é automatizado. Edição antiga com `## post_pixel`
   segue manual.
 - Se o editor postar à mão numa edição já armada, o automático também posta.

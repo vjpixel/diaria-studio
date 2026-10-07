@@ -1261,7 +1261,8 @@ async function main(): Promise<void> {
   // grava `failed` por ausência nem afeta D1/D2/D3 acima. Erro de agendamento
   // grava `failed`, igual aos destaques. O perfil PESSOAL (vjpixel) não sai
   // daqui — o Worker recusa webhook_target=pixel com action=post; o mesmo
-  // texto vai no lembrete manual do gate do Stage 6.
+  // texto sai automático com token do app pessoal (#9568,
+  // publish-linkedin-personal.ts), senão lembrete manual no Stage 6.
   let useMelhorSummary: UseMelhorDispatchSummary = { status: "off", reason: "--only sem 'um'" };
   if (includeUseMelhor) {
     const umPlan = planUseMelhorDispatch(editionDir, config);

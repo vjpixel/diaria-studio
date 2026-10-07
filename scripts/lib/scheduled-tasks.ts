@@ -936,7 +936,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-LinkedIn-Personal",
     description:
-      "publica no LinkedIn PESSOAL o 4º post (USE MELHOR) armado pelo Stage 6 e alarma a expiração do token pessoal (60 dias)",
+      "publica no LinkedIn PESSOAL o 4º post (USE MELHOR) armado pelo Stage 6 e alarma token (expiração 60d, revogação) e intenções presas",
     steps: [
       { key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] },
       { key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" },
@@ -946,10 +946,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `publishing.social.use_melhor_time` (07:45), o slot em que a página
     // publica o mesmo texto. A Posts API da LinkedIn não agenda, então o
     // post sai quando a task roda; `--fire-due` só publica intenção cujo
-    // `scheduled_at` já passou (até 3h de atraso). Mudou o slot no config?
-    // Mudar este horário junto — `test/publish-linkedin-personal.test.ts`
+    // `scheduled_at` já passou (até 3h de atraso). Slot deslocado (past-slot
+    // guard, Stage 5/6 tardios) é coberto pela task `-Catchup` abaixo, e o
+    // `--arm` recusa (lembrete manual) quando nenhuma das duas cai na janela
+    // (`fireWindowCheck`, scripts/lib/linkedin-personal.ts). Mudou o slot no
+    // config? Mudar este horário junto — `test/linkedin-personal.test.ts`
     // trava o par (minuto = use_melhor_time + 1).
     schedule: { kind: "daily", hour: 7, minute: 46 },
+    issue: "#9568",
+  },
+  {
+    name: "Diaria-LinkedIn-Personal-Catchup",
+    description:
+      "repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR) cujo horário foi deslocado para depois das 07:46",
+    steps: [{ key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] }],
+    logPath: "linkedin-personal/.catchup.log",
+    // De hora em hora (#9568, fleet review da PR #9844): qualquer
+    // `scheduled_at` tem uma execução em até 60 min, dentro da janela de 3h.
+    // Barato (lê 2 arquivos por execução e sai). Concorrência com a das
+    // 07:46 resolvida pelo lock O_EXCL do disparo. Par travado em
+    // `test/linkedin-personal.test.ts`.
+    schedule: { kind: "interval", hours: 1 },
     issue: "#9568",
   },
   {

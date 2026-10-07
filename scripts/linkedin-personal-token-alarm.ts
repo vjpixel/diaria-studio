@@ -2,16 +2,19 @@
 /**
  * scripts/linkedin-personal-token-alarm.ts (#9568)
  *
- * Alarme de expiração do token do app LinkedIn PESSOAL (`w_member_social`,
- * 60 dias, sem refresh token). Roda diário como 2º passo da task
- * `Diaria-LinkedIn-Personal`. Lógica pura em
- * `scripts/lib/linkedin-personal.ts::evaluateTokenExpiry`; aqui é só I/O via
- * `scripts/lib/alarm-issues.ts` (mesmo mecanismo dos outros alarmes).
+ * Alarme diário do LinkedIn PESSOAL automatizado (2º passo da task
+ * `Diaria-LinkedIn-Personal`). Lógica pura em `scripts/lib/linkedin-personal.ts`;
+ * aqui é só I/O via `scripts/lib/alarm-issues.ts`.
  *
- * Faixas: > 14 dias = nada; ≤ 14 = issue P2; ≤ 3 ou expirado = P1 (comenta
- * na issue aberta ao mudar de faixa). Família `estado`: token renovado no
- * ambiente faz a issue fechar sozinha. Token nunca configurado = sem alarme
- * (o lembrete manual do Stage 6 é o modo legítimo).
+ * Dois eixos:
+ *   1. Token (`evaluateTokenExpiry`, família `estado`, fecha sozinha quando o
+ *      token é renovado): > 14 dias = nada; ≤ 14 = P2; ≤ 3 (inclui < 24h) ou
+ *      expirado = P1; `EXPIRES_AT` ausente/ilegível = P2; `GET /v2/userinfo`
+ *      com 401/403 = P1 "token revogado". Token nunca configurado = sem
+ *      alarme (o lembrete manual do Stage 6 é o modo legítimo).
+ *   2. Intenções das edições dos últimos 7 dias (`evaluatePersonalIntents`,
+ *      família `evento`): `posting`/`send_unknown` há mais de 1h, `armed`
+ *      vencido há mais de 3h, `armed` sem token nesta máquina.
  *
  * Uso:
  *   npx tsx scripts/linkedin-personal-token-alarm.ts            # avalia + cria/reusa/fecha issue
@@ -19,17 +22,28 @@
  *
  * Estado: `data/linkedin-personal-token-alarm-issues.json`.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { editionDir } from "./lib/edition-paths.ts";
 import {
   applyAlarmReconciliation,
   loadAlarmIssuesState,
   planAlarmReconciliation,
   saveAlarmIssuesState,
 } from "./lib/alarm-issues.ts";
-import { evaluateTokenExpiry } from "./lib/linkedin-personal.ts";
+import {
+  ALARM_SCAN_DAYS,
+  LINKEDIN_PERSONAL_ENV,
+  PERSONAL_INTENT_FILE,
+  aammddBrt,
+  checkTokenRemote,
+  evaluatePersonalIntents,
+  evaluateTokenExpiry,
+  type PersonalPostIntent,
+} from "./lib/linkedin-personal.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "linkedin-personal-token-alarm-issues.json");
@@ -37,11 +51,31 @@ const LOG_PREFIX = "[linkedin-personal-token-alarm]";
 /** 1 execução limpa (token renovado) já basta pra fechar: o sinal não oscila. */
 const CLOSE_AFTER_RUNS = 1;
 
-function main(): void {
+/** Intenções legíveis das edições dos últimos `ALARM_SCAN_DAYS` dias (BRT). */
+export function readRecentIntents(rootDir: string, now: Date, days = ALARM_SCAN_DAYS): PersonalPostIntent[] {
+  const out: PersonalPostIntent[] = [];
+  for (let i = 0; i <= days; i++) {
+    const aammdd = aammddBrt(new Date(now.getTime() - i * 24 * 60 * 60 * 1000));
+    const p = resolve(rootDir, editionDir(aammdd), "_internal", PERSONAL_INTENT_FILE);
+    if (!existsSync(p)) continue;
+    try {
+      out.push(JSON.parse(readFileSync(p, "utf8")) as PersonalPostIntent);
+    } catch (e) {
+      console.error(`${LOG_PREFIX} ${p} ilegível: ${(e as Error).message}`);
+    }
+  }
+  return out;
+}
+
+async function main(): Promise<void> {
   loadProjectEnv(ROOT);
-  const finding = evaluateTokenExpiry(process.env, new Date());
-  console.log(`${LOG_PREFIX} ${finding ? finding.title : "token ausente ou com folga — nada a alarmar"}`);
-  const findings = finding ? [finding] : [];
+  const now = new Date();
+  const token = (process.env[LINKEDIN_PERSONAL_ENV.accessToken] ?? "").trim();
+  const remote = token ? await checkTokenRemote(fetch, token) : null;
+  if (remote?.state === "unknown") console.warn(`${LOG_PREFIX} não consegui checar o token na LinkedIn: ${remote.reason}`);
+  const tokenFinding = evaluateTokenExpiry(process.env, now, remote);
+  const findings = [...(tokenFinding ? [tokenFinding] : []), ...evaluatePersonalIntents(readRecentIntents(ROOT, now), process.env, now)];
+  console.log(`${LOG_PREFIX} ${findings.length === 0 ? "nada a alarmar" : findings.map((f) => f.title).join(" | ")}`);
   const state = loadAlarmIssuesState(STATE_PATH);
   if (hasFlag(process.argv, "dry-run")) {
     const actions = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS);
@@ -63,5 +97,8 @@ function main(): void {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    console.error(`${LOG_PREFIX} erro: ${(e as Error).message}`);
+    process.exit(1);
+  });
 }

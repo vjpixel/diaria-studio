@@ -56,11 +56,15 @@ export const defaultDopplerSet: DopplerSet = (name, value) => {
     encoding: "utf8",
     shell: process.platform === "win32",
   });
-  if (r.error || r.status !== 0) return { ok: false, error: r.error?.message ?? `exit ${r.status}` };
+  if (r.error || r.status !== 0) {
+    // stderr do Doppler (sem o valor — ele foi pelo stdin) explica a causa:
+    // `doppler login` vencido, ou diretório sem `doppler setup` (projeto/config).
+    return { ok: false, error: (r.error?.message ?? (r.stderr || "").trim()) || `exit ${r.status}` };
+  }
   return { ok: true };
 };
 
-export type PersistResult = { doppler: string[]; dopplerFailed: string[]; envWritten: boolean };
+export type PersistResult = { doppler: string[]; dopplerFailed: string[]; dopplerErrors: string[]; envWritten: boolean };
 
 /**
  * Grava os segredos no Doppler e no `.env`. Falha do Doppler não aborta o
@@ -76,14 +80,19 @@ export function persistSecrets(args: {
 }): PersistResult {
   const doppler: string[] = [];
   const dopplerFailed: string[] = [];
+  const dopplerErrors: string[] = [];
   for (const [name, value] of Object.entries(args.secrets)) {
     const r = args.dopplerSet(name, value);
-    (r.ok ? doppler : dopplerFailed).push(name);
+    if (r.ok) doppler.push(name);
+    else {
+      dopplerFailed.push(name);
+      if (r.error && !dopplerErrors.includes(r.error)) dopplerErrors.push(r.error);
+    }
   }
   let content = args.readEnv(args.envPath) ?? "";
   for (const [name, value] of Object.entries(args.secrets)) content = upsertEnvVar(content, name, value);
   args.writeEnv(args.envPath, content.endsWith("\n") ? content : content + "\n");
-  return { doppler, dopplerFailed, envWritten: true };
+  return { doppler, dopplerFailed, dopplerErrors, envWritten: true };
 }
 
 function openBrowser(url: string): void {
@@ -178,8 +187,11 @@ async function main(): Promise<void> {
   console.log("✔ .env local atualizado (token, URN e expiração).");
   if (r.dopplerFailed.length > 0) {
     console.error(
-      `✖ Doppler NÃO recebeu: ${r.dopplerFailed.join(", ")}. O 300 não vai ver o token até subir pro vault ` +
-        "(`doppler login` e rodar este script de novo, ou colar no dashboard).",
+      `✖ Doppler NÃO recebeu: ${r.dopplerFailed.join(", ")} (cwd ${process.cwd()}).\n` +
+        `  Doppler disse: ${r.dopplerErrors.join(" | ") || "sem stderr"}\n` +
+        "  Causas comuns: `doppler login` vencido, ou este diretório sem `doppler setup` (projeto/config errado — confira `doppler configure`).\n" +
+        "  O 300 não vai ver o token até ele subir pro vault: corrija e rode este script de novo (ou cole no dashboard).\n" +
+        "  Atenção: as 3 chaves ficaram só no .env local, e o próximo `npm run sync-env` nesta máquina aborta (LocalOnlyEnvKeysError, #5155) até o vault ter as mesmas chaves.",
     );
     process.exit(2);
   }

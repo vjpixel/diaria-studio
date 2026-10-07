@@ -98,9 +98,11 @@ export function extractPostPixelText(socialMd: string): string | null {
  * pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)
  * que a página publica — o `## post_pixel` (standalone de D1, #1690) deixou de
  * ser gerado. Prefere `## um`; edição antiga sem `## um` cai no `## post_pixel`
- * legado (nunca quebra o parse de edição já publicada). O perfil pessoal segue
- * MANUAL: o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post`
- * e a API direta tem um autor só (a página).
+ * legado (nunca quebra o parse de edição já publicada). O perfil pessoal não
+ * passa pelo Worker (`linkedin-cron` recusa `webhook_target=pixel` +
+ * `action=post`): sai automático com token do app pessoal (#9568,
+ * `publish-linkedin-personal.ts` reusa este texto), senão lembrete manual no
+ * Stage 6. `## post_pixel` legado é sempre manual.
  */
 export function extractPersonalPostText(
   socialMd: string,
