@@ -849,29 +849,25 @@ export function isDailyQueueEligible(
  * dois lados — documentado, não corrigido, porque o comportamento em si
  * está certo (`test/clarice-segment.test.ts` cobre o caso).
  *
- * Desempate: `priority_points > 0` (ex-engajados) desempata por email ASC,
- * igual `segmentEngajados`; score ≤ 0 ordena por `compareContactRecency`
- * (cadastro mais recente primeiro), igual `segmentRampWarm`.
+ * **Ordem (#9824, decisão do editor de 07/10/2026): `priority_points` DESC
+ * pra fila INTEIRA — positivo, zero e negativo —, com `compareContactRecency`
+ * (cadastro mais recente primeiro) como desempate entre scores iguais.**
  *
- * **#7876 — o bloco de score ≤ 0 é ordenado por safra INTEIRO, sem ser
- * fatiado pela magnitude do decaimento.** Antes, `pa !== pb` rodava primeiro
- * pra qualquer par: dentro do pool de score negativo (-1, -2, … -30) isso
- * criava dezenas de sub-blocos por VALOR de score antes de a recência entrar,
- * e quem decaiu -1 passava inteiro na frente de quem decaiu -2 por mais nova
- * que fosse a safra deste. Isso só ficou visível depois do #7873, que trouxe
- * 268k contatos de score ≤ 0 pra dentro da fila — 263.998 deles entre -1 e
- * -10 (medição de 09/09/2026, ciclo 2608-09), ou seja, o pool inteiro
- * despedaçado por ruído de decaimento.
+ * Reverte a parte do #7876 que juntava score 0 e negativo num bloco único
+ * ordenado só por safra, ignorando a magnitude. Com o teto de volume por onda,
+ * aquilo deixava um contato de score 0 de cadastro antigo FORA da onda
+ * enquanto -10/-20 de cadastros mais novos entravam (onda `d3-qua07`,
+ * 07/10/2026, campanha Brevo 332: 45 elegíveis com score ≥ 0 cortados,
+ * cadastros de 2021 a 2023). Agora a magnitude manda sempre; a safra só
+ * ordena DENTRO de cada valor de score.
  *
- * Score negativo não é sinal editorial: é quanto tempo faz que a pessoa não
- * interage. Dentro do pool quem ordena é a SAFRA — decisão do editor
- * (09/09/2026), consistente com o #5169 (`compareContactRecency` = `created`
- * DESC, cohort não entra enquanto `created` for confiável). Efeito medido:
- * dos 19.000 primeiros da fila, 18.894 passam a ser cadastros de 2026.
+ * O desempate por recência vale também entre positivos (antes era email ASC,
+ * herdado de `segmentEngajados`) — a regra do editor é única pra todos os
+ * scores. `compareContactRecency` já cai pra cohort e depois email ASC quando
+ * `created` empata ou falta, então a ordem continua determinística.
  *
- * Acima de zero nada muda — lá a magnitude É sinal (engajamento recente
- * medido), então score DESC continua governando, e o bloco inteiro mantém
- * prioridade TOTAL sobre o pool ≤ 0 (#7236).
+ * A prioridade TOTAL de score > 0 sobre o resto (#7236) segue valendo como
+ * consequência direta do score DESC, sem regra à parte.
  */
 export function compareDailyQueueOrder(
   a: Pick<StoreRow, "email" | "priority_points" | "created" | "cohort">,
@@ -879,16 +875,9 @@ export function compareDailyQueueOrder(
 ): number {
   const pa = a.priority_points ?? 0;
   const pb = b.priority_points ?? 0;
-  const posA = pa > 0;
-  const posB = pb > 0;
-  // Score positivo tem prioridade TOTAL sobre o bloco ≤ 0 (#7236).
-  if (posA !== posB) return posA ? -1 : 1;
-  if (posA) {
-    // Ambos positivos: score DESC (o valor É sinal editorial), email ASC no empate.
-    if (pa !== pb) return pb - pa;
-    return a.email.localeCompare(b.email);
-  }
-  // Ambos ≤ 0: a SAFRA manda, a magnitude do decaimento não fatia (#7876).
+  // Score DESC em qualquer faixa, inclusive 0 e negativo (#9824).
+  if (pa !== pb) return pb - pa;
+  // Mesmo score: cadastro mais recente primeiro (#9824).
   return compareContactRecency(a, b);
 }
 
