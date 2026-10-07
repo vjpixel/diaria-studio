@@ -7,12 +7,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   looksLikeSubscriberReply,
   filterSubscriberReplies,
+  mergeCapturedReplies,
   extractEmail,
   stripQuotedAndSignature,
   isTrivialReply,
@@ -893,5 +894,68 @@ describe("#9792: --exclude-captured / previouslyCaptured (2ª passada de §0-rep
     const res2 = run(join(dir, "nao-existe.json"));
     assert.equal(res2.status, 0, res2.stderr);
     assert.equal(JSON.parse(res2.stdout).replies.length, 2);
+  });
+
+  it("date em formatos diferentes (ISO vs RFC 2822) da mesma mensagem ainda casa", () => {
+    const r = filterSubscriberReplies([{ ...morning, date: "Tue, 06 Oct 2026 10:00:00 +0000" }], {
+      previouslyCaptured: [morning],
+    });
+    assert.equal(r.replies.length, 0);
+    assert.equal(r.alreadyProcessedCount, 1);
+  });
+
+  it("mergeCapturedReplies une sem duplicar e preserva o que já estava no ledger", () => {
+    const merged = mergeCapturedReplies([morning], [morning, evening]);
+    assert.deepEqual(
+      merged.map((x) => x.thread_id),
+      ["t-manha", "t-noite"],
+    );
+  });
+
+  it("CLI: re-execução do Stage 6 não re-rascunha a captura tardia da execução anterior (ledger --accumulate-into)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fsr-9792-rerun-"));
+    const early = join(dir, "captured-replies.json");
+    const pass = join(dir, "captured-replies-late-pass.json");
+    const ledger = join(dir, "captured-replies-late.json");
+    writeFileSync(early, JSON.stringify([morning]));
+    const runPass = () =>
+      spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/filter-subscriber-replies.ts",
+          "--in",
+          pass,
+          "--exclude-captured",
+          `${early},${ledger}`,
+          "--accumulate-into",
+          ledger,
+        ],
+        { encoding: "utf8" },
+      );
+    // 1ª execução do Stage 6: chega a reply da noite.
+    writeFileSync(pass, JSON.stringify([morning, evening]));
+    const r1 = runPass();
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(
+      JSON.parse(r1.stdout).replies.map((x: { thread_id: string }) => x.thread_id),
+      ["t-noite"],
+    );
+    // 2ª execução (retomada): a mesma captura + uma reply nova.
+    const later = { ...evening, thread_id: "t-madrugada", date: "2026-10-07T02:00:00Z" };
+    writeFileSync(pass, JSON.stringify([morning, evening, later]));
+    const r2 = runPass();
+    assert.equal(r2.status, 0, r2.stderr);
+    const out2 = JSON.parse(r2.stdout);
+    assert.deepEqual(
+      out2.replies.map((x: { thread_id: string }) => x.thread_id),
+      ["t-madrugada"],
+    );
+    assert.equal(out2.alreadyProcessedCount, 2);
+    assert.deepEqual(
+      JSON.parse(readFileSync(ledger, "utf8")).map((x: { thread_id: string }) => x.thread_id),
+      ["t-manha", "t-noite", "t-madrugada"],
+    );
   });
 });

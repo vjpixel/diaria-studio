@@ -191,6 +191,17 @@ function significantWords(s: string): string[] {
  *
  * Sem `correct_value` declarado: cai só no overlap de description/location
  * (sinal mais fraco, mas ainda exige pelo menos 1 termo em comum).
+ *
+ * Atalhos que dispensam o overlap de description/location (avaliados antes da
+ * regra geral acima, todos sobre o corpo já sem citação/assinatura, #9021):
+ *   - (#8751) `correct_value` com token distintivo (caixa mista ou
+ *     letras+dígitos, ver `hasDistinctiveCorrectMatch`) citado como palavra
+ *     inteira;
+ *   - (#8877) idem para `wrong_value` — reply que aponta só a grafia plantada;
+ *   - (#9792) `wrong_value` de 2+ palavras (>=6 chars úteis) citado inteiro e
+ *     contíguo (`containsWholePhrase`);
+ *   - (#9792) `wrong_value` E `correct_value` (distintos) citados os dois como
+ *     palavras inteiras — "X quando deveria ser Y", vale até pra palavra única.
  */
 /**
  * (#8751) Token de `correctValue` que identifica o erro sozinho: >=4 chars e

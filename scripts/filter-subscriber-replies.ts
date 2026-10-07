@@ -66,11 +66,14 @@
  *    duplicado.
  *
  * Uso:
- *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json] [--exclude-captured anterior.json]
+ *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json [--campaign-subjects extra.json] [--exclude-captured a.json[,b.json]] [--accumulate-into ledger.json]
  *
  * `--exclude-captured` (#9792): 2ª passada de §0-replies (Stage 6) — exclui
- * threads já presentes (mesma `thread_id` + `date`) na captura anterior do
- * Passo 1b, pra não rascunhar a mesma reply duas vezes.
+ * threads já presentes (mesma `thread_id` + `date`) nas capturas anteriores
+ * (lista separada por vírgula: Passo 1b + ledger das execuções anteriores do
+ * Stage 6), pra não rascunhar a mesma reply duas vezes.
+ * `--accumulate-into` (#9792): une as threads de `--in` ao ledger indicado
+ * (sem duplicar), pra que uma re-execução do Stage 6 as exclua também.
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
  * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount,
@@ -78,7 +81,7 @@
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
@@ -497,7 +500,39 @@ export interface FilterResult {
  */
 export function capturedReplyKey(r: { thread_id?: string; date?: string }): string | null {
   if (!r.thread_id) return null;
-  return `${r.thread_id}|${r.date ?? ""}`;
+  // `date` normalizado via Date.parse: a captura do Passo 1b e a do Stage 6
+  // podem gravar a mesma mensagem em formatos diferentes (ISO vs. header RFC
+  // 2822) — sem normalizar, a exclusão falharia em silêncio e duplicaria o
+  // rascunho. Valor não-parseável cai pro texto cru.
+  const raw = r.date ?? "";
+  const ms = raw ? Date.parse(raw) : NaN;
+  return `${r.thread_id}|${Number.isNaN(ms) ? raw : new Date(ms).toISOString()}`;
+}
+
+/**
+ * #9792 (fixer PR #9801): une `incoming` ao ledger `existing` sem duplicar
+ * (mesma `capturedReplyKey`). Threads sem chave entram sempre (nunca são
+ * excluídas mesmo, ver `capturedReplyKey`). Usado por `--accumulate-into`:
+ * re-executar o Stage 6 não pode perder a captura tardia da execução anterior
+ * — senão as replies dela voltariam a gerar rascunho duplicado.
+ */
+export function mergeCapturedReplies(existing: CapturedReply[], incoming: CapturedReply[]): CapturedReply[] {
+  const seen = new Set(existing.map(capturedReplyKey).filter((k): k is string => k !== null));
+  const out = [...existing];
+  for (const t of incoming) {
+    const k = capturedReplyKey(t);
+    if (k !== null) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+    }
+    out.push(t);
+  }
+  return out;
+}
+
+function readCapturedFile(path: string): CapturedReply[] {
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  return Array.isArray(parsed) ? parsed : Array.isArray(parsed?.threads) ? parsed.threads : [];
 }
 
 export function filterSubscriberReplies(
@@ -554,7 +589,7 @@ function main(): void {
   const inArg = values["in"];
   if (!inArg) {
     console.error(
-      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <captured-replies.json anterior>]",
+      "Uso: filter-subscriber-replies.ts --in <captured-replies.json> [--campaign-subjects <extra.json>] [--exclude-captured <a.json>[,<b.json>...]] [--accumulate-into <ledger.json>]",
     );
     process.exit(2);
   }
@@ -590,25 +625,45 @@ function main(): void {
       process.exit(2);
     }
   }
-  // #9792: 2ª passada (Stage 6) exclui o que a 1ª captura (Passo 1b) já processou.
+  // #9792: 2ª passada (Stage 6) exclui o que capturas anteriores já processaram —
+  // o Passo 1b E execuções anteriores do próprio Stage 6 (lista separada por vírgula).
   // Arquivo ausente = nada a excluir (a 1ª passada pode ter sido pulada, ex: --no-gates).
   let previouslyCaptured: CapturedReply[] = [];
   const excludeArg = values["exclude-captured"];
   if (typeof excludeArg === "string" && excludeArg) {
-    const excludePath = resolve(ROOT, excludeArg);
-    if (existsSync(excludePath)) {
+    for (const part of excludeArg.split(",").map((x) => x.trim()).filter(Boolean)) {
+      const excludePath = resolve(ROOT, part);
+      if (!existsSync(excludePath)) {
+        console.error(`ℹ️  --exclude-captured ${excludePath} não existe — nenhuma thread excluída por ele.`);
+        continue;
+      }
       try {
-        const parsed = JSON.parse(readFileSync(excludePath, "utf8"));
-        previouslyCaptured = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.threads) ? parsed.threads : [];
+        previouslyCaptured = previouslyCaptured.concat(readCapturedFile(excludePath));
       } catch (err) {
         console.error(`Falha ao parsear --exclude-captured ${excludePath}: ${(err as Error).message}`);
         process.exit(2);
       }
-    } else {
-      console.error(`ℹ️  --exclude-captured ${excludePath} não existe — nenhuma thread excluída por captura anterior.`);
     }
   }
   const result = filterSubscriberReplies(threads, { campaignSubjects, previouslyCaptured });
+  // #9792 (fixer PR #9801): `--accumulate-into` une a captura desta passada ao
+  // ledger cumulativo (ex: `captured-replies-late.json`), em vez de o playbook
+  // sobrescrevê-lo — re-executar o Stage 6 continua excluindo o que a execução
+  // anterior já rascunhou.
+  const accArg = values["accumulate-into"];
+  if (typeof accArg === "string" && accArg) {
+    const accPath = resolve(ROOT, accArg);
+    let existing: CapturedReply[] = [];
+    if (existsSync(accPath)) {
+      try {
+        existing = readCapturedFile(accPath);
+      } catch (err) {
+        console.error(`Falha ao parsear --accumulate-into ${accPath}: ${(err as Error).message}`);
+        process.exit(2);
+      }
+    }
+    writeFileSync(accPath, JSON.stringify(mergeCapturedReplies(existing, threads), null, 2) + "\n", "utf8");
+  }
   console.log(JSON.stringify(result, null, 2));
   if (result.replies.length > 0) {
     // #8997: as duas contagens são mutuamente exclusivas (trivial tem
