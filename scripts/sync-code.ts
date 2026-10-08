@@ -47,9 +47,21 @@
  * VISÍVEL (fail-soft, exit 0 sempre) — não decide o que fazer com os
  * stashes acumulados nem investiga a causa raiz; ambos ficam fora de
  * escopo por decisão explícita da própria issue #8719.
+ *
+ * #9887: o banner agora diz se o pileup está ATIVO (esta rodada criou/preservou
+ * um autostash, ou há um recente) ou é RESÍDUO HISTÓRICO (nenhum novo há
+ * `AUTOSTASH_PILEUP_IDLE_DAYS`+ dias) — campo `autostash_pileup` no JSON. A
+ * mesma pilha parada de 15 virou issue 2× (#9690, #9887) pedindo investigação
+ * de código quando o que faltava era a limpeza manual.
  */
 
-import { GIT_SYNC_STASH_MESSAGE, describeFfRefusal, syncCode } from "./lib/git-sync.ts";
+import { defaultSpawn, describeFfRefusal, syncCode } from "./lib/git-sync.ts";
+import {
+  assessAutostashPileup,
+  formatAutostashPileupBanner,
+  listAutostashDates,
+  type AutostashPileupAssessment,
+} from "./lib/autostash-report.ts";
 import { writeSyncCodeMarker } from "./lib/sync-code-marker.ts";
 
 /**
@@ -63,8 +75,20 @@ const STALE_AUTOSTASH_ALARM_THRESHOLD = 3;
 
 const result = syncCode();
 
+// #9887: só com o alarme armado, distingue pileup CRESCENDO (esta rodada
+// criou/preservou um autostash, ou há um recente) de RESÍDUO HISTÓRICO (pilha
+// parada desde antes dos fixes #8991/#9107, só falta limpeza manual). 1 spawn
+// extra (`git stash list --format`), fora do lock do sync — leitura pura.
+const autostashPileup: AutostashPileupAssessment | null =
+  result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD
+    ? assessAutostashPileup(listAutostashDates(defaultSpawn), {
+        now: new Date(),
+        createdThisRun: result.preserved_stash !== null,
+      })
+    : null;
+
 // Sempre imprime JSON do resultado para o orchestrator logar
-console.log(JSON.stringify(result, null, 2));
+console.log(JSON.stringify(autostashPileup ? { ...result, autostash_pileup: autostashPileup } : result, null, 2));
 
 // #8690: marker por edição (fail-soft — falha de escrita só avisa).
 const editionDirIdx = process.argv.indexOf("--edition-dir");
@@ -190,16 +214,10 @@ if (result.outcome === "worktree_refused") {
 // (exit 0 abaixo, inalterado) — este script só torna o pileup visível, não
 // decide o que fazer com os stashes acumulados nem investiga a causa raiz
 // (fora de escopo por decisão explícita da própria issue #8719).
-if (result.stale_autostash_count >= STALE_AUTOSTASH_ALARM_THRESHOLD) {
+// #9887: o texto (ativo × histórico) vem de `formatAutostashPileupBanner`.
+if (autostashPileup) {
   process.stderr.write(
-    `\n📚 PILEUP DE AUTOSTASH — ${result.stale_autostash_count} stashes de sync-code.ts acumulados em ` +
-      `'git stash list' (limiar de alarme: ${STALE_AUTOSTASH_ALARM_THRESHOLD}+; incidente que motivou o ` +
-      `alarme, #8719, mediu 6).\n` +
-      `   A edição vai continuar (fail-soft) — este script só sinaliza o pileup, não decide o que fazer\n` +
-      `   com ele. Investigue e limpe manualmente (revise CADA um antes de descartar — pode haver\n` +
-      `   trabalho legítimo não-relacionado a este sync ali dentro):\n` +
-      `   git stash list | grep -F '${GIT_SYNC_STASH_MESSAGE}'\n` +
-      `   Listagem read-only com arquivos por stash (#8991): npx tsx scripts/list-autostashes.ts\n\n`,
+    formatAutostashPileupBanner(result.stale_autostash_count, STALE_AUTOSTASH_ALARM_THRESHOLD, autostashPileup),
   );
 }
 
