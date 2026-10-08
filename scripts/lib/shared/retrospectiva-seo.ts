@@ -158,11 +158,38 @@ export function injectRetrospectivaHeadMeta(
   // improvável mas não impossível) fecharia o `<script>` mais cedo — escapar
   // a barra evita que o navegador interprete a tag antes do fim do JSON.
   const safeJsonLd = opts.jsonLd.replace(/<\/script/gi, "<\\/script");
-  const tags = `  <meta name="description" content="${escAttr(opts.description)}" />
-  <link rel="canonical" href="${escAttr(opts.canonical)}" />
-  <script type="application/ld+json">${safeJsonLd}</script>
-`;
+  // #9872: a página web mensal já nasce com description/canonical/OG no
+  // `<head>` — repetir as duas tags deixaria a página com dois `canonical`
+  // (sinal ambíguo para buscador). Só o que falta é injetado.
+  const head = headOf(html);
+  const tags = [
+    /<meta\s+name=["']description["']/i.test(head)
+      ? ""
+      : `  <meta name="description" content="${escAttr(opts.description)}" />\n`,
+    /<link\s+rel=["']canonical["']/i.test(head) ? "" : `  <link rel="canonical" href="${escAttr(opts.canonical)}" />\n`,
+    `  <script type="application/ld+json">${safeJsonLd}</script>\n`,
+  ].join("");
   return `${html.slice(0, ultima.index)}${tags}${html.slice(ultima.index)}`;
+}
+
+/** O `<head>` real: tudo antes do PRIMEIRO `</head>` (um `</head>` citado no
+ * corpo vem depois dele). Sem `</head>`, string vazia. @pure */
+function headOf(html: string): string {
+  const m = /<\/head\s*>/i.exec(html);
+  return m ? html.slice(0, m.index) : "";
+}
+
+/**
+ * Conteúdo do `<meta name="description">` que o HTML já traz no `<head>`
+ * (#9872 — a página web mensal o gera a partir do PREVIEW do draft), ou `null`.
+ * O Worker o prefere à description derivada do corpo, que é mecânica.
+ * @pure
+ */
+export function extractMetaDescription(html: string): string | null {
+  const m = /<meta\s+name=["']description["']\s+content="([^"]*)"/i.exec(headOf(html));
+  if (!m) return null;
+  const text = decodeHtmlEntities(m[1]).trim();
+  return text.length > 0 ? text : null;
 }
 
 function escAttr(s: string): string {

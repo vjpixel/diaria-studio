@@ -32,16 +32,26 @@ import { buildArticleHtml, buildArticleTeaserHtml } from "../scripts/lib/mensal/
 import { articleBuildOptionsForCycle } from "../scripts/build-article-page.ts";
 import { draftToEmailApoiadoresKit } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 
-/** Segmentos de texto visíveis: um por bloco (p/h*, td, li…), entidades e espaços normalizados. */
+/**
+ * Segmentos de texto visíveis: um por bloco (p/h*, td, li…), entidades e espaços normalizados.
+ *
+ * #9872: a página deixou de ser o HTML do e-mail e virou HTML semântico. Duas
+ * normalizações tornam as duas saídas comparáveis: (1) da página só conta o
+ * `<article>` — o masthead (marca, mês, `<h1>`) é cromo da página, não conteúdo
+ * do e-mail; (2) o ● dos kickers, que no e-mail é texto (`&#9679;`) e na página
+ * vem do CSS, sai dos dois lados.
+ */
 function textSegments(html: string): string[] {
-  const body = html
+  const article = /<article\b[^>]*>([\s\S]*)<\/article>/i.exec(html);
+  const body = (article ? article[1] : html)
     .replace(/<head[\s\S]*?<\/head>/i, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "");
   return body
-    .split(/<\/?(?:p|h[1-6]|td|tr|table|div|li|ul|ol|br)\b[^>]*>/i)
+    .split(/<\/?(?:p|h[1-6]|td|tr|table|div|li|ul|ol|br|section|aside|figure|figcaption)\b[^>]*>/i)
     .map((s) =>
       s
+        .replace(/&#9679;/g, "")
         .replace(/<[^>]+>/g, "")
         .replace(/&nbsp;/g, " ")
         .replace(/&quot;/g, '"')

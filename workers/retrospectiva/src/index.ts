@@ -75,6 +75,7 @@ import { verifySubscriberViaKitByEmail } from "../../../scripts/lib/shared/subsc
 import { checkKvRateLimit, clientIpFromRequest } from "../../../scripts/lib/shared/rate-limit.ts"; // #4052
 import {
   deriveDescription,
+  extractMetaDescription,
   extractTitleText,
   buildRetrospectivaJsonLd,
   injectRetrospectivaHeadMeta,
@@ -227,7 +228,8 @@ function injectSeo(
   paywallCssSelector?: string,
 ): string {
   const headline = extractTitleText(descriptionSource) ?? "Retrospectiva diar.ia.br";
-  const description = deriveDescription(descriptionSource);
+  // #9872: a página mensal já traz a description do PREVIEW; só deriva do corpo quando falta.
+  const description = extractMetaDescription(descriptionSource) ?? deriveDescription(descriptionSource);
   const jsonLd = buildRetrospectivaJsonLd({ headline, description, url: canonical, isAccessibleForFree, paywallCssSelector });
   return injectRetrospectivaHeadMeta(rendered, { description, canonical, jsonLd });
 }
