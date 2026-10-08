@@ -3115,6 +3115,24 @@ export async function readCampaignsBackfillCursorStrict(
   return normalizeCampaignsBackfillCursor(raw) ?? fallback;
 }
 
+/** #9918: falha de ESCRITA do cursor do backfill. */
+export class CampaignsBackfillCursorWriteError extends Error {
+  constructor(message: string, readonly kvError?: unknown) {
+    super(message);
+    this.name = "CampaignsBackfillCursorWriteError";
+  }
+}
+
+/** #9918: LANÇA em falha (antes era `catch {}` vazio). Com o KV estrito do
+ * backfill (`BACKFILL_KV_OPTS.strictWrites`, #9861) o `put` lança, e o catch
+ * vazio fazia o CLI imprimir `offset=… done=…` e "backfill completo" a partir
+ * do cursor em memória e sair com 0 sem nada persistido — `statsAttempts`
+ * (#9858) nunca era salvo e uma campanha com 5xx persistente nunca chegava ao
+ * teto de desistência, sem uma linha de log. Lançar não perde dado: o índice
+ * e os `stats:{id}` já gravados ficam, e a próxima rodada relê a mesma faixa
+ * a partir do cursor anterior (o índice deduplica, stats em cache não geram
+ * GET). O único chamador é o CLI `scripts/clarice-backfill-campaigns.ts`, que
+ * já converte a exceção em `exitCode = 1`. */
 async function writeCampaignsBackfillCursor(
   env: Pick<Env, "STATS_CACHE">,
   cursor: CampaignsBackfillCursor,
@@ -3122,9 +3140,13 @@ async function writeCampaignsBackfillCursor(
   if (!env.STATS_CACHE) return;
   try {
     await env.STATS_CACHE.put(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, JSON.stringify(cursor));
-  } catch {
-    // fail-soft — perder o cursor só faz a próxima chamada remedir/reprocessar,
-    // nunca corrompe dado já gravado em stats:{id}/archive-index.
+  } catch (e) {
+    throw new CampaignsBackfillCursorWriteError(
+      `gravação de '${CAMPAIGNS_BACKFILL_CURSOR_KV_KEY}' falhou — progresso desta rodada não persistido ` +
+        `(a próxima relê a mesma faixa): ` +
+        (e instanceof Error ? e.message : String(e)),
+      e,
+    );
   }
 }
 

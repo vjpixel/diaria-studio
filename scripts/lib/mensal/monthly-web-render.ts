@@ -187,6 +187,13 @@ function renderLinkListWeb(chunk: string, displayTitle: string): string {
   return parts.join("\n");
 }
 
+/** #9916: título do É IA? na PÁGINA web. O e-mail diz "Clique na imagem que
+ * foi gerada por IA" porque lá cada foto é link de voto; na web as fotos são
+ * `<img>` sem link desde o #9864 (o voto saiu da página), então a instrução de
+ * clicar seria falsa — o leitor clicaria e nada aconteceria. Pergunta neutra,
+ * sem verbo de ação. Única divergência de texto web × e-mail neste bloco. */
+export const WEB_EIA_TITLE = "Qual destas imagens foi gerada por IA?";
+
 function renderEiaWeb(
   chunk: string,
   yymm: string,
@@ -205,7 +212,7 @@ function renderEiaWeb(
     `<section class="eia">`,
     kicker("É IA?"),
     `<div class="panel"><div class="panel-body">`,
-    `<p class="eia-title">Clique na imagem que foi gerada por IA</p>`,
+    `<p class="eia-title">${escHtml(WEB_EIA_TITLE)}</p>`,
     `<div class="eia-pair">${img("A", imageUrlA)}${img("B", imageUrlB)}</div>`,
     `<p class="credit">${inline(content)}</p>`,
   ];

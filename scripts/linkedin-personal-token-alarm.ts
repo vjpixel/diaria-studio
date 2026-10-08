@@ -42,14 +42,17 @@ import {
   checkTokenRemote,
   evaluatePersonalIntents,
   evaluateTokenExpiry,
+  tokenAlarmFreezeOnUnknownRemote,
   type PersonalPostIntent,
 } from "./lib/linkedin-personal.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "linkedin-personal-token-alarm-issues.json");
 const LOG_PREFIX = "[linkedin-personal-token-alarm]";
-/** 1 execução limpa (token renovado) já basta pra fechar: o sinal não oscila. */
-const CLOSE_AFTER_RUNS = 1;
+/** 1 execução limpa (token renovado) já basta pra fechar: o sinal não oscila.
+ * Exceção (#9915): checagem remota indeterminada não conta como execução limpa
+ * pra issue de token revogado — ver `tokenAlarmFreezeOnUnknownRemote`. */
+export const CLOSE_AFTER_RUNS = 1;
 
 /** Intenções legíveis das edições dos últimos `ALARM_SCAN_DAYS` dias (BRT). */
 export function readRecentIntents(rootDir: string, now: Date, days = ALARM_SCAN_DAYS): PersonalPostIntent[] {
@@ -77,12 +80,14 @@ async function main(): Promise<void> {
   const findings = [...(tokenFinding ? [tokenFinding] : []), ...evaluatePersonalIntents(readRecentIntents(ROOT, now), process.env, now)];
   console.log(`${LOG_PREFIX} ${findings.length === 0 ? "nada a alarmar" : findings.map((f) => f.title).join(" | ")}`);
   const state = loadAlarmIssuesState(STATE_PATH);
+  const allowlist = tokenAlarmFreezeOnUnknownRemote(remote, state);
+  if (allowlist.length > 0) console.warn(`${LOG_PREFIX} issue de token revogado mantida como está até a LinkedIn responder (#9915).`);
   if (hasFlag(process.argv, "dry-run")) {
-    const actions = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS, allowlist);
     console.log(`${LOG_PREFIX} --dry-run: ${actions.map((a) => a.kind).join(", ") || "nenhuma ação"} — gh NÃO foi chamado.`);
     return;
   }
-  const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, { cwd: ROOT, closeAfterRuns: CLOSE_AFTER_RUNS });
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, { cwd: ROOT, closeAfterRuns: CLOSE_AFTER_RUNS, allowlist });
   saveAlarmIssuesState(nextState, STATE_PATH);
   let failed = false;
   for (const o of findingOutcomes) {

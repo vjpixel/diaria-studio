@@ -31,6 +31,9 @@ import { join } from "node:path";
 import { buildArticleHtml, buildArticleTeaserHtml } from "../scripts/lib/mensal/build-article-page.ts";
 import { articleBuildOptionsForCycle } from "../scripts/build-article-page.ts";
 import { draftToEmailApoiadoresKit } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
+import { WEB_EIA_TITLE } from "../scripts/lib/mensal/monthly-web-render.ts";
+
+const EMAIL_EIA_TITLE = "Clique na imagem que foi gerada por IA";
 
 /**
  * Segmentos de texto visíveis: um por bloco (p/h*, td, li…), entidades e espaços normalizados.
@@ -189,9 +192,17 @@ function emailReal(draft: string): string {
   ).html;
 }
 
-/** Chrome que legitimamente difere: imagens (a página não as pluga) e merge tag (a web a remove). */
+/** Chrome que legitimamente difere: imagens (a página não as pluga), merge tag
+ * (a web a remove) e o título do É IA? — "Clique na imagem…" no e-mail, onde a
+ * foto é link de voto; pergunta neutra na web, onde não é (#9916). */
 function ehChromeDeEmail(seg: string): boolean {
-  return seg === CAPTION || /^Imagem [AB]$/.test(seg) || seg.includes("{{");
+  return (
+    seg === CAPTION ||
+    /^Imagem [AB]$/.test(seg) ||
+    seg.includes("{{") ||
+    seg === EMAIL_EIA_TITLE ||
+    seg === WEB_EIA_TITLE
+  );
 }
 
 describe("#9496 — a página é a mesma versão do e-mail dos apoiadores", () => {
