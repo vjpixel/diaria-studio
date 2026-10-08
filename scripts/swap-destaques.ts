@@ -18,8 +18,11 @@
  *      default determinístico (não há bucket de origem do item promovido
  *      pra "trocar de lugar" com ele, ao contrário do swap-destaque.ts;
  *      RADAR é o pool genérico de reentrada, mesmo destino usado quando o
- *      editor demove um D3 manualmente, CLAUDE.md #2316/#2343) — ou é
- *      descartado com `--drop`;
+ *      editor demove um D3 manualmente, CLAUDE.md #2316/#2343) — ou vai
+ *      pro bucket de `--demote-to {bucket}` (#9869, mesmo flag do
+ *      swap-destaque.ts), ou é descartado com `--drop`. Qualquer cópia
+ *      pré-existente da mesma URL em outro bucket de pool sai junto (#9869:
+ *      senão o `url-bucket` acusa a duplicata `lancamento` + `radar`);
  *   3. Bloco `**DESTAQUE N**` de `02-reviewed.md` substituído por
  *      placeholder `[RASCUNHO PENDENTE]`;
  *   4. Imagens (`04-d{N}-*`) e prompts (`02-d{N}-*`) antigos da posição
@@ -47,6 +50,7 @@
  *   npx tsx scripts/swap-destaques.ts --edition 260929 \
  *     --d1-url https://exemplo.com/artigo-x --d1-title "Título de X" \
  *     --d2-url https://exemplo.com/artigo-y --d2-title "Título de Y" \
+ *     [--demote-to radar|lancamento|use_melhor|video|runners_up] \
  *     [--drop] [--dry-run] [--edition-dir <path>]
  *
  * `--drop` descarta TODOS os destaques substituídos nesta chamada (em vez
@@ -69,6 +73,7 @@ import {
   removeDestaqueBlockFromMd,
   deleteDestaqueImages,
   deleteDestaquePrompts,
+  type SourceBucket,
 } from "./swap-destaque.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -88,8 +93,13 @@ export interface SwapDestaquesArgs {
   editionDir: string;
   slots: SlotSwap[];
   drop: boolean;
+  /** #9869: bucket que recebe o(s) rebaixado(s) (`--demote-to`). Default `radar`. */
+  demoteTo: SourceBucket;
   dryRun: boolean;
 }
+
+/** #9869: buckets de pool aceitos por `--demote-to` (os mesmos do swap-destaque.ts). */
+export const DEMOTE_BUCKETS: readonly SourceBucket[] = ["radar", "lancamento", "use_melhor", "video", "runners_up"];
 
 export interface SwapDestaquesResult {
   edition: string;
@@ -97,7 +107,7 @@ export interface SwapDestaquesResult {
   swapped: Array<{
     position: number;
     promoted: { url: string; title: string };
-    demoted: { url: string; title: string; dropped: boolean };
+    demoted: { url: string; title: string; dropped: boolean; to_bucket?: SourceBucket };
   }>;
   modified: {
     rewritten: string[];
@@ -131,14 +141,16 @@ export function buildManualHighlight(
  * Aplica os swaps em `data.highlights[]` IN PLACE. `slots` já validado sem
  * posições duplicadas pelo parser de CLI, mas a função revalida (chamada
  * também direto em teste). O destaque substituído em cada slot vai para
- * `data.radar[0]` (a menos que `drop`), NUNCA para o bucket original do
- * highlight (não é rastreável de forma confiável — ver docstring do
- * arquivo).
+ * `data[demoteTo][0]` (default `radar`; a menos que `drop`), NUNCA inferido
+ * do bucket original do highlight (não é rastreável de forma confiável — ver
+ * docstring do arquivo). #9869: antes de inserir, remove dos buckets de pool
+ * (`DEMOTE_BUCKETS`) qualquer cópia da mesma URL — o item fica em UM bucket só.
  */
 export function swapManualInApprovedJson(
   data: Record<string, unknown>,
   slots: SlotSwap[],
   drop: boolean,
+  demoteTo: SourceBucket = "radar",
 ): {
   ok: true;
   demoted: Array<{ position: number; url: string; title: string }>;
@@ -190,13 +202,31 @@ export function swapManualInApprovedJson(
     });
     highlights[idx] = buildManualHighlight(s.url, s.title, s.position);
     if (!drop) {
-      const radar = (data.radar as Record<string, unknown>[] | undefined) ?? [];
-      data.radar = [toBucketItem(demotedItem, "radar"), ...radar]; // #9381 + #9601: item de pool é flat
+      removeUrlFromPoolBuckets(data, extractUrl(demotedItem)); // #9869
+      const target = (data[demoteTo] as Record<string, unknown>[] | undefined) ?? [];
+      data[demoteTo] = [toBucketItem(demotedItem, demoteTo), ...target]; // #9381 + #9601: item de pool é flat
     }
   }
   data.highlights = highlights;
 
   return { ok: true, demoted };
+}
+
+/**
+ * #9869: tira de todos os buckets de pool os itens com a URL dada (comparação
+ * sem barra final). URL vazia → no-op. Muta `data`.
+ */
+export function removeUrlFromPoolBuckets(data: Record<string, unknown>, url: string): void {
+  const norm = (u: string) => u.trim().replace(/\/+$/, "");
+  const key = norm(url);
+  if (!key) return;
+  for (const b of DEMOTE_BUCKETS) {
+    const list = data[b];
+    if (!Array.isArray(list)) continue;
+    data[b] = list.filter(
+      (it) => !(it && typeof it === "object" && norm(extractUrl(it as Record<string, unknown>)) === key),
+    );
+  }
 }
 
 /**
@@ -254,7 +284,7 @@ export function parseSwapDestaquesArgs(argv: string[]): SwapDestaquesArgs {
     console.error("Erro: --edition AAMMDD é obrigatório");
     console.error(
       "Uso: swap-destaques.ts --edition AAMMDD --d1-url <url> --d1-title <title> " +
-        "[--d2-url <url> --d2-title <title>] [--d3-url <url> --d3-title <title>] [--drop] [--dry-run]",
+        "[--d2-url <url> --d2-title <title>] [--d3-url <url> --d3-title <title>] [--demote-to <bucket>] [--drop] [--dry-run]",
     );
     process.exit(2);
   }
@@ -286,7 +316,21 @@ export function parseSwapDestaquesArgs(argv: string[]): SwapDestaquesArgs {
   const editionDir =
     args["edition-dir"] ?? resolveEditionDir(editionsRootDir, args.edition);
 
-  return { edition: args.edition, editionDir, slots, drop, dryRun };
+  // #9869: --demote-to bucket (opcional, default radar)
+  let demoteTo: SourceBucket = "radar";
+  if (args["demote-to"] !== undefined) {
+    if (!DEMOTE_BUCKETS.includes(args["demote-to"] as SourceBucket)) {
+      console.error(`Erro: --demote-to "${args["demote-to"]}" inválido. Válidos: ${DEMOTE_BUCKETS.join(", ")}`);
+      process.exit(2);
+    }
+    if (drop) {
+      console.error("Erro: --demote-to e --drop são mutuamente exclusivos");
+      process.exit(2);
+    }
+    demoteTo = args["demote-to"] as SourceBucket;
+  }
+
+  return { edition: args.edition, editionDir, slots, drop, demoteTo, dryRun };
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +346,7 @@ function jsonContent(data: unknown): string {
 }
 
 function main(): void {
-  const { edition, editionDir, slots, drop, dryRun } = parseSwapDestaquesArgs(
+  const { edition, editionDir, slots, drop, demoteTo, dryRun } = parseSwapDestaquesArgs(
     process.argv.slice(2),
   );
 
@@ -333,6 +377,7 @@ function main(): void {
     JSON.parse(JSON.stringify(approvedData)),
     slots,
     drop,
+    demoteTo,
   );
   if (!dryCheck.ok) {
     console.error(`Erro: ${dryCheck.reason}`);
@@ -349,6 +394,7 @@ function main(): void {
         url: dryCheck.demoted[i].url,
         title: dryCheck.demoted[i].title,
         dropped: drop,
+        ...(drop ? {} : { to_bucket: demoteTo }),
       },
     })),
     modified: { rewritten: [], deleted: [] },
@@ -362,7 +408,7 @@ function main(): void {
   }
 
   // 1. 01-approved.json
-  const swapResult = swapManualInApprovedJson(approvedData, slots, drop);
+  const swapResult = swapManualInApprovedJson(approvedData, slots, drop, demoteTo);
   if (!swapResult.ok) {
     console.error(`Erro ao aplicar swap em 01-approved.json: ${swapResult.reason}`);
     process.exit(1);
@@ -384,7 +430,7 @@ function main(): void {
       cappedData = {};
     }
     if (Array.isArray(cappedData.highlights)) {
-      const cappedSwap = swapManualInApprovedJson(cappedData, slots, drop);
+      const cappedSwap = swapManualInApprovedJson(cappedData, slots, drop, demoteTo);
       if (cappedSwap.ok) {
         pendingWrites.push({ path: approvedCappedPath, content: jsonContent(cappedData) });
       } else {
@@ -448,7 +494,7 @@ function main(): void {
       `✓ swap-destaques concluído (edição ${edition})`,
       ...result.swapped.map(
         (s) =>
-          `  d${s.position}: "${s.promoted.title}" ← NOVO  |  "${s.demoted.title}" → ${s.demoted.dropped ? "DESCARTADO" : "radar[0]"}`,
+          `  d${s.position}: "${s.promoted.title}" ← NOVO  |  "${s.demoted.title}" → ${s.demoted.dropped ? "DESCARTADO" : `${s.demoted.to_bucket}[0]`}`,
       ),
       ...(result.warnings.length > 0
         ? ["", "  Avisos:", ...result.warnings.map((w) => `    ⚠️  ${w}`)]

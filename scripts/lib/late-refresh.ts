@@ -66,7 +66,74 @@ export interface GithubNewReposFeed extends LateRefreshFeedBase {
   org: string;
 }
 
-export type LateRefreshFeed = RssFeed | SitemapFeed | GithubReleasesFeed | GithubNewReposFeed;
+/**
+ * Página-índice HTML oficial, mais nova primeiro (#9870). Para seção cujo
+ * sitemap não traz `lastmod` por página — caso de `claude.com/resources/articles/`
+ * (medido em 08/10/2026: 255 entradas no `claude.com/sitemap.xml`, nenhuma
+ * com `lastmod`, em ordem alfabética). Lê os `take` primeiros links do índice
+ * e a data de cada um sai da própria página (`article:published_time` /
+ * `datePublished`). Leitura de página pública oficial, volume fixo pequeno
+ * (1 + `take` GETs por gate) — não é scraping em escala.
+ */
+export interface IndexPageFeed extends LateRefreshFeedBase {
+  method: "index-page";
+  /** Só links cujo path começa com este prefixo (e tem um segmento depois dele). */
+  pathPrefix: string;
+  /** Quantos links do topo do índice abrir. */
+  take: number;
+}
+
+export type LateRefreshFeed = RssFeed | SitemapFeed | GithubReleasesFeed | GithubNewReposFeed | IndexPageFeed;
+
+/**
+ * #9870: links de artigo de uma página-índice, na ordem em que aparecem
+ * (o índice lista o mais novo primeiro), absolutos, sem duplicata, só do
+ * mesmo host e sob `pathPrefix` com exatamente UM segmento depois dele
+ * (exclui o próprio índice, paginação e versões localizadas `/de/...`, que
+ * não começam com o prefixo). @pure
+ */
+export function extractIndexPageLinks(html: string, pageUrl: string, pathPrefix: string, take: number): string[] {
+  let base: URL;
+  try {
+    base = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of html.matchAll(/href=["']([^"'#]+)["']/gi)) {
+    let u: URL;
+    try {
+      u = new URL(m[1], base);
+    } catch {
+      continue;
+    }
+    if (u.host !== base.host) continue;
+    if (!u.pathname.startsWith(pathPrefix)) continue;
+    const rest = u.pathname.slice(pathPrefix.length).replace(/\/+$/, "");
+    if (!rest || rest.includes("/")) continue;
+    const abs = `${u.protocol}//${u.host}${pathPrefix}${rest}`;
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    out.push(abs);
+    if (out.length >= take) break;
+  }
+  return out;
+}
+
+/**
+ * #9870: data de publicação de uma página de artigo — `article:published_time`
+ * (Open Graph) ou `datePublished` (JSON-LD). `null` se nenhum. @pure
+ */
+export function extractPublishedTime(html: string): string | null {
+  const og =
+    html.match(/<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i) ??
+    html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']article:published_time["']/i);
+  const ld = html.match(/"datePublished"\s*:\s*"([^"]+)"/);
+  const raw = (og?.[1] ?? ld?.[1] ?? "").trim();
+  if (!raw || Number.isNaN(new Date(raw).getTime())) return null;
+  return raw;
+}
 
 /**
  * Tag semver ESTÁVEL de minor/major com prefixo `v` (`v1.20.0`, `v0.25.0`) —
@@ -92,11 +159,17 @@ function githubNewReposFeed(lab: string, name: string, org: string): GithubNewRe
  * Mistral e Meta em 2026-10-02; os do GitHub (xAI, DeepSeek, Qwen) em
  * 2026-10-07 (#9424, `docs/late-refresh-github-feeds.md`).
  * Anthropic não publica RSS — o sitemap tem `lastmod` por página, filtrado
- * por prefixo de path pra não listar landing/solutions/localizações.
+ * por prefixo de path pra não listar landing/solutions/localizações. Exceção:
+ * `claude.com/resources/articles/` não tem `lastmod` e é lido pela página-índice
+ * (`IndexPageFeed`, #9870).
  */
 export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
   { lab: "Anthropic", name: "Anthropic News", url: "https://www.anthropic.com/sitemap.xml", method: "sitemap", pathPrefix: "/news/" },
-  { lab: "Anthropic", name: "Claude Blog", url: "https://claude.com/sitemap.xml", method: "sitemap", pathPrefix: "/blog/" },
+  // #9870: o blog da claude.com migrou para /resources/articles/ (claude.com/blog
+  // redireciona para lá; o sitemap não tem mais nenhuma URL /blog/ e as de
+  // /resources/articles/ não têm lastmod, medido em 08/10/2026). O antigo feed
+  // "Claude Blog" (sitemap + pathPrefix /blog/) devolvia zero sempre e saiu.
+  { lab: "Anthropic", name: "Claude Articles", url: "https://claude.com/resources/articles", method: "index-page", pathPrefix: "/resources/articles/", take: 8 },
   { lab: "OpenAI", name: "OpenAI News", url: "https://openai.com/news/rss.xml", method: "rss" },
   { lab: "Google", name: "Google AI Blog", url: "https://blog.google/technology/ai/rss/", method: "rss" },
   { lab: "Google DeepMind", name: "DeepMind Blog", url: "https://deepmind.google/blog/rss.xml", method: "rss" },

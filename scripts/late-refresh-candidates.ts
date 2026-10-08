@@ -40,11 +40,14 @@ import { processThreads, type CapturedThread } from "./capture-newsletter-urls.t
 import { extractPastUrlsUnbounded, readPastEditionsMd, readReviewedDestaqueUrls } from "./lib/past-editions-extract.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runTsx } from "./lib/run-tsx.ts";
+import { stripHtmlBasic } from "./lib/strip-html.ts";
 import {
   IMPRECISE_DATE_LOOKBACK_MS,
   LATE_REFRESH_FEEDS,
   LATE_REFRESH_UNCOVERED_LABS,
   canonicalUrlSet,
+  extractIndexPageLinks,
+  extractPublishedTime,
   feedReportRow,
   filterLateArticles,
   formatLateRefreshBlock,
@@ -59,6 +62,7 @@ import {
   type GithubNewReposFeed,
   type GithubReleasesFeed,
   type HighlightLike,
+  type IndexPageFeed,
   type LateArticle,
   type LateRefreshFeed,
   type SitemapFeed,
@@ -109,7 +113,56 @@ async function fetchSitemapAfter(feed: SitemapFeed, cutoffIso: string): Promise<
   }));
 }
 
-const GITHUB_HEADERS = { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } as const;
+const BOT_HEADERS = { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } as const;
+
+async function fetchHtml(url: string, fetchImpl: typeof fetch): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FEED_TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(url, { headers: BOT_HEADERS, signal: ctrl.signal, redirect: "follow" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function metaContent(html: string, attr: "property" | "name", key: string): string {
+  const m =
+    html.match(new RegExp(`<meta[^>]+${attr}=["']${key}["'][^>]+content=["']([^"']+)["']`, "i")) ??
+    html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+${attr}=["']${key}["']`, "i"));
+  return m ? stripHtmlBasic(m[1]) : "";
+}
+
+/**
+ * #9870: página-índice → os `take` primeiros artigos, cada um com a data da
+ * própria página. Página de artigo que falha vira artigo sem data (o corte
+ * por data o descarta) — o feed só falha inteiro se o ÍNDICE falhar.
+ */
+export async function fetchIndexPageAfter(feed: IndexPageFeed, fetchImpl: typeof fetch = fetch): Promise<LateArticle[]> {
+  const links = extractIndexPageLinks(await fetchHtml(feed.url, fetchImpl), feed.url, feed.pathPrefix, feed.take);
+  return Promise.all(
+    links.map(async (url): Promise<LateArticle> => {
+      let html = "";
+      try {
+        html = await fetchHtml(url, fetchImpl);
+      } catch {
+        html = "";
+      }
+      const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      return {
+        url,
+        title: metaContent(html, "property", "og:title") || (titleTag ? stripHtmlBasic(titleTag[1]) : ""),
+        published_at: html ? extractPublishedTime(html) : null,
+        summary: metaContent(html, "property", "og:description") || metaContent(html, "name", "description"),
+        lab: feed.lab,
+        source: feed.name,
+      };
+    }),
+  );
+}
+
+const GITHUB_HEADERS = BOT_HEADERS;
 
 /**
  * #9424: GET no GitHub com erro acionável (rate limit com horário de reset,
@@ -146,6 +199,10 @@ export async function fetchFeed(feed: LateRefreshFeed, cutoffIso: string, now: D
   try {
     if (feed.method === "sitemap") {
       const articles = await fetchSitemapAfter(feed, cutoffIso);
+      return { articles, processed: postProcessFeedArticles(feed, articles) };
+    }
+    if (feed.method === "index-page") {
+      const articles = await fetchIndexPageAfter(feed, fetchImpl);
       return { articles, processed: postProcessFeedArticles(feed, articles) };
     }
     if (feed.method === "github-new-repos") {

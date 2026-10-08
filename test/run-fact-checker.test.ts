@@ -35,6 +35,7 @@ import {
   normalizeFactCheckResult,
   computeAttentionItems,
   getBlockingClaims,
+  isReadingTimeEstimate,
   destaqueLabel,
   formatFactCheckUnavailableMessage,
   type FactCheckResult,
@@ -952,6 +953,56 @@ describe("getBlockingClaims (#4361)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #9868 — estimativa de tempo de leitura "(N min)" nunca bloqueia
+//
+// Regressão (edição 261008): página do MachineLearningMastery sem tempo de
+// leitura → fact-checker marcou o "(12 min)" do USE MELHOR como
+// NOT_FOUND_IN_SOURCE e `--check-blocking` saiu com exit 2, enquanto o
+// invariante `use-melhor-tempo` (#2447) EXIGE esse texto. Impasse.
+// ---------------------------------------------------------------------------
+
+describe("isReadingTimeEstimate / getBlockingClaims (#9868)", () => {
+  const claim = (
+    text: string,
+    destaque: FactClaim["destaque"] = "secondary",
+    claim_type: FactClaim["claim_type"] = "duration",
+  ): FactClaim => ({
+    destaque,
+    claim_type,
+    text,
+    context: "ctx",
+    sources: ["newsletter"],
+    verdict: "NOT_FOUND_IN_SOURCE",
+  });
+
+  it("caso real 261008: '(12 min)' duration NOT_FOUND de item secundário não bloqueia", () => {
+    assert.equal(getBlockingClaims([claim("(12 min)")]).length, 0);
+  });
+
+  it("formatos de tempo de leitura isolado não bloqueiam mesmo com destaque numérico", () => {
+    for (const t of ["(12 min)", "12 min", "— 15 min", "5 minutos", "8 min de leitura", "12 min."]) {
+      assert.ok(isReadingTimeEstimate(claim(t, 2)), `"${t}" deveria ser reconhecido como tempo de leitura`);
+      assert.equal(getBlockingClaims([claim(t, 2)]).length, 0, `"${t}" não deveria bloquear`);
+    }
+  });
+
+  it("duração factual em frase dentro de D1-D3 continua bloqueando (escopo estreito)", () => {
+    const c = claim("a greve durou 12 min", 1);
+    assert.equal(isReadingTimeEstimate(c), false);
+    assert.equal(getBlockingClaims([c]).length, 1);
+  });
+
+  it("claim não-duration com texto '12 min' continua sob a regra normal", () => {
+    assert.equal(isReadingTimeEstimate(claim("12 min", 2, "number")), false);
+    assert.equal(getBlockingClaims([claim("12 min", 2, "number")]).length, 1);
+  });
+
+  it("tempo de leitura continua contando em attention_items (warn-only, não some do gate)", () => {
+    assert.equal(computeAttentionItems([claim("(12 min)")]), 1);
+  });
+});
+
 describe("CLI --check-blocking (#4361)", () => {
   function writeFixture(tmp: string, agentClaims: unknown[]) {
     const internalDir = join(tmp, "_internal");
@@ -986,6 +1037,27 @@ describe("CLI --check-blocking (#4361)", () => {
       assert.equal(result.status, 2, `exit 2 esperado (GATE-BLOCKING). stderr: ${result.stderr}`);
       assert.ok(result.stderr.includes("GATE-BLOCKING"), "stderr deve indicar GATE-BLOCKING");
       assert.ok(result.stderr.includes("segunda vez"), "stderr deve mostrar o claim bloqueante");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#9868: claim duration '(12 min)' NOT_FOUND_IN_SOURCE + --check-blocking → exit 0", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-9868-duration-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: "secondary",
+          claim_type: "duration",
+          text: "(12 min)",
+          context: "Guia de RAG com LangChain (12 min)",
+          sources: ["newsletter"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+          note: "página não informa tempo de leitura",
+        },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 0, `exit 0 esperado (tempo de leitura é estimativa do pipeline). stderr: ${result.stderr}`);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
