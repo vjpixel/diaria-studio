@@ -326,7 +326,8 @@ if (isMainModule(import.meta.url)) {
     })
     .catch((e) => {
       console.error("[ai-fetch-report] erro:", e);
-      process.exit(1);
+      // #9911: exitCode, não process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+      process.exitCode = 1;
     });
 }
 

@@ -50,6 +50,7 @@ import { MIN_AGE_DAYS_FOR_CLICKS } from "./lib/shared/ctr-config.ts";
 import { isClickCacheComplete, type ClickCacheRow } from "./lib/shared/click-cache-completeness.ts";
 import { resolveEnrichmentState, type EnrichmentState } from "./lib/shared/enrichment-state.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // CONFIG_PATH removido: era usado apenas por loadConfig() — agora delegado a loadBeehiivConfig() (#2104)
@@ -527,8 +528,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(e instanceof Error ? e.message : String(e)) });
 }

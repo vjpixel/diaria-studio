@@ -64,6 +64,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { countExistingLines } from "./apply-mcp-subscriber-engagement.ts";
 import {
   reconcileManifestWithDisk,
@@ -206,7 +207,7 @@ export function auditVerdict(skipRecipients: boolean, unavailableCount: number):
   return "completo";
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   const outDirIdx = argv.indexOf("--out-dir");
   const outDir = outDirIdx !== -1 ? resolve(argv[outDirIdx + 1]) : DEFAULT_OUT_DIR;
@@ -217,7 +218,7 @@ async function main(): Promise<void> {
   const manifest = loadManifest(manifestPath);
   if (!manifest) {
     console.error(`[audit-engagement-manifest] manifest não encontrado: ${manifestPath}`);
-    process.exit(2);
+    return 2;
   }
 
   const coverageBefore = coverageSummary(manifest);
@@ -338,8 +339,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(e instanceof Error ? e.message : String(e)) });
 }

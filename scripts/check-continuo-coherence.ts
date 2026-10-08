@@ -84,8 +84,12 @@ function fetchActiveFiles(cwd: string): { ok: boolean; files?: string[]; error?:
  *  a qualquer outro comando deste CLI — diferente do `sync-code.ts`
  *  chamado no início do tick pela skill, que é fail-soft de propósito. */
 function fetchRecentMasterFiles(cwd: string, recentHours: number): { ok: boolean; files?: string[]; error?: string } {
-  const fetch = run("git", ["fetch", "origin", "master", "--quiet"], cwd);
-  if (!fetch.ok) return { ok: false, error: fetch.error };
+  // #9911: não nomear a variável `fetch` — o guard de process.exit+fetch
+  // (scripts/lib/process-exit-fetch-scan.ts) a leria como o fetch global.
+  // Aqui não há rede via fetch (só `git fetch` em subprocesso), então o
+  // process.exit do entry point síncrono abaixo não corre o risco do 127.
+  const gitFetch = run("git", ["fetch", "origin", "master", "--quiet"], cwd);
+  if (!gitFetch.ok) return { ok: false, error: gitFetch.error };
 
   const r = run("git", ["log", `--since=${recentHours} hours ago`, "origin/master", "--name-only", "--pretty=format:"], cwd);
   if (!r.ok) return { ok: false, error: r.error };

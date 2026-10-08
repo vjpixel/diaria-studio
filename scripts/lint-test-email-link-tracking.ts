@@ -85,6 +85,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 export interface LinkIssue {
   type: "link_dead" | "link_timeout" | "link_redirect_chain_long";
@@ -733,5 +734,6 @@ async function mainCli(): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  mainCli().then((code) => process.exit(code));
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(mainCli);
 }

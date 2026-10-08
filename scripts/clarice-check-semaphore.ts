@@ -40,6 +40,7 @@
  */
 
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import {
   DEFAULT_DASHBOARD_URL,
   DEFAULT_DASHBOARD_LIMIT,
@@ -136,7 +137,7 @@ export async function checkSemaphore(
   return stale ? { ...guardResult, stale } : guardResult;
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
   // #4568: `getIntArg` (não `getArg` + resolveDashboardLimit) — devolve
   // `undefined` só quando a flag está genuinamente AUSENTE e LANÇA em valor
@@ -164,12 +165,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(`✓ semáforo ${result.semaphore === "green" ? "🟢" : "🟡"} ${result.semaphore}`);
   }
   console.log(JSON.stringify(result, null, 2));
-  if (!result.ok) process.exit(1);
+  if (!result.ok) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(String((e as Error)?.stack || e));
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(() => main(), { onError: (e) => console.error(String((e as Error)?.stack || e)) });
 }

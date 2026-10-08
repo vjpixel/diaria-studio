@@ -45,6 +45,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1671
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts"; // #8722
 
@@ -528,7 +529,7 @@ export async function clusterCategorized(
   };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   const inPath = args.in;
   const outPath = args.out;
@@ -545,7 +546,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: topic-cluster.ts --in <categorized.json> [--out <clustered.json>] [--threshold 0.85] [--log-root-dir <path>]",
     );
-    process.exit(1);
+    return 1;
   }
 
   // #3311/#3310 padrão: override SÓ pra isolamento de teste — sem a flag,
@@ -620,8 +621,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main);
 }

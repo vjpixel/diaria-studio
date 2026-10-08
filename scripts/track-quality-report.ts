@@ -154,6 +154,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 export type Trail = "continuo" | "overnight" | "develop" | "other";
 export const TRAILS: Trail[] = ["continuo", "overnight", "develop", "other"];
@@ -917,13 +918,13 @@ if (isMainModule(import.meta.url)) {
   const since = values["since"] ?? null;
   const cwd = process.cwd();
 
-  const main = async () => {
+  const main = async (): Promise<number | void> => {
     let report: TrackQualityReport;
     try {
       report = await runTrackQualityReport(cwd, since);
     } catch (err) {
       console.error(`[track-quality-report] ERRO: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(2);
+      return 2;
     }
 
     if (flags.has("json")) {
@@ -934,11 +935,13 @@ if (isMainModule(import.meta.url)) {
       console.log("Uso: npx tsx scripts/track-quality-report.ts --table|--json [--since 30d|2026-08-01]");
     }
   };
-  main().catch((err) => {
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, {
     // Review PR #6878 (P3): sem isto, um throw fora do try/catch interno
     // (ex: no console.log/JSON.stringify) vira unhandled rejection em vez
     // do caminho limpo de erro — mesmo tratamento do catch interno.
-    console.error(`[track-quality-report] ERRO inesperado: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(2);
+    onError: (err) =>
+      console.error(`[track-quality-report] ERRO inesperado: ${err instanceof Error ? err.message : String(err)}`),
+    errorCode: 2,
   });
 }

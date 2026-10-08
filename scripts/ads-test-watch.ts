@@ -37,6 +37,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, getStringArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor, notifyEditorResultReachedEditor, type NotifyEditorFinding, type NotifyEditorResult } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
@@ -622,8 +623,6 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`${LOG_PREFIX} erro:`, e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(() => main(), { onError: (e) => console.error(`${LOG_PREFIX} erro:`, e) });
 }

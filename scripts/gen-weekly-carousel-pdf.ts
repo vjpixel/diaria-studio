@@ -44,6 +44,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { buildImagePdf, type ImagePdfPage } from "./lib/image-pdf.ts";
 
 /** Teto da Documents API do LinkedIn — 100MB por documento. Conferido
@@ -236,8 +237,6 @@ async function main(): Promise<void> {
 
 // CLI guard — importar este módulo (teste) nunca dispara download.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(String(e instanceof Error ? e.message : e));
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(String(e instanceof Error ? e.message : e)) });
 }

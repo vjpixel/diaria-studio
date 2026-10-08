@@ -290,7 +290,9 @@ if (isMainModule(import.meta.url)) {
       if (e instanceof TransientDashboardError) {
         console.log(JSON.stringify({ transient: true, retryAfterSecs: e.retryAfterSecs, status: e.status, reason: e.message }));
         console.error(e.message);
-        process.exit(3);
+        // #9911: exitCode, não process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+        process.exitCode = 3;
+        return;
       }
       console.error(String((e as Error)?.stack || e));
       process.exitCode = 1;
