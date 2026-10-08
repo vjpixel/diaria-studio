@@ -188,46 +188,106 @@ const POOL_SECTION_KEYS: ReadonlySet<string> = new Set(["use-melhor", "lancament
  * classificação por texto (ex: `length-cut` de descrição encurtada) segue
  * valendo. Antes, item cortado encolhia a seção >30% e virava `length-cut`
  * apontando pro `writer-destaque.md`, que nem escreve o pool.
+ *
+ * #9943 — `elsewhere` (opcional): chaves dos itens que estão em OUTRAS seções
+ * (pool ou destaque) antes (`before`) e depois (`after`). Item que saiu desta
+ * seção mas segue em outra (`movedOut`) ou entrou vindo de outra (`movedIn`)
+ * só mudou de seção — não conta em `removed`/`added`. Quando só houve
+ * movimentação, devolve `bucket-move`/`itens-movidos` com `removed = added = 0`.
  */
 export function classifyPoolItemSetChange(
   oldText: string,
   newText: string,
-): { type: RequestType; kind: string; removed: number; added: number } | null {
-  const keys = (t: string) =>
-    new Set(t.split("\n").filter((l) => l.trim().startsWith("**[")).map(titleLineUrlKey).filter((k): k is string => !!k));
-  const before = keys(oldText);
-  const after = keys(newText);
-  const removed = [...before].filter((k) => !after.has(k)).length;
-  const added = [...after].filter((k) => !before.has(k)).length;
-  if (removed === 0 && added === 0) return null;
-  if (added === 0) return { type: "pool-cut", kind: "itens-cortados", removed, added };
-  if (removed === 0) return { type: "pool-add", kind: "itens-adicionados", removed, added };
-  return { type: "link-swap", kind: "itens-trocados", removed, added };
+  elsewhere?: { before: ReadonlySet<string>; after: ReadonlySet<string> },
+): { type: RequestType; kind: string; removed: number; added: number; movedIn: string[]; movedOut: string[] } | null {
+  const before = new Set(sectionItemKeys(oldText));
+  const after = new Set(sectionItemKeys(newText));
+  const removedAll = [...before].filter((k) => !after.has(k));
+  const addedAll = [...after].filter((k) => !before.has(k));
+  const movedOut = removedAll.filter((k) => elsewhere?.after.has(k) ?? false);
+  const movedIn = addedAll.filter((k) => elsewhere?.before.has(k) ?? false);
+  const removed = removedAll.length - movedOut.length;
+  const added = addedAll.length - movedIn.length;
+  const moved = { movedIn, movedOut };
+  if (removed === 0 && added === 0) {
+    return movedIn.length === 0 && movedOut.length === 0 ? null : { type: "bucket-move", kind: "itens-movidos", removed, added, ...moved };
+  }
+  if (added === 0) return { type: "pool-cut", kind: "itens-cortados", removed, added, ...moved };
+  if (removed === 0) return { type: "pool-add", kind: "itens-adicionados", removed, added, ...moved };
+  return { type: "link-swap", kind: "itens-trocados", removed, added, ...moved };
 }
+
+/** Chaves host+path (`titleLineUrlKey`) das linhas de título `**[t](url)**` de uma seção, na ordem. */
+function sectionItemKeys(text: string): string[] {
+  return text.split("\n").filter((l) => l.trim().startsWith("**[")).map(titleLineUrlKey).filter((k): k is string => !!k);
+}
+
+/** Seção de pool da newsletter → `target` da taxonomia (mesmo vocabulário de `POOL_BUCKET_TARGETS`). */
+const POOL_SECTION_TARGETS: Readonly<Record<string, RequestTarget>> = {
+  "use-melhor": "use-melhor",
+  lancamentos: "lancamentos",
+  lancamento: "lancamentos",
+  radar: "radar",
+  videos: "video",
+};
 
 /**
  * #9936: o destaque novo é a MESMA história do que saiu, só com outra URL
  * (tipicamente o editor troca a cobertura de imprensa pelo post oficial)?
  *
  * Sinal: o editor edita a URL no lugar, e o item novo HERDA a pontuação do
- * antigo — `score` igual E (`score_base` + `bonuses_applied` iguais, ou
- * `source: "official: ..."`). Dado real (261006 d1, 261007 d2, 261008 d1): os
+ * antigo — `score` igual E um sinal de identidade (critério atual no
+ * parágrafo #9942 abaixo). Dado real (261006 d1, 261007 d2, 261008 d1): os
  * três herdam score, score_base e bonuses; 261007 também ganha
  * `source: "official: OpenAI"`. Item que entrou de fora dos finalistas não
  * herda nada (261008 Nano Banana 2.1: `score: null`) — esse continua sendo
  * `destaque-swap`. `score` igual sozinho não basta (scores colidem à toa).
+ *
+ * #9942: sem bônus, `score === score_base` e a comparação de base/bônus não
+ * acrescentava nada ao `score` igual — 75/75 × 75/75 de histórias distintas
+ * virava `link-swap`. O mesmo valia pro ramo `source: "official: ..."`, que
+ * sozinho aceitava qualquer score igual (radar 78 de 261007). Hoje, além do
+ * `score` igual, exige UM sinal de identidade da história:
+ * - `score_base` igual E `bonuses_applied` NÃO VAZIO e igual (os três casos
+ *   reais têm bônus); ou
+ * - título igual (o editor trocou só a URL, o título ficou); ou
+ * - a URL nova está nas `cluster_sources` do item antigo (ou vice-versa) —
+ *   esse dispensa o score.
+ * `official:` deixou de ser sinal suficiente; só muda a descrição.
  */
 function inheritsScoring(outH: any, innH: any): boolean {
   const a = outH?.article ?? outH ?? {};
   const b = innH?.article ?? innH ?? {};
+  if (clusterLinked(a, outH, b, innH)) return true;
   const score = (h: any, x: any) => (typeof x?.score === "number" ? x.score : typeof h?.score === "number" ? h.score : null);
   const sa = score(outH, a);
   const sb = score(innH, b);
   if (sa === null || sb === null || sa !== sb) return false;
+  const bonusesA = Array.isArray(a.bonuses_applied) ? a.bonuses_applied : [];
   const sameBase = typeof a.score_base === "number" && a.score_base === b.score_base &&
-    JSON.stringify(a.bonuses_applied ?? null) === JSON.stringify(b.bonuses_applied ?? null);
-  const official = typeof b.source === "string" && /^official:/i.test(b.source.trim());
-  return sameBase || official;
+    bonusesA.length > 0 && JSON.stringify(bonusesA) === JSON.stringify(b.bonuses_applied ?? null);
+  const titleOf = (x: any, h: any) => String(x?.title ?? h?.title ?? "").trim().toLowerCase();
+  const ta = titleOf(a, outH);
+  const sameTitle = ta !== "" && ta === titleOf(b, innH);
+  return sameBase || sameTitle;
+}
+
+/** #9942: a URL de um lado aparece nas `cluster_sources` do outro (mesma história, outra fonte). */
+function clusterLinked(a: any, outH: any, b: any, innH: any): boolean {
+  const urlOf = (x: any, h: any) => {
+    const u = x?.url ?? h?.url;
+    return typeof u === "string" && u !== "" ? articleUrlKey(u) : null;
+  };
+  const clusterKeys = (x: any, h: any) =>
+    new Set(
+      [...(x?.cluster_sources ?? []), ...(h?.cluster_sources ?? [])]
+        .map((cs: any) => (typeof cs?.url === "string" && cs.url !== "" ? articleUrlKey(cs.url) : null))
+        .filter((k): k is string => k !== null),
+    );
+  const ua = urlOf(a, outH);
+  const ub = urlOf(b, innH);
+  if (!ua || !ub) return false;
+  return clusterKeys(a, outH).has(ub) || clusterKeys(b, innH).has(ua);
 }
 
 /**
@@ -351,6 +411,29 @@ export function classifyNewsletterDiff(
   const newSections = extractSections(newContent.replace(/\r\n?/g, "\n"));
   /** #9936: chave de HISTÓRIA — a URL nova de uma troca de fonte resolve pra antiga. */
   const story = (key: string): string => sameStory?.get(key) ?? key;
+
+  // #9943: em que seção (pool ou destaque) cada item está, antes e depois —
+  // item que só mudou de seção não é corte nem adição no pool.
+  const locateItems = (sections: Map<string, string>): Map<string, string> => {
+    const where = new Map<string, string>();
+    for (const [sec, text] of sections) {
+      if (!POOL_SECTION_KEYS.has(sec) && !sec.startsWith("destaque-")) continue;
+      for (const k of sectionItemKeys(text)) if (!where.has(k)) where.set(k, sec);
+    }
+    return where;
+  };
+  const oldWhere = locateItems(oldSections);
+  const newWhere = locateItems(newSections);
+  const keysOutside = (where: Map<string, string>, section: string) =>
+    new Set([...where].filter(([, sec]) => sec !== section).map(([k]) => k));
+  const newItemUrls = new Map<string, string>();
+  for (const [, text] of newSections) {
+    for (const line of text.split("\n")) {
+      const k = line.trim().startsWith("**[") ? titleLineUrlKey(line) : null;
+      const url = k ? line.match(/\]\((https?:[^)\s]+)\)/)?.[1] : undefined;
+      if (k && url && !newItemUrls.has(k)) newItemUrls.set(k, url);
+    }
+  }
 
   // Detectar mudanças por seção
   for (const [section, newText] of newSections) {
@@ -500,7 +583,29 @@ export function classifyNewsletterDiff(
     // #9879/#9880: numa seção de pool, mudança no CONJUNTO de itens (por URL)
     // é corte/adição/troca de item e vence o "length-cut" por tamanho da seção.
     // Medição 260930..261008: 31 itens cortados, 0 descrições encurtadas.
-    const poolClass = POOL_SECTION_KEYS.has(section) ? classifyPoolItemSetChange(oldText, newText) : null;
+    // #9943: itens que só mudaram de seção saem da conta. Entrada vinda de
+    // outra seção de POOL vira `bucket-move` (1 por item, como o
+    // `classifyPoolDiff`, e deduplicada contra ele em `dedupeDestaqueSwaps`);
+    // ida/volta de destaque não gera nada aqui (destaque-* já reporta).
+    // Seção cuja única mudança no conjunto foi movimentação não gera entrada
+    // própria — o encolhimento do texto não é corte.
+    const poolClass = POOL_SECTION_KEYS.has(section)
+      ? classifyPoolItemSetChange(oldText, newText, { before: keysOutside(oldWhere, section), after: keysOutside(newWhere, section) })
+      : null;
+    if (poolClass) {
+      for (const k of poolClass.movedIn) {
+        const from = oldWhere.get(k);
+        if (!from || !POOL_SECTION_KEYS.has(from)) continue;
+        results.push({
+          request_type: "bucket-move",
+          target: POOL_SECTION_TARGETS[section] ?? target,
+          description: `Item movido de ${from} → ${section} no 02-reviewed.md: ${newItemUrls.get(k) ?? k}`,
+          resolution: "accepted",
+          context: { section, from_section: from, url: newItemUrls.get(k) ?? k, change_kind: "item-movido" },
+        });
+      }
+      if (poolClass.removed === 0 && poolClass.added === 0) continue;
+    }
     if (poolClass) requestType = poolClass.type;
 
     // Verificar se destaque foi removido (swap/cut)
@@ -1090,15 +1195,27 @@ function diffAndClassify(
  * #9936: vale igual pro `link-swap` de troca de fonte num slot de destaque
  * (`d1`..`dN`) — os dois diffs o veem quando o item não muda de posição. O
  * `link-swap` de pool (target `radar`/`lancamentos`/...) fica fora do dedupe.
+ *
+ * #9943: `bucket-move` de item do pool também — o approved (`classifyPoolDiff`)
+ * e a newsletter (`classifyNewsletterDiff`, item que mudou de seção) emitem um
+ * por item; casados por `target` + URL do item.
  */
 export function dedupeDestaqueSwaps<T extends { request_type: RequestType; target: RequestTarget; context?: Record<string, unknown> }>(
   entries: T[],
 ): T[] {
-  const isFromApproved = (e: T) => e.context !== undefined && "new_url" in e.context && !("section" in e.context);
-  const slotKey = (e: T): string | null =>
-    e.request_type === "destaque-swap" || (e.request_type === "link-swap" && /^d\d+$/.test(e.target))
-      ? `${e.request_type}:${e.target}`
-      : null;
+  const isFromApproved = (e: T) =>
+    e.context !== undefined && ("new_url" in e.context || "to_bucket" in e.context) && !("section" in e.context);
+  const slotKey = (e: T): string | null => {
+    if (e.request_type === "destaque-swap" || (e.request_type === "link-swap" && /^d\d+$/.test(e.target))) {
+      return `${e.request_type}:${e.target}`;
+    }
+    // #9943: a mesma mudança de seção de item do pool, vista pelo approved (`to_bucket`) e pela newsletter (`from_section`).
+    const url = e.context?.url;
+    if (e.request_type === "bucket-move" && !/^d\d+$/.test(e.target) && typeof url === "string" && url !== "") {
+      return `bucket-move:${e.target}:${articleUrlKey(url)}`;
+    }
+    return null;
+  };
   const newsletterKeys = new Set(entries.filter((e) => !isFromApproved(e)).map(slotKey).filter((k) => k !== null));
   return entries.filter((e) => {
     const k = slotKey(e);
