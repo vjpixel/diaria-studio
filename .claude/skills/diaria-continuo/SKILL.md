@@ -506,8 +506,11 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
     --message "subagent_metrics" \
-    --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "harness_usage | unavailable"}'
+    --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "papel": "dev-implementador | dev-fixer | ci-retry", "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "harness_usage | unavailable"}'
   ```
+  Campo `papel` obrigatório (#9875), mesma regra do overnight: um evento por
+  invocação de `Agent` da unidade (`dev-implementador`, `dev-fixer`,
+  `ci-retry`), nunca um só somando os três.
   `continuo-cost-summary.ts` (#5344 Parte B0) soma `details.subagent_tokens`
   destes eventos como categoria "Implementação", separada da categoria
   "Coordenador" (`coordinator_tokens_estimate` acima) — as duas somadas
