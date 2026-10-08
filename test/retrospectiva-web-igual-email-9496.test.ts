@@ -17,7 +17,7 @@
  *
  *   1. nenhum segmento Clarice-only chega à página (completa nem trecho);
  *   2. todo segmento editorial do e-mail está na página — o que fica de fora
- *      é só chrome de imagem (a página ainda não pluga imagens, #3940) e o
+ *      é só chrome de imagem (a página só pluga as fotos do É IA?, #9864) e o
  *      parágrafo com merge tag, que a web remove por construção (#7580);
  *   3. o É IA? da página é o do e-mail (legenda do `01-eia.md`), não o corpo
  *      do draft;
@@ -25,7 +25,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildArticleHtml, buildArticleTeaserHtml } from "../scripts/lib/mensal/build-article-page.ts";
@@ -245,6 +245,51 @@ describe("#9496 — o CLI pluga os insumos do e-mail nas duas chamadas", () => {
     const src = readFileSync("scripts/build-article-page.ts", "utf8");
     assert.match(src, /buildArticleHtml\(draftMd, cycle, articleBuildOptionsForCycle\(/);
     assert.match(src, /buildArticleTeaserHtml\(draftMd, cycle, articleBuildOptionsForCycle\(/);
+  });
+});
+
+describe("#9864 — o É IA? da página tem as fotos, como o e-mail", () => {
+  const URL_A = "https://img.exemplo/eia-a.jpg";
+  const URL_B = "https://img.exemplo/eia-b.jpg";
+  const mk = (withJpg: boolean, manifest?: object) => {
+    const dir = mkdtempSync(join(tmpdir(), "ret-9864-"));
+    mkdirSync(join(dir, "_internal"));
+    if (withJpg) writeFileSync(join(dir, "01-eia-A.jpg"), "x");
+    if (manifest) writeFileSync(join(dir, "_internal", "public-images.json"), JSON.stringify(manifest));
+    return dir;
+  };
+
+  it("página e e-mail mostram as mesmas <img> do É IA? e sem placeholder", () => {
+    const dir = mk(true, { images: { eia_a: { url: URL_A }, eia_b: { url: URL_B } } });
+    try {
+      const opts = articleBuildOptionsForCycle(dir);
+      assert.equal(opts.eiaImageUrlA, URL_A);
+      const pagina = buildArticleHtml(DRAFT, CICLO, opts).html;
+      const imgs = (h: string) => [URL_A, URL_B].filter((u) => h.includes(u));
+      assert.deepEqual(imgs(pagina), [URL_A, URL_B]);
+      assert.deepEqual(imgs(pagina), imgs(emailReal(DRAFT)));
+      assert.ok(!textSegments(pagina).some((s) => /^Imagem [AB]$/.test(s)), "sem placeholder");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("guard: foto no disco sem eia_a no manifest falha", () => {
+    const dir = mk(true, { images: { eia_b: { url: URL_B } } });
+    try {
+      assert.throws(() => articleBuildOptionsForCycle(dir), /eia_a\/eia_b/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ciclo sem foto do É IA? não falha", () => {
+    const dir = mk(false);
+    try {
+      assert.deepEqual(articleBuildOptionsForCycle(dir).eiaImageUrlA, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
