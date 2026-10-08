@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { resolveEditionDir, enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #3495: disk-aware, cobre flat+nested (mesmo fix do #3484); #3498: enumerateEditionDirs exposto pra cache de 1 varredura por populateAllFromApproved
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
+import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-urls.ts"; // #1678, #9867
 import { FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #8298: filtro de boilerplate/rodapé JÁ EXISTENTE (usado por findMismatchedUrls pro mesmo propósito) — reuso, não duplico a lista de domínios aqui
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -431,7 +431,21 @@ export function extractUrlsFromApproved(
   }
   // #1678: bucket-walk delegado ao helper compartilhado (single-source — antes
   // duplicado aqui e em merge-local-pending; a divergência causou o #1659).
-  return extractUrlsFromBuckets(parsed as Parameters<typeof extractUrlsFromBuckets>[0]);
+  const approvedUrls = extractUrlsFromBuckets(parsed as Parameters<typeof extractUrlsFromBuckets>[0]);
+  // #9867: só o que a edição de fato renderizou — candidato que ficou no pool
+  // não é "link usado". Sem `02-reviewed.md` local, mantém o approved inteiro.
+  return restrictToRenderedUrls(approvedUrls, readReviewedMd(editionDirPath));
+}
+
+/** #9867: `02-reviewed.md` da edição, ou `null` se ausente/ilegível. */
+function readReviewedMd(editionDirPath: string): string | null {
+  const p = resolve(editionDirPath, "02-reviewed.md");
+  if (!existsSync(p)) return null;
+  try {
+    return readFileSync(p, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 /**

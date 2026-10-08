@@ -28,9 +28,9 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
+import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-urls.ts"; // #1678, #9867
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { aammddFromIso, type Post } from "./refresh-past-editions.ts"; // #3207
@@ -95,7 +95,16 @@ export function extractUrlsFromApproved(approvedPath: string): string[] {
   }
   // #1678: bucket-walk delegado ao helper compartilhado (single-source da lista
   // de buckets — a duplicação aqui vs refresh-past-editions causou o #1659).
-  return extractUrlsFromBuckets(parsed);
+  // #9867: só o que a edição renderizou no `02-reviewed.md` (irmão de
+  // `_internal/`) — candidato que ficou no pool não bloqueia o dedup.
+  const reviewedPath = join(dirname(dirname(approvedPath)), "02-reviewed.md");
+  let reviewedMd: string | null = null;
+  try {
+    reviewedMd = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null;
+  } catch {
+    reviewedMd = null;
+  }
+  return restrictToRenderedUrls(extractUrlsFromBuckets(parsed), reviewedMd);
 }
 
 function isPublishedLocally(editionDir: string): boolean {
