@@ -1,24 +1,20 @@
 /**
  * test/retrospectiva-mobile-9492.test.ts (#9492)
  *
- * A Retrospectiva é o render do E-MAIL mensal servido como página: cartão em
+ * A Retrospectiva era o render do E-MAIL mensal servido como página: cartão em
  * `<table width="600">` + 10px de margem. Num celular de 375px isso abria um
  * viewport de layout de 620px (medido em 02/10/2026, ciclo 2609-10) e o texto
- * cortava na borda. A correção é CSS só da versão web, dentro de
- * `max-width:640px` — desktop e o canal de e-mail ficam intactos.
+ * cortava na borda. A 1ª correção foi CSS só da versão web; desde o #9872 a
+ * página é HTML semântico sem tabela, e o teste trava a ausência de largura
+ * fixa. O canal de e-mail fica intacto.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import {
-  buildArticleHtml,
-  buildArticleTeaserHtml,
-  injectWebMobileStyle,
-  WEB_MOBILE_STYLE,
-  WEB_MOBILE_STYLE_ID,
-} from "../scripts/lib/mensal/build-article-page.ts";
+import { buildArticleHtml, buildArticleTeaserHtml } from "../scripts/lib/mensal/build-article-page.ts";
+import { MONTHLY_WEB_STYLE, WEB_MOBILE_MAX_WIDTH } from "../scripts/lib/mensal/monthly-web-render.ts";
 import { draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   GATE_MOBILE_CSS,
@@ -69,47 +65,47 @@ function mediaMaxWidth(css: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-describe("#9492 — artigo web: CSS responsivo injetado só na versão web", () => {
-  it("regressão: o HTML do artigo tem viewport meta e o bloco mobile que solta o cartão de 600px", () => {
-    const { html } = draftToEmail(DRAFT, null, "2609");
-    const web = injectWebMobileStyle(html);
-    assert.match(web, /<meta name="viewport" content="width=device-width/);
-    assert.ok(web.includes(`id="${WEB_MOBILE_STYLE_ID}"`));
-    // O cartão fixo existe no render (é o que causava o corte) e o CSS o solta.
-    assert.match(web, /<table[^>]*width="600"/);
-    assert.match(WEB_MOBILE_STYLE, /table\[width="600"\]\s*\{\s*width:100% !important/);
-    assert.match(WEB_MOBILE_STYLE, /img\s*\{\s*max-width:100% !important/);
-    // O style entra no <head>, antes do </head>.
-    assert.ok(web.indexOf(WEB_MOBILE_STYLE_ID) < web.indexOf("</head>"));
+describe("#9492 / #9872 — artigo web legível no celular", () => {
+  // #9872: a página deixou de ser o render do e-mail (tabela de 600px que um CSS
+  // extra "soltava" no celular) e virou HTML semântico com CSS próprio. O
+  // invariante do #9492 continua o mesmo: nada de largura fixa que abra um
+  // viewport de layout maior que a tela.
+  const paginas = () => {
+    const md = readFileSync(FIXTURE, "utf8");
+    return [buildArticleHtml(md, "2604-05").html, buildArticleTeaserHtml(DRAFT_LONGO, "2604-05").html];
+  };
+
+  it("regressão: viewport meta e nenhum layout de largura fixa (sem <table>, sem width=600)", () => {
+    for (const html of paginas()) {
+      assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1"/);
+      assert.doesNotMatch(html, /<table\b/i, "tabela de layout é o que abria o viewport de 620px");
+      assert.doesNotMatch(html, /width="\d+"/, "atributo de largura fixa");
+    }
   });
 
-  it("tudo condicionado a max-width ≤ 640px — desktop (cartão 600 + margem) intacto", () => {
-    const w = mediaMaxWidth(WEB_MOBILE_STYLE);
-    assert.ok(w !== null && w <= 640, `max-width=${w}`);
-    // Nenhuma regra fora do @media: o que vem antes dele é só a abertura do <style>/comentário.
-    const antes = WEB_MOBILE_STYLE.slice(0, WEB_MOBILE_STYLE.indexOf("@media"));
-    assert.doesNotMatch(antes, /\{/);
+  it("CSS da página: nenhuma largura fixa em px acima da tela; imagens limitadas à coluna", () => {
+    // `max-width` em px/rem é limite (encolhe), não largura — o que quebra é `width: Npx`.
+    const fixas = [...MONTHLY_WEB_STYLE.matchAll(/(?<![-\w])width:\s*(\d+)px/g)].map((m) => Number(m[1]));
+    assert.ok(fixas.every((w) => w <= 320), `larguras fixas: ${fixas.join(", ")}`);
+    assert.match(MONTHLY_WEB_STYLE, /img \{ max-width: 100%; height: auto; \}/);
+    assert.match(MONTHLY_WEB_STYLE, /overflow-wrap: break-word/, "URL longa quebra em vez de vazar");
+  });
+
+  it("ajuste de celular condicionado a max-width ≤ 640px", () => {
+    const w = mediaMaxWidth(MONTHLY_WEB_STYLE);
+    assert.ok(w !== null && w <= 640 && w === WEB_MOBILE_MAX_WIDTH, `max-width=${w}`);
+  });
+
+  it("o CSS da página fica no <head>", () => {
+    for (const html of paginas()) {
+      assert.ok(html.indexOf(MONTHLY_WEB_STYLE) > 0 && html.indexOf(MONTHLY_WEB_STYLE) < html.indexOf("</head>"));
+    }
   });
 
   it("o render do E-MAIL não ganha o CSS web (canal de e-mail intacto)", () => {
     const { html } = draftToEmail(DRAFT, null, "2609");
-    assert.ok(!html.includes(WEB_MOBILE_STYLE_ID));
-  });
-
-  it("sem </head> lança — nunca publica sem o CSS em silêncio", () => {
-    assert.throws(() => injectWebMobileStyle("<html><body>x</body></html>"), /sem <\/head>/);
-  });
-
-  it("injeta antes do PRIMEIRO </head> (um </head> citado no corpo não desloca o CSS)", () => {
-    const out = injectWebMobileStyle("<head><title>a</title></head><body><p>&lt;/head&gt; e </head> no texto</p></body>");
-    assert.ok(out.indexOf(WEB_MOBILE_STYLE_ID) < out.indexOf("</head>"));
-    assert.ok(out.indexOf(WEB_MOBILE_STYLE_ID) < out.indexOf("<body>"));
-  });
-
-  it("call site real: buildArticleHtml e buildArticleTeaserHtml saem com o CSS mobile", () => {
-    const md = readFileSync(FIXTURE, "utf8");
-    assert.ok(buildArticleHtml(md, "2604-05").html.includes(WEB_MOBILE_STYLE_ID));
-    assert.ok(buildArticleTeaserHtml(DRAFT_LONGO, "2604-05").html.includes(WEB_MOBILE_STYLE_ID));
+    assert.ok(!html.includes(MONTHLY_WEB_STYLE));
+    assert.match(html, /<table[^>]*width="600"/, "o e-mail continua em tabelas, como clientes de e-mail exigem");
   });
 });
 

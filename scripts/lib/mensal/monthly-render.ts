@@ -596,22 +596,23 @@ export function captionForGenerator(imageGenerator: string): string {
 }
 
 /**
- * Renders a DESTAQUE section block. Aceita override de tema (usado pra
- * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
- * `imageUrl` (#1916): imagem 2x1 do destaque, embutida no topo do bloco.
+ * Partes de um bloco DESTAQUE, já separadas do HTML (#9872). Fonte única do
+ * parsing para o e-mail (`renderDestaque`) e para a página web
+ * (`monthly-web-render.ts`) — os dois canais leem o MESMO texto, só muda a
+ * marcação em volta.
  *
- * Formatos de header reconhecidos (após `normalizeLabel`):
- *   - `DESTAQUE 1 | ANTHROPIC` (formato antigo, separador `|`)
- *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
- *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
+ * `fio` é o fecho que vai na caixa "O fio condutor": o parágrafo
+ * `O fio condutor: …` quando existe, senão o ÚLTIMO parágrafo do corpo (e ele
+ * então sai de `paras`). `null` só quando o destaque não tem corpo nenhum.
  */
-/**
- * #2018: imageCaption parametriza a legenda da imagem gerada — antes era
- * hardcoded "Criada com Gemini", mas o gerador configurado pode ser
- * ComfyUI, Cloudflare, etc. Caller (draftToEmail) lê platform.config.json
- * e passa a legenda correta. Default: "Criada com IA" (genérico, seguro).
- */
-export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string, imageCaption?: string): string {
+export interface DestaqueParts {
+  tema: string;
+  title: string;
+  paras: string[];
+  fio: string | null;
+}
+
+export function parseDestaqueChunk(chunk: string, temaOverride?: string): DestaqueParts {
   const lines = chunk.split("\n");
   // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
   const cleaned = normalizeLabel(lines[0])
@@ -645,6 +646,30 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
     }
   }
 
+  if (conductorText) return { tema, title, paras: mainParas, fio: conductorText };
+  if (mainParas.length) return { tema, title, paras: mainParas.slice(0, -1), fio: mainParas[mainParas.length - 1] };
+  return { tema, title, paras: [], fio: null };
+}
+
+/**
+ * Renders a DESTAQUE section block. Aceita override de tema (usado pra
+ * LABORATÓRIO CLARICE etc — seções editorialmente equivalentes a destaques).
+ * `imageUrl` (#1916): imagem 2x1 do destaque, embutida no topo do bloco.
+ *
+ * Formatos de header reconhecidos (após `normalizeLabel`):
+ *   - `DESTAQUE 1 | ANTHROPIC` (formato antigo, separador `|`)
+ *   - `DESTAQUE 1\] ANTHROPIC` (Drive markdown export, com `\]` interno)
+ *   - `DESTAQUE 1 ANTHROPIC` (qualquer separador whitespace)
+ */
+/**
+ * #2018: imageCaption parametriza a legenda da imagem gerada — antes era
+ * hardcoded "Criada com Gemini", mas o gerador configurado pode ser
+ * ComfyUI, Cloudflare, etc. Caller (draftToEmail) lê platform.config.json
+ * e passa a legenda correta. Default: "Criada com IA" (genérico, seguro).
+ */
+export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string, imageCaption?: string): string {
+  const { tema, title, paras, fio } = parseDestaqueChunk(chunk, temaOverride);
+
   // Renderiza o tema sempre (não filtra por VALID_CATEGORIES — temas mensais
   // como ANTHROPIC, OPENAI, LABORATÓRIO CLARICE são editoriais e devem aparecer).
   const label = tema ? renderKicker(tema) : "";
@@ -667,15 +692,8 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
     `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin:24px 0 0;"><tr><td style="background:${PAPER};border:1px solid ${BEGE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">` +
     `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:12px;font-weight:bold;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${INK};">${tealDot()}&nbsp;O fio condutor</p>` +
     `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(capitalizeFirstLetter(text.replace(/\n/g, " ")))}</p></td></tr></table>`;
-  let mainHtml = "";
-  let conductorHtml = "";
-  if (conductorText) {
-    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
-    conductorHtml = boxFor(conductorText);
-  } else if (mainParas.length) {
-    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
-    conductorHtml = boxFor(mainParas[mainParas.length - 1]);
-  }
+  const mainHtml = paras.map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+  const conductorHtml = fio !== null ? boxFor(fio) : "";
 
   // #1916: imagem 2x1 do destaque no topo do bloco (full-width responsiva).
   // alt = título descritivo (cai pra tema/categoria só se faltar) — #1922 review.
@@ -709,17 +727,29 @@ export function renderIntro(body: string): string {
  * texto branco bold), como o CTA da diária. O label é o texto visível da linha
  * (sem o "→" e sem o link quando o texto do link é uma URL); href = URL do link.
  */
-export function renderCtaButton(line: string): string {
+/**
+ * Parsing do CTA `→ …` (#9872), compartilhado por e-mail e web: devolve o
+ * rótulo visível e a URL CRUA (o caller normaliza com a posição `cta`), ou
+ * `{ text }` quando a linha não traz link — aí ela sai como parágrafo comum.
+ */
+export function parseCtaLine(line: string): { label: string; rawUrl: string } | { text: string } {
   const text = line.replace(/^→\s*/, "").trim();
   const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
-  if (!linkM) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(text)}</p>`;
+  if (!linkM) return { text };
   const idx = linkM.index ?? 0;
-  const url = normalizeKnownUrl(linkM[2], "cta"); // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`)
   const linkText = linkM[1];
   const pre = text.slice(0, idx).trim().replace(/[:：]\s*$/, "").trim();
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
   const looksUrl = !/\s/.test(linkText) && /^(https?:\/\/|[\w.-]+\.[a-z]{2,})/i.test(linkText);
   const label = pre && looksUrl ? pre : [pre, linkText, post].filter(Boolean).join(" ").trim();
+  return { label, rawUrl: linkM[2] };
+}
+
+export function renderCtaButton(line: string): string {
+  const cta = parseCtaLine(line);
+  if ("text" in cta) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(cta.text)}</p>`;
+  const url = normalizeKnownUrl(cta.rawUrl, "cta"); // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`)
+  const { label } = cta;
   // Botão CTA (decisão final do editor 2026-06-09): pill "contorno" — fundo
   // paper #FBFAF6 + borda 1px bege, radius 999px, texto INK bold 16px (tamanho
   // do corpo). Centralizado.
@@ -766,7 +796,18 @@ export function renderLaboratorio(chunk: string): string {
  *   1. Item lista ...
  *   → CTA: [link](url)
  */
-export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false, imageAlt?: string): string {
+/** Bloco do corpo de um box (#9872): lista numerada, CTA `→ …` ou parágrafo. */
+export type BoxBlock =
+  | { kind: "ol"; items: string[] }
+  | { kind: "cta"; line: string }
+  | { kind: "p"; text: string };
+
+/**
+ * Parsing do box (Clarice/Livros/Livro/Divulgação), compartilhado por e-mail
+ * e web (#9872): subtítulo (1ª linha não-vazia, sem `**`) e os blocos do
+ * corpo, já com as quebras de linha achatadas como o render as usa.
+ */
+export function parseBoxChunk(chunk: string, noSubtitle = false): { subtitle: string; blocks: BoxBlock[] } {
   const lines = chunk.split("\n");
   // Skip header (o rótulo de seção) + blank lines.
   let i = 1;
@@ -785,28 +826,34 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
   const remaining = lines.slice(i).join("\n").trim();
 
   // Split em blocos: parágrafos, listas, dica final.
-  const blocks = remaining.split(/\n\n+/).filter((b) => b.trim());
+  const rawBlocks = remaining.split(/\n\n+/).filter((b) => b.trim());
 
-  const renderedBlocks: string[] = [];
-  for (const block of blocks) {
+  const blocks: BoxBlock[] = [];
+  for (const block of rawBlocks) {
     const blockLines = block.split("\n").map((l) => l.trim()).filter(Boolean);
     // Bloco é uma lista numerada se TODAS as linhas começam com `\d+\.`.
     const isOrdered = blockLines.length > 0 && blockLines.every((l) => /^\d+\.\s/.test(l));
     if (isOrdered) {
-      const items = blockLines
-        .map((l) => l.replace(/^\d+\.\s+/, ""))
-        .map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`)
-        .join("\n");
-      renderedBlocks.push(
-        `<ol style="margin:0 0 16px 0;padding-left:24px;color:${INK};">${items}</ol>`
-      );
+      blocks.push({ kind: "ol", items: blockLines.map((l) => l.replace(/^\d+\.\s+/, "")) });
     } else if (/^→/.test(block.trim())) {
-      renderedBlocks.push(renderCtaButton(block.trim().replace(/\n/g, " ")));
+      blocks.push({ kind: "cta", line: block.trim().replace(/\n/g, " ") });
     } else {
-      const inline = renderInline(block.trim().replace(/\n/g, " "));
-      renderedBlocks.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};color:${INK};">${inline}</p>`);
+      blocks.push({ kind: "p", text: block.trim().replace(/\n/g, " ") });
     }
   }
+  return { subtitle, blocks };
+}
+
+export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false, imageAlt?: string): string {
+  const { subtitle, blocks } = parseBoxChunk(chunk, noSubtitle);
+  const renderedBlocks = blocks.map((b) => {
+    if (b.kind === "ol") {
+      const items = b.items.map((item) => `<li style="margin:0 0 8px 0;">${renderInline(item)}</li>`).join("\n");
+      return `<ol style="margin:0 0 16px 0;padding-left:24px;color:${INK};">${items}</ol>`;
+    }
+    if (b.kind === "cta") return renderCtaButton(b.line);
+    return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(b.text)}</p>`;
+  });
 
   const subtitleHtml = subtitle
     ? `<h3 style="margin:0 0 16px 0;font-size:22px;font-weight:bold;font-family:${FONT_SERIF};line-height:1.3;color:${INK};">${renderInline(subtitle)}</h3>`
@@ -835,13 +882,22 @@ export function renderClariceBox(chunk: string, headerLabelText: string, imageUr
  * imersão 17/10). Sem imagem, comportamento de sempre (1ª linha = título).
  */
 export function renderDivulgacaoBox(chunk: string): string {
+  const d = parseDivulgacaoChunk(chunk);
+  return renderClariceBox(d.chunk, "Divulgação", d.imageUrl, false, d.imageAlt);
+}
+
+/**
+ * Separa a imagem de topo opcional do box DIVULGAÇÃO (#9872 — compartilhado
+ * com a web). Sem imagem, devolve o chunk intacto e `imageUrl` indefinido.
+ */
+export function parseDivulgacaoChunk(chunk: string): { chunk: string; imageUrl?: string; imageAlt?: string } {
   const lines = chunk.split("\n");
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
   const img = i < lines.length ? lines[i].trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/) : null;
-  if (!img) return renderClariceBox(chunk, "Divulgação");
+  if (!img) return { chunk };
   const rest = [lines[0], ...lines.slice(i + 1)].join("\n");
-  return renderClariceBox(rest, "Divulgação", img[2], false, img[1].trim() || undefined);
+  return { chunk: rest, imageUrl: img[2], imageAlt: img[1].trim() || undefined };
 }
 
 /**
@@ -858,10 +914,46 @@ export function renderClarice(chunk: string): string {
  * USE MELHOR DO MÊS, RADAR DO MÊS (#1901/#1902) e a legada OUTRAS NOTÍCIAS DO MÊS.
  */
 export function renderLinkListSection(chunk: string, displayTitle: string): string {
+  const { intro, footer, items: parsed } = parseLinkListChunk(chunk);
+  const header = renderKicker(displayTitle);
+
+  const itemsHtml = parsed
+    .map(({ title, desc }) => {
+      const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
+      const titleHtml = tm
+        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2], "titulo"))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
+        : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
+      return titleHtml + (desc
+        ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(desc)}</p>`
+        : `<div style="margin-bottom:20px;"></div>`);
+    })
+    .join("\n");
+
+  // #4040: posição própria derivada da SEÇÃO (`use-melhor`, `radar`) em vez do
+  // `inline` genérico — senão o CTA cairia no mesmo utm_campaign do "aqui" da
+  // APRESENTAÇÃO, dos wordmarks e de qualquer link no meio da prosa, e não
+  // daria pra medir se a seção mais clicada da peça é de fato o melhor lugar
+  // pro convite de cadastro. Na 2606-07 esse link raiz aparecia 7× com o MESMO
+  // utm_campaign — os cliques chegavam somados e sem origem.
+  const posicao = slugifySecao(displayTitle);
+  const ctaHtml = (texto: string) =>
+    `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(texto, posicao)}</p>`;
+
+  return header + (intro ? ctaHtml(intro) : "") + itemsHtml + (footer ? ctaHtml(footer) : "");
+}
+
+/**
+ * Parsing da lista de links (Use Melhor/Radar/Outras Notícias), compartilhado
+ * por e-mail e web (#9872): CTA de abertura/fecho da seção e os itens
+ * `{ title, desc }`, com `title` sendo a linha `[título](url)` crua.
+ */
+export function parseLinkListChunk(chunk: string): {
+  intro: string | null;
+  footer: string | null;
+  items: Array<{ title: string; desc: string }>;
+} {
   const lines = chunk.split("\n");
   let content = lines.slice(1).join("\n").trim();
-
-  const header = renderKicker(displayTitle);
 
   // CTA de seção — parágrafo que CONTÉM um link markdown mas não COMEÇA com um,
   // na primeira ou na última posição da seção. Sem isto ele cairia no `descBuf`
@@ -925,29 +1017,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     parsed.push({ title: currentTitle, desc: descBuf.join(" ").trim() });
   }
 
-  const itemsHtml = parsed
-    .map(({ title, desc }) => {
-      const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
-      const titleHtml = tm
-        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2], "titulo"))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
-        : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
-      return titleHtml + (desc
-        ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(desc)}</p>`
-        : `<div style="margin-bottom:20px;"></div>`);
-    })
-    .join("\n");
-
-  // #4040: posição própria derivada da SEÇÃO (`use-melhor`, `radar`) em vez do
-  // `inline` genérico — senão o CTA cairia no mesmo utm_campaign do "aqui" da
-  // APRESENTAÇÃO, dos wordmarks e de qualquer link no meio da prosa, e não
-  // daria pra medir se a seção mais clicada da peça é de fato o melhor lugar
-  // pro convite de cadastro. Na 2606-07 esse link raiz aparecia 7× com o MESMO
-  // utm_campaign — os cliques chegavam somados e sem origem.
-  const posicao = slugifySecao(displayTitle);
-  const ctaHtml = (texto: string) =>
-    `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(texto, posicao)}</p>`;
-
-  return header + (intro ? ctaHtml(intro) : "") + itemsHtml + (footer ? ctaHtml(footer) : "");
+  return { intro, footer, items: parsed };
 }
 
 /** @deprecated back-compat: use renderLinkListSection. */
@@ -992,22 +1062,29 @@ const DEFAULT_CURADORIA_LABEL = "Acesse nossas curadorias:";
  * fallback `DEFAULT_CURADORIA_LABEL` — mesmo guard de sempre contra label
  * duplicado (#3181/#3183: uma linha solta tipo "Acesse:" nunca vira prose).
  */
-export function renderEncerramento(body: string): string {
+/** Grupo de pills do PARA ENCERRAR (#9872): rótulo + links crus (sem UTM). */
+export interface EncerramentoPillGroup {
+  label: string;
+  pills: Array<{ label: string; rawUrl: string }>;
+}
+
+/**
+ * Parsing do PARA ENCERRAR, compartilhado por e-mail e web (#9872): blocos de
+ * prosa antes do fecho (`head`), grupos de pills e o último bloco de prosa
+ * (`last`, que o e-mail põe na caixa bege). Mesmas regras de rótulo do #4968.
+ */
+export function parseEncerramento(body: string): { head: string[]; groups: EncerramentoPillGroup[]; last: string } {
   const blocks = body.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
   const proseBlocks: string[] = [];
-  type PillGroup = { label: string; pills: string[] };
-  const pillGroups: PillGroup[] = [];
+  const groups: EncerramentoPillGroup[] = [];
   for (const block of blocks) {
     const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
     const nonLink: string[] = [];
-    const groupPills: string[] = [];
+    const groupPills: Array<{ label: string; rawUrl: string }> = [];
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
-        // Posição por RÓTULO (`pill-cursos-de-ia`, `pill-livros-sobre-ia`): com
-        // o `pill` genérico as duas curadorias caíam no mesmo utm_campaign e
-        // eram indistinguíveis — que é justamente o que se quer medir aqui.
-        groupPills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], `pill-${slugifySecao(m[1])}`)));
+        groupPills.push({ label: m[1], rawUrl: m[2] });
       } else {
         nonLink.push(line);
       }
@@ -1018,15 +1095,36 @@ export function renderEncerramento(body: string): string {
       // livre) é descartada como sempre (guard #3181/#3183 preservado).
       const candidateLabel = nonLink.join(" ").trim();
       const label = candidateLabel.endsWith(":") ? candidateLabel : DEFAULT_CURADORIA_LABEL;
-      pillGroups.push({ label, pills: groupPills });
+      groups.push({ label, pills: groupPills });
     } else if (nonLink.length) {
       proseBlocks.push(nonLink.join(" "));
     }
   }
+  return {
+    head: proseBlocks.slice(0, -1),
+    groups,
+    last: proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "",
+  };
+}
+
+/**
+ * Posição de UTM de uma pill (#4040): por RÓTULO (`pill-cursos-de-ia`,
+ * `pill-livros-sobre-ia`) — com o `pill` genérico as duas curadorias caíam
+ * no mesmo utm_campaign e eram indistinguíveis.
+ */
+export function pillPosicao(label: string): string {
+  return `pill-${slugifySecao(label)}`;
+}
+
+export function renderEncerramento(body: string): string {
+  const parsed = parseEncerramento(body);
+  const { head, last } = parsed;
+  const pillGroups = parsed.groups.map((g) => ({
+    label: g.label,
+    pills: g.pills.map((p) => renderPillLink(p.label, normalizeKnownUrl(p.rawUrl, pillPosicao(p.label)))),
+  }));
 
   const parts: string[] = [renderKicker("Para encerrar")];
-  const head = proseBlocks.slice(0, -1);
-  const last = proseBlocks.length ? proseBlocks[proseBlocks.length - 1] : "";
   for (const p of head) parts.push(`<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p)}</p>`);
   for (const group of pillGroups) {
     parts.push(
@@ -1078,6 +1176,29 @@ export function parseEiaLegend(eiaMd: string): string {
 }
 
 /**
+ * Crédito do bloco É IA? (#1914, extraído no #9872 para a web reusar): a
+ * legenda do `01-eia.md` quando vem, senão o corpo do chunk — descartando um
+ * corpo que seja só placeholder `[...]` (#1915 review), que nunca pode vazar
+ * como crédito.
+ */
+export function eiaCreditContent(chunk: string, creditOverride?: string): string {
+  const fallbackBody = chunk.split("\n").slice(1).join("\n").trim();
+  const cleanFallback = /^\[[\s\S]*\]$/.test(fallbackBody) ? "" : fallbackBody;
+  return creditOverride?.trim() || cleanFallback;
+}
+
+/** #3904: default do domínio de marca — poll.diaria.workers.dev segue ativo
+ * só por compat de links de VOTO já enviados em ciclos passados. */
+export function eiaWorkerUrl(): string {
+  return process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
+}
+
+/** URL crua (sem UTM) do "Ver ranking" — leaderboard anual do `brand` (#9865). */
+export function eiaLeaderboardRawUrl(yymm: string, brand: Brand): string {
+  return `${eiaWorkerUrl()}/leaderboard/20${yymm.slice(0, 2)}?brand=${brand}`;
+}
+
+/**
  * Renders the É IA? section (#465). Layout espelha a diária (#1918): imagens
  * A/B lado a lado, clicáveis (o voto vai no clique da própria imagem — sem
  * botão), empilhando no mobile via `.mob-stack`; frase "Clique na imagem que
@@ -1107,16 +1228,8 @@ export function renderEia(
   prevResultLine?: string | null,
   utmProfile: MonthlyUtmProfile = CLARICE_UTM_PROFILE,
 ): string {
-  const lines = chunk.split("\n");
-  // #1914: prefere a legenda do 01-eia.md; cai pro corpo do chunk só se ela
-  // vier vazia. E descarta um corpo que seja só placeholder `[...]` (#1915
-  // review) pra ele nunca vazar como crédito no email.
-  const fallbackBody = lines.slice(1).join("\n").trim();
-  const cleanFallback = /^\[[\s\S]*\]$/.test(fallbackBody) ? "" : fallbackBody;
-  const content = creditOverride?.trim() || cleanFallback;
-  // #3904: default do domínio de marca — poll.diaria.workers.dev segue ativo
-  // só por compat de links de VOTO já enviados em ciclos passados.
-  const workerUrl = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
+  const content = eiaCreditContent(chunk, creditOverride);
+  const workerUrl = eiaWorkerUrl();
   const edition = eiaEditionFromYymm(yymm);
   // #1905/#4510: brand + merge tag vêm do utmProfile — votos do É IA? mensal
   // vão pro leaderboard do brand do perfil (Clarice News por default,
@@ -1179,7 +1292,7 @@ ${prevResultHtml}
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${escHtml(normalizeKnownUrl(`${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=${utmProfile.pollBrand}`, "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${escHtml(normalizeKnownUrl(eiaLeaderboardRawUrl(yymm, utmProfile.pollBrand), "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>
@@ -1461,6 +1574,84 @@ export function splitByLabels(text: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/**
+ * Tipo de seção do draft mensal a partir do label normalizado (#9872).
+ *
+ * Fonte única do dispatch de `draftToEmail` e do render web
+ * (`monthly-web-render.ts`) — um label novo reconhecido só num dos dois
+ * faria a página web e o e-mail divergirem de conteúdo em silêncio.
+ * Ordem e regras são as do dispatch histórico (#1904-followup, #1914, #2794).
+ */
+export type SectionKind =
+  | { kind: "remetente" }
+  | { kind: "assunto" }
+  | { kind: "preview" }
+  | { kind: "intro" }
+  | { kind: "apresentacao" }
+  | { kind: "divulgacao" }
+  | { kind: "livros" }
+  | { kind: "livro" }
+  | { kind: "destaque"; n: number }
+  | { kind: "clarice" }
+  | { kind: "laboratorio" }
+  | { kind: "use-melhor" }
+  | { kind: "radar" }
+  | { kind: "outras-noticias" }
+  | { kind: "eia" }
+  | { kind: "encerramento" }
+  | { kind: "fallback" };
+
+export function classifySection(label: string): SectionKind {
+  if (label === "REMETENTE") return { kind: "remetente" };
+  // #2794: tolera o sufixo " (3 OPÇÕES)" (template atual) — sem isso, o
+  // match exato falhava e a seção inteira caía no fallback renderParagraphs.
+  if (label === "ASSUNTO" || /^ASSUNTO\b/i.test(label)) return { kind: "assunto" };
+  if (label === "PREVIEW") return { kind: "preview" };
+  if (label === "INTRO") return { kind: "intro" };
+  if (["APRESENTAÇÃO", "APRESENTACAO"].includes(label)) return { kind: "apresentacao" };
+  if (label === "DIVULGAÇÃO") return { kind: "divulgacao" };
+  if (label === "LIVROS") return { kind: "livros" };
+  if (label === "LIVRO" || label === "LIVRO DO MÊS") return { kind: "livro" };
+  // DESTAQUE — aceita `DESTAQUE N | TEMA` antigo E `DESTAQUE N\] TEMA` novo.
+  const destaqueMatch = label.match(/^DESTAQUE\s+(\d+)/);
+  if (destaqueMatch) return { kind: "destaque", n: Number(destaqueMatch[1]) };
+  if (label.startsWith("CLARICE —")) return { kind: "clarice" };
+  if (label === "LABORATÓRIO CLARICE") return { kind: "laboratorio" };
+  // #1904-followup: tolerante ao rótulo curto ("USE MELHOR DO MÊS" → "USE MELHOR").
+  if (label === "USE MELHOR" || label === "USE MELHOR DO MÊS") return { kind: "use-melhor" };
+  if (label === "RADAR" || label === "RADAR DO MÊS") return { kind: "radar" };
+  if (label === "OUTRAS NOTÍCIAS DO MÊS") return { kind: "outras-noticias" };
+  // #1914: tolera qualquer sufixo no rótulo ("É IA? — DESTAQUE DO MÊS" e
+  // variantes de travessão/encurtamento do editor) além do curto "É IA?".
+  if (label === "É IA?" || label.startsWith("É IA?")) return { kind: "eia" };
+  // ENCERRAMENTO antigo + PARA ENCERRAR (renomeado pelo editor).
+  if (label === "ENCERRAMENTO" || label === "PARA ENCERRAR") return { kind: "encerramento" };
+  return { kind: "fallback" };
+}
+
+/** Subject candidato do corpo do ASSUNTO: 1º item numerado, senão o texto todo. */
+export function parseAssuntoCandidate(body: string): string {
+  const lines = body.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const m = line.match(/^\d+\.\s+(.+)$/);
+    if (m) return m[1].trim();
+  }
+  return lines.length > 0 ? lines.join(" ").trim() : "";
+}
+
+/**
+ * LIVRO no formato ANTIGO abre direto no parágrafo do livro
+ * (`[**Título**](url), de Autor.`). Consumir essa linha como título deformaria a
+ * caixa, então nesse caso o box sai sem título interno (comportamento
+ * pré-260727, sem exigir migração dos snippets antigos).
+ */
+export function livroAbreComParagrafoDeLink(chunk: string): boolean {
+  const linhas = chunk.split("\n");
+  let k = 1;
+  while (k < linhas.length && !linhas[k].trim()) k++;
+  return (linhas[k] ?? "").trim().startsWith("[");
+}
+
 /** Converts draft.md content + optional chosen subject to { subject, previewText, html }.
  *
  * @param destaqueImageCaption #2018 — legenda das imagens geradas (ex: "Criada com Gemini",
@@ -1522,141 +1713,85 @@ export function draftToEmail(
     // do corpo).
     setMonthlyUtmSecao(label);
 
-    // REMETENTE: metadata, não renderiza no corpo.
-    if (label === "REMETENTE") continue;
-
-    // ASSUNTO: extrai como subject (override se chosenSubject não setado).
-    // #2794: tolera o sufixo " (3 OPÇÕES)" (template atual) — sem isso, o
-    // match exato falhava e a seção inteira caía no fallback renderParagraphs,
-    // vazando "ASSUNTO (3 OPÇÕES)\n1. ...\n2. ...\n3. ..." como prosa no corpo.
-    if (label === "ASSUNTO" || /^ASSUNTO\b/i.test(label)) {
-      const body = chunkBody(chunk);
-      const lines = body.split("\n").map((l) => l.trim()).filter(Boolean);
-      let candidate = "";
-      for (const line of lines) {
-        const m = line.match(/^\d+\.\s+(.+)$/);
-        if (m) { candidate = m[1].trim(); break; }
+    const kind = classifySection(label);
+    switch (kind.kind) {
+      case "remetente": // metadata, não renderiza no corpo.
+        break;
+      case "assunto": {
+        // ASSUNTO: extrai como subject (override se chosenSubject não setado).
+        const candidate = parseAssuntoCandidate(chunkBody(chunk));
+        if (!subject && candidate) subject = candidate;
+        break;
       }
-      if (!candidate && lines.length > 0) candidate = lines.join(" ").trim();
-      if (!subject && candidate) subject = candidate;
-      continue;
+      case "preview":
+        previewText = chunkBody(chunk).split("\n").join(" ").trim();
+        break;
+      case "intro": {
+        // INTRO: sumário editorial do mês — render destacado (label teal + italic + border).
+        const body = chunkBody(chunk);
+        if (body) bodyParts.push(renderIntro(body));
+        break;
+      }
+      case "apresentacao": {
+        const body = chunkBody(chunk);
+        if (body) bodyParts.push(renderParagraphs(body));
+        break;
+      }
+      case "divulgacao":
+        // DIVULGAÇÃO: box de divulgação/afiliado (bege) pra 1 item avulso (ex: acesso
+        // a produto) antes do Use Melhor. Reusa o box do Clarice com rótulo "Divulgação".
+        bodyParts.push(renderDivulgacaoBox(chunk));
+        break;
+      case "livros":
+        // LIVROS: box promovendo a página de curadoria de livros da diar.ia.br (bege),
+        // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
+        bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));
+        break;
+      case "livro":
+        // LIVRO: box de indicação de UM livro (bege). Kicker = CATEGORIA da seção
+        // ("Livro do mês"); título interno = primeira linha do bloco
+        // ("Recomendação de leitura"). Decisão do editor 260727 — reverte o #3581,
+        // que havia tirado o sufixo "do mês" E o título interno por redundância:
+        // eram redundantes quando kicker e título diziam a mesma coisa, deixaram de
+        // ser quando passaram a dizer coisas diferentes (categoria vs. natureza do
+        // box). Sem imagem. Back-compat do formato antigo: `livroAbreComParagrafoDeLink`.
+        bodyParts.push(renderClariceBox(chunk, "Livro do mês", undefined, livroAbreComParagrafoDeLink(chunk)));
+        break;
+      case "destaque":
+        // #1916: imagem 2x1 por destaque; #2018: legenda parametrizada do gerador.
+        bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[kind.n], destaqueImageCaption));
+        break;
+      case "clarice":
+        bodyParts.push(renderClarice(chunk));
+        break;
+      case "laboratorio":
+        bodyParts.push(renderLaboratorio(chunk));
+        break;
+      case "use-melhor":
+        bodyParts.push(renderLinkListSection(chunk, "Use Melhor")); // #1919: sem "do Mês"
+        break;
+      case "radar":
+        bodyParts.push(renderLinkListSection(chunk, "Radar")); // #1919: sem "do Mês"
+        break;
+      case "outras-noticias":
+        bodyParts.push(renderOutrasNoticias(chunk));
+        break;
+      case "eia":
+        // #4510: `utmProfile` vem do closure de `draftToEmail` (parâmetro da
+        // função externa) — sem repassar, `renderEia` cairia no default
+        // `CLARICE_UTM_PROFILE` mesmo dentro do render Beehiiv.
+        bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine, utmProfile));
+        break;
+      case "encerramento": {
+        const body = chunkBody(chunk);
+        if (body) bodyParts.push(renderEncerramento(body));
+        break;
+      }
+      case "fallback":
+        // Fallback: render as plain paragraphs (chunk inteiro, com label).
+        bodyParts.push(renderParagraphs(chunk));
+        break;
     }
-
-    // PREVIEW: extrai como previewText.
-    if (label === "PREVIEW") {
-      previewText = chunkBody(chunk).split("\n").join(" ").trim();
-      continue;
-    }
-
-    // INTRO: sumário editorial do mês — render destacado (label teal + italic + border).
-    if (label === "INTRO") {
-      const body = chunkBody(chunk);
-      if (body) bodyParts.push(renderIntro(body));
-      continue;
-    }
-
-    // APRESENTAÇÃO: parágrafos planos.
-    if (["APRESENTAÇÃO", "APRESENTACAO"].includes(label)) {
-      const body = chunkBody(chunk);
-      if (body) bodyParts.push(renderParagraphs(body));
-      continue;
-    }
-
-    // DIVULGAÇÃO: box de divulgação/afiliado (bege) pra 1 item avulso (ex: acesso
-    // a produto) antes do Use Melhor. Reusa o box do Clarice com rótulo "Divulgação".
-    if (label === "DIVULGAÇÃO") {
-      bodyParts.push(renderDivulgacaoBox(chunk));
-      continue;
-    }
-
-    // LIVROS: box promovendo a página de curadoria de livros da diar.ia.br (bege),
-    // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
-    if (label === "LIVROS") {
-      bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));
-      continue;
-    }
-
-    // LIVRO: box de indicação de UM livro (bege). Kicker = CATEGORIA da seção
-    // ("Livro do mês"); título interno = primeira linha do bloco
-    // ("Recomendação de leitura"). Decisão do editor 260727 — reverte o #3581,
-    // que havia tirado o sufixo "do mês" E o título interno por redundância:
-    // eram redundantes quando kicker e título diziam a mesma coisa, deixaram de
-    // ser quando passaram a dizer coisas diferentes (categoria vs. natureza do
-    // box). Sem imagem. Label curto e longo ambos aceitos na detecção.
-    // Back-compat: blocos ESCRITOS NO FORMATO ANTIGO abrem direto no parágrafo
-    // do livro (`[**Título**](url), de Autor.`). Consumir essa linha como
-    // título deformaria a caixa — o título do livro viraria <h3> e o corpo
-    // perderia o 1º parágrafo. Detecta pelo `[` inicial (parágrafo com link) e
-    // cai no comportamento pré-260727 (sem título interno) nesse caso, sem
-    // exigir migração dos snippets antigos.
-    if (label === "LIVRO" || label === "LIVRO DO MÊS") {
-      const linhas = chunk.split("\n");
-      let k = 1;
-      while (k < linhas.length && !linhas[k].trim()) k++;
-      const abreComParagrafoDeLink = (linhas[k] ?? "").trim().startsWith("[");
-      bodyParts.push(renderClariceBox(chunk, "Livro do mês", undefined, abreComParagrafoDeLink));
-      continue;
-    }
-
-    // DESTAQUE — aceita `DESTAQUE N | TEMA` antigo E `DESTAQUE N\] TEMA` novo.
-    const destaqueMatch = label.match(/^DESTAQUE\s+(\d+)/);
-    if (destaqueMatch) {
-      const n = Number(destaqueMatch[1]); // #1916: imagem 2x1 por destaque
-      // #2018: repassa a legenda parametrizada do gerador configurado
-      bodyParts.push(renderDestaque(chunk, undefined, destaqueImageUrls?.[n], destaqueImageCaption));
-      continue;
-    }
-
-    if (label.startsWith("CLARICE —")) {
-      bodyParts.push(renderClarice(chunk));
-      continue;
-    }
-
-    // LABORATÓRIO CLARICE: caixa dedicada (h3 + parágrafos + lista numerada).
-    if (label === "LABORATÓRIO CLARICE") {
-      bodyParts.push(renderLaboratorio(chunk));
-      continue;
-    }
-
-    // #1904-followup: dispatch tolerante ao rótulo curto (editor encurta
-    // "USE MELHOR DO MÊS" → "USE MELHOR"). O título de exibição é sempre o longo.
-    if (label === "USE MELHOR" || label === "USE MELHOR DO MÊS") {
-      bodyParts.push(renderLinkListSection(chunk, "Use Melhor")); // #1919: sem "do Mês"
-      continue;
-    }
-
-    if (label === "RADAR" || label === "RADAR DO MÊS") {
-      bodyParts.push(renderLinkListSection(chunk, "Radar")); // #1919: sem "do Mês"
-      continue;
-    }
-
-    if (label === "OUTRAS NOTÍCIAS DO MÊS") {
-      bodyParts.push(renderOutrasNoticias(chunk));
-      continue;
-    }
-
-    // #1914: tolera qualquer sufixo no rótulo ("É IA? — DESTAQUE DO MÊS" e
-    // variantes de travessão/encurtamento do editor) além do curto "É IA?".
-    // startsWith é dash-agnóstico no sufixo — match exato no em-dash era frágil
-    // (#1915 review). Sem isso a seção cai no fallback e o placeholder `[...]`
-    // aparece literal no email.
-    if (label === "É IA?" || label.startsWith("É IA?")) {
-      // #4510: `utmProfile` vem do closure de `draftToEmail` (parâmetro da
-      // função externa) — sem repassar, `renderEia` cairia no default
-      // `CLARICE_UTM_PROFILE` mesmo dentro do render Beehiiv.
-      bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine, utmProfile));
-      continue;
-    }
-
-    // ENCERRAMENTO antigo + PARA ENCERRAR (renomeado pelo editor).
-    if (label === "ENCERRAMENTO" || label === "PARA ENCERRAR") {
-      const body = chunkBody(chunk);
-      if (body) bodyParts.push(renderEncerramento(body));
-      continue;
-    }
-
-    // Fallback: render as plain paragraphs (chunk inteiro, com label).
-    bodyParts.push(renderParagraphs(chunk));
   }
 
   // Fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
