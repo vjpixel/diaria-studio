@@ -30,7 +30,7 @@ import {
   draftToEmailApoiadoresKit,
 } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 import { filterDraftForApoiadores } from "../scripts/lib/mensal/monthly-draft-filter.ts";
-import { draftToWebArticle } from "../scripts/lib/mensal/monthly-web-render.ts";
+import { draftToWebArticle, WEB_EIA_TITLE } from "../scripts/lib/mensal/monthly-web-render.ts";
 import {
   buildArticleHtml,
   buildArticleTeaserHtml,
@@ -81,6 +81,11 @@ function textSegments(html: string): string[] {
     )
     .filter((s) => s.length > 0);
 }
+
+/** #9916: o título do É IA? é a única divergência de texto deliberada — o
+ *  e-mail manda clicar (foto é link de voto), a web pergunta (foto sem link). */
+const EMAIL_EIA_TITLE = "Clique na imagem que foi gerada por IA";
+const comoNaWeb = (segs: string[]): string[] => segs.map((s) => (s === EMAIL_EIA_TITLE ? WEB_EIA_TITLE : s));
 
 function emailKit(): string {
   return draftToEmailApoiadoresKit(DRAFT, null, YYMM, EIA_A, EIA_B, CREDIT, IMGS, CAPTION, LIVROS_IMG, PREV).html;
@@ -174,13 +179,13 @@ describe("#9872 — texto da página idêntico ao do e-mail", () => {
       destaqueImageCaption: CAPTION,
       livrosImageUrl: LIVROS_IMG,
     });
-    assert.deepEqual(textSegments(`<article>${web.bodyHtml}</article>`), textSegments(emailKit()));
+    assert.deepEqual(textSegments(`<article>${web.bodyHtml}</article>`), comoNaWeb(textSegments(emailKit())));
   });
 
   it("página publicada × e-mail: só diferem o parágrafo com merge tag (removido na web) e a legenda das fotos de destaque (não plugadas)", () => {
     const page = buildArticleHtml(DRAFT, CICLO, { eiaCredit: CREDIT, eiaImageUrlA: EIA_A, eiaImageUrlB: EIA_B }).html;
     const email = draftToEmailApoiadoresKit(DRAFT, null, YYMM, EIA_A, EIA_B, CREDIT).html;
-    const esperado = textSegments(email).filter((s) => !s.startsWith("Você está recebendo esse e-mail"));
+    const esperado = comoNaWeb(textSegments(email)).filter((s) => !s.startsWith("Você está recebendo esse e-mail"));
     assert.deepEqual(textSegments(page), esperado);
     assert.ok(!page.includes("unsubscribe"), "a merge tag e o parágrafo saem");
   });

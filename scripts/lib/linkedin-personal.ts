@@ -27,7 +27,7 @@
  * agendamento fica com tasks systemd.
  */
 
-import type { AlarmFinding } from "./alarm-issues.ts";
+import { alarmIssueStateKey, type AlarmAllowlist, type AlarmFinding, type AlarmIssuesState } from "./alarm-issues.ts";
 import { getScheduledTaskByName, type ScheduledTaskSchedule } from "./scheduled-tasks.ts";
 
 // ── Configuração ─────────────────────────────────────────────────────────
@@ -582,6 +582,39 @@ export function evaluateTokenExpiry(
       `\n\nEsta issue fecha sozinha quando o token novo (expiração > ${TOKEN_WARN_DAYS} dias) aparecer no ambiente do \`300\`.`,
     contentSignature: band,
   };
+}
+
+/**
+ * #9915: congela a reconciliação do fingerprint do token quando a checagem
+ * remota foi INDETERMINADA (`unknown`: timeout, 5xx, rede) e a issue aberta
+ * rastreada é a de token REVOGADO. Só o remoto sabe se o token segue
+ * revogado; sem resposta dele, `evaluateTokenExpiry` cai na faixa de
+ * expiração local — `null` com `EXPIRES_AT` a mais de 14 dias — e, com
+ * `CLOSE_AFTER_RUNS = 1`, o alarme fechava a issue P1 como resolvida depois de
+ * uma única checagem que não provou nada (revogado → timeout fecha → 401
+ * reabre). Devolve uma allowlist de 1 entrada pro `applyAlarmReconciliation`:
+ * nem `close`/`comment_resolved` do lado do estado, nem `ensure` que trocaria
+ * a assinatura `revoked` por uma faixa de expiração — repete o último estado
+ * conhecido até o remoto responder. Fora desse caso (remoto respondeu, ou a
+ * issue aberta é de expiração, que se decide só com `EXPIRES_AT`), lista
+ * vazia: reconciliação normal.
+ */
+export function tokenAlarmFreezeOnUnknownRemote(
+  remote: TokenRemoteState | null,
+  state: AlarmIssuesState,
+): AlarmAllowlist {
+  if (remote?.state !== "unknown") return [];
+  const entry = state[alarmIssueStateKey(TOKEN_ALARM_CHECK, TOKEN_ALARM_FINGERPRINT)];
+  if (!entry || entry.closedAt !== null || entry.contentSignature !== "revoked") return [];
+  return [
+    {
+      check: TOKEN_ALARM_CHECK,
+      fingerprint: TOKEN_ALARM_FINGERPRINT,
+      reason: `checagem remota indeterminada (${remote.reason}) — mantém a issue de token revogado como está`,
+      accepted_at: "2026-10-08",
+      ref_issue: "#9915",
+    },
+  ];
 }
 
 /**

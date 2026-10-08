@@ -9,6 +9,8 @@
  *     cursor (antes: índice perdido + cursor avançado = lote fora pra sempre).
  *   - #9863: falha de LEITURA do cursor aborta sem gravar nada (antes: cursor
  *     padrão gravado por cima do salvo, perdendo `gaps`/`done`).
+ *   - #9918: falha de ESCRITA do cursor lança (antes: `catch {}` vazio, CLI
+ *     saía 0 dizendo "backfill completo" sem nada persistido).
  *   - #9859: `count` ausente na medição inicial não grava `done: true`; e um
  *     cursor `done` já gravado assim com `totalCount: null` volta a varrer.
  *   - #9858: 403/5xx persistente no GET de stats de UMA campanha tem teto de
@@ -26,6 +28,7 @@ import {
   BrevoUpstreamError,
   CampaignsArchiveIndexWriteError,
   CampaignsBackfillCursorReadError,
+  CampaignsBackfillCursorWriteError,
   CAMPAIGNS_ARCHIVE_INDEX_KV_KEY,
   CAMPAIGNS_BACKFILL_CURSOR_KV_KEY,
   CAMPAIGNS_BACKFILL_CURSOR_VERSION,
@@ -162,6 +165,49 @@ describe("#9861 — falha de escrita do índice não avança o cursor", () => {
     };
     await assert.rejects(run({ BREVO_API_KEY: "x", STATS_CACHE: kv }, makeBrevo().fetchFn), CampaignsArchiveIndexWriteError);
     assert.equal(store.has(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY), false);
+  });
+});
+
+describe("#9918 — falha de escrita do cursor não passa em silêncio", () => {
+  test("PUT do cursor falhando (500) → lança CampaignsBackfillCursorWriteError; rodada seguinte persiste", async () => {
+    const kv = makeKv({}, { failPut: (k) => k === CAMPAIGNS_BACKFILL_CURSOR_KV_KEY });
+    const brevo = makeBrevo();
+
+    await assert.rejects(run(kv.env, brevo.fetchFn), CampaignsBackfillCursorWriteError);
+    assert.equal(kv.store.has(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY), false, "nada de cursor gravado");
+    // O que já foi gravado antes do cursor fica: índice e stats.
+    assert.equal(kv.json(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY).length, EXTRA);
+
+    kv.failPut.fn = () => false;
+    const getsBefore = brevo.statsGets.length;
+    const r = await run(kv.env, brevo.fetchFn);
+    assert.equal(r.cursor.done, true);
+    assert.equal(kv.json(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY).done, true);
+    assert.equal(kv.json(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY).length, EXTRA, "índice deduplica a releitura");
+    assert.equal(brevo.statsGets.length, getsBefore, "stats já cacheados não refazem GET");
+  });
+
+  test("PUT do cursor `done` (sem lacunas) falhando também lança", async () => {
+    const savedCursor = {
+      offset: TOTAL, totalCount: TOTAL, done: false, gaps: [],
+      version: CAMPAIGNS_BACKFILL_CURSOR_VERSION, updatedAt: new Date(NOW - DAY).toISOString(),
+    };
+    const kv = makeKv({ [CAMPAIGNS_BACKFILL_CURSOR_KV_KEY]: savedCursor }, { failPut: (k) => k === CAMPAIGNS_BACKFILL_CURSOR_KV_KEY });
+    await assert.rejects(run(kv.env, makeBrevo().fetchFn), CampaignsBackfillCursorWriteError);
+    assert.deepEqual(kv.json(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY), savedCursor);
+  });
+
+  test("KV nativo do Worker que lança no PUT do cursor → mesma recusa", async () => {
+    const store = new Map<string, unknown>();
+    const kv = {
+      get: async (key: string) => store.get(key) ?? null,
+      put: async (key: string, v: string) => {
+        if (key === CAMPAIGNS_BACKFILL_CURSOR_KV_KEY) throw new Error("KV PUT failed: 503");
+        store.set(key, JSON.parse(v));
+      },
+      delete: async () => {},
+    };
+    await assert.rejects(run({ BREVO_API_KEY: "x", STATS_CACHE: kv }, makeBrevo().fetchFn), /KV PUT failed: 503/);
   });
 });
 
