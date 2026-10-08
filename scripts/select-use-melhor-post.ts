@@ -36,7 +36,7 @@ import {
   enrichUseMelhorItem,
   describeUseMelhorPostStatus,
   loadUseMelhorPostConfigState,
-  readApprovedForUseMelhor,
+  readApprovedPoolForUseMelhor,
   readUseMelhorPostState,
   renderedUseMelhorUrls,
   selectUseMelhorItem,
@@ -107,7 +107,8 @@ export function runSelection(
     ) {
       return { state: previous, written: null, preserved: true };
     }
-    const approved = readApprovedForUseMelhor(editionDir);
+    // #9869: capped + pool completo — item do pool incluído no gate é elegível.
+    const approved = readApprovedPoolForUseMelhor(editionDir);
     if (reviewed !== null && approved !== null) {
       const sel = selectUseMelhorItem(useMelhorCandidatesFromApproved(approved), renderedUseMelhorUrls(reviewed), {
         exclude,
