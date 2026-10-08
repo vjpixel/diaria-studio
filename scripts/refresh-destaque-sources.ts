@@ -53,6 +53,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   highlightSourceUrls,
@@ -169,11 +170,11 @@ export async function refreshDestaqueSources(
   return result;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
     console.error("Uso: refresh-destaque-sources.ts --edition-dir data/editions/AAMM/AAMMDD/ [--approved <path>] [--check | --record-writer-inputs]");
-    process.exit(1);
+    return 1;
   }
   const check = flags.has("check");
   let result: RefreshResult;
@@ -185,15 +186,13 @@ async function main(): Promise<void> {
     });
   } catch (e) {
     console.error(`refresh-destaque-sources: ${(e as Error).message}`);
-    process.exit(1);
+    return 1;
   }
   console.log(JSON.stringify(result, null, 2));
-  if (check && result.stale_before) process.exit(3);
+  if (check && result.stale_before) return 3;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`refresh-destaque-sources: ${(e as Error).message}`);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`refresh-destaque-sources: ${(e as Error).message}`) });
 }

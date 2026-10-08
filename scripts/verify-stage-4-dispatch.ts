@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 
 import { readSocialPublished, type PostEntry } from "./lib/social-published-store.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -503,7 +504,7 @@ export function reconcileLinkedin(
 
 // ---- Main ----
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   // #2834: --strict é flag booleana incondicional no parser local original
   // (sempre true quando presente, independente do que vem depois) — argv.includes
@@ -512,7 +513,7 @@ async function main(): Promise<void> {
   const editionDirRaw = parseArgsLib(argv).values["edition-dir"];
   if (!editionDirRaw) {
     console.error("Uso: verify-stage-4-dispatch.ts --edition-dir <path> [--strict]");
-    process.exit(2);
+    return 2;
   }
   const editionDir = resolve(ROOT, editionDirRaw);
 
@@ -525,7 +526,7 @@ async function main(): Promise<void> {
       : null;
   if (!publishedPath) {
     console.error(`[verify] arquivo nao encontrado:\n  ${internalPath}\n  ${rootPath}`);
-    process.exit(2);
+    return 2;
   }
 
   const published = readSocialPublished(publishedPath);
@@ -717,12 +718,10 @@ async function main(): Promise<void> {
   }
   console.error("");
 
-  process.exit(ok ? 0 : 1);
+  return ok ? 0 : 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(2);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("Fatal error:", e), errorCode: 2 });
 }

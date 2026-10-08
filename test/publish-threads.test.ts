@@ -399,10 +399,12 @@ describe("Credenciais THREADS obrigatórias", () => {
     assert.match(SRC, /THREADS_ACCESS_TOKEN/, "deve verificar THREADS_ACCESS_TOKEN");
   });
 
-  it("credenciais ausentes resultam em process.exit(0) (graceful skip, não exit 1)", () => {
+  it("credenciais ausentes resultam em exit 0 (graceful skip, não exit 1)", () => {
     // Threads é best-effort — exit 1 mascararia violations de consent de outros canais.
     // Análogo a publish-instagram.ts (#2486).
-    assert.match(SRC, /process\.exit\(0\)/, "deve sair graciosamente (exit 0) quando env vars ausentes");
+    // #9911: main() devolve o código (o entry point grava process.exitCode)
+    // em vez de chamar process.exit — o skip de credenciais é `return 0`.
+    assert.match(SRC, /SKIP: \$\{missing\} ausente[\s\S]{0,600}?return 0;/, "deve sair graciosamente (exit 0) quando env vars ausentes");
     assert.match(SRC, /SKIP:.*ausente/, "deve emitir mensagem SKIP quando creds ausentes");
   });
 
@@ -753,7 +755,8 @@ describe("#3944 Parte B --schedule: modo agendamento (verificação estática do
   });
 
   it("sem Worker configurado + --schedule → exit 2 (fail-fast, sem fallback de fire-now)", () => {
-    assert.match(SRC, /process\.exit\(2\)/, "deve sair com exit 2 quando Worker não configurado");
+    // #9911: main() devolve o código em vez de chamar process.exit.
+    assert.match(SRC, /Worker não está configurado[\s\S]{0,1200}?return 2;/, "deve sair com exit 2 quando Worker não configurado");
     assert.match(SRC, /DIARIA_LINKEDIN_CRON_URL/, "deve checar DIARIA_LINKEDIN_CRON_URL");
     assert.match(SRC, /DIARIA_LINKEDIN_CRON_TOKEN/, "deve checar DIARIA_LINKEDIN_CRON_TOKEN");
   });

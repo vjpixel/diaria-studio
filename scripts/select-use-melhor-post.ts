@@ -156,12 +156,12 @@ export async function runSelectionWithSteps(
   }
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseCliArgs(process.argv.slice(2));
   const editionDir = args.values["edition-dir"];
   if (!editionDir) {
     console.error("uso: select-use-melhor-post.ts --edition-dir <dir> [--reviewed] [--status [--json]]");
-    process.exit(2);
+    return 2;
   }
   const config = loadUseMelhorPostConfigState(ROOT);
 
@@ -186,7 +186,9 @@ async function main(): Promise<void> {
 
 if (isMainModule(import.meta.url)) {
   try {
-    await main();
+    // #9911: exitCode, não process.exit — no Windows o exit logo após um fetch sai 127.
+    const code = await main();
+    if (typeof code === "number") process.exitCode = code;
   } catch (e) {
     // Fail-soft (#9568): o 4º post nunca derruba o stage. O erro aparece no
     // stderr e o orchestrator segue sem o 4º post.

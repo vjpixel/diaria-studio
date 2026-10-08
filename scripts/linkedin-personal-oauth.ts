@@ -31,6 +31,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { upsertEnvVar } from "./lib/google-ads-credentials.ts";
@@ -155,7 +156,7 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
   });
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   loadProjectEnv(ROOT);
   const clientId = (process.env[LINKEDIN_PERSONAL_ENV.clientId] ?? "").trim();
   const clientSecret = (process.env[LINKEDIN_PERSONAL_ENV.clientSecret] ?? "").trim();
@@ -164,7 +165,7 @@ async function main(): Promise<void> {
       `✖ Faltam ${LINKEDIN_PERSONAL_ENV.clientId}/${LINKEDIN_PERSONAL_ENV.clientSecret} no ambiente.\n` +
         "  Crie o app (docs/linkedin-personal-setup.md), grave os dois no Doppler e rode `npm run sync-env`.",
     );
-    process.exit(1);
+    return 1;
   }
   const state = randomBytes(16).toString("hex");
   const code = await waitForCode(buildAuthorizeUrl(clientId, state), state);
@@ -193,14 +194,13 @@ async function main(): Promise<void> {
         "  O 300 não vai ver o token até ele subir pro vault: corrija e rode este script de novo (ou cole no dashboard).\n" +
         "  Atenção: as 3 chaves ficaram só no .env local, e o próximo `npm run sync-env` nesta máquina aborta (LocalOnlyEnvKeysError, #5155) até o vault ter as mesmas chaves.",
     );
-    process.exit(2);
+    return 2;
   }
   console.log(`✔ Doppler: ${r.doppler.join(", ")}. No 300: \`npm run sync-env\`.`);
+  return 0;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`✖ ${(e as Error).message}`);
-    process.exit(1);
-  });
+  // #9911: exitCode, não process.exit — no Windows o exit logo após o fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`✖ ${(e as Error).message}`) });
 }

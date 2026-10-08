@@ -28,6 +28,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { fetchSourceText } from "./fetch-source-text.ts";
 
 // ---------------------------------------------------------------------------
@@ -682,7 +683,7 @@ function extractEditionId(editionDir: string): string {
   return parts[parts.length - 1] ?? "unknown";
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values: args, flags } = parseArgs(process.argv.slice(2));
 
   // (#8996) Modo utilitário — formata a mensagem "indisponível" do gate de
@@ -692,7 +693,7 @@ async function main(): Promise<void> {
   if (flags.has("unavailable-message")) {
     if (!args.reason) {
       console.error("Uso: run-fact-checker.ts --unavailable-message --reason <texto> [--network-error]");
-      process.exit(1);
+      return 1;
     }
     console.log(formatFactCheckUnavailableMessage(args.reason, { networkError: flags.has("network-error") }));
     return;
@@ -700,7 +701,7 @@ async function main(): Promise<void> {
 
   if (!args["edition-dir"]) {
     console.error("Uso: run-fact-checker.ts --edition-dir data/editions/AAMMDD/");
-    process.exit(1);
+    return 1;
   }
 
   const editionDir = resolve(process.cwd(), args["edition-dir"]);
@@ -723,7 +724,7 @@ async function main(): Promise<void> {
       console.error(
         "  Fact-checker requer Stage 2 completado. Verifique se 02-reviewed.md e 03-social.md existem.",
       );
-      process.exit(1);
+      return 1;
     }
   }
 
@@ -761,7 +762,7 @@ async function main(): Promise<void> {
     const inputPath = resolve(process.cwd(), args["input-json"]);
     if (!existsSync(inputPath)) {
       console.error(`[run-fact-checker] --input-json não encontrado: ${inputPath}`);
-      process.exit(1);
+      return 1;
     }
     const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
     const result = normalizeFactCheckResult(raw, edition);
@@ -797,7 +798,7 @@ async function main(): Promise<void> {
           "  Ação: reescrever/remover o claim em 02-reviewed.md e/ou 03-social.md (ou localizar suporte " +
           "adicional na fonte), depois re-rodar o fact-checker + este check antes de aprovar o gate.",
         );
-        process.exit(2);
+        return 2;
       }
     }
     return;
@@ -835,8 +836,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("[run-fact-checker] ERRO:", e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("[run-fact-checker] ERRO:", e) });
 }

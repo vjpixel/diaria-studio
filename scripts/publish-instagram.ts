@@ -70,6 +70,7 @@ import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "./lib/comment-delivery-promise.ts"; // #8681 — guard contra promessa de entrega via comentário
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { runCli } from "./lib/cli-exit.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
@@ -459,12 +460,12 @@ export function buildUseMelhorInstagramPost(input: {
   return { ok: true, caption, imageUrl: coverUrl, imageUrls: carouselUrls ?? [coverUrl], imageFile: USE_MELHOR_COVER_FILE };
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
   if (!editionDirArg) {
     console.error("ERRO: --edition-dir é obrigatório.");
-    process.exit(1);
+    return 1;
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
@@ -486,7 +487,7 @@ async function main() {
         `Motivo: ${igConfig.disabled_reason || "não especificado"}\n` +
         "Reative setando publishing.social.instagram.enabled:true quando pronto.",
     );
-    process.exit(0);
+    return 0;
   }
 
   // #3817 — Resolver Worker URL/token quando --schedule é passado. Reusa o
@@ -521,7 +522,7 @@ async function main() {
           "  3. OU rodar SEM --schedule pra publicar imediatamente conscientemente",
         ].join("\n"),
       );
-      process.exit(2);
+      return 2;
     }
   }
 
@@ -549,14 +550,14 @@ async function main() {
         "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
         "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish)",
     );
-    process.exit(0);
+    return 0;
   }
 
   // Carregar social content
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     console.error("ERROR: 03-social.md não encontrado. Rode Stage 2 primeiro.");
-    process.exit(1);
+    return 1;
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
@@ -916,8 +917,6 @@ async function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

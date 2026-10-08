@@ -41,6 +41,7 @@ import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #68
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
+import { runCli } from "./lib/cli-exit.ts";
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
@@ -693,7 +694,7 @@ async function rescheduleFacebookPosts(opts: {
   return { rescheduled, skipped, failed, posts: results };
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   const editionDir = resolveEditionDirArgOrExit(args["edition-dir"] as string | undefined, { root: ROOT }); // #9427
   const doSchedule = !!args.schedule;
@@ -744,7 +745,7 @@ async function main() {
       "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
       `Encontrar Page ID em ${DIARIA_FACEBOOK_PAGE_URL} → Sobre → ID da página.`
     );
-    process.exit(1);
+    return 1;
   }
   if (!page_access_token) {
     console.error(
@@ -753,7 +754,7 @@ async function main() {
       "Gerar em https://developers.facebook.com/tools/explorer\n" +
       "(selecionar app + Page Diar.ia → Generate Page Access Token long-lived)."
     );
-    process.exit(1);
+    return 1;
   }
 
   // Load config
@@ -763,7 +764,7 @@ async function main() {
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     console.error("ERROR: 03-social.md not found. Run Stage 3 first.");
-    process.exit(1);
+    return 1;
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
@@ -1034,8 +1035,6 @@ async function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

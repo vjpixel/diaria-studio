@@ -72,6 +72,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 export type { PostEntry, SocialPublished };
 
 loadProjectEnv();
@@ -364,12 +365,12 @@ export function formatVerifySummary(result: { changes: number; inQueue?: number 
   return `${fila} entrada(s) confirmada(s) na fila; ${result.changes} reconciliada(s) (disparada/DLQ).`;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseArgsLib(process.argv.slice(2)).values;
   const editionDir = args["edition-dir"];
   if (!editionDir) {
     console.error("Uso: verify-social-worker-dispatch.ts --edition-dir <path>");
-    process.exit(1);
+    return 1;
   }
 
   const publishedPath = resolveSocialPublishedPath(ROOT, editionDir);
@@ -407,8 +408,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(e) });
 }

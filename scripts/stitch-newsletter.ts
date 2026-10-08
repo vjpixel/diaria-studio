@@ -26,6 +26,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomicIfChanged } from "./lib/atomic-write.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
@@ -1028,18 +1029,18 @@ export function regenerateHubDivulgacaoBoxForEdition(
   }
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
   if (!editionDirArg) {
     console.error("Uso: stitch-newsletter.ts --edition-dir data/editions/AAMMDD/");
-    process.exit(2);
+    return 2;
   }
   const editionDir = resolve(ROOT, editionDirArg);
   if (!existsSync(editionDir)) {
     console.error(`[stitch-newsletter] dir não existe: ${editionDir}`);
-    process.exit(1);
+    return 1;
   }
   try {
     // #2343: detect destaque_count from approved-capped.json to determine if D3 exists.
@@ -1184,14 +1185,14 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ out_path: outPath, bytes: out.length, destaque_count: destaqueCount }, null, 2));
   } catch (e) {
     console.error(`[stitch-newsletter] erro: ${(e as Error).message}`);
-    process.exit(1);
+    return 1;
   }
 }
 
 const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) {
-  main().catch((err) => {
-    console.error(`[stitch-newsletter] falha inesperada: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-    process.exit(1);
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, {
+    onError: (err) => console.error(`[stitch-newsletter] falha inesperada: ${err instanceof Error ? err.stack ?? err.message : String(err)}`),
   });
 }

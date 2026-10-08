@@ -43,6 +43,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, createHash } from "node:crypto";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { mtimeMs } from "./lib/mtime.ts"; // #2048 item 10: helper compartilhado (catch→null)
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
@@ -380,7 +381,7 @@ export async function uploadHtml(args: {
   };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values, flags } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
   const dryRun = flags.has("dry-run");
@@ -397,14 +398,14 @@ async function main(): Promise<void> {
       "Uso: upload-html-public.ts --edition AAMMDD [--dry-run] [--no-wrap] [--html <path>] " +
         "[--persist-to <json> --field <nome>]",
     );
-    process.exit(2);
+    return 2;
   }
 
   const secret =
     process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? "";
   if (!secret && !dryRun) {
     console.error("[upload-html-public] ADMIN_SECRET ausente no env — abortando");
-    process.exit(1);
+    return 1;
   }
 
   // #3491: sem --html, o path default construía `data/editions/{edition}`
@@ -428,7 +429,7 @@ async function main(): Promise<void> {
 
   if (!existsSync(htmlPath)) {
     console.error(`[upload-html-public] HTML não encontrado: ${htmlPath}`);
-    process.exit(1);
+    return 1;
   }
 
   // #2012: freshness guard — só ativa quando usando o path padrão da pipeline
@@ -487,8 +488,6 @@ async function main(): Promise<void> {
 // Mitigação: usar `node --import tsx -e "<código>"` (testado robusto acima)
 // ou código `-e` em uma única linha ao invocar `tsx -e` no Windows.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[upload-html-public] ${(e as Error).message}`);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`[upload-html-public] ${(e as Error).message}`) });
 }
