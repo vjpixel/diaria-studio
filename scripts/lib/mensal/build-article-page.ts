@@ -270,7 +270,11 @@ const SECTION_MARKER = /^\*\*[A-ZÀ-Ú][^*\p{Ll}]*\*\*$/u;
  */
 export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): string {
   const linhas = draftMd.split(/\r?\n/);
-  const iDestaque = linhas.findIndex((l) => /^\*\*DESTAQUE 1\b/.test(l));
+  // `(?:\\?\[)?` (#9907): o draft 2604-05 (export do Drive) escreve o marcador
+  // com colchetes escapados — `**\[DESTAQUE 1\] ANTHROPIC**`. O fim do corte
+  // já aceitava esse formato (via `isSectionLabel`/`normalizeLabel`); só o
+  // início não, e o ciclo inteiro lançava TeaserCutError.
+  const iDestaque = linhas.findIndex((l) => /^\*\*(?:\\?\[)?DESTAQUE 1\b/.test(l.trim()));
   if (iDestaque < 0) {
     throw new TeaserCutError(cycle, "não há marcador `**DESTAQUE 1 ...**` no draft");
   }
