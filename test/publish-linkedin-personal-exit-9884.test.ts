@@ -13,12 +13,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARM_EXIT, main } from "../scripts/publish-linkedin-personal.ts";
 import { LINKEDIN_PERSONAL_ENV } from "../scripts/lib/linkedin-personal.ts";
 
-const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/publish-linkedin-personal.ts");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const SRC = resolve(ROOT, "scripts/publish-linkedin-personal.ts");
 
 describe("publish-linkedin-personal exit code (#9884)", () => {
   it("o arquivo não chama process.exit( fora de comentário", () => {
@@ -51,5 +53,12 @@ describe("publish-linkedin-personal exit code (#9884)", () => {
         else process.env[k] = v;
       }
     }
+  });
+
+  it("o processo sai com o código que main() devolve (entry point grava process.exitCode)", () => {
+    // Sem isto, um entry point que só chame main() sairia 0 em todo caso e os
+    // testes em processo acima continuariam verdes — o Stage 6 leria "armado".
+    const r = spawnSync(process.execPath, ["--import", "tsx", SRC, "--nada"], { cwd: ROOT, encoding: "utf8" });
+    assert.equal(r.status, ARM_EXIT.error, r.stderr);
   });
 });

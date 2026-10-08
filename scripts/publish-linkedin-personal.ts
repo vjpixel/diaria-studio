@@ -347,9 +347,16 @@ function readConfig(): unknown {
  * Devolve o exit code em vez de chamar `process.exit` (#9884). No Windows,
  * com Node 24, `process.exit()` logo depois de um `fetch` cai no assert do
  * libuv (`!(handle->flags & UV_HANDLE_CLOSING)`, src\win\async.c:76) e o
- * processo sai com 127, não com o código pedido. O Stage 6 lê `--check`/`--arm`
- * pelo exit code (`unavailable` = 3), então o assert apagava o sinal. Com
- * `process.exitCode` o loop drena os handles do fetch e o código chega intacto.
+ * processo sai com 127, não com o código pedido. O Stage 6 só trata exit 0
+ * como AUTOMÁTICO (e o 5 como estado ambíguo): com o 127, todo `--arm`/
+ * `--check --edition-dir` bem-sucedido virava lembrete de post manual, com
+ * risco de post duplicado. O `--fire-due` das tasks Diaria-LinkedIn-Personal
+ * perdia o sinal de falha do mesmo jeito. Fechar o dispatcher global do fetch
+ * antes de sair NÃO evita o assert (medido); `process.exitCode` evita, porque
+ * deixa o loop drenar os handles.
+ *
+ * Tem efeito real: carrega o `.env`, e `--arm`/`--fire-due` sem `--dry-run`
+ * gravam intenção ou publicam. Teste em processo só com caminhos sem rede.
  */
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   loadProjectEnv(ROOT);
