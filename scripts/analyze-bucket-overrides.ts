@@ -50,6 +50,15 @@
  * `category_rule` são ignorados nessa contagem, não contam como fallback nem
  * como erro; não há dado, não como "0 fallback").
  *   npx tsx scripts/analyze-bucket-overrides.ts --rules [--editions-dir data/editions] [--json]
+ *
+ * `--replay` (#9882): eval de replay do categorizador — reaplica o
+ * `categorizeWithRule()` ATUAL sobre o input congelado de cada edição e
+ * compara com o bucket aprovado pelo editor. Reporta acordo congelado ×
+ * replay, melhorias, regressões e o resíduo (movimentos do editor que o
+ * código atual ainda erra) por direção. Default: janela `--window` (20);
+ * `--all` mede o corpus inteiro. É a régua antes/depois de qualquer ajuste
+ * de rubrica de bucket — rodar antes e depois da mudança e comparar.
+ *   npx tsx scripts/analyze-bucket-overrides.ts --replay [--all] [--window 20] [--editions-dir data/editions] [--json]
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
@@ -57,6 +66,7 @@ import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { isFallbackCategorizationRule, type Bucket } from "./lib/launch-heuristics.ts";
+import { replayEdition, summarizeReplay, renderReplayReport, type ReplayItem } from "./lib/categorizer-replay.ts"; // #9882
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -833,6 +843,10 @@ export interface CliOptions {
   editionsDir: string;
   asJson: boolean;
   rulesMode: boolean;
+  /** #9882: reaplica o categorizador atual sobre o corpus (ver scripts/lib/categorizer-replay.ts). */
+  replayMode: boolean;
+  /** #9882: `--replay --all` mede o corpus inteiro em vez da janela. */
+  replayAll: boolean;
   examplesPerDirection: number;
   window: number;
 }
@@ -859,6 +873,8 @@ export function resolveCliOptions(argv: string[], root: string): CliOptions {
   const editionsDir = editionsDirArg.startsWith("/") ? editionsDirArg : resolve(root, editionsDirArg);
   const asJson = flags.has("json");
   const rulesMode = flags.has("rules"); // #6647
+  const replayMode = flags.has("replay"); // #9882
+  const replayAll = flags.has("all"); // #9882
   const examplesPerDirection = values["examples"] ? Number.parseInt(values["examples"], 10) : 5;
   const windowArg = values["window"] ? Number.parseInt(values["window"], 10) : DEFAULT_WINDOW;
   const window = Number.isFinite(windowArg) && windowArg > 0 ? windowArg : DEFAULT_WINDOW;
@@ -866,13 +882,62 @@ export function resolveCliOptions(argv: string[], root: string): CliOptions {
     editionsDir,
     asJson,
     rulesMode,
+    replayMode,
+    replayAll,
     examplesPerDirection: Number.isFinite(examplesPerDirection) ? examplesPerDirection : 5,
     window,
   };
 }
 
+/**
+ * #9882: replay do categorizador atual sobre as edições que têm
+ * `01-categorized.json` + `01-approved.json`. `window` = últimas N edições
+ * (null = corpus inteiro). Lógica pura em `scripts/lib/categorizer-replay.ts`.
+ */
+export function replayEditionsUnderRoot(editionsDir: string, window: number | null): ReplayItem[] {
+  if (!existsSync(editionsDir)) return [];
+  const editionPaths = discoverEditionPaths(editionsDir);
+  const editions = [...editionPaths.keys()]
+    .sort()
+    .filter((ed) => {
+      const dir = editionPaths.get(ed)!;
+      return existsSync(join(dir, "_internal", "01-categorized.json")) && existsSync(join(dir, "_internal", "01-approved.json"));
+    });
+  const selected = window ? editions.slice(-window) : editions;
+  const items: ReplayItem[] = [];
+  for (const edition of selected) {
+    const dir = editionPaths.get(edition)!;
+    try {
+      const categorized = JSON.parse(readFileSync(join(dir, "_internal", "01-categorized.json"), "utf8"));
+      const approved = JSON.parse(readFileSync(join(dir, "_internal", "01-approved.json"), "utf8"));
+      items.push(...replayEdition(edition, categorized, approved));
+    } catch (err) {
+      console.error(`[analyze-bucket-overrides] ${edition}: falha ao ler/parsear JSON no replay — pulando (${(err as Error).message})`);
+    }
+  }
+  return items;
+}
+
 function main(): void {
-  const { editionsDir, asJson, rulesMode, examplesPerDirection, window } = resolveCliOptions(process.argv.slice(2), ROOT);
+  const { editionsDir, asJson, rulesMode, replayMode, replayAll, examplesPerDirection, window } = resolveCliOptions(
+    process.argv.slice(2),
+    ROOT,
+  );
+
+  if (replayMode) {
+    const replayWindow = replayAll ? null : window;
+    const summary = summarizeReplay(replayEditionsUnderRoot(editionsDir, replayWindow));
+    if (asJson) {
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
+    if (summary.pairs === 0) {
+      console.log(`[analyze-bucket-overrides] replay: 0 pares em ${editionsDir} — sem corpus local (worktree sem data/?).`);
+      return;
+    }
+    console.log(renderReplayReport(summary, replayWindow));
+    return;
+  }
 
   if (rulesMode) {
     const collected = collectRuleUsage(editionsDir);
