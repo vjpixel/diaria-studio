@@ -320,7 +320,9 @@ export interface FeedProcessed {
    * `true` quando havia entradas brutas e NENHUMA foi reconhecida no formato
    * esperado (release sem `/releases/tag/`, repo sem nome/URL/data). Filtro
    * de tag que zera tudo por só haver nightly NÃO conta — é o filtro
-   * funcionando (deepseek-harness só publica alpha/rc hoje).
+   * funcionando (deepseek-harness só publica alpha/rc hoje). No `index-page`
+   * (#9919) também vale para índice sem nenhum link e para nenhum artigo com
+   * data (o corte por data zeraria o feed sem sinal).
    */
   format_suspect: boolean;
 }
@@ -344,6 +346,14 @@ export function postProcessFeedArticles(feed: LateRefreshFeed, payload: unknown)
     const articles = filterGithubReleases(arts, feed.tagPattern);
     const recognized = arts.filter((a) => parseGithubReleaseUrl(a.url) !== null).length;
     return { articles, raw_entries: arts.length, after_filter: articles.length, format_suspect: arts.length > 0 && recognized === 0 };
+  }
+  if (feed.method === "index-page") {
+    // #9919: o índice sempre lista artigos — zero links (índice virou JS,
+    // seletor mudou) ou nenhum artigo com data (challenge/403 nas páginas,
+    // meta de data removida) zera o feed em silêncio, porque o corte por data
+    // descarta artigo sem data. Os dois casos são "formato mudou".
+    const dated = arts.filter((a) => typeof a.published_at === "string" && a.published_at !== "").length;
+    return { articles: arts, raw_entries: arts.length, after_filter: arts.length, format_suspect: arts.length === 0 || dated === 0 };
   }
   return { articles: arts, raw_entries: arts.length, after_filter: arts.length, format_suspect: false };
 }
@@ -824,8 +834,14 @@ export function formatLateRefreshBlock(r: LateRefreshReport): string {
   // Já dito na linha do "nada novo" quando não há candidato — não repetir.
   if (failed.length > 0 && (r.candidates.length > 0 || r.newsletters.length > 0)) notes.push(`feeds com falha: ${failedNames}`);
   const suspect = r.feeds.filter((f) => f.ok && f.format_suspect);
-  if (suspect.length > 0) {
-    notes.push(`formato mudou? entradas recebidas mas nenhuma reconhecida em: ${suspect.map((f) => `${f.name} (${f.raw_entries ?? "?"} brutas, ${f.after_filter ?? 0} após filtro)`).join(", ")}`);
+  // #9919: feed suspeito sem nenhuma entrada bruta (índice vazio) não "recebeu entradas" — nota própria.
+  const suspectEmpty = suspect.filter((f) => f.raw_entries === 0);
+  const suspectUnrecognized = suspect.filter((f) => f.raw_entries !== 0);
+  if (suspectUnrecognized.length > 0) {
+    notes.push(`formato mudou? entradas recebidas mas nenhuma reconhecida em: ${suspectUnrecognized.map((f) => `${f.name} (${f.raw_entries ?? "?"} brutas, ${f.after_filter ?? 0} após filtro)`).join(", ")}`);
+  }
+  if (suspectEmpty.length > 0) {
+    notes.push(`formato mudou? fonte respondeu sem nenhuma entrada em: ${suspectEmpty.map((f) => f.name).join(", ")}`);
   }
   if (r.newsletter_error) notes.push(`newsletters indisponíveis: ${r.newsletter_error}`);
   if (r.uncovered_labs.length > 0) notes.push(`sem feed oficial (só via newsletter): ${r.uncovered_labs.join(", ")}`);

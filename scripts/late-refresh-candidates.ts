@@ -137,17 +137,25 @@ function metaContent(html: string, attr: "property" | "name", key: string): stri
 /**
  * #9870: página-índice → os `take` primeiros artigos, cada um com a data da
  * própria página. Página de artigo que falha vira artigo sem data (o corte
- * por data o descarta) — o feed só falha inteiro se o ÍNDICE falhar.
+ * por data o descarta) — o feed só falha inteiro se o ÍNDICE falhar. Desde o
+ * #9919 cada falha de página é logada (`warn`, stderr por padrão) e índice
+ * vazio / nenhum artigo com data vira `format_suspect` no pós-processamento.
  */
-export async function fetchIndexPageAfter(feed: IndexPageFeed, fetchImpl: typeof fetch = fetch): Promise<LateArticle[]> {
+export async function fetchIndexPageAfter(
+  feed: IndexPageFeed,
+  fetchImpl: typeof fetch = fetch,
+  warn: (msg: string) => void = (msg) => console.error(msg),
+): Promise<LateArticle[]> {
   const links = extractIndexPageLinks(await fetchHtml(feed.url, fetchImpl), feed.url, feed.pathPrefix, feed.take);
+  if (links.length === 0) warn(`[late-refresh] WARN ${feed.name}: índice ${feed.url} sem nenhum link em ${feed.pathPrefix}`);
   return Promise.all(
     links.map(async (url): Promise<LateArticle> => {
       let html = "";
       try {
         html = await fetchHtml(url, fetchImpl);
-      } catch {
+      } catch (e) {
         html = "";
+        warn(`[late-refresh] WARN ${feed.name}: falha ao buscar ${url} (${e instanceof Error ? e.message : String(e)}) — artigo fica sem data`);
       }
       const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
       return {
@@ -195,14 +203,20 @@ export interface FetchFeedResult {
  * marca `ok: false`). `fetchImpl` injetável — usado pelos métodos do GitHub
  * (o RSS genérico segue no `fetchRss`, que tem o fetch dele).
  */
-export async function fetchFeed(feed: LateRefreshFeed, cutoffIso: string, now: Date, fetchImpl: typeof fetch = fetch): Promise<FetchFeedResult> {
+export async function fetchFeed(
+  feed: LateRefreshFeed,
+  cutoffIso: string,
+  now: Date,
+  fetchImpl: typeof fetch = fetch,
+  warn: (msg: string) => void = (msg) => console.error(msg),
+): Promise<FetchFeedResult> {
   try {
     if (feed.method === "sitemap") {
       const articles = await fetchSitemapAfter(feed, cutoffIso);
       return { articles, processed: postProcessFeedArticles(feed, articles) };
     }
     if (feed.method === "index-page") {
-      const articles = await fetchIndexPageAfter(feed, fetchImpl);
+      const articles = await fetchIndexPageAfter(feed, fetchImpl, warn);
       return { articles, processed: postProcessFeedArticles(feed, articles) };
     }
     if (feed.method === "github-new-repos") {
