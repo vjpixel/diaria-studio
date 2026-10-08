@@ -67,6 +67,11 @@ test("#9870: feed de claude.com/resources/articles/ configurado para Anthropic",
   assert.equal(feed.pathPrefix, "/resources/articles/");
   assert.ok(feed.take > 0 && feed.take <= 15, "volume fixo e pequeno de GETs por gate");
   assert.equal(isOfficialHost("https://claude.com/resources/articles/post-exemplo"), true);
+  // claude.com/blog redireciona para /resources/articles e o sitemap não tem mais /blog/ — feed morto removido.
+  assert.ok(
+    !LATE_REFRESH_FEEDS.some((f) => f.method === "sitemap" && f.url.startsWith("https://claude.com/") && f.pathPrefix === "/blog/"),
+    "feed sitemap /blog/ da claude.com devolvia zero sempre",
+  );
 });
 
 test("#9870: por que não sitemap — entrada sem lastmod nunca é selecionada", () => {

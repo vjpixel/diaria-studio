@@ -165,8 +165,10 @@ function githubNewReposFeed(lab: string, name: string, org: string): GithubNewRe
  */
 export const LATE_REFRESH_FEEDS: readonly LateRefreshFeed[] = [
   { lab: "Anthropic", name: "Anthropic News", url: "https://www.anthropic.com/sitemap.xml", method: "sitemap", pathPrefix: "/news/" },
-  { lab: "Anthropic", name: "Claude Blog", url: "https://claude.com/sitemap.xml", method: "sitemap", pathPrefix: "/blog/" },
-  // #9870: /resources/articles/ (ex.: Claude for Google Workspace, 06/10/2026) não tem lastmod no sitemap.
+  // #9870: o blog da claude.com migrou para /resources/articles/ (claude.com/blog
+  // redireciona para lá; o sitemap não tem mais nenhuma URL /blog/ e as de
+  // /resources/articles/ não têm lastmod, medido em 08/10/2026). O antigo feed
+  // "Claude Blog" (sitemap + pathPrefix /blog/) devolvia zero sempre e saiu.
   { lab: "Anthropic", name: "Claude Articles", url: "https://claude.com/resources/articles", method: "index-page", pathPrefix: "/resources/articles/", take: 8 },
   { lab: "OpenAI", name: "OpenAI News", url: "https://openai.com/news/rss.xml", method: "rss" },
   { lab: "Google", name: "Google AI Blog", url: "https://blog.google/technology/ai/rss/", method: "rss" },
