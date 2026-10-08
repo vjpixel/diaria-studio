@@ -174,6 +174,40 @@ describe("estimateCoordinatorUsage — integração com transcript real em tmpdi
     }
   });
 
+  // #9874: rodado de um cwd diferente do da sessão (worktree, `cd`), o
+  // diretório derivado do cwd não tem o transcript — antes caía em
+  // session_file_not_found mesmo com o arquivo existindo em ~/.claude/projects.
+  it("cwd diferente do da sessão → acha o transcript pelo session id em outro diretório de projeto (#9874)", () => {
+    const root = tmpRoot();
+    try {
+      writeTranscript(root, "sess-wt", [{ input: 100, cacheRead: 900, output: 50 }]);
+      const est = estimateCoordinatorUsage({
+        edition: "260902",
+        agent: "overnight",
+        sessionId: "sess-wt",
+        rootDir: root,
+        cwd: join(root, ".claude", "worktrees", "agent-x"),
+        homeDir: join(root, ".claude-home"),
+      });
+      assert.deepEqual(est, { status: "ok", tokens: 1050, cumulativeTokens: 1050, sessionId: "sess-wt" });
+      // Outro session id sem arquivo em lugar nenhum continua unavailable — a
+      // varredura casa pelo nome exato, nunca pega o transcript de outra sessão.
+      assert.deepEqual(
+        estimateCoordinatorUsage({
+          edition: "260902",
+          agent: "overnight",
+          sessionId: "sess-outra",
+          rootDir: root,
+          cwd: join(root, ".claude", "worktrees", "agent-x"),
+          homeDir: join(root, ".claude-home"),
+        }),
+        { status: "unavailable", reason: "session_file_not_found" },
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("transcript ausente → unavailable session_file_not_found; env sem session id → no_session_id", () => {
     const root = tmpRoot();
     try {

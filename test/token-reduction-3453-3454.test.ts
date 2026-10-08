@@ -84,8 +84,29 @@ describe("#3453 Rec 4 / #3454 Rec 2 — checklist de dispatch compartilhado", ()
 });
 
 describe("#3453 Rec 1 / #3454 Rec 1 — instrumentação de token do coordenador", () => {
-  it("overnight emite coordinator_tokens_estimate", () => {
-    assert.match(overnight, /--message "coordinator_tokens_estimate"/);
+  // #9874: a emissão à mão via `log-event.ts` saiu `unavailable` em 126/126
+  // ocorrências reais — o harness não expõe usage por tool call. O número só
+  // existe no transcript local, que `coordinator-usage-estimate.ts` (#6634)
+  // lê; o patch de prosa dos SKILL.md apontando pra ele nunca tinha sido
+  // aplicado. Trava as 3 skills no script e proíbe a forma à mão.
+  it("overnight, develop e continuo emitem coordinator_tokens_estimate via coordinator-usage-estimate.ts, nunca à mão (#9874)", () => {
+    const continuo = readFileSync(resolve(ROOT, ".claude/skills/diaria-continuo/SKILL.md"), "utf8");
+    for (const [name, text, agent] of [
+      ["overnight", overnight, "overnight"],
+      ["develop", develop, "develop"],
+      ["continuo", continuo, "continuo"],
+    ] as const) {
+      assert.match(
+        text,
+        new RegExp(`npx tsx scripts/coordinator-usage-estimate\\.ts --edition \\{[^}]+\\} --agent ${agent} --phase`),
+        `${name} deve emitir via coordinator-usage-estimate.ts`,
+      );
+      assert.doesNotMatch(
+        text,
+        /--message "coordinator_tokens_estimate"/,
+        `${name} não pode instruir a emissão à mão via log-event.ts`,
+      );
+    }
   });
 
   it("develop emite subagent_metrics e coordinator_model", () => {

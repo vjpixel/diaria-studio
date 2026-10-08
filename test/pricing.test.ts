@@ -57,6 +57,40 @@ describe("resolvePricing", () => {
   it("retorna null pra modelo não-Claude (ex: gemini)", () => {
     assert.equal(resolvePricing("gemini-2.5-flash", null), null);
   });
+
+  // #9876: o casamento por substring dava o preço do Haiku 4.5 a qualquer ID
+  // com "haiku" — `claude-haiku-5-5` (já presente em transcripts reais) saía
+  // a $1/$5 em silêncio. Versão sem preço conferido → null, nunca o tier da família.
+  it("versão Claude desconhecida → null, nunca o preço de outra versão da família (#9876)", () => {
+    for (const id of [
+      "claude-haiku-5-5",
+      "claude-haiku-5",
+      "claude-sonnet-6",
+      "claude-opus-6",
+      "claude-opus-4-1",
+      "claude-sonnet-4-6",
+      "claude-fable-5-1",
+    ]) {
+      assert.equal(resolvePricing(id, null), null, id);
+      assert.equal(estimateCallCostUsd({ input_tokens: 1000, output_tokens: 1000 }, id, null), null, id);
+    }
+  });
+
+  it("alias sem versão (sonnet/haiku/opus) → null: não diz qual preço (#9876)", () => {
+    for (const id of ["sonnet", "haiku", "opus", "claude-sonnet"]) {
+      assert.equal(resolvePricing(id, null), null, id);
+    }
+  });
+
+  it("formas equivalentes de ID conhecido resolvem igual (#9876)", () => {
+    assert.deepEqual(resolvePricing("haiku-4-5", null), HAIKU_PRICING);
+    assert.deepEqual(resolvePricing("claude-haiku-4-5", null), HAIKU_PRICING);
+    assert.deepEqual(resolvePricing("us.anthropic.claude-haiku-4-5-20251001", null), HAIKU_PRICING);
+    assert.deepEqual(resolvePricing("claude-opus-5.5", null), OPUS_5_5_PRICING);
+    assert.deepEqual(resolvePricing("claude-opus-5-5[1m]", null), OPUS_5_5_PRICING);
+    assert.deepEqual(resolvePricing("opus-4-7", null), OPUS_PRICING);
+    assert.deepEqual(resolvePricing("sonnet-5", null), SONNET_PRICING);
+  });
 });
 
 describe("editionDateMs", () => {

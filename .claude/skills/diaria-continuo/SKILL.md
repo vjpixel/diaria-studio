@@ -483,15 +483,15 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   ao montar o lote de perguntas no passo 3, ao dormir no passo 6, e a cada
   rotação de dia no passo 2):
   ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
-    --message "coordinator_tokens_estimate" \
-    --details '{"phase": "{nome-da-transição}", "tokens": N, "source": "harness_usage | context_size_proxy"}'
+  npx tsx scripts/coordinator-usage-estimate.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --phase "{nome-da-transição}"
   ```
+  Sempre por esse script (comando standalone), nunca à mão com
+  `log-event.ts` (#9874): ele lê o usage real do transcript local da sessão
+  e, sem fonte, grava `unavailable` com `reason` explícito — não emitir à
+  mão por cima.
   **`--agent continuo`, nunca `--agent overnight`** — mesma troca obrigatória
   documentada no bullet da Fase 1 acima; `continuo-cost-summary.ts` filtra
-  estritamente por esse valor. Se o harness não expuser nada estimável, logar
-  `{"tokens": null, "source": "unavailable"}` uma vez por dia rotacionado
-  (não repetir a cada transição) — mesma semântica do overnight.
+  estritamente por esse valor.
 - **Emissão de `subagent_metrics` é OBRIGATÓRIA aqui também, tornada
   explícita (#5344 Parte B0 — achado: era coberta só implicitamente pela
   frase "verbatim" do bullet "Reusa a Fase 1 de implementação" acima, o que
