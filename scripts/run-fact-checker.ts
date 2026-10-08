@@ -384,12 +384,43 @@ export function computeAttentionItems(claims: FactClaim[]): number {
 export function getBlockingClaims(claims: FactClaim[]): FactClaim[] {
   // #9383: `headline` também fica de fora — título é warn-only (presente
   // histórico em manchete é convenção legítima; o editor decide no gate).
+  // #9868: estimativa de tempo de leitura também fica de fora (ver
+  // `isReadingTimeEstimate`).
   return claims.filter(
     (c) =>
       c.verdict === "NOT_FOUND_IN_SOURCE" &&
       c.claim_type !== "superlative" &&
-      c.claim_type !== "headline",
+      c.claim_type !== "headline" &&
+      !isReadingTimeEstimate(c),
   );
+}
+
+/**
+ * (#9868) Texto que é só um tempo de leitura — "(12 min)", "12 min",
+ * "— 15 min", "12 minutos de leitura". Ancorado nas duas pontas: uma duração
+ * factual dentro de uma frase ("a greve durou 12 min") não casa.
+ */
+const READING_TIME_TEXT_RE =
+  /^[\s(—–-]*\d{1,3}\s*(?:min(?:utos?)?\.?)(?:\s+de\s+leitura)?[\s)]*$/i;
+
+/**
+ * (#9868) Claim `duration` que é a estimativa de tempo de leitura do pipeline
+ * (o "(X min)" exigido pelo invariante `use-melhor-tempo`, #2447) e não uma
+ * afirmação da fonte. Página sem tempo de leitura (caso MachineLearningMastery,
+ * edição 261008) fazia o fact-checker marcar o "(12 min)" como
+ * NOT_FOUND_IN_SOURCE — e `--check-blocking` saía com exit 2: remover o tempo
+ * reprova o invariante, mantê-lo reprova o gate. Nunca bloqueia; continua
+ * aparecendo em `attention_items`/no resumo do gate (warn-only).
+ *
+ * Reconhece pelo TEXTO (formato de tempo de leitura isolado) ou por ser um
+ * claim `duration` de item secundário (USE MELHOR/RADAR — o único "tempo"
+ * desses itens é a estimativa de leitura). Duração dentro de D1-D3 com texto
+ * de frase completa continua bloqueando como antes.
+ */
+export function isReadingTimeEstimate(c: FactClaim): boolean {
+  if (c.claim_type !== "duration") return false;
+  if (c.destaque === "secondary") return true;
+  return READING_TIME_TEXT_RE.test(c.text);
 }
 
 /**
