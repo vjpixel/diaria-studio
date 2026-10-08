@@ -366,6 +366,10 @@ import {
   markAwaitingKitConfirmation, // #8753
   findStaleAwaitingKitConfirmation, // #8753
   AWAITING_KIT_CONFIRMATION_STALE_DAYS, // #8753
+  needsDoiResend, // #9835
+  DOI_RESEND_INTERVAL_DAYS, // #9835
+  markDoiResent, // #9835
+  findContact, // #9835
   normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
@@ -379,6 +383,8 @@ import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-ori
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
 import { KitApiError } from "./lib/kit-client.ts"; // #9291
+import { kitApiBase } from "./lib/kit-config.ts"; // #9835
+import { vincularKitDoiForm, verificarDoiForm, mensagemDoiFormInvalido } from "./lib/shared/kit-doi.ts"; // #9835 — reenvio do DOI
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -388,6 +394,8 @@ interface BrevoDiariaConfig {
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
+  /** #9835 — `kit.doiFormId`: designer form de DOI usado no reenvio. */
+  kit?: { doiFormId?: string };
   /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
    *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
   publishing?: { newsletter?: { backend?: string } };
@@ -922,6 +930,20 @@ export async function verifyPromotedToBeehiiv(
  * deste POST e usa `decideKitPromotionAction` pra decidir se chama esta
  * função ou só espera a auto-confirmação (Passo 1, já existente) resolver
  * quando a pessoa confirmar o double opt-in por conta própria.
+ *
+ * **Revisão #9835 (07/10/2026).** A espera passiva prendia na Brevo quem já
+ * cumpria a regra de promoção por abertura (ver a issue). Este POST não
+ * ativa contato existente (ignora `state`, #8728) e `/v4/bulk/subscribers`
+ * exige OAuth (401 com API key, relato do dispatch do #9835). Ressalva: o
+ * vínculo a um form de SISTEMA promove `inactive` a `active` sem e-mail
+ * (medido em 16/09/2026, `KIT_ACTIVATE_FORM_ID` do worker `reativar`, #8194);
+ * este módulo NÃO usa esse caminho, e a escolha entre ele (o que o briefing
+ * 261007c registrou na issue) e o reenvio do DOI está em aberto na #9835. O
+ * que muda é que, pra contato `inactive` que qualifica por
+ * abertura, o caller agora REENVIA o double opt-in (vínculo ao designer form
+ * `kit.doiFormId`, ver `resendKitDoi`), e a pessoa ainda precisa clicar no
+ * botão: o consentimento continua vindo dela, nunca de uma ativação forçada.
+ * `cancelled`/`bounced`/`complained` não recebem reenvio.
  */
 export async function promoteKitSubscription(email: string, apiKey: string): Promise<{ id: number }> {
   // #6425 Parte B: regressão do switchover — este POST saía sem `fields`,
@@ -970,7 +992,9 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  *
  * `"await_self_confirmation"` — **decisão deliberada de NÃO forçar
  * reativação.** `inactive` no Kit é ambíguo: cobre tanto "nunca confirmou o
- * double opt-in" quanto "confirmou e depois se descadastrou". Não existe
+ * double opt-in" quanto "confirmou e depois se descadastrou" (premissa do
+ * #8728, não verificada ao vivo; descadastro no Kit normalmente gera
+ * `cancelled`). Não existe
  * forma de diferenciar os dois só pelo `state` — e forçar a reativação (via
  * form de sistema ou qualquer outro mecanismo) reabriria a inscrição de
  * quem genuinamente saiu, sem o consentimento dele. Por isso o caller nunca
@@ -982,12 +1006,100 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * `"promote"` — contato inexistente (`null`) ou já `active`: comportamento
  * de sempre, preservado (um contato já `active` promovido de novo é só o
  * POST idempotente confirmando o que já era verdade).
+ *
+ * **#9835 — `await_self_confirmation` deixou de ser só espera passiva.** O
+ * racional acima (nunca forçar reativação) continua valendo, e esta função
+ * não mudou. O que mudou é o caller: quando o contato qualifica por abertura
+ * e está `inactive` (sem cancelamento), `runEvaluation` reenvia o e-mail de
+ * double opt-in (`shouldResendKitDoi` + `resendKitDoi`), no máximo 1 vez a
+ * cada `DOI_RESEND_INTERVAL_DAYS`. Quem clicar no botão vira `active` no Kit
+ * e o Passo 1 converte (`self_confirmed_kit`). Reenviar o pedido de
+ * confirmação não reabre a inscrição de ninguém: só a pessoa clicando faz
+ * isso. Se a premissa de ambiguidade acima valer, o reenvio pode chegar a
+ * quem saiu; ainda assim só o clique dessa pessoa a reinscreve.
+ * `cancelled`/`bounced`/`complained` seguem só aguardando.
  */
 export type KitPromotionAction = "promote" | "await_self_confirmation";
 
 export function decideKitPromotionAction(existing: { state: string } | null): KitPromotionAction {
   if (existing !== null && existing.state !== "active") return "await_self_confirmation";
   return "promote";
+}
+
+/**
+ * shouldResendKitDoi (#9835) — pura. Decide se o contato em
+ * `await_self_confirmation` recebe o reenvio do double opt-in nesta rodada.
+ * Só `true` quando TODAS valem:
+ *  - qualifica por abertura (`qualifiesByOpenRate`: o caller passa
+ *    `evaluateContact(...).action === "promote_to_beehiiv"`, a mesma regra
+ *    de score/threshold que decide a promoção; não reimplementada aqui);
+ *  - estado no Kit é exatamente `inactive` (`cancelled`/`bounced`/
+ *    `complained` nunca recebem, nem `active`, que não precisa);
+ *  - o anti-spam do store permite (`needsDoiResend`: nunca reenviado, ou o
+ *    último reenvio foi há `DOI_RESEND_INTERVAL_DAYS` dias ou mais).
+ */
+export function shouldResendKitDoi(input: {
+  qualifiesByOpenRate: boolean;
+  kitState: string;
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at">;
+  now?: string;
+}): boolean {
+  if (!input.qualifiesByOpenRate) return false;
+  if (input.kitState !== "inactive") return false;
+  return needsDoiResend(input.contact, input.now);
+}
+
+/**
+ * resendKitDoi (#9835) — reenvia o e-mail de confirmação vinculando o
+ * subscriber já existente ao designer form de DOI. Reusa
+ * `vincularKitDoiForm` (`lib/shared/kit-doi.ts`, a mesma maquinaria dos
+ * workers), que é best-effort e nunca lança; o `fetchImpl` embrulhado aqui só
+ * observa o status HTTP pra devolver `ok`, sem duplicar a chamada.
+ *
+ * Recusa form ausente ou de SISTEMA via `verificarDoiForm`: o vínculo a um
+ * form de sistema responde 201 e não envia nada (#7723), então contaria como
+ * reenvio feito sem ter saído e-mail nenhum (o caller já valida o form uma
+ * vez por rodada; esta checagem é defensiva). `ok: true` significa 2xx do
+ * Kit, não prova de e-mail entregue: 200 costuma indicar que o subscriber já
+ * estava vinculado ao form, e o caller loga isso. Exceção/timeout dentro de
+ * `vincularKitDoiForm` é engolida por ele e vira `ok: false` sem `status`.
+ * Em falha o caller conta em `failed` e não grava `doi_resent_at`.
+ */
+export async function resendKitDoi(params: {
+  subscriberId: number;
+  apiKey: string;
+  formId: string | undefined;
+  fetchImpl?: typeof fetch;
+}): Promise<{ ok: true; status: number } | { ok: false; reason: string; status?: number }> {
+  const verdict = verificarDoiForm(params.formId);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      reason: verdict.reason === "ausente" ? "kit.doiFormId ausente" : `kit.doiFormId ${verdict.formId} é form de sistema (não envia confirmação)`,
+    };
+  }
+  const baseFetch = params.fetchImpl ?? fetch;
+  const seen: { status: number | null } = { status: null };
+  const logged: string[] = [];
+  await vincularKitDoiForm({
+    apiKey: params.apiKey,
+    base: kitApiBase(),
+    formId: verdict.formId,
+    subscriberId: params.subscriberId,
+    referrer:
+      `https://diar.ia.br/?utm_source=${encodeURIComponent(BREVO_DIARIA_PROMOCAO_SCORE_UTM.source)}` +
+      `&utm_medium=${encodeURIComponent(BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium)}` +
+      `&utm_campaign=${encodeURIComponent(BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign)}`,
+    fetchImpl: (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const res = await baseFetch(input, init);
+      seen.status = res.status;
+      return res;
+    }) as typeof fetch,
+    timeoutMs: 15_000,
+    log: (msg) => logged.push(msg),
+  });
+  if (seen.status !== null && seen.status >= 200 && seen.status < 300) return { ok: true, status: seen.status };
+  return { ok: false, reason: logged.join(" | ") || `status ${seen.status ?? "desconhecido"}`, status: seen.status ?? undefined };
 }
 
 /**
@@ -1359,6 +1471,16 @@ export interface RunEvaluationParams {
    * `lib/brevo-kit-duplicate-window.ts`).
    */
   appendDuplicateWindowLog?: (entry: BrevoKitDuplicateWindowEntry) => void;
+  /**
+   * #9835 — id do designer form de DOI do Kit (`platform.config.json` →
+   * `kit.doiFormId`), usado pra reenviar o double opt-in a quem qualifica
+   * por abertura mas está `inactive` no Kit (ver `shouldResendKitDoi`).
+   * Omitido (default, e toda a suíte pré-#9835): nenhum reenvio, só a espera
+   * passiva do #8728. Id de form de sistema: reenvio desligado na rodada, com
+   * um único warn (nunca N falhas por contato). `main()` passa o valor do
+   * config e avisa se ele faltar com backend kit.
+   */
+  kitDoiFormId?: string;
 }
 
 /**
@@ -1450,6 +1572,13 @@ export interface RunEvaluationResult {
    * contatos `inactive` no Kit travando a rodada inteira, ver #8728).
    */
   awaitingKitConfirmation: number;
+  /**
+   * #9835 — subconjunto de `awaitingKitConfirmation`: contatos `inactive` no
+   * Kit que qualificam por abertura e receberam nesta rodada o reenvio do
+   * double opt-in (vínculo ao form DOI aceito pelo Kit com 2xx; não prova
+   * entrega do e-mail). Falha no vínculo NÃO entra aqui: conta em `failed`.
+   */
+  doiResent: number;
   /**
    * #8753 — contatos `in_brevo` aguardando auto-confirmação no Kit há mais de
    * `AWAITING_KIT_CONFIRMATION_STALE_DAYS`. Sem isto, quem nunca confirma
@@ -1563,6 +1692,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     newsletterBackend = "beehiiv",
     kitApiKey,
     appendDuplicateWindowLog,
+    kitDoiFormId,
   } = params;
   let store = params.store;
 
@@ -1578,6 +1708,16 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kitAutoConfirmSkipped = 0;
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
+  let doiResent = 0; // #9835
+  // #9835 review — valida o form de DOI UMA vez por rodada: form de sistema
+  // (responde 201 e não envia nada, #7723) desliga o reenvio com um único
+  // log alto, em vez de virar N falhas idênticas por contato todo dia.
+  let doiFormForResend: string | undefined;
+  if (kitDoiFormId !== undefined) {
+    const verdict = verificarDoiForm(kitDoiFormId);
+    if (verdict.ok) doiFormForResend = verdict.formId;
+    else log(`warn: reenvio do double opt-in desligado nesta rodada (#9835): ${mensagemDoiFormInvalido(verdict) ?? "kit.doiFormId vazio"}`);
+  }
 
   for (const contact of contacts) {
     try {
@@ -2054,6 +2194,52 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             awaitingKitConfirmation++;
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             store = markAwaitingKitConfirmation(store, contact.email); // #8753
+            // #9835 — reenvia o double opt-in pra quem qualifica por abertura
+            // e está `inactive` (sem cancelamento), no máximo 1x a cada
+            // DOI_RESEND_INTERVAL_DAYS. Nunca mexe em `state`: quem ativa é a
+            // pessoa clicando, e o Passo 1 converte na rodada seguinte.
+            // Só roda em push (este ramo já está depois do `if (!push)`).
+            const storedContact = findContact(store, contact.email) ?? contact;
+            const resendAllowed =
+              doiFormForResend !== undefined &&
+              shouldResendKitDoi({
+                qualifiesByOpenRate: evalResult.action === "promote_to_beehiiv",
+                kitState: existingKitSubscriber!.state,
+                contact: storedContact,
+              });
+            if (doiFormForResend !== undefined && !resendAllowed) {
+              log(
+                `${contact.email}: double opt-in NÃO reenviado (#9835) — ` +
+                  (existingKitSubscriber!.state !== "inactive"
+                    ? `estado '${existingKitSubscriber!.state}' no Kit nunca recebe reenvio.`
+                    : `último reenvio em ${storedContact.doi_resent_at} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
+              );
+            }
+            if (resendAllowed) {
+              let resend: Awaited<ReturnType<typeof resendKitDoi>>;
+              try {
+                resend = await resendKitDoi({ subscriberId: existingKitSubscriber!.id, apiKey: kitApiKey, formId: doiFormForResend });
+              } catch (e) {
+                resend = { ok: false, reason: (e as Error).message };
+              }
+              if (resend.ok) {
+                log(
+                  `${contact.email}: double opt-in do Kit reenviado (form ${doiFormForResend}, HTTP ${resend.status}` +
+                    (resend.status === 200 ? ", já vinculado ao form antes: Kit pode não reenviar o e-mail" : "") +
+                    ", #9835).",
+                );
+                doiResent++;
+                store = markDoiResent(store, contact.email);
+              } else {
+                log(`warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}`);
+                failed++;
+                failedContacts.push({
+                  email: contact.email,
+                  reason: `falha ao reenviar double opt-in do Kit: ${resend.reason}`,
+                  kitRateLimited: resend.status === 429, // #9291 — 429 sem decisão volta na próxima rodada
+                });
+              }
+            }
             continue;
           }
           const { id } = await promoteKitSubscription(contact.email, kitApiKey);
@@ -2156,6 +2342,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitAutoConfirmSkipped,
     skippedActiveOnKit,
     awaitingKitConfirmation,
+    doiResent,
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
@@ -2256,6 +2443,9 @@ async function main(): Promise<void> {
     log(`reconciliação de órfãos (#4579) pulada — ${brevoDiaria.api_key_env} ausente no ambiente.`);
   }
 
+  if (push && newsletterBackend === "kit" && !platformConfig.kit?.doiFormId) {
+    log("warn: platform.config.json > kit.doiFormId ausente — reenvio do double opt-in (#9835) desligado; contatos inactive no Kit só aguardam.");
+  }
   log(`${inBrevo.length} contato(s) in_brevo a avaliar.`);
 
   const result = await runEvaluation({
@@ -2270,6 +2460,7 @@ async function main(): Promise<void> {
     newsletterBackend,
     kitApiKey,
     appendDuplicateWindowLog: appendBrevoKitDuplicateWindowLog, // #6705
+    kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
   });
 
   log(
@@ -2281,7 +2472,8 @@ async function main(): Promise<void> {
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
-      `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728).`,
+      `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
+      `${result.doiResent} com double opt-in do Kit reenviado (#9835).`,
   );
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o

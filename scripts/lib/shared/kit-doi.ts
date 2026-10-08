@@ -2,7 +2,9 @@
  * scripts/lib/shared/kit-doi.ts (#7723 — extração; DOI em todos os workers)
  *
  * Maquinaria ÚNICA do double opt-in do Kit, consumida pelos TRÊS workers que
- * criam assinante (`poll`, `cursos`, `reativar`). Nasceu dentro do `poll`
+ * criam assinante (`poll`, `cursos`, `reativar`), e desde o #9835 também
+ * pelo script Node `evaluate-brevo-diaria.ts` (reenvio do DOI a contato
+ * `inactive` que qualifica por abertura). Nasceu dentro do `poll`
  * (`doi-form-guard-7723.ts` + `optin-flag-6340.ts` + dois helpers privados de
  * `subscribe.ts`) e foi extraída quando o editor mandou ligar o DOI em todos
  * os lugares: três cópias da mesma regra é exatamente como um worker fica
