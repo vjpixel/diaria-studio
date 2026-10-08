@@ -438,7 +438,10 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   // rascunho do writer OU o humanizador não pegando o padrão; nomear só
   // writer-destaque escondia a metade humanizador do problema.
   "tone": ".claude/agents/writer-destaque.md (rascunho) + skill humanizador (passe de correção de voz que roda depois) + context/templates/newsletter.md",
-  "length-cut": ".claude/agents/writer-destaque.md + context/templates/newsletter.md",
+  // length-cut (#9880): desde que corte de ITEM no pool virou pool-cut, só
+  // sobra texto encurtado de verdade — no destaque (writer-destaque.md) ou na
+  // descrição de item de pool (writer.md, que escreve USE MELHOR/RADAR/LANÇAMENTOS).
+  "length-cut": ".claude/agents/writer-destaque.md (destaque) ou .claude/agents/writer.md (descrição de item de pool) + context/templates/newsletter.md",
   "link-swap": "context/editorial-rules.md (regras de fonte) ou seed/sources.csv",
   "image-redo": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
   "image-crop": "prompt de imagem no Stage 3 / .claude/agents/image-crop-reviewer.md",
