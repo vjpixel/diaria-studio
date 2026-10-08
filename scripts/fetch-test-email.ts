@@ -30,6 +30,9 @@
  *
  * `--sent-after` (#9901): horário do envio do teste atual. Sem ele, uma
  * reexecução no mesmo dia pode ler o teste ANTERIOR quando o novo demora.
+ * Só o Kit passa a âncora (#9905): no Beehiiv, `test_email_sent_at` de
+ * `05-published.json` é gravado DEPOIS do clique em Send test e, como corte,
+ * descartaria o próprio teste atual — o Stage 5 omite a flag nesse backend.
  *
  * Grava (só em sucesso):
  *   {edition_dir}/_internal/.email-body.tmp           corpo HTML (ou text/plain se não houver HTML)
