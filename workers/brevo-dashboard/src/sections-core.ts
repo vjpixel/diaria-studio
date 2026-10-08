@@ -804,7 +804,15 @@ ${monthlyAbcSectionsByDate}
   const monthlyArchive = opts.monthlyArchive ?? null;
   const monthlyTotalsRows = aggregateByMonth(
     monthlyArchive && monthlyArchive.campaigns.length > 0
-      ? [...campaigns, ...monthlyArchive.campaigns]
+      ? [
+          ...campaigns,
+          // #9917: dedup por id — o render de fallback (snapshot lastgood)
+          // pode trazer campanhas que o backfill já arquivou; sem o filtro
+          // elas contariam 2x nos totais mensais.
+          ...monthlyArchive.campaigns.filter(
+            (ac) => !campaigns.some((c) => c.id === ac.id),
+          ),
+        ]
       : campaigns,
   );
   // #3080/#8115: o aviso "(parcial — janela de N campanhas)" no mês mais
