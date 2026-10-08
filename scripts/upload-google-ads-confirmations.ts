@@ -74,6 +74,7 @@
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadKitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
@@ -233,10 +234,9 @@ export async function main(
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       console.error(`${LOG_PREFIX} ✖ erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(1);
-    });
+    },
+  });
 }

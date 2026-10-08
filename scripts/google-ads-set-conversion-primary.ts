@@ -50,6 +50,7 @@
  */
 
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   buildConversionActionReadQuery,
@@ -232,10 +233,9 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       console.error(`[google-ads-set-conversion-primary] ✖ erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(1);
-    });
+    },
+  });
 }

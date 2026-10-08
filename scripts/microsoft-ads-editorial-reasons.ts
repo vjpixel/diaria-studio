@@ -46,6 +46,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { withFetchRetry } from "./lib/fetch-retry.ts";
 import { SPEND_INGEST_FAILURE_EXIT_CODE, spendIngestRetryOptions } from "./lib/spend-ingest.ts";
@@ -164,10 +165,10 @@ export async function main(
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(SPEND_INGEST_FAILURE_EXIT_CODE);
-    });
+    },
+    errorCode: SPEND_INGEST_FAILURE_EXIT_CODE,
+  });
 }

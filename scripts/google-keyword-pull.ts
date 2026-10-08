@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { refreshGoogleAdsAccessToken, type GoogleAdsAuthConfig } from "./lib/google-ads-ingest.ts";
 import {
@@ -123,11 +124,10 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main(process.argv.slice(2))
-    .then((c) => process.exit(c))
-    .catch((e) => {
+  runCli(() => main(process.argv.slice(2)), {
+    onError: (e) => {
       console.error(`[google-keyword-pull] ${e instanceof Error ? e.message : e}`);
-      process.exit(1);
-    });
+    },
+  });
 }
 export { main };

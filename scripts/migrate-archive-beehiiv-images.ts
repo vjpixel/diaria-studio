@@ -34,6 +34,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { ARCHIVE_BASE_URL } from "./lib/site-archive-pages.ts";
 import {
@@ -217,7 +218,8 @@ async function main() {
     kvNamespaceId = cfg?.poll?.kv_namespace_id;
     if (!kvNamespaceId) {
       console.error("migrate-archive-beehiiv-images: platform.config.json → poll.kv_namespace_id não configurado.");
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
   }
 
@@ -250,8 +252,5 @@ async function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

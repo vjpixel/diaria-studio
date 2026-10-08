@@ -52,6 +52,7 @@ import { normalizeNickname } from "../workers/poll/src/lib.ts";
 // #2834: isMainModule as isEntryModule — alias pra evitar colisão com a const
 // local `isMainModule` já usada por este script (mesmo nome, propósito idêntico).
 import { isMainModule as isEntryModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 // ── Lógica pura (testável sem rede/KV real) ─────────────────────────────────
 
@@ -185,7 +186,8 @@ async function main(): Promise<void> {
 
   if (!ACCOUNT_ID || !API_TOKEN) {
     console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const dryRun = process.argv.includes("--dry-run");
@@ -264,8 +266,5 @@ async function main(): Promise<void> {
 // #2834: delega pro helper canônico (isEntryModule = isMainModule, ver alias no import acima).
 const isMainModule = isEntryModule(import.meta.url);
 if (isMainModule) {
-  main().catch((e) => {
-    console.error("[migrate-nickname-index] erro:", e);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error("[migrate-nickname-index] erro:", e) });
 }

@@ -51,6 +51,7 @@ import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadBeehiivConfig, type BeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 import { coverageSummary, type EngagementManifest, type EngagementCoverageSummary } from "./lib/beehiiv-engagement-manifest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -530,7 +531,7 @@ function parseArgs(argv: string[]): BackupOpts {
     const n = parseInt(limitRaw, 10);
     if (!Number.isInteger(n) || n < 0) {
       console.error(`--posts-limit inválido: "${limitRaw}" (esperado inteiro >= 0)`);
-      process.exit(2);
+      throw new CliExit(2);
     }
     postsLimit = n;
   }
@@ -553,8 +554,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error(e instanceof Error ? e.message : String(e)) });
 }

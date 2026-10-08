@@ -48,6 +48,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
 import { runMicrosoftAdsIngest, type FetchLike, type MicrosoftAdsAuthConfig } from "./lib/microsoft-ads-ingest.ts";
 import { SPEND_INGEST_FAILURE_EXIT_CODE, spendIngestRetryOptions } from "./lib/spend-ingest.ts";
@@ -217,14 +218,14 @@ export async function main(
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
       // aqui (as duas etapas de rede já são fail-soft), mas mantém
       // spend.csv intocado mesmo diante de um bug aqui; exit não-zero
       // (#9071) pra a unit não reportar sucesso.
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(SPEND_INGEST_FAILURE_EXIT_CODE);
-    });
+    },
+    errorCode: SPEND_INGEST_FAILURE_EXIT_CODE,
+  });
 }

@@ -40,6 +40,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { runGa4Ingest, type Ga4AuthConfig, type Ga4RunReportRequest } from "./lib/ga4-ingest.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -111,13 +112,13 @@ export async function main(): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       // Último caminho que escaparia como stack cru — nunca deveria chegar
       // aqui (as duas etapas de rede já são fail-soft), mas mantém a
       // disciplina "nunca quebra o caller" mesmo diante de um bug aqui.
       fallback(`erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(0);
-    });
+    },
+    errorCode: 0,
+  });
 }
