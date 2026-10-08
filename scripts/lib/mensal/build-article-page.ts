@@ -53,6 +53,7 @@
 import { cycleToYymm, isValidMonthlyCycle } from "./monthly-paths.ts";
 import { APOIADORES_KIT_UTM_PROFILE, deriveApoiadoresKitSubject, extractDestaqueTitle } from "./monthly-apoiadores-kit-render.ts";
 import { filterDraftForApoiadores } from "./monthly-draft-filter.ts";
+import { isSectionLabel } from "./monthly-render.ts";
 import { draftToWebArticle, monthLabelFromYymm, renderMonthlyWebPage } from "./monthly-web-render.ts";
 import { DIARIA_RETROSPECTIVA_URL } from "../canonical-urls.ts";
 import { mensalPathFromCycle } from "../shared/retrospectiva-path.ts";
@@ -146,11 +147,29 @@ export function unwrapWebVoteLinks(html: string): string {
  * no lugar errado e comer o link, não.
  */
 export function stripReplyByEmailSentence(html: string): string {
-  return html.replace(
-    /Se você quiser receber(?:(?!<\/p>)[\s\S])*?responda a este e-mail(?:(?!<\/p>)[\s\S])*?\.(?=\s*(?:[A-ZÀ-Ú]|<\/p>))\s*/gi,
-    "",
-  );
+  return html
+    .replace(
+      // `(?:a )?(?:este|esse)`: o 2605-06 traz "responda esse e-mail" (#9898).
+      /Se você quiser receber(?:(?!<\/p>)[\s\S])*?responda (?:a )?(?:este|esse) e-mail(?:(?!<\/p>)[\s\S])*?\.(?=\s*(?:[A-ZÀ-Ú]|<\/p>))\s*/gi,
+      "",
+    )
+    .replace(REPLY_INVITE_ONLY_P_RE, "")
+    .replace(REPLY_INVITE_RE, "");
 }
+
+/**
+ * 2ª forma da copy (#9898, drafts 2608-09 e 2609-10, bloco PARA ENCERRAR):
+ * *"Quer sugerir um tema ou tirar uma dúvida sobre o que está aqui? Responda a
+ * este e-mail. Se ainda não recebe…"*. Sai a frase "Responda a este e-mail." e
+ * a pergunta que a introduz — sem ela a pergunta ficaria pendurada, sem canal
+ * de resposta. A pergunta só é levada junto se começa num limite de frase
+ * (início do texto, fim de tag ou pontuação final), para nunca cortar no meio
+ * de outra frase. O CTA de cadastro que vem depois fica.
+ */
+const REPLY_INVITE_RE = /(?:(?<=^|>|[.!?](?:\s|&nbsp;)+)[A-ZÀ-Ú][^<.!?]*\?\s*)?Responda a este e-mail\.(?=\s*(?:[A-ZÀ-Ú]|<\/p>|$))\s*/g;
+
+/** Parágrafo que era SÓ a pergunta + "Responda…" sai inteiro, sem deixar `<p></p>` vazio (#9903 finding 4). */
+const REPLY_INVITE_ONLY_P_RE = /<p(?:\s[^>]*)?>\s*(?:[A-ZÀ-Ú][^<.!?]*\?\s*)?Responda a este e-mail\.\s*<\/p>\s*/g;
 
 /**
  * Corrige a atribuição dos links na versão web.
@@ -220,8 +239,16 @@ export class TeaserCutError extends Error {
   }
 }
 
-/** Marcador de seção do draft mensal: `**DESTAQUE 1 | INDÚSTRIA**`, `**LIVROS**`, … */
-const SECTION_MARKER = /^\*\*[A-ZÀ-Ú][^*]*\*\*$/;
+/**
+ * Marcador de seção do draft mensal: `**DESTAQUE 1 | INDÚSTRIA**`, `**LIVROS**`, …
+ *
+ * Sem letra minúscula (#9897): marcador é sempre caixa-alta, e é isso que o
+ * separa do título do destaque quando o título vem em negrito
+ * (`**Anthropic vira centro de gravidade da indústria**`, formato do 2604-05).
+ * Antes o título casava como marcador e o corte parava logo depois do
+ * cabeçalho do DESTAQUE 1 — o trecho saía sem o corpo do destaque.
+ */
+const SECTION_MARKER = /^\*\*[A-ZÀ-Ú][^*\p{Ll}]*\*\*$/u;
 
 /**
  * Corta o markdown do draft no fim do 1º destaque temático.
@@ -249,7 +276,11 @@ export function cutDraftAfterFirstDestaque(draftMd: string, cycle: string): stri
   }
   // `.trim()`: espaço à direita num cabeçalho gerado por LLM faria o
   // marcador não casar, e o corte seguiria varrendo — até dentro do DESTAQUE 2.
-  const iCorte = linhas.findIndex((l, i) => i > iDestaque && SECTION_MARKER.test(l.trim()));
+  // `|| isSectionLabel(l)` (#9903 finding 1): a caixa-alta não pode ser o ÚNICO
+  // critério — um marcador futuro com minúscula (`**Destaque 2 | IA generativa**`)
+  // deixaria de cortar e o conteúdo pago vazaria pro trecho. O vocabulário que o
+  // render usa pra dividir seções corta com qualquer caixa.
+  const iCorte = linhas.findIndex((l, i) => i > iDestaque && (SECTION_MARKER.test(l.trim()) || isSectionLabel(l)));
   if (iCorte < 0) {
     throw new TeaserCutError(cycle, "não há seção depois do DESTAQUE 1 — o trecho seria o artigo inteiro");
   }
