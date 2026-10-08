@@ -94,6 +94,10 @@ export const CAMPAIGNS_FETCH_RESERVE = 30;
 export const DEFAULT_BATCH_SIZE = 20;
 const MAX_BATCH_SIZE = 50; // mesmo teto de página que a API Brevo aceita
 
+/** #9856/#9857/#9861: o backfill REGRAVA a partir do que lê — falha de KV
+ * precisa lançar, nunca degradar pra "vazio"/no-op (ver `RemoteKvNamespace`). */
+export const BACKFILL_KV_OPTS = { strictReads: true, strictWrites: true } as const;
+
 export async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
@@ -130,7 +134,11 @@ export async function main(): Promise<void> {
   // #9856: `strictReads` — falha de leitura do KV LANÇA em vez de virar
   // `null`. Sem isso, uma falha transitória ao ler o índice de arquivo virava
   // "índice vazio" e o lote sobrescrevia o histórico inteiro.
-  const kv = createRemoteKvNamespace(STATS_CACHE_KV_NAMESPACE_ID, {}, { strictReads: true });
+  // #9857/#9861: `strictWrites` — falha de escrita (`stats:{id}`, índice)
+  // LANÇA em vez de virar no-op, pra o backfill não avançar o cursor por cima
+  // do que não foi gravado. Travado por
+  // `test/clarice-backfill-campaigns-cli-8115.test.ts` (#9862).
+  const kv = createRemoteKvNamespace(STATS_CACHE_KV_NAMESPACE_ID, {}, BACKFILL_KV_OPTS);
   if (!kv) {
     console.error(
       `${LOG_PREFIX} CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN ausentes — sem acesso ao KV de ` +
@@ -156,7 +164,7 @@ export async function main(): Promise<void> {
   console.log(
     `${LOG_PREFIX} offset=${result.cursor.offset}/${result.cursor.totalCount ?? "?"} ` +
       `escaneadas=${result.scanned} stats-novos=${result.statsFetched} já-cacheadas=${result.alreadyCached} ` +
-      `mutáveis-puladas=${result.skippedMutable} done=${result.cursor.done} (requests Brevo=${result.requestsUsed})`,
+      `mutáveis-puladas=${result.skippedMutable} stats-desistidas=${result.statsGivenUp} done=${result.cursor.done} (requests Brevo=${result.requestsUsed})`,
   );
   if (result.cursor.done) {
     console.log(`${LOG_PREFIX} backfill completo — nenhuma campanha histórica pendente no momento.`);
