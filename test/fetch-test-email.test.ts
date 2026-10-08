@@ -17,6 +17,8 @@ import {
   EXIT_BY_STATUS,
   fetchTestEmail,
   findBodyPart,
+  parseSentAfter,
+  pickLatestMessage,
   type FetchDeps,
 } from "../scripts/fetch-test-email.ts";
 import { makeEditionDir } from "./_helpers/make-edition-dir.ts";
@@ -191,5 +193,93 @@ describe("fetchTestEmail (#9886)", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #9901: reexecução no mesmo dia — o teste anterior já está na caixa e o novo
+// demora. Sem âncora o script devolvia o corpo antigo; com `sentAfterMs` ele
+// ignora mensagem anterior ao envio e continua o polling até o prazo.
+// ---------------------------------------------------------------------------
+
+describe("fetchTestEmail --sent-after (#9901)", () => {
+  const SENT = Date.UTC(2026, 9, 8, 22, 30);
+  const msgAt = (id: string, at: number, html: string) => ({
+    id,
+    internalDate: String(at),
+    payload: {
+      mimeType: "text/html",
+      headers: [{ name: "Subject", value: `[teste] ${id}` }],
+      body: { data: b64url(html), size: Buffer.byteLength(html) },
+    },
+  });
+
+  it("REGRESSÃO: e-mail antigo primeiro na caixa, novo chega num poll seguinte → lê o novo", async () => {
+    const dir = makeEditionDir("fetch-test-email-9901-");
+    try {
+      const oldMsg = msgAt("m-antigo", SENT - 60 * 60_000, "<p>antigo</p>");
+      const newMsg = msgAt("m-novo", SENT + 40_000, "<p>novo</p>");
+      let listCalls = 0;
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "T", waitSeconds: 0, timeoutSeconds: 30, pollSeconds: 5, sentAfterMs: SENT },
+        deps({
+          // Mesmo assunto → mesma thread; o novo só aparece depois do 1º ciclo de polling.
+          "threads?": () => {
+            listCalls++;
+            return { threads: [{ id: "t1" }] };
+          },
+          "threads/t1": () => ({ id: "t1", messages: listCalls > 2 ? [oldMsg, newMsg] : [oldMsg] }),
+        }),
+      );
+      assert.equal(s.status, "found");
+      assert.equal(s.message_id, "m-novo");
+      assert.equal(readFileSync(s.email_file!, "utf8"), "<p>novo</p>");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("só o antigo até o prazo → not_found_timeout, nunca o corpo velho", async () => {
+    const dir = makeEditionDir("fetch-test-email-9901-");
+    try {
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "beehiiv", title: "T", waitSeconds: 0, timeoutSeconds: 10, sentAfterMs: SENT },
+        deps({
+          "threads?": { threads: [{ id: "t1" }] },
+          "threads/t1": { id: "t1", messages: [msgAt("m-antigo", SENT - 10 * 60_000, "<p>antigo</p>")] },
+        }),
+      );
+      assert.equal(s.status, "not_found_timeout");
+      assert.equal(existsSync(resolve(dir, "_internal", ".email-body.tmp")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("novo em OUTRA thread, abaixo da antiga na lista → acha olhando a 2ª thread", async () => {
+    const dir = makeEditionDir("fetch-test-email-9901-");
+    try {
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "T", waitSeconds: 0, sentAfterMs: SENT },
+        deps({
+          "threads?": { threads: [{ id: "t-velha" }, { id: "t-nova" }] },
+          "threads/t-velha": { id: "t-velha", messages: [msgAt("m-antigo", SENT - 60_000, "<p>antigo</p>")] },
+          "threads/t-nova": { id: "t-nova", messages: [msgAt("m-novo", SENT + 1_000, "<p>novo</p>")] },
+        }),
+      );
+      assert.equal(s.message_id, "m-novo");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("pickLatestMessage respeita o corte; parseSentAfter valida ISO", () => {
+    const ms = [{ internalDate: "100" }, { internalDate: "300" }, { internalDate: "200" }];
+    assert.equal(pickLatestMessage(ms, null)?.internalDate, "300");
+    assert.equal(pickLatestMessage(ms, 250)?.internalDate, "300");
+    assert.equal(pickLatestMessage(ms, 301), null);
+    assert.equal(parseSentAfter(undefined), undefined);
+    assert.equal(parseSentAfter("2026-10-08T22:30:00Z"), SENT);
+    assert.throws(() => parseSentAfter("ontem"), /--sent-after inválido/);
   });
 });

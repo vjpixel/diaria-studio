@@ -993,6 +993,14 @@ describe("isReadingTimeEstimate / getBlockingClaims (#9868)", () => {
     assert.equal(getBlockingClaims([c]).length, 1);
   });
 
+  it("#9900: duração factual em item secundário (LANÇAMENTOS/RADAR) continua bloqueando", () => {
+    for (const t of ["disponível grátis por 30 dias", "o teste durou 12 min"]) {
+      const c = claim(t, "secondary");
+      assert.equal(isReadingTimeEstimate(c), false, `"${t}" não é tempo de leitura`);
+      assert.equal(getBlockingClaims([c]).length, 1, `"${t}" deveria bloquear`);
+    }
+  });
+
   it("claim não-duration com texto '12 min' continua sob a regra normal", () => {
     assert.equal(isReadingTimeEstimate(claim("12 min", 2, "number")), false);
     assert.equal(getBlockingClaims([claim("12 min", 2, "number")]).length, 1);

@@ -9,6 +9,7 @@ import {
   OPUS_PRICING,
   OPUS_5_5_PRICING,
   SONNET_PRICING,
+  SONNET_4_PRICING,
   HAIKU_PRICING,
 } from "../scripts/lib/pricing.ts";
 
@@ -68,12 +69,29 @@ describe("resolvePricing", () => {
       "claude-sonnet-6",
       "claude-opus-6",
       "claude-opus-4-1",
-      "claude-sonnet-4-6",
+      "claude-sonnet-4-5",
       "claude-fable-5-1",
     ]) {
       assert.equal(resolvePricing(id, null), null, id);
       assert.equal(estimateCallCostUsd({ input_tokens: 1000, output_tokens: 1000 }, id, null), null, id);
     }
+  });
+
+  // #9902: IDs versionados medidos em `data/editions/*/_internal/stage-status.json`
+  // (08/10/2026: sonnet-4-6 ×30, opus-4-6/4-7/4-8, opus-5, opus-5-5, sonnet-5,
+  // sonnet-5-5, haiku-4-5). Todos precisam de preço — `null` deixava o stage
+  // como "-" no aggregate-costs e `cost_partial` no recompute.
+  it("todo ID versionado presente nos stage-status.json reais tem preço (#9902)", () => {
+    for (const id of ["sonnet-4-6", "opus-4-6", "opus-4-7", "opus-4-8", "opus-5", "opus-5-5", "sonnet-5", "sonnet-5-5", "haiku-4-5"]) {
+      assert.notEqual(resolvePricing(id, null), null, id);
+    }
+  });
+
+  it("sonnet-4-6 usa o preço da geração 4.x ($3/$15), nunca o do Sonnet 5 (#9902)", () => {
+    assert.deepEqual(resolvePricing("claude-sonnet-4-6", null), SONNET_4_PRICING);
+    assert.equal(SONNET_4_PRICING.inputPer1M, 3);
+    assert.equal(SONNET_4_PRICING.outputPer1M, 15);
+    assert.notDeepEqual(SONNET_4_PRICING, SONNET_PRICING);
   });
 
   it("alias sem versão (sonnet/haiku/opus) → null: não diz qual preço (#9876)", () => {

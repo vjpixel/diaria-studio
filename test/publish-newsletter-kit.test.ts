@@ -687,6 +687,7 @@ describe("main() — integração", () => {
       assert.equal(state?.broadcast_id, 555, "estado rastreia o draft REAL, não o de teste");
       assert.deepEqual(state?.test_broadcast_ids, [556]);
       assert.equal(state?.status, "test_sent");
+      assert.equal(state?.test_sent_at, testBody.send_at, "#9901: âncora do --sent-after do §5f");
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

@@ -412,14 +412,14 @@ const READING_TIME_TEXT_RE =
  * reprova o invariante, mantê-lo reprova o gate. Nunca bloqueia; continua
  * aparecendo em `attention_items`/no resumo do gate (warn-only).
  *
- * Reconhece pelo TEXTO (formato de tempo de leitura isolado) ou por ser um
- * claim `duration` de item secundário (USE MELHOR/RADAR — o único "tempo"
- * desses itens é a estimativa de leitura). Duração dentro de D1-D3 com texto
- * de frase completa continua bloqueando como antes.
+ * Reconhece só pelo TEXTO (formato de tempo de leitura isolado), em qualquer
+ * destaque. (#9900) Antes, todo claim `duration` de item `secondary` também
+ * era isento — mas `secondary` cobre LANÇAMENTOS/RADAR/USE MELHOR inteiros,
+ * então "grátis por 30 dias" (fonte diz 7) num LANÇAMENTO deixava de
+ * bloquear. Duração em frase completa continua bloqueando em qualquer seção.
  */
 export function isReadingTimeEstimate(c: FactClaim): boolean {
   if (c.claim_type !== "duration") return false;
-  if (c.destaque === "secondary") return true;
   return READING_TIME_TEXT_RE.test(c.text);
 }
 
