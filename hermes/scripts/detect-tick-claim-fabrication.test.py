@@ -559,6 +559,33 @@ def test_regressao_9778_sessao_interativa_concorrente_e_ator():
     print("regressão #9778: 'interativa'/'concorrente' é ator — OK")
 
 
+def test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim():
+    """#9923: o relatório real do tick 13:31 (08/10) tinha a linha
+    "- **PR cap:** 2/3 (PRs #9912 e #9922). mayClaim=true." — o "Claim" do
+    identificador camelCase `mayClaim` virava keyword de claim e "PRs" (plural)
+    não era reconhecido como referência a pull request, então #9912/#9922
+    viravam `fabrication_suspected` contra o `claimed_issues_ever` do 'ended'."""
+    mod = _load_module()
+    linha = "- **PR cap:** 2/3 (PRs #9912 e #9922). mayClaim=true."
+    refs = mod.extract_claimed_issue_refs(linha)
+    assert refs == {}, refs
+    # Cada uma das duas causas, isolada, também não pode produzir claim.
+    refs = mod.extract_claimed_issue_refs("Cap: #9912 e #9922. mayClaim=true.")
+    assert refs == {}, f"mayClaim tratado como keyword: {refs}"
+    refs = mod.extract_claimed_issue_refs("Claims abertos nas PRs #9912 e #9922.")
+    assert 9912 not in refs and 9922 not in refs, f"PRs plural virou issue: {refs}"
+    # Claim próprio real continua contando.
+    for n, linha in (
+        (9500, "#9500 reivindicada neste tick."),
+        (9501, "Claim registrado em #9501."),
+        (9502, "- #9502: fix do parser. Claim registrada."),
+        (9503, "`claim-issue` rodou para #9503."),
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert n in refs, f"#{n} (claim próprio) sumiu: {linha!r} -> {refs}"
+    print("regressão #9923: mayClaim e 'PRs #A e #B' não são claim — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -1049,6 +1076,7 @@ def main() -> int:
         test_regressao_9210_outros_solto_nao_e_ator()
         test_regressao_9322_outro_colado_a_preposicao_e_ator()
         test_regressao_9778_sessao_interativa_concorrente_e_ator()
+        test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

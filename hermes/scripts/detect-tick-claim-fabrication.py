@@ -238,7 +238,12 @@ _ISSUE_REF = re.compile(r"#(\d+)\b")
 # Palavras que sinalizam "isto é um claim declarado", usadas pra restringir
 # a busca de #NNNN a linhas plausivelmente sobre reivindicação (evita casar
 # qualquer menção solta de "#123" em qualquer contexto).
-_CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|claim", re.IGNORECASE)
+# #9923: "claim" só conta como keyword quando NÃO está colado a uma letra
+# antes — o relatório real do tick 13:31 (08/10) tinha "PR cap: 2/3 (PRs
+# #9912 e #9922). mayClaim=true." e o "Claim" de dentro do identificador
+# camelCase `mayClaim` (campo do `continuo-pr-cap`, não declaração de claim)
+# ligava os 2 números de PR à keyword -> `fabrication_suspected` falso.
+_CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|(?<![A-Za-zÀ-ÿ])claim", re.IGNORECASE)
 
 # **#8377 (2026-09-18).** O detector lia QUALQUER #NNNN em uma linha que
 # mencionava "reivindic"/"claim", independentemente de se tratar de um
@@ -297,6 +302,11 @@ _REF_LIST = re.compile(
 )
 _LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
 _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
+# #9923: plural "PRs #A e #B" — a LISTA inteira são pull requests, não
+# issues. `_PR_REF` (singular) só casava "PR #N"; "PRs #9912 e #9922"
+# escapava e os dois números entravam como claim de issue. No singular
+# continua só o 1º número ("PR #8358 e #8359" é ambíguo — fica como antes).
+_PRS_LIST_REF = re.compile(r"\bPRs\s+(?P<refs>" + _REF_LIST.pattern + r")", re.IGNORECASE)
 
 # Ator que pode DETER um claim sem ser este coordenador — usado tanto por
 # `_OTHERS_CLAIM` (claim atribuído via "por ACTOR") quanto por
@@ -666,6 +676,8 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
                 continue
             # Exclusões aplicadas SÓ ao número que as justificou (#8377).
             pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
+            for pm in _PRS_LIST_REF.finditer(segment):
+                pr_ref_n.update(int(n) for n in _ISSUE_REF.findall(pm.group("refs")))
             others_n = set()
             for om in _OTHERS_CLAIM.finditer(segment):
                 refs_text = om.group("refs")
