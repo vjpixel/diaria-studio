@@ -16,10 +16,13 @@ import {
   LATE_REFRESH_FEEDS,
   extractIndexPageLinks,
   extractPublishedTime,
+  feedReportRow,
   filterLateArticles,
+  formatLateRefreshBlock,
   isOfficialHost,
   selectSitemapEntries,
   type IndexPageFeed,
+  type LateRefreshReport,
 } from "../scripts/lib/late-refresh.ts";
 import { fetchFeed } from "../scripts/late-refresh-candidates.ts";
 
@@ -129,4 +132,86 @@ test("#9870: índice fora do ar → feed com erro (fail-soft), artigo fora do ar
   const r2 = await fetchFeed(feed, CUTOFF, NOW, onlyIndex);
   assert.equal(r2.error, undefined);
   assert.ok(r2.articles.every((a) => a.published_at === null));
+});
+
+// ---------------------------------------------------------------------------
+// #9919: o feed index-page zerava sem format_suspect nem log quando (1) as
+// páginas de artigo falhavam / vinham sem data, ou (2) o índice devolvia zero
+// links. Nos dois casos o gate dizia "Nada novo nas fontes oficiais".
+// ---------------------------------------------------------------------------
+
+function reportWith(row: LateRefreshReport["feeds"][number]): LateRefreshReport {
+  return {
+    generated_at: "2026-10-07T22:00:00Z",
+    cutoffs: { research_cutoff: CUTOFF, newsletter_cutoff: CUTOFF, origin: "stage-status" },
+    feeds: [row],
+    uncovered_labs: [],
+    candidates: [],
+    already_in_edition: 0,
+    already_published: 0,
+    newsletters: [],
+  };
+}
+
+test("REGRESSÃO #9919: índice ok mas todos os artigos sem data (challenge/403) → format_suspect + log por página", async () => {
+  assert.ok(feed);
+  const onlyIndex = (async (input: string | URL | Request) =>
+    String(input) === INDEX_URL ? new Response(INDEX_HTML) : new Response("challenge", { status: 403 })) as typeof fetch;
+  const warns: string[] = [];
+  const r = await fetchFeed(feed, CUTOFF, NOW, onlyIndex, (m) => warns.push(m));
+  assert.equal(r.error, undefined);
+  assert.equal(r.processed?.format_suspect, true, "nenhum artigo com data é mudança de formato, não 'nada novo'");
+  assert.equal(r.processed?.raw_entries, 3);
+  assert.equal(warns.length, 3, warns.join("\n"));
+  assert.ok(
+    warns.every((w) => /Claude Articles: falha ao buscar https:\/\/claude\.com\/resources\/articles\/.+HTTP 403/.test(w)),
+    warns.join("\n"),
+  );
+
+  // Páginas 200 mas sem meta de data (meta removida do template): também suspeito, sem log de falha.
+  const noDate = (async (input: string | URL | Request) =>
+    new Response(String(input) === INDEX_URL ? INDEX_HTML : page("Sem data", null))) as typeof fetch;
+  const warns2: string[] = [];
+  const r2 = await fetchFeed(feed, CUTOFF, NOW, noDate, (m) => warns2.push(m));
+  assert.equal(r2.processed?.format_suspect, true);
+  assert.deepEqual(warns2, []);
+
+  const row = feedReportRow(feed, r, 0);
+  assert.equal(row.ok, true);
+  assert.equal(row.format_suspect, true);
+  assert.match(
+    formatLateRefreshBlock(reportWith(row)),
+    /formato mudou\? entradas recebidas mas nenhuma reconhecida em: Claude Articles \(3 brutas, 3 após filtro\)/,
+  );
+});
+
+test("REGRESSÃO #9919: índice renderizado por JS (zero links) → format_suspect + log, nota própria no bloco", async () => {
+  assert.ok(feed);
+  const jsIndex = (async () =>
+    new Response('<html><body><div id="__next"></div><script src="/app.js"></script></body></html>')) as typeof fetch;
+  const warns: string[] = [];
+  const r = await fetchFeed(feed, CUTOFF, NOW, jsIndex, (m) => warns.push(m));
+  assert.equal(r.error, undefined);
+  assert.deepEqual(r.articles, []);
+  assert.equal(r.processed?.format_suspect, true);
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /Claude Articles: índice .* sem nenhum link/);
+  const out = formatLateRefreshBlock(reportWith(feedReportRow(feed, r, 0)));
+  assert.match(out, /formato mudou\? fonte respondeu sem nenhuma entrada em: Claude Articles/);
+  assert.doesNotMatch(out, /entradas recebidas/);
+});
+
+test("#9919: feed saudável (ao menos um artigo com data) não é suspeito; falha isolada loga sem virar suspeita", async () => {
+  assert.ok(feed);
+  const warns: string[] = [];
+  const r = await fetchFeed(feed, CUTOFF, NOW, fakeFetch, (m) => warns.push(m));
+  assert.equal(r.processed?.format_suspect, false);
+  assert.deepEqual(warns, []);
+  const oneDown = (async (input: string | URL | Request) =>
+    String(input).endsWith("/old-post") ? new Response("x", { status: 500 }) : fakeFetch(input)) as typeof fetch;
+  const warns2: string[] = [];
+  const r2 = await fetchFeed(feed, CUTOFF, NOW, oneDown, (m) => warns2.push(m));
+  assert.equal(r2.processed?.format_suspect, false);
+  assert.equal(warns2.length, 1);
+  assert.match(warns2[0], /old-post/);
 });
