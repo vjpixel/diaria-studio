@@ -45,6 +45,8 @@ const LATE_REFRESH_ONLY_ALLOWLIST: Record<string, string> = {
     "Sitemap do site inteiro filtrado por pathPrefix=/news/; o fetch-sitemap do Stage 1 não filtra por prefixo. Stage 1 cobre via fonte `Anthropic` (site:anthropic.com/news).",
   "https://claude.com/sitemap.xml":
     "Sitemap com ~3k URLs filtrado por pathPrefix=/blog/; o fetch-sitemap do Stage 1 não filtra por prefixo. Lacuna conhecida, listada na PR da #9644.",
+  "https://claude.com/resources/articles":
+    "Página-índice HTML (não RSS), lida só no late-refresh (#9870): o sitemap não tem lastmod em /resources/articles/ e o Stage 1 não lê índice HTML. Mesma lacuna do Claude Blog acima.",
   "https://blog.google/technology/ai/rss/":
     "Subconjunto do feed geral https://blog.google/rss/ já lido pela fonte `Google` do Stage 1 (janela de dias da pesquisa coberta pelo geral, conferido em 05/10/2026).",
   "https://microsoft.ai/feed/":

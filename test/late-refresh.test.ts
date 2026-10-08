@@ -251,7 +251,7 @@ test("LATE_REFRESH_FEEDS: todo host de feed satisfaz isOfficialHost (#9515)", ()
         ? f.url.replace(/\/releases\.atom$/, "/releases/tag/v1.0.0")
         : f.method === "github-new-repos"
           ? `https://github.com/${f.org}/repo-exemplo`
-          : `${u.protocol}//${u.host}${(f.method === "sitemap" ? f.pathPrefix : undefined) ?? "/"}post-exemplo`;
+          : `${u.protocol}//${u.host}${(f.method === "sitemap" || f.method === "index-page" ? f.pathPrefix : undefined) ?? "/"}post-exemplo`;
     assert.equal(isOfficialHost(post), true, `${f.name}: ${post} deveria ser oficial`);
   }
   assert.equal(isOfficialHost("https://microsoft.ai/news/introducing-mai-voice-2/"), true);
