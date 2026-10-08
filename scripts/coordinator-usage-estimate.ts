@@ -67,13 +67,16 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { logEvent, resolveRunLogPath } from "./lib/run-log.ts";
 import {
+  claudeProjectsDir,
   collectUsageInWindow,
   currentSessionId,
   resolveTranscriptsDir,
 } from "./lib/session-transcript.ts";
+import { findTranscript } from "./lib/effective-model-probe.ts";
 
 /** Kinds que têm coordenador e emitem `coordinator_tokens_estimate`. */
 export const COORDINATOR_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -202,6 +205,32 @@ export function estimateToDetails(estimate: CoordinatorEstimate, phase: string):
 }
 
 /**
+ * Diretório de transcripts que contém `{sessionId}.jsonl` (#9874). Primeiro o
+ * derivado do cwd (caso normal); se o arquivo não está lá, varre
+ * `~/.claude/projects/*` pelo mesmo nome. O cwd do comando nem sempre é o cwd
+ * em que a sessão nasceu (coordenador que fez `cd` num worktree, subagente
+ * rodando no worktree em nome da sessão-mãe), e `encodeProjectDirName` não
+ * reproduz a codificação do harness para paths com `.` (`.claude/worktrees` →
+ * `--claude-worktrees`). Casar pelo session id (UUID) não mistura sessão
+ * concorrente — é o mesmo arquivo, só achado por outro caminho. Sem achado,
+ * devolve o diretório do cwd e o chamador cai em `session_file_not_found`.
+ */
+export function locateSessionTranscriptsDir(sessionId: string, cwd: string, homeDir?: string): string {
+  const primary = resolveTranscriptsDir(cwd, homeDir);
+  if (existsSync(join(primary, `${sessionId}.jsonl`))) return primary;
+  // `findTranscript` faz `readdirSync` sem proteção: `~/.claude/projects`
+  // ilegível (permissão, EIO) não pode furar o "NUNCA lança" do script —
+  // cai no `primary` e o chamador emite `session_file_not_found`.
+  let found: string | null = null;
+  try {
+    found = findTranscript(sessionId, claudeProjectsDir(homeDir));
+  } catch {
+    found = null;
+  }
+  return found ? dirname(found) : primary;
+}
+
+/**
  * Roda o estimate completo (leitura de transcript + run-log) e devolve o
  * resultado pronto pra virar evento. `rootDir`/`cwd`/`homeDir`/`env`
  * injetáveis pra teste; defaults = produção.
@@ -230,7 +259,7 @@ export function estimateCoordinatorUsage(opts: {
   );
 
   if (!sessionId) return { status: "unavailable", reason: "no_session_id" };
-  const transcriptsDir = resolveTranscriptsDir(opts.cwd ?? rootDir, opts.homeDir);
+  const transcriptsDir = locateSessionTranscriptsDir(sessionId, opts.cwd ?? rootDir, opts.homeDir);
   const endIso = (opts.now ?? new Date()).toISOString();
   const startIso = sinceIso ?? "1970-01-01T00:00:00Z";
   let window: ReturnType<typeof collectUsageInWindow>;
