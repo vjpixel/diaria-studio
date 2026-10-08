@@ -43,7 +43,7 @@
  * recebe quando é reconstruído e re-enviado (`build-article-page.ts --push`).
  * O caminho de e-mail não passa por nenhuma delas.
  *
- * Sem imagens geradas (destaqueImageUrls/eiaImageUrl*) nesta 1ª versão —
+ * Só as fotos do É IA? (#9864) entram; destaqueImageUrls seguem de fora —
  * `renderDestaque`/`renderEia` toleram `undefined` (renderizam sem `<img>`).
  * Plugar as imagens reais do ciclo é fast-follow explícito (ver PR #3940) —
  * o dado (URLs já hospedadas no KV do worker `poll`/`draft` por
@@ -101,6 +101,20 @@ export function stripEmailOnlyFooter(html: string): string {
   // Ancorado no parágrafo que CONTÉM a tag, não numa frase específica — copy
   // muda, a tag é estrutural.
   return html.replace(/<p[^>]*>(?:(?!<\/p>)[\s\S])*\{\{\s*unsubscribe\s*\}\}(?:(?!<\/p>)[\s\S])*<\/p>/gi, "");
+}
+
+/**
+ * Desembrulha as fotos do É IA? do link de voto (#9864).
+ *
+ * No e-mail cada foto é um `<a>` para `/vote/…?email={{ … }}`; na web ninguém
+ * resolve a tag, e o voto sem identidade não vale. Mantém a `<img>` e solta só
+ * o `<a>` cujo `href` carrega merge tag e que envolve nada além da imagem.
+ */
+export function unwrapWebVoteLinks(html: string): string {
+  return html.replace(
+    /<a\b[^>]*href="[^"]*\{\{[^"]*"[^>]*>\s*(<img\b[^>]*>)\s*<\/a>/gi,
+    "$1",
+  );
 }
 
 /**
@@ -319,6 +333,10 @@ export interface ArticleBuildOptions {
   /** Pós-processo do HTML de e-mail ANTES das transformações web — o relink
    * dos destaques para a edição diária de origem (#4048), como no e-mail. */
   postProcessEmailHtml?: (html: string) => string;
+  /** URLs públicas do par de fotos do É IA? (`eia_a`/`eia_b` do
+   * `public-images.json`, #9864). Sem elas o bloco sai com "Imagem A/B". */
+  eiaImageUrlA?: string;
+  eiaImageUrlB?: string;
 }
 
 export function buildArticleHtml(draftMd: string, cycle: string, opts: ArticleBuildOptions = {}): ArticlePage {
@@ -334,13 +352,15 @@ export function buildArticleHtml(draftMd: string, cycle: string, opts: ArticleBu
   // O `<title>` segue vindo do ASSUNTO do draft (contrato do #3940 e alvo do
   // guard de marca do #7719), não do assunto próprio do e-mail
   // (`deriveApoiadoresKitSubject`) — só o CORPO se alinha ao e-mail.
-  const email = draftToEmailApoiadoresKit(draftMd, null, yymm, undefined, undefined, opts.eiaCredit);
+  const email = draftToEmailApoiadoresKit(draftMd, null, yymm, opts.eiaImageUrlA, opts.eiaImageUrlB, opts.eiaCredit);
   const { subject, previewText } = email;
   const html = opts.postProcessEmailHtml ? opts.postProcessEmailHtml(email.html) : email.html;
   // Sanitiza o que é só de e-mail, depois GUARDA — a mesma ordem de
   // `buildArchivePageHtml`: primeiro o que se sabe tratar, e só então a recusa
   // do que sobrou, para o guard validar exatamente o HTML que vai ser servido.
-  const web = injectWebMobileStyle(retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(html))));
+  const web = injectWebMobileStyle(
+    retagWebUtmMedium(stripReplyByEmailSentence(stripEmailOnlyFooter(unwrapWebVoteLinks(html)))),
+  );
   verifyNoMergeTagsInArticle(web, cycle);
   // Guard de marca legada (#7719) — mesma disciplina do guard de merge tag
   // acima: checa o HTML final, DEPOIS do render, porque é dado que vem do

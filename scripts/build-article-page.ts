@@ -21,7 +21,7 @@
  *
  * Sem `--out` e sem `--push`: imprime o HTML em stdout (dry-run puro).
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -93,13 +93,41 @@ export function articleTeaserKvKey(cycle: string): string {
 }
 
 /**
+ * #9864: URLs públicas do par A/B do É IA? em `_internal/public-images.json`.
+ * Guard: ciclo com `01-eia-A.jpg` (ou o legado `01-eai-A.jpg`) no disco mas sem
+ * `eia_a`/`eia_b` no manifest lança — publicar assim deixa o placeholder
+ * "Imagem A/B" na página paga. Ciclo sem foto do É IA? segue sem imagem.
+ */
+export function readEiaImageUrls(monthlyDirPath: string): { eiaImageUrlA?: string; eiaImageUrlB?: string } {
+  const manifestPath = resolve(monthlyDirPath, "_internal", "public-images.json");
+  let images: Record<string, { url?: string }> = {};
+  if (existsSync(manifestPath)) {
+    images = (JSON.parse(readFileSync(manifestPath, "utf-8")) as { images?: typeof images }).images ?? {};
+  }
+  const eiaImageUrlA = images.eia_a?.url;
+  const eiaImageUrlB = images.eia_b?.url;
+  const temFoto = ["01-eia-A.jpg", "01-eai-A.jpg"].some((f) => existsSync(resolve(monthlyDirPath, f)));
+  if (temFoto && (!eiaImageUrlA || !eiaImageUrlB)) {
+    throw new Error(
+      `build-article-page: ${monthlyDirPath} tem a foto do É IA? mas _internal/public-images.json não tem ` +
+        "eia_a/eia_b com url — a página sairia com o placeholder 'Imagem A/B' (#9864). " +
+        "Rode a Etapa 3/4 do /diaria-mensal (upload das imagens) antes.",
+    );
+  }
+  return { eiaImageUrlA, eiaImageUrlB };
+}
+
+/**
  * #9496: os insumos de I/O do e-mail dos apoiadores, lidos pelas MESMAS
  * funções do render do e-mail (legenda do É IA? do `01-eia.md` + relink das
  * diárias) — a página é a versão web daquele e-mail, não do envio Clarice.
  * `logLabel` separa no stderr o relink do artigo do relink do trecho.
  */
 export function articleBuildOptionsForCycle(monthlyDirPath: string, logLabel = ""): ArticleBuildOptions {
+  const { eiaImageUrlA, eiaImageUrlB } = readEiaImageUrls(monthlyDirPath);
   return {
+    eiaImageUrlA,
+    eiaImageUrlB,
     eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
     postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath, logLabel),
   };
