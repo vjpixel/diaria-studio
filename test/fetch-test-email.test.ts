@@ -19,6 +19,7 @@ import {
   findBodyPart,
   parseSentAfter,
   pickLatestMessage,
+  SENT_AFTER_SKEW_MS,
   type FetchDeps,
 } from "../scripts/fetch-test-email.ts";
 import { makeEditionDir } from "./_helpers/make-edition-dir.ts";
@@ -281,5 +282,28 @@ describe("fetchTestEmail --sent-after (#9901)", () => {
     assert.equal(parseSentAfter(undefined), undefined);
     assert.equal(parseSentAfter("2026-10-08T22:30:00Z"), SENT);
     assert.throws(() => parseSentAfter("ontem"), /--sent-after inválido/);
+  });
+});
+
+// #9905: no Beehiiv, `test_email_sent_at` é gravado DEPOIS do clique em Send
+// test (playbook §8 / fix-3 passo 3). Usado como `--sent-after`, o corte
+// (`sentAfterMs - 5s`) cai depois do `internalDate` do teste atual e o descarta
+// (exit 3 a cada run). O §5f passo 0 só pode ancorar o Kit.
+describe("Stage 5 §5f passo 0: --sent-after só no Kit (#9905)", () => {
+  const stage5 = readFileSync(resolve(import.meta.dirname, "../.claude/agents/orchestrator-stage-5.md"), "utf8");
+  const line = stage5.split("\n").find((l) => l.includes("scripts/fetch-test-email.ts --edition-dir")) ?? "";
+
+  it("não usa test_email_sent_at do Beehiiv como âncora", () => {
+    assert.ok(line, "linha do fetch-test-email.ts não encontrada no orchestrator-stage-5.md");
+    assert.doesNotMatch(line, /Beehiiv `test_email_sent_at`/);
+    assert.match(line, /Beehiiv nunca passa `--sent-after`/);
+    assert.match(line, /só Kit: `\{ISO\}` = `test_sent_at`/);
+  });
+
+  it("cenário do bug: âncora gravada depois do clique descarta o teste atual", () => {
+    const received = [{ internalDate: String(Date.parse("2026-10-08T22:00:04Z")) }];
+    const writtenAfterClick = Date.parse("2026-10-08T22:01:30Z");
+    assert.equal(pickLatestMessage(received, writtenAfterClick - SENT_AFTER_SKEW_MS), null);
+    assert.ok(pickLatestMessage(received, null), "sem âncora (caminho Beehiiv) o teste atual é lido");
   });
 });
