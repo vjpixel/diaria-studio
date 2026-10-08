@@ -1161,14 +1161,6 @@
   <url>
     <loc>https://diar.ia.br/p/seu-gpt-personalizado-tem-data-para-acabar</loc>
     <lastmod>2026-10-06</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-06T00:00:00.000Z</news:publication_date>
-      <news:title>Seu GPT personalizado tem data para acabar</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/meta-poe-o-muse-para-fichar-seus-amigos-e-familia</loc>
@@ -1180,6 +1172,18 @@
       </news:publication>
       <news:publication_date>2026-10-07T09:00:00.000Z</news:publication_date>
       <news:title>Meta põe o Muse para fichar seus amigos e família</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/haiku-5-5-supera-o-sonnet-5-e-custa-ate-95-menos</loc>
+    <lastmod>2026-10-08</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-08T00:00:00.000Z</news:publication_date>
+      <news:title>Haiku 5.5 supera o Sonnet 5 e custa até 95% menos</news:title>
     </news:news>
   </url>
 </urlset>
