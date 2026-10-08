@@ -633,6 +633,7 @@ describe("main() — integração", () => {
         preview_text: "Preview antigo",
         status: "test_sent",
         test_broadcast_ids: [900],
+        test_sent_at: "2026-10-08T03:00:00.000Z",
       });
       mockFetch((call) => {
         if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
@@ -647,6 +648,11 @@ describe("main() — integração", () => {
       const state = readPublishedState(editionDir);
       assert.equal(state?.status, "test_sent", "atualizar conteúdo não pode apagar o fato de que um teste já foi enviado");
       assert.deepEqual(state?.test_broadcast_ids, [900], "histórico de test-sends preservado");
+      assert.equal(
+        state?.test_sent_at,
+        "2026-10-08T03:00:00.000Z",
+        "#9906: re-run sem --send-test não pode apagar a âncora do --sent-after do §5f",
+      );
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

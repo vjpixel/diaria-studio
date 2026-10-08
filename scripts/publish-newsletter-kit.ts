@@ -608,6 +608,11 @@ export async function main(rootDirOverride?: string): Promise<void> {
     // reforço explícito/releitura desta função sem nenhum PATCH ter mudado
     // o agendamento de verdade.
     ...(existing?.scheduled_at ? { scheduled_at: existing.scheduled_at } : {}),
+    // #9906: preservar `test_sent_at` (mesma classe do #464 pra `status`) —
+    // sem isso, um re-run só de conteúdo depois de um `--send-test` deixaria
+    // `status: "test_sent"` sem a âncora, e o §5f voltaria a omitir
+    // `--sent-after` (#9901), podendo ler um e-mail de teste antigo.
+    ...(existing?.test_sent_at ? { test_sent_at: existing.test_sent_at } : {}),
     // #9428: hash do payload que ACABOU de ir pro Kit (sempre o desta
     // invocação — um re-run atualiza o draft e, portanto, o baseline).
     content_hash: kitContentHash(subject, previewText, html),

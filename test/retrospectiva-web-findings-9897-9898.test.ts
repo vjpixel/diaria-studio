@@ -119,6 +119,56 @@ describe("#9903 finding 1 — marcador conhecido com minúscula continua cortand
   });
 });
 
+describe("#9907 — marcador com colchetes escapados (formato do 2604-05)", () => {
+  /** Mesmo draft, com todos os marcadores no formato `**\[LABEL\] TEMA**` do export do Drive. */
+  function draftEscapado(): string {
+    return draft("**Anthropic vira centro de gravidade da indústria**", "Fim.")
+      .replace("**ASSUNTO (3 OPÇÕES)**", "**\\[ASSUNTO\\]**")
+      .replace("**PREVIEW**", "**\\[PREVIEW\\]**")
+      .replace("**INTRO**", "**\\[INTRO\\]**")
+      .replace("**DESTAQUE 1 | INDÚSTRIA**", "**\\[DESTAQUE 1\\] ANTHROPIC**")
+      .replace("**CLARICE — DIVULGAÇÃO**", "**\\[CLARICE — DIVULGAÇÃO\\]**")
+      .replace("**DESTAQUE 2 | BRASIL**", "**\\[DESTAQUE 2\\] BRASIL**");
+  }
+
+  it("REGRESSÃO: `**\\[DESTAQUE 1\\] ...**` é reconhecido e o corte leva o D1 inteiro", () => {
+    const trecho = cutDraftAfterFirstDestaque(draftEscapado(), "26xx-yy");
+    assert.match(trecho, /\\\[DESTAQUE 1\\\] ANTHROPIC/);
+    assert.match(trecho, /CORPO-DO-PRIMEIRO-DESTAQUE/);
+    assert.match(trecho, /O fio condutor/);
+  });
+
+  it("conteúdo pago não vaza: corta antes do bloco seguinte e do DESTAQUE 2", () => {
+    const trecho = cutDraftAfterFirstDestaque(draftEscapado(), "26xx-yy");
+    assert.ok(!trecho.includes("CLARICE — DIVULGAÇÃO"));
+    assert.ok(!trecho.includes("Texto patrocinado"));
+    assert.ok(!trecho.includes("DESTAQUE 2"));
+    assert.ok(!trecho.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
+  });
+
+  it("sem bloco no meio, o corte cai no `**\\[DESTAQUE 2\\] ...**` escapado", () => {
+    const md = draftEscapado().replace("**\\[CLARICE — DIVULGAÇÃO\\]**\n\nTexto patrocinado.\n\n", "");
+    const trecho = cutDraftAfterFirstDestaque(md, "26xx-yy");
+    assert.match(trecho, /O fio condutor/);
+    assert.ok(!trecho.includes("DESTAQUE 2"));
+    assert.ok(!trecho.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
+  });
+
+  it("`**DESTAQUE 10 ...**` escapado não é tomado por DESTAQUE 1", () => {
+    const md = draftEscapado().replace("**\\[DESTAQUE 1\\] ANTHROPIC**", "**\\[DESTAQUE 10\\] ANTHROPIC**");
+    assert.throws(() => cutDraftAfterFirstDestaque(md, "26xx-yy"), /não há marcador/);
+  });
+
+  const path2604 = "data/monthly/2604-05/draft.md";
+  it("draft real 2604-05: corta depois do D1, sem o D2", { skip: !existsSync(path2604) }, () => {
+    const trecho = cutDraftAfterFirstDestaque(readFileSync(path2604, "utf8"), "2604-05");
+    assert.match(trecho, /DESTAQUE 1\\\] ANTHROPIC/);
+    assert.ok(!trecho.includes("DESTAQUE 2"), "o D2 (pago) não entra");
+    assert.ok(!trecho.includes("DESTAQUE 3"));
+    assert.ok(!trecho.includes("CLARICE — DIVULGAÇÃO"));
+  });
+});
+
 describe("#9903 findings 3-4 — limpeza da frase 'Responda…'", () => {
   it("pergunta após dois espaços ou &nbsp; também sai", () => {
     assert.equal(
