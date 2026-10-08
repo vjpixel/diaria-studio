@@ -94,6 +94,51 @@ describe("#9897 — título do D1 em negrito não é marcador de seção", () =>
   });
 });
 
+describe("#9903 finding 1 — marcador conhecido com minúscula continua cortando", () => {
+  it("REGRESSÃO: `**Destaque 2 | IA generativa**` corta (conteúdo pago não vaza)", () => {
+    const md = draft("Título", "Fim.")
+      .replace("**CLARICE — DIVULGAÇÃO**", "**Destaque 2 | IA generativa**");
+    const trecho = cutDraftAfterFirstDestaque(md, "26xx-yy");
+    assert.match(trecho, /O fio condutor/);
+    assert.ok(!trecho.includes("IA generativa"), "corta no marcador em caixa mista");
+    assert.ok(!trecho.includes("Texto patrocinado"));
+    assert.ok(!trecho.includes("SEGREDO-DO-SEGUNDO-DESTAQUE"));
+  });
+
+  it("`**É IA? — Destaque**` (caixa mista) também corta", () => {
+    const md = draft("Título", "Fim.").replace("**CLARICE — DIVULGAÇÃO**", "**É IA? — Destaque**");
+    const trecho = cutDraftAfterFirstDestaque(md, "26xx-yy");
+    assert.ok(!trecho.includes("É IA?"));
+    assert.ok(!trecho.includes("Texto patrocinado"));
+  });
+
+  it("título do D1 em negrito continua NÃO sendo marcador", () => {
+    const trecho = cutDraftAfterFirstDestaque(draft("**Anthropic vira centro de gravidade da indústria**", "Fim."), "26xx-yy");
+    assert.match(trecho, /CORPO-DO-PRIMEIRO-DESTAQUE/);
+    assert.match(trecho, /O fio condutor/);
+  });
+});
+
+describe("#9903 findings 3-4 — limpeza da frase 'Responda…'", () => {
+  it("pergunta após dois espaços ou &nbsp; também sai", () => {
+    assert.equal(
+      stripReplyByEmailSentence(`<p>Fim.  Quer sugerir? Responda a este e-mail. Assine.</p>`),
+      `<p>Fim.  Assine.</p>`,
+    );
+    assert.equal(
+      stripReplyByEmailSentence(`<p>Fim.&nbsp;Quer sugerir? Responda a este e-mail. Assine.</p>`),
+      `<p>Fim.&nbsp;Assine.</p>`,
+    );
+  });
+
+  it("parágrafo só com pergunta + frase sai inteiro, sem deixar <p></p>", () => {
+    assert.equal(
+      stripReplyByEmailSentence(`<p>Antes.</p>\n<p>Quer sugerir um tema? Responda a este e-mail.</p>\n<p>Depois.</p>`),
+      `<p>Antes.</p>\n<p>Depois.</p>`,
+    );
+  });
+});
+
 describe("#9898 — 'Responda a este e-mail.' sai da página web", () => {
   it("REGRESSÃO: a copy do PARA ENCERRAR 2608/2609 perde a pergunta e a frase, mantém o CTA", () => {
     const html = buildArticleHtml(draft("Título", ENCERRAMENTO_2608), "2608-09").html;
