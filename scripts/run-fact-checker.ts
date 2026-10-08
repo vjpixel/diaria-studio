@@ -397,11 +397,28 @@ export function getBlockingClaims(claims: FactClaim[]): FactClaim[] {
 
 /**
  * (#9868) Texto que é só um tempo de leitura — "(12 min)", "12 min",
- * "— 15 min", "12 minutos de leitura". Ancorado nas duas pontas: uma duração
- * factual dentro de uma frase ("a greve durou 12 min") não casa.
+ * "— 15 min", "(~12 min)", "12 minutos de leitura". Ancorado nas duas pontas.
+ *
+ * (#9914) Atenção: isso SOZINHO não distingue tempo de leitura de duração
+ * factual — o contrato do fact-checker põe em `text` o trecho MÍNIMO
+ * ("12 minutos") e a frase em `context`, então "o modelo gera o vídeo em 12
+ * minutos" chega como `text: "12 minutos"` e casa aqui. Por isso
+ * `isReadingTimeEstimate` também exige o marcador no `context`.
  */
 const READING_TIME_TEXT_RE =
-  /^[\s(—–-]*\d{1,3}\s*(?:min(?:utos?)?\.?)(?:\s+de\s+leitura)?[\s)]*$/i;
+  /^[\s(—–~-]*\d{1,3}\s*(?:min(?:utos?)?\.?)(?:\s+de\s+leitura)?[\s)]*$/i;
+
+/**
+ * (#9914) Marcador de tempo de leitura no FIM do `context` — a forma que o
+ * pipeline emite no USE MELHOR (`renderUseMelhorSection` appenda a estimativa
+ * ao fim da descrição; formatos aceitos espelham `USE_MELHOR_TEMPO_RE`, #2447):
+ * "(12 min)", "(~12 min)", "— 12 min", "~12 min", com "de leitura" opcional.
+ * Ancorado no fim (tolera pontuação/markdown residual): "(12 min)" no meio de
+ * uma frase, ou "em 12 minutos" sem parênteses/travessão/til, não casa.
+ * Grupo 1 = o número de minutos, comparado com o do `text`.
+ */
+const READING_TIME_CONTEXT_TAIL_RE =
+  /(?:\(\s*~?\s*(\d{1,3})\s*min(?:utos?)?\.?(?:\s+de\s+leitura)?\s*\)|[–—]\s*~?\s*(\d{1,3})\s*min(?:utos?)?\.?(?:\s+de\s+leitura)?|~\s*(\d{1,3})\s*min(?:utos?)?\.?(?:\s+de\s+leitura)?)[\s.*_)]*$/i;
 
 /**
  * (#9868) Claim `duration` que é a estimativa de tempo de leitura do pipeline
@@ -412,15 +429,26 @@ const READING_TIME_TEXT_RE =
  * reprova o invariante, mantê-lo reprova o gate. Nunca bloqueia; continua
  * aparecendo em `attention_items`/no resumo do gate (warn-only).
  *
- * Reconhece só pelo TEXTO (formato de tempo de leitura isolado), em qualquer
- * destaque. (#9900) Antes, todo claim `duration` de item `secondary` também
- * era isento — mas `secondary` cobre LANÇAMENTOS/RADAR/USE MELHOR inteiros,
- * então "grátis por 30 dias" (fonte diz 7) num LANÇAMENTO deixava de
- * bloquear. Duração em frase completa continua bloqueando em qualquer seção.
+ * (#9914) Exige as TRÊS condições — qualquer uma ausente, a regra normal vale
+ * (fail-closed: na dúvida, bloqueia):
+ *   1. `text` é só um tempo em minutos (`READING_TIME_TEXT_RE`);
+ *   2. item `secondary` — o tempo de leitura só existe no USE MELHOR; um
+ *      D1-D3 nunca o carrega, então "12 minutos" num destaque é factual;
+ *   3. `context` termina no marcador de tempo de leitura com o MESMO número
+ *      do `text` (`READING_TIME_CONTEXT_TAIL_RE`). "o modelo gera o vídeo em
+ *      12 minutos" (fonte diz 40) não termina em "(12 min)" → bloqueia.
+ * (#9900) `secondary` sozinho já não isentava (cobre LANÇAMENTOS/RADAR
+ * inteiros: "grátis por 30 dias" com fonte dizendo 7 tem que bloquear).
  */
 export function isReadingTimeEstimate(c: FactClaim): boolean {
   if (c.claim_type !== "duration") return false;
-  return READING_TIME_TEXT_RE.test(c.text);
+  if (c.destaque !== "secondary") return false;
+  if (!READING_TIME_TEXT_RE.test(c.text)) return false;
+  const tail = typeof c.context === "string" ? READING_TIME_CONTEXT_TAIL_RE.exec(c.context) : null;
+  if (!tail) return false;
+  const ctxMinutes = tail[1] ?? tail[2] ?? tail[3];
+  const textMinutes = /\d{1,3}/.exec(c.text)?.[0];
+  return ctxMinutes !== undefined && Number(ctxMinutes) === Number(textMinutes);
 }
 
 /**
