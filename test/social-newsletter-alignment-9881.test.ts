@@ -19,17 +19,17 @@ const root = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
 describe("#9881 — social alinhado ao corpo da newsletter no re-disparo do Stage 4", () => {
-  it("social-writer.md diz o que é alinhar: mesmos fatos (inclusive cortes) e mesmo fecho", () => {
+  it("social-writer.md diz o que é alinhar: mesmos fatos (só os do corpo atual) e mesmo fecho", () => {
     const md = read(".claude/agents/social-writer.md");
     assert.match(md, /Com `newsletter_md_path`: o corpo da newsletter é a versão do destaque que o editor aprovou \(#9881\)/);
-    assert.match(md, /o que o editor cortou do corpo sai do social também/);
+    assert.match(md, /fato ou ângulo que não está no corpo do destaque não entra no social/);
     assert.match(md, /o 3º parágrafo segue a consequência prática que o corpo escreveu/);
   });
 
   it("social-curto.md declara newsletter_md_path e a mesma regra de alinhamento", () => {
     const md = read(".claude/agents/social-curto.md");
     assert.match(md, /`newsletter_md_path` \(opcional, #9881\)/);
-    assert.match(md, /o que ele cortou sai, mesmo que esteja no `summary` ou na fonte/);
+    assert.match(md, /fato ou ângulo que não está no corpo do destaque não entra no curto, mesmo que esteja no `summary` ou na fonte/);
   });
 
   it("orchestrator-stage-4.md §e passa newsletter_md_path também ao social-curto", () => {
