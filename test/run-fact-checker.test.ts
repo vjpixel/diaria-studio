@@ -962,16 +962,17 @@ describe("getBlockingClaims (#4361)", () => {
 // invariante `use-melhor-tempo` (#2447) EXIGE esse texto. Impasse.
 // ---------------------------------------------------------------------------
 
-describe("isReadingTimeEstimate / getBlockingClaims (#9868)", () => {
+describe("isReadingTimeEstimate / getBlockingClaims (#9868, #9914)", () => {
   const claim = (
     text: string,
     destaque: FactClaim["destaque"] = "secondary",
     claim_type: FactClaim["claim_type"] = "duration",
+    context = `Guia prático de RAG com LangChain ${text.trim()}`,
   ): FactClaim => ({
     destaque,
     claim_type,
     text,
-    context: "ctx",
+    context,
     sources: ["newsletter"],
     verdict: "NOT_FOUND_IN_SOURCE",
   });
@@ -980,11 +981,62 @@ describe("isReadingTimeEstimate / getBlockingClaims (#9868)", () => {
     assert.equal(getBlockingClaims([claim("(12 min)")]).length, 0);
   });
 
-  it("formatos de tempo de leitura isolado não bloqueiam mesmo com destaque numérico", () => {
-    for (const t of ["(12 min)", "12 min", "— 15 min", "5 minutos", "8 min de leitura", "12 min."]) {
-      assert.ok(isReadingTimeEstimate(claim(t, 2)), `"${t}" deveria ser reconhecido como tempo de leitura`);
-      assert.equal(getBlockingClaims([claim(t, 2)]).length, 0, `"${t}" não deveria bloquear`);
+  it("formatos de tempo de leitura no fim da descrição do USE MELHOR não bloqueiam", () => {
+    const cases: Array<[string, string]> = [
+      ["(12 min)", "Passo a passo para montar o pipeline (12 min)"],
+      ["12 min", "Passo a passo para montar o pipeline (12 min)"],
+      ["— 15 min", "Tutorial de fine-tuning — 15 min"],
+      ["5 minutos", "Configure o agente em poucos passos (5 minutos)"],
+      ["8 min de leitura", "Como avaliar modelos – 8 min de leitura"],
+      ["12 min.", "Passo a passo para montar o pipeline (12 min)."],
+      ["(~12 min)", "Passo a passo para montar o pipeline (~12 min)"],
+      ["~40 min", "Curso introdutório ~40 min"],
+    ];
+    for (const [t, ctx] of cases) {
+      const c = claim(t, "secondary", "duration", ctx);
+      assert.ok(isReadingTimeEstimate(c), `"${t}" / "${ctx}" deveria ser tempo de leitura`);
+      assert.equal(getBlockingClaims([c]).length, 0, `"${t}" não deveria bloquear`);
     }
+  });
+
+  it("#9914 caso da issue: D1 diz 'gera o vídeo em 12 minutos' (fonte diz 40) → bloqueia", () => {
+    const c = claim("12 minutos", 1, "duration", "o modelo gera o vídeo em 12 minutos");
+    assert.equal(isReadingTimeEstimate(c), false);
+    assert.equal(getBlockingClaims([c]).length, 1);
+  });
+
+  it("#9914: duração curta em D1-D3 bloqueia mesmo com contexto no formato de tempo de leitura", () => {
+    for (const d of [1, 2, 3]) {
+      const c = claim("(12 min)", d, "duration", "O teste completo roda rápido (12 min)");
+      assert.equal(isReadingTimeEstimate(c), false, `D${d} nunca carrega tempo de leitura`);
+      assert.equal(getBlockingClaims([c]).length, 1);
+    }
+  });
+
+  it("#9914: 'N minutos' factual em item secundário (frase sem marcador) bloqueia", () => {
+    for (const ctx of [
+      "A ferramenta transcreve uma hora de áudio em 12 minutos",
+      "Em 12 minutos o agente (beta) termina a tarefa",
+      "(12 min) é o tempo que o modelo leva para responder",
+    ]) {
+      const c = claim("12 minutos", "secondary", "duration", ctx);
+      assert.equal(isReadingTimeEstimate(c), false, `"${ctx}" é duração factual`);
+      assert.equal(getBlockingClaims([c]).length, 1);
+    }
+  });
+
+  it("#9914: número do text diferente do marcador no context → bloqueia", () => {
+    const c = claim("12 minutos", "secondary", "duration", "Leva 12 minutos para treinar (5 min)");
+    assert.equal(isReadingTimeEstimate(c), false);
+    assert.equal(getBlockingClaims([c]).length, 1);
+  });
+
+  it("#9914: context ausente/vazio → fail-closed (bloqueia)", () => {
+    const empty = claim("(12 min)", "secondary", "duration", "");
+    assert.equal(isReadingTimeEstimate(empty), false);
+    const missing = { ...claim("(12 min)"), context: undefined as unknown as string };
+    assert.equal(isReadingTimeEstimate(missing), false);
+    assert.equal(getBlockingClaims([empty, missing]).length, 2);
   });
 
   it("duração factual em frase dentro de D1-D3 continua bloqueando (escopo estreito)", () => {
@@ -1002,8 +1054,8 @@ describe("isReadingTimeEstimate / getBlockingClaims (#9868)", () => {
   });
 
   it("claim não-duration com texto '12 min' continua sob a regra normal", () => {
-    assert.equal(isReadingTimeEstimate(claim("12 min", 2, "number")), false);
-    assert.equal(getBlockingClaims([claim("12 min", 2, "number")]).length, 1);
+    assert.equal(isReadingTimeEstimate(claim("12 min", "secondary", "number")), false);
+    assert.equal(getBlockingClaims([claim("12 min", "secondary", "number")]).length, 1);
   });
 
   it("tempo de leitura continua contando em attention_items (warn-only, não some do gate)", () => {
@@ -1066,6 +1118,28 @@ describe("CLI --check-blocking (#4361)", () => {
       ]);
       const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
       assert.equal(result.status, 0, `exit 0 esperado (tempo de leitura é estimativa do pipeline). stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#9914: D1 'em 12 minutos' (duration, text mínimo) NOT_FOUND + --check-blocking → exit 2", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-9914-duration-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: 1,
+          claim_type: "duration",
+          text: "12 minutos",
+          context: "o modelo gera o vídeo em 12 minutos",
+          sources: ["newsletter"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+          note: "fonte fala em 40 minutos",
+        },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 2, `exit 2 esperado (duração factual não é tempo de leitura). stderr: ${result.stderr}`);
+      assert.ok(result.stderr.includes("12 minutos"), "stderr deve mostrar o claim bloqueante");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
