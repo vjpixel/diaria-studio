@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -174,6 +174,40 @@ describe("estimateCoordinatorUsage — integração com transcript real em tmpdi
     }
   });
 
+  // #9874: rodado de um cwd diferente do da sessão (worktree, `cd`), o
+  // diretório derivado do cwd não tem o transcript — antes caía em
+  // session_file_not_found mesmo com o arquivo existindo em ~/.claude/projects.
+  it("cwd diferente do da sessão → acha o transcript pelo session id em outro diretório de projeto (#9874)", () => {
+    const root = tmpRoot();
+    try {
+      writeTranscript(root, "sess-wt", [{ input: 100, cacheRead: 900, output: 50 }]);
+      const est = estimateCoordinatorUsage({
+        edition: "260902",
+        agent: "overnight",
+        sessionId: "sess-wt",
+        rootDir: root,
+        cwd: join(root, ".claude", "worktrees", "agent-x"),
+        homeDir: join(root, ".claude-home"),
+      });
+      assert.deepEqual(est, { status: "ok", tokens: 1050, cumulativeTokens: 1050, sessionId: "sess-wt" });
+      // Outro session id sem arquivo em lugar nenhum continua unavailable — a
+      // varredura casa pelo nome exato, nunca pega o transcript de outra sessão.
+      assert.deepEqual(
+        estimateCoordinatorUsage({
+          edition: "260902",
+          agent: "overnight",
+          sessionId: "sess-outra",
+          rootDir: root,
+          cwd: join(root, ".claude", "worktrees", "agent-x"),
+          homeDir: join(root, ".claude-home"),
+        }),
+        { status: "unavailable", reason: "session_file_not_found" },
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("transcript ausente → unavailable session_file_not_found; env sem session id → no_session_id", () => {
     const root = tmpRoot();
     try {
@@ -186,6 +220,25 @@ describe("estimateCoordinatorUsage — integração com transcript real em tmpdi
         { status: "unavailable", reason: "no_session_id" },
       );
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Self-review 1 do PR #9889: a varredura de fallback em ~/.claude/projects
+  // não pode lançar se o diretório for ilegível — o script promete "NUNCA lança".
+  const cannotRevokeRead = process.platform === "win32" || process.getuid?.() === 0;
+  it("~/.claude/projects ilegível → unavailable session_file_not_found, sem lançar (#9874)", { skip: cannotRevokeRead }, () => {
+    const root = tmpRoot();
+    const projectsDir = join(root, ".claude-home", ".claude", "projects");
+    mkdirSync(projectsDir, { recursive: true });
+    chmodSync(projectsDir, 0o000);
+    try {
+      assert.deepEqual(
+        estimateCoordinatorUsage({ edition: "260902", agent: "overnight", sessionId: "sess-x", rootDir: root, homeDir: join(root, ".claude-home") }),
+        { status: "unavailable", reason: "session_file_not_found" },
+      );
+    } finally {
+      chmodSync(projectsDir, 0o755);
       rmSync(root, { recursive: true, force: true });
     }
   });

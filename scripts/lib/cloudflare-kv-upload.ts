@@ -407,9 +407,13 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
      * reservado pra chave ausente (404). Opt-in, só pra quem REGRAVA a partir
      * do que leu (o backfill de campanhas, `clarice-backfill-campaigns.ts`):
      * ali "falhou a leitura" lido como "vazio" sobrescreve o histórico. O
-     * default segue fail-soft (painel local, #4165/#4173). `put`/`delete` não
-     * mudam. */
-    private opts: { strictReads?: boolean } = {},
+     * default segue fail-soft (painel local, #4165/#4173). `delete` não muda.
+     *
+     * #9857/#9861: `strictWrites: true` faz `put` LANÇAR em falha de escrita em
+     * vez de virar no-op — mesmo público e mesmo motivo de `strictReads`: o
+     * backfill precisa saber que `stats:{id}`/o índice NÃO foram gravados pra
+     * não avançar o cursor por cima deles. */
+    private opts: { strictReads?: boolean; strictWrites?: boolean } = {},
   ) {}
 
   async get(key: string, type?: "json" | "text"): Promise<unknown> {
@@ -440,6 +444,7 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
     try {
       await putTextToWorkerKV(key, value, { ...this.cfg, expirationTtl: opts?.expirationTtl }, this.fetchImpl);
     } catch (e) {
+      if (this.opts.strictWrites) throw e;
       console.error(
         `[RemoteKvNamespace] put('${key}') falhou — no-op (fail-soft, #4165/#4173):`,
         e instanceof Error ? e.message : e,
@@ -471,7 +476,7 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
 export function createRemoteKvNamespace(
   kvNamespaceId: string,
   cfg: Partial<Pick<CloudflareKVConfig, "accountId" | "token">> = {},
-  opts: { strictReads?: boolean } = {},
+  opts: { strictReads?: boolean; strictWrites?: boolean } = {},
 ): RemoteKvNamespace | null {
   const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;

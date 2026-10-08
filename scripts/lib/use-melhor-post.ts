@@ -546,6 +546,58 @@ export function readApprovedForUseMelhor(editionDir: string): unknown | null {
 }
 
 /**
+ * Pure (#9869): junta o `use_melhor` do capped com o do pool completo — capped
+ * primeiro (mesma ordem/score de sempre), depois os itens do pool cuja URL não
+ * está no capped. `null` só quando os dois são `null`.
+ */
+export function mergeUseMelhorPools(capped: unknown | null, full: unknown | null): unknown | null {
+  if (capped === null && full === null) return null;
+  const listOf = (a: unknown | null): unknown[] => {
+    const l = (a as { use_melhor?: unknown } | null)?.use_melhor;
+    return Array.isArray(l) ? l : [];
+  };
+  const urlOf = (raw: unknown): string | null => {
+    const it = (raw && typeof raw === "object" && "article" in raw ? (raw as { article: unknown }).article : raw) as
+      | { url?: unknown }
+      | null;
+    return it && typeof it.url === "string" && it.url ? normalizeUseMelhorUrl(it.url) : null;
+  };
+  const cappedList = listOf(capped);
+  const seen = new Set(cappedList.map(urlOf).filter((u): u is string => u !== null));
+  const extra = listOf(full).filter((raw) => {
+    const u = urlOf(raw);
+    if (u === null || seen.has(u)) return false;
+    seen.add(u);
+    return true;
+  });
+  return { ...((capped ?? full) as object), use_melhor: [...cappedList, ...extra] };
+}
+
+/**
+ * (#9869) JSON aprovado para conferir contra o `02-reviewed.md`: o `use_melhor`
+ * do `01-approved-capped.json` + o do pool completo (`01-approved.json`).
+ *
+ * O capped só tem os USE MELHOR de maior score que o stitch renderizou; um
+ * item do pool que o editor inclui no USE MELHOR no gate (edição 261008) não
+ * estava lá e era tratado como "colado à mão" — não elegível ao 4º post. Ele
+ * TEM score no pool, então é elegível. Só para leitura contra a edição
+ * renderizada — a seleção do Stage 2 (sem `02-reviewed.md`) segue no capped,
+ * senão escolheria um item que nem foi renderizado.
+ */
+export function readApprovedPoolForUseMelhor(editionDir: string): unknown | null {
+  const readOne = (name: string): unknown | null => {
+    const p = resolve(editionDir, "_internal", name);
+    if (!existsSync(p)) return null;
+    try {
+      return JSON.parse(readFileSync(p, "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  return mergeUseMelhorPools(readOne("01-approved-capped.json"), readOne("01-approved.json"));
+}
+
+/**
  * Seleção do Stage 2 (sem `02-reviewed.md`). Devolve o estado a gravar.
  * Desligado no config → `enabled: false`, sem item (o chamador não grava nada).
  */

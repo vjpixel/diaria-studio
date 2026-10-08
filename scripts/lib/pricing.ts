@@ -54,18 +54,56 @@ export function editionDateMs(edition: string): number | null {
 }
 
 /**
- * Resolve pricing por tier a partir de um model string livre (ex:
- * "haiku-4-5", "claude-opus-4-7", "gemini", "sonnet-4-6"). Retorna `null` pra
- * modelos não-Claude (ex: Gemini na Etapa 3) — não há tier a precificar.
+ * IDs Claude com preço CONFERIDO, por chave normalizada `{família}-{major}[-{minor}]`
+ * (#9876). Só entra aqui modelo cujo preço está na tabela oficial citada acima —
+ * nunca por família: `haiku-5-5` não é `haiku-4-5`, e cobrar o preço de um pelo
+ * outro em silêncio é exatamente o bug que esta tabela fecha. Modelo novo →
+ * adicionar a linha com o preço conferido (e o teste em `test/pricing.test.ts`).
+ *
+ * Fora de propósito: `opus-4`/`opus-4-1` ($15/$75) e `sonnet-4-x` ($3/$15) têm
+ * preço diferente do tier que o casamento por substring lhes dava; como nenhum
+ * dado do repo os usa, ficam fora (→ `null`) em vez de precificados errado.
+ */
+const KNOWN_MODEL_PRICING: Readonly<Record<string, PricingEntry>> = {
+  "opus-5-5": OPUS_5_5_PRICING,
+  "opus-5": OPUS_PRICING,
+  "opus-4-8": OPUS_PRICING,
+  "opus-4-7": OPUS_PRICING,
+  "opus-4-6": OPUS_PRICING,
+  "opus-4-5": OPUS_PRICING,
+  "sonnet-5-5": SONNET_PRICING,
+  "sonnet-5": SONNET_PRICING,
+  "haiku-4-5": HAIKU_PRICING,
+};
+
+/**
+ * Normaliza um model string livre na chave de `KNOWN_MODEL_PRICING`: minúsculo,
+ * `.` → `-` (`opus-5.5`), sem prefixo até `claude-` (inclui `us.anthropic.`), sem
+ * sufixo de snapshot datado (`-20251001`) nem de contexto (`[1m]`). Devolve `null`
+ * quando o formato não é `{opus|sonnet|haiku}-{major}[-{minor}]` — inclusive o
+ * alias sem versão (`sonnet`, `haiku`), que não diz QUAL preço.
+ */
+export function normalizeModelKey(modelString: string): string | null {
+  let s = modelString.trim().toLowerCase().replace(/\[[^\]]*\]$/, "").replace(/\./g, "-");
+  const claudeAt = s.lastIndexOf("claude-");
+  if (claudeAt >= 0) s = s.slice(claudeAt + "claude-".length);
+  s = s.replace(/-\d{8}$/, "");
+  const m = s.match(/^(opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?$/);
+  if (!m) return null;
+  return m[3] !== undefined ? `${m[1]}-${m[2]}-${m[3]}` : `${m[1]}-${m[2]}`;
+}
+
+/**
+ * Resolve pricing a partir de um model string livre (ex: "haiku-4-5",
+ * "claude-opus-5-5", "claude-haiku-4-5-20251001"). Casa só IDs conhecidos
+ * (`KNOWN_MODEL_PRICING`, #9876): modelo não-Claude (Gemini na Etapa 3), alias
+ * sem versão e versão Claude sem preço conferido (ex: `claude-haiku-5-5`) →
+ * `null` = "sem custo atribuível", nunca o preço de outra versão da família.
  */
 export function resolvePricing(modelString: string, _dateMs?: number | null): PricingEntry | null {
-  const s = modelString.toLowerCase();
-  // Específico antes do genérico: `opus-5-5` (também casa `opus-5.5`) antes de `opus`.
-  if (/opus-5[-.]5/.test(s)) return OPUS_5_5_PRICING;
-  if (s.includes("opus")) return OPUS_PRICING;
-  if (s.includes("sonnet")) return SONNET_PRICING;
-  if (s.includes("haiku")) return HAIKU_PRICING;
-  return null;
+  const key = normalizeModelKey(modelString);
+  if (key === null) return null;
+  return KNOWN_MODEL_PRICING[key] ?? null;
 }
 
 /** Usage bruto de uma entrada do transcript (`message.usage` da API). */

@@ -147,6 +147,71 @@ describe("#8115 — clarice-backfill-campaigns.ts guards", () => {
     assert.equal(fetchCalls.length, 0); // recusou ANTES de qualquer request
   });
 
+  // #9862: a proteção da #9856 (e da #9857/#9861) depende de o SCRIPT montar o
+  // KV com `strictReads`/`strictWrites` — os testes do miolo montam o
+  // namespace estrito direto, então remover a flag daqui não quebraria nada.
+  // Estes dois rodam `main()` de verdade (sem `--dry-run`) sobre um fake da
+  // API HTTP do Cloudflare KV.
+  function installBackfillFetch(cf: { failGet?: string; failPut?: string }) {
+    const cfPuts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).fetch = async (input: any, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : (input as Request)?.url ?? String(input);
+      fetchCalls.push(url);
+      if (url.includes("brevo.com")) {
+        const offset = Number(url.match(/offset=(\d+)/)?.[1] ?? 0);
+        const limit = Number(url.match(/limit=(\d+)/)?.[1] ?? 1);
+        if (/emailCampaigns\/\d+\?/.test(url)) {
+          return Response.json({ statistics: { globalStats: { sent: 10, delivered: 10 } } });
+        }
+        const campaigns = Array.from({ length: limit }, (_, i) => ({
+          id: 5000 - offset - i,
+          name: `c${offset + i}`,
+          sentDate: "2026-01-01T00:00:00Z",
+          recipients: { lists: [1] },
+        }));
+        return Response.json({ campaigns, count: 130 });
+      }
+      if (url.includes("api.cloudflare.com")) {
+        const key = url.split("/values/")[1]?.split("?")[0] ?? "";
+        if ((init?.method ?? "GET") === "PUT") {
+          if (key === cf.failPut) return new Response("kv down", { status: 500 });
+          cfPuts.push(decodeURIComponent(key));
+          return new Response("{}", { status: 200 });
+        }
+        if (key === cf.failGet) return new Response("kv down", { status: 500 });
+        return new Response("not found", { status: 404 });
+      }
+      throw new Error(`fetch inesperado no teste: ${url}`);
+    };
+    return cfPuts;
+  }
+
+  function backfillEnv() {
+    process.env.BREVO_CLARICE_API_KEY = "fake-brevo-key";
+    process.env.CLOUDFLARE_ACCOUNT_ID = "acc";
+    process.env.CLOUDFLARE_WORKERS_TOKEN = "tok";
+    process.argv = ["node", "clarice-backfill-campaigns.ts", "--batch-size", "5"];
+  }
+
+  it("#9862: GET do índice de arquivo com 500 → main() falha alto e NENHUM PUT ao Cloudflare (strictReads)", async () => {
+    backfillEnv();
+    const cfPuts = installBackfillFetch({ failGet: "dash%3Acampaigns%3Aarchive-index" });
+
+    await assert.rejects(main(), /archive-index/);
+    assert.deepEqual(cfPuts, [], "nem índice, nem cursor, nem stats gravados");
+    assert.ok(fetchCalls.some((u) => u.includes("dash%3Acampaigns%3Aarchive-index")), "o índice foi de fato lido");
+  });
+
+  it("#9862: PUT do índice de arquivo com 500 → main() falha alto e o cursor NÃO é gravado (strictWrites)", async () => {
+    backfillEnv();
+    const cfPuts = installBackfillFetch({ failPut: "dash%3Acampaigns%3Aarchive-index" });
+
+    await assert.rejects(main(), /archive-index/);
+    assert.ok(!cfPuts.includes("dash:campaigns:backfill-cursor"), "cursor não avança por cima do índice não gravado");
+    assert.ok(cfPuts.some((k) => k.startsWith("stats:")), "stats do lote foram gravados (idempotente na próxima rodada)");
+  });
+
   it("STATS_CACHE_KV_NAMESPACE_ID bate com o binding real do wrangler.toml", () => {
     // Guarda contra o namespace ID divergir silenciosamente do Worker real
     // (o script escreveria no KV errado sem nenhum erro visível).

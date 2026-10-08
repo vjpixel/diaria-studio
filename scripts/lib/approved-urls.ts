@@ -81,3 +81,47 @@ export function extractUrlsFromBuckets(
   }
   return [...urls];
 }
+
+/**
+ * #9867: chave de comparação entre a URL do approved.json e a do markdown
+ * final — host minúsculo sem `www.`, sem fragmento, sem `utm_*`, sem barra
+ * final. URL que não parseia volta aparada (comparação literal).
+ */
+export function usedUrlKey(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    u.hash = "";
+    for (const k of [...u.searchParams.keys()]) if (/^utm_/i.test(k)) u.searchParams.delete(k);
+    const qs = u.searchParams.toString();
+    return `${u.hostname.toLowerCase().replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "")}${qs ? `?${qs}` : ""}`;
+  } catch {
+    return raw.trim().replace(/\/+$/, "");
+  }
+}
+
+/**
+ * #9867: restringe as URLs do `01-approved.json` às que a edição de fato
+ * RENDERIZOU (`02-reviewed.md` final).
+ *
+ * O `01-approved.json` guarda o pool inteiro do gate da Etapa 1 — inclusive
+ * candidato de RADAR na posição 26 que nunca chegou ao texto. Listá-lo em
+ * "Links usados" do `past-editions.md` fazia o `dedup.ts` e o invariante
+ * `no-duplicate-urls-vs-past-editions` (#8993) acusarem repetição de um link
+ * que nunca foi publicado (caso 261007 → 261008: `nano-banana-2-1`); no
+ * Stage 1 o mesmo erro descarta matéria legítima só por ter sido candidata
+ * na véspera.
+ *
+ * `renderedMd === null` (edição sem `02-reviewed.md` local) ou markdown sem
+ * nenhuma URL (arquivo truncado) → devolve `approvedUrls` intacto: na dúvida,
+ * bloqueia a mais (comportamento anterior), nunca perde link publicado.
+ * Ordem do approved preservada.
+ */
+export function restrictToRenderedUrls(approvedUrls: string[], renderedMd: string | null): string[] {
+  if (renderedMd === null) return approvedUrls;
+  const rendered = new Set<string>();
+  for (const m of renderedMd.matchAll(/https?:\/\/[^\s<>"')\]]+/gi)) {
+    rendered.add(usedUrlKey(m[0].replace(/[.,);]+$/, "")));
+  }
+  if (rendered.size === 0) return approvedUrls;
+  return approvedUrls.filter((u) => rendered.has(usedUrlKey(u)));
+}

@@ -18,6 +18,10 @@ import {
   resolveEditionFromArgs,
   checkOvernightTokenInstrumentation,
   TRACKED_TOKEN_INSTRUMENTATION_MESSAGES,
+  countSubagentMetricsByPapel,
+  formatPapelBreakdown,
+  SUBAGENT_METRICS_PAPEIS,
+  SEM_PAPEL,
 } from "../scripts/check-overnight-token-instrumentation.ts";
 
 let root: string | null = null;
@@ -214,5 +218,84 @@ describe("checkOvernightTokenInstrumentation — orquestração fail-soft (fixtu
     // nenhum data/run-log.jsonl criado
     const result = checkOvernightTokenInstrumentation("260811", rootDir);
     assert.equal(result.verdict.status, "warning");
+  });
+});
+
+describe("subagent_metrics por papel (#9875)", () => {
+  it("agrupa por details.papel, soma tokens numéricos e joga evento sem papel em sem-papel", () => {
+    const lines = [
+      evt("260811", "subagent_metrics", { details: { papel: "dev-implementador", subagent_tokens: 100 } }),
+      evt("260811", "subagent_metrics", { details: { papel: "dev-implementador", subagent_tokens: 50 } }),
+      evt("260811", "subagent_metrics", { details: { papel: "dev-fixer", subagent_tokens: 30 } }),
+      evt("260811", "subagent_metrics", { details: { papel: "ci-retry", subagent_tokens: null } }),
+      evt("260811", "subagent_metrics", { details: { subagent_tokens: 7 } }),
+      evt("260811", "subagent_metrics"),
+      evt("260810b", "subagent_metrics", { details: { papel: "dev-fixer", subagent_tokens: 999 } }),
+      evt("260811", "review_metrics", { details: { papel: "dev-fixer", subagent_tokens: 999 } }),
+    ];
+    assert.deepEqual(countSubagentMetricsByPapel(lines, "260811"), {
+      "dev-implementador": { events: 2, tokens: 150 },
+      "dev-fixer": { events: 1, tokens: 30 },
+      "ci-retry": { events: 1, tokens: 0 },
+      [SEM_PAPEL]: { events: 2, tokens: 7 },
+    });
+  });
+
+  it("papel vazio ou não-string conta como sem-papel; papel desconhecido é preservado", () => {
+    const lines = [
+      evt("260811", "subagent_metrics", { details: { papel: "  " } }),
+      evt("260811", "subagent_metrics", { details: { papel: 42 } }),
+      evt("260811", "subagent_metrics", { details: { papel: "review-fase-1.5" } }),
+    ];
+    assert.deepEqual(countSubagentMetricsByPapel(lines, "260811"), {
+      [SEM_PAPEL]: { events: 2, tokens: 0 },
+      "review-fase-1.5": { events: 1, tokens: 0 },
+    });
+  });
+
+  it("formatPapelBreakdown: conhecidos na ordem canônica, desconhecidos depois, sem-papel por último", () => {
+    const line = formatPapelBreakdown({
+      [SEM_PAPEL]: { events: 1, tokens: 0 },
+      zeta: { events: 1, tokens: 1 },
+      "ci-retry": { events: 1, tokens: 2 },
+      "dev-implementador": { events: 2, tokens: 10 },
+    });
+    assert.equal(
+      line,
+      "subagent_metrics por papel: dev-implementador: 2 evento(s) / 10 tokens; ci-retry: 1 evento(s) / 2 tokens; zeta: 1 evento(s) / 1 tokens; sem-papel: 1 evento(s) / 0 tokens.",
+    );
+    assert.equal(formatPapelBreakdown({}), "");
+  });
+
+  it("papéis canônicos cobrem implementador, fixer e retry de CI", () => {
+    assert.deepEqual([...SUBAGENT_METRICS_PAPEIS], ["dev-implementador", "dev-fixer", "ci-retry"]);
+  });
+
+  it("orquestração: result.papelBreakdown + linha por papel anexada à seção", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, [
+      evt("260811", "subagent_metrics", { details: { papel: "dev-implementador", subagent_tokens: 10 } }),
+      evt("260811", "subagent_metrics", { details: { papel: "ci-retry", subagent_tokens: 5 } }),
+      evt("260811", "coordinator_tokens_estimate"),
+      evt("260811", "review_metrics"),
+    ]);
+    const result = checkOvernightTokenInstrumentation("260811", rootDir);
+    assert.deepEqual(result.verdict, { status: "ok" });
+    assert.deepEqual(result.papelBreakdown, {
+      "dev-implementador": { events: 1, tokens: 10 },
+      "ci-retry": { events: 1, tokens: 5 },
+    });
+    assert.match(
+      result.section,
+      /\nsubagent_metrics por papel: dev-implementador: 1 evento\(s\) \/ 10 tokens; ci-retry: 1 evento\(s\) \/ 5 tokens\.$/,
+    );
+  });
+
+  it("sem subagent_metrics a seção não ganha linha de papel", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, [evt("260811", "review_metrics")]);
+    const result = checkOvernightTokenInstrumentation("260811", rootDir);
+    assert.deepEqual(result.papelBreakdown, {});
+    assert.doesNotMatch(result.section, /por papel/);
   });
 });
