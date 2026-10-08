@@ -62,16 +62,12 @@
 // #2130: a extensão `.ts` no import abaixo é intencional — convenção do repo
 // (tsx). Ver o mesmo comentário em backfill-score-by-month.ts.
 import "dotenv/config";
+import { runCli } from "./lib/cli-exit.ts";
 import { editionToMonthSlug, todayAammddBrt } from "../workers/poll/src/lib.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace (mesmo de backfill-score-by-month.ts)
-
-if (!ACCOUNT_ID || !API_TOKEN) {
-  console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
-  process.exit(1);
-}
 
 const dryRun = process.argv.includes("--dry-run");
 const clearFirst = process.argv.includes("--clear-first");
@@ -138,7 +134,14 @@ async function kvDelete(key: string): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
+  // #9911: checagem de env dentro do main (antes era top-level com
+  // process.exit) para o entry point gravar o código via runCli.
+  if (!ACCOUNT_ID || !API_TOKEN) {
+    console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
+    return 1;
+  }
+
   console.log(
     `[backfill-seq-state] mode: ${dryRun ? "DRY-RUN" : "WRITE"}` +
     `${clearFirst ? " (with --clear-first)" : ""}` +
@@ -235,7 +238,4 @@ async function main(): Promise<void> {
   console.log(`[backfill-seq-state] done — ${written} keys ${dryRun ? "would be written" : "written"}`);
 }
 
-main().catch((e) => {
-  console.error("[backfill-seq-state] erro:", e);
-  process.exit(1);
-});
+runCli(main, { onError: (e) => console.error("[backfill-seq-state] erro:", e) });

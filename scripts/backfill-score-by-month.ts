@@ -38,16 +38,12 @@
 // script é executado exclusivamente via `npx tsx` (ver shebang acima). NÃO
 // normalizar para `.js` sem migrar o runner do repo inteiro.
 import "dotenv/config";
+import { runCli } from "./lib/cli-exit.ts";
 import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
 
 const ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace
-
-if (!ACCOUNT_ID || !API_TOKEN) {
-  console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
-  process.exit(1);
-}
 
 const dryRun = process.argv.includes("--dry-run");
 const clearFirst = process.argv.includes("--clear-first");
@@ -129,7 +125,14 @@ async function kvDelete(key: string): Promise<void> {
 // módulo puro, sem deps de runtime do Worker). A cópia local anterior divergiu
 // silenciosamente no #2115; import direto elimina a classe de bug.
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
+  // #9911: checagem de env dentro do main (antes era top-level com
+  // process.exit) para o entry point gravar o código via runCli.
+  if (!ACCOUNT_ID || !API_TOKEN) {
+    console.error("Erro: CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_API_TOKEN obrigatórios no env");
+    return 1;
+  }
+
   console.log(`[backfill] mode: ${dryRun ? "DRY-RUN" : "WRITE"}${clearFirst ? " (with --clear-first)" : ""}`);
 
   // #1347 followup: opcional clear de score-by-month:* antes de re-popular.
@@ -227,7 +230,4 @@ async function main(): Promise<void> {
   console.log(`[backfill] done — ${written} keys ${dryRun ? "would be written" : "written"}`);
 }
 
-main().catch((e) => {
-  console.error("[backfill] erro:", e);
-  process.exit(1);
-});
+runCli(main, { onError: (e) => console.error("[backfill] erro:", e) });

@@ -61,6 +61,7 @@ import "dotenv/config";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { brtDateOf, shiftDate } from "./lib/ads-rolling-window.ts";
 import type { PanelInput } from "./aquisicao-reconcile.ts";
 import {
@@ -264,10 +265,10 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main(process.argv.slice(2))
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(() => main(process.argv.slice(2)), {
+    onError: (e) => {
       console.error(e instanceof Error ? e.message : String(e));
-      process.exit(0);
-    });
+    },
+    errorCode: 0,
+  });
 }

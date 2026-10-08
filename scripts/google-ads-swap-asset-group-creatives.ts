@@ -140,6 +140,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import {
   buildAssetGroupAssetsQuery,
@@ -945,10 +946,9 @@ export async function main(
 }
 
 if (isMainModule(import.meta.url)) {
-  main()
-    .then((code) => process.exit(code))
-    .catch((e) => {
+  runCli(main, {
+    onError: (e) => {
       console.error(`[google-ads-swap-asset-group-creatives] ✖ erro inesperado: ${e instanceof Error ? e.message : e}`);
-      process.exit(1);
-    });
+    },
+  });
 }
