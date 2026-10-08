@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -220,6 +220,25 @@ describe("estimateCoordinatorUsage — integração com transcript real em tmpdi
         { status: "unavailable", reason: "no_session_id" },
       );
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Self-review 1 do PR #9889: a varredura de fallback em ~/.claude/projects
+  // não pode lançar se o diretório for ilegível — o script promete "NUNCA lança".
+  const cannotRevokeRead = process.platform === "win32" || process.getuid?.() === 0;
+  it("~/.claude/projects ilegível → unavailable session_file_not_found, sem lançar (#9874)", { skip: cannotRevokeRead }, () => {
+    const root = tmpRoot();
+    const projectsDir = join(root, ".claude-home", ".claude", "projects");
+    mkdirSync(projectsDir, { recursive: true });
+    chmodSync(projectsDir, 0o000);
+    try {
+      assert.deepEqual(
+        estimateCoordinatorUsage({ edition: "260902", agent: "overnight", sessionId: "sess-x", rootDir: root, homeDir: join(root, ".claude-home") }),
+        { status: "unavailable", reason: "session_file_not_found" },
+      );
+    } finally {
+      chmodSync(projectsDir, 0o755);
       rmSync(root, { recursive: true, force: true });
     }
   });

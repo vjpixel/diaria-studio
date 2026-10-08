@@ -218,7 +218,15 @@ export function estimateToDetails(estimate: CoordinatorEstimate, phase: string):
 export function locateSessionTranscriptsDir(sessionId: string, cwd: string, homeDir?: string): string {
   const primary = resolveTranscriptsDir(cwd, homeDir);
   if (existsSync(join(primary, `${sessionId}.jsonl`))) return primary;
-  const found = findTranscript(sessionId, claudeProjectsDir(homeDir));
+  // `findTranscript` faz `readdirSync` sem proteção: `~/.claude/projects`
+  // ilegível (permissão, EIO) não pode furar o "NUNCA lança" do script —
+  // cai no `primary` e o chamador emite `session_file_not_found`.
+  let found: string | null = null;
+  try {
+    found = findTranscript(sessionId, claudeProjectsDir(homeDir));
+  } catch {
+    found = null;
+  }
   return found ? dirname(found) : primary;
 }
 
