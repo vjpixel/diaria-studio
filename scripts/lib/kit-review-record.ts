@@ -26,6 +26,7 @@ export type KitReviewReason = (typeof KIT_REVIEW_REASONS)[number];
 
 export interface KitReviewRecord {
   review_status: KitReviewStatus;
+  /** 1 ou 2; 0 só com `inconclusive` sem despachar o agente (#9885). */
   review_attempts: number;
   /** Só com `review_status === "inconclusive"`. */
   review_reason?: KitReviewReason;
@@ -61,8 +62,15 @@ export function buildKitReviewRecord(input: {
     );
   }
   const attempts = input.attempts ?? 1;
-  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 2) {
-    throw new Error(`review_attempts inválido: ${attempts} (o loop do §5f tem 1 ou 2 tentativas)`);
+  // #9885: 0 = o agente nem foi despachado (§5f passo 0 — e-mail não achado
+  // ou conector Gmail indisponível). Só faz sentido com `inconclusive`: `ok`
+  // e `issues_unfixable` só existem depois de o review ter rodado ao menos 1x.
+  const minAttempts = input.status === "inconclusive" ? 0 : 1;
+  if (!Number.isInteger(attempts) || attempts < minAttempts || attempts > 2) {
+    throw new Error(
+      `review_attempts inválido: ${attempts} (o loop do §5f tem 1 ou 2 tentativas; ` +
+        `0 só com review_status=inconclusive, quando o agente não foi despachado)`,
+    );
   }
   if (input.reason !== undefined && !isKitReviewReason(input.reason)) {
     throw new Error(

@@ -9,9 +9,13 @@
  *
  * Uso:
  *   npx tsx scripts/record-kit-review.ts --edition-dir data/editions/2610/261005 \
- *     --status ok|inconclusive|issues_unfixable [--attempts 1|2] \
+ *     --status ok|inconclusive|issues_unfixable [--attempts 0|1|2] \
  *     [--reason mcp_unavailable|not_found_timeout|truncated_fetch] \
  *     [--issues-json '["issue 1","issue 2"]']
+ *
+ * `--attempts` (default 1) conta despachos do agente: `0` quando o §5f saiu
+ * `inconclusive` no passo 0 sem despachar o `review-test-email` (#9885) —
+ * aceito só com `--status inconclusive`.
  *
  * Exit 1 = argumento inválido / edition-dir ausente (nada gravado).
  * Escrita verificada (`writeFilesVerified`, #9173 — `data/` vive no OneDrive).

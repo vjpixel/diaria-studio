@@ -11,9 +11,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  existsSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { checkStage4ReviewCompleted } from "../scripts/lib/invariant-checks/stage-5.ts";
 import { blockReasonForMarkingStageDone } from "../scripts/update-stage-status.ts";
@@ -284,5 +287,57 @@ describe("buildKitReviewRecord (#9594)", () => {
     assert.throws(() => buildKitReviewRecord({ status: "ok", reason: "mcp_unavailable" }), /só se aplica/);
     assert.throws(() => buildKitReviewRecord({ status: "inconclusive", reason: "x" }), /review_reason inválido/);
     assert.throws(() => buildKitReviewRecord({ status: "ok", issues: [1] }), /array de strings/);
+  });
+});
+
+describe("review_attempts=0 no inconclusive sem despacho (#9885)", () => {
+  it("aceita attempts 0 com status inconclusive (passo 0 do §5f, agente não despachado)", () => {
+    const r = buildKitReviewRecord({ status: "inconclusive", attempts: 0, reason: "not_found_timeout" });
+    assert.equal(r.review_attempts, 0);
+    assert.equal(r.review_reason, "not_found_timeout");
+  });
+
+  it("recusa attempts 0 em ok e issues_unfixable (o review rodou ao menos 1x)", () => {
+    assert.throws(() => buildKitReviewRecord({ status: "ok", attempts: 0 }), /review_attempts inválido: 0/);
+    assert.throws(() => buildKitReviewRecord({ status: "issues_unfixable", attempts: 0 }), /review_attempts inválido: 0/);
+    assert.throws(() => buildKitReviewRecord({ status: "inconclusive", attempts: -1 }), /review_attempts inválido/);
+  });
+
+  it("CLI grava --attempts 0 --status inconclusive (o caso real da 261008)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeKitPublished(dir);
+      const out = execFileSync(
+        process.execPath,
+        ["--import", "tsx", "scripts/record-kit-review.ts", "--edition-dir", dir,
+          "--status", "inconclusive", "--attempts", "0", "--reason", "mcp_unavailable"],
+        { encoding: "utf8" },
+      );
+      assert.equal(JSON.parse(out).review_attempts, 0);
+      const saved = JSON.parse(readFileSync(resolve(dir, "_internal", "05-review-kit.json"), "utf8"));
+      assert.equal(saved.review_attempts, 0);
+      assert.equal(saved.review_status, "inconclusive");
+      assert.equal(checkStage4ReviewCompleted(dir, "kit").length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("CLI recusa --attempts 0 com --status ok (exit 1, nada gravado)", () => {
+    const dir = makeEditionDir();
+    try {
+      assert.throws(
+        () =>
+          execFileSync(
+            process.execPath,
+            ["--import", "tsx", "scripts/record-kit-review.ts", "--edition-dir", dir, "--status", "ok", "--attempts", "0"],
+            { encoding: "utf8", stdio: "pipe" },
+          ),
+        (e: { status?: number }) => e.status === 1,
+      );
+      assert.equal(existsSync(resolve(dir, "_internal", "05-review-kit.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
