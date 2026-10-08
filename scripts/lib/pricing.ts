@@ -35,10 +35,12 @@ export interface PricingEntry {
 //   Sonnet 5 e 5.5 $2/$10, leitura 0,1x — o aumento para $3/$15 de 01/09 foi
 //     CANCELADO, então não existe mais virada por data.
 //   Haiku 4.5 $1/$5, leitura 0,1x
+//   Sonnet 4.x $3/$15, leitura 0,1x (geração anterior; #9902)
 export const OPUS_5_5_PRICING: PricingEntry = { inputPer1M: 4, outputPer1M: 20, cacheReadMultiplier: 0.05 };
 export const OPUS_PRICING: PricingEntry = { inputPer1M: 5, outputPer1M: 25, cacheReadMultiplier: 0.1 };
 export const SONNET_PRICING: PricingEntry = { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.1 };
 export const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5, cacheReadMultiplier: 0.1 };
+export const SONNET_4_PRICING: PricingEntry = { inputPer1M: 3, outputPer1M: 15, cacheReadMultiplier: 0.1 };
 
 // Escrita de cache: 1,25x (TTL 5min, default do harness). `cache_creation_input_tokens`
 // do transcript não distingue TTL; o de 1h (2x) não é aplicável enquanto essa
@@ -60,9 +62,12 @@ export function editionDateMs(edition: string): number | null {
  * outro em silêncio é exatamente o bug que esta tabela fecha. Modelo novo →
  * adicionar a linha com o preço conferido (e o teste em `test/pricing.test.ts`).
  *
- * Fora de propósito: `opus-4`/`opus-4-1` ($15/$75) e `sonnet-4-x` ($3/$15) têm
- * preço diferente do tier que o casamento por substring lhes dava; como nenhum
- * dado do repo os usa, ficam fora (→ `null`) em vez de precificados errado.
+ * `sonnet-4-6` ($3/$15) aparece em ~30 `stage-status.json` reais (#9902), por
+ * isso tem preço próprio — nunca o do Sonnet 5. Fora de propósito:
+ * `opus-4`/`opus-4-1` ($15/$75) e os demais `sonnet-4-x` têm preço diferente do
+ * tier que o casamento por substring lhes dava e não aparecem em
+ * `data/editions/` (medido em 08/10/2026); ficam fora (→ `null`) em vez de
+ * precificados errado.
  */
 const KNOWN_MODEL_PRICING: Readonly<Record<string, PricingEntry>> = {
   "opus-5-5": OPUS_5_5_PRICING,
@@ -73,6 +78,7 @@ const KNOWN_MODEL_PRICING: Readonly<Record<string, PricingEntry>> = {
   "opus-4-5": OPUS_PRICING,
   "sonnet-5-5": SONNET_PRICING,
   "sonnet-5": SONNET_PRICING,
+  "sonnet-4-6": SONNET_4_PRICING, // #9902
   "haiku-4-5": HAIKU_PRICING,
 };
 

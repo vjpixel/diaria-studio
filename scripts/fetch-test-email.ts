@@ -26,7 +26,10 @@
  * Uso:
  *   npx tsx scripts/fetch-test-email.ts --edition-dir data/editions/2610/261008 \
  *     --platform kit --title "{edition_title}" \
- *     [--wait-seconds 20] [--timeout-seconds 30]
+ *     [--wait-seconds 20] [--timeout-seconds 30] [--sent-after 2026-10-08T22:00:00Z]
+ *
+ * `--sent-after` (#9901): horário do envio do teste atual. Sem ele, uma
+ * reexecução no mesmo dia pode ler o teste ANTERIOR quando o novo demora.
  *
  * Grava (só em sucesso):
  *   {edition_dir}/_internal/.email-body.tmp           corpo HTML (ou text/plain se não houver HTML)
@@ -177,6 +180,32 @@ export interface FetchTestEmailOptions {
   waitSeconds?: number;
   timeoutSeconds?: number;
   pollSeconds?: number;
+  /**
+   * (#9901) Epoch ms do envio do teste ATUAL (`--sent-after <ISO>`). Mensagem
+   * com `internalDate` anterior (menos `SENT_AFTER_SKEW_MS`) é ignorada e o
+   * polling continua até o prazo. Ausente = comportamento antigo (mensagem
+   * mais recente da 1ª thread), que numa reexecução no mesmo dia pode ler o
+   * teste anterior.
+   */
+  sentAfterMs?: number;
+}
+
+/** (#9901) Folga pra relógio local vs. `internalDate` do Gmail. */
+export const SENT_AFTER_SKEW_MS = 5_000;
+
+/**
+ * Mensagem mais recente da thread com `internalDate >= cutoff` (`cutoff`
+ * null = sem filtro).
+ *
+ * @pure
+ */
+export function pickLatestMessage<M extends { internalDate: string }>(
+  messages: readonly M[],
+  cutoff: number | null,
+): M | null {
+  const sorted = [...messages].sort((a, b) => Number(b.internalDate) - Number(a.internalDate));
+  const hit = cutoff === null ? sorted[0] : sorted.find((m) => Number(m.internalDate) >= cutoff);
+  return hit ?? null;
 }
 
 /**
@@ -212,7 +241,10 @@ export async function fetchTestEmail(
 
   const deadline = deps.now() + (opts.timeoutSeconds ?? 30) * 1000;
   const poll = (opts.pollSeconds ?? 5) * 1000;
-  let threadId: string | null = null;
+  // #9901: com `sentAfterMs`, mensagem recebida antes do envio do teste atual
+  // (teste anterior do mesmo dia, mesma thread ou outra) nunca é escolhida.
+  const cutoff = opts.sentAfterMs === undefined ? null : opts.sentAfterMs - SENT_AFTER_SKEW_MS;
+  let msg: GmailThread["messages"][number] | null = null;
   try {
     for (;;) {
       for (const q of queries) {
@@ -220,18 +252,17 @@ export async function fetchTestEmail(
         const params = new URLSearchParams({ q, maxResults: "5" });
         const list = (await deps.gmailGet(`threads?${params}`)) as { threads?: Array<{ id: string }> };
         // A lista vem do mais recente pro mais antigo: um reenvio do teste fica no topo.
-        if (list.threads && list.threads.length > 0) {
-          threadId = list.threads[0].id;
-          break;
+        for (const t of list.threads ?? []) {
+          const thread = parseGmailThread(await deps.gmailGet(`threads/${t.id}?format=full`));
+          msg = pickLatestMessage(thread.messages, cutoff);
+          // Sem âncora: a 1ª thread decide, como antes (#9886).
+          if (msg || cutoff === null) break;
         }
+        if (msg) break;
       }
-      if (threadId || deps.now() >= deadline) break;
+      if (msg || deps.now() >= deadline) break;
       await deps.sleep(poll);
     }
-    if (!threadId) return base;
-
-    const thread = parseGmailThread(await deps.gmailGet(`threads/${threadId}?format=full`));
-    const msg = [...thread.messages].sort((a, b) => Number(b.internalDate) - Number(a.internalDate))[0];
     if (!msg) return base;
     const part = findBodyPart(msg.payload as GmailMessagePart);
     if (!part) {
@@ -300,11 +331,19 @@ function nonNegative(raw: string | undefined, flag: string): number | undefined 
   return n;
 }
 
+/** (#9901) `--sent-after <ISO>` → epoch ms; ausente → undefined; inválido lança. */
+export function parseSentAfter(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) throw new Error(`--sent-after inválido (esperado ISO 8601): ${raw}`);
+  return ms;
+}
+
 if (isMainModule(import.meta.url)) {
   const args = parseArgsSimple(process.argv.slice(2));
   const usage =
     "uso: fetch-test-email.ts --edition-dir <dir> --platform kit|beehiiv --title <edition_title> " +
-    "[--wait-seconds N] [--timeout-seconds N]";
+    "[--wait-seconds N] [--timeout-seconds N] [--sent-after <ISO>]";
   const platform = args.platform;
   if (!args["edition-dir"] || !args.title || (platform !== "kit" && platform !== "beehiiv")) {
     console.error(usage);
@@ -317,9 +356,11 @@ if (isMainModule(import.meta.url)) {
   }
   let waitSeconds: number | undefined;
   let timeoutSeconds: number | undefined;
+  let sentAfterMs: number | undefined;
   try {
     waitSeconds = nonNegative(args["wait-seconds"], "wait-seconds");
     timeoutSeconds = nonNegative(args["timeout-seconds"], "timeout-seconds");
+    sentAfterMs = parseSentAfter(args["sent-after"]);
   } catch (e) {
     console.error(`fetch-test-email: ${(e as Error).message}`);
     process.exit(2);
@@ -330,6 +371,7 @@ if (isMainModule(import.meta.url)) {
     title: args.title,
     waitSeconds,
     timeoutSeconds,
+    sentAfterMs,
   });
   const json = JSON.stringify(summary, null, 2);
   writeFileSync(resolve(internalDir, FETCH_SUMMARY_FILENAME), json + "\n");

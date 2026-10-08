@@ -10,6 +10,8 @@
  * e parse; só o walk vem daqui. Um futuro rename/adição de bucket muda 1 lugar.
  */
 
+import { isNonEditorialHost } from "./ctr-utils.ts"; // #9899
+
 export interface ApprovedUrlEntry {
   url?: string;
   // #3920: fontes extras do cluster same-story (bloco "Aprofunde:"). Presentes
@@ -115,6 +117,18 @@ export function usedUrlKey(raw: string): string {
  * nenhuma URL (arquivo truncado) → devolve `approvedUrls` intacto: na dúvida,
  * bloqueia a mais (comportamento anterior), nunca perde link publicado.
  * Ordem do approved preservada.
+ *
+ * #9899: o filtro sozinho perdia o link quando o editor/writer trocava a URL
+ * aprovada pela fonte oficial (261008 D2: approved `felloai.com/...` vs
+ * renderizado `deepmind.google/...`): a aprovada saía (não renderizou) e a
+ * renderizada nunca entrava (não está no approved), deixando a matéria sem
+ * URL em "Links usados". Agora as URLs de TÍTULO de item renderizadas
+ * (`**[título](url)**`, forma do destaque e do item do pool) que não casam
+ * com nenhuma aprovada entram depois das aprovadas. Só o link de título
+ * conta: box, rodapé, redes e crédito de imagem não são "link usado" e, se
+ * entrassem, o invariante `no-duplicate-urls-vs-past-editions` acusaria o
+ * rodapé fixo em toda edição seguinte. Host não-editorial
+ * (`isNonEditorialHost`) fica fora mesmo em forma de título.
  */
 export function restrictToRenderedUrls(approvedUrls: string[], renderedMd: string | null): string[] {
   if (renderedMd === null) return approvedUrls;
@@ -123,5 +137,31 @@ export function restrictToRenderedUrls(approvedUrls: string[], renderedMd: strin
     rendered.add(usedUrlKey(m[0].replace(/[.,);]+$/, "")));
   }
   if (rendered.size === 0) return approvedUrls;
-  return approvedUrls.filter((u) => rendered.has(usedUrlKey(u)));
+  const kept = approvedUrls.filter((u) => rendered.has(usedUrlKey(u)));
+  const keptKeys = new Set(kept.map(usedUrlKey));
+  for (const url of renderedTitleUrls(renderedMd)) {
+    const key = usedUrlKey(url);
+    if (keptKeys.has(key)) continue;
+    keptKeys.add(key);
+    kept.push(url);
+  }
+  return kept;
+}
+
+/** #9899: link de título de item (`**[título](url)**` no início da linha). */
+const TITLE_LINK_RE = /^\s*\*\*\[[^\]]+\]\((https?:\/\/[^)\s]+)\)\*\*/gm;
+
+/** #9899: URLs de título renderizadas, sem host não-editorial. */
+function renderedTitleUrls(md: string): string[] {
+  const out: string[] = [];
+  for (const m of md.matchAll(TITLE_LINK_RE)) {
+    let host: string;
+    try {
+      host = new URL(m[1]).hostname;
+    } catch {
+      continue;
+    }
+    if (!isNonEditorialHost(host)) out.push(m[1]);
+  }
+  return out;
 }

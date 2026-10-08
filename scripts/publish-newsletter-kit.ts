@@ -253,6 +253,12 @@ export interface KitNewsletterPublished {
   preview_text: string;
   status: "draft" | "test_sent" | "scheduled";
   test_broadcast_ids?: number[];
+  /**
+   * #9901: `send_at` (ISO) do test-send mais recente. O §5f passa como
+   * `fetch-test-email.ts --sent-after`, pra uma reexecução no mesmo dia não
+   * ler o e-mail de teste anterior.
+   */
+  test_sent_at?: string;
   scheduled_at?: string;
   /**
    * #9428: sha256 dos insumos do `content` (`02-reviewed.md`, `01-eia.md`,
@@ -670,6 +676,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     log(`test-send disparado: broadcast_id=${testBroadcast.id} (descartável, agendado pra ${sendAt})`);
     state.status = "test_sent";
     state.test_broadcast_ids = [...(state.test_broadcast_ids ?? []), testBroadcast.id];
+    state.test_sent_at = sendAt; // #9901
     writePublishedState(editionDir, state);
   }
 }
