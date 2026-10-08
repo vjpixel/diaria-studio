@@ -168,6 +168,32 @@ function titleLineUrlKey(line: string): string | null {
   }
 }
 
+/** Seções de pool (chave de `normalizeSectionKey`): um título por item, sem 3 opções. */
+const POOL_SECTION_KEYS: ReadonlySet<string> = new Set(["use-melhor", "lancamentos", "lancamento", "radar", "videos"]);
+
+/**
+ * #9879/#9880: compara o CONJUNTO de itens (chave host+path do link do título)
+ * de uma seção de pool antes/depois. `null` quando o conjunto é igual — aí a
+ * classificação por texto (ex: `length-cut` de descrição encurtada) segue
+ * valendo. Antes, item cortado encolhia a seção >30% e virava `length-cut`
+ * apontando pro `writer-destaque.md`, que nem escreve o pool.
+ */
+export function classifyPoolItemSetChange(
+  oldText: string,
+  newText: string,
+): { type: RequestType; kind: string; removed: number; added: number } | null {
+  const keys = (t: string) =>
+    new Set(t.split("\n").filter((l) => l.trim().startsWith("**[")).map(titleLineUrlKey).filter((k): k is string => !!k));
+  const before = keys(oldText);
+  const after = keys(newText);
+  const removed = [...before].filter((k) => !after.has(k)).length;
+  const added = [...after].filter((k) => !before.has(k)).length;
+  if (removed === 0 && added === 0) return null;
+  if (added === 0) return { type: "pool-cut", kind: "itens-cortados", removed, added };
+  if (removed === 0) return { type: "pool-add", kind: "itens-adicionados", removed, added };
+  return { type: "link-swap", kind: "itens-trocados", removed, added };
+}
+
 /**
  * Classifica diferenças no 02-reviewed.md (newsletter)
  */
@@ -275,7 +301,11 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
     const oldTitleLine = oldLines.find(l => l.trim().startsWith("**[") && l.includes("]("));
     const newTitleLine = newLines.find(l => l.trim().startsWith("**[") && l.includes("]("));
     const titleChanged = !!(oldTitleLine && newTitleLine && oldTitleLine !== newTitleLine);
-    if (titleChanged) {
+    // #9879: "title-choice" só existe em destaque (3 opções de título → 1).
+    // Seção de pool tem um título por item; a 1ª linha `**[` mudar ali é item
+    // cortado/trocado, não escolha de título (dado real: radar de 261001 e
+    // 261008, use-melhor de 261005, lancamentos de 261002).
+    if (titleChanged && section.startsWith("destaque-")) {
       requestType = "title-choice";
     }
 
@@ -365,6 +395,12 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
     }
 
+    // #9879/#9880: numa seção de pool, mudança no CONJUNTO de itens (por URL)
+    // é corte/adição/troca de item e vence o "length-cut" por tamanho da seção.
+    // Medição 260930..261008: 31 itens cortados, 0 descrições encurtadas.
+    const poolClass = POOL_SECTION_KEYS.has(section) ? classifyPoolItemSetChange(oldText, newText) : null;
+    if (poolClass) requestType = poolClass.type;
+
     // Verificar se destaque foi removido (swap/cut)
     if (!newSections.has(section) && oldSections.has(section)) {
       requestType = "destaque-cut";
@@ -387,7 +423,14 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
       target,
       description: `Mudança detectada em ${section}: ${oldText.slice(0, 100)}... → ${newText.slice(0, 100)}...`,
       resolution: "accepted",
-      context: { section, old_length: oldLen, new_length: newLen, url: articleUrl, ...(urlClass ? { change_kind: urlClass.kind } : {}) },
+      context: {
+        section,
+        old_length: oldLen,
+        new_length: newLen,
+        url: articleUrl,
+        ...(urlClass ? { change_kind: urlClass.kind } : {}),
+        ...(poolClass ? { change_kind: poolClass.kind, items_removed: poolClass.removed, items_added: poolClass.added } : {}),
+      },
     });
   }
 
