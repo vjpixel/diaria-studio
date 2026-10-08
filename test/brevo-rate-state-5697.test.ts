@@ -32,6 +32,7 @@ import {
   assertQuotaHeadroom,
   assertCampaignQuotaHeadroom,
   warnIfCampaignQuotaLow,
+  isStateStale,
   BrevoCampaignQuotaLowError,
   type BrevoCampaignQuotaState,
 } from "../scripts/lib/brevo-rate-state.ts";
@@ -79,7 +80,7 @@ describe("writeCampaignQuotaState / readCampaignQuotaState (#5697)", () => {
 describe("recordCampaignQuotaRemaining (#5697)", () => {
   it("grava remaining + limit + updatedAt (ISO, gerado no momento da chamada)", () => {
     const before = Date.now();
-    recordCampaignQuotaRemaining(17, 100, statePath);
+    recordCampaignQuotaRemaining(17, 100, undefined, statePath);
     const state = readCampaignQuotaState(statePath);
     assert.ok(state);
     assert.equal(state!.remaining, 17);
@@ -88,7 +89,7 @@ describe("recordCampaignQuotaRemaining (#5697)", () => {
   });
 
   it("limit omitido não é gravado como campo presente-mas-undefined quebrando JSON.stringify", () => {
-    recordCampaignQuotaRemaining(17, undefined, statePath);
+    recordCampaignQuotaRemaining(17, undefined, undefined, statePath);
     const state = readCampaignQuotaState(statePath);
     assert.equal(state!.remaining, 17);
     assert.equal(state!.limit, undefined);
@@ -130,19 +131,19 @@ describe("assertCampaignQuotaHeadroom (I/O via arquivo) (#5697)", () => {
   });
 
   it("estado gravado ACIMA da reserva => sweep prossegue", () => {
-    recordCampaignQuotaRemaining(50, 100, statePath);
+    recordCampaignQuotaRemaining(50, 100, undefined, statePath);
     assert.doesNotThrow(() => assertCampaignQuotaHeadroom(30, statePath));
   });
 
   it("estado gravado ABAIXO da reserva => recusa ANTES do sweep começar (critério de aceitação #1)", () => {
-    recordCampaignQuotaRemaining(5, 100, statePath);
+    recordCampaignQuotaRemaining(5, 100, undefined, statePath);
     assert.throws(() => assertCampaignQuotaHeadroom(30, statePath), BrevoCampaignQuotaLowError);
   });
 
   it("default minRemaining é 30 (sugestão da issue #5697) quando omitido", () => {
-    recordCampaignQuotaRemaining(29, 100, statePath);
+    recordCampaignQuotaRemaining(29, 100, undefined, statePath);
     assert.throws(() => assertCampaignQuotaHeadroom(undefined, statePath), BrevoCampaignQuotaLowError);
-    recordCampaignQuotaRemaining(30, 100, statePath);
+    recordCampaignQuotaRemaining(30, 100, undefined, statePath);
     assert.doesNotThrow(() => assertCampaignQuotaHeadroom(undefined, statePath));
   });
 });
@@ -169,13 +170,13 @@ describe("warnIfCampaignQuotaLow (#6458) — best-effort, NUNCA bloqueante, pro 
   });
 
   it("estado ACIMA da reserva => nunca avisa", () => {
-    recordCampaignQuotaRemaining(50, 100, statePath);
+    recordCampaignQuotaRemaining(50, 100, undefined, statePath);
     warnIfCampaignQuotaLow(30, statePath);
     assert.equal(logged.length, 0);
   });
 
   it("estado ABAIXO da reserva => avisa via console.error, NUNCA lança (diferente de assertCampaignQuotaHeadroom)", () => {
-    recordCampaignQuotaRemaining(5, 100, statePath);
+    recordCampaignQuotaRemaining(5, 100, undefined, statePath);
     assert.doesNotThrow(() => warnIfCampaignQuotaLow(30, statePath));
     assert.equal(logged.length, 1);
     assert.match(logged[0], /remaining=5/);
@@ -184,22 +185,78 @@ describe("warnIfCampaignQuotaLow (#6458) — best-effort, NUNCA bloqueante, pro 
   });
 
   it("estado EXATAMENTE na reserva => não avisa (mesma semântica de `<`, não `<=`, do assert)", () => {
-    recordCampaignQuotaRemaining(30, 100, statePath);
+    recordCampaignQuotaRemaining(30, 100, undefined, statePath);
     warnIfCampaignQuotaLow(30, statePath);
     assert.equal(logged.length, 0);
   });
 
   it("default minRemaining é 30 quando omitido (mesmo default de assertCampaignQuotaHeadroom)", () => {
-    recordCampaignQuotaRemaining(10, 100, statePath);
+    recordCampaignQuotaRemaining(10, 100, undefined, statePath);
     warnIfCampaignQuotaLow(undefined, statePath);
     assert.equal(logged.length, 1);
   });
 
   it("cota BEM abaixo da reserva não bloqueia o call site — a chamada real seguiria normalmente", () => {
-    recordCampaignQuotaRemaining(0, 100, statePath);
+    recordCampaignQuotaRemaining(0, 100, undefined, statePath);
     let reachedAfter = false;
     warnIfCampaignQuotaLow(30, statePath);
     reachedAfter = true;
     assert.equal(reachedAfter, true);
+  });
+});
+
+describe("isStateStale / stale state (#9913)", () => {
+  it("isStateStale: updatedAt recente => false", () => {
+    const state: BrevoCampaignQuotaState = { remaining: 0, updatedAt: new Date().toISOString() };
+    assert.equal(isStateStale(state), false);
+  });
+
+  it("isStateStale: updatedAt de 2h atras sem reset => true (fallback DEFAULT_RESET_WINDOW_MS)", () => {
+    const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+    const state: BrevoCampaignQuotaState = { remaining: 0, updatedAt: twoHoursAgo };
+    assert.equal(isStateStale(state), true);
+  });
+
+  it("isStateStale: updatedAt de 2h atras com reset de 3600s => true (reset informado)", () => {
+    const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+    const state: BrevoCampaignQuotaState = { remaining: 0, reset: 3600, updatedAt: twoHoursAgo };
+    assert.equal(isStateStale(state), true);
+  });
+
+  it("isStateStale: updatedAt de 30s atras com reset de 3600s => false (dentro da janela)", () => {
+    const thirtySecAgo = new Date(Date.now() - 30_000).toISOString();
+    const state: BrevoCampaignQuotaState = { remaining: 0, reset: 3600, updatedAt: thirtySecAgo };
+    assert.equal(isStateStale(state), false);
+  });
+
+  it("isStateStale: timestamp invalido => false (tratamento conservador)", () => {
+    const state: BrevoCampaignQuotaState = { remaining: 0, updatedAt: "x" };
+    assert.equal(isStateStale(state), false);
+  });
+
+  it("assertQuotaHeadroom: estado stale com remaining=0 nao bloqueia (#9913)", () => {
+    const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+    const state: BrevoCampaignQuotaState = { remaining: 0, updatedAt: twoHoursAgo };
+    assert.doesNotThrow(() => assertQuotaHeadroom(state, 30));
+  });
+
+  it("assertCampaignQuotaHeadroom: estado stale no arquivo nao bloqueia (#9913)", () => {
+    const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+    writeCampaignQuotaState({ remaining: 0, updatedAt: twoHoursAgo }, statePath);
+    assert.doesNotThrow(() => assertCampaignQuotaHeadroom(30, statePath));
+  });
+
+  it("warnIfCampaignQuotaLow: estado stale no arquivo nao avisa (#9913)", () => {
+    const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+    writeCampaignQuotaState({ remaining: 0, updatedAt: twoHoursAgo }, statePath);
+    const originalError = console.error;
+    const logged: string[] = [];
+    console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); };
+    try {
+      warnIfCampaignQuotaLow(30, statePath);
+      assert.equal(logged.length, 0);
+    } finally {
+      console.error = originalError;
+    }
   });
 });

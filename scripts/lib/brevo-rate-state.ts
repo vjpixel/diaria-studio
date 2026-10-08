@@ -42,8 +42,38 @@ export interface BrevoCampaignQuotaState {
   remaining: number;
   /** `x-sib-ratelimit-limit` correspondente, se o header veio presente. */
   limit?: number;
+  /** `x-sib-ratelimit-reset` em segundos até o reset da cota (header horário, 100 req/HORA). */
+  reset?: number;
   /** ISO timestamp de quando este estado foi gravado. */
   updatedAt: string;
+}
+
+/**
+ * Janela padrão de expiração: 1h em ms (3600s) — a cota da família
+ * /v3/emailCampaigns* da Brevo é horária (100 req/HORA por CONTA, ver
+ * docs/brevo-rate-limits.md, #5215/#5219). Usado como fallup quando o
+ * header `x-sib-ratelimit-reset` não veio presente ou não foi armazenado.
+ */
+export const DEFAULT_RESET_WINDOW_MS = 3_600_000;
+
+/**
+ * Decide se um estado observado é "stale" — expirou a janela de reset da
+ * Brevo. Um estado stale é indistinguível de "nunca observado" para efeitos
+ * de assertQuotaHeadroom e warnIfCampaignQuotaLow: a cota real da Brevo já
+ * pode ter sido renovada, então o consumidor read-only não deve ser barrado
+ * por um estado que pode não refletir mais a realidade.
+ *
+ * Se o campo `reset` (segundos) está presente no state, usa `updatedAt + reset`
+ * como expiração. Caso contrário, usa `updatedAt + DEFAULT_RESET_WINDOW_MS / 1000`.
+ *
+ * @param state — estado observado (nunca null — chamador decide o que fazer com null)
+ */
+export function isStateStale(state: BrevoCampaignQuotaState): boolean {
+  const updatedMs = Date.parse(state.updatedAt);
+  if (isNaN(updatedMs)) return false; // timestamp inválido → não podemos julgar staleness
+  const resetSeconds = state.reset ?? (DEFAULT_RESET_WINDOW_MS / 1000);
+  const expiryMs = updatedMs + (resetSeconds * 1000);
+  return Date.now() > expiryMs;
 }
 
 /**
@@ -87,9 +117,10 @@ export function readCampaignQuotaState(
 export function recordCampaignQuotaRemaining(
   remaining: number,
   limit?: number,
+  reset?: number,
   path: string = DEFAULT_RATE_STATE_PATH,
 ): void {
-  writeCampaignQuotaState({ remaining, limit, updatedAt: new Date().toISOString() }, path);
+  writeCampaignQuotaState({ remaining, limit, reset, updatedAt: new Date().toISOString() }, path);
 }
 
 /**
@@ -128,6 +159,7 @@ export function assertQuotaHeadroom(
   minRemaining: number,
 ): void {
   if (state == null) return;
+  if (isStateStale(state)) return; // #9913: estado expirado — cota Brevo ja pode ter renovado
   if (state.remaining < minRemaining) {
     throw new BrevoCampaignQuotaLowError(state.remaining, minRemaining);
   }
@@ -178,6 +210,7 @@ export function warnIfCampaignQuotaLow(
 ): void {
   const state = readCampaignQuotaState(path);
   if (state == null) return;
+  if (isStateStale(state)) return; // #9913: estado expirado — cota ja pode ter renovado
   if (state.remaining < minRemaining) {
     console.error(
       `⚠️  cota da família /v3/emailCampaigns* da Brevo pode estar baixa: última leitura remaining=${state.remaining} ` +
