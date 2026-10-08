@@ -221,6 +221,11 @@ const RULE_TRIGGERS: Record<Exclude<CategorizationRule, "use-melhor-specificity"
     url: "https://openai.com/index/api-changelog-update",
     title: "API changelog: minor update",
   },
+  "lancamento-new-platform-availability": {
+    // #9882: caso real 260911.
+    url: "https://blog.google/innovation-and-ai/products/gemini-app/gemini-app-now-on-windows/",
+    title: "The Gemini app is now available for Windows",
+  },
   "lancamento-report": {
     // "state of X" sozinho bate NON_PRODUCT_OFFICIAL_PATTERNS antes (rule
     // lancamento-non-product-official), e o path real do exemplo do
@@ -305,11 +310,11 @@ describe("categorizeWithRule() — 1 gatilho verificado por regra (cobertura com
     });
   }
 
-  // 40, não 41: "use-melhor-specificity" ficou sem gatilho orgânico via seed
+  // 41, não 42: "use-melhor-specificity" ficou sem gatilho orgânico via seed
   // real após #8631 remover a única fonte que criava o par host-only vs
   // path-mais-específico — ver comentário acima de RULE_TRIGGERS.
-  it("cobre exatamente os 40 rule ids testáveis via seed real (nenhum a mais, nenhum a menos; #8631 exclui use-melhor-specificity)", () => {
-    assert.equal(Object.keys(RULE_TRIGGERS).length, 40);
+  it("cobre exatamente os 41 rule ids testáveis via seed real (nenhum a mais, nenhum a menos; #8631 exclui use-melhor-specificity)", () => {
+    assert.equal(Object.keys(RULE_TRIGGERS).length, 41);
   });
 });
 

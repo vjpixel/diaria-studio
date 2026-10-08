@@ -378,6 +378,34 @@ export function isUpdate(article: Article): boolean {
 }
 
 /**
+ * #9882: "X now available on/for <plataforma>" / "X now works with <app>" no
+ * TÍTULO de post em domínio oficial = produto chegando a uma superfície nova
+ * de usuário final → LANÇAMENTO, não update incremental. Exceção estreita ao
+ * padrão `now (available|works)` de UPDATE_PATTERNS, derivada só dos
+ * movimentos reais do editor (radar → lancamento) e limitada pelos
+ * contra-exemplos do corpus (eval de replay, `analyze-bucket-overrides.ts
+ * --replay --all`, 08/10/2026):
+ *   - movidos pelo editor pra LANÇAMENTOS: "The Gemini app is now available
+ *     for Windows" (260911), "Perplexity Portable Computer Is Now Available on
+ *     Windows, Powered by NVIDIA RTX" (260915), "Claude now works with Google
+ *     Docs, Sheets, and Slides" (261008);
+ *   - mantidos em RADAR (limite): "OpenAI frontier models and Codex are now
+ *     available on AWS" (260603), "Daybreak models are now available on AWS"
+ *     (260813) — distribuição em nuvem de parceiro, excluída por
+ *     CLOUD_DISTRIBUTION_RE; "Claude for Government is now generally
+ *     available" (261002) — GA, não casa "now available on|for".
+ * Só o título conta — "now available" no summary é ruído comum.
+ */
+const NEW_PLATFORM_AVAILABILITY_TITLE_RE = /\bnow\s+(?:available\s+(?:on|for)|works\s+(?:with|in))\b/i;
+const CLOUD_DISTRIBUTION_RE =
+  /\b(aws|amazon|bedrock|sagemaker|azure|foundry|google\s+cloud|vertex|gcp|oracle|snowflake|databricks)\b/i;
+
+export function isNewPlatformAvailabilityTitle(article: Article): boolean {
+  const title = article.title ?? "";
+  return NEW_PLATFORM_AVAILABILITY_TITLE_RE.test(title) && !CLOUD_DISTRIBUTION_RE.test(title);
+}
+
+/**
  * Títulos de pesquisa publicados em domínio oficial de empresa.
  * Ocorre quando um lab posta um paper no próprio blog (ex: openai.com/blog/toward-a-theory-of-mind).
  * Reclassificar como pesquisa, não lançamento (#486).
@@ -1817,6 +1845,7 @@ const CATEGORIZATION_RULE_IDS = [
   "lancamento-non-product-announcement",
   "lancamento-customer-story",
   "lancamento-update",
+  "lancamento-new-platform-availability",
   "lancamento-report",
   "lancamento-explainer-title",
   "lancamento-likely-news",
@@ -2050,7 +2079,13 @@ export function categorizeWithRule(article: Article): CategorizationResult {
     if (isBusinessDeal(article)) return { category: "noticias", rule: "lancamento-business-deal" };
     if (isNonProductAnnouncement(article)) return { category: "noticias", rule: "lancamento-non-product-announcement" };
     if (isCustomerStory(article)) return { category: "noticias", rule: "lancamento-customer-story" }; // #898
-    if (isUpdate(article)) return { category: "noticias", rule: "lancamento-update" };
+    if (isUpdate(article)) {
+      // #9882: produto chegando a superfície nova de usuário final ("now
+      // available for Windows", "now works with Google Docs") é lançamento —
+      // ver isNewPlatformAvailabilityTitle.
+      if (isNewPlatformAvailabilityTitle(article)) return { category: "lancamento", rule: "lancamento-new-platform-availability" };
+      return { category: "noticias", rule: "lancamento-update" };
+    }
     if (isReport(article)) return { category: "noticias", rule: "lancamento-report" }; // #1096 — relatórios/análises não são lançamentos
     // #1698 — "How X helps", "Why...", "Beyond..." em blog oficial = explainer.
     // Roda APÓS o short-circuit type_hint==='lancamento' (acima): isso é
