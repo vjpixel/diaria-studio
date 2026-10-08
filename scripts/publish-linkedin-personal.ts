@@ -343,9 +343,17 @@ function readConfig(): unknown {
   }
 }
 
-async function main(): Promise<void> {
+/**
+ * Devolve o exit code em vez de chamar `process.exit` (#9884). No Windows,
+ * com Node 24, `process.exit()` logo depois de um `fetch` cai no assert do
+ * libuv (`!(handle->flags & UV_HANDLE_CLOSING)`, src\win\async.c:76) e o
+ * processo sai com 127, não com o código pedido. O Stage 6 lê `--check`/`--arm`
+ * pelo exit code (`unavailable` = 3), então o assert apagava o sinal. Com
+ * `process.exitCode` o loop drena os handles do fetch e o código chega intacto.
+ */
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   loadProjectEnv(ROOT);
-  const { flags, values } = parseArgs(process.argv.slice(2));
+  const { flags, values } = parseArgs([...argv]);
   const env = process.env as Env;
   const now = new Date();
 
@@ -354,12 +362,12 @@ async function main(): Promise<void> {
     const remote = c.ok ? await checkTokenRemote(fetch, c.creds.accessToken) : null;
     if (c.ok && remote?.state === "valid") {
       console.log("disponivel");
-      return;
+      return 0;
     }
     const reason = !c.ok ? c.reason : remote && remote.state !== "valid" ? remote.reason : "";
     console.error(`#9568: post automático no LinkedIn pessoal indisponível — ${reason}`);
     console.log("indisponivel");
-    process.exit(ARM_EXIT.unavailable);
+    return ARM_EXIT.unavailable;
   }
 
   if (flags.has("arm") || flags.has("check")) {
@@ -367,7 +375,7 @@ async function main(): Promise<void> {
     const raw = values["edition-dir"];
     if (!raw) {
       console.error("Uso: npx tsx scripts/publish-linkedin-personal.ts --arm|--check --edition-dir data/editions/AAMM/AAMMDD");
-      process.exit(ARM_EXIT.error);
+      return ARM_EXIT.error;
     }
     const dir = resolve(ROOT, raw);
     const r = await armPersonalPost({ editionDir: dir, config: readConfig(), env, now, fetchFn: fetch, dryRun });
@@ -377,7 +385,7 @@ async function main(): Promise<void> {
     if (!dryRun) {
       logEvent({ edition: basename(dir), stage: 6, agent: "publish-linkedin-personal", level: code === 0 || code === 1 ? "info" : "warn", message: `#9568: arm ${r.kind}`, details: { reason: r.reason ?? null, scheduled_at: r.intent?.scheduled_at ?? null } }, ROOT);
     }
-    process.exit(code);
+    return code;
   }
 
   if (flags.has("fire-due")) {
@@ -393,16 +401,21 @@ async function main(): Promise<void> {
         logEvent({ edition: o.edition, stage: 6, agent: "publish-linkedin-personal", level: FIRE_FAILURE_ACTIONS.has(o.action) ? "error" : o.note ? "warn" : "info", message: `#9568: post pessoal ${o.action}`, details: o }, ROOT);
       }
     }
-    process.exit(fireExitCode(outcomes));
+    return fireExitCode(outcomes);
   }
 
   console.error("Uso: --check [--edition-dir <dir>] | --arm --edition-dir <dir> | --fire-due [--dry-run]");
-  process.exit(ARM_EXIT.error);
+  return ARM_EXIT.error;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[linkedin-personal] erro: ${(e as Error).message}`);
-    process.exit(ARM_EXIT.error);
-  });
+  main().then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (e) => {
+      console.error(`[linkedin-personal] erro: ${(e as Error).message}`);
+      process.exitCode = ARM_EXIT.error;
+    },
+  );
 }
