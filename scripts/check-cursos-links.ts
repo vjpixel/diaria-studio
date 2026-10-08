@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -102,7 +103,7 @@ async function probe(url: string): Promise<CourseLinkProbe> {
   return probeOnce(url);
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const json = process.argv.includes("--json");
   const courses = loadCourses();
 
@@ -128,9 +129,10 @@ async function main() {
     }
   }
 
-  if (broken.length > 0) process.exit(1);
+  if (broken.length > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main);
 }

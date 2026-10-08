@@ -396,6 +396,7 @@ if (isMainModule(import.meta.url)) {
     })
     .catch((err) => {
       process.stderr.write(`[count-subscriptions-by-utm] ERRO: ${String(err)}\n`);
-      process.exit(1);
+      // #9911: exitCode, não process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+      process.exitCode = 1;
     });
 }

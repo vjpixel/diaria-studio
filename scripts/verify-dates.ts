@@ -30,6 +30,7 @@ import {
 import type { VerifyDateOptions } from "./lib/verify-options.ts";
 import { extractDateFromBody, normalizeDate } from "./lib/extract-date.ts"; // #1554 P2
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const DEFAULT_ARXIV_MARGIN_MONTHS = 1;
 
@@ -226,7 +227,7 @@ export async function verifyDate(
   };
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   // CLI shape preservada: positional <articles.json> [out.json], + flags opcionais
   // --bodies-dir <path> (#717 hyp 1) e --cutoff-iso <YYYY-MM-DD> (#717 hyp 4).
   // --window-days N (#849 / #836) — opcional, dispara assert da relação
@@ -268,7 +269,7 @@ async function main() {
       "Uso: verify-dates.ts <articles.json> [out.json] [--bodies-dir <path>] [--cutoff-iso YYYY-MM-DD] [--window-days N] [--verify-cache <path>]",
     );
     console.error("  articles.json: array de { url, date }");
-    process.exit(1);
+    return 1;
   }
 
   // #849 — quando ambos `--cutoff-iso` e `--window-days` foram passados,
@@ -348,4 +349,5 @@ async function main() {
 
 // Detecta execução direta (npx tsx verify-dates.ts ...) de forma portável no Windows e Unix
 const _isMain = isMainModule(import.meta.url);
-if (_isMain) main();
+// #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+if (_isMain) runCli(main);

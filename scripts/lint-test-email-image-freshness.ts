@@ -49,6 +49,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 export interface ImageFreshnessIssue {
   type: "image_stale" | "image_unreachable";
@@ -294,5 +295,6 @@ async function mainCli(): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  mainCli().then((code) => process.exit(code));
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(mainCli);
 }

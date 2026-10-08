@@ -275,7 +275,9 @@ async function main(): Promise<void> {
     console.error(
       "Uso: expand-inbox-aggregators.ts --articles <articles.json> --verify <link-verify-all.json> [--out <out.json>]",
     );
-    process.exit(1);
+    // #9911: exitCode, não process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+    process.exitCode = 1;
+    return;
   }
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));

@@ -40,6 +40,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { logEvent } from "./lib/run-log.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 const DEFAULT_BASE = DIARIA_EIA_URL;
@@ -263,7 +264,7 @@ async function fetchStat(
   }
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const args = process.argv.slice(2);
   const get = (flag: string): string | undefined => {
     const i = args.indexOf(flag);
@@ -272,14 +273,14 @@ async function main() {
   const yymm = get("--month");
   if (!yymm || !/^\d{4}$/.test(yymm)) {
     console.error("ERRO: --month YYMM obrigatório (ex: --month 2605)");
-    process.exit(1);
+    return 1;
   }
   const threshold = Number(get("--threshold") ?? DEFAULT_THRESHOLD);
   // `??` não cobre NaN (ex: `--threshold abc`) → validar explicitamente, senão
   // `total >= NaN` filtra tudo e cai em fallback silencioso (#1913 review).
   if (!Number.isFinite(threshold) || threshold < 0) {
     console.error(`ERRO: --threshold deve ser um número ≥ 0 (recebi "${get("--threshold")}")`);
-    process.exit(1);
+    return 1;
   }
   const base = get("--base") ?? DEFAULT_BASE;
   // #3311: override SÓ pra isolamento de teste — repassado a signalEiaFallback.
@@ -341,5 +342,6 @@ async function main() {
 // precisar do dual endsWith(".ts"/".js") manual.
 const isMain = isMainModule(import.meta.url);
 if (isMain) {
-  main();
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main);
 }

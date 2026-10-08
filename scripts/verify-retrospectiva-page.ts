@@ -56,6 +56,7 @@
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule, hasFlag } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { mensalPathFromCycle } from "./lib/shared/retrospectiva-path.ts";
 import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
@@ -269,8 +270,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`verify-retrospectiva-page: ${(e as Error).message}`);
-    process.exit(2);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`verify-retrospectiva-page: ${(e as Error).message}`), errorCode: 2 });
 }

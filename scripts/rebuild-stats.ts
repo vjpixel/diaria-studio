@@ -28,6 +28,7 @@
 
 import "dotenv/config";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 // #3297: isValidVoteEditionFormat é a mesma validação (AAMMDD legado OU ciclo
 // Clarice YYMM-MM) usada pelo Worker `poll` em handleVote/handleStats — este
 // script tinha sua PRÓPRIA cópia divergente do regex (só `/^\d{6}$/`, mais
@@ -189,5 +190,6 @@ async function mainCli(): Promise<number> {
 }
 
 if (isMainModule(import.meta.url)) {
-  mainCli().then((code) => process.exit(code));
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(mainCli);
 }

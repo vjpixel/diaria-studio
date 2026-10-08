@@ -105,6 +105,7 @@ if (isMainModule(import.meta.url)) {
     })
     .catch((err) => {
       process.stderr.write(`[probe-beehiiv-subscribe-widget] ERRO: ${String(err)}\n`);
-      process.exit(1);
+      // #9911: exitCode, não process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+      process.exitCode = 1;
     });
 }
