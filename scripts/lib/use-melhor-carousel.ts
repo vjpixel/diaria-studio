@@ -40,6 +40,7 @@ import {
 } from "./daily-carousel-card.ts";
 import type { CarouselCtaOverride } from "./instagram-test-override.ts";
 import { splitBodyAndTags } from "./social-cta-lines.ts";
+import { isUseMelhorCardBreakLine, stripUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
 import { USE_MELHOR_POST_ID } from "./use-melhor-post.ts";
 import {
   useMelhorSlideFilename,
@@ -86,8 +87,7 @@ export {
  * último card (mesma regra de `splitIntoParagraphCards`, nunca descarta).
  */
 export function splitUseMelhorParagraphs(body: string): string[] {
-  const paras = body
-    .replace(/\r\n/g, "\n")
+  const paras = stripUseMelhorCardBreaks(body.replace(/\r\n/g, "\n"))
     .split(/\n\s*\n/)
     .map((p) =>
       p
@@ -119,6 +119,7 @@ export interface UseMelhorListItem {
 export function parseUseMelhorListItems(paragraph: string): UseMelhorListItem[] | null {
   const lines = paragraph
     .split("\n")
+    .filter((l) => !isUseMelhorCardBreakLine(l)) // #9866
     .map((l) => l.trim())
     .filter(Boolean);
   if (lines.length === 0) return null;
@@ -149,8 +150,7 @@ export function useMelhorSlideBody(paragraph: string): string {
 /** Pure: quantos parágrafos-slide o texto gera (1..USE_MELHOR_MAX_PARAGRAPH_SLIDES; 0 se vazio). */
 export function countUseMelhorParagraphs(genericText: string): number {
   const { body } = splitBodyAndTags(genericText);
-  const paras = body
-    .replace(/\r\n/g, "\n")
+  const paras = stripUseMelhorCardBreaks(body.replace(/\r\n/g, "\n"))
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean);
@@ -248,8 +248,7 @@ export const USE_MELHOR_MAX_PARAGRAPHS = 6;
  */
 export function lintUseMelhorPostText(genericText: string): string[] {
   const { body } = splitBodyAndTags(genericText);
-  const paras = body
-    .replace(/\r\n/g, "\n")
+  const paras = stripUseMelhorCardBreaks(body.replace(/\r\n/g, "\n"))
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean);

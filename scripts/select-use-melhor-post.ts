@@ -27,8 +27,8 @@
  * errado da CLI (exit 2).
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkUseMelhorItemInFinal,
@@ -40,6 +40,7 @@ import {
   readUseMelhorPostState,
   renderedUseMelhorUrls,
   selectUseMelhorItem,
+  USE_MELHOR_SOURCE_TEXT_REL,
   useMelhorCandidatesFromApproved,
   writeUseMelhorPostState,
   type UseMelhorPostConfigState,
@@ -134,13 +135,20 @@ export async function runSelectionWithSteps(
   const res = runSelection(editionDir, config, opts);
   // `preserved` (#9610): não rebusca, mesmo sem `steps` — o `## um` foi escrito pro estado preservado.
   if (!res.state.enabled || !res.state.item || res.preserved) return res;
+  // #9871: o texto gravado é sempre do item ATUAL — apagar antes do fetch, senão um fetch
+  // falho deixaria o texto do item anterior em disco pra quem procurar o arquivo.
+  const sourceAbs = resolve(editionDir, USE_MELHOR_SOURCE_TEXT_REL);
+  rmSync(sourceAbs, { force: true });
   try {
     const r = await fetchSourceText(res.state.item.url, opts.fetchImpl ?? fetch);
     if (!r.ok) {
       console.error(`select-use-melhor-post: fonte sem corpo (${r.message}) — item sem passos`);
       return res;
     }
-    const state = { ...res.state, item: enrichUseMelhorItem(res.state.item, r.text) };
+    mkdirSync(dirname(sourceAbs), { recursive: true });
+    writeFileSync(sourceAbs, r.text, "utf8");
+    const item = { ...enrichUseMelhorItem(res.state.item, r.text), source_text_path: USE_MELHOR_SOURCE_TEXT_REL };
+    const state = { ...res.state, item };
     return { state, written: writeUseMelhorPostState(editionDir, state) };
   } catch (e) {
     console.error(`select-use-melhor-post: erro ao buscar a fonte (${(e as Error).message}) — item sem passos`);

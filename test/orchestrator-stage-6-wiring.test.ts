@@ -163,3 +163,18 @@ describe("orchestrator-stage-6.md — parada única do pipeline (#8205)", () => 
     assert.equal(matches.length, 1, `esperava exatamente 1 ocorrência de "Aguardar resposta do editor" (o gate único de §6c), achei ${matches.length}`);
   });
 });
+
+describe("orchestrator-stage-6.md §6b-replies — ledger só com as replies tratadas (#9813)", () => {
+  const stage6 = readFileSync(STAGE_6, "utf8");
+
+  it("todo bloco de código que chama --record-processed passa --thread-ids", () => {
+    const blocks = [...stage6.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+    const recordBlocks = blocks.filter((b) => b.includes("--record-processed"));
+    assert.ok(recordBlocks.length >= 1, "esperava ao menos 1 bloco com --record-processed em §6b-replies");
+    for (const b of recordBlocks) {
+      // Sem --thread-ids o script grava a passada inteira: a reply cujo
+      // create_draft falhou entraria no ledger e sumiria na retomada.
+      assert.match(b, /--thread-ids \S+/, `bloco sem --thread-ids:\n${b}`);
+    }
+  });
+});

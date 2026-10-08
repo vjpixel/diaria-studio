@@ -85,7 +85,7 @@ import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de ed
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
-  applyUseMelhorUtmToText,
+  finalizeUseMelhorPostText,
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
   reportUseMelhorPlan,
@@ -475,7 +475,7 @@ export function buildUseMelhorThreadsPost(input: {
     );
   }
   if (input.editionUrl) text = tagEditionUrlInText(text, input.editionUrl, THREADS_EDITION_UTM);
-  text = applyUseMelhorUtmToText(text);
+  text = finalizeUseMelhorPostText(text);
   const { carouselUrls } = resolveUseMelhorImages(input.images, input.plan);
   return { ok: true, text, carouselUrls };
 }

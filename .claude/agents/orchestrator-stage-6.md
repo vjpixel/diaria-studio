@@ -110,9 +110,9 @@ Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0
    **Só DEPOIS do passo 4 (draft + sorteio) concluído**, registrar a passada no ledger (#9807 — nunca na hora do filtro: se a sessão cair entre o filtro e o draft, a reply constaria como processada e a retomada a perderia em silêncio):
    ```bash
    npx tsx scripts/filter-subscriber-replies.ts --in {EDITION_DIR}/_internal/captured-replies-late-pass.json \
-     --record-processed {EDITION_DIR}/_internal/captured-replies-late.json
+     --record-processed {EDITION_DIR}/_internal/captured-replies-late.json --thread-ids {THREAD_IDS_TRATADOS}
    ```
-   Se alguma reply ficou sem tratamento (ex.: `create_draft` falhou), passar `--thread-ids {ids tratados, separados por vírgula}` — a que ficou de fora volta na retomada. Reprocessar gera no máximo um rascunho duplicado (desfazível; a alocação de número é idempotente por ciclo+email+edição), perder a reply não tem desfazer.
+   `{THREAD_IDS_TRATADOS}` = os `thread_id` cujo passo 4 terminou de fato (draft criado), separados por vírgula — **sempre**, nunca omitido (#9813): sem `--thread-ids` o script grava a passada inteira, e uma reply cujo `create_draft` falhou entraria no ledger e seria pulada em silêncio na retomada. Nenhuma reply tratada → não rodar o comando (lista vazia é erro de uso). A que ficou de fora volta na retomada. Reprocessar gera no máximo um rascunho duplicado (desfazível; a alocação de número é idempotente por ciclo+email+edição), perder a reply não tem desfazer.
 
 Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
 

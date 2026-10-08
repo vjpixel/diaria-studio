@@ -30,6 +30,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { logEvent } from "./run-log.ts";
+import { resolveUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
 import {
   USE_MELHOR_POST_ID,
   USE_MELHOR_UTM_CONTENT,
@@ -272,6 +273,16 @@ export function applyUseMelhorUtmToText(text: string): string {
     u.searchParams.set("utm_content", USE_MELHOR_UTM_CONTENT);
     return u.toString() + trail;
   });
+}
+
+/**
+ * Pure (#9866): transformação final do texto do 4º post em TODO canal — linha
+ * `{quebra}` (quebra visual dentro do card, `use-melhor-card-break.ts`) vira
+ * linha em branco real, depois `applyUseMelhorUtmToText`. Ponto único: um
+ * publisher que chamasse só a UTM publicaria o marcador literal.
+ */
+export function finalizeUseMelhorPostText(text: string): string {
+  return applyUseMelhorUtmToText(resolveUseMelhorCardBreaks(text));
 }
 
 /**
