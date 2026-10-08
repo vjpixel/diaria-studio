@@ -197,4 +197,19 @@ describe("#8115 — integração no render de Totais por mês", () => {
     assert.doesNotMatch(html, /Ago\/2026/, "sem campanhas arquivadas, nada novo aparece");
     assert.doesNotMatch(html, /parcial — janela de/, "backfill já confirmado 'done' suprime o aviso mesmo sem histórico extra");
   });
+
+  test("#9917 — campanha presente na janela E no archive (fallback lastgood) não conta 2x nos totais mensais", () => {
+    const render = (archived: BrevoCampaign[]) =>
+      renderDashboardHtml(
+        windowCampaigns, [], null, null, null, null, null, null, null,
+        2,
+        null,
+        { monthlyArchive: { campaigns: archived, backfillIncomplete: false, knownOffset: 2 } },
+      );
+    const semArquivo = render([]);
+    const comDuplicadas = render([...windowCampaigns]);
+    assert.equal(comDuplicadas, semArquivo, "ids já na janela ao vivo devem ser descartados do archive");
+    const comMista = render([...windowCampaigns, archivedCampaign]);
+    assert.match(comMista, /Ago\/2026/, "campanha só do archive continua entrando");
+  });
 });
