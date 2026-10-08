@@ -60,9 +60,32 @@ export type TokenInstrumentationVerdict =
   | { status: "ok" }
   | { status: "warning"; missing: TrackedTokenInstrumentationMessage[] };
 
+/**
+ * Papéis conhecidos de `subagent_metrics.details.papel` (#9875). Um evento por
+ * invocação de `Agent` da unidade — sem o campo, o custo do implementador fica
+ * somado ao de fixer e retry de CI e não dá pra medir a troca de modelo de um
+ * papel só. Valor fora desta lista é contado como veio (não descartado); evento
+ * sem o campo (ou com valor não-string/vazio) cai em `SEM_PAPEL`.
+ */
+export const SUBAGENT_METRICS_PAPEIS = ["dev-implementador", "dev-fixer", "ci-retry"] as const;
+
+export const SEM_PAPEL = "sem-papel";
+
+export interface PapelBreakdownEntry {
+  /** Nº de eventos `subagent_metrics` com este papel. */
+  events: number;
+  /** Soma de `subagent_tokens` numéricos (eventos com `null` não somam). */
+  tokens: number;
+}
+
+/** Quebra de `subagent_metrics` por `details.papel` (#9875). */
+export type PapelBreakdown = Record<string, PapelBreakdownEntry>;
+
 export interface TokenInstrumentationResult {
   edition: string;
   counts: TokenInstrumentationCounts;
+  /** Quebra dos eventos `subagent_metrics` por papel (#9875). */
+  papelBreakdown: PapelBreakdown;
   verdict: TokenInstrumentationVerdict;
   /** Texto markdown pronto pra colar na seção "Custo em tokens" do relatório (Fase 2). */
   section: string;
@@ -109,6 +132,54 @@ export function countTokenInstrumentationEvents(lines: string[], edition: string
     }
   }
   return counts;
+}
+
+/**
+ * Pure (#9875): agrupa os eventos `subagent_metrics` da edição por
+ * `details.papel`, contando eventos e somando `subagent_tokens` numéricos.
+ * Mesma tolerância de `countTokenInstrumentationEvents`: linha malformada é
+ * ignorada, nunca lança.
+ */
+export function countSubagentMetricsByPapel(lines: string[], edition: string): PapelBreakdown {
+  const breakdown: PapelBreakdown = {};
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof obj !== "object" || obj === null) continue;
+    const rec = obj as Record<string, unknown>;
+    if (rec.edition !== edition || rec.message !== "subagent_metrics") continue;
+    const details =
+      typeof rec.details === "object" && rec.details !== null ? (rec.details as Record<string, unknown>) : {};
+    const rawPapel = details.papel;
+    const papel = typeof rawPapel === "string" && rawPapel.trim() ? rawPapel.trim() : SEM_PAPEL;
+    const entry = (breakdown[papel] ??= { events: 0, tokens: 0 });
+    entry.events += 1;
+    const tokens = details.subagent_tokens;
+    if (typeof tokens === "number" && Number.isFinite(tokens)) entry.tokens += tokens;
+  }
+  return breakdown;
+}
+
+/**
+ * Pure (#9875): linha legível da quebra por papel — papéis conhecidos na
+ * ordem de `SUBAGENT_METRICS_PAPEIS`, depois os desconhecidos em ordem
+ * alfabética, `sem-papel` por último. String vazia se não há evento.
+ */
+export function formatPapelBreakdown(breakdown: PapelBreakdown): string {
+  const known = SUBAGENT_METRICS_PAPEIS.filter((p) => breakdown[p]);
+  const unknown = Object.keys(breakdown)
+    .filter((p) => p !== SEM_PAPEL && !(SUBAGENT_METRICS_PAPEIS as readonly string[]).includes(p))
+    .sort();
+  const order = [...known, ...unknown, ...(breakdown[SEM_PAPEL] ? [SEM_PAPEL] : [])];
+  if (order.length === 0) return "";
+  const parts = order.map((p) => `${p}: ${breakdown[p].events} evento(s) / ${breakdown[p].tokens} tokens`);
+  return `subagent_metrics por papel: ${parts.join("; ")}.`;
 }
 
 /**
@@ -174,9 +245,12 @@ export function checkOvernightTokenInstrumentation(
   const logPath = resolveRunLogPath(rootDir);
   const lines = existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [];
   const counts = countTokenInstrumentationEvents(lines, edition);
+  const papelBreakdown = countSubagentMetricsByPapel(lines, edition);
   const verdict = resolveTokenInstrumentationVerdict(counts);
-  const section = buildTokenInstrumentationSection(edition, counts, verdict);
-  return { edition, counts, verdict, section };
+  const papelLine = formatPapelBreakdown(papelBreakdown);
+  const baseSection = buildTokenInstrumentationSection(edition, counts, verdict);
+  const section = papelLine ? `${baseSection}\n${papelLine}` : baseSection;
+  return { edition, counts, papelBreakdown, verdict, section };
 }
 
 // ---------------------------------------------------------------------------
