@@ -2770,8 +2770,20 @@ export interface CampaignsBackfillCursor {
    * ANTIGO (#8115/#9841), cujo `offset`/`resumeAt`/`done` não são confiáveis
    * — ver `backfillGapsFromCursor`. */
   version?: number;
+  /** #9858: id da campanha → nº de rodadas em que o GET de stats dela falhou
+   * com 403/5xx (`isBrevoOutageStatus`) DEPOIS de a listagem da mesma rodada
+   * ter passado (indisponibilidade geral da Brevo derruba a listagem antes,
+   * e aí nada é contado). Ao atingir `BACKFILL_MAX_STATS_ATTEMPTS`, a
+   * posição deixa de voltar às lacunas: a campanha fica no índice sem stats
+   * e aparece em `archivedWithoutStats` de
+   * `scripts/verify-clarice-monthly-coverage.ts`. Ausente = nenhuma falha. */
+  statsAttempts?: Record<string, number>;
   updatedAt: string;
 }
+
+/** #9858: rodadas com 403/5xx no GET de stats de UMA campanha antes de o
+ * backfill desistir dela (ver `CampaignsBackfillCursor.statsAttempts`). */
+export const BACKFILL_MAX_STATS_ATTEMPTS = 5;
 
 /** #9851: versão atual do formato do cursor (`CampaignsBackfillCursor.version`). */
 export const CAMPAIGNS_BACKFILL_CURSOR_VERSION = 2;
@@ -2895,6 +2907,13 @@ export function normalizeCampaignsBackfillCursor(raw: unknown): CampaignsBackfil
     // que re-varre mais) em vez de ficar só com as válidas (perderia faixa).
     if (gaps.length === r.gaps.length) base.gaps = gaps.map((g) => ({ start: g.start, end: g.end }));
   }
+  if (r.statsAttempts != null && typeof r.statsAttempts === "object" && !Array.isArray(r.statsAttempts)) {
+    const attempts: Record<string, number> = {};
+    for (const [id, n] of Object.entries(r.statsAttempts)) {
+      if (typeof n === "number" && Number.isFinite(n) && n > 0) attempts[id] = n;
+    }
+    if (Object.keys(attempts).length > 0) base.statsAttempts = attempts;
+  }
   return base;
 }
 
@@ -3010,6 +3029,20 @@ export async function readCampaignsArchiveIndexStrict(
   return raw as ArchivedCampaignMeta[];
 }
 
+/** #9861: falha de ESCRITA do índice de arquivo. */
+export class CampaignsArchiveIndexWriteError extends Error {
+  constructor(message: string, readonly kvError?: unknown) {
+    super(message);
+    this.name = "CampaignsArchiveIndexWriteError";
+  }
+}
+
+/** #9861: LANÇA em falha (antes era fail-soft). É chamada antes da gravação
+ * do cursor em `runCampaignsBackfillBatch`: se o índice não foi gravado, o
+ * cursor também não anda, e a próxima rodada relê a mesma faixa (as entradas
+ * do lote voltam pro índice; `stats:{id}` já gravado não gera GET). No
+ * fail-soft antigo, índice falhando + cursor passando deixava o lote fora do
+ * índice — e do agregado mensal — pra sempre. */
 async function writeCampaignsArchiveIndex(
   env: Pick<Env, "STATS_CACHE">,
   entries: ArchivedCampaignMeta[],
@@ -3018,11 +3051,17 @@ async function writeCampaignsArchiveIndex(
   try {
     // Sem TTL — mesmo racional de `stats:{id}` imutável: histórico não muda.
     await env.STATS_CACHE.put(CAMPAIGNS_ARCHIVE_INDEX_KV_KEY, JSON.stringify(entries));
-  } catch {
-    // fail-soft — write de índice nunca deve derrubar o backfill em curso.
+  } catch (e) {
+    throw new CampaignsArchiveIndexWriteError(
+      `gravação de '${CAMPAIGNS_ARCHIVE_INDEX_KV_KEY}' falhou — backfill abortado sem avançar o cursor: ` +
+        (e instanceof Error ? e.message : String(e)),
+      e,
+    );
   }
 }
 
+/** Fail-soft: qualquer falha de leitura devolve o cursor padrão. O backfill
+ * usa `readCampaignsBackfillCursorStrict` (#9863). */
 export async function readCampaignsBackfillCursor(
   env: Pick<Env, "STATS_CACHE">,
   nowMs: number = Date.now(),
@@ -3035,6 +3074,45 @@ export async function readCampaignsBackfillCursor(
   } catch {
     return fallback;
   }
+}
+
+/** #9863: falha de LEITURA do cursor do backfill — distinta de "chave ausente". */
+export class CampaignsBackfillCursorReadError extends Error {
+  constructor(message: string, readonly kvError?: unknown) {
+    super(message);
+    this.name = "CampaignsBackfillCursorReadError";
+  }
+}
+
+/**
+ * #9863: leitura ESTRITA do cursor, usada por `runCampaignsBackfillBatch`.
+ * A fail-soft acima devolve o cursor padrão numa falha transitória do KV: o
+ * lote recomeçava do início e GRAVAVA esse cursor por cima do salvo, perdendo
+ * `gaps`/`done` — sem perda de dado (o índice deduplica e a revarredura é
+ * completa), mas gastando listagens do balde de 100/h da Brevo.
+ *
+ * Contrato: chave ausente (`null`) → cursor padrão (1ª execução). Exceção do
+ * KV → LANÇA `CampaignsBackfillCursorReadError` (o cron falha alto, nada é
+ * gravado, a próxima rodada relê o cursor salvo). Valor de shape inválido →
+ * cursor padrão, como antes: não há o que preservar num cursor ilegível.
+ */
+export async function readCampaignsBackfillCursorStrict(
+  env: Pick<Env, "STATS_CACHE">,
+  nowMs: number = Date.now(),
+): Promise<CampaignsBackfillCursor> {
+  const fallback = defaultCampaignsBackfillCursor(nowMs);
+  if (!env.STATS_CACHE) return fallback;
+  let raw: unknown;
+  try {
+    raw = await env.STATS_CACHE.get(CAMPAIGNS_BACKFILL_CURSOR_KV_KEY, "json");
+  } catch (e) {
+    throw new CampaignsBackfillCursorReadError(
+      `leitura de '${CAMPAIGNS_BACKFILL_CURSOR_KV_KEY}' falhou — backfill abortado sem gravar nada: ` +
+        (e instanceof Error ? e.message : String(e)),
+      e,
+    );
+  }
+  return normalizeCampaignsBackfillCursor(raw) ?? fallback;
 }
 
 async function writeCampaignsBackfillCursor(
@@ -3069,6 +3147,10 @@ export interface CampaignsBackfillBatchResult {
    * stats) — pra log/observabilidade do
    * caller, que é quem decide quando parar de chamar (orçamento próprio). */
   requestsUsed: number;
+  /** #9858: campanhas das quais o backfill desistiu nesta chamada (GET de
+   * stats com 403/5xx pela `BACKFILL_MAX_STATS_ATTEMPTS`-ésima rodada) —
+   * ficam no índice sem stats. */
+  statsGivenUp: number;
   cursor: CampaignsBackfillCursor;
 }
 
@@ -3101,15 +3183,33 @@ export async function runCampaignsBackfillBatch(
   const _fetchFn = opts._fetchFn ?? brevoFetch;
   const nowMs = opts.nowMs ?? Date.now();
 
-  let cursor = await readCampaignsBackfillCursor(env, nowMs);
+  // #9863: leitura ESTRITA — falha do KV lança aqui, antes de qualquer
+  // request ou gravação (um cursor de fallback gravado por cima do salvo
+  // perdia `gaps`/`done`).
+  let cursor = await readCampaignsBackfillCursorStrict(env, nowMs);
   let requestsUsed = 0;
 
   let gaps: BackfillGap[];
   if (cursor.totalCount == null) {
     const totalCount = await fetchCampaignsCount(env, _fetchFn);
     requestsUsed++;
+    if (totalCount == null) {
+      // #9859: a Brevo não devolveu `count` — não dá pra saber onde a varredura
+      // termina. Antes, isto gravava `done: true` com `version: 2` e
+      // `totalCount: null`: na rodada seguinte o total era medido, mas o
+      // cursor `done` não-legado não gerava lacuna nenhuma e `[LIMIT, total)`
+      // nunca era varrido. Agora não grava nada: a próxima rodada mede de novo.
+      return {
+        scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, statsGivenUp: 0, cursor,
+      };
+    }
     cursor = { ...cursor, totalCount, updatedAt: new Date(nowMs).toISOString() };
-    gaps = backfillGapsFromCursor(cursor);
+    // #9859: cursor sem `totalCount` nunca mediu, então nunca varreu nada — a
+    // lacuna é o histórico inteiro, mesmo num cursor `done` gravado pelo bug
+    // acima (esse `done` não significa nada).
+    gaps = advanceBackfillGaps([{ start: CAMPAIGNS_FETCH_LIMIT, end: totalCount }], {
+      shift: 0, processedStart: 0, processedCount: 0, total: totalCount, liveWindow: CAMPAIGNS_FETCH_LIMIT,
+    });
   } else {
     // #9837: TODA chamada com total já conhecido remede antes de ler a
     // página (1 GET barato). Campanhas novas empurram as antigas pra offsets
@@ -3138,7 +3238,7 @@ export async function runCampaignsBackfillBatch(
       ...rest, done: true, version: CAMPAIGNS_BACKFILL_CURSOR_VERSION, updatedAt: new Date(nowMs).toISOString(),
     };
     await writeCampaignsBackfillCursor(env, doneCursor);
-    return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, cursor: doneCursor };
+    return { scanned: 0, statsFetched: 0, alreadyCached: 0, skippedMutable: 0, requestsUsed, statsGivenUp: 0, cursor: doneCursor };
   }
 
   // #9856: leitura ESTRITA — falha do KV lança aqui, antes de qualquer
@@ -3156,6 +3256,9 @@ export async function runCampaignsBackfillBatch(
   let totalCount: number = cursor.totalCount;
   let rateLimited = false;
   let lastEnd = 0;
+  /** #9858: tentativas de stats por id — cópia mutável da do cursor. */
+  const statsAttempts: Record<string, number> = { ...(cursor.statsAttempts ?? {}) };
+  let statsGivenUp = 0;
 
   // #9837: o orçamento `batchSize` é repartido entre as lacunas pendentes,
   // da menor offset pra maior, 1 página por lacuna (teto
@@ -3213,6 +3316,7 @@ export async function runCampaignsBackfillBatch(
       const cached = env.STATS_CACHE ? await env.STATS_CACHE.get(kvKey, "json").catch(() => null) : null;
       if (cached) {
         alreadyCached++;
+        delete statsAttempts[String(c.id)];
         continue;
       }
       try {
@@ -3225,8 +3329,20 @@ export async function runCampaignsBackfillBatch(
         // globalStats zerado; persistir isso sem TTL criaria entrada
         // permanente e errada, impossível de recuperar sem intervenção manual.
         if (gs && gs.sent > 0 && env.STATS_CACHE) {
-          await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs })).catch(() => {});
+          // #9857: falha de escrita conta como stats não obtidos — a posição
+          // volta pras lacunas (`statsPending`). Antes, `.catch(() => {})`
+          // engolia a falha, a campanha contava como `statsFetched`, o cursor
+          // passava por ela e ela ficava no índice sem stats, fora de "Totais
+          // por mês" pra sempre. Exige um KV que LANCE em falha: o nativo do
+          // Worker lança; no Node, `RemoteKvNamespace` com `strictWrites`.
+          try {
+            await env.STATS_CACHE.put(kvKey, JSON.stringify({ gs }));
+          } catch {
+            statsPending.push(gapStart + processedCount - 1);
+            continue;
+          }
           statsFetched++;
+          delete statsAttempts[String(c.id)];
         }
       } catch (e) {
         const offsetHere = gapStart + processedCount - 1;
@@ -3264,7 +3380,29 @@ export async function runCampaignsBackfillBatch(
         // log. Re-lançar é o mesmo caminho de um erro na listagem da página
         // (`fetchCampaignsListPage` acima) — o cursor não é gravado, o cron
         // falha alto e a próxima chamada recomeça do mesmo ponto.
-        if (isNetworkOrTimeoutError(e) || (e instanceof BrevoUpstreamError && isBrevoOutageStatus(e.status))) {
+        if (e instanceof BrevoUpstreamError && isBrevoOutageStatus(e.status)) {
+          // #9858: 403/5xx NESTA campanha com a listagem da mesma rodada tendo
+          // passado — conta 1 tentativa. Sem teto, um 500 persistente numa
+          // campanha mantinha `done=false` pra sempre e gastava 1 listagem +
+          // 1 GET por rodada. No teto, a posição não volta às lacunas: a
+          // campanha fica no índice sem stats (`archivedWithoutStats` no
+          // verify-clarice-monthly-coverage).
+          const id = String(c.id);
+          const attempts = (statsAttempts[id] ?? 0) + 1;
+          if (attempts >= BACKFILL_MAX_STATS_ATTEMPTS) {
+            delete statsAttempts[id];
+            statsGivenUp++;
+            console.warn(
+              `[campaigns-backfill] campanha ${c.id}: GET de stats falhou (${e.status}) em ` +
+                `${attempts} rodadas — desistindo; fica no índice sem stats.`,
+            );
+          } else {
+            statsAttempts[id] = attempts;
+            statsPending.push(offsetHere);
+          }
+        } else if (isNetworkOrTimeoutError(e)) {
+          // Rede/timeout não é específico da campanha: volta às lacunas sem
+          // contar tentativa (#9858).
           statsPending.push(offsetHere);
         } else if (!(e instanceof BrevoUpstreamError)) {
           throw e;
@@ -3313,6 +3451,7 @@ export async function runCampaignsBackfillBatch(
     lastEnd = gapStart + processedCount;
   }
 
+  // #9861: lança em falha — antes da gravação do cursor, que então não anda.
   if (newArchiveEntries.length > 0) {
     await writeCampaignsArchiveIndex(env, [...archive, ...newArchiveEntries]);
   }
@@ -3326,9 +3465,10 @@ export async function runCampaignsBackfillBatch(
     updatedAt: new Date(nowMs).toISOString(),
   };
   if (!done) nextCursor.gaps = gaps;
+  if (Object.keys(statsAttempts).length > 0) nextCursor.statsAttempts = statsAttempts;
   await writeCampaignsBackfillCursor(env, nextCursor);
 
-  return { scanned: scannedTotal, statsFetched, alreadyCached, skippedMutable, requestsUsed, cursor: nextCursor };
+  return { scanned: scannedTotal, statsFetched, alreadyCached, skippedMutable, requestsUsed, statsGivenUp, cursor: nextCursor };
 }
 
 /**
