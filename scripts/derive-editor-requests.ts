@@ -143,6 +143,17 @@ function isDifferentArticleUrl(oldLine: string, newLine: string): boolean {
 }
 
 /**
+ * #9936: as duas linhas de URL apontam pra MESMA história via `story`
+ * (alias de troca de fonte vindo do `01-approved.json`)? Sem URL parseável → false.
+ */
+function isSameStoryUrl(oldLine: string, newLine: string, story: (key: string) => string): boolean {
+  const extract = (line: string) => line.match(/https?:\/\/\S+/)?.[0].replace(/[)\].,;]+$/, "") ?? null;
+  const o = extract(oldLine);
+  const n = extract(newLine);
+  return !!o && !!n && story(articleUrlKey(n)) === story(articleUrlKey(o));
+}
+
+/**
  * Chave de identidade do artigo: host (sem www) + path (sem barra final),
  * via `canonicalizeUrl` — query/hash/protocolo não entram, como em
  * `isDifferentArticleUrl`. URL que não parseia vira a própria string crua.
@@ -195,9 +206,91 @@ export function classifyPoolItemSetChange(
 }
 
 /**
- * Classifica diferenças no 02-reviewed.md (newsletter)
+ * #9936: o destaque novo é a MESMA história do que saiu, só com outra URL
+ * (tipicamente o editor troca a cobertura de imprensa pelo post oficial)?
+ *
+ * Sinal: o editor edita a URL no lugar, e o item novo HERDA a pontuação do
+ * antigo — `score` igual E (`score_base` + `bonuses_applied` iguais, ou
+ * `source: "official: ..."`). Dado real (261006 d1, 261007 d2, 261008 d1): os
+ * três herdam score, score_base e bonuses; 261007 também ganha
+ * `source: "official: OpenAI"`. Item que entrou de fora dos finalistas não
+ * herda nada (261008 Nano Banana 2.1: `score: null`) — esse continua sendo
+ * `destaque-swap`. `score` igual sozinho não basta (scores colidem à toa).
  */
-export function classifyNewsletterDiff(oldContent: string, newContent: string): Array<{
+function inheritsScoring(outH: any, innH: any): boolean {
+  const a = outH?.article ?? outH ?? {};
+  const b = innH?.article ?? innH ?? {};
+  const score = (h: any, x: any) => (typeof x?.score === "number" ? x.score : typeof h?.score === "number" ? h.score : null);
+  const sa = score(outH, a);
+  const sb = score(innH, b);
+  if (sa === null || sb === null || sa !== sb) return false;
+  const sameBase = typeof a.score_base === "number" && a.score_base === b.score_base &&
+    JSON.stringify(a.bonuses_applied ?? null) === JSON.stringify(b.bonuses_applied ?? null);
+  const official = typeof b.source === "string" && /^official:/i.test(b.source.trim());
+  return sameBase || official;
+}
+
+/**
+ * #9936: pares (saiu → entrou) do `01-approved.json` que são troca de fonte da
+ * MESMA história (`inheritsScoring`). Casamento guloso, na ordem: cada item que
+ * entrou fica com o 1º item que saiu e cuja pontuação ele herda.
+ */
+function matchSourceUpgrades<T extends { h: any }>(left: T[], entered: T[]): Array<{ out: T; inn: T }> {
+  const used = new Set<T>();
+  const pairs: Array<{ out: T; inn: T }> = [];
+  for (const inn of entered) {
+    const out = left.find((o) => !used.has(o) && inheritsScoring(o.h, inn.h));
+    if (out) {
+      used.add(out);
+      pairs.push({ out, inn });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * #9936: mapa `chave do link novo → chave do link antigo` (host+path, como
+ * `articleUrlKey`) das trocas de fonte da mesma história entre dois estados do
+ * `01-approved.json`. Consumido por `classifyNewsletterDiff`, que só vê
+ * markdown e não tem score: com o mapa, a URL oficial nova conta como o mesmo
+ * item que a de imprensa antiga (reordenação continua `section-order`, troca
+ * no mesmo slot vira `link-swap`, nunca `destaque-swap`). JSON inválido/ausente
+ * → mapa vazio (comportamento anterior).
+ */
+export function sourceUpgradeAliases(oldContent: string | undefined, newContent: string | undefined): Map<string, string> {
+  const aliases = new Map<string, string>();
+  if (!oldContent || !newContent) return aliases;
+  try {
+    const oldH: any[] = JSON.parse(oldContent)?.highlights ?? [];
+    const newH: any[] = JSON.parse(newContent)?.highlights ?? [];
+    const keyOf = (h: any): string | null => {
+      const url = h?.article?.url ?? h?.url;
+      return typeof url === "string" && url !== "" ? articleUrlKey(url) : null;
+    };
+    const oldKeys = oldH.map(keyOf);
+    const newKeys = newH.map(keyOf);
+    const left = oldH.map((h, i) => ({ h, key: oldKeys[i] })).filter((x) => x.key !== null && !newKeys.includes(x.key));
+    const entered = newH.map((h, i) => ({ h, key: newKeys[i] })).filter((x) => x.key !== null && !oldKeys.includes(x.key));
+    for (const { out, inn } of matchSourceUpgrades(left, entered)) aliases.set(inn.key!, out.key!);
+  } catch {
+    // JSON inválido — sem aliases.
+  }
+  return aliases;
+}
+
+/**
+ * Classifica diferenças no 02-reviewed.md (newsletter)
+ *
+ * `sameStory` (#9936, opcional): `sourceUpgradeAliases` do `01-approved.json`
+ * — chave do link novo → chave do link antigo quando é a MESMA história com
+ * outra URL. Sem ele, troca de fonte vira `destaque-swap` (comportamento
+ * anterior).
+ */
+export function classifyNewsletterDiff(
+  oldContent: string,
+  newContent: string,
+  sameStory?: ReadonlyMap<string, string>,
+): Array<{
   request_type: RequestType;
   target: RequestTarget;
   description: string;
@@ -256,6 +349,8 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
   // único `other` em `intro` (dado real: 260903/02-reviewed.md, 165 linhas CRLF).
   const oldSections = extractSections(oldContent.replace(/\r\n?/g, "\n"));
   const newSections = extractSections(newContent.replace(/\r\n?/g, "\n"));
+  /** #9936: chave de HISTÓRIA — a URL nova de uma troca de fonte resolve pra antiga. */
+  const story = (key: string): string => sameStory?.get(key) ?? key;
 
   // Detectar mudanças por seção
   for (const [section, newText] of newSections) {
@@ -324,14 +419,21 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
           // #9753: sem este `else`, URL trocada da mesma página ficava `title-choice`.
           if (text(oldTitleLine!) !== text(newTitleLine!)) urlClass = { type: "title-choice", kind: "titulo-reescrito" };
           else urlClass = { type: "link-swap", kind: "link-trocado" };
+        } else if (story(newKey) === story(oldKey)) {
+          // #9936: mesma história, outra URL (ex.: imprensa → post oficial). Troca de link, não de destaque.
+          urlClass = { type: "link-swap", kind: "fonte-trocada" };
         } else {
-          const keyOf = (t: string) => titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "");
+          const keyOf = (t: string) => {
+            const k = titleLineUrlKey(t.split("\n").find(l => l.trim().startsWith("**[") && l.includes("](")) ?? "");
+            return k === null ? null : story(k);
+          };
           const destaqueKeys = (m: Map<string, string>, skip?: string) =>
             [...m].filter(([k]) => k.startsWith("destaque-") && k !== skip).map(([, t]) => keyOf(t));
           // Reordenação só se o item novo já existia em outro slot ANTES e o item
           // antigo deste slot ainda existe DEPOIS; senão houve troca (mesmo com movimentação junto).
+          // #9936: chaves passam por `story` — a URL oficial nova conta como o item de imprensa antigo.
           const elsewhere =
-            destaqueKeys(oldSections, section).includes(newKey) && destaqueKeys(newSections, section).includes(oldKey);
+            destaqueKeys(oldSections, section).includes(story(newKey)) && destaqueKeys(newSections, section).includes(story(oldKey));
           urlClass = elsewhere
             ? { type: "section-order", kind: "reordenado" }
             : { type: "destaque-swap", kind: "item-trocado" };
@@ -384,14 +486,14 @@ export function classifyNewsletterDiff(oldContent: string, newContent: string): 
     // existente acima). `destaque-swap` vence qualquer classificação
     // anterior desta seção: uma vez confirmado que é outro artigo, "lead
     // reescrito"/"título trocado" deixam de fazer sentido como rótulo.
-    if (urlChanged && isDifferentArticleUrl(oldUrlLine!, newUrlLine!)) {
+    if (urlChanged && isDifferentArticleUrl(oldUrlLine!, newUrlLine!) && !isSameStoryUrl(oldUrlLine!, newUrlLine!, story)) {
       requestType = "destaque-swap";
     }
 
-    // item-trocado/reordenado vencem tudo; titulo-reescrito/categoria-trocada só
+    // item-trocado/reordenado/fonte-trocada vencem tudo; titulo-reescrito/categoria-trocada só
     // valem se nenhum sinal posterior (lead-rewrite, length-cut, link-swap) agiu.
     if (urlClass) {
-      const strong = urlClass.kind === "item-trocado" || urlClass.kind === "reordenado";
+      const strong = urlClass.kind === "item-trocado" || urlClass.kind === "reordenado" || urlClass.kind === "fonte-trocada";
       if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
     }
 
@@ -787,12 +889,43 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
     const newKeys = newHighlights.map(keyOf);
     const titleOf = (h: any) => h?.article?.title ?? h?.title;
     const urlOf = (h: any) => h?.article?.url ?? h?.url;
-    const left = oldHighlights
+    type Slot = { h: any; position: number; key: string };
+    const leftAll: Slot[] = oldHighlights
       .map((h: any, i: number) => ({ h, position: i + 1, key: oldKeys[i] }))
       .filter((x: { key: string | null }) => x.key !== null && !newKeys.includes(x.key));
-    const entered = newHighlights
+    const enteredAll: Slot[] = newHighlights
       .map((h: any, i: number) => ({ h, position: i + 1, key: newKeys[i] }))
       .filter((x: { key: string | null }) => x.key !== null && !oldKeys.includes(x.key));
+
+    // #9936: troca de URL pra fonte (oficial) da MESMA história — o item novo
+    // herda a pontuação do que saiu (`inheritsScoring`). É problema de link,
+    // não de seleção/ordem: `link-swap` no slot do item novo, fora da contagem
+    // de `destaque-swap`. Os demais seguem o pareamento na ordem abaixo.
+    const upgrades = matchSourceUpgrades(leftAll, enteredAll);
+    for (const { out, inn } of upgrades) {
+      const official = /^official:/i.test(String(inn.h?.article?.source ?? inn.h?.source ?? "").trim());
+      results.push({
+        request_type: "link-swap",
+        target: `d${inn.position}` as RequestTarget,
+        description: `Destaque D${inn.position}: link trocado dentro da mesma história${official ? " (fonte oficial)" : ""}: ${urlOf(out.h)} → ${urlOf(inn.h)}`,
+        resolution: "accepted",
+        context: {
+          old_url: urlOf(out.h),
+          new_url: urlOf(inn.h),
+          position: inn.position,
+          old_position: out.position,
+          change_kind: "fonte-trocada",
+        },
+      });
+    }
+    const upgradedOut = new Set(upgrades.map((p) => p.out));
+    const upgradedIn = new Set(upgrades.map((p) => p.inn));
+    const left = leftAll.filter((x) => !upgradedOut.has(x));
+    const entered = enteredAll.filter((x) => !upgradedIn.has(x));
+    /** Chave de história: URL nova de troca de fonte → chave da antiga. */
+    const storyKeys = new Map<string, string>(upgrades.map((p) => [p.inn.key, p.out.key]));
+    const story = (k: string | null) => (k === null ? null : storyKeys.get(k) ?? k);
+
     const pairs = Math.min(left.length, entered.length);
     for (let i = 0; i < pairs; i++) {
       const out = left[i];
@@ -833,8 +966,10 @@ export function classifyApprovedDiff(oldContent: string, newContent: string): Ar
       const oldUrls = oldHighlights.map((h: any) => h?.article?.url);
       const newUrls = newHighlights.map((h: any) => h?.article?.url);
       // Por chave canônica (#9753), coerente com o casamento de swap acima.
-      const sameSet = oldKeys.every((k: string | null) => k !== null && newKeys.includes(k));
-      if (sameSet && JSON.stringify(oldKeys) !== JSON.stringify(newKeys)) {
+      // #9936: troca de fonte da mesma história não desfaz a reordenação.
+      const newStoryKeys = newKeys.map(story);
+      const sameSet = oldKeys.every((k: string | null) => k !== null && newStoryKeys.includes(k));
+      if (sameSet && JSON.stringify(oldKeys) !== JSON.stringify(newStoryKeys)) {
         results.push({
           request_type: "section-order",
           target: "newsletter",
@@ -951,17 +1086,24 @@ function diffAndClassify(
  * a do approved com o mesmo `target`; a do approved só fica quando a
  * newsletter não registrou a troca daquele slot (ex.: markdown sem a linha de
  * título com link). Pura.
+ *
+ * #9936: vale igual pro `link-swap` de troca de fonte num slot de destaque
+ * (`d1`..`dN`) — os dois diffs o veem quando o item não muda de posição. O
+ * `link-swap` de pool (target `radar`/`lancamentos`/...) fica fora do dedupe.
  */
 export function dedupeDestaqueSwaps<T extends { request_type: RequestType; target: RequestTarget; context?: Record<string, unknown> }>(
   entries: T[],
 ): T[] {
   const isFromApproved = (e: T) => e.context !== undefined && "new_url" in e.context && !("section" in e.context);
-  const newsletterSwapTargets = new Set(
-    entries.filter((e) => e.request_type === "destaque-swap" && !isFromApproved(e)).map((e) => e.target),
-  );
-  return entries.filter(
-    (e) => !(e.request_type === "destaque-swap" && isFromApproved(e) && newsletterSwapTargets.has(e.target)),
-  );
+  const slotKey = (e: T): string | null =>
+    e.request_type === "destaque-swap" || (e.request_type === "link-swap" && /^d\d+$/.test(e.target))
+      ? `${e.request_type}:${e.target}`
+      : null;
+  const newsletterKeys = new Set(entries.filter((e) => !isFromApproved(e)).map(slotKey).filter((k) => k !== null));
+  return entries.filter((e) => {
+    const k = slotKey(e);
+    return !(k !== null && isFromApproved(e) && newsletterKeys.has(k));
+  });
 }
 
 /**
@@ -1058,11 +1200,19 @@ function buildStage2FilesClassifierMap(
   baselineLabel: string,
 ): Map<string, (oldC: string, newC: string) => any[]> {
   const destaqueUrls = buildDestaqueUrlMap(editionDir);
-  const baselineDestaqueUrls = destaqueUrlMapFromApproved(
-    readSnapshots(editionDir, baselineLabel, ["_internal/01-approved.json"]).get("_internal/01-approved.json"),
-  );
+  const baselineApproved = readSnapshots(editionDir, baselineLabel, ["_internal/01-approved.json"]).get("_internal/01-approved.json");
+  const baselineDestaqueUrls = destaqueUrlMapFromApproved(baselineApproved);
+  // #9936: troca de fonte da mesma história (só o approved tem score pra decidir).
+  const currentApprovedPath = join(editionDir, "_internal", "01-approved.json");
+  let currentApproved: string | undefined;
+  try {
+    currentApproved = existsSync(currentApprovedPath) ? readFileSync(currentApprovedPath, "utf8") : undefined;
+  } catch {
+    currentApproved = undefined; // fail-soft, como buildDestaqueUrlMap: sem aliases
+  }
+  const sameStory = sourceUpgradeAliases(baselineApproved, currentApproved);
   return new Map<string, (oldC: string, newC: string) => any[]>([
-    ["02-reviewed.md", classifyNewsletterDiff],
+    ["02-reviewed.md", (oldC, newC) => classifyNewsletterDiff(oldC, newC, sameStory)],
     ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls, baselineDestaqueUrls)],
     ["_internal/01-approved.json", classifyApprovedDiff],
   ]);
