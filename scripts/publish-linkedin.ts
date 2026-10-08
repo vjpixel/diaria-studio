@@ -103,7 +103,7 @@ import {
 import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
-  applyUseMelhorUtmToText,
+  finalizeUseMelhorPostText,
   findExistingUseMelhorEntry,
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
@@ -220,7 +220,7 @@ export function buildUseMelhorLinkedInPost(input: {
 }): { ok: true; text: string; imageUrl: string } | { ok: false; reason: string } {
   let text: string;
   try {
-    text = applyUseMelhorUtmToText(extractPostText(input.socialMd, "um"));
+    text = finalizeUseMelhorPostText(extractPostText(input.socialMd, "um"));
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }

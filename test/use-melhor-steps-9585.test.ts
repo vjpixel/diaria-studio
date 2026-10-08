@@ -4,7 +4,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { extractUseMelhorSteps, enrichUseMelhorItem } from "../scripts/lib/use-melhor-post.ts";
@@ -76,6 +76,27 @@ describe("runSelectionWithSteps", () => {
     const { state } = await runSelectionWithSteps(d, ON, { fetchImpl: (async () => { throw new Error("rede"); }) as never });
     assert.equal(state.item!.url, "https://example.com/tut");
     assert.equal(state.item!.steps, undefined);
+  });
+});
+
+describe("texto completo da fonte do ## um (#9871)", () => {
+  it("grava _internal/use-melhor-source.txt sem o corte de 6000 chars e aponta source_text_path", async () => {
+    const d = edition();
+    const longo = "x".repeat(9000);
+    const { state } = await runSelectionWithSteps(d, ON, { fetchImpl: html(`<p>Passo 1: Abra</p><p>${longo}</p>`) as never });
+    assert.equal(state.item!.source_text_path, "_internal/use-melhor-source.txt");
+    const txt = readFileSync(join(d, state.item!.source_text_path!), "utf8");
+    assert.ok(txt.includes(longo), "texto da fonte truncado");
+    assert.ok(state.item!.body!.length <= 6000);
+    const gravado = JSON.parse(readFileSync(join(d, "_internal", "use-melhor-post.json"), "utf8"));
+    assert.equal(gravado.item.source_text_path, "_internal/use-melhor-source.txt");
+  });
+  it("fetch falho: apaga texto velho de outro item e não aponta source_text_path", async () => {
+    const d = edition();
+    writeFileSync(join(d, "_internal", "use-melhor-source.txt"), "texto do item anterior");
+    const { state } = await runSelectionWithSteps(d, ON, { fetchImpl: (async () => { throw new Error("rede"); }) as never });
+    assert.equal(state.item!.source_text_path, undefined);
+    assert.equal(existsSync(join(d, "_internal", "use-melhor-source.txt")), false);
   });
 });
 

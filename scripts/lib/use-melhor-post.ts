@@ -93,6 +93,13 @@ export function useMelhorPostStatePath(editionDir: string): string {
   return resolve(editionDir, "_internal", "use-melhor-post.json");
 }
 
+/**
+ * #9871: texto COMPLETO da fonte do item (sem o corte de `USE_MELHOR_BODY_MAX_CHARS`),
+ * relativo ao diretório da edição. Os social agents não têm WebFetch — é este
+ * arquivo que eles leem pro `## um`, como os `fact-check-sources/d{N}.txt` dos destaques.
+ */
+export const USE_MELHOR_SOURCE_TEXT_REL = "_internal/use-melhor-source.txt";
+
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export interface UseMelhorPostConfigState {
@@ -166,6 +173,12 @@ export interface UseMelhorCandidate {
   steps?: string[];
   /** #9585: trecho do corpo da fonte (contexto pro writer; nunca fonte de fatos além dos passos). */
   body?: string;
+  /**
+   * #9871: `USE_MELHOR_SOURCE_TEXT_REL` quando o texto completo da fonte DESTE item
+   * foi gravado. Ausente = fetch falhou (ou estado anterior ao #9871); o writer segue com
+   * `title`/`summary`/`steps`/`body`.
+   */
+  source_text_path?: string;
 }
 
 const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{3,})$/i;

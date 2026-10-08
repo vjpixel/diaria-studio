@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { tokenizeForJaccard, jaccardSimilarity } from "../dedup.ts"; // #1861
 import { DIARIA_LINKEDIN_PAGE_SLUG } from "./canonical-urls.ts"; // #2790 fonte única (reexportada abaixo p/ back-compat)
+import { stripUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
 import { extractSection } from "./extract-section.ts"; // #2834 fonte única (era duplicada em publish-instagram.ts/publish-threads.ts)
 
 // ---------------------------------------------------------------------------
@@ -584,11 +585,13 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     // #9568: `## um` tem 2-6 parágrafos (carrossel de N slides) — faixa própria.
     const [dTargetMin, dTargetMax, dTolMin, dTolMax] =
       destaque === "um" ? USE_MELHOR_CHAR_RANGE : [targetMin, targetMax, tolMin, tolMax];
-    if (has_main && (mainText.length < dTolMin || mainText.length > dTolMax)) {
+    // #9866: linha `{quebra}` do `## um` vira só uma linha em branco no publish — não conta.
+    const countedChars = destaque === "um" ? stripUseMelhorCardBreaks(mainText).length : mainText.length;
+    if (has_main && (countedChars < dTolMin || countedChars > dTolMax)) {
       errors.push({
         destaque,
         rule: "main_chars_out_of_range",
-        detail: `${destaque}: main post ${mainText.length} chars (esperado ${dTargetMin}-${dTargetMax}, tolerância ${dTolMin}-${dTolMax})`,
+        detail: `${destaque}: main post ${countedChars} chars (esperado ${dTargetMin}-${dTargetMax}, tolerância ${dTolMin}-${dTolMax})`,
       });
     }
 

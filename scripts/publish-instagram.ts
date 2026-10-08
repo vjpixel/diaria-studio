@@ -74,7 +74,7 @@ import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; /
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
   USE_MELHOR_COVER_FILE,
-  applyUseMelhorUtmToText,
+  finalizeUseMelhorPostText,
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
   reportUseMelhorPlan,
@@ -441,7 +441,7 @@ export function buildUseMelhorInstagramPost(input: {
   }
   let caption: string;
   try {
-    caption = truncateCaption(applyUseMelhorUtmToText(extractPostText(input.socialMd, "um")));
+    caption = truncateCaption(finalizeUseMelhorPostText(extractPostText(input.socialMd, "um")));
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível: ${(e as Error).message}` };
   }

@@ -97,7 +97,7 @@ import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { TWITTER_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
-  applyUseMelhorUtmToText,
+  finalizeUseMelhorPostText,
   findExistingUseMelhorEntry,
   summarizeUseMelhor,
   type UseMelhorDispatchSummary,
@@ -481,7 +481,7 @@ export function prepTwitterPosts(
     }
     if (umText) {
       if (editionUrl) umText = tagEditionUrlInText(umText, editionUrl, TWITTER_EDITION_UTM);
-      umText = applyUseMelhorUtmToText(umText);
+      umText = finalizeUseMelhorPostText(umText);
       const weighted = computeTwitterWeightedLength(umText);
       if (weighted > TWITTER_CHAR_LIMIT) {
         umReason = `texto com ${weighted} chars (peso X) excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`;
