@@ -13,7 +13,7 @@
 
 import { lancamentoDomains, lancamentoPatterns, OFFICIAL_SOURCES } from "./official-domains.ts"; // #566
 import { AI_RELEVANT_TERMS, containsAITerms, isArticleAIRelevant } from "./ai-relevance.ts"; // #642
-import { isLikelyNewsNotLaunch } from "./launch-vs-news.ts"; // #1442
+import { isLikelyNewsNotLaunch, startsWithGeoComplement } from "./launch-vs-news.ts"; // #1442, #9944
 import type { Article } from "./types/article.ts"; // #650
 import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMap, resolveUseMelhorBySpecificity, type SourcePrefixEntry } from "./use-melhor-sources.ts"; // #1899 / #2176 / #2197
 import { isMarketingCaseStudy } from "./use-melhor-curation.ts"; // #2276
@@ -395,14 +395,34 @@ export function isUpdate(article: Article): boolean {
  *     CLOUD_DISTRIBUTION_RE; "Claude for Government is now generally
  *     available" (261002) — GA, não casa "now available on|for".
  * Só o título conta — "now available" no summary é ruído comum.
+ *
+ * #9944: o complemento livre era amplo demais — relatório "now available for
+ * download", "Release notes: X now works with Y", "now available for Brazil"
+ * viravam LANÇAMENTOS. Exclusões (o sujeito/complemento não é produto chegando
+ * a uma superfície de usuário):
+ *   - complemento começando por "download" (documento baixável);
+ *   - complemento geográfico (país/região — expansão, ver
+ *     `startsWithGeoComplement`);
+ *   - título com substantivo de documento/changelog (report, release notes,
+ *     blueprint, whitepaper, study, survey, playbook, e-book).
+ * O caller (`categorizeWithRule`) ainda exige !isReport/!isExplainerByTitle/
+ * !isLikelyNewsNotLaunch antes do return, então as checagens de relatório/
+ * explainer/notícia continuam valendo para esse caminho.
  */
 const NEW_PLATFORM_AVAILABILITY_TITLE_RE = /\bnow\s+(?:available\s+(?:on|for)|works\s+(?:with|in))\b/i;
 const CLOUD_DISTRIBUTION_RE =
   /\b(aws|amazon|bedrock|sagemaker|azure|foundry|google\s+cloud|vertex|gcp|oracle|snowflake|databricks)\b/i;
+const DOWNLOAD_COMPLEMENT_RE = /^\s*(?:free\s+)?download\b/i;
+const DOCUMENT_TITLE_RE =
+  /\b(?:reports?|release\s+notes?|changelog|blueprint|white\s*papers?|study|survey|playbook|e-?book|relat[óo]rio|notas\s+de\s+vers[ãa]o)\b/i;
 
 export function isNewPlatformAvailabilityTitle(article: Article): boolean {
   const title = article.title ?? "";
-  return NEW_PLATFORM_AVAILABILITY_TITLE_RE.test(title) && !CLOUD_DISTRIBUTION_RE.test(title);
+  const m = NEW_PLATFORM_AVAILABILITY_TITLE_RE.exec(title);
+  if (!m) return false;
+  if (CLOUD_DISTRIBUTION_RE.test(title) || DOCUMENT_TITLE_RE.test(title)) return false;
+  const complement = title.slice(m.index + m[0].length);
+  return !DOWNLOAD_COMPLEMENT_RE.test(complement) && !startsWithGeoComplement(complement);
 }
 
 /**
@@ -2082,8 +2102,17 @@ export function categorizeWithRule(article: Article): CategorizationResult {
     if (isUpdate(article)) {
       // #9882: produto chegando a superfície nova de usuário final ("now
       // available for Windows", "now works with Google Docs") é lançamento —
-      // ver isNewPlatformAvailabilityTitle.
-      if (isNewPlatformAvailabilityTitle(article)) return { category: "lancamento", rule: "lancamento-new-platform-availability" };
+      // ver isNewPlatformAvailabilityTitle. #9944: as checagens de relatório/
+      // explainer/notícia (que rodam abaixo pro caminho não-update) valem
+      // também aqui — senão o return antecipado as pulava.
+      if (
+        isNewPlatformAvailabilityTitle(article) &&
+        !isReport(article) &&
+        !isExplainerByTitle(article) &&
+        !isLikelyNewsNotLaunch(article.title ?? "")
+      ) {
+        return { category: "lancamento", rule: "lancamento-new-platform-availability" };
+      }
       return { category: "noticias", rule: "lancamento-update" };
     }
     if (isReport(article)) return { category: "noticias", rule: "lancamento-report" }; // #1096 — relatórios/análises não são lançamentos

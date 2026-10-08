@@ -135,6 +135,22 @@ const COUNTRY_ALTERNATION = COUNTRY_NAMES.map((c) =>
 ).join("|");
 
 /**
+ * #9944: complemento geográfico — "now available for Brazil", "now works in
+ * the EU", "now available in more countries". Ancorado no INÍCIO do texto
+ * (o caller passa o que vem depois de "now available for|on" / "now works
+ * with|in"): expansão de disponibilidade por país/região não é superfície
+ * nova de usuário final, é notícia de expansão.
+ */
+const GEO_COMPLEMENT_RE = new RegExp(
+  `^\\s*(?:the\\s+)?(?:${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States|users\\s+in)\\b`,
+  "i",
+);
+
+export function startsWithGeoComplement(text: string): boolean {
+  return GEO_COMPLEMENT_RE.test(text);
+}
+
+/**
  * Padrões de título que indicam anúncio institucional (não produto/feature)
  * mesmo em domínio oficial. Cada match retorna `true` em `isLikelyNewsNotLaunch`.
  */
