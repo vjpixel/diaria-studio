@@ -47,6 +47,7 @@
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,7 +110,7 @@ function loadConfig(): Config {
     process.stderr.write(
       "[fix-post-slug] BEEHIIV_API_KEY não definida. Configure no .env (veja .env.example).\n",
     );
-    process.exit(2);
+    throw new CliExit(2);
   }
 
   const configPath = resolve(ROOT, "platform.config.json");
@@ -119,7 +120,7 @@ function loadConfig(): Config {
       process.stderr.write(
         `[fix-post-slug] platform.config.json não encontrado em ${configPath}\n`,
       );
-      process.exit(2);
+      throw new CliExit(2);
     }
     try {
       const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
@@ -130,14 +131,14 @@ function loadConfig(): Config {
       process.stderr.write(
         `[fix-post-slug] platform.config.json inválido: ${(e as Error).message}\n`,
       );
-      process.exit(2);
+      throw new CliExit(2);
     }
   }
   if (!publicationId) {
     process.stderr.write(
       "[fix-post-slug] publicationId ausente — adicione `beehiiv.publicationId` em platform.config.json ou exporte BEEHIIV_PUBLICATION_ID.\n",
     );
-    process.exit(2);
+    throw new CliExit(2);
   }
 
   return { apiKey, publicationId };
@@ -419,7 +420,7 @@ export async function fixPostSlug(opts: {
 
 // ── CLI entry point ───────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
 
   const postId = values["post-id"];
@@ -435,7 +436,7 @@ async function main(): Promise<void> {
         "  --execute   Executar o PATCH (default: dry-run apenas)\n" +
         "  --force     Ignorar warnings de falso-positivo (ex: x-ray, versao-a)\n",
     );
-    process.exit(2);
+    return 2;
   }
 
   const cfg = loadConfig();
@@ -454,17 +455,15 @@ async function main(): Promise<void> {
         `[fix-post-slug] Plano Beehiiv não suporta correção via API: ${e.message}\n\n` +
           `${formatManualSlugFixInstructions(e.postId, e.slugTarget)}\n`,
       );
-      process.exit(3);
+      return 3;
     }
     process.stderr.write(`[fix-post-slug] Erro: ${(e as Error).message}\n`);
-    process.exit(1);
+    return 1;
   }
 }
 
 // Guard: só rodar main() quando invocado como CLI.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[fix-post-slug] Fatal: ${(e as Error).message}\n`);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => process.stderr.write(`[fix-post-slug] Fatal: ${(e as Error).message}\n`) });
 }

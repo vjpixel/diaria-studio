@@ -26,6 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 import {
@@ -70,7 +71,7 @@ export function readRecentIntents(rootDir: string, now: Date, days = ALARM_SCAN_
   return out;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   loadProjectEnv(ROOT);
   const now = new Date();
   const token = (process.env[LINKEDIN_PERSONAL_ENV.accessToken] ?? "").trim();
@@ -85,7 +86,7 @@ async function main(): Promise<void> {
   if (hasFlag(process.argv, "dry-run")) {
     const actions = planAlarmReconciliation(findings, state, CLOSE_AFTER_RUNS, allowlist);
     console.log(`${LOG_PREFIX} --dry-run: ${actions.map((a) => a.kind).join(", ") || "nenhuma ação"} — gh NÃO foi chamado.`);
-    return;
+    return 0;
   }
   const { nextState, findingOutcomes } = applyAlarmReconciliation(findings, state, { cwd: ROOT, closeAfterRuns: CLOSE_AFTER_RUNS, allowlist });
   saveAlarmIssuesState(nextState, STATE_PATH);
@@ -98,12 +99,10 @@ async function main(): Promise<void> {
       console.log(`${LOG_PREFIX} issue #${o.issueNumber} (${o.action}): ${o.url}`);
     }
   }
-  if (failed) process.exit(1);
+  return failed ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`${LOG_PREFIX} erro: ${(e as Error).message}`);
-    process.exit(1);
-  });
+  // #9911: exitCode, não process.exit — no Windows o exit logo após o fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`${LOG_PREFIX} erro: ${(e as Error).message}`) });
 }

@@ -16,6 +16,7 @@ import {
 } from "./lib/url-verify-cache.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { extractDateFromBody } from "./lib/extract-date.ts"; // #1554 P2 — populate published_date inline
 import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em launch-heuristics.ts
 
@@ -638,7 +639,7 @@ async function verifyWithBrowser(
   }
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   // CLI shape preservada: positional <urls.json> [out.json], + flags opcionais
   // --bodies-dir <path>             (#717 hyp 1) — intra-edição body cache
   // --cache <path>                  (#717 hyp 2) — cross-edition verdict cache
@@ -691,7 +692,7 @@ async function main() {
     console.error(
       "Usage: verify-accessibility.ts <urls.json | url1,url2,...> [out.json] [--bodies-dir <path>] [--cache <path>] [--cache-ttl-days N] [--browser-concurrency N] [--log-root-dir <path>]",
     );
-    process.exit(1);
+    return 1;
   }
 
   // Carregar cache cross-edição se path foi passado.
@@ -844,5 +845,6 @@ async function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main);
 }

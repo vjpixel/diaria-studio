@@ -79,6 +79,7 @@ import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Threads não renderiza markdown
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
@@ -480,12 +481,12 @@ export function buildUseMelhorThreadsPost(input: {
   return { ok: true, text, carouselUrls };
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
   if (!editionDirArg) {
     console.error("ERRO: --edition-dir é obrigatório.");
-    process.exit(1);
+    return 1;
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
@@ -512,7 +513,7 @@ async function main() {
         `Motivo: ${threadsGateConfig.disabled_reason || "não especificado"}\n` +
         "Reative setando publishing.social.threads.enabled:true quando pronto.",
     );
-    process.exit(0);
+    return 0;
   }
 
   // #3944 Parte B — Resolver Worker URL/token quando --schedule é passado.
@@ -548,7 +549,7 @@ async function main() {
           "  3. OU rodar SEM --schedule pra publicar imediatamente conscientemente",
         ].join("\n"),
       );
-      process.exit(2);
+      return 2;
     }
   }
 
@@ -573,14 +574,14 @@ async function main() {
         "  THREADS_USER_ID: Threads user ID da conta @diar.ia.br\n" +
         "  THREADS_ACCESS_TOKEN: token de longa duração do app Threads da Meta",
     );
-    process.exit(0);
+    return 0;
   }
 
   // Carregar social content
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     console.error("ERROR: 03-social.md não encontrado. Rode Stage 2 primeiro.");
-    process.exit(1);
+    return 1;
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
@@ -927,8 +928,6 @@ async function main() {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

@@ -29,6 +29,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
@@ -330,7 +331,7 @@ function printChecks(checks: Check[]): boolean {
   return allPassed;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const edition = values["edition"];
   // #1185: --skip-inject ainda aceito por compat (1mo, remover 2026-06-19);
@@ -345,7 +346,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: prep-manual-publish.ts --edition AAMMDD",
     );
-    process.exit(1);
+    return 1;
   }
 
   // #2286: publicationId lido via loadBeehiivConfig (env → platform.config.json).
@@ -366,7 +367,7 @@ async function main(): Promise<void> {
     console.error(
       `[prep-manual-publish] edição ${edition} não existe em ${editionDir}`,
     );
-    process.exit(1);
+    return 1;
   }
 
   const apiOpts = { publicationId, apiKey };
@@ -386,7 +387,7 @@ async function main(): Promise<void> {
 
   if (!allPassed) {
     console.error("[prep-manual-publish] algumas pré-condições falharam — fix antes de prosseguir.");
-    process.exit(1);
+    return 1;
   }
 
   // Print step-by-step instructions
@@ -410,8 +411,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[prep-manual-publish] ${(e as Error).message}`);
-    process.exit(2);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error(`[prep-manual-publish] ${(e as Error).message}`), errorCode: 2 });
 }

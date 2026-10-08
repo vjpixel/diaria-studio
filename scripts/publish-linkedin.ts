@@ -69,6 +69,7 @@ import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #68
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -721,7 +722,7 @@ export function computeCommentScheduledAt(
 
 // ── Main ──────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirRaw = values["edition-dir"];
   if (!editionDirRaw) {
@@ -729,7 +730,7 @@ async function main(): Promise<void> {
       "Erro: --edition-dir obrigatório.\n" +
         "Uso: npx tsx scripts/publish-linkedin.ts --edition-dir data/editions/260504 [--fire-now]",
     );
-    process.exit(1);
+    return 1;
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirRaw, { root: ROOT }); // #9427
   // #3311: override SÓ pra isolamento de teste — repassado a todo logEvent
@@ -782,7 +783,7 @@ async function main(): Promise<void> {
     destaques = onlyIds.filter((s) => s !== "um");
     if (destaques.length === 0 && !includeUseMelhor) {
       console.error("Erro: --only deve conter d1, d2, d3 e/ou um (ex: --only d1,d2).");
-      process.exit(1);
+      return 1;
     }
   } else {
     // Derive from social MD after it's loaded (set to default for now; refined below after load).
@@ -817,7 +818,7 @@ async function main(): Promise<void> {
         "  1. Variável de env: MAKE_LINKEDIN_WEBHOOK_URL=https://hook.eu2.make.com/...\n" +
         '  2. platform.config.json → publishing.social.linkedin.make_webhook_url: "..."',
     );
-    process.exit(1);
+    return 1;
   }
 
   // #3903 — header x-make-apikey opcional (migração incremental: reativa o
@@ -867,14 +868,14 @@ async function main(): Promise<void> {
       "  3. OU rodar SEM --schedule pra postar imediatamente conscientemente",
     ];
     console.error(lines.join("\n"));
-    process.exit(2);
+    return 2;
   }
 
   // Carregar 03-social.md
   const socialMdPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialMdPath)) {
     console.error("Erro: 03-social.md não encontrado. Rode a Etapa 2 primeiro.");
-    process.exit(1);
+    return 1;
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
 
@@ -920,7 +921,7 @@ async function main(): Promise<void> {
     console.error(
       `Erro: não foi possível extrair AAMMDD do caminho '${editionDir}'.`,
     );
-    process.exit(1);
+    return 1;
   }
 
   // Carregar / inicializar estado publicado (mesmo arquivo do facebook)
@@ -1017,7 +1018,7 @@ async function main(): Promise<void> {
           "  (--mode all também serve — uploada cover/eai_a/eia_b + d1/d2/d3 em uma chamada)",
         ].join("\n"),
       );
-      process.exit(2);
+      return 2;
     }
   }
 
@@ -1042,7 +1043,7 @@ async function main(): Promise<void> {
         resolve(editionDir, "_internal") +
         "). Abortando para não postar literal {outros_count} no LinkedIn.",
       );
-      process.exit(2);
+      return 2;
     }
   }
 
@@ -1351,8 +1352,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

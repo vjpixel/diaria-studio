@@ -39,6 +39,7 @@ import { enrichEntry, parseSitemap } from "./lib/fetch-sitemap.ts";
 import { processThreads, type CapturedThread } from "./capture-newsletter-urls.ts";
 import { extractPastUrlsUnbounded, readPastEditionsMd, readReviewedDestaqueUrls } from "./lib/past-editions-extract.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { runTsx } from "./lib/run-tsx.ts";
 import { stripHtmlBasic } from "./lib/strip-html.ts";
 import {
@@ -343,17 +344,17 @@ export async function buildLateRefreshReport(opts: {
   return base;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const editionDir = values["edition-dir"];
   if (!editionDir) {
     console.error("uso: late-refresh-candidates.ts --edition-dir {EDITION_DIR}/ [--now ISO] [--threads FILE] [--past-editions FILE] [--skip-newsletters] [--skip-feeds] [--json]");
-    process.exit(2);
+    return 2;
   }
   const now = values.now ? new Date(values.now) : new Date();
   if (Number.isNaN(now.getTime())) {
     console.error(`--now inválido: ${values.now}`);
-    process.exit(2);
+    return 2;
   }
   const absDir = resolve(editionDir);
   const report = await buildLateRefreshReport({
@@ -374,9 +375,9 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    // Fail-soft: o gate nunca depende deste passo.
-    console.log(`⚠️ Refresh tardio indisponível: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(0);
-  });
+  // #9911: grava process.exitCode em vez de process.exit — no Windows (Node 24) o exit logo após um fetch sai 127.
+  runCli(main, { onError: (e) => {
+      // Fail-soft: o gate nunca depende deste passo.
+      console.log(`⚠️ Refresh tardio indisponível: ${e instanceof Error ? e.message : String(e)}`);
+    }, errorCode: 0 });
 }
