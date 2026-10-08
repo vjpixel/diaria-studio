@@ -27,6 +27,12 @@
  * editor (incidente 260825: pipeline inteiro rodou com código antigo sob 3×
  * "sucesso" porque o warning era prosa ignorable).
  *
+ * #9925: o banner passou a sair também quando a defasagem NÃO pôde ser
+ * confirmada (fetch falhou/expirou, lock, medição -1) — veredito único em
+ * `code_freshness` no JSON (`fresh`/`stale`/`unknown`, ver
+ * `scripts/lib/sync-code-freshness.ts`), que o Passo 0 de /diaria-edicao
+ * repassa ao editor. Continua fail-soft (exit 0).
+ *
  * #8719 (24/09/2026, decisão do editor): `scripts/lib/git-sync.ts` nunca mais
  * faz `git stash pop` automático — quando um stash é criado, ele fica
  * SEMPRE preservado (`result.preserved_stash`), nunca reaplicado sozinho, e
@@ -63,6 +69,7 @@ import {
   type AutostashPileupAssessment,
 } from "./lib/autostash-report.ts";
 import { writeSyncCodeMarker } from "./lib/sync-code-marker.ts";
+import { assessCodeFreshness, formatCodeFreshnessBanner } from "./lib/sync-code-freshness.ts";
 
 /**
  * #8719: a partir de quantos autostashes acumulados (`GIT_SYNC_STASH_MESSAGE`
@@ -87,8 +94,18 @@ const autostashPileup: AutostashPileupAssessment | null =
       })
     : null;
 
+// #9925: veredito único "a edição vai rodar com o código atual?" — vai no JSON
+// (`code_freshness`) e decide o banner de código defasado/não verificado.
+const codeFreshness = assessCodeFreshness(result);
+
 // Sempre imprime JSON do resultado para o orchestrator logar
-console.log(JSON.stringify(autostashPileup ? { ...result, autostash_pileup: autostashPileup } : result, null, 2));
+console.log(
+  JSON.stringify(
+    { ...result, code_freshness: codeFreshness, ...(autostashPileup ? { autostash_pileup: autostashPileup } : {}) },
+    null,
+    2,
+  ),
+);
 
 // #8690: marker por edição (fail-soft — falha de escrita só avisa).
 const editionDirIdx = process.argv.indexOf("--edition-dir");
@@ -114,16 +131,12 @@ if (result.warnings.length > 0) {
 }
 
 // #6090: banner de código defasado — NÃO bloqueia (fail-soft preservado),
-// só para de ser invisível.
-if (result.commits_behind > 0) {
-  const n = result.commits_behind;
-  process.stderr.write(
-    `\n⚠  CÓDIGO DEFASADO — ${n} commit${n > 1 ? "s" : ""} atrás de origin/master.\n` +
-      `   A edição vai continuar (fail-soft), mas scripts podem rodar\n` +
-      `   com comportamento antigo — incluindo os guards que deveriam\n` +
-      `   detectar isso (guard defasado concorda com sujeito defasado).\n` +
-      `   Para sincronizar: git fetch origin && git merge --ff-only origin/master\n\n`,
-  );
+// só para de ser invisível. #9925: também quando a defasagem NÃO pôde ser
+// confirmada (fetch falhou/expirou, lock, medição -1) — antes só saía com
+// `commits_behind > 0`, e o "não sei" passava calado.
+const freshnessBanner = formatCodeFreshnessBanner(codeFreshness, result);
+if (freshnessBanner) {
+  process.stderr.write(freshnessBanner);
 }
 
 // #8719 (24/09/2026): o banner de "conflito de stash pop deixado no disco"

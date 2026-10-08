@@ -107,6 +107,12 @@
  *            agora resolvido via `git rev-parse --git-common-dir`, o mesmo
  *            `.git` real compartilhado entre TODOS os worktrees do repo. Ver
  *            `resolveSharedLockPath()`.
+ *   3e. #9925: quando a recusa do ff direto lista os caminhos em colisão
+ *      (`classifyFfRefusal`), o stash é DIRECIONADO a eles (`git stash push
+ *      --include-untracked -- :(literal)<caminho>...`) — o resto da sujeira
+ *      local fica no working tree e untracked alheio nunca é removido (a
+ *      remoção ampla é o que falhava com Permission denied em caminhos que nem
+ *      colidiam). Sem lista confiável → stash amplo de sempre (#9107).
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
@@ -302,6 +308,40 @@ export interface GitSyncResult {
    * outro arquivo, ou divergência genuína. Ver `classifyFfRefusal()`.
    */
   ff_refusal?: FfRefusal;
+  /**
+   * #9925: quando o stash foi DIRECIONADO (`git stash push -- <caminhos>`),
+   * os caminhos que ele guardou — só os que o git listou como colisão.
+   * Ausente quando não houve stash ou ele foi o stash amplo (fallback).
+   */
+  targeted_stash_paths?: string[];
+}
+
+/** Estado interno passado de `syncCodeLocked` pra `syncCode` (anexado ao resultado). */
+interface SyncCtx {
+  ffRefusal?: FfRefusal;
+  targetedStashPaths?: string[];
+}
+
+/**
+ * #9925: teto de caminhos num stash direcionado. Acima disso cai no stash
+ * amplo de sempre — evita estourar o limite de linha de comando do Windows
+ * (~32k chars) com uma colisão gigante.
+ */
+export const TARGETED_STASH_MAX_PATHS = 200;
+
+/**
+ * #9925: caminhos para o stash DIRECIONADO, ou `null` quando não dá pra
+ * direcionar com segurança (cai no stash amplo, comportamento anterior):
+ * recusa que não é colisão de arquivo (`diverged`/`unknown`), lista vazia,
+ * caminho entre aspas (o git escapou caractere especial — não é o caminho
+ * literal), ou mais de `TARGETED_STASH_MAX_PATHS`. Puro.
+ */
+export function targetedStashPathsFor(refusal: FfRefusal): string[] | null {
+  if (refusal.kind !== "local_changes_collide" && refusal.kind !== "untracked_collide") return null;
+  const paths = [...new Set(refusal.paths.map((p) => p.trim()).filter((p) => p.length > 0))];
+  if (paths.length === 0 || paths.length > TARGETED_STASH_MAX_PATHS) return null;
+  if (paths.some((p) => p.startsWith('"'))) return null;
+  return paths;
 }
 
 /**
@@ -1317,7 +1357,7 @@ export function syncCode(
     // #9690: `ctx.ffRefusal` é preenchido por syncCodeLocked quando o ff
     // direto recusa — anexado aqui pra cobrir TODO outcome dali em diante sem
     // repetir o campo em cada `return`.
-    const ctx: { ffRefusal?: FfRefusal } = {};
+    const ctx: SyncCtx = {};
     const result = syncCodeLocked(spawn, ctx);
     // #6090: estado de sincronização é SEMPRE medido after-the-fact via
     // `git rev-list --count`, em TODOS os outcomes — nunca inferido deles.
@@ -1330,6 +1370,7 @@ export function syncCode(
       ...measureSyncState(spawn),
       stale_autostash_count: countStaleAutostashes(spawn),
       ...(ctx.ffRefusal ? { ff_refusal: ctx.ffRefusal } : {}),
+      ...(ctx.targetedStashPaths ? { targeted_stash_paths: ctx.targetedStashPaths } : {}),
     };
     return out;
   } finally {
@@ -1348,7 +1389,7 @@ export function syncCode(
  */
 function syncCodeLocked(
   spawn: SpawnFn,
-  ctx: { ffRefusal?: FfRefusal } = {},
+  ctx: SyncCtx = {},
 ): Omit<GitSyncResult, "up_to_date" | "commits_behind" | "stale_autostash_count"> {
   const warnings: string[] = [];
 
@@ -1618,7 +1659,20 @@ function syncCodeLocked(
     // Sem untracked nenhum, `-u` e sem-`-u` são equivalentes — mantém `-u`.
     // Qualquer falha em medir (status falhou, diff falhou, caminho entre
     // aspas) cai no conservador: `-u`, como antes.
-    const untracked = statusRes.status === 0 ? parseUntrackedPaths(statusRes.stdout) : [];
+    //
+    // #9925: stash DIRECIONADO. Quando o git listou exatamente quais caminhos
+    // colidem (`ff_refusal.paths`, rastreados e/ou não-rastreados — o git
+    // lista as duas categorias na mesma recusa, verificado com git 2.53), o
+    // stash guarda SÓ esses caminhos (`-- :(literal)<caminho>...`). Incidente
+    // 261009: o stash `--include-untracked` sem pathspec tentou limpar TODO
+    // untracked do checkout e falhou com Permission denied em caminhos que
+    // nem colidiam (`.claude/skills/*`, `nul`, fixtures `_internal/`) —
+    // `stash_partial_failure_unrecovered`, ff nunca rodou, 18 commits de
+    // atraso. Com pathspec, mudança local que não colide fica no working tree
+    // (o ff não a toca) e untracked alheio nunca é removido.
+    const targetedStashPaths = targetedStashPathsFor(ffRefusal);
+    if (targetedStashPaths !== null) ctx.targetedStashPaths = targetedStashPaths;
+    const untracked = statusRes.status === 0 && targetedStashPaths === null ? parseUntrackedPaths(statusRes.stdout) : [];
     let includeUntracked = true;
     if (untracked.length > 0) {
       const diffRes = spawn("git", ["diff", "--name-only", "-z", "--no-renames", "HEAD", "origin/master"]);
@@ -1627,9 +1681,27 @@ function syncCodeLocked(
         includeUntracked = untrackedCollidesWithUpstream(untracked, upstreamPaths);
       }
     }
-    const stashArgs = includeUntracked
-      ? ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]
-      : ["stash", "push", "-m", GIT_SYNC_STASH_MESSAGE];
+    const stashArgs =
+      targetedStashPaths !== null
+        ? [
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            GIT_SYNC_STASH_MESSAGE,
+            "--",
+            ...targetedStashPaths.map((p) => `:(literal)${p}`),
+          ]
+        : includeUntracked
+          ? ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]
+          : ["stash", "push", "-m", GIT_SYNC_STASH_MESSAGE];
+    if (targetedStashPaths !== null) {
+      warnings.push(
+        `[git-sync] INFO: stash direcionado só aos ${targetedStashPaths.length} caminho(s) que colidem (#9925): ` +
+          `${targetedStashPaths.slice(0, 10).join(", ")}${targetedStashPaths.length > 10 ? ` (+${targetedStashPaths.length - 10})` : ""}. ` +
+          `Demais mudanças locais e untracked ficam no working tree.`,
+      );
+    }
     const stashRes = spawn("git", stashArgs);
     if (stashRes.status !== 0) {
       const stashRefAfterRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
@@ -1653,13 +1725,16 @@ function syncCodeLocked(
         // "recuperação" e só preservava se ELE TAMBÉM falhasse — outcome
         // único agora, sem sub-caso de pop bem-sucedido.
         const msg =
-          `[git-sync] ERROR: git ${stashArgs.slice(0, -2).join(" ")} saiu com erro (exit ${stashRes.status}) E criou ` +
+          `[git-sync] ERROR: git ${stashArgs.slice(0, stashArgs.indexOf("-m")).join(" ")}` +
+          `${targetedStashPaths !== null ? ` -- <${targetedStashPaths.length} caminho(s) em colisão>` : ""} saiu com erro (exit ${stashRes.status}) E criou ` +
           `um stash (${stashRefAfter}) apesar disso` +
           (dedupe.droppedDuplicate
             ? ` — cópia exata do autostash anterior ${keptRef}, então a duplicata foi descartada (#8991, sem perda: ` +
               `mesmo conteúdo, só não empilha 1 stash por rodada)`
             : "") +
-          (includeUntracked
+          (targetedStashPaths !== null
+            ? ` (stash direcionado aos caminhos em colisão, #9925 — untracked fora da colisão não foram tocados)`
+            : includeUntracked
             ? ` — possível remoção NÃO-RECUPERÁVEL de arquivos não-rastreados (#3411)`
             : ` (stash só do rastreado, #9107 — untracked não foram tocados)`) +
           `. Stash preservado (NUNCA despopado automaticamente — #8719, decisão do ` +

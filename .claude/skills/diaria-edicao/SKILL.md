@@ -59,6 +59,8 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
 | `checkout_failed` | `warn` | ⚠️ avisar editor ("estava em outra branch e não foi possível voltar para master") e prosseguir |
 | `sync_in_progress` (#3423) | `warn` | ⚠️ outro `syncCode()` já está rodando neste checkout (lock ativo) — sync desta rodada foi pulado para evitar popar o stash de um processo concorrente; avisar editor ("código pode estar levemente desatualizado, outra sincronização em andamento") e prosseguir |
 
+**Código defasado nunca passa calado (#9925).** Além do `outcome`, o JSON traz `code_freshness.status` (`fresh` / `stale` / `unknown`, veredito de `scripts/lib/sync-code-freshness.ts`). Se for `stale` ou `unknown`, o script imprime no stderr um banner `CÓDIGO DEFASADO` / `CÓDIGO NÃO VERIFICADO` — **repasse esse banner ao editor no texto da resposta, em destaque, ANTES de seguir pro Stage 0** (com `code_freshness.summary` e a ação do banner do outcome), e logue com `--level warn` mesmo que o outcome seja de "sucesso". A edição continua (fail-soft, regra abaixo) — o que muda é que o editor fica sabendo sem precisar perguntar. Quando a recusa do ff lista os arquivos em colisão, o sync stasha **só esses arquivos** (`targeted_stash_paths` no JSON) e deixa o resto da sujeira local e os untracked intocados — é o que destrava o caso de arquivos gerados (`sitemap.xml`, `audience-profile.md`, páginas em `workers/site/public/p/`) sem esbarrar em untracked travado.
+
 **Regras invariáveis:**
 - **Nunca bloquear a edição por falha de sync** — `proceed` é sempre `true` no resultado. Falha de sync vira warning, nunca halt.
 - **Só no início, nunca mid-edição.**
