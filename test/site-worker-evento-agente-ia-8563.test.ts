@@ -133,6 +133,14 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
         assert.equal(countOccurrences(html, "connect.facebook.net/en_US/fbevents.js"), 1);
       });
 
+      it("pixel da Meta só dispara em diar.ia.br (teste local não entra no dataset)", () => {
+        const html = readFileSync(page, "utf8");
+        const m = html.match(/<!-- Meta Pixel[\s\S]*?<script>([\s\S]*?)<\/script>/);
+        assert.ok(m, "bloco do pixel não encontrado");
+        assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {`), "pixel sem a condição de domínio");
+        assert.match(m[1], /fbq\('track', 'PageView'\);\s*\}\s*$/);
+      });
+
       it("index.html não usa caminho RELATIVO pros próprios arquivos (regressão: CSS não carregava em produção)", () => {
         // A página é servida SEM barra final (`html_handling =
         // drop-trailing-slash`). Sem a barra, o navegador resolve

@@ -58,6 +58,13 @@ describe("public/guia/agente-ia — página de vendas do guia", () => {
     assert.equal(countOccurrences(html, "fbq('track', 'PageView')"), 1);
   });
 
+  it("pixel da Meta só dispara em diar.ia.br (teste local não entra no dataset)", () => {
+    const m = html.match(/<!-- Meta Pixel[\s\S]*?<script>([\s\S]*?)<\/script>/);
+    assert.ok(m, "bloco do pixel não encontrado");
+    assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {`), "pixel sem a condição de domínio");
+    assert.match(m[1], /fbq\('track', 'PageView'\);\s*\}\s*$/);
+  });
+
   it("botões de compra apontam para o checkout com checkoutMode=10, e só a oferta e o CTA final compram", () => {
     const links = [...html.matchAll(/<a class="[^"]*checkout-link[^"]*" href="([^"]+)" data-posicao="([^"]+)"/g)];
     assert.deepEqual(links.map((m) => m[2]).sort(), ["final", "oferta"]);

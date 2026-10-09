@@ -27,8 +27,9 @@
     <script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');var FBCLIDRE = new RegExp("^[A-Za-z0-9_.-]+$");if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script>
     <!-- #9590: container GTM (o mesmo de renderAnalyticsHead) DEPOIS do bootstrap _dia_vid (dataLayer já tem external_id). É por ele que o GA4 (G-SGXBD0R9CD, destino da Google tag AW-17790097065) recebe a sessão com as UTMs. O PageView do Meta continua só no pixel direto abaixo: a tag PageView do container só dispara em cursos|livros.diar.ia.br (gtm.js publicado, medido em 05/10/2026). -->
     <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
-    <!-- Meta Pixel (Diar.ia) -->
+    <!-- Meta Pixel (Diar.ia). Só dispara em diar.ia.br: teste local (localhost) e preview não entram no dataset. -->
     <script>
+      if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {
       !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
       n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
       n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
@@ -36,6 +37,7 @@
       document,'script','https://connect.facebook.net/en_US/fbevents.js');
       fbq('init', '1285191740325112', { external_id: window.__DIA_VID__ });
       fbq('track', 'PageView');
+      }
     </script>
     <noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=1285191740325112&ev=PageView&noscript=1" /></noscript>
   </head>
