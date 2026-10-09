@@ -27,7 +27,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 - `context/editorial-rules.md` — regras absolutas (sem markdown, sem agregadores, etc.).
 - `context/templates/newsletter-monthly.md` — formato exato.
 - `context/audience-profile.md` — perfil de tom e CTR por tema.
-- `data/past-editions.md` — voz e linguagem recorrentes (pra manter consistência).
+- `data/past-editions-recent.md` — voz e linguagem recorrentes (pra manter consistência; recorte das ~12 edições mais recentes, #9978 — o `data/past-editions.md` completo cobre ~30 dias e estoura o Read).
 - `data/snippets/encerramento-social-apoio.md` — texto fixo (parágrafo de apoio Apoia.se + convite social) da seção `PARA ENCERRAR` (passo 8, #3219). Fonte única compartilhada com o diário — ler antes de escrever essa seção, nunca reescrever de memória.
 
 ## Processo

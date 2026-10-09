@@ -35,7 +35,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 - `context/editorial-rules.md` — regras absolutas.
 - `context/templates/newsletter.md` — formato.
 - `context/audience-profile.md` — perfil de tom.
-- `data/past-editions.md` — evitar repetir abertura/voz.
+- `data/past-editions-recent.md` — evitar repetir abertura/voz (recorte das ~12 edições mais recentes, #9978; **não** ler `data/past-editions.md`, que cobre ~30 dias pro dedup de URL e estoura o Read).
 
 ## Processo
 

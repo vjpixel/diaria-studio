@@ -50,7 +50,7 @@ describe("#9871 — re-disparo do writer-destaque lê os 4 arquivos de contexto"
       "context/editorial-rules.md",
       "context/templates/newsletter.md",
       "context/audience-profile.md",
-      "data/past-editions.md",
+      "data/past-editions-recent.md", // #9978: recorte de voz, não o arquivo de dedup de ~30 dias
     ]) {
       assert.ok(passo1!.includes(f), `passo 1 não cita ${f}`);
     }
@@ -64,7 +64,7 @@ describe("#9871 — re-disparo do writer-destaque lê os 4 arquivos de contexto"
       "context/editorial-rules.md",
       "context/templates/newsletter.md",
       "context/audience-profile.md",
-      "data/past-editions.md",
+      "data/past-editions-recent.md", // #9978
     ]);
   });
 });

@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveEditionDir, enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #3495: disk-aware, cobre flat+nested (mesmo fix do #3484); #3498: enumerateEditionDirs exposto pra cache de 1 varredura por populateAllFromApproved
+import { writeVoiceExcerpt } from "./lib/past-editions-voice.ts"; // #9978
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-urls.ts"; // #1678, #9867
@@ -678,6 +679,7 @@ async function main() {
     }
     const posts = readJson<Post[]>(RAW_PATH);
     writeFileSync(MD_PATH, renderMarkdown(posts), "utf8");
+    writeVoiceExcerpt(MD_PATH); // #9978
     console.log(
       `Regen MD-only: regenerated past-editions.md from raw (${posts.length} posts)`,
     );
@@ -752,6 +754,7 @@ async function main() {
   const mdTmp = MD_PATH + ".tmp";
   writeFileSync(mdTmp, renderMarkdown(truncated), "utf8");
   renameSync(mdTmp, MD_PATH);
+  writeVoiceExcerpt(MD_PATH); // #9978
 
   console.log(
     `Wrote ${truncated.length} editions (dedupEditionCount=${dedupEditionCount}) → ${MD_PATH}`
