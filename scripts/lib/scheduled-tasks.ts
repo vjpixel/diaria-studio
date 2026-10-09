@@ -266,6 +266,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7663",
   },
   {
+    name: "Diaria-Regen-Home-Watchdog",
+    description:
+      "garante a edição do dia na home: dispara regen-home.yml se o schedule do GitHub atrasou e alarma às 07:00 BRT (#9974)",
+    steps: [{ key: "check", script: "scripts/check-regen-home.ts" }],
+    logPath: "regen-home-watchdog/.check.log",
+    // Diária 06:20 BRT. O cron de `regen-home.yml` (06:12 BRT) é o caminho
+    // principal SE o GitHub for pontual — medido em 04-09/10/2026, chegou de
+    // 5h a 9h atrasado (#9974, depois de #8126). 06:20 dá folga pro run
+    // pontual terminar (~5 min com deploy); se a home ainda não lista a
+    // edição do dia, este watchdog dispara `gh workflow run regen-home.yml`
+    // (idempotente: pula se houver run ativo hoje) e reconfere a home até
+    // 07:00 BRT, alarmando se faltar. Slot livre entre 06:15 e 06:30.
+    //
+    // Por que scheduled task no `300` e não um cron de Worker na Cloudflare
+    // (alternativa citada na issue): `gh` já autenticado no `300` (os
+    // alarmes de `notifyEditor` usam o mesmo), zero infra nova, zero
+    // segredo novo. Disparo no fim do Stage 6 NÃO resolve: roda na véspera,
+    // e o corte de data futura do `buildHomeFeed` (#7686) mantém a edição
+    // fora da home até o dia do envio.
+    schedule: { kind: "daily", hour: 6, minute: 20 },
+    issue: "#9974",
+  },
+  {
     name: "Diaria-Home-Meta-Check",
     description: "smoke-test dos eixos de drift da home diar.ia.br (og:title, self-links http, rotulos EN, host legado, porta na URL)",
     steps: [{ key: "check", script: "scripts/home-meta-check.ts" }],
