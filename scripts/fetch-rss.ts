@@ -25,6 +25,7 @@ import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 // anchor-preserving de auto-forward-newsletters.ts/capture-newsletter-urls.ts).
 import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -300,7 +301,7 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
   }
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   const url = getArg(argv, "url") || undefined;
   const sourceName = getArg(argv, "source") || "unknown";
@@ -314,19 +315,16 @@ async function main() {
 
   if (!url) {
     console.error("Uso: tsx fetch-rss.ts --url <feed_url> --source <name> [--days 3] [--topic-filter \"term1,term2,...\"]");
-    process.exit(1);
+    return 1;
   }
 
   const result = await fetchRss({ url, sourceName, days, topicFilter });
   console.log(JSON.stringify(result, null, 2));
-  if (result.error) process.exit(2);
+  if (result.error) return 2;
 }
 
 const invokedDirectly = isMainModule(import.meta.url);
 
 if (invokedDirectly) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  runCli(main);
 }

@@ -26,6 +26,7 @@
 
 import "dotenv/config";
 import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 const PROBE_TEXT = "ola";
@@ -252,26 +253,28 @@ export function parseHealthcheckArgs(argv: string[]): { timeoutMs?: number; mcp?
   return out;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   let args: { timeoutMs?: number; mcp?: boolean };
   try {
     args = parseHealthcheckArgs(process.argv.slice(2));
   } catch (e) {
     console.error((e as Error).message);
-    process.exit(1);
+    return 1;
   }
   const apiKey = process.env.CLARICE_API_KEY;
   if (!apiKey) {
     console.log(JSON.stringify({ ok: false, error: "CLARICE_API_KEY ausente" }));
-    process.exit(2);
+    return 2;
   }
   const result = args.mcp
     ? await checkClariceMcpHealth({ apiKey, timeoutMs: args.timeoutMs })
     : await checkClariceHealth({ apiKey, timeoutMs: args.timeoutMs });
   console.log(JSON.stringify(result));
-  process.exit(result.ok ? 0 : 2);
+  return result.ok ? 0 : 2;
 }
 
 if (isMainModule(import.meta.url)) {
-  await main();
+  // #9911: runCli grava process.exitCode; exceção inesperada sai 1, como a
+  // rejeição não tratada do `await main()` antigo.
+  await runCli(main);
 }

@@ -39,6 +39,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts";
 import { dohFetch } from "./lib/doh-fetch.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
@@ -161,14 +162,14 @@ export async function pushEiaMetaForEdition(
   }
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = process.argv.slice(2);
   const { values } = parseCliArgs(args);
 
   const secret = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET;
   if (!secret) {
     console.error("[backfill-eia-meta] ADMIN_SECRET não definido. Ver .env.");
-    process.exit(1);
+    return 1;
   }
 
   const editionsRootDir = values["editions-dir"]
@@ -210,9 +211,9 @@ async function main(): Promise<void> {
 
   const failed = results.filter((r) => !r.ok);
   console.log(JSON.stringify({ pushed: results.filter((r) => r.ok).map((r) => r.edition), failed: failed.map((r) => r.edition), skipped: plan.skipped }, null, 2));
-  if (failed.length > 0) process.exit(1);
+  if (failed.length > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((err) => { console.error(err); process.exit(1); });
+  runCli(main);
 }

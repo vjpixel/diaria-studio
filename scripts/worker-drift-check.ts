@@ -427,7 +427,8 @@ async function main(): Promise<void> {
       `${LOG_PREFIX} ERRO: CLOUDFLARE_ACCOUNT_ID e/ou CLOUDFLARE_WORKERS_TOKEN não definidos — não é possível ` +
         "consultar deploys publicados. Configure ambos e rode de novo.",
     );
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const workers = discoverWorkers();
@@ -678,8 +679,8 @@ if (isMainModule(import.meta.url)) {
   // cenário exato da classe UV_HANDLE_CLOSING no Windows (#1401/#4638/#4651/
   // #4653): process.exit() força o shutdown do libuv antes dos sockets
   // keep-alive do fetch fecharem. process.exitCode deixa o event loop drenar
-  // sozinho. O guard pré-await (linha acima, envs ausentes) continua com
-  // process.exit(2) de propósito — nenhum fetch rodou ainda nesse ponto.
+  // sozinho. O guard pré-await (envs ausentes) também grava exitCode = 2 e
+  // retorna desde o #9911 (guard de CI proíbe process.exit em script com fetch).
   main().catch((e) => {
     console.error(`${LOG_PREFIX} erro:`, e);
     process.exitCode = 1;

@@ -25,6 +25,7 @@ import { resolveEditionDir, enumerateEditionDirs } from "./lib/find-current-edit
 import { writeVoiceExcerpt } from "./lib/past-editions-voice.ts"; // #9978
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-urls.ts"; // #1678, #9867
 import { FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #8298: filtro de boilerplate/rodapé JÁ EXISTENTE (usado por findMismatchedUrls pro mesmo propósito) — reuso, não duplico a lista de domínios aqui
 
@@ -663,7 +664,7 @@ export function renderMarkdown(posts: Post[], root: string = ROOT): string {
   return lines.join("\n");
 }
 
-async function main() {
+async function main(): Promise<number | void> {
   // #926: parser compartilhado.
   const { flags, positional } = parseCliArgs(process.argv.slice(2));
 
@@ -675,7 +676,7 @@ async function main() {
       console.error(
         "past-editions-raw.json não existe — rode bootstrap (refresh-dedup-runner em modo full) antes",
       );
-      process.exit(1);
+      return 1;
     }
     const posts = readJson<Post[]>(RAW_PATH);
     writeFileSync(MD_PATH, renderMarkdown(posts), "utf8");
@@ -691,7 +692,7 @@ async function main() {
     console.error(
       "Usage: refresh-past-editions.ts <input.json> [--merge] [--resolve-tracking] | --regen-md-only",
     );
-    process.exit(1);
+    return 1;
   }
 
   const isMerge = flags.has("merge");
@@ -763,8 +764,5 @@ async function main() {
 
 // Guard contra import em tests — só rodar main() quando invocado como CLI.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  runCli(main);
 }

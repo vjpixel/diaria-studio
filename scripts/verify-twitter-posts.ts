@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 export type { PostEntry, SocialPublished };
 
 const BUFFER_GRAPHQL_URL = "https://api.buffer.com/graphql";
@@ -188,13 +189,13 @@ export function resolveSocialPublishedPath(rootDir: string, editionDir: string):
   return null;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
   const editionDir = args["edition-dir"];
   if (!editionDir) {
     console.error("Uso: verify-twitter-posts.ts --edition-dir <path>");
-    process.exit(1);
+    return 1;
   }
 
   const publishedPath = resolveSocialPublishedPath(ROOT, editionDir);
@@ -202,13 +203,13 @@ async function main(): Promise<void> {
     const internal = resolve(ROOT, editionDir, "_internal", "06-social-published.json");
     const root = resolve(ROOT, editionDir, "06-social-published.json");
     console.error(`Arquivo não encontrado em nenhum dos paths esperados:\n  - ${internal}\n  - ${root}`);
-    process.exit(1);
+    return 1;
   }
 
   const token = process.env.BUFFER_ACCESS_TOKEN;
   if (!token) {
     console.error("BUFFER_ACCESS_TOKEN ausente no .env — ver .env.example.");
-    process.exit(1);
+    return 1;
   }
 
   const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
@@ -224,8 +225,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  runCli(main);
 }

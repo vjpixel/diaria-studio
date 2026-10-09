@@ -22,6 +22,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 export const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -191,17 +192,17 @@ export async function fetchSourceText(
   }
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { values, positional } = parseArgs(process.argv.slice(2));
   const url = positional[0];
   if (!url || validateUrl(url)) {
     console.error(`Uso: fetch-source-text.ts <url http(s) pública> [--out arquivo]${url ? ` — ${validateUrl(url)}` : ""}`);
-    process.exit(1);
+    return 1;
   }
   const r = await fetchSourceText(url);
   if (!r.ok) {
     console.error(`[fetch-source-text] ${r.message} (${url})`);
-    process.exit(r.kind === "blocked" ? 2 : 3);
+    return r.kind === "blocked" ? 2 : 3;
   }
   if (values.out) {
     mkdirSync(dirname(values.out), { recursive: true });
@@ -213,8 +214,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("[fetch-source-text] ERRO:", e);
-    process.exit(3);
-  });
+  runCli(main, { onError: (e) => console.error("[fetch-source-text] ERRO:", e), errorCode: 3 });
 }

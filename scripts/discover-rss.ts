@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { fetchRss } from "./fetch-rss.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CSV = resolve(ROOT, "seed/sources.csv");
@@ -293,7 +294,7 @@ function parseArgs(argv: string[]): CliFlags {
   return flags;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const flags = parseArgs(process.argv.slice(2));
   const csv = readFileSync(flags.csvPath, "utf8");
   const parsed = Papa.parse<SourceRow>(csv, {
@@ -302,7 +303,7 @@ async function main(): Promise<void> {
   });
   if (parsed.errors.length > 0) {
     console.error("CSV parse errors:", parsed.errors);
-    process.exit(1);
+    return 1;
   }
   const rows = parsed.data;
 
@@ -312,7 +313,7 @@ async function main(): Promise<void> {
 
   if (flags.source && targets.length === 0) {
     console.error(`Nenhuma fonte com nome "${flags.source}" encontrada.`);
-    process.exit(1);
+    return 1;
   }
 
   const results: DiscoveryResult[] = [];
@@ -343,7 +344,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `[discover-rss] ERRO: CSV parseado sem colunas ou linhas (allColumns=${allColumns.length}, rows=${rows.length}) — abortando escrita para evitar truncamento de ${flags.csvPath}\n`,
       );
-      process.exit(1);
+      return 1;
     }
     const updated = Papa.unparse(rows, {
       columns: allColumns,
@@ -371,8 +372,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((err) => {
-    console.error(err);
-    process.exit(2);
-  });
+  runCli(main, { errorCode: 2 });
 }
