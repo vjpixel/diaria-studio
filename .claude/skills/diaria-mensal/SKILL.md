@@ -202,7 +202,7 @@ Mede densidade de referência (frases longas, nomes próprios no corpo, siglas, 
 Invocar skill humanizador in-place no `draft.md`:
 
 ```
-Skill("humanizador", "Leia data/monthly/$CYCLE/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado no mesmo arquivo.")
+Skill("humanizador", "Leia data/monthly/$CYCLE/draft.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions-recent.md como referência, e salve o resultado no mesmo arquivo.")
 ```
 
 Se falhar: warning, seguir com o arquivo original (não bloqueia).

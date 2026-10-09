@@ -34,6 +34,7 @@ import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-u
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { aammddFromIso, type Post } from "./refresh-past-editions.ts"; // #3207
+import { writeVoiceExcerpt } from "./lib/past-editions-voice.ts"; // #9978
 
 // #3024: fileURLToPath (não `.pathname` cru) — `.pathname` produz path
 // malformado no Windows (ex: `C:\C:\Users\...`), quebrando qualquer resolve()
@@ -279,6 +280,9 @@ function main() {
     const separator = md.endsWith("\n") ? "" : "\n";
     writeFileSync(MD_PATH, md + separator + appendLines.join("\n"), "utf8");
   }
+  // #9978: regenerar o recorte de voz sempre (seções pending são as mais
+  // novas e entram no recorte por data, não por posição).
+  writeVoiceExcerpt(MD_PATH);
 
   console.log(
     JSON.stringify({

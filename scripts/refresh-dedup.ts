@@ -54,6 +54,7 @@ import {
   extractLinks,
 } from "./refresh-past-editions.ts";
 import { writeEditionReport } from "./send-edition-report.ts"; // #1950
+import { writeVoiceExcerpt } from "./lib/past-editions-voice.ts"; // #9978
 import { isMainModule } from "./lib/cli-args.ts";
 import {
   resolveNewsletterReadConfig,
@@ -444,6 +445,9 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
     const mdTmp = mdPath + ".tmp";
     writeFileSync(mdTmp, renderMarkdown(truncated), "utf8");
     renameSync(mdTmp, mdPath);
+    // #9978: recorte de voz (~12 seções) que os agentes leem — o MD completo
+    // (~30 dias, #9955) fica só pros scripts de dedup.
+    writeVoiceExcerpt(mdPath);
 
     process.stderr.write(
       `[refresh-dedup] Wrote ${truncated.length} editions → ${mdPath}\n`,
