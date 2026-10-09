@@ -442,7 +442,7 @@ Se `launch_candidate` count = 0, pular este passo (info no run-log). Falha de bu
 ```bash
 npx tsx scripts/check-promoted-dedup.ts \
   --categorized {EDITION_DIR}/_internal/tmp-categorized.json \
-  --past-editions data/past-editions.md --window 3
+  --past-editions data/past-editions.md
 ```
 (`--categorized` acima assume o caminho normal — ver "Nota de robustez" logo acima para o caso em que 1m-ter rodou tarde e escreveu em `tmp-dates-reviewed.json`.)
 Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar no gate `⚠️ N lançamento(s) revertidos para RADAR (URL oficial repetia edição anterior, colidia com artigo nativo da própria edição, ou duplicava outra promoção — #2315/#4200)` (o `reason` de cada entrada em `demoted[]` diz qual dos três casos foi). Falha → warn + prosseguir.

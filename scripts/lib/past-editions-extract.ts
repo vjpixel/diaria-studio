@@ -31,6 +31,144 @@ export { isValidEditionDir };
 export const DEFAULT_PAST_WINDOW = 3;
 
 /**
+ * #9955: janela do bloqueio de URL REPETIDA, em DIAS (decisão do editor,
+ * briefing overnight 261009). Antes o bloqueio usava `DEFAULT_PAST_WINDOW`
+ * (3 edições) — a mesma URL voltou como D1 em 261009 oito edições depois de
+ * sair como D2 em 261001 e passou. Vale só pra URL exata (canônica): os
+ * sinais fuzzy (título, tema, entidade, fato) continuam em
+ * `DEFAULT_PAST_WINDOW`, onde a janela curta é deliberada (follow-up de
+ * história em andamento não é repetição).
+ *
+ * Depende de `data/past-editions.md` cobrir esses dias: o gerador trunca em
+ * `beehiiv.dedupEditionCount` (platform.config.json), que precisa ser
+ * >= o nº de edições publicadas em `DEDUP_URL_WINDOW_DAYS` dias.
+ */
+export const DEDUP_URL_WINDOW_DAYS = 30;
+
+/** AAMMDD → epoch ms (UTC, meia-noite). `undefined` se inválido. */
+function aammddToUtcMs(aammdd: string): number | undefined {
+  if (!/^\d{6}$/.test(aammdd)) return undefined;
+  const y = 2000 + Number(aammdd.slice(0, 2));
+  const m = Number(aammdd.slice(2, 4));
+  const d = Number(aammdd.slice(4, 6));
+  const ms = Date.UTC(y, m - 1, d);
+  const back = new Date(ms);
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== m - 1 || back.getUTCDate() !== d) {
+    return undefined;
+  }
+  return ms;
+}
+
+/** YYYY-MM-DD → epoch ms (UTC). */
+function isoDateToUtcMs(iso: string): number | undefined {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return undefined;
+  return aammddToUtcMs(`${m[1].slice(2)}${m[2]}${m[3]}`);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * #9955: seleciona as seções `## YYYY-MM-DD` de past-editions.md publicadas
+ * nos `days` dias ANTERIORES à edição de referência: `ref - days <= data < ref`.
+ * A própria edição (e posteriores, num replay) fica de fora — sem self-match
+ * quando o refresh-dedup já incluiu a edição corrente.
+ *
+ * Sem `referenceAammdd` (caller não sabe a edição corrente): ancora na seção
+ * mais recente como se a referência fosse o dia seguinte a ela (edição é
+ * sempre D+1), incluindo-a.
+ */
+export function pastSectionsWithinDays(
+  md: string,
+  days: number,
+  referenceAammdd?: string,
+): { date: string; section: string }[] {
+  const sectionRe = /^## (\d{4}-\d{2}-\d{2})/m;
+  const parts = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/);
+  const sections: { date: string; ms: number; section: string }[] = [];
+  for (const s of parts) {
+    const m = s.match(sectionRe);
+    if (!m) continue;
+    const ms = isoDateToUtcMs(m[1]);
+    if (ms === undefined) continue;
+    sections.push({ date: m[1], ms, section: s });
+  }
+  if (sections.length === 0) return [];
+
+  let refMs = referenceAammdd ? aammddToUtcMs(referenceAammdd) : undefined;
+  if (refMs === undefined) {
+    refMs = Math.max(...sections.map((s) => s.ms)) + DAY_MS;
+  }
+  const cutoffMs = refMs - days * DAY_MS;
+  return sections
+    .filter((s) => s.ms >= cutoffMs && s.ms < refMs!)
+    .map(({ date, section }) => ({ date, section }));
+}
+
+function urlsOfSection(section: string): string[] {
+  const out: string[] = [];
+  for (const line of section.split("\n")) {
+    const m = line.match(/^-\s+(https?:\/\/\S+)/);
+    if (m) out.push(canonicalize(m[1].replace(/[.,);]+$/, "")));
+  }
+  return out;
+}
+
+/**
+ * #9955: URLs canônicas publicadas nos últimos `days` dias (default
+ * `DEDUP_URL_WINDOW_DAYS`) antes da edição de referência. Substitui
+ * `extractPastUrls(md, DEFAULT_PAST_WINDOW)` nos bloqueios de URL repetida
+ * (dedup Stage 1, finalize-stage1, check-promoted-dedup, invariante Stage 4).
+ */
+export function extractPastUrlsWithinDays(
+  md: string,
+  days: number = DEDUP_URL_WINDOW_DAYS,
+  referenceAammdd?: string,
+): Set<string> {
+  const urls = new Set<string>();
+  for (const { section } of pastSectionsWithinDays(md, days, referenceAammdd)) {
+    for (const u of urlsOfSection(section)) urls.add(u);
+  }
+  return urls;
+}
+
+/**
+ * #9955: como `extractPastUrlsWithOrigin`, mas pela janela em dias. Primeira
+ * ocorrência (a mais recente, seções em ordem decrescente) vence.
+ */
+export function extractPastUrlsWithOriginWithinDays(
+  md: string,
+  days: number = DEDUP_URL_WINDOW_DAYS,
+  referenceAammdd?: string,
+): Map<string, string> {
+  const origins = new Map<string, string>();
+  const sections = pastSectionsWithinDays(md, days, referenceAammdd).sort((a, b) =>
+    b.date.localeCompare(a.date),
+  );
+  for (const { date, section } of sections) {
+    for (const u of urlsOfSection(section)) {
+      if (!origins.has(u)) origins.set(u, date);
+    }
+  }
+  return origins;
+}
+
+/**
+ * #9955: AAMMDD de corte (inclusive) da janela em dias — edições com
+ * AAMMDD >= este valor estão dentro da janela. Usado pra filtrar diretórios
+ * de edição (`extractPastDestaqueUrls`). `undefined` se a referência é inválida.
+ */
+export function cutoffAammdd(referenceAammdd: string, days: number): string | undefined {
+  const refMs = aammddToUtcMs(referenceAammdd);
+  if (refMs === undefined) return undefined;
+  const d = new Date(refMs - days * DAY_MS);
+  const yy = String(d.getUTCFullYear() % 100).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yy}${mm}${dd}`;
+}
+
+/**
  * #1847: lê o conteúdo de `past-editions.md`, retornando "" quando o arquivo
  * está AUSENTE. Pós-#1847 o arquivo mora em `data/` (gitignored, regenerado no
  * Stage 0), então num clone fresco / CI antes do primeiro `refresh-dedup` ele
@@ -613,6 +751,9 @@ export function recentEditionDirs(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
+  // #9955: com `withinDays` E `currentAammdd`, a janela é por data
+  // (`currentAammdd - withinDays <= d < currentAammdd`) em vez de contagem.
+  withinDays?: number,
 ): string[] {
   const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
   let dirs = [...editionDirsByAammdd.keys()].filter(
@@ -623,6 +764,10 @@ export function recentEditionDirs(
   // POSTERIORES — rerun/replay de uma edição antiga deduplicava contra URLs de
   // edições futuras.
   if (currentAammdd) dirs = dirs.filter((d) => d < currentAammdd);
+  if (withinDays !== undefined && currentAammdd) {
+    const cutoff = cutoffAammdd(currentAammdd, withinDays);
+    if (cutoff) return dirs.filter((d) => d >= cutoff);
+  }
   return dirs.slice(0, window);
 }
 
@@ -666,9 +811,12 @@ export function extractPastDestaqueUrls(
   editionsDir: string,
   window: number,
   currentAammdd?: string,
+  // #9955: janela por data (ver `recentEditionDirs`); sem `currentAammdd`
+  // cai na contagem `window`.
+  withinDays?: number,
 ): Set<string> {
   if (!existsSync(editionsDir)) return new Set();
-  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd, withinDays);
   // #2463/#3025: resolve o path REAL (flat ou nested) de cada aammdd — nunca
   // `resolve(editionsDir, aammdd, ...)`, que assume flat.
   const editionDirsByAammdd = enumerateEditionDirs(editionsDir);

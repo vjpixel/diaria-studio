@@ -29,7 +29,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 // #1068 phase 2: helpers de extração de past URLs reusados do dedup.ts.
-import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW } from "./dedup.ts";
+import { canonicalize, extractPastUrlsWithinDays, extractPastDestaqueUrls, DEFAULT_PAST_WINDOW, DEDUP_URL_WINDOW_DAYS } from "./dedup.ts";
 import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
@@ -848,8 +848,14 @@ function main(): void {
   if (existsSync(pastMdAbs)) {
     try {
       const pastMd = readFileSync(pastMdAbs, "utf8");
-      const allPastUrls = extractPastUrls(pastMd, window);
-      const pastDestaque = extractPastDestaqueUrls(resolve(ROOT, editionsDir), window, edition ?? undefined);
+      // #9955: URL na mesma janela em DIAS do dedup.ts (DEDUP_URL_WINDOW_DAYS).
+      const allPastUrls = extractPastUrlsWithinDays(pastMd, DEDUP_URL_WINDOW_DAYS, edition ?? undefined);
+      const pastDestaque = extractPastDestaqueUrls(
+        resolve(ROOT, editionsDir),
+        window,
+        edition ?? undefined,
+        DEDUP_URL_WINDOW_DAYS,
+      );
       // Set difference: past flat \ past destaques = past secondary
       pastSecondaryUrls = new Set(
         [...allPastUrls].filter((u) => !pastDestaque.has(u)),

@@ -1099,8 +1099,6 @@ async function runPostResearchPreScore(deps: Stage1RunDeps, opts: Stage1RunOptio
     internalPath(editionDir, "tmp-categorized.json"),
     "--past-editions",
     "data/past-editions.md",
-    "--window",
-    "3",
   ]);
 
   // --- instrumentação silenciosa type_hint (opcional) ---

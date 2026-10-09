@@ -104,7 +104,7 @@ function loadConfig(): RefreshConfig {
     console.error(`platform.config.json inválido: ${(e as Error).message}`);
     process.exit(2);
   }
-  const dedupEditionCount = cfg.beehiiv?.dedupEditionCount ?? 14;
+  const dedupEditionCount = cfg.beehiiv?.dedupEditionCount ?? 35;
   const result = resolveNewsletterReadConfig();
   if (!result.ok) {
     console.error(result.reason);
@@ -314,6 +314,19 @@ export async function refreshDedup(opts: MainOpts): Promise<RefreshResult> {
       `[refresh-dedup] Bootstrap: buscando ${cfg.dedupEditionCount} edições mais recentes\n`,
     );
     incomingSummaries = await listRecentNewsletterPosts(cfg.readConfig, { limit: cfg.dedupEditionCount });
+  } else if ((existing as Post[]).length < cfg.dedupEditionCount) {
+    // #9955: raw com MENOS edições que `dedupEditionCount` (janela ampliada no
+    // config — 14 → 35 pra cobrir os ~30 dias do bloqueio de URL). O
+    // incremental só busca edições mais NOVAS que o raw e nunca preencheria
+    // as antigas; listar as `dedupEditionCount` mais recentes e baixar só as
+    // que o raw ainda não tem (as conhecidas mantêm os links já resolvidos).
+    mode = "incremental";
+    const knownIds = new Set((existing as Post[]).map((p) => p.id));
+    process.stderr.write(
+      `[refresh-dedup] Backfill: raw tem ${(existing as Post[]).length} < ${cfg.dedupEditionCount} edições — completando a janela\n`,
+    );
+    const listed = await listRecentNewsletterPosts(cfg.readConfig, { limit: cfg.dedupEditionCount });
+    incomingSummaries = listed.filter((p) => !knownIds.has(p.id));
   } else {
     mode = "incremental";
     const maxKnownMs = Math.max(

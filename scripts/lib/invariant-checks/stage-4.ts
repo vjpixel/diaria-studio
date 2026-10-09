@@ -91,9 +91,9 @@ import { checkSentinel as checkSocialHumanizerSentinel } from "../../check-human
 import { isNonEditorialHost } from "../ctr-utils.ts"; // #8993
 import {
   readPastEditionsMd,
-  extractPastUrlsWithOrigin,
-  DEFAULT_PAST_WINDOW,
-} from "../past-editions-extract.ts"; // #8993
+  extractPastUrlsWithOriginWithinDays,
+  DEDUP_URL_WINDOW_DAYS,
+} from "../past-editions-extract.ts"; // #8993, #9955
 import {
   extractCurrentDeclarationFromMd,
   extractRevealFromFrontmatter,
@@ -1632,10 +1632,10 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #8993: URL editorial de `02-reviewed.md` já apareceu numa das últimas
- * `DEFAULT_PAST_WINDOW` (3) edições publicadas (`data/past-editions.md`) —
- * violação da regra invariável "sem links repetidos das últimas 3 edições"
- * (context/editorial-rules.md). Achado real (edição 260929): o editor
+ * #8993: URL editorial de `02-reviewed.md` já apareceu numa edição publicada
+ * nos últimos `DEDUP_URL_WINDOW_DAYS` (30) dias (`data/past-editions.md`) —
+ * violação da regra invariável "sem links repetidos dos últimos ~30 dias"
+ * (context/editorial-rules.md; janela ampliada de 3 edições no #9955). Achado real (edição 260929): o editor
  * inseriu/promoveu um D1 com link que já tinha saído no RADAR da edição
  * anterior durante o gate do Stage 4 — o dedup por URL só roda no Stage 1
  * (`dedup.ts`), então um item que entra ou é promovido DEPOIS desse ponto
@@ -1644,7 +1644,7 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
  * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
  * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
  * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
- * apoia.se) e `canonicalize`/`extractPastUrlsWithOrigin` (mesmos helpers do
+ * apoia.se) e `canonicalize`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
  * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
  * é considerado "mesmo link" em todo o resto do pipeline.
  *
@@ -1667,7 +1667,7 @@ export interface DuplicateUrlMatch {
 /**
  * Pure (#8993): compara as URLs editoriais de `reviewedMd` (02-reviewed.md)
  * contra `pastOrigins` (mapa URL-canônica→data-de-origem, de
- * `extractPastUrlsWithOrigin`). Separado de `checkNoDuplicateUrlsAgainstPastEditions`
+ * `extractPastUrlsWithOriginWithinDays`). Separado de `checkNoDuplicateUrlsAgainstPastEditions`
  * (que só lê os 2 arquivos do disco) pra ser testável sem depender do
  * `data/past-editions.md` real da máquina — mesmo padrão de
  * `findImageContentMismatches`/`checkImageContentFresh` acima.
@@ -1711,15 +1711,18 @@ function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantV
   const pastMd = readPastEditionsMd(pastEditionsPath);
   if (!pastMd.trim()) return []; // sem histórico (bootstrap) — nada pra comparar
 
-  const pastOrigins = extractPastUrlsWithOrigin(pastMd, DEFAULT_PAST_WINDOW);
+  // #9955: janela em dias antes da edição revisada (AAMMDD do dir; sem ele,
+  // ancora na seção mais recente de past-editions.md).
+  const edition = /^\d{6}$/.test(basename(editionDir)) ? basename(editionDir) : undefined;
+  const pastOrigins = extractPastUrlsWithOriginWithinDays(pastMd, DEDUP_URL_WINDOW_DAYS, edition);
   const matches = findDuplicateUrlsAgainstPastEditions(md, pastOrigins);
 
   return matches.map(({ url, line, originDate }) => ({
     rule: "no-duplicate-urls-vs-past-editions",
     message:
-      `URL já publicada na edição de ${originDate} (dentro da janela das últimas ` +
-      `${DEFAULT_PAST_WINDOW} edições): ${url}. Regra invariável "sem links repetidos das ` +
-      `últimas 3 edições" (context/editorial-rules.md). Se foi promovido/inserido durante o ` +
+      `URL já publicada na edição de ${originDate} (dentro da janela dos últimos ` +
+      `${DEDUP_URL_WINDOW_DAYS} dias): ${url}. Regra invariável "sem links repetidos dos ` +
+      `últimos ~30 dias" (context/editorial-rules.md, #9955). Se foi promovido/inserido durante o ` +
       `gate, o dedup do Stage 1 não viu este link — confirme se a repetição é intencional ` +
       `(ex: atualização da mesma história) antes de aprovar.`,
     source_issue: "#8993",
@@ -3226,7 +3229,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "no-duplicate-urls-vs-past-editions",
     description:
-      "URL editorial de 02-reviewed.md repetida contra as últimas 3 edições (past-editions.md) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only)",
+      "URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only)",
     source_issue: "#8993",
     stage: 4,
     run: checkNoDuplicateUrlsAgainstPastEditions,
