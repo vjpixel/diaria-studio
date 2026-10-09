@@ -140,9 +140,14 @@ const COUNTRY_ALTERNATION = COUNTRY_NAMES.map((c) =>
  * (o caller passa o que vem depois de "now available for|on" / "now works
  * with|in"): expansão de disponibilidade por país/região não é superfície
  * nova de usuário final, é notícia de expansão.
+ *
+ * #9948: "users in" só conta como geo quando seguido de geo ("users in
+ * Brazil", "users in the EU") — "Sora now available for users in ChatGPT
+ * Plus" é superfície de produto, não expansão geográfica.
  */
+const GEO_TERM_ALTERNATION = `${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|\\d+\\+?\\s+(?:new\\s+|more\\s+)?(?:countries|regions|markets)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States`;
 const GEO_COMPLEMENT_RE = new RegExp(
-  `^\\s*(?:the\\s+)?(?:${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States|users\\s+in)\\b`,
+  `^\\s*(?:(?:all\\s+)?users\\s+in\\s+)?(?:the\\s+)?(?:${GEO_TERM_ALTERNATION})\\b`,
   "i",
 );
 
