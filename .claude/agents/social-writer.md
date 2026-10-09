@@ -133,6 +133,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 ```json
 {
   "path": "data/editions/260418/_internal/03-social.tmp.md",
+  "written": true,
   "posts": [
     { "destaque": "d1", "char_count": 720, "warnings": [] },
     { "destaque": "d2", "char_count": 690, "warnings": [] },
@@ -141,6 +142,8 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
   ]
 }
 ```
+
+**`written` (#9962):** `true` só se o `Write` do arquivo voltou sem erro. Write recusado (hook, permissão, path) → `"written": false` + o path e a mensagem de erro em `warnings` do 1º post; nunca gravar em outro nome. O coordenador confere existência e mtime do arquivo em disco logo após o seu retorno (`scripts/verify-agent-outputs.ts`).
 
 ## Regras
 

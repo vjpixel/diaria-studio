@@ -135,11 +135,14 @@ Retorne JSON:
   "image_prompt_path": "data/editions/260418/_internal/02-d1-prompt.md",
   "destaque_n": 1,
   "char_count": 1142,
+  "written": true,
   "warnings": []
 }
 ```
 
 `warnings` lista issues que não bloquearam a escrita mas merecem revisão (ex: peer overlap mantido por restrição editorial).
+
+**`written` (#9962) — honesto, nunca presumido.** `true` só se os DOIS `Write` (`out_path` e `image_prompt_out_path`) voltaram sem erro. Se qualquer `Write` for recusado (hook #9132 negando o nome do arquivo, permissão, path errado) devolva `"written": false` e diga em `warnings` qual path falhou e a mensagem de erro — e **nunca** tente outro nome de arquivo (`02-d1-prompt-new.md` e afins são negados pelo hook; só `out_path`/`image_prompt_out_path` exatos valem). O coordenador confere existência e mtime dos dois arquivos em disco logo após o seu retorno (`scripts/verify-agent-outputs.ts`): dizer "gravei" sem ter gravado vira falha detectada, não sucesso.
 
 ## Diferenças vs writer (parent)
 
