@@ -89,6 +89,12 @@ test("selectCandidates: domínio na lista de mantidos ou com decisão registrada
   assert.equal(makeIsDecided([{ domain: "keep.com", decision: "manter", decided_at: "x" }])("blog.keep.com"), true);
   assert.equal(isEditoriallyKept("nunca-listado.example"), false);
   assert.ok(EDITORIAL_KEEP_LIST instanceof Set);
+  // Decisões do editor no gate 4 da 261009 (#9975): manter, nunca reperguntar.
+  assert.equal(isEditoriallyKept("amazon.com"), true);
+  assert.equal(isEditoriallyKept("www.amazon.com"), true);
+  assert.equal(isEditoriallyKept("deepmind.google"), true);
+  // `amazon.com.br` é outro domínio registrável — não herda a decisão.
+  assert.equal(isEditoriallyKept("amazon.com.br"), false);
 });
 
 test("formatGateQuestions: uma pergunta por candidato, com exemplos retirados; vazio sem candidato", () => {
@@ -131,9 +137,17 @@ test("insertSetEntry + pendingDecisions: aplica no padrão do arquivo, idempoten
   assert.deepEqual(pendingDecisions([d], src, ""), [d]);
   assert.deepEqual(pendingDecisions([d], once, ""), []);
   assert.throws(() => insertSetEntry(src, "NAO_EXISTE", "x", "y"));
-  const keepSrc = readFileSync(join(import.meta.dirname, "..", "scripts", "lib", "editorial-keep-list.ts"), "utf8");
-  const k = insertSetEntry(keepSrc, "EDITORIAL_KEEP_LIST", "k.example", formatListEntry({ ...d, domain: "k.example", decision: "manter" }));
+  // Set vazio (fixture sintética — o arquivo real deixa de ser vazio assim que
+  // o 1º `--apply-to-code` roda, #9975): a entrada vira a 1ª linha do Set.
+  const emptyKeep = 'export const EDITORIAL_KEEP_LIST: ReadonlySet<string> = new Set<string>([\n]);\n';
+  const keepEntry = formatListEntry({ ...d, domain: "k.example", decision: "manter" });
+  const k = insertSetEntry(emptyKeep, "EDITORIAL_KEEP_LIST", "k.example", keepEntry);
   assert.match(k, /new Set<string>\(\[\n {2}"k\.example", \/\/ editor 261008 — editor pediu explicitamente para manter/);
+  // Arquivo real (com ou sem entradas): entra como última linha, idempotente.
+  const keepSrc = readFileSync(join(import.meta.dirname, "..", "scripts", "lib", "editorial-keep-list.ts"), "utf8");
+  const kReal = insertSetEntry(keepSrc, "EDITORIAL_KEEP_LIST", "k.example", keepEntry);
+  assert.ok(kReal.includes(keepEntry + "\n]);"), "entra como última linha do Set real");
+  assert.equal(insertSetEntry(kReal, "EDITORIAL_KEEP_LIST", "k.example", keepEntry), kReal, "idempotente");
 });
 
 // ---------------------------------------------------------------------------
