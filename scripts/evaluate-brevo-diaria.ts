@@ -369,6 +369,8 @@ import {
   needsDoiResend, // #9835
   DOI_RESEND_INTERVAL_DAYS, // #9835
   markDoiResent, // #9835
+  markDoiResendNoop, // #9979
+  lastDoiResendAttemptAt, // #9979
   findContact, // #9835
   normalizeEmail,
   DEFAULT_STORE_PATH,
@@ -1036,12 +1038,13 @@ export function decideKitPromotionAction(existing: { state: string } | null): Ki
  *  - estado no Kit é exatamente `inactive` (`cancelled`/`bounced`/
  *    `complained` nunca recebem, nem `active`, que não precisa);
  *  - o anti-spam do store permite (`needsDoiResend`: nunca reenviado, ou o
- *    último reenvio foi há `DOI_RESEND_INTERVAL_DAYS` dias ou mais).
+ *    última tentativa — reenvio 201 ou noop 200, #9979 — foi há
+ *    `DOI_RESEND_INTERVAL_DAYS` dias ou mais).
  */
 export function shouldResendKitDoi(input: {
   qualifiesByOpenRate: boolean;
   kitState: string;
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at">;
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at">;
   now?: string;
 }): boolean {
   if (!input.qualifiesByOpenRate) return false;
@@ -2225,7 +2228,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 `${contact.email}: double opt-in NÃO reenviado (#9835) — ` +
                   (existingKitSubscriber!.state !== "inactive"
                     ? `estado '${existingKitSubscriber!.state}' no Kit nunca recebe reenvio.`
-                    : `último reenvio em ${storedContact.doi_resent_at} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
+                    : `última tentativa em ${lastDoiResendAttemptAt(storedContact)} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
               );
             }
             if (resendAllowed) {
@@ -2243,7 +2246,10 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
                 // form"): o Kit não reenvia o e-mail. Não conta como reenvio
                 // nem grava `doi_resent_at` (decisão do editor: só 201 conta;
-                // sem teto de reenvios). Também não é falha.
+                // sem teto de reenvios). Também não é falha. #9979 — grava
+                // `doi_resend_noop_at` pro intervalo valer também aqui, senão
+                // o contato era re-chamado em toda rodada.
+                store = markDoiResendNoop(store, contact.email);
                 log(
                   `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
                     `(já vinculado ao form ${doiFormForResend}, nenhum e-mail sai); não conta como reenvio.`,
