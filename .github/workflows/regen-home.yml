@@ -65,6 +65,13 @@ on:
     # `scripts/lib/ads-rolling-window.ts`), então o offset é fixo e um único
     # cron cobre o ano inteiro.
     #
+    # #9974: o atraso PERSISTIU (5-9h em 04-09/10/2026) — este cron virou rede
+    # de segurança. Quem garante a edição na home é o watchdog
+    # `Diaria-Regen-Home-Watchdog` no `300` (06:20 BRT,
+    # `scripts/check-regen-home.ts`), que dispara este workflow via
+    # `workflow_dispatch` se a home ainda não lista a edição do dia e alarma
+    # às 07:00. Não remover o `workflow_dispatch:` abaixo.
+    #
     # Todo dia, inclusive fim de semana: em dia sem edição nova o
     # `gen-home-page.ts` reproduz byte a byte o `index.html` já commitado, o
     # passo de diff não acha mudança e o job termina sem abrir PR. Sai mais
