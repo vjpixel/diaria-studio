@@ -77,12 +77,18 @@ describe("checkClariceHealth", () => {
   it("usa o default quando timeoutMs é omitido — resposta lenta ainda dá ok=true", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     let aborted = false;
+    let settled = false;
     const fetchImpl: typeof fetch = (_url, init) =>
       new Promise((resolve) => {
+        // Só conta abort ANTES da resposta: o abort no finally (#9911) é
+        // limpeza pós-checagem, não o timeout disparando.
         init?.signal?.addEventListener("abort", () => {
-          aborted = true;
+          if (!settled) aborted = true;
         });
-        setTimeout(() => resolve(new Response("[]", { status: 200 })), OBSERVED_PROBE_LATENCY_MS);
+        setTimeout(() => {
+          settled = true;
+          resolve(new Response("[]", { status: 200 }));
+        }, OBSERVED_PROBE_LATENCY_MS);
       });
 
     const pending = checkClariceHealth({ apiKey: "k", fetchImpl }); // sem timeoutMs → default
@@ -279,5 +285,37 @@ describe("checkClariceMcpHealth (#5114)", () => {
       });
     const result = await checkClariceMcpHealth({ apiKey: "k", fetchImpl, timeoutMs: 50 });
     assert.equal(result.ok, false);
+  });
+});
+
+// #9911: sem process.exit, corpo não lido (stream SSE do initialize) seguraria
+// o processo — as duas checagens abortam o signal ao terminar.
+describe("abort no fim da checagem (#9911)", () => {
+  it("checkClariceMcpHealth aborta o signal mesmo com o initialize não consumido", async () => {
+    const signals: AbortSignal[] = [];
+    let call = 0;
+    const fetchImpl: typeof fetch = async (_u, init) => {
+      signals.push(init!.signal as AbortSignal);
+      call++;
+      if (call === 1) {
+        return new Response("event: message\ndata: {}\n\n", { status: 200, headers: { "mcp-session-id": "s" } });
+      }
+      return new Response(`event: message\ndata: ${JSON.stringify({ result: { isError: false }, jsonrpc: "2.0", id: 2 })}\n\n`, { status: 200 });
+    };
+    const result = await checkClariceMcpHealth({ apiKey: "k", fetchImpl, timeoutMs: 1000 });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(signals.length, 2);
+    for (const s of signals) assert.equal(s.aborted, true);
+  });
+
+  it("checkClariceHealth aborta o signal depois de um 200", async () => {
+    let signal: AbortSignal | undefined;
+    const fetchImpl: typeof fetch = async (_u, init) => {
+      signal = init!.signal as AbortSignal;
+      return new Response("[]", { status: 200 });
+    };
+    const result = await checkClariceHealth({ apiKey: "k", fetchImpl, timeoutMs: 1000 });
+    assert.equal(result.ok, true);
+    assert.equal(signal?.aborted, true);
   });
 });

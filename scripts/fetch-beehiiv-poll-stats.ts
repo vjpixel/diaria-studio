@@ -43,6 +43,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 interface BeehiivPostContent {
   data?: {
@@ -210,7 +211,7 @@ async function fetchPollResponses(
   return all;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   const postId = args["post-id"];
   const outPath = args.out;
@@ -218,7 +219,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso: fetch-beehiiv-poll-stats.ts --post-id <id> --out <path>",
     );
-    process.exit(1);
+    return 1;
   }
 
   const apiKey = process.env.BEEHIIV_API_KEY;
@@ -245,7 +246,7 @@ async function main(): Promise<void> {
     console.error(
       `[fetch-beehiiv-poll-stats] erro de API: ${(e as Error).message}`,
     );
-    process.exit(2);
+    return 2;
   }
 
   const postPollUuids = extractPollUuidsFromHtml(html);
@@ -267,7 +268,7 @@ async function main(): Promise<void> {
     console.error(
       `[fetch-beehiiv-poll-stats] erro de API (responses): ${(e as Error).message}`,
     );
-    process.exit(2);
+    return 2;
   }
 
   const normalized = filterAndNormalizeResponses(responses, postId);
@@ -295,8 +296,8 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[fetch-beehiiv-poll-stats] ${(e as Error).message}`);
-    process.exit(2);
+  runCli(main, {
+    onError: (e) => console.error(`[fetch-beehiiv-poll-stats] ${(e as Error).message}`),
+    errorCode: 2,
   });
 }

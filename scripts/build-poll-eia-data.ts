@@ -67,6 +67,7 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 // #2738: chave KV do clarice-dashboard pro engajamento do "É IA?" (aba Engajamento).
@@ -549,12 +550,12 @@ function parseArgs(argv: string[]): { push: boolean; workerUrl: string } {
   const workerUrl = workerUrlIdx >= 0
     ? (argv[workerUrlIdx + 1] && !argv[workerUrlIdx + 1].startsWith("--"))
       ? argv[workerUrlIdx + 1]
-      : (() => { console.error("[poll-eia] Erro: --worker-url requer um valor (ex: http://localhost:8787)"); process.exit(1); })()
+      : (() => { console.error("[poll-eia] Erro: --worker-url requer um valor (ex: http://localhost:8787)"); throw new CliExit(1); })()
     : DEFAULT_WORKER_URL;
   return { push, workerUrl };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   // #2738: CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN (usados por
   // pushEiaEngagementToBrevoKv) vêm de .env — sem isso, o push falha
   // silenciosamente (fail-soft) mesmo com os secrets configurados na máquina
@@ -571,7 +572,7 @@ async function main(): Promise<void> {
 
   if (editions.length === 0) {
     console.error("[poll-eia] Erro: nenhuma edição encontrada em data/editions/ — verifique se a junction OneDrive está montada");
-    process.exit(1);
+    return 1;
   }
 
   console.log(`[poll-eia] ${editions.length} edições em data/editions/ — buscando stats...`);
@@ -663,8 +664,5 @@ export async function pushEiaEngagementToBrevoKv(summary: PollEiaSummary): Promi
 
 // CLI guard (#cli-guard): só executa main() quando invocado diretamente
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[poll-eia] ${(e as Error).message}`);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error(`[poll-eia] ${(e as Error).message}`) });
 }

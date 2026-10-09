@@ -25,17 +25,18 @@
 import { resolve } from "node:path";
 
 import { getIntArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { artigoUrl } from "./lib/artigo-especial-draft.ts";
 import { probeArtigoEspecial, type ProbeFetch } from "./lib/artigo-especial-probe.ts";
 import { runMarkProducaoEtapa } from "./artigo-especial-producao.ts";
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const ano = getStringArg(argv, "ano", { example: "2026" });
   const slug = getStringArg(argv, "slug", { example: "o-jev" });
   if (!ano || !slug) {
     console.error("Uso: npx tsx scripts/probe-artigo-especial.ts --ano AAAA --slug slug [--attempts N] [--interval S] [--mark]");
-    process.exit(2);
+    return 2;
   }
   const attempts = getIntArg(argv, "attempts") ?? 10;
   const intervalS = getIntArg(argv, "interval") ?? 30;
@@ -51,9 +52,9 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
     err: (m) => console.error(m),
   });
-  // exitCode, não process.exit(): sair à força com o socket do fetch ainda
-  // fechando derruba o Node no Windows (assert do libuv em async.c).
-  process.exitCode = r.exitCode;
+  // runCli grava exitCode (nunca process.exit): sair à força com o socket do
+  // fetch ainda fechando derruba o Node no Windows (assert do libuv, #9911).
+  return r.exitCode;
 }
 
 export interface RunProbeOptions {
@@ -109,8 +110,5 @@ export async function runProbeArtigoEspecial(o: RunProbeOptions): Promise<{ exit
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`ERRO inesperado: ${(e as Error).message}`);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error(`ERRO inesperado: ${(e as Error).message}`) });
 }

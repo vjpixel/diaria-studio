@@ -154,3 +154,78 @@ describe("entry points migrados propagam o código (#9911)", () => {
     assert.doesNotMatch(r.stderr, /Fatal/);
   });
 });
+
+/**
+ * 2º lote do #9911: alarmes, reports, builders e verificadores de leitura
+ * (nenhum publisher de envio, nenhum servidor). Cada saída foi trocada
+ * 1:1 — `process.exit(N)` → `return N` dentro de `main()`, ou `CliExit(N)`
+ * fora dela — e o código do catch final preservado via `errorCode`.
+ */
+const BATCH_2 = [
+  "scripts/backfill-eia-meta.ts",
+  "scripts/build-poll-eia-data.ts",
+  "scripts/clarice-healthcheck.ts",
+  "scripts/coupon-clarice-class.ts",
+  "scripts/discover-rss.ts",
+  "scripts/fetch-beehiiv-poll-stats.ts",
+  "scripts/fetch-rss.ts",
+  "scripts/fetch-source-text.ts",
+  "scripts/probe-artigo-especial.ts",
+  "scripts/refresh-past-editions.ts",
+  "scripts/verify-facebook-posts.ts",
+  "scripts/verify-twitter-posts.ts",
+  "scripts/worker-drift-check.ts",
+];
+
+describe("2º lote migrado (#9911)", () => {
+  it("nenhum script do lote volta para a allowlist", () => {
+    for (const f of BATCH_2) assert.equal(ALLOWLIST.has(f), false, f);
+  });
+
+  // Mesma regra do bloco anterior: só caminhos de uso/credencial ausente,
+  // antes de qualquer rede ou escrita. Env vazia (nunca removida): dotenv e
+  // loadProjectEnv não sobrescrevem var já presente, então um .env local não
+  // transforma o teste em chamada de rede.
+  const run = (script: string, args: string[], env: Record<string, string> = {}) =>
+    spawnSync(process.execPath, ["--import", "tsx", resolve(ROOT, script), ...args], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+
+  const cases: Array<[string, string, string[], Record<string, string>, number]> = [
+    ["probe-artigo-especial sem --ano/--slug", "scripts/probe-artigo-especial.ts", [], {}, 2],
+    ["fetch-source-text sem url", "scripts/fetch-source-text.ts", [], {}, 1],
+    ["fetch-rss sem --url", "scripts/fetch-rss.ts", [], {}, 1],
+    ["refresh-past-editions sem input", "scripts/refresh-past-editions.ts", [], {}, 1],
+    ["verify-twitter-posts sem --edition-dir", "scripts/verify-twitter-posts.ts", [], {}, 1],
+    ["verify-facebook-posts sem --edition-dir", "scripts/verify-facebook-posts.ts", [], {}, 1],
+    ["fetch-beehiiv-poll-stats sem --post-id/--out", "scripts/fetch-beehiiv-poll-stats.ts", [], {}, 1],
+    ["clarice-healthcheck com --timeout-ms inválido", "scripts/clarice-healthcheck.ts", ["--timeout-ms", "abc"], {}, 1],
+    ["clarice-healthcheck sem CLARICE_API_KEY", "scripts/clarice-healthcheck.ts", [], { CLARICE_API_KEY: "" }, 2],
+    ["build-poll-eia-data com --worker-url sem valor (CliExit fora de main)", "scripts/build-poll-eia-data.ts", ["--worker-url"], {}, 1],
+    ["backfill-eia-meta sem ADMIN_SECRET", "scripts/backfill-eia-meta.ts", [], { ADMIN_SECRET: "", POLL_ADMIN_SECRET: "" }, 1],
+    ["coupon-clarice-class sem credencial Cloudflare", "scripts/coupon-clarice-class.ts", ["--dry-run"], { CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_WORKERS_TOKEN: "" }, 1],
+    ["worker-drift-check sem credencial Cloudflare", "scripts/worker-drift-check.ts", ["--dry-run"], { CLOUDFLARE_ACCOUNT_ID: "", CLOUDFLARE_WORKERS_TOKEN: "" }, 2],
+  ];
+
+  for (const [name, script, args, env, code] of cases) {
+    it(`${name} sai ${code}`, () => {
+      const r = run(script, args, env);
+      assert.equal(r.status, code, r.stderr);
+    });
+  }
+
+  it("discover-rss com --source inexistente sai 1 antes de qualquer fetch", () => {
+    const dir = mkdtempSync(join(tmpdir(), "discover-rss-9911-"));
+    try {
+      const csv = join(dir, "sources.csv");
+      writeFileSync(csv, "Nome,URL,RSS\nFonte A,https://example.invalid,\n");
+      const r = run("scripts/discover-rss.ts", ["--csv", csv, "--source", "nao-existe", "--dry-run"]);
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, /Nenhuma fonte com nome "nao-existe"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

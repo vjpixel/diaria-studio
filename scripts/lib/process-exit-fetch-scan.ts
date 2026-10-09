@@ -14,7 +14,8 @@
  *
  * `ALLOWLIST`: scripts ainda não migrados (#9911 migrou o conjunto prioritário
  * — LinkedIn pessoal, publish-facebook/instagram/linkedin/threads e os
- * scripts de Stage 2/4/5/6 — e deixou o resto para PR futuro). Duas ficaram
+ * scripts de Stage 2/4/5/6 — e, num 2º lote, 13 alarmes/reports/builders/
+ * verificadores de leitura; o resto fica para PR futuro). Duas ficaram
  * de propósito: `publish-monthly.ts` (os testes de integração substituem
  * `process.exit` para observar o código; migrar exige reescrever esses
  * testes) e `serve-preview.ts` (servidor de longa duração: o teardown por
@@ -30,39 +31,26 @@ import ts from "typescript";
 
 /** Paths relativos à raiz do repo, com `/`. Remover ao migrar. */
 export const ALLOWLIST: ReadonlySet<string> = new Set([
-  "scripts/backfill-eia-meta.ts",
-  "scripts/build-poll-eia-data.ts",
   "scripts/clarice-engagement-cohorts-v2.ts",
-  "scripts/clarice-healthcheck.ts",
   "scripts/clarice-plan-wave.ts",
   "scripts/clarice-schedule-ramp.ts",
   "scripts/clarice-stripe-delta.ts",
   "scripts/cohort-engagement.ts",
-  "scripts/coupon-clarice-class.ts",
   "scripts/delete-test-schedules.ts",
-  "scripts/discover-rss.ts",
   "scripts/eia-compose.ts",
   "scripts/evaluate-brevo-diaria.ts",
-  "scripts/fetch-beehiiv-poll-stats.ts",
-  "scripts/fetch-rss.ts",
-  "scripts/fetch-source-text.ts",
   "scripts/google-ads-associate-token.ts",
   "scripts/inject-poll-token.ts",
   "scripts/oauth-setup.ts",
   "scripts/onboarding-welcome-run.ts",
-  "scripts/probe-artigo-especial.ts",
   "scripts/publish-monthly.ts",
-  "scripts/refresh-past-editions.ts",
   "scripts/serve-preview.ts",
   "scripts/studio/verify-remote-tunnel.ts",
   "scripts/sync-apoio-nivel-beehiiv.ts",
   "scripts/sync-cursos-subscribers-kv.ts",
   "scripts/sync-pending-to-brevo.ts",
   "scripts/verify-emails-mv.ts",
-  "scripts/verify-facebook-posts.ts",
   "scripts/verify-pending-emails-mv.ts",
-  "scripts/verify-twitter-posts.ts",
-  "scripts/worker-drift-check.ts",
 ]);
 
 const GLOBAL_OBJECTS = new Set(["globalThis", "global", "window", "self"]);

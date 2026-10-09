@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 // Re-exports mantidos pra compat com callers (#650 backward compat).
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 export type { PostEntry, SocialPublished };
 
 /**
@@ -320,13 +321,13 @@ export async function verifyPublished(
   return { updated: { ...published, posts: updatedPosts }, changes };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
   const editionDir = args["edition-dir"];
   if (!editionDir) {
     console.error("Uso: verify-facebook-posts.ts --edition-dir <path>");
-    process.exit(1);
+    return 1;
   }
 
   // #920: prefer _internal/ (canonical, written by publish-facebook.ts), fall
@@ -337,13 +338,13 @@ async function main(): Promise<void> {
     const internal = resolve(ROOT, editionDir, "_internal", "06-social-published.json");
     const root = resolve(ROOT, editionDir, "06-social-published.json");
     console.error(`Arquivo não encontrado em nenhum dos paths esperados:\n  - ${internal}\n  - ${root}`);
-    process.exit(1);
+    return 1;
   }
 
   const credsPath = resolve(ROOT, "data/.fb-credentials.json");
   if (!existsSync(credsPath)) {
     console.error(`Credenciais não encontradas: ${credsPath}`);
-    process.exit(1);
+    return 1;
   }
 
   const creds = JSON.parse(readFileSync(credsPath, "utf8")) as {
@@ -376,8 +377,5 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  runCli(main);
 }
