@@ -1016,5 +1016,17 @@
       "https://www.anthropic.com/news/claude-discovers-novel-enzyme-system"
     ],
     "editionTitle": "Claude descobre novo sistema enzimático"
+  },
+  {
+    "date": "2026-10-08",
+    "editionSlug": "haiku-5-5-supera-o-sonnet-5-e-custa-ate-95-menos",
+    "url": "https://diar.ia.br/p/haiku-5-5-supera-o-sonnet-5-e-custa-ate-95-menos",
+    "matchedHeadlines": [
+      "Haiku 5.5 supera o Sonnet 5 e custa até 95% menos"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/claude-haiku-5-5"
+    ],
+    "editionTitle": "Haiku 5.5 supera o Sonnet 5 e custa até 95% menos"
   }
 ]

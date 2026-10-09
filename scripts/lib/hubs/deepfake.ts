@@ -104,7 +104,7 @@ const PUBLISHED_DATE = "2026-09-19";
 
 /** `YYYY-MM-DD` estático — dia em que o CORPO foi revisado por último. Nasce
  * igual a `PUBLISHED_DATE` (hub recém-criado, nunca revisado ainda). */
-const UPDATED_DATE = "2026-09-19";
+const UPDATED_DATE = "2026-10-09";
 
 /** `matchedHeadlines` vem em NFD antes de normalizar — `countMatching`/
  * `buildLaunchChronologyTable` normalizam pra NFC antes de testar (ver

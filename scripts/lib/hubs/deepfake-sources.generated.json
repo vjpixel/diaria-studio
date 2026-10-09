@@ -111,5 +111,17 @@
       "https://g1.globo.com/jornal-hoje/noticia/2026/08/17/eleicoes-2026-entenda-riscos-do-uso-de-inteligencia-artificial-nas-campanhas-veja-como-identificar-conteudos-criados-por-ia.ghtml"
     ],
     "editionTitle": "TSE exige aviso em propaganda eleitoral com IA"
+  },
+  {
+    "date": "2026-10-02",
+    "editionSlug": "voce-viu-bonner-anunciar-pesquisa-era-deepfake",
+    "url": "https://diar.ia.br/p/voce-viu-bonner-anunciar-pesquisa-era-deepfake",
+    "matchedHeadlines": [
+      "Você viu Bonner anunciar pesquisa? Era deepfake"
+    ],
+    "primarySourceUrls": [
+      "https://www.agencialupa.org/noticias/2026/10/01/vigia-1o-turno-tem-quase-um-conteudo-eleitoral-com-ia-por-hora-nas-redes/"
+    ],
+    "editionTitle": "Você viu Bonner anunciar pesquisa? Era deepfake"
   }
 ]
