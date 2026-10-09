@@ -58,6 +58,10 @@ describe("public/guia/agente-ia — página de vendas do guia", () => {
     assert.equal(countOccurrences(html, "fbq('track', 'PageView')"), 1);
   });
 
+  it("FAQ: quem usar o Claude Code é avisado de que a imagem é feita à parte (o guia usa o gerador de imagens do Codex)", () => {
+    assert.ok(html.includes("Se preferir, você também pode usar o Claude Code, criando a imagem à parte."));
+  });
+
   it("pixel da Meta só dispara em diar.ia.br (teste local não entra no dataset)", () => {
     const m = html.match(/<!-- Meta Pixel[\s\S]*?<script>([\s\S]*?)<\/script>/);
     assert.ok(m, "bloco do pixel não encontrado");
