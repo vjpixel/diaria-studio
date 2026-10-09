@@ -41,6 +41,8 @@ async function main(): Promise<number | void> {
   );
   if (!res.ok) {
     console.error(`erro: leitura de coupons:usage falhou (HTTP ${res.status}).`);
+    // #9911: libera o socket (sem process.exit, corpo não lido segura o loop).
+    await res.body?.cancel().catch(() => {});
     return 1;
   }
   const usage = (await res.json()) as CouponUsageReport;

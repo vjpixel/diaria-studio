@@ -86,6 +86,10 @@ export async function checkClariceHealth(
     return { ok: false, latency_ms, error: (e as Error).message };
   } finally {
     clearTimeout(timeout);
+    // #9911: cancela corpo não lido (ex.: stream SSE do initialize). Sem o
+    // process.exit, um socket aberto deixaria o processo pendurado. Abortar
+    // depois de o corpo útil já ter sido lido não tem efeito.
+    controller.abort();
   }
 }
 
@@ -229,6 +233,10 @@ export async function checkClariceMcpHealth(opts: HealthOptions): Promise<Health
     return { ok: false, latency_ms: Date.now() - t0, error: (e as Error).message };
   } finally {
     clearTimeout(timeout);
+    // #9911: cancela corpo não lido (ex.: stream SSE do initialize). Sem o
+    // process.exit, um socket aberto deixaria o processo pendurado. Abortar
+    // depois de o corpo útil já ter sido lido não tem efeito.
+    controller.abort();
   }
 }
 
