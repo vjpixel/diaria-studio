@@ -13,7 +13,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runEvaluation, shouldResendKitDoi, resendKitDoi } from "../scripts/evaluate-brevo-diaria.ts";
+import { runEvaluation, shouldResendKitDoi, resendKitDoi, isKitDoiResendCounted } from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
   needsDoiResend,
@@ -344,16 +344,50 @@ describe("runEvaluation — reenvio do DOI no ramo await_self_confirmation (#983
     }
   });
 
-  it("vínculo 200 (já vinculado) conta como reenvio mas o log avisa que o Kit pode não reenviar", async () => {
-    installFetch({ state: "inactive", formStatus: 200 });
+  // #9945 — regressão: 200 ("já vinculado ao form") é 2xx mas o Kit não envia
+  // e-mail; antes contava em doiResent e gravava doi_resent_at. Só 201 conta.
+  it("vínculo 200 (já vinculado) NÃO conta como reenvio nem grava doi_resent_at, e não é falha (#9945)", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 200 });
     const logs: string[] = [];
     try {
       const result = await run(contact("leitor@x.com"), { log: (m) => logs.push(m) });
-      assert.equal(result.doiResent, 1);
-      assert.ok(logs.some((l) => l.includes("HTTP 200") && l.includes("pode não reenviar")));
+      assert.equal(calls.formPosts.length, 1);
+      assert.equal(result.doiResent, 0);
+      assert.equal(result.failed, 0);
+      assert.equal(result.awaitingKitConfirmation, 1);
+      assert.equal(findContact(result.store, "leitor@x.com")!.doi_resent_at, undefined);
+      assert.ok(logs.some((l) => l.includes("HTTP 200") && l.includes("NÃO reenviado") && l.includes("#9945")));
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  it("vínculo 200 com reenvio antigo no store → doi_resent_at antigo preservado, sem contar (#9945)", async () => {
+    installFetch({ state: "inactive", formStatus: 200 });
+    try {
+      const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+      const result = await run(contact("leitor@x.com", { doi_resent_at: old }));
+      assert.equal(result.doiResent, 0);
+      assert.equal(findContact(result.store, "leitor@x.com")!.doi_resent_at, old);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("vínculo 201 (vínculo novo) conta como reenvio e grava doi_resent_at (#9945)", async () => {
+    installFetch({ state: "inactive", formStatus: 201 });
+    try {
+      const result = await run(contact("leitor@x.com"));
+      assert.equal(result.doiResent, 1);
+      assert.ok(findContact(result.store, "leitor@x.com")!.doi_resent_at);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("isKitDoiResendCounted: só 201 conta (#9945)", () => {
+    assert.equal(isKitDoiResendCounted(201), true);
+    for (const s of [200, 202, 204, 299]) assert.equal(isKitDoiResendCounted(s), false);
   });
 
   it("qualifica mas está dentro da janela → log com o motivo do não-reenvio", async () => {

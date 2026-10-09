@@ -1050,6 +1050,18 @@ export function shouldResendKitDoi(input: {
 }
 
 /**
+ * isKitDoiResendCounted (#9945) — pura. Só HTTP 201 (vínculo NOVO ao designer
+ * form, que dispara o e-mail de confirmação) conta como reenvio do DOI. O 200
+ * ("subscriber já vinculado ao form") é 2xx mas o Kit não envia nada; contá-lo
+ * inflava `doiResent` e gravava `doi_resent_at` sem e-mail ter saído.
+ * Decisão do editor (briefing overnight 261009): sem teto de reenvios, só
+ * corrigir a contagem.
+ */
+export function isKitDoiResendCounted(status: number): boolean {
+  return status === 201;
+}
+
+/**
  * resendKitDoi (#9835) — reenvia o e-mail de confirmação vinculando o
  * subscriber já existente ao designer form de DOI. Reusa
  * `vincularKitDoiForm` (`lib/shared/kit-doi.ts`, a mesma maquinaria dos
@@ -1061,7 +1073,8 @@ export function shouldResendKitDoi(input: {
  * reenvio feito sem ter saído e-mail nenhum (o caller já valida o form uma
  * vez por rodada; esta checagem é defensiva). `ok: true` significa 2xx do
  * Kit, não prova de e-mail entregue: 200 costuma indicar que o subscriber já
- * estava vinculado ao form, e o caller loga isso. Exceção/timeout dentro de
+ * estava vinculado ao form, e o caller não conta como reenvio nem grava
+ * `doi_resent_at` (só 201 conta, `isKitDoiResendCounted`, #9945). Exceção/timeout dentro de
  * `vincularKitDoiForm` é engolida por ele e vira `ok: false` sem `status`.
  * Em falha o caller conta em `failed` e não grava `doi_resent_at`.
  */
@@ -2222,14 +2235,19 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               } catch (e) {
                 resend = { ok: false, reason: (e as Error).message };
               }
-              if (resend.ok) {
-                log(
-                  `${contact.email}: double opt-in do Kit reenviado (form ${doiFormForResend}, HTTP ${resend.status}` +
-                    (resend.status === 200 ? ", já vinculado ao form antes: Kit pode não reenviar o e-mail" : "") +
-                    ", #9835).",
-                );
+              if (resend.ok && isKitDoiResendCounted(resend.status)) {
+                log(`${contact.email}: double opt-in do Kit reenviado (form ${doiFormForResend}, HTTP ${resend.status}, #9835).`);
                 doiResent++;
                 store = markDoiResent(store, contact.email);
+              } else if (resend.ok) {
+                // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
+                // form"): o Kit não reenvia o e-mail. Não conta como reenvio
+                // nem grava `doi_resent_at` (decisão do editor: só 201 conta;
+                // sem teto de reenvios). Também não é falha.
+                log(
+                  `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
+                    `(já vinculado ao form ${doiFormForResend}, nenhum e-mail sai); não conta como reenvio.`,
+                );
               } else {
                 log(`warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}`);
                 failed++;
