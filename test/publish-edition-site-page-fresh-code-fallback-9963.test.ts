@@ -22,6 +22,7 @@ import { join } from "node:path";
 import {
   defaultFreshCodeFallbackDeps,
   FRESH_CODE_HOST_ROOT_ENV,
+  FRESH_CODE_PENDING_REASON,
   freshCodeChildArgv,
   resolveWaiterLaunch,
   runWithFreshCodeWorktree,
@@ -91,6 +92,9 @@ function fakeDeps(over: Partial<FreshCodeFallbackDeps> = {}) {
       childCalls.push(a);
       return 0;
     },
+    writePendingState: (e) => {
+      events.push(`pending ${e}`);
+    },
     rmDir: (p) => {
       events.push(`rm ${p}`);
     },
@@ -118,6 +122,24 @@ describe("#9963 runWithFreshCodeWorktree — orquestração (fakes)", () => {
     const iRemove = events.indexOf("git worktree remove --force /tmp/wt");
     assert.ok(events.includes(`link ${join("/tmp/wt", "node_modules")} -> ${join("/host", "node_modules")}`));
     assert.ok(iChild < iUnlinkNm && iUnlinkNm < iRemove && iUnlinkData < iRemove, events.join("\n"));
+    const iPending = events.indexOf("pending /host/data/editions/261009");
+    assert.ok(iPending !== -1 && iPending < iChild, "state provisório gravado ANTES do filho (self-review P2 do #9971)");
+  });
+
+  it("filho morre sem gravar o state → fica o provisório (code 3), nunca o resultado de uma chamada anterior", () => {
+    const edition = tmp("diaria-9963-ed-");
+    const statePath = join(edition, "_internal", "site-page-published.json");
+    mkdirSync(join(edition, "_internal"), { recursive: true });
+    writeFileSync(statePath, JSON.stringify({ code: 0, published: true, slug: "edicao-anterior" }));
+    const real = defaultFreshCodeFallbackDeps();
+    const { deps } = fakeDeps({ writePendingState: real.writePendingState, runChild: () => 1 });
+
+    const r = runWithFreshCodeWorktree("/host", [], edition, deps);
+    assert.deepEqual(r, { ran: true, exitCode: 1 });
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.equal(state.code, 3);
+    assert.notEqual(state.published, true);
+    assert.equal(state.reason, FRESH_CODE_PENDING_REASON);
   });
 
   it("worktree add falha → ran:false, filho nunca roda", () => {

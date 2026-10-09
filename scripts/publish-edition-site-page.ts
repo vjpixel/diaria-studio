@@ -836,6 +836,13 @@ export interface FreshCodeFallbackDeps {
   unlink: (linkPath: string) => boolean;
   /** Roda o script do worktree com o argv dado; devolve o exit (`null` = não iniciou). */
   runChild: (args: { cwd: string; scriptPath: string; argv: string[]; hostRoot: string }) => number | null;
+  /**
+   * Grava um state PROVISÓRIO (`code: 3`, "filho não gravou o resultado")
+   * antes de lançar o filho, que o sobrescreve ao terminar. Sem isto, um filho
+   * que morre antes de gravar deixaria o state de uma chamada ANTERIOR, e o
+   * invariant do #7283 leria um resultado velho (self-review do PR #9971).
+   */
+  writePendingState: (editionDirAbs: string) => void;
   /** Remove o diretório do worktree (já sem links) — fallback quando `git worktree remove` falha. */
   rmDir: (p: string) => void;
   log: (line: string) => void;
@@ -891,6 +898,7 @@ export function runWithFreshCodeWorktree(
       linked.push(linkPath);
     }
     deps.log(`código defasado (#9821) — re-rodando a partir de worktree limpo em origin/master: ${wt} (#9963)`);
+    deps.writePendingState(editionDirAbs);
     const status = deps.runChild({
       cwd: wt,
       scriptPath: join(wt, "scripts", "publish-edition-site-page.ts"),
@@ -966,10 +974,17 @@ export function defaultFreshCodeFallbackDeps(git: GitRunner = defaultGitRunner):
       if (r.error) return null; // não iniciou
       return r.status ?? 1; // morto por sinal: rodou, falhou
     },
+    writePendingState: (editionDirAbs) =>
+      writeSitePageState(editionDirAbs, { code: 3, reason: FRESH_CODE_PENDING_REASON }),
     rmDir: (p) => rmSync(p, { recursive: true, force: true }),
     log: (line) => process.stderr.write(`[site-page] ${line}\n`),
   };
 }
+
+/** #9963: motivo do state provisório — só sobrevive se o filho morrer sem gravar o dele. */
+export const FRESH_CODE_PENDING_REASON =
+  "fallback em worktree limpo (#9963) lançou o processo filho, mas ele terminou sem gravar o resultado " +
+  "(crash/erro de import antes do fim) — rode de novo e confira o stderr";
 
 /** Roda `gh`, síncrono, capturando stdout como string. Injetável pra teste. */
 export type GhRunner = (args: string[], cwd: string) => string;
