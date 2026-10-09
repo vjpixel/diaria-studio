@@ -73,7 +73,7 @@ const PUBLISHED_DATE = "2026-08-10";
  * Nasce igual a `PUBLISHED_DATE` (hub recém-criado, nunca revisado ainda). */
 // 2026-08-18 (#5629/#5631): deriveMetaAiFacts extraído + reflow do parágrafo
 // de 119 palavras (Muse Glimmer) em 2. Bump por mudança de CORPO.
-const UPDATED_DATE = "2026-08-18";
+const UPDATED_DATE = "2026-10-09";
 
 /** `matchedHeadlines` vem em NFD ("óculos" tem acento; sem a normalização o
  * pattern de óculos abaixo bateria 0 contra o dado real, mesma classe de bug
