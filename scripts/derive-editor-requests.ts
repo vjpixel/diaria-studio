@@ -222,6 +222,33 @@ function sectionItemKeys(text: string): string[] {
   return text.split("\n").filter((l) => l.trim().startsWith("**[")).map(titleLineUrlKey).filter((k): k is string => !!k);
 }
 
+/**
+ * #9949: remove de uma seção de pool os blocos dos itens cujas chaves
+ * (`titleLineUrlKey`) estão em `keys`. Bloco = linha de título `**[t](url)**`
+ * até (exclusive) a próxima linha de título ou separador `---`.
+ */
+function stripItemBlocks(text: string, keys: ReadonlySet<string>): string {
+  if (keys.size === 0) return text;
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (t.startsWith("**[")) {
+      const k = titleLineUrlKey(line);
+      skipping = k !== null && keys.has(k);
+    } else if (t === "---") {
+      skipping = false;
+    }
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n");
+}
+
+/** Ignora diferença só de linhas em branco/espaço no fim (sobra da remoção de um bloco). */
+function normalizeBlankLines(text: string): string {
+  return text.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "").join("\n");
+}
+
 /** Seção de pool da newsletter → `target` da taxonomia (mesmo vocabulário de `POOL_BUCKET_TARGETS`). */
 const POOL_SECTION_TARGETS: Readonly<Record<string, RequestTarget>> = {
   "use-melhor": "use-melhor",
@@ -436,9 +463,46 @@ export function classifyNewsletterDiff(
   }
 
   // Detectar mudanças por seção
-  for (const [section, newText] of newSections) {
-    const oldText = oldSections.get(section) ?? "";
-    if (oldText === newText) continue;
+  for (const [section, newSectionText] of newSections) {
+    const oldSectionText = oldSections.get(section) ?? "";
+    if (oldSectionText === newSectionText) continue;
+
+    // #9879/#9880: numa seção de pool, mudança no CONJUNTO de itens (por URL)
+    // é corte/adição/troca de item e vence o "length-cut" por tamanho da seção.
+    // Medição 260930..261008: 31 itens cortados, 0 descrições encurtadas.
+    // #9943: itens que só mudaram de seção saem da conta. Entrada vinda de
+    // outra seção de POOL vira `bucket-move` (1 por item, como o
+    // `classifyPoolDiff`, e deduplicada contra ele em `dedupeDestaqueSwaps`);
+    // ida/volta de destaque não gera nada aqui (destaque-* já reporta).
+    let poolClass = POOL_SECTION_KEYS.has(section)
+      ? classifyPoolItemSetChange(oldSectionText, newSectionText, { before: keysOutside(oldWhere, section), after: keysOutside(newWhere, section) })
+      : null;
+    let oldText = oldSectionText;
+    let newText = newSectionText;
+    if (poolClass) {
+      for (const k of poolClass.movedIn) {
+        const from = oldWhere.get(k);
+        if (!from || !POOL_SECTION_KEYS.has(from)) continue;
+        results.push({
+          request_type: "bucket-move",
+          target: POOL_SECTION_TARGETS[section] ?? "newsletter",
+          description: `Item movido de ${from} → ${section} no 02-reviewed.md: ${newItemUrls.get(k) ?? k}`,
+          resolution: "accepted",
+          context: { section, from_section: from, url: newItemUrls.get(k) ?? k, change_kind: "item-movido" },
+        });
+      }
+      if (poolClass.removed === 0 && poolClass.added === 0) {
+        // #9949: a única mudança no CONJUNTO foi movimentação — mas os outros
+        // itens da seção podem ter sido editados no mesmo gate (descrição
+        // encurtada, reescrita). Tira os blocos dos itens movidos e compara o
+        // resto: sobrou diferença → classificação textual normal sobre o
+        // resto (o encolhimento causado pela saída do item movido não conta).
+        oldText = stripItemBlocks(oldSectionText, new Set(poolClass.movedOut));
+        newText = stripItemBlocks(newSectionText, new Set(poolClass.movedIn));
+        if (normalizeBlankLines(oldText) === normalizeBlankLines(newText)) continue;
+        poolClass = null;
+      }
+    }
 
     // Determinar target baseado na seção
     let target: RequestTarget = "newsletter";
@@ -580,32 +644,7 @@ export function classifyNewsletterDiff(
       if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
     }
 
-    // #9879/#9880: numa seção de pool, mudança no CONJUNTO de itens (por URL)
-    // é corte/adição/troca de item e vence o "length-cut" por tamanho da seção.
-    // Medição 260930..261008: 31 itens cortados, 0 descrições encurtadas.
-    // #9943: itens que só mudaram de seção saem da conta. Entrada vinda de
-    // outra seção de POOL vira `bucket-move` (1 por item, como o
-    // `classifyPoolDiff`, e deduplicada contra ele em `dedupeDestaqueSwaps`);
-    // ida/volta de destaque não gera nada aqui (destaque-* já reporta).
-    // Seção cuja única mudança no conjunto foi movimentação não gera entrada
-    // própria — o encolhimento do texto não é corte.
-    const poolClass = POOL_SECTION_KEYS.has(section)
-      ? classifyPoolItemSetChange(oldText, newText, { before: keysOutside(oldWhere, section), after: keysOutside(newWhere, section) })
-      : null;
-    if (poolClass) {
-      for (const k of poolClass.movedIn) {
-        const from = oldWhere.get(k);
-        if (!from || !POOL_SECTION_KEYS.has(from)) continue;
-        results.push({
-          request_type: "bucket-move",
-          target: POOL_SECTION_TARGETS[section] ?? target,
-          description: `Item movido de ${from} → ${section} no 02-reviewed.md: ${newItemUrls.get(k) ?? k}`,
-          resolution: "accepted",
-          context: { section, from_section: from, url: newItemUrls.get(k) ?? k, change_kind: "item-movido" },
-        });
-      }
-      if (poolClass.removed === 0 && poolClass.added === 0) continue;
-    }
+    // Mudança real no conjunto (corte/adição/troca) vence a classificação textual.
     if (poolClass) requestType = poolClass.type;
 
     // Verificar se destaque foi removido (swap/cut)

@@ -177,3 +177,54 @@ describe("#9943 item que só muda de seção não vira pool-cut + pool-add", () 
     assert.deepEqual(full(out), ["radar:pool-cut:itens-cortados"]);
   });
 });
+
+// --- #9949 ---------------------------------------------------------------
+
+describe("#9949 seção só com item movido não descarta edição de outro item", () => {
+  const C = { title: "Gemini 4 chega ao Workspace", url: "https://blog.google/products/workspace/gemini-4/" };
+  const longo = "Descrição longa do lançamento, com detalhe de preço, disponibilidade e limites de uso. ".repeat(6).trim();
+  const curto = "Descrição curta.";
+  type It = { title: string; url: string };
+  const mdDesc = (opts: { d1: It; lanc: Array<[It, string]>; radar: Array<[It, string]> }) =>
+    [
+      destaque(1, opts.d1),
+      poolSection("**🚀 LANÇAMENTOS**", opts.lanc.map(([it, d]) => poolItem(it.title, it.url, d))),
+      poolSection("**📡 RADAR**", opts.radar.map(([it, d]) => poolItem(it.title, it.url, d))),
+    ].join("\n");
+  const dA = `Descrição de ${A.title}.`;
+  const dB = `Descrição de ${B.title}.`;
+
+  it("cenário da issue: A LANÇAMENTOS → RADAR + C encurtado → bucket-move + length-cut em lancamentos", () => {
+    const out = classifyNewsletterDiff(
+      mdDesc({ d1: Z, lanc: [[A, dA], [C, longo]], radar: [[B, dB]] }),
+      mdDesc({ d1: Z, lanc: [[C, curto]], radar: [[B, dB], [A, dA]] }),
+    );
+    assert.deepEqual(full(out).sort(), ["lancamentos:length-cut", "radar:bucket-move:item-movido"]);
+    const cut = out.find((r) => r.request_type === "length-cut")!;
+    assert.equal((cut.context as any).items_removed, undefined, "não é corte de item");
+  });
+
+  it("só movimentação, sem edição de outro item → nada além do bucket-move", () => {
+    const out = classifyNewsletterDiff(
+      mdDesc({ d1: Z, lanc: [[A, dA], [C, longo]], radar: [[B, dB]] }),
+      mdDesc({ d1: Z, lanc: [[C, longo]], radar: [[B, dB], [A, dA]] }),
+    );
+    assert.deepEqual(full(out), ["radar:bucket-move:item-movido"]);
+  });
+
+  it("item do RADAR promovido a destaque + outro item do RADAR encurtado → destaque-swap + length-cut", () => {
+    const out = classifyNewsletterDiff(
+      mdDesc({ d1: Z, lanc: [[X, "x"]], radar: [[E, dA], [C, longo]] }),
+      mdDesc({ d1: E, lanc: [[X, "x"]], radar: [[C, curto]] }),
+    );
+    assert.deepEqual(summary(out).sort(), ["d1:destaque-swap", "radar:length-cut"]);
+  });
+
+  it("item movido + outro item reescrito mais longo → lead-rewrite", () => {
+    const out = classifyNewsletterDiff(
+      mdDesc({ d1: Z, lanc: [[A, dA], [C, curto]], radar: [[B, dB]] }),
+      mdDesc({ d1: Z, lanc: [[C, longo]], radar: [[B, dB], [A, dA]] }),
+    );
+    assert.deepEqual(full(out).sort(), ["lancamentos:lead-rewrite", "radar:bucket-move:item-movido"]);
+  });
+});
