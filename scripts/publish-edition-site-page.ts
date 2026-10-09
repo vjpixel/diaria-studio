@@ -248,6 +248,14 @@
  *       `/jogar`, ou remover o bloco): este guard só recusa publicar o
  *       literal cru, não decide como resolvê-lo.
  *
+ * ## #9963 (261009): guard #9821 recusou → re-roda de um worktree limpo
+ * Quando o checkout está defasado no gerador (#9821) e não dá pra sincronizar
+ * (sujeira de outra sessão, stash preso — #9960), `main` cria um worktree
+ * temporário em `origin/master`, linka `node_modules/` e `data/` do
+ * hospedeiro e re-roda este script de lá (`runWithFreshCodeWorktree`), com
+ * `--edition-dir` absoluto e `--no-fresh-code-fallback` (anti-recursão). Só
+ * se esse fallback não conseguir rodar a recusa `code: 3` original volta.
+ *
  * Uso:
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir data/editions/AAMMDD --slug o-slug-do-post
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
@@ -270,11 +278,11 @@
  * alimentam — ver #6454 original). Falha nesta etapa é fail-soft: a
  * publicação da página em si nunca é bloqueada por um problema aqui.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync, openSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, mkdtempSync, rmSync, cpSync, statSync, openSync, closeSync, symlinkSync, lstatSync, unlinkSync, rmdirSync } from "node:fs";
 import { resolve, dirname, join, basename, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execFileSync, execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
@@ -747,9 +755,220 @@ export function staleCodeRefusalReason(f: CodeFreshness): string | null {
     `regerada em 12 páginas). Rode \`npx tsx scripts/sync-code.ts\` e confira que saiu em dia ` +
     `(\`commits_behind: 0\`); se o outcome for \`protected_config_dirty\` (#9276), commite ou descarte a ` +
     `edição local de platform.config.json e rode de novo. Depois re-rode este script. ` +
+    `(Rodado sem \`--${NO_FRESH_CODE_FALLBACK_FLAG}\`, o script já tenta sozinho um worktree limpo em ` +
+    `origin/master antes de recusar — #9963.) ` +
     `Emergência consciente: \`--allow-stale-code\` pula este guard.` +
     (f.fetchFailed ? " (aviso: `git fetch origin master` falhou — comparação feita contra o ref local.)" : "")
   );
+}
+
+/**
+ * #9963: variável que o pai do fallback seta pro filho — caminho do checkout
+ * hospedeiro (o que estava defasado). Presente = este processo roda num
+ * worktree TEMPORÁRIO de código fresco, que o pai remove ao fim.
+ */
+export const FRESH_CODE_HOST_ROOT_ENV = "DIARIA_SITE_PAGE_HOST_ROOT";
+
+/** #9963: flag que o pai passa ao filho — impede o fallback de recursar. */
+export const NO_FRESH_CODE_FALLBACK_FLAG = "no-fresh-code-fallback";
+
+/**
+ * #9963: de onde o waiter do #9593 deve rodar. Dentro do worktree de código
+ * fresco, ele roda do checkout HOSPEDEIRO (o worktree some quando o filho
+ * termina, e o waiter vive até 35min). O código do waiter só espera CI e
+ * mergeia — não gera página —, então rodar a versão do hospedeiro não reabre
+ * o problema do #9821. Puro.
+ */
+export function resolveWaiterLaunch(
+  rootDir: string,
+  selfScript: string,
+  env: NodeJS.ProcessEnv,
+  exists: (p: string) => boolean,
+): { rootDir: string; scriptPath: string } {
+  const host = env[FRESH_CODE_HOST_ROOT_ENV];
+  if (host) {
+    const hostScript = join(host, "scripts", "publish-edition-site-page.ts");
+    if (exists(hostScript)) return { rootDir: host, scriptPath: hostScript };
+  }
+  return { rootDir, scriptPath: selfScript };
+}
+
+/**
+ * #9963: argv do filho — `--edition-dir` absoluto (o filho resolve caminhos
+ * relativos contra o worktree, não contra o hospedeiro) e a flag anti-recursão.
+ * Aceita `--edition-dir X` e `--edition-dir=X`. Puro.
+ */
+export function freshCodeChildArgv(argv: string[], editionDirAbs: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--edition-dir") {
+      out.push("--edition-dir", editionDirAbs);
+      i++;
+      continue;
+    }
+    if (a.startsWith("--edition-dir=")) {
+      out.push("--edition-dir", editionDirAbs);
+      continue;
+    }
+    if (a === `--${NO_FRESH_CODE_FALLBACK_FLAG}`) continue;
+    out.push(a);
+  }
+  out.push(`--${NO_FRESH_CODE_FALLBACK_FLAG}`);
+  return out;
+}
+
+/** Diretórios fora do git que o filho precisa enxergar no worktree (link pro hospedeiro). */
+export const FRESH_CODE_LINKED_DIRS = ["node_modules", "data"] as const;
+
+export interface FreshCodeFallbackDeps {
+  git: GitRunner;
+  mkTemp: () => string;
+  exists: (p: string) => boolean;
+  /** Cria `linkPath` apontando pra `target` (symlink de diretório; junction no Windows). */
+  link: (target: string, linkPath: string) => void;
+  /**
+   * Remove SÓ o link (nunca o conteúdo do alvo) e devolve `true` se ele sumiu.
+   * Chamado antes de qualquer remoção do worktree — remoção recursiva com o
+   * link no lugar poderia atravessar uma junction e esvaziar o `node_modules`/
+   * `data` do hospedeiro (classe do #7763).
+   */
+  unlink: (linkPath: string) => boolean;
+  /** Roda o script do worktree com o argv dado; devolve o exit (`null` = não iniciou). */
+  runChild: (args: { cwd: string; scriptPath: string; argv: string[]; hostRoot: string }) => number | null;
+  /** Remove o diretório do worktree (já sem links) — fallback quando `git worktree remove` falha. */
+  rmDir: (p: string) => void;
+  log: (line: string) => void;
+}
+
+export type FreshCodeFallbackResult = { ran: true; exitCode: number } | { ran: false; reason: string };
+
+/**
+ * #9963: quando o guard #9821 recusa (checkout defasado), em vez de devolver
+ * `code: 3` e deixar a página sem publicar até alguém agir, re-roda ESTE
+ * script a partir de um worktree temporário em `origin/master` (já buscado
+ * pelo `checkCodeFreshness`) — o código do gerador fica em dia sem depender
+ * do estado do checkout compartilhado (sujeira de outra sessão, stash preso,
+ * `protected_config_dirty`). Automatiza o workaround manual do incidente
+ * 261009 (PR #9951).
+ *
+ * `node_modules/` e `data/` (fora do git) entram como link pro hospedeiro.
+ * O filho recebe `--edition-dir` absoluto e `--no-fresh-code-fallback`; ele
+ * grava sozinho `_internal/site-page-published.json` e imprime o JSON do
+ * resultado. Limpeza: links desfeitos PRIMEIRO; se algum não sair, o worktree
+ * fica no disco (com aviso) em vez de arriscar uma remoção que atravesse o
+ * link. `ran: false` = o fallback não chegou a rodar o filho (worktree,
+ * link ou spawn falhou) — o chamador devolve a recusa original.
+ */
+export function runWithFreshCodeWorktree(
+  hostRoot: string,
+  argv: string[],
+  editionDirAbs: string,
+  deps: FreshCodeFallbackDeps,
+): FreshCodeFallbackResult {
+  const wt = deps.mkTemp();
+  try {
+    deps.git(["worktree", "add", "--detach", wt, "origin/master"], hostRoot);
+  } catch (e) {
+    try {
+      deps.rmDir(wt);
+    } catch {
+      /* fail-soft */
+    }
+    return { ran: false, reason: `git worktree add em origin/master falhou: ${(e as Error).message}` };
+  }
+  const linked: string[] = [];
+  let result: FreshCodeFallbackResult;
+  try {
+    for (const name of FRESH_CODE_LINKED_DIRS) {
+      const target = join(hostRoot, name);
+      if (!deps.exists(target)) {
+        if (name === "node_modules") throw new Error(`${target} ausente — sem dependências pro filho`);
+        continue;
+      }
+      const linkPath = join(wt, name);
+      deps.link(target, linkPath);
+      linked.push(linkPath);
+    }
+    deps.log(`código defasado (#9821) — re-rodando a partir de worktree limpo em origin/master: ${wt} (#9963)`);
+    const status = deps.runChild({
+      cwd: wt,
+      scriptPath: join(wt, "scripts", "publish-edition-site-page.ts"),
+      argv: freshCodeChildArgv(argv, editionDirAbs),
+      hostRoot,
+    });
+    result = status === null ? { ran: false, reason: "processo filho não iniciou" } : { ran: true, exitCode: status };
+  } catch (e) {
+    result = { ran: false, reason: (e as Error).message };
+  }
+  // Limpeza: links primeiro; só remove o worktree se TODOS saíram.
+  const stuck = linked.filter((l) => !deps.unlink(l));
+  if (stuck.length > 0) {
+    deps.log(
+      `aviso: não consegui desfazer ${stuck.join(", ")} — worktree ${wt} mantido no disco pra não atravessar o ` +
+        `link na remoção; remova o link à mão e depois \`git worktree remove --force ${wt}\` (#9963)`,
+    );
+    return result;
+  }
+  try {
+    deps.git(["worktree", "remove", "--force", wt], hostRoot);
+  } catch {
+    try {
+      deps.rmDir(wt);
+    } catch {
+      /* fail-soft */
+    }
+    try {
+      deps.git(["worktree", "prune"], hostRoot);
+    } catch {
+      /* higiene, nunca bloqueio */
+    }
+  }
+  return result;
+}
+
+/** Deps reais do fallback #9963. */
+export function defaultFreshCodeFallbackDeps(git: GitRunner = defaultGitRunner): FreshCodeFallbackDeps {
+  return {
+    git,
+    mkTemp: () => mkdtempSync(join(tmpdir(), "diaria-site-page-code-")),
+    exists: existsSync,
+    link: (target, linkPath) => symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir"),
+    unlink: (linkPath) => {
+      try {
+        if (!lstatSync(linkPath).isSymbolicLink()) return false; // não é link: nunca remover conteúdo
+      } catch {
+        return true; // já não existe
+      }
+      try {
+        unlinkSync(linkPath);
+      } catch {
+        try {
+          rmdirSync(linkPath); // junction no Windows: remove só o ponto de junção
+        } catch {
+          return false;
+        }
+      }
+      try {
+        lstatSync(linkPath);
+        return false;
+      } catch {
+        return true;
+      }
+    },
+    runChild: ({ cwd, scriptPath, argv, hostRoot }) => {
+      const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...argv], {
+        cwd,
+        stdio: "inherit",
+        windowsHide: true,
+        env: { ...process.env, [FRESH_CODE_HOST_ROOT_ENV]: hostRoot },
+      });
+      if (r.error) return null; // não iniciou
+      return r.status ?? 1; // morto por sinal: rodou, falhou
+    },
+    rmDir: (p) => rmSync(p, { recursive: true, force: true }),
+    log: (line) => process.stderr.write(`[site-page] ${line}\n`),
+  };
 }
 
 /** Roda `gh`, síncrono, capturando stdout como string. Injetável pra teste. */
@@ -1111,8 +1330,11 @@ export type MergeWaiterSpawner = (args: { rootDir: string; prNumber: number; edi
  * — o PR mergearia na hora, com o CI ainda rodando, pulando exatamente o
  * gate que o #8158 exige (`evaluatePrChecksGate` sobre TODOS os checks).
  */
-export const defaultMergeWaiterSpawner: MergeWaiterSpawner = ({ rootDir, prNumber, editionDir }) => {
-  const scriptPath = fileURLToPath(import.meta.url);
+export const defaultMergeWaiterSpawner: MergeWaiterSpawner = ({ rootDir: rootDirIn, prNumber, editionDir }) => {
+  // #9963: rodando dentro do worktree de código fresco (fallback do guard
+  // #9821), o pai remove esse worktree assim que este processo termina — o
+  // waiter (até 35min) roda a partir do checkout HOSPEDEIRO.
+  const { rootDir, scriptPath } = resolveWaiterLaunch(rootDirIn, fileURLToPath(import.meta.url), process.env, existsSync);
   const args = [...process.execArgv, scriptPath, "--merge-pr", String(prNumber)];
   let out: number | "ignore" = "ignore";
   if (editionDir) {
@@ -2490,7 +2712,7 @@ export async function main(): Promise<void> {
   }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code]\n" +
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback]\n" +
         "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
@@ -2515,6 +2737,17 @@ export async function main(): Promise<void> {
   // #9821: recusa ANTES de gerar qualquer coisa quando o código em disco está
   // defasado — o worktree do #8636 não protege os geradores (ver CodeFreshness).
   const staleRefusal = codeFreshnessPreflight(argv, ROOT);
+  if (staleRefusal && !hasFlag(argv, NO_FRESH_CODE_FALLBACK_FLAG)) {
+    // #9963: em vez de devolver code 3 e deixar a página sem publicar, re-roda
+    // a partir de um worktree limpo em origin/master. O filho grava o state e
+    // imprime o JSON; aqui só repassa o exit.
+    const fb = runWithFreshCodeWorktree(ROOT, argv, editionDirAbs, defaultFreshCodeFallbackDeps());
+    if (fb.ran) {
+      process.exitCode = fb.exitCode;
+      return;
+    }
+    staleRefusal.reason += ` Fallback automático em worktree limpo de origin/master (#9963) não rodou: ${fb.reason}.`;
+  }
   if (staleRefusal) {
     writeSitePageState(editionDirAbs, staleRefusal);
     console.log(JSON.stringify(staleRefusal, null, 2));
