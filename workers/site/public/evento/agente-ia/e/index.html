@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#FBFAF6" />
+    <title>Crie seu fluxo de posts com IA em uma tarde, sem programar</title>
+    <meta name="description" content="Imersão ao vivo de 4 horas: você escreve uma vez como a marca fala e monta um fluxo que transforma cada ideia em texto e imagem para cada rede, com a conta gratuita do ChatGPT. Sábado, 17 de outubro de 2026, das 14h às 18h." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap" />
+    <link rel="stylesheet" href="/evento/agente-ia/e/styles.css" />
+    <script src="/evento/agente-ia/config.js" defer></script>
+    <script src="/evento/agente-ia/script.js" defer></script>
+    <script src="/evento/agente-ia/e/script.js" defer></script>
+    <!-- #8978: ID first-party (_dia_vid) + _fbc em .diar.ia.br ANTES do pixel, pra fbq('init', ...) já sair com external_id/fbc no 1o disparo. -->
+    <script>try {var COOKIE="_dia_vid";var DOMAIN=".diar.ia.br";var MAXAGE=63072000;var VIDRE = new RegExp("^[0-9a-fA-F-]{16,64}$");var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));var vid = m && VIDRE.test(m[1]) ? m[1] : null;if (!vid) {vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {document.cookie = COOKIE + '=' + vid + '; Max-Age=' + MAXAGE + '; Domain=' + DOMAIN + '; Path=/; SameSite=Lax';}}window.__DIA_VID__ = vid;window.dataLayer = window.dataLayer || [];window.dataLayer.push({ external_id: vid });} catch (e) {}</script>
+    <script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');var FBCLIDRE = new RegExp("^[A-Za-z0-9_.-]+$");if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script>
+    <!-- #9590: container GTM (o mesmo de renderAnalyticsHead) DEPOIS do bootstrap _dia_vid. -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
+    <!-- Meta Pixel (Diar.ia). Só dispara em diar.ia.br: teste local (localhost) e preview não entram no dataset. -->
+    <script>
+      if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {
+      !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+      n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+      n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+      t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+      document,'script','https://connect.facebook.net/en_US/fbevents.js');
+      fbq('init', '1285191740325112', { external_id: window.__DIA_VID__ });
+      fbq('track', 'PageView');
+      }
+    </script>
+    <noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=1285191740325112&ev=PageView&noscript=1" /></noscript>
+  </head>
+  <body data-variante="e">
+    <svg class="sprite" aria-hidden="true" focusable="false"><defs><symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" /><path d="M9 13a4.5 4.5 0 0 0 3-4" /><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" /><path d="M3.477 10.896a4 4 0 0 1 .585-.396" /><path d="M6 18a4 4 0 0 1-1.967-.516" /><path d="M12 13h4" /><path d="M12 18h6a2 2 0 0 1 2 2v1" /><path d="M12 8h8" /><path d="M16 8V5a2 2 0 0 1 2-2" /><circle cx="16" cy="13" r=".5" /><circle cx="18" cy="3" r=".5" /><circle cx="20" cy="21" r=".5" /><circle cx="20" cy="8" r=".5" /></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></symbol><symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" /><path d="M14 2v4a2 2 0 0 0 2 2h4" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" /></symbol><symbol id="i-flask" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2" /><path d="M6.453 15h11.094" /><path d="M8.5 2h7" /></symbol><symbol id="i-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" /></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /><path d="m9 12 2 2 4-4" /></symbol><symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol><symbol id="i-terminal" viewBox="0 0 24 24"><path d="m7 11 2-2-2-2" /><path d="M11 13h4" /><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /></symbol><symbol id="i-user" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><polyline points="16 11 18 13 22 9" /></symbol><symbol id="i-calendar" viewBox="0 0 24 24"><path d="M8 2v4" /><path d="M16 2v4" /><rect width="18" height="18" x="3" y="4" rx="2" /><path d="M3 10h18" /></symbol><symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /><rect x="2" y="6" width="14" height="12" rx="2" /></symbol><symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" /></symbol></defs></svg>
+    <header class="brand-bar"><img src="/guia/agente-ia/assets/logo-diaria.svg" alt="diar.ia.br" width="1180" height="240" /></header>
+    <main>
+      <!-- 1. Promessa concreta -->
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="kicker">Imersão ao vivo · Sábado, 17 de outubro</p>
+            <h1 id="hero-title">Crie seu fluxo de posts com IA <em>em uma tarde</em>, sem programar</h1>
+            <p class="lead">Você escreve uma vez como a marca fala e se mostra. Depois, cada ideia vira um post para cada rede, com texto e imagem, no tom da marca. Você monta isso ao vivo, em 4 horas, com a conta gratuita do ChatGPT que já usa.</p>
+          </div>
+          <div class="hero-visual hero-visual-event">
+            <div class="event-card">
+              <p class="kicker">A imersão</p>
+              <ul class="event-facts">
+                <li><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-calendar"/></svg><span><strong>Sábado, 17 de outubro de 2026</strong>14h às 18h, horário de Brasília</span></li>
+                <li><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-video"/></svg><span><strong>Online e ao vivo</strong>Pelo Google Meet, do seu computador</span></li>
+                <li><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-terminal"/></svg><span><strong>ChatGPT gratuito</strong>Sem código, em português</span></li>
+                <li><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span><strong>Você sai com o fluxo pronto</strong>Testado com uma ideia sua</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. O que você vai construir -->
+      <section class="section" aria-labelledby="demo-title">
+        <div class="wrap">
+          <h2 id="demo-title">Na imersão, você monta um fluxo que transforma uma ideia em posts para cada rede. <em>E aprende a montar os próximos.</em></h2>
+          <div class="split split-visual-first">
+            <div class="split-visual"><ol class="track" aria-hidden="true"><li><svg class="icon icon-node" aria-hidden="true" focusable="false"><use href="#i-brain"/></svg><span>A ideia</span></li><li><svg class="icon icon-node" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>A identidade da marca</span></li><li><svg class="icon icon-node" aria-hidden="true" focusable="false"><use href="#i-branch"/></svg><span>Um texto para cada rede</span></li><li><svg class="icon icon-node" aria-hidden="true" focusable="false"><use href="#i-image"/></svg><span>A imagem do post</span></li><li><svg class="icon icon-node" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><span>A sua revisão</span></li></ol></div>
+            <div class="split-copy">
+              <p>Um fluxo é uma sequência de instruções escritas que a IA segue sempre na mesma ordem. O seu vai fazer assim:</p>
+              <ul class="dash-list"><li>você manda uma ideia: o tema, um link ou um rascunho;</li><li>o fluxo lê como a marca fala e se mostra;</li><li>escreve o post de cada rede, no formato e no tamanho dela;</li><li>cria a imagem que acompanha o post;</li><li>espera a sua revisão. Nada sai sem a sua aprovação.</li></ul>
+              <p>As redes são você quem escolhe: LinkedIn, Instagram, X, Threads, Facebook ou outra em que você trabalhe. A marca pode ser a sua, a da empresa ou a de um cliente.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. A dor -->
+      <section class="section section-recessed" aria-labelledby="neg-title">
+        <div class="wrap narrow center">
+          <p class="kicker">Antes do fluxo</p>
+          <h2 id="neg-title">Você explica a marca para a IA de novo, e o post sai genérico mesmo assim</h2>
+          <div class="chat" aria-hidden="true">
+  <div class="chat-top"><i></i><i></i><i></i></div>
+  <div class="chat-body">
+    <p class="bubble me">Escreva um post para o LinkedIn sobre o lançamento. <mark>Tom leve, sem jargão, frases curtas.</mark></p>
+    <div class="bubble ai"><b></b><b></b><b class="s"></b></div>
+    <p class="bubble me">Ficou genérico. <mark>Tom leve, sem jargão, frases curtas.</mark></p>
+    <div class="bubble ai"><b></b><b></b><b class="s"></b></div>
+    <p class="bubble me">Agora adapte para o Instagram. <mark>Tom leve, sem jargão, frases curtas.</mark></p>
+    <div class="bubble ai"><b></b><b class="s"></b></div>
+  </div>
+</div>
+          <ul class="thoughts"><li>“Já expliquei o tom ontem.”</li><li>“Vou reescrever quase tudo de novo.”</li><li>“Agora falta adaptar para o Instagram.”</li><li>“A imagem não tem nada a ver com a marca.”</li><li>“Cada cliente tem uma voz diferente.”</li><li>“São dez da noite e ainda falta o X.”</li></ul>
+          <p class="closing">A IA já chegou: <a href="https://www.meioemensagem.com.br/midia/ia-e-utilizada-por-83-dos-profissionais-de-midias-sociais" target="_blank" rel="noopener noreferrer">83% dos social media usam IA</a>. A sobrecarga continua: <a href="https://propmark.com.br/?p=132780" target="_blank" rel="noopener noreferrer">59,5% trabalham fora do expediente</a>. O que falta é a IA lembrar da marca sem você repetir.</p>
+        </div>
+      </section>
+
+      <!-- 4. O mecanismo -->
+      <section class="section" aria-labelledby="turn-title">
+        <div class="wrap">
+          <p class="kicker">Por que funciona</p>
+          <h2 id="turn-title">O post sai no tom da marca porque <em>a marca está escrita</em></h2>
+          <div class="split">
+            <div class="split-copy">
+              <p>No chat, a IA só sabe o que você digitou naquele pedido. Por isso você repete:</p>
+              <p class="quote">“Tom leve, sem jargão, frases curtas.”</p>
+              <p>No fluxo, ela lê sempre os mesmos arquivos, escritos uma vez por você, em português. São quatro partes:</p>
+            </div>
+            <div class="split-visual"><ol class="pillars"><li><svg class="icon icon-pillar" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><div><strong>Identidade</strong><p>como a marca fala e se mostra: o tom, as palavras que usa e evita, as cores e o estilo das imagens e os posts que deram certo.</p></div></li><li><svg class="icon icon-pillar" aria-hidden="true" focusable="false"><use href="#i-branch"/></svg><div><strong>Instruções por rede</strong><p>o formato, o tamanho e o jeito de cada rede.</p></div></li><li><svg class="icon icon-pillar" aria-hidden="true" focusable="false"><use href="#i-flask"/></svg><div><strong>Testes e correções</strong><p>cada correção sua vira uma linha nova das instruções.</p></div></li><li><svg class="icon icon-pillar" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><div><strong>Sua revisão</strong><p>o fluxo para e espera você aprovar antes de publicar.</p></div></li></ol></div>
+          </div>
+          <p class="mechanism">Esse é o mecanismo: você explica a marca uma vez, e cada correção fica guardada. O fluxo melhora a cada uso, em vez de começar do zero a cada pedido.</p>
+        </div>
+      </section>
+
+      <!-- Prova -->
+      <section class="section proof" aria-labelledby="proof-title">
+        <div class="wrap">
+          <div class="proof-grid">
+            <div>
+              <p class="kicker">Funciona todos os dias</p>
+              <p class="proof-number" aria-hidden="true">15 posts por dia</p>
+              <h2 id="proof-title">É assim que a diar.ia.br funciona, <em>sempre na mesma voz</em></h2>
+              <p>Fluxos de IA transformam cada edição da newsletter em 3 posts para cada rede. Na imersão, você monta o seu, etapa por etapa, junto comigo.</p>
+            </div>
+            <ul class="proof-nets" aria-label="3 posts por dia em cada rede">
+              <li><span>LinkedIn</span><strong>3</strong></li>
+              <li><span>Instagram</span><strong>3</strong></li>
+              <li><span>Facebook</span><strong>3</strong></li>
+              <li><span>Threads</span><strong>3</strong></li>
+              <li><span>X</span><strong>3</strong></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Depois -->
+      <section class="section section-recessed" aria-labelledby="pos-title">
+        <div class="wrap narrow center">
+          <p class="kicker">Depois da imersão</p>
+          <h2 id="pos-title">Você para de <em>explicar a marca</em> a cada pedido</h2>
+          <div class="card positive">
+            <ul class="positive-list"><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“A marca está escrita, não preciso repetir o tom.”</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“Mando uma ideia e recebo texto e imagem para cada rede.”</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“Cada rede tem as suas instruções.”</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“Quando o post sai errado, sei qual linha corrigir.”</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“Nada sai sem eu revisar.”</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>“Consigo montar o fluxo de outra marca sozinho.”</span></li></ul>
+            <div class="folder" aria-hidden="true"><div class="folder-top"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-folder"/></svg><span>Minha-marca/</span></div><ul><li class="d0"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>identidade.md</span></li><li class="d0"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-folder"/></svg><span>instrucoes/</span></li><li class="d1"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>linkedin.md</span></li><li class="d1"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>instagram.md</span></li><li class="d1"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>x.md</span></li><li class="d0"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-folder"/></svg><span>lancamento/</span></li><li class="d1"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>post-linkedin.md</span><svg class="icon icon-approve" aria-hidden="true" focusable="false"><use href="#i-user"/></svg></li><li class="d1"><svg class="icon icon-file" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><span>imagem.png</span><svg class="icon icon-approve" aria-hidden="true" focusable="false"><use href="#i-user"/></svg></li></ul></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. As três etapas -->
+      <section class="section" aria-labelledby="program-title">
+        <div class="wrap">
+          <p class="kicker">Como você constrói</p>
+          <h2 id="program-title">Três etapas, <em>na mesma tarde</em></h2>
+          <p class="lead steps-lead">Sábado, 17 de outubro, das 14h às 18h. Você faz cada etapa no seu computador, me acompanhando pelo Google Meet e tirando dúvidas na hora.</p>
+          <div class="steps">
+            <article class="step"><span class="step-number">01</span><h3>Escreva a identidade da marca</h3><p>Você descreve como a marca fala e se mostra: o tom, as palavras que ela usa e evita, as cores e o estilo das imagens e exemplos de posts que deram certo. Pode ser a sua marca pessoal, a da empresa ou a de um cliente.</p><p class="step-result"><strong>Você sai desta etapa com</strong> o arquivo de identidade da marca.</p></article>
+            <article class="step"><span class="step-number">02</span><h3>Monte as etapas do fluxo</h3><p>A partir do modelo, você define o que acontece com cada ideia: o texto de cada rede, no formato e no tamanho dela, a imagem que acompanha o post e a sua revisão.</p><p class="step-result"><strong>Você sai desta etapa com</strong> as instruções do fluxo, em português.</p></article>
+            <article class="step"><span class="step-number">03</span><h3>Teste com uma ideia sua e corrija</h3><p>Você roda o fluxo com uma ideia real, compara com o que esperava e transforma cada correção em uma linha nova das instruções.</p><p class="step-result"><strong>Você termina a imersão com</strong> o fluxo criando texto e imagem no tom da marca e um processo que sabe repetir.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. Materiais -->
+      <section class="section section-recessed" aria-labelledby="bul-title">
+        <div class="wrap">
+          <p class="kicker">Materiais da imersão</p>
+          <h2 id="bul-title">Ferramentas para fazer na tarde e <em>repetir depois</em></h2>
+          <div class="bullet-grid materials">
+            <article class="bullet"><svg class="icon icon-lock" aria-hidden="true" focusable="false"><use href="#i-file"/></svg><h3>Modelo do Arquivo de Identidade</h3><p>O ponto de partida para descrever como a marca fala e se mostra, em português, para você adaptar.</p><span class="pill">Identidade</span></article>
+            <article class="bullet"><svg class="icon icon-lock" aria-hidden="true" focusable="false"><use href="#i-flask"/></svg><h3>Checklist de Teste e Correção</h3><p>Você usa na mesma tarde para conferir o texto e a imagem de cada post e transformar cada ajuste em uma instrução nova.</p><span class="pill">Validação</span></article>
+            <article class="bullet"><svg class="icon icon-lock" aria-hidden="true" focusable="false"><use href="#i-branch"/></svg><h3>Roteiro do Próximo Fluxo</h3><p>Você usa no fim da imersão para montar o fluxo de outra marca ou de outra tarefa por conta própria.</p><span class="pill">Repetição</span></article>
+            <article class="bullet"><svg class="icon icon-lock" aria-hidden="true" focusable="false"><use href="#i-brain"/></svg><h3>Guia de Prompt Engineering</h3><p>Um guia para escrever instruções mais claras e ser mais eficiente ao usar chats de IA.</p><span class="pill">Bônus</span></article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Para quem é -->
+      <section class="section" aria-labelledby="audience-title">
+        <div class="wrap narrow">
+          <p class="kicker">Para quem é</p>
+          <h2 id="audience-title">Para quem cria conteúdo para empresas, agências ou clientes</h2>
+          <ul class="benefits"><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Trabalha como social media, redator ou analista de marketing e de conteúdo.</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Adapta o mesmo post, texto e imagem, para várias redes toda semana.</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Trabalha sozinho ou com equipe pequena e leva post para depois do expediente.</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Usa o ChatGPT, mas o resultado sai genérico e você reescreve quase tudo.</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Cuida de várias marcas ou contas, cada uma com a sua voz.</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Está em transição de carreira na área e quer mostrar um jeito novo de trabalhar.</span></li></ul>
+        </div>
+      </section>
+
+      <!-- 8. Dúvidas antes de decidir -->
+      <section class="section section-recessed" aria-labelledby="obj-title">
+        <div class="wrap narrow">
+          <p class="kicker">Antes de decidir</p>
+          <h2 id="obj-title">As quatro dúvidas que aparecem antes de montar o primeiro fluxo</h2>
+          <ul class="objections"><li><svg class="icon icon-obj" aria-hidden="true" focusable="false"><use href="#i-terminal"/></svg><div><h3>“Eu não sei programar”</h3><p>Não precisa. A identidade da marca e as instruções do fluxo são escritas em português, sem código. Você monta tudo acompanhando cada etapa ao vivo.</p></div></li><li><svg class="icon icon-obj" aria-hidden="true" focusable="false"><use href="#i-brain"/></svg><div><h3>“A conta gratuita do ChatGPT dá conta?”</h3><p>Sim. A imersão usa a sua conta gratuita, no aplicativo do ChatGPT para computador. Na semana do evento, você recebe as orientações para instalar e testar antes do dia 17.</p></div></li><li><svg class="icon icon-obj" aria-hidden="true" focusable="false"><use href="#i-flask"/></svg><div><h3>“E se eu travar no meio?”</h3><p>Você tira a dúvida na hora, pelo Google Meet, e segue com a turma. O Checklist de Teste e Correção mostra o que conferir quando o resultado sair diferente do esperado.</p></div></li><li><svg class="icon icon-obj" aria-hidden="true" focusable="false"><use href="#i-user"/></svg><div><h3>“Serve para a marca de um cliente?”</h3><p>Sim. Você pode montar a identidade da sua marca pessoal, da empresa onde trabalha ou de um cliente. Com o Roteiro do Próximo Fluxo, você repete o processo para as outras marcas.</p></div></li></ul>
+        </div>
+      </section>
+
+      <!-- 9. Recapitulação e preço -->
+      <section class="section" id="oferta" aria-labelledby="offer-title">
+        <div class="wrap">
+          <div class="offer card">
+            <p class="kicker">Ingresso único</p>
+            <h2 id="offer-title">Recapitulando o que o ingresso inclui</h2>
+            <ul class="offer-list"><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Imersão ao vivo de 4 horas, pelo Google Meet, no sábado, 17 de outubro, das 14h às 18h</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>O seu fluxo de posts montado e testado com uma ideia sua</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Modelo do Arquivo de Identidade</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Checklist de Teste e Correção</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Roteiro do Próximo Fluxo</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Bônus: Guia de Prompt Engineering</span></li><li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Orientações por e-mail para instalar o aplicativo e chegar pronto no dia 17</span></li></ul>
+            <p class="price">R$ 97</p>
+            <p class="small">Pagamento pela Hotmart, com garantia de 30 dias.</p>
+            <a class="button checkout-link" href="https://pay.hotmart.com/G107726319K" data-posicao="oferta">Garantir meu ingresso</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- 10. Garantia -->
+      <section class="section section-tight" aria-labelledby="gar-title">
+        <div class="wrap narrow">
+          <div class="guarantee">
+            <svg class="icon icon-guarantee" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg>
+            <div>
+              <p class="kicker">Garantia</p>
+              <h2 id="gar-title">Você tem 30 dias para pedir o reembolso</h2>
+              <p>Se mudar de ideia, você pede o reembolso pela Hotmart em até 30 dias depois da compra. Quem compra antes do dia 17 ainda tem garantia depois da imersão.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 11. Quem ensina -->
+      <section class="section" aria-labelledby="author-title">
+        <div class="wrap author">
+          <figure class="author-photo"><img src="/evento/agente-ia/assets/pixel-portrait-friendly.webp" alt="Retrato de Angelo Pixel" width="900" height="1125" loading="lazy" decoding="async" onerror="this.remove()" /></figure>
+          <div class="author-copy">
+            <p class="kicker">Com quem você vai aprender</p>
+            <h2 id="author-title">Angelo Pixel</h2>
+            <p>Sou Angelo Pixel. Edito a diar.ia.br, newsletter diária sobre inteligência artificial feita com um pipeline próprio de agentes de IA. Trabalho com IA desde 2020 e tenho mais de 20 anos de experiência criando e gerindo soluções tecnológicas.</p>
+            <p>Fui selecionado pela Anthropic para o programa Claude for Open Source, que reconhece contribuidores de código aberto de alto impacto, e tenho certificação em IA da Microsoft. Como Technical Product Manager, liderei um produto que aumentou em US$ 11 milhões o lucro anual da Amazon Brasil.</p>
+            <p>Meus projetos de código aberto foram premiados pelo Google e pela Mozilla. Já dei mais de 150 palestras em cinco países, incluindo um TEDx.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 12. FAQ curta -->
+      <section class="section section-recessed" aria-labelledby="faq-title">
+        <div class="wrap narrow faq">
+          <h2 id="faq-title" class="visually-hidden">Perguntas frequentes</h2>
+          <details><summary>É online ou presencial?</summary><p>Online e ao vivo, pelo Google Meet. Você acompanha e monta o fluxo do seu computador.</p></details><details><summary>Do que eu preciso no dia?</summary><p>De um computador com Windows ou Mac, com o aplicativo do ChatGPT instalado, e de uma conta no ChatGPT. Não funciona só no celular.</p></details><details><summary>O fluxo publica sozinho?</summary><p>Só depois da sua revisão. Ele cria o texto e a imagem de cada rede, você revisa e aprova, e ele publica. Nada sai sem a sua aprovação.</p></details><details><summary>Qual a diferença para um curso de prompts?</summary><p>Num curso de prompts, você aprende frases para pedir à IA, post por post. Na imersão, você monta um fluxo que já sabe como a marca fala e se mostra, e repete isso em toda ideia sem você explicar de novo.</p></details><details><summary>O que acontece depois da compra?</summary><p>Você recebe a confirmação da Hotmart. Na semana da imersão, envio por e-mail o link da sala no Google Meet e as orientações para instalar o aplicativo do ChatGPT e chegar pronto no dia 17.</p></details>
+        </div>
+      </section>
+
+      <!-- 13. Chamada final -->
+      <section class="section final" id="cta-final" aria-labelledby="final-title">
+        <div class="wrap narrow center">
+          <p class="kicker">Sábado, 17 de outubro · 14h às 18h</p>
+          <h2 id="final-title">Seu fluxo de posts começa em uma tarde</h2>
+          <p>Escreva a marca uma vez, monte as instruções de cada rede e teste com uma ideia sua, ao vivo, junto comigo.</p>
+          <p class="final-highlight">Crie seu fluxo de posts com IA em uma tarde, sem programar.</p>
+          <a class="button button-light checkout-link" href="https://pay.hotmart.com/G107726319K" data-posicao="final">Garantir meu ingresso por R$ 97</a>
+          <p class="small">Online e ao vivo, pelo Google Meet, com garantia de 30 dias.</p>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer"><img src="/guia/agente-ia/assets/logo-diaria.svg" alt="diar.ia.br" width="1180" height="240" loading="lazy" /></footer>
+    <a class="float-cta" href="#oferta" data-posicao="flutuante" hidden>Garantir meu ingresso</a>
+  </body>
+</html>
