@@ -145,7 +145,7 @@ const COUNTRY_ALTERNATION = COUNTRY_NAMES.map((c) =>
  * Brazil", "users in the EU") — "Sora now available for users in ChatGPT
  * Plus" é superfície de produto, não expansão geográfica.
  */
-const GEO_TERM_ALTERNATION = `${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States`;
+const GEO_TERM_ALTERNATION = `${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|\\d+\\+?\\s+(?:new\\s+|more\\s+)?(?:countries|regions|markets)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States`;
 const GEO_COMPLEMENT_RE = new RegExp(
   `^\\s*(?:(?:all\\s+)?users\\s+in\\s+)?(?:the\\s+)?(?:${GEO_TERM_ALTERNATION})\\b`,
   "i",

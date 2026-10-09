@@ -52,6 +52,8 @@ describe("#9948 — exclusões de documento/geo não atingem produto legítimo",
     assert.equal(startsWithGeoComplement(" users in Brazil"), true);
     assert.equal(startsWithGeoComplement(" users in the EU"), true);
     assert.equal(startsWithGeoComplement(" all users in Europe"), true);
+    assert.equal(startsWithGeoComplement(" users in 30 countries"), true);
+    assert.equal(startsWithGeoComplement(" 150+ new markets"), true);
     assert.equal(startsWithGeoComplement(" users in ChatGPT Plus"), false);
     assert.equal(
       isNewPlatformAvailabilityTitle({ url: "https://example.com", title: "Sora now available for users in Brazil" }),
