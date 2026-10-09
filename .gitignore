@@ -85,3 +85,22 @@ __pycache__/
 # PRÓPRIA (ver #6691).
 /.rev*.md
 /.review*.md
+
+# #9960: nomes de dispositivo reservados do Windows. Um `> nul` digitado num
+# shell Unix (Git Bash/Claude Code no Windows) cria um ARQUIVO literal `nul`
+# que nenhum programa Win32 consegue remover — e o `git stash
+# --include-untracked` do sync-code.ts falhava tentando limpá-lo
+# (`stash_partial_failure_unrecovered`, checkout 38 commits atrás em 261009).
+# Ignorado, o stash `-u` nunca o toca. Sem âncora: vale em qualquer nível.
+nul
+NUL
+con
+CON
+prn
+PRN
+aux
+AUX
+com[1-9]
+COM[1-9]
+lpt[1-9]
+LPT[1-9]

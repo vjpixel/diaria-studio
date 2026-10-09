@@ -113,6 +113,17 @@
  *      local fica no working tree e untracked alheio nunca é removido (a
  *      remoção ampla é o que falhava com Permission denied em caminhos que nem
  *      colidiam). Sem lista confiável → stash amplo de sempre (#9107).
+ *   3f. #9960: no stash amplo com `-u`, untracked com nome reservado do
+ *      Windows (`nul`, `con`, `com1.txt`...) é EXCLUÍDO por pathspec
+ *      (`:(exclude,literal)<caminho>`) — o git não consegue removê-lo e o
+ *      stash saía `stash_partial_failure_unrecovered` — e o warning traz o
+ *      comando exato de remoção. E quando o stash ainda assim sai não-zero
+ *      tendo criado stash, o ff-only é RE-TENTADO uma vez (o stash parcial
+ *      costuma ter limpado justamente o que colidia); sucesso vira
+ *      `synced_stash_preserved`. (Um "worktree limpo" não serviria aqui: o
+ *      git não deixa outro worktree mover o branch que o checkout principal
+ *      tem em uso — o lado do CÓDIGO defasado é coberto pelo #9963 no
+ *      `publish-edition-site-page.ts`.)
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
@@ -314,12 +325,24 @@ export interface GitSyncResult {
    * Ausente quando não houve stash ou ele foi o stash amplo (fallback).
    */
   targeted_stash_paths?: string[];
+  /**
+   * #9960: untracked de nome reservado do Windows (`nul`...) que o stash amplo
+   * EXCLUIU por pathspec. Ausente quando não houve nenhum.
+   */
+  reserved_untracked_excluded?: string[];
+  /**
+   * #9960: `true` quando o stash saiu não-zero mas criou stash e o ff-only foi
+   * re-tentado depois disso (sucesso → `synced_stash_preserved`).
+   */
+  ff_retried_after_partial_stash?: boolean;
 }
 
 /** Estado interno passado de `syncCodeLocked` pra `syncCode` (anexado ao resultado). */
 interface SyncCtx {
   ffRefusal?: FfRefusal;
   targetedStashPaths?: string[];
+  reservedExcluded?: string[];
+  ffRetriedAfterPartialStash?: boolean;
 }
 
 /**
@@ -1203,6 +1226,49 @@ export function parseUntrackedPaths(porcelainStdout: string): string[] {
 }
 
 /**
+ * #9960: nomes de dispositivo reservados do Windows (case-insensitive, com ou
+ * sem extensão — `nul`, `NUL.txt`, `com1.log`). Um arquivo literal com esse
+ * nome (criado por `> nul` num shell Unix rodando no Windows) não é removível
+ * por nenhum programa Win32: o `git stash --include-untracked` cria o stash e
+ * depois falha ao limpá-lo, saindo `stash_partial_failure_unrecovered`
+ * (incidente 261009, checkout 38 commits atrás).
+ */
+const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * #9960: entradas não-rastreadas (formato de `parseUntrackedPaths`) cujo
+ * ÚLTIMO componente é um nome reservado do Windows. Entrada entre aspas é
+ * ignorada (não é o caminho literal). Puro.
+ */
+export function findWindowsReservedUntracked(untracked: string[]): string[] {
+  return untracked.filter((raw) => {
+    if (raw.startsWith('"')) return false;
+    const base = raw.replace(/\/+$/, "").split("/").pop() ?? "";
+    return WINDOWS_RESERVED_NAME_RE.test(base);
+  });
+}
+
+/**
+ * #9960: pathspecs `:(exclude,literal)<caminho>` que tiram os nomes
+ * reservados de um stash amplo. Pathspec só de exclusão = "tudo menos isto"
+ * (verificado com git 2.53: rastreado e untracked restantes são stashados, o
+ * excluído fica no lugar). Puro.
+ */
+export function reservedExcludePathspecs(reserved: string[]): string[] {
+  return reserved.map((p) => `:(exclude,literal)${p.replace(/\/+$/, "")}`);
+}
+
+/** #9960: ação exata pra remover o arquivo reservado (vai no warning). */
+export function describeReservedRemoval(reserved: string[]): string {
+  const list = reserved.map((p) => p.replace(/\/+$/, ""));
+  return (
+    `remova no Git Bash, a partir da raiz do checkout: ${list.map((p) => `rm -f -- './${p}'`).join(" ; ")} ` +
+    `(no cmd.exe: ${list.map((p) => `del "\\\\?\\%CD%\\${p.replace(/\//g, "\\")}"`).join(" & ")}). ` +
+    `Origem típica: um '> nul' digitado num shell Unix no Windows — use '> /dev/null'.`
+  );
+}
+
+/**
  * #9107: decide se ALGUMA entrada não-rastreada colide com o que o
  * fast-forward para origin/master vai escrever. `upstreamPaths` é a lista de
  * caminhos tocados entre HEAD e origin/master (`git diff --name-only -z
@@ -1371,6 +1437,8 @@ export function syncCode(
       stale_autostash_count: countStaleAutostashes(spawn),
       ...(ctx.ffRefusal ? { ff_refusal: ctx.ffRefusal } : {}),
       ...(ctx.targetedStashPaths ? { targeted_stash_paths: ctx.targetedStashPaths } : {}),
+      ...(ctx.reservedExcluded ? { reserved_untracked_excluded: ctx.reservedExcluded } : {}),
+      ...(ctx.ffRetriedAfterPartialStash ? { ff_retried_after_partial_stash: true } : {}),
     };
     return out;
   } finally {
@@ -1681,6 +1749,19 @@ function syncCodeLocked(
         includeUntracked = untrackedCollidesWithUpstream(untracked, upstreamPaths);
       }
     }
+    // #9960: stash amplo com `-u` e um untracked de nome reservado do Windows
+    // (`nul`) no checkout → o git cria o stash e falha ao limpar esse arquivo.
+    // Exclui o(s) nome(s) reservado(s) por pathspec e avisa com a ação exata.
+    const reservedUntracked =
+      targetedStashPaths === null && includeUntracked ? findWindowsReservedUntracked(untracked) : [];
+    if (reservedUntracked.length > 0) {
+      ctx.reservedExcluded = reservedUntracked;
+      warnings.push(
+        `[git-sync] WARN: untracked com nome reservado do Windows no checkout (#9960): ` +
+          `${reservedUntracked.join(", ")} — excluído(s) do stash para não derrubar o sync. ` +
+          describeReservedRemoval(reservedUntracked),
+      );
+    }
     const stashArgs =
       targetedStashPaths !== null
         ? [
@@ -1693,7 +1774,14 @@ function syncCodeLocked(
             ...targetedStashPaths.map((p) => `:(literal)${p}`),
           ]
         : includeUntracked
-          ? ["stash", "push", "--include-untracked", "-m", GIT_SYNC_STASH_MESSAGE]
+          ? [
+              "stash",
+              "push",
+              "--include-untracked",
+              "-m",
+              GIT_SYNC_STASH_MESSAGE,
+              ...(reservedUntracked.length > 0 ? ["--", ...reservedExcludePathspecs(reservedUntracked)] : []),
+            ]
           : ["stash", "push", "-m", GIT_SYNC_STASH_MESSAGE];
     if (targetedStashPaths !== null) {
       warnings.push(
@@ -1717,6 +1805,37 @@ function syncCodeLocked(
         const dedupe = dedupeFreshAutostash(spawn, stashRefAfter);
         warnings.push(...dedupe.warnings);
         const keptRef = dedupe.keptRef;
+        // #9960: o stash parcial costuma ter limpado justamente o que colidia
+        // (o rastreado e/ou o untracked que o upstream escreve) e falhado só
+        // num arquivo alheio (ex.: `nul`). Antes, este ramo desistia sem tentar
+        // o ff — o checkout ficava N commits atrás mesmo quando o ff já
+        // passaria. `merge --ff-only` é seguro de re-tentar: recusa sem tocar
+        // nada se ainda houver colisão. Sucesso → código em dia, stash
+        // preservado (mesma semântica de `synced_stash_preserved`).
+        ctx.ffRetriedAfterPartialStash = true;
+        const retryFfRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
+        if (retryFfRes.status === 0) {
+          const upToDate = isAlreadyUpToDate(retryFfRes.stdout);
+          const msg =
+            `[git-sync] WARN: o stash saiu com erro (exit ${stashRes.status}) mas criou ${keptRef ?? "um stash"}; ` +
+            `o ff-only re-tentado em seguida PASSOU (#9960) — código sincronizado com origin/master. Stash ` +
+            `preservado (NUNCA despopado automaticamente — #8719): 'git stash show -p ${keptRef ?? "<ref>"}' / ` +
+            `'git stash apply ${keptRef ?? "<ref>"}'. Identificável em 'git stash list' (#7740): ` +
+            `'${GIT_SYNC_STASH_MESSAGE}'. Stderr stash: ${stashRes.stderr.trim() || "(vazio)"}`;
+          warnings.push(msg);
+          return {
+            outcome: upToDate ? "already_up_to_date" : "synced_stash_preserved",
+            message: msg,
+            branch_before: branchBefore,
+            warnings,
+            proceed: true,
+            preserved_stash: { ref: keptRef, message: GIT_SYNC_STASH_MESSAGE },
+          };
+        }
+        warnings.push(
+          `[git-sync] INFO: ff-only re-tentado após o stash parcial (#9960) também recusou — ` +
+            `${describeFfRefusal(classifyFfRefusal(retryFfRes.stderr))}.`,
+        );
         // O stash existe e é válido (o commit foi criado no passo 1 antes da
         // falha no passo 2) — MAS #8719 (decisão do editor, 24/09/2026): nunca
         // `git stash pop` automático, nem mesmo aqui como "recuperação". O
