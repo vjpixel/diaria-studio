@@ -10,7 +10,10 @@
  *     §4d.1b i+ii do playbook do Stage 4 (#9601): o item que sobe entra no
  *     wrapper de highlight (`toHighlightItem`), o que desce vai FLAT pro
  *     bucket `--demote-to` (`toBucketItem`; default = bucket de origem, exceto
- *     `lancamento` → `radar`), `rank` renumerado
+ *     `lancamento` → `radar`), `rank` renumerado; qualquer cópia da URL do
+ *     rebaixado em outro bucket de pool sai antes (#9961 — senão o
+ *     `url-bucket` acusa `duplicate`), e o pós-check do `url-bucket` põe
+ *     qualquer duplicata restante à frente de `rerenders_needed`
  *   - `_internal/01-approved-capped.json` (highlights[])
  *   - `02-reviewed.md` (`applySwapToReviewedMd`, #9601): bloco DESTAQUE vira
  *     placeholder; o item promovido sai da seção de pool de origem (seção
@@ -90,6 +93,7 @@ import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
+import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
 import {
   replaceTitleInTituloSubtitulo,
   tituloPendingPath,
@@ -309,6 +313,49 @@ function normUrl(u: string): string {
 }
 
 /**
+ * #9961: pós-check do swap — roda o mesmo `url-bucket` do gate (#165/#5757)
+ * contra o approved recém-mutado e devolve uma linha por URL presente em >1
+ * bucket (`found_in_bucket: duplicate`), que o chamador põe à frente de
+ * `rerenders_needed`. A duplicata é detectada direto do JSON — não depende de
+ * o rebaixado já estar listado no `02-reviewed.md`.
+ *
+ * @pure
+ */
+export function urlBucketDuplicateWarnings(
+  md: string,
+  approved: Record<string, unknown>,
+  label: string,
+): string[] {
+  return lintNewsletter(md, approved as ApprovedJson)
+    .errors.filter((e) => e.found_in_bucket === "duplicate")
+    .map(
+      (e) =>
+        `CORRIGIR ANTES DO GATE (#9961): url-bucket acusa ${e.url} duplicada em ${label} ` +
+        `(buckets: ${(e.duplicate_buckets ?? []).join(", ")}) — remover a cópia do bucket errado.`,
+    );
+}
+
+/** #9869/#9961: buckets de pool de `01-approved*.json` (os aceitos por `--demote-to`). */
+export const POOL_BUCKETS: readonly SourceBucket[] = ["radar", "lancamento", "use_melhor", "video", "runners_up"];
+
+/**
+ * #9869 (movido do swap-destaques.ts no #9961): tira de todos os buckets de
+ * pool os itens com a URL dada (comparação sem barra final). `highlights[]`
+ * não é tocado. URL vazia → no-op. Muta `data`.
+ */
+export function removeUrlFromPoolBuckets(data: Record<string, unknown>, url: string): void {
+  const key = normUrl(url);
+  if (!key) return;
+  for (const b of POOL_BUCKETS) {
+    const list = data[b];
+    if (!Array.isArray(list)) continue;
+    data[b] = list.filter(
+      (it) => !(it && typeof it === "object" && normUrl(extractUrl(it as Record<string, unknown>)) === key),
+    );
+  }
+}
+
+/**
  * #9601: remove do `02-reviewed.md` a entrada do item PROMOVIDO na seção de
  * pool de onde ele saiu (RADAR/LANÇAMENTOS/USE MELHOR/VÍDEOS) — senão a URL
  * aparece 2× (placeholder do destaque + item do pool) e a contagem da intro
@@ -416,6 +463,7 @@ export function buildSwapDestaqueSteps(
     demotedTo && demotedTo !== "runners_up"
       ? [
           `Incluir o destaque rebaixado como item da seção ${demotedTo} em 02-reviewed.md (formato de item de pool, título da fonte) e re-sincronizar a intro: npx tsx scripts/sync-intro-count.ts --md ${dir}/02-reviewed.md (#9601)`,
+          `Depois de incluir o item: conferir o url-bucket (gate-blocking) contra os 2 approved — npx tsx scripts/lint-newsletter-md.ts --md ${dir}/02-reviewed.md --approved ${dir}/_internal/01-approved.json e o mesmo com ${dir}/_internal/01-approved-capped.json (#9961: cópia da URL em outro bucket dá found_in_bucket: duplicate)`,
         ]
       : [];
   return [
@@ -708,6 +756,11 @@ export function swapInApprovedJson(
   // bucket's shape (#9601, §4d.1b i — flat for pool buckets).
   if (!drop) {
     const target = demoteTo ?? defaultDemoteBucket(promoteBucket);
+    // #9961: o destaque é um wrapper cujo `article` pode NUNCA ter saído do
+    // bucket de origem (ex: D3 vindo de `lancamento`). Demover pra outro bucket
+    // deixava a URL em 2 buckets → `url-bucket` acusa `duplicate`. Tira toda
+    // cópia pré-existente antes de inserir no destino (mesmo do #9869).
+    removeUrlFromPoolBuckets(data, extractUrl(demotedItem));
     const existing = data[target];
     data[target] = [
       toBucketItem(demotedItem, target), // #9381 + #9601
@@ -747,6 +800,7 @@ export function mirrorCappedSwapFallback(
     renumberRanks(cappedHighlights);
     if (!drop) {
       const target = demoteTo ?? defaultDemoteBucket(bucket as SourceBucket);
+      removeUrlFromPoolBuckets(approvedCappedData, extractUrl(cappedDemotedItem)); // #9961
       const cappedBucket = approvedCappedData[target];
       const demotedForBucket = toBucketItem(cappedDemotedItem, target); // #9381 + #9601
       if (Array.isArray(cappedBucket)) {
@@ -1173,6 +1227,23 @@ function main(): void {
 
   writeFilesVerified(pendingWrites, "swap-destaque");
   for (const w of pendingWrites) result.modified.rewritten.push(w.path);
+
+  // #9961: pós-check url-bucket (duplicata de bucket) contra os 2 approved.
+  // Vai à FRENTE de rerenders_needed — é gate-blocking no Stage 4.
+  {
+    const mdWrite = pendingWrites.find((w) => w.path === mdPath);
+    const finalMd = mdWrite ? mdWrite.content : existsSync(mdPath) ? readFileSync(mdPath, "utf8") : "";
+    const dupWarnings = [
+      ...urlBucketDuplicateWarnings(finalMd, approvedData, "01-approved.json"),
+      ...(approvedCappedData
+        ? urlBucketDuplicateWarnings(finalMd, approvedCappedData, "01-approved-capped.json")
+        : []),
+    ];
+    if (dupWarnings.length > 0) {
+      result.rerenders_needed.unshift(...dupWarnings);
+      for (const w of dupWarnings) console.error(`AVISO: ${w}`);
+    }
+  }
 
   // 4. Delete old images for the swapped position (new ones need Stage 3)
   const deletedImages = deleteDestaqueImages(editionDir, demotePosition, false);

@@ -73,8 +73,12 @@ import {
   removeDestaqueBlockFromMd,
   deleteDestaqueImages,
   deleteDestaquePrompts,
+  removeUrlFromPoolBuckets,
+  POOL_BUCKETS,
   type SourceBucket,
 } from "./swap-destaque.ts";
+
+export { removeUrlFromPoolBuckets }; // #9869 — vive no swap-destaque.ts desde o #9961
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -99,7 +103,7 @@ export interface SwapDestaquesArgs {
 }
 
 /** #9869: buckets de pool aceitos por `--demote-to` (os mesmos do swap-destaque.ts). */
-export const DEMOTE_BUCKETS: readonly SourceBucket[] = ["radar", "lancamento", "use_melhor", "video", "runners_up"];
+export const DEMOTE_BUCKETS: readonly SourceBucket[] = POOL_BUCKETS;
 
 export interface SwapDestaquesResult {
   edition: string;
@@ -212,22 +216,8 @@ export function swapManualInApprovedJson(
   return { ok: true, demoted };
 }
 
-/**
- * #9869: tira de todos os buckets de pool os itens com a URL dada (comparação
- * sem barra final). URL vazia → no-op. Muta `data`.
- */
-export function removeUrlFromPoolBuckets(data: Record<string, unknown>, url: string): void {
-  const norm = (u: string) => u.trim().replace(/\/+$/, "");
-  const key = norm(url);
-  if (!key) return;
-  for (const b of DEMOTE_BUCKETS) {
-    const list = data[b];
-    if (!Array.isArray(list)) continue;
-    data[b] = list.filter(
-      (it) => !(it && typeof it === "object" && norm(extractUrl(it as Record<string, unknown>)) === key),
-    );
-  }
-}
+// #9869: `removeUrlFromPoolBuckets` mudou pro swap-destaque.ts no #9961 (o
+// swap de item do pool tinha o mesmo bug) — re-exportado acima.
 
 /**
  * `next_steps` impressos após a troca, em ORDEM de execução. #9149: o 1º é o
