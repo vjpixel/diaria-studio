@@ -403,8 +403,15 @@ export function isUpdate(article: Article): boolean {
  *   - complemento começando por "download" (documento baixável);
  *   - complemento geográfico (país/região — expansão, ver
  *     `startsWithGeoComplement`);
- *   - título com substantivo de documento/changelog (report, release notes,
- *     blueprint, whitepaper, study, survey, playbook, e-book).
+ *   - SUJEITO (trecho antes de "now available|works") com substantivo de
+ *     documento/changelog (report, release notes, blueprint, whitepaper,
+ *     playbook, e-book) — ou "study"/"survey" como núcleo do sujeito.
+ * #9948: as exclusões de documento valem só para o SUJEITO, nunca para o
+ * complemento — "Copilot now works with Power BI reports" e "NotebookLM now
+ * available for Workspace survey forms" são produto chegando a superfície
+ * nova. "study"/"survey" só contam como núcleo do sujeito (última palavra
+ * antes de "is/are now"): "ChatGPT study mode now available on Android" é
+ * produto ("study" modifica "mode"); "Our new study is now available on…" não.
  * O caller (`categorizeWithRule`) ainda exige !isReport/!isExplainerByTitle/
  * !isLikelyNewsNotLaunch antes do return, então as checagens de relatório/
  * explainer/notícia continuam valendo para esse caminho.
@@ -413,14 +420,20 @@ const NEW_PLATFORM_AVAILABILITY_TITLE_RE = /\bnow\s+(?:available\s+(?:on|for)|wo
 const CLOUD_DISTRIBUTION_RE =
   /\b(aws|amazon|bedrock|sagemaker|azure|foundry|google\s+cloud|vertex|gcp|oracle|snowflake|databricks)\b/i;
 const DOWNLOAD_COMPLEMENT_RE = /^\s*(?:free\s+)?download\b/i;
-const DOCUMENT_TITLE_RE =
-  /\b(?:reports?|release\s+notes?|changelog|blueprint|white\s*papers?|study|survey|playbook|e-?book|relat[óo]rio|notas\s+de\s+vers[ãa]o)\b/i;
+const DOCUMENT_SUBJECT_RE =
+  /\b(?:reports?|release\s+notes?|changelog|blueprint|white\s*papers?|playbook|e-?book|relat[óo]rio|notas\s+de\s+vers[ãa]o)\b/i;
+// #9948: "study"/"survey" são modificadores comuns de nome de produto ("study
+// mode", "survey forms") — só excluem quando são o NÚCLEO do sujeito.
+const DOCUMENT_HEAD_NOUN_RE = /\b(?:study|studies|survey|surveys)\s*(?:(?:is|are)\s*)?$/i;
 
 export function isNewPlatformAvailabilityTitle(article: Article): boolean {
   const title = article.title ?? "";
   const m = NEW_PLATFORM_AVAILABILITY_TITLE_RE.exec(title);
   if (!m) return false;
-  if (CLOUD_DISTRIBUTION_RE.test(title) || DOCUMENT_TITLE_RE.test(title)) return false;
+  const subject = title.slice(0, m.index);
+  if (CLOUD_DISTRIBUTION_RE.test(title) || DOCUMENT_SUBJECT_RE.test(subject) || DOCUMENT_HEAD_NOUN_RE.test(subject)) {
+    return false;
+  }
   const complement = title.slice(m.index + m[0].length);
   return !DOWNLOAD_COMPLEMENT_RE.test(complement) && !startsWithGeoComplement(complement);
 }
@@ -1520,6 +1533,15 @@ const TUTORIAL_ACTION_VERBS_PT =
   // (261005, slug, ver SLUG_HOWTO_RE).
   "usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar|treinar|transformar|explorar|personalizar";
 
+// #9958 (09/10/2026): "como transcrever|resumir" — "Chega de ouvir áudio: como
+// transcrever WhatsApp e resumir reuniões com IA" (exame.com, 261009), movido
+// RADAR → USE MELHOR pelo editor; caía em noticias-default. Só no TÍTULO e
+// nunca depois de vírgula: no summary, ", como resumir matérias" é "tal como"
+// (enumeração de recurso), não how-to — medido no replay (#9882) contra
+// "Gemini no Chrome chega ao Brasil…" (260611, RADAR), que regredia quando
+// os verbos entraram em TUTORIAL_ACTION_VERBS_PT (que vale título+summary).
+const TITLE_HOWTO_EXTRA_RE = /(?<!,\s*)\bcomo\s+(?:transcrever|resumir)\b/i;
+
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
     "|\\btutorial:?\\s" +
@@ -1684,6 +1706,7 @@ function isTutorialByKeyword(article: Article): boolean {
     TUTORIAL_KEYWORDS_RE.test(hay) ||
     DISCOVERY_LISTICLE_RE.test(hay) ||
     isUsageGuideTitle(article.title ?? "") ||
+    TITLE_HOWTO_EXTRA_RE.test(article.title ?? "") ||
     hasHowToSlug(article.url ?? "", article.type_hint)
   );
 }
