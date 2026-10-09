@@ -15,6 +15,8 @@
  * --apply-to-code` insere as decisões registradas no gate 4 aqui.
  */
 export const EDITORIAL_KEEP_LIST: ReadonlySet<string> = new Set<string>([
+  "amazon.com", // editor 261009 — editor pediu explicitamente para manter (#9787) (pergunta no gate 4 da edição 261009, retirado 28× × mantido 12× no gate 4)
+  "deepmind.google", // editor 261009 — editor pediu explicitamente para manter (#9787) (pergunta no gate 4 da edição 261009, retirado 12× × mantido 4× no gate 4)
 ]);
 
 /**
