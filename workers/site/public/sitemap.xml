@@ -1186,4 +1186,16 @@
       <news:title>Haiku 5.5 supera o Sonnet 5 e custa até 95% menos</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/claude-ganha-regra-contra-quem-o-maltrata</loc>
+    <lastmod>2026-10-09</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-09T09:00:00.000Z</news:publication_date>
+      <news:title>Claude ganha regra contra quem o maltrata</news:title>
+    </news:news>
+  </url>
 </urlset>
