@@ -3,12 +3,12 @@
  *
  * Remove artigos duplicados da lista de candidatos.
  * Dois passes:
- *   1. Contra `past-editions.md` — URL canônica (últimas N edições)
+ *   1. Contra `past-editions.md` — URL canônica (últimos ~30 dias, #9955)
  *      1r. Contra itens CORTADOS pelo editor no Stage 4 das mesmas N edições (#9360)
  *   2. Dentro da própria lista — URL canônica + similaridade de título
  *
  * Uso:
- *   npx tsx scripts/dedup.ts --articles <articles.json> --past-editions data/past-editions.md [--window 3] [--title-threshold 0.85] [--out <out.json>]
+ *   npx tsx scripts/dedup.ts --articles <articles.json> --past-editions data/past-editions.md [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--out <out.json>]
  *
  * Input:  array JSON de artigos (cada um com ao menos { url, title? })
  * Output: { kept: Article[], removed: RemovedEntry[] }
@@ -43,8 +43,10 @@ import {
 import {
   isValidEditionDir,
   DEFAULT_PAST_WINDOW,
+  DEDUP_URL_WINDOW_DAYS,
   readPastEditionsMd,
   extractPastUrls,
+  extractPastUrlsWithinDays,
   extractPastUrlsUnbounded,
   extractPastTitles,
   extractPastThemeEntities,
@@ -91,8 +93,10 @@ export {
 export {
   isValidEditionDir,
   DEFAULT_PAST_WINDOW,
+  DEDUP_URL_WINDOW_DAYS,
   readPastEditionsMd,
   extractPastUrls,
+  extractPastUrlsWithinDays,
   extractPastUrlsUnbounded,
   extractPastTitles,
   extractPastThemeEntities,
@@ -770,6 +774,12 @@ async function main() {
   const pastEditionsExplicit = args["past-editions"] !== undefined;
   const pastEditionsPath = args["past-editions"] ?? "data/past-editions.md";
   const window = parseInt(args["window"] ?? String(DEFAULT_PAST_WINDOW), 10);
+  // #9955: janela (dias) do bloqueio de URL repetida.
+  const urlWindowDays = parseInt(args["url-window-days"] ?? String(DEDUP_URL_WINDOW_DAYS), 10);
+  if (!Number.isInteger(urlWindowDays) || urlWindowDays < 1) {
+    console.error(`dedup: --url-window-days inválido: "${args["url-window-days"]}" (esperado inteiro >= 1)`);
+    process.exit(1);
+  }
   const titleThreshold = parseFloat(args["title-threshold"] ?? String(CONFIG.dedup.titleThreshold));
   const outPath = args["out"];
   // #3311: override SÓ pra isolamento de teste — repassado ao logEvent de
@@ -782,7 +792,7 @@ async function main() {
   const logRootDir = args["log-root-dir"];
 
   if (!articlesPath) {
-    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
+    console.error("Uso: dedup.ts --articles <articles.json> [--past-editions <path>] [--editions-dir data/editions] [--current-edition AAMMDD] [--window 3] [--url-window-days 30] [--title-threshold 0.85] [--title-vs-past-threshold 0.70] [--subject-vs-past-threshold 0.60] [--out <out.json>]");
     process.exit(1);
   }
 
@@ -812,12 +822,30 @@ async function main() {
     console.error(`dedup pre-pass: ${resolved} título(s) resolvido(s), ${failed} falha(s) (mantidos com placeholder)`);
   }
 
+  // #1856: exclui a edição corrente do subject-dedup pra não deduplicar contra o
+  // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
+  // removia os próprios destaques). Deriva do --out/--articles quando o caller
+  // não passa --current-edition explícito.
+  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
+  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
+  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
+    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
+    process.exit(1);
+  }
+  const currentAammdd =
+    args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
+  if (!args["current-edition"] && currentAammdd) {
+    console.error(`[dedup] edição corrente derivada do path: ${currentAammdd} (excluída do subject-dedup #1856)`);
+  }
   // #1847: past-editions.md mora em data/ (gitignored, regenerado no Stage 0) —
   // pode estar AUSENTE num clone fresco / CI antes do primeiro refresh-dedup.
   // Tratar ausência como histórico vazio (mesma semântica do guard #672 abaixo),
   // não crashar com ENOENT. finalize-stage1.ts já fazia esse existsSync-guard.
   const pastMd = readPastEditionsMd(pastEditionsPath, { required: pastEditionsExplicit });
-  const pastUrls = extractPastUrls(pastMd, window);
+  // #9955: bloqueio de URL repetida é por DIAS (DEDUP_URL_WINDOW_DAYS, ~30)
+  // antes da edição corrente, não pelas `window` edições — os sinais fuzzy
+  // abaixo (título, tema, entidade) seguem em `window`.
+  const pastUrls = extractPastUrlsWithinDays(pastMd, urlWindowDays, currentAammdd);
   const pastTitles = extractPastTitles(pastMd, window); // #231 defense-in-depth
 
   // #672/#1847: guard contra past-editions.md vazio OU ausente (ex: Beehiiv
@@ -843,21 +871,6 @@ async function main() {
   const subjectVsPastThresholdLowered = parseFloat(
     args["subject-vs-past-threshold-lowered"] ?? "0.55",
   );
-  // #1856: exclui a edição corrente do subject-dedup pra não deduplicar contra o
-  // próprio 01-approved.json (self-match quebrava idempotência: re-run/resume
-  // removia os próprios destaques). Deriva do --out/--articles quando o caller
-  // não passa --current-edition explícito.
-  // #8666: `--current-edition` inválido falha alto — com ele errado o sinal (C)
-  // do event-dedup sairia desligado (ou com distâncias erradas) em silêncio.
-  if (args["current-edition"] !== undefined && !isValidEditionDir(args["current-edition"])) {
-    console.error(`dedup: --current-edition inválido: "${args["current-edition"]}" (esperado AAMMDD de data real)`);
-    process.exit(1);
-  }
-  const currentAammdd =
-    args["current-edition"] ?? deriveCurrentEdition(outPath, articlesPath);
-  if (!args["current-edition"] && currentAammdd) {
-    console.error(`[dedup] edição corrente derivada do path: ${currentAammdd} (excluída do subject-dedup #1856)`);
-  }
   const pastArticleTitles = extractPastEditionArticleTitles(
     editionsDir,
     window,
@@ -872,10 +885,13 @@ async function main() {
   // #1068: extrair URLs que foram destaques (highlights) em edições passadas.
   // Dedup usa pra permitir promoção secondary→destaque (URL em past mas não
   // como destaque → permite na edição corrente como destaque).
+  // #9955: mesma janela em dias do bloqueio de URL (com a edição corrente
+  // conhecida; sem ela, cai nas `window` edições mais recentes).
   const pastDestaqueUrls = extractPastDestaqueUrls(
     editionsDir,
     window,
     currentAammdd,
+    urlWindowDays,
   );
   if (pastDestaqueUrls.size > 0) {
     console.error(
@@ -959,7 +975,7 @@ async function main() {
   );
 
   console.error(
-    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold}, subject-vs-past-lowered=${subjectVsPastThresholdLowered})`
+    `dedup: ${articles.length} input → ${result.kept.length} kept, ${result.removed.length} removed (window=${window} edições, url-window=${urlWindowDays} dias, threshold=${titleThreshold}, title-vs-past=${titleVsPastThreshold}, subject-vs-past=${subjectVsPastThreshold}, subject-vs-past-lowered=${subjectVsPastThresholdLowered})`
   );
 
   const removed = result.removed.length;

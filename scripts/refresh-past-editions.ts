@@ -45,7 +45,7 @@ export type Post = {
 };
 
 function loadConfig(): { dedupEditionCount: number } {
-  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 14 };
+  if (!existsSync(CONFIG_PATH)) return { dedupEditionCount: 35 };
   let raw: string;
   try {
     raw = readFileSync(CONFIG_PATH, "utf8");
@@ -54,7 +54,7 @@ function loadConfig(): { dedupEditionCount: number } {
   }
   try {
     const cfg = JSON.parse(raw);
-    return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 14 };
+    return { dedupEditionCount: cfg?.beehiiv?.dedupEditionCount ?? 35 };
   } catch (e) {
     throw new Error(`${CONFIG_PATH} contém JSON inválido — verifique sintaxe (trailing commas, aspas, etc.): ${(e as Error).message}`);
   }

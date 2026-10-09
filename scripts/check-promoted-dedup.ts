@@ -32,7 +32,11 @@
  *   npx tsx scripts/check-promoted-dedup.ts \
  *     --categorized data/editions/AAMMDD/_internal/tmp-categorized.json \
  *     [--past-editions data/past-editions.md] \
- *     [--window 3]
+ *     [--url-window-days 30]
+ *
+ * #9955: a janela de URL repetida é em DIAS (DEDUP_URL_WINDOW_DAYS) antes da
+ * edição derivada do path de --categorized. `--window N` (edições) foi
+ * aposentado — aceito por compat, ignorado com aviso.
  *
  * Modifica --categorized in-place. Retorna JSON em stdout:
  *   { demoted: [{ url_from, url_to, title, reason }], checked: N }
@@ -40,7 +44,13 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { canonicalize, extractPastUrls, readPastEditionsMd, DEFAULT_PAST_WINDOW } from "./dedup.ts";
+import {
+  canonicalize,
+  extractPastUrlsWithinDays,
+  readPastEditionsMd,
+  deriveCurrentEdition,
+  DEDUP_URL_WINDOW_DAYS,
+} from "./dedup.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 
 // ---------------------------------------------------------------------------
@@ -266,35 +276,41 @@ export function checkPromotedDedup(
 function parseArgs(argv: string[]): {
   categorized: string;
   pastEditions: string;
-  window: number;
+  urlWindowDays: number;
 } {
   let categorized = "";
   let pastEditions = resolve(import.meta.dirname, "..", "data", "past-editions.md");
-  let window = DEFAULT_PAST_WINDOW;
+  let urlWindowDays = DEDUP_URL_WINDOW_DAYS;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--categorized" && argv[i + 1]) categorized = argv[++i];
     else if (argv[i] === "--past-editions" && argv[i + 1]) pastEditions = argv[++i];
-    else if (argv[i] === "--window" && argv[i + 1]) {
+    else if (argv[i] === "--url-window-days" && argv[i + 1]) {
       const w = parseInt(argv[++i], 10);
       if (!Number.isInteger(w) || w < 1) {
         console.error(
-          `[check-promoted-dedup] --window deve ser um inteiro positivo (recebido: ${argv[i]})`,
+          `[check-promoted-dedup] --url-window-days deve ser um inteiro positivo (recebido: ${argv[i]})`,
         );
         process.exit(1);
       }
-      window = w;
+      urlWindowDays = w;
+    } else if (argv[i] === "--window" && argv[i + 1]) {
+      // #9955: janela por nº de edições aposentada — a de URL é em dias.
+      i++;
+      console.error(
+        `[check-promoted-dedup] WARN: --window ignorado (#9955) — janela de URL é --url-window-days (default ${DEDUP_URL_WINDOW_DAYS}).`,
+      );
     }
   }
 
   if (!categorized) {
     console.error(
-      "Uso: check-promoted-dedup.ts --categorized <path> [--past-editions <path>] [--window <N>]",
+      "Uso: check-promoted-dedup.ts --categorized <path> [--past-editions <path>] [--url-window-days <N>]",
     );
     process.exit(1);
   }
 
-  return { categorized, pastEditions, window };
+  return { categorized, pastEditions, urlWindowDays };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -313,7 +329,11 @@ if (isMainModule(import.meta.url)) {
   // required: true → falha explícita se o arquivo estiver ausente (fresh clone,
   // Stage 0 offline, typo no path) — evita dedup silencioso sem histórico.
   const pastMd = readPastEditionsMd(args.pastEditions, { required: true });
-  const pastUrls = extractPastUrls(pastMd, args.window);
+  const pastUrls = extractPastUrlsWithinDays(
+    pastMd,
+    args.urlWindowDays,
+    deriveCurrentEdition(args.categorized),
+  );
 
   // Verificar e demote in-place
   const result = checkPromotedDedup(raw, pastUrls);
