@@ -103,6 +103,13 @@ export interface BrevoDiariaContact {
    * limpo quando o contato sai de `in_brevo` (mesmo tratamento de
    * `awaiting_kit_confirmation_since`); `needsDoiResend` checa o status. */
   doi_resent_at?: string;
+  /** #9979 — ISO da última tentativa de reenvio do DOI em que o Kit respondeu
+   * 200 ("já vinculado ao form": nenhum e-mail sai, então não conta como
+   * reenvio nem toca `doi_resent_at`, #9945). Existe só pro anti-spam:
+   * `needsDoiResend` aplica o mesmo `DOI_RESEND_INTERVAL_DAYS` à tentativa
+   * mais recente entre os dois marcadores, senão o contato era re-chamado em
+   * toda rodada. Ausente em stores antigos (= nenhuma tentativa noop). */
+  doi_resend_noop_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -541,17 +548,42 @@ export const DOI_RESEND_INTERVAL_DAYS = 7;
  * mais. Timestamp ilegível conta como "já reenviado agora" (fail-safe pro
  * lado do anti-spam: na dúvida, não reenvia). Não olha o estado no Kit nem a
  * taxa de abertura; isso é do caller (`shouldResendKitDoi`).
+ *
+ * #9979 — a "última tentativa" é a mais recente entre `doi_resent_at` (201,
+ * e-mail saiu) e `doi_resend_noop_at` (200, nada saiu): o intervalo vale pras
+ * duas, senão um contato que já recebeu 1 reenvio era re-chamado em toda
+ * rodada assim que o 201 antigo passava do intervalo. Mesmo fail-safe pra
+ * timestamp ilegível em qualquer um dos dois.
  */
 export function needsDoiResend(
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at">,
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at">,
   now: string = new Date().toISOString(),
   days: number = DOI_RESEND_INTERVAL_DAYS,
 ): boolean {
   if (contact.status !== "in_brevo") return false;
-  if (!contact.doi_resent_at) return true;
-  const lastMs = Date.parse(contact.doi_resent_at);
-  if (!Number.isFinite(lastMs)) return false;
-  return (Date.parse(now) - lastMs) / 86_400_000 >= days;
+  const marks = [contact.doi_resent_at, contact.doi_resend_noop_at].filter((m): m is string => !!m);
+  if (marks.length === 0) return true;
+  const ms = marks.map((m) => Date.parse(m));
+  if (ms.some((m) => !Number.isFinite(m))) return false;
+  return (Date.parse(now) - Math.max(...ms)) / 86_400_000 >= days;
+}
+
+/**
+ * #9979 — pura. ISO da tentativa de reenvio mais recente (201 ou 200), pro
+ * log do "NÃO reenviado"; `undefined` se nunca houve tentativa. Comparação
+ * por `Date.parse` (ilegível perde pra legível; dois ilegíveis → o 1º).
+ */
+export function lastDoiResendAttemptAt(
+  contact: Pick<BrevoDiariaContact, "doi_resent_at" | "doi_resend_noop_at">,
+): string | undefined {
+  const a = contact.doi_resent_at;
+  const b = contact.doi_resend_noop_at;
+  if (!a || !b) return a ?? b;
+  const am = Date.parse(a);
+  const bm = Date.parse(b);
+  if (!Number.isFinite(bm)) return a;
+  if (!Number.isFinite(am)) return b;
+  return bm > am ? b : a;
 }
 
 /** #9835 — grava `doi_resent_at` (sobrescreve: é o timestamp do ÚLTIMO
@@ -566,6 +598,24 @@ export function markDoiResent(
     ...store,
     contacts: store.contacts.map((c) =>
       c.email === norm && c.status === "in_brevo" ? { ...c, doi_resent_at: now } : c,
+    ),
+  };
+}
+
+/** #9979 — grava `doi_resend_noop_at` (tentativa de reenvio que o Kit
+ * respondeu 200: nenhum e-mail saiu). Não toca `doi_resent_at` nem conta como
+ * reenvio (#9945); só alimenta o intervalo de `needsDoiResend`. No-op
+ * silencioso pra contato ausente ou fora de `in_brevo`. */
+export function markDoiResendNoop(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    ...store,
+    contacts: store.contacts.map((c) =>
+      c.email === norm && c.status === "in_brevo" ? { ...c, doi_resend_noop_at: now } : c,
     ),
   };
 }

@@ -18,6 +18,8 @@ import {
   findContact,
   needsDoiResend,
   markDoiResent,
+  markDoiResendNoop,
+  lastDoiResendAttemptAt,
   DOI_RESEND_INTERVAL_DAYS,
   AWAITING_KIT_CONFIRMATION_STALE_DAYS,
   type BrevoDiariaContact,
@@ -397,6 +399,105 @@ describe("runEvaluation — reenvio do DOI no ramo await_self_confirmation (#983
       const recent = new Date(Date.now() - 86_400_000).toISOString();
       await run(contact("leitor@x.com", { doi_resent_at: recent }), { log: (m) => logs.push(m) });
       assert.ok(logs.some((l) => l.includes("NÃO reenviado") && l.includes(recent)));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// #9979 — regressão: depois do #9945 o 200 deixou de gravar `doi_resent_at`,
+// então um contato com 1 reenvio 201 antigo era re-chamado em TODA rodada
+// (needsDoiResend preso no 201 vencido). O 200 grava `doi_resend_noop_at` e o
+// intervalo vale pra tentativa mais recente entre os dois marcadores.
+describe("needsDoiResend com doi_resend_noop_at — puras (#9979)", () => {
+  it("201 vencido + noop recente → false", () => {
+    assert.equal(
+      needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(30), doi_resend_noop_at: daysAgo(1) }), NOW),
+      false,
+    );
+  });
+  it("201 vencido + noop vencido → true (sem teto de reenvios)", () => {
+    assert.equal(
+      needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(30), doi_resend_noop_at: daysAgo(7) }), NOW),
+      true,
+    );
+  });
+  it("só noop (sem 201) respeita o intervalo", () => {
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_noop_at: daysAgo(3) }), NOW), false);
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_noop_at: daysAgo(8) }), NOW), true);
+  });
+  it("store antigo sem o campo → comportamento do #9835 inalterado", () => {
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(8) }), NOW), true);
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(2) }), NOW), false);
+  });
+  it("noop ilegível → false (fail-safe do anti-spam)", () => {
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(30), doi_resend_noop_at: "lixo" }), NOW), false);
+  });
+  it("markDoiResendNoop grava só o noop, sem tocar doi_resent_at, só no contato in_brevo certo", () => {
+    const old = daysAgo(30);
+    const store = { contacts: [contact("a@x.com", { doi_resent_at: old }), contact("b@x.com")] };
+    const out = markDoiResendNoop(store, "A@x.com", NOW);
+    assert.equal(findContact(out, "a@x.com")!.doi_resend_noop_at, NOW);
+    assert.equal(findContact(out, "a@x.com")!.doi_resent_at, old);
+    assert.equal(findContact(out, "b@x.com")!.doi_resend_noop_at, undefined);
+    const promoted = markDoiResendNoop({ contacts: [contact("c@x.com", { status: "promoted_beehiiv" })] }, "c@x.com", NOW);
+    assert.equal(findContact(promoted, "c@x.com")!.doi_resend_noop_at, undefined);
+  });
+  it("lastDoiResendAttemptAt devolve o mais recente", () => {
+    assert.equal(lastDoiResendAttemptAt({}), undefined);
+    assert.equal(lastDoiResendAttemptAt({ doi_resent_at: daysAgo(9) }), daysAgo(9));
+    assert.equal(lastDoiResendAttemptAt({ doi_resent_at: daysAgo(9), doi_resend_noop_at: daysAgo(1) }), daysAgo(1));
+    assert.equal(lastDoiResendAttemptAt({ doi_resent_at: daysAgo(1), doi_resend_noop_at: daysAgo(9) }), daysAgo(1));
+  });
+});
+
+describe("runEvaluation — sequência 201 → 200 → 200 respeita o intervalo (#9979)", () => {
+  const origFetch = globalThis.fetch;
+  const ago = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
+
+  it("201, depois 200 fora do intervalo chama 1x, e o 200 seguinte dentro do intervalo não chama de novo", async () => {
+    // Rodada 1 — 201: reenvio real.
+    let calls = installFetch({ state: "inactive", formStatus: 201 });
+    try {
+      const r1 = await run(contact("leitor@x.com"));
+      assert.equal(calls.formPosts.length, 1);
+      assert.equal(r1.doiResent, 1);
+      // O tempo passa: o 201 fica fora do intervalo.
+      const afterOne = { ...findContact(r1.store, "leitor@x.com")!, doi_resent_at: ago(DOI_RESEND_INTERVAL_DAYS + 1) };
+
+      // Rodada 2 — 200 (já vinculado): chama, não conta, grava o noop.
+      calls = installFetch({ state: "inactive", formStatus: 200 });
+      const r2 = await run(afterOne);
+      assert.equal(calls.formPosts.length, 1);
+      assert.equal(r2.doiResent, 0);
+      assert.equal(r2.failed, 0);
+      const afterTwo = findContact(r2.store, "leitor@x.com")!;
+      assert.equal(afterTwo.doi_resent_at, afterOne.doi_resent_at, "200 não toca doi_resent_at");
+      assert.ok(afterTwo.doi_resend_noop_at, "200 grava doi_resend_noop_at");
+
+      // Rodada 3 — dentro do intervalo do noop: NÃO chama o Kit de novo.
+      calls = installFetch({ state: "inactive", formStatus: 200 });
+      const logs: string[] = [];
+      const r3 = await run(afterTwo, { log: (m) => logs.push(m) });
+      assert.equal(calls.formPosts.length, 0, "dentro do intervalo não re-chama (bug do #9979)");
+      assert.equal(r3.doiResent, 0);
+      assert.ok(logs.some((l) => l.includes("NÃO reenviado") && l.includes(afterTwo.doi_resend_noop_at!)));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("noop fora do intervalo → chama de novo (sem teto de reenvios)", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 201 });
+    try {
+      const r = await run(
+        contact("leitor@x.com", {
+          doi_resent_at: ago(30),
+          doi_resend_noop_at: ago(DOI_RESEND_INTERVAL_DAYS + 1),
+        }),
+      );
+      assert.equal(calls.formPosts.length, 1);
+      assert.equal(r.doiResent, 1, "201 volta a contar normalmente");
     } finally {
       globalThis.fetch = origFetch;
     }
