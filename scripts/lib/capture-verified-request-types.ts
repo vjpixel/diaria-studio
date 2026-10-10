@@ -26,6 +26,10 @@
  *    de TEXTO, nenhum cobre prompt de imagem; distilar imagem é escopo
  *    natural de uma extensão futura, não desta 1ª rodada.
  *
+ * `pool-text-edit` (#9989) mapeia pra texto (writer.md), mas nasceu depois
+ * desta fase e a captura dele ainda não foi validada contra dado real —
+ * fica de fora até alguém conferir, como os demais.
+ *
  * Resultado: 8 tipos — `title-choice`, `title-length`, `lead-rewrite`,
  * `tone`, `length-cut`, `social-rewrite`, `factual-correction`,
  * `eia-choice`. Decisão registrada aqui, não re-derivada por heurística em

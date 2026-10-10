@@ -244,6 +244,55 @@ function stripItemBlocks(text: string, keys: ReadonlySet<string>): string {
   return out.join("\n");
 }
 
+/**
+ * #9989: seção de pool com o MESMO conjunto de itens e texto diferente — diz
+ * o que mudou, item a item (casado por `titleLineUrlKey`, nunca por posição):
+ * - `titulo` / `descricao` / `titulo-e-descricao`: texto do link do título
+ *   e/ou corpo do item (linhas até o próximo título ou `---`) reescritos;
+ * - `reordenado`: nenhum texto mudou, só a ordem dos itens;
+ * - `outro`: a diferença está fora dos itens (cabeçalho, linha solta) ou só
+ *   na URL do mesmo artigo (query/tracking).
+ *
+ * @pure
+ */
+export function classifyPoolTextEdit(
+  oldText: string,
+  newText: string,
+): "titulo" | "descricao" | "titulo-e-descricao" | "reordenado" | "outro" {
+  const items = (text: string) => {
+    const map = new Map<string, { title: string; body: string[] }>();
+    let cur: { title: string; body: string[] } | null = null;
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (t.startsWith("**[")) {
+        const k = titleLineUrlKey(line);
+        cur = k ? { title: t.match(/^\*\*\[(.+)\]\(/)?.[1]?.trim() ?? t, body: [] } : null;
+        if (k && cur && !map.has(k)) map.set(k, cur);
+      } else if (t === "---") {
+        cur = null;
+      } else if (cur && t !== "") {
+        cur.body.push(t);
+      }
+    }
+    return map;
+  };
+  const before = items(oldText);
+  const after = items(newText);
+  let titleDiff = false;
+  let bodyDiff = false;
+  for (const [k, a] of after) {
+    const b = before.get(k);
+    if (!b) continue;
+    if (a.title !== b.title) titleDiff = true;
+    if (a.body.join("\n") !== b.body.join("\n")) bodyDiff = true;
+  }
+  if (titleDiff && bodyDiff) return "titulo-e-descricao";
+  if (titleDiff) return "titulo";
+  if (bodyDiff) return "descricao";
+  const order = (m: Map<string, unknown>) => [...m.keys()].join("\n");
+  return order(before) !== order(after) ? "reordenado" : "outro";
+}
+
 /** Ignora diferença só de linhas em branco/espaço no fim (sobra da remoção de um bloco). */
 function normalizeBlankLines(text: string): string {
   return text.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "").join("\n");
@@ -644,6 +693,18 @@ export function classifyNewsletterDiff(
       if (strong || requestType === "title-choice" || (urlClass.kind === "categoria-trocada" && requestType !== "length-cut" && requestType !== "link-swap")) requestType = urlClass.type;
     }
 
+    // #9989: seção de pool com o mesmo conjunto de itens (inclusive o "resto"
+    // depois de tirar um item movido, #9949) e texto diferente é edição de
+    // TEXTO — não o padrão da seção (`link-swap` em RADAR/LANÇAMENTOS/VÍDEOS,
+    // `destaque-promote` em USE MELHOR), que inflava esses dois sinais em
+    // `collect-edition-signals.ts`. `length-cut` (descrição encurtada >30%,
+    // #9880) continua valendo; só ordem trocada vira `section-order`.
+    let poolTextKind: ReturnType<typeof classifyPoolTextEdit> | null = null;
+    if (POOL_SECTION_KEYS.has(section) && !poolClass && requestType !== "length-cut") {
+      poolTextKind = classifyPoolTextEdit(oldText, newText);
+      requestType = poolTextKind === "reordenado" ? "section-order" : "pool-text-edit";
+    }
+
     // Mudança real no conjunto (corte/adição/troca) vence a classificação textual.
     if (poolClass) requestType = poolClass.type;
 
@@ -675,6 +736,7 @@ export function classifyNewsletterDiff(
         new_length: newLen,
         url: articleUrl,
         ...(urlClass ? { change_kind: urlClass.kind } : {}),
+        ...(poolTextKind ? { change_kind: poolTextKind } : {}),
         ...(poolClass ? { change_kind: poolClass.kind, items_removed: poolClass.removed, items_added: poolClass.added } : {}),
       },
     });

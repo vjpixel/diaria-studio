@@ -220,11 +220,11 @@ describe("#9949 seção só com item movido não descarta edição de outro item
     assert.deepEqual(summary(out).sort(), ["d1:destaque-swap", "radar:length-cut"]);
   });
 
-  it("item movido + outro item reescrito mais longo → lead-rewrite", () => {
+  it("item movido + outro item reescrito mais longo → pool-text-edit:descricao (#9989; era lead-rewrite, tipo de destaque)", () => {
     const out = classifyNewsletterDiff(
       mdDesc({ d1: Z, lanc: [[A, dA], [C, curto]], radar: [[B, dB]] }),
       mdDesc({ d1: Z, lanc: [[C, longo]], radar: [[B, dB], [A, dA]] }),
     );
-    assert.deepEqual(full(out).sort(), ["lancamentos:lead-rewrite", "radar:bucket-move:item-movido"]);
+    assert.deepEqual(full(out).sort(), ["lancamentos:pool-text-edit:descricao", "radar:bucket-move:item-movido"]);
   });
 });
