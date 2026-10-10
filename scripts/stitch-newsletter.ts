@@ -584,7 +584,11 @@ export async function fetchBodyForCache(
       signal: controller.signal,
       headers: { "user-agent": "Mozilla/5.0 (compatible; DiariaBot/1.0)" },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const body = await res.text();
     if (body.length < 500) return null;
     saveCachedBody(bodiesDir, url, body);

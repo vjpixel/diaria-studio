@@ -250,6 +250,9 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
     });
 
     if (!res.ok) {
+      // #9991: o `finally` desarma o abort; corpo de erro não lido seguraria
+      // o socket (e a saída via exitCode) sem limite.
+      await res.body?.cancel().catch(() => {});
       return {
         source: opts.sourceName,
         method: "rss",

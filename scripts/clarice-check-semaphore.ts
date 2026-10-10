@@ -114,6 +114,8 @@ export async function checkSemaphore(
 ): Promise<SemaphoreCheckResult> {
   const res = await fetchImpl(`${dashboardUrl}/api/campaigns?limit=${limit}`);
   if (!res.ok) {
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     throw new Error(`GET ${dashboardUrl}/api/campaigns falhou (${res.status}) — não dá pra determinar o semáforo, tratado como falha (não "indeterminate/passa").`);
   }
   // #4543: HTTP 200 não significa dado FRESH — ver docstring de

@@ -139,6 +139,9 @@ async function extractPublishedDate(
       });
 
       if (res.status >= 400) {
+        // #9991: o `finally` desarma o abort; corpo não lido seguraria o
+        // socket e a saída via exitCode.
+        await res.body?.cancel().catch(() => {});
         return { date: null, note: `HTTP ${res.status}`, cacheHit };
       }
 

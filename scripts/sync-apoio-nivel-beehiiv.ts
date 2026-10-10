@@ -151,6 +151,7 @@ import { type ApoioNivel, isApoioNivel } from "./lib/shared/apoio-nivel-types.ts
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { previousMonthKey } from "./lib/apoio-month-key.ts";
 import { findEmailMatchCandidates, type EmailMatchCandidate } from "./lib/apoio-email-heuristics.ts";
@@ -363,10 +364,15 @@ async function apiRequest<T>(
   });
   if (res.status === 429 && retries < MAX_RETRIES) {
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     await sleep(Math.max(retryAfter * 1000, 30_000));
     return apiRequest<T>(path, apiKey, fetchImpl, init, retries + 1);
   }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   const text = await res.text();
   const body = text ? (JSON.parse(text) as T) : null;
   return { ok: true, status: res.status, body };
@@ -788,7 +794,7 @@ export { reconcilePendingPromises, type ReconcilePromisesResult } from "./lib/ap
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   loadProjectEnv(ROOT);
 
@@ -847,7 +853,7 @@ async function main(): Promise<void> {
       `${LOG_PREFIX} ERRO FATAL: chave apoia.se rejeitada durante a reconciliação de promessas pendentes ` +
         `(${cycle.authError}) — verifique APOIA_SE_API_KEY/APOIA_SE_API_SECRET. Sync abortado antes de tocar a Beehiiv.\n`,
     );
-    process.exit(1);
+    return 1;
   }
 
   const data = await buildApoiosData(ROOT);
@@ -924,7 +930,7 @@ async function main(): Promise<void> {
         "aplicada, nem adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se " +
         "antes de usar --force-blast-radius (decisão consciente do editor, sempre logada).\n",
     );
-    process.exit(1);
+    return 1;
   }
 
   if (removalsBlockedByPartialData && diff.toRemove.length > 0) {
@@ -951,12 +957,10 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(`${LOG_PREFIX} push concluído: ${applied} aplicada(s), ${failed} falha(s).\n`);
-  if (failed > 0) process.exit(1);
+  if (failed > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`${LOG_PREFIX} erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
-  });
+  // #9911: runCli grava process.exitCode (process.exit depois de fetch sai 127 no Windows).
+  runCli(main, { onError: (e) => process.stderr.write(`${LOG_PREFIX} erro fatal: ${(e as Error).message}\n`) });
 }

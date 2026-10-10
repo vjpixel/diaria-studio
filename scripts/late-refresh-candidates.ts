@@ -97,7 +97,11 @@ async function fetchSitemapAfter(feed: SitemapFeed, cutoffIso: string): Promise<
   let xml: string;
   try {
     const res = await fetch(feed.url, { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" }, signal: ctrl.signal, redirect: "follow" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`HTTP ${res.status}`);
+    }
     xml = await res.text();
   } finally {
     clearTimeout(timer);
@@ -121,7 +125,10 @@ async function fetchHtml(url: string, fetchImpl: typeof fetch): Promise<string> 
   const timer = setTimeout(() => ctrl.abort(), FEED_TIMEOUT_MS);
   try {
     const res = await fetchImpl(url, { headers: BOT_HEADERS, signal: ctrl.signal, redirect: "follow" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`HTTP ${res.status}`);
+    }
     return await res.text();
   } finally {
     clearTimeout(timer);

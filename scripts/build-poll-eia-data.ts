@@ -254,6 +254,8 @@ export async function fetchEditionStats(
       if (res.status !== 404 && res.status !== 400) {
         console.warn(`[poll-eia] /stats?edition=${edition} → HTTP ${res.status}`);
       }
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
       return null;
     }
     const json = await res.json() as PollStatsResponse;
@@ -285,6 +287,7 @@ export async function fetchMonthLeaderboardJson(
       if (res.status !== 404 && res.status !== 400) {
         console.warn(`[poll-eia] /leaderboard/${monthSlug}.json → HTTP ${res.status}`);
       }
+      await res.body?.cancel().catch(() => {});
       return null;
     }
     const data = await res.json() as LeaderboardJsonResponse;

@@ -29,6 +29,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import {
   readSocialPublished,
   appendSocialPosts,
@@ -129,13 +130,13 @@ function parseArgs(argv: string[]): {
   return { editionDir, platform, dryRun, requireIsTest };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   if (!args.editionDir) {
     console.error(
       "Uso: delete-test-schedules.ts --edition-dir <path> [--platform facebook|linkedin] [--dry-run]",
     );
-    process.exit(2);
+    return 2;
   }
 
   const editionDir = resolve(ROOT, args.editionDir);
@@ -148,7 +149,7 @@ async function main(): Promise<void> {
       : null;
   if (!publishedPath) {
     console.error(`[delete-test-schedules] arquivo não encontrado:\n  ${internalPath}\n  ${rootPath}`);
-    process.exit(2);
+    return 2;
   }
 
   const published = readSocialPublished(publishedPath);
@@ -289,12 +290,10 @@ async function main(): Promise<void> {
   };
   console.log(JSON.stringify({ summary, results }, null, 2));
 
-  if (summary.failed > 0) process.exit(1);
+  if (summary.failed > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("Fatal error:", e);
-    process.exit(1);
-  });
+  // #9911: runCli grava process.exitCode (process.exit depois de fetch sai 127 no Windows).
+  runCli(main, { onError: (e) => console.error("Fatal error:", e) });
 }

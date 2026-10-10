@@ -56,6 +56,7 @@
  */
 
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { computePollToken, pollTokenKvKey, type PollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV, type CloudflareKVConfig } from "./lib/cloudflare-kv-upload.ts";
@@ -368,7 +369,7 @@ export async function run(args: {
   };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const dryRun = flags.has("dry-run");
   const force = flags.has("force");
@@ -378,7 +379,7 @@ async function main(): Promise<void> {
     console.error(
       `[inject-poll-token] --since-hours inválido: ${sinceHoursRaw} (precisa ser número > 0)`,
     );
-    process.exit(1);
+    return 1;
   }
 
   // #4581 (260804) — GUARD DE ÓRFÃO. O consumidor deste script era a merge tag
@@ -403,7 +404,7 @@ async function main(): Promise<void> {
         "  em publish-daily-brevo.ts, não precisa de invocação manual).\n" +
         "  Se você sabe o que está fazendo, repita com --force-orphan. Contexto: #4581.",
     );
-    process.exit(1);
+    return 1;
   }
 
   const apiKey = process.env.BEEHIIV_API_KEY;
@@ -421,7 +422,7 @@ async function main(): Promise<void> {
     console.error(
       `[inject-poll-token] envs ausentes: ${missing.join(", ")} — abortando`,
     );
-    process.exit(1);
+    return 1;
   }
 
   const result = await run({
@@ -442,12 +443,10 @@ async function main(): Promise<void> {
   // bem-sucedida pra qualquer wrapper de automação futura checando
   // $LASTEXITCODE (Task Scheduler, CI). O resumo já é impresso acima
   // (result.failed) — isto só torna o exit code coerente com ele.
-  process.exitCode = result.failed > 0 ? 1 : 0;
+  return result.failed > 0 ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[inject-poll-token] ${(e as Error).message}`);
-    process.exit(1);
-  });
+  // #9911: runCli grava process.exitCode (process.exit depois de fetch sai 127 no Windows).
+  runCli(main, { onError: (e) => console.error(`[inject-poll-token] ${(e as Error).message}`) });
 }

@@ -147,7 +147,11 @@ async function fetchImageOnce(url: string, timeoutMs = 15000): Promise<Buffer | 
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   } catch {

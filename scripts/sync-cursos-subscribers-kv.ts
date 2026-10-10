@@ -73,6 +73,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule, hasFlag } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { sha256Hex, subscriberKvKey } from "./lib/shared/subscriber-verify.ts";
 import {
   resolveNewsletterSubscriberBackend,
@@ -165,10 +166,15 @@ async function apiFetch<T>(
   });
   if (res.status === 429 && retries < MAX_RETRIES) {
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     await sleep(Math.max(retryAfter * 1000, 30_000));
     return apiFetch<T>(path, apiKey, fetchImpl, retries + 1);
   }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   return { ok: true, status: res.status, body: (await res.json()) as T };
 }
 
@@ -609,7 +615,7 @@ export function evaluateKvEmptyGuard(
   return { ok: true };
 }
 
-export async function main(rootDirOverride?: string): Promise<void> {
+export async function main(rootDirOverride?: string): Promise<number | void> {
   const rootDir = rootDirOverride ?? ROOT;
   const argv = process.argv.slice(2);
   const dryRun = argv.includes("--dry-run");
@@ -642,12 +648,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
     process.stderr.write(
       "[sync-cursos-subscribers-kv] CURSOS_KV_NAMESPACE_ID ausente (env ou --namespace-id) — rode `wrangler kv namespace create CURSOS_SUBSCRIBERS` primeiro.\n",
     );
-    process.exit(2);
+    return 2;
   }
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   if (!accountId) {
     process.stderr.write("[sync-cursos-subscribers-kv] CLOUDFLARE_ACCOUNT_ID ausente.\n");
-    process.exit(2);
+    return 2;
   }
 
   // #7338: guard ANTES de qualquer chamada real de wrangler — `syncKvKeys`
@@ -667,7 +673,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       process.stderr.write(
         "[sync-cursos-subscribers-kv] abortando sem tocar no KV — rode com --force-empty-guard se a queda for legítima.\n",
       );
-      process.exit(1);
+      return 1;
     }
     process.stderr.write(`[sync-cursos-subscribers-kv] AVISO (--force-empty-guard): ${guard.reason} — prosseguindo mesmo assim.\n`);
   } else if (guard.skippedReason === "backend-mismatch") {
@@ -716,9 +722,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[sync-cursos-subscribers-kv] erro fatal: ${e instanceof Error ? e.message : String(e)}\n`);
-    process.exit(1);
+  // #9911: runCli grava process.exitCode (process.exit depois de fetch sai 127 no Windows).
+  runCli(() => main(), {
+    onError: (e) => process.stderr.write(`[sync-cursos-subscribers-kv] erro fatal: ${e instanceof Error ? e.message : String(e)}\n`),
   });
 }
 

@@ -529,7 +529,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     targetVolume = parseTargetVolumeArg(argv);
   } catch (err) {
     console.error(`❌ ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
+    // #9911: exitCode, não process.exit (depois de fetch sai 127 no Windows).
+    process.exitCode = 1;
+    return;
   }
 
   const proposal = await planWave({
@@ -567,9 +569,13 @@ if (isMainModule(import.meta.url)) {
     if (err instanceof TransientDashboardError) {
       console.log(JSON.stringify({ transient: true, retryAfterSecs: err.retryAfterSecs, status: err.status, reason: err.message }));
       console.error(err.message);
-      process.exit(3);
+      // #9911: exitCode, não process.exit — este catch roda depois do fetch
+      // do dashboard, onde process.exit sai 127 no Windows e o chamador
+      // perderia o 3 que decide o retry.
+      process.exitCode = 3;
+      return;
     }
     console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }

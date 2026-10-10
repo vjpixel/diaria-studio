@@ -329,11 +329,16 @@ async function apiRequest<T>(
   });
   if (res.status === 429 && retries < MAX_RETRIES) {
     const delayMs = computeRetryDelayMs(res.headers.get("Retry-After"));
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     log(`HTTP 429 em ${path} — tentativa ${retries + 1}/${MAX_RETRIES}, aguardando ${delayMs}ms antes de retry…`);
     await sleep(delayMs);
     return apiRequest<T>(path, apiKey, fetchImpl, init, retries + 1);
   }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   const text = await res.text();
   const body = text ? (JSON.parse(text) as T) : null;
   return { ok: true, status: res.status, body };

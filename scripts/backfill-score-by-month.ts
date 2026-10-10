@@ -89,8 +89,12 @@ async function kvGet(key: string): Promise<string | null> {
   const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, {
     headers: { "Authorization": `Bearer ${API_TOKEN}` },
   });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`KV get ${key} failed: ${res.status}`);
+  if (!res.ok) {
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
+    if (res.status === 404) return null;
+    throw new Error(`KV get ${key} failed: ${res.status}`);
+  }
   return await res.text();
 }
 

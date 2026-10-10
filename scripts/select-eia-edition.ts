@@ -244,6 +244,8 @@ async function fetchStat(
       signal: AbortSignal.timeout(8000),
     });
     if (!r.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await r.body?.cancel().catch(() => {});
       return { edition, total: 0, correct_pct: null, correct_answer: null, fetchError: true };
     }
     const j = (await r.json()) as {
