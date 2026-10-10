@@ -50,3 +50,40 @@ export function resolveUseMelhorCardBreaks(text: string): string {
     .map((l) => (isUseMelhorCardBreakLine(l) ? "" : l))
     .join("\n");
 }
+
+/**
+ * Linha que abre um item da lista numerada do `## um` (`1) ...`, `2. ...`,
+ * com ou sem o número em negrito `**3)**`). Formato do social-writer §3c.
+ */
+const LIST_ITEM_LINE = /^[ \t]*(?:\*\*)?\d{1,2}[).](?:\*\*)?[ \t]/;
+
+/**
+ * Pure (#9999): nos canais de TEXTO (LinkedIn página + pessoal, Facebook) cada
+ * item da lista numerada sai separado por linha em branco. O agrupamento de
+ * 2 itens por parágrafo (#9791) só existe porque cada parágrafo é 1 card do
+ * carrossel do Instagram, e lá ele continua (o `03-social.md` não muda).
+ * Equivale a o writer ter posto `{quebra}` entre todos os itens do mesmo
+ * parágrafo, só que determinístico.
+ *
+ * Insere uma linha em branco antes de cada item colado (linha anterior
+ * não-vazia) num parágrafo que já abriu um item. Idempotente: linha anterior
+ * vazia ou marcador `{quebra}` (que `resolveUseMelhorCardBreaks` troca por
+ * linha em branco) não ganha outra.
+ */
+export function separateUseMelhorListItems(text: string): string {
+  const out: string[] = [];
+  let paragraphHasItem = false;
+  for (const line of text.split("\n")) {
+    const bare = line.replace(/\r$/, "");
+    if (bare.trim() === "" || isUseMelhorCardBreakLine(bare)) {
+      out.push(line);
+      paragraphHasItem = false;
+      continue;
+    }
+    const isItem = LIST_ITEM_LINE.test(bare);
+    if (isItem && paragraphHasItem) out.push("");
+    if (isItem) paragraphHasItem = true;
+    out.push(line);
+  }
+  return out.join("\n");
+}

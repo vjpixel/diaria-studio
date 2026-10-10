@@ -30,7 +30,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { logEvent } from "./run-log.ts";
-import { resolveUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
+import {
+  resolveUseMelhorCardBreaks, // #9866
+  separateUseMelhorListItems, // #9999
+} from "./use-melhor-card-break.ts";
 import {
   USE_MELHOR_POST_ID,
   USE_MELHOR_UTM_CONTENT,
@@ -283,6 +286,18 @@ export function applyUseMelhorUtmToText(text: string): string {
  */
 export function finalizeUseMelhorPostText(text: string): string {
   return applyUseMelhorUtmToText(resolveUseMelhorCardBreaks(text));
+}
+
+/**
+ * Pure (#9999): `finalizeUseMelhorPostText` dos canais de TEXTO longo —
+ * LinkedIn página, LinkedIn pessoal e Facebook — com cada item da lista
+ * numerada separado por linha em branco (`separateUseMelhorListItems`).
+ * Instagram (legenda junto do carrossel, decisão do editor restrita aos 3
+ * canais acima) e o `# Curto` (Threads/X, outro texto e teto de chars) seguem
+ * no `finalizeUseMelhorPostText` puro.
+ */
+export function finalizeUseMelhorTextChannelPostText(text: string): string {
+  return finalizeUseMelhorPostText(separateUseMelhorListItems(text));
 }
 
 /**
