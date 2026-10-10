@@ -699,10 +699,17 @@ export function classifyNewsletterDiff(
     // `destaque-promote` em USE MELHOR), que inflava esses dois sinais em
     // `collect-edition-signals.ts`. `length-cut` (descrição encurtada >30%,
     // #9880) continua valendo; só ordem trocada vira `section-order`.
+    // #10012: `outro` (só tracking/query da URL do mesmo artigo, ou só linha
+    // de cabeçalho) não é edição de texto de item — mantém o tipo padrão da
+    // seção, senão uma troca de `utm` no RADAR contava como recorrência do
+    // `writer.md` que não houve.
     let poolTextKind: ReturnType<typeof classifyPoolTextEdit> | null = null;
     if (POOL_SECTION_KEYS.has(section) && !poolClass && requestType !== "length-cut") {
-      poolTextKind = classifyPoolTextEdit(oldText, newText);
-      requestType = poolTextKind === "reordenado" ? "section-order" : "pool-text-edit";
+      const kind = classifyPoolTextEdit(oldText, newText);
+      if (kind !== "outro") {
+        poolTextKind = kind;
+        requestType = kind === "reordenado" ? "section-order" : "pool-text-edit";
+      }
     }
 
     // Mudança real no conjunto (corte/adição/troca) vence a classificação textual.
