@@ -74,6 +74,16 @@ if ! cd "$REPO_ROOT" 2>/dev/null; then
   exit 0
 fi
 
+# #10002: encerra registros de ticks ANTERIORES deste job que morreram sem
+# `end` (falha cedo — cota, credencial). Critério conservador no próprio
+# script (sem claims, heartbeat além de 90min, só esta máquina, nunca a
+# sessão atual). Fail-soft como o resto: limpeza de ruído nunca trava o tick.
+if SWEEP_OUT=$(npx tsx scripts/sweep-continuo-orphan-sessions.ts --job "$JOB_ID" --exclude "$SESSION_ID" 2>&1); then
+  echo "[register-continuo-tick] $SWEEP_OUT" >&2
+else
+  echo "[register-continuo-tick] AVISO: sweep de sessões órfãs falhou (fail-soft, tick segue): $SWEEP_OUT" >&2
+fi
+
 if OUT=$(npx tsx scripts/lib/session-registry.ts register --kind continuo --session-id "$SESSION_ID" 2>&1); then
   echo "[register-continuo-tick] $OUT" >&2
   # Path estável: sobrescrito a cada tick de propósito (o tick seguinte só

@@ -50,11 +50,37 @@ export const AUTH_STALL_STREAK_THRESHOLD = 2;
  *  conserto é outro, então não pode disparar este alarme. */
 export const AUTH_STALL_CODES: readonly number[] = [401, 403];
 
+/** Assinaturas de parada por COTA no texto de `last_error` do job (#10001).
+ *  Em 10/10/2026 o contínuo acumulou `failure_streak=22` com
+ *  `last_auth_error` ausente (`auth_code=null`) e a checagem deu `ok`: o
+ *  erro real estava só em `last_error` como texto livre. Dois formatos
+ *  observados ao vivo no `300`:
+ *  - OpenRouter: `RuntimeError: HTTP 403: Key limit exceeded (daily limit). …`
+ *  - Codex: `Error code: 429 - {'error': {'type': 'usage_limit_reached', …`
+ *  Cada regra exige o CÓDIGO e a FRASE juntos — um 403 genérico ou um 429
+ *  de rate limit transitório não casam, porque o conserto deles é outro. */
+export const QUOTA_STALL_PATTERNS: readonly { code: number; pattern: RegExp; label: string }[] = [
+  { code: 403, pattern: /\b403\b[\s\S]*key limit exceeded/i, label: "OpenRouter key limit exceeded" },
+  { code: 429, pattern: /\b429\b[\s\S]*usage_limit_reached/i, label: "Codex usage_limit_reached" },
+];
+
+/** Classifica o texto de `last_error` como parada por cota, ou `null`. */
+export function classifyQuotaError(lastError: unknown): { code: number; label: string } | null {
+  if (typeof lastError !== "string" || lastError === "") return null;
+  for (const { code, pattern, label } of QUOTA_STALL_PATTERNS) {
+    if (pattern.test(lastError)) return { code, label };
+  }
+  return null;
+}
+
 export interface AuthStallResult {
   /** `true` só com evidência POSITIVA das duas condições. Ausência de dado
    *  nunca vira `true` — o alarme abre issue, e alarme falso desse tipo
    *  manda o editor investigar credencial que está boa. */
   stalled: boolean;
+  /** `"auth"` (401/403 em `last_auth_error`), `"quota"` (cota esgotada lida
+   *  de `last_error`, #10001) ou `null` quando não há parada. */
+  stallKind: "auth" | "quota" | null;
   reason: string;
   failureStreak: number | null;
   lastAuthErrorCode: number | null;
@@ -76,16 +102,18 @@ export function checkContinuoAuthStall(jobsPath: string = DEFAULT_JOBS_PATH): Au
   let failureStreak: number | null = null;
   let lastAuthErrorCode: number | null = null;
   let lastAuthErrorReason: string | null = null;
+  let quota: { code: number; label: string } | null = null;
 
   try {
     const data = JSON.parse(readFileSync(jobsPath, "utf8")) as { jobs?: unknown };
     const jobs = Array.isArray(data.jobs) ? data.jobs : [];
     const job = jobs.find((j) => (j as { id?: unknown })?.id === CONTINUO_JOB_ID) as
-      | { failure_streak?: unknown; last_auth_error?: unknown }
+      | { failure_streak?: unknown; last_auth_error?: unknown; last_error?: unknown }
       | undefined;
     if (!job) {
       return {
         stalled: false,
+        stallKind: null,
         reason: `job ${CONTINUO_JOB_ID} não encontrado em ${jobsPath}`,
         failureStreak: null,
         lastAuthErrorCode: null,
@@ -99,12 +127,14 @@ export function checkContinuoAuthStall(jobsPath: string = DEFAULT_JOBS_PATH): Au
       const reason = (err as { reason?: unknown }).reason;
       lastAuthErrorReason = typeof reason === "string" ? reason : null;
     }
+    quota = classifyQuotaError(job.last_error);
   } catch (e) {
     // Fail-soft de propósito: `jobs.json` ausente/ilegível é "não sei", NUNCA
     // "está parado". O watch trata `stalled: false` com este motivo como
     // indeterminado, não como saúde confirmada.
     return {
       stalled: false,
+      stallKind: null,
       reason: `jobs.json ilegível (${jobsPath}): ${e instanceof Error ? e.message : String(e)}`,
       failureStreak: null,
       lastAuthErrorCode: null,
@@ -118,6 +148,7 @@ export function checkContinuoAuthStall(jobsPath: string = DEFAULT_JOBS_PATH): Au
   if (streakHit && codeHit) {
     return {
       stalled: true,
+      stallKind: "auth",
       reason:
         `parada dura por auth: failure_streak=${failureStreak} (limiar ${AUTH_STALL_STREAK_THRESHOLD}), ` +
         `last_auth_error=${lastAuthErrorCode} (${lastAuthErrorReason ?? "n/a"})`,
@@ -127,9 +158,26 @@ export function checkContinuoAuthStall(jobsPath: string = DEFAULT_JOBS_PATH): Au
     };
   }
 
+  // Cota esgotada (#10001): mesma exigência de streak, mas o código vem do
+  // texto de `last_error`. Só depois do ramo de auth — com as duas presentes,
+  // credencial inválida é o diagnóstico mais específico.
+  if (streakHit && quota) {
+    return {
+      stalled: true,
+      stallKind: "quota",
+      reason:
+        `parada dura por cota: failure_streak=${failureStreak} (limiar ${AUTH_STALL_STREAK_THRESHOLD}), ` +
+        `last_error=${quota.code} (${quota.label})`,
+      failureStreak,
+      lastAuthErrorCode: quota.code,
+      lastAuthErrorReason: quota.label,
+    };
+  }
+
   return {
     stalled: false,
-    reason: `sem parada dura por auth: failure_streak=${failureStreak}, auth_code=${lastAuthErrorCode}`,
+    stallKind: null,
+    reason: `sem parada dura por auth/cota: failure_streak=${failureStreak}, auth_code=${lastAuthErrorCode}`,
     failureStreak,
     lastAuthErrorCode,
     lastAuthErrorReason,
