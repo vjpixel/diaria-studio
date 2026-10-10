@@ -55,6 +55,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * é evidência de RE-EXECUÇÃO mecânica (ex: HTML final re-renderizado pelo
  * loop "ajustar"), não um pedido de conteúdo do editor. Mesma exclusão de
  * `other` na detecção de recorrência — nunca participa do agrupamento.
+ *
+ * `pool-text-edit` (#9989): título ou descrição de um item de pool
+ * (USE MELHOR/RADAR/LANÇAMENTOS/VÍDEOS) reescrito sem trocar o conjunto de
+ * itens. `context.change_kind`: `titulo` | `descricao` | `titulo-e-descricao`
+ * | `outro`.
  */
 export type RequestType =
   | "title-choice"
@@ -72,6 +77,7 @@ export type RequestType =
   | "bucket-move"
   | "pool-cut"
   | "pool-add"
+  | "pool-text-edit"
   | "eia-choice"
   | "social-rewrite"
   | "factual-correction"
@@ -135,6 +141,7 @@ export const VALID_REQUEST_TYPES: ReadonlyArray<RequestType> = [
   "bucket-move",
   "pool-cut",
   "pool-add",
+  "pool-text-edit",
   "eia-choice",
   "social-rewrite",
   "factual-correction",

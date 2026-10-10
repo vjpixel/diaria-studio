@@ -160,12 +160,13 @@ describe("#9869 (b) — swap-destaques --demote-to {bucket}", () => {
     assert.equal((data.radar as Array<{ url: string }>)[0].url, D1.url);
   });
 
-  it("--drop não mexe no pool", () => {
+  it("--drop não insere o rebaixado no pool e tira a cópia pré-existente (#9990)", () => {
     const data = approved();
     (data.radar as unknown[]).push({ url: D1.url, title: "cópia" });
     swapManualInApprovedJson(data, [NEW], true, "lancamento");
     assert.equal((data.lancamento as unknown[]).length, 1);
-    assert.equal((data.radar as unknown[]).length, 2);
+    assert.equal((data.radar as unknown[]).length, 1);
+    assert.ok(!(data.radar as Array<{ url: string }>).some((i) => i.url === D1.url));
   });
 
   it("bucket ausente no JSON é criado", () => {

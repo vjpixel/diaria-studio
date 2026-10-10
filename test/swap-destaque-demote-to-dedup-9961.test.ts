@@ -82,10 +82,21 @@ describe("#9961 — --demote-to ≠ bucket de origem não duplica a URL", () => 
     assert.deepEqual(urls(data.lancamento), [D3_URL, "https://other.example/launch-y"]);
   });
 
-  it("--drop não mexe nos buckets além do promovido (comportamento preservado)", () => {
+  it("--drop tira a cópia do rebaixado do bucket de origem e não insere em nenhum (#9990)", () => {
     const data = fixture();
     swapInApprovedJson(data, "radar", 0, 2, true, "radar");
-    assert.deepEqual(urls(data.lancamento), [D3_URL, "https://other.example/launch-y"]);
+    assert.deepEqual(urls(data.lancamento), ["https://other.example/launch-y"]);
+    assert.ok(!urls(data.radar).includes(D3_URL));
+  });
+
+  it("mirrorCappedSwapFallback com --drop também tira a cópia (#9990)", () => {
+    const capped = fixture();
+    delete capped.radar;
+    const promoted = { url: "https://news.example/r0", title: "Notícia R0" };
+    const r = mirrorCappedSwapFallback(capped, "radar", 2, true, promoted, "radar");
+    assert.equal(r.synced, true);
+    assert.deepEqual(urls(capped.lancamento), ["https://other.example/launch-y"]);
+    assert.equal(capped.radar, undefined);
   });
 
   it("mirrorCappedSwapFallback (capped sem o bucket do promovido) também limpa a cópia", () => {
@@ -152,6 +163,29 @@ describe("#9961 — CLI e2e: --promote radar:0 --demote d3 --demote-to radar", (
         assert.deepEqual(duplicates(data), [], f);
       }
       assert.ok(!result.rerenders_needed.some((s: string) => s.includes("CORRIGIR ANTES DO GATE")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#9990: --drop com D3 ainda em lancamento tira a URL das 2 approved", () => {
+    const dir = mkdtempSync(join(tmpdir(), "swap-9990-"));
+    try {
+      const internal = join(dir, "_internal");
+      mkdirSync(internal, { recursive: true });
+      writeFileSync(join(internal, "01-approved.json"), JSON.stringify(fixture(), null, 2));
+      writeFileSync(join(internal, "01-approved-capped.json"), JSON.stringify(fixture(), null, 2));
+      execFileSync(
+        "npx",
+        ["tsx", SCRIPT, "--edition", "261009", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d3", "--drop"],
+        { encoding: "utf8", cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      for (const f of ["01-approved.json", "01-approved-capped.json"]) {
+        const data = JSON.parse(readFileSync(join(internal, f), "utf8"));
+        const pool = ["lancamento", "radar", "use_melhor", "video"].flatMap((b) => urls(data[b] ?? []));
+        assert.ok(!pool.includes(D3_URL), `${f}: URL descartada continua no pool`);
+        assert.ok(!urls(data.highlights).includes(D3_URL), f);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

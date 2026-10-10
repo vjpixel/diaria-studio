@@ -452,6 +452,9 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   "bucket-move": "scripts/categorize.ts (+ overrides) / regras de seção em context/editorial-rules.md",
   "pool-cut": "rubrico do scorer (item entrou no pool sem merecer) / scripts/categorize.ts",
   "pool-add": "rubrico do scorer (item ficou de fora e o editor resgatou) / .claude/agents/scorer-select.md",
+  // pool-text-edit (#9989): título/descrição de item de pool reescrito, mesmo
+  // conjunto de itens — quem escreve esse texto é o writer.md.
+  "pool-text-edit": ".claude/agents/writer.md (título e descrição dos itens de USE MELHOR/RADAR/LANÇAMENTOS/VÍDEOS) + context/templates/newsletter.md",
   "eia-choice": "fluxo de seleção do Stage 3 (É IA?) / .claude/agents/orchestrator-stage-3.md",
   "social-rewrite": ".claude/agents/social-writer.md / .claude/agents/social-curto.md",
   "factual-correction": ".claude/agents/fact-checker.md",

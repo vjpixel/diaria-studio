@@ -752,15 +752,18 @@ export function swapInApprovedJson(
   renumberRanks(newHighlights);
   data.highlights = newHighlights;
 
+  // #9961: o destaque é um wrapper cujo `article` pode NUNCA ter saído do
+  // bucket de origem (ex: D3 vindo de `lancamento`). Demover pra outro bucket
+  // deixava a URL em 2 buckets → `url-bucket` acusa `duplicate`. Tira toda
+  // cópia pré-existente antes de inserir no destino (mesmo do #9869).
+  // #9990: vale também pro `--drop` — sem isso o item "descartado" seguia no
+  // bucket de origem e o writer o publicava no pool.
+  removeUrlFromPoolBuckets(data, extractUrl(demotedItem));
+
   // If not dropping, prepend demoted item to the destination bucket, in that
   // bucket's shape (#9601, §4d.1b i — flat for pool buckets).
   if (!drop) {
     const target = demoteTo ?? defaultDemoteBucket(promoteBucket);
-    // #9961: o destaque é um wrapper cujo `article` pode NUNCA ter saído do
-    // bucket de origem (ex: D3 vindo de `lancamento`). Demover pra outro bucket
-    // deixava a URL em 2 buckets → `url-bucket` acusa `duplicate`. Tira toda
-    // cópia pré-existente antes de inserir no destino (mesmo do #9869).
-    removeUrlFromPoolBuckets(data, extractUrl(demotedItem));
     const existing = data[target];
     data[target] = [
       toBucketItem(demotedItem, target), // #9381 + #9601
@@ -798,9 +801,9 @@ export function mirrorCappedSwapFallback(
     const cappedDemotedItem = cappedHighlights[demotePos];
     cappedHighlights[demotePos] = toHighlightItem(promotedItem, demotePos + 1, bucket); // #9601
     renumberRanks(cappedHighlights);
+    removeUrlFromPoolBuckets(approvedCappedData, extractUrl(cappedDemotedItem)); // #9961; #9990: também no --drop
     if (!drop) {
       const target = demoteTo ?? defaultDemoteBucket(bucket as SourceBucket);
-      removeUrlFromPoolBuckets(approvedCappedData, extractUrl(cappedDemotedItem)); // #9961
       const cappedBucket = approvedCappedData[target];
       const demotedForBucket = toBucketItem(cappedDemotedItem, target); // #9381 + #9601
       if (Array.isArray(cappedBucket)) {

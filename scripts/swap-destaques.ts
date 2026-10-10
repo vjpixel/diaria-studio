@@ -205,8 +205,8 @@ export function swapManualInApprovedJson(
       title: extractTitle(demotedItem),
     });
     highlights[idx] = buildManualHighlight(s.url, s.title, s.position);
+    removeUrlFromPoolBuckets(data, extractUrl(demotedItem)); // #9869; #9990: também no --drop
     if (!drop) {
-      removeUrlFromPoolBuckets(data, extractUrl(demotedItem)); // #9869
       const target = (data[demoteTo] as Record<string, unknown>[] | undefined) ?? [];
       data[demoteTo] = [toBucketItem(demotedItem, demoteTo), ...target]; // #9381 + #9601: item de pool é flat
     }
