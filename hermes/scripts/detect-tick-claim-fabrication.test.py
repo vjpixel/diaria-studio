@@ -611,6 +611,34 @@ def test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio():
     print("regressão #9994: 'PRs: #A', 'PRs (#A, #B)', 'PRs abertas #A' não são claim — OK")
 
 
+def test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs():
+    """#10011: `_PRS_LIST_REF` aceitava QUALQUER palavra (até 2) entre "PRs" e
+    a lista, então "PRs para #N", "PRs que fecham #A e #B" e "2 PRs
+    resolvendo #N" tiravam a ISSUE #N da checagem — uma claim fabricada
+    nela passava despercebida. Só palavra de estado da PR pode ficar no meio."""
+    mod = _load_module()
+    casos = (
+        ("#9912 reivindicada — PRs para #9912 em review", (9912,)),
+        ("#9912 e #9922 reivindicadas — PRs que fecham #9912 e #9922 em review", (9912, 9922)),
+        ("#9912 reivindicada — 2 PRs resolvendo #9912 em review", (9912,)),
+    )
+    for linha, esperados in casos:
+        refs = mod.extract_claimed_issue_refs(linha)
+        for n in esperados:
+            assert n in refs, f"claim de issue escondida por 'PRs <verbo/prep>': {linha!r} -> {refs}"
+    # Os casos do #9994 (e um estado composto) continuam sendo lista de PRs.
+    for linha in (
+        "Claims abertos nas PRs: #9912 e #9922.",
+        "Claims abertos nas PRs (#9912, #9922).",
+        "Claims abertos nas PRs abertas #9912 e #9922.",
+        "Claims abertos nas PRs mergeadas #9912 e #9922.",
+        "Claims abertos nas PRs em review #9912 e #9922.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9912 not in refs and 9922 not in refs, f"PRs virou issue: {linha!r} -> {refs}"
+    print("regressão #10011: 'PRs para/que fecham/resolvendo #N' não escondem claim — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -1103,6 +1131,7 @@ def main() -> int:
         test_regressao_9778_sessao_interativa_concorrente_e_ator()
         test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim()
         test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio()
+        test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

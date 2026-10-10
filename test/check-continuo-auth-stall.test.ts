@@ -34,6 +34,7 @@ import {
   CONTINUO_JOB_ID,
   AUTH_STALL_STREAK_THRESHOLD,
   AUTH_STALL_CODES,
+  classifyQuotaError,
 } from "../scripts/check-continuo-auth-stall.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -129,6 +130,65 @@ describe("checkContinuoAuthStall — parada dura por auth (#7647)", () => {
     const r = checkContinuoAuthStall(path);
     assert.equal(r.stalled, false);
     assert.match(r.reason, /ilegível/);
+  });
+});
+
+describe("parada por COTA lida de last_error (#10001)", () => {
+  // Textos literais observados no `jobs.json` do 300 em 10/10/2026 (key
+  // truncada) e no dump de request do Hermes de 19/08/2026.
+  const OPENROUTER =
+    "RuntimeError: HTTP 403: Key limit exceeded (daily limit). Manage it using https://openrouter.ai/workspaces/default/keys/xxx";
+  const CODEX =
+    "RuntimeError: Error code: 429 - {'error': {'type': 'usage_limit_reached', 'message': 'The usage limit has been reached', 'plan_type': 'go'}}";
+
+  for (const [nome, lastError, code] of [
+    ["OpenRouter 403 Key limit exceeded", OPENROUTER, 403],
+    ["Codex 429 usage_limit_reached", CODEX, 429],
+  ] as const) {
+    it(`${nome} + streak alto + auth_code=null → stalled quota (o caso da issue)`, () => {
+      const r = checkContinuoAuthStall(
+        jobsFile(`quota-${code}`, { failure_streak: 22, last_status: "error", last_error: lastError }),
+      );
+      assert.equal(r.stalled, true);
+      assert.equal(r.stallKind, "quota");
+      assert.equal(r.lastAuthErrorCode, code);
+      assert.match(r.reason, /parada dura por cota/);
+    });
+
+    it(`${nome} com streak abaixo do limiar → não alarma`, () => {
+      const r = checkContinuoAuthStall(
+        jobsFile(`quota-baixo-${code}`, { failure_streak: AUTH_STALL_STREAK_THRESHOLD - 1, last_error: lastError }),
+      );
+      assert.equal(r.stalled, false);
+      assert.equal(r.stallKind, null);
+    });
+  }
+
+  it("403/429 genéricos sem a frase de cota → não classificam como cota", () => {
+    assert.equal(classifyQuotaError("HTTP 403: Forbidden"), null);
+    assert.equal(classifyQuotaError("Error code: 429 - rate_limit_exceeded, retry later"), null);
+    assert.equal(classifyQuotaError("Key limit exceeded"), null); // sem o código
+    assert.equal(classifyQuotaError(null), null);
+    assert.equal(classifyQuotaError(123), null);
+  });
+
+  it("last_auth_error 401 vence a cota quando os dois aparecem (diagnóstico mais específico)", () => {
+    const r = checkContinuoAuthStall(
+      jobsFile("auth-e-cota", {
+        failure_streak: 5,
+        last_auth_error: { code: 401, reason: "unauthorized" },
+        last_error: OPENROUTER,
+      }),
+    );
+    assert.equal(r.stalled, true);
+    assert.equal(r.stallKind, "auth");
+    assert.equal(r.lastAuthErrorCode, 401);
+  });
+
+  it("o watch roteia stallKind=quota para um alarme próprio (STALLED_QUOTA)", () => {
+    const sh = readFileSync(resolve(ROOT, "hermes/scripts/watch-continuo-health.sh"), "utf8");
+    assert.match(sh, /STALLED_QUOTA/);
+    assert.match(sh, /\[watch-continuo\] parada por cota/);
   });
 });
 

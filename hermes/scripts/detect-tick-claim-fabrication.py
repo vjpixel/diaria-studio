@@ -306,12 +306,20 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 # issues. `_PR_REF` (singular) só casava "PR #N"; "PRs #9912 e #9922"
 # escapava e os dois números entravam como claim de issue. No singular
 # continua só o 1º número ("PR #8358 e #8359" é ambíguo — fica como antes).
-# #9994: aceita também "PRs: #A", "PRs (#A, #B)" e até 2 palavras entre
-# "PRs" e a lista ("PRs abertas #A e #B") — palavra só de letras, para não
-# atravessar outro número/ref, e nunca conectivo nem "issue(s)": "PRs e issue
-# #N reivindicada" / "PRs abertas e #N reivindicada" seguem claim de issue.
+# #9994: aceita também "PRs: #A", "PRs (#A, #B)" e "PRs abertas #A e #B".
+# #10011: entre "PRs" e a lista só entram palavras de ESTADO da PR (lista
+# fechada `_PRS_STATE_WORD`, até 2) — antes era qualquer palavra, e "PRs para
+# #N", "PRs que fecham #A e #B" ou "2 PRs resolvendo #N" tiravam a ISSUE #N da
+# checagem de claim (verbo/preposição aponta para a issue, não lista PRs).
+# Palavra fora da lista → não é lista de PRs, o número segue como issue.
+_PRS_STATE_WORD = (
+    r"(?:abert[oa]s?|mergead[oa]s?|mesclad[oa]s?|fechad[oa]s?|pendentes?"
+    r"|nov[oa]s?|recentes?|verdes?|vermelh[oa]s?|drafts?|prontas?|ativ[oa]s?"
+    r"|em\s+(?:review|revis[aã]o|aberto|andamento|draft)"
+    r"|open|merged|closed|pending)"
+)
 _PRS_LIST_REF = re.compile(
-    r"\bPRs\b[\s:(]*(?:(?!(?:e|ou|and|or|issues?)\b)[^\W\d_]+[\s:(]+){0,2}"
+    r"\bPRs\b[\s:(]*(?:" + _PRS_STATE_WORD + r"\b[\s:(]+){0,2}"
     r"(?P<refs>" + _REF_LIST.pattern + r")",
     re.IGNORECASE,
 )

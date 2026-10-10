@@ -976,11 +976,14 @@ AUTH_PARSE=$(printf '%s' "$AUTH_JSON" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    print('STALLED' if d['stalled'] else ('UNKNOWN' if 'ileg' in d['reason'] else 'OK'))
+    if d['stalled']:
+        print('STALLED_QUOTA' if d.get('stallKind') == 'quota' else 'STALLED')
+    else:
+        print('UNKNOWN' if 'ileg' in d['reason'] else 'OK')
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
 case "$AUTH_PARSE" in *__ERR__*) AUTH_PARSE="__ERR__" ;; esac
-case "$AUTH_PARSE" in STALLED|UNKNOWN|OK) : ;; *) AUTH_PARSE="__ERR__" ;; esac
+case "$AUTH_PARSE" in STALLED|STALLED_QUOTA|UNKNOWN|OK) : ;; *) AUTH_PARSE="__ERR__" ;; esac
 AUTH_REASON=$(printf '%s' "$AUTH_JSON" | python3 -c "
 import sys, json
 try:
@@ -993,6 +996,23 @@ if [ "$AUTH_PARSE" = "__ERR__" ]; then
 elif [ "$AUTH_PARSE" = "UNKNOWN" ]; then
   echo "[watch] parada por auth: INDETERMINADO (jobs.json ilegivel: $AUTH_REASON)" >&2
   FAILS=$((FAILS + 1))
+elif [ "$AUTH_PARSE" = "STALLED_QUOTA" ]; then
+  # #10001: cota esgotada (OpenRouter 403 "Key limit exceeded", Codex 429
+  # usage_limit_reached) — o erro só aparece em `last_error`, sem
+  # `last_auth_error`. Marcador próprio: o conserto é outro (esperar o reset
+  # ou trocar de provider/key), não rotacionar credencial.
+  file_issue "[watch-continuo] parada por cota" \
+    "[watch-continuo] parada por cota (403 key limit / 429 usage_limit) no cron do contínuo" \
+    "bug,P1" \
+    "Detectado por watch-continuo-health.sh via scripts/check-continuo-auth-stall.ts (#7647, #10001).
+
+\`\`\`
+$AUTH_REASON
+\`\`\`
+
+**Ação (externa, decisão do editor — o detector NÃO executa nada disso):** conferir no 300 se a cota diária da key/conta do provider do cron do contínuo acabou (OpenRouter: limite da key; Codex: limite do plano) e decidir entre esperar o reset ou trocar de provider/key. O detector é read-only sobre \`jobs.json\`.
+
+P1: enquanto a cota não volta, todo tick do contínuo falha cedo."
 elif [ "$AUTH_PARSE" = "STALLED" ]; then
   file_issue "[watch-continuo] parada dura por auth" \
     "[watch-continuo] parada dura por auth (401/403) no cron do contínuo" \

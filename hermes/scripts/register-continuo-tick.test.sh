@@ -94,6 +94,10 @@ assert_contains "sucesso — chamou tsx session-registry.ts" "$CALL1" "scripts/l
 assert_contains "sucesso — subcomando register" "$CALL1" "register"
 assert_contains "sucesso — kind continuo (nunca overnight/develop, #6483)" "$CALL1" "--kind continuo"
 assert_contains "sucesso — session-id propagado" "$CALL1" "--session-id hermes-cron-test-job-id-20260924T120000Z"
+# #10002: sweep de sessões órfãs do MESMO job roda antes do register,
+# excluindo a sessão nova.
+assert_contains "sucesso — sweep de órfãs chamado (#10002)" "$CALL1" "scripts/sweep-continuo-orphan-sessions.ts --job test-job-id --exclude hermes-cron-test-job-id-20260924T120000Z"
+assert_eq "sucesso — sweep vem ANTES do register (#10002)" "sweep-continuo-orphan-sessions" "$(head -n1 "$NPX_CALL_LOG" | grep -o 'sweep-continuo-orphan-sessions')"
 
 # ── Caso 2: registro falha (rc != 0) — fail-soft ──
 echo 1 > "$NPX_RC_FILE"
