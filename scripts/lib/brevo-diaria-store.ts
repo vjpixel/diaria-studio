@@ -117,11 +117,12 @@ export interface BrevoDiariaContact {
    * toda rodada. Ausente em stores antigos (= nenhuma tentativa noop). */
   doi_resend_noop_at?: string;
   /** #9986 — ISO da última tentativa de reenvio do DOI que falhou de forma
-   * PERMANENTE (4xx que não é 408/429, ex. 404 subscriber/form inexistente,
+   * PERMANENTE (4xx que não é 401/403/408/429, ex. 404 subscriber inexistente,
    * 422 rejeitado; ver `isPermanentKitDoiFailure` em evaluate-brevo-diaria).
    * Backoff: `needsDoiResend` aplica o mesmo `DOI_RESEND_INTERVAL_DAYS` a
    * este marcador, senão o mesmo contato somava `failed++` e um warn em TODA
-   * rodada. Falha transitória (5xx, 408, 429, rede) não grava. */
+   * rodada. Falha transitória (5xx, 408, 429, rede) e de credencial/config
+   * (401/403, afeta todos os contatos) não gravam. */
   doi_resend_failed_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`

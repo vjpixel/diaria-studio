@@ -1075,15 +1075,18 @@ export function isKitDoiResendCounted(status: number): boolean {
 
 /**
  * isPermanentKitDoiFailure (#9986) — pura. Falha do vínculo ao form DOI que
- * não vai se resolver sozinha na próxima rodada: 4xx exceto 408 (timeout) e
- * 429 (rate limit, #9291). Ex.: 404 (subscriber/form inexistente), 422
- * (rejeitado). Grava `doi_resend_failed_at` pro backoff de
- * `DOI_RESEND_INTERVAL_DAYS`. Sem status (exceção/timeout) e 5xx são
- * transitórios e seguem sem marcador.
+ * não vai se resolver sozinha na próxima rodada E é do CONTATO: 4xx exceto
+ * 401/403 (credencial/permissão — falha GLOBAL de config: uma KIT_API_KEY
+ * revogada marcaria todos os elegíveis e, depois da chave corrigida, eles
+ * ficariam DOI_RESEND_INTERVAL_DAYS sem tentativa), 408 (timeout) e 429 (rate
+ * limit, #9291). Ex.: 404 (subscriber inexistente), 422 (rejeitado). Grava
+ * `doi_resend_failed_at` pro backoff de `DOI_RESEND_INTERVAL_DAYS`. Sem status
+ * (exceção/timeout) e 5xx são transitórios e seguem sem marcador.
  */
+const NON_PER_CONTACT_4XX = new Set([401, 403, 408, 429]);
 export function isPermanentKitDoiFailure(status: number | undefined): boolean {
   if (status === undefined) return false;
-  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+  return status >= 400 && status < 500 && !NON_PER_CONTACT_4XX.has(status);
 }
 
 /**
@@ -2295,7 +2298,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 // #9986 — falha permanente (404/422) grava o marcador de
                 // backoff: o contato só volta a ser tentado depois de
                 // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
-                // rodada. Transitória (5xx, 408, 429, rede) não grava.
+                // rodada. Transitória (5xx, 408, 429, rede) e de
+                // credencial/config (401/403) não gravam.
                 const permanent = isPermanentKitDoiFailure(resend.status);
                 if (permanent) store = markDoiResendFailed(store, contact.email);
                 log(

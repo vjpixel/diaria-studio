@@ -564,10 +564,35 @@ describe("runEvaluation — contador agregado de noops do reenvio DOI (#9986)", 
 describe("reenvio DOI — backoff de falha permanente (#9986)", () => {
   const origFetch = globalThis.fetch;
 
-  it("isPermanentKitDoiFailure: 4xx exceto 408/429; 5xx e sem status são transitórios", () => {
-    for (const s of [400, 403, 404, 410, 422]) assert.equal(isPermanentKitDoiFailure(s), true, String(s));
-    for (const s of [undefined, 408, 429, 500, 502, 503, 200, 201]) assert.equal(isPermanentKitDoiFailure(s), false, String(s));
+  it("isPermanentKitDoiFailure: 4xx exceto 401/403/408/429; 5xx e sem status são transitórios", () => {
+    for (const s of [400, 404, 410, 422]) assert.equal(isPermanentKitDoiFailure(s), true, String(s));
+    for (const s of [undefined, 401, 403, 408, 429, 500, 502, 503, 200, 201]) {
+      assert.equal(isPermanentKitDoiFailure(s), false, String(s));
+    }
   });
+
+  // Self-review do PR #10005: 401/403 são falha de credencial/config (global),
+  // não do contato — uma chave revogada não pode suprimir 7 dias de tentativas
+  // de cada contato elegível depois de corrigida.
+  for (const status of [401, 403]) {
+    it(`${status} (credencial/config) → failed, mas NÃO grava marcador; a rodada seguinte tenta de novo`, async () => {
+      let calls = installFetch({ state: "inactive", formStatus: status });
+      try {
+        const r1 = await run(contact("leitor@x.com"));
+        assert.equal(calls.formPosts.length, 1);
+        assert.equal(r1.failed, 1);
+        const after = findContact(r1.store, "leitor@x.com")!;
+        assert.equal(after.doi_resend_failed_at, undefined, "falha global não entra no backoff por contato");
+
+        calls = installFetch({ state: "inactive", formStatus: 201 });
+        const r2 = await run(after);
+        assert.equal(calls.formPosts.length, 1, "chave corrigida: re-tenta já na rodada seguinte");
+        assert.equal(r2.doiResent, 1);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  }
 
   it("needsDoiResend respeita doi_resend_failed_at como as outras tentativas", () => {
     assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_failed_at: daysAgo(2) }), NOW), false);
