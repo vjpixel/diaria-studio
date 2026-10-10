@@ -586,6 +586,31 @@ def test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim():
     print("regressão #9923: mayClaim e 'PRs #A e #B' não são claim — OK")
 
 
+def test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio():
+    """#9994: `_PRS_LIST_REF` exigia "PRs" + espaço + "#". As formas
+    "PRs: #A e #B", "PRs (#A, #B)" e "PRs abertas #A e #B" escapavam e os
+    números voltavam a entrar como claim de issue."""
+    mod = _load_module()
+    for linha in (
+        "Claims abertos nas PRs: #9912 e #9922.",
+        "Claims abertos nas PRs (#9912, #9922).",
+        "Claims abertos nas PRs abertas #9912 e #9922.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9912 not in refs and 9922 not in refs, f"PRs virou issue: {linha!r} -> {refs}"
+    # Claim próprio real na mesma linha que cita PRs continua contando.
+    refs = mod.extract_claimed_issue_refs("#9600 reivindicada neste tick; PRs: #9912 e #9922.")
+    assert 9600 in refs, f"claim próprio sumiu: {refs}"
+    # As palavras intermediárias não podem ser conectivo nem "issue(s)".
+    for linha in (
+        "PRs e issue #9601 reivindicada neste tick.",
+        "PRs abertas e #9601 reivindicada neste tick.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9601 in refs, f"claim de issue engolido como PR: {linha!r} -> {refs}"
+    print("regressão #9994: 'PRs: #A', 'PRs (#A, #B)', 'PRs abertas #A' não são claim — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -1077,6 +1102,7 @@ def main() -> int:
         test_regressao_9322_outro_colado_a_preposicao_e_ator()
         test_regressao_9778_sessao_interativa_concorrente_e_ator()
         test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim()
+        test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

@@ -84,11 +84,14 @@ export function findActiveRunToday(runs: WorkflowRun[], todayBrt: string): Workf
   );
 }
 
-/** Instante do prazo do alarme (07:00 BRT) no dia de `now`. */
-export function alarmDeadline(now: Date): Date {
-  const d = new Date(now);
-  d.setUTCHours(ALARM_DEADLINE_UTC_HOUR, 0, 0, 0);
-  return d;
+/** Instante do prazo do alarme (07:00 BRT) no dia BRT `todayBrt` (YYYY-MM-DD).
+ * #9987: derivado do dia BRT, não do dia UTC de `now` — entre 21:00 e 23:59
+ * BRT (00:00-02:59 UTC do dia seguinte) o dia UTC já virou e o prazo caía nas
+ * 07:00 BRT do dia SEGUINTE, deixando o processo 8-10h em polling sobre o
+ * slug de ontem. */
+export function alarmDeadline(todayBrt: string): Date {
+  const [y, m, d] = todayBrt.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d, ALARM_DEADLINE_UTC_HOUR, 0, 0, 0));
 }
 
 export type WatchdogOutcome =
@@ -163,7 +166,7 @@ export async function runRegenHomeWatchdog(deps: WatchdogDeps): Promise<Watchdog
     return { status: "atrasada", todayBrt, slug, dispatched, detail: (e as Error).message };
   }
 
-  const deadlineMs = Math.max(alarmDeadline(start).getTime(), start.getTime() + MIN_POLL_WINDOW_MS);
+  const deadlineMs = Math.max(alarmDeadline(todayBrt).getTime(), start.getTime() + MIN_POLL_WINDOW_MS);
   let lastError = "";
   while (deps.now().getTime() < deadlineMs) {
     await deps.sleep(POLL_INTERVAL_MS);

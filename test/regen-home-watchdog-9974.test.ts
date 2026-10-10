@@ -17,6 +17,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  alarmDeadline,
   expectedSlugsForDay,
   findActiveRunToday,
   homeListsSlug,
@@ -176,6 +177,22 @@ describe("#9974 — runRegenHomeWatchdog com gh mockado", () => {
     const out = await runRegenHomeWatchdog(h.deps);
     assert.equal(out.status, "atrasada");
     assert.equal(h.sleeps, 10);
+  });
+
+  it("#9987: rodado entre 21:00 e 23:59 BRT (00:00-02:59 UTC) usa o prazo do dia BRT, não o do dia UTC seguinte", async () => {
+    // 10/10/2026 01:30 UTC = 09/10/2026 22:30 BRT → todayBrt = 2026-10-09.
+    // Prazo correto (07:00 BRT de 09/10) já passou → só a janela mínima (20 min).
+    // Com o bug, o prazo virava 10/10 10:00Z: 8h30 de polling (255 sleeps).
+    const h = harness({ homes: [HOME_OLD], start: Date.parse("2026-10-10T01:30:00Z") });
+    const out = await runRegenHomeWatchdog(h.deps);
+    assert.equal(out.status, "atrasada");
+    assert.equal(out.todayBrt, "2026-10-09");
+    assert.equal(h.sleeps, 10);
+  });
+
+  it("#9987: alarmDeadline deriva 10:00Z da data BRT", () => {
+    assert.equal(alarmDeadline("2026-10-09").toISOString(), "2026-10-09T10:00:00.000Z");
+    assert.equal(alarmDeadline("2026-12-31").toISOString(), "2026-12-31T10:00:00.000Z");
   });
 
   it("gh workflow run falhando → atrasada imediata com o erro, sem esperar", async () => {
