@@ -46,7 +46,7 @@ import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #609
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   USE_MELHOR_COVER_FILE,
-  finalizeUseMelhorPostText,
+  finalizeUseMelhorTextChannelPostText, // #9999
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
   reportUseMelhorPlan,
@@ -187,7 +187,7 @@ export function buildUseMelhorFacebookPost(input: {
   | { ok: false; reason: string } {
   let caption: string;
   try {
-    caption = finalizeUseMelhorPostText(extractPostText(input.socialMd, "facebook", "um"));
+    caption = finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "facebook", "um"));
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }

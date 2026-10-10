@@ -53,7 +53,7 @@ import { BEEHIIV_BASE_URL, appendUtmToEditionUrl } from "./lib/edition-url.ts"; 
 import { LINKEDIN_POST_PIXEL_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #9568 — LinkedIn não renderiza markdown
-import { finalizeUseMelhorPostText, planUseMelhorDispatch, type UseMelhorDispatchPlan } from "./lib/use-melhor-dispatch.ts"; // #9568
+import { finalizeUseMelhorTextChannelPostText, planUseMelhorDispatch, type UseMelhorDispatchPlan } from "./lib/use-melhor-dispatch.ts"; // #9568
 import { readSocialPublished } from "./lib/social-published-store.ts"; // #9568 — horário real do 4º post
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #9568
 import { useMelhorSlideFilename } from "./lib/use-melhor-carousel.ts"; // #9568
@@ -110,7 +110,7 @@ export function extractPersonalPostText(
   const social = extractSection(socialMd, "Social");
   const um = social ? extractDestaqueBlock(social, USE_MELHOR_POST_ID) : null;
   if (um && um.trim()) {
-    return { source: "um", text: finalizeUseMelhorPostText(stripMarkdownEmphasis(um.trim())) };
+    return { source: "um", text: finalizeUseMelhorTextChannelPostText(stripMarkdownEmphasis(um.trim())) };
   }
   const legacy = extractPostPixelText(socialMd);
   return legacy === null ? null : { source: "post_pixel", text: legacy };
