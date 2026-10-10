@@ -5,20 +5,28 @@
  * mas já existe no Kit como `inactive` caía em `await_self_confirmation`
  * (#8728) e ficava preso na Brevo sem ação nenhuma (15 contatos em
  * 07/10/2026). Decisão do editor: reenviar o double opt-in (vínculo ao
- * designer form de DOI), no máximo 1x a cada DOI_RESEND_INTERVAL_DAYS, nunca
- * pra cancelled/bounced/complained, nunca forçando `state`.
+ * designer form de DOI), no máximo 1 tentativa a cada DOI_RESEND_INTERVAL_DAYS
+ * (só o 201 envia e-mail; depois dele as tentativas respondem 200, #9986),
+ * nunca pra cancelled/bounced/complained, nunca forçando `state`.
  *
  * Sem rede: `globalThis.fetch` é substituído em todos os casos.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runEvaluation, shouldResendKitDoi, resendKitDoi, isKitDoiResendCounted } from "../scripts/evaluate-brevo-diaria.ts";
+import {
+  runEvaluation,
+  shouldResendKitDoi,
+  resendKitDoi,
+  isKitDoiResendCounted,
+  isPermanentKitDoiFailure,
+} from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
   needsDoiResend,
   markDoiResent,
   markDoiResendNoop,
+  markDoiResendFailed,
   lastDoiResendAttemptAt,
   DOI_RESEND_INTERVAL_DAYS,
   AWAITING_KIT_CONFIRMATION_STALE_DAYS,
@@ -498,6 +506,174 @@ describe("runEvaluation — sequência 201 → 200 → 200 respeita o intervalo 
       );
       assert.equal(calls.formPosts.length, 1);
       assert.equal(r.doiResent, 1, "201 volta a contar normalmente");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// #9986 (a) — regressão: o 200 (noop) não tinha contador agregado; o resumo
+// dizia "0 com double opt-in reenviado" e os N noops só apareciam no log por
+// contato.
+describe("runEvaluation — contador agregado de noops do reenvio DOI (#9986)", () => {
+  const origFetch = globalThis.fetch;
+
+  it("200 entra em doiResendNoop (não em doiResent nem failed) e aparece no resumo", async () => {
+    installFetch({ state: "inactive", formStatus: 200 });
+    try {
+      const result = await run([contact("leitor@x.com"), contact("leitor2@x.com")]);
+      assert.equal(result.doiResendNoop, 2);
+      assert.equal(result.doiResent, 0);
+      assert.equal(result.failed, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("201 conta só em doiResent; doiResendNoop fica 0", async () => {
+    installFetch({ state: "inactive", formStatus: 201 });
+    try {
+      const result = await run(contact("leitor@x.com"));
+      assert.equal(result.doiResent, 1);
+      assert.equal(result.doiResendNoop, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("dentro do intervalo (sem chamada ao Kit) não conta como noop", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 200 });
+    try {
+      const result = await run(contact("leitor@x.com", { doi_resend_noop_at: new Date(Date.now() - 86_400_000).toISOString() }));
+      assert.equal(calls.formPosts.length, 0);
+      assert.equal(result.doiResendNoop, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("o resumo do main() imprime o contador de noops", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(new URL("../scripts/evaluate-brevo-diaria.ts", import.meta.url), "utf8");
+    assert.match(src, /\$\{result\.doiResendNoop\} tentativa\(s\) de reenvio sem e-mail/);
+  });
+});
+
+// #9986 (c) — regressão: falha permanente (404/422) não gravava marcador, e o
+// mesmo contato somava failed++ + warn em TODA rodada, sem backoff.
+describe("reenvio DOI — backoff de falha permanente (#9986)", () => {
+  const origFetch = globalThis.fetch;
+
+  it("isPermanentKitDoiFailure: 4xx exceto 401/403/408/429; 5xx e sem status são transitórios", () => {
+    for (const s of [400, 404, 410, 422]) assert.equal(isPermanentKitDoiFailure(s), true, String(s));
+    for (const s of [undefined, 401, 403, 408, 429, 500, 502, 503, 200, 201]) {
+      assert.equal(isPermanentKitDoiFailure(s), false, String(s));
+    }
+  });
+
+  // Self-review do PR #10005: 401/403 são falha de credencial/config (global),
+  // não do contato — uma chave revogada não pode suprimir 7 dias de tentativas
+  // de cada contato elegível depois de corrigida.
+  for (const status of [401, 403]) {
+    it(`${status} (credencial/config) → failed, mas NÃO grava marcador; a rodada seguinte tenta de novo`, async () => {
+      let calls = installFetch({ state: "inactive", formStatus: status });
+      try {
+        const r1 = await run(contact("leitor@x.com"));
+        assert.equal(calls.formPosts.length, 1);
+        assert.equal(r1.failed, 1);
+        const after = findContact(r1.store, "leitor@x.com")!;
+        assert.equal(after.doi_resend_failed_at, undefined, "falha global não entra no backoff por contato");
+
+        calls = installFetch({ state: "inactive", formStatus: 201 });
+        const r2 = await run(after);
+        assert.equal(calls.formPosts.length, 1, "chave corrigida: re-tenta já na rodada seguinte");
+        assert.equal(r2.doiResent, 1);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  }
+
+  it("needsDoiResend respeita doi_resend_failed_at como as outras tentativas", () => {
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_failed_at: daysAgo(2) }), NOW), false);
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_failed_at: daysAgo(7) }), NOW), true);
+    assert.equal(needsDoiResend(contact("a@x.com", { doi_resend_failed_at: "lixo" }), NOW), false);
+    assert.equal(
+      needsDoiResend(contact("a@x.com", { doi_resent_at: daysAgo(30), doi_resend_failed_at: daysAgo(1) }), NOW),
+      false,
+    );
+  });
+
+  it("lastDoiResendAttemptAt considera a falha permanente", () => {
+    assert.equal(lastDoiResendAttemptAt({ doi_resend_failed_at: daysAgo(3) }), daysAgo(3));
+    assert.equal(
+      lastDoiResendAttemptAt({ doi_resent_at: daysAgo(9), doi_resend_noop_at: daysAgo(5), doi_resend_failed_at: daysAgo(1) }),
+      daysAgo(1),
+    );
+    assert.equal(lastDoiResendAttemptAt({ doi_resent_at: "lixo", doi_resend_failed_at: daysAgo(2) }), daysAgo(2));
+  });
+
+  it("markDoiResendFailed grava só o marcador de falha, só no contato in_brevo", () => {
+    const store = { contacts: [contact("a@x.com", { doi_resent_at: daysAgo(30) }), contact("b@x.com")] };
+    const out = markDoiResendFailed(store, "A@x.com", NOW);
+    assert.equal(findContact(out, "a@x.com")!.doi_resend_failed_at, NOW);
+    assert.equal(findContact(out, "a@x.com")!.doi_resent_at, daysAgo(30));
+    assert.equal(findContact(out, "b@x.com")!.doi_resend_failed_at, undefined);
+    const promoted = markDoiResendFailed({ contacts: [contact("c@x.com", { status: "promoted_beehiiv" })] }, "c@x.com", NOW);
+    assert.equal(findContact(promoted, "c@x.com")!.doi_resend_failed_at, undefined);
+  });
+
+  for (const status of [404, 422]) {
+    it(`${status} → failed na 1ª rodada, grava doi_resend_failed_at, e a rodada seguinte NÃO chama o Kit nem soma failed`, async () => {
+      let calls = installFetch({ state: "inactive", formStatus: status });
+      try {
+        const r1 = await run(contact("leitor@x.com"));
+        assert.equal(calls.formPosts.length, 1);
+        assert.equal(r1.failed, 1);
+        assert.equal(r1.doiResent, 0);
+        assert.equal(r1.doiResendNoop, 0);
+        const after = findContact(r1.store, "leitor@x.com")!;
+        assert.ok(after.doi_resend_failed_at, "falha permanente grava o marcador de backoff");
+        assert.equal(after.doi_resent_at, undefined);
+
+        calls = installFetch({ state: "inactive", formStatus: status });
+        const r2 = await run(after);
+        assert.equal(calls.formPosts.length, 0, "backoff: não re-chama dentro do intervalo");
+        assert.equal(r2.failed, 0, "backoff: não soma failed de novo");
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  }
+
+  it("falha permanente fora do intervalo → tenta de novo", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 201 });
+    try {
+      const old = new Date(Date.now() - (DOI_RESEND_INTERVAL_DAYS + 1) * 86_400_000).toISOString();
+      const r = await run(contact("leitor@x.com", { doi_resend_failed_at: old }));
+      assert.equal(calls.formPosts.length, 1);
+      assert.equal(r.doiResent, 1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("5xx (transitória) não grava marcador: a rodada seguinte tenta de novo", async () => {
+    installFetch({ state: "inactive", formStatus: 503 });
+    try {
+      const r = await run(contact("leitor@x.com"));
+      assert.equal(r.failed, 1);
+      assert.equal(findContact(r.store, "leitor@x.com")!.doi_resend_failed_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("429 não grava marcador (#9291 — volta na próxima rodada)", async () => {
+    installFetch({ state: "inactive", formStatus: 429 });
+    try {
+      const r = await run(contact("leitor@x.com"));
+      assert.equal(findContact(r.store, "leitor@x.com")!.doi_resend_failed_at, undefined);
     } finally {
       globalThis.fetch = origFetch;
     }

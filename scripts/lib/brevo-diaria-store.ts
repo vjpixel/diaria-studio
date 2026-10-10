@@ -98,8 +98,14 @@ export interface BrevoDiariaContact {
   /** #9835 — ISO do último reenvio do double opt-in do Kit (vínculo ao
    * designer form de DOI) pra um contato que qualifica por abertura mas está
    * `inactive` no Kit. Base do anti-spam (`needsDoiResend`): no máximo 1
-   * reenvio a cada `DOI_RESEND_INTERVAL_DAYS`. Só é gravado com vínculo 2xx;
-   * falha não grava, então a tentativa se repete na rodada seguinte. Não é
+   * TENTATIVA a cada `DOI_RESEND_INTERVAL_DAYS`. Só é gravado com HTTP 201
+   * (vínculo novo, o único que dispara e-mail, #9945). #9986 — na prática o
+   * e-mail sai UMA VEZ NA VIDA por contato: depois do 1º 201 o subscriber
+   * fica vinculado ao form e toda tentativa seguinte responde 200 (noop,
+   * `doi_resend_noop_at`). Quem já entrou pelo mesmo form (workers
+   * poll/cursos/reativar) nunca chega a ter um 201. Falha transitória não
+   * grava (a tentativa se repete na rodada seguinte); falha permanente grava
+   * `doi_resend_failed_at`. Não é
    * limpo quando o contato sai de `in_brevo` (mesmo tratamento de
    * `awaiting_kit_confirmation_since`); `needsDoiResend` checa o status. */
   doi_resent_at?: string;
@@ -110,6 +116,14 @@ export interface BrevoDiariaContact {
    * mais recente entre os dois marcadores, senão o contato era re-chamado em
    * toda rodada. Ausente em stores antigos (= nenhuma tentativa noop). */
   doi_resend_noop_at?: string;
+  /** #9986 — ISO da última tentativa de reenvio do DOI que falhou de forma
+   * PERMANENTE (4xx que não é 401/403/408/429, ex. 404 subscriber inexistente,
+   * 422 rejeitado; ver `isPermanentKitDoiFailure` em evaluate-brevo-diaria).
+   * Backoff: `needsDoiResend` aplica o mesmo `DOI_RESEND_INTERVAL_DAYS` a
+   * este marcador, senão o mesmo contato somava `failed++` e um warn em TODA
+   * rodada. Falha transitória (5xx, 408, 429, rede) e de credencial/config
+   * (401/403, afeta todos os contatos) não gravam. */
+  doi_resend_failed_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -533,10 +547,12 @@ export function findStaleAwaitingKitConfirmation(
 }
 
 /**
- * #9835 — intervalo mínimo entre dois reenvios do double opt-in do Kit pro
- * mesmo contato. Mesmo prazo do alarme de espera (#8753): quem não clicou no
- * botão em uma semana recebe no máximo mais um e-mail por semana (mesmo
- * valor; aqui a comparação é `>=`, no alarme é `>`). Literal
+ * #9835 — intervalo mínimo entre duas TENTATIVAS de reenvio do double opt-in
+ * do Kit pro mesmo contato (201, 200 noop ou falha permanente). Mesmo prazo
+ * do alarme de espera (#8753; aqui a comparação é `>=`, no alarme é `>`).
+ * #9986 — não é "um e-mail por semana": só o 201 envia, e depois do 1º 201
+ * as tentativas seguintes respondem 200 (já vinculado ao form), então o
+ * e-mail sai no máximo uma vez na vida por contato. Literal
  * em vez de alias (knip acusa export duplicado); a igualdade com
  * `AWAITING_KIT_CONFIRMATION_STALE_DAYS` é travada por teste.
  */
@@ -554,14 +570,18 @@ export const DOI_RESEND_INTERVAL_DAYS = 7;
  * duas, senão um contato que já recebeu 1 reenvio era re-chamado em toda
  * rodada assim que o 201 antigo passava do intervalo. Mesmo fail-safe pra
  * timestamp ilegível em qualquer um dos dois.
+ *
+ * #9986 — `doi_resend_failed_at` (falha permanente 404/422) entra no mesmo
+ * cálculo: é o backoff que impede o mesmo contato de virar `failed++` + warn
+ * em toda rodada.
  */
 export function needsDoiResend(
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at">,
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">,
   now: string = new Date().toISOString(),
   days: number = DOI_RESEND_INTERVAL_DAYS,
 ): boolean {
   if (contact.status !== "in_brevo") return false;
-  const marks = [contact.doi_resent_at, contact.doi_resend_noop_at].filter((m): m is string => !!m);
+  const marks = doiResendMarks(contact);
   if (marks.length === 0) return true;
   const ms = marks.map((m) => Date.parse(m));
   if (ms.some((m) => !Number.isFinite(m))) return false;
@@ -569,21 +589,35 @@ export function needsDoiResend(
 }
 
 /**
- * #9979 — pura. ISO da tentativa de reenvio mais recente (201 ou 200), pro
- * log do "NÃO reenviado"; `undefined` se nunca houve tentativa. Comparação
- * por `Date.parse` (ilegível perde pra legível; dois ilegíveis → o 1º).
+ * #9979 — pura. ISO da tentativa de reenvio mais recente (201, 200 ou — #9986
+ * — falha permanente), pro log do "NÃO reenviado"; `undefined` se nunca houve
+ * tentativa. Comparação por `Date.parse` (ilegível perde pra legível; todos
+ * ilegíveis → o 1º na ordem resent, noop, failed; empate → o 1º).
  */
 export function lastDoiResendAttemptAt(
-  contact: Pick<BrevoDiariaContact, "doi_resent_at" | "doi_resend_noop_at">,
+  contact: Pick<BrevoDiariaContact, "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">,
 ): string | undefined {
-  const a = contact.doi_resent_at;
-  const b = contact.doi_resend_noop_at;
-  if (!a || !b) return a ?? b;
-  const am = Date.parse(a);
-  const bm = Date.parse(b);
-  if (!Number.isFinite(bm)) return a;
-  if (!Number.isFinite(am)) return b;
-  return bm > am ? b : a;
+  const marks = doiResendMarks(contact);
+  let best: string | undefined;
+  let bestMs = -Infinity;
+  for (const m of marks) {
+    const ms = Date.parse(m);
+    if (Number.isFinite(ms) && ms > bestMs) {
+      best = m;
+      bestMs = ms;
+    }
+  }
+  return best ?? marks[0];
+}
+
+/** #9986 — marcadores de tentativa de reenvio do DOI presentes, na ordem
+ * resent (201), noop (200), failed (falha permanente). */
+function doiResendMarks(
+  contact: Pick<BrevoDiariaContact, "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">,
+): string[] {
+  return [contact.doi_resent_at, contact.doi_resend_noop_at, contact.doi_resend_failed_at].filter(
+    (m): m is string => !!m,
+  );
 }
 
 /** #9835 — grava `doi_resent_at` (sobrescreve: é o timestamp do ÚLTIMO
@@ -616,6 +650,24 @@ export function markDoiResendNoop(
     ...store,
     contacts: store.contacts.map((c) =>
       c.email === norm && c.status === "in_brevo" ? { ...c, doi_resend_noop_at: now } : c,
+    ),
+  };
+}
+
+/** #9986 — grava `doi_resend_failed_at` (tentativa de reenvio que falhou de
+ * forma permanente, ex. 404/422). Não toca os outros marcadores; só alimenta
+ * o backoff de `needsDoiResend`. No-op silencioso pra contato ausente ou
+ * fora de `in_brevo`. */
+export function markDoiResendFailed(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    ...store,
+    contacts: store.contacts.map((c) =>
+      c.email === norm && c.status === "in_brevo" ? { ...c, doi_resend_failed_at: now } : c,
     ),
   };
 }
