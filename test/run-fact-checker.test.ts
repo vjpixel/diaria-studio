@@ -36,6 +36,7 @@ import {
   computeAttentionItems,
   getBlockingClaims,
   isReadingTimeEstimate,
+  parseUseMelhorReadingTimeItems,
   destaqueLabel,
   formatFactCheckUnavailableMessage,
   type FactCheckResult,
@@ -1063,6 +1064,104 @@ describe("isReadingTimeEstimate / getBlockingClaims (#9868, #9914)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #9985 — a isenção do #9914 confere o marcador contra o 02-reviewed.md real,
+// não só contra o `context` do agente (que os exemplos do prompt truncam com
+// "...", tirando o "(12 min)" do fim).
+// ---------------------------------------------------------------------------
+
+describe("isenção de tempo de leitura conferida contra o MD real (#9985)", () => {
+  const MD = [
+    "DESTAQUE 1 | NEGÓCIOS",
+    "",
+    "O modelo gera o vídeo em 12 minutos, segundo a empresa.",
+    "",
+    "---",
+    "",
+    "**🚀 LANÇAMENTOS**",
+    "",
+    "**[Ferramenta X](https://ex.com/x)**  ",
+    "A ferramenta transcreve uma hora de áudio em 12 minutos",
+    "",
+    "---",
+    "",
+    "**🛠️ USE MELHOR**",
+    "",
+    "**[Guia de prompts para iniciantes](https://machinelearningmastery.com/guia)**  ",
+    "Guia de prompts para iniciantes com exemplos de few-shot e cadeia de raciocínio (12 min)",
+    "",
+    "**[Curso de RAG](https://ex.com/rag)** Montando um pipeline de RAG do zero — 15 min",
+    "",
+    "---",
+    "",
+    "**📡 RADAR**",
+    "",
+    "**[Item](https://ex.com/r)**  ",
+    "Um tutorial rápido (12 min)",
+  ].join("\n");
+
+  const claim = (text: string, context: string, destaque: FactClaim["destaque"] = "secondary"): FactClaim => ({
+    destaque,
+    claim_type: "duration",
+    text,
+    context,
+    sources: ["newsletter"],
+    verdict: "NOT_FOUND_IN_SOURCE",
+  });
+
+  it("parser extrai só os itens do USE MELHOR com marcador final (inline e 2 linhas)", () => {
+    const items = parseUseMelhorReadingTimeItems(MD);
+    assert.deepEqual(items.map((i) => i.minutes), [12, 15]);
+    assert.ok(items[0].normalized.startsWith("guia de prompts para iniciantes guia de prompts"));
+    assert.ok(!items.some((i) => i.normalized.includes("tutorial rápido")), "RADAR fica fora");
+  });
+
+  it("caso da issue: context truncado no formato dos exemplos do prompt → não bloqueia com o MD", () => {
+    const c = claim("12 min", "Guia de prompts para iniciantes...");
+    // Sem o MD, a isenção do #9914 falha (regressão que motivou a issue)...
+    assert.equal(isReadingTimeEstimate(c), false);
+    assert.equal(getBlockingClaims([c]).length, 1);
+    // ...com o MD real, o marcador é conferido lá.
+    assert.equal(getBlockingClaims([c], { newsletterMd: MD }).length, 0);
+  });
+
+  it("context com reticências no meio, com unicode '…' e com markdown de link também casa", () => {
+    for (const ctx of [
+      "Guia de prompts... cadeia de raciocínio",
+      "Guia de prompts para iniciantes com exemplos…",
+      "[Guia de prompts para iniciantes](https://machinelearningmastery.com/guia)...",
+    ]) {
+      assert.equal(getBlockingClaims([claim("(12 min)", ctx)], { newsletterMd: MD }).length, 0, ctx);
+    }
+    assert.equal(getBlockingClaims([claim("— 15 min", "Montando um pipeline de RAG...")], { newsletterMd: MD }).length, 0);
+  });
+
+  it("número diferente do marcador do item casado → bloqueia", () => {
+    assert.equal(getBlockingClaims([claim("15 min", "Guia de prompts para iniciantes...")], { newsletterMd: MD }).length, 1);
+  });
+
+  it("duração factual de LANÇAMENTOS/RADAR com mesmo número segue bloqueando com o MD", () => {
+    for (const ctx of ["A ferramenta transcreve uma hora de áudio...", "Um tutorial rápido..."]) {
+      assert.equal(getBlockingClaims([claim("12 minutos", ctx)], { newsletterMd: MD }).length, 1, ctx);
+    }
+  });
+
+  it("D1-D3 nunca isenta, mesmo com context que casa um item do USE MELHOR", () => {
+    assert.equal(getBlockingClaims([claim("12 min", "Guia de prompts para iniciantes...", 1)], { newsletterMd: MD }).length, 1);
+  });
+
+  it("context vazio ou curto demais pra identificar item → fail-closed", () => {
+    for (const ctx of ["", "...", "Guia...", "12 min"]) {
+      assert.equal(getBlockingClaims([claim("12 min", ctx)], { newsletterMd: MD }).length, 1, `"${ctx}"`);
+    }
+  });
+
+  it("MD sem seção USE MELHOR → comportamento do #9914 inalterado", () => {
+    assert.deepEqual(parseUseMelhorReadingTimeItems("DESTAQUE 1\n\nTexto (12 min)\n"), []);
+    assert.equal(getBlockingClaims([claim("12 min", "Guia de prompts para iniciantes...")], { newsletterMd: "x" }).length, 1);
+  });
+});
+
 describe("CLI --check-blocking (#4361)", () => {
   function writeFixture(tmp: string, agentClaims: unknown[]) {
     const internalDir = join(tmp, "_internal");
@@ -1118,6 +1217,32 @@ describe("CLI --check-blocking (#4361)", () => {
       ]);
       const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
       assert.equal(result.status, 0, `exit 0 esperado (tempo de leitura é estimativa do pipeline). stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#9985: context truncado ('Guia...') + '(12 min)' no USE MELHOR do 02-reviewed.md → exit 0", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-9985-duration-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: "secondary",
+          claim_type: "duration",
+          text: "12 min",
+          context: "Guia de prompts para iniciantes...",
+          sources: ["newsletter"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+          note: "página não informa tempo de leitura",
+        },
+      ]);
+      writeFileSync(
+        join(tmp, "02-reviewed.md"),
+        "**🛠️ USE MELHOR**\n\n**[Guia de prompts para iniciantes](https://ex.com/g)**  \nGuia de prompts para iniciantes com exemplos (12 min)\n",
+        "utf8",
+      );
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 0, `exit 0 esperado (marcador conferido no MD). stderr: ${result.stderr}`);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

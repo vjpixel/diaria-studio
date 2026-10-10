@@ -158,7 +158,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    - Nenhum link de agregador/paywall.
    - Nenhum markdown excêntrico (só títulos, listas, links — sem `**negrito**` no corpo final).
    - **Nenhum travessão (—) no texto.** Substituir por dois-pontos (antes de definição ou exemplo), vírgula (aposto ou conector) ou ponto (remate). Exceção única: meia-risca (–) em intervalos numéricos ("1989–2002").
-   - Sem repetir link dos últimos ~30 dias (#9955).
+   - Sem repetir link dos últimos ~30 dias (#9955): quem garante é a dedup determinística (`dedup.ts`, `check-promoted-dedup.ts`, invariante do Stage 4) contra o `data/past-editions.md` completo. Não ler esse arquivo nem concluir "sem repetidos" a partir do recorte `past-editions-recent.md` (~12 edições, #9978, #9992).
    - **Comprimento dos destaques (#914)**: cada destaque tem mínimo + máximo. Char count exclui URL e títulos — só body + "Por que isso importa:" + parágrafo de impacto.
 
      | Destaque | Mínimo | Máximo |
