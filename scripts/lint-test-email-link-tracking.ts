@@ -497,6 +497,8 @@ async function headWithRedirects(url: string, fetchImpl: typeof fetch): Promise<
       signal: controller.signal,
     });
     lastStatus = res.status;
+    // #9991: só o status importa; corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     return { status: res.status, hops, final_url: res.url || current, timed_out: false, via_get: true };
   } catch (e) {
     const isAbort = (e as Error).name === "AbortError";

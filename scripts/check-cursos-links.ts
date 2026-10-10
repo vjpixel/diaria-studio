@@ -87,6 +87,9 @@ async function probeOnce(url: string): Promise<CourseLinkProbe> {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
       },
     });
+    // #9991: só o status importa; o corpo (página inteira do curso) não lido
+    // seguraria o socket e a saída via exitCode.
+    await r.body?.cancel().catch(() => {});
     return { ok: r.ok, status: r.status, finalUrl: r.url || url, originalUrl: url };
   } catch (e) {
     return { ok: false, status: 0, finalUrl: url, originalUrl: url, error: (e as Error).message };

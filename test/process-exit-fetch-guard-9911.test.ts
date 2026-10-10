@@ -229,3 +229,47 @@ describe("2º lote migrado (#9911)", () => {
     }
   });
 });
+
+/**
+ * 3º lote do #9911 (junto com o #9991): scripts de até 4 saídas, sem servidor
+ * e sem publisher de envio. Mesma troca 1:1 dos lotes anteriores.
+ */
+const BATCH_3 = [
+  "scripts/clarice-plan-wave.ts",
+  "scripts/clarice-stripe-delta.ts",
+  "scripts/delete-test-schedules.ts",
+  "scripts/inject-poll-token.ts",
+  "scripts/sync-apoio-nivel-beehiiv.ts",
+  "scripts/sync-cursos-subscribers-kv.ts",
+];
+
+describe("3º lote migrado (#9911)", () => {
+  it("nenhum script do lote volta para a allowlist", () => {
+    for (const f of BATCH_3) assert.equal(ALLOWLIST.has(f), false, f);
+  });
+
+  const run = (script: string, args: string[], env: Record<string, string> = {}) =>
+    spawnSync(process.execPath, ["--import", "tsx", resolve(ROOT, script), ...args], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+
+  // Só caminhos de uso/arquivo ausente/guard, antes de qualquer rede ou escrita.
+  const cases: Array<[string, string, string[], Record<string, string>, number]> = [
+    ["delete-test-schedules sem --edition-dir", "scripts/delete-test-schedules.ts", [], {}, 2],
+    ["delete-test-schedules com edição sem 06-social-published.json", "scripts/delete-test-schedules.ts", ["--edition-dir", "test/__nao-existe-9911__"], {}, 2],
+    ["inject-poll-token sem --force-orphan", "scripts/inject-poll-token.ts", ["--dry-run"], {}, 1],
+    ["inject-poll-token com --since-hours inválido", "scripts/inject-poll-token.ts", ["--since-hours", "abc"], {}, 1],
+    ["clarice-stripe-delta com --from-csv inexistente", "scripts/clarice-stripe-delta.ts", ["--from-csv", "/nao/existe-9911.csv"], {}, 1],
+    ["clarice-stripe-delta sem STRIPE_API_KEY", "scripts/clarice-stripe-delta.ts", [], { STRIPE_API_KEY: "" }, 1],
+    ["clarice-plan-wave com --target-volume inválido", "scripts/clarice-plan-wave.ts", ["--cycle", "2610-10", "--target-volume", "abc"], {}, 1],
+  ];
+
+  for (const [name, script, args, env, code] of cases) {
+    it(`${name} sai ${code}`, () => {
+      const r = run(script, args, env);
+      assert.equal(r.status, code, r.stderr);
+    });
+  }
+});

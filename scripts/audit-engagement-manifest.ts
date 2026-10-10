@@ -170,6 +170,8 @@ export async function fetchRecipientsByPost(
     try {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${cfg.apiKey}` } });
       if (!res.ok) {
+        // #9991: corpo não lido segura o socket e a saída via exitCode.
+        await res.body?.cancel().catch(() => {});
         unavailable.push(entry.post_id);
         continue;
       }

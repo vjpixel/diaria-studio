@@ -79,6 +79,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceBaseFile } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 
 loadProjectEnv();
@@ -342,7 +343,7 @@ export function deltaOutputPath(now: Date = new Date(), baseDir?: string): strin
 // Main
 // ---------------------------------------------------------------------------
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const execute = hasFlag(argv, "execute"); // #4347: --dry-run é o DEFAULT, --execute liga a escrita real
   const outDirArg = getArg(argv, "out-dir"); // uso interno de teste — ver deltaOutputPath
   const outPath = deltaOutputPath(new Date(), outDirArg || undefined);
@@ -351,7 +352,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (fromCsv) {
     if (!existsSync(fromCsv)) {
       console.error(`❌ --from-csv: arquivo não encontrado: ${fromCsv}`);
-      process.exit(1);
+      return 1;
     }
     const raw = readFileSync(fromCsv, "utf8");
     const parsed = Papa.parse<Record<string, string>>(raw, { header: true, skipEmptyLines: true });
@@ -371,13 +372,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     console.error("❌ STRIPE_API_KEY não definida (chave restrita read-only Customers/Subscriptions/Charges). Ver .env.example.");
-    process.exit(1);
+    return 1;
   }
 
   let sinceArg = getArg(argv, "since");
   if (sinceArg && (!/^\d{4}-\d{2}-\d{2}$/.test(sinceArg) || Number.isNaN(Date.parse(sinceArg)))) {
     console.error(`❌ --since inválido: "${sinceArg}" (esperado YYYY-MM-DD).`);
-    process.exit(1);
+    return 1;
   }
   if (!sinceArg) {
     const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
@@ -422,8 +423,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(String((e as Error)?.stack || e));
-    process.exit(1);
-  });
+  // #9911: runCli grava process.exitCode (process.exit depois de fetch sai 127 no Windows).
+  runCli(() => main(), { onError: (e) => console.error(String((e as Error)?.stack || e)) });
 }

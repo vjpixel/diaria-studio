@@ -141,8 +141,10 @@ async function mainCli(): Promise<number> {
   const votes: VoteRecord[] = [];
   for (const key of voteKeys) {
     const res = await fetch(`${KV_BASE}/values/${encodeURIComponent(key)}`, { headers: authHeaders });
-    if (res.status === 404) continue;
     if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      if (res.status === 404) continue;
       console.error(`KV get ${key} falhou: ${res.status}`);
       return 2;
     }

@@ -578,6 +578,8 @@ export async function fetchOpenRouterActivity(
       signal: controller.signal,
     });
     if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
       const isForbidden = res.status === 403;
       const hint = isForbidden ? " (403 costuma ser chave de INFERÊNCIA, não management — confira OPENROUTER_MANAGEMENT_KEY)" : "";
       return { rows: [], ok: false, warning: `GET /api/v1/activity respondeu ${res.status}${hint} — seção de custo degradada (n/a)` };

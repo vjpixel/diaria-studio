@@ -159,9 +159,12 @@ async function fetchHtmlFeeds(url: string, timeoutMs: number): Promise<string[]>
       signal: controller.signal,
       redirect: "follow",
     });
-    if (!res.ok) return [];
     const ct = res.headers.get("content-type") ?? "";
-    if (!ct.includes("html") && !ct.includes("xml")) return [];
+    if (!res.ok || (!ct.includes("html") && !ct.includes("xml"))) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      return [];
+    }
     const html = await res.text();
     return extractFeedsFromHtml(html, url);
   } catch {

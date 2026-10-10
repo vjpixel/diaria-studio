@@ -87,7 +87,11 @@ async function findDefaultTemplate(opts: {
       const res = await fetch(`${baseUrl}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${opts.apiKey}` },
       });
-      if (!res.ok) return HARDCODED_FALLBACK;
+      if (!res.ok) {
+        // #9991: corpo não lido segura o socket e a saída via exitCode.
+        await res.body?.cancel().catch(() => {});
+        return HARDCODED_FALLBACK;
+      }
       const json = (await res.json()) as {
         data?: BeehiivPostListItem[];
         has_more?: boolean;
@@ -157,6 +161,7 @@ async function checkTemplateNotStale(
       headers: { Authorization: `Bearer ${opts.apiKey}` },
     });
     if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
       return {
         name: CHECK_NAME_TEMPLATE_STALE,
         passed: true,

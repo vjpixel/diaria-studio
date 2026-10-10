@@ -187,7 +187,11 @@ export async function runArchiveImageMigration(opts: MigrationRunOptions): Promi
 
 async function realFetch(url: string): Promise<ArrayBuffer> {
   const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
-  if (!res.ok) throw new Error(`download falhou (${res.status})`);
+  if (!res.ok) {
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`download falhou (${res.status})`);
+  }
   return res.arrayBuffer();
 }
 

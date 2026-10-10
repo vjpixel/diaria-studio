@@ -386,7 +386,11 @@ export async function fetchPermalink(
     // logar a URL de propósito.
     const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${mediaId}?fields=permalink`;
     const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // #9991: corpo não lido segura o socket e a saída via exitCode.
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const data = (await res.json()) as { permalink?: string; error?: unknown };
     if (data.error || !data.permalink) return null;
     return data.permalink;

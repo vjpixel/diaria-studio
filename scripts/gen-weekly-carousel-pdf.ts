@@ -152,7 +152,11 @@ export function resolveSlideUrlsFromCache(dataRoot: string, carouselKey: string)
 
 export async function downloadJpeg(url: string): Promise<Uint8Array> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`gen-weekly-carousel-pdf: GET ${url} -> ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`gen-weekly-carousel-pdf: GET ${url} -> ${res.status} ${res.statusText}`);
+  }
   const bytes = new Uint8Array(await res.arrayBuffer());
   // Corpo cortado no meio da transferência chega com 200 e sem erro
   // nenhum (#8305 review). `readJpegHeader` pega o caso pelo EOI ausente,

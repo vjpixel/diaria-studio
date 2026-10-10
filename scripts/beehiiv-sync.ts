@@ -127,6 +127,8 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<T
   if (res.status === 429 && retries < MAX_RETRIES) {
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
     const wait = Math.max(retryAfter * 1000, 30_000);
+    // #9991: corpo não lido segura o socket e a saída via exitCode.
+    await res.body?.cancel().catch(() => {});
     process.stderr.write(
       `[beehiiv-sync] rate-limited — esperando ${Math.round(wait / 1000)}s (tentativa ${retries + 1}/${MAX_RETRIES})\n`,
     );

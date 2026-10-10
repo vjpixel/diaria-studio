@@ -156,6 +156,10 @@ export async function fetchSourceText(
         signal: AbortSignal.timeout(20000),
       });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
+        // #9991: todo caminho que não lê o corpo o cancela. Sem `process.exit`
+        // no CLI, um corpo pendente (PDF de vários MB) segura o socket e a
+        // saída até o timeout de 20s.
+        await res.body?.cancel().catch(() => {});
         if (hop === MAX_REDIRECTS) return { ok: false, kind: "error", message: "redirects demais" };
         current = new URL(res.headers.get("location")!, current).toString();
         continue;
@@ -163,13 +167,17 @@ export async function fetchSourceText(
       break;
     }
     if (!res) return { ok: false, kind: "error", message: "sem resposta" };
-    if (BLOCKED_STATUSES.has(res.status)) {
-      return { ok: false, kind: "blocked", status: res.status, message: blockedMessage(res.status) };
-    }
-    if (!res.ok) return { ok: false, kind: "error", status: res.status, message: `HTTP ${res.status}` };
     const ct = res.headers.get("content-type") ?? "";
-    if (!isTextual(ct)) {
-      return { ok: false, kind: "error", status: res.status, message: `conteúdo não textual (${ct.split(";")[0]})` };
+    const early: FetchTextResult | null = BLOCKED_STATUSES.has(res.status)
+      ? { ok: false, kind: "blocked", status: res.status, message: blockedMessage(res.status) }
+      : !res.ok
+        ? { ok: false, kind: "error", status: res.status, message: `HTTP ${res.status}` }
+        : !isTextual(ct)
+          ? { ok: false, kind: "error", status: res.status, message: `conteúdo não textual (${ct.split(";")[0]})` }
+          : null;
+    if (early) {
+      await res.body?.cancel().catch(() => {});
+      return early;
     }
     const buf = new Uint8Array(await res.arrayBuffer());
     let truncated = buf.length > MAX_BODY_BYTES;
