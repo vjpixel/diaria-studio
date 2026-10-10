@@ -130,6 +130,14 @@ const COUNTRY_NAMES = [
   "País de Gales",
 ];
 
+/**
+ * #9993: fronteira de fim de palavra Unicode-aware. O `\b` do JS (sem flag
+ * `u`, e mesmo com ela) só trata `[A-Za-z0-9_]` como caractere de palavra,
+ * então "Canadá"/"Vietnã" seguidos de espaço ou fim de texto não tinham
+ * fronteira e não casavam. Usar sempre com a flag `u`.
+ */
+const WORD_END = "(?![\\p{L}\\p{N}_])";
+
 const COUNTRY_ALTERNATION = COUNTRY_NAMES.map((c) =>
   c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
 ).join("|");
@@ -147,8 +155,8 @@ const COUNTRY_ALTERNATION = COUNTRY_NAMES.map((c) =>
  */
 const GEO_TERM_ALTERNATION = `${COUNTRY_ALTERNATION}|countries|regions?|more\\s+(?:countries|regions|markets|languages)|\\d+\\+?\\s+(?:new\\s+|more\\s+)?(?:countries|regions|markets)|EU|Europe|European\\s+Union|Latin\\s+America|LATAM|APAC|EMEA|Asia(?:[-\\s]Pacific)?|Africa|Middle\\s+East|US|USA|United\\s+States`;
 const GEO_COMPLEMENT_RE = new RegExp(
-  `^\\s*(?:(?:all\\s+)?users\\s+in\\s+)?(?:the\\s+)?(?:${GEO_TERM_ALTERNATION})\\b`,
-  "i",
+  `^\\s*(?:(?:all\\s+)?users\\s+in\\s+)?(?:the\\s+)?(?:${GEO_TERM_ALTERNATION})${WORD_END}`,
+  "iu",
 );
 
 export function startsWithGeoComplement(text: string): boolean {
@@ -162,12 +170,12 @@ export function startsWithGeoComplement(text: string): boolean {
 export const NEWS_TITLE_PATTERNS: RegExp[] = [
   // "for {Country}" — programa/produto específico pra um país
   // Ex: "Introducing OpenAI for Singapore", "Claude for Brazil"
-  new RegExp(`\\bfor\\s+(${COUNTRY_ALTERNATION})\\b`, "i"),
+  new RegExp(`\\bfor\\s+(${COUNTRY_ALTERNATION})${WORD_END}`, "iu"),
   // PT variant: "para o Brasil", "para a Índia", "para o Japão"
   // Match `\bpara\s+(o\s+|a\s+|os\s+|as\s+)?{Country}\b`. Cobre tanto
   // título PT direto quanto traduções de anúncio EN. Conservador: ainda
   // exige nome do país na lista canônica, evitando "para o Cliente Final".
-  new RegExp(`\\bpara\\s+(?:o\\s+|a\\s+|os\\s+|as\\s+)?(${COUNTRY_ALTERNATION})\\b`, "i"),
+  new RegExp(`\\bpara\\s+(?:o\\s+|a\\s+|os\\s+|as\\s+)?(${COUNTRY_ALTERNATION})${WORD_END}`, "iu"),
   // "for Countries" (plural) — programa multi-país
   // Ex: "The next phase of OpenAI's Education for Countries"
   /\bfor\s+Countries\b/i,
