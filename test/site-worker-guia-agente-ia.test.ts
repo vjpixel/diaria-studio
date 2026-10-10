@@ -102,6 +102,12 @@ describe("public/guia/agente-ia — página de vendas do guia", () => {
     assert.match(html, /<title>Seu primeiro agente de IA em uma tarde, sem programar<\/title>/);
   });
 
+  it("descreve o passo 5 do guia atual: agendamento no Buffer com a imagem, não rascunho sem imagem", () => {
+    assert.ok(html.includes("Passo 5 | Agende os posts no Buffer, com a imagem (opcional)"));
+    assert.ok(html.includes("agendamento opcional dos posts no Buffer, com a imagem"));
+    assert.doesNotMatch(html, /Leve os posts ao Buffer|integração opcional com o Buffer/);
+  });
+
   it("todas as imagens locais referenciadas existem em disco", () => {
     const refs = new Set<string>();
     for (const m of [html, css].join("\n").matchAll(/\/(guia|evento)\/agente-ia\/assets\/[a-z0-9_-]+\.(?:png|webp|svg)/gi)) refs.add(m[0]);
