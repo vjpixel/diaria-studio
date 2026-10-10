@@ -298,6 +298,64 @@ describe("refresh-dedup.ts (#895)", () => {
     assert.ok(md.includes("Edição nova"));
     assert.ok(md.includes("https://example.com/nova-url"));
   });
+
+  // #9992: os 2 testes "incremental" acima têm raw com 1 post < 14, então
+  // entram no ramo de backfill do #9955 — não no `stopBeforeMs`, que é o que
+  // roda todo dia em produção. Aqui o raw tem >= dedupEditionCount posts e
+  // um post DESCONHECIDO mais antigo que o mais recente do raw: o early-stop
+  // tem que cortar nele (o backfill o baixaria, por estar no top-N).
+  it("incremental com raw >= dedupEditionCount usa o corte stopBeforeMs (#9992)", async () => {
+    const rawPath = join(sandboxRoot, "test-stop-before-past-editions-raw.json");
+    const mdPath = join(sandboxRoot, "test-stop-before-past-editions.md");
+    const iso = (d: string) => `2026-05-${d}T12:00:00Z`;
+    const ts = (d: string) => Math.floor(new Date(iso(d)).getTime() / 1000);
+
+    const existing = ["06", "04", "02"].map((d) => ({
+      id: `post_${d}`,
+      title: `Edição ${d}`,
+      web_url: `https://diaria.beehiiv.com/p/${d}`,
+      published_at: iso(d),
+      links: [`https://example.com/${d}`],
+    }));
+    writeFileSync(rawPath, JSON.stringify(existing), "utf8");
+
+    const baseFetch = makeMockFetch({
+      posts: ["07", "06", "05", "04", "02"].map((d) => ({
+        id: `post_${d}`,
+        title: `Edição ${d}`,
+        publish_date: ts(d),
+        web_url: `https://diaria.beehiiv.com/p/${d}`,
+      })),
+      contentByPostId: { post_07: "<p>Veja https://example.com/nova-07</p>" },
+    });
+    const fetchedDetails: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const m = /\/posts\/([^\/?]+)(?:\?|$)/.exec(typeof input === "string" ? input : input.toString());
+      if (m) fetchedDetails.push(decodeURIComponent(m[1]));
+      return baseFetch(input, init);
+    }) as typeof globalThis.fetch;
+
+    const result = await refreshDedup({
+      dryRun: false,
+      resolveTracking: false,
+      rawPath,
+      mdPath,
+      configOverride: { ...TEST_CONFIG, dedupEditionCount: 3 },
+      editionsRoot: join(sandboxRoot, "fixture-editions"),
+    });
+
+    assert.equal(result.mode, "incremental");
+    assert.equal(result.new_posts, 1, "só o post mais novo que o raw entra; o corte para no post_06");
+    assert.deepEqual(fetchedDetails, ["post_07"], "post_05 (desconhecido, abaixo do corte) não é baixado");
+    assert.equal(result.total_in_base, 3, "base aparada às dedupEditionCount mais recentes");
+    assert.equal(result.most_recent_date, "2026-05-07");
+    const raw = JSON.parse(readFileSync(rawPath, "utf8")) as Array<{ id: string }>;
+    assert.deepEqual(
+      raw.map((p) => p.id).sort(),
+      ["post_04", "post_06", "post_07"],
+      "corte não deixa vazar post_05 (anterior ao mais recente do raw)",
+    );
+  });
 });
 
 describe("publishedAtToEditionDir (#978)", () => {

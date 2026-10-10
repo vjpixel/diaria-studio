@@ -122,6 +122,8 @@ Gravar em `{out_path}` o JSON com o schema abaixo.
 
 `destaque` acima é `1`, `2` ou `3` (D1/D2/D3). Se o claim vier de um item FORA de D1-D3, usar o literal `"secondary"` em vez de um número (#8992) — nunca `4`.
 
+`context` é a frase do texto onde o claim aparece, copiada literalmente (pode truncar com `...`, como nos exemplos). Exceção (#9985): claim `duration` sobre o tempo de leitura "(N min)" de um item do USE MELHOR → copiar a linha de descrição inteira, até o fim, incluindo o "(N min)". Esse tempo é estimativa do pipeline, não afirmação da fonte; o runner o isenta do bloqueio conferindo o `context` contra o `02-reviewed.md`.
+
 No modo mensal, `edition` recebe o ciclo (ex: `"2605-06"`) em vez de `AAMMDD`.
 
 ## Modo mensal (#2793)

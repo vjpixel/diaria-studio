@@ -28,6 +28,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { fetchSourceText } from "./fetch-source-text.ts";
 
@@ -382,17 +383,23 @@ export function computeAttentionItems(claims: FactClaim[]): number {
  * Justiça..." — claim não-superlativo marcado NOT_FOUND_IN_SOURCE sobreviveu
  * ao Stage 4 porque o fact-check era só informativo ali.
  */
-export function getBlockingClaims(claims: FactClaim[]): FactClaim[] {
+export function getBlockingClaims(
+  claims: FactClaim[],
+  opts: { newsletterMd?: string | null } = {},
+): FactClaim[] {
   // #9383: `headline` também fica de fora — título é warn-only (presente
   // histórico em manchete é convenção legítima; o editor decide no gate).
   // #9868: estimativa de tempo de leitura também fica de fora (ver
-  // `isReadingTimeEstimate`).
+  // `isReadingTimeEstimate`). #9985: `newsletterMd` (o `02-reviewed.md` real)
+  // deixa a isenção conferir o marcador no MD em vez de depender só do
+  // `context` que o agente escreveu.
+  const useMelhorItems = opts.newsletterMd ? parseUseMelhorReadingTimeItems(opts.newsletterMd) : undefined;
   return claims.filter(
     (c) =>
       c.verdict === "NOT_FOUND_IN_SOURCE" &&
       c.claim_type !== "superlative" &&
       c.claim_type !== "headline" &&
-      !isReadingTimeEstimate(c),
+      !isReadingTimeEstimate(c, useMelhorItems),
   );
 }
 
@@ -440,16 +447,106 @@ const READING_TIME_CONTEXT_TAIL_RE =
  *      12 minutos" (fonte diz 40) não termina em "(12 min)" → bloqueia.
  * (#9900) `secondary` sozinho já não isentava (cobre LANÇAMENTOS/RADAR
  * inteiros: "grátis por 30 dias" com fonte dizendo 7 tem que bloquear).
+ *
+ * (#9985) A condição 3 dependia de o agente copiar a descrição ATÉ O FIM no
+ * `context` — formato que o prompt não pede (os exemplos do fact-checker.md
+ * truncam com "..."). Com `useMelhorItems` (itens do USE MELHOR do
+ * `02-reviewed.md` real, via `parseUseMelhorReadingTimeItems`), a condição 3
+ * também vale quando o `context` — truncado ou não — identifica um item do
+ * USE MELHOR cujo texto termina no marcador com o MESMO número. O `context`
+ * continua obrigatório (é o que amarra a claim ao item; vazio → bloqueia).
  */
-export function isReadingTimeEstimate(c: FactClaim): boolean {
+export function isReadingTimeEstimate(c: FactClaim, useMelhorItems?: UseMelhorReadingTimeItem[]): boolean {
   if (c.claim_type !== "duration") return false;
   if (c.destaque !== "secondary") return false;
   if (!READING_TIME_TEXT_RE.test(c.text)) return false;
+  const textMinutes = Number(/\d{1,3}/.exec(c.text)?.[0]);
   const tail = typeof c.context === "string" ? READING_TIME_CONTEXT_TAIL_RE.exec(c.context) : null;
-  if (!tail) return false;
-  const ctxMinutes = tail[1] ?? tail[2] ?? tail[3];
-  const textMinutes = /\d{1,3}/.exec(c.text)?.[0];
-  return ctxMinutes !== undefined && Number(ctxMinutes) === Number(textMinutes);
+  if (tail) {
+    const ctxMinutes = tail[1] ?? tail[2] ?? tail[3];
+    if (ctxMinutes !== undefined && Number(ctxMinutes) === textMinutes) return true;
+  }
+  if (!useMelhorItems || typeof c.context !== "string") return false;
+  const fragments = contextFragments(c.context);
+  const fragmentChars = fragments.reduce((n, f) => n + f.length, 0);
+  // Contexto curto demais não identifica item nenhum ("12 min", "guia") —
+  // fail-closed.
+  if (fragmentChars < MIN_CONTEXT_MATCH_CHARS) return false;
+  return useMelhorItems.some(
+    (item) => item.minutes === textMinutes && fragments.every((f) => item.normalized.includes(f)),
+  );
+}
+
+/** (#9985) Mínimo de caracteres (normalizados) do `context` pra casar um item do USE MELHOR. */
+const MIN_CONTEXT_MATCH_CHARS = 12;
+
+/** (#9985) Item do USE MELHOR cujo texto termina num marcador de tempo de leitura. */
+export interface UseMelhorReadingTimeItem {
+  /** Minutos do marcador final ("(12 min)" → 12). */
+  minutes: number;
+  /** Título + descrição sem markdown, minúsculo, espaços colapsados. */
+  normalized: string;
+}
+
+const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, { capture: "none", flags: "u" });
+const ANY_SECTION_HEADER_RE = sectionHeaderRegex(ALL_SECTION_NAMES_PATTERN, { capture: "none", flags: "u" });
+const ITEM_LINK_START_RE = /^\s*\*{0,2}\[[^\]]+\]\(/;
+
+/** Normaliza texto de MD/`context` pra comparação: tira link/ênfase, minúsculo, espaços colapsados. */
+function normalizeForMatch(s: string): string {
+  return s
+    .replace(/\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*\)/g, "$1")
+    .replace(/[*_`]/g, "")
+    .replace(/[“”"]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+/** Fragmentos do `context` separados por reticências ("..." ou "…"), normalizados. */
+function contextFragments(context: string): string[] {
+  return context
+    .split(/\.{3,}|…/)
+    .map(normalizeForMatch)
+    .filter((f) => f.length > 0);
+}
+
+/**
+ * (#9985) Extrai do MD da newsletter (`02-reviewed.md`) os itens da seção USE
+ * MELHOR que terminam num marcador de tempo de leitura — mesmo marcador e
+ * mesmas fronteiras de seção que o lint `use-melhor-tempo` (#2396): a seção
+ * começa no header USE MELHOR e acaba em `---` ou no próximo header de seção.
+ * Cada item começa numa linha de link (`**[Título](url)**`) e agrega as linhas
+ * seguintes (formato canônico inline ou legado de 2 linhas).
+ */
+export function parseUseMelhorReadingTimeItems(md: string): UseMelhorReadingTimeItem[] {
+  const items: string[][] = [];
+  let inSection = false;
+  for (const line of md.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!inSection) {
+      if (USE_MELHOR_HEADER_RE.test(t)) inSection = true;
+      continue;
+    }
+    if (/^-{3,}$/.test(t) || ANY_SECTION_HEADER_RE.test(t)) {
+      if (USE_MELHOR_HEADER_RE.test(t)) continue;
+      inSection = false;
+      continue;
+    }
+    if (!t) continue;
+    if (ITEM_LINK_START_RE.test(t) || items.length === 0) items.push([t]);
+    else items[items.length - 1].push(t);
+  }
+  const out: UseMelhorReadingTimeItem[] = [];
+  for (const lines of items) {
+    const joined = lines.join(" ");
+    const tail = READING_TIME_CONTEXT_TAIL_RE.exec(joined);
+    const minutes = tail ? (tail[1] ?? tail[2] ?? tail[3]) : undefined;
+    if (minutes === undefined) continue;
+    out.push({ minutes: Number(minutes), normalized: normalizeForMatch(joined) });
+  }
+  return out;
 }
 
 /**
@@ -785,7 +882,8 @@ async function main(): Promise<number | void> {
     // summary acima). Sem o flag, o comportamento de exit code é IDÊNTICO ao
     // de antes do #4361 — nenhum caller existente é afetado.
     if (flags.has("check-blocking")) {
-      const blocking = getBlockingClaims(result.claims);
+      // #9985: confere o marcador de tempo de leitura contra o MD real.
+      const blocking = getBlockingClaims(result.claims, { newsletterMd: readFileSync(newsletterPath, "utf8") });
       if (blocking.length > 0) {
         console.error(
           `\n[run-fact-checker] GATE-BLOCKING (#4361): ${blocking.length} claim(s) NOT_FOUND_IN_SOURCE sem suporte na fonte primária:`,

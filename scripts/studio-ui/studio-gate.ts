@@ -327,7 +327,10 @@ function buildFactCheck(editionDir: string): GateFactCheckState {
   if (!result || typeof result.summary !== "object" || result.summary === null) {
     return { available: false, note: "fact-check.json indisponível — rode o fact-checker (§4c.6) antes de aprovar." };
   }
-  return { available: true, summary: result.summary, blockingCount: getBlockingClaims(result.claims ?? []).length };
+  // #9985: mesmo critério do `--check-blocking` — isenção de tempo de
+  // leitura conferida contra o `02-reviewed.md` real.
+  const blockingCount = getBlockingClaims(result.claims ?? [], { newsletterMd: readReviewedMd(editionDir) }).length;
+  return { available: true, summary: result.summary, blockingCount };
 }
 
 function buildFactCheckAutofix(editionDir: string): GateFactCheckAutofixState {

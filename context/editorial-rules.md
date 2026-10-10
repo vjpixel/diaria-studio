@@ -99,7 +99,7 @@ Antes de aprovar o texto final da edição, validar:
 
 - [ ] Prompt de capa: sem resolução em pixels, estilo Van Gogh, 2:1, não menciona Noite Estrelada, múltiplos sujeitos agrupados no terço central (safe-area crop 1:1), figuras em pé com headroom vertical (cabeça não cortada no topo). Fundo liso/plano (ou impasto contido), nunca "dissolvido em pinceladas" (ver §2, "Evitar fundo/formas dissolvidas em pinceladas", #8989).
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
-- [ ] Todos os links ausentes em `data/past-editions.md`.
+- [ ] Nenhum link repetido dos últimos ~30 dias — garantido pela dedup determinística (`dedup.ts`, `check-promoted-dedup.ts`, invariante do Stage 4) contra o `data/past-editions.md` completo; agente não lê esse arquivo (estoura o Read), usa o recorte `data/past-editions-recent.md` só pra voz/tema (#9978, #9992).
 - [ ] Todos os links dentro da janela de datas da edição.
 - [ ] "Por que isso importa:" em linha separada em cada destaque, sem "Para [audiência]," no início, com 180-300 caracteres (#3993).
 - [ ] Títulos dos destaques com ≤52 caracteres.
