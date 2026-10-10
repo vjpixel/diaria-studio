@@ -601,6 +601,13 @@ def test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio():
     # Claim próprio real na mesma linha que cita PRs continua contando.
     refs = mod.extract_claimed_issue_refs("#9600 reivindicada neste tick; PRs: #9912 e #9922.")
     assert 9600 in refs, f"claim próprio sumiu: {refs}"
+    # As palavras intermediárias não podem ser conectivo nem "issue(s)".
+    for linha in (
+        "PRs e issue #9601 reivindicada neste tick.",
+        "PRs abertas e #9601 reivindicada neste tick.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9601 in refs, f"claim de issue engolido como PR: {linha!r} -> {refs}"
     print("regressão #9994: 'PRs: #A', 'PRs (#A, #B)', 'PRs abertas #A' não são claim — OK")
 
 
