@@ -128,6 +128,36 @@ describe("sweepContinuoOrphanSessions — I/O num repo temporário (#10002)", ()
     assert.equal(existsSync(p), true);
   });
 
+  // #10015: o registry trata as claims de uma sessão como a UNIÃO do arquivo
+  // real com as cópias `-safeBackup-` (#6623). Antes do fix o sweep olhava só
+  // o real, encerrava a sessão e `endSession` carimbava `endedAt` no backup —
+  // soltando a claim que o registry ainda mantinha.
+  function writeBackup(realPath: string, r: SessionRecord, n = "0001"): string {
+    const p = realPath.replace(/\.json$/, `-${TAG}-safeBackup-${n}.json`);
+    writeFileSync(p, JSON.stringify(r), "utf8");
+    return p;
+  }
+
+  it("real com claimed_issues [] + backup com [N] e heartbeat velho → NÃO encerra (#10015)", () => {
+    const real = write(rec("bkclaim"));
+    const backup = writeBackup(real, rec("bkclaim", { claimed_issues: [4242] }));
+    const r = sweepContinuoOrphanSessions(root, { ...opts });
+    const c = r.plan.find((x) => x.sessionId.endsWith("-bkclaim"));
+    assert.equal(c?.action, "keep");
+    assert.match(c!.reason, /#4242/);
+    assert.ok(!r.ended.some((id) => id.endsWith("-bkclaim")));
+    assert.equal(existsSync(real), true);
+    assert.equal(existsSync(backup), true);
+  });
+
+  it("real e backup sem claims, heartbeat velho → continua encerrando (#10015)", () => {
+    const real = write(rec("bkvazio"));
+    writeBackup(real, rec("bkvazio"));
+    const r = sweepContinuoOrphanSessions(root, { ...opts });
+    assert.ok(r.ended.includes(`hermes-cron-${JOB}-bkvazio`));
+    assert.equal(existsSync(real), false);
+  });
+
   it("data/sessions ausente → nada a fazer, sem lançar", () => {
     const empty = mkdtempSync(join(tmpdir(), "sweep-continuo-vazio-"));
     try {

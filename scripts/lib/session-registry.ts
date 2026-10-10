@@ -1229,6 +1229,19 @@ function readMergedRecordForRealFile(repoRoot: string, realPath: string): Sessio
 }
 
 /**
+ * Registro efetivo de UM arquivo real de sessão — o real unido aos seus
+ * `-safeBackup-` (`claimed_issues` em união, heartbeat mais recente), mesma
+ * semântica fail-safe do read-path (#6623/#6130). Exportado para consumidores
+ * fora deste módulo que decidem algo por arquivo (ex:
+ * `scripts/sweep-continuo-orphan-sessions.ts`, #10015) e não podem ver só o
+ * real: uma claim que sobreviveu apenas num backup continua sendo claim.
+ * `null` quando nem o real nem nenhum backup do grupo é legível.
+ */
+export function readEffectiveSessionRecord(repoRoot: string, realPath: string): SessionRecord | null {
+  return readMergedRecordForRealFile(repoRoot, realPath);
+}
+
+/**
  * Paths absolutos dos `-safeBackup-*` do MESMO grupo de um arquivo real de
  * sessão — mesma composição de `groupBackupsByRealStem` que
  * `readMergedRecordForRealFile` usa para o READ-path. Usada por

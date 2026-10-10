@@ -18,13 +18,16 @@
  *      registro de outra máquina);
  *   2. `sessionId` do MESMO job do cron (`hermes-cron-{job}-…`) e diferente
  *      da sessão atual (`--exclude`);
- *   3. `claimed_issues` vazio — encerrar nunca libera uma claim;
- *   4. heartbeat mais recente (`lastHeartbeat ?? startedAt`) mais velho que
+ *   3. `claimed_issues` vazio — encerrar nunca libera uma claim. Vale a
+ *      UNIÃO do arquivo real com as cópias `-safeBackup-` do grupo (#10015,
+ *      mesma semântica do registry, #6623): claim só no backup também mantém;
+ *   4. heartbeat mais recente (`lastHeartbeat ?? startedAt`, também da união) mais velho que
  *      `SOFT_STALE_MS` (90min) — mesma janela em que o registry já marca a
  *      sessão `stale`. Um tick vivo que ainda bate heartbeat nunca entra.
  *      Timestamp ilegível ou no futuro → mantém.
- * Cópias de conflito (`-safeBackup-`) ficam com o GC (`session-registry.ts
- * gc`), que já sabe tratá-las; o encerramento usa `endSession`, que carimba
+ * Cópias de conflito (`-safeBackup-`) não são candidatas por si (o GC,
+ * `session-registry.ts gc`, cuida delas) — só entram na decisão do arquivo
+ * real a que pertencem; o encerramento usa `endSession`, que carimba
  * `endedAt` nelas.
  *
  * Exit code 0 sempre que conseguiu rodar (fail-soft: o chamador é o wrapper
@@ -43,6 +46,7 @@ import {
   SOFT_STALE_MS,
   endSession,
   machineTag,
+  readEffectiveSessionRecord,
   sessionsDir,
   type SessionRecord,
 } from "./lib/session-registry.ts";
@@ -108,20 +112,31 @@ export function planContinuoOrphanSweep(
   return out;
 }
 
-/** Lê os registros reais (sem `-safeBackup-`) do kind `continuo`. Arquivo
- *  ilegível é pulado — nunca encerrado sem ser entendido. */
+/** Lê os registros do kind `continuo`, um por arquivo REAL (sem
+ *  `-safeBackup-`), já unidos às cópias de conflito do grupo (#10015):
+ *  `claimed_issues` e heartbeat vêm da união real+backups
+ *  (`readEffectiveSessionRecord`, semântica #6623) — uma claim que só
+ *  sobreviveu num backup ainda impede o encerramento, porque `endSession`
+ *  carimba `endedAt` nos backups e a soltaria. A identidade
+ *  (`kind`/`machineTag`/`sessionId`) é sempre a do arquivo real, que é o que
+ *  `endSession` vai encerrar. Arquivo real ilegível é pulado — nunca
+ *  encerrado sem ser entendido. */
 export function readContinuoRecords(repoRoot: string): SessionRecord[] {
   const dir = sessionsDir(repoRoot);
   if (!existsSync(dir)) return [];
   const records: SessionRecord[] = [];
   for (const name of readdirSync(dir)) {
     if (!name.startsWith("continuo-") || !name.endsWith(".json") || name.includes("-safeBackup-")) continue;
+    const path = join(dir, name);
+    let real: SessionRecord;
     try {
-      const r = JSON.parse(readFileSync(join(dir, name), "utf8")) as SessionRecord;
-      if (r && typeof r === "object" && typeof r.sessionId === "string") records.push(r);
+      real = JSON.parse(readFileSync(path, "utf8")) as SessionRecord;
     } catch {
-      // ilegível: fica com o GC, que também nunca remove o que não entende
+      continue; // ilegível: fica com o GC, que também nunca remove o que não entende
     }
+    if (!real || typeof real !== "object" || typeof real.sessionId !== "string") continue;
+    const merged = readEffectiveSessionRecord(repoRoot, path) ?? real;
+    records.push({ ...merged, kind: real.kind, machineTag: real.machineTag, sessionId: real.sessionId });
   }
   return records;
 }
