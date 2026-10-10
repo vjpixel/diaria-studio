@@ -20,9 +20,11 @@
  * REAL de `scripts/verify-accessibility.ts` (quando o fetch puro devolve
  * body <500 chars) — e `ci.yml` roda `npm test`, que inclui esse teste. Sem
  * o Chrome baixado, o job `test` de `ci.yml` falha de verdade. Por isso
- * `ci.yml` está na allowlist `WORKFLOWS_NEEDING_BROWSER` abaixo — é o único
- * workflow do repo que roda `npm test` (os outros rodam typecheck/lint/
- * scripts isolados, nunca a suíte inteira).
+ * `ci.yml` está na allowlist `WORKFLOWS_NEEDING_BROWSER` abaixo. O mesmo vale
+ * para `weekly-e2e.yml`, que também roda `npm test` (#9995 — o #8483 tinha
+ * assumido que `ci.yml` era o único, e o run semanal passou a falhar). O
+ * teste "#9995" abaixo trava isso: todo workflow que roda `npm test` precisa
+ * estar na allowlist e sem o skip.
  *
  * Este guard varre TODO workflow em `.github/workflows/` que rode `npm ci`
  * de verdade (linha `- run: npm ci`, não uma menção em comentário) e exige
@@ -56,17 +58,35 @@ const WORKFLOWS_DIR = resolve(ROOT, ".github", "workflows");
  *   `verify-accessibility.ts`). Achado ao vivo #8483 (run 35474594708,
  *   job 105981540676) — com o skip ligado, esse teste falha porque o
  *   binário do Chrome não existe.
+ * - `weekly-e2e.yml`: step "Run unit tests" também roda `npm test` — o
+ *   #8483 o marcou com skip por engano e o teste #3211 de
+ *   `verify-accessibility-e2e.test.ts` passou a falhar no run semanal
+ *   (#9995, run 37954585273: verdict `uncertain` em vez de `accessible`).
  */
-const WORKFLOWS_NEEDING_BROWSER = new Set<string>(["ci.yml"]);
+const WORKFLOWS_NEEDING_BROWSER = new Set<string>(["ci.yml", "weekly-e2e.yml"]);
+
+/**
+ * true se o arquivo tem um step real que roda a suíte inteira (`npm test`),
+ * na forma `- run: npm test` ou `run: npm test` dentro de um step nomeado.
+ * Ignora linhas comentadas.
+ */
+function runsNpmTest(text: string): boolean {
+  return /^\s*(-\s*)?run:\s*npm (run )?test\s*$/m.test(text);
+}
 
 /** true se o arquivo tem um step real `run: npm ci` (não uma menção em comentário). */
 function runsNpmCi(text: string): boolean {
   return /^\s*-\s*run:\s*npm ci\s*$/m.test(text);
 }
 
-/** true se o arquivo declara PUPPETEER_SKIP_DOWNLOAD em qualquer nível de env:. */
+/**
+ * true se o arquivo declara PUPPETEER_SKIP_DOWNLOAD como chave de env: (em
+ * qualquer nível). Menção em comentário (`# ... PUPPETEER_SKIP_DOWNLOAD ...`)
+ * não conta — workflows da allowlist citam o nome no comentário justamente
+ * para explicar por que NÃO skipam (#9995).
+ */
 function skipsPuppeteerDownload(text: string): boolean {
-  return /PUPPETEER_SKIP_DOWNLOAD/.test(text);
+  return /^\s*PUPPETEER_SKIP_DOWNLOAD\s*:/m.test(text);
 }
 
 function listWorkflowFiles(): string[] {
@@ -94,6 +114,31 @@ describe("CI puppeteer skip download (#8483)", () => {
         `\`env: PUPPETEER_SKIP_DOWNLOAD: "true"\` ao workflow (ou, se o job de fato ` +
         `precisa do Chrome real, adicione o arquivo a WORKFLOWS_NEEDING_BROWSER acima ` +
         `com justificativa).`,
+    );
+  });
+
+  it("#9995: todo workflow que roda `npm test` (suíte inteira) NÃO skipa o download e está na allowlist de browser real", () => {
+    // `npm test` inclui test/verify-accessibility-e2e.test.ts, que exercita o
+    // fallback de browser REAL — sem o Chrome baixado, o teste #3211 falha
+    // (verdict `uncertain`). O #8483 pôs o skip em weekly-e2e.yml supondo que
+    // só ci.yml rodava a suíte; este teste trava essa suposição pelo conteúdo.
+    const offenders: string[] = [];
+    let found = 0;
+    for (const file of listWorkflowFiles()) {
+      const text = readFileSync(join(WORKFLOWS_DIR, file), "utf8");
+      if (!runsNpmTest(text)) continue;
+      found++;
+      if (skipsPuppeteerDownload(text) || !WORKFLOWS_NEEDING_BROWSER.has(file)) {
+        offenders.push(file);
+      }
+    }
+    assert.ok(found >= 2, `sanity: esperava ≥2 workflows rodando npm test (ci.yml, weekly-e2e.yml), achou ${found}`);
+    assert.deepEqual(
+      offenders,
+      [],
+      `Workflow(s) que rodam \`npm test\` mas skipam o Chrome do puppeteer (ou ` +
+        `faltam em WORKFLOWS_NEEDING_BROWSER): ${offenders.join(", ")}. ` +
+        `verify-accessibility-e2e.test.ts precisa do browser real.`,
     );
   });
 

@@ -12,11 +12,13 @@ on:
     - cron: '0 9 * * 5'
   workflow_dispatch: # Permite trigger manual via gh ou UI.
 
-# #8483: evita baixar o Chrome do puppeteer em `npm ci` — nenhum job
-# deste workflow usa o browser real (scripts que precisam dele, como
-# capture-livros-promo.ts/verify-accessibility.ts, rodam fora do CI).
-env:
-  PUPPETEER_SKIP_DOWNLOAD: "true"
+# #9995: este workflow PRECISA do Chrome real do puppeteer — o step
+# "Run unit tests" roda `npm test`, que inclui
+# test/verify-accessibility-e2e.test.ts (fallback de browser real de
+# verify-accessibility.ts). O #8483 tinha posto PUPPETEER_SKIP_DOWNLOAD
+# aqui supondo que nenhum job usava o browser; o teste #3211 passou a
+# falhar toda 6ª (run 37954585273). Por isso NÃO há skip aqui — ver
+# WORKFLOWS_NEEDING_BROWSER em test/ci-puppeteer-skip-download.test.ts.
 
 jobs:
   e2e:
