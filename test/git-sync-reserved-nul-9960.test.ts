@@ -20,7 +20,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  collapsedUntrackedDirs,
   describeReservedRemoval,
+  mergeExpandedUntracked,
   findWindowsReservedUntracked,
   reservedExcludePathspecs,
   syncCode,
@@ -189,6 +191,70 @@ describe("#9960 syncCode — stash amplo exclui `nul` (git real)", () => {
       assert.match(stashed, /novo\/x\.ts/);
       assert.doesNotMatch(stashed, /^nul$/m);
       assert.ok(r.warnings.some((w) => /nome reservado do Windows.*rm -f -- '\.\/nul'/.test(w)));
+    } finally {
+      rmSync(p.root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── #9988: nome reservado DENTRO de diretório untracked colapsado ─────────────
+describe("#9988 diretório untracked colapsado — puro", () => {
+  it("collapsedUntrackedDirs pega só `dir/` (sem aspas), sem a barra", () => {
+    assert.deepEqual(collapsedUntrackedDirs(["nul", "novo/", "a/b/", '"x y/"', "f.txt"]), ["novo", "a/b"]);
+  });
+
+  it("mergeExpandedUntracked troca `dir/` pelo conteúdo do ls-files -z e então o `dir/nul` aparece", () => {
+    const merged = mergeExpandedUntracked(["nul", "novo/"], "novo/x.ts\0novo/nul\0");
+    assert.deepEqual(merged, ["nul", "novo/x.ts", "novo/nul"]);
+    assert.deepEqual(findWindowsReservedUntracked(merged), ["nul", "novo/nul"]);
+    // Sem a expansão, o porcelain colapsado escondia o `novo/nul` (o bug).
+    assert.deepEqual(findWindowsReservedUntracked(["nul", "novo/"]), ["nul"]);
+  });
+});
+
+describe("#9988 syncCode — stash amplo exclui `dir/nul` de diretório untracked (git real)", () => {
+  it("untracked `novo/` colapsado contendo `nul` → ls-files expande, `novo/nul` excluído, sync passa", () => {
+    const p = realPair();
+    try {
+      mkdirSync(join(p.upDir, "novo"), { recursive: true });
+      writeFileSync(join(p.upDir, "novo", "x.ts"), "export const up = 1;\n");
+      p.up("add", ".");
+      p.up("commit", "-qm", "upstream novo/");
+      p.up("push", "-q", "origin", "master");
+      mkdirSync(join(p.dir, "novo"), { recursive: true });
+      writeFileSync(join(p.dir, "novo", "x.ts"), "local\n");
+      writeFileSync(join(p.dir, "novo", "nul"), "");
+      assert.match(p.git("status", "--porcelain").stdout, /^\?\? novo\/$/m, "pré-condição: porcelain colapsa o diretório");
+
+      const stashCalls: string[][] = [];
+      let ffCalls = 0;
+      const spawn: SpawnFn = (cmd, args) => {
+        if (cmd !== "git") return { status: 1, stdout: "", stderr: "só git" };
+        if (args[0] === "merge" && args[1] === "--ff-only" && ++ffCalls === 1) {
+          return { status: 1, stdout: "", stderr: "fatal: formato que o classificador não conhece\n" };
+        }
+        if (isStashPush(args)) {
+          stashCalls.push(args);
+          // No Windows o git não remove `novo/nul`: se ele não foi excluído, falha.
+          if (!args.includes(":(exclude,literal)novo/nul")) {
+            const r = p.git(...args);
+            return { ...r, status: 1, stderr: "error: unable to unlink old 'novo/nul'" };
+          }
+        }
+        return p.git(...args);
+      };
+      const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+
+      assert.equal(stashCalls.length, 1);
+      assert.deepEqual(stashCalls[0].slice(stashCalls[0].indexOf("--")), ["--", ":(exclude,literal)novo/nul"]);
+      assert.equal(r.outcome, "synced_stash_preserved", r.message);
+      assert.equal(r.commits_behind, 0);
+      assert.deepEqual(r.reserved_untracked_excluded, ["novo/nul"]);
+      assert.ok(existsSync(join(p.dir, "novo", "nul")), "`novo/nul` fica no lugar, fora do stash");
+      assert.equal(readFileSync(join(p.dir, "novo", "x.ts"), "utf8"), "export const up = 1;\n");
+      const stashed = p.git("stash", "show", "--include-untracked", "--name-only", r.preserved_stash!.ref!).stdout;
+      assert.match(stashed, /novo\/x\.ts/);
+      assert.doesNotMatch(stashed, /novo\/nul/);
     } finally {
       rmSync(p.root, { recursive: true, force: true });
     }
