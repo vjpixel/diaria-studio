@@ -370,6 +370,7 @@ import {
   DOI_RESEND_INTERVAL_DAYS, // #9835
   markDoiResent, // #9835
   markDoiResendNoop, // #9979
+  markDoiResendFailed, // #9986
   lastDoiResendAttemptAt, // #9979
   findContact, // #9835
   normalizeEmail,
@@ -1013,8 +1014,12 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * racional acima (nunca forçar reativação) continua valendo, e esta função
  * não mudou. O que mudou é o caller: quando o contato qualifica por abertura
  * e está `inactive` (sem cancelamento), `runEvaluation` reenvia o e-mail de
- * double opt-in (`shouldResendKitDoi` + `resendKitDoi`), no máximo 1 vez a
- * cada `DOI_RESEND_INTERVAL_DAYS`. Quem clicar no botão vira `active` no Kit
+ * double opt-in (`shouldResendKitDoi` + `resendKitDoi`), com no máximo 1
+ * TENTATIVA a cada `DOI_RESEND_INTERVAL_DAYS`. #9986 — tentativa não é
+ * e-mail: só o HTTP 201 envia, e depois do 1º 201 (ou pra quem já entrou pelo
+ * mesmo form via workers poll/cursos/reativar) o Kit responde 200 e nada
+ * sai; na prática o e-mail sai no máximo uma vez na vida por contato, e o
+ * resumo da rodada expõe os noops (`doiResendNoop`). Quem clicar no botão vira `active` no Kit
  * e o Passo 1 converte (`self_confirmed_kit`). Reenviar o pedido de
  * confirmação não reabre a inscrição de ninguém: só a pessoa clicando faz
  * isso. Se a premissa de ambiguidade acima valer, o reenvio pode chegar a
@@ -1037,14 +1042,18 @@ export function decideKitPromotionAction(existing: { state: string } | null): Ki
  *    de score/threshold que decide a promoção; não reimplementada aqui);
  *  - estado no Kit é exatamente `inactive` (`cancelled`/`bounced`/
  *    `complained` nunca recebem, nem `active`, que não precisa);
- *  - o anti-spam do store permite (`needsDoiResend`: nunca reenviado, ou o
- *    última tentativa — reenvio 201 ou noop 200, #9979 — foi há
- *    `DOI_RESEND_INTERVAL_DAYS` dias ou mais).
+ *  - o anti-spam do store permite (`needsDoiResend`: nunca tentado, ou a
+ *    última tentativa — reenvio 201, noop 200 (#9979) ou falha permanente
+ *    (#9986) — foi há `DOI_RESEND_INTERVAL_DAYS` dias ou mais).
+ *
+ * `true` autoriza uma TENTATIVA, não um e-mail (#9986): só o 201 envia, e
+ * depois do 1º 201 o subscriber fica vinculado ao form e as tentativas
+ * seguintes respondem 200. Não é "1 e-mail a cada 7 dias".
  */
 export function shouldResendKitDoi(input: {
   qualifiesByOpenRate: boolean;
   kitState: string;
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at">;
+  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">;
   now?: string;
 }): boolean {
   if (!input.qualifiesByOpenRate) return false;
@@ -1065,6 +1074,19 @@ export function isKitDoiResendCounted(status: number): boolean {
 }
 
 /**
+ * isPermanentKitDoiFailure (#9986) — pura. Falha do vínculo ao form DOI que
+ * não vai se resolver sozinha na próxima rodada: 4xx exceto 408 (timeout) e
+ * 429 (rate limit, #9291). Ex.: 404 (subscriber/form inexistente), 422
+ * (rejeitado). Grava `doi_resend_failed_at` pro backoff de
+ * `DOI_RESEND_INTERVAL_DAYS`. Sem status (exceção/timeout) e 5xx são
+ * transitórios e seguem sem marcador.
+ */
+export function isPermanentKitDoiFailure(status: number | undefined): boolean {
+  if (status === undefined) return false;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/**
  * resendKitDoi (#9835) — reenvia o e-mail de confirmação vinculando o
  * subscriber já existente ao designer form de DOI. Reusa
  * `vincularKitDoiForm` (`lib/shared/kit-doi.ts`, a mesma maquinaria dos
@@ -1079,7 +1101,9 @@ export function isKitDoiResendCounted(status: number): boolean {
  * estava vinculado ao form, e o caller não conta como reenvio nem grava
  * `doi_resent_at` (só 201 conta, `isKitDoiResendCounted`, #9945). Exceção/timeout dentro de
  * `vincularKitDoiForm` é engolida por ele e vira `ok: false` sem `status`.
- * Em falha o caller conta em `failed` e não grava `doi_resent_at`.
+ * Em falha o caller conta em `failed` e não grava `doi_resent_at`; falha
+ * permanente (`isPermanentKitDoiFailure`) grava `doi_resend_failed_at` pro
+ * backoff (#9986).
  */
 export async function resendKitDoi(params: {
   subscriberId: number;
@@ -1591,10 +1615,18 @@ export interface RunEvaluationResult {
   /**
    * #9835 — subconjunto de `awaitingKitConfirmation`: contatos `inactive` no
    * Kit que qualificam por abertura e receberam nesta rodada o reenvio do
-   * double opt-in (vínculo ao form DOI aceito pelo Kit com 2xx; não prova
+   * double opt-in (vínculo NOVO ao form DOI, HTTP 201, #9945; não prova
    * entrega do e-mail). Falha no vínculo NÃO entra aqui: conta em `failed`.
    */
   doiResent: number;
+  /**
+   * #9986 — tentativas de reenvio do DOI que o Kit respondeu 2xx mas não 201
+   * (na prática 200, "já vinculado ao form"): nenhum e-mail sai. Sem este
+   * contador o resumo dizia "0 com double opt-in reenviado" e os noops só
+   * apareciam no log por contato — a feature podia não entregar nada sem
+   * ninguém perceber. Disjunto de `doiResent` e de `failed`.
+   */
+  doiResendNoop: number;
   /**
    * #8753 — contatos `in_brevo` aguardando auto-confirmação no Kit há mais de
    * `AWAITING_KIT_CONFIRMATION_STALE_DAYS`. Sem isto, quem nunca confirma
@@ -1725,6 +1757,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
   let doiResent = 0; // #9835
+  let doiResendNoop = 0; // #9986
   // #9835 review — valida o form de DOI UMA vez por rodada: form de sistema
   // (responde 201 e não envia nada, #7723) desliga o reenvio com um único
   // log alto, em vez de virar N falhas idênticas por contato todo dia.
@@ -2211,8 +2244,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             store = markAwaitingKitConfirmation(store, contact.email); // #8753
             // #9835 — reenvia o double opt-in pra quem qualifica por abertura
-            // e está `inactive` (sem cancelamento), no máximo 1x a cada
-            // DOI_RESEND_INTERVAL_DAYS. Nunca mexe em `state`: quem ativa é a
+            // e está `inactive` (sem cancelamento), no máximo 1 TENTATIVA a
+            // cada DOI_RESEND_INTERVAL_DAYS. #9986 — só o 201 envia e-mail;
+            // depois do 1º 201 (ou pra quem entrou pelo mesmo form nos
+            // workers) toda tentativa responde 200 e nada sai, então na
+            // prática é uma vez na vida. Nunca mexe em `state`: quem ativa é a
             // pessoa clicando, e o Passo 1 converte na rodada seguinte.
             // Só roda em push (este ramo já está depois do `if (!push)`).
             const storedContact = findContact(store, contact.email) ?? contact;
@@ -2250,12 +2286,22 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 // `doi_resend_noop_at` pro intervalo valer também aqui, senão
                 // o contato era re-chamado em toda rodada.
                 store = markDoiResendNoop(store, contact.email);
+                doiResendNoop++; // #9986
                 log(
                   `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
                     `(já vinculado ao form ${doiFormForResend}, nenhum e-mail sai); não conta como reenvio.`,
                 );
               } else {
-                log(`warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}`);
+                // #9986 — falha permanente (404/422) grava o marcador de
+                // backoff: o contato só volta a ser tentado depois de
+                // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
+                // rodada. Transitória (5xx, 408, 429, rede) não grava.
+                const permanent = isPermanentKitDoiFailure(resend.status);
+                if (permanent) store = markDoiResendFailed(store, contact.email);
+                log(
+                  `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}` +
+                    (permanent ? ` — falha permanente (HTTP ${resend.status}), próxima tentativa em ${DOI_RESEND_INTERVAL_DAYS}d (#9986)` : ""),
+                );
                 failed++;
                 failedContacts.push({
                   email: contact.email,
@@ -2367,6 +2413,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     skippedActiveOnKit,
     awaitingKitConfirmation,
     doiResent,
+    doiResendNoop,
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
@@ -2497,7 +2544,8 @@ async function main(): Promise<void> {
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
-      `${result.doiResent} com double opt-in do Kit reenviado (#9835).`,
+      `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
+      `${result.doiResendNoop} tentativa(s) de reenvio sem e-mail (Kit respondeu 200, já vinculado ao form, #9986).`,
   );
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o
