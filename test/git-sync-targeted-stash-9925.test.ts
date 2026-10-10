@@ -72,6 +72,12 @@ describe("#9925 assessCodeFreshness — puro", () => {
     }
   });
 
+  it("#9988: preexisting_unmerged_state com commits_behind 0 (branch à frente do ref velho) → unknown, nunca fresh", () => {
+    const f = assessCodeFreshness({ outcome: "preexisting_unmerged_state", commits_behind: 0, up_to_date: true });
+    assert.equal(f.status, "unknown");
+    assert.match(formatCodeFreshnessBanner(f, { outcome: "preexisting_unmerged_state" }) ?? "", /CÓDIGO NÃO VERIFICADO/);
+  });
+
   it("medição falhou (-1) → unknown, nunca fresh", () => {
     assert.equal(assessCodeFreshness({ outcome: "synced", commits_behind: -1, up_to_date: false }).status, "unknown");
   });

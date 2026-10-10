@@ -1851,9 +1851,12 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         // #9107: com untracked presente, o pior caso ganha 1 spawn (`git diff
         // --name-only` que decide se o stash precisa de --include-untracked).
         "git status --porcelain": ok(" M arquivo.txt\n?? solto/"),
-        [DIFF_UPSTREAM_KEY]: ok("arquivo.txt\0"),
+        // #9988: o upstream toca `solto/` → stash amplo com -u, e o diretório
+        // colapsado é expandido (`ls-files --others`) na busca de `dir/nul`.
+        [DIFF_UPSTREAM_KEY]: ok("arquivo.txt\0solto/x.ts\0"),
+        "git ls-files --others --exclude-standard -z -- :(literal)solto": ok("solto/x.ts\0"),
         "git rev-parse --verify refs/stash": ok(""),
-        [STASH_PUSH_TRACKED_ONLY_KEY]: ok("Saved working directory..."),
+        [STASH_PUSH_KEY]: ok("Saved working directory..."),
         "git rev-parse refs/stash": ok("abc1234\n"),
         // #8991: pior caso do dedupe — o autostash recém-criado é duplicata
         // exata do anterior, e o drop pega o stash de OUTRO processo (corrida),

@@ -47,6 +47,12 @@ const UNVERIFIED_OUTCOMES: ReadonlySet<GitSyncOutcome> = new Set<GitSyncOutcome>
   "sync_in_progress",
   "worktree_refused",
   "checkout_failed",
+  // #9988: com branch != master este outcome volta ANTES do fetch (e do
+  // checkout) — `measureSyncState` mede o HEAD de OUTRA branch contra um
+  // `origin/master` local velho, e uma branch à frente desse ref saía
+  // `commits_behind: 0` → `fresh`. Em master o fetch já rodou, mas o checkout
+  // está preso em estado absorvente: "não verificado" é o veredito honesto.
+  "preexisting_unmerged_state",
 ]);
 
 type FreshnessInput = Pick<GitSyncResult, "outcome" | "commits_behind" | "up_to_date">;

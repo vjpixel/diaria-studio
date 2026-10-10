@@ -36,7 +36,7 @@
  * #8719 (24/09/2026, decisão do editor): `scripts/lib/git-sync.ts` nunca mais
  * faz `git stash pop` automático — quando um stash é criado, ele fica
  * SEMPRE preservado (`result.preserved_stash`), nunca reaplicado sozinho, e
- * o checkout termina limpo em master. O banner "STASH PRESERVADO" mais
+ * o que não foi stashado (não colidia, #9925) segue no working tree (#9988). O banner "STASH PRESERVADO" mais
  * abaixo (guardado por `result.preserved_stash`) cobre esse aviso pra
  * qualquer outcome que preserve stash. (O banner específico de "conflito de
  * stash pop deixado no disco", #6668, existia só enquanto este módulo ainda

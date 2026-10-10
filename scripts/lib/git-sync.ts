@@ -54,13 +54,15 @@
  *      desfechos (ff sucede ou falha depois do stash) o stash é despopado
  *      automaticamente — ele fica preservado (mensagem identificável
  *      `GIT_SYNC_STASH_MESSAGE`, `preserved_stash` estruturado no
- *      resultado) e o checkout fica LIMPO em master (working tree igual ao
- *      índice, sem as mudanças do stash reaplicadas). Outcomes:
+ *      resultado) e as mudanças do stash não são reaplicadas. #9988: isso NÃO
+ *      quer dizer checkout limpo — com o stash direcionado (#9925, 3e) só os
+ *      caminhos em colisão vão pro stash; o resto da sujeira local e os
+ *      untracked fora do stash continuam no working tree. Outcomes:
  *      `"synced_stash_preserved"` (ff sob stash teve sucesso — código
- *      atualizado, mudanças locais preservadas só no stash) e `"ff_failed"`
+ *      atualizado, o que colidia preservado no stash) e `"ff_failed"`
  *      com `preserved_stash` preenchido (ff sob stash TAMBÉM falhou —
- *      divergência genuína, checkout limpo em master mas defasado, mudanças
- *      locais preservadas no stash). Em ambos os casos o consumidor
+ *      divergência genuína, checkout em master mas defasado, o que foi
+ *      stashado preservado no stash). Em ambos os casos o consumidor
  *      (`sync-code.ts`) já renderiza o banner de "stash preservado" — ver
  *      `preserved_stash` no `GitSyncResult`. Este mecanismo substitui o
  *      auto-pop (com o detector de conflito de pop do #6668, ver histórico
@@ -192,8 +194,9 @@ export type GitSyncOutcome =
                            // já resolveu sem precisar de stash — #8719)
   | "synced_stash_preserved" // #8719: tree suja, ff direto recusou, stash criado, ff SOB stash teve
                            // sucesso — código atualizado, mas o stash NUNCA é despopado
-                           // automaticamente (decisão do editor, 24/09/2026); mudanças locais ficam
-                           // só no stash, recuperação é manual (`preserved_stash` no resultado)
+                           // automaticamente (decisão do editor, 24/09/2026); o que foi stashado só
+                           // volta à mão (`preserved_stash` no resultado) — o que não colidia segue
+                           // no working tree (#9925/#9988)
   | "already_up_to_date"  // já na versão mais recente (tree limpa ou suja)
   | "fetch_failed"        // git fetch falhou com erro real (offline / auth / status !== 0 e != null) — warn, segue
   | "fetch_timeout"       // #5302: git fetch origin foi morto pelo timeout do spawnSync (status === null) —
@@ -721,13 +724,16 @@ export interface LockFs {
  * --porcelain (dirty check), 6. merge --ff-only DIRETO (#8719 — tentado
  * ANTES de qualquer stash), 7. rev-parse --verify refs/stash ANTES do stash
  * (#3411), 8. diff --name-only HEAD origin/master (#9107 — só quando há
- * untracked; decide se o stash precisa de --include-untracked), 9. stash
- * push, 10. rev-parse refs/stash (captura o ref recém-criado, #7740), 11-15.
+ * untracked; decide se o stash precisa de --include-untracked), 9. ls-files
+ * --others dos diretórios untracked colapsados (#9988 — só no stash amplo
+ * com -u e diretório `dir/` no porcelain; procura `dir/nul`), 10. stash
+ * push, 11. rev-parse refs/stash (captura o ref recém-criado, #7740), 12-16.
  * dedupeFreshAutostash (#8991: stash list -n 2, log --no-walk dos trees dos
  * pais, stash drop da duplicata, log -1 + stash store se a corrida pegou o
- * stash errado), 16. merge --ff-only SOB stash (retry), 17. rev-list --count
- * (measureSyncState, #6090), 18. stash list (countStaleAutostashes, #8719)
- * = 18 (#9107: era 12 antes do spawn do passo 8; #8991: +5 do dedupe).
+ * stash errado), 17. merge --ff-only SOB stash (retry), 18. rev-list --count
+ * (measureSyncState, #6090), 19. stash list (countStaleAutostashes, #8719)
+ * = 19 (#9107: era 12 antes do spawn do passo 8; #8991: +5 do dedupe;
+ * #9988: +1 do passo 9).
  *
  * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
  * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
@@ -753,9 +759,13 @@ export interface LockFs {
  * acima) decide se o stash precisa de `--include-untracked`.
  *
  * #8991 (30/09/2026): de 13 para 18 — os até 5 spawns de
- * `dedupeFreshAutostash()` (passos 11-15 acima). Valor atual: 18.
+ * `dedupeFreshAutostash()` (passos 12-16 acima, na numeração atual).
+ *
+ * #9988 (10/10/2026): de 18 para 19 — `git ls-files --others` (passo 9
+ * acima) expande diretório untracked colapsado na busca de nome reservado
+ * do Windows. Valor atual: 19.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 18;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 19;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -1246,6 +1256,25 @@ export function findWindowsReservedUntracked(untracked: string[]): string[] {
     const base = raw.replace(/\/+$/, "").split("/").pop() ?? "";
     return WINDOWS_RESERVED_NAME_RE.test(base);
   });
+}
+
+/**
+ * #9988: entradas do porcelain que são diretório untracked colapsado
+ * (`dir/`), sem a barra final. Entrada entre aspas é ignorada. Puro.
+ */
+export function collapsedUntrackedDirs(untracked: string[]): string[] {
+  return untracked.filter((u) => u.endsWith("/") && !u.startsWith('"')).map((u) => u.replace(/\/+$/, ""));
+}
+
+/**
+ * #9988: troca cada diretório colapsado (`dir/`) pelo seu conteúdo, vindo de
+ * `git ls-files --others --exclude-standard -z -- <dirs>` (NUL-separado). As
+ * demais entradas ficam como estão. Puro.
+ */
+export function mergeExpandedUntracked(untracked: string[], lsFilesZStdout: string): string[] {
+  const expanded = lsFilesZStdout.split("\0").filter((p) => p.length > 0);
+  const kept = untracked.filter((u) => !(u.endsWith("/") && !u.startsWith('"')));
+  return [...new Set([...kept, ...expanded])];
 }
 
 /**
@@ -1752,8 +1781,34 @@ function syncCodeLocked(
     // #9960: stash amplo com `-u` e um untracked de nome reservado do Windows
     // (`nul`) no checkout → o git cria o stash e falha ao limpar esse arquivo.
     // Exclui o(s) nome(s) reservado(s) por pathspec e avisa com a ação exata.
-    const reservedUntracked =
-      targetedStashPaths === null && includeUntracked ? findWindowsReservedUntracked(untracked) : [];
+    // #9988: o porcelain colapsa diretório inteiramente untracked em `dir/`,
+    // então um `dir/nul` nunca aparecia como entrada própria — expande esses
+    // diretórios com `ls-files --others` (`-z`: caminho literal, sem aspas)
+    // antes de procurar nomes reservados. Falha ao listar → segue só com as
+    // entradas do porcelain (cobre a raiz, comportamento do #9960).
+    const scanReserved = targetedStashPaths === null && includeUntracked;
+    let reservedScanList = untracked;
+    const collapsedDirs = scanReserved ? collapsedUntrackedDirs(untracked) : [];
+    if (collapsedDirs.length > 0) {
+      const lsRes = spawn("git", [
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        ...collapsedDirs.map((d) => `:(literal)${d}`),
+      ]);
+      if (lsRes.status === 0) {
+        reservedScanList = mergeExpandedUntracked(untracked, lsRes.stdout);
+      } else {
+        warnings.push(
+          `[git-sync] WARN: não consegui listar o conteúdo de diretório(s) untracked (${collapsedDirs.join(", ")}) ` +
+            `para procurar nomes reservados do Windows (#9988) — exit ${lsRes.status}. ` +
+            `Stderr: ${lsRes.stderr.trim() || "(vazio)"}`,
+        );
+      }
+    }
+    const reservedUntracked = scanReserved ? findWindowsReservedUntracked(reservedScanList) : [];
     if (reservedUntracked.length > 0) {
       ctx.reservedExcluded = reservedUntracked;
       warnings.push(
@@ -1922,9 +1977,9 @@ function syncCodeLocked(
 
     // #8719 (decisão do editor, 24/09/2026): NUNCA `git stash pop` automático
     // — nem quando o ff sob stash teve sucesso. O stash fica preservado
-    // (mensagem identificável `GIT_SYNC_STASH_MESSAGE`), o checkout fica
-    // LIMPO em master (working tree == índice, sem as mudanças do stash
-    // reaplicadas) e o consumidor (`sync-code.ts`) já renderiza um banner
+    // (mensagem identificável `GIT_SYNC_STASH_MESSAGE`), as mudanças do stash
+    // não são reaplicadas (o que não foi stashado — #9925/#9988 — segue no
+    // working tree) e o consumidor (`sync-code.ts`) já renderiza um banner
     // pedindo recuperação manual sempre que `preserved_stash` não é `null`.
     if (!stashedSomething) {
       // Nada foi de fato guardado (working tree só "dirty" por `git status`
@@ -1954,12 +2009,15 @@ function syncCodeLocked(
 
     if (pullRes.status !== 0) {
       // ff sob stash TAMBÉM falhou — divergência genuína (não era só sujeira
-      // local colidindo). Stash preservado mesmo assim; checkout limpo em
-      // master, porém defasado.
+      // local colidindo). Stash preservado mesmo assim; checkout em master,
+      // porém defasado (#9988: sem o que foi stashado, mas não "limpo" — o
+      // que não colidia segue no working tree).
       const msg =
         `[git-sync] WARN: ff (merge --ff-only origin/master) falhou mesmo sob stash (divergência). ` +
         `Stash preservado (NUNCA despopado automaticamente — #8719, decisão do editor de 24/09/2026). ` +
-        `Checkout segue LIMPO em master, porém defasado de origin/master. Recupere manualmente: ` +
+        `Checkout segue em master, porém defasado de origin/master; mudanças locais que não foram ` +
+        `para o stash (não colidiam, ou untracked fora dele) CONTINUAM no working tree (#9988). ` +
+        `Recupere manualmente: ` +
         `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' quando decidir como prosseguir. ` +
         `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'. ` +
         `Stderr: ${pullRes.stderr.trim() || "(vazio)"}`;
@@ -1981,8 +2039,10 @@ function syncCodeLocked(
     const upToDate = isAlreadyUpToDate(pullRes.stdout);
     const msg =
       `[git-sync] WARN: código sincronizado com origin/master, stash preservado (NUNCA despopado ` +
-      `automaticamente — #8719, decisão do editor de 24/09/2026). Mudanças locais ficam só no stash; ` +
-      `checkout limpo em master. Recupere manualmente quando decidir como prosseguir: ` +
+      `automaticamente — #8719, decisão do editor de 24/09/2026). O stash guarda o que colidia com o ff ` +
+      `(${targetedStashPaths !== null ? `só os ${targetedStashPaths.length} caminho(s) em colisão — #9925` : "stash amplo"}); ` +
+      `mudanças locais que não colidiam e untracked fora do stash CONTINUAM no working tree (#9988) — ` +
+      `não descarte o que sobrou no checkout. Recupere manualmente quando decidir como prosseguir: ` +
       `'git stash show -p ${createdStashRef ?? "<ref, ver git stash list>"}' / 'git stash apply ${createdStashRef ?? "<ref>"}' ` +
       `(nunca 'git stash pop' bare — a pilha é compartilhada, o topo pode ser de outra sessão). ` +
       `Identificável por mensagem em 'git stash list' (#7740): '${GIT_SYNC_STASH_MESSAGE}'.`;
