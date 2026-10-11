@@ -657,6 +657,8 @@ def test_regressao_10011_10016_formas_legitimas_de_lista_de_prs():
         "#9912 reivindicada — PRs ainda para #9912",
         "#9912 reivindicada — PRs já resolvendo #9912",
         "#9912 reivindicada — PRs que fecham #9912",
+        "#9912 reivindicada — PRs desta rodada que fecham #9912",
+        "#9912 reivindicada — PRs do tick para #9912",
     ):
         assert 9912 in mod.extract_claimed_issue_refs(linha), linha
     print("regressão #10016: lista de PRs com já/ainda/prontos/')'/rodada — OK")
