@@ -123,12 +123,28 @@ export interface GmailThread {
   snippet?: string;
 }
 
+/** #10031: teto de segurança de páginas (100 threads/página max → 5000 threads). */
+export const MAX_SEARCH_PAGES = 50;
+
 async function searchThreads(query: string): Promise<GmailThread[]> {
-  const params = new URLSearchParams({ q: query, maxResults: "50" });
-  const raw = await gmailRequest<unknown>(`threads?${params}`);
-  // #649: validar shape no boundary HTTP — fail-loud em vez de propagar undefined
-  const data = parseGmailThreadsList(raw);
-  return (data.threads ?? []) as GmailThread[];
+  // #10031: pagina até esgotar nextPageToken — depois de interrupção longa
+  // podem casar >50 threads e o cursor passaria por cima das mais antigas.
+  const all: GmailThread[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < MAX_SEARCH_PAGES; page++) {
+    const params = new URLSearchParams({ q: query, maxResults: "100" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const raw = await gmailRequest<unknown>(`threads?${params}`);
+    // #649: validar shape no boundary HTTP — fail-loud em vez de propagar undefined
+    const data = parseGmailThreadsList(raw);
+    all.push(...((data.threads ?? []) as GmailThread[]));
+    pageToken = data.nextPageToken;
+    if (!pageToken) return all;
+  }
+  console.warn(
+    `[inbox-drain] WARN: teto de ${MAX_SEARCH_PAGES} páginas atingido — drain parcial: threads mais antigas não buscadas ficam fora (cursor avança até a mais recente).`,
+  );
+  return all;
 }
 
 export interface GmailMessagePart {
@@ -545,7 +561,12 @@ function logDrainWarn(message: string, details?: Record<string, unknown>, rootDi
 // Inbox.md append
 // ---------------------------------------------------------------------------
 
-function appendToInbox(entries: string[]): void {
+/**
+ * #10031: idempotente — entradas cujo bloco exato já está em inbox.md são
+ * descartadas. Se `saveCursor` falhar depois do append, a re-execução reprocessa
+ * as mesmas mensagens sem duplicá-las. Retorna as entradas realmente gravadas.
+ */
+export function appendToInbox(entries: string[]): string[] {
   const inboxPath = resolveInboxMdPath();
   mkdirSync(dirname(inboxPath), { recursive: true });
   if (!existsSync(inboxPath)) {
@@ -557,6 +578,13 @@ function appendToInbox(entries: string[]): void {
   }
 
   const current = readFileSync(inboxPath, "utf8");
+  const seen = new Set<string>();
+  entries = entries.filter((e) => {
+    if (seen.has(e) || current.includes(e)) return false;
+    seen.add(e);
+    return true;
+  });
+  if (entries.length === 0) return [];
   const MARKER = "<!-- entries abaixo -->";
   const markerIdx = current.indexOf(MARKER);
 
@@ -574,6 +602,7 @@ function appendToInbox(entries: string[]): void {
   const tmpPath = inboxPath + ".tmp";
   writeFileSync(tmpPath, newContent, "utf8");
   renameSync(tmpPath, inboxPath);
+  return entries;
 }
 
 // ---------------------------------------------------------------------------
@@ -661,8 +690,9 @@ async function main(rootDir: string = ROOT): Promise<void> {
 
   let updatedCursor: InboxCursor;
   let warnReason: string | undefined;
+  let writtenCount = 0;
   if (inboxEntries.length > 0) {
-    appendToInbox(inboxEntries);
+    writtenCount = appendToInbox(inboxEntries).length;
     updatedCursor = resetEmptyDrain({
       ...cursor,
       last_drain_iso: mostRecentIso ?? cursor.last_drain_iso,
@@ -694,7 +724,7 @@ async function main(rootDir: string = ROOT): Promise<void> {
   saveCursor(updatedCursor);
 
   const result: DrainResult = {
-    new_entries: inboxEntries.length,
+    new_entries: writtenCount,
     urls: resultUrls,
     topics: resultTopics,
     most_recent_iso: mostRecentIso,

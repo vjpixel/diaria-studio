@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
-import { writeFileSync, existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -687,6 +687,81 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.ok(existsSync(fakeInboxMdPath()));
     const inboxContent = readFileSync(fakeInboxMdPath(), "utf8");
     assert.ok(inboxContent.includes("https://openai.com/blog/gpt-5"));
+  });
+
+  function b64url(text: string): string {
+    return Buffer.from(text).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+  }
+
+  function threadBody(id: string, url: string) {
+    return {
+      id,
+      messages: [{
+        id: `m-${id}`,
+        internalDate: String(new Date("2026-04-15T10:00:00Z").getTime()),
+        payload: {
+          mimeType: "text/plain",
+          body: { data: b64url(`Veja ${url}`) },
+          headers: [
+            { name: "From", value: "sender@example.com" },
+            { name: "Subject", value: `S ${id}` },
+          ],
+        },
+      }],
+    };
+  }
+
+  it("#10031: searchThreads pagina por nextPageToken — threads da 2a página entram", async () => {
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: "2026-01-01T00:00:00Z" }), "utf8");
+    const pageTokens: Array<string | null> = [];
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads?")) {
+        const tok = new URL(u).searchParams.get("pageToken");
+        pageTokens.push(tok);
+        return makeGmailResponse(
+          tok
+            ? { threads: [{ id: "t2" }] }
+            : { threads: [{ id: "t1" }], nextPageToken: "PAGE2" },
+        );
+      }
+      const m = u.match(/threads\/(t\d)/);
+      if (m) return makeGmailResponse(threadBody(m[1], `https://example.com/${m[1]}-artigo`));
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.deepEqual(pageTokens, [null, "PAGE2"]);
+    assert.equal(output.new_entries, 2);
+    const md = readFileSync(fakeInboxMdPath(), "utf8");
+    assert.ok(md.includes("example.com/t1-artigo") && md.includes("example.com/t2-artigo"));
+  });
+
+  it("#10031: falha do saveCursor após o append não duplica entradas na re-execução", async () => {
+    // Cursor path é um DIRETÓRIO → writeFileSync lança EISDIR depois do append.
+    mkdirSync(fakeCursorPath());
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads?")) return makeGmailResponse({ threads: [{ id: "t1" }] });
+      if (u.includes("/threads/t1")) return makeGmailResponse(threadBody("t1", "https://example.com/t1-artigo"));
+      return makeGmailResponse({});
+    };
+
+    const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-"));
+    try {
+      await assert.rejects(() => drainMain(logRootDir));
+    } finally {
+      rmSync(logRootDir, { recursive: true, force: true });
+    }
+    const afterFirst = readFileSync(fakeInboxMdPath(), "utf8");
+    assert.equal(afterFirst.split("- **subject:** S t1").length - 1, 1);
+
+    // Cursor volta a ser gravável; re-execução reprocessa a mesma mensagem.
+    rmSync(fakeCursorPath(), { recursive: true, force: true });
+    const second = await runDrain();
+    assert.equal(second.new_entries, 0, "re-execução não grava nada novo");
+    const afterSecond = readFileSync(fakeInboxMdPath(), "utf8");
+    assert.equal(afterSecond.split("- **subject:** S t1").length - 1, 1, "entrada não pode duplicar");
   });
 
   it("inbox disabled → skipped=true sem chamar Gmail API (#430)", async () => {
