@@ -542,6 +542,29 @@ export async function iterateThreads(
   return { inboxEntries, resultUrls, resultTopics, mostRecentIso, threadErrors, threadErrorSamples, failedThreadIds };
 }
 
+/** Janela da 1ª execução (cursor nulo), em dias. */
+export const FIRST_DRAIN_WINDOW_DAYS = 3;
+
+/**
+ * Início (00:00 UTC) do dia que abre a janela da 1ª execução — o mesmo corte
+ * que vira o `after:` da busca quando o cursor é nulo. #442: calculado em UTC
+ * (getDate/getMonth usam timezone local e perdem e-mails fora do Brasil). Pure.
+ */
+export function firstDrainCutoffIso(now: Date = new Date()): string {
+  const d = new Date(now.getTime());
+  d.setUTCDate(d.getUTCDate() - FIRST_DRAIN_WINDOW_DAYS);
+  return `${d.toISOString().slice(0, 10)}T00:00:00.000Z`;
+}
+
+/**
+ * #10052: `since` gravado para uma falha NOVA. Com cursor nulo, gravar `null`
+ * fazia o retry por ID ingerir a thread inteira (o `after:` só limita a busca,
+ * não o retry) — usa o mesmo corte de 3 dias da janela da busca. Pure.
+ */
+export function sinceForNewFailures(lastDrain: string | null, now: Date = new Date()): string {
+  return lastDrain ?? firstDrainCutoffIso(now);
+}
+
 /** #10030: tentativas (drains) antes de desistir de uma thread que nunca carrega
  * (ex.: thread só com rascunho, que o schema rejeita sempre). */
 export const MAX_FAILED_THREAD_ATTEMPTS = 5;
@@ -748,12 +771,8 @@ async function main(rootDir: string = ROOT): Promise<void> {
   const cursor = loadCursor();
   let afterDate: string;
   if (!cursor.last_drain_iso) {
-    // Primeira execução: 3 dias atrás
-    // #442: usar UTC para calcular a data — getDate/getMonth/getFullYear usam
-    // timezone local e perdem e-mails em máquinas fora do Brasil (CI, UTC).
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 3);
-    afterDate = d.toISOString().slice(0, 10).replace(/-/g, "/");
+    // Primeira execução: 3 dias atrás (#442: em UTC — ver firstDrainCutoffIso).
+    afterDate = firstDrainCutoffIso().slice(0, 10).replace(/-/g, "/");
   } else {
     // #442: cursor já é ISO string — fatiar diretamente sem conversão de timezone.
     afterDate = cursor.last_drain_iso.slice(0, 10).replace(/-/g, "/");
@@ -799,7 +818,11 @@ async function main(rootDir: string = ROOT): Promise<void> {
     failedThreadIds,
   } = await iterateThreads(planned.threads, getThread, lastDrain, planned.sinceOverrides);
 
-  const { failed: failedThreads, abandoned } = nextFailedThreads(pending, failedThreadIds, lastDrain);
+  const { failed: failedThreads, abandoned } = nextFailedThreads(
+    pending,
+    failedThreadIds,
+    sinceForNewFailures(lastDrain),
+  );
   if (abandoned.length > 0) {
     const ids = abandoned.map((a) => a.id);
     console.error(
