@@ -142,7 +142,7 @@ async function searchThreads(query: string): Promise<GmailThread[]> {
     if (!pageToken) return all;
   }
   console.warn(
-    `[inbox-drain] WARN: teto de ${MAX_SEARCH_PAGES} páginas atingido — drain parcial, restante fica pra próxima execução.`,
+    `[inbox-drain] WARN: teto de ${MAX_SEARCH_PAGES} páginas atingido — drain parcial: threads mais antigas não buscadas ficam fora (cursor avança até a mais recente).`,
   );
   return all;
 }
@@ -690,8 +690,9 @@ async function main(rootDir: string = ROOT): Promise<void> {
 
   let updatedCursor: InboxCursor;
   let warnReason: string | undefined;
+  let writtenCount = 0;
   if (inboxEntries.length > 0) {
-    appendToInbox(inboxEntries);
+    writtenCount = appendToInbox(inboxEntries).length;
     updatedCursor = resetEmptyDrain({
       ...cursor,
       last_drain_iso: mostRecentIso ?? cursor.last_drain_iso,
@@ -723,7 +724,7 @@ async function main(rootDir: string = ROOT): Promise<void> {
   saveCursor(updatedCursor);
 
   const result: DrainResult = {
-    new_entries: inboxEntries.length,
+    new_entries: writtenCount,
     urls: resultUrls,
     topics: resultTopics,
     most_recent_iso: mostRecentIso,

@@ -758,7 +758,8 @@ describe("inbox-drain main() integration (#306)", () => {
 
     // Cursor volta a ser gravável; re-execução reprocessa a mesma mensagem.
     rmSync(fakeCursorPath(), { recursive: true, force: true });
-    await runDrain();
+    const second = await runDrain();
+    assert.equal(second.new_entries, 0, "re-execução não grava nada novo");
     const afterSecond = readFileSync(fakeInboxMdPath(), "utf8");
     assert.equal(afterSecond.split("- **subject:** S t1").length - 1, 1, "entrada não pode duplicar");
   });
