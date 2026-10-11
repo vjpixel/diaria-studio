@@ -19,7 +19,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 | Facebook Page token | `data/.fb-credentials.json` (`page_access_token`) | 60 dias se short-lived; nunca se long-lived com renew | `publish-facebook.ts` retorna 190 (`OAuthException`) |
 | `CLOUDFLARE_API_TOKEN` | env var (`.env`) | Sem expiração nativa (até revogação) | `cloudflare-image.js` retorna 401 / `Authentication error` |
 | Beehiiv MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | Subagentes que usam Beehiiv MCP retornam erro de auth |
-| Gmail MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | `inbox-drain.ts` retorna `gmail_mcp_error` ou 401 |
+| Gmail MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | `review-test-email` (Etapas 5/6) falha com erro de auth do Gmail MCP |
 
 ---
 
@@ -133,11 +133,11 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 
 ### Gmail MCP OAuth
 
-- **Para que serve:** drenagem do inbox editorial (`scripts/inbox-drain.ts` quando rodar via MCP — o caminho atual usa Google OAuth direto via `google-auth.ts`, mas o conector MCP existe e é usado por `/diaria-inbox` quando ativado).
+- **Para que serve:** leitura do e-mail de teste da newsletter pelo agent `review-test-email` (loop verify→fix das Etapas 5/6). **Não** é usado pelo drain do inbox editorial — `scripts/inbox-drain.ts` (e `/diaria-inbox`) falam com a Gmail REST API via Google OAuth (`data/.credentials.json`, seção acima), nunca MCP (#10026).
 - **Onde gerar / re-conectar:** [claude.ai → Settings → Connectors](https://claude.ai/settings/connectors) → "Gmail" → reauthorize.
 - **Onde atualizar:** dentro da claude.ai.
-- **Como testar:** `/diaria-inbox` deve retornar JSON com `skipped: false` (ou `skipped: true` mas sem `reason: "gmail_mcp_error"`).
-- **Sinais de expiração:** `DrainResult.reason = "gmail_mcp_error"` ou erro 401.
+- **Como testar:** dentro do Claude Code, `/mcp` deve listar `claude.ai Gmail` como conectado.
+- **Sinais de expiração:** `review-test-email` retorna erro de auth nas chamadas `mcp__claude_ai_Gmail__*`.
 - **Downtime esperado:** 2-3 minutos.
 
 ---
@@ -158,7 +158,9 @@ Tabela de mapeamento erro → credencial:
 |---|---|---|
 | `OAuthException` ou `code: 190` | Facebook Page token | Rotação seção FB acima |
 | `invalid_grant` | Google OAuth refresh_token | Re-rodar `oauth-setup.ts` |
-| `Gmail API error (401)` ou `gmail_mcp_error` | Gmail (depende do caminho) | Conector MCP ou Google OAuth |
+| `Gmail API error (401)` ou `reason: "auth_expired"` no inbox drain | Google OAuth refresh_token | `npx tsx scripts/check-google-token.ts`; re-rodar `oauth-setup.ts` |
+| `reason: "local_error"` (legado `gmail_mcp_error`) no inbox drain | Nenhuma — falha local (config, gravação de `data/inbox.md`/cursor) | Ler o campo `error` e corrigir a causa local |
+| Erro de auth em `mcp__claude_ai_Gmail__*` (`review-test-email`) | Gmail MCP | Re-conectar em claude.ai |
 | `PERMISSION_DENIED` em image gen | Gemini API key | Rotação seção Gemini |
 | `Authentication error` em Cloudflare | `CLOUDFLARE_API_TOKEN` | Rotação seção CF |
 | Clarice retorna 401/403 | `CLARICE_API_KEY` | Rotação seção Clarice |
@@ -170,13 +172,13 @@ Tabela de mapeamento erro → credencial:
 | Credencial quebrada | Pior consequência | Fallback humano |
 |---|---|---|
 | Facebook Page token | Posts FB não saem da janela ideal de horário | Editor publica manual via Meta Business Suite (texto + imagem `04-d{N}.jpg`) |
-| Google OAuth | Drive sync para; revisão pelo celular não funciona | Continuar a edição sem sync; revisar no terminal |
+| Google OAuth | Drive sync para; revisão pelo celular não funciona; inbox editorial não drena (`auth_expired`) | Continuar a edição sem sync; revisar no terminal |
 | Login Codex expirado | Imagens caem no fallback (`codex.fallback`, Gemini) — legenda reflete o gerador efetivo (#9095) | `codex login` na máquina; se o Gemini também falhar, setar `image_generator: "cloudflare"` |
 | Gemini API key | Fallback do Codex e tradução do É IA? falham (imagens só quebram se o Codex também cair) | Rotacionar; ou `codex.fallback: "cloudflare"` (se CF estiver válido) |
 | Cloudflare token | Idem (se Gemini também falhou) | Reusar imagens de outra edição como placeholder |
 | Clarice | Stage 2 trava no diff | Pular revisão Clarice e seguir com texto bruto do writer |
 | Beehiiv MCP | Dedup base não atualiza | Aceitar risco de repetir 1-2 links da última edição (ou aguardar) |
-| Gmail MCP | Inbox não drena | Continuar com URLs já em `data/inbox.md` (drain ficou stale) |
+| Gmail MCP | `review-test-email` não lê o e-mail de teste | Editor confere o e-mail de teste à mão na parada de agendamento (Etapa 6) |
 
 ### 3. Aplique fallback OU rotacione a credencial
 

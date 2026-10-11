@@ -9,7 +9,7 @@ Roda o mesmo drain que o Stage 1 executa automaticamente.
 
 ## Quando usar
 
-- **Recuperação após token expirado** (caso principal): se um drain falhou com `auth_expired`, o cursor não avançou — rodar `npx tsx scripts/oauth-setup.ts` e depois esta skill recupera as submissões que ficaram para trás. É a ação que o próprio script imprime no aviso. Limite: a busca lê só as 50 threads mais recentes (sem paginação), então uma interrupção muito longa pode deixar submissões de fora.
+- **Recuperação após token expirado** (caso principal): se um drain falhou com `auth_expired`, o cursor não avançou — rodar `npx tsx scripts/oauth-setup.ts` e depois esta skill recupera as submissões que ficaram para trás. É a ação que o próprio script imprime no aviso. A busca pagina (100 threads/página) até esgotar o resultado, com teto de `MAX_SEARCH_PAGES` = 50 páginas (5000 threads); se o teto for atingido o script avisa no stderr e as mais antigas ficam de fora.
 - Ver o que vai entrar na próxima edição antes de iniciá-la.
 - Forçar um drain fora do fluxo, ou depurar quando uma submissão não aparece.
 
@@ -27,7 +27,7 @@ Ao final, mostre ao usuário:
 
 1. O JSON de resultado (`new_entries`, `urls`, `topics`, `most_recent_iso`, `skipped`, `reason`, `errors`, `error_samples`).
 2. Se `new_entries > 0`, as últimas entradas de `data/inbox.md`.
-3. Se `skipped: false` **com `errors > 0`**: drain PARCIAL — algumas threads falharam ao carregar e o cursor avançou mesmo assim, então elas **não** voltam ao rodar de novo. Avisar o editor com destaque e mostrar `error_samples` (nunca reportar só "N entradas, ok").
+3. Se `skipped: false` **com `errors > 0`**: drain PARCIAL — algumas threads falharam ao carregar. Elas ficam em `failed_threads` no cursor e são re-buscadas por ID no próximo drain (`pending_retry`, #10030); depois de 5 tentativas saem da fila e aparecem em `abandoned_threads` — essas o editor confere no Gmail. Avisar o editor e mostrar `error_samples` (nunca reportar só "N entradas, ok").
 4. Se `skipped: true`, o motivo e a ação:
 
 | `reason` | Significado | Ação |
@@ -35,7 +35,7 @@ Ao final, mostre ao usuário:
 | `auth_expired` | Token OAuth Google expirado/revogado | `npx tsx scripts/oauth-setup.ts`, depois rodar esta skill de novo |
 | `search_failed` | Gmail falhou ao listar threads (5xx, resposta fora do schema, ou credencial ausente/ilegível/`invalid_client`) — cursor não avançou | Ler `error_samples`: se falar de credencial ou refresh de token, `npx tsx scripts/oauth-setup.ts`; senão, rodar de novo |
 | `inbox_disabled` | `inbox.enabled: false` em `platform.config.json` | Intencional — reativar só se o editor quiser |
-| `gmail_mcp_error` | Falha local fora das chamadas ao Gmail — ler/parsear `platform.config.json`, gravar `data/inbox.md` ou o cursor (nome legado, não envolve MCP, #10026) | Ler a mensagem em `error` e corrigir a causa local. Se `inbox.md` foi gravado e o cursor não, rodar de novo duplica entradas — conferir antes |
+| `local_error` | Falha local fora das chamadas ao Gmail — ler/parsear `platform.config.json`, gravar `data/inbox.md` ou o cursor (#10026; antes se chamava `gmail_mcp_error`, mas nunca envolveu MCP) | Ler a mensagem em `error` e corrigir a causa local, depois rodar de novo. O append em `inbox.md` é idempotente: se `inbox.md` foi gravado e o cursor não, a re-execução não duplica entradas |
 
 Inbox vazio (`new_entries: 0`, `skipped: false`) é estado normal, não falha.
 
