@@ -21,6 +21,7 @@ import {
   isKitDoiResendCounted,
   isPermanentKitDoiFailure,
   decideDoiPermanentFailureScope,
+  probeKitDoiFormExists,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
@@ -64,19 +65,25 @@ function brevoStatsRes(opens: number, sends: number): Response {
 interface FakeKit {
   state: string;
   formStatus?: number;
+  /** #10051 — status do GET /forms/{id}/subscribers (probe de existência do form). */
+  formProbeStatus?: number;
   opens?: number;
   sends?: number;
 }
 
 /** Instala um fetch falso e devolve os contadores de chamadas ao Kit. */
 function installFetch(k: FakeKit) {
-  const calls = { formPosts: [] as string[], subscriberPosts: 0 };
+  const calls = { formPosts: [] as string[], subscriberPosts: 0, formProbes: 0 };
   globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? "GET";
     if (u.includes("/forms/") && method === "POST") {
       calls.formPosts.push(u);
       return jsonRes(k.formStatus ?? 201, { subscriber: { id: 77 } });
+    }
+    if (u.includes("/forms/") && method === "GET") {
+      calls.formProbes++;
+      return jsonRes(k.formProbeStatus ?? 200, { subscribers: [], pagination: { has_next_page: false } });
     }
     if (u.includes("api.kit.com/v4/subscribers") && u.includes("email_address=")) {
       const email = new URL(u).searchParams.get("email_address") ?? "leitor@x.com";
@@ -699,7 +706,7 @@ describe("reenvio DOI — form inexistente é falha global, não backoff por con
 
   for (const status of [404, 422]) {
     it(`form inexistente (${status} em todas as tentativas) → nenhum contato marcado, warn agregado, rodada seguinte re-tenta`, async () => {
-      let calls = installFetch({ state: "inactive", formStatus: status });
+      let calls = installFetch({ state: "inactive", formStatus: status, formProbeStatus: 404 });
       const logs: string[] = [];
       try {
         const emails = ["a@x.com", "b@x.com", "c@x.com"];
@@ -710,6 +717,7 @@ describe("reenvio DOI — form inexistente é falha global, não backoff por con
           assert.equal(findContact(r1.store, e)!.doi_resend_failed_at, undefined, `${e} não entra no backoff`);
         }
         assert.equal(logs.filter((l) => l.includes("falha GLOBAL de config") && l.includes("#10023")).length, 1);
+        assert.equal(calls.formProbes, 1, "probe de existência do form roda 1x por rodada, não por contato (#10051)");
 
         // Editor corrige o KIT_DOI_FORM_ID: a rodada seguinte já tenta todo mundo.
         calls = installFetch({ state: "inactive", formStatus: 201 });
@@ -740,6 +748,88 @@ describe("reenvio DOI — form inexistente é falha global, não backoff por con
       assert.equal(r.failed, 1);
       assert.ok(findContact(r.store, "bad@x.com")!.doi_resend_failed_at, "404 do contato entra no backoff");
       assert.equal(findContact(r.store, "good@x.com")!.doi_resend_failed_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// #10051 — regressão: em regime estável uma rodada pode ter só 2 elegíveis,
+// ambos com 422 por problema DELES. A heurística do #10023 (≥2 falhas iguais,
+// nenhum 2xx) chamava isso de form inexistente todo dia: ninguém entrava no
+// backoff, re-tentativa diária + warn falso. Agora a existência do form é
+// confirmada (1 GET por rodada) antes de declarar `global`.
+describe("reenvio DOI — form confirmado existe: falhas iguais são dos contatos (#10051)", () => {
+  const origFetch = globalThis.fetch;
+
+  it("decideDoiPermanentFailureScope: formExists=exists derruba global; missing/unknown mantêm a heurística", () => {
+    const base = { permanentFailureStatuses: [422, 422], successes: 0 };
+    assert.equal(decideDoiPermanentFailureScope({ ...base, formExists: "exists" }), "per_contact");
+    assert.equal(decideDoiPermanentFailureScope({ ...base, formExists: "missing" }), "global");
+    assert.equal(decideDoiPermanentFailureScope({ ...base, formExists: "unknown" }), "global");
+    assert.equal(decideDoiPermanentFailureScope(base), "global");
+  });
+
+  it("probeKitDoiFormExists: 2xx → exists, 404 → missing, outro status/exceção → unknown; GET read-only no endpoint do form", async () => {
+    const urls: string[] = [];
+    const mk = (status: number) =>
+      (async (url: string | URL, init?: RequestInit) => {
+        urls.push(`${init?.method} ${String(url)}`);
+        return jsonRes(status, {});
+      }) as typeof fetch;
+    assert.equal(await probeKitDoiFormExists({ formId: DOI_FORM, apiKey: "k", fetchImpl: mk(200) }), "exists");
+    assert.equal(await probeKitDoiFormExists({ formId: DOI_FORM, apiKey: "k", fetchImpl: mk(404) }), "missing");
+    assert.equal(await probeKitDoiFormExists({ formId: DOI_FORM, apiKey: "k", fetchImpl: mk(500) }), "unknown");
+    assert.equal(await probeKitDoiFormExists({ formId: DOI_FORM, apiKey: "k", fetchImpl: mk(401) }), "unknown");
+    const boom = (async () => {
+      throw new Error("rede");
+    }) as typeof fetch;
+    assert.equal(await probeKitDoiFormExists({ formId: DOI_FORM, apiKey: "k", fetchImpl: boom }), "unknown");
+    assert.ok(urls.every((u) => u.startsWith("GET ") && u.includes(`/forms/${DOI_FORM}/subscribers`)));
+  });
+
+  it("dois contatos com 422 em rodadas seguidas, nenhum outro elegível → entram no backoff; sem warn de form inexistente", async () => {
+    let calls = installFetch({ state: "inactive", formStatus: 422, formProbeStatus: 200 });
+    const logs: string[] = [];
+    try {
+      const emails = ["a@x.com", "b@x.com"];
+      const r1 = await run(emails.map((e) => contact(e)), { log: (m) => logs.push(m) });
+      assert.equal(calls.formPosts.length, 2);
+      assert.equal(calls.formProbes, 1, "1 probe por rodada");
+      assert.equal(r1.failed, 2);
+      for (const e of emails) assert.ok(findContact(r1.store, e)!.doi_resend_failed_at, `${e} entra no backoff`);
+      assert.equal(logs.filter((l) => l.includes("falha GLOBAL de config")).length, 0, "sem warn falso de form inexistente");
+
+      // Rodada seguinte: os dois estão no backoff, nem chamam o Kit nem somam failed.
+      calls = installFetch({ state: "inactive", formStatus: 422, formProbeStatus: 200 });
+      const r2 = await run(emails.map((e) => findContact(r1.store, e)!));
+      assert.equal(calls.formPosts.length, 0, "backoff vale: nenhuma re-tentativa diária");
+      assert.equal(calls.formProbes, 0, "sem falha, sem probe");
+      assert.equal(r2.failed, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("probe inconclusivo (5xx) → mantém global (#10023), sem backoff, com warn do probe", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 422, formProbeStatus: 503 });
+    const logs: string[] = [];
+    try {
+      const r = await run([contact("a@x.com"), contact("b@x.com")], { log: (m) => logs.push(m) });
+      assert.equal(calls.formProbes, 1);
+      assert.equal(findContact(r.store, "a@x.com")!.doi_resend_failed_at, undefined);
+      assert.equal(findContact(r.store, "b@x.com")!.doi_resend_failed_at, undefined);
+      assert.equal(logs.filter((l) => l.includes("#10051") && l.includes("não deu pra confirmar")).length, 1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("falha única na rodada → nenhum probe (sem rede extra)", async () => {
+    const calls = installFetch({ state: "inactive", formStatus: 422, formProbeStatus: 200 });
+    try {
+      await run(contact("a@x.com"));
+      assert.equal(calls.formProbes, 0);
     } finally {
       globalThis.fetch = origFetch;
     }
