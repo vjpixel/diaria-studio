@@ -703,12 +703,19 @@ export function classifyNewsletterDiff(
     // de cabeçalho) não é edição de texto de item — mantém o tipo padrão da
     // seção, senão uma troca de `utm` no RADAR contava como recorrência do
     // `writer.md` que não houve.
+    // #10019: a exceção é o padrão `destaque-promote` (USE MELHOR): herdá-lo
+    // num `outro` só trocava a recorrência falsa de `writer.md` por uma de
+    // `scorer-select.md` — nada foi promovido. Vira `other`, que fica fora da
+    // detecção de recorrência. `link-swap` (RADAR/LANÇAMENTOS) não entra na
+    // lista de capture-verified e segue como estava.
     let poolTextKind: ReturnType<typeof classifyPoolTextEdit> | null = null;
     if (POOL_SECTION_KEYS.has(section) && !poolClass && requestType !== "length-cut") {
       const kind = classifyPoolTextEdit(oldText, newText);
       if (kind !== "outro") {
         poolTextKind = kind;
         requestType = kind === "reordenado" ? "section-order" : "pool-text-edit";
+      } else if (requestType === "destaque-promote") {
+        requestType = "other";
       }
     }
 
