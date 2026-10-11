@@ -72,7 +72,13 @@ import { computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT } 
 export const INSTAGRAM_WEEKLY_CHAR_LIMIT = 2200;
 
 /** Monta a URL do link de arquivo com UTM (#4537) — exportada pra teste, mesmo
- * padrão de `buildFacebookCtaUrl` (`social-cta-lines.ts`). */
+ * padrão de `buildFacebookCtaUrl` (`social-cta-lines.ts`).
+ *
+ * #10038: `formatInstagramWeekly` NÃO emite mais esta URL (a frase "Arquivo
+ * completo em {url}" saiu da caption). Mantida só como referência do triplo
+ * `instagram-weekly-archive` (aposentado no registry) — os testes de
+ * atribuição dos outros canais comparam contra ela pra garantir que nenhum
+ * reusa `utm_source=instagram`. */
 export function buildInstagramWeeklyArchiveUrl(): string {
   const url = new URL("https://diar.ia.br");
   url.searchParams.set("utm_source", INSTAGRAM_WEEKLY_ARCHIVE_UTM.source);
@@ -114,7 +120,6 @@ export function buildTwitterWeeklyArchiveUrl(): string {
   return url.toString();
 }
 
-const ARCHIVE_URL = buildInstagramWeeklyArchiveUrl();
 const FACEBOOK_ARCHIVE_URL = buildFacebookWeeklyArchiveUrl();
 const THREADS_ARCHIVE_URL = buildThreadsWeeklyArchiveUrl();
 const TWITTER_ARCHIVE_URL = buildTwitterWeeklyArchiveUrl();
@@ -164,8 +169,9 @@ function contextLine(item: InstagramWeeklyItem): string {
  * numerados, cada um com 1 linha curta de contexto ("por que importa" do
  * destaque, ou a descrição de 1 linha do item de RADAR — #5330, ajuste
  * pós-benchmark de contas do nicho: headline sozinha performa pior que
- * headline + 1 frase de porquê importa) + "link na bio" apontando pro
- * arquivo. Truncado no limite de caption do IG (2200 chars) preservando
+ * headline + 1 frase de porquê importa) + "link da bio" no fim. Sem
+ * nenhuma URL no corpo desde o #10038 (a frase "Arquivo completo em {url}"
+ * saiu — texto morto num canal que não linka). Truncado no limite de caption do IG (2200 chars) preservando
  * palavras inteiras, mesmo padrão de `truncateCaption` em
  * publish-instagram.ts.
  *
@@ -200,7 +206,10 @@ export function formatInstagramWeekly(
         return ctx ? `${i + 1}. ${it.title}\n${ctx}` : `${i + 1}. ${it.title}`;
       })
       .join("\n\n") +
-    `\n\nEdição completa de cada matéria no link da bio. Arquivo completo em ${ARCHIVE_URL}.`;
+    // #10038 (decisão do editor, 261011): a frase "Arquivo completo em {url}"
+    // saiu — o Instagram não linka no corpo, então a URL era texto morto.
+    // A caption fica sem nenhuma URL; o caminho pro arquivo é o link da bio.
+    `\n\nEdição completa de cada matéria no link da bio.`;
   return truncateAtLimit(body, INSTAGRAM_WEEKLY_CHAR_LIMIT);
 }
 

@@ -728,7 +728,10 @@ export function entityFooterNavUtm(slug: EntitySlug) {
  * links que a pipeline DIÁRIA publica; o post semanal ficou fora do escopo
  * daquela issue e nunca ganhou UTM. Volume baixo (~1 link/semana, e o
  * Instagram não linka no corpo — o app suprime o Referer mesmo se o leitor
- * copiar o texto), mas mantém o inventário completo e sem literal solto. */
+ * copiar o texto), mas mantém o inventário completo e sem literal solto.
+ * #10038: a caption deixou de emitir este link (entrada `aposentado` em
+ * `UTM_EMITTERS`); o triplo fica pelo histórico e como baseline dos testes
+ * de atribuição dos siblings abaixo. */
 export const INSTAGRAM_WEEKLY_ARCHIVE_UTM = {
   source: "instagram",
   medium: "organic_social",
@@ -1466,8 +1469,11 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "\"Arquivo completo em {url}\" no post semanal do Instagram (#4101/#4483) — " +
       "saía cru, sem UTM (resíduo do #4295, fechado no #4537 item 1). Volume baixo " +
-      "(~1/semana) e o Instagram não linka no corpo, mas fecha o inventário.",
-    status: "ativo",
+      "(~1/semana) e o Instagram não linka no corpo, mas fecha o inventário. " +
+      "APOSENTADO no #10038 (261011, decisão do editor): a frase saiu da caption " +
+      "justamente porque o Instagram não linka no corpo — a URL era texto morto. " +
+      "Mantido no registry só por histórico/rastreabilidade da série.",
+    status: "aposentado",
   },
   {
     id: "facebook-weekly-archive",
