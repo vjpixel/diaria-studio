@@ -1,6 +1,6 @@
 # Setup: Gmail inbox para `diariaeditor@gmail.com`
 
-O Claude Code usa o conector Gmail MCP da claude.ai para ler e-mails. Esse conector é autenticado a **uma conta Google por vez** — normalmente a conta pessoal do editor (`vjpixel@gmail.com`).
+O drain do inbox (`scripts/inbox-drain.ts`) lê e-mails pela **Gmail REST API com OAuth Google** — o token em `data/.credentials.json`, gerado por `scripts/oauth-setup.ts` (o mesmo token do Drive sync). **Não usa o conector Gmail MCP da claude.ai** desde a migração do subagente `inbox-drainer` para script (#1110, #10026). O OAuth é autorizado a **uma conta Google** — a conta pessoal do editor (`vjpixel@gmail.com`).
 
 ## Método atual (#3217) — busca direta em Sent, zero setup
 
@@ -12,7 +12,7 @@ gmailQuery: "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}"
 
 **#3362 — os dois formatos (com/sem ponto) funcionam.** Gmail ignora pontos na *entrega* (`diariaeditor@gmail.com` e `diaria.editor@gmail.com` caem na mesma caixa), mas o operador de busca `to:` faz correspondência **literal** — não normaliza pontos. A query default usa `{ }` (OR do Gmail search) pra cobrir os dois formatos explicitamente; antes do #3362 só o formato sem ponto era capturado, e >2 meses de submissões pro formato com ponto foram perdidas silenciosamente.
 
-**Por que isso funciona sem nenhum setup do lado de `diariaeditor@gmail.com`:** o editor sempre tem uma cópia de qualquer e-mail que mandou na própria pasta Enviados (`Sent`) de `vjpixel@gmail.com`. Não há forward, filtro ou label nenhum no caminho — a única dependência é o Gmail MCP estar autenticado com a conta pessoal do editor, o que já é o caso para o resto do fluxo (draft de posts, leitura de threads, etc).
+**Por que isso funciona sem nenhum setup do lado de `diariaeditor@gmail.com`:** o editor sempre tem uma cópia de qualquer e-mail que mandou na própria pasta Enviados (`Sent`) de `vjpixel@gmail.com`. Não há forward, filtro ou label nenhum no caminho — a única dependência é o token OAuth (`data/.credentials.json`) estar válido e autorizado na conta pessoal do editor.
 
 ### Como enviar uma submissão
 
@@ -20,7 +20,7 @@ Simplesmente mande um e-mail (ou encaminhe um artigo/newsletter) de `vjpixel@gma
 
 ### Setup
 
-1. Confirmar que o Gmail MCP na claude.ai está autenticado com `vjpixel@gmail.com` (`/mcp` no Claude Code deve listar `claude.ai Gmail`).
+1. Confirmar que o token OAuth Google está válido: `npx tsx scripts/check-google-token.ts` (exit 0 = ok). Ausente ou expirado → `npx tsx scripts/oauth-setup.ts`, autorizando com `vjpixel@gmail.com`.
 2. Confirmar `platform.config.json > inbox.enabled: true`. `gmailQuery` pode ficar omitido (usa o default `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}`) ou setado explicitamente.
 3. Nada a configurar em `diariaeditor@gmail.com` — a conta nem precisa ter forwarding, filtro ou label.
 
@@ -32,7 +32,7 @@ Simplesmente mande um e-mail (ou encaminhe um artigo/newsletter) de `vjpixel@gma
 
 Envie um e-mail de teste de `vjpixel@gmail.com` para `diariaeditor@gmail.com` com um link no corpo (ex: `https://example.com/meu-artigo`), aguarde ~1 min, e rode `/diaria-inbox` de novo — deve retornar `new_entries: 1` e anexar o link em `data/inbox.md`.
 
-Se retornar erro de autenticação Gmail MCP → `/mcp` pra re-conectar.
+Se retornar `reason: "auth_expired"` (ou `search_failed` com erro de credencial em `error_samples`) → `npx tsx scripts/oauth-setup.ts` e rodar de novo.
 
 ---
 
@@ -82,13 +82,12 @@ Esta seção fica só como referência histórica, para o cenário (fora de esco
 - Aguarde ~1 min. Em `vjpixel@gmail.com`, confirme que o e-mail apareceu no label `Diaria.Editor`.
 - Rode `/diaria-inbox` — deve retornar `new_entries: 1`.
 
-### Opção B — Gmail MCP direto na conta `diariaeditor@gmail.com`
+### Opção B (histórica) — OAuth direto na conta `diariaeditor@gmail.com`
 
-Só faz sentido se você **não** usa o Gmail MCP para a sua conta pessoal hoje, ou se topa trocar. O conector Gmail na claude.ai aceita uma conta por vez.
+O drain lê a conta autorizada no OAuth (`data/.credentials.json`), que é uma por vez — e o mesmo token serve o Drive sync. Trocar a conta afeta os dois.
 
-1. Em `https://claude.ai/settings/connectors`, desconecte o Gmail atual (se houver).
-2. Reconecte autenticando com `diariaeditor@gmail.com`.
-3. Ajuste `platform.config.json`:
+1. Rodar `npx tsx scripts/oauth-setup.ts` autorizando com `diariaeditor@gmail.com`.
+2. Ajuste `platform.config.json`:
    ```json
    "inbox": {
      "address": "diariaeditor@gmail.com",
@@ -97,17 +96,18 @@ Só faz sentido se você **não** usa o Gmail MCP para a sua conta pessoal hoje,
    }
    ```
    (ou qualquer query que pegue só submissões relevantes — `in:inbox -from:me` por exemplo).
-4. Rode `/diaria-inbox` pra validar.
+3. Rode `/diaria-inbox` pra validar.
 
-### Opção C (futuro) — Gmail API via app password
+### Opção C (futuro) — IMAP via app password
 
-Mais robusto mas exige mais setup: app password + script `node-imap` próprio, sem depender do MCP. Não está implementado no projeto. Se um cenário de submissão de terceiro virar necessidade real, abra uma issue.
+Alternativa ao OAuth: app password + script `node-imap` próprio. Não está implementado no projeto. Se um cenário de submissão de terceiro virar necessidade real, abra uma issue.
 
 ---
 
 ## Troubleshooting
 
-- **`skipped: true, reason: "gmail_mcp_error"`** → Gmail MCP desconectado. `/mcp` no Claude Code pra reautenticar.
+- **`skipped: true, reason: "local_error"`** (antes `gmail_mcp_error`, #10026 — o nome era errado, nunca envolveu MCP) → falha local: ler/parsear `platform.config.json` ou gravar `data/inbox.md`/o cursor. Ler o campo `error` e corrigir a causa; reautenticar não ajuda. Para descartar o token, `npx tsx scripts/check-google-token.ts`.
+- **`errors > 0` com `skipped: false`** → drain parcial: algumas threads falharam ao carregar. Ficam em `failed_threads` no cursor e são re-buscadas no próximo drain (#10030); as que esgotam 5 tentativas aparecem em `abandoned_threads` — conferir no Gmail.
 - **`skipped: true, reason: "auth_expired"`** → OAuth Google expirado/revogado. Rodar `npx tsx scripts/oauth-setup.ts` e depois `/diaria-inbox` pra recuperar submissões que ficaram sem drenar.
 - **`new_entries: 0` inesperado** → confirme que o e-mail foi mesmo enviado de `vjpixel@gmail.com` para `diariaeditor@gmail.com` ou `diaria.editor@gmail.com` (busque `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}` direto na UI do Gmail). Se aparecer lá mas não em `data/inbox.md`, confira o cursor em `data/inbox-cursor.json` (`last_drain_iso`) — e-mails mais antigos que o cursor são ignorados por design.
 - **Migrando de Opção A (label) pra busca direta** → basta remover (ou deixar de setar) `gmailQuery` custom em `platform.config.json`; o default já é `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}`. O label antigo pode ficar (não atrapalha) ou ser removido manualmente no Gmail.

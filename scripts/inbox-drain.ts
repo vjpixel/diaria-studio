@@ -31,7 +31,9 @@
  * formato com ponto nunca entraram em data/inbox.md). A query default usa
  * `{ }` (OR do Gmail search) pra cobrir os 2 formatos.
  *
- * Cursor: data/inbox-cursor.json  — { last_drain_iso: "2026-04-17T14:22:00Z" | null }
+ * Cursor: data/inbox-cursor.json  — { last_drain_iso: "2026-04-17T14:22:00Z" | null,
+ *   failed_threads?: [{ id, since, attempts }] }  (#10030: threads que falharam e
+ *   são re-buscadas por ID no próximo drain, até MAX_FAILED_THREAD_ATTEMPTS)
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
  */
 
@@ -83,9 +85,25 @@ interface PlatformConfig {
   };
 }
 
-interface InboxCursor {
+/**
+ * #10030: thread cujo `getThread` falhou num drain anterior. Fica no cursor até
+ * carregar (ou esgotar `MAX_FAILED_THREAD_ATTEMPTS`) — sem isso, o cursor avança
+ * pro `mostRecentIso` das threads que carregaram e a que falhou, se mais antiga,
+ * sai da janela da próxima busca e some em silêncio.
+ */
+export interface FailedThread {
+  id: string;
+  /** Cursor vigente no drain em que a thread falhou pela 1ª vez — o retry filtra
+   * as mensagens contra ESTE valor, não contra o cursor atual (que já avançou). */
+  since: string | null;
+  attempts: number;
+}
+
+export interface InboxCursor {
   last_drain_iso: string | null;
   consecutive_empty_drains?: number;
+  /** #10030: threads pendentes de retry. Ausente/vazio = nada pendente. */
+  failed_threads?: FailedThread[];
 }
 
 interface DrainResult {
@@ -102,6 +120,10 @@ interface DrainResult {
   errors?: number;
   /** Primeiras mensagens de erro (max 3, slice 200 chars cada). */
   error_samples?: string[];
+  /** #10030: threads que falharam e ficam pendentes de retry no próximo drain. */
+  pending_retry?: number;
+  /** #10030: threads abandonadas neste drain por esgotarem as tentativas. */
+  abandoned_threads?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +455,8 @@ export interface IterateThreadsResult {
   mostRecentIso: string | null;
   threadErrors: number;
   threadErrorSamples: string[];
+  /** #10030: IDs das threads cujo `fetchThread` falhou, na ordem de iteração. */
+  failedThreadIds: string[];
 }
 
 /**
@@ -448,6 +472,9 @@ export async function iterateThreads(
   threads: GmailThread[],
   fetchThread: (id: string) => Promise<GmailThread2>,
   lastDrain: string | null,
+  /** #10030: corte por thread que substitui `lastDrain` — usado no retry de
+   * threads que falharam num drain anterior (filtra contra o cursor da época). */
+  sinceOverrides: ReadonlyMap<string, string | null> = new Map(),
 ): Promise<IterateThreadsResult> {
   const inboxEntries: string[] = [];
   const resultUrls: DrainResult["urls"] = [];
@@ -455,6 +482,7 @@ export async function iterateThreads(
   let mostRecentIso: string | null = null;
   let threadErrors = 0;
   const threadErrorSamples: string[] = [];
+  const failedThreadIds: string[] = [];
 
   for (const thread of threads) {
     let fullThread: GmailThread2;
@@ -465,6 +493,7 @@ export async function iterateThreads(
       // (ex: thread só com draft, conta com config não-padrão). Logar e seguir
       // pra não quebrar o drain inteiro por causa de uma thread atípica.
       threadErrors += 1;
+      failedThreadIds.push(thread.id);
       const msg = err instanceof Error ? err.message : String(err);
       if (threadErrorSamples.length < 3) threadErrorSamples.push(msg.slice(0, 200));
       console.error(
@@ -473,12 +502,13 @@ export async function iterateThreads(
       continue;
     }
 
+    const cutoff = sinceOverrides.has(thread.id) ? sinceOverrides.get(thread.id)! : lastDrain;
     for (const msg of dedupForwards(fullThread.messages)) {
       const dateMs = parseInt(msg.internalDate, 10);
       const iso = new Date(dateMs).toISOString();
 
       // Filtrar client-side: só e-mails mais recentes que o cursor
-      if (lastDrain && iso <= lastDrain) continue;
+      if (cutoff && iso <= cutoff) continue;
 
       const from = getHeader(msg, "From");
       const subject = getHeader(msg, "Subject") || "(sem assunto)";
@@ -509,7 +539,83 @@ export async function iterateThreads(
     }
   }
 
-  return { inboxEntries, resultUrls, resultTopics, mostRecentIso, threadErrors, threadErrorSamples };
+  return { inboxEntries, resultUrls, resultTopics, mostRecentIso, threadErrors, threadErrorSamples, failedThreadIds };
+}
+
+/** #10030: tentativas (drains) antes de desistir de uma thread que nunca carrega
+ * (ex.: thread só com rascunho, que o schema rejeita sempre). */
+export const MAX_FAILED_THREAD_ATTEMPTS = 5;
+
+/**
+ * #10030: une o resultado da busca com as threads pendentes de retry. Pendente
+ * que já veio na busca não duplica; o corte de cada pendente é o cursor da
+ * época em que falhou (`since`). Pure.
+ */
+export function planThreadsWithRetries(
+  searched: GmailThread[],
+  pending: FailedThread[],
+): { threads: GmailThread[]; sinceOverrides: Map<string, string | null> } {
+  const threads = [...searched];
+  const ids = new Set(searched.map((t) => t.id));
+  const sinceOverrides = new Map<string, string | null>();
+  for (const p of pending) {
+    sinceOverrides.set(p.id, p.since);
+    if (!ids.has(p.id)) {
+      threads.push({ id: p.id });
+      ids.add(p.id);
+    }
+  }
+  return { threads, sinceOverrides };
+}
+
+/**
+ * #10030: calcula a nova lista de pendentes a partir das falhas deste drain.
+ * Pendente que carregou sai da lista; o que falhou de novo soma uma tentativa e
+ * mantém o `since` original; falha nova entra com `since = lastDrain`. Quem
+ * atinge `MAX_FAILED_THREAD_ATTEMPTS` vai pra `abandoned` (o caller avisa). Pure.
+ */
+export function nextFailedThreads(
+  pending: FailedThread[],
+  failedIds: string[],
+  lastDrain: string | null,
+): { failed: FailedThread[]; abandoned: FailedThread[] } {
+  const byId = new Map(pending.map((p) => [p.id, p]));
+  const failed: FailedThread[] = [];
+  const abandoned: FailedThread[] = [];
+  for (const id of new Set(failedIds)) {
+    const prev = byId.get(id);
+    const entry: FailedThread = prev
+      ? { id, since: prev.since, attempts: prev.attempts + 1 }
+      : { id, since: lastDrain, attempts: 1 };
+    (entry.attempts >= MAX_FAILED_THREAD_ATTEMPTS ? abandoned : failed).push(entry);
+  }
+  return { failed, abandoned };
+}
+
+/** #10030: o retry de uma thread antiga não pode fazer o cursor RECUAR. Pure. */
+export function maxIso(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+/**
+ * #10026: resultado do catch-all de `main()`. Dispara em falha LOCAL — ler/parsear
+ * `platform.config.json`, gravar `data/inbox.md` ou o cursor — porque toda
+ * chamada à Gmail API já está dentro de try próprio (`search_failed`/`errors`).
+ * O nome antigo `gmail_mcp_error` era errado (o script nunca usou MCP) e mandava
+ * o editor reautenticar o conector MCP, que não tem efeito aqui.
+ */
+export function buildLocalErrorResult(errorMsg: string): DrainResult & { error: string } {
+  return {
+    new_entries: 0,
+    urls: [],
+    topics: [],
+    most_recent_iso: null,
+    skipped: true,
+    reason: "local_error",
+    error: errorMsg,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -679,6 +785,10 @@ async function main(rootDir: string = ROOT): Promise<void> {
   }
 
   const lastDrain = cursor.last_drain_iso;
+  // #10030: threads que falharam em drains anteriores entram de novo, por ID,
+  // com o corte do cursor da época — independem da janela `after:` da busca.
+  const pending = cursor.failed_threads ?? [];
+  const planned = planThreadsWithRetries(threads, pending);
   const {
     inboxEntries,
     resultUrls,
@@ -686,7 +796,17 @@ async function main(rootDir: string = ROOT): Promise<void> {
     mostRecentIso,
     threadErrors,
     threadErrorSamples,
-  } = await iterateThreads(threads, getThread, lastDrain);
+    failedThreadIds,
+  } = await iterateThreads(planned.threads, getThread, lastDrain, planned.sinceOverrides);
+
+  const { failed: failedThreads, abandoned } = nextFailedThreads(pending, failedThreadIds, lastDrain);
+  if (abandoned.length > 0) {
+    const ids = abandoned.map((a) => a.id);
+    console.error(
+      `[inbox-drain] WARN: ${abandoned.length} thread(s) abandonada(s) após ${MAX_FAILED_THREAD_ATTEMPTS} tentativas — conferir no Gmail: ${ids.join(", ")}`,
+    );
+    logDrainWarn(`threads abandonadas após ${MAX_FAILED_THREAD_ATTEMPTS} tentativas`, { thread_ids: ids }, rootDir);
+  }
 
   let updatedCursor: InboxCursor;
   let warnReason: string | undefined;
@@ -695,7 +815,7 @@ async function main(rootDir: string = ROOT): Promise<void> {
     writtenCount = appendToInbox(inboxEntries).length;
     updatedCursor = resetEmptyDrain({
       ...cursor,
-      last_drain_iso: mostRecentIso ?? cursor.last_drain_iso,
+      last_drain_iso: maxIso(mostRecentIso, cursor.last_drain_iso),
     });
   } else {
     updatedCursor = incrementEmptyDrain(cursor);
@@ -721,6 +841,9 @@ async function main(rootDir: string = ROOT): Promise<void> {
         break;
     }
   }
+  // #10030: a lista de pendentes é sempre a recém-calculada (vazia remove o campo).
+  if (failedThreads.length > 0) updatedCursor = { ...updatedCursor, failed_threads: failedThreads };
+  else delete updatedCursor.failed_threads;
   saveCursor(updatedCursor);
 
   const result: DrainResult = {
@@ -732,6 +855,8 @@ async function main(rootDir: string = ROOT): Promise<void> {
     ...(warnReason ? { reason: warnReason } : {}),
     // #667: expor erros de thread pra visibilidade no orchestrator.
     ...(threadErrors > 0 ? { errors: threadErrors, error_samples: threadErrorSamples } : {}),
+    ...(failedThreads.length > 0 ? { pending_retry: failedThreads.length } : {}),
+    ...(abandoned.length > 0 ? { abandoned_threads: abandoned.map((a) => a.id) } : {}),
   };
   console.log(JSON.stringify(result, null, 2));
 }
@@ -741,17 +866,9 @@ export { main };
 const isMain = isMainModule(import.meta.url);
 
 if (isMain) main().catch((err) => {
-  const result: DrainResult = {
-    new_entries: 0,
-    urls: [],
-    topics: [],
-    most_recent_iso: null,
-    skipped: true,
-    reason: "gmail_mcp_error",
-  };
   console.error("inbox-drain error:", err.message);
   logDrainError(err);
-  // Output de fallback para o orchestrator não quebrar
-  console.log(JSON.stringify({ ...result, error: err.message }, null, 2));
+  // Output de fallback para o orchestrator não quebrar (#10026: reason local_error)
+  console.log(JSON.stringify(buildLocalErrorResult(err.message), null, 2));
   process.exit(0); // exit 0 para não abortar a pipeline
 });

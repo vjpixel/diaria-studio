@@ -17,6 +17,11 @@ import {
   isAuthExpiredError,
   authExpiredWarn,
   buildSearchFailedResult,
+  buildLocalErrorResult,
+  planThreadsWithRetries,
+  nextFailedThreads,
+  maxIso,
+  MAX_FAILED_THREAD_ATTEMPTS,
 } from "../scripts/inbox-drain.ts";
 import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 import {
@@ -24,6 +29,60 @@ import {
   INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV,
   INBOX_MD_PATH_TEST_OVERRIDE_ENV,
 } from "../scripts/inbox-drain.ts"; // #4369
+
+describe("#10026 — catch-all de main() é falha local, não MCP", () => {
+  it("buildLocalErrorResult: reason local_error (nunca o legado gmail_mcp_error) + error", () => {
+    const r = buildLocalErrorResult("EACCES: data/inbox.md");
+    assert.equal(r.reason, "local_error");
+    assert.notEqual(r.reason, "gmail_mcp_error");
+    assert.equal(r.skipped, true);
+    assert.equal(r.error, "EACCES: data/inbox.md");
+  });
+});
+
+describe("#10030 — helpers de retry de threads que falharam", () => {
+  it("planThreadsWithRetries: pendente fora da busca entra por ID, sem duplicar a que já veio", () => {
+    const { threads, sinceOverrides } = planThreadsWithRetries(
+      [{ id: "a" }, { id: "b" }],
+      [{ id: "b", since: "2026-04-01T00:00:00.000Z", attempts: 1 }, { id: "c", since: null, attempts: 2 }],
+    );
+    assert.deepEqual(threads.map((t) => t.id), ["a", "b", "c"]);
+    assert.equal(sinceOverrides.get("b"), "2026-04-01T00:00:00.000Z");
+    assert.equal(sinceOverrides.get("c"), null);
+    assert.equal(sinceOverrides.has("a"), false);
+  });
+
+  it("nextFailedThreads: falha nova entra com since=lastDrain; repetida soma tentativa e mantém since; carregada sai", () => {
+    const { failed, abandoned } = nextFailedThreads(
+      [{ id: "old", since: "2026-03-01T00:00:00.000Z", attempts: 1 }, { id: "ok", since: null, attempts: 1 }],
+      ["old", "new", "new"],
+      "2026-04-01T00:00:00.000Z",
+    );
+    assert.deepEqual(failed, [
+      { id: "old", since: "2026-03-01T00:00:00.000Z", attempts: 2 },
+      { id: "new", since: "2026-04-01T00:00:00.000Z", attempts: 1 },
+    ]);
+    assert.deepEqual(abandoned, []);
+  });
+
+  it("nextFailedThreads: atinge MAX_FAILED_THREAD_ATTEMPTS → abandonada (não fica pendente pra sempre)", () => {
+    const { failed, abandoned } = nextFailedThreads(
+      [{ id: "x", since: null, attempts: MAX_FAILED_THREAD_ATTEMPTS - 1 }],
+      ["x"],
+      null,
+    );
+    assert.deepEqual(failed, []);
+    assert.equal(abandoned.length, 1);
+    assert.equal(abandoned[0].attempts, MAX_FAILED_THREAD_ATTEMPTS);
+  });
+
+  it("maxIso: nunca recua", () => {
+    assert.equal(maxIso("2026-04-01T00:00:00.000Z", "2026-04-10T00:00:00.000Z"), "2026-04-10T00:00:00.000Z");
+    assert.equal(maxIso(null, "2026-04-10T00:00:00.000Z"), "2026-04-10T00:00:00.000Z");
+    assert.equal(maxIso("2026-04-01T00:00:00.000Z", null), "2026-04-01T00:00:00.000Z");
+    assert.equal(maxIso(null, null), null);
+  });
+});
 
 describe("#1973 — OAuth expirado vs falha transiente", () => {
   it("isAuthExpiredError: invalid_grant / expired / revoked → true", () => {
@@ -710,6 +769,63 @@ describe("inbox-drain main() integration (#306)", () => {
       }],
     };
   }
+
+  function threadAt(id: string, url: string, isoDate: string) {
+    const t = threadBody(id, url);
+    t.messages[0].internalDate = String(new Date(isoDate).getTime());
+    return t;
+  }
+
+  it("#10030: thread que falhou (mais antiga) é reprocessada no drain seguinte, mesmo com o cursor já adiante", async () => {
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: "2026-04-01T00:00:00.000Z" }), "utf8");
+    let oldFails = true;
+    let searchIds = ["t-old", "t-new"];
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads?")) return makeGmailResponse({ threads: searchIds.map((id) => ({ id })) });
+      if (u.includes("/threads/t-old")) {
+        if (oldFails) {
+          return {
+            ok: false,
+            status: 500,
+            text: async () => "backend error",
+            json: async () => ({}),
+            arrayBuffer: async () => new ArrayBuffer(0),
+            headers: { get: () => null },
+          } as unknown as Response;
+        }
+        return makeGmailResponse(threadAt("t-old", "https://example.com/old-artigo", "2026-04-05T10:00:00Z"));
+      }
+      if (u.includes("/threads/t-new")) {
+        return makeGmailResponse(threadAt("t-new", "https://example.com/new-artigo", "2026-04-09T10:00:00Z"));
+      }
+      return makeGmailResponse({});
+    };
+
+    // 1º drain: t-old falha, t-new carrega → cursor avança pra t-new.
+    const first = await runDrain();
+    assert.equal(first.errors, 1);
+    assert.equal(first.pending_retry, 1);
+    const cursor1 = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
+    assert.equal(cursor1.last_drain_iso, "2026-04-09T10:00:00.000Z");
+    assert.deepEqual(cursor1.failed_threads, [{ id: "t-old", since: "2026-04-01T00:00:00.000Z", attempts: 1 }]);
+
+    // 2º drain: a busca (janela do cursor novo) já não traz t-old — antes do
+    // #10030 ela estaria perdida. Agora é re-buscada por ID e entra.
+    oldFails = false;
+    searchIds = [];
+    const second = await runDrain();
+    assert.equal(second.errors, undefined);
+    assert.equal(second.new_entries, 1);
+    assert.ok((second.urls as Array<{ url: string }>).some((x) => x.url === "https://example.com/old-artigo"));
+    const md = readFileSync(fakeInboxMdPath(), "utf8");
+    assert.ok(md.includes("example.com/old-artigo"));
+    assert.equal(md.split("- **subject:** S t-new").length - 1, 1, "t-new não duplica");
+
+    const cursor2 = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
+    assert.equal(cursor2.last_drain_iso, "2026-04-09T10:00:00.000Z", "retry de thread antiga não recua o cursor");
+    assert.equal(cursor2.failed_threads, undefined, "pendente resolvida sai do cursor");
+  });
 
   it("#10031: searchThreads pagina por nextPageToken — threads da 2a página entram", async () => {
     writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: "2026-01-01T00:00:00Z" }), "utf8");
