@@ -139,6 +139,7 @@ async function measureBeehiivRecentDelivery(
       { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
     );
     if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
       return { platform: "beehiiv", measured: false, reason: `Beehiiv API ${res.status} em /posts` };
     }
     const body = (await res.json()) as { data?: Array<{ stats?: { email?: { recipients?: number } } }> };

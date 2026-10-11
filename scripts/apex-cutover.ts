@@ -344,6 +344,7 @@ export async function httpProbeStatus(url: string, fetchFn: typeof fetch = fetch
       redirect: "manual",
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
+    await res.body?.cancel().catch(() => {});
     return res.status;
   } catch {
     return null;

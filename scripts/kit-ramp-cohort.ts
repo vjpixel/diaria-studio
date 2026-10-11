@@ -454,8 +454,14 @@ export async function fetchBeehiivStatus(
     `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`,
     { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
   );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
+  }
   const body = (await res.json()) as { data?: { status?: string } };
   return body.data?.status ?? null;
 }

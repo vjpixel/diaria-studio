@@ -244,6 +244,7 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // de agendar.
   const res = await fetchImpl(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}&includeScheduled=1`);
   if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
     // #5058 — 429/503 é TRANSITÓRIO (rate limit da Brevo repassado pelo
     // dashboard); qualquer outro status é erro estrutural (config, rede,
     // bug) e continua abortando direto, sem sinalizar retry pro chamador.

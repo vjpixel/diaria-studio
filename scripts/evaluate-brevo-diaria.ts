@@ -567,8 +567,14 @@ export async function fetchBeehiivSubscriptionStatus(
     `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}?`,
     { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
   );
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
+  if (res.status === 404) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
+  }
   const body = (await res.json()) as { data?: { status?: string } };
   return body.data?.status ?? null;
 }
@@ -773,8 +779,10 @@ export async function promoteBeehiivSubscription(
   // field na Beehiiv (#5231 item 1).
   let origemOriginalCustomFields: ReturnType<typeof buildOrigemOriginalCustomFields> = undefined;
   if (getRes.status === 404) {
+    await getRes.body?.cancel().catch(() => {});
     existingId = null;
   } else if (!getRes.ok) {
+    await getRes.body?.cancel().catch(() => {});
     throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} falhou (HTTP ${getRes.status})`);
   } else {
     const body = await getRes.json().catch((e) => {

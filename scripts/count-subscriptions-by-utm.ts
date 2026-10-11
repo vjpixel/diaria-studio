@@ -188,6 +188,7 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<F
   });
 
   if (res.status === 429 && retries < MAX_RETRIES) {
+    await res.body?.cancel().catch(() => {});
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
     const wait = Math.max(retryAfter * 1000, 30_000);
     process.stderr.write(
@@ -197,7 +198,10 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<F
     return apiFetch<T>(path, apiKey, retries + 1);
   }
 
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   return { ok: true, status: res.status, body: (await res.json()) as T };
 }
 

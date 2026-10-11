@@ -451,7 +451,10 @@ export function resolveKnownLinksIndexPages(sitemapUrl: string): string[] {
 async function fetchInternalLinksFromPage(pageUrl: string, targetOrigin: string): Promise<Set<string> | null> {
   try {
     const res = await fetch(pageUrl, { headers: { "User-Agent": "DiariaBot/1.0 (+https://diar.ia.br)" } });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     return extractInternalLinks(await res.text(), targetOrigin);
   } catch {
     return null;

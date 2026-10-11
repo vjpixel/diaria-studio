@@ -104,7 +104,10 @@ async function verifyOnMv(
   fetchImpl: typeof fetch,
 ): Promise<{ result: string; bucket: "verified" | "rejected" | "unknown" }> {
   const res = await fetchImpl(buildVerifyUrl(apiKey, email));
-  if (!res.ok) throw new Error(`MillionVerifier HTTP ${res.status} para ${email}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`MillionVerifier HTTP ${res.status} para ${email}`);
+  }
   const body = (await res.json()) as { result?: string };
   const result = body?.result ?? "";
   return { result, bucket: classifyResult(result) };

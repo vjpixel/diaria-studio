@@ -80,6 +80,7 @@ async function fetchModels(apiKey: string): Promise<string[]> {
       signal: controller.signal,
     });
     if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
       throw new Error(`HTTP ${res.status}`);
     }
     const json = (await res.json()) as { models?: Array<{ name: string }> };

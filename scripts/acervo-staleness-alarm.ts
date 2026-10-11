@@ -83,7 +83,10 @@ export function latestProducedEdition(root = EDITIONS_ROOT): DateOnly | null {
 async function fetchArchiveLatest(url = SITEMAP_AO_VIVO_URL): Promise<DateOnly | null> {
   try {
     const res = await fetch(url, { headers: { "User-Agent": "diaria-acervo-staleness/1.0" } });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     return latestLastmodInLiveSitemap(await res.text(), hojeBRT());
   } catch {
     // Rede indisponível vira "sem dado", nunca alarme: alarmar por falha de

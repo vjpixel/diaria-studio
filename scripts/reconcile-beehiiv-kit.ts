@@ -107,6 +107,7 @@ export async function fetchActiveBeehiivEmails(apiKey: string, publicationId: st
       { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
     );
     if (res.status === 429) {
+      await res.body?.cancel().catch(() => {});
       // #6311: reusa `parseRetryAfterSecs` (já validado contra NaN/negativo
       // pelo #6284, mesma rodada) via `computeRetryWaitMs`, em vez de um 3º
       // parser duplicado — nunca mais o `NaN` que fazia `setTimeout` disparar
@@ -115,6 +116,7 @@ export async function fetchActiveBeehiivEmails(apiKey: string, publicationId: st
       continue;
     }
     if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
       throw new Error(`Beehiiv API ${res.status} em /subscriptions (página ${page})`);
     }
     const body = (await res.json()) as Page<BeehiivSubscriptionApi>;

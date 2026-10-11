@@ -186,7 +186,10 @@ export async function checkRobotsTxt(
     const isRedirect = res.status >= 300 && res.status < 400;
     const location = res.headers.get("location");
     const finalUrl = isRedirect && location ? new URL(location, url).toString() : typeof res.url === "string" && res.url ? res.url : null;
-    if (res.status !== 200) return { httpStatus: res.status, robotsTxt: null, fetchError: null, finalUrl };
+    if (res.status !== 200) {
+      await res.body?.cancel().catch(() => {});
+      return { httpStatus: res.status, robotsTxt: null, fetchError: null, finalUrl };
+    }
     const body = await res.text();
     return { httpStatus: res.status, robotsTxt: body, fetchError: null, finalUrl };
   } catch (e) {

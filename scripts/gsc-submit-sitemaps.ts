@@ -71,7 +71,10 @@ export async function submitSitemap(
   const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/sitemaps/${encodeURIComponent(sitemapUrl)}`;
   try {
     const res = await fetchImpl(url, { method: "PUT" });
-    if (res.ok) return { sitemapUrl, ok: true, status: res.status };
+    if (res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { sitemapUrl, ok: true, status: res.status };
+    }
 
     const body = await res.text();
     if (res.status === 403) {

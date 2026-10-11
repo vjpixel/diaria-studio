@@ -297,7 +297,10 @@ export async function fetchHomeHtml(
 ): Promise<{ html: string | null; fetchError: string | null }> {
   try {
     const res = await fetchFn(url, { method: "GET", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (!res.ok) return { html: null, fetchError: `HTTP ${res.status}` };
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { html: null, fetchError: `HTTP ${res.status}` };
+    }
     return { html: await res.text(), fetchError: null };
   } catch (e) {
     return { html: null, fetchError: (e as Error).message };
