@@ -32,7 +32,7 @@ Score: **migrar** = lógica é determinística e migração reduz custo/tempo/bu
 |---|---|---|---|
 | `auto-reporter` | haiku | **Manter** | Dedup contra GitHub issues abertas + síntese narrativa de sinais + gate humano. `scripts/auto-reporter-dedup.ts` já existe pro dedup; o agent ainda agrega valor na escolha de severidade/título + interação. |
 | `review-test-email` | haiku | **Manter** | Verifica email contra checklist subjetiva ("layout quebrado", "imagens carregam"). Gmail MCP + Chrome fallback — inspeção visual/semântica precisa LLM. |
-| `inbox-drainer` | haiku | **Remover** | Migrado para `scripts/inbox-drain.ts` (já está no `script-migration-plan.md` como ✅). Skill `/diaria-inbox` ainda dispatcha via `Agent` — atualizar pra chamar script direto via Bash. |
+| `inbox-drainer` | haiku | ~~Remover~~ **FEITO (#1110, PR #1127)** | Migrado para `scripts/inbox-drain.ts` (já está no `script-migration-plan.md` como ✅). Agent removido no PR #1127; a skill `/diaria-inbox` roda `npx tsx scripts/inbox-drain.ts` direto via Bash (#10028). |
 | `drive-syncer` | haiku | **Remover** | Migrado para `scripts/drive-sync.ts` (✅). Orchestrator já chama via Bash em vários stages; o agent `.md` é redundante. |
 | `collect-monthly-runner` | haiku | **Remover** | Migrado para `scripts/collect-monthly.ts`. Skill `/diaria-mensal` pode invocar direto via Bash. |
 
@@ -61,8 +61,8 @@ Score: **migrar** = lógica é determinística e migração reduz custo/tempo/bu
 Issues sugeridas pra abrir:
 
 1. **P3 — Cleanup: remover agent wrappers redundantes**
-   - Apagar `.claude/agents/{inbox-drainer,drive-syncer,collect-monthly-runner,social-instagram,social-twitter}.md`
-   - Atualizar `/diaria-inbox` skill pra chamar `scripts/inbox-drain.ts` via Bash direto
+   - ~~Apagar `.claude/agents/{inbox-drainer,drive-syncer,collect-monthly-runner,social-instagram,social-twitter}.md`~~ **FEITO (#1110, PR #1127)**
+   - ~~Atualizar `/diaria-inbox` skill pra chamar `scripts/inbox-drain.ts` via Bash direto~~ **FEITO** (a skill roda o script via Bash; confirmado no #10028)
    - Confirmar com Pixel se `social-instagram` e `social-twitter` realmente não rodam (provavelmente sim, mas não vi referência no orchestrator-stage-2.md)
    - Risk: baixo. Ganho: -5 arquivos de agent + 1 menos camada de indireção.
 
