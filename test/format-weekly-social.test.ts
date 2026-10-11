@@ -63,16 +63,17 @@ describe("formatInstagramWeekly", () => {
     assert.ok(long.length <= INSTAGRAM_WEEKLY_CHAR_LIMIT);
   });
 
-  it('menciona "link da bio" e a única URL no corpo é o link de arquivo, agora com UTM (#4537, nunca URL de item)', () => {
-    const items = makeItems(5);
-    const caption = formatInstagramWeekly(items);
-    assert.ok(caption.toLowerCase().includes("bio"));
-    const urls = caption.match(/https?:\/\/\S+/g) ?? [];
-    assert.deepEqual(
-      urls,
-      [`${buildInstagramWeeklyArchiveUrl()}.`],
-      "só o link de arquivo (com UTM) deveria aparecer, sem URL crua de item",
-    );
+  it('#10038: termina em "link da bio" e não tem NENHUMA URL no corpo (sem "Arquivo completo em", nunca URL de item)', () => {
+    for (const mode of ["clicked", "highlights"] as const) {
+      const caption = formatInstagramWeekly(makeItems(5), mode);
+      assert.ok(
+        caption.endsWith("\n\nEdição completa de cada matéria no link da bio."),
+        `caption (${mode}) deveria terminar na linha do link da bio`,
+      );
+      assert.doesNotMatch(caption, /Arquivo completo/i);
+      assert.doesNotMatch(caption, /weekly-archive/);
+      assert.deepEqual(caption.match(/https?:\/\/\S+/g) ?? [], [], "Instagram não linka no corpo — nenhuma URL");
+    }
   });
 
   it("#4537: buildInstagramWeeklyArchiveUrl carrega os 3 params via new URL()/searchParams (nunca concatenação)", () => {
