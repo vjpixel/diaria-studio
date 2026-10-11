@@ -1116,16 +1116,59 @@ export function isPermanentKitDoiFailure(status: number | undefined): boolean {
  * `per_contact` (comportamento do #9986): o custo é no máximo 1 contato
  * adiado, não a base inteira. Transitórias (5xx, 408, 429, rede) não entram
  * em `permanentFailureStatuses` nem contam como sucesso.
+ *
+ * #10051 — a heurística sozinha erra em regime estável: quem respondeu 200 sai
+ * 7 dias da fila, então uma rodada pode ter só 2 elegíveis, ambos com 422 por
+ * problema DELES, e caía em `global` todo dia (re-tentativa diária + warn falso
+ * de form inexistente). `formExists` é a confirmação direta do form
+ * (`probeKitDoiFormExists`, 1 GET por rodada, só quando a heurística diz
+ * `global`): `"exists"` derruba o `global` pra `per_contact`. `"missing"` ou
+ * `"unknown"` (probe falhou, sem prova) mantêm a heurística do #10023.
  */
 export type DoiPermanentFailureScope = "per_contact" | "global";
+export type KitDoiFormProbe = "exists" | "missing" | "unknown";
 export function decideDoiPermanentFailureScope(input: {
   permanentFailureStatuses: readonly number[];
   successes: number;
+  formExists?: KitDoiFormProbe;
 }): DoiPermanentFailureScope {
   const statuses = input.permanentFailureStatuses;
   if (statuses.length < 2) return "per_contact";
   if (input.successes > 0) return "per_contact";
+  if (input.formExists === "exists") return "per_contact";
   return statuses.every((s) => s === statuses[0]) ? "global" : "per_contact";
+}
+
+/**
+ * probeKitDoiFormExists (#10051) — confirma a existência do form DOI em vez de
+ * deduzi-la pelas falhas. `GET /v4/forms/{id}/subscribers?per_page=1` (só
+ * leitura; o Kit v4 não expõe "get form" singular, e este é o endpoint que o
+ * repo já usa em `listFormSubscribersPage`): 2xx → `exists`, 404 → `missing`,
+ * qualquer outra coisa (401/403/429/5xx/rede/timeout) → `unknown`. Nunca lança.
+ * Chamado no máximo 1x por rodada, e só quando `decideDoiPermanentFailureScope`
+ * já apontaria `global` — nenhuma chamada de rede por contato.
+ */
+export async function probeKitDoiFormExists(params: {
+  formId: string;
+  apiKey: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<KitDoiFormProbe> {
+  const f = params.fetchImpl ?? fetch;
+  try {
+    const res = await f(`${kitApiBase()}/forms/${encodeURIComponent(params.formId)}/subscribers?per_page=1`, {
+      method: "GET",
+      headers: { "X-Kit-Api-Key": params.apiKey, Accept: "application/json" },
+      signal: AbortSignal.timeout(params.timeoutMs ?? 15_000),
+    });
+    // Corpo não interessa; cancela pra não segurar o socket (#10022).
+    await res.body?.cancel().catch(() => {});
+    if (res.status >= 200 && res.status < 300) return "exists";
+    if (res.status === 404) return "missing";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 /**
@@ -2454,10 +2497,22 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   // #10023 — aplica (ou descarta) o backoff das falhas permanentes do reenvio
   // DOI agora que a rodada inteira é conhecida.
   if (pendingDoiPermanentFailures.length > 0) {
-    const scope = decideDoiPermanentFailureScope({
-      permanentFailureStatuses: pendingDoiPermanentFailures.map((f) => f.status),
-      successes: doiResendAttempts2xx,
-    });
+    const permanentFailureStatuses = pendingDoiPermanentFailures.map((f) => f.status);
+    let scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes: doiResendAttempts2xx });
+    if (scope === "global" && doiFormForResend !== undefined && kitApiKey) {
+      // #10051 — antes de declarar o form inexistente, confirma: 1 GET por
+      // rodada, só neste caso. Form existe → as falhas são dos contatos.
+      const formExists = await probeKitDoiFormExists({ formId: doiFormForResend, apiKey: kitApiKey });
+      scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes: doiResendAttempts2xx, formExists });
+      if (scope === "per_contact") {
+        log(
+          `reenvio DOI: ${pendingDoiPermanentFailures.length} falha(s) HTTP ${pendingDoiPermanentFailures[0]!.status} sem nenhum 2xx, ` +
+            `mas o form ${doiFormForResend} existe (GET /forms/{id}/subscribers 2xx) — falhas dos contatos, backoff por contato (#10051).`,
+        );
+      } else if (formExists === "unknown") {
+        log(`warn: não deu pra confirmar a existência do form DOI ${doiFormForResend} (probe sem resposta conclusiva) — mantida a heurística do #10023 (#10051).`);
+      }
+    }
     if (scope === "global") {
       log(
         `warn: reenvio do double opt-in falhou com HTTP ${pendingDoiPermanentFailures[0]!.status} em TODAS as ` +
