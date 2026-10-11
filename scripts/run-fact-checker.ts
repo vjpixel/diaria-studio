@@ -464,7 +464,16 @@ export function isReadingTimeEstimate(c: FactClaim, useMelhorItems?: UseMelhorRe
   const tail = typeof c.context === "string" ? READING_TIME_CONTEXT_TAIL_RE.exec(c.context) : null;
   if (tail) {
     const ctxMinutes = tail[1] ?? tail[2] ?? tail[3];
-    if (ctxMinutes !== undefined && Number(ctxMinutes) === textMinutes) return true;
+    // (#10021) "configure em 10 minutos ... (10 min)": o mesmo número como
+    // duração ANTES do marcador torna a claim ambígua (pode ser a factual) →
+    // fail-closed.
+    if (
+      ctxMinutes !== undefined &&
+      Number(ctxMinutes) === textMinutes &&
+      !mentionsMinutesDuration(c.context!.slice(0, tail.index), textMinutes)
+    ) {
+      return true;
+    }
   }
   if (!useMelhorItems || typeof c.context !== "string") return false;
   const fragments = contextFragments(c.context);
@@ -472,9 +481,25 @@ export function isReadingTimeEstimate(c: FactClaim, useMelhorItems?: UseMelhorRe
   // Contexto curto demais não identifica item nenhum ("12 min", "guia") —
   // fail-closed.
   if (fragmentChars < MIN_CONTEXT_MATCH_CHARS) return false;
+  // (#10021) O item casado não pode mencionar o MESMO número como duração
+  // fora do marcador final: "configure o agente em 10 minutos ... (10 min)"
+  // com a claim "10 minutos" pode ser a afirmação factual, não o tempo de
+  // leitura — e o `context` truncado não distingue as duas → fail-closed.
   return useMelhorItems.some(
-    (item) => item.minutes === textMinutes && fragments.every((f) => item.normalized.includes(f)),
+    (item) =>
+      item.minutes === textMinutes &&
+      !mentionsMinutesDuration(item.beforeMarker, textMinutes) &&
+      fragments.every((f) => item.normalized.includes(f)),
   );
+}
+
+/**
+ * (#10021) `true` se `text` menciona `minutes` como duração em minutos
+ * ("10 minutos", "10 min", "10min"). Fronteira à esquerda exclui "110 min" e
+ * "1,10 min"; "10 dicas" não conta (não é duração).
+ */
+function mentionsMinutesDuration(text: string, minutes: number): boolean {
+  return new RegExp(String.raw`(?<![\d.,])0*${minutes}\s*min`, "i").test(text);
 }
 
 /** (#9985) Mínimo de caracteres (normalizados) do `context` pra casar um item do USE MELHOR. */
@@ -486,6 +511,8 @@ export interface UseMelhorReadingTimeItem {
   minutes: number;
   /** Título + descrição sem markdown, minúsculo, espaços colapsados. */
   normalized: string;
+  /** (#10021) Mesmo texto que `normalized`, mas só o que vem ANTES do marcador final. */
+  beforeMarker: string;
 }
 
 const USE_MELHOR_HEADER_RE = sectionHeaderRegex(String.raw`USE\s+MELHOR`, { capture: "none", flags: "u" });
@@ -543,8 +570,12 @@ export function parseUseMelhorReadingTimeItems(md: string): UseMelhorReadingTime
     const joined = lines.join(" ");
     const tail = READING_TIME_CONTEXT_TAIL_RE.exec(joined);
     const minutes = tail ? (tail[1] ?? tail[2] ?? tail[3]) : undefined;
-    if (minutes === undefined) continue;
-    out.push({ minutes: Number(minutes), normalized: normalizeForMatch(joined) });
+    if (!tail || minutes === undefined) continue;
+    out.push({
+      minutes: Number(minutes),
+      normalized: normalizeForMatch(joined),
+      beforeMarker: normalizeForMatch(joined.slice(0, tail.index)),
+    });
   }
   return out;
 }

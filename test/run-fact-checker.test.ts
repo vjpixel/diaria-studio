@@ -1156,6 +1156,33 @@ describe("isenção de tempo de leitura conferida contra o MD real (#9985)", () 
     }
   });
 
+  it("#10021: item do USE MELHOR com o MESMO número como duração factual antes do marcador → bloqueia", () => {
+    const md = [
+      "**🛠️ USE MELHOR**",
+      "",
+      "**[Agentes na prática](https://ex.com/agentes)**  ",
+      "Configure o agente em 10 minutos e automatize a triagem de e-mails (10 min)",
+      "",
+      "**[Guia de avaliação](https://ex.com/eval)** Como medir a qualidade de 10 respostas de um modelo (10 min)",
+    ].join("\n");
+    // Cenário da issue: fonte diz 40 minutos; a claim é a duração factual.
+    const factual = claim("10 minutos", "configure o agente em 10 minutos...");
+    assert.equal(isReadingTimeEstimate(factual, parseUseMelhorReadingTimeItems(md)), false);
+    assert.equal(getBlockingClaims([factual], { newsletterMd: md }).length, 1);
+    // Mesmo item, claim do marcador com context truncado: ambíguo → fail-closed.
+    assert.equal(getBlockingClaims([claim("(10 min)", "Agentes na prática...")], { newsletterMd: md }).length, 1);
+    // Número igual que NÃO é duração ("10 respostas") não estraga a isenção.
+    assert.equal(getBlockingClaims([claim("(10 min)", "Guia de avaliação...")], { newsletterMd: md }).length, 0);
+  });
+
+  it("#10021: context que termina no marcador mas repete o número como duração antes → bloqueia", () => {
+    const c = claim("10 minutos", "Configure o agente em 10 minutos e automatize a triagem (10 min)");
+    assert.equal(isReadingTimeEstimate(c), false);
+    assert.equal(getBlockingClaims([c]).length, 1);
+    // "110 min" / "1,10 min" não são o mesmo número.
+    assert.equal(isReadingTimeEstimate(claim("10 min", "Curso de 110 min condensado em resumo (10 min)")), true);
+  });
+
   it("MD sem seção USE MELHOR → comportamento do #9914 inalterado", () => {
     assert.deepEqual(parseUseMelhorReadingTimeItems("DESTAQUE 1\n\nTexto (12 min)\n"), []);
     assert.equal(getBlockingClaims([claim("12 min", "Guia de prompts para iniciantes...")], { newsletterMd: "x" }).length, 1);
