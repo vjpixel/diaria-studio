@@ -639,6 +639,29 @@ def test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs():
     print("regressão #10011: 'PRs para/que fecham/resolvendo #N' não escondem claim — OK")
 
 
+def test_regressao_10011_10016_formas_legitimas_de_lista_de_prs():
+    """#10016: falso alarme — já/ainda, prontos, ")" e "desta rodada"/"do tick"
+    são lista de PRs; verbo/preposição segue apontando pra issue."""
+    mod = _load_module()
+    for linha in (
+        "Claims nas PRs ainda abertas #9912 e #9922.",
+        "Claims nas PRs já mergeadas #9912 e #9922.",
+        "Claims em PRs (abertas) #9912 e #9922.",
+        "Claims nos PRs prontos #9912 e #9922.",
+        "Claims nas PRs desta rodada #9912 e #9922.",
+        "Claims nas PRs do tick #9912 e #9922.",
+    ):
+        refs = mod.extract_claimed_issue_refs(linha)
+        assert 9912 not in refs and 9922 not in refs, f"PRs virou issue: {linha!r} -> {refs}"
+    for linha in (
+        "#9912 reivindicada — PRs ainda para #9912",
+        "#9912 reivindicada — PRs já resolvendo #9912",
+        "#9912 reivindicada — PRs que fecham #9912",
+    ):
+        assert 9912 in mod.extract_claimed_issue_refs(linha), linha
+    print("regressão #10016: lista de PRs com já/ainda/prontos/')'/rodada — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -1132,6 +1155,7 @@ def main() -> int:
         test_regressao_9923_mayclaim_e_prs_plural_nao_sao_claim()
         test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio()
         test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs()
+        test_regressao_10011_10016_formas_legitimas_de_lista_de_prs()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.
