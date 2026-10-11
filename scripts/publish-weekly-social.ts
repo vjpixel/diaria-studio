@@ -1508,14 +1508,34 @@ async function runOneMode(
     } else {
       let response: { key: string } | null = null;
       try {
-        response = await postToWorkerQueue(workerUrl, workerToken, {
-          text: fbCaption,
-          image_url: null,
-          image_urls: carouselImageUrls,
-          scheduled_at: scheduledAt,
-          destaque: destaqueKey,
-          channel: "linkedin",
-        });
+        try {
+          response = await postToWorkerQueue(workerUrl, workerToken, {
+            text: fbCaption,
+            image_url: null,
+            image_urls: carouselImageUrls,
+            scheduled_at: scheduledAt,
+            destaque: destaqueKey,
+            channel: "linkedin",
+          });
+        } catch (e: any) {
+          // Fallback (decisão do editor, 261011): sem credencial da API direta
+          // (carrossel), publica só a CAPA como imagem única pelo webhook Make —
+          // o mesmo caminho do post diário. A legenda (fbCaption) já leva o link.
+          if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0) {
+            console.log(
+              `WARN linkedin/${destaqueKey} — sem credencial da API direta; fallback: capa como imagem única via Make.`,
+            );
+            response = await postToWorkerQueue(workerUrl, workerToken, {
+              text: fbCaption,
+              image_url: carouselImageUrls[0],
+              scheduled_at: scheduledAt,
+              destaque: destaqueKey,
+              channel: "linkedin",
+            });
+          } else {
+            throw e;
+          }
+        }
       } catch (e: any) {
         // #8303 — o Worker (workers/linkedin-cron/src/index.ts::handleEnqueue)
         // rejeita o enqueue ANTES de aceitar, quando channel=linkedin carrega
@@ -1531,6 +1551,9 @@ async function runOneMode(
         // rejeição específica (não-retriable, config ausente) de qualquer
         // outra falha real (rede, timeout, 5xx) — só a primeira vira
         // "skipped"; o resto continua "failed" como antes.
+        // Defensivo: o fallback de capa única (acima) já trata essa rejeição do
+        // carrossel; este ramo só alcança o código se o próprio fallback for
+        // recusado igual (Worker mudou de regra).
         if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing") {
           console.log(
             `SKIP linkedin/${destaqueKey} — credencial da API direta do LinkedIn ausente no Worker ` +

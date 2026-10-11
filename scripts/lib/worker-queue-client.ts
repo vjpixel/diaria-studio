@@ -108,8 +108,8 @@ export async function deleteFromWorkerQueue(
  * `workers/linkedin-cron/src/index.ts::handleEnqueue`). Callers que só
  * precisam logar o erro continuam funcionando sem mudança (é um `Error`
  * normal); callers que precisam ramificar por causa (como
- * `publish-weekly-social.ts`, que trata `linkedin_creds_missing` como
- * `status: "skipped"` em vez de `"failed"`) checam `.code` em vez de fazer
+ * `publish-weekly-social.ts`, que em `linkedin_creds_missing` reenfileira só a
+ * capa como imagem única via Make, em vez de marcar `"failed"`) checam `.code` em vez de fazer
  * parsing de string na mensagem — mais robusto a mudança de texto no Worker.
  */
 export class WorkerQueueError extends Error {
