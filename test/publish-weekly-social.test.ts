@@ -2202,6 +2202,8 @@ describe("main(): dispatch mockado", () => {
       assert.equal(queueCalls.filter((c) => c === "linkedin").length, 2, "1 tentativa de carrossel (400, sem retry) + 1 fallback com a capa única");
       assert.ok(linkedinSingle, "fallback enviou imagem única");
       assert.ok(typeof linkedinSingle.image_url === "string" && linkedinSingle.image_url.length > 0, "fallback leva a capa em image_url");
+      assert.equal(linkedinSingle.image_urls, undefined, "fallback não envia image_urls (senão o Worker voltaria a exigir creds)");
+      assert.match(linkedinSingle.image_url, /cover/i, "a imagem única é a CAPA, não um slide de notícia nem o CTA");
 
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const liEntry = out.posts.find((p: any) => p.platform === "linkedin");

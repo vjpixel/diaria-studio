@@ -1551,6 +1551,9 @@ async function runOneMode(
         // rejeição específica (não-retriable, config ausente) de qualquer
         // outra falha real (rede, timeout, 5xx) — só a primeira vira
         // "skipped"; o resto continua "failed" como antes.
+        // Defensivo: o fallback de capa única (acima) já trata essa rejeição do
+        // carrossel; este ramo só alcança o código se o próprio fallback for
+        // recusado igual (Worker mudou de regra).
         if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing") {
           console.log(
             `SKIP linkedin/${destaqueKey} — credencial da API direta do LinkedIn ausente no Worker ` +
