@@ -20,6 +20,7 @@ import {
   resendKitDoi,
   isKitDoiResendCounted,
   isPermanentKitDoiFailure,
+  decideDoiPermanentFailureScope,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
@@ -674,6 +675,71 @@ describe("reenvio DOI — backoff de falha permanente (#9986)", () => {
     try {
       const r = await run(contact("leitor@x.com"));
       assert.equal(findContact(r.store, "leitor@x.com")!.doi_resend_failed_at, undefined);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// #10023 — regressão: o POST /forms/{formId}/subscribers/{id} do Kit também
+// responde 404/422 quando o FORM não existe (apagado, ID errado). O #9986
+// tratava isso como falha do contato e gravava `doi_resend_failed_at` em todo
+// elegível da rodada; corrigido o ID, ninguém era tentado por 7 dias.
+describe("reenvio DOI — form inexistente é falha global, não backoff por contato (#10023)", () => {
+  const origFetch = globalThis.fetch;
+
+  it("decideDoiPermanentFailureScope: ≥2 falhas iguais sem 2xx → global; resto → per_contact", () => {
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [404, 404], successes: 0 }), "global");
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [422, 422, 422], successes: 0 }), "global");
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [404], successes: 0 }), "per_contact");
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [404, 404], successes: 1 }), "per_contact");
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [404, 422], successes: 0 }), "per_contact");
+    assert.equal(decideDoiPermanentFailureScope({ permanentFailureStatuses: [], successes: 0 }), "per_contact");
+  });
+
+  for (const status of [404, 422]) {
+    it(`form inexistente (${status} em todas as tentativas) → nenhum contato marcado, warn agregado, rodada seguinte re-tenta`, async () => {
+      let calls = installFetch({ state: "inactive", formStatus: status });
+      const logs: string[] = [];
+      try {
+        const emails = ["a@x.com", "b@x.com", "c@x.com"];
+        const r1 = await run(emails.map((e) => contact(e)), { log: (m) => logs.push(m) });
+        assert.equal(calls.formPosts.length, 3);
+        assert.equal(r1.failed, 3, "segue contando como falha da rodada");
+        for (const e of emails) {
+          assert.equal(findContact(r1.store, e)!.doi_resend_failed_at, undefined, `${e} não entra no backoff`);
+        }
+        assert.equal(logs.filter((l) => l.includes("falha GLOBAL de config") && l.includes("#10023")).length, 1);
+
+        // Editor corrige o KIT_DOI_FORM_ID: a rodada seguinte já tenta todo mundo.
+        calls = installFetch({ state: "inactive", formStatus: 201 });
+        const r2 = await run(emails.map((e) => findContact(r1.store, e)!));
+        assert.equal(calls.formPosts.length, 3, "nenhum contato ficou 7 dias sem tentativa");
+        assert.equal(r2.doiResent, 3);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  }
+
+  it("404 de um contato com 2xx de outro na mesma rodada → form existe, só o 404 entra no backoff", async () => {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("/forms/") && method === "POST") return jsonRes(u.endsWith("/subscribers/77") ? 404 : 201, {});
+      if (u.includes("api.kit.com/v4/subscribers") && u.includes("email_address=")) {
+        const email = new URL(u).searchParams.get("email_address")!;
+        const id = email === "bad@x.com" ? 77 : 88;
+        return jsonRes(200, { subscribers: [{ id, email_address: email, state: "inactive", created_at: "2026-09-01T00:00:00.000Z" }] });
+      }
+      return brevoStatsRes(3, 3);
+    }) as typeof fetch;
+    try {
+      const r = await run([contact("bad@x.com"), contact("good@x.com")]);
+      assert.equal(r.doiResent, 1);
+      assert.equal(r.failed, 1);
+      assert.ok(findContact(r.store, "bad@x.com")!.doi_resend_failed_at, "404 do contato entra no backoff");
+      assert.equal(findContact(r.store, "good@x.com")!.doi_resend_failed_at, undefined);
     } finally {
       globalThis.fetch = origFetch;
     }

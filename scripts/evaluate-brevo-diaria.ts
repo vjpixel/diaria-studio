@@ -1018,7 +1018,9 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * TENTATIVA a cada `DOI_RESEND_INTERVAL_DAYS`. #9986 — tentativa não é
  * e-mail: só o HTTP 201 envia, e depois do 1º 201 (ou pra quem já entrou pelo
  * mesmo form via workers poll/cursos/reativar) o Kit responde 200 e nada
- * sai; na prática o e-mail sai no máximo uma vez na vida por contato, e o
+ * sai; espera-se que o e-mail saia no máximo uma vez na vida por contato
+ * (premissa do comportamento do Kit; a proporção 200/201 ainda não foi
+ * medida, #9986/#10023), e o
  * resumo da rodada expõe os noops (`doiResendNoop`). Quem clicar no botão vira `active` no Kit
  * e o Passo 1 converte (`self_confirmed_kit`). Reenviar o pedido de
  * confirmação não reabre a inscrição de ninguém: só a pessoa clicando faz
@@ -1087,6 +1089,35 @@ const NON_PER_CONTACT_4XX = new Set([401, 403, 408, 429]);
 export function isPermanentKitDoiFailure(status: number | undefined): boolean {
   if (status === undefined) return false;
   return status >= 400 && status < 500 && !NON_PER_CONTACT_4XX.has(status);
+}
+
+/**
+ * decideDoiPermanentFailureScope (#10023) — pura. Decide, no FIM da rodada,
+ * se as falhas "permanentes" (`isPermanentKitDoiFailure`) do reenvio DOI são
+ * do CONTATO (grava `doi_resend_failed_at`, backoff de 7 dias) ou do FORM
+ * (global: não grava nada). O `POST /forms/{formId}/subscribers/{id}` do Kit
+ * também responde 404/422 quando o form foi apagado ou o ID está errado, e
+ * `verificarDoiForm` só confere vazio/form de sistema, nunca existência —
+ * sem esta decisão, um `KIT_DOI_FORM_ID` errado marcava TODO contato elegível
+ * e, corrigido o ID, ninguém era tentado por 7 dias.
+ *
+ * `global` quando: houve ≥2 falhas permanentes, nenhuma tentativa voltou 2xx
+ * (um 2xx prova que o form existe) e todas as falhas permanentes têm o MESMO
+ * status. Status mistos (404 + 422) ou qualquer 2xx → `per_contact`. Com uma
+ * única tentativa falhando não há como discriminar sem I/O extra; fica
+ * `per_contact` (comportamento do #9986): o custo é no máximo 1 contato
+ * adiado, não a base inteira. Transitórias (5xx, 408, 429, rede) não entram
+ * em `permanentFailureStatuses` nem contam como sucesso.
+ */
+export type DoiPermanentFailureScope = "per_contact" | "global";
+export function decideDoiPermanentFailureScope(input: {
+  permanentFailureStatuses: readonly number[];
+  successes: number;
+}): DoiPermanentFailureScope {
+  const statuses = input.permanentFailureStatuses;
+  if (statuses.length < 2) return "per_contact";
+  if (input.successes > 0) return "per_contact";
+  return statuses.every((s) => s === statuses[0]) ? "global" : "per_contact";
 }
 
 /**
@@ -1761,6 +1792,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let awaitingKitConfirmation = 0; // #8728
   let doiResent = 0; // #9835
   let doiResendNoop = 0; // #9986
+  // #10023 — falhas permanentes do reenvio DOI ficam PENDENTES até o fim da
+  // rodada: só aí dá pra saber se são do contato ou do form (todas iguais e
+  // nenhum 2xx = form inexistente/errado, global). Ver
+  // `decideDoiPermanentFailureScope`.
+  const pendingDoiPermanentFailures: { email: string; status: number }[] = [];
+  let doiResendAttempts2xx = 0;
   // #9835 review — valida o form de DOI UMA vez por rodada: form de sistema
   // (responde 201 e não envia nada, #7723) desliga o reenvio com um único
   // log alto, em vez de virar N falhas idênticas por contato todo dia.
@@ -2250,8 +2287,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             // e está `inactive` (sem cancelamento), no máximo 1 TENTATIVA a
             // cada DOI_RESEND_INTERVAL_DAYS. #9986 — só o 201 envia e-mail;
             // depois do 1º 201 (ou pra quem entrou pelo mesmo form nos
-            // workers) toda tentativa responde 200 e nada sai, então na
-            // prática é uma vez na vida. Nunca mexe em `state`: quem ativa é a
+            // workers) toda tentativa responde 200 e nada sai, então o
+            // esperado (não medido, #10023) é uma vez na vida. Nunca mexe em `state`: quem ativa é a
             // pessoa clicando, e o Passo 1 converte na rodada seguinte.
             // Só roda em push (este ramo já está depois do `if (!push)`).
             const storedContact = findContact(store, contact.email) ?? contact;
@@ -2277,6 +2314,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               } catch (e) {
                 resend = { ok: false, reason: (e as Error).message };
               }
+              if (resend.ok) doiResendAttempts2xx++; // #10023 — 2xx prova que o form existe
               if (resend.ok && isKitDoiResendCounted(resend.status)) {
                 log(`${contact.email}: double opt-in do Kit reenviado (form ${doiFormForResend}, HTTP ${resend.status}, #9835).`);
                 doiResent++;
@@ -2299,12 +2337,14 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 // backoff: o contato só volta a ser tentado depois de
                 // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
                 // rodada. Transitória (5xx, 408, 429, rede) e de
-                // credencial/config (401/403) não gravam.
+                // credencial/config (401/403) não gravam. #10023 — o marcador
+                // só é gravado no fim da rodada, depois de descartar falha
+                // global do form (`decideDoiPermanentFailureScope`).
                 const permanent = isPermanentKitDoiFailure(resend.status);
-                if (permanent) store = markDoiResendFailed(store, contact.email);
+                if (permanent) pendingDoiPermanentFailures.push({ email: contact.email, status: resend.status! });
                 log(
                   `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}` +
-                    (permanent ? ` — falha permanente (HTTP ${resend.status}), próxima tentativa em ${DOI_RESEND_INTERVAL_DAYS}d (#9986)` : ""),
+                    (permanent ? ` — possível falha permanente (HTTP ${resend.status}); backoff decidido no fim da rodada (#9986/#10023)` : ""),
                 );
                 failed++;
                 failedContacts.push({
@@ -2400,6 +2440,28 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       failed++;
       failedContacts.push({ email: contact.email, reason: (e as Error).message, kitRateLimited: isKitRateLimitError(e) });
       log(`FALHA em ${contact.email}: ${(e as Error).message}`);
+    }
+  }
+
+  // #10023 — aplica (ou descarta) o backoff das falhas permanentes do reenvio
+  // DOI agora que a rodada inteira é conhecida.
+  if (pendingDoiPermanentFailures.length > 0) {
+    const scope = decideDoiPermanentFailureScope({
+      permanentFailureStatuses: pendingDoiPermanentFailures.map((f) => f.status),
+      successes: doiResendAttempts2xx,
+    });
+    if (scope === "global") {
+      log(
+        `warn: reenvio do double opt-in falhou com HTTP ${pendingDoiPermanentFailures[0]!.status} em TODAS as ` +
+          `${pendingDoiPermanentFailures.length} tentativa(s) da rodada, sem nenhum 2xx — provável form DOI inexistente ` +
+          `ou ID errado (kit.doiFormId=${doiFormForResend}). Tratado como falha GLOBAL de config: nenhum contato entra ` +
+          `no backoff de ${DOI_RESEND_INTERVAL_DAYS}d; confira KIT_DOI_FORM_ID (#10023).`,
+      );
+    } else {
+      for (const f of pendingDoiPermanentFailures) {
+        store = markDoiResendFailed(store, f.email);
+        log(`${f.email}: falha permanente do reenvio DOI (HTTP ${f.status}), próxima tentativa em ${DOI_RESEND_INTERVAL_DAYS}d (#9986).`);
+      }
     }
   }
 
