@@ -22,6 +22,10 @@ import {
   nextFailedThreads,
   maxIso,
   MAX_FAILED_THREAD_ATTEMPTS,
+  iterateThreads,
+  firstDrainCutoffIso,
+  sinceForNewFailures,
+  FIRST_DRAIN_WINDOW_DAYS,
 } from "../scripts/inbox-drain.ts";
 import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 import {
@@ -74,6 +78,68 @@ describe("#10030 — helpers de retry de threads que falharam", () => {
     assert.deepEqual(failed, []);
     assert.equal(abandoned.length, 1);
     assert.equal(abandoned[0].attempts, MAX_FAILED_THREAD_ATTEMPTS);
+  });
+
+  it("#10052: firstDrainCutoffIso = 00:00 UTC de 3 dias atrás (mesmo dia do after: da busca)", () => {
+    const now = new Date("2026-10-11T02:30:00.000Z");
+    assert.equal(FIRST_DRAIN_WINDOW_DAYS, 3);
+    assert.equal(firstDrainCutoffIso(now), "2026-10-08T00:00:00.000Z");
+    // virada de mês em UTC
+    assert.equal(firstDrainCutoffIso(new Date("2026-03-02T23:59:00.000Z")), "2026-02-27T00:00:00.000Z");
+  });
+
+  it("#10052: sinceForNewFailures nunca grava null — cursor nulo vira o corte da janela de 3 dias", () => {
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    assert.equal(sinceForNewFailures(null, now), "2026-10-08T00:00:00.000Z");
+    assert.equal(sinceForNewFailures("2026-10-10T09:00:00.000Z", now), "2026-10-10T09:00:00.000Z");
+  });
+
+  it("#10052: thread falha com cursor nulo → retry por ID só ingere mensagens dentro da janela", async () => {
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const msg = (id: string, iso: string, url: string) => ({
+      id,
+      internalDate: String(new Date(iso).getTime()),
+      payload: {
+        mimeType: "text/plain",
+        body: { data: Buffer.from(`Veja ${url}`, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_") },
+        headers: [
+          { name: "From", value: "editor@example.com" },
+          { name: "Subject", value: `assunto ${id}` },
+        ],
+      },
+    });
+    const oldThread = {
+      id: "t-old",
+      messages: [
+        msg("m1", "2026-08-01T10:00:00.000Z", "https://example.com/antiga-1"),
+        msg("m2", "2026-09-15T10:00:00.000Z", "https://example.com/antiga-2"),
+        msg("m3", "2026-10-09T10:00:00.000Z", "https://example.com/recente"),
+      ],
+    };
+
+    // 1º drain (cursor nulo): getThread falha → entra nos pendentes.
+    const first = await iterateThreads(
+      [{ id: "t-old" }],
+      async () => {
+        throw new Error("transient");
+      },
+      null,
+    );
+    assert.deepEqual(first.failedThreadIds, ["t-old"]);
+    const { failed } = nextFailedThreads([], first.failedThreadIds, sinceForNewFailures(null, now));
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].since, "2026-10-08T00:00:00.000Z");
+
+    // 2º drain: a busca não traz a thread; o retry por ID traz.
+    const planned = planThreadsWithRetries([], failed);
+    const second = await iterateThreads(
+      planned.threads,
+      async () => oldThread as never,
+      "2026-10-10T00:00:00.000Z",
+      planned.sinceOverrides,
+    );
+    const urls = second.resultUrls.map((u) => u.url);
+    assert.deepEqual(urls, ["https://example.com/recente"]);
   });
 
   it("maxIso: nunca recua", () => {
