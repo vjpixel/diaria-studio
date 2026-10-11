@@ -143,7 +143,8 @@ export function scanProcessExitAfterFetch(root: string, allowlist: ReadonlySet<s
 }
 
 // ---------------------------------------------------------------------------
-// #9991: corpo de fetch não consumido em script que sai por `runCli`.
+// #9991: corpo de fetch não consumido em script que sai por `runCli` ou
+// atribui `process.exitCode` à mão (#10022).
 //
 // `process.exit()` matava o socket de um `fetch` cujo corpo ninguém leu;
 // com `process.exitCode` (o padrão do `runCli`) o processo só sai quando o
@@ -201,23 +202,100 @@ function isAwaitedFetch(e: ts.Expression | undefined): boolean {
   return true;
 }
 
-/** Posição (início) da primeira leitura de corpo de `X` em `node` (`X.json()`, `X.body`...), ou -1. */
-function firstBodyReadPos(node: ts.Node, name: string): number {
-  let pos = -1;
+/** `console.algo(...)`: só imprime, não consome nem repassa o stream. */
+function isConsoleCall(c: ts.CallExpression): boolean {
+  const e = c.expression;
+  return ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === "console";
+}
+
+/**
+ * `X.body` (nó `p`) usado de um jeito que consome ou repassa o stream:
+ * `X.body.cancel()`/`.getReader()`/`.pipeTo()` (qualquer acesso a membro),
+ * argumento de chamada que não é `console.*`, `for await (… of X.body)`,
+ * `return X.body`, atribuição. Ler só para inspecionar (`if (res.body)`,
+ * `console.log(res.body)`, template string) não conta (#10022).
+ */
+function bodyAccessConsumes(p: ts.PropertyAccessExpression): boolean {
+  let n: ts.Node = p;
+  while (ts.isParenthesizedExpression(n.parent) || ts.isNonNullExpression(n.parent) || ts.isAsExpression(n.parent)) n = n.parent;
+  const q = n.parent;
+  if (!q) return false;
+  if ((ts.isPropertyAccessExpression(q) || ts.isElementAccessExpression(q)) && q.expression === n) return true;
+  if (ts.isCallExpression(q)) return q.arguments.includes(n as ts.Expression) && !isConsoleCall(q);
+  if (ts.isNewExpression(q)) return !!q.arguments?.includes(n as ts.Expression);
+  return (
+    (ts.isForOfStatement(q) && q.expression === n) ||
+    ts.isReturnStatement(q) ||
+    (ts.isArrowFunction(q) && q.body === n) ||
+    (ts.isBinaryExpression(q) && q.right === n && q.operatorToken.kind === ts.SyntaxKind.EqualsToken) ||
+    (ts.isVariableDeclaration(q) && q.initializer === n) ||
+    (ts.isPropertyAssignment(q) && q.initializer === n) ||
+    ts.isArrayLiteralExpression(q) ||
+    ts.isSpreadElement(q)
+  );
+}
+
+/** `n` é uma leitura de corpo de `X`: `X.json()`/`.text()`/... ou `X.body` consumido. */
+function isBodyRead(n: ts.Node, name: string): n is ts.PropertyAccessExpression {
+  if (!ts.isPropertyAccessExpression(n) || !ts.isIdentifier(n.expression) || n.expression.text !== name) return false;
+  const m = n.name.text;
+  if (m === "body") return bodyAccessConsumes(n);
+  return BODY_METHODS.has(m) && ts.isCallExpression(n.parent) && n.parent.expression === n;
+}
+
+/** Todas as leituras de corpo de `X` em `node`, sem descer em funções aninhadas. */
+function bodyReads(node: ts.Node, name: string): ts.PropertyAccessExpression[] {
+  const out: ts.PropertyAccessExpression[] = [];
   const visit = (n: ts.Node): void => {
-    if (pos !== -1) return;
-    if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === name) {
-      const m = n.name.text;
-      if (m === "body" || (BODY_METHODS.has(m) && ts.isCallExpression(n.parent) && n.parent.expression === n)) {
-        pos = n.getStart();
-        return;
-      }
-    }
+    if (isBodyRead(n, name)) out.push(n);
     if (isFunctionLike(n)) return;
     ts.forEachChild(n, visit);
   };
   ts.forEachChild(node, visit);
-  return pos;
+  return out;
+}
+
+/**
+ * Passar de `child` para `parent` entra num caminho que pode não executar
+ * (ramo de `if`, `?:`, lado direito de `&&`/`||`/`??`, corpo de laço,
+ * `case`, `catch`).
+ */
+function isConditionalEdge(parent: ts.Node, child: ts.Node): boolean {
+  if (ts.isIfStatement(parent)) return child !== parent.expression;
+  if (ts.isConditionalExpression(parent)) return child !== parent.condition;
+  if (ts.isBinaryExpression(parent)) {
+    const k = parent.operatorToken.kind;
+    return (
+      child === parent.right &&
+      (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.QuestionQuestionToken)
+    );
+  }
+  if (ts.isIterationStatement(parent, false)) return child === parent.statement;
+  return ts.isCaseClause(parent) || ts.isDefaultClause(parent) || ts.isCatchClause(parent);
+}
+
+/**
+ * A leitura `read` acontece em todo caminho que chega ao `if` `target`
+ * (aproximação de dominância): sobe de `read` até o primeiro ancestral
+ * comum sem atravessar ramo condicional e exige que, ali, a leitura venha
+ * antes (statement anterior no mesmo bloco, ou a condição do `if` que
+ * contém `target`). Antes do #10022 qualquer leitura textualmente anterior
+ * calava todos os `if` seguintes, inclusive uma leitura dentro de outro `if`.
+ */
+function dominates(read: ts.Node, target: ts.Node): boolean {
+  if (read.getStart() >= target.getStart()) return false;
+  const targetAncestors = new Set<ts.Node>();
+  for (let a: ts.Node | undefined = target; a; a = a.parent) targetAncestors.add(a);
+  let child: ts.Node = read;
+  for (let p = read.parent; p; child = p, p = p.parent) {
+    if (targetAncestors.has(p)) {
+      if (ts.isBlock(p) || ts.isSourceFile(p) || ts.isModuleBlock(p)) return true; // `child` é statement anterior
+      if (ts.isIfStatement(p)) return child === p.expression;
+      return false;
+    }
+    if (isFunctionLike(p) || isConditionalEdge(p, child)) return false;
+  }
+  return false;
 }
 
 /** `X` tem o corpo lido/cancelado ou é repassado (argumento, return, atribuição) dentro de `node`. */
@@ -228,8 +306,7 @@ function consumesOrEscapes(node: ts.Node, name: string): boolean {
     if (ts.isIdentifier(n) && n.text === name) {
       const p = n.parent;
       if (ts.isPropertyAccessExpression(p) && p.expression === n) {
-        if (p.name.text === "body") found = true;
-        else if (BODY_METHODS.has(p.name.text) && ts.isCallExpression(p.parent) && p.parent.expression === p) found = true;
+        if (isBodyRead(p, name)) found = true;
       } else if (
         (ts.isCallExpression(p) && p.arguments.includes(n)) ||
         (ts.isNewExpression(p) && !!p.arguments?.includes(n)) ||
@@ -326,14 +403,14 @@ export function scanUnconsumedFetchBody(src: string, fileName = "x.ts"): Unconsu
         out.push({ line: lineOf(decl), name, reason: "never-consumed" });
         continue;
       }
-      // Corpo já lido antes do `if` (ex.: `const data = await res.json()`
-      // e depois `if (!res.ok || !data.ok) return`): nada pendurado.
-      const readPos = firstBodyReadPos(scope, name);
+      // Corpo já lido em todo caminho até o `if` (ex.: `const data = await
+      // res.json()` e depois `if (!res.ok || !data.ok) return`): nada pendurado.
+      const reads = bodyReads(scope, name);
       const visitIf = (n: ts.Node): void => {
         if (isFunctionLike(n)) return;
         if (
           ts.isIfStatement(n) && n.getStart(sf) > declPos && readsPropertyOf(n.expression, name) &&
-          !(readPos !== -1 && readPos < n.getStart(sf))
+          !reads.some((r) => dominates(r, n))
         ) {
           for (const branch of [n.thenStatement, n.elseStatement]) {
             if (branch && !ts.isIfStatement(branch) && exits(branch) && !consumesOrEscapes(branch, name)) {
@@ -360,16 +437,30 @@ export function usesRunCli(src: string): boolean {
   return /from\s+["'][^"']*\/cli-exit(\.ts|\.js)?["']/.test(src);
 }
 
+/**
+ * Script que atribui `process.exitCode` à mão (`process.exitCode = 1`,
+ * `||=`, `??=`...): sai pelo mesmo caminho do `runCli` — só quando o loop
+ * esvazia — e por isso também é segurado por corpo pendente (#10022).
+ */
+export function assignsProcessExitCode(src: string): boolean {
+  return /\bprocess\.exitCode\s*(?:\|\||&&|\?\?)?=(?!=)/.test(src);
+}
+
 export type BodyViolation = { file: string } & UnconsumedBody;
 
-/** Varre `scripts/` (fora de `scripts/lib/`) nos scripts que saem por `runCli`. */
-export function scanUnconsumedBodyInRunCliScripts(root: string): BodyViolation[] {
+/**
+ * Varre `scripts/` (fora de `scripts/lib/`) nos scripts que saem pelo loop
+ * vazio: os que usam `runCli` e os que atribuem `process.exitCode` à mão.
+ * Antes do #10022 só os do `runCli` eram vistos, e um script no padrão manual
+ * (ex.: `clarice-plan-wave.ts`) reintroduzia o #9991 sem o guard perceber.
+ */
+export function scanUnconsumedBodyInExitCodeScripts(root: string): BodyViolation[] {
   const out: BodyViolation[] = [];
   for (const abs of walkTs(join(root, "scripts"))) {
     const rel = relative(root, abs).split(sep).join("/");
     if (rel.startsWith("scripts/lib/")) continue;
     const src = readFileSync(abs, "utf8");
-    if (!usesRunCli(src)) continue;
+    if (!usesRunCli(src) && !assignsProcessExitCode(src)) continue;
     for (const v of scanUnconsumedFetchBody(src, abs)) out.push({ file: rel, ...v });
   }
   return out;

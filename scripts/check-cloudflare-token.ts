@@ -77,6 +77,7 @@ export async function checkCloudflareToken(
     });
 
     if (res.status === 401 || res.status === 403) {
+      await res.body?.cancel().catch(() => {});
       return {
         status: "invalid",
         token_prefix: prefix,

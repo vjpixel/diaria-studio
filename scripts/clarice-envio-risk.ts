@@ -198,6 +198,7 @@ export async function fetchRiskSnapshot(opts: FetchRiskSnapshotOptions): Promise
   // próprio agendamento; aqui o interesse é só saúde histórica de envio).
   const res = await fetchFn(`${opts.dashboardUrl}/api/campaigns?limit=${DEFAULT_DASHBOARD_LIMIT}`);
   if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
     // #5220 — mesma distinção de `clarice-plan-wave.ts` (#5058): 429/503 é
     // rate limit TRANSITÓRIO da Brevo repassado pelo dashboard — "espere e
     // repita", não erro estrutural. `TransientDashboardError` é o sinal que

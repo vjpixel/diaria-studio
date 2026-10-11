@@ -127,7 +127,10 @@ export async function expandAggregatorLinks(url: string): Promise<string[]> {
       },
       signal: AbortSignal.timeout(CONFIG.timeouts.fetch),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return [];
+    }
     const html = await res.text();
 
     let aggregatorHost: string;

@@ -163,6 +163,7 @@ export async function checkHub(
 ): Promise<{ httpStatus: number | null; fetchError: string | null }> {
   try {
     const res = await fetchFn(url, { method: "GET", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    await res.body?.cancel().catch(() => {});
     return { httpStatus: res.status, fetchError: null };
   } catch (e) {
     return { httpStatus: null, fetchError: (e as Error).message };

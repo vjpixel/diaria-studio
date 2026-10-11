@@ -53,7 +53,10 @@ async function realFetchText(url: string): Promise<string> {
     headers: { "user-agent": REGEN_HOME_WATCHDOG_USER_AGENT, "cache-control": "no-cache" },
     signal: AbortSignal.timeout(30_000),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} em ${url}`);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`HTTP ${res.status} em ${url}`);
+  }
   return res.text();
 }
 

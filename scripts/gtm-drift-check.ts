@@ -170,7 +170,10 @@ export async function fetchGtmJs(
       headers: { "User-Agent": BROWSER_USER_AGENT },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) return { text: null, fetchError: `HTTP ${res.status}` };
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { text: null, fetchError: `HTTP ${res.status}` };
+    }
     return { text: await res.text(), fetchError: null };
   } catch (e) {
     return { text: null, fetchError: (e as Error).message };

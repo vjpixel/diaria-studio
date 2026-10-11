@@ -118,6 +118,7 @@ export async function pingIndexNow(
       body: JSON.stringify(payload),
     });
     if (res.status === INDEXNOW_PENDING_KEY_VALIDATION_STATUS) {
+      await res.body?.cancel().catch(() => {});
       return {
         ok: false,
         status: res.status,
@@ -157,6 +158,7 @@ export async function checkKeyLocationServed(
   try {
     const res = await fetchFn(keyLocation);
     if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
       return { ok: false, status: res.status, error: `GET ${keyLocation} → ${res.status} (esperado 200)` };
     }
     const body = (await res.text()).trim();

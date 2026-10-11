@@ -282,11 +282,15 @@ async function beehiivFetch<T>(
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
   });
   if (res.status === 429 && retries < 5) {
+    await res.body?.cancel().catch(() => {});
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
     await sleep(Math.max(retryAfter * 1000, 30_000));
     return beehiivFetch<T>(path, apiKey, fetchImpl, retries + 1);
   }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   const text = await res.text();
   return { ok: true, status: res.status, body: text ? (JSON.parse(text) as T) : null };
 }

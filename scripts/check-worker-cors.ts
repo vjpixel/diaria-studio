@@ -91,6 +91,7 @@ async function checkCors(workerUrl: string): Promise<CheckResult> {
       headers: { Origin: "https://app.beehiiv.com" },
     });
     const corsHeader = res.headers.get("access-control-allow-origin");
+    await res.body?.cancel().catch(() => {});
     const evaluation = evaluateCorsResponse(res.status, corsHeader);
     return {
       ok: evaluation.ok,
