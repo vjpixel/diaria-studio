@@ -312,14 +312,17 @@ _PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
 # #N", "PRs que fecham #A e #B" ou "2 PRs resolvendo #N" tiravam a ISSUE #N da
 # checagem de claim (verbo/preposição aponta para a issue, não lista PRs).
 # Palavra fora da lista → não é lista de PRs, o número segue como issue.
+# #10016: advérbio opcional (já/ainda), `pront[oa]s?`, "desta rodada"/"do tick"
+# e ")" no separador ("PRs (abertas) #A") — falso alarme de fabricação.
 _PRS_STATE_WORD = (
     r"(?:abert[oa]s?|mergead[oa]s?|mesclad[oa]s?|fechad[oa]s?|pendentes?"
-    r"|nov[oa]s?|recentes?|verdes?|vermelh[oa]s?|drafts?|prontas?|ativ[oa]s?"
+    r"|nov[oa]s?|recentes?|verdes?|vermelh[oa]s?|drafts?|pront[oa]s?|ativ[oa]s?"
     r"|em\s+(?:review|revis[aã]o|aberto|andamento|draft)"
+    r"|(?:dest[ae]|d[ao])\s+(?:rodada|tick)"
     r"|open|merged|closed|pending)"
 )
 _PRS_LIST_REF = re.compile(
-    r"\bPRs\b[\s:(]*(?:" + _PRS_STATE_WORD + r"\b[\s:(]+){0,2}"
+    r"\bPRs\b[\s:(]*(?:(?:(?:j[aá]|ainda)\s+)?" + _PRS_STATE_WORD + r"\b[\s):(]+){0,2}"
     r"(?P<refs>" + _REF_LIST.pattern + r")",
     re.IGNORECASE,
 )
