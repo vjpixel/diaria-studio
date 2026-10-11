@@ -58,8 +58,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  *
  * `pool-text-edit` (#9989): título ou descrição de um item de pool
  * (USE MELHOR/RADAR/LANÇAMENTOS/VÍDEOS) reescrito sem trocar o conjunto de
- * itens. `context.change_kind`: `titulo` | `descricao` | `titulo-e-descricao`
- * | `outro`.
+ * itens. `context.change_kind`: `titulo` | `descricao` | `titulo-e-descricao`.
+ * Diferença `outro` (só tracking da URL ou cabeçalho) nunca gera
+ * `pool-text-edit` (#10012/#10019).
  */
 export type RequestType =
   | "title-choice"

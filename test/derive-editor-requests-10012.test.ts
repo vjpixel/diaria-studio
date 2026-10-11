@@ -2,8 +2,8 @@
  * #10012 — `classifyPoolTextEdit` devolve `"outro"` quando a diferença numa
  * seção de pool está só no tracking/query da URL do MESMO artigo ou numa
  * linha fora dos itens (cabeçalho). Isso não é edição de texto de item: o
- * pedido mantém o tipo padrão da seção (`link-swap` em RADAR/LANÇAMENTOS,
- * `destaque-promote` em USE MELHOR) em vez de virar `pool-text-edit` e contar
+ * pedido mantém o tipo padrão da seção (`link-swap` em RADAR/LANÇAMENTOS;
+ * no USE MELHOR vira `other`, ver #10019) em vez de virar `pool-text-edit` e contar
  * como recorrência do `writer.md` que não houve. Os casos de título/descrição
  * do #9989 continuam `pool-text-edit`.
  */
