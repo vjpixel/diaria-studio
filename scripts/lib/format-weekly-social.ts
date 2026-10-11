@@ -39,6 +39,9 @@
  * via `new URL()` + `searchParams` (nunca concatenação), mesmo padrão de
  * `buildFacebookCtaUrl` em `social-cta-lines.ts`, a partir do triplo único em
  * `scripts/lib/shared/utm-registry.ts` (`INSTAGRAM_WEEKLY_ARCHIVE_UTM`).
+ * Desde o #10038 a caption do Instagram NÃO emite mais esse link (termina em
+ * "link na bio"); o UTM do Instagram fica aposentado no registry, só como
+ * referência histórica dos testes de isolamento entre canais.
  *
  * #5348 self-review: `formatFacebookWeekly` usa um triplo UTM PRÓPRIO
  * (`FACEBOOK_WEEKLY_ARCHIVE_UTM`, `source:"facebook"`) — nunca reusa o do
