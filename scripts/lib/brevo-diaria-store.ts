@@ -99,13 +99,14 @@ export interface BrevoDiariaContact {
    * designer form de DOI) pra um contato que qualifica por abertura mas está
    * `inactive` no Kit. Base do anti-spam (`needsDoiResend`): no máximo 1
    * TENTATIVA a cada `DOI_RESEND_INTERVAL_DAYS`. Só é gravado com HTTP 201
-   * (vínculo novo, o único que dispara e-mail, #9945). #9986 — na prática o
-   * e-mail sai UMA VEZ NA VIDA por contato: depois do 1º 201 o subscriber
+   * (vínculo novo, o único que dispara e-mail, #9945). #9986 — o esperado
+   * (premissa sobre o Kit, proporção 200/201 ainda não medida, #10023) é o
+   * e-mail sair UMA VEZ NA VIDA por contato: depois do 1º 201 o subscriber
    * fica vinculado ao form e toda tentativa seguinte responde 200 (noop,
    * `doi_resend_noop_at`). Quem já entrou pelo mesmo form (workers
    * poll/cursos/reativar) nunca chega a ter um 201. Falha transitória não
    * grava (a tentativa se repete na rodada seguinte); falha permanente grava
-   * `doi_resend_failed_at`. Não é
+   * `doi_resend_failed_at` (salvo falha global do form, #10023). Não é
    * limpo quando o contato sai de `in_brevo` (mesmo tratamento de
    * `awaiting_kit_confirmation_since`); `needsDoiResend` checa o status. */
   doi_resent_at?: string;
@@ -552,7 +553,8 @@ export function findStaleAwaitingKitConfirmation(
  * do alarme de espera (#8753; aqui a comparação é `>=`, no alarme é `>`).
  * #9986 — não é "um e-mail por semana": só o 201 envia, e depois do 1º 201
  * as tentativas seguintes respondem 200 (já vinculado ao form), então o
- * e-mail sai no máximo uma vez na vida por contato. Literal
+ * esperado (não medido, #10023) é o e-mail sair no máximo uma vez na vida
+ * por contato. Literal
  * em vez de alias (knip acusa export duplicado); a igualdade com
  * `AWAITING_KIT_CONFIRMATION_STALE_DAYS` é travada por teste.
  */
