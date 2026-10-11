@@ -138,3 +138,9 @@ foi de fato chamado com o payload esperado. Carrossel real no LinkedIn
 Make) ficou fora de escopo — decisão de produto/custo de engenharia não
 tomada, documentada como trabalho futuro na issue #8052
 (`diaria-retrospectiva-semanal`).
+
+## princ-8719-pop-automatico
+
+Motivação da remoção do `git stash pop` automático do sync de código
+(#8719, 24/09/2026): o pop automático já deixou um checkout preso ~20h em
+conflito de merge (`UU`) numa rodada real.
