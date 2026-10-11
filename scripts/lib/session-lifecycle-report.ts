@@ -19,17 +19,32 @@
  * é esperado que este relatório saia "0 eventos" logo após o merge desta
  * unidade, e isso não é falha do mecanismo.
  */
-import type { SessionLifecycleEvent } from "./session-registry.ts";
+import type { SessionLifecycleEvent, SessionLifecycleEventType } from "./session-registry.ts";
+
+/** Eventos aceitos pelo parser. Evento desconhecido = linha descartada (um
+ * consumidor como `check-continuo-session-registration.ts` perderia a janela
+ * do tick em silêncio se o tipo novo não entrasse aqui — #10020). */
+const KNOWN_EVENTS: ReadonlySet<string> = new Set<SessionLifecycleEventType>([
+  "ended",
+  "gc-removed-without-end",
+  "swept-without-end",
+]);
 
 export interface SessionLifecycleSummary {
   totalEvents: number;
   endedCount: number;
   gcRemovedWithoutEndCount: number;
-  /** `gcRemovedWithoutEndCount / totalEvents`, `null` quando `totalEvents === 0`
-   * (nada a dividir — nunca `NaN`/`Infinity` silencioso). */
+  /** #10020 — ticks do contínuo encerrados pelo sweep de órfãos
+   * (`sweep-continuo-orphan-sessions.ts`) sem nunca terem chamado `end`. */
+  sweptWithoutEndCount: number;
+  /** Proporção de sessões que terminaram SEM chamar `end`
+   * (`(gcRemovedWithoutEndCount + sweptWithoutEndCount) / totalEvents`),
+   * `null` quando `totalEvents === 0` (nada a dividir — nunca
+   * `NaN`/`Infinity` silencioso). O nome ficou o do #6624 por
+   * compatibilidade; desde o #10020 inclui os ticks varridos. */
   gcRemovedWithoutEndRatio: number | null;
   /** Contagem por `kind`, só pra quem quiser decompor além do agregado. */
-  byKind: Record<string, { ended: number; gcRemovedWithoutEnd: number }>;
+  byKind: Record<string, { ended: number; gcRemovedWithoutEnd: number; sweptWithoutEnd: number }>;
 }
 
 /** Parseia uma linha JSONL — `null` para linha vazia ou JSON inválido/shape
@@ -43,7 +58,7 @@ export function parseSessionLifecycleLine(line: string): SessionLifecycleEvent |
     if (
       !parsed ||
       typeof parsed !== "object" ||
-      (parsed.event !== "ended" && parsed.event !== "gc-removed-without-end") ||
+      !KNOWN_EVENTS.has(parsed.event) ||
       typeof parsed.kind !== "string" ||
       typeof parsed.sessionId !== "string"
     ) {
@@ -68,25 +83,31 @@ export function parseSessionLifecycleLog(content: string): SessionLifecycleEvent
 /** Agrega uma lista de eventos já parseados no resumo que responde à
  * pergunta da issue. Pura. */
 export function summarizeSessionLifecycle(events: readonly SessionLifecycleEvent[]): SessionLifecycleSummary {
-  const byKind: Record<string, { ended: number; gcRemovedWithoutEnd: number }> = {};
+  const byKind: Record<string, { ended: number; gcRemovedWithoutEnd: number; sweptWithoutEnd: number }> = {};
   let endedCount = 0;
   let gcRemovedWithoutEndCount = 0;
+  let sweptWithoutEndCount = 0;
   for (const e of events) {
-    const bucket = (byKind[e.kind] ??= { ended: 0, gcRemovedWithoutEnd: 0 });
+    const bucket = (byKind[e.kind] ??= { ended: 0, gcRemovedWithoutEnd: 0, sweptWithoutEnd: 0 });
     if (e.event === "ended") {
       endedCount++;
       bucket.ended++;
+    } else if (e.event === "swept-without-end") {
+      sweptWithoutEndCount++;
+      bucket.sweptWithoutEnd++;
     } else {
       gcRemovedWithoutEndCount++;
       bucket.gcRemovedWithoutEnd++;
     }
   }
   const totalEvents = events.length;
+  const withoutEnd = gcRemovedWithoutEndCount + sweptWithoutEndCount;
   return {
     totalEvents,
     endedCount,
     gcRemovedWithoutEndCount,
-    gcRemovedWithoutEndRatio: totalEvents === 0 ? null : gcRemovedWithoutEndCount / totalEvents,
+    sweptWithoutEndCount,
+    gcRemovedWithoutEndRatio: totalEvents === 0 ? null : withoutEnd / totalEvents,
     byKind,
   };
 }

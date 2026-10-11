@@ -11,19 +11,24 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ORPHAN_SWEEP_MIN_AGE_MS,
   planContinuoOrphanSweep,
   sweepContinuoOrphanSessions,
 } from "../scripts/sweep-continuo-orphan-sessions.ts";
+import { parseSessionLifecycleLog, summarizeSessionLifecycle } from "../scripts/lib/session-lifecycle-report.ts";
 import { SOFT_STALE_MS, type SessionRecord } from "../scripts/lib/session-registry.ts";
 
 const JOB = "5d791ef6fc2c";
 const TAG = "300";
 const NOW = Date.parse("2026-10-10T12:00:00.000Z");
-const OLD = new Date(NOW - SOFT_STALE_MS - 60_000).toISOString();
+const OLD = new Date(NOW - ORPHAN_SWEEP_MIN_AGE_MS - 60_000).toISOString();
+// #10017: "stale" pro registry (passou de SOFT_STALE_MS) mas ainda dentro do
+// corte do sweep — o tick vivo em review/CI/merge, que não renova heartbeat.
+const STALE_BUT_ALIVE = new Date(NOW - SOFT_STALE_MS - 30 * 60_000).toISOString();
 const FRESH = new Date(NOW - 10 * 60_000).toISOString();
 
 function rec(id: string, over: Partial<SessionRecord> = {}): SessionRecord {
@@ -60,6 +65,22 @@ describe("planContinuoOrphanSweep (#10002)", () => {
   it("heartbeat recente → mantém (tick possivelmente vivo)", () => {
     const [c] = planContinuoOrphanSweep([rec("t3", { lastHeartbeat: FRESH })], opts);
     assert.equal(c!.action, "keep");
+  });
+
+  it("heartbeat além de SOFT_STALE_MS (90min) mas aquém do corte do sweep → mantém (#10017)", () => {
+    // Antes do fix o corte ERA o SOFT_STALE_MS: um tick vivo em review/CI/merge
+    // (sem renovar heartbeat, sem claims naquele instante) era varrido pelo
+    // tick seguinte do mesmo job.
+    const [c] = planContinuoOrphanSweep(
+      [rec("t3b", { startedAt: STALE_BUT_ALIVE, lastHeartbeat: STALE_BUT_ALIVE })],
+      opts,
+    );
+    assert.equal(c!.action, "keep");
+    assert.match(c!.reason, /heartbeat recente/);
+  });
+
+  it("corte do sweep é estritamente maior que SOFT_STALE_MS (#10017)", () => {
+    assert.ok(ORPHAN_SWEEP_MIN_AGE_MS > SOFT_STALE_MS);
   });
 
   it("outra máquina → mantém", () => {
@@ -156,6 +177,35 @@ describe("sweepContinuoOrphanSessions — I/O num repo temporário (#10002)", ()
     const r = sweepContinuoOrphanSessions(root, { ...opts });
     assert.ok(r.ended.includes(`hermes-cron-${JOB}-bkvazio`));
     assert.equal(existsSync(real), false);
+  });
+
+  it("heartbeat recente só no backup (real velho) → mantém (#10015/#10020)", () => {
+    const real = write(rec("bkfresh"));
+    writeBackup(real, rec("bkfresh", { lastHeartbeat: FRESH }));
+    const r = sweepContinuoOrphanSessions(root, { ...opts });
+    const c = r.plan.find((x) => x.sessionId.endsWith("-bkfresh"));
+    assert.equal(c?.action, "keep");
+    assert.ok(!r.ended.some((id) => id.endsWith("-bkfresh")));
+    assert.equal(existsSync(real), true);
+  });
+
+  it("encerramento grava \"swept-without-end\" no lifecycle, nunca \"ended\" (#10020)", () => {
+    const logPath = join(root, "data", "session-lifecycle.jsonl");
+    rmSync(logPath, { force: true });
+    write(rec("lifecycle"));
+    const r = sweepContinuoOrphanSessions(root, { ...opts });
+    assert.ok(r.ended.includes(`hermes-cron-${JOB}-lifecycle`));
+    const events = parseSessionLifecycleLog(readFileSync(logPath, "utf8")).filter((e) =>
+      e.sessionId.endsWith("-lifecycle"),
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.event, "swept-without-end");
+    assert.equal(events[0]!.kind, "continuo");
+    // E o relatório conta como "sem end", não como fim limpo.
+    const summary = summarizeSessionLifecycle(events);
+    assert.equal(summary.endedCount, 0);
+    assert.equal(summary.sweptWithoutEndCount, 1);
+    assert.equal(summary.gcRemovedWithoutEndRatio, 1);
   });
 
   it("data/sessions ausente → nada a fazer, sem lançar", () => {

@@ -190,7 +190,7 @@ describe("check-continuo-session-registration CLI", () => {
   describe("#8378 — sessão encerrada limpo é lida de data/session-lifecycle.jsonl", () => {
     function writeLifecycleEvent(
       lifecycleDir: string,
-      event: { event: "ended" | "gc-removed-without-end"; kind: string; sessionId: string; startedAt: string; lastHeartbeat: string | null; ts: string },
+      event: { event: "ended" | "gc-removed-without-end" | "swept-without-end"; kind: string; sessionId: string; startedAt: string; lastHeartbeat: string | null; ts: string },
     ): void {
       mkdirSync(lifecycleDir, { recursive: true });
       writeFileSync(join(lifecycleDir, "session-lifecycle.jsonl"), `${JSON.stringify(event)}\n`, "utf8");
@@ -268,6 +268,40 @@ describe("check-continuo-session-registration CLI", () => {
           ts: "2026-09-18T06:00:00.000Z",
         });
         const result = runCheck(rootSidecarDir, rootSessionsDir, "2026-09-18T05:00:00.000Z");
+        assert.equal(result.status, "ok", result.reason);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("evento swept-without-end (#10020) também conta como registro — o register RODOU, o sweep só encerrou depois", () => {
+      const root = mkdtempSync(join(tmpdir(), "continuo-session-check-10020-swept-"));
+      try {
+        const rootSidecarDir = join(root, "tick-sidecars");
+        const rootSessionsDir = join(root, "sessions");
+        mkdirSync(rootSidecarDir, { recursive: true });
+        mkdirSync(rootSessionsDir, { recursive: true });
+        writeFileSync(
+          join(rootSidecarDir, "cron_x_20261010_010536.json"),
+          JSON.stringify({
+            sessionId: "cron_x_20261010_010536",
+            firstAt: "2026-10-10T04:05:46.765Z",
+            lastAt: "2026-10-10T04:06:57.847Z",
+            toolCallCount: 1,
+            toolCalls: [],
+            capturedAt: "2026-10-10T05:00:00.000Z",
+          }),
+          "utf8",
+        );
+        writeLifecycleEvent(root, {
+          event: "swept-without-end",
+          kind: "continuo",
+          sessionId: "hermes-cron-x-20261010T040540Z",
+          startedAt: "2026-10-10T04:05:40.000Z",
+          lastHeartbeat: "2026-10-10T04:05:40.000Z",
+          ts: "2026-10-10T12:00:00.000Z",
+        });
+        const result = runCheck(rootSidecarDir, rootSessionsDir, "2026-10-10T05:00:00.000Z");
         assert.equal(result.status, "ok", result.reason);
       } finally {
         rmSync(root, { recursive: true, force: true });

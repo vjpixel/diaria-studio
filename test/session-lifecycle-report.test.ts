@@ -30,6 +30,14 @@ describe("parseSessionLifecycleLine", () => {
     assert.equal(parsed!.sessionId, "s1");
   });
 
+  it("aceita 'swept-without-end' (#10020) — senão o check de registro perde a janela do tick", () => {
+    const parsed = parseSessionLifecycleLine(
+      JSON.stringify({ event: "swept-without-end", kind: "continuo", machineTag: "300", sessionId: "s2", ts: "t" }),
+    );
+    assert.ok(parsed);
+    assert.equal(parsed!.event, "swept-without-end");
+  });
+
   it("linha vazia/whitespace → null", () => {
     assert.equal(parseSessionLifecycleLine(""), null);
     assert.equal(parseSessionLifecycleLine("   "), null);
@@ -92,7 +100,25 @@ describe("summarizeSessionLifecycle", () => {
       { event: "ended" as const, kind: "continuo" as const, machineTag: "300", sessionId: "c", ts: "t" },
     ];
     const summary = summarizeSessionLifecycle(events);
-    assert.deepEqual(summary.byKind.overnight, { ended: 1, gcRemovedWithoutEnd: 1 });
-    assert.deepEqual(summary.byKind.continuo, { ended: 1, gcRemovedWithoutEnd: 0 });
+    assert.deepEqual(summary.byKind.overnight, { ended: 1, gcRemovedWithoutEnd: 1, sweptWithoutEnd: 0 });
+    assert.deepEqual(summary.byKind.continuo, { ended: 1, gcRemovedWithoutEnd: 0, sweptWithoutEnd: 0 });
+  });
+
+  it("swept-without-end conta como SEM end, nunca como fim limpo (#10020)", () => {
+    // Noite de 10/10: dezenas de ticks do contínuo morrem por cota e o tick
+    // seguinte os varre. Antes do #10020 o sweep gravava "ended" e o relatório
+    // mostrava 0% sem end pro continuo.
+    const events = [
+      { event: "ended" as const, kind: "continuo" as const, machineTag: "300", sessionId: "a", ts: "t" },
+      { event: "swept-without-end" as const, kind: "continuo" as const, machineTag: "300", sessionId: "b", ts: "t" },
+      { event: "swept-without-end" as const, kind: "continuo" as const, machineTag: "300", sessionId: "c", ts: "t" },
+      { event: "gc-removed-without-end" as const, kind: "continuo" as const, machineTag: "300", sessionId: "d", ts: "t" },
+    ];
+    const summary = summarizeSessionLifecycle(events);
+    assert.equal(summary.endedCount, 1);
+    assert.equal(summary.sweptWithoutEndCount, 2);
+    assert.equal(summary.gcRemovedWithoutEndCount, 1);
+    assert.equal(summary.gcRemovedWithoutEndRatio, 3 / 4);
+    assert.deepEqual(summary.byKind.continuo, { ended: 1, gcRemovedWithoutEnd: 1, sweptWithoutEnd: 2 });
   });
 });

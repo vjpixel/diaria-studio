@@ -22,6 +22,12 @@
 #     session-id`) — o tick lê esse arquivo (SKILL.md passo 1.3 atualizado)
 #     em vez de gerar/registrar de novo, fechando a duplicação (#8740 pede
 #     "atualizar a skill para não duplicar o registro").
+#   - FAZ (#10002/#10020): antes de registrar, roda
+#     `scripts/sweep-continuo-orphan-sessions.ts` pra encerrar registros de
+#     ticks ANTERIORES deste job que morreram sem `end` (sem claims,
+#     heartbeat além de 6h — #10017 —, só esta máquina, nunca a sessão
+#     atual). O sweep grava `"swept-without-end"` no log de lifecycle, não
+#     `"ended"`. Fail-soft como o registro.
 #   - NÃO invoca `claude-delegate.sh`/o modelo — de propósito. A proposta
 #     original (item 1 do #7890/#8740) foi adiada uma vez por tocar o
 #     contrato de `claude-delegate.sh`, que é reusado por OUTRAS skills do
@@ -76,8 +82,8 @@ fi
 
 # #10002: encerra registros de ticks ANTERIORES deste job que morreram sem
 # `end` (falha cedo — cota, credencial). Critério conservador no próprio
-# script (sem claims, heartbeat além de 90min, só esta máquina, nunca a
-# sessão atual). Fail-soft como o resto: limpeza de ruído nunca trava o tick.
+# script (sem claims, heartbeat além de 6h — #10017 —, só esta máquina,
+# nunca a sessão atual). Fail-soft como o resto: limpeza de ruído nunca trava o tick.
 if SWEEP_OUT=$(npx tsx scripts/sweep-continuo-orphan-sessions.ts --job "$JOB_ID" --exclude "$SESSION_ID" 2>&1); then
   echo "[register-continuo-tick] $SWEEP_OUT" >&2
 else

@@ -1896,9 +1896,19 @@ export function heartbeat(
  *     direto de "esta sessão nunca chamou `end`" — só o GC (que decide por
  *     heartbeat/PID morto) chega a remover um arquivo real coordenador vivo
  *     o bastante pra nunca ter passado pela Fase 2 de encerramento da skill.
+ *   - `"swept-without-end"` (#10020) — o sweep de ticks órfãos do contínuo
+ *     (`scripts/sweep-continuo-orphan-sessions.ts`, #10002) encerrou o
+ *     registro de um tick que morreu sem chamar `end`. Mesma classe de
+ *     `"gc-removed-without-end"` (a sessão NUNCA chamou `end`), só que
+ *     removida por outro caminho — antes do #10020 o sweep usava
+ *     `endSession` com o evento default `"ended"` e a falha sumia do
+ *     relatório (`session-lifecycle-report.ts`) justamente nas noites em que
+ *     dezenas de ticks morrem por cota.
  */
+export type SessionLifecycleEventType = "ended" | "gc-removed-without-end" | "swept-without-end";
+
 export interface SessionLifecycleEvent {
-  event: "ended" | "gc-removed-without-end";
+  event: SessionLifecycleEventType;
   kind: SessionKind;
   machineTag: string;
   sessionId: string;
@@ -1988,7 +1998,9 @@ function logSessionLifecycleEvent(repoRoot: string, event: SessionLifecycleEvent
  *
  * #6624: quando `kind` é coordenador (`COORDINATOR_SESSION_KINDS`), registra
  * um evento `"ended"` no log de ciclo de vida — instrumentação, nunca afeta
- * o retorno nem lança.
+ * o retorno nem lança. #10020: `opts.lifecycleEvent` troca o evento para
+ * `"swept-without-end"` quando quem encerra não é a própria sessão (sweep de
+ * ticks órfãos do contínuo).
  *
  * **#6952 (achado do review da PR): a remoção também entra no lock.** Todo
  * ESCRITOR do registro passou a serializar em `{path}.lock`, mas o REMOVEDOR
@@ -2048,6 +2060,11 @@ export function endSession(
   // contém estes testes passou a dar ETIMEDOUT). Produção nunca passa este
   // argumento.
   lockTimeoutMs: number = 10_000,
+  // #10020: qual evento de lifecycle registrar. Default `"ended"` (o fim
+  // limpo, chamado pela própria sessão); o sweep de órfãos do contínuo passa
+  // `"swept-without-end"` — encerrar em nome de uma sessão morta não é "ela
+  // chamou end", e registrar como tal apagava a taxa de falha do relatório.
+  opts: { lifecycleEvent?: Extract<SessionLifecycleEventType, "ended" | "swept-without-end"> } = {},
 ): boolean {
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   if (!existsSync(path)) return false;
@@ -2109,7 +2126,7 @@ export function endSession(
     const now = Date.now();
     const startedMs = Date.parse(outcome.record.startedAt ?? "");
     logSessionLifecycleEvent(repoRoot, {
-      event: "ended",
+      event: opts.lifecycleEvent ?? "ended",
       kind,
       machineTag: tag,
       sessionId,
