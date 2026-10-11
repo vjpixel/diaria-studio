@@ -50,13 +50,14 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   console.log(`${LOG_PREFIX} ${summary.totalEvents} evento(s) no log.`);
   console.log(`${LOG_PREFIX} "ended" (chamou end corretamente): ${summary.endedCount}`);
   console.log(`${LOG_PREFIX} "gc-removed-without-end" (GC removeu sem end): ${summary.gcRemovedWithoutEndCount}`);
+  console.log(`${LOG_PREFIX} "swept-without-end" (sweep de órfãos do contínuo, sem end): ${summary.sweptWithoutEndCount}`);
   if (summary.gcRemovedWithoutEndRatio !== null) {
     console.log(
       `${LOG_PREFIX} proporção sem end: ${(summary.gcRemovedWithoutEndRatio * 100).toFixed(1)}%`,
     );
   }
   for (const [kind, counts] of Object.entries(summary.byKind)) {
-    console.log(`${LOG_PREFIX}   ${kind}: ended=${counts.ended} gc-removed-without-end=${counts.gcRemovedWithoutEnd}`);
+    console.log(`${LOG_PREFIX}   ${kind}: ended=${counts.ended} gc-removed-without-end=${counts.gcRemovedWithoutEnd} swept-without-end=${counts.sweptWithoutEnd}`);
   }
 }
 

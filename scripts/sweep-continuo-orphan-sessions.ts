@@ -22,13 +22,26 @@
  *      UNIÃO do arquivo real com as cópias `-safeBackup-` do grupo (#10015,
  *      mesma semântica do registry, #6623): claim só no backup também mantém;
  *   4. heartbeat mais recente (`lastHeartbeat ?? startedAt`, também da união) mais velho que
- *      `SOFT_STALE_MS` (90min) — mesma janela em que o registry já marca a
- *      sessão `stale`. Um tick vivo que ainda bate heartbeat nunca entra.
- *      Timestamp ilegível ou no futuro → mantém.
+ *      `ORPHAN_SWEEP_MIN_AGE_MS` (6h) — DE PROPÓSITO bem acima do
+ *      `SOFT_STALE_MS` (90min) do registry (#10017). Um tick vivo só renova o
+ *      heartbeat ao registrar e no renovador da delegação (~45min); review,
+ *      CI e merge depois disso não renovam, e fora do Claude Code não há
+ *      beacon — então "stale" (90min) NÃO é "morto" (#7227). Com o corte de
+ *      90min, um tick novo do mesmo job podia varrer o anterior ainda vivo
+ *      (num instante sem claims, ex. entre unclaim e merge) e o `heartbeat`/
+ *      `end` dele viravam no-op silencioso. 6h = 3× a cadência de 120min do
+ *      cron e 4× o `SOFT_STALE_MS`: o tick morto de verdade ainda é varrido,
+ *      só alguns ticks depois — o custo de esperar é ruído, o de errar é
+ *      matar um tick vivo. Timestamp ilegível ou no futuro → mantém.
  * Cópias de conflito (`-safeBackup-`) não são candidatas por si (o GC,
  * `session-registry.ts gc`, cuida delas) — só entram na decisão do arquivo
  * real a que pertencem; o encerramento usa `endSession`, que carimba
  * `endedAt` nelas.
+ *
+ * O encerramento registra `"swept-without-end"` (não `"ended"`) no log de
+ * ciclo de vida (#10020): o tick nunca chamou `end`, e registrar como fim
+ * limpo apagava do `session-lifecycle-report.ts` exatamente a falha que o
+ * #6624 foi criado pra medir.
  *
  * Exit code 0 sempre que conseguiu rodar (fail-soft: o chamador é o wrapper
  * do cron, que não pode travar o tick por causa de limpeza de ruído).
@@ -43,13 +56,17 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
-  SOFT_STALE_MS,
   endSession,
   machineTag,
   readEffectiveSessionRecord,
   sessionsDir,
   type SessionRecord,
 } from "./lib/session-registry.ts";
+
+/** Idade mínima do heartbeat (união real+backups) para um tick ser varrido
+ *  (#10017). Ver critério 4 no docblock do módulo — maior que `SOFT_STALE_MS`
+ *  de propósito, nunca igual. */
+export const ORPHAN_SWEEP_MIN_AGE_MS = 6 * 60 * 60 * 1000;
 
 export interface SweepCandidate {
   sessionId: string;
@@ -99,8 +116,8 @@ export function planContinuoOrphanSweep(
       keep("heartbeat no futuro (clock skew)");
       continue;
     }
-    if (ageMs <= SOFT_STALE_MS) {
-      keep(`heartbeat recente (${Math.round(ageMs / 60_000)}min ≤ ${SOFT_STALE_MS / 60_000}min)`);
+    if (ageMs <= ORPHAN_SWEEP_MIN_AGE_MS) {
+      keep(`heartbeat recente (${Math.round(ageMs / 60_000)}min ≤ ${ORPHAN_SWEEP_MIN_AGE_MS / 60_000}min)`);
       continue;
     }
     out.push({
@@ -158,7 +175,9 @@ export function sweepContinuoOrphanSessions(
   for (const c of plan) {
     if (c.action !== "end") continue;
     try {
-      if (endSession(repoRoot, "continuo", c.sessionId, localTag)) ended.push(c.sessionId);
+      if (endSession(repoRoot, "continuo", c.sessionId, localTag, undefined, { lifecycleEvent: "swept-without-end" })) {
+        ended.push(c.sessionId);
+      }
     } catch (e) {
       errors.push(`${c.sessionId}: ${e instanceof Error ? e.message : String(e)}`);
     }

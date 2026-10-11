@@ -146,8 +146,9 @@ function readContinuoSessionWindows(sessionsDir: string): { windows: RegisteredS
  *  (#8378 — "17 de 17 sem sessão" era majoritariamente isso, não falha real
  *  de registro).
  *
- *  Eventos de `event="ended"` e `event="gc-removed-without-end"` contam
- *  igualmente aqui: os dois provam que o registro EXISTIU com esse
+ *  Eventos de `event="ended"`, `event="gc-removed-without-end"` e
+ *  `event="swept-without-end"` (#10020) contam igualmente aqui: todos
+ *  provam que o registro EXISTIU com esse
  *  `startedAt`/`lastHeartbeat` — a diferença entre os dois (encerrou limpo
  *  vs. GC removeu por staleness) é irrelevante pra "o `register` rodou?",
  *  a única pergunta desta checagem.
