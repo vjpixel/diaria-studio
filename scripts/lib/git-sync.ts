@@ -1246,16 +1246,36 @@ export function parseUntrackedPaths(porcelainStdout: string): string[] {
 const WINDOWS_RESERVED_NAME_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
 /**
- * #9960: entradas não-rastreadas (formato de `parseUntrackedPaths`) cujo
- * ÚLTIMO componente é um nome reservado do Windows. Entrada entre aspas é
- * ignorada (não é o caminho literal). Puro.
+ * #9960: entradas não-rastreadas (formato de `parseUntrackedPaths`) com um
+ * nome reservado do Windows em QUALQUER componente do caminho. Entrada entre
+ * aspas é ignorada (não é o caminho literal). Puro.
+ *
+ * - Último componente reservado (`nul`, `sub/con`, `nul/` colapsado) → a
+ *   entrada sai como veio.
+ * - Componente INTERMEDIÁRIO reservado (#10041: `nul/x`, vindo da expansão
+ *   do #9988 de um diretório `nul/` colapsado) → sai o prefixo até esse
+ *   diretório, com barra final (`nul/`): excluir o diretório por pathspec
+ *   exclui todo o conteúdo dele. Antes, só o último componente era testado e
+ *   `nul/x` escapava da exclusão do stash amplo.
+ *
+ * Saída sem duplicatas (`nul/x` e `nul/y` → um único `nul/`), na ordem da
+ * primeira ocorrência.
  */
 export function findWindowsReservedUntracked(untracked: string[]): string[] {
-  return untracked.filter((raw) => {
-    if (raw.startsWith('"')) return false;
-    const base = raw.replace(/\/+$/, "").split("/").pop() ?? "";
-    return WINDOWS_RESERVED_NAME_RE.test(base);
-  });
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of untracked) {
+    if (raw.startsWith('"')) continue;
+    const parts = raw.replace(/\/+$/, "").split("/");
+    const idx = parts.findIndex((c) => WINDOWS_RESERVED_NAME_RE.test(c));
+    if (idx < 0) continue;
+    const entry = idx === parts.length - 1 ? raw : `${parts.slice(0, idx + 1).join("/")}/`;
+    const key = entry.replace(/\/+$/, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
 }
 
 /**
@@ -1287,14 +1307,39 @@ export function reservedExcludePathspecs(reserved: string[]): string[] {
   return reserved.map((p) => `:(exclude,literal)${p.replace(/\/+$/, "")}`);
 }
 
-/** #9960: ação exata pra remover o arquivo reservado (vai no warning). */
+/**
+ * #10041: destino do rename sugerido pra um diretório reservado. Prefixo (não
+ * sufixo): `nul.txt_x` continuaria reservado (`nul` + extensão qualquer).
+ */
+function renamedReservedDir(p: string): string {
+  const slash = p.lastIndexOf("/");
+  return `${p.slice(0, slash + 1)}renomeado_${p.slice(slash + 1)}`;
+}
+
+/**
+ * #9960: ação exata pra remover o arquivo reservado (vai no warning).
+ * #10041: entrada com barra final é DIRETÓRIO de nome reservado — a ação é
+ * renomear (preserva o conteúdo, que pode ser trabalho do editor), nunca
+ * `rm -f` (não remove diretório) nem `rm -rf` (apagaria o conteúdo).
+ */
 export function describeReservedRemoval(reserved: string[]): string {
-  const list = reserved.map((p) => p.replace(/\/+$/, ""));
-  return (
-    `remova no Git Bash, a partir da raiz do checkout: ${list.map((p) => `rm -f -- './${p}'`).join(" ; ")} ` +
-    `(no cmd.exe: ${list.map((p) => `del "\\\\?\\%CD%\\${p.replace(/\//g, "\\")}"`).join(" & ")}). ` +
-    `Origem típica: um '> nul' digitado num shell Unix no Windows — use '> /dev/null'.`
-  );
+  const files = reserved.filter((p) => !p.endsWith("/"));
+  const dirs = reserved.filter((p) => p.endsWith("/")).map((p) => p.replace(/\/+$/, ""));
+  const parts: string[] = [];
+  if (files.length > 0) {
+    parts.push(
+      `remova no Git Bash, a partir da raiz do checkout: ${files.map((p) => `rm -f -- './${p}'`).join(" ; ")} ` +
+        `(no cmd.exe: ${files.map((p) => `del "\\\\?\\%CD%\\${p.replace(/\//g, "\\")}"`).join(" & ")}).`,
+    );
+  }
+  if (dirs.length > 0) {
+    parts.push(
+      `renomeie o(s) diretório(s) no Git Bash, a partir da raiz do checkout: ` +
+        `${dirs.map((p) => `mv -- './${p}' './${renamedReservedDir(p)}'`).join(" ; ")}.`,
+    );
+  }
+  parts.push(`Origem típica: um '> nul' digitado num shell Unix no Windows — use '> /dev/null'.`);
+  return parts.join(" ");
 }
 
 /**

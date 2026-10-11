@@ -260,3 +260,80 @@ describe("#9988 syncCode — stash amplo exclui `dir/nul` de diretório untracke
     }
   });
 });
+
+// ── #10041: DIRETÓRIO de nome reservado escapava após a expansão do #9988 ─────
+describe("#10041 diretório de nome reservado — puro", () => {
+  it("`nul/x` vindo da expansão vira exclusão de `nul/` (antes: nada, só o último componente era testado)", () => {
+    const merged = mergeExpandedUntracked(["nul/"], "nul/x\0nul/y.ts\0");
+    assert.deepEqual(merged, ["nul/x", "nul/y.ts"]);
+    assert.deepEqual(findWindowsReservedUntracked(merged), ["nul/"]);
+    assert.deepEqual(reservedExcludePathspecs(findWindowsReservedUntracked(merged)), [":(exclude,literal)nul"]);
+  });
+
+  it("componente intermediário reservado em qualquer profundidade; o 1º reservado vence; sem duplicatas", () => {
+    assert.deepEqual(
+      findWindowsReservedUntracked(["a/CON.log/b.ts", "a/CON.log/c/d", "x/nul/aux", "docs/ok.md", "nul"]),
+      ["a/CON.log/", "x/nul/", "nul"],
+    );
+  });
+
+  it("ação sugerida pra diretório é renomear (preserva conteúdo), com nome de destino não reservado", () => {
+    const a = describeReservedRemoval(["nul/", "sub/NUL.txt/", "f/con"]);
+    assert.match(a, /rm -f -- '\.\/f\/con'/);
+    assert.match(a, /mv -- '\.\/nul' '\.\/renomeado_nul'/);
+    assert.match(a, /mv -- '\.\/sub\/NUL\.txt' '\.\/sub\/renomeado_NUL\.txt'/);
+    assert.doesNotMatch(a, /rm -rf/);
+    assert.doesNotMatch(a, /rm -f -- '\.\/nul'/);
+  });
+});
+
+describe("#10041 syncCode — stash amplo exclui diretório `nul/` untracked (git real)", () => {
+  it("untracked `nul/` colapsado → ls-files expande pra `nul/x`, `nul` excluído do stash, sync passa", () => {
+    const p = realPair();
+    try {
+      mkdirSync(join(p.upDir, "novo"), { recursive: true });
+      writeFileSync(join(p.upDir, "novo", "x.ts"), "export const up = 1;\n");
+      p.up("add", ".");
+      p.up("commit", "-qm", "upstream novo/");
+      p.up("push", "-q", "origin", "master");
+      mkdirSync(join(p.dir, "novo"), { recursive: true });
+      writeFileSync(join(p.dir, "novo", "x.ts"), "local\n");
+      mkdirSync(join(p.dir, "nul"), { recursive: true });
+      writeFileSync(join(p.dir, "nul", "x"), "trabalho\n");
+      assert.match(p.git("status", "--porcelain").stdout, /^\?\? nul\/$/m, "pré-condição: porcelain colapsa o diretório");
+
+      const stashCalls: string[][] = [];
+      let ffCalls = 0;
+      const spawn: SpawnFn = (cmd, args) => {
+        if (cmd !== "git") return { status: 1, stdout: "", stderr: "só git" };
+        if (args[0] === "merge" && args[1] === "--ff-only" && ++ffCalls === 1) {
+          return { status: 1, stdout: "", stderr: "fatal: formato que o classificador não conhece\n" };
+        }
+        if (isStashPush(args)) {
+          stashCalls.push(args);
+          // No Windows o git não remove o diretório `nul`: se ele não foi excluído, falha.
+          if (!args.includes(":(exclude,literal)nul")) {
+            const r = p.git(...args);
+            return { ...r, status: 1, stderr: "error: unable to unlink old 'nul/x'" };
+          }
+        }
+        return p.git(...args);
+      };
+      const r = syncCode(spawn, NOOP_LOCK, MAIN_CHECKOUT);
+
+      assert.equal(stashCalls.length, 1);
+      assert.deepEqual(stashCalls[0].slice(stashCalls[0].indexOf("--")), ["--", ":(exclude,literal)nul"]);
+      assert.equal(r.outcome, "synced_stash_preserved", r.message);
+      assert.equal(r.commits_behind, 0);
+      assert.deepEqual(r.reserved_untracked_excluded, ["nul/"]);
+      assert.equal(readFileSync(join(p.dir, "nul", "x"), "utf8"), "trabalho\n", "`nul/x` fica no lugar, fora do stash");
+      assert.equal(readFileSync(join(p.dir, "novo", "x.ts"), "utf8"), "export const up = 1;\n");
+      const stashed = p.git("stash", "show", "--include-untracked", "--name-only", r.preserved_stash!.ref!).stdout;
+      assert.match(stashed, /novo\/x\.ts/);
+      assert.doesNotMatch(stashed, /^nul\//m);
+      assert.ok(r.warnings.some((w) => /nome reservado do Windows.*mv -- '\.\/nul' '\.\/renomeado_nul'/.test(w)));
+    } finally {
+      rmSync(p.root, { recursive: true, force: true });
+    }
+  });
+});
