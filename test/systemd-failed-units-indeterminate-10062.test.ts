@@ -11,7 +11,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
+  RUNNING_ACTIVE_STATES,
   indeterminateTrackedUnits,
   parseActiveStateShowOutput,
 } from "../scripts/lib/systemd-failed-units-alarm.ts";
@@ -31,12 +33,36 @@ describe("ausência indeterminada (#10062 item 2 — sweep no mesmo minuto da un
     assert.equal(parseActiveStateShowOutput("Foo=bar\n"), null);
   });
 
-  it("indeterminateTrackedUnits: activating/null congelam; inactive e já-failed não", () => {
-    const states: Record<string, string | null> = { a: "activating", b: "inactive", c: null, d: "failed" };
+  it("indeterminateTrackedUnits: activating/null congelam; inactive, active e já-failed não", () => {
+    const states: Record<string, string | null> = {
+      a: "activating",
+      b: "inactive",
+      c: null,
+      d: "failed",
+      e: "active",
+    };
     assert.deepEqual(
-      indeterminateTrackedUnits(["a", "b", "c", "d"], ["d"], (u) => states[u] ?? null),
+      indeterminateTrackedUnits(["a", "b", "c", "d", "e"], ["d"], (u) => states[u] ?? null),
       ["a", "c"],
     );
+  });
+
+  it("`active` é ausência REAL (#10066 review): serviço Type=simple que voltou a rodar não congela a entry", () => {
+    // Tasks são oneshot (executando = `activating`); `active` só aparece em
+    // serviço contínuo que se recuperou — contar como "executando" deixaria
+    // a issue aberta para sempre.
+    assert.equal(RUNNING_ACTIVE_STATES.has("active"), false);
+    assert.deepEqual(buildIndeterminateAllowlist(openState(), [], () => "active", "2026-10-12"), []);
+  });
+
+  it("main() passa a allowlist indeterminada às duas reconciliações (guard de fonte)", () => {
+    const src = readFileSync(new URL("../scripts/systemd-failed-units-alarm.ts", import.meta.url), "utf8");
+    const mainStart = src.indexOf("async function main(");
+    assert.ok(mainStart >= 0, "main() não encontrada");
+    const body = src.slice(mainStart);
+    assert.match(body, /const indeterminate = buildIndeterminateAllowlist\(/);
+    assert.match(body, /planAlarmReconciliation\([^)]*indeterminate\)/);
+    assert.match(body, /allowlist: indeterminate/);
   });
 
   it("readUnitActiveState só lê (`show`), nunca muta a unit", () => {

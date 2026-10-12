@@ -19,6 +19,11 @@
  * abre/atualiza. Sob `email_policy: "urgent_only"`, isso é intencional: só
  * a criação/mudança do achado emite sinal, não toda execução.
  *
+ * **#10062:** "sem estado local" não significa "nunca fecha". O script FECHA
+ * a própria issue de alarme (`closeSupersededAlarmIssues`) quando a rodada
+ * não tem achado nenhum, ou quando o conjunto de achados mudou (a issue do
+ * conjunto antigo é fechada e a do conjunto novo abre/atualiza).
+ *
  * Uso:
  *   npx tsx scripts/on-hold-vencimento-alarm.ts               # avalia + alarma se necessário
  *   npx tsx scripts/on-hold-vencimento-alarm.ts --dry-run      # avalia + imprime, NÃO envia e-mail

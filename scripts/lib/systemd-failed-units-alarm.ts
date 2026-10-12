@@ -88,10 +88,16 @@ export function isAlarmingVerdict(verdict: SystemdFailedUnitsVerdict): boolean {
  * falhava de novo segundos depois e o sweep seguinte a achava `failed` — o
  * ciclo comentar/reabrir nunca fechava. Resolve checando o estado da
  * execução, sem mexer no horário de nenhuma das duas tasks.
+ *
+ * **`active` fica de FORA de propósito (#10066 review):** as units de task
+ * são `Type=oneshot` (`scripts/lib/systemd-units.ts`), e uma oneshot
+ * executando fica em `activating`, nunca em `active`. Uma unit `active` é
+ * serviço contínuo (Type=simple) que voltou a rodar depois de falhar — isso
+ * É a ausência real da falha. Contar `active` como "executando" congelaria
+ * a entry pra sempre e a issue de alarme nunca fecharia.
  */
 export const RUNNING_ACTIVE_STATES: ReadonlySet<string> = new Set([
   "activating",
-  "active",
   "deactivating",
   "reloading",
 ]);

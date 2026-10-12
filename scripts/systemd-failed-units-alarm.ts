@@ -350,7 +350,18 @@ async function main(): Promise<void> {
   const indeterminate = buildIndeterminateAllowlist(
     alarmState,
     evaluation.failedUnits,
-    (unit) => readUnitActiveState(unit),
+    (unit) => {
+      const activeState = readUnitActiveState(unit);
+      // #10066 review — leitura que falhou congela a entry (fail-soft na
+      // direção de não fechar); sem este log, uma falha persistente deixaria
+      // a issue aberta para sempre sem nenhum sinal do porquê.
+      if (activeState === null) {
+        console.warn(
+          `${LOG_PREFIX} \`systemctl --user show ${unit} --property=ActiveState\` falhou ou veio sem ActiveState — entry congelada nesta execução.`,
+        );
+      }
+      return activeState;
+    },
     new Date().toISOString().slice(0, 10),
   );
   if (indeterminate.length > 0) {

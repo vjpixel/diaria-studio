@@ -22,6 +22,13 @@
  * de achados (issue+categoria), então o mesmo conjunto reusa a issue
  * aberta e um conjunto novo abre/atualiza.
  *
+ * **#10062:** "sem estado local" não significa "nunca fecha". O script FECHA
+ * a própria issue de alarme (`closeSupersededAlarmIssues`) quando a rodada
+ * não tem achado nenhum, ou quando o conjunto de achados mudou (a issue do
+ * conjunto antigo é fechada e a do conjunto novo abre/atualiza). Só fecha
+ * com cobertura COMPLETA: com consultas de issue falhando, um achado do
+ * conjunto antigo pode só não ter sido visto, e a issue fica aberta.
+ *
  * Env: `gh` autenticado + `data/.credentials.json` com `gmail.send` (só
  * necessário pra ENVIAR, sob `email_policy: "legacy"`).
  *
