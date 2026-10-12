@@ -118,6 +118,10 @@ id = "72784da4ae39444481eb422ebac357c6"
 # workers/arquivo/wrangler.toml / workers/cursos/wrangler.toml), prefixo
 # próprio ("counter:ai-fetch:site:") — não cria namespace dedicado. Ver
 # scripts/lib/shared/ai-fetch-counters.ts pro racional completo.
+# #10082: o mesmo namespace guarda os abandonos de carrinho da Hotmart, sem
+# dados pessoais, no prefixo "hotmart:abandono:{AAAA-MM-DD}:" (TTL de 400
+# dias) — ver scripts/lib/shared/hotmart-abandono.ts. Script que liste ou
+# apague chaves deste namespace precisa filtrar por prefixo.
 [[kv_namespaces]]
 binding = "CURSOS_SUBSCRIBERS"
 id = "a3415c3bf4b840d6975dbac290b99153"
