@@ -136,13 +136,21 @@ Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legac
 
 ### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
 
+**Passo 0 — baixar as fontes dos destaques ANTES do dispatch (#9252, #9648)** — do MESMO `01-approved-capped.json` que o writer usa; mesmo passo 0 de `orchestrator-stage-2.md`:
+
+```bash
+npx tsx scripts/refresh-destaque-sources.ts --edition-dir {EDIR}/ --approved {EDIR}/_internal/01-approved-capped.json --record-writer-inputs
+```
+
+Stdout JSON: `sources[]` com `{destaque, url, path}` (ou `error`). Grava `_internal/fact-check-sources/d{N}.txt` e, com `--record-writer-inputs` (só aqui — nunca no Stage 4), `_internal/02-writer-inputs.json`: o registro do texto que cada writer recebeu, que a troca de destaque no Stage 4 não sobrescreve. Esta skill é a executora real do Stage 2 (inclusive headless) e não tinha este passo — as edições 261007–261009 saíram sem registro. Fail-soft: erro do script ou download falho nunca aborta a Etapa 2. Passar a cada `writer-destaque` `source_url` = `highlights[N-1].article.url` literal e `source_text_path` = `path` da entrada com `destaque === N` (omitir se veio com `error`).
+
 **Seleção do 4º post — item USE MELHOR (#9568), ANTES do dispatch abaixo:** `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDIR}/` (mesmo passo 0b de `orchestrator-stage-2.md`). Stdout JSON: `enabled: true` + `item` não-nulo → passar `use_melhor_post_path` ao `social-writer` e ao `social-curto` (eles escrevem `## um`); qualquer outro caso → omitir (4º post pulado, motivo no gate do Stage 4). Fail-soft: erro do script nunca aborta a Etapa 2.
 
 ```
 Agent({
   subagent_type: "writer-destaque",
   description: "Etapa 2 — D1 writer",
-  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, out_path={EDIR}/_internal/02-d1-draft.md, image_prompt_out_path={EDIR}/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
+  prompt: "Escreve DESTAQUE 1 da edição $1. destaque_n=1, article={highlights[0].article}, category_label={highlights[0].bucket → 'LANÇAMENTO'|'PESQUISA'|'MERCADO'|'BRASIL'|etc — SOMENTE o label textual, sem emoji; o agent escolhe o emoji do template canônico}, peer_titles=[highlights[1].article.title, highlights[2].article.title], edition_date=$1, source_url={highlights[0].article.url}, source_text_path={path do passo 0, se houver}, out_path={EDIR}/_internal/02-d1-draft.md, image_prompt_out_path={EDIR}/_internal/02-d1-prompt.md. Seguir context/templates/newsletter.md."
 })
 
 Agent({

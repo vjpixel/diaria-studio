@@ -216,6 +216,15 @@ describe("02-writer-inputs.json (#9648)", () => {
     const passo0 = stage2.slice(stage2.indexOf("**0. Baixar as fontes dos destaques"), stage2.indexOf("**0b."));
     assert.ok(passo0.length > 0, "passo 0 do Stage 2 localizado");
     assert.match(passo0, /refresh-destaque-sources\.ts [^\n]*--record-writer-inputs/);
+    // Causa das edições 261007–261009 sem registro: a skill /diaria-2-escrita é
+    // quem executa o Stage 2 (inclusive headless) e não tinha o passo 0.
+    const skill = read(".claude/skills/diaria-2-escrita/SKILL.md");
+    assert.match(skill, /refresh-destaque-sources\.ts [^\n]*--record-writer-inputs/, "SKILL.md de /diaria-2-escrita precisa do passo 0 com a flag");
+    assert.ok(
+      skill.indexOf("--record-writer-inputs") < skill.indexOf('subagent_type: "writer-destaque"'),
+      "passo 0 vem ANTES do dispatch dos writer-destaque",
+    );
+    assert.match(skill, /source_text_path=\{path do passo 0/, "writer-destaque recebe source_text_path");
     for (const p of [
       ".claude/agents/orchestrator-stage-4.md",
       "scripts/swap-destaque.ts",
