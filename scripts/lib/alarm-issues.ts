@@ -935,6 +935,86 @@ export function closeAlarmIssue(
   return res.status === 0;
 }
 
+// ─── Fechamento de issues superadas — alarmes de fingerprint-de-conjunto ────
+//
+// #10062 itens 3 e 5. Alarmes que chamam `notifyEditor` direto (sem
+// `applyAlarmReconciliation`) e derivam o fingerprint do CONJUNTO de achados
+// (`on-hold-vencimento-alarm.ts`, `route-marker-staleness-alarm.ts`,
+// `check-acquisition-health.ts`) nunca fechavam a própria issue: o caminho
+// "nenhum achado" dava `return` antes de qualquer `gh`, e um conjunto novo
+// abria issue nova sem tocar a anterior. Achado ao vivo: #9555 ficou 6 dias
+// aberta depois de todas as on-hold terem `Vencimento:` (fechada à mão em
+// 12/10); #10034 só abria. Sem estado local de propósito — a fonte é o
+// próprio GitHub (issues abertas com a label `alarm` cujo marcador é deste
+// check), então também limpa issues anteriores a esta mudança.
+
+/** Pura — fingerprint embutido num corpo de issue pelo marcador deste
+ * `check` (`null` se o corpo não carrega marcador deste check). Match
+ * exato do prefixo `check:` — `foo` nunca casa o marcador de `foo-bar`. */
+export function extractAlarmFingerprintForCheck(body: string, check: string): string | null {
+  const prefix = `<!-- alarm-finding: ${check}:`;
+  const start = body.indexOf(prefix);
+  if (start === -1) return null;
+  const rest = body.slice(start + prefix.length);
+  const end = rest.indexOf(" -->");
+  if (end === -1) return null;
+  return rest.slice(0, end);
+}
+
+export interface CloseSupersededResult {
+  /** Issues fechadas nesta chamada. */
+  closed: number[];
+  /** Issues que deveriam fechar mas o `gh issue close` falhou (retry na
+   * próxima execução — nada é persistido). */
+  failed: number[];
+  /** `false` quando a listagem via `gh` falhou — nada foi avaliado. */
+  listed: boolean;
+}
+
+/**
+ * Fecha toda issue ABERTA deste `check` cujo fingerprint não é o
+ * `currentFingerprint` (`null` = nenhum achado nesta execução → fecha
+ * todas). O conjunto de achados mudou ou zerou: a issue antiga descreve um
+ * estado que não existe mais. Fail-soft: falha de listagem/fechamento
+ * nunca lança, só volta no resultado.
+ *
+ * Só para alarmes cujo fingerprint é derivado deterministicamente de dado
+ * reavaliado por inteiro a cada execução (nenhum ruído de leitura que faça
+ * o achado "piscar") — por isso fecha na 1ª execução em que não reproduz,
+ * sem streak.
+ */
+export function closeSupersededAlarmIssues(
+  check: string,
+  currentFingerprint: string | null,
+  cwd: string,
+  run: GhRunFn = defaultAlarmGhRun,
+): CloseSupersededResult {
+  const res = run(
+    ["issue", "list", "--label", ALARM_LABEL, "--state", "open", "--json", "number,body", "--limit", "200"],
+    cwd,
+  );
+  if (res.status !== 0) return { closed: [], failed: [], listed: false };
+  let issues: { number: number; body?: string | null }[];
+  try {
+    issues = JSON.parse(res.stdout) as { number: number; body?: string | null }[];
+  } catch {
+    return { closed: [], failed: [], listed: false };
+  }
+  const closed: number[] = [];
+  const failed: number[] = [];
+  for (const issue of issues) {
+    const fp = extractAlarmFingerprintForCheck(issue.body ?? "", check);
+    if (fp === null || fp === currentFingerprint) continue;
+    const comment =
+      currentFingerprint === null
+        ? "Fechada automaticamente: o alarme rodou e não encontrou nenhum achado (#10062)."
+        : "Fechada automaticamente: o conjunto de achados mudou — o estado atual está em outra issue deste alarme (#10062).";
+    const closeRes = run(["issue", "close", String(issue.number), "--comment", comment, "--reason", "not planned"], cwd);
+    (closeRes.status === 0 ? closed : failed).push(issue.number);
+  }
+  return { closed, failed, listed: true };
+}
+
 // ─── Reconciliação (plan = puro, apply = I/O) ───────────────────────────────
 
 export type AlarmReconcileAction =

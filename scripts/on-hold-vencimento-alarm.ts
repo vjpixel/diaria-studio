@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { closeSupersededAlarmIssues } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import {
   evaluateOnHoldIssues,
@@ -44,6 +45,29 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[on-hold-vencimento-alarm]";
+const CHECK = "on-hold-vencimento-alarm";
+
+/** #10062 item 5 — fecha a(s) issue(s) deste alarme que não descrevem mais
+ * o estado atual (`null` = nenhum achado). Causa raiz da #9555 ficar 6 dias
+ * aberta depois de cumprida: o caminho "nenhum achado" dava `return` sem
+ * tocar o GitHub, e nada mais no script fechava issue. */
+function closeSuperseded(fingerprint: string | null): void {
+  const res = closeSupersededAlarmIssues(CHECK, fingerprint, ROOT);
+  if (!res.listed) {
+    console.warn(`${LOG_PREFIX} não foi possível listar issues de alarme abertas — fechamento automático adiado.`);
+    return;
+  }
+  for (const n of res.closed) console.log(`${LOG_PREFIX} issue #${n} fechada (achado não reproduz mais).`);
+  for (const n of res.failed) console.error(`${LOG_PREFIX} falha ao fechar #${n} — retry na próxima execução.`);
+}
+
+/** Pura — fingerprint do CONJUNTO de achados (ver comentário no call site). */
+export function onHoldAlarmFingerprint(findings: readonly { number: number; reason: string; vencimento?: string | null }[]): string {
+  return findings
+    .map((f) => `${f.number}:${f.reason}:${f.vencimento ?? ""}`)
+    .sort()
+    .join(",");
+}
 
 interface GhIssueListEntry {
   number: number;
@@ -88,6 +112,11 @@ async function main(): Promise<void> {
 
   if (!shouldSendOnHoldVencimentoAlarm(findings)) {
     console.log(`${LOG_PREFIX} nenhum achado — todas as on-hold têm vencimento futuro declarado.`);
+    if (isDryRun) {
+      console.log(`${LOG_PREFIX} --dry-run: fecharia a(s) issue(s) abertas deste alarme — gh NÃO chamado.`);
+    } else {
+      closeSuperseded(null);
+    }
     return;
   }
 
@@ -104,18 +133,18 @@ async function main(): Promise<void> {
   // idempotência local); um fingerprint estático faria `ensureAlarmIssue`
   // reusar a MESMA issue pra sempre sem nunca atualizar o corpo quando o
   // conjunto de on-hold vencidas mudar (achado do self-review do #7965).
-  const fingerprint = findings
-    .map((f) => `${f.number}:${f.reason}:${f.vencimento ?? ""}`)
-    .sort()
-    .join(",");
+  const fingerprint = onHoldAlarmFingerprint(findings);
   const result = await notifyEditor(
-    { check: "on-hold-vencimento-alarm", fingerprint, severity: "acao", subject, body },
+    { check: CHECK, fingerprint, severity: "acao", subject, body },
     { cwd: ROOT, emailTo: toOverride },
   );
   if (result.issue?.action === "failed") {
     throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
   }
   console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
+  // Conjunto mudou: a issue do conjunto anterior descreve estado que não
+  // existe mais (#10062 item 5).
+  closeSuperseded(fingerprint);
 }
 
 if (isMainModule(import.meta.url)) {

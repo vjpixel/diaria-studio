@@ -57,6 +57,7 @@ import { latestExecutionBlockFor } from "./issue-decisions.ts";
 import { parseRouteIssueMarkerAtStart } from "./issue-route.ts";
 import { BLOCKED_LABELS_SET } from "./block-staleness.ts";
 import { parseWaitUntil } from "./issue-exec-track.ts";
+import { BACKLOG_RECONCILE_REASON_PREFIX } from "./backlog-reconcile.ts";
 
 export interface RouteMarkerStalenessIssueInput {
   number: number;
@@ -133,6 +134,18 @@ function extractAgendadaReason(commentBody: string): string | null {
   const match = commentBody.match(/^Roteado para \*\*agendada\*\*(?:\.$| — (.+)$)/m);
   if (!match) return null;
   return match[1] ?? null;
+}
+
+/** #10062 item 4 — comentário `route-issue --track agendada` escrito pela
+ * reconciliação diária do backlog (`scripts/backlog-reconcile.ts`), não por
+ * uma sessão. Ele só re-estampa o marcador que já existia (nunca estende o
+ * prazo por decisão) e assina `(#6198)` por atribuição: contar como
+ * renovação ou ler o `#6198` como "motivo cita issue fechada" gerava falso
+ * positivo em toda issue agendada que o reconciliador tocasse (#5995,
+ * #8543, #9265, #9846, #4554, #8548). */
+function isBacklogReconcilerComment(commentBody: string): boolean {
+  const reason = extractAgendadaReason(commentBody);
+  return reason !== null && reason.startsWith(BACKLOG_RECONCILE_REASON_PREFIX);
 }
 
 /** Todos os `#N` citados num texto livre — mesmo precedente de
@@ -250,7 +263,11 @@ export function findRouteMarkerStaleness(
     // aguardando-ate: (a issue classifica "agendada" ou já expirou).
     if (parseWaitUntil(issue.body) === null) continue;
 
-    const agendadaComments = issue.comments.filter((c) => parseRouteIssueMarkerAtStart(c) === "agendada");
+    // #10062 item 4: só roteamentos de SESSÃO contam — os do reconciliador
+    // diário são mecânicos (ver `isBacklogReconcilerComment`).
+    const agendadaComments = issue.comments.filter(
+      (c) => parseRouteIssueMarkerAtStart(c) === "agendada" && !isBacklogReconcilerComment(c),
+    );
     if (agendadaComments.length >= AGENDADA_RENEWAL_THRESHOLD) {
       findings.push({
         number: issue.number,

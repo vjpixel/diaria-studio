@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { closeSupersededAlarmIssues } from "./lib/alarm-issues.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
 import {
@@ -47,6 +48,22 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[route-marker-staleness-alarm]";
+const CHECK = "route-marker-staleness-alarm";
+
+/** #10062 — fecha a(s) issue(s) deste alarme que não descrevem mais o
+ * estado atual (`null` = nenhum achado). Mesmo defeito do
+ * `on-hold-vencimento-alarm.ts` (#9555): o caminho "nenhum achado" dava
+ * `return` sem tocar o GitHub e um conjunto novo abria issue nova sem fechar
+ * a anterior. */
+function closeSuperseded(fingerprint: string | null): void {
+  const res = closeSupersededAlarmIssues(CHECK, fingerprint, ROOT);
+  if (!res.listed) {
+    console.warn(`${LOG_PREFIX} não foi possível listar issues de alarme abertas — fechamento automático adiado.`);
+    return;
+  }
+  for (const n of res.closed) console.log(`${LOG_PREFIX} issue #${n} fechada (achado não reproduz mais).`);
+  for (const n of res.failed) console.error(`${LOG_PREFIX} falha ao fechar #${n} — retry na próxima execução.`);
+}
 
 interface GhIssueListEntry {
   number: number;
@@ -213,6 +230,15 @@ async function main(): Promise<void> {
   const mustReport = findings.length > 0 || coverageInfo?.severe === true;
   if (!mustReport) {
     console.log(`${LOG_PREFIX} nenhum achado — todos os marcadores de roteamento estão em dia.`);
+    // Só fecha com cobertura COMPLETA — 0 achados com consultas falhando
+    // (mesmo abaixo do limiar de severidade) pode ser achado não-visto.
+    if (isDryRun) {
+      console.log(`${LOG_PREFIX} --dry-run: fecharia a(s) issue(s) abertas deste alarme — gh NÃO chamado.`);
+    } else if (!coverageInfo) {
+      closeSuperseded(null);
+    } else {
+      console.warn(`${LOG_PREFIX} cobertura incompleta — issue de alarme aberta NÃO fechada nesta execução.`);
+    }
     return;
   }
 
@@ -238,13 +264,17 @@ async function main(): Promise<void> {
   const fingerprint =
     findings.length > 0 ? findings.map((f) => `${f.number}:${f.category}`).sort().join(",") : "cobertura-degradada";
   const result = await notifyEditor(
-    { check: "route-marker-staleness-alarm", fingerprint, severity: "acao", subject, body },
+    { check: CHECK, fingerprint, severity: "acao", subject, body },
     { cwd: ROOT, emailTo: toOverride },
   );
   if (result.issue?.action === "failed") {
     throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
   }
   console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, ${findings.length} achado(s)).`);
+  // Conjunto mudou: fecha a issue do conjunto anterior — só com cobertura
+  // completa (com consultas falhando, achado do conjunto antigo pode só não
+  // ter sido visto).
+  if (!coverageInfo) closeSuperseded(fingerprint);
 }
 
 if (isMainModule(import.meta.url)) {

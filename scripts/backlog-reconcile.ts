@@ -31,6 +31,7 @@ import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { classifyExecTrack } from "./lib/issue-exec-track.ts";
 import { routeIssue, type RouteIssueResult } from "./route-issue.ts";
 import {
+  BACKLOG_RECONCILE_REASON_PREFIX,
   detectMarkerDeferralConflict,
   detectInheritedBlockLabel,
   detectOpenChecklistInTerminalIssue,
@@ -147,7 +148,7 @@ export function evaluateBacklog(
  * direto (ver docstring do módulo). */
 export function applyFix(fix: MarkerDeferralConflictFix, cwd: string, ghRun: GhRunFn = spawnGhSync, now?: Date): RouteIssueResult {
   const reason =
-    `reconciliação diária (#6198): marcador aguardando-ate: ${fix.markerDate} coexistia com ${fix.conflictingLabels.join(", ")} — ` +
+    `${BACKLOG_RECONCILE_REASON_PREFIX} marcador aguardando-ate: ${fix.markerDate} coexistia com ${fix.conflictingLabels.join(", ")} — ` +
     (fix.routeTrack === "agendada"
       ? "marcador ainda futuro, vence sobre o deferimento vago."
       : "marcador já expirado, label conflitante removida e issue devolvida ao fluxo normal.");

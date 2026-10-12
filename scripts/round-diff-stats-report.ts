@@ -169,6 +169,24 @@ export function classifyCheckAlarmState(
   return { state: "alarming", message: "" };
 }
 
+/**
+ * #10062 item 1: pura — quais achados entram em `applyAlarmReconciliation`
+ * nesta execução. `null` = não reconciliar (sem dado não é ausência do
+ * achado: nunca pode contar pro streak de fechamento). `[]` = execução
+ * SAUDÁVEL, que precisa passar pela reconciliação justamente pra contar
+ * como ausência — antes do #10062 o caminho saudável dava `return` antes,
+ * então o close de família "estado" (2 execuções limpas) era código morto
+ * e a issue de alarme nunca fechava sozinha.
+ */
+export function pendingFindingsForCheckAlarm(
+  classification: CheckAlarmClassification,
+  window7d: WindowedRoundDiffStats,
+): AlarmFinding[] | null {
+  if (classification.state === "no-data") return null;
+  if (classification.state === "healthy") return [];
+  return [buildRoundDiffRatioFinding(window7d.ratio, window7d.added, window7d.netPerDay, window7d.rounds)];
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const checkAlarm = hasFlag(argv, "check-alarm");
@@ -192,22 +210,27 @@ async function main(): Promise<void> {
   // MESMA frase de saída, silêncio verde nos dois casos que escondia
   // justamente a diferença que importa pra confiar (ou não) no "sem alarme".
   const classification = classifyCheckAlarmState(window7d);
-  if (classification.state !== "alarming") {
+  const pending = pendingFindingsForCheckAlarm(classification, window7d);
+  if (pending === null) {
     console.log(classification.message);
     return;
   }
-
-  const finding = buildRoundDiffRatioFinding(window7d.ratio, window7d.added, window7d.netPerDay, window7d.rounds);
-  console.warn(`${LOG_PREFIX} ALARME: razão de 7d cruzou o limiar (${formatRatio(window7d.ratio, window7d.added)}).`);
+  if (pending.length === 0) {
+    // #10062 item 1: saudável segue para a reconciliação com `[]` — é o que
+    // avança o streak de ausência e fecha a issue de alarme já aberta.
+    console.log(classification.message);
+  } else {
+    console.warn(`${LOG_PREFIX} ALARME: razão de 7d cruzou o limiar (${formatRatio(window7d.ratio, window7d.added)}).`);
+  }
 
   const state = loadAlarmState();
   if (dryRun) {
-    const actions = planAlarmReconciliation([finding], state, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(pending, state, CLOSE_ALARM_ISSUE_AFTER_RUNS);
     console.log(`${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas (${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`);
     return;
   }
 
-  const { nextState, findingOutcomes } = applyAlarmReconciliation([finding], state, {
+  const { nextState, findingOutcomes } = applyAlarmReconciliation(pending, state, {
     cwd: ROOT,
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
   });
