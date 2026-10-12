@@ -198,8 +198,11 @@ o alvo no repo) sem atualizar os jobs em paralelo
 `pause-cron-on-ratelimit.py` não estavam mais no `jobs.json` do `300`; por
 isso, desde o #10064, o `watch-continuo-health.sh` roda o watchdog no ramo
 de parada por cota (pausa no `403 Key limit exceeded`, retoma depois da
-virada UTC). Religar o job dedicado (cadência menor que a do watch, que é
-diária) é ação manual fora deste repo.
+virada UTC). Desde o #10070 a cadência menor fica com o timer systemd
+versionado `Diaria-Continuo-Ratelimit-Watchdog` (de hora em hora,
+`scripts/run-continuo-ratelimit-watchdog.ts`, registrado em
+`scripts/lib/scheduled-tasks.ts`), então a retomada não depende mais de
+religar o job dedicado do Hermes.
 
 ## Modelo do tick agendado: o job ignora `model.default` (#6908)
 

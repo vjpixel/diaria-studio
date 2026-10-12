@@ -289,6 +289,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#9974",
   },
   {
+    name: "Diaria-Continuo-Ratelimit-Watchdog",
+    description:
+      "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
+    steps: [{ key: "watchdog", script: "scripts/run-continuo-ratelimit-watchdog.ts" }],
+    logPath: "continuo/.ratelimit-watchdog.log",
+    // De hora em hora (minuto 0). Desde o #10064 o watchdog grava
+    // `resume_after` = 00:05 UTC (21:05 BRT) ao pausar por limite diário da
+    // key OpenRouter, mas o único chamador era o watch diário do Hermes
+    // (13:30): a retomada atrasava ~13-16h. Horário põe o teto em ~1h depois
+    // de `resume_after` (22:00 BRT). Não colide com o watch (minuto 30).
+    //
+    // Sem `enabled: false` de propósito: o `Diaria-Remediate-Never-Armed-
+    // Tasks` (#8153, "auto-armar tudo") arma esta task no 1º 18:15 BRT
+    // depois do merge chegar na checkout do `300` — é o que fecha a issue.
+    // Em máquina sem `~/.hermes/cron/jobs.json` o script sai calado (exit 0),
+    // então armar fora do `300` não faz nada além de rodar à toa. Não escreve
+    // em `data/` além do próprio log e do run-log.
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#10070",
+  },
+  {
     name: "Diaria-Home-Meta-Check",
     description: "smoke-test dos eixos de drift da home diar.ia.br (og:title, self-links http, rotulos EN, host legado, porta na URL)",
     steps: [{ key: "check", script: "scripts/home-meta-check.ts" }],
