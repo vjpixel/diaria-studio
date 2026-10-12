@@ -289,7 +289,11 @@ describe("orchestrator-prompt (#634)", () => {
       // #9673: +2 linhas (`{generic_study_questions_block}` no topo do resumo
       // do gate — pergunta sim/não explícita por item 🔎 — + a regra de
       // apresentação). Com as duas, o arquivo foi a 954 linhas. Teto 960.
-      "orchestrator-stage-4.md": 960,
+      // #9964: +23 linhas (doc editável do gate no Claude Docs — §4b step
+      // 3b cria o doc, §4d puxa edições/acusa conflito antes de cada
+      // apresentação e mantém o doc atualizado, branch `sim` faz o último
+      // apply, §4e confere). Arquivo foi a 980 linhas. Teto 960→990.
+      "orchestrator-stage-4.md": 990,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser
