@@ -11,7 +11,7 @@
  *   # Com doc (doc_url no estado): --doc-export obrigatório, recusa edição não
  *   # puxada e grava a base como PENDENTE (efetivar com `confirm`).
  *   npx tsx scripts/stage4-docs-sync.ts render --edition-dir <dir> --edition AAMMDD \
- *     [--out <arquivo.md>] [--summary-file <resumo.md>] [--doc-export <export.md>]
+ *     [--out <arquivo.md>] [--summary-file <resumo.md>] [--doc-export <export.md> --doc-version <container.version do export>]
  *
  *   # Grava o link do doc recém-criado (não mexe na base)
  *   npx tsx scripts/stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url>
@@ -21,11 +21,12 @@
  *   npx tsx scripts/stage4-docs-sync.ts check-roundtrip --edition-dir <dir> --doc-export <export.md>
  *
  *   # Depois de substituir o doc com o render pendente: efetiva a base nova
- *   npx tsx scripts/stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <export.md>]
+ *   npx tsx scripts/stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <export.md>] [--doc-version <v>]  (obrigatório se o render gravou version)
  *
  *   # Puxa as edições do doc (export markdown) de volta para os arquivos
  *   npx tsx scripts/stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <arquivo.md> \
- *     [--resolve "02-reviewed.md=arquivo|doc@<resolve_token>,03-social.md=..."]
+ *     [--resolve "02-reviewed.md=arquivo|doc@<resolve_token>,03-social.md=..."] [--final]
+ *     (--final = apply final do ramo `sim`; o `check` exige que seja o último apply)
  *
  *   # Desliga o sync (ex.: editor aprovou "sem as edições do doc")
  *   npx tsx scripts/stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"
@@ -70,18 +71,18 @@ function usage(msg: string): never {
 }
 
 const USAGE =
-  "uso: stage4-docs-sync.ts render --edition-dir <dir> --edition AAMMDD [--out <md>] [--summary-file <md>] [--doc-export <md>]\n" +
+  "uso: stage4-docs-sync.ts render --edition-dir <dir> --edition AAMMDD [--out <md>] [--summary-file <md>] [--doc-export <md> [--doc-version <v>]]\n" +
   "     stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url>\n" +
   "     stage4-docs-sync.ts check-roundtrip --edition-dir <dir> --doc-export <md>\n" +
-  "     stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <md>]\n" +
-  '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."]\n' +
+  "     stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <md>] [--doc-version <v>]\n" +
+  '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."] [--final]\n' +
   '     stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"\n' +
   "     stage4-docs-sync.ts check --edition-dir <dir>";
 
 function run(argv: string[]): number {
   const { positional, values, flags } = parseArgs(argv);
   const cmd = positional[0];
-  for (const k of ["edition-dir", "edition", "out", "summary-file", "doc-url", "doc-export", "resolve", "reason"]) {
+  for (const k of ["edition-dir", "edition", "out", "summary-file", "doc-url", "doc-export", "resolve", "reason", "doc-version"]) {
     if (flags.has(k)) usage(`--${k} requer um valor`);
   }
   const editionDir = values["edition-dir"];
@@ -95,7 +96,7 @@ function run(argv: string[]): number {
       if (values["doc-url"]) usage("render não aceita mais --doc-url — use `set-url`");
       // ENOENT/EBUSY aqui é falha inesperada (exit 3), não erro de formato.
       const summary = values["summary-file"] ? readFileSync(values["summary-file"], "utf8") : undefined;
-      const r = runRender({ editionDir, edition, out: values["out"], summary, docExport });
+      const r = runRender({ editionDir, edition, out: values["out"], summary, docExport, docVersion: values["doc-version"] });
       console.log(JSON.stringify({ ok: true, ...r }));
       return 0;
     }
@@ -113,14 +114,14 @@ function run(argv: string[]): number {
       return r.ok ? 0 : 1;
     }
     case "confirm": {
-      const r = runConfirm({ editionDir, docExport });
+      const r = runConfirm({ editionDir, docExport, docVersion: values["doc-version"] });
       console.log(JSON.stringify({ ok: true, ...r }));
       return 0;
     }
     case "apply": {
       if (!docExport) usage("--doc-export obrigatório no apply");
       const resolutions = values["resolve"] ? parseResolutions(values["resolve"]) : undefined;
-      const report = runApply({ editionDir, docExport, resolutions });
+      const report = runApply({ editionDir, docExport, resolutions, final: flags.has("final") });
       console.log(JSON.stringify(report, null, 2));
       return report.ok ? 0 : 1;
     }
