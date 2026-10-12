@@ -5,7 +5,7 @@ description: Roda a Etapa 2 (newsletter + social em paralelo, ambos a partir de 
 
 # /diaria-2-escrita
 
-Executa a Etapa 2 da pipeline diar.ia.br: dispara `writer` (newsletter) + `social-writer` (#3991, reverte #3486 — texto único LinkedIn/Facebook/Instagram) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
+Executa a Etapa 2 da pipeline diar.ia.br: dispara `writer` (newsletter) + `social-writer` (#3991, reverte #3486 — texto único LinkedIn/Facebook/Instagram) + `social-curto` (#3992) **em paralelo**, todos lendo de `_internal/01-approved-capped.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 
@@ -170,13 +170,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -190,7 +190,7 @@ Output: `{EDIR}/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA
 
 ### Fallback (writer único legacy)
 
-Quando `highlights.length !== 3` ou falha de dispatch parallel:
+Quando `highlights.length < 2 || highlights.length > 3` ou falha de dispatch parallel:
 
 ```
 Agent({
@@ -202,13 +202,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths com uma chave por destaque (d1, d2, d3) = o MESMO path do passo 0, omitindo a chave que veio com error (#9794/#9808); {SE o passo 'Seleção do 4º post' deu item.source_text_path: inclua também a chave um = {EDIR}/{item.source_text_path}, #9871} — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -617,5 +617,5 @@ done
 ## Notas
 
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.
-- Os agentes social leem diretamente de `_internal/01-approved.json` — não dependem de `02-reviewed.md`.
+- Os agentes social leem diretamente de `_internal/01-approved-capped.json` — não dependem de `02-reviewed.md`.
 - Se o orchestrator subagent ainda existir em `.claude/agents/orchestrator.md`, ignorar — este skill não delega.
