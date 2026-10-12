@@ -47,7 +47,7 @@ import {
   type CliJsonUsage,
   type CliRunMeta,
 } from "./cli-usage-json.ts";
-import { loadDoc, saveDoc, applyUpdate, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
+import { loadDoc, saveDoc, applyUpdate, type CliRunLogEntry, type StageRow, type UpdateOpts } from "../update-stage-status.ts";
 
 /** Um stage do pipeline e a skill que o executa. */
 export interface EditionStage {
@@ -430,7 +430,7 @@ export function accumulateCliRun(
   row: StageRow,
   usage: CliJsonUsage | null,
   meta: CliRunMeta | null,
-): Pick<UpdateOpts, "cost_usd" | "tokens_in" | "tokens_out" | "models" | "session_filter" | "num_turns" | "cli_runs"> {
+): Pick<UpdateOpts, "cost_usd" | "tokens_in" | "tokens_out" | "models" | "session_filter" | "num_turns" | "cli_runs" | "cli_run_log"> {
   const prior = row.session_filter === "cli_json";
   const add = (prev: number | undefined, cur: number) => (prior && prev !== undefined ? prev + cur : cur);
   const out: ReturnType<typeof accumulateCliRun> = {};
@@ -452,6 +452,12 @@ export function accumulateCliRun(
   }
   if (usage || meta?.numTurns !== undefined) {
     out.cli_runs = (prior || row.num_turns !== undefined ? (row.cli_runs ?? 1) : 0) + 1;
+    // #9597: entrada por execução (a soma acima não separa qual bateu o teto).
+    const entry: CliRunLogEntry = {};
+    if (meta?.numTurns !== undefined) entry.num_turns = meta.numTurns;
+    if (meta?.terminalReason !== undefined) entry.terminal_reason = meta.terminalReason;
+    if (usage) entry.cost_usd = usage.costUsd;
+    out.cli_run_log = [...(prior || row.num_turns !== undefined ? (row.cli_run_log ?? []) : []), entry];
   }
   return out;
 }

@@ -44,6 +44,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export type StageStatus = "pending" | "running" | "done" | "failed";
 
+/** #9597: o que uma execução CLI individual do stage consumiu. */
+export interface CliRunLogEntry {
+  num_turns?: number;
+  /** `terminal_reason`/`subtype` da execução (ex: `success`, `error_max_turns`). */
+  terminal_reason?: string;
+  cost_usd?: number;
+}
+
 export interface StageRow {
   stage: number;
   status: StageStatus;
@@ -120,6 +128,13 @@ export interface StageRow {
    * de transcript (`session_filter` ≠ `cli_json`).
    */
   cli_runs?: number;
+  /**
+   * #9597: registro POR execução `claude --print` do stage (append-only, na
+   * ordem), pra distinguir 1 execução de 120 turnos de 2 execuções que somam
+   * >120 — `num_turns` é soma e `terminal_reason` guarda só a última.
+   * Ausente em linhas anteriores ao #9597 (retrocompatível).
+   */
+  cli_run_log?: CliRunLogEntry[];
   /**
    * #9222: motivo persistente da falha de captura de usage (antes só ia pro
    * `onProgress`, sem rastro) — ex: stdout não parseou. Limpo (`undefined`)
@@ -309,6 +324,7 @@ export interface UpdateOpts {
   num_turns?: number; // #9222
   terminal_reason?: string; // #9222
   cli_runs?: number; // #9312
+  cli_run_log?: CliRunLogEntry[]; // #9597
   usage_capture_error?: string; // #9222 — presença da chave é o critério (undefined limpa)
   /**
    * #8899: opt-in explícito pro auto-bump de `end` numa 2ª chamada `done`/`failed`
@@ -448,6 +464,7 @@ export function applyUpdate(doc: StageStatusDoc, opts: UpdateOpts, now?: string)
       parse_errors: opts.parse_errors ?? r.parse_errors,
       num_turns: opts.num_turns ?? r.num_turns,
       cli_runs: opts.cli_runs ?? r.cli_runs,
+      cli_run_log: opts.cli_run_log ?? r.cli_run_log,
       // #9222: presença da chave (não `??`) — uma execução posterior que
       // terminou em sucesso precisa poder LIMPAR o motivo de uma anterior.
       terminal_reason: "terminal_reason" in opts ? opts.terminal_reason : r.terminal_reason,
