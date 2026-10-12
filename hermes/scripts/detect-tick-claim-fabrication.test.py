@@ -726,7 +726,9 @@ def test_regressao_10064_falha_de_provider_nao_e_fabricacao():
             log = td / "agent.log"
             log.write_text(agent_log_text, encoding="utf-8")
             logs = [log]
-        return mod.run(repo, report, sessions, 45, now, None,
+        # Contagem real fixa (61, igual à alegada): sem isso o teste chamava
+        # `gh issue list` ao vivo e a checagem (b) mudava com o backlog do dia.
+        return mod.run(repo, report, sessions, 45, now, _open_issues_file(td, 61),
                        cron_output_dir=cron_dir, agent_logs=logs)
 
     with tempfile.TemporaryDirectory() as t:
@@ -782,6 +784,41 @@ def test_regressao_10064_falha_de_provider_nao_e_fabricacao():
                     r["status"] == "fabrication_suspected")
 
     print("regressão #10064: falha de provider vs fabricação — OK")
+
+
+def test_regressao_10069_erro_posterior_nao_esconde_fabricacao_anterior():
+    """Self-review da PR #10069 (P2, falso negativo): o tick A escreve um
+    relatório com claim fabricada (contagem n=4 vs 41 reais) e DEPOIS o tick
+    B morre com `## Error`. A falha de B só explica relatório ausente/velho —
+    nunca pode virar `tick_failed_provider` e esconder a fabricação de A."""
+    mod = _load_module()
+    now = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+    started_a = now - timedelta(minutes=25)
+    report_a = now - timedelta(minutes=20)
+    run_b_end = now - timedelta(minutes=2)
+
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        repo = td / "repo"
+        report = repo / "data" / "continuo" / "last-tick-report.md"
+        sessions = repo / "data" / "sessions"
+        _write_session(sessions, "tick-a", started_a, report_a)
+        _write_report(report, "## Tick 11:40\n### Trabalhado\nclassificacao executada com n=4 issues\n",
+                      mtime=report_a)
+        cron_dir = td / "cron-output"
+        _write_cron_output(cron_dir, "2026-10-10_08-58-00.md", _KEY_LIMIT_ERROR_SECTION, run_b_end)
+        r = mod.run(repo, report, sessions, 45, now, _open_issues_file(td, 41),
+                    cron_output_dir=cron_dir, agent_logs=[])
+        assert_true("20. fabricação no relatório anterior + erro de provider depois -> fabrication_suspected",
+                    r["status"] == "fabrication_suspected")
+        assert_true("20. classification_count continua acusando a claim fabricada",
+                    any(c["check"] == "classification_count" and c["status"] == "fabrication_suspected"
+                        for c in r["checks"]))
+        assert_true("20. a falha de provider fica anexada como checagem informativa",
+                    (r["provider_failure"] or {}).get("kind") == "provider_error"
+                    and any(c["check"] == "tick_provider" for c in r["checks"]))
+
+    print("regressão #10069: erro de provider posterior não esconde fabricação anterior — OK")
 
 
 def main() -> int:
@@ -1284,6 +1321,7 @@ def main() -> int:
         test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs()
         test_regressao_10011_10016_formas_legitimas_de_lista_de_prs()
         test_regressao_10064_falha_de_provider_nao_e_fabricacao()
+        test_regressao_10069_erro_posterior_nao_esconde_fabricacao_anterior()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

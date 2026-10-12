@@ -198,7 +198,11 @@ do cron do Hermes (`~/.hermes/cron/output/{job}/*.md`) e o `agent.log`:
     (o modelo não executou nenhum passo da skill).
 Com um desses no run mais recente da janela, o veredito que seria
 `fabrication_suspected`/`indeterminate` vira `tick_failed_provider` (exit
-4): o conserto é cota/provider, não investigar o coordenador. Sem diretório
+4): o conserto é cota/provider, não investigar o coordenador. A
+reclassificação só cobre a checagem (a) (relatório ausente/velho): se (b) ou
+(c) acusarem claim fabricada no relatório que está no disco (escrito por um
+tick ANTERIOR ao que morreu), o veredito segue `fabrication_suspected`, com a
+falha de provider anexada como checagem informativa. Sem diretório
 de output do cron (CI, outra máquina) nada muda — e o `run()` só lê essas
 fontes quando o chamador passa os caminhos (o `main()` passa os do `300`).
 
@@ -1277,12 +1281,17 @@ def _agent_turns_for_run(
     menos de `_MAX_TICK_RUN` dele. None se o log não tiver a sessão."""
     best_stamp: dt.datetime | None = None
     best: dict | None = None
+    # Streaming linha a linha com pré-filtro barato: o agent.log e as
+    # rotações podem ter dezenas de MB (self-review da PR #10069).
+    needle = f"session=cron_{job_id}_"
     for log in agent_logs:
         try:
-            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            fh = log.open(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for line in lines:
+        with fh:
+            matched = [ln for ln in fh if "Turn ended" in ln and needle in ln]
+        for line in matched:
             m = _TURN_ENDED_RE.search(line)
             if not m or m.group("job") != job_id:
                 continue
@@ -1479,12 +1488,23 @@ def run(
             cron_output_dir, agent_logs or [], provider_start, now,
         )
         if provider_failure is not None:
+            # Self-review da PR #10069: a falha de provider só explica a
+            # AUSÊNCIA de relatório novo (checagem (a), `report_freshness`) —
+            # um tick que morreu não escreveu nada. As checagens (b)/(c)
+            # avaliam o CONTEÚDO do relatório que está no disco, escrito por
+            # um tick anterior; se ali houver claim fabricada, um tick
+            # posterior morrendo com `## Error` não pode escondê-la.
+            content_suspect = any(
+                c["status"] == "fabrication_suspected"
+                for c in checks if c["check"] != "report_freshness"
+            )
             checks.append({
                 "check": "tick_provider",
                 "status": "tick_failed_provider",
                 "details": provider_failure["details"],
             })
-            overall = "tick_failed_provider"
+            if not content_suspect:
+                overall = "tick_failed_provider"
 
     return {
         "status": overall,

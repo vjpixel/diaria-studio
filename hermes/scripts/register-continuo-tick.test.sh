@@ -57,7 +57,10 @@ cat > "$WORKDIR/bin/npx" <<EOF
 echo "\$*" >> "$NPX_CALL_LOG"
 rc=\$(cat "$NPX_RC_FILE")
 if [ "\$rc" = "0" ]; then
-  echo "session-registry: registered data/sessions/continuo-fake-\$7.json"
+  case "\$2" in
+    *sweep-continuo-orphan-sessions*) echo "sweep: ok" ;;
+    *) echo "session-registry: registered data/sessions/continuo-fake-\$7.json" ;;
+  esac
 else
   echo "boom: registro falhou de propósito" >&2
 fi
