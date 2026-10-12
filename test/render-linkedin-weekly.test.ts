@@ -137,8 +137,11 @@ describe("render-linkedin-weekly.ts — abertura/fecho padrão sem pergunta (#80
       const html = readFileSync(join(root, "data/weekly/26w40/ln-26w40.html"), "utf8");
       // O opening real sofre linkificação do wordmark (linkifyWordmark) — checa
       // um trecho que sobrevive intacto em vez do texto completo.
-      assert.match(html, /5 minutos por dia pra se manter atualizado e usar melhor as IAs\./);
-      assert.match(html, /Isso aqui é a semana inteira espremida em três matérias\./);
+      assert.match(html, /5 minutos por dia para se manter atualizado e usar melhor as IAs\./);
+      assert.match(html, /Você viu a semana inteira espremida em três matérias\./);
+      assert.match(html, /Desde o ano passado, escrevo a .*diar\.ia\.br.*, newsletter de IA/s);
+      assert.match(html, /mais renderam cliques na semana\./);
+      assert.ok(!/matérias\. Na edição diária[^<]*Assine grátis\.<\/p>/.test(html), "fecho padrão não termina mais em 'Assine grátis.'");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

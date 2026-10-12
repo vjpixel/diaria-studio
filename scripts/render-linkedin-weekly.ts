@@ -91,16 +91,16 @@ export function resolveCoverImageSourcePath(editionsRootDir: string, headlineOne
  * texto puro fora do `<a>`), não há mais extensão pra reconferir aqui.
  */
 export const DEFAULT_OPENING =
-  "Desde o ano passado escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
-  "5 minutos por dia pra se manter atualizado e usar melhor as IAs. Aqui no LinkedIn, trago toda segunda " +
-  "os três destaques que mais renderam clique na semana. As cinco edições completas ficam com os títulos " +
+  "Desde o ano passado, escrevo a diar.ia.br, newsletter de IA que sai por e-mail de segunda a sexta: " +
+  "5 minutos por dia para se manter atualizado e usar melhor as IAs. Aqui no LinkedIn, trago toda segunda " +
+  "os três destaques que mais renderam cliques na semana. As cinco edições completas ficam com os títulos " +
   "no fim do post. Assine grátis.";
 
 /** #8025 — texto padrão de fecho, mesma origem/evidência do `DEFAULT_OPENING` acima. */
 export const DEFAULT_CLOSING =
-  "Isso aqui é a semana inteira espremida em três matérias. Na edição diária cabe mais: ela chega às 6 " +
+  "Você viu a semana inteira espremida em três matérias. Na edição diária cabe mais: ela chega às 6 " +
   "da manhã, todo dia útil, com três resumos como esses, dicas de uso e indicação de outros artigos. " +
-  "5 minutos por dia pra se manter atualizado e usar melhor as IAs. Assine grátis.";
+  "5 minutos por dia pra se manter atualizado e usar melhor as IAs.";
 
 /**
  * Resolve `--{key}`/`--{key}-file`; quando os dois vêm vazios (flag omitida
