@@ -90,6 +90,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
+import { closeSupersededAlarmIssues, defaultAlarmGhRun, type GhRunFn } from "./lib/alarm-issues.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { listSnapshotDates, readSnapshotSubscribers, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
 import { openDiariaSubscribersDbSafe, DEFAULT_DB_PATH as DEFAULT_STORE_DB_PATH } from "./lib/diaria-subscribers-db.ts";
@@ -113,6 +114,30 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const DEFAULT_STATE_PATH = resolve(ROOT, "data/acquisition-health/state.json");
 const LOG_PREFIX = "[check-acquisition-health]";
+const ALARM_CHECK = "check-acquisition-health";
+
+/**
+ * #10062 item 3 — fecha a(s) issue(s) deste alarme cujo conjunto de achados
+ * não é o desta rodada (`null` = nenhum achado). Antes o caminho
+ * `notifyEditor` só ABRIA issue (#10034): `canal_desconhecido` é achado de
+ * uma rodada só (o canal entra em `knownChannels` em seguida), então toda
+ * issue aberta por ele ficava pendurada pra sempre. Só roda em execução real
+ * que de fato avaliou um snapshot (nunca em --dry-run nem nos `return`s de
+ * "não avaliado"). Exportada pra teste.
+ */
+export function closeSupersededAcquisitionAlarms(
+  fingerprint: string | null,
+  cwd: string = ROOT,
+  run: GhRunFn = defaultAlarmGhRun,
+): void {
+  const res = closeSupersededAlarmIssues(ALARM_CHECK, fingerprint, cwd, run);
+  if (!res.listed) {
+    console.warn(`${LOG_PREFIX} não foi possível listar issues de alarme abertas — fechamento automático adiado.`);
+    return;
+  }
+  for (const n of res.closed) console.log(`${LOG_PREFIX} issue #${n} fechada (achado não reproduz mais).`);
+  for (const n of res.failed) console.error(`${LOG_PREFIX} falha ao fechar #${n} — retry na próxima execução.`);
+}
 
 export function loadState(statePath: string): AcquisitionHealthState {
   if (!existsSync(statePath)) return emptyAcquisitionHealthState();
@@ -252,7 +277,7 @@ export async function runOverStore(
         console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
       } else {
         const result = await notifyEditor(
-          { check: "check-acquisition-health", fingerprint: fingerprint as string, severity: "acao", subject, body },
+          { check: ALARM_CHECK, fingerprint: fingerprint as string, severity: "acao", subject, body },
           { cwd: ROOT, emailTo: toOverride },
         );
         if (result.issue?.action === "failed") {
@@ -270,6 +295,8 @@ export async function runOverStore(
       console.log(`${LOG_PREFIX} --dry-run: state NÃO avançado.`);
       return;
     }
+
+    closeSupersededAcquisitionAlarms(fingerprint);
 
     const nextState: AcquisitionHealthState = {
       source: "store",
@@ -408,7 +435,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // severidade "acao" (health check, sem envio/dinheiro em risco), issue
       // sem e-mail sob `email_policy: "urgent_only"`.
       const result = await notifyEditor(
-        { check: "check-acquisition-health", fingerprint: fingerprint as string, severity: "acao", subject, body },
+        { check: ALARM_CHECK, fingerprint: fingerprint as string, severity: "acao", subject, body },
         { cwd: ROOT, emailTo: toOverride },
       );
       if (result.issue?.action === "failed") {
@@ -426,6 +453,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.log(`${LOG_PREFIX} --dry-run: state NÃO avançado.`);
     return;
   }
+
+  closeSupersededAcquisitionAlarms(fingerprint);
 
   const nextState: AcquisitionHealthState = {
     knownChannels: buildNextKnownChannels(state, currentStats),

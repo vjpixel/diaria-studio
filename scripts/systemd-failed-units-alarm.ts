@@ -67,6 +67,8 @@ import {
   buildUnitInvestigationCommand,
   buildSimultaneousFailuresNote,
   buildCorrelationComment,
+  indeterminateTrackedUnits,
+  parseActiveStateShowOutput,
   UNIT_DIAGNOSTIC_PROPERTIES,
   type SystemdFailedUnitsAlarmState,
   type SystemdFailedUnitsEvaluation,
@@ -79,6 +81,7 @@ import {
   defaultAlarmGhRun,
   saveAlarmIssuesState,
   saveState,
+  type AlarmAllowlistEntry,
   type AlarmFinding,
   type AlarmIssuesState,
   type AlarmIssueResult,
@@ -142,6 +145,53 @@ export function readUnitDiagnosticFields(
   }
 }
 
+/** #10062 item 2 — `ActiveState` atual da unit (`null` = não consultável).
+ * SÓ LEITURA, mesmo guard de `readUnitDiagnosticFields`. */
+export function readUnitActiveState(
+  unitName: string,
+  execFn: typeof execFileSync = execFileSync,
+): string | null {
+  try {
+    const out = execFn("systemctl", ["--user", "show", unitName, "--property=ActiveState"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }) as unknown as string;
+    return parseActiveStateShowOutput(String(out ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+const SYSTEMD_ALARM_CHECK = "systemd-failed-units";
+
+/**
+ * #10062 item 2 (ciclo da #9310) — units rastreadas com issue aberta que
+ * sumiram da lista de failed mas estão EXECUTANDO agora viram entries de
+ * "allowlist desta execução": `planAlarmReconciliation` congela a entry
+ * (nem `comment_resolved`, nem avanço de streak, nem `close`) até uma
+ * execução que veja o resultado final. Reusa o congelamento da allowlist
+ * (#5364) em vez de um 2º mecanismo — a entry só vale nesta execução, nunca
+ * é persistida.
+ */
+export function buildIndeterminateAllowlist(
+  alarmState: AlarmIssuesState,
+  failedUnits: readonly string[],
+  readActiveState: (unit: string) => string | null,
+  today: string,
+): AlarmAllowlistEntry[] {
+  const prefix = `${SYSTEMD_ALARM_CHECK}:`;
+  const trackedOpen = Object.entries(alarmState)
+    .filter(([key, entry]) => key.startsWith(prefix) && !entry.closedAt)
+    .map(([key]) => key.slice(prefix.length));
+  return indeterminateTrackedUnits(trackedOpen, failedUnits, readActiveState).map((unit) => ({
+    check: SYSTEMD_ALARM_CHECK,
+    fingerprint: unit,
+    reason: "unit executando agora — ausência da lista de failed é indeterminada nesta execução (#10062)",
+    accepted_at: today,
+    ref_issue: "#10062",
+  }));
+}
+
 export function toAlarmFinding(
   unitName: string,
   diagnosticFields: UnitDiagnosticFields | null = null,
@@ -156,7 +206,7 @@ export function toAlarmFinding(
   // todas as issues desta execução foram criadas/reusadas).
   const simultaneousNote = buildSimultaneousFailuresNote(unitName, allFailedUnits);
   return {
-    check: "systemd-failed-units",
+    check: SYSTEMD_ALARM_CHECK,
     fingerprint: unitName,
     title: `[diar.ia.br] systemd unit falhou: ${unitName}`,
     body: [
@@ -297,6 +347,28 @@ async function main(): Promise<void> {
     ? evaluation.failedUnits.map((unit) => toAlarmFinding(unit, readUnitDiagnosticFields(unit), evaluation.failedUnits))
     : [];
   const alarmState = loadAlarmIssuesState();
+  const indeterminate = buildIndeterminateAllowlist(
+    alarmState,
+    evaluation.failedUnits,
+    (unit) => {
+      const activeState = readUnitActiveState(unit);
+      // #10066 review — leitura que falhou congela a entry (fail-soft na
+      // direção de não fechar); sem este log, uma falha persistente deixaria
+      // a issue aberta para sempre sem nenhum sinal do porquê.
+      if (activeState === null) {
+        console.warn(
+          `${LOG_PREFIX} \`systemctl --user show ${unit} --property=ActiveState\` falhou ou veio sem ActiveState — entry congelada nesta execução.`,
+        );
+      }
+      return activeState;
+    },
+    new Date().toISOString().slice(0, 10),
+  );
+  if (indeterminate.length > 0) {
+    console.log(
+      `${LOG_PREFIX} executando agora (ausência indeterminada, streak congelado): ${indeterminate.map((e) => e.fingerprint).join(", ")}`,
+    );
+  }
   const issueRefs: AlarmIssueResult[] = [];
   let findingOutcomes: AlarmFindingOutcome[] = [];
   // #6788/#7960 — mesmo gate do e-mail (dedup por CONJUNTO + expiração
@@ -321,7 +393,7 @@ async function main(): Promise<void> {
   const shouldAlarmNow = shouldSendSystemdFailedUnitsAlarm(evaluation, state);
 
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, indeterminate);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado.`,
@@ -330,6 +402,7 @@ async function main(): Promise<void> {
     const { nextState, findingOutcomes: outcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+      allowlist: indeterminate,
     });
     findingOutcomes = outcomes;
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);

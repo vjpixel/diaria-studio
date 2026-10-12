@@ -71,6 +71,13 @@
 import { parseWaitUntil } from "./issue-exec-track.ts";
 import { ROUTABLE_LABELS } from "./issue-route.ts";
 
+/** Assinatura que abre TODA razão de roteamento escrita por este
+ * reconciliador (`applyFix` em `scripts/backlog-reconcile.ts`). Fonte única
+ * pra quem precisa reconhecer um comentário mecânico dele — #10062 item 4:
+ * `route-marker-staleness.ts` lia o `(#6198)` como "razão cita issue
+ * fechada" e contava cada passada do reconciliador como renovação. */
+export const BACKLOG_RECONCILE_REASON_PREFIX = "reconciliação diária (#6198):";
+
 export interface BacklogIssueInput {
   number: number;
   title: string;

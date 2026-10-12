@@ -13,8 +13,14 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildRoundDiffRatioFinding, classifyCheckAlarmState } from "../scripts/round-diff-stats-report.ts";
+import { readFileSync } from "node:fs";
+import {
+  buildRoundDiffRatioFinding,
+  classifyCheckAlarmState,
+  pendingFindingsForCheckAlarm,
+} from "../scripts/round-diff-stats-report.ts";
 import type { WindowedRoundDiffStats } from "../scripts/lib/round-diff-stats.ts";
+import { alarmIssueStateKey, applyAlarmReconciliation, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 
 function window7d(overrides: Partial<WindowedRoundDiffStats> = {}): WindowedRoundDiffStats {
   return {
@@ -74,5 +80,45 @@ describe("classifyCheckAlarmState (#7292 — distingue 'sem dado' de 'razão sau
   it("caso real #7292 (15,3:1, n=1) classifica alarming — mas o texto do finding sabe que n=1 (coberto no describe acima)", () => {
     const result = classifyCheckAlarmState(window7d());
     assert.equal(result.state, "alarming");
+  });
+});
+
+describe("pendingFindingsForCheckAlarm (#10062 item 1 — execução saudável conta como ausência)", () => {
+  const healthy = window7d({ rounds: 4, added: 100, removed: 50, ratio: 2, netPerDay: 50 / 7 });
+  const noData = window7d({ rounds: 0, added: 0, removed: 0, ratio: null, net: 0, netPerDay: 0 });
+
+  it("saudável → [] (reconcilia), sem dado → null (não reconcilia), alarmante → [finding]", () => {
+    assert.deepEqual(pendingFindingsForCheckAlarm(classifyCheckAlarmState(healthy), healthy), []);
+    assert.equal(pendingFindingsForCheckAlarm(classifyCheckAlarmState(noData), noData), null);
+    const alarming = window7d();
+    const pending = pendingFindingsForCheckAlarm(classifyCheckAlarmState(alarming), alarming);
+    assert.equal(pending?.length, 1);
+    assert.equal(pending![0]!.check, "round-diff-ratio");
+  });
+
+  it("2 execuções saudáveis seguidas fecham a issue de alarme aberta (antes: código morto)", () => {
+    const finding = buildRoundDiffRatioFinding(15, 15335, 2000, 3);
+    const key = alarmIssueStateKey(finding.check, finding.fingerprint);
+    let state: AlarmIssuesState = {
+      [key]: { issueNumber: 7292, url: "https://x/7292", missingStreak: 0, closedAt: null, family: "estado" },
+    };
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    for (let i = 0; i < 2; i++) {
+      const pending = pendingFindingsForCheckAlarm(classifyCheckAlarmState(healthy), healthy)!;
+      state = applyAlarmReconciliation(pending, state, { cwd: ".", closeAfterRuns: 2, run }).nextState;
+    }
+    assert.ok(state[key]!.closedAt, "issue deveria estar fechada após 2 execuções saudáveis");
+    assert.ok(calls.some((a) => a[0] === "issue" && a[1] === "close" && a[2] === "7292"));
+  });
+
+  it("main() não retorna antes da reconciliação no caminho saudável (guard de fonte)", () => {
+    const src = readFileSync(new URL("../scripts/round-diff-stats-report.ts", import.meta.url), "utf8");
+    const main = src.slice(src.indexOf("async function main"));
+    assert.match(main, /pendingFindingsForCheckAlarm\(/);
+    assert.doesNotMatch(main, /classification\.state !== "alarming"\)\s*\{[^}]*return;/);
   });
 });
