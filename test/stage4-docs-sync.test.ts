@@ -3,31 +3,50 @@
  *
  * Doc editável do gate do Stage 4: round-trip render → parse, cada ramo do
  * merge de 3 vias, conflito que não grava, sentinela corrompida → erro sem
- * escrita parcial, normalização de escapes de export e edição só num arquivo.
+ * escrita parcial, normalização de escapes de export, edição só num arquivo,
+ * e as regressões do fleet review do PR #10075 (resolve=arquivo seguido de
+ * apply, render com doc existente, heading setext, 3 vias real, exit 3, token
+ * de resolução, URLs com `_`, remoção em massa, TOCTOU, check final).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   DocsSyncFormatError,
   beginSentinel,
   decideFile,
+  diffSummary,
   docEquivalent,
   endSentinel,
   matchSentinel,
+  merge3,
   mergeDocOnto,
   normalizeLine,
   parseDocExport,
   parseResolutions,
+  readState,
   renderDocMarkdown,
+  resolveToken,
   runApply,
+  runCheck,
+  runCheckRoundtrip,
+  runConfirm,
+  runDisable,
   runRender,
+  runSetUrl,
   statePath,
   unescapeForWrite,
 } from "../scripts/lib/stage4-docs-sync.ts";
+
+const CLI = fileURLToPath(new URL("../scripts/stage4-docs-sync.ts", import.meta.url));
+
+function runCli(args: string[]) {
+  return spawnSync(process.execPath, ["--import", "tsx", CLI, ...args], { encoding: "utf8", timeout: 60_000 });
+}
 
 const REVIEWED = [
   "Para esta edição, eu (o editor) enviei 5 artigos.",
@@ -92,6 +111,31 @@ function tmpEdition(reviewed = REVIEWED, social = SOCIAL): string {
   return dir;
 }
 
+function withEdition(fn: (dir: string) => void, reviewed = REVIEWED, social = SOCIAL) {
+  const dir = tmpEdition(reviewed, social);
+  try {
+    fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Cria o "doc": render + set-url, e devolve o markdown do doc. */
+function createDoc(dir: string): string {
+  const { out } = runRender({ editionDir: dir, edition: "261012" });
+  runSetUrl({ editionDir: dir, docUrl: "https://claude.ai/artifact/x" });
+  return readFileSync(out, "utf8");
+}
+
+const read = (dir: string, f: string) => readFileSync(join(dir, f), "utf8");
+const writeExport = (dir: string, md: string, name = "export.md") => {
+  const p = join(dir, "_internal", name);
+  writeFileSync(p, md);
+  return p;
+};
+const conflictToken = (report: ReturnType<typeof runApply>, file: string) =>
+  report.conflicts.find((c) => c.file === file)!.resolve_token;
+
 describe("render → parse (round-trip)", () => {
   it("devolve exatamente o conteúdo de cada arquivo (sem brancos de borda)", () => {
     const md = renderDocMarkdown({ edition: "261012", files: files(), summary: "Resumo: 3 destaques." });
@@ -99,6 +143,7 @@ describe("render → parse (round-trip)", () => {
     assert.equal(parsed["02-reviewed.md"], REVIEWED.trimEnd());
     assert.equal(parsed["03-social.md"], SOCIAL.trimEnd());
     assert.ok(md.includes("Resumo: 3 destaques."));
+    assert.ok(md.startsWith("# Revisão editorial — Edição 261012\n"));
   });
 
   it("sentinelas sobrevivem a escapes/ênfase/heading/acento perdido do export", () => {
@@ -127,34 +172,56 @@ describe("render → parse (round-trip)", () => {
     const parsed = parseDocExport(aggressiveExport(md));
     assert.ok(docEquivalent(REVIEWED, parsed["02-reviewed.md"]));
     assert.ok(docEquivalent(SOCIAL, parsed["03-social.md"]));
-    // E o merge preserva o arquivo byte a byte.
     assert.equal(mergeDocOnto(REVIEWED, parsed["02-reviewed.md"]).content, REVIEWED);
   });
 });
 
-describe("sentinela corrompida → erro explícito", () => {
-  const md = renderDocMarkdown({ edition: "261012", files: files() });
+describe("heading setext acidental (parágrafo colado em `---`, arquivos reais 261001/261008)", () => {
+  const SETEXT = "Primeiro parágrafo.\n\nAgentes ficam mais baratos de manter rodando.\n---\n\nDESTAQUE 2\n";
 
-  it("FIM apagado", () => {
-    assert.throws(() => parseDocExport(md.replace(endSentinel("02-reviewed.md"), "")), DocsSyncFormatError);
+  it("render separa o `---` do parágrafo; export desse doc é equivalente e apply não grava", () => {
+    const md = renderDocMarkdown({ edition: "261012", files: files(SETEXT) });
+    assert.ok(md.includes("manter rodando.\n\n---"), "linha em branco inserida antes do ---");
+    const section = parseDocExport(md)["02-reviewed.md"];
+    assert.ok(docEquivalent(SETEXT, section));
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const report = runApply({ editionDir: dir, docExport: writeExport(dir, doc) });
+      assert.deepEqual(
+        report.files.map((f) => f.action),
+        ["unchanged", "unchanged"],
+      );
+      assert.equal(read(dir, "02-reviewed.md"), SETEXT);
+    }, SETEXT);
   });
-  it("INÍCIO duplicado", () => {
-    const dup = md.replace(beginSentinel("03-social.md"), `${beginSentinel("03-social.md")}\n\n${beginSentinel("03-social.md")}`);
-    assert.throws(() => parseDocExport(dup), DocsSyncFormatError);
+
+  it("check-roundtrip: doc que devolve `## parágrafo` sem `---` desativa o sync; apply então recusa", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const mangled = doc.replace("Agentes ficam mais baratos de manter rodando.\n\n---", "## Agentes ficam mais baratos de manter rodando.");
+      const exp = writeExport(dir, mangled);
+      const r = runCheckRoundtrip({ editionDir: dir, docExport: exp });
+      assert.equal(r.ok, false);
+      assert.ok(readState(dir)?.sync_disabled?.reason);
+      assert.throws(() => runApply({ editionDir: dir, docExport: exp }), /sync desativado/);
+      assert.equal(read(dir, "02-reviewed.md"), SETEXT);
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    }, SETEXT);
   });
-  it("FIM antes do INÍCIO", () => {
-    const swapped = md
-      .replace(beginSentinel("02-reviewed.md"), "@@B@@")
-      .replace(endSentinel("02-reviewed.md"), beginSentinel("02-reviewed.md"))
-      .replace("@@B@@", endSentinel("02-reviewed.md"));
-    assert.throws(() => parseDocExport(swapped), DocsSyncFormatError);
+
+  it("check-roundtrip ok com export agressivo intocado", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      assert.equal(runCheckRoundtrip({ editionDir: dir, docExport: writeExport(dir, aggressiveExport(doc)) }).ok, true);
+      assert.equal(readState(dir)?.sync_disabled, undefined);
+    });
   });
-  it("seções sobrepostas", () => {
-    const lines = md.split("\n");
-    const endIdx = lines.indexOf(endSentinel("02-reviewed.md"));
-    const [endLine] = lines.splice(endIdx, 1);
-    lines.push(endLine);
-    assert.throws(() => parseDocExport(lines.join("\n")), DocsSyncFormatError);
+
+  it("remoção de linha com comentário HTML (rich-text descarta) é unsafe → conflito", () => {
+    const base = "a\n\n<!-- marcador -->\n\nb\n";
+    const o = decideFile("02-reviewed.md", base, base, "a\n\nb");
+    assert.equal(o.action, "conflict");
+    if (o.action === "conflict") assert.match(o.unsafe[0].reason, /HTML/);
   });
 });
 
@@ -172,22 +239,42 @@ describe("normalização de escapes de export", () => {
     assert.equal(normalizeLine("  texto   com   espaços  "), "texto com espaços");
   });
 
-  it("snake_case e URLs com `_` não viram ênfase", () => {
-    assert.equal(normalizeLine("arquivo_de_teste.ts"), "arquivo_de_teste.ts");
+  it("quebra dura com barra invertida final é cosmética", () => {
+    assert.equal(normalizeLine("linha com quebra\\"), normalizeLine("linha com quebra  "));
+    assert.ok(docEquivalent("a  \nb\n", "a\\\nb"));
   });
 
-  it("unescapeForWrite des-escapa o seguro e recusa o ambíguo", () => {
+  it("snake_case e URLs com `_` não viram ênfase", () => {
+    assert.equal(normalizeLine("arquivo_de_teste.ts"), "arquivo_de_teste.ts");
+    assert.equal(normalizeLine("https://github.com/x/y/blob/main/__init__.py"), "https://github.com/x/y/blob/main/__init__.py");
+    assert.equal(normalizeLine("[código](https://a.com/_x_/b)"), "[código](https://a.com/_x_/b)");
+    assert.equal(normalizeLine("`__init__`"), "`__init__`");
+  });
+
+  it("unescapeForWrite des-escapa o seguro, recusa o ambíguo e não corrompe URL", () => {
     assert.deepEqual(unescapeForWrite("US\\$ 3 bi e \\#Tag __forte__  "), { ok: true, text: "US$ 3 bi e #Tag **forte**" });
     assert.equal(unescapeForWrite("<https://a.com/novo>").text, "[https://a.com/novo](https://a.com/novo)");
     assert.equal(unescapeForWrite("C:\\\\pasta").ok, false);
     assert.equal(unescapeForWrite("texto <u>sublinhado</u>").ok, false);
     assert.equal(unescapeForWrite("<?claude block x?>").ok, false);
+    assert.equal(
+      unescapeForWrite("veja https://github.com/x/__init__.py e [y](https://a.com/_x_/) agora").text,
+      "veja https://github.com/x/__init__.py e [y](https://a.com/_x_/) agora",
+    );
+  });
+
+  it("unescapeForWrite preserva marcador de lista, ênfase `_` e espaços finais da linha original", () => {
+    assert.equal(unescapeForWrite("- item novo", "* item velho").text, "* item novo");
+    assert.equal(unescapeForWrite("- item novo", "+ item velho").text, "+ item novo");
+    assert.equal(unescapeForWrite("3. passo novo", "3) passo velho").text, "3) passo novo");
+    assert.equal(unescapeForWrite("um _termo_ novo", "um _termo_ velho").text, "um _termo_ novo");
+    assert.equal(unescapeForWrite("linha nova", "linha velha  ").text, "linha nova  ");
+    assert.equal(unescapeForWrite("quebra dura\\").text, "quebra dura  ");
   });
 
   it("quebra de linha mole re-arranjada dentro do parágrafo é cosmética", () => {
     const base = "linha um\nlinha dois\n\noutro parágrafo\n";
     assert.ok(docEquivalent(base, "linha um linha dois\n\noutro parágrafo"));
-    // Mas juntar parágrafos (some a linha em branco no meio do texto) é edição.
     assert.ok(!docEquivalent("a\n\nb\n", "a b"));
   });
 });
@@ -215,9 +302,56 @@ describe("mergeDocOnto — edição pontual preserva o resto byte a byte", () =>
     assert.deepEqual(r.removed, ["b"]);
     assert.deepEqual(r.added, ["nova"]);
   });
+
+  it("diffSummary intercala por trecho", () => {
+    const s = diffSummary("a\n\nb\n\nc\n\nd\n", "a\n\nB\n\nc\n\nD");
+    assert.deepEqual(s.lines, ["- b", "+ B", "- d", "+ D"]);
+  });
 });
 
-describe("decideFile — cada ramo do merge de 3 vias", () => {
+describe("merge3 — 3 vias de verdade", () => {
+  const base = "p1\n\np2\n\np3\n\np4\n";
+
+  it("doc e pipeline em trechos disjuntos: puxa a edição do doc e mantém a do pipeline", () => {
+    const current = "p1\n\np2 pipeline\n\np3\n\np4\n";
+    const doc = "p1\n\np2\n\np3\n\np4 editor";
+    const o = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(o.action, "pulled");
+    if (o.action !== "pulled") return;
+    assert.equal(o.write, "p1\n\np2 pipeline\n\np3\n\np4 editor\n");
+    assert.equal(o.three_way, true);
+    // Base = doc: o próximo apply não lê o pipeline como "edição do doc".
+    assert.equal(o.newBase, doc);
+    assert.equal(decideFile("02-reviewed.md", o.newBase, o.write, doc).action, "doc_stale");
+  });
+
+  it("mesmo trecho mudado diferente → conflito; mesma mudança dos dois lados → base_updated", () => {
+    assert.equal(decideFile("02-reviewed.md", base, "p1\n\np2 A\n\np3\n\np4\n", "p1\n\np2 B\n\np3\n\np4").action, "conflict");
+    assert.equal(
+      decideFile("02-reviewed.md", base, "p1\n\np2 X\n\np3\n\np4\n", "p1\n\np2 X\n\np3\n\np4").action,
+      "base_updated",
+    );
+  });
+
+  it("resolve=doc só faz o doc vencer no trecho em conflito — mudança do pipeline em outro trecho sobrevive", () => {
+    const current = "p1 pipeline\n\np2 A\n\np3\n\np4\n";
+    const doc = "p1\n\np2 B\n\np3\n\np4";
+    const c = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    const o = decideFile("02-reviewed.md", base, current, doc, { choice: "doc", token: resolveToken(current, doc) });
+    assert.equal(o.action, "resolved_apply_doc");
+    if (o.action === "resolved_apply_doc") assert.equal(o.write, "p1 pipeline\n\np2 B\n\np3\n\np4\n");
+  });
+
+  it("merge3 sem edição do doc devolve o arquivo atual intacto", () => {
+    const current = "p1\n\np2 pipeline\n\np3\n\np4\n";
+    const r = merge3(base, current, "p1\n\np2\n\np3\n\np4");
+    assert.equal(r.docChanged, false);
+    assert.equal(r.content, current);
+  });
+});
+
+describe("decideFile — ramos e guards", () => {
   const base = "a\n\nb\n";
 
   it("doc == base, arquivo == base → unchanged", () => {
@@ -226,183 +360,277 @@ describe("decideFile — cada ramo do merge de 3 vias", () => {
   it("doc == base, arquivo mudou → doc_stale (nada gravado)", () => {
     const o = decideFile("02-reviewed.md", base, "a\n\nB2\n", "a\n\nb");
     assert.equal(o.action, "doc_stale");
-    assert.equal(o.write, undefined);
   });
   it("arquivo == base, doc editado → pulled (grava e avança a base)", () => {
     const o = decideFile("02-reviewed.md", base, base, "a\n\nb editado");
     assert.equal(o.action, "pulled");
+    if (o.action !== "pulled") return;
     assert.equal(o.write, "a\n\nb editado\n");
     assert.equal(o.newBase, "a\n\nb editado\n");
+    assert.deepEqual(o.changes.lines, ["- b", "+ b editado"]);
   });
-  it("arquivo != base e doc == arquivo → base_updated (sem gravar arquivo)", () => {
-    const o = decideFile("02-reviewed.md", base, "a\n\nmesmo\n", "a\n\nmesmo");
-    assert.equal(o.action, "base_updated");
-    assert.equal(o.write, undefined);
-    assert.equal(o.newBase, "a\n\nmesmo\n");
-  });
-  it("arquivo e doc mudaram diferente → conflict, sem write, com diff resumido", () => {
+  it("arquivo e doc mudaram diferente → conflict com diff, shas e token", () => {
     const o = decideFile("02-reviewed.md", base, "a\n\npipeline\n", "a\n\neditor");
     assert.equal(o.action, "conflict");
-    assert.equal(o.write, undefined);
-    assert.equal(o.newBase, undefined);
-    assert.deepEqual(o.editor_changes?.lines, ["- b", "+ editor"]);
-    assert.deepEqual(o.pipeline_changes?.lines, ["- b", "+ pipeline"]);
+    if (o.action !== "conflict") return;
+    assert.deepEqual(o.editor_changes.lines, ["- b", "+ editor"]);
+    assert.deepEqual(o.pipeline_changes.lines, ["- b", "+ pipeline"]);
+    assert.match(o.current_sha256, /^[0-9a-f]{64}$/);
+    assert.match(o.doc_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(o.resolve_token, resolveToken("a\n\npipeline\n", "a\n\neditor"));
   });
-  it("edição não des-escapável → conflict (nunca grava)", () => {
-    const o = decideFile("02-reviewed.md", base, base, "a\n\nb <u>x</u>");
+  it("edição não des-escapável → conflict; resolve=arquivo com arquivo intacto é honrado", () => {
+    const doc = "a\n\nb <u>x</u>";
+    const o = decideFile("02-reviewed.md", base, base, doc);
     assert.equal(o.action, "conflict");
-    assert.equal(o.write, undefined);
-    assert.ok(o.unsafe && o.unsafe.length === 1);
-  });
-  it("conflito resolvido: arquivo → mantém arquivo; doc → aplica doc", () => {
-    const keep = decideFile("02-reviewed.md", base, "a\n\npipeline\n", "a\n\neditor", "arquivo");
+    if (o.action !== "conflict") return;
+    assert.equal(o.unsafe.length, 1);
+    const keep = decideFile("02-reviewed.md", base, base, doc, { choice: "arquivo", token: o.resolve_token });
     assert.equal(keep.action, "resolved_keep_file");
-    assert.equal(keep.write, undefined);
-    assert.equal(keep.newBase, "a\n\npipeline\n");
-    const doc = decideFile("02-reviewed.md", base, "a\n\npipeline\n", "a\n\neditor", "doc");
-    assert.equal(doc.action, "resolved_apply_doc");
-    assert.equal(doc.write, "a\n\neditor\n");
+    if (keep.action === "resolved_keep_file") assert.equal(keep.newBase, doc);
+  });
+  it("token de outra versão do conflito → re-levanta o conflito", () => {
+    const o = decideFile("02-reviewed.md", base, "a\n\npipeline\n", "a\n\neditor", { choice: "doc", token: "000000000000" });
+    assert.equal(o.action, "conflict");
+    if (o.action === "conflict") assert.match(o.reason, /não corresponde/);
+  });
+  it("remoção em massa: seção vazia ou >50% das linhas removidas → conflito", () => {
+    const big = "l1\n\nl2\n\nl3\n\nl4\n\nl5\n\nl6\n";
+    const empty = decideFile("02-reviewed.md", big, big, "");
+    assert.equal(empty.action, "conflict");
+    if (empty.action === "conflict") assert.match(empty.reason, /remoção em massa/);
+    const most = decideFile("02-reviewed.md", big, big, "l1\n\nl2");
+    assert.equal(most.action, "conflict");
+    if (most.action === "conflict") assert.match(most.reason, /remoção em massa/);
+    assert.equal(decideFile("02-reviewed.md", big, big, "l1\n\nl2\n\nl3\n\nl4\n\nl6").action, "pulled");
   });
 });
 
 describe("runRender/runApply com arquivos (diretório temporário)", () => {
-  it("render grava md + base; apply sem edição não toca nos arquivos", () => {
-    const dir = tmpEdition();
-    try {
-      const { out } = runRender({ editionDir: dir, edition: "261012", docUrl: "https://claude.ai/artifact/x" });
+  it("render grava md + base; set-url não mexe na base; apply sem edição não toca nos arquivos", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
       const state = JSON.parse(readFileSync(statePath(dir), "utf8"));
       assert.equal(state.doc_url, "https://claude.ai/artifact/x");
       assert.equal(state.base["02-reviewed.md"].content, REVIEWED);
-      assert.match(state.base["03-social.md"].sha256, /^[0-9a-f]{64}$/);
-      // Re-render sem --doc-url preserva o link.
-      runRender({ editionDir: dir, edition: "261012" });
-      assert.equal(JSON.parse(readFileSync(statePath(dir), "utf8")).doc_url, "https://claude.ai/artifact/x");
-
-      const exp = join(dir, "export.md");
-      writeFileSync(exp, aggressiveExport(readFileSync(out, "utf8")));
-      const report = runApply({ editionDir: dir, docExport: exp });
+      const report = runApply({ editionDir: dir, docExport: writeExport(dir, aggressiveExport(doc)) });
       assert.equal(report.ok, true);
       assert.deepEqual(report.pulled, []);
-      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), REVIEWED);
-      assert.equal(readFileSync(join(dir, "03-social.md"), "utf8"), SOCIAL);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      assert.equal(read(dir, "02-reviewed.md"), REVIEWED);
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+    });
   });
 
-  it("edição só no 03-social.md: puxa social, 02-reviewed intacto", () => {
-    const dir = tmpEdition();
-    try {
-      const { out } = runRender({ editionDir: dir, edition: "261012" });
-      const exp = join(dir, "export.md");
-      writeFileSync(exp, readFileSync(out, "utf8").replace("Texto do d2.", "Texto do d2 revisado pelo editor."));
+  it("edição só no 03-social.md: puxa social com resumo de diff, 02-reviewed intacto", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const exp = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 revisado pelo editor."));
       const report = runApply({ editionDir: dir, docExport: exp });
       assert.equal(report.ok, true);
       assert.deepEqual(report.pulled, ["03-social.md"]);
-      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), REVIEWED);
-      assert.equal(
-        readFileSync(join(dir, "03-social.md"), "utf8"),
-        SOCIAL.replace("Texto do d2.", "Texto do d2 revisado pelo editor."),
-      );
-      // A base avançou: um 2º apply com o mesmo export é no-op.
+      assert.deepEqual(report.pulled_changes["03-social.md"]?.lines, ["- Texto do d2.", "+ Texto do d2 revisado pelo editor."]);
+      assert.equal(read(dir, "02-reviewed.md"), REVIEWED);
+      assert.equal(read(dir, "03-social.md"), SOCIAL.replace("Texto do d2.", "Texto do d2 revisado pelo editor."));
       const again = runApply({ editionDir: dir, docExport: exp });
       assert.deepEqual(again.pulled, []);
       assert.deepEqual(
         again.files.map((f) => f.action),
         ["unchanged", "unchanged"],
       );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
-  it("conflito num arquivo não grava nele, mas puxa o outro; exit 1 via CLI", () => {
-    const dir = tmpEdition();
-    try {
-      const { out } = runRender({ editionDir: dir, edition: "261012" });
-      // Pipeline mexe no 02-reviewed depois do render (cenário da 261009: gate mudou).
+  it("SEQUÊNCIA: conflito → resolve=arquivo → apply de novo com o MESMO export → arquivo intacto (doc_stale)", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
       const pipelineReviewed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
       writeFileSync(join(dir, "02-reviewed.md"), pipelineReviewed);
-      const exp = join(dir, "export.md");
-      writeFileSync(
-        exp,
-        readFileSync(out, "utf8")
-          .replace("Cada rodada redefine", "Cada rodada (editor) redefine")
-          .replace("Texto do d2.", "Texto do d2 novo."),
+      const exp = writeExport(dir, doc.replace("Cada rodada redefine", "Cada rodada (editor) redefine"));
+      const first = runApply({ editionDir: dir, docExport: exp });
+      assert.equal(first.ok, false);
+      const token = conflictToken(first, "02-reviewed.md");
+      const keep = runApply({ editionDir: dir, docExport: exp, resolutions: parseResolutions(`02-reviewed.md=arquivo@${token}`) });
+      assert.equal(keep.ok, true);
+      assert.deepEqual(keep.kept_file, ["02-reviewed.md"]);
+      assert.deepEqual(keep.doc_stale, []);
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed);
+      // O apply que o playbook manda rodar em seguida NÃO pode puxar a edição rejeitada.
+      const next = runApply({ editionDir: dir, docExport: exp });
+      assert.equal(next.ok, true);
+      assert.deepEqual(next.pulled, []);
+      assert.deepEqual(next.doc_stale, ["02-reviewed.md"]);
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed);
+      // E o render que atualiza o doc aceita esse export (nada pendente).
+      assert.equal(runRender({ editionDir: dir, edition: "261012", docExport: exp }).pending, true);
+    });
+  });
+
+  it("conflito num arquivo não grava nele, mas puxa o outro; exit 1 via CLI; resolve=doc com token", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const pipelineReviewed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
+      writeFileSync(join(dir, "02-reviewed.md"), pipelineReviewed);
+      const exp = writeExport(
+        dir,
+        doc.replace("Cada rodada redefine", "Cada rodada (editor) redefine").replace("Texto do d2.", "Texto do d2 novo."),
       );
       const stateBefore = readFileSync(statePath(dir), "utf8");
       const report = runApply({ editionDir: dir, docExport: exp });
       assert.equal(report.ok, false);
       assert.equal(report.conflicts.length, 1);
       assert.equal(report.conflicts[0].file, "02-reviewed.md");
-      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), pipelineReviewed);
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed);
       assert.deepEqual(report.pulled, ["03-social.md"]);
       const stateAfter = JSON.parse(readFileSync(statePath(dir), "utf8"));
-      // Base do arquivo em conflito NÃO avança.
       assert.equal(stateAfter.base["02-reviewed.md"].content, JSON.parse(stateBefore).base["02-reviewed.md"].content);
+      assert.deepEqual(stateAfter.pending_conflict, ["02-reviewed.md"]);
+      assert.equal(runCheck({ editionDir: dir }).ok, false);
 
-      // Pela CLI: exit 1 e conflicts[] no stdout.
-      const cli = spawnSync(
-        process.execPath,
-        ["--import", "tsx", resolve("scripts/stage4-docs-sync.ts"), "apply", "--edition-dir", dir, "--doc-export", exp],
-        { encoding: "utf8" },
-      );
+      const cli = runCli(["apply", "--edition-dir", dir, "--doc-export", exp]);
       assert.equal(cli.status, 1, cli.stderr);
       assert.equal(JSON.parse(cli.stdout).conflicts[0].file, "02-reviewed.md");
-      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), pipelineReviewed);
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed);
 
-      // Editor decide aplicar o doc.
-      const resolved = runApply({ editionDir: dir, docExport: exp, resolutions: parseResolutions("02-reviewed.md=doc") });
+      const token = conflictToken(report, "02-reviewed.md");
+      const resolved = runApply({ editionDir: dir, docExport: exp, resolutions: parseResolutions(`02-reviewed.md=doc@${token}`) });
       assert.equal(resolved.ok, true);
-      assert.ok(readFileSync(join(dir, "02-reviewed.md"), "utf8").includes("Cada rodada (editor) redefine"));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      assert.ok(read(dir, "02-reviewed.md").includes("Cada rodada (editor) redefine"));
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
   });
 
   it("sentinela corrompida: exit 2 e nada gravado (nem o arquivo íntegro)", () => {
-    const dir = tmpEdition();
-    try {
-      const { out } = runRender({ editionDir: dir, edition: "261012" });
-      const exp = join(dir, "export.md");
-      writeFileSync(
-        exp,
-        readFileSync(out, "utf8")
-          .replace("Texto do d2.", "Texto do d2 novo.")
-          .replace(endSentinel("02-reviewed.md"), "(apagado)"),
-      );
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const exp = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 novo.").replace(endSentinel("02-reviewed.md"), "(apagado)"));
       assert.throws(() => runApply({ editionDir: dir, docExport: exp }), DocsSyncFormatError);
-      assert.equal(readFileSync(join(dir, "03-social.md"), "utf8"), SOCIAL);
-      const cli = spawnSync(
-        process.execPath,
-        ["--import", "tsx", resolve("scripts/stage4-docs-sync.ts"), "apply", "--edition-dir", dir, "--doc-export", exp],
-        { encoding: "utf8" },
-      );
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+      const cli = runCli(["apply", "--edition-dir", dir, "--doc-export", exp]);
       assert.equal(cli.status, 2, cli.stderr);
-      assert.equal(readFileSync(join(dir, "03-social.md"), "utf8"), SOCIAL);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+    });
+  });
+
+  it("TOCTOU: arquivo muda entre a decisão e a escrita → conflito, nada gravado", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const exp = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 novo."));
+      const concurrent = SOCIAL.replace("Texto do d2.", "Texto do d2 (pipeline concorrente).");
+      const report = runApply({
+        editionDir: dir,
+        docExport: exp,
+        beforeWrite: (f) => writeFileSync(join(dir, f), concurrent),
+      });
+      assert.equal(report.ok, false);
+      assert.match(report.conflicts[0].reason, /durante o apply/);
+      assert.equal(read(dir, "03-social.md"), concurrent);
+    });
   });
 
   it("apply sem render prévio → erro de pré-condição", () => {
-    const dir = tmpEdition();
-    try {
-      const exp = join(dir, "export.md");
-      writeFileSync(exp, "nada");
-      assert.throws(() => runApply({ editionDir: dir, docExport: exp }), /render/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    withEdition((dir) => {
+      assert.throws(() => runApply({ editionDir: dir, docExport: writeExport(dir, "nada") }), /render/);
+    });
+  });
+});
+
+describe("render com doc existente: base pendente + confirm", () => {
+  it("exige --doc-export, recusa edição não puxada e não mexe na base", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const before = readFileSync(statePath(dir), "utf8");
+      assert.throws(() => runRender({ editionDir: dir, edition: "261012" }), /--doc-export/);
+      const edited = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 só no doc."));
+      assert.throws(() => runRender({ editionDir: dir, edition: "261012", docExport: edited }), /não puxada/);
+      assert.equal(readFileSync(statePath(dir), "utf8"), before);
+      const cli = runCli(["render", "--edition-dir", dir, "--edition", "261012", "--doc-export", edited]);
+      assert.equal(cli.status, 2, cli.stderr);
+    });
+  });
+
+  it("render grava base PENDENTE; sem confirm a base antiga vale; confirm efetiva", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const exp = writeExport(dir, doc);
+      const changed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
+      writeFileSync(join(dir, "02-reviewed.md"), changed);
+      const r = runRender({ editionDir: dir, edition: "261012", docExport: exp });
+      assert.equal(r.pending, true);
+      // Substituição do doc falhou: o doc segue com o conteúdo antigo — apply dá doc_stale, nunca reverte.
+      const stale = runApply({ editionDir: dir, docExport: exp });
+      assert.deepEqual(stale.doc_stale, ["02-reviewed.md"]);
+      assert.equal(read(dir, "02-reviewed.md"), changed);
+      // Substituição ok: confirm com o export novo efetiva.
+      const newDoc = writeExport(dir, readFileSync(r.out, "utf8"), "export-novo.md");
+      assert.throws(() => runConfirm({ editionDir: dir, docExport: exp }), /NÃO efetivada/);
+      runConfirm({ editionDir: dir, docExport: newDoc });
+      const st = readState(dir)!;
+      assert.equal(st.pending, undefined);
+      assert.equal(st.base["02-reviewed.md"].content, changed);
+      assert.deepEqual(runApply({ editionDir: dir, docExport: newDoc }).files.map((f) => f.action), ["unchanged", "unchanged"]);
+    });
+  });
+
+  it("state corrompido → render falha (exit 2), nunca descarta doc_url em silêncio", () => {
+    withEdition((dir) => {
+      createDoc(dir);
+      const st = JSON.parse(readFileSync(statePath(dir), "utf8"));
+      st.base["02-reviewed.md"].content += "adulterado";
+      writeFileSync(statePath(dir), JSON.stringify(st));
+      assert.throws(() => runRender({ editionDir: dir, edition: "261012" }), /sha256/);
+      writeFileSync(statePath(dir), "{não é json");
+      const cli = runCli(["render", "--edition-dir", dir, "--edition", "261012"]);
+      assert.equal(cli.status, 2, cli.stderr);
+    });
+  });
+});
+
+describe("check (antes do sentinel)", () => {
+  it("sem doc → ok; doc sem apply → falha; após apply ok → ok; arquivo mudou depois → falha", () => {
+    withEdition((dir) => {
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+      const doc = createDoc(dir);
+      assert.equal(runCheck({ editionDir: dir }).ok, false);
+      runApply({ editionDir: dir, docExport: writeExport(dir, doc) });
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+      writeFileSync(join(dir, "03-social.md"), SOCIAL + "\nmais\n");
+      assert.equal(runCheck({ editionDir: dir }).ok, false);
+      assert.equal(runCli(["check", "--edition-dir", dir]).status, 1);
+      // Editor aprova "sem as edições do doc": disable → check ok, apply recusa.
+      runDisable({ editionDir: dir, reason: "editor aprovou sem as edições do doc" });
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+      assert.throws(() => runApply({ editionDir: dir, docExport: writeExport(dir, doc) }), /sync desativado/);
+    });
+  });
+});
+
+describe("CLI — exit codes", () => {
+  it("falha inesperada (ENOENT do --summary-file) → exit 3 com JSON, nunca o exit 1 do conflito", () => {
+    withEdition((dir) => {
+      const cli = runCli(["render", "--edition-dir", dir, "--edition", "261012", "--summary-file", join(dir, "nao-existe.md")]);
+      assert.equal(cli.status, 3, cli.stderr);
+      const out = JSON.parse(cli.stdout);
+      assert.equal(out.ok, false);
+      assert.deepEqual(out.written, []);
+    });
+  });
+
+  it("uso inválido → exit 2", () => {
+    assert.equal(runCli(["apply"]).status, 2);
   });
 });
 
 describe("parseResolutions", () => {
-  it("aceita com e sem .md e recusa valor inválido", () => {
-    assert.deepEqual(parseResolutions("02-reviewed=arquivo,03-social.md=doc"), {
-      "02-reviewed.md": "arquivo",
-      "03-social.md": "doc",
+  it("exige token, aceita com e sem .md, recusa valor inválido e chave repetida", () => {
+    assert.deepEqual(parseResolutions("02-reviewed=arquivo@0123456789ab,03-social.md=doc@ba9876543210"), {
+      "02-reviewed.md": { choice: "arquivo", token: "0123456789ab" },
+      "03-social.md": { choice: "doc", token: "ba9876543210" },
     });
-    assert.throws(() => parseResolutions("02-reviewed.md=talvez"), DocsSyncFormatError);
+    assert.throws(() => parseResolutions("02-reviewed.md=doc"), DocsSyncFormatError);
+    assert.throws(() => parseResolutions("02-reviewed.md=talvez@0123456789ab"), DocsSyncFormatError);
+    assert.throws(
+      () => parseResolutions("02-reviewed.md=doc@0123456789ab,02-reviewed=arquivo@0123456789ab"),
+      /repete/,
+    );
   });
 });

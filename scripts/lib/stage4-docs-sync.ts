@@ -6,14 +6,21 @@
  * (aditivo aos previews HTML, só para o TEXTO), com sync automático de volta
  * para `02-reviewed.md`/`03-social.md`. Condição: o repo segue fonte de
  * verdade — o sync de volta DETECTA e ACUSA conflito, nunca sobrescreve em
- * silêncio.
+ * silêncio (nem a edição do editor, nem a do pipeline).
  *
  * Scripts TS não chamam o conector Claude Docs (é MCP do top-level). O fluxo é:
- *   1. `render` gera o markdown do doc a partir dos arquivos e grava a BASE
- *      (snapshot do que foi enviado ao doc) em `_internal/04-docs-gate.json`;
- *      o top-level cria/substitui o doc com esse markdown.
- *   2. O top-level exporta o doc (markdown) para um arquivo e chama `apply`,
- *      que faz o merge de 3 vias por arquivo: BASE × DOC × arquivo ATUAL.
+ *   1. `render` gera o markdown do doc a partir dos arquivos. Sem doc ainda
+ *      (`doc_url` ausente), grava a BASE (snapshot do que vai para o doc) em
+ *      `_internal/04-docs-gate.json`. Com doc existente, exige o export atual
+ *      do doc, recusa se ele tiver edição não puxada, e grava a base nova como
+ *      PENDENTE — só `confirm` (depois que o top-level substituiu o doc com
+ *      sucesso) a efetiva. Falhou a substituição → a base antiga segue valendo.
+ *   2. `set-url` grava o `doc_url` (sem mexer na base); `check-roundtrip`
+ *      confere, logo após criar o doc, que o export do doc intocado volta
+ *      equivalente — senão desativa o sync daquele doc (`sync_disabled`).
+ *   3. `apply` faz o merge de 3 vias por arquivo: BASE × DOC × arquivo ATUAL.
+ *   4. `check` confere mecanicamente, antes do sentinel do Stage 4, que o
+ *      último `apply` passou sem conflito e que os arquivos não mudaram desde.
  *
  * ── Formato do doc ──────────────────────────────────────────────────────────
  * Cada arquivo vai entre duas linhas-sentinela:
@@ -32,31 +39,42 @@
  * `matchSentinel`. Começar com `===` não vira heading setext porque a linha
  * tem texto além dos `=` e é sempre cercada por linhas em branco.
  *
+ * Heading setext acidental: nos arquivos reais (261001, 261008) há parágrafo
+ * seguido de `---` SEM linha em branco — em CommonMark isso é um H2 setext, e
+ * o doc devolveria `## parágrafo` sem a quebra temática. O render insere uma
+ * linha em branco antes de todo `---`/`***`/`___` precedido de texto; a
+ * comparação trata essa linha em branco extra como cosmética.
+ *
  * ── Normalização (só para COMPARAR) ─────────────────────────────────────────
  * `normalizeLine` neutraliza o que um export markdown tipicamente introduz sem
  * que o editor tenha mexido no texto:
- *   - fim de linha CRLF/LF, espaços finais, espaços repetidos, NBSP;
- *   - escapes de pontuação ASCII do CommonMark (`\*`, `\_`, `\#`, `\[`, `\]`,
- *     `\(`, `\)`, `\-`, `\+`, `\.`, `\!`, `\|`, `\>`, `\<`, `\$`, `\~`, `` \` ``,
- *     `\=`, `\&`, ...);
+ *   - fim de linha CRLF/LF, espaços finais, espaços repetidos, NBSP, quebra
+ *     dura com barra invertida final;
+ *   - escapes de pontuação ASCII do CommonMark (fora de code span);
  *   - entidades HTML `&amp;` `&lt;` `&gt;` `&quot;` `&#39;` `&nbsp;`;
- *   - ênfase `__x__`/`_x_` ≡ `**x**`/`*x*`;
+ *   - ênfase `__x__`/`_x_` ≡ `**x**`/`*x*` — NUNCA dentro de destino de link,
+ *     URL crua ou code span (`/__init__.py` não vira `**init**`);
  *   - marcador de lista `*`/`+` ≡ `-`, lista ordenada `1)` ≡ `1.`;
  *   - quebra temática `***`/`___`/`* * *` ≡ `---`;
  *   - link `<url>` ≡ `[url](url)` ≡ `url` (URL nua);
  * e, no nível do bloco, linhas em branco repetidas/no fim e quebra de linha
- * "mole" dentro de um parágrafo (o export pode juntar ou re-quebrar linhas de
- * um mesmo parágrafo) — ver `isCosmeticHunk`.
+ * "mole" dentro de um parágrafo — ver `isCosmeticHunk`.
  *
- * ── Merge sem corromper o arquivo ───────────────────────────────────────────
- * O conteúdo do doc NUNCA é gravado inteiro. `mergeDocOnto` faz um diff por
- * linha (LCS sobre as linhas normalizadas) entre o arquivo-alvo e o doc:
- * trecho igual (ou diferença só cosmética) mantém os bytes ORIGINAIS do
- * arquivo; só os trechos realmente editados no doc são trocados pelo texto do
- * doc, des-escapado de forma conservadora (`unescapeForWrite`). Sem edição, o
- * arquivo fica byte a byte igual. Linha editada que não dá para des-escapar com
- * segurança (`\\`, tag HTML crua, bloco `<?claude ...?>` do Docs) →
- * `unsafe`, que o `apply` trata como CONFLITO em vez de arriscar gravar.
+ * ── Merge de 3 vias ─────────────────────────────────────────────────────────
+ * `merge3(base, atual, doc)` calcula os trechos (hunks) base→doc e base→atual
+ * (diff por linha, LCS sobre as linhas normalizadas). Hunks cosméticos do lado
+ * do doc são descartados. Os hunks do doc são aplicados SOBRE o arquivo atual;
+ * trechos que não mudaram mantêm os bytes do arquivo atual. Hunk do doc que se
+ * sobrepõe (ou encosta) num hunk do pipeline é CONFLITO — exceto quando os
+ * dois lados fizeram a mesma mudança. Mudanças em trechos disjuntos são
+ * puxadas automaticamente.
+ *
+ * O conteúdo do doc NUNCA é gravado inteiro. Só as linhas dos hunks do doc
+ * são escritas, des-escapadas de forma conservadora (`unescapeForWrite`),
+ * preservando marcador de lista, estilo de ênfase e espaços finais da linha
+ * substituída. Linha que não dá para des-escapar com segurança (`\\`, tag HTML,
+ * bloco `<?claude ...?>`), remoção de linha com HTML/comentário, seção vazia
+ * ou remoção em massa (>50% das linhas) → CONFLITO, nunca gravação.
  *
  * Limite conhecido (documentado, não silencioso): diferença SÓ de linhas em
  * branco entre parágrafos é tratada como cosmética. Num editor rich-text,
@@ -64,8 +82,10 @@
  * edição), então a única fonte prática de diferença só-de-branco é o próprio
  * export.
  *
- * @see .claude/agents/orchestrator-stage-4.md §4b (criação do doc), §4d
- *   (apply antes de cada apresentação), §4e (último apply antes do sentinel)
+ * @see .claude/agents/orchestrator-stage-4.md §4b step 3b (criação do doc e
+ *   check-roundtrip), §4d (apply antes de cada apresentação + manter o doc
+ *   atualizado; o ÚLTIMO apply roda no ramo `sim`), §4e (`check` antes do
+ *   sentinel — só confere, não puxa)
  */
 
 import { createHash } from "node:crypto";
@@ -95,6 +115,12 @@ export function endSentinel(file: SyncFile): string {
 export const STATE_FILENAME = "04-docs-gate.json";
 export const DOC_MD_FILENAME = "04-docs-gate.md";
 
+/** Título do doc — o MESMO texto do H1 do markdown (o conector usa o título
+ * como nome; os dois alinhados evitam um doc "Revisão X" com H1 diferente). */
+export function docTitle(edition: string): string {
+  return `Revisão editorial — Edição ${edition}`;
+}
+
 export interface BaseEntry {
   sha256: string;
   content: string;
@@ -104,14 +130,34 @@ export interface DocsGateState {
   doc_url?: string;
   base: Record<SyncFile, BaseEntry>;
   rendered_at: string;
+  /** Base de um re-render ainda não efetivado (doc ainda não substituído). */
+  pending?: { base: Record<SyncFile, BaseEntry>; rendered_at: string };
+  /** Sync desligado para este doc (round-trip inicial falhou). Nunca puxa. */
+  sync_disabled?: { reason: string; at: string };
+  /** Último `apply` sem conflito + sha dos arquivos logo depois dele. */
+  last_apply_ok_at?: string;
+  last_apply_files_sha?: Record<SyncFile, string>;
+  /** Arquivos em conflito no último `apply` (ausente = nenhum). */
+  pending_conflict?: SyncFile[];
 }
 
 /** Erro de formato do export (sentinela ausente/corrompida/duplicada) ou de
- * pré-condição (estado/arquivo ausente) — CLI mapeia para exit 2. */
+ * pré-condição (estado/arquivo ausente) — CLI mapeia para exit 2. Lançado
+ * sempre ANTES de qualquer escrita. */
 export class DocsSyncFormatError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DocsSyncFormatError";
+  }
+}
+
+/** Falha inesperada (I/O etc.) — carrega o que já tinha sido gravado. CLI → exit 3. */
+export class DocsSyncUnexpectedError extends Error {
+  readonly written: string[];
+  constructor(message: string, written: string[]) {
+    super(message);
+    this.name = "DocsSyncUnexpectedError";
+    this.written = written;
   }
 }
 
@@ -133,13 +179,27 @@ function looksLikeSentinel(line: string): boolean {
   return matchSentinel(line) !== null;
 }
 
+const THEMATIC_BREAK_RE = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
+
+/** Insere linha em branco antes de quebra temática colada num parágrafo
+ * (evita heading setext no doc — ver docblock). */
+function separateThematicBreaks(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    const prev = out[out.length - 1];
+    if (THEMATIC_BREAK_RE.test(line) && prev !== undefined && prev.trim() !== "") out.push("");
+    out.push(line);
+  }
+  return out;
+}
+
 /**
  * Monta o markdown do doc. Lança se algum conteúdo já contiver uma linha que
  * o parser leria como sentinela (o round-trip ficaria ambíguo).
  */
 export function renderDocMarkdown(input: RenderInput): string {
   const out: string[] = [];
-  out.push(`# Revisão editorial — Edição ${input.edition}`);
+  out.push(`# ${docTitle(input.edition)}`);
   out.push("");
   if (input.summary && input.summary.trim()) {
     for (const line of input.summary.replace(/\r\n?/g, "\n").trimEnd().split("\n")) {
@@ -163,7 +223,7 @@ export function renderDocMarkdown(input: RenderInput): string {
     }
     out.push(beginSentinel(file));
     out.push("");
-    out.push(content.replace(/^\n+/, "").trimEnd());
+    out.push(separateThematicBreaks(content.replace(/^\n+/, "").trimEnd().split("\n")).join("\n"));
     out.push("");
     out.push(endSentinel(file));
     out.push("");
@@ -171,10 +231,14 @@ export function renderDocMarkdown(input: RenderInput): string {
   return out.join("\n");
 }
 
-export function buildState(files: Record<SyncFile, string>, now: Date, docUrl?: string): DocsGateState {
+function baseOf(files: Record<SyncFile, string>): Record<SyncFile, BaseEntry> {
   const base = {} as Record<SyncFile, BaseEntry>;
   for (const file of SYNC_FILES) base[file] = { sha256: sha256(files[file]), content: files[file] };
-  const state: DocsGateState = { base, rendered_at: now.toISOString() };
+  return base;
+}
+
+export function buildState(files: Record<SyncFile, string>, now: Date, docUrl?: string): DocsGateState {
+  const state: DocsGateState = { base: baseOf(files), rendered_at: now.toISOString() };
   if (docUrl) state.doc_url = docUrl;
   return state;
 }
@@ -187,7 +251,7 @@ export function buildState(files: Record<SyncFile, string>, now: Date, docUrl?: 
  * Retorna `{kind, file}` ou `null`.
  */
 export function matchSentinel(line: string): { kind: "begin" | "end"; file: SyncFile } | null {
-  let s = line.replace(/ /g, " ").trim();
+  let s = line.replace(/ /g, " ").trim();
   if (!s.includes("=")) return null;
   s = s.replace(/^#{1,6}\s+/, "");
   s = s.replace(/\\([!-/:-@[-`{-~])/g, "$1");
@@ -259,17 +323,41 @@ function decodeEntities(s: string): string {
   return s.replace(/&(?:amp|lt|gt|quot|apos|nbsp|#39);/g, (m) => HTML_ENTITIES[m] ?? m);
 }
 
-/** Ênfase com sublinhado → asterisco. Não casa `_` precedido de `\`, palavra
- * ou `*` (preserva `snake_case` e URLs com `_`). */
-function normalizeEmphasis(s: string): string {
-  return s
-    .replace(/(?<![\w\\])__(?=\S)(.+?)(?<=\S)__(?!\w)/g, "**$1**")
-    .replace(/(?<![\w\\*])_(?=\S)([^_]+?)(?<=\S)_(?![\w])/g, "*$1*");
+/** Trechos onde ênfase NUNCA é normalizada: code span, destino de link,
+ * autolink e URL crua. */
+const EMPHASIS_PROTECTED_RE = /`[^`]*`|\]\([^)]*\)|<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>()\]]+/g;
+/** Trechos onde escapes NÃO são removidos: code span (barra é literal ali). */
+const UNESCAPE_PROTECTED_RE = /`[^`]*`/g;
+
+/** Aplica `fn` só aos trechos fora de `protectedRe`. */
+function mapUnprotected(s: string, protectedRe: RegExp, fn: (part: string) => string): string {
+  let out = "";
+  let last = 0;
+  for (const m of s.matchAll(new RegExp(protectedRe.source, "g"))) {
+    out += fn(s.slice(last, m.index)) + m[0];
+    last = (m.index ?? 0) + m[0].length;
+  }
+  return out + fn(s.slice(last));
 }
 
-/** Remove escapes de pontuação ASCII do CommonMark. */
+const DOUBLE_UNDERSCORE_RE = /(?<![\w\\])__(?=\S)(.+?)(?<=\S)__(?!\w)/g;
+const SINGLE_UNDERSCORE_RE = /(?<![\w\\*])_(?=\S)([^_]+?)(?<=\S)_(?![\w])/g;
+
+/** Ênfase com sublinhado → asterisco, fora de URL/link/code. Não casa `_`
+ * precedido de `\`, palavra ou `*` (preserva `snake_case`). */
+function normalizeEmphasis(s: string, opts: { double?: boolean; single?: boolean } = {}): string {
+  const { double = true, single = true } = opts;
+  return mapUnprotected(s, EMPHASIS_PROTECTED_RE, (part) => {
+    let p = part;
+    if (double) p = p.replace(DOUBLE_UNDERSCORE_RE, "**$1**");
+    if (single) p = p.replace(SINGLE_UNDERSCORE_RE, "*$1*");
+    return p;
+  });
+}
+
+/** Remove escapes de pontuação ASCII do CommonMark (fora de code span). */
 function unescapePunct(s: string): string {
-  return s.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+  return mapUnprotected(s, UNESCAPE_PROTECTED_RE, (part) => part.replace(/\\([!-/:-@[-`{-~])/g, "$1"));
 }
 
 function normalizeListAndRule(s: string): string {
@@ -277,9 +365,14 @@ function normalizeListAndRule(s: string): string {
   return s.replace(/^(\s*)[*+](\s+)/, "$1-$2").replace(/^(\s*\d+)\)(\s+)/, "$1.$2");
 }
 
+/** Quebra dura no fim da linha: `\` final (não escapada). */
+function stripHardBreak(s: string): string {
+  return s.replace(/[ \t]+$/, "").replace(/(?<!\\)\\$/, "");
+}
+
 /** Forma de COMPARAÇÃO de uma linha (nunca gravada). */
 export function normalizeLine(line: string): string {
-  let s = line.replace(/ /g, " ");
+  let s = stripHardBreak(line.replace(/ /g, " "));
   s = normalizeEmphasis(s);
   s = unescapePunct(s);
   s = decodeEntities(s);
@@ -296,12 +389,24 @@ export interface UnescapeResult {
   reason?: string;
 }
 
+const HTML_TAG_RE = /<\/?[a-zA-Z][a-zA-Z0-9-]*(\s[^>]*)?\/?>/;
+
+/** Linha com HTML cru ou comentário (fora de autolink). */
+function hasHtml(line: string): boolean {
+  const s = line.replace(/<https?:\/\/[^>\s]+>/g, "");
+  return s.includes("<!--") || HTML_TAG_RE.test(s);
+}
+
 /**
  * Des-escapa uma linha EDITADA no doc para gravar no arquivo. Conservador:
  * recusa (`ok: false`) o que não dá para reverter com segurança, e o `apply`
  * trata isso como conflito em vez de arriscar corromper o arquivo.
+ *
+ * `original` (opcional) = linha do arquivo que esta substitui: preserva o
+ * estilo dela (marcador de lista `*`/`+`/`1)`, ênfase com `_`, espaços finais
+ * de quebra dura) em vez de reescrever no estilo do export.
  */
-export function unescapeForWrite(line: string): UnescapeResult {
+export function unescapeForWrite(line: string, original?: string): UnescapeResult {
   if (line.includes("\\\\")) {
     return { ok: false, text: line, reason: "barra invertida literal (`\\\\`) — des-escape ambíguo" };
   }
@@ -310,16 +415,32 @@ export function unescapeForWrite(line: string): UnescapeResult {
   }
   // Tag HTML crua (não autolink `<https://...>`) — o editor rich-text pode ter
   // aplicado formatação sem equivalente markdown (sublinhado, cor).
-  if (/<\/?[a-zA-Z][a-zA-Z0-9-]*(\s[^>]*)?\/?>/.test(line.replace(/<https?:\/\/[^>\s]+>/g, ""))) {
+  if (hasHtml(line)) {
     return { ok: false, text: line, reason: "tag HTML no texto exportado" };
   }
-  let s = line.replace(/ /g, " ").replace(/[ \t]+$/, "");
-  s = normalizeEmphasis(s);
+  let s = line.replace(/ /g, " ").replace(/[ \t]+$/, "");
+  const hardBreak = /(?<!\\)\\$/.test(s);
+  if (hardBreak) s = s.slice(0, -1).replace(/[ \t]+$/, "");
+  const origUsesDouble = original !== undefined && new RegExp(DOUBLE_UNDERSCORE_RE.source).test(original);
+  const origUsesSingle = original !== undefined && new RegExp(SINGLE_UNDERSCORE_RE.source).test(original);
+  s = normalizeEmphasis(s, { double: !origUsesDouble, single: !origUsesSingle });
   s = unescapePunct(s);
   s = decodeEntities(s);
   s = s.replace(/<(https?:\/\/[^>\s]+)>/g, "[$1]($1)");
   s = normalizeListAndRule(s);
+  if (original !== undefined) s = transferLineStyle(original, s);
+  const origTrailing = original !== undefined ? /[ \t]+$/.exec(original)?.[0] : undefined;
+  if (origTrailing && origTrailing.length >= 2) s += origTrailing;
+  else if (hardBreak) s += "  ";
   return { ok: true, text: s };
+}
+
+/** Restaura o marcador de lista da linha original (`*`/`+`/`1)`). */
+function transferLineStyle(original: string, s: string): string {
+  const om = /^(\s*)([*+]|\d+\))(\s+)/.exec(original);
+  if (!om) return s;
+  if (/[*+]/.test(om[2])) return s.replace(/^(\s*)-(\s+)/, `$1${om[2]}$2`);
+  return s.replace(/^(\s*\d+)\.(\s+)/, "$1)$2");
 }
 
 // ─── Diff por linha ──────────────────────────────────────────────────────────
@@ -346,9 +467,16 @@ function toUnits(text: string): Unit[] {
   return units;
 }
 
-type Op = { kind: "eq"; a: Unit; b: Unit } | { kind: "del"; a: Unit } | { kind: "ins"; b: Unit };
+/** Trecho base[bs,be) → x[xs,xe). Inserção pura: bs === be. */
+interface Hunk {
+  bs: number;
+  be: number;
+  xs: number;
+  xe: number;
+  cosmetic: boolean;
+}
 
-function diffUnits(a: Unit[], b: Unit[]): Op[] {
+function diffHunks(a: Unit[], b: Unit[]): Hunk[] {
   const n = a.length;
   const m = b.length;
   // Tabela LCS (sufixos). Arquivos da edição têm centenas de linhas — O(n·m) ok.
@@ -358,23 +486,29 @@ function diffUnits(a: Unit[], b: Unit[]): Op[] {
       dp[i][j] = a[i].norm === b[j].norm ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
-  const ops: Op[] = [];
+  const hunks: Hunk[] = [];
   let i = 0;
   let j = 0;
-  while (i < n && j < m) {
-    if (a[i].norm === b[j].norm) {
-      ops.push({ kind: "eq", a: a[i], b: b[j] });
+  let open: { bs: number; xs: number } | null = null;
+  const close = () => {
+    if (!open) return;
+    const h = { bs: open.bs, be: i, xs: open.xs, xe: j };
+    hunks.push({ ...h, cosmetic: isCosmeticHunk(a.slice(h.bs, h.be), b.slice(h.xs, h.xe)) });
+    open = null;
+  };
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i].norm === b[j].norm) {
+      close();
       i++;
       j++;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      ops.push({ kind: "del", a: a[i++] });
-    } else {
-      ops.push({ kind: "ins", b: b[j++] });
+      continue;
     }
+    if (!open) open = { bs: i, xs: j };
+    if (j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1])) i++;
+    else j++;
   }
-  while (i < n) ops.push({ kind: "del", a: a[i++] });
-  while (j < m) ops.push({ kind: "ins", b: b[j++] });
-  return ops;
+  close();
+  return hunks;
 }
 
 /** Texto do trecho com quebra de parágrafo explícita e quebra "mole" virando
@@ -393,142 +527,306 @@ function isCosmeticHunk(aSide: Unit[], bSide: Unit[]): boolean {
   return paragraphText(aSide) === paragraphText(bSide);
 }
 
-export interface MergeResult {
-  /** Houve ao menos um trecho realmente editado no doc. */
-  changed: boolean;
-  /** Conteúdo resultante (== alvo, byte a byte, quando `changed` é false). */
+/** Índice em X da posição-base `s`, ANTES de inserções em `s`. */
+function mapStart(hunks: Hunk[], s: number): number {
+  let delta = 0;
+  for (const h of hunks) if (h.be < s || (h.be === s && h.bs < s)) delta += h.xe - h.xs - (h.be - h.bs);
+  return s + delta;
+}
+
+/** Índice em X da posição-base `e`, DEPOIS de inserções em `e`. */
+function mapEnd(hunks: Hunk[], e: number): number {
+  let delta = 0;
+  for (const h of hunks) if (h.be <= e) delta += h.xe - h.xs - (h.be - h.bs);
+  return e + delta;
+}
+
+function trimUnits(u: Unit[]) {
+  let s = 0;
+  let e = u.length;
+  while (s < e && u[s].norm === "") s++;
+  while (e > s && u[e - 1].norm === "") e--;
+  return { lead: u.slice(0, s), mid: u.slice(s, e), tail: u.slice(e) };
+}
+
+const nonblank = (units: Unit[]) => units.filter((u) => u.norm !== "");
+
+export interface MergeConflict {
+  base: string[];
+  doc: string[];
+  current: string[];
+}
+
+export interface Merge3Result {
+  /** O doc tem ao menos um trecho realmente editado em relação à base. */
+  docChanged: boolean;
+  /** Conteúdo resultante (== atual, byte a byte, quando nada foi aplicado). */
   content: string;
-  /** Linhas editadas que não deu para des-escapar com segurança. */
+  /** Trechos onde doc e pipeline mexeram no mesmo lugar, de forma diferente. */
+  conflicts: MergeConflict[];
+  /** Linhas aplicadas que não deu para des-escapar com segurança. */
   unsafe: Array<{ line: string; reason: string }>;
-  /** Linhas do alvo removidas / linhas do doc inseridas, nos trechos editados. */
+  /** Trechos do doc aplicados (para o resumo de diff), na ordem do arquivo. */
+  applied: Array<{ removed: string[]; added: string[] }>;
+  /** Linhas não-brancas removidas/adicionadas pelos trechos aplicados. */
+  removedCount: number;
+  addedCount: number;
+  /** Linhas não-brancas do arquivo atual (para o guard de remoção em massa). */
+  currentCount: number;
+}
+
+/**
+ * Merge de 3 vias por linha. `onConflict`: o que emitir nos trechos em
+ * conflito — `"arquivo"` (default: mantém o atual) ou `"doc"` (o doc vence
+ * SÓ nesses trechos; o resto do pipeline é preservado).
+ */
+export function merge3(
+  base: string,
+  current: string,
+  doc: string,
+  onConflict: "arquivo" | "doc" = "arquivo",
+): Merge3Result {
+  const eol = current.includes("\r\n") ? "\r\n" : "\n";
+  const hadTrailingNewline = /\r?\n$/.test(current);
+  const currentBody = hadTrailingNewline ? current.replace(/\r?\n$/, "") : current;
+  const B = trimUnits(toUnits(base)).mid;
+  const tc = trimUnits(toUnits(currentBody));
+  const C = tc.mid;
+  const D = trimUnits(toUnits(doc)).mid;
+
+  const dAll = diffHunks(B, D);
+  const dHunks = dAll.filter((h) => !h.cosmetic);
+  const cHunks = diffHunks(B, C);
+  const currentCount = nonblank(C).length;
+  const empty: Merge3Result = {
+    docChanged: false,
+    content: current,
+    conflicts: [],
+    unsafe: [],
+    applied: [],
+    removedCount: 0,
+    addedCount: 0,
+    currentCount,
+  };
+  if (dHunks.length === 0) return empty;
+
+  // Agrupa hunks que se sobrepõem OU encostam (conservador) em clusters.
+  type Tagged = Hunk & { side: "d" | "c" };
+  // Hunks cosméticos do doc entram no agrupamento (para o mapeamento de
+  // posições do doc nunca cortar um deles ao meio), mas sozinhos não contam
+  // como edição: cluster sem hunk real do doc emite o arquivo atual.
+  const all: Tagged[] = [
+    ...dAll.map((h) => ({ ...h, side: "d" as const })),
+    ...cHunks.map((h) => ({ ...h, side: "c" as const })),
+  ].sort((x, y) => x.bs - y.bs || x.be - y.be);
+  const clusters: Array<{ s: number; e: number; d: Tagged[]; c: Tagged[] }> = [];
+  for (const h of all) {
+    const last = clusters[clusters.length - 1];
+    if (last && h.bs <= last.e) {
+      last.e = Math.max(last.e, h.be);
+      (h.side === "d" ? last.d : last.c).push(h);
+    } else {
+      clusters.push({ s: h.bs, e: h.be, d: h.side === "d" ? [h] : [], c: h.side === "c" ? [h] : [] });
+    }
+  }
+
+  const out: Unit[] = [];
+  const push = (units: Unit[]) => {
+    for (const u of units) {
+      const last = out[out.length - 1];
+      if (u.norm === "" && last && last.norm === "") continue; // nunca 2 brancos seguidos
+      out.push(u);
+    }
+  };
+  const unsafe: Merge3Result["unsafe"] = [];
+  const applied: Merge3Result["applied"] = [];
+  const conflicts: MergeConflict[] = [];
+  let removedCount = 0;
+  let addedCount = 0;
+
+  /** Emite o trecho do doc no lugar de `orig` (unidades do atual). */
+  const emitDoc = (orig: Unit[], docSlice: Unit[], baseSlice: Unit[]) => {
+    const origNb = nonblank(orig);
+    const docNb = nonblank(docSlice);
+    const pairStyle = origNb.length === docNb.length;
+    // Linha com HTML/comentário removida no doc: o rich-text descarta HTML na
+    // importação — a "remoção" pode não ter sido do editor.
+    const docNorms = new Set(docNb.map((u) => u.norm));
+    for (const u of nonblank(baseSlice)) {
+      if (hasHtml(u.raw[0]) && !docNorms.has(u.norm)) {
+        unsafe.push({ line: u.raw[0], reason: "linha com HTML/comentário removida no doc (o editor rich-text descarta HTML)" });
+      }
+    }
+    let k = 0;
+    const added: string[] = [];
+    const emitted: Unit[] = [];
+    for (const u of docSlice) {
+      if (u.norm === "") {
+        emitted.push({ norm: "", raw: [""] });
+        continue;
+      }
+      const original = pairStyle ? origNb[k]?.raw[0] : undefined;
+      k++;
+      const r = unescapeForWrite(u.raw[0], original);
+      if (!r.ok) unsafe.push({ line: u.raw[0], reason: r.reason ?? "des-escape não confiável" });
+      added.push(r.text);
+      emitted.push({ norm: u.norm, raw: [r.text] });
+    }
+    push(emitted);
+    const removed = origNb.map((u) => u.raw[0]);
+    applied.push({ removed, added });
+    removedCount += removed.length;
+    addedCount += added.length;
+  };
+
+  let curPos = 0;
+  for (const cl of clusters) {
+    const cs = mapStart(cHunks, cl.s);
+    const ce = mapEnd(cHunks, cl.e);
+    push(C.slice(curPos, cs));
+    curPos = ce;
+    const curSlice = C.slice(cs, ce);
+    if (!cl.d.some((h) => !h.cosmetic)) {
+      push(curSlice);
+      continue;
+    }
+    const docSlice = D.slice(mapStart(dAll, cl.s), mapEnd(dAll, cl.e));
+    const baseSlice = B.slice(cl.s, cl.e);
+    if (cl.c.length === 0) {
+      emitDoc(curSlice, docSlice, baseSlice);
+      continue;
+    }
+    // Doc e pipeline mexeram no mesmo trecho: igual dos dois lados = ok.
+    if (paragraphText(docSlice) === paragraphText(curSlice)) {
+      push(curSlice);
+      continue;
+    }
+    conflicts.push({
+      base: nonblank(baseSlice).map((u) => u.raw[0]),
+      doc: nonblank(docSlice).map((u) => u.raw[0]),
+      current: nonblank(curSlice).map((u) => u.raw[0]),
+    });
+    if (onConflict === "doc") emitDoc(curSlice, docSlice, baseSlice);
+    else push(curSlice);
+  }
+  push(C.slice(curPos));
+
+  const lines = [...tc.lead.flatMap((u) => u.raw), ...out.flatMap((u) => u.raw), ...tc.tail.flatMap((u) => u.raw)];
+  let content = lines.join(eol);
+  if (hadTrailingNewline) content += eol;
+  return { docChanged: true, content, conflicts, unsafe, applied, removedCount, addedCount, currentCount };
+}
+
+export interface MergeResult {
+  changed: boolean;
+  content: string;
+  unsafe: Array<{ line: string; reason: string }>;
   removed: string[];
   added: string[];
 }
 
 /**
- * Aplica sobre `target` (conteúdo cru de um arquivo) as edições que o doc tem
- * em relação a ele. Trechos iguais ou cosméticos mantêm os bytes do alvo.
+ * Aplica sobre `target` as edições que o doc tem em relação a ele (merge de 3
+ * vias com base == atual). Trechos iguais ou cosméticos mantêm os bytes do alvo.
  */
 export function mergeDocOnto(target: string, docSection: string): MergeResult {
-  const eol = target.includes("\r\n") ? "\r\n" : "\n";
-  const hadTrailingNewline = /\r?\n$/.test(target);
-  const targetBody = hadTrailingNewline ? target.replace(/\r?\n$/, "") : target;
-  const a = toUnits(targetBody);
-  const b = toUnits(docSection);
-  // Linhas em branco nas bordas não contam (o doc é trimado no parse).
-  const trimUnits = (u: Unit[]) => {
-    let s = 0;
-    let e = u.length;
-    while (s < e && u[s].norm === "") s++;
-    while (e > s && u[e - 1].norm === "") e--;
-    return { lead: u.slice(0, s), mid: u.slice(s, e), tail: u.slice(e) };
+  const r = merge3(target, target, docSection);
+  if (!r.docChanged) return { changed: false, content: target, unsafe: [], removed: [], added: [] };
+  return {
+    changed: true,
+    content: r.content,
+    unsafe: r.unsafe,
+    removed: r.applied.flatMap((h) => h.removed),
+    added: r.applied.flatMap((h) => h.added),
   };
-  const ta = trimUnits(a);
-  const tb = trimUnits(b);
-  const ops = diffUnits(ta.mid, tb.mid);
-
-  const outUnits: Array<{ lines: string[]; blank: boolean }> = [];
-  const unsafe: MergeResult["unsafe"] = [];
-  const removed: string[] = [];
-  const added: string[] = [];
-  let changed = false;
-
-  const pushUnit = (lines: string[], blank: boolean) => {
-    const last = outUnits[outUnits.length - 1];
-    if (blank && last && last.blank) return; // nunca 2 blocos de branco seguidos
-    outUnits.push({ lines, blank });
-  };
-
-  let k = 0;
-  while (k < ops.length) {
-    const op = ops[k];
-    if (op.kind === "eq") {
-      pushUnit(op.a.raw, op.a.norm === "");
-      k++;
-      continue;
-    }
-    const aSide: Unit[] = [];
-    const bSide: Unit[] = [];
-    while (k < ops.length && ops[k].kind !== "eq") {
-      const o = ops[k];
-      if (o.kind === "del") aSide.push(o.a);
-      else if (o.kind === "ins") bSide.push(o.b);
-      k++;
-    }
-    if (isCosmeticHunk(aSide, bSide)) {
-      for (const u of aSide) pushUnit(u.raw, u.norm === "");
-      continue;
-    }
-    changed = true;
-    for (const u of aSide) if (u.norm !== "") removed.push(...u.raw);
-    for (const u of bSide) {
-      if (u.norm === "") {
-        pushUnit([""], true);
-        continue;
-      }
-      const r = unescapeForWrite(u.raw[0]);
-      if (!r.ok) unsafe.push({ line: u.raw[0], reason: r.reason ?? "des-escape não confiável" });
-      added.push(r.text);
-      pushUnit([r.text], false);
-    }
-  }
-
-  if (!changed) return { changed: false, content: target, unsafe: [], removed: [], added: [] };
-
-  const lines = [
-    ...ta.lead.flatMap((u) => u.raw),
-    ...outUnits.flatMap((u) => u.lines),
-    ...ta.tail.flatMap((u) => u.raw),
-  ];
-  let content = lines.join(eol);
-  if (hadTrailingNewline) content += eol;
-  return { changed, content, unsafe, removed, added };
 }
 
 /** Doc e texto equivalentes a menos de diferenças cosméticas de export. */
 export function docEquivalent(target: string, docSection: string): boolean {
-  return !mergeDocOnto(target, docSection).changed;
+  return !merge3(target, target, docSection).docChanged;
 }
 
-// ─── Resumo de diff (para o relatório de conflito) ───────────────────────────
+// ─── Resumo de diff (para o relatório) ───────────────────────────────────────
 
 const DIFF_SUMMARY_MAX_LINES = 20;
 
-/** Resumo `- linha`/`+ linha` dos trechos que diferem (cosméticos ignorados). */
-export function diffSummary(from: string, to: string): { lines: string[]; truncated: number } {
-  const r = mergeDocOnto(from, to);
-  const all = [...r.removed.map((l) => `- ${l}`), ...r.added.map((l) => `+ ${l}`)];
-  return {
-    lines: all.slice(0, DIFF_SUMMARY_MAX_LINES),
-    truncated: Math.max(0, all.length - DIFF_SUMMARY_MAX_LINES),
-  };
+export interface DiffSummary {
+  lines: string[];
+  truncated: number;
+}
+
+/** Resumo `- linha`/`+ linha` intercalado POR TRECHO (cosméticos ignorados). */
+export function summarizeHunks(hunks: Array<{ removed: string[]; added: string[] }>): DiffSummary {
+  const all = hunks.flatMap((h) => [...h.removed.map((l) => `- ${l}`), ...h.added.map((l) => `+ ${l}`)]);
+  return { lines: all.slice(0, DIFF_SUMMARY_MAX_LINES), truncated: Math.max(0, all.length - DIFF_SUMMARY_MAX_LINES) };
+}
+
+export function diffSummary(from: string, to: string): DiffSummary {
+  return summarizeHunks(merge3(from, from, to).applied);
 }
 
 // ─── Decisão de 3 vias ───────────────────────────────────────────────────────
 
-export type FileAction =
-  | "unchanged" // doc == base e arquivo == base
-  | "doc_stale" // doc == base, arquivo mudou (pipeline) — re-render do doc
-  | "pulled" // arquivo == base, doc editado — edição puxada para o arquivo
-  | "base_updated" // arquivo != base mas doc == arquivo — só a base avança
-  | "conflict" // arquivo e doc mudaram, de forma diferente — nada gravado
-  | "resolved_keep_file" // conflito resolvido pelo editor: manter arquivo
-  | "resolved_apply_doc"; // conflito resolvido pelo editor: aplicar doc
-
 export type Resolution = "arquivo" | "doc";
 
-export interface FileOutcome {
+export interface ResolutionSpec {
+  choice: Resolution;
+  /** `resolve_token` do conflito que o editor viu — amarra a decisão a ele. */
+  token: string;
+}
+
+/** Token que amarra uma resolução ao conflito exato que o editor viu. */
+export function resolveToken(current: string, docSection: string): string {
+  return sha256(`${sha256(current)}:${sha256(docSection)}`).slice(0, 12);
+}
+
+interface OutcomeCommon {
   file: SyncFile;
-  action: FileAction;
-  /** Conteúdo a gravar no arquivo (só em `pulled`/`resolved_apply_doc`). */
-  write?: string;
-  /** Nova base (quando avança). */
-  newBase?: string;
-  reason?: string;
-  /** Em conflito: o que o editor mudou no doc e o que o pipeline mudou no arquivo. */
-  editor_changes?: { lines: string[]; truncated: number };
-  pipeline_changes?: { lines: string[]; truncated: number };
-  unsafe?: MergeResult["unsafe"];
+}
+
+export type FileOutcome =
+  | (OutcomeCommon & { action: "unchanged" })
+  /** doc == base, arquivo mudou (pipeline) — re-render do doc. */
+  | (OutcomeCommon & { action: "doc_stale" })
+  /** Edição do doc puxada. `three_way`: o pipeline também mudou o arquivo em
+   * trechos disjuntos (o doc fica para trás — re-render). */
+  | (OutcomeCommon & {
+      action: "pulled";
+      write: string;
+      newBase: string;
+      three_way: boolean;
+      changes: DiffSummary;
+    })
+  /** arquivo != base mas doc ≡ arquivo — só a base avança. */
+  | (OutcomeCommon & { action: "base_updated"; newBase: string })
+  /** Nada gravado. */
+  | (OutcomeCommon & {
+      action: "conflict";
+      reason: string;
+      editor_changes: DiffSummary;
+      pipeline_changes: DiffSummary;
+      overlaps: MergeConflict[];
+      unsafe: Merge3Result["unsafe"];
+      current_sha256: string;
+      doc_sha256: string;
+      resolve_token: string;
+    })
+  /** Conflito resolvido pelo editor: manter arquivo. A base vira o conteúdo do
+   * doc (a edição rejeitada) — o próximo apply dá `doc_stale`, nunca `pulled`. */
+  | (OutcomeCommon & { action: "resolved_keep_file"; newBase: string })
+  /** Conflito resolvido pelo editor: doc vence nos trechos em conflito. */
+  | (OutcomeCommon & { action: "resolved_apply_doc"; write: string; newBase: string; changes: DiffSummary });
+
+export type FileAction = FileOutcome["action"];
+
+/** Remoção em massa: seção vazia ou o merge remove (líquido) >50% das linhas. */
+function massRemovalReason(m: Merge3Result, docSection: string): string | null {
+  if (docSection.trim() === "") return "remoção em massa: seção do doc vazia";
+  const net = m.removedCount - m.addedCount;
+  if (m.currentCount > 0 && net > m.currentCount / 2) {
+    return `remoção em massa: o doc remove ${net} de ${m.currentCount} linhas (>50%)`;
+  }
+  return null;
 }
 
 export function decideFile(
@@ -536,57 +834,65 @@ export function decideFile(
   base: string,
   current: string,
   doc: string,
-  resolution?: Resolution,
+  resolution?: ResolutionSpec,
 ): FileOutcome {
   const fileEqBase = current === base;
-  const docEqBase = docEquivalent(base, doc);
+  const m = merge3(base, current, doc);
 
-  if (docEqBase) {
-    return fileEqBase ? { file, action: "unchanged" } : { file, action: "doc_stale" };
-  }
-  if (fileEqBase) {
-    const merged = mergeDocOnto(current, doc);
-    if (merged.unsafe.length > 0) {
-      return {
-        file,
-        action: "conflict",
-        reason: "edição do doc não pôde ser des-escapada com segurança — nada gravado",
-        unsafe: merged.unsafe,
-        editor_changes: diffSummary(base, doc),
-        pipeline_changes: { lines: [], truncated: 0 },
-      };
-    }
-    return { file, action: "pulled", write: merged.content, newBase: merged.content };
-  }
-  if (docEquivalent(current, doc)) {
-    return { file, action: "base_updated", newBase: current };
-  }
+  if (!m.docChanged) return fileEqBase ? { file, action: "unchanged" } : { file, action: "doc_stale" };
+  if (!fileEqBase && docEquivalent(current, doc)) return { file, action: "base_updated", newBase: current };
 
-  // Conflito real: arquivo e doc mudaram, e de forma diferente.
-  if (resolution === "arquivo") {
-    return { file, action: "resolved_keep_file", newBase: current };
-  }
-  if (resolution === "doc") {
-    const merged = mergeDocOnto(current, doc);
-    if (merged.unsafe.length === 0) {
-      return { file, action: "resolved_apply_doc", write: merged.content, newBase: merged.content };
-    }
+  const mass = massRemovalReason(m, doc);
+  const reasons: string[] = [];
+  if (m.conflicts.length > 0) reasons.push("arquivo mudou no repositório E no doc no mesmo trecho desde o último render");
+  if (m.unsafe.length > 0) reasons.push("edição do doc não pôde ser des-escapada com segurança");
+  if (mass) reasons.push(mass);
+
+  if (reasons.length === 0) {
+    // Base nova: com o arquivo intocado, o próprio resultado (bytes do arquivo);
+    // com pipeline em trecho disjunto, o DOC — senão o próximo apply leria as
+    // mudanças do pipeline como "edição do doc" e as reverteria.
     return {
       file,
-      action: "conflict",
-      reason: "resolução 'doc' pedida, mas a edição do doc não pôde ser des-escapada com segurança — nada gravado",
-      unsafe: merged.unsafe,
-      editor_changes: diffSummary(base, doc),
-      pipeline_changes: diffSummary(base, current),
+      action: "pulled",
+      write: m.content,
+      newBase: fileEqBase ? m.content : doc,
+      three_way: !fileEqBase,
+      changes: summarizeHunks(m.applied),
     };
   }
-  return {
+
+  const token = resolveToken(current, doc);
+  const conflict = (reason: string): FileOutcome => ({
     file,
     action: "conflict",
-    reason: "arquivo mudou no repositório E no doc desde o último render — nada gravado",
+    reason,
     editor_changes: diffSummary(base, doc),
     pipeline_changes: diffSummary(base, current),
-  };
+    overlaps: m.conflicts,
+    unsafe: m.unsafe,
+    current_sha256: sha256(current),
+    doc_sha256: sha256(doc),
+    resolve_token: token,
+  });
+  const baseReason = `${reasons.join("; ")} — nada gravado`;
+
+  if (!resolution) return conflict(baseReason);
+  if (resolution.token !== token) {
+    return conflict(
+      `resolução '${resolution.choice}@${resolution.token}' não corresponde ao conflito atual (token ${token}) — arquivo ou doc mudou desde a decisão; ${baseReason}`,
+    );
+  }
+  if (resolution.choice === "arquivo") return { file, action: "resolved_keep_file", newBase: doc };
+
+  const md = merge3(base, current, doc, "doc");
+  const mdMass = massRemovalReason(md, doc);
+  if (md.unsafe.length > 0 || mdMass) {
+    return conflict(
+      `resolução 'doc' pedida, mas ${md.unsafe.length > 0 ? "a edição do doc não pôde ser des-escapada com segurança" : mdMass} — nada gravado`,
+    );
+  }
+  return { file, action: "resolved_apply_doc", write: md.content, newBase: doc, changes: summarizeHunks(md.applied) };
 }
 
 // ─── Runners com I/O (usados pela CLI) ───────────────────────────────────────
@@ -605,6 +911,20 @@ function readSyncFiles(editionDir: string): Record<SyncFile, string> {
   return files;
 }
 
+function validateBase(raw: unknown, where: string): Record<SyncFile, BaseEntry> {
+  const b = raw as Partial<Record<SyncFile, Partial<BaseEntry>>> | undefined;
+  for (const file of SYNC_FILES) {
+    const entry = b?.[file];
+    if (!entry || typeof entry.content !== "string" || typeof entry.sha256 !== "string") {
+      throw new DocsSyncFormatError(`${STATE_FILENAME}: ${where} sem base válida de ${file}`);
+    }
+    if (sha256(entry.content) !== entry.sha256) {
+      throw new DocsSyncFormatError(`${STATE_FILENAME}: ${where} de ${file} com sha256 que não bate com o conteúdo (estado corrompido)`);
+    }
+  }
+  return b as Record<SyncFile, BaseEntry>;
+}
+
 export function readState(editionDir: string): DocsGateState | null {
   const p = statePath(editionDir);
   if (!existsSync(p)) return null;
@@ -614,12 +934,16 @@ export function readState(editionDir: string): DocsGateState | null {
   } catch (e) {
     throw new DocsSyncFormatError(`${STATE_FILENAME} ilegível: ${(e as Error).message}`);
   }
+  if (!parsed || typeof parsed !== "object") throw new DocsSyncFormatError(`${STATE_FILENAME} não é um objeto`);
   const st = parsed as Partial<DocsGateState>;
-  for (const file of SYNC_FILES) {
-    const entry = st.base?.[file];
-    if (!entry || typeof entry.content !== "string") {
-      throw new DocsSyncFormatError(`${STATE_FILENAME} sem base de ${file}`);
-    }
+  validateBase(st.base, "base");
+  if (typeof st.rendered_at !== "string") throw new DocsSyncFormatError(`${STATE_FILENAME}: rendered_at ausente/inválido`);
+  if (st.doc_url !== undefined && (typeof st.doc_url !== "string" || st.doc_url === "")) {
+    throw new DocsSyncFormatError(`${STATE_FILENAME}: doc_url inválido`);
+  }
+  if (st.pending !== undefined) {
+    validateBase(st.pending?.base, "pending");
+    if (typeof st.pending.rendered_at !== "string") throw new DocsSyncFormatError(`${STATE_FILENAME}: pending.rendered_at inválido`);
   }
   return st as DocsGateState;
 }
@@ -630,100 +954,336 @@ function writeState(editionDir: string, state: DocsGateState): void {
   writeFileAtomic(p, JSON.stringify(state, null, 2) + "\n");
 }
 
+function requireState(editionDir: string, cmd: string): DocsGateState {
+  const state = readState(editionDir);
+  if (!state) throw new DocsSyncFormatError(`${STATE_FILENAME} ausente — rode \`render\` antes de \`${cmd}\``);
+  return state;
+}
+
+function readExport(path: string): Record<SyncFile, string> {
+  if (!existsSync(path)) throw new DocsSyncFormatError(`export do doc não encontrado: ${path}`);
+  return parseDocExport(readFileSync(path, "utf8"));
+}
+
+function disabledError(state: DocsGateState): DocsSyncFormatError {
+  return new DocsSyncFormatError(
+    `sync desativado para este doc (${state.sync_disabled?.reason}) — edições do doc NÃO são puxadas nem o doc é atualizado`,
+  );
+}
+
 export interface RenderOptions {
   editionDir: string;
   edition: string;
   out?: string;
-  docUrl?: string;
   summary?: string;
+  /** Export atual do doc — obrigatório quando o estado já tem `doc_url`. */
+  docExport?: string;
   now?: Date;
 }
 
-export function runRender(opts: RenderOptions): { out: string; state: DocsGateState } {
+export interface RenderResult {
+  out: string;
+  /** true = base gravada como PENDENTE (efetivar com `confirm`). */
+  pending: boolean;
+  doc_url?: string;
+  title: string;
+  rendered_at: string;
+}
+
+/**
+ * Gera o markdown do doc. Sem doc existente grava a base direto; com doc
+ * existente exige o export, recusa edição pendente e grava a base como
+ * PENDENTE. Estado corrompido → `DocsSyncFormatError` (nunca engolido).
+ */
+export function runRender(opts: RenderOptions): RenderResult {
+  const state = readState(opts.editionDir);
+  if (state?.sync_disabled) throw disabledError(state);
   const files = readSyncFiles(opts.editionDir);
+  const now = (opts.now ?? new Date()).toISOString();
+
+  if (state?.doc_url) {
+    if (!opts.docExport) {
+      throw new DocsSyncFormatError("doc já existe (doc_url no estado): `render` exige --doc-export com o export atual do doc");
+    }
+    const sections = readExport(opts.docExport);
+    const pendingEdits = SYNC_FILES.filter((f) => !docEquivalent(state.base[f].content, sections[f]));
+    if (pendingEdits.length > 0) {
+      throw new DocsSyncFormatError(
+        `o doc tem edição ainda não puxada em ${pendingEdits.join(", ")} — rode \`apply\` (e resolva conflitos) antes do render; nada gravado`,
+      );
+    }
+  }
+
   const markdown = renderDocMarkdown({ edition: opts.edition, files, summary: opts.summary });
   const out = opts.out ?? resolve(opts.editionDir, "_internal", DOC_MD_FILENAME);
   mkdirSync(dirname(out), { recursive: true });
   writeFileAtomic(out, markdown);
-  // Preserva o doc_url de um render anterior quando --doc-url não é passado.
-  let previousUrl: string | undefined;
-  try {
-    previousUrl = readState(opts.editionDir)?.doc_url;
-  } catch {
-    previousUrl = undefined;
+
+  let next: DocsGateState;
+  let pending: boolean;
+  if (state?.doc_url) {
+    next = { ...state, pending: { base: baseOf(files), rendered_at: now } };
+    pending = true;
+  } else {
+    next = { ...(state ?? {}), base: baseOf(files), rendered_at: now } as DocsGateState;
+    delete next.pending;
+    pending = false;
   }
-  const state = buildState(files, opts.now ?? new Date(), opts.docUrl ?? previousUrl);
-  writeState(opts.editionDir, state);
-  return { out, state };
+  writeState(opts.editionDir, next);
+  return { out, pending, ...(next.doc_url ? { doc_url: next.doc_url } : {}), title: docTitle(opts.edition), rendered_at: now };
 }
+
+/**
+ * Efetiva a base pendente (o top-level já substituiu o doc). Com `docExport`,
+ * confere que o doc de fato tem o conteúdo pendente antes de efetivar.
+ */
+export function runConfirm(opts: { editionDir: string; docExport?: string }): { rendered_at: string } {
+  const state = requireState(opts.editionDir, "confirm");
+  if (!state.pending) {
+    throw new DocsSyncFormatError("nenhum render pendente para confirmar (apply posterior invalidou, ou render não rodou)");
+  }
+  if (opts.docExport) {
+    const sections = readExport(opts.docExport);
+    const off = SYNC_FILES.filter((f) => !docEquivalent(state.pending!.base[f].content, sections[f]));
+    if (off.length > 0) {
+      throw new DocsSyncFormatError(`o doc não tem o conteúdo do render pendente em ${off.join(", ")} — base NÃO efetivada`);
+    }
+  }
+  const next: DocsGateState = { ...state, base: state.pending.base, rendered_at: state.pending.rendered_at };
+  delete next.pending;
+  writeState(opts.editionDir, next);
+  return { rendered_at: next.rendered_at };
+}
+
+/** Grava só o `doc_url` (não toca na base). */
+export function runSetUrl(opts: { editionDir: string; docUrl: string }): void {
+  const state = requireState(opts.editionDir, "set-url");
+  if (!/^https?:\/\//.test(opts.docUrl)) throw new DocsSyncFormatError(`--doc-url inválido: ${opts.docUrl}`);
+  writeState(opts.editionDir, { ...state, doc_url: opts.docUrl });
+}
+
+/** Desliga o sync do doc por decisão explícita (ex.: editor aprovou o gate
+ * "sem as edições do doc" depois de um sync final que falhou). */
+export function runDisable(opts: { editionDir: string; reason: string; now?: Date }): void {
+  const state = requireState(opts.editionDir, "disable");
+  if (!opts.reason.trim()) throw new DocsSyncFormatError("--reason obrigatório no disable");
+  writeState(opts.editionDir, { ...state, sync_disabled: { reason: opts.reason, at: (opts.now ?? new Date()).toISOString() } });
+}
+
+export interface RoundtripResult {
+  ok: boolean;
+  reason?: string;
+  files: Array<{ file: SyncFile; equivalent: boolean; diff?: DiffSummary }>;
+}
+
+/**
+ * Logo após criar o doc: o export do doc intocado tem de voltar equivalente à
+ * base. Qualquer diferença (ou sentinela perdida) DESATIVA o sync deste doc
+ * (`sync_disabled`) — o round-trip do conector não é confiável para ele.
+ */
+export function runCheckRoundtrip(opts: { editionDir: string; docExport: string; now?: Date }): RoundtripResult {
+  const state = requireState(opts.editionDir, "check-roundtrip");
+  let result: RoundtripResult;
+  try {
+    const sections = readExport(opts.docExport);
+    const files = SYNC_FILES.map((file) => {
+      const equivalent = docEquivalent(state.base[file].content, sections[file]);
+      return equivalent ? { file, equivalent } : { file, equivalent, diff: diffSummary(state.base[file].content, sections[file]) };
+    });
+    const bad = files.filter((f) => !f.equivalent).map((f) => f.file);
+    result = bad.length === 0 ? { ok: true, files } : { ok: false, reason: `round-trip do doc alterou ${bad.join(", ")} sem edição`, files };
+  } catch (e) {
+    if (!(e instanceof DocsSyncFormatError)) throw e;
+    result = { ok: false, reason: `round-trip do doc falhou: ${e.message}`, files: [] };
+  }
+  if (!result.ok) {
+    writeState(opts.editionDir, {
+      ...state,
+      sync_disabled: { reason: result.reason ?? "round-trip falhou", at: (opts.now ?? new Date()).toISOString() },
+    });
+  }
+  return result;
+}
+
+type ReportOutcome = FileOutcome extends infer O ? (O extends FileOutcome ? Omit<O, "write" | "newBase"> : never) : never;
 
 export interface ApplyReport {
   ok: boolean;
   doc_url?: string;
-  files: Array<Omit<FileOutcome, "write" | "newBase">>;
+  files: ReportOutcome[];
+  /** Arquivos que receberam edição do doc (inclui `resolved_apply_doc`). */
   pulled: SyncFile[];
+  /** Resumo do diff puxado por arquivo (para o "📝 Edições do doc puxadas"). */
+  pulled_changes: Partial<Record<SyncFile, DiffSummary>>;
+  /** Doc atrás do arquivo — atualizar o doc (apply → render → substituir → confirm). */
   doc_stale: SyncFile[];
-  conflicts: Array<Omit<FileOutcome, "write" | "newBase">>;
+  /** Conflitos resolvidos com "manter arquivo" — o doc ainda mostra a edição rejeitada: atualizar o doc. */
+  kept_file: SyncFile[];
+  conflicts: Array<Extract<ReportOutcome, { action: "conflict" }>>;
 }
 
 export interface ApplyOptions {
   editionDir: string;
   docExport: string;
-  resolutions?: Partial<Record<SyncFile, Resolution>>;
+  resolutions?: Partial<Record<SyncFile, ResolutionSpec>>;
+  now?: Date;
+  /** Só para teste: roda entre a decisão e a releitura pré-escrita (TOCTOU). */
+  beforeWrite?: (file: SyncFile) => void;
+}
+
+function stripOutcome(o: FileOutcome): ReportOutcome {
+  const { write: _w, newBase: _n, ...rest } = o as FileOutcome & { write?: string; newBase?: string };
+  return rest as ReportOutcome;
 }
 
 /**
- * Lê o export, decide por arquivo e só então grava (nunca parcial: um erro de
- * formato aborta antes de qualquer escrita). Conflito não grava aquele arquivo
- * mas não impede de puxar o outro.
+ * Lê o export, decide por arquivo e só então grava (um erro de formato aborta
+ * antes de qualquer escrita). Conflito não grava aquele arquivo mas não impede
+ * de puxar o outro. O arquivo é relido logo antes de gravar: se mudou durante
+ * o apply, vira conflito (TOCTOU). Falha inesperada → `DocsSyncUnexpectedError`
+ * com a lista do que já foi gravado.
  */
 export function runApply(opts: ApplyOptions): ApplyReport {
-  const state = readState(opts.editionDir);
-  if (!state) {
-    throw new DocsSyncFormatError(`${STATE_FILENAME} ausente — rode \`render\` antes de \`apply\``);
-  }
-  if (!existsSync(opts.docExport)) throw new DocsSyncFormatError(`export do doc não encontrado: ${opts.docExport}`);
-  const sections = parseDocExport(readFileSync(opts.docExport, "utf8"));
+  const state = requireState(opts.editionDir, "apply");
+  if (state.sync_disabled) throw disabledError(state);
+  const sections = readExport(opts.docExport);
   const current = readSyncFiles(opts.editionDir);
 
-  const outcomes = SYNC_FILES.map((file) =>
+  const outcomes: FileOutcome[] = SYNC_FILES.map((file) =>
     decideFile(file, state.base[file].content, current[file], sections[file], opts.resolutions?.[file]),
   );
 
-  let stateChanged = false;
+  const written: string[] = [];
+  try {
+    const finalContent = { ...current };
+    for (let i = 0; i < outcomes.length; i++) {
+      const o = outcomes[i];
+      if (o.action === "pulled" || o.action === "resolved_apply_doc") {
+        const path = resolve(opts.editionDir, o.file);
+        opts.beforeWrite?.(o.file);
+        const now = readFileSync(path, "utf8");
+        if (now !== current[o.file]) {
+          outcomes[i] = {
+            file: o.file,
+            action: "conflict",
+            reason: "arquivo mudou durante o apply (escrita concorrente) — nada gravado",
+            editor_changes: diffSummary(state.base[o.file].content, sections[o.file]),
+            pipeline_changes: diffSummary(state.base[o.file].content, now),
+            overlaps: [],
+            unsafe: [],
+            current_sha256: sha256(now),
+            doc_sha256: sha256(sections[o.file]),
+            resolve_token: resolveToken(now, sections[o.file]),
+          };
+          continue;
+        }
+        if (o.write !== now) {
+          writeFileAtomic(path, o.write);
+          written.push(o.file);
+        }
+        finalContent[o.file] = o.write;
+      }
+    }
+    for (const o of outcomes) {
+      if ("newBase" in o) state.base[o.file] = { sha256: sha256(o.newBase), content: o.newBase };
+    }
+    const conflictFiles = outcomes.filter((o) => o.action === "conflict").map((o) => o.file);
+    if (written.length > 0) delete state.pending; // render pendente ficou velho
+    if (conflictFiles.length > 0) {
+      state.pending_conflict = conflictFiles;
+    } else {
+      delete state.pending_conflict;
+      state.last_apply_ok_at = (opts.now ?? new Date()).toISOString();
+      state.last_apply_files_sha = Object.fromEntries(SYNC_FILES.map((f) => [f, sha256(finalContent[f])])) as Record<
+        SyncFile,
+        string
+      >;
+    }
+    writeState(opts.editionDir, state);
+  } catch (e) {
+    throw new DocsSyncUnexpectedError((e as Error).message, written);
+  }
+
+  const pulledOutcomes = outcomes.filter(
+    (o): o is Extract<FileOutcome, { action: "pulled" | "resolved_apply_doc" }> =>
+      o.action === "pulled" || o.action === "resolved_apply_doc",
+  );
+  const conflicts = outcomes
+    .filter((o): o is Extract<FileOutcome, { action: "conflict" }> => o.action === "conflict")
+    .map((o) => stripOutcome(o) as Extract<ReportOutcome, { action: "conflict" }>);
+  const docStale: SyncFile[] = [];
   for (const o of outcomes) {
-    if (o.write !== undefined) writeFileAtomic(resolve(opts.editionDir, o.file), o.write);
-    if (o.newBase !== undefined) {
-      state.base[o.file] = { sha256: sha256(o.newBase), content: o.newBase };
-      stateChanged = true;
+    switch (o.action) {
+      case "doc_stale":
+        docStale.push(o.file);
+        break;
+      case "pulled":
+        if (o.three_way) docStale.push(o.file);
+        break;
+      case "resolved_apply_doc":
+        if (current[o.file] !== state.base[o.file].content) docStale.push(o.file);
+        break;
+      case "unchanged":
+      case "base_updated":
+      case "conflict":
+      case "resolved_keep_file":
+        break;
     }
   }
-  if (stateChanged) writeState(opts.editionDir, state);
-
-  const strip = (o: FileOutcome) => {
-    const { write: _w, newBase: _n, ...rest } = o;
-    return rest;
-  };
-  const conflicts = outcomes.filter((o) => o.action === "conflict").map(strip);
   return {
     ok: conflicts.length === 0,
     ...(state.doc_url ? { doc_url: state.doc_url } : {}),
-    files: outcomes.map(strip),
-    pulled: outcomes.filter((o) => o.action === "pulled" || o.action === "resolved_apply_doc").map((o) => o.file),
-    doc_stale: outcomes
-      .filter((o) => o.action === "doc_stale" || o.action === "resolved_keep_file")
-      .map((o) => o.file),
+    files: outcomes.map(stripOutcome),
+    pulled: pulledOutcomes.map((o) => o.file),
+    pulled_changes: Object.fromEntries(pulledOutcomes.map((o) => [o.file, o.changes])),
+    doc_stale: docStale,
+    kept_file: outcomes.filter((o) => o.action === "resolved_keep_file").map((o) => o.file),
     conflicts,
   };
 }
 
-/** `02-reviewed.md=arquivo,03-social.md=doc` (aceita também `02-reviewed`). */
-export function parseResolutions(spec: string): Partial<Record<SyncFile, Resolution>> {
-  const out: Partial<Record<SyncFile, Resolution>> = {};
+export interface CheckResult {
+  ok: boolean;
+  reason: string;
+}
+
+/**
+ * Conferência mecânica antes do sentinel do Stage 4 (§4e): sem doc ou com sync
+ * desativado → ok (nada a conferir); senão exige último apply sem conflito e
+ * arquivos idênticos aos de logo depois dele.
+ */
+export function runCheck(opts: { editionDir: string }): CheckResult {
+  const state = readState(opts.editionDir);
+  if (!state || !state.doc_url) return { ok: true, reason: "sem doc editável" };
+  if (state.sync_disabled) return { ok: true, reason: `sync desativado (${state.sync_disabled.reason})` };
+  if (state.pending_conflict && state.pending_conflict.length > 0) {
+    return { ok: false, reason: `conflito pendente em ${state.pending_conflict.join(", ")} — resolva com apply --resolve` };
+  }
+  if (!state.last_apply_ok_at || !state.last_apply_files_sha) {
+    return { ok: false, reason: "nenhum apply sem conflito registrado — rode o apply final do ramo `sim`" };
+  }
+  const files = readSyncFiles(opts.editionDir);
+  const changed = SYNC_FILES.filter((f) => sha256(files[f]) !== state.last_apply_files_sha![f]);
+  if (changed.length > 0) {
+    return { ok: false, reason: `${changed.join(", ")} mudou depois do último apply — rode o apply final de novo` };
+  }
+  return { ok: true, reason: `último apply ok em ${state.last_apply_ok_at}` };
+}
+
+/** `02-reviewed.md=arquivo@<token>,03-social.md=doc@<token>` (aceita sem `.md`).
+ * O token é o `resolve_token` do conflito — obrigatório. Chave repetida → erro. */
+export function parseResolutions(spec: string): Partial<Record<SyncFile, ResolutionSpec>> {
+  const out: Partial<Record<SyncFile, ResolutionSpec>> = {};
   for (const part of spec.split(",").map((s) => s.trim()).filter(Boolean)) {
-    const m = /^(02-reviewed|03-social)(?:\.md)?=(arquivo|doc)$/.exec(part);
-    if (!m) throw new DocsSyncFormatError(`--resolve inválido: "${part}" (esperado 02-reviewed.md=arquivo|doc)`);
-    out[`${m[1]}.md` as SyncFile] = m[2] as Resolution;
+    const m = /^(02-reviewed|03-social)(?:\.md)?=(arquivo|doc)@([0-9a-f]{12})$/.exec(part);
+    if (!m) {
+      throw new DocsSyncFormatError(
+        `--resolve inválido: "${part}" (esperado 02-reviewed.md=arquivo|doc@<resolve_token do conflito>)`,
+      );
+    }
+    const file = `${m[1]}.md` as SyncFile;
+    if (out[file]) throw new DocsSyncFormatError(`--resolve repete ${file}`);
+    out[file] = { choice: m[2] as Resolution, token: m[3] };
   }
   return out;
 }
