@@ -31,12 +31,22 @@ describe("parseClickBeaconBody (#8982)", () => {
     const p = parseClickBeaconBody(
       JSON.stringify({ variant: "a", posicao: "hero", event_id: "clique-a-hero-123", external_id: "vid-1", fbc: "fb.1.1.x", fbp: "fb.1.1.y" }),
     );
-    assert.deepEqual(p, { variant: "a", posicao: "hero", eventId: "clique-a-hero-123", externalId: "vid-1", fbc: "fb.1.1.x", fbp: "fb.1.1.y" });
+    assert.deepEqual(p, {
+      variant: "a",
+      posicao: "hero",
+      eventId: "clique-a-hero-123",
+      externalId: "vid-1",
+      fbc: "fb.1.1.x",
+      fbp: "fb.1.1.y",
+      origem: "",
+      utmCampaign: "",
+      utmContent: "",
+    });
   });
 
   it("JSON malformado → input vazio, nunca lança", () => {
     const p = parseClickBeaconBody("{ not json");
-    assert.deepEqual(p, { variant: "", posicao: "", eventId: "", externalId: "", fbc: "", fbp: "" });
+    assert.deepEqual(p, { variant: "", posicao: "", eventId: "", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
   });
 
   it("corta campos crus em CLICK_BEACON_FIELD_MAX (defesa em profundidade, mesmo padrão de SUBSCRIBE_CLIENT_ORIGIN_MAX)", () => {
@@ -56,47 +66,47 @@ describe("parseClickBeaconBody (#8982)", () => {
 
 describe("validateClickBeacon (#8982)", () => {
   it("variante 'a'/'A' + event_id → eventName CliqueIngresso_A, posicao default sem-posicao", () => {
-    const v1 = validateClickBeacon({ variant: "a", posicao: "", eventId: "e1", externalId: "", fbc: "", fbp: "" });
+    const v1 = validateClickBeacon({ variant: "a", posicao: "", eventId: "e1", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
     assert.deepEqual(v1, { ok: true, eventName: "CliqueIngresso_A", eventId: "e1", posicao: "sem-posicao" });
-    const v2 = validateClickBeacon({ variant: "A", posicao: "hero", eventId: "e2", externalId: "", fbc: "", fbp: "" });
+    const v2 = validateClickBeacon({ variant: "A", posicao: "hero", eventId: "e2", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
     assert.deepEqual(v2, { ok: true, eventName: "CliqueIngresso_A", eventId: "e2", posicao: "hero" });
   });
 
   it("variante 'b'/'B' → eventName CliqueIngresso_B", () => {
-    const v = validateClickBeacon({ variant: "B", posicao: "footer", eventId: "e3", externalId: "", fbc: "", fbp: "" });
+    const v = validateClickBeacon({ variant: "B", posicao: "footer", eventId: "e3", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
     assert.equal(v.ok, true);
     if (v.ok) assert.equal(v.eventName, "CliqueIngresso_B");
   });
 
   it("#9335: variante 'c'/'C' → eventName CliqueIngresso_C", () => {
-    const v = validateClickBeacon({ variant: "c", posicao: "topo", eventId: "e4", externalId: "", fbc: "", fbp: "" });
+    const v = validateClickBeacon({ variant: "c", posicao: "topo", eventId: "e4", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
     assert.equal(v.ok, true);
     if (v.ok) assert.equal(v.eventName, "CliqueIngresso_C");
   });
 
   it("variante 'd'/'D' (página de conteúdo com identidade) → eventName CliqueIngresso_D", () => {
-    const v = validateClickBeacon({ variant: "d", posicao: "topo", eventId: "e5", externalId: "", fbc: "", fbp: "" });
+    const v = validateClickBeacon({ variant: "d", posicao: "topo", eventId: "e5", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" });
     assert.equal(v.ok, true);
     if (v.ok) assert.equal(v.eventName, "CliqueIngresso_D");
   });
 
   it("variante inválida/ausente → invalid_variant", () => {
-    assert.deepEqual(validateClickBeacon({ variant: "", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
+    assert.deepEqual(validateClickBeacon({ variant: "", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" }), {
       ok: false,
       error: "invalid_variant",
     });
-    assert.deepEqual(validateClickBeacon({ variant: "e", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
+    assert.deepEqual(validateClickBeacon({ variant: "e", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" }), {
       ok: false,
       error: "invalid_variant",
     });
-    assert.deepEqual(validateClickBeacon({ variant: "<script>", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "" }), {
+    assert.deepEqual(validateClickBeacon({ variant: "<script>", posicao: "", eventId: "e", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" }), {
       ok: false,
       error: "invalid_variant",
     });
   });
 
   it("event_id ausente → missing_event_id, mesmo com variante válida", () => {
-    assert.deepEqual(validateClickBeacon({ variant: "a", posicao: "hero", eventId: "", externalId: "", fbc: "", fbp: "" }), {
+    assert.deepEqual(validateClickBeacon({ variant: "a", posicao: "hero", eventId: "", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" }), {
       ok: false,
       error: "missing_event_id",
     });
