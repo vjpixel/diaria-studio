@@ -29,6 +29,15 @@ não cobre a revisão do fluxo mensal. `scripts/drive-sync.ts` e
 como legado sem checar `/diaria-mensal` primeiro (achado #3729, review
 consolidado 260719).
 
+Desde #9964 o gate do Stage 4 também sai como **documento editável do
+Claude Docs** (só o texto de `02-reviewed.md`/`03-social.md`, aditivo aos
+previews HTML): `scripts/stage4-docs-sync.ts render` gera o markdown + a base
+do merge (pendente até `confirm` quando o doc já existe), `check-roundtrip`
+desliga o sync se o conector alterar o texto sem edição, e `apply` puxa as
+edições do doc de volta com merge de 3 vias que acusa conflito em vez de
+sobrescrever; `check` confere antes do sentinel. Fluxo no playbook
+`orchestrator-stage-4.md` §4b step 3b / §4d / §4e.
+
 ## Reports Drive sync — descontinuado (#3713)
 
 `scripts/upload-report-to-drive.ts` e `scripts/sync-report.ts` (Google Doc em
