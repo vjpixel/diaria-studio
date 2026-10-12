@@ -101,8 +101,26 @@ import {
   logMetaCapiSendResult,
 } from "../../../scripts/lib/shared/meta-capi.ts";
 
+import {
+  HOTMART_ABANDON_ENDPOINT,
+  HOTMART_ABANDON_READ_ENDPOINT,
+  HOTMART_ABANDON_KEY_PREFIX,
+  HOTMART_ABANDON_TTL_SECONDS,
+  HOTMART_HOTTOK_HEADER,
+  hottokMatches,
+  extractAbandon,
+  abandonKey,
+  isValidDay,
+} from "../../../scripts/lib/shared/hotmart-abandon.ts";
+
 export interface Env {
   ASSETS: Fetcher;
+  /** #10082: segredo do webhook da Hotmart (`X-HOTMART-HOTTOK`). Ausente =
+   *  webhook recusado (401). */
+  HOTMART_HOTTOK?: string;
+  /** #10082: bearer da leitura `GET /hotmart/abandonos` (VTSD). Ausente =
+   *  leitura recusada (401). */
+  HOTMART_READ_TOKEN?: string;
   /** #7657: KV `POLL` — o MESMO namespace que `workers/poll` lê. Só leitura
    *  aqui; quem escreve continua sendo a pipeline (upload-images-public.ts). */
   POLL: KvImageStore;
@@ -173,6 +191,63 @@ async function handleAgenteIaClique(request: Request, env: Env, ctx?: ExecutionC
     // fail-soft total — o beacon nunca pode falhar visivelmente pro cliente.
   }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * #10082: `POST /hotmart/abandono` — webhook de abandono de carrinho.
+ * Hottok inválido/ausente = 401. Evento que não é de abandono = 204 sem
+ * gravar. Grava só o registro sem PII de `extractAbandon` em KV
+ * `CURSOS_SUBSCRIBERS` (prefixo `hotmart:abandon:`).
+ */
+async function handleHotmartAbandon(request: Request, env: Env): Promise<Response> {
+  if (!hottokMatches(request.headers.get(HOTMART_HOTTOK_HEADER), env.HOTMART_HOTTOK)) {
+    return new Response("unauthorized", { status: 401 });
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await request.text());
+  } catch {
+    return new Response("bad request", { status: 400 });
+  }
+  const rec = extractAbandon(payload);
+  if (!rec) return new Response(null, { status: 204 });
+  if (!env.CURSOS_SUBSCRIBERS) return new Response("kv unavailable", { status: 503 });
+  const rand = crypto.randomUUID().slice(0, 8);
+  await env.CURSOS_SUBSCRIBERS.put(abandonKey(rec, rand), JSON.stringify(rec), {
+    expirationTtl: HOTMART_ABANDON_TTL_SECONDS,
+  });
+  return new Response(null, { status: 204 });
+}
+
+/** #10082: `GET /hotmart/abandonos?from=YYYY-MM-DD&to=YYYY-MM-DD` (bearer). */
+async function handleHotmartAbandonRead(request: Request, env: Env): Promise<Response> {
+  const secret = env.HOTMART_READ_TOKEN;
+  const auth = request.headers.get("Authorization") ?? "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!hottokMatches(bearer, secret)) return new Response("unauthorized", { status: 401 });
+  const q = new URL(request.url).searchParams;
+  const from = q.get("from");
+  const to = q.get("to") ?? from;
+  if (!isValidDay(from) || !isValidDay(to) || from > to) {
+    return new Response("from/to must be YYYY-MM-DD", { status: 400 });
+  }
+  if (!env.CURSOS_SUBSCRIBERS) return new Response("kv unavailable", { status: 503 });
+  const records: unknown[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.CURSOS_SUBSCRIBERS.list({ prefix: HOTMART_ABANDON_KEY_PREFIX, cursor });
+    for (const k of page.keys) {
+      const day = k.name.slice(HOTMART_ABANDON_KEY_PREFIX.length, HOTMART_ABANDON_KEY_PREFIX.length + 10);
+      if (day < from || day > to) continue;
+      const raw = await env.CURSOS_SUBSCRIBERS.get(k.name);
+      if (raw) records.push(JSON.parse(raw));
+    }
+    cursor = page.list_complete ? undefined : (page as { cursor?: string }).cursor;
+  } while (cursor);
+  return new Response(JSON.stringify({ from, to, count: records.length, records }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
 }
 
 /** Casa `/p/{slug}` (com ou sem barra final — `html_handling` já resolve a
@@ -268,6 +343,16 @@ export default {
     // mesmo racional de /img/{key} e /confirmada abaixo (rota, não asset).
     if (request.method === "POST" && new URL(request.url).pathname === CLICK_BEACON_ENDPOINT) {
       return handleAgenteIaClique(request, env, ctx);
+    }
+    // #10082: webhook de abandono de carrinho da Hotmart + leitura pro VTSD.
+    {
+      const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path === HOTMART_ABANDON_ENDPOINT) {
+        return handleHotmartAbandon(request, env);
+      }
+      if (request.method === "GET" && path === HOTMART_ABANDON_READ_ENDPOINT) {
+        return handleHotmartAbandonRead(request, env);
+      }
     }
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.
