@@ -51,7 +51,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { editionDir } from "./lib/edition-paths.ts";
 import { CONFIG } from "./lib/config.ts";
-import { runMain } from "./lib/exit-handler.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -464,12 +464,17 @@ async function fetchPotd(
   // 429 com retry/backoff: não iterar pro dia anterior (seria desperdiçar tentativas
   // se Wikimedia está rate-limitando o IP — todas as chamadas imediatas também batem).
   if (res.status === 429 && retryOnRateLimit > 0) {
+    // #9991: libera o socket antes de esperar/retentar (runCli só sai com o loop vazio).
+    await res.body?.cancel().catch(() => {});
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "2", 10);
     const delaySec = Number.isFinite(retryAfter) ? retryAfter : Math.pow(2, 4 - retryOnRateLimit);
     await new Promise((r) => setTimeout(r, delaySec * 1000));
     return fetchPotd(iso, retryOnRateLimit - 1, locale);
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
   const data = (await res.json()) as WikimediaResponse;
   return data.image ?? null;
 }
@@ -754,7 +759,10 @@ export async function findPtWikipediaUrl(enUrl: string): Promise<string | null> 
       headers: { "User-Agent": "diaria-studio/1.0 (diariaeditor@gmail.com)" },
       signal: AbortSignal.timeout(CONFIG.timeouts.wikimedia),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
     const data = await res.json() as {
       query?: { pages?: Array<{ langlinks?: Array<{ lang: string; title: string }> }> }
     };
@@ -1288,19 +1296,20 @@ async function downloadFile(url: string, outPath: string): Promise<void> {
     signal: AbortSignal.timeout(CONFIG.timeouts.wikimediaDownload),
   });
   if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
     throw new Error(`Download ${url} falhou: HTTP ${res.status}`);
   }
   const buf = Buffer.from(await res.arrayBuffer());
   writeFileSync(outPath, buf);
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
   const edition = args.edition;
   if (!edition || !/^\d{6}$/.test(edition)) {
     console.error("Uso: eia-compose.ts --edition AAMMDD [--out-dir <path>] [--force]");
-    process.exit(1);
+    return 1;
   }
   const force = process.argv.includes("--force");
   const outDir =
@@ -1322,7 +1331,7 @@ async function main(): Promise<void> {
     console.error(
       `ERRO: --selection deve ser um de ${validSelections.join("|")} (recebi "${selectionArg}")`,
     );
-    process.exit(1);
+    return 1;
   }
   const selection = selectionArg as (typeof validSelections)[number] | undefined;
   let pctCorrect: number | null | undefined;
@@ -1335,7 +1344,7 @@ async function main(): Promise<void> {
         console.error(
           `ERRO: --pct-correct deve ser numérico ou "null" (recebi "${args["pct-correct"]}")`,
         );
-        process.exit(1);
+        return 1;
       }
       pctCorrect = n;
     }
@@ -1355,7 +1364,7 @@ async function main(): Promise<void> {
         out_dir: outDir,
       }),
     );
-    process.exit(0);
+    return 0;
   }
 
   // Partial state guard (#1325): se algum output existe mas Stage 4 não está
@@ -1374,7 +1383,7 @@ async function main(): Promise<void> {
         out_dir: outDir,
       }),
     );
-    process.exit(2);
+    return 2;
   }
 
   // 1. Fetch POTD com eligibility
@@ -1671,5 +1680,13 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  runMain(main);
+  // #9911: main() devolve o código (1 uso, 0 skip, 2 estado parcial) e
+  // runCli grava process.exitCode — process.exit() logo depois do fetch do
+  // POTD/Wikipedia sai 127 no Windows. onError mantém o formato do runMain.
+  runCli(main, {
+    onError: (e) => {
+      console.error("[error]", e instanceof Error ? e.message : String(e));
+      if (e instanceof Error && e.stack) console.error(e.stack);
+    },
+  });
 }

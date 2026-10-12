@@ -68,6 +68,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { getArg, hasFlag, isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { DEFAULT_OUTPUT_PATH as SCORED_CSV_PATH } from "./score-pending-origin.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -282,7 +283,7 @@ export function parseLimitArg(argv: string[]): number | undefined {
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const log = (msg: string) => process.stderr.write(`[verify-pending-emails-mv] ${msg}\n`);
@@ -290,13 +291,13 @@ async function main(): Promise<void> {
   const apiKey = process.env.MILLION_VERIFIER_API_KEY;
   if (!apiKey) {
     log("ERRO: MILLION_VERIFIER_API_KEY não definido no ambiente.");
-    process.exit(2);
+    return 2;
   }
 
   const inputPath = getArg(argv, "input") || SCORED_CSV_PATH;
   if (!existsSync(inputPath)) {
     log(`ERRO: input não encontrado em ${inputPath}. Rode scripts/score-pending-origin.ts primeiro.`);
-    process.exit(2);
+    return 2;
   }
 
   const allEmails = readCandidateEmails(readFileSync(inputPath, "utf8"));
@@ -310,7 +311,7 @@ async function main(): Promise<void> {
     limit = parseLimitArg(argv);
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
-    process.exit(2);
+    return 2;
   }
   const limited = limit !== undefined ? todo.slice(0, limit) : todo;
   log(`${todo.length} ainda não verificado(s) (skip-forever pelo checkpoint); processando ${limited.length} nesta rodada.`);
@@ -318,7 +319,7 @@ async function main(): Promise<void> {
   const guard = checkMvCostGuard(limited.length, hasFlag(argv, "confirm"));
   if (!guard.ok) {
     log(`ERRO: ${guard.message}`);
-    process.exit(2);
+    return 2;
   }
 
   let verified = 0;
@@ -382,9 +383,11 @@ async function main(): Promise<void> {
   }
 }
 
+// #9911: main() devolve 2 nos guards de uso/credencial/custo e runCli grava
+// process.exitCode (1 no erro fatal) — process.exit() depois do fetch da
+// MillionVerifier sai 127 no Windows.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[verify-pending-emails-mv] erro fatal: ${(e as Error).message}\n`);
-    process.exit(1);
+  runCli(main, {
+    onError: (e) => process.stderr.write(`[verify-pending-emails-mv] erro fatal: ${(e as Error).message}\n`),
   });
 }

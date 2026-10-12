@@ -1561,8 +1561,10 @@ describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/
   // devolve `PARTIAL_FAILURE_EXIT_CODE`, nunca `1`, quando failed/
   // kitAutoConfirmSkipped>0 — ver test/evaluate-brevo-diaria-exit-code-8686.test.ts).
   // Os guards pré-await (brevo_diaria/list_id ausente, API
-  // key ausente pro --push) ficam como process.exit(2) de propósito —
-  // nenhum fetch rodou ainda nesses pontos.
+  // key ausente pro --push) eram process.exit(2) de propósito (nenhum fetch
+  // rodou ainda nesses pontos); desde o #9911 viraram `return 2` e o entry
+  // point é `runCli`, que grava process.exitCode — nenhum process.exit(
+  // sobra no script.
   const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "evaluate-brevo-diaria.ts");
 
   function readMainAndCatchBodies(): { mainBody: string; catchBody: string } {
@@ -1588,31 +1590,30 @@ describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/
       "#8686: os branches pós-await não atribuem mais o literal 1 (código de erro FATAL) pra falha/skip por " +
         "contato — usar resolveEvaluateExitCode(result), que devolve PARTIAL_FAILURE_EXIT_CODE",
     );
-    // Duas ocorrências esperadas: branch dry-run e branch --push.
-    const matches = mainBody.match(/process\.exitCode = resolveEvaluateExitCode\(result\)/g) ?? [];
+    // Duas ocorrências esperadas: branch dry-run e branch --push. Desde o
+    // #9911 main() DEVOLVE o código e runCli o grava em process.exitCode.
+    const matches = mainBody.match(/return resolveEvaluateExitCode\(result\)/g) ?? [];
     assert.equal(
       matches.length,
       2,
-      `esperava 2 ocorrências de process.exitCode = resolveEvaluateExitCode(result) (dry-run + --push), achei ${matches.length}`,
+      `esperava 2 ocorrências de return resolveEvaluateExitCode(result) (dry-run + --push), achei ${matches.length}`,
     );
   });
 
-  it("guards pré-await (exit 2 — brevo_diaria/list_id, API key) continuam com process.exit — sem risco libuv (#4651)", () => {
+  it("guards pré-await (exit 2 — brevo_diaria/list_id, API key) devolvem 2 sem process.exit (#4651, #9911)", () => {
     const { mainBody } = readMainAndCatchBodies();
-    assert.match(
-      mainBody,
-      /process\.exit\(2\)/,
-      "process.exit(2) deveria continuar existindo (guards pré-await, seguros)",
-    );
+    assert.equal(/process\.exit\s*\(/.test(mainBody), false, "main() não chama mais process.exit( (#9911)");
+    const returns2 = mainBody.match(/return 2;/g) ?? [];
+    assert.equal(returns2.length, 3, `esperava 3 guards pré-await com return 2, achei ${returns2.length}`);
   });
 
-  it("catch handler do isMainModule() usa process.exitCode, não process.exit (#4651)", () => {
+  it("entry point do isMainModule() usa runCli, não process.exit (#4651, #9911)", () => {
     const { catchBody } = readMainAndCatchBodies();
     assert.equal(
       /process\.exit\s*\(/.test(catchBody),
       false,
-      "catch de main() não pode chamar process.exit() — usar process.exitCode (#4651 Windows crash)",
+      "entry point não pode chamar process.exit() — usar runCli (#4651 Windows crash)",
     );
-    assert.match(catchBody, /process\.exitCode/, "catch de main() deve setar process.exitCode");
+    assert.match(catchBody, /runCli\(main/, "entry point deve rodar main() via runCli (#9911)");
   });
 });

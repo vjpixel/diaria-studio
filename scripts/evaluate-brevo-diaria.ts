@@ -341,6 +341,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { brevoGet, brevoPut } from "./lib/brevo-client.ts";
 import { eventTimestampMs, latestEventTime } from "./lib/brevo-stats.ts";
 import {
@@ -1569,7 +1570,7 @@ export interface RunEvaluationParams {
    * `brevoApiKey` do Passo 0 que este comentário fazia antes era enganosa e
    * levou a uma lacuna real.** `brevoApiKey` ausente em `push` SEMPRE aborta
    * em `main()` ANTES de avaliar qualquer contato (precondição dura, ver o
-   * `process.exit(2)` logo no início de `main()`) — não existe caminho onde
+   * `return 2` logo no início de `main()`) — não existe caminho onde
    * `runEvaluation` roda sem ela em `push`. `kitApiKey`, antes deste fix, só
    * era exigida por `main()` quando `newsletterBackend === "kit"` — mas o
    * roteamento por ORIGEM do Passo 0/1 é INDEPENDENTE de
@@ -2551,29 +2552,28 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
   const log = (msg: string) => process.stderr.write(`[evaluate-brevo-diaria] ${msg}\n`);
 
-  // #4651: os process.exit() abaixo até o 1º `await` de rede
-  // (reconcileStoreWithBrevoList, mais adiante) ficam como estão de
-  // propósito — nenhum fetch rodou ainda neste processo nestes pontos
-  // (leitura de platform.config.json/env é I/O local síncrono), então não
-  // há socket keep-alive aberto que dispare o crash libuv
-  // (UV_HANDLE_CLOSING) do #4638/#1401.
+  // #9911: toda saída de main() devolve o código e `runCli` grava
+  // `process.exitCode`. Até aqui os guards pré-await (exit 2) usavam
+  // `process.exit(2)` — seguro só por não haver fetch antes deles (#4651);
+  // trocados por `return 2` para o guard de CI do #9911 cobrir o script
+  // inteiro sem exceção.
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
   const brevoDiaria = platformConfig.brevo_diaria;
   if (!brevoDiaria || brevoDiaria.list_id == null) {
     log("ERRO: brevo_diaria não configurado (ou list_id ausente) em platform.config.json.");
-    process.exit(2);
+    return 2;
   }
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[evaluate-brevo-diaria]");
   const brevoApiKey = process.env[brevoDiaria.api_key_env];
   if (push && !brevoApiKey) {
     log(`ERRO: ${brevoDiaria.api_key_env} não definido no ambiente (necessário pra --push).`);
-    process.exit(2);
+    return 2;
   }
 
   // #6339: qual backend recebe a promoção por score — lido de
@@ -2622,7 +2622,7 @@ async function main(): Promise<void> {
   if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
     const why = newsletterBackend === "kit" ? "newsletterBackend=kit" : `${inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length} contato(s) de origem Kit no store`;
     log(`ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push — ${why}, #6340 item 4 fix A).`);
-    process.exit(2);
+    return 2;
   }
 
   // #4579: reconciliação de órfãos — roda SEMPRE (mesmo em dry-run, é
@@ -2713,7 +2713,7 @@ async function main(): Promise<void> {
   // que, no caminho normal com `brevoApiKey` presente e contato(s) in_brevo
   // pra avaliar, já fez await fetch (reconcileStoreWithBrevoList — condicional
   // a `brevoApiKey` — e o loop por contato dentro de runEvaluation) — mas
-  // process.exitCode + return é seguro de qualquer forma, com ou sem fetch
+  // devolver o código (gravado em process.exitCode por runCli) é seguro de qualquer forma, com ou sem fetch
   // prévio, evitando o crash libuv (UV_HANDLE_CLOSING) com sockets
   // keep-alive ainda abertos.
   if (!push) {
@@ -2724,8 +2724,7 @@ async function main(): Promise<void> {
     // precisa aparecer em cron (ver docstring de `kitAutoConfirmSkipped`).
     // #8686: `PARTIAL_FAILURE_EXIT_CODE` (3), NUNCA `1` — ver docstring de
     // `resolveEvaluateExitCode` pro porquê da distinção.
-    process.exitCode = resolveEvaluateExitCode(result);
-    return;
+    return resolveEvaluateExitCode(result);
   }
   writeStore(result.store, DEFAULT_STORE_PATH);
   log("push concluído — store atualizado.");
@@ -2733,14 +2732,14 @@ async function main(): Promise<void> {
   // aqui NUNCA significa "o push falhou" (o store já reflete o progresso
   // real desta rodada); `resolveEvaluateExitCode` sinaliza isso com
   // `PARTIAL_FAILURE_EXIT_CODE`, distinto do `exit(1)` fatal.
-  process.exitCode = resolveEvaluateExitCode(result);
+  return resolveEvaluateExitCode(result);
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[evaluate-brevo-diaria] erro fatal: ${(e as Error).message}\n`);
-    // Windows fix (#4651): main() pode lançar depois de já ter feito await
-    // fetch — mesma razão do bloco acima.
-    process.exitCode = 1;
+  // Windows fix (#4651/#9911): main() pode lançar depois de já ter feito
+  // await fetch — runCli grava process.exitCode (1 no erro fatal), nunca
+  // process.exit().
+  runCli(main, {
+    onError: (e) => process.stderr.write(`[evaluate-brevo-diaria] erro fatal: ${(e as Error).message}\n`),
   });
 }

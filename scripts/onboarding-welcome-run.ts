@@ -111,6 +111,7 @@ import {
 } from "./lib/onboarding-state.ts";
 import { brevoPost, brevoGet, brevoDelete } from "./lib/brevo-client.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -188,13 +189,18 @@ async function beehiivFetch<T>(path: string, apiKey: string, retries = 0): Promi
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
   });
   if (res.status === 429 && retries < 3) {
+    // #9991: libera o socket antes de esperar/retentar (runCli só sai com o loop vazio).
+    await res.body?.cancel().catch(() => {});
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
     const wait = Math.max(retryAfter * 1000, 30_000);
     process.stderr.write(`[onboarding] rate-limited Beehiiv — esperando ${Math.round(wait / 1000)}s\n`);
     await sleep(wait);
     return beehiivFetch<T>(path, apiKey, retries + 1);
   }
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   return { ok: true, status: res.status, body: (await res.json()) as T };
 }
 
@@ -712,7 +718,7 @@ function parseArgs(argv: string[]): CliArgs {
       const p = argv[++i];
       if (!existsSync(p)) {
         process.stderr.write(`[onboarding] --emails-file não encontrado: ${p}\n`);
-        process.exit(2);
+        throw new CliExit(2);
       }
       // Uma linha por e-mail; `#` inicia comentário para o operador anotar a
       // origem da lista. O `#` só conta como comentário no INÍCIO da linha ou
@@ -731,7 +737,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--skip-email3") args.skip.add("email3");
     else {
       process.stderr.write(`[onboarding] flag desconhecida: ${a}\n`);
-      process.exit(2);
+      throw new CliExit(2);
     }
   }
   return args;
@@ -746,7 +752,7 @@ function loadSnippets(dirAbs: string): { 1: ReturnType<typeof parseOnboardingSni
   return { 1: load(1), 2: load(2), 3: load(3) };
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseArgs(process.argv.slice(2));
   // #5966: `--env-root` precisa ser resolvido ANTES do loadProjectEnv() pra
   // valer — parseArgs() não lê env, então essa reordenação é segura.
@@ -767,7 +773,7 @@ async function main(): Promise<void> {
   if (args.cancelPending) {
     if (!brevoKey) {
       process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
-      process.exit(2);
+      return 2;
     }
     const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
     const results = await runCancelPending({ apiKey: brevoKey, storePath });
@@ -811,7 +817,7 @@ async function main(): Promise<void> {
     process.stderr.write(
       `[onboarding] modo dirigido exige backend de assinante "kit" (atual: "${backend}") — a resolução por e-mail é da API do Kit.\n`,
     );
-    process.exit(2);
+    return 2;
   }
 
   let beeCfg: { ok: true; config: BeehiivConfig } | null = null;
@@ -820,20 +826,20 @@ async function main(): Promise<void> {
     const kitResult = resolveKitConfig();
     if (!kitResult.ok) {
       process.stderr.write(`[onboarding] ${kitResult.reason}\n`);
-      process.exit(2);
+      return 2;
     }
     kitCfg = kitResult.config;
   } else {
     const beeResult = resolveBeehiivConfig();
     if (!beeResult.ok) {
       process.stderr.write(`[onboarding] ${beeResult.reason}\n`);
-      process.exit(2);
+      return 2;
     }
     beeCfg = beeResult;
   }
   if (!brevoKey) {
     process.stderr.write(`[onboarding] ${apiKeyEnv} ausente no env.\n`);
-    process.exit(2);
+    return 2;
   }
 
   const storePath = args.storePath ?? resolve(ROOT, cfg.store_path ?? DEFAULT_STORE_PATH);
@@ -899,7 +905,7 @@ async function main(): Promise<void> {
       seededBy: args.seededBy ?? "",
     });
     process.stdout.write(`${renderSeedPlan(plan, { send: args.send, seededBy: args.seededBy ?? "" })}\n`);
-    if (!plan.ok) process.exit(1);
+    if (!plan.ok) return 1;
 
     if (args.send) {
       for (const p of plan.entries) {
@@ -1155,7 +1161,7 @@ async function main(): Promise<void> {
   const sender = { email: cfg.sender_email ?? "", name: cfg.sender_name ?? "diar.ia.br" };
   if (!sender.email) {
     process.stderr.write(`[onboarding] platform.config.json sem onboarding.sender_email — abortando antes de qualquer envio.\n`);
-    process.exit(2);
+    return 2;
   }
   const isoNow = new Date(nowSec * 1000).toISOString();
 
@@ -1227,9 +1233,13 @@ async function main(): Promise<void> {
 // `fetch` em vez de spawnar subprocesso); sem este guard, `main()` disparava
 // no próprio `import` do teste (achado ao vivo escrevendo os testes desta
 // issue — falhava tentando ler credenciais Beehiiv/Brevo do ambiente real).
+//
+// #9911: main() devolve o código (2 uso/config/credencial, 1 plano de
+// semeadura inválido) e `parseArgs` lança `CliExit(2)`; runCli grava
+// process.exitCode — process.exit() depois do fetch Brevo/Kit sai 127 no
+// Windows.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[onboarding] fatal: ${(e as Error).stack ?? e}\n`);
-    process.exit(1);
+  runCli(main, {
+    onError: (e) => process.stderr.write(`[onboarding] fatal: ${(e as Error).stack ?? e}\n`),
   });
 }

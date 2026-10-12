@@ -167,6 +167,7 @@ import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { hasFlag, isMainModule, getIntArg } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { hasMorePages } from "./sync-cursos-subscribers-kv.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import {
@@ -775,7 +776,7 @@ export function assertStoreFileGuard(
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");
@@ -788,7 +789,7 @@ async function main(): Promise<void> {
     assertStoreFileGuard(existsSync(DEFAULT_STORE_PATH), argv, DEFAULT_STORE_PATH);
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
-    process.exit(2);
+    return 2;
   }
 
   let maxAdd: number | undefined;
@@ -796,7 +797,7 @@ async function main(): Promise<void> {
     maxAdd = getIntArg(argv, "max-add", { min: 0 });
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
-    process.exit(2);
+    return 2;
   }
 
   // #4476/#4494 achados silent-failure-hunter: guard de MV ANTES de qualquer
@@ -818,12 +819,10 @@ async function main(): Promise<void> {
       rawPoolSize,
     };
   }
-  // #4651: os process.exit() abaixo até o 1º `await` de rede
-  // (fetchPendingBeehiivSubscriptions, mais adiante) ficam como estão de
-  // propósito — nenhum fetch rodou ainda neste processo nestes pontos
-  // (guard de MV + leitura de platform.config.json/env são só I/O local
-  // síncrono), então não há socket keep-alive aberto que dispare o crash
-  // libuv (UV_HANDLE_CLOSING) do #4638/#1401.
+  // #4651/#9911: os guards abaixo até o 1º `await` de rede
+  // (fetchPendingBeehiivSubscriptions, mais adiante) eram `process.exit(2)`,
+  // seguros só por não haver fetch antes deles; desde o #9911 devolvem 2 e
+  // `runCli` grava process.exitCode, como o resto de main().
   const mvComplete = coverage !== null && coverage.poolSize > 0 && coverage.processedCount >= coverage.poolSize;
   if (push) {
     try {
@@ -837,7 +836,7 @@ async function main(): Promise<void> {
       }
     } catch (e) {
       log(`ERRO: ${(e as Error).message}`);
-      process.exit(2);
+      return 2;
     }
   }
 
@@ -852,16 +851,16 @@ async function main(): Promise<void> {
       `ERRO: platform.config.json não parseia como JSON válido (${(e as Error).message}) — ` +
         "config corrompida ou escrita parcial. Não é seguro prosseguir sem config válida.",
     );
-    process.exit(2);
+    return 2;
   }
   const brevoDiaria = platformConfig.brevo_diaria;
   if (!brevoDiaria) {
     log("ERRO: brevo_diaria não configurado em platform.config.json.");
-    process.exit(2);
+    return 2;
   }
   if (brevoDiaria!.list_id == null) {
     log("ERRO: brevo_diaria.list_id não definido em platform.config.json.");
-    process.exit(2);
+    return 2;
   }
 
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[sync-pending-to-brevo]");
@@ -869,7 +868,7 @@ async function main(): Promise<void> {
   const brevoApiKey = process.env[brevoDiaria!.api_key_env];
   if (push && !brevoApiKey) {
     log(`ERRO: ${brevoDiaria!.api_key_env} não definido no ambiente (necessário pra --push).`);
-    process.exit(2);
+    return 2;
   }
 
   log("buscando assinantes Pending na Beehiiv…");
@@ -953,14 +952,15 @@ async function main(): Promise<void> {
   // no caminho normal com `selected` não-vazio, o loop `ingestContactToBrevo`
   // acima também faz fetch — de qualquer forma, process.exit() arriscaria o
   // crash libuv (UV_HANDLE_CLOSING) com sockets keep-alive ainda abertos.
-  if (failed > 0) process.exitCode = 1;
+  // runCli grava o código devolvido em process.exitCode (#9911).
+  if (failed > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`[sync-pending-to-brevo] erro fatal: ${(e as Error).message}\n`);
-    // Windows fix (#4651): main() pode lançar depois de já ter feito await
-    // fetch — mesma razão do bloco acima.
-    process.exitCode = 1;
+  // Windows fix (#4651/#9911): main() pode lançar depois de já ter feito
+  // await fetch — runCli grava process.exitCode (1 no erro fatal), nunca
+  // process.exit().
+  runCli(main, {
+    onError: (e) => process.stderr.write(`[sync-pending-to-brevo] erro fatal: ${(e as Error).message}\n`),
   });
 }
