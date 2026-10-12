@@ -50,10 +50,13 @@ const xmlReasons = (inner: string) => `<?xml version="1.0" encoding="utf-8"?>
     </GetAssetGroupsEditorialReasonsResponse>
   </s:Body>
 </s:Envelope>`;
-const ONE_REASON = xmlReasons(`<EditorialReasonCollection><EditorialReasons>
-  <ReasonCode>702</ReasonCode><Location>AdGroup</Location><PublisherCountries>BR</PublisherCountries>
-  <Term>promo</Term><AppealStatus>Appealable</AppealStatus>
-</EditorialReasons></EditorialReasonCollection>`);
+const ONE_REASON = xmlReasons(`<EditorialReasons><AssetGroupEditorialReasonCollection>
+  <AppealStatus>Appealable</AppealStatus><AssetGroupId>1187474912702110</AssetGroupId><CampaignId>571543153</CampaignId>
+  <Reasons><AssetGroupEditorialReason>
+    <Location>Headline</Location><PublisherCountries><string>BR</string></PublisherCountries>
+    <ReasonCode>702</ReasonCode><Term>promo</Term>
+  </AssetGroupEditorialReason></Reasons>
+</AssetGroupEditorialReasonCollection></EditorialReasons>`);
 const NO_REASONS = xmlReasons("");
 const FAULT = `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>
@@ -235,5 +238,41 @@ describe("#9091 — review: 200 com shape inesperado e prioridade de identidade"
     assert.equal(code, 0);
     assert.ok(urls.some((u) => u.includes("oauth2.googleapis.com")));
     assert.ok(!urls.some((u) => u.includes("login.microsoftonline.com")));
+  });
+});
+
+describe("#10063 — CLI manda o par asset group → campanha (default PMax teste 2608)", () => {
+  it("default: EntityId 1187474912702110 + ParentId 571543153, campaignId no snapshot", async () => {
+    setEnv({ ...ALWAYS, ...AZURE });
+    const out = join(dir, "out.json");
+    let posted = "";
+    const code = await main(["--output", out], {
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (isToken(url)) return tokenOk();
+        posted = String(init?.body ?? "");
+        return new Response(NO_REASONS, { status: 200 });
+      },
+      sleep: noSleep,
+    });
+    assert.equal(code, 0);
+    assert.match(posted, /<EntityId>1187474912702110<\/EntityId>\s*<ParentId>571543153<\/ParentId>/);
+    const payload = JSON.parse(readFileSync(out, "utf8"));
+    assert.equal(payload.campaignId, "571543153");
+  });
+
+  it("--asset-group-id/--campaign-id sobrepõem o default", async () => {
+    setEnv({ ...ALWAYS, ...AZURE });
+    const out = join(dir, "out.json");
+    let posted = "";
+    const code = await main(["--output", out, "--asset-group-id", "111", "--campaign-id", "222"], {
+      fetchImpl: async (url: string, init?: RequestInit) => {
+        if (isToken(url)) return tokenOk();
+        posted = String(init?.body ?? "");
+        return new Response(NO_REASONS, { status: 200 });
+      },
+      sleep: noSleep,
+    });
+    assert.equal(code, 0);
+    assert.match(posted, /<EntityId>111<\/EntityId>\s*<ParentId>222<\/ParentId>/);
   });
 });

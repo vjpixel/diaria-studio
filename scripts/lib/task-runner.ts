@@ -101,15 +101,60 @@ export function execTsxStep(scriptAbsPath: string, args: string[], cwd: string):
   // nunca deixar `code` indefinido/null virar um exit 0 implícito em quem lê
   // este resultado.
   if (result.error || result.status === null) {
-    return {
-      code: 1,
-      output:
-        output +
-        `\nERRO: o passo nao executou (falha de spawn antes do processo iniciar): ` +
-        `${result.error?.message ?? "status null"}\n`,
-    };
+    return { code: 1, output: output + `\nERRO: ${abnormalStepExitReason(result)}\n` };
   }
   return { code: result.status, output };
+}
+
+/**
+ * Texto do motivo quando `spawnSync` não devolve exit code (#10063). Antes,
+ * todo `status === null` era rotulado "falha de spawn antes do processo
+ * iniciar" — inclusive quando o processo RODOU por 2 minutos e morreu por
+ * sinal (`SIGABRT` do OOM do heap V8 em `cleanup-tmp-300.ts`), o que mandava
+ * quem lia o log investigar o spawn em vez do consumo de memória do script.
+ *
+ * @pure
+ */
+export function abnormalStepExitReason(result: {
+  error?: Error | undefined;
+  status: number | null;
+  signal: NodeJS.Signals | null;
+}): string {
+  if (result.error) {
+    return `o passo nao executou (falha de spawn antes do processo iniciar): ${result.error.message}`;
+  }
+  if (result.signal) {
+    const hint =
+      result.signal === "SIGABRT"
+        ? " — tipico de OOM do heap V8 (procure 'JavaScript heap out of memory' na saida acima)"
+        : result.signal === "SIGKILL"
+          ? " — tipico do OOM killer do kernel/cgroup ou de kill externo"
+          : "";
+    return `o processo do passo foi encerrado pelo sinal ${result.signal}${hint}`;
+  }
+  return "o passo nao executou (falha de spawn antes do processo iniciar): status null";
+}
+
+/** Quantas linhas finais da saída de um passo que falhou vão pro stderr
+ *  (journal do systemd), #10063. */
+export const FAILED_STEP_STDERR_TAIL_LINES = 20;
+
+/**
+ * Resumo de passo falho pro stderr (#10063). A saída dos passos vai só pro
+ * log em `data/` — o journal do systemd (`journalctl --user -u ...`) ficava
+ * só com "status=1/FAILURE", sem nenhuma pista do motivo (foi assim que o
+ * OOM diário do `diaria-tmp-cleanup` passou dias invisível no journal).
+ *
+ * @pure
+ */
+export function formatFailedStepReport(taskName: string, stepKey: string, code: number, output: string, logPath: string): string {
+  const lines = output.replace(/\s+$/, "").split("\n");
+  const tail = lines.slice(-FAILED_STEP_STDERR_TAIL_LINES).join("\n");
+  return (
+    `[task-runner] ${taskName}: passo '${stepKey}' falhou (code ${code}). ` +
+    `Ultimas ${Math.min(lines.length, FAILED_STEP_STDERR_TAIL_LINES)} linha(s):\n${tail}\n` +
+    `[task-runner] log completo: ${logPath}`
+  );
 }
 
 /** Resultado de um passo individual dentro de uma run. */
@@ -162,6 +207,9 @@ export interface RunScheduledTaskOptions {
   /** Injeção de syncCode antes dos passos (testes). Default: `syncCode` real de `./git-sync.ts`.
    * **Obrigatório sob `node:test` (#7736)** — omitir lança, ver guard no corpo de `runScheduledTask`. */
   syncCode?: () => GitSyncResult;
+  /** Destino do resumo de passo falho (#10063). Default: `console.error`
+   * (stderr → journal do systemd). Testes injetam pra capturar. */
+  reportFailure?: (message: string) => void;
 }
 
 /** Assinatura injetável de UMA tentativa de anexar `content` a `logPath` —
@@ -368,6 +416,15 @@ export function runScheduledTask(
 
       if (!step.bestEffort && result.code !== 0 && failingCode === 0) {
         failingCode = result.code;
+      }
+      if (result.code !== 0) {
+        try {
+          (opts.reportFailure ?? ((m: string) => console.error(m)))(
+            formatFailedStepReport(def.name, step.key, result.code, result.output, logPath),
+          );
+        } catch {
+          // stderr indisponível não muda o resultado da run.
+        }
       }
     }
   }
