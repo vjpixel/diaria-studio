@@ -37,7 +37,7 @@
  * ## Uso
  *
  *   npx tsx scripts/microsoft-ads-editorial-reasons.ts
- *   npx tsx scripts/microsoft-ads-editorial-reasons.ts --asset-group-id 12345
+ *   npx tsx scripts/microsoft-ads-editorial-reasons.ts --asset-group-id 12345 --campaign-id 67890
  *   npx tsx scripts/microsoft-ads-editorial-reasons.ts --output data/microsoft-ads/custom.json
  */
 
@@ -64,6 +64,12 @@ export const DEFAULT_OUTPUT_DIR = resolve(ROOT, "data", "microsoft-ads");
 /** Asset group ID do "diar.ia.br - 4 conceitos" (campanha PMax teste 2608).
  *  Default conhecido porque é o único asset group com assets Microsoft. */
 const DEFAULT_ASSET_GROUP_ID = "1187474912702110";
+
+/** Campanha dona do asset group default — "PMax teste 2608" (id 571543153,
+ *  conferido ao vivo via `GetCampaignsByAccountId` em 12/10/2026, status
+ *  Paused desde o fim do teste em 23/09). A operação exige o par asset
+ *  group → campanha (#10063); sem ele a API devolve o Fault 2829. */
+const DEFAULT_CAMPAIGN_ID = "571543153";
 
 function fallback(reason: string): void {
   console.warn(`[microsoft-ads-editorial-reasons] falha — ${reason}`);
@@ -92,6 +98,7 @@ export async function main(
   opts: EditorialReasonsCliOptions = {},
 ): Promise<number> {
   const assetGroupId = getStringArg(argv, "asset-group-id") ?? DEFAULT_ASSET_GROUP_ID;
+  const campaignId = getStringArg(argv, "campaign-id") ?? DEFAULT_CAMPAIGN_ID;
   const outputOverride = getStringArg(argv, "output");
   const now = opts.now ?? new Date();
 
@@ -112,6 +119,7 @@ export async function main(
 
   const result = await fetchAssetGroupEditorialReasons(retryingFetch, configResult.auth, {
     assetGroupId,
+    campaignId,
   });
 
   if (!result.ok) {
@@ -134,6 +142,7 @@ export async function main(
     capturedAt: now.toISOString(),
     source: result.source,
     assetGroupId,
+    campaignId,
     accountId: configResult.auth.accountId,
     customerId: configResult.auth.customerId,
     count: result.count,

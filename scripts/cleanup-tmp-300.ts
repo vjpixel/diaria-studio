@@ -83,13 +83,14 @@
  * é ação POSTERIOR do editor, fora do escopo deste PR (a issue #8828 pede
  * só o REGISTRO, não `systemctl enable` ao vivo).
  */
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { resolveRepoRoot, listActiveSessions } from "./lib/session-registry.ts";
 import {
   planTmpCleanup,
   planFreedOutputBytes,
+  SESSION_DIR_MIN_AGE_MS,
   type SessionDirCandidate,
   type OutputFileCandidate,
 } from "./lib/tmp-cleanup.ts";
@@ -110,26 +111,50 @@ function defaultClaudeDir(): string {
  *  dele (recursivo) — um diretório de sessão cujo `.output` foi escrito
  *  ontem não deve parecer "velho" só porque o diretório em si foi criado
  *  há semanas. Falha de stat em qualquer entrada (ex: symlink quebrado) é
- *  ignorada silenciosamente — não deve derrubar a varredura inteira. */
-function newestMtimeMs(path: string): number {
+ *  ignorada — não deve derrubar a varredura inteira.
+ *
+ *  **NUNCA segue symlink (#10063).** A versão anterior usava
+ *  `readdirSync(path, { recursive: true })`, que no Node 24 DESCE em
+ *  symlink de diretório (medido: `a/up -> ..` vira `a/up/a/up/...` até o
+ *  ELOOP) e materializa a lista inteira em memória. Scratchpads de sessão
+ *  guardam symlinks pro `data/` do OneDrive e pro `node_modules` do repo —
+ *  a varredura enumerava o `data/` inteiro a cada sessão e estourava o
+ *  heap (4,3 GB, `FATAL ERROR: ... JavaScript heap out of memory`) todo dia
+ *  desde 06/10/2026, com a unit `diaria-tmp-cleanup` vermelha. Agora a
+ *  descida é iterativa (pilha explícita, um diretório por vez), usa
+ *  `lstat` (mtime do PRÓPRIO link, nunca do alvo) e só desce em diretório
+ *  real (`Dirent.isDirectory()` é `false` para symlink).
+ *
+ *  `stopAtMs` (opcional): retorna assim que achar um mtime `>= stopAtMs` —
+ *  o caller só precisa saber se a sessão é "recente demais", não o valor
+ *  exato, e diretório recente costuma ter arquivo recente logo no topo. */
+export function newestMtimeMs(path: string, stopAtMs: number = Number.POSITIVE_INFINITY): number {
   let newest = 0;
   try {
-    newest = statSync(path).mtimeMs;
+    newest = lstatSync(path).mtimeMs;
   } catch {
     return 0;
   }
-  let entries: string[] = [];
-  try {
-    entries = readdirSync(path, { recursive: true }) as string[];
-  } catch {
-    return newest;
-  }
-  for (const rel of entries) {
+  if (newest >= stopAtMs) return newest;
+  const stack: string[] = [path];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries: Dirent[];
     try {
-      const m = statSync(join(path, rel)).mtimeMs;
-      if (m > newest) newest = m;
+      entries = readdirSync(dir, { withFileTypes: true });
     } catch {
-      // ignora entrada inacessível — não bloqueia a varredura.
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      try {
+        const m = lstatSync(full).mtimeMs;
+        if (m > newest) newest = m;
+      } catch {
+        continue; // removida entre o readdir e o lstat — ignora.
+      }
+      if (newest >= stopAtMs) return newest;
+      if (entry.isDirectory()) stack.push(full);
     }
   }
   return newest;
@@ -151,7 +176,7 @@ export function looksLikeProjectSlug(name: string): boolean {
   return name.startsWith("-");
 }
 
-export function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
+export function collectSessionDirs(claudeDir: string, now: number = Date.now()): SessionDirCandidate[] {
   const out: SessionDirCandidate[] = [];
   if (!existsSync(claudeDir)) return out;
   let projectSlugs: string[];
@@ -185,7 +210,9 @@ export function collectSessionDirs(claudeDir: string): SessionDirCandidate[] {
         continue;
       }
       if (!sStat.isDirectory()) continue;
-      out.push({ sessionId, path: sessionPath, mtimeMs: newestMtimeMs(sessionPath) });
+      // Parar no limiar de idade: acima dele o plano já classifica como
+      // "recente" e o valor exato não muda a decisão (#10063).
+      out.push({ sessionId, path: sessionPath, mtimeMs: newestMtimeMs(sessionPath, now - SESSION_DIR_MIN_AGE_MS) });
     }
   }
   return out;
@@ -222,11 +249,12 @@ async function main(): Promise<void> {
   const claudeDir = getArg(argv, "claude-dir") || defaultClaudeDir();
   const repoRoot = resolveRepoRoot();
 
-  const sessionDirs = collectSessionDirs(claudeDir);
+  const now = Date.now();
+  const sessionDirs = collectSessionDirs(claudeDir, now);
   const outputFiles = collectOutputFiles(sessionDirs);
   const activeSessionIds = new Set(listActiveSessions(repoRoot).map((s) => s.sessionId));
 
-  const plan = planTmpCleanup(sessionDirs, outputFiles, activeSessionIds, Date.now());
+  const plan = planTmpCleanup(sessionDirs, outputFiles, activeSessionIds, now);
   const freedBytes = planFreedOutputBytes(plan);
 
   console.log(

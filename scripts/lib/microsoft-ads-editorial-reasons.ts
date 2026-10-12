@@ -100,6 +100,11 @@ export interface FetchAssetGroupEditorialReasonsOptions {
   campaignManagementUrl?: string;
   /** Asset group ID do Microsoft Advertising (ex: "1187474912702110"). */
   assetGroupId: string;
+  /** Campaign ID dono do asset group (ex: "571543153", PMax teste 2608).
+   *  Obrigatório (#10063): a operação recebe pares
+   *  `EntityIdToParentIdAssociation` (asset group → campanha), não um
+   *  `AssetGroupId` solto. */
+  campaignId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,10 +128,23 @@ export interface FetchAssetGroupEditorialReasonsOptions {
  *     <s:Body>
  *       <GetAssetGroupsEditorialReasonsRequest xmlns="https://bingads.microsoft.com/CampaignManagement/v13">
  *         <AccountId>...</AccountId>
- *         <AssetGroupId>...</AssetGroupId>
+ *         <AssetGroupIdToCampaignIdAssociations>
+ *           <EntityIdToParentIdAssociation>
+ *             <EntityId>{assetGroupId}</EntityId>
+ *             <ParentId>{campaignId}</ParentId>
+ *           </EntityIdToParentIdAssociation>
+ *         </AssetGroupIdToCampaignIdAssociations>
  *       </GetAssetGroupsEditorialReasonsRequest>
  *     </s:Body>
  *   </s:Envelope>
+ *
+ * **#10063 — o corpo antigo (`<AssetGroupId>` solto) NUNCA funcionou:** a API
+ * responde HTTP 200 com SOAP Fault `2829 CampaignServiceEntitiesArrayIsNullOrEmpty`
+ * ("The list of entities cannot be null or empty"). Até o #9091 esse Fault
+ * era lido como "0 motivos" (exit 0); o #9091 passou a exigir o nó de
+ * resposta e a unit ficou vermelha todo dia. Shape correto conferido contra
+ * a doc oficial (learn.microsoft.com → GetAssetGroupsEditorialReasons) e ao
+ * vivo em 12/10/2026 (resposta real com `AssetGroupEditorialReasonCollection`).
  *
  * `<IdentityProvider>Google</IdentityProvider>` entra no SOAP Header só
  * quando `auth.googleRefreshToken` está presente — mesmo critério e mesmo
@@ -141,6 +159,7 @@ export function buildEditorialReasonsEnvelope(
   accessToken: string,
   auth: Pick<MicrosoftAdsAuthConfig, "developerToken" | "customerId" | "accountId" | "googleRefreshToken">,
   assetGroupId: string,
+  campaignId: string,
 ): string {
   const identityProviderHeader = auth.googleRefreshToken ? { IdentityProvider: "Google" } : {};
   return xmlBuilder.build({
@@ -163,7 +182,12 @@ export function buildEditorialReasonsEnvelope(
         GetAssetGroupsEditorialReasonsRequest: {
           "@_xmlns": CAMPAIGN_MANAGEMENT_NAMESPACE,
           AccountId: auth.accountId,
-          AssetGroupId: assetGroupId,
+          AssetGroupIdToCampaignIdAssociations: {
+            EntityIdToParentIdAssociation: {
+              EntityId: assetGroupId,
+              ParentId: campaignId,
+            },
+          },
         },
       },
     },
@@ -191,14 +215,22 @@ export function extractSoapFaultMessage(xml: string): string | null {
     // SOAP 1.2 Fault: <Code><Value>...</Value></Code>, <Reason><Text>...</Text></Reason>
     const faultString = fault.faultstring;
     const reasonText = fault.Reason?.Text;
-    // Campaign Management API Fault detail: ApiFault → OperationErrors → OperationError → Message
+    // Campaign Management API Fault detail: ApiFault → OperationErrors → OperationError → Message.
+    // SOAP 1.1 usa `<detail>` MINÚSCULO (#10063: o Fault real 2829 chega assim,
+    // e só `Detail` maiúsculo era lido — o código/mensagem específicos se
+    // perdiam e o log mostrava só o faultstring genérico "Invalid client data").
+    const detail = fault.detail ?? fault.Detail;
     const errorContainer =
-      fault.Detail?.ApiFault?.OperationErrors?.OperationError ??
-      fault.Detail?.AdApiFaultDetail?.Errors?.AdApiError ??
-      fault.Detail?.ApiFaultDetail?.OperationErrors?.OperationError;
+      detail?.ApiFault?.OperationErrors?.OperationError ??
+      detail?.AdApiFaultDetail?.Errors?.AdApiError ??
+      detail?.ApiFaultDetail?.OperationErrors?.OperationError ??
+      detail?.ApiFaultDetail?.BatchErrors?.BatchError;
     const errorList =
       errorContainer === undefined ? [] : Array.isArray(errorContainer) ? errorContainer : [errorContainer];
-    const errorMsgs = errorList.map((e) => e?.Message).filter(Boolean).join("; ");
+    const errorMsgs = errorList
+      .filter((e) => e && typeof e === "object" && e.Message)
+      .map((e) => (e.ErrorCode ? `${e.ErrorCode} (${e.Code}): ${e.Message}` : String(e.Message)))
+      .join("; ");
     const combined = [faultString, reasonText, errorMsgs].filter(Boolean).join(" — ");
     return combined || null;
   } catch {
@@ -242,27 +274,79 @@ export async function postSoapGeneric(
 // Response parsing (pure)
 // ---------------------------------------------------------------------------
 
+/** Normaliza nó XML opcional/single/array pra array (fast-xml-parser devolve
+ *  objeto único quando há 1 filho, array quando há vários, `""` quando o
+ *  elemento é vazio). */
+function asArray(node: unknown): any[] {
+  if (node === undefined || node === null || node === "") return [];
+  return Array.isArray(node) ? node : [node];
+}
+
 /**
  * Faz parse da resposta XML de `GetAssetGroupsEditorialReasonsResponse`,
  * devolvendo o array de `MicrosoftAdsEditorialReason`.
+ *
+ * Shape real (#10063, doc oficial + resposta ao vivo de 12/10/2026):
+ *
+ *   <EditorialReasons>
+ *     <AssetGroupEditorialReasonCollection>       (1 por asset group)
+ *       <AppealStatus>NotAppealable</AppealStatus>
+ *       <AssetGroupId/> <CampaignId/>
+ *       <Reasons>
+ *         <AssetGroupEditorialReason>
+ *           <Location/> <PublisherCountries><string>BR</string></PublisherCountries>
+ *           <ReasonCode/> <Term/>
+ *         </AssetGroupEditorialReason>
+ *       </Reasons>
+ *     </AssetGroupEditorialReasonCollection>
+ *   </EditorialReasons>
+ *
+ * O `AppealStatus` vive na COLEÇÃO (por asset group), não em cada motivo —
+ * é replicado em cada `MicrosoftAdsEditorialReason`. O shape antigo
+ * (`EditorialReasonCollection > EditorialReasons`) nunca existiu na API.
  *
  * @pure — testável sem I/O.
  */
 export function parseEditorialReasonsResponse(xml: string): MicrosoftAdsEditorialReason[] {
   const parsed: any = xmlParser.parse(xml);
-  const collection =
-    parsed?.Envelope?.Body?.GetAssetGroupsEditorialReasonsResponse?.EditorialReasonCollection;
-  if (!collection) return [];
-  const reasonsRaw = collection.EditorialReasons;
-  if (!reasonsRaw) return [];
-  const reasonsArray = Array.isArray(reasonsRaw) ? reasonsRaw : [reasonsRaw];
-  return reasonsArray.map((r: any): MicrosoftAdsEditorialReason => ({
-    reasonCode: Number(r.ReasonCode) || 0,
-    location: String(r.Location ?? ""),
-    publisherCountries: String(r.PublisherCountries ?? ""),
-    term: String(r.Term ?? ""),
-    appealStatus: String(r.AppealStatus ?? ""),
-  }));
+  const response = parsed?.Envelope?.Body?.GetAssetGroupsEditorialReasonsResponse;
+  const collections = asArray(response?.EditorialReasons?.AssetGroupEditorialReasonCollection);
+  const out: MicrosoftAdsEditorialReason[] = [];
+  for (const c of collections) {
+    const appealStatus = String(c?.AppealStatus ?? "");
+    for (const r of asArray(c?.Reasons?.AssetGroupEditorialReason)) {
+      out.push({
+        reasonCode: Number(r?.ReasonCode) || 0,
+        location: String(r?.Location ?? ""),
+        publisherCountries: asArray(r?.PublisherCountries?.string).map(String).join(","),
+        term: String(r?.Term ?? ""),
+        appealStatus,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Mensagens de `PartialErrors` (BatchError[]) da resposta — vazio quando
+ * não há erro parcial. Um asset group que a API não conseguiu resolver
+ * (ID errado, par asset group→campanha inconsistente) volta aqui, não como
+ * Fault — sem esta checagem sairia como "0 motivos" (#10063).
+ *
+ * @pure
+ */
+export function extractPartialErrors(xml: string): string[] {
+  try {
+    const parsed: any = xmlParser.parse(xml);
+    const errs = asArray(
+      parsed?.Envelope?.Body?.GetAssetGroupsEditorialReasonsResponse?.PartialErrors?.BatchError,
+    );
+    return errs
+      .filter((e) => e && typeof e === "object")
+      .map((e) => `${e.ErrorCode ?? "?"} (${e.Code ?? "?"}): ${e.Message ?? "sem mensagem"}`);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -314,7 +398,7 @@ export async function fetchAssetGroupEditorialReasons(
     return { ok: false, error: `renovação do access token falhou: ${tokenResult.error}` };
   }
 
-  const envelope = buildEditorialReasonsEnvelope(tokenResult.accessToken, auth, opts.assetGroupId);
+  const envelope = buildEditorialReasonsEnvelope(tokenResult.accessToken, auth, opts.assetGroupId, opts.campaignId);
 
   const postResult = await postSoapGeneric(
     fetchImpl,
@@ -335,7 +419,15 @@ export async function fetchAssetGroupEditorialReasons(
   if (!hasEditorialReasonsResponseNode(postResult.text)) {
     return {
       ok: false,
-      error: `GetAssetGroupsEditorialReasons respondeu HTTP 200 sem o nó GetAssetGroupsEditorialReasonsResponse (shape inesperado): ${postResult.text.slice(0, 400)}`,
+      error: `GetAssetGroupsEditorialReasons respondeu HTTP 200 sem o nó GetAssetGroupsEditorialReasonsResponse (shape inesperado): ${extractSoapFaultMessage(postResult.text) ?? postResult.text.slice(0, 400)}`,
+    };
+  }
+
+  const partialErrors = extractPartialErrors(postResult.text);
+  if (partialErrors.length > 0) {
+    return {
+      ok: false,
+      error: `GetAssetGroupsEditorialReasons devolveu PartialErrors: ${partialErrors.join("; ")}`,
     };
   }
 
