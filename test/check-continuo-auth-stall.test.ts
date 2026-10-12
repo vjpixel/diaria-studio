@@ -190,6 +190,21 @@ describe("parada por COTA lida de last_error (#10001)", () => {
     assert.match(sh, /STALLED_QUOTA/);
     assert.match(sh, /\[watch-continuo\] parada por cota/);
   });
+
+  it("no STALLED_QUOTA o watch roda o watchdog que PAUSA o cron (#10064)", () => {
+    // Antes só alarmava e o failure_streak chegou a 45. A pausa/retomada em si
+    // é testada em hermes/scripts/pause-cron-on-ratelimit.test.py.
+    const sh = readFileSync(resolve(ROOT, "hermes/scripts/watch-continuo-health.sh"), "utf8");
+    const branch = sh.slice(sh.indexOf('elif [ "$AUTH_PARSE" = "STALLED_QUOTA" ]'), sh.indexOf('elif [ "$AUTH_PARSE" = "STALLED" ]'));
+    assert.match(branch, /pause-cron-on-ratelimit\.py/);
+  });
+
+  it("status tick_failed_provider do detector não abre issue de fabricação (#10064)", () => {
+    const sh = readFileSync(resolve(ROOT, "hermes/scripts/watch-continuo-health.sh"), "utf8");
+    const branch = sh.slice(sh.indexOf('elif [ "$FAB_PARSE" = "tick_failed_provider" ]'), sh.indexOf('elif [ "$FAB_PARSE" = "fabrication_suspected" ]'));
+    assert.ok(branch.length > 0, "ramo tick_failed_provider ausente, ou depois do de fabricação");
+    assert.doesNotMatch(branch, /file_issue "\[watch-continuo\] fabricação/);
+  });
 });
 
 describe("bloqueio honesto: o módulo não toca credencial nem pool (#7647)", () => {

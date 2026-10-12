@@ -809,6 +809,36 @@ if [ "$FAB_PARSE" = "__ERR__" ]; then
   FAILS=$((FAILS + 1))
 elif [ "$FAB_PARSE" = "indeterminate" ]; then
   note "[watch] fabricacao de tick: indeterminado (sem sessao continuo recente pra correlacionar — ok, nao alarma; #7537)"
+elif [ "$FAB_PARSE" = "tick_failed_provider" ]; then
+  # #10064: o tick morreu no provider (`## Error` no output do cron — cota,
+  # credencial) ou o modelo ignorou a skill (tool_turns=0, caso #9997 do
+  # fallback DeepSeek). Não é fabricação do coordenador: o erro de provider já
+  # tem alarme próprio (parada por auth/cota, abaixo); o prompt ignorado ganha
+  # issue própria, separada da de fabricação.
+  FAB_KIND=$(printf '%s' "$FAB_JSON" | python3 -c "
+import sys, json
+try:
+    pf = json.load(sys.stdin).get('provider_failure') or {}
+    print(pf.get('kind', ''))
+    print(pf.get('details', ''))
+except Exception:
+    print('')" 2>/dev/null || echo "")
+  FAB_KIND_TAG=$(printf '%s\n' "$FAB_KIND" | head -n 1)
+  FAB_KIND_DETAILS=$(printf '%s\n' "$FAB_KIND" | sed -n '2p')
+  if [ "$FAB_KIND_TAG" = "provider_ignored_prompt" ]; then
+    file_issue "[watch-continuo] modelo do tick ignorou a skill" \
+      "[watch-continuo] modelo do tick ignorou a skill (0 tool calls) no contínuo" \
+      "bug,P2" \
+      "Detectado por watch-continuo-health.sh via hermes/scripts/detect-tick-claim-fabrication.py (#10064) — o run mais recente do cron do contínuo respondeu sem executar nenhuma ferramenta (\`tool_turns=0\` no agent.log do Hermes). Não é fabricação de conclusão pelo coordenador (#7537): o modelo nem tentou o tick.
+
+\`\`\`
+$FAB_KIND_DETAILS
+\`\`\`
+
+**Ação**: conferir qual modelo/provider atendeu o tick (tipicamente o fallback quando o primário está sem cota — caso #9997, DeepSeek via OpenRouter) e decidir se esse modelo deve continuar na cadeia de fallback do job."
+  else
+    note "[watch] fabricacao de tick: nao — tick falhou no provider ($FAB_KIND_DETAILS); alarme fica com a checagem de parada por auth/cota (#10064)"
+  fi
 elif [ "$FAB_PARSE" = "fabrication_suspected" ]; then
   FAB_DETAILS=$(printf '%s' "$FAB_JSON" | python3 -c "
 import sys, json
@@ -1001,6 +1031,13 @@ elif [ "$AUTH_PARSE" = "STALLED_QUOTA" ]; then
   # usage_limit_reached) — o erro só aparece em `last_error`, sem
   # `last_auth_error`. Marcador próprio: o conserto é outro (esperar o reset
   # ou trocar de provider/key), não rotacionar credencial.
+  # #10064: além de alarmar, PAUSA o cron no 403 de key limit em vez de deixar
+  # o failure_streak subir a cada tick (chegou a 45 em 08–10/10). Quem pausa e
+  # retoma (virada UTC do limite diário) é `pause-cron-on-ratelimit.py`; o
+  # job dedicado dele não está mais em jobs.json, então a varredura do watch
+  # o roda aqui também. Fail-soft: falha do watchdog vira nota, nunca aborta.
+  PAUSE_OUT=$(python3 /home/vjpixel/diaria-studio/hermes/scripts/pause-cron-on-ratelimit.py 2>&1) || true
+  [ -n "$PAUSE_OUT" ] && note "[watch] pause-cron-on-ratelimit: $PAUSE_OUT"
   file_issue "[watch-continuo] parada por cota" \
     "[watch-continuo] parada por cota (403 key limit / 429 usage_limit) no cron do contínuo" \
     "bug,P1" \

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import {
   ORPHAN_SWEEP_MIN_AGE_MS,
   planContinuoOrphanSweep,
+  readDeadTickSessionIds,
   sweepContinuoOrphanSessions,
 } from "../scripts/sweep-continuo-orphan-sessions.ts";
 import { parseSessionLifecycleLog, summarizeSessionLifecycle } from "../scripts/lib/session-lifecycle-report.ts";
@@ -217,5 +218,78 @@ describe("sweepContinuoOrphanSessions — I/O num repo temporário (#10002)", ()
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+// #10064: tick que morre no provider antes do relatório deixa a sessão
+// registrada pelo pre-run viva, com heartbeat recente — o corte de 6h só a
+// pegava horas depois, e nesse meio-tempo o detector de fabricação a
+// correlacionava contra o relatório velho (report_freshness da #9939).
+// Fixture com o formato REAL do output do cron do Hermes no `300`.
+const CRON_HEAD =
+  "# Cron Job: Diária Contínuo — fila técnica\n\n**Job ID:** 5d791ef6fc2c\n\n" +
+  "## Prompt\n\n(skill — inclusive um heading falso:)\n## Error\n\n";
+function cronOutput(sessionId: string, tail: string): string {
+  return (
+    `${CRON_HEAD}## Script Output\nThe following data was collected by a pre-run script.\n\n` +
+    "```\n" + sessionId + "\n```\n\nExecute um ciclo...\n\n" + tail
+  );
+}
+const KEY_LIMIT_TAIL =
+  "## Error\n\n```\nRuntimeError: HTTP 403: Key limit exceeded (daily limit). Manage it using https://openrouter.ai/x\n```\n";
+
+describe("tick morto no provider: sweep encerra na hora (#10064)", () => {
+  const DEAD = `hermes-cron-${JOB}-20261010T104025Z`;
+  const OK = `hermes-cron-${JOB}-20261011T043000Z`;
+  let dir: string;
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "sweep-cron-output-"));
+    writeFileSync(join(dir, "2026-10-10_07-40-30.md"), cronOutput(DEAD, KEY_LIMIT_TAIL), "utf8");
+    writeFileSync(join(dir, "2026-10-11_01-30-50.md"), cronOutput(OK, "## Response\n\nTick concluído.\n"), "utf8");
+    writeFileSync(join(dir, "sem-script-output.md"), `${CRON_HEAD}nada\n`, "utf8");
+    writeFileSync(join(dir, "nao-md.txt"), cronOutput(`hermes-cron-${JOB}-20261010T000000Z`, KEY_LIMIT_TAIL), "utf8");
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("readDeadTickSessionIds pega só o run com ## Error depois do Script Output", () => {
+    assert.deepEqual([...readDeadTickSessionIds(dir, JOB)], [DEAD]);
+  });
+
+  it("heading '## Error' dentro do prompt (skill) não conta como erro do run", () => {
+    assert.ok(!readDeadTickSessionIds(dir, JOB).has(OK));
+  });
+
+  it("diretório ausente → conjunto vazio, sem lançar", () => {
+    assert.equal(readDeadTickSessionIds(join(dir, "nao-existe"), JOB).size, 0);
+  });
+
+  it("sessão de tick morto com heartbeat RECENTE → encerra (antes: esperava 6h)", () => {
+    const dead = rec("20261010T104025Z", { startedAt: FRESH, lastHeartbeat: FRESH });
+    const [semSinal] = planContinuoOrphanSweep([dead], opts);
+    assert.equal(semSinal!.action, "keep");
+    const [c] = planContinuoOrphanSweep([dead], { ...opts, deadTickSessionIds: readDeadTickSessionIds(dir, JOB) });
+    assert.equal(c!.action, "end");
+    assert.match(c!.reason, /## Error/);
+  });
+
+  it("tick morto mas com claimed_issues, de outra máquina ou é o atual → mantém", () => {
+    const dead = new Set([`hermes-cron-${JOB}-a`, `hermes-cron-${JOB}-b`, `hermes-cron-${JOB}-atual`]);
+    const r = planContinuoOrphanSweep(
+      [
+        rec("a", { lastHeartbeat: FRESH, claimed_issues: [10064] }),
+        rec("b", { lastHeartbeat: FRESH, machineTag: "neo" }),
+        rec("atual", { lastHeartbeat: FRESH }),
+      ],
+      { ...opts, deadTickSessionIds: dead },
+    );
+    assert.deepEqual(r.map((c) => c.action), ["keep", "keep", "keep"]);
+  });
+
+  it("run que terminou com ## Response (tick normal) não vira candidato", () => {
+    const [c] = planContinuoOrphanSweep([rec("20261011T043000Z", { lastHeartbeat: FRESH })], {
+      ...opts,
+      deadTickSessionIds: readDeadTickSessionIds(dir, JOB),
+    });
+    assert.equal(c!.action, "keep");
   });
 });

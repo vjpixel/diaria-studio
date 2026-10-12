@@ -57,7 +57,10 @@ cat > "$WORKDIR/bin/npx" <<EOF
 echo "\$*" >> "$NPX_CALL_LOG"
 rc=\$(cat "$NPX_RC_FILE")
 if [ "\$rc" = "0" ]; then
-  echo "session-registry: registered data/sessions/continuo-fake-\$7.json"
+  case "\$2" in
+    *sweep-continuo-orphan-sessions*) echo "sweep: ok" ;;
+    *) echo "session-registry: registered data/sessions/continuo-fake-\$7.json" ;;
+  esac
 else
   echo "boom: registro falhou de propósito" >&2
 fi
@@ -97,6 +100,9 @@ assert_contains "sucesso — session-id propagado" "$CALL1" "--session-id hermes
 # #10002: sweep de sessões órfãs do MESMO job roda antes do register,
 # excluindo a sessão nova.
 assert_contains "sucesso — sweep de órfãs chamado (#10002)" "$CALL1" "scripts/sweep-continuo-orphan-sessions.ts --job test-job-id --exclude hermes-cron-test-job-id-20260924T120000Z"
+# #10064: o sweep recebe a saída do cron do job pra encerrar na hora o tick
+# anterior que morreu no provider (## Error), sem esperar o corte de 6h.
+assert_contains "sucesso — sweep recebe --cron-output-dir do job (#10064)" "$CALL1" "--cron-output-dir $HOME/.hermes/cron/output/test-job-id"
 assert_eq "sucesso — sweep vem ANTES do register (#10002)" "sweep-continuo-orphan-sessions" "$(head -n1 "$NPX_CALL_LOG" | grep -o 'sweep-continuo-orphan-sessions')"
 
 # ── Caso 2: registro falha (rc != 0) — fail-soft ──
