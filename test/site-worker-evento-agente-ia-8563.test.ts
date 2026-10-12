@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
 import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts";
 import { GTM_CONTAINER_ID, renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
+import { skipWhenInternalJs } from "../scripts/lib/shared/internal-mode.ts";
 
 /**
  * #9590 — o `<script>` do loader do GTM exatamente como `renderAnalyticsHead()`
@@ -40,9 +41,10 @@ import { GTM_CONTAINER_ID, renderAnalyticsHead } from "../scripts/lib/shared/seo
  * teste compara contra o helper pra cópia colada não ficar pra trás).
  */
 function gtmLoaderScript(): string {
-  const m = renderAnalyticsHead().match(/<script>\(function\(w,d,s,l,i\)[\s\S]*?<\/script>/);
+  const m = renderAnalyticsHead().match(/<script>(\(function\(w,d,s,l,i\)[\s\S]*?)<\/script>/);
   assert.ok(m, "renderAnalyticsHead() não emitiu mais o loader do GTM — regex desatualizada?");
-  return m[0];
+  // #10080: o loader é o mesmo do helper, só envolvido para não rodar no modo interno.
+  return `<script>${skipWhenInternalJs(m[1])}</script>`;
 }
 
 function countOccurrences(haystack: string, needle: string): number {
@@ -137,7 +139,7 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
         const html = readFileSync(page, "utf8");
         const m = html.match(/<!-- Meta Pixel[\s\S]*?<script>([\s\S]*?)<\/script>/);
         assert.ok(m, "bloco do pixel não encontrado");
-        assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {`), "pixel sem a condição de domínio");
+        assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname) && !window.__DIA_INTERNO__) {`), "pixel sem a condição de domínio");
         assert.match(m[1], /fbq\('track', 'PageView'\);\s*\}\s*$/);
       });
 

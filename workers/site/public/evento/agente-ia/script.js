@@ -1,5 +1,29 @@
 const checkoutUrl = window.EVENT_CHECKOUT_URL?.trim();
 
+// #10080: modo interno (?interno=1). O bootstrap inline do <head> define
+// window.__DIA_INTERNO__ antes do pixel e do GTM, que então nem carregam.
+// Aqui: sem beacon do clique e com um aviso discreto para a equipe.
+const internalMode = window.__DIA_INTERNO__ === true;
+if (internalMode) {
+  const aviso = document.createElement("div");
+  aviso.className = "aviso-interno";
+  aviso.setAttribute("role", "status");
+  aviso.textContent = "Modo interno: visita não medida";
+  Object.assign(aviso.style, {
+    position: "fixed",
+    left: "8px",
+    top: "8px",
+    zIndex: "9999",
+    padding: "3px 8px",
+    borderRadius: "4px",
+    background: "rgba(0, 0, 0, 0.65)",
+    color: "#fff",
+    font: "12px/1.4 system-ui, sans-serif",
+    pointerEvents: "none",
+  });
+  document.body.appendChild(aviso);
+}
+
 // Versão da página no teste A/B, marcada no <body data-variante>. Vai no nome
 // dos eventos do pixel porque as estatísticas do pixel separam por nome de
 // evento, não pelos parâmetros.
@@ -54,7 +78,7 @@ const visitData = visitOrigin(window.location.search);
 // O try/catch garante que um erro no pixel nunca impeça a navegação para o
 // checkout (o clique chama track depois do preventDefault).
 function track(event, data, eventId) {
-  if (typeof window.fbq !== "function") return;
+  if (internalMode || typeof window.fbq !== "function") return;
   try {
     const params = Object.assign({}, visitData, data);
     if (eventId) window.fbq("trackCustom", `${event}_${variant}`, params, { eventID: eventId });
@@ -80,6 +104,8 @@ function readCookie(name) {
 // seguida — o listener antigo chamava fbq() e deixava o navegador seguir o
 // href no MESMO instante, cancelando a requisição do pixel antes dela sair.
 function sendClickBeacon(eventId, posicao) {
+  // #10080: no modo interno o clique não vai para a Meta por nenhum caminho.
+  if (internalMode) return false;
   var payload = JSON.stringify({
     variant: variant.toLowerCase(),
     posicao: posicao,

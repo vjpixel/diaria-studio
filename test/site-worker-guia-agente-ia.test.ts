@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { visitorIdBootstrapJs } from "../scripts/lib/shared/visitor-id.ts";
 import { metaFbcBootstrapJs } from "../scripts/lib/shared/meta-fbc-bootstrap.ts";
 import { GTM_CONTAINER_ID, renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
+import { skipWhenInternalJs } from "../scripts/lib/shared/internal-mode.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "guia", "agente-ia");
@@ -49,8 +50,10 @@ describe("public/guia/agente-ia — página de vendas do guia", () => {
   it("bootstraps _dia_vid e _fbc idênticos aos helpers, GTM uma vez depois deles e um único init/PageView do pixel", () => {
     assert.match(html, new RegExp(`<script>${escapeRe(visitorIdBootstrapJs())}</script>`));
     assert.match(html, new RegExp(`<script>${escapeRe(metaFbcBootstrapJs())}</script>`));
-    const loader = renderAnalyticsHead().match(/<script>\(function\(w,d,s,l,i\)[\s\S]*?<\/script>/)?.[0];
-    assert.ok(loader && loader.includes(`'${GTM_CONTAINER_ID}'`));
+    const body = renderAnalyticsHead().match(/<script>(\(function\(w,d,s,l,i\)[\s\S]*?)<\/script>/)?.[1];
+    assert.ok(body && body.includes(`'${GTM_CONTAINER_ID}'`));
+    // #10080: o loader é o mesmo do helper, só envolvido para não rodar no modo interno.
+    const loader = `<script>${skipWhenInternalJs(body)}</script>`;
     assert.equal(countOccurrences(html, loader), 1);
     assert.ok(html.indexOf(loader) > html.indexOf(`<script>${visitorIdBootstrapJs()}</script>`));
     assert.match(html, /fbq\('init', '1285191740325112', \{ external_id: window\.__DIA_VID__ \}\);/);
@@ -65,7 +68,7 @@ describe("public/guia/agente-ia — página de vendas do guia", () => {
   it("pixel da Meta só dispara em diar.ia.br (teste local não entra no dataset)", () => {
     const m = html.match(/<!-- Meta Pixel[\s\S]*?<script>([\s\S]*?)<\/script>/);
     assert.ok(m, "bloco do pixel não encontrado");
-    assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {`), "pixel sem a condição de domínio");
+    assert.ok(m[1].includes(String.raw`if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname) && !window.__DIA_INTERNO__) {`), "pixel sem a condição de domínio");
     assert.match(m[1], /fbq\('track', 'PageView'\);\s*\}\s*$/);
   });
 
