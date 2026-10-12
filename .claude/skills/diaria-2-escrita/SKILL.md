@@ -134,15 +134,15 @@ node -e "
 
 Se `highlights.length < 2 || highlights.length > 3`: cair em writer único legacy (ver bloco "Fallback" abaixo). **#2343:** para 2 destaques, dispatch `writer-destaque` × 2 (D1 + D2 apenas — pular o D3 writer abaixo); para 3, × 3 (D1 + D2 + D3). O `stitch-newsletter.ts` detecta o `destaque_count` do `01-approved-capped.json` e omite o bloco D3 automaticamente quando são 2 destaques.
 
-### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
-
-**Passo 0 — baixar as fontes dos destaques ANTES do dispatch (#9252, #9648)** — do MESMO `01-approved-capped.json` que o writer usa; mesmo passo 0 de `orchestrator-stage-2.md`:
+**Passo 0 — baixar as fontes dos destaques ANTES do dispatch (#9252, #9648)** — do MESMO `01-approved-capped.json` que o writer usa; mesmo passo 0 de `orchestrator-stage-2.md`. Roda em TODOS os modos de `$2` (`all`, `newsletter`, `social`), antes de qualquer branch:
 
 ```bash
 npx tsx scripts/refresh-destaque-sources.ts --edition-dir {EDIR}/ --approved {EDIR}/_internal/01-approved-capped.json --record-writer-inputs
 ```
 
 Stdout JSON: `sources[]` com `{destaque, url, path}` (ou `error`). Grava `_internal/fact-check-sources/d{N}.txt` e, com `--record-writer-inputs` (só aqui — nunca no Stage 4), `_internal/02-writer-inputs.json`: o registro do texto que cada writer recebeu, que a troca de destaque no Stage 4 não sobrescreve. Esta skill é a executora real do Stage 2 (inclusive headless) e não tinha este passo — as edições 261007–261009 saíram sem registro. Fail-soft: erro do script ou download falho nunca aborta a Etapa 2. Passar a cada `writer-destaque` `source_url` = `highlights[N-1].article.url` literal e `source_text_path` = `path` da entrada com `destaque === N` (omitir se veio com `error`).
+
+### Se `$2` está ausente ou `$2 = all` (padrão — tudo em paralelo):
 
 **Seleção do 4º post — item USE MELHOR (#9568), ANTES do dispatch abaixo:** `npx tsx scripts/select-use-melhor-post.ts --edition-dir {EDIR}/` (mesmo passo 0b de `orchestrator-stage-2.md`). Stdout JSON: `enabled: true` + `item` não-nulo → passar `use_melhor_post_path` ao `social-writer` e ao `social-curto` (eles escrevem `## um`); qualquer outro caso → omitir (4º post pulado, motivo no gate do Stage 4). Fail-soft: erro do script nunca aborta a Etapa 2.
 
@@ -156,13 +156,13 @@ Agent({
 Agent({
   subagent_type: "writer-destaque",
   description: "Etapa 2 — D2 writer",
-  prompt: "Escreve DESTAQUE 2... [análogo, com highlights[1].article + peer_titles dos outros 2]"
+  prompt: "Escreve DESTAQUE 2... [análogo, com highlights[1].article + peer_titles dos outros 2 + source_url={highlights[1].article.url} + source_text_path={path do passo 0 para destaque 2, se houver}]"
 })
 
 Agent({
   subagent_type: "writer-destaque",
   description: "Etapa 2 — D3 writer",
-  prompt: "Escreve DESTAQUE 3... [análogo, com highlights[2].article + peer_titles dos outros 2]"
+  prompt: "Escreve DESTAQUE 3... [análogo, com highlights[2].article + peer_titles dos outros 2 + source_url={highlights[2].article.url} + source_text_path={path do passo 0 para destaque 3, se houver}]"
 })
 // #2343: dispatchar este D3 writer SOMENTE quando highlights.length === 3.
 // Em edições de 2 destaques, pular este Agent (stitch omite o bloco D3).

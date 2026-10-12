@@ -224,7 +224,11 @@ describe("02-writer-inputs.json (#9648)", () => {
       skill.indexOf("--record-writer-inputs") < skill.indexOf('subagent_type: "writer-destaque"'),
       "passo 0 vem ANTES do dispatch dos writer-destaque",
     );
-    assert.match(skill, /source_text_path=\{path do passo 0/, "writer-destaque recebe source_text_path");
+    assert.ok((skill.match(/source_text_path=\{path do passo 0/g) ?? []).length >= 3, "D1, D2 e D3 recebem source_text_path");
+    assert.ok(
+      skill.indexOf("--record-writer-inputs") < skill.indexOf("### Se `$2` está ausente"),
+      "passo 0 vem antes do branch por $2 (newsletter/social também baixam)",
+    );
     for (const p of [
       ".claude/agents/orchestrator-stage-4.md",
       "scripts/swap-destaque.ts",
