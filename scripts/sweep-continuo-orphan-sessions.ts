@@ -33,6 +33,10 @@
  *      cron e 4× o `SOFT_STALE_MS`: o tick morto de verdade ainda é varrido,
  *      só alguns ticks depois — o custo de esperar é ruído, o de errar é
  *      matar um tick vivo. Timestamp ilegível ou no futuro → mantém.
+ *      **Exceção (#10064):** com `--cron-output-dir`, a sessão de um run do
+ *      cron que já terminou com `## Error` (tick morreu no provider antes do
+ *      relatório) é encerrada sem esperar as 6h — ver `readDeadTickSessionIds`.
+ *      Os critérios 1–3 continuam valendo.
  * Cópias de conflito (`-safeBackup-`) não são candidatas por si (o GC,
  * `session-registry.ts gc`, cuida delas) — só entram na decisão do arquivo
  * real a que pertencem; o encerramento usa `endSession`, que carimba
@@ -80,6 +84,12 @@ export interface SweepOptions {
   now: number;
   /** Sessão do tick corrente — nunca encerrada. */
   excludeSessionId?: string;
+  /** #10064: sessões cujo run do cron JÁ TERMINOU com erro do provider
+   *  (`## Error` no output do Hermes, ver `readDeadTickSessionIds`). Prova
+   *  determinística de que o tick morreu — dispensa o corte de 6h do
+   *  critério 4. Os critérios 1–3 (kind/máquina/job, exclude, sem claims)
+   *  continuam valendo. */
+  deadTickSessionIds?: ReadonlySet<string>;
 }
 
 /** Decisão PURA (sem I/O) sobre registros já lidos. Só olha registros do
@@ -104,6 +114,14 @@ export function planContinuoOrphanSweep(
     const claims = Array.isArray(r.claimed_issues) ? r.claimed_issues : [];
     if (claims.length > 0) {
       keep(`tem claimed_issues (#${claims.join(", #")}) — encerrar liberaria claim`);
+      continue;
+    }
+    if (opts.deadTickSessionIds?.has(r.sessionId)) {
+      out.push({
+        sessionId: r.sessionId,
+        action: "end",
+        reason: "run do cron terminou com erro do provider (## Error) antes do relatório, sem claimed_issues",
+      });
       continue;
     }
     const hb = Date.parse(r.lastHeartbeat ?? r.startedAt ?? "");
@@ -158,6 +176,52 @@ export function readContinuoRecords(repoRoot: string): SessionRecord[] {
   return records;
 }
 
+/** Seções `## X` do output do cron do Hermes (`~/.hermes/cron/output/{job}/*.md`). */
+function hasCronSection(text: string, heading: string): boolean {
+  return new RegExp(`^## ${heading}[ \\t]*$`, "m").test(text);
+}
+
+/** #10064: ids de sessão de ticks cujo run do cron morreu no provider.
+ *
+ *  O pre-run (`register-continuo-tick.sh`) imprime o SESSION_ID em stdout, e
+ *  o Hermes grava esse stdout na seção `## Script Output` do output do run;
+ *  quando o run morre no provider (cota, credencial), o mesmo arquivo ganha
+ *  uma seção `## Error` no lugar de `## Response`. As duas juntas provam que
+ *  aquela sessão é de um tick que já terminou sem chegar ao relatório nem ao
+ *  `end` — o caso que o corte de 6h do critério 4 só pegava horas depois.
+ *
+ *  Hermes cron não tem hook pós-run (o job só tem `script`, que é pre-run):
+ *  quem chama isto é o pre-run do tick SEGUINTE. Diretório ausente ou
+ *  arquivo ilegível → conjunto vazio (fail-soft, nada é encerrado). */
+export function readDeadTickSessionIds(cronOutputDir: string, jobId: string): Set<string> {
+  const ids = new Set<string>();
+  if (!existsSync(cronOutputDir)) return ids;
+  const idRe = new RegExp(`hermes-cron-${jobId}-\\d{8}T\\d{6}Z`, "g");
+  let names: string[];
+  try {
+    names = readdirSync(cronOutputDir);
+  } catch {
+    return ids;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".md")) continue;
+    let text: string;
+    try {
+      text = readFileSync(join(cronOutputDir, name), "utf8");
+    } catch {
+      continue;
+    }
+    // Só o que vem DEPOIS de `## Script Output` — antes dele está o prompt
+    // (a skill inteira), cujo texto não pode decidir nada aqui.
+    const tail = text.split(/^## Script Output[ \t]*$/m)[1];
+    if (tail === undefined) continue;
+    if (!hasCronSection(tail, "Error") || hasCronSection(tail, "Response")) continue;
+    const scriptOut = tail.split(/^## /m)[0] ?? "";
+    for (const id of scriptOut.match(idRe) ?? []) ids.add(id);
+  }
+  return ids;
+}
+
 export function sweepContinuoOrphanSessions(
   repoRoot: string,
   opts: Omit<SweepOptions, "localTag" | "now"> & { localTag?: string; now?: number; dryRun?: boolean },
@@ -166,6 +230,7 @@ export function sweepContinuoOrphanSessions(
   const plan = planContinuoOrphanSweep(readContinuoRecords(repoRoot), {
     jobId: opts.jobId,
     excludeSessionId: opts.excludeSessionId,
+    deadTickSessionIds: opts.deadTickSessionIds,
     localTag,
     now: opts.now ?? Date.now(),
   });
@@ -197,9 +262,11 @@ if (isMainModule(import.meta.url)) {
     process.exitCode = 1;
   } else {
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const cronOutputDir = arg("--cron-output-dir");
     const r = sweepContinuoOrphanSessions(repoRoot, {
       jobId,
       excludeSessionId: arg("--exclude"),
+      deadTickSessionIds: cronOutputDir ? readDeadTickSessionIds(cronOutputDir, jobId) : undefined,
       dryRun: argv.includes("--dry-run"),
     });
     const toEnd = r.plan.filter((c) => c.action === "end").length;

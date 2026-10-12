@@ -183,6 +183,25 @@ is not None`, calculado no `run()`) e fazem o MESMO downgrade pra
 mudam o veredito quando ha sessao correlacionada (retrocompativel via
 default `True`). Ver `check_classification_count` e `check_claimed_issues`.
 
+**Falha de provider ≠ fabricação (#10064, 12/10/2026).** Na parada de
+08–10/10 (#9997) o detector acusou fabricação num tick em que o coordenador
+não alegou nada: o primário (Codex) estava sem cota, o tick caiu no
+fallback DeepSeek via OpenRouter, que respondeu "Understood — I'm Hermes
+Agent, ready when you are" com 0 tool calls (ignorou a skill inteira); horas
+depois o próprio fallback passou a morrer com `403 Key limit exceeded`. O
+relatório velho ficou no disco e a checagem (a) viu "sessão registrada pelo
+pre-run + relatório anterior à janela". Agora o `run()` também lê a saída
+do cron do Hermes (`~/.hermes/cron/output/{job}/*.md`) e o `agent.log`:
+  - run com seção `## Error` → `provider_error` (o tick morreu no provider);
+  - run com `## Response` mas `tool_turns=0` na linha "Turn ended" da sessão
+    `cron_{job}_*` correspondente no `agent.log` → `provider_ignored_prompt`
+    (o modelo não executou nenhum passo da skill).
+Com um desses no run mais recente da janela, o veredito que seria
+`fabrication_suspected`/`indeterminate` vira `tick_failed_provider` (exit
+4): o conserto é cota/provider, não investigar o coordenador. Sem diretório
+de output do cron (CI, outra máquina) nada muda — e o `run()` só lê essas
+fontes quando o chamador passa os caminhos (o `main()` passa os do `300`).
+
 Uso:
     python3 detect-tick-claim-fabrication.py [--repo PATH]
         [--report-path PATH] [--sessions-dir PATH]
@@ -211,6 +230,24 @@ SESSIONS_REL_DIR = Path("data") / "sessions"
 # — sobrevive à remoção do registro `data/sessions/continuo-*.json` que o
 # próprio `endSession` faz (`rmSync`, ver `all_continuo_claimed_issues`).
 LIFECYCLE_LOG_REL_PATH = Path("data") / "session-lifecycle.jsonl"
+
+# #10064: saída do cron e log do agente do Hermes no `300` — fonte do
+# diagnóstico "tick morreu/ignorou o prompt no provider".
+CONTINUO_JOB_ID = "5d791ef6fc2c"
+DEFAULT_CRON_OUTPUT_DIR = Path.home() / ".hermes" / "cron" / "output" / CONTINUO_JOB_ID
+DEFAULT_AGENT_LOG_DIR = Path.home() / ".hermes" / "logs"
+# Nome do arquivo de output do cron: `YYYY-MM-DD_HH-MM-SS.md` (relógio do
+# Hermes). A sessão do agente no `agent.log` é `cron_{job}_{YYYYMMDD_HHMMSS}`
+# no MESMO relógio — por isso a correlação compara os dois carimbos entre si,
+# sem depender de fuso.
+_CRON_OUTPUT_NAME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.md$")
+_TURN_ENDED_RE = re.compile(
+    r"Turn ended:.*?\bmodel=(?P<model>\S+).*?\btool_turns=(?P<tool_turns>\d+)"
+    r".*?\bsession=cron_(?P<job>[0-9a-f]+)_(?P<stamp>\d{8}_\d{6})"
+)
+# Um run de tick nunca dura mais que isso entre o início da sessão do agente
+# e a escrita do output — teto pra não casar a sessão de outro tick.
+_MAX_TICK_RUN = dt.timedelta(hours=3)
 
 # Mesmo valor usado por watch-continuo-health.sh checagem #3 ("claims
 # vazando de novo"): tick é de 30min, folga de 15min pra latência de
@@ -1221,6 +1258,132 @@ def correlate_continuo_session(
     return None
 
 
+def _cron_section(text: str, heading: str) -> str | None:
+    """Corpo de `## {heading}` na saída do cron (até o próximo `## `), ou None."""
+    m = re.search(rf"^## {re.escape(heading)}[ \t]*$", text, re.MULTILINE)
+    if not m:
+        return None
+    rest = text[m.end():]
+    nxt = re.search(r"^## ", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _agent_turns_for_run(
+    agent_logs: list[Path], job_id: str, run_stamp: dt.datetime
+) -> dict | None:
+    """Última linha "Turn ended" da sessão `cron_{job}_*` que corresponde ao
+    run cujo output tem carimbo `run_stamp` (mesmo relógio do Hermes): a
+    sessão de início mais recente que não é posterior ao output e está a
+    menos de `_MAX_TICK_RUN` dele. None se o log não tiver a sessão."""
+    best_stamp: dt.datetime | None = None
+    best: dict | None = None
+    for log in agent_logs:
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = _TURN_ENDED_RE.search(line)
+            if not m or m.group("job") != job_id:
+                continue
+            try:
+                started = dt.datetime.strptime(m.group("stamp"), "%Y%m%d_%H%M%S")
+            except ValueError:
+                continue
+            if started > run_stamp or run_stamp - started > _MAX_TICK_RUN:
+                continue
+            # mesma sessão pode ter várias linhas: fica a última lida (os
+            # logs rotacionados chegam do mais velho pro mais novo)
+            if best_stamp is None or started >= best_stamp:
+                best_stamp = started
+                best = {
+                    "session": f"cron_{job_id}_{m.group('stamp')}",
+                    "model": m.group("model"),
+                    "tool_turns": int(m.group("tool_turns")),
+                }
+    return best
+
+
+def find_tick_provider_failure(
+    cron_output_dir: Path | None,
+    agent_logs: list[Path],
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+    job_id: str = CONTINUO_JOB_ID,
+) -> dict | None:
+    """#10064: o run de cron MAIS RECENTE com mtime em [window_start,
+    window_end] morreu no provider (`## Error`) ou o modelo ignorou o
+    prompt (`tool_turns=0`)? Devolve {kind, run, details} ou None.
+
+    Fail-soft: diretório ausente/ilegível → None (sem diagnóstico, o veredito
+    das checagens (a)-(c) fica como está)."""
+    if cron_output_dir is None or not cron_output_dir.is_dir():
+        return None
+    latest: tuple[dt.datetime, Path] | None = None
+    for f in cron_output_dir.glob("*.md"):
+        try:
+            mtime = dt.datetime.fromtimestamp(f.stat().st_mtime, tz=dt.timezone.utc)
+        except OSError:
+            continue
+        if window_start <= mtime <= window_end and (latest is None or mtime > latest[0]):
+            latest = (mtime, f)
+    if latest is None:
+        return None
+    path = latest[1]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # Antes de `## Script Output` vem o prompt (a skill inteira) — um heading
+    # do texto da skill não pode ser lido como seção do run.
+    split = re.split(r"^## Script Output[ \t]*$", text, maxsplit=1, flags=re.MULTILINE)
+    text = split[1] if len(split) == 2 else text
+
+    error = _cron_section(text, "Error")
+    if error is not None:
+        first = next(
+            (ln.strip() for ln in error.splitlines() if ln.strip() and not ln.strip().startswith("```")),
+            "(sem mensagem)",
+        )
+        return {
+            "kind": "provider_error",
+            "run": path.name,
+            "details": f"run {path.name} terminou com erro do provider: {first[:240]}",
+        }
+
+    if _cron_section(text, "Response") is None:
+        return None
+    m = _CRON_OUTPUT_NAME_RE.match(path.name)
+    if not m:
+        return None
+    run_stamp = dt.datetime(*(int(g) for g in m.groups()))
+    turn = _agent_turns_for_run(agent_logs, job_id, run_stamp)
+    if turn is not None and turn["tool_turns"] == 0:
+        return {
+            "kind": "provider_ignored_prompt",
+            "run": path.name,
+            "details": (
+                f"run {path.name} (sessao {turn['session']}, model={turn['model']}) "
+                "respondeu com tool_turns=0 — o modelo ignorou a skill e nao "
+                "executou nenhum passo do tick (caso #9997: fallback DeepSeek)."
+            ),
+        }
+    return None
+
+
+def default_agent_logs(log_dir: Path = DEFAULT_AGENT_LOG_DIR) -> list[Path]:
+    """`agent.log` e rotações, do mais velho (`.3`) pro mais novo."""
+    if not log_dir.is_dir():
+        return []
+    logs = [p for p in log_dir.glob("agent.log*") if re.fullmatch(r"agent\.log(\.\d+)?", p.name)]
+
+    def _age(p: Path) -> int:
+        suffix = p.name[len("agent.log"):]
+        return int(suffix[1:]) if suffix else 0
+
+    return sorted(logs, key=_age, reverse=True)
+
+
 def run(
     repo: Path,
     report_path: Path,
@@ -1229,6 +1392,8 @@ def run(
     now: dt.datetime,
     open_issues_json: Path | None,
     lifecycle_log_path: Path | None = None,
+    cron_output_dir: Path | None = None,
+    agent_logs: list[Path] | None = None,
 ) -> dict:
     # Janela do tick atual: ancorada no relatório quando existe (o mtime
     # é o único sinal de "quando este tick escreveu") ou em `now` quando
@@ -1301,11 +1466,32 @@ def run(
     else:
         overall = "indeterminate"
 
+    # #10064: tick que morreu/ignorou o prompt no provider não é fabricação
+    # do coordenador. Janela: do início da sessão correlacionada (ou da
+    # janela do tick) até `now` — o output do cron é escrito no FIM do run.
+    provider_failure = None
+    if overall != "ok":
+        started = _parse_iso(session.get("startedAt")) if session else None
+        provider_start = (
+            started - dt.timedelta(minutes=1) if started is not None else tick_window_start
+        )
+        provider_failure = find_tick_provider_failure(
+            cron_output_dir, agent_logs or [], provider_start, now,
+        )
+        if provider_failure is not None:
+            checks.append({
+                "check": "tick_provider",
+                "status": "tick_failed_provider",
+                "details": provider_failure["details"],
+            })
+            overall = "tick_failed_provider"
+
     return {
         "status": overall,
         "report_path": str(report_path),
         "tick_window_min": tick_window_min,
         "session_correlated": session.get("sessionId") if session else None,
+        "provider_failure": provider_failure,
         "checks": checks,
     }
 
@@ -1328,6 +1514,10 @@ def main() -> int:
                     help="override de 'agora' em ISO 8601 (testes)")
     ap.add_argument("--open-issues-json", type=str, default=None,
                     help="arquivo JSON com issues abertas (testes/offline) em vez de chamar `gh`")
+    ap.add_argument("--cron-output-dir", type=str, default=str(DEFAULT_CRON_OUTPUT_DIR),
+                    help=f"saida do cron do Hermes pro job do continuo (default: {DEFAULT_CRON_OUTPUT_DIR}, #10064)")
+    ap.add_argument("--agent-log", action="append", default=None,
+                    help="agent.log do Hermes (repetivel; default: ~/.hermes/logs/agent.log*, #10064)")
     ap.add_argument("--json", action="store_true", help="saida JSON")
     args = ap.parse_args()
 
@@ -1344,6 +1534,8 @@ def main() -> int:
     result = run(
         repo, report_path, sessions_dir, args.tick_window_min, now, open_issues_json,
         lifecycle_log_path=lifecycle_log_path,
+        cron_output_dir=Path(args.cron_output_dir) if args.cron_output_dir else None,
+        agent_logs=[Path(p) for p in args.agent_log] if args.agent_log else default_agent_logs(),
     )
 
     if args.json:
@@ -1354,7 +1546,8 @@ def main() -> int:
         for c in result["checks"]:
             print(f"  [{c['status']}] {c['check']}: {c['details']}")
 
-    return {"ok": 0, "fabrication_suspected": 2, "indeterminate": 3}[result["status"]]
+    return {"ok": 0, "fabrication_suspected": 2, "indeterminate": 3,
+            "tick_failed_provider": 4}[result["status"]]
 
 
 if __name__ == "__main__":

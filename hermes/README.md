@@ -194,7 +194,12 @@ o alvo no repo) sem atualizar os jobs em paralelo
 (`opus-daily-diff-review.sh` → job `645d5debb7f0`; `continuo-pr-review.sh`
 → job `3330b108a5b2`; `monitor-cron-model-rotation.py` → jobs
 `496cd687d3e0`/`86303d0ed84b`; `pause-cron-on-ratelimit.py` → jobs
-`c3ac9f22c347`/`2cb556b0c30d`).
+`c3ac9f22c347`/`2cb556b0c30d`). Em 12/10/2026 esses dois jobs do
+`pause-cron-on-ratelimit.py` não estavam mais no `jobs.json` do `300`; por
+isso, desde o #10064, o `watch-continuo-health.sh` roda o watchdog no ramo
+de parada por cota (pausa no `403 Key limit exceeded`, retoma depois da
+virada UTC). Religar o job dedicado (cadência menor que a do watch, que é
+diária) é ação manual fora deste repo.
 
 ## Modelo do tick agendado: o job ignora `model.default` (#6908)
 

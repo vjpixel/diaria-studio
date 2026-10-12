@@ -15,6 +15,7 @@ Uso: python3 hermes/scripts/pause-cron-on-ratelimit.test.py
 from __future__ import annotations
 
 import contextlib
+import datetime
 import importlib.util
 import io
 import json
@@ -53,6 +54,143 @@ def _run_main(mod) -> str:
     with contextlib.redirect_stdout(buf):
         mod.main()
     return buf.getvalue().strip()
+
+
+KEY_LIMIT_ERROR = (
+    "RuntimeError: HTTP 403: Key limit exceeded (daily limit). Manage it using "
+    "https://openrouter.ai/workspaces/default/keys/xxx"
+)
+
+
+def key_limit_cases() -> None:
+    """#10064: o watchdog pausa no 403 Key limit exceeded lido de `last_error`
+    do job (sem pool exausto em auth.json), retoma depois da virada UTC e não
+    re-pausa lendo o erro velho logo após retomar."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        auth_path = tmp_path / "auth.json"
+        jobs_path = tmp_path / "jobs.json"
+        marker_path = tmp_path / ".paused-by-watchdog"
+        state_path = tmp_path / ".key-limit-resumed-run"
+        # Pool saudável — o ramo antigo nunca dispararia (cenário real de 10/10).
+        auth_path.write_text(
+            json.dumps({"credential_pool": {"openrouter": [{"last_status": "ok"}]}}),
+            encoding="utf-8",
+        )
+
+        def write_job(**kw):
+            job = {
+                "id": "5d791ef6fc2c",
+                "enabled": True,
+                "model": "gpt-6-luna",
+                "provider": "openai-codex",
+                "failure_streak": 45,
+                "last_error": KEY_LIMIT_ERROR,
+                "last_run_at": "2026-10-10T07:40:30-03:00",
+            }
+            job.update(kw)
+            jobs_path.write_text(json.dumps({"jobs": [job]}), encoding="utf-8")
+
+        mod = _load_module()
+        mod.AUTH_PATH = str(auth_path)
+        mod.JOBS_PATH = str(jobs_path)
+        mod.MARKER_PATH = str(marker_path)
+        mod.KEY_LIMIT_STATE_PATH = str(state_path)
+        ok_result = subprocess.CompletedProcess(args=["hermes"], returncode=0, stdout="", stderr="")
+
+        # 1. 403 key limit com streak alto -> pausa + marcador JSON com resume_after
+        write_job()
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        calls = [c.args[0] for c in run.call_args_list]
+        assert_true(
+            "key limit: 403 Key limit exceeded com failure_streak alto pausa o job",
+            ["hermes", "cron", "pause", "5d791ef6fc2c"] in calls and "pausado" in out.lower(),
+            f"(calls={calls!r} saída={out!r})",
+        )
+        marker = json.loads(marker_path.read_text()) if marker_path.exists() else {}
+        assert_true(
+            "key limit: marcador JSON com reason=key_limit e resume_after futuro",
+            marker.get("reason") == "key_limit" and marker.get("resume_after", 0) > time.time(),
+            f"(marcador={marker!r})",
+        )
+
+        # 2. Job pausado, antes do reset -> silêncio, nada roda
+        write_job(enabled=False)
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        assert_true(
+            "key limit: antes da virada UTC o watchdog fica em silêncio",
+            out == "" and run.call_count == 0,
+            f"(saída={out!r} calls={run.call_count})",
+        )
+
+        # 3. Depois do reset -> retoma e grava o last_run_at da retomada
+        marker["resume_after"] = time.time() - 1
+        marker_path.write_text(json.dumps(marker))
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        calls = [c.args[0] for c in run.call_args_list]
+        assert_true(
+            "key limit: depois da virada UTC retoma o job e remove o marcador",
+            ["hermes", "cron", "resume", "5d791ef6fc2c"] in calls and not marker_path.exists(),
+            f"(calls={calls!r} saída={out!r})",
+        )
+        assert_true(
+            "key limit: guarda o last_run_at da retomada",
+            state_path.exists() and state_path.read_text() == "2026-10-10T07:40:30-03:00",
+        )
+
+        # 4. Logo após retomar, last_error ainda é o 403 velho -> NÃO re-pausa
+        write_job(enabled=True)
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        assert_true(
+            "key limit: erro velho (mesmo last_run_at da retomada) não re-pausa",
+            run.call_count == 0 and not marker_path.exists(),
+            f"(saída={out!r} calls={run.call_count})",
+        )
+
+        # 5. Novo run falhou de novo com 403 -> re-pausa
+        write_job(last_run_at="2026-10-11T00:10:00-03:00", failure_streak=46)
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        assert_true(
+            "key limit: run novo falhando de novo com 403 pausa outra vez",
+            run.call_count == 1 and marker_path.exists(),
+            f"(saída={out!r} calls={run.call_count})",
+        )
+        marker_path.unlink()
+
+        # 6. Streak 1 (falha isolada) ou 403 genérico -> não pausa
+        for desc, kw in (
+            ("failure_streak=1", {"failure_streak": 1, "last_run_at": "x1"}),
+            ("403 genérico sem 'key limit'", {"last_error": "HTTP 403: Forbidden", "last_run_at": "x2"}),
+        ):
+            write_job(**kw)
+            with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+                _run_main(mod)
+            assert_true(
+                f"key limit: {desc} não pausa",
+                run.call_count == 0 and not marker_path.exists(),
+            )
+
+        # 7. Editor retomou à mão enquanto o marcador existia -> só limpa
+        marker_path.write_text(json.dumps({"reason": "key_limit", "resume_after": time.time() + 3600}))
+        write_job(failure_streak=0, last_error=None, last_run_at="x3")
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            _run_main(mod)
+        assert_true(
+            "key limit: job já ativo com marcador -> limpa o marcador sem comando",
+            run.call_count == 0 and not marker_path.exists(),
+        )
+
+    assert_true(
+        "next_key_limit_reset: próxima 00:00 UTC + margem",
+        _load_module().next_key_limit_reset(
+            datetime.datetime(2026, 10, 10, 18, 57, tzinfo=datetime.timezone.utc).timestamp()
+        ) == datetime.datetime(2026, 10, 11, 0, 5, tzinfo=datetime.timezone.utc).timestamp(),
+    )
 
 
 def main() -> int:
@@ -149,6 +287,8 @@ def main() -> int:
             "pausado" in out.lower() and marker_path.exists(),
             f"(saída: {out!r})",
         )
+
+    key_limit_cases()
 
     if FAILED:
         print("FALHOU")

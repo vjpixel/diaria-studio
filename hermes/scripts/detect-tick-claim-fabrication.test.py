@@ -664,6 +664,126 @@ def test_regressao_10011_10016_formas_legitimas_de_lista_de_prs():
     print("regressão #10016: lista de PRs com já/ainda/prontos/')'/rodada — OK")
 
 
+# ------------------------------------------------------------------
+# 19. #10064 — falha de provider não é fabricação. Fixtures com o formato
+# REAL do `300`: output do cron com `## Error` (403 Key limit exceeded de
+# 10/10) e linha "Turn ended" do agent.log do tick de 08/10 17:54 UTC em
+# que o fallback DeepSeek respondeu sem nenhuma tool call (#9997).
+# ------------------------------------------------------------------
+
+_CRON_HEADER = (
+    "# Cron Job: Diária Contínuo — fila técnica\n\n**Job ID:** 5d791ef6fc2c\n\n"
+    "## Prompt\n\n(skill)\n\n## Script Output\n\n```\nhermes-cron-5d791ef6fc2c-x\n```\n\n"
+)
+_KEY_LIMIT_ERROR_SECTION = (
+    "## Error\n\n```\nRuntimeError: HTTP 403: Key limit exceeded (daily limit). "
+    "Manage it using https://openrouter.ai/workspaces/default/keys/abc\n```\n"
+)
+_TURN_ENDED_IGNORED = (
+    "2026-10-08 17:56:24,767 INFO [cron_5d791ef6fc2c_20261008_145417] "
+    "agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) "
+    "model=deepseek/deepseek-v4-flash api_calls=1/150 budget=1/150 tool_turns=0 "
+    "last_msg_role=assistant response_len=77 session=cron_5d791ef6fc2c_20261008_145417\n"
+)
+_TURN_ENDED_HEALTHY = (
+    "2026-10-08 17:56:24,767 INFO [cron_5d791ef6fc2c_20261008_145417] "
+    "agent.conversation_loop: Turn ended: reason=text_response(finish_reason=stop) "
+    "model=gpt-6-luna api_calls=10/150 budget=10/150 tool_turns=9 "
+    "last_msg_role=assistant response_len=300 session=cron_5d791ef6fc2c_20261008_145417\n"
+)
+
+
+def _write_cron_output(out_dir: Path, name: str, body: str, mtime: datetime) -> Path:
+    import os
+    out_dir.mkdir(parents=True, exist_ok=True)
+    p = out_dir / name
+    p.write_text(_CRON_HEADER + body, encoding="utf-8")
+    ts = mtime.timestamp()
+    os.utime(p, (ts, ts))
+    return p
+
+
+def test_regressao_10064_falha_de_provider_nao_e_fabricacao():
+    mod = _load_module()
+    # Cenário #9997: sessão registrada pelo pre-run às 17:54:16Z, relatório
+    # velho (16:52:58Z), tick terminou às 17:56:24Z.
+    started = datetime(2026, 10, 8, 17, 54, 16, tzinfo=timezone.utc)
+    run_end = datetime(2026, 10, 8, 17, 56, 24, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 8, 18, 30, tzinfo=timezone.utc)
+    stale_report = datetime(2026, 10, 8, 16, 52, 58, tzinfo=timezone.utc)
+
+    def scenario(td: Path, body: str | None, agent_log_text: str | None):
+        repo = td / "repo"
+        report = repo / "data" / "continuo" / "last-tick-report.md"
+        sessions = repo / "data" / "sessions"
+        _write_session(sessions, "hermes-cron-5d791ef6fc2c-20261008T175416Z", started, started)
+        _write_report(report, "## Tick 13:50\nclassificacao executada com n=61 issues\n", mtime=stale_report)
+        cron_dir = td / "cron-output"
+        if body is not None:
+            _write_cron_output(cron_dir, "2026-10-08_14-56-24.md", body, run_end)
+        logs = []
+        if agent_log_text is not None:
+            log = td / "agent.log"
+            log.write_text(agent_log_text, encoding="utf-8")
+            logs = [log]
+        return mod.run(repo, report, sessions, 45, now, None,
+                       cron_output_dir=cron_dir, agent_logs=logs)
+
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        # Controle: sem output do cron, segue a acusação de sempre.
+        r = scenario(td, None, None)
+        assert_true("19. controle: sem output do cron -> fabrication_suspected (inalterado)",
+                    r["status"] == "fabrication_suspected" and r["provider_failure"] is None)
+
+    with tempfile.TemporaryDirectory() as t:
+        r = scenario(Path(t), "## Response\n\nUnderstood — I'm Hermes Agent, ready when you are. "
+                     "What would you like to do?\n", _TURN_ENDED_IGNORED)
+        assert_true("19. fallback ignorou a skill (tool_turns=0) -> tick_failed_provider, nao fabricacao",
+                    r["status"] == "tick_failed_provider")
+        assert_true("19. provider_failure.kind = provider_ignored_prompt",
+                    (r["provider_failure"] or {}).get("kind") == "provider_ignored_prompt")
+        assert_true("19. a checagem tick_provider cita o modelo do fallback",
+                    any(c["check"] == "tick_provider" and "deepseek" in c["details"] for c in r["checks"]))
+
+    with tempfile.TemporaryDirectory() as t:
+        r = scenario(Path(t), _KEY_LIMIT_ERROR_SECTION, None)
+        assert_true("19. run com ## Error (403 Key limit exceeded) -> tick_failed_provider",
+                    r["status"] == "tick_failed_provider"
+                    and (r["provider_failure"] or {}).get("kind") == "provider_error"
+                    and "Key limit exceeded" in r["provider_failure"]["details"])
+
+    with tempfile.TemporaryDirectory() as t:
+        # Coordenador trabalhou (tool_turns=9) e mesmo assim o relatório é
+        # velho -> continua sendo suspeita de fabricação real.
+        r = scenario(Path(t), "## Response\n\nTick concluído.\n", _TURN_ENDED_HEALTHY)
+        assert_true("19. run com tool calls reais -> continua fabrication_suspected",
+                    r["status"] == "fabrication_suspected" and r["provider_failure"] is None)
+
+    with tempfile.TemporaryDirectory() as t:
+        # Response sem linha no agent.log (log rotacionado) -> sem diagnóstico.
+        r = scenario(Path(t), "## Response\n\nalgo\n", "")
+        assert_true("19. sem a sessao no agent.log -> nao presume falha de provider",
+                    r["status"] == "fabrication_suspected")
+
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        # Output de erro FORA da janela (anterior ao início da sessão) não conta.
+        repo = td / "repo"
+        report = repo / "data" / "continuo" / "last-tick-report.md"
+        sessions = repo / "data" / "sessions"
+        _write_session(sessions, "hermes-cron-5d791ef6fc2c-20261008T175416Z", started, started)
+        _write_report(report, "## Tick\n", mtime=stale_report)
+        _write_cron_output(td / "cron-output", "2026-10-08_13-50-00.md", _KEY_LIMIT_ERROR_SECTION,
+                           started - timedelta(hours=1))
+        r = mod.run(repo, report, sessions, 45, now, None,
+                    cron_output_dir=td / "cron-output", agent_logs=[])
+        assert_true("19. output de erro anterior a sessao correlacionada nao reclassifica",
+                    r["status"] == "fabrication_suspected")
+
+    print("regressão #10064: falha de provider vs fabricação — OK")
+
+
 def main() -> int:
     mod = _load_module()
     now = datetime.now(timezone.utc)
@@ -918,6 +1038,11 @@ def main() -> int:
         # 11. main() exit codes agregados via subprocesso real
         # ------------------------------------------------------------------
         def _run_main(args: list[str]) -> tuple[int, str]:
+            # #10064: isola das fontes reais do Hermes (~/.hermes no `300`)
+            # — senão um run real recente com erro mudaria o exit code.
+            if "--cron-output-dir" not in args:
+                args = args + ["--cron-output-dir", str(td / "no-cron-output"),
+                               "--agent-log", str(td / "no-agent.log")]
             r = subprocess.run(
                 [sys.executable, str(MODULE_PATH)] + args,
                 capture_output=True, text=True, timeout=30,
@@ -1158,6 +1283,7 @@ def main() -> int:
         test_regressao_9994_prs_com_pontuacao_ou_palavra_no_meio()
         test_regressao_10011_prs_com_verbo_ou_preposicao_nao_e_lista_de_prs()
         test_regressao_10011_10016_formas_legitimas_de_lista_de_prs()
+        test_regressao_10064_falha_de_provider_nao_e_fabricacao()
 
         # ------------------------------------------------------------------
         # 16. #8521 residuo — evento 'ended' com HISTORICO `claimed_issues_ever`.

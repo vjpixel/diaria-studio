@@ -26,7 +26,8 @@
 #     `scripts/sweep-continuo-orphan-sessions.ts` pra encerrar registros de
 #     ticks ANTERIORES deste job que morreram sem `end` (sem claims,
 #     heartbeat além de 6h — #10017 —, só esta máquina, nunca a sessão
-#     atual). O sweep grava `"swept-without-end"` no log de lifecycle, não
+#     atual; ou, #10064, run do cron que já terminou com `## Error`, sem
+#     esperar as 6h). O sweep grava `"swept-without-end"` no log de lifecycle, não
 #     `"ended"`. Fail-soft como o registro.
 #   - NÃO invoca `claude-delegate.sh`/o modelo — de propósito. A proposta
 #     original (item 1 do #7890/#8740) foi adiada uma vez por tocar o
@@ -84,7 +85,12 @@ fi
 # `end` (falha cedo — cota, credencial). Critério conservador no próprio
 # script (sem claims, heartbeat além de 6h — #10017 —, só esta máquina,
 # nunca a sessão atual). Fail-soft como o resto: limpeza de ruído nunca trava o tick.
-if SWEEP_OUT=$(npx tsx scripts/sweep-continuo-orphan-sessions.ts --job "$JOB_ID" --exclude "$SESSION_ID" 2>&1); then
+# #10064: com `--cron-output-dir`, o sweep também encerra NA HORA (sem
+# esperar as 6h) a sessão de um tick cujo run do cron já terminou com
+# `## Error` (morreu no provider antes do relatório) — o Hermes cron não tem
+# hook pós-run, então este pre-run do tick seguinte faz o papel dele.
+CRON_OUTPUT_DIR="${HERMES_CRON_OUTPUT_DIR:-$HOME/.hermes/cron/output/$JOB_ID}"
+if SWEEP_OUT=$(npx tsx scripts/sweep-continuo-orphan-sessions.ts --job "$JOB_ID" --exclude "$SESSION_ID" --cron-output-dir "$CRON_OUTPUT_DIR" 2>&1); then
   echo "[register-continuo-tick] $SWEEP_OUT" >&2
 else
   echo "[register-continuo-tick] AVISO: sweep de sessões órfãs falhou (fail-soft, tick segue): $SWEEP_OUT" >&2

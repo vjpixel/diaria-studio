@@ -24,11 +24,30 @@ quando o job está de fato configurado pra rodar num modelo `:free` do
 OpenRouter. Um override manual pra modelo pago (ex: `z-ai/glm-5.3-flash`) ou
 outro provider não depende do pool free — exaustão dele é irrelevante nesse
 caso, e pausar desfaria silenciosamente a decisão operacional do editor.
+
+Pausa por `403 Key limit exceeded` (#10064, 12/10/2026): a parada de 08–10/10
+acumulou `failure_streak=45` no job porque a key OpenRouter do fallback bateu
+o limite DIÁRIO configurado na key (`RuntimeError: HTTP 403: Key limit
+exceeded (daily limit)`) — erro que não passa pelo pool de `auth.json` (as
+credenciais seguiam "ok"), então o ramo acima nunca disparava. Agora o
+watchdog também lê `last_error`/`failure_streak` do próprio job:
+  - `failure_streak >= KEY_LIMIT_MIN_STREAK` e `last_error` com 403 + "key
+    limit exceeded" → pausa, independente do provider configurado (o erro é
+    evidência direta de que todo tick falha), e grava o marcador em JSON com
+    `resume_after` = próxima 00:00 UTC (+5min) — é quando o limite diário de
+    key da OpenRouter renova.
+  - Retomada: `now >= resume_after`. Ao retomar, guarda o `last_run_at` do job
+    em `KEY_LIMIT_STATE_PATH`: o `last_error` só muda no PRÓXIMO run, e sem
+    isso o watchdog re-pausaria na hora o job que acabou de retomar, lendo o
+    erro velho. Se o próximo run falhar de novo, `last_run_at` muda e a pausa
+    volta (correto: a cota ainda não voltou).
+Marcador legado (texto `JOB_ID`, do ramo do pool) segue com a regra antiga.
 """
 
 import datetime
 import json
 import os
+import re
 import subprocess
 
 HERMES_HOME = os.path.expanduser("~/.hermes")
@@ -36,6 +55,16 @@ AUTH_PATH = os.path.join(HERMES_HOME, "auth.json")
 JOBS_PATH = os.path.join(HERMES_HOME, "cron", "jobs.json")
 MARKER_PATH = os.path.join(HERMES_HOME, "cron", ".paused-by-watchdog")
 JOB_ID = "5d791ef6fc2c"
+KEY_LIMIT_STATE_PATH = os.path.join(HERMES_HOME, "cron", ".key-limit-resumed-run")
+
+# #10064: mesmo limiar de `AUTH_STALL_STREAK_THRESHOLD`
+# (`scripts/check-continuo-auth-stall.ts`) — 1 falha isolada não é parada.
+KEY_LIMIT_MIN_STREAK = 2
+# Mesma assinatura de `QUOTA_STALL_PATTERNS` (#10001) no detector TS: código
+# E frase juntos — um 403 genérico não casa.
+KEY_LIMIT_RE = re.compile(r"\b403\b[\s\S]*key limit exceeded", re.IGNORECASE)
+# Folga depois da virada UTC — o reset da OpenRouter não é instantâneo.
+KEY_LIMIT_RESUME_MARGIN_S = 5 * 60
 
 
 def _load(path):
@@ -76,18 +105,129 @@ def _job_uses_free_openrouter_pool(job):
     return provider == "openrouter" and model.endswith(":free")
 
 
-def main():
+def is_key_limit_error(last_error):
+    """True se `last_error` do job é o 403 de limite diário da key (#10064)."""
+    return isinstance(last_error, str) and bool(KEY_LIMIT_RE.search(last_error))
+
+
+def next_key_limit_reset(now_ts):
+    """Próxima 00:00 UTC estritamente depois de `now_ts`, + margem. O limite
+    diário de key da OpenRouter renova na virada do dia UTC."""
+    now = datetime.datetime.fromtimestamp(now_ts, tz=datetime.timezone.utc)
+    midnight = (now + datetime.timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return midnight.timestamp() + KEY_LIMIT_RESUME_MARGIN_S
+
+
+def _read_marker():
+    """Conteúdo do marcador: dict (marcador JSON do #10064) ou None (legado
+    em texto, ou ilegível — trata como o marcador antigo do pool)."""
     try:
-        auth = _load(AUTH_PATH)
-        entries = auth.get("credential_pool", {}).get("openrouter", [])
-    except Exception:
-        return  # auth.json ilegível — não é hora de alarme
-    if not entries:
-        return  # sem pool openrouter — fora do escopo
+        with open(MARKER_PATH) as f:
+            raw = f.read()
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
+
+def _read_resumed_run():
+    try:
+        with open(KEY_LIMIT_STATE_PATH) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _handle_key_limit(job, enabled, paused_by_us, now_ts):
+    """Ramo do #10064. Devolve True quando tratou o tick (o chamador não segue
+    pro ramo do pool), False quando não é com ele."""
+    marker = _read_marker() if paused_by_us else None
+    if marker is not None and marker.get("reason") == "key_limit":
+        if enabled:
+            # editor (ou outra rotina) já retomou; só limpa o marcador
+            os.remove(MARKER_PATH)
+            return True
+        resume_after = marker.get("resume_after") or 0
+        if now_ts < resume_after:
+            return True  # ainda antes do reset — silêncio
+        r = _run_hermes_cmd(["hermes", "cron", "resume", JOB_ID])
+        if r is None:
+            return True
+        if r.returncode == 0:
+            os.remove(MARKER_PATH)
+            try:
+                with open(KEY_LIMIT_STATE_PATH, "w") as f:
+                    f.write(str(job.get("last_run_at") or ""))
+            except OSError as e:
+                print(
+                    f"⚠️ Watchdog retomou {JOB_ID} mas não gravou {KEY_LIMIT_STATE_PATH} "
+                    f"({e}) — pode re-pausar no próximo tick lendo o 403 antigo."
+                )
+            print(
+                "▶️ **Diária Contínuo retomado** pelo watchdog: passou a virada UTC "
+                "do limite diário da key OpenRouter (403 Key limit exceeded). Se o "
+                "próximo tick falhar de novo com o mesmo erro, o watchdog pausa outra vez."
+            )
+        else:
+            print(
+                f"⚠️ Watchdog tentou retomar {JOB_ID} (key limit) e falhou: "
+                f"{(r.stderr or r.stdout).strip()[:200]}"
+            )
+        return True
+    if paused_by_us:
+        return False  # marcador do ramo do pool — regra antiga
+
+    streak = job.get("failure_streak")
+    if not (enabled and isinstance(streak, int) and streak >= KEY_LIMIT_MIN_STREAK):
+        return False
+    if not is_key_limit_error(job.get("last_error")):
+        return False
+    last_run = str(job.get("last_run_at") or "")
+    if last_run and last_run == _read_resumed_run():
+        # erro velho, de antes da nossa retomada — o job ainda não rodou de novo
+        return True
+    r = _run_hermes_cmd(["hermes", "cron", "pause", JOB_ID])
+    if r is None:
+        return True
+    if r.returncode != 0:
+        print(
+            f"⚠️ Watchdog detectou 403 Key limit exceeded (failure_streak={streak}) "
+            f"mas não conseguiu pausar {JOB_ID}: {(r.stderr or r.stdout).strip()[:200]}"
+        )
+        return True
+    resume_after = next_key_limit_reset(now_ts)
+    dt = datetime.datetime.fromtimestamp(resume_after, tz=datetime.timezone.utc)
+    try:
+        with open(MARKER_PATH, "w") as f:
+            json.dump(
+                {"job": JOB_ID, "reason": "key_limit", "resume_after": resume_after,
+                 "paused_last_run_at": last_run},
+                f,
+            )
+    except OSError as e:
+        print(
+            f"🚨 Watchdog PAUSOU {JOB_ID} (403 Key limit exceeded) mas FALHOU AO GRAVAR "
+            f"o marcador ({e}) — o job vai ficar pausado INDEFINIDAMENTE sem retomada "
+            f"automática. Ação manual: 'hermes cron resume {JOB_ID}' após "
+            f"{dt:%d/%m %H:%M} UTC, ou investigar {MARKER_PATH}."
+        )
+        return True
+    print(
+        f"⏸️ **Diária Contínuo pausado** pelo watchdog: a key OpenRouter bateu o "
+        f"limite diário (`403 Key limit exceeded`, failure_streak={streak}). "
+        f"Retomada automática após {dt:%d/%m %H:%M} UTC (virada do limite diário); "
+        f"pausar evita acumular falha a cada tick (#10064)."
+    )
+    return True
+
+
+def main():
     now_ts = datetime.datetime.now().timestamp()
-    blocked = _pool_state(entries, now_ts)
-
     try:
         jobs_raw = _load(JOBS_PATH)
         items = jobs_raw if isinstance(jobs_raw, list) else jobs_raw.get("jobs", [])
@@ -98,6 +238,21 @@ def main():
         return
     enabled = bool(job.get("enabled", True))
     paused_by_us = os.path.exists(MARKER_PATH)
+
+    # #10064: 403 de key limit vem do PRÓPRIO job, não do pool de auth.json —
+    # roda antes (e independe) da leitura do pool.
+    if _handle_key_limit(job, enabled, paused_by_us, now_ts):
+        return
+
+    try:
+        auth = _load(AUTH_PATH)
+        entries = auth.get("credential_pool", {}).get("openrouter", [])
+    except Exception:
+        return  # auth.json ilegível — não é hora de alarme
+    if not entries:
+        return  # sem pool openrouter — fora do escopo
+
+    blocked = _pool_state(entries, now_ts)
 
     # --- retomada pós-reset ---
     if paused_by_us:
