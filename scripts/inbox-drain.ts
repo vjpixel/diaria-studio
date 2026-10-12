@@ -594,14 +594,17 @@ export function planThreadsWithRetries(
 /**
  * #10030: calcula a nova lista de pendentes a partir das falhas deste drain.
  * Pendente que carregou sai da lista; o que falhou de novo soma uma tentativa e
- * mantém o `since` original; falha nova entra com `since = lastDrain`. Quem
- * atinge `MAX_FAILED_THREAD_ATTEMPTS` vai pra `abandoned` (o caller avisa). Pure.
+ * mantém o `since` original; falha nova entra com `since = lastDrain` (#10055:
+ * cursor nulo vira o corte da janela de `now`, nunca `null`). Quem atinge
+ * `MAX_FAILED_THREAD_ATTEMPTS` vai pra `abandoned` (o caller avisa). Pure.
  */
 export function nextFailedThreads(
   pending: FailedThread[],
   failedIds: string[],
   lastDrain: string | null,
+  now: Date = new Date(),
 ): { failed: FailedThread[]; abandoned: FailedThread[] } {
+  const newSince = sinceForNewFailures(lastDrain, now);
   const byId = new Map(pending.map((p) => [p.id, p]));
   const failed: FailedThread[] = [];
   const abandoned: FailedThread[] = [];
@@ -609,7 +612,7 @@ export function nextFailedThreads(
     const prev = byId.get(id);
     const entry: FailedThread = prev
       ? { id, since: prev.since, attempts: prev.attempts + 1 }
-      : { id, since: lastDrain, attempts: 1 };
+      : { id, since: newSince, attempts: 1 };
     (entry.attempts >= MAX_FAILED_THREAD_ATTEMPTS ? abandoned : failed).push(entry);
   }
   return { failed, abandoned };
@@ -769,10 +772,13 @@ async function main(rootDir: string = ROOT): Promise<void> {
   }
 
   const cursor = loadCursor();
+  // #10055: um único `now` para o `after:` da busca e o `since` das falhas novas
+  // (dois `new Date()` divergiam ao cruzar 00:00 UTC com cursor nulo).
+  const now = new Date();
   let afterDate: string;
   if (!cursor.last_drain_iso) {
     // Primeira execução: 3 dias atrás (#442: em UTC — ver firstDrainCutoffIso).
-    afterDate = firstDrainCutoffIso().slice(0, 10).replace(/-/g, "/");
+    afterDate = firstDrainCutoffIso(now).slice(0, 10).replace(/-/g, "/");
   } else {
     // #442: cursor já é ISO string — fatiar diretamente sem conversão de timezone.
     afterDate = cursor.last_drain_iso.slice(0, 10).replace(/-/g, "/");
@@ -821,7 +827,8 @@ async function main(rootDir: string = ROOT): Promise<void> {
   const { failed: failedThreads, abandoned } = nextFailedThreads(
     pending,
     failedThreadIds,
-    sinceForNewFailures(lastDrain),
+    lastDrain,
+    now,
   );
   if (abandoned.length > 0) {
     const ids = abandoned.map((a) => a.id);
