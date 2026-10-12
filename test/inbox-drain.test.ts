@@ -80,6 +80,25 @@ describe("#10030 — helpers de retry de threads que falharam", () => {
     assert.equal(abandoned[0].attempts, MAX_FAILED_THREAD_ATTEMPTS);
   });
 
+  it("#10055: nextFailedThreads aplica o corte da janela sozinho — cursor nulo nunca grava since=null", () => {
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const { failed } = nextFailedThreads([], ["t"], null, now);
+    assert.equal(failed[0].since, "2026-10-08T00:00:00.000Z");
+    // cursor presente continua intacto
+    const { failed: f2 } = nextFailedThreads([], ["t"], "2026-10-10T09:00:00.000Z", now);
+    assert.equal(f2[0].since, "2026-10-10T09:00:00.000Z");
+  });
+
+  it("#10055: mesmo `now` no after: da busca e no since gravado (virada de 00:00 UTC)", () => {
+    const before = new Date("2026-10-11T23:59:59.000Z");
+    const afterMidnight = new Date("2026-10-12T00:00:01.000Z");
+    const afterDay = firstDrainCutoffIso(before).slice(0, 10);
+    const { failed } = nextFailedThreads([], ["t"], null, before);
+    assert.equal(failed[0].since!.slice(0, 10), afterDay);
+    // com `now` distinto (bug antigo) os dias divergiriam
+    assert.notEqual(firstDrainCutoffIso(afterMidnight).slice(0, 10), afterDay);
+  });
+
   it("#10052: firstDrainCutoffIso = 00:00 UTC de 3 dias atrás (mesmo dia do after: da busca)", () => {
     const now = new Date("2026-10-11T02:30:00.000Z");
     assert.equal(FIRST_DRAIN_WINDOW_DAYS, 3);
