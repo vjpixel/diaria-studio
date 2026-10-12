@@ -170,13 +170,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths={"d1":path,"d2":path,"d3":path} (o MESMO path por destaque do passo 0; omitir a chave que veio com error; #9794/#9808) — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths={"d1":path,"d2":path,"d3":path} (o MESMO path por destaque do passo 0; omitir a chave que veio com error; #9794/#9808) — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
@@ -190,7 +190,7 @@ Output: `{EDIR}/_internal/02-draft.md` unificado (coverage + 3 destaques + É IA
 
 ### Fallback (writer único legacy)
 
-Quando `highlights.length !== 3` ou falha de dispatch parallel:
+Quando `highlights.length < 2 || highlights.length > 3` ou falha de dispatch parallel:
 
 ```
 Agent({
@@ -202,13 +202,13 @@ Agent({
 Agent({
   subagent_type: "social-writer",
   description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
-  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths={"d1":path,"d2":path,"d3":path} (o MESMO path por destaque do passo 0; omitir a chave que veio com error; #9794/#9808) — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um (§3c)}. NÃO gerar ## post_pixel (aposentado, #9568). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
   subagent_type: "social-curto",
   description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
-  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved-capped.json, source_text_paths={"d1":path,"d2":path,"d3":path} (o MESMO path por destaque do passo 0; omitir a chave que veio com error; #9794/#9808) — compartilhado por Twitter/X e Threads. {SE o passo 'Seleção do 4º post' deu enabled+item: use_melhor_post_path={EDIR}/_internal/use-melhor-post.json — escreva também ## um}. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3 (+ ## um). Seguir .claude/agents/social-curto.md — CTA 'Mais em {edition_url}' com o placeholder LITERAL (#4285, resolvido no Stage 5), palavras-chave finais como hashtags com # (#4264), ≤280 ponderados."
 })
 ```
 
