@@ -90,10 +90,16 @@ export type ExecStepFn = (scriptAbsPath: string, args: string[], cwd: string) =>
  * resolvido via PATH — ver ponto 1 da docstring do módulo pro porquê disso
  * eliminar a classe de falha do #4343 por construção.
  */
-export function execTsxStep(scriptAbsPath: string, args: string[], cwd: string): StepExecResult {
+export function execTsxStep(
+  scriptAbsPath: string,
+  args: string[],
+  cwd: string,
+  maxBuffer: number = STEP_MAX_BUFFER_BYTES,
+): StepExecResult {
   const result = spawnSync(process.execPath, ["--import", "tsx", scriptAbsPath, ...args], {
     cwd,
     encoding: "utf8",
+    maxBuffer,
   });
   const output = (result.stdout ?? "") + (result.stderr ?? "");
 
@@ -105,6 +111,13 @@ export function execTsxStep(scriptAbsPath: string, args: string[], cwd: string):
   }
   return { code: result.status, output };
 }
+
+/**
+ * Teto de saída (stdout e stderr, cada um) de um passo (#10071). O default do
+ * `spawnSync` é 1 MiB — um passo verboso estourava, era morto com SIGTERM e
+ * falhava. 64 MiB cobre qualquer passo real com folga.
+ */
+export const STEP_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 /**
  * Texto do motivo quando `spawnSync` não devolve exit code (#10063). Antes,
@@ -120,6 +133,15 @@ export function abnormalStepExitReason(result: {
   status: number | null;
   signal: NodeJS.Signals | null;
 }): string {
+  // ENOBUFS/ETIMEDOUT (#10071): o processo RODOU e foi morto pelo próprio
+  // spawnSync (saída acima do maxBuffer / timeout) — nunca "falha de spawn".
+  const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (result.error && errCode === "ENOBUFS") {
+    return `o processo do passo foi encerrado (sinal ${result.signal ?? "?"}) por exceder o limite de saida (maxBuffer): ${result.error.message}`;
+  }
+  if (result.error && errCode === "ETIMEDOUT") {
+    return `o processo do passo foi encerrado (sinal ${result.signal ?? "?"}) por timeout: ${result.error.message}`;
+  }
   if (result.error) {
     return `o passo nao executou (falha de spawn antes do processo iniciar): ${result.error.message}`;
   }

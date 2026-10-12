@@ -20,6 +20,7 @@ import {
   formatFailedStepReport,
   runScheduledTask,
   FAILED_STEP_STDERR_TAIL_LINES,
+  STEP_MAX_BUFFER_BYTES,
   type StepExecResult,
 } from "../scripts/lib/task-runner.ts";
 import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
@@ -75,6 +76,41 @@ describe("#10063 — abnormalStepExitReason distingue sinal de falha de spawn", 
     const result = execTsxStep(script, [], ROOT);
     assert.equal(result.code, 1);
     assert.match(result.output, /encerrado pelo sinal SIGTERM/);
+    assert.doesNotMatch(result.output, /falha de spawn/);
+  });
+});
+
+describe("#10071 — ENOBUFS/ETIMEDOUT do spawnSync não são 'falha de spawn'", () => {
+  const errWithCode = (code: string): Error =>
+    Object.assign(new Error(`spawnSync node ${code}`), { code });
+
+  it("ENOBUFS (pure) → 'limite de saida (maxBuffer)', nunca 'falha de spawn'", () => {
+    const r = abnormalStepExitReason({ error: errWithCode("ENOBUFS"), status: null, signal: "SIGTERM" });
+    assert.match(r, /encerrado \(sinal SIGTERM\) por exceder o limite de saida \(maxBuffer\)/);
+    assert.doesNotMatch(r, /falha de spawn/);
+  });
+
+  it("ETIMEDOUT (pure) → 'por timeout', nunca 'falha de spawn'", () => {
+    const r = abnormalStepExitReason({ error: errWithCode("ETIMEDOUT"), status: null, signal: "SIGTERM" });
+    assert.match(r, /encerrado \(sinal SIGTERM\) por timeout/);
+    assert.doesNotMatch(r, /falha de spawn/);
+  });
+
+  it("spawn real: passo que emite >1 MiB passa com o maxBuffer default (antes: ENOBUFS)", () => {
+    assert.ok(STEP_MAX_BUFFER_BYTES > 1024 * 1024);
+    const script = join(workDir, "verbose.ts");
+    writeFileSync(script, 'process.stdout.write("x".repeat(2 * 1024 * 1024));\n');
+    const result = execTsxStep(script, [], ROOT);
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(result.output, /falha de spawn/);
+  });
+
+  it("spawn real: saída acima do maxBuffer → motivo nomeia maxBuffer, não 'falha de spawn'", () => {
+    const script = join(workDir, "verbose-over.ts");
+    writeFileSync(script, 'process.stdout.write("x".repeat(2 * 1024 * 1024));\n');
+    const result = execTsxStep(script, [], ROOT, 1024 * 1024);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /limite de saida \(maxBuffer\)/);
     assert.doesNotMatch(result.output, /falha de spawn/);
   });
 });
