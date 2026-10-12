@@ -27,7 +27,7 @@ function checkoutHref(base) {
 const ORIGIN_FIELD_MAX = 100;
 function visitOrigin(search) {
   const visit = new URLSearchParams(search);
-  const clean = (key) => (visit.get(key) || "").trim().slice(0, ORIGIN_FIELD_MAX);
+  const clean = (key) => (visit.get(key) || "").trim().slice(0, ORIGIN_FIELD_MAX).trim();
   const source = clean("utm_source");
   const data = { origem: source || (clean("fbclid") ? "meta" : "direto") };
   const campaign = clean("utm_campaign");
@@ -36,11 +36,19 @@ function visitOrigin(search) {
   if (content) data.utm_content = content;
   return data;
 }
-const origin = visitOrigin(window.location.search);
+// Nome com prefixo de propósito: `origin` sozinho encobriria window.origin
+// para os outros scripts da página (este arquivo não é módulo).
+const visitData = visitOrigin(window.location.search);
 
 // Eventos próprios do guia (prefixo Guia), separados dos eventos do evento ao vivo.
+// O try/catch garante que um erro no pixel nunca impeça a navegação para o checkout.
 function track(event, data) {
-  if (typeof window.fbq === "function") window.fbq("trackCustom", `Guia${event}`, Object.assign({}, origin, data));
+  if (typeof window.fbq !== "function") return;
+  try {
+    window.fbq("trackCustom", `Guia${event}`, Object.assign({}, visitData, data));
+  } catch (e) {
+    // fail-soft
+  }
 }
 
 track("Visita");

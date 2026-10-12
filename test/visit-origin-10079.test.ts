@@ -63,7 +63,7 @@ function fakeLink(posicao: string): FakeLink {
  * disparou. Nada de DOM real: só o que os dois scripts usam. */
 function runPageScript(
   js: string,
-  opts: { search: string; cookie?: string; variante?: string; checkoutUrl?: string },
+  opts: { search: string; cookie?: string; variante?: string; checkoutUrl?: string; fbqThrows?: boolean },
 ) {
   const fbqCalls: FbqCall[] = [];
   const beacons: Array<{ url: string; body: Promise<string> }> = [];
@@ -71,7 +71,10 @@ function runPageScript(
   const links = [fakeLink("topo")];
   const win: Record<string, unknown> = {
     location: { search: opts.search, href: "" },
-    fbq: (...args: unknown[]) => fbqCalls.push({ args }),
+    fbq: (...args: unknown[]) => {
+      fbqCalls.push({ args });
+      if (opts.fbqThrows) throw new Error("fbq quebrado");
+    },
     __DIA_VID__: "550e8400-e29b-41d4-a716-446655440000",
     EVENT_CHECKOUT_URL: opts.checkoutUrl ?? "https://pay.hotmart.com/G107726319K?checkoutMode=10",
     scrollY: 0,
@@ -93,6 +96,7 @@ function runPageScript(
       return true;
     },
   };
+  const timers: Array<() => void> = [];
   const context = vm.createContext({
     window: win,
     document: doc,
@@ -100,18 +104,23 @@ function runPageScript(
     URL,
     URLSearchParams,
     Blob,
-    setTimeout: () => 0,
+    setTimeout: (fn: () => void) => {
+      timers.push(fn);
+      return 0;
+    },
   });
   vm.runInContext(js, context);
-  const click = () =>
+  const click = (mods: { ctrlKey?: boolean } = {}) =>
     links[0].listeners.forEach((fn) =>
-      fn({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: () => {} }),
+      fn({ button: 0, metaKey: false, ctrlKey: !!mods.ctrlKey, shiftKey: false, altKey: false, preventDefault: () => {} }),
     );
+  const runTimers = () => timers.splice(0).forEach((fn) => fn());
+  const locationHref = () => String((win.location as { href: string }).href);
   const scrollToEnd = () => {
     win.scrollY = 1000;
     scrollListeners.forEach((fn) => fn());
   };
-  return { fbqCalls, beacons, click, scrollToEnd };
+  return { fbqCalls, beacons, click, scrollToEnd, runTimers, locationHref };
 }
 
 const AD_VISIT = "?utm_source=meta&utm_content=AD99&fbclid=teste";
@@ -204,11 +213,64 @@ describe("#10079 guia/agente-ia/script.js — origem em todos os eventos", () =>
   });
 });
 
-describe("#10079 drift: teto dos campos de origem no JS estático", () => {
+describe("#10079 drift: regra de origem no JS estático", () => {
   it("as duas páginas cortam em CLICK_BEACON_ORIGIN_FIELD_MAX", () => {
     for (const js of [EVENTO_JS, GUIA_JS]) {
       assert.match(js, new RegExp(`const ORIGIN_FIELD_MAX = ${CLICK_BEACON_ORIGIN_FIELD_MAX};`));
     }
+  });
+
+  it("visitOrigin é idêntica nas duas páginas (sem passo de build, é cópia)", () => {
+    const fn = (js: string) => js.match(/function visitOrigin\(search\) \{[\s\S]*?\n\}/)?.[0];
+    assert.ok(fn(EVENTO_JS));
+    assert.equal(fn(EVENTO_JS), fn(GUIA_JS));
+  });
+
+  it("não declara `origin` no topo (encobriria window.origin para os outros scripts da página)", () => {
+    for (const js of [EVENTO_JS, GUIA_JS]) assert.doesNotMatch(js, /^(?:const|let|var) origin\b/m);
+  });
+});
+
+describe("#10079 casos de borda da origem", () => {
+  it("utm_source vazio ou só com espaços cai para a regra do fbclid", () => {
+    const vazio = runPageScript(EVENTO_JS, { search: "?utm_source=&fbclid=x" });
+    assert.equal((vazio.fbqCalls[0].args[2] as Record<string, string>).origem, "meta");
+    const espacos = runPageScript(EVENTO_JS, { search: "?utm_source=%20%20" });
+    assert.equal((espacos.fbqCalls[0].args[2] as Record<string, string>).origem, "direto");
+  });
+
+  it("corte não deixa espaço no fim (fbq e CAPI mandam o mesmo valor)", () => {
+    const valor = "a".repeat(CLICK_BEACON_ORIGIN_FIELD_MAX - 1) + "%20b";
+    const page = runPageScript(EVENTO_JS, { search: `?utm_content=${valor}` });
+    const content = (page.fbqCalls[0].args[2] as Record<string, string>).utm_content;
+    assert.equal(content, "a".repeat(CLICK_BEACON_ORIGIN_FIELD_MAX - 1));
+    assert.equal(parseClickBeaconBody(JSON.stringify({ utm_content: content })).utmContent, content);
+  });
+
+  it("fbq que lança não impede a navegação para o checkout", () => {
+    const page = runPageScript(EVENTO_JS, { search: AD_VISIT, fbqThrows: true });
+    page.click();
+    page.runTimers();
+    assert.match(page.locationHref(), /^https:\/\/pay\.hotmart\.com\//);
+  });
+
+  it("clique com modificador (nova aba) também leva a origem, sem beacon", () => {
+    const page = runPageScript(EVENTO_JS, { search: AD_VISIT });
+    page.click({ ctrlKey: true });
+    const last = page.fbqCalls.at(-1)!.args;
+    assert.equal(last[1], "CliqueIngresso_D");
+    assert.equal((last[2] as Record<string, string>).origem, "meta");
+    assert.equal(page.beacons.length, 0);
+  });
+
+  it("clique comum navega para o checkout com as UTMs depois do beacon", () => {
+    const page = runPageScript(EVENTO_JS, { search: AD_VISIT });
+    page.click();
+    assert.equal(page.locationHref(), "", "não navega antes do timer");
+    page.runTimers();
+    const dest = new URL(page.locationHref());
+    assert.equal(dest.searchParams.get("utm_content"), "AD99");
+    assert.equal(dest.searchParams.get("fbclid"), "teste");
   });
 });
 
