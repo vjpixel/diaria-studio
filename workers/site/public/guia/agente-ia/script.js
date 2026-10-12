@@ -20,9 +20,27 @@ function checkoutHref(base) {
   return url.toString();
 }
 
+// Origem da visita (#10079), calculada uma vez por carregamento da página e
+// enviada em todos os eventos. Mesma regra da página do evento: o utm_source,
+// se houver; "meta", se houver fbclid; senão "direto". O nome do evento não
+// muda: a separação por origem é feita com conversões personalizadas na Meta.
+const ORIGIN_FIELD_MAX = 100;
+function visitOrigin(search) {
+  const visit = new URLSearchParams(search);
+  const clean = (key) => (visit.get(key) || "").trim().slice(0, ORIGIN_FIELD_MAX);
+  const source = clean("utm_source");
+  const data = { origem: source || (clean("fbclid") ? "meta" : "direto") };
+  const campaign = clean("utm_campaign");
+  const content = clean("utm_content");
+  if (campaign) data.utm_campaign = campaign;
+  if (content) data.utm_content = content;
+  return data;
+}
+const origin = visitOrigin(window.location.search);
+
 // Eventos próprios do guia (prefixo Guia), separados dos eventos do evento ao vivo.
 function track(event, data) {
-  if (typeof window.fbq === "function") window.fbq("trackCustom", `Guia${event}`, data || {});
+  if (typeof window.fbq === "function") window.fbq("trackCustom", `Guia${event}`, Object.assign({}, origin, data));
 }
 
 track("Visita");

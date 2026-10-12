@@ -31,6 +31,13 @@ const VARIANT_RE = /^[abcd]$/i; // #9335: versão C recebe 100% do tráfego desd
  * aplica a outros campos crus do cliente (workers/poll/src/subscribe.ts). */
 export const CLICK_BEACON_FIELD_MAX = 300;
 
+/** #10079: teto dos campos de origem da visita (`origem`, `utm_campaign`,
+ * `utm_content`). Menor que `CLICK_BEACON_FIELD_MAX` porque viram parâmetro
+ * de `custom_data` na Meta, usado em regra de conversão personalizada — um
+ * UTM real nunca chega perto disso. O `script.js` corta no mesmo tamanho
+ * antes de mandar (ver teste de drift). */
+export const CLICK_BEACON_ORIGIN_FIELD_MAX = 100;
+
 export interface ParsedClickBeacon {
   /** "" quando ausente/formato inválido — validação real em `validateClickBeacon`. */
   variant: string;
@@ -39,6 +46,12 @@ export interface ParsedClickBeacon {
   externalId: string;
   fbc: string;
   fbp: string;
+  /** #10079: origem da visita calculada pelo `script.js` (`utm_source`, ou
+   * "meta" quando só há `fbclid`, ou "direto"). "" em beacon de script
+   * antigo (cache do navegador) — aí o campo não vai pra Meta. */
+  origem: string;
+  utmCampaign: string;
+  utmContent: string;
 }
 
 function asStr(v: unknown): string {
@@ -61,9 +74,12 @@ export function parseClickBeaconBody(raw: string): ParsedClickBeacon {
       externalId: asStr(o.external_id).trim().slice(0, CLICK_BEACON_FIELD_MAX),
       fbc: asStr(o.fbc).trim().slice(0, CLICK_BEACON_FIELD_MAX),
       fbp: asStr(o.fbp).trim().slice(0, CLICK_BEACON_FIELD_MAX),
+      origem: asStr(o.origem).trim().slice(0, CLICK_BEACON_ORIGIN_FIELD_MAX),
+      utmCampaign: asStr(o.utm_campaign).trim().slice(0, CLICK_BEACON_ORIGIN_FIELD_MAX),
+      utmContent: asStr(o.utm_content).trim().slice(0, CLICK_BEACON_ORIGIN_FIELD_MAX),
     };
   } catch {
-    return { variant: "", posicao: "", eventId: "", externalId: "", fbc: "", fbp: "" };
+    return { variant: "", posicao: "", eventId: "", externalId: "", fbc: "", fbp: "", origem: "", utmCampaign: "", utmContent: "" };
   }
 }
 
@@ -87,6 +103,23 @@ export function validateClickBeacon(p: ParsedClickBeacon): ClickBeaconValidation
     eventId: p.eventId,
     posicao: p.posicao || "sem-posicao",
   };
+}
+
+/**
+ * #10079: `custom_data` do evento reenviado via CAPI — os MESMOS parâmetros
+ * que o `fbq('trackCustom', ...)` client-side leva (`posicao` + origem da
+ * visita), pra que as conversões personalizadas por origem casem dos dois
+ * lados. Campo vazio é omitido (nunca manda `origem: ""`). Pure.
+ */
+export function clickBeaconCustomData(
+  parsed: ParsedClickBeacon,
+  v: Extract<ClickBeaconValidation, { ok: true }>,
+): Record<string, string> {
+  const data: Record<string, string> = { posicao: v.posicao };
+  if (parsed.origem) data.origem = parsed.origem;
+  if (parsed.utmCampaign) data.utm_campaign = parsed.utmCampaign;
+  if (parsed.utmContent) data.utm_content = parsed.utmContent;
+  return data;
 }
 
 /**

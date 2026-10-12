@@ -89,7 +89,12 @@ import { matchIndexNowKeyPath } from "../../../scripts/lib/shared/indexnow-key-r
 // o pixel) — o beacon reenvia o MESMO evento via CAPI, dedupado pela Meta
 // contra o disparo client-side pelo par (event_name, event_id). Ver docstring
 // completa em click-beacon.ts.
-import { parseClickBeaconBody, validateClickBeacon, CLICK_BEACON_ENDPOINT } from "../../../scripts/lib/shared/click-beacon.ts";
+import {
+  parseClickBeaconBody,
+  validateClickBeacon,
+  clickBeaconCustomData,
+  CLICK_BEACON_ENDPOINT,
+} from "../../../scripts/lib/shared/click-beacon.ts";
 import {
   extractMetaCapiClientSignals,
   sendMetaCapiCustomEvent,
@@ -151,7 +156,8 @@ async function handleAgenteIaClique(request: Request, env: Env, ctx?: ExecutionC
           eventName: v.eventName,
           eventId: v.eventId,
           eventSourceUrl,
-          customData: { posicao: v.posicao },
+          // #10079: posicao + origem da visita (origem/utm_campaign/utm_content).
+          customData: clickBeaconCustomData(parsed, v),
           clientSignals,
         },
         { accessToken: env.META_CAPI_ACCESS_TOKEN },

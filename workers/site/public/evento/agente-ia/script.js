@@ -24,14 +24,36 @@ function checkoutHref(base) {
   return url.toString();
 }
 
+// #10079: origem da visita, calculada uma vez por carregamento da página e
+// enviada em TODOS os eventos (visita, rolagem e clique) e no beacon do clique.
+// O nome do evento não muda: a separação por origem é feita com conversões
+// personalizadas no painel da Meta, filtrando pelo parâmetro `origem`.
+// Ordem: o utm_source, se houver; "meta", se houver fbclid; senão "direto".
+// Cada campo é cortado em 100 caracteres (mesmo teto do servidor,
+// CLICK_BEACON_ORIGIN_FIELD_MAX em scripts/lib/shared/click-beacon.ts).
+const ORIGIN_FIELD_MAX = 100;
+function visitOrigin(search) {
+  const visit = new URLSearchParams(search);
+  const clean = (key) => (visit.get(key) || "").trim().slice(0, ORIGIN_FIELD_MAX);
+  const source = clean("utm_source");
+  const data = { origem: source || (clean("fbclid") ? "meta" : "direto") };
+  const campaign = clean("utm_campaign");
+  const content = clean("utm_content");
+  if (campaign) data.utm_campaign = campaign;
+  if (content) data.utm_content = content;
+  return data;
+}
+const origin = visitOrigin(window.location.search);
+
 // #8982: `eventID` opcional — quando presente, viaja no 4o argumento do fbq
 // (`{eventID}`) pra Meta deduplicar este disparo client-side contra o MESMO
 // evento reenviado via CAPI pelo beacon abaixo (mesmo mecanismo de
 // event_name+event_id já documentado em meta-capi.ts pro CompleteRegistration).
 function track(event, data, eventId) {
   if (typeof window.fbq !== "function") return;
-  if (eventId) window.fbq("trackCustom", `${event}_${variant}`, data || {}, { eventID: eventId });
-  else window.fbq("trackCustom", `${event}_${variant}`, data);
+  const params = Object.assign({}, origin, data);
+  if (eventId) window.fbq("trackCustom", `${event}_${variant}`, params, { eventID: eventId });
+  else window.fbq("trackCustom", `${event}_${variant}`, params);
 }
 
 track("VisitaPagina");
@@ -57,6 +79,10 @@ function sendClickBeacon(eventId, posicao) {
     external_id: window.__DIA_VID__ || readCookie("_dia_vid"),
     fbc: readCookie("_fbc"),
     fbp: readCookie("_fbp"),
+    // #10079: mesma origem que vai nos parâmetros do fbq.
+    origem: origin.origem,
+    utm_campaign: origin.utm_campaign || "",
+    utm_content: origin.utm_content || "",
   });
   try {
     if (typeof navigator.sendBeacon === "function") {
