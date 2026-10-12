@@ -140,6 +140,7 @@ describe("#9312 accumulateCliRun (pure)", () => {
       session_filter: "cli_json",
       num_turns: 5,
       cli_runs: 1,
+      cli_run_log: [{ num_turns: 5, cost_usd: 1 }], // #9597
     });
   });
 
