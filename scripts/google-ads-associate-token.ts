@@ -33,6 +33,7 @@ import {
   buildAssociationRequest,
   normalizeCustomerId,
 } from "./lib/google-ads-associate.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 
 /**
  * #8023 — dois escopos, espaço-separados (formato exigido pelo OAuth 2.0 do
@@ -66,7 +67,7 @@ async function fetchOrExit(input: string, init: RequestInit, what: string): Prom
   } catch (e) {
     console.error(`✖ Falha de rede antes de chegar na ${what} — ${e instanceof Error ? e.message : e}`);
     console.error("  A requisição não saiu daqui, então nada foi associado. Pode repetir com segurança.");
-    process.exit(1);
+    throw new CliExit(1);
   }
 }
 
@@ -78,7 +79,7 @@ async function jsonOrExit<T>(res: Response, what: string): Promise<T> {
   } catch {
     console.error(`✖ ${what} respondeu algo que não é JSON (HTTP ${res.status}):`);
     console.error("  " + text.slice(0, 300).replace(/\n/g, "\n  "));
-    process.exit(1);
+    throw new CliExit(1);
   }
 }
 
@@ -95,7 +96,7 @@ function required(name: string): string {
   if (!value) {
     console.error(`✖ Falta ${name} no ambiente.`);
     console.error("  Rode via Doppler:  doppler run -- npx tsx scripts/google-ads-associate-token.ts");
-    process.exit(1);
+    throw new CliExit(1);
   }
   return value;
 }
@@ -118,7 +119,7 @@ function saveRefreshTokenToDoppler(refreshToken: string): void {
     console.error("");
     console.error("  O refresh token NÃO foi impresso de propósito (segredo não vai pro terminal).");
     console.error("  Instale/autentique o CLI (`doppler login`) e rode o --auth de novo.");
-    process.exit(1);
+    throw new CliExit(1);
   }
 
   console.log("✔ GOOGLE_ADS_REFRESH_TOKEN gravado no Doppler (valor nunca impresso).");
@@ -250,7 +251,7 @@ async function runConsentFlow(): Promise<void> {
   );
   if (!res.ok || !payload.refresh_token) {
     console.error(`✖ Troca do código falhou: ${payload.error_description ?? res.status}`);
-    process.exit(1);
+    throw new CliExit(1);
   }
 
   saveRefreshTokenToDoppler(payload.refresh_token);
@@ -279,7 +280,7 @@ async function accessTokenFromRefresh(): Promise<string> {
   if (!res.ok || !payload.access_token) {
     console.error(`✖ Não consegui renovar o access token: ${payload.error_description ?? res.status}`);
     console.error("  Se o refresh token ainda não existe, rode antes:  --auth");
-    process.exit(1);
+    throw new CliExit(1);
   }
   return payload.access_token;
 }
@@ -317,22 +318,22 @@ async function associate(): Promise<void> {
     console.log(`✔ Token associado ao projeto — ${outcome.reason}`);
     console.log("");
     console.log("  Nada mais a fazer aqui. O próximo marco é a fila do Basic Access.");
-    process.exit(0);
+    return;
   }
 
   console.error(`✖ Associação não confirmada — ${outcome.reason}`);
   console.error("");
   console.error("  Resposta bruta (primeiros 600 caracteres):");
   console.error("  " + text.slice(0, 600).replace(/\n/g, "\n  "));
-  process.exit(1);
+  throw new CliExit(1);
 }
 
+// #9911: as saídas viraram `CliExit(1)` (helpers) e `return` (sucesso);
+// `runCli` grava `process.exitCode` em vez de `process.exit()`, que no
+// Windows sai 127 logo depois de um `fetch`.
 const wantsAuth = process.argv.includes("--auth");
-try {
-  await (wantsAuth ? runConsentFlow() : associate());
-} catch (e) {
+runCli(() => (wantsAuth ? runConsentFlow() : associate()), {
   // Fecha o último caminho que escaparia como stack cru — rejeições do fluxo
   // de consentimento (timeout, porta ocupada, state divergente) chegam aqui.
-  console.error(`✖ ${e instanceof Error ? e.message : e}`);
-  process.exit(1);
-}
+  onError: (e) => console.error(`✖ ${e instanceof Error ? e.message : e}`),
+});

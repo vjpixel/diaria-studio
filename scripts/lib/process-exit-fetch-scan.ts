@@ -18,8 +18,14 @@
  * verificadores de leitura; num 3º lote (#9991), 6 scripts de até 4 saídas
  * — clarice-plan-wave, clarice-stripe-delta, delete-test-schedules,
  * inject-poll-token, sync-apoio-nivel-beehiiv, sync-cursos-subscribers-kv;
- * o resto fica para PR futuro). Restam servidores (`oauth-setup.ts` sobe o
- * callback HTTP), scripts com 5+ saídas e `clarice-engagement-cohorts-v2.ts`
+ * num 4º lote, 7 scripts de 5+ saídas revisados saída a saída —
+ * cohort-engagement, eia-compose, evaluate-brevo-diaria,
+ * google-ads-associate-token, onboarding-welcome-run, sync-pending-to-brevo,
+ * verify-pending-emails-mv; o resto fica para PR futuro). Restam servidores
+ * (`oauth-setup.ts` sobe o callback HTTP), `clarice-schedule-ramp.ts`,
+ * `studio/verify-remote-tunnel.ts`, `verify-emails-mv.ts` (o handler de
+ * SIGINT/SIGTERM sai 130 com requisições em voo, e um teste substitui
+ * `process.exit` para observar o código) e `clarice-engagement-cohorts-v2.ts`
  * (os testes substituem `process.exit` para observar o código). Duas ficaram
  * de propósito: `publish-monthly.ts` (os testes de integração substituem
  * `process.exit` para observar o código; migrar exige reescrever esses
@@ -38,18 +44,11 @@ import ts from "typescript";
 export const ALLOWLIST: ReadonlySet<string> = new Set([
   "scripts/clarice-engagement-cohorts-v2.ts",
   "scripts/clarice-schedule-ramp.ts",
-  "scripts/cohort-engagement.ts",
-  "scripts/eia-compose.ts",
-  "scripts/evaluate-brevo-diaria.ts",
-  "scripts/google-ads-associate-token.ts",
   "scripts/oauth-setup.ts",
-  "scripts/onboarding-welcome-run.ts",
   "scripts/publish-monthly.ts",
   "scripts/serve-preview.ts",
   "scripts/studio/verify-remote-tunnel.ts",
-  "scripts/sync-pending-to-brevo.ts",
   "scripts/verify-emails-mv.ts",
-  "scripts/verify-pending-emails-mv.ts",
 ]);
 
 const GLOBAL_OBJECTS = new Set(["globalThis", "global", "window", "self"]);

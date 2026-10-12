@@ -273,3 +273,73 @@ describe("3º lote migrado (#9911)", () => {
     });
   }
 });
+
+/**
+ * 4º lote do #9911: scripts de 5+ saídas, revisados saída a saída. Cada
+ * `process.exit(N)` virou `return N` em `main()` ou `CliExit(N)` num helper
+ * síncrono (`parseArgs`, `required`), com o código semântico preservado
+ * (cohort-engagement 3, onboarding/evaluate/sync-pending/verify-pending 2,
+ * eia-compose 1/0/2). `verify-emails-mv.ts` ficou de fora: o handler de
+ * SIGINT/SIGTERM sai 130 com requisições em voo e um teste substitui
+ * `process.exit` para observar o código.
+ */
+const BATCH_4 = [
+  "scripts/cohort-engagement.ts",
+  "scripts/eia-compose.ts",
+  "scripts/evaluate-brevo-diaria.ts",
+  "scripts/google-ads-associate-token.ts",
+  "scripts/onboarding-welcome-run.ts",
+  "scripts/sync-pending-to-brevo.ts",
+  "scripts/verify-pending-emails-mv.ts",
+];
+
+describe("4º lote migrado (#9911)", () => {
+  it("nenhum script do lote volta para a allowlist", () => {
+    for (const f of BATCH_4) assert.equal(ALLOWLIST.has(f), false, f);
+  });
+
+  const run = (script: string, args: string[], env: Record<string, string> = {}) =>
+    spawnSync(process.execPath, ["--import", "tsx", resolve(ROOT, script), ...args], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+
+  // Só caminhos de uso/credencial ausente, antes de qualquer rede ou escrita
+  // fora de diretório temporário. Env vazia (nunca removida): loadProjectEnv
+  // não sobrescreve var já presente.
+  const cases: Array<[string, string, string[], Record<string, string>, number]> = [
+    ["cohort-engagement com --threshold inválido", "scripts/cohort-engagement.ts", ["--threshold", "abc"], {}, 3],
+    ["cohort-engagement com --until sem valor", "scripts/cohort-engagement.ts", ["--since", "2026-07-21", "--until"], {}, 3],
+    ["eia-compose sem --edition", "scripts/eia-compose.ts", [], {}, 1],
+    ["onboarding-welcome-run com flag desconhecida (CliExit em parseArgs)", "scripts/onboarding-welcome-run.ts", ["--nao-existe-9911"], {}, 2],
+    ["onboarding-welcome-run com --emails-file inexistente (CliExit em parseArgs)", "scripts/onboarding-welcome-run.ts", ["--emails-file", "/nao/existe-9911.txt"], {}, 2],
+    ["verify-pending-emails-mv sem MILLION_VERIFIER_API_KEY", "scripts/verify-pending-emails-mv.ts", [], { MILLION_VERIFIER_API_KEY: "" }, 2],
+    ["sync-pending-to-brevo com --max-add inválido", "scripts/sync-pending-to-brevo.ts", ["--max-add", "abc"], {}, 2],
+  ];
+
+  for (const [name, script, args, env, code] of cases) {
+    it(`${name} sai ${code}`, () => {
+      const r = run(script, args, env);
+      assert.equal(r.status, code, r.stderr);
+    });
+  }
+
+  it("google-ads-associate-token sem credencial sai 1 via CliExit, sem passar pelo onError", () => {
+    const r = run("scripts/google-ads-associate-token.ts", [], { GOOGLE_ADS_CLIENT_ID: "" });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /Falta GOOGLE_ADS_CLIENT_ID/);
+    assert.doesNotMatch(r.stderr, /CliExit/);
+  });
+
+  it("eia-compose com --selection inválido sai 1 (out-dir temporário)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "eia-compose-9911-"));
+    try {
+      const r = run("scripts/eia-compose.ts", ["--edition", "260101", "--out-dir", dir, "--selection", "nao-existe"]);
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, /--selection deve ser um de/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

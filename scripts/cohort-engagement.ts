@@ -90,6 +90,7 @@
 import "dotenv/config";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import {
   normalizeKey,
   resolveGroupKey,
@@ -542,6 +543,8 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<F
   });
 
   if (res.status === 429 && retries < MAX_RETRIES) {
+    // #9991: libera o socket antes de esperar/retentar (runCli só sai com o loop vazio).
+    await res.body?.cancel().catch(() => {});
     const retryAfter = parseInt(res.headers.get("Retry-After") ?? "60", 10);
     const wait = Math.max(retryAfter * 1000, 30_000);
     process.stderr.write(
@@ -551,7 +554,10 @@ async function apiFetch<T>(path: string, apiKey: string, retries = 0): Promise<F
     return apiFetch<T>(path, apiKey, retries + 1);
   }
 
-  if (!res.ok) return { ok: false, status: res.status, body: null };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    return { ok: false, status: res.status, body: null };
+  }
   return { ok: true, status: res.status, body: (await res.json()) as T };
 }
 
@@ -649,7 +655,13 @@ export async function runCohortEngagement(
 // CLI guard
 // ---------------------------------------------------------------------------
 
-if (isMainModule(import.meta.url)) {
+/**
+ * Entry point (#9911): devolve o código de saída — 3 para argumento/janela
+ * inválidos, 1 (via `runCli`) para erro na consulta — e `runCli` o grava em
+ * `process.exitCode`. `process.exit()` logo depois do fetch da Beehiiv sai
+ * 127 no Windows.
+ */
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   const { flags, values } = parseArgs(argv);
   const jsonMode = flags.has("json");
@@ -658,7 +670,7 @@ if (isMainModule(import.meta.url)) {
   const threshold = thresholdRaw != null ? Number(thresholdRaw) : DEFAULT_THRESHOLD;
   if (Number.isNaN(threshold)) {
     process.stderr.write(`[cohort-engagement] --threshold inválido: "${thresholdRaw}"\n`);
-    process.exit(3);
+    return 3;
   }
 
   const minReceivedRaw = values["min-received"];
@@ -667,7 +679,7 @@ if (isMainModule(import.meta.url)) {
     minReceived = Number(minReceivedRaw);
     if (Number.isNaN(minReceived)) {
       process.stderr.write(`[cohort-engagement] --min-received inválido: "${minReceivedRaw}"\n`);
-      process.exit(3);
+      return 3;
     }
   }
 
@@ -683,7 +695,7 @@ if (isMainModule(import.meta.url)) {
       process.stderr.write(
         `[cohort-engagement] --${flag} requer um valor (ex: --${flag} 2026-07-21)\n`,
       );
-      process.exit(3);
+      return 3;
     }
   }
 
@@ -694,7 +706,7 @@ if (isMainModule(import.meta.url)) {
       sinceEpochSeconds = parseSinceToEpochSeconds(sinceRaw);
     } catch (e) {
       process.stderr.write(`[cohort-engagement] ${(e as Error).message}\n`);
-      process.exit(3);
+      return 3;
     }
   }
 
@@ -705,7 +717,7 @@ if (isMainModule(import.meta.url)) {
       untilEpochSecondsExclusive = parseUntilToEpochSecondsExclusive(untilRaw);
     } catch (e) {
       process.stderr.write(`[cohort-engagement] ${(e as Error).message}\n`);
-      process.exit(3);
+      return 3;
     }
   }
 
@@ -717,29 +729,29 @@ if (isMainModule(import.meta.url)) {
   );
   if (guardError != null) {
     process.stderr.write(`[cohort-engagement] ${guardError}\n`);
-    process.exit(3);
+    return 3;
   }
 
   const cfg = loadBeehiivConfig("[cohort-engagement]");
 
-  runCohortEngagement(cfg.publicationId, cfg.apiKey, {
+  const result = await runCohortEngagement(cfg.publicationId, cfg.apiKey, {
     threshold,
     minReceived,
     sinceEpochSeconds,
     sinceLabel: sinceRaw ?? null,
     untilEpochSecondsExclusive,
     untilLabel: untilRaw ?? null,
-  })
-    .then((result) => {
-      if (jsonMode) {
-        process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-        return;
-      }
-      process.stderr.write(`\n[cohort-engagement] Resultado (fetched_at=${result.fetched_at})\n\n`);
-      process.stdout.write(formatEngagementTable(result) + "\n");
-    })
-    .catch((err) => {
-      process.stderr.write(`[cohort-engagement] ERRO: ${String(err)}\n`);
-      process.exit(1);
-    });
+  });
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return;
+  }
+  process.stderr.write(`\n[cohort-engagement] Resultado (fetched_at=${result.fetched_at})\n\n`);
+  process.stdout.write(formatEngagementTable(result) + "\n");
+}
+
+if (isMainModule(import.meta.url)) {
+  runCli(main, {
+    onError: (err) => process.stderr.write(`[cohort-engagement] ERRO: ${String(err)}\n`),
+  });
 }
