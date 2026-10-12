@@ -276,12 +276,6 @@ function baseOf(files: Record<SyncFile, string>): Record<SyncFile, BaseEntry> {
   return base;
 }
 
-export function buildState(files: Record<SyncFile, string>, now: Date, docUrl?: string): DocsGateState {
-  const state: DocsGateState = { base: baseOf(files), rendered_at: now.toISOString() };
-  if (docUrl) state.doc_url = docUrl;
-  return state;
-}
-
 // ─── Parse do export ─────────────────────────────────────────────────────────
 
 /**
@@ -879,8 +873,6 @@ export type FileOutcome =
   | (OutcomeCommon & { action: "resolved_keep_file"; write: string; newBase: string; changes: DiffSummary })
   /** Conflito resolvido pelo editor: doc vence nos trechos em conflito. */
   | (OutcomeCommon & { action: "resolved_apply_doc"; write: string; newBase: string; changes: DiffSummary });
-
-export type FileAction = FileOutcome["action"];
 
 /** Remoção em massa: seção vazia ou o merge remove (líquido) >50% das linhas. */
 function massRemovalReason(m: Merge3Result, docSection: string): string | null {
