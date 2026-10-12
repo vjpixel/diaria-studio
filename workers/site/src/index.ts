@@ -100,6 +100,19 @@ import {
   sendMetaCapiCustomEvent,
   logMetaCapiSendResult,
 } from "../../../scripts/lib/shared/meta-capi.ts";
+// #10082: abandono de carrinho da Hotmart (webhook), gravado sem dados
+// pessoais — ver docstring de hotmart-abandono.ts.
+import {
+  HOTMART_WEBHOOK_PATH,
+  HOTMART_ABANDONOS_PATH,
+  ABANDONO_TTL_SECONDS,
+  buildAbandonoRecord,
+  abandonoKvKey,
+  abandonoDayPrefix,
+  resolvePeriodo,
+  secretMatches,
+  type AbandonoRecord,
+} from "../../../scripts/lib/shared/hotmart-abandono.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -124,6 +137,104 @@ export interface Env {
    *  beacon sempre responde 204 de qualquer forma — nunca bloqueia o
    *  clique real. */
   META_CAPI_ACCESS_TOKEN?: string;
+  /** #10082: hottok da conta Hotmart (Ferramentas > Webhook), comparado com o
+   *  cabeçalho `X-HOTMART-HOTTOK` de cada chamada do webhook. Provisionado
+   *  com `wrangler secret put HOTMART_HOTTOK --name diaria-site`. Ausente =
+   *  o webhook recusa tudo (503), nunca grava sem autenticar. */
+  HOTMART_HOTTOK?: string;
+  /** #10082: token da leitura `GET /hotmart/abandonos` (cabeçalho
+   *  `Authorization: Bearer ...`), usado pelo relatório do VTSD.
+   *  Provisionado com `wrangler secret put HOTMART_ABANDONOS_TOKEN --name
+   *  diaria-site`. Ausente = a leitura recusa tudo (503). */
+  HOTMART_ABANDONOS_TOKEN?: string;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * #10082: `POST /webhooks/hotmart` — webhook da Hotmart. Só o evento
+ * `PURCHASE_OUT_OF_SHOPPING_CART` é gravado; outros eventos recebem 200 e
+ * são ignorados (a Hotmart reenvia o que não recebe 2xx, e um evento a mais
+ * marcado no painel não deve virar fila de reenvio). O registro vai para o
+ * KV `CURSOS_SUBSCRIBERS` com prefixo próprio, e o mesmo registro vai como
+ * metadata da chave, para a leitura listar sem um `get` por registro.
+ * Nenhum log com o corpo: o payload tem nome, e-mail e telefone.
+ */
+async function handleHotmartWebhook(request: Request, env: Env): Promise<Response> {
+  if (!env.HOTMART_HOTTOK) return jsonResponse({ ok: false, error: "not_configured" }, 503);
+  if (!(await secretMatches(request.headers.get("X-HOTMART-HOTTOK"), env.HOTMART_HOTTOK))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401);
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await request.text());
+  } catch {
+    return jsonResponse({ ok: false, error: "invalid_json" }, 400);
+  }
+  const built = buildAbandonoRecord(payload, Date.now());
+  if (!built.ok) {
+    if (built.reason === "not_abandono") return jsonResponse({ ok: true, ignored: true });
+    return jsonResponse({ ok: false, error: built.reason }, 400);
+  }
+  if (!env.CURSOS_SUBSCRIBERS) return jsonResponse({ ok: false, error: "storage_unavailable" }, 503);
+  const key = abandonoKvKey(built.record);
+  try {
+    await env.CURSOS_SUBSCRIBERS.put(key, JSON.stringify(built.record), {
+      metadata: built.record,
+      expirationTtl: ABANDONO_TTL_SECONDS,
+    });
+  } catch (err) {
+    // 5xx de propósito: a Hotmart reenvia, e o reenvio grava na mesma chave.
+    console.error(`hotmart-abandono: falha ao gravar ${key}: ${err instanceof Error ? err.message : String(err)}`);
+    return jsonResponse({ ok: false, error: "storage_error" }, 500);
+  }
+  console.log(`hotmart-abandono: gravado ${key}`);
+  return jsonResponse({ ok: true });
+}
+
+/**
+ * #10082: `GET /hotmart/abandonos?de=AAAA-MM-DD&ate=AAAA-MM-DD` — registros
+ * de abandono do período (dias em Brasília, inclusivos; sem parâmetros, o
+ * dia de hoje). Autenticada por `Authorization: Bearer
+ * <HOTMART_ABANDONOS_TOKEN>`, fail-closed.
+ */
+async function handleHotmartAbandonos(request: Request, env: Env, reqUrl: URL): Promise<Response> {
+  if (!env.HOTMART_ABANDONOS_TOKEN) return jsonResponse({ ok: false, error: "not_configured" }, 503);
+  const bearer = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (!(await secretMatches(bearer, env.HOTMART_ABANDONOS_TOKEN))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401);
+  }
+  const periodo = resolvePeriodo(reqUrl.searchParams.get("de"), reqUrl.searchParams.get("ate"), Date.now());
+  if (!periodo.ok) return jsonResponse({ ok: false, error: periodo.error }, 400);
+  if (!env.CURSOS_SUBSCRIBERS) return jsonResponse({ ok: false, error: "storage_unavailable" }, 503);
+  const registros: AbandonoRecord[] = [];
+  for (const dia of periodo.dias) {
+    let cursor: string | undefined;
+    do {
+      // Cast: a tipagem de KV usada nos testes (tsconfig.test.json) não traz
+      // `metadata` na listagem; o runtime traz (gravado no put do webhook).
+      const page = (await env.CURSOS_SUBSCRIBERS.list({ prefix: abandonoDayPrefix(dia), cursor })) as unknown as {
+        keys: Array<{ name: string; metadata?: AbandonoRecord | null }>;
+        list_complete: boolean;
+        cursor?: string;
+      };
+      for (const k of page.keys) {
+        if (k.metadata) registros.push(k.metadata);
+        else {
+          const raw = await env.CURSOS_SUBSCRIBERS.get(k.name);
+          if (raw) registros.push(JSON.parse(raw) as AbandonoRecord);
+        }
+      }
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  }
+  registros.sort((a, b) => a.criado_em.localeCompare(b.criado_em));
+  return jsonResponse({ ok: true, de: periodo.dias[0], ate: periodo.dias[periodo.dias.length - 1], total: registros.length, registros });
 }
 
 /**
@@ -268,6 +379,14 @@ export default {
     // mesmo racional de /img/{key} e /confirmada abaixo (rota, não asset).
     if (request.method === "POST" && new URL(request.url).pathname === CLICK_BEACON_ENDPOINT) {
       return handleAgenteIaClique(request, env, ctx);
+    }
+    // #10082: webhook da Hotmart e leitura dos abandonos — rotas, não assets.
+    {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === HOTMART_WEBHOOK_PATH && request.method === "POST") return handleHotmartWebhook(request, env);
+      if (pathname === HOTMART_ABANDONOS_PATH && request.method === "GET") {
+        return handleHotmartAbandonos(request, env, new URL(request.url));
+      }
     }
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.
