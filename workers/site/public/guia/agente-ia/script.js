@@ -4,6 +4,30 @@
 // origem da venda; fbclid deixa o pixel do checkout reconhecer o clique no anúncio).
 
 const CHECKOUT_URL = "https://pay.hotmart.com/A107949130U?checkoutMode=10";
+
+// #10080: modo interno (?interno=1). O bootstrap inline do <head> define
+// window.__DIA_INTERNO__ antes do pixel e do GTM, que então nem carregam.
+// Aqui: sem beacon do clique e com um aviso discreto para a equipe.
+const internalMode = window.__DIA_INTERNO__ === true;
+if (internalMode) {
+  const aviso = document.createElement("div");
+  aviso.className = "aviso-interno";
+  aviso.setAttribute("role", "status");
+  aviso.textContent = "Modo interno: visita não medida";
+  Object.assign(aviso.style, {
+    position: "fixed",
+    left: "8px",
+    bottom: "8px",
+    zIndex: "9999",
+    padding: "3px 8px",
+    borderRadius: "4px",
+    background: "rgba(0, 0, 0, 0.65)",
+    color: "#fff",
+    font: "12px/1.4 system-ui, sans-serif",
+    pointerEvents: "none",
+  });
+  document.body.appendChild(aviso);
+}
 const TRACKING_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "fbclid", "gclid"];
 
 function checkoutHref(base) {
@@ -43,7 +67,7 @@ const visitData = visitOrigin(window.location.search);
 // Eventos próprios do guia (prefixo Guia), separados dos eventos do evento ao vivo.
 // O try/catch garante que um erro no pixel nunca impeça a navegação para o checkout.
 function track(event, data) {
-  if (typeof window.fbq !== "function") return;
+  if (internalMode || typeof window.fbq !== "function") return;
   try {
     window.fbq("trackCustom", `Guia${event}`, Object.assign({}, visitData, data));
   } catch (e) {
