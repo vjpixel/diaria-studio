@@ -22,7 +22,8 @@ describe("#10058 — social da skill diaria-2-escrita", () => {
     for (const p of prompts) {
       assert.match(p, /01-approved-capped\.json/);
       assert.doesNotMatch(p, /01-approved\.json/);
-      assert.match(p, /source_text_paths=/);
+      assert.match(p, /source_text_paths com uma chave por destaque/);
+      assert.match(p, /chave um = /);
     }
   });
 
