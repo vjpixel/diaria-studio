@@ -17,7 +17,7 @@ if (internalMode) {
   Object.assign(aviso.style, {
     position: "fixed",
     left: "8px",
-    bottom: "8px",
+    top: "8px",
     zIndex: "9999",
     padding: "3px 8px",
     borderRadius: "4px",
@@ -86,6 +86,8 @@ const href = checkoutHref(CHECKOUT_URL);
 document.querySelectorAll(".checkout-link").forEach((link) => {
   link.href = href;
   link.addEventListener("click", (ev) => {
+    // #10080: no modo interno não há pixel para esperar: o link segue normal.
+    if (internalMode) return;
     const data = { posicao: link.dataset.posicao || "sem-posicao" };
     if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
       track("Clique", data);

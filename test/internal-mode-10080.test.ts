@@ -13,7 +13,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import {
   internalModeBootstrapJs,
@@ -22,7 +23,7 @@ import {
 } from "../scripts/lib/shared/internal-mode.ts";
 import { renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
 
-const PUBLIC = join(process.cwd(), "workers/site/public");
+const PUBLIC = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), "workers/site/public");
 const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "guia/agente-ia"].map((p) => ({
   name: p,
   html: readFileSync(join(PUBLIC, p, "index.html"), "utf8"),
@@ -45,9 +46,15 @@ function fakeStorage(initial: Record<string, string> = {}, opts: { throws?: bool
 
 /** Executa o bootstrap inline do <head> e devolve o window resultante. */
 function runBootstrap(search: string, storage: ReturnType<typeof fakeStorage>) {
-  const win: Record<string, unknown> = { location: { search }, localStorage: storage };
-  vm.runInContext(internalModeBootstrapJs(), vm.createContext({ window: win, URLSearchParams }));
-  return win;
+  const replaced: string[] = [];
+  const win: Record<string, unknown> = {
+    location: { search, href: `https://diar.ia.br/evento/agente-ia/d${search}#oferta` },
+    localStorage: storage,
+    history: { state: null, replaceState: (_s: unknown, _t: string, url: string) => replaced.push(url) },
+  };
+  const ctx = vm.createContext({ window: win, URLSearchParams, URL });
+  vm.runInContext(internalModeBootstrapJs(), ctx);
+  return Object.assign(win, { replaced, globals: Object.keys(ctx) });
 }
 
 describe("#10080 bootstrap do modo interno", () => {
@@ -73,6 +80,17 @@ describe("#10080 bootstrap do modo interno", () => {
   it("sem marcador nem parâmetro: modo normal; valor diferente de 1/0 não muda nada", () => {
     assert.equal(runBootstrap("", fakeStorage()).__DIA_INTERNO__, false);
     assert.equal(runBootstrap("?interno=sim", fakeStorage()).__DIA_INTERNO__, false);
+  });
+
+  it("tira só o ?interno da barra de endereço, mantendo UTMs e âncora", () => {
+    const win = runBootstrap("?utm_source=meta&interno=1&utm_content=AD99", fakeStorage());
+    assert.deepEqual(win.replaced, ["/evento/agente-ia/d?utm_source=meta&utm_content=AD99#oferta"]);
+    assert.deepEqual(runBootstrap("?utm_source=meta", fakeStorage()).replaced, [], "sem o parâmetro, não mexe na URL");
+  });
+
+  it("não deixa variáveis no escopo global", () => {
+    const win = runBootstrap("?interno=1", fakeStorage());
+    assert.deepEqual(win.globals.sort(), ["URL", "URLSearchParams", "window"]);
   });
 
   it("localStorage bloqueado: modo normal, sem erro", () => {
@@ -107,7 +125,7 @@ describe("#10080 HTML das páginas", () => {
 });
 
 /** Roda um script.js de página com o modo interno ligado ou não. */
-function runPage(js: string, interno: boolean) {
+function runPage(js: string, interno: boolean, search = "?utm_source=meta&fbclid=x") {
   const fbqCalls: unknown[][] = [];
   const beacons: string[] = [];
   const appended: Array<{ textContent: string; className: string }> = [];
@@ -124,7 +142,7 @@ function runPage(js: string, interno: boolean) {
     },
   ];
   const win: Record<string, unknown> = {
-    location: { search: "?utm_source=meta&fbclid=x", href: "" },
+    location: { search, href: "" },
     fbq: (...args: unknown[]) => fbqCalls.push(args),
     __DIA_INTERNO__: interno,
     EVENT_CHECKOUT_URL: "https://pay.hotmart.com/G107726319K?checkoutMode=10",
@@ -158,11 +176,24 @@ function runPage(js: string, interno: boolean) {
     setTimeout: (fn: () => void) => (timers.push(fn), 0),
   });
   vm.runInContext(js, context);
+  let prevented = false;
   links[0].listeners.forEach((fn) =>
-    fn({ button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault: () => {} }),
+    fn({
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      preventDefault: () => {
+        prevented = true;
+      },
+    }),
   );
   timers.splice(0).forEach((fn) => fn());
-  return { fbqCalls, beacons, appended, href: String((win.location as { href: string }).href) };
+  // Destino do clique: navegação pelo script (location.href) ou, sem
+  // preventDefault, a navegação nativa do link.
+  const scripted = String((win.location as { href: string }).href);
+  return { fbqCalls, beacons, appended, href: scripted || (prevented ? "" : links[0].href) };
 }
 
 describe("#10080 script.js com o modo interno", () => {
@@ -178,6 +209,12 @@ describe("#10080 script.js com o modo interno", () => {
       assert.equal(r.appended[0].textContent, "Modo interno: visita não medida");
       assert.doesNotMatch(r.appended[0].textContent, /→/);
       assert.match(r.href, /^https:\/\/pay\.hotmart\.com\//);
+    });
+
+    it(`${name}: o parâmetro interno nunca segue para o checkout`, () => {
+      const r = runPage(js, true, "?utm_source=meta&interno=1");
+      assert.doesNotMatch(r.href, /interno/);
+      assert.match(r.href, /utm_source=meta/);
     });
 
     it(`${name}: desligado — eventos voltam a disparar e não há aviso`, () => {

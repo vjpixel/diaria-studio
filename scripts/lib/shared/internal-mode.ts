@@ -8,8 +8,12 @@
  *
  * Modo interno das páginas `/evento/agente-ia/*` e `/guia/agente-ia`:
  * - abrir qualquer uma delas com `?interno=1` grava o marcador no
- *   localStorage do navegador (vale para todas as páginas do domínio);
+ *   localStorage do navegador. Só estas páginas leem o marcador: a home e o
+ *   acervo de diar.ia.br (pixel pelo GTM) e o checkout da Hotmart (pixel
+ *   próprio) continuam medindo;
  * - `?interno=0` apaga o marcador;
+ * - o parâmetro sai da barra de endereço logo depois de lido
+ *   (`history.replaceState`), para não vazar num link copiado;
  * - com o marcador, a página não inicializa o pixel da Meta, não carrega o
  *   GTM (LinkedIn, Google Ads e GA4) e não manda o beacon do clique. Os
  *   links para o checkout continuam funcionando.
@@ -30,14 +34,29 @@ const INTERNAL_MODE_FLAG = "window.__DIA_INTERNO__";
  * bloqueado (aba anônima de alguns navegadores) vira modo normal, nunca erro.
  */
 export function internalModeBootstrapJs(): string {
+  const param = JSON.stringify(INTERNAL_MODE_QUERY_PARAM);
   return (
+    // IIFE: nenhuma variável vaza para o escopo global (um `const q` num
+    // script da página quebraria com SyntaxError).
+    "(function () {" +
+    "var q = null;" +
     "try {" +
-    `var KEY=${JSON.stringify(INTERNAL_MODE_STORAGE_KEY)};` +
-    `var q = new URLSearchParams(window.location.search).get(${JSON.stringify(INTERNAL_MODE_QUERY_PARAM)});` +
-    "if (q === '1') window.localStorage.setItem(KEY, '1');" +
-    "else if (q === '0') window.localStorage.removeItem(KEY);" +
-    `${INTERNAL_MODE_FLAG} = window.localStorage.getItem(KEY) === '1';` +
-    `} catch (e) { ${INTERNAL_MODE_FLAG} = false; }`
+    `var key = ${JSON.stringify(INTERNAL_MODE_STORAGE_KEY)};` +
+    `q = new URLSearchParams(window.location.search).get(${param});` +
+    "if (q === '1') window.localStorage.setItem(key, '1');" +
+    "else if (q === '0') window.localStorage.removeItem(key);" +
+    `${INTERNAL_MODE_FLAG} = window.localStorage.getItem(key) === '1';` +
+    `} catch (e) { ${INTERNAL_MODE_FLAG} = false; }` +
+    // Tira o parâmetro da barra de endereço: um link copiado daqui não pode
+    // levar `?interno=1` para visitantes reais (desligaria a medição deles).
+    "if (q !== null) {" +
+    "try {" +
+    "var u = new URL(window.location.href);" +
+    `u.searchParams.delete(${param});` +
+    "window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);" +
+    "} catch (e) {}" +
+    "}" +
+    "})();"
   );
 }
 

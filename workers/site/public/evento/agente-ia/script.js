@@ -12,7 +12,7 @@ if (internalMode) {
   Object.assign(aviso.style, {
     position: "fixed",
     left: "8px",
-    bottom: "8px",
+    top: "8px",
     zIndex: "9999",
     padding: "3px 8px",
     borderRadius: "4px",
