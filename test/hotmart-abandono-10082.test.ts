@@ -213,8 +213,10 @@ describe("#10082 buildAbandonoRecord", () => {
 });
 
 describe("#10082 cleanToken (src/sck/oferta)", () => {
-  it("aceita códigos usuais", () => {
-    for (const v of ["meta", "diaria", "lp-d-AD99", "lp-guia", "o8hknz2x", "utm:x_1.2"]) assert.equal(cleanToken(v), v);
+  it("aceita códigos usuais, inclusive nome de anúncio com data", () => {
+    for (const v of ["meta", "diaria", "lp-d-AD99", "lp-guia", "o8hknz2x", "utm:x_1.2", "lp-d-AD18-2026-10-05", "2.0.0"]) {
+      assert.equal(cleanToken(v), v);
+    }
   });
 
   it("descarta e-mail (inclusive %40 e @ depois do corte), telefone, documento, espaço e caractere de controle", () => {
@@ -280,6 +282,19 @@ describe("#10082 brtDay / resolvePeriodo / secretMatches / parseAbandonoRecord",
     assert.equal(parseAbandonoRecord({ evento_id: "a", dia: "2026-10-11" }), null);
     assert.equal(parseAbandonoRecord({ evento_id: "a", criado_em: "ontem", dia: "2026-10-11" }), null);
     assert.ok(parseAbandonoRecord({ evento_id: "a", criado_em: "2026-10-11T12:00:00.000Z", dia: "2026-10-11" }));
+  });
+
+  it("parseAbandonoRecord devolve só os campos da allowlist (campo extra gravado à mão não sai na leitura)", () => {
+    const r = parseAbandonoRecord({
+      evento_id: "a",
+      criado_em: "2026-10-11T12:00:00.000Z",
+      dia: "2026-10-11",
+      email: "fulana@example.com",
+      produto_id: 8576469,
+    });
+    assert.ok(r);
+    assert.equal(JSON.stringify(r).includes("fulana"), false);
+    assert.equal(r?.produto_id, 8576469);
   });
 });
 

@@ -107,6 +107,7 @@ import {
   HOTMART_ABANDONOS_PATH,
   ABANDONO_TTL_SECONDS,
   buildAbandonoRecord,
+  cleanToken,
   abandonoKvKey,
   fitsKvMetadata,
   lerAbandonos,
@@ -157,8 +158,10 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Hex do SHA-256 do texto: id determinístico para evento sem `id`. */
-async function sha256Hex(text: string): Promise<string> {
+/** Hex do SHA-256 do corpo bruto, sem normalizar (ao contrário do
+ * `sha256Hex` de subscriber-verify.ts, que normaliza e-mail): id
+ * determinístico para evento sem `id`. */
+async function bodyHashHex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -190,11 +193,14 @@ async function handleHotmartWebhook(request: Request, env: Env): Promise<Respons
     console.warn(`hotmart-webhook: corpo não é JSON (${raw.length} caracteres); recusado (400)`);
     return jsonResponse({ ok: false, error: "invalid_json" }, 400);
   }
-  const built = buildAbandonoRecord(payload, Date.now(), await sha256Hex(raw));
+  const built = buildAbandonoRecord(payload, Date.now(), await bodyHashHex(raw));
   if (!built.ok) {
     if (built.reason === "not_abandono") {
       const root = (payload ?? {}) as Record<string, unknown>;
-      console.warn(`hotmart-webhook: evento ignorado: ${String(root.event).slice(0, 60)} (versão ${String(root.version).slice(0, 10)})`);
+      // Passa pelo mesmo filtro de formato: o log nunca leva texto livre do corpo.
+      const evento = cleanToken(root.event, 60) ?? "(formato inválido)";
+      const versao = cleanToken(root.version, 10) ?? "?";
+      console.warn(`hotmart-webhook: evento ignorado: ${evento} (versão ${versao})`);
       return jsonResponse({ ok: true, ignored: true });
     }
     console.warn(`hotmart-webhook: corpo sem a forma de evento (${Array.isArray(payload) ? "array" : typeof payload}); recusado (400)`);

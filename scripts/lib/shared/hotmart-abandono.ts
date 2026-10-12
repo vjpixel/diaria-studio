@@ -100,8 +100,13 @@ function obj(v: unknown): Record<string, unknown> | undefined {
 
 const TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/;
-/** 8 ou mais dígitos seguidos (telefone, CPF) mesmo com separadores. */
-const LONG_DIGITS_RE = /\d(?:[\s.:-]?\d){7,}/;
+/** Telefone ou documento: 10+ dígitos colados (celular com DDD, CPF), ou um
+ * valor sem nenhuma letra com 8+ dígitos ("123.456.789-00"). Nome de anúncio
+ * com data ("AD18-2026-10-05") passa. */
+function looksLikePhoneOrDocument(s: string): boolean {
+  if (/\d{10,}/.test(s)) return true;
+  return !/[A-Za-z]/.test(s) && (s.match(/\d/g)?.length ?? 0) >= 8;
+}
 
 /**
  * Texto curto em formato de código (`meta`, `lp-d-AD99`, `o8hknz2x`). O que
@@ -111,7 +116,7 @@ const LONG_DIGITS_RE = /\d(?:[\s.:-]?\d){7,}/;
 export function cleanToken(v: unknown, max = ABANDONO_FIELD_MAX): string | null {
   if (typeof v !== "string" && typeof v !== "number") return null;
   const s = String(v).trim();
-  if (!s || /@|%40/i.test(s) || LONG_DIGITS_RE.test(s) || !TOKEN_RE.test(s)) return null;
+  if (!s || /@|%40/i.test(s) || looksLikePhoneOrDocument(s) || !TOKEN_RE.test(s)) return null;
   return s.slice(0, max);
 }
 
@@ -184,13 +189,27 @@ export function fitsKvMetadata(record: AbandonoRecord): boolean {
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Confere a forma mínima de um registro lido do KV (que pode ter sido gravado
- * à mão ou por versão antiga). Devolve `null` se não servir. */
+ * à mão ou por versão antiga) e devolve um objeto NOVO só com os campos da
+ * allowlist: um campo a mais gravado à mão nunca sai na leitura. `null` se
+ * não servir. */
 export function parseAbandonoRecord(x: unknown): AbandonoRecord | null {
   const o = obj(x);
   if (!o) return null;
   if (typeof o.evento_id !== "string" || typeof o.criado_em !== "string" || !Number.isFinite(Date.parse(o.criado_em))) return null;
   if (typeof o.dia !== "string" || !DAY_RE.test(o.dia)) return null;
-  return o as unknown as AbandonoRecord;
+  const strOrNull = (v: unknown) => (typeof v === "string" ? v : null);
+  return {
+    v: ABANDONO_RECORD_VERSION,
+    evento_id: o.evento_id,
+    criado_em: o.criado_em,
+    criado_em_origem: o.criado_em_origem === "recebimento" ? "recebimento" : "hotmart",
+    dia: o.dia,
+    produto_id: typeof o.produto_id === "number" ? o.produto_id : null,
+    oferta: strOrNull(o.oferta),
+    src: strOrNull(o.src),
+    sck: strOrNull(o.sck),
+    afiliado: typeof o.afiliado === "boolean" ? o.afiliado : null,
+  };
 }
 
 export type PeriodoResult =
