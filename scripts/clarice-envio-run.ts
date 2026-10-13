@@ -930,7 +930,14 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
   const report = new ReportBuilder(`diar.ia.br Clarice envio ${aammdd}`);
   let lockPath: string | null = null;
 
-  // --- Kill switch — ANTES de qualquer chamada externa. ---
+  // #10105/#10142 — alarme decisão×toggle ANTES do kill switch: com a rampa
+  // pausada o relatório é justamente o que sobra pra vigiar uma decisão
+  // contradita (ex.: "religar" × toggle desligado, ou toggle do novos
+  // religado contra decisão de pausa). O alarme só lê `gh` + arquivos
+  // locais de toggle — nenhuma chamada Brevo. Aviso, não bloqueio.
+  if (deps.readDecisionDrift) for (const line of deps.readDecisionDrift()) report.note(line);
+
+  // --- Kill switch — ANTES de qualquer chamada Brevo. ---
   if (!deps.isEnabled()) {
     report.note(
       "⏸️  automação PAUSADA (data/clarice-envio-enabled.json = {enabled:false}) — nenhuma chamada Brevo feita. " +
@@ -941,9 +948,6 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     return { code: 0, reportId, reportMarkdown: report.build() };
   }
   if (deps.readEnabledState) report.note(describeEnabledProvenance(deps.readEnabledState()));
-  // #10105 — toggle ligado contra decisão vigente de pausa: avisa no
-  // relatório (premissa do PR: aviso, não bloqueio — quem decide é o editor).
-  if (deps.readDecisionDrift) for (const line of deps.readDecisionDrift()) report.note(line);
 
   // --- #10096: parada durável por fila insuficiente — ANTES de qualquer
   // chamada externa, como o kill switch. Só o caminho manual com número

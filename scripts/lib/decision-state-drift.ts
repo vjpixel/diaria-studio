@@ -225,5 +225,13 @@ export function decisionDriftReportLines(
       `⚠️  alarme decisão×toggle (#10105) NÃO rodou: ${fetched.error} — não dá pra afirmar que nenhuma decisão do editor foi contradita.`,
     ];
   }
-  return formatDriftReportLines(checkDecisionStates(fetched.issues, readToggle));
+  // #10142 — o alarme roda ANTES do kill switch nos dois runners: exceção do
+  // leitor de toggle não pode derrubar nem o relatório pausado.
+  try {
+    return formatDriftReportLines(checkDecisionStates(fetched.issues, readToggle));
+  } catch (e) {
+    return [
+      `⚠️  alarme decisão×toggle (#10105) NÃO rodou: leitura do toggle falhou (${(e as Error).message}) — não dá pra afirmar que nenhuma decisão do editor foi contradita.`,
+    ];
+  }
 }

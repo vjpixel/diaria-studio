@@ -38,6 +38,8 @@ import { isWaveReleased } from "../scripts/lib/clarice-wave-released.ts"; // #97
 import { readClariceEnvioHalt, writeClariceEnvioHalt, type ClariceEnvioHalt } from "../scripts/lib/clarice-envio-halt.ts"; // #10096
 import { readClariceEnvioEnabledState } from "../scripts/lib/clarice-envio-enabled.ts"; // #10117
 import { classifyEnvioReportId } from "../scripts/lib/clarice-envio-alarm.ts"; // #10118
+import { decisionDriftReportLines } from "../scripts/lib/decision-state-drift.ts"; // #10142
+import { formatDecisionMarker } from "../scripts/lib/issue-decisions.ts"; // #10142
 import {
   riskUtilization,
   type RiskMetrics,
@@ -2478,6 +2480,39 @@ describe("describeEnabledProvenance (#10105)", () => {
       }),
     );
     assert.match(r.reportMarkdown, /SEM RASTRO/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("#10142 alarme decisão×toggle roda ANTES do kill switch: rampa pausada + toggle novos fora de sincronia", async () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-run-drift-paused-"));
+    const { exec, calls } = makeFakeExec({});
+    const marker = formatDecisionMarker({
+      decided_at: "2026-10-01T12:00:00.000Z",
+      pergunta: "Religar o clarice-novos?",
+      resposta: "Não — mantém pausado",
+      sessao: "develop",
+      estado_esperado: { toggle: "clarice-novos-enabled", enabled: false },
+    });
+    const r = await runEnvio(
+      baseDeps(root, {
+        exec,
+        isEnabled: () => false,
+        readDecisionDrift: () =>
+          decisionDriftReportLines(
+            () => ({ ok: true, issues: [{ number: 8099, title: "Clarice", commentBodies: [marker] }] }),
+            (toggle) =>
+              toggle === "clarice-novos-enabled"
+                ? { enabled: true, updatedAt: "2026-10-05T10:00:00.000Z" }
+                : { enabled: false, updatedAt: "2026-10-13T14:00:00.000Z" },
+          ),
+      }),
+    );
+    assert.equal(r.code, 0);
+    assert.equal(calls.length, 0, "rampa pausada: nenhuma chamada externa");
+    assert.match(r.reportId, /-paused$/);
+    assert.match(r.reportMarkdown, /PAUSADA/);
+    assert.match(r.reportMarkdown, /DECISÃO CONTRADITA/);
+    assert.match(r.reportMarkdown, /#8099/);
     rmSync(root, { recursive: true, force: true });
   });
 

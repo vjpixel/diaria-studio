@@ -254,3 +254,16 @@ describe("parseDriftCli", () => {
     assert.equal(parseDriftCli([...base, "--sessao", "nada", "--toggle", "clarice-envio-enabled", "--enabled", "false"], now).kind, "error");
   });
 });
+
+describe("decisionDriftReportLines fail-soft no leitor de toggle (#10142)", () => {
+  it("exceção do leitor vira linha de aviso, nunca derruba o relatório (roda antes do kill switch)", () => {
+    const lines = decisionDriftReportLines(
+      () => ({ ok: true, issues: [{ number: 8099, commentBodies: [formatDecisionMarker(PAUSA)] }] }),
+      () => {
+        throw new Error("EACCES");
+      },
+    );
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /NÃO rodou: leitura do toggle falhou \(EACCES\)/);
+  });
+});

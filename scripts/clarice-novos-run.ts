@@ -81,6 +81,11 @@ import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { isClariceNovosEnabled } from "./lib/clarice-novos-enabled.ts";
+import {
+  decisionDriftReportLines,
+  fetchOpenIssuesWithTrustedComments,
+  productionToggleReader,
+} from "./lib/decision-state-drift.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { clariceActivityDepsFromDisk, mostRecentActiveClariceCycle } from "./lib/mensal/monthly-paths.ts";
 import { writeNovosCutoff } from "./lib/clarice-novos-cutoff.ts";
@@ -244,6 +249,11 @@ export interface NovosRunDeps {
    * temporário sem junction `data/` real, e o sinal de exec-mode não deve
    * depender disso pra ser exercitado. */
   execMode: () => "local" | "cloud";
+  /** #10142 — alarme decisão×toggle (#10105): linhas de aviso quando um
+   * toggle real (envio ou novos) contradiz a decisão vigente do editor.
+   * Roda ANTES do kill switch, então aparece também no relatório pausado.
+   * Opcional: ausente = alarme não roda (testes). Só avisa, nunca bloqueia. */
+  readDecisionDrift?: () => string[];
 }
 
 export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
@@ -254,6 +264,8 @@ export function productionDeps(rootDir: string = ROOT): NovosRunDeps {
     isEnabled: () => isClariceNovosEnabled(rootDir),
     resolveEnvioCycle: () => mostRecentActiveClariceCycle(clariceActivityDepsFromDisk()),
     execMode: () => detectExecMode({ projectRoot: rootDir }),
+    readDecisionDrift: () =>
+      decisionDriftReportLines(() => fetchOpenIssuesWithTrustedComments(rootDir), productionToggleReader(rootDir)),
   };
 }
 
@@ -345,7 +357,13 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
   const aammdd = todayAammdd(now);
   const report = new ReportBuilder(`diar.ia.br Clarice novos ${aammdd}`);
 
-  // --- Kill switch (#4941 E3) — ANTES de qualquer chamada externa. ---
+  // #10142 — alarme decisão×toggle ANTES do kill switch (só lê `gh` + os
+  // arquivos de toggle; nenhuma chamada Stripe/MV/Brevo): uma decisão de
+  // pausa do novos contradita por um toggle religado, ou "religar" × toggle
+  // desligado, aparece também no relatório pausado.
+  if (deps.readDecisionDrift) for (const line of deps.readDecisionDrift()) report.note(line);
+
+  // --- Kill switch (#4941 E3) — ANTES de qualquer chamada Stripe/MV/Brevo. ---
   if (!deps.isEnabled()) {
     report.note(
       "⏸️  automação PAUSADA (data/clarice-novos-enabled.json ausente ou {enabled:false}) — " +
