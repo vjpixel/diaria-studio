@@ -1296,9 +1296,46 @@ export interface ApplyOptions {
   /** Apply final do ramo `sim`: sem conflito, grava `final_apply` (o `check`
    * do §4e exige). Apply não-final apaga `final_apply`. */
   final?: boolean;
+  /** Tamanho em bytes do export devolvido pelo conector (#10116). Quando
+   * passado, o arquivo em `docExport` tem de ter exatamente esse tamanho —
+   * senão a cópia manual do export saiu truncada/alterada e nada é gravado. */
+  expectedBytes?: number;
   now?: Date;
   /** Só para teste: roda entre a decisão e a releitura pré-escrita (TOCTOU). */
   beforeWrite?: (file: SyncFile) => void;
+}
+
+const REPLACEMENT_CHAR = "\uFFFD";
+
+function countReplacementChars(text: string): number {
+  let n = 0;
+  for (const ch of text) if (ch === REPLACEMENT_CHAR) n++;
+  return n;
+}
+
+/**
+ * #10116: o export chega ao disco copiado à mão (base64 → decode). Um erro de
+ * cópia fora das linhas-sentinela vira U+FFFD (byte UTF-8 inválido) e, sem
+ * esta checagem, entraria em `02-reviewed.md`/`03-social.md` como "edição do
+ * editor". Recusa (exit 2, nada gravado) qualquer seção do export com mais
+ * U+FFFD do que o arquivo/base já tinham — só o U+FFFD pré-existente no
+ * conteúdo (raro, mas legítimo) é tolerado.
+ */
+function assertNoReplacementChars(
+  sections: Record<SyncFile, string>,
+  current: Record<SyncFile, string>,
+  base: DocsGateState["base"],
+): void {
+  const bad = SYNC_FILES.filter((file) => {
+    const inExport = countReplacementChars(sections[file]);
+    if (inExport === 0) return false;
+    return inExport > Math.max(countReplacementChars(current[file]), countReplacementChars(base[file].content));
+  });
+  if (bad.length > 0) {
+    throw new DocsSyncFormatError(
+      `export do doc contém caractere U+FFFD (cópia/decodificação corrompida) em ${bad.join(", ")} — refaça a cópia do export (nada gravado)`,
+    );
+  }
 }
 
 function stripOutcome(o: FileOutcome): ReportOutcome {
@@ -1316,10 +1353,17 @@ function stripOutcome(o: FileOutcome): ReportOutcome {
 export function runApply(opts: ApplyOptions): ApplyReport {
   const state = requireState(opts.editionDir, "apply");
   if (state.sync_disabled) throw disabledError(state);
-  const exportText = existsSync(opts.docExport) ? readFileSync(opts.docExport, "utf8") : null;
-  if (exportText === null) throw new DocsSyncFormatError(`export do doc não encontrado: ${opts.docExport}`);
+  const exportBytes = existsSync(opts.docExport) ? readFileSync(opts.docExport) : null;
+  if (exportBytes === null) throw new DocsSyncFormatError(`export do doc não encontrado: ${opts.docExport}`);
+  if (opts.expectedBytes !== undefined && exportBytes.length !== opts.expectedBytes) {
+    throw new DocsSyncFormatError(
+      `export do doc com ${exportBytes.length} bytes, o conector devolveu ${opts.expectedBytes} — cópia do export corrompida; refaça a cópia (nada gravado)`,
+    );
+  }
+  const exportText = exportBytes.toString("utf8");
   const sections = parseDocExport(exportText);
   const current = readSyncFiles(opts.editionDir);
+  assertNoReplacementChars(sections, current, state.base);
 
   const outcomes: FileOutcome[] = SYNC_FILES.map((file) =>
     decideFile(file, state.base[file].content, current[file], sections[file], opts.resolutions?.[file]),

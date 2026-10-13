@@ -25,8 +25,11 @@
  *
  *   # Puxa as edições do doc (export markdown) de volta para os arquivos
  *   npx tsx scripts/stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <arquivo.md> \
- *     [--resolve "02-reviewed.md=arquivo|doc@<resolve_token>,03-social.md=..."] [--final]
+ *     [--resolve "02-reviewed.md=arquivo|doc@<resolve_token>,03-social.md=..."] [--final] [--expected-bytes <n>]
  *     (--final = apply final do ramo `sim`; o `check` exige que seja o último apply)
+ *     (#10116: export com U+FFFD é recusado com exit 2, nada gravado — cópia
+ *     corrompida; --expected-bytes = tamanho devolvido pelo conector, opcional:
+ *     se o arquivo tiver outro tamanho, exit 2, nada gravado)
  *
  *   # Desliga o sync (ex.: editor aprovou "sem as edições do doc")
  *   npx tsx scripts/stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"
@@ -86,7 +89,7 @@ const USAGE =
   "     stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url>\n" +
   "     stage4-docs-sync.ts check-roundtrip --edition-dir <dir> --doc-export <md>\n" +
   "     stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <md>] [--doc-version <v>]\n" +
-  '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."] [--final]\n' +
+  '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."] [--final] [--expected-bytes <n>]\n' +
   '     stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"\n' +
   "     stage4-docs-sync.ts enable --edition-dir <dir> --doc-export <md>\n" +
   "     stage4-docs-sync.ts status --edition-dir <dir>\n" +
@@ -95,7 +98,7 @@ const USAGE =
 function run(argv: string[]): number {
   const { positional, values, flags } = parseArgs(argv);
   const cmd = positional[0];
-  for (const k of ["edition-dir", "edition", "out", "summary-file", "doc-url", "doc-export", "resolve", "reason", "doc-version"]) {
+  for (const k of ["edition-dir", "edition", "out", "summary-file", "doc-url", "doc-export", "resolve", "reason", "doc-version", "expected-bytes"]) {
     if (flags.has(k)) usage(`--${k} requer um valor`);
   }
   const editionDir = values["edition-dir"];
@@ -134,7 +137,13 @@ function run(argv: string[]): number {
     case "apply": {
       if (!docExport) usage("--doc-export obrigatório no apply");
       const resolutions = values["resolve"] ? parseResolutions(values["resolve"]) : undefined;
-      const report = runApply({ editionDir, docExport, resolutions, final: flags.has("final") });
+      const rawBytes = values["expected-bytes"];
+      let expectedBytes: number | undefined;
+      if (rawBytes !== undefined) {
+        if (!/^\d+$/.test(rawBytes)) usage(`--expected-bytes inválido: ${rawBytes} (inteiro ≥ 0)`);
+        expectedBytes = Number(rawBytes);
+      }
+      const report = runApply({ editionDir, docExport, resolutions, final: flags.has("final"), expectedBytes });
       console.log(JSON.stringify(report, null, 2));
       return report.ok ? 0 : 1;
     }
