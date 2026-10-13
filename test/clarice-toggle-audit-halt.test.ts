@@ -13,11 +13,15 @@ import { join, resolve } from "node:path";
 import { buildToggleChangeEvent, parseToggleCli, resolveToggleAudit } from "../scripts/lib/clarice-toggle-audit.ts";
 import {
   clearClariceEnvioHalt,
+  CLARICE_ENVIO_HALT_MAX_AGE_DAYS,
   describeHaltForReport,
+  evaluateHaltStaleness,
+  HALT_STALE_REPORT_SUFFIX,
   readClariceEnvioHalt,
   writeClariceEnvioHalt,
   type ClariceEnvioHalt,
 } from "../scripts/lib/clarice-envio-halt.ts";
+import { classifyEnvioReportId } from "../scripts/lib/clarice-envio-alarm.ts";
 
 describe("parseToggleCli (#10105)", () => {
   it("sem args => leitura", () => {
@@ -113,5 +117,44 @@ describe("clarice-envio-halt (#10096)", () => {
     assert.doesNotMatch(same, /ciclo mudou/);
     const changed = describeHaltForReport({ halted: true, invalid: false, halt: HALT }, "2610-11");
     assert.match(changed, /ciclo mudou desde a parada \(2609-10 → 2610-11\)/);
+  });
+});
+
+describe("evaluateHaltStaleness (#10118)", () => {
+  const since = Date.parse(HALT.since);
+  const at = (days: number) => new Date(since + days * 86_400_000);
+
+  it("limite nomeado é 3 dias", () => {
+    assert.equal(CLARICE_ENVIO_HALT_MAX_AGE_DAYS, 3);
+  });
+  it("dentro do limite e mesmo ciclo => não vencida (pausa legítima)", () => {
+    assert.deepEqual(evaluateHaltStaleness(HALT, at(1), "2609-10"), { stale: false });
+    assert.deepEqual(evaluateHaltStaleness(HALT, at(3), "2609-10"), { stale: false }, "exatamente no limite ainda vale");
+  });
+  it("passou do limite => vencida, com a idade no motivo", () => {
+    const r = evaluateHaltStaleness(HALT, at(3.5), "2609-10");
+    assert.ok(r.stale);
+    if (r.stale) assert.deepEqual(r.reasons, [`parada há mais de 3 dias (desde ${HALT.since})`]);
+  });
+  it("ciclo mudou => vencida mesmo no 1º dia", () => {
+    const r = evaluateHaltStaleness(HALT, at(0.5), "2610-11");
+    assert.ok(r.stale);
+    if (r.stale) assert.match(r.reasons.join(), /ciclo mudou desde a parada \(2609-10 → 2610-11\)/);
+  });
+  it("ciclo atual desconhecido (null) só desliga o critério de ciclo", () => {
+    assert.deepEqual(evaluateHaltStaleness(HALT, at(1), null), { stale: false });
+    assert.equal(evaluateHaltStaleness(HALT, at(5), null).stale, true);
+  });
+  it("since ilegível => vencida (fail-toward-alarming)", () => {
+    const r = evaluateHaltStaleness({ ...HALT, since: "ontem" }, at(0), "2609-10");
+    assert.ok(r.stale);
+    if (r.stale) assert.match(r.reasons[0], /ilegível/);
+  });
+  it("limite injetável", () => {
+    assert.equal(evaluateHaltStaleness(HALT, at(2), "2609-10", 1).stale, true);
+  });
+  it("sufixo do relatório vencido NÃO é pausa legítima pro alarme", () => {
+    assert.equal(classifyEnvioReportId(`envio-261015${HALT_STALE_REPORT_SUFFIX}`, "261015"), "alarm");
+    assert.equal(classifyEnvioReportId("envio-261015-fila-insuficiente-pendente", "261015"), "ok");
   });
 });

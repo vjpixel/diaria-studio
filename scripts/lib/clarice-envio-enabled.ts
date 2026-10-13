@@ -127,10 +127,15 @@ export interface ClariceEnvioEnabledState {
   machine?: string | null;
   sessionId?: string | null;
   reason?: string | null;
+  /** #10117 — `true` só quando o estado veio do default de arquivo AUSENTE.
+   * Sem isso, `updatedAt: null` não distingue "arquivo não existe" de
+   * "arquivo escrito à mão sem `updatedAt`" (`{"enabled": true}`), e o
+   * segundo — troca sem rastro — passava pelo relatório como default. */
+  fileAbsent?: true;
 }
 
 /** Arquivo AUSENTE: automação LIGADA. Ver Divergência 1 na docstring. */
-const ABSENT_DEFAULT: ClariceEnvioEnabledState = { enabled: true, updatedAt: null };
+const ABSENT_DEFAULT: ClariceEnvioEnabledState = { enabled: true, updatedAt: null, fileAbsent: true };
 
 /** Arquivo PRESENTE mas ilegível/inválido: automação PAUSADA. Ver Divergência 2. */
 const INVALID_DEFAULT: ClariceEnvioEnabledState = { enabled: false, updatedAt: null };
@@ -151,7 +156,7 @@ function statePath(rootDir: string): string {
 
 /**
  * Lê o estado do toggle. Fail-soft total — nunca lança. Ausente →
- * `{enabled: true, updatedAt: null}`; presente e válido → o valor do arquivo;
+ * `{enabled: true, updatedAt: null, fileAbsent: true}`; presente e válido → o valor do arquivo;
  * presente e ilegível/inválido → `{enabled: false, updatedAt: null}` + aviso
  * via `opts.onInvalid`. Ver a tabela na docstring do módulo.
  */

@@ -88,6 +88,8 @@ import {
 } from "./lib/clarice-envio-enabled.ts";
 import {
   describeHaltForReport,
+  evaluateHaltStaleness,
+  HALT_STALE_REPORT_SUFFIX,
   readClariceEnvioHalt,
   writeClariceEnvioHalt,
   type ClariceEnvioHalt,
@@ -435,18 +437,21 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
  * registrada do editor) — vira aviso, não nota neutra.
  */
 export function describeEnabledProvenance(state: ClariceEnvioEnabledState): string {
-  if (state.updatedAt === null) {
+  // #10117 — só o default de arquivo AUSENTE é neutro; arquivo presente sem
+  // `updatedAt` (escrito à mão) cai no aviso SEM RASTRO abaixo.
+  if (state.fileAbsent) {
     return "kill switch: LIGADO pelo default de arquivo ausente (data/clarice-envio-enabled.json não existe).";
   }
+  const since = state.updatedAt ?? "data desconhecida (arquivo sem updatedAt)";
   const who = `máquina ${state.machine ?? "?"}${state.sessionId ? `, sessão ${state.sessionId}` : ""}`;
   if (!state.reason && !state.machine) {
     return (
-      `⚠️  kill switch LIGADO desde ${state.updatedAt} SEM RASTRO (sem máquina/motivo gravados — escrito antes do #10105 ou editado à mão). ` +
+      `⚠️  kill switch LIGADO desde ${since} SEM RASTRO (sem máquina/motivo gravados — escrito antes do #10105 ou editado à mão). ` +
       "Se houver decisão do editor de manter a rampa pausada, confira antes da próxima onda; " +
       'reescreva com `npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."` pra registrar o motivo.'
     );
   }
-  return `kill switch: LIGADO desde ${state.updatedAt} (${who}) — motivo: ${state.reason ?? "não informado"}.`;
+  return `kill switch: LIGADO desde ${since} (${who}) — motivo: ${state.reason ?? "não informado"}.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -929,11 +934,27 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
   // passa; nenhum deles limpa a parada (ver clarice-envio-halt.ts). ---
   const haltRead = deps.readHalt?.();
   if (haltRead?.halted) {
-    const haltText = describeHaltForReport(haltRead, computeExpectedEnvioCycle(now));
+    const currentCycle = computeExpectedEnvioCycle(now);
+    const haltText = describeHaltForReport(haltRead, currentCycle);
     if (requestedVolume === undefined && !opts.planOnly) {
       report.note(haltText);
-      const reportId = `envio-${aammdd}-fila-insuficiente-pendente`;
-      writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — parada pendente (fila insuficiente)`, report.build());
+      // #10118 — dentro do limite a parada é pausa legítima (`-pendente`, OK
+      // pro alarme); vencida (idade > N dias ou ciclo virou) ganha sufixo
+      // próprio, fora de OK_SUFFIXES, pra a task de alarme disparar.
+      const staleness = haltRead.invalid ? { stale: false as const } : evaluateHaltStaleness(haltRead.halt, now, currentCycle);
+      if (staleness.stale) {
+        report.note(
+          `🚨 parada VENCIDA (${staleness.reasons.join("; ")}) — continua sem enviar, mas esta rodada sai como alarme ` +
+            "até o editor decidir (--clear ou envio manual com --volume N).",
+        );
+      }
+      const reportId = staleness.stale
+        ? `envio-${aammdd}${HALT_STALE_REPORT_SUFFIX}`
+        : `envio-${aammdd}-fila-insuficiente-pendente`;
+      const title = staleness.stale
+        ? `diar.ia.br Clarice envio ${aammdd} — parada VENCIDA (fila insuficiente)`
+        : `diar.ia.br Clarice envio ${aammdd} — parada pendente (fila insuficiente)`;
+      writeAndRegisterReport(deps, reportId, title, report.build());
       return { code: 0, reportId, reportMarkdown: report.build() };
     }
     report.note(`${haltText} — seguindo só porque esta rodada é manual (${opts.planOnly ? "--plan-only" : `--volume ${requestedVolume}`}); a parada continua gravada.`);

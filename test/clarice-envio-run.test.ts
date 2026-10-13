@@ -36,6 +36,8 @@ import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio
 import { appendSentOrQueuedEmails, sentOrQueuedFilePath } from "../scripts/clarice-build-segment.ts"; // #9761
 import { isWaveReleased } from "../scripts/lib/clarice-wave-released.ts"; // #9761
 import { readClariceEnvioHalt, writeClariceEnvioHalt, type ClariceEnvioHalt } from "../scripts/lib/clarice-envio-halt.ts"; // #10096
+import { readClariceEnvioEnabledState } from "../scripts/lib/clarice-envio-enabled.ts"; // #10117
+import { classifyEnvioReportId } from "../scripts/lib/clarice-envio-alarm.ts"; // #10118
 import {
   riskUtilization,
   type RiskMetrics,
@@ -534,6 +536,60 @@ describe("clarice-envio-run (#5026)", () => {
       assert.equal(next.calls.length, 0, "parada pendente não chama sub-script nenhum");
       assert.match(r2.reportMarkdown, /PARADA desde/);
       assert.match(r2.reportMarkdown, /clarice-envio-halt\.ts --clear --reason/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // #10118 — parada vencida (idade > limite OU ciclo virou) deixa de ser
+    // pausa legítima: reportId com sufixo fora de OK_SUFFIXES => alarme.
+    const staleHalt = (overrides: Partial<ClariceEnvioHalt> = {}): ClariceEnvioHalt => ({
+      kind: "fila-insuficiente",
+      since: "2026-08-10T22:00:00.000Z",
+      reportId: "envio-260810",
+      cycle: CYCLE,
+      queueAvailable: 10,
+      desiredVolume: 3450,
+      baseVolume: 3005,
+      ...overrides,
+    });
+
+    it("#10118: parada dentro do limite e mesmo ciclo => -pendente (OK pro alarme)", async () => {
+      const root = freshRoot();
+      writeClariceEnvioHalt(root, staleHalt());
+      const { exec, calls } = makeFakeExec({});
+      const r = await runEnvio(
+        baseDeps(root, { exec, now: () => new Date("2026-08-12T22:00:00.000Z"), readHalt: () => readClariceEnvioHalt(root) }),
+      );
+      assert.equal(r.reportId, "envio-260812-fila-insuficiente-pendente");
+      assert.equal(classifyEnvioReportId(r.reportId, "260812"), "ok");
+      assert.equal(calls.length, 0);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10118: parada há mais de 3 dias => -fila-insuficiente-vencida, classificado como ALARME, sem tocar Brevo", async () => {
+      const root = freshRoot();
+      writeClariceEnvioHalt(root, staleHalt({ since: "2026-08-05T22:00:00.000Z" }));
+      const { exec, calls } = makeFakeExec({});
+      const r = await runEnvio(
+        baseDeps(root, { exec, now: () => new Date("2026-08-12T22:00:00.000Z"), readHalt: () => readClariceEnvioHalt(root) }),
+      );
+      assert.equal(r.code, 0);
+      assert.equal(r.reportId, "envio-260812-fila-insuficiente-vencida");
+      assert.equal(classifyEnvioReportId(r.reportId, "260812"), "alarm");
+      assert.match(r.reportMarkdown, /parada VENCIDA \(parada há mais de 3 dias \(desde 2026-08-05T22:00:00\.000Z\)\)/);
+      assert.equal(calls.length, 0, "parada vencida continua sem enviar");
+      assert.equal(readClariceEnvioHalt(root).halted, true, "vencer não limpa a parada");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10118: ciclo atual diferente do gravado na parada => vencida mesmo dentro do limite de dias", async () => {
+      const root = freshRoot();
+      writeClariceEnvioHalt(root, staleHalt({ cycle: "2606-07", since: "2026-08-11T22:00:00.000Z" }));
+      const { exec } = makeFakeExec({});
+      const r = await runEnvio(
+        baseDeps(root, { exec, now: () => new Date("2026-08-12T22:00:00.000Z"), readHalt: () => readClariceEnvioHalt(root) }),
+      );
+      assert.equal(r.reportId, "envio-260812-fila-insuficiente-vencida");
+      assert.match(r.reportMarkdown, /ciclo mudou desde a parada \(2606-07 → 2607-08\)/);
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -2317,7 +2373,25 @@ describe("describeEnabledProvenance (#10105)", () => {
     assert.match(line, /decisão do editor em #8099/);
   });
   it("arquivo ausente (default LIGADO) => diz que é o default, não aviso", () => {
-    assert.match(describeEnabledProvenance({ enabled: true, updatedAt: null }), /default de arquivo ausente/);
+    assert.match(describeEnabledProvenance({ enabled: true, updatedAt: null, fileAbsent: true }), /default de arquivo ausente/);
+  });
+  // #10117 — arquivo PRESENTE sem updatedAt (escrito à mão, mesma classe da
+  // reativação de 01/10) era descrito como "default de arquivo ausente".
+  it("#10117: arquivo presente sem updatedAt (escrito à mão) => aviso SEM RASTRO, nunca 'default de arquivo ausente'", () => {
+    const line = describeEnabledProvenance({ enabled: true, updatedAt: null });
+    assert.doesNotMatch(line, /default de arquivo ausente/);
+    assert.match(line, /SEM RASTRO/);
+    assert.match(line, /sem updatedAt/);
+  });
+  it('#10117: ponta a ponta — {"enabled": true} real em disco cai no SEM RASTRO; arquivo ausente segue default', () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-run-manual-toggle-"));
+    mkdirSync(resolve(root, "data"), { recursive: true });
+    writeFileSync(resolve(root, "data", "clarice-envio-enabled.json"), JSON.stringify({ enabled: true }), "utf8");
+    assert.match(describeEnabledProvenance(readClariceEnvioEnabledState(root, { onInvalid: () => {} })), /SEM RASTRO/);
+    rmSync(root, { recursive: true, force: true });
+    const absentRoot = mkdtempSync(join(tmpdir(), "clarice-envio-run-absent-toggle-"));
+    assert.match(describeEnabledProvenance(readClariceEnvioEnabledState(absentRoot)), /default de arquivo ausente/);
+    rmSync(absentRoot, { recursive: true, force: true });
   });
   it("runEnvio registra a linha no relatório quando readEnabledState é injetado", async () => {
     const root = mkdtempSync(join(tmpdir(), "clarice-envio-run-prov-"));
