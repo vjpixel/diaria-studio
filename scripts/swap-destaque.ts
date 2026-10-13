@@ -89,6 +89,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9381
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
+import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
@@ -1182,6 +1183,28 @@ function main(): void {
     pendingWrites.push({
       path: approvedCappedPath,
       content: JSON.stringify(approvedCappedData, null, 2) + "\n",
+    });
+  }
+
+  // #10100: `--drop` declara o descarte em `_internal/stage4-dropped-items.json`
+  // (no mesmo lote verificado do approved) — é esse registro que o invariante
+  // `approved-item-removed` (#8121) reconhece para não acusar o drop legítimo.
+  if (drop) {
+    const droppedPath = stage4DroppedItemsPath(editionDir);
+    pendingWrites.push({
+      path: droppedPath,
+      content: appendStage4DroppedItems(
+        existsSync(droppedPath) ? readFileSync(droppedPath, "utf8") : null,
+        [
+          {
+            url: demotedUrl,
+            title: demotedTitle,
+            position: demotePosition,
+            source: "swap-destaque",
+            dropped_at: new Date().toISOString(),
+          },
+        ],
+      ),
     });
   }
 

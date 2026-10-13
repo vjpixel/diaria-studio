@@ -67,6 +67,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { isFallbackCategorizationRule, type Bucket } from "./lib/launch-heuristics.ts";
 import { replayEdition, summarizeReplay, renderReplayReport, type ReplayItem } from "./lib/categorizer-replay.ts"; // #9882
+import { readStage4DroppedItems, type Stage4DroppedItem } from "./lib/stage4-dropped-items.ts"; // #10100
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -295,6 +296,11 @@ export interface EditionMoves {
    * literais existentes que constroem `EditionMoves` sem essa chave (ex:
    * fixtures de teste anteriores ao #8233). */
   destaqueMoves?: DestaqueMove[];
+  /** #10100 — destaques descartados no Stage 4 via `swap-destaque(s).ts --drop`
+   * (`_internal/stage4-dropped-items.json`). Decisão editorial explícita: o item
+   * some de `01-approved.json` de propósito, e sem este registro sumiria também
+   * do sinal. Opcional pelo mesmo motivo de `destaqueMoves`. */
+  stage4Drops?: Stage4DroppedItem[];
 }
 
 const MONTH_DIR_RE = /^\d{4}$/;
@@ -369,7 +375,8 @@ export function analyzeEditionsUnderRoot(editionsDir: string): EditionMoves[] {
 
     const moves = diffBucketOverrides(categorized, approved);
     const destaqueMoves = diffDestaqueMoves(categorized, approved);
-    results.push({ edition, moves, destaqueMoves });
+    const stage4Drops = readStage4DroppedItems(editionDir); // #10100
+    results.push({ edition, moves, destaqueMoves, stage4Drops });
   }
 
   return results;
@@ -667,6 +674,8 @@ export interface DestaqueSummary {
   editionsWithDestaqueMove: number;
   promoteExamples: DestaqueMove[];
   demoteExamples: DestaqueMove[];
+  /** #10100 — destaques descartados no Stage 4 (`--drop`), fora de `total`. */
+  stage4Drops: number;
 }
 
 export interface WindowedRate {
@@ -763,6 +772,7 @@ export function summarize(
     editionsWithDestaqueMove,
     promoteExamples: promoteMoves.slice(0, examplesPerDirection),
     demoteExamples: demoteMoves.slice(0, examplesPerDirection),
+    stage4Drops: editionMoves.reduce((acc, e) => acc + (e.stage4Drops ?? []).length, 0),
   };
 
   return {
@@ -824,6 +834,7 @@ function renderReport(summary: AnalysisSummary): string {
   lines.push(`  pool → destaque (promote):    ${String(ds.promotions).padStart(4)}`);
   lines.push(`  destaque → pool (demote):     ${String(ds.demotions).padStart(4)}`);
   lines.push(`  ${"TOTAL".padEnd(27)} ${String(ds.total).padStart(4)}`);
+  lines.push(`  descartado no Stage 4 (--drop, #10100): ${String(ds.stage4Drops).padStart(4)}`);
   lines.push("");
   if (ds.promoteExamples.length > 0) {
     lines.push("Exemplos pool → destaque:");

@@ -66,6 +66,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
+import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import {
   extractUrl,
   extractTitle,
@@ -429,6 +430,29 @@ function main(): void {
         result.warnings.push(w);
       }
     }
+  }
+
+  // #10100: `--drop` declara os descartes em `_internal/stage4-dropped-items.json`
+  // (mesmo lote verificado) — o invariante `approved-item-removed` (#8121)
+  // reconhece o registro e não acusa o drop legítimo.
+  if (drop) {
+    const droppedPath = stage4DroppedItemsPath(editionDir);
+    const droppedAt = new Date().toISOString();
+    pendingWrites.push({
+      path: droppedPath,
+      content: appendStage4DroppedItems(
+        existsSync(droppedPath) ? readFileSync(droppedPath, "utf8") : null,
+        swapResult.demoted
+          .filter((d) => d.url)
+          .map((d) => ({
+            url: d.url,
+            title: d.title,
+            position: d.position,
+            source: "swap-destaques" as const,
+            dropped_at: droppedAt,
+          })),
+      ),
+    });
   }
 
   // .social-source-hash.json — NÃO regravado aqui (#9149). Ver docstring

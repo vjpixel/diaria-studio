@@ -67,6 +67,7 @@ import {
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import { detectRemovedApprovedItems } from "../lint-checks/approved-item-removal.ts"; // #8121
+import { readStage4DroppedItems, stage4DroppedUrlSet } from "../stage4-dropped-items.ts"; // #10100
 import {
   checkTitlePublisherSuffix,
   checkTitleTrailingPeriod,
@@ -1772,12 +1773,19 @@ function checkApprovedItemRemoval(editionDir: string): InvariantViolation[] {
   } catch {
     return [];
   }
-  return detectRemovedApprovedItems(baselineJson, currentJson).map((item) => ({
+  // #10100: descarte declarado por `swap-destaque(s).ts --drop` (registrado em
+  // `_internal/stage4-dropped-items.json`) é decisão explícita do editor, não
+  // remoção acidental — fica fora do warning.
+  const declaredDrops = stage4DroppedUrlSet(readStage4DroppedItems(editionDir));
+  return detectRemovedApprovedItems(baselineJson, currentJson)
+    .filter((item) => !declaredDrops.has(canonicalize(item.url)))
+    .map((item) => ({
     rule: "approved-item-removed",
     message:
       `Item removido de 01-approved.json durante o Stage 4 (estava em "${item.bucket}" no snapshot pós-Stage 1): ` +
-      `${item.title} (${item.url}). Nunca remover — desreferencie do 02-reviewed.md e mantenha o item em ` +
-      `01-approved.json (#8121).`,
+      `${item.title} (${item.url}). Nunca remover à mão — desreferencie do 02-reviewed.md e mantenha o item em ` +
+      `01-approved.json; para descartar um destaque, use swap-destaque.ts --drop, que registra o descarte ` +
+      `em _internal/stage4-dropped-items.json (#8121, #10100).`,
     source_issue: "#8121",
     severity: "warning" as const,
     file: currentPath,
