@@ -17,7 +17,9 @@ Comportamento (padrão watchdog — silêncio quando nada a fazer):
 
 Limitação conhecida: se o editor pausar o job MANUALMENTE enquanto o marcador
 existir, o watchdog ainda vai retomá-lo no reset (intenção manual é indistinguível
-da intenção dele). Aceito — o marcador só vive entre pausa e reset, janela curta.
+da intenção dele). O marcador só vive entre pausa e reset: no ramo do pool isso
+é até o reset da credencial; no ramo `key_limit` (#10064) vai até a próxima
+00:05 UTC — até ~24h, não uma janela curta (#10111).
 
 Guard de override manual (#6594, 28/08/2026): a pausa preventiva só se aplica
 quando o job está de fato configurado pra rodar num modelo `:free` do
@@ -41,6 +43,10 @@ watchdog também lê `last_error`/`failure_streak` do próprio job:
     isso o watchdog re-pausaria na hora o job que acabou de retomar, lendo o
     erro velho. Se o próximo run falhar de novo, `last_run_at` muda e a pausa
     volta (correto: a cota ainda não voltou).
+  - Retomada MANUAL (editor roda `hermes cron resume` com o marcador ainda
+    lá): o watchdog limpa o marcador e grava o mesmo estado, com o
+    `paused_last_run_at` do marcador (#10111) — senão re-pausava no tick
+    seguinte, já sem marcador, lendo o 403 que o `resume` não zera.
 Marcador legado (texto `JOB_ID`, do ramo do pool) segue com a regra antiga.
 """
 
@@ -143,13 +149,34 @@ def _read_resumed_run():
         return None
 
 
+def _write_resumed_run(last_run_at, context):
+    """Grava em `KEY_LIMIT_STATE_PATH` o `last_run_at` cujo `last_error` já é
+    conhecido como velho (de antes de uma retomada) — o ramo de pausa não
+    re-pausa enquanto o job não rodar de novo."""
+    try:
+        with open(KEY_LIMIT_STATE_PATH, "w") as f:
+            f.write(str(last_run_at or ""))
+    except OSError as e:
+        print(
+            f"⚠️ Watchdog: {context}, mas não gravou {KEY_LIMIT_STATE_PATH} "
+            f"({e}) — pode re-pausar no próximo tick lendo o 403 antigo."
+        )
+
+
 def _handle_key_limit(job, enabled, paused_by_us, now_ts):
     """Ramo do #10064. Devolve True quando tratou o tick (o chamador não segue
     pro ramo do pool), False quando não é com ele."""
     marker = _read_marker() if paused_by_us else None
     if marker is not None and marker.get("reason") == "key_limit":
         if enabled:
-            # editor (ou outra rotina) já retomou; só limpa o marcador
+            # editor (ou outra rotina) já retomou. O `hermes cron resume` não
+            # zera `failure_streak` nem `last_error` (só mudam no próximo run),
+            # então sem gravar o estado o próximo tick re-pausaria o job lendo o
+            # 403 velho e desfaria a retomada manual (#10111). Grava o
+            # `last_run_at` do momento da pausa (o do run que gerou o erro);
+            # sem ele no marcador, o atual do job.
+            paused_run = marker.get("paused_last_run_at") or job.get("last_run_at")
+            _write_resumed_run(paused_run, "o marcador foi limpo após retomada manual")
             os.remove(MARKER_PATH)
             return True
         resume_after = marker.get("resume_after") or 0
@@ -160,14 +187,7 @@ def _handle_key_limit(job, enabled, paused_by_us, now_ts):
             return True
         if r.returncode == 0:
             os.remove(MARKER_PATH)
-            try:
-                with open(KEY_LIMIT_STATE_PATH, "w") as f:
-                    f.write(str(job.get("last_run_at") or ""))
-            except OSError as e:
-                print(
-                    f"⚠️ Watchdog retomou {JOB_ID} mas não gravou {KEY_LIMIT_STATE_PATH} "
-                    f"({e}) — pode re-pausar no próximo tick lendo o 403 antigo."
-                )
+            _write_resumed_run(job.get("last_run_at"), f"o watchdog retomou {JOB_ID}")
             print(
                 "▶️ **Diária Contínuo retomado** pelo watchdog: passou a virada UTC "
                 "do limite diário da key OpenRouter (403 Key limit exceeded). Se o "
