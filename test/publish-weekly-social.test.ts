@@ -50,8 +50,10 @@ import {
   buildFlatCardTexts,
   DEFAULT_WEEKLY_TIME,
   WEEKLY_MIN_ITEMS,
+  enqueueWeeklyLinkedIn,
   main,
 } from "../scripts/publish-weekly-social.ts";
+import { WorkerQueueError } from "../scripts/lib/worker-queue-client.ts";
 import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-select.ts";
 import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
 import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
@@ -2129,6 +2131,7 @@ describe("main(): dispatch mockado", () => {
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
       assert.equal(liEntry.status, "scheduled");
+      assert.equal("degraded" in liEntry, false, "#10103: carrossel normal NÃO leva a marcação de downgrade");
       const igEntry = out.posts.find((p: any) => p.platform === "instagram");
       assert.equal(liEntry.scheduled_at, igEntry.scheduled_at, "MESMO agendamento do Instagram (#8052)");
     });
@@ -2209,12 +2212,99 @@ describe("main(): dispatch mockado", () => {
       const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
       assert.equal(liEntry.status, "scheduled", "a capa única foi aceita pelo Worker (caminho Make) — é uma publicação real");
       assert.ok(liEntry.worker_queue_key, "fila registrada");
+      // #10103 — o downgrade fica marcado no store (auditoria + reenvio do
+      // carrossel quando a API direta for aprovada, #8055).
+      assert.equal(liEntry.degraded, "cover_only", "capa única via fallback marcada como degraded");
 
       // Instagram e Threads não são afetados pelo LinkedIn ter sido pulado.
       const igEntry = out.posts.find((p: any) => p.platform === "instagram");
       assert.equal(igEntry.status, "scheduled");
       const threadsEntry = out.posts.find((p: any) => p.platform === "threads");
       assert.equal(threadsEntry.status, "scheduled");
+    });
+
+    it("#10103: fallback de capa única TAMBÉM falha — LinkedIn registra 'failed' (sem degraded); Instagram, Facebook e Threads seguem 'scheduled'", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      process.env.FACEBOOK_PAGE_ID = "999";
+      process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "fbtoken";
+
+      const queueCalls: string[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          const body = JSON.parse(opts.body as string);
+          queueCalls.push(body.channel);
+          if (body.channel === "linkedin" && body.image_urls) {
+            return { statusCode: 400, data: JSON.stringify({ error: "creds ausentes", code: "linkedin_creds_missing" }) };
+          }
+          if (body.channel === "linkedin") {
+            // 2º enqueue (capa única via Make) também recusado — 4xx sem
+            // `code`, não-retriable, falha genérica.
+            return { statusCode: 422, data: JSON.stringify({ error: "make webhook indisponível" }) };
+          }
+          return {
+            statusCode: 200,
+            data: JSON.stringify({ queued: true, key: `queue:${body.channel}:1`, scheduled_at: "2027-12-26T11:00:00-03:00", destaque: body.destaque }),
+          };
+        })
+        .times(4); // instagram + threads + linkedin carrossel (400) + linkedin capa única (422)
+
+      const fbMock = mockAgent.get("https://graph.facebook.com");
+      let photoCalls = 0;
+      fbMock
+        .intercept({ path: "/v25.0/999/photos", method: "POST" })
+        .reply(() => {
+          photoCalls++;
+          return { statusCode: 200, data: JSON.stringify({ id: `photo_${photoCalls}` }) };
+        })
+        .times(3);
+      fbMock
+        .intercept({ path: "/v25.0/999/feed", method: "POST" })
+        .reply(200, { id: "999_post123" });
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
+      );
+
+      assert.equal(queueCalls.filter((c) => c === "linkedin").length, 2, "carrossel + 1 tentativa de capa única, sem retry de 4xx");
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const liEntry = out.posts.find((p: any) => p.platform === "linkedin");
+      assert.equal(liEntry.status, "failed", "fallback recusado é falha real, não 'skipped' nem 'scheduled'");
+      assert.match(liEntry.reason, /make webhook indisponível/);
+      assert.equal("degraded" in liEntry, false, "nada foi enfileirado — sem marcação de downgrade");
+
+      for (const platform of ["instagram", "facebook", "threads"]) {
+        const entry = out.posts.find((p: any) => p.platform === platform);
+        assert.equal(entry?.status, "scheduled", `${platform} não é afetado pela falha do fallback do LinkedIn`);
+      }
+    });
+
+    it("#10103: enqueueWeeklyLinkedIn — erro que não é linkedin_creds_missing propaga sem tentar o fallback", async () => {
+      const calls: any[] = [];
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((opts) => {
+          calls.push(JSON.parse(opts.body as string));
+          return { statusCode: 400, data: JSON.stringify({ error: "payload inválido", code: "invalid_payload" }) };
+        });
+
+      await assert.rejects(
+        enqueueWeeklyLinkedIn("https://worker.test", "tok", {
+          text: "legenda",
+          carouselImageUrls: ["https://cdn.test/cover-4x5.jpg", "https://cdn.test/cta-4x5.jpg"],
+          scheduledAt: "2027-12-26T11:00:00-03:00",
+          destaque: "weekly-clicked",
+        }),
+        (e: any) => e instanceof WorkerQueueError && e.code === "invalid_payload",
+      );
+      assert.equal(calls.length, 1, "só o carrossel — o fallback é exclusivo de linkedin_creds_missing");
     });
 
     it("skip-existing: LinkedIn já 'scheduled' de uma tentativa anterior NÃO é re-tentado", async () => {
