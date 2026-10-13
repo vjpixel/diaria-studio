@@ -72,7 +72,7 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 > Saídas que de fato funcionam:
 >
 > 1. Rearmar **antes** de a próxima ocorrência do horário novo acontecer — a janela entre o último disparo e o horário novo.
-> 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled`. É a opção mais segura aqui, porque o switch existe justamente para isso.
+> 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled --reason "..."`. É a opção mais segura aqui, porque o switch existe justamente para isso.
 > 3. `touch` no arquivo de carimbo antes do `start` — declara "já disparou agora", e não sobra ocorrência devida.
 
 ## 2ª captura diária — `Diaria-Clarice-Novos-Tarde` (#5185, 260814)
