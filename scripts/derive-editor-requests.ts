@@ -1639,6 +1639,67 @@ export function buildReconstructedNewsletterBaseline(editionDir: string, finalMd
 }
 
 /**
+ * Pedidos do Stage 4 contra o baseline RECONSTRUÍDO (#9356) — só newsletter.
+ * Compartilhado pelo `backfill-stage4` e pela reclassificação da recorrência
+ * (#10135). `null` quando nenhum arquivo da pipeline sobrou pra reconstruir.
+ */
+function classifyReconstructedNewsletter(
+  editionDir: string,
+  finalMd: string,
+  baselineStatus: string,
+): Array<Omit<EditorRequestEntry, "timestamp" | "edition" | "source">> | null {
+  const baseline = buildReconstructedNewsletterBaseline(editionDir, finalMd);
+  if (baseline === null) return null;
+  return classifyNewsletterDiff(baseline, normalizeNewsletterForComparison(finalMd)).map((e) => ({
+    ...e,
+    stage: 4,
+    context: { ...(e.context ?? {}), baseline: "reconstructed", backfill: "#9356", baseline_status: baselineStatus },
+  }));
+}
+
+/**
+ * #10135: re-deriva, com o classificador ATUAL, os pedidos que o
+ * `derive-stage4`/`derive-stage6` gravaram a partir dos arquivos do Stage 2
+ * (`02-reviewed.md`, `03-social.md`, `_internal/01-approved.json`).
+ *
+ * Por que existe: `editor-requests.jsonl` congela o rótulo do classificador
+ * que valia no dia da edição. Consertar o classificador (ex.: #9879/#9880,
+ * corte de item de pool deixou de ser `length-cut`) não mudava a contagem
+ * de `recurring_editor_request`, que lia os rótulos velhos de até 7 edições
+ * pra trás e seguia abrindo issues de "pedido recorrente" falsas.
+ *
+ * Diffa o baseline imutável `stage2-post-gate` contra o estado ATUAL dos
+ * arquivos (para uma edição já fechada, o estado final) — cobre de uma vez
+ * o intervalo que o Stage 4 e o Stage 6 derivaram em duas passadas. Se a
+ * edição passou pelo `backfill-stage4` (marcador presente), re-deriva
+ * também a parte reconstruída. Pura em relação ao disco (só lê, nunca grava
+ * snapshot nem jsonl).
+ *
+ * `null` = nada a re-derivar (sem baseline e sem backfill): quem chama cai
+ * nos rótulos gravados.
+ */
+export function rederiveStage2FileRequests(
+  editionDir: string,
+): Array<Omit<EditorRequestEntry, "timestamp" | "edition" | "source">> | null {
+  const hasBaseline = hasSnapshot(editionDir, STAGE2_BASELINE_LABEL, STAGE2_SNAPSHOT_FILES);
+  const hasBackfill = existsSync(join(editionDir, STAGE4_BACKFILL_MARKER));
+  if (!hasBaseline && !hasBackfill) return null;
+  const out: Array<Omit<EditorRequestEntry, "timestamp" | "edition" | "source">> = [];
+  if (hasBaseline) {
+    const classifierMap = buildStage2FilesClassifierMap(editionDir, STAGE2_BASELINE_LABEL);
+    out.push(...diffAndClassify(editionDir, STAGE2_BASELINE_LABEL, STAGE2_SNAPSHOT_FILES, classifierMap, 4));
+  }
+  if (hasBackfill) {
+    const finalPath = join(editionDir, "02-reviewed.md");
+    if (existsSync(finalPath)) {
+      const status = assessStage2BaselineOnDisk(editionDir).status;
+      out.push(...(classifyReconstructedNewsletter(editionDir, readFileSync(finalPath, "utf8"), status) ?? []));
+    }
+  }
+  return out;
+}
+
+/**
  * Backfill do #9356: deriva os pedidos do Stage 4 das edições cujo baseline
  * `stage2-post-gate` foi gravado tarde (ou nunca), usando o baseline
  * RECONSTRUÍDO a partir do último arquivo da pipeline. Só newsletter — a
@@ -1668,18 +1729,12 @@ function backfillStage4(editionDir: string, edition: string, write: boolean): nu
     return 0;
   }
   const finalMd = readFileSync(finalPath, "utf8");
-  const baseline = buildReconstructedNewsletterBaseline(editionDir, finalMd);
-  if (baseline === null) {
+  const classified = classifyReconstructedNewsletter(editionDir, finalMd, health.status);
+  if (classified === null) {
     console.log(`[derive-editor-requests] backfill-stage4 ${edition}: nenhum arquivo da pipeline (02-humanized/02-clarice-corrected) — pulando.`);
     return 0;
   }
-  const entries = classifyNewsletterDiff(baseline, normalizeNewsletterForComparison(finalMd)).map((e) => ({
-    ...e,
-    stage: 4,
-    edition,
-    source: "derived" as const,
-    context: { ...(e.context ?? {}), baseline: "reconstructed", backfill: "#9356", baseline_status: health.status },
-  }));
+  const entries = classified.map((e) => ({ ...e, edition, source: "derived" as const }));
   if (!write) {
     console.log(JSON.stringify({ edition, baseline_status: health.status, social: "irrecuperável", entries }, null, 2));
     return entries.length;

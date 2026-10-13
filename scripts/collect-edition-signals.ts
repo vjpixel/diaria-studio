@@ -58,6 +58,7 @@ import {
 } from "./lib/source-runs.ts";
 import { parseSourcesMd } from "./list-active-sources.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
+import { rederiveStage2FileRequests } from "./derive-editor-requests.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -407,6 +408,8 @@ interface EditorRequestEntry {
   target: string;
   description: string;
   resolution: "accepted" | "partial" | "declined";
+  /** `derived` = gravado pelo `derive-editor-requests.ts`; ausente em linhas antigas = manual. */
+  source?: string;
   context?: Record<string, unknown>;
 }
 
@@ -518,6 +521,58 @@ export function readEditorRequestsForEditions(
       }
     }
     if (entries.length > 0) out[edition] = entries;
+  }
+  return out;
+}
+
+/** Pedidos re-derivados pelo classificador atual (`rederiveStage2FileRequests`), sem timestamp/edição/source. */
+export type RederivedRequest = Omit<EditorRequestEntry, "timestamp" | "edition">;
+
+/**
+ * #10135: troca os rótulos GRAVADOS que vieram dos arquivos do Stage 2
+ * (`source: "derived"`, `stage` 4 ou 6) pelos rótulos do classificador
+ * ATUAL, re-derivados a partir dos snapshots da edição. Sem isso, consertar
+ * o classificador não desarmava o alarme: o `.jsonl` de até 7 edições pra
+ * trás guardava o rótulo velho e seguia reabrindo issue de "pedido
+ * recorrente" (#10090/#9422: 9 `title-choice` e 7 `length-cut` gravados em
+ * 261005–261009, zero com o classificador atual).
+ *
+ * Mantém intactos os pedidos `manual` e os derivados de outros estágios
+ * (Stage 1). Quando `rederive` devolve `null` (edição sem snapshot
+ * `stage2-post-gate` nem backfill) ou lança, cai nos rótulos gravados —
+ * fallback fail-soft, nunca derruba a coleta.
+ */
+export function reclassifyEditorRequests(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+  editions: Array<{ edition: string; dir: string }>,
+  rederive: (editionDir: string) => RederivedRequest[] | null,
+): Record<string, EditorRequestEntry[]> {
+  const out: Record<string, EditorRequestEntry[]> = {};
+  for (const { edition, dir } of editions) {
+    const recorded = entriesByEdition[edition] ?? [];
+    let fresh: RederivedRequest[] | null;
+    try {
+      fresh = rederive(dir);
+    } catch {
+      fresh = null;
+    }
+    if (fresh === null) {
+      if (recorded.length > 0) out[edition] = recorded;
+      continue;
+    }
+    const kept = recorded.filter((e) => !(e.source === "derived" && (e.stage === 4 || e.stage === 6)));
+    const timestamp = new Date().toISOString();
+    const merged: EditorRequestEntry[] = [
+      ...kept,
+      ...fresh.map((e) => ({
+        ...e,
+        timestamp,
+        edition,
+        source: "derived",
+        context: { ...(e.context ?? {}), reclassified: "#10135" },
+      })),
+    ];
+    if (merged.length > 0) out[edition] = merged;
   }
   return out;
 }
@@ -1764,7 +1819,12 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
     const editionsRoot = resolve(rootDir, "data/editions");
     const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
     const recentEditions = selectRecentEditions(editionDirsByAammdd, edition, editionDir);
-    const entriesByEdition = readEditorRequestsForEditions(recentEditions);
+    // #10135: rótulos do classificador ATUAL, não os gravados no dia.
+    const entriesByEdition = reclassifyEditorRequests(
+      readEditorRequestsForEditions(recentEditions),
+      recentEditions,
+      rederiveStage2FileRequests,
+    );
     signals.push(...signalsFromRecurringEditorRequests(entriesByEdition));
   } catch {
     // ignore
