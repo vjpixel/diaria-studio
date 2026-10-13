@@ -503,6 +503,52 @@ function loadBeehiivCache(beehiivPostsDir: string): BeehiivCachePost[] {
 }
 
 /**
+ * Enfileira o post semanal do LinkedIn no Worker (#8052), com o fallback de
+ * capa única (decisão do editor, 261011): quando o Worker recusa o carrossel
+ * com `linkedin_creds_missing` (sem credencial da API direta, #8055), reenvia
+ * só a CAPA como imagem única pelo webhook Make — o mesmo caminho do post
+ * diário. A legenda (`text`) já leva o link.
+ *
+ * Retorna `degraded: "cover_only"` quando foi o fallback que entrou (#10103),
+ * pra o store marcar o downgrade — sem isso, a entrada fica `scheduled` igual
+ * a um carrossel e não dá pra auditar nem reenviar o carrossel depois.
+ *
+ * Qualquer falha propaga (inclusive a do próprio fallback): quem chama decide
+ * o bookkeeping (`skipped` pra `linkedin_creds_missing`, `failed` pro resto).
+ */
+export async function enqueueWeeklyLinkedIn(
+  workerUrl: string,
+  workerToken: string,
+  opts: { text: string; carouselImageUrls: string[]; scheduledAt: string; destaque: string },
+): Promise<{ key: string; degraded?: "cover_only" }> {
+  const { text, carouselImageUrls, scheduledAt, destaque } = opts;
+  try {
+    const response = await postToWorkerQueue(workerUrl, workerToken, {
+      text,
+      image_url: null,
+      image_urls: carouselImageUrls,
+      scheduled_at: scheduledAt,
+      destaque,
+      channel: "linkedin",
+    });
+    return { key: response.key };
+  } catch (e) {
+    if (!(e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0)) {
+      throw e;
+    }
+  }
+  console.log(`WARN linkedin/${destaque} — sem credencial da API direta; fallback: capa como imagem única via Make.`);
+  const response = await postToWorkerQueue(workerUrl, workerToken, {
+    text,
+    image_url: carouselImageUrls[0],
+    scheduled_at: scheduledAt,
+    destaque,
+    channel: "linkedin",
+  });
+  return { key: response.key, degraded: "cover_only" };
+}
+
+/**
  * `dataRoot` é injetável (default `{ROOT}/data`, #4101 finding 7) — permite
  * testes de dispatch redirecionarem `data/weekly/{saturday}/` E
  * `data/beehiiv-cache/posts/` pra um tmpdir em vez de escrever no `data/`
@@ -1506,36 +1552,16 @@ async function runOneMode(
       console.error(`ERRO linkedin/${destaqueKey}: Worker não configurado (DIARIA_LINKEDIN_CRON_URL/DIARIA_LINKEDIN_CRON_TOKEN).`);
       tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
     } else {
-      let response: { key: string } | null = null;
+      let response: { key: string; degraded?: "cover_only" } | null = null;
       try {
-        try {
-          response = await postToWorkerQueue(workerUrl, workerToken, {
-            text: fbCaption,
-            image_url: null,
-            image_urls: carouselImageUrls,
-            scheduled_at: scheduledAt,
-            destaque: destaqueKey,
-            channel: "linkedin",
-          });
-        } catch (e: any) {
-          // Fallback (decisão do editor, 261011): sem credencial da API direta
-          // (carrossel), publica só a CAPA como imagem única pelo webhook Make —
-          // o mesmo caminho do post diário. A legenda (fbCaption) já leva o link.
-          if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing" && carouselImageUrls.length > 0) {
-            console.log(
-              `WARN linkedin/${destaqueKey} — sem credencial da API direta; fallback: capa como imagem única via Make.`,
-            );
-            response = await postToWorkerQueue(workerUrl, workerToken, {
-              text: fbCaption,
-              image_url: carouselImageUrls[0],
-              scheduled_at: scheduledAt,
-              destaque: destaqueKey,
-              channel: "linkedin",
-            });
-          } else {
-            throw e;
-          }
-        }
+        // Carrossel, com fallback de capa única quando o Worker não tem a
+        // credencial da API direta (helper `enqueueWeeklyLinkedIn`, #10103).
+        response = await enqueueWeeklyLinkedIn(workerUrl, workerToken, {
+          text: fbCaption,
+          carouselImageUrls,
+          scheduledAt,
+          destaque: destaqueKey,
+        });
       } catch (e: any) {
         // #8303 — o Worker (workers/linkedin-cron/src/index.ts::handleEnqueue)
         // rejeita o enqueue ANTES de aceitar, quando channel=linkedin carrega
@@ -1551,7 +1577,7 @@ async function runOneMode(
         // rejeição específica (não-retriable, config ausente) de qualquer
         // outra falha real (rede, timeout, 5xx) — só a primeira vira
         // "skipped"; o resto continua "failed" como antes.
-        // Defensivo: o fallback de capa única (acima) já trata essa rejeição do
+        // Defensivo: o fallback de capa única (`enqueueWeeklyLinkedIn`) já trata essa rejeição do
         // carrossel; este ramo só alcança o código se o próprio fallback for
         // recusado igual (Worker mudou de regra).
         if (e instanceof WorkerQueueError && e.code === "linkedin_creds_missing") {
@@ -1583,6 +1609,10 @@ async function runOneMode(
             status: "scheduled",
             scheduled_at: scheduledAt,
             worker_queue_key: response.key,
+            // #10103 — marca o downgrade (capa única via Make em vez do
+            // carrossel) pra auditoria e pro reenvio do carrossel quando a
+            // API direta for aprovada (#8055). Ausente = carrossel normal.
+            ...(response.degraded ? { degraded: response.degraded } : {}),
           });
         } catch (e: any) {
           console.error(
