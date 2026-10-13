@@ -22,7 +22,8 @@
  *   - `envio-{aammdd}` (sem sufixo) — sucesso (code 0) OU agendamento
  *     INCERTO reconciliável (code 2). Onda foi criada — OK.
  *   - `-paused` / `-sem-ciclo-elegivel` / `-abc-iniciar` / `-onda-ja-existe` /
- *     `-fila-insuficiente` / `-freio-stop` / `-sem-volume` — pausas
+ *     `-fila-insuficiente` / `-fila-insuficiente-pendente` (#10096) /
+ *     `-freio-stop` / `-sem-volume` — pausas
  *     LEGÍTIMAS e documentadas (kill switch, ciclo não pronto, precisa do
  *     editor, onda já existe, sem público/volume suficiente). Nenhuma
  *     dessas é falha — OK, sem alarme.
@@ -50,6 +51,10 @@ const OK_SUFFIXES = new Set([
   "-abc-iniciar",
   "-onda-ja-existe",
   "-fila-insuficiente",
+  // #10096 — rodada que encontrou a parada durável por fila insuficiente
+  // ainda gravada (`data/clarice-envio-halt.json`): pausa legítima, espera
+  // decisão do editor. O relatório diz isso todo dia; não é falha.
+  "-fila-insuficiente-pendente",
   "-freio-stop",
   "-sem-volume",
 ]);

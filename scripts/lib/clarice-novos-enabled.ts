@@ -38,8 +38,10 @@
  * Uso CLI (mesmo padrão de `exec-mode.ts`/`clarice-envio-enabled.ts`):
  *   npx tsx scripts/lib/clarice-novos-enabled.ts
  *   # → imprime "enabled" ou "disabled" (exit 0 sempre)
- *   npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled
- *   npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled
+ *   npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled --reason "..."
+ *   npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."
+ *   # `--reason` é obrigatório desde o #10105 (mesmo rastro do irmão
+ *   # `clarice-envio-enabled.ts`: machine/sessionId/reason + run-log).
  *
  * @see CLAUDE.md § tasks agendadas — Diaria-Clarice-Novos
  * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original, removido
@@ -49,7 +51,15 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { getArg, isMainModule } from "./cli-args.ts";
+import { isMainModule } from "./cli-args.ts";
+import {
+  logToggleChange,
+  parseToggleCli,
+  readToggleAudit,
+  resolveToggleAudit,
+  type ResolveToggleAuditOptions,
+  type ToggleAudit,
+} from "./clarice-toggle-audit.ts";
 
 export interface ClariceNovosEnabledState {
   /** `false` = default de arquivo ausente (lado seguro — ver docstring do
@@ -58,6 +68,10 @@ export interface ClariceNovosEnabledState {
   /** ISO — quando o estado foi alterado pela última vez via `setClariceNovosEnabled`.
    * `null` = nunca escrito (arquivo ausente, estado no default). */
   updatedAt: string | null;
+  /** #10105 — proveniência da última escrita; ausente em arquivo pré-#10105. */
+  machine?: string | null;
+  sessionId?: string | null;
+  reason?: string | null;
 }
 
 const DEFAULT_STATE: ClariceNovosEnabledState = { enabled: false, updatedAt: null };
@@ -79,6 +93,7 @@ export function readClariceNovosEnabledState(rootDir: string): ClariceNovosEnabl
     return {
       enabled: raw.enabled,
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+      ...readToggleAudit(raw as Record<string, unknown>),
     };
   } catch {
     return { ...DEFAULT_STATE };
@@ -100,21 +115,30 @@ export function isClariceNovosEnabled(rootDir: string): boolean {
 export function setClariceNovosEnabled(
   rootDir: string,
   enabled: boolean,
-  opts: { now?: () => Date } = {},
-): ClariceNovosEnabledState {
+  opts: { now?: () => Date; logRunEvent?: boolean } & ResolveToggleAuditOptions = {},
+): ClariceNovosEnabledState & ToggleAudit {
   const now = opts.now ?? (() => new Date());
   const p = statePath(rootDir);
   mkdirSync(dirname(p), { recursive: true });
-  const state: ClariceNovosEnabledState = { enabled, updatedAt: now().toISOString() };
+  const state: ClariceNovosEnabledState & ToggleAudit = {
+    enabled,
+    updatedAt: now().toISOString(),
+    ...resolveToggleAudit(opts),
+  };
   writeFileSync(p, JSON.stringify(state, null, 2) + "\n", "utf8");
+  // #10105 — evento fail-soft em run-log.jsonl (nunca derruba a escrita).
+  if (opts.logRunEvent !== false) logToggleChange(rootDir, "clarice-novos-enabled", state);
   return state;
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
 if (isMainModule(import.meta.url)) {
-  const setArg = getArg(process.argv.slice(2), "set");
-  if (setArg === "enabled" || setArg === "disabled") {
-    const state = setClariceNovosEnabled(process.cwd(), setArg === "enabled");
+  const cmd = parseToggleCli(process.argv.slice(2), "clarice-novos-enabled");
+  if (cmd.kind === "error") {
+    console.error(cmd.message);
+    process.exitCode = 2;
+  } else if (cmd.kind === "set") {
+    const state = setClariceNovosEnabled(process.cwd(), cmd.enabled, { reason: cmd.reason });
     console.log(state.enabled ? "enabled" : "disabled");
   } else {
     console.log(isClariceNovosEnabled(process.cwd()) ? "enabled" : "disabled");

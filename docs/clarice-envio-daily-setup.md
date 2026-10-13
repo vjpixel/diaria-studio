@@ -17,10 +17,23 @@ Um script de setup, **DUAS tasks indivisíveis** (decisão do editor 260811 — 
 **Default `enabled: true`** quando o arquivo não existe — **INVERSO** do `clarice-novos-enabled.ts`. Decisão explícita do editor ("ligada desde o início"): a rampa Clarice já roda hoje manualmente todo dia; a automação substitui um trabalho que já acontece, não estreia um canal novo. Arquivo **corrompido/ilegível** é tratado como `disabled` (é sinal de problema, não de intenção — ver docstring de `clarice-envio-enabled.ts` pro racional completo e o risco aceito desse default invertido).
 
 ```bash
-npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled  # pausa o par inteiro
-npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled   # religa
+npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled --reason "..."  # pausa o par inteiro
+npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."   # religa
 npx tsx scripts/lib/clarice-envio-enabled.ts                 # imprime "enabled"/"disabled"
 ```
+
+`--reason` é obrigatório desde o #10105: toda troca grava `machine`, `sessionId` (quando parte de uma sessão do Claude Code) e `reason` no arquivo, e emite evento em `data/run-log.jsonl`. O relatório de cada rodada mostra a proveniência; toggle ligado **sem** esses campos (escrito antes do #10105 ou à mão) vira aviso. O mesmo vale para `clarice-novos-enabled.ts`.
+
+## Parada durável por fila insuficiente — `data/clarice-envio-halt.json` (#10096)
+
+Quando a rodada para por fila insuficiente (regra 260811), a parada fica gravada: as rodadas agendadas seguintes saem com relatório `envio-{aammdd}-fila-insuficiente-pendente`, sem tocar Brevo/MV, até o editor decidir. `--volume N` (caminho manual) passa pela parada mas não a limpa.
+
+```bash
+npx tsx scripts/lib/clarice-envio-halt.ts                        # mostra a parada (ou "no-halt")
+npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."  # retoma a automação
+```
+
+A base da rampa (`baseVolumeFromLastSendDay`) só conta ondas da rampa (`grupo:dN-*`) desde o #10096 — envios do `clarice-novos` (`grupo:novos-*`) nunca viram a base.
 
 ## Estado do teste A/B/C de assunto — `data/clarice-abc-state.json` (#5055)
 

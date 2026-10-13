@@ -23,6 +23,7 @@ import {
   EnvioAbort,
   summarizeStderr,
   releaseWaveSelectionIn,
+  describeEnabledProvenance,
   type EnvioRunDeps,
   type StepResult,
   type ExecFn,
@@ -34,6 +35,7 @@ import type { ClariceAbcStateRead } from "../scripts/lib/clarice-abc-state.ts";
 import { acquireEnvioLock, lockPathForCycle } from "../scripts/lib/clarice-envio-lock.ts";
 import { appendSentOrQueuedEmails, sentOrQueuedFilePath } from "../scripts/clarice-build-segment.ts"; // #9761
 import { isWaveReleased } from "../scripts/lib/clarice-wave-released.ts"; // #9761
+import { readClariceEnvioHalt, writeClariceEnvioHalt, type ClariceEnvioHalt } from "../scripts/lib/clarice-envio-halt.ts"; // #10096
 import {
   riskUtilization,
   type RiskMetrics,
@@ -494,6 +496,75 @@ describe("clarice-envio-run (#5026)", () => {
       const r = await runEnvio(baseDeps(root, { exec }));
       assert.equal(r.code, 0);
       assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "nunca deveria chegar a segmentar");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // #10096 — a parada da regra 260811 passou a ser DURÁVEL: antes ela valia
+    // por 1 rodada e a seguinte escalava sobre uma base residual (ciclo
+    // 2609-10: 40.180 → parou → 31 → 101), sem aviso.
+    it("#10096: fila insuficiente grava a parada durável em disco; a rodada SEGUINTE sai pendente sem tocar Brevo", async () => {
+      const root = freshRoot();
+      const proposal = goldenProposal({ availableFirstSend: 10 });
+      const { exec } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(proposal),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
+      });
+      const fileHalt = {
+        readHalt: () => readClariceEnvioHalt(root),
+        writeHalt: (h: ClariceEnvioHalt) => writeClariceEnvioHalt(root, h),
+      };
+      const r1 = await runEnvio(baseDeps(root, { exec, ...fileHalt }));
+      assert.equal(r1.code, 0);
+      assert.match(r1.reportId, /-fila-insuficiente$/);
+      const read = readClariceEnvioHalt(root);
+      assert.ok(read.halted && !read.invalid, "parada precisa estar gravada");
+      if (read.halted && !read.invalid) {
+        assert.equal(read.halt.kind, "fila-insuficiente");
+        assert.equal(read.halt.cycle, CYCLE);
+        assert.equal(read.halt.queueAvailable, 10);
+        assert.equal(read.halt.baseVolume, 3005);
+      }
+
+      // Rodada seguinte (dia seguinte): mesmo com a fila "voltando", nada roda.
+      const next = makeFakeExec({});
+      const r2 = await runEnvio(baseDeps(root, { exec: next.exec, now: () => new Date("2026-08-12T22:00:00.000Z"), ...fileHalt }));
+      assert.equal(r2.code, 0);
+      assert.equal(r2.reportId, "envio-260812-fila-insuficiente-pendente");
+      assert.equal(next.calls.length, 0, "parada pendente não chama sub-script nenhum");
+      assert.match(r2.reportMarkdown, /PARADA desde/);
+      assert.match(r2.reportMarkdown, /clarice-envio-halt\.ts --clear --reason/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10096: parada ilegível em disco conta como ATIVA (lado seguro)", async () => {
+      const root = freshRoot();
+      mkdirSync(resolve(root, "data"), { recursive: true });
+      writeFileSync(resolve(root, "data", "clarice-envio-halt.json"), "{ corrompido", "utf8");
+      const { exec, calls } = makeFakeExec({});
+      const r = await runEnvio(baseDeps(root, { exec, readHalt: () => readClariceEnvioHalt(root) }));
+      assert.equal(r.code, 0);
+      assert.match(r.reportId, /-fila-insuficiente-pendente$/);
+      assert.equal(calls.length, 0);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10096: --volume N (número confirmado pelo editor) passa pela parada, mas NÃO a limpa", async () => {
+      const root = freshRoot();
+      writeClariceEnvioHalt(root, {
+        kind: "fila-insuficiente",
+        since: "2026-08-10T22:00:00.000Z",
+        reportId: "envio-260810",
+        cycle: CYCLE,
+        queueAvailable: 10,
+        desiredVolume: 3450,
+        baseVolume: 3005,
+      });
+      const { exec, calls } = makeFakeExec(goldenHandlers());
+      const r = await runEnvio(baseDeps(root, { exec, readHalt: () => readClariceEnvioHalt(root) }), { volume: 3000 });
+      assert.ok(calls.some((c) => c.script === "scripts/clarice-plan-wave.ts"), "caminho manual segue");
+      assert.match(r.reportMarkdown, /seguindo só porque esta rodada é manual \(--volume 3000\)/);
+      assert.equal(readClariceEnvioHalt(root).halted, true, "parada continua gravada");
       rmSync(root, { recursive: true, force: true });
     });
 
@@ -2222,5 +2293,43 @@ describe("normalizeTargetVolume (#6133)", () => {
     assert.equal(normalizeTargetVolume(undefined), undefined);
     assert.equal(normalizeTargetVolume(null), undefined);
     assert.equal(normalizeTargetVolume({}), undefined);
+  });
+});
+
+// #10105 — o relatório do envio diz QUEM ligou o kill switch e por quê; toggle
+// ligado sem rastro (o caso de 01/10/2026) vira aviso.
+describe("describeEnabledProvenance (#10105)", () => {
+  it("toggle LIGADO sem máquina/motivo gravados => aviso de troca sem rastro", () => {
+    const line = describeEnabledProvenance({ enabled: true, updatedAt: "2026-10-01T15:31:21.000Z" });
+    assert.match(line, /SEM RASTRO/);
+    assert.match(line, /--set enabled --reason/);
+  });
+  it("toggle com proveniência => linha neutra com máquina, sessão e motivo", () => {
+    const line = describeEnabledProvenance({
+      enabled: true,
+      updatedAt: "2026-10-14T12:00:00.000Z",
+      machine: "300",
+      sessionId: "abc-123",
+      reason: "decisão do editor em #8099",
+    });
+    assert.doesNotMatch(line, /SEM RASTRO/);
+    assert.match(line, /máquina 300, sessão abc-123/);
+    assert.match(line, /decisão do editor em #8099/);
+  });
+  it("arquivo ausente (default LIGADO) => diz que é o default, não aviso", () => {
+    assert.match(describeEnabledProvenance({ enabled: true, updatedAt: null }), /default de arquivo ausente/);
+  });
+  it("runEnvio registra a linha no relatório quando readEnabledState é injetado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-run-prov-"));
+    const { exec } = makeFakeExec({});
+    const r = await runEnvio(
+      baseDeps(root, {
+        exec,
+        readEnabledState: () => ({ enabled: true, updatedAt: "2026-10-01T15:31:21.000Z" }),
+        readHalt: () => ({ halted: true, invalid: true, error: "teste" }),
+      }),
+    );
+    assert.match(r.reportMarkdown, /SEM RASTRO/);
+    rmSync(root, { recursive: true, force: true });
   });
 });

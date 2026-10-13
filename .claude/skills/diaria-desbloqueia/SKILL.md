@@ -173,6 +173,25 @@ e o estado é o mesmo: `Revisado por /diaria-desbloqueia — bloqueio de
 execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
 **Nunca** perguntar de novo O QUE o `bloqueio-execucao` já documenta.
 
+> **Decisão sobre estado verificável — conferir o estado real antes de
+> "segue valendo" (#10105).** Vale pra `bloqueioConfirmado` e pra
+> `jaDestravadas`: quando a decisão/bloqueio registrado é sobre um estado
+> que dá pra LER (kill switch `data/clarice-envio-enabled.json` /
+> `data/clarice-novos-enabled.json`, parada `data/clarice-envio-halt.json`,
+> toggle `data/*-enabled.json` em geral, timer armado, label aplicada), ler
+> esse estado ANTES de comentar que a decisão segue valendo ou de rotear a
+> partir dela — a thread diz o que o editor decidiu, não o que o sistema está
+> fazendo. Ex.: `npx tsx scripts/lib/clarice-envio-enabled.ts` (imprime
+> `enabled`/`disabled`) e o JSON do arquivo (desde o #10105 traz `machine`,
+> `sessionId` e `reason` da última troca). Se o estado CONTRADIZ a decisão
+> (decisão "manter pausada" e toggle `enabled`), nunca escrever "segue
+> valendo": comentar a divergência citando o estado lido e a proveniência
+> (ou a ausência dela), e tratar como achado — issue nova com prioridade, ou
+> pergunta ao editor se a pausa é de envio real em curso (critério 1 do
+> #5321). Incidente: em 08/10/2026 esta skill registrou "decisão segue
+> valendo" na #8099 (pausa da rampa Clarice) enquanto o toggle estava
+> `enabled: true` desde 01/10 e a rampa enviava todo dia.
+
 > Isto **não** proíbe o Passo 3b de tocar o mesmo grupo. São perguntas de
 > natureza diferente: aqui é *"o que falta?"* — já respondido, não se
 > repergunta; lá é *"você pode agir nisso agora?"* — nunca perguntado antes.

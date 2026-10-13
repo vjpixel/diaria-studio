@@ -11,8 +11,8 @@ Task `Diaria-Clarice-Novos` (`scripts/lib/scheduled-tasks.ts`) → `npx tsx scri
 **Default `enabled: false`** quando o arquivo não existe — armar esta task NUNCA liga o disparo automático sozinha. O que está do outro lado do toggle é envio de e-mail real e irreversível sem revisão humana; o lado seguro do fail-soft é o oposto do padrão usado no toggle de chat do Studio (`studio-chat-enabled.ts`, #4078, removido no #6942 junto com o chat do Studio inteiro), que era `true` por default.
 
 ```bash
-npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled   # libera o disparo automático diário
-npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled  # pausa (kill switch — substitui "não rodar a skill de novo")
+npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled --reason "..."   # libera o disparo automático diário
+npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."  # pausa (kill switch — substitui "não rodar a skill de novo")
 npx tsx scripts/lib/clarice-novos-enabled.ts                 # imprime "enabled"/"disabled"
 ```
 
@@ -72,7 +72,7 @@ npx tsx scripts/arm-systemd-timers.ts --task Diaria-Clarice-Novos     # arma de 
 > Saídas que de fato funcionam:
 >
 > 1. Rearmar **antes** de a próxima ocorrência do horário novo acontecer — a janela entre o último disparo e o horário novo.
-> 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled`. É a opção mais segura aqui, porque o switch existe justamente para isso.
+> 2. Usar o kill switch desta task: `npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."`, rearmar, deixar o catch-up sair no vazio, religar com `--set enabled`. É a opção mais segura aqui, porque o switch existe justamente para isso.
 > 3. `touch` no arquivo de carimbo antes do `start` — declara "já disparou agora", e não sobra ocorrência devida.
 
 ## 2ª captura diária — `Diaria-Clarice-Novos-Tarde` (#5185, 260814)

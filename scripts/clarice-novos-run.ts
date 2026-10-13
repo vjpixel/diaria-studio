@@ -349,7 +349,7 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
   if (!deps.isEnabled()) {
     report.note(
       "⏸️  automação PAUSADA (data/clarice-novos-enabled.json ausente ou {enabled:false}) — " +
-        "nenhuma chamada Stripe/MV/Brevo feita. Rode `npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled` pra liberar.",
+        "nenhuma chamada Stripe/MV/Brevo feita. Rode `npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled --reason \"...\"` pra liberar.",
     );
     const reportId = `novos-${aammdd}-paused`;
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice novos ${aammdd} — pausado`, report.build());

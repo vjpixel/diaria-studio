@@ -26,6 +26,7 @@ import {
   renderHealthSection,
   renderRecommendationSection,
   baseVolumeFromLastSendDay,
+  isRampBaseCampaign,
   groupByBrtDay,
   selectMatureDayCampaigns,
   DEFAULT_HEALTH_THRESHOLDS,
@@ -572,6 +573,51 @@ test("baseVolumeFromLastSendDay — soma células A/B/C do último dia BRT (não
 
 test("baseVolumeFromLastSendDay — vazio retorna 0", () => {
   assert.equal(baseVolumeFromLastSendDay([]), 0);
+});
+
+// #10096 — regressão do ciclo 2609-10: a rodada de sábado PAROU (fila
+// insuficiente), domingo só teve as 2 campanhas do `clarice-novos` (14 + 14)
+// e a rodada seguinte escalou a rampa sobre 28 em vez de ~40 mil.
+test("baseVolumeFromLastSendDay — dia sem onda da rampa + campanhas grupo:novos-* → base NÃO cai ao volume dos novos (#10096)", () => {
+  const mk = (id: number, name: string, sentDate: string, sent: number): BrevoCampaign =>
+    campaignSentHoursAgo(0, { id, name, sentDate, statistics: statsFor({ sent, delivered: sent, uniqueViews: 0 }) });
+  const camps = [
+    // sáb 10/10 (BRT) — onda d6 da rampa, 3 células
+    mk(1, "Clarice 2609 grupo:d6-sab10-A", "2026-10-10T09:00:00Z", 13_400),
+    mk(2, "Clarice 2609 grupo:d6-sab10-B", "2026-10-10T09:00:00Z", 13_390),
+    mk(3, "Clarice 2609 grupo:d6-sab10-C", "2026-10-10T09:00:00Z", 13_390),
+    // dom 11/10 — rodada parou; só os novos (manhã + tarde)
+    mk(4, "Clarice 2609 grupo:novos-261011", "2026-10-11T12:00:00Z", 14),
+    mk(5, "Clarice 2609 grupo:novos-261011-2", "2026-10-11T21:00:00Z", 14),
+  ];
+  assert.equal(baseVolumeFromLastSendDay(camps), 40_180);
+});
+
+test("baseVolumeFromLastSendDay — novos no MESMO dia da onda não inflam a base (#10096)", () => {
+  const mk = (id: number, name: string, sent: number): BrevoCampaign =>
+    campaignSentHoursAgo(0, { id, name, sentDate: "2026-10-13T09:00:00Z", statistics: statsFor({ sent, delivered: sent, uniqueViews: 0 }) });
+  const camps = [
+    mk(1, "Clarice 2609 grupo:d8-ter13", 32),
+    mk(2, "Clarice 2609 grupo:novos-261013", 26),
+    mk(3, "Clarice 2609 grupo:novos-261013-2", 34),
+  ];
+  assert.equal(baseVolumeFromLastSendDay(camps), 32);
+});
+
+test("baseVolumeFromLastSendDay — só campanhas grupo:novos-* → 0 (sem base da rampa, nunca a base dos novos) (#10096)", () => {
+  const camps = [
+    campaignSentHoursAgo(0, { id: 1, name: "Clarice 2609 grupo:novos-261011", sentDate: "2026-10-11T12:00:00Z", statistics: statsFor({ sent: 14, delivered: 14, uniqueViews: 0 }) }),
+  ];
+  assert.equal(baseVolumeFromLastSendDay(camps), 0);
+});
+
+test("isRampBaseCampaign — dN-* e naming legado entram; novos e outras keys grupo: ficam fora (#10096)", () => {
+  assert.equal(isRampBaseCampaign("Clarice 2609 grupo:d7-seg12-A"), true);
+  assert.equal(isRampBaseCampaign("Clarice 2609 grupo:D12-qui15"), true);
+  assert.equal(isRampBaseCampaign("Clarice News 2606-07 — A · dom"), true);
+  assert.equal(isRampBaseCampaign("Clarice 2609 grupo:novos-261011"), false);
+  assert.equal(isRampBaseCampaign("Clarice 2609 grupo:novos-261011-2"), false);
+  assert.equal(isRampBaseCampaign("Clarice 2607 grupo:ramp-warm"), false);
 });
 
 // #2992 — fronteira das 48h pode rachar um dia A/B/C entre incluído/excluído.

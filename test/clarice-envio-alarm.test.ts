@@ -49,7 +49,7 @@ describe("classifyEnvioReportId", () => {
     assert.equal(classifyEnvioReportId(`envio-${AAMMDD}`, AAMMDD), "ok");
   });
 
-  for (const suffix of ["-paused", "-sem-ciclo-elegivel", "-abc-iniciar", "-onda-ja-existe", "-fila-insuficiente", "-freio-stop", "-sem-volume"]) {
+  for (const suffix of ["-paused", "-sem-ciclo-elegivel", "-abc-iniciar", "-onda-ja-existe", "-fila-insuficiente", "-fila-insuficiente-pendente", "-freio-stop", "-sem-volume"]) {
     it(`pausa legítima "${suffix}" => ok`, () => {
       assert.equal(classifyEnvioReportId(`envio-${AAMMDD}${suffix}`, AAMMDD), "ok");
     });
