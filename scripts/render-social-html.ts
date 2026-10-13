@@ -37,6 +37,10 @@ import {
   loadUseMelhorPostConfigState,
 } from "./lib/use-melhor-post.ts"; // #9568
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #9568
+import {
+  finalizeUseMelhorPostText,
+  finalizeUseMelhorTextChannelPostText,
+} from "./lib/use-melhor-dispatch.ts"; // #10087: preview = texto publicado do `## um`
 
 export interface ImageMap {
   [key: string]: {
@@ -271,12 +275,18 @@ export function countImgTags(html: string): number {
  * em vez de cair num fallback silencioso que escondia o problema do editor.
  */
 export function channelsForSection(sectionName: string): string {
+  return formatChannelLabels(channelKeysForSection(sectionName));
+}
+
+/** Chaves de canal (`linkedin`, `facebook`, ...) cobertas por uma seção `# …`
+ * do `03-social.md`. Mesma regra de `channelsForSection` (que só formata). */
+export function channelKeysForSection(sectionName: string): readonly string[] {
   const n = sectionName.toLowerCase();
-  if (n.includes("curto")) return formatChannelLabels(CURTO_CHANNELS);
-  if (n.includes("social")) return formatChannelLabels(TEXTO_UNICO_CHANNELS);
+  if (n.includes("curto")) return CURTO_CHANNELS;
+  if (n.includes("social")) return TEXTO_UNICO_CHANNELS;
   // Formato legado (pré-#3991): uma seção por rede.
   const legacy = KNOWN_SOCIAL_CHANNELS.find((k) => n.includes(k.channel));
-  if (legacy) return formatChannelLabels([legacy.channel]);
+  if (legacy) return [legacy.channel];
   throw new Error(
     `[channelsForSection] seção social não reconhecida: "${sectionName}". ` +
       `Canais conhecidos: ${KNOWN_SOCIAL_CHANNELS.map((k) => k.channel).join(", ")}. ` +
@@ -287,6 +297,36 @@ export function channelsForSection(sectionName: string): string {
 export interface GroupedBlock {
   channels: string;
   post: Post;
+}
+
+/** #9999: canais de TEXTO longo, onde o publish separa os itens do `## um`
+ * por linha em branco (`finalizeUseMelhorTextChannelPostText`). */
+const USE_MELHOR_TEXT_CHANNELS: ReadonlySet<string> = new Set(["linkedin", "facebook"]);
+
+/**
+ * #10087: blocos do 4º post (`## um`) com o texto que CADA canal publica —
+ * LinkedIn/Facebook via `finalizeUseMelhorTextChannelPostText` (itens
+ * separados por linha em branco, #9999), os demais (Instagram, `# Curto`) via
+ * `finalizeUseMelhorPostText`. Os dois resolvem `{quebra}` e aplicam a UTM do
+ * 4º post. Antes o preview mostrava o `## um` cru, num bloco único pros 3
+ * canais, e o editor via os itens colados que nunca saem assim no
+ * LinkedIn/Facebook. Quando os textos finais dos dois grupos coincidem (lista
+ * sem itens a separar), fica um bloco só com o rótulo da seção inteira.
+ */
+export function useMelhorBlocksForSection(sectionName: string, post: Post): GroupedBlock[] {
+  const keys = channelKeysForSection(sectionName);
+  const textKeys = keys.filter((k) => USE_MELHOR_TEXT_CHANNELS.has(k));
+  const otherKeys = keys.filter((k) => !USE_MELHOR_TEXT_CHANNELS.has(k));
+  const textMain = finalizeUseMelhorTextChannelPostText(post.main);
+  const otherMain = finalizeUseMelhorPostText(post.main);
+  if (textKeys.length === 0 || otherKeys.length === 0 || textMain === otherMain) {
+    const main = textKeys.length > 0 ? textMain : otherMain;
+    return [{ channels: formatChannelLabels(keys), post: { ...post, main } }];
+  }
+  return [
+    { channels: formatChannelLabels(textKeys), post: { ...post, main: textMain } },
+    { channels: formatChannelLabels(otherKeys), post: { ...post, main: otherMain } },
+  ];
 }
 
 export interface DestaqueGroup {
@@ -348,7 +388,11 @@ export function groupByDestaque(
           blocks: [],
         });
       }
-      groups.get(key)!.blocks.push({ channels, post });
+      if (key === USE_MELHOR_POST_ID) {
+        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post)); // #10087
+      } else {
+        groups.get(key)!.blocks.push({ channels, post });
+      }
     }
   }
   const order = (k: string): number => {

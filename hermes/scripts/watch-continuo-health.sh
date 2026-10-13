@@ -65,6 +65,9 @@ cd "$REPO" || { echo "ERRO: repo ausente"; exit 1; }
 FAILS=0
 ISSUES_CREATED=0
 ISSUES_CREATED_TITLES=""
+# #10074: avisos de pausa/retomada do contínuo por key limit, entregues no
+# stdout ao fim da varredura (ver bloco "avisos de pausa/retomada" abaixo).
+RATELIMIT_NOTES=""
 
 # Entrega SÓ QUANDO HÁ PROBLEMA (editor, 19/09/2026) ─────────────────────────
 # O job de cron é `no_agent=True` no Hermes: o stdout deste script é entregue
@@ -1038,6 +1041,9 @@ elif [ "$AUTH_PARSE" = "STALLED_QUOTA" ]; then
   # o roda aqui também. Fail-soft: falha do watchdog vira nota, nunca aborta.
   PAUSE_OUT=$(python3 /home/vjpixel/diaria-studio/hermes/scripts/pause-cron-on-ratelimit.py 2>&1) || true
   [ -n "$PAUSE_OUT" ] && note "[watch] pause-cron-on-ratelimit: $PAUSE_OUT"
+  # #10074: o aviso do Python (pausa/retomada/falha) vai pro stdout também —
+  # antes ficava só no $WATCH_LOG e o editor não via.
+  [ -n "$PAUSE_OUT" ] && RATELIMIT_NOTES="${RATELIMIT_NOTES}${PAUSE_OUT}"$'\n'
   file_issue "[watch-continuo] parada por cota" \
     "[watch-continuo] parada por cota (403 key limit / 429 usage_limit) no cron do contínuo" \
     "bug,P1" \
@@ -1123,6 +1129,25 @@ else
   note "[watch] review obsoleto: ok (nenhuma PR com review obsoleto sem resolução; #8445)"
 fi
 
+# ── avisos de pausa/retomada por key limit (#10074) ─────────────────────────
+# O timer horário (`scripts/run-continuo-ratelimit-watchdog.ts`, #10070) pausa
+# e retoma o contínuo antes desta varredura e enfileira o aviso do Python em
+# ~/.hermes/cron/.ratelimit-watchdog-notes.jsonl. Quando o watch roda, o job
+# já está pausado (ou já voltou) e o Python fica calado — sem drenar a fila,
+# o editor nunca sabia que o contínuo parou nem quando voltou.
+RL_DRAIN=$(npx tsx /home/vjpixel/diaria-studio/scripts/drain-continuo-ratelimit-notes.ts 2>/tmp/continuo-ratelimit-drain.err)
+RL_DRAIN_RC=$?
+if [ "$RL_DRAIN_RC" -ne 0 ]; then
+  echo "[watch] avisos de pausa/retomada: INDETERMINADO (drain falhou: $(head -c 300 /tmp/continuo-ratelimit-drain.err 2>/dev/null))" >&2
+  FAILS=$((FAILS + 1))
+fi
+if [ -n "$RL_DRAIN" ]; then
+  note "[watch] avisos de pausa/retomada drenados: $RL_DRAIN"
+  RATELIMIT_NOTES="${RATELIMIT_NOTES}${RL_DRAIN}"$'\n'
+else
+  note "[watch] avisos de pausa/retomada: nenhum na fila"
+fi
+
 note "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $FAILS, issues criadas: $ISSUES_CREATED)"
 
 # Entrega: silêncio quando a varredura passou limpa. Issue criada é o sinal
@@ -1132,6 +1157,10 @@ note "[watch] varredura concluída (checagens indeterminadas/falhas de infra: $F
 if [ "$ISSUES_CREATED" -gt 0 ]; then
   echo "[watch] $ISSUES_CREATED issue(s) de saúde do contínuo aberta(s):"
   printf '%s' "$ISSUES_CREATED_TITLES"
+fi
+# #10074: pausa/retomada do contínuo é "algo aconteceu" — entrega o aviso.
+if [ -n "$RATELIMIT_NOTES" ]; then
+  printf '%s' "$RATELIMIT_NOTES"
 fi
 # Exit honesto (finding P2 do review #6469): FAILS>0 = o observador NÃO pôde
 # garantir a varredura — o cron do Hermes registra a falha e o failure_streak

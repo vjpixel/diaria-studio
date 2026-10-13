@@ -198,7 +198,30 @@ describe("#8115 — integração no render de Totais por mês", () => {
     assert.doesNotMatch(html, /parcial — janela de/, "backfill já confirmado 'done' suprime o aviso mesmo sem histórico extra");
   });
 
-  test("#9917 — campanha presente na janela E no archive (fallback lastgood) não conta 2x nos totais mensais", () => {
+  // #10095: o render carimba a hora atual no cabeçalho ("carregado às HH:MM
+  // BRT") e usa `new Date()` em outras seções. Sem relógio congelado, as duas
+  // chamadas comparadas abaixo podiam cair em minutos diferentes e o
+  // `assert.equal` do HTML inteiro falhava sem relação com a dedup (flake
+  // do CI do PR #10088). O teste a seguir prova a dependência de relógio;
+  // o teste #9917 congela o relógio para comparar só o efeito do archive.
+  test("#10095 — o HTML do render depende do relógio (por isso o teste #9917 congela Date)", (t) => {
+    const render = () =>
+      renderDashboardHtml(
+        windowCampaigns, [], null, null, null, null, null, null, null,
+        2,
+        null,
+        { monthlyArchive: { campaigns: [], backfillIncomplete: false, knownOffset: 2 } },
+      );
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T10:40:59.900Z") });
+    const antes = render();
+    t.mock.timers.tick(200); // cruza a virada do minuto
+    const depois = render();
+    assert.notEqual(antes, depois, "virada de minuto entre 2 renders muda o HTML — comparar HTML inteiro exige relógio congelado");
+  });
+
+  test("#9917 — campanha presente na janela E no archive (fallback lastgood) não conta 2x nos totais mensais", (t) => {
+    // #10095: relógio congelado — as 3 chamadas abaixo veem o mesmo instante.
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-13T10:40:59.900Z") });
     const render = (archived: BrevoCampaign[]) =>
       renderDashboardHtml(
         windowCampaigns, [], null, null, null, null, null, null, null,
