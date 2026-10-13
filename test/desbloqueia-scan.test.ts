@@ -33,8 +33,10 @@ import assert from "node:assert/strict";
 import {
   classifyDesbloqueioCandidate,
   scanDesbloqueioCandidates,
+  SEM_DIRECAO_LABEL,
   type DesbloqueioIssueInput,
 } from "../scripts/lib/desbloqueia-scan.ts";
+import { MOTIVO_LABEL } from "../scripts/lib/issue-route.ts";
 import {
   resolveDependencyStates,
   runDesbloqueioScan,
@@ -573,11 +575,34 @@ describe("#7708 — fora-de-rodada no escopo + anti-fadiga do acao-adiada", () =
     assert.equal(r?.status, "acao-imediata-candidata");
   });
 
-  it("decisao-registrada e sem-direcao-acionavel também entram", () => {
-    for (const label of ["decisao-registrada", "sem-direcao-acionavel"]) {
-      const r = classifyDesbloqueioCandidate(baseInput({ labels: [label], now: agora }));
-      assert.equal(r?.status, "acao-imediata-candidata", label);
-    }
+  it("decisao-registrada também entra como acao-imediata-candidata", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ labels: ["decisao-registrada"], now: agora }));
+    assert.equal(r?.status, "acao-imediata-candidata");
+  });
+
+  // #10122 — sem-direção é falta de CRITÉRIO do editor: vira pergunta de
+  // direção (Passo 3), não só pedido de ação imediata (3b). Antes caía em
+  // acao-imediata-candidata e nenhuma superfície perguntava nada.
+  it("sem-direcao-acionavel entra no escopo de PERGUNTA (#10122)", () => {
+    const r = classifyDesbloqueioCandidate(baseInput({ labels: ["sem-direcao-acionavel"], now: agora }));
+    assert.equal(r?.escopo, "fora-de-rodada");
+    assert.equal(r?.status, "precisa-pergunta");
+    const report = scanDesbloqueioCandidates([
+      baseInput({ number: 10122, labels: ["sem-direcao-acionavel"], now: agora }),
+    ]);
+    assert.deepEqual(report.precisaPergunta.map((c) => c.number), [10122]);
+    assert.deepEqual(report.acaoImediataCandidatas, []);
+  });
+
+  it("SEM_DIRECAO_LABEL bate com a label que route-issue --motivo sem-direcao aplica (#10122)", () => {
+    assert.equal(SEM_DIRECAO_LABEL, MOTIVO_LABEL["sem-direcao"]);
+  });
+
+  it("sem-direcao-acionavel com adiamento ativo continua acao-adiada (#10122 não fura o cooldown)", () => {
+    const r = classifyDesbloqueioCandidate(
+      baseInput({ labels: ["sem-direcao-acionavel"], comments: [adiada(diasAtras(1))], now: agora }),
+    );
+    assert.equal(r?.status, "acao-adiada");
   });
 
   it("on-hold/wontfix ficam FORA por default — engavetamento deliberado não se repergunta", () => {
