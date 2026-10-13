@@ -19,9 +19,14 @@
  * já tem `suggested_primary_domain`, roda 1 query Brave
  * `site:{domínio oficial} {título}` e aplica a regra de
  * `choosePrimarySource` (#5664): resultado no domínio oficial (ou subdomínio)
- * E mesmo assunto — similaridade de título >= 0,60 OU o matcher "mesma
- * história" do dedup intra-edição (`isIntraEditionDuplicate`, o mesmo que o
- * `review-highlight-official-swap.ts` usa).
+ * E mesmo assunto — similaridade de título >= 0,60 OU o MESMO produto com
+ * versão idêntica nos dois títulos (`sameStoryByExactProductVersion`:
+ * "Haiku 5.5" ↔ "Haiku 5.5"; nunca só "Claude"/"GPT", nunca "GPT-5.5" ↔
+ * "GPT-5"). #10141: o matcher do dedup intra-edição (`isIntraEditionDuplicate`)
+ * NÃO serve aqui — os ramos `cross_vehicle`/`entity` aceitavam "mesma empresa
+ * + 1 palavra" e trocavam manchete de processo/multa/demissão por página de
+ * produto sem relação. Só roda para destaque com `suggested_primary_domain`
+ * E verbo de lançamento no título; na dúvida, mantém a URL secundária.
  *
  * Fail-soft em tudo: sem `BRAVE_API_KEY`, sem `past-editions.md`, busca com
  * erro, JSON ilegível → nada muda e exit 0. URL oficial que repete edição
@@ -50,20 +55,13 @@ import {
   extractPastUrlsWithinDays,
   readPastEditionsMd,
 } from "./lib/past-editions-extract.ts";
-import { isIntraEditionDuplicate } from "./dedup-intra-edition.ts";
 import {
   runActivePrimarySourceLookup,
   type ActiveLookupAttempt,
   type ActiveLookupInput,
   type PrimarySourceCandidate,
-  type SameStoryFn,
+  sameStoryByExactProductVersion,
 } from "./lib/primary-source-lookup.ts";
-
-export const sameStoryViaIntraEditionMatcher: SameStoryFn = (article, candidate) =>
-  isIntraEditionDuplicate(
-    { url: candidate.url, title: candidate.title },
-    [{ article: { url: article.url ?? "", title: article.title ?? "", summary: article.summary ?? undefined } }] as never,
-  ) !== null;
 
 export function formatAttemptNote(a: ActiveLookupAttempt): string {
   const d = a.rank ? `D${a.rank}` : "destaque";
@@ -131,7 +129,7 @@ async function main(): Promise<void> {
     search,
     pastUrls,
     canonicalize,
-    sameStory: sameStoryViaIntraEditionMatcher,
+    sameStory: sameStoryByExactProductVersion,
     destaqueCount,
   });
 

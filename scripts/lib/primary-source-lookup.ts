@@ -11,7 +11,7 @@
  * ascending. Otherwise preserve the secondary URL and record the attempt.
  */
 
-import { detectDomainMismatchCandidate } from "./launch-detect.ts";
+import { detectDomainMismatchCandidate, hasLaunchVerb } from "./launch-detect.ts";
 import { subjectSimilarity } from "./title-similarity.ts";
 
 export interface PrimarySourceArticle {
@@ -49,12 +49,50 @@ export interface PrimarySourceLookup {
 /**
  * #10137: optional second acceptance signal. Called only for candidates that
  * already passed the official-domain/accessibility filter — it widens "same
- * topic", never the domain rule. Injected (not imported) so this lib stays
- * free of the `scripts/dedup-intra-edition.ts` dependency; the CLI passes
- * `isIntraEditionDuplicate`, the same matcher the intra-edition dedup and
- * `review-highlight-official-swap.ts` already use for "same story".
+ * topic", never the domain rule. The CLI passes
+ * `sameStoryByExactProductVersion` (below). #10141: it must NOT be
+ * `isIntraEditionDuplicate` — that matcher is tuned for press-vs-press dedup
+ * and its `cross_vehicle`/`entity` branches swapped unrelated official pages.
  */
 export type SameStoryFn = (article: PrimarySourceArticle, candidate: { url: string; title: string }) => boolean;
+
+/**
+ * #10141: versioned product identifiers in a title — a capitalized product
+ * word immediately followed by a version ("GPT-5.5", "Claude Haiku 5.5" →
+ * `haiku5.5`, "Llama 3.1", "GPT-4o"), normalized to lowercase with the
+ * separator removed so "GPT 5.5" and "GPT-5.5" collide. A bare product name
+ * ("Claude", "Llama", "Copilot", "GPT") yields nothing, and four-digit years
+ * ("Março 2026") are ignored — neither identifies a specific launch.
+ */
+export function extractVersionedProductCodes(text: string): Set<string> {
+  const codes = new Set<string>();
+  const re = /\b([A-Z][A-Za-z]*)[\s-]?(\d+(?:\.\d+)*[a-z]?)(?![\w.]*\d)/g;
+  for (const m of text.matchAll(re)) {
+    const version = m[2];
+    if (/^\d{4}$/.test(version) && Number(version) >= 1900) continue;
+    codes.add(`${m[1].toLowerCase()}${version.toLowerCase()}`);
+  }
+  return codes;
+}
+
+/**
+ * #10141: the ONLY "same story" signal the active lookup accepts below the
+ * 0.60 similarity bar — both titles cite the IDENTICAL versioned product
+ * ("Haiku 5.5" ↔ "Haiku 5.5"). Replaces the #10137 wiring to
+ * `isIntraEditionDuplicate`, whose `cross_vehicle`/`entity` branches accept
+ * "same company + one shared word": every `site:{official domain}` result
+ * already carries the company name, so sharing a bare product name ("Claude",
+ * "Llama", "Copilot") was enough to swap a lawsuit/fine/layoff headline for an
+ * unrelated product page. "GPT-5.5" vs "GPT-5" is a different version and
+ * never matches.
+ */
+export const sameStoryByExactProductVersion: SameStoryFn = (article, candidate) => {
+  const articleCodes = extractVersionedProductCodes(article.title ?? "");
+  if (articleCodes.size === 0) return false;
+  const candidateCodes = extractVersionedProductCodes(candidate.title);
+  for (const code of articleCodes) if (candidateCodes.has(code)) return true;
+  return false;
+};
 
 export interface ChoosePrimarySourceOptions {
   sameStory?: SameStoryFn;
@@ -278,6 +316,12 @@ export async function runActivePrimarySourceLookup(
   for (const highlight of rankedTopHighlights(input.highlights ?? [], destaqueCount)) {
     const article = highlight.article as PrimarySourceArticle;
     const original = article.url as string;
+    // #10141: only look up launches. Without an explicit Stage 1
+    // `suggested_primary_domain` (set by enrich-primary-source only for
+    // launch verb + known company) or without a launch verb in the title, the
+    // story is not about an official release (lawsuit, fine, layoffs…) and
+    // any official page is at best tangential — keep the secondary URL.
+    if (!article.suggested_primary_domain?.trim() || !hasLaunchVerb(article.title ?? "")) continue;
     const query = buildPrimarySourceQuery(article);
     if (!query || decisions.has(original)) continue; // no known company → nothing to look up
 
