@@ -103,7 +103,9 @@ pule direto pra `gh issue view` improvisado. Ele:
      bloqueio não vale mais. Nunca comentar "segue valendo" — rotear pra
      fora de `bloqueada`.
    - **`precisaPergunta`** — nem um nem outro cobre o estado atual. É a
-     ÚNICA lista que vira pergunta.
+     ÚNICA lista que vira pergunta. Inclui, desde #10122, as `fora-de-rodada`
+     com `sem-direcao-acionavel`: o que falta nelas é um CRITÉRIO do editor,
+     não uma ação no teclado — viram pergunta de direção no Passo 3.
    - **`semSinalNaoTriadas`** (#7694) — candidata `·sem sinal` cuja thread
      não tem marcador nenhum. **Nunca vira pergunta**: não é "falta uma
      resposta do editor", é "ninguém leu esta issue ainda". Vira TRIAGEM
@@ -111,7 +113,8 @@ pule direto pra `gh issue view` improvisado. Ele:
      `AskUserQuestion` é exatamente o que "Perguntar é exceção" (#5321)
      proíbe.
    - **`acaoImediataCandidatas`** (#7708) — vieram de `fora-de-rodada`
-     (alarme de estado, decisão em prosa, sem-direção) e ninguém avaliou se
+     (alarme de estado, decisão em prosa — `sem-direcao-acionavel` vai pra
+     `precisaPergunta` desde #10122) e ninguém avaliou se
      existe uma ação do editor que as destrava AGORA. Alimentam o Passo 3b.
    - **`acaoAdiada`** (#7708) — já pedimos a ação e o editor adiou; o
      cooldown ainda vale. **Nunca vira pergunta.** É este grupo que impede a
@@ -277,6 +280,17 @@ forem necessárias até esgotar o pool:
 4. **Blast-radius/autorização de gasto real** (cat. D/E-com-custo) —
    critério 3/1 do #5321: só pergunta quando há gasto real ou ação
    irreversível envolvida.
+5. **Direção para `sem-direcao-acionavel`** (#10122) — a rodada concluiu
+   "sem ação de código clara", e o que falta é o CRITÉRIO do editor (qual
+   corte aplicar, que regra de escolha seguir, o que fazer com um sinal
+   recorrente do auto-reporter). Resumir o padrão que a thread documenta
+   (quantas edições reincidiram, qual a mudança manual do editor) e
+   perguntar "qual o critério?", com 2-3 critérios candidatos derivados da
+   própria thread + a opção "nem eu destravo isto" — a recomendada em 1º.
+   Resposta com critério → comentário `decisao-editor` + `route-issue
+   --track overnight --motivo triada` (a issue volta à fila com direção);
+   "nem eu destravo" → mantém `fora-de-rodada` com `--motivo sem-direcao`
+   (nunca sem `--motivo`, que aplicaria `on-hold`).
 
 **Toda pergunta traz uma recomendação (#8909, adendo do editor, 28/09/2026).**
 A opção recomendada vem em 1º lugar, com o sufixo "(Recomendado)" e uma

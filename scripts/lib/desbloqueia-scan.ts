@@ -38,7 +38,8 @@
  *     (#7708): a issue saiu da fila por um mecanismo paralelo (alarme de
  *     estado, decisão em prosa, sem-direção) e ninguém avaliou se existe uma
  *     ação do editor que a destrava agora. Alimenta o pedido de ação
- *     imediata do playbook.
+ *     imediata do playbook. Exceção (#10122): com `sem-direcao-acionavel`
+ *     vira `precisa-pergunta` — falta critério, não ação no teclado.
  *   - `acao-adiada`         — já pedimos a ação e o editor adiou; o cooldown
  *     (`ACAO_ADIADA_COOLDOWN_DAYS`) ainda vale (#7708). **Nunca** vira
  *     pergunta — é o que impede a skill de repetir a mesma bateria a cada
@@ -177,7 +178,8 @@ export type DesbloqueioStatus =
  *   - `fora-de-rodada` (#7708) — a issue foi tirada da fila por um mecanismo
  *     paralelo (alarme de estado, decisão em prosa, sem-direção) e ninguém
  *     avaliou se existe uma ação do editor que a destrava agora →
- *     `acao-imediata-candidata`.
+ *     `acao-imediata-candidata` (ou `precisa-pergunta` quando a causa é
+ *     `sem-direcao-acionavel`, #10122 — pergunta de direção).
  *
  * Sem este campo os três colapsariam em `precisa-pergunta`, e a bateria de
  * `AskUserQuestion` receberia o backlog inteiro.
@@ -386,9 +388,20 @@ function decideStatus(args: {
   // `DesbloqueioEscopo`. Colapsar os três em `precisa-pergunta` jogaria o
   // backlog inteiro na bateria de `AskUserQuestion`, contra #5321.
   if (escopo === "sem-sinal") return "sem-sinal-nao-triada";
-  if (escopo === "fora-de-rodada") return "acao-imediata-candidata";
+  if (escopo === "fora-de-rodada") {
+    // #10122 — `sem-direcao-acionavel` é falta de CRITÉRIO, não de ação no
+    // teclado: a pergunta certa é de direção ("qual o critério?"), que é a
+    // bateria do Passo 3. Mandá-la só pro 3b (ação imediata) deixava essas
+    // issues sem nenhuma superfície que perguntasse ao editor.
+    if (input.labels.includes(SEM_DIRECAO_LABEL)) return "precisa-pergunta";
+    return "acao-imediata-candidata";
+  }
   return "precisa-pergunta";
 }
+
+/** #10122 — label que `route-issue --track fora-de-rodada --motivo sem-direcao`
+ * aplica (`MOTIVO_LABEL["sem-direcao"]` em `issue-route.ts`). */
+export const SEM_DIRECAO_LABEL = "sem-direcao-acionavel";
 
 export interface DesbloqueioScanReport {
   jaDestravadas: DesbloqueioCandidate[];
