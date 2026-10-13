@@ -176,10 +176,17 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
         "input_cache_read": 0.000000030,  # $0,03/M
     },
     "z-ai/glm-5.3-flash": {
-        "prompt": 0.00000015,            # $0,15/M — preco de lista, promo caiu
-        # $0,50/M vigente em 04/10/2026 (#9559; baixou dos $0,90/M de #9472).
-        "completion": 0.0000005,
-        "input_cache_read": 0.000000030,  # $0,03/M — preço vigente 2026-10-04 (#9559)
+        # #10065 (13/10/2026): catalogo mudou de novo — completion subiu
+        # (0,50 -> 1,20/M no alarme de 12/10; 0,90/M medido ao vivo em 13/10,
+        # que e o valor gravado aqui), prompt e input_cache_read CAIRAM.
+        # Decisao do editor (briefing overnight 261013): MANTER o modelo ao
+        # preco novo. Baseline acompanha os 3 campos vigentes — inclusive as
+        # quedas, senao uma volta ao preco antigo de prompt/cache passaria
+        # sem alarme. Custo-mix no workload real (2302 chamadas do tick,
+        # 28/08-16/09): $9,46 no baseline antigo -> $3,24 no vigente (-66%).
+        "prompt": 0.0000000261,           # $0,0261/M
+        "completion": 0.0000009,          # $0,90/M
+        "input_cache_read": 0.0000000108, # $0,0108/M
     },
 }
 
