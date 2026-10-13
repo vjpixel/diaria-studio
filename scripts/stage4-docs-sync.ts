@@ -31,6 +31,14 @@
  *   # Desliga o sync (ex.: editor aprovou "sem as edições do doc")
  *   npx tsx scripts/stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"
  *
+ *   # Religa o sync (#10078): só se o export do doc voltar equivalente à base
+ *   # (mesmo critério do check-roundtrip); reprovado → segue desligado, exit 1
+ *   npx tsx scripts/stage4-docs-sync.ts enable --edition-dir <dir> --doc-export <export.md>
+ *
+ *   # Estado do doc SEM export (#10078): doc_url, sync ligado/desligado,
+ *   # arquivos que o pipeline mudou desde o conteúdo do doc, conflito pendente
+ *   npx tsx scripts/stage4-docs-sync.ts status --edition-dir <dir>
+ *
  *   # Antes do sentinel do Stage 4: último apply ok e arquivos sem mudança desde
  *   npx tsx scripts/stage4-docs-sync.ts check --edition-dir <dir>
  *
@@ -41,7 +49,8 @@
  * Exit codes:
  *   0 — ok
  *   1 — apply com CONFLITO em ao menos 1 arquivo (nada gravado nele);
- *       check-roundtrip reprovado (sync desativado); check reprovado
+ *       check-roundtrip reprovado (sync desativado); enable reprovado (sync
+ *       segue desativado); check reprovado
  *   2 — uso inválido, estado/arquivo ausente ou corrompido, sentinela
  *       ausente/corrompida no export, edição pendente no render, sync
  *       desativado (nada gravado)
@@ -60,8 +69,10 @@ import {
   runCheckRoundtrip,
   runConfirm,
   runDisable,
+  runEnable,
   runRender,
   runSetUrl,
+  runStatus,
 } from "./lib/stage4-docs-sync.ts";
 
 class UsageError extends Error {}
@@ -77,6 +88,8 @@ const USAGE =
   "     stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <md>] [--doc-version <v>]\n" +
   '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."] [--final]\n' +
   '     stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"\n' +
+  "     stage4-docs-sync.ts enable --edition-dir <dir> --doc-export <md>\n" +
+  "     stage4-docs-sync.ts status --edition-dir <dir>\n" +
   "     stage4-docs-sync.ts check --edition-dir <dir>";
 
 function run(argv: string[]): number {
@@ -130,6 +143,16 @@ function run(argv: string[]): number {
       if (!reason) usage("--reason obrigatório no disable");
       runDisable({ editionDir, reason });
       console.log(JSON.stringify({ ok: true, sync_disabled: reason }));
+      return 0;
+    }
+    case "enable": {
+      if (!docExport) usage("--doc-export obrigatório no enable (o sync só religa com o round-trip verde)");
+      const r = runEnable({ editionDir, docExport });
+      console.log(JSON.stringify(r, null, 2));
+      return r.ok ? 0 : 1;
+    }
+    case "status": {
+      console.log(JSON.stringify({ ok: true, ...runStatus({ editionDir }) }));
       return 0;
     }
     case "check": {

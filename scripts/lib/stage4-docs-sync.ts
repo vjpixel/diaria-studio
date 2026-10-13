@@ -17,9 +17,16 @@
  *      sucesso, contra a `container.version` do export) a efetiva. Falhou a
  *      substituição → a base antiga segue valendo.
  *   2. `set-url` grava o `doc_url` (sem mexer na base); `check-roundtrip`
- *      confere, logo após criar o doc, que o export do doc intocado volta
- *      equivalente — senão desativa o sync daquele doc (`sync_disabled`).
+ *      (opcional desde #10078) confere que o export do doc intocado volta
+ *      equivalente — senão desativa o sync daquele doc (`sync_disabled`);
+ *      `enable` religa o sync com o mesmo critério.
  *   3. `apply` faz o merge de 3 vias por arquivo: BASE × DOC × arquivo ATUAL.
+ *      Fluxo padrão desde #10078 (decisão do editor, 13/10/2026): o editor
+ *      edita no doc durante o gate e o export chega ao disco UMA vez, na
+ *      finalização (`apply --final` do ramo `sim`) — o conector só devolve o
+ *      export inline no resultado da tool, e cada ida ao disco custa a
+ *      retranscrição do doc inteiro. Durante o gate, `status` (sem export)
+ *      informa o que o pipeline mudou desde o conteúdo do doc.
  *   4. `check` confere mecanicamente, antes do sentinel do Stage 4, que o
  *      último `apply` foi o `apply --final` do ramo `sim`, sem conflito, e que
  *      os arquivos não mudaram desde.
@@ -1164,9 +1171,22 @@ export interface RoundtripResult {
  */
 export function runCheckRoundtrip(opts: { editionDir: string; docExport: string; now?: Date }): RoundtripResult {
   const state = requireState(opts.editionDir, "check-roundtrip");
+  const result = evaluateRoundtrip(state, opts.docExport);
+  if (!result.ok) {
+    writeState(opts.editionDir, {
+      ...state,
+      sync_disabled: { reason: result.reason ?? "round-trip falhou", at: (opts.now ?? new Date()).toISOString() },
+    });
+  }
+  return result;
+}
+
+/** Compara o export com a base sem gravar nada. Erro de formato do export
+ * (sentinela perdida etc.) vira reprovação; erro de I/O propaga. */
+function evaluateRoundtrip(state: DocsGateState, docExport: string): RoundtripResult {
   let result: RoundtripResult;
   try {
-    const sections = readExport(opts.docExport);
+    const sections = readExport(docExport);
     const files = SYNC_FILES.map((file) => {
       const base = state.base[file].content;
       // Estrito: além de nenhuma edição, nenhuma linha juntada/partida (o
@@ -1181,13 +1201,75 @@ export function runCheckRoundtrip(opts: { editionDir: string; docExport: string;
     if (!(e instanceof DocsSyncFormatError)) throw e;
     result = { ok: false, reason: `round-trip do doc falhou: ${e.message}`, files: [] };
   }
-  if (!result.ok) {
-    writeState(opts.editionDir, {
-      ...state,
-      sync_disabled: { reason: result.reason ?? "round-trip falhou", at: (opts.now ?? new Date()).toISOString() },
-    });
-  }
   return result;
+}
+
+export interface EnableResult extends RoundtripResult {
+  /** true = o sync já estava ativo (nada mudou). */
+  already_enabled?: boolean;
+}
+
+/**
+ * Religa o sync depois de um `disable` (#10078) — só com o round-trip verde:
+ * o export do doc tem de voltar equivalente à base. Reprovado → o sync segue
+ * desligado (o motivo original é preservado) e nada é gravado. Aprovado →
+ * apaga `sync_disabled` e também `final_apply`/`pending`, que eram de antes do
+ * desligamento: o `check` do §4e volta a exigir um `apply --final` novo.
+ *
+ * Doc com edição do editor feita enquanto o sync estava desligado reprova de
+ * propósito: sem o round-trip limpo não dá para separar edição de alteração do
+ * conector.
+ */
+export function runEnable(opts: { editionDir: string; docExport: string }): EnableResult {
+  const state = requireState(opts.editionDir, "enable");
+  if (!state.doc_url) throw new DocsSyncFormatError("sem doc_url no estado — não há doc para religar o sync");
+  if (!state.sync_disabled) return { ok: true, already_enabled: true, files: [] };
+  const result = evaluateRoundtrip(state, opts.docExport);
+  if (!result.ok) {
+    return { ...result, reason: `sync continua desativado — ${result.reason}` };
+  }
+  const next: DocsGateState = { ...state };
+  delete next.sync_disabled;
+  delete next.final_apply;
+  delete next.pending;
+  writeState(opts.editionDir, next);
+  return result;
+}
+
+export interface StatusResult {
+  /** false = sem `04-docs-gate.json` ou sem `doc_url`. */
+  has_doc: boolean;
+  doc_url?: string;
+  sync_enabled: boolean;
+  sync_disabled?: { reason: string; at: string };
+  /** Arquivos que o pipeline mudou desde o conteúdo que está no doc (sha do
+   * arquivo ≠ sha da base). O doc NÃO mostra essas mudanças; as edições do
+   * editor no doc são mescladas por cima delas no apply final (3 vias). */
+  files_changed_since_doc: SyncFile[];
+  pending_conflict: SyncFile[];
+  final_apply_at?: string;
+}
+
+/**
+ * Estado do doc SEM export (#10078) — custo zero, sem conector. É o que o
+ * gate consulta a cada apresentação no lugar do ciclo export → apply: o
+ * export do doc chega ao disco uma vez só, na finalização (ramo `sim`).
+ */
+export function runStatus(opts: { editionDir: string }): StatusResult {
+  const state = readState(opts.editionDir);
+  if (!state || !state.doc_url) {
+    return { has_doc: false, sync_enabled: false, files_changed_since_doc: [], pending_conflict: [] };
+  }
+  const files = readSyncFiles(opts.editionDir);
+  return {
+    has_doc: true,
+    doc_url: state.doc_url,
+    sync_enabled: !state.sync_disabled,
+    ...(state.sync_disabled ? { sync_disabled: state.sync_disabled } : {}),
+    files_changed_since_doc: SYNC_FILES.filter((f) => sha256(files[f]) !== state.base[f].sha256),
+    pending_conflict: state.pending_conflict ?? [],
+    ...(state.final_apply ? { final_apply_at: state.final_apply.at } : {}),
+  };
 }
 
 type ReportOutcome = FileOutcome extends infer O ? (O extends FileOutcome ? Omit<O, "write" | "newBase"> : never) : never;
