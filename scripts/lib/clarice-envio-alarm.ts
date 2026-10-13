@@ -28,8 +28,9 @@
  *     editor, onda já existe, sem público/volume suficiente). Nenhuma
  *     dessas é falha — OK, sem alarme.
  *   - `-fila-insuficiente-vencida` (#10118) — a parada durável do #10096
- *     passou de `CLARICE_ENVIO_HALT_MAX_AGE_DAYS` ou o ciclo virou desde
- *     ela, e ninguém decidiu. Fica FORA de `OK_SUFFIXES` de propósito —
+ *     passou de `CLARICE_ENVIO_HALT_MAX_AGE_DAYS`, o ciclo virou desde
+ *     ela, ou `data/clarice-envio-halt.json` está ilegível (#10121), e
+ *     ninguém decidiu. Fica FORA de `OK_SUFFIXES` de propósito —
  *     ALARME (e-mail próprio, não o de "falha").
  *   - qualquer OUTRO sufixo (`-abort`, `-lock-held`, ou um sufixo futuro
  *     ainda não listado aqui) — ALARME. Fail-TOWARD-alarming de propósito:
@@ -161,7 +162,7 @@ export function buildEnvioAlarmEmail(
       subject: `⚠️ Diaria-Clarice-Envio: rampa parada há tempo demais (${evaluation.reportId})`,
       body:
         `A rampa Clarice está parada por fila insuficiente (regra 260811, parada durável #10096) ` +
-        `e a parada venceu — passou do limite de dias ou o ciclo virou desde ela (#10118). ` +
+        `e a parada venceu — passou do limite de dias ou o ciclo virou desde ela (#10118), ou o arquivo de parada está ilegível (#10121). ` +
         `Nenhuma onda é agendada até decisão explícita do editor. Detalhes no relatório: ` +
         `data/clarice-subscribers/envio-reports/${evaluation.reportId}.md (também em /relatorios).\n\n` +
         `Pra retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."\n` +

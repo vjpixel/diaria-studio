@@ -88,7 +88,7 @@ import {
 } from "./lib/clarice-envio-enabled.ts";
 import {
   describeHaltForReport,
-  evaluateHaltStaleness,
+  evaluateHaltReadStaleness,
   HALT_STALE_REPORT_SUFFIX,
   readClariceEnvioHalt,
   writeClariceEnvioHalt,
@@ -941,7 +941,9 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       // #10118 — dentro do limite a parada é pausa legítima (`-pendente`, OK
       // pro alarme); vencida (idade > N dias ou ciclo virou) ganha sufixo
       // próprio, fora de OK_SUFFIXES, pra a task de alarme disparar.
-      const staleness = haltRead.invalid ? { stale: false as const } : evaluateHaltStaleness(haltRead.halt, now, currentCycle);
+      // #10121 — arquivo ilegível é vencida de imediato (sem since/ciclo pra
+      // provar que está dentro do limite): senão a rampa ficaria parada sem alarme.
+      const staleness = evaluateHaltReadStaleness(haltRead, now, currentCycle);
       if (staleness.stale) {
         report.note(
           `🚨 parada VENCIDA (${staleness.reasons.join("; ")}) — continua sem enviar, mas esta rodada sai como alarme ` +

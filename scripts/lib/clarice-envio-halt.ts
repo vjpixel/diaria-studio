@@ -173,6 +173,36 @@ export function evaluateHaltStaleness(
   return reasons.length > 0 ? { stale: true, reasons } : { stale: false };
 }
 
+/**
+ * #10121 — staleness a partir da LEITURA (não só da parada legível). Arquivo
+ * ilegível conta como parada ativa (lado seguro, #10096) e, como não dá pra
+ * saber desde quando nem de qual ciclo, é VENCIDA de imediato: sem isso a
+ * rodada sairia `-fila-insuficiente-pendente` (OK pro alarme) todo dia e a
+ * rampa ficaria parada indefinidamente sem ninguém ser avisado. Puro.
+ */
+export function evaluateHaltReadStaleness(
+  read: Exclude<ClariceEnvioHaltRead, { halted: false }>,
+  now: Date,
+  currentCycle: string | null,
+  maxAgeDays: number = CLARICE_ENVIO_HALT_MAX_AGE_DAYS,
+): ClariceEnvioHaltStaleness {
+  if (read.invalid) return { stale: true, reasons: [`arquivo de parada ilegível (${read.error})`] };
+  return evaluateHaltStaleness(read.halt, now, currentCycle, maxAgeDays);
+}
+
+/**
+ * #10123 — identidade ESTÁVEL de uma parada, pro fingerprint do alarme: a
+ * mesma parada vencida produz o mesmo achado todo dia (uma issue por parada,
+ * não uma por dia). Parada legível → `halt:{cycle}:{since}`; ilegível →
+ * `halt:ilegivel`; ausente (limpa entre a rodada das 19:00 e o alarme) →
+ * `halt:sem-arquivo`. Puro.
+ */
+export function haltAlarmFingerprint(read: ClariceEnvioHaltRead | null): string {
+  if (!read || !read.halted) return "halt:sem-arquivo";
+  if (read.invalid) return "halt:ilegivel";
+  return `halt:${read.halt.cycle}:${read.halt.since}`;
+}
+
 /** Texto do relatório de uma rodada que encontrou a parada ativa. Puro. */
 export function describeHaltForReport(read: Exclude<ClariceEnvioHaltRead, { halted: false }>, currentCycle: string | null): string {
   const clearCmd = 'npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."';

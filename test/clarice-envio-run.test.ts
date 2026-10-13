@@ -600,7 +600,11 @@ describe("clarice-envio-run (#5026)", () => {
       const { exec, calls } = makeFakeExec({});
       const r = await runEnvio(baseDeps(root, { exec, readHalt: () => readClariceEnvioHalt(root) }));
       assert.equal(r.code, 0);
-      assert.match(r.reportId, /-fila-insuficiente-pendente$/);
+      // #10121 — ilegível é VENCIDA de imediato (alarme), não -pendente (OK):
+      // senão a rampa ficaria parada todo dia sem ninguém ser avisado.
+      assert.match(r.reportId, /-fila-insuficiente-vencida$/);
+      assert.equal(classifyEnvioReportId(r.reportId, r.reportId.slice("envio-".length, "envio-".length + 6)), "alarm");
+      assert.match(r.reportMarkdown, /parada VENCIDA \(arquivo de parada ilegível \(/);
       assert.equal(calls.length, 0);
       rmSync(root, { recursive: true, force: true });
     });
