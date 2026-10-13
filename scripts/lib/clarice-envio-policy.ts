@@ -448,8 +448,13 @@ export function decideBrake(
     // omitir o número (o objetivo do texto é ser auditável, não garbled).
     const verb = util.byMetric[k] >= STOP_UTIL ? "estourou o limiar" : "está em";
     const valueText = value !== null && Number.isFinite(value) ? fmtPct(value) : "sem leitura válida";
+    // #10114 item 3 — "freio: OK — spam 1,23% estourou o limiar 0,30%" lia
+    // como contradição. Não é bug: o freio automático foi desligado no #6793
+    // (level sempre "ok"); a métrica estourada fica só no relatório. O texto
+    // agora diz isso, pra ninguém ler "OK" como "dentro do limiar".
+    const brakeOffNote = util.byMetric[k] >= STOP_UTIL ? " — freio automático desligado desde o #6793, nota só informativa: a onda NÃO é segurada por isso" : "";
     reasons.push(
-      `${RISK_METRIC_LABEL[k]}: ${valueText} ${verb} ${fmtPct(t[k])} (${pctOfLimit}% do limiar).`,
+      `${RISK_METRIC_LABEL[k]}: ${valueText} ${verb} ${fmtPct(t[k])} (${pctOfLimit}% do limiar)${brakeOffNote}.`,
     );
   }
 
