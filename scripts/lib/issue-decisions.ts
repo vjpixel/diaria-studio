@@ -55,6 +55,36 @@ export interface IssueDecision {
   resposta: string;
   /** Qual sessão gravou a decisão. */
   sessao: SessionKind;
+  /**
+   * #10105 — estado VERIFICÁVEL que a decisão manda manter (opcional,
+   * machine-readable). Ex.: decisão "manter a rampa Clarice pausada" grava
+   * `{toggle: "clarice-envio-enabled", enabled: false}`. O alarme
+   * (`scripts/lib/decision-state-drift.ts`) compara este campo com o toggle
+   * real — nunca interpreta a prosa de `resposta`. Ausente em marcadores
+   * anteriores ao #10105 (retrocompatível: continuam válidos, só não alarmam).
+   */
+  estado_esperado?: ExpectedToggleState;
+}
+
+/** Toggles cujo estado real dá pra ler deterministicamente (`data/*.json`).
+ * Lista fechada de propósito: um nome fora dela não tem leitor, e aceitá-lo
+ * criaria um alarme que nunca dispara. */
+export const VERIFIABLE_TOGGLES = ["clarice-envio-enabled", "clarice-novos-enabled"] as const;
+export type VerifiableToggle = (typeof VERIFIABLE_TOGGLES)[number];
+
+export interface ExpectedToggleState {
+  toggle: VerifiableToggle;
+  enabled: boolean;
+}
+
+export function isValidExpectedToggleState(value: unknown): value is ExpectedToggleState {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.toggle === "string" &&
+    (VERIFIABLE_TOGGLES as readonly string[]).includes(v.toggle) &&
+    typeof v.enabled === "boolean"
+  );
 }
 
 const MARKER_PREFIX = "<!-- decisao-editor: ";
@@ -65,12 +95,23 @@ const MARKER_SUFFIX = " -->";
  * (JSON.stringify com chaves na ordem de inserção do objeto literal abaixo,
  * estável entre chamadas). */
 export function formatDecisionMarker(opts: IssueDecision): string {
-  const payload = {
+  const payload: Record<string, unknown> = {
     decided_at: opts.decided_at,
     pergunta: opts.pergunta,
     resposta: opts.resposta,
     sessao: opts.sessao,
   };
+  // #10105 — só entra no payload quando presente: marcador sem estado
+  // esperado sai byte a byte igual ao de antes.
+  if (opts.estado_esperado !== undefined) {
+    if (!isValidExpectedToggleState(opts.estado_esperado)) {
+      throw new Error(
+        `estado_esperado inválido: ${JSON.stringify(opts.estado_esperado)} — toggle precisa ser um de ` +
+          `${VERIFIABLE_TOGGLES.join(", ")} e enabled booleano.`,
+      );
+    }
+    payload.estado_esperado = { toggle: opts.estado_esperado.toggle, enabled: opts.estado_esperado.enabled };
+  }
   const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   return `${MARKER_PREFIX}${encoded}${MARKER_SUFFIX}`;
 }
@@ -126,6 +167,20 @@ export function parseDecisionMarkers(commentsBodies: readonly string[]): IssueDe
       continue; // marcador malformado (base64 ou JSON inválido) — ignora, não lança
     }
     if (isValidDecision(parsed)) {
+      // #10105 — `estado_esperado` malformado não invalida a DECISÃO (ela
+      // segue respondendo a pergunta), mas some do payload: um campo que o
+      // alarme não sabe ler não pode fingir que está sendo vigiado. Avisa,
+      // porque foi justamente um alarme silenciosamente inerte que deixou a
+      // rampa enviando 12 dias contra a decisão do editor.
+      if (parsed.estado_esperado !== undefined && !isValidExpectedToggleState(parsed.estado_esperado)) {
+        console.warn(
+          `[issue-decisions] estado_esperado ignorado no marcador decisao-editor de ${parsed.decided_at}: ` +
+            `${JSON.stringify(parsed.estado_esperado)} não é {toggle: ${VERIFIABLE_TOGGLES.join("|")}, enabled: boolean}.`,
+        );
+        const { estado_esperado: _ignored, ...rest } = parsed;
+        decisions.push(rest);
+        continue;
+      }
       decisions.push(parsed);
       continue;
     }

@@ -2480,4 +2480,18 @@ describe("describeEnabledProvenance (#10105)", () => {
     assert.match(r.reportMarkdown, /SEM RASTRO/);
     rmSync(root, { recursive: true, force: true });
   });
+
+  it("#10105 alarme decisão×toggle: linhas de readDecisionDrift entram no relatório", async () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-run-drift-"));
+    const { exec } = makeFakeExec({});
+    const r = await runEnvio(
+      baseDeps(root, {
+        exec,
+        readDecisionDrift: () => ["⚠️  DECISÃO CONTRADITA (#8099): manda PAUSADO, toggle LIGADO"],
+        readHalt: () => ({ halted: true, invalid: true, error: "teste" }),
+      }),
+    );
+    assert.match(r.reportMarkdown, /DECISÃO CONTRADITA \(#8099\)/);
+    rmSync(root, { recursive: true, force: true });
+  });
 });
