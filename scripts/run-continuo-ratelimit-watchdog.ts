@@ -24,7 +24,12 @@
  *   - sai 1 quando o script falha ou imprime aviso de falha (linhas que
  *     começam com o emoji de alerta/sirene que o próprio script usa), pra o
  *     unit sair `failed` e `Diaria-Systemd-Failed-Units-Alarm` enxergar.
- *     Silêncio (o caso comum) e as mensagens de pausa/retomada saem 0.
+ *     Silêncio (o caso comum) e as mensagens de pausa/retomada saem 0;
+ *   - enfileira as mensagens de pausa/retomada (#10074) em
+ *     `~/.hermes/cron/.ratelimit-watchdog-notes.jsonl`, que o watch diário
+ *     do Hermes drena e entrega no Telegram. Sem isso o aviso ficava só no
+ *     log da task: quando o watch rodava, o job já estava pausado e o Python
+ *     não imprimia mais nada.
  *
  * Não muda a lógica de pausa/retomada: é a mesma função que o watch chama.
  * Máquina sem `~/.hermes` → o script sai calado (exit 0).
@@ -39,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { appendRatelimitNote, ratelimitNotesPath } from "./lib/continuo-ratelimit-notes.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[continuo-ratelimit-watchdog]";
@@ -103,6 +109,9 @@ export interface WatchdogRunDeps {
   runPython: () => PythonRunResult;
   log: (msg: string) => void;
   recordEvent: (level: "info" | "error", message: string) => void;
+  /** #10074: enfileira o aviso de pausa/retomada pro watch diário entregar ao
+   * editor. Devolve `null` em sucesso ou a mensagem de erro (nunca lança). */
+  queueNote?: (message: string) => string | null;
 }
 
 /** Devolve o exit code da task (0 = ok/informativo, 1 = falha). */
@@ -125,12 +134,25 @@ export function runContinuoRatelimitWatchdog(deps: WatchdogRunDeps): number {
   const kind = classifyWatchdogOutput(r.stdout);
   if (kind === "silent") return 0;
   deps.recordEvent(kind === "failure" ? "error" : "info", `pause-cron-on-ratelimit: ${out.slice(0, 500)}`);
-  return kind === "failure" ? 1 : 0;
+  if (kind === "failure") return 1;
+  if (deps.queueNote) {
+    const err = deps.queueNote(out);
+    if (err) {
+      // O aviso não vai chegar ao editor pelo watch — falha visível (unit
+      // `failed` → Diaria-Systemd-Failed-Units-Alarm), não silêncio.
+      const msg = `não consegui enfileirar o aviso pro watch (#10074): ${err}`;
+      deps.log(`${LOG_PREFIX} ${msg}`);
+      deps.recordEvent("error", msg);
+      return 1;
+    }
+  }
+  return 0;
 }
 
 function main(): number {
   return runContinuoRatelimitWatchdog({
     runPython: () => spawnPauseWatchdog(),
+    queueNote: (message) => appendRatelimitNote(ratelimitNotesPath(homedir()), message),
     log: (m) => console.log(m),
     recordEvent: (level, message) => {
       logEvent(
