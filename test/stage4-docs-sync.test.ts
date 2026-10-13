@@ -1000,3 +1000,137 @@ describe("#10078 — enable e export único na finalização", () => {
     });
   });
 });
+
+describe("#10112 — destaque movido/trocado pelo pipeline: 'aplicar doc' recusado", () => {
+  const block = (n: number, cat: string, title: string, body: string) =>
+    [
+      `DESTAQUE ${n} | ${cat}`,
+      "",
+      title,
+      "",
+      body,
+      "",
+      "Por que isso importa:",
+      "",
+      `Impacto do ${title.toLowerCase()} no mercado brasileiro de IA.`,
+    ].join("\n");
+  const A = (n: number, body = "A Anthropic fechou uma rodada de US$ 2 bilhões liderada por Google.") =>
+    block(n, "💰 MERCADO", "Anthropic levanta rodada série E", body);
+  const B = (n: number) =>
+    block(n, "⚖️ REGULAÇÃO", "Europa aprova regra para deepfakes", "O Parlamento Europeu aprovou a regra de rotulagem de vídeo sintético.");
+  const C = (n: number) =>
+    block(n, "🔬 PESQUISA", "Modelo aberto bate fechado em matemática", "Um laboratório publicou pesos que superam o modelo fechado no benchmark.");
+  const ed = (...blocks: string[]) => ["Intro da edição.", "", "---", "", blocks.join("\n\n---\n\n"), ""].join("\n");
+  const EDITED = "A Anthropic fechou uma rodada de US$ 2,5 bilhões liderada por Google.";
+  const countDestaques = (s: string) => (s.match(/^DESTAQUE \d+ \|/gm) ?? []).length;
+
+  it("REPRO: reorder [A,B]→[B,A] + edição de A no doc + resolve=doc é recusado (o merge linha a linha corromperia o arquivo)", () => {
+    const base = ed(A(1), B(2));
+    const current = ed(B(1), A(2));
+    const doc = ed(A(1, EDITED), B(2));
+    const c = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    if (c.action !== "conflict") return;
+    assert.ok(c.apply_doc_blocked, "conflito tem de avisar que 'aplicar doc' está bloqueado");
+    assert.ok(c.overlaps.some((o) => o.moved_block));
+    // Premissa do bug: sem o guard, o merge "doc vence" linha a linha grava a
+    // linha de A dentro do bloco de B (o corpo de B some) — arquivo corrompido.
+    const raw = merge3(base, current, doc, "doc").content;
+    assert.ok(raw.includes(EDITED));
+    assert.ok(!raw.includes("O Parlamento Europeu aprovou"), "premissa: o doc vencer sobrescreve o corpo de B");
+    const o = decideFile("02-reviewed.md", base, current, doc, { choice: "doc", token: c.resolve_token });
+    assert.equal(o.action, "conflict");
+    if (o.action === "conflict") assert.match(o.reason, /resolução 'doc' recusada.*duplicaria ou reverteria/);
+    // `arquivo` segue disponível e mantém a ordem do pipeline, sem duplicar.
+    const keep = decideFile("02-reviewed.md", base, current, doc, { choice: "arquivo", token: c.resolve_token });
+    assert.equal(keep.action, "resolved_keep_file");
+    if (keep.action === "resolved_keep_file") assert.equal(countDestaques(keep.write), 2);
+  });
+
+  it("promote (insere novo D1 e desloca): edição longe do cabeçalho é puxada no destaque deslocado, sem duplicar", () => {
+    const base = ed(A(1), B(2));
+    const current = ed(C(1), A(2), B(3));
+    const doc = ed(A(1, EDITED), B(2));
+    const o = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(o.action, "pulled");
+    if (o.action !== "pulled") return;
+    assert.equal(o.write, ed(C(1), A(2, EDITED), B(3)));
+  });
+
+  it("promote + edição colada no cabeçalho deslocado (título) → conflito com doc recusado", () => {
+    const base = ed(A(1), B(2));
+    const current = ed(C(1), A(2), B(3));
+    const doc = ed(A(1).replace("Anthropic levanta rodada série E", "Anthropic capta US$ 2 bi"), B(2));
+    const c = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    if (c.action === "conflict") assert.match(c.apply_doc_blocked ?? "", /cabeçalho de destaque/);
+  });
+
+  it("swap (bloco vira placeholder) + edição do destaque velho no doc → doc recusado (não reverte o swap)", () => {
+    const base = ed(A(1), B(2));
+    const placeholder = [
+      "**DESTAQUE 2 | [RASCUNHO PENDENTE — swap-destaque]**",
+      "",
+      "**[Novo](https://x.com/novo)**",
+      "",
+      "[TEXTO PENDENTE — re-rodar writer-destaque para DESTAQUE 2]",
+    ].join("\n");
+    const current = ed(A(1), placeholder);
+    const doc = ed(A(1), B(2).replace("aprovou a regra", "aprovou ontem a regra"));
+    const c = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    if (c.action !== "conflict") return;
+    assert.ok(c.apply_doc_blocked);
+    const o = decideFile("02-reviewed.md", base, current, doc, { choice: "doc", token: c.resolve_token });
+    assert.equal(o.action, "conflict");
+  });
+
+  it("bloco sem cabeçalho movido (parágrafos trocados) → doc recusado pela detecção de movimento", () => {
+    const p1 = "Primeiro parágrafo longo o bastante para ter identidade própria no arquivo.";
+    const p2 = "Segundo parágrafo também longo, descrevendo outro assunto da edição de hoje.";
+    const base = `# Social\n\n${p1}\n\n${p2}\n`;
+    const current = `# Social\n\n${p2}\n\n${p1}\n`;
+    const doc = `# Social\n\n${p1.replace("Primeiro", "Primeiríssimo")}\n\n${p2}`;
+    const c = decideFile("03-social.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    if (c.action !== "conflict") return;
+    assert.match(c.apply_doc_blocked ?? "", /moveu este bloco/);
+  });
+
+  it("conflito comum dentro de um destaque (nada movido) → doc continua aceito", () => {
+    const base = ed(A(1), B(2));
+    const current = ed(A(1, "A Anthropic fechou rodada de US$ 2 bi (pipeline)."), B(2));
+    const doc = ed(A(1, EDITED), B(2));
+    const c = decideFile("02-reviewed.md", base, current, doc);
+    assert.equal(c.action, "conflict");
+    if (c.action !== "conflict") return;
+    assert.equal(c.apply_doc_blocked, undefined);
+    const o = decideFile("02-reviewed.md", base, current, doc, { choice: "doc", token: c.resolve_token });
+    assert.equal(o.action, "resolved_apply_doc");
+    if (o.action === "resolved_apply_doc") assert.ok(o.write.includes(EDITED));
+  });
+
+  it("runApply: o conflito reportado carrega apply_doc_blocked e --resolve doc não grava nada", () => {
+    const base = ed(A(1), B(2));
+    withEdition(
+      (dir) => {
+        const docMd = createDoc(dir);
+        writeFileSync(join(dir, "02-reviewed.md"), ed(B(1), A(2))); // reorder do pipeline
+        const exp = writeExport(dir, docMd.replace("US$ 2 bilhões", "US$ 2,5 bilhões"));
+        const r1 = runApply({ editionDir: dir, docExport: exp });
+        const c = r1.conflicts.find((x) => x.file === "02-reviewed.md");
+        assert.ok(c && c.action === "conflict" && c.apply_doc_blocked);
+        const before = read(dir, "02-reviewed.md");
+        const r2 = runApply({
+          editionDir: dir,
+          docExport: exp,
+          resolutions: { "02-reviewed.md": { choice: "doc", token: conflictToken(r1, "02-reviewed.md") } },
+        });
+        assert.equal(r2.ok, false);
+        assert.equal(read(dir, "02-reviewed.md"), before);
+        assert.equal(countDestaques(before), 2);
+      },
+      base,
+    );
+  });
+});

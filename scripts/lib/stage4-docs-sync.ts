@@ -85,6 +85,19 @@
  * bloco `<?claude ...?>`), remoção de linha com HTML/comentário, seção vazia
  * ou remoção em massa (>50% das linhas) → CONFLITO, nunca gravação.
  *
+ * Bloco movido pelo pipeline (#10112): o diff é por linha, então um destaque
+ * que `reorder-destaques`/`swap-destaque`/`promote-to-destaque` deslocou ou
+ * trocou aparece como "removido aqui + inserido ali". A edição do editor nesse
+ * destaque cai no trecho da remoção → conflito (correto), mas fazer o doc
+ * vencer ali reinseriria o bloco antigo — duplicado, revertido ou intercalado
+ * no bloco vizinho — sem que `unsafe`/remoção em massa notem. Por isso o
+ * conflito cujo trecho toca um cabeçalho de destaque (`DESTAQUE N |`, `## dN`)
+ * ou uma linha que o pipeline tirou de um trecho e pôs em outro
+ * (`movedLines`) sai com `apply_doc_blocked` e `doc` é recusado como
+ * resolução; `arquivo` segue valendo. Recusar (em vez de mesclar o bloco como
+ * unidade) é a opção conservadora: nunca grava um resultado que o merge não
+ * sabe montar, e o editor refaz a edição no lugar novo.
+ *
  * Limite conhecido (documentado, não silencioso): diferença SÓ de linhas em
  * branco entre parágrafos é tratada como cosmética. Num editor rich-text,
  * juntar dois parágrafos muda o texto da linha (o que É detectado como
@@ -599,6 +612,58 @@ export interface MergeConflict {
   base: string[];
   doc: string[];
   current: string[];
+  /** #10112: o trecho em conflito envolve um bloco que o PIPELINE moveu ou
+   * trocou (reorder/swap/promote) — o merge é linha a linha e vê o bloco
+   * movido como "removido aqui + inserido ali", então fazer o doc vencer
+   * aqui duplicaria ou reverteria o bloco. Presente → `doc` é recusado como
+   * resolução; o motivo vai em `conflict.apply_doc_blocked`. */
+  moved_block?: string;
+}
+
+/** Cabeçalho de bloco que identifica um destaque: `DESTAQUE N | …` no
+ * `02-reviewed.md`, `## dN` no `03-social.md` (#10112). Comparado sobre a
+ * linha normalizada. */
+const BLOCK_HEADER_RE = /^(?:\*\*)?DESTAQUE\s+\d+\s*\||^#{1,6}\s*d[1-9]\s*$/i;
+
+/** Linha "com identidade" o bastante para que vê-la sair de um trecho e
+ * entrar em outro seja movimento de bloco, não coincidência (quebra temática,
+ * `Por que isso importa:` e rótulos curtos se repetem pelo arquivo). */
+const MOVED_LINE_MIN_CHARS = 30;
+
+/**
+ * Linhas (normalizadas) que o pipeline tirou de um trecho e pôs em OUTRO —
+ * assinatura de bloco movido (reorder/promote desloca destaques inteiros;
+ * o LCS mantém um e lê o outro como remoção + inserção). @pure
+ */
+function movedLines(B: Unit[], C: Unit[], cHunks: Hunk[]): Set<string> {
+  const removedIn = new Map<string, Set<number>>();
+  cHunks.forEach((h, i) => {
+    for (const u of nonblank(B.slice(h.bs, h.be))) {
+      if (u.norm.length < MOVED_LINE_MIN_CHARS) continue;
+      if (!removedIn.has(u.norm)) removedIn.set(u.norm, new Set());
+      removedIn.get(u.norm)!.add(i);
+    }
+  });
+  const moved = new Set<string>();
+  cHunks.forEach((h, i) => {
+    for (const u of nonblank(C.slice(h.xs, h.xe))) {
+      const from = removedIn.get(u.norm);
+      if (from && [...from].some((k) => k !== i)) moved.add(u.norm);
+    }
+  });
+  return moved;
+}
+
+/** Motivo para recusar `doc` num trecho em conflito, ou `undefined` (#10112). */
+function movedBlockReason(baseSlice: Unit[], curSlice: Unit[], moved: Set<string>): string | undefined {
+  const lines = [...nonblank(baseSlice), ...nonblank(curSlice)];
+  const header = lines.find((u) => BLOCK_HEADER_RE.test(u.norm));
+  if (header) {
+    return `o pipeline mexeu no cabeçalho de destaque \`${header.raw[0]}\` neste trecho (reorder/swap/promote)`;
+  }
+  const mv = lines.find((u) => moved.has(u.norm));
+  if (mv) return `o pipeline moveu este bloco para outra posição do arquivo (linha \`${mv.raw[0]}\`)`;
+  return undefined;
 }
 
 export interface Merge3Result {
@@ -694,6 +759,7 @@ export function merge3(
   const conflicts: MergeConflict[] = [];
   let removedCount = 0;
   let addedCount = 0;
+  let moved: Set<string> | undefined; // calculado só quando há conflito
 
   /** Emite o trecho do doc no lugar de `orig` (unidades do atual). */
   const emitDoc = (orig: Unit[], docSlice: Unit[], baseSlice: Unit[]) => {
@@ -762,10 +828,13 @@ export function merge3(
       push(curSlice);
       continue;
     }
+    moved ??= movedLines(B, C, cHunks);
+    const movedBlock = movedBlockReason(baseSlice, curSlice, moved);
     conflicts.push({
       base: nonblank(baseSlice).map((u) => u.raw[0]),
       doc: nonblank(docSlice).map((u) => u.raw[0]),
       current: nonblank(curSlice).map((u) => u.raw[0]),
+      ...(movedBlock ? { moved_block: movedBlock } : {}),
     });
     if (onConflict === "doc") emitDoc(curSlice, docSlice, baseSlice);
     else push(curSlice);
@@ -871,6 +940,9 @@ export type FileOutcome =
       current_sha256: string;
       doc_sha256: string;
       resolve_token: string;
+      /** #10112: presente → `doc` NÃO é resolução aceita (o trecho envolve um
+       * destaque que o pipeline moveu/trocou); só `arquivo` é oferecido. */
+      apply_doc_blocked?: string;
     })
   /** Conflito resolvido pelo editor: manter arquivo NOS TRECHOS EM CONFLITO —
    * as edições do doc em trechos disjuntos são aplicadas (`write`/`changes`;
@@ -925,6 +997,10 @@ export function decideFile(
   }
 
   const token = resolveToken(current, doc);
+  const movedBlock = m.conflicts.find((c) => c.moved_block)?.moved_block;
+  const applyDocBlocked = movedBlock
+    ? `${movedBlock} — 'aplicar doc' duplicaria ou reverteria o destaque (o merge é linha a linha); escolha 'arquivo' e refaça a edição no arquivo (ou num doc re-renderizado)`
+    : undefined;
   const conflict = (reason: string): FileOutcome => ({
     file,
     action: "conflict",
@@ -936,6 +1012,7 @@ export function decideFile(
     current_sha256: sha256(current),
     doc_sha256: sha256(doc),
     resolve_token: token,
+    ...(applyDocBlocked ? { apply_doc_blocked: applyDocBlocked } : {}),
   });
   const baseReason = `${reasons.join("; ")} — nada gravado`;
 
@@ -958,6 +1035,12 @@ export function decideFile(
     };
   }
 
+  // #10112: destaque movido/trocado pelo pipeline no trecho em conflito — o
+  // doc vencer ali reinseriria o bloco antigo (duplicado ou revertido) sem
+  // nenhum guard abaixo notar (o saldo de linhas é positivo). Recusa.
+  if (applyDocBlocked) {
+    return conflict(`resolução 'doc' recusada: ${applyDocBlocked} — nada gravado`);
+  }
   const md = merge3(base, current, doc, "doc");
   const mdMass = massRemovalReason(md, doc);
   if (md.unsafe.length > 0 || mdMass) {
