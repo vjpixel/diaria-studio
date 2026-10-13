@@ -8,7 +8,7 @@
  * na ordem) e devolve respostas canned — os testes verificam tanto o
  * RESULTADO (exit code, report) quanto a SEQUÊNCIA/ARGS exatos passados a
  * cada sub-script (onde vivem as regressões documentadas no #4347/#4941:
- * reuso de `--key`, `--hold juridico` sempre presente, `--content-cycle`
+ * reuso de `--key`, `--hold` nunca passado (#10104), `--content-cycle`
  * só quando os ciclos divergem, `clarice-novos-html-state` nunca recebe
  * `--content-cycle`).
  */
@@ -76,7 +76,7 @@ function goldenHandlers(opts: { cicloMensal?: string; shouldSendTest?: boolean }
     "scripts/clarice-build-db.ts": textResult(""),
     "scripts/clarice-stripe-delta.ts": jsonResult({ mode: "execute", since: "2026-08-01", rows: 12, out: "x.csv" }),
     "scripts/verify-emails-mv.ts": jsonResult({ mode: "since", since: "2026-08-01", cohorts: [], total_verified: 3 }),
-    "scripts/clarice-build-segment.ts": jsonResult({ selected: 42, hold: "juridico", cycle: "2607-08", group: "novos" }),
+    "scripts/clarice-build-segment.ts": jsonResult({ selected: 42, cycle: "2607-08", group: "novos" }),
     "scripts/clarice-novos-resolve-key.ts": jsonResult({ key: "novos-260810" }),
     "scripts/clarice-resolve-folder.ts": jsonResult({ folderId: 7, resolved: true }),
     "scripts/clarice-import-waves.ts": jsonResult({ mode: "execute", results: [{ listId: 99, wave: "novos" }] }),
@@ -270,7 +270,7 @@ describe("clarice-novos-run (#4941)", () => {
   // ── caminho feliz ──────────────────────────────────────────────────────
 
   describe("caminho feliz — sequência e args exatos", () => {
-    it("dispara com sucesso: --key reusado, --hold juridico presente, --content-cycle só quando os ciclos divergem", async () => {
+    it("dispara com sucesso: --key reusado, sem --hold (#10104), --content-cycle só quando os ciclos divergem", async () => {
       root = freshRoot();
       const { exec, calls } = makeFakeExec(goldenHandlers({ cicloMensal: "2607-08" })); // diverge de 2607-08? igual — ver teste seguinte para divergência
       const deps = baseDeps(root, { exec, resolveEnvioCycle: () => "2606-07" }); // cicloEnvio != cicloMensal -> força --content-cycle
@@ -303,10 +303,11 @@ describe("clarice-novos-run (#4941)", () => {
         assert.equal(c.args[i + 1], "novos-260810", `${c.script} usou key diferente: ${c.args.join(" ")}`);
       }
 
-      // --hold juridico sempre presente na chamada de build-segment.
+      // #10104: a reserva do cohort jurídico foi encerrada — build-segment
+      // nunca recebe --hold (nem o valor "juridico" solto).
       const segmentCall = calls.find((c) => c.script === "scripts/clarice-build-segment.ts")!;
-      assert.ok(segmentCall.args.includes("--hold"));
-      assert.equal(segmentCall.args[segmentCall.args.indexOf("--hold") + 1], "juridico");
+      assert.ok(!segmentCall.args.includes("--hold"), `--hold inesperado: ${segmentCall.args.join(" ")}`);
+      assert.ok(!segmentCall.args.includes("juridico"), `juridico inesperado: ${segmentCall.args.join(" ")}`);
 
       // --content-cycle presente nas 3 chamadas de schedule-group (ciclos divergem: 2606-07 != 2607-08).
       const scheduleCalls = calls.filter((c) => c.script === "scripts/clarice-schedule-group.ts");
@@ -413,7 +414,7 @@ describe("clarice-novos-run (#4941)", () => {
     it("0 contatos -> exit 0, NENHUMA chamada além do build-segment (não importa/dispara nada)", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
-      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ selected: 0, hold: "juridico" });
+      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ selected: 0 });
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
@@ -492,16 +493,18 @@ describe("clarice-novos-run (#4941)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
-    it("--hold ausente/errado no resumo -> aborta por segurança (#4542), mesmo com exit 0 do sub-script", async () => {
+    it("#10104: resumo sem `hold` NÃO aborta mais — segue pro import (sanity check do #4542 removido)", async () => {
       root = freshRoot();
       const handlers = goldenHandlers();
-      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ selected: 42, hold: undefined });
+      handlers["scripts/clarice-build-segment.ts"] = jsonResult({ selected: 42 });
       const { exec, calls } = makeFakeExec(handlers);
       const deps = baseDeps(root, { exec });
       const result = await runNovos([], deps);
-      assert.equal(result.code, 1);
-      assert.match(result.reportMarkdown, /juridico/);
-      assert.ok(!calls.some((c) => c.script === "scripts/clarice-novos-resolve-key.ts"));
+      assert.equal(result.code, 0, result.reportMarkdown);
+      assert.doesNotMatch(result.reportMarkdown, /não confirmou --hold/);
+      assert.ok(calls.some((c) => c.script === "scripts/clarice-novos-resolve-key.ts"));
+      const segmentCall = calls.find((c) => c.script === "scripts/clarice-build-segment.ts")!;
+      assert.ok(!segmentCall.args.includes("--hold"));
       rmSync(root, { recursive: true, force: true });
     });
 

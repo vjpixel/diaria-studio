@@ -23,6 +23,11 @@
  * um filtro permanente. Um segmento retido hoje é o público-alvo da campanha
  * de amanhã — embutir a exclusão no predicado do grupo tornaria o próprio
  * envio especial impossível de montar com as mesmas ferramentas.
+ *
+ * Estado desde #10104 (13/10/2026): o editor encerrou a reserva do cohort
+ * jurídico e `clarice-novos-run.ts` deixou de passar `--hold juridico`. Hoje
+ * nenhum caminho automatizado aplica `--hold`; a infra fica mantida de
+ * propósito (genérica, opt-in, custo zero parada) para uma reserva futura.
  */
 
 import { isJuridicoEmail } from "./clarice-sector.ts";
