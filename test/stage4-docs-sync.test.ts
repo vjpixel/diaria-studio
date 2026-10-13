@@ -522,6 +522,64 @@ describe("runRender/runApply com arquivos (diretório temporário)", () => {
     });
   });
 
+  it("#10116: export com U+FFFD (cópia corrompida) → apply --final recusa com exit 2, nada gravado", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      // Erro de cópia fora das sentinelas: byte UTF-8 inválido vira U+FFFD na decodificação.
+      const corrupted = Buffer.concat([
+        Buffer.from(doc.replace("Cada rodada redefine", "Cada rodada XX redefine").split("XX")[0], "utf8"),
+        Buffer.from([0xc3]),
+        Buffer.from(doc.replace("Cada rodada redefine", "Cada rodada XX redefine").split("XX")[1], "utf8"),
+      ]);
+      const exp = join(dir, "_internal", "export-fffd.md");
+      writeFileSync(exp, corrupted);
+      assert.ok(readFileSync(exp, "utf8").includes("�"));
+      const stateBefore = readFileSync(statePath(dir), "utf8");
+      assert.throws(() => runApply({ editionDir: dir, docExport: exp, final: true }), /U\+FFFD.*02-reviewed\.md/);
+      assert.equal(read(dir, "02-reviewed.md"), REVIEWED);
+      assert.equal(readFileSync(statePath(dir), "utf8"), stateBefore, "estado intocado");
+      const cli = runCli(["apply", "--edition-dir", dir, "--doc-export", exp, "--final"]);
+      assert.equal(cli.status, 2, cli.stderr);
+      assert.match(JSON.parse(cli.stdout).error, /refaça a cópia/);
+      assert.equal(read(dir, "02-reviewed.md"), REVIEWED);
+      assert.equal(runCheck({ editionDir: dir }).ok, false, "sem final_apply");
+      // Export limpo segue passando.
+      const clean = writeExport(dir, doc.replace("Cada rodada redefine", "Cada rodada sempre redefine"));
+      const ok = runApply({ editionDir: dir, docExport: clean, final: true });
+      assert.equal(ok.ok, true);
+      assert.deepEqual(ok.pulled, ["02-reviewed.md"]);
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("#10116: U+FFFD que já estava no arquivo não bloqueia o apply", () => {
+    const withFffd = REVIEWED.replace("Cada rodada", "Cada � rodada");
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const report = runApply({ editionDir: dir, docExport: writeExport(dir, doc.replace("Texto do d2.", "Texto novo.")), final: true });
+      assert.equal(report.ok, true);
+      assert.deepEqual(report.pulled, ["03-social.md"]);
+    }, withFffd);
+  });
+
+  it("#10116: --expected-bytes divergente → exit 2, nada gravado; igual → segue", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const edited = doc.replace("Texto do d2.", "Texto do d2 novo.");
+      const exp = writeExport(dir, edited);
+      const size = Buffer.byteLength(edited, "utf8");
+      assert.throws(() => runApply({ editionDir: dir, docExport: exp, final: true, expectedBytes: size + 3 }), /bytes/);
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+      const cli = runCli(["apply", "--edition-dir", dir, "--doc-export", exp, "--final", "--expected-bytes", String(size - 1)]);
+      assert.equal(cli.status, 2, cli.stderr);
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+      assert.equal(runCli(["apply", "--edition-dir", dir, "--doc-export", exp, "--expected-bytes", "abc"]).status, 2);
+      const ok = runCli(["apply", "--edition-dir", dir, "--doc-export", exp, "--final", "--expected-bytes", String(size)]);
+      assert.equal(ok.status, 0, ok.stderr);
+      assert.equal(read(dir, "03-social.md"), SOCIAL.replace("Texto do d2.", "Texto do d2 novo."));
+    });
+  });
+
   it("TOCTOU: arquivo muda entre a decisão e a escrita → conflito, nada gravado", () => {
     withEdition((dir) => {
       const doc = createDoc(dir);
