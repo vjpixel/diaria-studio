@@ -24,6 +24,8 @@ npx tsx scripts/lib/clarice-envio-enabled.ts                 # imprime "enabled"
 
 `--reason` é obrigatório desde o #10105: toda troca grava `machine`, `sessionId` (quando parte de uma sessão do Claude Code) e `reason` no arquivo, e emite evento em `data/run-log.jsonl`. O relatório de cada rodada mostra a proveniência; toggle ligado **sem** esses campos (escrito antes do #10105 ou à mão) vira aviso. O mesmo vale para `clarice-novos-enabled.ts`.
 
+Alarme decisão×toggle (#10105): o relatório de cada rodada também cruza o toggle com as decisões vigentes do editor em issues abertas — marcador `decisao-editor` com `estado_esperado` (`scripts/lib/decision-state-drift.ts`). Toggle ligado contra uma decisão de pausa vira linha `DECISÃO CONTRADITA`; o aviso não bloqueia a onda. Se o `gh` falhar, o relatório diz que o alarme não rodou. Conferência avulsa: `npx tsx scripts/check-decision-state-drift.ts [--issues N,M]`.
+
 ## Parada durável por fila insuficiente — `data/clarice-envio-halt.json` (#10096)
 
 Quando a rodada para por fila insuficiente (regra 260811), a parada fica gravada: as rodadas agendadas seguintes saem com relatório `envio-{aammdd}-fila-insuficiente-pendente`, sem tocar Brevo/MV, até o editor decidir. `--volume N` (caminho manual) passa pela parada mas não a limpa. Passados `CLARICE_ENVIO_HALT_MAX_AGE_DAYS` (3) dias, ou se o ciclo esperado pelo calendário mudar desde a parada, o relatório vira `envio-{aammdd}-fila-insuficiente-vencida` — continua sem enviar, mas a task de alarme dispara (#10118).

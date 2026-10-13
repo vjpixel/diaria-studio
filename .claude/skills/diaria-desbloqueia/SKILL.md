@@ -194,6 +194,17 @@ execução de {recorded_at} ("{motivo}") segue valendo, nenhuma mudança.`
 > #5321). Incidente: em 08/10/2026 esta skill registrou "decisão segue
 > valendo" na #8099 (pausa da rampa Clarice) enquanto o toggle estava
 > `enabled: true` desde 01/10 e a rampa enviava todo dia.
+>
+> **Conferência mecânica, antes de qualquer "segue valendo":** rodar
+> `npx tsx scripts/check-decision-state-drift.ts --issues N,M` com as
+> issues de `jaDestravadas` + `bloqueioConfirmado` (foreground). Para cada
+> decisão vigente que declara `estado_esperado` no marcador, ele lê o
+> toggle real e imprime `ok #N` ou `DECISÃO CONTRADITA (#N …)`; exit 1 =
+> há divergência, exit 2 = não conferiu (gh falhou — rodar de novo, nunca
+> tratar como "nada a avisar"). Issue com `DECISÃO CONTRADITA` nunca recebe
+> "segue valendo". Decisão sem `estado_esperado` (marcador anterior ao
+> #10105) não é vigiada pelo script — aí a leitura manual acima continua
+> obrigatória.
 
 > Isto **não** proíbe o Passo 3b de tocar o mesmo grupo. São perguntas de
 > natureza diferente: aqui é *"o que falta?"* — já respondido, não se
@@ -378,6 +389,14 @@ estourou".
   registrou, não literalmente qual comando rodou — não há um valor
   `SessionKind` dedicado pra esta skill e criar um só pra isso quebraria
   todo consumidor existente do enum sem ganho real).
+  **Decisão sobre estado verificável (#10105)** — "manter a rampa
+  pausada", "pode religar o clarice-novos": gerar o marcador com
+  `estado_esperado`, que é o que o alarme decisão×toggle vigia:
+  `npx tsx scripts/check-decision-state-drift.ts --print-marker --pergunta "..." --resposta "..." --sessao develop --toggle clarice-envio-enabled --enabled false`
+  (toggles aceitos: `clarice-envio-enabled`, `clarice-novos-enabled`).
+  A partir daí, enquanto a issue estiver aberta e essa for a decisão mais
+  recente, o relatório diário do envio Clarice avisa se o toggle real
+  contradisser a decisão.
 - **Bloqueio de execução novo, descoberto durante esta sessão** (ex:
   editor confirma que a conta NÃO existe): rotear direto pra `--track
   bloqueada` (ver abaixo) — desde #7270, o marcador `formatExecutionBlockMarker`

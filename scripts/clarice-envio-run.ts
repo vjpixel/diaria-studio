@@ -87,6 +87,11 @@ import {
   type ClariceEnvioEnabledState,
 } from "./lib/clarice-envio-enabled.ts";
 import {
+  decisionDriftReportLines,
+  fetchOpenIssuesWithTrustedComments,
+  productionToggleReader,
+} from "./lib/decision-state-drift.ts"; // #10105
+import {
   BASE_COLLAPSE_REPORT_SUFFIX,
   describeHaltForReport,
   evaluateHaltReadStaleness,
@@ -340,6 +345,11 @@ export interface EnvioRunDeps {
   /** #10105 — estado completo do kill switch (com proveniência), só pra
    * relatar quem/por que ligou. Opcional: ausente = sem a linha no relatório. */
   readEnabledState?: () => ClariceEnvioEnabledState;
+  /** #10105 — alarme decisão×toggle: linhas de aviso quando o toggle real
+   * contradiz uma decisão vigente do editor (marcador `decisao-editor` com
+   * `estado_esperado` em issue aberta). Vazio = nada a avisar. Opcional:
+   * ausente = alarme não roda (testes). Só avisa, nunca bloqueia a onda. */
+  readDecisionDrift?: () => string[];
 }
 
 /**
@@ -429,6 +439,8 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     readHalt: () => readClariceEnvioHalt(rootDir),
     writeHalt: (halt: ClariceEnvioHalt) => writeClariceEnvioHalt(rootDir, halt),
     readEnabledState: () => readClariceEnvioEnabledState(rootDir),
+    readDecisionDrift: () =>
+      decisionDriftReportLines(() => fetchOpenIssuesWithTrustedComments(rootDir), productionToggleReader(rootDir)),
   };
 }
 
@@ -929,6 +941,9 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
     return { code: 0, reportId, reportMarkdown: report.build() };
   }
   if (deps.readEnabledState) report.note(describeEnabledProvenance(deps.readEnabledState()));
+  // #10105 — toggle ligado contra decisão vigente de pausa: avisa no
+  // relatório (premissa do PR: aviso, não bloqueio — quem decide é o editor).
+  if (deps.readDecisionDrift) for (const line of deps.readDecisionDrift()) report.note(line);
 
   // --- #10096: parada durável por fila insuficiente — ANTES de qualquer
   // chamada externa, como o kill switch. Só o caminho manual com número
