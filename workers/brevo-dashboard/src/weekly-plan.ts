@@ -410,6 +410,83 @@ export function baseVolumeFromLastSendDay(allCampaigns: BrevoCampaign[]): number
 }
 
 /**
+ * #10114 — fração mínima do pico recente da rampa abaixo da qual o volume-base
+ * é tratado como COLAPSADO (resíduo de uma onda parcial, não um nível real da
+ * rampa). 0,25 porque o único jeito legítimo da rampa encolher sozinha é o
+ * corte do vermelho (−30%/onda, `RED_CUT_FRACTION`): 3 vermelhos seguidos
+ * ainda dão 0,343 do pico; o incidente do ciclo 2609-10 deu 101/40.180 =
+ * 0,0025. 4 vermelhos seguidos (0,24) também param, e isso merece o editor.
+ */
+export const RAMP_BASE_COLLAPSE_MIN_FRACTION = 0.25;
+
+/** #10114 — quantos dias de envio da rampa ANTERIORES ao último entram no pico. */
+export const RAMP_BASE_COLLAPSE_LOOKBACK_DAYS = 7;
+
+export type RampBaseCollapse =
+  | { collapsed: false }
+  | {
+      collapsed: true;
+      baseVolume: number;
+      baseDay: string;
+      peakVolume: number;
+      peakDay: string;
+      /** baseVolume / peakVolume. */
+      fraction: number;
+    };
+
+/**
+ * #10114 — o volume-base (último dia com onda da rampa, ver
+ * `baseVolumeFromLastSendDay`) está muito abaixo do pico dos dias de rampa
+ * anteriores? Fecha o buraco que o #10096 deixou: as ondas residuais de uma
+ * parada (`d7-seg12` = 31, `d8-ter13` = 101) já saem com nome de rampa, então
+ * o filtro `grupo:dN-` as conta como base, e a rampa recomeçaria de ~101 sem
+ * ninguém decidir isso.
+ *
+ * Pico = maior total diário entre os `lookbackDays` dias de rampa ANTERIORES
+ * ao último. `ignoreBeforeMs` (aceite do editor, `--accept-base` em
+ * `scripts/lib/clarice-envio-halt.ts`) tira do pico os dias enviados ANTES do
+ * aceite: o editor olhou a base baixa e decidiu que ela vale; o histórico
+ * anterior à decisão deixa de travar a rampa. O último dia (a base) nunca é
+ * filtrado pelo aceite — ele é o que está sendo julgado. Puro.
+ */
+export function detectRampBaseCollapse(
+  allCampaigns: BrevoCampaign[],
+  opts: { ignoreBeforeMs?: number | null; minFraction?: number; lookbackDays?: number } = {},
+): RampBaseCollapse {
+  const minFraction = opts.minFraction ?? RAMP_BASE_COLLAPSE_MIN_FRACTION;
+  const lookbackDays = opts.lookbackDays ?? RAMP_BASE_COLLAPSE_LOOKBACK_DAYS;
+  const ramp = allCampaigns.filter((c) => isRampBaseCampaign(c.name));
+  const totals = new Map<string, number>();
+  const lastMsByDay = new Map<string, number>();
+  for (const c of ramp) {
+    const day = brtDayKey(c.sentDate);
+    if (!day) continue;
+    totals.set(day, (totals.get(day) ?? 0) + (pickStats(c)?.stats.sent ?? 0));
+    const ms = Date.parse(c.sentDate as string);
+    if (Number.isFinite(ms) && ms > (lastMsByDay.get(day) ?? -Infinity)) lastMsByDay.set(day, ms);
+  }
+  const days = [...totals.keys()].sort(); // YYYY-MM-DD ascendente
+  if (days.length < 2) return { collapsed: false };
+  const baseDay = days[days.length - 1];
+  const baseVolume = totals.get(baseDay) ?? 0;
+  const ignoreBefore = opts.ignoreBeforeMs ?? null;
+  let peakDay: string | null = null;
+  let peakVolume = 0;
+  for (const day of days.slice(0, -1).slice(-lookbackDays)) {
+    if (ignoreBefore !== null && (lastMsByDay.get(day) ?? -Infinity) < ignoreBefore) continue;
+    const v = totals.get(day) ?? 0;
+    if (v > peakVolume) {
+      peakVolume = v;
+      peakDay = day;
+    }
+  }
+  if (peakDay === null || peakVolume <= 0) return { collapsed: false };
+  const fraction = baseVolume / peakVolume;
+  if (fraction >= minFraction) return { collapsed: false };
+  return { collapsed: true, baseVolume, baseDay, peakVolume, peakDay, fraction };
+}
+
+/**
  * Seleciona as campanhas MADURAS dos `HEALTH_SAMPLE_DAYS` (10) dias-calendário
  * BRT mais recentes com envio — não as N campanhas mais recentes. Um dia de
  * teste A/B/C (3 campanhas simultâneas) conta como 1 dia; TODAS as campanhas

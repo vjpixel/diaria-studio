@@ -27,6 +27,7 @@ import {
   renderRecommendationSection,
   baseVolumeFromLastSendDay,
   isRampBaseCampaign,
+  detectRampBaseCollapse,
   groupByBrtDay,
   selectMatureDayCampaigns,
   DEFAULT_HEALTH_THRESHOLDS,
@@ -609,6 +610,73 @@ test("baseVolumeFromLastSendDay — só campanhas grupo:novos-* → 0 (sem base 
     campaignSentHoursAgo(0, { id: 1, name: "Clarice 2609 grupo:novos-261011", sentDate: "2026-10-11T12:00:00Z", statistics: statsFor({ sent: 14, delivered: 14, uniqueViews: 0 }) }),
   ];
   assert.equal(baseVolumeFromLastSendDay(camps), 0);
+});
+
+// #10114 — o estado real em produção depois do #10096: as ondas residuais já
+// saíram com nome de rampa (d7-seg12 = 31, d8-ter13 = 101), então o filtro
+// grupo:dN- as conta e a base fica em 101. O guard compara com o pico.
+const collapseMk = (id: number, name: string, sentDate: string, sent: number): BrevoCampaign =>
+  campaignSentHoursAgo(0, { id, name, sentDate, statistics: statsFor({ sent, delivered: sent, uniqueViews: 0 }) });
+const cycle260910 = (): BrevoCampaign[] => [
+  collapseMk(1, "Clarice 2609 grupo:d6-sab10-A", "2026-10-10T09:00:00Z", 13_400),
+  collapseMk(2, "Clarice 2609 grupo:d6-sab10-B", "2026-10-10T09:00:00Z", 13_390),
+  collapseMk(3, "Clarice 2609 grupo:d6-sab10-C", "2026-10-10T09:00:00Z", 13_390),
+  collapseMk(4, "Clarice 2609 grupo:novos-261011", "2026-10-11T12:00:00Z", 14),
+  collapseMk(5, "Clarice 2609 grupo:d7-seg12", "2026-10-12T09:00:00Z", 31),
+  collapseMk(6, "Clarice 2609 grupo:d8-ter13", "2026-10-13T09:00:00Z", 101),
+  collapseMk(7, "Clarice 2609 grupo:novos-261013", "2026-10-13T12:00:00Z", 26),
+];
+
+test("detectRampBaseCollapse — ciclo 2609-10 (40.180 → 31 → 101): base 101 é COLAPSADA contra o pico 40.180 (#10114)", () => {
+  const camps = cycle260910();
+  assert.equal(baseVolumeFromLastSendDay(camps), 101); // o buraco: a base já é a residual
+  const r = detectRampBaseCollapse(camps);
+  assert.equal(r.collapsed, true);
+  if (r.collapsed) {
+    assert.equal(r.baseVolume, 101);
+    assert.equal(r.baseDay, "2026-10-13");
+    assert.equal(r.peakVolume, 40_180);
+    assert.equal(r.peakDay, "2026-10-10");
+  }
+});
+
+test("detectRampBaseCollapse — aceite do editor DEPOIS do pico tira o pico da conta (#10114)", () => {
+  const camps = cycle260910();
+  // aceite em 12/10 15:00Z: o dia 10/10 (pico) e o 12/10 09:00Z ficam antes dele.
+  const r = detectRampBaseCollapse(camps, { ignoreBeforeMs: Date.parse("2026-10-12T15:00:00Z") });
+  assert.equal(r.collapsed, false);
+  // aceite ANTES do pico não muda nada.
+  assert.equal(detectRampBaseCollapse(camps, { ignoreBeforeMs: Date.parse("2026-10-09T00:00:00Z") }).collapsed, true);
+});
+
+test("detectRampBaseCollapse — 3 cortes do vermelho seguidos (−30% cada) NÃO são colapso (#10114)", () => {
+  const camps = [
+    collapseMk(1, "C grupo:d1-seg05", "2026-10-05T09:00:00Z", 10_000),
+    collapseMk(2, "C grupo:d2-ter06", "2026-10-06T09:00:00Z", 7_000),
+    collapseMk(3, "C grupo:d3-qua07", "2026-10-07T09:00:00Z", 4_900),
+    collapseMk(4, "C grupo:d4-qui08", "2026-10-08T09:00:00Z", 3_430),
+  ];
+  assert.equal(detectRampBaseCollapse(camps).collapsed, false);
+});
+
+test("detectRampBaseCollapse — rampa crescendo, 1 dia só, ou vazio → não colapsa (#10114)", () => {
+  assert.equal(detectRampBaseCollapse([]).collapsed, false);
+  assert.equal(detectRampBaseCollapse([collapseMk(1, "C grupo:d1-seg05", "2026-10-05T09:00:00Z", 31)]).collapsed, false);
+  const growing = [
+    collapseMk(1, "C grupo:d1-seg05", "2026-10-05T09:00:00Z", 1_000),
+    collapseMk(2, "C grupo:d2-ter06", "2026-10-06T09:00:00Z", 1_150),
+  ];
+  assert.equal(detectRampBaseCollapse(growing).collapsed, false);
+});
+
+test("detectRampBaseCollapse — pico fora da janela de N dias de rampa não conta (#10114)", () => {
+  const camps = [
+    collapseMk(1, "C grupo:d1-seg05", "2026-10-05T09:00:00Z", 40_000),
+    collapseMk(2, "C grupo:d2-ter06", "2026-10-06T09:00:00Z", 100),
+    collapseMk(3, "C grupo:d3-qua07", "2026-10-07T09:00:00Z", 100),
+  ];
+  assert.equal(detectRampBaseCollapse(camps, { lookbackDays: 1 }).collapsed, false);
+  assert.equal(detectRampBaseCollapse(camps, { lookbackDays: 2 }).collapsed, true);
 });
 
 test("isRampBaseCampaign — dN-* e naming legado entram; novos e outras keys grupo: ficam fora (#10096)", () => {

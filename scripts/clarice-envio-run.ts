@@ -87,9 +87,11 @@ import {
   type ClariceEnvioEnabledState,
 } from "./lib/clarice-envio-enabled.ts";
 import {
+  BASE_COLLAPSE_REPORT_SUFFIX,
   describeHaltForReport,
   evaluateHaltReadStaleness,
   HALT_STALE_REPORT_SUFFIX,
+  HALT_WRITE_FAILED_REPORT_SUFFIX,
   readClariceEnvioHalt,
   writeClariceEnvioHalt,
   type ClariceEnvioHalt,
@@ -1131,6 +1133,34 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       throw new EnvioAbort("❌ crédito Brevo não consultado (BREVO_CLARICE_API_KEY ausente ou falha) — nunca agendar sem validar antes.");
     }
 
+    // --- #10114: base colapsada — o último dia de rampa ficou muito abaixo
+    // do pico recente (ondas residuais de uma parada, ex. d7=31/d8=101 depois
+    // de d6=40.180). Escalar dali seria o mesmo "volume muito menor que o
+    // proposto sem avisar" da regra 260811. A rodada agendada PARA e alarma
+    // (sufixo fora de OK_SUFFIXES); a condição é re-derivada do histórico a
+    // cada rodada, então persiste até o editor decidir: `--volume N` (envio
+    // pontual) ou `--accept-base` (aceita a base baixa e retoma). Antes do
+    // MV sob demanda, pra nunca gastar crédito numa rodada que vai parar. ---
+    const collapse = proposal.volumes.baseCollapse;
+    if (collapse?.collapsed) {
+      const collapseText =
+        `🛑 volume-base COLAPSADO: ${collapse.baseVolume} em ${collapse.baseDay} = ${(collapse.fraction * 100).toFixed(1)}% ` +
+        `do pico recente da rampa (${collapse.peakVolume} em ${collapse.peakDay}) — provável resíduo de onda parcial, não um nível real da rampa.`;
+      if (requestedVolume === undefined && !opts.planOnly) {
+        report.note(
+          `${collapseText} Decisão do editor (260811): nunca escalar sobre uma base residual sem avisar. ` +
+            "Nada agendado. Pra um envio com volume confirmado: /diaria-clarice-envio com --volume N; " +
+            'pra aceitar a base baixa e retomar a automação: `npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."`.',
+        );
+        lockPath && releaseEnvioLock(lockPath);
+        lockPath = null;
+        const reportId = `envio-${aammdd}${BASE_COLLAPSE_REPORT_SUFFIX}`;
+        writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — base colapsada`, report.build());
+        return { code: 0, reportId, reportMarkdown: report.build() };
+      }
+      report.note(`${collapseText} Seguindo só porque esta rodada é manual (${opts.planOnly ? "--plan-only" : `--volume ${requestedVolume}`}).`);
+    }
+
     // --- Teste A/B/C — decide sozinha continuar/travar; iniciar exige o editor. ---
     report.section("Passo 2 — Teste A/B/C");
     // #5055: o estado durável é lido AQUI só pra relatar e pra alimentar
@@ -1434,11 +1464,13 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       );
       lockPath && releaseEnvioLock(lockPath);
       lockPath = null;
-      const reportId = `envio-${aammdd}-fila-insuficiente`;
+      let reportId = `envio-${aammdd}-fila-insuficiente`;
       // #10096 — a parada fica gravada em disco: a próxima rodada NÃO
       // recomeça de uma base residual, espera decisão explícita do editor.
-      // Falha ao gravar vira nota alta (a rodada já parou — exit 0 segue
-      // certo pra ESTA rodada), nunca silêncio.
+      // Falha ao gravar: exit 0 segue certo pra ESTA rodada (já parou), mas o
+      // reportId ganha sufixo próprio fora de OK_SUFFIXES (#10115) — sem a
+      // parada, a próxima rodada pode escalar sobre base residual, e isso
+      // precisa virar alarme, não só uma nota no relatório.
       if (deps.writeHalt) {
         try {
           deps.writeHalt({
@@ -1458,6 +1490,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           report.note(
             `⚠️  FALHA ao gravar a parada durável (${(e as Error).message}) — a próxima rodada pode recomeçar de uma base residual (#10096). Pause o kill switch se isso não for o desejado.`,
           );
+          reportId = `envio-${aammdd}${HALT_WRITE_FAILED_REPORT_SUFFIX}`;
         }
       }
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — fila insuficiente`, report.build());

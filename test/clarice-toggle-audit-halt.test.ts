@@ -12,6 +12,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildToggleChangeEvent, parseToggleCli, resolveToggleAudit } from "../scripts/lib/clarice-toggle-audit.ts";
 import {
+  BASE_COLLAPSE_REPORT_SUFFIX,
+  clariceEnvioBaseAckPath,
+  HALT_WRITE_FAILED_REPORT_SUFFIX,
+  readClariceEnvioBaseAck,
+  writeClariceEnvioBaseAck,
   clearClariceEnvioHalt,
   CLARICE_ENVIO_HALT_MAX_AGE_DAYS,
   describeHaltForReport,
@@ -156,5 +161,25 @@ describe("evaluateHaltStaleness (#10118)", () => {
   it("sufixo do relatório vencido NÃO é pausa legítima pro alarme", () => {
     assert.equal(classifyEnvioReportId(`envio-261015${HALT_STALE_REPORT_SUFFIX}`, "261015"), "alarm");
     assert.equal(classifyEnvioReportId("envio-261015-fila-insuficiente-pendente", "261015"), "ok");
+  });
+});
+
+describe("aceite de base baixa da rampa (#10114)", () => {
+  it("ausente => null; gravado => lido; ilegível => null (guard continua ativo)", () => {
+    const root = mkdtempSync(join(tmpdir(), "base-ack-"));
+    assert.equal(readClariceEnvioBaseAck(root), null);
+    const ack = writeClariceEnvioBaseAck(root, "editor aceitou 101", new Date("2026-10-14T12:00:00.000Z"));
+    assert.deepEqual(readClariceEnvioBaseAck(root), ack);
+    assert.equal(ack.acceptedAt, "2026-10-14T12:00:00.000Z");
+    writeFileSync(clariceEnvioBaseAckPath(root), "{not json", "utf8");
+    assert.equal(readClariceEnvioBaseAck(root), null);
+    writeFileSync(clariceEnvioBaseAckPath(root), JSON.stringify({ acceptedAt: "ontem" }), "utf8");
+    assert.equal(readClariceEnvioBaseAck(root), null);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("sufixos de base colapsada e de falha ao gravar a parada são ALARME, não pausa (#10114, #10115)", () => {
+    assert.equal(classifyEnvioReportId(`envio-261015${BASE_COLLAPSE_REPORT_SUFFIX}`, "261015"), "alarm");
+    assert.equal(classifyEnvioReportId(`envio-261015${HALT_WRITE_FAILED_REPORT_SUFFIX}`, "261015"), "alarm");
   });
 });

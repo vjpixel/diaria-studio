@@ -127,3 +127,20 @@ describe("toAlarmFinding — parada vencida (#10123)", () => {
     assert.equal(f.fingerprint, "261005:alarm-failure:envio-261005-abort");
   });
 });
+
+describe("toAlarmFinding — base colapsada (#10114)", () => {
+  it("achado de ESTADO com fingerprint estável (sem aammdd): uma issue enquanto durar", () => {
+    const a = toAlarmFinding({ verdict: "alarm-failure", reportId: "envio-261013-base-colapsada" }, "261013");
+    const b = toAlarmFinding({ verdict: "alarm-failure", reportId: "envio-261014-base-colapsada" }, "261014");
+    assert.equal(a.family, "estado");
+    assert.equal(a.fingerprint, "base-colapsada");
+    assert.equal(b.fingerprint, a.fingerprint);
+    assert.match(a.body, /--accept-base/);
+  });
+
+  it("falha ao gravar a parada (#10115) é EVENTO do dia, com fingerprint por aammdd", () => {
+    const f = toAlarmFinding({ verdict: "alarm-failure", reportId: "envio-261013-fila-insuficiente-halt-write-failed" }, "261013");
+    assert.equal(f.family, "evento");
+    assert.equal(f.fingerprint, "261013:alarm-failure:envio-261013-fila-insuficiente-halt-write-failed");
+  });
+});

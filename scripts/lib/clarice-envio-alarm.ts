@@ -32,6 +32,12 @@
  *     ela, ou `data/clarice-envio-halt.json` está ilegível (#10121), e
  *     ninguém decidiu. Fica FORA de `OK_SUFFIXES` de propósito —
  *     ALARME (e-mail próprio, não o de "falha").
+ *   - `-fila-insuficiente-halt-write-failed` (#10115) — a rodada parou por
+ *     fila insuficiente mas NÃO gravou a parada durável: a próxima pode
+ *     escalar sobre base residual. ALARME.
+ *   - `-base-colapsada` (#10114) — volume-base muito abaixo do pico recente
+ *     da rampa (ondas residuais); a rodada agendada não escala sobre ele.
+ *     ALARME até o editor decidir (`--volume N` ou `--accept-base`).
  *   - qualquer OUTRO sufixo (`-abort`, `-lock-held`, ou um sufixo futuro
  *     ainda não listado aqui) — ALARME. Fail-TOWARD-alarming de propósito:
  *     um sufixo desconhecido preferimos alarmar à toa (o editor vê "ah, é
@@ -41,7 +47,11 @@
  *     antes do `try`, systemd nunca disparou, máquina desligada) — ALARME.
  */
 
-import { HALT_STALE_REPORT_SUFFIX } from "./clarice-envio-halt.ts";
+import {
+  BASE_COLLAPSE_REPORT_SUFFIX,
+  HALT_STALE_REPORT_SUFFIX,
+  HALT_WRITE_FAILED_REPORT_SUFFIX,
+} from "./clarice-envio-halt.ts";
 
 export type EnvioAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure";
 
@@ -167,6 +177,32 @@ export function buildEnvioAlarmEmail(
         `data/clarice-subscribers/envio-reports/${evaluation.reportId}.md (também em /relatorios).\n\n` +
         `Pra retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."\n` +
         `Pra um envio pontual com volume confirmado: /diaria-clarice-envio com --volume N.` +
+        issueLine,
+    };
+  }
+  if (evaluation.reportId?.endsWith(HALT_WRITE_FAILED_REPORT_SUFFIX)) {
+    return {
+      subject: `⚠️ Diaria-Clarice-Envio: parada por fila insuficiente NÃO gravada (${evaluation.reportId})`,
+      body:
+        `A rodada de ${aammdd} parou por fila insuficiente (regra 260811) e não conseguiu gravar ` +
+        `data/clarice-envio-halt.json (#10096/#10115) — o erro está no relatório: ` +
+        `data/clarice-subscribers/envio-reports/${evaluation.reportId}.md (também em /relatorios).\n\n` +
+        `Sem a parada gravada, a próxima rodada agendada pode recomeçar de uma base residual. ` +
+        `Confira o disco/permissão/sync de data/ e, se não quiser que a rampa siga sozinha, ` +
+        `pause o kill switch antes das 19:00 BRT.` +
+        issueLine,
+    };
+  }
+  if (evaluation.reportId?.endsWith(BASE_COLLAPSE_REPORT_SUFFIX)) {
+    return {
+      subject: `⚠️ Diaria-Clarice-Envio: volume-base da rampa colapsou (${evaluation.reportId})`,
+      body:
+        `O volume-base da rampa Clarice (último dia com onda dN) ficou muito abaixo do pico recente ` +
+        `(#10114) — provável resíduo de onda parcial. A rodada agendada não escala sobre ele e não ` +
+        `agendou nada. Números no relatório: data/clarice-subscribers/envio-reports/${evaluation.reportId}.md ` +
+        `(também em /relatorios).\n\n` +
+        `Envio com volume confirmado: /diaria-clarice-envio com --volume N.\n` +
+        `Aceitar a base baixa e retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."` +
         issueLine,
     };
   }
