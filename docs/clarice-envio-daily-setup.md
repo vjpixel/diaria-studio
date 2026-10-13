@@ -31,9 +31,12 @@ Quando a rodada para por fila insuficiente (regra 260811), a parada fica gravada
 ```bash
 npx tsx scripts/lib/clarice-envio-halt.ts                        # mostra a parada (ou "no-halt")
 npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."  # retoma a automação
+npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."  # aceita base baixa da rampa (#10114)
 ```
 
-A base da rampa (`baseVolumeFromLastSendDay`) só conta ondas da rampa (`grupo:dN-*`) desde o #10096 — envios do `clarice-novos` (`grupo:novos-*`) nunca viram a base.
+Se gravar a parada falhar (disco, permissão, sync), o relatório sai `envio-{aammdd}-fila-insuficiente-halt-write-failed` e a task de alarme dispara (#10115).
+
+A base da rampa (`baseVolumeFromLastSendDay`) só conta ondas da rampa (`grupo:dN-*`) desde o #10096 — envios do `clarice-novos` (`grupo:novos-*`) nunca viram a base. Ondas residuais de uma parada também saem com nome `dN`, então desde o #10114 a base é comparada com o pico dos 7 dias de rampa anteriores (`detectRampBaseCollapse`): abaixo de 25% do pico, a rodada agendada não agenda nada e sai `envio-{aammdd}-base-colapsada` (alarme, uma issue enquanto durar). Saídas: `/diaria-clarice-envio --volume N` (envio pontual) ou `--accept-base` (grava `data/clarice-envio-base-ack.json`; dias de rampa anteriores ao aceite deixam de contar pro pico).
 
 ## Estado do teste A/B/C de assunto — `data/clarice-abc-state.json` (#5055)
 

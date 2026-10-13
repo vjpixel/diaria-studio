@@ -190,3 +190,26 @@ describe("buildEnvioAlarmEmail com issueRef (#5339) — prova de fumaça do wiri
     assert.doesNotMatch(body, /Issue:/);
   });
 });
+
+describe("buildEnvioAlarmEmail — #10114/#10115", () => {
+  it("falha ao gravar a parada => e-mail próprio (não o genérico de 'falhou')", () => {
+    const { subject, body } = buildEnvioAlarmEmail(
+      { verdict: "alarm-failure", reportId: `envio-${AAMMDD}-fila-insuficiente-halt-write-failed` },
+      AAMMDD,
+    );
+    assert.match(subject, /parada por fila insuficiente NÃO gravada/);
+    assert.match(body, /clarice-envio-halt\.json/);
+  });
+  it("base colapsada => e-mail próprio com --volume e --accept-base", () => {
+    const { subject, body } = buildEnvioAlarmEmail({ verdict: "alarm-failure", reportId: `envio-${AAMMDD}-base-colapsada` }, AAMMDD);
+    assert.match(subject, /volume-base da rampa colapsou/);
+    assert.match(body, /--volume N/);
+    assert.match(body, /--accept-base/);
+  });
+  it("evaluateEnvioAlarm: os dois sufixos novos => alarm-failure", () => {
+    for (const s of ["-base-colapsada", "-fila-insuficiente-halt-write-failed"]) {
+      const e = evaluateEnvioAlarm([{ reportId: `envio-${AAMMDD}${s}`, mtimeMs: 1 }], AAMMDD);
+      assert.equal(e.verdict, "alarm-failure", s);
+    }
+  });
+});

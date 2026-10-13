@@ -38,8 +38,10 @@ import {
   baseVolumeFromLastSendDay,
   computeWeekPlan,
   decideSemaphore,
+  detectRampBaseCollapse,
   selectMatureDayCampaigns,
   type HealthAggregate,
+  type RampBaseCollapse,
   type Semaphore,
 } from "../../workers/brevo-dashboard/src/weekly-plan.ts";
 import {
@@ -1155,6 +1157,13 @@ export interface VolumeProposal {
   /** `true` no vermelho — o editor precisa revisar antes de prosseguir. */
   flagged: boolean;
   baseVolume: number;
+  /**
+   * #10114 — `baseVolume` muito abaixo do pico recente da rampa (resíduo de
+   * onda parcial). Opcional só por compatibilidade com JSON antigo/fixtures;
+   * `proposeVolumes` sempre preenche. `clarice-envio-run.ts` PARA a rodada
+   * agendada quando `collapsed` — nunca escala sobre a base residual.
+   */
+  baseCollapse?: RampBaseCollapse;
   health: HealthAggregate;
   spamSignal: SpamSignal;
 }
@@ -1182,6 +1191,7 @@ export function proposeVolumes(
   days: number,
   now: Date,
   spamEntry: Parameters<typeof resolveSpamSignal>[0],
+  opts: { baseAckSinceMs?: number | null } = {},
 ): VolumeResult {
   if (!Number.isInteger(days) || days <= 0) {
     return { ok: false, reason: `número de dias inválido: ${days} — esperado inteiro > 0.` };
@@ -1219,6 +1229,7 @@ export function proposeVolumes(
       semaphore,
       flagged: plan.flagged,
       baseVolume,
+      baseCollapse: detectRampBaseCollapse(allSent, { ignoreBeforeMs: opts.baseAckSinceMs ?? null }),
       health,
       spamSignal,
     },
@@ -1689,6 +1700,12 @@ export function renderWaveProposal(p: WaveProposal): string {
 
   L.push("── Saúde e volume ──");
   L.push(`  Semáforo: ${SEMAPHORE_LABEL[p.volumes.semaphore]} · volume-base (último dia): ${fmt(p.volumes.baseVolume)}`);
+  if (p.volumes.baseCollapse?.collapsed) {
+    const bc = p.volumes.baseCollapse;
+    L.push(
+      `  ⚠️  BASE COLAPSADA (#10114): ${fmt(bc.baseVolume)} em ${bc.baseDay} = ${(bc.fraction * 100).toFixed(1)}% do pico ${fmt(bc.peakVolume)} (${bc.peakDay}) — a rodada agendada não escala sobre ela.`,
+    );
+  }
   L.push(
     `  Abertura ${p.volumes.health.openRate.toFixed(1)}% · hard bounce ${p.volumes.health.hardBounceRate.toFixed(2)}% · bounce total ${p.volumes.health.bounceRate.toFixed(2)}% · unsub ${p.volumes.health.unsubRate.toFixed(2)}%`,
   );

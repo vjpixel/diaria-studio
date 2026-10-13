@@ -16,6 +16,7 @@
  *
  *   npx tsx scripts/lib/clarice-envio-halt.ts                       # mostra o estado
  *   npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..." # retoma a automação
+ *   npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..." # aceita base baixa da rampa (#10114)
  *
  * `--volume N` no caminho manual (`/diaria-clarice-envio`) também passa —
  * é número confirmado pelo editor — mas NÃO limpa a parada: a próxima rodada
@@ -225,11 +226,70 @@ export function describeHaltForReport(read: Exclude<ClariceEnvioHaltRead, { halt
   );
 }
 
+/** #10115 — sufixo do `reportId` de uma rodada que PAROU por fila insuficiente
+ * mas não conseguiu gravar a parada durável. Fora de `OK_SUFFIXES`
+ * (`clarice-envio-alarm.ts`): sem a parada, a próxima rodada pode recomeçar de
+ * uma base residual — isso precisa chegar ao editor, não ficar numa nota. */
+export const HALT_WRITE_FAILED_REPORT_SUFFIX = "-fila-insuficiente-halt-write-failed";
+
+/** #10114 — sufixo do `reportId` de uma rodada agendada que parou porque o
+ * volume-base colapsou (muito abaixo do pico recente da rampa,
+ * `detectRampBaseCollapse`). Fora de `OK_SUFFIXES`: vira alarme. */
+export const BASE_COLLAPSE_REPORT_SUFFIX = "-base-colapsada";
+
+// ---------------------------------------------------------------------------
+// #10114 — aceite explícito de uma base baixa. A condição de colapso é
+// re-derivada do histórico da Brevo a cada rodada (durável por natureza); o
+// aceite é o que o editor grava quando decide que a base baixa vale. Dias de
+// rampa enviados ANTES do aceite deixam de contar pro pico.
+// ---------------------------------------------------------------------------
+
+export interface ClariceEnvioBaseAck {
+  /** ISO — quando o editor aceitou a base atual. */
+  acceptedAt: string;
+  reason: string;
+}
+
+export function clariceEnvioBaseAckPath(rootDir: string): string {
+  return resolve(rootDir, "data", "clarice-envio-base-ack.json");
+}
+
+/** Lê o aceite. Ausente OU ilegível → `null` (o guard de colapso continua
+ * ativo — lado seguro: um arquivo corrompido nunca libera a rampa). */
+export function readClariceEnvioBaseAck(rootDir: string): ClariceEnvioBaseAck | null {
+  const p = clariceEnvioBaseAckPath(rootDir);
+  if (!existsSync(p)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown> | null;
+    if (!raw || typeof raw.acceptedAt !== "string" || Number.isNaN(Date.parse(raw.acceptedAt))) return null;
+    return { acceptedAt: raw.acceptedAt, reason: typeof raw.reason === "string" ? raw.reason : "" };
+  } catch {
+    return null;
+  }
+}
+
+/** Grava o aceite (decisão do editor). Propaga erro de escrita. */
+export function writeClariceEnvioBaseAck(rootDir: string, reason: string, now: Date = new Date()): ClariceEnvioBaseAck {
+  const ack: ClariceEnvioBaseAck = { acceptedAt: now.toISOString(), reason };
+  const p = clariceEnvioBaseAckPath(rootDir);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(ack, null, 2) + "\n", "utf8");
+  return ack;
+}
+
 // CLI guard: só executa como main module, importável sem efeito colateral.
 if (isMainModule(import.meta.url)) {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const root = process.cwd();
-  if (flags.has("clear") || "clear" in values) {
+  if (flags.has("accept-base") || "accept-base" in values) {
+    const reason = (values.reason ?? "").trim();
+    if (!reason) {
+      console.error('[clarice-envio-halt] --accept-base exige --reason "..." (decisão do editor que aceita a base baixa da rampa, #10114).');
+      process.exitCode = 2;
+    } else {
+      console.log(JSON.stringify(writeClariceEnvioBaseAck(root, reason)));
+    }
+  } else if (flags.has("clear") || "clear" in values) {
     const reason = (values.reason ?? "").trim();
     if (!reason) {
       console.error('[clarice-envio-halt] --clear exige --reason "..." (decisão do editor que libera a rampa).');

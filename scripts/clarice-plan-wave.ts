@@ -72,6 +72,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
+import { readClariceEnvioBaseAck } from "./lib/clarice-envio-halt.ts";
 import { readListArchiveMeta } from "./lib/clarice-list-consolidation.ts"; // #9532
 import { resolve } from "node:path";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
@@ -222,6 +223,8 @@ export interface PlanWaveOptions {
   segmentsBaseDir?: string;
   /** #5140 — raiz do repo pra ler `data/clarice-hour-test.json`. Injetável em teste. */
   hourTestRootDir?: string;
+  /** #10114 — raiz do repo pra ler `data/clarice-envio-base-ack.json`. Injetável em teste. */
+  baseAckRootDir?: string;
   /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
    *  clarice-schedule-ramp.ts). Default = `fetch` global (produção). */
   fetchImpl?: typeof fetch;
@@ -303,7 +306,12 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
 
   // 3. Volume — delega ao semáforo do dashboard (herda o gate de spam).
   const spamEntry = await fetchPostmasterSpamEntry(opts.dashboardUrl, fetch);
-  const volumeResult = proposeVolumes(campaigns, opts.dates.length, now, spamEntry);
+  // #10114 — aceite explícito de base baixa (editor): dias de rampa anteriores
+  // a ele deixam de contar pro pico do guard de colapso. Ilegível = sem aceite.
+  const baseAck = readClariceEnvioBaseAck(opts.baseAckRootDir ?? REPO_ROOT);
+  const volumeResult = proposeVolumes(campaigns, opts.dates.length, now, spamEntry, {
+    baseAckSinceMs: baseAck ? Date.parse(baseAck.acceptedAt) : null,
+  });
   if (!volumeResult.ok) throw new Error(`Não foi possível propor volume: ${volumeResult.reason}`);
 
   // 4. Store local — fila disponível, backlog MV, não-abridores.

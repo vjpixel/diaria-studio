@@ -539,6 +539,76 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // #10115 — falha ao gravar a parada saía `-fila-insuficiente` (OK pro
+    // alarme) com só uma nota: a rodada seguinte não acharia parada e podia
+    // escalar sobre base residual sem ninguém saber.
+    it("#10115: falha ao gravar a parada => sufixo -halt-write-failed, classificado como ALARME", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(goldenProposal({ availableFirstSend: 10 })),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
+      });
+      const r = await runEnvio(
+        baseDeps(root, {
+          exec,
+          readHalt: () => ({ halted: false }),
+          writeHalt: () => {
+            throw new Error("EACCES: permission denied");
+          },
+        }),
+      );
+      assert.equal(r.code, 0);
+      assert.equal(r.reportId, "envio-260811-fila-insuficiente-halt-write-failed");
+      assert.equal(classifyEnvioReportId(r.reportId, "260811"), "alarm");
+      assert.match(r.reportMarkdown, /FALHA ao gravar a parada durável \(EACCES/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    // #10114 — números do ciclo 2609-10: d6-sab10 = 40.180, depois as ondas
+    // residuais d7-seg12 = 31 e d8-ter13 = 101 (já com nome de rampa). A base
+    // ficava em 101 e a rodada agendada propunha ~110 em silêncio.
+    const collapsed = {
+      collapsed: true as const,
+      baseVolume: 101,
+      baseDay: "2026-10-13",
+      peakVolume: 40_180,
+      peakDay: "2026-10-10",
+      fraction: 101 / 40_180,
+    };
+    const collapsedProposal = () =>
+      goldenProposal({
+        volumes: { perDay: [116], total: 116, semaphore: "green", flagged: false, baseVolume: 101, baseCollapse: collapsed, health: {} as any, spamSignal: {} as any },
+      });
+
+    it("#10114: base colapsada na rodada agendada => -base-colapsada (ALARME), sem MV nem segmento", async () => {
+      const root = freshRoot();
+      const { exec, calls } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(collapsedProposal()),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
+      });
+      const r = await runEnvio(baseDeps(root, { exec }));
+      assert.equal(r.code, 0);
+      assert.equal(r.reportId, "envio-260811-base-colapsada");
+      assert.equal(classifyEnvioReportId(r.reportId, "260811"), "alarm");
+      assert.match(r.reportMarkdown, /volume-base COLAPSADO: 101 em 2026-10-13 = 0\.3% do pico recente da rampa \(40180 em 2026-10-10\)/);
+      assert.match(r.reportMarkdown, /--accept-base --reason/);
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-mv-ondemand.ts"), "nunca gastar MV numa rodada que para");
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-build-segment.ts"), "nunca segmentar");
+      assert.ok(!calls.some((c) => c.script === "scripts/clarice-schedule-group.ts"), "nunca agendar");
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10114: base colapsada + --volume N (número confirmado) => segue, com nota", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers({ proposal: collapsedProposal() }));
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 3000 });
+      assert.notEqual(r.reportId, "envio-260811-base-colapsada");
+      assert.match(r.reportMarkdown, /Seguindo só porque esta rodada é manual \(--volume 3000\)/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     // #10118 — parada vencida (idade > limite OU ciclo virou) deixa de ser
     // pausa legítima: reportId com sufixo fora de OK_SUFFIXES => alarme.
     const staleHalt = (overrides: Partial<ClariceEnvioHalt> = {}): ClariceEnvioHalt => ({

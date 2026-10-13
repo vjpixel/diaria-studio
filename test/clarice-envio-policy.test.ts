@@ -275,6 +275,17 @@ describe("decideBrake — freio removido (#6793 Faixa B, item 2, 01/09/2026) —
     assert.ok(b.reasons.some((r) => r.includes("hard bounce") && r.includes("2,00%")));
   });
 
+  it("#10114 item 3: métrica que estourou o limiar com freio 'ok' diz que o freio está desligado (não lê como contradição)", () => {
+    const b = decideBrake(risk({ hardBounceRatePct: 3 }), SPAM_OK);
+    assert.equal(b.level, "ok");
+    const r = b.reasons.find((x) => x.includes("estourou o limiar"));
+    assert.ok(r, b.reasons.join(" | "));
+    assert.match(r!, /freio automático desligado desde o #6793/);
+    // zona de atenção (abaixo do limiar) não ganha a nota
+    const hold = decideBrake(risk({ hardBounceRatePct: 1.4 }), SPAM_OK);
+    assert.ok(!hold.reasons.some((x) => x.includes("freio automático desligado")));
+  });
+
   it("#6793/#6888: hard bounce 1,4% (70% do limiar, zona de atenção) => level 'ok' (era hold até 01/09/2026); adaptiveStep cresce 10% mesmo em zona de atenção (era 0 até 01/09/2026, #6888)", () => {
     const b = decideBrake(risk({ hardBounceRatePct: 1.4 }), SPAM_OK);
     assert.equal(b.level, "ok");

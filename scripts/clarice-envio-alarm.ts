@@ -51,6 +51,7 @@ import {
   type EnvioAlarmReportFile,
 } from "./lib/clarice-envio-alarm.ts";
 import {
+  BASE_COLLAPSE_REPORT_SUFFIX,
   HALT_STALE_REPORT_SUFFIX,
   haltAlarmFingerprint,
   readClariceEnvioHalt,
@@ -136,6 +137,36 @@ export function toAlarmFinding(
         "",
         "Uma issue por parada (achado de ESTADO, #10123): as rodadas seguintes com a mesma",
         "parada reusam esta issue, e ela se fecha sozinha depois do `--clear`.",
+      ].join("\n"),
+      labels: ["bug"],
+      priority: "P2",
+    };
+  }
+  // #10114 — base colapsada também é CONDIÇÃO (re-derivada do histórico da
+  // Brevo toda rodada até o editor decidir), não evento de um dia: mesma
+  // lógica do #10123 — fingerprint estável, `family: "estado"`, uma issue
+  // enquanto durar, fecha sozinha depois do `--accept-base`/envio confirmado.
+  if (evaluation.reportId?.endsWith(BASE_COLLAPSE_REPORT_SUFFIX)) {
+    return {
+      check: "clarice-envio",
+      fingerprint: "base-colapsada",
+      family: "estado",
+      title: "[diar.ia.br] Clarice: volume-base da rampa colapsou — rodada agendada parada (base-colapsada)",
+      body: [
+        "Achado automático do alarme `Diaria-Clarice-Envio-Alarm`",
+        "(`scripts/clarice-envio-alarm.ts`, #10114).",
+        "",
+        `primeira detecção: ${aammdd}`,
+        `relatório: data/clarice-subscribers/envio-reports/${evaluation.reportId}.md`,
+        "",
+        "O último dia com onda da rampa (dN) ficou muito abaixo do pico recente — provável",
+        "resíduo de onda parcial depois de uma parada. A rodada agendada não escala sobre essa",
+        "base e não agenda nada até decisão do editor:",
+        "",
+        "- envio com volume confirmado: `/diaria-clarice-envio --volume N`",
+        "- aceitar a base baixa e retomar: `npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason \"...\"`",
+        "",
+        "Achado de ESTADO: as rodadas seguintes com a base ainda colapsada reusam esta issue.",
       ].join("\n"),
       labels: ["bug"],
       priority: "P2",
