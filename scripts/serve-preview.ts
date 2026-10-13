@@ -108,6 +108,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname, basename, join, extname, normalize, sep } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 // Reusa o mecanismo de persist-to já testado de upload-html-public.ts
 // (#1734) em vez de duplicar a lógica de merge JSON aqui — mesmo padrão que
@@ -507,7 +508,14 @@ export function openInBrowser(url: string, execImpl: typeof exec = exec): void {
       : process.platform === "darwin"
         ? `open "${url}"`
         : `xdg-open "${url}"`;
-  execImpl(cmd);
+  const child = execImpl(cmd);
+  // #9911: o servidor encerra por `process.exitCode` (loop vazio), não por
+  // `process.exit()`. O browser lançado pelo xdg-open pode herdar o stdio do
+  // filho e manter os pipes abertos — sem unref, o teardown nunca terminaria.
+  child?.unref?.();
+  for (const stream of [child?.stdin, child?.stdout, child?.stderr]) {
+    (stream as { unref?: () => void } | null | undefined)?.unref?.();
+  }
 }
 
 /**
@@ -1010,7 +1018,7 @@ function writeReadyFile(readyFile: string, payload: unknown): void {
   renameSync(tmp, readyFile);
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   const { values, flags } = parseCliArgs(argv);
 
@@ -1023,16 +1031,16 @@ async function main(): Promise<void> {
   // #9700/#9705: tempo de vida — `--idle-exit-min`/`--ttl-min` (0/ausente =
   // nunca). Validado ANTES do --detach/--ensure: no pai, o erro sai na hora
   // e claro, em vez de "filho saiu com código 2 antes de servir".
-  const lifetime = (key: string): number => {
-    const r = parseLifetimeMinutes(key, values[key]);
+  const idleR = parseLifetimeMinutes("idle-exit-min", values["idle-exit-min"]);
+  const ttlR = parseLifetimeMinutes("ttl-min", values["ttl-min"]);
+  for (const r of [idleR, ttlR]) {
     if (!r.ok) {
       console.error(`[serve-preview] ${r.error}`);
-      process.exit(2);
+      return 2;
     }
-    return r.minutes;
-  };
-  const idleExitMin = lifetime("idle-exit-min");
-  const ttlMin = lifetime("ttl-min");
+  }
+  const idleExitMin = idleR.ok ? idleR.minutes : 0;
+  const ttlMin = ttlR.ok ? ttlR.minutes : 0;
 
   // #9678: --ensure reusa um servidor persistido ainda vivo; senão cai no
   // mesmo caminho do --detach.
@@ -1040,7 +1048,7 @@ async function main(): Promise<void> {
     const persistTo = values["persist-to"];
     if (!persistTo || !values["file"]) {
       console.error("[serve-preview] --ensure exige --file e --persist-to (é lá que o servidor vivo é procurado)");
-      process.exit(2);
+      return 2;
     }
     const field = values["field"] ?? "url";
     const live = await findLivePersistedPreview(resolve(persistTo), field);
@@ -1057,7 +1065,7 @@ async function main(): Promise<void> {
   if (flags.has("detach") || flags.has("ensure")) {
     if (!values["file"]) {
       console.error("[serve-preview] --detach exige --file");
-      process.exit(2);
+      return 2;
     }
     const child = await spawnDetachedPreview(argv);
     console.log(JSON.stringify({ ...child, detached: true, reused: false }, null, 2));
@@ -1070,12 +1078,12 @@ async function main(): Promise<void> {
       "Uso: serve-preview.ts --file <path.html> [--port N] [--open] [--watch] [--persist-to <json> --field <nome>]\n" +
         "     serve-preview.ts --stop-pid <PID>",
     );
-    process.exit(2);
+    return 2;
   }
   const portArg = values["port"] !== undefined ? Number(values["port"]) : 0;
   if (Number.isNaN(portArg) || portArg < 0) {
     console.error(`[serve-preview] --port inválido: ${values["port"]}`);
-    process.exit(2);
+    return 2;
   }
   // #8123 Fatia 1: fallback de preview ao vivo quando o Studio /revisao não
   // está rodando — mesmo watcher+debounce+SSE, sem re-renderizar nada por
@@ -1083,12 +1091,14 @@ async function main(): Promise<void> {
   const watchFlag = flags.has("watch");
 
   let selfExitReason: string | null = null;
-  let shutdownImpl: () => void = () => process.exit(0);
+  // Antes de o teardown existir (servidor ainda subindo), o pedido de saída
+  // fica registrado em `selfExitReason` e é atendido logo após a montagem.
+  let shutdownImpl: (() => void) | null = null;
   const exitFor = (reason: string) => {
     if (selfExitReason) return;
     selfExitReason = reason;
     console.error(`[serve-preview] encerrando sozinho: ${reason} (#9700)`);
-    shutdownImpl();
+    shutdownImpl?.();
   };
 
   // `--edition` só etiqueta as medições de reload do watcher no run-log
@@ -1162,17 +1172,36 @@ async function main(): Promise<void> {
   // Teardown gracioso (#3546 critério de aceite): SIGINT/SIGTERM fecha o
   // servidor antes de sair. O processo fica vivo até o caller derrubá-lo —
   // orchestrator dispara via `run_in_background` e mata ao fim do gate.
+  //
+  // #9911: sem `process.exit(0)`. `server.close()` encerra watcher, timers de
+  // debounce/idle, conexões SSE e o listen; o TTL é `unref` e o filho do
+  // `--open` também (ver `openInBrowser`). Com o loop vazio o processo sai
+  // com o `exitCode` 0. Os handlers de sinal saem de cena no 1º sinal: um 2º
+  // Ctrl+C volta ao padrão do Node (mata na hora) se algo ainda segurar o loop.
   const shutdown = () => {
-    server.close().finally(() => process.exit(0));
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    server
+      .close()
+      .catch((e: unknown) => {
+        console.error(`[serve-preview] falha ao fechar o servidor: ${(e as Error).message}`);
+      })
+      .finally(() => {
+        // Mesmo código de antes (`.finally(() => process.exit(0))`): teardown
+        // pedido sai 0 mesmo se o close reclamar.
+        process.exitCode = 0;
+      });
   };
   shutdownImpl = shutdown;
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  if (selfExitReason) shutdown();
 }
 
+// #9911: main() devolve 2 nos erros de uso e runCli grava process.exitCode
+// (1 no erro fatal) — process.exit() depois do fetch do `--ensure`
+// (probePreviewUrl) sai 127 no Windows. No modo servidor main() retorna com o
+// servidor no ar e o processo segue vivo pelo listen, como antes.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`[serve-preview] ${(e as Error).message}`);
-    process.exit(1);
-  });
+  runCli(main, { onError: (e) => console.error(`[serve-preview] ${(e as Error).message}`) });
 }

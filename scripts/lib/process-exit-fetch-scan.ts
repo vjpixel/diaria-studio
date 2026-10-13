@@ -12,28 +12,19 @@
  *    (limite conhecido: o guard é heurístico, não análise de fluxo).
  *  - "chama process.exit": qualquer `process.exit(...)`.
  *
- * `ALLOWLIST`: scripts ainda não migrados (#9911 migrou o conjunto prioritário
- * — LinkedIn pessoal, publish-facebook/instagram/linkedin/threads e os
- * scripts de Stage 2/4/5/6 — e, num 2º lote, 13 alarmes/reports/builders/
- * verificadores de leitura; num 3º lote (#9991), 6 scripts de até 4 saídas
- * — clarice-plan-wave, clarice-stripe-delta, delete-test-schedules,
- * inject-poll-token, sync-apoio-nivel-beehiiv, sync-cursos-subscribers-kv;
- * num 4º lote, 7 scripts de 5+ saídas revisados saída a saída —
- * cohort-engagement, eia-compose, evaluate-brevo-diaria,
- * google-ads-associate-token, onboarding-welcome-run, sync-pending-to-brevo,
- * verify-pending-emails-mv; o resto fica para PR futuro). Restam servidores
- * (`oauth-setup.ts` sobe o callback HTTP), `clarice-schedule-ramp.ts`,
- * `studio/verify-remote-tunnel.ts`, `verify-emails-mv.ts` (o handler de
- * SIGINT/SIGTERM sai 130 com requisições em voo, e um teste substitui
- * `process.exit` para observar o código) e `clarice-engagement-cohorts-v2.ts`
- * (os testes substituem `process.exit` para observar o código). Duas ficaram
- * de propósito: `publish-monthly.ts` (os testes de integração substituem
- * `process.exit` para observar o código; migrar exige reescrever esses
- * testes) e `serve-preview.ts` (servidor de longa duração: o teardown por
- * SIGINT/SIGTERM e o `--ensure` saem com servidor ou filho ainda vivos, e
- * trocar por `exitCode` pode deixar o processo pendurado — pede revisão
- * saída por saída). A lista só encolhe: entrada que deixou de violar é reportada como
- * obsoleta e o teste falha até ela sair.
+ * `ALLOWLIST`: scripts ainda não migrados. Vazia desde o 5º lote do #9911,
+ * que migrou os 7 últimos — servidores (`oauth-setup.ts`, `serve-preview.ts`:
+ * teardown libera os handles em vez de `process.exit`), os 2 com testes que
+ * substituíam `process.exit` (`clarice-engagement-cohorts-v2.ts`,
+ * `publish-monthly.ts`: testes reescritos para ler o código devolvido),
+ * `verify-emails-mv.ts` (Ctrl+C aborta os fetches pagos via AbortController),
+ * `clarice-schedule-ramp.ts` e `studio/verify-remote-tunnel.ts`. Lotes
+ * anteriores: o conjunto prioritário (LinkedIn pessoal, publishers diários,
+ * Stage 2/4/5/6), 13 alarmes/reports/builders, 6 scripts de até 4 saídas
+ * (#9991) e 7 de 5+ saídas. Script novo que combine fetch e `process.exit(`
+ * deve nascer com `runCli`; entrar aqui exige motivo. A lista só encolhe:
+ * entrada que deixou de violar é reportada como obsoleta e o teste falha até
+ * ela sair.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -41,15 +32,7 @@ import { join, relative, sep } from "node:path";
 import ts from "typescript";
 
 /** Paths relativos à raiz do repo, com `/`. Remover ao migrar. */
-export const ALLOWLIST: ReadonlySet<string> = new Set([
-  "scripts/clarice-engagement-cohorts-v2.ts",
-  "scripts/clarice-schedule-ramp.ts",
-  "scripts/oauth-setup.ts",
-  "scripts/publish-monthly.ts",
-  "scripts/serve-preview.ts",
-  "scripts/studio/verify-remote-tunnel.ts",
-  "scripts/verify-emails-mv.ts",
-]);
+export const ALLOWLIST: ReadonlySet<string> = new Set<string>([]);
 
 const GLOBAL_OBJECTS = new Set(["globalThis", "global", "window", "self"]);
 

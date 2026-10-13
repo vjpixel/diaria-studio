@@ -98,6 +98,7 @@ import { openClariceDb, DEFAULT_DB_PATH, MV_NEVER_VERIFIED_SQL } from "./lib/cla
 import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
 import { resolveCohortArg } from "./lib/clarice-segment.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 
 // .env — loader canônico do projeto (#923, consolidado pra arquivo único #4820).
 // Bare `dotenv/config` não carrega .env, onde os secrets costumam morar.
@@ -220,6 +221,13 @@ type Checkpoint = Record<string, CachedResult>;
 // ---------------------------------------------------------------------------
 
 class FatalApiError extends Error {}
+
+/**
+ * #9911: a rodada foi interrompida (SIGINT/SIGTERM) — o fetch em voo foi
+ * abortado e nenhuma nova tentativa sai. Não é falha transitória: o email
+ * NÃO entra em `failures` (fica fora do checkpoint e volta na próxima rodada).
+ */
+class InterruptedError extends Error {}
 
 // ---------------------------------------------------------------------------
 // Candidate selection (store) — #2886 PR3
@@ -559,17 +567,22 @@ async function verifyOne(
   // #4353: injetável (mesmo padrão de `_sleep` em scripts/lib/brevo-client.ts)
   // — testes de retry-esgotado não esperam 13s (1+3+9s) de verdade.
   _sleep: (ms: number) => Promise<void> = sleep,
+  // #9911: sinal de interrupção (Ctrl+C) — aborta o fetch em voo (cada
+  // chamada à MV é paga) e impede retry/nova tentativa.
+  interrupt?: AbortSignal,
 ): Promise<MvResponse> {
   const url = buildVerifyUrl(apiKey, email, timeoutSec);
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= RETRYABLE_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await _sleep(RETRYABLE_DELAYS_MS[attempt - 1]);
+    if (interrupt?.aborted) throw new InterruptedError("interrompido");
     const ctrl = new AbortController();
     // Abort client-side um pouco depois do timeout que a MV honra server-side.
     const t = setTimeout(() => ctrl.abort(), (timeoutSec + 10) * 1000);
+    const signal = interrupt ? AbortSignal.any([ctrl.signal, interrupt]) : ctrl.signal;
     try {
-      const resp = await fetch(url, { signal: ctrl.signal });
+      const resp = await fetch(url, { signal });
       // 429 / 5xx = transitório → retry (libera o socket antes de continuar).
       if (resp.status === 429 || resp.status >= 500) {
         await resp.body?.cancel().catch(() => {});
@@ -608,6 +621,7 @@ async function verifyOne(
       return json;
     } catch (e) {
       if (e instanceof FatalApiError) throw e;
+      if (interrupt?.aborted) throw new InterruptedError("interrompido");
       lastErr = e;
     } finally {
       clearTimeout(t);
@@ -791,11 +805,21 @@ export async function verifyCohortList(params: {
     }
   };
   let aborting = false;
+  // #9911: Ctrl+C aborta os fetches pagos em voo (AbortController) em vez de
+  // `process.exit(130)` — que, depois de um fetch, sai 127 no Windows. O
+  // handler sai de cena no 1º sinal: um 2º Ctrl+C volta ao comportamento
+  // padrão do Node (mata o processo na hora, código 130).
+  const interrupt = new AbortController();
+  const offSignals = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
   const onSignal = () => {
     aborting = true;
+    offSignals();
+    interrupt.abort();
     flush();
     console.error("\n⏸️  interrompido — checkpoint salvo. Re-rode pra continuar.");
-    process.exit(130);
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -809,7 +833,7 @@ export async function verifyCohortList(params: {
       await runPool(todo, concurrency, async (email) => {
         if (aborting) return;
         try {
-          const res = await verifyOne(apiKey, email, timeout, _sleep);
+          const res = await verifyOne(apiKey, email, timeout, _sleep, interrupt.signal);
           checkpoint[email] = {
             result: res.result ?? "",
             resultcode: res.resultcode ?? -1,
@@ -825,6 +849,9 @@ export async function verifyCohortList(params: {
             aborting = true;
             throw e;
           }
+          // Interrompido: não é falha transitória — fica fora do checkpoint
+          // e de `failures`, e volta na próxima rodada.
+          if (e instanceof InterruptedError) return;
           failures.push(email);
         }
         done++;
@@ -836,19 +863,26 @@ export async function verifyCohortList(params: {
     } catch (e) {
       if (e instanceof FatalApiError) {
         flush();
-        process.off("SIGINT", onSignal);
-        process.off("SIGTERM", onSignal);
+        offSignals();
+        // Os demais workers param no próximo item (`aborting`); o fetch que
+        // ainda estiver em voo é abortado aqui, sem gastar mais crédito.
+        interrupt.abort();
         console.error(`❌ erro fatal da API MillionVerifier: ${e.message}`);
         console.error("   checkpoint salvo — corrija e re-rode pra retomar.");
-        process.exit(1);
+        // #9911: CliExit em vez de process.exit(1) — runCli grava o código.
+        throw new CliExit(1);
       }
+      offSignals();
       throw e;
     }
   }
 
   flush();
-  process.off("SIGINT", onSignal);
-  process.off("SIGTERM", onSignal);
+  offSignals();
+  // #9911: interrompido por SIGINT/SIGTERM — mesmo código 130 de antes, mas
+  // depois de os workers drenarem (fetches abortados) e sem escrever os CSVs
+  // de saída de uma rodada parcial (o checkpoint já foi salvo no handler).
+  if (interrupt.signal.aborted) throw new CliExit(130);
 
   const outputRows = buildOutputRows(checkpoint, rows, allCohortRows, emailKey);
   const split = splitRows(outputRows, emailKey, checkpoint);
@@ -933,14 +967,14 @@ export async function verifyCohortList(params: {
 // Main
 // ---------------------------------------------------------------------------
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const apiKey = process.env.MILLION_VERIFIER_API_KEY;
   if (!apiKey) {
     console.error(
       "MILLION_VERIFIER_API_KEY não definida. Configure no .env (veja .env.example) " +
         "ou no ambiente. Pegue a key no dashboard MillionVerifier → API.",
     );
-    process.exit(1);
+    return 1;
   }
 
   const args = parseArgs(argv);
@@ -957,7 +991,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.log(JSON.stringify(res, null, 2));
     } catch (e) {
       console.error(`❌ ${(e as Error).message}`);
-      process.exit(1);
+      return 1;
     }
     return;
   }
@@ -973,13 +1007,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       "--input foi removido (#2886 PR3) — a fonte agora é o store, não um CSV. " +
         "Use --cohort {slug} no lugar (ex: --cohort ex-assinantes). Ver CLAUDE.md.",
     );
-    process.exit(1);
+    return 1;
   }
   // #1961: as saídas verificadas + cache são POR-CICLO → vivem em
   // data/clarice-subscribers/{conteúdo}-{envio}/.
   if (!args.cycle) {
     console.error("--cycle {conteúdo}-{envio} é obrigatório (saídas em {ciclo}/ — ex: --cycle 2605-06).");
-    process.exit(1);
+    return 1;
   }
   // #4347: --data-root é OPCIONAL, uso interno de teste (mesmo padrão de
   // --data-root em clarice-build-segment.ts / --out-dir em
@@ -992,7 +1026,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // (smoke manual / integração) sem falsamente reportar "não encontrado".
   if (args.db !== ":memory:" && !existsSync(args.db)) {
     console.error(`store não encontrado em ${args.db}. Rode clarice-build-db.ts primeiro, ou use --db para apontar outro path.`);
-    process.exit(1);
+    return 1;
   }
   // Só cria a pasta do ciclo DEPOIS de validar o store — senão um typo no
   // --cohort/--db/--since deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
@@ -1005,7 +1039,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (args.since) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(args.since) || Number.isNaN(Date.parse(args.since))) {
       console.error(`❌ --since inválido: "${args.since}" (esperado YYYY-MM-DD).`);
-      process.exit(1);
+      return 1;
     }
     const db = openClariceDb(args.db);
     let plan: SinceCohortPlan[];
@@ -1037,7 +1071,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const costGuard = checkMvCostGuard(totalToVerify, args.confirm);
     if (!costGuard.ok) {
       console.error(costGuard.message);
-      process.exit(1);
+      return 1;
     }
 
     const perCohort: CohortVerifySummary[] = [];
@@ -1081,7 +1115,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     cohort = resolveCohortArg(args.cohort);
   } catch (e) {
     console.error(`❌ ${(e as Error).message}`);
-    process.exit(1);
+    return 1;
   }
   // assinantes-ativos (T01) é ISENTO de MV — pagamento Stripe já valida
   // implicitamente (#1297; mesmo predicado de `classifyEligibility` em
@@ -1093,7 +1127,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `--cohort ${COHORT_ASSINANTES_ATIVOS} não é verificável: pagamento Stripe já valida ` +
         `implicitamente (#1297) — este cohort é isento de MV em toda a pipeline.`,
     );
-    process.exit(1);
+    return 1;
   }
 
   // #2886 PR3 review: try/finally garante db.close() mesmo se a query
@@ -1142,8 +1176,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  // #9911: main() devolve 1 nos guards; verifyCohortList lança CliExit(130)
+  // na interrupção e CliExit(1) no erro fatal da API; runCli grava
+  // process.exitCode (1 no erro fatal) — process.exit() depois do fetch da
+  // MillionVerifier sai 127 no Windows.
+  runCli(() => main(), { onError: (e) => console.error(e) });
 }

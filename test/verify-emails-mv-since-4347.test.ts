@@ -178,21 +178,16 @@ test("REGRESSÃO (#4347 D8): main() --since com 501 e-mails a verificar aborta S
   const origFetch = globalThis.fetch;
   let fetchCalls = 0;
   globalThis.fetch = (async () => { fetchCalls++; throw new Error("fetch NUNCA deveria ser chamado"); }) as typeof fetch;
-  const origExit = process.exit;
-  let exitCode: number | undefined;
-  // @ts-expect-error stub
-  process.exit = (code?: number) => { exitCode = code; throw Object.assign(new Error("mock-exit"), { __mockExit: true }); };
+  // #9911: main() devolve o código em vez de chamar process.exit.
+  let exitCode: number | void | undefined;
   process.env.MILLION_VERIFIER_API_KEY = "fake-key-test";
 
   try {
-    await captureAll(() =>
-      main(["--since", "2026-07-01", "--cycle", "2606-07", "--db", dbPath, "--data-root", dir]).catch((e) => {
-        if (!(e instanceof Error && (e as Error & { __mockExit?: boolean }).__mockExit)) throw e;
-      }),
-    );
+    await captureAll(async () => {
+      exitCode = await main(["--since", "2026-07-01", "--cycle", "2606-07", "--db", dbPath, "--data-root", dir]);
+    });
   } finally {
     globalThis.fetch = origFetch;
-    process.exit = origExit;
     delete process.env.MILLION_VERIFIER_API_KEY;
   }
   assert.equal(fetchCalls, 0, "nenhuma chamada de rede — crédito zero gasto");

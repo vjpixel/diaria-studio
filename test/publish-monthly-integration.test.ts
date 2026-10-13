@@ -27,8 +27,6 @@ const FIXTURE_SRC = resolve(import.meta.dirname, "fixtures/publish-monthly/2604"
 
 let tmpMonthlyDir: string;
 const originalArgv = process.argv;
-const originalExit = process.exit;
-let exitCode: number | null = null;
 
 function setupTmpDir(): string {
   const tmp = mkdtempSync(join(tmpdir(), "publish-monthly-test-"));
@@ -36,19 +34,6 @@ function setupTmpDir(): string {
   copyFileSync(join(FIXTURE_SRC, "draft.md"), join(tmp, "draft.md"));
   mkdirSync(join(tmp, "_internal"), { recursive: true });
   return tmp;
-}
-
-function mockProcessExit(): void {
-  exitCode = null;
-  // @ts-expect-error mocking
-  process.exit = (code?: number) => {
-    exitCode = code ?? 0;
-    throw new Error("__mocked_exit__");
-  };
-}
-
-function restoreProcessExit(): void {
-  process.exit = originalExit;
 }
 
 before(() => {
@@ -124,15 +109,11 @@ describe("publish-monthly main(): dry-run end-to-end (#1029)", () => {
       "--list-id", "9",
       "--dry-run",
     ];
-    mockProcessExit();
+    // #9911: main() devolve o código (runCli grava process.exitCode) em vez
+    // de chamar process.exit — nada a interceptar.
     try {
-      await main(emptyDir);
-      assert.fail("Esperava throw via mocked exit");
-    } catch (e) {
-      if (!(e instanceof Error) || e.message !== "__mocked_exit__") throw e;
-      assert.equal(exitCode, 1, "Deve sair com code 1 quando draft.md falta");
+      assert.equal(await main(emptyDir), 1, "Deve sair com code 1 quando draft.md falta");
     } finally {
-      restoreProcessExit();
       rmSync(emptyDir, { recursive: true, force: true });
     }
   });
