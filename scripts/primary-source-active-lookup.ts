@@ -22,7 +22,10 @@
  * E mesmo assunto — similaridade de título >= 0,60 OU o MESMO produto com
  * versão idêntica nos dois títulos (`sameStoryByExactProductVersion`:
  * "Haiku 5.5" ↔ "Haiku 5.5"; nunca só "Claude"/"GPT", nunca "GPT-5.5" ↔
- * "GPT-5"). #10141: o matcher do dedup intra-edição (`isIntraEditionDuplicate`)
+ * "GPT-5"; #10145: só o produto SUJEITO da manchete conta — versão anterior
+ * ou plataforma citadas depois ("que o Haiku 4.5", "no Windows 11") nunca
+ * casam, e variantes da mesma versão ("2.5 Flash" ↔ "2.5 Pro") são
+ * distintas). #10141: o matcher do dedup intra-edição (`isIntraEditionDuplicate`)
  * NÃO serve aqui — os ramos `cross_vehicle`/`entity` aceitavam "mesma empresa
  * + 1 palavra" e trocavam manchete de processo/multa/demissão por página de
  * produto sem relação. Só roda para destaque com `suggested_primary_domain`

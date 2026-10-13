@@ -63,16 +63,65 @@ export type SameStoryFn = (article: PrimarySourceArticle, candidate: { url: stri
  * separator removed so "GPT 5.5" and "GPT-5.5" collide. A bare product name
  * ("Claude", "Llama", "Copilot", "GPT") yields nothing, and four-digit years
  * ("Março 2026") are ignored — neither identifies a specific launch.
+ *
+ * #10145: a model-tier word right after the version is part of the code
+ * ("Gemini 2.5 Flash" → `gemini2.5flash`, "Claude 3.5 Haiku" →
+ * `claude3.5haiku`, "GPT-4o mini" → `gpt4omini`, "Flash-Lite" chains), so
+ * sibling variants of the same version never collide. Codes come out in
+ * title order (Set insertion order) — the first one is the candidate subject.
  */
+const VARIANT_WORDS = [
+  "flash", "lite", "pro", "ultra", "nano", "mini", "haiku", "sonnet", "opus",
+  "turbo", "max", "plus", "air", "instant", "thinking", "omni",
+];
+const VARIANT_AFTER_VERSION = new RegExp(`^[\\s-]+(${VARIANT_WORDS.join("|")})\\b`, "i");
+
 export function extractVersionedProductCodes(text: string): Set<string> {
   const codes = new Set<string>();
   const re = /\b([A-Z][A-Za-z]*)[\s-]?(\d+(?:\.\d+)*[a-z]?)(?![\w.]*\d)/g;
   for (const m of text.matchAll(re)) {
     const version = m[2];
     if (/^\d{4}$/.test(version) && Number(version) >= 1900) continue;
-    codes.add(`${m[1].toLowerCase()}${version.toLowerCase()}`);
+    let code = `${m[1].toLowerCase()}${version.toLowerCase()}`;
+    let rest = text.slice((m.index ?? 0) + m[0].length);
+    for (let v = rest.match(VARIANT_AFTER_VERSION); v; v = rest.match(VARIANT_AFTER_VERSION)) {
+      code += v[1].toLowerCase();
+      rest = rest.slice(v[0].length);
+    }
+    codes.add(code);
   }
   return codes;
+}
+
+/**
+ * #10145: where the subject clause of a headline ends — punctuation, a
+ * spaced dash, or a preposition/conjunction that opens a secondary phrase
+ * ("no Windows 11", "sucessor do GPT-6", "mais barato que o Haiku 4.5",
+ * "for Pixel 10"). Whatever versioned code appears only after it is context
+ * (platform, predecessor, comparison), never the launched product.
+ */
+const SUBJECT_CLAUSE_END = new RegExp(
+  "[,;:|()\\[\\]\\\\/]|\\s[-–—]\\s|\\s(?:" + [
+    "no", "na", "nos", "nas", "em", "para", "pra", "do", "da", "dos", "das", "de",
+    "com", "sem", "contra", "que", "como", "ao", "aos", "à", "às", "pelo", "pela",
+    "sobre", "após", "até", "entre", "e", "ou", "sucessor", "substitui",
+    "on", "in", "for", "with", "to", "than", "vs\\.?", "versus", "via", "from",
+    "of", "by", "at", "after", "over", "against", "and", "or", "replacing",
+  ].join("|") + ")(?=\\s|$)",
+  "i",
+);
+
+/**
+ * #10145: the versioned product a headline is ABOUT — the first code in its
+ * subject clause (title start up to `SUBJECT_CLAUSE_END`). `undefined` when
+ * the subject clause names no versioned product ("Google lança Gemini no
+ * Pixel 10" → the only code, `pixel10`, is the platform).
+ */
+export function subjectVersionedProductCode(title: string): string | undefined {
+  const end = title.search(SUBJECT_CLAUSE_END);
+  const head = end === -1 ? title : title.slice(0, end);
+  const [first] = extractVersionedProductCodes(head);
+  return first;
 }
 
 /**
@@ -85,13 +134,22 @@ export function extractVersionedProductCodes(text: string): Set<string> {
  * "Llama", "Copilot") was enough to swap a lawsuit/fine/layoff headline for an
  * unrelated product page. "GPT-5.5" vs "GPT-5" is a different version and
  * never matches.
+ *
+ * #10145: only the headline's SUBJECT code counts (`subjectVersionedProductCode`)
+ * — sharing the predecessor ("mais barato que o Haiku 4.5") or the platform
+ * ("no Windows 11") used to swap D1 for the old model's / platform's page.
+ * The candidate must lead with that same code and cite none of the article's
+ * other codes; anything ambiguous preserves the secondary URL.
  */
 export const sameStoryByExactProductVersion: SameStoryFn = (article, candidate) => {
-  const articleCodes = extractVersionedProductCodes(article.title ?? "");
-  if (articleCodes.size === 0) return false;
-  const candidateCodes = extractVersionedProductCodes(candidate.title);
-  for (const code of articleCodes) if (candidateCodes.has(code)) return true;
-  return false;
+  const title = article.title ?? "";
+  const subject = subjectVersionedProductCode(title);
+  if (!subject) return false;
+  const [candidateFirst, ...candidateRest] = extractVersionedProductCodes(candidate.title);
+  if (candidateFirst !== subject) return false;
+  const others = extractVersionedProductCodes(title);
+  others.delete(subject);
+  return !candidateRest.some((code) => others.has(code));
 };
 
 export interface ChoosePrimarySourceOptions {
