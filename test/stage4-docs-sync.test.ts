@@ -36,8 +36,10 @@ import {
   runCheckRoundtrip,
   runConfirm,
   runDisable,
+  runEnable,
   runRender,
   runSetUrl,
+  runStatus,
   statePath,
   unescapeForWrite,
 } from "../scripts/lib/stage4-docs-sync.ts";
@@ -827,5 +829,116 @@ describe("re-review #10075 — quebra mole, keep_file parcial, version, URLs, se
     assert.ok(md.includes("Título A\n\n==="));
     assert.ok(md.includes("Título B\n\n--"));
     assert.ok(docEquivalent(content, parseDocExport(md)["02-reviewed.md"]));
+  });
+});
+
+describe("#10078 — enable e export único na finalização", () => {
+  it("enable: round-trip verde religa o sync (apaga final_apply antigo); apply volta a puxar", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const exp = writeExport(dir, doc);
+      runApply({ editionDir: dir, docExport: exp, final: true });
+      runDisable({ editionDir: dir, reason: "export não chegou ao disco" });
+      assert.equal(runStatus({ editionDir: dir }).sync_enabled, false);
+      assert.throws(() => runApply({ editionDir: dir, docExport: exp }), /sync desativado/);
+
+      const cli = runCli(["enable", "--edition-dir", dir, "--doc-export", writeExport(dir, aggressiveExport(doc), "rt.md")]);
+      assert.equal(cli.status, 0, cli.stderr);
+      assert.equal(JSON.parse(cli.stdout).ok, true);
+      const state = readState(dir)!;
+      assert.equal(state.sync_disabled, undefined);
+      assert.equal(state.final_apply, undefined, "final_apply de antes do disable não vale mais");
+      assert.equal(runCheck({ editionDir: dir }).ok, false, "check exige um apply --final novo depois do enable");
+      assert.equal(runStatus({ editionDir: dir }).sync_enabled, true);
+
+      const edited = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 editado."), "ed.md");
+      assert.deepEqual(runApply({ editionDir: dir, docExport: edited, final: true }).pulled, ["03-social.md"]);
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("enable reprovado (export alterado/editado ou sentinela perdida): segue desligado com o motivo original, nada gravado", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      runDisable({ editionDir: dir, reason: "motivo original" });
+      const before = readFileSync(statePath(dir), "utf8");
+      const edited = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 editado."));
+      const r = runEnable({ editionDir: dir, docExport: edited });
+      assert.equal(r.ok, false);
+      assert.match(r.reason ?? "", /continua desativado/);
+      assert.equal(readFileSync(statePath(dir), "utf8"), before);
+      const cli = runCli(["enable", "--edition-dir", dir, "--doc-export", writeExport(dir, "sem sentinela", "bad.md")]);
+      assert.equal(cli.status, 1, cli.stderr);
+      assert.equal(readState(dir)?.sync_disabled?.reason, "motivo original");
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+    });
+  });
+
+  it("enable: já ativo → no-op; sem doc_url → exit 2; sem --doc-export → exit 2", () => {
+    withEdition((dir) => {
+      runRender({ editionDir: dir, edition: "261012" });
+      assert.equal(runCli(["enable", "--edition-dir", dir, "--doc-export", writeExport(dir, "x")]).status, 2);
+      const doc = createDoc(dir);
+      assert.equal(runEnable({ editionDir: dir, docExport: writeExport(dir, doc) }).already_enabled, true);
+      assert.equal(runCli(["enable", "--edition-dir", dir]).status, 2);
+    });
+  });
+
+  it("FLUXO PADRÃO: sem export durante o gate; status acusa o que o pipeline mudou; UM export no final mescla doc + pipeline", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      assert.deepEqual(runStatus({ editionDir: dir }).files_changed_since_doc, []);
+      // ajustar pelo terminal durante o gate (o doc não é atualizado).
+      const pipelineReviewed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
+      writeFileSync(join(dir, "02-reviewed.md"), pipelineReviewed);
+      const st = runCli(["status", "--edition-dir", dir]);
+      assert.equal(st.status, 0, st.stderr);
+      assert.deepEqual(JSON.parse(st.stdout).files_changed_since_doc, ["02-reviewed.md"]);
+      // O editor editou no doc o tempo todo, em trechos disjuntos; export único no `sim`.
+      const exp = writeExport(
+        dir,
+        doc.replace("liderada por Google.", "liderada pelo Google.").replace("Texto do d2.", "Texto do d2 do editor."),
+      );
+      const fin = runApply({ editionDir: dir, docExport: exp, final: true });
+      assert.equal(fin.ok, true);
+      assert.deepEqual(fin.pulled, ["02-reviewed.md", "03-social.md"]);
+      const merged = read(dir, "02-reviewed.md");
+      assert.ok(merged.includes("Cada rodada (pipeline) redefine"), "mudança do pipeline preservada");
+      assert.ok(merged.includes("liderada pelo Google."), "edição do doc puxada");
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("FLUXO PADRÃO com conflito: acusado, nada sobrescrito; --resolve reusa o MESMO export (sem export novo)", () => {
+    withEdition((dir) => {
+      const doc = createDoc(dir);
+      const pipelineReviewed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
+      writeFileSync(join(dir, "02-reviewed.md"), pipelineReviewed);
+      const exp = writeExport(dir, doc.replace("Cada rodada redefine", "Cada rodada (editor) redefine"));
+      const fin = runCli(["apply", "--edition-dir", dir, "--doc-export", exp, "--final"]);
+      assert.equal(fin.status, 1, fin.stderr);
+      const report = JSON.parse(fin.stdout) as ReturnType<typeof runApply>;
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed, "conflito nunca sobrescreve");
+      assert.equal(runCheck({ editionDir: dir }).ok, false);
+      assert.deepEqual(runStatus({ editionDir: dir }).pending_conflict, ["02-reviewed.md"]);
+      const token = conflictToken(report, "02-reviewed.md");
+      const resolved = runApply({
+        editionDir: dir,
+        docExport: exp,
+        final: true,
+        resolutions: parseResolutions(`02-reviewed.md=doc@${token}`),
+      });
+      assert.equal(resolved.ok, true);
+      assert.ok(read(dir, "02-reviewed.md").includes("Cada rodada (editor) redefine"));
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("status sem doc → has_doc false", () => {
+    withEdition((dir) => {
+      assert.equal(runStatus({ editionDir: dir }).has_doc, false);
+      runRender({ editionDir: dir, edition: "261012" });
+      assert.equal(runStatus({ editionDir: dir }).has_doc, false);
+    });
   });
 });
