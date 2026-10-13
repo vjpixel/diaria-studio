@@ -126,6 +126,53 @@ export function clearClariceEnvioHalt(
   return true;
 }
 
+/**
+ * #10118 — idade máxima (em dias) de uma parada por fila insuficiente antes de
+ * a rodada agendada deixar de ser "pausa legítima" e virar ALARME. Dentro do
+ * limite, a parada é a regra 260811 funcionando (espera decisão do editor);
+ * além dele, ninguém decidiu e o único sinal seria um relatório que alguém
+ * precisa abrir. 3 dias = um fim de semana inteiro sem leitura mais 1 dia de
+ * folga, curto o bastante pra não deixar a rampa morta por uma semana.
+ */
+export const CLARICE_ENVIO_HALT_MAX_AGE_DAYS = 3;
+
+/** Sufixo do `reportId` de uma rodada que encontrou a parada VENCIDA (#10118).
+ * Fica de FORA de `OK_SUFFIXES` (`clarice-envio-alarm.ts`) de propósito: é o
+ * que faz a task de alarme disparar. */
+export const HALT_STALE_REPORT_SUFFIX = "-fila-insuficiente-vencida";
+
+export type ClariceEnvioHaltStaleness = { stale: false } | { stale: true; reasons: string[] };
+
+/**
+ * #10118 — a parada passou do ponto de "pausa legítima"? Vencida quando
+ * (a) passou de `maxAgeDays` desde `since`, (b) o ciclo esperado pelo
+ * calendário difere do `cycle` gravado (a fila do ciclo novo é outra — a
+ * parada provavelmente nem se aplica mais), ou (c) `since` é ilegível
+ * (fail-toward-alarming: não dá pra provar que ainda está dentro do limite).
+ * Puro. `currentCycle` null (calendário indisponível) só desliga o critério (b).
+ */
+export function evaluateHaltStaleness(
+  halt: ClariceEnvioHalt,
+  now: Date,
+  currentCycle: string | null,
+  maxAgeDays: number = CLARICE_ENVIO_HALT_MAX_AGE_DAYS,
+): ClariceEnvioHaltStaleness {
+  const reasons: string[] = [];
+  const sinceMs = Date.parse(halt.since);
+  if (Number.isNaN(sinceMs)) {
+    reasons.push(`data da parada ilegível (since=${JSON.stringify(halt.since)})`);
+  } else {
+    const ageDays = (now.getTime() - sinceMs) / 86_400_000;
+    if (ageDays > maxAgeDays) {
+      reasons.push(`parada há mais de ${maxAgeDays} dias (desde ${halt.since})`);
+    }
+  }
+  if (currentCycle && currentCycle !== halt.cycle) {
+    reasons.push(`ciclo mudou desde a parada (${halt.cycle} → ${currentCycle})`);
+  }
+  return reasons.length > 0 ? { stale: true, reasons } : { stale: false };
+}
+
 /** Texto do relatório de uma rodada que encontrou a parada ativa. Puro. */
 export function describeHaltForReport(read: Exclude<ClariceEnvioHaltRead, { halted: false }>, currentCycle: string | null): string {
   const clearCmd = 'npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."';

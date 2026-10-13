@@ -26,7 +26,7 @@ npx tsx scripts/lib/clarice-envio-enabled.ts                 # imprime "enabled"
 
 ## Parada durável por fila insuficiente — `data/clarice-envio-halt.json` (#10096)
 
-Quando a rodada para por fila insuficiente (regra 260811), a parada fica gravada: as rodadas agendadas seguintes saem com relatório `envio-{aammdd}-fila-insuficiente-pendente`, sem tocar Brevo/MV, até o editor decidir. `--volume N` (caminho manual) passa pela parada mas não a limpa.
+Quando a rodada para por fila insuficiente (regra 260811), a parada fica gravada: as rodadas agendadas seguintes saem com relatório `envio-{aammdd}-fila-insuficiente-pendente`, sem tocar Brevo/MV, até o editor decidir. `--volume N` (caminho manual) passa pela parada mas não a limpa. Passados `CLARICE_ENVIO_HALT_MAX_AGE_DAYS` (3) dias, ou se o ciclo esperado pelo calendário mudar desde a parada, o relatório vira `envio-{aammdd}-fila-insuficiente-vencida` — continua sem enviar, mas a task de alarme dispara (#10118).
 
 ```bash
 npx tsx scripts/lib/clarice-envio-halt.ts                        # mostra a parada (ou "no-halt")

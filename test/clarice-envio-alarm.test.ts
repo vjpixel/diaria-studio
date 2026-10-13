@@ -151,6 +151,18 @@ describe("buildEnvioAlarmEmail", () => {
     assert.match(body, /diaria-clarice-envio/);
     assert.match(body, /06:00/);
   });
+
+  it("#10118: parada vencida => e-mail próprio (não diz 'falhou'), cita o --clear e o --volume", () => {
+    const reportId = `envio-${AAMMDD}-fila-insuficiente-vencida`;
+    const evaluation = evaluateEnvioAlarm([report(reportId, 1)], AAMMDD);
+    assert.equal(evaluation.verdict, "alarm-failure");
+    const { subject, body } = buildEnvioAlarmEmail(evaluation, AAMMDD);
+    assert.doesNotMatch(subject, /falhou/);
+    assert.match(subject, /parada há tempo demais/);
+    assert.match(body, new RegExp(reportId));
+    assert.match(body, /clarice-envio-halt\.ts --clear --reason/);
+    assert.match(body, /--volume N/);
+  });
 });
 
 describe("buildEnvioAlarmEmail com issueRef (#5339) — prova de fumaça do wiring alarm-issues", () => {

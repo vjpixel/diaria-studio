@@ -27,6 +27,10 @@
  *     LEGÍTIMAS e documentadas (kill switch, ciclo não pronto, precisa do
  *     editor, onda já existe, sem público/volume suficiente). Nenhuma
  *     dessas é falha — OK, sem alarme.
+ *   - `-fila-insuficiente-vencida` (#10118) — a parada durável do #10096
+ *     passou de `CLARICE_ENVIO_HALT_MAX_AGE_DAYS` ou o ciclo virou desde
+ *     ela, e ninguém decidiu. Fica FORA de `OK_SUFFIXES` de propósito —
+ *     ALARME (e-mail próprio, não o de "falha").
  *   - qualquer OUTRO sufixo (`-abort`, `-lock-held`, ou um sufixo futuro
  *     ainda não listado aqui) — ALARME. Fail-TOWARD-alarming de propósito:
  *     um sufixo desconhecido preferimos alarmar à toa (o editor vê "ah, é
@@ -35,6 +39,8 @@
  *   - NENHUM relatório encontrado pra `aammdd` — a task nem rodou (crash
  *     antes do `try`, systemd nunca disparou, máquina desligada) — ALARME.
  */
+
+import { HALT_STALE_REPORT_SUFFIX } from "./clarice-envio-halt.ts";
 
 export type EnvioAlarmVerdict = "ok" | "alarm-no-report" | "alarm-failure";
 
@@ -53,7 +59,9 @@ const OK_SUFFIXES = new Set([
   "-fila-insuficiente",
   // #10096 — rodada que encontrou a parada durável por fila insuficiente
   // ainda gravada (`data/clarice-envio-halt.json`): pausa legítima, espera
-  // decisão do editor. O relatório diz isso todo dia; não é falha.
+  // decisão do editor. O relatório diz isso todo dia; não é falha — DENTRO
+  // do limite de idade/ciclo. Vencida, a rodada usa HALT_STALE_REPORT_SUFFIX
+  // (#10118), que NÃO está aqui: vira alarme.
   "-fila-insuficiente-pendente",
   "-freio-stop",
   "-sem-volume",
@@ -145,6 +153,19 @@ export function buildEnvioAlarmEmail(
         `  journalctl --user -u diaria-clarice-envio.service -n 100\n\n` +
         `Sem onda agendada pra amanhã 06:00 BRT, monte manualmente via /diaria-clarice-envio ` +
         `(skill manual) — não espere a task rodar de novo sozinha.` +
+        issueLine,
+    };
+  }
+  if (evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX)) {
+    return {
+      subject: `⚠️ Diaria-Clarice-Envio: rampa parada há tempo demais (${evaluation.reportId})`,
+      body:
+        `A rampa Clarice está parada por fila insuficiente (regra 260811, parada durável #10096) ` +
+        `e a parada venceu — passou do limite de dias ou o ciclo virou desde ela (#10118). ` +
+        `Nenhuma onda é agendada até decisão explícita do editor. Detalhes no relatório: ` +
+        `data/clarice-subscribers/envio-reports/${evaluation.reportId}.md (também em /relatorios).\n\n` +
+        `Pra retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."\n` +
+        `Pra um envio pontual com volume confirmado: /diaria-clarice-envio com --volume N.` +
         issueLine,
     };
   }

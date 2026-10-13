@@ -58,7 +58,7 @@ describe("readClariceEnvioEnabledState — default de arquivo AUSENTE é LIGADO 
 
   it("sem data/clarice-envio-enabled.json -> {enabled:true, updatedAt:null} (INVERSO do clarice-novos)", () => {
     const c = collector();
-    assert.deepEqual(readClariceEnvioEnabledState(root, c), { enabled: true, updatedAt: null });
+    assert.deepEqual(readClariceEnvioEnabledState(root, c), { enabled: true, updatedAt: null, fileAbsent: true });
     assert.equal(isClariceEnvioEnabled(root, c), true);
   });
 
@@ -107,6 +107,14 @@ describe("readClariceEnvioEnabledState — arquivo válido manda no estado", () 
     const c = collector();
     assert.deepEqual(readClariceEnvioEnabledState(dir, c), { enabled: false, updatedAt: null });
     assert.deepEqual(c.warnings, [], "'enabled' é o campo que decide; updatedAt torto não invalida o arquivo");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('#10117: {"enabled": true} escrito à mão sem updatedAt NÃO carrega fileAbsent (não é o default de ausência)', () => {
+    const dir = rootWithStateFile("manual", JSON.stringify({ enabled: true }));
+    const state = readClariceEnvioEnabledState(dir, collector());
+    assert.equal(state.fileAbsent, undefined);
+    assert.deepEqual(state, { enabled: true, updatedAt: null });
     rmSync(dir, { recursive: true, force: true });
   });
 });
