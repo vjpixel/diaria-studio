@@ -395,8 +395,9 @@ estourou".
   `npx tsx scripts/check-decision-state-drift.ts --print-marker --pergunta "..." --resposta "..." --sessao develop --toggle clarice-envio-enabled --enabled false`
   (toggles aceitos: `clarice-envio-enabled`, `clarice-novos-enabled`).
   A partir daí, enquanto a issue estiver aberta e essa for a decisão mais
-  recente, o relatório diário do envio Clarice avisa se o toggle real
-  contradisser a decisão.
+  recente, os relatórios diários do envio Clarice e do clarice-novos
+  avisam se o toggle real contradisser a decisão — inclusive com a
+  rodada pausada pelo kill switch (#10142).
 - **Bloqueio de execução novo, descoberto durante esta sessão** (ex:
   editor confirma que a conta NÃO existe): rotear direto pra `--track
   bloqueada` (ver abaixo) — desde #7270, o marcador `formatExecutionBlockMarker`

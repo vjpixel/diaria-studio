@@ -17,6 +17,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { readNovosCutoff } from "../scripts/lib/clarice-novos-cutoff.ts";
 import { readNovosRunStatus } from "../scripts/lib/clarice-novos-run-status.ts";
+import { decisionDriftReportLines } from "../scripts/lib/decision-state-drift.ts";
+import { formatDecisionMarker } from "../scripts/lib/issue-decisions.ts";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -164,6 +166,46 @@ describe("clarice-novos-run (#4941)", () => {
       assert.equal(calls.length, 0, "nenhuma chamada externa deveria acontecer com o toggle desligado");
       assert.match(result.reportMarkdown, /PAUSADA/);
       assert.ok(existsSync(resolve(root, "data", "clarice-subscribers", "novos-reports", `${result.reportId}.md`)));
+      rmSync(root, { recursive: true, force: true });
+    });
+  });
+
+  // #10142 — alarme decisão×toggle roda ANTES do kill switch: decisão de
+  // pausa do novos contradita pelo toggle religado aparece mesmo quando ESTA
+  // rodada está pausada (e no caminho normal), sem nenhuma chamada externa.
+  describe("alarme decisão×toggle (#10142)", () => {
+    const decisaoPausaNovos = formatDecisionMarker({
+      decided_at: "2026-10-01T12:00:00.000Z",
+      pergunta: "Religar o clarice-novos?",
+      resposta: "Não — mantém pausado",
+      sessao: "develop",
+      estado_esperado: { toggle: "clarice-novos-enabled", enabled: false },
+    });
+    const driftNovosLigado = () =>
+      decisionDriftReportLines(
+        () => ({ ok: true, issues: [{ number: 9999, title: "Clarice novos", commentBodies: [decisaoPausaNovos] }] }),
+        (toggle) =>
+          toggle === "clarice-novos-enabled" ? { enabled: true, updatedAt: "2026-10-05T10:00:00.000Z" } : { enabled: false, updatedAt: "2026-10-13T14:00:00.000Z" },
+      );
+
+    it("isEnabled()===false + toggle novos fora de sincronia -> linha DECISÃO CONTRADITA no relatório pausado", async () => {
+      root = freshRoot();
+      const { exec, calls } = makeFakeExec({});
+      const result = await runNovos([], baseDeps(root, { exec, isEnabled: () => false, readDecisionDrift: driftNovosLigado }));
+      assert.equal(result.code, 0);
+      assert.equal(calls.length, 0);
+      assert.match(result.reportMarkdown, /PAUSADA/);
+      assert.match(result.reportMarkdown, /DECISÃO CONTRADITA/);
+      assert.match(result.reportMarkdown, /#9999/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("alarme roda antes do preflight (aparece mesmo quando a rodada aborta)", async () => {
+      root = freshRoot();
+      const { exec } = makeFakeExec({});
+      const result = await runNovos([], baseDeps(root, { exec, execMode: () => "cloud", readDecisionDrift: driftNovosLigado }));
+      assert.equal(result.code, 1);
+      assert.match(result.reportMarkdown, /DECISÃO CONTRADITA/);
       rmSync(root, { recursive: true, force: true });
     });
   });
