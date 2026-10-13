@@ -171,9 +171,17 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
         # #9633 (05/10/2026): prompt e input_cache_read subiram 1,34x
         # ($0,0224/M -> $0,03/M) no catalogo; decisao do editor: MANTER o
         # modelo ao preco novo. Completion inalterado.
-        "prompt": 0.000000030,            # $0,03/M
-        "completion": 0.00000128,         # $1,28/M
-        "input_cache_read": 0.000000030,  # $0,03/M
+        # #10132 (13/10/2026): prompt subiu 3,03x ($0,03 -> $0,091/M), mas
+        # completion CAIU 7x ($1,28 -> $0,182/M) e input_cache_read caiu
+        # ($0,03 -> $0,0182/M) — praticamente o preco de 08/09 (escolha
+        # original). Custo-mix no workload real do fallback (1.042 chamadas,
+        # 09/09-08/10, 95% cache read): $6,13 no baseline antigo -> $4,03 no
+        # vigente (-34%). Conclusao: MANTER o modelo. Baseline acompanha os 3
+        # campos vigentes — inclusive as quedas, senao a volta do completion a
+        # $1,28/M passaria sem alarme.
+        "prompt": 0.000000091,             # $0,091/M
+        "completion": 0.000000182,         # $0,182/M
+        "input_cache_read": 0.0000000182,  # $0,0182/M
     },
     "z-ai/glm-5.3-flash": {
         # #10065 (13/10/2026): catalogo mudou de novo — completion subiu
