@@ -25,7 +25,6 @@ npx tsx scripts/clarice-novos-run.ts [--since YYYY-MM-DD] [--dry-run] [--force] 
 | Atividade divergente (#4621) | `clarice-novos-resolve-cycle.ts` | fallback (D3) diverge por MAIS de 1 ciclo mensal do ciclo mais recente com atividade real em `data/clarice-subscribers/` → aborta. `--subject "Assunto explícito"` destrava conscientemente. |
 | Crédito Brevo | `clarice-import-waves.ts --execute` | import incompleto/reconciliação falha → aborta antes do `--create` (já embutido no próprio `--execute`, #4577). |
 | Custo MV (D8) | `verify-emails-mv.ts --since` | recorte > 500 e-mails a verificar sem `--confirm` (repassado por `clarice-novos-run.ts`) → aborta sem gastar crédito. |
-| `--hold juridico` ausente no resumo (#4542) | `clarice-novos-run.ts` (sanity check próprio) | bug de código do orquestrador (a flag não chegou ao sub-script) → aborta por segurança, nunca arrisca vazar o cohort jurídico reservado. |
 
 Falha de MCP/ferramenta em qualquer passo → o sub-script falha com exit ≠ 0, `clarice-novos-run.ts` aborta e grava o motivo no relatório (nunca stall silencioso, regra global do projeto #738).
 
@@ -61,7 +60,7 @@ Resolução de `{CICLO_ENVIO}`: `mostRecentActiveClariceCycle` (mesmo sinal do g
 
 Passo 2 — `verify-emails-mv.ts --since {SINCE} --cycle {CICLO_ENVIO} [--confirm]` → `clarice-build-db.ts` de novo (reingestão, #4362). Pulado inteiro em `--dry-run` (custo real).
 
-Passo 3 — `clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO} --hold juridico [--dry-run] [--force]`. `--hold juridico` é sempre passado — `clarice-novos-run.ts` confere que o resumo confirma `hold: "juridico"` antes de prosseguir (#4542). O antigo guard D4 não participa mais deste caminho (#5660).
+Passo 3 — `clarice-build-segment.ts --group novos --since {SINCE} --cycle {CICLO_ENVIO} [--dry-run] [--force]`. Sem `--hold juridico` desde #10104 (decisão do editor, 13/10/2026): a reserva do cohort jurídico (#4542) deixou de ser aplicada e o orquestrador não confere mais `hold` no resumo. O antigo guard D4 não participa mais deste caminho (#5660).
 
 Passo 4 — `clarice-novos-resolve-key.ts --cycle {CICLO_ENVIO} --date {AAMMDD}` → `{KEY}` → `clarice-resolve-folder.ts --name "Clarice novos"` → `clarice-import-waves.ts --cycle {CICLO_ENVIO} --group novos --key {KEY} --label "Novos {DD/MM}" --folder-id {N} --execute` (a espera do processo assíncrono + reconciliação de contagem já é interna ao `--execute`, #4577 — o orquestrador não faz polling extra).
 

@@ -423,7 +423,11 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       step(deps, report, "clarice-build-db (pós-MV, #4362)", "scripts/clarice-build-db.ts", []);
     }
 
-    // --- Grupo novos (--hold juridico obrigatório, #4542) ---
+    // --- Grupo novos (D13) ---
+    // Sem `--hold juridico` desde #10104 (decisão do editor, 13/10/2026): a
+    // reserva do cohort jurídico (#4542) deixou de valer e os retidos voltam
+    // às seleções. A infra genérica de `--hold` (scripts/lib/clarice-hold.ts)
+    // continua disponível, só não é mais aplicada aqui.
     report.section("Passo 3 — Grupo 'novos' (D13)");
     const segmentArgs = [
       "--group",
@@ -432,27 +436,16 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       since,
       "--cycle",
       cicloEnvio,
-      "--hold",
-      "juridico",
       ...(opts.dryRun ? ["--dry-run"] : []),
       ...(opts.force ? ["--force"] : []),
     ];
-    const segment = step<{ selected?: number; hold?: string; deferred_by_cap?: number }>(
+    const segment = step<{ selected?: number; deferred_by_cap?: number }>(
       deps,
       report,
       "clarice-build-segment --group novos",
       "scripts/clarice-build-segment.ts",
       segmentArgs,
     );
-    // Sanity check (#4542) — se --hold não aparece no resumo, a flag não
-    // chegou ao script: bug de CÓDIGO deste orquestrador, não condição
-    // operacional — falha alto em vez de arriscar vazar o cohort jurídico.
-    if (segment.json?.hold !== "juridico") {
-      throw new NovosAbort(
-        `❌ clarice-build-segment não confirmou --hold juridico no resumo (hold="${segment.json?.hold}") — ` +
-          `abortando por segurança (#4542, risco de vazar cohort jurídico reservado).`,
-      );
-    }
     const selected = segment.json?.selected ?? 0;
     report.note(`grupo 'novos': ${selected} contato(s) selecionado(s).`);
     // #5922 item 6 — auto-fatiamento do D13: o build-segment fatiou pro topo
