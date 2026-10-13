@@ -46,6 +46,7 @@
 
 import { loadProjectEnv } from "../lib/env-loader.ts";
 import { parseArgs, isMainModule } from "../lib/cli-args.ts";
+import { runCli } from "../lib/cli-exit.ts";
 
 loadProjectEnv();
 
@@ -190,8 +191,15 @@ export async function checkRemoteTunnel(
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+/** Código de saída: 0 blocked, 1 leaked, 2 unknown/uso. */
+export function exitCodeFor(state: TunnelCheckResult["state"]): number {
+  if (state === "blocked") return 0;
+  if (state === "leaked") return 1;
+  return 2;
+}
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const args = parseArgs(argv);
   const url = args.values.url ?? process.env.STUDIO_REMOTE_URL;
   const marker = args.values.marker ?? DEFAULT_MARKER;
   const timeoutMs = args.values["timeout-ms"] ? Number(args.values["timeout-ms"]) : DEFAULT_TIMEOUT_MS;
@@ -203,7 +211,7 @@ async function main(): Promise<void> {
         "Só funciona DEPOIS que o tunnel + Access foram ativados pelo editor —\n" +
         "ver docs/studio-ui-remote-setup.md e scripts/studio/setup-remote-tunnel-linux.sh.\n",
     );
-    process.exit(2);
+    return 2;
   }
 
   const result = await checkRemoteTunnel(url, { marker, timeoutMs });
@@ -226,14 +234,15 @@ async function main(): Promise<void> {
 
   process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 
-  if (result.state === "blocked") process.exit(0);
-  if (result.state === "leaked") process.exit(1);
-  process.exit(2);
+  return exitCodeFor(result.state);
 }
 
+// #9911: main() devolve o código (0/1/2) e runCli grava process.exitCode
+// (2 no erro fatal, mesmo código de "estado desconhecido") — process.exit()
+// depois do fetch sai 127 no Windows.
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`Fatal error: ${(e as Error).message}\n`);
-    process.exit(2);
+  runCli(() => main(), {
+    onError: (e) => process.stderr.write(`Fatal error: ${(e as Error).message}\n`),
+    errorCode: 2,
   });
 }

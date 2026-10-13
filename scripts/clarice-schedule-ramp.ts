@@ -127,6 +127,7 @@ import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
 import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455 / #3643 bug 3
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { SEND_HOUR_UTC } from "./lib/clarice-wave-plan.ts"; // #7047
 import { assertScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts"; // #8059
@@ -311,7 +312,11 @@ export async function fetchPostmasterSpamEntryDetailed(
 ): Promise<PostmasterSpamEntryFetchResult> {
   try {
     const res = await fetchFn(`${dashboardUrl}/api/postmaster-spam`);
-    if (!res.ok) return { entry: null, fetchFailed: true };
+    if (!res.ok) {
+      // #9991/#9911: com runCli o processo só sai com o loop vazio — libera o socket.
+      await res.body?.cancel().catch(() => {});
+      return { entry: null, fetchFailed: true };
+    }
     const body = (await res.json()) as { entry?: unknown };
     const raw = body?.entry;
     if (!raw || typeof raw !== "object") return { entry: null, fetchFailed: false };
@@ -549,6 +554,8 @@ export async function resolveAutoRampVolumes(
 ): Promise<AutoRampVolumeResult> {
   const res = await fetchImpl(`${dashboardUrl}/api/campaigns?limit=${limit}`);
   if (!res.ok) {
+    // #9991/#9911: com runCli o processo só sai com o loop vazio — libera o socket.
+    await res.body?.cancel().catch(() => {});
     return { ok: false, reason: `GET ${dashboardUrl}/api/campaigns falhou (${res.status}). Use --volumes A,B,C explícito.` };
   }
   const stale = extractDashboardStaleInfo(res);
@@ -1234,11 +1241,11 @@ function ensureDir(dir: string): void {
 // Main
 // ---------------------------------------------------------------------------
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
     console.error("--cycle {conteúdo}-{envio} é obrigatório (ex: --cycle 2606-07).");
-    process.exit(1);
+    return 1;
   }
   const doBuildAudience = hasFlag(argv, "build-audience");
   const doImport = hasFlag(argv, "import");
@@ -1288,7 +1295,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     autoVolumesStale = result.stale;
     if (!result.ok) {
       console.error(`❌ ${result.reason}`);
-      process.exit(1);
+      return 1;
     }
     volumes = result.plan.volumes;
     console.error(
@@ -1308,7 +1315,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dayLabels = dayLabelsArg ? dayLabelsArg.split(",").map((s) => s.trim()) : DAY_LABELS;
   if (dayLabels.length !== 3) {
     console.error(`❌ --days precisa ter exatamente 3 rótulos separados por vírgula (recebido: "${dayLabelsArg}").`);
-    process.exit(1);
+    return 1;
   }
 
   if (!doBuildAudience && !doImport && !doCreate && !doTest && !doSchedule) {
@@ -1324,7 +1331,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
     console.error("BREVO_CLARICE_API_KEY não definida.");
-    process.exit(1);
+    return 1;
   }
 
   // --- 2. --build-audience ---
@@ -1335,7 +1342,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `resultado e perder rastreabilidade do que já foi importado/agendado). Delete o diretório manualmente se a ` +
         `intenção é genuinamente recomeçar este ciclo.`,
       );
-      process.exit(1);
+      return 1;
     }
 
     // Crédito Brevo cobre a soma ANTES de escrever qualquer coisa (mesmo racional de weekly-send-plan-audience.ts).
@@ -1343,7 +1350,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     const credits = extractPlanCredits(account);
     if (credits === null) {
       console.error("❌ Não foi possível ler créditos do plano Brevo (/v3/account). Abortando --build-audience.");
-      process.exit(1);
+      return 1;
     }
     console.error(`Crédito restante no ciclo Brevo: ${credits.toLocaleString("pt-BR")}.`);
     if (!creditCoversPlan(totalRequested, credits)) {
@@ -1351,7 +1358,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         `❌ Total do plano (${totalRequested.toLocaleString("pt-BR")}) excede o crédito restante ` +
         `(${credits.toLocaleString("pt-BR")}). Reduza --volumes ou aguarde o próximo ciclo de cobrança.`,
       );
-      process.exit(1);
+      return 1;
     }
 
     // #2994/#3682: exclui quem já está comprometido com uma campanha AGENDADA
@@ -1450,7 +1457,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       if (conflicts.length) {
         console.error(`❌ ${conflicts.length} lista(s) com esses nomes JÁ existem no Brevo — delete-as ou mude --label:`);
         for (const c of conflicts) console.error(`   #${c.id} "${c.name}"`);
-        process.exit(1);
+        return 1;
       }
     }
 
@@ -1601,7 +1608,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const eiaCheck = checkEiaGuard(cycle, skipEiaGuard, undefined);
       if (!eiaCheck.ok) {
         console.error(eiaCheck.message);
-        process.exit(1);
+        return 1;
       }
       console.error(skipEiaGuard ? `⚠  --skip-eia-guard ativo — verificação de gabarito É IA? ignorada.` : `✓ Gabarito É IA? verificado`);
 
@@ -1673,8 +1680,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(String((e as Error)?.stack || e));
-    process.exit(1);
-  });
+  // #9911: main() devolve 1 nos guards (uso, crédito, conflito, É IA?) e
+  // runCli grava process.exitCode (1 no erro fatal) — process.exit() depois
+  // dos fetches da Brevo/dashboard sai 127 no Windows.
+  runCli(() => main(), { onError: (e) => console.error(String((e as Error)?.stack || e)) });
 }

@@ -51,11 +51,11 @@
 import { createServer } from "node:http";
 import { mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-
-loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
+import { isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");
@@ -66,9 +66,10 @@ const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth/callback`;
 // outro" é travada por `test/postmaster-register-domain-4539.test.ts` (o path
 // citado aqui até 260806 era `test/oauth-scopes-4539.test.ts`, que nunca
 // existiu — o comentário prometia uma garantia mecânica sem apontar pra ela),
-// que lê ESTE ARQUIVO COMO TEXTO em vez de importar `SCOPES`. Importar não é opção:
-// `main()` roda incondicionalmente no fim do módulo, então um import abriria
-// o browser e subiria o servidor da porta 8765 dentro do CI.
+// que lê ESTE ARQUIVO COMO TEXTO em vez de importar `SCOPES`. (Até o #9911,
+// `main()` rodava incondicionalmente no fim do módulo e um import abriria o
+// browser; hoje o entry point está atrás de `isMainModule`, mas o teste de
+// scopes segue lendo o texto.)
 const SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -162,7 +163,12 @@ function openBrowser(url: string): void {
       : process.platform === "darwin"
         ? `open "${url}"`
         : `xdg-open "${url}"`;
-  exec(cmd);
+  // #9911: sem process.exit() no fim, um filho com pipe aberto (o browser
+  // herdando o stdio do xdg-open) seguraria o processo vivo depois do setup.
+  // stdio "ignore" + unref: o browser abre igual, mas não prende o loop.
+  const child = spawn(cmd, { shell: true, stdio: "ignore", windowsHide: true });
+  child.on("error", () => {}); // sem browser: a URL já foi impressa acima
+  child.unref();
 }
 
 async function exchangeCode(
@@ -194,7 +200,82 @@ async function exchangeCode(
   }>;
 }
 
-async function main(): Promise<void> {
+/**
+ * Sobe o servidor local do callback OAuth e resolve com o `code`.
+ *
+ * #9911: o entry point grava `process.exitCode` (via `runCli`) em vez de
+ * chamar `process.exit()`, então o processo só termina quando o loop esvazia.
+ * Por isso todo caminho de saída daqui libera os handles que seguravam o
+ * processo vivo: o timer de 5 min é limpo, o servidor é fechado e as respostas
+ * vão com `Connection: close` (sem socket keep-alive do browser pendurado).
+ * Exportado para teste (`port` 0 = porta efêmera, `onListening` informa a
+ * porta real).
+ */
+export function waitForOAuthCode(
+  port: number,
+  opts: { timeoutMs?: number; onListening?: (port: number) => void } = {},
+): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? 300_000;
+  return new Promise<string>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (err: Error | null, code?: string) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      server.close();
+      server.closeIdleConnections();
+      if (err) reject(err);
+      else resolve(code as string);
+    };
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+      if (url.pathname !== "/oauth/callback") {
+        res.writeHead(404, { Connection: "close" });
+        res.end("Not found");
+        return;
+      }
+
+      const error = url.searchParams.get("error");
+      if (error) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
+        res.end(`<h2>❌ Erro: ${error}</h2><p>Feche esta janela e tente novamente.</p>`);
+        finish(new Error(`OAuth error: ${error}`));
+        return;
+      }
+
+      const authCode = url.searchParams.get("code");
+      if (!authCode) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
+        res.end(`<h2>❌ Código não encontrado</h2>`);
+        finish(new Error("No code in callback"));
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
+      res.end(`
+        <html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;max-width:500px;margin:50px auto;text-align:center">
+          <h2>✅ Autorização concluída!</h2>
+          <p>Pode fechar esta janela e voltar ao terminal.</p>
+        </body></html>
+      `);
+      finish(null, authCode);
+    });
+
+    server.listen(port, () => {
+      const addr = server.address();
+      const realPort = typeof addr === "object" && addr ? addr.port : port;
+      opts.onListening?.(realPort);
+    });
+
+    server.on("error", (e) => finish(e));
+    // Timeout de 5 minutos
+    timer = setTimeout(() => finish(new Error("Timeout aguardando autorização (5 min)")), timeoutMs);
+  });
+}
+
+async function main(): Promise<number | void> {
+  loadProjectEnv(); // #1219 — carrega .env antes de ler process.env.
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -205,7 +286,7 @@ async function main(): Promise<void> {
         "   $env:GOOGLE_CLIENT_SECRET='...'\n\n" +
         "Crie credenciais em: https://console.cloud.google.com/apis/credentials"
     );
-    process.exit(1);
+    return 1;
   }
 
   console.log("🔐 Google OAuth 2.0 Setup — diar.ia.br Studio\n");
@@ -216,57 +297,12 @@ async function main(): Promise<void> {
   openBrowser(authUrl);
 
   // Servidor local para capturar o callback
-  const code = await new Promise<string>((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", `http://localhost:${REDIRECT_PORT}`);
-      if (url.pathname !== "/oauth/callback") {
-        res.writeHead(404);
-        res.end("Not found");
-        return;
-      }
-
-      const error = url.searchParams.get("error");
-      if (error) {
-        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<h2>❌ Erro: ${error}</h2><p>Feche esta janela e tente novamente.</p>`);
-        server.close();
-        reject(new Error(`OAuth error: ${error}`));
-        return;
-      }
-
-      const authCode = url.searchParams.get("code");
-      if (!authCode) {
-        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<h2>❌ Código não encontrado</h2>`);
-        server.close();
-        reject(new Error("No code in callback"));
-        return;
-      }
-
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`
-        <html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;max-width:500px;margin:50px auto;text-align:center">
-          <h2>✅ Autorização concluída!</h2>
-          <p>Pode fechar esta janela e voltar ao terminal.</p>
-        </body></html>
-      `);
-      server.close();
-      resolve(authCode);
-    });
-
-    server.listen(REDIRECT_PORT, () => {
+  const code = await waitForOAuthCode(REDIRECT_PORT, {
+    onListening: () =>
       console.log(
         `Aguardando callback na porta ${REDIRECT_PORT}...\n` +
           "(Se o browser não abriu, cole a URL acima manualmente)\n"
-      );
-    });
-
-    server.on("error", reject);
-    // Timeout de 5 minutos
-    setTimeout(() => {
-      server.close();
-      reject(new Error("Timeout aguardando autorização (5 min)"));
-    }, 300_000);
+      ),
   });
 
   console.log("✅ Código recebido. Trocando por tokens...");
@@ -278,7 +314,7 @@ async function main(): Promise<void> {
         "Acesse https://myaccount.google.com/permissions, revogue o acesso ao app,\n" +
         "e rode o setup novamente (o parâmetro prompt=consent força o refresh_token)."
     );
-    process.exit(1);
+    return 1;
   }
 
   // Garantir que data/ existe
@@ -308,7 +344,10 @@ async function main(): Promise<void> {
   console.log("  • Para testar: npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/YYMMDD/ --stage 0 --files ''");
 }
 
-main().catch((err) => {
-  console.error("❌ Erro no setup:", err.message);
-  process.exit(1);
-});
+// #9911: main() devolve 1 nos guards e runCli grava process.exitCode (1 no
+// erro fatal) — process.exit() depois do fetch de troca de código sai 127 no
+// Windows. Sem process.exit, o processo só sai quando o loop esvazia: o
+// servidor de callback e o timer de 5 min são liberados em waitForOAuthCode.
+if (isMainModule(import.meta.url)) {
+  runCli(main, { onError: (err) => console.error("❌ Erro no setup:", (err as Error).message) });
+}

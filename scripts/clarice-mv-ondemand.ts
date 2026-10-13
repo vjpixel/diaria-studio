@@ -89,6 +89,7 @@ import { clariceCycleDir, ensureDir, requireCycleArg } from "./lib/clarice-paths
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DEFAULT_DASHBOARD_URL } from "./clarice-schedule-ramp.ts";
 import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { readClariceAbcState, lockedSubjectFromState } from "./lib/clarice-abc-state.ts";
 
 /** Raiz do repo — não `process.cwd()`, mesmo motivo de `clarice-plan-wave.ts`.
@@ -172,14 +173,14 @@ export async function runMvOnDemandPlan(params: {
   };
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const apiKey = process.env.MILLION_VERIFIER_API_KEY;
   if (!apiKey) {
     console.error(
       "MILLION_VERIFIER_API_KEY não definida. Configure no .env (veja .env.example) " +
         "ou no ambiente. Pegue a key no dashboard MillionVerifier → API.",
     );
-    process.exit(1);
+    return 1;
   }
 
   const cycle = requireCycleArg(argv);
@@ -279,9 +280,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   console.log(JSON.stringify(summary, null, 2));
 }
 
+// #9911: runCli reconhece o CliExit que `verifyCohortList` lança — 130 no
+// Ctrl+C (fetches pagos abortados), 1 no erro fatal da API — e grava
+// process.exitCode, preservando os códigos de quando ela chamava process.exit.
 if (isMainModule(import.meta.url)) {
-  main().catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
-  });
+  runCli(() => main(), { onError: (err) => console.error(err instanceof Error ? err.message : err) });
 }

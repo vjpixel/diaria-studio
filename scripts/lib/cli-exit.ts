@@ -30,7 +30,7 @@
  *
  * Guard de CI: `test/process-exit-fetch-guard-9911.test.ts` (scanner em
  * `scripts/lib/process-exit-fetch-scan.ts`) recusa `process.exit(` em script
- * que usa `fetch`, com allowlist dos que ainda não migraram.
+ * que usa `fetch`; a allowlist ficou vazia no 5º lote do #9911.
  */
 
 /** Saída antecipada com código, reconhecida por `runCli` (não é erro). */

@@ -233,7 +233,7 @@ function importOnlyRouter(): typeof fetch {
   }) as typeof fetch;
 }
 
-async function captureLogs(fn: () => void | Promise<void>): Promise<string[]> {
+async function captureLogs(fn: () => unknown): Promise<string[]> {
   const logs: string[] = [];
   const orig = console.log;
   console.log = (...a: unknown[]) => { logs.push(a.map(String).join(" ")); };

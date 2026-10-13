@@ -59,6 +59,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 import { checkScheduleLeadTime } from "./lib/schedule-guard.ts"; // #7047
 import {
   parseMonthlyCycleArg,
@@ -169,8 +170,10 @@ interface ParsedArgs {
  * Parse args. Aceita `argv` opcional pra testabilidade — em produção usa
  * `process.argv.slice(2)` (CLI). Em testes, pass `["--yymm", "2604", ...]`.
  *
- * Side-effect: chama `process.exit(1)` em casos inválidos. Tests precisam
- * cuidar com try/catch ou interceptar process.exit se testar errors.
+ * Em casos inválidos imprime o erro em stderr e lança `CliExit(1)` (#9911 —
+ * antes chamava `process.exit(1)`, que depois de um fetch sai 127 no
+ * Windows). `main()` converte o `CliExit` no código devolvido; tests podem
+ * usar `assert.throws(() => parseArgs([...]), CliExit)`.
  */
 export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
   let yymm = "";
@@ -202,7 +205,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       const n = parseInt(raw, 10);
       if (Number.isNaN(n) || n <= 0) {
         process.stderr.write(`ERRO: --list-id inválido: "${raw}"\n`);
-        process.exit(1);
+        throw new CliExit(1);
       }
       listIdOverride = n;
     } else if (argv[i] === "--send-test-to" && i + 1 < argv.length) {
@@ -210,7 +213,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       // Validação básica de email (não hard, só checa que tem @ e .)
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
         process.stderr.write(`ERRO: --send-test-to inválido: "${raw}"\n`);
-        process.exit(1);
+        throw new CliExit(1);
       }
       sendTestTo = raw;
     } else if (argv[i] === "--schedule-at" && i + 1 < argv.length) {
@@ -218,13 +221,13 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       const d = new Date(raw);
       if (Number.isNaN(d.getTime())) {
         process.stderr.write(`ERRO: --schedule-at não é ISO 8601 válido: "${raw}"\n`);
-        process.exit(1);
+        throw new CliExit(1);
       }
       if (d.getTime() <= Date.now()) {
         process.stderr.write(
           `ERRO: --schedule-at deve estar no futuro. Recebido: ${d.toISOString()}, agora: ${new Date().toISOString()}\n`,
         );
-        process.exit(1);
+        throw new CliExit(1);
       }
       scheduleAt = d.toISOString();
     } else if (argv[i] === "--update-existing" && i + 1 < argv.length) {
@@ -232,7 +235,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       const n = parseInt(raw, 10);
       if (Number.isNaN(n) || n <= 0) {
         process.stderr.write(`ERRO: --update-existing inválido: "${raw}"\n`);
-        process.exit(1);
+        throw new CliExit(1);
       }
       updateExisting = n;
     }
@@ -252,7 +255,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
     });
     if (!leadCheck.ok) {
       process.stderr.write(`ERRO: ${leadCheck.error}\n`);
-      process.exit(1);
+      throw new CliExit(1);
     }
   }
 
@@ -286,7 +289,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
       "Legado: --yymm YYMM (deriva ciclo automaticamente)\n" +
       "Exemplo: --cycle 2605-06 --list-id 9 --send-test --send-test-to felipe@clarice.ai\n",
     );
-    process.exit(1);
+    throw new CliExit(1);
   }
 
   return { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting };
@@ -415,7 +418,7 @@ export async function main(
     uploadDestaqueImages: uploadDestaqueImagesDefault,
     uploadLivrosImage: uploadLivrosImageDefault,
   },
-): Promise<void> {
+): Promise<number | void> {
   // #2009: aviso de deprecação em runtime — fluxo canônico é multi-campanha.
   process.stderr.write(
     `\n⚠️  DEPRECATED (#2009): publish-monthly.ts é o fluxo legado de campanha única.\n` +
@@ -429,18 +432,27 @@ export async function main(
     `   Este script será removido em release futuro.\n\n`,
   );
 
-  const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parseArgs();
+  // #9911: parseArgs lança CliExit(1) em uso inválido (já imprimiu o erro);
+  // main() devolve o código em vez de sair, e runCli grava process.exitCode.
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseArgs();
+  } catch (e) {
+    if (e instanceof CliExit) return e.code;
+    throw e;
+  }
+  const { yymm, cycle, sendTest, sendNow, dryRun, listIdOverride, sendTestTo, scheduleAt, updateExisting } = parsed;
 
   // #1015: --send-test, --send-now e --schedule-at são 3 ações mutuamente exclusivas.
   const actions = [sendTest && "--send-test", sendNow && "--send-now", scheduleAt && "--schedule-at"].filter(Boolean);
   if (actions.length > 1) {
     process.stderr.write(`ERRO: ${actions.join(", ")} são mutuamente exclusivos.\n`);
-    process.exit(1);
+    return 1;
   }
   // --send-test-to só faz sentido com --send-test
   if (sendTestTo && !sendTest) {
     process.stderr.write("ERRO: --send-test-to requer --send-test.\n");
-    process.exit(1);
+    return 1;
   }
 
   // Load platform config
@@ -453,7 +465,7 @@ export async function main(
     process.stderr.write(
       `newsletter_monthly é "${platformConfig.newsletter_monthly}", esperado "brevo"\n`
     );
-    process.exit(1);
+    return 1;
   }
 
   const brevo = platformConfig.brevo_monthly;
@@ -461,7 +473,7 @@ export async function main(
     process.stderr.write(
       "brevo_monthly não configurado em platform.config.json\n"
     );
-    process.exit(1);
+    return 1;
   }
 
   // Resolve list_id: CLI override (--list-id) tem prioridade sobre platform.config.json.
@@ -473,7 +485,7 @@ export async function main(
       process.stderr.write(
         "ERRO: list_id não definido. Passe --list-id N ou configure brevo_monthly.list_id em platform.config.json.\n"
       );
-      process.exit(1);
+      return 1;
     }
 
     if (brevo.sender_email === null) {
@@ -481,7 +493,7 @@ export async function main(
         "ERRO: brevo_monthly.sender_email é null.\n" +
         "Configure o remetente verificado no painel Brevo e preencha sender_email em platform.config.json (#653).\n"
       );
-      process.exit(1);
+      return 1;
     }
   }
 
@@ -491,7 +503,7 @@ export async function main(
       `ERRO: ${brevo.api_key_env} não está definido no ambiente.\n` +
       `Adicione ao .env: ${brevo.api_key_env}=<chave>\n`
     );
-    process.exit(1);
+    return 1;
   }
   // After this point we're either dry-run (apiKey unused) or apiKeyRaw is non-empty.
   const apiKey = apiKeyRaw ?? "";
@@ -507,7 +519,7 @@ export async function main(
       `draft.md não encontrado: ${draftPath}\n` +
       "Rode a Etapa 2 do /diaria-mensal primeiro.\n"
     );
-    process.exit(1);
+    return 1;
   }
 
   const draft = readFileSync(draftPath, "utf8");
@@ -608,7 +620,7 @@ export async function main(
       "Não foi possível extrair subject do draft.\n" +
       "Verifique a seção ASSUNTO em draft.md ou crie _internal/02-chosen-subject.txt.\n"
     );
-    process.exit(1);
+    return 1;
   }
 
   const ts = new Date().toLocaleString("sv-SE", { timeZone: "America/Sao_Paulo" }).slice(0, 16);
@@ -679,7 +691,7 @@ export async function main(
         `ERRO: campanha ${updateExisting} está em status "${existing.status}" e não pode ser atualizada.\n` +
         `Crie uma campanha nova (omitir --update-existing) ou use uma diferente.\n`,
       );
-      process.exit(1);
+      return 1;
     }
     process.stdout.write(
       `Campanha ${updateExisting} encontrada (status: ${existing.status}). Prosseguindo com PUT.\n`,
@@ -799,9 +811,10 @@ export async function main(
 
 // Guard: só roda main() quando invocado como CLI (não em import de test).
 // Pattern: import.meta.url vs file:// do argv[1] (entrypoint Node).
+// #9911: main() devolve 1 nos guards e runCli grava process.exitCode (1 no
+// erro fatal) — process.exit() depois do fetch da Brevo sai 127 no Windows.
 if (isMainModule(import.meta.url)) {
-  main().catch((err) => {
-    process.stderr.write(`Fatal: ${err.message}\n`);
-    process.exit(1);
+  runCli(() => main(), {
+    onError: (err) => process.stderr.write(`Fatal: ${(err as Error).message}\n`),
   });
 }

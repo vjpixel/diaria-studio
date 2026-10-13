@@ -33,27 +33,12 @@ let mockAgent: MockAgent;
 let originalDispatcher: ReturnType<typeof getGlobalDispatcher>;
 const originalArgv = process.argv;
 const originalEnv = { ...process.env };
-const originalExit = process.exit;
-let exitCode: number | null = null;
 
 function setupTmpDir(): string {
   const tmp = mkdtempSync(join(tmpdir(), "pm-mock-fetch-"));
   copyFileSync(join(FIXTURE_SRC, "draft.md"), join(tmp, "draft.md"));
   mkdirSync(join(tmp, "_internal"), { recursive: true });
   return tmp;
-}
-
-function mockExit(): void {
-  exitCode = null;
-  // @ts-expect-error mocking
-  process.exit = (code?: number) => {
-    exitCode = code ?? 0;
-    throw new Error("__mocked_exit__");
-  };
-}
-
-function restoreExit(): void {
-  process.exit = originalExit;
 }
 
 before(() => {
@@ -252,16 +237,9 @@ describe("publish-monthly main(): --update-existing em campanha terminal (#1029)
       "--update-existing", "50",
       "--send-test",
     ];
-    mockExit();
-    try {
-      await main(tmpDir);
-      assert.fail("Esperava throw via mocked exit");
-    } catch (e) {
-      if (!(e instanceof Error) || e.message !== "__mocked_exit__") throw e;
-      assert.equal(exitCode, 1, "Deve sair com code 1");
-    } finally {
-      restoreExit();
-    }
+    // #9911: main() devolve o código (runCli grava process.exitCode) em vez
+    // de chamar process.exit — nada a interceptar.
+    assert.equal(await main(tmpDir), 1, "Deve sair com code 1");
 
     // 05-published.json NÃO deve ter sido escrito (script abortou antes)
     assert.equal(existsSync(join(tmpDir, "_internal", "05-published.json")), false);

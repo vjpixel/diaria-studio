@@ -142,6 +142,7 @@ import { pollProcessUntilTerminal, type PollOptions } from "./lib/brevo-process-
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { buildCohortsV2Artifact } from "./lib/cohorts-v2-artifact.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #5015
@@ -400,6 +401,8 @@ export function makeRealCampaignExportClient(apiKey: string): CampaignExportClie
       try {
         const res = await fetch(url, { signal: ctrl.signal });
         if (!res.ok) {
+          // #9991/#9911: com runCli o processo só sai com o loop vazio — libera o socket.
+          await res.body?.cancel().catch(() => {});
           throw new Error(`Download do CSV de export falhou (${res.status}): ${url}`);
         }
         return await res.text();
@@ -791,7 +794,7 @@ export async function pushCohortsToKV(
 
 // exportado (#4497) só pra permitir teste direto da validação de --limit sem
 // invocar via CLI real.
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<number | void> {
   const concurrency = Number(getArg(argv, "concurrency") || "2") || 2;
   // getIntArg (#4497) — ausente vira undefined ("sem limite", processa todas
   // as campanhas — blast radius baixo mesmo sem limite, já que sem --push o
@@ -829,7 +832,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (!apiKey) {
     console.error("BREVO_CLARICE_API_KEY não definida (veja .env.example).");
-    process.exit(1);
+    return 1;
   }
 
   // #5015: fail-fast nas credenciais Cloudflare ANTES do backfill por
@@ -844,7 +847,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       "CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_WORKERS_TOKEN não definidos — necessários " +
         "para gravar no KV com --push. Configure as credenciais (ou rode sem --push) antes do backfill.",
     );
-    process.exit(1);
+    return 1;
   }
 
   console.error(
@@ -912,7 +915,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(`📤 KV atualizado: ${COHORTS_KV_KEY} (namespace ${DASHBOARD_KV_NAMESPACE_ID}).`);
     } else {
       console.error(`⚠️  ${pushResult.reason} — KV NÃO atualizado.`);
-      process.exit(1);
+      return 1;
     }
   } else {
     console.error("(sem --push) KV não atualizado.");
@@ -920,8 +923,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(e);
-    process.exit(1);
-  });
+  // #9911: main() devolve 1 nas falhas de credencial/anti-clobber e runCli
+  // grava process.exitCode (1 no erro fatal) — process.exit() depois do
+  // fetch da Brevo sai 127 no Windows.
+  runCli(() => main(), { onError: (e) => console.error(e) });
 }

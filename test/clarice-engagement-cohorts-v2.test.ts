@@ -766,18 +766,8 @@ test("main: --refetch-window-days=0 é aceito (não colapsa pro default 30 — a
   const originalKey = process.env.BREVO_CLARICE_API_KEY;
   delete process.env.BREVO_CLARICE_API_KEY;
   try {
-    let exitCode: number | undefined;
-    const originalExit = process.exit;
-    // @ts-expect-error — mock de process.exit só para este teste
-    process.exit = (code?: number) => {
-      exitCode = code;
-      throw new Error("__exit__");
-    };
-    try {
-      await assert.rejects(main(["--refetch-window-days", "0"]), /__exit__/);
-    } finally {
-      process.exit = originalExit;
-    }
+    // #9911: main() devolve o código em vez de chamar process.exit.
+    const exitCode = await main(["--refetch-window-days", "0"]);
     assert.equal(exitCode, 1); // saiu pelo check de API key, não por erro de parsing de --refetch-window-days
   } finally {
     if (originalKey !== undefined) process.env.BREVO_CLARICE_API_KEY = originalKey;
@@ -973,7 +963,8 @@ test("main: sem --push, backfill real (mockado) completa sem NUNCA acionar o gua
           // Sem --push, o guard de credenciais Cloudflare (que lançaria) nem é
           // avaliado — completa normalmente mesmo com as credenciais ausentes.
           // --db-path isolado (#6222): nunca lê o DEFAULT_DB_PATH real.
-          await main(["--db-path", dbPath]);
+          // #9911: sucesso devolve undefined (exitCode intocado → sai 0).
+          assert.equal(await main(["--db-path", dbPath]), undefined);
         },
       );
     });
@@ -986,13 +977,7 @@ test("main: --push com backfill vazio (universe=0) aciona o guard anti-clobber e
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
-  let exitCode: number | undefined;
-  const originalExit = process.exit;
-  // @ts-expect-error — mock de process.exit só para este teste
-  process.exit = (code?: number) => {
-    exitCode = code;
-    throw new Error("__exit__");
-  };
+  let exitCode: number | void | undefined;
   try {
     await withTmpDbDir(async (dbPath) => {
       await withEnv(
@@ -1005,43 +990,33 @@ test("main: --push com backfill vazio (universe=0) aciona o guard anti-clobber e
           // --db-path isolado (#6222): nunca lê o DEFAULT_DB_PATH real —
           // sem opt-outs administrativos reais, universe permanece 0 e o
           // guard dispara determinísticamente independente do ambiente.
-          await assert.rejects(main(["--push", "--db-path", dbPath]), /__exit__/);
+          exitCode = await main(["--push", "--db-path", dbPath]);
         },
       );
     });
     assert.equal(exitCode, 1);
   } finally {
-    process.exit = originalExit;
     globalThis.fetch = originalFetch;
   }
 });
 
 test("main: --push sem CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN falha ANTES do backfill (fail-fast, mesmo racional do v1)", async () => {
-  let exitCode: number | undefined;
-  const originalExit = process.exit;
-  // @ts-expect-error — mock de process.exit só para este teste
-  process.exit = (code?: number) => {
-    exitCode = code;
-    throw new Error("__exit__");
-  };
-  try {
-    await withEnv(
-      {
-        BREVO_CLARICE_API_KEY: "fake-key-test",
-        CLOUDFLARE_ACCOUNT_ID: undefined,
-        CLOUDFLARE_WORKERS_TOKEN: undefined,
-      },
-      async () => {
-        // Sem mock de fetch: se o código chegasse a tentar o backfill, este
-        // teste falharia por rede real indisponível/lenta — a ausência do
-        // mock É a prova de que o fail-fast acontece antes de qualquer rede.
-        await assert.rejects(main(["--push"]), /__exit__/);
-      },
-    );
-    assert.equal(exitCode, 1);
-  } finally {
-    process.exit = originalExit;
-  }
+  let exitCode: number | void | undefined;
+  await withEnv(
+    {
+      BREVO_CLARICE_API_KEY: "fake-key-test",
+      CLOUDFLARE_ACCOUNT_ID: undefined,
+      CLOUDFLARE_WORKERS_TOKEN: undefined,
+    },
+    async () => {
+      // Sem mock de fetch: se o código chegasse a tentar o backfill, este
+      // teste falharia por rede real indisponível/lenta — a ausência do
+      // mock É a prova de que o fail-fast acontece antes de qualquer rede.
+      // #9911: main() devolve o código em vez de chamar process.exit.
+      exitCode = await main(["--push"]);
+    },
+  );
+  assert.equal(exitCode, 1);
 });
 
 // ─── Regressão #6222 — reprodução determinística do "grupo A" via fixture ──
@@ -1065,13 +1040,6 @@ test("main: opt-outs administrativos reais (via --db-path) tornam universe != 0 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ campaigns: [] }), { status: 200 })) as typeof fetch;
-  let exitCode: number | undefined;
-  const originalExit = process.exit;
-  // @ts-expect-error — mock de process.exit só para este teste
-  process.exit = (code?: number) => {
-    exitCode = code;
-    throw new Error("__exit__");
-  };
   try {
     await withTmpDbDir(async (dbPath) => {
       const db = openClariceDb(dbPath);
@@ -1094,8 +1062,8 @@ test("main: opt-outs administrativos reais (via --db-path) tornam universe != 0 
           if (!admin.available) throw new Error("esperado available=true (pré-condição do cenário)");
           assert.equal(admin.emails.size, 1, "pré-condição do cenário: opt-out real presente no store");
 
-          // Se o guard anti-clobber (bug do #6222) disparasse aqui, o erro
-          // seria "__exit__" com exitCode 1 SEM nunca tocar https.request —
+          // Se o guard anti-clobber (bug do #6222) disparasse aqui, main()
+          // resolveria com 1 (#9911) SEM nunca tocar https.request —
           // a asserção abaixo espera o erro do NETWORK GUARD, provando que
           // o código passou do guard anti-clobber e tentou mesmo escrever.
           await assert.rejects(main(["--push", "--db-path", dbPath]), /\[network-guard #6222\]/);
@@ -1103,8 +1071,6 @@ test("main: opt-outs administrativos reais (via --db-path) tornam universe != 0 
       );
     });
   } finally {
-    process.exit = originalExit;
     globalThis.fetch = originalFetch;
   }
-  assert.equal(exitCode, undefined, "process.exit nunca deveria ter sido chamado — o guard de rede lança antes");
 });

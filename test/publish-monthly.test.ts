@@ -23,6 +23,7 @@ import {
   // main (para teste de deprecação #2009)
   main as publishMonthlyMain,
 } from "../scripts/publish-monthly.ts";
+import { CliExit } from "../scripts/lib/cli-exit.ts";
 
 /**
  * Cobertura de teste pro publish-monthly.ts (#1024).
@@ -531,18 +532,12 @@ describe("eiaEditionFromYymm (#2115 — ciclo YYMM-MM)", () => {
 // ─── parseArgs ─────────────────────────────────────────────────────────────
 
 describe("parseArgs", () => {
-  // Helper pra capturar process.exit calls durante testes (parseArgs chama
-  // exit em validation errors).
+  // Helper pra capturar a saída de validação de parseArgs: desde o #9911 ela
+  // imprime o erro e lança CliExit(1) em vez de chamar process.exit(1).
   function withMockedExit(fn: () => void): { exitCode: number | null; stderr: string } {
     let exitCode: number | null = null;
     let stderr = "";
-    const realExit = process.exit;
     const realStderrWrite = process.stderr.write.bind(process.stderr);
-    // @ts-expect-error mocking
-    process.exit = (code?: number) => {
-      exitCode = code ?? 0;
-      throw new Error("__mocked_exit__");
-    };
     process.stderr.write = ((data: string) => {
       stderr += data;
       return true;
@@ -550,9 +545,9 @@ describe("parseArgs", () => {
     try {
       fn();
     } catch (e) {
-      if (!(e instanceof Error) || e.message !== "__mocked_exit__") throw e;
+      if (!(e instanceof CliExit)) throw e;
+      exitCode = e.code;
     } finally {
-      process.exit = realExit;
       process.stderr.write = realStderrWrite;
     }
     return { exitCode, stderr };
@@ -830,19 +825,13 @@ Texto do lab.`);
 
 describe("publish-monthly main() warning de deprecação (#2009)", () => {
   it("emite DEPRECATED no stderr ao ser chamada (antes de qualquer validação de args)", async () => {
-    // Intercepitar stderr.write e process.exit para capturar o aviso de deprecação
-    // sem deixar o processo terminar. main() emite o warning antes de parseArgs(),
-    // então mesmo sem args válidos ele deve aparecer primeiro.
+    // Intercepta stderr.write para capturar o aviso de deprecação. main()
+    // emite o warning antes de parseArgs(), então mesmo sem args válidos ele
+    // deve aparecer primeiro; desde o #9911 main() devolve 1 (uso inválido)
+    // em vez de chamar process.exit.
     let stderrOutput = "";
     const origWrite = process.stderr.write.bind(process.stderr);
     const origArgv = process.argv;
-    const savedExit = process.exit;
-
-    (process as NodeJS.Process & { exit: (code?: number) => never }).exit = (
-      _code?: number,
-    ): never => {
-      throw Object.assign(new Error("__mock_exit__"), { __mockExit: true });
-    };
     process.stderr.write = (chunk: string | Uint8Array): boolean => {
       stderrOutput += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
       return true;
@@ -850,19 +839,14 @@ describe("publish-monthly main() warning de deprecação (#2009)", () => {
     // Fornecer args inválidos (sem --yymm/--cycle) pra main() sair cedo após o warning
     process.argv = ["node", "publish-monthly.ts"];
 
+    let code: number | void;
     try {
-      await publishMonthlyMain();
-    } catch (e: unknown) {
-      // Esperado: process.exit(1) lançado pelo mock após imprimir o aviso de uso
-      if (!(e instanceof Error) || !(e as Error & { __mockExit?: boolean }).__mockExit) {
-        // Erro real (não o mock) — relançar para falha do teste
-        throw e;
-      }
+      code = await publishMonthlyMain();
     } finally {
-      process.exit = savedExit;
       process.stderr.write = origWrite;
       process.argv = origArgv;
     }
+    assert.equal(code, 1, "uso inválido devolve 1");
 
     assert.ok(
       stderrOutput.includes("DEPRECATED"),
