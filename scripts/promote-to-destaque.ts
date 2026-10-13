@@ -34,7 +34,7 @@
  *      TÍTULO/SUBTÍTULO (marcador `swap-destaque-titulo-pending.json` →
  *      `swap-destaque.ts --finalize-titulo`) e contagem da intro re-sincronizada;
  *   4. `03-social.md`: seções `## d{N}` renumeradas;
- *   5. `_internal/intentional-error.json` (`location`), carimbos de social/
+ *   5. `_internal/intentional-error.json` (`location` + `description`/`reveal`, #10113), carimbos de social/
  *      carrossel, `fact-check-sources/`, `04-crop-review.json`,
  *      `06-public-images.json` (chaves das posições deslocadas invalidadas).
  *
@@ -66,6 +66,8 @@ import {
   renameDestaquePrompts,
   reorderSocialMd,
   updateIntentionalErrorLocationJson,
+  updateIntentionalErrorProseJson,
+  remapErroIntencionalNarrativeInMd,
   reindexCarouselSourceHashes,
   reorderFactCheckSources,
   reorderCropReviewJson,
@@ -230,7 +232,9 @@ export interface PromoteMdUpdates {
 
 /**
  * #9755: tudo que o promote muda no texto de `02-reviewed.md`, na ordem:
- * (1) renumera headers; (2) placeholder do destaque novo; (3) tira o item
+ * (1) renumera headers — e, #10113, a narrativa "Nessa edição, … no destaque
+ * N." do bloco ERRO INTENCIONAL, mesmo remap do reorder (#10098);
+ * (2) placeholder do destaque novo; (3) tira o item
  * promovido do pool de origem (`removePoolItemFromMd` do swap); (4) título
  * provisório no TÍTULO/SUBTÍTULO; (5) contagem da intro. @pure
  */
@@ -241,7 +245,10 @@ export function applyPromoteToReviewedMd(
   promotedUrl: string,
 ): { md: string; updates: PromoteMdUpdates } {
   const provisional = toProvisionalTitulo(promotedTitle);
-  const shifted = shiftDestaqueHeadersInMd(md, position);
+  const shifted = remapErroIntencionalNarrativeInMd(
+    shiftDestaqueHeadersInMd(md, position),
+    insertionOrder(position),
+  );
   const ph = insertDestaquePlaceholderInMd(shifted, position, provisional, promotedUrl);
   const pool = removePoolItemFromMd(ph.md, promotedUrl);
   const titulo = insertTitleInTituloSubtitulo(pool.md, position, provisional);
@@ -403,7 +410,13 @@ export function promoteToDestaque(
   const iePath = intentionalErrorJsonPath(editionDir);
   const ie = loadIntentionalErrorJson(iePath);
   if (ie) {
-    const { record, changed } = updateIntentionalErrorLocationJson(ie, newOrder);
+    const loc = updateIntentionalErrorLocationJson(ie, newOrder);
+    // #10113: description/reveal citam "destaque N" em prosa — seguem o
+    // location, como no reorder (#10098). Sem isso o reveal da edição
+    // seguinte aponta o destaque da ordem antiga.
+    const prose = updateIntentionalErrorProseJson(loc.record, newOrder);
+    const record = prose.record;
+    const changed = loc.changed || prose.changed;
     if (changed) {
       if (!dryRun) writeIntentionalErrorJson(iePath, record);
       rewritten.push(iePath);
