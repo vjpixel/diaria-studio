@@ -36,6 +36,28 @@ export interface PrimarySourceLookup {
   from?: string;
   to?: string;
   score?: number;
+  /**
+   * #10137: which signal accepted the winner — `similarity` (title similarity
+   * >= 0.60, the original #5664 rule) or `same-story` (the injected
+   * `sameStory` matcher, used for short official page titles like
+   * "Claude Haiku 5.5 \ Anthropic" that score below 0.60 against a press
+   * headline about the same launch).
+   */
+  match?: "similarity" | "same-story";
+}
+
+/**
+ * #10137: optional second acceptance signal. Called only for candidates that
+ * already passed the official-domain/accessibility filter — it widens "same
+ * topic", never the domain rule. Injected (not imported) so this lib stays
+ * free of the `scripts/dedup-intra-edition.ts` dependency; the CLI passes
+ * `isIntraEditionDuplicate`, the same matcher the intra-edition dedup and
+ * `review-highlight-official-swap.ts` already use for "same story".
+ */
+export type SameStoryFn = (article: PrimarySourceArticle, candidate: { url: string; title: string }) => boolean;
+
+export interface ChoosePrimarySourceOptions {
+  sameStory?: SameStoryFn;
 }
 
 export interface PrimarySourceLookupInput {
@@ -74,6 +96,7 @@ function isOfficialUrl(raw: string, domain: string): boolean {
 export function choosePrimarySource(
   article: PrimarySourceArticle,
   candidates: readonly PrimarySourceCandidate[],
+  options: ChoosePrimarySourceOptions = {},
 ): { lookup: PrimarySourceLookup; url?: string } {
   const domain = suggestedDomain(article);
   const query = buildPrimarySourceQuery(article) ?? "";
@@ -88,9 +111,22 @@ export function choosePrimarySource(
       candidate.accessible !== false && candidate.url !== original &&
       isOfficialUrl(candidate.url, domain),
     )
-    .map((candidate) => ({ ...candidate, score: subjectSimilarity(article.title ?? "", candidate.title) }))
-    .filter((candidate) => candidate.score >= 0.6)
-    .sort((a, b) => b.score - a.score || a.url.localeCompare(b.url));
+    .map((candidate) => {
+      const score = subjectSimilarity(article.title ?? "", candidate.title);
+      const match: PrimarySourceLookup["match"] | undefined = score >= 0.6
+        ? "similarity"
+        : options.sameStory?.(article, { url: candidate.url, title: candidate.title })
+          ? "same-story"
+          : undefined;
+      return { ...candidate, score, match };
+    })
+    .filter((candidate) => candidate.match !== undefined)
+    // Similarity matches first (the stricter #5664 rule), then score, then URL.
+    .sort((a, b) =>
+      Number(b.match === "similarity") - Number(a.match === "similarity") ||
+      b.score - a.score ||
+      a.url.localeCompare(b.url),
+    );
 
   const winner = eligible[0];
   if (!winner) {
@@ -105,6 +141,7 @@ export function choosePrimarySource(
       from: original,
       to: winner.url,
       score: winner.score,
+      match: winner.match,
     },
   };
 }
@@ -147,4 +184,165 @@ export function applyPrimarySourceLookup(
     else preserved++;
   }
   return { output, replaced, preserved };
+}
+
+// ---------------------------------------------------------------------------
+// #10137 — active lookup for the edition's top highlights (§1u-sexies)
+// ---------------------------------------------------------------------------
+//
+// §1m-ter (#1699) and §1y (#5664) both depended on the orchestrator
+// dispatching `discovery-searcher`; after the Stage 1 runner (#5415) they were
+// listed as delegated and nothing ran them — zero `primary_source_substituted`
+// from 260819 on. This runs the search deterministically, only for the top-N
+// highlights (D1-D3 by `rank`, ~3 queries/edition), before the gate MD is
+// rendered, so the gate and the writer already see the official URL.
+//
+// Conservative by design: any failure preserves the secondary URL; an official
+// URL that repeats a past edition or is already in this edition is never used.
+
+export interface ActiveLookupHighlight {
+  article?: PrimarySourceArticle;
+  rank?: number;
+  [key: string]: unknown;
+}
+
+/** Shape of `_internal/01-categorized.json` at §1u (highlights + runners_up + buckets). */
+export interface ActiveLookupInput extends PrimarySourceLookupInput {
+  highlights?: ActiveLookupHighlight[];
+  runners_up?: Array<{ article?: PrimarySourceArticle; [key: string]: unknown }>;
+}
+
+/** Returns candidates, or `null` when the search itself failed (network, quota, HTTP error). */
+export type PrimarySourceSearchFn = (query: string) => Promise<PrimarySourceCandidate[] | null>;
+
+export interface ActiveLookupDeps {
+  search: PrimarySourceSearchFn;
+  /** Canonicalized URLs already published inside the dedup window. */
+  pastUrls: ReadonlySet<string>;
+  canonicalize: (url: string) => string;
+  sameStory?: SameStoryFn;
+  /** How many highlights (by rank) to try. Default 3 (D1-D3). */
+  destaqueCount?: number;
+  /** Pause between searches (Brave: 1 query/second). Default 1100ms. */
+  rateLimitMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface ActiveLookupAttempt extends PrimarySourceLookup {
+  rank?: number;
+  title?: string;
+}
+
+export interface ActiveLookupResult {
+  output: ActiveLookupInput;
+  attempts: ActiveLookupAttempt[];
+  replaced: number;
+}
+
+const BUCKETS = ["lancamento", "radar", "use_melhor", "video"] as const;
+
+function rankedTopHighlights(highlights: ActiveLookupHighlight[], count: number): ActiveLookupHighlight[] {
+  return highlights
+    .map((h, i) => ({ h, i }))
+    .filter(({ h }) => typeof h.article?.url === "string" && h.article.url !== "")
+    .sort((a, b) => (a.h.rank ?? a.i + 1) - (b.h.rank ?? b.i + 1) || a.i - b.i)
+    .slice(0, count)
+    .map(({ h }) => h);
+}
+
+function collectEditionUrls(input: ActiveLookupInput, canonicalize: (u: string) => string): Set<string> {
+  const urls = new Set<string>();
+  const add = (a: PrimarySourceArticle | undefined) => {
+    if (typeof a?.url === "string" && a.url) urls.add(canonicalize(a.url));
+  };
+  for (const h of input.highlights ?? []) add(h.article);
+  for (const r of input.runners_up ?? []) add(r.article);
+  for (const b of BUCKETS) for (const a of input[b] ?? []) add(a);
+  return urls;
+}
+
+export async function runActivePrimarySourceLookup(
+  input: ActiveLookupInput,
+  deps: ActiveLookupDeps,
+): Promise<ActiveLookupResult> {
+  const destaqueCount = deps.destaqueCount ?? 3;
+  const rateLimitMs = deps.rateLimitMs ?? 1100;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const editionUrls = collectEditionUrls(input, deps.canonicalize);
+
+  // original URL → annotation (+ new URL when replaced)
+  const decisions = new Map<string, { lookup: PrimarySourceLookup; url?: string }>();
+  const attempts: ActiveLookupAttempt[] = [];
+  let searched = 0;
+
+  for (const highlight of rankedTopHighlights(input.highlights ?? [], destaqueCount)) {
+    const article = highlight.article as PrimarySourceArticle;
+    const original = article.url as string;
+    const query = buildPrimarySourceQuery(article);
+    if (!query || decisions.has(original)) continue; // no known company → nothing to look up
+
+    if (searched > 0 && rateLimitMs > 0) await sleep(rateLimitMs);
+    searched++;
+
+    let candidates: PrimarySourceCandidate[] | null;
+    try {
+      candidates = await deps.search(query);
+    } catch {
+      candidates = null;
+    }
+
+    let decision: { lookup: PrimarySourceLookup; url?: string };
+    if (candidates === null) {
+      decision = { lookup: { query, status: "preserved", reason: "search-failed" } };
+    } else {
+      const isFresh = (c: PrimarySourceCandidate) => {
+        if (typeof c.url !== "string") return false;
+        const canon = deps.canonicalize(c.url);
+        return !deps.pastUrls.has(canon) && !editionUrls.has(canon);
+      };
+      decision = choosePrimarySource(article, candidates.filter(isFresh), { sameStory: deps.sameStory });
+      if (decision.lookup.status === "preserved") {
+        // Explain WHY when the only matching official result was a dedup hit.
+        const blocked = choosePrimarySource(article, candidates, { sameStory: deps.sameStory });
+        if (blocked.url) {
+          const canon = deps.canonicalize(blocked.url);
+          decision = {
+            lookup: {
+              query,
+              status: "preserved",
+              reason: deps.pastUrls.has(canon) ? "official-result-repeats-past-edition" : "official-result-already-in-edition",
+              to: blocked.url,
+            },
+          };
+        }
+      }
+    }
+
+    decisions.set(original, decision);
+    if (decision.url) editionUrls.add(deps.canonicalize(decision.url));
+    attempts.push({ ...decision.lookup, rank: highlight.rank, title: article.title });
+  }
+
+  const update = (article: PrimarySourceArticle | undefined): PrimarySourceArticle | undefined => {
+    const decision = article?.url ? decisions.get(article.url) : undefined;
+    if (!article || !decision) return article;
+    return {
+      ...article,
+      ...(decision.url
+        ? { url: decision.url, primary_source_substituted: { from: article.url, to: decision.url } }
+        : {}),
+      primary_source_lookup: decision.lookup,
+    };
+  };
+
+  const output: ActiveLookupInput = {
+    ...input,
+    highlights: (input.highlights ?? []).map((h) => (h.article ? { ...h, article: update(h.article) } : h)),
+  };
+  if (input.runners_up) output.runners_up = input.runners_up.map((r) => (r.article ? { ...r, article: update(r.article) } : r));
+  for (const b of BUCKETS) {
+    if (input[b]) output[b] = input[b]!.map((a) => update(a) as PrimarySourceArticle);
+  }
+
+  return { output, attempts, replaced: attempts.filter((a) => a.status === "replaced").length };
 }

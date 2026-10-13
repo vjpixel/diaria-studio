@@ -1211,6 +1211,51 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Regressão #10137: §1m-ter/§1y ficaram em DELEGATED_STEPS (#5415) e nada
+  // os executava — zero `primary_source_substituted` desde 260818. Antes do
+  // fix, primary-source-active-lookup.ts nunca era chamado pelo runner.
+  it("§1u-sexies: busca ativa de fonte primária roda depois dos rebaixamentos e antes do dedup intra-edição/render (#10137)", async () => {
+    return withTmpRoot("stage-1-run-p4-primary-source-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(
+        happyHandlers({ "primary-source-active-lookup.ts": () => ok(JSON.stringify({ attempted: 1, replaced: 1, notes: ["🔗 nota-10137"] })) }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        const idx = (name: string) => calls.findIndex((c) => c.script.endsWith(name));
+        const generic = idx("demote-generic-study-highlights.ts");
+        const lookup = idx("primary-source-active-lookup.ts");
+        const dedup = idx("dedup-intra-edition.ts");
+        const render = idx("render-categorized-md.ts");
+        assert.ok(lookup >= 0, "primary-source-active-lookup.ts tem que ser executado pelo runner");
+        assert.ok(generic < lookup, "roda com o top-3 já final (depois dos rebaixamentos)");
+        assert.ok(lookup < dedup && lookup < render, "roda antes do dedup intra-edição e do render do MD");
+        const args = calls[lookup].args;
+        assert.ok(args[args.indexOf("--categorized") + 1].endsWith("_internal/01-categorized.json"));
+        assert.equal(args[args.indexOf("--edition") + 1], "260423");
+        assert.ok(args[args.indexOf("--out-log") + 1].endsWith("_internal/01-primary-source-lookup.json"));
+        assert.ok(result.notes.includes("🔗 nota-10137"), "notas do passo vão pro relatório do Stage 1");
+      });
+    });
+  });
+
+  it("§1u-sexies falhando NÃO bloqueia o Stage 1 (fail-soft, #10137)", async () => {
+    return withTmpRoot("stage-1-run-p4-primary-source-soft-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec, calls } = makeFakeExec(happyHandlers({ "primary-source-active-lookup.ts": () => fail(1, "boom") }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(!result.haltRequired);
+        assert.ok(result.notes.some((n) => n.includes("primary-source-active-lookup") && n.includes("fail-soft")));
+        assert.ok(calls.some((c) => c.script.endsWith("render-categorized-md.ts")), "render segue depois da falha");
+      });
+    });
+  });
+
   it("§1u-quinquies falhando NÃO bloqueia o Stage 1 (fail-soft, #9462)", async () => {
     return withTmpRoot("stage-1-run-p4-generic-study-soft-", (root, editionDir) => {
       seedScored(root, editionDir);

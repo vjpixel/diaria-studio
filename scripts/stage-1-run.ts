@@ -44,6 +44,10 @@
  *      imprensa→oficial; editor ainda vê e resolve manualmente no gate
  *      via review-highlight-source.ts/review-highlight-official-swap.ts
  *      (esses SIM cobertos — são warn-only determinísticos, não Agent).
+ *      #10137: medido que, assim delegado, ninguém rodava o passo (zero
+ *      substituição desde 260818). Para os DESTAQUES D1-D3 a busca agora
+ *      roda aqui, determinística (Brave), em §1u-sexies — ver fase
+ *      `post-select-render`. Itens de RADAR não-destaque seguem delegados.
  *   3. §1m-quinquies (discovery-searcher por vídeo não-YouTube) — **NÃO
  *      COBERTO**, delegado. Mesmo racional: fail-soft explícito
  *      (`video_url_unverified: true`, editor cola manualmente no gate).
@@ -107,7 +111,8 @@
  *     (shape final + strip verifier, in-JS) → §1u-bis/§1u-ter (dedup
  *     intra-edição + evergreen) → §1u-quater (rebaixa destaque com MESMO
  *     FATO, #9100, fail-soft) → §1u-quinquies (penalidade de estudo/case
- *     genérico, #9462, flag + fail-soft) → §1v (render MD) → §1v-scoring-features
+ *     genérico, #9462, flag + fail-soft) → §1u-sexies (busca ativa de fonte
+ *     primária dos destaques D1-D3, #10137, fail-soft) → §1v (render MD) → §1v-scoring-features
  *     (feature store de scoring, fail-soft) → §1v-bis..1v-quinquies
  *     (lints warn-only) → §1w-quint (anti-skip 1f, BLOQUEIA) → §1w-bis
  *     (validate-stage-1-output, blocker vira HALT) → §1w-quat
@@ -588,10 +593,10 @@ export interface Stage1RunResult {
 
 const DELEGATED_STEPS = [
   "§1f Path B — as ~5 queries PT + ~5 EN temáticas genéricas não têm pool determinístico (diferente de how-to/negative-impact, que TÊM); julgamento do orchestrator sobre o que é relevante hoje.",
-  "§1m-ter — busca ativa de fonte primária (discovery-searcher por launch_candidate) — opcional/fail-soft, nunca executado por este script.",
+  "§1m-ter — busca ativa de fonte primária para itens de RADAR com launch_candidate (discovery-searcher + promoção radar→lançamento) — opcional/fail-soft, nunca executado por este script. Os DESTAQUES D1-D3 são cobertos deterministicamente por §1u-sexies (#10137).",
   "§1m-quinquies — resolução de URL de vídeo pro YouTube (discovery-searcher) — opcional/fail-soft, nunca executado por este script.",
   "§1g cost-capture (record-agent-costs.ts) — precisa do bloco <usage> real dos dispatches Agent, indisponível a um script puro.",
-  "§1y resolve-primary-source.ts (discovery-searcher pós-gate) — enhancement opcional fail-soft, nunca executado por este script.",
+  "§1y resolve-primary-source.ts (discovery-searcher pós-gate) — enhancement opcional fail-soft, nunca executado por este script; para os destaques D1-D3, substituído por §1u-sexies (primary-source-active-lookup.ts, pré-gate, #10137).",
   "§1x GATE HUMANO — apresentação formatada ao editor + espera de aprovação continuam do orchestrator.",
 ];
 
@@ -1388,6 +1393,26 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
     internalPath(editionDir, "01-generic-study-demoted.json"),
   ]);
   for (const line of ((genericStudy.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
+    if (typeof line === "string") report.note(line);
+  }
+
+  // --- §1u-sexies busca ativa de fonte primária dos destaques (#10137) ---
+  // §1m-ter/§1y (discovery-searcher) ficaram delegados no #5415 e ninguém os
+  // rodava: zero substituição desde 260818, troca manual no gate 4. Roda aqui,
+  // com o top-3 já final (depois dos rebaixamentos) e antes do dedup
+  // intra-edição + render, pra gate/writer verem a URL oficial. Fail-soft
+  // (sem BRAVE_API_KEY/rede → nada muda).
+  const primaryLookup = softStep(deps, report, "primary-source-active-lookup (1u-sexies, #10137)", "scripts/primary-source-active-lookup.ts", [
+    "--categorized",
+    categorizedPath,
+    "--edition",
+    opts.edition,
+    "--past-editions",
+    "data/past-editions.md",
+    "--out-log",
+    internalPath(editionDir, "01-primary-source-lookup.json"),
+  ]);
+  for (const line of ((primaryLookup.json as { notes?: unknown } | undefined)?.notes as unknown[] | undefined) ?? []) {
     if (typeof line === "string") report.note(line);
   }
 
