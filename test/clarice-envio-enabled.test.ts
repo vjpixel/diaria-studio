@@ -153,6 +153,9 @@ describe("readClariceEnvioEnabledState — arquivo PRESENTE e inválido é PAUSA
   });
 });
 
+/** #10105 — proveniência fixa (sem depender do hostname/env da máquina que roda a suíte). */
+const AUDIT = { machine: "maquina-teste", sessionId: null, reason: "teste" };
+
 describe("setClariceEnvioEnabled — escrita (now injetado, path dedicado)", () => {
   let root: string;
 
@@ -165,26 +168,27 @@ describe("setClariceEnvioEnabled — escrita (now injetado, path dedicado)", () 
   });
 
   it("setClariceEnvioEnabled(false) persiste a pausa e a leitura reflete", () => {
-    const written = setClariceEnvioEnabled(root, false, { now: () => new Date("2026-08-11T22:00:00.000Z") });
-    assert.deepEqual(written, { enabled: false, updatedAt: "2026-08-11T22:00:00.000Z" });
+    const written = setClariceEnvioEnabled(root, false, { now: () => new Date("2026-08-11T22:00:00.000Z"), ...AUDIT });
+    assert.deepEqual(written, { enabled: false, updatedAt: "2026-08-11T22:00:00.000Z", ...AUDIT });
     assert.deepEqual(readClariceEnvioEnabledState(root, collector()), {
       enabled: false,
       updatedAt: "2026-08-11T22:00:00.000Z",
+      ...AUDIT,
     });
     assert.equal(isClariceEnvioEnabled(root, collector()), false);
   });
 
   it("setClariceEnvioEnabled(true) religa e atualiza updatedAt", () => {
-    const written = setClariceEnvioEnabled(root, true, { now: () => new Date("2026-08-12T09:30:00.000Z") });
-    assert.deepEqual(written, { enabled: true, updatedAt: "2026-08-12T09:30:00.000Z" });
+    const written = setClariceEnvioEnabled(root, true, { now: () => new Date("2026-08-12T09:30:00.000Z"), ...AUDIT });
+    assert.deepEqual(written, { enabled: true, updatedAt: "2026-08-12T09:30:00.000Z", ...AUDIT });
     assert.equal(isClariceEnvioEnabled(root, collector()), true);
   });
 
   it("cria data/ quando ainda não existe (root fresco, sem junction montada)", () => {
     const fresh = mkdtempSync(join(tmpdir(), "clarice-envio-enabled-fresh-"));
-    setClariceEnvioEnabled(fresh, false, { now: () => new Date("2026-08-11T23:00:00.000Z") });
+    setClariceEnvioEnabled(fresh, false, { now: () => new Date("2026-08-11T23:00:00.000Z"), ...AUDIT });
     const raw = JSON.parse(readFileSync(resolve(fresh, "data", "clarice-envio-enabled.json"), "utf8"));
-    assert.deepEqual(raw, { enabled: false, updatedAt: "2026-08-11T23:00:00.000Z" });
+    assert.deepEqual(raw, { enabled: false, updatedAt: "2026-08-11T23:00:00.000Z", ...AUDIT });
     rmSync(fresh, { recursive: true, force: true });
   });
 
@@ -198,5 +202,39 @@ describe("setClariceEnvioEnabled — escrita (now injetado, path dedicado)", () 
       "as duas automações têm defaults OPOSTOS — compartilhar arquivo pausaria/ligaria a errada",
     );
     assert.equal(isClariceEnvioEnabled(root, collector()), true);
+  });
+});
+
+// #10105 — a reativação de 01/10/2026 não deixou rastro: o arquivo só tinha
+// {enabled, updatedAt} e nada ia pro run-log.
+describe("setClariceEnvioEnabled — rastro da troca (#10105)", () => {
+  it("grava machine/sessionId/reason no arquivo e emite evento no run-log.jsonl", () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-enabled-audit-"));
+    setClariceEnvioEnabled(root, true, {
+      now: () => new Date("2026-10-01T15:31:21.000Z"),
+      machine: "neo",
+      sessionId: "sess-1",
+      reason: "religando por decisão do editor em #8099",
+    });
+    const raw = JSON.parse(readFileSync(resolve(root, "data", "clarice-envio-enabled.json"), "utf8"));
+    assert.equal(raw.machine, "neo");
+    assert.equal(raw.sessionId, "sess-1");
+    assert.equal(raw.reason, "religando por decisão do editor em #8099");
+    const lines = readFileSync(resolve(root, "data", "run-log.jsonl"), "utf8").trim().split("\n");
+    assert.equal(lines.length, 1);
+    const ev = JSON.parse(lines[0]);
+    assert.equal(ev.agent, "clarice-envio-enabled");
+    assert.equal(ev.level, "warn", "religar envio real é warn");
+    assert.equal(ev.details.enabled, true);
+    assert.equal(ev.details.machine, "neo");
+    assert.equal(ev.details.reason, "religando por decisão do editor em #8099");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("sessionId vem de CLAUDE_CODE_SESSION_ID quando não injetado", () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-envio-enabled-audit-env-"));
+    const w = setClariceEnvioEnabled(root, false, { reason: "x", machine: "m", env: { CLAUDE_CODE_SESSION_ID: "env-sess" }, logRunEvent: false });
+    assert.equal(w.sessionId, "env-sess");
+    rmSync(root, { recursive: true, force: true });
   });
 });

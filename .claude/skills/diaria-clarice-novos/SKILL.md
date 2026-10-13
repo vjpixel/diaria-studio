@@ -42,8 +42,8 @@ A task diária `Diaria-Clarice-Novos` checa este toggle ANTES de qualquer chamad
 
 ```bash
 npx tsx scripts/lib/clarice-novos-enabled.ts                # imprime "enabled" ou "disabled"
-npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled   # libera o disparo automático diário
-npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled  # pausa (substitui "não rodar a skill de novo")
+npx tsx scripts/lib/clarice-novos-enabled.ts --set enabled --reason "..."   # libera o disparo automático diário
+npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."  # pausa (substitui "não rodar a skill de novo")
 ```
 
 **Isto substitui, pra a rotina automática, o kill switch antigo que dependia de invocação manual** — pausar continua sendo trivial (uma linha de comando, sem terminal na máquina exigido — futuramente um botão no Studio), mas agora precisa ser explícito, porque a task roda sozinha 2x por dia (09:00 e 18:00, #5447). Se `Diaria-Clarice-Guardrail-Alarm` disparar depois de uma rodada `novos`, a remediação é `--set disabled` até investigar.

@@ -20,6 +20,9 @@ import {
   setClariceNovosEnabled,
 } from "../scripts/lib/clarice-novos-enabled.ts";
 
+/** #10105 — proveniência fixa (sem depender do hostname/env de quem roda a suíte). */
+const AUDIT = { machine: "maquina-teste", sessionId: null, reason: "teste" };
+
 describe("readClariceNovosEnabledState / isClariceNovosEnabled / setClariceNovosEnabled (#4941)", () => {
   let root: string;
 
@@ -38,12 +41,12 @@ describe("readClariceNovosEnabledState / isClariceNovosEnabled / setClariceNovos
   });
 
   it("setClariceNovosEnabled(true) persiste e readClariceNovosEnabledState reflete", () => {
-    const written = setClariceNovosEnabled(root, true, { now: () => new Date("2026-08-10T20:00:00.000Z") });
+    const written = setClariceNovosEnabled(root, true, { now: () => new Date("2026-08-10T20:00:00.000Z"), ...AUDIT });
     assert.equal(written.enabled, true);
     assert.equal(written.updatedAt, "2026-08-10T20:00:00.000Z");
 
     const read = readClariceNovosEnabledState(root);
-    assert.deepEqual(read, { enabled: true, updatedAt: "2026-08-10T20:00:00.000Z" });
+    assert.deepEqual(read, { enabled: true, updatedAt: "2026-08-10T20:00:00.000Z", ...AUDIT });
     assert.equal(isClariceNovosEnabled(root), true);
   });
 
@@ -91,5 +94,20 @@ describe("readClariceNovosEnabledState / isClariceNovosEnabled / setClariceNovos
     );
     assert.deepEqual(readClariceNovosEnabledState(dir), { enabled: true, updatedAt: null });
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("setClariceNovosEnabled — rastro da troca (#10105)", () => {
+  it("grava machine/sessionId/reason no arquivo e emite evento no run-log.jsonl", () => {
+    const root = mkdtempSync(join(tmpdir(), "clarice-novos-enabled-audit-"));
+    setClariceNovosEnabled(root, true, { machine: "300", sessionId: "s-9", reason: "liberando novos (#4941)" });
+    const raw = JSON.parse(readFileSync(resolve(root, "data", "clarice-novos-enabled.json"), "utf8"));
+    assert.equal(raw.machine, "300");
+    assert.equal(raw.sessionId, "s-9");
+    assert.equal(raw.reason, "liberando novos (#4941)");
+    const ev = JSON.parse(readFileSync(resolve(root, "data", "run-log.jsonl"), "utf8").trim());
+    assert.equal(ev.agent, "clarice-novos-enabled");
+    assert.equal(ev.details.reason, "liberando novos (#4941)");
+    rmSync(root, { recursive: true, force: true });
   });
 });

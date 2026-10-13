@@ -357,13 +357,40 @@ function fmtPct(n: number, decimals = 2): string {
 }
 
 /**
+ * #10096 — a campanha conta pro volume-base da rampa?
+ *
+ * - nome com `grupo:{key}` → só se a key for de onda da rampa (`dN-…`, ex.
+ *   `grupo:d7-seg12-A`). `grupo:novos-*` (cadastros novos, fluxo paralelo do
+ *   `clarice-novos-run.ts`) e qualquer outro fluxo com naming `grupo:` ficam
+ *   FORA — não são a rampa e não podem ditar o volume dela;
+ * - nome SEM `grupo:` → entra (naming legado anterior ao `grupo:`, ex.
+ *   "Clarice News 2606-07 — A · dom"; era tudo rampa). Hoje toda onda da
+ *   rampa sai com `grupo:dN-…`, então isso só pesa em histórico antigo.
+ *
+ * Mesma regex de extração de `groupKeyFromCampaignName`
+ * (`scripts/lib/clarice-wave-plan.ts`) — duplicada aqui porque o worker não
+ * importa de `scripts/`.
+ */
+export function isRampBaseCampaign(name: string | null | undefined): boolean {
+  const m = /grupo:([\w-]+)\s*$/i.exec((name ?? "").trim());
+  if (!m) return true;
+  return /^d\d+-/i.test(m[1]);
+}
+
+/**
  * Volume-base = soma do `sent` de TODAS as campanhas enviadas no MESMO dia (BRT)
  * que o envio mais recente (maduro OU NÃO — volume é conhecido na hora do envio,
  * não precisa maturar; decisão do editor). Somar por dia porque um envio pode ser
  * fatiado em células A/B/C simultâneas — pegar só uma subestimaria o volume real
  * em ~⅓ e a rampa escalaria sobre a base errada. Retorna 0 se o array for vazio.
+ *
+ * #10096: só campanhas DA RAMPA entram (ver `isRampBaseCampaign`) — antes, um
+ * dia que só teve envios do fluxo `clarice-novos` (`grupo:novos-*`, 2x/dia,
+ * dezenas de contatos) virava o "último dia com envio" e a rampa escalava
+ * sobre essa base residual (ciclo 2609-10: 40.180 → 31 → 101).
  */
-export function baseVolumeFromLastSendDay(campaigns: BrevoCampaign[]): number {
+export function baseVolumeFromLastSendDay(allCampaigns: BrevoCampaign[]): number {
+  const campaigns = allCampaigns.filter((c) => isRampBaseCampaign(c.name));
   let latestMs = -Infinity;
   let latestDay: string | null = null;
   for (const c of campaigns) {

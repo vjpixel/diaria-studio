@@ -81,7 +81,18 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
-import { isClariceEnvioEnabled } from "./lib/clarice-envio-enabled.ts";
+import {
+  isClariceEnvioEnabled,
+  readClariceEnvioEnabledState,
+  type ClariceEnvioEnabledState,
+} from "./lib/clarice-envio-enabled.ts";
+import {
+  describeHaltForReport,
+  readClariceEnvioHalt,
+  writeClariceEnvioHalt,
+  type ClariceEnvioHalt,
+  type ClariceEnvioHaltRead,
+} from "./lib/clarice-envio-halt.ts";
 import {
   readClariceAbcState,
   lockedSubjectFromState,
@@ -315,6 +326,16 @@ export interface EnvioRunDeps {
    * ou o import falha ANTES de existir lista/campanha. Retorna quantos saíram.
    * Opcional: ausente = sem rollback (comportamento anterior). */
   releaseWaveSelection?: (cycle: string, waveKeyBase: string) => number;
+  /** #10096 — parada durável por fila insuficiente
+   * (`data/clarice-envio-halt.json`). Opcional: ausente = sem parada
+   * gravada (testes nunca leem o `data/` real). */
+  readHalt?: () => ClariceEnvioHaltRead;
+  /** #10096 — grava a parada quando a rodada para por fila insuficiente.
+   * Opcional: ausente = não persiste (comportamento anterior). */
+  writeHalt?: (halt: ClariceEnvioHalt) => void;
+  /** #10105 — estado completo do kill switch (com proveniência), só pra
+   * relatar quem/por que ligou. Opcional: ausente = sem a linha no relatório. */
+  readEnabledState?: () => ClariceEnvioEnabledState;
 }
 
 /**
@@ -401,7 +422,31 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
     // tentaria o mesmo lock e falharia com LockHeldError).
     releaseWaveSelection: (cycle: string, waveKeyBase: string) =>
       releaseWaveSelectionIn(clariceSegmentsDir(cycle), cycle, waveKeyBase),
+    readHalt: () => readClariceEnvioHalt(rootDir),
+    writeHalt: (halt: ClariceEnvioHalt) => writeClariceEnvioHalt(rootDir, halt),
+    readEnabledState: () => readClariceEnvioEnabledState(rootDir),
   };
+}
+
+/**
+ * #10105 — linha do relatório com a proveniência do kill switch. Um toggle
+ * LIGADO sem `machine`/`reason` gravados foi escrito antes do #10105 ou à mão
+ * (foi assim que a rampa voltou a enviar em 01/10/2026 contra decisão
+ * registrada do editor) — vira aviso, não nota neutra.
+ */
+export function describeEnabledProvenance(state: ClariceEnvioEnabledState): string {
+  if (state.updatedAt === null) {
+    return "kill switch: LIGADO pelo default de arquivo ausente (data/clarice-envio-enabled.json não existe).";
+  }
+  const who = `máquina ${state.machine ?? "?"}${state.sessionId ? `, sessão ${state.sessionId}` : ""}`;
+  if (!state.reason && !state.machine) {
+    return (
+      `⚠️  kill switch LIGADO desde ${state.updatedAt} SEM RASTRO (sem máquina/motivo gravados — escrito antes do #10105 ou editado à mão). ` +
+      "Se houver decisão do editor de manter a rampa pausada, confira antes da próxima onda; " +
+      'reescreva com `npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."` pra registrar o motivo.'
+    );
+  }
+  return `kill switch: LIGADO desde ${state.updatedAt} (${who}) — motivo: ${state.reason ?? "não informado"}.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -870,11 +915,28 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
   if (!deps.isEnabled()) {
     report.note(
       "⏸️  automação PAUSADA (data/clarice-envio-enabled.json = {enabled:false}) — nenhuma chamada Brevo feita. " +
-        "Rode `npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled` pra religar.",
+        "Rode `npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason \"...\"` pra religar.",
     );
     const reportId = `envio-${aammdd}-paused`;
     writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — pausado`, report.build());
     return { code: 0, reportId, reportMarkdown: report.build() };
+  }
+  if (deps.readEnabledState) report.note(describeEnabledProvenance(deps.readEnabledState()));
+
+  // --- #10096: parada durável por fila insuficiente — ANTES de qualquer
+  // chamada externa, como o kill switch. Só o caminho manual com número
+  // confirmado pelo editor (`--volume N`, ou `--plan-only` que não escreve)
+  // passa; nenhum deles limpa a parada (ver clarice-envio-halt.ts). ---
+  const haltRead = deps.readHalt?.();
+  if (haltRead?.halted) {
+    const haltText = describeHaltForReport(haltRead, computeExpectedEnvioCycle(now));
+    if (requestedVolume === undefined && !opts.planOnly) {
+      report.note(haltText);
+      const reportId = `envio-${aammdd}-fila-insuficiente-pendente`;
+      writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — parada pendente (fila insuficiente)`, report.build());
+      return { code: 0, reportId, reportMarkdown: report.build() };
+    }
+    report.note(`${haltText} — seguindo só porque esta rodada é manual (${opts.planOnly ? "--plan-only" : `--volume ${requestedVolume}`}); a parada continua gravada.`);
   }
 
   try {
@@ -1350,6 +1412,31 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       lockPath && releaseEnvioLock(lockPath);
       lockPath = null;
       const reportId = `envio-${aammdd}-fila-insuficiente`;
+      // #10096 — a parada fica gravada em disco: a próxima rodada NÃO
+      // recomeça de uma base residual, espera decisão explícita do editor.
+      // Falha ao gravar vira nota alta (a rodada já parou — exit 0 segue
+      // certo pra ESTA rodada), nunca silêncio.
+      if (deps.writeHalt) {
+        try {
+          deps.writeHalt({
+            kind: "fila-insuficiente",
+            since: now.toISOString(),
+            reportId: `envio-${aammdd}`,
+            cycle,
+            queueAvailable,
+            desiredVolume,
+            baseVolume: proposal.volumes.baseVolume,
+          });
+          report.note(
+            "parada gravada em data/clarice-envio-halt.json (#10096) — as próximas rodadas agendadas NÃO enviam até o editor decidir " +
+              '(`npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."`).',
+          );
+        } catch (e) {
+          report.note(
+            `⚠️  FALHA ao gravar a parada durável (${(e as Error).message}) — a próxima rodada pode recomeçar de uma base residual (#10096). Pause o kill switch se isso não for o desejado.`,
+          );
+        }
+      }
       writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — fila insuficiente`, report.build());
       return { code: 0, reportId, reportMarkdown: report.build() };
     }

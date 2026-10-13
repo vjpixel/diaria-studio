@@ -85,8 +85,11 @@
  * Uso CLI (mesmo padrão de `exec-mode.ts`/`clarice-novos-enabled.ts`):
  *   npx tsx scripts/lib/clarice-envio-enabled.ts
  *   # → imprime "enabled" ou "disabled" (exit 0 sempre)
- *   npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled
- *   npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled
+ *   npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."
+ *   npx tsx scripts/lib/clarice-envio-enabled.ts --set disabled --reason "..."
+ *   # `--reason` é obrigatório desde o #10105: toda escrita grava `machine`,
+ *   # `sessionId` (quando houver) e `reason` no arquivo + evento em
+ *   # `data/run-log.jsonl` (ver `scripts/lib/clarice-toggle-audit.ts`).
  *
  * @see scripts/lib/clarice-novos-enabled.ts (#4941 — molde direto)
  * @see scripts/lib/studio-chat-enabled.ts (#4078 — molde original, removido
@@ -98,7 +101,15 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { getArg, isMainModule } from "./cli-args.ts";
+import { isMainModule } from "./cli-args.ts";
+import {
+  logToggleChange,
+  parseToggleCli,
+  readToggleAudit,
+  resolveToggleAudit,
+  type ResolveToggleAuditOptions,
+  type ToggleAudit,
+} from "./clarice-toggle-audit.ts";
 
 export interface ClariceEnvioEnabledState {
   /** `true` = default de arquivo AUSENTE (decisão do editor "ligada desde o
@@ -110,6 +121,12 @@ export interface ClariceEnvioEnabledState {
    * `setClariceEnvioEnabled`. `null` = nunca escrito (arquivo ausente, estado
    * no default) ou arquivo ilegível. */
   updatedAt: string | null;
+  /** #10105 — proveniência da última escrita (`machine`/`sessionId`/`reason`).
+   * Ausentes em arquivo escrito antes do #10105 ou editado à mão — o que,
+   * por si só, já é sinal de troca sem rastro (o relatório do envio avisa). */
+  machine?: string | null;
+  sessionId?: string | null;
+  reason?: string | null;
 }
 
 /** Arquivo AUSENTE: automação LIGADA. Ver Divergência 1 na docstring. */
@@ -154,7 +171,7 @@ export function readClariceEnvioEnabledState(
       `[clarice-envio-enabled] ${p} existe mas não deu pra ler/parsear (${(e as Error).message}) — ` +
         `assumindo PAUSADO por segurança. Isso NÃO é o default de arquivo ausente (que é LIGADO): ` +
         `um arquivo ilegível é sinal de problema, não de intenção. Conserte o arquivo ou rode ` +
-        `\`npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled\` pra reescrevê-lo.`,
+        `\`npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."\` pra reescrevê-lo.`,
     );
     return { ...INVALID_DEFAULT };
   }
@@ -163,7 +180,7 @@ export function readClariceEnvioEnabledState(
     warn(
       `[clarice-envio-enabled] ${p} existe mas não tem um campo booleano "enabled" — ` +
         `assumindo PAUSADO por segurança (arquivo inválido não é o mesmo que arquivo ausente). ` +
-        `Rode \`npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled\` pra reescrevê-lo.`,
+        `Rode \`npx tsx scripts/lib/clarice-envio-enabled.ts --set enabled --reason "..."\` pra reescrevê-lo.`,
     );
     return { ...INVALID_DEFAULT };
   }
@@ -171,6 +188,7 @@ export function readClariceEnvioEnabledState(
   return {
     enabled: raw.enabled,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+    ...readToggleAudit(raw as Record<string, unknown>),
   };
 }
 
@@ -189,24 +207,38 @@ export function isClariceEnvioEnabled(rootDir: string, opts: ReadClariceEnvioEna
  * a automação quando na verdade ela segue ligada — o pior resultado possível
  * pro caminho de escrita deste módulo em particular, porque o default de
  * ausência é LIGADO. */
+/**
+ * #10105: grava também `machine`/`sessionId`/`reason` (ver
+ * `resolveToggleAudit`) e emite evento em `run-log.jsonl` — a reativação de
+ * 01/10/2026 não deixou rastro nenhum. O evento é fail-soft (logging nunca
+ * derruba a escrita); a escrita do arquivo continua propagando erro.
+ */
 export function setClariceEnvioEnabled(
   rootDir: string,
   enabled: boolean,
-  opts: { now?: () => Date } = {},
-): ClariceEnvioEnabledState {
+  opts: { now?: () => Date; logRunEvent?: boolean } & ResolveToggleAuditOptions = {},
+): ClariceEnvioEnabledState & ToggleAudit {
   const now = opts.now ?? (() => new Date());
   const p = statePath(rootDir);
   mkdirSync(dirname(p), { recursive: true });
-  const state: ClariceEnvioEnabledState = { enabled, updatedAt: now().toISOString() };
+  const state: ClariceEnvioEnabledState & ToggleAudit = {
+    enabled,
+    updatedAt: now().toISOString(),
+    ...resolveToggleAudit(opts),
+  };
   writeFileSync(p, JSON.stringify(state, null, 2) + "\n", "utf8");
+  if (opts.logRunEvent !== false) logToggleChange(rootDir, "clarice-envio-enabled", state);
   return state;
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
 if (isMainModule(import.meta.url)) {
-  const setArg = getArg(process.argv.slice(2), "set");
-  if (setArg === "enabled" || setArg === "disabled") {
-    const state = setClariceEnvioEnabled(process.cwd(), setArg === "enabled");
+  const cmd = parseToggleCli(process.argv.slice(2), "clarice-envio-enabled");
+  if (cmd.kind === "error") {
+    console.error(cmd.message);
+    process.exitCode = 2;
+  } else if (cmd.kind === "set") {
+    const state = setClariceEnvioEnabled(process.cwd(), cmd.enabled, { reason: cmd.reason });
     console.log(state.enabled ? "enabled" : "disabled");
   } else {
     console.log(isClariceEnvioEnabled(process.cwd()) ? "enabled" : "disabled");
