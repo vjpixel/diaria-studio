@@ -9,6 +9,7 @@ import {
   extractVersionedProductCodes,
   runActivePrimarySourceLookup,
   sameStoryByExactProductVersion,
+  subjectVersionedProductCode,
 } from "../scripts/lib/primary-source-lookup.ts";
 
 describe("primary-source-lookup (#5664)", () => {
@@ -334,8 +335,116 @@ describe("runActivePrimarySourceLookup — no swap to unrelated official pages (
     assert.deepEqual([...extractVersionedProductCodes("OpenAI GPT-5.5 chega")], ["gpt5.5"]);
     assert.deepEqual([...extractVersionedProductCodes("Introducing GPT-5 | OpenAI")], ["gpt5"]);
     assert.deepEqual([...extractVersionedProductCodes("Claude Haiku 5.5 \\ Anthropic")], ["haiku5.5"]);
-    assert.deepEqual([...extractVersionedProductCodes("OpenAI ships GPT-4o mini")], ["gpt4o"]);
+    assert.deepEqual([...extractVersionedProductCodes("OpenAI ships GPT-4o mini")], ["gpt4omini"]);
     assert.deepEqual([...extractVersionedProductCodes("Anthropic treina Claude em Março 2026")], []);
     assert.deepEqual([...extractVersionedProductCodes("Copilot release notes | Microsoft")], []);
+  });
+});
+
+// #10145: the #10141 matcher accepted ANY shared versioned code, so a headline
+// citing the predecessor ("mais barato que o Haiku 4.5") or the platform
+// ("no Windows 11") matched the old model's / platform's official page — on
+// launch day Brave has not indexed the new page yet and `site:` returns the
+// old one. Only the subject code counts now, and sibling variants of one
+// version ("2.5 Flash" vs "2.5 Pro") never collide. No network.
+describe("sameStoryByExactProductVersion — subject code only, variants distinct (#10145)", () => {
+  const noSleep = async () => {};
+  const cases = [
+    {
+      name: "Haiku 5.5 launch citing Haiku 4.5 → Haiku 4.5 page",
+      article: { url: "https://press.example/haiku", title: "Anthropic lança Claude Haiku 5.5, mais barato que o Haiku 4.5", suggested_primary_domain: "anthropic.com" },
+      candidate: { url: "https://www.anthropic.com/news/claude-haiku-4-5", title: "Introducing Claude Haiku 4.5" },
+    },
+    {
+      name: "GPT-6.1 Sol launch citing GPT-6 → GPT-6 page",
+      article: { url: "https://press.example/gpt", title: "OpenAI lança GPT-6.1 Sol, sucessor do GPT-6", suggested_primary_domain: "openai.com" },
+      candidate: { url: "https://openai.com/index/gpt-6-for-everyone", title: "GPT-6 and Intelligent UI for everyone" },
+    },
+    {
+      name: "Copilot Vision on Windows 11 → Windows 11 release info",
+      article: { url: "https://press.example/copilot", title: "Microsoft lança Copilot Vision no Windows 11", suggested_primary_domain: "microsoft.com" },
+      candidate: { url: "https://learn.microsoft.com/windows/release-health/windows11-release-information", title: "Windows 11 release information" },
+    },
+    {
+      name: "Gemini on Pixel 10 → Pixel 10 Pro specs",
+      article: { url: "https://press.example/pixel", title: "Google lança Gemini no Pixel 10", suggested_primary_domain: "blog.google" },
+      candidate: { url: "https://blog.google/pixel-10-pro-specs", title: "Pixel 10 Pro tech specs" },
+    },
+    {
+      name: "Gemini 2.5 Flash launch → Gemini 2.5 Pro page (variant after version)",
+      article: { url: "https://press.example/flash", title: "Google lança Gemini 2.5 Flash para desenvolvedores", suggested_primary_domain: "blog.google" },
+      candidate: { url: "https://blog.google/gemini-2-5-pro", title: "Gemini 2.5 Pro: our most intelligent model" },
+    },
+    {
+      name: "Claude 3.5 Haiku launch → Claude 3.5 Sonnet page (variant after version)",
+      article: { url: "https://press.example/35haiku", title: "Anthropic lança Claude 3.5 Haiku", suggested_primary_domain: "anthropic.com" },
+      candidate: { url: "https://www.anthropic.com/news/claude-3-5-sonnet", title: "Introducing Claude 3.5 Sonnet \\ Anthropic" },
+    },
+    {
+      name: "Gemini 2.5 Flash-Lite launch → Gemini 2.5 Flash page (chained variant)",
+      article: { url: "https://press.example/flashlite", title: "Google lança Gemini 2.5 Flash-Lite", suggested_primary_domain: "blog.google" },
+      candidate: { url: "https://blog.google/gemini-2-5-flash", title: "Gemini 2.5 Flash: our best price-performance model for developers" },
+    },
+  ];
+
+  for (const c of cases) {
+    it(`rejects: ${c.name}`, async () => {
+      assert.equal(sameStoryByExactProductVersion(c.article, c.candidate), false);
+      const result = await runActivePrimarySourceLookup({ highlights: [{ rank: 1, article: { ...c.article } }] }, {
+        search: async () => [c.candidate],
+        pastUrls: new Set(),
+        canonicalize: (u) => u,
+        sameStory: sameStoryByExactProductVersion,
+        sleep: noSleep,
+      });
+      assert.equal(result.attempts.length, 1, "the title must reach the search (launch verb + domain)");
+      assert.equal(result.replaced, 0);
+      assert.equal((result.output.highlights![0].article as { url: string }).url, c.article.url);
+    });
+  }
+
+  it("fixtures discriminate: the #10141 rule (any shared product+version, no variant) accepted every case", () => {
+    // Verbatim copy of the pre-#10145 extractor/matcher, kept here so the
+    // fixtures prove they would have swapped under the old rule.
+    const oldCodes = (text: string) => {
+      const codes = new Set<string>();
+      for (const m of text.matchAll(/\b([A-Z][A-Za-z]*)[\s-]?(\d+(?:\.\d+)*[a-z]?)(?![\w.]*\d)/g)) {
+        if (/^\d{4}$/.test(m[2]) && Number(m[2]) >= 1900) continue;
+        codes.add(`${m[1].toLowerCase()}${m[2].toLowerCase()}`);
+      }
+      return codes;
+    };
+    for (const c of cases) {
+      const a = oldCodes(c.article.title);
+      const shared = [...oldCodes(c.candidate.title)].some((code) => a.has(code));
+      assert.equal(shared, true, c.name);
+    }
+  });
+
+  it("still swaps the legit launch pages (subject code ↔ same code)", () => {
+    const accept: Array<[string, string]> = [
+      ["Anthropic lança Claude Haiku 5.5, mais barato que o Haiku 4.5", "Claude Haiku 5.5 \\ Anthropic"],
+      ["OpenAI lança GPT-6.1 Sol, sucessor do GPT-6", "Introducing GPT-6.1 Sol | OpenAI"],
+      ["Google lança Gemini 2.5 Flash para desenvolvedores", "Gemini 2.5 Flash: our fastest model"],
+      ["Anthropic lança Claude 3.5 Haiku", "Introducing Claude 3.5 Haiku \\ Anthropic"],
+      ["Anthropic launches Claude Haiku 5.5 with 90% API price reduction", "Claude Haiku 5.5 \\ Anthropic"],
+    ];
+    for (const [title, candidateTitle] of accept) {
+      assert.equal(sameStoryByExactProductVersion({ title }, { url: "https://x.example/", title: candidateTitle }), true, `${title} ↔ ${candidateTitle}`);
+    }
+  });
+
+  it("in doubt does not swap: candidate also citing the predecessor, or a variant-less version", () => {
+    const article = { title: "Anthropic lança Claude Haiku 5.5, mais barato que o Haiku 4.5" };
+    assert.equal(sameStoryByExactProductVersion(article, { url: "https://x.example/", title: "Claude Haiku 5.5 vs Haiku 4.5 benchmarks" }), false);
+    assert.equal(sameStoryByExactProductVersion({ title: "Google lança Gemini 2.5 Flash" }, { url: "https://x.example/", title: "Gemini 2.5 models" }), false);
+  });
+
+  it("subjectVersionedProductCode picks the launched product, not platform/predecessor", () => {
+    assert.equal(subjectVersionedProductCode("Anthropic lança Claude Haiku 5.5, mais barato que o Haiku 4.5"), "haiku5.5");
+    assert.equal(subjectVersionedProductCode("OpenAI lança GPT-6.1 Sol, sucessor do GPT-6"), "gpt6.1");
+    assert.equal(subjectVersionedProductCode("Microsoft lança Copilot Vision no Windows 11"), undefined);
+    assert.equal(subjectVersionedProductCode("Google lança Gemini no Pixel 10"), undefined);
+    assert.equal(subjectVersionedProductCode("Google lança Gemini 2.5 Flash-Lite"), "gemini2.5flashlite");
   });
 });
