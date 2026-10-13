@@ -175,14 +175,63 @@ def key_limit_cases() -> None:
                 run.call_count == 0 and not marker_path.exists(),
             )
 
-        # 7. Editor retomou à mão enquanto o marcador existia -> só limpa
-        marker_path.write_text(json.dumps({"reason": "key_limit", "resume_after": time.time() + 3600}))
-        write_job(failure_streak=0, last_error=None, last_run_at="x3")
+        # 7. Editor retomou à mão enquanto o marcador existia -> só limpa.
+        # Estado REAL pós-`hermes cron resume` (#10111): o resume do Hermes mexe
+        # só em enabled/state/paused_*/next_run_at — `failure_streak` e
+        # `last_error` seguem os do run que falhou (antes o fixture usava
+        # streak=0/last_error=None, estado que o Hermes nunca produz).
+        state_path.unlink(missing_ok=True)
+        marker_path.write_text(json.dumps({
+            "reason": "key_limit", "resume_after": time.time() + 3600,
+            "paused_last_run_at": "2026-10-12T07:00:00-03:00",
+        }))
+        write_job(last_run_at="2026-10-12T07:00:00-03:00")
         with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
             _run_main(mod)
         assert_true(
             "key limit: job já ativo com marcador -> limpa o marcador sem comando",
             run.call_count == 0 and not marker_path.exists(),
+        )
+        assert_true(
+            "#10111: retomada manual grava o paused_last_run_at no estado",
+            state_path.exists() and state_path.read_text() == "2026-10-12T07:00:00-03:00",
+            f"(estado={state_path.read_text() if state_path.exists() else None!r})",
+        )
+
+        # 8. #10111 cenário da issue, passo 4: tick seguinte, sem marcador, job
+        # ativo com o 403 velho e streak alto -> NÃO re-pausa (desfaria a
+        # retomada manual do editor até a próxima 00:05 UTC).
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            out = _run_main(mod)
+        assert_true(
+            "#10111: tick após a retomada manual não re-pausa lendo o 403 velho",
+            run.call_count == 0 and not marker_path.exists() and out == "",
+            f"(saída={out!r} calls={[c.args[0] for c in run.call_args_list]!r})",
+        )
+
+        # 9. Depois da retomada manual, um run NOVO falha de novo com 403 ->
+        # re-pausa (a cota não voltou; a guarda só segura o erro velho).
+        write_job(last_run_at="2026-10-12T09:00:00-03:00", failure_streak=46)
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            _run_main(mod)
+        assert_true(
+            "#10111: run novo pós-retomada manual falhando com 403 pausa outra vez",
+            run.call_count == 1 and marker_path.exists(),
+        )
+        marker_path.unlink(missing_ok=True)
+
+        # 10. Marcador sem `paused_last_run_at` (gravado antes desse campo) ->
+        # cai no last_run_at atual do job e também não re-pausa.
+        state_path.unlink(missing_ok=True)
+        marker_path.write_text(json.dumps({"reason": "key_limit", "resume_after": time.time() + 3600}))
+        write_job(last_run_at="2026-10-12T11:00:00-03:00")
+        with mock.patch.object(mod.subprocess, "run", return_value=ok_result) as run:
+            _run_main(mod)
+            _run_main(mod)
+        assert_true(
+            "#10111: marcador sem paused_last_run_at usa o last_run_at do job e não re-pausa",
+            run.call_count == 0 and not marker_path.exists()
+            and state_path.read_text() == "2026-10-12T11:00:00-03:00",
         )
 
     assert_true(
