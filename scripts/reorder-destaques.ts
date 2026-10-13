@@ -5,9 +5,11 @@
  * Reordena destaques mid-Stage atomicamente. Propaga reorder pra:
  *   - `_internal/01-approved.json` (highlights[])
  *   - `_internal/01-approved-capped.json` (highlights[])
- *   - `02-reviewed.md` (blocos DESTAQUE 1/2/3)
+ *   - `02-reviewed.md` (blocos DESTAQUE 1/2/3 + o "destaque N" da linha
+ *     "Nessa edição, …" do bloco ERRO INTENCIONAL, #10098)
  *   - `_internal/intentional-error.json` (campo `location`, #3222 — não mora
- *     mais no frontmatter de `02-reviewed.md`)
+ *     mais no frontmatter de `02-reviewed.md`; e o "destaque N" em prosa de
+ *     `description`/`reveal`, #10098)
  *   - `_internal/02-d{N}-prompt.md` (rename files)
  *   - `04-d{N}-sd-prompt.json` (raiz ou `_internal/`) e
  *     `_internal/04-d{N}-generator.json` (#9679) — o prompt SD e o sidecar do
@@ -698,6 +700,62 @@ export function updateIntentionalErrorLocationJson(
   const newN = newIdx + 1;
   const rest = m[2] ?? "";
   return { record: { ...record, location: `DESTAQUE ${newN}${rest}` }, changed: true };
+}
+
+/**
+ * #10098: remapeia toda menção `destaque N` (case-insensitive) num texto livre
+ * segundo `newOrder` — "destaque 3" + newOrder=[3,1,2] → "destaque 1". Passada
+ * ÚNICA com callback (nunca replaces encadeados, que transformariam 3→1→2).
+ * Preserva a caixa da palavra ("Destaque", "DESTAQUE"). N fora de `newOrder`
+ * (destaque eliminado num reorder 3→2) fica intacto — o `location` já recebe o
+ * sentinel REVISAR nesse caso (#2366) e o editor redeclara à mão.
+ */
+export function remapDestaqueWordRefsInText(text: string, newOrder: number[]): string {
+  return text.replace(/\b(destaque)(\s+)([1-9])\b/gi, (full, word: string, sp: string, num: string) => {
+    const idx = newOrder.indexOf(parseInt(num, 10));
+    if (idx < 0) return full;
+    return `${word}${sp}${idx + 1}`;
+  });
+}
+
+/**
+ * #10098: `description` e `reveal` do `_internal/intentional-error.json` citam a
+ * posição do erro em prosa ("… (Bradesko) no destaque 3") — o `description` vira
+ * o reveal da edição seguinte. Remapeia junto com o `location`.
+ */
+export function updateIntentionalErrorProseJson(
+  record: IntentionalErrorJson,
+  newOrder: number[],
+): { record: IntentionalErrorJson; changed: boolean } {
+  let changed = false;
+  const next: IntentionalErrorJson = { ...record };
+  for (const field of ["description", "reveal"] as const) {
+    const value = record[field];
+    if (typeof value !== "string") continue;
+    const remapped = remapDestaqueWordRefsInText(value, newOrder);
+    if (remapped !== value) {
+      next[field] = remapped;
+      changed = true;
+    }
+  }
+  return { record: changed ? next : record, changed };
+}
+
+/**
+ * #10098: no bloco `**ERRO INTENCIONAL**` de `02-reviewed.md`, remapeia o
+ * `destaque N` só nas linhas `Nessa edição, …` — a linha `Na última edição, …`
+ * fala da ordem da edição ANTERIOR e não pode ser tocada. O bloco vai até o
+ * próximo separador `---` (ou EOF).
+ */
+export function remapErroIntencionalNarrativeInMd(md: string, newOrder: number[]): string {
+  return md.replace(
+    /(\*\*ERRO\s+INTENCIONAL\*\*)([\s\S]*?)(?=\n---\s*(?:\n|$)|$(?![\s\S]))/g,
+    (_full, header: string, body: string) =>
+      header +
+      body.replace(/^(\s*Nessa\s+edi[çc][ãa]o\b.*)$/gim, (line: string) =>
+        remapDestaqueWordRefsInText(line, newOrder),
+      ),
+  );
 }
 
 /**
@@ -1424,6 +1482,9 @@ function main(): void {
     const before = md;
     md = reorderDestaquesInMd(md, args.newOrder);
     if (md !== before) {
+      // #10098: a narrativa "Nessa edição, … no destaque N." do bloco ERRO
+      // INTENCIONAL cita a posição — segue o destaque junto com o `location`.
+      md = remapErroIntencionalNarrativeInMd(md, args.newOrder);
       queueWrite(mdPath, md);
       reviewedMdReordered = true;
     }
@@ -1530,10 +1591,11 @@ function main(): void {
   const intentionalErrorPath = intentionalErrorJsonPath(editionDir);
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorPath);
   if (intentionalErrorRecord) {
-    const { record: updatedRecord, changed } = updateIntentionalErrorLocationJson(
-      intentionalErrorRecord,
-      args.newOrder,
-    );
+    const loc = updateIntentionalErrorLocationJson(intentionalErrorRecord, args.newOrder);
+    // #10098: description/reveal citam "destaque N" em prosa — seguem o location.
+    const prose = updateIntentionalErrorProseJson(loc.record, args.newOrder);
+    const updatedRecord = prose.record;
+    const changed = loc.changed || prose.changed;
     if (changed) {
       if (!args.dryRun) writeIntentionalErrorJson(intentionalErrorPath, updatedRecord);
       modified.rewritten.push(intentionalErrorPath);
