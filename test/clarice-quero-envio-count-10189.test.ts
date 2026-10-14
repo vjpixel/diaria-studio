@@ -69,7 +69,9 @@ test("#10189 o que conta como 'saiu': sent, scheduled ou sendNow aceito", () => 
 test("#10189 clarice-schedule-group: rascunho recalcula o índice em vez de reusar o gravado", () => {
   const src = readFileSync(resolve(ROOT, "scripts/clarice-schedule-group.ts"), "utf8");
   assert.match(src, /existing && envioWentOut\(existing\) \? existing\.envioIndex : undefined/);
-  assert.match(src, /resolveEnvioIndex\(campaigns, key\)/, "passa as entradas com status, não só as keys");
+  // #10212: o histórico passa por buildContentEnvioHistory (ciclo de conteúdo), ainda com as entradas completas.
+  assert.match(src, /segmentsHistory: campaigns,/, "passa as entradas com status, não só as keys");
+  assert.match(src, /resolveEnvioIndex\(envioHistory, key\)/);
 });
 
 test("#10189 reapply: 1º envio ainda agendado sai sem a frase; envio 2 com a frase", () => {

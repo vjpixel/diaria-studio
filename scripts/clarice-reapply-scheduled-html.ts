@@ -100,7 +100,7 @@ import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { parseCycleArg, clariceSegmentsDir } from "./lib/clarice-paths.ts";
-import { applyQueroPhrase, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10189
+import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10189, #10212
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { assertNoAbTestForSingleHtmlPath } from "./lib/clarice-ab-test.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
@@ -692,7 +692,10 @@ export function queroHtmlForCampaign(
   }
   const key = campaignName.slice(prefix.length).trim();
   const stored = history.find((e) => e.key === key)?.envioIndex;
-  const asSent: EnvioHistoryEntry[] = history.map((e) => (e.key === key ? { ...e, status: "scheduled" } : e));
+  // #10212: ondas deste ciclo que levaram o draft de OUTRO ciclo de conteúdo
+  // (novos em fallback D3) não ocupam posição no envio deste conteúdo.
+  const sameContent = buildContentEnvioHistory({ segmentsCycle: cycle, contentCycle: cycle, segmentsHistory: history });
+  const asSent: EnvioHistoryEntry[] = sameContent.map((e) => (e.key === key ? { ...e, status: "scheduled" } : e));
   if (!asSent.some((e) => e.key === key)) asSent.push({ key, status: "scheduled" });
   const envioIndex = stored ?? resolveEnvioIndex(asSent, key);
   const quero = applyQueroPhrase(html, envioIndex);
