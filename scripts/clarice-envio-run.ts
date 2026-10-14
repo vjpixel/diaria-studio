@@ -136,6 +136,7 @@ import { writeLastBrakeSnapshot } from "./lib/clarice-envio-last-brake.ts";
 import { proposeNextVolume, brtDayKey, type NextVolumeDecision } from "./lib/clarice-envio-policy.ts";
 import type { RiskSnapshot } from "./clarice-envio-risk.ts";
 import { SCHEDULE_AT_WARNING_PREFIX, type InvocationSummary } from "./clarice-schedule-group.ts"; // #7042
+import { describeQueroOutcome } from "./lib/clarice-quero-phrase.ts"; // #10179
 import type { WaveCollision } from "./lib/clarice-wave-audit.ts"; // #7880
 import { readClariceAbTest, type ClariceAbTestConfig } from "./lib/clarice-ab-test.ts"; // #9308
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts"; // #9308
@@ -1849,6 +1850,10 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
           throw new EnvioAbort(`❌ clarice-schedule-group --schedule ("${key}") falhou (exit ${scheduleResult.code}): ${summarizeStderr(scheduleResult.stderr)}`);
         } else {
           report.note(`✅ "${key}" agendada pra ${scheduleAt} (status="${scheduleJson?.status ?? "?"}").`);
+        }
+        // #10179: o resumo diz se a frase do "quero" entrou neste envio.
+        if (scheduleJson?.envioIndex !== undefined) {
+          report.note(`   "${key}": ${describeQueroOutcome(scheduleJson.envioIndex, scheduleJson.queroIncluded === true)}`);
         }
         if (scheduleJson) summaries.push(scheduleJson);
         scheduledCount++;

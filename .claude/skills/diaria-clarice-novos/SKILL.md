@@ -62,6 +62,10 @@ Opcionais: `--cycle 2609-10` (o default resolve o ciclo pelo mesmo `resolveLates
 
 **Sem efeito colateral:** não envia, não grava state, não chama Brevo/Stripe/MV; a única rede possível é a leitura do dashboard com `--compare-last-sent`, que é fail-soft. Imprime `mtime`, tamanho e sha256 do arquivo e confere: imagens `<img>` (pelo menos uma, todas em `/img/` do KV), nenhuma seta `→`/`←`, pelo menos um link com `utm_source=clarice`, e cada `--expect`. **Exit 0** = ok; **exit 1** = arquivo ausente, desatualizado (marcador ausente, sha256 diferente, mtime anterior ao `--newer-than`), sem imagem, imagem fora do KV, seta ou sem link `utm_source=clarice`. A última linha do stdout está pronta para colar no relatório. Exit 1 aqui não pausa a task: para segurar o envio enquanto o sync não chega, use o kill switch acima.
 
+## Frase do "quero": fora do 1º envio do ciclo (#10179)
+
+A frase *Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero".* fica no `draft.md` e no `cloudflare-preview.html` do ciclo, mas o `htmlContent` de cada campanha sai por envio: **1º envio do ciclo sem a frase; 2º, 3º e seguintes com a frase**. Quem aplica é `clarice-schedule-group.ts` no `--create`/`--update-html` (`scripts/lib/clarice-quero-phrase.ts`), então vale igual para `novos` e para a rampa `d{N}` do `clarice-envio-run.ts`. O índice do envio é a ordem das ondas em `segments/group-campaigns.json` do ciclo (`novos-*` e `d{N}-*` juntas; células `-A`/`-B`/`-C`/`-H{HH}`/`-VA`/`-VB` da mesma onda contam como um envio só). Onda montada fora desse script não entra na contagem: nesse caso, passe `--envio-index N` ao `clarice-schedule-group.ts`. O índice e o resultado ficam gravados na campanha (`envioIndex`, `queroIncluded`) e o relatório da rodada diz se a frase entrou. Não edite o draft à mão para tirar ou repor a frase.
+
 ---
 
 ## Passos (o que `clarice-novos-run.ts` faz — referência, não script pra copiar à mão)

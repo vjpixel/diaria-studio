@@ -54,6 +54,11 @@
  *                      A/B de horário pode reabrir isso de propósito.
  *   --update-html      re-aplica o HTML atual (cloudflare-preview.html) na
  *                      campanha em draft — propaga fix de render pós-create.
+ *   --envio-index N    #10179: força o índice do envio no ciclo (1-based).
+ *                      Sem a flag, sai da ordem das ondas em
+ *                      group-campaigns.json. Decide a frase do "quero" no
+ *                      `htmlContent` (fora no 1º envio, presente do 2º em
+ *                      diante — `scripts/lib/clarice-quero-phrase.ts`).
  *   --send-test        manda test email pro `brevo_monthly.test_email` do
  *                      platform.config.json.
  *   --schedule         agenda a campanha (PUT scheduledAt + GET-verify).
@@ -210,6 +215,7 @@ import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
+import { applyQueroPhrase, describeQueroApplication, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179
 
 loadProjectEnv();
 
@@ -242,6 +248,12 @@ export interface CampaignEntry {
    *  `sendNowAcceptedAt` nunca é gravado; este campo é o que impede o guard de
    *  liberar um 2º POST dentro de `SEND_NOW_GUARD_WINDOW_MS`. */
   sendNowAttemptedAt?: string;
+  /** #10179: índice (1-based) do envio desta campanha no ciclo — células da
+   *  mesma onda compartilham o índice (`resolveEnvioIndex`). Gravado no
+   *  `--create`/`--update-html`; ausente em campanhas anteriores ao #10179. */
+  envioIndex?: number;
+  /** #10179: a frase do "quero" foi no `htmlContent` desta campanha. */
+  queroIncluded?: boolean;
 }
 
 /** Shape exato que `applyVerifyResults`/`isScheduledStatus` (clarice-schedule-sends.ts)
@@ -682,6 +694,10 @@ export interface InvocationSummary {
    * campo é barato e útil em qualquer fase que toque agendamento.
    */
   scheduledAt?: string | null;
+  /** #10179: índice do envio no ciclo e se a frase do "quero" foi no HTML —
+   *  ecoados da entrada da campanha pra o relatório do caller. */
+  envioIndex?: number;
+  queroIncluded?: boolean;
   cycleTotals: { created: number; scheduled: number; sent: number };
 }
 
@@ -721,6 +737,8 @@ export function buildInvocationSummary(
     phase,
     status: campaign?.status,
     scheduledAt: campaign?.scheduledAt ?? null,
+    ...(campaign?.envioIndex !== undefined ? { envioIndex: campaign.envioIndex } : {}),
+    ...(campaign?.queroIncluded !== undefined ? { queroIncluded: campaign.queroIncluded } : {}),
     cycleTotals: {
       created: allCampaigns.length,
       scheduled: allCampaigns.filter((c) => c.status === "scheduled").length,
@@ -1338,6 +1356,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const byKey = new Map(campaigns.map((c) => [c.key, c]));
   const existing = byKey.get(key);
 
+  // #10179: frase do "quero" — fora do 1º envio do ciclo, presente do 2º em
+  // diante. O índice sai da ordem das ondas em group-campaigns.json (células
+  // da mesma onda = mesmo envio); `--envio-index N` sobrepõe (recuperação
+  // manual, ou onda montada fora deste script). Só o `htmlContent` gravado
+  // por --create/--update-html muda; o cloudflare-preview.html fica intacto.
+  const envioIndexOverride = getIntArg(argv, "envio-index", { min: 1 });
+  const quero = applyQueroPhrase(
+    html,
+    envioIndexOverride ?? existing?.envioIndex ?? resolveEnvioIndex(campaigns.map((c) => c.key), key),
+  );
+  html = quero.html;
+  console.error(`ℹ ${key}: ${describeQueroApplication(quero)}`);
+
   // --- Plano (sempre imprime) ---
   console.error(
     `\n📋 Campanha grupo — key='${key}'  listId=${listId}` +
@@ -1440,7 +1471,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         console.error(`✓ ${key} → campanha #${campaignId} (rascunho)`);
       }
 
-      const c: CampaignEntry = { key, campaignId, listId, subject, scheduledAt, status: "draft" };
+      const c: CampaignEntry = {
+        key,
+        campaignId,
+        listId,
+        subject,
+        scheduledAt,
+        status: "draft",
+        envioIndex: quero.envioIndex,
+        queroIncluded: quero.included,
+      };
       campaigns.push(c);
       byKey.set(key, c);
       // #3228: segmentsDir já existe no fluxo --group (criado por
@@ -1463,6 +1503,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       console.error(`⚠️  ${key} já ${c.status === "sent" ? "disparada" : "agendada"} — html NÃO atualizado`);
     } else {
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { htmlContent: html });
+      c.envioIndex = quero.envioIndex;
+      c.queroIncluded = quero.included;
+      writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
       console.error(`✓ ${key} html atualizado (campanha #${c.campaignId})`);
     }
   }
