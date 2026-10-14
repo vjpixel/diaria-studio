@@ -1540,7 +1540,17 @@ const TUTORIAL_ACTION_VERBS_PT =
 // (enumeração de recurso), não how-to — medido no replay (#9882) contra
 // "Gemini no Chrome chega ao Brasil…" (260611, RADAR), que regredia quando
 // os verbos entraram em TUTORIAL_ACTION_VERBS_PT (que vale título+summary).
-const TITLE_HOWTO_EXTRA_RE = /(?<!,\s*)\bcomo\s+(?:transcrever|resumir)\b/i;
+//
+// #5995/#10163 (14/10/2026, direção RADAR → USE MELHOR decidida pelo editor):
+// mais verbos de USO pelo leitor final, cada um com caso real que o editor
+// publicou em USE MELHOR e que caía em noticias-default/tie-breaker radar —
+// "Como gravar, transcrever e resumir reuniões com IA" (260915), "…entenda o
+// viés de bajulação e como obter respostas críticas" (260904), "…Como passar
+// pela triagem sem tentar 'enganar' a IA" (260728), "…saiba como salvar o seu"
+// (260929), "…o que você está entregando de graça para a IA e como se
+// proteger" (261014). Mesma restrição (só título, nunca depois de vírgula).
+// Medição no PR: gabarito #8419 (02-reviewed.md) 0 regressões.
+const TITLE_HOWTO_EXTRA_RE = /(?<!,\s*)\bcomo\s+(?:transcrever|resumir|gravar|obter|passar|salvar|se\s+proteger)\b/i;
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1649,9 +1659,41 @@ const PROMPTS_QUE_TITLE_RE = new RegExp(`\\b${PT_LISTICLE_COUNT}\\s+prompts?\\s+
 // Atribuição típica de reportagem ("segundo X", "aponta pesquisa", "revela").
 const NEWS_REPORT_TITLE_RE = /\b(?:segundo|pesquisadores?|revelam?|apontam?|estudo|levantamento)\b/i;
 
+// #5995/#10163 (14/10/2026, direção RADAR → USE MELHOR decidida pelo editor:
+// "how-to/listicle em PT para usuário final que hoje cai em noticias-default").
+// Formas de GUIA em PT-BR pelo TÍTULO, cada uma com caso real publicado em USE
+// MELHOR (gabarito #8419: seção final em 02-reviewed.md):
+//   - "N funções de/do/da" — "Sete funções de IA no celular para facilitar a
+//     rotina" (260716);
+//   - "por onde começar" — "IA para iniciantes: por onde começar do zero" (260702);
+//   - "testei/testamos N ferramentas|IAs|apps|plataformas" — "IA para criar
+//     apps: testei 7 ferramentas" (260702);
+//   - "conheça [N] ferramentas|apps|IAs que" — "IA para estudos: conheça
+//     ferramentas que podem ajudar a aprender melhor" (260902);
+//   - "<X> na prática:" — "Lovable na prática: o guia para profissionais
+//     criarem apps…" (260806).
+// Testado e deixado de fora por regredir no corpus (ver PR): "N coisas que"
+// ("Sete coisas que você nunca deve digitar no ChatGPT" é RADAR), "N melhores
+// ferramentas/IAs" (4 rankings que o editor manteve em RADAR), "cursos
+// gratuitos" e "como se inscrever" (vagas/residência de universidade em RADAR).
+// "^Como funciona o/a <recurso>" acertaria 2 casos publicados em USE MELHOR
+// ("Como funciona a memória do Claude?", 260928), mas contradiz o guard
+// existente de test/5995-regression-guard.test.ts ("Como funciona a nova versão
+// do ChatGPT" → notícia) e o gabarito do Stage 1 — fica pra decisão à parte.
+const PT_USER_GUIDE_TITLE_RE = new RegExp(
+  `\\b${PT_LISTICLE_COUNT}\\s+fun[çc][õo]es\\s+(?:de|do|da)\\b` +
+    "|\\bpor\\s+onde\\s+come[çc]ar\\b" +
+    `|\\btest(?:ei|amos)\\s+${PT_LISTICLE_COUNT}\\s+(?:ferramentas|ias|apps|plataformas)\\b` +
+    "|\\bconhe[çc]a\\s+(?:\\d+\\s+)?(?:ferramentas|apps|ias)\\s+que\\b" +
+    "|\\bna\\s+pr[áa]tica:",
+  "i",
+);
+
 function isUsageGuideTitle(title: string): boolean {
   return (
-    USAGE_GUIDE_TITLE_RE.test(title) || (PROMPTS_QUE_TITLE_RE.test(title) && !NEWS_REPORT_TITLE_RE.test(title))
+    USAGE_GUIDE_TITLE_RE.test(title) ||
+    PT_USER_GUIDE_TITLE_RE.test(title) ||
+    (PROMPTS_QUE_TITLE_RE.test(title) && !NEWS_REPORT_TITLE_RE.test(title))
   );
 }
 
