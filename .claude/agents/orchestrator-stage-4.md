@@ -917,13 +917,13 @@ SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{ED
 npx tsx scripts/check-invariants.ts --stage 4 --rule intentional-error-present-in-final --edition-dir {EDITION_DIR}/
 ```
 Exit 1 (violação `error` — o item com `wrong_value` sumiu do texto): **NÃO escrever o sentinel abaixo.** Dois caminhos, pelo mesmo motivo que o fact-check `NOT_FOUND_IN_SOURCE` (exit 2, §4c.6 acima) já distingue:
-- **Gate interativo (`auto_approve = false`):** apresentar a violação ao editor com as duas saídas já descritas na mensagem (#7243): (a) replantar o erro em outro item do `02-reviewed.md` atual e atualizar `wrong_value`/`correct_value`/`location` em `_internal/intentional-error.json` de acordo, ou (b) declarar a edição sem erro (`{"no_error": true}` em `_internal/intentional-error.json`) — depois repetir esta checagem até exit 0 antes de prosseguir.
+- **Gate interativo (`auto_approve = false`):** apresentar a violação ao editor com as duas saídas já descritas na mensagem (#7243): (a) replantar o erro em outro item do `02-reviewed.md` atual — via `npx tsx scripts/replant-intentional-error.ts --edition-dir {EDITION_DIR}/` (#10176/#10213: troca a menção no MD, reescreve "Nessa edição, …", grava `_internal/intentional-error.json` e a entry da edição no `data/intentional-errors.jsonl` num lote verificado; `--dry-run` só mostra o candidato; exit 1 = sem candidato, erro antigo ainda no texto ou MD alterado no meio — aí replantar à mão), ou (b) declarar a edição sem erro (`{"no_error": true}` em `_internal/intentional-error.json`) — depois repetir esta checagem até exit 0 antes de prosseguir.
 - **`auto_approve = true` (`--no-gates`, rodada agendada/headless):** não há editor no gate pra apresentar a violação (mesma lacuna que o exit 2 do fact-check já cobre — não inventar um padrão novo). Parar e renderizar halt banner (#738):
   ```bash
   npx tsx scripts/render-halt-banner.ts \
     --stage "4 — Revisão" \
     --reason "intentional-error-present-in-final: item com wrong_value sumiu de 02-reviewed.md (provável poda editorial)" \
-    --action "replante o erro em outro item OU declare {\"no_error\": true} em _internal/intentional-error.json, depois re-rode /diaria-4-revisao"
+    --action "replante o erro em outro item (scripts/replant-intentional-error.ts) OU declare {\"no_error\": true} em _internal/intentional-error.json, depois re-rode /diaria-4-revisao"
   ```
   **Nunca prosseguir pra Etapa 5 sozinho neste caso** — publicar um reveal falso na edição seguinte é exatamente o dano que este invariante existe pra prevenir (#7243); "sem editor pra perguntar, então segue" reproduziria em modo headless o mesmo buraco que o incidente 260902 já expôs em modo interativo.
 

@@ -109,6 +109,53 @@ export function loadIntentionalErrors(path: string): IntentionalError[] {
 }
 
 /**
+ * (#10213) Leitura ESTRITA do JSONL para quem vai REESCREVÊ-LO. Ao contrário de
+ * `loadIntentionalErrors` (fail-soft, pra leitores), aqui um arquivo que existe
+ * mas não pode ser lido (ex: travado pelo OneDrive) LANÇA — reescrever o JSONL a
+ * partir de `[]` apagaria o histórico do concurso. Devolve também o texto cru,
+ * pra que a reescrita preserve linhas que o parse tolerante descartaria
+ * (corrompidas / sem `edition`).
+ */
+export function readIntentionalErrorsJsonlStrict(path: string): {
+  raw: string | null;
+  entries: IntentionalError[];
+  unparsedLines: number;
+} {
+  if (!existsSync(path)) return { raw: null, entries: [], unparsedLines: 0 };
+  const raw = readFileSync(path, "utf8"); // lança em erro de leitura, de propósito
+  const entries = parseIntentionalErrorsJsonl(raw);
+  const nonEmpty = raw.split("\n").filter((l) => l.trim()).length;
+  return { raw, entries, unparsedLines: nonEmpty - entries.length };
+}
+
+/**
+ * (#10213) Pure: substitui no TEXTO CRU do JSONL só as linhas da `edition` dada
+ * (qualquer `source`) por `entry`, que vai ao fim. Toda outra linha não-vazia é
+ * preservada VERBATIM — inclusive as que não parseiam ou não têm `edition`, que
+ * `parseIntentionalErrorsJsonl` descartaria em silêncio.
+ */
+export function replaceEditionInJsonlRaw(
+  raw: string | null,
+  edition: string,
+  entry: IntentionalError,
+): string {
+  const kept: string[] = [];
+  for (const line of (raw ?? "").split("\n")) {
+    if (!line.trim()) continue;
+    let isThisEdition = false;
+    try {
+      const parsed = JSON.parse(line) as Partial<IntentionalError> | null;
+      isThisEdition = !!parsed && typeof parsed === "object" && parsed.edition === edition;
+    } catch {
+      // linha corrompida → preservada como está
+    }
+    if (!isThisEdition) kept.push(line.replace(/\r$/, ""));
+  }
+  kept.push(JSON.stringify(entry));
+  return kept.join("\n") + "\n";
+}
+
+/**
  * Pure: filtra erros declarados pra uma edição específica.
  */
 export function intentionalErrorsForEdition(

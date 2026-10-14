@@ -301,7 +301,14 @@ forem necessárias até esgotar o pool:
    Resposta com critério → comentário `decisao-editor` + `route-issue
    --track overnight --motivo triada` (a issue volta à fila com direção);
    "nem eu destravo" → mantém `fora-de-rodada` com `--motivo sem-direcao`
-   (nunca sem `--motivo`, que aplicaria `on-hold`).
+   (nunca sem `--motivo`, que aplicaria `on-hold`) **e** comenta na issue o
+   marcador `acao-adiada` (#10216), gerado por
+   `npx tsx scripts/lib/issue-decisions.ts --print-acao-adiada-marker --acao "definir o critério de direção (sem-direcao-acionavel)" --motivo "nem eu destravo" --sessao develop`.
+   Sem o marcador, a próxima varredura não acha nada na thread e devolve a
+   issue a `precisaPergunta` — a mesma pergunta toda rodada. Com ele, a
+   issue cai em `acaoAdiada` e só volta à bateria depois de
+   `ACAO_ADIADA_COOLDOWN_DAYS` (7 dias). A label sozinha não serve de
+   memória: `sem-direcao-acionavel` continua lá antes e depois da resposta.
 
 **Toda pergunta traz uma recomendação (#8909, adendo do editor, 28/09/2026).**
 A opção recomendada vem em 1º lugar, com o sufixo "(Recomendado)" e uma
@@ -413,7 +420,8 @@ estourou".
   `formatAcaoAdiadaMarker` (`scripts/lib/issue-decisions.ts`) com a ação
   pedida e o motivo, se ele deu um. Não rotear nada — o track não mudou. O
   marcador some sozinho depois de `ACAO_ADIADA_COOLDOWN_DAYS` (7 dias) ou
-  quando um sintoma novo aparecer.
+  quando um sintoma novo aparecer. Mesmo marcador para o "nem eu destravo"
+  da pergunta de direção do Passo 3 (#10216) — ali o track também fica.
 - **"Não é isso, o problema é outro"**: a ação que imaginamos estava errada.
   Isso é informação de conteúdo, não adiamento — comentar o que o editor
   disse e rotear conforme, **nunca** gravar `acao-adiada` (senão a issue

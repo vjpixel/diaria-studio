@@ -28,17 +28,72 @@ const ENTITIES: Record<string, string> = {
   "&nbsp;": " ", "&amp;": "&", "&uacute;": "ú", "&eacute;": "é", "&Eacute;": "É", "&Uacute;": "Ú",
 };
 
-/** Restringe a <article>/<main> quando existir (evita rodapé/widgets de anúncio do portal). */
+function decodeCodePoint(cp: number, original: string): string {
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return original; // fora do intervalo Unicode
+  }
+}
+
+/**
+ * #10215: quantos caracteres de HTML ANTES do bloco principal entram no escopo —
+ * o selo "Conteúdo patrocinado"/"Publieditorial" costuma ficar num header logo
+ * fora do `<article>`. Curto o bastante pra não puxar o menu/rodapé do portal.
+ */
+const PRE_ARTICLE_WINDOW = 1500;
+
+/** Blocos `<article>`/`<main>` com fechamento casado por profundidade (aninhamento ok). */
+function scopeBlocks(html: string): Array<{ start: number; end: number }> {
+  const blocks: Array<{ start: number; end: number }> = [];
+  const openRe = /<(article|main)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = openRe.exec(html))) {
+    const tag = m[1].toLowerCase();
+    const tagRe = new RegExp(`<(/?)${tag}\\b[^>]*>`, "gi");
+    tagRe.lastIndex = m.index;
+    let depth = 0;
+    let t: RegExpExecArray | null;
+    while ((t = tagRe.exec(html))) {
+      depth += t[1] ? -1 : 1;
+      if (depth === 0) {
+        blocks.push({ start: m.index, end: t.index + t[0].length });
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+/**
+ * Restringe ao bloco principal (evita rodapé/widgets de anúncio do portal).
+ * #10215: o principal é o maior `<article>`/`<main>` que contém o `<h1>` (ou o
+ * maior de todos, sem `<h1>` dentro de nenhum) — não o PRIMEIRO, que em muitos
+ * portais é um card de conteúdo relacionado — mais uma janela antes dele, onde
+ * costuma ficar o selo de patrocínio.
+ */
 function articleScope(html: string): string {
-  const m = html.match(/<(article|main)\b[\s\S]*?<\/\1>/i);
-  return m ? m[0] : html;
+  const blocks = scopeBlocks(html);
+  if (blocks.length === 0) return html;
+  const h1 = html.search(/<h1\b/i);
+  const withH1 = h1 >= 0 ? blocks.filter((b) => b.start <= h1 && h1 < b.end) : [];
+  const pool = withH1.length > 0 ? withH1 : blocks;
+  const main = pool.reduce((a, b) => (b.end - b.start > a.end - a.start ? b : a));
+  let from = Math.max(0, main.start - PRE_ARTICLE_WINDOW);
+  if (from > 0) {
+    // Não começar no meio de uma tag (atributo viraria "texto visível").
+    const nextTag = html.indexOf("<", from);
+    from = nextTag >= 0 && nextTag < main.start ? nextTag : main.start;
+  }
+  return html.slice(from, main.end);
 }
 
 function visibleText(html: string): string {
   return articleScope(html)
     .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (e, n) => decodeCodePoint(parseInt(n, 16), e))
+    .replace(/&#(\d+);/g, (e, n) => decodeCodePoint(Number(n), e))
     .replace(/&[a-zA-Z]+;/g, (e) => ENTITIES[e] ?? e)
     .replace(/\s+/g, " ");
 }
