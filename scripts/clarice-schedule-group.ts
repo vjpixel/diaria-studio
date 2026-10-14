@@ -56,7 +56,8 @@
  *                      campanha em draft — propaga fix de render pós-create.
  *   --envio-index N    #10179: força o índice do envio no ciclo (1-based).
  *                      Sem a flag, sai da ordem das ondas em
- *                      group-campaigns.json. Decide a frase do "quero" no
+ *                      group-campaigns.json que de fato saíram (#10189:
+ *                      rascunho nunca disparado não conta). Decide a frase do "quero" no
  *                      `htmlContent` (fora no 1º envio, presente do 2º em
  *                      diante — `scripts/lib/clarice-quero-phrase.ts`).
  *   --send-test        manda test email pro `brevo_monthly.test_email` do
@@ -215,7 +216,7 @@ import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
-import { applyQueroPhrase, describeQueroApplication, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179
+import { applyQueroPhrase, describeQueroApplication, envioWentOut, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189
 
 loadProjectEnv();
 
@@ -249,7 +250,8 @@ export interface CampaignEntry {
    *  liberar um 2º POST dentro de `SEND_NOW_GUARD_WINDOW_MS`. */
   sendNowAttemptedAt?: string;
   /** #10179: índice (1-based) do envio desta campanha no ciclo — células da
-   *  mesma onda compartilham o índice (`resolveEnvioIndex`). Gravado no
+   *  mesma onda compartilham o índice (`resolveEnvioIndex`; só ondas que
+   *  saíram contam, #10189). Gravado no
    *  `--create`/`--update-html`; ausente em campanhas anteriores ao #10179. */
   envioIndex?: number;
   /** #10179: a frase do "quero" foi no `htmlContent` desta campanha. */
@@ -1357,14 +1359,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const existing = byKey.get(key);
 
   // #10179: frase do "quero" — fora do 1º envio do ciclo, presente do 2º em
-  // diante. O índice sai da ordem das ondas em group-campaigns.json (células
-  // da mesma onda = mesmo envio); `--envio-index N` sobrepõe (recuperação
-  // manual, ou onda montada fora deste script). Só o `htmlContent` gravado
-  // por --create/--update-html muda; o cloudflare-preview.html fica intacto.
+  // diante. O índice sai da ordem das ondas em group-campaigns.json que DE
+  // FATO SAÍRAM (#10189 — rascunho esquecido não conta; células da mesma
+  // onda = mesmo envio); `--envio-index N` sobrepõe (recuperação manual, ou
+  // onda montada fora deste script). O índice gravado só é reusado quando a
+  // campanha já saiu: um rascunho recalcula, porque o índice dele foi
+  // calculado num estado do ciclo que pode ter mudado (#10189). Só o
+  // `htmlContent` gravado por --create/--update-html muda; o
+  // cloudflare-preview.html fica intacto.
   const envioIndexOverride = getIntArg(argv, "envio-index", { min: 1 });
+  const storedEnvioIndex = existing && envioWentOut(existing) ? existing.envioIndex : undefined;
   const quero = applyQueroPhrase(
     html,
-    envioIndexOverride ?? existing?.envioIndex ?? resolveEnvioIndex(campaigns.map((c) => c.key), key),
+    envioIndexOverride ?? storedEnvioIndex ?? resolveEnvioIndex(campaigns, key),
   );
   html = quero.html;
   console.error(`ℹ ${key}: ${describeQueroApplication(quero)}`);

@@ -36,12 +36,12 @@ function containsQueroMarker(html: string): boolean {
 
 test('#10179 aceite: num ciclo com 3 envios, o 1º sai sem `dizendo "quero"` e o 2º e 3º com', () => {
   // Ondas do ciclo na ordem de criação, como em group-campaigns.json.
-  const history: string[] = [];
+  const history: { key: string; status: string }[] = [];
   const outputs: string[] = [];
   for (const key of ["d1-sab03", "d2-dom04", "novos-261005-0900"]) {
     const idx = resolveEnvioIndex(history, key);
     outputs.push(applyQueroPhrase(HTML, idx).html);
-    history.push(key);
+    history.push({ key, status: "sent" });
   }
   assert.equal(containsQueroMarker(outputs[0]), false, "envio 1 não pode ter a frase");
   assert.equal(containsQueroMarker(outputs[1]), true, "envio 2 tem a frase");
@@ -103,10 +103,11 @@ test("#10179 células da mesma onda são o MESMO envio; key já registrada é es
   assert.equal(sendSlotOf("d6-qui06-VB"), "d6-qui06");
   assert.equal(sendSlotOf("novos-261005-0900"), "novos-261005-0900");
 
+  const out = (...keys: string[]) => keys.map((key) => ({ key, status: "scheduled" }));
   assert.equal(resolveEnvioIndex([], "d1-sab03-A"), 1);
-  assert.equal(resolveEnvioIndex(["d1-sab03-A"], "d1-sab03-B"), 1, "outra célula da onda 1 ainda é o envio 1");
-  assert.equal(resolveEnvioIndex(["d1-sab03-A", "d1-sab03-B", "d1-sab03-C"], "d2-dom04-A"), 2);
-  assert.equal(resolveEnvioIndex(["d1-sab03-A", "d2-dom04-A"], "d1-sab03-A"), 1, "re-execução idempotente mantém o índice");
+  assert.equal(resolveEnvioIndex(out("d1-sab03-A"), "d1-sab03-B"), 1, "outra célula da onda 1 ainda é o envio 1");
+  assert.equal(resolveEnvioIndex(out("d1-sab03-A", "d1-sab03-B", "d1-sab03-C"), "d2-dom04-A"), 2);
+  assert.equal(resolveEnvioIndex(out("d1-sab03-A", "d2-dom04-A"), "d1-sab03-A"), 1, "re-execução idempotente mantém o índice");
 });
 
 test("#10179 resumo da invocação ecoa envioIndex/queroIncluded pra o relatório do caller", () => {

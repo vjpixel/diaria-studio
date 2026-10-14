@@ -20,11 +20,17 @@
  * no momento em que o `htmlContent` vai pra campanha (`--create`/`--update-html`).
  *
  * O que conta como "envio do ciclo": cada ONDA registrada em
- * `segments/group-campaigns.json` do ciclo (`Clarice {yymm} grupo:{key}`), na
- * ordem em que foi criada — rampa `d{N}-...` e `novos-...` juntas. As células
- * de uma mesma onda (`-A`/`-B`/`-C` de assunto, `-H{HH}` de horário,
- * `-VA`/`-VB` de conteúdo) são o MESMO envio: saem no mesmo dia, para fatias
- * disjuntas da mesma onda, e por isso recebem o mesmo índice.
+ * `segments/group-campaigns.json` do ciclo (`Clarice {yymm} grupo:{key}`) que
+ * DE FATO SAIU (ou está na fila da Brevo) — `status` `sent`/`scheduled`, ou
+ * `sendNowAcceptedAt` gravado (#10189) —, na ordem em que foi criada, mais a
+ * onda da key atual. Rascunho que nunca saiu não ocupa posição: antes do
+ * #10189 um `novos-*` em `draft` esquecido levava o índice 1 e nenhum
+ * destinatário recebia a versão sem a frase. Rampa `d{N}-...` e `novos-...`
+ * contam juntas (definição do item 1 do #10179, mantida no #10189): um
+ * `novos` que saiu antes da `d1` É o 1º envio do ciclo. As células de uma
+ * mesma onda (`-A`/`-B`/`-C` de assunto, `-H{HH}` de horário, `-VA`/`-VB` de
+ * conteúdo) são o MESMO envio: saem no mesmo dia, para fatias disjuntas da
+ * mesma onda, e por isso recebem o mesmo índice.
  */
 
 /** Índice (1-based) do envio no ciclo a partir do qual a frase entra. */
@@ -81,19 +87,41 @@ export function sendSlotOf(key: string): string {
   return key.trim().replace(CELL_SUFFIX_RE, "");
 }
 
+/** Entrada de `group-campaigns.json` vista pela contagem de envios. */
+export interface EnvioHistoryEntry {
+  key: string;
+  status?: string;
+  /** ISO do POST `sendNow` aceito (#9638) — envio imediato que já saiu. */
+  sendNowAcceptedAt?: string;
+}
+
 /**
- * Índice (1-based) do envio de `key` no ciclo, dado o histórico de keys do
- * ciclo na ordem em que as campanhas foram criadas (`group-campaigns.json`).
- *
- * - key já registrada (re-execução idempotente, `--update-html`) → a posição
- *   do envio dela, estável entre chamadas;
- * - key nova de uma onda já registrada (outra célula) → o índice da onda;
- * - key de onda nova → número de ondas já registradas + 1.
+ * A campanha de fato saiu (ou está na fila da Brevo)? `sent`/`scheduled`, ou
+ * um `sendNow` aceito — o status local pode ainda dizer `draft` se o
+ * GET-verify pós-`sendNow` não chegou a gravar `sent` (#9638). `draft` sem
+ * `sendNowAcceptedAt` nunca saiu e não ocupa posição no ciclo (#10189).
  */
-export function resolveEnvioIndex(existingKeysInOrder: readonly string[], key: string): number {
+export function envioWentOut(entry: EnvioHistoryEntry): boolean {
+  if (entry.status === "sent" || entry.status === "scheduled") return true;
+  return typeof entry.sendNowAcceptedAt === "string" && entry.sendNowAcceptedAt.length > 0;
+}
+
+/**
+ * Índice (1-based) do envio de `key` no ciclo, dado o histórico do ciclo na
+ * ordem em que as campanhas foram criadas (`group-campaigns.json`).
+ *
+ * Só contam as ondas que SAÍRAM (`envioWentOut`, #10189) — rascunho
+ * esquecido não gasta a exceção do 1º envio.
+ *
+ * - key de uma onda que já saiu (re-execução, outra célula, reapply de uma
+ *   campanha agendada) → a posição dessa onda entre as que saíram;
+ * - key de onda que ainda não saiu → número de ondas que saíram + 1.
+ */
+export function resolveEnvioIndex(history: readonly EnvioHistoryEntry[], key: string): number {
   const slots: string[] = [];
-  for (const k of existingKeysInOrder) {
-    const s = sendSlotOf(k);
+  for (const entry of history) {
+    if (!envioWentOut(entry)) continue;
+    const s = sendSlotOf(entry.key);
     if (!slots.includes(s)) slots.push(s);
   }
   const mine = sendSlotOf(key);
