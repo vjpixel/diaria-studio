@@ -63,6 +63,7 @@ import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/
 import { sameEvent, SAME_EDITION } from "./lib/event-dedup.ts";
 // #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
 import { groupSameStory } from "./lib/story-grouping.ts";
+import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -1193,7 +1194,7 @@ export interface SecondaryIntraBucketResult {
  * PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui nome de
  * modelo, exclui empresa/genéricos). Em caso de match, mantém o item com
  * `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que NÃO é
- * model-card/hub page (`isModelCardOrHubPage`). Empate residual: mantém o
+ * model-card/hub page (`isModelCardOrHubPage`). **#10162: antes de tudo isso, URL oficial (`isOfficialLancamentoUrl`) vence cobertura quando só um dos dois é oficial.** Empate residual: mantém o
  * primeiro da lista (ordem estável).
  *
  * **`options.strict` (#4675 review, fix de regressão do #4667):** o
@@ -1295,8 +1296,17 @@ export function dedupSecondaryIntraBucket(
       const aHasSummary = !!(a.summary && a.summary.trim().length > 0);
       const bHasSummary = !!(b.summary && b.summary.trim().length > 0);
 
+      // #10162: fonte oficial sempre vence a cobertura da mesma história,
+      // antes de qualquer critério de summary/model-card. Só decide quando
+      // EXATAMENTE um dos dois é oficial (whitelist de official-domains.ts) —
+      // nunca presume oficial sem verificar.
+      const aIsOfficial = isOfficialLancamentoUrl(a.url);
+      const bIsOfficial = isOfficialLancamentoUrl(b.url);
+
       let keepA: boolean;
-      if (aHasSummary !== bHasSummary) {
+      if (aIsOfficial !== bIsOfficial) {
+        keepA = aIsOfficial;
+      } else if (aHasSummary !== bHasSummary) {
         keepA = aHasSummary;
       } else {
         const aIsModelCard = isModelCardOrHubPage(a.url);

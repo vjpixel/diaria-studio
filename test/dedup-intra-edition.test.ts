@@ -1843,6 +1843,32 @@ describe("isModelCardOrHubPage (#4360)", () => {
 });
 
 describe("dedupSecondaryIntraBucket (#4360, generalizado #4667)", () => {
+  it("#10162: fonte oficial vence cobertura mesmo quando só a cobertura tem summary", () => {
+    const articles = [
+      {
+        url: "https://www.canaltech.com.br/inteligencia-artificial/openai-lanca-gpt-5-5-turbo/",
+        title: "OpenAI lança GPT-5.5 Turbo com contexto maior",
+        summary: "A OpenAI anunciou o GPT-5.5 Turbo.",
+      },
+      {
+        url: "https://openai.com/index/gpt-5-5-turbo/",
+        title: "OpenAI lança GPT-5.5 Turbo com contexto maior",
+      },
+    ];
+    const { kept, removed } = dedupSecondaryIntraBucket(articles);
+    assert.equal(removed.length, 1);
+    assert.equal(kept[0].url, "https://openai.com/index/gpt-5-5-turbo/");
+  });
+
+  it("#10162: sem oficial verificado, mantém o critério anterior (summary)", () => {
+    const articles = [
+      { url: "https://tecnoblog.net/a", title: "Claude caiu hoje de manhã" },
+      { url: "https://canaltech.com.br/b", title: "Claude caiu hoje de manhã", summary: "x" },
+    ];
+    const { kept } = dedupSecondaryIntraBucket(articles);
+    assert.equal(kept[0].url, "https://canaltech.com.br/b");
+  });
+
   it("CASO REAL: consolida model-card + post oficial do mesmo lançamento (Gemini Robotics ER 2)", () => {
     const articles = [
       {
