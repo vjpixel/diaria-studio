@@ -15,8 +15,8 @@
  * editor trocando a URL secundária pela oficial à mão no gate 4.
  *
  * Mecanismo (determinístico, sem Agent): para cada destaque do top-N cuja
- * manchete cita uma empresa conhecida (`detectDomainMismatchCandidate`) ou que
- * já tem `suggested_primary_domain`, roda 1 query Brave
+ * manchete tem verbo de lançamento E já traz `suggested_primary_domain`
+ * (#10141: empresa citada sozinha não basta), roda 1 query Brave
  * `site:{domínio oficial} {título}` e aplica a regra de
  * `choosePrimarySource` (#5664): resultado no domínio oficial (ou subdomínio)
  * E mesmo assunto — similaridade de título >= 0,60 OU o MESMO produto com
@@ -25,7 +25,7 @@
  * "GPT-5"; #10145: só o produto SUJEITO da manchete conta — versão anterior
  * ou plataforma citadas depois ("que o Haiku 4.5", "no Windows 11") nunca
  * casam, e variantes da mesma versão ("2.5 Flash" ↔ "2.5 Pro") são
- * distintas). #10141: o matcher do dedup intra-edição (`isIntraEditionDuplicate`)
+ * distintas; #10205: nada após `,;:` quando a 1ª oração já tem verbo de lançamento). #10141: o matcher do dedup intra-edição (`isIntraEditionDuplicate`)
  * NÃO serve aqui — os ramos `cross_vehicle`/`entity` aceitavam "mesma empresa
  * + 1 palavra" e trocavam manchete de processo/multa/demissão por página de
  * produto sem relação. Só roda para destaque com `suggested_primary_domain`
