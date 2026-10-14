@@ -143,6 +143,8 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 
 ### Etapa 5b — Publicação paralela (#38)
 
+**Antes de tudo, o PR da página do site (§5b-site do playbook, #10160):** `publish-edition-site-page.ts --slug-from-d1 --sitemap ... --no-wait-merge` abre o PR e devolve na hora — nada no dispatch espera o merge; o merge trava o fim do Stage 6 (§6c-site + invariante `site-page-pr-merged`).
+
 **Newsletter primeiro (ordem obrigatória, #2454 — `{edition_url}` só existe depois do draft), depois todos os canais sociais + Brevo + Kit diária em uma única mensagem:**
 
 1. **Newsletter** — Beehiiv (`context/publishers/beehiiv-playbook.md`, você lê e executa direto — **não tente dispatchar via `Agent`**, `javascript_tool` é restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Desde #4196 o fetch roda com timeout (`AbortController`, 25s) e qualquer falha aciona o fallback chunked automaticamente, sem seleção manual. Editor finaliza metadata na UI) OU Kit (`publish-newsletter-kit.ts --send-test`), conforme `publishing.newsletter.backend`.

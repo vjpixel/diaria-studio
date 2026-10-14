@@ -24,6 +24,7 @@ import {
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
+  checkSitePagePrMerged,
   buildKitDraftStaleMessage,
   readKitDiariaState,
   isBrevoDiariaActiveForEdition,
@@ -56,7 +57,8 @@ describe("STAGE_6_RULES registry (#4574)", () => {
     assert.ok(ids.includes("site-sitemap-no-orphans"));
     assert.ok(ids.includes("sync-code-ran"));
     assert.ok(ids.includes("kit-draft-fresh"));
-    assert.equal(ids.length, 9, `esperava 9 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes("site-page-pr-merged"));
+    assert.equal(ids.length, 10, `esperava 10 regras no Stage 6, achei: ${JSON.stringify(ids)}`);
   });
 
   it("contém a entry site-page-published, stage 6, source_issue #7578 (GATE-BLOCKING desde a decisão do editor de 07/09/2026)", () => {
@@ -316,116 +318,13 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("REGRESSÃO #9326: published:true + merged:false SEM prUrl não passa limpo — warning com o mergeBlocker", () => {
-    writeFileSync(
-      join(fixture, "_internal", "site-page-published.json"),
-      JSON.stringify({
-        code: 0,
-        slug: "abc",
-        published: true,
-        merged: false,
-        mergeReason: "sem prNumber — nada a mergear",
-        mergeBlocker: "BLOQUEIO: PR da página do site não identificado — verificar branch site-publish/abc",
-        checked_at: new Date().toISOString(),
-      }),
-    );
-    const v = checkSitePagePublished(fixture);
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "site-page-merge-pending");
-    assert.equal(v[0].severity, "warning");
-    assert.equal(v[0].source_issue, "#9326");
-    assert.match(v[0].message, /site-publish\/abc/);
-    rmSync(fixture, { recursive: true, force: true });
-  });
-
-  it("#9326: merged:false sem mergeBlocker gravado (arquivo antigo) ainda acusa, derivando a mensagem", () => {
+  it("#10160: published:true + merged:false não é mais assunto desta regra — virou site-page-pr-merged", () => {
     writeFileSync(
       join(fixture, "_internal", "site-page-published.json"),
       JSON.stringify({ code: 0, slug: "abc", published: true, merged: false }),
     );
-    const v = checkSitePagePublished(fixture);
-    assert.equal(v.length, 1);
-    assert.equal(v[0].rule, "site-page-merge-pending");
-    assert.match(v[0].message, /PR não identificado/);
+    assert.deepEqual(checkSitePagePublished(fixture), []);
     rmSync(fixture, { recursive: true, force: true });
-  });
-
-  describe("REGRESSÃO #9429: merged:false + prUrl consulta o estado VIVO do PR", () => {
-    const writeMergePending = () =>
-      writeFileSync(
-        join(fixture, "_internal", "site-page-published.json"),
-        JSON.stringify({
-          code: 0,
-          slug: "abc",
-          published: true,
-          prUrl: "https://github.com/vjpixel/diaria-studio/pull/9415",
-          merged: false,
-          mergeBlocker: "BLOQUEIO: CI não convergiu em 120s — PR #9415 aberto",
-        }),
-      );
-
-    it("PR já MERGED (merge feito depois do JSON gravado) → 0 violations, e consulta o número certo", () => {
-      writeMergePending();
-      const asked: string[] = [];
-      const v = checkSitePagePublished(fixture, (url) => {
-        asked.push(url);
-        return "MERGED";
-      });
-      assert.deepEqual(asked, ["https://github.com/vjpixel/diaria-studio/pull/9415"]);
-      assert.equal(v.length, 0);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("PR ainda OPEN → mantém o warning site-page-merge-pending", () => {
-      writeMergePending();
-      const v = checkSitePagePublished(fixture, () => "OPEN");
-      assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "site-page-merge-pending");
-      assert.equal(v[0].severity, "warning");
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("PR CLOSED sem merge → mantém o warning", () => {
-      writeMergePending();
-      const v = checkSitePagePublished(fixture, () => "CLOSED");
-      assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "site-page-merge-pending");
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("gh falha (null) → fail-soft para o warning existente, nunca passa limpo", () => {
-      writeMergePending();
-      const v = checkSitePagePublished(fixture, () => null);
-      assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "site-page-merge-pending");
-      assert.match(v[0].message, /CI não convergiu/);
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("fetcher que lança → fail-soft para o warning", () => {
-      writeMergePending();
-      const v = checkSitePagePublished(fixture, () => {
-        throw new Error("gh: command not found");
-      });
-      assert.equal(v.length, 1);
-      assert.equal(v[0].rule, "site-page-merge-pending");
-      rmSync(fixture, { recursive: true, force: true });
-    });
-
-    it("sem prUrl o fetcher nem é chamado (nada a consultar)", () => {
-      writeFileSync(
-        join(fixture, "_internal", "site-page-published.json"),
-        JSON.stringify({ code: 0, slug: "abc", published: true, merged: false }),
-      );
-      let called = false;
-      const v = checkSitePagePublished(fixture, () => {
-        called = true;
-        return "MERGED";
-      });
-      assert.equal(called, false);
-      assert.equal(v.length, 1);
-      rmSync(fixture, { recursive: true, force: true });
-    });
   });
 
   it("passa (0 violations) quando published:true — página escrita, branch pushada, PR aberto/reusado", () => {
@@ -463,6 +362,114 @@ describe("checkSitePagePublished (#7283) — REGRESSÃO: fail-soft do §6d-site 
     assert.equal(v[0].rule, "site-page-published-parseable");
     assert.equal(v[0].severity, "error");
     rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("checkSitePagePrMerged (#10160) — a Etapa 6 não termina com o PR do site aberto", () => {
+  let fixture: string;
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+  const writeState = (state: Record<string, unknown>) =>
+    writeFileSync(join(fixture, "_internal", "site-page-published.json"), JSON.stringify(state));
+  const openPr = {
+    code: 0,
+    slug: "abc",
+    published: true,
+    prUrl: "https://github.com/vjpixel/diaria-studio/pull/9415",
+    prNumber: 9415,
+    status: "open",
+    merged: false,
+    mergeBlocker: "BLOQUEIO: CI não convergiu em 0ms — PR #9415 aberto",
+  };
+
+  it("REGRESSÃO #10160: PR OPEN → error bloqueante (recusa o sentinel do Stage 6)", () => {
+    writeState(openPr);
+    const v = checkSitePagePrMerged(fixture, () => "OPEN");
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "site-page-pr-merged");
+    assert.equal(v[0].severity, "error");
+    assert.equal(v[0].source_issue, "#10160");
+    assert.match(v[0].message, /OPEN/);
+    assert.match(v[0].message, /check-site-page-pr-gate\.ts/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("PR MERGED ao vivo (state defasado) → 0 violations, consultando a URL registrada", () => {
+    writeState(openPr);
+    const asked: string[] = [];
+    const v = checkSitePagePrMerged(fixture, (url) => {
+      asked.push(url);
+      return "MERGED";
+    });
+    assert.deepEqual(asked, ["https://github.com/vjpixel/diaria-studio/pull/9415"]);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("merged:true gravado → 0 violations sem consultar o gh", () => {
+    writeState({ ...openPr, merged: true, status: "merged" });
+    const v = checkSitePagePrMerged(fixture, () => {
+      throw new Error("não deveria consultar");
+    });
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("PR CLOSED sem merge → error", () => {
+    writeState(openPr);
+    const v = checkSitePagePrMerged(fixture, () => "CLOSED");
+    assert.equal(v.length, 1);
+    assert.match(v[0].message, /CLOSED/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("gh falha (null ou lança) → error: estado desconhecido nunca vira mergeado (#573)", () => {
+    writeState(openPr);
+    for (const fetcher of [() => null, () => { throw new Error("gh: command not found"); }]) {
+      const v = checkSitePagePrMerged(fixture, fetcher);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "error");
+      assert.match(v[0].message, /DESCONHECIDO/);
+    }
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("merged:false sem prUrl (PR não identificado) → error, sem consultar o gh", () => {
+    writeState({ code: 0, slug: "abc", published: true, merged: false });
+    let called = false;
+    const v = checkSitePagePrMerged(fixture, () => {
+      called = true;
+      return "MERGED";
+    });
+    assert.equal(called, false);
+    assert.equal(v.length, 1);
+    assert.match(v[0].message, /site-publish\/abc/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("fora do escopo (já é site-page-published ou legado): ausente, ilegível, code 2, published:false, sem merged nem prUrl", () => {
+    const never = () => {
+      throw new Error("não deveria consultar");
+    };
+    assert.deepEqual(checkSitePagePrMerged(fixture, never), []);
+    writeFileSync(join(fixture, "_internal", "site-page-published.json"), "{ not json");
+    assert.deepEqual(checkSitePagePrMerged(fixture, never), []);
+    writeState({ code: 2, published: false });
+    assert.deepEqual(checkSitePagePrMerged(fixture, never), []);
+    writeState({ code: 3, published: false, prUrl: openPr.prUrl });
+    assert.deepEqual(checkSitePagePrMerged(fixture, never), []);
+    writeState({ code: 0, published: true, slug: "abc" });
+    assert.deepEqual(checkSitePagePrMerged(fixture, never), []);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("registrada no Stage 6 sem postDispatchOnly — é ela que trava o pipeline-sentinel write --step 6", () => {
+    const entry = STAGE_6_RULES.find((r) => r.id === "site-page-pr-merged");
+    assert.ok(entry, "STAGE_6_RULES deve conter site-page-pr-merged");
+    assert.equal(entry!.stage, 6);
+    assert.ok(!entry!.postDispatchOnly, "postDispatchOnly tiraria a regra do write do sentinel (phase pre-dispatch)");
+    assert.ok(getRulesForStage(6, { phase: "pre-dispatch" }).some((r) => r.id === "site-page-pr-merged"));
   });
 });
 

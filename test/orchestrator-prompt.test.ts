@@ -303,7 +303,11 @@ describe("orchestrator-prompt (#634)", () => {
       // guard do §5c-2 evitando o fallback de URL Beehiiv-específico
       // quando o backend é Kit). Arquivo foi a 508 linhas. Teto bumped de
       // 455→525 com headroom pequeno.
-      "orchestrator-stage-5.md": 525,
+      // #10160 (14/10): +11 linhas — §5b-site nova (PR da página do site
+      // vira a 1ª ação do dispatch, sem esperar o merge): comando + o
+      // registro que o Stage 6 lê + linha no resumo. É passo EXECUTADO
+      // (antes vivia em §6b-site), não referência. Teto 525→540.
+      "orchestrator-stage-5.md": 540,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
@@ -373,7 +377,11 @@ describe("orchestrator-prompt (#634)", () => {
       // trade-off aceito pelo editor" e acrescenta a variável
       // `SITE_PUBLISH_OK` pro aviso dentro do template do gate (§6c). Arquivo
       // foi a 705 linhas — segue dentro do teto atual, sem bump.
-      "orchestrator-stage-6.md": 753,
+      // #10160 (14/10): +3 linhas líquidas — §6b-site virou "conferir o PR
+      // aberto no Stage 5" (fallback de publicação só sem registro, narrativa
+      // de mecanismo enxugada pra docs/) e ganhou a trava §6c-site antes do
+      // Schedule. Teto 753→760.
+      "orchestrator-stage-6.md": 760,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
       const budget = PER_FILE_LINE_BUDGET[file];

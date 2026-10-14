@@ -23,6 +23,14 @@
  * publicação-depois) foi apresentada e recusada em favor da versão simples
  * e simétrica ao guard de slug.
  *
+ * **#10160 (261014): passou pro INÍCIO da Etapa 5** (§5b-site do
+ * `orchestrator-stage-5.md`), com `--no-wait-merge`: abre o PR e devolve na
+ * hora (1 poll; CI pendente → waiter em background), e o resto do dispatch
+ * roda enquanto CI/review andam. O merge virou TRAVA do fim da Etapa 6:
+ * `scripts/check-site-page-pr-gate.ts` antes do Schedule + invariante
+ * `site-page-pr-merged` (bloqueante) no sentinel `.step-6-done.json`. O
+ * Stage 6 só re-roda este script como fallback (state ausente/falho).
+ *
 
  * ## O slug vem de `--slug`, nunca de `post_url` sozinho (#6202 review, problema 1)
  *
@@ -260,6 +268,7 @@
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir data/editions/AAMMDD --slug o-slug-do-post
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --skip-publish
  *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap workers/site/public/sitemap.xml
+ *   npx tsx scripts/publish-edition-site-page.ts --edition-dir ... --slug ... --sitemap ... --no-wait-merge   (Stage 5, #10160)
  *
  * #6454 (achado 04/09/2026: a flag existia desde a 1ª versão, mas só
  * STAGEAVA o arquivo pro commit — nada escrevia conteúdo nele, então o
@@ -295,6 +304,9 @@ import {
 } from "./lib/site-archive-pages.ts";
 import { buildEditionArchivePost, type EditionPageInputs } from "./lib/edition-site-page.ts";
 import { buildHomeFeed, buildIndexHtml, ARCHIVE_CARD_LIMIT } from "./lib/site-home-page.ts";
+// #10160: `--slug-from-d1` (§5b-site, antes de existir qualquer slug de post).
+import { parseDestaques } from "./extract-destaques.ts";
+import { seoSlug } from "./lib/slug.ts";
 import { evaluatePrChecksGate } from "./lib/pr-checks-gate.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { logEvent } from "./lib/run-log.ts";
@@ -1274,6 +1286,11 @@ export interface MergeAttemptResult {
    * único desfecho em que esperar mais pode resolver (vermelho, conflito,
    * erro de `gh` e PR fechado não se resolvem esperando). */
   timedOut?: boolean;
+  /** #10160: `true` só quando o `gh pr view` falhou (estado do PR
+   * DESCONHECIDO) — distingue "não deu pra verificar" de "CI vermelho /
+   * conflito / PR fechado" pra trava do Stage 6 (`check-site-page-pr-gate.ts`),
+   * que nunca trata o desconhecido como mergeado. */
+  ghError?: boolean;
 }
 
 /**
@@ -1392,6 +1409,9 @@ export function applyMergeWaiterResult(
   prNumber: number,
   result: MergeAttemptResult,
   now: Date = new Date(),
+  // #10160: a trava do Stage 6 (`check-site-page-pr-gate.ts`) reusa esta
+  // função pra gravar o merge que ela mesma fez — o rótulo diz quem mergeou.
+  sourceLabel: string = "waiter em background (#9593)",
 ): Record<string, unknown> | null {
   const statePr = parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
   if (statePr !== prNumber) return null;
@@ -1400,12 +1420,16 @@ export function applyMergeWaiterResult(
   // `merged:false`. Merge é irreversível; o desfecho ruim de um waiter tardio
   // não pode apagá-lo do state file nem ressuscitar o `mergeBlocker`.
   if (state.merged === true && !result.merged) return null;
-  const mergeReason = `waiter em background (#9593): ${result.reason}`;
+  const mergeReason = `${sourceLabel}: ${result.reason}`;
   const next: Record<string, unknown> = {
     ...state,
     merged: result.merged,
     mergeReason,
     merge_waiter_finished_at: now.toISOString(),
+    status: sitePagePrStatus({
+      merged: result.merged,
+      prUrl: typeof state.prUrl === "string" ? state.prUrl : undefined,
+    }),
   };
   const blocker = sitePageMergeBlocker({
     published: state.published === true,
@@ -1653,6 +1677,7 @@ export function waitAndMergeSitePagePr(
     } catch (e) {
       return {
         merged: false,
+        ghError: true,
         reason: `gh pr view falhou (${(e as Error).message}) — PR #${prNumber} fica aberto pra revisão manual`,
       };
     }
@@ -2242,6 +2267,10 @@ export function productionDeps(
   sleep: SleepFn = defaultSleep,
   worktreeDir?: string,
   spawnWaiter: MergeWaiterSpawner = defaultMergeWaiterSpawner,
+  // #10160: `0` (flag `--no-wait-merge`, Stage 5) = 1 único poll e, com o CI
+  // ainda pendente, delega na hora ao waiter em background — o dispatch da
+  // Etapa 5 não fica 2min parado esperando um CI que leva ~12min.
+  syncWaitMs: number = SITE_PAGE_CI_SYNC_WAIT_MS,
 ): PublishPageDeps {
   return {
     readEditionInputs,
@@ -2383,7 +2412,7 @@ export function productionDeps(
       if (prNumber === undefined) {
         return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear", fetchStale };
       }
-      const attempt = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep);
+      const attempt = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, syncWaitMs);
       let mergeReason = attempt.reason;
       if (!attempt.merged && attempt.timedOut) {
         // #9593: o job `test` leva ~12min — a espera síncrona de 2min quase
@@ -2591,6 +2620,36 @@ export function publishEditionSitePage(
  * o link `/p/{slug}` do e-mail daria 404 do mesmo jeito. Antes isso caía no
  * `null` e o gate 6 ficava verde (o único aviso era uma linha de stderr).
  */
+/**
+ * #10160: slug da página derivado do título do D1 em `02-reviewed.md` —
+ * `seoSlug(d1.title)`, o MESMO de `deriveEditionUrl` (`publish-newsletter-kit.ts`
+ * grava `05-edition-url.txt` com ele) e do link de WhatsApp que o pré-render do
+ * Stage 4 já crava no e-mail. Existe pra §5b-site rodar ANTES do dispatch da
+ * newsletter, quando nenhum slug de post existe ainda. Lança
+ * `EditionInputsInvalid` (→ `code: 4`) sem `02-reviewed.md` ou sem D1.
+ */
+export function deriveSlugFromD1(editionDirAbs: string): string {
+  const reviewedPath = join(editionDirAbs, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) throw new EditionInputsInvalid(`${reviewedPath} ausente`);
+  const destaques = parseDestaques(readFileSync(reviewedPath, "utf8"));
+  const d1 = destaques.find((d) => d.n === 1);
+  const slug = d1?.title ? seoSlug(d1.title) : "";
+  if (!slug) throw new EditionInputsInvalid(`D1 sem título parseável em ${reviewedPath}`);
+  return slug;
+}
+
+/**
+ * #10160: estado do PR da página em 1 palavra — `merged` (merge confirmado),
+ * `open` (PR identificado, ainda não mergeado — esperando CI/waiter, ou
+ * travado) ou `none` (nenhum PR identificado). Derivado, nunca fonte da
+ * verdade: a trava do Stage 6 confirma `open` ao vivo por `gh pr view`.
+ */
+export type SitePagePrStatus = "merged" | "open" | "none";
+export function sitePagePrStatus(state: { merged?: boolean; prUrl?: string }): SitePagePrStatus {
+  if (state.merged === true) return "merged";
+  return parsePrNumberFromUrl(state.prUrl) !== undefined ? "open" : "none";
+}
+
 export function sitePageMergeBlocker(state: {
   published?: boolean;
   merged?: boolean;
@@ -2638,6 +2697,13 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     published: "published" in result ? result.published : false,
     reason: "reason" in result ? result.reason : undefined,
     prUrl: "prUrl" in result ? result.prUrl : undefined,
+    // #10160: número + estado do PR explícitos — o Stage 5 abre o PR e segue
+    // (`--no-wait-merge`); a trava do Stage 6 lê isto pra saber o que checar.
+    prNumber: parsePrNumberFromUrl("prUrl" in result ? result.prUrl : undefined),
+    status: sitePagePrStatus({
+      merged: "merged" in result ? result.merged : undefined,
+      prUrl: "prUrl" in result ? result.prUrl : undefined,
+    }),
     // #8158 (revoga #6598): `undefined` (sem PR nenhum, ou publicação nem
     // chegou nesse ponto) é distinto de `false` (PR aberto mas NÃO
     // mergeado — CI vermelho/timeout) — o invariant do #7283 pode usar essa
@@ -2727,7 +2793,7 @@ export async function main(): Promise<void> {
   }
   if (!editionDir) {
     console.error(
-      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback]\n" +
+      "uso: npx tsx scripts/publish-edition-site-page.ts --edition-dir <dir> [--slug <slug>] [--skip-publish] [--sitemap <path>] [--worktree-dir <path>] [--allow-stale-code] [--no-fresh-code-fallback] [--no-wait-merge] [--slug-from-d1]\n" +
         "     npx tsx scripts/publish-edition-site-page.ts --merge-pr <N> [--edition-dir <dir>]   (waiter do #9593)",
     );
     process.exitCode = 1;
@@ -2749,6 +2815,19 @@ export async function main(): Promise<void> {
     return;
   }
   const editionDirAbs = resolve(ROOT, editionDir);
+  // #10160: no início da Etapa 5 o slug real do post ainda não existe — usa o
+  // slug que o bloco WhatsApp do e-mail já crava (`seoSlug` do título do D1).
+  if (!slug && hasFlag(argv, "slug-from-d1")) {
+    try {
+      slug = deriveSlugFromD1(editionDirAbs);
+    } catch (e) {
+      const invalid = { code: 4 as const, reason: `--slug-from-d1: ${(e as Error).message}` };
+      writeSitePageState(editionDirAbs, invalid);
+      console.log(JSON.stringify(invalid, null, 2));
+      process.exitCode = invalid.code;
+      return;
+    }
+  }
   // #9821: recusa ANTES de gerar qualquer coisa quando o código em disco está
   // defasado — o worktree do #8636 não protege os geradores (ver CodeFreshness).
   const staleRefusal = codeFreshnessPreflight(argv, ROOT);
@@ -2785,7 +2864,17 @@ export async function main(): Promise<void> {
   try {
     result = publishEditionSitePage(
       editionDirAbs,
-      productionDeps(undefined, undefined, undefined, undefined, undefined, worktreeDir ?? explicitWorktreeDir),
+      productionDeps(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        worktreeDir ?? explicitWorktreeDir,
+        undefined,
+        // #10160: Stage 5 abre o PR e segue — nada espera o merge aqui.
+        hasFlag(argv, "no-wait-merge") ? 0 : SITE_PAGE_CI_SYNC_WAIT_MS,
+      ),
       {
         skipPublish: hasFlag(argv, "skip-publish"),
         slug,

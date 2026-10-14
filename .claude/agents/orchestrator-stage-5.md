@@ -13,7 +13,7 @@ Stage 5 e **dispatch puro** — sem gate proprio. O gate de revisao editorial es
 
 > **Fusao 5+6 (#7983, 11/09/2026).** Desde esta issue o Stage 5 e o Stage 6 rodam numa INVOCACAO SO: ao terminar este playbook, continue lendo `orchestrator-stage-6.md` na mesma sessao (ver §"Resumo apos Stage 5" no fim deste arquivo). Os dois stages seguem SEPARADOS em tudo que e estado — numeracao, sentinels, invariants, `find-current-edition --stage 5|6`, statusline, Studio; o que foi fundido e so o ponto de entrada. `/diaria-6-agendamento` continua existindo como porta de RETOMADA (sessao morreu depois do dispatch, ou retry do agendamento).
 
-Quatro acoes em paralelo: (1) criar rascunho Beehiiv + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`); (4) **canal Brevo diária** (`brevo_diaria`) — cria a campanha como RASCUNHO (#5772), agendamento fica pro Stage 6, mesma divisão do Beehiiv.
+Primeiro abre o PR da pagina do site (§5b-site, #10160 — sem esperar o merge). Depois, quatro acoes em paralelo: (1) criar rascunho Beehiiv + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`); (4) **canal Brevo diária** (`brevo_diaria`) — cria a campanha como RASCUNHO (#5772), agendamento fica pro Stage 6, mesma divisão do Beehiiv.
 
 **PARA antes do Schedule do Beehiiv** — a newsletter fica como RASCUNHO com test email enviado e o loop review concluido. O clique de "Schedule" NAO acontece no Stage 5 — e responsabilidade do Stage 6.
 
@@ -154,6 +154,16 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator -
 4. Clicar "Send test email" — toast `Test email sent` aparece
 
 **Schedule continua sendo do Stage 6** (gate humano + automacao).
+
+### 5b-site. PR da pagina do site — PRIMEIRA acao do dispatch, sem esperar o merge (#10160)
+
+**Antes de qualquer publisher (newsletter, social, Brevo/Kit) e independente de `--skip`** — o site nao e canal de consent. Era §6b-site; subiu pra ca porque e o passo mais lento (abre o PR, CI de ~12min, merge) e no fim travava a sessao. Agora ele so ABRE o PR (worktree isolado, `site-publish/{slug}`, mecanismo em `docs/site-page-publish-mechanism.md`) e devolve na hora: com `--no-wait-merge` o script faz 1 poll e, CI pendente, entrega o merge ao waiter em background (#9593). O resto da Etapa 5 roda enquanto CI e review andam. O slug sai de `--slug-from-d1` (`seoSlug` do titulo do D1, o mesmo link de WhatsApp que o pre-render do Stage 4 ja cravou no e-mail; no Beehiiv, §6b-slug confere depois). So depende de `_internal/newsletter-final.html` (Stage 4):
+```bash
+npx tsx scripts/publish-edition-site-page.ts --edition-dir {EDITION_DIR} --slug-from-d1 --sitemap workers/site/public/sitemap.xml --no-wait-merge
+npx tsx scripts/reconcile-site-sitemap.ts
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage5 PR: exit {code}"
+```
+O script grava em `_internal/site-page-published.json` o registro que o Stage 6 le: `prNumber`, `prUrl`, `status` (`open` | `merged` | `none`), `published`, `code`. **Nada aqui espera o merge e nenhum exit para a Etapa 5** (tabela de exits em `orchestrator-stage-6.md` §6b-site) — falha vira warn e segue; o Stage 6 re-roda a publicacao como fallback e TRAVA o fim da Etapa 6 no merge (§6c-site + invariante `site-page-pr-merged`).
 
 ### 5c-pre. Upload de imagens publicas (#999 fix — pre-requisito do dispatch)
 
@@ -482,6 +492,7 @@ Apresentar resumo para o editor saber que dispatch completou e que o gate de age
 
 ```
 Publicacao dispatchada — edicao {AAMMDD}
+  Site: PR {prUrl} aberto ({status} — merge trava o fim do Stage 6, #10160) (ou "falhou — {reason}, Stage 6 re-roda")
   Newsletter: rascunho criado + test email enviado — review {status}
   LinkedIn: agendado x 3 (+1 do 4º post USE MELHOR, #9568 — `use_melhor` da saida: "ready" → horario da entry um; "skip"/"off" → "4º post pulado — {reason}")
   Facebook: agendado x 3 (+1 do 4º post, idem)
