@@ -430,3 +430,4 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 /* Marca diar.ia.br no padrão do DS (scripts/lib/shared/brand-wordmark.ts): negrito, pontos e "br" em teal. */
 .wm{font-weight:700}
 .wm span{color:var(--brand)}
+@media (max-width:767px){h1{font-size:34px}.hero-date{margin-bottom:22px}}
