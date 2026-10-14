@@ -51,7 +51,7 @@
  */
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { readSitePageState } from "./check-site-page-merge.ts";
 import {
@@ -175,10 +175,13 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const waitMs = Number(getArg(argv, "wait-ms") || "0");
-  const pollMs = Number(getArg(argv, "poll-ms") || String(SITE_PAGE_PR_GATE_POLL_MS));
-  if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > SITE_PAGE_PR_GATE_MAX_WAIT_MS || !Number.isFinite(pollMs) || pollMs <= 0) {
-    console.error(`--wait-ms precisa estar em [0, ${SITE_PAGE_PR_GATE_MAX_WAIT_MS}] e --poll-ms > 0`);
+  let waitMs: number;
+  let pollMs: number;
+  try {
+    waitMs = getIntArg(argv, "wait-ms", { min: 0, max: SITE_PAGE_PR_GATE_MAX_WAIT_MS }) ?? 0;
+    pollMs = getIntArg(argv, "poll-ms", { min: 1 }) ?? SITE_PAGE_PR_GATE_POLL_MS;
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
     return;
   }
