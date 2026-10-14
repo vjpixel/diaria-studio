@@ -81,6 +81,10 @@ describe("sources RSS fixes (#1266)", () => {
     // #8110: sitemap.xml não é RSS (nunca foi, confirmado 403 em qualquer
     // /rss.xml ou /feed alternativo) — RSS limpa, WebSearch site: continua ativa.
     "Perplexity Research",
+    // #10168: feed atrás do challenge anti-bot da Vercel (HTTP 429 com
+    // qualquer UA, `x-vercel-mitigated: challenge`, 14/10/2026) — sem fix do
+    // lado do consumidor. RSS limpa, WebSearch site:venturebeat.com cobre.
+    "VentureBeat (IA)",
   ];
 
   for (const name of SOURCES_WITHOUT_RSS) {
