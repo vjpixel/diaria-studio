@@ -66,3 +66,24 @@ describe("scorer (fallback) — espelha a regra do #9883", () => {
     assert.equal(opens, closes, "a regra #9883 caiu dentro de um bloco CALIBRATED");
   });
 });
+
+describe("peso por categoria na ordem e no desempate do D1 (#10165/#10166)", () => {
+  it("scorer-select tem a regra e preserva os invariantes", () => {
+    const txt = read("scorer-select.md");
+    assert.match(txt, /Peso por categoria \(#10165\/#10166/);
+    assert.match(txt, /lancamento.*ANTES de destaque de pesquisa ou mercado/s);
+    assert.match(txt, /nada disso muda quais 6 entram/);
+    assert.match(txt, /vem ANTES deste desempate de estilo/);
+  });
+
+  it("scorer (fallback) espelha a regra fora dos blocos CALIBRATED", () => {
+    const txt = read("scorer.md");
+    const idx = txt.indexOf("Peso por categoria (#10165/#10166");
+    assert.ok(idx > 0);
+    const before = txt.slice(0, idx);
+    assert.equal(
+      (before.match(/CALIBRATED:[a-z_]+:start/g) ?? []).length,
+      (before.match(/CALIBRATED:[a-z_]+:end/g) ?? []).length,
+    );
+  });
+});
