@@ -24,7 +24,9 @@ import {
   resolveCompleteRegistrationDedup,
   claimCompleteRegistrationSend,
   releaseClaimOnSendFailure,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
+  deriveClickIdFromFbc,
+  readCookieValue,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
@@ -505,13 +507,16 @@ export async function handleGateSubscribe(
   const fbp = (parsed.fbp || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX);
   const origin: SubscribeOrigin = {
     referrer: (parsed.referrer || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
-    clickId: (parsed.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
+    // #10230: sem `click_id` no form, o `_fbc` (cookie do request ou do corpo)
+    // preserva o clique do anúncio pro SubscriptionConfirmed.
+    clickId: (parsed.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX)
+      || (deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc")) ?? deriveClickIdFromFbc(fbc) ?? "").slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     externalId: resolveVisitorId(request.headers.get("Cookie"), externalId) ?? "",
   };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
   // `resolveOrigemPagaWithClickIdFallback`.
-  const origemPaga = resolveOrigemPagaWithClickIdFallback(origemPagaCliente, origin.clickId);
+  const origemPaga = resolveOrigemPagaWithClickIdFallback(origemPagaCliente, (parsed.clickId || "").trim()); // #10230: só click_id do form
 
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima.
