@@ -86,8 +86,14 @@ async function fetchLastSentNovos(
   dashboardUrl: string,
   fetchFn: typeof fetch,
 ): Promise<DashboardCampaign | null> {
-  const res = await fetchFn(`${dashboardUrl.replace(/\/$/, "")}/api/campaigns?limit=50`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const res = await fetchFn(`${dashboardUrl.replace(/\/$/, "")}/api/campaigns?limit=50`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    // #9991: corpo descartado precisa ser cancelado, senão o socket segura o processo.
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`HTTP ${res.status}`);
+  }
   const body = (await res.json()) as { campaigns?: DashboardCampaign[] };
   return pickLastSentNovosCampaign(body.campaigns ?? []);
 }
