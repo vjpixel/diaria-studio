@@ -686,7 +686,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "box-divulgacao-expiry",
-    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado — mesma checagem do Stage 4, rodada logo após o stitch (#10174, warning-only)",
+    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, e caixa vencida presente no box da edição — mesma checagem do Stage 4, rodada logo após o stitch (#10174, #10214, warning-only)",
     source_issue: "#10174",
     stage: 2,
     run: (editionDir: string) => checkBoxDivulgacaoExpiry(editionDir),

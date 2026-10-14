@@ -34,12 +34,19 @@
  * atual pode ser descartado (ex.: ele editou o próprio snippet depois do
  * stitch e quer reaplicar).
  *
+ * **Nunca aplica caixa vencida sem pedido explícito (#10214).** Snippet novo
+ * com `expires:` anterior à data da EDIÇÃO (AAMMDD do diretório — nunca o
+ * relógio: a edição é D+1) é recusado com `reason: "expired"`, mesma regra do
+ * stitch (`resolveBoxesForEdition`, #10174). `--allow-expired` só quando o
+ * editor decidiu publicar a caixa mesmo assim (vira warning). `expires:`
+ * malformado não bloqueia (validade ignorada, como no stitch) — vira warning.
+ *
  * Exit: 0 = aplicado; 1 = uso inválido / pré-condição (sem 02-reviewed.md,
  * snippet ausente, imagem irmã inválida); 2 = recusado pela proteção do box
- * (editado, sem baseline, slot sem box).
+ * (editado, sem baseline, slot sem box) ou pela validade (caixa vencida).
  *
  * Uso:
- *   npx tsx scripts/apply-box-slot.ts --edition AAMMDD --slot 1|2 --file X.md [--force] [--dry-run]
+ *   npx tsx scripts/apply-box-slot.ts --edition AAMMDD --slot 1|2 --file X.md [--force] [--allow-expired] [--dry-run]
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -52,6 +59,8 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as resolveEditionDir } from "./lib/edition-paths.ts";
 import { locateBoxDivulgacaoRange } from "./lib/newsletter-parse.ts";
 import { loadDivulgacaoSnippet } from "./stitch-newsletter.ts";
+import { aammddToIsoDate, readSnippetExpiry } from "./lib/shared/snippet-header.ts"; // #10214
+import { readSnippetFileRaw } from "./lib/shared/snippet-loader.ts"; // #10214
 
 export interface BoxSelectionEntry {
   slot: number;
@@ -198,7 +207,12 @@ export function readEditionPublishState(editionDir: string): EditionPublishState
 
 /** Comando de CLI exato pra reaplicar com `--force` (o painel não tem force). */
 export function applyBoxSlotForceCommand(edition: string, slot: 1 | 2, file: string): string {
-  return `npx tsx scripts/apply-box-slot.ts --edition ${edition} --slot ${slot} --file ${file} --force`;
+  return `${applyBoxSlotCommand(edition, slot, file)} --force`;
+}
+
+/** Comando base de `apply-box-slot.ts`, sem flags (#10214). */
+export function applyBoxSlotCommand(edition: string, slot: 1 | 2, file: string): string {
+  return `npx tsx scripts/apply-box-slot.ts --edition ${edition} --slot ${slot} --file ${file}`;
 }
 
 /**
@@ -218,6 +232,9 @@ export interface ApplyBoxSlotToEditionOpts {
   slot: 1 | 2;
   file: string;
   force?: boolean;
+  /** #10214: aplica mesmo com `expires:` anterior à data da edição (decisão
+   * explícita do editor). Default: recusa com `reason: "expired"`. */
+  allowExpired?: boolean;
   dryRun?: boolean;
   /** Sobe as imagens da edição (default: `upload-images-public.ts --mode newsletter`). Injetável em teste. */
   runUpload?: (editionDir: string) => void;
@@ -239,7 +256,7 @@ export type ApplyBoxSlotToEditionResult =
     }
   | {
       ok: false;
-      reason: "no-reviewed" | "no-snippet" | "no-box" | "edited" | "no-baseline" | "image-failed";
+      reason: "no-reviewed" | "no-snippet" | "no-box" | "edited" | "no-baseline" | "image-failed" | "expired";
       message: string;
     };
 
@@ -303,6 +320,30 @@ export async function applyBoxSlotToEdition(opts: ApplyBoxSlotToEditionOpts): Pr
   } catch (err) {
     return { ok: false, reason: "no-snippet", message: (err as Error).message };
   }
+  // #10214: validade julgada contra a data da EDIÇÃO (basename AAMMDD), mesma
+  // regra do stitch (#10174) — antes só o stitch checava, e este caminho (CLI
+  // + botão do painel Caixas) aplicava caixa vencida sem aviso.
+  const expiryWarnings: string[] = [];
+  const editionIso = aammddToIsoDate(edition);
+  const newRaw = editionIso ? readSnippetFileRaw(file, rootDir) : null;
+  if (editionIso && newRaw !== null) {
+    const exp = readSnippetExpiry(newRaw, editionIso);
+    if (exp.status === "expired") {
+      const what = `caixa \`${file}\` expirou (expires: ${exp.expires}) antes da edição ${edition} (${editionIso})`;
+      if (!opts.allowExpired) {
+        return {
+          ok: false,
+          reason: "expired",
+          message:
+            `${what} — o stitch não publicaria essa caixa (#10174). Nada foi alterado. ` +
+            `Se o editor decidiu publicá-la mesmo assim: \`${applyBoxSlotCommand(edition, slot, file)} --allow-expired\`.`,
+        };
+      }
+      expiryWarnings.push(`${what} — aplicada mesmo assim (--allow-expired).`);
+    } else if (exp.status === "invalid") {
+      expiryWarnings.push(`caixa \`${file}\` declara expires: "${exp.raw}", que não é AAAA-MM-DD — validade ignorada.`);
+    }
+  }
   const res = applyBoxSlot({
     reviewedMd: readFileSync(reviewedPath, "utf8"),
     selection,
@@ -328,7 +369,7 @@ export async function applyBoxSlotToEdition(opts: ApplyBoxSlotToEditionOpts): Pr
   }
 
   const publishState = readEditionPublishState(dir);
-  const warnings: string[] = [];
+  const warnings: string[] = [...expiryWarnings];
   if (publishState === "draft") {
     warnings.push(
       `rascunho no ESP continua com o box antigo — re-rode \`/diaria-5-publicacao newsletter ${edition}\` pra refazer o rascunho.`,
@@ -466,12 +507,13 @@ async function main(): Promise<void> {
       slot: { type: "string" },
       file: { type: "string" },
       force: { type: "boolean", default: false },
+      "allow-expired": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
     },
   });
   const slotNum = Number(values.slot);
   if (!values.edition || !/^\d{6}$/.test(values.edition) || (slotNum !== 1 && slotNum !== 2) || !values.file) {
-    console.error("uso: apply-box-slot.ts --edition AAMMDD --slot 1|2 --file X.md [--force] [--dry-run]");
+    console.error("uso: apply-box-slot.ts --edition AAMMDD --slot 1|2 --file X.md [--force] [--allow-expired] [--dry-run]");
     process.exit(1);
   }
   const slot = slotNum as 1 | 2;
@@ -481,12 +523,15 @@ async function main(): Promise<void> {
     slot,
     file: values.file,
     force: values.force,
+    allowExpired: values["allow-expired"],
     dryRun: values["dry-run"],
   });
   if (!res.ok) {
     console.error(`apply-box-slot: abortado (${res.reason}) — ${res.message}`);
-    // 2 = recusa por proteção do box (edited/no-baseline/no-box); 1 = pré-condição/erro.
-    process.exit(res.reason === "edited" || res.reason === "no-baseline" || res.reason === "no-box" ? 2 : 1);
+    // 2 = recusa por proteção do box (edited/no-baseline/no-box) ou pela validade (expired, #10214); 1 = pré-condição/erro.
+    process.exit(
+      res.reason === "edited" || res.reason === "no-baseline" || res.reason === "no-box" || res.reason === "expired" ? 2 : 1,
+    );
   }
   for (const w of res.warnings) console.warn(`apply-box-slot: ⚠ ${w}`);
   const img =
