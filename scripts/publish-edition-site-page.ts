@@ -299,6 +299,8 @@ import {
   UnresolvedMergeTagError,
   sitemapEntryFromPost,
   addSitemapEntry,
+  removeSitemapEntry,
+  archiveUrlForSlug,
   buildSitemapXml,
   type ArchivePost,
 } from "./lib/site-archive-pages.ts";
@@ -453,7 +455,16 @@ export interface PublishPageDeps {
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo.
    * `editionDir` (#9593) só serve pro waiter em background saber qual state
    * file atualizar quando o CI não fecha dentro da espera síncrona. */
-  publish(slug: string, sitemapRelPath?: string, editionDir?: string): PublishResult;
+  publish(slug: string, sitemapRelPath?: string, editionDir?: string, removedPaths?: string[]): PublishResult;
+  /**
+   * #10194: a republicação mudou o slug da página desta edição (o título do D1
+   * mudou no loop do Stage 5 depois do §5b-site). Fecha o PR antigo, sinaliza o
+   * waiter dele, tira a entrada do slug velho do sitemap/home e devolve os paths
+   * TRACKED a remover no mesmo commit do PR novo (página velha já mergeada).
+   * Roda ANTES de `updateSitemapAndHome`. Fail-soft no caller. Opcional pra não
+   * quebrar deps de teste que não exercitam esse caminho.
+   */
+  supersedePrevious?(args: SupersedeArgs): SupersedeOutcome;
   log(line: string): void;
 }
 
@@ -1575,9 +1586,13 @@ export async function runMergeWaiter(
   // disparar este waiter — sem a pausa, um merge relâmpago aqui poderia ser
   // sobrescrito pelo `merged:false` que o pai grava logo em seguida.
   sleep(pollIntervalMs);
-  const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs, mergeLock);
+  // #10194: desistência quando uma republicação com slug novo marcou este PR.
+  const superseded = (): boolean =>
+    editionDirAbs !== undefined && readSupersededPrNumbers(editionDirAbs).includes(prNumber);
+  const result = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, maxWaitMs, pollIntervalMs, mergeLock, superseded);
   process.stderr.write(`[site-page] waiter PR #${prNumber}: merged=${result.merged} — ${result.reason}\n`);
-  let shouldAlert = !result.merged;
+  // PR substituído não mergeado é o desfecho esperado, não falha a alertar.
+  let shouldAlert = !result.merged && !superseded();
   let slug: string | undefined;
   let prUrl: string | undefined;
   let stateWriteError: string | undefined;
@@ -1666,6 +1681,11 @@ export function waitAndMergeSitePagePr(
   maxWaitMs: number = SITE_PAGE_CI_SYNC_WAIT_MS,
   pollIntervalMs: number = 5_000,
   mergeLock?: SitePageMergeLock,
+  // #10194: `true` = uma republicação com slug novo substituiu este PR — o
+  // waiter desiste em vez de mergear a página velha. Conferido a cada volta,
+  // antes do merge (o `gh pr close` da republicação é o sinal principal; este
+  // cobre o close que falhou ou ainda não chegou).
+  shouldAbort?: () => boolean,
 ): MergeAttemptResult {
   const deadline = Date.now() + maxWaitMs;
   let lockBusySeen = false;
@@ -1691,6 +1711,12 @@ export function waitAndMergeSitePagePr(
     }
     if (prState === "CLOSED") {
       return { merged: false, reason: `PR #${prNumber} foi FECHADO sem merge — nada a mergear` };
+    }
+    if (shouldAbort?.()) {
+      return {
+        merged: false,
+        reason: `PR #${prNumber} substituído por republicação da página com slug novo — waiter desiste (#10194)`,
+      };
     }
     const rollup = (payload as { statusCheckRollup?: unknown }).statusCheckRollup;
     const mergeable = (payload as { mergeable?: string }).mergeable;
@@ -1882,6 +1908,10 @@ export function commitAndPushSitePage(
   lock: LockRunner = defaultLockRunner,
   sleep: SleepFn = defaultSleep,
   worktreeDir?: string,
+  // #10194: paths de uma página de slug VELHO (republicação mudou o slug e o
+  // PR velho já estava mergeado) a remover no MESMO commit — ver
+  // `supersedePreviousSitePage`. Só sai o que estiver tracked em `gitCwd`.
+  removedPaths: readonly string[] = [],
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
@@ -2101,6 +2131,20 @@ export function commitAndPushSitePage(
       git(["add", "--", p], gitCwd);
       stagedPathspecs.push(p);
     }
+    // #10194: remoção da página do slug velho. `git rm` só quando o path está
+    // TRACKED em `gitCwd` (`git ls-files`): no worktree ele nasce de
+    // origin/master (a página velha está lá se o PR velho foi mergeado); no
+    // caminho legado o `rmSync` do supersede já apagou do disco e o `git rm`
+    // só registra a remoção. Path não rastreado fica fora do pathspec do
+    // commit — `git commit -- <path>` lança com pathspec desconhecido.
+    const removedPathspecs: string[] = [];
+    for (const p of removedPaths) {
+      if (stagedPathspecs.includes(p)) continue;
+      if (!git(["ls-files", "--", p], gitCwd).trim()) continue;
+      git(["rm", "-r", "-q", "--", p], gitCwd);
+      stagedPathspecs.push(p);
+      removedPathspecs.push(p);
+    }
 
     const status = git(["status", "--porcelain", "--", ...stagedPathspecs], gitCwd);
     committed = status.trim().length > 0;
@@ -2127,7 +2171,11 @@ export function commitAndPushSitePage(
         [
           "commit",
           "-m",
-          `chore(site): publica página da edição /p/${slug}\n\nRefs #6202, #6598`,
+          `chore(site): publica página da edição /p/${slug}\n\n` +
+            (removedPathspecs.length > 0
+              ? `Remove a página substituída (slug mudou na republicação, #10194): ${removedPathspecs.join(", ")}\n\n`
+              : "") +
+            `Refs #6202, #6598`,
           "--",
           ...stagedPathspecs,
         ],
@@ -2395,7 +2443,8 @@ export function productionDeps(
 
       return { seoImageAdded, archiveIndexRegenerated };
     },
-    publish: (slug, sitemapPath?: string, editionDir?: string) => {
+    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args),
+    publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[]) => {
       const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
         rootDir,
         slug,
@@ -2405,6 +2454,7 @@ export function productionDeps(
         lock,
         sleep,
         worktreeDir,
+        removedPaths,
       );
       // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
@@ -2438,7 +2488,7 @@ export function productionDeps(
 export function publishEditionSitePage(
   editionDir: string,
   deps: PublishPageDeps,
-  opts: { skipPublish?: boolean; slug?: string; sitemap?: string } = {},
+  opts: { skipPublish?: boolean; slug?: string; sitemap?: string; previous?: PreviousSitePage | null } = {},
 ): PublishPageResult {
   let inputs: EditionPageInputs | null;
   try {
@@ -2496,6 +2546,34 @@ export function publishEditionSitePage(
   }
   deps.log(`página escrita: /p/${built.post.slug} (${html.length} bytes)`);
 
+  // #10194: republicação com slug novo (título do D1 mudou depois do
+  // §5b-site). Antes de `updateSitemapAndHome` — a entrada velha sai do
+  // sitemap antes da nova entrar, e a home regenerada já nasce sem ela. Só
+  // quando vai publicar: `--skip-publish` nunca fecha PR de ninguém.
+  let removedPaths: string[] = [];
+  const previous = opts.previous;
+  if (!opts.skipPublish && previous && previous.slug !== built.post.slug && deps.supersedePrevious) {
+    try {
+      const out = deps.supersedePrevious({
+        oldSlug: previous.slug,
+        newSlug: built.post.slug,
+        oldPrNumber: previous.prNumber,
+        sitemapRelPath: opts.sitemap,
+        editionDirAbs: editionDir,
+      });
+      removedPaths = out.removedPaths;
+      deps.log(
+        `slug mudou na republicação: /p/${previous.slug} -> /p/${built.post.slug} (#10194) — PR anterior ` +
+          `${previous.prNumber !== undefined ? `#${previous.prNumber}` : "não identificado"}: ${out.oldPrState}; ` +
+          `entrada velha ${out.sitemapEntryRemoved ? "removida do" : "ausente no"} sitemap` +
+          (removedPaths.length > 0 ? `; página velha sai no commit novo (${removedPaths.join(", ")})` : "") +
+          (out.notes.length > 0 ? `; avisos: ${out.notes.join("; ")}` : ""),
+      );
+    } catch (e) {
+      deps.log(`aviso: limpeza do slug anterior /p/${previous.slug} falhou (${(e as Error).message}) (#10194)`);
+    }
+  }
+
   // #6454: sitemapRelPath é o caminho relativo do sitemap.xml a ser
   // atualizado alongside da página. O caller (main) passa --sitemap; em
   // testes é undefined. Roda ANTES do check de --skip-publish — escrever
@@ -2550,7 +2628,7 @@ export function publishEditionSitePage(
 
   let publishResult: PublishResult;
   try {
-    publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir);
+    publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir, removedPaths);
   } catch (e) {
     // A página JÁ está escrita (e pode já estar commitada, se só o push
     // falhou) — a próxima rodada/push manual a leva junto. Por isso a
@@ -2620,6 +2698,194 @@ export function publishEditionSitePage(
  * o link `/p/{slug}` do e-mail daria 404 do mesmo jeito. Antes isso caía no
  * `null` e o gate 6 ficava verde (o único aviso era uma linha de stderr).
  */
+/**
+ * #10194: página do site publicada ANTES nesta edição, lida do
+ * `_internal/site-page-published.json` da última chamada. Só conta publicação
+ * confirmada (`published: true` + slug) — uma tentativa que falhou não deixou
+ * PR nem entrada a desfazer.
+ */
+export interface PreviousSitePage {
+  slug: string;
+  prNumber?: number;
+}
+
+export function readPreviousSitePage(editionDirAbs: string): PreviousSitePage | null {
+  const path = join(editionDirAbs, "_internal", "site-page-published.json");
+  if (!existsSync(path)) return null;
+  try {
+    const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (state.published !== true || typeof state.slug !== "string" || !state.slug) return null;
+    const prNumber =
+      typeof state.prNumber === "number"
+        ? state.prNumber
+        : parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
+    return { slug: state.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
+  } catch (e) {
+    process.stderr.write(
+      `[site-page] aviso: ${path} ilegível (${(e as Error).message}) — republicação não confere slug anterior (#10194)\n`,
+    );
+    return null;
+  }
+}
+
+/**
+ * #10194: marcador durável dos PRs de página substituídos por uma republicação
+ * com slug novo. Arquivo à parte (não o state file) porque o state file é
+ * sobrescrito a cada chamada e o waiter antigo precisa ler a desistência
+ * durante os 35min dele. Append-only.
+ */
+const SITE_PAGE_SUPERSEDED_FILE = "site-page-superseded.json";
+
+export function readSupersededPrNumbers(editionDirAbs: string): number[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(editionDirAbs, "_internal", SITE_PAGE_SUPERSEDED_FILE), "utf8")) as {
+      prNumbers?: unknown;
+    };
+    return Array.isArray(raw.prNumbers) ? raw.prNumbers.filter((n): n is number => typeof n === "number") : [];
+  } catch {
+    return [];
+  }
+}
+
+function markSitePagePrSuperseded(editionDirAbs: string, prNumber: number): void {
+  const current = readSupersededPrNumbers(editionDirAbs);
+  if (current.includes(prNumber)) return;
+  mkdirSync(join(editionDirAbs, "_internal"), { recursive: true });
+  writeFileAtomic(
+    join(editionDirAbs, "_internal", SITE_PAGE_SUPERSEDED_FILE),
+    JSON.stringify({ prNumbers: [...current, prNumber], updated_at: new Date().toISOString() }, null, 2),
+  );
+}
+
+export interface SupersedeArgs {
+  oldSlug: string;
+  newSlug: string;
+  oldPrNumber?: number;
+  sitemapRelPath?: string;
+  editionDirAbs?: string;
+}
+
+/**
+ * `closed` = estava aberto e esta chamada fechou; `merged` = já mergeado (a
+ * página velha está em master e sai no commit novo); `already-closed` = fechado
+ * sem merge antes; `open` = continua aberto (o `gh pr close` falhou — o
+ * marcador de desistência segue valendo pro waiter); `unknown` = `gh pr view`
+ * falhou; `none` = nenhum PR anterior identificado.
+ */
+export type OldSitePagePrState = "closed" | "merged" | "already-closed" | "open" | "unknown" | "none";
+
+export interface SupersedeOutcome {
+  oldPrState: OldSitePagePrState;
+  /** Paths (relativos a `rootDir`, forward-slash) a remover no commit do PR novo. */
+  removedPaths: string[];
+  sitemapEntryRemoved: boolean;
+  notes: string[];
+}
+
+function viewPrState(rootDir: string, prNumber: number, gh: GhRunner): string | undefined {
+  try {
+    const raw = gh(["pr", "view", String(prNumber), "--json", "state"], rootDir);
+    const state = (JSON.parse(raw) as { state?: unknown }).state;
+    return typeof state === "string" ? state : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #10194: desfaz a publicação do slug velho quando a republicação da página
+ * da edição muda de slug. Ordem importa:
+ *
+ * 1. Marca o PR velho como substituído (o waiter dele lê isso antes de mergear
+ *    e desiste) — ANTES de qualquer chamada de rede, pra fechar a janela entre
+ *    o `gh pr view` e o `gh pr close`.
+ * 2. `gh pr view`: OPEN → `gh pr close --delete-branch`; se o close falhar,
+ *    relê o estado (o waiter pode ter mergeado no intervalo).
+ * 3. Tira a `<loc>` do slug velho do sitemap em `rootDir` SEMPRE — mesmo com o
+ *    PR velho só aberto, a escrita local da chamada anterior deixou a entrada
+ *    no sitemap do checkout, e o commit novo a carregaria (duplicata).
+ * 4. Apaga `p/{slug-velho}` do disco em `rootDir`; quando o PR velho está
+ *    MERGED (ou o estado não pôde ser lido), devolve esse path em
+ *    `removedPaths` pra `commitAndPushSitePage` tirar a página do master no
+ *    MESMO commit do PR novo — lá só sai o que estiver TRACKED.
+ *
+ * Fail-soft: nunca lança — cada passo que falha vira nota.
+ */
+export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: SupersedeArgs): SupersedeOutcome {
+  const notes: string[] = [];
+  const { oldSlug, newSlug, oldPrNumber, sitemapRelPath, editionDirAbs } = args;
+  let oldPrState: OldSitePagePrState = "none";
+
+  if (oldPrNumber !== undefined) {
+    if (editionDirAbs) {
+      try {
+        markSitePagePrSuperseded(editionDirAbs, oldPrNumber);
+      } catch (e) {
+        notes.push(`marcador de desistência do waiter não gravado (${(e as Error).message})`);
+      }
+    }
+    const state = viewPrState(rootDir, oldPrNumber, gh);
+    if (state === "MERGED") {
+      oldPrState = "merged";
+    } else if (state === "CLOSED") {
+      oldPrState = "already-closed";
+    } else if (state === "OPEN") {
+      try {
+        gh(
+          [
+            "pr",
+            "close",
+            String(oldPrNumber),
+            "--delete-branch",
+            "--comment",
+            `Substituído: a página desta edição foi republicada em /p/${newSlug} (título do D1 mudou) — #10194.`,
+          ],
+          rootDir,
+        );
+        oldPrState = "closed";
+      } catch (e) {
+        const after = viewPrState(rootDir, oldPrNumber, gh);
+        if (after === "MERGED") oldPrState = "merged";
+        else if (after === "CLOSED") oldPrState = "closed";
+        else {
+          oldPrState = "open";
+          notes.push(`gh pr close #${oldPrNumber} falhou (${(e as Error).message}) — fechar à mão`);
+        }
+      }
+    } else {
+      oldPrState = "unknown";
+      notes.push(`estado do PR #${oldPrNumber} não lido — conferir à mão se /p/${oldSlug} ficou no master`);
+    }
+  }
+
+  let sitemapEntryRemoved = false;
+  if (sitemapRelPath) {
+    const sitemapAbs = resolve(rootDir, sitemapRelPath);
+    try {
+      if (existsSync(sitemapAbs)) {
+        const xml = readFileSync(sitemapAbs, "utf8");
+        const next = removeSitemapEntry(xml, archiveUrlForSlug(oldSlug));
+        if (next !== xml) {
+          writeFileSync(sitemapAbs, next, "utf8");
+          sitemapEntryRemoved = true;
+        }
+      }
+    } catch (e) {
+      notes.push(`entrada /p/${oldSlug} não removida do sitemap (${(e as Error).message})`);
+    }
+  }
+
+  const relOldPageDir = ["workers", "site", "public", "p", oldSlug].join("/");
+  try {
+    rmSync(resolve(rootDir, relOldPageDir), { recursive: true, force: true });
+  } catch (e) {
+    notes.push(`página local /p/${oldSlug} não apagada (${(e as Error).message})`);
+  }
+  const removedPaths = oldPrState === "merged" || oldPrState === "unknown" ? [relOldPageDir] : [];
+
+  return { oldPrState, removedPaths, sitemapEntryRemoved, notes };
+}
+
 /**
  * #10160: slug da página derivado do título do D1 em `02-reviewed.md` —
  * `seoSlug(d1.title)`, o MESMO de `deriveEditionUrl` (`publish-newsletter-kit.ts`
@@ -2917,6 +3183,9 @@ export async function main(): Promise<void> {
         skipPublish: hasFlag(argv, "skip-publish"),
         slug,
         sitemap: getArg(argv, "sitemap"),
+        // #10194: a publicação anterior desta edição (slug + PR), pra
+        // republicação com slug novo desfazer a velha.
+        previous: readPreviousSitePage(editionDirAbs),
       },
     );
   } catch (e) {

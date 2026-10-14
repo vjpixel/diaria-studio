@@ -1018,6 +1018,23 @@ export function addSitemapEntry(
   return xmlBase.replace('</urlset>', insertion + '</urlset>');
 }
 
+/**
+ * #10194: remove do sitemap XML a(s) `<url>` cuja `<loc>` é EXATAMENTE `loc`
+ * — contraparte de `addSitemapEntry`, usada quando a republicação da página
+ * de uma edição muda de slug (o título do D1 mudou no loop do Stage 5): a
+ * entrada do slug velho sairia duplicando a mesma edição no sitemap e, por
+ * tabela, na home (`buildHomeFeed` lê o sitemap). Mesma disciplina de
+ * comparação exata de `addSitemapEntry` (#7280): só a tag `<loc>` inteira
+ * casa, nunca um prefixo de outra URL. Sem a entrada, devolve o XML intacto.
+ */
+export function removeSitemapEntry(existingXml: string, loc: string): string {
+  const target = `<loc>${escXml(loc)}</loc>`;
+  if (!existingXml.includes(target)) return existingXml;
+  return existingXml.replace(/[ \t]*<url>[\s\S]*?<\/url>[ \t]*\r?\n?/g, (block) =>
+    block.includes(target) ? "" : block,
+  );
+}
+
 function isNewsEntryFresh(news: SitemapNewsEntry, now: number): boolean {
   const ts = Date.parse(news.publicationDate);
   if (Number.isNaN(ts)) return false;
