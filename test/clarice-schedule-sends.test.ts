@@ -602,7 +602,10 @@ describe("runScheduleLoop (#3658 — persistência per-iteração, não só no f
     assert.equal(c1.status, "scheduled", "c1 (PUT bem-sucedido antes da falha) deve estar persistido");
     assert.equal(c2.status, "scheduled", "c2 (PUT bem-sucedido antes da falha) deve estar persistido");
     assert.equal(c3.status, "draft", "c3 (putFn lançou) deve permanecer draft — nunca foi agendado de fato");
-    assert.equal(writeCalls.length, 2, "deve ter gravado em disco 2× (c1 + c2), antes da exceção de c3");
+    // #10211: cada campanha grava 2× — scheduleAcceptedAt logo após o PUT
+    // aceito, e o status "scheduled" após o GET-verify. c3 (PUT recusado) não grava.
+    assert.equal(writeCalls.length, 4, "deve ter gravado em disco 4× (c1 + c2, 2 cada), antes da exceção de c3");
+    assert.equal(JSON.parse(writeCalls[3])[2].scheduleAcceptedAt, undefined, "c3 nunca teve o PUT aceito");
   });
 
   it("todas as campanhas bem-sucedidas → todas persistidas como scheduled, na ordem", async () => {

@@ -140,6 +140,7 @@ import { clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { setCampaignStatus } from "./clarice-reapply-scheduled-html.ts";
 import type { CampaignEntry } from "./clarice-schedule-group.ts";
+import { clearScheduleAcceptance } from "./lib/clarice-quero-phrase.ts"; // #10211
 import { brtDayKey } from "./lib/clarice-envio-policy.ts";
 import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
@@ -412,7 +413,7 @@ async function cancelPendingWaves(
     }
     try {
       await deps.setCampaignStatus(apiKey, entry.campaignId, "suspended");
-      entry.status = "draft"; // reflete localmente que não é mais "scheduled" — evita que a próxima rodada a trate como comprometida
+      clearScheduleAcceptance(entry); // status "draft" — reflete localmente que não é mais "scheduled" (evita que a próxima rodada a trate como comprometida) e tira o marcador de agendamento aceito (#10211)
       anySucceeded = true;
       report.note(`✅ "${p.key}" (campaignId ${entry.campaignId}) suspensa.`);
     } catch (e) {
@@ -428,7 +429,7 @@ async function cancelPendingWaves(
       } else if (alreadyTerminal === "suspended") {
         // #5942/#5944 — a campanha já estava SUSPENSA em rodada anterior.
         // Nada a suspender — já está no estado seguro.
-        entry.status = "draft";
+        clearScheduleAcceptance(entry); // #10211
         anySucceeded = true;
         report.note(`ℹ️  "${p.key}" (campaignId ${entry.campaignId}): já estava SUSPENSA na Brevo — nada a suspender, estado seguro.`);
       } else {

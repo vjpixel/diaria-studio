@@ -192,6 +192,8 @@ interface CampaignEntry {
   subject: string;
   scheduledAt: string;
   status: "draft" | "scheduled";
+  /** #10211: ISO do PUT `scheduledAt` aceito — ver `markScheduleAccepted`. */
+  scheduleAcceptedAt?: string;
 }
 
 /**
@@ -286,6 +288,25 @@ export function applyVerifyResults(
   }
 }
 
+/**
+ * #10211: grava `scheduleAcceptedAt` assim que o PUT `scheduledAt` é aceito
+ * (2xx), ANTES do GET-verify — mesmo padrão do `sendNowAcceptedAt` (#9638).
+ * Se o GET-verify falhar, o status local fica `draft`, mas a campanha está na
+ * fila da Brevo e vai sair: sem este marcador, a contagem de envios do ciclo
+ * (`envioWentOut`, frase do "quero" #10179) a ignorava e a onda seguinte
+ * ocupava o mesmo índice — saía sem a frase.
+ */
+export function markScheduleAccepted<T extends { scheduleAcceptedAt?: string }>(
+  c: T,
+  campaigns: readonly T[],
+  campaignsPath: string,
+  writeFn: (path: string, content: string) => void = (p, content) => writeFileAtomic(p, content),
+  now: () => Date = () => new Date(),
+): void {
+  c.scheduleAcceptedAt = now().toISOString();
+  writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+}
+
 export interface ScheduleLoopDeps {
   /** Executa o PUT real de agendamento (`brevoPut .../emailCampaigns/{id}`). */
   putFn: (c: CampaignEntry) => Promise<void>;
@@ -361,6 +382,7 @@ export async function runScheduleLoop(
     );
 
     await deps.putFn(c); // brevoPut REAL — agendamento aceito na Brevo a partir daqui (cancelável via API/painel + recriação, #4935, mas não é gratuito)
+    markScheduleAccepted(c, campaigns, campaignsPath, writeFn, now); // #10211
 
     // #3658: persiste ESTA campanha IMEDIATAMENTE — se a PRÓXIMA falhar, o
     // registro local desta já está gravado, não some junto com a exceção.

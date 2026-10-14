@@ -202,7 +202,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, BrevoHttpError, isTerminalSendStatus, describeUncertainSendStatus, pollTerminalSendStatus, SEND_NOW_GUARD_WINDOW_MS } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
-import { checkEiaGuard, applyVerifyResults, isScheduledStatus } from "./clarice-schedule-sends.ts";
+import { checkEiaGuard, applyVerifyResults, isScheduledStatus, markScheduleAccepted } from "./clarice-schedule-sends.ts";
 // #4662: fonte única do horário canônico de envio (09:00 UTC = 06:00 BRT) —
 // usada só pra COMPOR a sugestão no erro de --schedule-at só-data (nunca
 // duplicar "09:00:00Z" aqui) e pra validar calendário (2026-02-31 etc).
@@ -216,7 +216,7 @@ import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
-import { applyQueroPhrase, describeQueroApplication, envioWentOut, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189
+import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, envioWentOut, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189, #10212
 
 loadProjectEnv();
 
@@ -256,6 +256,13 @@ export interface CampaignEntry {
   envioIndex?: number;
   /** #10179: a frase do "quero" foi no `htmlContent` desta campanha. */
   queroIncluded?: boolean;
+  /** #10211: ISO do PUT `scheduledAt` aceito (`markScheduleAccepted`) — conta
+   *  como envio do ciclo mesmo com o GET-verify falho e status local `draft`. */
+  scheduleAcceptedAt?: string;
+  /** #10212: ciclo do CONTEÚDO (`--content-cycle`) cujo HTML esta campanha
+   *  levou — gravado no `--create`; ausente em campanhas anteriores ao #10212
+   *  (lidas como do ciclo que as registra). */
+  contentCycle?: string;
 }
 
 /** Shape exato que `applyVerifyResults`/`isScheduledStatus` (clarice-schedule-sends.ts)
@@ -486,6 +493,20 @@ export function resolveListIndexArg(argv: string[]): { listIndex: number | undef
  * regra sem precisar de fixtures reais em `data/monthly/` (`monthlyDir` não
  * é injetável, mesma limitação documentada nos testes deste arquivo).
  */
+/**
+ * Lê um `group-campaigns.json` — ausente = `[]` (1º envio do ciclo);
+ * JSON inválido lança (o índice da frase do "quero" e a idempotência dependem
+ * dele, então nunca cai num `[]` silencioso).
+ */
+export function readGroupCampaigns(path: string): CampaignEntry[] {
+  if (!existsSync(path)) return [];
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as CampaignEntry[];
+  } catch (e) {
+    throw new Error(`group-campaigns.json corrompido (JSON inválido): ${path}\n${String(e)}`);
+  }
+}
+
 export function resolveContentCycle(argv: string[], segmentsCycle: string): string {
   return getArg(argv, "content-cycle") || segmentsCycle;
 }
@@ -1347,14 +1368,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (hourCellSuffix) html = tagHourCellUtm(html, hourCellSuffix.toUpperCase());
 
   const campaignsPath = resolve(segmentsDir, "group-campaigns.json");
-  let campaigns: CampaignEntry[] = [];
-  if (existsSync(campaignsPath)) {
-    try {
-      campaigns = JSON.parse(readFileSync(campaignsPath, "utf8"));
-    } catch (e) {
-      throw new Error(`group-campaigns.json corrompido (JSON inválido): ${campaignsPath}\n${String(e)}`);
-    }
-  }
+  const campaigns: CampaignEntry[] = readGroupCampaigns(campaignsPath);
   const byKey = new Map(campaigns.map((c) => [c.key, c]));
   const existing = byKey.get(key);
 
@@ -1369,9 +1383,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // cloudflare-preview.html fica intacto.
   const envioIndexOverride = getIntArg(argv, "envio-index", { min: 1 });
   const storedEnvioIndex = existing && envioWentOut(existing) ? existing.envioIndex : undefined;
+  // #10212: a contagem é pelo ciclo de CONTEÚDO — com `--content-cycle`
+  // divergente (fallback D3 do clarice-novos), soma o histórico do ciclo do
+  // conteúdo e ignora as ondas do ciclo de contatos que levaram outro draft.
+  const envioHistory = buildContentEnvioHistory({
+    segmentsCycle: cycle,
+    contentCycle,
+    segmentsHistory: campaigns,
+    contentCycleHistory:
+      contentCycle === cycle ? [] : readGroupCampaigns(resolve(clariceSegmentsDir(contentCycle), "group-campaigns.json")),
+  });
   const quero = applyQueroPhrase(
     html,
-    envioIndexOverride ?? storedEnvioIndex ?? resolveEnvioIndex(campaigns, key),
+    envioIndexOverride ?? storedEnvioIndex ?? resolveEnvioIndex(envioHistory, key),
   );
   html = quero.html;
   console.error(`ℹ ${key}: ${describeQueroApplication(quero)}`);
@@ -1487,6 +1511,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         status: "draft",
         envioIndex: quero.envioIndex,
         queroIncluded: quero.included,
+        contentCycle, // #10212
       };
       campaigns.push(c);
       byKey.set(key, c);
@@ -1552,6 +1577,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         );
       }
       await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
+      markScheduleAccepted(c, campaigns, campaignsPath); // #10211 — antes do GET-verify
       const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
       // Cast de shape — ver docstring de `CampaignEntry`/`ScheduleSendsShape`
       // no topo do arquivo: mesmos objetos por REFERÊNCIA, só o tipo estático
