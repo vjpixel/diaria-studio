@@ -110,6 +110,8 @@ import {
   scanWrongValueAdoption, // #7324
 } from "../intentional-errors.ts";
 import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
+import { detectSponsoredMarkers } from "../lint-checks/sponsored-source-markers.ts"; // #10169
+import { loadCachedBody } from "../url-body-cache.ts"; // #10169
 import { hero2x1KeyFor, isDestaqueImagePresent } from "../shared/public-image-keys.ts"; // #7399, extraído em #7596
 
 // #6336: usado só por checkKitFixtureAudit, pra localizar
@@ -757,6 +759,48 @@ export function checkMaxContentItems(editionDir: string): InvariantViolation[] {
       file: path,
     },
   ];
+}
+
+/**
+ * #10169: WARN-only — página-fonte (corpo cacheado do Stage 1 em
+ * `_internal/_forensic/link-verify-bodies`) ou path da URL com marcador de
+ * publieditorial. Nunca bloqueia nem descarta item (decisão do editor, #7401):
+ * entra no resumo do gate e o editor decide. Sem corpo cacheado, só vale o
+ * marcador de path da URL.
+ */
+export function checkSponsoredSourceMarkers(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  let md: string;
+  try {
+    md = readFileSync(reviewedPath, "utf8");
+  } catch {
+    return [];
+  }
+  const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
+  const out: InvariantViolation[] = [];
+  for (const { url, line } of extractUrlsWithLines(md)) {
+    let host: string;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      continue;
+    }
+    if (isNonEditorialHost(host)) continue;
+    const markers = detectSponsoredMarkers(url, loadCachedBody(bodiesDir, url));
+    if (markers.length === 0) continue;
+    out.push({
+      rule: "sponsored-source-marker",
+      message:
+        `possível publieditorial em ${url} (marcador: ${markers.join(", ")}) — ` +
+        `confirmar no gate se é anúncio; manter, trocar ou sinalizar (#10169).`,
+      source_issue: "#10169",
+      severity: "warning",
+      file: reviewedPath,
+      line,
+    });
+  }
+  return out;
 }
 
 /**
@@ -3448,6 +3492,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#6336",
     stage: 4,
     run: checkKitFixtureAudit,
+  },
+  {
+    id: "sponsored-source-marker",
+    description: "página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169)",
+    source_issue: "#10169",
+    stage: 4,
+    run: checkSponsoredSourceMarkers,
   },
   {
     id: "approved-item-removed",
