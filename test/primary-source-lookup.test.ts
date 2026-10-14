@@ -447,4 +447,28 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Google lança Gemini no Pixel 10"), undefined);
     assert.equal(subjectVersionedProductCode("Google lança Gemini 2.5 Flash-Lite"), "gemini2.5flashlite");
   });
+
+  it("#10147: adjunto com vírgula antes do sujeito não esconde o código (regressão do #10145)", () => {
+    assert.equal(subjectVersionedProductCode("Com preço menor, Anthropic lança Haiku 5.5"), "haiku5.5");
+    assert.equal(subjectVersionedProductCode("Após atraso, OpenAI lança GPT-5.5"), "gpt5.5");
+    assert.equal(subjectVersionedProductCode("Google lança Gemini, no Pixel 10"), undefined);
+    assert.equal(sameStoryByExactProductVersion({ title: "Com preço menor, Anthropic lança Haiku 5.5" }, { url: "https://x.example/", title: "Introducing Claude Haiku 5.5" }), true);
+    assert.equal(sameStoryByExactProductVersion({ title: "Após atraso, OpenAI lança GPT-5.5" }, { url: "https://x.example/", title: "Introducing GPT-5.5" }), true);
+  });
+
+  it("#10147: 'pro' minúsculo (PT) não vira variante Pro; 'Pro' maiúsculo continua", () => {
+    assert.equal(subjectVersionedProductCode("Anthropic leva Claude Haiku 5.5 pro Brasil"), "haiku5.5");
+    assert.equal(sameStoryByExactProductVersion({ title: "Anthropic leva Claude Haiku 5.5 pro Brasil" }, { url: "https://x.example/", title: "Claude Haiku 5.5 \\ Anthropic" }), true);
+    assert.equal(subjectVersionedProductCode("Google lança Gemini 2.5 Pro"), "gemini2.5pro");
+  });
+
+  it("#10147: 'multada/processada por <produto>' não troca pela página de lançamento", () => {
+    assert.equal(sameStoryByExactProductVersion({ title: "Meta é multada por Llama 5" }, { url: "https://x.example/", title: "Llama 5" }), false);
+    assert.equal(sameStoryByExactProductVersion({ title: "Juiz multa OpenAI por GPT-4o" }, { url: "https://x.example/", title: "GPT-4o" }), false);
+  });
+
+  it("#10147 review: pós-vírgula com 'mas exige <plataforma>' não vira sujeito; 'pro' final continua variante", () => {
+    assert.equal(subjectVersionedProductCode("Novo recurso chega, mas exige iPhone 17"), undefined);
+    assert.equal(subjectVersionedProductCode("Nova IA: Gemini 3 pro"), "gemini3pro");
+  });
 });
