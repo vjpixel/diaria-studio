@@ -455,7 +455,7 @@ export interface PublishPageDeps {
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo.
    * `editionDir` (#9593) só serve pro waiter em background saber qual state
    * file atualizar quando o CI não fecha dentro da espera síncrona. */
-  publish(slug: string, sitemapRelPath?: string, editionDir?: string, removedPaths?: string[]): PublishResult;
+  publish(slug: string, sitemapRelPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }): PublishResult;
   /**
    * #10194: a republicação mudou o slug da página desta edição (o título do D1
    * mudou no loop do Stage 5 depois do §5b-site). Fecha o PR antigo, sinaliza o
@@ -1912,6 +1912,9 @@ export function commitAndPushSitePage(
   // PR velho já estava mergeado) a remover no MESMO commit — ver
   // `supersedePreviousSitePage`. Só sai o que estiver tracked em `gitCwd`.
   removedPaths: readonly string[] = [],
+  // #10206: slug velho -> novo; `_redirects` só é tocado (e staged) com isto,
+  // aplicado SOBRE a cópia do `gitCwd` — nunca copiado do checkout compartilhado.
+  redirect?: { oldSlug: string; newSlug: string },
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
@@ -2130,6 +2133,18 @@ export function commitAndPushSitePage(
       }
       git(["add", "--", p], gitCwd);
       stagedPathspecs.push(p);
+    }
+    if (redirect && sitemapRelPath) {
+      const redirectsRel = redirectsRelPathFromSitemap(sitemapRelPath);
+      const redirectsAbs = resolve(gitCwd, redirectsRel);
+      const cur = existsSync(redirectsAbs) ? readFileSync(redirectsAbs, "utf8") : "";
+      const next = addSlugRedirect(cur, redirect.oldSlug, redirect.newSlug);
+      if (next !== cur) {
+        mkdirSync(dirname(redirectsAbs), { recursive: true });
+        writeFileSync(redirectsAbs, next, "utf8");
+        git(["add", "--", redirectsRel], gitCwd);
+        stagedPathspecs.push(redirectsRel);
+      }
     }
     // #10194: remoção da página do slug velho. `git rm` só quando o path está
     // TRACKED em `gitCwd` (`git ls-files`): no worktree ele nasce de
@@ -2444,7 +2459,7 @@ export function productionDeps(
       return { seoImageAdded, archiveIndexRegenerated };
     },
     supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args),
-    publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[]) => {
+    publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }) => {
       const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
         rootDir,
         slug,
@@ -2455,6 +2470,7 @@ export function productionDeps(
         sleep,
         worktreeDir,
         removedPaths,
+        redirect,
       );
       // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
@@ -2551,6 +2567,7 @@ export function publishEditionSitePage(
   // sitemap antes da nova entrar, e a home regenerada já nasce sem ela. Só
   // quando vai publicar: `--skip-publish` nunca fecha PR de ninguém.
   let removedPaths: string[] = [];
+  let redirect: { oldSlug: string; newSlug: string } | undefined;
   const previous = opts.previous;
   if (!opts.skipPublish && previous && previous.slug !== built.post.slug && deps.supersedePrevious) {
     try {
@@ -2562,6 +2579,7 @@ export function publishEditionSitePage(
         editionDirAbs: editionDir,
       });
       removedPaths = out.removedPaths;
+      redirect = { oldSlug: previous.slug, newSlug: built.post.slug };
       deps.log(
         `slug mudou na republicação: /p/${previous.slug} -> /p/${built.post.slug} (#10194) — PR anterior ` +
           `${previous.prNumber !== undefined ? `#${previous.prNumber}` : "não identificado"}: ${out.oldPrState}; ` +
@@ -2628,7 +2646,7 @@ export function publishEditionSitePage(
 
   let publishResult: PublishResult;
   try {
-    publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir, removedPaths);
+    publishResult = deps.publish(built.post.slug, sitemapRelPath, editionDir, removedPaths, redirect);
   } catch (e) {
     // A página JÁ está escrita (e pode já estar commitada, se só o push
     // falhou) — a próxima rodada/push manual a leva junto. Por isso a
@@ -2774,7 +2792,29 @@ export interface SupersedeArgs {
  */
 export type OldSitePagePrState = "closed" | "merged" | "already-closed" | "open" | "unknown" | "none";
 
+/** #10206: `_redirects` do site, irmão do sitemap (forward-slash, relativo a rootDir). */
+export function redirectsRelPathFromSitemap(sitemapRelPath: string): string {
+  const i = sitemapRelPath.replace(/\\/g, "/").lastIndexOf("/");
+  return (i < 0 ? "" : sitemapRelPath.slice(0, i + 1).replace(/\\/g, "/")) + "_redirects";
+}
+
+/**
+ * #10206: acrescenta `/p/{velho} /p/{novo} 301` ao conteúdo de `_redirects`
+ * (idempotente; ignora slugs iguais). Posts sociais já agendados levam o slug
+ * velho — sem o redirect o leitor cai em 404 depois do supersede.
+ */
+export function addSlugRedirect(content: string, oldSlug: string, newSlug: string): string {
+  if (oldSlug === newSlug) return content;
+  const line = `/p/${oldSlug} /p/${newSlug} 301`;
+  // A -> B depois B -> A: tira a regra com origem em /p/{novo}, senão vira loop.
+  const lines = content.split("\n").filter((l) => !l.trim().startsWith(`/p/${newSlug} `));
+  content = lines.join("\n");
+  if (lines.some((l) => l.trim().startsWith(`/p/${oldSlug} `))) return content;
+  return (content === "" || content.endsWith("\n") ? content : content + "\n") + line + "\n";
+}
+
 export interface SupersedeOutcome {
+  redirectAdded?: boolean;
   oldPrState: OldSitePagePrState;
   /** Paths (relativos a `rootDir`, forward-slash) a remover no commit do PR novo. */
   removedPaths: string[];
@@ -2886,6 +2926,23 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
     }
   }
 
+  let redirectAdded = false;
+  if (sitemapRelPath) {
+    const redirectsAbs = resolve(rootDir, redirectsRelPathFromSitemap(sitemapRelPath));
+    try {
+      const cur = existsSync(redirectsAbs) ? readFileSync(redirectsAbs, "utf8") : "";
+      const next = addSlugRedirect(cur, oldSlug, newSlug);
+      if (next !== cur) {
+        writeFileSync(redirectsAbs, next, "utf8");
+        redirectAdded = true;
+      }
+    } catch (e) {
+      notes.push(`redirect /p/${oldSlug} -> /p/${newSlug} não gravado (${(e as Error).message}) — posts agendados com o slug velho darão 404 (#10206)`);
+    }
+  } else {
+    notes.push(`sem --sitemap: redirect /p/${oldSlug} -> /p/${newSlug} não gravado — posts agendados com o slug velho darão 404 (#10206)`);
+  }
+
   const relOldPageDir = ["workers", "site", "public", "p", oldSlug].join("/");
   try {
     rmSync(resolve(rootDir, relOldPageDir), { recursive: true, force: true });
@@ -2894,7 +2951,7 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
   }
   const removedPaths = oldPrState === "merged" || oldPrState === "unknown" ? [relOldPageDir] : [];
 
-  return { oldPrState, removedPaths, sitemapEntryRemoved, notes };
+  return { oldPrState, removedPaths, sitemapEntryRemoved, redirectAdded, notes };
 }
 
 /**
