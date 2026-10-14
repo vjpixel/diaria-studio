@@ -31,7 +31,7 @@
 export const QUERO_FIRST_SEND_WITH_PHRASE = 2;
 
 /** Texto plano da frase — usado em mensagens e testes. */
-export const QUERO_PHRASE_TEXT =
+const QUERO_PHRASE_TEXT =
   'Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero".';
 
 // Aspas que o render pode produzir em volta de quero: entidade, reta ou curvas.
