@@ -192,9 +192,18 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
         # quedas, senao uma volta ao preco antigo de prompt/cache passaria
         # sem alarme. Custo-mix no workload real (2302 chamadas do tick,
         # 28/08-16/09): $9,46 no baseline antigo -> $3,24 no vigente (-66%).
-        "prompt": 0.0000000261,           # $0,0261/M
-        "completion": 0.0000009,          # $0,90/M
-        "input_cache_read": 0.0000000108, # $0,0108/M
+        # #10220 (14/10/2026): prompt 5,75x ($0,0261 -> $0,15/M) e
+        # input_cache_read 2,78x ($0,0108 -> $0,03/M) subiram; completion
+        # CAIU ($0,90 -> $0,50/M). Custo-mix no workload real (2329 chamadas,
+        # 28/08-16/09, 95% cache read; state.db session_model_usage):
+        # $3,29 no baseline antigo -> $9,50 no vigente (2,9x, ~US$ 15/mes).
+        # Alternativa ja em uso como fallback (deepseek-v4-flash, mesmas
+        # tokens): $5,68 — mas sem medicao de qualidade contra o tick, entao
+        # nao ha evidencia pra trocar; decisao #10065 (MANTER) segue valendo.
+        # Baseline acompanha os 3 campos vigentes, inclusive a queda.
+        "prompt": 0.00000015,             # $0,15/M
+        "completion": 0.0000005,          # $0,50/M
+        "input_cache_read": 0.00000003,   # $0,03/M
     },
 }
 
