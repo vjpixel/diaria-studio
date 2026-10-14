@@ -345,6 +345,8 @@ imagem — usado só pelo embed abaixo, #3392). Falha = warning, não bloqueia. 
 `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` (só pras imagens — produção
 real, fora do escopo de #3214/#3546).
 
+**Frase do "quero" (#10179):** o HTML gravado aqui mantém a frase *Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero".* da APRESENTAÇÃO. Quem decide por envio é `clarice-schedule-group.ts`: o 1º envio Clarice do ciclo sai sem a frase e o 2º, 3º e seguintes saem com ela (`scripts/lib/clarice-quero-phrase.ts`; regra completa em `.claude/skills/diaria-clarice-novos/SKILL.md`). Não retirar a frase do `draft.md` à mão.
+
 **Gerar a variante com imagens embutidas antes de servir** — #1914 tinha migrado
 esse preview de Cloudflare pra Claude Artifact (elimina cota de Workers KV pro
 HTML), mas Artifacts rodam sob CSP estrita que bloqueia imagem remota (só

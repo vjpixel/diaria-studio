@@ -95,6 +95,7 @@ import type { ResolveLatestMonthlyCycleResult } from "./lib/mensal/monthly-paths
 import { datePartsInTz, toAammdd, BRT_TIMEZONE, type DateParts } from "./lib/next-edition-date.ts";
 import { registerReport } from "./studio-ui/studio-reports.ts";
 import type { InvocationSummary } from "./clarice-schedule-group.ts";
+import { describeQueroOutcome } from "./lib/clarice-quero-phrase.ts"; // #10179
 import type { ResolveFolderResult } from "./clarice-resolve-folder.ts";
 
 // #4983 — achado ao vivo na 1ª invocação real da task agendada (260811): o
@@ -659,6 +660,10 @@ export async function runNovos(argv: string[], deps: NovosRunDeps): Promise<Novo
       return { code: NOVOS_SENDNOW_UNCERTAIN_EXIT_CODE, reportId: reportIdSent, reportMarkdown: report.build() };
     }
     report.note(`✅ disparo confirmado (status="sent") — ${selected} contato(s).`);
+    // #10179: o relatório diz se a frase do "quero" entrou neste envio.
+    if (sendJson.envioIndex !== undefined) {
+      report.note(describeQueroOutcome(sendJson.envioIndex, sendJson.queroIncluded === true));
+    }
 
     if (!sendJson?.listId || !sendJson?.campaignId) {
       // #4949 review (silent-failure, achado 2): NÃO usar NovosAbort aqui —
