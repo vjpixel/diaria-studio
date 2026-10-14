@@ -21,6 +21,9 @@ export const EDITORIAL_BLOCKLIST: ReadonlySet<string> = new Set<string>([
   "langchain.com", // editor 260806 — blog corporativo publica case study/anúncio de produto sob a categoria "Tutoriais" do seed/sources.csv; review-use-melhor.ts flagou repetidamente como não-tutorial (ex: edição 260806, "Evaluating code review agents with ReviewBench")
   "tiktok.com", // editor 260821 — vídeo de terceiro sem substância verificável como tutorial (ex: edição 260821, "Como Usar O Chat Gpt Para Estudar Para Concurso" no USE MELHOR)
   "chatprd.ai", // editor 261006 — pedido direto do editor (ex: edição 261007, "How to Build a Real-Time Incident Command Dashboard with ChatGPT Sites" no USE MELHOR)
+  "theverge.com", // editor 261014 — decisão do editor via monitor de cortes por domínio (#9787) (pergunta no gate 4 da edição 261014, retirado 7× × mantido 3× no gate 4)
+  "x.com", // editor 261014 (#10149) — pedido direto no gate 4 da edição 261014 (ex: "Mark Zuckerberg (@finkd) on X" no RADAR); post de rede social não é fonte primária pro pool
+  "twitter.com", // editor 261014 (#10149) — mesmo motivo de x.com, pra onde redireciona
 ]);
 
 /**
