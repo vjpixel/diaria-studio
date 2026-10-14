@@ -167,6 +167,14 @@ export interface DocsGateState {
   final_apply?: { at: string; export_sha256: string; files_sha: Record<SyncFile, string> };
   /** Arquivos em conflito no último `apply` (ausente = nenhum). */
   pending_conflict?: SyncFile[];
+  /** #10177: `container.version` (o `rev` do conector) do doc cujo conteúdo é
+   * exatamente a `base` — gravada na criação (`set-url --doc-version`). Se a
+   * version lida no ramo `sim` (um `read` barato do conector) for a mesma, o
+   * editor não editou o doc e `apply --final --no-edits` dispensa o export.
+   * Apagada por tudo que pode desalinhar doc e base: render com doc existente
+   * (substituição), `confirm`, `enable`, `set-url` sem version e qualquer
+   * `apply` com export. Ausente = fast path indisponível (export normal). */
+  base_doc_version?: string;
 }
 
 /** Erro de formato do export (sentinela ausente/corrompida/duplicada) ou de
@@ -176,6 +184,16 @@ export class DocsSyncFormatError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DocsSyncFormatError";
+  }
+}
+
+/** #10177: `apply --no-edits` recusado — a version do doc mudou desde a
+ * criação, ou não há version registrada. Nada gravado; o top-level faz o
+ * export normal. CLI → exit 4. */
+export class DocsSyncNeedsExportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocsSyncNeedsExportError";
   }
 }
 
@@ -1097,6 +1115,9 @@ export function readState(editionDir: string): DocsGateState | null {
   if (st.doc_url !== undefined && (typeof st.doc_url !== "string" || st.doc_url === "")) {
     throw new DocsSyncFormatError(`${STATE_FILENAME}: doc_url inválido`);
   }
+  if (st.base_doc_version !== undefined && (typeof st.base_doc_version !== "string" || st.base_doc_version === "")) {
+    throw new DocsSyncFormatError(`${STATE_FILENAME}: base_doc_version inválido`);
+  }
   if (st.pending !== undefined) {
     validateBase(st.pending?.base, "pending");
     if (typeof st.pending.rendered_at !== "string") throw new DocsSyncFormatError(`${STATE_FILENAME}: pending.rendered_at inválido`);
@@ -1184,6 +1205,8 @@ export function runRender(opts: RenderOptions): RenderResult {
       ...state,
       pending: { base: baseOf(files), rendered_at: now, ...(opts.docVersion ? { doc_version: opts.docVersion } : {}) },
     };
+    // O doc vai ser substituído: a version da criação deixa de descrever a base.
+    delete next.base_doc_version;
     pending = true;
   } else {
     next = { ...(state ?? {}), base: baseOf(files), rendered_at: now } as DocsGateState;
@@ -1222,15 +1245,21 @@ export function runConfirm(opts: { editionDir: string; docExport?: string; docVe
   }
   const next: DocsGateState = { ...state, base: state.pending.base, rendered_at: state.pending.rendered_at };
   delete next.pending;
+  delete next.base_doc_version;
   writeState(opts.editionDir, next);
   return { rendered_at: next.rendered_at };
 }
 
-/** Grava só o `doc_url` (não toca na base). */
-export function runSetUrl(opts: { editionDir: string; docUrl: string }): void {
+/** Grava o `doc_url` (não toca na base) e, se informada, a `container.version`
+ * do doc recém-criado (#10177 — habilita `apply --final --no-edits`). */
+export function runSetUrl(opts: { editionDir: string; docUrl: string; docVersion?: string }): void {
   const state = requireState(opts.editionDir, "set-url");
   if (!/^https?:\/\//.test(opts.docUrl)) throw new DocsSyncFormatError(`--doc-url inválido: ${opts.docUrl}`);
-  writeState(opts.editionDir, { ...state, doc_url: opts.docUrl });
+  if (opts.docVersion !== undefined && opts.docVersion.trim() === "") throw new DocsSyncFormatError("--doc-version vazio");
+  const next: DocsGateState = { ...state, doc_url: opts.docUrl };
+  if (opts.docVersion !== undefined) next.base_doc_version = opts.docVersion;
+  else delete next.base_doc_version; // doc novo sem version: a antiga não vale
+  writeState(opts.editionDir, next);
 }
 
 /** Desliga o sync do doc por decisão explícita (ex.: editor aprovou o gate
@@ -1315,6 +1344,7 @@ export function runEnable(opts: { editionDir: string; docExport: string }): Enab
   delete next.sync_disabled;
   delete next.final_apply;
   delete next.pending;
+  delete next.base_doc_version;
   writeState(opts.editionDir, next);
   return result;
 }
@@ -1331,6 +1361,8 @@ export interface StatusResult {
   files_changed_since_doc: SyncFile[];
   pending_conflict: SyncFile[];
   final_apply_at?: string;
+  /** #10177: version do doc na criação (ausente = `--no-edits` indisponível). */
+  base_doc_version?: string;
 }
 
 /**
@@ -1352,6 +1384,7 @@ export function runStatus(opts: { editionDir: string }): StatusResult {
     files_changed_since_doc: SYNC_FILES.filter((f) => sha256(files[f]) !== state.base[f].sha256),
     pending_conflict: state.pending_conflict ?? [],
     ...(state.final_apply ? { final_apply_at: state.final_apply.at } : {}),
+    ...(state.base_doc_version ? { base_doc_version: state.base_doc_version } : {}),
   };
 }
 
@@ -1374,7 +1407,13 @@ export interface ApplyReport {
 
 export interface ApplyOptions {
   editionDir: string;
-  docExport: string;
+  /** Export do doc. Obrigatório, exceto com `noEdits`. */
+  docExport?: string;
+  /** #10177: sem export — a `container.version` lida agora do doc (um `read`
+   * barato do conector). Igual à `base_doc_version` da criação = o editor não
+   * editou, o doc é a própria base; diferente/ausente → `DocsSyncNeedsExportError`
+   * (exit 4), nada gravado. Exclusivo com `docExport`/`expectedBytes`. */
+  noEdits?: { docVersion: string };
   resolutions?: Partial<Record<SyncFile, ResolutionSpec>>;
   /** Apply final do ramo `sim`: sem conflito, grava `final_apply` (o `check`
    * do §4e exige). Apply não-final apaga `final_apply`. */
@@ -1433,18 +1472,48 @@ function stripOutcome(o: FileOutcome): ReportOutcome {
  * o apply, vira conflito (TOCTOU). Falha inesperada → `DocsSyncUnexpectedError`
  * com a lista do que já foi gravado.
  */
+/** #10177: o doc não mudou desde a criação — as seções "exportadas" são a
+ * própria base. Recusa (nada gravado) se a version não bater. */
+function noEditsSections(state: DocsGateState, docVersion: string): Record<SyncFile, string> {
+  if (!state.base_doc_version) {
+    throw new DocsSyncNeedsExportError(
+      "sem version do doc registrada para a base (criação sem --doc-version, ou doc substituído/puxado depois) — faça o export normal (nada gravado)",
+    );
+  }
+  if (state.pending) {
+    throw new DocsSyncNeedsExportError("render pendente (doc pode ter sido substituído) — faça o export normal (nada gravado)");
+  }
+  if (docVersion !== state.base_doc_version) {
+    throw new DocsSyncNeedsExportError(
+      `version do doc ${docVersion} ≠ ${state.base_doc_version} da criação — o doc mudou; faça o export normal (nada gravado)`,
+    );
+  }
+  return Object.fromEntries(SYNC_FILES.map((f) => [f, state.base[f].content])) as Record<SyncFile, string>;
+}
+
 export function runApply(opts: ApplyOptions): ApplyReport {
   const state = requireState(opts.editionDir, "apply");
   if (state.sync_disabled) throw disabledError(state);
-  const exportBytes = existsSync(opts.docExport) ? readFileSync(opts.docExport) : null;
-  if (exportBytes === null) throw new DocsSyncFormatError(`export do doc não encontrado: ${opts.docExport}`);
-  if (opts.expectedBytes !== undefined && exportBytes.length !== opts.expectedBytes) {
-    throw new DocsSyncFormatError(
-      `export do doc com ${exportBytes.length} bytes, o conector devolveu ${opts.expectedBytes} — cópia do export corrompida; refaça a cópia (nada gravado)`,
-    );
+  let exportText: string;
+  let sections: Record<SyncFile, string>;
+  if (opts.noEdits) {
+    if (opts.docExport !== undefined || opts.expectedBytes !== undefined) {
+      throw new DocsSyncFormatError("--no-edits não aceita --doc-export/--expected-bytes");
+    }
+    sections = noEditsSections(state, opts.noEdits.docVersion);
+    exportText = `no-edits@${opts.noEdits.docVersion}\n` + SYNC_FILES.map((f) => sections[f]).join("\n");
+  } else {
+    if (opts.docExport === undefined) throw new DocsSyncFormatError("apply exige --doc-export (ou --no-edits --doc-version)");
+    const exportBytes = existsSync(opts.docExport) ? readFileSync(opts.docExport) : null;
+    if (exportBytes === null) throw new DocsSyncFormatError(`export do doc não encontrado: ${opts.docExport}`);
+    if (opts.expectedBytes !== undefined && exportBytes.length !== opts.expectedBytes) {
+      throw new DocsSyncFormatError(
+        `export do doc com ${exportBytes.length} bytes, o conector devolveu ${opts.expectedBytes} — cópia do export corrompida; refaça a cópia (nada gravado)`,
+      );
+    }
+    exportText = exportBytes.toString("utf8");
+    sections = parseDocExport(exportText);
   }
-  const exportText = exportBytes.toString("utf8");
-  const sections = parseDocExport(exportText);
   const current = readSyncFiles(opts.editionDir);
   assertNoReplacementChars(sections, current, state.base);
 
@@ -1492,6 +1561,9 @@ export function runApply(opts: ApplyOptions): ApplyReport {
     const at = (opts.now ?? new Date()).toISOString();
     state.last_apply_at = at;
     delete state.final_apply;
+    // Apply com export: a base pode ter avançado para o conteúdo do doc, cuja
+    // version não conhecemos — o fast path --no-edits deixa de valer.
+    if (!opts.noEdits) delete state.base_doc_version;
     if (conflictFiles.length > 0) {
       state.pending_conflict = conflictFiles;
     } else {

@@ -1001,6 +1001,100 @@ describe("#10078 — enable e export único na finalização", () => {
   });
 });
 
+describe("#10177 — apply --no-edits: pula o export quando a version do doc não mudou desde a criação", () => {
+  /** Cria o doc registrando a version devolvida pela criação (mock — nunca o conector real). */
+  function createDocV(dir: string, version = "1"): string {
+    const { out } = runRender({ editionDir: dir, edition: "261014" });
+    runSetUrl({ editionDir: dir, docUrl: "https://claude.ai/artifact/x", docVersion: version });
+    return readFileSync(out, "utf8");
+  }
+
+  it("version igual (caso 261014, rev 1 = rev 1): apply --final --no-edits sem export grava final_apply e o check passa", () => {
+    withEdition((dir) => {
+      createDocV(dir, "1");
+      assert.equal(readState(dir)?.base_doc_version, "1");
+      assert.equal(runStatus({ editionDir: dir }).base_doc_version, "1");
+      const cli = runCli(["apply", "--edition-dir", dir, "--no-edits", "--doc-version", "1", "--final"]);
+      assert.equal(cli.status, 0, cli.stderr);
+      const r = JSON.parse(cli.stdout);
+      assert.equal(r.ok, true);
+      assert.equal(r.no_edits, true);
+      assert.deepEqual(r.pulled, []);
+      assert.equal(read(dir, "02-reviewed.md"), REVIEWED);
+      assert.equal(read(dir, "03-social.md"), SOCIAL);
+      assert.ok(readState(dir)?.final_apply, "final_apply gravado");
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("version igual com mudança do pipeline durante o gate: arquivo do pipeline preservado (doc_stale), check passa", () => {
+    withEdition((dir) => {
+      createDocV(dir, "3");
+      const pipelineReviewed = REVIEWED.replace("Cada rodada redefine", "Cada rodada (pipeline) redefine");
+      writeFileSync(join(dir, "02-reviewed.md"), pipelineReviewed);
+      const r = runApply({ editionDir: dir, noEdits: { docVersion: "3" }, final: true });
+      assert.equal(r.ok, true);
+      assert.deepEqual(r.doc_stale, ["02-reviewed.md"]);
+      assert.equal(read(dir, "02-reviewed.md"), pipelineReviewed, "nunca reverte o pipeline para a base");
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("version diferente (editor editou): exit 4, needs_export, NADA gravado — e o export normal segue funcionando", () => {
+    withEdition((dir) => {
+      const doc = createDocV(dir, "1");
+      const before = readFileSync(statePath(dir), "utf8");
+      const cli = runCli(["apply", "--edition-dir", dir, "--no-edits", "--doc-version", "2", "--final"]);
+      assert.equal(cli.status, 4, cli.stderr);
+      assert.equal(JSON.parse(cli.stdout).needs_export, true);
+      assert.equal(readFileSync(statePath(dir), "utf8"), before, "estado intocado");
+      assert.equal(runCheck({ editionDir: dir }).ok, false, "sem final_apply");
+      const exp = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 editado."));
+      assert.deepEqual(runApply({ editionDir: dir, docExport: exp, final: true }).pulled, ["03-social.md"]);
+      assert.equal(runCheck({ editionDir: dir }).ok, true);
+    });
+  });
+
+  it("sem version registrada (set-url sem --doc-version) → exit 4", () => {
+    withEdition((dir) => {
+      createDoc(dir);
+      assert.equal(readState(dir)?.base_doc_version, undefined);
+      assert.equal(runCli(["apply", "--edition-dir", dir, "--no-edits", "--doc-version", "1", "--final"]).status, 4);
+    });
+  });
+
+  it("apply com export apaga a version (base pode ter avançado); render com doc e confirm também", () => {
+    withEdition((dir) => {
+      const doc = createDocV(dir, "1");
+      const exp = writeExport(dir, doc.replace("Texto do d2.", "Texto do d2 editado."));
+      runApply({ editionDir: dir, docExport: exp });
+      assert.equal(readState(dir)?.base_doc_version, undefined);
+      // Mesmo que a version "volte" a bater por coincidência, o fast path não vale mais.
+      assert.throws(() => runApply({ editionDir: dir, noEdits: { docVersion: "1" }, final: true }), /export normal/);
+    });
+    withEdition((dir) => {
+      const doc = createDocV(dir, "1");
+      runRender({ editionDir: dir, edition: "261014", docExport: writeExport(dir, doc), docVersion: "1" });
+      assert.equal(readState(dir)?.base_doc_version, undefined, "render com doc existente apaga");
+      assert.throws(() => runApply({ editionDir: dir, noEdits: { docVersion: "1" } }), /export normal/);
+    });
+  });
+
+  it("set-url sem version em cima de um estado com version apaga a antiga; sync desligado → exit 2; flags incompatíveis → exit 2", () => {
+    withEdition((dir) => {
+      createDocV(dir, "1");
+      runSetUrl({ editionDir: dir, docUrl: "https://claude.ai/artifact/y" });
+      assert.equal(readState(dir)?.base_doc_version, undefined);
+      runSetUrl({ editionDir: dir, docUrl: "https://claude.ai/artifact/y", docVersion: "5" });
+      const exp = writeExport(dir, "x");
+      assert.equal(runCli(["apply", "--edition-dir", dir, "--no-edits", "--doc-version", "5", "--doc-export", exp]).status, 2);
+      assert.equal(runCli(["apply", "--edition-dir", dir, "--no-edits"]).status, 2);
+      runDisable({ editionDir: dir, reason: "teste" });
+      assert.equal(runCli(["apply", "--edition-dir", dir, "--no-edits", "--doc-version", "5", "--final"]).status, 2);
+    });
+  });
+});
+
 describe("#10112 — destaque movido/trocado pelo pipeline: 'aplicar doc' recusado", () => {
   const block = (n: number, cat: string, title: string, body: string) =>
     [

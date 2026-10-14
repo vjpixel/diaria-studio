@@ -13,8 +13,9 @@
  *   npx tsx scripts/stage4-docs-sync.ts render --edition-dir <dir> --edition AAMMDD \
  *     [--out <arquivo.md>] [--summary-file <resumo.md>] [--doc-export <export.md> --doc-version <container.version do export>]
  *
- *   # Grava o link do doc recém-criado (não mexe na base)
- *   npx tsx scripts/stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url>
+ *   # Grava o link do doc recém-criado (não mexe na base). --doc-version =
+ *   # `container.version` devolvida pela criação (#10177, habilita --no-edits)
+ *   npx tsx scripts/stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url> [--doc-version <v>]
  *
  *   # Logo após criar o doc: export do doc intocado tem de voltar equivalente;
  *   # senão grava `sync_disabled` (o doc deixa de ser sincronizado)
@@ -30,6 +31,11 @@
  *     (#10116: export com U+FFFD é recusado com exit 2, nada gravado — cópia
  *     corrompida; --expected-bytes = tamanho devolvido pelo conector, opcional:
  *     se o arquivo tiver outro tamanho, exit 2, nada gravado)
+ *
+ *   # Sem export (#10177): a version lida agora do doc é a mesma da criação →
+ *   # o editor não editou; aplica como se o export fosse a própria base.
+ *   # Version diferente/ausente → exit 4, nada gravado (fazer o export normal)
+ *   npx tsx scripts/stage4-docs-sync.ts apply --edition-dir <dir> --no-edits --doc-version <v> [--final]
  *
  *   # Desliga o sync (ex.: editor aprovou "sem as edições do doc")
  *   npx tsx scripts/stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"
@@ -59,12 +65,15 @@
  *       desativado (nada gravado)
  *   3 — falha inesperada (I/O, EBUSY do OneDrive, ...). JSON
  *       `{ ok:false, error, written:[...] }` diz o que já tinha sido gravado.
+ *   4 — `apply --no-edits` recusado: version do doc mudou desde a criação (ou
+ *       não foi registrada). Nada gravado — fazer o export normal (#10177).
  */
 
 import { readFileSync } from "node:fs";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import {
   DocsSyncFormatError,
+  DocsSyncNeedsExportError,
   DocsSyncUnexpectedError,
   parseResolutions,
   runApply,
@@ -86,10 +95,11 @@ function usage(msg: string): never {
 
 const USAGE =
   "uso: stage4-docs-sync.ts render --edition-dir <dir> --edition AAMMDD [--out <md>] [--summary-file <md>] [--doc-export <md> [--doc-version <v>]]\n" +
-  "     stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url>\n" +
+  "     stage4-docs-sync.ts set-url --edition-dir <dir> --doc-url <url> [--doc-version <v>]\n" +
   "     stage4-docs-sync.ts check-roundtrip --edition-dir <dir> --doc-export <md>\n" +
   "     stage4-docs-sync.ts confirm --edition-dir <dir> [--doc-export <md>] [--doc-version <v>]\n" +
   '     stage4-docs-sync.ts apply --edition-dir <dir> --doc-export <md> [--resolve "02-reviewed.md=arquivo|doc@<token>,..."] [--final] [--expected-bytes <n>]\n' +
+  "     stage4-docs-sync.ts apply --edition-dir <dir> --no-edits --doc-version <v> [--final]\n" +
   '     stage4-docs-sync.ts disable --edition-dir <dir> --reason "<motivo>"\n' +
   "     stage4-docs-sync.ts enable --edition-dir <dir> --doc-export <md>\n" +
   "     stage4-docs-sync.ts status --edition-dir <dir>\n" +
@@ -119,8 +129,9 @@ function run(argv: string[]): number {
     case "set-url": {
       const docUrl = values["doc-url"];
       if (!docUrl) usage("--doc-url obrigatório no set-url");
-      runSetUrl({ editionDir, docUrl });
-      console.log(JSON.stringify({ ok: true, doc_url: docUrl }));
+      const docVersion = values["doc-version"];
+      runSetUrl({ editionDir, docUrl, docVersion });
+      console.log(JSON.stringify({ ok: true, doc_url: docUrl, ...(docVersion ? { base_doc_version: docVersion } : {}) }));
       return 0;
     }
     case "check-roundtrip": {
@@ -135,6 +146,16 @@ function run(argv: string[]): number {
       return 0;
     }
     case "apply": {
+      if (flags.has("no-edits")) {
+        const docVersion = values["doc-version"];
+        if (!docVersion) usage("--no-edits exige --doc-version (container.version lida agora do doc)");
+        if (docExport || values["expected-bytes"] || values["resolve"]) {
+          usage("--no-edits não aceita --doc-export/--expected-bytes/--resolve");
+        }
+        const report = runApply({ editionDir, noEdits: { docVersion }, final: flags.has("final") });
+        console.log(JSON.stringify({ ...report, no_edits: true }, null, 2));
+        return report.ok ? 0 : 1;
+      }
       if (!docExport) usage("--doc-export obrigatório no apply");
       const resolutions = values["resolve"] ? parseResolutions(values["resolve"]) : undefined;
       const rawBytes = values["expected-bytes"];
@@ -182,6 +203,11 @@ export function main(argv: string[]): number {
       console.error(`stage4-docs-sync: ${e.message}\n${USAGE}`);
       console.log(JSON.stringify({ ok: false, error: e.message }));
       return 2;
+    }
+    if (e instanceof DocsSyncNeedsExportError) {
+      console.error(`stage4-docs-sync: ${e.message}`);
+      console.log(JSON.stringify({ ok: false, needs_export: true, error: e.message }));
+      return 4;
     }
     if (e instanceof DocsSyncFormatError) {
       console.error(`stage4-docs-sync: ${e.message}`);
