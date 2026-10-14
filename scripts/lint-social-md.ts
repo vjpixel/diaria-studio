@@ -110,6 +110,11 @@ import {
   type BannedLexiconError,
   type BannedLexiconReport,
 } from "./lib/lint-checks/banned-lexicon.ts"; // #7260: mesmo backstop do lint-newsletter-md.ts, agora também em 03-social.md
+import {
+  checkCurtoXWeight,
+  type CurtoXWeightError,
+  type CurtoXWeightReport,
+} from "./lib/lint-checks/curto-x-weight.ts"; // #10180: peso X (280) do # Curto, mesmo cálculo do prep-twitter-posts.ts
 
 export type { LintError };
 export { extractPlatformSection, parseDestaqueHeaders, lintLinkedinCTAs, lintFacebookCTAs };
@@ -148,6 +153,8 @@ export { checkNoXmlArtifacts };
 export type { NoXmlArtifactsError, NoXmlArtifactsReport };
 export { checkBannedLexicon };
 export type { BannedLexiconError, BannedLexiconReport };
+export { checkCurtoXWeight };
+export type { CurtoXWeightError, CurtoXWeightReport };
 
 // ---------------------------------------------------------------------------
 // #5416 — Modo agregador `--stage 4 --json`
@@ -246,6 +253,13 @@ export function runStage4SocialLintReport(editionDir: string): SocialStageLintRe
   // backstop já aplicado a 02-reviewed.md (lint-newsletter-md.ts).
   runSocialCheckSafely(push, "banned-lexicon", "#7260", "gate-blocking", () =>
     checkBannedLexicon(md),
+  );
+
+  // #10180: cada post do `# Curto` (d1/d2/d3 e o `## um`) cabe nos 280 do X,
+  // pelo mesmo peso do Stage 5 (prep-twitter-posts.ts). Sem isto o gate
+  // aprovava um post que o Stage 5 depois pulava no X sem aviso (261014).
+  runSocialCheckSafely(push, "curto-x-weight", "#10180", "gate-blocking", () =>
+    checkCurtoXWeight(md),
   );
 
   // #2526/#4352: `lintAntithesisReveal`/`lintTrailingEditorialHook` sempre
@@ -359,6 +373,12 @@ export function runStage2SocialLintReport(editionDir: string): SocialStageLintRe
     lintUseMelhorFailSoft(md),
   );
 
+  // #10180: mesmo check do Stage 4, já no Stage 2 — o `# Curto` acabou de ser
+  // escrito pelo social-curto e é aqui que encurtar custa menos.
+  runSocialCheckSafely(push, "curto-x-weight", "#10180", "gate-blocking", () =>
+    checkCurtoXWeight(md),
+  );
+
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);
   return { stage: 2, passed, checks };
 }
@@ -409,7 +429,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
         "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>\n" +
         "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>\n" +
-        "  ou: lint-social-md.ts --check banned-lexicon --md <path>",
+        "  ou: lint-social-md.ts --check banned-lexicon --md <path>\n" +
+        "  ou: lint-social-md.ts --check curto-x-weight --md <path>",
     );
     process.exit(2);
   }
@@ -740,6 +761,19 @@ function main(): void {
           `  linha ${e.line}: "${e.matched}" → use "${e.correct}" (${e.sourceIssue}) — "${e.excerpt}"`,
         );
       }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check curto-x-weight (#10180) — cada post do `# Curto` (d1/d2/d3 e
+  // `## um`) cabe nos 280 do X pelo peso do Stage 5 (URL = 23).
+  if (args.check === "curto-x-weight") {
+    const result = checkCurtoXWeight(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ ${result.errors.length} post(s) do # Curto acima de ${result.limit} no peso do X em ${args.md}:`);
+      for (const e of result.errors) console.error(`  ${e.message}`);
       process.exit(1);
     }
     return;
