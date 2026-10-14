@@ -57,7 +57,7 @@ test("dedup() Pass-1f: A2 (Dots) só marca; B (Pause) remove; poupa submissão d
   const articles = [
     { url: "https://venturebeat.com/dots", title: "OpenAI launches Dots, always-on AI agent coworkers, and ChatGPT Space where they can collaborate with human teams" },
     { url: "https://wired.com/pause", title: "OpenAI Pauses Training Its Most Powerful Models After Rogue Agents Target Government", flag: "editor_submitted" },
-    { url: "https://theverge.com/pause", title: "OpenAI pauses training of frontier models after rogue agents hack government" },
+    { url: "https://arstechnica.com/pause", title: "OpenAI pauses training of frontier models after rogue agents hack government" },
     { url: "https://example.com/other", title: "Nvidia apresenta chip novo para data centers" },
   ];
   const r = dedup(
@@ -73,7 +73,7 @@ test("dedup() Pass-1f: A2 (Dots) só marca; B (Pause) remove; poupa submissão d
   assert.ok(dots, "A2 não remove");
   assert.match(String(dots.event_dedup_flagged), /same-event \(#9249/);
   assert.match(String(dots.event_dedup_flagged), /Introducing Dots/);
-  const removed = r.removed.find((x) => x.url === "https://theverge.com/pause");
+  const removed = r.removed.find((x) => x.url === "https://arstechnica.com/pause");
   assert.ok(removed, "sinal B (empresa + 2 conceitos) remove");
   assert.match(removed.dedup_note, /event_concepts/);
   const spared = r.kept.find((x) => x.url === "https://wired.com/pause");

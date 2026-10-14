@@ -13,9 +13,9 @@
       "https://valor.globo.com/tecnologia/noticia/2026/04/23/nubank-ifood.html"
     ],
     "removed_notes": [
+      "https://arstechnica.com/2026/04/22/old-news → url-match com edição anterior",
       "https://openai.com/news/gpt-5-launch/?utm_source=twitter → url-duplicado na lista (mantido: https://openai.com/news/gpt-5-launch/)",
-      "https://therundown.ai/p/weekly-roundup-ai → agregador/roundup bloqueado (use fonte primária)",
-      "https://theverge.com/2026/04/22/old-news → url-match com edição anterior"
+      "https://therundown.ai/p/weekly-roundup-ai → agregador/roundup bloqueado (use fonte primária)"
     ]
   },
   "categorize": {
