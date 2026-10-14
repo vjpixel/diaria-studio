@@ -24,7 +24,10 @@
  * Miolo puro (`checkDecisionStates`, `formatDriftReportLines`) + I/O fino
  * (`fetchOpenIssuesWithTrustedComments`, `productionToggleReader`). Consumido
  * por `scripts/check-decision-state-drift.ts` (CLI, usado pelo
- * `/diaria-desbloqueia`) e pelo relatório diário de `clarice-envio-run.ts`.
+ * `/diaria-desbloqueia`), pelo relatório diário de `clarice-envio-run.ts` e,
+ * desde o #10210, pela task `clarice-envio-alarm.ts` — que transforma cada
+ * divergência em achado (issue + e-mail urgente); a linha no relatório
+ * sozinha não chegava a ninguém.
  */
 import { spawnSync } from "node:child_process";
 import { trustedCommentBodies } from "./trusted-comment-author.ts";

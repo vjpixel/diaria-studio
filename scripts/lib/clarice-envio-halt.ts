@@ -268,13 +268,181 @@ export function readClariceEnvioBaseAck(rootDir: string): ClariceEnvioBaseAck | 
   }
 }
 
-/** Grava o aceite (decisão do editor). Propaga erro de escrita. */
+/** Grava o aceite (decisão do editor). Propaga erro de escrita. Também limpa
+ * o estado durável de colapso (#10209): o editor decidiu sobre a base, o
+ * alarme não deve seguir apontando o colapso até a próxima rodada agendada. */
 export function writeClariceEnvioBaseAck(rootDir: string, reason: string, now: Date = new Date()): ClariceEnvioBaseAck {
   const ack: ClariceEnvioBaseAck = { acceptedAt: now.toISOString(), reason };
   const p = clariceEnvioBaseAckPath(rootDir);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(ack, null, 2) + "\n", "utf8");
+  clearClariceEnvioBaseCollapse(rootDir);
   return ack;
+}
+
+// ---------------------------------------------------------------------------
+// #10209 item 3 — estado DURÁVEL do colapso de base. A condição é derivada do
+// histórico da Brevo, que só a rodada das 19:00 consulta. Antes, o alarme
+// (20:30) só via o colapso se o relatório do dia fosse `-base-colapsada`:
+// dias `-paused`/`-abort`/sem relatório não geravam achado e 2 deles fechavam
+// a issue com a base ainda colapsada (mesmo defeito que o #10125 corrigiu pra
+// parada vencida). Agora a rodada que para por colapso grava este arquivo; a
+// rodada que calcula a proposta SEM colapso (ou o `--accept-base`) o apaga; o
+// alarme lê o arquivo toda execução.
+// ---------------------------------------------------------------------------
+
+export interface ClariceEnvioBaseCollapseState {
+  /** ISO — quando a rodada detectou o colapso pela 1ª vez (preservado nas seguintes). */
+  detectedAt: string;
+  /** `envio-{aammdd}-base-colapsada` da rodada que gravou por último. */
+  reportId: string;
+  baseVolume: number;
+  baseDay: string;
+  peakVolume: number;
+  peakDay: string;
+  fraction: number;
+}
+
+export type ClariceEnvioBaseCollapseRead =
+  | { collapsed: false }
+  | { collapsed: true; invalid: false; state: ClariceEnvioBaseCollapseState }
+  | { collapsed: true; invalid: true; error: string };
+
+export function clariceEnvioBaseCollapsePath(rootDir: string): string {
+  return resolve(rootDir, "data", "clarice-envio-base-collapse.json");
+}
+
+function isBaseCollapseState(v: unknown): v is ClariceEnvioBaseCollapseState {
+  if (!v || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  return (
+    typeof o.detectedAt === "string" &&
+    typeof o.reportId === "string" &&
+    typeof o.baseVolume === "number" &&
+    typeof o.baseDay === "string" &&
+    typeof o.peakVolume === "number" &&
+    typeof o.peakDay === "string" &&
+    typeof o.fraction === "number"
+  );
+}
+
+/** Leitura fail-SAFE (mesmo racional da parada): arquivo presente mas
+ * ilegível conta como colapso ativo — o alarme segue avisando. */
+export function readClariceEnvioBaseCollapse(rootDir: string): ClariceEnvioBaseCollapseRead {
+  const p = clariceEnvioBaseCollapsePath(rootDir);
+  if (!existsSync(p)) return { collapsed: false };
+  try {
+    const raw: unknown = JSON.parse(readFileSync(p, "utf8"));
+    if (!isBaseCollapseState(raw)) return { collapsed: true, invalid: true, error: "shape inesperado" };
+    return { collapsed: true, invalid: false, state: raw };
+  } catch (e) {
+    return { collapsed: true, invalid: true, error: (e as Error).message };
+  }
+}
+
+/** Grava o colapso. `detectedAt` de um estado anterior legível é preservado
+ * (identidade estável do achado). Propaga erro de escrita. */
+export function writeClariceEnvioBaseCollapse(
+  rootDir: string,
+  state: ClariceEnvioBaseCollapseState,
+): ClariceEnvioBaseCollapseState {
+  const prev = readClariceEnvioBaseCollapse(rootDir);
+  const next: ClariceEnvioBaseCollapseState =
+    prev.collapsed && !prev.invalid ? { ...state, detectedAt: prev.state.detectedAt } : state;
+  const p = clariceEnvioBaseCollapsePath(rootDir);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(next, null, 2) + "\n", "utf8");
+  return next;
+}
+
+/** Apaga o estado de colapso. Devolve `false` se não havia. */
+export function clearClariceEnvioBaseCollapse(rootDir: string): boolean {
+  const p = clariceEnvioBaseCollapsePath(rootDir);
+  if (!existsSync(p)) return false;
+  rmSync(p, { force: true });
+  return true;
+}
+
+/**
+ * #10209 item 2 — menor `--volume N` que tira a rampa do colapso: a onda de N
+ * vira o novo dN, e só não recolapsa se `N >= minFraction × pico`. Abaixo
+ * disso, `--volume N` envia e a rodada agendada seguinte para de novo — o
+ * caminho certo para retomar com base menor é `--accept-base`. Puro.
+ */
+export function minVolumeToClearCollapse(peakVolume: number, minFraction: number): number {
+  return Math.max(1, Math.ceil(peakVolume * minFraction));
+}
+
+/** Texto de orientação do colapso (relatório, issue, e-mail). Puro. */
+export function describeBaseCollapseActions(peakVolume: number | null, minFraction: number): string[] {
+  const minN = peakVolume !== null && peakVolume > 0 ? minVolumeToClearCollapse(peakVolume, minFraction) : null;
+  return [
+    'aceitar a base baixa e retomar a automação: `npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."`',
+    minN !== null
+      ? `envio pontual com volume confirmado: \`/diaria-clarice-envio --volume N\` — só resolve com N ≥ ${minN} ` +
+        `(${Math.round(minFraction * 100)}% do pico ${peakVolume}); abaixo disso a onda vira a nova base e a próxima rodada agendada recolapsa`
+      : `envio pontual com volume confirmado: \`/diaria-clarice-envio --volume N\` — abaixo de ${Math.round(minFraction * 100)}% do pico a onda vira a nova base e a próxima rodada agendada recolapsa`,
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// #10209 item 1 — registro dos dias em que a rodada agendou volume REDUZIDO
+// por crédito Brevo (`cappedBy: "credit"`, #5042). É redução deliberada, não
+// resíduo de onda parcial: sem este registro, a rodada seguinte comparava o
+// dia cortado com o pico anterior e parava por "base colapsada".
+// ---------------------------------------------------------------------------
+
+export interface ClariceEnvioCreditCap {
+  /** YYYY-MM-DD (BRT) — dia em que a onda cortada sai. */
+  day: string;
+  /** Volume agendado depois do corte. */
+  volume: number;
+  recordedAt: string;
+}
+
+/** Quantos registros manter — bem acima da janela de pico (7 dias de rampa). */
+export const CLARICE_ENVIO_CREDIT_CAPS_KEEP = 30;
+
+export function clariceEnvioCreditCapsPath(rootDir: string): string {
+  return resolve(rootDir, "data", "clarice-envio-credit-caps.json");
+}
+
+/** Ausente OU ilegível → `[]`: sem registro, o guard de colapso fica MAIS
+ * estrito (lado seguro — no pior caso para e chama o editor). */
+export function readClariceEnvioCreditCaps(rootDir: string): ClariceEnvioCreditCap[] {
+  const p = clariceEnvioCreditCapsPath(rootDir);
+  if (!existsSync(p)) return [];
+  try {
+    const raw: unknown = JSON.parse(readFileSync(p, "utf8"));
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (e): e is ClariceEnvioCreditCap =>
+        !!e &&
+        typeof e === "object" &&
+        typeof (e as ClariceEnvioCreditCap).day === "string" &&
+        /^\d{4}-\d{2}-\d{2}$/.test((e as ClariceEnvioCreditCap).day) &&
+        typeof (e as ClariceEnvioCreditCap).volume === "number" &&
+        typeof (e as ClariceEnvioCreditCap).recordedAt === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Registra (ou substitui, mesmo `day`) um corte por crédito. Propaga erro de escrita. */
+export function recordClariceEnvioCreditCap(
+  rootDir: string,
+  cap: { day: string; volume: number },
+  now: Date = new Date(),
+): ClariceEnvioCreditCap[] {
+  const entries = readClariceEnvioCreditCaps(rootDir).filter((e) => e.day !== cap.day);
+  entries.push({ day: cap.day, volume: cap.volume, recordedAt: now.toISOString() });
+  entries.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  const kept = entries.slice(-CLARICE_ENVIO_CREDIT_CAPS_KEEP);
+  const p = clariceEnvioCreditCapsPath(rootDir);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(kept, null, 2) + "\n", "utf8");
+  return kept;
 }
 
 // CLI guard: só executa como main module, importável sem efeito colateral.
