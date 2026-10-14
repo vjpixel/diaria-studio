@@ -477,10 +477,7 @@ export const ghPrState: PrStateFetcher = (prUrl) => {
  * casos a edição não tem página. (Antes do #7578 era `warning`, para tolerar
  * uma versão do script anterior ao #7283; esse período já passou.)
  */
-function checkSitePagePublished(
-  editionDir: string,
-  fetchPrState: PrStateFetcher = ghPrState,
-): InvariantViolation[] {
+function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
   if (!existsSync(path)) {
     return [
@@ -541,44 +538,82 @@ function checkSitePagePublished(
       },
     ];
   }
-  // #9326: `published: true` com `merged: false` = branch pushada sem merge
-  // (PR aberto e não mergeado, OU nem identificado — `gh pr create/list` sem
-  // URL parseável). O `/p/{slug}` do e-mail dá 404 no envio. O gate 6 já
-  // exibe o `mergeBlocker` (⛔, #9278); aqui o invariante deixa de passar
-  // limpo. `warning` e não `error`: o merge costuma ser feito à mão depois
-  // (o arquivo não é regravado), então o estado gravado fica defasado e um
-  // `error` travaria o re-run pós-merge à toa. Desde #9429 o caso com prUrl
-  // é resolvido pela consulta ao vivo abaixo; o warning só sobra quando o PR
-  // não está MERGED ou a consulta falhou.
-  if (data.merged === false) {
-    // #9429: o JSON é gravado uma vez e fica defasado quando o merge acontece
-    // depois (à mão ou CI convergindo após o timeout do publisher). Com prUrl,
-    // consulta o estado VIVO do PR — MERGED => sem violation. Qualquer outro
-    // estado, ou falha do gh (offline, sem auth), cai no warning de sempre.
-    if (data.prUrl && isPrUrl(data.prUrl)) {
-      let liveState: string | null = null;
-      try {
-        liveState = fetchPrState(data.prUrl);
-      } catch {
-        liveState = null;
-      }
-      if (liveState === "MERGED") return [];
-    }
-    return [
-      {
-        rule: "site-page-merge-pending",
-        message:
-          (data.mergeBlocker ??
-            `branch site-publish/${data.slug ?? "?"} pushada mas NÃO mergeada${data.prUrl ? ` (${data.prUrl})` : " (PR não identificado)"} — ` +
-              `/p/${data.slug ?? "?"} dá 404 no envio até o merge.`) +
-          ` (Estado vivo do PR não está MERGED, ou a consulta ao \`gh\` falhou — conferir com \`gh pr view\`.)`,
-        source_issue: "#9326",
-        severity: "warning",
-        file: path,
-      },
-    ];
-  }
+  // #10160: o "pushado mas não mergeado" (#9326/#9429, antes um warning
+  // `site-page-merge-pending` aqui) virou a regra própria e BLOQUEANTE
+  // `site-page-pr-merged` logo abaixo — esta regra só responde "a página foi
+  // publicada (branch + PR)?".
   return [];
+}
+
+/**
+ * #10160: o PR da página do site registrado em
+ * `_internal/site-page-published.json` precisa estar MERGED pra Etapa 6
+ * terminar. Desde o #10160 o PR é aberto no INÍCIO da Etapa 5 (§5b-site,
+ * `--no-wait-merge`) e nada no dispatch espera o merge — a trava é o fim da
+ * Etapa 6: `check-site-page-pr-gate.ts` antes do Schedule (§6c-site) e esta
+ * regra, `severity: "error"` sem `postDispatchOnly`, que faz
+ * `pipeline-sentinel.ts write --step 6` recusar o `.step-6-done.json`
+ * enquanto o PR não estiver mergeado. Sem o merge, `/p/{slug}` (link de
+ * WhatsApp do e-mail) dá 404 no envio.
+ *
+ * Sucede o warning `site-page-merge-pending` (#9326/#9429): o argumento pelo
+ * `warning` ("o merge costuma ser feito à mão depois e o JSON fica defasado")
+ * já tinha caído com a consulta ao vivo do #9429 — `merged: true` gravado ou
+ * PR `MERGED` ao vivo passam limpo. Falha do `gh` (offline, sem auth) bloqueia:
+ * estado desconhecido nunca vira mergeado (#573); `--bypass-reason` do
+ * sentinel segue disponível pra emergência consciente.
+ *
+ * Fora do escopo (sem violation aqui): state ausente/ilegível, `code: 2` e
+ * `published≠true` — já são `site-page-published`; `merged` ausente sem
+ * `prUrl` é arquivo anterior ao #8158 (sem PR a conferir).
+ */
+function checkSitePagePrMerged(
+  editionDir: string,
+  fetchPrState: PrStateFetcher = ghPrState,
+): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "site-page-published.json");
+  if (!existsSync(path)) return [];
+  let data: {
+    code?: number;
+    slug?: string;
+    published?: boolean;
+    prUrl?: string;
+    merged?: boolean;
+    mergeBlocker?: string;
+  };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+  if (data.code === 2 || data.published !== true || data.merged === true) return [];
+  const hasPr = typeof data.prUrl === "string" && isPrUrl(data.prUrl);
+  if (!hasPr && data.merged !== false) return [];
+  let liveState: string | null = null;
+  if (hasPr) {
+    try {
+      liveState = fetchPrState(data.prUrl as string);
+    } catch {
+      liveState = null;
+    }
+    if (liveState === "MERGED") return [];
+  }
+  const what = hasPr
+    ? `PR da página do site ${data.prUrl} está ${liveState ?? "em estado DESCONHECIDO (gh pr view falhou)"}, não MERGED`
+    : `PR da página do site não identificado (branch site-publish/${data.slug ?? "?"} pushada sem PR parseável)`;
+  return [
+    {
+      rule: "site-page-pr-merged",
+      message:
+        `${what} — a Etapa 6 não termina sem o merge (#10160): /p/${data.slug ?? "?"} (link de WhatsApp do ` +
+        `e-mail) dá 404 no envio. Rodar \`npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} ` +
+        `--wait-ms 540000\` (mergeia se o CI estiver verde) ou corrigir o CI/conflito e mergear.` +
+        (data.mergeBlocker ? ` Último registro: ${data.mergeBlocker}` : ""),
+      source_issue: "#10160",
+      severity: "error",
+      file: path,
+    },
+  ];
 }
 
 /**
@@ -717,6 +752,15 @@ export const STAGE_6_RULES: InvariantRule[] = [
     run: checkSitePagePublished,
   },
   {
+    id: "site-page-pr-merged",
+    description:
+      "PR da página do site registrado em _internal/site-page-published.json está MERGED — GATE-BLOCKING: a Etapa 6 " +
+      "não termina sem o merge, o PR é aberto no início da Etapa 5 sem esperar (#10160)",
+    source_issue: "#10160",
+    stage: 6,
+    run: checkSitePagePrMerged,
+  },
+  {
     id: "site-sitemap-no-orphans",
     description:
       "toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578)",
@@ -746,6 +790,7 @@ export {
   checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
+  checkSitePagePrMerged,
   // #7578: exportada pra teste com paths injetados — sem isso o unico teste
   // possivel seria contra o repo real, que fica limpo e nunca exercita o caminho.
   checkSiteSitemapNoOrphans,
