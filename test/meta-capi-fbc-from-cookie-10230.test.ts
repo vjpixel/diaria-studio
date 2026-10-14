@@ -32,3 +32,11 @@ describe("deriveClickIdFromFbc (#10230)", () => {
     assert.equal(deriveClickIdFromFbc("fb.1.1700000000000.<script>"), undefined);
   });
 });
+
+describe("precedência cookie/corpo (#10230)", () => {
+  it("cookie malformado não bloqueia fbc válido do corpo", () => {
+    const viaCookie = deriveClickIdFromFbc("lixo");
+    const viaBody = deriveClickIdFromFbc("fb.1.1700000000000.Ok1");
+    assert.equal(viaCookie ?? viaBody, "fbclid:Ok1");
+  });
+});

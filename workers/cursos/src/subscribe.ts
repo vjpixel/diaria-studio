@@ -510,13 +510,13 @@ export async function handleGateSubscribe(
     // #10230: sem `click_id` no form, o `_fbc` (cookie do request ou do corpo)
     // preserva o clique do anúncio pro SubscriptionConfirmed.
     clickId: (parsed.clickId || "").trim().slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX)
-      || deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc") ?? fbc) || "",
+      || (deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc")) ?? deriveClickIdFromFbc(fbc) ?? "").slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     externalId: resolveVisitorId(request.headers.get("Cookie"), externalId) ?? "",
   };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
   // `resolveOrigemPagaWithClickIdFallback`.
-  const origemPaga = resolveOrigemPagaWithClickIdFallback(origemPagaCliente, origin.clickId);
+  const origemPaga = resolveOrigemPagaWithClickIdFallback(origemPagaCliente, (parsed.clickId || "").trim()); // #10230: só click_id do form
 
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima.

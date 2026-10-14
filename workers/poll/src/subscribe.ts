@@ -1093,7 +1093,7 @@ export async function handleJogarSubscribe(
     referrer: v.referrer,
     // #10230: sem `click_id` no form (assinou em página sem fbclid na URL), o
     // `_fbc` (cookie do request ou do corpo) preserva o clique do anúncio.
-    clickId: v.clickId || deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc") ?? v.fbc) || "",
+    clickId: v.clickId || (deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc")) ?? deriveClickIdFromFbc(v.fbc) ?? "").slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     externalId: resolveVisitorId(request.headers.get("Cookie"), v.externalId) ?? "",
   };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
@@ -1101,7 +1101,7 @@ export async function handleJogarSubscribe(
   // `resolveOrigemPagaWithClickIdFallback`.
   const utm: SubscribeUtm = {
     ...utmResolved,
-    origemPaga: resolveOrigemPagaWithClickIdFallback(utmResolved.origemPaga, origin.clickId),
+    origemPaga: resolveOrigemPagaWithClickIdFallback(utmResolved.origemPaga, v.clickId), // #10230: só click_id do form; o derivado de _fbc (cookie 90d) não reclassifica canal
   };
   // #6291: seleção de backend via a ÚNICA função exportada — ver docstring
   // de `subscribeViaConfiguredBackend` acima sobre por que um 6º handler
