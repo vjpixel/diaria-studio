@@ -1963,6 +1963,11 @@ export function commitAndPushSitePage(
     optionalPaths.add(sitemapRelPath);
     optionalPaths.add(homeRelPath);
     optionalPaths.add(archiveRelDir);
+    // #10206: `_redirects` (irmão do sitemap) recebe `/p/{velho} /p/{novo} 301`
+    // do supersede — sai no mesmo commit da página nova.
+    const redirectsRelPath = redirectsRelPathFromSitemap(sitemapRelPath);
+    pathsToStage.push(redirectsRelPath);
+    optionalPaths.add(redirectsRelPath);
   }
 
   let committed = false;
@@ -2774,7 +2779,27 @@ export interface SupersedeArgs {
  */
 export type OldSitePagePrState = "closed" | "merged" | "already-closed" | "open" | "unknown" | "none";
 
+/** #10206: `_redirects` do site, irmão do sitemap (forward-slash, relativo a rootDir). */
+export function redirectsRelPathFromSitemap(sitemapRelPath: string): string {
+  const i = sitemapRelPath.replace(/\\/g, "/").lastIndexOf("/");
+  return (i < 0 ? "" : sitemapRelPath.slice(0, i + 1).replace(/\\/g, "/")) + "_redirects";
+}
+
+/**
+ * #10206: acrescenta `/p/{velho} /p/{novo} 301` ao conteúdo de `_redirects`
+ * (idempotente; ignora slugs iguais). Posts sociais já agendados levam o slug
+ * velho — sem o redirect o leitor cai em 404 depois do supersede.
+ */
+export function addSlugRedirect(content: string, oldSlug: string, newSlug: string): string {
+  if (oldSlug === newSlug) return content;
+  const line = `/p/${oldSlug} /p/${newSlug} 301`;
+  const lines = content.split("\n");
+  if (lines.some((l) => l.trim().startsWith(`/p/${oldSlug} `))) return content;
+  return (content === "" || content.endsWith("\n") ? content : content + "\n") + line + "\n";
+}
+
 export interface SupersedeOutcome {
+  redirectAdded?: boolean;
   oldPrState: OldSitePagePrState;
   /** Paths (relativos a `rootDir`, forward-slash) a remover no commit do PR novo. */
   removedPaths: string[];
@@ -2886,6 +2911,23 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
     }
   }
 
+  let redirectAdded = false;
+  if (sitemapRelPath) {
+    const redirectsAbs = resolve(rootDir, redirectsRelPathFromSitemap(sitemapRelPath));
+    try {
+      const cur = existsSync(redirectsAbs) ? readFileSync(redirectsAbs, "utf8") : "";
+      const next = addSlugRedirect(cur, oldSlug, newSlug);
+      if (next !== cur) {
+        writeFileSync(redirectsAbs, next, "utf8");
+        redirectAdded = true;
+      }
+    } catch (e) {
+      notes.push(`redirect /p/${oldSlug} -> /p/${newSlug} não gravado (${(e as Error).message}) — posts agendados com o slug velho darão 404 (#10206)`);
+    }
+  } else {
+    notes.push(`sem --sitemap: redirect /p/${oldSlug} -> /p/${newSlug} não gravado — posts agendados com o slug velho darão 404 (#10206)`);
+  }
+
   const relOldPageDir = ["workers", "site", "public", "p", oldSlug].join("/");
   try {
     rmSync(resolve(rootDir, relOldPageDir), { recursive: true, force: true });
@@ -2894,7 +2936,7 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
   }
   const removedPaths = oldPrState === "merged" || oldPrState === "unknown" ? [relOldPageDir] : [];
 
-  return { oldPrState, removedPaths, sitemapEntryRemoved, notes };
+  return { oldPrState, removedPaths, sitemapEntryRemoved, redirectAdded, notes };
 }
 
 /**
