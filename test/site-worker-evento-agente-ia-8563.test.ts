@@ -53,7 +53,10 @@ function countOccurrences(haystack: string, needle: string): number {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
-const VARIANTS = ["a", "b", "c", "d"] as const;
+const VARIANTS = ["a", "b", "c", "d", "e"] as const;
+/** A versão E (13/10/2026) tem visual e checkout próprios: CSS em `e/styles.css` e
+ * oferta de R$ 27 em `e/config.js`. As outras usam os arquivos comuns. */
+const OWN_FILES: Partial<Record<(typeof VARIANTS)[number], true>> = { e: true };
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
   it("index.html da raiz manda todo mundo para /d (versão D desde 04/10; era C desde 01/10, #9334) e preserva a query string", () => {
@@ -88,8 +91,9 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
         const html = readFileSync(page, "utf8");
         // Nenhum href/src pra chatgpt.site (o ponto inteiro é esconder esse domínio).
         assert.doesNotMatch(html, /chatgpt\.site/i);
-        assert.match(html, /href="\/evento\/agente-ia\/styles\.css"/);
-        assert.match(html, /src="\/evento\/agente-ia\/config\.js"/);
+        const base = OWN_FILES[v] ? `/evento/agente-ia/${v}/` : "/evento/agente-ia/";
+        assert.ok(html.includes(`href="${base}styles.css"`), `${v}: stylesheet esperado em ${base}styles.css`);
+        assert.ok(html.includes(`src="${base}config.js"`), `${v}: config esperado em ${base}config.js`);
         assert.match(html, /src="\/evento\/agente-ia\/script\.js"/);
         assert.match(html, new RegExp(`<body data-variante="${v}">`));
       });
@@ -174,6 +178,15 @@ describe("public/evento/agente-ia — página do workshop (#8563)", () => {
     const js = readFileSync(resolve(PAGE_DIR, "config.js"), "utf8");
     const url = new URL(js.match(/EVENT_CHECKOUT_URL\s*=\s*"([^"]+)"/)![1]);
     assert.equal(url.searchParams.get("checkoutMode"), "10");
+  });
+
+  it("versões com config.js próprio também apontam para checkout HTTPS com checkoutMode=10", () => {
+    for (const v of VARIANTS.filter((name) => OWN_FILES[name])) {
+      const js = readFileSync(resolve(PAGE_DIR, v, "config.js"), "utf8");
+      const url = new URL(js.match(/EVENT_CHECKOUT_URL\s*=\s*"([^"]+)"/)![1]);
+      assert.equal(url.protocol, "https:");
+      assert.equal(url.searchParams.get("checkoutMode"), "10", `${v}/config.js sem checkoutMode=10`);
+    }
   });
 
   it("styles.css e script.js existem", () => {

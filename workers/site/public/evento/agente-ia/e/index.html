@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#FBFAF6" />
-    <title>Produza um mês de conteúdo com a sua identidade em uma hora</title>
     <meta name="description" content="Imersão ao vivo de 4 horas pelo Zoom: você monta um assistente que aprende a sua identidade e gera os posts do mês, com texto e imagem, com a conta gratuita do ChatGPT e sem programar. Sábado, 17 de outubro de 2026, das 14h às 18h. De R$ 97 por R$ 27." />
+    <title>Produza um mês de conteúdo com a sua identidade em uma hora</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap" />
@@ -13,14 +13,16 @@
     <script src="/evento/agente-ia/e/config.js" defer></script>
     <script src="/evento/agente-ia/script.js" defer></script>
     <script src="/evento/agente-ia/e/script.js" defer></script>
+    <!-- #10080: modo interno (?interno=1 liga, ?interno=0 desliga, marcador no localStorage; o parâmetro sai da URL). Ligado, a página não inicializa o pixel, não carrega o GTM e não manda o beacon do clique. -->
+    <script>(function () {var q = null;try {var key = "diaria_interno";q = new URLSearchParams(window.location.search).get("interno");if (q === '1') window.localStorage.setItem(key, '1');else if (q === '0') window.localStorage.removeItem(key);window.__DIA_INTERNO__ = window.localStorage.getItem(key) === '1';} catch (e) { window.__DIA_INTERNO__ = false; }if (q !== null) {try {var u = new URL(window.location.href);u.searchParams.delete("interno");window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);} catch (e) {}}})();</script>
     <!-- #8978: ID first-party (_dia_vid) + _fbc em .diar.ia.br ANTES do pixel, pra fbq('init', ...) já sair com external_id/fbc no 1o disparo. -->
     <script>try {var COOKIE="_dia_vid";var DOMAIN=".diar.ia.br";var MAXAGE=63072000;var VIDRE = new RegExp("^[0-9a-fA-F-]{16,64}$");var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));var vid = m && VIDRE.test(m[1]) ? m[1] : null;if (!vid) {vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {document.cookie = COOKIE + '=' + vid + '; Max-Age=' + MAXAGE + '; Domain=' + DOMAIN + '; Path=/; SameSite=Lax';}}window.__DIA_VID__ = vid;window.dataLayer = window.dataLayer || [];window.dataLayer.push({ external_id: vid });} catch (e) {}</script>
     <script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');var FBCLIDRE = new RegExp("^[A-Za-z0-9_.-]+$");if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script>
-    <!-- #9590: container GTM (o mesmo de renderAnalyticsHead) DEPOIS do bootstrap _dia_vid. -->
-    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');</script>
+    <!-- #9590: container GTM (o mesmo de renderAnalyticsHead) DEPOIS do bootstrap _dia_vid (dataLayer já tem external_id). É por ele que o GA4 (G-SGXBD0R9CD, destino da Google tag AW-17790097065) recebe a sessão com as UTMs. O PageView do Meta continua só no pixel direto abaixo: a tag PageView do container só dispara em cursos|livros.diar.ia.br (gtm.js publicado, medido em 05/10/2026). -->
+    <script>if (!window.__DIA_INTERNO__) {(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');}</script>
     <!-- Meta Pixel (Diar.ia). Só dispara em diar.ia.br: teste local (localhost) e preview não entram no dataset. -->
     <script>
-      if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {
+      if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname) && !window.__DIA_INTERNO__) {
       !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
       n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
       n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
@@ -53,7 +55,7 @@
             <figure class="post post-ig">
               <figcaption class="net-name">Instagram</figcaption>
               <div class="ph"><span class="av" aria-hidden="true">d<i>..</i></span><span class="who"><b>diar.ia.br</b></span><span class="more">···</span></div>
-              <div class="media"><img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="Post da diar.ia.br: pintura de um agente de IA azul em reunião com quatro pessoas e o título Gemini vira colega com e-mail e agenda próprios." /><span class="count">1/5</span></div>
+              <div class="media"><img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="Post da diar.ia.br: pintura de um agente de IA azul em reunião com quatro pessoas e o título Gemini vira colega com e-mail e agenda próprios." /><span class="count">1/5</span></div>
               <div class="act act-ig"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></span><span class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i></span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg></span></div>
               <p class="tx"><b>diar.ia.br</b> O Gemini agent, apresentado pelo Google Cloud no Gemini at Work 2026, trabalha por objetivos. Você diz o que quer e volta depois para buscar o trabalho pronto. <span class="dim">… mais</span></p>
             </figure>
@@ -61,7 +63,7 @@
               <figcaption class="net-name">LinkedIn</figcaption>
               <div class="ph"><span class="av" aria-hidden="true">d<i>..</i></span><span class="who"><b>diar.ia.br</b><span>Newsletter diária sobre IA</span><span>13 h · <svg class="mi mi-s" aria-hidden="true" focusable="false"><use href="#i-globe"/></svg></span></span><span class="more">···</span></div>
               <p class="tx">O Gemini agent, apresentado pelo Google Cloud no Gemini at Work 2026, trabalha por objetivos. Você diz o que quer e volta depois para buscar o trabalho pronto. <span class="dim">… mais</span></p>
-              <img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" />
+              <img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" />
               <div class="act act-li"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-thumbs-up"/></svg>Gostei</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg>Comentar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg>Compartilhar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg>Enviar</span></div>
             </figure>
             <p class="mock-note">Posts reais da diar.ia.br, de 13 de outubro, feitos por um assistente como o que você vai montar.</p>
@@ -94,8 +96,8 @@
             <li class="stage">
               <span class="stage-label">3 · Texto e imagem para cada rede</span>
               <div class="stage-card stage-out">
-                <img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" />
-                <img src="/evento/agente-ia/e/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" />
+                <img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" />
+                <img src="/evento/agente-ia/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" />
                 <p>Texto longo, texto curto, card e carrossel, no formato de cada rede. Você revisa antes de publicar.</p>
               </div>
             </li>
@@ -110,13 +112,13 @@
               <figcaption class="net-name">LinkedIn</figcaption>
               <div class="ph"><span class="av" aria-hidden="true">d<i>..</i></span><span class="who"><b>diar.ia.br</b><span>Newsletter diária sobre IA</span><span>13 h · <svg class="mi mi-s" aria-hidden="true" focusable="false"><use href="#i-globe"/></svg></span></span><span class="more">···</span></div>
               <p class="tx">O Gemini agent, apresentado pelo Google Cloud no Gemini at Work 2026, trabalha por objetivos. Você diz o que quer e volta depois para buscar o trabalho pronto. <span class="dim">… mais</span></p>
-              <img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" />
+              <img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" />
               <div class="act act-li"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-thumbs-up"/></svg>Gostei</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg>Comentar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg>Compartilhar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg>Enviar</span></div>
             </figure>
             <figure class="post post-ig">
               <figcaption class="net-name">Instagram</figcaption>
               <div class="ph"><span class="av" aria-hidden="true">d<i>..</i></span><span class="who"><b>diar.ia.br</b></span><span class="more">···</span></div>
-              <div class="media"><img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><span class="count">1/5</span></div>
+              <div class="media"><img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><span class="count">1/5</span></div>
               <div class="act act-ig"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></span><span class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i></span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg></span></div>
               <p class="tx"><b>diar.ia.br</b> O Gemini agent, apresentado pelo Google Cloud no Gemini at Work 2026, trabalha por objetivos. Você diz o que quer e volta depois para buscar o trabalho pronto. <span class="dim">… mais</span></p>
             </figure>
@@ -124,7 +126,7 @@
               <figcaption class="net-name">Facebook</figcaption>
               <div class="ph"><span class="av" aria-hidden="true">d<i>..</i></span><span class="who"><b>diar.ia.br</b><span>13 h · <svg class="mi mi-s" aria-hidden="true" focusable="false"><use href="#i-globe"/></svg></span></span><span class="more">···</span></div>
               <p class="tx">O Gemini agent, apresentado pelo Google Cloud no Gemini at Work 2026, trabalha por objetivos. Você diz o que quer e volta depois para buscar o trabalho pronto. <span class="dim">… Veja mais</span></p>
-              <div class="fb-grid"><img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-p2.webp" width="300" height="375" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-p3.webp" width="300" height="375" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-cta.webp" width="300" height="375" alt="" loading="lazy" /></div>
+              <div class="fb-grid"><img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-p2.webp" width="300" height="375" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-p3.webp" width="300" height="375" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-cta.webp" width="300" height="375" alt="" loading="lazy" /></div>
               <div class="act act-fb"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-thumbs-up"/></svg>Curtir</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg>Comentar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-share-fb"/></svg>Compartilhar</span></div>
             </figure>
             <figure class="post post-th">
@@ -134,7 +136,7 @@
                 <p class="tx">O Google apresentou o Gemini agent: um único agente que planeja tarefas, cria subagentes e trabalha dentro do Gmail, Docs e Sheets. Por baixo, escolhe entre modelos Gemini e Claude, da Anthropic.</p>
                 <p class="tx">Mais em <span class="lnk">diar.ia.br/p/gemini-vira…</span></p>
                 <p class="tx">#GoogleCloud</p>
-                <div class="strip"><img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /></div>
+                <div class="strip"><img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /></div>
                 <div class="act act-th"><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></div>
               </div></div>
             </figure>
@@ -144,7 +146,7 @@
                 <div class="ph2"><b>diar.ia.br</b><span class="dim">@diariabr · 13 h</span></div>
                 <p class="tx">O Google apresentou o Gemini agent: um único agente que planeja tarefas, cria subagentes e trabalha dentro do Gmail, Docs e Sheets. Por baixo, escolhe entre modelos Gemini e Claude, da Anthropic.</p>
                 <p class="tx">Mais em <span class="lnk">diar.ia.br/p/gemini-vira…</span><br><span class="lnk">#Gemini #GoogleCloud</span></p>
-                <div class="strip"><img src="/evento/agente-ia/e/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/e/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /></div>
+                <div class="strip"><img src="/evento/agente-ia/assets/exemplo-card-4x5.webp" width="480" height="600" alt="" loading="lazy" /><img src="/evento/agente-ia/assets/exemplo-carrossel-p1.webp" width="480" height="600" alt="" loading="lazy" /></div>
                 <div class="act act-x"><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-chart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-upload"/></svg></div>
               </div></div>
             </figure>
