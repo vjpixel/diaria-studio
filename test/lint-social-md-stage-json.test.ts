@@ -95,12 +95,13 @@ describe("runStage4SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("5 checks presentes, todos gate-blocking", () => {
+  it("6 checks presentes, todos gate-blocking (curto-x-weight #10180)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4SocialLintReport(editionDir);
     const ids = report.checks.map((c) => c.id).sort();
     assert.deepEqual(ids, [
       "banned-lexicon",
+      "curto-x-weight",
       "no-antithesis-reveal",
       "no-trailing-editorial-hook",
       "no-xml-artifacts",
@@ -221,13 +222,14 @@ describe("runStage2SocialLintReport (#5416)", () => {
     return dir;
   }
 
-  it("6 checks presentes, severities batem com a prosa do playbook (#2b/#2c, #9619)", () => {
+  it("7 checks presentes, severities batem com a prosa do playbook (#2b/#2c, #9619, #10180)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2SocialLintReport(editionDir);
     const byId = new Map(report.checks.map((c) => [c.id, c]));
     assert.deepEqual(
       [...byId.keys()].sort(),
       [
+        "curto-x-weight",
         "linkedin-schema",
         "no-email-cta-instagram",
         "no-trailing-question",
@@ -247,6 +249,8 @@ describe("runStage2SocialLintReport (#5416)", () => {
     assert.equal(byId.get("personal-post-no-newsletter-deixis")?.severity, "warn-only");
     // #9619: `## um` é fail-soft — só aviso.
     assert.equal(byId.get("use-melhor-um-fail-soft")?.severity, "warn-only");
+    // #10180: post do # Curto acima de 280 no X → o Stage 5 pularia; bloqueia.
+    assert.equal(byId.get("curto-x-weight")?.severity, "gate-blocking");
     rmSync(editionDir, { recursive: true, force: true });
   });
 

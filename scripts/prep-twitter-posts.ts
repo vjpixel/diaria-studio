@@ -108,39 +108,13 @@ import {
   type UseMelhorDispatchPlan,
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
+import { TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT, computeTwitterWeightedLength } from "./lib/twitter-weight.ts"; // #10180
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Limite de caracteres por tweet. */
-export const TWITTER_CHAR_LIMIT = 280;
-
-/**
- * Peso que o X (t.co) atribui a QUALQUER URL dentro de um post, independente
- * do comprimento literal — desde #3994. `text.length` cru superestima o custo
- * de uma URL longa (#4285/#4264 adendo do editor): `{edition_url}` resolve
- * pra `https://diar.ia.br/p/{slug}`, tipicamente 40-80 chars literais, mas o
- * X sempre conta 23 na hora de aplicar o limite de 280. Sem essa correção,
- * um slug longo derrubava o post pro `skipped` sem que ele de fato
- * estourasse no X.
- */
-export const TWITTER_URL_WEIGHT = 23;
-
-/** Reconhece URLs http(s) dentro do texto do post, pra fins de contagem ponderada. */
-const URL_RE = /https?:\/\/\S+/g;
-
-/**
- * Calcula o comprimento "ponderado" de um post do X, contando cada URL como
- * `TWITTER_URL_WEIGHT` chars (t.co) em vez do comprimento literal — o mesmo
- * critério que o X usa de verdade pra aplicar o limite de 280 (#4285/#4264
- * adendo do editor, #3994). Texto sem nenhuma URL: idêntico a `text.length`.
- */
-export function computeTwitterWeightedLength(text: string): number {
-  let delta = 0;
-  for (const match of text.matchAll(URL_RE)) {
-    delta += TWITTER_URL_WEIGHT - match[0].length;
-  }
-  return text.length + delta;
-}
+// #10180: limite/peso do X vivem em lib/twitter-weight.ts (folha), compartilhado
+// com o lint `curto-x-weight` do Stage 2/4. Reexportados aqui pra compat.
+export { TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT, computeTwitterWeightedLength };
 
 /**
  * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
