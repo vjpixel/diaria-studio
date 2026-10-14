@@ -2142,6 +2142,12 @@ export function commitAndPushSitePage(
       if (next !== cur) {
         mkdirSync(dirname(redirectsAbs), { recursive: true });
         writeFileSync(redirectsAbs, next, "utf8");
+      }
+      // #10233: stage pelo estado no git, não por `next !== cur` — no caminho
+      // legado o arquivo pode já carregar a linha sem estar commitado (escrita
+      // de uma rodada anterior no checkout compartilhado), e pular o `add`
+      // deixava o redirect fora do commit.
+      if (next !== cur || git(["status", "--porcelain", "--", redirectsRel], gitCwd).trim()) {
         git(["add", "--", redirectsRel], gitCwd);
         stagedPathspecs.push(redirectsRel);
       }
@@ -2814,7 +2820,6 @@ export function addSlugRedirect(content: string, oldSlug: string, newSlug: strin
 }
 
 export interface SupersedeOutcome {
-  redirectAdded?: boolean;
   oldPrState: OldSitePagePrState;
   /** Paths (relativos a `rootDir`, forward-slash) a remover no commit do PR novo. */
   removedPaths: string[];
@@ -2926,20 +2931,14 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
     }
   }
 
-  let redirectAdded = false;
-  if (sitemapRelPath) {
-    const redirectsAbs = resolve(rootDir, redirectsRelPathFromSitemap(sitemapRelPath));
-    try {
-      const cur = existsSync(redirectsAbs) ? readFileSync(redirectsAbs, "utf8") : "";
-      const next = addSlugRedirect(cur, oldSlug, newSlug);
-      if (next !== cur) {
-        writeFileSync(redirectsAbs, next, "utf8");
-        redirectAdded = true;
-      }
-    } catch (e) {
-      notes.push(`redirect /p/${oldSlug} -> /p/${newSlug} não gravado (${(e as Error).message}) — posts agendados com o slug velho darão 404 (#10206)`);
-    }
-  } else {
+  // #10233: o redirect `/p/{velho} /p/{novo} 301` NÃO é gravado aqui — só em
+  // `commitAndPushSitePage` (parâmetro `redirect`), sobre a cópia do `gitCwd`.
+  // Gravar também em `rootDir` sujava o checkout compartilhado no caminho do
+  // worktree (o `_redirects` não está em `pathsToStage`) e, no caminho legado
+  // (`gitCwd === rootDir`), fazia o commit achar a linha já presente
+  // (`next === cur`) e deixar o `_redirects` FORA do commit — 404 nos posts
+  // agendados com o slug velho.
+  if (!sitemapRelPath) {
     notes.push(`sem --sitemap: redirect /p/${oldSlug} -> /p/${newSlug} não gravado — posts agendados com o slug velho darão 404 (#10206)`);
   }
 
@@ -2951,7 +2950,7 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
   }
   const removedPaths = oldPrState === "merged" || oldPrState === "unknown" ? [relOldPageDir] : [];
 
-  return { oldPrState, removedPaths, sitemapEntryRemoved, redirectAdded, notes };
+  return { oldPrState, removedPaths, sitemapEntryRemoved, notes };
 }
 
 /**

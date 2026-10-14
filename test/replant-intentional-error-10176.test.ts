@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { main } from "../scripts/replant-intentional-error.ts";
+import { main, findOldErrorStillPresent, sectionKeyFromLocation } from "../scripts/replant-intentional-error.ts";
 
 const MD = `**DESTAQUE 1 | 🤖 MODELOS**
 
@@ -190,5 +190,76 @@ describe("#10176 replant-intentional-error", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#10234 old_error_still_present escopado à seção do location", () => {
+  const SONNET_MD = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude Haiku 5.5 fica mais barato](https://www.anthropic.com/news/haiku)**
+
+A Anthropic cortou o preço do Haiku 5.5.
+
+---
+
+**📡 RADAR**
+
+**[Cursor vs. Claude Code](https://exame.com/tecnologia/cursor-claude-code)**
+Claude Code, Cursor e GitHub Copilot disputam o mercado, e o Claude Sonnet 5 lidera.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada no DESTAQUE 1.
+`;
+
+  it("cenário real da issue: item com 'Sonnet' podado do D1, outro item cita 'Claude Sonnet 5' → replanta", () => {
+    const { root, dir, jsonlPath } = setup();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), SONNET_MD, "utf8");
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ description: "trocou o nome do modelo", location: "DESTAQUE 1, parágrafo 2", category: "attribution", correct_value: "Haiku", wrong_value: "Sonnet", reveal: "Na última edição, escrevi Sonnet onde o certo era Haiku." }),
+        "utf8",
+      );
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 0);
+      const json = JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8"));
+      assert.notEqual(json.wrong_value, "Sonnet");
+      assert.ok(readFileSync(join(dir, "02-reviewed.md"), "utf8").includes("Claude Sonnet 5"), "menção legítima intacta");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("erro antigo ainda DENTRO da seção declarada → recusa", () => {
+    const md = SONNET_MD.replace("cortou o preço do Haiku 5.5", "cortou o preço do Sonnet 5.5");
+    const r = findOldErrorStillPresent(md, { wrong_value: "Sonnet", location: "DESTAQUE 1" });
+    assert.equal(r.present, true);
+    assert.equal(r.scope, "DESTAQUE 1");
+  });
+
+  it("ocorrência só fora da seção declarada → não conta, mas é reportada", () => {
+    const r = findOldErrorStillPresent(SONNET_MD, { wrong_value: "Sonnet", location: "DESTAQUE 1" });
+    assert.equal(r.present, false);
+    assert.deepEqual(r.elsewhere, ["RADAR"]);
+  });
+
+  it("location não resolvível ou seção sumida do MD → conservador (texto inteiro)", () => {
+    assert.equal(findOldErrorStillPresent(SONNET_MD, { wrong_value: "Sonnet", location: "item sobre preços" }).present, true);
+    assert.equal(findOldErrorStillPresent(SONNET_MD, { wrong_value: "Sonnet", location: "LANÇAMENTOS" }).present, true);
+    assert.equal(findOldErrorStillPresent(SONNET_MD, { wrong_value: "Sonnet", location: "DESTAQUE 1 e RADAR" }).present, true);
+  });
+
+  it("casa por palavra inteira: 'Large 3' não bate em 'Large 30'", () => {
+    assert.equal(findOldErrorStillPresent("**📡 RADAR**\nMistral Large 30 saiu.\n", { wrong_value: "Large 3" }).present, false);
+    assert.equal(findOldErrorStillPresent("**📡 RADAR**\nMistral Large 3 saiu.\n", { wrong_value: "Large 3" }).present, true);
+  });
+
+  it("sectionKeyFromLocation resolve os formatos livres reais", () => {
+    assert.equal(sectionKeyFromLocation("DESTAQUE 2, parágrafo 3"), "DESTAQUE 2");
+    assert.equal(sectionKeyFromLocation('RADAR (menção a "Claude")'), "RADAR");
+    assert.equal(sectionKeyFromLocation("Lançamentos"), "LANÇAMENTOS");
+    assert.equal(sectionKeyFromLocation(undefined), null);
   });
 });

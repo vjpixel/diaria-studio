@@ -54,6 +54,89 @@ import type { IntentionalError, IntentionalErrorJson } from "./lib/intentional-e
 /** Linha da declaração corrente ("Nessa edição, …" — frase única até o 1º ponto final da linha). */
 const CURRENT_NARRATIVE_LINE_RE = /^Nessa edição,.*$/m;
 
+/** Seções nomeadas reconhecidas em `location` e nos headers do MD (#10234). */
+const NAMED_SECTIONS: ReadonlyArray<{ key: string; re: RegExp }> = [
+  { key: "LANÇAMENTOS", re: /LAN[ÇC]AMENTOS?/iu },
+  { key: "RADAR", re: /RADAR|OUTRAS?\s+NOT[ÍI]CIAS?/iu },
+  { key: "USE MELHOR", re: /USE\s+MELHOR/iu },
+  { key: "VÍDEOS", re: /V[ÍI]DEOS?/iu },
+];
+
+/**
+ * (#10234) Seção declarada no texto livre de `location`/`description`
+ * ("DESTAQUE 2, parágrafo 3", "RADAR (menção a …)", "D3"). `null` quando não
+ * dá pra resolver uma única seção — aí o chamador cai no comportamento
+ * conservador (texto inteiro).
+ */
+export function sectionKeyFromLocation(text: string | undefined): string | null {
+  if (!text) return null;
+  const keys = new Set<string>();
+  for (const m of text.matchAll(/\bDESTAQUE\s*(\d)\b|\bD([1-9])\b/giu)) keys.add(`DESTAQUE ${m[1] ?? m[2]}`);
+  for (const { key, re } of NAMED_SECTIONS) if (re.test(text)) keys.add(key);
+  return keys.size === 1 ? [...keys][0] : null;
+}
+
+/** Chave de seção de uma linha de header do MD, ou `null` se a linha não é header. */
+function headerKey(line: string): string | null {
+  const stripped = line
+    .trim()
+    .replace(/^#+\s*/, "")
+    .replace(/^\*\*|\*\*$/g, "")
+    .replace(/^[^\p{L}\p{N}]+/u, "")
+    .trim();
+  const d = /^DESTAQUE\s+(\d)\b/iu.exec(stripped);
+  if (d) return `DESTAQUE ${d[1]}`;
+  for (const { key, re } of NAMED_SECTIONS) if (new RegExp(`^(?:${re.source})$`, "iu").test(stripped)) return key;
+  // Outros headers em caixa alta (ERRO INTENCIONAL, É IA?, SORTEIO…) só encerram a seção anterior.
+  const isBoldOrHeading = /^\s*(?:\*\*[^*]+\*\*|#+\s+\S.*)\s*$/u.test(line);
+  if (isBoldOrHeading && /\p{Lu}/u.test(stripped) && !/\p{Ll}/u.test(stripped)) return `OUTRA:${stripped}`;
+  return null;
+}
+
+/** Texto de cada seção do MD, por chave (seção repetida concatena). */
+function sectionTexts(md: string): Map<string, string> {
+  const out = new Map<string, string>();
+  let current = "";
+  for (const line of md.split("\n")) {
+    const key = headerKey(line);
+    if (key) {
+      current = key;
+      continue;
+    }
+    out.set(current, (out.get(current) ?? "") + line + "\n");
+  }
+  return out;
+}
+
+/**
+ * (#10234) O erro ANTIGO ainda está no texto? Antes era `md.includes(wrong)`,
+ * que recusava por coincidência — o editor poda o item com "Sonnet" e outro
+ * item cita "Claude Sonnet 5". Agora:
+ *   - casamento por palavra inteira (não acha "Large 3" dentro de "Large 30");
+ *   - quando `location` (ou `description`) aponta UMA seção ainda presente no
+ *     MD, só conta ocorrência DENTRO dela; ocorrência só em outra seção é
+ *     tratada como menção legítima (devolvida em `elsewhere`, pra aviso).
+ * Conservador quando não dá pra escopar: seção não resolvida, ou o header da
+ * seção declarada sumiu do MD (item pode ter sido movido junto com a
+ * reorganização) → qualquer ocorrência no texto inteiro conta.
+ */
+export function findOldErrorStillPresent(
+  md: string,
+  record: Pick<IntentionalErrorJson, "wrong_value" | "location" | "description">,
+): { present: boolean; scope: string; elsewhere: string[] } {
+  const wrong = (record.wrong_value ?? "").trim();
+  if (!wrong) return { present: false, scope: "nenhum", elsewhere: [] };
+  const esc = wrong.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "u");
+  if (!re.test(md)) return { present: false, scope: "texto inteiro", elsewhere: [] };
+  const key = sectionKeyFromLocation(record.location) ?? sectionKeyFromLocation(record.description);
+  const sections = sectionTexts(md);
+  if (!key || !sections.has(key)) return { present: true, scope: "texto inteiro", elsewhere: [] };
+  if (re.test(sections.get(key) ?? "")) return { present: true, scope: key, elsewhere: [] };
+  const elsewhere = [...sections].filter(([, text]) => re.test(text)).map(([k]) => k || "(topo)");
+  return { present: false, scope: key, elsewhere };
+}
+
 function jsonRecordBody(record: IntentionalErrorJson): string {
   // Mesmo formato de `writeIntentionalErrorJson`.
   return JSON.stringify(record, null, 2) + "\n";
@@ -140,13 +223,23 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   // deixaria a edição com dois erros e só o novo declarado.
   const prevRecord = loadIntentionalErrorJson(jsonPath);
   const oldWrong = (prevRecord?.wrong_value ?? "").trim();
-  if (prevRecord?.no_error !== true && oldWrong && !/^\{PREENCHER/i.test(oldWrong) && md.includes(oldWrong)) {
-    console.log(JSON.stringify({ action: "old_error_still_present", wrong_value: oldWrong }));
-    console.error(
-      `replant-intentional-error: o erro antigo ("${oldWrong}") ainda aparece em 02-reviewed.md — ` +
-        "o item provavelmente só foi movido e não precisa de replantio. Se for mesmo replantar, corrija o erro antigo no texto antes.",
-    );
-    return 1;
+  if (prevRecord && prevRecord.no_error !== true && oldWrong && !/^\{PREENCHER/i.test(oldWrong)) {
+    // (#10234) Escopado à seção declarada em `location` — ver `findOldErrorStillPresent`.
+    const old = findOldErrorStillPresent(md, prevRecord);
+    if (old.present) {
+      console.log(JSON.stringify({ action: "old_error_still_present", wrong_value: oldWrong, scope: old.scope }));
+      console.error(
+        `replant-intentional-error: o erro antigo ("${oldWrong}") ainda aparece em 02-reviewed.md (${old.scope}) — ` +
+          "o item provavelmente só foi movido e não precisa de replantio. Se for mesmo replantar, corrija o erro antigo no texto antes.",
+      );
+      return 1;
+    }
+    if (old.elsewhere.length > 0) {
+      console.error(
+        `replant-intentional-error: "${oldWrong}" ainda aparece fora da seção declarada (${old.scope}) — ` +
+          `em ${old.elsewhere.join(", ")}; tratado como menção legítima, não como o erro antigo (#10234).`,
+      );
+    }
   }
 
   const tried: string[] = [];
