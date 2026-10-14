@@ -23,9 +23,9 @@
  * reais, mesmo padrão de `parseSubscribeBody` (`workers/poll/src/subscribe.ts`).
  */
 
-/** Só "a"/"A" ou "b"/"B" — mesma variante que `script.js` já deriva de
+/** Só uma letra de "a" a "e" (maiúscula ou minúscula) — mesma variante que `script.js` já deriva de
  * `document.body.dataset.variante`. */
-const VARIANT_RE = /^[abcd]$/i; // #9335: versão C recebe 100% do tráfego desde 01/10/2026; D (conteúdo com identidade) desde 04/10/2026
+const VARIANT_RE = /^[a-e]$/i; // #9335: versão C recebe 100% do tráfego desde 01/10/2026; D (conteúdo com identidade) desde 04/10/2026; E (estrutura de 8 blocos) desde 13/10/2026
 
 /** Mesmo teto de defesa em profundidade que `SUBSCRIBE_CLIENT_ORIGIN_MAX`
  * aplica a outros campos crus do cliente (workers/poll/src/subscribe.ts). */
