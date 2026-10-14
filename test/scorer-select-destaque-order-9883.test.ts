@@ -71,7 +71,7 @@ describe("peso por categoria na ordem e no desempate do D1 (#10165/#10166)", () 
   it("scorer-select tem a regra e preserva os invariantes", () => {
     const txt = read("scorer-select.md");
     assert.match(txt, /Peso por categoria \(#10165\/#10166/);
-    assert.match(txt, /lancamento.*ANTES de destaque de pesquisa ou mercado/s);
+    assert.match(txt, /`bucket: lancamento` ou de regulação[^\n]*ANTES de destaque de pesquisa ou mercado/);
     assert.match(txt, /nada disso muda quais 6 entram/);
     assert.match(txt, /vem ANTES deste desempate de estilo/);
   });
@@ -80,6 +80,7 @@ describe("peso por categoria na ordem e no desempate do D1 (#10165/#10166)", () 
     const txt = read("scorer.md");
     const idx = txt.indexOf("Peso por categoria (#10165/#10166");
     assert.ok(idx > 0);
+    assert.match(txt.slice(idx, idx + 400), /vencem este peso[\s\S]*Não muda o passo 5/);
     const before = txt.slice(0, idx);
     assert.equal(
       (before.match(/CALIBRATED:[a-z_]+:start/g) ?? []).length,
