@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { main, findOldErrorStillPresent, sectionKeyFromLocation } from "../scripts/replant-intentional-error.ts";
+import { main, countWholeWord, findOldErrorStillPresent, sectionKeyFromLocation } from "../scripts/replant-intentional-error.ts";
 
 const MD = `**DESTAQUE 1 | 🤖 MODELOS**
 
@@ -46,15 +46,30 @@ function setup(jsonl?: string) {
 }
 
 function quiet<T>(fn: () => T): T {
+  return captured(fn).result;
+}
+
+/** Roda `fn` capturando o stdout (console.log) — JSON de saída do script. */
+function captured<T>(fn: () => T): { result: T; stdout: string } {
   const [l, e] = [console.log, console.error];
-  console.log = () => {};
+  const out: string[] = [];
+  console.log = (...a: unknown[]) => void out.push(a.join(" "));
   console.error = () => {};
   try {
-    return fn();
+    return { result: fn(), stdout: out.join("\n") };
   } finally {
     console.log = l;
     console.error = e;
   }
+}
+
+/** Grava um baseline pós-Stage 2 confiável (`stage2-post-gate` + `.capture.json` dentro da tolerância). */
+function writeBaseline(dir: string, md: string) {
+  const snap = join(dir, "_internal", "editor-request-snapshots", "stage2-post-gate");
+  mkdirSync(snap, { recursive: true });
+  writeFileSync(join(snap, "02-reviewed.md"), md, "utf8");
+  writeFileSync(join(dir, "_internal", ".step-2-done.json"), JSON.stringify({ completed_at: "2026-10-13T20:00:00Z" }), "utf8");
+  writeFileSync(join(snap, ".capture.json"), JSON.stringify({ captured_at: "2026-10-13T20:00:30Z", trigger: "pipeline-sentinel-step-2" }), "utf8");
 }
 
 describe("#10176 replant-intentional-error", () => {
@@ -214,22 +229,119 @@ Claude Code, Cursor e GitHub Copilot disputam o mercado, e o Claude Sonnet 5 lid
 Nessa edição, uma marca saiu grafada errada no DESTAQUE 1.
 `;
 
-  it("cenário real da issue: item com 'Sonnet' podado do D1, outro item cita 'Claude Sonnet 5' → replanta", () => {
-    const { root, dir, jsonlPath } = setup();
+  const SONNET_RECORD = { description: "trocou o nome do modelo", location: "DESTAQUE 1, parágrafo 2", category: "attribution", correct_value: "Haiku", wrong_value: "Sonnet", reveal: "Na última edição, escrevi Sonnet onde o certo era Haiku." };
+  // Pré-gate: o D1 tinha o item com o erro ("Sonnet" no lugar de "Haiku") + a menção legítima no RADAR.
+  const SONNET_PRE_GATE = SONNET_MD.replace(
+    "A Anthropic cortou o preço do Haiku 5.5.",
+    "A Anthropic cortou o preço do Haiku 5.5.\n\n**[Opus ganha contexto maior](https://www.anthropic.com/news/opus)**\n\nO Sonnet 5.5 agora lê 2M tokens.",
+  );
+
+  function setupSonnet(withBaseline: boolean) {
+    const ctx = setup();
+    writeFileSync(join(ctx.dir, "02-reviewed.md"), SONNET_MD, "utf8");
+    writeFileSync(join(ctx.dir, "_internal", "intentional-error.json"), JSON.stringify(SONNET_RECORD), "utf8");
+    if (withBaseline) writeBaseline(ctx.dir, SONNET_PRE_GATE);
+    return ctx;
+  }
+
+  it("cenário real da issue (#10234): item com 'Sonnet' podado do D1, outro item cita 'Claude Sonnet 5' → replanta pela contagem do baseline, sem override", () => {
+    const { root, dir, jsonlPath } = setupSonnet(true);
     try {
-      writeFileSync(join(dir, "02-reviewed.md"), SONNET_MD, "utf8");
-      writeFileSync(
-        join(dir, "_internal", "intentional-error.json"),
-        JSON.stringify({ description: "trocou o nome do modelo", location: "DESTAQUE 1, parágrafo 2", category: "attribution", correct_value: "Haiku", wrong_value: "Sonnet", reveal: "Na última edição, escrevi Sonnet onde o certo era Haiku." }),
-        "utf8",
-      );
-      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 0);
+      const { result, stdout } = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath]));
+      assert.equal(result, 0);
+      const out = JSON.parse(stdout);
+      assert.equal(out.action, "replanted");
+      assert.deepEqual(out.old_error_elsewhere.elsewhere, ["RADAR"], "elsewhere vai no JSON de stdout (headless)");
+      assert.equal(out.old_error_elsewhere.baseline_count, 2);
+      assert.equal(out.old_error_elsewhere.current_count, 1);
+      assert.equal(out.old_error_elsewhere.resolved_by, "baseline_count");
       const json = JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8"));
       assert.notEqual(json.wrong_value, "Sonnet");
       assert.ok(readFileSync(join(dir, "02-reviewed.md"), "utf8").includes("Claude Sonnet 5"), "menção legítima intacta");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("cenário 'Sonnet' sem baseline confiável → recusa old_error_maybe_moved; com --allow-elsewhere → replanta", () => {
+    const { root, dir, jsonlPath } = setupSonnet(false);
+    try {
+      const refused = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath]));
+      assert.equal(refused.result, 1);
+      const out = JSON.parse(refused.stdout);
+      assert.equal(out.action, "old_error_maybe_moved");
+      assert.deepEqual(out.elsewhere, ["RADAR"]);
+      assert.equal(out.baseline_count, null);
+      assert.equal(out.override, "--allow-elsewhere");
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), SONNET_MD, "nada gravado na recusa");
+
+      const ok = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath, "--allow-elsewhere"]));
+      assert.equal(ok.result, 0);
+      assert.equal(JSON.parse(ok.stdout).old_error_elsewhere.resolved_by, "allow_elsewhere");
+      assert.notEqual(JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8")).wrong_value, "Sonnet");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ponta a ponta: location 'RADAR (menção a \"X\")', item movido pra LANÇAMENTOS com RADAR ainda presente → recusa (mesmo com baseline)", () => {
+    const preGate = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude ganha memória](https://www.anthropic.com/news/claude-memory)**
+
+A Anthropic lançou memória no Claude.
+
+---
+
+**📡 RADAR**
+
+**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
+O Gemnini 3 passa a falar português.
+
+**[Cursor vs. Claude Code](https://exame.com/tecnologia/cursor-claude-code)**
+Claude Code, Cursor e GitHub Copilot disputam o mercado.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada na seção RADAR.
+`;
+    // Editor moveu o item do RADAR pra LANÇAMENTOS; o RADAR continua existindo com outro item.
+    const moved = preGate
+      .replace("**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**\nO Gemnini 3 passa a falar português.\n\n", "")
+      .replace(
+        "---\n\n**📡 RADAR**",
+        "---\n\n**🚀 LANÇAMENTOS**\n\n**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**\nO Gemnini 3 passa a falar português.\n\n---\n\n**📡 RADAR**",
+      );
+    assert.ok(moved.includes("LANÇAMENTOS") && moved.includes("RADAR"));
+    const { root, dir, jsonlPath } = setup();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), moved, "utf8");
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ description: "nome grafado errado", location: 'RADAR (menção a "Gemnini 3")', category: "ortografico", correct_value: "Gemini", wrong_value: "Gemnini" }),
+        "utf8",
+      );
+      writeBaseline(dir, preGate);
+      const { result, stdout } = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath]));
+      assert.equal(result, 1);
+      const out = JSON.parse(stdout);
+      assert.equal(out.action, "old_error_maybe_moved");
+      assert.equal(out.scope, "RADAR");
+      assert.deepEqual(out.elsewhere, ["LANÇAMENTOS"]);
+      assert.equal(out.baseline_count, out.current_count, "contagem não caiu → item movido");
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), moved);
+      assert.equal(JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8")).wrong_value, "Gemnini");
+      assert.equal(existsSync(jsonlPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("countWholeWord conta por palavra inteira", () => {
+    assert.equal(countWholeWord("Sonnet, Sonnet 5 e Sonnets", "Sonnet"), 2);
+    assert.equal(countWholeWord("nada aqui", "Sonnet"), 0);
   });
 
   it("erro antigo ainda DENTRO da seção declarada → recusa", () => {
@@ -239,7 +351,7 @@ Nessa edição, uma marca saiu grafada errada no DESTAQUE 1.
     assert.equal(r.scope, "DESTAQUE 1");
   });
 
-  it("ocorrência só fora da seção declarada → não conta, mas é reportada", () => {
+  it("ocorrência só fora da seção declarada → present=false com elsewhere preenchido (main decide: recusa salvo baseline/override)", () => {
     const r = findOldErrorStillPresent(SONNET_MD, { wrong_value: "Sonnet", location: "DESTAQUE 1" });
     assert.equal(r.present, false);
     assert.deepEqual(r.elsewhere, ["RADAR"]);
