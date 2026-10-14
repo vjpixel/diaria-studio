@@ -2799,8 +2799,10 @@ function viewPrState(rootDir: string, prNumber: number, gh: GhRunner): string | 
  * 1. Marca o PR velho como substituído (o waiter dele lê isso antes de mergear
  *    e desiste) — ANTES de qualquer chamada de rede, pra fechar a janela entre
  *    o `gh pr view` e o `gh pr close`.
- * 2. `gh pr view`: OPEN → `gh pr close --delete-branch`; se o close falhar,
- *    relê o estado (o waiter pode ter mergeado no intervalo).
+ * 2. `gh pr view`: OPEN → `gh pr close` (sem `--delete-branch`, que mexeria
+ *    na branch local do checkout compartilhado fora do lock — #8158) + DELETE
+ *    só da ref remota via `gh api`, fail-soft; se o close falhar, relê o
+ *    estado (o waiter pode ter mergeado no intervalo).
  * 3. Tira a `<loc>` do slug velho do sitemap em `rootDir` SEMPRE — mesmo com o
  *    PR velho só aberto, a escrita local da chamada anterior deixou a entrada
  *    no sitemap do checkout, e o commit novo a carregaria (duplicata).
@@ -2836,13 +2838,22 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
             "pr",
             "close",
             String(oldPrNumber),
-            "--delete-branch",
             "--comment",
             `Substituído: a página desta edição foi republicada em /p/${newSlug} (título do D1 mudou) — #10194.`,
           ],
           rootDir,
         );
         oldPrState = "closed";
+        // SEM `--delete-branch` no close (#8158, mesma razão do merge): a flag
+        // também apaga a branch LOCAL no checkout compartilhado, e o supersede
+        // roda fora do lock de publicação. Só a ref REMOTA sai, via API —
+        // não toca o checkout. Falha aqui é cosmética (branch órfã no remoto).
+        const oldBranch = sitePublishBranch(oldSlug);
+        try {
+          gh(["api", "-X", "DELETE", `repos/{owner}/{repo}/git/refs/heads/${oldBranch}`], rootDir);
+        } catch (e) {
+          notes.push(`branch remota ${oldBranch} não apagada (${(e as Error).message}) — apagar à mão`);
+        }
       } catch (e) {
         const after = viewPrState(rootDir, oldPrNumber, gh);
         if (after === "MERGED") oldPrState = "merged";

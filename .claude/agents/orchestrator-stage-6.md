@@ -162,7 +162,7 @@ Sem este passo o acervo do site fica congelado e a página `/p/{slug}` — desti
 
 **1. Estado registrado pelo Stage 5.** Ler `_internal/site-page-published.json`. Se `published === true` (PR aberto/mergeado no §5b-site), NÃO republicar — pular pro passo 3 (que manda de volta pro passo 2 se a página estiver defasada, exit `5`).
 
-**2. Fallback — só se o arquivo estiver ausente, com `published !== true`, ou se o passo 3 / §6c-site devolver exit `5`** (edição despachada antes do #10160, §5b-site falhou, ou página DEFASADA — #10190: o D1 ou os insumos da página mudaram depois do §5b-site): publicar aqui, igual ao Stage 5. `--slug`: backend `"beehiiv"` → `{slug_atual_do_get_post}` de §6b-slug (divergência já virou aviso pro gate); backend `"kit"` → `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados):
+**2. Fallback — só se o arquivo estiver ausente, com `published !== true`, ou se o passo 3 / §6c-site devolver exit `5`** (edição despachada antes do #10160, §5b-site falhou, ou página DEFASADA — #10190: o D1 ou os insumos da página mudaram depois do §5b-site): publicar aqui, igual ao Stage 5. `--slug`: backend `"beehiiv"` → `{slug_atual_do_get_post}` de §6b-slug (divergência já virou aviso pro gate); backend `"kit"` → `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados). **Republicação com slug novo limpa o slug velho sozinha (#10194):** o script lê o slug/PR anterior do state, grava o PR velho em `_internal/site-page-superseded.json` (o waiter dele desiste do merge), fecha o PR velho se aberto (`gh pr close` sem `--delete-branch`, #8158 — só a branch remota sai, fail-soft), tira a `<loc>` velha do sitemap e, se o PR velho já mergeou, remove `p/{slug-velho}` no mesmo commit do PR novo. Nada a fazer à mão; avisos saem no log:
 
 ```bash
 npx tsx scripts/publish-edition-site-page.ts \
@@ -288,7 +288,7 @@ npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --wait-ms
 ```
 - `0` (MERGED — já estava, ou o CI ficou verde e o script mergeou com `--squash --match-head-commit` sob o merge lock, regra do #5251) → seguir pro Schedule.
 - `3` (CI ainda rodando após 9min) → rodar o MESMO comando de novo (o job `test` leva ~12min); ainda `3` na 3ª vez → halt banner abaixo, motivo "CI do PR do site não convergiu".
-- `5` (página DEFASADA, #10190) → re-rodar o fallback do §6b-site passo 2 (republica com o slug/conteúdo atuais) e repetir este comando; ainda `5` depois disso → tratar como `1`.
+- `5` (página DEFASADA, #10190) → re-rodar o fallback do §6b-site passo 2 (republica com o slug/conteúdo atuais; slug novo fecha o PR antigo e limpa o acervo sozinho, #10194) e repetir este comando; ainda `5` depois disso → tratar como `1`.
 - `1` (CI vermelho, conflito, PR fechado, merge recusado), `2` (`gh` falhou — desconhecido NUNCA vira mergeado) ou `4` (sem PR registrado: re-rodar o fallback do §6b-site passo 2 e repetir — **exceto** com `code: 5` no state, guard de merge tag desconhecida: o fallback falha igual, ir direto pro halt) → **halt**, sem agendar nada:
 ```bash
 npx tsx scripts/render-halt-banner.ts --stage "6 — Agendamento" --reason "PR da página do site não mergeado: {reason do JSON}" --action "corrija o CI/conflito (gh pr view {prNumber}) e responda 'retry' (re-roda §6c-site), 'bypass {motivo}' (agenda a newsletter sem a página, #10191) ou 'abort'"

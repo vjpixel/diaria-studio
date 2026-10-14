@@ -59,7 +59,7 @@ const noopLock: LockRunner = () => ({ ok: true, stdout: "ok\n", stderr: "" });
 const noopSleep: SleepFn = () => {};
 
 /** gh fake: registra chamadas; estado do PR velho controlado pelo teste. */
-function makeGh(oldState: "OPEN" | "MERGED" | "CLOSED", opts: { closeThrows?: boolean; afterClose?: string } = {}) {
+function makeGh(oldState: "OPEN" | "MERGED" | "CLOSED", opts: { closeThrows?: boolean; afterClose?: string; deleteRefThrows?: boolean } = {}) {
   const calls: string[][] = [];
   let state: string = oldState;
   const gh: GhRunner = (args) => {
@@ -74,6 +74,7 @@ function makeGh(oldState: "OPEN" | "MERGED" | "CLOSED", opts: { closeThrows?: bo
       state = "CLOSED";
       return "";
     }
+    if (args[0] === "api" && args.includes("DELETE") && opts.deleteRefThrows) throw new Error("gh api: 422 simulado");
     if (cmd === "pr list") return "[]";
     if (cmd === "pr create") return "https://github.com/vjpixel/diaria-studio/pull/1\n";
     if (cmd === "pr view") return JSON.stringify({ state: "OPEN", statusCheckRollup: [], mergeable: "MERGEABLE" });
@@ -151,12 +152,32 @@ describe("#10194 supersedePreviousSitePage", () => {
     const close = calls.find((c) => c[0] === "pr" && c[1] === "close");
     assert.ok(close, "gh pr close deveria ter sido chamado");
     assert.equal(close![2], String(OLD_PR));
-    assert.ok(close!.includes("--delete-branch"));
+    // #8158: `--delete-branch` apagaria a branch LOCAL no checkout compartilhado
+    // fora do lock — só a ref remota sai, via API.
+    assert.ok(!calls.some((c) => c.includes("--delete-branch")));
+    const del = calls.find((c) => c[0] === "api" && c.includes("DELETE"));
+    assert.ok(del, "ref remota da branch velha deveria ser apagada via gh api");
+    assert.ok(del!.includes(`repos/{owner}/{repo}/git/refs/heads/site-publish/${OLD_SLUG}`));
     assert.deepEqual(readSupersededPrNumbers(ed), [OLD_PR]);
     const xml = readFileSync(join(rootDir, ...SITEMAP_REL.split("/")), "utf8");
     assert.ok(!xml.includes(`<loc>${archiveUrlForSlug(OLD_SLUG)}</loc>`));
     assert.ok(xml.includes(`<loc>${archiveUrlForSlug(`${OLD_SLUG}-ec15971b`)}</loc>`));
     assert.equal(existsSync(join(rootDir, "workers", "site", "public", "p", OLD_SLUG)), false);
+  });
+
+  it("DELETE da ref remota falha: PR segue fechado, falha vira aviso (fail-soft)", () => {
+    const rootDir = tmp("diaria-10194-root-");
+    writeOldPublication(rootDir);
+    const { gh } = makeGh("OPEN", { deleteRefThrows: true });
+    const out = supersedePreviousSitePage(rootDir, gh, {
+      oldSlug: OLD_SLUG,
+      newSlug: NEW_SLUG,
+      oldPrNumber: OLD_PR,
+      sitemapRelPath: SITEMAP_REL,
+    });
+    assert.equal(out.oldPrState, "closed");
+    assert.deepEqual(out.removedPaths, []);
+    assert.ok(out.notes.some((n) => n.includes(`site-publish/${OLD_SLUG}`) && n.includes("não apagada")));
   });
 
   it("PR velho MERGEADO: não fecha nada e devolve a página velha pra remoção no commit novo", () => {
