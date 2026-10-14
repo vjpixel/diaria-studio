@@ -26,6 +26,10 @@ describe("#10206 addSlugRedirect", () => {
     assert.equal(addSlugRedirect("x\n", "a", "a"), "x\n");
     assert.equal(addSlugRedirect("", "velho", "novo"), "/p/velho /p/novo 301\n");
   });
+  it("voltar ao slug anterior remove a regra inversa (sem loop)", () => {
+    const out = addSlugRedirect("/p/a /p/b 301\n", "b", "a");
+    assert.equal(out, "/p/b /p/a 301\n");
+  });
   it("caminho do _redirects é irmão do sitemap", () => {
     assert.equal(redirectsRelPathFromSitemap(SITEMAP_REL), "workers/site/public/_redirects");
   });
