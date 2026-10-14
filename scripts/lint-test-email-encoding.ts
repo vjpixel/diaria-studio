@@ -147,6 +147,23 @@ export function stripSectionHeaderEmojis(md: string): string {
     .join("\n");
 }
 
+/**
+ * #10181: rótulos estruturais do `02-reviewed.md` que nunca chegam ao corpo do
+ * e-mail — `TÍTULO` e `SUBTÍTULO` marcam o bloco de assunto/preview no topo
+ * do MD (viram subject/preview text, não texto do corpo). O `Í` deles era
+ * acusado como `char_dropped` em toda edição (falso positivo, 261014). Só a
+ * LINHA DO RÓTULO sai: o valor (linha seguinte) continua sendo checado, porque
+ * o título do D1 aparece no corpo. Tolera `**…**` e `:` final.
+ */
+const STRUCTURAL_LABEL_LINE_RE = /^\s*(?:\*\*)?\s*(?:SUBT[ÍI]TULO|T[ÍI]TULO)\s*:?\s*(?:\*\*)?\s*$/u;
+
+export function stripStructuralLabels(md: string): string {
+  return md
+    .split("\n")
+    .filter((line) => !STRUCTURAL_LABEL_LINE_RE.test(line))
+    .join("\n");
+}
+
 const CEREMONY_MARKER_RE = new RegExp(`^(\\s*(?:\\*\\*)?)\u{1F389}[${String.fromCodePoint(0xfe0e, 0xfe0f)}]?[ \\t]*`, "u");
 
 /** Kickers fixos que o renderer emite via `renderKicker("...")` e que não estão
@@ -200,7 +217,8 @@ function specialUnits(text: string): string[] {
 export function checkEncoding(sourceText: string, emailText: string): EncodingIssue[] {
   const issues: EncodingIssue[] = [];
   // #9115: emoji de kicker é removido pelo renderer por design — tira do source antes.
-  const source = stripSectionHeaderEmojis(sourceText);
+  // #10181: rótulos estruturais (TÍTULO/SUBTÍTULO) não vão pro corpo — idem.
+  const source = stripStructuralLabels(stripSectionHeaderEmojis(sourceText));
   const emailNoVs = emailText.replace(VARIATION_SELECTORS_RE, "");
 
   for (const unit of specialUnits(source)) {

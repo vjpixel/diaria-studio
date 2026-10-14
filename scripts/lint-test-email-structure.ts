@@ -166,7 +166,11 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   // `&#9679;`, que sobrevive ao strip de tags). Aceitar AMBOS: o emoji (emails
   // legados) OU o bullet `&#9679;`. Mantém a âncora (não casa keyword solta em
   // prosa), só amplia o prefixo permitido.
-  const SECTION_ANCHOR = String.raw`(?:${SECTION_EMOJI}|&#9679;\s*)`;
+  // #10181: o e-mail que o Gmail devolve do Kit traz o ponto já DECODIFICADO
+  // (`●` literal, U+25CF, fora do range de SECTION_EMOJI) em vez da entidade —
+  // e todas as seções caíam em `section_missing` (falso positivo, 261014). A
+  // âncora aceita as três grafias do mesmo ponto: `&#9679;`, `&#x25CF;` e `●`.
+  const SECTION_ANCHOR = String.raw`(?:${SECTION_EMOJI}|(?:&#9679;|&#x25cf;|\u{25CF})\s*)`;
   const headerInText = (body: string): boolean =>
     new RegExp(`${SECTION_ANCHOR}${body}`, "iu").test(text);
   // Posição do header no RAW content (pra contar <a href> no slice). Best-effort
