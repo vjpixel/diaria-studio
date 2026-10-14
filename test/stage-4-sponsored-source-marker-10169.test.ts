@@ -30,6 +30,27 @@ describe("detectSponsoredMarkers (#10169)", () => {
   it("URL sem corpo cacheado: só o path vale", () => {
     assert.equal(detectSponsoredMarkers("https://a.com/publicidade/x", null).length, 1);
   });
+  it("#10215: card <article> relacionado ANTES do texto principal não esconde o principal", () => {
+    const html =
+      "<article class='card'><a>Leia também: outra notícia</a></article>" +
+      "<div>" + "x".repeat(3000) + "</div>" +
+      "<article><h1>Título</h1><p>Conteúdo patrocinado por Fulano</p></article>";
+    assert.deepEqual(detectSponsoredMarkers("https://a.com/x", html), ["conteúdo patrocinado"]);
+  });
+  it("#10215: selo num header logo antes do <article> é visto", () => {
+    const html =
+      "<nav>" + "menu ".repeat(1000) + "</nav>" +
+      "<header><span class='selo'>Publieditorial</span></header>" +
+      "<article><h1>Título</h1><p>texto</p></article><footer>Patrocinado</footer>";
+    assert.deepEqual(detectSponsoredMarkers("https://a.com/x", html), ["publieditorial"]);
+  });
+  it("#10215: entidade numérica hex é decodificada", () => {
+    assert.ok(detectSponsoredMarkers("https://a.com/x", "<p>Conte&#xFA;do de marca</p>").includes("conteúdo de marca"));
+  });
+  it("#10215: <article> aninhado não trunca o bloco principal", () => {
+    const html = "<article><h1>T</h1><article>citação</article><p>Conteúdo de marca</p></article>";
+    assert.ok(detectSponsoredMarkers("https://a.com/x", html).includes("conteúdo de marca"));
+  });
   it("página limpa → vazio", () => {
     assert.deepEqual(detectSponsoredMarkers("https://a.com/x", "<p>Notícia normal</p>"), []);
   });

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { applyRouteLabelPlan, planRouteLabels, type RouteMotivo } from "../scripts/lib/issue-route.ts";
 import { classifyExecTrack } from "../scripts/lib/issue-exec-track.ts";
 import { classifyDesbloqueioCandidate } from "../scripts/lib/desbloqueia-scan.ts";
+import { acaoAdiadaMarkerFromArgs } from "../scripts/lib/issue-decisions.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
@@ -31,7 +32,7 @@ function route(track: "overnight" | "fora-de-rodada", motivo?: RouteMotivo): str
   return [...applyRouteLabelPlan(["bug", "P2"], planRouteLabels(track, motivo))];
 }
 
-function desbloqueiaStatus(labels: string[]) {
+function desbloqueiaStatus(labels: string[], comments: string[] = [], now = new Date("2026-10-13T12:00:00Z")) {
   return classifyDesbloqueioCandidate({
     number: 1,
     title: "t",
@@ -39,9 +40,9 @@ function desbloqueiaStatus(labels: string[]) {
     body: "",
     state: "OPEN",
     updatedAt: "2026-10-13T00:00:00Z",
-    comments: [],
+    comments,
     dependencyState: null,
-    now: new Date("2026-10-13T12:00:00Z"),
+    now,
   })?.status ?? null;
 }
 
@@ -65,6 +66,43 @@ describe("#10122 — rota de sem-direção nunca produz on-hold", () => {
     assert.ok(labels.includes("trade-off-real"));
     assert.ok(!labels.includes("on-hold"));
     assert.equal(classifyExecTrack({ labels, body: "", state: "OPEN" }), "overnight");
+  });
+});
+
+describe("#10216 — 'nem eu destravo' não repete a pergunta na rodada seguinte", () => {
+  const labels = route("fora-de-rodada", "sem-direcao");
+  const answeredAt = new Date("2026-10-13T12:00:00Z");
+  const marker = (() => {
+    const r = acaoAdiadaMarkerFromArgs(
+      ["--print-acao-adiada-marker", "--acao", "definir o critério de direção (sem-direcao-acionavel)", "--motivo", "nem eu destravo", "--sessao", "develop"],
+      answeredAt,
+    );
+    assert.ok("marker" in r);
+    return r.marker;
+  })();
+
+  it("defeito reproduzido: sem marcador, a 2ª rodada pergunta de novo", () => {
+    assert.equal(desbloqueiaStatus(labels, [], new Date("2026-10-14T12:00:00Z")), "precisa-pergunta");
+  });
+
+  it("com o marcador gravado na resposta, a 2ª rodada (dia seguinte) cai em acao-adiada", () => {
+    assert.equal(desbloqueiaStatus(labels, [marker], new Date("2026-10-14T12:00:00Z")), "acao-adiada");
+  });
+
+  it("depois do cooldown (7 dias) a pergunta volta — adiamento, não engavetamento", () => {
+    assert.equal(desbloqueiaStatus(labels, [marker], new Date("2026-10-21T12:00:01Z")), "precisa-pergunta");
+  });
+
+  it("CLI helper recusa --acao vazio e --sessao inválida", () => {
+    assert.ok("error" in acaoAdiadaMarkerFromArgs(["--print-acao-adiada-marker"]));
+    assert.ok("error" in acaoAdiadaMarkerFromArgs(["--acao", "x", "--sessao", "interactive"]));
+  });
+
+  it("playbook: 'nem eu destravo' manda gravar o marcador acao-adiada", () => {
+    const d = read(DESBLOQUEIA);
+    const passo3 = d.slice(d.indexOf("## Passo 3 —"), d.indexOf("## Passo 3b"));
+    const item = passo3.slice(passo3.indexOf("nem eu destravo\" →"));
+    assert.match(item, /--print-acao-adiada-marker/);
   });
 });
 

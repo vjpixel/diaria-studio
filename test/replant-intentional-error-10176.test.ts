@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { main } from "../scripts/replant-intentional-error.ts";
@@ -109,6 +109,70 @@ describe("#10176 replant-intentional-error", () => {
       assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", join(root, "j.jsonl")])), 1);
       assert.equal(existsSync(join(dir, "_internal", "intentional-error.json")), false);
       assert.equal(existsSync(join(root, "j.jsonl")), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#10213: --dry-run não altera conteúdo nem mtime de MD/JSON e não cria JSONL", () => {
+    const { root, dir, jsonlPath } = setup();
+    try {
+      const mdPath = join(dir, "02-reviewed.md");
+      const jsonPath = join(dir, "_internal", "intentional-error.json");
+      const old = new Date("2026-01-01T00:00:00Z");
+      utimesSync(mdPath, old, old);
+      utimesSync(jsonPath, old, old);
+      const jsonBefore = readFileSync(jsonPath, "utf8");
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath, "--dry-run"])), 0);
+      assert.equal(readFileSync(mdPath, "utf8"), MD);
+      assert.equal(readFileSync(jsonPath, "utf8"), jsonBefore);
+      assert.equal(statSync(mdPath).mtimeMs, old.getTime(), "MD não foi reescrito");
+      assert.equal(statSync(jsonPath).mtimeMs, old.getTime(), "JSON não foi reescrito");
+      assert.equal(existsSync(jsonlPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#10213: JSONL com linha corrompida/sem edition preserva essas linhas", () => {
+    const corrupt = '{"edition": "2609';
+    const noEdition = JSON.stringify({ error_type: "x", is_feature: true });
+    const other = JSON.stringify({ edition: "261001", error_type: "x", is_feature: true, source: "manual" });
+    const { root, dir, jsonlPath } = setup([corrupt, noEdition, other].join("\n") + "\n");
+    try {
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 0);
+      const lines = readFileSync(jsonlPath, "utf8").trim().split("\n");
+      assert.ok(lines.includes(corrupt), "linha corrompida preservada");
+      assert.ok(lines.includes(noEdition), "linha sem edition preservada");
+      assert.ok(lines.includes(other), "outra edição preservada verbatim");
+      assert.equal(JSON.parse(lines[lines.length - 1]).edition, "261014");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#10213: JSONL existente mas ilegível → exit 1, nada gravado", () => {
+    const { root, dir } = setup();
+    try {
+      // Um diretório no lugar do arquivo: existsSync=true, readFileSync lança (EISDIR).
+      const jsonlPath = join(root, "dir.jsonl");
+      mkdirSync(jsonlPath);
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 1);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), MD);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#10213: erro antigo ainda presente no MD → recusa (exit 1), nada gravado", () => {
+    const { root, dir, jsonlPath } = setup();
+    try {
+      const withOld = MD.replace("A Anthropic lançou memória no Claude.", "A Fooo lançou memória no Claude.");
+      writeFileSync(join(dir, "02-reviewed.md"), withOld, "utf8");
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 1);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), withOld);
+      assert.equal(JSON.parse(readFileSync(join(dir, "_internal", "intentional-error.json"), "utf8")).wrong_value, "Fooo");
+      assert.equal(existsSync(jsonlPath), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

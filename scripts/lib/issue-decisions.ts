@@ -614,8 +614,48 @@ export function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
   return trustedCommentBodiesFromIssueViewJson(result.stdout);
 }
 
+/**
+ * #10216 — monta o marcador `acao-adiada` a partir de argv
+ * (`--print-acao-adiada-marker --acao "..." [--motivo "..."] [--sessao develop]`),
+ * pra o playbook do `/diaria-desbloqueia` não compor base64 à mão. Pura:
+ * devolve o marcador ou uma mensagem de erro de uso.
+ */
+export function acaoAdiadaMarkerFromArgs(
+  args: readonly string[],
+  now: Date = new Date(),
+): { marker: string } | { error: string } {
+  const val = (flag: string): string | undefined => {
+    const i = args.indexOf(flag);
+    return i === -1 ? undefined : args[i + 1];
+  };
+  const acao = (val("--acao") ?? "").trim();
+  if (!acao) return { error: "--acao é obrigatório e não-vazio" };
+  const sessao = val("--sessao") ?? "develop";
+  if (sessao !== "continuo" && sessao !== "overnight" && sessao !== "develop") {
+    return { error: `--sessao inválido: ${sessao} (continuo|overnight|develop)` };
+  }
+  return {
+    marker: formatAcaoAdiadaMarker({
+      pedido_em: now.toISOString(),
+      acao,
+      motivo: (val("--motivo") ?? "").trim(),
+      sessao,
+    }),
+  };
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes("--print-acao-adiada-marker")) {
+    const r = acaoAdiadaMarkerFromArgs(args);
+    if ("error" in r) {
+      process.stderr.write(`${r.error}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(r.marker + "\n");
+    return;
+  }
   const issueFlagIdx = args.indexOf("--issue");
   if (issueFlagIdx === -1 || !args[issueFlagIdx + 1]) {
     process.stderr.write("uso: npx tsx scripts/lib/issue-decisions.ts --issue N\n");
