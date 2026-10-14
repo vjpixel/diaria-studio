@@ -1431,16 +1431,16 @@ describe("#4339 — demoteNotATool: not_a_tool sai de LANÇAMENTOS automaticamen
     assert.equal(updated.radar?.length, 1, "não deve duplicar em radar[]");
     assert.equal(
       updated.radar?.[0].url,
-      "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
-      "mantém o item com descrição (mais completo), segue a preferência já usada por dedupSecondaryIntraBucket",
+      "https://openai.com/index/chatgpt-for-academic-researchers",
+      "#10162: fonte oficial vence a cobertura, mesmo a cobertura tendo descrição",
     );
 
     // consolidated: reporta a fusão (item descartado → item mantido).
     assert.equal(consolidated.length, 1);
-    assert.equal(consolidated[0].url, "https://openai.com/index/chatgpt-for-academic-researchers");
+    assert.equal(consolidated[0].url, "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers");
     assert.equal(
       consolidated[0].consolidated_into,
-      "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
+      "https://openai.com/index/chatgpt-for-academic-researchers",
     );
   });
 
