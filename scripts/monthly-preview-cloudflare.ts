@@ -31,6 +31,8 @@
  * Uso:
  *   npx tsx scripts/monthly-preview-cloudflare.ts --cycle 2605-06
  *   npx tsx scripts/monthly-preview-cloudflare.ts --cycle 2605-06 --dry-run
+ *     (sem upload; grava `cloudflare-preview.dry-run.html` e
+ *     `public-images.dry-run.json` — nunca os arquivos de envio, #10175)
  *
  * Env:
  *   CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN — upload das imagens pro KV
@@ -103,6 +105,50 @@ export function buildPublicImagesManifest(
     images.livros_promo = { url: livrosImageUrl, filename: LIVROS_PROMO_FILENAME, mime_type: mimeForFilename(LIVROS_PROMO_FILENAME) };
   }
   return images;
+}
+
+/**
+ * Caminhos de saída do preview (#10175). `cloudflare-preview.html` é o HTML
+ * REAL de envio — `clarice-novos-html-state.ts`/`clarice-novos-run.ts` o leem
+ * nos envios das 09:00/18:00 — e `public-images.json` é lido por
+ * `render-monthly-apoiadores-{kit,brevo}.ts` e `build-article-page.ts`. O
+ * dry-run não sobe imagens, então gravar nesses caminhos trocaria o HTML de
+ * produção por um sem imagens (incidente 14/10/2026). Em dry-run os dois saem
+ * com sufixo `.dry-run` e os de produção ficam intocados.
+ */
+export function previewOutputPaths(
+  internalDir: string,
+  dryRun: boolean,
+): { htmlPath: string; publicImagesPath: string } {
+  const suffix = dryRun ? ".dry-run" : "";
+  return {
+    htmlPath: resolve(internalDir, `cloudflare-preview${suffix}.html`),
+    publicImagesPath: resolve(internalDir, `public-images${suffix}.json`),
+  };
+}
+
+/**
+ * Persiste o HTML local — desde #3214, este é o artefato final do script.
+ * Quem publica pro editor é o top-level Claude Code via `Artifact` direto
+ * sobre este arquivo (ver SKILL.md §3c/§4b) — este script só grava em disco.
+ *
+ * #3392: o manifest url pública → filename local é consumido por
+ * `scripts/embed-images-base64.ts` (SKILL.md §3c/§4b) pra gerar a variante
+ * `cloudflare-preview-embedded.html` publicada via `Artifact` — sem isso o
+ * Artifact bloqueia as imagens remotas por CSP (mesma regressão do diário
+ * #3214/#3370). Em dry-run sai `{ images: {} }` no arquivo `.dry-run.json`.
+ */
+export function writePreviewOutputs(
+  internalDir: string,
+  html: string,
+  publicImages: Record<string, MonthlyPublicImage>,
+  dryRun: boolean,
+): { htmlPath: string; publicImagesPath: string } {
+  mkdirSync(internalDir, { recursive: true });
+  const paths = previewOutputPaths(internalDir, dryRun);
+  writeFileSync(paths.htmlPath, html);
+  writeFileSync(paths.publicImagesPath, JSON.stringify({ images: publicImages }, null, 2) + "\n");
+  return paths;
 }
 
 async function main(): Promise<void> {
@@ -234,19 +280,8 @@ async function main(): Promise<void> {
   // Quem publica pro editor é o top-level Claude Code via `Artifact` direto
   // sobre este arquivo (ver SKILL.md §3c/§4b) — este script só grava em disco.
   const internalDir = resolve(monthlyDir, "_internal");
-  mkdirSync(internalDir, { recursive: true });
-  const htmlPath = resolve(internalDir, "cloudflare-preview.html");
-  writeFileSync(htmlPath, html);
-
-  // #3392: manifest url pública → filename local, consumido por
-  // `scripts/embed-images-base64.ts` (SKILL.md §3c/§4b) pra gerar a variante
-  // `cloudflare-preview-embedded.html` publicada via `Artifact` — sem isso o
-  // Artifact bloqueia as imagens remotas por CSP (mesma regressão do diário
-  // #3214/#3370). Grava mesmo em dry-run/sem upload (fica `{ images: {} }`,
-  // inofensivo — o embed simplesmente não encontra nada pra substituir).
   const publicImages = buildPublicImagesManifest(eia, destaqueImages, livrosImageUrl);
-  const publicImagesPath = resolve(internalDir, "public-images.json");
-  writeFileSync(publicImagesPath, JSON.stringify({ images: publicImages }, null, 2) + "\n");
+  const { htmlPath, publicImagesPath } = writePreviewOutputs(internalDir, html, publicImages, dryRun);
 
   console.log(JSON.stringify({ yymm, cycle, html_path: htmlPath, public_images_path: publicImagesPath, dry_run: dryRun }, null, 2));
 }
