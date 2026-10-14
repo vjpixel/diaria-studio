@@ -47,6 +47,7 @@ import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; /
 import {
   USE_MELHOR_COVER_FILE,
   finalizeUseMelhorTextChannelPostText, // #9999
+  prependUseMelhorCaptionTitle, // #10201
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
   reportUseMelhorPlan,
@@ -187,7 +188,11 @@ export function buildUseMelhorFacebookPost(input: {
   | { ok: false; reason: string } {
   let caption: string;
   try {
-    caption = finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "facebook", "um"));
+    // #10201: título do item como 1ª linha da legenda.
+    caption = prependUseMelhorCaptionTitle(
+      finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "facebook", "um")),
+      input.plan.captionTitle,
+    );
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }

@@ -108,6 +108,23 @@ export const CHANNEL_ENGAGEMENT_LINES: Record<SocialChannel, string | null> = {
   instagram: INSTAGRAM_ENGAGEMENT_LINE,
 };
 
+/**
+ * #10201: linha de engajamento do 4º post (item USE MELHOR, `## um`). A linha
+ * dos destaques ("…que ainda subestima isso") foi pensada pra notícia — no fim
+ * de um passo a passo "isso" não se refere a nada. Decisão do editor
+ * (/diaria-desbloqueia 14/10/2026): linha própria pro `## um`; os destaques de
+ * notícia seguem com `INSTAGRAM_ENGAGEMENT_LINE`. Mesmas regras: estática,
+ * NÃO-interrogativa (#1762), só Instagram.
+ */
+export const INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE = "Manda pra quem precisa disso.";
+
+/** Mapa canal → linha de engajamento do 4º post (USE MELHOR, #10201). */
+export const USE_MELHOR_ENGAGEMENT_LINES: Record<SocialChannel, string | null> = {
+  linkedin: null,
+  facebook: null,
+  instagram: INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE,
+};
+
 /** Mapa canal → linha de CTA (`null` = nenhuma linha injetada para esse canal). */
 export const CHANNEL_CTA_LINES: Record<SocialChannel, string | null> = {
   linkedin: LINKEDIN_CTA_LINE,
@@ -221,12 +238,17 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
  * cobre `**`/`__`/`*`/`_` com tratamento de bugs de fusão de span e boundary
  * Unicode que uma regex ingênua aqui duplicaria de forma mais estreita.
  */
-export function injectChannelLine(genericText: string, channel: SocialChannel): string {
+export function injectChannelLine(
+  genericText: string,
+  channel: SocialChannel,
+  opts: { useMelhor?: boolean } = {},
+): string {
   const { body, tags } = splitBodyAndTags(genericText);
   const ctaLine = CHANNEL_CTA_LINES[channel];
   // #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
   // ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
-  const engagementLine = CHANNEL_ENGAGEMENT_LINES[channel];
+  // #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
+  const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
   const parts = [body];
   if (ctaLine) parts.push(ctaLine);
   if (engagementLine) parts.push(engagementLine);

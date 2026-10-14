@@ -75,6 +75,13 @@ export type UseMelhorReadyPlan = {
    * item na edição final. Só aviso — o post sai com essa capa.
    */
   coverTitleWarning?: string;
+  /**
+   * #10201: título do item (o mesmo da capa — `resolveUseMelhorCoverTitle`)
+   * que os publicadores põem como 1ª linha da legenda (Instagram, LinkedIn
+   * página/pessoal, Facebook). Opcional só pra planos montados à mão em teste;
+   * `planUseMelhorDispatchFrom` sempre preenche.
+   */
+  captionTitle?: string;
 };
 
 export type UseMelhorDispatchPlan =
@@ -163,6 +170,7 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
     slots,
     ...(imageWarning && { imageWarning }),
     ...(coverTitleWarning && { coverTitleWarning }),
+    ...(coverTitle.trim() && { captionTitle: coverTitle.trim() }),
   };
 }
 
@@ -286,6 +294,27 @@ export function applyUseMelhorUtmToText(text: string): string {
  */
 export function finalizeUseMelhorPostText(text: string): string {
   return applyUseMelhorUtmToText(resolveUseMelhorCardBreaks(text));
+}
+
+/**
+ * Pure (#10201): põe o título do item USE MELHOR como 1ª linha da legenda.
+ * Pelo §3c do `social-writer` (#9789) o `## um` vai direto à lista — a capa do
+ * carrossel faz a abertura —, então a legenda sozinha (feed do Instagram,
+ * LinkedIn página/pessoal, Facebook) começava no "1)" sem dizer do que se
+ * tratava. Decisão do editor (opção a): determinístico no publish, sem tocar
+ * no `## um` (que alimenta os cards) nem no `social-writer`.
+ *
+ * Sem título (plano montado sem ele) → texto intacto. Markdown de ênfase do
+ * título é removido (os canais não renderizam markdown). Se o texto já abre
+ * com o título (editor escreveu à mão), não duplica.
+ */
+export function prependUseMelhorCaptionTitle(text: string, title: string | null | undefined): string {
+  const t = (title ?? "").replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim();
+  if (!t) return text;
+  const body = text.replace(/^\s+/, "");
+  const firstLine = (body.split("\n", 1)[0] ?? "").replace(/\*\*|__/g, "").trim();
+  if (firstLine.toLocaleLowerCase("pt-BR") === t.toLocaleLowerCase("pt-BR")) return text;
+  return `${t}\n\n${body}`;
 }
 
 /**

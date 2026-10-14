@@ -53,7 +53,7 @@ import { BEEHIIV_BASE_URL, appendUtmToEditionUrl } from "./lib/edition-url.ts"; 
 import { LINKEDIN_POST_PIXEL_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #9568 — LinkedIn não renderiza markdown
-import { finalizeUseMelhorTextChannelPostText, planUseMelhorDispatch, type UseMelhorDispatchPlan } from "./lib/use-melhor-dispatch.ts"; // #9568
+import { finalizeUseMelhorTextChannelPostText, planUseMelhorDispatch, prependUseMelhorCaptionTitle, type UseMelhorDispatchPlan } from "./lib/use-melhor-dispatch.ts"; // #9568; #10201
 import { readSocialPublished } from "./lib/social-published-store.ts"; // #9568 — horário real do 4º post
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #9568
 import { useMelhorSlideFilename } from "./lib/use-melhor-carousel.ts"; // #9568
@@ -148,7 +148,12 @@ export function resolvePersonalPost(input: {
   return {
     ok: true,
     source: personal.source,
-    text: personal.text,
+    // #10201: no perfil pessoal (06-linkedin-personal.json) a legenda também
+    // abre com o título do item — não há capa que dê o contexto.
+    text:
+      personal.source === "um" && plan.status === "ready"
+        ? prependUseMelhorCaptionTitle(personal.text, plan.captionTitle)
+        : personal.text,
     image: imageOk ? imageName : null,
     scheduledAt: personal.source === "um" ? input.scheduledAt : null,
   };
