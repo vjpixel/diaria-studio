@@ -21,13 +21,25 @@ const TEXT_MARKERS: Array<{ label: string; re: RegExp }> = [
   { label: "conteúdo de marca", re: /conte[úu]do\s+de\s+marca/i },
   { label: "conteúdo patrocinado", re: /conte[úu]do\s+patrocinado/i },
   { label: "patrocinado", re: /\bpatrocinad[oa]s?\b/i },
-  { label: "Pré-MBA", re: /pr[ée]-?\s?MBA/i },
+  { label: "Pré-MBA", re: /\bpr[ée]-?\s?MBA/i },
 ];
 
+const ENTITIES: Record<string, string> = {
+  "&nbsp;": " ", "&amp;": "&", "&uacute;": "ú", "&eacute;": "é", "&Eacute;": "É", "&Uacute;": "Ú",
+};
+
+/** Restringe a <article>/<main> quando existir (evita rodapé/widgets de anúncio do portal). */
+function articleScope(html: string): string {
+  const m = html.match(/<(article|main)\b[\s\S]*?<\/\1>/i);
+  return m ? m[0] : html;
+}
+
 function visibleText(html: string): string {
-  return html
+  return articleScope(html)
     .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, " ")
     .replace(/<[^>]+>/g, " ")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&[a-zA-Z]+;/g, (e) => ENTITIES[e] ?? e)
     .replace(/\s+/g, " ");
 }
 
@@ -42,7 +54,10 @@ export function detectSponsoredMarkers(url: string, html: string | null): string
   for (const m of URL_PATH_MARKERS) if (m.re.test(path)) found.push(m.label);
   if (html) {
     const text = visibleText(html);
-    for (const m of TEXT_MARKERS) if (m.re.test(text)) found.push(m.label);
+    for (const m of TEXT_MARKERS) {
+      if (m.label === "patrocinado" && found.includes("conteúdo patrocinado")) continue;
+      if (m.re.test(text)) found.push(m.label);
+    }
   }
   return found;
 }

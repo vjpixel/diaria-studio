@@ -18,6 +18,18 @@ describe("detectSponsoredMarkers (#10169)", () => {
   it("ignora marcador dentro de script/style", () => {
     assert.deepEqual(detectSponsoredMarkers("https://a.com/x", "<script>var patrocinado=1</script><p>ok</p>"), []);
   });
+  it("decodifica entidades HTML", () => {
+    assert.ok(detectSponsoredMarkers("https://a.com/x", "<p>Conte&uacute;do&nbsp;de marca</p>").includes("conteúdo de marca"));
+  });
+  it("ignora rodapé fora de <article>", () => {
+    assert.deepEqual(detectSponsoredMarkers("https://a.com/x", "<article>texto</article><footer>Patrocinado</footer>"), []);
+  });
+  it("não duplica 'patrocinado' quando 'conteúdo patrocinado' casou", () => {
+    assert.deepEqual(detectSponsoredMarkers("https://a.com/x", "<p>Conteúdo patrocinado</p>"), ["conteúdo patrocinado"]);
+  });
+  it("URL sem corpo cacheado: só o path vale", () => {
+    assert.equal(detectSponsoredMarkers("https://a.com/publicidade/x", null).length, 1);
+  });
   it("página limpa → vazio", () => {
     assert.deepEqual(detectSponsoredMarkers("https://a.com/x", "<p>Notícia normal</p>"), []);
   });
