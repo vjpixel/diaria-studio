@@ -173,6 +173,10 @@ export interface SnippetInfo {
   /** #9104: chaves de evento/campanha (`evento:` do header, ou
    * `utm_campaign` dos links) — ver `extractSnippetEventKeys`. Ausente = `[]`. */
   eventKeys?: string[];
+  /** #10174: valor CRU de `expires:` do header (`AAAA-MM-DD`, último dia em
+   * que a caixa pode sair), ou `null`. Julgado contra a data da edição por
+   * `evaluateSnippetExpiry` em `resolveBoxesForEdition`. Ausente = sem validade. */
+  expires?: string | null;
 }
 
 export function parseSnippetContent(file: string, content: string): SnippetInfo {
@@ -184,7 +188,8 @@ export function parseSnippetContent(file: string, content: string): SnippetInfo 
   const seasonal = readSeasonalFlag(content);
   const { audience, source: audienceSource } = resolveSnippetAudience(content, rawUrls);
   const eventKeys = extractSnippetEventKeys(content, rawUrls);
-  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys };
+  const expires = parseBoxHeaderField(content, "expires");
+  return { file, nome, urls, fullUrls, seasonal, audience, audienceSource, eventKeys, expires };
 }
 
 /** Carrega + parseia todos os snippets de `data/snippets/*.md` (#5227,

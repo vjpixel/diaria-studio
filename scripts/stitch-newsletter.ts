@@ -43,7 +43,8 @@ import {
   SOCIAL_INVITE,
   CURADORIA_PILLS,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (apoio Apoia.se + ferramentas), compartilhada com o mensal; renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o slot A não tem override); SOCIAL_INVITE/CURADORIA_PILLS #4413/#4411 (blocos fixos, não mais lidos de config/snippet por edição)
-import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
+import { readSnippetFile, readSnippetFileRaw } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
+import { hasMisplacedHeaderComment, misplacedHeaderWarning } from "./lib/shared/snippet-header.ts"; // #10178
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338; extractBoxDivulgacao3 removido do stitch pelo #6748 (slot 3 eliminado) — a função continua existindo em newsletter-parse.ts pros lints que ainda leem edições antigas
 import {
   resolveUsedSnippets,
@@ -287,6 +288,13 @@ export function loadDivulgacaoSnippet(file: string | null | undefined, rootDir?:
     throw new Error(
       `loadDivulgacaoSnippet: slot configurado aponta para "data/snippets/${file}", mas o arquivo não existe (ou ficou vazio após remover o header) — verifique se a caixa foi arquivada sem atualizar o slot em platform.config.json, ou se o OneDrive ainda não sincronizou este arquivo nesta máquina.`,
     );
+  }
+  // #10178: header de comentário fora da 1ª linha — os campos dele (alt:,
+  // titulo:…) são ignorados e o que vem antes (ex.: `---`) vaza pra edição.
+  // Só aviso: o conteúdo segue (o box existe e foi configurado).
+  const rawWithHeader = readSnippetFileRaw(file, rootDir);
+  if (rawWithHeader !== null && hasMisplacedHeaderComment(rawWithHeader)) {
+    console.warn(`[stitch-newsletter] warn — ${misplacedHeaderWarning(file)}`);
   }
   // Formato carrinho (🛒): texto cru, sem bold-wrap — igual ao que
   // BOX_DIVULGACAO_CART_RE (newsletter-parse.ts) espera no reviewed.md.

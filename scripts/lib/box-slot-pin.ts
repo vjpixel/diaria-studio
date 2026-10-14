@@ -30,6 +30,18 @@
  * Em nenhum dos dois casos `boxes_divulgacao.slot{N}` é apagado no unpin: o
  * valor configurado volta a ser candidato normal do auto-select (#4626).
  *
+ * **Troca manual do slot (#10174, documentado — sem mudança de código).** Se o
+ * editor tira um desses boxes do slot à mão (config ou painel Caixas, caso
+ * do PR #10172: slot 2 da Retrospectiva para livros), o ownership acima faz
+ * o `--unpin` seguinte de quem saiu virar no-op — o slot continua pinado no
+ * arquivo novo, que é o efeito desejado. Mas o próximo `pin: true` do
+ * mesmo produto (`/diaria-mensal-apoiadores` ou `/diaria-artigo-especial`
+ * do ciclo seguinte) RETOMA o slot sozinho, sobrescrevendo a troca manual —
+ * é a alternância last-writer-wins. Quem quer o slot de volta depois disso
+ * troca de novo à mão. O `expires:` do header (#10174) não impede essa
+ * retomada: ele só tira do ar uma caixa vencida (o stitch a pula e o
+ * invariante `box-divulgacao-expiry` avisa no Stage 2/4).
+ *
  * Trade-off herdado do #6748: o slot 2 só existe no gap D2/D3 — em edição de
  * 2 destaques nenhum dos dois boxes aparece, mesmo pinado.
  */

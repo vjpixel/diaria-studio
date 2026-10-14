@@ -29,6 +29,13 @@
   margin-top: 0.15rem;
 }
 .box-content-title::before { content: ""; }
+/* #10174/#10178: avisos de autoria no card da caixa. */
+.box-warnings {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.78rem;
+  color: var(--status-warn-ink, var(--status-warn));
+}
 .box-meta {
   font-size: 0.78rem;
   font-family: var(--font-mono);

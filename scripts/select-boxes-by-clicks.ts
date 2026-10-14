@@ -95,7 +95,7 @@ import {
   type SnippetInfo,
 } from "./box-click-report.ts";
 import { DEFAULT_KIT_BROADCASTS_DIR } from "./lib/shared/edition-cache-reader.ts";
-import { DEFAULT_SNIPPET_AUDIENCE } from "./lib/shared/snippet-header.ts";
+import { DEFAULT_SNIPPET_AUDIENCE, aammddToIsoDate, evaluateSnippetExpiry } from "./lib/shared/snippet-header.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EDITIONS_DIR = resolve(ROOT, "data/editions");
@@ -461,7 +461,10 @@ export interface SlotSelectionRecord {
   file: string | null;
   /** #9155: só em `mode: "fallback-ineligible"` — o arquivo de
    * `boxes_divulgacao.slotN` que seria usado como fallback e foi recusado
-   * (o slot sai VAZIO, `file: null`), e o motivo da recusa. */
+   * (o slot sai VAZIO, `file: null`), e o motivo da recusa. #10174: também
+   * em `auto` (pin vencido substituído pela seleção automática) e em
+   * `disabled` (automação desligada, caixa vencida → slot vazio), sempre com
+   * `rejectReason: "expirado"`. */
   rejectedFile?: string;
   rejectReason?: FallbackRejectReason;
   nome: string | null;
@@ -472,8 +475,25 @@ export interface SlotSelectionRecord {
   seasonal: boolean | null;
 }
 
-/** #9155: por que o arquivo de fallback de um slot foi recusado. */
-export type FallbackRejectReason = "audiencia" | "duplicado" | "evento";
+/** #9155: por que o arquivo de fallback de um slot foi recusado. #10174:
+ * `expirado` — `expires:` do header anterior à data da edição. */
+export type FallbackRejectReason = "audiencia" | "duplicado" | "evento" | "expirado";
+
+/**
+ * #10174: `true` se o snippet `file` declara `expires:` anterior à data da
+ * edição (`editionIsoDate`, `AAAA-MM-DD`). Sem data de edição, arquivo fora
+ * de `snippets`, sem `expires:` ou `expires:` malformado → `false` (o
+ * invariante `box-divulgacao-expiry` do Stage 2/4 avisa do malformado; aqui
+ * a caixa nunca some por erro de digitação).
+ */
+export function isSnippetExpiredForEdition(
+  file: string | null | undefined,
+  snippetByFile: ReadonlyMap<string, SnippetInfo>,
+  editionIsoDate: string | null,
+): boolean {
+  if (!file || !editionIsoDate) return false;
+  return evaluateSnippetExpiry(snippetByFile.get(file)?.expires, editionIsoDate).status === "expired";
+}
 
 /**
  * #9155: aplica ao arquivo de FALLBACK de um slot (o `boxes_divulgacao.slotN`
@@ -485,6 +505,7 @@ export type FallbackRejectReason = "audiencia" | "duplicado" | "evento";
  * - `audiencia`: snippet conhecido de outra audiência (`isSnippetEligibleForDiaria`).
  * - `duplicado`: o mesmo arquivo já ocupa outro slot desta edição.
  * - `evento`: compartilha chave de evento com um arquivo já atribuído.
+ * - `expirado` (#10174): `expires:` anterior à data da edição (`editionIsoDate`).
  *
  * Arquivo que não existe em `snippets` (config apontando pra nome ausente,
  * fixture) não é julgado por audiência/evento — sem dado pra decidir, segue
@@ -494,8 +515,11 @@ export function checkFallbackEligibility(opts: {
   file: string;
   snippetByFile: ReadonlyMap<string, SnippetInfo>;
   assignedFiles: ReadonlySet<string>;
+  /** #10174: data da edição (`AAAA-MM-DD`); ausente = sem checagem de validade. */
+  editionIsoDate?: string | null;
 }): FallbackRejectReason | null {
   const snippet = opts.snippetByFile.get(opts.file);
+  if (isSnippetExpiredForEdition(opts.file, opts.snippetByFile, opts.editionIsoDate ?? null)) return "expirado";
   if (snippet && !isSnippetEligibleForDiaria(snippet)) return "audiencia";
   if (opts.assignedFiles.has(opts.file)) return "duplicado";
   const keys = snippet?.eventKeys ?? [];
@@ -577,6 +601,27 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     : [{ slot: 2, mode: "disabled", file: null, nome: null, score: null, trend: null, editionsAppeared: null, seasonal: null }];
 
   const snippets = loadSnippets(opts.snippetsDir ?? SNIPPETS_DIR);
+  const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
+
+  // #10174: caixa com `expires:` vencido nunca entra na edição — nem pinada,
+  // nem fallback, nem candidata do ranking. Referência = data da EDIÇÃO
+  // (`opts.aammdd`), não o relógio. `aammdd` fora do formato → sem checagem.
+  const editionIsoDate = aammddToIsoDate(opts.aammdd);
+  const isExpired = (file: string | null | undefined): boolean =>
+    isSnippetExpiredForEdition(file, snippetByFile, editionIsoDate);
+  const warnExpired = (where: string, file: string, then: string): void => {
+    const exp = snippetByFile.get(file)?.expires ?? "?";
+    process.stderr.write(
+      `[select-boxes-by-clicks] warn — ${where}: \`${file}\` expirou (expires: ${exp}, edição ${editionIsoDate}); ${then} (#10174)\n`,
+    );
+  };
+  // Slot 0 fica fora da rotação (#4274), mas uma caixa vencida ali anunciaria
+  // o mesmo evento passado — sai vazio.
+  if (isExpired(effective.slot0)) {
+    warnExpired("slot 0", effective.slot0!, "slot fica vazio nesta edição");
+    effective.slot0 = null;
+  }
+
   // #6748: registro do slot 3 é sempre "disabled"/vazio — nunca participa do
   // ranking, pin nem fallback, em NENHUM modo (auto ligado ou desligado).
   const slot3Disabled: SlotSelectionRecord = {
@@ -591,8 +636,25 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   };
 
   if (!autoCfg.enabled) {
-    const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
     const selection: SlotSelectionRecord[] = activeSlots.map((slot) => {
+      const configured = effective[SLOT_KEY[slot]];
+      if (isExpired(configured)) {
+        // #10174: sem automação não há candidato pra cobrir — slot vazio.
+        warnExpired(`slot ${slot}`, configured!, "slot fica vazio nesta edição (auto-seleção desligada)");
+        effective[SLOT_KEY[slot]] = null;
+        return {
+          slot,
+          mode: "disabled" as const,
+          file: null,
+          rejectedFile: configured!,
+          rejectReason: "expirado" as const,
+          nome: null,
+          score: null,
+          trend: null,
+          editionsAppeared: null,
+          seasonal: null,
+        };
+      }
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       return {
         slot,
@@ -643,7 +705,11 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     snippets: diariaSnippets,
     findPost: (aammdd) => findPostForEdition(aammdd, posts),
   });
-  const ranked = [...history.values()].map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow));
+  // #10174: caixa vencida sai do ranking (o histórico de cliques dela segue
+  // contando pra anti-repetição — `previousSnippets` abaixo não é filtrado).
+  const ranked = [...history.values()]
+    .map((h) => scoreBox(h, autoCfg.recentWindow, autoCfg.priorWindow))
+    .filter((r) => !isExpired(r.file));
   const previousSnippets = findPreviousEditionSnippets(opts.aammdd, aammddList, readReviewedMd, diariaSnippets);
 
   // #6748: slot 3 fora de `activeSlots` em TODOS os arrays abaixo — nunca
@@ -651,10 +717,21 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   // pin, e o loop de seleção final abaixo cobre só `activeSlots` + os
   // registros fixos `inactiveSlotRecords`/`slot3Disabled` (adicionados no
   // fim). #9175: `activeSlots` é [1, 2], ou só [1] em edição sem D3.
-  const slotsToAuto = activeSlots.filter((s) => !autoCfg.pinnedSlots.has(s));
+  //
+  // #10174: slot pinado cuja caixa VENCEU deixa de ser pinado nesta edição —
+  // entra na seleção automática como qualquer slot não pinado (e, sem
+  // candidato, cai no fallback, que é o próprio arquivo vencido e por isso
+  // recusado → slot vazio). Premissa conservadora registrada no PR: nunca
+  // publicar a caixa vencida; não mexer no `platform.config.json`.
+  const isPinnedActive = (s: 1 | 2): boolean => autoCfg.pinnedSlots.has(s) && !isExpired(effective[SLOT_KEY[s]]);
+  const expiredPins = new Map<1 | 2, string>();
+  for (const s of activeSlots) {
+    if (autoCfg.pinnedSlots.has(s) && isExpired(effective[SLOT_KEY[s]])) expiredPins.set(s, effective[SLOT_KEY[s]]!);
+  }
+  const slotsToAuto = activeSlots.filter((s) => !isPinnedActive(s));
   const alreadyAssignedFiles = new Set<string>();
   for (const s of activeSlots) {
-    if (autoCfg.pinnedSlots.has(s) && effective[SLOT_KEY[s]]) {
+    if (isPinnedActive(s) && effective[SLOT_KEY[s]]) {
       alreadyAssignedFiles.add(effective[SLOT_KEY[s]]!);
     }
   }
@@ -676,8 +753,6 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   });
   const pickBySlot = new Map(picks.map((p) => [p.slot, p]));
 
-  const snippetByFile = new Map(snippets.map((s) => [s.file, s]));
-
   // #9155: arquivos já atribuídos nesta edição ANTES de julgar os fallbacks —
   // slot0, slots pinados (pin manual sempre vence) e picks auto. Fallback
   // aceito entra no conjunto, então o slot 2 enxerga o fallback do slot 1.
@@ -686,7 +761,7 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
 
   const selection: SlotSelectionRecord[] = [];
   for (const slot of activeSlots) {
-    if (autoCfg.pinnedSlots.has(slot)) {
+    if (isPinnedActive(slot)) {
       const snippet = snippetByFile.get(effective[SLOT_KEY[slot]] ?? "");
       selection.push({
         slot,
@@ -701,13 +776,16 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
       continue;
     }
     const pick = pickBySlot.get(slot);
+    const expiredPin = expiredPins.get(slot);
     if (pick && pick.file) {
+      if (expiredPin) warnExpired(`slot ${slot} (pinado)`, expiredPin, `substituída pela seleção automática (\`${pick.file}\`)`);
       effective[SLOT_KEY[slot]] = pick.file;
       const snippet = snippetByFile.get(pick.file);
       selection.push({
         slot,
         mode: "auto",
         file: pick.file,
+        ...(expiredPin ? { rejectedFile: expiredPin, rejectReason: "expirado" as const } : {}),
         nome: pick.nome,
         score: pick.score,
         trend: pick.trend,
@@ -717,14 +795,18 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
     } else {
       const fallbackFile = effective[SLOT_KEY[slot]];
       const rejectReason = fallbackFile
-        ? checkFallbackEligibility({ file: fallbackFile, snippetByFile, assignedFiles: assignedForFallback })
+        ? checkFallbackEligibility({ file: fallbackFile, snippetByFile, assignedFiles: assignedForFallback, editionIsoDate })
         : null;
       if (fallbackFile && rejectReason) {
         // #9155: slot sai VAZIO em vez de usar um fallback que o #9104 barraria.
         effective[SLOT_KEY[slot]] = null;
-        process.stderr.write(
-          `[select-boxes-by-clicks] warn — slot ${slot}: fallback \`${fallbackFile}\` recusado (${rejectReason}); slot fica vazio nesta edição (#9155)\n`,
-        );
+        if (rejectReason === "expirado") {
+          warnExpired(`slot ${slot}${expiredPin ? " (pinado)" : ""}`, fallbackFile, "sem candidato automático, slot fica vazio nesta edição");
+        } else {
+          process.stderr.write(
+            `[select-boxes-by-clicks] warn — slot ${slot}: fallback \`${fallbackFile}\` recusado (${rejectReason}); slot fica vazio nesta edição (#9155)\n`,
+          );
+        }
         selection.push({
           slot,
           mode: "fallback-ineligible",

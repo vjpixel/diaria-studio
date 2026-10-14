@@ -8,6 +8,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-selection-drift.ts"; // #9253
+import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"; // #10174
+import { readSnippetFileRaw } from "../shared/snippet-loader.ts"; // #10174
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
@@ -1998,6 +2000,85 @@ export function checkBoxSelectionConfigDrift(
   }));
 }
 
+/** #10174: a partir de quantos dias antes do `expires:` o invariante avisa
+ * "expira em N dias" (mesmo limiar do painel Caixas, `BOX_EXPIRY_WARN_DAYS`
+ * em `studio-ui/studio-boxes.ts` — não importado de lá: camada UI). */
+export const BOX_EXPIRY_INVARIANT_WARN_DAYS = 3;
+
+/**
+ * #10174: caixa de divulgação configurada num slot (`boxes_divulgacao.slot0/1/2`
+ * do `platform.config.json`) com `expires:` VENCIDO, perto de vencer
+ * (≤ `BOX_EXPIRY_INVARIANT_WARN_DAYS` dias) ou malformado, julgado contra a
+ * data da EDIÇÃO (basename `AAMMDD` do `editionDir`). Caso que motivou: a
+ * caixa do evento de 17/10 pinada no slot 1 anunciaria, a partir da edição
+ * de 18/10, um evento que já aconteceu — sem nada acusar.
+ *
+ * O stitch (`resolveBoxesForEdition`) já PULA a caixa vencida; este check é a
+ * visibilidade no gate (Stage 2 e Stage 4): o editor vê que o slot pinado
+ * caducou e que o config precisa ser atualizado. Warning, nunca error — a
+ * edição sai correta sem a caixa. Slot 2 entra mesmo em edição de 2
+ * destaques (o config vale pras próximas). Snippet ausente → pulado (o
+ * stitch já falha alto nesse caso). `rootDir` só pra fixture de teste.
+ */
+export function checkBoxDivulgacaoExpiry(
+  editionDir: string,
+  rootDir: string = ROOT,
+): InvariantViolation[] {
+  const aammdd = basename(editionDir);
+  const editionIso = aammddToIsoDate(aammdd);
+  if (!editionIso) return [];
+  let cfg: Record<string, unknown> = {};
+  let pinned: unknown[] = [];
+  let autoEnabled = false;
+  try {
+    const raw = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+    cfg = raw?.boxes_divulgacao ?? {};
+    autoEnabled = raw?.boxes_divulgacao_auto?.enabled === true;
+    pinned = Array.isArray(raw?.boxes_divulgacao_auto?.pinned_slots) ? raw.boxes_divulgacao_auto.pinned_slots : [];
+  } catch {
+    return []; // config ilegível — outros checks cobrem
+  }
+  const violations: InvariantViolation[] = [];
+  for (const n of [0, 1, 2] as const) {
+    const file = cfg[`slot${n}`];
+    if (typeof file !== "string" || !file) continue;
+    const content = readSnippetFileRaw(file, rootDir);
+    if (content === null) continue;
+    const exp = readSnippetExpiry(content, editionIso);
+    const isPinned = n !== 0 && autoEnabled && pinned.includes(n);
+    const where = `boxes_divulgacao.slot${n}${isPinned ? " (pinado)" : ""}`;
+    let message: string | null = null;
+    if (exp.status === "expired") {
+      const effect = isPinned
+        ? "nesta edição o slot vai pra seleção automática (sem candidato, sai vazio)"
+        : "a caixa é pulada nesta edição (o slot sai vazio ou recebe a seleção automática)";
+      message =
+        `Caixa \`${file}\` (${where}) expirada: expires: ${exp.expires}, edição ${editionIso}. ` +
+        `O stitch não publica caixa vencida — ${effect}. Fix: trocar o slot em platform.config.json ` +
+        `(ou pelo painel Caixas) e arquivar a caixa.`;
+    } else if (exp.status === "valid" && exp.daysLeft <= BOX_EXPIRY_INVARIANT_WARN_DAYS) {
+      const when = exp.daysLeft === 0 ? "expira hoje (última edição)" : `expira em ${exp.daysLeft} dia${exp.daysLeft === 1 ? "" : "s"}`;
+      message =
+        `Caixa \`${file}\` (${where}) ${when} — expires: ${exp.expires}. ` +
+        `Depois disso o slot sai vazio ou vai pra seleção automática; planeje a troca no config.`;
+    } else if (exp.status === "invalid") {
+      message =
+        `Caixa \`${file}\` (${where}) declara expires: "${exp.raw}", que não é uma data AAAA-MM-DD — ` +
+        `a validade é IGNORADA e a caixa segue saindo. Fix: corrigir o header do snippet.`;
+    }
+    if (message) {
+      violations.push({
+        rule: "box-divulgacao-expiry",
+        message,
+        source_issue: "#10174",
+        severity: "warning",
+        file: "platform.config.json",
+      });
+    }
+  }
+  return violations;
+}
+
 /**
  * #4090 item 4 (decisão do editor, 260727): se a edição gerou o card 4:5
  * (`04-d{N}-4x5.jpg` no disco — mandatório desde a decisão 260728, ver
@@ -3262,6 +3343,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#9253",
     stage: 4,
     run: (editionDir: string) => checkBoxSelectionConfigDrift(editionDir),
+  },
+  {
+    id: "box-divulgacao-expiry",
+    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, pela data da edição (#10174, warning-only)",
+    source_issue: "#10174",
+    stage: 4,
+    run: (editionDir: string) => checkBoxDivulgacaoExpiry(editionDir),
   },
   {
     id: "card-4x5-upload-missing",

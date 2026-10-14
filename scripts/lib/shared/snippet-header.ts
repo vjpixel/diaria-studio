@@ -101,6 +101,92 @@ export function readSeasonalFlag(content: string): boolean | null {
   return null;
 }
 
+// ── Header fora da 1ª linha (#10178) ────────────────────────────────────────
+
+/**
+ * #10178: `true` quando o arquivo TEM um comentário `<!--` mas ele não abre o
+ * arquivo (`leadingCommentInner` devolve `null`) — sinal de header deslocado.
+ * Caso real 14/10/2026: um `.md` começando com `---` antes do comentário
+ * perdeu `alt:`/`titulo:` em silêncio (`parseBoxHeaderField` só lê o 1º
+ * comentário quando ele abre o arquivo) e o `---` vazou pro `02-reviewed.md`
+ * via `apply-box-slot.ts` (barra duplicada). Detecção pura, nunca lança;
+ * quem chama decide como avisar (warn no stitch, aviso no painel Caixas).
+ */
+export function hasMisplacedHeaderComment(content: string): boolean {
+  return leadingCommentInner(content) === null && content.includes("<!--");
+}
+
+/** #10178: texto do aviso de header deslocado, compartilhado pelo stitch e
+ * pelo painel Caixas (mesma frase nos dois lugares). */
+export function misplacedHeaderWarning(filename: string): string {
+  return (
+    `data/snippets/${filename}: o comentário de header \`<!-- ... -->\` não está na 1ª linha do arquivo ` +
+    `— os campos dele (nome:, alt:, titulo:, expires:…) são ignorados e o que vem antes vaza pra edição. ` +
+    `Mova o comentário pro topo do arquivo (#10178).`
+  );
+}
+
+// ── Validade da caixa: `expires:` (#10174) ──────────────────────────────────
+
+/**
+ * #10174: estado de validade de uma caixa em relação à data de uma edição.
+ * - `none`: sem `expires:` no header (caixa permanente — o caso comum);
+ * - `invalid`: `expires:` presente mas fora do formato `AAAA-MM-DD` (ou data
+ *   impossível). Não esconde a caixa: quem chama avisa e segue;
+ * - `valid`: `daysLeft` ≥ 0 (0 = a edição do próprio último dia);
+ * - `expired`: a data da edição já passou do último dia.
+ */
+export type SnippetExpiry =
+  | { status: "none" }
+  | { status: "invalid"; raw: string }
+  | { status: "valid" | "expired"; expires: string; daysLeft: number };
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+function isoDateToUtcMs(iso: string): number | null {
+  const m = ISO_DATE_RE.exec(iso);
+  if (!m) return null;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // Rejeita data impossível (2026-02-30 vira 02/03 no Date.UTC).
+  return new Date(ms).toISOString().slice(0, 10) === iso ? ms : null;
+}
+
+/** #10174: `AAMMDD` (data de edição) → `AAAA-MM-DD`, ou `null` se não for 6
+ * dígitos de uma data válida. Edição é sempre do século 21. */
+export function aammddToIsoDate(aammdd: string): string | null {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(aammdd);
+  if (!m) return null;
+  const iso = `20${m[1]}-${m[2]}-${m[3]}`;
+  return isoDateToUtcMs(iso) === null ? null : iso;
+}
+
+/**
+ * #10174: lê `expires: AAAA-MM-DD` do header e compara com a data da EDIÇÃO
+ * (`editionIsoDate`, `AAAA-MM-DD` — a data civil BRT da edição, nunca o
+ * relógio: a edição é D+1 e pode ser montada na véspera). `expires` é o
+ * ÚLTIMO dia em que a caixa ainda pode sair, inclusive — evento no sábado
+ * 17/10 → `expires: 2026-10-17` mantém a caixa na edição de 17/10 (sai de
+ * manhã, antes do evento) e a tira a partir da edição de 18/10.
+ * `editionIsoDate` inválido → `none` (sem data de referência não há como
+ * julgar; o caller segue o comportamento de sempre). Nunca lança.
+ */
+export function readSnippetExpiry(content: string, editionIsoDate: string): SnippetExpiry {
+  return evaluateSnippetExpiry(parseBoxHeaderField(content, "expires"), editionIsoDate);
+}
+
+/** #10174: mesma regra de `readSnippetExpiry`, a partir do valor cru de
+ * `expires:` já lido do header (`SnippetInfo.expires`). Nunca lança. */
+export function evaluateSnippetExpiry(raw: string | null | undefined, editionIsoDate: string): SnippetExpiry {
+  if (raw === null || raw === undefined || raw.trim() === "") return { status: "none" };
+  const editionMs = isoDateToUtcMs(editionIsoDate);
+  if (editionMs === null) return { status: "none" };
+  const expires = raw.trim();
+  const expiresMs = isoDateToUtcMs(expires);
+  if (expiresMs === null) return { status: "invalid", raw: expires };
+  const daysLeft = Math.round((expiresMs - editionMs) / 86_400_000);
+  return { status: daysLeft < 0 ? "expired" : "valid", expires, daysLeft };
+}
+
 /** #9104: audiência default de um snippet sem `audiencia:` no header e sem
  * sinal inferível — a própria diária. Default escolhido pra não mudar nada
  * nos snippets existentes (todos sem o campo até o #9104). */
