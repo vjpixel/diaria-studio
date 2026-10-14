@@ -175,6 +175,12 @@ describe("resolveBoxesForEdition pula caixa vencida (#10174)", () => {
     const { editionsDir, postsDir, snippetsDir, cleanup } = fixture();
     try {
       writeFileSync(join(snippetsDir, "evento.md"), EVENTO);
+      // 261017 (imediatamente anterior) sai sem caixa — sem ela a anti-repetição
+      // #4626 já excluiria evento.md e o teste não discriminaria o filtro de
+      // expiração do ranking.
+      const prev = join(editionsDir, "261017");
+      mkdirSync(prev, { recursive: true });
+      writeFileSync(join(prev, "02-reviewed.md"), "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody");
       const ed = join(editionsDir, "261010");
       mkdirSync(ed, { recursive: true });
       writeFileSync(

@@ -121,6 +121,7 @@ import {
 } from "../apply-box-slot.ts"; // #8990
 import { locateBoxDivulgacaoRange } from "../lib/newsletter-parse.ts"; // #8990
 import { enumerateEditionDirs } from "../lib/find-current-edition.ts"; // #8990
+import { brtDateOf } from "../lib/ads-rolling-window.ts"; // #10174 — dia civil BRT (UTC-3) de um instante
 
 export { isRuntimeExcluded };
 
@@ -1025,12 +1026,6 @@ export interface BoxListEntry {
  * invariante do Stage 2/4) passa a avisar "expira em N dias". */
 export const BOX_EXPIRY_WARN_DAYS = 3;
 
-/** #10174: dia civil BRT (UTC-3, sem horário de verão desde 2019) de um
- * instante, `AAAA-MM-DD`. */
-function brtIsoDate(now: Date): string {
-  return new Date(now.getTime() - 3 * 3600_000).toISOString().slice(0, 10);
-}
-
 /** #10174/#10178: avisos de autoria de uma caixa (ver `BoxListEntry.warnings`).
  * Puro, nunca lança. `todayIso` = `AAAA-MM-DD` de referência. */
 export function computeBoxWarnings(filename: string, content: string, todayIso: string): string[] {
@@ -1066,7 +1061,7 @@ export function computeBoxWarnings(filename: string, content: string, todayIso: 
  * arquivo nunca aparece em `git status --porcelain` por definição —
  * `checkDirtyVsGit` sempre voltaria `false`, então o campo virou morto. */
 export function listBoxes(rootDir: string, now: Date = new Date()): BoxListEntry[] {
-  const todayIso = brtIsoDate(now);
+  const todayIso = brtDateOf(now);
   const dir = snippetsDir(rootDir);
   if (!existsSync(dir)) return [];
   const slots = readBoxSlotAssignments(rootDir);
