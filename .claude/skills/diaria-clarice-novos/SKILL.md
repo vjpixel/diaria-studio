@@ -50,6 +50,20 @@ npx tsx scripts/lib/clarice-novos-enabled.ts --set disabled --reason "..."  # pa
 
 ---
 
+## Conferência opcional do HTML antes das 09:00 — `clarice-novos-preflight.ts` (#10157)
+
+O `cloudflare-preview.html` que o envio lê fica em `data/monthly/{ciclo}/_internal/` (OneDrive, fora do git). Quando ele é regenerado numa máquina (ajuste no `draft.md`), a task roda no `300` e lê a cópia que o sync tiver entregado até ali; se o sync atrasar, o envio sai com a versão antiga sem erro nem aviso. Depois de regenerar o HTML, rode no **servidor**, antes do disparo:
+
+```bash
+npx tsx scripts/clarice-novos-preflight.ts --expect "Garantir meu ingresso" --expect-sha <sha256 da máquina onde gerou>
+```
+
+Opcionais: `--cycle 2609-10` (o default resolve o ciclo pelo mesmo `resolveLatestMonthlyCycleFromDisk` do `clarice-novos-resolve-cycle.ts`), `--newer-than <ISO>` (mtime mínimo), `--baseline <html anterior>` (lista título, destaques, caixas e legendas que mudaram), `--compare-last-sent` (lê `GET /api/campaigns` do dashboard e avisa se o assunto ou o ciclo mudaram desde a última campanha `novos` enviada), `--html <caminho>` (conferir outro arquivo, por exemplo a cópia local, para obter o sha256 de referência), `--json`.
+
+**Sem efeito colateral:** não envia, não grava state, não chama Brevo/Stripe/MV; a única rede possível é a leitura do dashboard com `--compare-last-sent`, que é fail-soft. Imprime `mtime`, tamanho e sha256 do arquivo e confere: imagens `<img>` (pelo menos uma, todas em `/img/` do KV), nenhuma seta `→`/`←`, pelo menos um link com `utm_source=clarice`, e cada `--expect`. **Exit 0** = ok; **exit 1** = arquivo ausente, desatualizado (marcador ausente, sha256 diferente, mtime anterior ao `--newer-than`), sem imagem, imagem fora do KV, seta ou sem link `utm_source=clarice`. A última linha do stdout está pronta para colar no relatório. Exit 1 aqui não pausa a task: para segurar o envio enquanto o sync não chega, use o kill switch acima.
+
+---
+
 ## Passos (o que `clarice-novos-run.ts` faz — referência, não script pra copiar à mão)
 
 Passo 0 — Preflight: exec-mode local, 3 env vars (`STRIPE_API_KEY`/`BREVO_CLARICE_API_KEY`/`MILLION_VERIFIER_API_KEY`), reingestão se `isDerivedStale()`.
