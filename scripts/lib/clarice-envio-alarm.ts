@@ -136,6 +136,41 @@ export function markEnvioAlarmed(_state: EnvioAlarmState, aammdd: string): Envio
 // E-mail
 // ---------------------------------------------------------------------------
 
+type EnvioAlarmIssueRef = { issueNumber: number | null; url: string | null; action: string; error?: string };
+
+function formatIssueLine(issueRef?: EnvioAlarmIssueRef): string {
+  return issueRef
+    ? "\n\n" +
+        (issueRef.action === "failed"
+          ? `Issue: falha ao criar/reusar (${issueRef.error})`
+          : `Issue: #${issueRef.issueNumber} (${issueRef.url})`)
+    : "";
+}
+
+/** E-mail da parada VENCIDA (#10118/#10123). `reportId` null (#10125): o
+ * alarme detectou a parada vencida lendo `data/clarice-envio-halt.json`
+ * direto, mas o relatório mais recente de hoje não é o `-vencida` (dia sem
+ * relatório, `-lock-held`, `--volume N` manual depois das 19:00...) — o
+ * e-mail aponta pro arquivo de parada em vez de um relatório que não existe. */
+export function buildHaltStaleAlarmEmail(
+  reportId: string | null,
+  issueRef?: EnvioAlarmIssueRef,
+): { subject: string; body: string } {
+  const where = reportId
+    ? `Detalhes no relatório: data/clarice-subscribers/envio-reports/${reportId}.md (também em /relatorios).`
+    : `Detalhes em data/clarice-envio-halt.json (o relatório mais recente de hoje não é o da parada vencida — o alarme leu a parada direto, #10125).`;
+  return {
+    subject: `⚠️ Diaria-Clarice-Envio: rampa parada há tempo demais (${reportId ?? "data/clarice-envio-halt.json"})`,
+    body:
+      `A rampa Clarice está parada por fila insuficiente (regra 260811, parada durável #10096) ` +
+      `e a parada venceu — passou do limite de dias ou o ciclo virou desde ela (#10118), ou o arquivo de parada está ilegível (#10121). ` +
+      `Nenhuma onda é agendada até decisão explícita do editor. ${where}\n\n` +
+      `Pra retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."\n` +
+      `Pra um envio pontual com volume confirmado: /diaria-clarice-envio com --volume N.` +
+      formatIssueLine(issueRef),
+  };
+}
+
 /** `issueRef` (#5339, opcional) — outcome de `applyAlarmReconciliation`
  * (`scripts/lib/alarm-issues.ts`) pro achado desta rodada. `undefined`
  * (dry-run, ou wiring ainda não chamado) omite a citação sem quebrar nada —
@@ -143,14 +178,9 @@ export function markEnvioAlarmed(_state: EnvioAlarmState, aammdd: string): Envio
 export function buildEnvioAlarmEmail(
   evaluation: EnvioAlarmEvaluation,
   aammdd: string,
-  issueRef?: { issueNumber: number | null; url: string | null; action: string; error?: string },
+  issueRef?: EnvioAlarmIssueRef,
 ): { subject: string; body: string } {
-  const issueLine = issueRef
-    ? "\n\n" +
-      (issueRef.action === "failed"
-        ? `Issue: falha ao criar/reusar (${issueRef.error})`
-        : `Issue: #${issueRef.issueNumber} (${issueRef.url})`)
-    : "";
+  const issueLine = formatIssueLine(issueRef);
   if (evaluation.verdict === "alarm-no-report") {
     return {
       subject: `⚠️ Diaria-Clarice-Envio: nenhum relatório encontrado pra ${aammdd}`,
@@ -168,17 +198,7 @@ export function buildEnvioAlarmEmail(
     };
   }
   if (evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX)) {
-    return {
-      subject: `⚠️ Diaria-Clarice-Envio: rampa parada há tempo demais (${evaluation.reportId})`,
-      body:
-        `A rampa Clarice está parada por fila insuficiente (regra 260811, parada durável #10096) ` +
-        `e a parada venceu — passou do limite de dias ou o ciclo virou desde ela (#10118), ou o arquivo de parada está ilegível (#10121). ` +
-        `Nenhuma onda é agendada até decisão explícita do editor. Detalhes no relatório: ` +
-        `data/clarice-subscribers/envio-reports/${evaluation.reportId}.md (também em /relatorios).\n\n` +
-        `Pra retomar a automação: npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason "..."\n` +
-        `Pra um envio pontual com volume confirmado: /diaria-clarice-envio com --volume N.` +
-        issueLine,
-    };
+    return buildHaltStaleAlarmEmail(evaluation.reportId, issueRef);
   }
   if (evaluation.reportId?.endsWith(HALT_WRITE_FAILED_REPORT_SUFFIX)) {
     return {

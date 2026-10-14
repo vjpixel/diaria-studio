@@ -47,16 +47,19 @@ import { datePartsInTz, toAammdd, BRT_TIMEZONE } from "./lib/next-edition-date.t
 import {
   evaluateEnvioAlarm,
   buildEnvioAlarmEmail,
+  buildHaltStaleAlarmEmail,
   type EnvioAlarmEvaluation,
   type EnvioAlarmReportFile,
 } from "./lib/clarice-envio-alarm.ts";
 import {
   BASE_COLLAPSE_REPORT_SUFFIX,
   HALT_STALE_REPORT_SUFFIX,
+  evaluateHaltReadStaleness,
   haltAlarmFingerprint,
   readClariceEnvioHalt,
   type ClariceEnvioHaltRead,
 } from "./lib/clarice-envio-halt.ts";
+import { computeExpectedEnvioCycle } from "./lib/clarice-envio-cycle.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import {
   planAlarmReconciliation,
@@ -108,39 +111,7 @@ export function toAlarmFinding(
   halt: ClariceEnvioHaltRead | null = null,
 ): AlarmFinding {
   if (evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX)) {
-    const fingerprint = haltAlarmFingerprint(halt);
-    const haltLine =
-      halt && halt.halted
-        ? halt.invalid
-          ? `parada: data/clarice-envio-halt.json ILEGÍVEL (${halt.error})`
-          : `parada: desde ${halt.halt.since}, ciclo ${halt.halt.cycle} (${halt.halt.reportId}) — fila ${halt.halt.queueAvailable}, desejado ${halt.halt.desiredVolume}`
-        : "parada: arquivo ausente no momento do alarme (já limpa?)";
-    return {
-      check: "clarice-envio",
-      fingerprint,
-      family: "estado",
-      title: `[diar.ia.br] Clarice: rampa parada há tempo demais por fila insuficiente (${fingerprint})`,
-      body: [
-        "Achado automático do alarme `Diaria-Clarice-Envio-Alarm`",
-        "(`scripts/clarice-envio-alarm.ts`, #10118/#10123).",
-        "",
-        `primeira detecção: ${aammdd}`,
-        `relatório: data/clarice-subscribers/envio-reports/${evaluation.reportId}.md`,
-        haltLine,
-        "",
-        "A rampa Clarice está PARADA de propósito (regra 260811, parada durável #10096) e a",
-        "parada venceu: passou do limite de dias, o ciclo virou desde ela ou o arquivo está",
-        "ilegível. Não é erro de execução; nenhuma onda é agendada até decisão do editor:",
-        "",
-        "- retomar a automação: `npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason \"...\"`",
-        "- envio pontual com volume confirmado: `/diaria-clarice-envio --volume N` (não limpa a parada)",
-        "",
-        "Uma issue por parada (achado de ESTADO, #10123): as rodadas seguintes com a mesma",
-        "parada reusam esta issue, e ela se fecha sozinha depois do `--clear`.",
-      ].join("\n"),
-      labels: ["bug"],
-      priority: "P2",
-    };
+    return toHaltAlarmFinding(aammdd, halt, evaluation.reportId);
   }
   // #10114 — base colapsada também é CONDIÇÃO (re-derivada do histórico da
   // Brevo toda rodada até o editor decidir), não evento de um dia: mesma
@@ -201,6 +172,94 @@ export function toAlarmFinding(
   };
 }
 
+/** Achado de ESTADO da parada vencida (#10123). `reportId` null (#10125):
+ * a parada foi detectada vencida lendo `data/clarice-envio-halt.json` direto,
+ * sem relatório `-vencida` hoje — o fingerprint é o mesmo (`haltAlarmFingerprint`),
+ * então a issue aberta é reusada em vez de fechar pela streak e reabrir. */
+export function toHaltAlarmFinding(
+  aammdd: string,
+  halt: ClariceEnvioHaltRead | null,
+  reportId: string | null,
+): AlarmFinding {
+  const fingerprint = haltAlarmFingerprint(halt);
+  const haltLine =
+    halt && halt.halted
+      ? halt.invalid
+        ? `parada: data/clarice-envio-halt.json ILEGÍVEL (${halt.error})`
+        : `parada: desde ${halt.halt.since}, ciclo ${halt.halt.cycle} (${halt.halt.reportId}) — fila ${halt.halt.queueAvailable}, desejado ${halt.halt.desiredVolume}`
+      : "parada: arquivo ausente no momento do alarme (já limpa?)";
+  return {
+    check: "clarice-envio",
+    fingerprint,
+    family: "estado",
+    title: `[diar.ia.br] Clarice: rampa parada há tempo demais por fila insuficiente (${fingerprint})`,
+    body: [
+      "Achado automático do alarme `Diaria-Clarice-Envio-Alarm`",
+      "(`scripts/clarice-envio-alarm.ts`, #10118/#10123).",
+      "",
+      `primeira detecção: ${aammdd}`,
+      reportId
+        ? `relatório: data/clarice-subscribers/envio-reports/${reportId}.md`
+        : "relatório: nenhum `-vencida` hoje — parada lida direto de data/clarice-envio-halt.json (#10125)",
+      haltLine,
+      "",
+      "A rampa Clarice está PARADA de propósito (regra 260811, parada durável #10096) e a",
+      "parada venceu: passou do limite de dias, o ciclo virou desde ela ou o arquivo está",
+      "ilegível. Não é erro de execução; nenhuma onda é agendada até decisão do editor:",
+      "",
+      "- retomar a automação: `npx tsx scripts/lib/clarice-envio-halt.ts --clear --reason \"...\"`",
+      "- envio pontual com volume confirmado: `/diaria-clarice-envio --volume N` (não limpa a parada)",
+      "",
+      "Uma issue por parada (achado de ESTADO, #10123): as rodadas seguintes com a mesma",
+      "parada reusam esta issue, e ela se fecha sozinha depois do `--clear`.",
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+  };
+}
+
+/**
+ * #10125 — achados desta execução do alarme, a partir do relatório de hoje E
+ * da leitura atual de `data/clarice-envio-halt.json`. Puro (`now` injetado).
+ *
+ * 1. **Parada vencida não depende do relatório mais recente.** Antes, o achado
+ *    de parada só existia se o relatório mais novo do dia terminava em
+ *    `-fila-insuficiente-vencida`; dia sem relatório, `-lock-held`/`-abort` ou
+ *    um `--volume N` manual depois das 19:00 contavam como ausência, e 2 dias
+ *    assim (`CLOSE_ALARM_ISSUE_AFTER_RUNS`) fechavam a issue com a parada
+ *    ainda vencida — reabrindo no dia seguinte (ruído + e-mail). Agora a parada
+ *    é lida sempre: ativa e vencida (pelo relatório OU pela própria avaliação
+ *    de `evaluateHaltReadStaleness`) → mesmo fingerprint, a issue é reusada.
+ * 2. **Relatório `-vencida` sem arquivo de parada não é achado.** O editor
+ *    rodou `--clear` entre a rodada das 19:00 e o alarme das 20:30: a parada
+ *    já foi decidida. Antes isso gerava `halt:sem-arquivo` (issue nova +
+ *    e-mail); agora não emite nada, e a issue real da parada avança a streak
+ *    de fechamento.
+ *
+ * Falha comum do dia (não `-vencida`) continua achado de EVENTO próprio, ao
+ * lado do achado de parada quando os dois coexistem.
+ */
+export function buildEnvioAlarmFindings(
+  evaluation: EnvioAlarmEvaluation,
+  aammdd: string,
+  halt: ClariceEnvioHaltRead | null,
+  now: Date,
+): AlarmFinding[] {
+  const reportSaysStale = evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX) ?? false;
+  const findings: AlarmFinding[] = [];
+  if (halt?.halted) {
+    const stale = reportSaysStale || evaluateHaltReadStaleness(halt, now, computeExpectedEnvioCycle(now)).stale;
+    if (stale) findings.push(toHaltAlarmFinding(aammdd, halt, reportSaysStale ? evaluation.reportId : null));
+  }
+  if (evaluation.verdict !== "ok" && !reportSaysStale) findings.push(toAlarmFinding(evaluation, aammdd));
+  return findings;
+}
+
+/** Fingerprint de achado de parada (`haltAlarmFingerprint` sempre prefixa `halt:`). */
+export function isHaltFingerprint(fingerprint: string): boolean {
+  return fingerprint.startsWith("halt:");
+}
+
 /**
  * Lista os relatórios `envio-{aammdd}*.md` de HOJE — cada `writeAndRegisterReport`
  * de `runEnvio` grava exatamente 1 por invocação, então >1 candidato só
@@ -241,10 +300,10 @@ async function main(): Promise<void> {
   // execução não-dry-run. #7960: o e-mail (abaixo) é decidido a partir do
   // OUTCOME desta reconciliação (`notifyEditorForOutcomes`), não mais de
   // um estado `lastAlarmedAammdd` separado.
-  // #10123: parada vencida usa a identidade da parada (não o dia) — lê o
-  // arquivo de parada só nesse caso.
-  const haltRead = evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX) ? readClariceEnvioHalt(ROOT) : null;
-  const alarmFindings: AlarmFinding[] = evaluation.verdict !== "ok" ? [toAlarmFinding(evaluation, aammdd, haltRead)] : [];
+  // #10123/#10125: parada vencida usa a identidade da parada (não o dia) e
+  // é lida SEMPRE — não só quando o relatório mais recente é o `-vencida`.
+  const haltRead = readClariceEnvioHalt(ROOT);
+  const alarmFindings: AlarmFinding[] = buildEnvioAlarmFindings(evaluation, aammdd, haltRead, new Date());
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
 
   if (isDryRun) {
@@ -277,7 +336,15 @@ async function main(): Promise<void> {
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
     "acao",
-    (qualifying) => buildEnvioAlarmEmail(evaluation, aammdd, qualifying[0]),
+    (qualifying) => {
+      const first = qualifying[0];
+      // #10125: achado de parada sem relatório `-vencida` hoje — o e-mail
+      // aponta pro arquivo de parada, não pra um relatório que não existe.
+      if (isHaltFingerprint(first.fingerprint) && !evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX)) {
+        return buildHaltStaleAlarmEmail(null, first);
+      }
+      return buildEnvioAlarmEmail(evaluation, aammdd, first);
+    },
     {
       cwd: ROOT,
       platformConfigPath: PLATFORM_CONFIG_PATH,
