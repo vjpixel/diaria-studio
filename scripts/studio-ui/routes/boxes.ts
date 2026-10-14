@@ -241,7 +241,7 @@ export async function handleApiBoxApplyToEdition(
   const result = await applySlotToStitchedEdition(rootDir, { edition: p.edition, slot: p.slot, file: p.file });
   const status = result.ok
     ? 200
-    : result.reason === "edited" || result.reason === "no-baseline"
+    : result.reason === "edited" || result.reason === "no-baseline" || result.reason === "expired" // #10214
       ? 409
       : result.reason === "image-failed"
         ? 500

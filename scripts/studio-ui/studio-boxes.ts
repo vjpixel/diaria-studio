@@ -108,6 +108,7 @@ import {
   hasMisplacedHeaderComment, // #10178
   misplacedHeaderWarning, // #10178
   readSnippetExpiry, // #10174
+  aammddToIsoDate, // #10214
 } from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts); isRuntimeExcluded MOVIDA pra cá em #4504 (camada errada — pipeline core também precisa dela e não pode importar de studio-ui/, ver test/lib-boundary.test.ts) — reexportada abaixo por back-compat de import
 import { resolveConviteAmigoFilename } from "../lib/newsletter-render-html.ts"; // #5999 — mesma fonte de verdade do render pro filename da caixa fixa "Convide um amigo" (platform.config.json -> boxes_fixos.convite_amigo)
 
@@ -122,6 +123,7 @@ import {
 import { locateBoxDivulgacaoRange } from "../lib/newsletter-parse.ts"; // #8990
 import { enumerateEditionDirs } from "../lib/find-current-edition.ts"; // #8990
 import { brtDateOf } from "../lib/ads-rolling-window.ts"; // #10174 — dia civil BRT (UTC-3) de um instante
+import { nextEditionDate } from "../lib/next-edition-date.ts"; // #10214 — painel julga validade pela próxima edição (D+1)
 
 export { isRuntimeExcluded };
 
@@ -1017,8 +1019,8 @@ export interface BoxListEntry {
   /** Avisos de autoria exibidos no card da caixa (vazio = nenhum):
    * header de comentário fora da 1ª linha (#10178) e validade `expires:`
    * vencida, perto de vencer (≤ `BOX_EXPIRY_WARN_DAYS` dias) ou malformada
-   * (#10174) — contados a partir de HOJE em BRT, já que o painel não está
-   * amarrado a uma edição (o stitch julga pela data da edição). */
+   * (#10174) — julgados contra a PRÓXIMA EDIÇÃO (D+1 em BRT, #10214): é a
+   * edição que o editor está montando, e o stitch julga pela data dela. */
   warnings: string[];
 }
 
@@ -1027,11 +1029,12 @@ export interface BoxListEntry {
 export const BOX_EXPIRY_WARN_DAYS = 3;
 
 /** #10174/#10178: avisos de autoria de uma caixa (ver `BoxListEntry.warnings`).
- * Puro, nunca lança. `todayIso` = `AAAA-MM-DD` de referência. */
-export function computeBoxWarnings(filename: string, content: string, todayIso: string): string[] {
+ * Puro, nunca lança. `editionIso` = `AAAA-MM-DD` da edição de referência
+ * (no painel, a próxima edição — D+1 em BRT, #10214). */
+export function computeBoxWarnings(filename: string, content: string, editionIso: string): string[] {
   const warnings: string[] = [];
   if (hasMisplacedHeaderComment(content)) warnings.push(misplacedHeaderWarning(filename));
-  const exp = readSnippetExpiry(content, todayIso);
+  const exp = readSnippetExpiry(content, editionIso);
   if (exp.status === "invalid") {
     warnings.push(`expires: "${exp.raw}" não é uma data AAAA-MM-DD — a validade é ignorada (#10174).`);
   } else if (exp.status === "expired") {
@@ -1039,7 +1042,7 @@ export function computeBoxWarnings(filename: string, content: string, todayIso: 
   } else if (exp.status === "valid" && exp.daysLeft <= BOX_EXPIRY_WARN_DAYS) {
     warnings.push(
       exp.daysLeft === 0
-        ? `Expira hoje (${exp.expires}) — último dia em edição (#10174).`
+        ? `Última edição: ${exp.expires} — sai das edições seguintes (#10174).`
         : `Expira em ${exp.daysLeft} dia${exp.daysLeft === 1 ? "" : "s"} (${exp.expires}) (#10174).`,
     );
   }
@@ -1061,7 +1064,9 @@ export function computeBoxWarnings(filename: string, content: string, todayIso: 
  * arquivo nunca aparece em `git status --porcelain` por definição —
  * `checkDirtyVsGit` sempre voltaria `false`, então o campo virou morto. */
 export function listBoxes(rootDir: string, now: Date = new Date()): BoxListEntry[] {
-  const todayIso = brtDateOf(now);
+  // #10214: referência = próxima edição (D+1 em BRT), não hoje — com
+  // `expires` = hoje a caixa já não entra na edição que está sendo montada.
+  const editionIso = aammddToIsoDate(nextEditionDate(now)) ?? brtDateOf(now);
   const dir = snippetsDir(rootDir);
   if (!existsSync(dir)) return [];
   const slots = readBoxSlotAssignments(rootDir);
@@ -1088,7 +1093,7 @@ export function listBoxes(rootDir: string, now: Date = new Date()): BoxListEntry
       mtimeIso,
       slot: slots[filename] ?? null,
       slotPatronos: slotsPatronos[filename] ?? null,
-      warnings: computeBoxWarnings(filename, content, todayIso),
+      warnings: computeBoxWarnings(filename, content, editionIso),
     });
   }
   return entries;

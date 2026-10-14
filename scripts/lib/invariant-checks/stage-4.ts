@@ -2063,6 +2063,14 @@ export const BOX_EXPIRY_INVARIANT_WARN_DAYS = 3;
  * edição sai correta sem a caixa. Slot 2 entra mesmo em edição de 2
  * destaques (o config vale pras próximas). Snippet ausente → pulado (o
  * stitch já falha alto nesse caso). `rootDir` só pra fixture de teste.
+ *
+ * #10214: além do config, lê a caixa EFETIVAMENTE presente na edição — o box
+ * dos slots 1/2 no `02-reviewed.md` (ou `_internal/02-draft.md` antes dele
+ * existir), resolvido pra snippet pela mesma leitura do render
+ * (`readBoxSelectionFileForSlot`, casando pelo conteúdo). Caixa vencida
+ * PRESENTE (aplicada pós-stitch por `apply-box-slot.ts --allow-expired`, ou
+ * colada à mão) gera o aviso de que ela VAI chegar ao leitor — e substitui o
+ * aviso do config pro mesmo slot, que diria (falsamente) que o stitch a pulou.
  */
 export function checkBoxDivulgacaoExpiry(
   editionDir: string,
@@ -2071,6 +2079,44 @@ export function checkBoxDivulgacaoExpiry(
   const aammdd = basename(editionDir);
   const editionIso = aammddToIsoDate(aammdd);
   if (!editionIso) return [];
+  const violations: InvariantViolation[] = [];
+
+  // #10214: caixa presente no markdown da edição.
+  const presentExpired = new Set<string>();
+  const mdPath = [resolve(editionDir, "02-reviewed.md"), resolve(editionDir, "_internal", "02-draft.md")].find((p) =>
+    existsSync(p),
+  );
+  if (mdPath) {
+    let md = "";
+    try {
+      md = readFileSync(mdPath, "utf8");
+    } catch {
+      md = "";
+    }
+    for (const slot of [1, 2] as const) {
+      const boxText = slot === 1 ? extractBoxDivulgacao1(md) : extractBoxDivulgacao2(md);
+      if (!boxText) continue;
+      const file = readBoxSelectionFileForSlot(editionDir, slot, boxText, rootDir);
+      if (typeof file !== "string" || !file) continue;
+      const content = readSnippetFileRaw(file, rootDir);
+      if (content === null) continue;
+      const exp = readSnippetExpiry(content, editionIso);
+      if (exp.status !== "expired") continue;
+      presentExpired.add(file);
+      violations.push({
+        rule: "box-divulgacao-expiry",
+        message:
+          `Caixa \`${file}\` está NA EDIÇÃO (box do slot ${slot} em ${basename(mdPath)}) e expirou: ` +
+          `expires: ${exp.expires}, edição ${editionIso} — vai chegar ao leitor anunciando algo vencido. ` +
+          `Fix: trocar a caixa (\`npx tsx scripts/apply-box-slot.ts --edition ${aammdd} --slot ${slot} --file X.md\`) ` +
+          `ou remover o box do 02-reviewed.md.`,
+        source_issue: "#10214",
+        severity: "warning",
+        file: basename(mdPath),
+      });
+    }
+  }
+
   let cfg: Record<string, unknown> = {};
   let pinned: unknown[] = [];
   let autoEnabled = false;
@@ -2080,12 +2126,14 @@ export function checkBoxDivulgacaoExpiry(
     autoEnabled = raw?.boxes_divulgacao_auto?.enabled === true;
     pinned = Array.isArray(raw?.boxes_divulgacao_auto?.pinned_slots) ? raw.boxes_divulgacao_auto.pinned_slots : [];
   } catch {
-    return []; // config ilegível — outros checks cobrem
+    return violations; // config ilegível — outros checks cobrem
   }
-  const violations: InvariantViolation[] = [];
   for (const n of [0, 1, 2] as const) {
     const file = cfg[`slot${n}`];
     if (typeof file !== "string" || !file) continue;
+    // #10214: a mesma caixa já foi acusada como PRESENTE na edição — o aviso
+    // do config ("o stitch não publica caixa vencida") seria falso aqui.
+    if (presentExpired.has(file)) continue;
     const content = readSnippetFileRaw(file, rootDir);
     if (content === null) continue;
     const exp = readSnippetExpiry(content, editionIso);
@@ -3390,7 +3438,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "box-divulgacao-expiry",
-    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, pela data da edição (#10174, warning-only)",
+    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado, pela data da edição; e caixa vencida PRESENTE no box do slot 1/2 do 02-reviewed.md (#10174, #10214, warning-only)",
     source_issue: "#10174",
     stage: 4,
     run: (editionDir: string) => checkBoxDivulgacaoExpiry(editionDir),

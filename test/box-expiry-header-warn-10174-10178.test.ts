@@ -369,18 +369,19 @@ describe("painel Caixas: avisos no card (#10174, #10178)", () => {
     assert.deepEqual(computeBoxWarnings("l.md", LIVROS, "2026-10-18"), []);
   });
 
-  it("listBoxes devolve warnings por caixa (data de referência = hoje em BRT)", () => {
+  it("listBoxes devolve warnings por caixa (data de referência = próxima edição, D+1 em BRT — #10214)", () => {
     const root = mkdtempSync(join(tmpdir(), "box-panel-10174-"));
     mkdirSync(join(root, "data", "snippets"), { recursive: true });
     writeFileSync(join(root, "data", "snippets", "evento.md"), EVENTO);
     writeFileSync(join(root, "data", "snippets", "livros.md"), LIVROS);
     writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: { slot1: "evento.md" } }));
     try {
-      // 02:00 UTC de 18/10 ainda é 17/10 em BRT → "expira hoje", não "expirada".
-      const boxes = listBoxes(root, new Date("2026-10-18T02:00:00Z"));
+      // 02:00 UTC de 17/10 ainda é 16/10 em BRT → próxima edição 17/10 é a
+      // última com a caixa (não "expirada", que valeria pro dia civil UTC).
+      const boxes = listBoxes(root, new Date("2026-10-17T02:00:00Z"));
       const ev = boxes.find((b) => b.slug === "evento.md")!;
       assert.equal(ev.warnings.length, 1);
-      assert.match(ev.warnings[0], /Expira hoje/);
+      assert.match(ev.warnings[0], /Última edição: 2026-10-17/);
       assert.deepEqual(boxes.find((b) => b.slug === "livros.md")!.warnings, []);
     } finally {
       rmSync(root, { recursive: true, force: true });
