@@ -1186,4 +1186,16 @@
       <news:title>Gemini vira colega com e-mail e agenda próprios</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/oab-sp-vai-a-justica-contra-a-startup-enter</loc>
+    <lastmod>2026-10-14</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-14T00:00:00.000Z</news:publication_date>
+      <news:title>OAB-SP vai à Justiça contra a startup Enter</news:title>
+    </news:news>
+  </url>
 </urlset>
