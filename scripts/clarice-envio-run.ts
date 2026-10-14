@@ -99,9 +99,16 @@ import {
   HALT_WRITE_FAILED_REPORT_SUFFIX,
   readClariceEnvioHalt,
   writeClariceEnvioHalt,
+  writeClariceEnvioBaseCollapse,
+  clearClariceEnvioBaseCollapse,
+  recordClariceEnvioCreditCap,
+  describeBaseCollapseActions,
+  minVolumeToClearCollapse,
   type ClariceEnvioHalt,
   type ClariceEnvioHaltRead,
+  type ClariceEnvioBaseCollapseState,
 } from "./lib/clarice-envio-halt.ts";
+import { RAMP_BASE_COLLAPSE_MIN_FRACTION } from "../workers/brevo-dashboard/src/weekly-plan.ts";
 import {
   readClariceAbcState,
   lockedSubjectFromState,
@@ -343,6 +350,18 @@ export interface EnvioRunDeps {
   /** #10096 — grava a parada quando a rodada para por fila insuficiente.
    * Opcional: ausente = não persiste (comportamento anterior). */
   writeHalt?: (halt: ClariceEnvioHalt) => void;
+  /** #10209 — grava o estado durável do colapso de base
+   * (`data/clarice-envio-base-collapse.json`) quando a rodada agendada para
+   * por colapso; o alarme lê esse arquivo mesmo em dia sem relatório
+   * `-base-colapsada`. Opcional: ausente = não persiste (testes). */
+  writeBaseCollapse?: (state: ClariceEnvioBaseCollapseState) => void;
+  /** #10209 — apaga o estado de colapso quando a proposta da rodada sai SEM
+   * colapso. Opcional: ausente = não mexe. */
+  clearBaseCollapse?: () => void;
+  /** #10209 — registra o dia em que a onda agendada foi CORTADA por crédito
+   * (`cappedBy: "credit"`), pra o guard de colapso não tratar o corte
+   * deliberado como resíduo. Opcional: ausente = não registra. */
+  recordCreditCap?: (cap: { day: string; volume: number }) => void;
   /** #10105 — estado completo do kill switch (com proveniência), só pra
    * relatar quem/por que ligou. Opcional: ausente = sem a linha no relatório. */
   readEnabledState?: () => ClariceEnvioEnabledState;
@@ -439,6 +458,15 @@ export function productionDeps(rootDir: string = ROOT): EnvioRunDeps {
       releaseWaveSelectionIn(clariceSegmentsDir(cycle), cycle, waveKeyBase),
     readHalt: () => readClariceEnvioHalt(rootDir),
     writeHalt: (halt: ClariceEnvioHalt) => writeClariceEnvioHalt(rootDir, halt),
+    writeBaseCollapse: (state: ClariceEnvioBaseCollapseState) => {
+      writeClariceEnvioBaseCollapse(rootDir, state);
+    },
+    clearBaseCollapse: () => {
+      clearClariceEnvioBaseCollapse(rootDir);
+    },
+    recordCreditCap: (cap: { day: string; volume: number }) => {
+      recordClariceEnvioCreditCap(rootDir, cap);
+    },
     readEnabledState: () => readClariceEnvioEnabledState(rootDir),
     readDecisionDrift: () =>
       decisionDriftReportLines(() => fetchOpenIssuesWithTrustedComments(rootDir), productionToggleReader(rootDir)),
@@ -1167,18 +1195,57 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
         `🛑 volume-base COLAPSADO: ${collapse.baseVolume} em ${collapse.baseDay} = ${(collapse.fraction * 100).toFixed(1)}% ` +
         `do pico recente da rampa (${collapse.peakVolume} em ${collapse.peakDay}) — provável resíduo de onda parcial, não um nível real da rampa.`;
       if (requestedVolume === undefined && !opts.planOnly) {
+        // #10209 item 2 — `--volume N` abaixo do limiar recolapsa na rodada
+        // seguinte; a orientação diz o N mínimo e põe o `--accept-base` primeiro.
+        const actions = describeBaseCollapseActions(collapse.peakVolume, RAMP_BASE_COLLAPSE_MIN_FRACTION);
         report.note(
           `${collapseText} Decisão do editor (260811): nunca escalar sobre uma base residual sem avisar. ` +
-            "Nada agendado. Pra um envio com volume confirmado: /diaria-clarice-envio com --volume N; " +
-            'pra aceitar a base baixa e retomar a automação: `npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."`.',
+            `Nada agendado. Opções: ${actions.join("; ")}.`,
         );
         lockPath && releaseEnvioLock(lockPath);
         lockPath = null;
         const reportId = `envio-${aammdd}${BASE_COLLAPSE_REPORT_SUFFIX}`;
+        // #10209 item 3 — estado durável pro alarme: dias seguintes sem este
+        // relatório (`-paused`, `-abort`, sem rodada) não fecham a issue.
+        if (deps.writeBaseCollapse) {
+          try {
+            deps.writeBaseCollapse({
+              detectedAt: now.toISOString(),
+              reportId,
+              baseVolume: collapse.baseVolume,
+              baseDay: collapse.baseDay,
+              peakVolume: collapse.peakVolume,
+              peakDay: collapse.peakDay,
+              fraction: collapse.fraction,
+            });
+          } catch (e) {
+            report.note(
+              `⚠️  falha ao gravar o estado de colapso (${(e as Error).message}) — o alarme só verá o colapso pelo relatório de hoje (#10209).`,
+            );
+          }
+        }
         writeAndRegisterReport(deps, reportId, `diar.ia.br Clarice envio ${aammdd} — base colapsada`, report.build());
         return { code: 0, reportId, reportMarkdown: report.build() };
       }
       report.note(`${collapseText} Seguindo só porque esta rodada é manual (${opts.planOnly ? "--plan-only" : `--volume ${requestedVolume}`}).`);
+      if (requestedVolume !== undefined) {
+        const minN = minVolumeToClearCollapse(collapse.peakVolume, RAMP_BASE_COLLAPSE_MIN_FRACTION);
+        if (requestedVolume < minN) {
+          report.note(
+            `⚠️  --volume ${requestedVolume} < ${minN} (${Math.round(RAMP_BASE_COLLAPSE_MIN_FRACTION * 100)}% do pico ${collapse.peakVolume}): ` +
+              "esta onda vira a nova base e a próxima rodada agendada recolapsa (#10209). Pra retomar a automação com base menor: " +
+              '`npx tsx scripts/lib/clarice-envio-halt.ts --accept-base --reason "..."`.',
+          );
+        }
+      }
+    } else if (deps.clearBaseCollapse) {
+      // #10209 item 3 — proposta sem colapso: a condição acabou (envio
+      // confirmado acima do limiar, aceite, ou corte por crédito registrado).
+      try {
+        deps.clearBaseCollapse();
+      } catch (e) {
+        report.note(`⚠️  falha ao limpar o estado de colapso (${(e as Error).message}) — o alarme pode seguir apontando colapso (#10209).`);
+      }
     }
 
     // --- Teste A/B/C — decide sozinha continuar/travar; iniciar exige o editor. ---
@@ -1885,6 +1952,18 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       throw cellError;
     }
 
+    // #10209 item 1 — onda agendada com volume CORTADO por crédito: registra
+    // o dia, pra a próxima rodada não ler o corte deliberado como colapso.
+    if (decision.cappedBy === "credit" && deps.recordCreditCap) {
+      try {
+        deps.recordCreditCap({ day: sendDate, volume: decision.volume });
+        report.note(`corte por crédito registrado pra ${sendDate} (${decision.volume}) — o guard de colapso o trata como novo patamar, não resíduo (#10209).`);
+      } catch (e) {
+        report.note(
+          `⚠️  falha ao registrar o corte por crédito (${(e as Error).message}) — a próxima rodada pode parar por "base colapsada" (#10209).`,
+        );
+      }
+    }
     const reportId = `envio-${aammdd}`;
     writeAndRegisterReport(
       deps,

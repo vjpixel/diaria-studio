@@ -679,6 +679,39 @@ test("detectRampBaseCollapse — pico fora da janela de N dias de rampa não con
   assert.equal(detectRampBaseCollapse(camps, { lookbackDays: 2 }).collapsed, true);
 });
 
+// #10209 item 1 — corte por crédito (`cappedBy: "credit"`, #5042) agenda 15%
+// do pico DE PROPÓSITO. Sem o registro, a rodada seguinte parava por "base
+// colapsada".
+const creditCut = (): BrevoCampaign[] => [
+  collapseMk(1, "C grupo:d1-seg05", "2026-10-05T09:00:00Z", 40_000),
+  collapseMk(2, "C grupo:d2-ter06", "2026-10-06T09:00:00Z", 6_000),
+];
+
+test("detectRampBaseCollapse — dia cortado por crédito NÃO é colapso; sem o registro, é (#10209)", () => {
+  assert.equal(detectRampBaseCollapse(creditCut()).collapsed, true, "reproduz o defeito sem o registro");
+  assert.equal(detectRampBaseCollapse(creditCut(), { creditCaps: [{ day: "2026-10-06", volume: 6_000 }] }).collapsed, false);
+});
+
+test("detectRampBaseCollapse — rampa escalando DEPOIS do corte por crédito não recolapsa contra o pico antigo (#10209)", () => {
+  const camps = [...creditCut(), collapseMk(3, "C grupo:d3-qua07", "2026-10-07T09:00:00Z", 6_900)];
+  assert.equal(detectRampBaseCollapse(camps).collapsed, true);
+  assert.equal(detectRampBaseCollapse(camps, { creditCaps: [{ day: "2026-10-06", volume: 6_000 }] }).collapsed, false);
+});
+
+test("detectRampBaseCollapse — resíduo DEPOIS do corte por crédito (ou no próprio dia) continua colapso (#10209)", () => {
+  const residualAfter = [...creditCut(), collapseMk(3, "C grupo:d3-qua07", "2026-10-07T09:00:00Z", 50)];
+  const r = detectRampBaseCollapse(residualAfter, { creditCaps: [{ day: "2026-10-06", volume: 6_000 }] });
+  assert.equal(r.collapsed, true);
+  if (r.collapsed) assert.equal(r.peakVolume, 6_000);
+  // Onda cortada por crédito que só saiu parcial (50 de 6.000 agendados).
+  const partial = [creditCut()[0], collapseMk(2, "C grupo:d2-ter06", "2026-10-06T09:00:00Z", 50)];
+  assert.equal(detectRampBaseCollapse(partial, { creditCaps: [{ day: "2026-10-06", volume: 6_000 }] }).collapsed, true);
+});
+
+test("detectRampBaseCollapse — corte por crédito registrado DEPOIS da base é ignorado (#10209)", () => {
+  assert.equal(detectRampBaseCollapse(creditCut(), { creditCaps: [{ day: "2026-10-08", volume: 6_000 }] }).collapsed, true);
+});
+
 test("isRampBaseCampaign — dN-* e naming legado entram; novos e outras keys grupo: ficam fora (#10096)", () => {
   assert.equal(isRampBaseCampaign("Clarice 2609 grupo:d7-seg12-A"), true);
   assert.equal(isRampBaseCampaign("Clarice 2609 grupo:D12-qui15"), true);

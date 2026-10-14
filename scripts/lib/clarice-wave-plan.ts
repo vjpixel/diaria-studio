@@ -1191,7 +1191,11 @@ export function proposeVolumes(
   days: number,
   now: Date,
   spamEntry: Parameters<typeof resolveSpamSignal>[0],
-  opts: { baseAckSinceMs?: number | null } = {},
+  opts: {
+    baseAckSinceMs?: number | null;
+    /** #10209 — dias com corte deliberado por crédito (`data/clarice-envio-credit-caps.json`). */
+    creditCaps?: ReadonlyArray<{ day: string; volume: number }>;
+  } = {},
 ): VolumeResult {
   if (!Number.isInteger(days) || days <= 0) {
     return { ok: false, reason: `número de dias inválido: ${days} — esperado inteiro > 0.` };
@@ -1229,7 +1233,10 @@ export function proposeVolumes(
       semaphore,
       flagged: plan.flagged,
       baseVolume,
-      baseCollapse: detectRampBaseCollapse(allSent, { ignoreBeforeMs: opts.baseAckSinceMs ?? null }),
+      baseCollapse: detectRampBaseCollapse(allSent, {
+        ignoreBeforeMs: opts.baseAckSinceMs ?? null,
+        creditCaps: opts.creditCaps ?? [],
+      }),
       health,
       spamSignal,
     },

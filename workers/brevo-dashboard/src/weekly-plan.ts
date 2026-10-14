@@ -416,6 +416,9 @@ export function baseVolumeFromLastSendDay(allCampaigns: BrevoCampaign[]): number
  * corte do vermelho (−30%/onda, `RED_CUT_FRACTION`): 3 vermelhos seguidos
  * ainda dão 0,343 do pico; o incidente do ciclo 2609-10 deu 101/40.180 =
  * 0,0025. 4 vermelhos seguidos (0,24) também param, e isso merece o editor.
+ * O OUTRO encolhimento legítimo, o corte por crédito Brevo (`cappedBy:
+ * "credit"`, #5042 — pode agendar 15% do pico de propósito), não passa por
+ * esta fração: entra via `creditCaps` em `detectRampBaseCollapse` (#10209).
  */
 export const RAMP_BASE_COLLAPSE_MIN_FRACTION = 0.25;
 
@@ -451,7 +454,14 @@ export type RampBaseCollapse =
  */
 export function detectRampBaseCollapse(
   allCampaigns: BrevoCampaign[],
-  opts: { ignoreBeforeMs?: number | null; minFraction?: number; lookbackDays?: number } = {},
+  opts: {
+    ignoreBeforeMs?: number | null;
+    minFraction?: number;
+    lookbackDays?: number;
+    /** #10209 — dias (YYYY-MM-DD BRT) em que a rodada agendou volume
+     * REDUZIDO por crédito (`cappedBy: "credit"`), com o volume agendado. */
+    creditCaps?: ReadonlyArray<{ day: string; volume: number }>;
+  } = {},
 ): RampBaseCollapse {
   const minFraction = opts.minFraction ?? RAMP_BASE_COLLAPSE_MIN_FRACTION;
   const lookbackDays = opts.lookbackDays ?? RAMP_BASE_COLLAPSE_LOOKBACK_DAYS;
@@ -470,15 +480,30 @@ export function detectRampBaseCollapse(
   const baseDay = days[days.length - 1];
   const baseVolume = totals.get(baseDay) ?? 0;
   const ignoreBefore = opts.ignoreBeforeMs ?? null;
+  const ignored = (day: string) => ignoreBefore !== null && (lastMsByDay.get(day) ?? -Infinity) < ignoreBefore;
+  // #10209 — o corte por crédito mais recente até a base é um novo patamar
+  // DELIBERADO da rampa: dias anteriores a ele saem do pico, e o volume
+  // agendado no dia do corte entra como candidato (um resíduo DEPOIS do
+  // corte, inclusive no próprio dia, ainda é colapso).
+  let latestCap: { day: string; volume: number } | null = null;
+  for (const cap of opts.creditCaps ?? []) {
+    if (cap.day > baseDay) continue;
+    if (!latestCap || cap.day > latestCap.day) latestCap = cap;
+  }
   let peakDay: string | null = null;
   let peakVolume = 0;
   for (const day of days.slice(0, -1).slice(-lookbackDays)) {
-    if (ignoreBefore !== null && (lastMsByDay.get(day) ?? -Infinity) < ignoreBefore) continue;
+    if (ignored(day)) continue;
+    if (latestCap && day < latestCap.day) continue;
     const v = totals.get(day) ?? 0;
     if (v > peakVolume) {
       peakVolume = v;
       peakDay = day;
     }
+  }
+  if (latestCap && !ignored(latestCap.day) && latestCap.volume > peakVolume) {
+    peakVolume = latestCap.volume;
+    peakDay = latestCap.day;
   }
   if (peakDay === null || peakVolume <= 0) return { collapsed: false };
   const fraction = baseVolume / peakVolume;

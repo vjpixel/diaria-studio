@@ -611,6 +611,47 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    // #10209 item 3 — o colapso vira estado DURÁVEL pro alarme; proposta sem
+    // colapso o apaga.
+    it("#10209: base colapsada na rodada agendada grava o estado durável; proposta sem colapso o apaga", async () => {
+      const root = freshRoot();
+      const written: unknown[] = [];
+      let cleared = 0;
+      const { exec } = makeFakeExec({
+        "scripts/clarice-check-derived-stale.ts": textResult("fresh"),
+        "scripts/clarice-plan-wave.ts": jsonResult(collapsedProposal()),
+        "scripts/clarice-envio-risk.ts": jsonResult(healthyRisk()),
+      });
+      const r = await runEnvio(
+        baseDeps(root, { exec, writeBaseCollapse: (s) => void written.push(s), clearBaseCollapse: () => void cleared++ }),
+      );
+      assert.equal(r.reportId, "envio-260811-base-colapsada");
+      assert.equal(written.length, 1);
+      assert.deepEqual(
+        { ...(written[0] as Record<string, unknown>), detectedAt: "x" },
+        { detectedAt: "x", reportId: "envio-260811-base-colapsada", baseVolume: 101, baseDay: "2026-10-13", peakVolume: 40_180, peakDay: "2026-10-10", fraction: 101 / 40_180 },
+      );
+      assert.equal(cleared, 0);
+      // #10209 item 2 — orientação: N mínimo (25% de 40.180 = 10.045) e accept-base.
+      assert.match(r.reportMarkdown, /só resolve com N ≥ 10045/);
+      assert.match(r.reportMarkdown, /--accept-base --reason/);
+
+      const { exec: exec2 } = makeFakeExec(goldenHandlers());
+      await runEnvio(baseDeps(root, { exec: exec2, writeBaseCollapse: (s) => void written.push(s), clearBaseCollapse: () => void cleared++ }));
+      assert.equal(cleared, 1, "proposta sem colapso limpa o estado");
+      assert.equal(written.length, 1);
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10209: --volume N abaixo do limiar com base colapsada => aviso de que recolapsa e aponta --accept-base", async () => {
+      const root = freshRoot();
+      const { exec } = makeFakeExec(goldenHandlers({ proposal: collapsedProposal() }));
+      const r = await runEnvio(baseDeps(root, { exec }), { volume: 3000 });
+      assert.match(r.reportMarkdown, /--volume 3000 < 10045/);
+      assert.match(r.reportMarkdown, /próxima rodada agendada recolapsa/);
+      rmSync(root, { recursive: true, force: true });
+    });
+
     // #10118 — parada vencida (idade > limite OU ciclo virou) deixa de ser
     // pausa legítima: reportId com sufixo fora de OK_SUFFIXES => alarme.
     const staleHalt = (overrides: Partial<ClariceEnvioHalt> = {}): ClariceEnvioHalt => ({
@@ -1632,6 +1673,25 @@ describe("clarice-envio-run (#5026)", () => {
 
       assert.match(r.reportMarkdown, /cappedBy: credit/, "relatório registra que o crédito foi quem cortou o volume final");
       rmSync(root, { recursive: true, force: true });
+    });
+
+    it("#10209: onda agendada com corte por crédito registra o dia (pro guard de colapso não tratar o corte como resíduo)", async () => {
+      const root = freshRoot();
+      const caps: Array<{ day: string; volume: number }> = [];
+      const proposal = goldenProposal({ availableFirstSend: 5000, brevoCredits: 2000 });
+      const { exec } = makeFakeExec(goldenHandlers({ proposal }));
+      const r = await runEnvio(baseDeps(root, { exec, recordCreditCap: (c) => void caps.push(c) }));
+      assert.equal(r.code, 0, r.reportMarkdown);
+      assert.deepEqual(caps, [{ day: SEND_DATE, volume: 2000 }]);
+
+      // Sem corte por crédito => nada registrado.
+      const caps2: Array<{ day: string; volume: number }> = [];
+      const { exec: exec2 } = makeFakeExec(goldenHandlers());
+      const root2 = freshRoot();
+      await runEnvio(baseDeps(root2, { exec: exec2, recordCreditCap: (c) => void caps2.push(c) }));
+      assert.deepEqual(caps2, []);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(root2, { recursive: true, force: true });
     });
 
     it("#7042 (achado 7 do silent-failure-hunter): aviso de horário não-canônico do stderr de 'clarice-schedule-group --create' é PROMOVIDO pro relatório persistido, não só pro journal (console.error)", async () => {

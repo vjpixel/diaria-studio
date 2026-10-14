@@ -72,7 +72,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, getIntArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireCycleArg, CLARICE_BASE, REPO_ROOT, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
-import { readClariceEnvioBaseAck } from "./lib/clarice-envio-halt.ts";
+import { readClariceEnvioBaseAck, readClariceEnvioCreditCaps } from "./lib/clarice-envio-halt.ts";
 import { readListArchiveMeta } from "./lib/clarice-list-consolidation.ts"; // #9532
 import { resolve } from "node:path";
 import { readClariceAbcState, lockedSubjectFromState, describeAbcState } from "./lib/clarice-abc-state.ts";
@@ -223,7 +223,7 @@ export interface PlanWaveOptions {
   segmentsBaseDir?: string;
   /** #5140 — raiz do repo pra ler `data/clarice-hour-test.json`. Injetável em teste. */
   hourTestRootDir?: string;
-  /** #10114 — raiz do repo pra ler `data/clarice-envio-base-ack.json`. Injetável em teste. */
+  /** #10114 — raiz do repo pra ler `data/clarice-envio-base-ack.json` (e, #10209, `data/clarice-envio-credit-caps.json`). Injetável em teste. */
   baseAckRootDir?: string;
   /** #5058 — seam de teste (mesmo padrão de `resolveAutoRampVolumes` em
    *  clarice-schedule-ramp.ts). Default = `fetch` global (produção). */
@@ -309,8 +309,12 @@ export async function planWave(opts: PlanWaveOptions): Promise<WaveProposal> {
   // #10114 — aceite explícito de base baixa (editor): dias de rampa anteriores
   // a ele deixam de contar pro pico do guard de colapso. Ilegível = sem aceite.
   const baseAck = readClariceEnvioBaseAck(opts.baseAckRootDir ?? REPO_ROOT);
+  // #10209 — dias com corte deliberado por crédito (Passo 5 do envio-run):
+  // redução planejada, não resíduo — não pode disparar o guard de colapso.
+  const creditCaps = readClariceEnvioCreditCaps(opts.baseAckRootDir ?? REPO_ROOT);
   const volumeResult = proposeVolumes(campaigns, opts.dates.length, now, spamEntry, {
     baseAckSinceMs: baseAck ? Date.parse(baseAck.acceptedAt) : null,
+    creditCaps,
   });
   if (!volumeResult.ok) throw new Error(`Não foi possível propor volume: ${volumeResult.reason}`);
 
