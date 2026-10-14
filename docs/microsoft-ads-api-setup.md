@@ -240,8 +240,9 @@ Implementação:
   OAuth `msads.manage`).
 - `scripts/microsoft-ads-editorial-reasons.ts` — CLI fino, fail-soft (exit 0
   sem credencial). Output: `data/microsoft-ads/editorial-reasons-{YYYY-MM-DD}.json`.
-- Task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`, diária 10:00 BRT
-  (10min depois do `Diaria-Google-Ads-Spend-Ingest`, sem colisão).
+- ~~Task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`~~ — **removida do
+  registro no #10148** (14/10/2026, decisão do editor): o timer já estava
+  parado à mão na `300`. O CLI segue no repo para uso manual.
 
 Testes: `test/microsoft-ads-editorial-reasons.test.ts` — 18 testes cobrindo
 envelope, parsing (1/2/0 razões, XML malformado), extração de SOAP Fault, e
@@ -274,5 +275,6 @@ fail-soft end-to-end via `fetch` mockado (nunca toca a API real).
 - [x] **#5878 — Campaign Management API: `GetAssetGroupsEditorialReasons`**
       implementado (envelope SOAP 1.1, parsing XML, fail-soft), testado contra
       fixture (18 testes, `test/microsoft-ads-editorial-reasons.test.ts`),
-      CLI pronto, task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`
-      (10:00 BRT). Reusa credencial `MICROSOFT_ADS_*` já no Doppler.
+      CLI pronto (a task agendada `Diaria-Microsoft-Ads-Editorial-Reasons`
+      existiu de #5878 até ser removida no #10148 — hoje só uso manual).
+      Reusa credencial `MICROSOFT_ADS_*` já no Doppler.
