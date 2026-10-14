@@ -29,6 +29,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import {
   monthlyDir,
   resolveLatestMonthlyCycleFromDisk,
@@ -240,10 +241,8 @@ export async function runPreflight(argv: string[], overrides: PreflightMainOverr
 }
 
 if (isMainModule(import.meta.url)) {
-  runPreflight(process.argv.slice(2))
-    .then((code) => process.exit(code))
-    .catch((e) => {
-      console.error("[clarice-novos-preflight] erro:", e);
-      process.exit(1);
-    });
+  // #9911: runCli grava process.exitCode em vez de chamar process.exit (o script faz fetch opcional).
+  void runCli(() => runPreflight(process.argv.slice(2)), {
+    onError: (e) => console.error("[clarice-novos-preflight] erro:", e),
+  });
 }
