@@ -1198,4 +1198,16 @@
       <news:title>OAB-SP vai à Justiça contra a startup Enter</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/meta-ai-gera-flavio-22-e-trava-com-lula</loc>
+    <lastmod>2026-10-15</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-15T00:00:00.000Z</news:publication_date>
+      <news:title>Meta AI gera "Flávio 22" e trava com Lula?</news:title>
+    </news:news>
+  </url>
 </urlset>
