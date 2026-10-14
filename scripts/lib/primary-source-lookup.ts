@@ -85,6 +85,8 @@ export function extractVersionedProductCodes(text: string): Set<string> {
     let code = `${m[1].toLowerCase()}${version.toLowerCase()}`;
     let rest = text.slice((m.index ?? 0) + m[0].length);
     for (let v = rest.match(VARIANT_AFTER_VERSION); v; v = rest.match(VARIANT_AFTER_VERSION)) {
+      // #10147: "pro" minúsculo é a preposição PT ("para o"), não a variante Pro.
+      if (v[1] === "pro") break;
       code += v[1].toLowerCase();
       rest = rest.slice(v[0].length);
     }
@@ -104,7 +106,7 @@ const SUBJECT_CLAUSE_END = new RegExp(
   "[,;:|()\\[\\]\\\\/]|\\s[-–—]\\s|\\s(?:" + [
     "no", "na", "nos", "nas", "em", "para", "pra", "do", "da", "dos", "das", "de",
     "com", "sem", "contra", "que", "como", "ao", "aos", "à", "às", "pelo", "pela",
-    "sobre", "após", "até", "entre", "e", "ou", "sucessor", "substitui",
+    "sobre", "após", "até", "por", "entre", "e", "ou", "sucessor", "substitui",
     "on", "in", "for", "with", "to", "than", "vs\\.?", "versus", "via", "from",
     "of", "by", "at", "after", "over", "against", "and", "or", "replacing",
   ].join("|") + ")(?=\\s|$)",
@@ -118,10 +120,19 @@ const SUBJECT_CLAUSE_END = new RegExp(
  * Pixel 10" → the only code, `pixel10`, is the platform).
  */
 export function subjectVersionedProductCode(title: string): string | undefined {
-  const end = title.search(SUBJECT_CLAUSE_END);
-  const head = end === -1 ? title : title.slice(0, end);
-  const [first] = extractVersionedProductCodes(head);
-  return first;
+  // #10147: pontuação (",", ";", ":") antes de qualquer código não encerra o
+  // sujeito — "Com preço menor, Anthropic lança Haiku 5.5" abre com adjunto.
+  // Preposição/travessão continua encerrando; o resto pós-vírgula ganha um
+  // espaço à frente pra "no Pixel 10" parar logo na preposição.
+  let rest = title;
+  for (;;) {
+    const m = SUBJECT_CLAUSE_END.exec(rest);
+    const head = m ? rest.slice(0, m.index) : rest;
+    const [first] = extractVersionedProductCodes(head);
+    if (first) return first;
+    if (!m || !/^[,;:]$/.test(m[0])) return undefined;
+    rest = " " + rest.slice(m.index + m[0].length);
+  }
 }
 
 /**
