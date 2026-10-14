@@ -59,18 +59,18 @@ const VARIANTS = ["a", "b", "c", "d", "e"] as const;
 const OWN_FILES: Partial<Record<(typeof VARIANTS)[number], true>> = { e: true };
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html da raiz manda todo mundo para /d (versão D desde 04/10; era C desde 01/10, #9334) e preserva a query string", () => {
+  it("index.html da raiz manda todo mundo para /e (versão E desde 14/10; era D desde 04/10 e C desde 01/10, #9334) e preserva a query string", () => {
     const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
-    assert.match(html, /"\/evento\/agente-ia\/d"\s*\+\s*location\.search/);
-    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na A, na B ou na C também vai para a D.
+    assert.match(html, /"\/evento\/agente-ia\/e"\s*\+\s*location\.search/);
+    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na A, na B, na C ou na D também vai para a E.
     assert.doesNotMatch(html, /Math\.random/);
     assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
     // #9590: idem pro GTM/GA4 — a sessão é contada na versão de destino, que recebe as UTMs via location.search.
     assert.doesNotMatch(html, /googletagmanager\.com/);
-    // Sem JavaScript, cai na versão D em vez de ficar numa página vazia.
-    assert.match(html, /url=\/evento\/agente-ia\/d"/);
+    // Sem JavaScript, cai na versão E em vez de ficar numa página vazia.
+    assert.match(html, /url=\/evento\/agente-ia\/e"/);
   });
 
   it("toda versão publicada (subdiretório com index.html) está em VARIANTS — versão nova sem GTM não passa despercebida", () => {
