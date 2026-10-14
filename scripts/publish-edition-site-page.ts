@@ -292,7 +292,7 @@ import { resolve, dirname, join, basename, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync, execSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   buildArchivePageHtml,
@@ -2639,6 +2639,32 @@ export function deriveSlugFromD1(editionDirAbs: string): string {
 }
 
 /**
+ * #10190: impressão digital dos insumos que DETERMINAM o conteúdo da página
+ * no caminho `--slug`/`--slug-from-d1` (o único que o Stage 5/6 usa):
+ * `_internal/newsletter-final.html` + blocos TÍTULO/SUBTÍTULO do
+ * `02-reviewed.md` (ver `readEditionInputs`). Gravada no state file quando a
+ * página é publicada; a trava do Stage 6 (`check-site-page-pr-gate.ts`)
+ * compara com a atual — divergência = a página no PR foi gerada antes de uma
+ * correção do Stage 5 (loop do §5f, `kit-draft-fresh` #9428) e precisa ser
+ * republicada. Só os insumos da página, nunca o arquivo inteiro: uma edição em
+ * `02-reviewed.md` que não muda a página não pode disparar republicação vazia.
+ * `undefined` sem `newsletter-final.html`.
+ */
+export function sitePageSourceDigest(editionDirAbs: string): string | undefined {
+  const htmlPath = join(editionDirAbs, "_internal", "newsletter-final.html");
+  if (!existsSync(htmlPath)) return undefined;
+  const reviewedPath = join(editionDirAbs, "02-reviewed.md");
+  const md = existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : "";
+  return createHash("sha256")
+    .update(readFileSync(htmlPath, "utf8"))
+    .update("\u0000")
+    .update(extractBloco(md, "TÍTULO") ?? "")
+    .update("\u0000")
+    .update(extractBloco(md, "SUBTÍTULO") ?? "")
+    .digest("hex");
+}
+
+/**
  * #10160: estado do PR da página em 1 palavra — `merged` (merge confirmado),
  * `open` (PR identificado, ainda não mergeado — esperando CI/waiter, ou
  * travado) ou `none` (nenhum PR identificado). Derivado, nunca fonte da
@@ -2668,6 +2694,16 @@ export function sitePageMergeBlocker(state: {
     `BLOQUEIO: ${what}. Mergear ANTES do envio (06:00 BRT) — ` +
     `sem o merge, ${path} (link de WhatsApp do e-mail) dá 404 (#9278, #9326).`
   );
+}
+
+function safeSourceDigest(editionDirAbs: string): string | undefined {
+  try {
+    return sitePageSourceDigest(editionDirAbs);
+  } catch (e) {
+    // Sem digest a trava só não confere o conteúdo (o slug segue conferido).
+    process.stderr.write(`[site-page] aviso: sourceDigest não calculado (${(e as Error).message})\n`);
+    return undefined;
+  }
 }
 
 /**
@@ -2721,6 +2757,8 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
       prUrl: "prUrl" in result ? result.prUrl : undefined,
       slug: "slug" in result ? result.slug : undefined,
     }) ?? undefined,
+    // #10190: insumos da página publicada — a trava do Stage 6 republica se mudarem.
+    sourceDigest: "published" in result && result.published === true ? safeSourceDigest(editionDirAbs) : undefined,
     checked_at: new Date().toISOString(),
   };
   try {

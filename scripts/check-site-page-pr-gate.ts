@@ -32,7 +32,28 @@
  *   - CI vermelho, conflito, PR fechado, `gh pr merge` falho → exit 1 (halt);
  *   - `gh pr view` falhou → exit 2 (halt — desconhecido NUNCA vira mergeado);
  *   - sem PR registrado (state ausente/ilegível, `published≠true`, sem
- *     `prUrl`) → exit 4 (rodar o fallback de publicação do §6b-site).
+ *     `prUrl`) → exit 4 (rodar o fallback de publicação do §6b-site);
+ *   - página DEFASADA (#10190) → exit 5 (rodar o fallback de publicação e
+ *     repetir): o slug registrado (`state.slug`) difere do slug esperado
+ *     (`--expected-slug`, ou `seoSlug` do título do D1 atual em
+ *     `02-reviewed.md` — o link de WhatsApp do e-mail), ou os insumos da
+ *     página mudaram desde a publicação (`state.sourceDigest` ≠
+ *     `sitePageSourceDigest` atual). Vale MESMO com o PR já mergeado: o
+ *     §5b-site congela slug e conteúdo no início da Etapa 5, e o loop de fix
+ *     do §5f / `kit-draft-fresh` (#9428) podem mudar o D1 depois — o e-mail
+ *     sairia apontando pra `/p/{slug-novo}` com a página em `/p/{slug-velho}`.
+ *
+ * ## Bypass (#10191)
+ *
+ * `--bypass-reason "<motivo>"`: qualquer veredito ≠ `merged` vira `bypassed`
+ * (exit 0) e fica registrado em `prGateBypass` no state file — o invariante
+ * `site-page-pr-merged`/`site-page-published` lê esse registro e rebaixa a
+ * violação pra `warning`, então o sentinel da Etapa 6 não exige um 2º bypass.
+ * Serve pro caso em que a newsletter não pode deixar de sair por causa da
+ * página (CI vermelho alheio à página, guard de merge tag `code: 5` que o
+ * fallback não resolve, `--no-gates` sem editor pra responder `retry`). A
+ * trava da #10160 continua sendo o default: sem a flag, nada muda. Uma
+ * republicação posterior reescreve o state e apaga o bypass (nova tentativa).
  *
  * Merge feito aqui é gravado no state file (`merged: true`, `status:
  * "merged"`, `mergeBlocker` limpo) — mesma função do waiter
@@ -42,6 +63,8 @@
  *
  *   npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR}
  *   npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --wait-ms 540000
+ *   npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --expected-slug {slug}
+ *   npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --bypass-reason "<motivo>"
  *
  * ## Guard de publicação
  *
@@ -51,14 +74,16 @@
  */
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { readSitePageState } from "./check-site-page-merge.ts";
 import {
   applyMergeWaiterResult,
   defaultGhRunner,
+  deriveSlugFromD1,
   makeSessionRegistryMergeLock,
   parsePrNumberFromUrl,
+  sitePageSourceDigest,
   waitAndMergeSitePagePr,
   type GhRunner,
   type MergeAttemptResult,
@@ -72,17 +97,23 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const SITE_PAGE_PR_GATE_MAX_WAIT_MS = 540_000;
 export const SITE_PAGE_PR_GATE_POLL_MS = 15_000;
 
-export type SitePagePrGateVerdict =
-  | { kind: "merged"; prNumber: number; reason: string }
+type UnmergedVerdict =
   | { kind: "pending"; prNumber: number; reason: string }
   | { kind: "blocked"; prNumber: number; reason: string }
   | { kind: "cannot-verify"; prNumber: number; reason: string }
-  | { kind: "no-pr"; reason: string };
+  | { kind: "no-pr"; reason: string }
+  | { kind: "stale"; prNumber?: number; reason: string };
+
+export type SitePagePrGateVerdict =
+  | { kind: "merged"; prNumber: number; reason: string }
+  | UnmergedVerdict
+  | { kind: "bypassed"; bypassReason: string; bypassed: UnmergedVerdict };
 
 /** Exit code de cada veredito — ver docstring do módulo. */
 export function exitCodeForVerdict(v: SitePagePrGateVerdict): number {
   switch (v.kind) {
     case "merged":
+    case "bypassed":
       return 0;
     case "blocked":
       return 1;
@@ -92,6 +123,8 @@ export function exitCodeForVerdict(v: SitePagePrGateVerdict): number {
       return 3;
     case "no-pr":
       return 4;
+    case "stale":
+      return 5;
   }
 }
 
@@ -107,6 +140,38 @@ export function classifyMergeAttempt(prNumber: number, attempt: MergeAttemptResu
   return { kind: "blocked", prNumber, reason: attempt.reason };
 }
 
+/**
+ * #10190, pura: a página registrada no state ainda corresponde ao que o
+ * e-mail vai linkar? Devolve o motivo da defasagem, ou `null`.
+ *
+ * `expectedSlug` `undefined` = não deu pra derivar (sem `02-reviewed.md`/D1):
+ * a checagem de slug é pulada — o D1 ilegível já é falha de outro guard, e
+ * travar o Schedule por isso aqui seria bloquear sem ter o que republicar.
+ * `currentDigest`/`state.sourceDigest` ausentes (state anterior ao #10190, ou
+ * insumo sumido) pulam só a checagem de conteúdo.
+ */
+export function sitePageStaleness(
+  state: Record<string, unknown>,
+  expectedSlug: string | undefined,
+  currentDigest: string | undefined,
+): string | null {
+  const stateSlug = typeof state.slug === "string" ? state.slug : undefined;
+  if (expectedSlug !== undefined && stateSlug !== expectedSlug) {
+    return (
+      `slug da página publicada (${stateSlug ?? "ausente"}) difere do slug que o e-mail linka ` +
+      `(${expectedSlug}) — o título do D1 mudou depois do §5b-site; /p/${expectedSlug} daria 404`
+    );
+  }
+  const stateDigest = typeof state.sourceDigest === "string" ? state.sourceDigest : undefined;
+  if (stateDigest !== undefined && currentDigest !== undefined && stateDigest !== currentDigest) {
+    return (
+      "insumos da página (newsletter-final.html / TÍTULO / SUBTÍTULO) mudaram depois da publicação — " +
+      "a página no PR é anterior a uma correção do Stage 5"
+    );
+  }
+  return null;
+}
+
 export interface SitePagePrGateDeps {
   gh?: GhRunner;
   sleep?: SleepFn;
@@ -114,14 +179,27 @@ export interface SitePagePrGateDeps {
   waitMs?: number;
   pollMs?: number;
   now?: Date;
+  /** #10190: slug que o e-mail linka; ausente → `seoSlug` do título do D1 atual. */
+  expectedSlug?: string;
+  /** #10191: registra o bypass e devolve `bypassed` (exit 0) pra qualquer veredito ≠ merged. */
+  bypassReason?: string;
 }
 
-/** Corpo do CLI, injetável. */
-export function runSitePagePrGate(
-  rootDir: string,
-  editionDirAbs: string,
-  deps: SitePagePrGateDeps = {},
-): SitePagePrGateVerdict {
+function statePathOf(editionDirAbs: string): string {
+  return join(editionDirAbs, "_internal", "site-page-published.json");
+}
+
+function resolveExpectedSlug(editionDirAbs: string, explicit: string | undefined): string | undefined {
+  if (explicit !== undefined) return explicit;
+  try {
+    return deriveSlugFromD1(editionDirAbs);
+  } catch (e) {
+    process.stderr.write(`[site-page-pr-gate] aviso: slug do D1 não derivável, checagem de slug pulada (${(e as Error).message})\n`);
+    return undefined;
+  }
+}
+
+function evaluateGate(rootDir: string, editionDirAbs: string, deps: SitePagePrGateDeps): SitePagePrGateVerdict {
   const read = readSitePageState(editionDirAbs);
   if (read.kind === "absent") {
     return { kind: "no-pr", reason: "_internal/site-page-published.json ausente — §5b-site não rodou" };
@@ -135,6 +213,15 @@ export function runSitePagePrGate(
     };
   }
   const prNumber = parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
+  // #10190: antes do merge — página defasada não serve nem mergeada.
+  let digest: string | undefined;
+  try {
+    digest = sitePageSourceDigest(editionDirAbs);
+  } catch {
+    digest = undefined;
+  }
+  const stale = sitePageStaleness(state, resolveExpectedSlug(editionDirAbs, deps.expectedSlug), digest);
+  if (stale) return { kind: "stale", ...(prNumber !== undefined ? { prNumber } : {}), reason: stale };
   if (prNumber === undefined) {
     return { kind: "no-pr", reason: `PR da página não identificado no state file (branch site-publish/${String(state.slug ?? "?")})` };
   }
@@ -157,7 +244,7 @@ export function runSitePagePrGate(
     const next = applyMergeWaiterResult(state, prNumber, attempt, deps.now ?? new Date(), "trava do Stage 6 (#10160)");
     if (next) {
       try {
-        writeFileAtomic(join(editionDirAbs, "_internal", "site-page-published.json"), JSON.stringify(next, null, 2));
+        writeFileAtomic(statePathOf(editionDirAbs), JSON.stringify(next, null, 2));
       } catch (e) {
         // O merge aconteceu; o state defasado só faz o invariante consultar o PR ao vivo.
         process.stderr.write(`[site-page-pr-gate] aviso: merge feito, mas o state file não foi regravado (${(e as Error).message})\n`);
@@ -167,19 +254,55 @@ export function runSitePagePrGate(
   return verdict;
 }
 
+/**
+ * #10191: grava o bypass no state file (cria um mínimo se ausente/ilegível).
+ * Lança se não conseguir gravar — um bypass não registrado deixaria o
+ * sentinel recusar a Etapa 6 depois do Schedule já feito, então o chamador
+ * precisa saber que ele não valeu.
+ */
+function recordBypass(editionDirAbs: string, bypassReason: string, bypassed: UnmergedVerdict, now: Date): void {
+  const read = readSitePageState(editionDirAbs);
+  const base: Record<string, unknown> =
+    read.kind === "ok" ? read.state : { published: false, reason: bypassed.reason };
+  const next = {
+    ...base,
+    prGateBypass: { reason: bypassReason, verdict: bypassed.kind, verdictReason: bypassed.reason, at: now.toISOString() },
+  };
+  writeFileAtomic(statePathOf(editionDirAbs), JSON.stringify(next, null, 2));
+}
+
+/** Corpo do CLI, injetável. */
+export function runSitePagePrGate(
+  rootDir: string,
+  editionDirAbs: string,
+  deps: SitePagePrGateDeps = {},
+): SitePagePrGateVerdict {
+  const verdict = evaluateGate(rootDir, editionDirAbs, deps);
+  const bypassReason = deps.bypassReason?.trim();
+  if (verdict.kind === "merged" || verdict.kind === "bypassed" || !bypassReason) return verdict;
+  recordBypass(editionDirAbs, bypassReason, verdict, deps.now ?? new Date());
+  return { kind: "bypassed", bypassReason, bypassed: verdict };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const editionDirArg = getArg(argv, "edition-dir");
   if (!editionDirArg) {
-    console.error("uso: npx tsx scripts/check-site-page-pr-gate.ts --edition-dir <dir> [--wait-ms N] [--poll-ms N]");
+    console.error(
+      "uso: npx tsx scripts/check-site-page-pr-gate.ts --edition-dir <dir> [--wait-ms N] [--poll-ms N] [--expected-slug <slug>] [--bypass-reason <motivo>]",
+    );
     process.exitCode = 1;
     return;
   }
   let waitMs: number;
   let pollMs: number;
+  let expectedSlug: string | undefined;
+  let bypassReason: string | undefined;
   try {
     waitMs = getIntArg(argv, "wait-ms", { min: 0, max: SITE_PAGE_PR_GATE_MAX_WAIT_MS }) ?? 0;
     pollMs = getIntArg(argv, "poll-ms", { min: 1 }) ?? SITE_PAGE_PR_GATE_POLL_MS;
+    expectedSlug = getStringArg(argv, "expected-slug", { example: "titulo-da-edicao" });
+    bypassReason = getStringArg(argv, "bypass-reason", { example: "CI vermelho alheio à página (flake)" });
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e));
     process.exitCode = 1;
@@ -189,11 +312,21 @@ async function main(): Promise<void> {
   const state = readSitePageState(editionDirAbs);
   const prNumber =
     state.kind === "ok" ? parsePrNumberFromUrl(typeof state.state.prUrl === "string" ? state.state.prUrl : undefined) : undefined;
-  const verdict = runSitePagePrGate(ROOT, editionDirAbs, {
-    waitMs,
-    pollMs,
-    mergeLock: prNumber !== undefined ? makeSessionRegistryMergeLock(ROOT, prNumber) : undefined,
-  });
+  let verdict: SitePagePrGateVerdict;
+  try {
+    verdict = runSitePagePrGate(ROOT, editionDirAbs, {
+      waitMs,
+      pollMs,
+      mergeLock: prNumber !== undefined ? makeSessionRegistryMergeLock(ROOT, prNumber) : undefined,
+      expectedSlug,
+      bypassReason,
+    });
+  } catch (e) {
+    // Inclui o `recordBypass` falho: bypass pedido e NÃO gravado não vale.
+    console.error(`[site-page-pr-gate] erro (nenhum bypass foi registrado): ${(e as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(JSON.stringify(verdict, null, 2));
   process.exitCode = exitCodeForVerdict(verdict);
 }

@@ -503,6 +503,7 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
     prUrl?: string;
     merged?: boolean;
     mergeBlocker?: string;
+    prGateBypass?: unknown;
   };
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
@@ -522,7 +523,7 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
   }
   if (data.code === 2) return [];
   if (data.published !== true) {
-    return [
+    return applyPrGateBypass(data, [
       {
         rule: "site-page-published",
         message:
@@ -536,13 +537,36 @@ function checkSitePagePublished(editionDir: string): InvariantViolation[] {
         severity: "error",
         file: path,
       },
-    ];
+    ]);
   }
   // #10160: o "pushado mas não mergeado" (#9326/#9429, antes um warning
   // `site-page-merge-pending` aqui) virou a regra própria e BLOQUEANTE
   // `site-page-pr-merged` logo abaixo — esta regra só responde "a página foi
   // publicada (branch + PR)?".
   return [];
+}
+
+/**
+ * #10191: bypass consciente da trava do PR do site, gravado por
+ * `check-site-page-pr-gate.ts --bypass-reason` em `prGateBypass` (state file).
+ * Rebaixa as violações da página (`site-page-published`, `site-page-pr-merged`)
+ * pra `warning` — o Schedule já saiu ciente de que `/p/{slug}` pode dar 404, e
+ * exigir um 2º `--bypass-reason` no sentinel só duplicaria a decisão. Sem
+ * registro (ou registro sem `reason`), devolve as violações intactas.
+ */
+function applyPrGateBypass(
+  data: { prGateBypass?: unknown },
+  violations: InvariantViolation[],
+): InvariantViolation[] {
+  const bypass = data.prGateBypass as { reason?: unknown; at?: unknown } | undefined;
+  if (!bypass || typeof bypass !== "object" || typeof bypass.reason !== "string" || !bypass.reason.trim()) {
+    return violations;
+  }
+  return violations.map((v) => ({
+    ...v,
+    severity: "warning" as const,
+    message: `${v.message} [bypass registrado pela trava do Stage 6 em ${String(bypass.at ?? "?")}: "${bypass.reason}" (#10191)]`,
+  }));
 }
 
 /**
@@ -580,6 +604,7 @@ function checkSitePagePrMerged(
     prUrl?: string;
     merged?: boolean;
     mergeBlocker?: string;
+    prGateBypass?: unknown;
   };
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
@@ -601,7 +626,7 @@ function checkSitePagePrMerged(
   const what = hasPr
     ? `PR da página do site ${data.prUrl} está ${liveState ?? "em estado DESCONHECIDO (gh pr view falhou)"}, não MERGED`
     : `PR da página do site não identificado (branch site-publish/${data.slug ?? "?"} pushada sem PR parseável)`;
-  return [
+  return applyPrGateBypass(data, [
     {
       rule: "site-page-pr-merged",
       message:
@@ -613,7 +638,7 @@ function checkSitePagePrMerged(
       severity: "error",
       file: path,
     },
-  ];
+  ]);
 }
 
 /**

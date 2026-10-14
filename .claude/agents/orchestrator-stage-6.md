@@ -160,9 +160,9 @@ Guardar o resultado (`SLUG_CHECK_OK` booleano + instruções de correção manua
 
 Sem este passo o acervo do site fica congelado e a página `/p/{slug}` — destino do link de WhatsApp do e-mail e de campanha paga (#7575) — dá 404 no envio.
 
-**1. Estado registrado pelo Stage 5.** Ler `_internal/site-page-published.json`. Se `published === true` (PR aberto/mergeado no §5b-site), NÃO republicar — pular pro passo 3.
+**1. Estado registrado pelo Stage 5.** Ler `_internal/site-page-published.json`. Se `published === true` (PR aberto/mergeado no §5b-site), NÃO republicar — pular pro passo 3 (que manda de volta pro passo 2 se a página estiver defasada, exit `5`).
 
-**2. Fallback — só se o arquivo estiver ausente ou com `published !== true`** (edição despachada antes do #10160, ou §5b-site falhou): publicar aqui, igual ao Stage 5. `--slug`: backend `"beehiiv"` → `{slug_atual_do_get_post}` de §6b-slug (divergência já virou aviso pro gate); backend `"kit"` → `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados):
+**2. Fallback — só se o arquivo estiver ausente, com `published !== true`, ou se o passo 3 / §6c-site devolver exit `5`** (edição despachada antes do #10160, §5b-site falhou, ou página DEFASADA — #10190: o D1 ou os insumos da página mudaram depois do §5b-site): publicar aqui, igual ao Stage 5. `--slug`: backend `"beehiiv"` → `{slug_atual_do_get_post}` de §6b-slug (divergência já virou aviso pro gate); backend `"kit"` → `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados):
 
 ```bash
 npx tsx scripts/publish-edition-site-page.ts \
@@ -193,7 +193,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```bash
 npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR}
 ```
-Exit: `0` MERGED · `3` CI ainda rodando · `1` CI vermelho/conflito/PR fechado · `2` `gh` falhou (estado desconhecido) · `4` sem PR registrado (o fallback do passo 2 falhou). Guardar `SITE_PUBLISH_OK` (`published === true` no state file, relido AGORA — o waiter pode tê-lo reescrito), `SITE_PR_GATE` (o JSON impresso: `kind`, `prNumber`, `reason`) e o `mergeBlocker`/`prUrl` do state para o gate de §6c. **Segue para §6c em qualquer resultado** — nenhum exit bloqueia esta seção; a trava é §6c-site.
+Exit: `0` MERGED · `3` CI ainda rodando · `1` CI vermelho/conflito/PR fechado · `2` `gh` falhou (estado desconhecido) · `4` sem PR registrado (o fallback do passo 2 falhou) · `5` página DEFASADA (#10190: `state.slug` ≠ slug do D1 atual, ou `sourceDigest` ≠ insumos atuais — o e-mail linkaria `/p/{slug-novo}` com a página em `/p/{slug-velho}`) → rodar o passo 2 e repetir este passo, uma vez. **`--expected-slug {slug}`** em toda chamada da trava sempre que o passo 2 publicou com `--slug {slug}` explícito (Beehiiv); sem ele o slug esperado é o `seoSlug` do D1 atual. Guardar `SITE_PUBLISH_OK` (`published === true` no state file, relido AGORA — o waiter pode tê-lo reescrito), `SITE_PR_GATE` (o JSON impresso: `kind`, `prNumber`, `reason`) e o `mergeBlocker`/`prUrl` do state para o gate de §6c. **Segue para §6c em qualquer resultado** — nenhum exit bloqueia esta seção; a trava é §6c-site.
 
 ### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
 
@@ -288,11 +288,14 @@ npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --wait-ms
 ```
 - `0` (MERGED — já estava, ou o CI ficou verde e o script mergeou com `--squash --match-head-commit` sob o merge lock, regra do #5251) → seguir pro Schedule.
 - `3` (CI ainda rodando após 9min) → rodar o MESMO comando de novo (o job `test` leva ~12min); ainda `3` na 3ª vez → halt banner abaixo, motivo "CI do PR do site não convergiu".
-- `1` (CI vermelho, conflito, PR fechado, merge recusado), `2` (`gh` falhou — desconhecido NUNCA vira mergeado) ou `4` (sem PR registrado: re-rodar o fallback do §6b-site passo 2 e repetir) → **halt**, sem agendar nada:
+- `5` (página DEFASADA, #10190) → re-rodar o fallback do §6b-site passo 2 (republica com o slug/conteúdo atuais) e repetir este comando; ainda `5` depois disso → tratar como `1`.
+- `1` (CI vermelho, conflito, PR fechado, merge recusado), `2` (`gh` falhou — desconhecido NUNCA vira mergeado) ou `4` (sem PR registrado: re-rodar o fallback do §6b-site passo 2 e repetir — **exceto** com `code: 5` no state, guard de merge tag desconhecida: o fallback falha igual, ir direto pro halt) → **halt**, sem agendar nada:
 ```bash
-npx tsx scripts/render-halt-banner.ts --stage "6 — Agendamento" --reason "PR da página do site não mergeado: {reason do JSON}" --action "corrija o CI/conflito (gh pr view {prNumber}) e responda 'retry' (re-roda §6c-site), ou 'abort'"
+npx tsx scripts/render-halt-banner.ts --stage "6 — Agendamento" --reason "PR da página do site não mergeado: {reason do JSON}" --action "corrija o CI/conflito (gh pr view {prNumber}) e responda 'retry' (re-roda §6c-site), 'bypass {motivo}' (agenda a newsletter sem a página, #10191) ou 'abort'"
 ```
-Backstop mecânico: o invariante `site-page-pr-merged` (`STAGE_6_RULES`, `severity: error`) faz `pipeline-sentinel.ts write --step 6` recusar o sentinel enquanto o PR registrado não estiver MERGED — pular este passo não fecha a etapa.
+**Bypass (#10191) — a newsletter não deixa de sair por causa da página.** Resposta `bypass {motivo}` (ex.: CI vermelho alheio à página, flake, guard de merge tag) → rodar a trava com `--bypass-reason "{motivo}"` (+ `--expected-slug` se aplicável), que grava `prGateBypass` no state e sai `0`; seguir pro Schedule e listar no resumo final "página do site NÃO mergeada (bypass: {motivo}) — /p/{slug} pode dar 404 até o merge". Exit ≠ 0 com `--bypass-reason` = o registro falhou: halt de novo, o bypass não valeu. **`--no-gates` (#10191, sem editor pra responder `retry`):** esgotadas as tentativas acima (3× `3`, `5` persistente, `1`/`2`/`4`), NÃO haltar — rodar a trava com `--bypass-reason "--no-gates: {reason do JSON}"`, logar `warn` (`log-event.ts --stage 6 --message "site-page pr gate bypass (--no-gates): {reason}"`) e seguir pro Schedule. Premissa: newsletter não enviada é perda irreversível do dia; a página 404 é recuperável até as 06:00 (o waiter em background do #9593 segue tentando o merge, e o editor recebe o alerta dele).
+
+Backstop mecânico: o invariante `site-page-pr-merged` (`STAGE_6_RULES`, `severity: error`) faz `pipeline-sentinel.ts write --step 6` recusar o sentinel enquanto o PR registrado não estiver MERGED — pular este passo não fecha a etapa. Com `prGateBypass` gravado pela trava, ele e `site-page-published` caem pra `warning` (o bypass já foi a decisão; o sentinel não pede um 2º).
 
 ### 6d. Executar Schedule do Beehiiv
 
