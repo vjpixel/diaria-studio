@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { main } from "../scripts/replant-intentional-error.ts";
@@ -94,6 +94,35 @@ describe("#10176 replant-intentional-error", () => {
       writeFileSync(join(dir, "02-reviewed.md"), plain, "utf8");
       assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 1);
       assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), plain);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rollback: validação falha e JSON inexistente → nada fica gravado", () => {
+    const root = mkdtempSync(join(tmpdir(), "replant-10176-rb-"));
+    const dir = join(root, "editions", "261014");
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    try {
+      // Sem 'Nessa edição' no MD → no_narrative_line; nada criado.
+      writeFileSync(join(dir, "02-reviewed.md"), MD.replace(/Nessa edição,.*/, "x"), "utf8");
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", join(root, "j.jsonl")])), 1);
+      assert.equal(existsSync(join(dir, "_internal", "intentional-error.json")), false);
+      assert.equal(existsSync(join(root, "j.jsonl")), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("substitui entry antiga da edição (qualquer source) sem duplicar", () => {
+    const old = JSON.stringify({ edition: "261014", error_type: "x", is_feature: true, source: "manual", wrong_value: "Fooo" });
+    const other = JSON.stringify({ edition: "261001", error_type: "x", is_feature: true, source: "manual" });
+    const { root, dir, jsonlPath } = setup(old + "\n" + other + "\n");
+    try {
+      assert.equal(quiet(() => main(["--edition-dir", dir, "--jsonl", jsonlPath])), 0);
+      const e = readFileSync(jsonlPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      assert.equal(e.filter((r) => r.edition === "261014").length, 1);
+      assert.equal(e.filter((r) => r.edition === "261001").length, 1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
