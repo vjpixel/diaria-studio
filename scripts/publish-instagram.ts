@@ -73,9 +73,11 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
+import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10201
 import {
   USE_MELHOR_COVER_FILE,
   finalizeUseMelhorPostText,
+  prependUseMelhorCaptionTitle, // #10201
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
   reportUseMelhorPlan,
@@ -143,7 +145,8 @@ export function extractPostText(socialMd: string, destaque: string): string {
   if (socialMatch) {
     const dText = extractDestaqueBlock(socialMatch[1], destaque);
     if (dText !== null) {
-      const text = injectChannelLine(dText.trim(), "instagram");
+      // #10201: `## um` (4º post, USE MELHOR) leva a linha de engajamento própria.
+      const text = injectChannelLine(dText.trim(), "instagram", { useMelhor: destaque === USE_MELHOR_POST_ID });
       assertNoScaffolding(text, `destaque '${destaque}' (instagram/Social)`);
       // #6862: Instagram não renderiza markdown — ver docstring de
       // lib/strip-markdown-emphasis.ts (nunca fazer isso na fonte).
@@ -446,7 +449,11 @@ export function buildUseMelhorInstagramPost(input: {
   }
   let caption: string;
   try {
-    caption = truncateCaption(finalizeUseMelhorPostText(extractPostText(input.socialMd, "um")));
+    // #10201: título do item como 1ª linha da legenda — a capa do carrossel
+    // abre o post, mas a legenda sozinha começava no "1)".
+    caption = truncateCaption(
+      prependUseMelhorCaptionTitle(finalizeUseMelhorPostText(extractPostText(input.socialMd, "um")), input.plan.captionTitle),
+    );
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível: ${(e as Error).message}` };
   }

@@ -105,6 +105,7 @@ import { postToWorkerQueue as sharedPostToWorkerQueue } from "./lib/worker-queue
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
   finalizeUseMelhorTextChannelPostText, // #9999
+  prependUseMelhorCaptionTitle, // #10201
   findExistingUseMelhorEntry,
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
@@ -221,7 +222,11 @@ export function buildUseMelhorLinkedInPost(input: {
 }): { ok: true; text: string; imageUrl: string } | { ok: false; reason: string } {
   let text: string;
   try {
-    text = finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "um"));
+    // #10201: título do item como 1ª linha — no LinkedIn não há capa que abra o post.
+    text = prependUseMelhorCaptionTitle(
+      finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "um")),
+      input.plan.captionTitle,
+    );
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível em '# Social': ${(e as Error).message}` };
   }
