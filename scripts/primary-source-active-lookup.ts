@@ -41,7 +41,14 @@
  *   npx tsx scripts/primary-source-active-lookup.ts \
  *     --categorized data/editions/2610/261008/_internal/01-categorized.json \
  *     [--edition 261008] [--past-editions data/past-editions.md] \
- *     [--destaque-count 3] [--out-log .../_internal/01-primary-source-lookup.json]
+ *     [--destaque-count 3] [--pool-max 6] [--out-log .../_internal/01-primary-source-lookup.json]
+ *
+ * #10162 (decisão do editor: fonte oficial vence a cobertura em QUALQUER
+ * seção): depois dos destaques, o mesmo mecanismo roda sobre o pool — RADAR
+ * com `launch_candidate` (o que o §1m-ter delegado deveria cobrir) e USE
+ * MELHOR (empresa citada no TÍTULO, URL fora do domínio oficial) — até
+ * `--pool-max` buscas. Nunca troca submissão do editor, URL já oficial, nem
+ * leva um domínio acima de 2 URLs na edição (#5735).
  *
  * Stdout: JSON `{ skipped?, attempted, replaced, notes[] }`.
  */
@@ -65,9 +72,18 @@ import {
   type PrimarySourceCandidate,
   sameStoryByExactProductVersion,
 } from "./lib/primary-source-lookup.ts";
+import { registrableDomain } from "./lib/registrable-domain.ts";
+import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts";
+
+/**
+ * #10162: teto de buscas Brave para itens do POOL (RADAR `launch_candidate` +
+ * USE MELHOR) por edição, além das ~3 dos destaques. ~$0,005/query → ~$0,03
+ * por edição no pior caso. `--pool-max 0` desliga o passe do pool.
+ */
+export const DEFAULT_POOL_MAX_QUERIES = 6;
 
 export function formatAttemptNote(a: ActiveLookupAttempt): string {
-  const d = a.rank ? `D${a.rank}` : "destaque";
+  const d = a.bucket ? (a.bucket === "use_melhor" ? "USE MELHOR" : "RADAR") : a.rank ? `D${a.rank}` : "destaque";
   if (a.status === "replaced") return `🔗 fonte primária (${d}): ${a.from} → ${a.to} [${a.match}]`;
   return `🔎 fonte primária (${d}) mantida: ${a.reason}${a.to ? ` (${a.to})` : ""}`;
 }
@@ -118,6 +134,8 @@ async function main(): Promise<void> {
   const edition = args.edition ?? deriveCurrentEdition(categorizedPath);
   const pastUrls = extractPastUrlsWithinDays(readPastEditionsMd(pastPath), DEDUP_URL_WINDOW_DAYS, edition);
   const destaqueCount = Number.parseInt(args["destaque-count"] ?? "3", 10) || 3;
+  const poolMaxParsed = Number.parseInt(args["pool-max"] ?? String(DEFAULT_POOL_MAX_QUERIES), 10);
+  const poolMax = Number.isFinite(poolMaxParsed) && poolMaxParsed >= 0 ? poolMaxParsed : DEFAULT_POOL_MAX_QUERIES;
 
   const search = async (query: string): Promise<PrimarySourceCandidate[] | null> => {
     const response = await braveSearch(query, { apiKey, count: 5 });
@@ -134,6 +152,12 @@ async function main(): Promise<void> {
     canonicalize,
     sameStory: sameStoryByExactProductVersion,
     destaqueCount,
+    // #10162: fonte oficial vence a cobertura também no pool (RADAR
+    // launch_candidate + USE MELHOR), com teto de buscas por edição e o cap
+    // de 2 URLs por domínio (#5735).
+    poolMaxQueries: poolMax,
+    registrableDomain,
+    isOfficialUrl: isOfficialLancamentoUrl,
   });
 
   // Grava também quando nada foi trocado: a anotação `primary_source_lookup`
