@@ -62,6 +62,11 @@
  * na campanha, o PUT de htmlContent deste script pode reescrever UTMs sem
  * aviso. Este script não desliga/religa o toggle — só alerta aqui.
  *
+ * #10189: o HTML não é mais o mesmo para todas as campanhas — cada uma
+ * recebe a regra do "quero" (#10179) do envio dela (`queroHtmlForCampaign`),
+ * posicionado por `segments/group-campaigns.json`. Sem isso, reaplicar sobre
+ * o 1º envio ainda agendado devolvia a frase a ele.
+ *
  * Modo de falha mais sério (#4082 item 5): se qualquer passo entre o suspend
  * e o reschedule bem-sucedido falhar, a campanha fica PRESA em "suspended" —
  * o pior estado possível é ela sair da fila em silêncio e o envio
@@ -94,7 +99,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
-import { parseCycleArg } from "./lib/clarice-paths.ts";
+import { parseCycleArg, clariceSegmentsDir } from "./lib/clarice-paths.ts";
+import { applyQueroPhrase, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10189
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { assertNoAbTestForSingleHtmlPath } from "./lib/clarice-ab-test.ts";
 import { isMainModule, getArg } from "./lib/cli-args.ts";
@@ -621,14 +627,15 @@ export async function runApplyBatch(
   apiKey: string,
   cycle: string,
   toUpdate: BrevoCampaignListItem[],
-  html: string,
+  /** HTML único, ou por campanha (#10189 — regra do "quero" por envio). */
+  html: string | ((c: BrevoCampaignListItem) => string),
 ): Promise<BatchRunResult> {
   const succeeded: ApplyResult[] = [];
   const failedIds: number[] = [];
   for (let i = 0; i < toUpdate.length; i++) {
     const c = toUpdate[i];
     try {
-      const result = await applyReapply(apiKey, cycle, c, html);
+      const result = await applyReapply(apiKey, cycle, c, typeof html === "function" ? html(c) : html);
       if (result) succeeded.push(result);
     } catch (e) {
       failedIds.push(c.id);
@@ -653,6 +660,55 @@ export async function runApplyBatch(
     }
   }
   return { succeeded, failedIds, aborted: false, notProcessed: [] };
+}
+
+/** Entrada de `group-campaigns.json` lida por este script (só o que a regra do "quero" usa). */
+type GroupCampaignHistoryEntry = EnvioHistoryEntry & { envioIndex?: number };
+
+/**
+ * #10189: HTML de UMA campanha com a regra do "quero" (#10179) aplicada —
+ * antes, este script reaplicava o mesmo HTML a todas as campanhas do ciclo e
+ * devolvia a frase ao 1º envio se ele ainda estivesse agendado.
+ *
+ * - Nome `Clarice {yymm} grupo:{key}` → índice do envio: o `envioIndex`
+ *   gravado em `group-campaigns.json` quando existe; senão
+ *   `resolveEnvioIndex` sobre o histórico, tratando a própria campanha como
+ *   saída (ela está na fila da Brevo — é por isso que este script a toca).
+ * - Nome sem `grupo:` (fluxo antigo `Clarice News {yymm}`) → HTML intacto,
+ *   com aviso: não há key para posicionar o envio no ciclo.
+ */
+export function queroHtmlForCampaign(
+  html: string,
+  campaignName: string,
+  cycle: string,
+  history: readonly GroupCampaignHistoryEntry[],
+): { html: string; line: string } {
+  const prefix = `Clarice ${cycleToYymm(cycle)} grupo:`;
+  if (!campaignName.startsWith(prefix)) {
+    return {
+      html,
+      line: `⚠️ frase do "quero": regra não aplicada a "${campaignName}" (nome sem "grupo:{key}" — sem posição no ciclo); HTML vai como está no draft`,
+    };
+  }
+  const key = campaignName.slice(prefix.length).trim();
+  const stored = history.find((e) => e.key === key)?.envioIndex;
+  const asSent: EnvioHistoryEntry[] = history.map((e) => (e.key === key ? { ...e, status: "scheduled" } : e));
+  if (!asSent.some((e) => e.key === key)) asSent.push({ key, status: "scheduled" });
+  const envioIndex = stored ?? resolveEnvioIndex(asSent, key);
+  const quero = applyQueroPhrase(html, envioIndex);
+  return { html: quero.html, line: `${key}: ${describeQueroApplication(quero)}` };
+}
+
+/** Lê `segments/group-campaigns.json` do ciclo; ausente → histórico vazio. */
+function readGroupCampaignsHistory(cycle: string): GroupCampaignHistoryEntry[] {
+  const path = resolve(clariceSegmentsDir(cycle), "group-campaigns.json");
+  if (!existsSync(path)) return [];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return Array.isArray(parsed) ? (parsed as GroupCampaignHistoryEntry[]) : [];
+  } catch (e) {
+    throw new Error(`group-campaigns.json corrompido (JSON inválido): ${path}\n${String(e)}`);
+  }
 }
 
 /** Parseia --apply (default false = dry-run). */
@@ -739,6 +795,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   for (const line of buildPlanLines(toUpdate, skipped)) console.error(`  ${line}`);
 
+  // #10189: cada campanha recebe o HTML com a regra do "quero" do envio dela.
+  const history = readGroupCampaignsHistory(cycle);
+  const htmlByCampaign = new Map<number, string>();
+  for (const c of toUpdate) {
+    const r = queroHtmlForCampaign(html, typeof c.name === "string" ? c.name : "", cycle, history);
+    htmlByCampaign.set(c.id, r.html);
+    console.error(`  #${c.id} ${r.line}`);
+  }
+
   if (!apply) {
     console.error(`\ndry-run (default) — use --apply para suspender/reaplicar/reagendar as campanhas acima.`);
     return;
@@ -749,7 +814,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
-  const { failedIds, aborted, notProcessed } = await runApplyBatch(apiKey, cycle, toUpdate, html);
+  const { failedIds, aborted, notProcessed } = await runApplyBatch(apiKey, cycle, toUpdate, (c) => htmlByCampaign.get(c.id) ?? html);
 
   if (aborted) {
     console.error(
