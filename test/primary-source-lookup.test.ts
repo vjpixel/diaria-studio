@@ -472,3 +472,124 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Nova IA: Gemini 3 pro"), "gemini3pro");
   });
 });
+
+// #10162: decisão do editor — fonte oficial vence a cobertura em QUALQUER
+// seção. Antes, a busca ativa só cobria D1-D3; RADAR `launch_candidate`
+// dependia do §1m-ter delegado (nunca rodava) e USE MELHOR não tinha busca
+// nenhuma — o editor trocava à mão no gate 4 (261005-261014). Sem rede:
+// `search` é fixture.
+describe("runActivePrimarySourceLookup — pool RADAR/USE MELHOR (#10162)", () => {
+  const noSleep = async () => {};
+  const regDomain = (u: string) => {
+    try {
+      const h = new URL(u).hostname.replace(/^www\./, "");
+      return h.split(".").slice(-2).join(".");
+    } catch {
+      return null;
+    }
+  };
+  const radarPress = {
+    url: "https://venturebeat.com/ai/openai-launches-gpt-6-1",
+    title: "OpenAI launches GPT-6.1 for developers",
+    launch_candidate: true,
+    suggested_primary_domain: "openai.com",
+  };
+  const radarOfficial = "https://openai.com/index/introducing-gpt-6-1";
+  const tutorial = {
+    url: "https://www.techtudo.com.br/dicas/como-usar-o-claude-para-resumir-pdfs",
+    title: "Como usar o Claude para resumir PDFs",
+  };
+  const tutorialOfficial = "https://support.anthropic.com/resumir-pdfs";
+  const search = async (q: string) => {
+    if (q.startsWith("site:openai.com")) return [{ url: radarOfficial, title: "Introducing GPT-6.1" }];
+    if (q.startsWith("site:anthropic.com")) return [{ url: tutorialOfficial, title: "Como usar o Claude para resumir PDFs | Anthropic" }];
+    return [];
+  };
+  type Item = { url: string; title: string; launch_candidate?: boolean; suggested_primary_domain?: string; flag?: string };
+  const fixture = (): { highlights: Array<{ rank: number; article: Item }>; radar: Item[]; use_melhor: Item[] } => ({
+    highlights: [{ rank: 1, article: { url: "https://g1.globo.com/a", title: "Empresas brasileiras usam IA" } }],
+    radar: [{ ...radarPress }, { url: "https://example.com/r", title: "Outra notícia de IA" }],
+    use_melhor: [{ ...tutorial }],
+  });
+  const base = { pastUrls: new Set<string>(), canonicalize: (u: string) => u, sameStory: sameStoryByExactProductVersion, sleep: noSleep };
+
+  it("sem poolMaxQueries o pool não é buscado (comportamento #10137 preservado)", async () => {
+    const queries: string[] = [];
+    const result = await runActivePrimarySourceLookup(fixture(), { ...base, search: async (q) => { queries.push(q); return search(q); } });
+    assert.deepEqual(queries, []);
+    assert.equal((result.output.use_melhor as Array<{ url: string }>)[0].url, tutorial.url);
+  });
+
+  it("troca RADAR launch_candidate e USE MELHOR pela página oficial da mesma história", async () => {
+    const result = await runActivePrimarySourceLookup(fixture(), { ...base, search, poolMaxQueries: 6, registrableDomain: regDomain });
+    assert.equal(result.replaced, 2);
+    const radar = result.output.radar as Array<Record<string, unknown>>;
+    assert.equal(radar[0].url, radarOfficial);
+    assert.deepEqual(radar[0].primary_source_substituted, { from: radarPress.url, to: radarOfficial });
+    assert.equal(radar[1].url, "https://example.com/r");
+    const um = result.output.use_melhor as Array<Record<string, unknown>>;
+    assert.equal(um[0].url, tutorialOfficial);
+    assert.deepEqual(result.attempts.map((a) => a.bucket), ["radar", "use_melhor"]);
+  });
+
+  it("RADAR sem launch_candidate ou sem verbo de lançamento não é buscado (gate do #10141)", async () => {
+    const queries: string[] = [];
+    const input = {
+      radar: [
+        { ...radarPress, launch_candidate: false },
+        { ...radarPress, url: "https://venturebeat.com/b", title: "OpenAI é processada por GPT-6.1" },
+      ],
+    };
+    await runActivePrimarySourceLookup(input, { ...base, search: async (q) => { queries.push(q); return []; }, poolMaxQueries: 6 });
+    assert.deepEqual(queries, []);
+  });
+
+  it("nunca troca submissão do editor nem URL já oficial", async () => {
+    const queries: string[] = [];
+    const input = {
+      radar: [{ ...radarPress, flag: "editor_submitted" }],
+      use_melhor: [{ ...tutorial, url: "https://claude.com/blog/resumir-pdfs" }],
+    };
+    await runActivePrimarySourceLookup(input, {
+      ...base,
+      search: async (q) => { queries.push(q); return search(q); },
+      poolMaxQueries: 6,
+      isOfficialUrl: (u) => u.startsWith("https://claude.com/"),
+    });
+    assert.deepEqual(queries, []);
+  });
+
+  it("não leva o domínio oficial acima de 2 URLs na edição (#5735)", async () => {
+    const input = fixture();
+    input.radar.push({ url: "https://openai.com/index/a", title: "A" }, { url: "https://openai.com/index/b", title: "B" });
+    const result = await runActivePrimarySourceLookup(input, { ...base, search, poolMaxQueries: 6, registrableDomain: regDomain });
+    assert.equal((result.output.radar as Array<{ url: string }>)[0].url, radarPress.url);
+    assert.equal(result.attempts.find((a) => a.bucket === "radar")?.reason, "official-domain-at-cap");
+    // O USE MELHOR (anthropic.com, sem URL na edição) segue trocando.
+    assert.equal((result.output.use_melhor as Array<{ url: string }>)[0].url, tutorialOfficial);
+  });
+
+  it("poolMaxQueries limita as buscas do pool", async () => {
+    const queries: string[] = [];
+    await runActivePrimarySourceLookup(fixture(), { ...base, search: async (q) => { queries.push(q); return search(q); }, poolMaxQueries: 1 });
+    assert.equal(queries.length, 1);
+    assert.ok(queries[0].startsWith("site:openai.com"));
+  });
+
+  it("USE MELHOR cuja página oficial não é o mesmo assunto mantém a cobertura", async () => {
+    const result = await runActivePrimarySourceLookup({ use_melhor: [{ ...tutorial }] }, {
+      ...base,
+      search: async () => [{ url: "https://www.anthropic.com/news/economic-index", title: "Anthropic Economic Index" }],
+      poolMaxQueries: 6,
+    });
+    assert.equal(result.replaced, 0);
+    assert.equal((result.output.use_melhor as Array<{ url: string }>)[0].url, tutorial.url);
+  });
+
+  it("a CLI liga o passe do pool com teto e cap de domínio", () => {
+    const src = readFileSync(new URL("../scripts/primary-source-active-lookup.ts", import.meta.url), "utf8");
+    assert.match(src, /poolMaxQueries: poolMax/);
+    assert.match(src, /registrableDomain,/);
+    assert.match(src, /DEFAULT_POOL_MAX_QUERIES = 6/);
+  });
+});

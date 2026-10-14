@@ -330,6 +330,20 @@ export interface ActiveLookupDeps {
   sameStory?: SameStoryFn;
   /** How many highlights (by rank) to try. Default 3 (D1-D3). */
   destaqueCount?: number;
+  /**
+   * #10162: max searches for POOL items (RADAR `launch_candidate` + USE
+   * MELHOR), after the highlights. Default 0 (highlights only, the #10137
+   * behaviour); the CLI passes 6. Bounds the Brave spend per edition.
+   */
+  poolMaxQueries?: number;
+  /**
+   * #10162: registrable domain of a URL (for the #5735 cap of 2 URLs per
+   * domain). When given, a pool swap to a domain that already has 2 URLs in
+   * the edition is skipped. Omitted → no cap check.
+   */
+  registrableDomain?: (url: string) => string | null;
+  /** #10162: true when the URL is already an official source (pool items skip the search). */
+  isOfficialUrl?: (url: string) => boolean;
   /** Pause between searches (Brave: 1 query/second). Default 1100ms. */
   rateLimitMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -338,6 +352,8 @@ export interface ActiveLookupDeps {
 export interface ActiveLookupAttempt extends PrimarySourceLookup {
   rank?: number;
   title?: string;
+  /** #10162: pool bucket of the item (absent for highlights). */
+  bucket?: "radar" | "use_melhor";
 }
 
 export interface ActiveLookupResult {
@@ -382,17 +398,31 @@ export async function runActivePrimarySourceLookup(
   const attempts: ActiveLookupAttempt[] = [];
   let searched = 0;
 
-  for (const highlight of rankedTopHighlights(input.highlights ?? [], destaqueCount)) {
-    const article = highlight.article as PrimarySourceArticle;
+  // #10162: URLs per registrable domain in the edition (highlights + pool), for
+  // the #5735 cap (max 2 URLs per domain) on pool swaps.
+  const domainCounts = new Map<string, number>();
+  const registrable = deps.registrableDomain;
+  if (registrable) {
+    const seen = new Set<string>();
+    const count = (a: PrimarySourceArticle | undefined) => {
+      if (typeof a?.url !== "string" || !a.url) return;
+      const canon = deps.canonicalize(a.url);
+      if (seen.has(canon)) return;
+      seen.add(canon);
+      const d = registrable(a.url);
+      if (d) domainCounts.set(d, (domainCounts.get(d) ?? 0) + 1);
+    };
+    for (const h of input.highlights ?? []) count(h.article);
+    for (const b of BUCKETS) for (const a of input[b] ?? []) count(a);
+  }
+
+  const lookupOne = async (
+    article: PrimarySourceArticle,
+    meta: { rank?: number; bucket?: "radar" | "use_melhor" },
+  ): Promise<void> => {
     const original = article.url as string;
-    // #10141: only look up launches. Without an explicit Stage 1
-    // `suggested_primary_domain` (set by enrich-primary-source only for
-    // launch verb + known company) or without a launch verb in the title, the
-    // story is not about an official release (lawsuit, fine, layoffs…) and
-    // any official page is at best tangential — keep the secondary URL.
-    if (!article.suggested_primary_domain?.trim() || !hasLaunchVerb(article.title ?? "")) continue;
     const query = buildPrimarySourceQuery(article);
-    if (!query || decisions.has(original)) continue; // no known company → nothing to look up
+    if (!query || decisions.has(original)) return; // no known company → nothing to look up
 
     if (searched > 0 && rateLimitMs > 0) await sleep(rateLimitMs);
     searched++;
@@ -431,9 +461,74 @@ export async function runActivePrimarySourceLookup(
       }
     }
 
+    // #10162: pool swaps never push a domain past the #5735 cap (2 URLs per
+    // registrable domain per edition) — the official link passes the same
+    // checks as the one it replaces.
+    const toDomain = decision.url && registrable ? registrable(decision.url) : null;
+    const fromDomain = registrable ? registrable(original) : null;
+    if (meta.bucket && decision.url && toDomain && toDomain !== fromDomain && (domainCounts.get(toDomain) ?? 0) >= 2) {
+      decision = { lookup: { query, status: "preserved", reason: "official-domain-at-cap", to: decision.url } };
+    }
+
     decisions.set(original, decision);
-    if (decision.url) editionUrls.add(deps.canonicalize(decision.url));
-    attempts.push({ ...decision.lookup, rank: highlight.rank, title: article.title });
+    if (decision.url) {
+      editionUrls.add(deps.canonicalize(decision.url));
+      if (toDomain && toDomain !== fromDomain) {
+        domainCounts.set(toDomain, (domainCounts.get(toDomain) ?? 0) + 1);
+        if (fromDomain) domainCounts.set(fromDomain, Math.max(0, (domainCounts.get(fromDomain) ?? 1) - 1));
+      }
+    }
+    attempts.push({ ...decision.lookup, rank: meta.rank, title: article.title, ...(meta.bucket ? { bucket: meta.bucket } : {}) });
+  };
+
+  for (const highlight of rankedTopHighlights(input.highlights ?? [], destaqueCount)) {
+    const article = highlight.article as PrimarySourceArticle;
+    // #10141: only look up launches. Without an explicit Stage 1
+    // `suggested_primary_domain` (set by enrich-primary-source only for
+    // launch verb + known company) or without a launch verb in the title, the
+    // story is not about an official release (lawsuit, fine, layoffs…) and
+    // any official page is at best tangential — keep the secondary URL.
+    if (!article.suggested_primary_domain?.trim() || !hasLaunchVerb(article.title ?? "")) continue;
+    await lookupOne(article, { rank: highlight.rank });
+  }
+
+  // #10162: "fonte oficial sempre vence a cobertura" also in the pool. RADAR
+  // `launch_candidate` is what §1m-ter (#1699) was meant to cover — delegated
+  // since #5415 and never run. USE MELHOR had no lookup at all (the editor
+  // swapped press how-tos for the official help page by hand, 261005-261014).
+  // Same conservative rule as the highlights (official domain + same story,
+  // never a repeat, never a domain over the cap); bounded by `poolMaxQueries`.
+  const poolMax = deps.poolMaxQueries ?? 0;
+  if (poolMax > 0) {
+    const pool: Array<{ article: PrimarySourceArticle; bucket: "radar" | "use_melhor" }> = [];
+    const eligibleBase = (a: PrimarySourceArticle | undefined): a is PrimarySourceArticle =>
+      typeof a?.url === "string" && a.url !== "" && typeof a.title === "string" && a.title.trim() !== "" &&
+      // The editor picked this exact URL — never override a submission (#7401).
+      a.flag !== "editor_submitted" &&
+      !decisions.has(a.url) &&
+      !(deps.isOfficialUrl?.(a.url) ?? false);
+    for (const a of input.radar ?? []) {
+      // Same gate as the highlights (#10141): flagged launch + launch verb.
+      if (!eligibleBase(a) || a.launch_candidate !== true) continue;
+      if (!a.suggested_primary_domain?.trim() || !hasLaunchVerb(a.title ?? "")) continue;
+      pool.push({ article: a, bucket: "radar" });
+    }
+    for (const a of input.use_melhor ?? []) {
+      if (!eligibleBase(a)) continue;
+      // Tutorials carry no launch verb: the company comes from the TITLE only
+      // (a summary that merely cites a company must not pick the domain).
+      const domain = a.suggested_primary_domain?.trim() ||
+        detectDomainMismatchCandidate({ title: a.title, url: a.url }).suggested_domain;
+      if (!domain) continue;
+      pool.push({ article: { ...a, suggested_primary_domain: domain }, bucket: "use_melhor" });
+    }
+    let poolSearched = 0;
+    for (const { article, bucket } of pool) {
+      if (poolSearched >= poolMax) break;
+      const before = searched;
+      await lookupOne(article, { bucket });
+      if (searched > before) poolSearched++;
+    }
   }
 
   const update = (article: PrimarySourceArticle | undefined): PrimarySourceArticle | undefined => {
