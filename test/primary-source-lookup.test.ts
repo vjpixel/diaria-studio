@@ -466,4 +466,9 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(sameStoryByExactProductVersion({ title: "Meta é multada por Llama 5" }, { url: "https://x.example/", title: "Llama 5" }), false);
     assert.equal(sameStoryByExactProductVersion({ title: "Juiz multa OpenAI por GPT-4o" }, { url: "https://x.example/", title: "GPT-4o" }), false);
   });
+
+  it("#10147 review: pós-vírgula com 'mas exige <plataforma>' não vira sujeito; 'pro' final continua variante", () => {
+    assert.equal(subjectVersionedProductCode("Novo recurso chega, mas exige iPhone 17"), undefined);
+    assert.equal(subjectVersionedProductCode("Nova IA: Gemini 3 pro"), "gemini3pro");
+  });
 });

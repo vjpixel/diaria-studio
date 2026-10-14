@@ -86,7 +86,7 @@ export function extractVersionedProductCodes(text: string): Set<string> {
     let rest = text.slice((m.index ?? 0) + m[0].length);
     for (let v = rest.match(VARIANT_AFTER_VERSION); v; v = rest.match(VARIANT_AFTER_VERSION)) {
       // #10147: "pro" minúsculo é a preposição PT ("para o"), não a variante Pro.
-      if (v[1] === "pro") break;
+      if (v[1] === "pro" && /^\s+\S/.test(rest.slice(v[0].length))) break;
       code += v[1].toLowerCase();
       rest = rest.slice(v[0].length);
     }
@@ -106,7 +106,7 @@ const SUBJECT_CLAUSE_END = new RegExp(
   "[,;:|()\\[\\]\\\\/]|\\s[-–—]\\s|\\s(?:" + [
     "no", "na", "nos", "nas", "em", "para", "pra", "do", "da", "dos", "das", "de",
     "com", "sem", "contra", "que", "como", "ao", "aos", "à", "às", "pelo", "pela",
-    "sobre", "após", "até", "por", "entre", "e", "ou", "sucessor", "substitui",
+    "sobre", "após", "até", "por", "mas", "porém", "exige", "exigindo", "but", "while", "requires", "entre", "e", "ou", "sucessor", "substitui",
     "on", "in", "for", "with", "to", "than", "vs\\.?", "versus", "via", "from",
     "of", "by", "at", "after", "over", "against", "and", "or", "replacing",
   ].join("|") + ")(?=\\s|$)",
