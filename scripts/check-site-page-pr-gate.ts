@@ -17,7 +17,11 @@
  * só pra mostrar o estado no gate) e logo antes do Schedule (§6c-site,
  * `--wait-ms 540000`, a trava). O invariante `site-page-pr-merged`
  * (`STAGE_6_RULES`, bloqueante) fecha o mesmo buraco no sentinel
- * `.step-6-done.json`, caso o passo seja pulado.
+ * `.step-6-done.json`, caso o passo seja pulado — inclusive o caso de página
+ * DEFASADA com PR já mergeado (#10207: mesma `sitePageStaleness`, em
+ * `scripts/lib/site-page-staleness.ts`). Pra o invariante não acusar uma
+ * página publicada com `--slug` explícito, esta trava grava o
+ * `--expected-slug` recebido em `expectedSlug` no state file.
  *
  * ## O que faz
  *
@@ -77,6 +81,7 @@ import { fileURLToPath } from "node:url";
 import { getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { readSitePageState } from "./check-site-page-merge.ts";
+import { SITE_PAGE_EXPECTED_SLUG_FIELD, sitePageStaleness } from "./lib/site-page-staleness.ts";
 import {
   applyMergeWaiterResult,
   defaultGhRunner,
@@ -141,36 +146,11 @@ export function classifyMergeAttempt(prNumber: number, attempt: MergeAttemptResu
 }
 
 /**
- * #10190, pura: a página registrada no state ainda corresponde ao que o
- * e-mail vai linkar? Devolve o motivo da defasagem, ou `null`.
- *
- * `expectedSlug` `undefined` = não deu pra derivar (sem `02-reviewed.md`/D1):
- * a checagem de slug é pulada — o D1 ilegível já é falha de outro guard, e
- * travar o Schedule por isso aqui seria bloquear sem ter o que republicar.
- * `currentDigest`/`state.sourceDigest` ausentes (state anterior ao #10190, ou
- * insumo sumido) pulam só a checagem de conteúdo.
+ * #10190, pura — vive em `scripts/lib/site-page-staleness.ts` desde o #10207
+ * (o invariante `site-page-pr-merged` usa a mesma função). Re-exportada aqui
+ * pra manter a superfície pública da trava.
  */
-export function sitePageStaleness(
-  state: Record<string, unknown>,
-  expectedSlug: string | undefined,
-  currentDigest: string | undefined,
-): string | null {
-  const stateSlug = typeof state.slug === "string" ? state.slug : undefined;
-  if (expectedSlug !== undefined && stateSlug !== expectedSlug) {
-    return (
-      `slug da página publicada (${stateSlug ?? "ausente"}) difere do slug que o e-mail linka ` +
-      `(${expectedSlug}) — o título do D1 mudou depois do §5b-site; /p/${expectedSlug} daria 404`
-    );
-  }
-  const stateDigest = typeof state.sourceDigest === "string" ? state.sourceDigest : undefined;
-  if (stateDigest !== undefined && currentDigest !== undefined && stateDigest !== currentDigest) {
-    return (
-      "insumos da página (newsletter-final.html / TÍTULO / SUBTÍTULO) mudaram depois da publicação — " +
-      "a página no PR é anterior a uma correção do Stage 5"
-    );
-  }
-  return null;
-}
+export { sitePageStaleness };
 
 export interface SitePagePrGateDeps {
   gh?: GhRunner;
@@ -199,6 +179,24 @@ function resolveExpectedSlug(editionDirAbs: string, explicit: string | undefined
   }
 }
 
+/**
+ * #10207: registra no state o `--expected-slug` explícito, pro invariante
+ * `site-page-pr-merged` conferir contra o MESMO slug que a trava conferiu
+ * (sem o registro, ele cai no `seoSlug` do D1 — certo pro caminho Kit, falso
+ * positivo pro fallback com `--slug` do post). Muta `state` em memória (o
+ * merge feito adiante regrava a partir dele) e grava best-effort: falhar aqui
+ * só faz o sentinel ser mais estrito, nunca mais frouxo.
+ */
+function recordExpectedSlug(editionDirAbs: string, state: Record<string, unknown>, expectedSlug: string): void {
+  if (state[SITE_PAGE_EXPECTED_SLUG_FIELD] === expectedSlug) return;
+  state[SITE_PAGE_EXPECTED_SLUG_FIELD] = expectedSlug;
+  try {
+    writeFileAtomic(statePathOf(editionDirAbs), JSON.stringify(state, null, 2));
+  } catch (e) {
+    process.stderr.write(`[site-page-pr-gate] aviso: --expected-slug não registrado no state file (${(e as Error).message})\n`);
+  }
+}
+
 function evaluateGate(rootDir: string, editionDirAbs: string, deps: SitePagePrGateDeps): SitePagePrGateVerdict {
   const read = readSitePageState(editionDirAbs);
   if (read.kind === "absent") {
@@ -213,6 +211,7 @@ function evaluateGate(rootDir: string, editionDirAbs: string, deps: SitePagePrGa
     };
   }
   const prNumber = parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
+  if (deps.expectedSlug !== undefined) recordExpectedSlug(editionDirAbs, state, deps.expectedSlug);
   // #10190: antes do merge — página defasada não serve nem mergeada.
   let digest: string | undefined;
   try {
