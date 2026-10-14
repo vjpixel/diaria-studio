@@ -73,8 +73,12 @@ export type SameStoryFn = (article: PrimarySourceArticle, candidate: { url: stri
 const VARIANT_WORDS = [
   "flash", "lite", "pro", "ultra", "nano", "mini", "haiku", "sonnet", "opus",
   "turbo", "max", "plus", "air", "instant", "thinking", "omni",
+  "codex", "image", "coder", "scout", "maverick", "deep", "think", "vision", "audio", "realtime",
 ];
 const VARIANT_AFTER_VERSION = new RegExp(`^[\\s-]+(${VARIANT_WORDS.join("|")})\\b`, "i");
+// #10205: qualquer palavra COLADA por hífen à versão ("GPT-5.5-Codex") é sufixo
+// de produto — nunca colapsa pro modelo-base.
+const HYPHEN_SUFFIX_AFTER_VERSION = /^-([A-Za-z]\w*)\b/;
 
 export function extractVersionedProductCodes(text: string): Set<string> {
   const codes = new Set<string>();
@@ -84,7 +88,8 @@ export function extractVersionedProductCodes(text: string): Set<string> {
     if (/^\d{4}$/.test(version) && Number(version) >= 1900) continue;
     let code = `${m[1].toLowerCase()}${version.toLowerCase()}`;
     let rest = text.slice((m.index ?? 0) + m[0].length);
-    for (let v = rest.match(VARIANT_AFTER_VERSION); v; v = rest.match(VARIANT_AFTER_VERSION)) {
+    for (let v = rest.match(VARIANT_AFTER_VERSION) ?? rest.match(HYPHEN_SUFFIX_AFTER_VERSION); v;
+      v = rest.match(VARIANT_AFTER_VERSION) ?? rest.match(HYPHEN_SUFFIX_AFTER_VERSION)) {
       // #10147: "pro" minúsculo é a preposição PT ("para o"), não a variante Pro.
       if (v[1] === "pro" && /^\s+\S/.test(rest.slice(v[0].length))) break;
       code += v[1].toLowerCase();
@@ -103,7 +108,7 @@ export function extractVersionedProductCodes(text: string): Set<string> {
  * (platform, predecessor, comparison), never the launched product.
  */
 const SUBJECT_CLAUSE_END = new RegExp(
-  "[,;:|()\\[\\]\\\\/]|\\s[-–—]\\s|\\s(?:" + [
+  "[,;:|()\\[\\]\\\\/]|\\s[-–—]\\s|(?:^|\\s)(?:" + [
     "no", "na", "nos", "nas", "em", "para", "pra", "do", "da", "dos", "das", "de",
     "com", "sem", "contra", "que", "como", "ao", "aos", "à", "às", "pelo", "pela",
     "sobre", "após", "até", "por", "mas", "porém", "exige", "exigindo", "but", "while", "requires", "entre", "e", "ou", "sucessor", "substitui",
@@ -130,7 +135,19 @@ export function subjectVersionedProductCode(title: string): string | undefined {
     const head = m ? rest.slice(0, m.index) : rest;
     const [first] = extractVersionedProductCodes(head);
     if (first) return first;
-    if (!m || !/^[,;:]$/.test(m[0])) return undefined;
+    if (!m) return undefined;
+    if (!/^[,;:]$/.test(m[0])) {
+      // #10205: preposição ABRINDO o título ("Após GPT-5.5, OpenAI lança GPT-6")
+      // é adjunto até a próxima vírgula; preposição no meio encerra o sujeito.
+      if (m.index !== 0 || head !== "") return undefined;
+      const comma = /[,;:]/.exec(rest);
+      if (!comma) return undefined;
+      rest = " " + rest.slice(comma.index + 1);
+      continue;
+    }
+    // #10205: oração com verbo de lançamento já tem sujeito — o que vem depois
+    // da pontuação é outra oração, nunca o produto lançado.
+    if (hasLaunchVerb(head)) return undefined;
     rest = " " + rest.slice(m.index + m[0].length);
   }
 }

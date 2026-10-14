@@ -471,6 +471,16 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Novo recurso chega, mas exige iPhone 17"), undefined);
     assert.equal(subjectVersionedProductCode("Nova IA: Gemini 3 pro"), "gemini3pro");
   });
+
+  it("#10205: 2ª oração após pontuação não vira sujeito; preposição inicial é adjunto; sufixo hifenado é variante", () => {
+    assert.equal(subjectVersionedProductCode("Microsoft lança Copilot Vision: Windows 11 ganha IA na tela"), undefined);
+    assert.equal(subjectVersionedProductCode("OpenAI anuncia plano novo; GPT-5 fica mais barato"), undefined);
+    assert.equal(subjectVersionedProductCode("No Windows 11, Microsoft lança Copilot Vision"), undefined);
+    assert.equal(subjectVersionedProductCode("Após GPT-5.5, OpenAI lança GPT-6"), "gpt6");
+    assert.equal(subjectVersionedProductCode("OpenAI lança GPT-5.5-Codex"), "gpt5.5codex");
+    assert.equal(subjectVersionedProductCode("Novo recurso chega, mas exige Windows 11"), undefined);
+    assert.equal(sameStoryByExactProductVersion({ title: "OpenAI lança GPT-5.5-Codex" }, { url: "https://x.example/", title: "Introducing GPT-5.5" }), false);
+  });
 });
 
 // #10162: decisão do editor — fonte oficial vence a cobertura em QUALQUER
