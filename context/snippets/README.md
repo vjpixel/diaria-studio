@@ -204,8 +204,24 @@ por slot).
     chave nunca saem juntas na seleção automática (ex.: a imersão no slot 1
     e outra versão dela no slot 2). Ausente → os `utm_campaign` dos links do
     corpo servem de chave; sem nenhum dos dois, a caixa não colide com nada.
+  - `expires:` (#10174) — validade da caixa, `AAAA-MM-DD`: o ÚLTIMO dia em
+    que ela ainda pode sair, inclusive, comparado com a data da EDIÇÃO (não
+    com o relógio). Evento no sábado 17/10 → `expires: 2026-10-17`: a caixa
+    sai na edição de 17/10 e some a partir da de 18/10. Vencida, o stitch
+    (`resolveBoxesForEdition`) nunca a publica: slot pinado vai pra seleção
+    automática, e sem candidato (ou com a automação desligada) o slot sai
+    vazio; ela também sai do ranking. O `platform.config.json` não é
+    alterado. O invariante `box-divulgacao-expiry` (Stage 2 e 4, warning)
+    avisa quando a caixa de um slot venceu, vence em até 3 dias ou tem data
+    malformada (data malformada é ignorada, a caixa segue saindo), e o
+    painel Caixas mostra o mesmo aviso no card.
   Todos os campos são opcionais e independentes — declarar um não exige
   os outros.
+- **O comentário-cabeçalho tem de abrir o arquivo (#10178).** Os campos só
+  são lidos se o `<!--` estiver no topo (espaço em branco antes é ok).
+  Qualquer outra coisa antes dele (ex.: um `---`) faz os campos serem
+  ignorados e o que vem antes vazar pra edição. O stitch emite warn e o
+  painel Caixas mostra um aviso no card quando há `<!--` fora do topo.
 - **Imagem irmã do snippet (#8990).** Uma caixa pode ter uma imagem com o
   MESMO basename do `.md`, no mesmo diretório: `data/snippets/X.md` →
   `data/snippets/X.jpg` (aceitos, nesta ordem: `.jpg`, `.jpeg`, `.png`).

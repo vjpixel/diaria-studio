@@ -232,6 +232,10 @@ function renderList() {
       box.nome && box.contentTitle && box.contentTitle !== box.title
         ? `<div class="box-content-title">na edição: ${escapeHtml(box.contentTitle)}</div>`
         : "";
+    // #10174/#10178: avisos de autoria (header fora da 1ª linha, validade).
+    const warningsBlock = Array.isArray(box.warnings) && box.warnings.length > 0
+      ? `<ul class="box-warnings">${box.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul>`
+      : "";
     card.innerHTML = `
       <div class="box-card-head">
         <span class="box-title">${escapeHtml(box.title)}</span>
@@ -240,6 +244,7 @@ function renderList() {
         ${categoriaBadge}
       </div>
       ${contentTitleLine}
+      ${warningsBlock}
       <div class="box-meta">
         <code>${escapeHtml(box.slug)}</code> · modificado ${fmtTime(box.mtimeIso)}
       </div>

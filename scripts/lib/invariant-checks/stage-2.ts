@@ -26,7 +26,7 @@ import {
   checkUseMelhorBeginnerMinimum,
   type BeginnerMinimumItem,
 } from "../lint-checks/use-melhor-beginner-minimum.ts";
-import { checkCarouselTextOverflow } from "./stage-4.ts"; // #6439
+import { checkCarouselTextOverflow, checkBoxDivulgacaoExpiry } from "./stage-4.ts"; // #6439; #10174
 import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repeat.ts"; // #9101
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -683,6 +683,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     source_issue: "#6439",
     stage: 2,
     run: checkCarouselTextOverflowStage2,
+  },
+  {
+    id: "box-divulgacao-expiry",
+    description: "caixa de boxes_divulgacao (slot 0/1/2) com expires: vencido, perto de vencer (≤3 dias) ou malformado — mesma checagem do Stage 4, rodada logo após o stitch (#10174, warning-only)",
+    source_issue: "#10174",
+    stage: 2,
+    run: (editionDir: string) => checkBoxDivulgacaoExpiry(editionDir),
   },
 ];
 
