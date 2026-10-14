@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 112 invariants.
+**Total**: 113 invariants.
 
 ## Static (estrutura do repo)
 
@@ -107,6 +107,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
 | `social-humanizer-seal-fresh` | selo do humanizador bate com o 03-social.md atual — social reescrito no Stage 4 foi re-humanizado (#9820) | #9820 |
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
+| `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
