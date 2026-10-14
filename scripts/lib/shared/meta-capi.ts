@@ -386,6 +386,23 @@ export function buildFbcFromClickId(
 }
 
 /**
+ * #10230: inverso de `buildFbcFromClickId`. Deriva o `click_id` do cadastro
+ * (`fbclid:XXXX`) a partir de um `_fbc` canônico (`fb.1.{ts}.{fbclid}`),
+ * pra quem chegou por anúncio da Meta e assina numa página SEM `fbclid` na
+ * URL — o `_fbc` do cookie sobrevive à navegação, o `click_id` do form não.
+ * Sem isso o `SubscriptionConfirmed` (que só lê `origem_click_id`) sai sem
+ * fbc. Devolve `undefined` pra valor ausente/fora da forma canônica.
+ * @pure
+ */
+export function deriveClickIdFromFbc(fbc: string | undefined | null): string | undefined {
+  const raw = (fbc ?? "").trim();
+  if (!FB_COOKIE_RE.test(raw)) return undefined;
+  const fbclid = raw.split(".").slice(3).join(".");
+  if (!fbclid || !FBCLID_RE.test(fbclid)) return undefined;
+  return `${META_CLICK_ID_PREFIX}${fbclid}`;
+}
+
+/**
  * #8978: fallback de fbc a partir de um `fbclid` presente na QUERYSTRING do
  * header `Referer` do request.
  *

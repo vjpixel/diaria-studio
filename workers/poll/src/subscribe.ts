@@ -60,7 +60,9 @@ import {
   resolveCompleteRegistrationDedup,
   claimCompleteRegistrationSend,
   releaseClaimOnSendFailure,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572
+  deriveClickIdFromFbc,
+  readCookieValue,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
@@ -1089,7 +1091,9 @@ export async function handleJogarSubscribe(
   // `BEEHIIV_ORIGEM_EXTERNALID_FIELD`/`KIT_ORIGEM_EXTERNALID_FIELD`).
   const origin: SubscribeOrigin = {
     referrer: v.referrer,
-    clickId: v.clickId,
+    // #10230: sem `click_id` no form (assinou em página sem fbclid na URL), o
+    // `_fbc` (cookie do request ou do corpo) preserva o clique do anúncio.
+    clickId: v.clickId || deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc") ?? v.fbc) || "",
     externalId: resolveVisitorId(request.headers.get("Cookie"), v.externalId) ?? "",
   };
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
