@@ -1985,7 +1985,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // já está ocupado por Diaria-Session-Registry-Gc — usa 09:52 (slot
     // livre entre 09:50 e 09:55, ver grep de `hour: 9, minute:` neste
     // arquivo), ainda dentro do cluster matinal e antes de
-    // Diaria-Microsoft-Ads-Editorial-Reasons (10:00) e
     // Diaria-Ads-Spend-Ingest-Alarm (10:05, que lê o log desta ingestão).
     name: "Diaria-Microsoft-Ads-Spend-Ingest",
     description: "ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv",
@@ -2157,25 +2156,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "meta-capi/.confirmations-send.log",
     schedule: { kind: "interval", hours: 1 },
     issue: "#8543, #8978",
-  },
-  {
-    // #5878 — Campaign Management API v13 (SOAP) capta motivos editoriais de
-    // assets rejeitados. Diferente da Reporting API (Google Ads Spend Ingest
-    // acima, #5704), esta é uma chamada SINCRONA (GetAssetGroupsEditorialReasons
-    // não segue submit→poll→download) — devolve o resultado em 1 round-trip.
-    // Output: data/microsoft-ads/editorial-reasons-{YYYY-MM-DD}.json.
-    //
-    // Horário 10:00 BRT — 10min depois do Google Ads Spend Ingest (09:50),
-    // dentro do cluster matinal, sem colisão. Desde o #9091, mesmo contrato
-    // dos ingests (#9012/#9071): retry de rede + exit não-zero em falha real
-    // (credencial ausente, API, SOAP Fault); 0 motivos = exit 0. ARMADA na
-    // 300 (systemctl, rodada overnight 260909 — ver scheduled-tasks-registry.md).
-    name: "Diaria-Microsoft-Ads-Editorial-Reasons",
-    description: "captura motivos editoriais de assets rejeitados (Campaign Management API v13 SOAP)",
-    steps: [{ key: "check", script: "scripts/microsoft-ads-editorial-reasons.ts" }],
-    logPath: "microsoft-ads/.editorial-reasons.log",
-    schedule: { kind: "daily", hour: 10, minute: 0 },
-    issue: "#5878",
   },
   {
     name: "Diaria-Hub-Pages-Build",
@@ -2677,8 +2657,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "a partir do log; desde #9012/#9071 a falha real tambem sai com exit nao-zero, #5597",
     steps: [{ key: "alarm", script: "scripts/ads-spend-ingest-alarm.ts" }],
     logPath: "aquisicao/.ads-spend-ingest-alarm.log",
-    // Diaria 10:05 BRT -- depois de Diaria-Google-Ads-Spend-Ingest (09:50) e
-    // Diaria-Microsoft-Ads-Editorial-Reasons (10:00), slot livre (ver grep de
+    // Diaria 10:05 BRT -- depois de Diaria-Google-Ads-Spend-Ingest (09:50),
+    // slot livre (ver grep de
     // `kind: "daily"` neste arquivo). #7137: a docstring do script (em
     // origin/master) ainda afirma "a task Diaria-Ads-Spend-Ingest ainda NAO
     // existe" -- prosa vencida, ela existe desde o #5704
@@ -3212,8 +3192,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
  *   unit systemd em si (`~/.config/systemd/user/diaria-clarice-novos-abort-alarm.{service,timer}`
  *   + mirror `.systemd-units/`) continua pendente como ação manual do
  *   editor — isto só faz o exit code parar de falhar todas as noites.
+ * - `"Diaria-Microsoft-Ads-Editorial-Reasons"` — removida no #10148 (decisão
+ *   do editor no briefing overnight 261014): o timer já estava parado à mão
+ *   na `300` (`ActiveState=inactive`) e a task não fazia mais sentido. O CLI
+ *   `scripts/microsoft-ads-editorial-reasons.ts` e o núcleo SOAP em
+ *   `scripts/lib/microsoft-ads-editorial-reasons.ts` FICAM no repo (uso
+ *   manual, testes próprios) — só a execução agendada saiu. A limpeza do
+ *   unit `diaria-microsoft-ads-editorial-reasons.{service,timer}` na `300`
+ *   é ação manual do editor; até lá, um disparo acidental vira no-op aqui.
  */
-export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set(["Diaria-Clarice-Novos-Abort-Alarm"]);
+export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set([
+  "Diaria-Clarice-Novos-Abort-Alarm",
+  "Diaria-Microsoft-Ads-Editorial-Reasons",
+]);
 
 /** `true` quando `name` é uma task retirada conhecida (ver `RETIRED_TASK_NAMES`). */
 export function isRetiredTaskName(name: string): boolean {
