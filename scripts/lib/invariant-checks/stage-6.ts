@@ -18,6 +18,8 @@ import { findOrphanSlugs, listPageSlugs, slugsInSitemap } from "../site-sitemap-
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8786
 import { changedSourceFilesOnDisk, kitContentHash, type SourceHashes } from "../kit-draft-freshness.ts"; // #9428
 import { renderKitPayload, loadPlatformConfig } from "../../publish-newsletter-kit.ts"; // #9428
+import { deriveSlugFromD1, sitePageSourceDigest } from "../../publish-edition-site-page.ts"; // #10207
+import { recordedExpectedSlug, sitePageStaleness } from "../site-page-staleness.ts"; // #10207
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -590,10 +592,44 @@ function applyPrGateBypass(
  * Fora do escopo (sem violation aqui): state ausente/ilegível, `code: 2` e
  * `published≠true` — já são `site-page-published`; `merged` ausente sem
  * `prUrl` é arquivo anterior ao #8158 (sem PR a conferir).
+ *
+ * ## Página DEFASADA (#10207)
+ *
+ * Antes de olhar o merge, confere defasagem com a MESMA `sitePageStaleness`
+ * da trava (`scripts/lib/site-page-staleness.ts`): slug registrado ≠ slug que
+ * o e-mail linka, ou `sourceDigest` ≠ insumos atuais. Vale mesmo com
+ * `merged: true` — até o #10207 o invariante devolvia `[]` nesse caso e
+ * aprovava o que a trava reprova (exit 5): PR de `/p/A` mergeado → D1
+ * retitulado pra B → §6c-site pulado → e-mail linka `/p/B` → 404. Slug
+ * esperado: o `expectedSlug` que a trava gravou ao receber `--expected-slug`
+ * (fallback com `--slug` do post), senão `seoSlug` do D1 atual. D1 não
+ * derivável pula só a checagem de slug, igual à trava. Bypass da trava
+ * (`prGateBypass`) rebaixa pra `warning`, igual ao caso não-mergeado.
  */
+export type SitePageStalenessFn = (editionDir: string, state: Record<string, unknown>) => string | null;
+
+export const defaultSitePageStaleness: SitePageStalenessFn = (editionDir, state) => {
+  let expected = recordedExpectedSlug(state);
+  if (expected === undefined) {
+    try {
+      expected = deriveSlugFromD1(editionDir);
+    } catch {
+      expected = undefined;
+    }
+  }
+  let digest: string | undefined;
+  try {
+    digest = sitePageSourceDigest(editionDir);
+  } catch {
+    digest = undefined;
+  }
+  return sitePageStaleness(state, expected, digest);
+};
+
 function checkSitePagePrMerged(
   editionDir: string,
   fetchPrState: PrStateFetcher = ghPrState,
+  assessStaleness: SitePageStalenessFn = defaultSitePageStaleness,
 ): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "site-page-published.json");
   if (!existsSync(path)) return [];
@@ -611,7 +647,25 @@ function checkSitePagePrMerged(
   } catch {
     return [];
   }
-  if (data.code === 2 || data.published !== true || data.merged === true) return [];
+  if (data.code === 2 || data.published !== true) return [];
+  const stale = assessStaleness(editionDir, data as Record<string, unknown>);
+  if (stale) {
+    return applyPrGateBypass(data, [
+      {
+        rule: "site-page-pr-merged",
+        message:
+          `página do site DEFASADA (#10207): ${stale}. O PR ${data.prUrl ?? "(não identificado)"} ` +
+          `${data.merged === true ? "já está mergeado, mas " : ""}não serve a página que o e-mail linka. Republicar ` +
+          `(§6b-site passo 2: \`publish-edition-site-page.ts\` com \`--slug-from-d1\` no Kit) e ` +
+          `rodar \`npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR} --wait-ms 540000\` ` +
+          `(+ \`--expected-slug\` se a página foi publicada com \`--slug\` explícito).`,
+        source_issue: "#10207",
+        severity: "error",
+        file: path,
+      },
+    ]);
+  }
+  if (data.merged === true) return [];
   const hasPr = typeof data.prUrl === "string" && isPrUrl(data.prUrl);
   if (!hasPr && data.merged !== false) return [];
   let liveState: string | null = null;
@@ -779,8 +833,9 @@ export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "site-page-pr-merged",
     description:
-      "PR da página do site registrado em _internal/site-page-published.json está MERGED — GATE-BLOCKING: a Etapa 6 " +
-      "não termina sem o merge, o PR é aberto no início da Etapa 5 sem esperar (#10160)",
+      "PR da página do site registrado em _internal/site-page-published.json está MERGED e a página não está " +
+      "defasada (slug/insumos, #10207) — GATE-BLOCKING: a Etapa 6 não termina sem o merge, o PR é aberto no " +
+      "início da Etapa 5 sem esperar (#10160)",
     source_issue: "#10160",
     stage: 6,
     run: checkSitePagePrMerged,

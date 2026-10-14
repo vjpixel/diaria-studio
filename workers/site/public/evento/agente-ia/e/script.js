@@ -18,8 +18,12 @@ if (floatCta) {
   };
   window.addEventListener("scroll", update, { passive: true });
   window.addEventListener("resize", update, { passive: true });
+  // #10217: passa pelo track() do script comum (carregado antes, também com
+  // defer): o evento sai como CliqueFlutuante_E com origem/utm_campaign/
+  // utm_content (#10079) e respeita o modo interno (#10080). Chamar o fbq
+  // direto mandava o evento sem a origem da visita.
   floatCta.addEventListener("click", () => {
-    if (typeof window.fbq === "function") window.fbq("trackCustom", "CliqueFlutuante_E", {});
+    if (typeof track === "function") track("CliqueFlutuante");
   });
   update();
 }
