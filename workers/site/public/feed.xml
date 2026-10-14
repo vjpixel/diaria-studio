@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 13 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 14 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>OAB-SP vai à Justiça contra a startup Enter</title>
+      <link>https://diar.ia.br/p/oab-sp-vai-a-justica-contra-a-startup-enter</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/oab-sp-vai-a-justica-contra-a-startup-enter</guid>
+      <pubDate>Wed, 14 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic roda modelo em 15 TV boxes de US$ 55 | Assina o Gemini Pro? O Argon já chegou para você</description>
+    </item>
     <item>
       <title>Gemini vira colega com e-mail e agenda próprios</title>
       <link>https://diar.ia.br/p/gemini-vira-colega-com-e-mail-e-agenda-proprios</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos</guid>
       <pubDate>Tue, 04 Aug 2026 09:00:00 GMT</pubDate>
       <description>Mercado de IA abre espaço além do código | UE exige aviso quando você fala com IA</description>
-    </item>
-    <item>
-      <title>Claude hackeou 3 empresas sem ninguém notar</title>
-      <link>https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar</guid>
-      <pubDate>Mon, 03 Aug 2026 09:00:00 GMT</pubDate>
-      <description>BuzzFeed demite 1/3 da equipe após aposta em IA | Deepfake de Roberto Carlos vira golpe de R$1,8 bi</description>
     </item>
   </channel>
 </rss>
