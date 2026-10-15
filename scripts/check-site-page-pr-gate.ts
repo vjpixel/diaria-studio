@@ -59,14 +59,17 @@
  * trava da #10160 continua sendo o default: sem a flag, nada muda. Uma
  * republicação posterior reescreve o state e apaga o bypass (nova tentativa).
  *
- * #10196: bypass de `stale`/`no-pr` é IRRECUPERÁVEL sozinho. O waiter em
- * background (#9593) só mergeia o PR do slug que ele conhece — com `stale` a
- * página no PR é a do slug/conteúdo VELHO (e o `stale` sai antes de qualquer
- * tentativa de merge), com `no-pr` não há PR nenhum. A premissa "o waiter
- * segue tentando até as 06:00" só vale pra `pending`/`blocked`. Nesses dois
- * casos o bypass grava `unrecoverable: true` em `prGateBypass`, loga nível
- * `error` e dispara `notifyEditor` urgente: o `/p/{slug}` do e-mail pode
- * nunca existir sem ação humana.
+ * #10196: bypass de `stale` é IRRECUPERÁVEL sozinho. O waiter em background
+ * (#9593) só mergeia o PR do slug que ele conhece — com `stale` a página no PR
+ * é a do slug/conteúdo VELHO (e o `stale` sai antes de qualquer tentativa de
+ * merge). A premissa "o waiter segue tentando até as 06:00" só vale pra
+ * `pending`/`blocked`. Nesse caso o bypass grava `unrecoverable: true` em
+ * `prGateBypass`, loga nível `error` e dispara `notifyEditor` urgente: o
+ * `/p/{slug}` do e-mail pode nunca existir sem ação humana. `no-pr` fica de
+ * fora DE PROPÓSITO (review do PR #10257): é o veredito do bypass do guard de
+ * merge tag (`code: 5`, #10191), um uso previsto — tratá-lo como urgente
+ * abriria issue P1 + e-mail a cada ocorrência. Segue o comportamento anterior:
+ * o playbook loga `warn` e nada mais.
  *
  * Merge feito aqui é gravado no state file (`merged: true`, `status:
  * "merged"`, `mergeBlocker` limpo) — mesma função do waiter
@@ -127,10 +130,11 @@ export type SitePagePrGateVerdict =
 
 /**
  * #10196: veredito cujo bypass deixa o link do e-mail sem página até alguém
- * agir — nenhum waiter vai mergear a página certa sozinho. Ver docstring.
+ * agir — nenhum waiter vai mergear a página certa sozinho. Só `stale`: `no-pr`
+ * é excluído de propósito (ver docstring do módulo).
  */
 export function isUnrecoverableBypass(v: UnmergedVerdict): boolean {
-  return v.kind === "stale" || v.kind === "no-pr";
+  return v.kind === "stale";
 }
 
 /** Exit code de cada veredito — ver docstring do módulo. */
@@ -356,6 +360,12 @@ export function buildUnrecoverableBypassFinding(
 export interface UnrecoverableBypassAlertDeps {
   log?: (event: RunLogEvent, rootDir: string) => unknown;
   notify?: (finding: NotifyEditorFinding) => Promise<unknown>;
+  /**
+   * `--expected-slug` da chamada: é o slug que o e-mail linka, e vence o
+   * `expectedSlug` do state e o `seoSlug` do D1 (review do PR #10257 — sem
+   * ele, o fallback Beehiiv com slug do post alertava nomeando o slug do D1).
+   */
+  expectedSlug?: string;
 }
 
 /**
@@ -373,9 +383,10 @@ export async function alertUnrecoverableBypass(
   const read = readSitePageState(editionDirAbs);
   const state = read.kind === "ok" ? read.state : {};
   const slug =
-    typeof state[SITE_PAGE_EXPECTED_SLUG_FIELD] === "string"
+    deps.expectedSlug ??
+    (typeof state[SITE_PAGE_EXPECTED_SLUG_FIELD] === "string"
       ? (state[SITE_PAGE_EXPECTED_SLUG_FIELD] as string)
-      : resolveExpectedSlug(editionDirAbs, undefined);
+      : resolveExpectedSlug(editionDirAbs, undefined));
   const finding = buildUnrecoverableBypassFinding(editionDirAbs, verdict, slug);
   process.stderr.write(`[site-page-pr-gate] ERRO: ${finding.subject} (#10196)\n`);
   try {
@@ -444,7 +455,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  await alertUnrecoverableBypass(ROOT, editionDirAbs, verdict);
+  await alertUnrecoverableBypass(ROOT, editionDirAbs, verdict, { expectedSlug });
   console.log(JSON.stringify(verdict, null, 2));
   process.exitCode = exitCodeForVerdict(verdict);
 }

@@ -10,9 +10,10 @@
  * de novo. A publicação reusa o PR #A ainda aberto e o waiter dele lia o
  * marcador e desistia em silêncio.
  *
- * #10196: bypass de `stale`/`no-pr` é irrecuperável (nenhum waiter publica a
- * página certa) — grava `unrecoverable`, loga `error` e notifica urgente;
- * `pending`/`blocked` seguem como antes.
+ * #10196: bypass de `stale` é irrecuperável (nenhum waiter publica a página
+ * certa) — grava `unrecoverable`, loga `error` e notifica urgente;
+ * `no-pr`/`pending`/`blocked` seguem como antes (`no-pr` é o bypass previsto
+ * do guard de merge tag, review do PR #10257).
  *
  * Nenhum teste toca `gh` real: `GhRunner` é sempre fake.
  */
@@ -29,6 +30,8 @@ import {
   unmarkSitePagePrSuperseded,
   writeSitePageState,
   runMergeWaiter,
+  runWithFreshCodeWorktree,
+  defaultFreshCodeFallbackDeps,
   type PublishPageDeps,
   type GitRunner,
   type GhRunner,
@@ -101,6 +104,41 @@ function makeGit(trackedSlug: string) {
   };
   return { git, calls };
 }
+
+describe("#10198 × fallback em worktree limpo (#9963): mesmo editionDir absoluto", () => {
+  it("pai grava o state provisório e o filho recebe --edition-dir no MESMO path; o provisório herda last_published", () => {
+    const ed = tmp("diaria-10198-9963-ed-");
+    writeSitePageState(ed, { code: 0, slug: SLUG_A, bytes: 1, published: true, prUrl: url(PR_A), merged: true });
+    const real = defaultFreshCodeFallbackDeps();
+    const pendingDirs: string[] = [];
+    let childArgv: string[] = [];
+    const res = runWithFreshCodeWorktree("/host", ["--edition-dir", "data/editions/261015", "--slug-from-d1"], ed, {
+      git: () => "",
+      mkTemp: () => "/tmp/wt-fake",
+      exists: () => true,
+      link: () => {},
+      unlink: () => true,
+      rmDir: () => {},
+      log: () => {},
+      writePendingState: (dir) => {
+        pendingDirs.push(dir);
+        real.writePendingState(dir);
+      },
+      runChild: ({ argv }) => {
+        childArgv = argv;
+        // O filho (em origin/master) lê o state do path que recebeu: o
+        // provisório do pai não pode ter apagado o último par confirmado.
+        const i = argv.indexOf("--edition-dir");
+        assert.deepEqual(readPreviousSitePage(argv[i + 1]), { slug: SLUG_A, prNumber: PR_A });
+        return 0;
+      },
+    });
+    assert.deepEqual(res, { ran: true, exitCode: 0 });
+    assert.deepEqual(pendingDirs, [ed]);
+    assert.equal(childArgv[childArgv.indexOf("--edition-dir") + 1], ed, "filho grava no mesmo dir absoluto que o pai lê");
+    assert.equal(readState(ed).code, 3, "provisório gravado");
+  });
+});
 
 describe("#10198 last_published sobrevive a tentativa falha", () => {
   it("publicado A → code:3 → readPreviousSitePage ainda devolve A; publicado B substitui", () => {
@@ -236,7 +274,7 @@ describe("#10199 PR que volta a ser o corrente sai do marcador", () => {
   });
 });
 
-describe("#10196 bypass irrecuperável (stale/no-pr) alerta à parte", () => {
+describe("#10196 bypass irrecuperável (só stale) alerta à parte", () => {
   const never: GhRunner = (args) => {
     throw new Error(`gh não deveria ser consultado: ${args.join(" ")}`);
   };
@@ -283,13 +321,42 @@ describe("#10196 bypass irrecuperável (stale/no-pr) alerta à parte", () => {
     assert.match(findings[0].body, /waiter/);
   });
 
-  it("no-pr + bypass também é irrecuperável", async () => {
+  it("no-pr + bypass NÃO é irrecuperável: sem unrecoverable, sem issue P1/e-mail (guard de merge tag)", async () => {
     const dir = edition();
-    const verdict = runSitePagePrGate("/repo", dir, { gh: never, bypassReason: "--no-gates: sem PR" });
-    assert.equal((verdict as { unrecoverable?: boolean }).unrecoverable, true);
-    let notified = 0;
-    await alertUnrecoverableBypass("/repo", dir, verdict, { log: () => {}, notify: async () => void notified++ });
-    assert.equal(notified, 1);
+    const verdict = runSitePagePrGate("/repo", dir, { gh: never, bypassReason: "guard de merge tag (code 5)" });
+    assert.equal(verdict.kind, "bypassed");
+    assert.equal((verdict as { bypassed: { kind: string } }).bypassed.kind, "no-pr");
+    assert.equal(exitCodeForVerdict(verdict), 0);
+    assert.equal((verdict as { unrecoverable?: boolean }).unrecoverable, undefined);
+    assert.equal((readState(dir).prGateBypass as { unrecoverable?: boolean }).unrecoverable, undefined);
+    const alerted = await alertUnrecoverableBypass("/repo", dir, verdict, {
+      log: () => assert.fail("não deveria logar error"),
+      notify: async () => assert.fail("não deveria notificar"),
+    });
+    assert.equal(alerted, false);
+  });
+
+  it("--expected-slug da chamada vence o slug do state/D1 no texto do alerta", async () => {
+    const dir = edition();
+    writeFileSync(
+      statePath(dir),
+      JSON.stringify({ code: 0, slug: "slug-velho", published: true, prUrl: url(PR_A), merged: true, expectedSlug: "slug-do-d1" }),
+    );
+    const verdict = {
+      kind: "bypassed" as const,
+      bypassReason: "x",
+      bypassed: { kind: "stale" as const, prNumber: PR_A, reason: "slug difere" },
+      unrecoverable: true as const,
+    };
+    const findings: NotifyEditorFinding[] = [];
+    await alertUnrecoverableBypass("/repo", dir, verdict, {
+      log: () => {},
+      notify: async (f) => void findings.push(f),
+      expectedSlug: "slug-do-post",
+    });
+    assert.equal(findings.length, 1);
+    assert.match(findings[0].subject, /\/p\/slug-do-post/);
+    assert.doesNotMatch(findings[0].subject, /slug-do-d1/);
   });
 
   it("blocked + bypass segue recuperável: sem unrecoverable, sem alerta", async () => {
@@ -322,7 +389,12 @@ describe("#10196 bypass irrecuperável (stale/no-pr) alerta à parte", () => {
 
   it("notify que lança não derruba o alerta (fail-soft)", async () => {
     const dir = edition();
-    const verdict = runSitePagePrGate("/repo", dir, { gh: never, bypassReason: "x" });
+    writeFileSync(
+      statePath(dir),
+      JSON.stringify({ code: 0, slug: "slug-velho", published: true, prUrl: url(PR_A), merged: true }),
+    );
+    const verdict = runSitePagePrGate("/repo", dir, { gh: never, expectedSlug: "slug-do-email", bypassReason: "x" });
+    assert.equal((verdict as { unrecoverable?: boolean }).unrecoverable, true);
     const ok = await alertUnrecoverableBypass("/repo", dir, verdict, {
       log: () => {},
       notify: async () => {
