@@ -439,8 +439,8 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .button:focus-visible,.float-cta:focus-visible{outline-color:var(--ink)}
 .final .button:focus-visible{outline-color:var(--paper)}
 
-/* Topo: o quadro da data ganha o rótulo "ao vivo" com ponto teal piscando. O piscar é só de
-   opacidade e lento, então vale também com "reduzir movimento"; o anel que cresce, não. */
+/* Topo: o quadro da data ganha o rótulo "ao vivo". O ponto teal piscando (.live-dot, no topo e no
+   fechamento) pisca só na opacidade e devagar, então vale também com "reduzir movimento"; o anel que cresce, não. */
 .hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px}
 .hero-date strong{font-size:clamp(19px,1.9vw,23px)}
 .live-label{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase}
@@ -465,11 +465,13 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .section-ink h2 em{color:var(--brand)}
 .section-ink h2+p{font-size:clamp(18px,1.6vw,21px);max-width:720px}
 
-/* O que você vai criar: um cartão por formato */
-.formats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--gap)}
-.formats-grid li{padding:22px 24px;border:1px solid var(--rule);border-radius:12px;background:var(--paper)}
-.formats-grid li:last-child{border-bottom:1px solid var(--rule)}
-@media (max-width:767px){.formats-grid{gap:10px}.formats-grid li{padding:14px 18px;font-size:19px}}
+/* Como funciona: título dos posts e a prova da diar.ia.br em destaque; cada post mostra o formato */
+.result-head{display:block;max-width:760px}
+/* Título em teal mais escuro (#008888): o teal da marca sobre o bege fica em 2,55:1; este dá 3,41:1, o mínimo para título grande. */
+.result-title{font-size:clamp(32px,4vw,46px);line-height:1.08;color:#008888;margin-bottom:12px}
+.proof-line{font-family:var(--serif);font-size:clamp(20px,2vw,24px);font-weight:700;letter-spacing:-.01em}
+.nets .net-name{letter-spacing:.06em}
+.nets-note{margin-top:28px;max-width:760px;font-family:var(--serif);font-style:italic;font-size:clamp(18px,1.8vw,21px);line-height:1.45}
 
 /* Para quem é: cada frase num cartão de papel */
 .sayings{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -495,11 +497,13 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .sheet-check .on b{border-color:var(--brand);background:var(--brand)}
 .sheet-check .on b::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
 .doc .sheet-foot{flex:none;margin-top:12px;font-family:var(--serif);font-style:italic;font-size:13px}
-.bonus-cover{width:96px;height:96px;border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(23,20,17,.1)}
 
 /* Garantia: escudo em círculo teal */
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
 
 /* Fechamento: só data, frase, preço e botão */
+/* No fechamento, o ponto teal piscando fica ao lado de "Ao vivo pelo Zoom", no lugar da bolinha fixa (pedido de 15/10). */
+.final-when::before{content:none}
+.final-when .live-label{margin-top:6px}
 .final-price{display:flex;flex-direction:column;align-items:center;gap:4px;margin:0 0 28px;font-size:20px}
 .final-price strong{font-size:clamp(52px,6vw,68px);line-height:1}
