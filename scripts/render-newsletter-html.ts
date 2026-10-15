@@ -115,6 +115,7 @@ import {
   type Esp,
 } from "./lib/newsletter-render-html.ts";
 import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
+import { writeRenderSourceStamp } from "./lib/newsletter-html-freshness.ts"; // #10258
 import {
   buildLinkLayout,
   buildPublishedLinks,
@@ -333,6 +334,12 @@ function main(): void {
     mkdirSync(dirname(resolvedOut), { recursive: true }); // garantir que _internal/ existe (#2042)
     writeFileSync(resolvedOut, output + "\n");
     console.error(`Written to ${outPath}`);
+    // #10258: carimba o sha256 do 02-reviewed.md usado neste render — o
+    // invariante newsletter-html-not-behind-reviewed (error, bloqueia o
+    // sentinel do Stage 4) usa isso pra não acusar um reviewed só tocado.
+    // Variante patronos fica de fora: é um arquivo paralelo, não a cadeia
+    // draft → newsletter-final.html.
+    if (format === "html" && !patronos) writeRenderSourceStamp(resolvedDir);
   } else {
     // #2012: quando stdout não é TTY (pipe / redirect) e --out está ausente,
     // o HTML pode ir silenciosamente pro /dev/null — exatamente o que causou

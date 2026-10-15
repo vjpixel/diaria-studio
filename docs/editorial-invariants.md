@@ -99,7 +99,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |
 | `max-content-items` | rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785) | #9785 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
-| `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245) | #10245 |
+| `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
 | `no-duplicate-urls-vs-past-editions` | URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only) | #8993 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
