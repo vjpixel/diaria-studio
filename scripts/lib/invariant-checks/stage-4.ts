@@ -3248,7 +3248,51 @@ function checkKitFixtureAudit(
   ];
 }
 
+/**
+ * #10245 — `_internal/newsletter-final.html` não pode ficar atrás de
+ * `02-reviewed.md`. O replant do erro intencional (e qualquer edição do gate 4)
+ * regrava o reviewed sem re-renderizar o HTML; Stage 5 publicava a página do
+ * site e o broadcast Kit com insumos defasados. HTML ausente não acusa (o
+ * pré-render é outra regra). `mtimes`: override pra teste.
+ */
+export function checkNewsletterHtmlNotBehindReviewed(
+  editionDir: string,
+  mtimes?: (relPath: string) => number | null,
+): InvariantViolation[] {
+  const getMtime =
+    mtimes ??
+    ((relPath: string): number | null => {
+      const full = resolve(editionDir, relPath);
+      return existsSync(full) ? statSync(full).mtimeMs : null;
+    });
+  const html = "_internal/newsletter-final.html";
+  if (getMtime(html) === null) return [];
+  const stale = evaluateStaleness([{ downstream: html, upstreams: ["02-reviewed.md"] }], getMtime, 1000);
+  if (stale.length === 0) return [];
+  const s = stale[0];
+  return [
+    {
+      rule: "newsletter-html-not-behind-reviewed",
+      message:
+        `${html} (${s.downstream_mtime}) é anterior a 02-reviewed.md (${s.upstream_mtime}, +${s.lag_minutes} min) — ` +
+        `a página do site e o broadcast sairiam com o texto antigo. Re-renderizar: render-newsletter-html.ts + ` +
+        `substitute-image-urls.ts + render-kit-html-preview.ts antes do sentinel.`,
+      source_issue: "#10245",
+      // warning: só mtime (sem comparação de conteúdo) — mesmo critério de social-not-behind-reviewed
+      severity: "warning",
+      file: resolve(editionDir, html),
+    },
+  ];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
+  {
+    id: "newsletter-html-not-behind-reviewed",
+    description: "newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245)",
+    source_issue: "#10245",
+    stage: 4,
+    run: (editionDir) => checkNewsletterHtmlNotBehindReviewed(editionDir),
+  },
   {
     id: "public-images-populated",
     description: "06-public-images.json com URLs d1/d2/d3 (#999)",
