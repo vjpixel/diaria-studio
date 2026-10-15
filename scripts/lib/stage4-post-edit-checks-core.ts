@@ -52,6 +52,25 @@ import { hashContent } from "./stage4-cas.ts";
 /** #9830: regra de invariante coberta pelo item 6 do sweep (`checkSentinel`) — pulada no item 5. */
 export const HUMANIZER_SEAL_RULE_ID = "social-humanizer-seal-fresh";
 
+/**
+ * #10261: regra de frescor do HTML (`_internal/newsletter-final.html` vs
+ * `02-reviewed.md`, #10245/#10258) — pulada no item 5 do sweep. O sweep é
+ * disparado logo após o Edit do reviewed, ANTES do re-render terminar: ler o
+ * HTML nesse instante sempre acusa "defasado", o achado vira `gate_blocking`
+ * e, como `computeInputsHash` não cobre o HTML, o re-render não invalida o
+ * relatório — o `sim` do editor ficava travado por um bloqueio que nenhum
+ * re-render limpava. A imposição fica com quem lê o estado FINAL:
+ * `check-invariants --stage 4` e `pipeline-sentinel.ts write --step 4`
+ * (este último recusa o sentinel com HTML defasado — #10258 intacto).
+ */
+export const HTML_FRESHNESS_RULE_ID = "newsletter-html-not-behind-reviewed";
+
+/** Regras do registry do Stage 4 que o item 5 do sweep não roda (ver docs acima). */
+export const SWEEP_SKIPPED_RULE_IDS: ReadonlySet<string> = new Set([
+  HUMANIZER_SEAL_RULE_ID,
+  HTML_FRESHNESS_RULE_ID,
+]);
+
 export interface Stage4Finding {
   /** Qual sub-checagem originou o achado — útil pra "onde eu corrijo isso". */
   source:
@@ -318,7 +337,9 @@ export function runStage4PostEditChecks(editionDir: string, root: string): Stage
       // achado no resumo do gate — e, com selo ausente, ela diz `warning`
       // enquanto o item 6 diz `error`. A regra continua no `check-invariants
       // --stage 4` e no `pipeline-sentinel.ts write --step 4`.
-      if (rule.id === HUMANIZER_SEAL_RULE_ID) continue;
+      // #10261: idem pra `newsletter-html-not-behind-reviewed` — o sweep lê o
+      // HTML no meio do re-render (ver `HTML_FRESHNESS_RULE_ID`).
+      if (SWEEP_SKIPPED_RULE_IDS.has(rule.id)) continue;
       const violations = rule.run(editionDir);
       for (const v of violations) {
         findings.push({
