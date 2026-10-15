@@ -439,14 +439,16 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .button:focus-visible,.float-cta:focus-visible{outline-color:var(--ink)}
 .final .button:focus-visible{outline-color:var(--paper)}
 
-/* Topo: o quadro da data ganha o rótulo "ao vivo" com ponto teal pulsando */
+/* Topo: o quadro da data ganha o rótulo "ao vivo" com ponto teal piscando. O piscar é só de
+   opacidade e lento, então vale também com "reduzir movimento"; o anel que cresce, não. */
 .hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px}
 .hero-date strong{font-size:clamp(19px,1.9vw,23px)}
 .live-label{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase}
-.live-dot{position:relative;flex:none;width:10px;height:10px;border-radius:50%;background:var(--brand)}
-.live-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:var(--brand)}
+.live-dot{position:relative;flex:none;width:10px;height:10px;border-radius:50%;background:var(--brand);animation:live-blink 1.4s ease-in-out infinite}
+@keyframes live-blink{0%,100%{opacity:1}50%{opacity:.2}}
+.live-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:var(--brand);opacity:0}
 @media (prefers-reduced-motion:no-preference){
-  .live-dot::after{animation:live-pulse 1.6s ease-out infinite}
+  .live-dot::after{animation:live-pulse 1.4s ease-out infinite}
   @keyframes live-pulse{from{transform:scale(1);opacity:.6}to{transform:scale(2.6);opacity:0}}
 }
 
@@ -474,6 +476,26 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .sayings li{padding:14px 18px;border-radius:12px;background:var(--paper)}
 .sayings li:last-child{grid-column:1/-1}
 @media (max-width:767px){.sayings{grid-template-columns:1fr;gap:8px}.sayings li{padding:10px 16px}.sayings span{font-size:17px}}
+
+/* O que você recebe: prévia de cada material (folha sobre fundo bege, cortada embaixo) e capa do guia */
+.materials .bullet{overflow:hidden}
+.doc{height:196px;margin:-24px -24px 4px;padding:22px 26px 0;background:var(--paper-alt);-webkit-mask-image:linear-gradient(#000 78%,transparent);mask-image:linear-gradient(#000 78%,transparent)}
+.sheet{min-height:100%;padding:16px 18px;border:1px solid var(--rule);border-radius:4px 4px 0 0;background:var(--white);box-shadow:0 6px 18px rgba(23,20,17,.1);transform:rotate(-1.2deg);transform-origin:bottom left}
+.materials .bullet+.bullet .sheet{transform:rotate(1.2deg);transform-origin:bottom right}
+.doc .sheet-head{flex:none;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--rule)}
+.sheet-head::before{content:"● ";color:var(--brand)}
+.sheet-q{display:grid;gap:10px;font-size:12px;line-height:1.3;counter-reset:q}
+.sheet-q li{display:grid;gap:3px;counter-increment:q}
+.sheet-q span::before{content:counter(q) ". ";font-weight:600}
+.sheet-q em,.sheet-q i{display:block;min-height:17px;padding-bottom:1px;border-bottom:1px solid var(--rule-ink)}
+.sheet-q em{font-family:var(--serif);font-size:13px}
+.sheet-check{display:grid;gap:9px;font-size:12px;line-height:1.3}
+.sheet-check li{display:flex;gap:9px;align-items:flex-start}
+.sheet-check b{position:relative;flex:none;width:14px;height:14px;margin-top:1px;border:1.5px solid var(--ink);border-radius:3px}
+.sheet-check .on b{border-color:var(--brand);background:var(--brand)}
+.sheet-check .on b::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.doc .sheet-foot{flex:none;margin-top:12px;font-family:var(--serif);font-style:italic;font-size:13px}
+.bonus-cover{width:96px;height:96px;border:1px solid var(--rule);border-radius:4px;box-shadow:0 4px 12px rgba(23,20,17,.1)}
 
 /* Garantia: escudo em círculo teal */
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
