@@ -452,6 +452,8 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 /* Como funciona: rótulos das etapas em pílula, número em círculo teal */
 .stage-label{display:inline-flex;align-self:flex-start;align-items:center;gap:8px;padding:3px 12px 3px 3px;border-radius:999px;background:var(--paper);border:1px solid var(--rule-ink);font-weight:500;line-height:1.2}
 .stage-label b{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--brand);color:var(--ink);font-weight:500;letter-spacing:0}
+/* Sem os fios verticais entre as etapas quando elas empilham (pedido de 15/10). */
+@media (max-width:1023px){.stage+.stage::before{content:none}}
 
 /* Faixa teal (por que o ChatGPT devolve texto genérico) */
 .section-brand{background:var(--brand);color:var(--ink)}
