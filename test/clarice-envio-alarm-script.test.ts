@@ -512,3 +512,26 @@ describe("#10210 — alarme decisão×toggle vira finding", () => {
     assert.deepEqual(Object.keys(active), ["clarice-envio:base-colapsada"]);
   });
 });
+
+describe("buildEnvioAlarmFindings — base colapsada aceita (#10273)", () => {
+  const AAMMDD = "261014";
+  const evaluation = { verdict: "alarm-failure" as const, reportId: `envio-${AAMMDD}-base-colapsada` };
+  const now = new Date("2026-10-14T23:30:00.000Z");
+  const reportMtimeMs = Date.parse("2026-10-14T22:00:00.000Z");
+  const collapsedRead = { collapsed: false, invalid: false } as unknown as ClariceEnvioBaseCollapseRead;
+  const countCollapse = (reads: Parameters<typeof buildEnvioAlarmFindings>[4]) =>
+    buildEnvioAlarmFindings(evaluation, AAMMDD, null, now, reads).filter((f) => f.fingerprint === "base-colapsada").length;
+
+  it("relatório colapsado + ack posterior, estado apagado => sem achado", () => {
+    const baseAck = { acceptedAt: "2026-10-14T22:30:00.000Z", reason: "ok" };
+    assert.equal(countCollapse({ baseCollapse: collapsedRead, baseAck, reportMtimeMs }), 0);
+    assert.equal(buildEnvioAlarmFindings(evaluation, AAMMDD, null, now, { baseCollapse: collapsedRead, baseAck, reportMtimeMs }).length, 0);
+  });
+  it("ack ANTERIOR ao relatório => achado continua", () => {
+    const baseAck = { acceptedAt: "2026-10-14T20:00:00.000Z", reason: "ok" };
+    assert.equal(countCollapse({ baseCollapse: collapsedRead, baseAck, reportMtimeMs }), 1);
+  });
+  it("sem ack => achado continua", () => {
+    assert.equal(countCollapse({ baseCollapse: collapsedRead, baseAck: null, reportMtimeMs }), 1);
+  });
+});
