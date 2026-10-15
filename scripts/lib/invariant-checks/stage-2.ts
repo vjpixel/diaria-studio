@@ -75,7 +75,8 @@ function runCheck(
  * lint-newsletter-md (titles-per-highlight, why-matters-format,
  * destaque-min-chars, destaque-max-chars, why-matters-length (#3993),
  * intro-count, coverage-line-format (#1207), eai-section,
- * destaque-category-noticias (#8200, cedo no Stage 2 desde #9105)).
+ * destaque-category-noticias (#8200, cedo no Stage 2 desde #9105),
+ * section-links-resolve (#3821, cedo no Stage 2 desde #10311)).
  *
  * Cada check é invocado individualmente pra produzir mensagens específicas.
  * Não chamamos o modo "default" (que exige `--approved` JSON) porque o
@@ -118,6 +119,12 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     { name: "pool-summary-quality", issue: "#9358" },
     { name: "no-untranslated-summary", issue: "#3196" },
     { name: "secondary-items-have-summary", issue: "#2545" },
+    // #10311: roda o parser REAL (`parseSections`) e barra item de seção
+    // secundária com url vazia — caso 261016: VÍDEO com linha em branco entre
+    // `**[Título](URL)**` e a descrição vira 2 blocos, o 2º sem URL. Era
+    // gate-blocking só no agregador do Stage 4; aqui o sentinel do Stage 2
+    // recusa enquanto o fix (tirar a linha em branco) ainda é da pipeline.
+    { name: "section-links-resolve", issue: "#3821" },
   ];
   const violations: InvariantViolation[] = [];
   for (const check of checks) {
@@ -588,7 +595,7 @@ function checkCarouselTextOverflowStage2(editionDir: string): InvariantViolation
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
-    description: "02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105) e resumos do pool completos/traduzidos (#9358)",
+    description: "02-reviewed.md passa lint-newsletter-md granulares, incl. destaque sem categoria NOTÍCIAS (#964, #8200/#9105), resumos do pool completos/traduzidos (#9358) e itens de seção com URL resolvível pelo parser real (#3821/#10311)",
     source_issue: "#964",
     stage: 2,
     run: checkReviewedPassesAllLints,
