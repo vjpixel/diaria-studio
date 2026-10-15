@@ -32,7 +32,27 @@ export interface KitReviewRecord {
   review_reason?: KitReviewReason;
   /** Issues que sobraram após o filtro de falso-positivo (§5f passo 4.5). */
   review_final_issues: string[];
+  /**
+   * #10243: checagem determinística (TS, não LLM) do erro intencional no e-mail
+   * ENTREGUE. `present` = `wrong_value` achado; `missing` = ausente (o agente
+   * pode ter alucinado o texto correto — falso negativo de 261015);
+   * `no_wrong_value` = sem `wrong_value` declarado; `no_email` = sem corpo.
+   */
+  intentional_error_check?: IntentionalErrorCheck;
   recorded_at: string;
+}
+
+export type IntentionalErrorCheck = "present" | "missing" | "no_wrong_value" | "no_email";
+
+/** @pure Case-sensitive: "Unibanko" ≠ "Unibanco". */
+export function checkIntentionalErrorInEmail(
+  emailBody: string | undefined,
+  wrongValue: string | undefined,
+): IntentionalErrorCheck {
+  const w = (wrongValue ?? "").trim();
+  if (!w) return "no_wrong_value";
+  if (!emailBody) return "no_email";
+  return emailBody.includes(w) ? "present" : "missing";
 }
 
 export function isKitReviewStatus(v: unknown): v is KitReviewStatus {
@@ -54,6 +74,7 @@ export function buildKitReviewRecord(input: {
   attempts?: number;
   reason?: unknown;
   issues?: unknown;
+  intentionalErrorCheck?: IntentionalErrorCheck;
   now?: Date;
 }): KitReviewRecord {
   if (!isKitReviewStatus(input.status)) {
@@ -84,11 +105,21 @@ export function buildKitReviewRecord(input: {
   if (!Array.isArray(issues) || issues.some((i) => typeof i !== "string")) {
     throw new Error("review_final_issues precisa ser um array de strings");
   }
+  const finalIssues = issues as string[];
+  // #10243: `ok` do agente não vale se o erro intencional declarado não está
+  // no e-mail entregue — o agente descreveu texto que não existia.
+  if (input.intentionalErrorCheck === "missing" && input.status === "ok") {
+    throw new Error(
+      "review_status=ok contradiz a checagem determinística: wrong_value do erro intencional " +
+        "NÃO aparece no e-mail entregue (#10243). Reavalie o e-mail ou grave issues_unfixable.",
+    );
+  }
   return {
     review_status: input.status,
     review_attempts: attempts,
     ...(input.reason !== undefined ? { review_reason: input.reason as KitReviewReason } : {}),
-    review_final_issues: issues as string[],
+    review_final_issues: finalIssues,
+    ...(input.intentionalErrorCheck ? { intentional_error_check: input.intentionalErrorCheck } : {}),
     recorded_at: (input.now ?? new Date()).toISOString(),
   };
 }
