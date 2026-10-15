@@ -3285,7 +3285,10 @@ export function checkNewsletterHtmlNotBehindReviewed(
     {
       rule: "newsletter-html-not-behind-reviewed",
       message:
-        `${NEWSLETTER_FINAL_HTML} é anterior a 02-reviewed.md (+${result.lagMinutes} min) e ${why} — ` +
+        // #10268: stamp-mismatch também dispara com o HTML mais novo (lag 0).
+        `${NEWSLETTER_FINAL_HTML} não reflete 02-reviewed.md` +
+        (result.lagMinutes > 0 ? ` (HTML anterior em ${result.lagMinutes} min)` : "") +
+        ` — ${why}; ` +
         `a página do site e o broadcast sairiam com o texto antigo. Re-renderizar: render-newsletter-html.ts + ` +
         `substitute-image-urls.ts + render-kit-html-preview.ts antes do sentinel.`,
       source_issue: "#10245",
