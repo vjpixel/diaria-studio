@@ -76,4 +76,20 @@ describe("pontos de merge consultam o sinal (#10278)", () => {
     assert.ok(occurrences >= 2, `esperava o gate citado no pickup 2b e na Fase 1 (achei ${occurrences})`);
     assert.match(skill, /gh pr edit \{N\} --add-label retido-para-editor/);
   });
+
+  // #10294: as outras portas de merge também leem o sinal.
+  it("merge train (run-merge-train.ts + merge-train-live.ts) consulta o sinal retido (#10294)", () => {
+    const cli = readFileSync(join(ROOT, "scripts/run-merge-train.ts"), "utf8");
+    assert.match(cli, /partitionRetidoCandidates\(/, "run-merge-train deve excluir PR retida antes de compor os lotes");
+    const live = readFileSync(join(ROOT, "scripts/lib/merge-train-live.ts"), "utf8");
+    assert.match(live, /from "\.\/pr-retido-para-editor\.ts"/);
+    assert.match(live, /condição 3 \(retido-para-editor\)/, "revalidateGate2 deve reler o sinal no instante do merge");
+  });
+
+  it("Gate 2 do /diaria-develop e a skill /diaria-continuo exigem check-pr-retido-gate antes do merge (#10294)", () => {
+    for (const rel of [".claude/skills/diaria-develop/SKILL.md", ".claude/skills/diaria-continuo/SKILL.md"]) {
+      const skill = readFileSync(join(ROOT, rel), "utf8");
+      assert.ok(skill.includes("scripts/check-pr-retido-gate.ts --pr {N}"), `${rel} deve citar o gate retido`);
+    }
+  });
 });

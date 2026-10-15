@@ -38,6 +38,10 @@
  *       #7060, nunca reprovação — precisa de nova invocação do trem, não
  *       de um fixer — ver `scripts/lib/merge-train-live.ts`)
  *       OU `gh`/preparação falhou antes de processar qualquer lote
+ *       OU o sinal `retido-para-editor` de algum PR estava ilegível
+ *       (#10294 — fail-closed: o PR é excluído e o resto segue). PR retido
+ *       de fato (excluído na descoberta, ou status `retido` no merge) NÃO
+ *       conta como falha — é retenção deliberada pro editor.
  *   2 = uso inválido (--session-id/--kind ausentes; nem --prs nem --open;
  *       --prs vazio/token inválido; --max-batch-size inválido)
  */
@@ -45,7 +49,7 @@
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
-import { createRealTrainRunner, fetchTrainPrInfo, runMergeTrain, type TrainBatchOutcome } from "./lib/merge-train-live.ts";
+import { createRealTrainRunner, fetchTrainPrInfo, partitionRetidoCandidates, runMergeTrain, type TrainBatchOutcome } from "./lib/merge-train-live.ts";
 import { logEvent } from "./lib/run-log.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
@@ -123,11 +127,36 @@ async function main() {
     return;
   }
 
+  const runner = createRealTrainRunner(cwd);
+
+  // #10294: PR retida para o editor (label `retido-para-editor` ou marcador
+  // no corpo, #10278) sai do trem ANTES de compor os lotes, com motivo
+  // explícito — nunca entra num lote e por isso nunca prende os demais.
+  // Sinal ilegível = fail-closed (excluída também) e conta como falha no
+  // exit code; retenção de fato é decisão deliberada, não falha.
+  const { eligible, excluded } = partitionRetidoCandidates(runner, prNumbers);
+  for (const ex of excluded) {
+    console.log(`run-merge-train: PR #${ex.pr} EXCLUÍDO do trem (${ex.retido === true ? "retido para o editor" : "sinal de retenção ilegível — fail-closed"}): ${ex.reason}`);
+    logEvent({
+      edition: null,
+      stage: null,
+      agent: kind,
+      level: ex.retido === true ? "info" : "warn",
+      message: "merge_train_pr_retido_excluido",
+      details: { pr: ex.pr, retido: ex.retido, reason: ex.reason },
+    });
+  }
+  const retidoReadFailure = excluded.some((ex) => ex.retido === null);
+  if (eligible.length === 0) {
+    console.log("run-merge-train: nenhum PR elegível após excluir os retidos — nada a mergear.");
+    process.exit(retidoReadFailure ? 1 : 0);
+    return;
+  }
+
   const candidates: TrainCandidate[] = [];
   const prInfos: TrainPrInfo[] = [];
-  const runner = createRealTrainRunner(cwd);
   const failures: string[] = [];
-  for (const pr of prNumbers) {
+  for (const pr of eligible) {
     try {
       candidates.push({ pr, files: filesForPr(pr, cwd) });
       prInfos.push(fetchTrainPrInfo(runner, pr));
@@ -202,7 +231,9 @@ async function main() {
   // "PR com defeito", mas também não é "resolvido" — precisa de nova
   // invocação do trem, então conta pro exit != 0 pelo mesmo motivo que
   // lock-blocked conta: sinaliza trabalho pendente, não bug de código).
-  const hasRealFailure = allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate");
+  // `retido` (#10294) NÃO conta: é retenção deliberada pro editor, não falha.
+  const hasRealFailure =
+    retidoReadFailure || allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate");
   process.exit(hasRealFailure ? 1 : 0);
 }
 

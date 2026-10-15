@@ -71,6 +71,7 @@ import {
   type TrainPrInfo,
 } from "./merge-train.ts";
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
+import { evaluatePrRetido, type PrRetidoResult } from "./pr-retido-para-editor.ts";
 
 export interface ExecResult {
   ok: boolean;
@@ -135,13 +136,65 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
   };
 }
 
-export interface Gate2Result {
-  ok: boolean;
-  reason?: string;
+/**
+ * Sinal `retido-para-editor` (#10278/#10294) de um PR, lido ao vivo
+ * (`gh pr view --json labels,body`). Falha de `gh`/JSON → `retido: null`
+ * (fail-closed: os chamadores tratam como retido, nunca como livre).
+ */
+export function checkPrRetido(runner: TrainRunner, prNumber: number): PrRetidoResult {
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "labels,body"]);
+  if (!res.ok) return { retido: null, reason: `gh pr view (labels,body) falhou — fail-closed: ${res.stderr}` };
+  let payload: unknown;
+  try {
+    payload = JSON.parse(res.stdout);
+  } catch (e) {
+    return { retido: null, reason: `JSON malformado de gh pr view (labels,body) — fail-closed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (typeof payload !== "object" || payload === null) {
+    return { retido: null, reason: "gh pr view (labels,body) devolveu JSON não-objeto — fail-closed" };
+  }
+  const p = payload as { labels?: unknown; body?: unknown };
+  return evaluatePrRetido({ labels: p.labels, body: p.body });
+}
+
+export interface RetidoExclusion {
+  pr: number;
+  /** `true` = retida de fato; `null` = sinal ilegível (fail-closed). */
+  retido: true | null;
+  reason: string;
 }
 
 /**
- * Revalidação do Gate 2 (as 2 condições) imediatamente antes de mergear —
+ * Separa os candidatos do trem (#10294) em elegíveis e excluídos por
+ * `retido-para-editor` ANTES de compor os lotes — uma PR retida nunca entra
+ * num lote, e por isso nunca prende os demais (o lote é composto só com o
+ * que sobra). Ordem dos elegíveis preservada.
+ */
+export function partitionRetidoCandidates(
+  runner: TrainRunner,
+  prNumbers: readonly number[],
+): { eligible: number[]; excluded: RetidoExclusion[] } {
+  const eligible: number[] = [];
+  const excluded: RetidoExclusion[] = [];
+  for (const pr of prNumbers) {
+    const v = checkPrRetido(runner, pr);
+    if (v.retido === false) eligible.push(pr);
+    else excluded.push({ pr, retido: v.retido, reason: v.reason });
+  }
+  return { eligible, excluded };
+}
+
+export interface Gate2Result {
+  ok: boolean;
+  reason?: string;
+  /** `true` quando a reprovação veio da condição 3 (`retido-para-editor`,
+   * #10294) — o chamador tira só ESTE PR do lote em vez de travar o lote. */
+  retido?: boolean;
+}
+
+/**
+ * Revalidação do Gate 2 (as 2 condições + a condição 3 `retido-para-editor`,
+ * #10294) imediatamente antes de mergear —
  * chamada por `mergeTrainBatch` (por PR do lote) e `mergeSoloPr` (pro PR
  * único). Simplificação DELIBERADA da condição 2 em relação ao Gate 2 "de
  * origem" documentado nas 3 SKILL.md: aqui NÃO há carve-out de threads
@@ -190,6 +243,15 @@ export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Res
   }
   if (unresolvedCount > 0) {
     return { ok: false, reason: `condição 2 (threads) — ${unresolvedCount} não resolvida(s) (sem carve-out FORBIDDEN nesta revalidação, ver docstring)` };
+  }
+
+  // Condição 3 (#10278/#10294): PR retida para o editor. Relida aqui, no
+  // instante do merge, porque a label pode ter sido aplicada por outra
+  // trilha DEPOIS da descoberta (`partitionRetidoCandidates`). Ilegível →
+  // fail-closed, também marcado `retido` (o PR sai do lote, o resto segue).
+  const retido = checkPrRetido(runner, prNumber);
+  if (retido.retido !== false) {
+    return { ok: false, retido: true, reason: `condição 3 (retido-para-editor) — ${retido.reason}` };
   }
 
   return { ok: true };
@@ -352,6 +414,10 @@ export interface MergeTrainBatchResult {
    * sessão mergeando agora) — `runMergeTrain` usa isto pra decidir retry
    * em vez de descarte, diferente de qualquer outra causa de falha. */
   lockDenied?: boolean;
+  /** PR do lote reprovado na condição 3 (`retido-para-editor`, #10294) no
+   * instante do merge — `runMergeTrain` o tira do lote e reprocessa o resto,
+   * em vez de rotular o lote inteiro como `lock-blocked`. */
+  retidoPr?: number;
 }
 
 /**
@@ -398,7 +464,11 @@ export function mergeTrainBatch(
   for (const pr of batch.prs) {
     const gate = revalidateGate2(runner, pr);
     if (!gate.ok) {
-      return { ok: false, error: `revalidação de Gate 2 falhou pro PR #${pr}: ${gate.reason}` };
+      return {
+        ok: false,
+        error: `revalidação de Gate 2 falhou pro PR #${pr}: ${gate.reason}`,
+        ...(gate.retido ? { retidoPr: pr } : {}),
+      };
     }
   }
 
@@ -534,7 +604,9 @@ export interface MergeSoloOptions {
  * PRECISA de mensagem custom porque combina >1 PR num commit só. */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
   const gate = revalidateGate2(runner, prNumber);
-  if (!gate.ok) return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}` };
+  if (!gate.ok) {
+    return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...(gate.retido ? { retidoPr: prNumber } : {}) };
+  }
 
   const acquire = runner.exec("npx", [
     "tsx",
@@ -587,8 +659,13 @@ export interface TrainBatchOutcome {
    * eventualmente a "consertava", e reprovaria as duas por um problema que
    * não existe). Não reentra na fila (evita livelock se a corrida persistir
    * por config real) — exige nova invocação do trem.
+   *
+   * `"retido"` (#10294): o PR (sempre lote de 1) foi reprovado na condição 3
+   * (`retido-para-editor`) no instante do merge — não mergeado, de
+   * propósito. Terminal e NÃO é falha (o editor decide); os demais PRs do
+   * lote voltam pra fila sem ele.
    */
-  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked" | "indeterminate";
+  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked" | "indeterminate" | "retido";
   detail: string;
 }
 
@@ -662,7 +739,8 @@ export async function runMergeTrain(
     if (batch.prs.length === 1) {
       const pr = batch.prs[0];
       const result = mergeSoloPr(runner, pr, opts);
-      outcomes.push({ batch, status: result.ok ? "solo-merged" : "solo-failed", detail: result.error ?? "sem trem — merge solo" });
+      const soloStatus = result.ok ? "solo-merged" : result.retidoPr !== undefined ? "retido" : "solo-failed";
+      outcomes.push({ batch, status: soloStatus, detail: result.error ?? "sem trem — merge solo" });
       continue;
     }
 
@@ -721,6 +799,16 @@ export async function runMergeTrain(
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
       if (mergeResult.ok) {
         outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado` });
+      } else if (mergeResult.retidoPr !== undefined) {
+        // #10294: 1 PR do lote ficou retido para o editor DEPOIS da
+        // descoberta. Nunca prende o resto: o retido sai (terminal
+        // `retido`) e os demais voltam pra fila como lote estritamente
+        // menor — anti-livelock preservado (cada re-entrada encolhe o lote).
+        const retidoPr = mergeResult.retidoPr;
+        const rest = batch.prs.filter((p) => p !== retidoPr);
+        outcomes.push({ batch, status: "abandoned", detail: `PR #${retidoPr} retido no instante do merge — lote refeito sem ele: ${mergeResult.error}` });
+        outcomes.push({ batch: { prs: [retidoPr] }, status: "retido", detail: mergeResult.error ?? "retido-para-editor" });
+        if (rest.length > 0) queue.push({ prs: rest });
       } else if (mergeResult.lockDenied) {
         // Esgotou os retries e o lock continua negado — achado do fleet
         // review: isto NÃO É "abandoned" (que significa "vermelho, vai

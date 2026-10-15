@@ -38,6 +38,8 @@ import {
   mergeSoloPr,
   cleanupIntegrationBranch,
   runMergeTrain,
+  checkPrRetido,
+  partitionRetidoCandidates,
   type TrainRunner,
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
@@ -65,6 +67,19 @@ function noThreadsJson(): string {
   return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } });
 }
 
+/** Resposta padrão pra `gh pr view --json labels,body` (#10294): sem retenção. */
+function notRetidoJson(): string {
+  return JSON.stringify({ labels: [{ name: "bug" }], body: "Closes #10" });
+}
+/** PR retida para o editor via label (#10278). */
+function retidoJson(): string {
+  return JSON.stringify({ labels: [{ name: "retido-para-editor" }], body: "Closes #10" });
+}
+/** Roteia `gh pr view {pr} --json labels,body` de UM PR específico. */
+function isRetidoView(pr: number) {
+  return (a: string[]) => a[0] === "pr" && a[1] === "view" && a[2] === String(pr) && a.includes("labels,body");
+}
+
 class FakeTrainRunner implements TrainRunner {
   readonly calls: { cmd: string; args: string[]; cwd?: string }[] = [];
   readonly warnings: string[] = [];
@@ -82,11 +97,9 @@ class FakeTrainRunner implements TrainRunner {
    * merge-lock — a maioria dos testes quer isso "verde por padrão" e só
    * sobrescreve o que importa pro caso específico. */
   withGate2Green(): this {
-    return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson())).on(
-      "gh",
-      (a) => a[0] === "api" && a[1] === "graphql",
-      () => ok(noThreadsJson()),
-    );
+    return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
+      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()));
   }
 
   withLockOk(): this {
@@ -628,5 +641,93 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0].status, "lock-blocked");
     assert.ok(!outcomes.some((o) => o.status === "abandoned"), "lock negado não deve bissectar — o lote já provou passar junto no CI");
+  });
+
+  // #10294: label `retido-para-editor` aplicada por outra trilha DEPOIS da
+  // descoberta — a revalidação no instante do merge tira só esse PR e o
+  // resto do lote segue (nunca `lock-blocked` pro lote inteiro, nunca merge
+  // do retido).
+  it("PR retido no instante do merge: sai do lote (status 'retido'), o resto é refeito e mergeado (#10294)", async () => {
+    const runner = fullRunner();
+    let createCalls = 0;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+      createCalls++;
+      return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+    });
+    const merged: string[] = [];
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+      merged.push(a[2]);
+      return ok();
+    });
+    runner.on("gh", isRetidoView(101), () => ok(retidoJson()));
+
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    const retidos = outcomes.filter((o) => o.status === "retido");
+    assert.equal(retidos.length, 1);
+    assert.deepEqual([...retidos[0].batch.prs], [101]);
+    const mergedOutcome = outcomes.find((o) => o.status === "merged");
+    assert.ok(mergedOutcome, "o resto do lote deve mergear");
+    assert.deepEqual([...mergedOutcome.batch.prs], [100, 102]);
+    assert.ok(!outcomes.some((o) => o.status === "lock-blocked"), "retido nunca prende o lote como lock-blocked");
+    assert.ok(!merged.includes("101"), "o PR retido nunca é mergeado");
+    // O 1º PR-trem (que continha o retido) foi fechado sem mergear.
+    assert.deepEqual(merged, ["9002"]);
+  });
+
+  it("lote de 1 retido: status terminal 'retido', sem gh pr merge (#10294)", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+      throw new Error("não deveria mergear PR retido");
+    });
+    runner.on("gh", isRetidoView(100), () => ok(retidoJson()));
+    const outcomes = await runMergeTrain(runner, { prs: [100] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].status, "retido");
+  });
+});
+
+describe("checkPrRetido / partitionRetidoCandidates (#10294)", () => {
+  it("label retido-para-editor → retido true", () => {
+    const runner = new FakeTrainRunner().on("gh", isRetidoView(7), () => ok(retidoJson()));
+    assert.equal(checkPrRetido(runner, 7).retido, true);
+  });
+
+  it("marcador no corpo → retido true", () => {
+    const runner = new FakeTrainRunner().on("gh", isRetidoView(7), () =>
+      ok(JSON.stringify({ labels: [], body: "x\n<!-- retido-para-editor -->\n" })),
+    );
+    assert.equal(checkPrRetido(runner, 7).retido, true);
+  });
+
+  it("gh falha ou JSON malformado → retido null (fail-closed, nunca livre)", () => {
+    const failing = new FakeTrainRunner().on("gh", () => true, () => fail("rate limit"));
+    assert.equal(checkPrRetido(failing, 7).retido, null);
+    const garbage = new FakeTrainRunner().on("gh", () => true, () => ok("não-json"));
+    assert.equal(checkPrRetido(garbage, 7).retido, null);
+  });
+
+  it("separa elegíveis e excluídos preservando a ordem — o retido nunca entra no lote", () => {
+    const runner = new FakeTrainRunner()
+      .on("gh", (a) => a.includes("labels,body"), () => ok(notRetidoJson()))
+      .on("gh", isRetidoView(2), () => ok(retidoJson()))
+      .on("gh", isRetidoView(4), () => fail("timeout"));
+    const { eligible, excluded } = partitionRetidoCandidates(runner, [1, 2, 3, 4]);
+    assert.deepEqual(eligible, [1, 3]);
+    assert.deepEqual(
+      excluded.map((e) => [e.pr, e.retido]),
+      [
+        [2, true],
+        [4, null],
+      ],
+    );
+    assert.ok(excluded.every((e) => e.reason.length > 0), "motivo explícito por exclusão");
+  });
+
+  it("revalidateGate2 reprova na condição 3 com retido=true quando a label aparece (#10294)", () => {
+    const runner = new FakeTrainRunner().withGate2Green().on("gh", isRetidoView(100), () => ok(retidoJson()));
+    const result = revalidateGate2(runner, 100);
+    assert.equal(result.ok, false);
+    assert.equal(result.retido, true);
+    assert.match(result.reason ?? "", /condição 3/);
   });
 });

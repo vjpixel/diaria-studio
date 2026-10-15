@@ -35,7 +35,11 @@
  * - `scripts/lib/continuo-merge-gate.ts` (portão de merge do
  *   `continuo-pr-review.sh`, via `scripts/check-continuo-merge-gate.ts`);
  * - `scripts/check-pr-retido-gate.ts` (condição 3 do gate determinístico de
- *   merge do `/diaria-overnight`, Fase 0 passo 2b e Fase 1 passo 3).
+ *   merge do `/diaria-overnight`, Fase 0 passo 2b e Fase 1 passo 3; também
+ *   do Gate 2 do `/diaria-develop` e do `/diaria-continuo`, #10294);
+ * - `scripts/lib/merge-train-live.ts` (`partitionRetidoCandidates` exclui a
+ *   PR do trem na descoberta; `revalidateGate2` relê no instante do merge e
+ *   tira só ela do lote — `scripts/run-merge-train.ts`, #10294).
  */
 
 export const RETIDO_PARA_EDITOR_LABEL = "retido-para-editor";
