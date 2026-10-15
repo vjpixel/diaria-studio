@@ -59,6 +59,18 @@
  * trava da #10160 continua sendo o default: sem a flag, nada muda. Uma
  * republicação posterior reescreve o state e apaga o bypass (nova tentativa).
  *
+ * #10196: bypass de `stale` é IRRECUPERÁVEL sozinho. O waiter em background
+ * (#9593) só mergeia o PR do slug que ele conhece — com `stale` a página no PR
+ * é a do slug/conteúdo VELHO (e o `stale` sai antes de qualquer tentativa de
+ * merge). A premissa "o waiter segue tentando até as 06:00" só vale pra
+ * `pending`/`blocked`. Nesse caso o bypass grava `unrecoverable: true` em
+ * `prGateBypass`, loga nível `error` e dispara `notifyEditor` urgente: o
+ * `/p/{slug}` do e-mail pode nunca existir sem ação humana. `no-pr` fica de
+ * fora DE PROPÓSITO (review do PR #10257): é o veredito do bypass do guard de
+ * merge tag (`code: 5`, #10191), um uso previsto — tratá-lo como urgente
+ * abriria issue P1 + e-mail a cada ocorrência. Segue o comportamento anterior:
+ * o playbook loga `warn` e nada mais.
+ *
  * Merge feito aqui é gravado no state file (`merged: true`, `status:
  * "merged"`, `mergeBlocker` limpo) — mesma função do waiter
  * (`applyMergeWaiterResult`), rótulo próprio.
@@ -76,11 +88,13 @@
  * `docs/site-page-publish-mechanism.md`) e nada mais. Nunca toca Beehiiv/Kit/
  * redes sociais.
  */
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { readSitePageState } from "./check-site-page-merge.ts";
+import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
+import { logEvent, type RunLogEvent } from "./lib/run-log.ts";
 import { SITE_PAGE_EXPECTED_SLUG_FIELD, sitePageStaleness } from "./lib/site-page-staleness.ts";
 import {
   applyMergeWaiterResult,
@@ -112,7 +126,16 @@ type UnmergedVerdict =
 export type SitePagePrGateVerdict =
   | { kind: "merged"; prNumber: number; reason: string }
   | UnmergedVerdict
-  | { kind: "bypassed"; bypassReason: string; bypassed: UnmergedVerdict };
+  | { kind: "bypassed"; bypassReason: string; bypassed: UnmergedVerdict; unrecoverable?: true };
+
+/**
+ * #10196: veredito cujo bypass deixa o link do e-mail sem página até alguém
+ * agir — nenhum waiter vai mergear a página certa sozinho. Só `stale`: `no-pr`
+ * é excluído de propósito (ver docstring do módulo).
+ */
+export function isUnrecoverableBypass(v: UnmergedVerdict): boolean {
+  return v.kind === "stale";
+}
 
 /** Exit code de cada veredito — ver docstring do módulo. */
 export function exitCodeForVerdict(v: SitePagePrGateVerdict): number {
@@ -265,7 +288,13 @@ function recordBypass(editionDirAbs: string, bypassReason: string, bypassed: Unm
     read.kind === "ok" ? read.state : { published: false, reason: bypassed.reason };
   const next = {
     ...base,
-    prGateBypass: { reason: bypassReason, verdict: bypassed.kind, verdictReason: bypassed.reason, at: now.toISOString() },
+    prGateBypass: {
+      reason: bypassReason,
+      verdict: bypassed.kind,
+      verdictReason: bypassed.reason,
+      at: now.toISOString(),
+      ...(isUnrecoverableBypass(bypassed) ? { unrecoverable: true } : {}),
+    },
   };
   writeFileAtomic(statePathOf(editionDirAbs), JSON.stringify(next, null, 2));
 }
@@ -280,7 +309,107 @@ export function runSitePagePrGate(
   const bypassReason = deps.bypassReason?.trim();
   if (verdict.kind === "merged" || verdict.kind === "bypassed" || !bypassReason) return verdict;
   recordBypass(editionDirAbs, bypassReason, verdict, deps.now ?? new Date());
-  return { kind: "bypassed", bypassReason, bypassed: verdict };
+  return {
+    kind: "bypassed",
+    bypassReason,
+    bypassed: verdict,
+    ...(isUnrecoverableBypass(verdict) ? { unrecoverable: true as const } : {}),
+  };
+}
+
+function editionIdOf(editionDirAbs: string): string | null {
+  const id = basename(editionDirAbs);
+  return /^\d{6}$/.test(id) ? id : null;
+}
+
+/**
+ * #10196 (pura): achado `urgente` do bypass irrecuperável — o e-mail sai com
+ * um link `/p/{slug}` que nenhum processo automático vai fazer existir.
+ */
+export function buildUnrecoverableBypassFinding(
+  editionDirAbs: string,
+  verdict: Extract<SitePagePrGateVerdict, { kind: "bypassed" }>,
+  slug: string | undefined,
+): NotifyEditorFinding {
+  const edition = editionIdOf(editionDirAbs);
+  const page = slug ? `/p/${slug}` : "a página da edição";
+  const body = [
+    `A trava do Stage 6 (§6c-site) foi contornada com veredito \`${verdict.bypassed.kind}\` — o e-mail foi agendado mesmo assim.`,
+    ``,
+    `- Edição: ${edition ?? "?"}`,
+    `- Bypass: ${verdict.bypassReason}`,
+    `- Veredito: ${verdict.bypassed.reason}`,
+    ``,
+    `Efeito: o link de WhatsApp do e-mail aponta pra ${page}, e NENHUM processo automático vai publicá-la — o waiter em background (#9593) só mergeia o PR do slug que ele conhece, e com \`${verdict.bypassed.kind}\` esse PR não é o da página certa (ou não existe). Sem ação, o link dá 404 no envio das 06:00 e depois.`,
+    ``,
+    `Ação: republicar a página com o slug do e-mail (\`npx tsx scripts/publish-edition-site-page.ts --edition-dir ${editionDirAbs} --slug-from-d1\`, ou \`--slug {slug-do-post}\` no fallback Beehiiv) e mergear o PR antes das 06:00. Fechar esta issue depois do merge.`,
+    ``,
+    `Achado automático de \`scripts/check-site-page-pr-gate.ts --bypass-reason\` (#10196).`,
+  ].join("\n");
+  return {
+    check: "site-page-pr-gate-bypass",
+    fingerprint: `site-page-pr-gate-bypass:${edition ?? basename(editionDirAbs)}`,
+    severity: "urgente",
+    family: "evento",
+    priority: "P1",
+    subject: `Página do site: bypass ${verdict.bypassed.kind} deixa ${page} sem página no e-mail${edition ? ` (${edition})` : ""}`,
+    body,
+  };
+}
+
+export interface UnrecoverableBypassAlertDeps {
+  log?: (event: RunLogEvent, rootDir: string) => unknown;
+  notify?: (finding: NotifyEditorFinding) => Promise<unknown>;
+  /**
+   * `--expected-slug` da chamada: é o slug que o e-mail linka, e vence o
+   * `expectedSlug` do state e o `seoSlug` do D1 (review do PR #10257 — sem
+   * ele, o fallback Beehiiv com slug do post alertava nomeando o slug do D1).
+   */
+  expectedSlug?: string;
+}
+
+/**
+ * #10196: alerta do bypass irrecuperável — `log-event` nível `error` + stderr
+ * + `notifyEditor` urgente. No-op pra bypass recuperável. Nunca lança: o
+ * bypass já foi gravado e o Schedule depende do exit 0.
+ */
+export async function alertUnrecoverableBypass(
+  rootDir: string,
+  editionDirAbs: string,
+  verdict: SitePagePrGateVerdict,
+  deps: UnrecoverableBypassAlertDeps = {},
+): Promise<boolean> {
+  if (verdict.kind !== "bypassed" || !verdict.unrecoverable) return false;
+  const read = readSitePageState(editionDirAbs);
+  const state = read.kind === "ok" ? read.state : {};
+  const slug =
+    deps.expectedSlug ??
+    (typeof state[SITE_PAGE_EXPECTED_SLUG_FIELD] === "string"
+      ? (state[SITE_PAGE_EXPECTED_SLUG_FIELD] as string)
+      : resolveExpectedSlug(editionDirAbs, undefined));
+  const finding = buildUnrecoverableBypassFinding(editionDirAbs, verdict, slug);
+  process.stderr.write(`[site-page-pr-gate] ERRO: ${finding.subject} (#10196)\n`);
+  try {
+    (deps.log ?? logEvent)(
+      {
+        edition: editionIdOf(editionDirAbs),
+        stage: 6,
+        agent: "check-site-page-pr-gate",
+        level: "error",
+        message: finding.subject,
+        details: { verdict: verdict.bypassed.kind, verdictReason: verdict.bypassed.reason, bypassReason: verdict.bypassReason },
+      },
+      rootDir,
+    );
+  } catch (e) {
+    process.stderr.write(`[site-page-pr-gate] log-event falhou (${(e as Error).message})\n`);
+  }
+  try {
+    await (deps.notify ?? ((f) => notifyEditor(f, { cwd: rootDir, rootDir })))(finding);
+  } catch (e) {
+    process.stderr.write(`[site-page-pr-gate] notifyEditor falhou (${(e as Error).message})\n`);
+  }
+  return true;
 }
 
 async function main(): Promise<void> {
@@ -326,6 +455,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  await alertUnrecoverableBypass(ROOT, editionDirAbs, verdict, { expectedSlug });
   console.log(JSON.stringify(verdict, null, 2));
   process.exitCode = exitCodeForVerdict(verdict);
 }

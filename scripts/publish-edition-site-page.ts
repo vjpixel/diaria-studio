@@ -2484,6 +2484,17 @@ export function productionDeps(
       if (prNumber === undefined) {
         return { pushed, prUrl, prNumber, prCreated, merged: false, mergeReason: "sem prNumber — nada a mergear", fetchStale };
       }
+      // #10199: este PR é o corrente agora — se uma republicação anterior o
+      // marcou como substituído (A → B → A), o marcador sai antes do waiter
+      // ler, senão ele desiste em silêncio.
+      if (editionDir) {
+        const err = unmarkSitePagePrSuperseded(editionDir, prNumber);
+        if (err) {
+          process.stderr.write(
+            `[site-page] aviso: PR #${prNumber} segue no marcador de substituídos (${err}) — o waiter vai desistir; mergear à mão (#10199)\n`,
+          );
+        }
+      }
       const attempt = waitAndMergeSitePagePr(rootDir, prNumber, gh, sleep, syncWaitMs);
       let mergeReason = attempt.reason;
       if (!attempt.merged && attempt.timedOut) {
@@ -2725,12 +2736,49 @@ export function publishEditionSitePage(
 /**
  * #10194: página do site publicada ANTES nesta edição, lida do
  * `_internal/site-page-published.json` da última chamada. Só conta publicação
- * confirmada (`published: true` + slug) — uma tentativa que falhou não deixou
- * PR nem entrada a desfazer.
+ * confirmada (`published: true` + slug). #10198: quando a última chamada
+ * falhou, vale o `last_published` que ela herdou — a tentativa falha pode ter
+ * rodado o supersede e precisa que a próxima o refaça (o `git rm` da página
+ * velha só entra no commit que de fato for pushado).
  */
 export interface PreviousSitePage {
   slug: string;
   prNumber?: number;
+}
+
+/**
+ * #10198: campo do state file com o último par (slug, PR) CONFIRMADO. O state
+ * é sobrescrito a cada chamada; sem isto, uma tentativa que falha DEPOIS do
+ * supersede (push/lock/worktree → `code: 3`, `published: false`, sem slug)
+ * apagava a memória do slug velho e a rodada seguinte não refazia o supersede
+ * — `p/{slug-velho}` ficava no master pra sempre, ou o PR velho seguia aberto
+ * e sem marcador pro waiter.
+ */
+export const SITE_PAGE_LAST_PUBLISHED_FIELD = "last_published";
+
+/** Extrai `{ slug, prNumber? }` de um registro — `null` se não houver slug. */
+function previousFromRecord(rec: Record<string, unknown>): PreviousSitePage | null {
+  if (typeof rec.slug !== "string" || !rec.slug) return null;
+  const prNumber =
+    typeof rec.prNumber === "number"
+      ? rec.prNumber
+      : parsePrNumberFromUrl(typeof rec.prUrl === "string" ? rec.prUrl : undefined);
+  return { slug: rec.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
+}
+
+/**
+ * #10198: o par a carregar em `last_published` dado o state ANTERIOR (o que
+ * está em disco) — a publicação confirmada dele, senão o `last_published` que
+ * ele já carregava. Pura.
+ */
+export function lastConfirmedSitePage(state: Record<string, unknown> | null): PreviousSitePage | null {
+  if (!state) return null;
+  if (state.published === true) {
+    const own = previousFromRecord(state);
+    if (own) return own;
+  }
+  const last = state[SITE_PAGE_LAST_PUBLISHED_FIELD];
+  return last && typeof last === "object" ? previousFromRecord(last as Record<string, unknown>) : null;
 }
 
 export function readPreviousSitePage(editionDirAbs: string): PreviousSitePage | null {
@@ -2738,12 +2786,7 @@ export function readPreviousSitePage(editionDirAbs: string): PreviousSitePage | 
   if (!existsSync(path)) return null;
   try {
     const state = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    if (state.published !== true || typeof state.slug !== "string" || !state.slug) return null;
-    const prNumber =
-      typeof state.prNumber === "number"
-        ? state.prNumber
-        : parsePrNumberFromUrl(typeof state.prUrl === "string" ? state.prUrl : undefined);
-    return { slug: state.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
+    return lastConfirmedSitePage(state);
   } catch (e) {
     process.stderr.write(
       `[site-page] aviso: ${path} ilegível (${(e as Error).message}) — republicação não confere slug anterior (#10194)\n`,
@@ -2768,6 +2811,32 @@ export function readSupersededPrNumbers(editionDirAbs: string): number[] {
     return Array.isArray(raw.prNumbers) ? raw.prNumbers.filter((n): n is number => typeof n === "number") : [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * #10199: tira `prNumber` do marcador quando ele volta a ser o PR CORRENTE da
+ * página (republicação A → B → A reusa a branch `site-publish/A` e o PR #A
+ * ainda aberto). Sem isto o waiter de #A lê o marcador e desiste em silêncio
+ * (`shouldAlert` falso pra PR substituído). Chamado assim que o PR da
+ * publicação é conhecido, ANTES de disparar o waiter. Fail-soft: devolve o
+ * erro em vez de lançar.
+ */
+export function unmarkSitePagePrSuperseded(editionDirAbs: string, prNumber: number): string | undefined {
+  const current = readSupersededPrNumbers(editionDirAbs);
+  if (!current.includes(prNumber)) return undefined;
+  try {
+    writeFileAtomic(
+      join(editionDirAbs, "_internal", SITE_PAGE_SUPERSEDED_FILE),
+      JSON.stringify(
+        { prNumbers: current.filter((n) => n !== prNumber), updated_at: new Date().toISOString() },
+        null,
+        2,
+      ),
+    );
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
   }
 }
 
@@ -3060,6 +3129,22 @@ function safeSourceDigest(editionDirAbs: string): string | undefined {
  */
 export function writeSitePageState(editionDirAbs: string, result: PublishPageResult): void {
   const path = join(editionDirAbs, "_internal", "site-page-published.json");
+  // #10198: o último par confirmado sobrevive a tentativas falhas — ver
+  // `SITE_PAGE_LAST_PUBLISHED_FIELD`. Publicação confirmada AGORA vira o novo
+  // par; senão herda o do state anterior em disco.
+  let lastPublished: PreviousSitePage | null = null;
+  if ("published" in result && result.published === true) {
+    const prNumber = parsePrNumberFromUrl(result.prUrl);
+    lastPublished = { slug: result.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
+  } else if (existsSync(path)) {
+    try {
+      lastPublished = lastConfirmedSitePage(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
+    } catch (e) {
+      process.stderr.write(
+        `[site-page] aviso: state anterior ilegível (${(e as Error).message}) — último slug publicado não preservado (#10198)\n`,
+      );
+    }
+  }
   const state = {
     code: result.code,
     slug: "slug" in result ? result.slug : undefined,
@@ -3092,6 +3177,7 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     }) ?? undefined,
     // #10190: insumos da página publicada — a trava do Stage 6 republica se mudarem.
     sourceDigest: "published" in result && result.published === true ? safeSourceDigest(editionDirAbs) : undefined,
+    [SITE_PAGE_LAST_PUBLISHED_FIELD]: lastPublished ?? undefined,
     checked_at: new Date().toISOString(),
   };
   try {
