@@ -58,6 +58,7 @@ import {
   buildEnvioAlarmEmail,
   buildHaltStaleAlarmEmail,
   type EnvioAlarmEvaluation,
+  pickLatestEnvioReport,
   type EnvioAlarmReportFile,
 } from "./lib/clarice-envio-alarm.ts";
 import {
@@ -67,8 +68,10 @@ import {
   describeBaseCollapseActions,
   evaluateHaltReadStaleness,
   haltAlarmFingerprint,
+  readClariceEnvioBaseAck,
   readClariceEnvioBaseCollapse,
   readClariceEnvioHalt,
+  type ClariceEnvioBaseAck,
   type ClariceEnvioBaseCollapseRead,
   type ClariceEnvioHaltRead,
 } from "./lib/clarice-envio-halt.ts";
@@ -366,6 +369,11 @@ export function toHaltAlarmFinding(
 export interface EnvioAlarmStateReads {
   /** `data/clarice-envio-base-collapse.json` (#10209). */
   baseCollapse?: ClariceEnvioBaseCollapseRead | null;
+  /** `--accept-base` do editor (#10273). Ack posterior ao relatório
+   * `-base-colapsada` desarma o achado por relatório (decisão já tomada). */
+  baseAck?: ClariceEnvioBaseAck | null;
+  /** mtime (ms) do relatório mais recente — compara com `baseAck.acceptedAt`. */
+  reportMtimeMs?: number | null;
   /** Checagens decisão×toggle (#10210) — só as com `ok: false` viram achado.
    * `null` = o alarme decisão×toggle não rodou (gh falhou). */
   decisionChecks?: readonly DecisionStateCheck[] | null;
@@ -406,20 +414,29 @@ export function buildEnvioAlarmFindings(
   reads: EnvioAlarmStateReads = {},
 ): AlarmFinding[] {
   const reportSaysStale = evaluation.reportId?.endsWith(HALT_STALE_REPORT_SUFFIX) ?? false;
-  const reportSaysCollapse = evaluation.reportId?.endsWith(BASE_COLLAPSE_REPORT_SUFFIX) ?? false;
+  const collapse = reads.baseCollapse ?? null;
+  // #10273: `--accept-base` apaga o estado mas não escreve relatório novo; o
+  // `-base-colapsada` segue "o mais recente". Ack posterior a ele = decidido.
+  const ackedAfterReport =
+    !collapse?.collapsed &&
+    reads.baseAck != null &&
+    reads.reportMtimeMs != null &&
+    Date.parse(reads.baseAck.acceptedAt) >= reads.reportMtimeMs;
+  const reportSaysCollapse =
+    (evaluation.reportId?.endsWith(BASE_COLLAPSE_REPORT_SUFFIX) ?? false) && !ackedAfterReport;
   const findings: AlarmFinding[] = [];
   if (halt?.halted) {
     const stale = reportSaysStale || evaluateHaltReadStaleness(halt, now, computeExpectedEnvioCycle(now)).stale;
     if (stale) findings.push(toHaltAlarmFinding(aammdd, halt, reportSaysStale ? evaluation.reportId : null));
   }
-  const collapse = reads.baseCollapse ?? null;
   if (reportSaysCollapse || collapse?.collapsed) {
     findings.push(toBaseCollapseAlarmFinding(aammdd, collapse, reportSaysCollapse ? evaluation.reportId : null));
   }
   for (const check of reads.decisionChecks ?? []) {
     if (!check.ok) findings.push(toDecisionDriftAlarmFinding(check));
   }
-  if (evaluation.verdict !== "ok" && !reportSaysStale && !reportSaysCollapse) {
+  const reportIsCollapse = evaluation.reportId?.endsWith(BASE_COLLAPSE_REPORT_SUFFIX) ?? false;
+  if (evaluation.verdict !== "ok" && !reportSaysStale && !reportIsCollapse) {
     findings.push(toAlarmFinding(evaluation, aammdd));
   }
   return findings;
@@ -557,6 +574,8 @@ async function main(): Promise<void> {
   const decisionChecks = readDecisionChecks();
   const alarmFindings: AlarmFinding[] = buildEnvioAlarmFindings(evaluation, aammdd, haltRead, new Date(), {
     baseCollapse,
+    baseAck: readClariceEnvioBaseAck(ROOT),
+    reportMtimeMs: pickLatestEnvioReport(candidates)?.mtimeMs ?? null,
     decisionChecks,
   });
   const fullState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
