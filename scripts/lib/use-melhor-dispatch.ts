@@ -76,9 +76,11 @@ export type UseMelhorReadyPlan = {
    */
   coverTitleWarning?: string;
   /**
-   * #10201: título do item (o mesmo da capa — `resolveUseMelhorCoverTitle`)
-   * que os publicadores põem como 1ª linha da legenda (Instagram, LinkedIn
-   * página/pessoal, Facebook). Opcional só pra planos montados à mão em teste;
+   * #10201: título do item que os publicadores põem como 1ª linha da legenda
+   * (Instagram, LinkedIn página/pessoal, Facebook). #10276: é o mesmo da capa —
+   * com o carrossel valendo e `stamp.cover_title` gravado, é o título gravado
+   * (mesmo que o editor tenha mudado o do item no gate 4); senão, o resolvido
+   * agora por `resolveUseMelhorCoverTitle`. Opcional só pra planos montados à mão em teste;
    * `planUseMelhorDispatchFrom` sempre preenche.
    */
   captionTitle?: string;
@@ -163,6 +165,12 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
   }
   const drift = slots ? useMelhorCoverTitleDrift(input.stamp, coverTitle) : null;
   const coverTitleWarning = drift ? describeUseMelhorCoverTitleDrift(drift) : undefined;
+  // #10276: com o carrossel valendo, a capa mostra o título GRAVADO no Stage 3
+  // (`stamp.cover_title`, #9630) — a 1ª linha da legenda usa o mesmo, senão um
+  // título editado no gate 4 deixa legenda e capa diferentes. Sem carrossel
+  // (ou carimbo antigo, sem o campo), vale o título resolvido agora.
+  const stampedTitle = slots && typeof input.stamp?.cover_title === "string" ? input.stamp.cover_title.trim() : "";
+  const captionTitle = stampedTitle || coverTitle.trim();
   return {
     status: "ready",
     time: cfg.time,
@@ -170,7 +178,7 @@ export function planUseMelhorDispatchFrom(input: UseMelhorPlanInput): UseMelhorD
     slots,
     ...(imageWarning && { imageWarning }),
     ...(coverTitleWarning && { coverTitleWarning }),
-    ...(coverTitle.trim() && { captionTitle: coverTitle.trim() }),
+    ...(captionTitle && { captionTitle }),
   };
 }
 

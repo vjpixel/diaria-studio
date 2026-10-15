@@ -184,31 +184,107 @@ export interface UseMelhorCandidate {
 const STEP_LINE = /^(?:(?:passo|etapa|step)\s*(\d{1,2})\b\s*[:.)\-–—]?\s*|(\d{1,2})\s*[.)]\s+)(.{3,})$/i;
 
 /**
+ * #10276: verbos de ação no imperativo (PT "você" + EN) que abrem um passo de
+ * tutorial. Comparação sem acento e em minúsculas. Infinitivo ("Ter conta",
+ * "Enviar até 30/10") de propósito NÃO entra — é o formato típico de
+ * requisito/prazo, que não deve virar passo.
+ */
+const IMPERATIVE_VERBS = new Set(
+  (
+    "abra acesse adicione ajuste anote aperte arraste ative autorize baixe busque cadastre calcule carregue clique cole " +
+    "compare compartilhe configure confirme conecte copie crie defina descreva desative digite edite entre envie escolha " +
+    "escreva estime execute experimente explique exporte faca gere habilite importe informe insira inicie instale leia " +
+    "liste marque mude navegue organize peca pergunte pesquise preencha pressione procure publique registre revise rode " +
+    "salve selecione separe some teste toque troque use va verifique volte " +
+    "add ask check choose click compare configure connect copy create define describe disable download drag edit enable " +
+    "enter export find follow generate give go import insert install launch list log make navigate open paste pick press " +
+    "review run save search select send set sign start tap test try turn type update upload use visit write"
+  ).split(/\s+/),
+);
+
+/**
+ * Sinal de tutorial num cabeçalho logo antes da lista (#10276). "Como" só no
+ * início da linha ("Como configurar..."), pra não casar prosa ("como resultado").
+ */
+const TUTORIAL_HEADING =
+  /^[#*_\s]*como\b|passo[\s-]+a[\s-]+passo|step[\s-]+by[\s-]+step|\bhow\s+to\b|\btutorial\b|\binstru[cç][oõ]es\b|\binstructions\b|\bsteps\b|\bpassos\b/i;
+
+function foldAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+/** Pure (#10276): o item abre com verbo de ação no imperativo? */
+export function startsWithImperative(item: string): boolean {
+  const first = foldAccents(item.replace(/^[\s*_"“'`\[(]+/, "")).match(/^[a-z]+/);
+  return first !== null && IMPERATIVE_VERBS.has(first[0]);
+}
+
+interface StepRun {
+  items: string[];
+  /** Todos os itens vieram marcados "Passo/Etapa/Step N" (sinal explícito de tutorial). */
+  explicit: boolean;
+  /** Até 2 linhas não-vazias antes do 1º item (candidatas a cabeçalho). */
+  before: string[];
+}
+
+/**
+ * Pure (#10276): a lista numerada é um tutorial, não um sumário/lista de
+ * requisitos/etapas de inscrição? Basta um sinal:
+ *   - todos os itens marcados "Passo N"/"Etapa N"/"Step N";
+ *   - um cabeçalho curto logo antes ("Passo a passo", "Como ...", "How to",
+ *     "Tutorial", "Instruções");
+ *   - a maioria dos itens abre com verbo de ação no imperativo ("Abra",
+ *     "Clique", "Copie", "Open"...).
+ */
+function isTutorialRun(run: StepRun): boolean {
+  if (run.explicit) return true;
+  if (run.before.some((l) => l.length <= 80 && TUTORIAL_HEADING.test(l))) return true;
+  const verbs = run.items.filter(startsWithImperative).length;
+  return verbs * 2 > run.items.length;
+}
+
+/**
  * Pure (#9585): extrai os passos numerados do texto da fonte, na ordem.
  * Aceita "Passo 1: ...", "Etapa 2 ...", "Step 3 ..." e "1. ..."/"1) ...".
  * Só devolve uma sequência que comece em 1 e seja consecutiva (>=2 passos) —
  * numeração solta (ano, ranking) não vira passo. Sem passos → `[]`.
+ *
+ * #10276: só conta lista que tenha sinal de TUTORIAL (`isTutorialRun`) — lista
+ * numerada de requisitos, prazos ou sumário não vira `steps`, senão o
+ * `## um` sai em formato lista com passos inventados (o que o #10246 evita).
  */
 export function extractUseMelhorSteps(text: string): string[] {
   // Várias listas numeradas (sumário, requisitos, passos): coleta cada run 1..N
-  // consecutivo e fica com a mais longa (empate → a última). Linha não-passo
-  // entre dois passos não quebra o run (passos têm parágrafos de explicação).
-  const runs: string[][] = [];
-  let cur: string[] = [];
+  // consecutivo e fica com a mais longa entre as que são tutorial (empate → a
+  // última). Linha não-passo entre dois passos não quebra o run (passos têm
+  // parágrafos de explicação).
+  const runs: StepRun[] = [];
+  let cur: StepRun | null = null;
+  const recent: string[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    const m = raw.trim().match(STEP_LINE);
-    if (!m) continue;
-    const n = Number(m[1] ?? m[2]);
-    if (n === 1) {
-      if (cur.length) runs.push(cur);
-      cur = [m[3].trim()];
-    } else if (cur.length && n === cur.length + 1) {
-      cur.push(m[3].trim());
+    const line = raw.trim();
+    const m = line.match(STEP_LINE);
+    if (!m) {
+      if (line) {
+        recent.push(line);
+        if (recent.length > 2) recent.shift();
+      }
+      continue;
     }
+    const n = Number(m[1] ?? m[2]);
+    const explicit = m[1] !== undefined;
+    if (n === 1) {
+      if (cur) runs.push(cur);
+      cur = { items: [m[3].trim()], explicit, before: [...recent] };
+    } else if (cur && n === cur.items.length + 1) {
+      cur.items.push(m[3].trim());
+      cur.explicit = cur.explicit && explicit;
+    }
+    recent.length = 0;
   }
-  if (cur.length) runs.push(cur);
+  if (cur) runs.push(cur);
   let best: string[] = [];
-  for (const r of runs) if (r.length >= best.length) best = r;
+  for (const r of runs) if (isTutorialRun(r) && r.items.length >= best.length) best = r.items;
   return best.length >= 2 ? best : [];
 }
 
