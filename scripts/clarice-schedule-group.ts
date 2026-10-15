@@ -216,7 +216,7 @@ import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
-import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, envioWentOut, resolveEnvioIndex } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189, #10212
+import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189, #10212, #10254
 
 loadProjectEnv();
 
@@ -509,6 +509,37 @@ export function readGroupCampaigns(path: string): CampaignEntry[] {
 
 export function resolveContentCycle(argv: string[], segmentsCycle: string): string {
   return getArg(argv, "content-cycle") || segmentsCycle;
+}
+
+/**
+ * #10254: índice do envio (frase do "quero", #10179) desta campanha.
+ *
+ * Mesma regra do reapply (`queroHtmlForCampaign`, #10195): o HISTÓRICO
+ * decide (`resolveEnvioIndex`), nunca o `envioIndex` gravado — um valor
+ * gravado antes do #10189 pode ter contado um `novos-*` em rascunho que nunca
+ * saiu. Antes, este script reusava o gravado quando a campanha já tinha
+ * saído, e os dois scripts discordavam sobre a frase da mesma campanha.
+ *
+ * - `--envio-index N` (override) sobrepõe tudo — recuperação manual.
+ * - Gravado divergente do recalculado vira `divergence` (aviso), não decisão.
+ *   O valor gravado não é reescrito: o HTML de uma campanha que já saiu não
+ *   é mais tocado por este script (`--update-html` recusa), então o gravado
+ *   descreve o que foi de fato para a Brevo.
+ */
+export function resolveQueroEnvioIndex(opts: {
+  key: string;
+  history: readonly EnvioHistoryEntry[];
+  existing?: Pick<CampaignEntry, "envioIndex">;
+  override?: number;
+}): { envioIndex: number; divergence?: string } {
+  const recalculated = resolveEnvioIndex(opts.history, opts.key);
+  const envioIndex = opts.override ?? recalculated;
+  const stored = opts.existing?.envioIndex;
+  const divergence =
+    opts.override === undefined && stored !== undefined && stored !== recalculated
+      ? `⚠️ envioIndex gravado (${stored}) diverge do recalculado pelo histórico (${recalculated}) — vale o recalculado`
+      : undefined;
+  return { envioIndex, ...(divergence ? { divergence } : {}) };
 }
 
 /** Regex de data ISO simples (YYYY-MM-DD) — mesmo formato de ISO_DATE_RE em clarice-wave-plan.ts. */
@@ -1376,13 +1407,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // diante. O índice sai da ordem das ondas em group-campaigns.json que DE
   // FATO SAÍRAM (#10189 — rascunho esquecido não conta; células da mesma
   // onda = mesmo envio); `--envio-index N` sobrepõe (recuperação manual, ou
-  // onda montada fora deste script). O índice gravado só é reusado quando a
-  // campanha já saiu: um rascunho recalcula, porque o índice dele foi
-  // calculado num estado do ciclo que pode ter mudado (#10189). Só o
-  // `htmlContent` gravado por --create/--update-html muda; o
+  // onda montada fora deste script). O índice gravado nunca é reusado — o
+  // histórico decide, como no reapply (#10254/#10195); divergência só avisa.
+  // Só o `htmlContent` gravado por --create/--update-html muda; o
   // cloudflare-preview.html fica intacto.
   const envioIndexOverride = getIntArg(argv, "envio-index", { min: 1 });
-  const storedEnvioIndex = existing && envioWentOut(existing) ? existing.envioIndex : undefined;
   // #10212: a contagem é pelo ciclo de CONTEÚDO — com `--content-cycle`
   // divergente (fallback D3 do clarice-novos), soma o histórico do ciclo do
   // conteúdo e ignora as ondas do ciclo de contatos que levaram outro draft.
@@ -1393,12 +1422,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     contentCycleHistory:
       contentCycle === cycle ? [] : readGroupCampaigns(resolve(clariceSegmentsDir(contentCycle), "group-campaigns.json")),
   });
-  const quero = applyQueroPhrase(
-    html,
-    envioIndexOverride ?? storedEnvioIndex ?? resolveEnvioIndex(envioHistory, key),
-  );
+  const envio = resolveQueroEnvioIndex({ key, history: envioHistory, existing, override: envioIndexOverride });
+  const quero = applyQueroPhrase(html, envio.envioIndex);
   html = quero.html;
-  console.error(`ℹ ${key}: ${describeQueroApplication(quero)}`);
+  console.error(`ℹ ${key}: ${describeQueroApplication(quero)}${envio.divergence ? ` ${envio.divergence}` : ""}`);
 
   // --- Plano (sempre imprime) ---
   console.error(
