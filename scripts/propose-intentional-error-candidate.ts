@@ -40,7 +40,7 @@ import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRe
 
 export function main(argv: string[] = process.argv.slice(2)): number {
   const values = parseArgs(argv);
-  const listRecent = "list-recent" in values;
+  const listRecent = argv.includes("--list-recent");
   const checkWrong = values["check-wrong"];
   if (listRecent || checkWrong) {
     const dir = values["edition-dir"]?.replace(/[\\/]+$/, "");

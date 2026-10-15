@@ -249,3 +249,21 @@ describe("#10244: listRecentErrors / CLI --list-recent --check-wrong", () => {
     assert.equal(JSON.parse(logs[0]).repeats[0].edition, "260928");
   });
 });
+
+describe("#10244: --list-recent como último argumento (ordem do playbook)", () => {
+  it("devolve { recent } e não { candidate }", async () => {
+    const { main } = await import("../scripts/propose-intentional-error-candidate.ts");
+    const dir = mkdtempSync(join(tmpdir(), "ie-10244b-"));
+    const jsonl = join(dir, "h.jsonl");
+    writeFileSync(jsonl, HISTORY.map((h) => JSON.stringify(h)).join("\n") + "\n");
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (m: string) => logs.push(m);
+    try {
+      assert.equal(main(["--edition", "260930", "--jsonl", jsonl, "--list-recent"]), 0);
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(JSON.parse(logs[0]).recent.length, 2);
+  });
+});
