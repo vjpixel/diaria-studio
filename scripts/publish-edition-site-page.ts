@@ -2965,6 +2965,15 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
         const oldBranch = sitePublishBranch(oldSlug);
         try {
           gh(["api", "-X", "DELETE", `repos/{owner}/{repo}/git/refs/heads/${oldBranch}`], rootDir);
+          // #10266: a ref de tracking LOCAL sobrevive ao DELETE via API (nada roda
+          // `fetch --prune`); num A→B→A o `push --force-with-lease` esperaria o
+          // commit antigo numa branch remota que não existe mais e recusaria. Só
+          // a ref `refs/remotes/...` sai — não toca branch local nem working tree.
+          try {
+            defaultGitRunner(["update-ref", "-d", `refs/remotes/origin/${oldBranch}`], rootDir);
+          } catch (e) {
+            notes.push(`ref local origin/${oldBranch} não apagada (${(e as Error).message}) — rodar git fetch --prune`);
+          }
         } catch (e) {
           notes.push(`branch remota ${oldBranch} não apagada (${(e as Error).message}) — apagar à mão`);
         }
