@@ -74,6 +74,10 @@
  * #9380: separadores ` · ` e ` / ` entram no strip por allowlist; sufixo com
  * cara de domínio (`claude.dev`) conta como veículo em todos os separadores
  * de traço. Aplicado a TODO item do pool em `categorize.ts`, não só no inbox.
+ *
+ * #10313: com `url` (opcional), sufixo de traço cujo nome compactado bate com
+ * o domínio do item ("Saúde Digital News" ↔ saudedigitalnews.com.br) também
+ * conta como veículo — cobre o veículo de nicho fora da allowlist.
  *   - `KNOWN_DASH_PUBLISHERS` — set de veículos (lowercase) para traço/travessão
  *   - `MIN_PREFIX_LEN` — constante de boundary para testes
  */
@@ -194,11 +198,53 @@ const DOMAIN_LIKE_SUFFIX_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|com\.br|br|dev|o
 // Hugging Face) — com traço seriam sujeito do título ("acordo - Hugging Face").
 const MIDDOT_ONLY_PUBLISHERS = new Set(["hugging face"]);
 
-function isKnownPublisherSuffix(suffix: string, middot: boolean): boolean {
+/** Comprimento mínimo do nome compactado pra casar com o domínio (#10313). */
+const MIN_DOMAIN_MATCH_LEN = 4;
+
+/** Lowercase, sem diacríticos, só [a-z0-9] — "Saúde Digital News" → "saudedigitalnews". */
+function compactName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * #10313: o sufixo é o NOME do veículo do próprio item quando, compactado
+ * (sem acento/espaço/pontuação), bate com um rótulo do hostname da URL
+ * (ou com o hostname inteiro sem `www.` e sem os rótulos de TLD).
+ * Ex: "Saúde Digital News" ↔ saudedigitalnews.com.br.
+ * Sem URL (ou URL inválida) → false: o comportamento antigo fica intacto.
+ *
+ * @pure
+ */
+export function suffixMatchesUrlHost(suffix: string, url: string | undefined): boolean {
+  if (!url) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const compactSuffix = compactName(suffix);
+  if (compactSuffix.length < MIN_DOMAIN_MATCH_LEN) return false;
+  const labels = host.replace(/^www\./, "").split(".");
+  // Descarta TLD (e o 2º nível genérico de ccTLD: com.br, co.uk, org.br...).
+  const tldParts = new Set(["com", "org", "net", "gov", "edu", "co", "br", "uk", "pt", "io", "ai", "news", "info"]);
+  let end = labels.length;
+  while (end > 1 && tldParts.has(labels[end - 1])) end--;
+  const nameLabels = labels.slice(0, end);
+  if (nameLabels.some((l) => compactName(l) === compactSuffix)) return true;
+  return compactName(nameLabels.join("")) === compactSuffix;
+}
+
+function isKnownPublisherSuffix(suffix: string, middot: boolean, url?: string): boolean {
   return (
     KNOWN_DASH_PUBLISHERS.has(suffix) ||
     DOMAIN_LIKE_SUFFIX_RE.test(suffix) ||
-    (middot && MIDDOT_ONLY_PUBLISHERS.has(suffix))
+    (middot && MIDDOT_ONLY_PUBLISHERS.has(suffix)) ||
+    suffixMatchesUrlHost(suffix, url)
   );
 }
 
@@ -228,7 +274,7 @@ function stripPipeSuffix(title: string): string {
  * Verifica a ÚLTIMA ocorrência do separador para handle de "título - sub - Veículo".
  * Anti-FP: prefixo < MIN_PREFIX_LEN → manter.
  */
-function stripDashSuffix(title: string): string {
+function stripDashSuffix(title: string, url?: string): string {
   const trimmed = title.trim();
 
   const dashIdx = trimmed.lastIndexOf(" - ");     // espaço-hífen-espaço
@@ -257,7 +303,7 @@ function stripDashSuffix(title: string): string {
     .toLowerCase();
 
   // Anti-falso-positivo principal: só strip se o sufixo é veículo conhecido
-  if (!isKnownPublisherSuffix(suffix, sepStart === middotIdx)) return title;
+  if (!isKnownPublisherSuffix(suffix, sepStart === middotIdx, url)) return title;
 
   const prefix = trimmed.slice(0, sepStart).trim();
   if (prefix.length < MIN_PREFIX_LEN) return title;
@@ -270,16 +316,19 @@ function stripDashSuffix(title: string): string {
  * Handles: ` | ` (pipe) + ` - ` / ` — ` (traço/travessão) + ` • ` (bullet, #2984).
  *
  * @param title - Título bruto (ex: vindo de og:title / <title>).
+ * @param url - (opcional, #10313) URL do item — sufixo de traço que bate com o
+ *              domínio dela conta como veículo mesmo fora da allowlist.
  * @returns Título limpo, ou o original se o strip produziria prefixo muito curto
  *          ou o sufixo de traço/travessão não for veículo conhecido.
  *
  * @pure
  */
-export function stripPublisherSuffix(title: string): string {
+export function stripPublisherSuffix(title: string, url?: string): string {
   // Pipe primeiro (strip mais amplo — strip tudo após o 1º " | ")
   const afterPipe = stripPipeSuffix(title);
-  // Depois traço/travessão (só se sufixo é veículo conhecido)
-  return stripDashSuffix(afterPipe);
+  // Depois traço/travessão (só se sufixo é veículo conhecido ou bate com o
+  // domínio da URL do item, #10313)
+  return stripDashSuffix(afterPipe, url);
 }
 
 /**
@@ -455,17 +504,20 @@ const MAX_NORMALIZE_ITERATIONS = 10;
  * mesma iteração do loop — sem precisar de uma segunda passada dedicada.
  *
  * @param title - Título bruto (de og:title / <title> / pipeline).
+ * @param url - (opcional, #10313) URL do item, repassada a `stripPublisherSuffix`
+ *              pra reconhecer o sufixo " - {Nome do veículo}" pelo domínio.
  * @returns Título normalizado (todas as camadas de sufixo de veículo removidas).
  *
  * @pure
  */
-export function normalizeItemTitle(title: string): string {
+export function normalizeItemTitle(title: string, url?: string): string {
   let current = title;
   for (let i = 0; i < MAX_NORMALIZE_ITERATIONS; i++) {
     const next = stripTrailingPeriod(
       stripClickbaitTail(
         stripPublisherSuffix(
           stripTrailingPeriod(normalizeBracketPrefix(stripYoutubeWatchWrapper(current))),
+          url,
         ),
       ),
     );

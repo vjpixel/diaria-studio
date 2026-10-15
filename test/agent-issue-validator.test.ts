@@ -25,6 +25,7 @@ import {
   extractEncodingDropCharAndContext,
   extractEncodingDropCharTerm,
   filterAgentIssues,
+  isIntroEditorCountMismatchFalsePositive,
   ISSUE_HANDLERS,
   SECTION_HEADER_EMOJIS,
   type FetchFn,
@@ -1197,4 +1198,42 @@ describe("#2105 — filterAgentIssues: exclusividade estrutural via tabela de ha
   // garantida pelo teste de regressão do #2082 ("link_dead com {{poll_sig}} na URL
   // sem fetchFn NÃO é dropado como merge-tag FP") — um duplicado aqui foi removido
   // no review do #2105.
+});
+
+describe("#10308 — intro 'X enviados por mim' vs editor_blocks é FP", () => {
+  const CURRENT_HTML =
+    "<p>Nesta edição, a IA analisou 120 conteúdos (30 enviados por mim e 90 encontrados automaticamente) e selecionei os 12 mais relevantes.</p>";
+  const LEGACY_HTML =
+    "<p>Para esta edição, eu (o editor) enviei 3 submissões e a diar.ia.br encontrou outros 90 artigos.</p>";
+
+  it("caso real 261016: intro_editor_count_mismatch citando 'enviados por mim' é dropado", async () => {
+    const issue =
+      "email:intro_editor_count_mismatch: intro diz '30 enviados por mim' mas marker reporta editor_blocks=2";
+    const r = await filterAgentIssues([issue], CURRENT_HTML, "261016");
+    assert.equal(r.kept.length, 0);
+    assert.equal(r.dropped.length, 1);
+    assert.match(r.dropped[0].reason, /#10308/);
+  });
+
+  it("intro_count_mismatch sem citar a frase, mas HTML no formato atual → dropado", async () => {
+    const issue = "email:intro_count_mismatch: intro diz '30' mas marker reporta editor_blocks=2";
+    const r = await filterAgentIssues([issue], CURRENT_HTML, "261016");
+    assert.equal(r.dropped.length, 1);
+  });
+
+  it("formato legado 'enviei N submissões' com mismatch real segue mantido", async () => {
+    const issue =
+      "email:intro_count_mismatch: intro diz 'enviei 3 submissões' mas marker reporta editor_blocks=2";
+    const r = await filterAgentIssues([issue], LEGACY_HTML, "260519");
+    assert.equal(r.kept.length, 1);
+    assert.equal(r.dropped.length, 0);
+  });
+
+  it("isIntroEditorCountMismatchFalsePositive ignora issue que não cita editor_blocks", () => {
+    const r = isIntroEditorCountMismatchFalsePositive(
+      "email:intro_count_mismatch: intro diz 30 mas o pool tem 31",
+      CURRENT_HTML,
+    );
+    assert.equal(r.falsePositive, false);
+  });
 });

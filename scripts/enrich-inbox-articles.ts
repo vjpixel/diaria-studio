@@ -494,7 +494,7 @@ export async function enrichArticles(
       // continua fixo mesmo que o texto seja sobrescrito depois.
       const titleCameFromFetchedMetadata = merged.titleUpdated;
       if (titleCameFromFetchedMetadata && typeof merged.article.title === "string") {
-        merged.article.title = normalizeItemTitle(merged.article.title);
+        merged.article.title = normalizeItemTitle(merged.article.title, merged.article.url); // url: #10313
       }
       // #1641: metadata veio só com summary (sem title) e o título seguiu
       // placeholder — recupera do submitted_subject pra não dropar na categorização.
@@ -513,7 +513,7 @@ export async function enrichArticles(
       // Aplicar antes de gravar em `out` para que `title_updated` reflita o estado
       // final correto, sem a obsolescência que existia no passo pós-loop.
       if (!isInboxArticle(job.article) && typeof merged.article.title === "string") {
-        merged.article.title = normalizeItemTitle(merged.article.title);
+        merged.article.title = normalizeItemTitle(merged.article.title, merged.article.url); // url: #10313
       }
       out[job.idx] = merged.article;
       const titleUpdated =
@@ -580,7 +580,7 @@ export async function enrichArticles(
     // Pula artigos editoriais — nunca normalizar títulos curados pelo editor.
     if (isInboxArticle(article)) continue;
     if (typeof article.title !== "string" || !article.title) continue;
-    const normalized = normalizeItemTitle(article.title);
+    const normalized = normalizeItemTitle(article.title, article.url); // url: #10313
     if (normalized === article.title) continue; // já normalizado (worker) ou sem mudança
     article.title = normalized;
     if (targetIdxSet.has(i)) {

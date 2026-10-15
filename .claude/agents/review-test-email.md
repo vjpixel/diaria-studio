@@ -420,6 +420,8 @@ Em 260519 attempt 2 reportou `status: ok` mas o editor encontrou 3 problemas rea
 
    Se marker ausente (edição pré-#1368), pular este check.
 
+   **Só vale para o formato LEGADO "enviei N submissões" (#10308).** O intro atual ("Nesta edição, a IA analisou N conteúdos (X enviados por mim e Y encontrados automaticamente)...") conta LINKS do inbox (`total_editor_urls + total_newsletter_urls`), não e-mails — `editor_blocks` é outra unidade e os dois divergem sempre que um encaminhamento traz mais de 1 link. Se o email usa "enviados por mim", **pular este check** — nunca comparar X com `editor_blocks` (quem mantém esse número certo é `sync-coverage-line.ts`). `filterAgentIssues` dropa esse falso positivo de qualquer forma, mas não o emita.
+
 **Resultado:** estes 3 checks fecham o gap do attempt 2 em 260519, onde italic+leaderboard+intro count escaparam e o editor pediu re-paste. Prefixo `email:` (blocker) — força fix loop.
 
 ### 3c. Link tracking via HEAD (#1248)
