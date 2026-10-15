@@ -903,7 +903,22 @@ const VISUAL_GUIDE_EXPLAINER_RE = /\b(visual|illustrated)\s+guide\s+to\b/i;
 const LAUNCH_FAMILY_MEMBER_RE =
   /\b(newest|latest)\s+(member|addition)\s+(of|to)\s+(the\s+)?\S+(\s+\S+){0,4}\s+family\b|\b(mais\s+)?novo\s+integrante\s+da\s+fam[íi]lia\b/i;
 
+/**
+ * #10314: cobertura de imprensa sobre campanha publicitária (path `/marketing/`
+ * + "campanha/homenageia/comercial" no título) não é tutorial, mesmo que o
+ * summary cite curso/capacitação gratuita (caso 261016: exame.com/marketing/
+ * "OpenAI homenageia professores em campanha…" caiu em USE MELHOR).
+ */
+const MARKETING_CAMPAIGN_TITLE_RE = /\b(campanha|campaign|homenageia|homenageiam|comercial|propaganda|publicit[áa]ri[ao])\b/i;
+
+function isMarketingCampaignCoverage(article: Article): boolean {
+  const { full } = hostAndPath(article.url ?? "");
+  return /\/marketing\//i.test(full) && MARKETING_CAMPAIGN_TITLE_RE.test(article.title ?? "");
+}
+
 export function isNewsNotTutorial(article: Article): boolean {
+  // #10314: cobertura de campanha de marketing nunca é tutorial.
+  if (isMarketingCampaignCoverage(article)) return true;
   // #2313: slug de lançamento no path → anúncio, mesmo que título diga "How to use X".
   // Vendor blogs frequentemente publicam anúncios com wording de tutorial no título
   // (ex: "How to use Amazon Bedrock Guardrails" em .../introducing-bedrock-guardrails/).
