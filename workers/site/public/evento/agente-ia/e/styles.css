@@ -432,21 +432,22 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .wm span{color:var(--brand)}
 @media (max-width:767px){h1{font-size:34px}.hero-date{margin-bottom:22px}}
 
-/* Versão de 14/10/2026 (feedback do Ruam): mais cor sem sair do DS. Teal com texto em tinta
-   (contraste 5,7:1; texto branco sobre teal fica em 3,2:1). */
+/* Versão de 15/10/2026 (feedback do Ruam, revisto): o teal cheio fica só no botão, para ele ser
+   a peça de cor da página; o resto ganha variação com tinta, bege e detalhes teal pequenos.
+   Botão teal com texto em tinta: 5,7:1 (texto branco sobre teal fica em 3,2:1). */
 .button,.float-cta{background:var(--brand);color:var(--ink)}
 .button:focus-visible,.float-cta:focus-visible{outline-color:var(--ink)}
 .final .button:focus-visible{outline-color:var(--paper)}
 
-/* Topo: faixa teal com ponto "ao vivo" pulsando */
-.hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px;border:0;background:var(--brand);color:var(--ink)}
+/* Topo: o quadro da data ganha o rótulo "ao vivo" com ponto teal pulsando */
+.hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px}
 .hero-date strong{font-size:clamp(19px,1.9vw,23px)}
 .live-label{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase}
-.live-dot{position:relative;flex:none;width:10px;height:10px;border-radius:50%;background:var(--white)}
-.live-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:var(--white)}
+.live-dot{position:relative;flex:none;width:10px;height:10px;border-radius:50%;background:var(--brand)}
+.live-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:var(--brand)}
 @media (prefers-reduced-motion:no-preference){
   .live-dot::after{animation:live-pulse 1.6s ease-out infinite}
-  @keyframes live-pulse{from{transform:scale(1);opacity:.7}to{transform:scale(2.6);opacity:0}}
+  @keyframes live-pulse{from{transform:scale(1);opacity:.6}to{transform:scale(2.6);opacity:0}}
 }
 
 /* Como funciona: rótulos das etapas em pílula, número em círculo teal */
@@ -455,11 +456,12 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 /* Sem os fios verticais entre as etapas quando elas empilham (pedido de 15/10). */
 @media (max-width:1023px){.stage+.stage::before{content:none}}
 
-/* Faixa teal (por que o ChatGPT devolve texto genérico) */
-.section-brand{background:var(--brand);color:var(--ink)}
-.section-brand h2 em{color:var(--ink)}
-.section-brand .kicker::before{color:var(--ink)}
-.section-brand h2+p{font-size:clamp(18px,1.6vw,21px);max-width:720px}
+/* Faixa em tinta (por que o ChatGPT devolve texto genérico), como as faixas dos anúncios:
+   título cor de papel, ênfase em itálico teal (5,7:1 sobre a tinta). */
+.section-ink{background:var(--ink);color:var(--paper)}
+.section-ink h2,.section-ink .kicker{color:var(--paper)}
+.section-ink h2 em{color:var(--brand)}
+.section-ink h2+p{font-size:clamp(18px,1.6vw,21px);max-width:720px}
 
 /* O que você vai criar: um cartão por formato */
 .formats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--gap)}
@@ -467,14 +469,13 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .formats-grid li:last-child{border-bottom:1px solid var(--rule)}
 @media (max-width:767px){.formats-grid{gap:10px}.formats-grid li{padding:14px 18px;font-size:19px}}
 
-/* Para quem é: cada frase num cartão com fio teal */
+/* Para quem é: cada frase num cartão de papel */
 .sayings{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.sayings li{padding:12px 16px;border-radius:0 12px 12px 0;background:var(--paper);border-left:4px solid var(--brand)}
+.sayings li{padding:14px 18px;border-radius:12px;background:var(--paper)}
 .sayings li:last-child{grid-column:1/-1}
-@media (max-width:767px){.sayings{grid-template-columns:1fr;gap:8px}.sayings li{padding:8px 14px}.sayings span{font-size:17px}}
+@media (max-width:767px){.sayings{grid-template-columns:1fr;gap:8px}.sayings li{padding:10px 16px}.sayings span{font-size:17px}}
 
-/* Garantia: cartão branco com borda teal e escudo em círculo teal */
-.guarantee{background:var(--white);border:2px solid var(--brand)}
+/* Garantia: escudo em círculo teal */
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
 
 /* Fechamento: só data, frase, preço e botão */
