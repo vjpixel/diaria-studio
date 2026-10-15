@@ -225,3 +225,27 @@ describe("#9101: CLI propose-intentional-error-candidate --jsonl", () => {
     assert.equal(JSON.parse(logs.join("")).candidate.wrong_value, "Gemine");
   });
 });
+
+describe("#10244: listRecentErrors / CLI --list-recent --check-wrong", () => {
+  it("lista só a janela de 30 dias e ignora no_error", async () => {
+    const { listRecentErrors } = await import("../scripts/lib/intentional-error-repeat.ts");
+    const r = listRecentErrors(HISTORY, "260930");
+    assert.deepEqual(r.map((e) => e.edition), ["260925", "260928"]);
+    assert.equal(r.find((e) => e.edition === "260928")?.wrong_value, "Anthropik");
+  });
+  it("CLI --check-wrong acusa repetição na janela", async () => {
+    const { main } = await import("../scripts/propose-intentional-error-candidate.ts");
+    const dir = mkdtempSync(join(tmpdir(), "ie-10244-"));
+    const jsonl = join(dir, "h.jsonl");
+    writeFileSync(jsonl, HISTORY.map((h) => JSON.stringify(h)).join("\n") + "\n");
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (m: string) => logs.push(m);
+    try {
+      assert.equal(main(["--edition", "260930", "--jsonl", jsonl, "--check-wrong", "Anthropik"]), 0);
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(JSON.parse(logs[0]).repeats[0].edition, "260928");
+  });
+});
