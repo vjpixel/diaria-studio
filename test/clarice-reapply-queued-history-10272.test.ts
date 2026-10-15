@@ -29,3 +29,21 @@ test("#10272 sem queuedKeys o comportamento antigo (draft não conta) permanece"
   const d2 = queroHtmlForCampaign(HTML, "Clarice 2610 grupo:d2-dom04-A", "2610-11", HISTORY);
   assert.equal(hasQueroPhrase(d2.html), false);
 });
+
+test("#10272 fallback de outro contentCycle na fila não volta a ocupar posição (#10212)", () => {
+  const hist = [
+    { key: "novos-x", status: "draft", contentCycle: "2609-10" },
+    { key: "d1-sab03-A", status: "scheduled" },
+  ];
+  const queued = new Set(["novos-x", "d1-sab03-A"]);
+  const d1 = queroHtmlForCampaign(HTML, "Clarice 2610 grupo:d1-sab03-A", "2610-11", hist, queued);
+  assert.equal(hasQueroPhrase(d1.html), false, "d1 segue sendo o 1º envio deste conteúdo");
+});
+
+test("#10272 chaves fora do histórico: ordem estável, só a 1ª do lote perde a frase", () => {
+  const queued = new Set(["d1-sab03-A", "d2-dom04-A"]);
+  const d1 = queroHtmlForCampaign(HTML, "Clarice 2610 grupo:d1-sab03-A", "2610-11", [], queued);
+  const d2 = queroHtmlForCampaign(HTML, "Clarice 2610 grupo:d2-dom04-A", "2610-11", [], queued);
+  assert.equal(hasQueroPhrase(d1.html), false);
+  assert.equal(hasQueroPhrase(d2.html), true);
+});

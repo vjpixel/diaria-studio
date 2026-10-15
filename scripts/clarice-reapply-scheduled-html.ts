@@ -675,6 +675,9 @@ type GroupCampaignHistoryEntry = EnvioHistoryEntry & { envioIndex?: number };
  *   saída (ela está na fila da Brevo — é por isso que este script a toca).
  *   O `envioIndex` gravado em `group-campaigns.json` só gera aviso quando
  *   diverge (#10195: gravado antes do #10189, pode ter contado rascunho).
+ * - `queuedKeys` (#10272): keys das demais campanhas do lote `toUpdate` — todas
+ *   na fila da Brevo, logo também saídas, mesmo com registro local `draft`.
+ *   Em `--campaign-id` o lote é só a própria campanha (limite conhecido).
  * - Nome sem `grupo:` (fluxo antigo `Clarice News {yymm}`) → HTML intacto,
  *   com aviso: não há key para posicionar o envio no ciclo.
  */
@@ -701,8 +704,11 @@ export function queroHtmlForCampaign(
   // mesmo que o registro local diga `draft` (GET-verify falho pré-#10211).
   const isQueued = (k: string): boolean => k === key || queuedKeys.has(k);
   const asSent: EnvioHistoryEntry[] = sameContent.map((e) => (isQueued(e.key) ? { ...e, status: "scheduled" } : e));
-  for (const k of new Set([key, ...queuedKeys])) {
-    if (!asSent.some((e) => e.key === k)) asSent.push({ key: k, status: "scheduled" });
+  // Ordem estável (ordem do lote, própria por último) — não depende de qual
+  // campanha está sendo processada. Chave já presente no histórico (inclusive
+  // as excluídas por contentCycle diferente, #10212) nunca é re-adicionada.
+  for (const k of new Set([...queuedKeys, key])) {
+    if (!asSent.some((e) => e.key === k) && !history.some((e) => e.key === k)) asSent.push({ key: k, status: "scheduled" });
   }
   // #10195: o histórico decide, nunca o valor gravado — um `envioIndex`
   // gravado antes do #10189 pode ter contado um `novos-*` em rascunho que
