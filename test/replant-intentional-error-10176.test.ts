@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { main, countWholeWord, findOldErrorStillPresent, sectionKeyFromLocation } from "../scripts/replant-intentional-error.ts";
+import { main, baselineOccurrences, countWholeWord, findOldErrorStillPresent, sectionKeyFromLocation } from "../scripts/replant-intentional-error.ts";
 
 const MD = `**DESTAQUE 1 | 🤖 MODELOS**
 
@@ -430,7 +430,7 @@ Cita o Gemnini 3 como concorrente.
 **📡 RADAR**
 
 **[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
-O Gemnini 3 passa a falar português.
+O modelo passa a falar português.
 
 ---
 
@@ -449,7 +449,7 @@ A Anthropic lançou memória no Claude.
 **🚀 LANÇAMENTOS**
 
 **[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
-O Gemnini 3 passa a falar português.
+O modelo passa a falar português.
 
 ---
 
@@ -478,6 +478,15 @@ Nessa edição, uma marca saiu grafada errada na seção RADAR.
       const out = JSON.parse(stdout);
       assert.equal(out.action, "old_error_maybe_moved");
       assert.ok(out.baseline_count > out.current_count, "total caiu");
+      assert.deepEqual(out.elsewhere, ["LANÇAMENTOS"]);
+      // (#10301) Pré-condição do cenário: o item movido carrega UMA só ocorrência, então a
+      // contagem de LANÇAMENTOS EMPATA (1 no baseline, 1 agora) e o `grewElsewhere` (#10237)
+      // não dispara sozinho — quem recusa é o `movedItem` (identidade por URL, #10270).
+      const lancamentos = (md: string) =>
+        countWholeWord(md.split("**🚀 LANÇAMENTOS**")[1].split("\n---\n")[0], "Gemnini");
+      assert.equal(lancamentos(preGate), 1);
+      assert.equal(lancamentos(moved), lancamentos(preGate), "contagem por seção de LANÇAMENTOS empata");
+      assert.equal(baselineOccurrences(dir, "Gemnini").bySection.get("LANÇAMENTOS"), lancamentos(moved));
       assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), moved);
       assert.equal(existsSync(jsonlPath), false);
     } finally {
