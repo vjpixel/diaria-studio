@@ -1620,6 +1620,41 @@ describe("clarice-envio-run (#5026)", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("#10274: corte por crédito é registrado mesmo quando a célula B falha depois da A já agendada", async () => {
+      const root = freshRoot();
+      const caps: Array<{ day: string; volume: number }> = [];
+      const proposal = goldenProposal({
+        availableFirstSend: 5000,
+        brevoCredits: 2000,
+        abc: { action: "continuar", metric: "abertura", winner: null, caveats: [], rationale: "teste em curso" },
+        state: {
+          cycle: CYCLE,
+          waves: [
+            wave({ key: "d11-ter11-A", subject: "Sub A" }),
+            wave({ key: "d11-ter11-B", subject: "Sub B" }),
+            wave({ key: "d11-ter11-C", subject: "Sub C" }),
+          ],
+          volumeSum: 1, volumeComplete: true, sentCount: 3, scheduledCount: 0, unscopedCount: 0,
+        },
+        waves: [{ n: 12, date: SEND_DATE, scheduledAt: `${SEND_DATE}T09:00:00.000Z`, volume: 3450, keys: ["d12-qua12-A", "d12-qua12-B", "d12-qua12-C"] }],
+      });
+      const scheduleGroupHandler: Handler = (args) => {
+        const key = args[args.indexOf("--key") + 1] ?? "?";
+        if (args.includes("--create")) return jsonResult({ key, listId: 1, campaignId: 1, phase: "create", status: "draft" });
+        if (key.endsWith("-B")) return { code: 1, stdout: "", stderr: "boom B" };
+        return jsonResult({ key, listId: 1, campaignId: 1, phase: "schedule", status: "scheduled" });
+      };
+      const { exec } = makeFakeExec({
+        ...goldenHandlers({ proposal }),
+        "scripts/clarice-schedule-group.ts": scheduleGroupHandler,
+      });
+      const r = await runEnvio(baseDeps(root, { exec, recordCreditCap: (c) => void caps.push(c) }));
+      assert.equal(r.code, 1, r.reportMarkdown);
+      assert.match(r.reportMarkdown, /ONDA PARCIALMENTE MONTADA/);
+      assert.deepEqual(caps, [{ day: SEND_DATE, volume: 2000 }], "A foi agendada com volume cortado: o corte precisa ser persistido");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("agendamento INCERTO (exit 2) em 1 célula => code 2, mas não aborta as outras", async () => {
       const root = freshRoot();
       let scheduleCall = 0;
