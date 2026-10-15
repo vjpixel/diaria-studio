@@ -39,14 +39,15 @@ describe("#10267 placeholder e no_error não viram gabarito", () => {
     assert.doesNotThrow(() => buildKitReviewRecord({ status: "ok", intentionalErrorCheck: check }));
   });
 
-  it("cenário real: JSON do Stage 2 ainda com placeholder → record ok gravável", () => {
+  it("cenário real: JSON do Stage 2 ainda com placeholder → record ok gravável, mas com aviso (#10293)", () => {
     const { dir, emailFile } = editionWith(
       JSON.stringify({ description: "{PREENCHER}", wrong_value: "{PREENCHER}", correct_value: "{PREENCHER}" }),
       "<p>O Unibanco abriu</p>",
     );
     const r = checkEditionEmail(dir, emailFile);
     assert.equal(r.check, "no_wrong_value");
-    assert.deepEqual(r.warnings, []);
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0], /placeholder/);
   });
 
   it("no_error: true com wrong_value residual → no_wrong_value (não missing)", () => {
