@@ -1895,6 +1895,23 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
               scheduleAt: scheduledAt,
             }));
 
+    // #10209 item 1 — onda agendada com volume CORTADO por crédito: registra
+    // o dia, pra a próxima rodada não ler o corte deliberado como colapso.
+    // #10274: chamado também no catch das células (>=1 já agendada), senão um
+    // erro na célula B perdia o corte da A, já campanha real na Brevo.
+    const recordCreditCapIfNeeded = (): void => {
+      if (decision.cappedBy === "credit" && deps.recordCreditCap) {
+        try {
+          deps.recordCreditCap({ day: sendDate, volume: decision.volume });
+          report.note(`corte por crédito registrado pra ${sendDate} (${decision.volume}) — o guard de colapso o trata como novo patamar, não resíduo (#10209).`);
+        } catch (e) {
+          report.note(
+            `⚠️  falha ao registrar o corte por crédito (${(e as Error).message}) — a próxima rodada pode parar por "base colapsada" (#10209).`,
+          );
+        }
+      }
+    };
+
     let anyUncertain = false;
     let scheduledCount = 0;
     const summaries: InvocationSummary[] = [];
@@ -1936,6 +1953,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       // certo, só o CONTEÚDO do relatório passa a não esconder o estado
       // parcial).
       if (scheduledCount > 0) {
+        recordCreditCapIfNeeded();
         // `${key} (${scheduleAt})` em vez de um "às 06:00" fixo (#5140): com
         // horário por célula, uma frase que afirma a hora errada num aviso de
         // estado PARCIAL é pior que não dizer hora nenhuma — é justamente o
@@ -1952,18 +1970,7 @@ export async function runEnvio(deps: EnvioRunDeps, opts: EnvioRunOptions = {}): 
       throw cellError;
     }
 
-    // #10209 item 1 — onda agendada com volume CORTADO por crédito: registra
-    // o dia, pra a próxima rodada não ler o corte deliberado como colapso.
-    if (decision.cappedBy === "credit" && deps.recordCreditCap) {
-      try {
-        deps.recordCreditCap({ day: sendDate, volume: decision.volume });
-        report.note(`corte por crédito registrado pra ${sendDate} (${decision.volume}) — o guard de colapso o trata como novo patamar, não resíduo (#10209).`);
-      } catch (e) {
-        report.note(
-          `⚠️  falha ao registrar o corte por crédito (${(e as Error).message}) — a próxima rodada pode parar por "base colapsada" (#10209).`,
-        );
-      }
-    }
+    recordCreditCapIfNeeded();
     const reportId = `envio-${aammdd}`;
     writeAndRegisterReport(
       deps,
