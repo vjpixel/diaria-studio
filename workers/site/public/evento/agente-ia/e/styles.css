@@ -467,7 +467,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 
 /* O que você vai criar: um cartão por formato */
 .formats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--gap)}
-.formats-grid li{padding:22px 24px;border:1px solid var(--rule);border-radius:12px;background:var(--paper)}
+.formats-grid li{padding:22px 24px;border:1px solid var(--rule);border-radius:12px;background:var(--white)}
 .formats-grid li:last-child{border-bottom:1px solid var(--rule)}
 @media (max-width:767px){.formats-grid{gap:10px}.formats-grid li{padding:14px 18px;font-size:19px}}
 
