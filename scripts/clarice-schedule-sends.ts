@@ -292,9 +292,16 @@ export function applyVerifyResults(
  * #10211: grava `scheduleAcceptedAt` assim que o PUT `scheduledAt` é aceito
  * (2xx), ANTES do GET-verify — mesmo padrão do `sendNowAcceptedAt` (#9638).
  * Se o GET-verify falhar, o status local fica `draft`, mas a campanha está na
- * fila da Brevo e vai sair: sem este marcador, a contagem de envios do ciclo
- * (`envioWentOut`, frase do "quero" #10179) a ignorava e a onda seguinte
- * ocupava o mesmo índice — saía sem a frase.
+ * fila da Brevo e vai sair.
+ *
+ * Quem afeta a contagem de envios do ciclo (`envioWentOut`, frase do "quero"
+ * #10179) é o call site de `clarice-schedule-group.ts` (`runScheduleLive`),
+ * que persiste em `segments/group-campaigns.json` — o arquivo que
+ * `buildContentEnvioHistory` lê. O call site DESTE arquivo (`runScheduleLoop`)
+ * grava `sends/cells/campaigns-summary.json`, que a contagem não lê: aqui o
+ * marcador só mantém o registro local fiel ao que foi aceito pela Brevo
+ * (#10271 — o comentário anterior atribuía a este arquivo um efeito na
+ * contagem que ele não tem).
  */
 export function markScheduleAccepted<T extends { scheduleAcceptedAt?: string }>(
   c: T,
