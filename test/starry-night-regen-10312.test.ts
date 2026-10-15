@@ -28,6 +28,7 @@ import {
   estiloRegenCommands,
   formatGateSummary,
   MAX_ESTILO_AUTO_REGEN,
+  MAX_ESTILO_REGEN_FAILED_RUNS,
 } from "../scripts/run-image-crop-reviewer.ts";
 import {
   checkCropReviewWarnings,
@@ -82,6 +83,17 @@ describe("Noite Estrelada no veredito do revisor (#10312)", () => {
       assert.match(v[0].message, /D2 \(1x1, 4x5\)/);
       assert.match(v[0].message, /tela do celular/);
       assert.match(v[0].message, /--estilo-regen-plan/);
+      assert.match(v[0].message, /NÃO rodou/, "sem 04-estilo-regen.json o erro aponta o passo pulado");
+      assert.match(v[0].message, /edição para aqui/);
+    });
+
+    it("plano rodou e esgotou → mensagem diz que esgotou, não que foi pulado", () => {
+      persist(RAW_261016);
+      writeFileSync(join(dir, "_internal", "04-estilo-regen.json"), JSON.stringify({ attempts: { d2: 1 } }));
+      const v = checkStarryNightDetected(dir);
+      assert.equal(v.length, 1);
+      assert.match(v[0].message, /esgotou/);
+      assert.doesNotMatch(v[0].message, /NÃO rodou/);
     });
 
     it("image-crop-warn deixa de carregar o achado de estilo atual (sem duplicar como warning)", () => {
@@ -115,20 +127,48 @@ describe("Noite Estrelada no veredito do revisor (#10312)", () => {
   });
 
   describe("Stage 3: plano de regeneração automática", () => {
-    it("1ª passada regenera o destaque acusado; esgotado o teto, vai pra exhausted", () => {
+    it("1ª passada regenera o destaque acusado; imagem regerada gasta a tentativa e esgota o teto", () => {
       persist(RAW_261016);
       const result = normalizeCropReviewResult(
         JSON.parse(readFileSync(join(dir, "_internal", "04-crop-review.json"), "utf8")),
         "261016",
       );
-      const p1 = planEstiloRegeneration(result, {});
+      let md5 = "v1";
+      const current = () => md5;
+      const p1 = planEstiloRegeneration(result, {}, () => false, current);
       assert.deepEqual(p1.regenerate, ["d2"]);
       assert.deepEqual(p1.exhausted, []);
-      assert.equal(p1.attempts.d2, 1);
-      const p2 = planEstiloRegeneration(result, p1.attempts);
+      assert.equal(p1.attempts.d2, undefined, "tentativa só é gasta quando a regeneração roda");
+      assert.deepEqual(p1.state.pending?.d2, { "1x1": "v1", "4x5": "v1" });
+      md5 = "v2"; // regeneração rodou
+      const p2 = planEstiloRegeneration(result, p1.state, () => false, current);
       assert.deepEqual(p2.regenerate, []);
       assert.deepEqual(p2.exhausted, ["d2"]);
+      assert.equal(p2.attempts.d2, 1);
       assert.equal(MAX_ESTILO_AUTO_REGEN, 1);
+    });
+
+    it("falha passageira do gerador (imagem não mudou) ganha nova chance; o loop ainda termina", () => {
+      persist(RAW_261016);
+      const result = normalizeCropReviewResult(
+        JSON.parse(readFileSync(join(dir, "_internal", "04-crop-review.json"), "utf8")),
+        "261016",
+      );
+      const same = () => "v1";
+      const p1 = planEstiloRegeneration(result, {}, () => false, same);
+      const p2 = planEstiloRegeneration(result, p1.state, () => false, same);
+      assert.deepEqual(p2.regenerate, ["d2"], "1ª falha não gasta a tentativa");
+      assert.equal(p2.state.failed?.d2, 1);
+      assert.equal(p2.attempts.d2, undefined);
+      const runs = MAX_ESTILO_REGEN_FAILED_RUNS;
+      let st = p2.state;
+      let last = p2;
+      for (let i = 0; i < runs + 1; i++) {
+        last = planEstiloRegeneration(result, st, () => false, same);
+        st = last.state;
+      }
+      assert.deepEqual(last.regenerate, []);
+      assert.deepEqual(last.exhausted, ["d2"]);
     });
 
     it("entrada desatualizada não dispara regeneração", () => {
@@ -151,7 +191,7 @@ describe("Noite Estrelada no veredito do revisor (#10312)", () => {
       assert.match(cmds[2], /gen-social-card-4x5\.ts --edition-dir data\/editions\/2610\/261016\/ --destaque d2$/);
     });
 
-    it("CLI --estilo-regen-plan consome a tentativa no ato e termina o loop na 2ª chamada", () => {
+    it("CLI --estilo-regen-plan: regeneração que rodou gasta a tentativa e termina o loop", () => {
       persist(RAW_261016);
       const r1 = runPlan();
       assert.equal(r1.status, 0, r1.stderr);
@@ -160,11 +200,26 @@ describe("Noite Estrelada no veredito do revisor (#10312)", () => {
       assert.equal(out1.commands.d2.length, 3);
       assert.ok(existsSync(join(dir, "_internal", "04-estilo-regen.json")));
 
+      // regeneração rodou (imagens mudaram) e o revisor re-acusou
+      writeFileSync(join(dir, "04-d2-1x1.jpg"), "img-d2-1x1-v2");
+      writeFileSync(join(dir, "04-d2-4x5.jpg"), "img-d2-4x5-v2");
+      persist(RAW_261016);
       const r2 = runPlan();
       assert.equal(r2.status, 0, r2.stderr);
       const out2 = JSON.parse(r2.stdout);
       assert.deepEqual(out2.regenerate, []);
       assert.deepEqual(out2.exhausted, ["d2"]);
+      assert.equal(out2.attempts.d2, 1);
+    });
+
+    it("CLI --estilo-regen-plan: gerador falhou (imagem igual) → nova chance, depois esgota", () => {
+      persist(RAW_261016);
+      assert.deepEqual(JSON.parse(runPlan().stdout).regenerate, ["d2"]);
+      const r2 = JSON.parse(runPlan().stdout);
+      assert.deepEqual(r2.regenerate, ["d2"], "falha passageira não gasta a tentativa");
+      const r3 = JSON.parse(runPlan().stdout);
+      assert.deepEqual(r3.regenerate, []);
+      assert.deepEqual(r3.exhausted, ["d2"]);
     });
 
     it("CLI --estilo-regen-plan sem veredito persistido → exit 1", () => {

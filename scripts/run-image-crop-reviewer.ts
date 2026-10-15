@@ -34,7 +34,8 @@
  *   # 3. (#10312) Plano de regeneração por Noite Estrelada (categoria "estilo"):
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --estilo-regen-plan
  *   # → JSON { regenerate, exhausted, attempts, commands } — o orchestrator roda
- *   #   `commands[dN]` e repete o revisor; teto MAX_ESTILO_AUTO_REGEN por destaque.
+ *   #   `commands[dN]` e repete o revisor; teto MAX_ESTILO_AUTO_REGEN por destaque
+ *   #   (só gasta quando a imagem mudou; falha do gerador ganha nova chance).
  *
  * Output: data/editions/AAMMDD/_internal/04-crop-review.json
  *   + stdout: parâmetros de dispatch (modo descoberta) ou seção formatada (modo --input-json)
@@ -258,45 +259,86 @@ export function stampCropReviewImageHashes(result: CropReviewResult, editionDir:
  */
 export const MAX_ESTILO_AUTO_REGEN = 1;
 
+/**
+ * Quantas vezes um plano pode re-propor a regeneração de um destaque cuja
+ * regeneração anterior NÃO mudou a imagem (gerador fora, cota, comando
+ * falhou). Falha passageira ganha nova chance sem gastar a tentativa real;
+ * o teto garante que o loop termina mesmo com o gerador fora de vez.
+ */
+export const MAX_ESTILO_REGEN_FAILED_RUNS = 1;
+
+/** Estado persistido em `_internal/04-estilo-regen.json`. */
+export interface EstiloRegenState {
+  /** Regenerações que de fato rodaram (imagem mudou) por destaque. */
+  attempts?: Partial<Record<DestaqueId, number>>;
+  /** Regenerações propostas que não mudaram a imagem, por destaque. */
+  failed?: Partial<Record<DestaqueId, number>>;
+  /** Proposta em aberto: md5 por ratio de `04-{d}-{ratio}.jpg` no momento do plano. */
+  pending?: Partial<Record<DestaqueId, Record<string, string | null>>>;
+}
+
 export interface EstiloRegenPlan {
-  /** Destaques a regenerar agora (tentativa consumida no plano). */
+  /** Destaques a regenerar agora (ficam em `state.pending` até o próximo plano). */
   regenerate: DestaqueId[];
   /** Destaques ainda com Noite Estrelada e sem tentativa sobrando — vão pro gate como erro. */
   exhausted: DestaqueId[];
-  /** Tentativas por destaque, já incluindo as consumidas por este plano. */
+  /** Regenerações efetivas por destaque (só conta a que mudou a imagem). */
   attempts: Partial<Record<DestaqueId, number>>;
+  /** Estado a gravar de volta. */
+  state: EstiloRegenState;
 }
+
+/** md5 atual de `04-{destaque}-{ratio}.jpg`, `null` se ausente. */
+export type CurrentImageMd5 = (destaque: DestaqueId, ratio: string) => string | null;
 
 /**
  * Decide quais destaques regenerar a partir do veredito do revisor (#10312).
  * Considera só entradas `status: "warn"` + `categoria: "estilo"` que não
  * estejam desatualizadas (`isStale`, md5 da imagem mudou depois da revisão —
- * #9598). Puro: o chamador grava `attempts` de volta.
+ * #9598). Puro: o chamador grava `state` de volta.
+ *
+ * A tentativa só é gasta quando a regeneração de fato rodou: o plano anota o
+ * md5 das imagens em `pending` e o plano seguinte compara com o md5 atual.
+ * Imagem mudou → `attempts` +1. Não mudou (gerador falhou) → `failed` +1, e
+ * o destaque ganha nova chance até `MAX_ESTILO_REGEN_FAILED_RUNS`.
  */
 export function planEstiloRegeneration(
   result: CropReviewResult,
-  previousAttempts: Partial<Record<DestaqueId, number>>,
+  previous: EstiloRegenState,
   isStale: (entry: CropReviewEntry) => boolean = () => false,
+  currentMd5: CurrentImageMd5 = () => null,
   maxAttempts: number = MAX_ESTILO_AUTO_REGEN,
 ): EstiloRegenPlan {
-  const flagged = new Set<DestaqueId>();
-  for (const r of result.results) {
-    if (r.status === "warn" && r.categoria === "estilo" && !isStale(r)) flagged.add(r.destaque);
+  const attempts: Partial<Record<DestaqueId, number>> = { ...(previous.attempts ?? {}) };
+  const failed: Partial<Record<DestaqueId, number>> = { ...(previous.failed ?? {}) };
+  for (const d of DESTAQUE_IDS) {
+    const snap = previous.pending?.[d];
+    if (!snap) continue;
+    const changed = Object.entries(snap).some(([ratio, md5]) => currentMd5(d, ratio) !== md5);
+    if (changed) attempts[d] = (attempts[d] ?? 0) + 1;
+    else failed[d] = (failed[d] ?? 0) + 1;
   }
-  const attempts: Partial<Record<DestaqueId, number>> = { ...previousAttempts };
+
+  const flaggedRatios = new Map<DestaqueId, Set<string>>();
+  for (const r of result.results) {
+    if (r.status === "warn" && r.categoria === "estilo" && !isStale(r)) {
+      flaggedRatios.set(r.destaque, (flaggedRatios.get(r.destaque) ?? new Set()).add(r.ratio));
+    }
+  }
+  const pending: Partial<Record<DestaqueId, Record<string, string | null>>> = {};
   const regenerate: DestaqueId[] = [];
   const exhausted: DestaqueId[] = [];
   for (const d of DESTAQUE_IDS) {
-    if (!flagged.has(d)) continue;
-    const used = attempts[d] ?? 0;
-    if (used < maxAttempts) {
+    const ratios = flaggedRatios.get(d);
+    if (!ratios) continue;
+    if ((attempts[d] ?? 0) < maxAttempts && (failed[d] ?? 0) <= MAX_ESTILO_REGEN_FAILED_RUNS) {
       regenerate.push(d);
-      attempts[d] = used + 1;
+      pending[d] = Object.fromEntries([...ratios].map((ratio) => [ratio, currentMd5(d, ratio)]));
     } else {
       exhausted.push(d);
     }
   }
-  return { regenerate, exhausted, attempts };
+  return { regenerate, exhausted, attempts, state: { attempts, failed, pending } };
 }
 
 /**
@@ -396,9 +438,9 @@ async function main(): Promise<void> {
   mkdirSync(internalDir, { recursive: true });
 
   // Modo --estilo-regen-plan (#10312): lê o veredito JÁ persistido e decide
-  // quais destaques regenerar por Noite Estrelada. Consome a tentativa no ato
-  // (grava `_internal/04-estilo-regen.json`) — o teto vale mesmo se o
-  // orchestrator chamar o plano de novo sem ter regenerado.
+  // quais destaques regenerar por Noite Estrelada. Grava
+  // `_internal/04-estilo-regen.json` sempre (a presença do arquivo prova que o
+  // plano rodou); a tentativa só é gasta quando a imagem de fato mudou.
   if (flags.has("estilo-regen-plan")) {
     if (!existsSync(outPath)) {
       console.error(`[run-image-crop-reviewer] veredito não encontrado: ${outPath} — persistir com --input-json antes.`);
@@ -406,16 +448,20 @@ async function main(): Promise<void> {
     }
     const persisted = normalizeCropReviewResult(JSON.parse(readFileSync(outPath, "utf8")) as unknown, edition);
     const attemptsPath = join(internalDir, "04-estilo-regen.json");
-    let previous: Partial<Record<DestaqueId, number>> = {};
+    let previous: EstiloRegenState = {};
     if (existsSync(attemptsPath)) {
       try {
-        previous = (JSON.parse(readFileSync(attemptsPath, "utf8")) as { attempts?: Partial<Record<DestaqueId, number>> }).attempts ?? {};
+        previous = JSON.parse(readFileSync(attemptsPath, "utf8")) as EstiloRegenState;
       } catch {
         previous = {};
       }
     }
-    const plan = planEstiloRegeneration(persisted, previous, (e) => isCropReviewEntryStale(editionDir, e));
-    writeFileSync(attemptsPath, JSON.stringify({ attempts: plan.attempts, updated_at: new Date().toISOString() }, null, 2), "utf8");
+    const currentMd5: CurrentImageMd5 = (d, ratio) => {
+      const p = join(editionDir, `04-${d}-${ratio}.jpg`);
+      return existsSync(p) ? md5OfFile(p) : null;
+    };
+    const plan = planEstiloRegeneration(persisted, previous, (e) => isCropReviewEntryStale(editionDir, e), currentMd5);
+    writeFileSync(attemptsPath, JSON.stringify({ ...plan.state, updated_at: new Date().toISOString() }, null, 2), "utf8");
     const editionArg = args["edition-dir"].replace(/[/\\]+$/, "");
     console.log(
       JSON.stringify(

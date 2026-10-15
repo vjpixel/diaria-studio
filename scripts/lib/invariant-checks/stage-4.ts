@@ -1721,6 +1721,12 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
   if (!read) return [];
   const { path, results } = read;
   const hits = results.filter((r) => isCurrentStarryNight(editionDir, r));
+  // O plano de regeneração sempre grava este arquivo; ausente = o orchestrator
+  // pulou o passo do Stage 3 (o loop vive só no playbook).
+  const regenRan = existsSync(resolve(editionDir, "_internal", "04-estilo-regen.json"));
+  const cause = regenRan
+    ? "a regeneração automática do Stage 3 esgotou"
+    : "a regeneração automática do Stage 3 NÃO rodou (_internal/04-estilo-regen.json ausente — passo --estilo-regen-plan pulado)";
   const byDestaque = new Map<string, CropReviewFileEntry[]>();
   for (const r of hits) {
     const key = r.destaque ?? "?";
@@ -1732,8 +1738,8 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
     return {
       rule: "image-starry-night-detected",
       message:
-        `Destaque ${destaque.toUpperCase()} (${ratios}): imagem gerada com Noite Estrelada — ${motivo}. ` +
-        `Viola regra invariável. Regenerar: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` ` +
+        `Destaque ${destaque.toUpperCase()} (${ratios}): imagem gerada com Noite Estrelada — ${motivo}; ${cause}. ` +
+        `Viola regra invariável — em rodada sem gates a edição para aqui. Regenerar: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` ` +
         `(ou reescrever _internal/02-${destaque}-prompt.md e rodar image-generate.ts --force + --ratio 4x5 --force + gen-social-card-4x5.ts), ` +
         `depois re-rodar o revisor. Falso positivo: trocar a entrada para status "ok" em _internal/04-crop-review.json.`,
       source_issue: "#10312",
