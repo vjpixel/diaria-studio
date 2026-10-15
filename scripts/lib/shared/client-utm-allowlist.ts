@@ -78,8 +78,12 @@ export function isAllowedClientSocialUtmSource(rawSource: unknown): boolean {
  * `CLIENT_UTM_SOURCE_ALLOWED_PREFIXES`, porque aquela alimenta `origemPaga`
  * e um source interno nunca pode virar canal pago. Só consultada no caminho
  * `source === "apex"` de `resolveSubscribeUtm`.
+ *
+ * #10315: `evento-email` — link manual nos e-mails pra quem comprou ingresso de
+ * evento (`EVENTO_EMAIL_UTM_SOURCE` em `utm-registry.ts`; literal aqui como os
+ * demais, `test/subscribe-apex-evento-email-10315.test.ts` trava a igualdade).
  */
-export const CLIENT_UTM_INTERNAL_ORGANIC_SOURCES = ["retrospectiva-mensal", "retrospectiva-anual"] as const;
+export const CLIENT_UTM_INTERNAL_ORGANIC_SOURCES = ["retrospectiva-mensal", "retrospectiva-anual", "evento-email"] as const;
 
 /** Pure (#9502): mesma regra de fronteira de traço das outras listas. */
 export function isAllowedClientInternalUtmSource(rawSource: unknown): boolean {

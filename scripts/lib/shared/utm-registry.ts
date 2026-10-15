@@ -238,6 +238,32 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
 }
 
 /**
+ * `utm_source`/`utm_medium` dos e-mails de EVENTO (#10315) — comunicação com
+ * quem comprou ingresso de imersão/evento ao vivo, enviada à mão pelo Gmail.
+ * Fora do pipeline, então sem `UtmEmitter` (não há `originFile`) — o link vive
+ * no texto do e-mail. 1º uso: P.S. do e-mail de pré-requisitos da imersão de
+ * 17/10/2026 (`diar.ia.br/evento/agente-ia`), convidando pra assinar a diária.
+ *
+ * Fonte própria, no padrão `{superfície}-email` do Artigo Especial acima:
+ * audiência (compradores do evento) e canal (Gmail manual) distintos de todo
+ * envio pelo ESP. Liberada no apex via `CLIENT_UTM_INTERNAL_ORGANIC_SOURCES`
+ * (`client-utm-allowlist.ts`) — sem isso o cadastro cai em `diaria-apex`.
+ */
+export const EVENTO_EMAIL_UTM_SOURCE = "evento-email";
+export const EVENTO_EMAIL_UTM_MEDIUM = "email";
+
+/**
+ * `utm_campaign` dos e-mails de evento — `evento-email-{ano}-{slug}`, com o
+ * slug de `diar.ia.br/evento/{slug}`. Por EVENTO, nunca por e-mail da
+ * sequência: um campaign por mensagem fatiaria a série em linhas que não somam.
+ *
+ * @pure
+ */
+export function buildEventoEmailCampaign(ano: string, slug: string): string {
+  return `${EVENTO_EMAIL_UTM_SOURCE}-${ano}-${slug}`;
+}
+
+/**
  * UTM do redirect `diar.ia.br/apoiar/ir` → `apoia.se/diaria` (#8498). O item
  * "Apoiar" do menu global e o rodapé apontam pra `/apoiar/ir` (não pra URL
  * crua do Apoia.se) pra manter o contador de clique do #7915 e pra que o
