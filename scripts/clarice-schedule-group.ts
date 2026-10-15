@@ -216,7 +216,7 @@ import { checkKeyAgainstHourTest } from "./lib/clarice-group-cells.ts";
 import { readClariceHourTestState } from "./lib/clarice-hour-test.ts";
 import { rewriteAmazonAffiliateTagsInText, assertNoAmazonAffiliateTagIssues } from "./lib/amazon-affiliate.ts";
 import { readClariceAbTest, resolveCampaignHtmlPath, variantArmFromKey } from "./lib/clarice-ab-test.ts";
-import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189, #10212, #10254
+import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, envioWentOut, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10179, #10189, #10212, #10254, #10271
 
 loadProjectEnv();
 
@@ -523,7 +523,8 @@ export function resolveContentCycle(argv: string[], segmentsCycle: string): stri
  * - `--envio-index N` (override) sobrepõe tudo — recuperação manual.
  * - Gravado divergente do recalculado vira `divergence` (aviso), não decisão.
  *   O valor gravado não é reescrito: o HTML de uma campanha que já saiu não
- *   é mais tocado por este script (`--update-html` recusa), então o gravado
+ *   é mais tocado por este script (`--update-html` recusa via `envioWentOut`,
+ *   inclusive `draft` com agendamento/sendNow aceito — #10271), então o gravado
  *   descreve o que foi de fato para a Brevo.
  */
 export function resolveQueroEnvioIndex(opts: {
@@ -1288,6 +1289,87 @@ export async function runSendNowLive(
   return "sent";
 }
 
+/**
+ * #10271: `--update-html` — propaga um fix de render pra campanha que AINDA
+ * NÃO saiu. A guarda é `envioWentOut(c)`, não só `status`: uma entrada `draft`
+ * com `scheduleAcceptedAt` (#10211 — PUT aceito, GET-verify falho, campanha na
+ * fila da Brevo) ou com `sendNowAcceptedAt` (#9638) já saiu. Antes a guarda
+ * olhava só `status === "scheduled" | "sent"`, e o script fazia PUT de
+ * `htmlContent` numa campanha já na fila e reescrevia `envioIndex`/
+ * `queroIncluded` — o registro deixava de descrever o que foi pra Brevo
+ * (premissa do docstring de `resolveQueroEnvioIndex`).
+ */
+export async function runUpdateHtml(
+  c: CampaignEntry,
+  campaigns: readonly CampaignEntry[],
+  campaignsPath: string,
+  html: string,
+  quero: { envioIndex: number; included: boolean },
+  deps: {
+    putHtmlFn: (campaignId: number, html: string) => Promise<void>;
+    writeFn?: (path: string, content: string) => void;
+    logFn?: (msg: string) => void;
+  },
+): Promise<"updated" | "skipped"> {
+  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const logFn = deps.logFn ?? ((m) => console.error(m));
+  if (envioWentOut(c)) {
+    const why =
+      c.status === "sent" ? "disparada"
+      : c.status === "scheduled" ? "agendada"
+      : c.sendNowAcceptedAt ? `com sendNow aceito em ${c.sendNowAcceptedAt}`
+      : `com agendamento aceito em ${c.scheduleAcceptedAt} (GET-verify não confirmou — está na fila da Brevo)`;
+    logFn(`⚠️  ${c.key} já ${why} — html NÃO atualizado`);
+    return "skipped";
+  }
+  await deps.putHtmlFn(c.campaignId, html);
+  c.envioIndex = quero.envioIndex;
+  c.queroIncluded = quero.included;
+  writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+  logFn(`✓ ${c.key} html atualizado (campanha #${c.campaignId})`);
+  return "updated";
+}
+
+/**
+ * #10271: passo PUT `scheduledAt` + GET-verify do `--schedule`, extraído de
+ * `main()` pra que o teste de regressão do #10211 exercite o call site REAL
+ * deste script (que persiste em `segments/group-campaigns.json`, o arquivo
+ * que `buildContentEnvioHistory` lê) — não o `runScheduleLoop` de
+ * `clarice-schedule-sends.ts`, que grava outro arquivo. `markScheduleAccepted`
+ * roda logo após o PUT aceito, ANTES do GET-verify: se o verify falhar, o
+ * status local fica `draft` mas `scheduleAcceptedAt` já está em disco.
+ * Os guards de status/`scheduledAt` ficam no caller.
+ */
+export async function runScheduleLive(
+  c: CampaignEntry & { scheduledAt: string },
+  campaigns: CampaignEntry[],
+  campaignsPath: string,
+  deps: {
+    putScheduleFn: (campaignId: number, scheduledAt: string) => Promise<void>;
+    verifyFn: (campaignId: number) => Promise<{ status: string }>;
+    writeFn?: (path: string, content: string) => void;
+    logFn?: (msg: string) => void;
+    now?: () => Date;
+  },
+): Promise<void> {
+  const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
+  const logFn = deps.logFn ?? ((m) => console.error(m));
+  await deps.putScheduleFn(c.campaignId, c.scheduledAt);
+  markScheduleAccepted(c, campaigns, campaignsPath, writeFn, deps.now); // #10211 — antes do GET-verify
+  const verifySettled = await Promise.allSettled([deps.verifyFn(c.campaignId)]);
+  // Cast de shape — ver docstring de `CampaignEntry`/`ScheduleSendsShape`
+  // no topo do arquivo: mesmos objetos por REFERÊNCIA, só o tipo estático
+  // diverge (scheduledAt já foi confirmado string neste ponto).
+  applyVerifyResults(
+    verifySettled,
+    [c as unknown as ScheduleSendsShape],
+    campaigns as unknown as ScheduleSendsShape[],
+    campaignsPath,
+    writeFn,
+    logFn,
+  );
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -1558,15 +1640,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (doUpdateHtml) {
     const c = byKey.get(key);
     if (!c) throw new Error(`campanha '${key}' não criada — rode --create antes.`);
-    if (c.status === "scheduled" || c.status === "sent") {
-      console.error(`⚠️  ${key} já ${c.status === "sent" ? "disparada" : "agendada"} — html NÃO atualizado`);
-    } else {
-      await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { htmlContent: html });
-      c.envioIndex = quero.envioIndex;
-      c.queroIncluded = quero.included;
-      writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
-      console.error(`✓ ${key} html atualizado (campanha #${c.campaignId})`);
-    }
+    // #10271: guarda é `envioWentOut(c)` (dentro de runUpdateHtml), não só `status`.
+    await runUpdateHtml(c, campaigns, campaignsPath, html, quero, {
+      putHtmlFn: async (id, h) => {
+        await brevoPut(apiKey, `/emailCampaigns/${id}`, { htmlContent: h });
+      },
+    });
   }
 
   // --- send-test ---
@@ -1603,18 +1682,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
             `(${c.scheduledAt}). Atualize o group-campaigns.json ou recrie com --create --schedule-at novo.`,
         );
       }
-      await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
-      markScheduleAccepted(c, campaigns, campaignsPath); // #10211 — antes do GET-verify
-      const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
-      // Cast de shape — ver docstring de `CampaignEntry`/`ScheduleSendsShape`
-      // no topo do arquivo: mesmos objetos por REFERÊNCIA, só o tipo estático
-      // diverge (scheduledAt já foi confirmado string neste ponto do branch).
-      applyVerifyResults(
-        verifySettled,
-        [c as unknown as ScheduleSendsShape],
-        campaigns as unknown as ScheduleSendsShape[],
-        campaignsPath,
-      );
+      // #10271: PUT + markScheduleAccepted (#10211) + GET-verify em runScheduleLive.
+      await runScheduleLive(c as CampaignEntry & { scheduledAt: string }, campaigns, campaignsPath, {
+        putScheduleFn: async (id, scheduledAt) => {
+          await brevoPut(apiKey, `/emailCampaigns/${id}`, { scheduledAt });
+        },
+        verifyFn: (id) => brevoGetCampaign(apiKey, id),
+      });
     }
   }
 
