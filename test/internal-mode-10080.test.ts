@@ -24,7 +24,7 @@ import {
 import { renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
 
 const PUBLIC = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), "workers/site/public");
-const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "guia/agente-ia"].map((p) => ({
+const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "evento/agente-ia/f", "guia/agente-ia"].map((p) => ({
   name: p,
   html: readFileSync(join(PUBLIC, p, "index.html"), "utf8"),
 }));
