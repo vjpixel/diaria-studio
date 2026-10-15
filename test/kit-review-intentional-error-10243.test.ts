@@ -9,6 +9,10 @@ describe("#10243 checagem determinística do erro intencional", () => {
   it("missing quando só o texto correto está no e-mail (261015)", () => {
     assert.equal(checkIntentionalErrorInEmail("O Unibanco abriu", "Unibanko"), "missing");
   });
+  it("normaliza HTML: tags e entidades", () => {
+    assert.equal(checkIntentionalErrorInEmail("<p>Uni<b>banko</b> &amp; caf&eacute;</p>", "Unibanko &"), "present");
+    assert.equal(checkIntentionalErrorInEmail("<p>Itaú&nbsp;Unibanko</p>", "Itaú Unibanko"), "present");
+  });
   it("no_wrong_value / no_email", () => {
     assert.equal(checkIntentionalErrorInEmail("x", undefined), "no_wrong_value");
     assert.equal(checkIntentionalErrorInEmail(undefined, "Unibanko"), "no_email");

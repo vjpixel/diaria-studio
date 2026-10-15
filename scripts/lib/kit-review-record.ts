@@ -44,7 +44,19 @@ export interface KitReviewRecord {
 
 export type IntentionalErrorCheck = "present" | "missing" | "no_wrong_value" | "no_email";
 
-/** @pure Case-sensitive: "Unibanko" ≠ "Unibanco". */
+const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/** @pure Tira tags, decodifica entidades e colapsa espaços (HTML cru do Kit). */
+export function normalizeEmailText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&([a-z]+);/gi, (m, n) => ENT[n.toLowerCase()] ?? m)
+    .replace(/\s+/g, " ");
+}
+
+/** @pure Case-sensitive: "Unibanko" ≠ "Unibanco". HTML normalizado (#10243 review). */
 export function checkIntentionalErrorInEmail(
   emailBody: string | undefined,
   wrongValue: string | undefined,
@@ -52,7 +64,7 @@ export function checkIntentionalErrorInEmail(
   const w = (wrongValue ?? "").trim();
   if (!w) return "no_wrong_value";
   if (!emailBody) return "no_email";
-  return emailBody.includes(w) ? "present" : "missing";
+  return normalizeEmailText(emailBody).includes(normalizeEmailText(w)) ? "present" : "missing";
 }
 
 export function isKitReviewStatus(v: unknown): v is KitReviewStatus {
