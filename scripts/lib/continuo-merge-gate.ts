@@ -41,6 +41,14 @@
  * 1. `superseded` — issue(s) já fechada(s) por outra coisa → `reject`
  *    incondicional, ANTES até do veredito da revisão (não importa o que o
  *    review achou: não há mais nada útil a mergear, #6238).
+ * 1b. PR retida para o editor (#10278 — label `retido-para-editor` ou
+ *    marcador no corpo, ver `scripts/lib/pr-retido-para-editor.ts`; `null`
+ *    = labels ilegíveis, fail-closed) → `escalate`. VEM ANTES do veredito
+ *    e de todo o resto: outra trilha (overnight, editor) já decidiu que a
+ *    PR não sai sem o editor, e nenhum `approve` do review raso desta
+ *    sessão revoga isso. Não é `reject` — a PR pode estar ótima, só não é
+ *    decisão desta trilha. Incidente de origem: PR #10221, retida pelo
+ *    overnight 261014b em prosa de comentário e mergeada pelo continuo.
  * 2. `reviewedHeadSha` desconhecido (`null` — nenhum review independente
  *    encontrado, ou marcador legado sem o campo `head=`, #6926) →
  *    `escalate`. Sem SHA revisado não há como saber SE o HEAD atual é o
@@ -100,6 +108,10 @@ export interface ContinuoMergeGateInput {
   /** `true` quando o gate de superseded (#6238) já confirmou que toda issue
    *  referenciada pela PR está `CLOSED` — ver `computeSupersededVerdict`. */
   superseded: boolean;
+  /** #10278: `true` = PR retida para o editor (label `retido-para-editor`
+   *  ou marcador no corpo); `null` = labels ilegíveis (fail-closed, tratado
+   *  como retida). Ver `evaluatePrRetido`. */
+  retidoParaEditor: boolean | null;
   /** Veredito extraído do marcador de review (#6926) — `null` cobre TANTO
    *  "nenhum review independente encontrado" QUANTO "encontrado mas sem
    *  campo `verdict=`" (marcador legado, pré-#6926). Nos dois casos o gate
@@ -143,6 +155,16 @@ export function evaluateContinuoMergeGate(input: ContinuoMergeGateInput): Contin
     return {
       action: "reject",
       reason: "superseded: issue(s) referenciada(s) já fechada(s) por outra coisa (#6238)",
+    };
+  }
+
+  if (input.retidoParaEditor !== false) {
+    return {
+      action: "escalate",
+      reason:
+        input.retidoParaEditor === null
+          ? "labels da PR ilegíveis — não dá pra confirmar que não está retida para o editor (#10278), fail-closed"
+          : "PR retida para o editor (label retido-para-editor ou marcador no corpo, #10278) — merge só com decisão do editor",
     };
   }
 

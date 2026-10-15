@@ -505,11 +505,10 @@ def main() -> int:
     # #10065 (13/10/2026): o catálogo mudou de novo (completion 0,50 -> 0,90/M,
     # prompt e input_cache_read caíram); editor decidiu MANTER o modelo e o
     # baseline acompanha os 3 campos vigentes.
-    # #10220 (14/10/2026): prompt 0,15/M, completion 0,50/M, cache 0,03/M.
-    for campo, valor in (("prompt", 0.00000015), ("completion", 0.0000005),
-                         ("input_cache_read", 0.00000003)):
+    for campo, valor in (("prompt", 0.0000000261), ("completion", 0.0000009),
+                         ("input_cache_read", 0.0000000108)):
         assert_true(
-            f"#10220: baseline vigente do glm-5.3-flash usa {campo}={valor}",
+            f"#10065: baseline vigente do glm-5.3-flash usa {campo}={valor}",
             mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"][campo] == valor,
         )
     # #9559 -> #9633 -> #10132: baseline vigente do deepseek-v4-flash. Em
@@ -567,36 +566,52 @@ def main() -> int:
     # (aparece como unverifiable, não como aumento).
     cat_10065 = mod.extract_catalog_pricing(_catalog(
         {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                     "input_cache_read": "0.00000003"}},
+         "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
+                     "input_cache_read": "0.0000000108"}},
     ))
     f_10065 = mod.detect_price_changes(cat_10065)
     assert_true(
         "#10065: catálogo no preço vigente do glm-5.3-flash -> nenhum aumento pro glm",
         not [i for i in f_10065["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"],
     )
-    # O baseline de 13/10 (#10065) teria alarmado com o catálogo de 14/10
-    # (#10220): prompt e input_cache_read subiram, completion caiu.
+    # O baseline ANTIGO (completion 0,50/M) teria alarmado com o mesmo catálogo.
     f_10065_old = mod.detect_price_changes(cat_10065, baseline={
-        "z-ai/glm-5.3-flash": {"prompt": 0.0000000261, "completion": 0.0000009,
-                               "input_cache_read": 0.0000000108},
+        "z-ai/glm-5.3-flash": {"prompt": 0.00000015, "completion": 0.0000005,
+                               "input_cache_read": 0.000000030},
     }, not_on_openrouter=set())
     assert_true(
-        "#10220: baseline de 13/10 com o catálogo de 14/10 alarmaria prompt+cache (exit 3)",
+        "#10065: baseline antigo (completion 0,50/M) com o mesmo catálogo alarmaria (exit 3)",
         mod.price_check_exit_code(f_10065_old) == 3
-        and {i["campo"] for i in f_10065_old["increases"]} == {"prompt", "input_cache_read"},
+        and {i["campo"] for i in f_10065_old["increases"]} == {"completion"},
     )
     # E o preço do alarme de 12/10 (completion 1,20/M) segue alarmando contra
     # o baseline novo — a atualização não cegou o watchdog pra novas altas.
     f_10065_up = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
         {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.00000015", "completion": "0.0000012",
-                     "input_cache_read": "0.00000003"}},
+         "pricing": {"prompt": "0.0000000261", "completion": "0.0000012",
+                     "input_cache_read": "0.0000000108"}},
     )))
     assert_true(
         "#10065: completion 1,20/M (alarme de 12/10) ainda alarma contra o baseline novo",
         any(i["modelo"] == "z-ai/glm-5.3-flash" and i["campo"] == "completion"
             for i in f_10065_up["increases"]),
+    )
+
+    # #10278 (regressão): o #10220 (PR #10221) subiu o baseline do glm para o
+    # preço de 14/10 sem decisão do editor, calando o alarme de uma alta de
+    # 2,9x. A decisão foi TROCAR de modelo, não absorver — então o catálogo
+    # de 14/10 tem que continuar alarmando (prompt + cache) contra o baseline
+    # de produção. Se alguém re-subir o baseline sem decisão, isto quebra.
+    f_10278 = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
+                     "input_cache_read": "0.00000003"}},
+    )))
+    assert_true(
+        "#10278: catálogo de 14/10 do glm-5.3-flash alarma prompt+cache contra o baseline de produção",
+        {i["campo"] for i in f_10278["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"}
+        == {"prompt", "input_cache_read"}
+        and mod.price_check_exit_code(f_10278) == 3,
     )
 
     # #10132 (regressão): catálogo com os 2 modelos pagos no preço vigente
@@ -608,8 +623,8 @@ def main() -> int:
          "pricing": {"prompt": "0.000000091", "completion": "0.000000182",
                      "input_cache_read": "0.0000000182"}},
         {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                     "input_cache_read": "0.00000003"}},
+         "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
+                     "input_cache_read": "0.0000000108"}},
     ))
     f_10132 = mod.detect_price_changes(cat_10132)
     assert_true(
@@ -623,8 +638,7 @@ def main() -> int:
     assert_true(
         "#10132: baseline da #9633 com o mesmo catálogo alarmaria só no prompt (exit 3)",
         mod.price_check_exit_code(f_10132_old) == 3
-        and {(i["modelo"], i["campo"]) for i in f_10132_old["increases"]
-             if i["modelo"] == "deepseek/deepseek-v4-flash"}
+        and {(i["modelo"], i["campo"]) for i in f_10132_old["increases"]}
         == {("deepseek/deepseek-v4-flash", "prompt")},
     )
     # E outra mudança de preço ainda dispara: a volta do completion a 1,28/M
@@ -637,8 +651,8 @@ def main() -> int:
         f_up = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
             {"id": "deepseek/deepseek-v4-flash", "pricing": pricing},
             {"id": "z-ai/glm-5.3-flash",
-             "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                         "input_cache_read": "0.00000003"}},
+             "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
+                         "input_cache_read": "0.0000000108"}},
         )))
         assert_true(
             f"#10132: {campo}={preco} ainda alarma contra o baseline novo (exit 3)",

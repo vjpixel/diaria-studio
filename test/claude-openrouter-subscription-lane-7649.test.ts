@@ -78,12 +78,12 @@ function openrouterBranch(src: string): string {
 }
 
 describe("claude-delegate.sh — sentinela do elo de assinatura (#7649)", () => {
-  it("MODELS_DEFAULT termina com a sentinela, depois do glm-5.3-flash", () => {
+  it("MODELS_DEFAULT termina com a sentinela, depois do elo pago deepseek-v4-flash (#10278)", () => {
     const src = readWrapper();
     assert.match(
       src,
-      /MODELS_DEFAULT=\("dots-studio\/dots-3-note-preview:free" "thinkingmachines\/inkling-small:free" "poolside\/laguna-s-2\.1:free" "z-ai\/glm-5\.3-flash" "\$SUBSCRIPTION_LANE_MODEL"\)/,
-      "MODELS_DEFAULT não termina com o sentinela do elo de assinatura logo depois do glm-5.3-flash",
+      /MODELS_DEFAULT=\("dots-studio\/dots-3-note-preview:free" "thinkingmachines\/inkling-small:free" "poolside\/laguna-s-2\.1:free" "deepseek\/deepseek-v4-flash" "\$SUBSCRIPTION_LANE_MODEL"\)/,
+      "MODELS_DEFAULT não termina com o sentinela do elo de assinatura logo depois do deepseek-v4-flash (#10278)",
     );
   });
 
