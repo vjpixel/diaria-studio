@@ -1177,14 +1177,6 @@
   <url>
     <loc>https://diar.ia.br/p/gemini-vira-colega-com-e-mail-e-agenda-proprios</loc>
     <lastmod>2026-10-13</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-13T00:00:00.000Z</news:publication_date>
-      <news:title>Gemini vira colega com e-mail e agenda próprios</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/oab-sp-vai-a-justica-contra-a-startup-enter</loc>
@@ -1208,6 +1200,18 @@
       </news:publication>
       <news:publication_date>2026-10-15T00:00:00.000Z</news:publication_date>
       <news:title>Meta AI gera "Flávio 22" e trava com Lula?</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/rh-da-riachuelo-cria-sistema-em-12-dias-sem-codigo</loc>
+    <lastmod>2026-10-16</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-16T00:00:00.000Z</news:publication_date>
+      <news:title>RH da Riachuelo cria sistema em 12 dias sem código</news:title>
     </news:news>
   </url>
 </urlset>
