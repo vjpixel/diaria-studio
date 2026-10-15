@@ -124,7 +124,7 @@ const SUBJECT_CLAUSE_END = new RegExp(
  * clause after the colon.
  */
 const GENERIC_LAUNCH_OBJECT_END =
-  /\s(?:(?:um|uma|a|an)\s+)?(?:novo|nova|novos|novas|new)\s+[\p{L}-]+\s*$/iu;
+  /\s(?:novo|nova|novos|novas|new)\s+(?:modelo|modelos|model|models|chatbot|assistente|assistant|IA|AI|LLM)(?:\s+(?:de\s+)?(?:IA|AI|linguagem|language|aberto|open))?\s*$/iu;
 
 /**
  * #10145: the versioned product a headline is ABOUT — the first code in its

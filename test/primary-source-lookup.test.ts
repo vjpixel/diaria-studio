@@ -486,6 +486,8 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Anthropic lança novo modelo: Claude Opus 6"), "opus6");
     assert.equal(subjectVersionedProductCode("OpenAI launches new model: GPT-6"), "gpt6");
     assert.equal(subjectVersionedProductCode("Microsoft lança Copilot Vision: Windows 11 ganha IA na tela"), undefined);
+    assert.equal(subjectVersionedProductCode("Microsoft lança nova versão: Windows 11 ganha IA na tela"), undefined);
+    assert.equal(subjectVersionedProductCode("Anthropic lança novo modelo aberto: Claude Opus 6"), "opus6");
   });
 });
 
