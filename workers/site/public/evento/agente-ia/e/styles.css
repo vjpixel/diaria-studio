@@ -439,8 +439,8 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .button:focus-visible,.float-cta:focus-visible{outline-color:var(--ink)}
 .final .button:focus-visible{outline-color:var(--paper)}
 
-/* Topo: o quadro da data ganha o rótulo "ao vivo" com ponto teal piscando. O piscar é só de
-   opacidade e lento, então vale também com "reduzir movimento"; o anel que cresce, não. */
+/* Topo: o quadro da data ganha o rótulo "ao vivo". O ponto teal piscando (.live-dot, usado no
+   fechamento) pisca só na opacidade e devagar, então vale também com "reduzir movimento"; o anel que cresce, não. */
 .hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px}
 .hero-date strong{font-size:clamp(19px,1.9vw,23px)}
 .live-label{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase}
@@ -502,5 +502,8 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
 
 /* Fechamento: só data, frase, preço e botão */
+/* O ponto teal piscando fica só no fechamento, ao lado de "Ao vivo pelo Zoom" (pedido de 15/10). */
+.final-when::before{content:none}
+.final-when .live-label{margin-top:6px}
 .final-price{display:flex;flex-direction:column;align-items:center;gap:4px;margin:0 0 28px;font-size:20px}
 .final-price strong{font-size:clamp(52px,6vw,68px);line-height:1}
