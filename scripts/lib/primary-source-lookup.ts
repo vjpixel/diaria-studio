@@ -119,6 +119,14 @@ const SUBJECT_CLAUSE_END = new RegExp(
 );
 
 /**
+ * #10277: launch clause ending in a generic object ("lança novo modelo",
+ * "launches a new tool") — it names no product, so the product is the next
+ * clause after the colon.
+ */
+const GENERIC_LAUNCH_OBJECT_END =
+  /\s(?:(?:um|uma|a|an)\s+)?(?:novo|nova|novos|novas|new)\s+[\p{L}-]+\s*$/iu;
+
+/**
  * #10145: the versioned product a headline is ABOUT — the first code in its
  * subject clause (title start up to `SUBJECT_CLAUSE_END`). `undefined` when
  * the subject clause names no versioned product ("Google lança Gemini no
@@ -145,9 +153,11 @@ export function subjectVersionedProductCode(title: string): string | undefined {
       rest = " " + rest.slice(comma.index + 1);
       continue;
     }
-    // #10205: oração com verbo de lançamento já tem sujeito — o que vem depois
-    // da pontuação é outra oração, nunca o produto lançado.
-    if (hasLaunchVerb(head)) return undefined;
+    // #10205: oração com verbo de lançamento que já NOMEIA o produto
+    // ("Copilot Vision: Windows 11 ...") — o que vem depois da pontuação é
+    // outra oração, nunca o produto lançado. #10277: objeto genérico ("lança
+    // novo modelo: Claude Opus 6") não nomeia nada; o produto vem depois.
+    if (hasLaunchVerb(head) && !GENERIC_LAUNCH_OBJECT_END.test(head)) return undefined;
     rest = " " + rest.slice(m.index + m[0].length);
   }
 }

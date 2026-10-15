@@ -481,6 +481,12 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Novo recurso chega, mas exige Windows 11"), undefined);
     assert.equal(sameStoryByExactProductVersion({ title: "OpenAI lança GPT-5.5-Codex" }, { url: "https://x.example/", title: "Introducing GPT-5.5" }), false);
   });
+
+  it("#10277: 1ª oração com verbo de lançamento e objeto genérico segue para a 2ª", () => {
+    assert.equal(subjectVersionedProductCode("Anthropic lança novo modelo: Claude Opus 6"), "opus6");
+    assert.equal(subjectVersionedProductCode("OpenAI launches new model: GPT-6"), "gpt6");
+    assert.equal(subjectVersionedProductCode("Microsoft lança Copilot Vision: Windows 11 ganha IA na tela"), undefined);
+  });
 });
 
 // #10162: decisão do editor — fonte oficial vence a cobertura em QUALQUER
