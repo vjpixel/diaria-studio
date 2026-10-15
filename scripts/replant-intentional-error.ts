@@ -115,6 +115,25 @@ function sectionTexts(md: string): Map<string, string> {
   return out;
 }
 
+/**
+ * (#10270) Identidade dos itens que carregam `wrong`: chave (URL do item, ou a linha de
+ * título) → seção. Item = bloco iniciado por linha `**[título](url)**`; só entram os que
+ * contêm o termo. Permite ver um item MOVIDO de seção mesmo quando as contagens por seção
+ * empatam (item movido + menção legítima podada na seção de destino).
+ */
+function carrierKeys(md: string, wrong: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [section, text] of sectionTexts(md)) {
+    const items = text.split(/\n(?=\*\*\[)/);
+    for (const item of items) {
+      if (!/^\*\*\[/.test(item) || countWholeWord(item, wrong) === 0) continue;
+      const url = item.match(/\]\((https?:[^)\s]+)\)/)?.[1];
+      out.set(url ?? item.split("\n")[0].trim(), section || "(topo)");
+    }
+  }
+  return out;
+}
+
 /** Regex de palavra inteira (sem flag `g`) pro `wrong_value`. */
 function wholeWordRe(wrong: string, flags = "u"): RegExp {
   const esc = wrong.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -137,14 +156,15 @@ export function countWholeWord(text: string, wrong: string): number {
 export function baselineOccurrences(
   editionDir: string,
   wrong: string,
-): { status: string; count: number | null; bySection: Map<string, number> } {
+): { status: string; count: number | null; bySection: Map<string, number>; carriers: Map<string, string> } {
   const bySection = new Map<string, number>();
+  const carriers = new Map<string, string>();
   const health = assessStage2BaselineOnDisk(editionDir);
-  if (health.status !== "ok") return { status: health.status, count: null, bySection };
+  if (health.status !== "ok") return { status: health.status, count: null, bySection, carriers };
   const md = readSnapshots(editionDir, STAGE2_BASELINE_LABEL, ["02-reviewed.md"]).get("02-reviewed.md");
-  if (md === undefined) return { status: "missing", count: null, bySection };
+  if (md === undefined) return { status: "missing", count: null, bySection, carriers };
   for (const [k, text] of sectionTexts(md)) bySection.set(k || "(topo)", countWholeWord(text, wrong));
-  return { status: "ok", count: countWholeWord(md, wrong), bySection };
+  return { status: "ok", count: countWholeWord(md, wrong), bySection, carriers: carrierKeys(md, wrong) };
 }
 
 /**
@@ -292,7 +312,13 @@ export function main(argv: string[] = process.argv.slice(2)): number {
       const grewElsewhere = old.elsewhere.some(
         (k) => (currentBySection.get(k) ?? 0) > (baseline.bySection.get(k) ?? 0),
       );
-      const countDropped = baseline.count !== null && baseline.count > currentCount && !grewElsewhere;
+      // (#10270) Contagem por seção empata se o item movido substituiu uma menção legítima
+      // podada no destino: compara a identidade do item (URL) contra o baseline.
+      const movedItem = [...carrierKeys(md, oldWrong)].some(([key, sec]) => {
+        const was = baseline.carriers.get(key);
+        return was !== undefined && was !== sec;
+      });
+      const countDropped = baseline.count !== null && baseline.count > currentCount && !grewElsewhere && !movedItem;
       elsewhereInfo = {
         wrong_value: oldWrong,
         scope: old.scope,

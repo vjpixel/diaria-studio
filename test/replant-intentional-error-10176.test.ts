@@ -411,6 +411,80 @@ Nessa edição, uma marca saiu grafada errada na seção RADAR.
     }
   });
 
+  it("#10270: item do erro movido RADAR→LANÇAMENTOS + menção legítima podada de LANÇAMENTOS (contagem por seção empata) → recusa", () => {
+    const preGate = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude ganha memória](https://www.anthropic.com/news/claude-memory)**
+
+A Anthropic lançou memória no Claude.
+
+---
+
+**🚀 LANÇAMENTOS**
+
+**[Comparativo legítimo](https://openai.com/index/comparativo)**
+Cita o Gemnini 3 como concorrente.
+
+---
+
+**📡 RADAR**
+
+**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
+O Gemnini 3 passa a falar português.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada na seção RADAR.
+`;
+    const moved = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude ganha memória](https://www.anthropic.com/news/claude-memory)**
+
+A Anthropic lançou memória no Claude.
+
+---
+
+**🚀 LANÇAMENTOS**
+
+**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
+O Gemnini 3 passa a falar português.
+
+---
+
+**📡 RADAR**
+
+**[Item sem relação](https://exame.com/tecnologia/sem-relacao)**
+Nada a ver com o assunto.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada na seção RADAR.
+`;
+    const { root, dir, jsonlPath } = setup();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), moved, "utf8");
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ description: "nome grafado errado", location: 'RADAR (menção a "Gemnini 3")', category: "ortografico", correct_value: "Gemini", wrong_value: "Gemnini" }),
+        "utf8",
+      );
+      writeBaseline(dir, preGate);
+      const { result, stdout } = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath]));
+      assert.equal(result, 1);
+      const out = JSON.parse(stdout);
+      assert.equal(out.action, "old_error_maybe_moved");
+      assert.ok(out.baseline_count > out.current_count, "total caiu");
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), moved);
+      assert.equal(existsSync(jsonlPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("countWholeWord conta por palavra inteira", () => {
     assert.equal(countWholeWord("Sonnet, Sonnet 5 e Sonnets", "Sonnet"), 2);
     assert.equal(countWholeWord("nada aqui", "Sonnet"), 0);
