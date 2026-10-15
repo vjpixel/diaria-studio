@@ -66,7 +66,7 @@ describe("pontos de merge consultam o sinal (#10278)", () => {
   });
 
   it("check-pr-retido-gate.ts sem --pr sai 3 (uso inválido, nunca 'livre')", () => {
-    const r = spawnSync("npx", ["tsx", join(ROOT, "scripts/check-pr-retido-gate.ts")], { encoding: "utf8" });
+    const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts/check-pr-retido-gate.ts")], { encoding: "utf8" });
     assert.equal(r.status, 3);
   });
 
