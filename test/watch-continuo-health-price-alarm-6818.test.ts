@@ -98,6 +98,40 @@ describe("#6818 item 4 — watch-continuo-health.sh alarma em aumento de preço 
     assert.ok(found!.title.includes(found!.marker), "título precisa conter o marcador (dedup depende disso)");
   });
 
+  it("#10295: issue de aumento expõe a decisão registrada e não manda subir o baseline de modelo já decidido", () => {
+    const increaseBranch = block.slice(block.indexOf('"$PRICE_PARSE" = "INCREASE"'));
+    // Os detalhes imprimem o campo `decisao` vindo do --price-check --json.
+    assert.match(increaseBranch, /f\.get\('decisao'\)/);
+    assert.match(increaseBranch, /decisao registrada:/);
+    // O corpo da issue tem a exceção explícita apontando o #10278.
+    assert.match(increaseBranch, /\*\*Exceção \(#10295\)\*\*/);
+    assert.match(increaseBranch, /#10278/);
+    assert.match(increaseBranch, /\*\*NÃO\*\* atualizar \\`PAID_PRICE_BASELINE\\`/);
+  });
+
+  it("#10295: o snippet de detalhes do ramo INCREASE renderiza a decisão do glm a partir do JSON real do price-check", () => {
+    // Extrai o python inline do PRICE_DETAILS do ramo INCREASE e roda com um
+    // findings sintético: glm com decisão + deepseek sem decisão.
+    const increaseBranch = block.slice(block.indexOf('"$PRICE_PARSE" = "INCREASE"'));
+    const m = increaseBranch.match(/python3 -c "\n([\s\S]*?)" 2>\/dev\/null/);
+    assert.ok(m, "snippet python do ramo INCREASE não encontrado");
+    const py = m![1].replace(/\\"/g, '"');
+    const findings = {
+      increases: [
+        { modelo: "z-ai/glm-5.3-flash", campo: "prompt", baseline: 2.61e-8, atual: 1.5e-7, fator: 5.75,
+          decisao: "#10278: NAO atualizar PAID_PRICE_BASELINE" },
+        { modelo: "deepseek/deepseek-v4-flash", campo: "prompt", baseline: 9.1e-8, atual: 1.5e-7, fator: 1.65 },
+      ],
+    };
+    const res = spawnSync("python3", ["-c", py], { input: JSON.stringify(findings), encoding: "utf8" });
+    assert.equal(res.status, 0, res.stderr);
+    const lines = res.stdout.trim().split("\n");
+    assert.equal(lines.length, 3, res.stdout);
+    assert.match(lines[0], /z-ai\/glm-5\.3-flash prompt/);
+    assert.match(lines[1], /decisao registrada: #10278/);
+    assert.match(lines[2], /deepseek\/deepseek-v4-flash prompt/);
+  });
+
   it("sintaxe bash do script continua válida (bash -n)", () => {
     const res = spawnSync("bash", ["-n", SCRIPT], { encoding: "utf8" });
     assert.equal(res.status, 0, `bash -n falhou: ${res.stderr}`);

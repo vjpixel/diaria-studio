@@ -228,6 +228,23 @@ PAID_MODELS_NOT_ON_OPENROUTER = {
     "sonnet",
 }
 
+# #10295 (15/10/2026): decisao do editor ja registrada sobre a alta de preco de
+# um modelo do baseline. O alarme CONTINUA soando (exit 3) — e o que o #10278
+# pediu: enquanto o glm ainda aparecer em producao, a alta nao e silenciada —
+# mas cada aumento desses modelos sai anotado com a decisao, e a issue do
+# watch-continuo-health deixa de mandar "atualizar PAID_PRICE_BASELINE", que e
+# exatamente o que a decisao desfez. Ao concluir a troca (glm fora da cadeia e
+# da lane em ~/.hermes), remover o modelo daqui, do baseline e da allowlist.
+PRICE_INCREASE_DECISIONS: dict[str, str] = {
+    "z-ai/glm-5.3-flash": (
+        "#10278 (15/10/2026): o editor decidiu TROCAR o glm-5.3-flash pelo "
+        "deepseek/deepseek-v4-flash, nao absorver a alta. NAO atualizar "
+        "PAID_PRICE_BASELINE deste modelo; a acao e concluir a troca "
+        "(tirar o glm da cadeia/lane em ~/.hermes, #6930) e entao remove-lo "
+        "do baseline e da allowlist."
+    ),
+}
+
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
 
 # Folga relativa antes de considerar que o preco subiu. Cobre ruido de
@@ -466,6 +483,7 @@ def detect_price_changes(
     baseline: dict[str, dict[str, float]] | None = None,
     not_on_openrouter: set[str] | None = None,
     tolerance: float = PRICE_INCREASE_TOLERANCE,
+    decisions: dict[str, str] | None = None,
 ) -> dict:
     """Compara o catalogo contra o baseline de modelos PAGOS em uso (#6818 it.4).
 
@@ -484,8 +502,13 @@ def detect_price_changes(
     sempre; um alarme que sempre grita e um alarme que ninguem le, e ai o
     aumento real de 09/09 passa junto com o ruido. Fail-closed vale pra
     incapacidade INESPERADA de medir, nao pra fronteira documentada.
+
+    `decisions` (#10295): aumento de modelo com decisao ja registrada em
+    PRICE_INCREASE_DECISIONS continua em `increases` (exit 3, nunca
+    silenciado), so ganha o campo `decisao` com o texto da decisao.
     """
     baseline = PAID_PRICE_BASELINE if baseline is None else baseline
+    decisions = PRICE_INCREASE_DECISIONS if decisions is None else decisions
     not_on_openrouter = (
         PAID_MODELS_NOT_ON_OPENROUTER if not_on_openrouter is None else not_on_openrouter
     )
@@ -519,13 +542,16 @@ def detect_price_changes(
                 })
                 continue
             if current_price > expected_price * (1 + tolerance):
-                increases.append({
+                increase = {
                     "modelo": model_id,
                     "campo": field,
                     "baseline": expected_price,
                     "atual": current_price,
                     "fator": (current_price / expected_price) if expected_price else None,
-                })
+                }
+                if model_id in decisions:
+                    increase["decisao"] = decisions[model_id]
+                increases.append(increase)
             # Tolerancia SIMETRICA (review do PR #7085): a 1a versao aplicava a
             # folga so no ramo de aumento, entao um ruido decimal de -0,4% caia
             # em `decreases` como se fosse queda real. Nao afetava exit code
@@ -611,6 +637,8 @@ def render_price_check(findings: dict) -> None:
         fator = f"{f['fator']:.2f}x" if f.get("fator") else "?"
         print(f"AUMENTO  {f['modelo']:28} {f['campo']:18} "
               f"{f['baseline']:.9f} -> {f['atual']:.9f}  ({fator})")
+        if f.get("decisao"):
+            print(f"         decisao registrada: {f['decisao']}")
     for f in findings["decreases"]:
         print(f"queda    {f['modelo']:28} {f['campo']:18} "
               f"{f['baseline']:.9f} -> {f['atual']:.9f}")
