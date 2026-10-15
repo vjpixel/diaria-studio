@@ -497,11 +497,6 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .sheet-check .on b{border-color:var(--brand);background:var(--brand)}
 .sheet-check .on b::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
 .doc .sheet-foot{flex:none;margin-top:12px;font-family:var(--serif);font-style:italic;font-size:13px}
-.bonus{overflow:hidden}
-.bonus .doc{margin:-28px -28px 4px;padding-left:30px;padding-right:30px}
-.doc .sheet-title{font-family:var(--serif);font-weight:700;font-size:24px;line-height:1.1;letter-spacing:-.02em;margin-bottom:10px}
-.doc .sheet-title em{color:var(--brand)}
-.doc .sheet-sub{font-size:13px;line-height:1.4}
 
 /* Garantia: escudo em círculo teal */
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
