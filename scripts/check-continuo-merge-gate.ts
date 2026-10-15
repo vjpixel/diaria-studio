@@ -6,7 +6,7 @@
  * revisar — ver `scripts/lib/continuo-merge-gate.ts` pra lógica pura/ordem
  * dos portões. Este arquivo só faz I/O: 1 chamada `gh pr view` (a maioria
  * dos campos precisados de uma vez — headRefOid, mergeable,
- * statusCheckRollup, comments, body, additions, deletions), 1 chamada
+ * statusCheckRollup, comments, body, additions, deletions, labels), 1 chamada
  * paginada `gh api .../pulls/{n}/files` (ver nota abaixo sobre por que NÃO
  * é `gh pr view --json files`), 1 chamada `gh issue view` por issue
  * referenciada pelo corpo (tipicamente 0 ou 1), e imprime o veredito como
@@ -69,6 +69,7 @@ import { classifyChangedPaths } from "./lib/sensitive-path-guard.ts";
 import { extractIndependentReviewVerdict, extractIndependentReviewHeadSha } from "./lib/pr-review-authenticity.ts";
 import { extractClosingIssueNumbers, computeSupersededVerdict } from "./lib/continuo-superseded-check.ts";
 import { evaluateContinuoMergeGate, type ContinuoMergeGateResult } from "./lib/continuo-merge-gate.ts";
+import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
 
 /**
  * #6926: reusa o MESMO valor do limiar de tamanho de diff que já decide
@@ -91,6 +92,7 @@ interface GhPrViewPayload {
   body?: unknown;
   additions?: unknown;
   deletions?: unknown;
+  labels?: unknown;
 }
 
 interface GhIssueViewPayload {
@@ -176,7 +178,7 @@ function run(): number {
 
   const cwd = process.cwd();
   const prView = ghJson<GhPrViewPayload>(
-    ["pr", "view", String(prNumber), "--json", "headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions"],
+    ["pr", "view", String(prNumber), "--json", "headRefOid,mergeable,statusCheckRollup,comments,body,additions,deletions,labels"],
     cwd,
   );
 
@@ -204,12 +206,17 @@ function run(): number {
   const issueStates = fetchIssueStates(closingIssueNumbers, cwd);
   const supersededVerdict = computeSupersededVerdict(closingIssueNumbers, issueStates);
 
+  // #10278: label `retido-para-editor` / marcador no corpo — a mesma
+  // chamada `gh pr view` já traz `labels` e `body`, sem I/O extra.
+  const retido = evaluatePrRetido({ labels: payload.labels, body: payload.body });
+
   const additions = typeof payload.additions === "number" ? payload.additions : null;
   const deletions = typeof payload.deletions === "number" ? payload.deletions : null;
   const diffLineCount = additions !== null && deletions !== null ? additions + deletions : null;
 
   const result = evaluateContinuoMergeGate({
     superseded: supersededVerdict.superseded,
+    retidoParaEditor: retido.retido,
     verdict,
     currentHeadSha,
     reviewedHeadSha,
@@ -226,6 +233,7 @@ function run(): number {
     reason: result.reason,
     details: {
       superseded: supersededVerdict,
+      retidoParaEditor: retido,
       verdict,
       currentHeadSha,
       reviewedHeadSha,

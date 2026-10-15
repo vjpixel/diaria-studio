@@ -9,6 +9,7 @@ import {
 // ruim por vez, isolando qual portão decidiu.
 const GREEN: ContinuoMergeGateInput = {
   superseded: false,
+  retidoParaEditor: false,
   verdict: "approve",
   currentHeadSha: "abc123",
   reviewedHeadSha: "abc123",
@@ -184,5 +185,33 @@ describe("evaluateContinuoMergeGate (#6926) — ordem de precedência", () => {
     });
     assert.equal(result.action, "reject");
     assert.match(result.reason, /superseded/);
+  });
+});
+
+describe("evaluateContinuoMergeGate (#10278) — PR retida para o editor", () => {
+  it("retidoParaEditor=true com tudo verde e verdict=approve → escalate, nunca merge (cenário da PR #10221)", () => {
+    const result = evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: true });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /retida para o editor/);
+  });
+
+  it("retidoParaEditor=null (labels ilegíveis) → escalate, fail-closed", () => {
+    const result = evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: null });
+    assert.equal(result.action, "escalate");
+    assert.match(result.reason, /fail-closed/);
+  });
+
+  it("retenção vence o veredito reject — escala em vez de gravar reject permanente", () => {
+    const result = evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: true, verdict: "reject" });
+    assert.equal(result.action, "escalate");
+  });
+
+  it("superseded continua vencendo a retenção (não há mais nada a mergear)", () => {
+    const result = evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: true, superseded: true });
+    assert.equal(result.action, "reject");
+  });
+
+  it("controle: retidoParaEditor=false com tudo verde → merge", () => {
+    assert.equal(evaluateContinuoMergeGate({ ...GREEN, retidoParaEditor: false }).action, "merge");
   });
 });

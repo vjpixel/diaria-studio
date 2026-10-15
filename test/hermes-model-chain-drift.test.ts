@@ -115,7 +115,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   const models = parseModelsDefault(wrapperSource);
   const tableRow = findWrapperTableRow(skillSource);
 
-  it("MODELS_DEFAULT tem pelo menos 1 modelo :free, glm-5.3-flash como último elo de GATEWAY, e o elo de assinatura (#7649) como terminal real", () => {
+  it("MODELS_DEFAULT tem pelo menos 1 modelo :free, deepseek-v4-flash como último elo de GATEWAY (#10278), e o elo de assinatura (#7649) como terminal real", () => {
     // #7649 (rodada overnight 260909) acrescentou 1 elo depois do glm —
     // claude.ai via assinatura, sem gateway — como rede de segurança de
     // CAUDA além do próprio glm. Isso NÃO reabre o risco que este teste
@@ -130,10 +130,12 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       models.slice(0, -2).some((m) => m.endsWith(":free")),
       "nenhum dos modelos antes do fallback pago termina em :free — a cadeia deveria priorizar free tier.",
     );
+    // #10278 (15/10/2026): o elo pago de gateway trocou de z-ai/glm-5.3-flash
+    // para deepseek/deepseek-v4-flash (decisão do editor, alta de 2,9x do glm).
     assert.equal(
       models[models.length - 2],
-      "z-ai/glm-5.3-flash",
-      "o fallback pago (z-ai/glm-5.3-flash) deve continuar como ÚLTIMO ELO DE GATEWAY da cadeia — " +
+      "deepseek/deepseek-v4-flash",
+      "o fallback pago (deepseek/deepseek-v4-flash, #10278) deve continuar como ÚLTIMO ELO DE GATEWAY da cadeia — " +
         "é a rede de segurança paga, não deve virar primário por acidente de reordenação, e nenhum " +
         "elo de gateway novo deveria entrar DEPOIS dele.",
     );
@@ -141,7 +143,7 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
       models[models.length - 1],
       "sonnet",
       "o elo de assinatura claude.ai (#7649) deve continuar como o TERMINAL real da cadeia, " +
-        "depois de glm-5.3-flash — é a rede de segurança de cauda que roda sem gateway/custo em dólar.",
+        "depois do elo pago de gateway — é a rede de segurança de cauda que roda sem gateway/custo em dólar.",
     );
   });
 

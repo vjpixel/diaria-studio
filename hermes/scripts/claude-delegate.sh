@@ -227,7 +227,18 @@ SUBSCRIPTION_LANE_CLAUDE_MODEL="claude-sonnet-5-5"
 is_subscription_lane_model() {
   [ "${1:-}" = "$SUBSCRIPTION_LANE_MODEL" ]
 }
-MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "z-ai/glm-5.3-flash" "$SUBSCRIPTION_LANE_MODEL")
+# #10278 (15/10/2026, decisão do editor no briefing overnight 261015b): o
+# elo PAGO de gateway deixou de ser z-ai/glm-5.3-flash e passou a ser
+# deepseek/deepseek-v4-flash (o mesmo fallback pago que ~/.hermes/config.yaml
+# já usa desde 08/09). Motivo: alta de 2,9x no custo-mix do glm em 14/10
+# (#10220). Sem medição de qualidade do deepseek contra o tick — risco aceito
+# pelo editor. As menções a "glm-5.3-flash" nos comentários acima são
+# históricas (medições feitas quando ele era o elo pago); o pressuposto (a)
+# do BUDGET vale igual: preço do deepseek é da mesma ordem, bem abaixo do
+# default da Anthropic. O lane de piloto do #6930 (dispatch-glm-lane-unit.sh)
+# força --model z-ai/glm-5.3-flash explicitamente e não é afetado por esta
+# troca.
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "deepseek/deepseek-v4-flash" "$SUBSCRIPTION_LANE_MODEL")
 MODEL_FORCED=""
 
 while [ $# -gt 0 ]; do
