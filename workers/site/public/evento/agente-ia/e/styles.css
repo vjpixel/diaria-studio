@@ -502,7 +502,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .icon-guarantee{width:56px;height:56px;padding:13px;border-radius:50%;background:var(--brand);color:var(--ink)}
 
 /* Fechamento: só data, frase, preço e botão */
-/* O ponto teal piscando fica só no fechamento, ao lado de "Ao vivo pelo Zoom" (pedido de 15/10). */
+/* No fechamento, o ponto teal piscando fica ao lado de "Ao vivo pelo Zoom", no lugar da bolinha fixa (pedido de 15/10). */
 .final-when::before{content:none}
 .final-when .live-label{margin-top:6px}
 .final-price{display:flex;flex-direction:column;align-items:center;gap:4px;margin:0 0 28px;font-size:20px}
