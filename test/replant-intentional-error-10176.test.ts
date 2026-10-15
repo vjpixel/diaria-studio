@@ -339,6 +339,78 @@ Nessa edição, uma marca saiu grafada errada na seção RADAR.
     }
   });
 
+  it("#10237: item do erro movido RADAR→LANÇAMENTOS + outro item do RADAR cortado → contagem menor NÃO autoriza replant", () => {
+    const preGate = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude ganha memória](https://www.anthropic.com/news/claude-memory)**
+
+A Anthropic lançou memória no Claude. O Gemnini 3 também foi citado.
+
+---
+
+**📡 RADAR**
+
+**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
+O Gemnini 3 passa a falar português.
+
+**[Outro item](https://exame.com/tecnologia/outro-item)**
+Comparação com o Gemnini 3 no mercado.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada na seção RADAR.
+`;
+    // Editor move o item do erro pra LANÇAMENTOS e corta o outro item do RADAR: total 3 → 2.
+    const moved = `**DESTAQUE 1 | 🤖 MODELOS**
+
+**[Claude ganha memória](https://www.anthropic.com/news/claude-memory)**
+
+A Anthropic lançou memória no Claude. O Gemnini 3 também foi citado.
+
+---
+
+**🚀 LANÇAMENTOS**
+
+**[Gemnini 3 chega ao Brasil](https://blog.google/gemini-3-brasil)**
+O Gemnini 3 passa a falar português.
+
+---
+
+**📡 RADAR**
+
+**[Item sem relação](https://exame.com/tecnologia/sem-relacao)**
+Nada a ver com o assunto.
+
+---
+
+**ERRO INTENCIONAL**
+
+Nessa edição, uma marca saiu grafada errada na seção RADAR.
+`;
+    const { root, dir, jsonlPath } = setup();
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), moved, "utf8");
+      writeFileSync(
+        join(dir, "_internal", "intentional-error.json"),
+        JSON.stringify({ description: "nome grafado errado", location: 'RADAR (menção a "Gemnini 3")', category: "ortografico", correct_value: "Gemini", wrong_value: "Gemnini" }),
+        "utf8",
+      );
+      writeBaseline(dir, preGate);
+      const { result, stdout } = captured(() => main(["--edition-dir", dir, "--jsonl", jsonlPath]));
+      assert.equal(result, 1);
+      const out = JSON.parse(stdout);
+      assert.equal(out.action, "old_error_maybe_moved");
+      assert.ok(out.baseline_count > out.current_count, "total caiu, mas LANÇAMENTOS cresceu 0→1");
+      assert.deepEqual(out.elsewhere.includes("LANÇAMENTOS"), true);
+      assert.equal(readFileSync(join(dir, "02-reviewed.md"), "utf8"), moved);
+      assert.equal(existsSync(jsonlPath), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("countWholeWord conta por palavra inteira", () => {
     assert.equal(countWholeWord("Sonnet, Sonnet 5 e Sonnets", "Sonnet"), 2);
     assert.equal(countWholeWord("nada aqui", "Sonnet"), 0);

@@ -134,12 +134,17 @@ export function countWholeWord(text: string, wrong: string): number {
  * quando o baseline não existe ou não é confiável (legado/capturado tarde —
  * pode já conter as edições do editor).
  */
-export function baselineOccurrences(editionDir: string, wrong: string): { status: string; count: number | null } {
+export function baselineOccurrences(
+  editionDir: string,
+  wrong: string,
+): { status: string; count: number | null; bySection: Map<string, number> } {
+  const bySection = new Map<string, number>();
   const health = assessStage2BaselineOnDisk(editionDir);
-  if (health.status !== "ok") return { status: health.status, count: null };
+  if (health.status !== "ok") return { status: health.status, count: null, bySection };
   const md = readSnapshots(editionDir, STAGE2_BASELINE_LABEL, ["02-reviewed.md"]).get("02-reviewed.md");
-  if (md === undefined) return { status: "missing", count: null };
-  return { status: "ok", count: countWholeWord(md, wrong) };
+  if (md === undefined) return { status: "missing", count: null, bySection };
+  for (const [k, text] of sectionTexts(md)) bySection.set(k || "(topo)", countWholeWord(text, wrong));
+  return { status: "ok", count: countWholeWord(md, wrong), bySection };
 }
 
 /**
@@ -279,7 +284,15 @@ export function main(argv: string[] = process.argv.slice(2)): number {
       // que restou é menção de outro item) ou com override explícito.
       const currentCount = countWholeWord(md, oldWrong);
       const baseline = baselineOccurrences(editionDir, oldWrong);
-      const countDropped = baseline.count !== null && baseline.count > currentCount;
+      // (#10237) Total menor não basta: se o item do erro foi movido pra uma seção e OUTRO
+      // item foi cortado, o total cai mas o erro antigo segue lá. Cada seção de `elsewhere`
+      // precisa já ter tido >= as ocorrências de hoje no baseline (crescimento = movimento).
+      const currentBySection = new Map<string, number>();
+      for (const [k, text] of sectionTexts(md)) currentBySection.set(k || "(topo)", countWholeWord(text, oldWrong));
+      const grewElsewhere = old.elsewhere.some(
+        (k) => (currentBySection.get(k) ?? 0) > (baseline.bySection.get(k) ?? 0),
+      );
+      const countDropped = baseline.count !== null && baseline.count > currentCount && !grewElsewhere;
       elsewhereInfo = {
         wrong_value: oldWrong,
         scope: old.scope,
