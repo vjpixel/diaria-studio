@@ -14,6 +14,9 @@
  *   - p1..pN: 1 parágrafo de `## um` por slide, mesma tipografia/rodapé dos
  *     slides de parágrafo do carrossel diário (62px fixo, handle + micro-CTA).
  *     N = número de parágrafos do texto, entre 1 e `USE_MELHOR_MAX_PARAGRAPH_SLIDES`.
+ *     Os dois formatos do `## um` (#10246) passam pelo mesmo caminho: lista
+ *     numerada (item com `steps`, até 2 itens por card) ou texto corrido (item
+ *     sem `steps`, 3 parágrafos) — `useMelhorSlideBody` decide por parágrafo.
  *   - CTA: idêntico ao slide CTA do carrossel diário.
  *
  * Os textos vêm do MESMO `## um` que o `social-writer` escreve (nunca um texto
@@ -41,7 +44,7 @@ import {
 import type { CarouselCtaOverride } from "./instagram-test-override.ts";
 import { splitBodyAndTags } from "./social-cta-lines.ts";
 import { isUseMelhorCardBreakLine, stripUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
-import { USE_MELHOR_POST_ID } from "./use-melhor-post.ts";
+import { USE_MELHOR_POST_ID, type UseMelhorUmFormat } from "./use-melhor-post.ts";
 import {
   useMelhorSlideFilename,
   useMelhorSlideImageKey,
@@ -340,6 +343,57 @@ export function lintUseMelhorPostList(genericText: string): string[] {
     );
   }
   return problems;
+}
+
+/** Nº de parágrafos do `## um` em texto corrido (#10246) — como os destaques. */
+export const USE_MELHOR_PROSE_PARAGRAPHS = 3;
+
+/**
+ * Pure (#10246): lint do `## um` em TEXTO CORRIDO — o formato pedido pelo
+ * editor (edição 261015) quando o item não tem `steps` (não é tutorial).
+ * Regras: exatamente `USE_MELHOR_PROSE_PARAGRAPHS` parágrafos (só acusado
+ * dentro da faixa 2–6; fora dela `lintUseMelhorPostText` já acusa) e nenhum
+ * parágrafo em lista numerada (texto meio lista, meio prosa). Vazio = ok.
+ */
+export function lintUseMelhorPostProse(genericText: string): string[] {
+  const { body } = splitBodyAndTags(genericText);
+  const paras = splitUseMelhorParagraphs(body);
+  if (paras.length === 0) return [];
+  const problems: string[] = [];
+  if (
+    paras.length !== USE_MELHOR_PROSE_PARAGRAPHS &&
+    paras.length >= USE_MELHOR_MIN_PARAGRAPHS &&
+    paras.length <= USE_MELHOR_MAX_PARAGRAPHS
+  ) {
+    problems.push(
+      `${paras.length} parágrafos — item sem passos (texto corrido) pede ${USE_MELHOR_PROSE_PARAGRAPHS}, como os destaques`,
+    );
+  }
+  const listed = paras
+    .map((p, i) => (parseUseMelhorListItems(p) !== null ? i + 1 : null))
+    .filter((i): i is number => i !== null);
+  if (listed.length > 0) {
+    problems.push(
+      `parágrafo(s) ${listed.join(", ")} em lista numerada no meio do texto corrido — ou tudo lista, ou tudo prosa`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Pure (#10246): lint de forma completo do `## um` conforme o formato do item
+ * (`useMelhorUmFormat`). `"lista"` (item com `steps`): regras genéricas + lista
+ * (#9789/#9791). `"prosa"` (item sem `steps`): aceita os DOIS formatos — texto
+ * que abre em lista é validado como lista (escolha legítima do editor/writer),
+ * o resto como texto corrido. Nunca acusa prosa só por não ser lista.
+ */
+export function lintUseMelhorPostShape(genericText: string, format: UseMelhorUmFormat): string[] {
+  const generic = lintUseMelhorPostText(genericText);
+  if (format === "lista") return [...generic, ...lintUseMelhorPostList(genericText)];
+  const { body } = splitBodyAndTags(genericText);
+  const first = splitUseMelhorParagraphs(body)[0];
+  const opensAsList = first !== undefined && parseUseMelhorListItems(first) !== null;
+  return [...generic, ...(opensAsList ? lintUseMelhorPostList(genericText) : lintUseMelhorPostProse(genericText))];
 }
 
 /** Pure: carimbo do texto RENDERIZADO (kicker + título + rodapé + layout de cada slide). */
