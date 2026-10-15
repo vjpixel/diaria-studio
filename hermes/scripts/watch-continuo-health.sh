@@ -917,6 +917,8 @@ try:
     for f in d.get('increases', []):
         fator = f\"{f['fator']:.2f}x\" if f.get('fator') else '?'
         print(f\"  {f['modelo']} {f['campo']}: {f['baseline']:.9f} -> {f['atual']:.9f} ({fator})\")
+        if f.get('decisao'):
+            print(f\"    decisao registrada: {f['decisao']}\")
 except Exception:
     print('__ERR__')" 2>/dev/null || echo "__ERR__")
   file_issue "[watch-continuo] aumento de preço em modelo pago já em uso" \
@@ -928,7 +930,9 @@ except Exception:
 $PRICE_DETAILS
 \`\`\`
 
-Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia."
+Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia.
+
+**Exceção (#10295)**: modelo cuja linha acima traz \`decisao registrada\` já tem decisão do editor sobre esta alta (ex.: glm-5.3-flash, #10278: trocar pelo deepseek-v4-flash). Para ele, **NÃO** atualizar \`PAID_PRICE_BASELINE\` — isso desfaria a decisão. A ação é concluir o que a decisão manda (\`PRICE_INCREASE_DECISIONS\` em hermes-model-cost-report.py)."
 else
   note "[watch] preço OpenRouter: ok (sem aumento vs baseline; #6818 item 4)"
 fi

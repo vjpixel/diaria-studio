@@ -614,6 +614,45 @@ def main() -> int:
         and mod.price_check_exit_code(f_10278) == 3,
     )
 
+    # #10295 (regressão): a alta do glm (fora da cadeia paga ativa desde o
+    # #10278, só a lane/piloto) continua alarmando, mas cada aumento sai
+    # anotado com a decisão — senão a issue do watch-continuo-health manda
+    # "atualizar PAID_PRICE_BASELINE" e uma sessão reaplica a alta revertida.
+    assert_true(
+        "#10295: aumentos do glm-5.3-flash carregam a decisão do #10278 (trocar, não subir baseline)",
+        f_10278["increases"]
+        and all("#10278" in i.get("decisao", "") and "NAO atualizar" in i["decisao"]
+                for i in f_10278["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"),
+    )
+    f_10295_ds = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
+        {"id": "deepseek/deepseek-v4-flash",
+         "pricing": {"prompt": "0.00000015", "completion": "0.000000182",
+                     "input_cache_read": "0.0000000182"}},
+        {"id": "z-ai/glm-5.3-flash",
+         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
+                     "input_cache_read": "0.00000003"}},
+    )))
+    assert_true(
+        "#10295: aumento do deepseek (cadeia ativa, sem decisão) NÃO ganha 'decisao' e o exit segue 3",
+        any(i["modelo"] == "deepseek/deepseek-v4-flash" for i in f_10295_ds["increases"])
+        and all("decisao" not in i for i in f_10295_ds["increases"]
+                if i["modelo"] == "deepseek/deepseek-v4-flash")
+        and mod.price_check_exit_code(f_10295_ds) == 3,
+    )
+    assert_true(
+        "#10295: decisions={} desliga a anotação (prova que o campo vem do registro, não do id)",
+        all("decisao" not in i for i in mod.detect_price_changes(
+            mod.extract_catalog_pricing(_catalog(
+                {"id": "z-ai/glm-5.3-flash",
+                 "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
+                             "input_cache_read": "0.00000003"}})),
+            decisions={})["increases"]),
+    )
+    assert_true(
+        "#10295: todo modelo em PRICE_INCREASE_DECISIONS tem baseline (senão a anotação nunca dispara)",
+        set(mod.PRICE_INCREASE_DECISIONS) <= set(mod.PAID_PRICE_BASELINE),
+    )
+
     # #10132 (regressão): catálogo com os 2 modelos pagos no preço vigente
     # medido em 13/10/2026 (strings exatas do catálogo) -> o --price-check de
     # produção sai LIMPO (exit 0). Senão o alarme do prompt 3,03x repete todo
