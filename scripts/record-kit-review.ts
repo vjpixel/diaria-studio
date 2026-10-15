@@ -27,13 +27,15 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { isMainModule, parseArgsSimple } from "./lib/cli-args.ts";
+import { logEvent } from "./lib/run-log.ts";
 import { writeFilesVerified } from "./lib/write-files-verified.ts";
 import {
   buildKitReviewRecord,
   checkIntentionalErrorInEmail,
   KIT_REVIEW_FILENAME,
+  type IntentionalErrorCheck,
   type KitReviewRecord,
 } from "./lib/kit-review-record.ts";
 
@@ -49,19 +51,48 @@ export function recordKitReview(
   return { path, record };
 }
 
-/** #10243 — lê `wrong_value` do erro intencional da edição e confere no corpo. */
-export function checkEditionEmail(editionDir: string, emailFile: string) {
+/**
+ * #10243 — lê `wrong_value` do erro intencional da edição e confere no corpo.
+ *
+ * #10267: `no_error: true` = edição sem erro declarado → `no_wrong_value` (mesmo
+ * que o JSON ainda carregue um `wrong_value`). `warnings` lista as causas que
+ * DESLIGAM a checagem sem ser uma decisão editorial — JSON ilegível, `--email-file`
+ * ausente/ilegível — pra que o chamador as torne visíveis em vez de engolir.
+ */
+export function checkEditionEmail(
+  editionDir: string,
+  emailFile: string,
+): { check: IntentionalErrorCheck; warnings: string[] } {
+  const warnings: string[] = [];
   const ie = resolve(editionDir, "_internal", "intentional-error.json");
   let wrong: string | undefined;
   if (existsSync(ie)) {
     try {
-      wrong = (JSON.parse(readFileSync(ie, "utf8")) as { wrong_value?: string }).wrong_value;
-    } catch {
-      wrong = undefined;
+      const parsed = JSON.parse(readFileSync(ie, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("não é um objeto JSON");
+      }
+      const rec = parsed as { wrong_value?: unknown; no_error?: unknown };
+      if (rec.no_error !== true && typeof rec.wrong_value === "string") wrong = rec.wrong_value;
+    } catch (e) {
+      warnings.push(
+        `${ie} ilegível (${(e as Error).message}) — checagem do erro intencional desligada (#10267)`,
+      );
     }
   }
-  const body = existsSync(emailFile) ? readFileSync(emailFile, "utf8") : undefined;
-  return checkIntentionalErrorInEmail(body, wrong);
+  let body: string | undefined;
+  if (!existsSync(emailFile)) {
+    warnings.push(`--email-file ${emailFile} não existe — checagem do erro intencional desligada (#10267)`);
+  } else {
+    try {
+      body = readFileSync(emailFile, "utf8");
+    } catch (e) {
+      warnings.push(
+        `--email-file ${emailFile} ilegível (${(e as Error).message}) — checagem do erro intencional desligada (#10267)`,
+      );
+    }
+  }
+  return { check: checkIntentionalErrorInEmail(body, wrong), warnings };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -76,12 +107,28 @@ if (isMainModule(import.meta.url)) {
   }
   try {
     const issues = args["issues-json"] !== undefined ? (JSON.parse(args["issues-json"]) as unknown) : undefined;
+    let intentionalErrorCheck: IntentionalErrorCheck | undefined;
+    if (args["email-file"]) {
+      const res = checkEditionEmail(editionDir, args["email-file"]);
+      intentionalErrorCheck = res.check;
+      for (const w of res.warnings) {
+        console.error(`record-kit-review: WARN ${w}`);
+        logEvent({
+          edition: basename(resolve(editionDir)),
+          stage: 5,
+          agent: "record-kit-review",
+          level: "warn",
+          message: w,
+          details: { intentional_error_check: res.check },
+        });
+      }
+    }
     const r = recordKitReview(editionDir, {
       status: args.status,
       attempts: args.attempts !== undefined ? Number(args.attempts) : undefined,
       reason: args.reason,
       issues,
-      intentionalErrorCheck: args["email-file"] ? checkEditionEmail(editionDir, args["email-file"]) : undefined,
+      intentionalErrorCheck,
     });
     console.log(JSON.stringify({ path: r.path, ...r.record }));
   } catch (e) {

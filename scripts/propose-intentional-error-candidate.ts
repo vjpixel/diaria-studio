@@ -24,10 +24,14 @@
  * (#10244) `--list-recent` lista os erros da janela (`{ recent: [...] }`) e
  * `--check-wrong "<grafia>"` devolve `{ repeats: [...] }` — pro Stage 4 consultar
  * ANTES de propor na mão quando `candidate: null`. Não exigem `02-reviewed.md`.
+ * (#10269) Esses dois modos leem o JSONL em modo ESTRITO: arquivo existente mas
+ * ilegível (ou sem nenhuma linha parseável) sai com exit 1 em vez de responder
+ * `{repeats: []}` — que seria lido como "sem repetição". Arquivo ausente = vazio.
  *
  * Stdout: JSON `{ candidate: IntentionalErrorCandidate | null }`.
  * Exit codes: 0 = leu com sucesso (candidato encontrado ou não — ambos são
- * saídas válidas, "sem candidato" não é erro); 2 = uso inválido ou arquivo
+ * saídas válidas, "sem candidato" não é erro); 1 = histórico ilegível em
+ * `--list-recent`/`--check-wrong` (#10269); 2 = uso inválido ou arquivo
  * `02-reviewed.md` inexistente.
  */
 
@@ -35,7 +39,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
-import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
+import {
+  loadIntentionalErrors,
+  readIntentionalErrorsJsonlStrict,
+  type IntentionalError,
+} from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRepeats } from "./lib/intentional-error-repeat.ts";
 
 export function main(argv: string[] = process.argv.slice(2)): number {
@@ -54,7 +62,34 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     }
     const wd = values["window-days"] ? Number(values["window-days"]) : undefined;
     const opts = { windowDays: wd !== undefined && Number.isFinite(wd) && wd >= 1 ? wd : undefined };
-    const history = jsonl ? loadIntentionalErrors(jsonl) : [];
+    // #10269: leitura ESTRITA — JSONL ilegível (lock do OneDrive, permissão) ou
+    // inteiramente corrompido NÃO pode virar `[]`, porque `{repeats: []}` é lido
+    // como "sem repetição na janela" e o Stage 4 proporia um erro repetido.
+    // Arquivo ausente segue sendo histórico vazio (legítimo em clone novo).
+    let history: IntentionalError[] = [];
+    try {
+      const read = readIntentionalErrorsJsonlStrict(jsonl);
+      if (read.unparsedLines > 0 && read.entries.length === 0) {
+        console.error(
+          `propose-intentional-error-candidate: ${jsonl} tem ${read.unparsedLines} linha(s) e nenhuma parseia — ` +
+            "histórico indisponível; não dá pra afirmar que não há repetição (#10269).",
+        );
+        return 1;
+      }
+      if (read.unparsedLines > 0) {
+        console.error(
+          `propose-intentional-error-candidate: WARN ${read.unparsedLines} linha(s) de ${jsonl} não parseiam — ` +
+            "ficam fora da checagem de repetição (#10269).",
+        );
+      }
+      history = read.entries;
+    } catch (err) {
+      console.error(
+        `propose-intentional-error-candidate: ${jsonl} existe mas não pôde ser lido (${(err as Error).message}) — ` +
+          "não dá pra afirmar que não há repetição (#10269).",
+      );
+      return 1;
+    }
     const out = checkWrong
       ? { repeats: findRecentRepeats({ wrong_value: checkWrong }, history, ed, opts) }
       : { recent: listRecentErrors(history, ed, opts) };

@@ -414,6 +414,16 @@ const HEADLESS_WARNING_REQUIRED_FIELDS = [
 ] as const;
 
 /**
+ * (#10267) Pure — o valor é o placeholder literal `{PREENCHER...}` que o Stage 2
+ * planta no JSON antes de o editor preencher o gabarito. Fonte única do
+ * reconhecedor: quem confere o erro intencional (headless warning, review Kit)
+ * trata placeholder como "sem valor declarado", nunca como gabarito real.
+ */
+export function isIntentionalErrorPlaceholder(value: string): boolean {
+  return /^\{PREENCHER/i.test(value.trim());
+}
+
+/**
  * (#8592) Pure — dado o diretório de uma edição, decide se uma rodada
  * HEADLESS (sem editor no gate — `scripts/run-edition-stages.ts`, que sempre
  * roda cada stage com `--no-gates`) terminou sem erro intencional declarado.
@@ -446,7 +456,7 @@ export function intentionalErrorHeadlessWarning(editionDir: string): string | nu
   const pending = HEADLESS_WARNING_REQUIRED_FIELDS.filter((field) => {
     const value = record[field];
     if (typeof value !== "string" || value.trim().length === 0) return true;
-    return /^\{PREENCHER/i.test(value.trim());
+    return isIntentionalErrorPlaceholder(value);
   });
 
   if (pending.length === 0) return null;
