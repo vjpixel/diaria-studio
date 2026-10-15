@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 14 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 15 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Meta AI gera &quot;Flávio 22&quot; e trava com Lula?</title>
+      <link>https://diar.ia.br/p/meta-ai-gera-flavio-22-e-trava-com-lula</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/meta-ai-gera-flavio-22-e-trava-com-lula</guid>
+      <pubDate>Thu, 15 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Você pagaria US$ 30 por Grok, Cursor e X juntos? | Google Play agora roda o app que você mesmo criou</description>
+    </item>
     <item>
       <title>OAB-SP vai à Justiça contra a startup Enter</title>
       <link>https://diar.ia.br/p/oab-sp-vai-a-justica-contra-a-startup-enter</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos</guid>
       <pubDate>Wed, 05 Aug 2026 09:00:00 GMT</pubDate>
       <description>OpenAI testa anúncios no Brasil | Aeroportos automatizam tarifas com câmeras com IA</description>
-    </item>
-    <item>
-      <title>Hacker chinês usa DeepSeek em ataques autônomos</title>
-      <link>https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/hacker-chines-usa-deepseek-em-ataques-autonomos</guid>
-      <pubDate>Tue, 04 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Mercado de IA abre espaço além do código | UE exige aviso quando você fala com IA</description>
     </item>
   </channel>
 </rss>
