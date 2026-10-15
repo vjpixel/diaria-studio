@@ -17,7 +17,7 @@
  *   npx tsx scripts/propose-intentional-error-candidate.ts --md data/editions/AAMMDD/02-reviewed.md
  *
  * (#9101) Filtro de repetição: lê `data/intentional-errors.jsonl` (override
- * `--jsonl <path>`; ausente = sem filtro, fail-soft) e descarta grafia já usada
+ * `--jsonl <path>`; ausente = sem filtro; existente mas ilegível = exit 1, #10292) e descarta grafia já usada
  * / entidade usada nos últimos `--window-days` (default 30) antes de `--edition`
  * (default: basename de `--edition-dir`).
  *
@@ -30,8 +30,8 @@
  *
  * Stdout: JSON `{ candidate: IntentionalErrorCandidate | null }`.
  * Exit codes: 0 = leu com sucesso (candidato encontrado ou não — ambos são
- * saídas válidas, "sem candidato" não é erro); 1 = histórico ilegível em
- * `--list-recent`/`--check-wrong` (#10269); 2 = uso inválido ou arquivo
+ * saídas válidas, "sem candidato" não é erro); 1 = histórico ilegível, em
+ * qualquer modo (#10269 consultas, #10292 caminho principal); 2 = uso inválido ou arquivo
  * `02-reviewed.md` inexistente.
  */
 
@@ -40,11 +40,45 @@ import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
 import {
-  loadIntentionalErrors,
   readIntentionalErrorsJsonlStrict,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRepeats } from "./lib/intentional-error-repeat.ts";
+
+/**
+ * (#10269, #10292) Lê o histórico em modo ESTRITO. Devolve `null` (o caller sai
+ * com exit 1; a mensagem já foi pro stderr) quando o JSONL existe mas é ilegível
+ * (lock do OneDrive, permissão) ou tem linhas e nenhuma parseia — nesses casos
+ * `[]` seria lido como "sem repetição na janela" e o Stage 4 proporia um erro
+ * repetido. Arquivo ausente, ou `path` nulo (edição fora de `.../editions/`, ex.
+ * fixture), = histórico vazio (legítimo em clone novo).
+ */
+function readHistoryStrict(path: string | null): IntentionalError[] | null {
+  if (!path) return [];
+  try {
+    const read = readIntentionalErrorsJsonlStrict(path);
+    if (read.unparsedLines > 0 && read.entries.length === 0) {
+      console.error(
+        `propose-intentional-error-candidate: ${path} tem ${read.unparsedLines} linha(s) e nenhuma parseia — ` +
+          "histórico indisponível; não dá pra afirmar que não há repetição (#10269).",
+      );
+      return null;
+    }
+    if (read.unparsedLines > 0) {
+      console.error(
+        `propose-intentional-error-candidate: WARN ${read.unparsedLines} linha(s) de ${path} não parseiam — ` +
+          "ficam fora da checagem de repetição (#10269).",
+      );
+    }
+    return read.entries;
+  } catch (err) {
+    console.error(
+      `propose-intentional-error-candidate: ${path} existe mas não pôde ser lido (${(err as Error).message}) — ` +
+        "não dá pra afirmar que não há repetição (#10269).",
+    );
+    return null;
+  }
+}
 
 export function main(argv: string[] = process.argv.slice(2)): number {
   const values = parseArgs(argv);
@@ -62,34 +96,8 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     }
     const wd = values["window-days"] ? Number(values["window-days"]) : undefined;
     const opts = { windowDays: wd !== undefined && Number.isFinite(wd) && wd >= 1 ? wd : undefined };
-    // #10269: leitura ESTRITA — JSONL ilegível (lock do OneDrive, permissão) ou
-    // inteiramente corrompido NÃO pode virar `[]`, porque `{repeats: []}` é lido
-    // como "sem repetição na janela" e o Stage 4 proporia um erro repetido.
-    // Arquivo ausente segue sendo histórico vazio (legítimo em clone novo).
-    let history: IntentionalError[] = [];
-    try {
-      const read = readIntentionalErrorsJsonlStrict(jsonl);
-      if (read.unparsedLines > 0 && read.entries.length === 0) {
-        console.error(
-          `propose-intentional-error-candidate: ${jsonl} tem ${read.unparsedLines} linha(s) e nenhuma parseia — ` +
-            "histórico indisponível; não dá pra afirmar que não há repetição (#10269).",
-        );
-        return 1;
-      }
-      if (read.unparsedLines > 0) {
-        console.error(
-          `propose-intentional-error-candidate: WARN ${read.unparsedLines} linha(s) de ${jsonl} não parseiam — ` +
-            "ficam fora da checagem de repetição (#10269).",
-        );
-      }
-      history = read.entries;
-    } catch (err) {
-      console.error(
-        `propose-intentional-error-candidate: ${jsonl} existe mas não pôde ser lido (${(err as Error).message}) — ` +
-          "não dá pra afirmar que não há repetição (#10269).",
-      );
-      return 1;
-    }
+    const history = readHistoryStrict(jsonl);
+    if (history === null) return 1;
     const out = checkWrong
       ? { repeats: findRecentRepeats({ wrong_value: checkWrong }, history, ed, opts) }
       : { recent: listRecentErrors(history, ed, opts) };
@@ -110,7 +118,7 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
 
   const md = readFileSync(mdPath, "utf8");
-  // #9101 — histórico fail-soft (arquivo ausente = lista vazia = sem filtro).
+  // #9101 — arquivo ausente = lista vazia = sem filtro; ilegível = exit 1 (#10292).
   const editionDirArg = values["edition-dir"]?.replace(/[\\/]+$/, "");
   // --edition-dir fora de `.../editions/` (fixture) → sem histórico, nunca o `data/` do cwd.
   const jsonlPath =
@@ -123,8 +131,13 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     );
   }
   const windowDays = values["window-days"] ? Number(values["window-days"]) : undefined;
+  // #10292: mesma leitura ESTRITA dos modos de consulta (#10269). O `candidate`
+  // não-nulo é apresentado pelo Stage 4 como "já filtrado contra repetição" —
+  // histórico ilegível virando `[]` faria o filtro (#9101) passar em branco.
+  const history = readHistoryStrict(jsonlPath);
+  if (history === null) return 1;
   const candidate = proposeIntentionalErrorCandidate(md, {
-    history: jsonlPath ? loadIntentionalErrors(jsonlPath) : [],
+    history,
     edition,
     windowDays: windowDays !== undefined && Number.isFinite(windowDays) && windowDays >= 1 ? windowDays : undefined,
   });

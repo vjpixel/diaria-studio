@@ -38,6 +38,7 @@ import {
   type IntentionalErrorCheck,
   type KitReviewRecord,
 } from "./lib/kit-review-record.ts";
+import { isIntentionalErrorPlaceholder } from "./lib/intentional-errors.ts";
 
 export function recordKitReview(
   editionDir: string,
@@ -56,8 +57,8 @@ export function recordKitReview(
  *
  * #10267: `no_error: true` = edição sem erro declarado → `no_wrong_value` (mesmo
  * que o JSON ainda carregue um `wrong_value`). `warnings` lista as causas que
- * DESLIGAM a checagem sem ser uma decisão editorial — JSON ilegível, `--email-file`
- * ausente/ilegível — pra que o chamador as torne visíveis em vez de engolir.
+ * DESLIGAM a checagem sem ser uma decisão editorial — JSON ilegível, `wrong_value`
+ * ainda placeholder `{PREENCHER}` (#10293), `--email-file` ausente/ilegível — pra que o chamador as torne visíveis em vez de engolir.
  */
 export function checkEditionEmail(
   editionDir: string,
@@ -74,6 +75,15 @@ export function checkEditionEmail(
       }
       const rec = parsed as { wrong_value?: unknown; no_error?: unknown };
       if (rec.no_error !== true && typeof rec.wrong_value === "string") wrong = rec.wrong_value;
+      // #10293: placeholder vira `no_wrong_value` (não há o que procurar no e-mail),
+      // mas NÃO é decisão editorial como `no_error: true` — é o gabarito que o gate
+      // deixou passar sem preencher. Sem este aviso a edição saía sem gabarito, calada.
+      if (wrong !== undefined && isIntentionalErrorPlaceholder(wrong.trim())) {
+        warnings.push(
+          `${ie}: wrong_value ainda é placeholder (${JSON.stringify(wrong)}) — gabarito do erro intencional ` +
+            "não declarado; checagem desligada (#10293)",
+        );
+      }
     } catch (e) {
       warnings.push(
         `${ie} ilegível (${(e as Error).message}) — checagem do erro intencional desligada (#10267)`,
