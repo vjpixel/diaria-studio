@@ -15,6 +15,8 @@
  * `scripts/lib/invariant-checks/stage-5.ts` (leitura).
  */
 
+import { isIntentionalErrorPlaceholder } from "./intentional-errors.ts";
+
 export const KIT_REVIEW_FILENAME = "05-review-kit.json";
 
 export const KIT_REVIEW_STATUSES = ["ok", "inconclusive", "issues_unfixable"] as const;
@@ -44,25 +46,62 @@ export interface KitReviewRecord {
 
 export type IntentionalErrorCheck = "present" | "missing" | "no_wrong_value" | "no_email";
 
-const ENT: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+/** Entidades nomeadas sem forma "letra + diacrítico" (case-insensitive nas 6 básicas). */
+const ENT: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  ordm: "º", ordf: "ª", deg: "°", ndash: "–", mdash: "—", hellip: "…",
+  laquo: "«", raquo: "»", lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”",
+  middot: "·", copy: "©", reg: "®", trade: "™", euro: "€", szlig: "ß",
+};
+
+/** Sufixo de entidade HTML → diacrítico combinante (`&ccedil;`, `&atilde;`, `&Eacute;`…). */
+const DIACRITIC: Record<string, string> = {
+  acute: "́", grave: "̀", circ: "̂", tilde: "̃", uml: "̈", cedil: "̧",
+};
+
+function decodeNamedEntity(original: string, name: string): string {
+  const basic = ENT[name] ?? ENT[name.toLowerCase()];
+  if (basic !== undefined) return basic;
+  // #10267: `&ccedil;`/`&atilde;` no HTML do Kit contra um wrong_value acentuado
+  // davam `missing` falso. Case-sensitive (`&Aacute;` = "Á").
+  const m = /^([a-zA-Z])(acute|grave|circ|tilde|uml|cedil)$/.exec(name);
+  if (m) {
+    const composed = (m[1] + DIACRITIC[m[2]]).normalize("NFC");
+    if (composed.length === 1) return composed;
+  }
+  return original;
+}
+
+/** #10267: entidade numérica fora do intervalo Unicode não aborta o record. */
+function decodeCodePoint(cp: number, original: string): string {
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return original;
+  }
+}
 
 /** @pure Tira tags, decodifica entidades e colapsa espaços (HTML cru do Kit). */
 export function normalizeEmailText(html: string): string {
   return html
     .replace(/<[^>]*>/g, "")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
-    .replace(/&([a-z]+);/gi, (m, n) => ENT[n.toLowerCase()] ?? m)
+    .replace(/&#(\d+);/g, (e, n) => decodeCodePoint(Number(n), e))
+    .replace(/&#x([0-9a-f]+);/gi, (e, n) => decodeCodePoint(parseInt(n, 16), e))
+    .replace(/&([a-z]+);/gi, (m, n) => decodeNamedEntity(m, n))
     .replace(/\s+/g, " ");
 }
 
-/** @pure Case-sensitive: "Unibanko" ≠ "Unibanco". HTML normalizado (#10243 review). */
+/**
+ * @pure Case-sensitive: "Unibanko" ≠ "Unibanco". HTML normalizado (#10243 review).
+ * Placeholder `{PREENCHER...}` = sem gabarito declarado (`no_wrong_value`), nunca
+ * um valor a procurar no e-mail (#10267).
+ */
 export function checkIntentionalErrorInEmail(
   emailBody: string | undefined,
   wrongValue: string | undefined,
 ): IntentionalErrorCheck {
   const w = (wrongValue ?? "").trim();
-  if (!w) return "no_wrong_value";
+  if (!w || isIntentionalErrorPlaceholder(w)) return "no_wrong_value";
   if (!emailBody) return "no_email";
   return normalizeEmailText(emailBody).includes(normalizeEmailText(w)) ? "present" : "missing";
 }
