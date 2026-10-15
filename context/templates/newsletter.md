@@ -23,7 +23,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 **[Opção de título 3 — máx. 52 chars](URL)**
 
-[Parágrafo 1 — abre a história]
+[Parágrafo 1 — abre com quem fez o quê e o fato concreto que importa (#8694, ver writer-destaque.md passo 2)]
 
 [Parágrafo 2 — desenvolve contexto]
 
