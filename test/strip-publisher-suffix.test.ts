@@ -35,6 +35,7 @@ import {
   normalizeItemTitle,
   MIN_PREFIX_LEN,
   KNOWN_DASH_PUBLISHERS,
+  suffixMatchesUrlHost,
 } from "../scripts/lib/strip-publisher-suffix.ts";
 
 // ===========================================================================
@@ -481,5 +482,45 @@ describe("stripYoutubeWatchWrapper (#4826)", () => {
   it("normalizeItemTitle: título normal (sem wrapper) segue intocado (#4826, sem regressão)", () => {
     const input = "Especialistas debatem regulamentação da IA no Brasil";
     assert.equal(normalizeItemTitle(input), input);
+  });
+});
+
+describe("sufixo de veículo reconhecido pelo domínio da URL (#10313)", () => {
+  const TITLE =
+    "Quase 70% dos médicos já usam Inteligência Artificial, aponta estudo da MV - Saúde Digital News";
+  const CLEAN = "Quase 70% dos médicos já usam Inteligência Artificial, aponta estudo da MV";
+  const URL = "https://saudedigitalnews.com.br/2026/10/15/quase-70-dos-medicos/";
+
+  it("caso real 261016: sufixo removido quando o nome bate com o domínio do item", () => {
+    assert.ok(!KNOWN_DASH_PUBLISHERS.has("saúde digital news"), "pré-condição: fora da allowlist");
+    assert.equal(normalizeItemTitle(TITLE, URL), CLEAN);
+    assert.equal(stripPublisherSuffix(TITLE, URL), CLEAN);
+  });
+
+  it("sem URL, comportamento antigo (allowlist) fica intacto", () => {
+    assert.equal(normalizeItemTitle(TITLE), TITLE);
+  });
+
+  it("sufixo que NÃO bate com o domínio do item não é tocado", () => {
+    assert.equal(normalizeItemTitle(TITLE, "https://www.exame.com/tecnologia/x"), TITLE);
+    const legit = "OpenAI lança modelo novo de raciocínio - o maior até agora";
+    assert.equal(normalizeItemTitle(legit, "https://openai.com/index/x"), legit);
+  });
+
+  it("www., subdomínio e travessão também casam", () => {
+    assert.equal(
+      normalizeItemTitle(
+        "Startup brasileira capta rodada para IA — Mobile Next",
+        "https://www.mobilenext.com.br/a",
+      ),
+      "Startup brasileira capta rodada para IA",
+    );
+    assert.ok(suffixMatchesUrlHost("Saúde Digital News", "https://news.saudedigitalnews.com.br/x"));
+  });
+
+  it("guarda: nome curto demais, URL inválida ou ausente → false", () => {
+    assert.equal(suffixMatchesUrlHost("MV", "https://mv.com.br"), false);
+    assert.equal(suffixMatchesUrlHost("Saúde Digital News", "not a url"), false);
+    assert.equal(suffixMatchesUrlHost("Saúde Digital News", undefined), false);
   });
 });

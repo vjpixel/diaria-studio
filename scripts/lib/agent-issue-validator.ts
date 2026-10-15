@@ -21,6 +21,8 @@
  *     e UA de browser; 2xx/3xx = FP. 403 em *.beehiiv.com = FP de bot-block.
  *   - `email:section_missing` (#2013) — grep da section label no HTML local
  *     (byte-idêntico ao corpo enviado); label presente = FP de truncamento.
+ *   - `email:intro_*count_mismatch` (#10308) — "X enviados por mim" conta
+ *     links do inbox, não `editor_blocks`; comparar os dois é FP.
  *   - `email:encoding_drop` de emoji em header de seção (#2013) — DS #1936
  *     renderiza headers SEM emoji (stripKickerEmoji); emoji de seção ausente
  *     no header é by-design, não corruption.
@@ -777,6 +779,46 @@ async function headOrGet(url: string, fetchFn: FetchFn): Promise<{ status: numbe
   }
 }
 
+/**
+ * #10308: Pure — decide se um `email:intro_*count_mismatch` é falso-positivo
+ * por comparar o "X enviados por mim" do intro atual com `editor_blocks`.
+ *
+ * O intro atual (#3461, "Nesta edição, a IA analisou N conteúdos (X enviados
+ * por mim e Y encontrados automaticamente)...") conta LINKS do inbox
+ * (`total_editor_urls + total_newsletter_urls` do marker, ver
+ * `readInboxLinkCountFromMarker`/#3696), não e-mails. `editor_blocks` conta
+ * e-mails distintos do editor — outra unidade. Os dois divergem sempre que o
+ * editor encaminha qualquer coisa com mais de 1 link (caso 261016: "30
+ * enviados por mim" vs `editor_blocks=2`). O check 20 do `review-test-email`
+ * só faz sentido no formato LEGADO ("enviei N submissões", pré-260715), onde
+ * N era de fato a contagem de blocos.
+ *
+ * Drop quando a issue compara contra `editor_blocks` E o intro em questão é o
+ * formato atual — sinal: a própria issue cita "enviados por mim", ou o HTML
+ * local tem "enviados por mim" e NÃO tem a frase legada "enviei N submissões".
+ * Issue no formato legado (HTML com "enviei N submissões") segue mantida:
+ * aquele mismatch é real.
+ *
+ * @pure
+ */
+export function isIntroEditorCountMismatchFalsePositive(
+  issue: string,
+  htmlLocal: string,
+): { falsePositive: true; reason: string } | { falsePositive: false } {
+  if (!/^email:intro_[a-z_]*count_mismatch\b/.test(issue)) return { falsePositive: false };
+  if (!/editor_blocks/i.test(issue)) return { falsePositive: false };
+  const CURRENT_RE = /enviad[oa]s\s+por\s+mim/i;
+  const LEGACY_RE = /enviei\s+\d+\s+submiss/i;
+  const issueCitesCurrent = CURRENT_RE.test(issue);
+  const htmlIsCurrent = CURRENT_RE.test(htmlLocal) && !LEGACY_RE.test(htmlLocal);
+  if (!issueCitesCurrent && !htmlIsCurrent) return { falsePositive: false };
+  return {
+    falsePositive: true,
+    reason:
+      "intro count falso-positivo: 'X enviados por mim' conta links do inbox (total_editor_urls + total_newsletter_urls), não editor_blocks (e-mails) — unidades diferentes (#10308)",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // filterAgentIssues — integração de todas as classes
 // ---------------------------------------------------------------------------
@@ -877,6 +919,17 @@ export const ISSUE_HANDLERS: readonly IssueHandler[] = [
     prefix: "email:section_missing",
     handle(issue, { htmlLocal }) {
       const r = isSectionMissingFalsePositive(issue, htmlLocal);
+      if (r.falsePositive) return { kind: "drop", reason: r.reason };
+      return { kind: "keep" };
+    },
+  },
+  {
+    // intro_count_mismatch / intro_editor_count_mismatch (#10308): "X enviados
+    // por mim" conta links, não editor_blocks — comparação de unidades
+    // diferentes é FP. Formato legado ("enviei N submissões") segue mantido.
+    prefix: "email:intro_",
+    handle(issue, { htmlLocal }) {
+      const r = isIntroEditorCountMismatchFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
       return { kind: "keep" };
     },

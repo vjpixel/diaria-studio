@@ -218,14 +218,18 @@ export function toPoolItem(item: Record<string, unknown>): Record<string, unknow
       ? article.title
       : undefined) ??
     (typeof item.title === "string" && item.title.length > 0 ? item.title : undefined);
+  // #10313: URL do item deixa o strip reconhecer " - {Veículo}" pelo domínio.
+  const itemUrl =
+    (article && typeof article.url === "string" ? article.url : undefined) ??
+    (typeof item.url === "string" ? item.url : undefined);
   if (article) {
     const a: Record<string, unknown> = { ...article };
     delete a.title_options;
-    if (sourceTitle) a.title = normalizeItemTitle(sourceTitle);
+    if (sourceTitle) a.title = normalizeItemTitle(sourceTitle, itemUrl);
     out.article = a;
   }
   if (sourceTitle && (!article || typeof item.title === "string")) {
-    out.title = normalizeItemTitle(sourceTitle);
+    out.title = normalizeItemTitle(sourceTitle, itemUrl);
   }
   return out;
 }
