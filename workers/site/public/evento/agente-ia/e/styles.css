@@ -439,7 +439,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .button:focus-visible,.float-cta:focus-visible{outline-color:var(--ink)}
 .final .button:focus-visible{outline-color:var(--paper)}
 
-/* Topo: o quadro da data ganha o rótulo "ao vivo". O ponto teal piscando (.live-dot, usado no
+/* Topo: o quadro da data ganha o rótulo "ao vivo". O ponto teal piscando (.live-dot, no topo e no
    fechamento) pisca só na opacidade e devagar, então vale também com "reduzir movimento"; o anel que cresce, não. */
 .hero-date{flex-direction:column;align-items:flex-start;gap:6px;padding:14px 20px}
 .hero-date strong{font-size:clamp(19px,1.9vw,23px)}
