@@ -23,7 +23,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 **[Opção de título 3 — máx. 52 chars](URL)**
 
-[Parágrafo 1 — abre a história: quem fez o quê, com o nome oficial do produto, e o fato concreto que importa (número, preço, o que muda), em linguagem do leitor. Sem metáfora/interpretação do redator, sem nome de componente técnico, sem ressalva própria (#8694 — regra completa em writer-destaque.md passo 2)]
+[Parágrafo 1 — abre com quem fez o quê e o fato concreto que importa (#8694, ver writer-destaque.md passo 2)]
 
 [Parágrafo 2 — desenvolve contexto]
 
