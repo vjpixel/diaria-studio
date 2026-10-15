@@ -670,10 +670,11 @@ type GroupCampaignHistoryEntry = EnvioHistoryEntry & { envioIndex?: number };
  * antes, este script reaplicava o mesmo HTML a todas as campanhas do ciclo e
  * devolvia a frase ao 1º envio se ele ainda estivesse agendado.
  *
- * - Nome `Clarice {yymm} grupo:{key}` → índice do envio: o `envioIndex`
- *   gravado em `group-campaigns.json` quando existe; senão
+ * - Nome `Clarice {yymm} grupo:{key}` → índice do envio: SEMPRE
  *   `resolveEnvioIndex` sobre o histórico, tratando a própria campanha como
  *   saída (ela está na fila da Brevo — é por isso que este script a toca).
+ *   O `envioIndex` gravado em `group-campaigns.json` só gera aviso quando
+ *   diverge (#10195: gravado antes do #10189, pode ter contado rascunho).
  * - Nome sem `grupo:` (fluxo antigo `Clarice News {yymm}`) → HTML intacto,
  *   com aviso: não há key para posicionar o envio no ciclo.
  */
@@ -697,9 +698,16 @@ export function queroHtmlForCampaign(
   const sameContent = buildContentEnvioHistory({ segmentsCycle: cycle, contentCycle: cycle, segmentsHistory: history });
   const asSent: EnvioHistoryEntry[] = sameContent.map((e) => (e.key === key ? { ...e, status: "scheduled" } : e));
   if (!asSent.some((e) => e.key === key)) asSent.push({ key, status: "scheduled" });
-  const envioIndex = stored ?? resolveEnvioIndex(asSent, key);
+  // #10195: o histórico decide, nunca o valor gravado — um `envioIndex`
+  // gravado antes do #10189 pode ter contado um `novos-*` em rascunho que
+  // nunca saiu. O gravado só serve para avisar quando diverge.
+  const envioIndex = resolveEnvioIndex(asSent, key);
   const quero = applyQueroPhrase(html, envioIndex);
-  return { html: quero.html, line: `${key}: ${describeQueroApplication(quero)}` };
+  const divergence =
+    stored !== undefined && stored !== envioIndex
+      ? ` ⚠️ envioIndex gravado (${stored}) diverge do recalculado pelo histórico (${envioIndex}) — vale o recalculado`
+      : "";
+  return { html: quero.html, line: `${key}: ${describeQueroApplication(quero)}${divergence}` };
 }
 
 /** Lê `segments/group-campaigns.json` do ciclo; ausente → histórico vazio. */
