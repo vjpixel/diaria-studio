@@ -54,7 +54,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // promovido pra regra global aqui, pra não precisar de ajuste manual por edição.
 // Exportada para teste de regressão em test/image-generate-safe-area.test.ts.
 export const STYLE_SUFFIX =
-  ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
+  ", post-impressionist oil painting with thick impasto brushstrokes, directional rhythmic brushwork, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
+  // #10312: "swirling textures" (o termo anterior) era convite direto ao motivo
+  // de Noite Estrelada — edição 261016 D2 saiu com redemoinho concêntrico
+  // azul/amarelo na TELA de um celular. Reforço em fraseado AFIRMATIVO (#1241,
+  // #4201: nomear a obra ou o motivo, mesmo negando, ancora o modelo nele):
+  // telas, céus e superfícies lisas viram campos calmos de cor, pincelada reta.
+  "Screens, displays, skies, walls and other flat or smooth surfaces are painted as calm, even fields of color built from straight, parallel brushstrokes that follow the shape of the surface. " +
   "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to a square (1:1); do not place key subjects near the left or right edges. " +
   "When the scene includes a standing or upright figure (human, robot, or humanoid character), frame it as a wide shot: the entire figure, including the head and feet, must fit comfortably within the frame with generous empty margin above the head; never crop or cut off the top of the head. " +
   "Compose for later reframing: this single artwork is cropped into a wide format (2:1, which keeps the full width and trims top and bottom) and into portrait formats (4:5 and 9:16, which keep the full height and trim left and right). Every essential element must therefore sit inside the central 67% of the width and the central 59% of the height — the rectangle common to both crops — and never touch any edge. " +

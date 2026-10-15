@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 114 invariants.
+**Total**: 115 invariants.
 
 ## Static (estrutura do repo)
 
@@ -91,6 +91,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
+| `image-starry-night-detected` | revisor de imagem (Stage 3) acusou Noite Estrelada na imagem ATUAL do destaque — regra invariável, error; Stage 3 regenera sozinho antes (#10312) | #10312 |
 | `instagram-comment-delivery-promise` | override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide) | #8681 |
 | `intentional-error-not-recent-repeat-final` | erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101) | #9101 |
 | `intentional-error-present-in-final` | item que carrega o erro intencional (wrong_value) ainda está em 02-reviewed.md — detecta poda silenciosa no gate (#7243) | #7243 |

@@ -31,6 +31,11 @@
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ \
  *     --input-json <path-para-output-do-subagente>
  *
+ *   # 3. (#10312) Plano de regeneração por Noite Estrelada (categoria "estilo"):
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --estilo-regen-plan
+ *   # → JSON { regenerate, exhausted, attempts, commands } — o orchestrator roda
+ *   #   `commands[dN]` e repete o revisor; teto MAX_ESTILO_AUTO_REGEN por destaque.
+ *
  * Output: data/editions/AAMMDD/_internal/04-crop-review.json
  *   + stdout: parâmetros de dispatch (modo descoberta) ou seção formatada (modo --input-json)
  *
@@ -43,6 +48,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
+import { isCropReviewEntryStale } from "./lib/invariant-checks/stage-4.ts"; // #10312
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -199,6 +205,11 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
       categoria: r.categoria === "estilo" ? ("estilo" as const) : ("crop" as const),
       motivo: typeof r.motivo === "string" ? r.motivo : undefined,
       sugestao: typeof r.sugestao === "string" ? r.sugestao : undefined,
+      // #10312: preservado pra que o plano de regeneração (que relê o arquivo
+      // persistido) consiga descartar entrada desatualizada (#9598).
+      ...(typeof r.image_md5 === "string" && /^[0-9a-f]{32}$/.test(r.image_md5)
+        ? { image_md5: r.image_md5 }
+        : {}),
     }));
 
   const summary: CropReviewSummary = {
@@ -231,6 +242,78 @@ export function stampCropReviewImageHashes(result: CropReviewResult, editionDir:
       return { ...r, image_md5: md5OfFile(imgPath) };
     }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// #10312: regeneração automática quando o revisor acusa Noite Estrelada
+// ---------------------------------------------------------------------------
+
+/**
+ * Quantas regenerações automáticas o Stage 3 faz por destaque quando o
+ * revisor acusa `categoria: "estilo"`. Esgotado o teto, a imagem segue pro
+ * gate, onde o invariante `image-starry-night-detected` (Stage 4) é ERRO.
+ * 1 e não mais: cada tentativa custa 2 chamadas ao gerador (2:1 + 4:5) e o
+ * prompt é o mesmo — se a 2ª geração repete o motivo, o problema é o prompt,
+ * e quem reescreve prompt é o editor.
+ */
+export const MAX_ESTILO_AUTO_REGEN = 1;
+
+export interface EstiloRegenPlan {
+  /** Destaques a regenerar agora (tentativa consumida no plano). */
+  regenerate: DestaqueId[];
+  /** Destaques ainda com Noite Estrelada e sem tentativa sobrando — vão pro gate como erro. */
+  exhausted: DestaqueId[];
+  /** Tentativas por destaque, já incluindo as consumidas por este plano. */
+  attempts: Partial<Record<DestaqueId, number>>;
+}
+
+/**
+ * Decide quais destaques regenerar a partir do veredito do revisor (#10312).
+ * Considera só entradas `status: "warn"` + `categoria: "estilo"` que não
+ * estejam desatualizadas (`isStale`, md5 da imagem mudou depois da revisão —
+ * #9598). Puro: o chamador grava `attempts` de volta.
+ */
+export function planEstiloRegeneration(
+  result: CropReviewResult,
+  previousAttempts: Partial<Record<DestaqueId, number>>,
+  isStale: (entry: CropReviewEntry) => boolean = () => false,
+  maxAttempts: number = MAX_ESTILO_AUTO_REGEN,
+): EstiloRegenPlan {
+  const flagged = new Set<DestaqueId>();
+  for (const r of result.results) {
+    if (r.status === "warn" && r.categoria === "estilo" && !isStale(r)) flagged.add(r.destaque);
+  }
+  const attempts: Partial<Record<DestaqueId, number>> = { ...previousAttempts };
+  const regenerate: DestaqueId[] = [];
+  const exhausted: DestaqueId[] = [];
+  for (const d of DESTAQUE_IDS) {
+    if (!flagged.has(d)) continue;
+    const used = attempts[d] ?? 0;
+    if (used < maxAttempts) {
+      regenerate.push(d);
+      attempts[d] = used + 1;
+    } else {
+      exhausted.push(d);
+    }
+  }
+  return { regenerate, exhausted, attempts };
+}
+
+/**
+ * Comandos que regeneram um destaque inteiro, NESTA ordem: 2:1 (+ 1:1
+ * derivado; o `--force` do 2:1 apaga o 4:5 nativo antigo, #6010), arte 4:5
+ * nativa, e o card 4:5 com título (que também é a capa do carrossel). `--force`
+ * aqui é a exceção documentada ao #1325 — regeneração pedida pelo revisor,
+ * não reentrada.
+ */
+export function estiloRegenCommands(editionDir: string, destaque: DestaqueId): string[] {
+  const dir = editionDir.replace(/[/\\]+$/, "");
+  const prompt = `${dir}/_internal/02-${destaque}-prompt.md`;
+  return [
+    `npx tsx scripts/image-generate.ts --editorial ${prompt} --out-dir ${dir}/ --destaque ${destaque} --force`,
+    `npx tsx scripts/image-generate.ts --editorial ${prompt} --out-dir ${dir}/ --destaque ${destaque} --ratio 4x5 --force`,
+    `npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${dir}/ --destaque ${destaque}`,
+  ];
 }
 
 /**
@@ -276,6 +359,14 @@ export function formatGateSummary(result: CropReviewResult): string {
     if (r.sugestao) lines.push(`       Sugestão: ${r.sugestao}`);
   }
   lines.push("");
+  if (results.some((r) => r.status === "warn" && r.categoria === "estilo")) {
+    // #10312: Noite Estrelada deixou de ser decisão do editor — viola regra
+    // invariável. O Stage 3 regenera sozinho; se persistir, é ERRO no gate.
+    lines.push(
+      "  🌀 Noite Estrelada viola regra invariável: o Stage 3 regenera o destaque sozinho " +
+        `(até ${MAX_ESTILO_AUTO_REGEN}x, --estilo-regen-plan); se persistir, vira ERRO no gate (image-starry-night-detected, #10312).`,
+    );
+  }
   lines.push("  Decisão final é do editor. Aprovação no gate confirma revisão dos itens acima.");
   lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
   return lines.join("\n");
@@ -291,7 +382,7 @@ function extractEditionId(editionDir: string): string {
 }
 
 async function main(): Promise<void> {
-  const { values: args } = parseArgs(process.argv.slice(2));
+  const { values: args, flags } = parseArgs(process.argv.slice(2));
   if (!args["edition-dir"]) {
     console.error("Uso: run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ [--input-json <path>]");
     process.exit(1);
@@ -303,6 +394,43 @@ async function main(): Promise<void> {
   const outPath = args.out ? resolve(process.cwd(), args.out) : join(internalDir, "04-crop-review.json");
 
   mkdirSync(internalDir, { recursive: true });
+
+  // Modo --estilo-regen-plan (#10312): lê o veredito JÁ persistido e decide
+  // quais destaques regenerar por Noite Estrelada. Consome a tentativa no ato
+  // (grava `_internal/04-estilo-regen.json`) — o teto vale mesmo se o
+  // orchestrator chamar o plano de novo sem ter regenerado.
+  if (flags.has("estilo-regen-plan")) {
+    if (!existsSync(outPath)) {
+      console.error(`[run-image-crop-reviewer] veredito não encontrado: ${outPath} — persistir com --input-json antes.`);
+      process.exit(1);
+    }
+    const persisted = normalizeCropReviewResult(JSON.parse(readFileSync(outPath, "utf8")) as unknown, edition);
+    const attemptsPath = join(internalDir, "04-estilo-regen.json");
+    let previous: Partial<Record<DestaqueId, number>> = {};
+    if (existsSync(attemptsPath)) {
+      try {
+        previous = (JSON.parse(readFileSync(attemptsPath, "utf8")) as { attempts?: Partial<Record<DestaqueId, number>> }).attempts ?? {};
+      } catch {
+        previous = {};
+      }
+    }
+    const plan = planEstiloRegeneration(persisted, previous, (e) => isCropReviewEntryStale(editionDir, e));
+    writeFileSync(attemptsPath, JSON.stringify({ attempts: plan.attempts, updated_at: new Date().toISOString() }, null, 2), "utf8");
+    const editionArg = args["edition-dir"].replace(/[/\\]+$/, "");
+    console.log(
+      JSON.stringify(
+        {
+          regenerate: plan.regenerate,
+          exhausted: plan.exhausted,
+          attempts: plan.attempts,
+          commands: Object.fromEntries(plan.regenerate.map((d) => [d, estiloRegenCommands(editionArg, d)])),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
 
   // Modo --input-json: recebe o veredito do subagente, normaliza, grava e formata.
   if (args["input-json"]) {
