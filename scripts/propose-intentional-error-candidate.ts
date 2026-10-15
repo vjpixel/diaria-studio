@@ -21,6 +21,10 @@
  * / entidade usada nos últimos `--window-days` (default 30) antes de `--edition`
  * (default: basename de `--edition-dir`).
  *
+ * (#10244) `--list-recent` lista os erros da janela (`{ recent: [...] }`) e
+ * `--check-wrong "<grafia>"` devolve `{ repeats: [...] }` — pro Stage 4 consultar
+ * ANTES de propor na mão quando `candidate: null`. Não exigem `02-reviewed.md`.
+ *
  * Stdout: JSON `{ candidate: IntentionalErrorCandidate | null }`.
  * Exit codes: 0 = leu com sucesso (candidato encontrado ou não — ambos são
  * saídas válidas, "sem candidato" não é erro); 2 = uso inválido ou arquivo
@@ -32,10 +36,31 @@ import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
 import { loadIntentionalErrors } from "./lib/intentional-errors.ts";
-import { intentionalErrorsJsonlPathForEditionDir } from "./lib/intentional-error-repeat.ts";
+import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRepeats } from "./lib/intentional-error-repeat.ts";
 
 export function main(argv: string[] = process.argv.slice(2)): number {
   const values = parseArgs(argv);
+  const listRecent = "list-recent" in values;
+  const checkWrong = values["check-wrong"];
+  if (listRecent || checkWrong) {
+    const dir = values["edition-dir"]?.replace(/[\\/]+$/, "");
+    const jsonl =
+      values["jsonl"] ??
+      (dir ? intentionalErrorsJsonlPathForEditionDir(resolve(dir)) : join("data", "intentional-errors.jsonl"));
+    const ed = values["edition"] ?? (dir ? basename(resolve(dir)) : "");
+    if (!/^\d{6}$/.test(ed)) {
+      console.error("propose-intentional-error-candidate: --list-recent/--check-wrong exigem --edition AAMMDD ou --edition-dir");
+      return 2;
+    }
+    const wd = values["window-days"] ? Number(values["window-days"]) : undefined;
+    const opts = { windowDays: wd !== undefined && Number.isFinite(wd) && wd >= 1 ? wd : undefined };
+    const history = jsonl ? loadIntentionalErrors(jsonl) : [];
+    const out = checkWrong
+      ? { repeats: findRecentRepeats({ wrong_value: checkWrong }, history, ed, opts) }
+      : { recent: listRecentErrors(history, ed, opts) };
+    console.log(JSON.stringify(out, null, 2));
+    return 0;
+  }
   const mdPath = values["md"] ?? (values["edition-dir"] ? join(values["edition-dir"], "02-reviewed.md") : undefined);
 
   if (!mdPath) {

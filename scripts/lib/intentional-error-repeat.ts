@@ -150,6 +150,43 @@ export function findRecentRepeats(
   return out;
 }
 
+export interface RecentError {
+  edition: string;
+  wrong_value: string | null;
+  correct_value: string | null;
+}
+
+/**
+ * Pure (#10244): erros declarados dentro da janela ANTERIOR a `refEdition`,
+ * pra o Stage 4 listar antes de propor um candidato na mão. Mesma janela de
+ * `findRecentRepeats`. Entries `no_error` e a própria edição são ignoradas.
+ */
+export function listRecentErrors(
+  history: IntentionalError[],
+  refEdition: string,
+  opts: FindRepeatOptions = {},
+): RecentError[] {
+  const windowDays = opts.windowDays ?? DEFAULT_REPEAT_WINDOW_DAYS;
+  const ref = editionToDate(refEdition);
+  const out: RecentError[] = [];
+  for (const entry of history) {
+    if (entry.no_error || entry.edition === refEdition) continue;
+    const when = editionToDate(entry.edition);
+    if (ref && when) {
+      const ageDays = (ref.getTime() - when.getTime()) / 86_400_000;
+      if (ageDays < 0 || ageDays > windowDays) continue;
+    } else if (Number.isFinite(windowDays)) {
+      continue;
+    }
+    out.push({
+      edition: entry.edition,
+      wrong_value: extractWrongValue(entry),
+      correct_value: entry.correct_value ?? null,
+    });
+  }
+  return out;
+}
+
 /**
  * Deriva `data/intentional-errors.jsonl` a partir do diretório da edição
  * (flat `data/editions/AAMMDD` ou nested `data/editions/AAMM/AAMMDD`): sobe até
