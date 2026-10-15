@@ -1550,7 +1550,29 @@ const TUTORIAL_ACTION_VERBS_PT =
 // (260929), "…o que você está entregando de graça para a IA e como se
 // proteger" (261014). Mesma restrição (só título, nunca depois de vírgula).
 // Medição no PR: gabarito #8419 (02-reviewed.md) 0 regressões.
-const TITLE_HOWTO_EXTRA_RE = /(?<!,\s*)\bcomo\s+(?:transcrever|resumir|gravar|obter|passar|salvar|se\s+proteger)\b/i;
+// (Regex único original, dividido no #10275 abaixo:
+//  /(?<!,\s*)\bcomo\s+(?:transcrever|resumir|gravar|obter|passar|salvar|se\s+proteger)\b/i)
+// #10275: os verbos de #10163 (gravar|obter|passar|salvar|se proteger) são
+// ambíguos sob type_hint noticia/opiniao — "Como salvar o jornalismo da IA" é
+// ensaio/notícia, não guia. Com esse hint, só valem quando o "como" vem
+// precedido de marcador de chamada ao leitor ("saiba|veja|entenda|descubra|
+// aprenda|confira|e como"): "…entregando de graça para a IA e como se
+// proteger" (g1, 261014, type_hint=noticia, USE MELHOR) segue positivo.
+// transcrever|resumir (#9958) ficam de fora do guard — escopo do #10163 só.
+const TITLE_HOWTO_EXTRA_10163_RE = /(?<!,\s*)\bcomo\s+(?:gravar|obter|passar|salvar|se\s+proteger)\b/i;
+const TITLE_HOWTO_EXTRA_PRE_9958_RE = /(?<!,\s*)\bcomo\s+(?:transcrever|resumir)\b/i;
+const TITLE_HOWTO_READER_MARKER_RE =
+  /(?<!,\s*)\b(?:saiba|veja|entenda|descubra|aprenda|confira|e)\s+como\s+(?:gravar|obter|passar|salvar|se\s+proteger)\b/i;
+
+function isNewsHint(typeHint: string | null | undefined): boolean {
+  return typeHint === "noticia" || typeHint === "opiniao";
+}
+
+function hasTitleHowToExtra(title: string, typeHint: string | null | undefined): boolean {
+  if (TITLE_HOWTO_EXTRA_PRE_9958_RE.test(title)) return true;
+  if (!TITLE_HOWTO_EXTRA_10163_RE.test(title)) return false;
+  return !isNewsHint(typeHint) || TITLE_HOWTO_READER_MARKER_RE.test(title);
+}
 
 const TUTORIAL_KEYWORDS_RE = new RegExp(
   "\\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\\b" +
@@ -1689,10 +1711,34 @@ const PT_USER_GUIDE_TITLE_RE = new RegExp(
   "i",
 );
 
-function isUsageGuideTitle(title: string): boolean {
+// #10275: PT_USER_GUIDE_TITLE_RE rodava antes do check de type_hint em
+// isNewsNotTutorial e vencia o rótulo de notícia do pesquisador. Com hint
+// noticia/opiniao:
+//   - "<X> na prática:" é rubrica editorial comum de reportagem ("IA na
+//     prática: bancos já usam agentes…") — não vale; o caso real positivo
+//     ("Lovable na prática: o guia…", 260806) não tem type_hint;
+//   - as demais alternativas são anuladas por verbo de anúncio/reportagem no
+//     título ("Samsung anuncia sete funções de IA do Galaxy S27"). "Sete
+//     funções de IA no celular para facilitar a rotina" (260716, noticia, USE
+//     MELHOR) e "IA para estudos: conheça ferramentas que…" (260902, noticia)
+//     não têm esses verbos e seguem positivos.
+const PT_GUIDE_NA_PRATICA_RE = /\bna\s+pr[áa]tica:/i;
+const PT_GUIDE_NEWS_VERB_RE =
+  /\b(?:anuncia(?:m|ram)?|lan[çc]a(?:m|ram)?|apresenta(?:m|ram)?|revela(?:m|ram)?|divulga(?:m|ram)?|libera(?:m|ram)?|estreia(?:m)?|ganha(?:m|ram)?|recebe(?:m|ram)?|traz(?:em)?|testa(?:m|ram)?|segundo|aponta(?:m)?)\b/i;
+
+function isPtUserGuideTitle(title: string, typeHint: string | null | undefined): boolean {
+  if (!PT_USER_GUIDE_TITLE_RE.test(title)) return false;
+  if (!isNewsHint(typeHint)) return true;
+  if (PT_GUIDE_NEWS_VERB_RE.test(title)) return false;
+  // Só "na prática:" casou → rubrica de reportagem sob hint de notícia.
+  const withoutNaPratica = title.replace(new RegExp(PT_GUIDE_NA_PRATICA_RE.source, "gi"), " ");
+  return PT_USER_GUIDE_TITLE_RE.test(withoutNaPratica);
+}
+
+function isUsageGuideTitle(title: string, typeHint?: string | null): boolean {
   return (
     USAGE_GUIDE_TITLE_RE.test(title) ||
-    PT_USER_GUIDE_TITLE_RE.test(title) ||
+    isPtUserGuideTitle(title, typeHint) ||
     (PROMPTS_QUE_TITLE_RE.test(title) && !NEWS_REPORT_TITLE_RE.test(title))
   );
 }
@@ -1747,8 +1793,8 @@ function isTutorialByKeyword(article: Article): boolean {
   return (
     TUTORIAL_KEYWORDS_RE.test(hay) ||
     DISCOVERY_LISTICLE_RE.test(hay) ||
-    isUsageGuideTitle(article.title ?? "") ||
-    TITLE_HOWTO_EXTRA_RE.test(article.title ?? "") ||
+    isUsageGuideTitle(article.title ?? "", article.type_hint) ||
+    hasTitleHowToExtra(article.title ?? "", article.type_hint) ||
     hasHowToSlug(article.url ?? "", article.type_hint)
   );
 }
