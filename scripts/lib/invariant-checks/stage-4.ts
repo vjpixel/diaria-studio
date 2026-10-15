@@ -30,6 +30,11 @@ import {
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
 import {
+  evaluateNewsletterHtmlFreshnessOnDisk,
+  NEWSLETTER_FINAL_HTML,
+  type NewsletterHtmlFreshness,
+} from "../newsletter-html-freshness.ts"; // #10258
+import {
   USE_MELHOR_POST_ID,
   checkUseMelhorItemInFinal,
   loadUseMelhorPostConfigState,
@@ -3255,34 +3260,37 @@ function checkKitFixtureAudit(
  * `02-reviewed.md`. O replant do erro intencional (e qualquer edição do gate 4)
  * regrava o reviewed sem re-renderizar o HTML; Stage 5 publicava a página do
  * site e o broadcast Kit com insumos defasados. HTML ausente não acusa (o
- * pré-render é outra regra). `mtimes`: override pra teste.
+ * pré-render é outra regra).
+ *
+ * #10258 — `error` (era warning): `pipeline-sentinel.ts write --step 4` recusa.
+ * Pra não bloquear por toque sem mudança de conteúdo, mtime defasado só vira
+ * violação quando o carimbo de proveniência do render
+ * (`_internal/newsletter-render-source.json`) não registra o sha256 atual do
+ * reviewed — critério completo em `scripts/lib/newsletter-html-freshness.ts`.
+ * `evaluate`: override pra teste.
  */
 export function checkNewsletterHtmlNotBehindReviewed(
   editionDir: string,
-  mtimes?: (relPath: string) => number | null,
+  evaluate: (editionDir: string) => NewsletterHtmlFreshness = evaluateNewsletterHtmlFreshnessOnDisk,
 ): InvariantViolation[] {
-  const getMtime =
-    mtimes ??
-    ((relPath: string): number | null => {
-      const full = resolve(editionDir, relPath);
-      return existsSync(full) ? statSync(full).mtimeMs : null;
-    });
-  const html = "_internal/newsletter-final.html";
-  if (getMtime(html) === null) return [];
-  const stale = evaluateStaleness([{ downstream: html, upstreams: ["02-reviewed.md"] }], getMtime, 1000);
-  if (stale.length === 0) return [];
-  const s = stale[0];
+  const result = evaluate(editionDir);
+  if (!result.stale) return [];
+  const why =
+    result.reason === "stamp-mismatch"
+      ? "o conteúdo de 02-reviewed.md mudou desde o último render"
+      : result.reason === "stamp-newer-than-html"
+        ? "o render mais recente não chegou ao newsletter-final.html (substitute-image-urls.ts não rodou depois)"
+        : "sem carimbo de render pra provar que o conteúdo é o mesmo";
   return [
     {
       rule: "newsletter-html-not-behind-reviewed",
       message:
-        `${html} (${s.downstream_mtime}) é anterior a 02-reviewed.md (${s.upstream_mtime}, +${s.lag_minutes} min) — ` +
+        `${NEWSLETTER_FINAL_HTML} é anterior a 02-reviewed.md (+${result.lagMinutes} min) e ${why} — ` +
         `a página do site e o broadcast sairiam com o texto antigo. Re-renderizar: render-newsletter-html.ts + ` +
         `substitute-image-urls.ts + render-kit-html-preview.ts antes do sentinel.`,
       source_issue: "#10245",
-      // warning: só mtime (sem comparação de conteúdo) — mesmo critério de social-not-behind-reviewed
-      severity: "warning",
-      file: resolve(editionDir, html),
+      severity: "error", // #10258
+      file: resolve(editionDir, NEWSLETTER_FINAL_HTML),
     },
   ];
 }
@@ -3290,7 +3298,7 @@ export function checkNewsletterHtmlNotBehindReviewed(
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "newsletter-html-not-behind-reviewed",
-    description: "newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245)",
+    description: "newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa)",
     source_issue: "#10245",
     stage: 4,
     run: (editionDir) => checkNewsletterHtmlNotBehindReviewed(editionDir),
