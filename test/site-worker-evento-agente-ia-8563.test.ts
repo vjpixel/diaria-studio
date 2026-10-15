@@ -13,9 +13,9 @@
  * editor tornaram o proxy desnecessário e removem o risco de asset relativo
  * quebrado.
  *
- * Versões: a página tem quatro versões, `a/` a `d/` (cada uma com seu
+ * Versões: a página tem seis versões, `a/` a `f/` (cada uma com seu
  * `index.html`). O teste A/B entre `a` e `b` acabou em 30/09/2026; hoje o
- * `index.html` da raiz manda todo mundo para a versão vigente (`d`) e
+ * `index.html` da raiz manda todo mundo para a versão vigente (`f`, desde 15/10/2026) e
  * redireciona levando a query string (UTMs e fbclid precisam chegar à
  * página e ao checkout). As outras versões continuam no ar para links
  * antigos. Os anúncios continuam apontando para `/evento/agente-ia`.
@@ -53,24 +53,24 @@ function countOccurrences(haystack: string, needle: string): number {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE_DIR = resolve(ROOT, "workers", "site", "public", "evento", "agente-ia");
-const VARIANTS = ["a", "b", "c", "d", "e"] as const;
-/** A versão E (13/10/2026) tem visual e checkout próprios: CSS em `e/styles.css` e
- * oferta de R$ 27 em `e/config.js`. As outras usam os arquivos comuns. */
-const OWN_FILES: Partial<Record<(typeof VARIANTS)[number], true>> = { e: true };
+const VARIANTS = ["a", "b", "c", "d", "e", "f"] as const;
+/** As versões E (13/10/2026) e F (15/10/2026) têm visual e checkout próprios: CSS em `<v>/styles.css` e
+ * oferta de R$ 27 em `<v>/config.js`. As outras usam os arquivos comuns. */
+const OWN_FILES: Partial<Record<(typeof VARIANTS)[number], true>> = { e: true, f: true };
 
 describe("public/evento/agente-ia — página do workshop (#8563)", () => {
-  it("index.html da raiz manda todo mundo para /e (versão E desde 14/10; era D desde 04/10 e C desde 01/10, #9334) e preserva a query string", () => {
+  it("index.html da raiz manda todo mundo para /f (versão F desde 15/10; era E desde 14/10, D desde 04/10 e C desde 01/10, #9334) e preserva a query string", () => {
     const html = readFileSync(resolve(PAGE_DIR, "index.html"), "utf8");
-    assert.match(html, /"\/evento\/agente-ia\/e"\s*\+\s*location\.search/);
-    // Sem sorteio e sem ler a variante guardada: quem já tinha caído na A, na B, na C ou na D também vai para a E.
+    assert.match(html, /"\/evento\/agente-ia\/f"\s*\+\s*location\.search/);
+    // Sem sorteio e sem ler a variante guardada: quem já tinha caído em outra versão também vai para a F.
     assert.doesNotMatch(html, /Math\.random/);
     assert.doesNotMatch(html, /localStorage\.getItem/);
     // Sem pixel na raiz: o PageView é da versão que abrir (senão conta 2x).
     assert.doesNotMatch(html, /fbq\(/);
     // #9590: idem pro GTM/GA4 — a sessão é contada na versão de destino, que recebe as UTMs via location.search.
     assert.doesNotMatch(html, /googletagmanager\.com/);
-    // Sem JavaScript, cai na versão E em vez de ficar numa página vazia.
-    assert.match(html, /url=\/evento\/agente-ia\/e"/);
+    // Sem JavaScript, cai na versão F em vez de ficar numa página vazia.
+    assert.match(html, /url=\/evento\/agente-ia\/f"/);
   });
 
   it("toda versão publicada (subdiretório com index.html) está em VARIANTS — versão nova sem GTM não passa despercebida", () => {
