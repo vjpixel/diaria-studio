@@ -87,12 +87,30 @@ test("#10189 reapply: 1º envio ainda agendado sai sem a frase; envio 2 com a fr
   assert.equal(r2.html, HTML);
 });
 
-test("#10189 reapply: envioIndex gravado vence; campanha fora do histórico conta como saída; nome legado fica intacto", () => {
-  const stored = queroHtmlForCampaign(HTML, "Clarice 2609 grupo:d3-seg05", "2609-10", [
+test("#10195 reapply: histórico vence o envioIndex gravado (gravado só avisa); campanha fora do histórico conta como saída; nome legado fica intacto", () => {
+  // Cenário da issue: novos-* em rascunho levou o índice 1 pela regra antiga e
+  // a d1 foi gravada com envioIndex 2, mas na prática é o 1º envio.
+  const d1 = queroHtmlForCampaign(HTML, "Clarice 2609 grupo:d1-sab03-A", "2609-10", [
+    { key: "novos-261001", status: "draft", envioIndex: 1 },
+    { key: "d1-sab03-A", status: "scheduled", envioIndex: 2 },
+  ]);
+  assert.equal(hasQueroPhrase(d1.html), false, "1º envio real sai sem a frase apesar do 2 gravado");
+  assert.match(d1.line, /gravado \(2\) diverge do recalculado pelo histórico \(1\)/);
+
+  // Sentido inverso: gravado 1, mas um envio já saiu antes → é o envio 2.
+  const d3 = queroHtmlForCampaign(HTML, "Clarice 2609 grupo:d3-seg05", "2609-10", [
     { key: "d1-sab03", status: "sent" },
     { key: "d3-seg05", status: "scheduled", envioIndex: 1 },
   ]);
-  assert.equal(hasQueroPhrase(stored.html), false, "envioIndex 1 gravado decide");
+  assert.equal(d3.html, HTML, "envio 2 mantém a frase apesar do 1 gravado");
+  assert.match(d3.line, /gravado \(1\) diverge/);
+
+  // Gravado concorda com o histórico → sem aviso.
+  const agree = queroHtmlForCampaign(HTML, "Clarice 2609 grupo:d3-seg05", "2609-10", [
+    { key: "d1-sab03", status: "sent" },
+    { key: "d3-seg05", status: "scheduled", envioIndex: 2 },
+  ]);
+  assert.doesNotMatch(agree.line, /diverge/);
 
   const outside = queroHtmlForCampaign(HTML, "Clarice 2609 grupo:extra", "2609-10", []);
   assert.equal(hasQueroPhrase(outside.html), false, "ciclo vazio + campanha agendada = envio 1");
