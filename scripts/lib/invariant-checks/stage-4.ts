@@ -3278,7 +3278,8 @@ export function checkNewsletterHtmlNotBehindReviewed(
         `a página do site e o broadcast sairiam com o texto antigo. Re-renderizar: render-newsletter-html.ts + ` +
         `substitute-image-urls.ts + render-kit-html-preview.ts antes do sentinel.`,
       source_issue: "#10245",
-      severity: "error",
+      // warning: só mtime (sem comparação de conteúdo) — mesmo critério de social-not-behind-reviewed
+      severity: "warning",
       file: resolve(editionDir, html),
     },
   ];

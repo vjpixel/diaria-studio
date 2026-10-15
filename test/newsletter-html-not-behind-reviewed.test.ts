@@ -9,7 +9,7 @@ describe("checkNewsletterHtmlNotBehindReviewed (#10245)", () => {
   it("acusa HTML mais antigo que 02-reviewed.md (replant sem re-render)", () => {
     const v = checkNewsletterHtmlNotBehindReviewed("/x", mt({ [HTML]: 1_000_000, "02-reviewed.md": 2_000_000 }));
     assert.equal(v.length, 1);
-    assert.equal(v[0].severity, "error");
+    assert.equal(v[0].severity, "warning");
   });
   it("passa quando o HTML é mais novo", () => {
     assert.deepEqual(checkNewsletterHtmlNotBehindReviewed("/x", mt({ [HTML]: 3_000_000, "02-reviewed.md": 2_000_000 })), []);
