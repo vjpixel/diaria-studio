@@ -333,6 +333,16 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   overnight` na chamada de `scripts/run-merge-train.ts`. Mesmo gatilho
   (≥2 unidades Gate-2-verde sem colisão de arquivo ao mesmo tempo), mesma
   degradação automática (bissecta até o piso se o lote vier vermelho).
+- **PR retida para o editor (#10278/#10294) — condição 3 do gate de merge,
+  também aqui.** Antes de QUALQUER merge por esta skill (solo ou trem),
+  `npx tsx scripts/check-pr-retido-gate.ts --pr {N}` precisa sair `exit 0`.
+  `exit 1` = label `retido-para-editor` (ou marcador
+  `<!-- retido-para-editor -->` no corpo), aplicada por qualquer trilha: não
+  mergear, comentar e seguir pra próxima unidade. `exit 3` = erro,
+  fail-closed (não mergear). O `run-merge-train.ts` já lê o sinal sozinho
+  (exclui a PR do lote com motivo explícito, o resto segue) e o
+  `continuo-pr-review.sh` lê via `check-continuo-merge-gate.ts` — este item
+  cobre o merge direto pela sessão, que não passa por nenhum dos dois.
 - **Reusa o formato de `plan.json`** descrito em
   `.claude/skills/diaria-overnight/SKILL.md` (Fase 0, passo 7) — mesmos
   campos (`issues[]`, `timeline`, `stall_events`, `resume_state`, etc.) sob
