@@ -450,8 +450,8 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 }
 
 /* Como funciona: rótulos das etapas em pílula, número em círculo teal */
-.stage-label{display:inline-flex;align-self:flex-start;align-items:center;gap:10px;padding:6px 14px 6px 6px;border-radius:999px;background:var(--paper);border:1px solid var(--rule-ink);font-weight:500}
-.stage-label b{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--brand);color:var(--ink);font-weight:500;letter-spacing:0}
+.stage-label{display:inline-flex;align-self:flex-start;align-items:center;gap:8px;padding:3px 12px 3px 3px;border-radius:999px;background:var(--paper);border:1px solid var(--rule-ink);font-weight:500;line-height:1.2}
+.stage-label b{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--brand);color:var(--ink);font-weight:500;letter-spacing:0}
 
 /* Faixa teal (por que o ChatGPT devolve texto genérico) */
 .section-brand{background:var(--brand);color:var(--ink)}
@@ -466,8 +466,10 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 @media (max-width:767px){.formats-grid{gap:10px}.formats-grid li{padding:14px 18px;font-size:19px}}
 
 /* Para quem é: cada frase num cartão com fio teal */
-.sayings{display:grid;gap:14px}
-.sayings li{padding:18px 22px;border-radius:12px;background:var(--paper);border-left:4px solid var(--brand)}
+.sayings{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.sayings li{padding:12px 16px;border-radius:0 12px 12px 0;background:var(--paper);border-left:4px solid var(--brand)}
+.sayings li:last-child{grid-column:1/-1}
+@media (max-width:767px){.sayings{grid-template-columns:1fr;gap:8px}.sayings li{padding:8px 14px}.sayings span{font-size:17px}}
 
 /* Garantia: cartão branco com borda teal e escudo em círculo teal */
 .guarantee{background:var(--white);border:2px solid var(--brand)}
