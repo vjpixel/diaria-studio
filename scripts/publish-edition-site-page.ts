@@ -455,7 +455,7 @@ export interface PublishPageDeps {
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo.
    * `editionDir` (#9593) só serve pro waiter em background saber qual state
    * file atualizar quando o CI não fecha dentro da espera síncrona. */
-  publish(slug: string, sitemapRelPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }): PublishResult;
+  publish(slug: string, sitemapRelPath?: string, editionDir?: string, removedPaths?: string[], redirect?: SlugRedirect): PublishResult;
   /**
    * #10194: a republicação mudou o slug da página desta edição (o título do D1
    * mudou no loop do Stage 5 depois do §5b-site). Fecha o PR antigo, sinaliza o
@@ -1914,7 +1914,8 @@ export function commitAndPushSitePage(
   removedPaths: readonly string[] = [],
   // #10206: slug velho -> novo; `_redirects` só é tocado (e staged) com isto,
   // aplicado SOBRE a cópia do `gitCwd` — nunca copiado do checkout compartilhado.
-  redirect?: { oldSlug: string; newSlug: string },
+  // #10265: `priorSlugs` reaplica as regras de TODOS os slugs anteriores.
+  redirect?: SlugRedirect,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
@@ -2138,7 +2139,8 @@ export function commitAndPushSitePage(
       const redirectsRel = redirectsRelPathFromSitemap(sitemapRelPath);
       const redirectsAbs = resolve(gitCwd, redirectsRel);
       const cur = existsSync(redirectsAbs) ? readFileSync(redirectsAbs, "utf8") : "";
-      const next = addSlugRedirect(cur, redirect.oldSlug, redirect.newSlug);
+      let next = cur;
+      for (const oldSlug of slugRedirectSources(redirect)) next = addSlugRedirect(next, oldSlug, redirect.newSlug);
       if (next !== cur) {
         mkdirSync(dirname(redirectsAbs), { recursive: true });
         writeFileSync(redirectsAbs, next, "utf8");
@@ -2521,7 +2523,14 @@ export function productionDeps(
 export function publishEditionSitePage(
   editionDir: string,
   deps: PublishPageDeps,
-  opts: { skipPublish?: boolean; slug?: string; sitemap?: string; previous?: PreviousSitePage | null } = {},
+  opts: {
+    skipPublish?: boolean;
+    slug?: string;
+    sitemap?: string;
+    previous?: PreviousSitePage | null;
+    /** #10265: todos os slugs já publicados desta edição (`readSitePageSlugHistory`). */
+    priorSlugs?: readonly string[];
+  } = {},
 ): PublishPageResult {
   let inputs: EditionPageInputs | null;
   try {
@@ -2584,7 +2593,7 @@ export function publishEditionSitePage(
   // sitemap antes da nova entrar, e a home regenerada já nasce sem ela. Só
   // quando vai publicar: `--skip-publish` nunca fecha PR de ninguém.
   let removedPaths: string[] = [];
-  let redirect: { oldSlug: string; newSlug: string } | undefined;
+  let redirect: SlugRedirect | undefined;
   const previous = opts.previous;
   if (!opts.skipPublish && previous && previous.slug !== built.post.slug && deps.supersedePrevious) {
     try {
@@ -2606,6 +2615,42 @@ export function publishEditionSitePage(
       );
     } catch (e) {
       deps.log(`aviso: limpeza do slug anterior /p/${previous.slug} falhou (${(e as Error).message}) (#10194)`);
+    }
+  }
+
+  // #10265: o redirect e o `git rm` de um slug substituído só viviam no commit
+  // do PR da republicação que trocou o slug. Toda republicação reconstrói a
+  // branch a partir de master, então uma republicação seguinte com o MESMO
+  // slug (A→B→B) ou uma cadeia (A→B→C, com o PR B fechado antes do merge)
+  // perdia essa limpeza. Reaplica a cada republicação, para TODOS os slugs já
+  // publicados desta edição: redirect pro slug atual, entrada fora do sitemap
+  // e `git rm` da página (o commit só remove o que estiver tracked, então
+  // página que nunca chegou ao master não entra). O slug tratado no bloco
+  // acima (PR fechado/marcado) não passa de novo.
+  if (!opts.skipPublish && deps.supersedePrevious) {
+    const current = built.post.slug;
+    const older = [...new Set(opts.priorSlugs ?? [])].filter(
+      (s) => s && s !== current && !(redirect && s === redirect.oldSlug),
+    );
+    for (const oldSlug of older) {
+      try {
+        // Sem `oldPrNumber`: o PR desse slug já foi tratado na troca original.
+        // Só tira a entrada do sitemap e a cópia local da página.
+        deps.supersedePrevious({ oldSlug, newSlug: current, sitemapRelPath: opts.sitemap, editionDirAbs: editionDir });
+      } catch (e) {
+        deps.log(`aviso: limpeza do slug anterior /p/${oldSlug} falhou (${(e as Error).message}) (#10265)`);
+      }
+      const rel = ["workers", "site", "public", "p", oldSlug].join("/");
+      if (!removedPaths.includes(rel)) removedPaths.push(rel);
+    }
+    if (older.length > 0) {
+      redirect = redirect
+        ? { ...redirect, priorSlugs: older }
+        : { oldSlug: older[0], newSlug: current, priorSlugs: older.slice(1) };
+      deps.log(
+        `slugs anteriores desta edição reaplicados (#10265): ${older.map((s) => `/p/${s}`).join(", ")} -> /p/${current} ` +
+          `(redirect + remoção da página se ela estiver no master)`,
+      );
     }
   }
 
@@ -2781,6 +2826,44 @@ export function lastConfirmedSitePage(state: Record<string, unknown> | null): Pr
   return last && typeof last === "object" ? previousFromRecord(last as Record<string, unknown>) : null;
 }
 
+/**
+ * #10265: campo do state file com TODOS os slugs já publicados (confirmados)
+ * desta edição, em ordem. `last_published` só guarda o último; o redirect e o
+ * `git rm` dos anteriores precisam ser reaplicados a cada republicação, porque
+ * a branch de publicação sempre renasce de master.
+ */
+export const SITE_PAGE_PUBLISHED_SLUGS_FIELD = "published_slugs";
+
+/**
+ * #10265: slugs já publicados registrados no state. State anterior ao campo
+ * (só `last_published`/publicação confirmada) entra semeado com esse slug. Pura.
+ */
+export function publishedSlugHistory(state: Record<string, unknown> | null): string[] {
+  if (!state) return [];
+  const out: string[] = [];
+  const raw = state[SITE_PAGE_PUBLISHED_SLUGS_FIELD];
+  if (Array.isArray(raw)) {
+    for (const s of raw) if (typeof s === "string" && s && !out.includes(s)) out.push(s);
+  }
+  const last = lastConfirmedSitePage(state);
+  if (last && !out.includes(last.slug)) out.push(last.slug);
+  return out;
+}
+
+/** #10265: `publishedSlugHistory` do state em disco; ausente/ilegível → `[]`. */
+export function readSitePageSlugHistory(editionDirAbs: string): string[] {
+  const path = join(editionDirAbs, "_internal", "site-page-published.json");
+  if (!existsSync(path)) return [];
+  try {
+    return publishedSlugHistory(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
+  } catch (e) {
+    process.stderr.write(
+      `[site-page] aviso: ${path} ilegível (${(e as Error).message}) — slugs anteriores não reaplicados (#10265)\n`,
+    );
+    return [];
+  }
+}
+
 export function readPreviousSitePage(editionDirAbs: string): PreviousSitePage | null {
   const path = join(editionDirAbs, "_internal", "site-page-published.json");
   if (!existsSync(path)) return null;
@@ -2866,6 +2949,21 @@ export interface SupersedeArgs {
  * falhou; `none` = nenhum PR anterior identificado.
  */
 export type OldSitePagePrState = "closed" | "merged" | "already-closed" | "open" | "unknown" | "none";
+
+/**
+ * #10206: redirect de slug velho pro novo. #10265: `priorSlugs` são os demais
+ * slugs já publicados desta edição — cada um ganha a sua regra pro `newSlug`.
+ */
+export interface SlugRedirect {
+  oldSlug: string;
+  newSlug: string;
+  priorSlugs?: readonly string[];
+}
+
+/** #10265: origens das regras de um `SlugRedirect`, sem repetição nem o próprio destino. */
+export function slugRedirectSources(redirect: SlugRedirect): string[] {
+  return [...new Set([redirect.oldSlug, ...(redirect.priorSlugs ?? [])])].filter((s) => s && s !== redirect.newSlug);
+}
 
 /** #10206: `_redirects` do site, irmão do sitemap (forward-slash, relativo a rootDir). */
 export function redirectsRelPathFromSitemap(sitemapRelPath: string): string {
@@ -3133,17 +3231,27 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
   // `SITE_PAGE_LAST_PUBLISHED_FIELD`. Publicação confirmada AGORA vira o novo
   // par; senão herda o do state anterior em disco.
   let lastPublished: PreviousSitePage | null = null;
-  if ("published" in result && result.published === true) {
-    const prNumber = parsePrNumberFromUrl(result.prUrl);
-    lastPublished = { slug: result.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
-  } else if (existsSync(path)) {
+  let prevState: Record<string, unknown> | null = null;
+  if (existsSync(path)) {
     try {
-      lastPublished = lastConfirmedSitePage(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
+      prevState = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     } catch (e) {
       process.stderr.write(
         `[site-page] aviso: state anterior ilegível (${(e as Error).message}) — último slug publicado não preservado (#10198)\n`,
       );
     }
+  }
+  if ("published" in result && result.published === true) {
+    const prNumber = parsePrNumberFromUrl(result.prUrl);
+    lastPublished = { slug: result.slug, ...(prNumber !== undefined ? { prNumber } : {}) };
+  } else {
+    lastPublished = lastConfirmedSitePage(prevState);
+  }
+  // #10265: histórico cumulativo dos slugs publicados — sobrevive a tentativas
+  // falhas pela mesma herança do `last_published`.
+  const publishedSlugs = publishedSlugHistory(prevState);
+  if ("published" in result && result.published === true && !publishedSlugs.includes(result.slug)) {
+    publishedSlugs.push(result.slug);
   }
   const state = {
     code: result.code,
@@ -3178,6 +3286,7 @@ export function writeSitePageState(editionDirAbs: string, result: PublishPageRes
     // #10190: insumos da página publicada — a trava do Stage 6 republica se mudarem.
     sourceDigest: "published" in result && result.published === true ? safeSourceDigest(editionDirAbs) : undefined,
     [SITE_PAGE_LAST_PUBLISHED_FIELD]: lastPublished ?? undefined,
+    [SITE_PAGE_PUBLISHED_SLUGS_FIELD]: publishedSlugs.length > 0 ? publishedSlugs : undefined,
     checked_at: new Date().toISOString(),
   };
   try {
@@ -3339,6 +3448,8 @@ export async function main(): Promise<void> {
         // #10194: a publicação anterior desta edição (slug + PR), pra
         // republicação com slug novo desfazer a velha.
         previous: readPreviousSitePage(editionDirAbs),
+        // #10265: todos os slugs já publicados, pra reaplicar redirect/remoção.
+        priorSlugs: readSitePageSlugHistory(editionDirAbs),
       },
     );
   } catch (e) {
