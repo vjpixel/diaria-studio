@@ -240,8 +240,10 @@ export function buildArtigoEspecialEmailCampaign(ano: string, slug: string): str
 /**
  * `utm_source`/`utm_medium` dos e-mails de EVENTO (#10315) — comunicação com
  * quem comprou ingresso de imersão/evento ao vivo, enviada à mão pelo Gmail.
- * Fora do pipeline, então sem `UtmEmitter` (não há `originFile`) — o link vive
- * no texto do e-mail. 1º uso: P.S. do e-mail de pré-requisitos da imersão de
+ * Fora do pipeline: o link vive no texto do e-mail, montado à mão com
+ * `buildEventoEmailCampaign` abaixo — por isso a entrada `evento-email` de
+ * `UTM_EMITTERS` aponta `originFile` pra este arquivo (sem ela, o `/utms`
+ * acusaria `nao_catalogado` no 1º cadastro, #5205). 1º uso: P.S. do e-mail de pré-requisitos da imersão de
  * 17/10/2026 (`diar.ia.br/evento/agente-ia`), convidando pra assinar a diária.
  *
  * Fonte própria, no padrão `{superfície}-email` do Artigo Especial acima:
@@ -1040,6 +1042,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "são garantidamente mensais. `utm_source` próprio pra separar a série de cliques deste envio da " +
       "diária ('kit') e do digest mensal de apoiadores ('mensal-apoiadores-kit'), que têm audiência e " +
       "cadência distintas.",
+    status: "ativo",
+  },
+  {
+    id: "evento-email",
+    label: "E-mails de evento (Gmail manual, compradores de ingresso)",
+    source: EVENTO_EMAIL_UTM_SOURCE,
+    medium: EVENTO_EMAIL_UTM_MEDIUM,
+    campaignPattern: `${EVENTO_EMAIL_UTM_SOURCE}-{ano}-{slug}`,
+    originFile: "scripts/lib/shared/utm-registry.ts",
+    description:
+      "Link manual de cadastro na diária (P.S.) nos e-mails pra quem comprou ingresso de evento ao vivo, " +
+      "enviados à mão pelo Gmail (#10315). Sem render no repo: o valor é montado com " +
+      "`buildEventoEmailCampaign` e colado no texto, por isso o `originFile` é o próprio registry. " +
+      "Campaign por evento ({slug} de diar.ia.br/evento/{slug}), nunca por e-mail da sequência. " +
+      "1º uso: imersão de 17/10/2026 (`evento-email-2026-agente-ia`).",
     status: "ativo",
   },
   {

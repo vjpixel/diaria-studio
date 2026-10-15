@@ -16,11 +16,20 @@ import {
   EVENTO_EMAIL_UTM_MEDIUM,
   EVENTO_EMAIL_UTM_SOURCE,
   buildEventoEmailCampaign,
+  findUtmEmitter,
+  knownUtmSources,
 } from "../scripts/lib/shared/utm-registry.ts";
 
 describe("apex aceita utm_source dos e-mails de evento (#10315)", () => {
   it("o literal da allowlist é o mesmo source do registry", () => {
     assert.ok((CLIENT_UTM_INTERNAL_ORGANIC_SOURCES as readonly string[]).includes(EVENTO_EMAIL_UTM_SOURCE));
+  });
+
+  it("catalogado no inventário: o /utms não acusa nao_catalogado no 1º cadastro (#5205)", () => {
+    assert.ok(knownUtmSources().includes(EVENTO_EMAIL_UTM_SOURCE));
+    const emitter = findUtmEmitter("evento-email");
+    assert.equal(emitter?.source, EVENTO_EMAIL_UTM_SOURCE);
+    assert.equal(emitter?.medium, EVENTO_EMAIL_UTM_MEDIUM);
   });
 
   it("campaign por evento: evento-email-{ano}-{slug}", () => {
