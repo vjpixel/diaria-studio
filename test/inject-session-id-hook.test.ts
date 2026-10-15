@@ -440,6 +440,25 @@ describe("buildUpdatedCommand (#5156)", () => {
     assert.equal(result, "npx tsx scripts/lib/effective-model-probe.ts --session-id 'sess-abc'");
   });
 
+  it("injeta --session-id em edition-lock.ts standalone (#10309 — trava por edição identifica o fork)", () => {
+    const result = buildUpdatedCommand(
+      "npx tsx scripts/edition-lock.ts acquire --edition-dir data/editions/261016 --stage 4",
+      "sess-abc",
+      4242,
+    );
+    assert.equal(
+      result,
+      "npx tsx scripts/edition-lock.ts acquire --edition-dir data/editions/261016 --stage 4 --session-id 'sess-abc'",
+    );
+  });
+
+  it("edition-lock.ts encadeado → null (#10309)", () => {
+    assert.equal(
+      buildUpdatedCommand("cd x && npx tsx scripts/edition-lock.ts release --edition-dir d", "sess-abc"),
+      null,
+    );
+  });
+
   it("effective-model-probe.ts encadeado → null (#9527)", () => {
     assert.equal(buildUpdatedCommand("cd x && npx tsx scripts/lib/effective-model-probe.ts", "sess-abc"), null);
   });

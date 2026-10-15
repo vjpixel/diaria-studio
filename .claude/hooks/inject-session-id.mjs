@@ -171,6 +171,10 @@ const TARGET_CLEANUP_WORKTREES = "cleanup-merged-worktrees.ts";
 // sessão no mesmo checkout. Com `--transcript` explícito (uso do relatório,
 // um arquivo por subagente) a flag injetada é inócua: `--transcript` vence.
 const TARGET_EFFECTIVE_MODEL_PROBE = "effective-model-probe.ts";
+// #10309: `edition-lock.ts` é o 7º alvo — a trava por edição do Stage 4
+// identifica o detentor pelo `session_id` (um fork de sessão ganha id novo).
+// Incondicional: acquire/release exigem a flag; `status` a ignora.
+const TARGET_EDITION_LOCK = "edition-lock.ts";
 // #5161 item 4: renomeada de WRITE_SUBCOMMANDS — is-claimed é leitura, mas
 // ainda precisa da flag injetada (ver comentário acima). "Escrita" deixou de
 // descrever o conjunto inteiro.
@@ -250,6 +254,10 @@ const SESSION_ID_TARGETS = [
   },
   {
     match: TARGET_EFFECTIVE_MODEL_PROBE,
+    needsSessionId: () => true,
+  },
+  {
+    match: TARGET_EDITION_LOCK,
     needsSessionId: () => true,
   },
 ];
