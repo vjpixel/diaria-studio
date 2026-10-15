@@ -212,6 +212,19 @@ export function extractUseMelhorSteps(text: string): string[] {
   return best.length >= 2 ? best : [];
 }
 
+/**
+ * Formato do `## um` (#10246). `"lista"` quando o item tem `steps` (tutorial:
+ * os passos da fonte viram a lista numerada `1) ...`, #9789); `"prosa"` quando
+ * não tem (anúncio, notícia de produto, guia sem passos — o writer escreve
+ * texto corrido curto em vez de inventar passos a partir de requisitos/prazos).
+ * Fetch da fonte falho também deixa o item sem `steps` → prosa.
+ */
+export type UseMelhorUmFormat = "lista" | "prosa";
+
+export function useMelhorUmFormat(item: Pick<UseMelhorCandidate, "steps"> | null | undefined): UseMelhorUmFormat {
+  return Array.isArray(item?.steps) && item.steps.length > 0 ? "lista" : "prosa";
+}
+
 export const USE_MELHOR_BODY_MAX_CHARS = 6000;
 
 /** Pure (#9585): anexa `steps` (só se houver) e `body` ao item. */

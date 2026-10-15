@@ -37,9 +37,10 @@ import {
   readUseMelhorPostState,
   resolveUseMelhorCoverTitle,
   useMelhorPostStatePath,
+  useMelhorUmFormat,
   type UseMelhorPostConfigState,
 } from "../use-melhor-post.ts"; // #9568
-import { findOverflowingUseMelhorSlides, lintUseMelhorPostList, lintUseMelhorPostText } from "../use-melhor-carousel.ts"; // #9568, #9789/#9791
+import { findOverflowingUseMelhorSlides, lintUseMelhorPostShape } from "../use-melhor-carousel.ts"; // #9568, #9789/#9791, #10246
 import { readUseMelhorCarouselStamp, staleUseMelhorImageKeys } from "../use-melhor-slide-files.ts"; // #9795
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
@@ -2435,7 +2436,8 @@ function checkUseMelhorCarouselOverflow(
   // Self-review #9572 (finding 6): os lints sociais só enumeram `## d{N}` — a
   // forma do `## um` é checada aqui (Stages 2 e 4), warning-only como o resto.
   // #9789/#9791: + lista numerada direto ao ponto, até 2 itens por card.
-  const shape = [...lintUseMelhorPostText(umText.trim()), ...lintUseMelhorPostList(umText.trim())];
+  // #10246: item sem `steps` (não é tutorial) aceita texto corrido de 3 parágrafos.
+  const shape = lintUseMelhorPostShape(umText.trim(), useMelhorUmFormat(state.item));
   if (shape.length > 0) {
     violations.push({
       rule: "use-melhor-um-shape",
