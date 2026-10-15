@@ -28,7 +28,7 @@
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
@@ -115,7 +115,7 @@ import {
   type Esp,
 } from "./lib/newsletter-render-html.ts";
 import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
-import { writeRenderSourceStamp } from "./lib/newsletter-html-freshness.ts"; // #10258
+import { writeRenderSourceStamp, sha256Hex, REVIEWED_MD } from "./lib/newsletter-html-freshness.ts"; // #10258, #10268
 import {
   buildLinkLayout,
   buildPublishedLinks,
@@ -259,7 +259,15 @@ function main(): void {
   }
 
   const resolvedDir = resolve(ROOT, editionDir);
-  const baseContent = extractContent(resolvedDir);
+  // #10268: lê o 02-reviewed.md UMA vez — os mesmos bytes alimentam o parse e o
+  // sha256 do carimbo. Reler o arquivo na hora de carimbar (depois de gravar a
+  // saída) registraria um save do editor feito no meio do render, e o carimbo
+  // passaria a "provar" um texto que o HTML não reflete. Arquivo ausente: deixa
+  // o extractContent lançar o erro de sempre ("run Stage 2 first").
+  const reviewedPath = resolve(resolvedDir, REVIEWED_MD);
+  const reviewedBytes = existsSync(reviewedPath) ? readFileSync(reviewedPath) : null;
+  const reviewedSha256 = reviewedBytes ? sha256Hex(reviewedBytes) : undefined;
+  const baseContent = extractContent(resolvedDir, reviewedBytes ? reviewedBytes.toString("utf8") : undefined);
   // #4275: --patronos sobrescreve só os campos de box de divulgação — destaques/
   // seções/demais campos do conteúdo base (mesmo 02-reviewed.md) saem intocados.
   // Aplicado ANTES dos 2 branches abaixo (split e non-split) pra funcionar com
@@ -339,7 +347,8 @@ function main(): void {
     // sentinel do Stage 4) usa isso pra não acusar um reviewed só tocado.
     // Variante patronos fica de fora: é um arquivo paralelo, não a cadeia
     // draft → newsletter-final.html.
-    if (format === "html" && !patronos) writeRenderSourceStamp(resolvedDir);
+    // #10268: sha dos bytes lidos acima, nunca uma releitura.
+    if (format === "html" && !patronos) writeRenderSourceStamp(resolvedDir, reviewedSha256);
   } else {
     // #2012: quando stdout não é TTY (pipe / redirect) e --out está ausente,
     // o HTML pode ir silenciosamente pro /dev/null — exatamente o que causou

@@ -16,17 +16,29 @@
  *
  * Decisão (pura, `evaluateNewsletterHtmlFreshness`):
  * 1. HTML ausente → não acusa (o pré-render ausente é outra regra).
- * 2. HTML com mtime ≥ reviewed (tolerância `toleranceMs`) → fresco. Mantém o
- *    fluxo normal (render depois do reviewed) e cobre caminhos que escrevem o
- *    HTML sem carimbar (edição de última milha do Studio no
- *    `newsletter-final.html`).
- * 3. HTML mais antigo, mas o carimbo registra o sha256 ATUAL do reviewed e
- *    não é mais novo que o HTML → fresco: o reviewed só foi tocado, o
- *    conteúdo que o HTML reflete é o mesmo. A exigência "carimbo não mais
- *    novo que o HTML" evita aceitar um re-render só do `newsletter-draft.html`
- *    (que atualiza o carimbo) sem o `substitute-image-urls.ts` que regrava o
- *    `newsletter-final.html`.
- * 4. Caso contrário → defasado.
+ * 2. Com carimbo e sha256 do reviewed legível, o CARIMBO decide (#10268) —
+ *    o mtime não tem voto:
+ *    a. sha do carimbo ≠ sha atual → defasado (`stamp-mismatch`), mesmo com
+ *       o HTML mais novo que o reviewed. Cobre o `newsletter-final.html`
+ *       regravado sem re-render depois de o reviewed mudar (edição de última
+ *       milha no Studio, OneDrive re-baixando com mtime novo) — antes o
+ *       `mtime-fresh` respondia primeiro e o texto velho passava.
+ *    b. sha igual e HTML com mtime ≥ reviewed → fresco (`mtime-fresh`).
+ *    c. sha igual, HTML mais antigo que o reviewed, carimbo não mais novo que
+ *       o HTML → fresco (`stamp-matches`): o reviewed só foi tocado.
+ *    d. sha igual, HTML mais antigo que o reviewed e carimbo mais novo que o
+ *       HTML → defasado (`stamp-newer-than-html`): re-render só do
+ *       `newsletter-draft.html` sem o `substitute-image-urls.ts` que regrava o
+ *       `newsletter-final.html`.
+ * 3. Sem carimbo (ou reviewed ilegível) → fallback por mtime: HTML com mtime
+ *    ≥ reviewed (tolerância `toleranceMs`) é fresco; senão defasado
+ *    (`no-stamp`).
+ *
+ * O carimbo registra o sha256 dos BYTES que o render de fato leu
+ * (`render-newsletter-html.ts` hasheia o buffer que passa ao
+ * `extractContent`, #10268) — não uma releitura do arquivo depois de gravar
+ * a saída, que pegaria um save do editor no meio do render e carimbaria um
+ * sha que o HTML não reflete.
  */
 
 import { createHash } from "node:crypto";
@@ -65,21 +77,27 @@ export function evaluateNewsletterHtmlFreshness(input: NewsletterHtmlFreshnessIn
   const tol = input.toleranceMs ?? HTML_FRESHNESS_TOLERANCE_MS;
   if (input.htmlMtimeMs === null) return { stale: false, reason: "no-html" };
   if (input.reviewedMtimeMs === null) return { stale: false, reason: "no-reviewed" };
-  if (input.htmlMtimeMs + tol >= input.reviewedMtimeMs) return { stale: false, reason: "mtime-fresh" };
-  const lagMinutes = Math.round((input.reviewedMtimeMs - input.htmlMtimeMs) / 60000);
+  const mtimeFresh = input.htmlMtimeMs + tol >= input.reviewedMtimeMs;
+  // Defasagem por mtime; 0 quando o HTML é mais novo (stamp-mismatch com mtime fresco).
+  const lagMinutes = Math.max(0, Math.round((input.reviewedMtimeMs - input.htmlMtimeMs) / 60000));
   const { stamp } = input;
-  if (!stamp) return { stale: true, reason: "no-stamp", lagMinutes };
-  if (stamp.mtimeMs > input.htmlMtimeMs + tol) return { stale: true, reason: "stamp-newer-than-html", lagMinutes };
-  if (input.reviewedSha256 !== null && stamp.reviewed_sha256 === input.reviewedSha256) {
+  // #10268: com carimbo, ele decide — o mtime só desempata o caso "draft
+  // re-renderizado sem substitute" (carimbo mais novo que o HTML).
+  if (stamp && input.reviewedSha256 !== null) {
+    if (stamp.reviewed_sha256 !== input.reviewedSha256) return { stale: true, reason: "stamp-mismatch", lagMinutes };
+    if (mtimeFresh) return { stale: false, reason: "mtime-fresh" };
+    if (stamp.mtimeMs > input.htmlMtimeMs + tol) return { stale: true, reason: "stamp-newer-than-html", lagMinutes };
     return { stale: false, reason: "stamp-matches" };
   }
-  return { stale: true, reason: "stamp-mismatch", lagMinutes };
+  // Sem carimbo (ou reviewed ilegível): fallback por mtime.
+  if (mtimeFresh) return { stale: false, reason: "mtime-fresh" };
+  return { stale: true, reason: "no-stamp", lagMinutes };
 }
 
 export function sha256OfFileOrNull(path: string): string | null {
   if (!existsSync(path)) return null;
   try {
-    return createHash("sha256").update(readFileSync(path)).digest("hex");
+    return sha256Hex(readFileSync(path));
   } catch {
     return null;
   }
@@ -108,12 +126,14 @@ export function readRenderSourceStamp(editionDir: string): RenderSourceStamp | n
 }
 
 /**
- * Grava o carimbo com o sha256 do `02-reviewed.md` atual. Chamado por
- * `render-newsletter-html.ts` a cada render HTML com `--out`. Reviewed
- * ausente → não grava (nada a carimbar).
+ * Grava o carimbo. Chamado por `render-newsletter-html.ts` a cada render HTML
+ * com `--out`, passando o sha256 dos bytes que o render LEU (#10268) — reler o
+ * arquivo aqui, depois de gravar a saída, carimbaria um save do editor feito
+ * no meio do render. Sem `reviewedSha256` (uso legado/teste), hasheia o
+ * `02-reviewed.md` atual; reviewed ausente → não grava (nada a carimbar).
  */
-export function writeRenderSourceStamp(editionDir: string): void {
-  const sha = sha256OfFileOrNull(resolve(editionDir, REVIEWED_MD));
+export function writeRenderSourceStamp(editionDir: string, reviewedSha256?: string): void {
+  const sha = reviewedSha256 ?? sha256OfFileOrNull(resolve(editionDir, REVIEWED_MD));
   if (sha === null) return;
   const path = resolve(editionDir, RENDER_SOURCE_STAMP);
   mkdirSync(dirname(path), { recursive: true });
@@ -123,13 +143,19 @@ export function writeRenderSourceStamp(editionDir: string): void {
   );
 }
 
+/** sha256 hex de um buffer/texto — mesmo algoritmo de `sha256OfFileOrNull`. */
+export function sha256Hex(data: Buffer | string): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
 /** Lê o disco e avalia. */
 export function evaluateNewsletterHtmlFreshnessOnDisk(editionDir: string): NewsletterHtmlFreshness {
   const reviewedPath = resolve(editionDir, REVIEWED_MD);
   const htmlMtimeMs = mtimeOrNull(resolve(editionDir, NEWSLETTER_FINAL_HTML));
   const reviewedMtimeMs = mtimeOrNull(reviewedPath);
-  // Hash só quando o mtime já acusou — evita ler o reviewed no caminho comum.
-  const needsHash = htmlMtimeMs !== null && reviewedMtimeMs !== null && htmlMtimeMs + HTML_FRESHNESS_TOLERANCE_MS < reviewedMtimeMs;
+  // #10268: o carimbo decide sempre que existe, então o hash é lido mesmo no
+  // caminho mtime-fresco (custo: 1 leitura do reviewed, ~dezenas de KB).
+  const needsHash = htmlMtimeMs !== null && reviewedMtimeMs !== null;
   return evaluateNewsletterHtmlFreshness({
     htmlMtimeMs,
     reviewedMtimeMs,
