@@ -312,6 +312,9 @@ export const MAX_ESTILO_AUTO_REGEN = 1;
  */
 export const MAX_ESTILO_REGEN_FAILED_RUNS = 1;
 
+/** Ratios revisados por destaque — os que `images` guarda após uma proposta (#10332). */
+const ESTILO_REGEN_RATIOS: readonly CropReviewRatio[] = ["1x1", "4x5"];
+
 /** Estado persistido em `_internal/04-estilo-regen.json`. */
 export interface EstiloRegenState {
   /** Regenerações que de fato rodaram (imagem mudou) por destaque. */
@@ -376,12 +379,15 @@ export function planEstiloRegeneration(
     if (!snap) continue;
     for (const md5 of Object.values(snap)) remember(d, md5);
     const changed = Object.entries(snap).some(([ratio, md5]) => currentMd5(d, ratio) !== md5);
-    if (changed) {
-      attempts[d] = (attempts[d] ?? 0) + 1;
-      for (const ratio of Object.keys(snap)) remember(d, currentMd5(d, ratio));
-    } else {
-      failed[d] = (failed[d] ?? 0) + 1;
-    }
+    if (changed) attempts[d] = (attempts[d] ?? 0) + 1;
+    else failed[d] = (failed[d] ?? 0) + 1;
+    // #10332: guarda o md5 atual de TODOS os ratios, não só dos que estavam no
+    // `pending`. A regeneração reescreve o destaque inteiro (2:1 → 1:1 e o 4:5
+    // nativo), e o revisor pode acusar no plano seguinte um ratio diferente do
+    // que estava pendente. Sem isso o reset do #10327 abaixo trata a própria
+    // imagem regenerada como "outra imagem na mesma posição" e zera
+    // `attempts`/`failed` — o teto some sempre que o ratio acusado alterna.
+    for (const ratio of ESTILO_REGEN_RATIOS) remember(d, currentMd5(d, ratio));
   }
 
   const flaggedRatios = new Map<DestaqueId, Set<string>>();
