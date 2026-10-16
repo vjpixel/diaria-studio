@@ -73,11 +73,13 @@ PAID_ALLOWLIST = {
     # Fallback pago do Hermes (config.yaml) desde 08/09/2026 — substituiu o
     # glm-5.3-flash nas 20 ocorrencias de ~/.hermes/config.yaml.
     "deepseek/deepseek-v4-flash",
-    # NAO removido junto: o glm continua sendo o 4o elo (piso pago) da cadeia
-    # de claude-delegate.sh, que a SKILL do continuo invoca na delegacao
-    # (hermes-diaria-continuo/SKILL.md:464) — ou seja, ainda aparece em
-    # producao. Tirar daqui o transformaria em vazamento falso.
-    "z-ai/glm-5.3-flash",       # piso pago da lane + visao
+    # NAO removido junto: desde o #10278 (15/10/2026) o glm SAIU da cadeia
+    # padrao de claude-delegate.sh (MODELS_DEFAULT agora tem o
+    # deepseek-v4-flash como elo pago), mas continua forcado por --model na
+    # lane piloto do #6930 (dispatch-glm-lane-unit.sh) e em entradas de
+    # ~/.hermes ainda nao migradas — ou seja, ainda aparece em producao.
+    # Tirar daqui o transformaria em vazamento falso.
+    "z-ai/glm-5.3-flash",       # lane piloto #6930 + visao (fora da cadeia padrao desde #10278)
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
     # #8738 (23/09/2026): version bump do mesmo modelo "Luna" do
@@ -94,7 +96,8 @@ PAID_ALLOWLIST = {
     "openai-codex/gpt-6-luna",
     "gpt-6-luna",
     # #7649 (08/09/2026): elo final de assinatura claude.ai de
-    # claude-delegate.sh (depois do glm-5.3-flash, quando os 3 :free E o
+    # claude-delegate.sh (depois do elo pago — deepseek-v4-flash desde o
+    # #10278, era o glm-5.3-flash —, quando os 3 :free E o
     # pago falham). Sentinela "sonnet" gravada literalmente como `model` na
     # linha de billing — nao e cobranca de gateway (roda com as 5 vars
     # ANTHROPIC_* de gateway UNSET, ver docstring do wrapper), mas sem

@@ -25,8 +25,10 @@
 # Gotchas embutidos:
 #   - Prompt via STDIN (--allowedTools é variádico e engole prompt posicional).
 #   - Fallback de modelo: free primeiro; se free falhar (balde diário esgota —
-#     compartilhado por CONTA entre todos os :free), cai pro glm-5.3-flash
-#     pago (~USD 0,075/M in; teto diário da chave limita o estrago).
+#     compartilhado por CONTA entre todos os :free), cai pro elo pago
+#     deepseek/deepseek-v4-flash (desde o #10278, 15/10/2026 — antes era o
+#     glm-5.3-flash; ver o aviso logo antes de MODELS_DEFAULT, mais abaixo; teto diário da
+#     chave limita o estrago).
 #   - Exit codes na falha total da cadeia (#6617, 28/08/2026): 1 = falha
 #     transitória (quota/rate-limit/timeout — "volta sozinho" é uma leitura
 #     válida); 4 = pelo menos um modelo da cadeia falhou com sinal de CONFIG
@@ -50,7 +52,8 @@
 #     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
 #     procurar o id. Tratamento dos 3 casos: issue #6803.
 #   - Elo final de assinatura claude.ai (#7649, decisão do editor 08/09/2026):
-#     depois do glm-5.3-flash, a cadeia tenta MAIS UM elo — o MESMO `claude
+#     depois do elo pago (deepseek-v4-flash desde o #10278; era o
+#     glm-5.3-flash), a cadeia tenta MAIS UM elo — o MESMO `claude
 #     -p`, mas SEM nenhuma das 8 vars ANTHROPIC_*/CLAUDE_CODE_USE_* de auth e
 #     gateway (unset explícito, nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN
 #     e ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura, então
@@ -464,12 +467,14 @@ for MODEL in "${MODELS[@]}"; do
   # chamadas iam pro Sonnet pago e não tocavam o balde. O custo em DINHEIRO
   # cai de qualquer forma; o que piora é a cota free, que já é o gargalo do
   # #6712 (17h/dia de pausa). Se isso incomodar, a alternativa é fixar o
-  # background sempre no elo PAGO barato (glm-5.3-flash) em vez de "$MODEL"
+  # background sempre no elo PAGO barato da cadeia (hoje deepseek/deepseek-
+  # v4-flash, #10278 — NUNCA o glm-5.3-flash, que o editor trocou) em vez de "$MODEL"
   # — não feito aqui pra manter a propriedade "background nunca custa mais
   # que o primário" e evitar um slug hardcoded.
   #
   # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
-  # .jsonl da sessão (as duas acima registram só glm-5.3-flash), então
+  # .jsonl da sessão (as duas acima registravam só glm-5.3-flash, medido quando ele era o
+  # elo pago da cadeia — pré-#10278), então
   # auditoria por transcript nunca as vê — a fonte é o billing do gateway.
   #
   # Usa "$MODEL" (o elo corrente da cadeia) em vez de um slug fixo pra valer

@@ -19,7 +19,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -80,7 +81,8 @@ describe("#6818 item 4 — watch-continuo-health.sh alarma em aumento de preço 
 
   it("só o ramo INCREASE chama file_issue — OK e UNVERIFIABLE nunca abrem issue de aumento", () => {
     const increaseBranch = block.slice(block.indexOf('"$PRICE_PARSE" = "INCREASE"'));
-    assert.match(increaseBranch, /file_issue "\[watch-continuo\] aumento de preço em modelo pago já em uso"/);
+    // #10345: o marcador carrega o id do modelo (uma issue por modelo).
+    assert.match(increaseBranch, /file_issue "\[watch-continuo\] aumento de preço em modelo pago já em uso: \$PRICE_MODEL" \\/);
   });
 
   it("o marcador de dedup do item 12 é único e vira substring do título (mesmo invariante do #6771)", () => {
@@ -88,7 +90,7 @@ describe("#6818 item 4 — watch-continuo-health.sh alarma em aumento de preço 
     // aquele teste cobre TODOS os file_issue call sites de forma genérica,
     // mas travar aqui também documenta explicitamente por que o item 12
     // precisa satisfazer a mesma disciplina.
-    const marker = "[watch-continuo] aumento de preço em modelo pago já em uso";
+    const marker = "[watch-continuo] aumento de preço em modelo pago já em uso: $PRICE_MODEL";
     const re = /file_issue "([^"]+)" \\\n\s*"([^"]+)"/g;
     let found: { marker: string; title: string } | undefined;
     for (const m of source.matchAll(re)) {
@@ -109,27 +111,128 @@ describe("#6818 item 4 — watch-continuo-health.sh alarma em aumento de preço 
     assert.match(increaseBranch, /\*\*NÃO\*\* atualizar \\`PAID_PRICE_BASELINE\\`/);
   });
 
-  it("#10295: o snippet de detalhes do ramo INCREASE renderiza a decisão do glm a partir do JSON real do price-check", () => {
-    // Extrai o python inline do PRICE_DETAILS do ramo INCREASE e roda com um
-    // findings sintético: glm com decisão + deepseek sem decisão.
-    const increaseBranch = block.slice(block.indexOf('"$PRICE_PARSE" = "INCREASE"'));
-    const m = increaseBranch.match(/python3 -c "\n([\s\S]*?)" 2>\/dev\/null/);
-    assert.ok(m, "snippet python do ramo INCREASE não encontrado");
-    const py = m![1].replace(/\\"/g, '"');
-    const findings = {
-      increases: [
-        { modelo: "z-ai/glm-5.3-flash", campo: "prompt", baseline: 2.61e-8, atual: 1.5e-7, fator: 5.75,
-          decisao: "#10278: NAO atualizar PAID_PRICE_BASELINE" },
-        { modelo: "deepseek/deepseek-v4-flash", campo: "prompt", baseline: 9.1e-8, atual: 1.5e-7, fator: 1.65 },
-      ],
-    };
-    const res = spawnSync("python3", ["-c", py], { input: JSON.stringify(findings), encoding: "utf8" });
+  // Harness comportamental (#10345): roda o ramo INCREASE de verdade, com as
+  // funções reais have_issue/file_issue/note do script e um `gh` falso no PATH.
+  function runIncreaseBranch(findings: unknown, openTitles: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), "watch-price-10345-"));
+    try {
+      const createdLog = join(dir, "created.log");
+      const gh = join(dir, "gh");
+      writeFileSync(
+        gh,
+        `#!/usr/bin/env bash
+if [ "$1 $2" = "issue list" ]; then printf '%s' "$OPEN_TITLES"; exit 0; fi
+if [ "$1 $2" = "issue create" ]; then
+  shift 2
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--title" ]; then printf '%s\\n' "$2" >> "$CREATED_LOG"; printf '%s\\n' "$2" >> "$CREATED_LOG.bodies"; fi
+    if [ "$1" = "--body" ]; then printf '%s\\n----\\n' "$2" >> "$CREATED_LOG.bodies"; fi
+    shift
+  done
+  exit 0
+fi
+exit 1
+`,
+      );
+      chmodSync(gh, 0o755);
+      const fnStart = source.indexOf("note() {");
+      const fnEnd = source.indexOf("\n# ── 1. Review Opus diário rodou?");
+      assert.ok(fnStart >= 0 && fnEnd > fnStart, "funções note/have_issue/file_issue não encontradas");
+      const notePart = source.slice(fnStart, source.indexOf("\n}\n", fnStart) + 3);
+      const haveStart = source.indexOf("have_issue() {");
+      const helpers = notePart + "\n" + source.slice(haveStart, fnEnd);
+      const incStart = block.indexOf('elif [ "$PRICE_PARSE" = "INCREASE" ]; then');
+      const END = "fi # fim do loop por modelo (#10345)";
+      const incEnd = block.indexOf(END);
+      assert.ok(incStart >= 0 && incEnd > incStart, "ramo INCREASE (loop por modelo) não encontrado");
+      const branch = block.slice(incStart, incEnd + END.length);
+      const script = `set -uo pipefail
+FAILS=0; ISSUES_CREATED=0; ISSUES_CREATED_TITLES=""
+WATCH_LOG="$CREATED_LOG.watch"
+${helpers}
+PRICE_RC=3
+PRICE_JSON=$(cat "$FINDINGS_FILE")
+PRICE_PARSE=INCREASE
+if false; then :
+${branch}
+fi
+echo "FAILS=$FAILS CREATED=$ISSUES_CREATED"
+cat "$WATCH_LOG" 2>/dev/null || true
+`;
+      const findingsFile = join(dir, "findings.json");
+      writeFileSync(findingsFile, JSON.stringify(findings));
+      const res = spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH}`,
+          OPEN_TITLES: openTitles.join("\n"),
+          CREATED_LOG: createdLog,
+          FINDINGS_FILE: findingsFile,
+        },
+      });
+      const created = existsSync(createdLog)
+        ? readFileSync(createdLog, "utf8").split("\n").filter(Boolean)
+        : [];
+      const bodies = existsSync(createdLog + ".bodies") ? readFileSync(createdLog + ".bodies", "utf8") : "";
+      return { res, created, bodies };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const GLM = {
+    modelo: "z-ai/glm-5.3-flash", campo: "prompt", baseline: 2.61e-8, atual: 1.5e-7, fator: 5.75,
+    decisao: "#10278: NAO atualizar PAID_PRICE_BASELINE",
+  };
+  const DEEPSEEK = { modelo: "deepseek/deepseek-v4-flash", campo: "prompt", baseline: 9.1e-8, atual: 1.5e-7, fator: 1.65 };
+  const DEEPSEEK_OUT = { modelo: "deepseek/deepseek-v4-flash", campo: "completion", baseline: 1e-7, atual: 2e-7, fator: 2 };
+
+  it("#10345: issue do glm aberta NÃO esconde a alta nova do deepseek (dedup por modelo)", () => {
+    const { res, created } = runIncreaseBranch(
+      { increases: [GLM, DEEPSEEK] },
+      ["[watch-continuo] aumento de preço em modelo pago já em uso: z-ai/glm-5.3-flash (OpenRouter, #6818)"],
+    );
     assert.equal(res.status, 0, res.stderr);
-    const lines = res.stdout.trim().split("\n");
-    assert.equal(lines.length, 3, res.stdout);
-    assert.match(lines[0], /z-ai\/glm-5\.3-flash prompt/);
-    assert.match(lines[1], /decisao registrada: #10278/);
-    assert.match(lines[2], /deepseek\/deepseek-v4-flash prompt/);
+    assert.deepEqual(created, [
+      "[watch-continuo] aumento de preço em modelo pago já em uso: deepseek/deepseek-v4-flash (OpenRouter, #6818)",
+    ]);
+    assert.match(res.stdout, /z-ai\/glm-5\.3-flash: issue aberta já existe/);
+    assert.match(res.stdout, /FAILS=0 CREATED=1/);
+  });
+
+  it("#10345: issue aberta do deepseek deduplica a dele — sem duplicar a cada corrida", () => {
+    const { res, created } = runIncreaseBranch(
+      { increases: [GLM, DEEPSEEK] },
+      [
+        "[watch-continuo] aumento de preço em modelo pago já em uso: z-ai/glm-5.3-flash (OpenRouter, #6818)",
+        "[watch-continuo] aumento de preço em modelo pago já em uso: deepseek/deepseek-v4-flash (OpenRouter, #6818)",
+      ],
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(created, []);
+    assert.match(res.stdout, /FAILS=0 CREATED=0/);
+  });
+
+  it("#10345: nenhuma issue aberta → uma por modelo; campos do mesmo modelo vão na mesma issue; decisão do glm só na dele", () => {
+    const { res, created, bodies } = runIncreaseBranch({ increases: [GLM, DEEPSEEK, DEEPSEEK_OUT] }, []);
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(created.length, 2, created.join("\n"));
+    assert.match(res.stdout, /CREATED=2/);
+    const [glmBody, dsBody] = bodies.split("\n----\n");
+    assert.match(glmBody, /z-ai\/glm-5\.3-flash prompt/);
+    assert.match(glmBody, /decisao registrada: #10278/);
+    assert.doesNotMatch(glmBody, /deepseek-v4-flash (prompt|completion):/);
+    assert.match(dsBody, /deepseek\/deepseek-v4-flash prompt/);
+    assert.match(dsBody, /deepseek\/deepseek-v4-flash completion/);
+    assert.doesNotMatch(dsBody, /decisao registrada: /);
+  });
+
+  it("#10345: increases sem id de modelo legível vira INDETERMINADO (FAILS+1), nunca silêncio", () => {
+    const { res, created } = runIncreaseBranch({ increases: [{ campo: "prompt", baseline: 1, atual: 2 }] }, []);
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(created, []);
+    assert.match(res.stdout, /FAILS=1 CREATED=0/);
   });
 
   it("sintaxe bash do script continua válida (bash -n)", () => {
