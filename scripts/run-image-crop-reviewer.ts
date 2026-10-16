@@ -35,7 +35,12 @@
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --estilo-regen-plan
  *   # → JSON { regenerate, exhausted, attempts, commands } — o orchestrator roda
  *   #   `commands[dN]` e repete o revisor; teto MAX_ESTILO_AUTO_REGEN por destaque
- *   #   (só gasta quando a imagem mudou; falha do gerador ganha nova chance).
+ *   #   (só gasta quando a imagem mudou; falha do gerador ganha nova chance;
+ *   #   a contagem zera quando a imagem atual é outra, ex: swap de destaque, #10327).
+ *
+ *   # 4. (#10328) Falso positivo de Noite Estrelada — marca a imagem ATUAL do
+ *   #    destaque (todos os ratios acusados, ou só `dN:4x5`), fora do veredito:
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --mark-false-positive d1[,d2:4x5]
  *
  * Output: data/editions/AAMMDD/_internal/04-crop-review.json
  *   + stdout: parâmetros de dispatch (modo descoberta) ou seção formatada (modo --input-json)
@@ -49,7 +54,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
-import { isCropReviewEntryStale } from "./lib/invariant-checks/stage-4.ts"; // #10312
+import {
+  isCropReviewEntryStale, // #10312
+  isCropReviewImageVariant, // #10325
+  type CropReviewImageVariant,
+} from "./lib/invariant-checks/stage-4.ts";
+import {
+  addEstiloFalsePositives, // #10328
+  readEstiloFalsePositiveMd5s,
+  isEstiloFalsePositive,
+} from "./lib/estilo-false-positives.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -103,6 +117,12 @@ export interface CropReviewEntry {
    * revisão. Ausente = imagem não existia no persist, ou entrada pré-#9598.
    */
   image_md5?: string;
+  /**
+   * #10325: quando presente, `image_md5` é de `04-{destaque}-{image_variant}.jpg`
+   * em vez de `04-{destaque}-{ratio}.jpg`. Usado no achado de estilo do 4:5,
+   * que julga a arte de fundo — o card com título é recomposto sem arte nova.
+   */
+  image_variant?: CropReviewImageVariant;
 }
 
 export interface CropReviewSummary {
@@ -211,6 +231,7 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
       ...(typeof r.image_md5 === "string" && /^[0-9a-f]{32}$/.test(r.image_md5)
         ? { image_md5: r.image_md5 }
         : {}),
+      ...(isCropReviewImageVariant(r.image_variant) ? { image_variant: r.image_variant } : {}),
     }));
 
   const summary: CropReviewSummary = {
@@ -238,11 +259,35 @@ export function stampCropReviewImageHashes(result: CropReviewResult, editionDir:
   return {
     ...result,
     results: result.results.map((r) => {
-      const imgPath = join(editionDir, `04-${r.destaque}-${r.ratio}.jpg`);
-      if (!existsSync(imgPath)) return r;
-      return { ...r, image_md5: md5OfFile(imgPath) };
+      // Recarimbo: descarta carimbo/variante herdados do input antes de decidir de novo.
+      const { image_md5: _md5, image_variant: _variant, ...base } = r;
+      const variant = cropReviewStampVariant(editionDir, r.destaque, r.ratio, r.categoria);
+      const imgPath = join(editionDir, `04-${r.destaque}-${variant ?? r.ratio}.jpg`);
+      if (!existsSync(imgPath)) return base;
+      return { ...base, image_md5: md5OfFile(imgPath), ...(variant ? { image_variant: variant } : {}) };
     }),
   };
+}
+
+/**
+ * #10325: qual arquivo carimbar. O achado de estilo (Noite Estrelada) no 4:5
+ * julga a ARTE de fundo: carimbar o card com título (`04-{d}-4x5.jpg`) fazia a
+ * entrada virar "desatualizada" quando o editor mudava o título e o card era
+ * recomposto sem arte nova — o erro `image-starry-night-detected` sumia e a
+ * mesma Noite Estrelada ia pra capa do carrossel. Mesma ordem de fonte que o
+ * `gen-social-card-4x5.ts` usa (`discoverCropPairs`): nativa → master → 2:1.
+ * `null` = carimbar `04-{d}-{ratio}.jpg` (achado de crop, e o 1:1, cujo crop
+ * é derivado determinístico do 2:1).
+ */
+export function cropReviewStampVariant(
+  editionDir: string,
+  destaque: DestaqueId,
+  ratio: CropReviewRatio,
+  categoria: CropReviewCategory | undefined,
+): CropReviewImageVariant | null {
+  if (categoria !== "estilo" || ratio !== "4x5") return null;
+  const order: CropReviewImageVariant[] = ["4x5-nativo", "master", "2x1"];
+  return order.find((v) => existsSync(join(editionDir, `04-${destaque}-${v}.jpg`))) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +318,15 @@ export interface EstiloRegenState {
   attempts?: Partial<Record<DestaqueId, number>>;
   /** Regenerações propostas que não mudaram a imagem, por destaque. */
   failed?: Partial<Record<DestaqueId, number>>;
-  /** Proposta em aberto: md5 por ratio de `04-{d}-{ratio}.jpg` no momento do plano. */
+  /** Proposta em aberto: md5 por ratio da imagem julgada no momento do plano. */
   pending?: Partial<Record<DestaqueId, Record<string, string | null>>>;
+  /**
+   * #10327: md5s das imagens a que `attempts`/`failed` se referem (a anterior
+   * e a regenerada). A contagem é por POSIÇÃO; quando a imagem atual do
+   * destaque não é nenhuma destas (swap/promote no Stage 4), a contagem zera
+   * em vez de declarar "esgotou" sobre uma imagem nunca regenerada.
+   */
+  images?: Partial<Record<DestaqueId, string[]>>;
 }
 
 export interface EstiloRegenPlan {
@@ -311,12 +363,25 @@ export function planEstiloRegeneration(
 ): EstiloRegenPlan {
   const attempts: Partial<Record<DestaqueId, number>> = { ...(previous.attempts ?? {}) };
   const failed: Partial<Record<DestaqueId, number>> = { ...(previous.failed ?? {}) };
+  const images: Partial<Record<DestaqueId, string[]>> = {};
+  for (const d of DESTAQUE_IDS) {
+    const prev = previous.images?.[d];
+    if (Array.isArray(prev)) images[d] = prev.filter((m): m is string => typeof m === "string");
+  }
+  const remember = (d: DestaqueId, md5: string | null) => {
+    if (md5 && !(images[d] ?? []).includes(md5)) images[d] = [...(images[d] ?? []), md5];
+  };
   for (const d of DESTAQUE_IDS) {
     const snap = previous.pending?.[d];
     if (!snap) continue;
+    for (const md5 of Object.values(snap)) remember(d, md5);
     const changed = Object.entries(snap).some(([ratio, md5]) => currentMd5(d, ratio) !== md5);
-    if (changed) attempts[d] = (attempts[d] ?? 0) + 1;
-    else failed[d] = (failed[d] ?? 0) + 1;
+    if (changed) {
+      attempts[d] = (attempts[d] ?? 0) + 1;
+      for (const ratio of Object.keys(snap)) remember(d, currentMd5(d, ratio));
+    } else {
+      failed[d] = (failed[d] ?? 0) + 1;
+    }
   }
 
   const flaggedRatios = new Map<DestaqueId, Set<string>>();
@@ -331,6 +396,17 @@ export function planEstiloRegeneration(
   for (const d of DESTAQUE_IDS) {
     const ratios = flaggedRatios.get(d);
     if (!ratios) continue;
+    // #10327: a imagem atual não é nem a anterior nem a regenerada → é outra
+    // imagem na mesma posição, e a contagem antiga não vale pra ela. Estado
+    // legado (sem `images`) mantém a contagem — sem como saber a que imagem
+    // ela se referia.
+    const known = images[d];
+    const current = [...ratios].map((ratio) => currentMd5(d, ratio)).filter((m): m is string => !!m);
+    if (known && known.length > 0 && current.length > 0 && !current.some((m) => known.includes(m))) {
+      delete attempts[d];
+      delete failed[d];
+      delete images[d];
+    }
     if ((attempts[d] ?? 0) < maxAttempts && (failed[d] ?? 0) <= MAX_ESTILO_REGEN_FAILED_RUNS) {
       regenerate.push(d);
       pending[d] = Object.fromEntries([...ratios].map((ratio) => [ratio, currentMd5(d, ratio)]));
@@ -338,7 +414,46 @@ export function planEstiloRegeneration(
       exhausted.push(d);
     }
   }
-  return { regenerate, exhausted, attempts, state: { attempts, failed, pending } };
+  return { regenerate, exhausted, attempts, state: { attempts, failed, pending, images } };
+}
+
+export interface FalsePositiveTarget {
+  destaque: DestaqueId;
+  /** `null` = todos os ratios acusados do destaque. */
+  ratio: CropReviewRatio | null;
+}
+
+/** `"d1,d2:4x5"` → alvos do `--mark-false-positive` (#10328). Lança em entrada inválida. */
+export function parseFalsePositiveTargets(raw: string): FalsePositiveTarget[] {
+  const out: FalsePositiveTarget[] = [];
+  for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
+    const m = /^(d[123])(?::(1x1|4x5))?$/.exec(tok);
+    if (!m) throw new Error(`--mark-false-positive: alvo inválido "${tok}" (esperado d1, d2:4x5, ...)`);
+    out.push({ destaque: m[1] as DestaqueId, ratio: (m[2] as CropReviewRatio | undefined) ?? null });
+  }
+  if (out.length === 0) throw new Error("--mark-false-positive: nenhum alvo");
+  return out;
+}
+
+/**
+ * Entradas de estilo ATUAIS (warn, carimbadas, não desatualizadas) que casam
+ * com os alvos — o que `--mark-false-positive` grava (#10328).
+ */
+export function selectFalsePositiveMarks(
+  result: CropReviewResult,
+  targets: FalsePositiveTarget[],
+  isStale: (entry: CropReviewEntry) => boolean,
+): Array<{ image_md5: string; destaque: DestaqueId; ratio: CropReviewRatio }> {
+  return result.results
+    .filter(
+      (r) =>
+        r.status === "warn" &&
+        r.categoria === "estilo" &&
+        typeof r.image_md5 === "string" &&
+        !isStale(r) &&
+        targets.some((t) => t.destaque === r.destaque && (t.ratio === null || t.ratio === r.ratio)),
+    )
+    .map((r) => ({ image_md5: r.image_md5!, destaque: r.destaque, ratio: r.ratio }));
 }
 
 /**
@@ -456,11 +571,21 @@ async function main(): Promise<void> {
         previous = {};
       }
     }
+    // #10325: a mesma imagem que o persist carimba no achado de estilo (arte
+    // nativa no 4:5) — `pending`/`images` e `image_md5` falam do mesmo arquivo.
     const currentMd5: CurrentImageMd5 = (d, ratio) => {
-      const p = join(editionDir, `04-${d}-${ratio}.jpg`);
+      const variant = cropReviewStampVariant(editionDir, d, ratio as CropReviewRatio, "estilo");
+      const p = join(editionDir, `04-${d}-${variant ?? ratio}.jpg`);
       return existsSync(p) ? md5OfFile(p) : null;
     };
-    const plan = planEstiloRegeneration(persisted, previous, (e) => isCropReviewEntryStale(editionDir, e), currentMd5);
+    // #10328: falso positivo marcado pelo editor não dispara regeneração.
+    const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
+    const plan = planEstiloRegeneration(
+      persisted,
+      previous,
+      (e) => isEstiloFalsePositive(e, falsePositives) || isCropReviewEntryStale(editionDir, e),
+      currentMd5,
+    );
     writeFileSync(attemptsPath, JSON.stringify({ ...plan.state, updated_at: new Date().toISOString() }, null, 2), "utf8");
     const editionArg = args["edition-dir"].replace(/[/\\]+$/, "");
     console.log(
@@ -475,6 +600,35 @@ async function main(): Promise<void> {
         2,
       ),
     );
+    return;
+  }
+
+  // Modo --mark-false-positive (#10328): grava a marcação fora do veredito,
+  // chaveada pelo md5 da imagem julgada — o persist do revisor reescreve
+  // `04-crop-review.json` inteiro, então um `status: "ok"` manual ali se perdia.
+  if (args["mark-false-positive"]) {
+    if (!existsSync(outPath)) {
+      console.error(`[run-image-crop-reviewer] veredito não encontrado: ${outPath}`);
+      process.exit(1);
+    }
+    const persisted = normalizeCropReviewResult(JSON.parse(readFileSync(outPath, "utf8")) as unknown, edition);
+    let targets: FalsePositiveTarget[];
+    try {
+      targets = parseFalsePositiveTargets(args["mark-false-positive"]);
+    } catch (e) {
+      console.error(`[run-image-crop-reviewer] ${(e as Error).message}`);
+      process.exit(1);
+    }
+    const marks = selectFalsePositiveMarks(persisted, targets, (e) => isCropReviewEntryStale(editionDir, e));
+    if (marks.length === 0) {
+      console.error(
+        `[run-image-crop-reviewer] nenhum achado de Noite Estrelada ATUAL (warn + estilo, carimbado com a imagem em disco) ` +
+          `para "${args["mark-false-positive"]}" em ${outPath} — nada a marcar.`,
+      );
+      process.exit(1);
+    }
+    const added = addEstiloFalsePositives(editionDir, marks);
+    console.log(JSON.stringify({ marked: marks, added }, null, 2));
     return;
   }
 
