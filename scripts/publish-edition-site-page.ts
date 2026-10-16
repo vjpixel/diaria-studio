@@ -2975,14 +2975,31 @@ export function redirectsRelPathFromSitemap(sitemapRelPath: string): string {
  * #10206: acrescenta `/p/{velho} /p/{novo} 301` ao conteúdo de `_redirects`
  * (idempotente; ignora slugs iguais). Posts sociais já agendados levam o slug
  * velho — sem o redirect o leitor cai em 404 depois do supersede.
+ *
+ * #10353: nunca deixa 301 em cadeia. Regra já existente com origem
+ * `/p/{velho}` tem o destino reescrito pra `/p/{novo}` (antes saía sem mexer,
+ * e A→B + republicação com C deixava A→B, B→C); regra cujo destino é
+ * `/p/{velho}` (X→velho) também passa a apontar pro `/p/{novo}`.
  */
 export function addSlugRedirect(content: string, oldSlug: string, newSlug: string): string {
   if (oldSlug === newSlug) return content;
-  const line = `/p/${oldSlug} /p/${newSlug} 301`;
+  const oldPath = `/p/${oldSlug}`;
+  const newPath = `/p/${newSlug}`;
+  const line = `${oldPath} ${newPath} 301`;
   // A -> B depois B -> A: tira a regra com origem em /p/{novo}, senão vira loop.
-  const lines = content.split("\n").filter((l) => !l.trim().startsWith(`/p/${newSlug} `));
-  content = lines.join("\n");
-  if (lines.some((l) => l.trim().startsWith(`/p/${oldSlug} `))) return content;
+  const lines = content.split("\n").filter((l) => !l.trim().startsWith(`${newPath} `));
+  let hasOrigin = false;
+  const rewritten = lines.map((l) => {
+    const tokens = l.trim().split(/\s+/);
+    if (tokens.length < 2 || !tokens[0].startsWith("/p/")) return l;
+    if (tokens[0] === oldPath) hasOrigin = true;
+    if (tokens[0] !== oldPath && tokens[1] !== oldPath) return l;
+    if (tokens[1] === newPath) return l;
+    tokens[1] = newPath;
+    return tokens.join(" ");
+  });
+  content = rewritten.join("\n");
+  if (hasOrigin) return content;
   return (content === "" || content.endsWith("\n") ? content : content + "\n") + line + "\n";
 }
 

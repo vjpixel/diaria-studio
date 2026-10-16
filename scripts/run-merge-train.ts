@@ -28,8 +28,9 @@
  *
  * Exit codes:
  *   0 = todos os PRs candidatos terminaram em `merged`/`solo-merged`
- *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked` OU
- *       `indeterminate` (falha real de merge, ou lote sem resolução — não
+ *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked`,
+ *       `retido-ilegivel` (#10299 — sinal de retenção ilegível no instante
+ *       do merge) OU `indeterminate` (falha real de merge, ou lote sem resolução — não
  *       "vermelho de CI", que sempre resolve via bisecção até o piso;
  *       `lock-blocked` é um lote que provou passar junto no CI mas não
  *       conseguiu a janela de merge lock após retries, ou falhou na
@@ -49,7 +50,14 @@
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
-import { createRealTrainRunner, fetchTrainPrInfo, partitionRetidoCandidates, runMergeTrain, type TrainBatchOutcome } from "./lib/merge-train-live.ts";
+import {
+  createRealTrainRunner,
+  fetchTrainPrInfo,
+  partitionRetidoCandidates,
+  runMergeTrain,
+  trainHasRealFailure,
+  type TrainBatchOutcome,
+} from "./lib/merge-train-live.ts";
 import { logEvent } from "./lib/run-log.ts";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
@@ -232,8 +240,9 @@ async function main() {
   // invocação do trem, então conta pro exit != 0 pelo mesmo motivo que
   // lock-blocked conta: sinaliza trabalho pendente, não bug de código).
   // `retido` (#10294) NÃO conta: é retenção deliberada pro editor, não falha.
-  const hasRealFailure =
-    retidoReadFailure || allOutcomes.some((o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate");
+  // `retido-ilegivel` (#10299) conta: sinal ilegível no instante do merge,
+  // mesma regra do ilegível da descoberta (`retidoReadFailure`).
+  const hasRealFailure = trainHasRealFailure(allOutcomes, retidoReadFailure);
   process.exit(hasRealFailure ? 1 : 0);
 }
 

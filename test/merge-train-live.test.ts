@@ -40,6 +40,7 @@ import {
   runMergeTrain,
   checkPrRetido,
   partitionRetidoCandidates,
+  trainHasRealFailure,
   type TrainRunner,
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
@@ -684,6 +685,53 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     assert.equal(outcomes.length, 1);
     assert.equal(outcomes[0].status, "retido");
   });
+
+  // #10299: sinal ilegível no instante do merge (gh falhou) não é retenção
+  // deliberada — antes virava `retido` e o trem saía com exit 0.
+  it("lote de 1 com sinal retido ilegível no merge: status 'retido-ilegivel', conta como falha real (#10299)", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+      throw new Error("não deveria mergear com sinal ilegível");
+    });
+    runner.on("gh", isRetidoView(100), () => fail("timeout de rede"));
+    const outcomes = await runMergeTrain(runner, { prs: [100] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].status, "retido-ilegivel");
+    assert.equal(trainHasRealFailure(outcomes), true);
+  });
+
+  it("lote >=2 com sinal ilegível num PR: ele sai como 'retido-ilegivel' (falha), o resto mergeia (#10299)", async () => {
+    const runner = fullRunner();
+    let createCalls = 0;
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+      createCalls++;
+      return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+    });
+    const merged: string[] = [];
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+      merged.push(a[2]);
+      return ok();
+    });
+    runner.on("gh", isRetidoView(101), () => ok("não-json"));
+    const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    const ilegiveis = outcomes.filter((o) => o.status === "retido-ilegivel");
+    assert.equal(ilegiveis.length, 1);
+    assert.deepEqual([...ilegiveis[0].batch.prs], [101]);
+    assert.ok(!outcomes.some((o) => o.status === "retido"), "ilegível nunca é reportado como retenção deliberada");
+    assert.deepEqual(merged, ["9002"]);
+    assert.equal(trainHasRealFailure(outcomes), true);
+  });
+
+  it("retido de fato não conta como falha; o ilegível da descoberta conta (#10299)", async () => {
+    const runner = fullRunner();
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => {
+      throw new Error("não deveria mergear PR retido");
+    });
+    runner.on("gh", isRetidoView(100), () => ok(retidoJson()));
+    const outcomes = await runMergeTrain(runner, { prs: [100] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+    assert.equal(trainHasRealFailure(outcomes), false);
+    assert.equal(trainHasRealFailure(outcomes, true), true);
+  });
 });
 
 describe("checkPrRetido / partitionRetidoCandidates (#10294)", () => {
@@ -729,5 +777,12 @@ describe("checkPrRetido / partitionRetidoCandidates (#10294)", () => {
     assert.equal(result.ok, false);
     assert.equal(result.retido, true);
     assert.match(result.reason ?? "", /condição 3/);
+  });
+
+  it("revalidateGate2 com sinal ilegível devolve retido=null, nunca true (#10299)", () => {
+    const runner = new FakeTrainRunner().withGate2Green().on("gh", isRetidoView(100), () => fail("rate limit"));
+    const result = revalidateGate2(runner, 100);
+    assert.equal(result.ok, false);
+    assert.equal(result.retido, null);
   });
 });
