@@ -15,10 +15,11 @@ import {
 
 // slot2 normalizado pro Artigo Especial: na config real ele alterna com a Retrospectiva
 // (#9474, last-writer-wins) e estes testes não podem depender de quem ocupa o slot hoje.
-const realText = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8").replace(
-  /("slot2": )"[^"]*"/,
-  '$1"artigo-especial-apoiadores.md"',
-);
+// pinned_slots normalizado pra [1, 2] pelo mesmo motivo (#10303): o pin do slot 2
+// vai e volta com o Artigo Especial/Retrospectiva — o teste de unpin precisa dele pinado.
+const realText = readFileSync(join(import.meta.dirname, "..", "platform.config.json"), "utf8")
+  .replace(/("slot2": )"[^"]*"/, '$1"artigo-especial-apoiadores.md"')
+  .replace(/("pinned_slots": )\[[^\]]*\]/, "$1[1, 2]");
 const INPUT = { titulo: "T", gancho: "G", mesLabel: "Setembro" };
 
 function changedLines(a: string, b: string): string[] {

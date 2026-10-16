@@ -342,7 +342,7 @@ export function resolveSubscribeUtm(raw: unknown, clientUtm?: ClientUtmOverride)
     clientUtm &&
     (isAllowedClientUtmSource(clientUtm.source) ||
       isAllowedClientSocialUtmSource(clientUtm.source) ||
-      // #9502: orgânico interno (retrospectiva-*) — também só no triplo.
+      // #9502/#10315: orgânico interno (retrospectiva-*, evento-email) — também só no triplo.
       isAllowedClientInternalUtmSource(clientUtm.source))
   ) {
     const source = String(clientUtm.source).trim();

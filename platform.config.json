@@ -158,7 +158,8 @@
   },
   "boxes_divulgacao_auto": {
     "enabled": true,
-    "pinned_slots": [1, 2],
+    "pinned_slots": [1],
+    "note_10303": "#10303 (15/10/2026, decisão do editor) — slot 2 despinado: com [1, 2] o slot 2 ficava fora do ranking E da anti-repetição e repetiu livros-divulgacao.md em 261014/261015/261016. Só o slot 1 (evento) fica pinado; o slot 2 volta à seleção por cliques com anti-repetição. Pins temporários do Artigo Especial/Retrospectiva (box-slot-pin.ts, #9474) seguem adicionando 2 aqui enquanto vigoram.",
     "note": "#4626 — seleção automática dos slots 1/2 de boxes_divulgacao por cliques (últimas last_n edições) + tendência de queda (recent_window vs prior_window aparições) + anti-repetição vs. edição imediatamente anterior. pinned_slots: lista de slots (1/2) que ficam MANUAIS — o valor em boxes_divulgacao.slotN acima vale como está, sem entrar no ranking/anti-repetição (editor pina um slot escrevendo o número aqui). Slot 0 nunca participa (fora de escopo — #4274); slot 3 nunca participa desde o #6748 (eliminado, ver boxes_divulgacao.note_slot3). Sem candidato elegível (histórico insuficiente/tudo excluído) cede pro valor já configurado em boxes_divulgacao, nunca quebra. Resultado registrado em _internal/box-selection.json por edição, mostrado no resumo do Stage 4 (informativo, sem gate). enabled:false volta ao comportamento 100% manual pré-#4626. Ver scripts/select-boxes-by-clicks.ts."
   },
   "boxes_fixos": {
