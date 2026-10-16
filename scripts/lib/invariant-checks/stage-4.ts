@@ -29,6 +29,7 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+import { readEstiloFalsePositiveMd5s, isEstiloFalsePositive } from "../estilo-false-positives.ts"; // #10328
 import {
   evaluateNewsletterHtmlFreshnessOnDisk,
   NEWSLETTER_FINAL_HTML,
@@ -1625,12 +1626,31 @@ function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolati
  * reorder não invalida nada. Entrada sem `image_md5`/`ratio` (persistida antes
  * do #9598) segue o comportamento antigo — sem como saber de qual imagem era.
  */
+/**
+ * #10325: arquivos alternativos contra os quais uma entrada pode ser carimbada
+ * (`04-{destaque}-{variante}.jpg`). O achado de Noite Estrelada no 4:5 julga a
+ * ARTE de fundo, não o card com título por cima — carimbar o card fazia a
+ * entrada virar "desatualizada" só porque o título mudou e o card foi
+ * recomposto, e o erro `image-starry-night-detected` sumia com a mesma arte.
+ */
+export const CROP_REVIEW_IMAGE_VARIANTS = ["4x5-nativo", "master", "2x1"] as const;
+export type CropReviewImageVariant = (typeof CROP_REVIEW_IMAGE_VARIANTS)[number];
+
+export function isCropReviewImageVariant(v: unknown): v is CropReviewImageVariant {
+  return typeof v === "string" && (CROP_REVIEW_IMAGE_VARIANTS as readonly string[]).includes(v);
+}
+
+/** Sufixo do arquivo carimbado: a variante (#10325) quando houver, senão o ratio (#9598). */
+export function cropReviewImageSuffix(entry: { ratio?: string; image_variant?: string }): string {
+  return isCropReviewImageVariant(entry.image_variant) ? entry.image_variant : (entry.ratio ?? "");
+}
+
 export function isCropReviewEntryStale(
   editionDir: string,
-  entry: { destaque?: string; ratio?: string; image_md5?: string },
+  entry: { destaque?: string; ratio?: string; image_md5?: string; image_variant?: string },
 ): boolean {
   if (typeof entry.image_md5 !== "string" || !entry.destaque || !entry.ratio) return false;
-  const imgPath = resolve(editionDir, `04-${entry.destaque}-${entry.ratio}.jpg`);
+  const imgPath = resolve(editionDir, `04-${entry.destaque}-${cropReviewImageSuffix(entry)}.jpg`);
   if (!existsSync(imgPath)) return true;
   try {
     return md5OfFile(imgPath) !== entry.image_md5;
@@ -1647,6 +1667,7 @@ interface CropReviewFileEntry {
   motivo?: string;
   sugestao?: string;
   image_md5?: string;
+  image_variant?: string;
 }
 
 function readCropReviewEntries(editionDir: string): { path: string; results: CropReviewFileEntry[] } | null {
@@ -1660,9 +1681,18 @@ function readCropReviewEntries(editionDir: string): { path: string; results: Cro
   }
 }
 
-/** Achado de Noite Estrelada (#8989) ainda válido para a imagem atual (#9598). */
-function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry): boolean {
-  return !!r && r.status === "warn" && r.categoria === "estilo" && !isCropReviewEntryStale(editionDir, r);
+/**
+ * Achado de Noite Estrelada (#8989) ainda válido para a imagem atual (#9598) e
+ * não marcado como falso positivo pelo editor (#10328).
+ */
+function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry, falsePositives: Set<string>): boolean {
+  return (
+    !!r &&
+    r.status === "warn" &&
+    r.categoria === "estilo" &&
+    !isEstiloFalsePositive(r, falsePositives) &&
+    !isCropReviewEntryStale(editionDir, r)
+  );
 }
 
 function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
@@ -1672,7 +1702,15 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
   // #10312: Noite Estrelada ATUAL sai daqui e vira erro em
   // `image-starry-night-detected` (checkStarryNightDetected abaixo). A
   // entrada desatualizada continua aqui, como nota "re-rodar o revisor".
-  const warns = results.filter((r) => r && r.status === "warn" && !isCurrentStarryNight(editionDir, r));
+  // #10328: falso positivo marcado pelo editor some também daqui (não vira warning).
+  const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
+  const warns = results.filter(
+    (r) =>
+      r &&
+      r.status === "warn" &&
+      !isCurrentStarryNight(editionDir, r, falsePositives) &&
+      !isEstiloFalsePositive(r, falsePositives),
+  );
   const stale = warns.filter((r) => isCropReviewEntryStale(editionDir, r));
   const staleKeys = [...new Set(stale.map((r) => `${(r.destaque ?? "?").toUpperCase()} (${r.ratio})`))];
   const staleNotices: InvariantViolation[] = staleKeys.map((key) => ({
@@ -1714,19 +1752,27 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
  *
  * Não é o caso do #7401 (reverter escolha editorial pra satisfazer lint): o
  * conserto é regenerar a imagem, nunca mexer no texto do editor. Falso
- * positivo do revisor: o editor troca a entrada para `status: "ok"`.
+ * positivo do revisor: `run-image-crop-reviewer.ts --mark-false-positive dN`,
+ * gravado fora do veredito e chaveado pelo md5 da imagem (#10328) — o
+ * `status: "ok"` manual no veredito ainda é respeitado, mas o próximo persist
+ * do revisor o apaga.
  */
 function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
   const read = readCropReviewEntries(editionDir);
   if (!read) return [];
   const { path, results } = read;
-  const hits = results.filter((r) => isCurrentStarryNight(editionDir, r));
+  const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
+  const hits = results.filter((r) => isCurrentStarryNight(editionDir, r, falsePositives));
   // O plano de regeneração sempre grava este arquivo; ausente = o orchestrator
   // pulou o passo do Stage 3 (o loop vive só no playbook).
   const regenRan = existsSync(resolve(editionDir, "_internal", "04-estilo-regen.json"));
   const cause = regenRan
     ? "a regeneração automática do Stage 3 esgotou"
     : "a regeneração automática do Stage 3 NÃO rodou (_internal/04-estilo-regen.json ausente — passo --estilo-regen-plan pulado)";
+  // #10328: com o plano esgotado, `--estilo-regen-plan` devolve `regenerate: []`
+  // e não faz nada — sugerir primeiro só quando ele não rodou.
+  const manual = (d: string) =>
+    `reescrever _internal/02-${d}-prompt.md e rodar image-generate.ts --force + --ratio 4x5 --force + gen-social-card-4x5.ts`;
   const byDestaque = new Map<string, CropReviewFileEntry[]>();
   for (const r of hits) {
     const key = r.destaque ?? "?";
@@ -1739,9 +1785,12 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
       rule: "image-starry-night-detected",
       message:
         `Destaque ${destaque.toUpperCase()} (${ratios}): imagem gerada com Noite Estrelada — ${motivo}; ${cause}. ` +
-        `Viola regra invariável — em rodada sem gates a edição para aqui. Regenerar: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` ` +
-        `(ou reescrever _internal/02-${destaque}-prompt.md e rodar image-generate.ts --force + --ratio 4x5 --force + gen-social-card-4x5.ts), ` +
-        `depois re-rodar o revisor. Falso positivo: trocar a entrada para status "ok" em _internal/04-crop-review.json.`,
+        `Viola regra invariável — em rodada sem gates a edição para aqui. Regenerar: ` +
+        (regenRan
+          ? manual(destaque)
+          : `\`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` (ou ${manual(destaque)})`) +
+        `, depois re-rodar o revisor. Falso positivo: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --mark-false-positive ${destaque}\` ` +
+        `(vale enquanto a imagem for a mesma e sobrevive a novas revisões; trocar a entrada para status "ok" é perdido no próximo persist do revisor, #10328).`,
       source_issue: "#10312",
       severity: "error" as const,
       file: path,
