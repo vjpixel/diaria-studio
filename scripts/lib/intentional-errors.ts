@@ -129,6 +129,60 @@ export function readIntentionalErrorsJsonlStrict(path: string): {
 }
 
 /**
+ * (#10269, #10292, #10344) Resultado de `readIntentionalErrorsHistoryStrict`.
+ * `ok: false` = o histórico EXISTE mas não dá pra confiar nele (ilegível, ou
+ * tem linhas e nenhuma parseia) — o caller tem que falhar alto, nunca seguir
+ * com `[]` como se fosse "sem repetição na janela". `warning` = algumas linhas
+ * não parseiam e ficam fora da checagem (as demais seguem valendo).
+ */
+export type IntentionalErrorsHistoryRead =
+  | { ok: true; entries: IntentionalError[]; warning?: string }
+  | { ok: false; reason: string };
+
+/**
+ * (#10269, #10292, #10344) Leitura ESTRITA do histórico para quem DECIDE
+ * repetição (proposer do Stage 4, planter do Stage 2, invariante
+ * `intentional-error-not-recent-repeat`). Distingue "arquivo ausente" (ou
+ * `path` nulo — edição fora de `.../editions/`, ex. fixture), que é legítimo e
+ * vira histórico vazio, de "arquivo existe mas não foi lido" (lock do OneDrive,
+ * EISDIR, permissão) ou "tem linhas e nenhuma parseia" — nesses dois casos
+ * `loadIntentionalErrors` devolveria `[]` em silêncio e o filtro #9101 passaria
+ * em branco. Nunca lança.
+ */
+export function readIntentionalErrorsHistoryStrict(path: string | null): IntentionalErrorsHistoryRead {
+  if (!path) return { ok: true, entries: [] };
+  let read: ReturnType<typeof readIntentionalErrorsJsonlStrict>;
+  try {
+    read = readIntentionalErrorsJsonlStrict(path);
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `${path} existe mas não pôde ser lido (${(err as Error).message}) — ` +
+        "não dá pra afirmar que não há repetição (#10269).",
+    };
+  }
+  if (read.unparsedLines > 0 && read.entries.length === 0) {
+    return {
+      ok: false,
+      reason:
+        `${path} tem ${read.unparsedLines} linha(s) e nenhuma parseia — ` +
+        "histórico indisponível; não dá pra afirmar que não há repetição (#10269).",
+    };
+  }
+  if (read.unparsedLines > 0) {
+    return {
+      ok: true,
+      entries: read.entries,
+      warning:
+        `WARN ${read.unparsedLines} linha(s) de ${path} não parseiam — ` +
+        "ficam fora da checagem de repetição (#10269).",
+    };
+  }
+  return { ok: true, entries: read.entries };
+}
+
+/**
  * (#10213) Pure: substitui no TEXTO CRU do JSONL só as linhas da `edition` dada
  * (qualquer `source`) por `entry`, que vai ao fim. Toda outra linha não-vazia é
  * preservada VERBATIM — inclusive as que não parseiam ou não têm `edition`, que
