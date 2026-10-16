@@ -38,6 +38,7 @@ import {
   extractYoutubeLengthSeconds, // #6739
   normalizeDashToParens,
   isRadarHowToEligible,
+  isAdCampaignCoverage,
   promoteHowTosFromRadar,
   hasActionableOpportunitySignal,
 } from "../scripts/lib/use-melhor-curation.ts";
@@ -2439,6 +2440,61 @@ describe("normalizeDashToParens (#2450)", () => {
     assert.ok(!result.includes("— 10 min"), "não deve manter o formato dash");
     // Prefixo [TRADUZIR] deve ser preservado
     assert.match(result, /\[TRADUZIR\]/, "prefixo deve ser preservado");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #10314 — cobertura de campanha publicitária não é promovida ao USE MELHOR
+// ---------------------------------------------------------------------------
+
+describe("#10314: campanha de marketing não vira USE MELHOR", () => {
+  const REAL_URL =
+    "https://exame.com/marketing/openai-homenageia-professores-em-campanha-que-aborda-ia-na-sala-de-aula/";
+  const REAL_TITLE = "OpenAI homenageia professores em campanha que aborda IA na sala de aula";
+  const REAL_SUMMARY =
+    "Filme usa humor para retratar mudanças na relação entre professores e alunos; empresa lança curso gratuito de IA para educadores brasileiros";
+
+  it("caso real 261016 (exame /marketing/) não é elegível à promoção", () => {
+    assert.equal(isRadarHowToEligible(REAL_URL, REAL_TITLE, REAL_SUMMARY), false);
+  });
+
+  it("promoteHowTosFromRadar mantém o caso real no RADAR", () => {
+    const item = { url: REAL_URL, title: REAL_TITLE, summary: REAL_SUMMARY };
+    const { newUseMelhor, newRadar, promoted } = promoteHowTosFromRadar([item], []);
+    assert.equal(promoted, 0);
+    assert.equal(newUseMelhor.length, 0);
+    assert.deepEqual(newRadar, [item]);
+  });
+
+  it("path /marketing/ sozinho (título neutro) bloqueia; sinal de oportunidade só no summary não basta", () => {
+    assert.equal(
+      isRadarHowToEligible(
+        "https://exame.com/marketing/empresa-x-e-educacao/",
+        "Empresa X aposta em educação com IA",
+        "empresa lança curso gratuito de IA para professores",
+      ),
+      false,
+    );
+  });
+
+  it("título de campanha fora de /marketing/ também bloqueia", () => {
+    assert.ok(isAdCampaignCoverage("https://example.com/noticias/x", "Google lança comercial com Gemini e curso gratuito"));
+  });
+
+  it("how-to explícito na seção de marketing continua elegível (sem falso-positivo)", () => {
+    const url = "https://exame.com/marketing/como-usar-ia-para-criar-campanhas/";
+    const title = "Como usar IA para criar campanhas no Google Ads";
+    assert.equal(isAdCampaignCoverage(url, title), false);
+    assert.equal(isRadarHowToEligible(url, title), true);
+  });
+
+  it("oportunidade acionável sem sinal de campanha segue elegível (#3027 intacto)", () => {
+    assert.ok(
+      isRadarHowToEligible(
+        "https://g1.globo.com/educacao/noticia/x.ghtml",
+        "MEC abre curso gratuito de inteligência artificial para professores",
+      ),
+    );
   });
 });
 
