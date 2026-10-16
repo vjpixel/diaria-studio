@@ -1314,6 +1314,10 @@ function isNonEmptyMark(v: unknown): v is string {
  * pra sempre e o re-disparo liberado saía com o HTML antigo. Sem
  * `getCampaignFn` injetado, recusa (fail-safe).
  *
+ * #10364: além do guard, o PUT exige status ao vivo === "draft". O guard
+ * libera `send: true` pra status não mapeados (ex.: "in_review"), o que não
+ * prova que o envio não saiu — ali recusa sem PUT e sem regravar o registro.
+ *
  * Retorno `"skipped"` = PUT pedido NÃO feito; o caller sinaliza exit 1.
  */
 export async function runUpdateHtml(
@@ -1353,6 +1357,18 @@ export async function runUpdateHtml(
         logFn(`   (registro local de ${c.key} corrigido pra "sent" — estava defasado)`);
       }
       logFn(`⚠️  ${c.key} (campanha #${c.campaignId}): ${guard.reason} — html NÃO atualizado`);
+      return "skipped";
+    }
+    // #10364: `checkSendNowGuard` só barra terminal/queued/draft-na-janela —
+    // qualquer outro status ao vivo (ex.: "in_review", envio aceito retido pra
+    // revisão de compliance, #4364) devolve `send: true`. Pro --update-html
+    // isso NÃO prova que o sendNow não saiu: só "draft" ao vivo prova. Fora
+    // dele, recusa sem PUT e sem tocar o registro.
+    if (live.status !== "draft") {
+      logFn(
+        `⚠️  ${c.key} (campanha #${c.campaignId}): ${marks} e status ao vivo="${live.status}" (não é "draft") — ` +
+          `o sendNow pode ter saído e estar retido na Brevo; html NÃO atualizado (#10364)`,
+      );
       return "skipped";
     }
     logFn(
