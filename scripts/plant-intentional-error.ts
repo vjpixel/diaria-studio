@@ -17,7 +17,8 @@
  * Uso: npx tsx scripts/plant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--jsonl path] [--edition AAMMDD]
  * Stdout: JSON `{ action: "planted"|"already_filled"|"no_candidate", ... }`.
  * Exit: 0 = planted/already_filled; 1 = no_candidate | no_placeholder (nada plantável — o
- * placeholder fica e o sentinel barra; o orchestrator escreve à mão);
+ * placeholder fica e o sentinel barra; o orchestrator escreve à mão) | history_unreadable
+ * (#10344: `data/intentional-errors.jsonl` existe mas não foi lido — liberar e re-rodar);
  * 2 = uso inválido / arquivo ausente.
  */
 
@@ -28,7 +29,7 @@ import { listIntentionalErrorCandidates } from "./lib/propose-intentional-error-
 import {
   intentionalErrorJsonPath,
   loadIntentionalErrorJson,
-  loadIntentionalErrors,
+  readIntentionalErrorsHistoryStrict,
   writeIntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir } from "./lib/intentional-error-repeat.ts";
@@ -76,13 +77,26 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
   const jsonlPath = values["jsonl"] ?? intentionalErrorsJsonlPathForEditionDir(editionDir);
   const edition = values["edition"] ?? basename(editionDir);
+  // #10344: leitura ESTRITA do histórico. Arquivo ausente = sem histórico
+  // (legítimo); existente-mas-ilegível (lock do OneDrive) não pode virar `[]` —
+  // o filtro de repetição #9101 passaria em branco e o Stage 2 plantaria um erro
+  // repetido. Não planta nada: o placeholder fica e o sentinel barra.
+  const historyRead = readIntentionalErrorsHistoryStrict(jsonlPath);
+  if (!historyRead.ok) {
+    console.log(JSON.stringify({ action: "history_unreadable", jsonl: jsonlPath }));
+    console.error(
+      `plant-intentional-error: ${historyRead.reason} Nada plantado — libere o arquivo e re-rode (#10344).`,
+    );
+    return 1;
+  }
+  if (historyRead.warning) console.error(`plant-intentional-error: ${historyRead.warning}`);
   // Tenta os candidatos em ordem de preferência: o 1º pode não ser plantável
   // (menção só em URL / fora da seção pelo rastreio de linha) — #9255 review.
   let candidate: IntentionalErrorCandidate | null = null;
   let planted: ReturnType<typeof plantIntentionalError> = null;
   const tried: string[] = [];
   for (const c of listIntentionalErrorCandidates(md, {
-    history: jsonlPath ? loadIntentionalErrors(jsonlPath) : [],
+    history: historyRead.entries,
     edition,
   })) {
     tried.push(c.location);

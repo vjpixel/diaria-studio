@@ -40,7 +40,7 @@ import { basename, join, resolve } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { proposeIntentionalErrorCandidate } from "./lib/propose-intentional-error-candidate.ts";
 import {
-  readIntentionalErrorsJsonlStrict,
+  readIntentionalErrorsHistoryStrict,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRepeats } from "./lib/intentional-error-repeat.ts";
@@ -54,30 +54,14 @@ import { intentionalErrorsJsonlPathForEditionDir, listRecentErrors, findRecentRe
  * fixture), = histórico vazio (legítimo em clone novo).
  */
 function readHistoryStrict(path: string | null): IntentionalError[] | null {
-  if (!path) return [];
-  try {
-    const read = readIntentionalErrorsJsonlStrict(path);
-    if (read.unparsedLines > 0 && read.entries.length === 0) {
-      console.error(
-        `propose-intentional-error-candidate: ${path} tem ${read.unparsedLines} linha(s) e nenhuma parseia — ` +
-          "histórico indisponível; não dá pra afirmar que não há repetição (#10269).",
-      );
-      return null;
-    }
-    if (read.unparsedLines > 0) {
-      console.error(
-        `propose-intentional-error-candidate: WARN ${read.unparsedLines} linha(s) de ${path} não parseiam — ` +
-          "ficam fora da checagem de repetição (#10269).",
-      );
-    }
-    return read.entries;
-  } catch (err) {
-    console.error(
-      `propose-intentional-error-candidate: ${path} existe mas não pôde ser lido (${(err as Error).message}) — ` +
-        "não dá pra afirmar que não há repetição (#10269).",
-    );
+  // #10344: lógica compartilhada com o planter do Stage 2 e o invariante de repetição.
+  const read = readIntentionalErrorsHistoryStrict(path);
+  if (!read.ok) {
+    console.error(`propose-intentional-error-candidate: ${read.reason}`);
     return null;
   }
+  if (read.warning) console.error(`propose-intentional-error-candidate: ${read.warning}`);
+  return read.entries;
 }
 
 export function main(argv: string[] = process.argv.slice(2)): number {

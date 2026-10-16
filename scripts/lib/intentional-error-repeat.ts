@@ -9,8 +9,9 @@
  * esvazia o concurso (leitor já sabe a resposta) e deixa o reveal ambíguo.
  *
  * Funções puras (exceto `checkIntentionalErrorNotRecentRepeat`, que lê o JSON
- * da edição e o jsonl): recebem o histórico já carregado (`loadIntentionalErrors`, fail-soft —
- * arquivo ausente = `[]`) e decide se um valor já foi usado.
+ * da edição e o jsonl): recebem o histórico já carregado e decidem se um valor já foi usado.
+ * O invariante lê o histórico em modo ESTRITO (`readIntentionalErrorsHistoryStrict`,
+ * #10344): arquivo ausente = `[]`; existente-mas-ilegível = falha alta, nunca `[]` calado.
  *
  * Premissa (#9101): janela default de 30 dias, injetável.
  */
@@ -19,7 +20,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import {
   intentionalErrorJsonPath,
   loadIntentionalErrorJson,
-  loadIntentionalErrors,
+  readIntentionalErrorsHistoryStrict,
   type IntentionalError,
 } from "./intentional-errors.ts";
 import type { InvariantViolation } from "./invariant-checks/types.ts";
@@ -208,7 +209,9 @@ export function intentionalErrorsJsonlPathForEditionDir(editionDir: string): str
  * pode reusar `wrong_value`/`correct_value` (normalizado) de uma edição dos
  * últimos 30 dias em `data/intentional-errors.jsonl` — incidente 260930 repetiu
  * "Anthropik" de 260928. Fail-soft: JSON ausente/placeholder, jsonl ausente ou
- * `no_error` → sem violação (outros checks cobrem ausência).
+ * `no_error` → sem violação (outros checks cobrem ausência). Jsonl EXISTENTE mas
+ * ilegível (lock do OneDrive) ou sem nenhuma linha parseável → violação `error`
+ * nomeando a falha de leitura (#10344); linhas parcialmente corrompidas → `warning`.
  * `history`/`windowDays` injetáveis pra teste. Registrado no Stage 2 e no
  * Stage 4 (o erro pode ser preenchido só no gate, via proposer).
  */
@@ -226,15 +229,43 @@ export function checkIntentionalErrorNotRecentRepeat(
   if (!correct_value && !wrong_value) return [];
 
   let history = opts.history;
+  const readWarnings: InvariantViolation[] = [];
   if (!history) {
+    // #10344: leitura ESTRITA. Ausente = histórico vazio (legítimo); existente
+    // mas ilegível (lock do OneDrive) não pode virar `[]` e passar em silêncio —
+    // é exatamente o cenário em que um erro repetido chegaria ao leitor.
     const jsonlPath = intentionalErrorsJsonlPathForEditionDir(resolve(editionDir));
-    history = jsonlPath ? loadIntentionalErrors(jsonlPath) : [];
+    const read = readIntentionalErrorsHistoryStrict(jsonlPath);
+    if (!read.ok) {
+      return [
+        {
+          rule,
+          message:
+            `não foi possível checar repetição do erro intencional: ${read.reason} ` +
+            "Libere o arquivo e re-rode a checagem (#10344).",
+          source_issue: "#10344",
+          severity: "error",
+          file: jsonlPath ?? jsonPath,
+        },
+      ];
+    }
+    if (read.warning) {
+      readWarnings.push({
+        rule,
+        message: `checagem de repetição do erro intencional parcial: ${read.warning}`,
+        source_issue: "#10344",
+        severity: "warning",
+        file: jsonlPath ?? jsonPath,
+      });
+    }
+    history = read.entries;
   }
-  if (history.length === 0) return [];
+  if (history.length === 0) return readWarnings;
   const windowDays = opts.windowDays ?? DEFAULT_REPEAT_WINDOW_DAYS;
   const edition = basename(resolve(editionDir));
   if (!editionToDate(edition)) {
     return [
+      ...readWarnings,
       {
         rule,
         message: `não foi possível checar repetição do erro intencional: diretório "${edition}" não é AAMMDD (#9101)`,
@@ -245,7 +276,7 @@ export function checkIntentionalErrorNotRecentRepeat(
     ];
   }
   const matches = findRecentRepeats({ wrong_value, correct_value }, history, edition, { windowDays });
-  const out: InvariantViolation[] = [];
+  const out: InvariantViolation[] = [...readWarnings];
   for (const field of ["wrong_value", "correct_value"] as const) {
     const hits = matches.filter((m) => m.field === field);
     if (hits.length === 0) continue;
