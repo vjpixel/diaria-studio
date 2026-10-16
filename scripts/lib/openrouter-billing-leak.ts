@@ -81,11 +81,13 @@ export interface BillingLeakEvaluation {
  */
 export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
   // Fallback pago do Hermes (~/.hermes/config.yaml) desde 08/09/2026 —
-  // substituiu o glm nas 20 ocorrencias de la. O glm CONTINUA abaixo: segue
-  // sendo o elo pago da cadeia do wrapper, que a SKILL do continuo invoca na
-  // delegacao. Os dois convivem de proposito.
-  "deepseek/deepseek-v4-flash",
-  "z-ai/glm-5.3-flash", // elo pago da cadeia do wrapper (MODELS_DEFAULT)
+  // substituiu o glm nas 20 ocorrencias de la. Desde o #10278 (15/10/2026) o
+  // deepseek tambem e o elo pago da cadeia padrao do wrapper
+  // (claude-delegate.sh, MODELS_DEFAULT). O glm CONTINUA abaixo: a lane
+  // piloto do #6930 (dispatch-glm-lane-unit.sh) o forca por --model, entao
+  // ele ainda pode aparecer no billing. Os dois convivem de proposito.
+  "deepseek/deepseek-v4-flash", // elo pago da cadeia do wrapper (MODELS_DEFAULT, #10278)
+  "z-ai/glm-5.3-flash", // lane piloto #6930 (fora do MODELS_DEFAULT desde #10278)
   "gpt-5.6-luna",
   "openai-codex/gpt-5.6-luna",
   "openai/gpt-5.6-luna", // mesma família sob o id prefixado do gateway

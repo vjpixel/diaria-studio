@@ -31,7 +31,8 @@
 #      `hermes-model-cost-report.py --price-check` compara o catálogo
 #      público da OpenRouter contra PAID_PRICE_BASELINE; indeterminado
 #      (catálogo inacessível/campo sumiu) NUNCA vira "ok", só alarme ou
-#      indeterminado.
+#      indeterminado. Uma issue POR MODELO (#10345): a issue aberta de um
+#      modelo não suprime a alta nova de outro.
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -910,21 +911,52 @@ except Exception:
   printf '%s\n' "$PRICE_DETAILS" >&2
   FAILS=$((FAILS + 1))
 elif [ "$PRICE_PARSE" = "INCREASE" ]; then
-  PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
+  # #10345: UMA issue POR MODELO, com o id do modelo no marcador. Antes o
+  # marcador era fixo ("... já em uso"), então a issue do glm — que fica
+  # aberta de propósito enquanto a troca do #10278 não termina em ~/.hermes —
+  # fazia o file_issue logar "issue aberta já existe" pra QUALQUER alta nova,
+  # inclusive a do deepseek-v4-flash (o elo pago ativo, sem decisão
+  # registrada). Mesma classe do #6818: a alta nova nunca chegava ao GitHub.
+  # Com o modelo no marcador, a issue aberta de um modelo só deduplica a dele.
+  PRICE_MODELS=$(printf '%s' "$PRICE_JSON" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
+    seen = []
     for f in d.get('increases', []):
+        m = f.get('modelo')
+        if m and m not in seen:
+            seen.append(m)
+    print('\\n'.join(seen) if seen else '__ERR__')
+except Exception:
+    print('__ERR__')" 2>/dev/null || echo "__ERR__")
+  case "$PRICE_MODELS" in *__ERR__*) PRICE_MODELS="__ERR__" ;; esac
+  if [ "$PRICE_MODELS" = "__ERR__" ]; then
+    echo "[watch] preço OpenRouter: INDETERMINADO (aumento detectado mas sem id de modelo legível; rc=$PRICE_RC)" >&2
+    FAILS=$((FAILS + 1))
+  else
+  # here-string (não pipe): o loop roda no shell corrente, então os contadores
+  # que file_issue incrementa (FAILS, ISSUES_CREATED) não se perdem num subshell.
+  while IFS= read -r PRICE_MODEL; do
+    [ -z "$PRICE_MODEL" ] && continue
+    PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    alvo = sys.argv[1]
+    for f in d.get('increases', []):
+        if f.get('modelo') != alvo:
+            continue
         fator = f\"{f['fator']:.2f}x\" if f.get('fator') else '?'
         print(f\"  {f['modelo']} {f['campo']}: {f['baseline']:.9f} -> {f['atual']:.9f} ({fator})\")
         if f.get('decisao'):
             print(f\"    decisao registrada: {f['decisao']}\")
 except Exception:
-    print('__ERR__')" 2>/dev/null || echo "__ERR__")
-  file_issue "[watch-continuo] aumento de preço em modelo pago já em uso" \
-    "[watch-continuo] aumento de preço em modelo pago já em uso (OpenRouter, #6818)" \
-    "bug,P2" \
-    "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --price-check (#6818 item 4) — o catálogo público da OpenRouter mostra preço acima do baseline registrado em \`PAID_PRICE_BASELINE\` (hermes-model-cost-report.py) para pelo menos 1 modelo pago já em uso:
+    print('__ERR__')" "$PRICE_MODEL" 2>/dev/null || echo "__ERR__")
+    file_issue "[watch-continuo] aumento de preço em modelo pago já em uso: $PRICE_MODEL" \
+      "[watch-continuo] aumento de preço em modelo pago já em uso: $PRICE_MODEL (OpenRouter, #6818)" \
+      "bug,P2" \
+      "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --price-check (#6818 item 4) — o catálogo público da OpenRouter mostra preço acima do baseline registrado em \`PAID_PRICE_BASELINE\` (hermes-model-cost-report.py) para o modelo pago já em uso \`$PRICE_MODEL\`:
 
 \`\`\`
 $PRICE_DETAILS
@@ -932,7 +964,11 @@ $PRICE_DETAILS
 
 Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia.
 
-**Exceção (#10295)**: modelo cuja linha acima traz \`decisao registrada\` já tem decisão do editor sobre esta alta (ex.: glm-5.3-flash, #10278: trocar pelo deepseek-v4-flash). Para ele, **NÃO** atualizar \`PAID_PRICE_BASELINE\` — isso desfaria a decisão. A ação é concluir o que a decisão manda (\`PRICE_INCREASE_DECISIONS\` em hermes-model-cost-report.py)."
+Uma issue por modelo (#10345): a issue aberta de outro modelo não suprime esta, e esta não suprime a de outro.
+
+**Exceção (#10295)**: se a linha acima traz \`decisao registrada\`, o editor já decidiu sobre esta alta (ex.: glm-5.3-flash, #10278: trocar pelo deepseek-v4-flash). Para ele, **NÃO** atualizar \`PAID_PRICE_BASELINE\` — isso desfaria a decisão. A ação é concluir o que a decisão manda (\`PRICE_INCREASE_DECISIONS\` em hermes-model-cost-report.py)."
+  done <<< "$PRICE_MODELS"
+  fi # fim do loop por modelo (#10345)
 else
   note "[watch] preço OpenRouter: ok (sem aumento vs baseline; #6818 item 4)"
 fi
