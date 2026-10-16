@@ -4,8 +4,8 @@
  * Trava as propriedades MECÂNICAS que `docs/lane-glm.md` exige da condição
  * (b) — produtor apenas, imposto por `--tools`, nunca por instrução de
  * prompt (mesma disciplina do #6864/#6849 já aplicada a
- * `continuo-pr-review.sh`) — e (c) — `--model z-ai/glm-5.3-flash` sempre
- * explícito. Lê o SOURCE do script (mesmo padrão de
+ * `continuo-pr-review.sh`) — e (c) — `--model "$LANE_MODEL"` sempre
+ * explícito (`deepseek/deepseek-v4-flash` desde o #10367; era o glm-5.3-flash). Lê o SOURCE do script (mesmo padrão de
  * `test/continuo-pr-review-never-merges.test.ts`), não o executa.
  *
  * #6941 (achado de review, code-reviewer, P0, confiança alta, demonstrado
@@ -130,9 +130,25 @@ describe("dispatch-glm-lane-unit.sh — condição (b) do docs/lane-glm.md, prod
 });
 
 describe("dispatch-glm-lane-unit.sh — condição (c), --model sempre explícito", () => {
-  it("invocação do claude-delegate.sh sempre passa --model z-ai/glm-5.3-flash", () => {
+  // #10367: lane reapontada do z-ai/glm-5.3-flash para o deepseek-v4-flash.
+  it("LANE_MODEL é deepseek/deepseek-v4-flash e a invocação passa --model \"$LANE_MODEL\"", () => {
     const src = readScript();
-    assert.match(src, /--model\s+z-ai\/glm-5\.3-flash/);
+    assert.match(src, /^LANE_MODEL="deepseek\/deepseek-v4-flash"$/m);
+    assert.match(src, /^\s+--model "\$LANE_MODEL" \\$/m);
+  });
+
+  it("#10367: nenhuma linha de CÓDIGO (fora de comentário) ainda força o glm-5.3-flash", () => {
+    const codeLines = readScript()
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l));
+    const offending = codeLines.filter((l) => l.includes("glm-5.3-flash"));
+    assert.deepEqual(offending, [], `linhas de código citando o glm: ${offending.join(" | ")}`);
+  });
+
+  it("#10367: log de unidades separado por modelo — nunca o units.jsonl do glm", () => {
+    const src = readScript();
+    assert.match(src, /^UNITS_LOG="\$REPO\/data\/glm-lane\/units-deepseek-v4-flash\.jsonl"$/m);
+    assert.doesNotMatch(src, /^UNITS_LOG=.*\/units\.jsonl"$/m);
   });
 });
 

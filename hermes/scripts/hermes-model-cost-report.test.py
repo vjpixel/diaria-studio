@@ -500,17 +500,35 @@ def main() -> int:
         and mod.price_check_exit_code(f_cache) == 3,
     )
 
-    # #8716: o baseline de produção acompanha o preço vigente do modelo pago;
-    # se voltar ao preço promocional, o alerta diário fica mascarado.
-    # #10065 (13/10/2026): o catálogo mudou de novo (completion 0,50 -> 0,90/M,
-    # prompt e input_cache_read caíram); editor decidiu MANTER o modelo e o
-    # baseline acompanha os 3 campos vigentes.
-    for campo, valor in (("prompt", 0.0000000261), ("completion", 0.0000009),
-                         ("input_cache_read", 0.0000000108)):
-        assert_true(
-            f"#10065: baseline vigente do glm-5.3-flash usa {campo}={valor}",
-            mod.PAID_PRICE_BASELINE["z-ai/glm-5.3-flash"][campo] == valor,
-        )
+    # #10367 (16/10/2026): troca do #10278 concluída — a lane do #6930 foi
+    # reapontada para o deepseek-v4-flash e o glm-5.3-flash saiu do baseline,
+    # da allowlist e do registro de decisões. Uso residual dele vira vazamento.
+    GLM = "z-ai/glm-5.3-flash"
+    assert_true(
+        "#10367: glm-5.3-flash fora de PAID_PRICE_BASELINE, PAID_ALLOWLIST e PRICE_INCREASE_DECISIONS",
+        GLM not in mod.PAID_PRICE_BASELINE
+        and GLM not in mod.PAID_ALLOWLIST
+        and GLM not in mod.PRICE_INCREASE_DECISIONS,
+    )
+    assert_true(
+        "#10367: glm-5.3-flash cobrado pela OpenRouter agora é vazamento pago (_is_leak True)",
+        mod._is_leak(GLM, "openrouter") is True,
+    )
+    assert_true(
+        "#10367: deepseek-v4-flash (novo modelo da lane) segue na allowlist e com baseline",
+        "deepseek/deepseek-v4-flash" in mod.PAID_ALLOWLIST
+        and "deepseek/deepseek-v4-flash" in mod.PAID_PRICE_BASELINE,
+    )
+    # Baselines históricos do glm, passados explicitamente nos testes de
+    # regressão abaixo (#10065/#10278/#10295) — o mecanismo continua coberto,
+    # só não é mais o baseline de produção.
+    BASELINE_GLM_10065 = {GLM: {"prompt": 0.0000000261, "completion": 0.0000009,
+                                "input_cache_read": 0.0000000108}}
+    DECISIONS_GLM_10278 = {GLM: (
+        "#10278 (15/10/2026): o editor decidiu TROCAR o glm-5.3-flash pelo "
+        "deepseek/deepseek-v4-flash, nao absorver a alta. NAO atualizar "
+        "PAID_PRICE_BASELINE deste modelo."
+    )}
     # #9559 -> #9633 -> #10132: baseline vigente do deepseek-v4-flash. Em
     # 13/10/2026 prompt subiu 0,03 -> 0,091/M, completion caiu 1,28 -> 0,182/M
     # e input_cache_read caiu 0,03 -> 0,0182/M (custo-mix real -34%); o modelo
@@ -559,20 +577,20 @@ def main() -> int:
         and {i["campo"] for i in f_9633_old["increases"]} == {"prompt", "input_cache_read"},
     )
 
-    # #10065 (regressão): com o glm-5.3-flash no preço vigente medido em
-    # 13/10/2026 (string exata do catálogo), o baseline de produção NÃO
-    # alarma pra ele — senão o alarme repete todo dia sobre um aumento já
-    # decidido. Só o glm no catálogo: o deepseek fica fora de propósito
-    # (aparece como unverifiable, não como aumento).
+    # #10065 (regressão): com o glm-5.3-flash no preço medido em 13/10/2026
+    # (string exata do catálogo), o baseline daquela época NÃO alarma pra ele.
+    # Desde o #10367 o glm não está mais no baseline de produção — o baseline
+    # histórico (BASELINE_GLM_10065) é passado explicitamente.
     cat_10065 = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
+        {"id": GLM,
          "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
                      "input_cache_read": "0.0000000108"}},
     ))
-    f_10065 = mod.detect_price_changes(cat_10065)
+    f_10065 = mod.detect_price_changes(cat_10065, baseline=BASELINE_GLM_10065,
+                                       not_on_openrouter=set())
     assert_true(
-        "#10065: catálogo no preço vigente do glm-5.3-flash -> nenhum aumento pro glm",
-        not [i for i in f_10065["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"],
+        "#10065: catálogo no preço de 13/10 do glm-5.3-flash -> nenhum aumento, exit 0",
+        not f_10065["increases"] and mod.price_check_exit_code(f_10065) == 0,
     )
     # O baseline ANTIGO (completion 0,50/M) teria alarmado com o mesmo catálogo.
     f_10065_old = mod.detect_price_changes(cat_10065, baseline={
@@ -585,68 +603,76 @@ def main() -> int:
         and {i["campo"] for i in f_10065_old["increases"]} == {"completion"},
     )
     # E o preço do alarme de 12/10 (completion 1,20/M) segue alarmando contra
-    # o baseline novo — a atualização não cegou o watchdog pra novas altas.
+    # o baseline de 13/10 — a atualização não cegou o watchdog pra novas altas.
     f_10065_up = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
+        {"id": GLM,
          "pricing": {"prompt": "0.0000000261", "completion": "0.0000012",
                      "input_cache_read": "0.0000000108"}},
-    )))
+    )), baseline=BASELINE_GLM_10065, not_on_openrouter=set())
     assert_true(
-        "#10065: completion 1,20/M (alarme de 12/10) ainda alarma contra o baseline novo",
-        any(i["modelo"] == "z-ai/glm-5.3-flash" and i["campo"] == "completion"
+        "#10065: completion 1,20/M (alarme de 12/10) ainda alarma contra o baseline de 13/10",
+        any(i["modelo"] == GLM and i["campo"] == "completion"
             for i in f_10065_up["increases"]),
     )
 
     # #10278 (regressão): o #10220 (PR #10221) subiu o baseline do glm para o
     # preço de 14/10 sem decisão do editor, calando o alarme de uma alta de
-    # 2,9x. A decisão foi TROCAR de modelo, não absorver — então o catálogo
-    # de 14/10 tem que continuar alarmando (prompt + cache) contra o baseline
-    # de produção. Se alguém re-subir o baseline sem decisão, isto quebra.
-    f_10278 = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
+    # 2,9x. O catálogo de 14/10 alarma (prompt + cache) contra o baseline de
+    # 13/10 — mecanismo preservado com baseline/decisões explícitos (#10367).
+    cat_glm_1410 = mod.extract_catalog_pricing(_catalog(
+        {"id": GLM,
          "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
                      "input_cache_read": "0.00000003"}},
-    )))
+    ))
+    f_10278 = mod.detect_price_changes(cat_glm_1410, baseline=BASELINE_GLM_10065,
+                                       not_on_openrouter=set(),
+                                       decisions=DECISIONS_GLM_10278)
     assert_true(
-        "#10278: catálogo de 14/10 do glm-5.3-flash alarma prompt+cache contra o baseline de produção",
-        {i["campo"] for i in f_10278["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"}
+        "#10278: catálogo de 14/10 do glm-5.3-flash alarma prompt+cache contra o baseline de 13/10",
+        {i["campo"] for i in f_10278["increases"] if i["modelo"] == GLM}
         == {"prompt", "input_cache_read"}
         and mod.price_check_exit_code(f_10278) == 3,
     )
 
-    # #10295 (regressão): a alta do glm (fora da cadeia paga ativa desde o
-    # #10278, só a lane/piloto) continua alarmando, mas cada aumento sai
-    # anotado com a decisão — senão a issue do watch-continuo-health manda
-    # "atualizar PAID_PRICE_BASELINE" e uma sessão reaplica a alta revertida.
+    # #10295 (regressão): aumento de modelo com decisão registrada continua
+    # alarmando, mas sai anotado com a decisão — senão a issue do
+    # watch-continuo-health manda "atualizar PAID_PRICE_BASELINE" e uma sessão
+    # reaplica a alta revertida.
     assert_true(
-        "#10295: aumentos do glm-5.3-flash carregam a decisão do #10278 (trocar, não subir baseline)",
+        "#10295: aumentos com decisão registrada carregam o texto da decisão",
         f_10278["increases"]
         and all("#10278" in i.get("decisao", "") and "NAO atualizar" in i["decisao"]
-                for i in f_10278["increases"] if i["modelo"] == "z-ai/glm-5.3-flash"),
+                for i in f_10278["increases"] if i["modelo"] == GLM),
     )
     f_10295_ds = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
         {"id": "deepseek/deepseek-v4-flash",
          "pricing": {"prompt": "0.00000015", "completion": "0.000000182",
                      "input_cache_read": "0.0000000182"}},
-        {"id": "z-ai/glm-5.3-flash",
+        {"id": GLM,
          "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
                      "input_cache_read": "0.00000003"}},
-    )))
+    )), baseline={**mod.PAID_PRICE_BASELINE, **BASELINE_GLM_10065},
+        decisions=DECISIONS_GLM_10278)
     assert_true(
-        "#10295: aumento do deepseek (cadeia ativa, sem decisão) NÃO ganha 'decisao' e o exit segue 3",
+        "#10295: aumento do deepseek (sem decisão) NÃO ganha 'decisao' e o exit segue 3",
         any(i["modelo"] == "deepseek/deepseek-v4-flash" for i in f_10295_ds["increases"])
         and all("decisao" not in i for i in f_10295_ds["increases"]
                 if i["modelo"] == "deepseek/deepseek-v4-flash")
         and mod.price_check_exit_code(f_10295_ds) == 3,
     )
+    f_sem_decisao = mod.detect_price_changes(cat_glm_1410, baseline=BASELINE_GLM_10065,
+                                             not_on_openrouter=set(), decisions={})
     assert_true(
         "#10295: decisions={} desliga a anotação (prova que o campo vem do registro, não do id)",
-        all("decisao" not in i for i in mod.detect_price_changes(
-            mod.extract_catalog_pricing(_catalog(
-                {"id": "z-ai/glm-5.3-flash",
-                 "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                             "input_cache_read": "0.00000003"}})),
-            decisions={})["increases"]),
+        f_sem_decisao["increases"]
+        and all("decisao" not in i for i in f_sem_decisao["increases"]),
+    )
+    # #10367: contra o baseline de produção (glm fora dele desde a troca), o
+    # catálogo do glm não gera aumento algum pra ele.
+    f_10367 = mod.detect_price_changes(cat_glm_1410, not_on_openrouter=set())
+    assert_true(
+        "#10367: catálogo do glm não gera aumento contra o baseline de produção (glm fora dele)",
+        not [i for i in f_10367["increases"] if i["modelo"] == GLM],
     )
     assert_true(
         "#10295: todo modelo em PRICE_INCREASE_DECISIONS tem baseline (senão a anotação nunca dispara)",

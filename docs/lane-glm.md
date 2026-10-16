@@ -1,4 +1,14 @@
-# Lane de piloto em glm-5.3-flash (#6930)
+# Lane de piloto em modelo de gateway (#6930) — hoje `deepseek/deepseek-v4-flash`
+
+**Reapontada em 16/10/2026 (#10367):** o modelo da lane passou de
+`z-ai/glm-5.3-flash` para `deepseek/deepseek-v4-flash` (decisão do editor no
+briefing overnight 261016b, na sequência do #10278, que já tinha trocado o glm
+pelo deepseek como elo pago da cadeia do wrapper). O nome "glm" do arquivo, do
+script e do comando npm ficou por compatibilidade. As unidades do deepseek são
+registradas num log próprio (`data/glm-lane/units-deepseek-v4-flash.jsonl`):
+as 2 unidades em `units.jsonl` mediram o glm e não contam para o teto nem para
+os critérios de morte do modelo novo. Menções ao glm abaixo são históricas
+(medições e achados feitos quando ele era o modelo da lane).
 
 Detalhamento da exceção apontada em `CLAUDE.md`, seção **"NUNCA trocar a conta
 claude.ai pela API (#5608)"**. A regra ali continua valendo por padrão: nenhuma
@@ -14,8 +24,9 @@ incondicionalmente em toda sessão e em todo dispatch de subagente — e está a
 
 Um lane de execução de **piloto**, decidido pelo editor em 01/09/2026, cujo
 objetivo declarado é duplo: **drenar a fila técnica** (31 issues no track
-`overnight` no dia da decisão) e **medir o custo** de `z-ai/glm-5.3-flash` sob
-volume real.
+`overnight` no dia da decisão) e **medir o custo** do modelo da lane
+(`z-ai/glm-5.3-flash` até o #10367; `deepseek/deepseek-v4-flash` desde então)
+sob volume real.
 
 Ele invoca `hermes/scripts/claude-delegate.sh`, que seta `ANTHROPIC_BASE_URL`
 + `ANTHROPIC_AUTH_TOKEN` apontando para o OpenRouter — exatamente o padrão que
@@ -56,11 +67,11 @@ drena. **O piloto não começa antes da #6926 mergear.**
 
 ### (c) `--model` explícito, sempre
 
-A invocação passa **`--model z-ai/glm-5.3-flash`**. Não é detalhe: sem
-`--model`, `claude-delegate.sh` roda a `MODELS_DEFAULT` inteira
-(`dots-studio/dots-3-note-preview:free` → `poolside/laguna-s-2.1:free` →
-`z-ai/glm-5.3-flash`), e a exceção passaria a cobrir três modelos, dois deles
-nunca avaliados aqui.
+A invocação passa **`--model deepseek/deepseek-v4-flash`** (constante
+`LANE_MODEL` do script; era `z-ai/glm-5.3-flash` até o #10367). Não é detalhe:
+sem `--model`, `claude-delegate.sh` roda a `MODELS_DEFAULT` inteira (os elos
+`:free` → `deepseek/deepseek-v4-flash` → elo de assinatura), e a exceção
+passaria a cobrir vários modelos, os `:free` nunca avaliados aqui.
 
 O `export` continua **escopado ao subprocesso** do wrapper, nunca persistente
 no shell — o padrão de erro do #6714 segue proibido.
@@ -154,6 +165,9 @@ de `ps`/`ListAgents`: #6947.
 
 ## Custo de referência medido
 
+Medições do glm-5.3-flash, quando ele era o modelo da lane (pré-#10367). O
+custo do deepseek-v4-flash na lane ainda não tem medição própria.
+
 | dia | modelo | requests | USD | USD/request |
 |---|---|---:|---:|---:|
 | 29/08 | `z-ai/glm-5.3-flash` | 613 | 1,7160 | 0,0028 |
@@ -200,7 +214,7 @@ review`/`gh issue close|edit` E escopa `git`/`npm`/`npx` a subcomandos
 específicos (nunca `Bash(git:*)`/`Bash(npm:*)`/`Bash(npx:*)` genéricos —
 achado de review, #6941: esses genéricos permitiam `git push` direto pra
 `master` e `npm exec -- gh pr merge` driblando o allowlist inteiro);
-`--model z-ai/glm-5.3-flash` sempre passado. **NÃO reivindica a issue
+`--model "$LANE_MODEL"` (`deepseek/deepseek-v4-flash`) sempre passado. **NÃO reivindica a issue
 sozinho** — a reivindicação é responsabilidade do COORDENADOR, como comando
 standalone ANTES de chamar o script (`session-registry.ts claim-issue`;
 achado de review: `--session-id` só é injetado automaticamente numa
@@ -210,7 +224,8 @@ CONFERE que a claim existe (`is-claimed`) e recusa despachar se não achar.
 Roda num worktree isolado (removido ao final, sucesso ou falha), invoca
 `hermes/scripts/claude-delegate.sh` UMA VEZ (nunca sessão de vida longa),
 tira snapshot de `/api/v1/credits` (`scripts/glm-lane-credits.ts`) antes e
-depois, e registra a unidade append-only em `data/glm-lane/units.jsonl`
+depois, e registra a unidade append-only em
+`data/glm-lane/units-deepseek-v4-flash.jsonl` (era `units.jsonl` na fase glm)
 (`scripts/record-glm-lane-unit.ts`) — incluindo se a invocação terminou
 (`status: "completed"`) ou falhou por infra (`"infra-error"`, excluído dos
 critérios de morte 2-4 acima).
@@ -225,7 +240,7 @@ recebe o número da issue já escolhida, nunca decide isso sozinho.
 Testes: `test/glm-lane-gate.test.ts`, `test/glm-lane-credits.test.ts`,
 `test/check-glm-lane-gate.test.ts`, `test/record-glm-lane-unit.test.ts`,
 `test/dispatch-glm-lane-unit.test.ts`. **Duas unidades reais já
-despachadas (01/09/2026):** #6928 (US$0,0108, 123s, GLM acertou) e #6950
+despachadas com o glm (01/09/2026, em `units.jsonl`):** #6928 (US$0,0108, 123s, GLM acertou) e #6950
 (US$0,2407, review com 3 findings incluindo 1 P1 — insumo do teste do
 `--pr N` acima, não corrigido manualmente de propósito).
 

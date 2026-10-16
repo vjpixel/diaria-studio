@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # scripts/dispatch-glm-lane-unit.sh (#6930, --pr N no #6954)
 #
-# Despacha UMA unidade do piloto `z-ai/glm-5.3-flash` — ver `docs/lane-
-# glm.md` (normativo) antes de mexer aqui. Este script implementa as
+# Despacha UMA unidade do piloto da lane #6930 — modelo `$LANE_MODEL`,
+# `deepseek/deepseek-v4-flash` desde o #10367 (era `z-ai/glm-5.3-flash`;
+# o nome "glm" do script, do comando npm e dos docs ficou por
+# compatibilidade). Ver `docs/lane-glm.md` (normativo) antes de mexer
+# aqui. Este script implementa as
 # condições (b) e (c) mecanicamente:
 #
 #   (b) Produtor apenas — imposto pelo --tools abaixo, que OMITE
@@ -36,7 +39,7 @@
 #       delegação padrão do contínuo usa `Bash` SEM NENHUM escopo — ver
 #       `hermes-diaria-continuo/SKILL.md` §4 passo 2 — então este script já
 #       é mais restrito que o piso já aceito no repo, não menos).
-#   (c) --model z-ai/glm-5.3-flash SEMPRE explícito — sem ele o wrapper
+#   (c) --model "$LANE_MODEL" SEMPRE explícito — sem ele o wrapper
 #       roda a cadeia MODELS_DEFAULT inteira e o piloto mede 3 modelos.
 #
 # A condição (a) — "issue de aceite mecânico" — é seleção HUMANA do
@@ -121,7 +124,17 @@ if [ "${1:-}" = "--pr" ]; then
   EXISTING_PR="${2:?uso: --pr requer um número de PR}"
 fi
 
-UNITS_LOG="$REPO/data/glm-lane/units.jsonl"
+# #10367: lane reapontada para o deepseek-v4-flash (decisão do editor,
+# briefing overnight 261016b). Modelo fixo, sem override por env — a
+# condição (c) exige UM modelo medido, e trocar de modelo é decisão
+# versionada, não variável de ambiente.
+LANE_MODEL="deepseek/deepseek-v4-flash"
+# Log de unidades SEPARADO por modelo (#10367): as unidades já registradas
+# em units.jsonl mediram o glm-5.3-flash. Reusar o mesmo arquivo somaria o
+# custo/$-por-issue e as PRs mergeadas de dois modelos distintos no gate de
+# critérios de morte (e herdaria o teto de 10 já parcialmente gasto). O log
+# do glm fica intacto como histórico.
+UNITS_LOG="$REPO/data/glm-lane/units-deepseek-v4-flash.jsonl"
 CAP="${GLM_LANE_UNITS_CAP:-10}"
 SONNET_BASELINE="${GLM_LANE_SONNET_COST_PER_ISSUE_USD:-}"
 # #6941 (P2): timestamp no NOME do diretório, não só na branch — sem
@@ -362,10 +375,10 @@ rm -f "$CREDITS_STDERR_TMP"
 STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 START_EPOCH=$(date +%s)
 
-echo "[glm-lane] despachando claude-delegate.sh --model z-ai/glm-5.3-flash (issue #$ISSUE${EXISTING_PR:+, PR #$EXISTING_PR})..."
+echo "[glm-lane] despachando claude-delegate.sh --model $LANE_MODEL (issue #$ISSUE${EXISTING_PR:+, PR #$EXISTING_PR})..."
 set +e
 printf '%s' "$PROMPT" | "$REPO/hermes/scripts/claude-delegate.sh" \
-  --model z-ai/glm-5.3-flash \
+  --model "$LANE_MODEL" \
   --cwd "$WORKTREE_DIR" \
   --tools "$TOOLS" \
   --timeout 2400
