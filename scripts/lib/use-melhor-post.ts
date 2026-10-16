@@ -203,11 +203,33 @@ const IMPERATIVE_VERBS = new Set(
 );
 
 /**
+ * #10352: palavras da lista acima que, no início de um item, muitas vezes NÃO
+ * são verbo — "entre" (preposição: "Entre 18 e 29 anos"), "peca" ("peça" sem
+ * acento, substantivo), e "use/set/list/test/type/make" (substantivos em
+ * inglês: "Use cases", "List of tools"). Só contam como imperativo seguidas de
+ * um objeto plausível (`AMBIGUOUS_NOT_OBJECT`). "entre" e "some" (determinante
+ * em inglês: "Some users...") exigem a palavra seguinte de uma lista fechada
+ * (`STRICT_NEXT`): "Entre no site", "Some o custo".
+ */
+const AMBIGUOUS_IMPERATIVES = new Set(["entre", "some", "peca", "use", "set", "list", "test", "type", "make"]);
+/** Palavra seguinte que denuncia leitura NÃO-verbal da palavra ambígua. */
+const AMBIGUOUS_NOT_OBJECT = new Set([
+  "of", "cases", "case", "results", "result", "and", "or", "de", "do", "da", "dos", "das", "e", "ou",
+]);
+/** Palavra seguinte obrigatória para "entre"/"some" contarem como imperativo. */
+const STRICT_NEXT: Record<string, Set<string>> = {
+  entre: new Set(["no", "na", "nos", "nas", "em", "num", "numa", "com", "pelo", "pela"]),
+  some: new Set(["o", "a", "os", "as", "um", "uma", "todos", "todas", "esse", "essa", "esses", "essas", "seu", "sua", "seus", "suas"]),
+};
+
+/**
  * Sinal de tutorial num cabeçalho logo antes da lista (#10276). "Como" só no
  * início da linha ("Como configurar..."), pra não casar prosa ("como resultado").
+ * #10352: "passos"/"steps" soltos casavam "Próximos passos" antes de um roadmap —
+ * agora só "N passos"/"N steps" ou o cabeçalho que ABRE com "Passos"/"Steps".
  */
 const TUTORIAL_HEADING =
-  /^[#*_\s]*como\b|passo[\s-]+a[\s-]+passo|step[\s-]+by[\s-]+step|\bhow\s+to\b|\btutorial\b|\binstru[cç][oõ]es\b|\binstructions\b|\bsteps\b|\bpassos\b/i;
+  /^[#*_\s]*como\b|passo[\s-]+a[\s-]+passo|step[\s-]+by[\s-]+step|\bhow\s+to\b|\btutorial\b|\binstru[cç][oõ]es\b|\binstructions\b|\b\d{1,2}\s+(?:passos|steps)\b|^[#*_\s]*(?:passos|steps)\b/i;
 
 function foldAccents(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -215,8 +237,16 @@ function foldAccents(s: string): string {
 
 /** Pure (#10276): o item abre com verbo de ação no imperativo? */
 export function startsWithImperative(item: string): boolean {
-  const first = foldAccents(item.replace(/^[\s*_"“'`\[(]+/, "")).match(/^[a-z]+/);
-  return first !== null && IMPERATIVE_VERBS.has(first[0]);
+  const folded = foldAccents(item.replace(/^[\s*_"“'`\[(]+/, ""));
+  const first = folded.match(/^[a-z]+/);
+  if (first === null || !IMPERATIVE_VERBS.has(first[0])) return false;
+  if (!AMBIGUOUS_IMPERATIVES.has(first[0])) return true;
+  // #10352: palavra ambígua só é verbo se vier seguida de objeto ("Use o atalho",
+  // "Entre no site"); número, pontuação, fim de item ou "of/de/e" → não é.
+  const next = folded.slice(first[0].length).match(/^[\s*_]+([a-z]+)/);
+  if (next === null || AMBIGUOUS_NOT_OBJECT.has(next[1])) return false;
+  const strict = STRICT_NEXT[first[0]];
+  return strict === undefined || strict.has(next[1]);
 }
 
 interface StepRun {
