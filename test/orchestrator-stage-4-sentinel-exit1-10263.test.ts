@@ -15,7 +15,7 @@ const md = readFileSync(
 describe("orchestrator-stage-4 §4e sentinel (#10263)", () => {
   it("exit 1 do sentinel por invariante volta ao gate, nunca warn", () => {
     assert.match(md, /exit 1 \(recusa por invariante[^)]*\) NUNCA é warn \(#10263\)/);
-    assert.match(md, /Só falha de I\/O do sentinel[^.]*vira warn/);
+    assert.match(md, /`NÃO escrito`[^]*recusa por invariante[^]*`falha ao escrever sentinel` = I\/O/);
     assert.ok(!md.includes("Falha do sentinel → idem, logar warn e não bloquear."));
   });
 
