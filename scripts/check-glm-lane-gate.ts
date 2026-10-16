@@ -2,14 +2,16 @@
 /**
  * check-glm-lane-gate.ts (#6930)
  *
- * CLI do gate de critérios de morte/teto do piloto GLM — ver
- * `scripts/lib/glm-lane-gate.ts` pra lógica pura. Lê `data/glm-lane/
- * units.jsonl` (uma unidade por linha, formato de
+ * CLI do gate de critérios de morte/teto do piloto da lane #6930 (modelo
+ * `deepseek/deepseek-v4-flash` desde o #10367) — ver
+ * `scripts/lib/glm-lane-gate.ts` pra lógica pura. Lê o log passado em
+ * `--units-log` (`data/glm-lane/units-deepseek-v4-flash.jsonl` desde o
+ * #10367; uma unidade por linha, formato de
  * `scripts/record-glm-lane-unit.ts`), computa o estado agregado e decide
  * se o PRÓXIMO despacho pode acontecer.
  *
  * Uso:
- *   npx tsx scripts/check-glm-lane-gate.ts --units-log data/glm-lane/units.jsonl \
+ *   npx tsx scripts/check-glm-lane-gate.ts --units-log data/glm-lane/units-deepseek-v4-flash.jsonl \
  *     --units-cap 10 [--sonnet-cost-per-issue 1.23]
  *
  * Exit codes: 0 = autorizado a despachar; 1 = recusado (teto ou critério

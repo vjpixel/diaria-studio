@@ -2,9 +2,11 @@
 /**
  * record-glm-lane-unit.ts (#6930)
  *
- * Anexa 1 registro em `data/glm-lane/units.jsonl` (formato lido por
- * `scripts/check-glm-lane-gate.ts`) ao final de uma unidade do piloto
- * GLM. Chamado por `scripts/dispatch-glm-lane-unit.sh`, nunca por uma
+ * Anexa 1 registro no log de unidades passado em `--units-log` (formato
+ * lido por `scripts/check-glm-lane-gate.ts`) ao final de uma unidade do
+ * piloto da lane #6930 — `data/glm-lane/units-deepseek-v4-flash.jsonl`
+ * desde o #10367 (o `units.jsonl` antigo é o histórico do glm-5.3-flash).
+ * Chamado por `scripts/dispatch-glm-lane-unit.sh`, nunca por uma
  * sessão interativa direto.
  *
  * `costUsd` é derivado dos DOIS snapshots de `scripts/glm-lane-credits.ts`
@@ -16,7 +18,7 @@
  *
  * Uso:
  *   npx tsx scripts/record-glm-lane-unit.ts \
- *     --units-log data/glm-lane/units.jsonl \
+ *     --units-log data/glm-lane/units-deepseek-v4-flash.jsonl \
  *     --issue 6940 \
  *     --started-at 2026-09-01T15:00:00Z \
  *     --ended-at 2026-09-01T15:12:00Z \

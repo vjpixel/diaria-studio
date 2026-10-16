@@ -1,12 +1,15 @@
 /**
  * glm-lane-gate.ts (#6930)
  *
- * Lógica PURA/testável dos critérios de morte e do teto do piloto
- * `z-ai/glm-5.3-flash` (`docs/lane-glm.md`, normativo — leia lá as
- * condições (a)-(d) antes de mexer aqui). Este módulo só decide, a partir
+ * Lógica PURA/testável dos critérios de morte e do teto do piloto da lane
+ * #6930 — modelo `deepseek/deepseek-v4-flash` desde o #10367 (era
+ * `z-ai/glm-5.3-flash`; "GLM" nos nomes/mensagens abaixo = a lane, por
+ * compatibilidade). `docs/lane-glm.md` é normativo — leia lá as
+ * condições (a)-(d) antes de mexer aqui. Este módulo só decide, a partir
  * do histórico de unidades já registrado, se o PRÓXIMO despacho pode
- * acontecer — todo I/O (ler `data/glm-lane/units.jsonl`, comparar contra
- * config) fica em `scripts/dispatch-glm-lane-unit.sh`.
+ * acontecer — todo I/O (ler o log de unidades do modelo vigente,
+ * `data/glm-lane/units-deepseek-v4-flash.jsonl`, comparar contra config)
+ * fica em `scripts/dispatch-glm-lane-unit.sh`.
  *
  * ## Critérios de morte
  *

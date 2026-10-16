@@ -73,13 +73,11 @@ PAID_ALLOWLIST = {
     # Fallback pago do Hermes (config.yaml) desde 08/09/2026 — substituiu o
     # glm-5.3-flash nas 20 ocorrencias de ~/.hermes/config.yaml.
     "deepseek/deepseek-v4-flash",
-    # NAO removido junto: desde o #10278 (15/10/2026) o glm SAIU da cadeia
-    # padrao de claude-delegate.sh (MODELS_DEFAULT agora tem o
-    # deepseek-v4-flash como elo pago), mas continua forcado por --model na
-    # lane piloto do #6930 (dispatch-glm-lane-unit.sh) e em entradas de
-    # ~/.hermes ainda nao migradas — ou seja, ainda aparece em producao.
-    # Tirar daqui o transformaria em vazamento falso.
-    "z-ai/glm-5.3-flash",       # lane piloto #6930 + visao (fora da cadeia padrao desde #10278)
+    # #10367 (16/10/2026): o z-ai/glm-5.3-flash SAIU desta allowlist. Desde o
+    # #10278 ele ja nao estava na cadeia padrao de claude-delegate.sh, e a
+    # lane piloto do #6930 (dispatch-glm-lane-unit.sh) foi reapontada para o
+    # deepseek-v4-flash (decisao do editor, briefing overnight 261016b). Uso
+    # residual do glm em producao passa a ser sinalizado como vazamento pago.
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
     # #8738 (23/09/2026): version bump do mesmo modelo "Luna" do
@@ -91,8 +89,7 @@ PAID_ALLOWLIST = {
     # fora da allowlist e vira falso-positivo "PAGO FORA DA ALLOWLIST"
     # todo dia — mesma classe de drift do PR #7648 que motivou as 2
     # entradas gpt-5.6-luna acima. As entradas antigas NAO sao removidas:
-    # mesmo trade-off ja aceito pro z-ai/glm-5.3-flash acima (trafego
-    # historico/ainda-nao-migrado pode referenciar o id velho).
+    # trafego historico/ainda-nao-migrado pode referenciar o id velho.
     "openai-codex/gpt-6-luna",
     "gpt-6-luna",
     # #7649 (08/09/2026): elo final de assinatura claude.ai de
@@ -158,15 +155,6 @@ CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 # atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
 # a direcao segura.
 PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
-    # Medido ao vivo em 10/09/2026 contra o catalogo da OpenRouter (#7907),
-    # apos o watchdog do item 4 (#7811) ter disparado sozinho em producao. A
-    # promocao de lancamento do glm-5.3-flash expirou em 09-10/09/2026 (~1
-    # dia depois do previsto — provavel diferenca de fuso na virada de
-    # Singapura). Decisao do editor ja registrada em #6818 (09/09/2026):
-    # MANTER o glm-5.3-flash de qualquer jeito, absorvendo o dobro do custo
-    # (~$176 -> ~$352/mes), sem avaliar substituto nesta rodada — atualizar o
-    # baseline aqui e o que impede o mesmo alarme de repetir todo dia sobre
-    # um aumento ja visto, medido e autorizado.
     "deepseek/deepseek-v4-flash": {
         # Preco vigente medido em 04/10/2026 (#9559): promo expirou — prompt
         # caiu 3,9x, completion subiu 7,35x. Decisao do editor: MANTER o modelo
@@ -186,27 +174,10 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
         "completion": 0.000000182,         # $0,182/M
         "input_cache_read": 0.0000000182,  # $0,0182/M
     },
-    "z-ai/glm-5.3-flash": {
-        # #10065 (13/10/2026): catalogo mudou de novo — completion subiu
-        # (0,50 -> 1,20/M no alarme de 12/10; 0,90/M medido ao vivo em 13/10,
-        # que e o valor gravado aqui), prompt e input_cache_read CAIRAM.
-        # Decisao do editor (briefing overnight 261013): MANTER o modelo ao
-        # preco novo. Baseline acompanha os 3 campos vigentes — inclusive as
-        # quedas, senao uma volta ao preco antigo de prompt/cache passaria
-        # sem alarme. Custo-mix no workload real (2302 chamadas do tick,
-        # 28/08-16/09): $9,46 no baseline antigo -> $3,24 no vigente (-66%).
-        # #10278 (15/10/2026): o #10220 (PR #10221) chegou a subir este
-        # baseline para o preco de 14/10 (prompt 0,15/M, completion 0,50/M,
-        # cache 0,03/M — custo-mix 2,9x, ~US$ 180/ano), calando o alarme sem
-        # decisao do editor. REVERTIDO: a decisao (briefing overnight 261015b)
-        # foi TROCAR o glm-5.3-flash pelo deepseek-v4-flash, nao absorver a
-        # alta. O baseline volta ao de 13/10 de proposito — enquanto o glm
-        # ainda aparecer em producao (cadeia em ~/.hermes, lane do #6930), o
-        # alarme de preco deve continuar soando, nunca silenciado.
-        "prompt": 0.0000000261,           # $0,0261/M
-        "completion": 0.0000009,          # $0,90/M
-        "input_cache_read": 0.0000000108, # $0,0108/M
-    },
+    # #10367 (16/10/2026): o z-ai/glm-5.3-flash saiu deste baseline (e da
+    # allowlist e de PRICE_INCREASE_DECISIONS) ao concluir a troca decidida
+    # no #10278 — a lane do #6930 agora forca o deepseek-v4-flash. Historico
+    # dos baselines do glm (#7907, #10065, #10278): historico deste arquivo.
 }
 
 # Modelos pagos que a OpenRouter NAO serve — sao cobrados por outra rota
@@ -232,21 +203,13 @@ PAID_MODELS_NOT_ON_OPENROUTER = {
 }
 
 # #10295 (15/10/2026): decisao do editor ja registrada sobre a alta de preco de
-# um modelo do baseline. O alarme CONTINUA soando (exit 3) — e o que o #10278
-# pediu: enquanto o glm ainda aparecer em producao, a alta nao e silenciada —
-# mas cada aumento desses modelos sai anotado com a decisao, e a issue do
-# watch-continuo-health deixa de mandar "atualizar PAID_PRICE_BASELINE", que e
-# exatamente o que a decisao desfez. Ao concluir a troca (glm fora da cadeia e
-# da lane em ~/.hermes), remover o modelo daqui, do baseline e da allowlist.
-PRICE_INCREASE_DECISIONS: dict[str, str] = {
-    "z-ai/glm-5.3-flash": (
-        "#10278 (15/10/2026): o editor decidiu TROCAR o glm-5.3-flash pelo "
-        "deepseek/deepseek-v4-flash, nao absorver a alta. NAO atualizar "
-        "PAID_PRICE_BASELINE deste modelo; a acao e concluir a troca "
-        "(tirar o glm da cadeia/lane em ~/.hermes, #6930) e entao remove-lo "
-        "do baseline e da allowlist."
-    ),
-}
+# um modelo do baseline. O alarme CONTINUA soando (exit 3), mas cada aumento
+# desses modelos sai anotado com a decisao, e a issue do watch-continuo-health
+# deixa de mandar "atualizar PAID_PRICE_BASELINE" quando isso desfaria a
+# decisao. Invariante (teste): todo id aqui tem baseline. Vazio desde o
+# #10367: a unica entrada (glm-5.3-flash, #10278 — trocar pelo
+# deepseek-v4-flash) saiu quando a troca foi concluida.
+PRICE_INCREASE_DECISIONS: dict[str, str] = {}
 
 OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
 

@@ -239,8 +239,8 @@ is_subscription_lane_model() {
 # históricas (medições feitas quando ele era o elo pago); o pressuposto (a)
 # do BUDGET vale igual: preço do deepseek é da mesma ordem, bem abaixo do
 # default da Anthropic. O lane de piloto do #6930 (dispatch-glm-lane-unit.sh)
-# força --model z-ai/glm-5.3-flash explicitamente e não é afetado por esta
-# troca.
+# força --model explicitamente — também deepseek/deepseek-v4-flash desde o
+# #10367 (era z-ai/glm-5.3-flash).
 MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "deepseek/deepseek-v4-flash" "$SUBSCRIPTION_LANE_MODEL")
 MODEL_FORCED=""
 
