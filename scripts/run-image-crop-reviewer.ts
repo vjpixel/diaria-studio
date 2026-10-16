@@ -315,6 +315,13 @@ export const MAX_ESTILO_REGEN_FAILED_RUNS = 1;
 /** Ratios revisados por destaque — os que `images` guarda após uma proposta (#10332). */
 const ESTILO_REGEN_RATIOS: readonly CropReviewRatio[] = ["1x1", "4x5"];
 
+/**
+ * #10342: chave da base 2:1 para `CurrentImageMd5` — não é um ratio revisado,
+ * mas `04-{d}-2x1.jpg` é o arquivo que o 1º comando de `estiloRegenCommands`
+ * reescreve quando o gerador funciona.
+ */
+const BASE_RATIO = "2x1";
+
 /** Estado persistido em `_internal/04-estilo-regen.json`. */
 export interface EstiloRegenState {
   /** Regenerações que de fato rodaram (imagem mudou) por destaque. */
@@ -323,6 +330,15 @@ export interface EstiloRegenState {
   failed?: Partial<Record<DestaqueId, number>>;
   /** Proposta em aberto: md5 por ratio da imagem julgada no momento do plano. */
   pending?: Partial<Record<DestaqueId, Record<string, string | null>>>;
+  /**
+   * #10342: md5 do 2:1 (`04-{d}-2x1.jpg`) no momento da proposta — a base que
+   * o gerador reescreve. Decide "a regeneração rodou?" no plano seguinte. O
+   * md5 por ratio de `pending` não serve sozinho: o 1º comando com `--force`
+   * apaga o 4:5 nativo e o master ANTES de chamar o gerador (#6010), então com
+   * o gerador fora o md5 do 4:5 muda só porque a variante resolvida passou de
+   * `4x5-nativo` para `2x1` — sem imagem nova nenhuma.
+   */
+  pendingBase?: Partial<Record<DestaqueId, string | null>>;
   /**
    * #10327: md5s das imagens a que `attempts`/`failed` se referem (a anterior
    * e a regenerada). A contagem é por POSIÇÃO; quando a imagem atual do
@@ -355,7 +371,8 @@ export type CurrentImageMd5 = (destaque: DestaqueId, ratio: string) => string | 
  * A tentativa só é gasta quando a regeneração de fato rodou: o plano anota o
  * md5 das imagens em `pending` e o plano seguinte compara com o md5 atual.
  * Imagem mudou → `attempts` +1. Não mudou (gerador falhou) → `failed` +1, e
- * o destaque ganha nova chance até `MAX_ESTILO_REGEN_FAILED_RUNS`.
+ * o destaque ganha nova chance até `MAX_ESTILO_REGEN_FAILED_RUNS`. "Mudou" é
+ * medido no 2:1 (`pendingBase`, #10342) quando ele existia no plano anterior.
  */
 export function planEstiloRegeneration(
   result: CropReviewResult,
@@ -378,7 +395,17 @@ export function planEstiloRegeneration(
     const snap = previous.pending?.[d];
     if (!snap) continue;
     for (const md5 of Object.values(snap)) remember(d, md5);
-    const changed = Object.entries(snap).some(([ratio, md5]) => currentMd5(d, ratio) !== md5);
+    // #10342: com o md5 do 2:1 gravado, só ele decide — 2:1 novo = o gerador
+    // rodou. Sem ele (estado legado, ou 2:1 ausente no plano) cai na
+    // comparação por ratio de antes.
+    const base = previous.pendingBase?.[d];
+    const changed =
+      typeof base === "string"
+        ? (() => {
+            const now = currentMd5(d, BASE_RATIO);
+            return now !== null && now !== base;
+          })()
+        : Object.entries(snap).some(([ratio, md5]) => currentMd5(d, ratio) !== md5);
     if (changed) attempts[d] = (attempts[d] ?? 0) + 1;
     else failed[d] = (failed[d] ?? 0) + 1;
     // #10332: guarda o md5 atual de TODOS os ratios, não só dos que estavam no
@@ -397,6 +424,7 @@ export function planEstiloRegeneration(
     }
   }
   const pending: Partial<Record<DestaqueId, Record<string, string | null>>> = {};
+  const pendingBase: Partial<Record<DestaqueId, string | null>> = {};
   const regenerate: DestaqueId[] = [];
   const exhausted: DestaqueId[] = [];
   for (const d of DESTAQUE_IDS) {
@@ -416,11 +444,12 @@ export function planEstiloRegeneration(
     if ((attempts[d] ?? 0) < maxAttempts && (failed[d] ?? 0) <= MAX_ESTILO_REGEN_FAILED_RUNS) {
       regenerate.push(d);
       pending[d] = Object.fromEntries([...ratios].map((ratio) => [ratio, currentMd5(d, ratio)]));
+      pendingBase[d] = currentMd5(d, BASE_RATIO);
     } else {
       exhausted.push(d);
     }
   }
-  return { regenerate, exhausted, attempts, state: { attempts, failed, pending, images } };
+  return { regenerate, exhausted, attempts, state: { attempts, failed, pending, pendingBase, images } };
 }
 
 export interface FalsePositiveTarget {
