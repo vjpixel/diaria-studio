@@ -102,6 +102,25 @@ describe("#10348 --update-html com marcador de sendNow segue o guard do --send-n
     assert.deepEqual(puts, []);
   });
 
+  // #10364: o guard do --send-now devolve `send: true` pra status não mapeados
+  // — "in_review" (envio aceito retido pra compliance, #4364) não prova que o
+  // sendNow não saiu. Sem PUT, registro intacto, log sem "o sendNow não saiu".
+  for (const live of ["in_review", "suspended", "archive"]) {
+    it(`#10364 sendNowAcceptedAt + status ao vivo ${live}: recusa sem PUT e sem alterar o registro`, async () => {
+      const { r, puts, gets, logs, onDisk } = await run({}, live, after1h, `live-${live}`);
+      assert.equal(r, "skipped");
+      assert.deepEqual(gets, [31]);
+      assert.deepEqual(puts, []);
+      assert.equal(onDisk.status, "draft");
+      assert.equal(onDisk.envioIndex, 1);
+      assert.equal(onDisk.queroIncluded, false);
+      const all = logs.join("\n");
+      assert.match(all, new RegExp(`status ao vivo="${live}"`));
+      assert.match(all, /html NÃO atualizado/);
+      assert.doesNotMatch(all, /o sendNow não saiu/);
+    });
+  }
+
   it("draft sem marcador: atualiza sem GET", async () => {
     const { r, puts, gets } = await run({ sendNowAcceptedAt: undefined }, "draft", after1h, "no-mark");
     assert.equal(r, "updated");
