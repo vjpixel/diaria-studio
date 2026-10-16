@@ -745,5 +745,17 @@
       "https://blog.google/innovation-and-ai/models-and-research/google-research/google-project-suncatcher-facts/"
     ],
     "editionTitle": "Google vai colocar data centers no espaço?"
+  },
+  {
+    "date": "2026-10-13",
+    "editionSlug": "gemini-vira-colega-com-e-mail-e-agenda-proprios",
+    "url": "https://diar.ia.br/p/gemini-vira-colega-com-e-mail-e-agenda-proprios",
+    "matchedHeadlines": [
+      "Gemini vira colega com e-mail e agenda próprios"
+    ],
+    "primarySourceUrls": [
+      "https://cloud.google.com/blog/products/ai-machine-learning/welcome-to-gemini-at-work-2026"
+    ],
+    "editionTitle": "Gemini vira colega com e-mail e agenda próprios"
   }
 ]
