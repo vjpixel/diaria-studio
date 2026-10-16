@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildKitReviewRecord,
   checkIntentionalErrorInEmail,
@@ -16,6 +19,8 @@ import {
 import { checkEditionEmail } from "../scripts/record-kit-review.ts";
 import { isIntentionalErrorPlaceholder } from "../scripts/lib/intentional-errors.ts";
 import { main as proposeMain } from "../scripts/propose-intentional-error-candidate.ts";
+
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function editionWith(ie: string | null, email: string | null): { dir: string; emailFile: string } {
   const dir = mkdtempSync(join(tmpdir(), "kit-10267-"));
@@ -88,9 +93,38 @@ describe("#10267 falha de leitura não desliga a checagem em silêncio", () => {
     assert.match(r.warnings[0], /--email-file .* não existe/);
   });
 
-  it("intentional-error.json ausente não é warning (sem gabarito declarado)", () => {
+  // #10351 reverte a decisão anterior ("ausente não é warning"): o Stage 2 sempre
+  // grava o arquivo, e "sem erro" se declara com no_error: true — ausência é falha.
+  it("intentional-error.json ausente → warning (#10351)", () => {
     const { dir, emailFile } = editionWith(null, "<p>x</p>");
-    assert.deepEqual(checkEditionEmail(dir, emailFile), { check: "no_wrong_value", warnings: [] });
+    const r = checkEditionEmail(dir, emailFile);
+    assert.equal(r.check, "no_wrong_value");
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0], /intentional-error\.json ausente/);
+    assert.match(r.warnings[0], /#10351/);
+  });
+
+  it("--email-file vazio → no_email + warning (#10351, fetch truncado)", () => {
+    const { dir, emailFile } = editionWith(JSON.stringify({ wrong_value: "Unibanko" }), "");
+    const r = checkEditionEmail(dir, emailFile);
+    assert.equal(r.check, "no_email");
+    assert.equal(r.warnings.length, 1);
+    assert.match(r.warnings[0], /--email-file .* está vazio/);
+  });
+
+  it("--email-file só com espaço/quebra de linha também avisa (#10351)", () => {
+    const { dir, emailFile } = editionWith(JSON.stringify({ wrong_value: "Unibanko" }), "  \n\t\n");
+    const r = checkEditionEmail(dir, emailFile);
+    assert.equal(r.check, "no_email");
+    assert.match(r.warnings[0] ?? "", /está vazio/);
+  });
+
+  it("usage do CLI documenta --email-file (#10351)", () => {
+    const r = spawnSync(process.execPath, ["--import", "tsx", join(REPO_ROOT, "scripts/record-kit-review.ts")], {
+      encoding: "utf8",
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--email-file/);
   });
 });
 

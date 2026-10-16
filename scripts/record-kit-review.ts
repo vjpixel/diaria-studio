@@ -59,6 +59,10 @@ export function recordKitReview(
  * que o JSON ainda carregue um `wrong_value`). `warnings` lista as causas que
  * DESLIGAM a checagem sem ser uma decisão editorial — JSON ilegível, `wrong_value`
  * ainda placeholder `{PREENCHER}` (#10293), `--email-file` ausente/ilegível — pra que o chamador as torne visíveis em vez de engolir.
+ * #10351: também o JSON AUSENTE (o Stage 2 sempre grava o arquivo, nem que com
+ * placeholder; a decisão editorial de "sem erro" é `no_error: true`, nunca a
+ * falta do arquivo) e o corpo do e-mail VAZIO/só espaço (fetch truncado gravado
+ * como arquivo vazio cairia em `no_email` calado).
  */
 export function checkEditionEmail(
   editionDir: string,
@@ -89,6 +93,11 @@ export function checkEditionEmail(
         `${ie} ilegível (${(e as Error).message}) — checagem do erro intencional desligada (#10267)`,
       );
     }
+  } else {
+    warnings.push(
+      `${ie} ausente — gabarito do erro intencional não declarado; checagem desligada ` +
+        "(sem erro na edição se declara com no_error: true, #10351)",
+    );
   }
   let body: string | undefined;
   if (!existsSync(emailFile)) {
@@ -96,6 +105,13 @@ export function checkEditionEmail(
   } else {
     try {
       body = readFileSync(emailFile, "utf8");
+      if (body.trim() === "") {
+        warnings.push(
+          `--email-file ${emailFile} está vazio — corpo do e-mail entregue não capturado (fetch truncado?); ` +
+            "checagem do erro intencional desligada (#10351)",
+        );
+        body = undefined;
+      }
     } catch (e) {
       warnings.push(
         `--email-file ${emailFile} ilegível (${(e as Error).message}) — checagem do erro intencional desligada (#10267)`,
@@ -111,7 +127,9 @@ if (isMainModule(import.meta.url)) {
   if (!editionDir || !args.status) {
     console.error(
       "uso: record-kit-review.ts --edition-dir <dir> --status ok|inconclusive|issues_unfixable " +
-        "[--attempts N] [--reason R] [--issues-json '[...]']",
+        "[--attempts N] [--reason R] [--issues-json '[...]'] [--email-file <corpo do e-mail entregue>]\n" +
+        "  --email-file liga a checagem do erro intencional (#10243): wrong_value de _internal/intentional-error.json\n" +
+        "  precisa aparecer no e-mail entregue; sem o flag a checagem não roda.",
     );
     process.exit(1);
   }

@@ -123,8 +123,10 @@ const SUBJECT_CLAUSE_END = new RegExp(
  * "launches a new tool") — it names no product, so the product is the next
  * clause after the colon.
  */
+// #10355: o inglês põe o adjetivo ANTES do substantivo ("new AI model", "a new
+// open-weight model") — até 2 adjetivos aceitos entre "new" e o substantivo.
 const GENERIC_LAUNCH_OBJECT_END =
-  /\s(?:novo|nova|novos|novas|new)\s+(?:modelo|modelos|model|models|chatbot|assistente|assistant|IA|AI|LLM)(?:\s+(?:de\s+)?(?:IA|AI|linguagem|language|aberto|open))?\s*$/iu;
+  /\s(?:novo|nova|novos|novas|new)\s+(?:(?:AI|open|open-source|open-weight|language|reasoning|frontier|multimodal)\s+){0,2}(?:modelo|modelos|model|models|chatbot|assistente|assistant|IA|AI|LLM)(?:\s+(?:de\s+)?(?:IA|AI|linguagem|language|aberto|open))?\s*$/iu;
 
 /**
  * #10145: the versioned product a headline is ABOUT — the first code in its
@@ -145,6 +147,24 @@ export function subjectVersionedProductCode(title: string): string | undefined {
     if (first) return first;
     if (!m) return undefined;
     if (!/^[,;:]$/.test(m[0])) {
+      // #10355: o " de" de "novo modelo de IA:"/"novo modelo de linguagem:" faz
+      // parte do objeto genérico, não abre frase secundária. Se a preposição cai
+      // DENTRO do objeto genérico que termina na pontuação seguinte, a oração é
+      // tratada como a do ramo de pontuação abaixo (o produto vem depois do ":").
+      const punct = /[,;:]/.exec(rest);
+      if (punct && punct.index > m.index) {
+        const clause = rest.slice(0, punct.index);
+        const generic = GENERIC_LAUNCH_OBJECT_END.exec(clause);
+        if (
+          generic &&
+          m.index >= generic.index &&
+          hasLaunchVerb(clause) &&
+          extractVersionedProductCodes(clause).size === 0
+        ) {
+          rest = " " + rest.slice(punct.index + 1);
+          continue;
+        }
+      }
       // #10205: preposição ABRINDO o título ("Após GPT-5.5, OpenAI lança GPT-6")
       // é adjunto até a próxima vírgula; preposição no meio encerra o sujeito.
       if (m.index !== 0 || head !== "") return undefined;

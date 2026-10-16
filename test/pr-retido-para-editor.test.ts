@@ -37,6 +37,24 @@ describe("evaluatePrRetido (#10278)", () => {
     assert.equal(r.retido, true);
   });
 
+  // #10349: marcador escrito à mão fora da forma exata também retém.
+  for (const variant of [
+    "<!--retido-para-editor-->",
+    "<!-- Retido-Para-Editor -->",
+    "<!--   RETIDO-PARA-EDITOR\t-->",
+    "<!--\nretido-para-editor\n-->",
+  ]) {
+    it(`marcador tolerante a espaço/caixa (${JSON.stringify(variant)}) → retido (#10349)`, () => {
+      const r = evaluatePrRetido({ labels: [], body: `Resumo\n\n${variant}\n` });
+      assert.equal(r.retido, true);
+    });
+  }
+
+  it("marcador com outro nome no comentário HTML não retém (#10349)", () => {
+    assert.equal(evaluatePrRetido({ labels: [], body: "<!-- retido-para-editor-antigo -->" }).retido, false);
+    assert.equal(evaluatePrRetido({ labels: [], body: "retido-para-editor fora de comentário" }).retido, false);
+  });
+
   it("cenário da PR #10221: só prosa ('NÃO mergeado pela rodada') sem label nem marcador → livre (é por isso que a label é obrigatória)", () => {
     const r = evaluatePrRetido({ labels: [{ name: "continuo" }], body: "NÃO mergeado pela rodada — decisão do editor" });
     assert.equal(r.retido, false);

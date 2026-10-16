@@ -44,6 +44,13 @@
 
 export const RETIDO_PARA_EDITOR_LABEL = "retido-para-editor";
 export const RETIDO_PARA_EDITOR_MARKER = "<!-- retido-para-editor -->";
+/**
+ * Casa o marcador tolerando espaço e caixa (#10349): `<!--retido-para-editor-->`
+ * e `<!-- Retido-Para-Editor -->` também retêm — mesma normalização que a label
+ * recebe (trim + lowercase). Sem isso, uma retenção manual fora da forma exata
+ * passava pelo gate e a PR era mergeada.
+ */
+export const RETIDO_PARA_EDITOR_MARKER_RE = /<!--\s*retido-para-editor\s*-->/i;
 
 export interface PrRetidoInput {
   /** `labels` cru do `gh pr view --json labels` — array de `{name}`. */
@@ -87,7 +94,7 @@ export function evaluatePrRetido(input: PrRetidoInput): PrRetidoResult {
       reason: `label '${RETIDO_PARA_EDITOR_LABEL}' presente — retida para o editor (#10278)`,
     };
   }
-  if (typeof input.body === "string" && input.body.includes(RETIDO_PARA_EDITOR_MARKER)) {
+  if (typeof input.body === "string" && RETIDO_PARA_EDITOR_MARKER_RE.test(input.body)) {
     return {
       retido: true,
       reason: `marcador ${RETIDO_PARA_EDITOR_MARKER} no corpo da PR — retida para o editor (#10278)`,

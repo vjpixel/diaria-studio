@@ -489,6 +489,24 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Microsoft lança nova versão: Windows 11 ganha IA na tela"), undefined);
     assert.equal(subjectVersionedProductCode("Anthropic lança novo modelo aberto: Claude Opus 6"), "opus6");
   });
+
+  it("#10355: 'novo modelo de IA:' / 'de linguagem:' não morrem no ' de' do SUBJECT_CLAUSE_END", () => {
+    assert.equal(subjectVersionedProductCode("Meta lança novo modelo de IA: Llama 5"), "llama5");
+    assert.equal(subjectVersionedProductCode("Anthropic lança novo modelo de linguagem: Claude Opus 6"), "opus6");
+    assert.equal(subjectVersionedProductCode("Anthropic lança nova IA de linguagem: Claude Opus 6"), "opus6");
+    // a preposição fora do objeto genérico continua encerrando o sujeito
+    assert.equal(subjectVersionedProductCode("Meta lança no Brasil novo modelo de IA: Llama 5"), undefined);
+    // sem verbo de lançamento, nada muda
+    assert.equal(subjectVersionedProductCode("Ranking de modelos de IA: Llama 5 lidera"), undefined);
+  });
+
+  it("#10355: inglês com adjetivo antes de 'model' também segue para a 2ª oração", () => {
+    assert.equal(subjectVersionedProductCode("OpenAI launches new AI model: GPT-6"), "gpt6");
+    assert.equal(subjectVersionedProductCode("Meta releases new open model: Llama 5"), "llama5");
+    assert.equal(subjectVersionedProductCode("Meta releases a new open-weight AI model: Llama 5"), "llama5");
+    // objeto que nomeia produto continua encerrando
+    assert.equal(subjectVersionedProductCode("Microsoft launches Copilot Vision: Windows 11 gets AI"), undefined);
+  });
 });
 
 // #10162: decisão do editor — fonte oficial vence a cobertura em QUALQUER

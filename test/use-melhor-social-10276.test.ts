@@ -97,6 +97,63 @@ describe("#10276 defeito 1 — lista numerada sem sinal de tutorial não vira st
   });
 });
 
+describe("#10352 verbos ambíguos e cabeçalho 'passos' solto", () => {
+  it("cenário da issue: lista de requisitos de curso não vira steps", () => {
+    const t = "Quem pode participar\n1. Entre 18 e 29 anos\n2. Envie o formulário\n3. Tenha conta Google";
+    assert.deepEqual(extractUseMelhorSteps(t), []);
+  });
+
+  it("'Próximos passos' antes de um roadmap não é cabeçalho de tutorial", () => {
+    const t = "Próximos passos\n1. Lançamento em dezembro\n2. Expansão para a Europa\n3. Versão paga em 2027";
+    assert.deepEqual(extractUseMelhorSteps(t), []);
+    assert.deepEqual(extractUseMelhorSteps("Next steps\n1. Beta in December\n2. GA in 2027"), []);
+  });
+
+  it("'N passos' e cabeçalho que abre com 'Passos' continuam valendo", () => {
+    assert.deepEqual(extractUseMelhorSteps("Em 3 passos\n1. Conta no Drive\n2. Pasta compartilhada"), [
+      "Conta no Drive",
+      "Pasta compartilhada",
+    ]);
+    assert.deepEqual(extractUseMelhorSteps("## Passos\n1. Conta no Drive\n2. Pasta compartilhada"), [
+      "Conta no Drive",
+      "Pasta compartilhada",
+    ]);
+  });
+
+  it("startsWithImperative: palavra ambígua sem objeto não é verbo", () => {
+    for (const nao of [
+      "Entre 18 e 29 anos",
+      "Some users report bugs",
+      "Peça de roupa gerada por IA",
+      "Use cases for agents",
+      "List of tools",
+      "Set of prompts",
+      "Test results",
+      "Type: assinatura",
+      "Make",
+    ]) {
+      assert.equal(startsWithImperative(nao), false, nao);
+    }
+  });
+
+  it("startsWithImperative: palavra ambígua com objeto segue sendo verbo", () => {
+    for (const sim of [
+      "Entre no site",
+      "Some o custo total",
+      "Peça ao ChatGPT um resumo",
+      "Use o atalho Ctrl+K",
+      "Use the shortcut",
+      "Set up the API key",
+      "List your tasks",
+      "Test the prompt",
+      "Type your question",
+      "Make sure the file is saved",
+    ]) {
+      assert.equal(startsWithImperative(sim), true, sim);
+    }
+  });
+});
+
 describe("#10276 defeito 2 — 1ª linha da legenda = título da capa", () => {
   const TITLE_STAGE3 = "Como saber se a assinatura de IA se paga";
   const TITLE_GATE4 = "A conta da assinatura de IA";
