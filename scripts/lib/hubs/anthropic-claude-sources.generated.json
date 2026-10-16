@@ -1028,5 +1028,17 @@
       "https://www.anthropic.com/claude-haiku-5-5"
     ],
     "editionTitle": "Haiku 5.5 supera o Sonnet 5 e custa até 95% menos"
+  },
+  {
+    "date": "2026-10-09",
+    "editionSlug": "claude-ganha-regra-contra-quem-o-maltrata",
+    "url": "https://diar.ia.br/p/claude-ganha-regra-contra-quem-o-maltrata",
+    "matchedHeadlines": [
+      "Claude ganha regra contra quem o maltrata"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/news/2026-usage-policy-update"
+    ],
+    "editionTitle": "Claude ganha regra contra quem o maltrata"
   }
 ]
