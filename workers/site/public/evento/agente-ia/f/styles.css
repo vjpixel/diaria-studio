@@ -239,7 +239,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .step-number{font-family:var(--mono);font-size:13px;letter-spacing:.12em;color:var(--brand)}
 .step p{font-size:17px}
 .step-result{margin-top:auto;padding-top:14px;border-top:1px solid var(--rule)}
-.materials{grid-template-columns:repeat(2,1fr)}
+.materials{grid-template-columns:repeat(3,1fr)}
 .materials h3{font-size:22px}
 /* Prova: o número da diar.ia.br em destaque */
 .proof{background:var(--paper)}
@@ -251,6 +251,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .proof-nets strong{font-family:var(--serif);font-size:22px}
 @media (max-width:1023px){
   .steps{grid-template-columns:1fr}
+  .materials{grid-template-columns:1fr}
   .proof-grid{grid-template-columns:1fr;gap:32px}
 }
 @media (max-width:767px){
@@ -483,7 +484,7 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .materials .bullet{overflow:hidden}
 .doc{height:196px;margin:-24px -24px 4px;padding:22px 26px 0;background:var(--paper-alt);-webkit-mask-image:linear-gradient(#000 78%,transparent);mask-image:linear-gradient(#000 78%,transparent)}
 .sheet{min-height:100%;padding:16px 18px;border:1px solid var(--rule);border-radius:4px 4px 0 0;background:var(--white);box-shadow:0 6px 18px rgba(23,20,17,.1);transform:rotate(-1.2deg);transform-origin:bottom left}
-.materials .bullet+.bullet .sheet{transform:rotate(1.2deg);transform-origin:bottom right}
+.materials .bullet:nth-child(2) .sheet{transform:rotate(1.2deg);transform-origin:bottom right}
 .doc .sheet-head{flex:none;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;padding-bottom:10px;margin-bottom:12px;border-bottom:1px solid var(--rule)}
 .sheet-head::before{content:"● ";color:var(--brand)}
 .sheet-q{display:grid;gap:10px;font-size:12px;line-height:1.3;counter-reset:q}
@@ -496,6 +497,9 @@ p.bubble{display:block;width:auto;max-width:82%;font-size:15px;line-height:1.45}
 .sheet-check b{position:relative;flex:none;width:14px;height:14px;margin-top:1px;border:1.5px solid var(--ink);border-radius:3px}
 .sheet-check .on b{border-color:var(--brand);background:var(--brand)}
 .sheet-check .on b::after{content:"";position:absolute;left:3px;top:0;width:4px;height:8px;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.sheet-steps{display:grid;gap:9px;font-size:12px;line-height:1.3;counter-reset:s}
+.sheet-steps li{display:flex;gap:8px;counter-increment:s}
+.sheet-steps li::before{content:counter(s) ".";flex:none;font-weight:600}
 .doc .sheet-foot{flex:none;margin-top:12px;font-family:var(--serif);font-style:italic;font-size:13px}
 
 /* Garantia: escudo em círculo teal */
