@@ -54,6 +54,8 @@
  *                      A/B de horário pode reabrir isso de propósito.
  *   --update-html      re-aplica o HTML atual (cloudflare-preview.html) na
  *                      campanha em draft — propaga fix de render pós-create.
+ *                      Recusa (exit 1) campanha que já saiu; draft com marcador
+ *                      de sendNow consulta o status ao vivo (#10348).
  *   --envio-index N    #10179: força o índice do envio no ciclo (1-based).
  *                      Sem a flag, sai da ordem das ondas em
  *                      group-campaigns.json que de fato saíram (#10189:
@@ -1289,6 +1291,10 @@ export async function runSendNowLive(
   return "sent";
 }
 
+function isNonEmptyMark(v: unknown): v is string {
+  return typeof v === "string" && v !== "";
+}
+
 /**
  * #10271: `--update-html` — propaga um fix de render pra campanha que AINDA
  * NÃO saiu. A guarda é `envioWentOut(c)`, não só `status`: uma entrada `draft`
@@ -1298,6 +1304,17 @@ export async function runSendNowLive(
  * `htmlContent` numa campanha já na fila e reescrevia `envioIndex`/
  * `queroIncluded` — o registro deixava de descrever o que foi pra Brevo
  * (premissa do docstring de `resolveQueroEnvioIndex`).
+ *
+ * #10348: o único caso em que "saiu" pelo registro local pode ser falso é o
+ * marcador de sendNow (`sendNowAcceptedAt`/`sendNowAttemptedAt`) numa entrada
+ * `draft` sem `scheduleAcceptedAt`. Ali vale a MESMA regra do `--send-now`:
+ * GET ao vivo + `checkSendNowGuard` (status ao vivo e janela de
+ * `SEND_NOW_GUARD_WINDOW_MS`). Se o guard libera um novo POST sendNow, a
+ * campanha não saiu e o HTML PODE ser atualizado — antes, a guarda recusava
+ * pra sempre e o re-disparo liberado saía com o HTML antigo. Sem
+ * `getCampaignFn` injetado, recusa (fail-safe).
+ *
+ * Retorno `"skipped"` = PUT pedido NÃO feito; o caller sinaliza exit 1.
  */
 export async function runUpdateHtml(
   c: CampaignEntry,
@@ -1307,13 +1324,42 @@ export async function runUpdateHtml(
   quero: { envioIndex: number; included: boolean },
   deps: {
     putHtmlFn: (campaignId: number, html: string) => Promise<void>;
+    /** #10348: GET ao vivo, consultado só no caso do marcador de sendNow. */
+    getCampaignFn?: (campaignId: number) => Promise<{ status: string }>;
     writeFn?: (path: string, content: string) => void;
     logFn?: (msg: string) => void;
+    nowFn?: () => Date;
   },
 ): Promise<"updated" | "skipped"> {
   const writeFn = deps.writeFn ?? ((p, content) => writeFileAtomic(p, content));
   const logFn = deps.logFn ?? ((m) => console.error(m));
-  if (envioWentOut(c)) {
+  const hasSendNowMark = isNonEmptyMark(c.sendNowAcceptedAt) || isNonEmptyMark(c.sendNowAttemptedAt);
+  if (c.status === "draft" && !isNonEmptyMark(c.scheduleAcceptedAt) && hasSendNowMark) {
+    const marks = `sendNowAcceptedAt=${c.sendNowAcceptedAt ?? "—"}, sendNowAttemptedAt=${c.sendNowAttemptedAt ?? "—"}`;
+    if (!deps.getCampaignFn) {
+      logFn(`⚠️  ${c.key} tem marcador de sendNow (${marks}) e não há GET ao vivo pra conferir — html NÃO atualizado`);
+      return "skipped";
+    }
+    const live = await deps.getCampaignFn(c.campaignId);
+    const guard = checkSendNowGuard(c.status, live.status, {
+      sendNowAcceptedAt: c.sendNowAcceptedAt,
+      sendNowAttemptedAt: c.sendNowAttemptedAt,
+      now: (deps.nowFn ?? (() => new Date()))(),
+    });
+    if (!guard.send) {
+      if (guard.syncLocalAsSent) {
+        c.status = "sent";
+        writeFn(campaignsPath, JSON.stringify(campaigns, null, 2));
+        logFn(`   (registro local de ${c.key} corrigido pra "sent" — estava defasado)`);
+      }
+      logFn(`⚠️  ${c.key} (campanha #${c.campaignId}): ${guard.reason} — html NÃO atualizado`);
+      return "skipped";
+    }
+    logFn(
+      `↻ ${c.key} (campanha #${c.campaignId}): ${marks}, mas status ao vivo="${live.status}" fora da janela do guard — ` +
+        `o sendNow não saiu; html será atualizado antes do re-disparo (#10348)`,
+    );
+  } else if (envioWentOut(c)) {
     const why =
       c.status === "sent" ? "disparada"
       : c.status === "scheduled" ? "agendada"
@@ -1640,12 +1686,16 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   if (doUpdateHtml) {
     const c = byKey.get(key);
     if (!c) throw new Error(`campanha '${key}' não criada — rode --create antes.`);
-    // #10271: guarda é `envioWentOut(c)` (dentro de runUpdateHtml), não só `status`.
-    await runUpdateHtml(c, campaigns, campaignsPath, html, quero, {
+    // #10271: guarda é `envioWentOut(c)` (dentro de runUpdateHtml), não só `status`;
+    // #10348: marcador de sendNow consulta o status ao vivo (mesma regra do --send-now).
+    const updated = await runUpdateHtml(c, campaigns, campaignsPath, html, quero, {
       putHtmlFn: async (id, h) => {
         await brevoPut(apiKey, `/emailCampaigns/${id}`, { htmlContent: h });
       },
+      getCampaignFn: (id) => brevoGetCampaign(apiKey, id),
     });
+    // #10348: PUT pedido e não feito não é sucesso — exit 1 (o JSON de resumo ainda imprime).
+    if (updated === "skipped") process.exitCode = 1;
   }
 
   // --- send-test ---

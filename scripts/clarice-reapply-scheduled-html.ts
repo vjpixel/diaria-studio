@@ -98,7 +98,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { brevoGet, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
+import { brevoGet, brevoPut, brevoGetList, isTerminalSendStatus } from "./lib/brevo-client.ts";
 import { parseCycleArg, clariceSegmentsDir } from "./lib/clarice-paths.ts";
 import { applyQueroPhrase, buildContentEnvioHistory, describeQueroApplication, resolveEnvioIndex, type EnvioHistoryEntry } from "./lib/clarice-quero-phrase.ts"; // #10189, #10212
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
@@ -157,6 +157,17 @@ const DISCOVERY_PAGE_SIZE = 100;
  * `brevoListAllLists`).
  */
 export async function fetchQueuedCampaigns(apiKey: string): Promise<BrevoCampaignListItem[]> {
+  return (await fetchAllCampaigns(apiKey)).filter((c) => isSchedulableStatus(c.status));
+}
+
+/**
+ * #10347: a listagem paginada INTEIRA (todos os status), da qual
+ * `fetchQueuedCampaigns` filtra a fila. `main()` usa as duas visões da mesma
+ * paginação: a fila (o que recebe PUT) e as já enviadas (`sent`/`inProcess`),
+ * que contam como saída na regra do "quero" mesmo quando o registro local
+ * ficou `draft` (GET-verify falho pré-#10211) — sem chamada extra à Brevo.
+ */
+export async function fetchAllCampaigns(apiKey: string): Promise<BrevoCampaignListItem[]> {
   const all: BrevoCampaignListItem[] = [];
   let offset = 0;
   for (;;) {
@@ -179,7 +190,7 @@ export async function fetchQueuedCampaigns(apiKey: string): Promise<BrevoCampaig
     if (campaigns.length < DISCOVERY_PAGE_SIZE) break;
     offset += DISCOVERY_PAGE_SIZE;
   }
-  return all.filter((c) => isSchedulableStatus(c.status));
+  return all;
 }
 
 /**
@@ -677,7 +688,11 @@ type GroupCampaignHistoryEntry = EnvioHistoryEntry & { envioIndex?: number };
  *   diverge (#10195: gravado antes do #10189, pode ter contado rascunho).
  * - `queuedKeys` (#10272): keys das demais campanhas do lote `toUpdate` — todas
  *   na fila da Brevo, logo também saídas, mesmo com registro local `draft`.
- *   Em `--campaign-id` o lote é só a própria campanha (limite conhecido).
+ *   Desde o #10347 inclui também as campanhas do ciclo já ENVIADAS na Brevo
+ *   (`collectCycleOutKeys`): uma onda que disparou saiu da fila, e com
+ *   registro local `draft` não contaria por nenhum dos dois lados.
+ *   Em `--campaign-id` o lote é só a própria campanha e não há listagem
+ *   (limite conhecido — o histórico local é a única fonte).
  * - Nome sem `grupo:` (fluxo antigo `Clarice News {yymm}`) → HTML intacto,
  *   com aviso: não há key para posicionar o envio no ciclo.
  */
@@ -736,6 +751,23 @@ export function collectQueuedKeys(
     if (typeof c.name === "string" && c.name.startsWith(keyPrefix)) keys.add(c.name.slice(keyPrefix.length).trim());
   }
   return keys;
+}
+
+/**
+ * #10347: keys que contam como SAÍDA vindas da Brevo — o lote `toUpdate` (na
+ * fila, #10272) mais as campanhas do ciclo já enviadas (`sent`/`inProcess`)
+ * da mesma listagem paginada `all`. Ordem de criação na união (#10300): a d1
+ * enviada ontem vem antes da d2 agendada, mesmo que só a d2 esteja na fila.
+ */
+export function collectCycleOutKeys(
+  toUpdate: readonly BrevoCampaignListItem[],
+  all: readonly BrevoCampaignListItem[],
+  cycle: string,
+): Set<string> {
+  const sent = filterCycleCampaigns([...all], cycle).filter((c) => typeof c.status === "string" && isTerminalSendStatus(c.status));
+  const byId = new Map<number, BrevoCampaignListItem>();
+  for (const c of [...toUpdate, ...sent]) byId.set(c.id, c);
+  return collectQueuedKeys([...byId.values()], `Clarice ${cycleToYymm(cycle)} grupo:`);
 }
 
 /** Lê `segments/group-campaigns.json` do ciclo; ausente → histórico vazio. */
@@ -806,6 +838,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   let toUpdate: BrevoCampaignListItem[];
   let skipped: BrevoCampaignListItem[];
+  // #10347: listagem inteira (todos os status) — só no modo por nome.
+  let allListed: BrevoCampaignListItem[] = [];
 
   if (campaignIdArg !== undefined) {
     console.error(
@@ -827,8 +861,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `\n📋 clarice-reapply-scheduled-html --cycle ${cycle} ` +
       `(prefixos: ${cycleNamePrefixes(cycle).map((p) => `"${p}"`).join(", ")})`,
     );
-    const all = await fetchQueuedCampaigns(apiKey);
-    const matched = filterCycleCampaigns(all, cycle);
+    allListed = await fetchAllCampaigns(apiKey);
+    const matched = filterCycleCampaigns(allListed.filter((c) => isSchedulableStatus(c.status)), cycle);
     ({ toUpdate, skipped } = partitionByQueuedStatus(matched));
   }
 
@@ -837,8 +871,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // #10189: cada campanha recebe o HTML com a regra do "quero" do envio dela.
   const history = readGroupCampaignsHistory(cycle);
   const htmlByCampaign = new Map<number, string>();
-  const keyPrefix = `Clarice ${cycleToYymm(cycle)} grupo:`;
-  const queuedKeys = collectQueuedKeys(toUpdate, keyPrefix);
+  // #10272 fila + #10347 já enviadas na Brevo.
+  const queuedKeys = collectCycleOutKeys(toUpdate, allListed, cycle);
   for (const c of toUpdate) {
     const r = queroHtmlForCampaign(html, typeof c.name === "string" ? c.name : "", cycle, history, queuedKeys);
     htmlByCampaign.set(c.id, r.html);
