@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 15 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 16 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>RH da Riachuelo cria sistema em 12 dias sem código</title>
+      <link>https://diar.ia.br/p/rh-da-riachuelo-cria-sistema-em-12-dias-sem-codigo</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/rh-da-riachuelo-cria-sistema-em-12-dias-sem-codigo</guid>
+      <pubDate>Fri, 16 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Editoras não conseguem provar que livro é humano | ChatGPT fez mal a crianças, acusam 8 estados dos EUA</description>
+    </item>
     <item>
       <title>Meta AI gera &quot;Flávio 22&quot; e trava com Lula?</title>
       <link>https://diar.ia.br/p/meta-ai-gera-flavio-22-e-trava-com-lula</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste</guid>
       <pubDate>Thu, 06 Aug 2026 09:00:00 GMT</pubDate>
       <description>IA do Chrome consome 20 GB sem aviso prévio | Correção nas ações de IA reacende debate</description>
-    </item>
-    <item>
-      <title>IA por trás de +50% dos cibercrimes africanos</title>
-      <link>https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ia-por-tras-de-50-dos-cibercrimes-africanos</guid>
-      <pubDate>Wed, 05 Aug 2026 09:00:00 GMT</pubDate>
-      <description>OpenAI testa anúncios no Brasil | Aeroportos automatizam tarifas com câmeras com IA</description>
     </item>
   </channel>
 </rss>
