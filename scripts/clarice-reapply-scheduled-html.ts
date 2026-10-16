@@ -722,6 +722,22 @@ export function queroHtmlForCampaign(
   return { html: quero.html, line: `${key}: ${describeQueroApplication(quero)}${divergence}` };
 }
 
+/**
+ * #10300: keys do lote em ordem de criação (id crescente). A API lista sem
+ * `sort` (decrescente por criação); sem isso, a key ausente do histórico
+ * recebe índice invertido e a d2 perde a frase do "quero".
+ */
+export function collectQueuedKeys(
+  toUpdate: readonly { id: number; name?: unknown }[],
+  keyPrefix: string,
+): Set<string> {
+  const keys = new Set<string>();
+  for (const c of [...toUpdate].sort((a, b) => a.id - b.id)) {
+    if (typeof c.name === "string" && c.name.startsWith(keyPrefix)) keys.add(c.name.slice(keyPrefix.length).trim());
+  }
+  return keys;
+}
+
 /** Lê `segments/group-campaigns.json` do ciclo; ausente → histórico vazio. */
 function readGroupCampaignsHistory(cycle: string): GroupCampaignHistoryEntry[] {
   const path = resolve(clariceSegmentsDir(cycle), "group-campaigns.json");
@@ -822,10 +838,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const history = readGroupCampaignsHistory(cycle);
   const htmlByCampaign = new Map<number, string>();
   const keyPrefix = `Clarice ${cycleToYymm(cycle)} grupo:`;
-  const queuedKeys = new Set<string>();
-  for (const c of toUpdate) {
-    if (typeof c.name === "string" && c.name.startsWith(keyPrefix)) queuedKeys.add(c.name.slice(keyPrefix.length).trim());
-  }
+  const queuedKeys = collectQueuedKeys(toUpdate, keyPrefix);
   for (const c of toUpdate) {
     const r = queroHtmlForCampaign(html, typeof c.name === "string" ? c.name : "", cycle, history, queuedKeys);
     htmlByCampaign.set(c.id, r.html);
