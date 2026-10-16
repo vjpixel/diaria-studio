@@ -24,6 +24,7 @@ import {
   normalizeCropReviewResult,
   stampCropReviewImageHashes,
   planEstiloRegeneration,
+  MAX_ESTILO_REGEN_FAILED_RUNS,
   parseFalsePositiveTargets,
   selectFalsePositiveMarks,
 } from "../scripts/run-image-crop-reviewer.ts";
@@ -156,6 +157,61 @@ describe("#10327: tentativas de regeneração presas à imagem, não à posiçã
     assert.deepEqual(p2.state.images?.d2, ["a", "b"]);
     const p3 = planEstiloRegeneration(result, p2.state, () => false, () => "a");
     assert.deepEqual(p3.exhausted, ["d2"], "voltar à imagem anterior não reabre a contagem");
+  });
+
+  // #10332: a regeneração reescreve o destaque inteiro; o revisor pode acusar
+  // um ratio diferente do que estava no `pending`.
+  const estilo = (ratio: "1x1" | "4x5") =>
+    normalizeCropReviewResult(
+      { results: [{ destaque: "d1", ratio, status: "warn", categoria: "estilo", motivo: "espiral" }] },
+      "261016",
+    );
+
+  it("#10332: pending {4x5} → regenera → revisor acusa {1x1} → esgotado (teto não some)", () => {
+    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+    const cur = (_d: string, r: string) => md5[r] ?? null;
+    const p1 = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur);
+    assert.deepEqual(p1.regenerate, ["d1"]);
+    // image-generate --force regera 2x1+1x1, depois --ratio 4x5 --force
+    md5["1x1"] = "1x1-v2";
+    md5["4x5"] = "4x5-v2";
+    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    assert.deepEqual(p2.regenerate, [], "a imagem acusada é a própria regenerada");
+    assert.deepEqual(p2.exhausted, ["d1"]);
+    assert.equal(p2.attempts.d1, 1);
+    // e se a próxima revisão voltar a acusar o 4x5, continua esgotado
+    const p3 = planEstiloRegeneration(estilo("4x5"), p2.state, () => false, cur);
+    assert.deepEqual(p3.exhausted, ["d1"]);
+  });
+
+  it("#10332: idem para failed — gerador falhou e o revisor alterna o ratio → esgotado", () => {
+    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+    const cur = (_d: string, r: string) => md5[r] ?? null;
+    // 2 falhas toleradas (failed <= MAX_ESTILO_REGEN_FAILED_RUNS), na 3ª esgota
+    let state = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur).state;
+    const ratios: Array<"1x1" | "4x5"> = ["1x1", "4x5", "1x1"];
+    let last;
+    for (const r of ratios) {
+      last = planEstiloRegeneration(estilo(r), state, () => false, cur);
+      state = last.state;
+    }
+    assert.equal(last!.state.failed?.d1, MAX_ESTILO_REGEN_FAILED_RUNS + 1);
+    assert.deepEqual(last!.regenerate, [], "imagem nunca mudou: alternar o ratio não zera failed");
+    assert.deepEqual(last!.exhausted, ["d1"]);
+  });
+
+  it("#10332: troca real da imagem (swap) depois do ratio alternado ainda zera a contagem", () => {
+    const md5: Record<string, string> = { "1x1": "1x1-v1", "4x5": "4x5-v1" };
+    const cur = (_d: string, r: string) => md5[r] ?? null;
+    const p1 = planEstiloRegeneration(estilo("4x5"), {}, () => false, cur);
+    md5["1x1"] = "1x1-v2";
+    md5["4x5"] = "4x5-v2";
+    const p2 = planEstiloRegeneration(estilo("1x1"), p1.state, () => false, cur);
+    assert.deepEqual(p2.exhausted, ["d1"]);
+    md5["1x1"] = "swap-1x1";
+    md5["4x5"] = "swap-4x5";
+    const p3 = planEstiloRegeneration(estilo("1x1"), p2.state, () => false, cur);
+    assert.deepEqual(p3.regenerate, ["d1"]);
   });
 
   it("estado legado (sem images) mantém a contagem", () => {
