@@ -452,6 +452,51 @@ export function planEstiloRegeneration(
   return { regenerate, exhausted, attempts, state: { attempts, failed, pending, pendingBase, images } };
 }
 
+/**
+ * Plano de regeneração por Noite Estrelada calculado sobre o estado em DISCO
+ * (veredito persistido + `_internal/04-estilo-regen.json` + md5 das imagens
+ * atuais), SEM gravar nada (#10346). É a mesma decisão do `--estilo-regen-plan`
+ * — o CLI grava `plan.state` em seguida; o invariante
+ * `image-starry-night-detected` (Stage 4) só lê, pra distinguir "esgotou de
+ * fato" de "o plano nunca rodou para a imagem atual" (swap/promote no Stage 4,
+ * #10327). `null` quando não há veredito persistido.
+ */
+export function planEstiloRegenerationForEdition(
+  editionDir: string,
+  opts: { verdictPath?: string; edition?: string } = {},
+): EstiloRegenPlan | null {
+  const verdictPath = opts.verdictPath ?? join(editionDir, "_internal", "04-crop-review.json");
+  if (!existsSync(verdictPath)) return null;
+  const persisted = normalizeCropReviewResult(
+    JSON.parse(readFileSync(verdictPath, "utf8")) as unknown,
+    opts.edition ?? extractEditionId(editionDir),
+  );
+  const attemptsPath = join(editionDir, "_internal", "04-estilo-regen.json");
+  let previous: EstiloRegenState = {};
+  if (existsSync(attemptsPath)) {
+    try {
+      previous = JSON.parse(readFileSync(attemptsPath, "utf8")) as EstiloRegenState;
+    } catch {
+      previous = {};
+    }
+  }
+  // #10325: a mesma imagem que o persist carimba no achado de estilo (arte
+  // nativa no 4:5) — `pending`/`images` e `image_md5` falam do mesmo arquivo.
+  const currentMd5: CurrentImageMd5 = (d, ratio) => {
+    const variant = cropReviewStampVariant(editionDir, d, ratio as CropReviewRatio, "estilo");
+    const p = join(editionDir, `04-${d}-${variant ?? ratio}.jpg`);
+    return existsSync(p) ? md5OfFile(p) : null;
+  };
+  // #10328: falso positivo marcado pelo editor não dispara regeneração.
+  const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
+  return planEstiloRegeneration(
+    persisted,
+    previous,
+    (e) => isEstiloFalsePositive(e, falsePositives) || isCropReviewEntryStale(editionDir, e),
+    currentMd5,
+  );
+}
+
 export interface FalsePositiveTarget {
   destaque: DestaqueId;
   /** `null` = todos os ratios acusados do destaque. */
@@ -592,35 +637,12 @@ async function main(): Promise<void> {
   // `_internal/04-estilo-regen.json` sempre (a presença do arquivo prova que o
   // plano rodou); a tentativa só é gasta quando a imagem de fato mudou.
   if (flags.has("estilo-regen-plan")) {
-    if (!existsSync(outPath)) {
+    const plan = planEstiloRegenerationForEdition(editionDir, { verdictPath: outPath, edition });
+    if (!plan) {
       console.error(`[run-image-crop-reviewer] veredito não encontrado: ${outPath} — persistir com --input-json antes.`);
       process.exit(1);
     }
-    const persisted = normalizeCropReviewResult(JSON.parse(readFileSync(outPath, "utf8")) as unknown, edition);
     const attemptsPath = join(internalDir, "04-estilo-regen.json");
-    let previous: EstiloRegenState = {};
-    if (existsSync(attemptsPath)) {
-      try {
-        previous = JSON.parse(readFileSync(attemptsPath, "utf8")) as EstiloRegenState;
-      } catch {
-        previous = {};
-      }
-    }
-    // #10325: a mesma imagem que o persist carimba no achado de estilo (arte
-    // nativa no 4:5) — `pending`/`images` e `image_md5` falam do mesmo arquivo.
-    const currentMd5: CurrentImageMd5 = (d, ratio) => {
-      const variant = cropReviewStampVariant(editionDir, d, ratio as CropReviewRatio, "estilo");
-      const p = join(editionDir, `04-${d}-${variant ?? ratio}.jpg`);
-      return existsSync(p) ? md5OfFile(p) : null;
-    };
-    // #10328: falso positivo marcado pelo editor não dispara regeneração.
-    const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
-    const plan = planEstiloRegeneration(
-      persisted,
-      previous,
-      (e) => isEstiloFalsePositive(e, falsePositives) || isCropReviewEntryStale(editionDir, e),
-      currentMd5,
-    );
     writeFileSync(attemptsPath, JSON.stringify({ ...plan.state, updated_at: new Date().toISOString() }, null, 2), "utf8");
     const editionArg = args["edition-dir"].replace(/[/\\]+$/, "");
     console.log(
