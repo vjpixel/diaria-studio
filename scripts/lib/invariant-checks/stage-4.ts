@@ -29,6 +29,9 @@ import {
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
 import { md5OfFile } from "../shared/file-md5.ts"; // #6068
+// #10346: ciclo de import com run-image-crop-reviewer.ts (que importa isCropReviewEntryStale daqui) é
+// seguro — os dois lados só usam o outro dentro de funções, nunca no topo do módulo.
+import { planEstiloRegenerationForEdition } from "../../run-image-crop-reviewer.ts";
 import { readEstiloFalsePositiveMd5s, isEstiloFalsePositive } from "../estilo-false-positives.ts"; // #10328
 import {
   evaluateNewsletterHtmlFreshnessOnDisk,
@@ -1766,11 +1769,45 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
   // O plano de regeneração sempre grava este arquivo; ausente = o orchestrator
   // pulou o passo do Stage 3 (o loop vive só no playbook).
   const regenRan = existsSync(resolve(editionDir, "_internal", "04-estilo-regen.json"));
-  const cause = regenRan
-    ? "a regeneração automática do Stage 3 esgotou"
-    : "a regeneração automática do Stage 3 NÃO rodou (_internal/04-estilo-regen.json ausente — passo --estilo-regen-plan pulado)";
+  // #10346: o arquivo existir não prova que o plano rodou para a imagem ATUAL —
+  // depois de um swap/promote no Stage 4 a contagem zera (#10327) e o plano
+  // devolveria `regenerate: [dN]`. Recalcula o plano (sem gravar) e só diz
+  // "esgotou" para quem ele de fato declara esgotado. Estado ilegível → `null`,
+  // tratado como "não sei": sugere o plano primeiro, que é inofensivo.
+  let pendingRegen: Set<string> | null = null;
+  if (regenRan) {
+    try {
+      const plan = planEstiloRegenerationForEdition(editionDir);
+      pendingRegen = plan ? new Set<string>(plan.regenerate) : null;
+    } catch {
+      pendingRegen = null;
+    }
+  }
+  const causeFor = (d: string): { cause: string; suggestPlan: boolean } => {
+    if (!regenRan) {
+      return {
+        cause:
+          "a regeneração automática do Stage 3 NÃO rodou (_internal/04-estilo-regen.json ausente — passo --estilo-regen-plan pulado)",
+        suggestPlan: true,
+      };
+    }
+    if (pendingRegen === null) {
+      return {
+        cause: "não deu para ler o estado do plano de regeneração (_internal/04-estilo-regen.json/04-crop-review.json)",
+        suggestPlan: true,
+      };
+    }
+    if (pendingRegen.has(d)) {
+      return {
+        cause:
+          "a regeneração automática ainda não rodou para a imagem ATUAL (ex.: destaque trocado no Stage 4 — o plano devolve regenerate para ele)",
+        suggestPlan: true,
+      };
+    }
+    return { cause: "a regeneração automática do Stage 3 esgotou", suggestPlan: false };
+  };
   // #10328: com o plano esgotado, `--estilo-regen-plan` devolve `regenerate: []`
-  // e não faz nada — sugerir primeiro só quando ele não rodou.
+  // e não faz nada — sugerir só quando ele ainda regeneraria.
   const manual = (d: string) =>
     `reescrever _internal/02-${d}-prompt.md e rodar image-generate.ts --force + --ratio 4x5 --force + gen-social-card-4x5.ts`;
   const byDestaque = new Map<string, CropReviewFileEntry[]>();
@@ -1781,14 +1818,15 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
   return [...byDestaque.entries()].map(([destaque, entries]) => {
     const ratios = entries.map((e) => e.ratio ?? "?").join(", ");
     const motivo = entries.find((e) => e.motivo)?.motivo ?? "padrão de espiral/redemoinho estilo Noite Estrelada";
+    const { cause, suggestPlan } = causeFor(destaque);
     return {
       rule: "image-starry-night-detected",
       message:
         `Destaque ${destaque.toUpperCase()} (${ratios}): imagem gerada com Noite Estrelada — ${motivo}; ${cause}. ` +
         `Viola regra invariável — em rodada sem gates a edição para aqui. Regenerar: ` +
-        (regenRan
-          ? manual(destaque)
-          : `\`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` (ou ${manual(destaque)})`) +
+        (suggestPlan
+          ? `\`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` + os comandos de \`commands.${destaque}\` (ou ${manual(destaque)})`
+          : manual(destaque)) +
         `, depois re-rodar o revisor. Falso positivo: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --mark-false-positive ${destaque}\` ` +
         `(vale enquanto a imagem for a mesma e sobrevive a novas revisões; trocar a entrada para status "ok" é perdido no próximo persist do revisor, #10328).`,
       source_issue: "#10312",
