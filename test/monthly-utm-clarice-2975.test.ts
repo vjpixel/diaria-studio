@@ -38,7 +38,6 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
   draftToEmail,
   normalizeKnownUrl,
@@ -414,17 +413,12 @@ describe("#4040 — helpers do registry compartilhado", () => {
 });
 
 describe("#9589 — CTA com utm_campaign explícito preserva a campanha", () => {
-  // Link da caixa da imersão LIDO do template (não copiado) — se o template
-  // trocar a URL, o teste acompanha em vez de ficar verde sobre uma cópia velha.
-  const TEMPLATE_BOX_URL = (() => {
-    const tpl = readFileSync(
-      new URL("../context/templates/newsletter-monthly.md", import.meta.url),
-      "utf8",
-    );
-    const m = tpl.match(/→ \[[^\]]+\]\((https:\/\/diar\.ia\.br\/evento\/agente-ia\?[^)]+)\)/);
-    assert.ok(m, "caixa DIVULGAÇÃO da imersão não encontrada no template mensal");
-    return m[1];
-  })();
+  // Link da caixa da imersão de 17/10 (fixture). Até o #8895 era LIDO do
+  // template mensal; a caixa saiu do template depois do evento, mas o
+  // comportamento do #9589 (CTA com utm_campaign explícito) segue valendo pra
+  // qualquer caixa futura — por isso a URL vira fixture literal aqui.
+  const TEMPLATE_BOX_URL =
+    "https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-voz";
 
   function hrefParams(html: string): URLSearchParams {
     const m = html.replace(/&amp;/g, "&").match(/href="([^"]+)"/);

@@ -61,25 +61,13 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **Datas:** use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
    - Restrições: não copiar `body` literal; evitar "IA"/"inteligência artificial"/"AI" quando o sujeito concreto couber (#4825, inclusive no título narrativo — ver acima); sem markdown (`**`, `#`, `-`, `>`); não inventar citações.
 
-5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → [DIVULGAÇÃO imersão 17/10, temporário] → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
+5. **Seções Clarice/Livros (#6881: ordem D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL — LIVROS entrou entre D2 e D3, CLARICE—TUTORIAL moveu de "entre D2 e D3" pra "entre D3 e USE MELHOR").** Após D1 e antes de D2, emitir (label em negrito — #2794):
    ```
    **CLARICE — DIVULGAÇÃO**
 
    [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link. CTA no formato `→ [texto](url)` — vira botão no render (renderCtaButton), um `[texto](url)` sem o `→` sai como link de texto comum.]
    ```
-   Após D2, antes de LIVROS, emitir o box **DIVULGAÇÃO** da imersão de 17/10 — texto FIXO (pedido do editor, 25/09/2026), emitir literalmente, sem parafrasear. Remover deste passo e do template depois de 17/10/2026 (remoção rastreada na #8895; as duas cópias são travadas idênticas por `test/monthly-divulgacao-box-sync-9591.test.ts` — editar sempre as duas):
-   ```
-   **DIVULGAÇÃO**
-
-   ![Homem toma água de coco numa poltrona enquanto braços robóticos trabalham no computador](https://eia.diar.ia.br/img/img-2609-10-04-caixa-agente-b.jpg)
-
-   IA não é só pra bater papo. Crie conteúdo com identidade.
-
-   Em uma tarde, sem programar, você monta um comando no ChatGPT que transforma uma pauta em conteúdo na sua voz e, depois que você revisa, publica em cada rede.
-
-   → [Saiba mais](https://diar.ia.br/evento/agente-ia?utm_source=clarice&utm_medium=email&utm_campaign=agente-ia&utm_content=caixa-voz)
-   ```
-   Em seguida, ainda antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
+   Após D2 e antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
    ```
    **LIVROS**
 
@@ -144,7 +132,7 @@ Da diar.ia.br:
    - `**APRESENTAÇÃO**` presente entre PREVIEW e INTRO, texto literal do boilerplate, com os 3 links corretos (#2913)
    - Intro 2-3 frases sem citar destaques
    - 3 destaques completos (cabeçalho + parágrafos + fio condutor); sem bloco "Para aprofundar"
-   - Ordem das seções (#6881): D1 → CLARICE—DIVULGAÇÃO → D2 → DIVULGAÇÃO (imersão 17/10, até 17/10/2026) → LIVROS → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**LIVROS**` presente entre D2 e D3, texto fixo literal, CTA com `→`
+   - Ordem das seções (#6881): D1 → CLARICE—DIVULGAÇÃO → D2 → LIVROS → D3 → CLARICE—TUTORIAL → USE MELHOR → RADAR → É IA? → PARA ENCERRAR — `**LIVROS**` presente entre D2 e D3, texto fixo literal, CTA com `→`
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
