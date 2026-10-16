@@ -1318,7 +1318,48 @@ export function isRadarHowToEligible(url: string, title: string, summary = ""): 
   // (fonte única — elimina duplicação com a cópia em categorize.ts).
   if (isDevReleaseNote(title)) return false;
 
+  // #10314: cobertura de campanha publicitária/marketing → não promover.
+  // Caso real 261016: "OpenAI homenageia professores em campanha que aborda IA
+  // na sala de aula" (exame.com/marketing/...) entrou só porque o SUMMARY
+  // citava "curso gratuito" (sinal de oportunidade #3027), mas a matéria é
+  // sobre o filme publicitário, não um guia de uso.
+  if (isAdCampaignCoverage(url, title)) return false;
+
   return true;
+}
+
+/**
+ * #10314: seção de marketing/publicidade do veículo no path da URL
+ * (`/marketing/`, `/publicidade/`, `/propaganda/`, `/advertising/`).
+ */
+const AD_COVERAGE_PATH_RE = /\/(?:marketing|publicidade|propaganda|advertising)\//i;
+
+/**
+ * #10314: título que descreve campanha/peça publicitária ou homenagem de
+ * marca — "X homenageia professores em campanha", "comercial", "filme
+ * publicitário", "ad campaign".
+ */
+const AD_CAMPAIGN_TITLE_RE =
+  /\b(?:homenageia|homenagem|campanhas?|comerciais|comercial|publicit[áa]ri[oa]s?|ad\s+campaigns?|commercials?)\b/i;
+
+/**
+ * #10314: true se o item é cobertura de campanha publicitária/marketing —
+ * path de seção de marketing OU título de campanha — E o título NÃO traz sinal
+ * how-to explícito (RADAR_HOWTO_PROMOTE_RE). A exceção mantém elegível um
+ * how-to genuíno publicado na seção de marketing ("Como usar IA para criar
+ * campanhas no Google Ads"). Medido em 4.793 itens radar/use_melhor de
+ * data/editions (149 elegíveis à promoção): o único elegível que casa é o
+ * caso real da issue — zero falso-positivo no histórico.
+ */
+export function isAdCampaignCoverage(url: string, title: string): boolean {
+  if (RADAR_HOWTO_PROMOTE_RE.test(title)) return false;
+  let path = "";
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    path = "";
+  }
+  return AD_COVERAGE_PATH_RE.test(path) || AD_CAMPAIGN_TITLE_RE.test(title);
 }
 
 /** Artigo mínimo aceito pela promoção radar→use_melhor. */
