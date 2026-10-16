@@ -187,9 +187,11 @@ export function partitionRetidoCandidates(
 export interface Gate2Result {
   ok: boolean;
   reason?: string;
-  /** `true` quando a reprovação veio da condição 3 (`retido-para-editor`,
-   * #10294) — o chamador tira só ESTE PR do lote em vez de travar o lote. */
-  retido?: boolean;
+  /** Presente quando a reprovação veio da condição 3 (`retido-para-editor`,
+   * #10294) — o chamador tira só ESTE PR do lote em vez de travar o lote.
+   * `true` = retido de fato; `null` = sinal ilegível no instante do merge
+   * (fail-closed, #10299 — não é retenção deliberada, conta como falha). */
+  retido?: true | null;
 }
 
 /**
@@ -248,10 +250,11 @@ export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Res
   // Condição 3 (#10278/#10294): PR retida para o editor. Relida aqui, no
   // instante do merge, porque a label pode ter sido aplicada por outra
   // trilha DEPOIS da descoberta (`partitionRetidoCandidates`). Ilegível →
-  // fail-closed, também marcado `retido` (o PR sai do lote, o resto segue).
+  // fail-closed: o PR sai do lote e o resto segue, mas com `retido: null`
+  // (#10299) — o chamador o reporta como falha, não como retenção.
   const retido = checkPrRetido(runner, prNumber);
   if (retido.retido !== false) {
-    return { ok: false, retido: true, reason: `condição 3 (retido-para-editor) — ${retido.reason}` };
+    return { ok: false, retido: retido.retido, reason: `condição 3 (retido-para-editor) — ${retido.reason}` };
   }
 
   return { ok: true };
@@ -418,6 +421,15 @@ export interface MergeTrainBatchResult {
    * instante do merge — `runMergeTrain` o tira do lote e reprocessa o resto,
    * em vez de rotular o lote inteiro como `lock-blocked`. */
   retidoPr?: number;
+  /** #10299: com `retidoPr`, `true` quando o sinal estava ILEGÍVEL (não
+   * retido de fato) — vira status `retido-ilegivel`, que conta como falha. */
+  retidoIlegivel?: boolean;
+}
+
+/** Campos de `MergeTrainBatchResult` derivados da condição 3 do Gate 2. */
+function retidoFields(gate: Gate2Result, pr: number): Pick<MergeTrainBatchResult, "retidoPr" | "retidoIlegivel"> {
+  if (gate.retido === undefined) return {};
+  return gate.retido === null ? { retidoPr: pr, retidoIlegivel: true } : { retidoPr: pr };
 }
 
 /**
@@ -467,7 +479,7 @@ export function mergeTrainBatch(
       return {
         ok: false,
         error: `revalidação de Gate 2 falhou pro PR #${pr}: ${gate.reason}`,
-        ...(gate.retido ? { retidoPr: pr } : {}),
+        ...retidoFields(gate, pr),
       };
     }
   }
@@ -605,7 +617,7 @@ export interface MergeSoloOptions {
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
   const gate = revalidateGate2(runner, prNumber);
   if (!gate.ok) {
-    return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...(gate.retido ? { retidoPr: prNumber } : {}) };
+    return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...retidoFields(gate, prNumber) };
   }
 
   const acquire = runner.exec("npx", [
@@ -664,9 +676,29 @@ export interface TrainBatchOutcome {
    * (`retido-para-editor`) no instante do merge — não mergeado, de
    * propósito. Terminal e NÃO é falha (o editor decide); os demais PRs do
    * lote voltam pra fila sem ele.
+   *
+   * `"retido-ilegivel"` (#10299): mesmo caminho do `retido` (o PR sai do lote,
+   * não é mergeado — fail-closed), mas o sinal estava ILEGÍVEL no instante do
+   * merge (`gh` falhou, JSON ruim). Não é retenção deliberada: conta como
+   * falha real (`trainHasRealFailure`), igual ao ilegível da descoberta.
    */
-  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked" | "indeterminate" | "retido";
+  status: "merged" | "solo-merged" | "solo-failed" | "abandoned" | "lock-blocked" | "indeterminate" | "retido" | "retido-ilegivel";
   detail: string;
+}
+
+/**
+ * Exit code do `run-merge-train.ts` (#10299): falha real = `solo-failed`,
+ * `lock-blocked`, `indeterminate`, `retido-ilegivel`, ou sinal de retenção
+ * ilegível já na descoberta (`retidoReadFailure`). `retido` de fato e
+ * `abandoned` (rastro de bissecção) nunca contam.
+ */
+export function trainHasRealFailure(outcomes: readonly TrainBatchOutcome[], retidoReadFailure = false): boolean {
+  return (
+    retidoReadFailure ||
+    outcomes.some(
+      (o) => o.status === "solo-failed" || o.status === "lock-blocked" || o.status === "indeterminate" || o.status === "retido-ilegivel",
+    )
+  );
 }
 
 const DEFAULT_CI_TIMEOUT_MS = 30 * 60 * 1000;
@@ -739,7 +771,13 @@ export async function runMergeTrain(
     if (batch.prs.length === 1) {
       const pr = batch.prs[0];
       const result = mergeSoloPr(runner, pr, opts);
-      const soloStatus = result.ok ? "solo-merged" : result.retidoPr !== undefined ? "retido" : "solo-failed";
+      const soloStatus = result.ok
+        ? "solo-merged"
+        : result.retidoPr === undefined
+          ? "solo-failed"
+          : result.retidoIlegivel
+            ? "retido-ilegivel"
+            : "retido";
       outcomes.push({ batch, status: soloStatus, detail: result.error ?? "sem trem — merge solo" });
       continue;
     }
@@ -807,7 +845,11 @@ export async function runMergeTrain(
         const retidoPr = mergeResult.retidoPr;
         const rest = batch.prs.filter((p) => p !== retidoPr);
         outcomes.push({ batch, status: "abandoned", detail: `PR #${retidoPr} retido no instante do merge — lote refeito sem ele: ${mergeResult.error}` });
-        outcomes.push({ batch: { prs: [retidoPr] }, status: "retido", detail: mergeResult.error ?? "retido-para-editor" });
+        outcomes.push({
+          batch: { prs: [retidoPr] },
+          status: mergeResult.retidoIlegivel ? "retido-ilegivel" : "retido",
+          detail: mergeResult.error ?? "retido-para-editor",
+        });
         if (rest.length > 0) queue.push({ prs: rest });
       } else if (mergeResult.lockDenied) {
         // Esgotou os retries e o lock continua negado — achado do fleet

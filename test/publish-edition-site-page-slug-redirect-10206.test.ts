@@ -85,13 +85,26 @@ describe("#10206 addSlugRedirect", () => {
   it("acrescenta a linha, é idempotente e ignora slug igual", () => {
     const out = addSlugRedirect("/p/a /p/b 301\n", "velho", "novo");
     assert.equal(out, "/p/a /p/b 301\n/p/velho /p/novo 301\n");
-    assert.equal(addSlugRedirect(out, "velho", "outro"), out);
+    assert.equal(addSlugRedirect(out, "velho", "novo"), out);
     assert.equal(addSlugRedirect("x\n", "a", "a"), "x\n");
     assert.equal(addSlugRedirect("", "velho", "novo"), "/p/velho /p/novo 301\n");
   });
   it("voltar ao slug anterior remove a regra inversa (sem loop)", () => {
     const out = addSlugRedirect("/p/a /p/b 301\n", "b", "a");
     assert.equal(out, "/p/b /p/a 301\n");
+  });
+  it("#10353: regra existente com a mesma origem tem o destino reescrito", () => {
+    assert.equal(addSlugRedirect("/p/x /p/y 301\n/p/a /p/b 301\n", "a", "c"), "/p/x /p/y 301\n/p/a /p/c 301\n");
+  });
+  it("#10353: republicação A→B→C pela ordem real do caller vira A→C e B→C (sem cadeia)", () => {
+    // slugRedirectSources({ oldSlug: "b", newSlug: "c", priorSlugs: ["a"] }) = ["b", "a"]
+    let content = "/p/x /p/y 301\n/p/a /p/b 301\n";
+    for (const old of ["b", "a"]) content = addSlugRedirect(content, old, "c");
+    assert.equal(content, "/p/x /p/y 301\n/p/a /p/c 301\n/p/b /p/c 301\n");
+  });
+  it("#10353: só o slug imediato como fonte ainda colapsa a cadeia (X→velho passa a X→novo)", () => {
+    const out = addSlugRedirect("/p/a /p/b 301\n", "b", "c");
+    assert.equal(out, "/p/a /p/c 301\n/p/b /p/c 301\n");
   });
   it("caminho do _redirects é irmão do sitemap", () => {
     assert.equal(redirectsRelPathFromSitemap(SITEMAP_REL), REDIRECTS_REL);
