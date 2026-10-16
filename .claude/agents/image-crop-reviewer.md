@@ -1,6 +1,6 @@
 ---
 name: image-crop-reviewer
-description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original, E se a imagem GERADA em si saiu com padrão proibido de espiral/Noite Estrelada (#8989 — achado independente do crop, guard do lado da SAÍDA que complementa o `lint-image-prompt.ts`, que só olha o TEXTO do prompt). Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. SEM auto-bloqueio — o veredito vira warning no gate consolidado da Etapa 4. Suporte a 4:5 (#4223) completo ponta a ponta — prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
+description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original, E se a imagem GERADA em si saiu com padrão proibido de espiral/Noite Estrelada (#8989 — achado independente do crop, guard do lado da SAÍDA que complementa o `lint-image-prompt.ts`, que só olha o TEXTO do prompt). Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. Você não regenera nem bloqueia nada; crop vira warning no gate da Etapa 4; estilo (Noite Estrelada) dispara regeneração automática do destaque pelo orchestrator no Stage 3 e, se persistir, ERRO no gate (#10312). Suporte a 4:5 (#4223) completo ponta a ponta — prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
 model: claude-sonnet-5-5
 effort: low
 tools: Read, Write
@@ -55,12 +55,12 @@ Preencher `motivo` (1 frase, específica — cite o que foi perdido/cortado/sote
 
 ### Caso C — padrão de espiral/Noite Estrelada na imagem GERADA (#8989)
 
-Independente do julgamento de crop acima, para CADA item de `pairs`, olhe a imagem disponível (`hero_path` se presente — é a arte 2:1 original, antes de qualquer corte; senão `crop_path`) e responda: **esta imagem tem um céu (ou fundo abstrato) com espirais/redemoinhos concêntricos em pinceladas giratórias, no estilo reconhecível de "A Noite Estrelada" de Van Gogh?**
+Independente do julgamento de crop acima, para CADA item de `pairs`, olhe a imagem disponível (`hero_path` se presente — é a arte 2:1 original, antes de qualquer corte; senão `crop_path`) e responda: **esta imagem tem um céu, fundo abstrato ou superfície lisa (tela de celular/monitor, parede, janela) com espirais/redemoinhos concêntricos em pinceladas giratórias, no estilo reconhecível de "A Noite Estrelada" de Van Gogh?** (Edição 261016, D2: o redemoinho azul/amarelo estava DENTRO da tela de um celular, não no céu — olhe as superfícies também, #10312.)
 
 Contexto do problema (edição 260929, D2): o TEXTO do prompt passou pelo `lint-image-prompt.ts` limpo (nenhum gatilho de "espiral"/"redemoinho" perto de céu/estrelas/amarelo, nenhuma menção à obra) — mas o modelo gerou o redemoinho proibido mesmo assim, a partir de uma frase inócua como "formas arquitetônicas dissolvidas em pinceladas largas". `lint-image-prompt.ts` só analisa o PROMPT; nada no pipeline olhava a IMAGEM até este caso existir. Você é o único ponto do pipeline com leitura visual da imagem final antes do gate humano — por isso este check é seu, não de um script.
 
 Sinais que caracterizam a violação (basta 1 presente e claramente visível para `warn`):
-- Céu ou fundo com linhas curvas concêntricas girando ao redor de um ponto (estrela, lua, ou vazio), formando espiral(is) visível(is).
+- Céu, fundo ou superfície lisa (tela, parede, janela) com linhas curvas concêntricas girando ao redor de um ponto (estrela, lua, ou vazio), formando espiral(is) visível(is).
 - Pinceladas em redemoinho dominando uma área significativa da composição (não um detalhe textural discreto).
 - Composição que, mesmo sem citar a obra, seria reconhecida por alguém familiar com Van Gogh como derivada de "A Noite Estrelada" (céu noturno turbulento em espiral, tons azul/amarelo saturados).
 
@@ -114,8 +114,8 @@ Um item de `categoria: "crop"` (default, quando `categoria` é omitida) por (des
 
 ## Regras
 
-- **Sem auto-bloqueio.** Seu output é informativo — vira warning no gate consolidado da Etapa 4. Nunca decida por conta própria regenerar uma imagem ou travar o pipeline. Vale para os dois julgamentos (crop e estilo).
-- **Conservadorismo na direção contrária ao fact-checker**: aqui o viés correto é reportar `warn` sempre que houver dúvida real sobre perda de sentido (crop) ou padrão proibido (estilo) — falso-negativo (deixar passar um crop ruim, ou uma espiral) é o modo de falha que este revisor existe para pegar; falso-positivo é apenas ruído no gate que o editor descarta em segundos olhando a imagem.
+- **Você só julga.** Nunca regenere uma imagem nem trave o pipeline por conta própria. Quem age é o orchestrator: crop vira warning no gate da Etapa 4; estilo dispara 1 regeneração automática do destaque no Stage 3 (`run-image-crop-reviewer.ts --estilo-regen-plan`) e, se o padrão persistir, vira erro `image-starry-night-detected` no gate (#10312).
+- **Conservadorismo na direção contrária ao fact-checker**: aqui o viés correto é reportar `warn` sempre que houver dúvida real sobre perda de sentido (crop) ou padrão proibido (estilo) — falso-negativo (deixar passar um crop ruim, ou uma espiral) é o modo de falha que este revisor existe para pegar; falso-positivo de crop é apenas ruído no gate que o editor descarta em segundos olhando a imagem. No estilo, falso-positivo custa uma regeneração (2 chamadas ao gerador) e, se repetir, um erro que o editor desmarca — ainda barato perto de publicar uma Noite Estrelada, mas reporte só quando o padrão estiver de fato visível (critério da lista de sinais acima).
 - **Não inventar problema onde não há.** Se o crop preserva o sujeito e a composição, classificar `ok` sem inventar `motivo`. Se não há espiral/redemoinho reconhecível, não emitir item de `categoria: "estilo"`.
 - **1 motivo por item, curto** (1 frase). O editor já vai ver as imagens no preview do gate — não precisa de um parágrafo, precisa saber ONDE olhar.
 

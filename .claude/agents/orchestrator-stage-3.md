@@ -110,6 +110,11 @@ Se `dispatchedAt` vier `null` (arquivo ausente — edição pré-#5414, ou dispa
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/04-crop-review.json
   ```
   Sempre exit 0 (warning-only). Reaparece no gate da Etapa 4 via `check-invariants.ts --stage 4` (`image-crop-warn`) — nunca gate-blocking.
+- **Noite Estrelada na imagem gerada = regenerar sozinho (#10312).** Logo após o persist acima, SEMPRE:
+  ```bash
+  npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --estilo-regen-plan
+  ```
+  JSON `{ regenerate, exhausted, attempts, commands }`. Pra cada `dN` em `regenerate`, rodar os comandos de `commands.dN` em ordem (2:1 `--force` → 4:5 nativo `--force` → card 4:5; o `--force` aqui é a exceção documentada ao #1325 — regeneração pedida pelo revisor, não reentrada) e depois repetir o revisor inteiro (descoberta → `Agent("image-crop-reviewer")` com TODOS os pares → persist `--input-json`) e este plano de novo. O plano grava `_internal/04-estilo-regen.json` e só gasta a tentativa (teto `MAX_ESTILO_AUTO_REGEN` = 1 por destaque) quando a imagem de fato mudou; regeneração que falhou ganha 1 nova chance (`MAX_ESTILO_REGEN_FAILED_RUNS`), então o loop termina sozinho. **Verificável:** com veredito persistido, `_internal/04-estilo-regen.json` TEM de existir antes do gate; ausente, o erro do Stage 4 diz "NÃO rodou". `regenerate` vazio → seguir. `exhausted` não vazio → não regenerar de novo: o achado vira **erro** `image-starry-night-detected` no gate da Etapa 4 (o editor reescreve o prompt ou marca falso positivo). Falha de um comando de regeneração → logar e seguir (o erro do gate cobre). Não se aplica ao `image-crop-warn` de crop (categoria `crop`), que continua warning-only.
 - **Leaderboard top1 (#1160/#1753/#9236 — 3 primeiras edições publicadas do mês, período ANTERIOR; renderizado como bloco de campeões no box do É IA?).**
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts --edition {AAMMDD} --out {EDITION_DIR}/_internal/04-leaderboard-top1.json

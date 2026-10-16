@@ -19,6 +19,7 @@ import {
 } from "../scripts/run-image-crop-reviewer.ts";
 import {
   checkCropReviewWarnings,
+  checkStarryNightDetected,
   isCropReviewEntryStale,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { reorderCropReviewJson } from "../scripts/reorder-destaques.ts";
@@ -58,9 +59,14 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
 
   it("imagens inalteradas → os 3 avisos originais aparecem", () => {
     persist(RAW);
+    // #10312: o achado de estilo (Noite Estrelada) ATUAL saiu de
+    // image-crop-warn e virou erro em image-starry-night-detected.
     const v = checkCropReviewWarnings(dir);
-    assert.equal(v.length, 3);
+    assert.equal(v.length, 2);
     assert.ok(v.every((x) => x.source_issue === "#3951"));
+    const e = checkStarryNightDetected(dir);
+    assert.equal(e.length, 1);
+    assert.match(e[0].message, /D3 \(4x5\)[\s\S]*Noite Estrelada/);
   });
 
   it("D3 regerado → avisos do D3 antigo somem, viram nota de desatualizado; D1 segue", () => {
@@ -98,8 +104,9 @@ describe("crop review desatualizado após regeração/troca de imagem (#9598)", 
     const { data } = reorderCropReviewJson(cur, [3, 2, 1]);
     writeReview(data);
     const v = checkCropReviewWarnings(dir);
-    assert.equal(v.length, 3);
+    assert.equal(v.length, 2);
     assert.ok(v.every((x) => x.source_issue === "#3951"), JSON.stringify(v));
+    assert.equal(checkStarryNightDetected(dir).length, 1); // #10312: estilo segue o slot novo (D1)
   });
 
   it("entrada legada sem image_md5 segue o comportamento antigo (aviso exibido)", () => {

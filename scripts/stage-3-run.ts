@@ -350,7 +350,7 @@ export interface Stage3RunResult {
 const DELEGATED_STEPS = [
   '3a — É IA? (coleta do dispatch em background + polling com retry/skip em timeout de 10min, decisão do editor) — nunca executado por este script.',
   '3a-bis — Skill("humanizador") + mcp__clarice__correct_text + filtro de julgamento semântico sobre a descrição do É IA? — nunca executado por este script.',
-  '3b (crop-reviewer) — dispatch Agent("image-crop-reviewer", { edition, pairs: cropReviewPairs, out_path }) e a chamada --input-json que persiste o veredito — este script só faz a DESCOBERTA dos pares (cropReviewPairs no resultado).',
+  '3b (crop-reviewer) — dispatch Agent("image-crop-reviewer", { edition, pairs: cropReviewPairs, out_path }) e a chamada --input-json que persiste o veredito, seguida de --estilo-regen-plan (#10312: regenerar destaque com Noite Estrelada e repetir o revisor) — este script só faz a DESCOBERTA dos pares (cropReviewPairs no resultado).',
   '3b (gate humano final) — aprovar/regenerar imagens + escrever o sentinel do Stage 3 (pipeline-sentinel.ts write --step 3) — nunca executado por este script.',
 ];
 
@@ -599,7 +599,7 @@ export async function runStage3(argv: string[], deps: Stage3RunDeps): Promise<St
         pendingAgentDispatch.push({
           step: "3b-crop-reviewer",
           agent: "image-crop-reviewer",
-          detail: `${parsed.pairs.length} par(es) de imagem pra revisar — dispatch via Agent("image-crop-reviewer", { edition: "${opts.edition}", pairs: cropReviewPairs, out_path: "${parsed.out_path}" }); depois persistir com "run-image-crop-reviewer.ts --edition-dir ${editionDir}/ --input-json <output-do-agent>".`,
+          detail: `${parsed.pairs.length} par(es) de imagem pra revisar — dispatch via Agent("image-crop-reviewer", { edition: "${opts.edition}", pairs: cropReviewPairs, out_path: "${parsed.out_path}" }); depois persistir com "run-image-crop-reviewer.ts --edition-dir ${editionDir}/ --input-json <output-do-agent>" e rodar "run-image-crop-reviewer.ts --edition-dir ${editionDir}/ --estilo-regen-plan" (#10312 — regenera destaque com Noite Estrelada).`,
           manifestPath: parsed.out_path,
         });
       }

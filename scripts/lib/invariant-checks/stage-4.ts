@@ -1639,26 +1639,40 @@ export function isCropReviewEntryStale(
   }
 }
 
-function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
+interface CropReviewFileEntry {
+  destaque?: string;
+  ratio?: string;
+  status?: string;
+  categoria?: string;
+  motivo?: string;
+  sugestao?: string;
+  image_md5?: string;
+}
+
+function readCropReviewEntries(editionDir: string): { path: string; results: CropReviewFileEntry[] } | null {
   const path = resolve(editionDir, "_internal", "04-crop-review.json");
-  if (!existsSync(path)) return [];
-  let data: {
-    results?: Array<{
-      destaque?: string;
-      ratio?: string;
-      status?: string;
-      motivo?: string;
-      sugestao?: string;
-      image_md5?: string;
-    }>;
-  };
+  if (!existsSync(path)) return null;
   try {
-    data = JSON.parse(readFileSync(path, "utf8"));
+    const data = JSON.parse(readFileSync(path, "utf8")) as { results?: CropReviewFileEntry[] };
+    return { path, results: Array.isArray(data.results) ? data.results : [] };
   } catch {
-    return [];
+    return null;
   }
-  const results = Array.isArray(data.results) ? data.results : [];
-  const warns = results.filter((r) => r && r.status === "warn");
+}
+
+/** Achado de Noite Estrelada (#8989) ainda válido para a imagem atual (#9598). */
+function isCurrentStarryNight(editionDir: string, r: CropReviewFileEntry): boolean {
+  return !!r && r.status === "warn" && r.categoria === "estilo" && !isCropReviewEntryStale(editionDir, r);
+}
+
+function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
+  const read = readCropReviewEntries(editionDir);
+  if (!read) return [];
+  const { path, results } = read;
+  // #10312: Noite Estrelada ATUAL sai daqui e vira erro em
+  // `image-starry-night-detected` (checkStarryNightDetected abaixo). A
+  // entrada desatualizada continua aqui, como nota "re-rodar o revisor".
+  const warns = results.filter((r) => r && r.status === "warn" && !isCurrentStarryNight(editionDir, r));
   const stale = warns.filter((r) => isCropReviewEntryStale(editionDir, r));
   const staleKeys = [...new Set(stale.map((r) => `${(r.destaque ?? "?").toUpperCase()} (${r.ratio})`))];
   const staleNotices: InvariantViolation[] = staleKeys.map((key) => ({
@@ -1682,6 +1696,57 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
       file: path,
     }));
   return [...current, ...staleNotices];
+}
+
+/**
+ * #10312: o revisor de imagem (`image-crop-reviewer`, Stage 3) acusou padrão
+ * de Noite Estrelada (`categoria: "estilo"`, #8989) na imagem ATUAL do
+ * destaque. Até aqui isso era só `image-crop-warn` (warning) e a imagem
+ * chegava ao gate pronta pra publicar — achado ao vivo na edição 261016 (D2,
+ * redemoinho azul/amarelo na tela do celular). A regra é invariável (CLAUDE.md:
+ * "Prompt de imagem: ... SEM Noite Estrelada"), então aqui é ERRO.
+ *
+ * O Stage 3 já regenera sozinho (`run-image-crop-reviewer.ts
+ * --estilo-regen-plan`, teto `MAX_ESTILO_AUTO_REGEN`); este invariante só
+ * dispara quando a regeneração automática esgotou ou não rodou. Imagem
+ * regerada depois da revisão (md5 diverge, #9598) não conta — vira a nota de
+ * desatualizado de `image-crop-warn`.
+ *
+ * Não é o caso do #7401 (reverter escolha editorial pra satisfazer lint): o
+ * conserto é regenerar a imagem, nunca mexer no texto do editor. Falso
+ * positivo do revisor: o editor troca a entrada para `status: "ok"`.
+ */
+function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
+  const read = readCropReviewEntries(editionDir);
+  if (!read) return [];
+  const { path, results } = read;
+  const hits = results.filter((r) => isCurrentStarryNight(editionDir, r));
+  // O plano de regeneração sempre grava este arquivo; ausente = o orchestrator
+  // pulou o passo do Stage 3 (o loop vive só no playbook).
+  const regenRan = existsSync(resolve(editionDir, "_internal", "04-estilo-regen.json"));
+  const cause = regenRan
+    ? "a regeneração automática do Stage 3 esgotou"
+    : "a regeneração automática do Stage 3 NÃO rodou (_internal/04-estilo-regen.json ausente — passo --estilo-regen-plan pulado)";
+  const byDestaque = new Map<string, CropReviewFileEntry[]>();
+  for (const r of hits) {
+    const key = r.destaque ?? "?";
+    byDestaque.set(key, [...(byDestaque.get(key) ?? []), r]);
+  }
+  return [...byDestaque.entries()].map(([destaque, entries]) => {
+    const ratios = entries.map((e) => e.ratio ?? "?").join(", ");
+    const motivo = entries.find((e) => e.motivo)?.motivo ?? "padrão de espiral/redemoinho estilo Noite Estrelada";
+    return {
+      rule: "image-starry-night-detected",
+      message:
+        `Destaque ${destaque.toUpperCase()} (${ratios}): imagem gerada com Noite Estrelada — ${motivo}; ${cause}. ` +
+        `Viola regra invariável — em rodada sem gates a edição para aqui. Regenerar: \`npx tsx scripts/run-image-crop-reviewer.ts --edition-dir <dir>/ --estilo-regen-plan\` ` +
+        `(ou reescrever _internal/02-${destaque}-prompt.md e rodar image-generate.ts --force + --ratio 4x5 --force + gen-social-card-4x5.ts), ` +
+        `depois re-rodar o revisor. Falso positivo: trocar a entrada para status "ok" em _internal/04-crop-review.json.`,
+      source_issue: "#10312",
+      severity: "error" as const,
+      file: path,
+    };
+  });
 }
 
 /**
@@ -3480,6 +3545,14 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkCropReviewWarnings,
   },
   {
+    id: "image-starry-night-detected",
+    description:
+      "revisor de imagem (Stage 3) acusou Noite Estrelada na imagem ATUAL do destaque — regra invariável, error; Stage 3 regenera sozinho antes (#10312)",
+    source_issue: "#10312",
+    stage: 4,
+    run: checkStarryNightDetected,
+  },
+  {
     id: "box-divulgacao-alt-missing",
     description: "slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only)",
     source_issue: "#4086",
@@ -3641,6 +3714,7 @@ export {
   checkCaptureFailedSubmissionCount,
   checkNoDuplicateUrlsAgainstPastEditions,
   checkCropReviewWarnings,
+  checkStarryNightDetected,
   checkBoxDivulgacaoAltMissing,
   checkCard4x5UploadMismatch,
   checkCarouselCardsMissing,
