@@ -187,12 +187,18 @@ export function hasBrazilAngle<T extends ClickRankedCandidate>(c: T): boolean {
  * implicação profissional > diversidade de categoria"). Pesos em ordem
  * lexicográfica estrita (100 > 50 > 10 — nenhuma combinação dos critérios
  * mais fracos supera o mais forte).
+ *
+ * #10378: com `isInHighlights` informado (só a retro semanal do Instagram),
+ * item que NÃO saiu nos highlights da mesma semana vence qualquer outro
+ * critério (+1000, antes do ângulo Brasil).
  */
 export function editorialTiebreakScore<T extends ClickRankedCandidate>(
   c: T,
   alreadySelectedCategories: Set<string>,
+  isInHighlights?: (c: T) => boolean,
 ): number {
   let score = 0;
+  if (isInHighlights && !isInHighlights(c)) score += 1000;
   if (hasBrazilAngle(c)) score += 100;
   if (hasProfessionalImplication(c)) score += 50;
   if (!alreadySelectedCategories.has(c.category.toUpperCase())) score += 10;
