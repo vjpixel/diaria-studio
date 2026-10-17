@@ -1653,6 +1653,19 @@ export function isCropReviewEntryStale(
   entry: { destaque?: string; ratio?: string; image_md5?: string; image_variant?: string },
 ): boolean {
   if (typeof entry.image_md5 !== "string" || !entry.destaque || !entry.ratio) return false;
+  // #10333: a variante é escolhida uma vez, no persist (`cropReviewStampVariant`,
+  // ordem nativo → master → 2x1). Se depois nasce uma variante anterior na
+  // ordem (ex.: `image-generate --ratio 4x5 --force` cria o nativo sem apagar o
+  // master), o card passa a usar a arte nova sem o arquivo carimbado mudar — a
+  // entrada já não fala da arte atual e não pode valer (nem um falso positivo
+  // marcado sobre o md5 antigo).
+  if (isCropReviewImageVariant(entry.image_variant)) {
+    const destaque = entry.destaque;
+    const current = CROP_REVIEW_IMAGE_VARIANTS.find((v) =>
+      existsSync(resolve(editionDir, `04-${destaque}-${v}.jpg`)),
+    );
+    if (current !== entry.image_variant) return true;
+  }
   const imgPath = resolve(editionDir, `04-${entry.destaque}-${cropReviewImageSuffix(entry)}.jpg`);
   if (!existsSync(imgPath)) return true;
   try {
@@ -1706,13 +1719,15 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
   // `image-starry-night-detected` (checkStarryNightDetected abaixo). A
   // entrada desatualizada continua aqui, como nota "re-rodar o revisor".
   // #10328: falso positivo marcado pelo editor some também daqui (não vira warning).
+  // #10333: só enquanto a entrada fala da arte atual — desatualizada, o falso
+  // positivo vale para a arte antiga e a nota "re-rodar o revisor" volta.
   const falsePositives = readEstiloFalsePositiveMd5s(editionDir);
   const warns = results.filter(
     (r) =>
       r &&
       r.status === "warn" &&
       !isCurrentStarryNight(editionDir, r, falsePositives) &&
-      !isEstiloFalsePositive(r, falsePositives),
+      !(isEstiloFalsePositive(r, falsePositives) && !isCropReviewEntryStale(editionDir, r)),
   );
   const stale = warns.filter((r) => isCropReviewEntryStale(editionDir, r));
   const staleKeys = [...new Set(stale.map((r) => `${(r.destaque ?? "?").toUpperCase()} (${r.ratio})`))];
