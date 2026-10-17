@@ -128,6 +128,9 @@
  *                      #9706: exceto 4xx definitivo da Brevo no POST (a
  *                      resposta chegou e recusou) — exit 1 (falhou), com a
  *                      marca de tentativa restaurada.
+ *                      #10366: status ao vivo fora de "draft" e não mapeado
+ *                      acima ("in_review", "suspended", "archive"...) também
+ *                      recusa — fail-closed, nenhum POST.
  *
  * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
  *                      gabarito É IA?) quando diverge do --cycle de
@@ -914,6 +917,11 @@ export function applySendNowVerifyResults(
  * do aceite) deixa só o "tentado" no registro, e "draft" ao vivo dentro da
  * janela continua sendo tratado como em processamento. Com os dois presentes,
  * a janela conta a partir do MAIS RECENTE.
+ *
+ * #10366: fail-closed — só `"draft"` ao vivo (fora da janela acima) libera o
+ * POST. Qualquer outro status (`"in_review"`, `"suspended"`, `"archive"`,
+ * `"scheduled"` agendado por fora, valor desconhecido) recusa sem
+ * `syncLocalAsSent`: não prova que o envio saiu nem que não saiu.
  */
 export function checkSendNowGuard(
   localStatus: CampaignEntry["status"],
@@ -966,6 +974,22 @@ export function checkSendNowGuard(
         syncLocalAsSent: false,
       };
     }
+  }
+  // #10366: qualquer status ao vivo que não seja "draft" conhecido (ex.:
+  // "in_review" — envio aceito retido pra revisão de compliance, #4364;
+  // "suspended"; "archive"; "scheduled" agendado por fora; ou um valor novo
+  // da Brevo) NÃO prova que o 1º sendNow não saiu. Antes caía no `send: true`
+  // e um 2º --send-now repetia o POST numa campanha já fora de "draft".
+  // Fail-closed: só "draft" (fora da janela acima) libera o POST.
+  if (liveStatus !== "draft") {
+    return {
+      send: false,
+      reason:
+        `status ao vivo="${liveStatus}" não é "draft" — a campanha não está num estado em que um POST sendNow seja seguro ` +
+        `(pode ser envio já aceito e retido na Brevo). ${describeUncertainSendStatus(liveStatus)} ` +
+        `NÃO re-dispare; resolva no painel da Brevo (#10366)`,
+      syncLocalAsSent: false,
+    };
   }
   return { send: true };
 }
@@ -1314,9 +1338,10 @@ function isNonEmptyMark(v: unknown): v is string {
  * pra sempre e o re-disparo liberado saía com o HTML antigo. Sem
  * `getCampaignFn` injetado, recusa (fail-safe).
  *
- * #10364: além do guard, o PUT exige status ao vivo === "draft". O guard
- * libera `send: true` pra status não mapeados (ex.: "in_review"), o que não
- * prova que o envio não saiu — ali recusa sem PUT e sem regravar o registro.
+ * #10364: além do guard, o PUT exige status ao vivo === "draft". Desde o
+ * #10366 o próprio guard já recusa status não-"draft" (ex.: "in_review"); a
+ * checagem local fica como defesa em profundidade — se o guard voltar a
+ * liberar algo fora de "draft", o PUT continua recusado sem regravar o registro.
  *
  * Retorno `"skipped"` = PUT pedido NÃO feito; o caller sinaliza exit 1.
  */
@@ -1359,11 +1384,10 @@ export async function runUpdateHtml(
       logFn(`⚠️  ${c.key} (campanha #${c.campaignId}): ${guard.reason} — html NÃO atualizado`);
       return "skipped";
     }
-    // #10364: `checkSendNowGuard` só barra terminal/queued/draft-na-janela —
-    // qualquer outro status ao vivo (ex.: "in_review", envio aceito retido pra
-    // revisão de compliance, #4364) devolve `send: true`. Pro --update-html
-    // isso NÃO prova que o sendNow não saiu: só "draft" ao vivo prova. Fora
-    // dele, recusa sem PUT e sem tocar o registro.
+    // #10364: só "draft" ao vivo prova que o sendNow não saiu. Desde o #10366
+    // `checkSendNowGuard` já recusa qualquer status fora de "draft" (ex.:
+    // "in_review", #4364), então este ramo é defesa em profundidade: se o
+    // guard regredir, o PUT segue recusado sem tocar o registro.
     if (live.status !== "draft") {
       logFn(
         `⚠️  ${c.key} (campanha #${c.campaignId}): ${marks} e status ao vivo="${live.status}" (não é "draft") — ` +
