@@ -280,6 +280,35 @@ describe("selectInstagramWeekly — desempate editorial dentro do ruído de 1 cl
   });
 });
 
+describe("selectInstagramWeekly — desempate prefere item fora dos highlights (#10378)", () => {
+  it("empate dentro do ruído: item que não é D1 vence o D1 mesmo com ângulo Brasil no D1", () => {
+    const candidates: InstagramRankedCandidate[] = [
+      rankedFixture({
+        title: "Itaú lança ferramenta de IA no Brasil",
+        url: "https://exemplo.com/itau",
+        editionDate: "260728",
+        destaqueNumber: 1,
+        opens: 100,
+        ratePct: 3.5,
+        category: "MERCADO",
+      }),
+      rankedFixture({
+        title: "Guardian cobre IA no mundo",
+        url: "https://exemplo.com/guardian",
+        editionDate: "260729",
+        destaqueNumber: undefined,
+        kind: "section",
+        opens: 100,
+        ratePct: 3.0,
+        category: "RADAR",
+      }),
+    ];
+    assert.equal(withinClickNoise(candidates[0], candidates[1]), true);
+    const result = selectInstagramWeekly(candidates, 5);
+    assert.equal(result.selected[0].title, "Guardian cobre IA no mundo");
+  });
+});
+
 describe("selectInstagramWeekly — limite de itens e insuficiência", () => {
   it("respeita maxItems mesmo com mais candidatos elegíveis disponíveis", () => {
     const candidates: InstagramRankedCandidate[] = Array.from({ length: 7 }, (_, i) =>

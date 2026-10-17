@@ -401,6 +401,11 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
   const selectedCategories = new Set<string>();
   const warnings: string[] = [];
   let remaining = eligible;
+  // #10378: D1s da semana (carrossel highlights) — desempate prefere quem ficou de fora.
+  const highlightUrls = new Set(
+    selectInstagramHighlights(candidatesIn).selected.map((c) => normalizeUrl(c.url)),
+  );
+  const isInHighlights = (c: InstagramRankedCandidate) => highlightUrls.has(normalizeUrl(c.url));
 
   while (selected.length < maxItems && remaining.length > 0) {
     const top = remaining[0];
@@ -408,7 +413,7 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
     let winner: InstagramRankedCandidate;
     if (tiedGroup.length > 1) {
       const scored = tiedGroup
-        .map((c) => ({ c, score: editorialTiebreakScore(c, selectedCategories) }))
+        .map((c) => ({ c, score: editorialTiebreakScore(c, selectedCategories, isInHighlights) }))
         .sort((x, y) => y.score - x.score || byRateDescThenTitle(x.c, y.c));
       winner = scored[0].c;
       const missingData = tiedGroup.filter((c) => !c.hasClickData);
