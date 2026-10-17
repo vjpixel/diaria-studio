@@ -650,9 +650,10 @@ describe("#6202/#6598 commitAndPushSitePage — branch dedicada + PR, nunca push
     assert.equal(r.prUrl, "https://github.com/vjpixel/diaria-studio/pull/9999");
     assert.deepEqual(
       calls.map((c) => c[0]),
+      // #10266: rev-parse/ls-remote/update-ref = dropStaleTrackingRef antes do push.
       // #7287: 2 rev-parse agora — abbrev-ref (nome, pro checkout de volta) +
       // HEAD/origin-master (o guard em si, por commit).
-      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "rev-parse", "ls-remote", "update-ref", "push", "checkout"],
     );
     const revParseCall = calls[0];
     const guardCall = calls[1];
@@ -1175,7 +1176,7 @@ describe("#6202 productionDeps — fiação real (#6202 review P2-G)", () => {
     assert.equal(result.prUrl, "https://github.com/vjpixel/diaria-studio/pull/1");
     assert.deepEqual(
       calls.map((c) => c[0]),
-      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "push", "checkout"],
+      ["rev-parse", "rev-parse", "checkout", "add", "status", "diff", "commit", "rev-parse", "ls-remote", "update-ref", "push", "checkout"],
     );
     assert.ok(
       ghCalls.some((c) => c[0] === "pr" && c[1] === "create"),
