@@ -1173,6 +1173,54 @@ export async function probeKitDoiFormExists(params: {
 }
 
 /**
+ * KIT_DOI_NOOP_RELINK (#9986) — por que o noop 200 NÃO é desfeito com
+ * "desvincular e revincular" no form DOI.
+ *
+ * Decisão do editor (briefing overnight 261017): para quem já está vinculado
+ * ao form DOI (reenvio responde 200, nada sai), desvincular e revincular pra
+ * forçar o 201 e o e-mail, garantindo que a remoção não apaga o subscriber.
+ * Auditoria da API pública do Kit v4 (OpenAPI
+ * `https://developers.kit.com/api-reference/v4.json`, lida em 17/10/2026):
+ *  - Forms expõe só `GET /v4/forms`, `GET /v4/forms/{id}/subscribers`,
+ *    `POST /v4/forms/{id}/subscribers[/{sub_id}]` e
+ *    `POST /v4/bulk/forms/subscribers`. NÃO existe endpoint que remova um
+ *    subscriber de um form (ao contrário de tags, que têm
+ *    `DELETE /v4/tags/{tag_id}/subscribers/{id}`).
+ *  - O bulk diz explicitamente: "Subscribers already added to the specified
+ *    form will not receive the Incentive Email again." — re-adicionar pelo
+ *    bulk também não reenvia.
+ *  - A única "remoção" disponível é `POST /v4/subscribers/{id}/unsubscribe`,
+ *    que move o subscriber pra `cancelled` e é, nas palavras da própria doc,
+ *    "consent-revoking and effectively permanent". Usar isso pra "desvincular"
+ *    cancelaria a inscrição de quem está tentando confirmar — o oposto do
+ *    objetivo, e um estado do qual o reenvio (`shouldResendKitDoi`, só
+ *    `inactive`) nunca mais o tiraria.
+ *
+ * Logo o relink não é implementável com segurança: o caminho do noop segue
+ * só gravando `doi_resend_noop_at` + `doiResendNoop` (#9979/#10005), e o
+ * resumo da rodada passa a dizer que esses contatos estão presos sem
+ * mecanismo automático (`mensagemDoiNoopSemRelink`). O mecanismo alternativo
+ * (ex.: segundo designer form de DOI) volta pro editor na issue.
+ */
+export const KIT_DOI_NOOP_RELINK = {
+  supported: false,
+  reason: "Kit v4 não tem endpoint para remover subscriber de form; o único caminho de remoção (unsubscribe) cancela a inscrição",
+} as const;
+
+/**
+ * mensagemDoiNoopSemRelink (#9986) — pura. Linha do resumo da rodada quando
+ * houve noops: sem ela, o contador `doiResendNoop` aparece mas não diz que
+ * esses contatos não têm saída automática. `null` quando não houve noop.
+ */
+export function mensagemDoiNoopSemRelink(noops: number): string | null {
+  if (!Number.isFinite(noops) || noops <= 0) return null;
+  return (
+    `warn: ${noops} contato(s) inactive já vinculado(s) ao form DOI — nenhum e-mail de confirmação saiu ` +
+    `e não há reenvio automático possível: ${KIT_DOI_NOOP_RELINK.reason} (#9986).`
+  );
+}
+
+/**
  * resendKitDoi (#9835) — reenvia o e-mail de confirmação vinculando o
  * subscriber já existente ao designer form de DOI. Reusa
  * `vincularKitDoiForm` (`lib/shared/kit-doi.ts`, a mesma maquinaria dos
@@ -2676,6 +2724,8 @@ async function main(): Promise<number> {
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
       `${result.doiResendNoop} tentativa(s) de reenvio sem e-mail (Kit respondeu 200, já vinculado ao form, #9986).`,
   );
+  const doiNoopMsg = mensagemDoiNoopSemRelink(result.doiResendNoop); // #9986 — relink inviável na API do Kit
+  if (doiNoopMsg) log(doiNoopMsg);
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o
   // warn individual de cada falha pode ficar fora da janela de tail que

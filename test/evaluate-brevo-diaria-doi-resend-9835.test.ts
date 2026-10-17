@@ -22,6 +22,8 @@ import {
   isPermanentKitDoiFailure,
   decideDoiPermanentFailureScope,
   probeKitDoiFormExists,
+  KIT_DOI_NOOP_RELINK,
+  mensagemDoiNoopSemRelink,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
@@ -833,5 +835,69 @@ describe("reenvio DOI — form confirmado existe: falhas iguais são dos contato
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+});
+
+// #9986 (item 3) — decisão do editor (261017): desvincular e revincular no
+// form DOI quem responde 200. A API do Kit v4 não tem endpoint de remoção de
+// form, e a única "remoção" (POST /subscribers/{id}/unsubscribe) cancela a
+// inscrição. Regressão: o caminho do noop nunca pode "desvincular" via
+// unsubscribe/DELETE/PUT — só o POST de vínculo ao form, marcador de noop
+// gravado e nenhum marcador de sucesso.
+describe("reenvio DOI — noop 200 sem relink destrutivo (#9986)", () => {
+  const origFetch = globalThis.fetch;
+
+  it("noop 200: a única escrita no Kit é o POST de vínculo; nunca unsubscribe/DELETE/PUT", async () => {
+    const writes: { method: string; url: string }[] = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("api.kit.com") && method !== "GET") writes.push({ method, url: u });
+      if (u.includes("/forms/") && method === "POST") return jsonRes(200, { subscriber: { id: 77 } });
+      if (u.includes("/forms/") && method === "GET") {
+        return jsonRes(200, { subscribers: [], pagination: { has_next_page: false } });
+      }
+      if (u.includes("api.kit.com/v4/subscribers") && u.includes("email_address=")) {
+        return jsonRes(200, {
+          subscribers: [{ id: 77, email_address: "leitor@x.com", state: "inactive", created_at: "2026-09-01T00:00:00.000Z" }],
+        });
+      }
+      if (u.includes("api.kit.com")) return jsonRes(500, {});
+      return brevoStatsRes(3, 3);
+    }) as typeof fetch;
+    try {
+      const result = await run(contact("leitor@x.com"));
+      assert.equal(writes.length, 1, JSON.stringify(writes));
+      assert.equal(writes[0].method, "POST");
+      assert.match(writes[0].url, new RegExp(`/forms/${DOI_FORM}/subscribers/77$`));
+      assert.ok(!writes.some((w) => w.url.includes("/unsubscribe") || w.method === "DELETE" || w.method === "PUT"));
+      const stored = findContact(result.store, "leitor@x.com")!;
+      assert.ok(stored.doi_resend_noop_at, "noop gravado (backoff #10005 preservado)");
+      assert.equal(stored.doi_resent_at, undefined, "sem marcador de sucesso");
+      assert.equal(stored.status, "in_brevo", "contato não sai do store");
+      assert.equal(result.doiResendNoop, 1);
+      assert.equal(result.doiResent, 0);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("KIT_DOI_NOOP_RELINK documenta que o relink não é suportado", () => {
+    assert.equal(KIT_DOI_NOOP_RELINK.supported, false);
+    assert.match(KIT_DOI_NOOP_RELINK.reason, /unsubscribe/);
+  });
+
+  it("mensagemDoiNoopSemRelink: null sem noop; com noop nomeia o total e a issue", () => {
+    assert.equal(mensagemDoiNoopSemRelink(0), null);
+    assert.equal(mensagemDoiNoopSemRelink(Number.NaN), null);
+    const m = mensagemDoiNoopSemRelink(5)!;
+    assert.match(m, /^warn: 5 contato\(s\)/);
+    assert.match(m, /#9986/);
+  });
+
+  it("o main() imprime o aviso de noop sem relink logo após o resumo", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(new URL("../scripts/evaluate-brevo-diaria.ts", import.meta.url), "utf8");
+    assert.match(src, /mensagemDoiNoopSemRelink\(result\.doiResendNoop\)/);
   });
 });
