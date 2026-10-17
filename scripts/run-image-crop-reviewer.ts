@@ -57,6 +57,7 @@ import { md5OfFile } from "./lib/shared/file-md5.ts"; // #9598
 import {
   isCropReviewEntryStale, // #10312
   isCropReviewImageVariant, // #10325
+  CROP_REVIEW_IMAGE_VARIANTS, // #10333: ordem nativo → master → 2x1, fonte única
   type CropReviewImageVariant,
 } from "./lib/invariant-checks/stage-4.ts";
 import {
@@ -286,8 +287,7 @@ export function cropReviewStampVariant(
   categoria: CropReviewCategory | undefined,
 ): CropReviewImageVariant | null {
   if (categoria !== "estilo" || ratio !== "4x5") return null;
-  const order: CropReviewImageVariant[] = ["4x5-nativo", "master", "2x1"];
-  return order.find((v) => existsSync(join(editionDir, `04-${destaque}-${v}.jpg`))) ?? null;
+  return CROP_REVIEW_IMAGE_VARIANTS.find((v) => existsSync(join(editionDir, `04-${destaque}-${v}.jpg`))) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +339,15 @@ export interface EstiloRegenState {
    * `4x5-nativo` para `2x1` — sem imagem nova nenhuma.
    */
   pendingBase?: Partial<Record<DestaqueId, string | null>>;
+  /**
+   * #10335: md5 de TODOS os ratios revisados (`ESTILO_REGEN_RATIOS`) no momento
+   * da proposta, não só dos acusados (`pending`). No plano seguinte, o md5
+   * atual de um ratio só entra em `images` se for coerente com o desfecho:
+   * regeneração rodou E aquele ratio mudou. Gerador falhou → nada novo é da
+   * regeneração, e um arquivo diferente do snapshot foi trocado por outra
+   * pessoa (não pode herdar a contagem).
+   */
+  pendingAll?: Partial<Record<DestaqueId, Record<string, string | null>>>;
   /**
    * #10327: md5s das imagens a que `attempts`/`failed` se referem (a anterior
    * e a regenerada). A contagem é por POSIÇÃO; quando a imagem atual do
@@ -414,7 +423,25 @@ export function planEstiloRegeneration(
     // que estava pendente. Sem isso o reset do #10327 abaixo trata a própria
     // imagem regenerada como "outra imagem na mesma posição" e zera
     // `attempts`/`failed` — o teto some sempre que o ratio acusado alterna.
-    for (const ratio of ESTILO_REGEN_RATIOS) remember(d, currentMd5(d, ratio));
+    const all = previous.pendingAll?.[d];
+    if (all && typeof all === "object") {
+      // #10335: com o snapshot de todos os ratios, só entra o md5 atual que a
+      // regeneração explica — ela rodou (`changed`) e o ratio mudou. Com o
+      // gerador fora, um ratio diferente do snapshot foi trocado por outra
+      // pessoa (ex.: arte 4:5 nativa nova) e não herda a contagem. O 2:1 da
+      // proposta também conta como imagem conhecida: com o 4:5 nativo apagado
+      // pelo `--force` (#10342), o 4:5 resolve para esse mesmo 2:1.
+      if (typeof base === "string") remember(d, base);
+      for (const ratio of ESTILO_REGEN_RATIOS) {
+        const before = typeof all[ratio] === "string" ? all[ratio] : null;
+        remember(d, before);
+        const now = currentMd5(d, ratio);
+        if (changed && now !== before) remember(d, now);
+      }
+    } else {
+      // Estado anterior ao #10335 (sem `pendingAll`): comportamento do #10332.
+      for (const ratio of ESTILO_REGEN_RATIOS) remember(d, currentMd5(d, ratio));
+    }
   }
 
   const flaggedRatios = new Map<DestaqueId, Set<string>>();
@@ -425,6 +452,7 @@ export function planEstiloRegeneration(
   }
   const pending: Partial<Record<DestaqueId, Record<string, string | null>>> = {};
   const pendingBase: Partial<Record<DestaqueId, string | null>> = {};
+  const pendingAll: Partial<Record<DestaqueId, Record<string, string | null>>> = {};
   const regenerate: DestaqueId[] = [];
   const exhausted: DestaqueId[] = [];
   for (const d of DESTAQUE_IDS) {
@@ -445,11 +473,12 @@ export function planEstiloRegeneration(
       regenerate.push(d);
       pending[d] = Object.fromEntries([...ratios].map((ratio) => [ratio, currentMd5(d, ratio)]));
       pendingBase[d] = currentMd5(d, BASE_RATIO);
+      pendingAll[d] = Object.fromEntries(ESTILO_REGEN_RATIOS.map((ratio) => [ratio, currentMd5(d, ratio)]));
     } else {
       exhausted.push(d);
     }
   }
-  return { regenerate, exhausted, attempts, state: { attempts, failed, pending, pendingBase, images } };
+  return { regenerate, exhausted, attempts, state: { attempts, failed, pending, pendingBase, pendingAll, images } };
 }
 
 /**
