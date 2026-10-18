@@ -20,7 +20,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
@@ -730,7 +730,11 @@ function main(): void {
   try {
     const editionDir = dirname(mdPath);
     useMelhorNotice = describeUseMelhorPostStatus(
-      gatherUseMelhorStatusInput(editionDir, loadUseMelhorPostConfigState(resolve(import.meta.dirname, ".."))),
+      gatherUseMelhorStatusInput(
+        editionDir,
+        // #10305: com a edição, o horário exibido é o da rotação do dia (o que o Stage 5 agenda).
+        loadUseMelhorPostConfigState(resolve(import.meta.dirname, ".."), basename(resolve(editionDir))),
+      ),
     ).lines;
   } catch (e) {
     console.error(`[render-social-html] #9568: status do 4º post indisponível: ${(e as Error).message}`);

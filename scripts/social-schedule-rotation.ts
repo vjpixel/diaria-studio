@@ -26,8 +26,8 @@
  * um arquivo local.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
   type CivilDate,
@@ -43,40 +43,17 @@ import {
   resolveLinkedinArticleTime,
   weekdayCoverage,
 } from "./lib/social-schedule-rotation.ts";
+import { DEFAULT_ROTATION_LOG, newRowsToRecord, recordRotationRows, rowKey } from "./lib/social-schedule-rotation-record.ts";
+
+// Reexport: a lógica de gravação mora na lib (os publicadores também gravam, #10417 finding 3).
+export { DEFAULT_ROTATION_LOG, newRowsToRecord, rowKey };
 
 const ROOT = resolve(import.meta.dirname, "..");
-export const DEFAULT_ROTATION_LOG = "data/social-schedule-rotation.jsonl";
 
 /** Pure: aceita "AAAA-MM-DD" ou "AAMMDD". */
 export function parseCliDate(s: string): CivilDate {
   if (/^\d{6}$/.test(s)) return parseIsoCivilDate(`20${s.slice(0, 2)}-${s.slice(2, 4)}-${s.slice(4, 6)}`);
   return parseIsoCivilDate(s);
-}
-
-/** Pure: chave de deduplicação de uma linha do plano. */
-export function rowKey(r: RotationPlanRow): string {
-  if (r.kind === "weekday") return `${r.date}|weekday|${r.type}`;
-  if (r.kind === "weekend") return `${r.date}|weekend|${r.day}`;
-  return `${r.date}|linkedin_article`;
-}
-
-/**
- * Pure: linhas novas (ainda não gravadas) — `existing` é o conteúdo atual do
- * JSONL. Linha ilegível no arquivo é ignorada (não impede gravar as demais).
- * Uma linha já gravada com outro horário NÃO é sobrescrita: o registro é do
- * que foi decidido na hora (o config pode ter mudado depois).
- */
-export function newRowsToRecord(existing: string, rows: RotationPlanRow[]): RotationPlanRow[] {
-  const seen = new Set<string>();
-  for (const line of existing.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      seen.add(rowKey(JSON.parse(line) as RotationPlanRow));
-    } catch {
-      // linha corrompida: ignorar
-    }
-  }
-  return rows.filter((r) => !seen.has(rowKey(r)));
 }
 
 function formatTable(rows: RotationPlanRow[]): string {
@@ -134,14 +111,8 @@ function main(): void {
 
   if (has("--record")) {
     const logPath = resolve(ROOT, get("--log") ?? DEFAULT_ROTATION_LOG);
-    const existing = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-    const fresh = newRowsToRecord(existing, rows);
-    if (fresh.length > 0) {
-      mkdirSync(dirname(logPath), { recursive: true });
-      const recordedAt = new Date().toISOString();
-      appendFileSync(logPath, fresh.map((r) => JSON.stringify({ ...r, recorded_at: recordedAt })).join("\n") + "\n");
-    }
-    console.log(`[social-schedule-rotation] ${fresh.length} linha(s) nova(s) em ${logPath} (${rows.length - fresh.length} já gravada(s)).`);
+    const n = recordRotationRows(logPath, rows);
+    console.log(`[social-schedule-rotation] ${n} linha(s) nova(s) em ${logPath} (${rows.length - n} já gravada(s)).`);
     return;
   }
 

@@ -382,3 +382,39 @@ export function resolveLinkedinArticleTime(
   if (slot) return { time: slot.time, source: "rotation", weekIndex: slot.weekIndex };
   return { time: baseTimesFromSocial(social).linkedinArticle ?? DEFAULT_LINKEDIN_WEEKLY_ARTICLE_TIME, source: "base" };
 }
+
+/**
+ * Pure: data de PUBLICAÇÃO de uma edição diária (`AAMMDD` + `fallback_schedule.day_offset`),
+ * a mesma conta de `computeScheduledAt`. `null` quando `edition` não é `AAMMDD` válido.
+ */
+export function publishDateForEdition(edition: string, social: SocialLike | null | undefined): CivilDate | null {
+  if (!/^\d{6}$/.test(edition)) return null;
+  let d: CivilDate;
+  try {
+    d = parseIsoCivilDate(`20${edition.slice(0, 2)}-${edition.slice(2, 4)}-${edition.slice(4, 6)}`);
+  } catch {
+    return null;
+  }
+  const raw = (social?.fallback_schedule as { day_offset?: unknown } | null | undefined)?.day_offset;
+  const offset = typeof raw === "number" && Number.isInteger(raw) ? raw : 0;
+  return offset === 0 ? d : civilFromDayNumber(civilDayNumber(d) + offset);
+}
+
+/**
+ * Pure: horário que o post `type` da edição diária publicada em `date` vai
+ * receber — o MESMO que `computeScheduledAt` usa (rotação do dia, senão o fixo).
+ * Para as superfícies que só EXIBEM o horário (gate 4, preview social, Studio),
+ * self-review #10417 finding 1: sem isto o editor via 07:45 no gate enquanto o
+ * post saía no horário rotacionado. `time: null` = sem horário fixo (4º post
+ * desligado). Config de rotação malformado lança, como em `readSocialRotation`.
+ */
+export function resolveDailyPostTime(
+  social: SocialLike | null | undefined,
+  date: CivilDate,
+  type: RotationPostType,
+): { time: string | null; base: string | null; source: "rotation" | "base" } {
+  const base = baseTimesFromSocial(social).weekday[type];
+  const slot = weekdayRotationSlot(readSocialRotation(social), date, type);
+  if (slot) return { time: slot.time, base, source: "rotation" };
+  return { time: base, base, source: "base" };
+}

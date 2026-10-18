@@ -11,7 +11,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   ROTATION_POST_TYPES,
@@ -23,7 +24,9 @@ import {
   countWeekdaysBetween,
   linkedinArticleRotationSlot,
   parseIsoCivilDate,
+  publishDateForEdition,
   readSocialRotation,
+  resolveDailyPostTime,
   resolveLinkedinArticleTime,
   weekdayCoverage,
   weekdayRotationSlot,
@@ -33,6 +36,12 @@ import { computeScheduledAt } from "../scripts/compute-social-schedule.ts";
 import { resolveArtigoEspecialScheduledAts } from "../scripts/lib/artigo-especial-schedule.ts";
 import { DEFAULT_WEEKLY_TIME, resolveWeeklyTime } from "../scripts/publish-weekly-social.ts";
 import { newRowsToRecord, parseCliDate } from "../scripts/social-schedule-rotation.ts";
+import {
+  dailyRotationRowsForEdition,
+  recordDailyRotationFailSoft,
+  recordRotationRows,
+} from "../scripts/lib/social-schedule-rotation-record.ts";
+import { describeUseMelhorPostStatus, useMelhorPostConfigState } from "../scripts/lib/use-melhor-post.ts";
 
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
 
@@ -278,5 +287,114 @@ describe("platform.config.json REAL (#10305)", () => {
   });
   it("artigo de segunda tem fonte de config (linkedin_weekly_article_time)", () => {
     assert.match(realSocial.linkedin_weekly_article_time, /^\d{2}:\d{2}$/);
+  });
+});
+
+// ── Fixer do PR #10417 (findings 1-3 do self-review) ─────────────────────────
+
+describe("finding 1 — superfícies de exibição mostram o horário da rotação", () => {
+  it("resolveDailyPostTime bate com computeScheduledAt nos 4 tipos (mesma função pura)", () => {
+    for (const edition of ["261020", "261021", "261103", "261120"]) {
+      const date = publishDateForEdition(edition, social())!;
+      for (const type of ROTATION_POST_TYPES) {
+        const iso = computeScheduledAt({ config: config(), editionDate: edition, destaque: type, platform: "linkedin", now: FAR_PAST_NOW });
+        assert.equal(iso.slice(11, 16), resolveDailyPostTime(social(), date, type).time, `${edition}/${type}`);
+      }
+    }
+  });
+  it("fora da janela devolve o fixo, com source=base", () => {
+    assert.deepEqual(resolveDailyPostTime(social(), d("2026-10-19"), "um"), { time: "07:45", base: "07:45", source: "base" });
+  });
+  it("publishDateForEdition aplica day_offset e rejeita não-AAMMDD", () => {
+    assert.deepEqual(publishDateForEdition("261020", social()), d("2026-10-20"));
+    const s = { ...social(), fallback_schedule: { ...social().fallback_schedule, day_offset: 1 } };
+    assert.deepEqual(publishDateForEdition("261020", s), d("2026-10-21"));
+    assert.equal(publishDateForEdition("edicao", social()), null);
+    assert.equal(publishDateForEdition("261332", social()), null);
+  });
+  it("gate 4 / preview: useMelhorPostConfigState com a edição mostra o rotacionado e o fixo", () => {
+    const st = useMelhorPostConfigState(config(), "261021");
+    const expected = weekdayRotationSlot(rot, d("2026-10-21"), "um")!.time;
+    assert.equal(st.enabled, true);
+    assert.equal(st.time, expected);
+    assert.equal(st.baseTime, "07:45");
+    const lines = describeUseMelhorPostStatus({
+      config: st, state: null, reviewedMd: null, approved: null, hasSocialSection: true, hasCurtoSection: true, carouselSlots: null,
+    }).lines;
+    assert.match(lines[0], new RegExp(`às ${expected} BRT \\(teste rotativo #10305; fixo 07:45\\)`));
+  });
+  it("sem edição (ou fora da janela) segue o fixo 07:45, sem baseTime — chamadores antigos inalterados", () => {
+    assert.deepEqual(useMelhorPostConfigState(config()), { enabled: true, time: "07:45" });
+    assert.deepEqual(useMelhorPostConfigState(config(), "261019"), { enabled: true, time: "07:45" });
+  });
+});
+
+describe("finding 2 — past-slot shift registra a célula perdida", () => {
+  it("slot rotacionado no passado → shift + WARN 'célula perdida' no stderr", () => {
+    const prevQuiet = process.env.DIARIA_QUIET_SCHEDULE_LOG;
+    delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void errs.push(a.join(" "));
+    try {
+      const now = Date.parse("2026-10-20T23:30:00-03:00"); // depois de todos os slots do dia
+      const iso = computeScheduledAt({ config: config(), editionDate: "261020", destaque: "d1", platform: "linkedin", now });
+      assert.ok(Date.parse(iso) > now, iso);
+    } finally {
+      console.error = orig;
+      if (prevQuiet === undefined) delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      else process.env.DIARIA_QUIET_SCHEDULE_LOG = prevQuiet;
+    }
+    assert.ok(errs.some((e) => /\[rotação #10305\] WARN: célula perdida — 261020 linkedin\/d1 planejado 11:00/.test(e)), errs.join("\n"));
+  });
+  it("fora da rotação o shift não fala em célula perdida", () => {
+    const prevQuiet = process.env.DIARIA_QUIET_SCHEDULE_LOG;
+    delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+    const errs: string[] = [];
+    const orig = console.error;
+    console.error = (...a: unknown[]) => void errs.push(a.join(" "));
+    try {
+      computeScheduledAt({ config: config(), editionDate: "261019", destaque: "d1", platform: "linkedin", now: Date.parse("2026-10-19T23:30:00-03:00") });
+    } finally {
+      console.error = orig;
+      if (prevQuiet === undefined) delete process.env.DIARIA_QUIET_SCHEDULE_LOG;
+      else process.env.DIARIA_QUIET_SCHEDULE_LOG = prevQuiet;
+    }
+    assert.ok(errs.some((e) => /WARN \(#2552\)/.test(e)));
+    assert.ok(!errs.some((e) => /célula perdida/.test(e)));
+  });
+});
+
+describe("finding 3 — o agendamento grava o registro sozinho (idempotente)", () => {
+  it("dailyRotationRowsForEdition: 4 linhas de rotação no dia útil da janela, nada fora dela", () => {
+    const rows = dailyRotationRowsForEdition(social(), "261020");
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every((r) => r.kind === "weekday" && r.source === "rotation" && r.date === "2026-10-20"));
+    assert.deepEqual(dailyRotationRowsForEdition(social(), "261019"), []);
+    assert.deepEqual(dailyRotationRowsForEdition(social(), "261024"), []); // sábado: o semanal grava o seu
+  });
+  it("recordRotationRows grava uma vez; a 2ª chamada (2º publicador) não duplica", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "rot-10305-"));
+    try {
+      const log = resolve(dir, "sub", "rot.jsonl");
+      const rows = dailyRotationRowsForEdition(social(), "261021");
+      assert.equal(recordRotationRows(log, rows, "2026-10-21T00:00:00Z"), 4);
+      assert.equal(recordRotationRows(log, rows), 0);
+      const lines = readFileSync(log, "utf8").trim().split("\n");
+      assert.equal(lines.length, 4);
+      assert.equal(JSON.parse(lines[0]).recorded_at, "2026-10-21T00:00:00Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("recordDailyRotationFailSoft não grava sob o test runner sem destino explícito, e nunca lança", () => {
+    assert.ok(process.env.NODE_TEST_CONTEXT, "suite roda sob node --test");
+    assert.doesNotThrow(() => recordDailyRotationFailSoft("/caminho/que/nao/existe", "261020"));
+  });
+  it("os 4 publicadores diários chamam o registro no --schedule", () => {
+    for (const f of ["publish-facebook", "publish-linkedin", "publish-instagram", "publish-threads"]) {
+      const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", `${f}.ts`), "utf8");
+      assert.match(src, /if \(doSchedule\) recordDailyRotationFailSoft\(ROOT, editionDate\);/, f);
+    }
   });
 });

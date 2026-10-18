@@ -58,6 +58,7 @@ import { parseSections } from "./newsletter-parse.ts";
 /** Id da seção do 4º post em `03-social.md` (`## um`) — definido no módulo folha. */
 export { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
 import { USE_MELHOR_POST_ID } from "./use-melhor-slide-files.ts";
+import { publishDateForEdition, resolveDailyPostTime } from "./social-schedule-rotation.ts";
 
 /** `utm_content` próprio do 4º post — mede separado dos destaques. */
 export const USE_MELHOR_UTM_CONTENT = "usemelhor";
@@ -104,8 +105,15 @@ const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export interface UseMelhorPostConfigState {
   enabled: boolean;
-  /** "HH:MM" (BRT) quando `enabled`; `null` caso contrário. */
+  /**
+   * "HH:MM" (BRT) quando `enabled`; `null` caso contrário. Com `edition`
+   * informado e o teste rotativo (#10305) ativo no dia, é o horário
+   * ROTACIONADO (o mesmo que `computeScheduledAt` agenda), e `baseTime` guarda
+   * o fixo `use_melhor_time`.
+   */
   time: string | null;
+  /** #10305: horário fixo quando `time` veio da rotação; ausente caso contrário. */
+  baseTime?: string;
   /** Por que está desligado — sempre presente quando `enabled === false`. */
   reason?: string;
 }
@@ -119,7 +127,7 @@ export interface UseMelhorPostConfigState {
  * FORA dos atuais, e cair em cima de um deles publicaria 2 posts no mesmo
  * minuto em cada rede.
  */
-export function useMelhorPostConfigState(config: unknown): UseMelhorPostConfigState {
+export function useMelhorPostConfigState(config: unknown, edition?: string): UseMelhorPostConfigState {
   const social = (config as { publishing?: { social?: Record<string, unknown> } } | null)?.publishing?.social;
   const raw = social?.use_melhor_time;
   if (raw === undefined || raw === null || raw === "") {
@@ -142,14 +150,25 @@ export function useMelhorPostConfigState(config: unknown): UseMelhorPostConfigSt
       reason: `4º post desligado (use_melhor_time ${time} colide com fallback_schedule.${clash} — escolha um slot fora dos destaques)`,
     };
   }
+  // #10305 (self-review #10417 finding 1): superfície de exibição com a edição
+  // em mãos mostra o horário rotacionado do dia, não o fixo. Rotação malformada
+  // lança aqui também — mas o agendamento (computeScheduledAt) lança igual.
+  const publishDate = edition ? publishDateForEdition(edition, social) : null;
+  if (publishDate) {
+    const r = resolveDailyPostTime(social, publishDate, "um");
+    if (r.source === "rotation" && r.time && r.time !== time) return { enabled: true, time: r.time, baseTime: time };
+  }
   return { enabled: true, time };
 }
 
-/** Lê `platform.config.json` de `rootDir` e devolve o estado. Config ilegível = desligado. */
-export function loadUseMelhorPostConfigState(rootDir: string): UseMelhorPostConfigState {
+/**
+ * Lê `platform.config.json` de `rootDir` e devolve o estado. Config ilegível = desligado.
+ * `edition` (AAMMDD, opcional): aplica o teste rotativo do dia ao `time` (#10305).
+ */
+export function loadUseMelhorPostConfigState(rootDir: string, edition?: string): UseMelhorPostConfigState {
   const path = resolve(rootDir, "platform.config.json");
   try {
-    return useMelhorPostConfigState(JSON.parse(readFileSync(path, "utf8")));
+    return useMelhorPostConfigState(JSON.parse(readFileSync(path, "utf8")), edition);
   } catch (err) {
     return {
       enabled: false,
@@ -789,7 +808,8 @@ export interface UseMelhorPostStatus {
 export function describeUseMelhorPostStatus(input: UseMelhorPostStatusInput): UseMelhorPostStatus {
   const { config } = input;
   if (!config.enabled) return { level: "off", lines: [config.reason ?? USE_MELHOR_DISABLED_LABEL] };
-  const head = `4º post (USE MELHOR) às ${config.time} BRT`;
+  const rotNote = config.baseTime ? ` (teste rotativo #10305; fixo ${config.baseTime})` : "";
+  const head = `4º post (USE MELHOR) às ${config.time} BRT${rotNote}`;
   if (!input.state) {
     return {
       level: "warn",

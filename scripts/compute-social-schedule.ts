@@ -282,6 +282,7 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   // publicação fora da grade da diária. O horário fixo acima continua sendo
   // validado antes (sem `use_melhor_time` o 4º post segue desligado).
   let time = baseTime;
+  let rotatedSlot: { weekdayIndex: number; cycle: number } | null = null;
   if (!slot && input.applyRotation !== false) {
     const rot = weekdayRotationSlot(
       readSocialRotation(social),
@@ -290,6 +291,7 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
     );
     if (rot) {
       time = rot.time;
+      rotatedSlot = { weekdayIndex: rot.weekdayIndex, cycle: rot.cycle };
       if (process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
         console.error(
           `[compute-schedule] rotação #10305: ${editionDate} ${platform}/${destaque} → ${rot.time} ` +
@@ -414,6 +416,20 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
         `Slot shiftado para now+${minsAhead}min → ${finalShiftedIso}. ` +
         `(slot original: ${calculatedIso}, edition: ${editionDate})`,
       );
+      // #10305 (self-review #10417 finding 2): o shift usa o espaçamento fixo
+      // por destaque (+15/+25/+35/+45 min), não a ordem da rotação — este post
+      // PERDE a célula horário × tipo do teste. Opção mais simples escolhida:
+      // não tentar preservar a ordem rotacionada (o horário já passou de
+      // qualquer jeito), só deixar o descarte explícito. A medição descarta o
+      // post comparando o `scheduled_at` real de `06-social-published.json`
+      // com o plano (`social-schedule-rotation.ts --date`).
+      if (rotatedSlot) {
+        console.error(
+          `[rotação #10305] WARN: célula perdida — ${editionDate} ${platform}/${destaque} planejado ${time} ` +
+            `(dia útil #${rotatedSlot.weekdayIndex}, ciclo ${rotatedSlot.cycle}) saiu deslocado para ${finalShiftedIso}; ` +
+            `descartar da medição.`,
+        );
+      }
     }
 
     return finalShiftedIso;
