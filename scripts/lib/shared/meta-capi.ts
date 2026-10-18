@@ -875,6 +875,30 @@ export interface BuildCompleteRegistrationEventInput {
   eventId?: string;
 }
 
+/**
+ * #10413: reduz `event_source_url` a `origin + pathname` — sem query string
+ * nem fragmento. A URL de confirmação do `reativar` carrega
+ * `?email=<e-mail em claro>&t=<token>`, e repassá-la crua mandava à Meta o
+ * e-mail (contrariando o invariante do módulo: só o hash sai daqui) e o
+ * token de confirmação. Sanitizar AQUI, nos dois builders, cobre todo
+ * chamador presente e futuro (poll/cursos usam `request.url`, o site usa o
+ * `Referer`) em vez de depender de cada um lembrar.
+ *
+ * Perde UTM/fbclid da query — aceito: o click id já viaja em `fbc`
+ * (`clientSignals`), e a Meta só precisa da página pra `action_source:
+ * "website"`. URL que não parseia é cortada no primeiro `?`/`#` — nunca
+ * devolvida crua. @pure, nunca lança.
+ */
+export function sanitizeEventSourceUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin + u.pathname;
+  } catch {
+    const cut = raw.search(/[?#]/);
+    return cut === -1 ? raw : raw.slice(0, cut);
+  }
+}
+
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
  * pure exceto pelo hash assíncrono (Web Crypto). Nunca envia rede; separado
  * de `sendMetaCapiEvent` pra ser testável sem mock de fetch. */
@@ -899,7 +923,7 @@ export async function buildCompleteRegistrationEvent(
   return {
     event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,
-    event_source_url: input.eventSourceUrl,
+    event_source_url: sanitizeEventSourceUrl(input.eventSourceUrl),
     action_source: input.actionSource ?? "website",
     event_id: eventId,
     user_data: userData,
@@ -1045,7 +1069,7 @@ export function buildMetaCapiCustomEvent(input: BuildMetaCapiCustomEventInput): 
   const event: MetaCapiGenericEvent = {
     event_name: input.eventName,
     event_time: input.eventTimeSeconds ?? Math.floor(Date.now() / 1000),
-    event_source_url: input.eventSourceUrl,
+    event_source_url: sanitizeEventSourceUrl(input.eventSourceUrl),
     action_source: input.actionSource ?? "website",
     event_id: input.eventId,
     user_data: userData,
@@ -1113,8 +1137,10 @@ export type MetaCapiLogEvent =
 export function buildMetaCapiLogEvent(
   result: MetaCapiSendResult,
   worker: string,
-  eventSourceUrl?: string,
+  rawEventSourceUrl?: string,
 ): MetaCapiLogEvent {
+  // #10413: o log promete "nunca PII" — mesma sanitização do evento enviado.
+  const eventSourceUrl = rawEventSourceUrl === undefined ? undefined : sanitizeEventSourceUrl(rawEventSourceUrl);
   if (result.ok) {
     const event = { event: "meta_capi_sent" as const, worker, status: result.status };
     return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };
