@@ -10,6 +10,7 @@ import {
   cosineSimilarity,
   clusterArticles,
   clusterTexts,
+  topicSlugText,
   clusterArticlesWithEmbeddings,
   rankWithinCluster,
   clusterBucket,
@@ -881,11 +882,51 @@ describe("#10440: cluster não funde eventos distintos por placeholder/boilerpla
       );
       assert.equal(calls, 0);
       assert.equal(stats.attempted, 0);
+      assert.equal(stats.skipped_uninformative, 2, "attempted + skipped = lote (semântica pré-#10440)");
       assert.equal(clusters.length, 2);
     } finally {
       globalThis.fetch = savedFetch;
       if (saved === undefined) delete process.env.GEMINI_API_KEY;
       else process.env.GEMINI_API_KEY = saved;
     }
+  });
+
+  it("remetente com parênteses no nome também é placeholder", () => {
+    const clusters = clusterArticles(
+      [
+        { url: "https://a.com/openai-lanca-agente-de-compras", title: "(newsletter:Foo (Bar))" },
+        { url: "https://b.com/meta-demite-equipe-de-llama", title: "(newsletter:Foo (Bar))" },
+      ],
+      0.5,
+    );
+    assert.equal(clusters.length, 2);
+  });
+
+  it("prefixos [INBOX]/(inbox são placeholder (título vira slug)", () => {
+    const [a, b] = clusterTexts([
+      { url: "https://a.com/openai-lanca-agente-de-compras", title: "[INBOX] encaminhado" },
+      { url: "https://b.com/meta-demite-equipe-de-llama", title: "(inbox: editor)" },
+    ]);
+    assert.ok(!a.includes("INBOX") && a.includes("openai"));
+    assert.ok(!b.includes("inbox") && b.includes("meta"));
+  });
+
+  it("topicSlugText descarta seções genéricas do caminho e mantém o org do HF", () => {
+    assert.equal(
+      topicSlugText("https://aws.amazon.com/blogs/machine-learning/icymi-what-landed-for-ai-builders-in-september-2026"),
+      "icymi what landed for ai builders in september",
+    );
+    assert.equal(topicSlugText("https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017"), "deepseek ai DeepSeek V4.1 Flash");
+  });
+
+  it("dois links da mesma seção com slug curto não juntam pela seção", () => {
+    const clusters = clusterArticles(
+      [
+        { url: "https://aws.amazon.com/blogs/machine-learning/bedrock-agents", title: "(newsletter:AWS)" },
+        { url: "https://aws.amazon.com/blogs/machine-learning/sagemaker-pricing", title: "(newsletter:AWS)" },
+      ],
+      0.5,
+    );
+    assert.equal(clusters.length, 2);
   });
 });

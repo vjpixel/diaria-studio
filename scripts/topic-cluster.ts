@@ -48,7 +48,7 @@ import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts"; // #8722
-import { urlSlugText } from "./lib/roundup-detect.ts"; // #10440
+import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts"; // #10440
 
 export interface Article {
   url: string;
@@ -88,10 +88,24 @@ export interface CategorizedInput {
 export interface EmbeddingStats {
   model: string;
   key_present: boolean;
+  /**
+   * Embeddings de fato pedidos à API. Desde o #10440 NÃO inclui artigo sem
+   * texto informativo (título placeholder + slug curto + summary boilerplate)
+   * — esse não é embedado e conta em `skipped_uninformative`. Comparar com o
+   * histórico anterior ao #10440: o `attempted` antigo equivale a
+   * `attempted + skipped_uninformative`.
+   */
   attempted: number;
+  /** Falhas entre os `attempted` (nunca conta artigo pulado). */
   failed: number;
+  /** `failed / attempted` — base é só o que foi tentado. */
   fail_rate: number;
   fallback_triggered: boolean;
+  /**
+   * #10440: artigos do lote sem texto informativo — não embedados, ficam solo
+   * no cluster. Ausente em stats anteriores ao #10440 (equivale a 0).
+   */
+  skipped_uninformative?: number;
   /**
    * Mensagem de erro quando `platform.config.json` existe mas não pôde ser
    * lido/parseado (#4654 fix segunda camada — mesma classe de "sinal
@@ -259,11 +273,48 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
 // da mesma newsletter (e, por encadeamento via "newsletter"/"ai", de outras)
 // virarem "mesmo evento" (edição 261019: 30+ links, inclusive o DeepSeek V4.1
 // Flash, descartados como duplicata de um roundup AWS de setembro).
-const NEWSLETTER_PLACEHOLDER_TITLE_RE = /^\(newsletter:[^)]*\)?\s*$/i;
-
+//
+// Reusa `isPlaceholderHighlightTitle` (lib, #4102) — `(newsletter:.*)`
+// guloso, então remetente com parênteses no nome (`(newsletter:Foo (Bar))`)
+// também casa. Somam-se os prefixos `[INBOX]`/`(inbox` que
+// enrich-inbox-articles.ts trata como placeholder (título de submissão do
+// inbox que o enrichment não conseguiu substituir).
 function isPlaceholderTitle(title: string): boolean {
   const t = title.trim();
-  return !t || NEWSLETTER_PLACEHOLDER_TITLE_RE.test(t) || /^\((inbox|no title|sem t[íi]tulo)\)$/i.test(t);
+  return isPlaceholderHighlightTitle(t) || /^\[inbox\]/i.test(t) || /^\(inbox/i.test(t);
+}
+
+// #10440: segmentos de SEÇÃO do caminho (`/blogs/machine-learning/…`,
+// `/news/…`, `/pt-br/…`) não falam do assunto do artigo — dois links do
+// mesmo host compartilhariam esses tokens só por morarem na mesma seção.
+// Ficam de fora do slug usado como texto de cluster. O último segmento é
+// sempre mantido; segmentos anteriores que não são seção genérica também
+// (ex.: o org do model card do HF, `deepseek-ai/DeepSeek-V4.1-Flash-1017`).
+const GENERIC_PATH_SEGMENTS = new Set([
+  "blog", "blogs", "news", "noticias", "notícias", "post", "posts", "p",
+  "article", "articles", "artigo", "artigos", "story", "stories", "stories-and-news",
+  "press", "press-release", "press-releases", "newsroom", "updates", "update",
+  "research", "insights", "category", "categories", "tag", "tags", "topics", "topic",
+  "machine-learning", "artificial-intelligence", "ai", "ia", "tech", "technology",
+  "en", "en-us", "en-gb", "pt", "pt-br", "es", "amp", "index", "index.html",
+]);
+
+/** Slug do path sem seções genéricas e sem tokens puramente numéricos (data). */
+export function topicSlugText(url: string): string {
+  let segments: string[];
+  try {
+    segments = decodeURIComponent(new URL(url).pathname).split("/").filter(Boolean);
+  } catch {
+    return "";
+  }
+  const kept = segments.filter(
+    (seg, i) => i === segments.length - 1 || !GENERIC_PATH_SEGMENTS.has(seg.toLowerCase()),
+  );
+  return kept
+    .join(" ")
+    .split(/[-_\s]+/)
+    .filter((w) => w && !/^\d+$/.test(w))
+    .join(" ");
 }
 
 function hostOf(url: string): string {
@@ -283,7 +334,8 @@ function normSummary(s: string): string {
  * cru título+summary em dois pontos:
  *
  * 1. Título placeholder (`(newsletter:X)`, `(inbox)`, vazio) é descartado e
- *    substituído pelo slug da URL (sem tokens puramente numéricos de data) —
+ *    substituído pelo slug da URL (`topicSlugText`: sem seções genéricas do
+ *    caminho nem tokens puramente numéricos de data) —
  *    o slug costuma carregar o assunto (`deepseek-just-released-v4-1-flash`).
  * 2. Summary BOILERPLATE do site — o mesmo texto, idêntico, em ≥2 artigos do
  *    mesmo host no lote (ex.: meta description do Hugging Face "We're on a
@@ -308,10 +360,7 @@ export function clusterTexts(articles: Article[]): string[] {
     const title = a.title ?? "";
     const parts: string[] = [];
     if (isPlaceholderTitle(title)) {
-      const slug = urlSlugText(a.url)
-        .split(/\s+/)
-        .filter((w) => w && !/^\d+$/.test(w))
-        .join(" ");
+      const slug = topicSlugText(a.url);
       // Slug de 1 token só (`/tools`, encurtador `/90-wk2n`) não identifica
       // assunto — igualdade dele não prova "mesmo evento".
       if (tokenize(slug).size >= 2) parts.push(slug);
@@ -403,8 +452,11 @@ export async function clusterArticlesWithEmbeddings(
   // Batch: buscar todos os embeddings em paralelo
   const texts = clusterTexts(articles);
   const tokensByArt = texts.map((t) => tokenize(t));
-  // #10440: artigo sem texto informativo não é embedado (nem conta em
-  // attempted/failed) — fica solo, como no caminho Jaccard.
+  // #10440: artigo sem texto informativo não é embedado — fica solo, como no
+  // caminho Jaccard. Não conta em attempted/failed (não houve chamada que
+  // pudesse falhar); vai pra `skipped_uninformative`, de modo que
+  // attempted + skipped_uninformative = tamanho do lote (o `attempted` de
+  // antes do #10440).
   const informative = tokensByArt.map((t) => t.size > 0);
   const embeddingResults = await Promise.all(
     texts.map((t, i) => (informative[i] ? embedText(t, model) : Promise.resolve(null))),
@@ -420,6 +472,7 @@ export async function clusterArticlesWithEmbeddings(
     failed,
     fail_rate: attempted > 0 ? failed / attempted : 0,
     fallback_triggered: allNull,
+    skipped_uninformative: articles.length - attempted,
   };
 
   if (allNull) {
@@ -568,6 +621,7 @@ export function aggregateEmbeddingStats(statsList: EmbeddingStats[]): EmbeddingS
   const model = withAttempts?.model ?? statsList[0]?.model ?? DEFAULT_EMBEDDING_MODEL;
   const attempted = statsList.reduce((sum, s) => sum + s.attempted, 0);
   const failed = statsList.reduce((sum, s) => sum + s.failed, 0);
+  const skipped = statsList.reduce((sum, s) => sum + (s.skipped_uninformative ?? 0), 0);
   return {
     model,
     key_present: statsList.some((s) => s.key_present),
@@ -575,6 +629,7 @@ export function aggregateEmbeddingStats(statsList: EmbeddingStats[]): EmbeddingS
     failed,
     fail_rate: attempted > 0 ? failed / attempted : 0,
     fallback_triggered: statsList.some((s) => s.fallback_triggered),
+    skipped_uninformative: skipped,
   };
 }
 
