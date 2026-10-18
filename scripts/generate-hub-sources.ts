@@ -96,6 +96,7 @@ import { findPrimarySourceUrl, stripTrackingParams } from "./lib/hub-primary-sou
 import { isSafeUrlScheme } from "./lib/shared/markdown-links.ts";
 import type { RawCachedPost } from "./generate-arquivo-titles.ts";
 import { isPublicEdition, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
+import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HUBS_DIR = resolve(ROOT, "scripts/lib/hubs");
@@ -555,7 +556,8 @@ export function collectHubSources(
     // enganam a detecção de hub edição — mesmo sem slug, casam keyword patterns
     // e poluem o relatório "slugs resolvíveis". Pular sem warning (não são
     // edições reais, e sem slug não tem como gerar entrada de hub válida).
-    if (post.title?.startsWith("[teste]")) continue;
+    // #10395: helper único (`[teste]` e `[teste-…]`, sem diferenciar caixa).
+    if (isKitTestBroadcast({ title: post.title })) continue;
     const destaques = [post.title, ...(post.subtitle ? post.subtitle.split("|").map((s) => s.trim()) : [])].filter(
       (s): s is string => Boolean(s),
     );

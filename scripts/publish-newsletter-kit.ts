@@ -108,6 +108,29 @@
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --dry-run
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir>
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --send-test
+ *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --draft-only-for-ui-test
+ *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --mark-ui-test-sent [--at <ISO>]
+ *
+ * ## Teste pela UI do Kit, sem broadcast descartável (#10395)
+ *
+ * Avaliado ao vivo na #10307 (18/10/2026): o editor de broadcast do Kit tem
+ * Preview → "Send test email", que dispara sobre o RASCUNHO real sem criar
+ * broadcast nenhum, com render e merge tags iguais às do envio de verdade
+ * (o assunto chega SEM o prefixo `[teste]`). É o caminho preferido do Stage 5
+ * quando o Claude in Chrome está disponível:
+ *
+ * - `--draft-only-for-ui-test` cria/atualiza só o draft real (zero broadcast
+ *   de teste) e grava em `_internal/newsletter-kit-published.json`
+ *   `test_mode: "ui"` + `ui_test_url` (`https://app.kit.com/campaigns/{id}/draft`).
+ *   `status` não muda — o teste ainda não saiu.
+ * - Depois do clique em "Send preview", `--mark-ui-test-sent --at <ISO>`
+ *   (SEM rede, sem render) grava `status: "test_sent"` e `test_sent_at` = o
+ *   `--at` (horário capturado ANTES do clique; sem `--at`, agora). É a âncora
+ *   do `fetch-test-email.ts --sent-after`, que precisa ser <= o envio real.
+ *
+ * `--send-test` continua existindo e é o FALLBACK (servidor `300`, Chrome
+ * indisponível). Os broadcasts descartáveis que ele deixa são reconhecidos por
+ * `isKitTestBroadcast()` (`scripts/lib/shared/kit-test-broadcast.ts`).
  *
  * **Pré-requisito manual de `--send-test` (achado do review, PR #6080):**
  * `resolveTestSendTagId` só resolve/cria a TAG `diaria-test-email` — quem
@@ -259,6 +282,15 @@ export interface KitNewsletterPublished {
    * ler o e-mail de teste anterior.
    */
   test_sent_at?: string;
+  /**
+   * #10395: como o e-mail de teste desta edição sai. `"ui"` = Send test da UI
+   * do Kit sobre o draft real (`--draft-only-for-ui-test`, sem broadcast
+   * descartável); `"broadcast"` = fallback `--send-test`. Ausente em estados
+   * anteriores ao #10395 (equivale a `"broadcast"`).
+   */
+  test_mode?: "ui" | "broadcast";
+  /** #10395: URL do editor do draft no Kit, aberta pelo Claude in Chrome. */
+  ui_test_url?: string;
   scheduled_at?: string;
   /**
    * #9428: sha256 dos insumos do `content` (`02-reviewed.md`, `01-eia.md`,
@@ -317,6 +349,53 @@ export function writePublishedState(editionDir: string, state: KitNewsletterPubl
   const path = resolvePublishedStatePath(editionDir);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(state, null, 2) + "\n");
+}
+
+/** #10395: editor do broadcast em rascunho na UI do Kit (Preview → Send test email). */
+export function kitBroadcastDraftUrl(broadcastId: number): string {
+  return `https://app.kit.com/campaigns/${broadcastId}/draft`;
+}
+
+/**
+ * #10395 (pure): estado depois do `--mark-ui-test-sent`. Recusa (`ok:false`)
+ * quando não há draft registrado — marcar teste de um broadcast que este
+ * script não conhece deixaria `--sent-after` ancorado em nada — ou quando o
+ * broadcast já foi agendado (o teste do Stage 5 não se aplica mais).
+ */
+export function markUiTestSent(
+  state: KitNewsletterPublished | null,
+  sentAtIso: string,
+): { ok: true; state: KitNewsletterPublished } | { ok: false; reason: string } {
+  if (!state) {
+    return {
+      ok: false,
+      reason: "nenhum draft registrado em _internal/newsletter-kit-published.json — rode --draft-only-for-ui-test antes",
+    };
+  }
+  if (state.status === "scheduled") {
+    return { ok: false, reason: "broadcast já agendado (status scheduled) — o teste do Stage 5 não se aplica mais" };
+  }
+  return {
+    ok: true,
+    state: {
+      ...state,
+      status: "test_sent",
+      test_mode: "ui",
+      ui_test_url: state.ui_test_url ?? kitBroadcastDraftUrl(state.broadcast_id),
+      test_sent_at: sentAtIso,
+    },
+  };
+}
+
+/** #10395: `--at <ISO>` → ISO normalizado; ausente → agora; inválido → erro. */
+export function resolveUiTestSentAt(
+  raw: string | undefined,
+  nowMs: number,
+): { ok: true; iso: string } | { ok: false; reason: string } {
+  if (raw === undefined) return { ok: true, iso: new Date(nowMs).toISOString() };
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return { ok: false, reason: `--at inválido (esperado ISO 8601): ${raw}` };
+  return { ok: true, iso: new Date(ms).toISOString() };
 }
 
 // ── platform.config.json (leitura mínima) ─────────────────────────────
@@ -480,10 +559,20 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const editionDirArg = parseCliArgs(argv).positional[0];
   const dryRun = hasFlag(argv, "dry-run");
   const sendTest = hasFlag(argv, "send-test");
+  const draftOnlyForUiTest = hasFlag(argv, "draft-only-for-ui-test"); // #10395
+  const markUiTest = hasFlag(argv, "mark-ui-test-sent"); // #10395
   const log = (msg: string) => process.stderr.write(`[publish-newsletter-kit] ${msg}\n`);
 
   if (!editionDirArg) {
-    log("uso: npx tsx scripts/publish-newsletter-kit.ts <edition-dir> [--dry-run] [--send-test]");
+    log(
+      "uso: npx tsx scripts/publish-newsletter-kit.ts <edition-dir> [--dry-run] " +
+        "[--send-test | --draft-only-for-ui-test | --mark-ui-test-sent [--at <ISO>]]",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if ([sendTest, draftOnlyForUiTest, markUiTest].filter(Boolean).length > 1) {
+    log("ERRO: --send-test, --draft-only-for-ui-test e --mark-ui-test-sent são mutuamente exclusivos.");
     process.exitCode = 1;
     return;
   }
@@ -503,6 +592,29 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
   const editionDir = resolvedArg.editionDir;
+
+  // #10395: só registra que o Send test da UI saiu — sem rede, sem render.
+  if (markUiTest) {
+    const at = resolveUiTestSentAt(parseCliArgs(argv).values.at, Date.now());
+    if (!at.ok) {
+      log(`ERRO: ${at.reason}`);
+      process.exitCode = 1;
+      return;
+    }
+    const marked = markUiTestSent(readPublishedState(editionDir), at.iso);
+    if (!marked.ok) {
+      log(`ERRO: ${marked.reason}`);
+      process.exitCode = 1;
+      return;
+    }
+    writePublishedState(editionDir, marked.state);
+    log(
+      `test-send pela UI registrado: test_sent_at=${at.iso} ` +
+        `(broadcast_id=${marked.state.broadcast_id}, nenhum broadcast criado)`,
+    );
+    return;
+  }
+
   // #9428: hash dos insumos ANTES de lê-los — só diagnóstico (nomear qual
   // arquivo mudou); quem decide se o draft ficou defasado é `content_hash`.
   const sourceHashes = computeKitDraftSourceHashes(editionDir);
@@ -613,6 +725,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
     // `status: "test_sent"` sem a âncora, e o §5f voltaria a omitir
     // `--sent-after` (#9901), podendo ler um e-mail de teste antigo.
     ...(existing?.test_sent_at ? { test_sent_at: existing.test_sent_at } : {}),
+    // #10395: preservar o modo de teste e a URL da UI num re-run só de conteúdo.
+    ...(existing?.test_mode ? { test_mode: existing.test_mode } : {}),
+    ...(existing?.ui_test_url ? { ui_test_url: existing.ui_test_url } : {}),
     // #9428: hash do payload que ACABOU de ir pro Kit (sempre o desta
     // invocação — um re-run atualiza o draft e, portanto, o baseline).
     content_hash: kitContentHash(subject, previewText, html),
@@ -666,6 +781,15 @@ export async function main(rootDirOverride?: string): Promise<void> {
     log(`warn: falha ao gravar 05-edition-url.txt (${e instanceof Error ? e.message : String(e)}) — draft/estado já persistidos, artefato secundário não gravado.`);
   }
 
+  if (draftOnlyForUiTest) {
+    // #10395: nenhum broadcast de teste — o Stage 5 dispara o Send test da UI
+    // sobre ESTE draft real e depois roda `--mark-ui-test-sent`.
+    state.test_mode = "ui";
+    state.ui_test_url = kitBroadcastDraftUrl(broadcastId);
+    writePublishedState(editionDir, state);
+    log(`draft pronto pro Send test da UI: ${state.ui_test_url} (nenhum broadcast descartável criado)`);
+  }
+
   if (sendTest) {
     // #464: broadcast SEPARADO e descartável — nunca o de produção (ver
     // docstring do módulo sobre por que reusar o real corromperia a Etapa 6).
@@ -682,6 +806,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
     state.status = "test_sent";
     state.test_broadcast_ids = [...(state.test_broadcast_ids ?? []), testBroadcast.id];
     state.test_sent_at = sendAt; // #9901
+    state.test_mode = "broadcast"; // #10395
     writePublishedState(editionDir, state);
   }
 }

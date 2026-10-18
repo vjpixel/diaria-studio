@@ -76,7 +76,10 @@ export const FETCH_SUMMARY_FILENAME = "test-email-fetch.json";
 
 /**
  * Queries em ordem de tentativa: com o prefixo do test-send e, de fallback,
- * sem ele (o ESP já mudou o prefixo antes). Aspas do título viram espaço —
+ * sem ele (o ESP já mudou o prefixo antes). No Kit a 2ª é o caminho NORMAL
+ * desde o #10395: o "Send test email" da UI manda o assunto sem `[teste]` (só
+ * o fallback `--send-test` grava o prefixo); `--sent-after` impede que um
+ * `[teste]` antigo do mesmo dia, achado pela 1ª, seja lido. Aspas do título viram espaço —
  * dentro de `subject:"..."` elas fechariam a frase.
  *
  * @pure

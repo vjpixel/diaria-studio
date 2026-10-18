@@ -285,6 +285,89 @@ describe("fetchTestEmail --sent-after (#9901)", () => {
   });
 });
 
+// #10395: o "Send test email" da UI do Kit manda o assunto SEM `[teste]`. A
+// busca tem de achar pela query de fallback (sem prefixo) e continuar
+// respeitando `--sent-after` — inclusive quando um `[teste]` do fallback
+// `--send-test` do mesmo dia casa a 1ª query.
+describe("fetchTestEmail: Send test da UI do Kit, assunto sem prefixo (#10395)", () => {
+  const SENT = Date.UTC(2026, 9, 18, 22, 0);
+  const msg = (id: string, at: number, subject: string) => ({
+    id,
+    internalDate: String(at),
+    payload: {
+      mimeType: "text/html",
+      headers: [{ name: "Subject", value: subject }],
+      body: { data: b64url(`<p>${id}</p>`), size: 10 },
+    },
+  });
+  const isPrefixed = (path: string) => decodeURIComponent(path.replace(/\+/g, " ")).includes("[teste]");
+
+  it("a query de fallback não tem o prefixo — casa o assunto do Send test da UI", () => {
+    const [comPrefixo, semPrefixo] = buildTestEmailQueries("kit", "Manchete");
+    assert.ok(comPrefixo.includes('"[teste] Manchete"'));
+    assert.equal(semPrefixo, 'subject:"Manchete" from:news.diar.ia.br newer_than:1d');
+  });
+
+  it("acha o e-mail sem [teste] pela 2ª query, com --sent-after", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      const calls: string[] = [];
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete", waitSeconds: 0, timeoutSeconds: 10, sentAfterMs: SENT },
+        deps(
+          {
+            "threads?": (path: string) => (isPrefixed(path) ? { threads: [] } : { threads: [{ id: "t-ui" }] }),
+            "threads/t-ui": { id: "t-ui", messages: [msg("m-ui", SENT + 30_000, "Manchete")] },
+          },
+          calls,
+        ),
+      );
+      assert.equal(s.status, "found");
+      assert.equal(s.message_id, "m-ui");
+      assert.equal(s.email_subject, "Manchete", "assunto chega sem o prefixo [teste]");
+      assert.ok(s.query && !s.query.includes("[teste]"), "achou pela query sem prefixo");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("REGRESSÃO: [teste] antigo do fallback no mesmo dia casa a 1ª query — o corte o descarta e lê o da UI", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete", waitSeconds: 0, timeoutSeconds: 10, sentAfterMs: SENT },
+        deps({
+          "threads?": (path: string) =>
+            isPrefixed(path) ? { threads: [{ id: "t-velho" }] } : { threads: [{ id: "t-velho" }, { id: "t-ui" }] },
+          "threads/t-velho": { id: "t-velho", messages: [msg("m-velho", SENT - 3 * 60 * 60_000, "[teste] Manchete")] },
+          "threads/t-ui": { id: "t-ui", messages: [msg("m-ui", SENT + 30_000, "Manchete")] },
+        }),
+      );
+      assert.equal(s.status, "found");
+      assert.equal(s.message_id, "m-ui", "nunca o teste antigo do --send-test");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("e-mail da UI ainda não chegou e só existe o antigo → not_found_timeout, nunca o corpo velho", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete", waitSeconds: 0, timeoutSeconds: 10, sentAfterMs: SENT },
+        deps({
+          "threads?": { threads: [{ id: "t-velho" }] },
+          "threads/t-velho": { id: "t-velho", messages: [msg("m-velho", SENT - 60 * 60_000, "Manchete")] },
+        }),
+      );
+      assert.equal(s.status, "not_found_timeout");
+      assert.equal(existsSync(resolve(dir, "_internal", ".email-body.tmp")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
 // #9905: no Beehiiv, `test_email_sent_at` é gravado DEPOIS do clique em Send
 // test (playbook §8 / fix-3 passo 3). Usado como `--sent-after`, o corte
 // (`sentAfterMs - 5s`) cai depois do `internalDate` do teste atual e o descarta

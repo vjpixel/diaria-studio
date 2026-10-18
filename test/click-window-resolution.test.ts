@@ -176,6 +176,29 @@ describe("matchPostsToWindow — desempate por origem (#7637)", () => {
   // ele deveria estar — e o dia em que `EditionOrigin` ganhar um 3º valor,
   // `ORIGIN_PRECEDENCE` não compila até alguém decidir a precedência dele.
 
+  it("#10395: test-send Kit com [teste] no assunto fica de fora mesmo sem recipients agregado", () => {
+    // Cache Kit com agregação mas sem `recipients` entraria pelo piso (lacuna
+    // de campo). O prefixo do `--send-test` fecha esse buraco sozinho.
+    const real = post("real", { origin: "kit", title: "Manchete real", publish_date: epochAt("260904", 9, 2) });
+    const teste = post("teste", {
+      origin: "kit",
+      title: "[teste] Manchete real",
+      publish_date: epochAt("260904", 23, 59),
+      stats: { email: { opens: 1 } },
+    });
+    const out = matchPostsToWindow([real, teste], ["260904"]);
+    assert.equal(out.get("260904")?.label, "real");
+    assert.equal(matchPostsToWindow([teste], ["260904"]).has("260904"), false);
+  });
+
+  it("#10395: prefixo [teste] só exclui na origem Kit — Beehiiv e origem ausente não mudam", () => {
+    const beehiiv = post("b", { origin: "beehiiv", title: "[teste] x", publish_date: epochAt("260904") });
+    const semOrigem = post("s", { title: "[teste] x", publish_date: epochAt("260905") });
+    const out = matchPostsToWindow([beehiiv, semOrigem], ["260904", "260905"]);
+    assert.equal(out.get("260904")?.label, "b");
+    assert.equal(out.get("260905")?.label, "s");
+  });
+
   it("status != confirmed continua fora, em qualquer origem", () => {
     const scheduled = post("scheduled", { origin: "kit", status: "scheduled", publish_date: epochAt("260904") });
     assert.equal(matchPostsToWindow([scheduled], ["260904"]).has("260904"), false);

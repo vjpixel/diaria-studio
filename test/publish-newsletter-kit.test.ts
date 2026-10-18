@@ -23,6 +23,9 @@ import {
   writePublishedState,
   updateExistingKitBroadcast,
   main,
+  kitBroadcastDraftUrl,
+  markUiTestSent,
+  resolveUiTestSentAt,
   type KitNewsletterPublished,
 } from "../scripts/publish-newsletter-kit.ts";
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
@@ -833,3 +836,214 @@ describe("main() — integração", () => {
 // lacuna em `publish-daily-brevo-4266.test.ts`, que também só cobre
 // `checkSubjectNotEmpty` isoladamente, nunca via `main()` de ponta a ponta).
 // A função pura já está coberta acima (`describe("checkSubjectNotEmpty")`).
+
+// ── #10395: Send test da UI do Kit, sem broadcast descartável ─────────
+
+describe("#10395: helpers do teste pela UI", () => {
+  const base: KitNewsletterPublished = { broadcast_id: 321, subject: "S", preview_text: "P", status: "draft" };
+
+  it("kitBroadcastDraftUrl aponta pro editor do rascunho", () => {
+    assert.equal(kitBroadcastDraftUrl(321), "https://app.kit.com/campaigns/321/draft");
+  });
+
+  it("markUiTestSent: draft vira test_sent com âncora, modo ui e URL, sem tocar test_broadcast_ids", () => {
+    const r = markUiTestSent({ ...base, test_broadcast_ids: [9] }, "2026-10-18T22:00:00.000Z");
+    assert.ok(r.ok);
+    assert.equal(r.state.status, "test_sent");
+    assert.equal(r.state.test_sent_at, "2026-10-18T22:00:00.000Z");
+    assert.equal(r.state.test_mode, "ui");
+    assert.equal(r.state.ui_test_url, "https://app.kit.com/campaigns/321/draft");
+    assert.deepEqual(r.state.test_broadcast_ids, [9]);
+  });
+
+  it("markUiTestSent recusa sem draft registrado e com broadcast já agendado", () => {
+    assert.equal(markUiTestSent(null, "2026-10-18T22:00:00.000Z").ok, false);
+    assert.equal(markUiTestSent({ ...base, status: "scheduled" }, "2026-10-18T22:00:00.000Z").ok, false);
+  });
+
+  it("resolveUiTestSentAt: ausente = agora; ISO é normalizado; lixo é erro", () => {
+    const now = Date.UTC(2026, 9, 18, 22, 0);
+    assert.deepEqual(resolveUiTestSentAt(undefined, now), { ok: true, iso: "2026-10-18T22:00:00.000Z" });
+    assert.deepEqual(resolveUiTestSentAt("2026-10-18T19:00:00-03:00", now), { ok: true, iso: "2026-10-18T22:00:00.000Z" });
+    assert.equal(resolveUiTestSentAt("agora", now).ok, false);
+  });
+});
+
+describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", () => {
+  it("--draft-only-for-ui-test: só o draft real (1 POST), nenhum broadcast de teste nem lookup de tag", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      mockFetch((call) => {
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          return jsonRes(201, { broadcast: { id: 555, status: "draft", public_url: "https://news.diar.ia.br/p/555" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--draft-only-for-ui-test"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(calls.length, 1, "nenhum broadcast descartável — só o draft real");
+      assert.equal((calls[0].body as { send_at: string | null }).send_at, null);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.broadcast_id, 555);
+      assert.equal(state?.status, "draft", "o teste ainda não saiu — status não muda");
+      assert.equal(state?.test_mode, "ui");
+      assert.equal(state?.ui_test_url, "https://app.kit.com/campaigns/555/draft");
+      assert.deepEqual(state?.test_broadcast_ids, []);
+      assert.equal(state?.test_sent_at, undefined);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--mark-ui-test-sent --at: sem rede, grava test_sent + test_sent_at (âncora do --sent-after)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      writePublishedState(editionDir, {
+        broadcast_id: 555,
+        subject: "S",
+        preview_text: "P",
+        status: "draft",
+        test_broadcast_ids: [],
+        test_mode: "ui",
+        ui_test_url: "https://app.kit.com/campaigns/555/draft",
+      });
+      mockFetch(() => {
+        throw new Error("--mark-ui-test-sent não pode chamar a rede");
+      });
+      process.argv = [
+        "node",
+        "publish-newsletter-kit.ts",
+        editionDir,
+        "--mark-ui-test-sent",
+        "--at",
+        "2026-10-18T21:59:30Z",
+      ];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(calls.length, 0);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.status, "test_sent");
+      assert.equal(state?.test_sent_at, "2026-10-18T21:59:30.000Z");
+      assert.equal(state?.test_mode, "ui");
+      assert.deepEqual(state?.test_broadcast_ids, [], "nenhum broadcast de teste registrado");
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--mark-ui-test-sent sem draft registrado: exit 1, nada gravado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--mark-ui-test-sent"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 1);
+      assert.equal(readPublishedState(editionDir), null);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--send-test junto com --draft-only-for-ui-test: exit 1 antes de qualquer rede", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--send-test", "--draft-only-for-ui-test"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 1);
+      assert.equal(calls.length, 0);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("re-run só de conteúdo depois do teste pela UI preserva test_mode/ui_test_url/test_sent_at", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      writePublishedState(editionDir, {
+        broadcast_id: 777,
+        subject: "S",
+        preview_text: "P",
+        status: "test_sent",
+        test_broadcast_ids: [],
+        test_sent_at: "2026-10-18T22:00:00.000Z",
+        test_mode: "ui",
+        ui_test_url: "https://app.kit.com/campaigns/777/draft",
+      });
+      mockFetch((call) => {
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
+          return jsonRes(200, { broadcast: { id: 777, status: "draft", public_url: "https://news.diar.ia.br/p/777" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.status, "test_sent");
+      assert.equal(state?.test_mode, "ui");
+      assert.equal(state?.ui_test_url, "https://app.kit.com/campaigns/777/draft");
+      assert.equal(state?.test_sent_at, "2026-10-18T22:00:00.000Z");
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("--send-test (fallback) continua criando o descartável e marca test_mode broadcast", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    try {
+      writePlatformConfig(root, "kit");
+      const editionDir = writeEdition(root, "260998");
+      let posts = 0;
+      mockFetch((call) => {
+        if (call.method === "GET" && call.pathname === "/v4/tags") {
+          return jsonRes(200, {
+            tags: [{ id: 42, name: "diaria-test-email", created_at: "x" }],
+            pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+          });
+        }
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          posts++;
+          return jsonRes(201, { broadcast: { id: 550 + posts, status: "draft", public_url: "https://news.diar.ia.br/p/x" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--send-test"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      assert.equal(posts, 2);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.test_mode, "broadcast");
+      assert.deepEqual(state?.test_broadcast_ids, [552]);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
