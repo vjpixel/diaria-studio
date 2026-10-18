@@ -19,6 +19,7 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   extractTextPart,
+  extractHtmlHrefs,
   stripHtmlForBody,
   mergeCaptured,
   DEFAULT_BODY_LIMIT,
@@ -276,5 +277,33 @@ describe("module exports — API surface for downstream use", () => {
       body: "content",
     };
     assert.ok(t.thread_id && t.sender && t.subject && t.date && t.body);
+  });
+});
+
+// #10440: links do artigo só existem como href no text/html
+describe("extractHtmlHrefs (#10440)", () => {
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64url");
+  it("extrai hrefs http(s) do HTML mesmo com text/plain presente", () => {
+    const part = {
+      mimeType: "multipart/alternative",
+      parts: [
+        { mimeType: "text/plain", body: { data: b64("Só texto, sem links") } },
+        {
+          mimeType: "text/html",
+          body: {
+            data: b64(
+              `<a href="https://link.alphasignal.ai/c?u=1&amp;x=2">Ler</a> <a href='https://arxiv.org/abs/1'>p</a> <a href="mailto:a@b.c">m</a>`,
+            ),
+          },
+        },
+      ],
+    } as never;
+    assert.deepEqual(extractHtmlHrefs(part), [
+      "https://link.alphasignal.ai/c?u=1&x=2",
+      "https://arxiv.org/abs/1",
+    ]);
+  });
+  it("sem parte HTML devolve vazio", () => {
+    assert.deepEqual(extractHtmlHrefs({ mimeType: "text/plain", body: { data: b64("x") } } as never), []);
   });
 });

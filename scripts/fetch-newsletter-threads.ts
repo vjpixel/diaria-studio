@@ -153,6 +153,24 @@ function extractHtmlPart(part: GmailMessagePart): string {
   return "";
 }
 
+/**
+ * #10440: hrefs das partes text/html. Newsletters como AlphaSignal trazem
+ * text/plain só com texto (links como "[1]" ou ausentes) e os links do artigo
+ * só existem como <a href> no HTML — que o caminho text/plain nunca lia.
+ */
+export function extractHtmlHrefs(part: GmailMessagePart): string[] {
+  const out: string[] = [];
+  if (part.mimeType === "text/html" && part.body?.data) {
+    const html = decodeBase64Url(part.body.data);
+    for (const m of html.matchAll(/<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+      const href = (m[1] ?? m[2] ?? "").replace(/&amp;/g, "&").trim();
+      if (/^https?:\/\//i.test(href)) out.push(href);
+    }
+  }
+  for (const child of part.parts ?? []) out.push(...extractHtmlHrefs(child));
+  return out;
+}
+
 function getHeader(
   headers: Array<{ name: string; value: string }>,
   name: string,
@@ -249,7 +267,10 @@ export async function fetchThread(
   }
 
   // #8668: extrair URLs do corpo COMPLETO antes do truncamento
-  const urls_completo = extractUrls(body);
+  // #10440: une os hrefs do HTML (links que o text/plain não carrega).
+  const urls_completo = [
+    ...new Set([...extractUrls(body), ...extractHtmlHrefs(msg.payload as GmailMessagePart)]),
+  ];
 
   // Truncate to limit — token-reduction core
   const truncated = body.length > bodyLimit ? body.slice(0, bodyLimit) : body;
