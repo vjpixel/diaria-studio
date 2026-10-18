@@ -83,8 +83,16 @@ PAID_ALLOWLIST: frozenset[str] = frozenset()
 # chamada) — nao sao vazamento. Ate o #10387 viviam dentro do PAID_ALLOWLIST;
 # sairam pra ca pra que o PAID_ALLOWLIST pudesse ficar vazio sem transformar o
 # orquestrador (luna via openai-codex) e o elo de assinatura do
-# claude-delegate.sh em falso positivo diario. Invariante (teste): todo id
-# aqui esta em PAID_MODELS_NOT_ON_OPENROUTER.
+# claude-delegate.sh em falso positivo diario.
+#
+# #10431: os ids aqui sao os que a ROTA DE ASSINATURA grava (`gpt-6-luna`,
+# `openai-codex/gpt-6-luna`, `sonnet`). O mesmo luna cobrado PELA OpenRouter
+# chega com outro id (`openai/gpt-6-luna`) e segue sendo vazamento — de
+# proposito: em 18/10/2026 o ~/.hermes/config.yaml do 300 roda o luna so por
+# `provider: openai-codex` (fallbacks todos `:free` na OpenRouter), e o
+# session_model_usage do state.db nao tem nenhuma linha de luna com
+# billing_provider=openrouter em todo o historico (so openai-codex, main e
+# vazio). Luna la seria config errada, nao uso normal.
 SUBSCRIPTION_ROUTE_MODELS: frozenset[str] = frozenset({
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
@@ -106,11 +114,8 @@ SUBSCRIPTION_ROUTE_MODELS: frozenset[str] = frozenset({
     # linha de billing — nao e cobranca de gateway (roda com as 5 vars
     # ANTHROPIC_* de gateway UNSET, ver docstring do wrapper), mas sem
     # allowlist seria indistinguivel de um vazamento pago de verdade. Mesmo
-    # tratamento do gpt-5.6-luna acima (drift do PR #7648): entra tanto aqui
-    # (pra _is_leak nao sinalizar) quanto em PAID_MODELS_NOT_ON_OPENROUTER
-    # abaixo (pro --price-check nao tentar achar preco de um modelo que a
-    # OpenRouter nunca serviu) — o invariante do teste (todo item deste
-    # conjunto em PAID_MODELS_NOT_ON_OPENROUTER) exige as DUAS entradas juntas.
+    # tratamento do gpt-5.6-luna acima (drift do PR #7648): entra aqui pra
+    # _is_leak nao sinalizar.
     "sonnet",
 })
 
@@ -139,85 +144,21 @@ CONTINUO_PRIMARY_MODEL_IDS = {
     "openai-codex/gpt-6-luna",
 }
 CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
-# #10387: o fallback pago do continuo deixou de ser INTENCIONAL (saiu do
-# PAID_ALLOWLIST) — a constante fica so pra a composicao por tick seguir
-# mostrando "pago=%" se o ~/.hermes no 300 ainda cair nele. Qualquer chamada
-# aqui tambem sai como vazamento pago em collect().
-CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
+# #10431: nao ha mais fallback pago INTENCIONAL do continuo (#10387 tirou o
+# deepseek-v4-flash do PAID_ALLOWLIST e da cadeia). A coluna "pago=%" da
+# composicao por tick conta QUALQUER id que `_is_leak` acusa (sem :free, fora
+# da rota de assinatura, nao local) — nao mais um slug fixo, que apodrecia a cada troca de modelo
+# (glm -> deepseek -> nenhum) e deixava um pago novo cair em "outros".
 
-# ---------------------------------------------------------------------------
-# #6818 item 4 — aumento de preco em modelo PAGO ja em uso
-# ---------------------------------------------------------------------------
-# `_is_leak` acima so pergunta "este id esta na allowlist?". Um modelo que ESTA
-# na allowlist nunca e sinalizado, a qualquer preco — entao o degrau de 09/09
-# (a promocao de lancamento do glm-5.3-flash expira e o custo do tick DOBRA
-# sem nenhuma mudanca de config, codigo ou volume) passaria despercebido ate
-# aparecer na fatura. O watchdog vigiava so a transicao `:free -> pago`.
-#
-# Baseline em USD por TOKEN, no MESMO formato que o catalogo da OpenRouter
-# devolve (`pricing.prompt` etc. vem como string decimal por token, nao por
-# milhao). Medido ao vivo em 02/09/2026 contra
-# `GET https://openrouter.ai/api/v1/models` (sem auth) — os valores abaixo sao
-# a promocao AINDA VIGENTE; o alarme dispara exatamente quando ela cair.
-#
-# MANTIDO A MAO, mesmo trade-off ja aceito pro PAID_ALLOWLIST/CONTINUO_*: se o
-# preco mudar de proposito (troca deliberada de modelo, renegociacao), alguem
-# atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
-# a direcao segura.
-#
-# ENCERRADO no #10387 (18/10/2026): sem modelo pago do OpenRouter em uso, nao
-# ha preco a vigiar. O baseline ficou VAZIO e `watch-continuo-health.sh` deixou
-# de chamar `--price-check` (o alarme de preco do #6818/#10278/#10295 saiu do
-# watchdog). A funcao `detect_price_changes` e o `--price-check` seguem aqui,
-# testados com baselines explicitos, pra o caso de uma decisao futura reabrir
-# modelo pago — quem vigia custo hoje e o alarme de billing
+# #10431: o `--price-check` (#6818 item 4, alarme de aumento de preco em
+# modelo PAGO ja em uso — PAID_PRICE_BASELINE, PRICE_INCREASE_DECISIONS,
+# PAID_MODELS_NOT_ON_OPENROUTER, leitura do catalogo publico da OpenRouter)
+# foi REMOVIDO. O #10387 ja tinha esvaziado o baseline e tirado a chamada do
+# watch-continuo-health.sh; sem modelo pago em uso nao ha preco a vigiar e o
+# modo ficou inerte. Quem vigia custo e o alarme de billing
 # (`scripts/openrouter-billing-leak-check.ts`, qualquer cobranca > 0 acusa).
-#
-# Ultimo baseline vigente (historico, #9559 -> #9633 -> #10132), do
-# deepseek/deepseek-v4-flash: prompt $0,091/M, completion $0,182/M,
-# input_cache_read $0,0182/M (medido em 13/10/2026). O z-ai/glm-5.3-flash ja
-# tinha saido no #10367 (baselines #7907, #10065, #10278 no historico do git).
-PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {}
-
-# Modelos pagos que a OpenRouter NAO serve — sao cobrados por outra rota
-# (`openai-codex`). Verificado em 02/09/2026: nem `openai-codex/gpt-5.6-luna`
-# nem `gpt-5.6-luna` aparecem no catalogo (`openai/gpt-5.6-luna`, que aparece,
-# e outro id, servido pela OpenRouter — nao e o que o Hermes cobra).
-#
-# Existem NOMEADOS de proposito: sem esta lista, um modelo pago fora do
-# catalogo cairia em "nao encontrei" e seria indistinguivel de um id digitado
-# errado no baseline. Com ela, o relatorio diz "nao verificavel por esta
-# fonte" — que e a verdade, e nunca "preco ok".
-#
-# #8738 (23/09/2026): gpt-6-luna/openai-codex/gpt-6-luna entram pela mesma
-# razao que as formas gpt-5.6-luna acima — mesma rota openai-codex, mesmo
-# id ausente do catalogo da OpenRouter, exigido pelo invariante do #6818
-# (todo item do SUBSCRIPTION_ROUTE_MODELS — ex-PAID_ALLOWLIST, #10387 —
-# precisa estar nesta lista).
-PAID_MODELS_NOT_ON_OPENROUTER = {
-    "openai-codex/gpt-5.6-luna",
-    "gpt-5.6-luna",
-    "openai-codex/gpt-6-luna",
-    "gpt-6-luna",
-    "sonnet",
-}
-
-# #10295 (15/10/2026): decisao do editor ja registrada sobre a alta de preco de
-# um modelo do baseline. O alarme CONTINUA soando (exit 3), mas cada aumento
-# desses modelos sai anotado com a decisao, e a issue do watch-continuo-health
-# deixa de mandar "atualizar PAID_PRICE_BASELINE" quando isso desfaria a
-# decisao. Invariante (teste): todo id aqui tem baseline. Vazio desde o
-# #10367: a unica entrada (glm-5.3-flash, #10278 — trocar pelo
-# deepseek-v4-flash) saiu quando a troca foi concluida.
-PRICE_INCREASE_DECISIONS: dict[str, str] = {}
-
-OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
-
-# Folga relativa antes de considerar que o preco subiu. Cobre ruido de
-# arredondamento na serializacao decimal do catalogo, nao variacao real de
-# preco: 1% e ordens de grandeza menor que qualquer mudanca de tabela (a do
-# 09/09 e +100%).
-PRICE_INCREASE_TOLERANCE = 0.01
+# O codigo e os testes de regressao (#6818/#7085/#9633/#10065/#10132/#10278/
+# #10295) estao no historico do git, se uma decisao futura reabrir modelo pago.
 
 
 def _connect() -> sqlite3.Connection:
@@ -383,7 +324,10 @@ def collect_tick_composition(days: int) -> list[dict]:
             t["primary_calls"] += calls
         elif CONTINUO_LOCAL_FALLBACK_HINT in model:
             t["local_fallback_calls"] += calls
-        elif model == CONTINUO_PAID_FALLBACK_MODEL:
+        elif _is_leak(model, ""):
+            # #10431: provider vazio = fail-closed do _is_leak (pago, a menos
+            # que :free/stealth/rota de assinatura/hint de modelo local) —
+            # esta query nao le billing_provider.
             t["paid_fallback_calls"] += calls
         else:
             t["other_calls"] += calls
@@ -406,215 +350,6 @@ def collect_tick_composition(days: int) -> list[dict]:
         )
     out.sort(key=lambda r: (r["dia"], r["session_id"]))
     return out
-
-
-def extract_catalog_pricing(catalog: dict) -> dict[str, dict[str, float]]:
-    """`{id: {campo: preco_float}}` a partir do JSON cru de /api/v1/models.
-
-    PURA (#6818 item 4): recebe o dict ja parseado, nunca faz rede — e o que
-    permite testar a deteccao com catalogo sintetico. A OpenRouter serializa
-    preco como STRING decimal por token ("0.000000075"); campo nao-numerico
-    ou ausente e simplesmente omitido, nunca vira 0.0 (0.0 leria como "de
-    graca" e mascararia justamente o que o alarme procura).
-    """
-    out: dict[str, dict[str, float]] = {}
-    # Guard de shape (review do PR #7085): se a raiz do JSON vier como lista
-    # (ou qualquer nao-dict), `.get` lancaria AttributeError FORA do try/except
-    # de `fetch_openrouter_catalog` — o processo morreria com traceback. O
-    # exit 1 resultante coincide com "indeterminado" por acidente, nao por
-    # desenho. Aqui vira `{}`, que o `detect_price_changes` ja trata como
-    # INDETERMINADO de proposito.
-    if not isinstance(catalog, dict):
-        return out
-    for entry in catalog.get("data") or []:
-        if not isinstance(entry, dict):
-            continue
-        model_id = entry.get("id")
-        pricing = entry.get("pricing")
-        if not model_id or not isinstance(pricing, dict):
-            continue
-        parsed: dict[str, float] = {}
-        for field, raw in pricing.items():
-            try:
-                parsed[field] = float(raw)
-            except (TypeError, ValueError):
-                continue
-        if parsed:
-            out[model_id] = parsed
-    return out
-
-
-def detect_price_changes(
-    catalog_pricing: dict[str, dict[str, float]],
-    baseline: dict[str, dict[str, float]] | None = None,
-    not_on_openrouter: set[str] | None = None,
-    tolerance: float = PRICE_INCREASE_TOLERANCE,
-    decisions: dict[str, str] | None = None,
-) -> dict:
-    """Compara o catalogo contra o baseline de modelos PAGOS em uso (#6818 it.4).
-
-    PURA. Devolve `{"increases": [...], "decreases": [...],
-    "unverifiable": [...], "out_of_scope": [...]}`.
-
-    FAIL-CLOSED por construcao, mesma disciplina do #6992: modelo do baseline
-    que nao aparece no catalogo (ou cujo campo sumiu) entra em `unverifiable`,
-    NUNCA e omitido em silencio. "Nao consegui medir" jamais pode ser lido
-    como "nao subiu" — e o modo de falha que este alarme existe pra impedir.
-
-    `out_of_scope` e categoria SEPARADA de `unverifiable`, de proposito: um
-    modelo servido por outra rota nunca vai aparecer no catalogo da OpenRouter
-    — e condicao PERMANENTE e conhecida, nao uma medicao que falhou. Somando
-    as duas, o alarme sairia INDETERMINADO em toda execucao, todo dia, pra
-    sempre; um alarme que sempre grita e um alarme que ninguem le, e ai o
-    aumento real de 09/09 passa junto com o ruido. Fail-closed vale pra
-    incapacidade INESPERADA de medir, nao pra fronteira documentada.
-
-    `decisions` (#10295): aumento de modelo com decisao ja registrada em
-    PRICE_INCREASE_DECISIONS continua em `increases` (exit 3, nunca
-    silenciado), so ganha o campo `decisao` com o texto da decisao.
-    """
-    baseline = PAID_PRICE_BASELINE if baseline is None else baseline
-    decisions = PRICE_INCREASE_DECISIONS if decisions is None else decisions
-    not_on_openrouter = (
-        PAID_MODELS_NOT_ON_OPENROUTER if not_on_openrouter is None else not_on_openrouter
-    )
-
-    increases: list[dict] = []
-    decreases: list[dict] = []
-    unverifiable: list[dict] = []
-    out_of_scope: list[dict] = []
-
-    for model_id in sorted(not_on_openrouter):
-        out_of_scope.append({
-            "modelo": model_id,
-            "motivo": "modelo pago servido por outra rota (nao esta no catalogo da OpenRouter)",
-        })
-
-    for model_id, expected in sorted(baseline.items()):
-        current = catalog_pricing.get(model_id)
-        if current is None:
-            unverifiable.append({
-                "modelo": model_id,
-                "motivo": "ausente do catalogo — id renomeado/removido, ou catalogo incompleto",
-            })
-            continue
-        for field, expected_price in sorted(expected.items()):
-            current_price = current.get(field)
-            if current_price is None:
-                unverifiable.append({
-                    "modelo": model_id,
-                    "campo": field,
-                    "motivo": "campo de preco ausente no catalogo",
-                })
-                continue
-            if current_price > expected_price * (1 + tolerance):
-                increase = {
-                    "modelo": model_id,
-                    "campo": field,
-                    "baseline": expected_price,
-                    "atual": current_price,
-                    "fator": (current_price / expected_price) if expected_price else None,
-                }
-                if model_id in decisions:
-                    increase["decisao"] = decisions[model_id]
-                increases.append(increase)
-            # Tolerancia SIMETRICA (review do PR #7085): a 1a versao aplicava a
-            # folga so no ramo de aumento, entao um ruido decimal de -0,4% caia
-            # em `decreases` como se fosse queda real. Nao afetava exit code
-            # (queda nunca alarma), mas imprimia "queda" que nao houve.
-            elif current_price < expected_price * (1 - tolerance):
-                decreases.append({
-                    "modelo": model_id,
-                    "campo": field,
-                    "baseline": expected_price,
-                    "atual": current_price,
-                })
-
-    return {
-        "increases": increases,
-        "decreases": decreases,
-        "unverifiable": unverifiable,
-        "out_of_scope": out_of_scope,
-    }
-
-
-def build_catalog_unavailable_findings(motivo: str = "catalogo da OpenRouter inacessivel") -> dict:
-    """Findings de "nao consegui buscar o catalogo" (#6818 it.4).
-
-    PURA e testavel (review do PR #7085, P2): antes isto era um dict literal
-    inline no `main()` — o UNICO lugar do arquivo onde o shape de `findings`
-    era montado a mao em vez de vir de `detect_price_changes`. Um typo numa
-    chave (esquecer `out_of_scope`, por exemplo) quebraria em silencio
-    justamente no caminho de fail-closed que este alarme existe pra garantir,
-    e nenhum teste pegaria.
-    """
-    return {
-        "increases": [],
-        "decreases": [],
-        "out_of_scope": [],
-        "unverifiable": [{"modelo": "(todos)", "motivo": motivo}],
-    }
-
-
-def price_check_exit_code(findings: dict) -> int:
-    """0 = nenhum aumento e nada inesperado; 1 = INDETERMINADO; 3 = aumento.
-
-    3 distinto de 1 de proposito, mesmo padrao de
-    `scripts/openrouter-billing-leak-check.ts`: um runner precisa tratar
-    "achou aumento" diferente de "nao consegui medir".
-
-    Queda de preco nunca alarma — e reportada, e boa noticia. `out_of_scope`
-    tambem nao alarma: e fronteira conhecida e permanente (ver docstring de
-    `detect_price_changes`), nao medicao falha. So `unverifiable` — ausencia
-    INESPERADA — vira indeterminado.
-    """
-    if findings.get("increases"):
-        return 3
-    if findings.get("unverifiable"):
-        return 1
-    return 0
-
-
-def fetch_openrouter_catalog(url: str = OPENROUTER_CATALOG_URL, timeout: int = 30) -> dict | None:
-    """I/O isolada do resto (#6818 it.4) — `None` em qualquer falha.
-
-    O endpoint e publico (sem auth). User-Agent explicito de proposito: sem
-    ele a borda da Cloudflare pode devolver challenge em vez de JSON, e o
-    parse falharia de um jeito que parece "catalogo vazio".
-    """
-    import urllib.request
-
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "diaria-studio/hermes-model-cost-report (#6818)"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status != 200:
-                print(f"[price-check] catalogo respondeu HTTP {resp.status}", file=sys.stderr)
-                return None
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception as e:  # noqa: BLE001 — fail-soft deliberado, vira INDETERMINADO
-        print(f"[price-check] falha ao buscar catalogo: {e}", file=sys.stderr)
-        return None
-
-
-def render_price_check(findings: dict) -> None:
-    for f in findings["increases"]:
-        fator = f"{f['fator']:.2f}x" if f.get("fator") else "?"
-        print(f"AUMENTO  {f['modelo']:28} {f['campo']:18} "
-              f"{f['baseline']:.9f} -> {f['atual']:.9f}  ({fator})")
-        if f.get("decisao"):
-            print(f"         decisao registrada: {f['decisao']}")
-    for f in findings["decreases"]:
-        print(f"queda    {f['modelo']:28} {f['campo']:18} "
-              f"{f['baseline']:.9f} -> {f['atual']:.9f}")
-    for f in findings["unverifiable"]:
-        campo = f.get("campo", "-")
-        print(f"INDETERMINADO  {f['modelo']:28} {campo:18} {f['motivo']}")
-    for f in findings.get("out_of_scope", []):
-        print(f"fora de escopo  {f['modelo']:28} {'-':18} {f['motivo']}")
-    if not findings["increases"] and not findings["decreases"] and not findings["unverifiable"]:
-        print("precos dos modelos pagos em uso: sem alteracao vs baseline.")
 
 
 def render(rows: list[dict], days: int) -> None:
@@ -667,23 +402,7 @@ def main() -> None:
     ap.add_argument("--json", action="store_true", help="saida JSON")
     ap.add_argument("--tick-composition", action="store_true",
                      help="composicao de modelo por TICK do job continuo (#6912), em vez do relatorio por dia/modelo")
-    ap.add_argument("--price-check", action="store_true",
-                     help="compara o catalogo da OpenRouter contra PAID_PRICE_BASELINE (#6818 item 4) — "
-                          "exit 3 se algum modelo pago em uso SUBIU de preco, 1 se algo ficou indeterminado")
     args = ap.parse_args()
-
-    if args.price_check:
-        catalog = fetch_openrouter_catalog()
-        if catalog is None:
-            # Fail-closed: sem catalogo nao da pra afirmar nada sobre preco.
-            findings = build_catalog_unavailable_findings()
-        else:
-            findings = detect_price_changes(extract_catalog_pricing(catalog))
-        if args.json:
-            print(json.dumps(findings, indent=2, ensure_ascii=False))
-        else:
-            render_price_check(findings)
-        sys.exit(price_check_exit_code(findings))
 
     if args.tick_composition:
         rows = collect_tick_composition(args.days)

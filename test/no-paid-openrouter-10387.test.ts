@@ -22,7 +22,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,18 +109,29 @@ describe("#10387 — lane de piloto do #6930 encerrada", () => {
     assert.match(r.stderr, /encerrada no #10387/);
   });
 
-  it("o abort vem antes do 1º efeito colateral (source do guard, claim, worktree)", () => {
-    // Só linhas de CÓDIGO — o docstring do topo cita os mesmos marcadores.
-    const src = readFileSync(DISPATCH, "utf8")
+  it("#10431: o script é só lápide — nenhum código de despacho sobra depois do exit 3", () => {
+    // Só linhas de CÓDIGO — o docstring do topo cita o harness removido.
+    const code = readFileSync(DISPATCH, "utf8")
       .split("\n")
-      .filter((l) => !/^\s*#/.test(l))
-      .join("\n");
-    const abortIdx = src.indexOf("encerrada no #10387");
-    assert.ok(abortIdx > 0);
-    for (const marker of ['source "$REPO/scripts/lib/glm-lane-headref-guard.sh"', "is-claimed", "git worktree add"]) {
-      const idx = src.indexOf(marker);
-      if (idx === -1) continue;
-      assert.ok(abortIdx < idx, `abort precisa vir antes de ${marker}`);
+      .filter((l) => l.trim() !== "" && !/^\s*#/.test(l));
+    assert.deepEqual(
+      code.map((l) => l.split(/\s+/)[0]),
+      ["set", "echo", "exit"],
+      `código além de set/echo/exit voltou ao dispatch-glm-lane-unit.sh: ${code.join(" | ")}`,
+    );
+    for (const marker of ["claude-delegate", "worktree", "is-claimed", "glm-lane-credits"]) {
+      assert.ok(!code.join("\n").includes(marker), `marcador de despacho ${marker} voltou ao código`);
+    }
+  });
+
+  it("#10431: o harness que só a lane consumia foi removido (gate, registro, guard de headRefName)", () => {
+    for (const rel of [
+      "scripts/check-glm-lane-gate.ts",
+      "scripts/lib/glm-lane-gate.ts",
+      "scripts/record-glm-lane-unit.ts",
+      "scripts/lib/glm-lane-headref-guard.sh",
+    ]) {
+      assert.equal(existsSync(join(ROOT, rel)), false, `${rel} deveria ter saído no #10431`);
     }
   });
 });

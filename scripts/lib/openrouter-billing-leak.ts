@@ -91,7 +91,15 @@ export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set<string>([
   // "gpt-5.6-luna"/"gpt-6-luna" (#8738). O luna sai junto: este guard lê só o
   // billing do OpenRouter, e o luna do orquestrador roda pela rota
   // openai-codex — luna faturado NO OpenRouter também é modelo pago no
-  // OpenRouter. Readicionar qualquer modelo aqui exige NOVA decisão do editor
+  // OpenRouter. Rota conferida no #10431 (18/10/2026): o ~/.hermes/config.yaml
+  // do 300 roda o luna só por `provider: openai-codex`, com os fallbacks todos
+  // `:free`, e o `session_model_usage` do ~/.hermes/state.db não tem NENHUMA
+  // linha de luna com billing_provider=openrouter em todo o histórico (só
+  // openai-codex, main e vazio). A linha `openai/gpt-5.6-luna` de 30/08 nos
+  // dados de billing veio de chamadas avulsas à API do OpenRouter feitas
+  // numa sessão naquele dia (run-log de 30/08 17:58), não do roteamento do
+  // Hermes. Luna no OpenRouter hoje seria config errada e DEVE acusar.
+  // Readicionar qualquer modelo aqui exige NOVA decisão do editor
   // revertendo o #10387 — nunca silenciar o alarme ampliando esta lista.
   //
   // "sonnet" (elo de assinatura claude.ai, #7649) também NÃO entra aqui, de
