@@ -33,7 +33,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
-import { recordDailyRotationFailSoft } from "./lib/social-schedule-rotation-record.ts"; // #10305
+import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
@@ -1039,7 +1039,8 @@ async function main(): Promise<number | void> {
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
-  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate);
+  // #10427: `um` só entra no registro se este publicador o agendou.
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), dayOffsetOverride });
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 

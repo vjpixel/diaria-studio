@@ -64,16 +64,50 @@ export function recordRotationRows(logPath: string, rows: RotationPlanRow[], rec
 }
 
 /**
+ * O que o publicador sabe do próprio agendamento e o registro precisa (#10427).
+ */
+export interface DailyRotationRecordOptions {
+  /**
+   * O 4º post (Use Melhor, `um`) foi de fato agendado por ESTE publicador
+   * neste dia. `false` tira a linha `…|weekday|um`: dia sem Use Melhor
+   * elegível (ou peça faltando) não tem post, e gravar a célula faria a
+   * medição tratar post inexistente como dado. Outro publicador que agendou o
+   * `um` no mesmo dia grava a linha depois (o registro é por dia, não por
+   * canal). `undefined` = desconhecido, mantém a linha — só a CLI
+   * `--record` manual chega assim, e ali a medição precisa cruzar com
+   * `06-social-published.json` (`destaque: "um"`) pra saber se o post existiu.
+   */
+  useMelhorScheduled?: boolean;
+  /** `--day-offset` do publicador — mesma data de `computeScheduledAt`. */
+  dayOffsetOverride?: number;
+}
+
+/**
+ * Pure: o post `um` foi agendado (ou já estava, em rodada anterior) segundo as
+ * entradas que o publicador acumulou. `failed`/`draft`/`skipped` não contam.
+ */
+export function useMelhorScheduledIn(posts: ReadonlyArray<{ destaque: string; status: string }>): boolean {
+  return posts.some((p) => p.destaque === "um" && (p.status === "scheduled" || p.status === "published"));
+}
+
+/**
  * Pure: linhas de dia útil da edição `edition` (AAMMDD) que vieram da rotação.
  * Vazio quando a rotação não se aplica ao dia — aí não há o que registrar
  * (o horário fixo já é o default conhecido).
  */
-export function dailyRotationRowsForEdition(social: unknown, edition: string): RotationPlanRow[] {
+export function dailyRotationRowsForEdition(
+  social: unknown,
+  edition: string,
+  opts: DailyRotationRecordOptions = {},
+): RotationPlanRow[] {
   const s = social as Parameters<typeof baseTimesFromSocial>[0];
-  const date = publishDateForEdition(edition, s);
+  const date = publishDateForEdition(edition, s, opts.dayOffsetOverride);
   if (!date) return [];
   return buildRotationPlan(readSocialRotation(s), baseTimesFromSocial(s), date, date).filter(
-    (r) => r.kind === "weekday" && r.source === "rotation",
+    (r) =>
+      r.kind === "weekday" &&
+      r.source === "rotation" &&
+      !(r.type === "um" && opts.useMelhorScheduled === false),
   );
 }
 
@@ -86,11 +120,15 @@ export function dailyRotationRowsForEdition(social: unknown, edition: string): R
  * publicador como subprocesso não podem escrever no `data/` real. Destino
  * sobreponível por `DIARIA_SOCIAL_ROTATION_LOG`.
  */
-export function recordDailyRotationFailSoft(rootDir: string, edition: string): void {
+export function recordDailyRotationFailSoft(
+  rootDir: string,
+  edition: string,
+  opts: DailyRotationRecordOptions = {},
+): void {
   if (process.env.NODE_TEST_CONTEXT && !process.env.DIARIA_SOCIAL_ROTATION_LOG) return;
   try {
     const config = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
-    const rows = dailyRotationRowsForEdition(config?.publishing?.social, edition);
+    const rows = dailyRotationRowsForEdition(config?.publishing?.social, edition, opts);
     if (rows.length === 0) return;
     const logPath = resolve(rootDir, process.env.DIARIA_SOCIAL_ROTATION_LOG ?? DEFAULT_ROTATION_LOG);
     const n = recordRotationRows(logPath, rows);

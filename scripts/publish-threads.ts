@@ -81,7 +81,7 @@ import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #68
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
-import { recordDailyRotationFailSoft } from "./lib/social-schedule-rotation-record.ts"; // #10305
+import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
@@ -925,7 +925,8 @@ async function main(): Promise<number | void> {
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
-  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate);
+  // #10427: `um` só entra no registro se este publicador o agendou.
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results) });
   console.log(
     JSON.stringify(
       { out_path: publishedPath, summary, posts: results, skipped_no_curto: skippedNoCurto, use_melhor: useMelhorSummary },
