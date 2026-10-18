@@ -357,6 +357,30 @@ export interface EstiloRegenState {
   images?: Partial<Record<DestaqueId, string[]>>;
 }
 
+/**
+ * #10375: o que o orchestrator CONFIRMOU ter rodado com exit 0, por destaque.
+ * `2x1` = 1º comando de `estiloRegenCommands` (reescreve o 2:1 e deriva o
+ * 1:1); `4x5` = o 2º (`--ratio 4x5`, cria a arte `4x5-nativo`). O md5 só não
+ * distingue "o gerador criou o 4x5-nativo" de "o editor trocou a arte" — este
+ * registro por comando distingue.
+ */
+export type EstiloRegenRan = Partial<Record<DestaqueId, ReadonlySet<string> | readonly string[]>>;
+
+/** Ratios revisados cujo md5 novo o comando `ran` explica. */
+const RAN_COVERS: Record<string, readonly string[]> = { "2x1": ["1x1"], "4x5": ["4x5"] };
+
+/** `"d1:2x1,d1:4x5"` → `EstiloRegenRan` (`--estilo-regen-ran`, #10375). Lança em entrada inválida. */
+export function parseEstiloRegenRan(raw: string): EstiloRegenRan {
+  const out: Partial<Record<DestaqueId, string[]>> = {};
+  for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
+    const m = /^(d[123]):(2x1|4x5)$/.exec(tok);
+    if (!m) throw new Error(`--estilo-regen-ran: token inválido "${tok}" (esperado d1:2x1, d2:4x5, ...)`);
+    const d = m[1] as DestaqueId;
+    out[d] = [...(out[d] ?? []), m[2]!];
+  }
+  return out;
+}
+
 export interface EstiloRegenPlan {
   /** Destaques a regenerar agora (ficam em `state.pending` até o próximo plano). */
   regenerate: DestaqueId[];
@@ -389,6 +413,7 @@ export function planEstiloRegeneration(
   isStale: (entry: CropReviewEntry) => boolean = () => false,
   currentMd5: CurrentImageMd5 = () => null,
   maxAttempts: number = MAX_ESTILO_AUTO_REGEN,
+  ran: EstiloRegenRan = {},
 ): EstiloRegenPlan {
   const attempts: Partial<Record<DestaqueId, number>> = { ...(previous.attempts ?? {}) };
   const failed: Partial<Record<DestaqueId, number>> = { ...(previous.failed ?? {}) };
@@ -436,7 +461,11 @@ export function planEstiloRegeneration(
         const before = typeof all[ratio] === "string" ? all[ratio] : null;
         remember(d, before);
         const now = currentMd5(d, ratio);
-        if (changed && now !== before) remember(d, now);
+        // #10375: 2:1 falho + `--ratio 4x5` ok deixa `changed=false` com um
+        // 4x5-nativo novo do gerador; o comando confirmado (`ran`) é o sinal
+        // que o md5 sozinho não dá (arte trocada pelo editor não tem `ran`).
+        const ranCovers = [...(ran[d] ?? [])].some((cmd) => RAN_COVERS[cmd]?.includes(ratio));
+        if ((changed || ranCovers) && now !== before) remember(d, now);
       }
     } else {
       // Estado anterior ao #10335 (sem `pendingAll`): comportamento do #10332.
@@ -492,7 +521,7 @@ export function planEstiloRegeneration(
  */
 export function planEstiloRegenerationForEdition(
   editionDir: string,
-  opts: { verdictPath?: string; edition?: string } = {},
+  opts: { verdictPath?: string; edition?: string; ran?: EstiloRegenRan } = {},
 ): EstiloRegenPlan | null {
   const verdictPath = opts.verdictPath ?? join(editionDir, "_internal", "04-crop-review.json");
   if (!existsSync(verdictPath)) return null;
@@ -523,6 +552,8 @@ export function planEstiloRegenerationForEdition(
     previous,
     (e) => isEstiloFalsePositive(e, falsePositives) || isCropReviewEntryStale(editionDir, e),
     currentMd5,
+    MAX_ESTILO_AUTO_REGEN,
+    opts.ran,
   );
 }
 
@@ -666,7 +697,16 @@ async function main(): Promise<void> {
   // `_internal/04-estilo-regen.json` sempre (a presença do arquivo prova que o
   // plano rodou); a tentativa só é gasta quando a imagem de fato mudou.
   if (flags.has("estilo-regen-plan")) {
-    const plan = planEstiloRegenerationForEdition(editionDir, { verdictPath: outPath, edition });
+    let ran: EstiloRegenRan = {};
+    if (args["estilo-regen-ran"]) {
+      try {
+        ran = parseEstiloRegenRan(args["estilo-regen-ran"]);
+      } catch (e) {
+        console.error(`[run-image-crop-reviewer] ${(e as Error).message}`);
+        process.exit(1);
+      }
+    }
+    const plan = planEstiloRegenerationForEdition(editionDir, { verdictPath: outPath, edition, ran });
     if (!plan) {
       console.error(`[run-image-crop-reviewer] veredito não encontrado: ${outPath} — persistir com --input-json antes.`);
       process.exit(1);
