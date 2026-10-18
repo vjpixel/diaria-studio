@@ -647,6 +647,12 @@ explicitamente, com ou sem continuação após o wordmark (#10385; o caso
 `http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
+- **Exceção, a perda esperada da menção (#10385, decisão do editor de
+  18/10/2026):** se os ÚNICOS issues forem `WORDMARK_HREF_REWRITE_HINT` na
+  âncora `mencao-abertura` (o LinkedIn reescreve todo "diar.ia.br" do corpo,
+  ver `context/publishers/linkedin.md` item (f)), NÃO tentar corrigir: seguir
+  pro 8d e entregar no Passo 9 com o pedido de ajuste manual (item 4).
+  Qualquer outro issue, sozinho ou junto desse, cai na regra abaixo.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
   nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
   issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
@@ -729,14 +735,18 @@ editor, nesta ordem:
 3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
    aplicados e sem travessão, pronto pra colar.
 4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
-   editor de 18/10/2026).** O LinkedIn reescreve todo "diar.ia.br" do
-   corpo para `http://diar.ia.br` sem UTM, então a âncora da menção da
-   abertura chega sempre sem a UTM `mencao-abertura` (o Passo 8c acusa com
-   `WORDMARK_HREF_REWRITE_HINT`). Pedir ao editor, toda semana e de forma
+   editor de 18/10/2026)**, só quando o `ln-{cycle}.html` tiver uma âncora
+   com `utm_content=mencao-abertura` (abertura sem a marca não gera
+   âncora). O LinkedIn reescreve todo "diar.ia.br" do corpo para
+   `http://diar.ia.br` sem UTM, então essa âncora chega sem a UTM (o Passo
+   8c acusa com `WORDMARK_HREF_REWRITE_HINT`). Pedir ao editor, de forma
    explícita, que corrija o link da menção à mão antes de agendar, e passar
-   a URL completa com UTM pronta pra colar (a mesma do `ln-{cycle}.html`).
-   Procedimento: `context/publishers/linkedin.md`, item (f) e o resgate
-   logo abaixo dele.
+   o `href` dessa âncora no `ln-{cycle}.html` como a URL pronta pra colar.
+   Na UI: selecionar o texto "diar.ia.br" da menção arrastando o mouse (sem
+   clicar direto no link), abrir o diálogo de link e colar a URL. Depois de
+   corrigir, recarregar o rascunho e conferir que o link da menção ainda
+   tem `utm_content=mencao-abertura` (ainda não verificado se a correção
+   manual sobrevive ao salvar; se não sobreviver, avisar na #10385).
 5. **As instruções da ação manual**, resumidas:
    - Na aba já aberta com o rascunho colado, subir a imagem de capa no
      campo nativo (ícone no topo do editor, acima do título —

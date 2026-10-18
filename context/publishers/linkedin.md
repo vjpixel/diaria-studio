@@ -343,13 +343,14 @@ nunca seja o último nó.
 regra que `endsInBareDomainLabel` já guardava, mas com uma consequência
 que não estava documentada: dá pra pré-linkar a menção em prosa a
 `diar.ia.br` **e manter a UTM**, desde que a âncora se estenda além do
-domínio. Testado nas duas formas em 260803:
+domínio. Testado nas duas formas em 260803 (**superado por (e)/(f):** a
+extensão da âncora não preserva a UTM; ver a reprodução de 18/10/2026):
 
     texto "diar.ia.br"                    -> href reescrito pra http://diar.ia.br, UTM perdida
     texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta (conclusão de 260803 — NÃO reproduzida em 260823, ver item (d) abaixo)
 
-`linkifyWordmark` (mesmo módulo) faz isso automaticamente na primeira
-menção da abertura, estendendo por até 3 palavras e validando com o
+`linkifyWordmark` (mesmo módulo) fazia isso na primeira menção da
+abertura (até o #8819, ver (e)), estendendo por até 3 palavras e validando com o
 próprio guard; se não der pra estender, não linka em vez de emitir link
 que se anuncia rastreado e não é.
 
@@ -373,8 +374,8 @@ sessões não foi isolada** — pode ser mudança de comportamento do editor do
 LinkedIn desde 260803, uma diferença sutil na construção do HTML colado
 não registrada na época, ou o teste original ter sido mal-verificado.
 Tratar (d) como o comportamento **atual e confirmado**, e (c) como
-histórico não confiável para este caso específico até alguém reproduzir
-um dos dois de forma controlada. O que se observa agora: o
+histórico não confiável para este caso específico (reproduzido de forma
+controlada em 18/10/2026, ver (f): (d) confirmado). O que se observa agora: o
 auto-linkificador do LinkedIn reconhece a substring "diar.ia.br" DENTRO do
 texto da âncora colada e a separa num `<a>` próprio sem UTM
 (`href="http://diar.ia.br/"`), deixando só o resto (", newsletter de IA")
@@ -413,17 +414,23 @@ o SPLIT (d) pela REESCRITA (c), não eliminou a perda.
 teste lido depois de estabilizar E depois de recarregar a página):** o
 auto-linkificador do LinkedIn transforma **toda** ocorrência do texto
 "diar.ia.br" num link `http://diar.ia.br` sem UTM, esteja ela dentro ou
-fora de âncora. 7 formas testadas: `diar.ia.br` sozinho (reescrito),
+fora de âncora. O mesmo vale para "diar.ia.br" em texto puro em qualquer
+ponto do corpo, que ganha uma âncora extra sem UTM. 7 formas testadas:
+`diar.ia.br` sozinho (reescrito),
 `diar.ia.br, newsletter de IA` (dividida: wordmark sem UTM + resto com
 UTM), `diar.ia.br/` e `Diar.ia.br` (reescritos), âncora sem o domínio
 seguida do wordmark em texto puro (âncora preservada, wordmark vira link
-sem UTM), e `diar&#8203;.ia.br` com zero-width space (quebra em `diar.`
+sem UTM), `diar.ia.br (<a>assine aqui</a>)` (âncora preservada, wordmark
+vira link sem UTM), e `diar&#8203;.ia.br` com zero-width space (quebra em `diar.`
 com UTM + `ia.br` linkado para `http://ia.br`, pior). **Só sobrevive com
 UTM a âncora cujo texto não contém o domínio.**
 
 **Decisão do editor (18/10/2026): manter a âncora atual e corrigir à mão
 toda semana.** A skill `/diaria-linkedin-semanal` pede o ajuste ao editor
-no Passo 9, e ele aplica o procedimento de resgate abaixo.
+no Passo 9 (item 4, com o passo a passo na UI e a releitura depois de
+recarregar). O procedimento de resgate abaixo é o histórico de 26w34,
+escrito para o agente e hoje não validado de ponta a ponta.
+
 `auditLinkedinPaste` acusa o caso explicitamente desde o #10385:
 `isWordmarkAnchorText` casa o wordmark com ou sem continuação, e toda
 âncora de wordmark com a UTM divergente (ou sumida do colado) recebe o
