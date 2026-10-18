@@ -77,7 +77,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
-import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Threads não renderiza markdown
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Threads não renderiza markdown; #10441 ponto único do texto de post
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { runCli } from "./lib/cli-exit.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
@@ -158,7 +158,7 @@ export function extractPostText(
   assertNoScaffolding(text, `destaque '${destaque}' (threads)`);
   // #6862: Threads não renderiza markdown — ver docstring de
   // lib/strip-markdown-emphasis.ts (nunca fazer isso na fonte).
-  return stripMarkdownEmphasis(text);
+  return toSocialPostText(text);
 }
 
 /**

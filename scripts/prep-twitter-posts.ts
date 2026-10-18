@@ -92,6 +92,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, readSocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #4309 — extração do `## dN` + guard de scaffolding
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #10441 — X não renderiza markdown
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
@@ -150,7 +151,9 @@ export function extractCurtoText(
   // 03-social.md; resolver antes do guard. Sem editionUrl, segue recusado.
   const text = editionUrl ? dText.trim().replaceAll("{edition_url}", editionUrl) : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (twitter/curto)`);
-  return text;
+  // #10441: X não renderiza markdown — mesmo ponto único dos outros canais
+  // (antes deste fix era o único publicador que não removia `**`).
+  return toSocialPostText(text);
 }
 
 export interface PrepResult {
