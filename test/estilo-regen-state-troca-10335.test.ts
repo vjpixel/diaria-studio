@@ -257,6 +257,54 @@ describe("#10335: swap-destaque.ts e --estilo-regen-reset zeram a posição (CLI
     }
   });
 
+  it("swap-destaques (plural, #8995) --d1-url zera o estado de d1 e preserva d2; imagem nova ganha regeneração", () => {
+    const dir = makeEdition();
+    try {
+      const path = join(dir, "_internal", "04-estilo-regen.json");
+      const before = JSON.parse(readFileSync(path, "utf8")) as EstiloRegenState;
+      writeFileSync(path, JSON.stringify({ ...before, attempts: { ...(before.attempts ?? {}), d2: 1 } }));
+      const s = run("swap-destaques.ts", [
+        "--edition", "261018", "--edition-dir", dir,
+        "--d1-url", "https://example.com/novo", "--d1-title", "Novo", "--drop",
+      ]);
+      assert.equal(s.status, 0, s.stderr);
+      const st = JSON.parse(readFileSync(path, "utf8")) as EstiloRegenState;
+      assert.equal(st.pending?.d1, undefined);
+      assert.equal(st.pendingAll?.d1, undefined);
+      assert.equal(st.pendingBase?.d1, undefined);
+      assert.equal(st.attempts?.d2, 1, "posição não trocada mantém o estado");
+      assert.ok(JSON.parse(s.stdout).modified.rewritten.some((p: string) => p.endsWith("04-estilo-regen.json")));
+      assert.equal(existsSync(join(dir, "04-d1-2x1.jpg")), false, "swap apaga as imagens da posição");
+      trocaEAcusa1x1(dir);
+      const plan = planEstiloRegenerationForEdition(dir);
+      assert.deepEqual(plan?.regenerate, ["d1"]);
+      assert.deepEqual(plan?.exhausted, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap-destaque --dry-run só anuncia 'zerado' quando havia estado da posição", () => {
+    const dir = makeEdition();
+    try {
+      const args = ["--edition", "261018", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d1", "--drop", "--dry-run"];
+      const com = run("swap-destaque.ts", args);
+      assert.equal(com.status, 0, com.stderr);
+      assert.match(JSON.parse(com.stdout).dry_run_plan.estilo_regen_state, /estado de d1 zerado/);
+      const path = join(dir, "_internal", "04-estilo-regen.json");
+      const before = readFileSync(path, "utf8");
+      assert.ok(JSON.parse(before).pending?.d1, "dry-run não grava");
+      rmSync(path);
+      const sem = run("swap-destaque.ts", args);
+      assert.equal(sem.status, 0, sem.stderr);
+      const msg = JSON.parse(sem.stdout).dry_run_plan.estilo_regen_state as string;
+      assert.doesNotMatch(msg, /zerado/);
+      assert.match(msg, /nada a zerar/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("--estilo-regen-reset: alvo inválido sai 1; parse deduplica", () => {
     const dir = mkdtempSync(join(tmpdir(), "estilo-10335-bad-"));
     try {

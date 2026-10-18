@@ -1117,6 +1117,18 @@ function main(): void {
   };
 
   if (dryRun) {
+    // #10335: só anuncia "zerado" quando havia estado da posição — o run real
+    // é no-op com arquivo ausente/sem a posição. dryRun=true não grava nada.
+    const estiloPlan = updateEstiloRegenStateFile(
+      internalDir,
+      (d) => clearEstiloRegenDestaques(d, [`d${demotePosition}`]),
+      true,
+    );
+    const estiloRegenPlan = estiloPlan.rewritten
+      ? `_internal/04-estilo-regen.json: estado de d${demotePosition} zerado (#10335)`
+      : estiloPlan.warning
+        ? `_internal/04-estilo-regen.json: ${estiloPlan.warning}`
+        : `_internal/04-estilo-regen.json: sem estado de d${demotePosition}, nada a zerar (#10335)`;
     console.log(
       JSON.stringify(
         {
@@ -1128,7 +1140,7 @@ function main(): void {
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
             images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
             prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
-            estilo_regen_state: `_internal/04-estilo-regen.json: estado de d${demotePosition} zerado (#10335)`,
+            estilo_regen_state: estiloRegenPlan,
           },
         },
         null,
