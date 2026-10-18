@@ -19,7 +19,7 @@
 
 import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 
-const UPDATED_AT = "3 de setembro de 2026";
+const UPDATED_AT = "18 de outubro de 2026";
 
 const CONTACT_EMAIL = "diariaeditor@gmail.com";
 
@@ -67,6 +67,7 @@ ${renderAnalyticsHead()}
   <li><strong>Interações com os e-mails</strong>: se a edição foi aberta e quais links foram clicados.</li>
   <li><strong>Respostas voluntárias</strong>: enquetes (como o "É IA?"), pesquisas e mensagens que você nos envia.</li>
   <li><strong>Dados de acesso às páginas</strong> do projeto: endereço de origem da visita, tipo de navegador e páginas vistas, em forma agregada.</li>
+  <li><strong>Dados técnicos de um cadastro feito depois de um anúncio da Meta</strong>: endereço IP, tipo de navegador e o identificador do cookie de medição da Meta, guardados junto do seu cadastro. Servem só para confirmar à Meta que o cadastro aconteceu (medição de anúncios).</li>
 </ul>
 
 <h2>Para que usamos</h2>
@@ -101,7 +102,7 @@ ${renderAnalyticsHead()}
 </ul>
 
 <h2>Cookies</h2>
-<p>As páginas próprias do projeto não usam cookies de rastreamento publicitário. O site principal e os serviços de terceiros listados acima podem usar cookies próprios, sujeitos às políticas de cada um.</p>
+<p>As páginas próprias do projeto usam um identificador de visitante próprio e cookies de medição de anúncios (como os da Meta), para saber se um cadastro veio de um anúncio. Esses dados não são usados para publicidade de outras empresas. O site principal e os serviços de terceiros listados acima podem usar cookies próprios, sujeitos às políticas de cada um.</p>
 
 <h2>Crianças</h2>
 <p>O projeto não é dirigido a menores de 13 anos e não coleta dados dessa faixa etária de forma consciente.</p>

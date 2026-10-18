@@ -17,6 +17,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import worker from "../workers/arquivo/src/index.ts";
+import { readFileSync } from "node:fs";
+
 import { renderPrivacyPage } from "../workers/arquivo/src/render-privacy.ts";
 
 describe("#5262 — GET /privacidade no Worker arquivo", () => {
@@ -53,5 +55,21 @@ describe("#5262 — GET /privacidade no Worker arquivo", () => {
     for (const vendor of ["Beehiiv", "Kit", "Brevo", "MillionVerifier", "Cloudflare", "Google", "Meta", "Microsoft"]) {
       assert.match(html, new RegExp(`\\b${vendor}\\b`), `política não cita ${vendor}`);
     }
+  });
+
+  it("declara IP/navegador/cookie da Meta enquanto os workers de cadastro coletam esses sinais (#8543)", () => {
+    // Coerência política × código: com KIT_ORIGEM_CLIENTIP_FIELD ativo, o
+    // cadastro grava IP, user agent e _fbp no Kit. A política não pode voltar
+    // a dizer só "em forma agregada" / "sem cookies publicitários".
+    const active = ["workers/poll/wrangler.toml", "workers/cursos/wrangler.toml"].some((p) =>
+      /^KIT_ORIGEM_CLIENTIP_FIELD\s*=/m.test(readFileSync(p, "utf8")),
+    );
+    // Ligado em 18/10/2026. Se alguém desligar a coleta, este assert cai e
+    // obriga a decidir de novo o texto da política (não passa em silêncio).
+    assert.ok(active, "coleta desligada: revisar a política de privacidade e este teste juntos");
+    const html = renderPrivacyPage();
+    assert.match(html, /endereço IP/);
+    assert.match(html, /cookies de medição de anúncios/);
+    assert.doesNotMatch(html, /não usam cookies de rastreamento publicitário/);
   });
 });

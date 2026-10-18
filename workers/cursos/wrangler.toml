@@ -134,18 +134,18 @@ KIT_ORIGEM_EXTERNALID_FIELD = "origem_external_id"
 
 # #8543 (EMQ 28/09/2026) — custom fields Kit dos sinais de match do cadastro
 # (IP, user agent, `_fbp`) pro lote `SubscriptionConfirmed` reusar
-# (`scripts/lib/meta-capi-confirmation-batch.ts`). DESLIGADOS DE PROPÓSITO:
-# os 3 campos ainda não existem na conta Kit de produção e o MCP do Kit é
-# gated pelo plano (não deu pra conferir). Ativar = (1) criar no Kit os
-# campos com as chaves `origem_client_ip`, `origem_user_agent`, `origem_fbp`
-# (mesmas de `KIT_CLIENT_IP_FIELD_NAME` e vizinhos); (2) descomentar as 3
-# linhas abaixo, aqui e no wrangler.toml do worker irmão (poll/cursos). O
-# push em master faz o deploy. Minimização: só grava quando o request tem
+# (`scripts/lib/meta-capi-confirmation-batch.ts`). LIGADOS em 18/10/2026
+# (decisão do editor, /diaria-develop 261018): campos criados na conta Kit
+# via API (ids 1400093 origem_client_ip, 1400094 origem_user_agent,
+# 1400095 origem_fbp) e política de privacidade atualizada para declarar a
+# coleta (workers/arquivo/src/render-privacy.ts). Desligar = comentar as 3
+# linhas abaixo, aqui e no wrangler.toml do worker irmão (poll/cursos).
+# Minimização: só grava quando o request tem
 # sinal da Meta (`_fbp`/`_fbc`/`fbclid:`) e nunca pra click id de outro canal
 # (`selectPersistableMatchSignals`, scripts/lib/shared/meta-capi.ts).
-# KIT_ORIGEM_CLIENTIP_FIELD = "origem_client_ip"
-# KIT_ORIGEM_USERAGENT_FIELD = "origem_user_agent"
-# KIT_ORIGEM_FBP_FIELD = "origem_fbp"
+KIT_ORIGEM_CLIENTIP_FIELD = "origem_client_ip"
+KIT_ORIGEM_USERAGENT_FIELD = "origem_user_agent"
+KIT_ORIGEM_FBP_FIELD = "origem_fbp"
 
 # #6048 (item 4/5, Gate B aprovado pelo editor 25/08/2026 — rollout worker-a-
 # worker, poll já verificado ao vivo, cursos é o 2º). env.SUBSCRIBE_BACKEND

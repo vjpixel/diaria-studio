@@ -261,7 +261,7 @@ describe("#8543 — worker poll grava IP/UA/fbp no Kit", () => {
     assert.equal(f.origem_fbp, undefined);
   });
 
-  it("sem as env vars (estado do wrangler.toml hoje) → nada gravado", async () => {
+  it("sem as env vars (worker sem os campos configurados) → nada gravado", async () => {
     const { fn, calls } = kitFetch();
     await handleJogarSubscribe(
       pollReq({ email: "a@b.com", optin: true, source: "jogar", fbp: FBP }),
