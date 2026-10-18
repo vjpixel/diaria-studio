@@ -407,11 +407,23 @@ se sustentou, ver (f) abaixo.**
 na âncora da menção da abertura e a UTM `mencao-abertura` se perdeu; as
 outras 7 âncoras com UTM sobreviveram. É exatamente a 1ª linha do caso
 (c): texto que termina em domínio nu tem o href reescrito. O #8819 trocou
-o SPLIT (d) pela REESCRITA (c), não eliminou a perda. **Estado atual:** a
-forma da âncora que sobrevive ao paste ainda não foi decidida — exige
-reprodução controlada ao vivo no LinkedIn (item 1 da #10385, fica para
-uma sessão com Chrome logado). Até lá, a perda é ESPERADA toda semana e a
-correção é manual, via o procedimento de resgate abaixo.
+o SPLIT (d) pela REESCRITA (c), não eliminou a perda.
+
+**Reprodução controlada (18/10/2026, /diaria-develop 261018, rascunho de
+teste lido depois de estabilizar E depois de recarregar a página):** o
+auto-linkificador do LinkedIn transforma **toda** ocorrência do texto
+"diar.ia.br" num link `http://diar.ia.br` sem UTM, esteja ela dentro ou
+fora de âncora. 7 formas testadas: `diar.ia.br` sozinho (reescrito),
+`diar.ia.br, newsletter de IA` (dividida: wordmark sem UTM + resto com
+UTM), `diar.ia.br/` e `Diar.ia.br` (reescritos), âncora sem o domínio
+seguida do wordmark em texto puro (âncora preservada, wordmark vira link
+sem UTM), e `diar&#8203;.ia.br` com zero-width space (quebra em `diar.`
+com UTM + `ia.br` linkado para `http://ia.br`, pior). **Só sobrevive com
+UTM a âncora cujo texto não contém o domínio.**
+
+**Decisão do editor (18/10/2026): manter a âncora atual e corrigir à mão
+toda semana.** A skill `/diaria-linkedin-semanal` pede o ajuste ao editor
+no Passo 9, e ele aplica o procedimento de resgate abaixo.
 `auditLinkedinPaste` acusa o caso explicitamente desde o #10385:
 `isWordmarkAnchorText` casa o wordmark com ou sem continuação, e toda
 âncora de wordmark com a UTM divergente (ou sumida do colado) recebe o

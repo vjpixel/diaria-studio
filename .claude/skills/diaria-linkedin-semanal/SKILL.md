@@ -728,7 +728,16 @@ editor, nesta ordem:
    capa disponível (fail-soft do Passo 7), sem inventar substituto.
 3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
    aplicados e sem travessão, pronto pra colar.
-4. **As instruções da ação manual**, resumidas:
+4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
+   editor de 18/10/2026).** O LinkedIn reescreve todo "diar.ia.br" do
+   corpo para `http://diar.ia.br` sem UTM, então a âncora da menção da
+   abertura chega sempre sem a UTM `mencao-abertura` (o Passo 8c acusa com
+   `WORDMARK_HREF_REWRITE_HINT`). Pedir ao editor, toda semana e de forma
+   explícita, que corrija o link da menção à mão antes de agendar, e passar
+   a URL completa com UTM pronta pra colar (a mesma do `ln-{cycle}.html`).
+   Procedimento: `context/publishers/linkedin.md`, item (f) e o resgate
+   logo abaixo dele.
+5. **As instruções da ação manual**, resumidas:
    - Na aba já aberta com o rascunho colado, subir a imagem de capa no
      campo nativo (ícone no topo do editor, acima do título —
      `context/publishers/linkedin.md` §3).
