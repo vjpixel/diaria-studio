@@ -222,6 +222,106 @@ describe("#10393 item 3 — postKitCreateWithSignalFallback", () => {
   });
 });
 
+describe("#10428 — retry escalonado: UA sai antes de IP e fbp", () => {
+  const UA_FIELD = "origem_user_agent";
+  const LONG_UA = "Mozilla/5.0 (iPhone) [FBAN/FBIOS;FBAV/450.0]" + "x".repeat(220);
+  const FBP = "fb.1.1700000000000.123456789";
+  const baseBody = () => ({
+    email_address: "a@b.com",
+    state: "active",
+    fields: { origem_cadastro: "poll", origem_client_ip: IP, [UA_FIELD]: LONG_UA, origem_fbp: FBP },
+  });
+  const signalFieldNames = ["origem_client_ip", UA_FIELD, "origem_fbp"];
+
+  it("422 por causa do UA → 2º POST tira SÓ o UA; IP e fbp sobrevivem", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const logs: string[] = [];
+    const res = await postKitCreateWithSignalFallback({
+      post: async (b) => {
+        bodies.push(b);
+        const f = (b.fields ?? {}) as Record<string, string>;
+        return UA_FIELD in f ? new Response("{}", { status: 422 }) : new Response("{}", { status: 201 });
+      },
+      body: baseBody(),
+      signalFieldNames,
+      userAgentFieldName: UA_FIELD,
+      redactValues: [IP, LONG_UA, FBP, "a@b.com"],
+      log: (m) => logs.push(m),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(bodies.length, 2);
+    const f2 = bodies[1].fields as Record<string, string>;
+    assert.equal(f2[UA_FIELD], undefined);
+    assert.equal(f2.origem_client_ip, IP);
+    assert.equal(f2.origem_fbp, FBP);
+    assert.equal(f2.origem_cadastro, "poll");
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].includes("kit_create_422_retry_without_user_agent"));
+  });
+
+  it("422 persiste sem o UA → 3º POST tira os 3 sinais (cadastro nunca falha por opcional)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const logs: string[] = [];
+    const res = await postKitCreateWithSignalFallback({
+      post: async (b) => {
+        bodies.push(b);
+        return bodies.length < 3 ? new Response("{}", { status: 422 }) : new Response("{}", { status: 201 });
+      },
+      body: baseBody(),
+      signalFieldNames,
+      userAgentFieldName: UA_FIELD,
+      redactValues: [],
+      log: (m) => logs.push(m),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(bodies.length, 3);
+    assert.deepEqual(bodies[2].fields, { origem_cadastro: "poll" });
+    assert.ok(logs[0].includes("kit_create_422_retry_without_user_agent"));
+    assert.ok(logs[1].includes("kit_create_422_retry_without_match_signals"));
+  });
+
+  it("2º POST falha com não-422 → devolve essa resposta, sem 3º POST", async () => {
+    let n = 0;
+    const res = await postKitCreateWithSignalFallback({
+      post: async () => (++n === 1 ? new Response("{}", { status: 422 }) : new Response("{}", { status: 500 })),
+      body: baseBody(),
+      signalFieldNames,
+      userAgentFieldName: UA_FIELD,
+      redactValues: [],
+      log: () => {},
+    });
+    assert.equal(res.status, 500);
+    assert.equal(n, 2);
+  });
+
+  it("UA como único sinal → 1 retry só (não repete o mesmo corpo)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await postKitCreateWithSignalFallback({
+      post: async (b) => (bodies.push(b), new Response("{}", { status: 422 })),
+      body: { email_address: "a@b.com", fields: { [UA_FIELD]: LONG_UA } },
+      signalFieldNames: [UA_FIELD],
+      userAgentFieldName: UA_FIELD,
+      redactValues: [],
+      log: () => {},
+    });
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[1].fields, undefined);
+  });
+
+  it("sem userAgentFieldName → comportamento antigo (1 retry sem todos)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await postKitCreateWithSignalFallback({
+      post: async (b) => (bodies.push(b), new Response("{}", { status: bodies.length === 1 ? 422 : 201 })),
+      body: baseBody(),
+      signalFieldNames,
+      redactValues: [],
+      log: () => {},
+    });
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[1].fields, { origem_cadastro: "poll" });
+  });
+});
+
 // ---- workers ----
 
 function makeMapKV() {
@@ -319,27 +419,40 @@ describe("#10393 item 3 — worker poll: 422 por campo de sinal não derruba o c
   beforeEach(() => (cap = captureConsole()));
   afterEach(() => cap.restore());
 
-  it("422 e depois 201 → cadastro 200; 2º POST sem os 3 campos de sinal, com os demais", async () => {
+  it("422 e depois 201 → cadastro 200; 2º POST tira SÓ o UA (#10428), IP segue", async () => {
     const { fn, calls } = kitFetch([422, 201]);
     const res = await handleJogarSubscribe(pollReq(), pollEnv(), { fetchImpl: fn });
     assert.equal(res.status, 200);
     const c = creates(calls);
     assert.equal(c.length, 2);
-    assert.equal(c[0].body.fields.origem_client_ip, IP);
+    assert.equal(c[0].body.fields.origem_user_agent, UA);
     const f2 = c[1].body.fields ?? {};
+    assert.equal(f2.origem_client_ip, IP);
+    assert.equal(f2.origem_user_agent, undefined);
+    assert.ok(!cap.lines.join("\n").includes(IP), cap.lines.join("\n"));
+  });
+
+  it("422, 422 e depois 201 → cadastro 200; 3º POST sem os 3 campos de sinal, com os demais", async () => {
+    const { fn, calls } = kitFetch([422, 422, 201]);
+    const res = await handleJogarSubscribe(pollReq(), pollEnv(), { fetchImpl: fn });
+    assert.equal(res.status, 200);
+    const c = creates(calls);
+    assert.equal(c.length, 3);
+    assert.equal(c[0].body.fields.origem_client_ip, IP);
+    const f2 = c[2].body.fields ?? {};
     assert.equal(f2.origem_client_ip, undefined);
     assert.equal(f2.origem_user_agent, undefined);
     assert.equal(f2.origem_fbp, undefined);
-    assert.equal(c[1].body.email_address, "leitor@example.com");
+    assert.equal(c[2].body.email_address, "leitor@example.com");
     assert.ok(!cap.lines.join("\n").includes(IP), cap.lines.join("\n"));
     assert.ok(!cap.lines.join("\n").includes("iPhone"));
   });
 
-  it("422 nas duas → falha, e o log `Kit respondeu` não carrega IP/UA/e-mail", async () => {
-    const { fn, calls } = kitFetch([422, 422]);
+  it("422 em todas → falha, e o log `Kit respondeu` não carrega IP/UA/e-mail", async () => {
+    const { fn, calls } = kitFetch([422, 422, 422]);
     const res = await handleJogarSubscribe(pollReq(), pollEnv(), { fetchImpl: fn });
     assert.notEqual(res.status, 200);
-    assert.equal(creates(calls).length, 2);
+    assert.equal(creates(calls).length, 3);
     const all = cap.lines.join("\n");
     assert.ok(all.includes("Kit respondeu 422"), all);
     assert.ok(!all.includes(IP));
@@ -362,23 +475,25 @@ describe("#10393 itens 3-4 — worker cursos", () => {
     assert.ok(c[0].hasSignal, "POST /subscribers sem signal");
   });
 
-  it("422 e depois 201 → cadastro 200 sem os campos de sinal; log sem IP/UA", async () => {
-    const { fn, calls } = kitFetch([422, 201]);
+  it("422, 422 e depois 201 → cadastro 200 sem os campos de sinal; 2º POST só sem UA (#10428); log sem IP/UA", async () => {
+    const { fn, calls } = kitFetch([422, 422, 201]);
     const res = await handleGateSubscribe(cursosReq(), cursosEnv(), { fetchImpl: fn });
     assert.equal(res.status, 200);
     const c = creates(calls);
-    assert.equal(c.length, 2);
+    assert.equal(c.length, 3);
     assert.equal(c[0].body.fields.origem_client_ip, IP);
-    assert.equal((c[1].body.fields ?? {}).origem_client_ip, undefined);
+    assert.equal((c[1].body.fields ?? {}).origem_client_ip, IP);
     assert.equal((c[1].body.fields ?? {}).origem_user_agent, undefined);
-    assert.ok(c[1].hasSignal);
+    assert.equal((c[2].body.fields ?? {}).origem_client_ip, undefined);
+    assert.equal((c[2].body.fields ?? {}).origem_user_agent, undefined);
+    assert.ok(c[2].hasSignal);
     const all = cap.lines.join("\n");
     assert.ok(!all.includes(IP));
     assert.ok(!all.includes("iPhone"));
   });
 
-  it("422 nas duas → `Kit respondeu` redigido", async () => {
-    const { fn } = kitFetch([422, 422]);
+  it("422 em todas → `Kit respondeu` redigido", async () => {
+    const { fn } = kitFetch([422, 422, 422]);
     const res = await handleGateSubscribe(cursosReq(), cursosEnv(), { fetchImpl: fn });
     assert.notEqual(res.status, 200);
     const all = cap.lines.join("\n");
