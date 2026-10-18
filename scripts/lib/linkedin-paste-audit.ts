@@ -33,7 +33,18 @@
  * pelo caminho normal. `looksLikeBareDomainAnchorText` foi ajustado pra só
  * disparar quando o texto de âncora AINDA tem continuação após o wordmark
  * (o padrão problemático de verdade) — texto de âncora exatamente igual ao
- * wordmark é o formato esperado agora, não sinal de bug.
+ * wordmark é o formato esperado agora, não sinal de SPLIT (mas é sinal de
+ * REESCRITA de href quando a UTM some, ver #10385 abaixo).
+ *
+ * **#10385 (18/10/2026): a premissa do #8819 não se sustentou.** No ciclo
+ * `26w42` a âncora SÓ com "diar.ia.br" (o formato do #8819, sem continuação)
+ * teve o href reescrito pelo editor do LinkedIn pra `http://diar.ia.br`, com
+ * a UTM `mencao-abertura` perdida — é o caso (c) do playbook (âncora cujo
+ * texto termina em domínio nu). O texto da âncora bate, então a checagem 3
+ * já acusava a UTM divergente, mas sem nenhum hint que ligasse o achado ao
+ * padrão conhecido. `isWordmarkAnchorText` + `WORDMARK_HREF_REWRITE_HINT`
+ * fazem a auditoria acusar EXPLICITAMENTE qualquer âncora de wordmark sem a
+ * UTM esperada, com ou sem continuação.
  *
  * Um perigo colateral relacionado (mesmo PR #5987): corrigir a âncora
  * dividida via clique direto sobre o link colado pode deslocar a seleção e
@@ -203,7 +214,9 @@ function hrefsEquivalent(a: string, b: string): boolean {
  * pra sinalizar o cenário de divisão observado no paste — sem continuação
  * dentro do mesmo texto de âncora, não há o que dividir. Continua ativo
  * como defesa contra `ln-selection.json`/render antigo (âncora estendida
- * residual) ou uma regressão futura que reintroduza a extensão.
+ * residual) ou uma regressão futura que reintroduza a extensão. A UTM
+ * perdida na âncora SÓ com o wordmark (#10385) é outro padrão, coberto por
+ * `isWordmarkAnchorText` logo abaixo.
  *
  * Regex (não enumeração de pontuação): `WORDMARK` seguido de qualquer
  * caractere que não seja letra/dígito — cobre vírgula, ponto, dois-pontos,
@@ -218,6 +231,32 @@ export function looksLikeBareDomainAnchorText(text: string): boolean {
   const trimmed = text.trim();
   return BARE_DOMAIN_ANCHOR_TEXT_RE.test(trimmed) && trimmed.length > WORDMARK.length;
 }
+
+/**
+ * Pure (#10385): texto de âncora que COMEÇA no wordmark "diar.ia.br", COM OU
+ * SEM continuação — inclui o texto exatamente igual ao wordmark, que
+ * `looksLikeBareDomainAnchorText` exclui de propósito. É o predicado da
+ * acusação de UTM perdida: no ciclo `26w42` a âncora só com o wordmark (o
+ * formato do #8819) teve o href reescrito pra `http://diar.ia.br` no paste
+ * (caso (c) do playbook), então "sem continuação" não é mais sinal de
+ * âncora segura. `looksLikeBareDomainAnchorText` continua separando o
+ * padrão de SPLIT (#5987, só existe com continuação) do de REESCRITA.
+ */
+export function isWordmarkAnchorText(text: string): boolean {
+  return BARE_DOMAIN_ANCHOR_TEXT_RE.test(text.trim());
+}
+
+/**
+ * Hint anexado (#10385) a toda âncora de wordmark cuja UTM não sobreviveu ao
+ * paste, ou que sumiu do colado sem continuação a dividir. Exportado pra
+ * teste e pra quem montar mensagem ao editor a partir de `result.issues`.
+ */
+export const WORDMARK_HREF_REWRITE_HINT =
+  ` Âncora do wordmark "${WORDMARK}" sem a UTM esperada — padrão conhecido (#10385, caso (c) de ` +
+  `context/publishers/linkedin.md §"Newsletter LinkedIn"): o editor do LinkedIn reescreve o href da âncora ` +
+  `cujo texto termina no domínio nu pra http://${WORDMARK}, mesmo sem continuação (a premissa do #8819 não ` +
+  `se sustentou). Corrigir na UI via seleção por teclado + popup "Edit link", NUNCA clicando direto sobre o ` +
+  `link colado.`;
 
 /**
  * Audita o resultado do paste do corpo do artigo semanal do LinkedIn contra
@@ -297,12 +336,16 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
     }
 
     if (matchIdx === -1) {
+      // Com continuação: padrão de SPLIT (#5987). Sem continuação (wordmark
+      // exato, formato do #8819): padrão de REESCRITA do href (#10385).
       const bugHint = looksLikeBareDomainAnchorText(sa.text)
         ? ` Texto começa com "${WORDMARK}" — padrão conhecido do bug de split de âncora (PR #5987, ver ` +
           `context/publishers/linkedin.md §"Newsletter LinkedIn"): corrigir via seleção por teclado + popup ` +
           `"Edit link" da toolbar, NUNCA clicar direto sobre o link colado (risco de deslocar a seleção e ` +
           `apagar outro parágrafo em silêncio).`
-        : "";
+        : isWordmarkAnchorText(sa.text)
+          ? WORDMARK_HREF_REWRITE_HINT
+          : "";
       issues.push(`Âncora "${sa.text}" (${sa.href}) não foi encontrada no colado com o texto completo — UTM perdida ou âncora dividida.${bugHint}`);
       continue;
     }
@@ -315,12 +358,21 @@ export function auditLinkedinPaste(input: LinkedinPasteAuditInput): LinkedinPast
     }
 
     if (saUtm.campaign || saUtm.content) {
+      const utmIssues: string[] = [];
       if (saUtm.campaign && saUtm.campaign !== pastedUtm.campaign) {
-        issues.push(`Âncora "${sa.text}": utm_campaign divergente — esperado "${saUtm.campaign}", colado "${pastedUtm.campaign ?? "(ausente)"}".`);
+        utmIssues.push(`Âncora "${sa.text}": utm_campaign divergente — esperado "${saUtm.campaign}", colado "${pastedUtm.campaign ?? "(ausente)"}".`);
       }
       if (saUtm.content && saUtm.content !== pastedUtm.content) {
-        issues.push(`Âncora "${sa.text}": utm_content divergente — esperado "${saUtm.content}", colado "${pastedUtm.content ?? "(ausente)"}".`);
+        utmIssues.push(`Âncora "${sa.text}": utm_content divergente — esperado "${saUtm.content}", colado "${pastedUtm.content ?? "(ausente)"}".`);
       }
+      // #10385: âncora de wordmark com o texto intacto mas a UTM perdida é o
+      // caso (c) do playbook (href reescrito pra http://diar.ia.br) — acusar
+      // com o hint, com ou sem continuação. Hint só na 1ª mensagem da âncora,
+      // pra não repetir o mesmo parágrafo em campaign e content.
+      if (utmIssues.length > 0 && isWordmarkAnchorText(sa.text)) {
+        utmIssues[0] += WORDMARK_HREF_REWRITE_HINT;
+      }
+      issues.push(...utmIssues);
     } else {
       // #5988 review: âncora da fonte SEM UTM (ex: link Use Melhor, `um.url`
       // em weekly-linkedin-render.ts) — nada de UTM pra comparar, então o
