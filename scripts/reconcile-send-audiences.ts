@@ -79,7 +79,7 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
-import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { listBroadcasts, listAllBroadcasts, getBroadcastStats, type KitBroadcastSummary } from "./lib/kit-client.ts";
 import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
@@ -128,6 +128,9 @@ export interface RecentDeliveryMeasurement {
   measured: boolean;
   recipients?: number;
   reason?: string;
+  /** #10400: o que foi medido (id/assunto do broadcast, descartes) — só
+   *  observabilidade, nenhum consumidor decide por este campo. */
+  detail?: string;
 }
 
 async function measureBeehiivRecentDelivery(
@@ -158,13 +161,22 @@ async function measureBeehiivRecentDelivery(
  * Pure (#10395): broadcast `completed` mais recente que NÃO é test-send. Sem o
  * filtro, um `--send-test` (1 destinatário, `[teste]` no assunto) disparado
  * depois da edição virava "a entrega recente" do Kit e o guard media 1.
+ *
+ * #10400: entre os reais, prefere o mais recente com `public: true`. O envio
+ * pequeno por tag de outro canal (mensal dos apoiadores, que sai
+ * `public: false` de propósito pra não publicar a recompensa paga) não é
+ * test-send, mas distorce a medição do mesmo jeito. Não é critério de TESTE —
+ * só de qual canal medir (`isKitTestBroadcast` continua não olhando `public`,
+ * #7637). Sem nenhum público entre os reais (era da rampa, quando a diária
+ * saía `public: false`), cai no real mais recente, como antes.
  */
 export function pickLatestRealKitBroadcast<
-  B extends Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "created_at">,
+  B extends Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "created_at"> & { public?: boolean },
 >(broadcasts: readonly B[]): B | null {
   const real = broadcasts.filter((b) => !isKitTestBroadcast(b));
   if (real.length === 0) return null;
-  return real.reduce((best, b) =>
+  const pub = real.filter((b) => b.public === true);
+  return (pub.length > 0 ? pub : real).reduce((best, b) =>
     Date.parse(b.published_at ?? b.created_at) > Date.parse(best.published_at ?? best.created_at) ? b : best,
   );
 }
@@ -180,16 +192,30 @@ export async function measureKitRecentDelivery(
 ): Promise<RecentDeliveryMeasurement> {
   const { listBroadcasts, getBroadcastStats } = deps;
   try {
-    const { broadcasts } = await listBroadcasts({ status: "completed", perPage: 50 });
+    // #10400: todas as páginas — a ordem da listagem do Kit não é fixada, e
+    // uma 1ª página só de test-sends dava measured:false com a edição real
+    // na página seguinte.
+    const { broadcasts, pages, truncated } = await listAllBroadcasts({ status: "completed" }, listBroadcasts);
+    const scope = `${broadcasts.length} completed em ${pages} página(s)${truncated ? ", TRUNCADO no teto de páginas" : ""}`;
     if (broadcasts.length === 0) {
       return { platform: "kit", measured: false, reason: "nenhum broadcast completed encontrado" };
     }
+    const discarded = broadcasts.filter((b) => isKitTestBroadcast(b)).length;
     const latest = pickLatestRealKitBroadcast(broadcasts);
     if (!latest) {
-      return { platform: "kit", measured: false, reason: "só broadcasts de teste entre os completed recentes" };
+      return {
+        platform: "kit",
+        measured: false,
+        reason: `só broadcasts de teste entre os completed (${discarded} descartado(s) de ${scope})`,
+      };
     }
     const stats = await getBroadcastStats(latest.id);
-    return { platform: "kit", measured: true, recipients: stats.recipients };
+    return {
+      platform: "kit",
+      measured: true,
+      recipients: stats.recipients,
+      detail: `broadcast ${latest.id} "${latest.subject}"; ${discarded} test-send(s) descartado(s) de ${scope}`,
+    };
   } catch (e) {
     return { platform: "kit", measured: false, reason: (e as Error).message };
   }
@@ -340,7 +366,7 @@ function formatReport(outcome: GuardOutcome): string {
   for (const r of outcome.recentDelivery) {
     lines.push(
       r.measured
-        ? `    ${r.platform}: ${r.recipients}`
+        ? `    ${r.platform}: ${r.recipients}${r.detail ? ` (${r.detail})` : ""}`
         : `    ${r.platform}: não medido (${r.reason})`,
     );
   }

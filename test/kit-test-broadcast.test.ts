@@ -22,6 +22,8 @@ import {
   pickLatestRealKitBroadcast,
   type KitRecentDeliveryDeps,
 } from "../scripts/reconcile-send-audiences.ts";
+import { listAllBroadcasts } from "../scripts/lib/kit-client.ts";
+import { daysSinceFirstCompletedBroadcast } from "../scripts/dmarc-enforcement-engine.ts";
 
 describe("hasKitTestSubjectPrefix", () => {
   it("casa o prefixo do --send-test e as variantes de probe", () => {
@@ -29,6 +31,15 @@ describe("hasKitTestSubjectPrefix", () => {
     assert.equal(hasKitTestSubjectPrefix("[TESTE] Manchete"), true);
     assert.equal(hasKitTestSubjectPrefix("  [teste] Manchete"), true);
     assert.equal(hasKitTestSubjectPrefix("[teste-464] probe"), true);
+  });
+
+  it("#10400: casa [probe-…] e [teste #N] (o que annual-collect pegava por startsWith('['))", () => {
+    assert.equal(hasKitTestSubjectPrefix("[probe-rodape] centralizar footer"), true);
+    assert.equal(hasKitTestSubjectPrefix("[probe-6047] custom field"), true);
+    assert.equal(hasKitTestSubjectPrefix("[probe] x"), true);
+    assert.equal(hasKitTestSubjectPrefix("[teste #8371] merge tag voto_token"), true);
+    assert.equal(hasKitTestSubjectPrefix("[prober] x"), false);
+    assert.equal(hasKitTestSubjectPrefix("[Brasil] manchete real"), false);
   });
 
   it("não casa edição real, palavra parecida nem ausência", () => {
@@ -126,7 +137,9 @@ describe("reconcile-send-audiences: pickLatestRealKitBroadcast (#10395)", () => 
         return { recipients: 1234 };
       },
     });
-    assert.deepEqual(r, { platform: "kit", measured: true, recipients: 1234 });
+    assert.equal(r.measured, true);
+    assert.equal(r.recipients, 1234);
+    assert.match(r.detail ?? "", /broadcast 1 .*1 test-send\(s\) descartado/);
     assert.deepEqual(asked, [1]);
   });
 });
@@ -150,5 +163,83 @@ describe("makeKitTestBroadcastPredicate", () => {
     const isTest = makeKitTestBroadcastPredicate();
     assert.equal(isTest({ id: 1, subject: "[teste] X" }), true);
     assert.equal(isTest({ id: 1, subject: "X" }), false);
+  });
+});
+
+describe("#10400: paginação e consumidores fora do helper", () => {
+  const pg = (has_next_page: boolean, end_cursor: string | null) => ({
+    has_previous_page: false,
+    has_next_page,
+    start_cursor: null,
+    end_cursor,
+    per_page: 100,
+  });
+  const b = (id: number, subject: string, published_at: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    subject,
+    published_at,
+    created_at: published_at,
+    status: "completed" as const,
+    ...extra,
+  });
+  type ListFn = Parameters<typeof listAllBroadcasts>[1];
+
+  it("REGRESSÃO: 1ª página só de test-sends não esconde a edição real da página seguinte", async () => {
+    const afters: (string | undefined)[] = [];
+    const r = await measureKitRecentDelivery({
+      listBroadcasts: (async (opts: { after?: string }) => {
+        afters.push(opts.after);
+        return opts.after === "c1"
+          ? { broadcasts: [b(1, "Manchete real", "2026-10-17T09:00:00Z")], pagination: pg(false, null) }
+          : { broadcasts: [b(2, "[teste] x", "2026-10-18T22:00:00Z")], pagination: pg(true, "c1") };
+      }) as unknown as KitRecentDeliveryDeps["listBroadcasts"],
+      getBroadcastStats: async () => ({ recipients: 900 }),
+    });
+    assert.equal(r.measured, true);
+    assert.equal(r.recipients, 900);
+    assert.deepEqual(afters, [undefined, "c1"]);
+  });
+
+  it("só testes: reason diz quantos foram descartados", async () => {
+    const r = await measureKitRecentDelivery({
+      listBroadcasts: (async () => ({
+        broadcasts: [b(2, "[teste] x", "2026-10-18T22:00:00Z"), b(3, "[probe-1] y", "2026-10-18T23:00:00Z")],
+        pagination: pg(false, null),
+      })) as unknown as KitRecentDeliveryDeps["listBroadcasts"],
+      getBroadcastStats: async () => ({ recipients: 1 }),
+    });
+    assert.equal(r.measured, false);
+    assert.match(r.reason ?? "", /2 descartado/);
+  });
+
+  it("prefere o real público ao envio por tag não-público mais recente (mensal dos apoiadores)", () => {
+    const diaria = b(1, "Manchete", "2026-10-18T09:00:00Z", { public: true });
+    const apoio = b(2, "Retrospectiva de setembro", "2026-10-18T10:00:00Z", { public: false });
+    assert.equal(pickLatestRealKitBroadcast([diaria, apoio])?.id, 1);
+    // era da rampa: nenhum real público → cai no real mais recente
+    assert.equal(pickLatestRealKitBroadcast([{ ...diaria, public: false }, apoio])?.id, 2);
+  });
+
+  it("listAllBroadcasts: para no teto (truncated) e lança em has_next_page sem cursor", async () => {
+    const always = (async () => ({
+      broadcasts: [b(1, "x", "2026-10-01T00:00:00Z")],
+      pagination: pg(true, "c"),
+    })) as unknown as ListFn;
+    const r = await listAllBroadcasts({ status: "completed", maxPages: 3 }, always);
+    assert.equal(r.pages, 3);
+    assert.equal(r.truncated, true);
+    assert.equal(r.broadcasts.length, 3);
+    const broken = (async () => ({ broadcasts: [], pagination: pg(true, null) })) as unknown as ListFn;
+    await assert.rejects(listAllBroadcasts({}, broken), /end_cursor ausente/);
+  });
+
+  it("dmarc: test-send/probe mais antigo não conta como 1º envio", () => {
+    const now = new Date("2026-10-18T00:00:00Z");
+    const days = daysSinceFirstCompletedBroadcast(
+      [b(1, "[teste] probe inicial", "2026-08-01T00:00:00Z"), b(2, "Edição real", "2026-10-08T00:00:00Z")],
+      now,
+    );
+    assert.equal(days, 10);
+    assert.equal(daysSinceFirstCompletedBroadcast([b(1, "[probe-x] y", "2026-08-01T00:00:00Z")], now), null);
   });
 });
