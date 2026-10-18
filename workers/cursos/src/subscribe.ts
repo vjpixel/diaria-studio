@@ -26,7 +26,10 @@ import {
   releaseClaimOnSendFailure,
   deriveClickIdFromFbc,
   readCookieValue,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230
+  selectPersistableMatchSignals,
+  applyMatchSignalFields,
+  type PersistedMatchSignals,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
@@ -98,6 +101,9 @@ export interface SubscribeOrigin {
   /** #8978: `_dia_vid` first-party lido do cookie do request de cadastro —
    * ver docstring completa em `SubscribeOrigin` de `workers/poll/src/subscribe.ts`. */
   externalId: string;
+  /** #8543 (EMQ): IP/UA/`_fbp` já minimizados — ver `SubscribeOrigin` de
+   * `workers/poll/src/subscribe.ts`. Ausente = não grava. */
+  matchSignals?: PersistedMatchSignals;
 }
 
 function asStr(v: unknown): string {
@@ -344,6 +350,8 @@ async function subscribeToKit(
     // #8978 (fleet review item 2): aviso ÚNICO por isolate.
     warnExternalIdFieldMissingOnce("cursos", "kit");
   }
+  // #8543 (EMQ): sinais de match pro `SubscriptionConfirmed` (guard duplo).
+  applyMatchSignalFields(fields, env, origin.matchSignals);
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -513,6 +521,19 @@ export async function handleGateSubscribe(
       || (deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc")) ?? deriveClickIdFromFbc(fbc) ?? "").slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     externalId: resolveVisitorId(request.headers.get("Cookie"), externalId) ?? "",
   };
+  // #8388 item 3: mesmos sinais de match quality do worker `poll` — IP/UA
+  // dos headers, `_fbp`/`_fbc` do cookie first-party, `fbc` derivado do
+  // `click_id` do #8003. Extração pura, nunca lança; campo ausente é
+  // OMITIDO, nunca string vazia. #8978 (fleet review pós-#8983): mesmos 3
+  // fallbacks de corpo do worker `poll`. #8543: extraído ANTES do cadastro
+  // pra gravar IP/UA/fbp (minimizados) no Kit na mesma chamada de criação.
+  const clientSignals = extractMetaCapiClientSignals(request.headers, {
+    clickId: origin.clickId,
+    fbcBody: fbc,
+    fbpBody: fbp,
+    externalIdBody: externalId,
+  });
+  origin.matchSignals = selectPersistableMatchSignals(clientSignals, origin.clickId);
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
   // `resolveOrigemPagaWithClickIdFallback`.
@@ -573,18 +594,7 @@ export async function handleGateSubscribe(
   // (8s) sempre que a Meta respondia lento.
   // #7776: log estruturado no meio do mesmo caminho fire-and-forget — ver
   // docstring de `logMetaCapiSendResult` (meta-capi.ts).
-  // #8388 item 3: mesmos sinais de match quality do worker `poll` — IP/UA
-  // dos headers, `_fbp`/`_fbc` do cookie first-party, `fbc` derivado do
-  // `click_id` do #8003. Extração pura, nunca lança; campo ausente é
-  // OMITIDO, nunca string vazia.
-  // #8978 (fleet review pós-#8983): mesmos 3 fallbacks de corpo do worker
-  // `poll` — cookie do request continua vencendo quando existir.
-  const clientSignals = extractMetaCapiClientSignals(request.headers, {
-    clickId: origin.clickId,
-    fbcBody: fbc,
-    fbpBody: fbp,
-    externalIdBody: externalId,
-  });
+  // `clientSignals` (#8388/#8978) foi extraído antes do cadastro (#8543).
   // #8572: mesmo par dedup do worker `poll` — resolvido uma vez, usado nos
   // dois lados (CAPI via `eventTimeSeconds`, browser via `event_id` no corpo
   // da resposta). Ver o comentário equivalente em `workers/poll/src/subscribe.ts`.

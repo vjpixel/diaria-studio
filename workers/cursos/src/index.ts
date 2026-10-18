@@ -152,6 +152,15 @@ export interface Env {
    * acima. Reusado depois por `SubscriptionConfirmed`/`Reactivation` a partir
    * do snapshot Kit. Ainda não criado em produção. */
   KIT_ORIGEM_EXTERNALID_FIELD?: string;
+  /** #8543 (EMQ): nomes dos custom fields Kit onde gravar os sinais de match
+   * do cadastro (IP, user agent, `_fbp`) pro `SubscriptionConfirmed` reusar —
+   * chaves `origem_client_ip`/`origem_user_agent`/`origem_fbp`
+   * (`KIT_CLIENT_IP_FIELD_NAME` e vizinhos). Ausente = não grava (mesmo
+   * degrade gracioso dos `KIT_ORIGEM_*` acima). Só grava o que
+   * `selectPersistableMatchSignals` (meta-capi.ts) deixa passar. */
+  KIT_ORIGEM_CLIENTIP_FIELD?: string;
+  KIT_ORIGEM_USERAGENT_FIELD?: string;
+  KIT_ORIGEM_FBP_FIELD?: string;
   ALLOWED_ORIGINS?: string;
   _requestOrigin?: string | null;
   /** #5504: Meta Conversions API — mesmo secret/mecanismo de

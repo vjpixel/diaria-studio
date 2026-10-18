@@ -138,7 +138,7 @@ import { REATIVAR_ALARM_COUNTER_KEYS, incrementReativarAlarmCounter } from "../.
 import { BREVO_DIARIA_REATIVAR_CLIQUE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4530
 import { unlinkFromBrevoListShared } from "../../../scripts/lib/shared/brevo-list-unlink.ts"; // #4535
 import { buildOrigemOriginalCustomFields } from "../../../scripts/lib/shared/beehiiv-origem-original.ts"; // #5231
-import { sendCompleteRegistrationEvent, logMetaCapiSendResult } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776
+import { sendCompleteRegistrationEvent, logMetaCapiSendResult, extractMetaCapiClientSignals, type MetaCapiHeaderSource } from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8543
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { resolveKitCreateState, vincularKitDoiForm, extrairSubscriberId, mensagemSubscriberIdAusente } from "../../../scripts/lib/shared/kit-doi.ts"; // #7723
 import { verifyReativarToken } from "../../../scripts/lib/shared/reativar-token.ts"; // #8194
@@ -1300,6 +1300,11 @@ export async function handleConfirm(
   // handleJogarSubscribe/handleGateSubscribe). Sem `ctx` real (ex: teste que
   // não injeta um), cai no fallback síncrono.
   ctx?: ExecutionContext,
+  // #8543 (EMQ 3.2/10 do `Reactivation` em 28/09/2026): headers do request
+  // do clique — IP, user agent e cookies `_fbp`/`_fbc`/`_dia_vid` quando o
+  // host os recebe. OPCIONAL: sem eles o evento sai só com o hash do e-mail,
+  // como antes (testes antigos não passam headers).
+  requestHeaders?: MetaCapiHeaderSource,
 ): Promise<Response> {
   const parsed = parseEmailParam(url);
   if (!parsed.ok) {
@@ -1404,9 +1409,13 @@ export async function handleConfirm(
     // `workers/poll`/`workers/cursos` continuam com o default
     // `"CompleteRegistration"` — eles disparam no SUBMIT do form, o evento
     // real que o conjunto otimiza.
+    // #8543: o clique é um request de navegador de verdade — IP/UA dele são
+    // sinal legítimo do mesmo visitante (a Meta estima +32% de EMQ cada).
+    // `clickId` NÃO é passado: este clique vem de e-mail, não de anúncio.
+    const clientSignals = requestHeaders ? extractMetaCapiClientSignals(requestHeaders) : undefined;
     const sendEvent = logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
-        { email: parsed.email, eventSourceUrl: url.toString(), eventName: "Reactivation" },
+        { email: parsed.email, eventSourceUrl: url.toString(), eventName: "Reactivation", clientSignals },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "reativar",
@@ -1439,6 +1448,6 @@ export default {
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
     }
-    return handleConfirm(url, env, fetch, undefined, ctx);
+    return handleConfirm(url, env, fetch, undefined, ctx, request.headers);
   },
 };
