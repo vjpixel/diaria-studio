@@ -395,6 +395,7 @@ async function subscribeToKit(
         }),
       body,
       signalFieldNames,
+      userAgentFieldName: env.KIT_ORIGEM_USERAGENT_FIELD,
       redactValues,
       log: (m) => console.error(`[cursos] ${m}`),
     });

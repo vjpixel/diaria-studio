@@ -557,9 +557,14 @@ export interface PersistedMatchSignals {
   fbp?: string;
 }
 
-/** Teto do user agent persistido — UA real fica bem abaixo disso; o corte é
- * defesa contra header abusivo virando custom field gigante. */
-export const PERSISTED_USER_AGENT_MAX = 300;
+/** Teto do user agent persistido — defesa contra header abusivo virando
+ * custom field gigante. #10428: 255 (era 300). O UA do navegador interno do
+ * Facebook/Instagram (FBAN/FBAV) passa de 250 caracteres e é justamente o
+ * tráfego de anúncio da Meta; se o Kit limitar custom field em 255 (limite
+ * comum de VARCHAR, NÃO confirmado ao vivo), 300 provocaria 422 no cadastro.
+ * 255 cabe nos dois cenários; o retry escalonado de
+ * `postKitCreateWithSignalFallback` cobre um limite ainda menor. */
+export const PERSISTED_USER_AGENT_MAX = 255;
 
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 const IPV6_RE = /^[0-9A-Fa-f:.]{2,45}$/;
@@ -766,11 +771,23 @@ function escapeRegExp(s: string): string {
  * o retry é seguro de qualquer jeito (se falhar de novo, a causa é outra e o
  * caller loga a 2ª resposta). Exceção do `post` propaga pro caller (que já
  * trata rede/timeout). Nunca loga valor de sinal nem e-mail.
+ *
+ * #10428: retry ESCALONADO. O UA é o único sinal de tamanho variável (o do
+ * navegador interno do FB/IG passa de 250 chars) e por isso o suspeito mais
+ * provável de um 422 por limite de custom field. Com `userAgentFieldName`
+ * presente no corpo junto de outros sinais, a 1ª tentativa extra tira SÓ o UA
+ * (`kit_create_422_retry_without_user_agent`); só se ela também voltar 422 é
+ * que IP e fbp saem (`kit_create_422_retry_without_match_signals`). Antes, um
+ * UA longo derrubava os 3 sinais de uma vez e o EMQ caía em silêncio. No
+ * máximo 3 POSTs; sem `userAgentFieldName` (ou UA sozinho) o comportamento é
+ * o de antes — 1 retry sem todos.
  */
 export async function postKitCreateWithSignalFallback(opts: {
   post: (body: Record<string, unknown>) => Promise<Response>;
   body: Record<string, unknown>;
   signalFieldNames: readonly string[];
+  /** #10428: nome do custom field do UA (`KIT_ORIGEM_USERAGENT_FIELD`). */
+  userAgentFieldName?: string;
   redactValues: ReadonlyArray<string | undefined>;
   log: (msg: string) => void;
 }): Promise<Response> {
@@ -779,20 +796,31 @@ export async function postKitCreateWithSignalFallback(opts: {
   const fields = opts.body.fields as Record<string, string> | undefined;
   if (!fields || !opts.signalFieldNames.some((k) => k in fields)) return first;
 
-  const firstText = await first.text().catch(() => "<unreadable>");
-  opts.log(
-    JSON.stringify({
-      event: "kit_create_422_retry_without_match_signals",
-      dropped: opts.signalFieldNames,
-      body: redactLogValues(firstText, opts.redactValues).slice(0, 300),
-    }),
-  );
-  const rest: Record<string, string> = {};
-  for (const [k, v] of Object.entries(fields)) if (!opts.signalFieldNames.includes(k)) rest[k] = v;
-  const retryBody: Record<string, unknown> = { ...opts.body };
-  if (Object.keys(rest).length > 0) retryBody.fields = rest;
-  else delete retryBody.fields;
-  return opts.post(retryBody);
+  const bodyWithout = (drop: readonly string[]): Record<string, unknown> => {
+    const rest: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fields)) if (!drop.includes(k)) rest[k] = v;
+    const out: Record<string, unknown> = { ...opts.body };
+    if (Object.keys(rest).length > 0) out.fields = rest;
+    else delete out.fields;
+    return out;
+  };
+  const logRetry = async (event: string, dropped: readonly string[], res: Response): Promise<void> => {
+    const text = await res.text().catch(() => "<unreadable>");
+    opts.log(JSON.stringify({ event, dropped, body: redactLogValues(text, opts.redactValues).slice(0, 300) }));
+  };
+
+  let lastFailure = first;
+  const ua = opts.userAgentFieldName;
+  const presentSignals = opts.signalFieldNames.filter((k) => k in fields);
+  if (ua && presentSignals.includes(ua) && presentSignals.length > 1) {
+    await logRetry("kit_create_422_retry_without_user_agent", [ua], first);
+    const second = await opts.post(bodyWithout([ua]));
+    if (second.status !== 422) return second;
+    lastFailure = second;
+  }
+
+  await logRetry("kit_create_422_retry_without_match_signals", opts.signalFieldNames, lastFailure);
+  return opts.post(bodyWithout(opts.signalFieldNames));
 }
 
 export type MetaCapiActionSource = "website" | "system_generated" | "email";
