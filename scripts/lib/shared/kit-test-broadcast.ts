@@ -22,15 +22,17 @@
  *    `_internal/newsletter-kit-published.json` — o mais forte, mas só existe
  *    pra quem tem a edição em disco;
  * 2. assunto (ou `title`, que no cache unificado É o `subject` do Kit —
- *    `normalizeKitBroadcast`) começando com `[teste]` ou `[teste-…]` — o
- *    prefixo que o `--send-test` grava;
+ *    `normalizeKitBroadcast`) começando com `[teste]`, `[teste-…]`,
+ *    `[teste #…]` ou `[probe-…]` — o prefixo que o `--send-test` grava e os
+ *    dos probes manuais (#10400);
  * 3. `subscriber_filter` restrito SÓ a tag(s) de teste (ids resolvidos em
  *    runtime por `findTagIdByName("diaria-test-email")` — leitura, nunca cria
  *    a tag —, nunca hardcoded: o id é por conta).
  *
- * **Consumidores hoje (#10395):** só o sinal 2 tem consumidor
+ * **Consumidores hoje (#10395, #10400):** só o sinal 2 tem consumidor
  * (`generate-hub-sources.ts`, `click-window-resolution.ts`,
- * `reconcile-send-audiences.ts` chamam sem `signals`). Os sinais 1 e 3 estão
+ * `reconcile-send-audiences.ts`, `dmarc-enforcement-engine.ts` chamam sem
+ * `signals`; `annual-collect.ts` usa `hasKitTestSubjectPrefix`). Os sinais 1 e 3 estão
  * prontos e testados, mas nenhum chamador ainda carrega `test_broadcast_ids`
  * ou resolve o id da tag — quem precisar monta os sets com
  * `makeKitTestBroadcastPredicate`.
@@ -47,10 +49,13 @@
 export const KIT_TEST_SUBJECT_PREFIX = "[teste]";
 
 /**
- * `[teste]` e as variantes de probe já vistas no cache (`[teste-464]`).
- * Não casa `[testemunho]` nem "teste" sem colchete no meio do assunto.
+ * `[teste]` e as variantes já vistas no cache: `[teste-464]`, `[teste #8371]`,
+ * `[probe-rodape]`, `[probe-6047]` (#10400 — `[probe-…]` e `[teste #…]`
+ * entraram aqui pra que `annual-collect.ts` deixasse o `startsWith("[")`
+ * próprio). Não casa `[testemunho]`, `[prober]` nem "teste" sem colchete no
+ * meio do assunto.
  */
-const TEST_SUBJECT_RE = /^\s*\[teste(?:\]|-[^\]]*\])/i;
+const TEST_SUBJECT_RE = /^\s*\[(?:teste|probe)(?:\]|[-\s][^\]]*\])/i;
 
 /** Campos que algum produtor (resumo REST, detalhe, cache unificado) tem. */
 export interface KitBroadcastIdentity {
