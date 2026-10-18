@@ -8,6 +8,13 @@
  * (decisão pura testável + fingerprint/idempotência do alarme, separados do
  * I/O que mora em `scripts/kit-doi-orphan-guard.ts`).
  *
+ * #9986 — lê só `kit.doiFormId`, nunca o 2º form (`kit.doiResendFormId`).
+ * Não muda o veredito hoje: todo contato que chega ao 2º form já estava
+ * vinculado ao principal (é a precondição do reenvio em
+ * `evaluate-brevo-diaria.ts`). Rever se o 2º form passar a receber contatos
+ * por outro caminho. Vale igual para `subscriber-state-snapshot.ts` e a
+ * métrica correspondente em `metrics/registry.ts`.
+ *
  * ─── Contexto (#6810) ───────────────────────────────────────────────────────
  *
  * 4 cadastros reais caíram numa janela de ~19h em 28/08/2026 em que o

@@ -1270,6 +1270,22 @@ export function mensagemDoiResendEsgotado(exhausted: number): string | null {
 }
 
 /**
+ * mensagemDoiNoopResumo (#9986) — pura. Escolhe o aviso de noops do resumo
+ * pelo form que a rodada de fato usou (`doiResendFormActive`), nunca pela
+ * presença de `kit.doiResendFormId` na config: um id de sistema ou igual ao
+ * principal é ignorado no runtime, e trocar o aviso por
+ * `mensagemDoiResendEsgotado(0)` (null) esconderia os noops justo quando
+ * eles estão presos.
+ */
+export function mensagemDoiNoopResumo(
+  r: Pick<RunEvaluationResult, "doiResendFormActive" | "doiResendNoop" | "doiResendExhausted">,
+): string | null {
+  return r.doiResendFormActive
+    ? mensagemDoiResendEsgotado(r.doiResendExhausted)
+    : mensagemDoiNoopSemRelink(r.doiResendNoop);
+}
+
+/**
  * resendKitDoi (#9835) — reenvia o e-mail de confirmação vinculando o
  * subscriber já existente ao designer form de DOI. Reusa
  * `vincularKitDoiForm` (`lib/shared/kit-doi.ts`, a mesma maquinaria dos
@@ -1831,6 +1847,14 @@ export interface RunEvaluationResult {
    * `doiResent` e de `failed`.
    */
   doiResendExhausted: number;
+  /**
+   * #9986 — o 2º form de DOI passou na validação desta rodada (não vazio, não
+   * de sistema, diferente do principal) e foi de fato usado. É ele, e não a
+   * mera presença de `kitDoiResendFormId` na config, que decide qual aviso de
+   * noops presos o resumo imprime (`mensagemDoiNoopResumo`): com um id
+   * inválido o runtime ignora o 2º form e os noops ficam presos como antes.
+   */
+  doiResendFormActive: boolean;
   /**
    * #8753 — contatos `in_brevo` aguardando auto-confirmação no Kit há mais de
    * `AWAITING_KIT_CONFIRMATION_STALE_DAYS`. Sem isto, quem nunca confirma
@@ -2508,6 +2532,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 }
                 // #10023 — 2xx prova que o form existe (contado por form, #9986).
                 if (resend.ok) doiResendAttempts2xx.set(formId, (doiResendAttempts2xx.get(formId) ?? 0) + 1);
+                // #9986 — premissa NÃO medida: 201 no 2º form conta como e-mail
+                // enviado porque o form 10062841 tem "Send confirmation email"
+                // ligado (cópia do Cadastro). Se o Kit só mandar o Incentive
+                // Email pra quem é novo NA CONTA (e não só no form), este
+                // contador infla sem e-mail — conferir na 1ª rodada real.
                 if (resend.ok && isKitDoiResendCounted(resend.status)) {
                   log(
                     `${contact.email}: double opt-in do Kit reenviado (form ${formId}` +
@@ -2565,6 +2594,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
               // #9986 — quem já respondeu 200 no principal vai direto pro 2º
               // form; quem responde 200 no principal NESTA rodada segue pro 2º
               // na mesma rodada (sem esperar outros DOI_RESEND_INTERVAL_DAYS).
+              // Escolha de desenho: dobra as chamadas ao Kit só pra esses
+              // contatos (dezenas); 429 já é transitório (#9291).
               const target = doiResendTargetForm(storedContact, doiResendFormForNoop !== undefined);
               if (target === "resend") {
                 await attempt(doiResendFormForNoop!, "resend");
@@ -2725,6 +2756,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     doiResendNoop,
     doiResentViaResendForm,
     doiResendExhausted,
+    doiResendFormActive: doiResendFormForNoop !== undefined, // #9986
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
@@ -2860,12 +2892,10 @@ async function main(): Promise<number> {
       `${result.doiResentViaResendForm} reenviado(s) pelo 2º form de DOI (subconjunto dos reenviados, #9986), ` +
       `${result.doiResendExhausted} esgotado(s) (200 nos dois forms de DOI, reenvio encerrado, #9986).`,
   );
-  // #9986 — relink inviável na API do Kit. Com o 2º form de DOI configurado,
-  // os noops do principal seguem pra ele e o aviso passa a ser só sobre quem
-  // esgotou os dois forms.
-  const doiNoopMsg = platformConfig.kit?.doiResendFormId
-    ? mensagemDoiResendEsgotado(result.doiResendExhausted)
-    : mensagemDoiNoopSemRelink(result.doiResendNoop);
+  // #9986 — relink inviável na API do Kit. Com o 2º form de DOI ATIVO nesta
+  // rodada (validado, não só configurado), os noops do principal seguem pra
+  // ele e o aviso passa a ser só sobre quem esgotou os dois forms.
+  const doiNoopMsg = mensagemDoiNoopResumo(result);
   if (doiNoopMsg) log(doiNoopMsg);
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o

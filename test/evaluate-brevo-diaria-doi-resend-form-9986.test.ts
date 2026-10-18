@@ -19,6 +19,7 @@ import {
   runEvaluation,
   doiResendTargetForm,
   mensagemDoiResendEsgotado,
+  mensagemDoiNoopResumo,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import {
   findContact,
@@ -214,6 +215,22 @@ describe("runEvaluation — 2º form de DOI (#9986)", () => {
     }
   });
 
+  it("aviso do resumo segue o form VALIDADO, não a presença na config (form inválido → noops presos continuam avisados)", async () => {
+    for (const bad of [PRIMARY, "9839463"]) {
+      installFetch({ [PRIMARY]: 200 });
+      const r = await run(contact("leitor@x.com"), { resendForm: bad, log: () => {} });
+      assert.equal(r.doiResendFormActive, false, bad);
+      assert.equal(r.doiResendNoop, 1, bad);
+      const m = mensagemDoiNoopResumo(r);
+      assert.ok(m, `aviso de noop sumiu com 2º form inválido ${bad}`);
+      assert.match(m!, /^warn: 1 contato\(s\) inactive já vinculado\(s\) ao form DOI/);
+    }
+    installFetch({ [PRIMARY]: 200, [RESEND]: 201 });
+    const ok = await run(contact("leitor@x.com"), { log: () => {} });
+    assert.equal(ok.doiResendFormActive, true);
+    assert.equal(mensagemDoiNoopResumo(ok), null); // noop seguiu pro 2º form e enviou
+  });
+
   it("falhas permanentes no 2º form são decididas pelo 2º form (2xx no principal não as torna per-contact)", async () => {
     // Principal responde 200 (2xx) para os dois; 2º form 404 para os dois e
     // probe 404 → global para o 2º form: nenhum backoff por contato.
@@ -246,5 +263,8 @@ describe("resumo e config (#9986)", () => {
     assert.match(src, /kitDoiResendFormId: platformConfig\.kit\?\.doiResendFormId/);
     assert.match(src, /result\.doiResendExhausted/);
     assert.match(src, /result\.doiResentViaResendForm/);
+    // Aviso escolhido pelo form validado (finding do review): nunca pela config crua.
+    assert.match(src, /const doiNoopMsg = mensagemDoiNoopResumo\(result\);/);
+    assert.doesNotMatch(src, /doiNoopMsg = platformConfig\.kit\?\.doiResendFormId/);
   });
 });
