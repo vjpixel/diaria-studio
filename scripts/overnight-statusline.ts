@@ -102,7 +102,8 @@ import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860: plan
  * Todos os valores válidos de `status` em plan.json.
  * Fonte canônica: `.claude/skills/diaria-overnight/SKILL.md` (tabela de status possíveis).
  * Não-terminais: elegivel, precisa-resposta, bloqueada-externa, not-this-week, fora-do-escopo.
- * Terminais: mergeada, draft-ci-vermelho, pulada.
+ * Terminais: mergeada, draft-ci-vermelho, pulada, retida-para-editor (#10430 —
+ * PR aberta de propósito, retida para o editor, #10278).
  */
 export type IssueStatus =
   | "elegivel"
@@ -112,7 +113,8 @@ export type IssueStatus =
   | "fora-do-escopo"
   | "mergeada"
   | "draft-ci-vermelho"
-  | "pulada";
+  | "pulada"
+  | "retida-para-editor";
 
 export interface PlanIssue {
   status: IssueStatus;
@@ -225,7 +227,7 @@ export const OVERNIGHT_DIR_RE = /^\d{6}[a-z]?$/;
  * mesmo dia (uma sessão supervisionada por AAMMDD).
  */
 export const DEVELOP_DIR_RE = /^\d{6}$/;
-const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada"]);
+const TERMINAL_STATUSES = new Set<IssueStatus>(["mergeada", "draft-ci-vermelho", "pulada", "retida-para-editor"]);
 const BAR_WIDTH = 12;
 
 /**

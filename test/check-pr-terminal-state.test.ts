@@ -13,10 +13,13 @@ import {
   checkPrTerminalState,
   findRegisteredNotTerminal,
   findUnregisteredBranchCandidates,
+  isPrRetidaParaEditor,
   PR_ACCOUNTED_STATUSES,
+  verdictExitCode,
   type OpenPrLike,
   type PlanIssueWithPrLike,
 } from "../scripts/lib/pr-terminal-state.ts";
+import { isTerminalForBar } from "../scripts/overnight-statusline.ts";
 
 // ─── findRegisteredNotTerminal ──────────────────────────────────────────────
 
@@ -159,10 +162,11 @@ describe("checkPrTerminalState", () => {
     assert.equal(verdict.unregisteredCandidates.length, 0);
   });
 
-  it("PR aberto em branch da sessão, não registrado → divergent (cenário 2)", () => {
+  it("PR aberto em branch da sessão, não registrado → candidates, exit 0 (cenário 2, #10430)", () => {
     const openPrs: OpenPrLike[] = [{ number: 5823, headRefName: "develop/fix-5815" }];
     const verdict = checkPrTerminalState(openPrs, []);
-    assert.equal(verdict.status, "divergent");
+    assert.equal(verdict.status, "candidates");
+    assert.equal(verdictExitCode(verdict), 0);
     assert.equal(verdict.registeredNotTerminal.length, 0);
     assert.equal(verdict.unregisteredCandidates.length, 1);
   });
@@ -181,7 +185,70 @@ describe("checkPrTerminalState", () => {
     const planIssues: PlanIssueWithPrLike[] = [{ number: 5815, status: "pendente", pr: 5823 }];
     const verdict = checkPrTerminalState(openPrs, planIssues);
     assert.equal(verdict.status, "divergent");
+    assert.equal(verdictExitCode(verdict), 1);
     assert.equal(verdict.registeredNotTerminal.length, 1);
     assert.equal(verdict.unregisteredCandidates.length, 1);
+  });
+});
+
+// ─── PR retida para o editor (#10430) ───────────────────────────────────────
+
+describe("PR retida para o editor (#10430)", () => {
+  it("cenário real da rodada 261018: issue pulada + PR com label retido-para-editor → ok, exit 0", () => {
+    const openPrs: OpenPrLike[] = [
+      { number: 10421, headRefName: "overnight/fix-10400-x", labels: [{ name: "retido-para-editor" }], body: "Closes #10400" },
+    ];
+    const planIssues: PlanIssueWithPrLike[] = [{ number: 10400, status: "pulada", pr: 10421 }];
+    const verdict = checkPrTerminalState(openPrs, planIssues);
+    assert.equal(verdict.status, "ok");
+    assert.equal(verdictExitCode(verdict), 0);
+  });
+
+  it("marcador <!-- retido-para-editor --> no corpo também conta como terminal", () => {
+    const openPrs: OpenPrLike[] = [
+      { number: 1, headRefName: "overnight/fix-1", labels: [], body: "x\n<!-- retido-para-editor -->\n" },
+    ];
+    const planIssues: PlanIssueWithPrLike[] = [{ number: 1, status: "pulada", pr: 1 }];
+    assert.deepEqual(findRegisteredNotTerminal(openPrs, planIssues), []);
+  });
+
+  it("status retida-para-editor no plan.json é terminal mesmo sem labels no payload", () => {
+    const openPrs: OpenPrLike[] = [{ number: 1, headRefName: "overnight/fix-1" }];
+    const planIssues: PlanIssueWithPrLike[] = [{ number: 1, status: "retida-para-editor", pr: 1 }];
+    assert.equal(PR_ACCOUNTED_STATUSES.has("retida-para-editor"), true);
+    assert.deepEqual(findRegisteredNotTerminal(openPrs, planIssues), []);
+  });
+
+  it("PR pulada sem sinal de retenção segue divergente (exit 1)", () => {
+    const openPrs: OpenPrLike[] = [{ number: 1, headRefName: "overnight/fix-1", labels: [{ name: "bug" }], body: "" }];
+    const planIssues: PlanIssueWithPrLike[] = [{ number: 1, status: "pulada", pr: 1 }];
+    const verdict = checkPrTerminalState(openPrs, planIssues);
+    assert.equal(verdict.status, "divergent");
+    assert.equal(verdictExitCode(verdict), 1);
+  });
+
+  it("labels ilegíveis (retido: null) não contam como retida — reporta", () => {
+    const openPrs: OpenPrLike[] = [{ number: 1, labels: "garbage" as unknown, body: "<!-- retido-para-editor -->" }];
+    assert.equal(isPrRetidaParaEditor(openPrs[0]), false);
+    const planIssues: PlanIssueWithPrLike[] = [{ number: 1, status: "pulada", pr: 1 }];
+    assert.equal(findRegisteredNotTerminal(openPrs, planIssues).length, 1);
+  });
+
+  it("candidata de outra sessão retida é anotada como retida e não reprova", () => {
+    const openPrs: OpenPrLike[] = [
+      { number: 7, headRefName: "overnight/fix-7", labels: [{ name: "retido-para-editor" }], body: "" },
+    ];
+    const verdict = checkPrTerminalState(openPrs, []);
+    assert.equal(verdict.status, "candidates");
+    assert.equal(verdict.unregisteredCandidates[0].retida, true);
+    assert.equal(verdictExitCode(verdict), 0);
+  });
+});
+
+// ─── vocabulário do plan.json: statusline (#10430) ─────────────────────────
+
+describe("statusline trata retida-para-editor como terminal (#10430)", () => {
+  it("isTerminalForBar('retida-para-editor') === true", () => {
+    assert.equal(isTerminalForBar("retida-para-editor"), true);
   });
 });
