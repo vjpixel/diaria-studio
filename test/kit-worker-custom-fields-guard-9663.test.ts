@@ -39,10 +39,13 @@ const KIT_FIELDS_20261005 = [
   "utm_campaign", "utm_medium", "utm_source", "origem_cadastro", "apoio_nivel",
 ];
 
+/** Criados via API em 18/10/2026 (#8543, ids 1400093-1400095) ao ligar os sinais do CAPI. */
+const KIT_FIELDS_CREATED_20261018 = ["origem_client_ip", "origem_user_agent", "origem_fbp"];
+
 test("#9663 cenário real: wrangler.toml do repo × fields do Kit de 05/10 → só confirmou_via do reativar falta", () => {
   const configured = collectWorkerKitFieldVars(join(ROOT, "workers"));
   assert.ok(configured.some((v) => v.worker === "reativar" && v.varName === "KIT_CONFIRMOU_VIA_FIELD"));
-  const missing = findMissingKitCustomFields(configured, KIT_FIELDS_20261005);
+  const missing = findMissingKitCustomFields(configured, [...KIT_FIELDS_20261005, ...KIT_FIELDS_CREATED_20261018]);
   assert.deepEqual(
     missing.map((m) => `${m.worker}:${m.varName}=${m.fieldKey}`),
     ["reativar:KIT_CONFIRMOU_VIA_FIELD=confirmou_via"],
@@ -51,7 +54,7 @@ test("#9663 cenário real: wrangler.toml do repo × fields do Kit de 05/10 → s
 
 test("depois de criar o field no Kit, o guard fica limpo", () => {
   const configured = collectWorkerKitFieldVars(join(ROOT, "workers"));
-  assert.deepEqual(findMissingKitCustomFields(configured, [...KIT_FIELDS_20261005, "confirmou_via"]), []);
+  assert.deepEqual(findMissingKitCustomFields(configured, [...KIT_FIELDS_20261005, ...KIT_FIELDS_CREATED_20261018, "confirmou_via"]), []);
 });
 
 test("parse: ignora comentário, valor vazio e vars que não são KIT_*_FIELD", () => {
