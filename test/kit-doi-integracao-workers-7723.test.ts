@@ -84,7 +84,9 @@ test("cursos: vínculo falhando NÃO desfaz a assinatura (best-effort)", async (
   assert.equal(r.beehiivStatus, "inactive");
 });
 
-test("cursos: resposta 2xx sem subscriber.id não vincula, mas o log carrega o e-mail", async () => {
+// #10405 inverteu este teste: o e-mail em claro no log era PII. O log segue
+// existindo (a falha não fica silenciosa), mas sem o e-mail.
+test("cursos: resposta 2xx sem subscriber.id não vincula, loga a falha SEM o e-mail (#10405)", async () => {
   const erros: string[] = [];
   const orig = console.error;
   console.error = (m?: unknown) => { erros.push(String(m)); };
@@ -95,8 +97,8 @@ test("cursos: resposta 2xx sem subscriber.id não vincula, mas o log carrega o e
   } finally {
     console.error = orig;
   }
-  const log = erros.find((e) => e.includes("perdido@b.com"));
-  assert.ok(log, "sem o e-mail no log, esse assinante fica inactive e NINGUÉM consegue achá-lo depois");
+  assert.ok(erros.some((e) => e.includes("sem subscriber.id")), "a falha de vínculo precisa ser logada");
+  assert.equal(erros.some((e) => e.includes("perdido@b.com")), false, "e-mail em claro no log do Worker é PII (#10405)");
 });
 
 // ─── reativar ────────────────────────────────────────────────────────────────

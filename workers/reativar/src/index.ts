@@ -915,7 +915,7 @@ export async function activateSubscriptionKit(
         JSON.stringify({
           event: "reativar_kit_doi_sem_subscriber_id",
           status: res.status,
-          email,
+          // #10405: sem `email` — PII em log de Worker.
           motivo: extraido.motivo,
           detail: mensagemSubscriberIdAusente(extraido, email, res.status),
         }),

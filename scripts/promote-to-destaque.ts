@@ -81,7 +81,7 @@ import {
   intentionalErrorJsonPath,
 } from "./lib/intentional-errors.ts";
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
-import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { clearEstiloRegenDestaques, reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335, #10404
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -490,9 +490,17 @@ export function promoteToDestaque(
   // 8. _internal/04-estilo-regen.json (#10335): o estado do plano de Noite
   //    Estrelada segue a imagem deslocada; a posição nova não herda nada (o
   //    `pending` antigo dela julgaria a imagem nova como regenerada).
+  //    #10404: o reorder sozinho NÃO garante isso — `newOrder` mapeia a posição
+  //    inserida a partir de `d3`, então um `d3` residual (D3 rebaixado à mão no
+  //    Stage 4, sem script que limpe o estado) seria copiado para ela. Zerar a
+  //    posição inserida depois do remapeamento.
   const estilo = updateEstiloRegenStateFile(
     internalDir,
-    (d) => reorderEstiloRegenState(d, newOrder),
+    (d) => {
+      const reordered = reorderEstiloRegenState(d, newOrder);
+      const cleared = clearEstiloRegenDestaques(reordered.data, [`d${position}`]);
+      return { changed: reordered.changed || cleared.changed, data: cleared.data };
+    },
     dryRun,
     (path, content) => writeFilesVerified([{ path, content }], "promote-to-destaque"),
   );
