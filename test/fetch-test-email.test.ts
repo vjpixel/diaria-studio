@@ -18,6 +18,7 @@ import {
   fetchTestEmail,
   findBodyPart,
   isKitUiTestUnmarked,
+  kitTestHints,
   parseSentAfter,
   pickLatestMessage,
   SENT_AFTER_SKEW_MS,
@@ -463,5 +464,125 @@ describe("Stage 5 §5f passo 0: --sent-after só no Kit (#9905)", () => {
     const writtenAfterClick = Date.parse("2026-10-08T22:01:30Z");
     assert.equal(pickLatestMessage(received, writtenAfterClick - SENT_AFTER_SKEW_MS), null);
     assert.ok(pickLatestMessage(received, null), "sem âncora (caminho Beehiiv) o teste atual é lido");
+  });
+});
+
+// #10411 itens 2-3: o modo UI do Kit tinha só o `--sent-after` passado pelo
+// chamador como defesa — `buildTestEmailQueries` ignorava `test_mode` e o
+// script não usava `test_sent_at` do estado como corte default. Sem a flag, um
+// `[teste]` antigo do mesmo dia (fallback `--send-test` anterior) ganhava na 1ª
+// query e era revisado no lugar do teste atual.
+describe("fetchTestEmail: ordem de query e corte default do modo UI (#10411)", () => {
+  const SENT_ISO = "2026-10-18T22:00:00.000Z";
+  const SENT = Date.parse(SENT_ISO);
+  const writeKitState = (dir: string, state: unknown) =>
+    writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), JSON.stringify(state));
+  const msg = (id: string, at: number, subject: string) => ({
+    id,
+    internalDate: String(at),
+    payload: {
+      mimeType: "text/html",
+      headers: [{ name: "Subject", value: subject }],
+      body: { data: b64url(`<p>${id}</p>`), size: 10 },
+    },
+  });
+  const isPrefixed = (path: string) => decodeURIComponent(path.replace(/\+/g, " ")).includes("[teste]");
+
+  it("buildTestEmailQueries: Kit com testMode ui tenta a query sem prefixo primeiro", () => {
+    const [primeira, segunda] = buildTestEmailQueries("kit", "Manchete", { testMode: "ui" });
+    assert.equal(primeira, 'subject:"Manchete" from:news.diar.ia.br newer_than:1d');
+    assert.ok(segunda.includes('"[teste] Manchete"'));
+    assert.ok(buildTestEmailQueries("kit", "Manchete", { testMode: "broadcast" })[0].includes("[teste]"));
+    assert.ok(buildTestEmailQueries("kit", "Manchete")[0].includes("[teste]"), "sem modo = ordem antiga");
+    assert.ok(buildTestEmailQueries("beehiiv", "X", { testMode: "ui" })[0].includes("[TEST]"), "Beehiiv não muda");
+  });
+
+  it("kitTestHints: lê modo e âncora válidos, ignora lixo", () => {
+    assert.deepEqual(kitTestHints({ test_mode: "ui", test_sent_at: SENT_ISO }), { testMode: "ui", testSentAtMs: SENT });
+    assert.deepEqual(kitTestHints({ test_mode: "x", test_sent_at: "ontem" }), {});
+    assert.deepEqual(kitTestHints(null), {});
+  });
+
+  it("REGRESSÃO: sem --sent-after, modo ui com [teste] antigo do mesmo dia → lê o e-mail da UI (corte = test_sent_at, query sem prefixo 1º)", async () => {
+    const dir = makeEditionDir("fetch-test-email-10411-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "test_sent", test_mode: "ui", test_sent_at: SENT_ISO });
+      const calls: string[] = [];
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete", waitSeconds: 0, timeoutSeconds: 10 },
+        deps(
+          {
+            "threads?": (path: string) =>
+              isPrefixed(path) ? { threads: [{ id: "t-velho" }] } : { threads: [{ id: "t-velho" }, { id: "t-ui" }] },
+            "threads/t-velho": { id: "t-velho", messages: [msg("m-velho", SENT - 3 * 60 * 60_000, "[teste] Manchete")] },
+            "threads/t-ui": { id: "t-ui", messages: [msg("m-ui", SENT + 30_000, "Manchete")] },
+          },
+          calls,
+        ),
+      );
+      assert.equal(s.status, "found");
+      assert.equal(s.message_id, "m-ui", "nunca o [teste] antigo do --send-test");
+      assert.ok(!isPrefixed(calls[0]), "1ª busca é a sem prefixo no modo ui");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("modo broadcast sem --sent-after também usa test_sent_at como corte", async () => {
+    const dir = makeEditionDir("fetch-test-email-10411-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "test_sent", test_mode: "broadcast", test_sent_at: SENT_ISO });
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete", waitSeconds: 0, timeoutSeconds: 10 },
+        deps({
+          "threads?": { threads: [{ id: "t-velho" }] },
+          "threads/t-velho": { id: "t-velho", messages: [msg("m-velho", SENT - 60 * 60_000, "[teste] Manchete")] },
+        }),
+      );
+      assert.equal(s.status, "not_found_timeout", "o teste antigo nunca é lido");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("--sent-after explícito vence o test_sent_at do estado", async () => {
+    const dir = makeEditionDir("fetch-test-email-10411-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "test_sent", test_mode: "ui", test_sent_at: SENT_ISO });
+      const s = await fetchTestEmail(
+        {
+          editionDir: dir,
+          platform: "kit",
+          title: "Manchete",
+          waitSeconds: 0,
+          timeoutSeconds: 10,
+          sentAfterMs: SENT - 4 * 60 * 60_000,
+        },
+        deps({
+          "threads?": { threads: [{ id: "t-velho" }] },
+          "threads/t-velho": { id: "t-velho", messages: [msg("m-velho", SENT - 3 * 60 * 60_000, "Manchete")] },
+        }),
+      );
+      assert.equal(s.message_id, "m-velho", "o corte do chamador (mais antigo) é o que vale");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("estado Kit com JSON inválido → warn explícito, busca segue sem corte (nunca silencioso)", async () => {
+    const dir = makeEditionDir("fetch-test-email-10411-");
+    try {
+      writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), "{ quebrado");
+      const warnings: string[] = [];
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "T", waitSeconds: 0, timeoutSeconds: 1, pollSeconds: 5 },
+        { ...deps({ "threads?": { threads: [] } }), warn: (m) => warnings.push(m) },
+      );
+      assert.equal(s.status, "not_found_timeout");
+      assert.equal(warnings.length, 1);
+      assert.match(warnings[0], /newsletter-kit-published\.json ilegível/);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });

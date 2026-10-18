@@ -239,6 +239,23 @@ export function readKitDiariaState(editionDir: string): { broadcastId: number | 
 }
 
 /**
+ * #10411 — como atualizar o rascunho Kit defasado + mandar novo teste. Caminho
+ * preferido (#10395): `--draft-only-for-ui-test` (PATCH do mesmo broadcast,
+ * nenhum broadcast descartável), Send test email na UI do Kit e
+ * `--mark-ui-test-sent --at`. `--send-test` só como fallback sem Chrome.
+ * Pura, exportada pra teste.
+ */
+export function buildKitDraftRefreshInstructions(editionDir: string): string {
+  const cmd = (flags: string) => `\`npx tsx scripts/publish-newsletter-kit.ts ${editionDir} ${flags}\``;
+  return (
+    `caminho preferido (Claude in Chrome): ${cmd("--draft-only-for-ui-test")} (idempotente: PATCH do ` +
+    `mesmo broadcast, sem broadcast de teste), capturar o horário, "Send test email" → "Send preview" na ` +
+    `UI do rascunho no Kit (nunca Send/Schedule/Continue) e ${cmd("--mark-ui-test-sent --at <ISO capturado antes do clique>")}; ` +
+    `fallback só sem Chrome: ${cmd("--send-test")} (cria broadcast de teste descartável)`
+  );
+}
+
+/**
  * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
  * Nomeia o Kit sempre, e a Brevo diária quando ela participou da edição
  * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) também, quando
@@ -256,7 +273,10 @@ export function buildKitDraftStaleMessage(args: {
   kitDiaria?: { broadcastId: number | null } | null;
 }): string {
   const { what, when, editionDir, brevoDiariaEnabled, kitDiaria } = args;
-  const kitCmd = `\`npx tsx scripts/publish-newsletter-kit.ts ${editionDir} --send-test\``;
+  // #10411: o caminho preferido desde o #10395 é o Send test da UI sobre o
+  // rascunho real — `--send-test` virou fallback (cria broadcast descartável,
+  // que vira `completed` e não se apaga, e troca `test_mode` pra "broadcast").
+  const kitCmd = buildKitDraftRefreshInstructions(editionDir);
   // #9445: a Kit diária NÃO atualiza no re-run — com o estado gravado,
   // `decideKitChannelDispatch` devolve `already_done`. Pra refletir o texto
   // novo é preciso apagar o broadcast velho no Kit E o arquivo de estado (só
@@ -272,8 +292,8 @@ export function buildKitDraftStaleMessage(args: {
   if (!brevoDiariaEnabled) {
     return (
       `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
-      `teste estão com o conteúdo VELHO. Re-rodar ${kitCmd} (idempotente: atualiza o mesmo broadcast ` +
-      `e manda novo teste) e conferir o novo e-mail antes de aprovar o agendamento.` +
+      `teste estão com o conteúdo VELHO. Atualizar o Kit — ${kitCmd} — e conferir o novo e-mail ` +
+      `antes de aprovar o agendamento.` +
       kitDiariaPart
     );
   }
@@ -282,7 +302,7 @@ export function buildKitDraftStaleMessage(args: {
   return (
     `${what} mudou depois que o rascunho Kit foi publicado (${when}) — os rascunhos montados do ` +
     `mesmo conteúdo (broadcast Kit e campanha Brevo diária) e os e-mails de teste estão com o ` +
-    `conteúdo VELHO. Re-rodar os 2 canais: Kit ${kitCmd} (idempotente: atualiza o mesmo broadcast) ` +
+    `conteúdo VELHO. Re-rodar os 2 canais: Kit — ${kitCmd} — ` +
     `e Brevo diária ${brevoCmd} (idempotente: reaproveita a campanha registrada e atualiza via PUT); ` +
     `conferir os novos e-mails de teste antes de aprovar o agendamento.` +
     kitDiariaPart

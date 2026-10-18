@@ -30,6 +30,8 @@
  *
  * `--sent-after` (#9901): horário do envio do teste atual. Sem ele, uma
  * reexecução no mesmo dia pode ler o teste ANTERIOR quando o novo demora.
+ * No Kit, omitido = `test_sent_at` do `newsletter-kit-published.json`
+ * (#10411); a flag explícita sempre vence.
  * Só o Kit passa a âncora (#9905): no Beehiiv, `test_email_sent_at` de
  * `05-published.json` é gravado DEPOIS do clique em Send test e, como corte,
  * descartaria o próprio teste atual — o Stage 5 omite a flag nesse backend.
@@ -81,21 +83,26 @@ export const FETCH_SUMMARY_FILENAME = "test-email-fetch.json";
 
 /**
  * Queries em ordem de tentativa: com o prefixo do test-send e, de fallback,
- * sem ele (o ESP já mudou o prefixo antes). No Kit a 2ª é o caminho NORMAL
- * desde o #10395: o "Send test email" da UI manda o assunto sem `[teste]` (só
- * o fallback `--send-test` grava o prefixo); `--sent-after` impede que um
- * `[teste]` antigo do mesmo dia, achado pela 1ª, seja lido. Aspas do título viram espaço —
- * dentro de `subject:"..."` elas fechariam a frase.
+ * sem ele (o ESP já mudou o prefixo antes). No Kit com `testMode: "ui"`
+ * (#10395, ordem invertida desde o #10411) a query SEM prefixo vem primeiro:
+ * o "Send test email" da UI manda o assunto sem `[teste]` (só o fallback
+ * `--send-test` grava o prefixo), e um `[teste]` antigo do mesmo dia ganharia
+ * na 1ª query. O `--sent-after` (default `test_sent_at`, #10411) é a 2ª
+ * defesa. Aspas do título viram espaço — dentro de `subject:"..."` elas
+ * fechariam a frase.
  *
  * @pure
  */
-export function buildTestEmailQueries(platform: TestEmailPlatform, title: string): string[] {
+export function buildTestEmailQueries(
+  platform: TestEmailPlatform,
+  title: string,
+  opts: { testMode?: "ui" | "broadcast" } = {},
+): string[] {
   const { prefix, from } = PLATFORM_QUERY[platform];
   const safe = title.replace(/"/g, " ").replace(/\s+/g, " ").trim();
-  return [
-    `subject:"${prefix}${safe}" from:${from} newer_than:1d`,
-    `subject:"${safe}" from:${from} newer_than:1d`,
-  ];
+  const withPrefix = `subject:"${prefix}${safe}" from:${from} newer_than:1d`;
+  const withoutPrefix = `subject:"${safe}" from:${from} newer_than:1d`;
+  return platform === "kit" && opts.testMode === "ui" ? [withoutPrefix, withPrefix] : [withPrefix, withoutPrefix];
 }
 
 export interface LocatedPart {
@@ -150,14 +157,40 @@ export function isKitUiTestUnmarked(state: unknown): boolean {
   return test_mode === "ui" && (typeof test_sent_at !== "string" || test_sent_at === "");
 }
 
-function readKitPublishedState(internalDir: string): unknown {
+/**
+ * Lê `_internal/newsletter-kit-published.json`. Ausente → `null` em silêncio;
+ * presente e ilegível → `null` + `warn` (#10411: antes engolia o erro, e o
+ * modo UI perdia a ordem de query e o corte default sem sinal nenhum).
+ */
+function readKitPublishedState(internalDir: string, warn: (msg: string) => void): unknown {
   const path = resolve(internalDir, KIT_PUBLISHED_STATE_FILENAME);
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as unknown;
-  } catch {
+  } catch (e) {
+    warn(
+      `fetch-test-email: ${KIT_PUBLISHED_STATE_FILENAME} ilegível (${(e as Error).message}) — ` +
+        "sem test_mode/test_sent_at: ordem de query padrão e sem corte default",
+    );
     return null;
   }
+}
+
+/**
+ * (#10411) `test_mode` e `test_sent_at` (epoch ms) do estado do Kit, ou
+ * ausentes quando o estado não os traz (ou traz inválidos).
+ *
+ * @pure
+ */
+export function kitTestHints(state: unknown): { testMode?: "ui" | "broadcast"; testSentAtMs?: number } {
+  if (typeof state !== "object" || state === null) return {};
+  const { test_mode, test_sent_at } = state as { test_mode?: unknown; test_sent_at?: unknown };
+  const testMode = test_mode === "ui" || test_mode === "broadcast" ? test_mode : undefined;
+  const ms = typeof test_sent_at === "string" ? Date.parse(test_sent_at) : NaN;
+  return {
+    ...(testMode ? { testMode } : {}),
+    ...(Number.isFinite(ms) ? { testSentAtMs: ms } : {}),
+  };
 }
 
 export interface TestEmailFetchSummary {
@@ -186,6 +219,8 @@ export interface FetchDeps {
   gmailGet: (path: string) => Promise<unknown>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
+  /** (#10411) aviso não-fatal (stderr por default). */
+  warn?: (msg: string) => void;
 }
 
 async function defaultGmailGet(path: string): Promise<unknown> {
@@ -204,6 +239,7 @@ const defaultDeps: FetchDeps = {
   gmailGet: defaultGmailGet,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   now: () => Date.now(),
+  warn: (msg) => console.error(msg),
 };
 
 function header(msg: GmailThread["messages"][number], name: string): string | null {
@@ -223,7 +259,9 @@ export interface FetchTestEmailOptions {
    * com `internalDate` anterior (menos `SENT_AFTER_SKEW_MS`) é ignorada e o
    * polling continua até o prazo. Ausente = comportamento antigo (mensagem
    * mais recente da 1ª thread), que numa reexecução no mesmo dia pode ler o
-   * teste anterior.
+   * teste anterior. No Kit, quando omitido, o default é `test_sent_at` de
+   * `_internal/newsletter-kit-published.json` (#10411) — o corte não depende
+   * mais só do chamador passar a flag.
    */
   sentAfterMs?: number;
 }
@@ -257,7 +295,13 @@ export async function fetchTestEmail(
 ): Promise<TestEmailFetchSummary> {
   const internalDir = resolve(opts.editionDir, "_internal");
   const edition = basename(resolve(opts.editionDir));
-  const queries = buildTestEmailQueries(opts.platform, opts.title);
+  const warn = deps.warn ?? ((msg: string) => console.error(msg));
+  // #10411: o estado do Kit decide a ordem das queries (modo UI = sem prefixo
+  // primeiro) e o corte default (`test_sent_at`) — lido uma vez só.
+  const kitState = opts.platform === "kit" ? readKitPublishedState(internalDir, warn) : null;
+  const hints = kitTestHints(kitState);
+  const queries = buildTestEmailQueries(opts.platform, opts.title, { testMode: hints.testMode });
+  const sentAfterMs = opts.sentAfterMs ?? (opts.platform === "kit" ? hints.testSentAtMs : undefined);
   const base: TestEmailFetchSummary = {
     status: "not_found_timeout",
     platform: opts.platform,
@@ -276,7 +320,7 @@ export async function fetchTestEmail(
 
   // #10395: teste pela UI sem `--mark-ui-test-sent` → não há âncora pro
   // `--sent-after`; buscar sem corte acharia um teste antigo do mesmo dia.
-  if (opts.platform === "kit" && isKitUiTestUnmarked(readKitPublishedState(internalDir))) {
+  if (opts.platform === "kit" && isKitUiTestUnmarked(kitState)) {
     return {
       ...base,
       status: "ui_test_not_marked",
@@ -293,7 +337,7 @@ export async function fetchTestEmail(
   const poll = (opts.pollSeconds ?? 5) * 1000;
   // #9901: com `sentAfterMs`, mensagem recebida antes do envio do teste atual
   // (teste anterior do mesmo dia, mesma thread ou outra) nunca é escolhida.
-  const cutoff = opts.sentAfterMs === undefined ? null : opts.sentAfterMs - SENT_AFTER_SKEW_MS;
+  const cutoff = sentAfterMs === undefined ? null : sentAfterMs - SENT_AFTER_SKEW_MS;
   let msg: GmailThread["messages"][number] | null = null;
   try {
     for (;;) {

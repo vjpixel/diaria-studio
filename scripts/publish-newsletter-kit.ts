@@ -127,8 +127,10 @@
  *   `--sent-after` aceitar o e-mail do teste anterior. Recusa (exit 1) com o
  *   broadcast já `scheduled`, como o `--mark-ui-test-sent`.
  * - Depois do clique em "Send preview", `--mark-ui-test-sent --at <ISO>`
- *   (SEM rede, sem render) grava `status: "test_sent"` e `test_sent_at` = o
- *   `--at`. `--at` é OBRIGATÓRIO: horário capturado ANTES do clique, ISO com
+ *   (sem render) grava `status: "test_sent"` e `test_sent_at` = o `--at`.
+ *   Única chamada de rede: um `GET /v4/broadcasts/{id}` (só leitura, #10410)
+ *   — recusa marcar se o broadcast REAL saiu do rascunho (clique errado em
+ *   Send/Schedule na UI), ver `assessBroadcastStillDraft`. `--at` é OBRIGATÓRIO: horário capturado ANTES do clique, ISO com
  *   fuso explícito (`Z`/`±hh:mm`), não no futuro (folga de 2 min) e não
  *   anterior ao `source_hashed_at` do draft. Exige `test_mode: "ui"` no
  *   estado. É a âncora do `fetch-test-email.ts --sent-after`, que precisa ser
@@ -158,7 +160,11 @@
  * menciona a Beehiiv (crédito de plataforma não substituído, #6195); 10
  * PATCH do draft existente zerou `send_at` de um broadcast já agendado e o
  * reagendamento automático de defesa em profundidade também falhou — ver
- * `updateExistingKitBroadcast` (#8208), INTERVENÇÃO MANUAL necessária.
+ * `updateExistingKitBroadcast` (#8208), INTERVENÇÃO MANUAL necessária; 11
+ * (`--mark-ui-test-sent`, #10410) o broadcast real NÃO está mais em rascunho
+ * (`status` != draft, `send_at`/`published_at` preenchidos) — a edição pode ter
+ * sido enviada/agendada pela UI, nada gravado; 12 (`--mark-ui-test-sent`,
+ * #10410) a releitura do broadcast falhou — estado não confirmável, nada gravado.
  *
  * Idempotência: `<edition-dir>/_internal/newsletter-kit-published.json` é
  * escrito assim que o draft é criado — uma invocação seguinte pra MESMA
@@ -457,6 +463,84 @@ export function resolveUiTestSentAt(
   return { ok: true, iso: new Date(ms).toISOString() };
 }
 
+/**
+ * #10410 (pure): o broadcast REAL ainda está em rascunho? O teste pela UI
+ * opera sobre o broadcast de produção (base inteira, `public: true`); um
+ * clique errado em Send/Schedule/Continue o envia ou agenda. Antes de gravar
+ * `test_sent`, o `--mark-ui-test-sent` relê o broadcast e só aceita rascunho
+ * inequívoco: `send_at` nulo, `published_at` nulo e `status` = `"draft"`.
+ * `status` AUSENTE na resposta não reprova sozinho (o shape de leitura do
+ * `GET` singular não é documentado campo a campo — premissa registrada aqui):
+ * aí decidem `send_at`/`published_at`, e o aviso volta em `warning`.
+ */
+export function assessBroadcastStillDraft(
+  broadcast: { status?: string | null; send_at?: string | null; published_at?: string | null },
+): { ok: true; warning?: string } | { ok: false; reason: string } {
+  const problems: string[] = [];
+  if (broadcast.status != null && broadcast.status !== "draft") problems.push(`status=${broadcast.status}`);
+  if (broadcast.send_at) problems.push(`send_at=${broadcast.send_at}`);
+  if (broadcast.published_at) problems.push(`published_at=${broadcast.published_at}`);
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `broadcast não está mais em rascunho (${problems.join(", ")}) — a edição pode ter sido ENVIADA ou ` +
+        "AGENDADA para a base inteira pela UI do Kit (clique em Send/Schedule/Continue no lugar de Send preview). " +
+        "Conferir no Kit AGORA; test_sent NÃO gravado",
+    };
+  }
+  if (broadcast.status == null) {
+    return {
+      ok: true,
+      warning: "resposta do Kit sem `status` — rascunho inferido só por send_at/published_at nulos",
+    };
+  }
+  return { ok: true };
+}
+
+/** #10410: leitura injetável do broadcast (teste sem rede). */
+export interface MarkUiTestSentDeps {
+  getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null; published_at?: string | null }>;
+}
+
+export type MarkUiTestSentOutcome =
+  | { ok: true; state: KitNewsletterPublished; warning?: string }
+  | { ok: false; exitCode: 1 | 11 | 12; reason: string };
+
+/**
+ * #10395 + #10410: o `--mark-ui-test-sent` inteiro menos o I/O de disco —
+ * valida o `--at`, o estado local e, por último, relê o broadcast no Kit
+ * (`GET`, só leitura) antes de devolver o estado `test_sent`. Nunca escreve
+ * nada: quem grava é o `main()`, só com `ok: true`.
+ */
+export async function resolveMarkUiTestSent(
+  current: KitNewsletterPublished | null,
+  atRaw: string | undefined,
+  nowMs: number,
+  deps: MarkUiTestSentDeps,
+): Promise<MarkUiTestSentOutcome> {
+  const at = resolveUiTestSentAt(atRaw, nowMs, current?.source_hashed_at);
+  if (!at.ok) return { ok: false, exitCode: 1, reason: at.reason };
+  const marked = markUiTestSent(current, at.iso);
+  if (!marked.ok) return { ok: false, exitCode: 1, reason: marked.reason };
+  const id = marked.state.broadcast_id;
+  let remote: Awaited<ReturnType<MarkUiTestSentDeps["getBroadcast"]>>;
+  try {
+    remote = await deps.getBroadcast(id);
+  } catch (e) {
+    return {
+      ok: false,
+      exitCode: 12,
+      reason:
+        `GET /broadcasts/${id} falhou (${e instanceof Error ? e.message : String(e)}) — não dá pra confirmar ` +
+        "que o broadcast real segue em rascunho. Conferir na UI do Kit e re-rodar; test_sent NÃO gravado",
+    };
+  }
+  const draft = assessBroadcastStillDraft(remote);
+  if (!draft.ok) return { ok: false, exitCode: 11, reason: `broadcast_id=${id}: ${draft.reason}` };
+  return { ok: true, state: marked.state, ...(draft.warning ? { warning: draft.warning } : {}) };
+}
+
 // ── platform.config.json (leitura mínima) ─────────────────────────────
 
 export interface KitAffiliateConfig {
@@ -659,7 +743,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
   const editionDir = resolvedArg.editionDir;
 
-  // #10395: só registra que o Send test da UI saiu — sem rede, sem render.
+  // #10395: só registra que o Send test da UI saiu — sem render; a única rede
+  // é a releitura do broadcast (#10410, `resolveMarkUiTestSent`).
   if (markUiTest) {
     const parsed = parseCliArgs(argv);
     if (parsed.flags.has("at")) {
@@ -668,22 +753,26 @@ export async function main(rootDirOverride?: string): Promise<void> {
       return;
     }
     const current = readPublishedState(editionDir);
-    const at = resolveUiTestSentAt(parsed.values.at, Date.now(), current?.source_hashed_at);
-    if (!at.ok) {
-      log(`ERRO: ${at.reason}`);
-      process.exitCode = 1;
+    const outcome = await resolveMarkUiTestSent(current, parsed.values.at, Date.now(), {
+      getBroadcast: (id) => getBroadcast(id),
+    });
+    if (!outcome.ok) {
+      if (outcome.exitCode === 11) {
+        log("=".repeat(72));
+        log("ALERTA #10410 — BROADCAST REAL FORA DO RASCUNHO DEPOIS DO TESTE PELA UI");
+        log(`ERRO: ${outcome.reason}`);
+        log("=".repeat(72));
+      } else {
+        log(`ERRO: ${outcome.reason}`);
+      }
+      process.exitCode = outcome.exitCode;
       return;
     }
-    const marked = markUiTestSent(current, at.iso);
-    if (!marked.ok) {
-      log(`ERRO: ${marked.reason}`);
-      process.exitCode = 1;
-      return;
-    }
-    writePublishedState(editionDir, marked.state);
+    if (outcome.warning) log(`warn: ${outcome.warning}`);
+    writePublishedState(editionDir, outcome.state);
     log(
-      `test-send pela UI registrado: test_sent_at=${at.iso} ` +
-        `(broadcast_id=${marked.state.broadcast_id}, nenhum broadcast criado)`,
+      `test-send pela UI registrado: test_sent_at=${outcome.state.test_sent_at} ` +
+        `(broadcast_id=${outcome.state.broadcast_id}, confirmado em rascunho no Kit, nenhum broadcast criado)`,
     );
     return;
   }

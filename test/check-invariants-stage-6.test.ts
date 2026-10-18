@@ -26,6 +26,7 @@ import {
   checkSitePagePublished,
   checkSitePagePrMerged,
   buildKitDraftStaleMessage,
+  buildKitDraftRefreshInstructions,
   readKitDiariaState,
   isBrevoDiariaActiveForEdition,
 } from "../scripts/lib/invariant-checks/stage-6.ts";
@@ -492,6 +493,33 @@ describe("kit-draft-fresh — mensagem nomeia todo canal ativo (#9442)", () => {
     );
     assert.match(msg, /Brevo diária/);
     assert.ok(!msg.includes("--force"), "--force criaria campanha duplicada — nunca sugerir");
+  });
+});
+
+// #10411: desde o #10395 o caminho preferido de novo teste é o Send test da UI
+// sobre o rascunho real; a mensagem só sugeria `--send-test` (que cria o
+// broadcast descartável que o #10395 quis eliminar e troca test_mode).
+describe("kit-draft-fresh — correção aponta pro teste pela UI, --send-test só fallback (#10411)", () => {
+  const base = { what: "02-reviewed.md", when: "2026-10-02T10:00:00Z", editionDir: "data/editions/261002" };
+
+  it("com e sem Brevo diária: preferido --draft-only-for-ui-test + Send test + --mark-ui-test-sent, antes do --send-test", () => {
+    for (const brevo of [false, true]) {
+      const msg = buildKitDraftStaleMessage({ ...base, brevoDiariaEnabled: brevo });
+      const pref = msg.indexOf("npx tsx scripts/publish-newsletter-kit.ts data/editions/261002 --draft-only-for-ui-test");
+      const mark = msg.indexOf("npx tsx scripts/publish-newsletter-kit.ts data/editions/261002 --mark-ui-test-sent --at");
+      const fallback = msg.indexOf("npx tsx scripts/publish-newsletter-kit.ts data/editions/261002 --send-test");
+      assert.ok(pref >= 0 && mark > pref, "caminho da UI presente e na ordem");
+      assert.ok(fallback > mark, "--send-test aparece só depois, como fallback");
+      assert.match(msg, /Send test email/);
+      assert.match(msg, /nunca Send\/Schedule\/Continue/);
+      assert.match(msg, /fallback só sem Chrome/);
+    }
+  });
+
+  it("buildKitDraftRefreshInstructions usa o path real da edição", () => {
+    const s = buildKitDraftRefreshInstructions("data/editions/2610/261018");
+    assert.ok(s.includes("publish-newsletter-kit.ts data/editions/2610/261018 --draft-only-for-ui-test"));
+    assert.ok(!s.includes("{EDITION_DIR}"));
   });
 });
 

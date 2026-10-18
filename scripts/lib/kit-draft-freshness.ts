@@ -19,12 +19,17 @@
  *   `KIT_DRAFT_SOURCE_FILES`) só serve pra nomear, na mensagem, qual arquivo
  *   mudou — nunca decide sozinho.
  *
- * Escopo: o check compara contra o DRAFT. Se um `--send-test` falhar depois
- * do PATCH, o draft fica em dia e o e-mail de teste velho não é acusado aqui.
+ * Escopo: o check compara contra o DRAFT. Se o novo teste falhar depois do
+ * PATCH (Send test da UI ou `--send-test`), o draft fica em dia e o e-mail de
+ * teste velho não é acusado aqui.
  *
- * Só leitura/hash — nunca re-publica nada sozinho. A ação é do editor:
- * re-rodar `publish-newsletter-kit.ts <edition-dir> --send-test` (idempotente:
- * PATCH do mesmo `broadcast_id` + novo e-mail de teste).
+ * Só leitura/hash — nunca re-publica nada sozinho. A ação é do editor, pelo
+ * caminho preferido desde o #10395 (#10411): `publish-newsletter-kit.ts
+ * <edition-dir> --draft-only-for-ui-test` (PATCH do mesmo `broadcast_id`, sem
+ * broadcast descartável) + "Send test email" na UI do Kit +
+ * `--mark-ui-test-sent --at <ISO>`. `--send-test` é só o fallback sem Chrome
+ * (cria um broadcast de teste que vira `completed` e não se apaga). Texto
+ * exato: `buildKitDraftRefreshInstructions` (`invariant-checks/stage-6.ts`).
  */
 
 import { createHash } from "node:crypto";
