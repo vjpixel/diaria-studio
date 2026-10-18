@@ -43,7 +43,13 @@ import {
   resolveLinkedinArticleTime,
   weekdayCoverage,
 } from "./lib/social-schedule-rotation.ts";
-import { DEFAULT_ROTATION_LOG, newRowsToRecord, recordRotationRows, rowKey } from "./lib/social-schedule-rotation-record.ts";
+import {
+  DEFAULT_ROTATION_LOG,
+  filterUseMelhorRowsByPublished,
+  newRowsToRecord,
+  recordRotationRows,
+  rowKey,
+} from "./lib/social-schedule-rotation-record.ts";
 
 // Reexport: a lógica de gravação mora na lib (os publicadores também gravam, #10417 finding 3).
 export { DEFAULT_ROTATION_LOG, newRowsToRecord, rowKey };
@@ -111,7 +117,8 @@ function main(): void {
 
   if (has("--record")) {
     const logPath = resolve(ROOT, get("--log") ?? DEFAULT_ROTATION_LOG);
-    const n = recordRotationRows(logPath, rows);
+    // #10427 (review #10432): a linha `um` só é gravada se o post existiu.
+    const n = recordRotationRows(logPath, filterUseMelhorRowsByPublished(rows, social, ROOT));
     console.log(`[social-schedule-rotation] ${n} linha(s) nova(s) em ${logPath} (${rows.length - n} já gravada(s)).`);
     return;
   }

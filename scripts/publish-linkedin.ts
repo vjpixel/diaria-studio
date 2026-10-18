@@ -60,7 +60,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
-import { recordDailyRotationFailSoft } from "./lib/social-schedule-rotation-record.ts"; // #10305
+import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
@@ -1356,7 +1356,8 @@ async function main(): Promise<number | void> {
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
-  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate);
+  // #10427: `um` só entra no registro se este publicador o agendou.
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), dayOffsetOverride });
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 

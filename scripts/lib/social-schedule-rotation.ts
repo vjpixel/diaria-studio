@@ -316,9 +316,15 @@ export function buildRotationPlan(rot: SocialRotation | null, base: BaseTimes, f
       else if (base.linkedinArticle) rows.push({ date, kind: "linkedin_article", time: base.linkedinArticle, source: "base" });
     }
     for (const type of ROTATION_POST_TYPES) {
+      // #10427: sem horário fixo o post está desligado — `computeScheduledAt`
+      // valida o fixo ANTES de aplicar a rotação e lança, então nada é agendado
+      // (o caso real é o Use Melhor sem `use_melhor_time`). Gerar a linha de
+      // rotação aqui faria o registro e `weekdayCoverage` contarem como coberta
+      // uma célula que nunca recebeu post.
+      if (!base.weekday[type]) continue;
       const s = weekdayRotationSlot(rot, d, type);
       if (s) rows.push({ date, kind: "weekday", type, time: s.time, source: "rotation", weekday_index: s.weekdayIndex, cycle: s.cycle });
-      else if (base.weekday[type]) rows.push({ date, kind: "weekday", type, time: base.weekday[type] as string, source: "base" });
+      else rows.push({ date, kind: "weekday", type, time: base.weekday[type] as string, source: "base" });
     }
   }
   return rows;
@@ -386,8 +392,14 @@ export function resolveLinkedinArticleTime(
 /**
  * Pure: data de PUBLICAÇÃO de uma edição diária (`AAMMDD` + `fallback_schedule.day_offset`),
  * a mesma conta de `computeScheduledAt`. `null` quando `edition` não é `AAMMDD` válido.
+ * `dayOffsetOverride` (o `--day-offset` de `publish-facebook.ts`/`publish-linkedin.ts`)
+ * vence o do config, como em `computeScheduledAt` (#10427); valor não inteiro é ignorado.
  */
-export function publishDateForEdition(edition: string, social: SocialLike | null | undefined): CivilDate | null {
+export function publishDateForEdition(
+  edition: string,
+  social: SocialLike | null | undefined,
+  dayOffsetOverride?: number,
+): CivilDate | null {
   if (!/^\d{6}$/.test(edition)) return null;
   let d: CivilDate;
   try {
@@ -396,7 +408,12 @@ export function publishDateForEdition(edition: string, social: SocialLike | null
     return null;
   }
   const raw = (social?.fallback_schedule as { day_offset?: unknown } | null | undefined)?.day_offset;
-  const offset = typeof raw === "number" && Number.isInteger(raw) ? raw : 0;
+  const offset =
+    typeof dayOffsetOverride === "number" && Number.isInteger(dayOffsetOverride)
+      ? dayOffsetOverride
+      : typeof raw === "number" && Number.isInteger(raw)
+        ? raw
+        : 0;
   return offset === 0 ? d : civilFromDayNumber(civilDayNumber(d) + offset);
 }
 

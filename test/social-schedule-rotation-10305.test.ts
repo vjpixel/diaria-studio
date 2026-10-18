@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -38,8 +38,11 @@ import { DEFAULT_WEEKLY_TIME, resolveWeeklyTime } from "../scripts/publish-weekl
 import { newRowsToRecord, parseCliDate } from "../scripts/social-schedule-rotation.ts";
 import {
   dailyRotationRowsForEdition,
+  editionForPublishDate,
+  filterUseMelhorRowsByPublished,
   recordDailyRotationFailSoft,
   recordRotationRows,
+  useMelhorScheduledIn,
 } from "../scripts/lib/social-schedule-rotation-record.ts";
 import { describeUseMelhorPostStatus, useMelhorPostConfigState } from "../scripts/lib/use-melhor-post.ts";
 
@@ -394,7 +397,118 @@ describe("finding 3 — o agendamento grava o registro sozinho (idempotente)", (
   it("os 4 publicadores diários chamam o registro no --schedule", () => {
     for (const f of ["publish-facebook", "publish-linkedin", "publish-instagram", "publish-threads"]) {
       const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", `${f}.ts`), "utf8");
-      assert.match(src, /if \(doSchedule\) recordDailyRotationFailSoft\(ROOT, editionDate\);/, f);
+      assert.match(
+        src,
+        /if \(doSchedule\) recordDailyRotationFailSoft\(ROOT, editionDate, \{ useMelhorScheduled: useMelhorScheduledIn\(results\)/,
+        f,
+      );
     }
+  });
+});
+
+describe("#10427 — registro não conta o Use Melhor que não foi agendado", () => {
+  it("buildRotationPlan pula `um` sem use_melhor_time (o 4º post desligado nunca é agendado)", () => {
+    const semUm = { ...social(), use_melhor_time: undefined };
+    const rows = buildRotationPlan(rot, baseTimesFromSocial(semUm), d("2026-10-20"), d("2026-11-20"));
+    assert.ok(!rows.some((r) => r.kind === "weekday" && r.type === "um"));
+    const cov = weekdayCoverage(rot, rows);
+    for (const [time, byType] of Object.entries(cov)) assert.equal(byType.um, 0, time);
+    assert.equal(dailyRotationRowsForEdition(semUm, "261020").length, 3);
+    // coerente com computeScheduledAt, que recusa o `um` sem horário fixo
+    assert.throws(() =>
+      computeScheduledAt({
+        config: { publishing: { social: semUm } } as never,
+        editionDate: "261020",
+        destaque: "um",
+        platform: "linkedin",
+        now: FAR_PAST_NOW,
+      }),
+    );
+  });
+  it("dailyRotationRowsForEdition: useMelhorScheduled=false tira só a linha `um`", () => {
+    const rows = dailyRotationRowsForEdition(social(), "261020", { useMelhorScheduled: false });
+    assert.deepEqual(rows.map((r) => (r.kind === "weekday" ? r.type : r.kind)), ["d1", "d2", "d3"]);
+    assert.equal(dailyRotationRowsForEdition(social(), "261020", { useMelhorScheduled: true }).length, 4);
+  });
+  it("publicador sem `um` grava 3; outro que agendou o `um` completa a 4ª sem duplicar", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "rot-10427-"));
+    try {
+      const log = resolve(dir, "rot.jsonl");
+      assert.equal(recordRotationRows(log, dailyRotationRowsForEdition(social(), "261021", { useMelhorScheduled: false })), 3);
+      assert.ok(!readFileSync(log, "utf8").includes('"type":"um"'));
+      assert.equal(recordRotationRows(log, dailyRotationRowsForEdition(social(), "261021", { useMelhorScheduled: true })), 1);
+      assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("editionForPublishDate inverte o day_offset do config", () => {
+    assert.equal(editionForPublishDate("2026-10-20", social()), "261020");
+    assert.equal(editionForPublishDate("2026-10-20", { fallback_schedule: { day_offset: 1 } }), "261019");
+    assert.equal(editionForPublishDate("2026-11-01", { fallback_schedule: { day_offset: 1 } }), "261031");
+  });
+  it("CLI --record: linha `um` só passa com o post um agendado em 06-social-published.json", () => {
+    const rows = dailyRotationRowsForEdition(social(), "261020");
+    assert.equal(rows.length, 4);
+    const types = (rs: typeof rows) => rs.map((r) => (r.kind === "weekday" ? r.type : r.kind)).sort();
+    const warns: string[] = [];
+    const asked: string[] = [];
+    const run = (posts: Array<{ destaque: string; status: string }> | null) =>
+      filterUseMelhorRowsByPublished(rows, social(), "/nao-usado", (m) => warns.push(m), (ed) => {
+        asked.push(ed);
+        return posts;
+      });
+    // arquivo ausente: não grava `um` e avisa
+    assert.deepEqual(types(run(null)), ["d1", "d2", "d3"]);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /06-social-published\.json ausente/);
+    assert.match(warns[0], /2610\/261020/);
+    assert.deepEqual(asked, ["261020"]);
+    // arquivo presente sem o `um` agendado (falhou / só destaques)
+    assert.deepEqual(types(run([{ destaque: "d1", status: "scheduled" }, { destaque: "um", status: "failed" }])), ["d1", "d2", "d3"]);
+    // `um` agendado: as 4 linhas
+    assert.deepEqual(types(run([{ destaque: "um", status: "scheduled" }])), ["d1", "d2", "d3", "um"]);
+    assert.equal(warns.length, 1, "só o caso de arquivo ausente avisa");
+  });
+  it("CLI --record: default lê 06-social-published.json via editionDir sob rootDir", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "rot-10432-"));
+    try {
+      const rows = dailyRotationRowsForEdition(social(), "261020");
+      const warns: string[] = [];
+      assert.equal(filterUseMelhorRowsByPublished(rows, social(), dir, (m) => warns.push(m)).length, 3);
+      assert.equal(warns.length, 1);
+      const edDir = resolve(dir, "data/editions/2610/261020");
+      mkdirSync(edDir, { recursive: true });
+      writeFileSync(resolve(edDir, "06-social-published.json"), JSON.stringify({ posts: [{ platform: "linkedin", destaque: "um", status: "scheduled", url: null, scheduled_at: null }] }));
+      assert.equal(filterUseMelhorRowsByPublished(rows, social(), dir, (m) => warns.push(m)).length, 4);
+      assert.equal(warns.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("useMelhorScheduledIn: só scheduled/published do `um` contam", () => {
+    assert.equal(useMelhorScheduledIn([{ destaque: "d1", status: "scheduled" }]), false);
+    assert.equal(useMelhorScheduledIn([{ destaque: "um", status: "failed" }]), false);
+    assert.equal(useMelhorScheduledIn([{ destaque: "um", status: "draft" }]), false);
+    assert.equal(useMelhorScheduledIn([{ destaque: "um", status: "scheduled" }]), true);
+    assert.equal(useMelhorScheduledIn([{ destaque: "um", status: "published" }]), true);
+  });
+  it("dayOffsetOverride do publicador muda a data registrada, como em computeScheduledAt", () => {
+    // edição 261019 (seg, fora da janela) + --day-offset 1 → publica 20/10 (dentro)
+    assert.deepEqual(dailyRotationRowsForEdition(social(), "261019"), []);
+    const rows = dailyRotationRowsForEdition(social(), "261019", { dayOffsetOverride: 1 });
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every((r) => r.date === "2026-10-20"));
+    const at = computeScheduledAt({
+      config: config() as never,
+      editionDate: "261019",
+      destaque: "d1",
+      platform: "facebook",
+      dayOffsetOverride: 1,
+      now: FAR_PAST_NOW,
+    });
+    const d1 = rows.find((r) => r.kind === "weekday" && r.type === "d1")!;
+    assert.ok(at.startsWith(`2026-10-20T${d1.time}`), `${at} vs ${d1.time}`);
+    assert.deepEqual(publishDateForEdition("261019", social(), Number.NaN), d("2026-10-19"));
   });
 });
