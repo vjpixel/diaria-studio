@@ -17,12 +17,14 @@ import {
   EXIT_BY_STATUS,
   fetchTestEmail,
   findBodyPart,
+  isKitUiTestUnmarked,
   parseSentAfter,
   pickLatestMessage,
   SENT_AFTER_SKEW_MS,
   type FetchDeps,
 } from "../scripts/fetch-test-email.ts";
 import { makeEditionDir } from "./_helpers/make-edition-dir.ts";
+import { isKitReviewReason } from "../scripts/lib/kit-review-record.ts";
 
 const b64url = (s: string) => Buffer.from(s, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
 
@@ -365,6 +367,79 @@ describe("fetchTestEmail: Send test da UI do Kit, assunto sem prefixo (#10395)",
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+});
+
+// #10395 (fleet review): `--draft-only-for-ui-test` rodou mas o
+// `--mark-ui-test-sent` não — sem âncora, buscar sem corte leria um teste
+// antigo do mesmo dia. Sai com status/exit próprios em vez de buscar.
+describe("fetchTestEmail: teste pela UI não registrado (#10395)", () => {
+  const writeKitState = (dir: string, state: unknown) =>
+    writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), JSON.stringify(state));
+
+  it("isKitUiTestUnmarked: só test_mode ui SEM test_sent_at", () => {
+    assert.equal(isKitUiTestUnmarked({ test_mode: "ui" }), true);
+    assert.equal(isKitUiTestUnmarked({ test_mode: "ui", test_sent_at: "" }), true);
+    assert.equal(isKitUiTestUnmarked({ test_mode: "ui", test_sent_at: "2026-10-18T22:00:00.000Z" }), false);
+    assert.equal(isKitUiTestUnmarked({ test_mode: "broadcast" }), false);
+    assert.equal(isKitUiTestUnmarked({}), false);
+    assert.equal(isKitUiTestUnmarked(null), false);
+  });
+
+  it("estado ui sem test_sent_at → ui_test_not_marked (exit 5), sem tocar o Gmail nem esperar", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "draft", test_mode: "ui" });
+      const calls: string[] = [];
+      let slept = 0;
+      const d = deps({ "threads?": { threads: [{ id: "t-velho" }] } }, calls);
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "Manchete" },
+        { ...d, sleep: async (ms) => { slept += ms; } },
+      );
+      assert.equal(s.status, "ui_test_not_marked");
+      assert.equal(EXIT_BY_STATUS[s.status], 5);
+      assert.equal(calls.length, 0, "não busca sem corte");
+      assert.equal(slept, 0, "nem espera o e-mail chegar");
+      assert.match(s.error ?? "", /mark-ui-test-sent/);
+      assert.equal(existsSync(resolve(dir, "_internal", ".email-body.tmp")), false);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("estado ui COM test_sent_at segue o caminho normal (busca)", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "test_sent", test_mode: "ui", test_sent_at: "2026-10-18T22:00:00.000Z" });
+      const calls: string[] = [];
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "kit", title: "T", waitSeconds: 0, timeoutSeconds: 1, pollSeconds: 5 },
+        deps({ "threads?": { threads: [] } }, calls),
+      );
+      assert.equal(s.status, "not_found_timeout");
+      assert.ok(calls.length > 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("Beehiiv ignora o estado do Kit", async () => {
+    const dir = makeEditionDir("fetch-test-email-10395-");
+    try {
+      writeKitState(dir, { broadcast_id: 555, status: "draft", test_mode: "ui" });
+      const s = await fetchTestEmail(
+        { editionDir: dir, platform: "beehiiv", title: "T", waitSeconds: 0, timeoutSeconds: 1, pollSeconds: 5 },
+        deps({ "threads?": { threads: [] } }),
+      );
+      assert.equal(s.status, "not_found_timeout");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("record-kit-review aceita --reason ui_test_not_marked", () => {
+    assert.equal(isKitReviewReason("ui_test_not_marked"), true);
   });
 });
 

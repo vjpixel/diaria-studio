@@ -840,7 +840,13 @@ describe("main() — integração", () => {
 // ── #10395: Send test da UI do Kit, sem broadcast descartável ─────────
 
 describe("#10395: helpers do teste pela UI", () => {
-  const base: KitNewsletterPublished = { broadcast_id: 321, subject: "S", preview_text: "P", status: "draft" };
+  const base: KitNewsletterPublished = {
+    broadcast_id: 321,
+    subject: "S",
+    preview_text: "P",
+    status: "draft",
+    test_mode: "ui",
+  };
 
   it("kitBroadcastDraftUrl aponta pro editor do rascunho", () => {
     assert.equal(kitBroadcastDraftUrl(321), "https://app.kit.com/campaigns/321/draft");
@@ -856,16 +862,41 @@ describe("#10395: helpers do teste pela UI", () => {
     assert.deepEqual(r.state.test_broadcast_ids, [9]);
   });
 
-  it("markUiTestSent recusa sem draft registrado e com broadcast já agendado", () => {
+  it("markUiTestSent recusa sem draft registrado, com broadcast já agendado e sem test_mode ui", () => {
     assert.equal(markUiTestSent(null, "2026-10-18T22:00:00.000Z").ok, false);
     assert.equal(markUiTestSent({ ...base, status: "scheduled" }, "2026-10-18T22:00:00.000Z").ok, false);
+    const semUi = markUiTestSent({ ...base, test_mode: undefined }, "2026-10-18T22:00:00.000Z");
+    assert.equal(semUi.ok, false);
+    assert.match(!semUi.ok ? semUi.reason : "", /--draft-only-for-ui-test/);
+    assert.equal(markUiTestSent({ ...base, test_mode: "broadcast" }, "2026-10-18T22:00:00.000Z").ok, false);
   });
 
-  it("resolveUiTestSentAt: ausente = agora; ISO é normalizado; lixo é erro", () => {
+  it("resolveUiTestSentAt: --at é obrigatório (ausente/vazio = erro, nunca 'agora')", () => {
     const now = Date.UTC(2026, 9, 18, 22, 0);
-    assert.deepEqual(resolveUiTestSentAt(undefined, now), { ok: true, iso: "2026-10-18T22:00:00.000Z" });
+    assert.equal(resolveUiTestSentAt(undefined, now).ok, false);
+    assert.equal(resolveUiTestSentAt("", now).ok, false);
+  });
+
+  it("resolveUiTestSentAt: ISO com fuso é normalizado; sem fuso ou lixo é erro", () => {
+    const now = Date.UTC(2026, 9, 18, 22, 0);
     assert.deepEqual(resolveUiTestSentAt("2026-10-18T19:00:00-03:00", now), { ok: true, iso: "2026-10-18T22:00:00.000Z" });
+    assert.deepEqual(resolveUiTestSentAt("2026-10-18T21:59:30.123Z", now), { ok: true, iso: "2026-10-18T21:59:30.123Z" });
+    assert.equal(resolveUiTestSentAt("2026-10-18T19:00:00", now).ok, false, "sem fuso = hora local da máquina");
+    assert.equal(resolveUiTestSentAt("2026-10-18", now).ok, false);
     assert.equal(resolveUiTestSentAt("agora", now).ok, false);
+  });
+
+  it("resolveUiTestSentAt: futuro só até a folga de 2 min", () => {
+    const now = Date.UTC(2026, 9, 18, 22, 0);
+    assert.equal(resolveUiTestSentAt("2026-10-18T22:01:30Z", now).ok, true);
+    assert.equal(resolveUiTestSentAt("2026-10-18T22:03:00Z", now).ok, false);
+  });
+
+  it("resolveUiTestSentAt: anterior ao source_hashed_at do draft é recusado", () => {
+    const now = Date.UTC(2026, 9, 18, 22, 0);
+    const draftAt = "2026-10-18T21:50:00.000Z";
+    assert.equal(resolveUiTestSentAt("2026-10-18T21:49:59Z", now, draftAt).ok, false);
+    assert.equal(resolveUiTestSentAt("2026-10-18T21:50:00Z", now, draftAt).ok, true);
   });
 });
 
@@ -902,6 +933,7 @@ describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", ()
 
   it("--mark-ui-test-sent --at: sem rede, grava test_sent + test_sent_at (âncora do --sent-after)", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+    const atIso = new Date(Date.now() - 60_000).toISOString();
     try {
       writePlatformConfig(root, "kit");
       const editionDir = writeEdition(root, "260998");
@@ -923,7 +955,7 @@ describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", ()
         editionDir,
         "--mark-ui-test-sent",
         "--at",
-        "2026-10-18T21:59:30Z",
+        atIso,
       ];
       process.exitCode = undefined;
       await main(root);
@@ -931,7 +963,7 @@ describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", ()
       assert.equal(calls.length, 0);
       const state = readPublishedState(editionDir);
       assert.equal(state?.status, "test_sent");
-      assert.equal(state?.test_sent_at, "2026-10-18T21:59:30.000Z");
+      assert.equal(state?.test_sent_at, atIso);
       assert.equal(state?.test_mode, "ui");
       assert.deepEqual(state?.test_broadcast_ids, [], "nenhum broadcast de teste registrado");
     } finally {
@@ -948,7 +980,14 @@ describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", ()
       mockFetch(() => {
         throw new Error("não deveria chamar fetch");
       });
-      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--mark-ui-test-sent"];
+      process.argv = [
+        "node",
+        "publish-newsletter-kit.ts",
+        editionDir,
+        "--mark-ui-test-sent",
+        "--at",
+        new Date(Date.now() - 60_000).toISOString(),
+      ];
       process.exitCode = undefined;
       await main(root);
       assert.equal(process.exitCode, 1);
@@ -1046,4 +1085,200 @@ describe("#10395: main() com --draft-only-for-ui-test / --mark-ui-test-sent", ()
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// ── #10395 (fleet review): contratos endurecidos dos dois modos ─────────
+
+describe("#10395: --draft-only-for-ui-test e --mark-ui-test-sent — recusas e encadeamento", () => {
+  const uiDraft = (extra: Partial<KitNewsletterPublished> = {}): KitNewsletterPublished => ({
+    broadcast_id: 555,
+    subject: "S",
+    preview_text: "P",
+    status: "draft",
+    test_broadcast_ids: [],
+    test_mode: "ui",
+    ui_test_url: "https://app.kit.com/campaigns/555/draft",
+    ...extra,
+  });
+
+  async function runMain(root: string, editionDir: string, ...flags: string[]): Promise<void> {
+    process.argv = ["node", "publish-newsletter-kit.ts", editionDir, ...flags];
+    process.exitCode = undefined;
+    await main(root);
+  }
+
+  function withEdition(fn: (root: string, editionDir: string) => Promise<void>): () => Promise<void> {
+    return async () => {
+      const root = mkdtempSync(join(tmpdir(), "kit-main-"));
+      try {
+        writePlatformConfig(root, "kit");
+        await fn(root, writeEdition(root, "260998"));
+      } finally {
+        process.exitCode = undefined;
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+  }
+
+  it(
+    "--draft-only-for-ui-test depois de um teste anterior (test_sent, T1): volta pra draft e apaga test_sent_at",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, {
+        broadcast_id: 555,
+        subject: "S",
+        preview_text: "P",
+        status: "test_sent",
+        test_broadcast_ids: [900],
+        test_sent_at: "2026-10-18T10:00:00.000Z",
+        test_mode: "broadcast",
+      });
+      mockFetch((call) => {
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/555") {
+          return jsonRes(200, { broadcast: { id: 555, status: "draft", public_url: "https://news.diar.ia.br/p/555" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      await runMain(root, editionDir, "--draft-only-for-ui-test");
+      assert.equal(process.exitCode, undefined);
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.status, "draft", "o teste novo ainda não saiu");
+      assert.equal(state?.test_sent_at, undefined, "a âncora T1 não pode sobreviver — o --sent-after leria o teste antigo");
+      assert.equal(state?.test_mode, "ui");
+      assert.equal(state?.ui_test_url, "https://app.kit.com/campaigns/555/draft");
+      assert.deepEqual(state?.test_broadcast_ids, [900], "histórico de descartáveis preservado");
+    }),
+  );
+
+  it(
+    "--draft-only-for-ui-test com broadcast já agendado: exit 1, sem rede, estado intacto",
+    withEdition(async (root, editionDir) => {
+      const scheduled = uiDraft({ status: "scheduled", scheduled_at: "2026-10-19T09:00:00.000Z" });
+      writePublishedState(editionDir, scheduled);
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      await runMain(root, editionDir, "--draft-only-for-ui-test");
+      assert.equal(process.exitCode, 1);
+      assert.equal(calls.length, 0);
+      assert.deepEqual(readPublishedState(editionDir), scheduled);
+    }),
+  );
+
+  it(
+    "--mark-ui-test-sent sem --at: exit 1, nada gravado",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, uiDraft());
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      await runMain(root, editionDir, "--mark-ui-test-sent");
+      assert.equal(process.exitCode, 1);
+      assert.equal(readPublishedState(editionDir)?.status, "draft");
+      assert.equal(readPublishedState(editionDir)?.test_sent_at, undefined);
+    }),
+  );
+
+  it(
+    "--mark-ui-test-sent com --at sem valor (seguido de outra flag ou no fim): exit 1",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, uiDraft());
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      await runMain(root, editionDir, "--mark-ui-test-sent", "--at");
+      assert.equal(process.exitCode, 1);
+      await runMain(root, editionDir, "--at", "--mark-ui-test-sent");
+      assert.equal(process.exitCode, 1);
+      assert.equal(readPublishedState(editionDir)?.test_sent_at, undefined);
+    }),
+  );
+
+  it(
+    "--mark-ui-test-sent com --at anterior ao source_hashed_at do draft: exit 1",
+    withEdition(async (root, editionDir) => {
+      const draftAt = new Date(Date.now() - 60_000).toISOString();
+      writePublishedState(editionDir, uiDraft({ source_hashed_at: draftAt }));
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      await runMain(root, editionDir, "--mark-ui-test-sent", "--at", new Date(Date.now() - 3_600_000).toISOString());
+      assert.equal(process.exitCode, 1);
+      assert.equal(readPublishedState(editionDir)?.test_sent_at, undefined);
+    }),
+  );
+
+  it(
+    "--mark-ui-test-sent sem test_mode ui no estado: exit 1 pedindo --draft-only-for-ui-test",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, uiDraft({ test_mode: undefined, ui_test_url: undefined }));
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      await runMain(root, editionDir, "--mark-ui-test-sent", "--at", new Date(Date.now() - 60_000).toISOString());
+      assert.equal(process.exitCode, 1);
+      assert.equal(readPublishedState(editionDir)?.status, "draft");
+    }),
+  );
+
+  for (const mode of ["--draft-only-for-ui-test", "--mark-ui-test-sent"]) {
+    it(
+      `--dry-run com ${mode}: exit 1, sem rede, estado intacto`,
+      withEdition(async (root, editionDir) => {
+        const before = uiDraft();
+        writePublishedState(editionDir, before);
+        mockFetch(() => {
+          throw new Error("não deveria chamar fetch");
+        });
+        const extra = mode === "--mark-ui-test-sent" ? ["--at", new Date(Date.now() - 60_000).toISOString()] : [];
+        await runMain(root, editionDir, "--dry-run", mode, ...extra);
+        assert.equal(process.exitCode, 1);
+        assert.equal(calls.length, 0);
+        assert.deepEqual(readPublishedState(editionDir), before);
+      }),
+    );
+  }
+
+  it(
+    "--draft-only-for-ui-test seguido de --send-test (fallback): PATCH no mesmo draft, modo broadcast, âncora nova",
+    withEdition(async (root, editionDir) => {
+      let posts = 0;
+      const patched: string[] = [];
+      mockFetch((call) => {
+        if (call.method === "GET" && call.pathname === "/v4/tags") {
+          return jsonRes(200, {
+            tags: [{ id: 42, name: "diaria-test-email", created_at: "x" }],
+            pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+          });
+        }
+        if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+          posts++;
+          return jsonRes(201, { broadcast: { id: 554 + posts, status: "draft", public_url: "https://news.diar.ia.br/p/x" } });
+        }
+        if (call.method === "PATCH") {
+          patched.push(call.pathname);
+          return jsonRes(200, { broadcast: { id: 555, status: "draft", public_url: "https://news.diar.ia.br/p/555" } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+
+      await runMain(root, editionDir, "--draft-only-for-ui-test");
+      assert.equal(process.exitCode, undefined);
+      const afterUi = readPublishedState(editionDir);
+      assert.equal(afterUi?.broadcast_id, 555);
+      assert.equal(afterUi?.test_mode, "ui");
+      assert.equal(afterUi?.test_sent_at, undefined);
+
+      const before = Date.now();
+      await runMain(root, editionDir, "--send-test");
+      assert.equal(process.exitCode, undefined);
+      assert.deepEqual(patched, ["/v4/broadcasts/555"], "o draft real é reaproveitado, nunca recriado");
+      assert.equal(posts, 2, "1 draft real (1ª rodada) + 1 descartável (2ª)");
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.broadcast_id, 555);
+      assert.equal(state?.status, "test_sent");
+      assert.equal(state?.test_mode, "broadcast");
+      assert.deepEqual(state?.test_broadcast_ids, [556]);
+      assert.ok(state?.test_sent_at && Date.parse(state.test_sent_at) >= before, "âncora nova do --send-test");
+    }),
+  );
 });

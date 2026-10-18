@@ -25,14 +25,25 @@
  *    `normalizeKitBroadcast`) começando com `[teste]` ou `[teste-…]` — o
  *    prefixo que o `--send-test` grava;
  * 3. `subscriber_filter` restrito SÓ a tag(s) de teste (ids resolvidos em
- *    runtime por `resolveTestSendTagId`, nunca hardcoded — o id é por conta).
+ *    runtime por `findTagIdByName("diaria-test-email")` — leitura, nunca cria
+ *    a tag —, nunca hardcoded: o id é por conta).
+ *
+ * **Consumidores hoje (#10395):** só o sinal 2 tem consumidor
+ * (`generate-hub-sources.ts`, `click-window-resolution.ts`,
+ * `reconcile-send-audiences.ts` chamam sem `signals`). Os sinais 1 e 3 estão
+ * prontos e testados, mas nenhum chamador ainda carrega `test_broadcast_ids`
+ * ou resolve o id da tag — quem precisar monta os sets com
+ * `makeKitTestBroadcastPredicate`.
  *
  * Nenhum sinal olha `public` (a medição do #7637 derrubou: edição real da rampa
  * saiu `public: false`) nem `recipients` (quem quiser o piso continua com o
  * dele — este helper soma, não substitui).
  */
 
-/** Prefixo de assunto que `publish-newsletter-kit.ts --send-test` grava. */
+/**
+ * Prefixo de assunto que `publish-newsletter-kit.ts --send-test` grava (o
+ * publisher e a query de `fetch-test-email.ts` usam esta constante).
+ */
 export const KIT_TEST_SUBJECT_PREFIX = "[teste]";
 
 /**
@@ -52,9 +63,9 @@ export interface KitBroadcastIdentity {
 
 export interface KitTestBroadcastSignals {
   /** Ids de `test_broadcast_ids` de `newsletter-kit-published.json`. */
-  testBroadcastIds?: Iterable<number | string>;
+  testBroadcastIds?: ReadonlySet<number | string>;
   /** Id(s) da tag `diaria-test-email` (por conta, resolvido em runtime). */
-  testTagIds?: Iterable<number>;
+  testTagIds?: ReadonlySet<number>;
 }
 
 /** @pure */
@@ -69,8 +80,7 @@ export function hasKitTestSubjectPrefix(subject: string | null | undefined): boo
  *
  * @pure
  */
-export function filterTargetsOnlyTestTags(filter: unknown, testTagIds: Iterable<number>): boolean {
-  const allowed = new Set(testTagIds);
+export function filterTargetsOnlyTestTags(filter: unknown, allowed: ReadonlySet<number>): boolean {
   if (allowed.size === 0 || !Array.isArray(filter) || filter.length === 0) return false;
   let conditions = 0;
   for (const group of filter) {
@@ -95,11 +105,31 @@ export function filterTargetsOnlyTestTags(filter: unknown, testTagIds: Iterable<
  * @pure
  */
 export function isKitTestBroadcast(b: KitBroadcastIdentity, signals: KitTestBroadcastSignals = {}): boolean {
-  if (b.id !== undefined && b.id !== null && signals.testBroadcastIds) {
-    const target = String(b.id);
-    for (const id of signals.testBroadcastIds) if (String(id) === target) return true;
+  const ids = signals.testBroadcastIds;
+  if (b.id !== undefined && b.id !== null && ids && ids.size > 0) {
+    // Ids vêm como number do estado local e às vezes como string de outro
+    // produtor — casa nas duas formas sem iterar o set.
+    if (ids.has(b.id) || ids.has(String(b.id)) || ids.has(Number(b.id))) return true;
   }
   if (hasKitTestSubjectPrefix(b.subject) || hasKitTestSubjectPrefix(b.title)) return true;
   if (signals.testTagIds && filterTargetsOnlyTestTags(b.subscriber_filter, signals.testTagIds)) return true;
   return false;
+}
+
+/**
+ * Materializa os sinais UMA vez (ids normalizados em sets) e devolve o
+ * predicado — pra filtrar uma lista inteira de broadcasts sem recriar os sets
+ * por item.
+ *
+ * @pure
+ */
+export function makeKitTestBroadcastPredicate(signals: {
+  testBroadcastIds?: Iterable<number | string>;
+  testTagIds?: Iterable<number>;
+} = {}): (b: KitBroadcastIdentity) => boolean {
+  const materialized: KitTestBroadcastSignals = {
+    ...(signals.testBroadcastIds ? { testBroadcastIds: new Set(signals.testBroadcastIds) } : {}),
+    ...(signals.testTagIds ? { testTagIds: new Set(signals.testTagIds) } : {}),
+  };
+  return (b) => isKitTestBroadcast(b, materialized);
 }

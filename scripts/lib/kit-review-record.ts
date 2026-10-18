@@ -22,8 +22,13 @@ export const KIT_REVIEW_FILENAME = "05-review-kit.json";
 export const KIT_REVIEW_STATUSES = ["ok", "inconclusive", "issues_unfixable"] as const;
 export type KitReviewStatus = (typeof KIT_REVIEW_STATUSES)[number];
 
-/** Mesmo vocabulário de `review_reason` do caminho Beehiiv (#8902). */
-export const KIT_REVIEW_REASONS = ["mcp_unavailable", "not_found_timeout", "truncated_fetch"] as const;
+/**
+ * Mesmo vocabulário de `review_reason` do caminho Beehiiv (#8902), mais
+ * `ui_test_not_marked` (#10395, só Kit): o estado diz `test_mode: "ui"` sem
+ * `test_sent_at` — o Send test da UI pode nunca ter saído
+ * (`fetch-test-email.ts` exit 5).
+ */
+export const KIT_REVIEW_REASONS = ["mcp_unavailable", "not_found_timeout", "truncated_fetch", "ui_test_not_marked"] as const;
 export type KitReviewReason = (typeof KIT_REVIEW_REASONS)[number];
 
 export interface KitReviewRecord {

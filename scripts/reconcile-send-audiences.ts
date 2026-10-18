@@ -169,7 +169,16 @@ export function pickLatestRealKitBroadcast<
   );
 }
 
-async function measureKitRecentDelivery(): Promise<RecentDeliveryMeasurement> {
+/** Fronteira de I/O de `measureKitRecentDelivery` — injetável nos testes (#10395). */
+export interface KitRecentDeliveryDeps {
+  listBroadcasts: typeof listBroadcasts;
+  getBroadcastStats: (id: number) => Promise<{ recipients: number }>;
+}
+
+export async function measureKitRecentDelivery(
+  deps: KitRecentDeliveryDeps = { listBroadcasts, getBroadcastStats },
+): Promise<RecentDeliveryMeasurement> {
+  const { listBroadcasts, getBroadcastStats } = deps;
   try {
     const { broadcasts } = await listBroadcasts({ status: "completed", perPage: 50 });
     if (broadcasts.length === 0) {

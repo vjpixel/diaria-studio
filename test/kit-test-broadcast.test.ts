@@ -15,8 +15,13 @@ import {
   hasKitTestSubjectPrefix,
   isKitTestBroadcast,
   KIT_TEST_SUBJECT_PREFIX,
+  makeKitTestBroadcastPredicate,
 } from "../scripts/lib/shared/kit-test-broadcast.ts";
-import { pickLatestRealKitBroadcast } from "../scripts/reconcile-send-audiences.ts";
+import {
+  measureKitRecentDelivery,
+  pickLatestRealKitBroadcast,
+  type KitRecentDeliveryDeps,
+} from "../scripts/reconcile-send-audiences.ts";
 
 describe("hasKitTestSubjectPrefix", () => {
   it("casa o prefixo do --send-test e as variantes de probe", () => {
@@ -37,25 +42,25 @@ describe("hasKitTestSubjectPrefix", () => {
 
 describe("filterTargetsOnlyTestTags", () => {
   it("filtro escopado só à tag de teste (shape de buildTestSendFilter) → true", () => {
-    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42] }] }], [42]), true);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42] }] }], new Set([42])), true);
   });
 
   it("filtro vazio (= base inteira, #6126), outra tag, tag mista ou lixo → false", () => {
-    assert.equal(filterTargetsOnlyTestTags([], [42]), false);
-    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [7] }] }], [42]), false);
-    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42, 7] }] }], [42]), false);
-    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "segment", ids: [42] }] }], [42]), false);
-    assert.equal(filterTargetsOnlyTestTags([{ all: [] }], [42]), false);
-    assert.equal(filterTargetsOnlyTestTags(null, [42]), false);
-    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42] }] }], []), false);
+    assert.equal(filterTargetsOnlyTestTags([], new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [7] }] }], new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42, 7] }] }], new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "segment", ids: [42] }] }], new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [] }], new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags(null, new Set([42])), false);
+    assert.equal(filterTargetsOnlyTestTags([{ all: [{ type: "tag", ids: [42] }] }], new Set([])), false);
   });
 });
 
 describe("isKitTestBroadcast", () => {
   it("sinal 1: id registrado em test_broadcast_ids (mesmo com assunto sem prefixo)", () => {
-    assert.equal(isKitTestBroadcast({ id: 556, subject: "Manchete" }, { testBroadcastIds: [556] }), true);
-    assert.equal(isKitTestBroadcast({ id: "556", subject: "Manchete" }, { testBroadcastIds: [556] }), true);
-    assert.equal(isKitTestBroadcast({ id: 555, subject: "Manchete" }, { testBroadcastIds: [556] }), false);
+    assert.equal(isKitTestBroadcast({ id: 556, subject: "Manchete" }, { testBroadcastIds: new Set([556]) }), true);
+    assert.equal(isKitTestBroadcast({ id: "556", subject: "Manchete" }, { testBroadcastIds: new Set([556]) }), true);
+    assert.equal(isKitTestBroadcast({ id: 555, subject: "Manchete" }, { testBroadcastIds: new Set([556]) }), false);
   });
 
   it("sinal 2: prefixo no subject ou no title (cache unificado usa title = subject)", () => {
@@ -65,15 +70,15 @@ describe("isKitTestBroadcast", () => {
 
   it("sinal 3: subscriber_filter só na tag de teste", () => {
     const b = { subject: "Manchete", subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] };
-    assert.equal(isKitTestBroadcast(b, { testTagIds: [42] }), true);
+    assert.equal(isKitTestBroadcast(b, { testTagIds: new Set([42]) }), true);
     assert.equal(isKitTestBroadcast(b), false, "sem o id da tag em mãos, o sinal 3 não dispara");
   });
 
   it("edição real (filtro vazio, assunto normal, id não registrado) nunca é teste", () => {
     assert.equal(
       isKitTestBroadcast({ id: 555, subject: "Modelos se replicam sozinhos", subscriber_filter: [] }, {
-        testBroadcastIds: [556],
-        testTagIds: [42],
+        testBroadcastIds: new Set([556]),
+        testTagIds: new Set([42]),
       }),
       false,
     );
@@ -92,5 +97,58 @@ describe("reconcile-send-audiences: pickLatestRealKitBroadcast (#10395)", () => 
 
   it("só testes entre os completed → null (o guard reporta measured:false, nunca mede 1)", () => {
     assert.equal(pickLatestRealKitBroadcast([b(2, "[teste] x", "2026-10-18T22:00:00Z")]), null);
+  });
+  it("measureKitRecentDelivery: só testes → measured:false (null do picker), sem buscar stats", async () => {
+    let statsCalls = 0;
+    const r = await measureKitRecentDelivery({
+      listBroadcasts: (async () => ({
+        broadcasts: [b(2, "[teste] x", "2026-10-18T22:00:00Z")],
+        pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 50 },
+      })) as unknown as KitRecentDeliveryDeps["listBroadcasts"],
+      getBroadcastStats: async () => {
+        statsCalls++;
+        return { recipients: 1 };
+      },
+    });
+    assert.equal(r.measured, false);
+    assert.equal(statsCalls, 0);
+  });
+
+  it("measureKitRecentDelivery: mede a edição real, nunca o test-send mais recente", async () => {
+    const asked: number[] = [];
+    const r = await measureKitRecentDelivery({
+      listBroadcasts: (async () => ({
+        broadcasts: [b(1, "Manchete real", "2026-10-18T09:00:00Z"), b(2, "[teste] Manchete real", "2026-10-18T22:00:00Z")],
+        pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 50 },
+      })) as unknown as KitRecentDeliveryDeps["listBroadcasts"],
+      getBroadcastStats: async (id) => {
+        asked.push(id);
+        return { recipients: 1234 };
+      },
+    });
+    assert.deepEqual(r, { platform: "kit", measured: true, recipients: 1234 });
+    assert.deepEqual(asked, [1]);
+  });
+});
+
+describe("makeKitTestBroadcastPredicate", () => {
+  it("materializa os sinais uma vez e filtra a lista com os 3 sinais", () => {
+    const isTest = makeKitTestBroadcastPredicate({ testBroadcastIds: ["556"], testTagIds: [42] });
+    const lista = [
+      { id: 555, subject: "Edição real", subscriber_filter: [] },
+      { id: 556, subject: "Sem prefixo, mas registrado" },
+      { id: 557, subject: "[teste] Manchete" },
+      { id: 558, subject: "Manchete", subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] },
+    ];
+    assert.deepEqual(
+      lista.filter((b) => !isTest(b)).map((b) => b.id),
+      [555],
+    );
+  });
+
+  it("sem sinais, só o prefixo conta", () => {
+    const isTest = makeKitTestBroadcastPredicate();
+    assert.equal(isTest({ id: 1, subject: "[teste] X" }), true);
+    assert.equal(isTest({ id: 1, subject: "X" }), false);
   });
 });
