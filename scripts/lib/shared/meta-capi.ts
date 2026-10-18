@@ -609,6 +609,35 @@ export function sanitizePersistedMatchSignals(raw: {
   return out;
 }
 
+/** #10393 item 2: quais dos 3 sinais VIERAM (valor não-vazio) e foram
+ * DESCARTADOS pela sanitização. `false` tanto pra "nunca veio" quanto pra
+ * "veio e passou" — é o que separa as três situações no resumo do lote. */
+export interface MatchSignalRejections {
+  clientIpAddress: boolean;
+  clientUserAgent: boolean;
+  fbp: boolean;
+}
+
+/**
+ * #10393 item 2: mesma régua de `sanitizePersistedMatchSignals`, mas devolve
+ * quais campos tinham valor e foram rejeitados (IPv6 com zone id, UA só de
+ * caractere de controle, fbp fora do regex...). Sem isso o lote não
+ * distinguia "o cadastro não gravou" de "gravou lixo / foi editado à mão". @pure
+ */
+export function matchSignalRejections(raw: {
+  clientIpAddress?: string | null;
+  clientUserAgent?: string | null;
+  fbp?: string | null;
+}): MatchSignalRejections {
+  const kept = sanitizePersistedMatchSignals(raw);
+  const came = (v: string | null | undefined): boolean => (v ?? "").trim() !== "";
+  return {
+    clientIpAddress: came(raw.clientIpAddress) && !kept.clientIpAddress,
+    clientUserAgent: came(raw.clientUserAgent) && !kept.clientUserAgent,
+    fbp: came(raw.fbp) && !kept.fbp,
+  };
+}
+
 /**
  * Minimização (#8543): decide QUAIS sinais do request de cadastro podem ir
  * pro ESP. Regras, nesta ordem:
@@ -648,21 +677,115 @@ export interface MatchSignalFieldNames {
   KIT_ORIGEM_FBP_FIELD?: string;
 }
 
+/** #10393 item 2: estado module-level (vive enquanto o ISOLATE do Worker
+ * viver) — um aviso por var ausente, não um por cadastro. Mesmo racional de
+ * `warnExternalIdFieldMissingOnce` (`visitor-id.ts`). */
+const matchSignalFieldMissingWarned = new Set<string>();
+
+/** Só pra testes: zera o "já avisei" do isolate. */
+export function resetMatchSignalFieldWarningsForTest(): void {
+  matchSignalFieldMissingWarned.clear();
+}
+
+function warnMatchSignalFieldMissingOnce(worker: string, hint: keyof MatchSignalFieldNames): void {
+  if (matchSignalFieldMissingWarned.has(hint)) return;
+  matchSignalFieldMissingWarned.add(hint);
+  // `console.warn`: config pendente, não falha do worker. Nunca o VALOR do sinal.
+  console.warn(JSON.stringify({ event: "match_signal_field_missing", worker, hint }));
+}
+
 /**
  * #8543: escreve os sinais (já minimizados por `selectPersistableMatchSignals`)
  * no mapa `fields` do POST de criação do Kit. Guard duplo, mesmo padrão dos
  * `KIT_ORIGEM_*`: env configurada E valor presente. Compartilhada pelos
- * workers `poll` e `cursos` (sem import cross-worker). Muta `fields`. @pure
+ * workers `poll` e `cursos` (sem import cross-worker). Muta `fields`.
+ *
+ * #10393 item 2: sinal presente com a var ausente avisa UMA vez por isolate
+ * (`match_signal_field_missing`) — antes, desligar a coleta num worker só
+ * derrubava o EMQ, sem sinal nenhum. Devolve os nomes de campo gravados (o
+ * retry sem os opcionais, item 3, precisa saber quais tirar).
  */
 export function applyMatchSignalFields(
   fields: Record<string, string>,
   names: MatchSignalFieldNames,
   signals: PersistedMatchSignals | undefined,
-): void {
-  if (!signals) return;
-  if (names.KIT_ORIGEM_CLIENTIP_FIELD && signals.clientIpAddress) fields[names.KIT_ORIGEM_CLIENTIP_FIELD] = signals.clientIpAddress;
-  if (names.KIT_ORIGEM_USERAGENT_FIELD && signals.clientUserAgent) fields[names.KIT_ORIGEM_USERAGENT_FIELD] = signals.clientUserAgent;
-  if (names.KIT_ORIGEM_FBP_FIELD && signals.fbp) fields[names.KIT_ORIGEM_FBP_FIELD] = signals.fbp;
+  worker = "unknown",
+): string[] {
+  if (!signals) return [];
+  const written: string[] = [];
+  const pairs: Array<[keyof MatchSignalFieldNames, string | undefined]> = [
+    ["KIT_ORIGEM_CLIENTIP_FIELD", signals.clientIpAddress],
+    ["KIT_ORIGEM_USERAGENT_FIELD", signals.clientUserAgent],
+    ["KIT_ORIGEM_FBP_FIELD", signals.fbp],
+  ];
+  for (const [envName, value] of pairs) {
+    if (!value) continue;
+    const fieldName = names[envName];
+    if (fieldName) {
+      fields[fieldName] = value;
+      written.push(fieldName);
+    } else {
+      warnMatchSignalFieldMissingOnce(worker, envName);
+    }
+  }
+  return written;
+}
+
+/**
+ * #10393 item 3: troca cada ocorrência dos valores dados (IP, UA, fbp,
+ * e-mail) por `[redacted]` — o corpo de erro do Kit pode ecoar o payload e
+ * vai pro log do Worker. Valores vazios/curtos (< 3) são ignorados pra não
+ * picotar o texto. @pure
+ */
+export function redactLogValues(text: string, values: ReadonlyArray<string | undefined>): string {
+  let out = text;
+  const uniq = [...new Set(values.filter((v): v is string => typeof v === "string" && v.trim().length >= 3))];
+  // Mais longo primeiro: um valor contido em outro (IP dentro do UA) não deixa sobra.
+  uniq.sort((a, b) => b.length - a.length);
+  for (const v of uniq) {
+    out = out.split(v).join("[redacted]");
+    // JSON escapa `/` e `"` — o eco do Kit pode vir na forma escapada.
+    const jsonForm = JSON.stringify(v).slice(1, -1);
+    if (jsonForm !== v) out = out.split(jsonForm).join("[redacted]");
+  }
+  return out;
+}
+
+/**
+ * #10393 item 3: os sinais de match vão no MESMO `POST /v4/subscribers` que
+ * cria o assinante. Se o Kit recusar com 422 e houver campo de sinal no
+ * corpo, tenta UMA vez de novo sem eles — o cadastro nunca pode falhar por
+ * causa de um campo opcional. Não dá pra saber se o 422 foi MESMO por eles;
+ * o retry é seguro de qualquer jeito (se falhar de novo, a causa é outra e o
+ * caller loga a 2ª resposta). Exceção do `post` propaga pro caller (que já
+ * trata rede/timeout). Nunca loga valor de sinal nem e-mail.
+ */
+export async function postKitCreateWithSignalFallback(opts: {
+  post: (body: Record<string, unknown>) => Promise<Response>;
+  body: Record<string, unknown>;
+  signalFieldNames: readonly string[];
+  redactValues: ReadonlyArray<string | undefined>;
+  log: (msg: string) => void;
+}): Promise<Response> {
+  const first = await opts.post(opts.body);
+  if (first.status !== 422 || opts.signalFieldNames.length === 0) return first;
+  const fields = opts.body.fields as Record<string, string> | undefined;
+  if (!fields || !opts.signalFieldNames.some((k) => k in fields)) return first;
+
+  const firstText = await first.text().catch(() => "<unreadable>");
+  opts.log(
+    JSON.stringify({
+      event: "kit_create_422_retry_without_match_signals",
+      dropped: opts.signalFieldNames,
+      body: redactLogValues(firstText, opts.redactValues).slice(0, 300),
+    }),
+  );
+  const rest: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) if (!opts.signalFieldNames.includes(k)) rest[k] = v;
+  const retryBody: Record<string, unknown> = { ...opts.body };
+  if (Object.keys(rest).length > 0) retryBody.fields = rest;
+  else delete retryBody.fields;
+  return opts.post(retryBody);
 }
 
 export type MetaCapiActionSource = "website" | "system_generated" | "email";

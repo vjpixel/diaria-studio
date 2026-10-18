@@ -64,8 +64,10 @@ import {
   readCookieValue,
   selectPersistableMatchSignals,
   applyMatchSignalFields,
+  postKitCreateWithSignalFallback,
+  redactLogValues,
   type PersistedMatchSignals,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543, #10393
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
@@ -864,7 +866,7 @@ async function subscribeToKit(
   // #8543 (EMQ): sinais de match pro `SubscriptionConfirmed` — mesmo guard
   // duplo (env configurado E valor presente); minimização já aplicada em
   // `selectPersistableMatchSignals` no handler.
-  applyMatchSignalFields(fields, env, origin.matchSignals);
+  const signalFieldNames = applyMatchSignalFields(fields, env, origin.matchSignals, "poll");
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -880,19 +882,33 @@ async function subscribeToKit(
     state: createState,
   };
   if (Object.keys(fields).length > 0) body.fields = fields;
+  const redactValues = [
+    origin.matchSignals?.clientIpAddress,
+    origin.matchSignals?.clientUserAgent,
+    origin.matchSignals?.fbp,
+    input.email,
+  ];
 
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/subscribers`, {
-      method: "POST",
-      headers: {
-        "X-Kit-Api-Key": apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      // Mesmo timeout/rationale de SUBSCRIBE_FETCH_TIMEOUT_MS (Beehiiv) —
-      // um POST simples de assinatura não deve travar a resposta ao usuário.
-      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+    // #10393 item 3: 422 com campo de sinal no corpo → 1 retry sem eles.
+    res = await postKitCreateWithSignalFallback({
+      post: (b) =>
+        fetchImpl(`${base}/subscribers`, {
+          method: "POST",
+          headers: {
+            "X-Kit-Api-Key": apiKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(b),
+          // Mesmo timeout/rationale de SUBSCRIBE_FETCH_TIMEOUT_MS (Beehiiv) —
+          // um POST simples de assinatura não deve travar a resposta ao usuário.
+          signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
+        }),
+      body,
+      signalFieldNames,
+      redactValues,
+      log: (m) => console.error(`[subscribeToKit] ${m}`),
     });
   } catch (err) {
     // #6048 achado ao vivo (25/08/2026, verificação do rollout do worker
@@ -997,8 +1013,9 @@ async function subscribeToKit(
   }
   // #6048 — mesmo racional do catch acima: loga o corpo do erro do Kit
   // (truncado, sem incluir o header de auth) em vez de descartar em silêncio.
+  // #10393 item 3: o corpo de erro pode ecoar o payload — IP/UA/fbp/e-mail redigidos.
   const bodyText = await res.text().catch(() => "<unreadable>");
-  console.error(`[subscribeToKit] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
+  console.error(`[subscribeToKit] Kit respondeu ${res.status}: ${redactLogValues(bodyText, redactValues).slice(0, 500)}`);
   return { ok: false, status: res.status, reason: "subscribe_error" };
 }
 
