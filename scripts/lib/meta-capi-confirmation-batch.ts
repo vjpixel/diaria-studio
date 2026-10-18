@@ -117,6 +117,7 @@ import {
   META_CLICK_ID_PREFIX,
   buildFbcFromClickId,
   computeConfirmationEventId,
+  matchSignalRejections,
   sanitizePersistedMatchSignals,
   sendCompleteRegistrationEvent,
   type MetaCapiClientSignals,
@@ -260,6 +261,12 @@ export interface MetaConfirmationSummary {
   withClientIp: number;
   withUserAgent: number;
   withFbp: number;
+  /** #10393 item 2: dos `toSend`, quantos tinham o campo gravado no Kit mas
+   *  com valor DESCARTADO na revalidação (editado à mão, IPv6 com zone id, fbp
+   *  fora da forma). `with* + rejected*` = veio; o resto de `toSend` = nunca veio. */
+  rejectedClientIp: number;
+  rejectedUserAgent: number;
+  rejectedFbp: number;
   sent: number;
   failed: number;
   failedPermanent: number;
@@ -381,6 +388,9 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
     withClientIp: 0,
     withUserAgent: 0,
     withFbp: 0,
+    rejectedClientIp: 0,
+    rejectedUserAgent: 0,
+    rejectedFbp: 0,
     sent: 0,
     failed: 0,
     failedPermanent: 0,
@@ -442,6 +452,21 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
     if (sig?.clientIpAddress) summary.withClientIp++;
     if (sig?.clientUserAgent) summary.withUserAgent++;
     if (sig?.fbp) summary.withFbp++;
+    const rej = matchSignalRejections({
+      clientIpAddress: p.cand.clientIp,
+      clientUserAgent: p.cand.clientUserAgent,
+      fbp: p.cand.fbp,
+    });
+    if (rej.clientIpAddress) summary.rejectedClientIp++;
+    if (rej.clientUserAgent) summary.rejectedUserAgent++;
+    if (rej.fbp) summary.rejectedFbp++;
+  }
+  const rejectedTotal = summary.rejectedClientIp + summary.rejectedUserAgent + summary.rejectedFbp;
+  if (rejectedTotal > 0) {
+    log(
+      `sinais de match descartados na revalidação (veio valor, não passou): ip=${summary.rejectedClientIp} ` +
+        `ua=${summary.rejectedUserAgent} fbp=${summary.rejectedFbp} — campo editado à mão ou gravado fora da forma.`,
+    );
   }
 
   if (effectiveDryRun) {

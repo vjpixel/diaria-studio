@@ -28,8 +28,10 @@ import {
   readCookieValue,
   selectPersistableMatchSignals,
   applyMatchSignalFields,
+  postKitCreateWithSignalFallback,
+  redactLogValues,
   type PersistedMatchSignals,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543, #10393
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 import { isAllowedClientUtmSource, resolveOrigemPagaWithClickIdFallback } from "../../../scripts/lib/shared/client-utm-allowlist.ts"; // #7535 (Camada 1), #8553
@@ -351,7 +353,7 @@ async function subscribeToKit(
     warnExternalIdFieldMissingOnce("cursos", "kit");
   }
   // #8543 (EMQ): sinais de match pro `SubscriptionConfirmed` (guard duplo).
-  applyMatchSignalFields(fields, env, origin.matchSignals);
+  const signalFieldNames = applyMatchSignalFields(fields, env, origin.matchSignals, "cursos");
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -370,13 +372,31 @@ async function subscribeToKit(
     state: createState,
   };
   if (Object.keys(fields).length > 0) body.fields = fields;
+  const redactValues = [
+    origin.matchSignals?.clientIpAddress,
+    origin.matchSignals?.clientUserAgent,
+    origin.matchSignals?.fbp,
+    input.email,
+  ];
 
   let res: Response;
   try {
-    res = await fetchImpl(`${base}/subscribers`, {
-      method: "POST",
-      headers: { "X-Kit-Api-Key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+    // #10393 item 3: 422 com campo de sinal no corpo → 1 retry sem eles.
+    res = await postKitCreateWithSignalFallback({
+      post: (b) =>
+        fetchImpl(`${base}/subscribers`, {
+          method: "POST",
+          headers: { "X-Kit-Api-Key": apiKey, "Content-Type": "application/json" },
+          body: JSON.stringify(b),
+          // #10393 item 4: era o único POST do Kit no cursos sem timeout
+          // (o vínculo DOI já usava CURSOS_KIT_FETCH_TIMEOUT_MS; o poll passa
+          // SUBSCRIBE_FETCH_TIMEOUT_MS aqui).
+          signal: AbortSignal.timeout(CURSOS_KIT_FETCH_TIMEOUT_MS),
+        }),
+      body,
+      signalFieldNames,
+      redactValues,
+      log: (m) => console.error(`[cursos] ${m}`),
     });
   } catch (err) {
     console.error("[cursos] fetch pra Kit lançou:", err);
@@ -413,8 +433,9 @@ async function subscribeToKit(
   // #6048 (achado ao vivo no worker poll, 25/08/2026): branch de erro não-2xx
   // era o único ponto silencioso aqui (o catch de exceção já logava) — foi
   // exatamente esse tipo de silêncio que escondeu um KIT_API_KEY inválido.
+  // #10393 item 3: o corpo de erro pode ecoar o payload — IP/UA/fbp/e-mail redigidos.
   const bodyText = await res.text().catch(() => "<unreadable>");
-  console.error(`[cursos] Kit respondeu ${res.status}: ${bodyText.slice(0, 500)}`);
+  console.error(`[cursos] Kit respondeu ${res.status}: ${redactLogValues(bodyText, redactValues).slice(0, 500)}`);
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
