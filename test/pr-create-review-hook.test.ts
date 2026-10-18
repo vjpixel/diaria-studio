@@ -1662,21 +1662,27 @@ describe("extractPrNumberFromUrl (#6920)", () => {
 });
 
 describe("ensureCloseKeywords (#6920)", () => {
-  it("anexa 'Closes #N' via gh pr edit quando o corpo só tem a forma em português", () => {
+  it("anexa 'Closes #N' (escrita via writeFn, #10442) quando o corpo só tem a forma em português", () => {
     const calls: [string, string[]][] = [];
     const execFn = (cmd: string, args: string[]) => {
       calls.push([cmd, args]);
       if (args[1] === "view") return "Fecha #6920\n";
       return "";
     };
-    const result = ensureCloseKeywords("https://github.com/o/r/pull/6920", { execFn });
+    const writes: [number, string][] = [];
+    const writeFn = (num: number, body: string) => {
+      writes.push([num, body]);
+      return { ok: true };
+    };
+    const result = ensureCloseKeywords("https://github.com/o/r/pull/6920", { execFn, writeFn });
     assert.equal(result.applied, true);
     assert.equal(result.addendum, "Closes #6920");
-    assert.equal(calls.length, 2);
+    // Só a leitura passa por execFn — a escrita nunca é `gh pr edit` (#10442).
+    assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], ["gh", ["pr", "view", "6920", "--json", "body", "-q", ".body"]]);
-    assert.equal(calls[1][0], "gh");
-    assert.deepEqual(calls[1][1].slice(0, 2), ["pr", "edit"]);
-    assert.match(calls[1][1][calls[1][1].length - 1], /Closes #6920/);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0][0], 6920);
+    assert.match(writes[0][1], /Closes #6920/);
   });
 
   it("não chama 'gh pr edit' quando o corpo já está correto", () => {

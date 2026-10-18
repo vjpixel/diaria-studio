@@ -16,6 +16,10 @@
  *   # o que cada post de um dia recebe (AAAA-MM-DD ou AAMMDD)
  *   npx tsx scripts/social-schedule-rotation.ts --date 261020 [--json]
  *
+ *   # #10443: edição publicada com o --day-offset manual dos publicadores —
+ *   # --date vira a data da EDIÇÃO e o plano mostrado é o do dia de publicação
+ *   npx tsx scripts/social-schedule-rotation.ts --date 261020 --day-offset 1
+ *
  *   # só o horário (HH:MM) do artigo semanal do LinkedIn da segunda — Passo 9 de /diaria-linkedin-semanal
  *   npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date 261026
  *
@@ -60,6 +64,23 @@ const ROOT = resolve(import.meta.dirname, "..");
 export function parseCliDate(s: string): CivilDate {
   if (/^\d{6}$/.test(s)) return parseIsoCivilDate(`20${s.slice(0, 2)}-${s.slice(2, 4)}-${s.slice(4, 6)}`);
   return parseIsoCivilDate(s);
+}
+
+/**
+ * Pure (#10443): dia cujo plano o `--date` mostra. Sem `--day-offset`, é o
+ * próprio `--date` (comportamento de sempre). Com ele, `--date` é a data da
+ * EDIÇÃO e o post sai `dayOffset` dias depois, como no `--day-offset` manual de
+ * `publish-facebook.ts`/`publish-linkedin.ts` — mesma conta de
+ * `publishDateForEdition` com override. Valor não inteiro lança.
+ */
+export function resolveCliPlanDate(ds: string, dayOffset?: string): CivilDate {
+  const date = parseCliDate(ds);
+  if (dayOffset === undefined) return date;
+  const n = Number(dayOffset);
+  if (!/^-?\d+$/.test(dayOffset.trim()) || !Number.isInteger(n)) {
+    throw new Error(`--day-offset inválido: '${dayOffset}' (esperado inteiro).`);
+  }
+  return n === 0 ? date : civilFromDayNumber(civilDayNumber(date) + n);
 }
 
 function formatTable(rows: RotationPlanRow[]): string {
@@ -108,7 +129,10 @@ function main(): void {
   } else {
     const ds = get("--date");
     if (!ds) throw new Error("passe --plan, --date ou --linkedin-article --date.");
-    from = to = parseCliDate(ds);
+    from = to = resolveCliPlanDate(ds, has("--day-offset") ? (get("--day-offset") ?? "") : undefined);
+    if (has("--day-offset") && !has("--json")) {
+      console.error(`[social-schedule-rotation] edição ${ds} + --day-offset ${get("--day-offset")}: plano do dia ${formatCivilDate(from)}.`);
+    }
   }
 
   let rows = buildRotationPlan(rot, base, from, to);

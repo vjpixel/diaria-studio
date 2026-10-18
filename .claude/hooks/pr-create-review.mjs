@@ -112,9 +112,9 @@
 // by the skill's own coordinator — see that file's docblock for the split
 // rationale. Keep the two in sync by hand; each side has its own test file.
 
-import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
@@ -917,37 +917,117 @@ export function extractPrNumberFromUrl(prUrl) {
 }
 
 /**
- * Lê o corpo atual da PR recém-criada via `gh pr view`, computa o addendum
- * (função pura acima) e, se necessário, anexa via `gh pr edit --body`. Corrige
- * em vez de reclamar (Passo 2a da #6920) — o texto em português continua
- * sendo o que o humano lê, o `Closes #N` em inglês é só o que falta pro
- * GitHub entender. Fail-soft total: qualquer erro (gh indisponível, PR
- * deletada entre create e este passo, JSON malformado) nunca propaga — este
- * hook não pode bloquear nem atrasar a criação da PR, que já aconteceu.
+ * #10442: script que grava o corpo da PR (REST + releitura pós-escrita, falha
+ * alto). Spawnado como subprocesso — nunca importado: este hook é
+ * self-contained por design (import estático de `.ts` quebraria o hook inteiro
+ * num Node sem type-stripping, ver docblock de `stripQuotedSpans` abaixo).
+ * Caminho relativo à raiz do checkout em que a sessão roda (`cwd`), que é onde
+ * o `gh` também resolve `{owner}/{repo}`.
  */
-export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
+export const SAFE_EDIT_SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
+
+/**
+ * Grava `body` na PR `num` via `scripts/lib/gh-pr-safe-edit.ts --body-file`
+ * (#10442). Antes era `gh pr edit --body`, que esbarra em `projectCards`
+ * (Projects classic) e pode sair `exit 0` sem alterar o corpo (#6292) — o
+ * hook reportava `applied: true` sem nada gravado. O arquivo do corpo vai pro
+ * tmpdir do SO (nunca pra árvore do checkout, item 20 de
+ * `context/overnight-dispatch-rules.md`) e é apagado no fim.
+ *
+ * `shell: true` — mesma razão de `block-pr-create-orchestrator-snapshot-stale.mjs`:
+ * `npx` é wrapper `.cmd` no Windows (#6777). Como o shell não aspa argumento
+ * sozinho, o caminho do arquivo vai entre aspas duplas (tmpdir do Windows pode
+ * ter espaço no nome do usuário).
+ */
+export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.cwd() } = {}) {
+  let dir;
   try {
-    const num = extractPrNumberFromUrl(prUrl);
+    dir = mkdtempSync(join(tmpdir(), "pr-create-review-"));
+    const file = join(dir, "body.md");
+    writeFileSync(file, body, "utf8");
+    const result = spawnFn("npx", ["tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", `"${file}"`], {
+      cwd,
+      encoding: "utf8",
+      // Boot do tsx + PATCH + releitura; folga sobre os ~2-3s medidos.
+      timeout: 60_000,
+      shell: true,
+      windowsHide: true,
+    });
+    if (!result || result.error) {
+      return { ok: false, error: String(result?.error?.message ?? result?.error ?? "spawn falhou") };
+    }
+    if (result.status !== 0) {
+      const out = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+      return { ok: false, error: out.slice(0, 500) || `gh-pr-safe-edit saiu com status ${result.status}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // tmpdir do SO — sobra inofensiva.
+      }
+    }
+  }
+}
+
+/**
+ * Lê o corpo atual da PR recém-criada via `gh pr view`, computa o addendum
+ * (função pura acima) e, se necessário, anexa via `writePrBodySafe` (#10442 —
+ * REST + releitura, nunca `gh pr edit --body`). Corrige em vez de reclamar
+ * (Passo 2a da #6920) — o texto em português continua sendo o que o humano
+ * lê, o `Closes #N` em inglês é só o que falta pro GitHub entender. Nunca
+ * lança: qualquer erro (gh indisponível, PR deletada entre create e este
+ * passo, JSON malformado) vira `applied: false` — este hook não pode bloquear
+ * nem atrasar a criação da PR, que já aconteceu. A falha de ESCRITA, porém,
+ * volta como `reason: "write-failed"` + `error`, e o chamador a expõe no
+ * contexto da sessão (#10442): sumir em silêncio era o defeito.
+ */
+export function ensureCloseKeywords(prUrl, { execFn = execFileSync, writeFn = writePrBodySafe } = {}) {
+  let num;
+  let addendum;
+  let newBody;
+  try {
+    num = extractPrNumberFromUrl(prUrl);
     if (!num) return { applied: false, reason: "no-pr-number" };
-    // windowsHide (#8017) nas 2 chamadas abaixo — mesma razão de
-    // resolveMainRepoRoot acima.
+    // windowsHide (#8017) — mesma razão de resolveMainRepoRoot acima.
     const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
       encoding: "utf8",
       timeout: 10_000,
       windowsHide: true,
     });
-    const addendum = computeCloseKeywordAddendum(body);
+    addendum = computeCloseKeywordAddendum(body);
     if (!addendum) return { applied: false, reason: "not-needed" };
-    const newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
-    execFn("gh", ["pr", "edit", String(num), "--body", newBody], {
-      encoding: "utf8",
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    return { applied: true, addendum };
+    newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
   } catch {
     return { applied: false, reason: "error" };
   }
+  let write;
+  try {
+    write = writeFn(num, newBody);
+  } catch (e) {
+    write = { ok: false, error: String(e?.message ?? e) };
+  }
+  if (!write?.ok) return { applied: false, reason: "write-failed", pr: num, addendum, error: write?.error ?? "sem detalhe" };
+  return { applied: true, addendum };
+}
+
+/**
+ * #10442: aviso pro contexto da sessão quando o `Closes #N` não pôde ser
+ * gravado. `null` quando não há nada a avisar (aplicado, desnecessário, ou
+ * erro de LEITURA — esse já é fail-soft desde o #6920 e não deixa a PR pior).
+ */
+export function closeKeywordWarning(result) {
+  if (!result || result.reason !== "write-failed") return null;
+  return (
+    `⚠️ #10442: o corpo desta PR cita a issue só em português e o hook NÃO conseguiu anexar ` +
+    `"${result.addendum}" (o GitHub não fecha a issue sem ele). Anexe à mão: ` +
+    `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr ${result.pr} --body-file {arquivo no scratchpad}. ` +
+    `Erro: ${result.error}`
+  );
 }
 
 /**
@@ -1140,7 +1220,7 @@ if (
         // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
         // "Closes #N" ANTES do review — melhor esforço, nunca bloqueia o
         // resto do hook se falhar (fail-soft dentro de ensureCloseKeywords).
-        ensureCloseKeywords(prUrl);
+        const closeWarning = closeKeywordWarning(ensureCloseKeywords(prUrl));
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
@@ -1151,7 +1231,8 @@ if (
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PostToolUse",
-              additionalContext: buildReviewInstruction(prUrl, effort, warning),
+              additionalContext:
+                (closeWarning ? `${closeWarning}\n\n` : "") + buildReviewInstruction(prUrl, effort, warning),
             },
           }),
         );
