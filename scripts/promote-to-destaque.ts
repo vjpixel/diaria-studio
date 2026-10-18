@@ -36,7 +36,9 @@
  *   4. `03-social.md`: seções `## d{N}` renumeradas;
  *   5. `_internal/intentional-error.json` (`location` + `description`/`reveal`, #10113), carimbos de social/
  *      carrossel, `fact-check-sources/`, `04-crop-review.json`,
- *      `06-public-images.json` (chaves das posições deslocadas invalidadas).
+ *      `06-public-images.json` (chaves das posições deslocadas invalidadas),
+ *      `04-estilo-regen.json` (estado do plano de Noite Estrelada segue a
+ *      imagem; posição nova sem estado, #10335).
  *
  * O que NÃO faz (exige LLM, geração de imagem ou decisão editorial — sai
  * como `next_steps` no JSON):
@@ -79,6 +81,7 @@ import {
   intentionalErrorJsonPath,
 } from "./lib/intentional-errors.ts";
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
+import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -483,6 +486,18 @@ export function promoteToDestaque(
   if (rewritten.includes(publicPath)) {
     warnings.push("06-public-images.json: chaves das posições deslocadas removidas — rodar upload-images-public.ts de novo.");
   }
+
+  // 8. _internal/04-estilo-regen.json (#10335): o estado do plano de Noite
+  //    Estrelada segue a imagem deslocada; a posição nova não herda nada (o
+  //    `pending` antigo dela julgaria a imagem nova como regenerada).
+  const estilo = updateEstiloRegenStateFile(
+    internalDir,
+    (d) => reorderEstiloRegenState(d, newOrder),
+    dryRun,
+    (path, content) => writeFilesVerified([{ path, content }], "promote-to-destaque"),
+  );
+  if (estilo.rewritten) rewritten.push(estilo.rewritten);
+  if (estilo.warning) warnings.push(estilo.warning);
 
   const d = `d${position}`;
   const nextSteps = [

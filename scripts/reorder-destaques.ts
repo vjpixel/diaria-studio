@@ -49,6 +49,10 @@
  *     (`invalidatePublicImagesForReorder`), com warning pedindo re-upload —
  *     as URLs públicas continuam apontando pra arte antiga até o editor
  *     rodar `upload-images-public.ts` de novo.
+ *   - `_internal/04-estilo-regen.json` (#10335) — estado do plano de
+ *     regeneração por Noite Estrelada remapeado por posição
+ *     (`reorderEstiloRegenState`): segue a imagem, senão o `pending` da
+ *     posição antiga julga a imagem que chegou como regenerada.
  *
  * Uso:
  *   # D2 vira D1, D1 vira D2, D3 stay:
@@ -121,6 +125,7 @@ import {
 import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
+import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -1770,6 +1775,25 @@ function main(): void {
           warnings.push(reuploadMsg);
         }
       }
+    }
+  }
+
+  // 8. _internal/04-estilo-regen.json (#10335) — o estado do plano de
+  // regeneração por Noite Estrelada é chaveado por posição; sem remapear, o
+  // `pending` vivo da posição antiga é comparado com a imagem que chegou e a
+  // troca passa por regeneração (destaque vai a `exhausted` sem nunca ter
+  // sido regerado). O estado segue a imagem, como o 04-crop-review.json.
+  {
+    const r = updateEstiloRegenStateFile(
+      internalDir,
+      (d) => reorderEstiloRegenState(d, args.newOrder),
+      args.dryRun,
+      (path, content) => writePostBatchVerified([{ path, content }], args.newOrder),
+    );
+    if (r.rewritten) modified.rewritten.push(r.rewritten);
+    if (r.warning) {
+      console.warn(`WARN: reorder-destaques — ${r.warning}`);
+      warnings.push(r.warning);
     }
   }
 

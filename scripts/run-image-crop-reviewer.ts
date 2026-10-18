@@ -38,6 +38,10 @@
  *   #   (só gasta quando a imagem mudou; falha do gerador ganha nova chance;
  *   #   a contagem zera quando a imagem atual é outra, ex: swap de destaque, #10327).
  *
+ *   # 3b. (#10335) Arte trocada à mão (sem swap/reorder/promote, que já cuidam
+ *   #     disso): zera o estado do plano da posição antes de re-revisar:
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --estilo-regen-reset d1[,d2]
+ *
  *   # 4. (#10328) Falso positivo de Noite Estrelada — marca a imagem ATUAL do
  *   #    destaque (todos os ratios acusados, ou só `dN:4x5`), fora do veredito:
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --mark-false-positive d1[,d2:4x5]
@@ -65,6 +69,11 @@ import {
   readEstiloFalsePositiveMd5s,
   isEstiloFalsePositive,
 } from "./lib/estilo-false-positives.ts";
+import {
+  ESTILO_REGEN_PER_DESTAQUE_KEYS, // #10335
+  clearEstiloRegenDestaques,
+  updateEstiloRegenStateFile,
+} from "./lib/estilo-regen-state.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -381,6 +390,24 @@ export function parseEstiloRegenRan(raw: string): EstiloRegenRan {
   return out;
 }
 
+/** `"d1,d3"` → destaques do `--estilo-regen-reset` (#10335). Lança em entrada inválida. */
+export function parseEstiloRegenResetTargets(raw: string): DestaqueId[] {
+  const out: DestaqueId[] = [];
+  for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
+    if (!/^d[123]$/.test(tok)) throw new Error(`--estilo-regen-reset: destaque inválido "${tok}" (esperado d1, d2, d3)`);
+    if (!out.includes(tok as DestaqueId)) out.push(tok as DestaqueId);
+  }
+  if (out.length === 0) throw new Error("--estilo-regen-reset: nenhum destaque");
+  return out;
+}
+
+// #10335: todo campo por destaque do estado precisa estar na lista que o
+// swap/reorder/promote/--estilo-regen-reset limpam ou remapeiam.
+type _EstiloRegenKeysCovered =
+  Exclude<keyof EstiloRegenState, (typeof ESTILO_REGEN_PER_DESTAQUE_KEYS)[number]> extends never ? true : never;
+const _estiloRegenKeysCovered: _EstiloRegenKeysCovered = true;
+void _estiloRegenKeysCovered;
+
 export interface EstiloRegenPlan {
   /** Destaques a regenerar agora (ficam em `state.pending` até o próximo plano). */
   regenerate: DestaqueId[];
@@ -696,6 +723,26 @@ async function main(): Promise<void> {
   // quais destaques regenerar por Noite Estrelada. Grava
   // `_internal/04-estilo-regen.json` sempre (a presença do arquivo prova que o
   // plano rodou); a tentativa só é gasta quando a imagem de fato mudou.
+  // Modo --estilo-regen-reset (#10335): o editor trocou a arte de um destaque
+  // à mão (arquivo novo, sem swap/reorder/promote). Zera o estado do plano
+  // daquela posição — o `pending` da arte antiga julgaria a nova como regerada.
+  if (args["estilo-regen-reset"]) {
+    let targets: DestaqueId[];
+    try {
+      targets = parseEstiloRegenResetTargets(args["estilo-regen-reset"]);
+    } catch (e) {
+      console.error(`[run-image-crop-reviewer] ${(e as Error).message}`);
+      process.exit(1);
+    }
+    const r = updateEstiloRegenStateFile(internalDir, (d) => clearEstiloRegenDestaques(d, targets));
+    if (r.warning) {
+      console.error(`[run-image-crop-reviewer] ${r.warning}`);
+      process.exit(1);
+    }
+    console.log(JSON.stringify({ reset: targets, rewritten: r.rewritten }, null, 2));
+    return;
+  }
+
   if (flags.has("estilo-regen-plan")) {
     let ran: EstiloRegenRan = {};
     if (args["estilo-regen-ran"]) {
