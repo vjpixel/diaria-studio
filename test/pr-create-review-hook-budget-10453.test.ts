@@ -95,7 +95,7 @@ describe("ensureCloseKeywords respeita o prazo (#10453)", () => {
     assert.ok(closeKeywordWarning(r), "aviso tem que chegar à sessão");
   });
 
-  it("prazo já vencido → nem lê o corpo", () => {
+  it("prazo já vencido → nem lê o corpo, e avisa (#10457)", () => {
     const r = ensureCloseKeywords("https://github.com/o/r/pull/1", {
       execFn: () => {
         throw new Error("não deveria ler");
@@ -104,6 +104,8 @@ describe("ensureCloseKeywords respeita o prazo (#10453)", () => {
       now: () => 10,
     });
     assert.equal(r.applied, false);
+    assert.equal(r.reason, "budget-exhausted");
+    assert.ok(closeKeywordWarning(r), "silêncio aqui era o defeito do #10457");
   });
 });
 
@@ -137,7 +139,9 @@ describe("main do hook: effort antes da escrita, escrita com prazo (#10453)", ()
   });
 
   it("ensureCloseKeywords recebe o prazo derivado do início do hook", () => {
-    assert.match(main, /ensureCloseKeywords\(prUrl,\s*\{\s*deadlineAt:\s*hookDeadline\(HOOK_STARTED_AT\)/);
+    // #10457: o prazo virou uma const compartilhada com resolveEffort.
+    assert.match(main, /const deadlineAt = hookDeadline\(HOOK_STARTED_AT\);/);
+    assert.match(main, /ensureCloseKeywords\(prUrl,\s*\{\s*deadlineAt\s*\}\)/);
     assert.match(HOOK_SRC, /const HOOK_STARTED_AT = Date\.now\(\);/);
   });
 });
