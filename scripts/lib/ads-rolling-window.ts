@@ -226,6 +226,12 @@ export const TIPO_TO_EFEITO: Readonly<Record<string, EdicaoEfeito>> = {
   // teste 2608 (27/09/2026) de propósito, pra não contaminar a comparação
   // entre braços enquanto ela ainda rodava.
   "conversion-action-secundaria": "mudanca",
+  // #10423 — troca de lance/meta de lance (tCPA, tROAS, estratégia de
+  // lance) de uma campanha em voo. "mudanca": o algoritmo de lance
+  // inteligente reentra em aprendizado, igual a qualquer edição de
+  // orçamento/segmentação. Antes deste tipo, a troca do tCPA da "Max" saiu
+  // registrada como `edicao-em-voo` (genérico), perdendo o que de fato mudou.
+  "lance-alvo": "mudanca",
 };
 
 /** Conjunto FECHADO de `tipo` válidos para `edicoes.jsonl` (#8531) — as

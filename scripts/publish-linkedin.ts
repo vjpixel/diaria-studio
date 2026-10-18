@@ -60,13 +60,15 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
+import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { extractSection, extractDestaqueBlock as extractDestaqueBlockShared, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` compartilhada + guard de scaffolding
-import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — LinkedIn não renderiza markdown
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — LinkedIn não renderiza markdown; #10441 ponto único do texto de post
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
+import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10451 — linha própria do 4º post, como no Instagram
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { runCli } from "./lib/cli-exit.ts";
@@ -192,14 +194,14 @@ export function extractPostText(socialMd: string, destaque: string): string {
   const commentRe = /\n### comment_(diaria|pixel)\b/;
   const cut = block.search(commentRe);
   const mainOnly = cut >= 0 ? block.slice(0, cut) : block;
-  const text = injectChannelLine(mainOnly.trim(), "linkedin");
+  const text = injectChannelLine(mainOnly.trim(), "linkedin", { useMelhor: destaque === USE_MELHOR_POST_ID });
   // #4309: guard no ponto de saída do texto FINAL (pós-corte dos comments) —
   // este é o texto que de fato vai pro post principal do LinkedIn.
   assertNoScaffolding(text, `destaque '${destaque}' (linkedin, post principal)`);
   // #6862: LinkedIn não renderiza markdown — achado ao vivo (editor viu `**`
   // literal no post real). Ver docstring de lib/strip-markdown-emphasis.ts
   // (nunca fazer isso na fonte — 03-social.md alimenta o carrossel também).
-  return stripMarkdownEmphasis(text);
+  return toSocialPostText(text);
 }
 
 /**
@@ -1353,6 +1355,10 @@ async function main(): Promise<number | void> {
     failed: results.filter((r) => r.status === "failed").length,
   };
 
+  // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
+  // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
+  // #10427: `um` só entra no registro se este publicador o agendou.
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), dayOffsetOverride });
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 

@@ -52,6 +52,9 @@
  *
  * Horário — `--time` (default "11:00", ver DEFAULT_WEEKLY_TIME abaixo) é uma
  * ASSUNÇÃO da implementação, não uma decisão do editor (herdada do #4101).
+ * Desde o #10305, sem `--time` e dentro da janela de
+ * `publishing.social.rotation`, sábado e domingo alternam candidatos semana a
+ * semana (`resolveWeeklyTime`).
  * Timezone vem de `platform.config.json` (`publishing.social.timezone`,
  * leitura apenas — nunca escrito por este script).
  *
@@ -182,12 +185,45 @@ import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type 
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
+import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
 import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Assunção de implementação — ver nota no cabeçalho. Override via `--time`. */
-export const DEFAULT_WEEKLY_TIME = "11:00";
+export const DEFAULT_WEEKLY_TIME = DEFAULT_WEEKLY_CAROUSEL_TIME;
+
+/**
+ * Pure (#10305): horário efetivo do carrossel semanal. Ordem: `--time`
+ * explícito > teste rotativo de fim de semana (`publishing.social.rotation`,
+ * sábado e domingo alternam candidatos semana a semana —
+ * `scripts/lib/social-schedule-rotation.ts`) > `DEFAULT_WEEKLY_TIME`. A data
+ * que decide é a de PUBLICAÇÃO (`saturday` + `dayOffset`): o modo "clicked"
+ * sai no domingo e usa o candidato do domingo.
+ */
+export function resolveWeeklyTime(opts: {
+  explicitTime?: string;
+  social: { rotation?: unknown } | null | undefined;
+  saturday: string;
+  dayOffset: number;
+}): string {
+  if (opts.explicitTime) return opts.explicitTime;
+  const { year, month, day } = parseEditionDate(opts.saturday);
+  const target = new Date(Date.UTC(year, month - 1, day + opts.dayOffset));
+  const slot = weekendRotationSlot(readSocialRotation(opts.social), {
+    year: target.getUTCFullYear(),
+    month: target.getUTCMonth() + 1,
+    day: target.getUTCDate(),
+  });
+  if (slot) {
+    console.error(
+      `[publish-weekly-social] rotação #10305: ${target.toISOString().slice(0, 10)} → ${slot.time} ` +
+        `(fixo ${DEFAULT_WEEKLY_TIME}; semana #${slot.weekIndex})`,
+    );
+    return slot.time;
+  }
+  return DEFAULT_WEEKLY_TIME;
+}
 
 /**
  * Dois carrosséis semanais (#5330, decisão do editor 260815): "highlights"
@@ -691,7 +727,9 @@ async function runOneMode(
   // repo real) — mesmo padrão de `beehiivPostsDir` acima (equivale a
   // `DEFAULT_KIT_BROADCASTS_DIR` quando `dataRoot` é o default).
   const kitBroadcastsDir = resolve(dataRoot, "kit-cache/broadcasts");
-  const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
+  // #10305: sem `--time`, o horário vem da rotação semanal (resolvido mais
+  // abaixo, com o config já lido) ou cai em DEFAULT_WEEKLY_TIME.
+  const explicitTime: string | undefined = values["time"];
   let dayOffset = DEFAULT_MODE_DAY_OFFSET[mode];
   if (values["day-offset"] != null) {
     const parsed = Number(values["day-offset"]);
@@ -1010,6 +1048,7 @@ async function runOneMode(
 
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
+  const time = resolveWeeklyTime({ explicitTime, social: platformConfig?.publishing?.social, saturday, dayOffset });
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
   // #5905: seleção manual (--force-urls) torna a intro padrão de "clicked"
   // ("As notícias de IA mais lidas da semana", #7571) factualmente incorreta

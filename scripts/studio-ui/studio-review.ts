@@ -66,7 +66,7 @@ import { substituteImagePlaceholders } from "../substitute-image-urls.ts";
 // parser/renderer que a pipeline REAL usa no Stage 4 (§4b step 3 de
 // orchestrator-stage-4.md) pra gerar `_internal/social-preview.html`, em vez
 // de reimplementar o parsing de `## d1/d2/d3` por plataforma aqui.
-import { parsePlatforms, buildSocialHtml, type ImageMap } from "../render-social-html.ts";
+import { parsePlatforms, buildSocialHtml, resolveUseMelhorCaptionTitle, type ImageMap } from "../render-social-html.ts";
 import { USE_MELHOR_POST_ID, describeUseMelhorPostStatus, loadUseMelhorPostConfigState } from "../lib/use-melhor-post.ts"; // #9568
 import { gatherUseMelhorStatusInput } from "../lib/use-melhor-status.ts"; // #9568
 import { readUseMelhorCarouselStamp } from "../lib/use-melhor-carousel.ts"; // #9568
@@ -977,12 +977,26 @@ export function buildSocialPreviewHtml(
     let useMelhorNotice: string[] | undefined;
     try {
       useMelhorNotice = describeUseMelhorPostStatus(
-        gatherUseMelhorStatusInput(editionDir, loadUseMelhorPostConfigState(resolve(import.meta.dirname, "..", ".."))),
+        gatherUseMelhorStatusInput(
+          editionDir,
+          // #10305: horário da rotação do dia (o que o Stage 5 agenda), não o fixo.
+          loadUseMelhorPostConfigState(resolve(import.meta.dirname, "..", ".."), basename(resolve(editionDir))),
+        ),
       ).lines;
     } catch {
       useMelhorNotice = undefined;
     }
-    const html = buildSocialHtml(platforms, imageMap, postPixelImageNum, editionDir, useMelhorNotice);
+    const html = buildSocialHtml(
+      platforms,
+      imageMap,
+      postPixelImageNum,
+      editionDir,
+      useMelhorNotice,
+      // #10451: título da 1ª linha da legenda do `## um`, como no publish.
+      // Vem do plano do Stage 5, que lê o `03-social.md` SALVO: com texto
+      // ainda não salvo (`overrideSocialText`), o título reflete o disco até o save.
+      resolveUseMelhorCaptionTitle(editionDir, resolve(import.meta.dirname, "..", "..")),
+    );
     return { ok: true, html };
   } catch (e) {
     const message = (e as Error).message;

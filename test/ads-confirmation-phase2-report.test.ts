@@ -49,6 +49,23 @@ describe("#8543 fase 2 — classificação de canal", () => {
     assert.equal(classifyPhase2Channel({ origem_click_id: "msclkid:x" }).channel, "outros");
     assert.equal(classifyPhase2Channel(null).channel, "outros");
   });
+
+  it("#10412: origem_paga com sufixo de campanha (fronteira de traço) é o canal pago, não 'outros' nem só-click-id", () => {
+    assert.deepEqual(classifyPhase2Channel({ origem_paga: "meta-ads-260901", origem_click_id: null }), {
+      channel: "meta",
+      viaClickIdOnly: false,
+      clickIdChannel: null,
+    });
+    assert.deepEqual(classifyPhase2Channel({ origem_paga: "Meta-Ads-260901", origem_click_id: "fbclid:x" }), {
+      channel: "meta",
+      viaClickIdOnly: false,
+      clickIdChannel: "meta",
+    });
+    assert.equal(classifyPhase2Channel({ origem_paga: "google-ads-pmax" }).channel, "google");
+    // Sem fronteira de traço não casa (mesma regra de isAllowedClientUtmSource).
+    assert.equal(classifyPhase2Channel({ origem_paga: "meta-adsxyz" }).channel, "outros");
+    assert.equal(classifyPhase2Channel({ origem_paga: "google-adsense" }).channel, "outros");
+  });
 });
 
 describe("#8543 fase 2 — buildPhase2Report", () => {
@@ -102,6 +119,57 @@ describe("#8543 fase 2 — buildPhase2Report", () => {
 
   it("janela inválida lança", () => {
     assert.throws(() => buildPhase2Report({ roster, googleIndex, metaIndex, ga4: null, since: "2026-10-18", until: "2026-09-27" }));
+  });
+});
+
+describe("#10412 — cobertura do import nunca passa de 100%", () => {
+  // Meta: 1 confirmado ativo e importado, 2 importados que saíram depois
+  // (cancelled/bounced). Antes: cobertura = 3 importados / 1 confirmado = 300%.
+  const roster10412: Phase2RosterEntry[] = [
+    { id: 11, state: "active", created_at: "2026-10-05T15:00:00Z", fields: { origem_paga: "meta-ads-260901" } },
+    { id: 12, state: "cancelled", created_at: "2026-10-05T15:00:00Z", fields: { origem_paga: "meta-ads" } },
+    { id: 13, state: "bounced", created_at: "2026-10-05T15:00:00Z", fields: { origem_paga: "meta-ads" } },
+    { id: 14, state: "active", created_at: "2026-10-05T15:00:00Z", fields: { origem_paga: "meta-ads" } },
+    { id: 21, state: "cancelled", created_at: "2026-10-05T15:00:00Z", fields: { origem_paga: "google-ads" } },
+  ];
+  const r = buildPhase2Report({
+    roster: roster10412,
+    googleIndex: { "kit-21": { status: "submitted" } },
+    metaIndex: {
+      "kit-11": { status: "sent" },
+      "kit-12": { status: "sent" },
+      "kit-13": { status: "sent" },
+      "kit-14": { status: "skipped-other-channel" },
+    },
+    ga4: null,
+    since: "2026-10-01",
+    until: "2026-10-18",
+  });
+  const m = r.rows.find((x) => x.channel === "meta")!;
+  const g = r.rows.find((x) => x.channel === "google")!;
+
+  it("numerador conta só importado E ativo; quem saiu vai para importCanalNaoAtivo", () => {
+    assert.equal(m.confirmados, 2);
+    assert.equal(m.importMeta, 3); // contagem bruta do lote preservada
+    assert.equal(m.importCanalNaoAtivo, 2);
+    assert.equal(m.coberturaImportCanal, 0.5);
+    for (const row of r.rows) {
+      if (row.coberturaImportCanal !== null) assert.ok(row.coberturaImportCanal <= 1, `${row.channel}: ${row.coberturaImportCanal}`);
+    }
+  });
+
+  it("canal sem confirmado e com importado que saiu: cobertura null, não Infinity", () => {
+    assert.equal(g.confirmados, 0);
+    assert.equal(g.importGoogle, 1);
+    assert.equal(g.importCanalNaoAtivo, 1);
+    assert.equal(g.coberturaImportCanal, null);
+  });
+
+  it("texto mostra metaOutroCanal e os importados não ativos", () => {
+    const t = renderPhase2ReportText(r);
+    assert.match(t, /1 pulados como de outro canal/);
+    assert.match(t, /Meta: 2 importado\(s\) pelo lote do canal que não estão ativos hoje/);
+    assert.doesNotMatch(t, /\d{3,}\.\d%/);
   });
 });
 

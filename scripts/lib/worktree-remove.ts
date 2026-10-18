@@ -305,9 +305,10 @@ export function resolveWorktreeRemoval(gitResult: GitRemovalResult, path: string
 /**
  * CLI standalone (#8209): `npx tsx scripts/lib/worktree-remove.ts <path>`
  * remove `path` com segurança (links primeiro, nunca seguindo pro alvo) e
- * sai 0 se o diretório deixou de existir, 1 caso contrário — usado como
- * fallback best-effort em `dispatch-glm-lane-unit.sh`, que não tem runtime
- * Node/TS pra chamar `removeWorktreeDirSafely` diretamente.
+ * sai 0 se o diretório deixou de existir, 1 caso contrário — pra scripts
+ * shell, que não têm runtime Node/TS pra chamar `removeWorktreeDirSafely`
+ * diretamente. O único consumidor (`dispatch-glm-lane-unit.sh`) virou lápide
+ * no #10431; o CLI fica como utilitário avulso.
  */
 if (isMainModule(import.meta.url)) {
   const target = process.argv[2];

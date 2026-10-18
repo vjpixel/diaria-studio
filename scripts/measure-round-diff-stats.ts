@@ -34,10 +34,14 @@
  * falhar — refs de rodada são sempre locais (nunca dependem de rede/API
  * externa), então não há degradação fail-soft aqui: se não dá pra calcular,
  * é um erro real de uso do comando, não uma condição externa indisponível.
+ *
+ * Também falha ALTA (exit 1, nada persistido, inclusive em `--dry-run`)
+ * quando `--base` não é ancestral de `--head` (#10422) — o diff sairia
+ * invertido. Ver o comentário no ponto da checagem.
  */
 import { resolve } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { getDiffLineStats } from "./lib/diff-line-stats.ts";
+import { checkIsAncestor, getDiffLineStats } from "./lib/diff-line-stats.ts";
 import { logEvent } from "./lib/run-log.ts";
 import {
   buildRoundDiffStatsRecord,
@@ -65,9 +69,30 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #10422: `base` precisa ser ancestral de `head`. Se o checkout local está
+  // ATRÁS da base (ex: `git pull` falhou por sujeira de outra sessão), o
+  // `git diff base..head` não erra — devolve o diff INVERTIDO, e persistir
+  // isso contamina a série de 7d. Escolhido checar ancestralidade em vez de
+  // medir contra `origin/master`: `origin/master` local também pode estar
+  // defasado (sem fetch) e não é o HEAD que a rodada de fato produziu —
+  // a ancestralidade é o invariante que torna `base..head` uma medida válida
+  // em qualquer cenário, e recusar é melhor que adivinhar outra ref.
+  const cwd = resolve(process.cwd());
+  const ancestry = checkIsAncestor(base, head, { cwd });
+  if (ancestry.verdict !== "ancestor") {
+    const why =
+      ancestry.verdict === "not-ancestor"
+        ? `--base ${base} não é ancestral de ${head} — o checkout está atrás da base (ou divergiu); ` +
+          `o diff sairia invertido. Atualize o checkout (git fetch && git merge --ff-only) ou passe --head origin/master.`
+        : `não foi possível verificar se ${base} é ancestral de ${head}: ${ancestry.detail}`;
+    console.error(`${LOG_PREFIX} recusado, nada persistido: ${why}`);
+    process.exit(1);
+    return;
+  }
+
   let stats;
   try {
-    stats = getDiffLineStats(base, head, { cwd: resolve(process.cwd()) });
+    stats = getDiffLineStats(base, head, { cwd });
   } catch (e) {
     console.error(`${LOG_PREFIX} ${(e as Error).message}`);
     process.exit(1);

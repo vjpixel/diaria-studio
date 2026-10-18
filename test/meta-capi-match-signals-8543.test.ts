@@ -89,6 +89,12 @@ describe("#8543 — sanitização (dos dois lados)", () => {
     assert.equal(s.fbp, undefined);
   });
 
+  it("#10428: teto do UA cabe num custom field de 255 (UA do FBAN/FBAV passa de 250)", () => {
+    assert.ok(PERSISTED_USER_AGENT_MAX <= 255);
+    const s = sanitizePersistedMatchSignals({ clientUserAgent: "y".repeat(300) });
+    assert.ok((s.clientUserAgent?.length ?? 0) <= 255);
+  });
+
   it("applyMatchSignalFields: só grava com env configurada E valor presente", () => {
     const fields: Record<string, string> = {};
     applyMatchSignalFields(fields, { KIT_ORIGEM_CLIENTIP_FIELD: "origem_client_ip" }, { clientIpAddress: "1.2.3.4", fbp: FBP });

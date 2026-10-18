@@ -1412,10 +1412,13 @@ export async function handleConfirm(
     // #8543: o clique é um request de navegador de verdade — IP/UA dele são
     // sinal legítimo do mesmo visitante (a Meta estima +32% de EMQ cada).
     // `clickId` NÃO é passado: este clique vem de e-mail, não de anúncio.
+    // #10413: `url` carrega `?email=<em claro>&t=<token>` — só origin +
+    // pathname vai pra Meta (o builder em meta-capi.ts também sanitiza; isto
+    // é a 2ª camada, explícita no ponto onde a query perigosa nasce).
     const clientSignals = requestHeaders ? extractMetaCapiClientSignals(requestHeaders) : undefined;
     const sendEvent = logMetaCapiSendResult(
       sendCompleteRegistrationEvent(
-        { email: parsed.email, eventSourceUrl: url.toString(), eventName: "Reactivation", clientSignals },
+        { email: parsed.email, eventSourceUrl: url.origin + url.pathname, eventName: "Reactivation", clientSignals },
         { accessToken: env.META_CAPI_ACCESS_TOKEN, fetchImpl },
       ),
       "reativar",

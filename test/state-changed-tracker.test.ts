@@ -42,6 +42,7 @@ import {
   filterIssuesByRoundScope,
   checkConvergenceScan,
   recordConvergenceScan,
+  findRetrackedUnworkedIssues,
   type PlanWithStateChanged,
   type PlanWithGoal,
   type ConvergenceScanIssue,
@@ -296,10 +297,19 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
   function setupFakeGh(ghResponse: {
     stdout?: string;
     exitCode?: number;
+    plan?: Record<string, unknown>;
+    /** subdiretório do plan.json (ex: "develop/261018") — #10407 infere o kind pelo path. */
+    planSubdir?: string;
   }): { planPath: string; env: NodeJS.ProcessEnv } {
     root = mkdtempSync(join(tmpdir(), "state-changed-tracker-gh-"));
-    const planPath = join(root, "plan.json");
-    writeFileSync(planPath, JSON.stringify({ goal: { target_set: [] } }, null, 2), "utf8");
+    const planDir = ghResponse.planSubdir ? join(root, ghResponse.planSubdir) : root;
+    mkdirSync(planDir, { recursive: true });
+    const planPath = join(planDir, "plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify(ghResponse.plan ?? { goal: { target_set: [] } }, null, 2),
+      "utf8",
+    );
 
     const ghDir = join(root, "bin");
     mkdirSync(ghDir);
@@ -407,6 +417,39 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     assert.match(r.stdout, /ok — nenhuma pendência de re-triagem, nenhuma issue nova fora da varredura/);
     const written = JSON.parse(readFileSync(planPath, "utf8"));
     assert.equal(written.goal.last_convergence_scan.novas_encontradas, 0);
+  });
+
+  // #10407 — regressão do caso real (develop 261018): issues já no plano
+  // como pulada/deixado-para-o-300/overnight, re-roteadas pra develop por
+  // outra sessão. Antes: "ok — nenhuma issue nova" e exit 0.
+  it("#10407: issue do plano deixado-para-o-300 re-roteada pra develop → exit 1 nomeando a issue", () => {
+    const { planPath, env } = setupFakeGh({
+      planSubdir: join("develop", "261018"),
+      plan: {
+        goal: { target_set: [10385, 10387, 10400] },
+        issues: [
+          { number: 10385, status: "pulada", motivo: "deixado-para-o-300", exec_track_painel: "overnight" },
+          { number: 10387, status: "pulada", motivo: "deixado-para-o-300", exec_track_painel: "overnight" },
+          { number: 10400, status: "pulada", motivo: "deixado-para-o-300", exec_track_painel: "overnight" },
+        ],
+      },
+      stdout: JSON.stringify([
+        { number: 10385, labels: [{ name: "develop-track" }, { name: "P2" }], body: null },
+        { number: 10387, labels: [{ name: "external-blocker" }], body: null },
+        { number: 10400, labels: [{ name: "bug" }], body: null },
+      ]),
+    });
+    const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
+      encoding: "utf8",
+      cwd: ROOT,
+      env,
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /re-classificação \(#10407\)/);
+    assert.match(r.stderr, /#10385 \(deixado-para-o-300, overnight → develop\)/);
+    assert.match(r.stderr, /#10387 \(deixado-para-o-300, overnight → bloqueada\)/);
+    assert.doesNotMatch(r.stderr, /#10400/);
+    assert.doesNotMatch(r.stdout, /^ok/);
   });
 
   // Regressão específica do Achado 1 do #5713: com `gh` indisponível, o
@@ -713,5 +756,133 @@ describe("recordConvergenceScan — I/O grava goal.last_convergence_scan", () =>
       at: "2026-08-19T10:00:00.000Z",
       novas_encontradas: 1,
     });
+  });
+});
+
+describe("findRetrackedUnworkedIssues — re-classifica issue do plano não trabalhada (#10407)", () => {
+  // Fixture do caso real: plan.json do develop 261018 (forma exata gravada).
+  const realPlan: PlanWithGoal = {
+    goal: { target_set: [10385, 10387, 10393] },
+    issues: [10385, 10387, 10393].map((number) => ({
+      number,
+      status: "pulada",
+      motivo: "deixado-para-o-300",
+      exec_track_painel: "overnight",
+      exec_track_divergiu: false,
+      source: "fresh-scan",
+    })),
+  };
+  const reroutedToDevelop: ConvergenceScanIssue[] = [10385, 10387, 10393].map((number) => ({
+    number,
+    labels: ["bug", "P2", "develop-track"],
+    body: null,
+  }));
+
+  it("caso real 261018: 3 issues pulada/deixado-para-o-300/overnight re-roteadas pra develop → as 3 acusadas", () => {
+    // Antes do #10407 o gate só via issue NOVA: as 3 estão em target_set/issues[].
+    assert.deepEqual(checkConvergenceScan(realPlan, reroutedToDevelop), {
+      status: "ok",
+      novas_encontradas: 0,
+    });
+    const got = findRetrackedUnworkedIssues(realPlan, reroutedToDevelop);
+    assert.deepEqual(
+      got.map((r) => [r.number, r.motivo, r.track_gravado, r.track_atual]),
+      [
+        [10385, "deixado-para-o-300", "overnight", "develop"],
+        [10387, "deixado-para-o-300", "overnight", "develop"],
+        [10393, "deixado-para-o-300", "overnight", "develop"],
+      ],
+    );
+  });
+
+  it("track continua overnight → nada a acusar", () => {
+    const open = reroutedToDevelop.map((i) => ({ ...i, labels: ["bug"] }));
+    assert.deepEqual(findRetrackedUnworkedIssues(realPlan, open), []);
+  });
+
+  it("issue fechada (ausente das abertas) → ignorada", () => {
+    assert.deepEqual(
+      findRetrackedUnworkedIssues(realPlan, reroutedToDevelop.slice(0, 1)).map((r) => r.number),
+      [10385],
+    );
+  });
+
+  it("track virou agendada/fora-de-rodada → não é buraco, ignorada", () => {
+    const now = new Date("2026-10-18T00:00:00Z");
+    const open: ConvergenceScanIssue[] = [
+      { number: 10385, labels: [], body: "<!-- aguardando-ate: 2026-11-01 -->" },
+      { number: 10387, labels: ["on-hold"] },
+    ];
+    assert.deepEqual(findRetrackedUnworkedIssues(realPlan, open, { now }), []);
+  });
+
+  it("status trabalhado (mergeada) re-roteado → ignorado, só 'não trabalhada' conta", () => {
+    const plan: PlanWithGoal = {
+      issues: [{ number: 1, status: "mergeada", exec_track_painel: "overnight" }],
+    };
+    assert.deepEqual(findRetrackedUnworkedIssues(plan, [{ number: 1, labels: ["develop-track"] }]), []);
+  });
+
+  it("track gravado já igual ao atual → ignorado (sessão já sabia)", () => {
+    const plan: PlanWithGoal = {
+      issues: [
+        { number: 1, status: "pulada", motivo: "claimed-por-outra-sessao", exec_track_painel: "develop" },
+      ],
+    };
+    assert.deepEqual(
+      findRetrackedUnworkedIssues(plan, [{ number: 1, labels: ["develop-track"] }], { includeClaimed: true }),
+      [],
+    );
+  });
+
+  it("claimed-por-outra-sessao só conta com includeClaimed (develop)", () => {
+    const plan: PlanWithGoal = {
+      issues: [
+        { number: 7, status: "pulada", motivo: "claimed-por-outra-sessao", exec_track_painel: "overnight" },
+      ],
+    };
+    const open: ConvergenceScanIssue[] = [{ number: 7, labels: ["external-blocker"] }];
+    assert.deepEqual(findRetrackedUnworkedIssues(plan, open), []);
+    assert.deepEqual(
+      findRetrackedUnworkedIssues(plan, open, { includeClaimed: true }).map((r) => [r.number, r.track_atual]),
+      [[7, "bloqueada"]],
+    );
+  });
+
+  it("forma legada (motivo direto em status, alias helios) e dict do develop sem exec_track_painel", () => {
+    const plan: PlanWithGoal = {
+      issues: {
+        "20": { status: "deixado-para-o-helios" },
+        "21": { status: "deixado-para-o-300", exec_track_painel: "overnight" },
+      },
+    };
+    const open: ConvergenceScanIssue[] = [
+      { number: 20, labels: ["windows"] },
+      { number: 21, labels: ["develop-track"] },
+    ];
+    assert.deepEqual(
+      findRetrackedUnworkedIssues(plan, open).map((r) => [r.number, r.motivo, r.track_gravado]),
+      [
+        [20, "deixado-para-o-helios", null],
+        [21, "deixado-para-o-300", "overnight"],
+      ],
+    );
+  });
+
+  it("plan sem issues/shape estranho → [] sem lançar", () => {
+    assert.deepEqual(findRetrackedUnworkedIssues({}, reroutedToDevelop), []);
+    assert.deepEqual(findRetrackedUnworkedIssues({ issues: "x" } as PlanWithGoal, reroutedToDevelop), []);
+  });
+});
+
+describe("isDevelopPlan (#10407)", () => {
+  it("infere pelo segmento develop do path; --kind explícito vence", async () => {
+    const { isDevelopPlan } = await import("../scripts/check-state-changed-pending.ts");
+    assert.equal(isDevelopPlan("data/develop/261018/plan.json"), true);
+    assert.equal(isDevelopPlan("C:\\x\\data\\develop\\261018\\plan.json"), true);
+    assert.equal(isDevelopPlan("data/overnight/261018/plan.json"), false);
+    assert.equal(isDevelopPlan("data/developer/plan.json"), false);
+    assert.equal(isDevelopPlan("data/develop/261018/plan.json", "overnight"), false);
+    assert.equal(isDevelopPlan("data/overnight/x/plan.json", "develop"), true);
   });
 });

@@ -92,7 +92,8 @@ describe("pontos de merge consultam o sinal (#10278)", () => {
     const skill = readFileSync(join(ROOT, ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
     const occurrences = skill.split("scripts/check-pr-retido-gate.ts").length - 1;
     assert.ok(occurrences >= 2, `esperava o gate citado no pickup 2b e na Fase 1 (achei ${occurrences})`);
-    assert.match(skill, /gh pr edit \{N\} --add-label retido-para-editor/);
+    // #10429: via helper REST com releitura, nunca `gh pr edit --add-label`.
+    assert.match(skill, /gh-pr-safe-edit\.ts --pr \{N\} --add-label retido-para-editor/);
   });
 
   // #10294: as outras portas de merge também leem o sinal.

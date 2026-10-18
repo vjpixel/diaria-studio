@@ -164,7 +164,10 @@ export async function extrairSubscriberId(res: Response): Promise<SubscriberIdEx
   try {
     corpo = await res.clone().json();
   } catch (err) {
-    return { ok: false, motivo: "parse-falhou", detalhe: String(err) };
+    // #10416: só o NOME do erro. A mensagem do `JSON.parse` traz um trecho do
+    // corpo — no V8, os 10 primeiros chars: um PREFIXO do e-mail ecoado, que
+    // nenhuma redação por valor inteiro pega (e outro runtime pode trazer mais).
+    return { ok: false, motivo: "parse-falhou", detalhe: err instanceof Error ? err.name : typeof err };
   }
   const bruto = (corpo as { subscriber?: { id?: unknown } } | null | undefined)?.subscriber?.id;
   if (bruto === undefined || bruto === null) return { ok: false, motivo: "campo-ausente" };

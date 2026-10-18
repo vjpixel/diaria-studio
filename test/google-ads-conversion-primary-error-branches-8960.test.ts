@@ -169,7 +169,7 @@ describe("#8960 — google-ads-set-conversion-primary: conversionActions:mutate"
     };
     const code = await withEnv(AUTH_ENV, () =>
       setPrimaryMain(
-        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send"],
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--issue", "8574", "--motivo", "motivo de teste"],
         fetchMock as unknown as typeof fetch,
       ),
     );
@@ -185,7 +185,7 @@ describe("#8960 — google-ads-set-conversion-primary: conversionActions:mutate"
     };
     const code = await withEnv(AUTH_ENV, () =>
       setPrimaryMain(
-        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send"],
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--issue", "8574", "--motivo", "motivo de teste"],
         fetchMock as unknown as typeof fetch,
       ),
     );
@@ -212,7 +212,7 @@ describe("#8960 — google-ads-set-conversion-primary: releitura pós-mutação 
     };
     const code = await withEnv(AUTH_ENV, () =>
       setPrimaryMain(
-        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send"],
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--issue", "8574", "--motivo", "motivo de teste"],
         fetchMock as unknown as typeof fetch,
       ),
     );
@@ -234,7 +234,7 @@ describe("#8960 — google-ads-set-conversion-primary: releitura pós-mutação 
     };
     const code = await withEnv(AUTH_ENV, () =>
       setPrimaryMain(
-        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send"],
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--issue", "8574", "--motivo", "motivo de teste"],
         fetchMock as unknown as typeof fetch,
       ),
     );
@@ -274,7 +274,7 @@ describe("#8960 — google-ads-set-conversion-primary: registro em edicoes.jsonl
             "false",
             "--customer-id",
             "2369219639",
-            "--send",
+            "--send", "--issue", "8574", "--motivo", "motivo de teste",
             "--skip-registro",
             "--edicoes-path",
             edicoesPath,
@@ -322,7 +322,7 @@ describe("#8960 — google-ads-set-conversion-primary: registro em edicoes.jsonl
             "false",
             "--customer-id",
             "2369219639",
-            "--send",
+            "--send", "--issue", "8574", "--motivo", "motivo de teste",
             "--edicoes-path",
             edicoesPath,
           ],

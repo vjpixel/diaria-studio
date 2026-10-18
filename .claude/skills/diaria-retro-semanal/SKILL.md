@@ -20,6 +20,14 @@ não como etapa do pipeline diário.
 | `highlights` | Os 5 D1 da semana | Ordem cronológica, SEM ranking por clique — não depende de dado de clique nenhum | **Sábado** (o próprio `AAMMDD-do-sabado`), 11:00 |
 | `clicked` | Os 5 itens mais clicados da semana (D1/D2/D3/RADAR) | Ranking por taxa de clique verificado, ver `weekly-instagram-select.ts` | **Domingo** seguinte, 11:00 |
 
+**Horário durante o teste rotativo (#10305):** dentro da janela de
+`publishing.social.rotation`, sem `--time` explícito, sábado e domingo
+alternam `weekend_candidates` semana a semana (na mesma semana os dois dias
+caem em horários diferentes) — o 11:00 da tabela vale fora da janela. O
+script imprime o horário escolhido no stderr. Depois de agendar, registre:
+`npx tsx scripts/social-schedule-rotation.ts --record --date {AAMMDD-do-sabado} --kind weekend`
+e o mesmo com a data do domingo.
+
 **Sem `--mode` explícito, a skill roda os DOIS (#5903)** — ver "Argumentos"
 abaixo. `clicked` isolado só é o default de quem chama
 `scripts/publish-weekly-social.ts` direto (back-compat, não é o comportamento

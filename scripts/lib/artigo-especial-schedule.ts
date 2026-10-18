@@ -138,6 +138,8 @@ export function resolveArtigoEspecialScheduledAts(
       dayOffsetOverride: 1,
       now,
       disablePastSlotShift: input.disablePastSlotShift ?? false,
+      // #10305: horário do artigo especial é decisão própria — nunca gira com a diária.
+      applyRotation: false,
     }),
     perfil: computeScheduledAt({
       config: withTime("09:30"),
@@ -147,6 +149,8 @@ export function resolveArtigoEspecialScheduledAts(
       dayOffsetOverride: 2,
       now,
       disablePastSlotShift: input.disablePastSlotShift ?? false,
+      // #10305: horário do artigo especial é decisão própria — nunca gira com a diária.
+      applyRotation: false,
     }),
   };
 }

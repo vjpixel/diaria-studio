@@ -13,7 +13,10 @@
  * `check-overnight-comment-coverage.ts`). `exit 1` = há PR aberto no GitHub
  * que esta sessão deveria ter fechado (mergeado ou fechado sem merge) e não
  * fechou — voltar, checar o PR (`gh pr view N`), mergear/fechar/atualizar o
- * `plan.json` com o status correto antes de escrever o relatório.
+ * `plan.json` com o status correto antes de escrever o relatório. PR retida
+ * para o editor (label/marcador `retido-para-editor`, #10278, ou status
+ * `retida-para-editor` no plano) é terminal; PR `overnight/`/`develop/`/`fix/`
+ * sem registro no plano é só AVISO (candidata, `exit 0`) — #10430.
  *
  * Uso:
  *   npx tsx scripts/check-pr-terminal-state.ts --plan data/overnight/260820/plan.json
@@ -31,6 +34,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import {
   checkPrTerminalState,
+  verdictExitCode,
   type OpenPrLike,
   type PlanIssueWithPrLike,
 } from "./lib/pr-terminal-state.ts";
@@ -45,8 +49,10 @@ interface GhFetchResult<T> {
 function fetchOpenPrs(cwd: string): GhFetchResult<OpenPrLike[]> {
   const result = spawnSync(
     "gh",
-    ["pr", "list", "--state", "open", "--json", "headRefName,number,createdAt", "--limit", "200"],
-    { cwd, encoding: "utf8", timeout: 30_000 },
+    ["pr", "list", "--state", "open", "--json", "headRefName,number,createdAt,labels,body", "--limit", "200"],
+    // maxBuffer: com `body` no payload (#10430), 200 PRs passam fácil do 1 MiB
+    // default do spawnSync — estouro viraria fail-soft e desligaria o gate.
+    { cwd, encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024 },
   );
   if (result.error) {
     return { value: null, error: `gh não pôde ser executado: ${result.error.message}` };
@@ -120,15 +126,20 @@ if (isMainModule(import.meta.url)) {
 
   if (verdict.unregisteredCandidates.length > 0) {
     console.error(
-      "[check-pr-terminal-state] PR(s) aberto(s) em branch desta linha de skills (develop/overnight/fix) SEM registro em plan.json — candidato(s) pra revisão humana, autoria não confirmada:",
+      "[check-pr-terminal-state] aviso (não reprova, #10430): PR(s) aberto(s) em branch desta linha de skills (develop/overnight/fix) SEM registro em plan.json — candidato(s) pra revisão humana, autoria não confirmada (pode ser de outra sessão):",
     );
     for (const c of verdict.unregisteredCandidates) {
-      console.error(`  PR #${c.pr} — branch ${c.headRefName}`);
+      console.error(`  PR #${c.pr} — branch ${c.headRefName}${c.retida ? " (retida para o editor)" : ""}`);
     }
   }
 
-  console.error(
-    "[check-pr-terminal-state] → confirme o estado real de cada PR (gh pr view N), mergeie/feche/atualize plan.json com o status correto antes de escrever o relatório final.",
-  );
-  process.exit(1);
+  const exitCode = verdictExitCode(verdict);
+  if (exitCode === 1) {
+    console.error(
+      "[check-pr-terminal-state] → confirme o estado real de cada PR (gh pr view N), mergeie/feche/atualize plan.json com o status correto (ex.: `retida-para-editor` para PR retida, #10430) antes de escrever o relatório final.",
+    );
+  } else {
+    console.log("ok — nenhuma divergência confirmada (só candidato(s) listado(s) acima, informativo)");
+  }
+  process.exit(exitCode);
 }

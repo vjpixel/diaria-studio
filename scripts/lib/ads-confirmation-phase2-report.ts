@@ -28,7 +28,9 @@
  *
  * ## Canal
  *
- * `origem_paga` (`google-ads`/`meta-ads`) primeiro; sem ela, o prefixo de
+ * `origem_paga` (`google-ads`/`meta-ads`, com ou sem sufixo de campanha com
+ * fronteira de traço — `meta-ads-260901` é Meta, `meta-adsxyz` não; mesma regra
+ * de `isAllowedClientUtmSource`, #10412) primeiro; sem ela, o prefixo de
  * `origem_click_id` (`gclid:` → Google, `fbclid:` → Meta). O segundo caminho é
  * contado à parte (`viaClickIdOnly`): desde o #10230 o `fbclid:` pode vir do
  * cookie `_fbc` (90 dias) sem reclassificar o canal, então ele é sinal mais
@@ -85,7 +87,20 @@ export interface Phase2ChannelRow {
   metaForaDaJanela: number | null;
   metaOutroCanal: number | null;
   metaFalhaPermanente: number | null;
-  /** import / confirmados do canal "dono" (Google pra google, Meta pra meta). */
+  /**
+   * Importados pelo lote do canal "dono" (Google pra google, Meta pra meta)
+   * que NÃO estão `active` hoje (confirmaram, foram importados e saíram, ou
+   * divergência de estado). Ficam fora do numerador da cobertura (#10412).
+   * `null` = índice do canal indisponível ou canal sem dono (`outros`).
+   */
+  importCanalNaoAtivo: number | null;
+  /**
+   * Cobertura do import do canal "dono" (0..1): (importados pelo lote do canal
+   * E `active` hoje) / confirmados. Numerador e denominador olham o MESMO
+   * estado atual, então nunca passa de 100% (#10412 — antes o numerador
+   * contava todo importado, inclusive quem saiu depois, e o denominador só os
+   * `active`). Quem foi importado e saiu aparece em `importCanalNaoAtivo`.
+   */
   coberturaImportCanal: number | null;
 }
 
@@ -106,6 +121,16 @@ export function brtDay(iso: string): string | null {
   return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
 }
 
+/**
+ * `origem_paga` normalizada casa o canal `prefix`: igual, ou com sufixo de
+ * campanha depois de um traço (`meta-ads-260901`). Mesma fronteira de
+ * `isAllowedClientUtmSource` (`scripts/lib/shared/client-utm-allowlist.ts`) e
+ * do que `resolveOrigemPagaWithClickIdFallback` preserva (#10412). @pure
+ */
+function origemPagaMatches(origemPaga: string, prefix: string): boolean {
+  return origemPaga === prefix || origemPaga.startsWith(`${prefix}-`);
+}
+
 /** Canal pago de um assinante + se veio só do click id. @pure */
 export function classifyPhase2Channel(
   fields: Record<string, string | null> | null | undefined,
@@ -117,8 +142,8 @@ export function classifyPhase2Channel(
     : clickId.startsWith("fbclid:")
       ? "meta"
       : null;
-  if (origemPaga === "google-ads") return { channel: "google", viaClickIdOnly: false, clickIdChannel };
-  if (origemPaga === "meta-ads") return { channel: "meta", viaClickIdOnly: false, clickIdChannel };
+  if (origemPagaMatches(origemPaga, "google-ads")) return { channel: "google", viaClickIdOnly: false, clickIdChannel };
+  if (origemPagaMatches(origemPaga, "meta-ads")) return { channel: "meta", viaClickIdOnly: false, clickIdChannel };
   if (clickIdChannel) return { channel: clickIdChannel, viaClickIdOnly: true, clickIdChannel };
   return { channel: "outros", viaClickIdOnly: false, clickIdChannel };
 }
@@ -175,10 +200,13 @@ export function buildPhase2Report(input: Phase2Inputs): Phase2Report {
       metaForaDaJanela: input.metaIndex ? 0 : null,
       metaOutroCanal: input.metaIndex ? 0 : null,
       metaFalhaPermanente: input.metaIndex ? 0 : null,
+      importCanalNaoAtivo: null,
       coberturaImportCanal: null,
     });
   }
 
+  // Importados pelo lote do canal dono E `active` hoje — numerador da cobertura.
+  const importCanalAtivo = new Map<Phase2Channel, number>(channels.map((c) => [c, 0]));
   for (const s of input.roster) {
     const day = brtDay(s.created_at);
     if (!day || day < input.since || day > input.until) continue;
@@ -192,10 +220,14 @@ export function buildPhase2Report(input: Phase2Inputs): Phase2Report {
     else row.saiu++;
     const key = `kit-${s.id}`;
     const g = input.googleIndex?.[key];
-    if (g && g.status === "submitted") row.importGoogle!++;
+    const googleImported = !!g && g.status === "submitted";
+    if (googleImported) row.importGoogle!++;
     const m = input.metaIndex?.[key];
+    const metaImported = !!m && m.status === "sent";
+    const ownImported = channel === "google" ? googleImported : channel === "meta" ? metaImported : false;
+    if (ownImported && s.state === "active") importCanalAtivo.set(channel, importCanalAtivo.get(channel)! + 1);
     if (m) {
-      if (m.status === "sent") row.importMeta!++;
+      if (metaImported) row.importMeta!++;
       else if (m.status === "skipped-out-of-window") row.metaForaDaJanela!++;
       else if (m.status === "skipped-other-channel") row.metaOutroCanal!++;
       else if (m.status === "skipped-failed-permanent") row.metaFalhaPermanente!++;
@@ -205,7 +237,10 @@ export function buildPhase2Report(input: Phase2Inputs): Phase2Report {
   for (const row of rows.values()) {
     row.taxaConfirmacao = ratio(row.confirmados, row.cadastros);
     const own = row.channel === "google" ? row.importGoogle : row.channel === "meta" ? row.importMeta : null;
-    row.coberturaImportCanal = own === null ? null : ratio(own, row.confirmados);
+    if (own === null) continue;
+    const ativos = importCanalAtivo.get(row.channel)!;
+    row.importCanalNaoAtivo = own - ativos;
+    row.coberturaImportCanal = ratio(ativos, row.confirmados);
   }
 
   return {
@@ -254,8 +289,17 @@ export function renderPhase2ReportText(r: Phase2Report): string {
   if (meta.metaForaDaJanela !== null) {
     lines.push(
       `Meta, perdas do lote no canal Meta: ${meta.metaForaDaJanela} fora da janela de 7 dias, ` +
+        `${meta.metaOutroCanal} pulados como de outro canal, ` +
         `${meta.metaFalhaPermanente} recusa permanente.`,
     );
+  }
+  for (const row of r.rows) {
+    if (row.importCanalNaoAtivo) {
+      lines.push(
+        `${LABEL[row.channel]}: ${row.importCanalNaoAtivo} importado(s) pelo lote do canal que não estão ativos hoje ` +
+          "(fora da cobertura, que conta só importado E confirmado).",
+      );
+    }
   }
   if (r.confirmadaPageviews) {
     const p = r.confirmadaPageviews;

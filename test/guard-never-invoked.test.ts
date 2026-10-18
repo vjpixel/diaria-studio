@@ -158,8 +158,9 @@ describe("buildLocalCorpusText — integração com o repo real", () => {
 });
 
 describe("regressão #7137 — os 16 scripts triados nesta PR não voltam como finding cru", () => {
-  // Removidos nesta PR ou em PR anterior (#7143) — não são mais candidatos.
-  const removed = ["check-drive-push", "check-intra-themes", "node-modules-loop-alarm"];
+  // Removidos nesta PR ou em PR anterior (#7143; check-glm-lane-gate no #10431,
+  // com a lane do #6930 encerrada) — não são mais candidatos.
+  const removed = ["check-drive-push", "check-intra-themes", "node-modules-loop-alarm", "check-glm-lane-gate"];
   // Os 14 restantes: cada um foi armado (aparece direto no corpus),
   // excluído por cadeia indireta, ou excluído por decisão deliberada —
   // nenhum pode sobrar em `findings` sem registro.
@@ -172,7 +173,6 @@ describe("regressão #7137 — os 16 scripts triados nesta PR não voltam como f
     "check-continuo-workdir",
     "check-control-edition-noise",
     "check-corrupted-names",
-    "check-glm-lane-gate",
     "check-highlight-themes",
     "check-secondary-themes",
     "check-session-leakage",
