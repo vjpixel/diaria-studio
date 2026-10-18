@@ -24,6 +24,7 @@ import { basename, dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #10441 preview = texto publicado, sem negrito
 import {
   KNOWN_SOCIAL_CHANNELS,
   TEXTO_UNICO_CHANNELS,
@@ -404,24 +405,20 @@ export function groupByDestaque(
 }
 
 function renderGroupedBlock(block: GroupedBlock, color: string): string {
-  // #6871 (achado 260901; nome da função corrigido #6940 — #6862 trocou a
-  // sanitização por `stripMarkdownEmphasis`, não `stripMarkdownBold`): o `**`
-  // de negrito seletivo (#6086 item c, pensado pro slide do carrossel) é
-  // removido do texto REAL publicado no LinkedIn/Facebook/Instagram
-  // (`stripMarkdownEmphasis` em `scripts/lib/strip-markdown-emphasis.ts`,
-  // chamado no ponto de publicação de cada canal — NÃO em
-  // `injectChannelLine`, ver `scripts/lib/social-cta-lines.ts`) —
-  // LinkedIn/Facebook/Instagram não renderizam markdown, e antes o `**`
-  // sobrevivia literal no post. Este preview,
-  // porém, deve mostrar a ênfase pretendida em negrito de verdade (não o
-  // texto exatamente como sai publicado) — converte pra <strong> aqui, DEPOIS
-  // do escHtml (`*` não é escapado por HTML, a ordem não perde nada).
-  const mainParas = block.post.main
+  // #10441 (revisa #6871): o preview mostra o texto EXATAMENTE como sai
+  // publicado — sem negrito. O `**` do `## dN` existe só pros cards do
+  // carrossel (#6086 item c); nenhuma plataforma renderiza negrito no texto do
+  // post, e o <strong> que o #6871 punha aqui fazia o editor achar que o post
+  // ia ao ar em negrito (pedido do editor no gate 4 da 261019). Mesmo ponto
+  // único dos publicadores: `toSocialPostText` (`lib/social-post-text.ts`).
+  // O negrito dos cards aparece à parte, na galeria do carrossel ou na linha
+  // "Negrito nos cards" (`renderCardBoldNote`).
+  const postText = toSocialPostText(block.post.main);
+  const mainParas = postText
     .split(/\n\n+/)
     .filter(Boolean)
     .map(p =>
       `<p>${escHtml(p)
-        .replace(/\*\*(.+?)\*\*/gs, "<strong>$1</strong>")
         .replace(/\n/g, "<br>")
         .replace(/\{edition_url\}/g, "<em>[link da edição]</em>")}</p>`,
     )
@@ -429,7 +426,7 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
   const hashtags = block.post.hashtags
     ? `<div class="hashtags">${escHtml(block.post.hashtags).replace(/#(\w+)/g, `<span style="color:${color}">#$1</span>`)}</div>`
     : "";
-  const chars = block.post.main.replace(/\s+/g, " ").trim().length;
+  const chars = postText.replace(/\s+/g, " ").trim().length;
   return `
       <div class="channel-block">
         <div class="channel-label">${escHtml(block.channels)} <span class="char-count">${chars} chars</span></div>
@@ -460,6 +457,37 @@ function renderCarouselGallery(group: DestaqueGroup): string {
     </div>`;
 }
 
+/** #10441: trechos marcados com `**...**` no texto-fonte dos cards — o bloco
+ *  que vai pro Instagram (`# Social`, ou `# Instagram` legado), que é de onde
+ *  o carrossel lê. O `# Curto` (X/Threads) não tem card. É o que sai em
+ *  negrito nos cards (e só neles). Únicos, na ordem. */
+export function cardBoldSpans(group: DestaqueGroup): string[] {
+  const spans: string[] = [];
+  for (const b of group.blocks) {
+    if (!/instagram/i.test(b.channels)) continue;
+    for (const m of b.post.main.matchAll(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g)) {
+      const t = m[1].replace(/\s+/g, " ").trim();
+      if (t && !spans.includes(t)) spans.push(t);
+    }
+  }
+  return spans;
+}
+
+/** #10441: o negrito dos cards, SEPARADO do texto do post. Com a galeria do
+ *  carrossel, os próprios cards mostram o negrito — só uma legenda avisa que o
+ *  texto do post sai sem ele. Sem galeria (cards ainda não gerados), lista os
+ *  trechos que vão em negrito nos cards. */
+function renderCardBoldNote(group: DestaqueGroup): string {
+  const spans = cardBoldSpans(group);
+  if (!spans.length) return "";
+  if (group.carouselImages?.length) {
+    return `<div class="card-bold-note">Negrito só nos cards acima — o texto do post sai sem negrito.</div>`;
+  }
+  return `<div class="card-bold-note">Negrito nos cards do carrossel (o texto do post sai sem negrito): ${spans
+    .map(t => `<strong>${escHtml(t)}</strong>`)
+    .join(" · ")}</div>`;
+}
+
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
   // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
   // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
@@ -475,6 +503,7 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   <div class="post">
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
     ${imgHtml}
+    ${renderCardBoldNote(group)}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
   </div>`;
 }
@@ -623,6 +652,7 @@ export function buildSocialHtml(
   }
   .carousel-slide { flex: 0 0 82%; scroll-snap-align: center; margin: 0; }
   .carousel-slide img { width: 100%; height: auto; display: block; border-radius: 10px; }
+  .card-bold-note { font-size: 13px; color: #555; padding: 8px 16px; background: #f6f6f6; }
   .carousel-slide figcaption { font-size: 12px; color: #666; text-align: center; padding-top: 6px; }
   .channel-block {
     border-top: 1px solid #f0f0f0;

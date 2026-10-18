@@ -63,7 +63,7 @@ import { editionDir } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
-import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — nenhum canal social renderiza markdown
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — nenhum canal social renderiza markdown; #10441 ponto único do texto de post
 
 export const EIA_CHANNELS = ["linkedin", "facebook", "instagram", "threads", "twitter"] as const;
 export type EiaChannel = (typeof EIA_CHANNELS)[number];
@@ -113,7 +113,7 @@ export function buildPlans(md: string, art: { composite: string; a: string; b: s
     // alimenta o carrossel (imagens do É IA? são compostas fixas, `art.*`),
     // então não tem o conflito de destino duplo de 03-social.md; strip é
     // sempre seguro aqui.
-    plans.push({ channel, text: stripMarkdownEmphasis(text), images: imagesForChannel(channel, art) });
+    plans.push({ channel, text: toSocialPostText(text), images: imagesForChannel(channel, art) });
   }
   return plans;
 }

@@ -234,7 +234,8 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
  *
  * A sanitização de negrito markdown (`**`) NÃO acontece aqui — é feita uma
  * camada acima, no ponto de publicação de cada canal, via
- * `stripMarkdownEmphasis` (`scripts/lib/strip-markdown-emphasis.ts`, #6862):
+ * `toSocialPostText` (`scripts/lib/social-post-text.ts`, ponto único #10441,
+ * sobre `stripMarkdownEmphasis` do #6862):
  * cobre `**`/`__`/`*`/`_` com tratamento de bugs de fusão de span e boundary
  * Unicode que uma regex ingênua aqui duplicaria de forma mais estreita.
  */

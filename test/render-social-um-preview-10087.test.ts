@@ -104,7 +104,8 @@ describe("#10087 — preview do ## um = texto que cada canal publica", () => {
   it("HTML do preview: sem {quebra} literal, itens 1 e 2 em parágrafos separados no bloco LinkedIn/Facebook", () => {
     const html = buildSocialHtml(parsePlatforms(MD), {});
     assert.doesNotMatch(html, /\{quebra\}/);
-    assert.match(html, /<p>1\) <strong>Peça o primeiro rascunho<\/strong> de e-mails\.<\/p>/);
+    // #10441: o corpo do post sai sem negrito (o `**` é só dos cards).
+    assert.match(html, /<p>1\) Peça o primeiro rascunho de e-mails\.<\/p>/);
   });
 
   it("# Curto e lista sem nada a separar: um bloco só, com {quebra} resolvido", () => {

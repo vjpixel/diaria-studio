@@ -65,7 +65,7 @@ import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.t
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
-import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #6862 — Instagram não renderiza markdown
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Instagram não renderiza markdown; #10441 ponto único do texto de post
 import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "./lib/comment-delivery-promise.ts"; // #8681 — guard contra promessa de entrega via comentário
@@ -151,7 +151,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
       assertNoScaffolding(text, `destaque '${destaque}' (instagram/Social)`);
       // #6862: Instagram não renderiza markdown — ver docstring de
       // lib/strip-markdown-emphasis.ts (nunca fazer isso na fonte).
-      return stripMarkdownEmphasis(text);
+      return toSocialPostText(text);
     }
   }
 
@@ -166,7 +166,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
       const text = dText.trim();
       assertNoScaffolding(text, `destaque '${destaque}' (instagram/${platTitle} legado)`);
       // #6862: idem — mesma sanitização no caminho legado.
-      return stripMarkdownEmphasis(text);
+      return toSocialPostText(text);
     }
   }
 
@@ -688,7 +688,7 @@ async function main(): Promise<number | void> {
     let caption: string;
     try {
       const raw = testOverride?.caption
-        ? stripMarkdownEmphasis(testOverride.caption) // #8681
+        ? toSocialPostText(testOverride.caption) // #8681
         : umReady
           ? umReady.caption // #9568 — já truncada, com utm_content=usemelhor
           : extractPostText(socialMd, d);

@@ -488,10 +488,10 @@ Post pessoal.
   });
 });
 
-describe("renderDestaqueGroup — negrito ** vira <strong> no preview (#6871, achado 260901)", () => {
+describe("renderDestaqueGroup — preview mostra o post sem negrito (#6871 revisto em #10441)", () => {
   const IMAGES = { cover: { url: "https://img.example/d1.jpg" } };
 
-  it("** no corpo do post vira <strong>, nunca sobrevive como asterisco literal", () => {
+  it("** some do corpo do post (sai assim publicado); o trecho aparece em negrito só na nota dos cards", () => {
     const MD = `# Social
 
 ## d1
@@ -502,8 +502,11 @@ Frase normal. **Trecho em negrito no slide do carrossel.** Mais texto.
 `;
     const groups = groupByDestaque(parsePlatforms(MD), IMAGES);
     const html = renderDestaqueGroup(groups[0], "#000");
-    assert.ok(html.includes("<strong>Trecho em negrito no slide do carrossel.</strong>"));
-    assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (stripMarkdownEmphasis, #6862)");
+    const body = html.match(/<div class="post-body">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    assert.ok(body.includes("Trecho em negrito no slide do carrossel."));
+    assert.ok(!body.includes("<strong>"), "#10441: o corpo do post não sai em negrito em nenhum canal");
+    assert.ok(html.includes('class="card-bold-note"'), "#10441: o negrito dos cards aparece à parte");
+    assert.ok(!html.includes("**"), "preview não deve mostrar asterisco literal — o texto REAL publicado também não tem (toSocialPostText, #10441)");
   });
 });
 
