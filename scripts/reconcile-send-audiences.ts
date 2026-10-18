@@ -169,6 +169,12 @@ async function measureBeehiivRecentDelivery(
  * só de qual canal medir (`isKitTestBroadcast` continua não olhando `public`,
  * #7637). Sem nenhum público entre os reais (era da rampa, quando a diária
  * saía `public: false`), cai no real mais recente, como antes.
+ *
+ * Trade-off aceito (PR #10409): a preferência assume que toda diária pelo
+ * backend Kit sai pública. Uma edição real `public: false` (draft promovido à
+ * mão, rampa religada) perde pra uma pública mais antiga — por isso
+ * `measureKitRecentDelivery` relata em `detail` quantos reais não-públicos
+ * mais recentes que o medido foram preteridos, em vez de escolher em silêncio.
  */
 export function pickLatestRealKitBroadcast<
   B extends Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "created_at"> & { public?: boolean },
@@ -210,11 +216,17 @@ export async function measureKitRecentDelivery(
       };
     }
     const stats = await getBroadcastStats(latest.id);
+    const tsOf = (b: KitBroadcastSummary) => Date.parse(b.published_at ?? b.created_at);
+    const skippedNonPublic = broadcasts.filter(
+      (b) => b.public !== true && !isKitTestBroadcast(b) && tsOf(b) > tsOf(latest),
+    ).length;
+    const skippedNote =
+      skippedNonPublic > 0 ? `; ${skippedNonPublic} real(is) não-público(s) mais recente(s) preterido(s)` : "";
     return {
       platform: "kit",
       measured: true,
       recipients: stats.recipients,
-      detail: `broadcast ${latest.id} "${latest.subject}"; ${discarded} test-send(s) descartado(s) de ${scope}`,
+      detail: `broadcast ${latest.id} "${latest.subject}"; ${discarded} test-send(s) descartado(s) de ${scope}${skippedNote}`,
     };
   } catch (e) {
     return { platform: "kit", measured: false, reason: (e as Error).message };

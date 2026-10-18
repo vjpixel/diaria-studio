@@ -171,7 +171,8 @@ const INSTITUTIONAL_EMAIL_TITLE_PATTERNS = [
 /**
  * `true` quando o título do post é uma edição real da newsletter — `false`
  * pra probe/teste do Kit (`[teste-464]`, `[probe-rodape]`, `[teste]` —
- * `hasKitTestSubjectPrefix`, fonte única desde o #10400), cópia segmentada
+ * `hasKitTestSubjectPrefix`, fonte única desde o #10400, mais qualquer título
+ * começando com `[`, a regra anterior, mantida como rede), cópia segmentada
  * da mesma edição (`SEGMENT_COPY_SUFFIXES`)
  * ou e-mail institucional (`INSTITUTIONAL_EMAIL_TITLE_PATTERNS`). Post sem
  * título nenhum passa — não tem texto pra casar contra nenhum destes
@@ -183,7 +184,12 @@ const INSTITUTIONAL_EMAIL_TITLE_PATTERNS = [
 export function isRealEditionTitle(title: string | undefined | null): boolean {
   const t = (title ?? "").trim();
   if (!t) return true;
-  if (hasKitTestSubjectPrefix(t)) return false; // #10400: fonte única, era startsWith("[")
+  // #10400 (fixer do PR #10409): o helper é a fonte única dos prefixos de
+  // teste conhecidos, mas sozinho estreitaria o filtro antigo — qualquer
+  // título começando com `[` era excluído, e um rótulo de teste futuro
+  // (`[TEST]`, `[rascunho]`) entraria na anual. A regra ampla fica como rede;
+  // o helper documenta quais prefixos são teste de fato.
+  if (hasKitTestSubjectPrefix(t) || t.startsWith("[")) return false;
   if (SEGMENT_COPY_SUFFIXES.some((re) => re.test(t))) return false;
   if (INSTITUTIONAL_EMAIL_TITLE_PATTERNS.some((re) => re.test(t))) return false;
   return true;

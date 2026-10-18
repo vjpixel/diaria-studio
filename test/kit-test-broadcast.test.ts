@@ -24,6 +24,7 @@ import {
 } from "../scripts/reconcile-send-audiences.ts";
 import { listAllBroadcasts } from "../scripts/lib/kit-client.ts";
 import { daysSinceFirstCompletedBroadcast } from "../scripts/dmarc-enforcement-engine.ts";
+import { isRealEditionTitle } from "../scripts/lib/anual/annual-collect.ts";
 
 describe("hasKitTestSubjectPrefix", () => {
   it("casa o prefixo do --send-test e as variantes de probe", () => {
@@ -218,6 +219,48 @@ describe("#10400: paginação e consumidores fora do helper", () => {
     assert.equal(pickLatestRealKitBroadcast([diaria, apoio])?.id, 1);
     // era da rampa: nenhum real público → cai no real mais recente
     assert.equal(pickLatestRealKitBroadcast([{ ...diaria, public: false }, apoio])?.id, 2);
+  });
+
+  it("detail relata reais não-públicos mais recentes preteridos pela preferência por público", async () => {
+    const r = await measureKitRecentDelivery({
+      listBroadcasts: (async () => ({
+        broadcasts: [
+          b(1, "Manchete", "2026-10-17T09:00:00Z", { public: true }),
+          b(2, "Edição promovida à mão", "2026-10-18T09:00:00Z", { public: false }),
+        ],
+        pagination: pg(false, null),
+      })) as unknown as KitRecentDeliveryDeps["listBroadcasts"],
+      getBroadcastStats: async () => ({ recipients: 900 }),
+    });
+    assert.equal(r.measured, true);
+    assert.match(r.detail ?? "", /broadcast 1 /);
+    assert.match(r.detail ?? "", /1 real\(is\) não-público\(s\) mais recente\(s\) preterido/);
+  });
+
+  it("listAllBroadcasts: truncamento avisa em stderr", async () => {
+    const always = (async () => ({
+      broadcasts: [b(1, "x", "2026-10-01T00:00:00Z")],
+      pagination: pg(true, "c"),
+    })) as unknown as ListFn;
+    const writes: string[] = [];
+    const orig = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await listAllBroadcasts({ maxPages: 2 }, always);
+    } finally {
+      process.stderr.write = orig;
+    }
+    assert.ok(writes.some((w) => /TRUNCADA/.test(w)), "esperava aviso de truncamento em stderr");
+  });
+
+  it("annual: título começando com '[' continua excluído (não estreita a regra antiga)", () => {
+    assert.equal(isRealEditionTitle("[probe-rodape] footer"), false);
+    assert.equal(isRealEditionTitle("[TEST] rótulo futuro"), false);
+    assert.equal(isRealEditionTitle("[rascunho] x"), false);
+    assert.equal(isRealEditionTitle("Manchete real"), true);
   });
 
   it("listAllBroadcasts: para no teto (truncated) e lança em has_next_page sem cursor", async () => {

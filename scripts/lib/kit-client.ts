@@ -336,6 +336,11 @@ export async function listAllBroadcasts(
     }
     after = pagination.end_cursor;
   }
+  // Truncamento visível (fixer do PR #10409): o chamador também recebe
+  // `truncated`, mas nem todo chamador o relata — o aviso aqui vale pra todos.
+  process.stderr.write(
+    `[kit-client] listAllBroadcasts: teto de ${maxPages} página(s) atingido (${out.length} broadcasts lidos) — lista TRUNCADA; "mais recente"/"mais antigo" podem estar errados.\n`,
+  );
   return { broadcasts: out, pages, truncated: true };
 }
 

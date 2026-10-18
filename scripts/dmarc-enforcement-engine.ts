@@ -139,7 +139,14 @@ export function summarizeSubscriberStates(subs: { state: string }[]): {
 /** Dias corridos entre o `send_at`/`published_at` do broadcast COMPLETADO
  *  mais antigo e `now` — `null` se não houver nenhum broadcast completado.
  *  Test-sends/probes (`isKitTestBroadcast`, #10400) não contam: um probe de
- *  1 destinatário não é maturidade de envio do domínio. */
+ *  1 destinatário não é maturidade de envio do domínio.
+ *
+ *  Só o sinal 2 (prefixo de assunto) é aplicado: o helper não carrega id de
+ *  broadcast de teste nem id da tag `diaria-test-email` (sinais 1 e 3 exigem
+ *  ler `newsletter-kit-published.json` das edições ou resolver a tag por
+ *  conta em runtime). Gap conhecido e aceito (PR #10409): um test-send sem
+ *  prefixo antecipa a maturidade; nenhum caminho atual grava test-send sem
+ *  prefixo. */
 export function daysSinceFirstCompletedBroadcast(
   broadcasts: Pick<KitBroadcastSummary, "status" | "published_at" | "created_at" | "subject">[],
   now: Date,
