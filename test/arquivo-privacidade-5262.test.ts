@@ -15,6 +15,9 @@
  *
  * #8543: também trava a coerência entre a política e a coleta de IP, user
  * agent e _fbp ligada nos wrangler.toml de poll e cursos.
+ *
+ * #10414: e o lado do ENVIO — IP/UA de todo cadastro e reativação vão à
+ * Meta (CAPI) com ou sem cookie, e a política não pode prometer o contrário.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -30,6 +33,11 @@ import {
   KIT_FBP_FIELD_NAME,
   KIT_USER_AGENT_FIELD_NAME,
 } from "../scripts/lib/google-ads-confirmation-batch.ts";
+import {
+  buildCompleteRegistrationEvent,
+  extractMetaCapiClientSignals,
+  selectPersistableMatchSignals,
+} from "../scripts/lib/shared/meta-capi.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -96,5 +104,54 @@ describe("#5262 — GET /privacidade no Worker arquivo", () => {
     assert.match(html, /enviados à Meta/);
     assert.match(html, /cookies de medição de anúncios/);
     assert.doesNotMatch(html, /não usam cookies de rastreamento publicitário/);
+  });
+
+  describe("#10414 — lado do ENVIO: IP/UA vão à Meta em todo cadastro e reativação", () => {
+    // O #8543 travou o lado do ARMAZENAMENTO (Kit, gateado pelo cookie via
+    // selectPersistableMatchSignals), mas a política dizia que IP/UA só
+    // eram coletados "quando o seu navegador tem o cookie de medição da
+    // Meta". O CAPI envia IP/UA de TODO cadastro (poll, cursos) e de TODA
+    // reativação (reativar), sem gate. Decisão do editor (briefing 261018d):
+    // alinhar o texto ao comportamento, não gatear o envio.
+
+    it("o evento montado a partir de um request SEM cookie da Meta carrega IP e user agent", async () => {
+      const headers = new Headers({
+        "CF-Connecting-IP": "203.0.113.7",
+        "user-agent": "Mozilla/5.0 (teste #10414)",
+      });
+      const clientSignals = extractMetaCapiClientSignals(headers);
+      assert.equal(clientSignals.fbp, undefined, "premissa: request sem _fbp");
+      // O que é PERSISTIDO continua gateado pelo cookie...
+      assert.deepEqual(selectPersistableMatchSignals(clientSignals, undefined), {});
+      // ...mas o que é ENVIADO à Meta não é.
+      const event = await buildCompleteRegistrationEvent({
+        email: "leitor@example.com",
+        eventSourceUrl: "https://diar.ia.br/",
+        clientSignals,
+      });
+      assert.equal(event.user_data.client_ip_address, "203.0.113.7");
+      assert.equal(event.user_data.client_user_agent, "Mozilla/5.0 (teste #10414)");
+    });
+
+    it("os 3 workers que disparam o evento passam os sinais do request sem gate de cookie", () => {
+      for (const file of ["workers/poll/src/subscribe.ts", "workers/cursos/src/subscribe.ts", "workers/reativar/src/index.ts"]) {
+        const src = readFileSync(join(ROOT, file), "utf8");
+        assert.match(src, /extractMetaCapiClientSignals\(/, `${file}: não extrai mais IP/UA do request — revisar a política junto`);
+        assert.match(
+          src,
+          /sendCompleteRegistrationEvent\(\s*\{[^}]*\bclientSignals\b[^}]*\}/,
+          `${file}: o evento CAPI não leva mais clientSignals — revisar a política junto`,
+        );
+      }
+    });
+
+    it("a política declara o envio em todo cadastro e reativação, sem prometer gate por cookie", () => {
+      const html = renderPrivacyPage();
+      assert.match(html, /em todo cadastro e em toda reativação/);
+      assert.match(html, /tenha o seu navegador o cookie de medição da Meta ou não/);
+      // A redação anterior, que condicionava a coleta ao cookie, não pode voltar.
+      assert.doesNotMatch(html, /quando o seu navegador tem o cookie de medição da Meta/i);
+      assert.doesNotMatch(html, /Dados técnicos do cadastro, quando/);
+    });
   });
 });
