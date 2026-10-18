@@ -5,7 +5,12 @@ usando modelos pagos no OpenRouter". A lane existia para medir um modelo PAGO
 de gateway, então deixou de ter objeto. O que mudou no repo:
 
 - `scripts/dispatch-glm-lane-unit.sh` aborta logo no início (exit 3), antes de
-  qualquer claim, worktree ou dispatch;
+  qualquer claim, worktree ou dispatch. No #10431 virou lápide: o corpo morto
+  saiu, junto com o harness que só ele consumia (`check-glm-lane-gate.ts`,
+  `lib/glm-lane-gate.ts`, `record-glm-lane-unit.ts`,
+  `lib/glm-lane-headref-guard.sh` e os testes deles). As seções "Harness" e
+  "Critérios de morte" abaixo descrevem esse código, que agora só existe no
+  histórico do git;
 - `hermes/scripts/claude-delegate.sh` recusa `--model` que não seja `:free`
   nem o elo de assinatura (exit 2), e a cadeia default não tem mais elo pago;
 - `scripts/glm-lane-credits.ts` fica só como leitura avulsa do saldo da conta
@@ -13,6 +18,17 @@ de gateway, então deixou de ter objeto. O que mudou no repo:
 - o alarme de preço de modelo pago (#6818/#10278/#10295) saiu do
   `watch-continuo-health.sh`; quem vigia custo é o alarme de billing
   (`scripts/openrouter-billing-leak-check.ts`, qualquer cobrança > 0 acusa).
+  O `--price-check` do `hermes-model-cost-report.py` saiu no #10431, e a
+  coluna "pago=%" da composição por tick passou a contar qualquer id pago (não
+  mais o slug fixo do deepseek);
+- luna (#10431): fica FORA de `EXPECTED_PAID_MODELS`. A rota real é
+  `openai-codex` (`~/.hermes/config.yaml` no `300`, conferido em 18/10/2026;
+  `session_model_usage` sem nenhuma linha de luna com
+  `billing_provider=openrouter`), coberta por `SUBSCRIPTION_ROUTE_MODELS` no
+  relatório Python. Luna faturado no OpenRouter seria config errada e acusa;
+- risco aceito (#10431): o portão do `claude-delegate.sh` confia no sufixo
+  `:free`. Um `:free` que passe a ser cobrado só aparece no alarme de billing
+  do dia seguinte.
 
 Com isso a exceção à regra do `CLAUDE.md` (#5608/#6714) descrita abaixo **não
 está mais aberta**. O resto deste arquivo é histórico do piloto: condições,

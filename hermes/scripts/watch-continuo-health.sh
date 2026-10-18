@@ -874,8 +874,8 @@ fi
 # custo agora é o alarme de billing (`scripts/openrouter-billing-leak-check.ts`,
 # que acusa QUALQUER cobrança > 0) mais a checagem 4 acima (vazamento pago
 # em `session_model_usage`, com PAID_ALLOWLIST vazio). O código desta seção
-# está no histórico do repositório, e `--price-check` segue disponível no
-# script Python caso uma decisão futura reabra modelo pago.
+# está no histórico do repositório; o `--price-check` do script Python saiu
+# no #10431 (também no histórico, caso uma decisão futura reabra modelo pago).
 
 # ── 13. registro de sessão do contínuo ausente (#7890) ─────────────────────
 # Achado durante o #7814: o tick de 08/09 (#7641) nunca gravou

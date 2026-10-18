@@ -217,10 +217,6 @@ export function hasInvocationPoint(candidateName: string, corpusText: string): b
  * `task-never-armed-alarm.ts` já é revisada.
  */
 export const KNOWN_INDIRECT_INVOCATIONS: Record<string, string> = {
-  "check-glm-lane-gate":
-    "[cadeia indireta] scripts/dispatch-glm-lane-unit.sh chama `npx tsx scripts/check-glm-lane-gate.ts` " +
-    "antes de cada despacho (código real, não prosa) — dispatch-glm-lane-unit.sh por sua vez tem ponto " +
-    "de invocação real via `npm run glm-lane-dispatch` (package.json, #7137).",
   "check-highlight-themes":
     "[cadeia indireta] scripts/stage-1-run.ts chama `scripts/check-highlight-themes.ts` no passo " +
     "§1w-quint-b (código real) — stage-1-run.ts por sua vez é invocado por " +

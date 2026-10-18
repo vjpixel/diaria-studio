@@ -266,6 +266,15 @@ MODEL_FORCED=""
 # com exit 2 — uso inválido, nunca "próximo elo". Vale pro `--model`
 # explícito E pra cada elo de MODELS_DEFAULT (defesa contra alguém
 # reintroduzir um elo pago no array sem nova decisão do editor).
+#
+# #10431 item 3, risco aceito: o portão confia no SUFIXO `:free`. Um `:free`
+# que o OpenRouter passe a cobrar (mudança de tier, overage) passa por aqui e
+# só aparece no alarme de billing do dia seguinte
+# (`scripts/openrouter-billing-leak-check.ts`, D-1, que acusa QUALQUER
+# usage > 0 e não tem atalho por `:free` — #6983). Fechar isso antes da
+# chamada exigiria consultar preço a cada invocação (o `--price-check` do
+# catálogo saiu no #10431); o custo de exposição é no máximo 1 dia de um
+# modelo barato, então fica registrado em vez de mecanizado.
 is_model_allowed() {
   local m="${1:-}"
   case "$m" in
