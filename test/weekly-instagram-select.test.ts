@@ -25,6 +25,8 @@ import {
   isCommercialOrOwnLink,
   hasSuspiciousCommercialLanguage,
   withinClickNoise,
+  formatTieGroupsForPreview,
+  formatRankingForPreview,
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "../scripts/lib/weekly-instagram-select.ts";
@@ -306,6 +308,76 @@ describe("selectInstagramWeekly — desempate prefere item fora dos highlights (
     assert.equal(withinClickNoise(candidates[0], candidates[1]), true);
     const result = selectInstagramWeekly(candidates, 5);
     assert.equal(result.selected[0].title, "Guardian cobre IA no mundo");
+  });
+});
+
+describe("selectInstagramWeekly — grupo de empate no preview (#10388)", () => {
+  // Mesmo cenário do desempate por ângulo Brasil acima: o perdedor (Guardian)
+  // precisa aparecer no preview — antes só o warning "escolheu X" saía e o
+  // editor não via quem ficou de fora daquela vaga.
+  const candidates = (): InstagramRankedCandidate[] => [
+    rankedFixture({ title: "Guardian cobre IA no mundo", url: "https://exemplo.com/guardian", editionDate: "260713", destaqueNumber: 2, opens: 100, ratePct: 3.0 }),
+    rankedFixture({ title: "Itaú lança ferramenta de IA no Brasil", url: "https://exemplo.com/itau", editionDate: "260728", destaqueNumber: 2, opens: 100, ratePct: 3.5, category: "MERCADO" }),
+    rankedFixture({ title: "Bem atrás no ranking", url: "https://exemplo.com/longe", editionDate: "260714", destaqueNumber: 3, opens: 100, ratePct: 0.5 }),
+  ];
+
+  it("selection.ties registra vaga, taxa, vencedor e perdedores de cada empate desfeito", () => {
+    const result = selectInstagramWeekly(candidates(), 5);
+    assert.equal(result.ties.length, 1);
+    const [tie] = result.ties;
+    assert.equal(tie.position, 1);
+    assert.equal(tie.ratePct, 3.5);
+    assert.equal(tie.genuine, true);
+    assert.equal(tie.winner.title, "Itaú lança ferramenta de IA no Brasil");
+    assert.deepEqual(tie.losers.map((c) => c.title), ["Guardian cobre IA no mundo"]);
+  });
+
+  it("formatTieGroupsForPreview lista quem perdeu com taxa, edição e posição de origem", () => {
+    const lines = formatTieGroupsForPreview(selectInstagramWeekly(candidates(), 5).ties).join("\n");
+    assert.match(lines, /Vaga 1 — empate em 3\.50% \(2 candidatos\)/);
+    assert.match(lines, /venceu: \[3\.50%\] Itaú lança ferramenta de IA no Brasil \(260728 D2\)/);
+    assert.match(lines, /perdeu: \[3\.00%\] Guardian cobre IA no mundo \(260713 D2\)/);
+  });
+
+  it("empate não genuíno (sem dado de clique) é rotulado assim no preview", () => {
+    const cs = [
+      rankedFixture({ title: "Sem dado A", url: "https://exemplo.com/a", editionDate: "260713", destaqueNumber: 1, opens: 0, ratePct: 0, hasClickData: false }),
+      rankedFixture({ title: "Sem dado B", url: "https://exemplo.com/b", editionDate: "260714", destaqueNumber: 2, opens: 0, ratePct: 0, hasClickData: false }),
+    ];
+    const result = selectInstagramWeekly(cs, 5);
+    assert.equal(result.ties[0].genuine, false);
+    const lines = formatTieGroupsForPreview(result.ties).join("\n");
+    assert.match(lines, /empate NÃO genuíno/);
+    assert.match(lines, /\[sem dado de clique\]/);
+  });
+
+  it("sem empate, o bloco sai vazio (preview não ganha ruído)", () => {
+    const cs = [
+      rankedFixture({ title: "Alto", url: "https://exemplo.com/alto", editionDate: "260713", destaqueNumber: 1, opens: 100, ratePct: 9 }),
+      rankedFixture({ title: "Baixo", url: "https://exemplo.com/baixo", editionDate: "260714", destaqueNumber: 1, opens: 100, ratePct: 2 }),
+    ];
+    const result = selectInstagramWeekly(cs, 5);
+    assert.deepEqual(result.ties, []);
+    assert.deepEqual(formatTieGroupsForPreview(result.ties), []);
+  });
+
+  it("formatRankingForPreview (--show-ranking) lista todos os elegíveis por taxa, marca o carrossel e os excluídos", () => {
+    const cs = [
+      ...candidates(),
+      rankedFixture({ title: "Afiliado", url: "https://www.amazon.com.br/x", editionDate: "260715", destaqueNumber: 1, opens: 100, ratePct: 9, excluded: true }),
+    ];
+    const result = selectInstagramWeekly(cs, 2);
+    const lines = formatRankingForPreview(result);
+    assert.match(lines[0], /3 elegíveis/);
+    assert.match(lines[1], /1\. \[3\.50%\] Itaú .* — carrossel #1/);
+    assert.match(lines[2], /2\. \[3\.00%\] Guardian .* — carrossel #2/);
+    assert.match(lines[3], /3\. \[0\.50%\] Bem atrás .* — fora/);
+    assert.ok(lines.some((l) => /Excluídos .*: 1/.test(l)));
+    assert.ok(lines.some((l) => /Afiliado/.test(l)));
+  });
+
+  it("selectInstagramHighlights nunca tem empate (ties sempre vazio)", () => {
+    assert.deepEqual(selectInstagramHighlights(candidates()).ties, []);
   });
 });
 

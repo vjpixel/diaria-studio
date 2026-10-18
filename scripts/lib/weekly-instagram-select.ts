@@ -386,6 +386,25 @@ export interface InstagramSelectionResult {
   /** Candidatos excluídos (comercial/afiliado/própria) — auditoria. */
   excluded: InstagramRankedCandidate[];
   warnings: string[];
+  /**
+   * #10388: um grupo por empate desfeito pelo desempate editorial (mesma
+   * ordem dos warnings de empate) — quem venceu e quem perdeu, pra o preview
+   * mostrar ao editor no gate sem precisar instrumentar o script.
+   */
+  ties: InstagramTieGroup[];
+}
+
+/** #10388: grupo empatado dentro do ruído de 1 clique e como o desempate editorial o resolveu. */
+export interface InstagramTieGroup {
+  /** Posição no carrossel (1-based) que o vencedor ocupou. */
+  position: number;
+  /** Taxa do topo do grupo (o candidato que abriu o empate). */
+  ratePct: number;
+  winner: InstagramRankedCandidate;
+  /** Os demais do grupo — perderam ESTA vaga (podem voltar a competir pelas seguintes). */
+  losers: InstagramRankedCandidate[];
+  /** `false` quando algum membro não tinha dado de clique real (empate não-genuíno). */
+  genuine: boolean;
 }
 
 /**
@@ -400,6 +419,7 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
   const selected: InstagramRankedCandidate[] = [];
   const selectedCategories = new Set<string>();
   const warnings: string[] = [];
+  const ties: InstagramTieGroup[] = [];
   let remaining = eligible;
   // #10378: D1s da semana (carrossel highlights) — desempate prefere quem ficou de fora.
   const highlightUrls = new Set(
@@ -417,6 +437,13 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
         .sort((x, y) => y.score - x.score || byRateDescThenTitle(x.c, y.c));
       winner = scored[0].c;
       const missingData = tiedGroup.filter((c) => !c.hasClickData);
+      ties.push({
+        position: selected.length + 1,
+        ratePct: top.ratePct,
+        winner,
+        losers: tiedGroup.filter((c) => c !== winner),
+        genuine: missingData.length === 0,
+      });
       if (missingData.length > 0) {
         warnings.push(
           `${tiedGroup.length} candidatos com a mesma taxa (${top.ratePct.toFixed(2)}%), mas NÃO é empate genuíno — ` +
@@ -441,7 +468,7 @@ export function selectInstagramWeekly(candidatesIn: InstagramRankedCandidate[], 
     warnings.push(`Só ${selected.length}/${maxItems} candidatos elegíveis encontrados (após exclusão comercial/própria).`);
   }
 
-  return { selected, ranked: eligible, excluded, warnings };
+  return { selected, ranked: eligible, excluded, warnings, ties };
 }
 
 /**
@@ -467,5 +494,48 @@ export function selectInstagramHighlights(candidatesIn: InstagramRankedCandidate
   for (const c of excluded) {
     warnings.push(`D1 de ${c.editionDate} ("${c.title}") excluído — link comercial/afiliado/próprio.`);
   }
-  return { selected, ranked: selected, excluded, warnings };
+  return { selected, ranked: selected, excluded, warnings, ties: [] };
+}
+
+/** #10388: linha de um candidato no preview — taxa, edição, posição de origem e título. */
+function describeCandidate(c: InstagramRankedCandidate): string {
+  const origin = c.kind === "destaque" ? `D${c.destaqueNumber}` : c.category;
+  const noData = c.hasClickData ? "" : " [sem dado de clique]";
+  return `[${c.ratePct.toFixed(2)}%] ${c.title} (${c.editionDate} ${origin})${noData}`;
+}
+
+/**
+ * Pure (#10388): bloco do preview que lista, por empate desfeito, o vencedor
+ * e quem perdeu aquela vaga — o gate humano decide vendo o grupo inteiro.
+ * Vazio quando não houve empate.
+ */
+export function formatTieGroupsForPreview(ties: InstagramTieGroup[]): string[] {
+  if (ties.length === 0) return [];
+  const lines = ["Empates desfeitos pelo desempate editorial:"];
+  for (const t of ties) {
+    const label = t.genuine ? "empate" : "empate NÃO genuíno (falta dado de clique)";
+    lines.push(`  Vaga ${t.position} — ${label} em ${t.ratePct.toFixed(2)}% (${t.losers.length + 1} candidatos):`);
+    lines.push(`    venceu: ${describeCandidate(t.winner)}`);
+    for (const l of t.losers) lines.push(`    perdeu: ${describeCandidate(l)}`);
+  }
+  return lines;
+}
+
+/**
+ * Pure (#10388, `--show-ranking`): o ranking elegível completo por taxa,
+ * marcando a posição no carrossel de quem foi selecionado, mais os excluídos
+ * (comercial/afiliado/próprio) — auditoria do gate.
+ */
+export function formatRankingForPreview(result: Pick<InstagramSelectionResult, "ranked" | "selected" | "excluded">): string[] {
+  const lines = [`Ranking completo (${result.ranked.length} elegíveis, ordem por taxa):`];
+  result.ranked.forEach((c, i) => {
+    const pos = result.selected.indexOf(c);
+    const mark = pos >= 0 ? `carrossel #${pos + 1}` : "fora";
+    lines.push(`  ${String(i + 1).padStart(2)}. ${describeCandidate(c)} — ${mark}`);
+  });
+  if (result.excluded.length > 0) {
+    lines.push(`Excluídos (comercial/afiliado/próprio): ${result.excluded.length}`);
+    for (const c of result.excluded) lines.push(`  - ${describeCandidate(c)}`);
+  }
+  return lines;
 }
