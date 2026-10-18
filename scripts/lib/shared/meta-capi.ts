@@ -735,7 +735,7 @@ export function applyMatchSignalFields(
  * #10393 item 3: troca cada ocorrência dos valores dados (IP, UA, fbp,
  * e-mail) por `[redacted]` — o corpo de erro do Kit pode ecoar o payload e
  * vai pro log do Worker. Valores vazios/curtos (< 3) são ignorados pra não
- * picotar o texto. @pure
+ * picotar o texto. Comparação case-insensitive (#10416). @pure
  */
 export function redactLogValues(text: string, values: ReadonlyArray<string | undefined>): string {
   let out = text;
@@ -743,12 +743,19 @@ export function redactLogValues(text: string, values: ReadonlyArray<string | und
   // Mais longo primeiro: um valor contido em outro (IP dentro do UA) não deixa sobra.
   uniq.sort((a, b) => b.length - a.length);
   for (const v of uniq) {
-    out = out.split(v).join("[redacted]");
+    // #10416: case-insensitive — o caller nem sempre normaliza (cursos só faz
+    // `trim()` no e-mail) e o Kit ecoa em minúsculas: e-mail cadastrado com
+    // maiúsculas e ecoado em minúsculas no corpo passava em claro.
+    out = out.replace(new RegExp(escapeRegExp(v), "gi"), "[redacted]");
     // JSON escapa `/` e `"` — o eco do Kit pode vir na forma escapada.
     const jsonForm = JSON.stringify(v).slice(1, -1);
-    if (jsonForm !== v) out = out.split(jsonForm).join("[redacted]");
+    if (jsonForm !== v) out = out.replace(new RegExp(escapeRegExp(jsonForm), "gi"), "[redacted]");
   }
   return out;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
