@@ -53,24 +53,35 @@ const REAL_ROWS: BillingRow[] = [
   { date: "2026-08-30", model: "anthropic/claude-sonnet-5", requests: 10, usageUsd: 0.3868 },
   { date: "2026-08-30", model: "openai/gpt-5.6-luna", requests: 7, usageUsd: 0.0783 },
   { date: "2026-08-29", model: "anthropic/claude-sonnet-5", requests: 21, usageUsd: 1.2064 },
-  // #10367: nos dados reais de 29/08 esta linha era z-ai/glm-5.3-flash; o glm
-  // saiu da allowlist, então o elo pago esperado da fixture passa a ser o deepseek.
+  // #10367: nos dados reais de 29/08 esta linha era z-ai/glm-5.3-flash (trocado
+  // pelo deepseek quando o glm saiu da allowlist). Desde o #10387 nenhum dos
+  // dois é esperado — a linha é vazamento como qualquer outra cobrança.
   { date: "2026-08-29", model: "deepseek/deepseek-v4-flash", requests: 402, usageUsd: 0.7145 },
 ];
 
 describe("evaluateBillingLeak (#6716 escopo 3) — contra o vazamento REAL medido", () => {
   it("pega as 3 linhas de claude-sonnet-5 e soma o USD certo", () => {
     const r = evaluateBillingLeak(REAL_ROWS);
-    assert.equal(r.leaks.length, 3, "as 3 linhas de sonnet (29, 30 e 31/08) são vazamento");
-    assert.ok(r.leaks.every((l) => l.model === "anthropic/claude-sonnet-5"));
-    assert.equal(Number(r.leakedUsd.toFixed(4)), 2.5531, "1.2064 + 0.3868 + 0.9599");
+    const sonnet = r.leaks.filter((l) => l.model === "anthropic/claude-sonnet-5");
+    assert.equal(sonnet.length, 3, "as 3 linhas de sonnet (29, 30 e 31/08) são vazamento");
+    const sonnetUsd = sonnet.reduce((acc, l) => acc + l.usageUsd, 0);
+    assert.equal(Number(sonnetUsd.toFixed(4)), 2.5531, "1.2064 + 0.3868 + 0.9599");
   });
 
-  it("NÃO acusa os modelos que o repo de fato pede", () => {
+  // #10387 (18/10/2026, decisão do editor): nenhum modelo pago do OpenRouter é
+  // esperado. Antes deste fix, deepseek-v4-flash (elo pago da cadeia/lane) e
+  // openai/gpt-5.6-luna passavam calados; agora TODA linha com usage > 0 acusa.
+  it("#10387: toda linha faturada (> 0) é vazamento — deepseek e luna inclusive", () => {
     const r = evaluateBillingLeak(REAL_ROWS);
     const flagged = r.leaks.map((l) => l.model);
-    assert.ok(!flagged.includes("deepseek/deepseek-v4-flash"), "elo pago da cadeia/lane é esperado");
-    assert.ok(!flagged.includes("openai/gpt-5.6-luna"), "primário do job é esperado");
+    assert.equal(r.leaks.length, 5, "3 de sonnet + luna + deepseek; as 2 linhas :free de usage 0 ficam fora");
+    assert.ok(flagged.includes("deepseek/deepseek-v4-flash"), "ex-elo pago da cadeia/lane agora é vazamento");
+    assert.ok(flagged.includes("openai/gpt-5.6-luna"), "luna faturado no OpenRouter agora é vazamento");
+    assert.equal(Number(r.leakedUsd.toFixed(4)), Number(r.totalUsd.toFixed(4)), "sem allowlist, vazado == faturado");
+  });
+
+  it("#10387: EXPECTED_PAID_MODELS é vazio", () => {
+    assert.equal(EXPECTED_PAID_MODELS.size, 0);
   });
 
   it("`:free` com usage 0 nunca é vazamento (custo dele é cota, não dólar)", () => {
@@ -107,22 +118,23 @@ describe("evaluateBillingLeak (#6716 escopo 3) — contra o vazamento REAL medid
   it("totalUsd soma tudo, leakedUsd só o que vazou", () => {
     const r = evaluateBillingLeak(REAL_ROWS);
     assert.equal(Number(r.totalUsd.toFixed(4)), 3.3459);
-    assert.ok(r.leakedUsd < r.totalUsd);
+    // Com allowlist explícita, o que ela cobre sai do vazado (a mecânica de
+    // allowlist continua testável mesmo com a de produção vazia, #10387).
+    const comAllowlist = evaluateBillingLeak(REAL_ROWS, new Set(["deepseek/deepseek-v4-flash"]));
+    assert.ok(comAllowlist.leakedUsd < comAllowlist.totalUsd);
   });
 
-  it("#10367: glm-5.3-flash saiu da allowlist — cobrança dele agora é vazamento", () => {
-    assert.ok(!EXPECTED_PAID_MODELS.has("z-ai/glm-5.3-flash"));
-    assert.ok(EXPECTED_PAID_MODELS.has("deepseek/deepseek-v4-flash"));
-    assert.equal(
-      isBillingLeak({ date: "2026-10-17", model: "z-ai/glm-5.3-flash", requests: 3, usageUsd: 0.01 }),
-      true,
-    );
+  it("#10367/#10387: glm-5.3-flash e deepseek-v4-flash fora da allowlist — cobrança deles é vazamento", () => {
+    for (const model of ["z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash"]) {
+      assert.ok(!EXPECTED_PAID_MODELS.has(model));
+      assert.equal(isBillingLeak({ date: "2026-10-17", model, requests: 3, usageUsd: 0.01 }), true, model);
+    }
   });
 
-  it("EXPECTED_PAID_MODELS cobre as 2 formas do mesmo modelo (id puro e prefixado)", () => {
-    assert.ok(EXPECTED_PAID_MODELS.has("gpt-5.6-luna"));
-    assert.ok(EXPECTED_PAID_MODELS.has("openai-codex/gpt-5.6-luna"));
-    assert.ok(EXPECTED_PAID_MODELS.has("openai/gpt-5.6-luna"));
+  it("#10387: nenhuma das formas do luna é esperada no billing do OpenRouter", () => {
+    for (const model of ["gpt-5.6-luna", "openai-codex/gpt-5.6-luna", "openai/gpt-5.6-luna", "gpt-6-luna", "openai/gpt-6-luna"]) {
+      assert.equal(isBillingLeak({ date: "2026-10-17", model, requests: 1, usageUsd: 0.0001 }), true, model);
+    }
   });
 });
 
@@ -144,7 +156,7 @@ describe("idempotência do alarme (#6716)", () => {
   });
 
   it("sem vazamento → nunca alarma e re-arma o cursor (alarmedKeys continua vazio)", () => {
-    const clean = evaluateBillingLeak([{ date: "2026-09-01", model: "deepseek/deepseek-v4-flash", requests: 10, usageUsd: 0.05 }]);
+    const clean = evaluateBillingLeak([{ date: "2026-09-01", model: "poolside/laguna-s-2.1:free", requests: 10, usageUsd: 0 }]);
     assert.equal(shouldAlarmBillingLeak(emptyBillingLeakAlarmState(), clean), false);
     assert.deepEqual(advanceBillingLeakAlarmState(clean, NOW).alarmedKeys, []);
   });
@@ -237,7 +249,7 @@ describe("#7211 — dedup por chave acumulada (não mais por fingerprint de CONJ
 describe("buildBillingLeakAlarmEmail (#6716)", () => {
   it("assunto traz o valor vazado; corpo lista cada achado e explica por que lê o gateway", () => {
     const { subject, body } = buildBillingLeakAlarmEmail(evaluateBillingLeak(REAL_ROWS), new Date("2026-09-01T21:00:00Z"));
-    assert.match(subject, /2\.5531/);
+    assert.match(subject, /3\.3459/, "#10387: sem allowlist, o vazado é tudo o que foi faturado");
     assert.match(body, /anthropic\/claude-sonnet-5/);
     assert.match(body, /session_model_usage/, "o corpo tem que dizer por que a tabela local não serve");
     assert.match(body, /EXPECTED_PAID_MODELS/, "tem que dizer como legitimar um modelo, pra ninguém silenciar de outro jeito");

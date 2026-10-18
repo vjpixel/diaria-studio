@@ -372,27 +372,37 @@ def main() -> int:
         "#6818: todo modelo do PAID_ALLOWLIST está coberto pelo baseline ou nomeado fora da OpenRouter",
         set(mod.PAID_ALLOWLIST) <= coberto,
     )
+    assert_true(
+        "#6818/#10387: todo modelo de SUBSCRIPTION_ROUTE_MODELS está nomeado fora da OpenRouter",
+        set(mod.SUBSCRIPTION_ROUTE_MODELS) <= set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
+    )
 
-    # 9b. Regressao da troca glm -> deepseek (08/09/2026): quando o fallback
-    #     pago do config.yaml muda, CONTINUO_PAID_FALLBACK_MODEL e o
-    #     PAID_ALLOWLIST tem que andar JUNTOS. Se so a constante mudasse, todo
-    #     tick que caisse no fallback seria classificado como VAZAMENTO; se so
-    #     a allowlist mudasse, a composicao por tick atribuiria o fallback a
-    #     other_calls e a linha de base do #6912 ficaria silenciosamente
-    #     errada. Nenhum dos dois erros levanta excecao — sao ambos silenciosos,
-    #     que e o motivo de existir um teste em vez de confiar na revisao.
+    # 9b. #10387 (18/10/2026, decisao do editor): nenhum modelo pago do
+    #     OpenRouter e intencional. PAID_ALLOWLIST e PAID_PRICE_BASELINE
+    #     vazios; o ex-fallback pago do continuo (deepseek) e vazamento.
+    #     Antes do #10387 este bloco exigia o oposto (fallback NA allowlist,
+    #     regressao da troca glm -> deepseek de 08/09).
     assert_true(
-        "fallback pago do continuo esta na PAID_ALLOWLIST (nunca classificado como vazamento)",
-        mod.CONTINUO_PAID_FALLBACK_MODEL in mod.PAID_ALLOWLIST,
+        "#10387: PAID_ALLOWLIST vazio (nenhum modelo pago do OpenRouter e intencional)",
+        len(mod.PAID_ALLOWLIST) == 0,
     )
     assert_true(
-        "fallback pago do continuo tem baseline de preco (o alarme do #6818 o cobre)",
-        mod.CONTINUO_PAID_FALLBACK_MODEL in set(mod.PAID_PRICE_BASELINE)
-        | set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
+        "#10387: PAID_PRICE_BASELINE vazio (alarme de preco encerrado)",
+        len(mod.PAID_PRICE_BASELINE) == 0,
     )
     assert_true(
-        "primario do continuo tambem esta na allowlist (mesma classe de erro)",
-        set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.PAID_ALLOWLIST),
+        "#10387: ex-fallback pago do continuo (deepseek-v4-flash) cobrado pela OpenRouter e vazamento",
+        mod.CONTINUO_PAID_FALLBACK_MODEL not in mod.PAID_ALLOWLIST
+        and mod._is_leak(mod.CONTINUO_PAID_FALLBACK_MODEL, "openrouter") is True,
+    )
+    assert_true(
+        "#10387: qualquer id pago do OpenRouter sem :free e vazamento; o mesmo id com :free nao",
+        mod._is_leak("deepseek/deepseek-v4-flash", "openrouter") is True
+        and mod._is_leak("poolside/laguna-s-2.1:free", "openrouter") is False,
+    )
+    assert_true(
+        "primario do continuo esta em SUBSCRIPTION_ROUTE_MODELS (nunca vazamento; mesma classe de erro)",
+        set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.SUBSCRIPTION_ROUTE_MODELS),
     )
 
     # --- #7649 (08/09/2026): elo de assinatura claude.ai de claude-delegate.sh ---
@@ -402,8 +412,8 @@ def main() -> int:
     # falso positivo de vazamento pago. Aqui e o oposto do #7648 (constante
     # nova em vez de troca de slug), mas o invariante que protege e o mesmo.
     assert_true(
-        "#7649: elo de assinatura ('sonnet') esta na PAID_ALLOWLIST (nunca sinalizado como vazamento)",
-        "sonnet" in mod.PAID_ALLOWLIST,
+        "#7649: elo de assinatura ('sonnet') esta em SUBSCRIPTION_ROUTE_MODELS (nunca sinalizado como vazamento)",
+        "sonnet" in mod.SUBSCRIPTION_ROUTE_MODELS,
     )
     assert_true(
         "#7649: _is_leak('sonnet', 'anthropic') -> False (nao e vazamento, mesmo com provider billable)",
@@ -423,7 +433,7 @@ def main() -> int:
     coberto_sem_sonnet = (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)) - {"sonnet"}
     assert_true(
         "#7649 controle negativo: sem 'sonnet' em PAID_MODELS_NOT_ON_OPENROUTER, o invariante da secao 9 QUEBRA",
-        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_sonnet),
+        not (set(mod.SUBSCRIPTION_ROUTE_MODELS) <= coberto_sem_sonnet),
     )
     # detect_price_changes: o elo de assinatura tem que sair como out_of_scope
     # (fronteira PERMANENTE — nao ha preco no catalogo da OpenRouter pra
@@ -515,9 +525,9 @@ def main() -> int:
         mod._is_leak(GLM, "openrouter") is True,
     )
     assert_true(
-        "#10367: deepseek-v4-flash (novo modelo da lane) segue na allowlist e com baseline",
-        "deepseek/deepseek-v4-flash" in mod.PAID_ALLOWLIST
-        and "deepseek/deepseek-v4-flash" in mod.PAID_PRICE_BASELINE,
+        "#10387: deepseek-v4-flash (ex-modelo da lane) fora da allowlist e do baseline",
+        "deepseek/deepseek-v4-flash" not in mod.PAID_ALLOWLIST
+        and "deepseek/deepseek-v4-flash" not in mod.PAID_PRICE_BASELINE,
     )
     # Baselines históricos do glm, passados explicitamente nos testes de
     # regressão abaixo (#10065/#10278/#10295) — o mecanismo continua coberto,
@@ -529,16 +539,13 @@ def main() -> int:
         "deepseek/deepseek-v4-flash, nao absorver a alta. NAO atualizar "
         "PAID_PRICE_BASELINE deste modelo."
     )}
-    # #9559 -> #9633 -> #10132: baseline vigente do deepseek-v4-flash. Em
-    # 13/10/2026 prompt subiu 0,03 -> 0,091/M, completion caiu 1,28 -> 0,182/M
-    # e input_cache_read caiu 0,03 -> 0,0182/M (custo-mix real -34%); o modelo
-    # é mantido e o baseline acompanha os 3 campos vigentes.
-    for campo, valor in (("prompt", 0.000000091), ("completion", 0.000000182),
-                         ("input_cache_read", 0.0000000182)):
-        assert_true(
-            f"#10132: baseline vigente do deepseek-v4-flash usa {campo}={valor}",
-            mod.PAID_PRICE_BASELINE["deepseek/deepseek-v4-flash"][campo] == valor,
-        )
+    # #9559 -> #9633 -> #10132: último baseline do deepseek-v4-flash antes do
+    # #10387 (que esvaziou o baseline de produção). Em 13/10/2026 prompt subiu
+    # 0,03 -> 0,091/M, completion caiu 1,28 -> 0,182/M e input_cache_read caiu
+    # 0,03 -> 0,0182/M (custo-mix real -34%). Passado explicitamente nos testes
+    # de regressão abaixo — o mecanismo continua coberto.
+    BASELINE_DS_10132 = {"deepseek/deepseek-v4-flash": {
+        "prompt": 0.000000091, "completion": 0.000000182, "input_cache_read": 0.0000000182}}
 
     # #9633 (regressão histórica): com o catálogo no preço reportado pela
     # issue, o baseline daquela época (0,03/1,28/0,03) sai LIMPO (exit 0).
@@ -651,7 +658,7 @@ def main() -> int:
         {"id": GLM,
          "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
                      "input_cache_read": "0.00000003"}},
-    )), baseline={**mod.PAID_PRICE_BASELINE, **BASELINE_GLM_10065},
+    )), baseline={**BASELINE_DS_10132, **BASELINE_GLM_10065},
         decisions=DECISIONS_GLM_10278)
     assert_true(
         "#10295: aumento do deepseek (sem decisão) NÃO ganha 'decisao' e o exit segue 3",
@@ -691,7 +698,7 @@ def main() -> int:
          "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
                      "input_cache_read": "0.0000000108"}},
     ))
-    f_10132 = mod.detect_price_changes(cat_10132)
+    f_10132 = mod.detect_price_changes(cat_10132, baseline=BASELINE_DS_10132)
     assert_true(
         "#10132: catálogo no preço vigente (13/10) -> sem aumento, sem unverifiable, exit 0",
         not f_10132["increases"] and not f_10132["unverifiable"]
@@ -718,7 +725,7 @@ def main() -> int:
             {"id": "z-ai/glm-5.3-flash",
              "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
                          "input_cache_read": "0.0000000108"}},
-        )))
+        )), baseline=BASELINE_DS_10132)
         assert_true(
             f"#10132: {campo}={preco} ainda alarma contra o baseline novo (exit 3)",
             mod.price_check_exit_code(f_up) == 3
@@ -764,14 +771,14 @@ def main() -> int:
     )
     assert_true(
         "#8738 controle negativo: sem gpt-6-luna em PAID_MODELS_NOT_ON_OPENROUTER, o invariante do #6818 QUEBRA",
-        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_gpt6_luna),
+        not (set(mod.SUBSCRIPTION_ROUTE_MODELS) <= coberto_sem_gpt6_luna),
     )
     # E o invariante do #6818 (seção 9 acima) continua valendo com as
     # entradas novas somadas — não é uma duplicata da asserção da seção 9,
     # é a prova de que ESTA adição específica não quebrou o invariante geral.
     assert_true(
         "#8738: invariante do #6818 (PAID_ALLOWLIST <= baseline ∪ not_on_openrouter) segue valendo com gpt-6-luna",
-        set(mod.PAID_ALLOWLIST) <= (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)),
+        set(mod.SUBSCRIPTION_ROUTE_MODELS) <= (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)),
     )
 
     if FAILED:

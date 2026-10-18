@@ -68,7 +68,7 @@ export interface BillingLeakEvaluation {
 }
 
 /**
- * Modelos cuja cobrança é ESPERADA — a cadeia que o repo de fato pede.
+ * Modelos cuja cobrança é ESPERADA no OpenRouter — nenhum desde o #10387.
  *
  * Duplicado de propósito em relação ao `PAID_ALLOWLIST` de
  * `hermes-model-cost-report.py` (que é Python e lê outra fonte): o objetivo
@@ -79,29 +79,24 @@ export interface BillingLeakEvaluation {
  * `:free` nunca é vazamento — não custa dólar (o custo dele é cota, coberta
  * por outro guard, ver #6907).
  */
-export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set([
-  // Fallback pago do Hermes (~/.hermes/config.yaml) desde 08/09/2026 —
-  // substituiu o glm nas 20 ocorrencias de la. Desde o #10278 (15/10/2026) o
-  // deepseek tambem e o elo pago da cadeia padrao do wrapper
-  // (claude-delegate.sh, MODELS_DEFAULT), e desde o #10367 (16/10/2026) o
-  // modelo que a lane piloto do #6930 (dispatch-glm-lane-unit.sh) forca por
-  // --model. O z-ai/glm-5.3-flash saiu daqui no #10367: cobranca dele no
-  // billing agora e vazamento.
-  "deepseek/deepseek-v4-flash", // elo pago do wrapper (#10278) + lane #6930 (#10367)
-  "gpt-5.6-luna",
-  "openai-codex/gpt-5.6-luna",
-  "openai/gpt-5.6-luna", // mesma família sob o id prefixado do gateway
-  // #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna. Entradas
-  // antigas MANTIDAS (trafego historico/ainda-nao-migrado pode referenciar
-  // o id velho) — mesmo tratamento das 3 formas acima, mesmo modelo.
-  "gpt-6-luna",
-  "openai-codex/gpt-6-luna",
-  "openai/gpt-6-luna",
+export const EXPECTED_PAID_MODELS: ReadonlySet<string> = new Set<string>([
+  // VAZIO desde o #10387 (18/10/2026, decisão do editor: "não estou mais
+  // usando modelos pagos no OpenRouter"). Nenhuma cobrança no OpenRouter é
+  // esperada — qualquer linha com usage > 0 acusa, seja qual for o modelo.
   //
-  // "sonnet" (elo de assinatura claude.ai, #7649) NÃO entra aqui, de
-  // propósito — ao contrário de "gpt-5.6-luna" acima. Ver
-  // test/openrouter-billing-leak-model-list-drift-6994.test.ts
-  // (SONNET_DELIBERATELY_NOT_MIRRORED): este módulo lê o feed de billing
+  // Até o #10387 aqui viviam "deepseek/deepseek-v4-flash" (fallback pago do
+  // ~/.hermes/config.yaml desde 08/09, elo pago do claude-delegate.sh desde o
+  // #10278, modelo da lane piloto do #6930 desde o #10367; o
+  // z-ai/glm-5.3-flash já tinha saído no #10367) e as 3 formas de
+  // "gpt-5.6-luna"/"gpt-6-luna" (#8738). O luna sai junto: este guard lê só o
+  // billing do OpenRouter, e o luna do orquestrador roda pela rota
+  // openai-codex — luna faturado NO OpenRouter também é modelo pago no
+  // OpenRouter. Readicionar qualquer modelo aqui exige NOVA decisão do editor
+  // revertendo o #10387 — nunca silenciar o alarme ampliando esta lista.
+  //
+  // "sonnet" (elo de assinatura claude.ai, #7649) também NÃO entra aqui, de
+  // propósito. Ver
+  // test/openrouter-billing-leak-model-list-drift-6994.test.ts: este módulo lê o feed de billing
   // REAL do OpenRouter, e "sonnet" no gateway só pode significar que o
   // guard fail-closed do #7649 (unset + abort das 8 vars de auth/gateway
   // em hermes/scripts/claude-delegate.sh) falhou — é exatamente o sinal
@@ -376,9 +371,11 @@ export function buildBillingLeakAlarmEmail(
     "`anthropic/claude-sonnet-5` — nem nos dias em que o OpenRouter cobrou por",
     "ela. São chamadas internas do CLI, não mensagens da sessão (#6716).",
     "",
-    "Se o modelo listado acima for legítimo, adicione-o a EXPECTED_PAID_MODELS",
-    "em scripts/lib/openrouter-billing-leak.ts — nunca silencie ampliando a",
-    "janela ou baixando o alarme.",
+    "Desde o #10387 nenhum modelo pago do OpenRouter é legítimo (só `:free`):",
+    "EXPECTED_PAID_MODELS em scripts/lib/openrouter-billing-leak.ts é VAZIO de",
+    "propósito. Corrija o caminho que caiu no modelo pago (~/.hermes/config.yaml,",
+    "perfis, cron jobs, cadeia do claude-delegate.sh) — nunca silencie ampliando",
+    "a allowlist, a janela ou baixando o alarme.",
     "",
     `(alarme automático — checagem rodou em ${now.toISOString()})`,
   );

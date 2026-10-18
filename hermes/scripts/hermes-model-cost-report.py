@@ -67,17 +67,25 @@ from pathlib import Path
 
 STATE_DB = Path.home() / ".hermes" / "state.db"
 
-# Modelos pagos que o config engaja DE PROPOSITO. Qualquer outro id pago que
-# apareca no relatorio e vazamento e deve ser investigado, nao normalizado.
-PAID_ALLOWLIST = {
-    # Fallback pago do Hermes (config.yaml) desde 08/09/2026 — substituiu o
-    # glm-5.3-flash nas 20 ocorrencias de ~/.hermes/config.yaml.
-    "deepseek/deepseek-v4-flash",
-    # #10367 (16/10/2026): o z-ai/glm-5.3-flash SAIU desta allowlist. Desde o
-    # #10278 ele ja nao estava na cadeia padrao de claude-delegate.sh, e a
-    # lane piloto do #6930 (dispatch-glm-lane-unit.sh) foi reapontada para o
-    # deepseek-v4-flash (decisao do editor, briefing overnight 261016b). Uso
-    # residual do glm em producao passa a ser sinalizado como vazamento pago.
+# Modelos PAGOS do OpenRouter que o config engaja DE PROPOSITO. VAZIO desde o
+# #10387 (18/10/2026, decisao do editor: "nao estou mais usando modelos pagos
+# no OpenRouter") — so `:free`. Qualquer id pago que apareca no relatorio e
+# vazamento e deve ser investigado, nao normalizado. Readicionar algo aqui
+# exige NOVA decisao do editor revertendo o #10387.
+#
+# Historico: ate o #10387 aqui vivia "deepseek/deepseek-v4-flash" (fallback
+# pago do ~/.hermes/config.yaml desde 08/09/2026, elo pago do
+# claude-delegate.sh desde o #10278, lane piloto do #6930 desde o #10367); o
+# "z-ai/glm-5.3-flash" ja tinha saido no #10367.
+PAID_ALLOWLIST: frozenset[str] = frozenset()
+
+# Modelos cobrados por ROTA DE ASSINATURA (nao pelo OpenRouter, custo $0 por
+# chamada) — nao sao vazamento. Ate o #10387 viviam dentro do PAID_ALLOWLIST;
+# sairam pra ca pra que o PAID_ALLOWLIST pudesse ficar vazio sem transformar o
+# orquestrador (luna via openai-codex) e o elo de assinatura do
+# claude-delegate.sh em falso positivo diario. Invariante (teste): todo id
+# aqui esta em PAID_MODELS_NOT_ON_OPENROUTER.
+SUBSCRIPTION_ROUTE_MODELS: frozenset[str] = frozenset({
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
     # #8738 (23/09/2026): version bump do mesmo modelo "Luna" do
@@ -93,20 +101,18 @@ PAID_ALLOWLIST = {
     "openai-codex/gpt-6-luna",
     "gpt-6-luna",
     # #7649 (08/09/2026): elo final de assinatura claude.ai de
-    # claude-delegate.sh (depois do elo pago — deepseek-v4-flash desde o
-    # #10278, era o glm-5.3-flash —, quando os 3 :free E o
-    # pago falham). Sentinela "sonnet" gravada literalmente como `model` na
+    # claude-delegate.sh (quando os 3 :free falham; ate o #10387 havia um elo
+    # pago de gateway antes dele). Sentinela "sonnet" gravada literalmente como `model` na
     # linha de billing — nao e cobranca de gateway (roda com as 5 vars
     # ANTHROPIC_* de gateway UNSET, ver docstring do wrapper), mas sem
     # allowlist seria indistinguivel de um vazamento pago de verdade. Mesmo
     # tratamento do gpt-5.6-luna acima (drift do PR #7648): entra tanto aqui
     # (pra _is_leak nao sinalizar) quanto em PAID_MODELS_NOT_ON_OPENROUTER
     # abaixo (pro --price-check nao tentar achar preco de um modelo que a
-    # OpenRouter nunca serviu) — o invariante mais abaixo neste arquivo
-    # (todo item do PAID_ALLOWLIST coberto por baseline OU por
-    # PAID_MODELS_NOT_ON_OPENROUTER) exige as DUAS entradas juntas.
+    # OpenRouter nunca serviu) — o invariante do teste (todo item deste
+    # conjunto em PAID_MODELS_NOT_ON_OPENROUTER) exige as DUAS entradas juntas.
     "sonnet",
-}
+})
 
 # #6912 (01/09/2026): cadeia de modelo do job `continuo` — MANTIDA A MAO
 # neste arquivo, igual ao PAID_ALLOWLIST acima. `~/.hermes/cron/jobs.json` e
@@ -116,12 +122,12 @@ PAID_ALLOWLIST = {
 # core, estas constantes ficam defasadas ate alguem atualizar a mao; e o
 # mesmo trade-off ja aceito pro PAID_ALLOWLIST.
 CONTINUO_JOB_ID = "5d791ef6fc2c"
-# #6912 (review): o PAID_ALLOWLIST acima ja prova que o MESMO modelo aparece
+# #6912 (review): o SUBSCRIPTION_ROUTE_MODELS acima (ex-PAID_ALLOWLIST) ja prova que o MESMO modelo aparece
 # gravado sob 2 ids diferentes ("gpt-5.6-luna" e "openai-codex/gpt-5.6-luna",
 # dependendo do provider/rota) — casar so a forma nua deixava a forma
 # prefixada cair silenciosamente em other_calls, sem aparecer em nenhum
 # percentual, corrompendo justo a linha de base que esta issue quer coletar.
-# #8738 (23/09/2026): mesmo version bump do PAID_ALLOWLIST acima
+# #8738 (23/09/2026): mesmo version bump do SUBSCRIPTION_ROUTE_MODELS acima
 # (gpt-5.6-luna -> gpt-6-luna) — sem as 2 formas novas aqui, chamadas do
 # job continuo com o id bumpado cairiam silenciosamente em "outros",
 # mascarando degradacao pro fallback local (o proposito deste conjunto).
@@ -133,6 +139,10 @@ CONTINUO_PRIMARY_MODEL_IDS = {
     "openai-codex/gpt-6-luna",
 }
 CONTINUO_LOCAL_FALLBACK_HINT = "qwen"
+# #10387: o fallback pago do continuo deixou de ser INTENCIONAL (saiu do
+# PAID_ALLOWLIST) — a constante fica so pra a composicao por tick seguir
+# mostrando "pago=%" se o ~/.hermes no 300 ainda cair nele. Qualquer chamada
+# aqui tambem sai como vazamento pago em collect().
 CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 
 # ---------------------------------------------------------------------------
@@ -154,31 +164,20 @@ CONTINUO_PAID_FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 # preco mudar de proposito (troca deliberada de modelo, renegociacao), alguem
 # atualiza o baseline junto. Baseline defasado gera alarme, nunca silencio —
 # a direcao segura.
-PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
-    "deepseek/deepseek-v4-flash": {
-        # Preco vigente medido em 04/10/2026 (#9559): promo expirou — prompt
-        # caiu 3,9x, completion subiu 7,35x. Decisao do editor: MANTER o modelo
-        # (+23% no mix real, ~US$ 0,66/mes).
-        # #9633 (05/10/2026): prompt e input_cache_read subiram 1,34x
-        # ($0,0224/M -> $0,03/M) no catalogo; decisao do editor: MANTER o
-        # modelo ao preco novo. Completion inalterado.
-        # #10132 (13/10/2026): prompt subiu 3,03x ($0,03 -> $0,091/M), mas
-        # completion CAIU 7x ($1,28 -> $0,182/M) e input_cache_read caiu
-        # ($0,03 -> $0,0182/M) — praticamente o preco de 08/09 (escolha
-        # original). Custo-mix no workload real do fallback (1.042 chamadas,
-        # 09/09-08/10, 95% cache read): $6,13 no baseline antigo -> $4,03 no
-        # vigente (-34%). Conclusao: MANTER o modelo. Baseline acompanha os 3
-        # campos vigentes — inclusive as quedas, senao a volta do completion a
-        # $1,28/M passaria sem alarme.
-        "prompt": 0.000000091,             # $0,091/M
-        "completion": 0.000000182,         # $0,182/M
-        "input_cache_read": 0.0000000182,  # $0,0182/M
-    },
-    # #10367 (16/10/2026): o z-ai/glm-5.3-flash saiu deste baseline (e da
-    # allowlist e de PRICE_INCREASE_DECISIONS) ao concluir a troca decidida
-    # no #10278 — a lane do #6930 agora forca o deepseek-v4-flash. Historico
-    # dos baselines do glm (#7907, #10065, #10278): historico deste arquivo.
-}
+#
+# ENCERRADO no #10387 (18/10/2026): sem modelo pago do OpenRouter em uso, nao
+# ha preco a vigiar. O baseline ficou VAZIO e `watch-continuo-health.sh` deixou
+# de chamar `--price-check` (o alarme de preco do #6818/#10278/#10295 saiu do
+# watchdog). A funcao `detect_price_changes` e o `--price-check` seguem aqui,
+# testados com baselines explicitos, pra o caso de uma decisao futura reabrir
+# modelo pago — quem vigia custo hoje e o alarme de billing
+# (`scripts/openrouter-billing-leak-check.ts`, qualquer cobranca > 0 acusa).
+#
+# Ultimo baseline vigente (historico, #9559 -> #9633 -> #10132), do
+# deepseek/deepseek-v4-flash: prompt $0,091/M, completion $0,182/M,
+# input_cache_read $0,0182/M (medido em 13/10/2026). O z-ai/glm-5.3-flash ja
+# tinha saido no #10367 (baselines #7907, #10065, #10278 no historico do git).
+PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {}
 
 # Modelos pagos que a OpenRouter NAO serve — sao cobrados por outra rota
 # (`openai-codex`). Verificado em 02/09/2026: nem `openai-codex/gpt-5.6-luna`
@@ -193,7 +192,8 @@ PAID_PRICE_BASELINE: dict[str, dict[str, float]] = {
 # #8738 (23/09/2026): gpt-6-luna/openai-codex/gpt-6-luna entram pela mesma
 # razao que as formas gpt-5.6-luna acima — mesma rota openai-codex, mesmo
 # id ausente do catalogo da OpenRouter, exigido pelo invariante do #6818
-# (todo item do PAID_ALLOWLIST precisa de baseline OU desta lista).
+# (todo item do SUBSCRIPTION_ROUTE_MODELS — ex-PAID_ALLOWLIST, #10387 —
+# precisa estar nesta lista).
 PAID_MODELS_NOT_ON_OPENROUTER = {
     "openai-codex/gpt-5.6-luna",
     "gpt-5.6-luna",
@@ -247,7 +247,7 @@ def _is_leak(model: str, provider: str) -> bool:
     """
     if not model:
         return False
-    if model.endswith(":free") or model in PAID_ALLOWLIST:
+    if model.endswith(":free") or model in PAID_ALLOWLIST or model in SUBSCRIPTION_ROUTE_MODELS:
         return False
     # stealth/* rodou gratuito durante a janela de preview (ox-alpha, ate
     # 26/08/2026). Sem sufixo :free, mas nunca cobrou.

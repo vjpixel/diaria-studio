@@ -112,6 +112,17 @@
 #     ver docstring de sonnetLaneCostPerIssueUsd em glm-lane-gate.ts)
 set -euo pipefail
 
+# #10387 (18/10/2026): LANE ENCERRADA. O editor decidiu não usar mais nenhum
+# modelo pago do OpenRouter, e a lane existia justamente pra medir um modelo
+# pago de gateway (glm-5.3-flash, depois deepseek-v4-flash). Abort
+# incondicional antes de qualquer efeito (claim, worktree, credits, dispatch);
+# `claude-delegate.sh` também recusa o `--model` pago (exit 2), então este é
+# o 1º de 2 portões. O resto do script fica como histórico do piloto
+# (docs/lane-glm.md) — reabrir exige nova decisão do editor revertendo o
+# #10387, não remover só esta guarda.
+echo "ERRO: lane de piloto do #6930 encerrada no #10387 — sem modelo pago do OpenRouter. Ver docs/lane-glm.md." >&2
+exit 3
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 # shellcheck source=lib/glm-lane-headref-guard.sh
