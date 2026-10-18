@@ -391,7 +391,7 @@ vieram prontos (literais) do Passo 2/3. Se `sourceAccessibility.accessible
 que essa fonte específica ficou inacessível desde a edição de origem —
 puramente informativo, o corpo publicado não muda.
 
-## Passo 5 — Humanizador + Clarice (só texto NOVO — abertura/fecho com override e comentário do Use Melhor)
+## Passo 5 — Humanizador + Clarice (só texto NOVO — abertura/fecho com override, comentário do Use Melhor e texto do post de feed)
 
 **Manchetes NUNCA passam por humanizador/Clarice (#8818, reverte o #5108):
 corpo/why de toda manchete é sempre o texto já revisado/publicado na
@@ -405,13 +405,19 @@ padrão já é finalizado (derivado de texto real já humanizado/corrigido em
 edições anteriores), então reprocessá-lo a cada rodada não muda nada e só
 gasta chamada. Só rode humanizador+Clarice pra abertura/fecho quando o
 editor tiver oferecido texto NOVO espontaneamente nesta conversa (override
-explícito via `--opening`/`--closing` no Passo 7) — nesse caso, e para o
-comentário do Use Melhor (sempre novo quando existe):
+explícito via `--opening`/`--closing` no Passo 7) — nesse caso, para o
+comentário do Use Melhor (sempre novo quando existe) e para o **texto do
+post de feed** (Passo 8d, sempre novo, redigido pela sessão a cada ciclo,
+#10384). O post de feed é composto depois do paste, então as duas passadas
+dele rodam no próprio Passo 8d, com o mesmo procedimento abaixo:
 
 ```
 Skill("humanizador", "Humanize este texto em português, mantendo o
 sentido: <texto>")
 ```
+
+O humanizador roda no processo completo de 9 passos da skill, nunca uma
+passada parcial.
 
 Depois:
 
@@ -429,7 +435,8 @@ a marca) — nesse caso aplique todo o resto e sinalize só essa ao editor.
 desde o #8818** (já revisadas na edição diária de origem, reprocessar
 reintroduziria risco factual e deriva de voz sem ganho). Guarde o resultado
 final dos textos sempre-novos processados aqui (abertura/fecho com
-override, comentário do Use Melhor) pro Passo 7.
+override, comentário do Use Melhor) pro Passo 7; o do post de feed vai
+pro Passo 9.
 
 ## Passo 6 — Fact-check (#8818: sempre pulado, mantido só por robustez defensiva)
 
@@ -597,13 +604,47 @@ inspecionar").
 Via `javascript_tool`, extrair do DOM do editor:
 
 1. Todas as âncoras do CORPO (`document.querySelectorAll('a')` dentro do
-   `contenteditable` do artigo) — `href` + `textContent` de cada uma.
+   `contenteditable` do artigo) — texto + `utm_content` + base do link
+   (origem + caminho) de cada uma, nunca o `href` cru (ver abaixo).
 2. `editor.textContent.length` do mesmo elemento.
+
+**O filtro do `javascript_tool` bloqueia o retorno do `href` cru (#10386,
+ciclo `26w42`).** Devolver um `href` com query string (UTM) volta como
+`[BLOCKED: Cookie/query string data]`, e selecionar texto do editor voltou
+como `[BLOCKED: JWT token]`. O método que funciona é devolver só o que a
+auditoria precisa, sem a query string:
+
+```javascript
+const ed = document.querySelector('[contenteditable="true"]');
+JSON.stringify({
+  len: ed.textContent.length,
+  anchors: [...ed.querySelectorAll("a")].map((a) => {
+    const u = new URL(a.href);
+    return { text: a.textContent, base: u.origin + u.pathname, utm_content: u.searchParams.get("utm_content") };
+  }),
+});
+```
+
+Monte `pastedAnchors` a partir desse retorno: pra cada âncora colada, se
+existe âncora da fonte com o mesmo texto e o `utm_content` colado bate com
+o dela, use o `href` da FONTE; senão use só `base` (sem query, o que faz a
+auditoria acusar a UTM perdida). Limitação aceita: `utm_campaign` não é
+conferido à parte, supõe-se que sobrevive junto com `utm_content` (nos
+casos observados a UTM some inteira, nunca um parâmetro só).
+
+**Nunca re-executar o paste do Passo 8b depois de um resultado
+`[BLOCKED: ...]`.** O bloqueio é do RETORNO da chamada, não da ação: em
+`26w42` a colagem aconteceu mesmo assim, e colar de novo duplica o corpo.
+Depois de qualquer resultado bloqueado, releia o estado com o snippet
+acima antes de qualquer outra ação.
 
 Chamar `auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength })`
 de `scripts/lib/linkedin-paste-audit.ts` (`sourceHtml` = conteúdo de
 `ln-{cycle}.html`, SEM o parágrafo sentinela — módulo puro, sem I/O,
-import direto).
+import direto). Âncora de "diar.ia.br" sem a UTM esperada é acusada
+explicitamente, com ou sem continuação após o wordmark (#10385; o caso
+`26w42` é a âncora só com o wordmark tendo o href reescrito pra
+`http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
@@ -613,7 +654,11 @@ import direto).
   LinkedIn"), aplicar a correção de lá: selecionar a âncora completa via
   teclado (nunca clicar direto sobre o link colado — risco de deslocar a
   seleção e apagar outro parágrafo em silêncio, mesmo achado) e
-  sobrescrever via popup **Edit link** da toolbar. Repetir a auditoria —
+  sobrescrever via popup **Edit link** da toolbar. Nunca use `ctrl+k`
+  (digita "k" no lugar da âncora) nem setas depois de um clique (o cursor
+  pula pro campo do título), e se o diálogo não abrir, desfaça e deixe pro
+  editor (atalhos que corrompem, #10386, em `context/publishers/linkedin.md`
+  logo após o procedimento de resgate). Repetir a auditoria —
   **máximo 2 tentativas de correção manual.** Se `ok === true` antes disso,
   prosseguir. Se a 2ª tentativa ainda falhar (mesma causa conhecida ou
   outra), PARAR e envolver o editor de qualquer forma — mesmo quando a
@@ -632,10 +677,42 @@ vira o **post de feed** que acompanha o artigo — peça editorial separada
 do corpo, sem âncora em texto (link é a URL escrita por extenso, ver
 `context/publishers/linkedin.md` §4). Diferente do comentário do Use
 Melhor (voz pessoal obrigatória do editor, #5970), este campo é resumo
-factual — componha 1-2 frases a partir das manchetes já aprovadas no
-Passo 3, tom consistente com os posts normais da página no LinkedIn.
+factual, composto a partir das manchetes já aprovadas no Passo 3, tom
+consistente com os posts normais da página no LinkedIn.
 **A skill prepara este texto e o entrega ao editor no Passo 9 — não
 preenche o campo nem agenda.**
+
+**Título do artigo (#10386).** Default: o título da manchete 1
+(`headlines[0].title`) literal, sem reescrever nem mexer na pontuação.
+Qualquer mudança é escolha do editor (em `26w42` ele trocou depois pra
+outra forma, sem o "?"); a skill não inventa variação. Se a sessão
+preencher o campo de título do editor, digite direto nele, nunca chegue
+nele por setas a partir do corpo (ver "atalhos que corrompem" no
+playbook).
+
+**Tamanho e hashtags do post de feed (#10386).** Default: um parágrafo
+de 2 a 4 frases que diga do que trata a edição e cite as manchetes da
+semana, seguido de um bloco de hashtags na mesma regra dos posts sociais
+da diária (`.claude/agents/social-writer.md`, #367): até 5 hashtags,
+sempre `#InteligenciaArtificial`, nunca `#Tecnologia`, em português
+quando possível, num bloco contíguo no fim. Extensão diferente (mais
+curta ou mais longa) é escolha do editor: se ele pedir, siga e não volte
+ao default no mesmo ciclo.
+
+**Humanizador + Clarice são obrigatórios antes do Passo 9 (#10384).** O
+texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
+
+1. `Skill("humanizador", ...)` no processo completo de 9 passos (mesma
+   chamada do Passo 5);
+2. `mcp__clarice__correct_text` sobre o resultado, aplicando **todas** as
+   sugestões (mesma regra do Passo 5, #4514; exceção só pra marca ou
+   identificador técnico, sinalizada ao editor);
+3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
+
+Texto do post sem as duas passadas não vai pro Passo 9. Se o editor
+pedir outra versão (mais longa, com hashtags, outro tom), a versão nova
+passa de novo pelas duas passadas antes de ser entregue: em `26w42` as
+duas primeiras versões saíram sem revisão e o editor teve de perguntar.
 
 ## Passo 9 — Entregar ao editor: capa + agendamento manuais (#8031)
 
@@ -649,7 +726,8 @@ editor, nesta ordem:
 2. **O caminho do arquivo de capa** (`data/weekly/{cycle}/04-d1-2x1.jpg`),
    se `coverImagePath` veio populado — ou aviso explícito de que não há
    capa disponível (fail-soft do Passo 7), sem inventar substituto.
-3. **O texto do post de feed** (Passo 8d), pronto pra colar.
+3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
+   aplicados e sem travessão, pronto pra colar.
 4. **As instruções da ação manual**, resumidas:
    - Na aba já aberta com o rascunho colado, subir a imagem de capa no
      campo nativo (ícone no topo do editor, acima do título —
@@ -659,7 +737,9 @@ editor, nesta ordem:
      certa não basta, a HORA importa mais, porque o post de feed nasce com
      o alcance definido pelo engajamento da 1ª hora (publicar de madrugada
      queima esse alcance de forma permanente); horário comercial da manhã,
-     mesma lógica do envio canônico das 06:00 BRT da diária.
+     mesma lógica do envio canônico das 06:00 BRT da diária. O horário
+     exato do artigo semanal ainda não tem definição (escolha do editor,
+     discutida na #10305).
    - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
      aparece agendado.
 

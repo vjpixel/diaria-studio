@@ -22,6 +22,8 @@ import {
   extractAnchorsFromHtml,
   stripHtmlToText,
   looksLikeBareDomainAnchorText,
+  isWordmarkAnchorText,
+  WORDMARK_HREF_REWRITE_HINT,
   TEXT_LENGTH_TOLERANCE_RATIO,
   type LinkedinPasteAuditInput,
 } from "../scripts/lib/linkedin-paste-audit.ts";
@@ -452,7 +454,7 @@ describe("auditLinkedinPaste — bug de split de âncora 'diar.ia.br' nu (PR #59
     assert.equal(result.ok, true, result.issues.join("\n"));
   });
 
-  it("#8819: se a âncora ATUAL (só wordmark) ainda assim perder no paste, o hint do PR #5987 NÃO dispara — não há continuação pra 'dividir'", () => {
+  it("#8819/#10385: se a âncora ATUAL (só wordmark) sumir no paste, o hint do PR #5987 NÃO dispara (não há continuação pra 'dividir'), mas o do #10385 sim", () => {
     const mencaoAtual = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w39&amp;utm_content=mencao-abertura">diar.ia.br</a>`;
     const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA);
     // Simula perda total da âncora do wordmark no paste (sem substituto de mesmo texto).
@@ -462,5 +464,52 @@ describe("auditLinkedinPaste — bug de split de âncora 'diar.ia.br' nu (PR #59
     const anchorIssue = result.issues.find((i) => i.startsWith('Âncora "diar.ia.br"'));
     assert.ok(anchorIssue, result.issues.join("\n"));
     assert.ok(!/PR #5987/.test(anchorIssue!), anchorIssue);
+    assert.ok(anchorIssue!.includes(WORDMARK_HREF_REWRITE_HINT), anchorIssue);
+  });
+});
+
+describe("isWordmarkAnchorText (#10385)", () => {
+  it("casa o wordmark exato E com continuação, ao contrário de looksLikeBareDomainAnchorText", () => {
+    assert.ok(isWordmarkAnchorText("diar.ia.br"));
+    assert.ok(isWordmarkAnchorText("  DIAR.IA.BR "));
+    assert.ok(isWordmarkAnchorText("diar.ia.br, newsletter de IA"));
+  });
+
+  it("não casa texto que não começa no wordmark nem continuação alfanumérica", () => {
+    assert.ok(!isWordmarkAnchorText("Assine em diar.ia.br"));
+    assert.ok(!isWordmarkAnchorText("diar.ia.br2"));
+    assert.ok(!isWordmarkAnchorText("Assinar a edição diária"));
+  });
+});
+
+describe("auditLinkedinPaste — #10385: âncora só com o wordmark tem o href reescrito pra http://diar.ia.br (caso real 26w42)", () => {
+  const mencaoAtual = `<a href="https://diar.ia.br/?utm_source=linkedin&amp;utm_medium=newsletter&amp;utm_campaign=ln-26w42&amp;utm_content=mencao-abertura">diar.ia.br</a>`;
+
+  it("acusa a UTM perdida COM o hint do #10385, mesmo sem continuação após o wordmark", () => {
+    const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA, CTA_FIM);
+    // Reprodução do ciclo 26w42: texto da âncora intacto, href reescrito
+    // pelo editor do LinkedIn pra home crua, sem query string.
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "diar.ia.br" ? { ...a, href: "http://diar.ia.br" } : a));
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, false);
+    const wordmarkIssues = result.issues.filter((i) => i.startsWith('Âncora "diar.ia.br"'));
+    assert.ok(wordmarkIssues.some((i) => /utm_campaign divergente/.test(i) && /\(ausente\)/.test(i)), result.issues.join("\n"));
+    // Hint aparece exatamente 1 vez (só na 1ª mensagem da âncora, não repetido em utm_content).
+    assert.equal(wordmarkIssues.filter((i) => i.includes(WORDMARK_HREF_REWRITE_HINT)).length, 1, result.issues.join("\n"));
+    assert.ok(!result.issues.some((i) => /PR #5987/.test(i)), result.issues.join("\n"));
+  });
+
+  it("CTA comum (texto não-wordmark) com UTM perdida NÃO recebe o hint do #10385", () => {
+    const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA, CTA_FIM);
+    const pastedAnchors = extractAnchorsFromHtml(sourceHtml).map((a) => (a.text === "Assinar a edição diária" ? { ...a, href: "https://diar.ia.br/" } : a));
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors, pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, false);
+    assert.ok(!result.issues.some((i) => i.includes(WORDMARK_HREF_REWRITE_HINT)), result.issues.join("\n"));
+  });
+
+  it("âncora do wordmark com UTM intacta continua ok:true", () => {
+    const sourceHtml = sourceHtmlWith(mencaoAtual, CTA_ABERTURA, CTA_FIM);
+    const result = auditLinkedinPaste({ sourceHtml, pastedAnchors: extractAnchorsFromHtml(sourceHtml), pastedTextLength: stripHtmlToText(sourceHtml).length });
+    assert.equal(result.ok, true, result.issues.join("\n"));
   });
 });

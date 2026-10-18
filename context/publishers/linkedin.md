@@ -396,9 +396,26 @@ pelo caminho normal. A correção manual via teclado/popup **Edit link**
 abaixo (26w34, histórico) continua válida como PROCEDIMENTO DE RESGATE se
 o padrão antigo reaparecer por algum motivo (`ln-selection.json`/render
 desatualizado, regressão futura) — `scripts/lib/linkedin-paste-audit.ts`
-(`looksLikeBareDomainAnchorText`) só dispara o hint desse procedimento
-quando o texto de âncora AINDA tem continuação após o wordmark, já que
-"diar.ia.br" sozinho deixou de ser sinal de problema.
+(`looksLikeBareDomainAnchorText`) só dispara o hint de SPLIT (#5987)
+quando o texto de âncora AINDA tem continuação após o wordmark. **A
+premissa de que "diar.ia.br" sozinho deixou de ser sinal de problema não
+se sustentou, ver (f) abaixo.**
+
+**f) A âncora só com "diar.ia.br" (formato do #8819) também perde a UTM
+(#10385, ciclo `26w42`, 18/10/2026).** Depois do paste via
+`ClipboardEvent`, o editor do LinkedIn gravou `href="http://diar.ia.br"`
+na âncora da menção da abertura e a UTM `mencao-abertura` se perdeu; as
+outras 7 âncoras com UTM sobreviveram. É exatamente a 1ª linha do caso
+(c): texto que termina em domínio nu tem o href reescrito. O #8819 trocou
+o SPLIT (d) pela REESCRITA (c), não eliminou a perda. **Estado atual:** a
+forma da âncora que sobrevive ao paste ainda não foi decidida — exige
+reprodução controlada ao vivo no LinkedIn (item 1 da #10385, fica para
+uma sessão com Chrome logado). Até lá, a perda é ESPERADA toda semana e a
+correção é manual, via o procedimento de resgate abaixo.
+`auditLinkedinPaste` acusa o caso explicitamente desde o #10385:
+`isWordmarkAnchorText` casa o wordmark com ou sem continuação, e toda
+âncora de wordmark com a UTM divergente (ou sumida do colado) recebe o
+hint `WORDMARK_HREF_REWRITE_HINT`, sem depender de conferência manual.
 
 **Correção aplicada manualmente na 1ª publicação real (26w34, 260823):**
 selecionar a frase inteira ("diar.ia.br, newsletter de IA") via teclado
@@ -429,6 +446,26 @@ tamanho logo após o paste original — foi assim que a perda do CTA do Use
 Melhor foi pega e corrigida (reinserção manual via paste de 1 `<p><a>`
 isolado, cursor posicionado com `Home`/`End`/`Enter`, nunca clique direto
 sobre texto de link).
+
+**Atalhos que corrompem o artigo (#10386, ciclo `26w42`, 18/10/2026).**
+O procedimento de resgate acima é de 26w34; na rodada de 26w42 três
+caminhos óbvios falharam, e nenhum deve ser usado:
+
+- **`ctrl+k` com texto selecionado** substituiu a âncora inteira pela
+  letra "k" (desfeito com `ctrl+z`). O atalho não abre o diálogo de link
+  nesse editor; ele digita.
+- **Setas depois de um clique** moveram o cursor pra fora do corpo, pro
+  campo do TÍTULO do artigo. Qualquer digitação ou `shift+seta` dali em
+  diante edita o título, não o parágrafo.
+- **O botão de link da toolbar não abriu o diálogo "Edit link"** com a
+  seleção ativa, ao contrário do que funcionou em 26w34.
+
+Não há hoje caminho de resgate por teclado/toolbar validado de ponta a
+ponta. Se a 1ª tentativa do procedimento acima não abrir o diálogo "Edit
+link", pare: desfaça com `ctrl+z` o que tiver mudado, rode a auditoria de
+novo pra confirmar que o corpo voltou ao estado do paste e deixe a âncora
+para o editor corrigir na UI (a tentativa conta no teto de 2 do Passo 8c
+da skill).
 
 **Desde o #5988, a automação acima (paste do corpo) é EXECUTADA pelo Passo
 8 de `.claude/skills/diaria-linkedin-semanal/SKILL.md`** (só a sessão
@@ -487,13 +524,15 @@ ao lado do botão Publish, e o artigo agendado aparece em
   É peça editorial separada do corpo do artigo. Em post do LinkedIn **não
   existe âncora em texto**: link é a URL escrita por extenso, que a
   plataforma auto-linka.
-  **O que escrever ali (#5988):** 1-2 frases resumindo do que trata a
-  edição desta semana (as manchetes selecionadas no Passo 3), tom
-  consistente com os posts normais da página no LinkedIn (seções 1-8
-  acima) — diferente do comentário do Use Melhor (#5970), que é
-  obrigatoriamente voz pessoal do editor, este campo é resumo factual e
-  pode ser composto pela própria sessão que executa o Passo 8 da skill, a
-  partir das manchetes já aprovadas no gate.
+  **O que escrever ali (#5988):** resumo do que trata a edição desta
+  semana (as manchetes selecionadas no Passo 3), tom consistente com os
+  posts normais da página no LinkedIn (seções 1-8 acima) — diferente do
+  comentário do Use Melhor (#5970), que é obrigatoriamente voz pessoal do
+  editor, este campo é resumo factual e pode ser composto pela própria
+  sessão que executa o Passo 8 da skill, a partir das manchetes já
+  aprovadas no gate. Tamanho, hashtags e as passadas obrigatórias de
+  humanizador + Clarice (#10384, #10386): ver Passo 8d de
+  `.claude/skills/diaria-linkedin-semanal/SKILL.md`, a fonte única.
 
 ---
 
