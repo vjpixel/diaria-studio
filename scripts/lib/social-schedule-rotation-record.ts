@@ -16,10 +16,14 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { editionDir } from "./edition-paths.ts";
 import {
   type RotationPlanRow,
   baseTimesFromSocial,
   buildRotationPlan,
+  civilDayNumber,
+  civilFromDayNumber,
+  parseIsoCivilDate,
   publishDateForEdition,
   readSocialRotation,
 } from "./social-schedule-rotation.ts";
@@ -73,9 +77,12 @@ export interface DailyRotationRecordOptions {
    * elegível (ou peça faltando) não tem post, e gravar a célula faria a
    * medição tratar post inexistente como dado. Outro publicador que agendou o
    * `um` no mesmo dia grava a linha depois (o registro é por dia, não por
-   * canal). `undefined` = desconhecido, mantém a linha — só a CLI
-   * `--record` manual chega assim, e ali a medição precisa cruzar com
-   * `06-social-published.json` (`destaque: "um"`) pra saber se o post existiu.
+   * canal). `undefined` = desconhecido, mantém a linha. A CLI `--record` não
+   * passa por aqui: ela filtra a linha `um` por `06-social-published.json`
+   * (`filterUseMelhorRowsByPublished`). Ressalva (review #10432 finding 2):
+   * o valor vem só dos `results` do run atual — publicador que pule um `um`
+   * já agendado sem empurrá-lo pra `results` passa `false` na re-rodada; não
+   * apaga nada (append-only), só não grava se a 1ª gravação fosse essa.
    */
   useMelhorScheduled?: boolean;
   /** `--day-offset` do publicador — mesma data de `computeScheduledAt`. */
@@ -88,6 +95,53 @@ export interface DailyRotationRecordOptions {
  */
 export function useMelhorScheduledIn(posts: ReadonlyArray<{ destaque: string; status: string }>): boolean {
   return posts.some((p) => p.destaque === "um" && (p.status === "scheduled" || p.status === "published"));
+}
+
+/**
+ * Pure: AAMMDD da edição cujos posts diários saem em `publishDate`
+ * (AAAA-MM-DD) — inverso de `publishDateForEdition` com o `day_offset` do
+ * config (default 0).
+ */
+export function editionForPublishDate(publishDate: string, social: unknown): string {
+  const raw = (social as { fallback_schedule?: { day_offset?: unknown } } | null | undefined)?.fallback_schedule?.day_offset;
+  const offset = typeof raw === "number" && Number.isInteger(raw) ? raw : 0;
+  const d = civilFromDayNumber(civilDayNumber(parseIsoCivilDate(publishDate)) - offset);
+  return `${String(d.year).slice(2)}${String(d.month).padStart(2, "0")}${String(d.day).padStart(2, "0")}`;
+}
+
+/**
+ * Filtro da CLI `--record` (#10427, review #10432): a linha `…|weekday|um` só
+ * fica quando `06-social-published.json` da edição do dia mostra o post `um`
+ * agendado/publicado (`useMelhorScheduledIn`). Arquivo ausente = não dá pra
+ * saber → a linha NÃO é gravada e `warn` recebe o motivo (rodar de novo
+ * depois do Stage 5 grava, o registro é idempotente). Demais linhas passam
+ * intactas. `readPublished(edition)` devolve os posts, ou `null` se o arquivo
+ * não existe — injetável pra teste; o default lê `editionDir(edition)` sob
+ * `rootDir`.
+ */
+export function filterUseMelhorRowsByPublished(
+  rows: RotationPlanRow[],
+  social: unknown,
+  rootDir: string,
+  warn: (msg: string) => void = (m) => console.error(m),
+  readPublished: (edition: string) => ReadonlyArray<{ destaque: string; status: string }> | null = (edition) => {
+    const p = resolve(rootDir, editionDir(edition), "06-social-published.json");
+    if (!existsSync(p)) return null;
+    return (JSON.parse(readFileSync(p, "utf8")) as { posts?: Array<{ destaque: string; status: string }> }).posts ?? [];
+  },
+): RotationPlanRow[] {
+  return rows.filter((r) => {
+    if (!(r.kind === "weekday" && r.type === "um")) return true;
+    const edition = editionForPublishDate(r.date, social);
+    const posts = readPublished(edition);
+    if (posts === null) {
+      warn(
+        `[rotação #10427] WARN: ${editionDir(edition)}/06-social-published.json ausente — linha um de ${r.date} NÃO gravada (rode --record de novo depois do Stage 5).`,
+      );
+      return false;
+    }
+    return useMelhorScheduledIn(posts);
+  });
 }
 
 /**

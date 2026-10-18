@@ -11,7 +11,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -38,6 +38,8 @@ import { DEFAULT_WEEKLY_TIME, resolveWeeklyTime } from "../scripts/publish-weekl
 import { newRowsToRecord, parseCliDate } from "../scripts/social-schedule-rotation.ts";
 import {
   dailyRotationRowsForEdition,
+  editionForPublishDate,
+  filterUseMelhorRowsByPublished,
   recordDailyRotationFailSoft,
   recordRotationRows,
   useMelhorScheduledIn,
@@ -433,9 +435,53 @@ describe("#10427 — registro não conta o Use Melhor que não foi agendado", ()
     try {
       const log = resolve(dir, "rot.jsonl");
       assert.equal(recordRotationRows(log, dailyRotationRowsForEdition(social(), "261021", { useMelhorScheduled: false })), 3);
-      assert.ok(!readFileSync(log, "utf8").includes("|um") && !readFileSync(log, "utf8").includes('"type":"um"'));
+      assert.ok(!readFileSync(log, "utf8").includes('"type":"um"'));
       assert.equal(recordRotationRows(log, dailyRotationRowsForEdition(social(), "261021", { useMelhorScheduled: true })), 1);
       assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 4);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("editionForPublishDate inverte o day_offset do config", () => {
+    assert.equal(editionForPublishDate("2026-10-20", social()), "261020");
+    assert.equal(editionForPublishDate("2026-10-20", { fallback_schedule: { day_offset: 1 } }), "261019");
+    assert.equal(editionForPublishDate("2026-11-01", { fallback_schedule: { day_offset: 1 } }), "261031");
+  });
+  it("CLI --record: linha `um` só passa com o post um agendado em 06-social-published.json", () => {
+    const rows = dailyRotationRowsForEdition(social(), "261020");
+    assert.equal(rows.length, 4);
+    const types = (rs: typeof rows) => rs.map((r) => (r.kind === "weekday" ? r.type : r.kind)).sort();
+    const warns: string[] = [];
+    const asked: string[] = [];
+    const run = (posts: Array<{ destaque: string; status: string }> | null) =>
+      filterUseMelhorRowsByPublished(rows, social(), "/nao-usado", (m) => warns.push(m), (ed) => {
+        asked.push(ed);
+        return posts;
+      });
+    // arquivo ausente: não grava `um` e avisa
+    assert.deepEqual(types(run(null)), ["d1", "d2", "d3"]);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /06-social-published\.json ausente/);
+    assert.match(warns[0], /2610\/261020/);
+    assert.deepEqual(asked, ["261020"]);
+    // arquivo presente sem o `um` agendado (falhou / só destaques)
+    assert.deepEqual(types(run([{ destaque: "d1", status: "scheduled" }, { destaque: "um", status: "failed" }])), ["d1", "d2", "d3"]);
+    // `um` agendado: as 4 linhas
+    assert.deepEqual(types(run([{ destaque: "um", status: "scheduled" }])), ["d1", "d2", "d3", "um"]);
+    assert.equal(warns.length, 1, "só o caso de arquivo ausente avisa");
+  });
+  it("CLI --record: default lê 06-social-published.json via editionDir sob rootDir", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "rot-10432-"));
+    try {
+      const rows = dailyRotationRowsForEdition(social(), "261020");
+      const warns: string[] = [];
+      assert.equal(filterUseMelhorRowsByPublished(rows, social(), dir, (m) => warns.push(m)).length, 3);
+      assert.equal(warns.length, 1);
+      const edDir = resolve(dir, "data/editions/2610/261020");
+      mkdirSync(edDir, { recursive: true });
+      writeFileSync(resolve(edDir, "06-social-published.json"), JSON.stringify({ posts: [{ platform: "linkedin", destaque: "um", status: "scheduled", url: null, scheduled_at: null }] }));
+      assert.equal(filterUseMelhorRowsByPublished(rows, social(), dir, (m) => warns.push(m)).length, 4);
+      assert.equal(warns.length, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
