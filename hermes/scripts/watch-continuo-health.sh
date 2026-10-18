@@ -24,15 +24,10 @@
 #      sem ter feito nada disso. Compara `data/continuo/last-tick-report.md`
 #      (existe + mtime dentro da janela do tick) e alegações de claim/contagem
 #      no próprio relatório contra `gh issue list` e `data/sessions/continuo-*.json`.
-#   12. aumento de preço em modelo pago já em uso na OpenRouter (#6818 item
-#      4) — a checagem 4 acima só pergunta "está na allowlist?"; um modelo
-#      que ESTÁ na allowlist nunca é sinalizado, a qualquer preço, e foi
-#      assim que o degrau de 09/09 do glm-5.3-flash quase passou batido.
-#      `hermes-model-cost-report.py --price-check` compara o catálogo
-#      público da OpenRouter contra PAID_PRICE_BASELINE; indeterminado
-#      (catálogo inacessível/campo sumiu) NUNCA vira "ok", só alarme ou
-#      indeterminado. Uma issue POR MODELO (#10345): a issue aberta de um
-#      modelo não suprime a alta nova de outro.
+#   12. (ENCERRADO no #10387, 18/10/2026) aumento de preço em modelo pago já
+#      em uso na OpenRouter (#6818 item 4, #10345, #10295) — sem modelo pago
+#      do OpenRouter em uso, não há preço a vigiar; ver o comentário no
+#      lugar da seção 12, mais abaixo.
 #   (item 5 — adoção de prefixo de branch — CORTADO no #6798, 01/09/2026:
 #    informational, 0 correções, dedup falhava e produziu issue duplicada 3x
 #    antes do fix; sucessor mais preciso é `check-branch-issue-consistency.ts`.)
@@ -867,111 +862,20 @@ else
   note "[watch] fabricacao de tick: ok (sem sinal de fabricacao; #7537)"
 fi
 
-# ── 12. aumento de preço em modelo pago já em uso (#6818 item 4) ────────────
-# A checagem 4 acima só pergunta "está na allowlist?" — um modelo que ESTÁ
-# na allowlist nunca é sinalizado, a qualquer preço. Foi assim que o degrau
-# de 09/09 do glm-5.3-flash (promoção de lançamento expira, custo do tick
-# dobra — ~$176 -> ~$352/mês — ZERO mudança de config/código/volume) quase
-# passou batido: só não custou porque alguém foi olhar à mão (#6818).
-# `hermes-model-cost-report.py --price-check` compara o catálogo público da
-# OpenRouter (sem auth) contra PAID_PRICE_BASELINE (mantido à mão no
-# script, mesmo trade-off já aceito pro PAID_ALLOWLIST). Exit 3 = aumento
-# real; exit 1 = indeterminado (catálogo inacessível, ou id/campo do
-# baseline sumiu do catálogo) — NUNCA lido como "ok" (mesma disciplina
-# fail-closed do #6992/#7776/#7805); exit 0 = preço estável ou só caiu.
-PRICE_JSON=$(python3 /home/vjpixel/.hermes/scripts/hermes-model-cost-report.py --price-check --json 2>/dev/null)
-PRICE_RC=$?
-PRICE_PARSE=$(printf '%s' "$PRICE_JSON" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    if d.get('increases'):
-        print('INCREASE')
-    elif d.get('unverifiable'):
-        print('UNVERIFIABLE')
-    else:
-        print('OK')
-except Exception:
-    print('__ERR__')" 2>/dev/null || echo "__ERR__")
-case "$PRICE_PARSE" in *__ERR__*) PRICE_PARSE="__ERR__" ;; esac
-case "$PRICE_PARSE" in INCREASE|UNVERIFIABLE|OK) : ;; *) PRICE_PARSE="__ERR__" ;; esac
-if [ "$PRICE_PARSE" = "__ERR__" ]; then
-  echo "[watch] preço OpenRouter: INDETERMINADO (price-check falhou, rc=$PRICE_RC)" >&2
-  FAILS=$((FAILS + 1))
-elif [ "$PRICE_PARSE" = "UNVERIFIABLE" ]; then
-  PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    for f in d.get('unverifiable', []):
-        print(f\"  {f.get('modelo')} {f.get('campo', '-')}: {f.get('motivo')}\")
-except Exception:
-    print('__ERR__')" 2>/dev/null || echo "__ERR__")
-  echo "[watch] preço OpenRouter: INDETERMINADO (catálogo não confirma o baseline; rc=$PRICE_RC)" >&2
-  printf '%s\n' "$PRICE_DETAILS" >&2
-  FAILS=$((FAILS + 1))
-elif [ "$PRICE_PARSE" = "INCREASE" ]; then
-  # #10345: UMA issue POR MODELO, com o id do modelo no marcador. Antes o
-  # marcador era fixo ("... já em uso"), então a issue do glm — que fica
-  # aberta de propósito enquanto a troca do #10278 não termina em ~/.hermes —
-  # fazia o file_issue logar "issue aberta já existe" pra QUALQUER alta nova,
-  # inclusive a do deepseek-v4-flash (o elo pago ativo, sem decisão
-  # registrada). Mesma classe do #6818: a alta nova nunca chegava ao GitHub.
-  # Com o modelo no marcador, a issue aberta de um modelo só deduplica a dele.
-  PRICE_MODELS=$(printf '%s' "$PRICE_JSON" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    seen = []
-    for f in d.get('increases', []):
-        m = f.get('modelo')
-        if m and m not in seen:
-            seen.append(m)
-    print('\\n'.join(seen) if seen else '__ERR__')
-except Exception:
-    print('__ERR__')" 2>/dev/null || echo "__ERR__")
-  case "$PRICE_MODELS" in *__ERR__*) PRICE_MODELS="__ERR__" ;; esac
-  if [ "$PRICE_MODELS" = "__ERR__" ]; then
-    echo "[watch] preço OpenRouter: INDETERMINADO (aumento detectado mas sem id de modelo legível; rc=$PRICE_RC)" >&2
-    FAILS=$((FAILS + 1))
-  else
-  # here-string (não pipe): o loop roda no shell corrente, então os contadores
-  # que file_issue incrementa (FAILS, ISSUES_CREATED) não se perdem num subshell.
-  while IFS= read -r PRICE_MODEL; do
-    [ -z "$PRICE_MODEL" ] && continue
-    PRICE_DETAILS=$(printf '%s' "$PRICE_JSON" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    alvo = sys.argv[1]
-    for f in d.get('increases', []):
-        if f.get('modelo') != alvo:
-            continue
-        fator = f\"{f['fator']:.2f}x\" if f.get('fator') else '?'
-        print(f\"  {f['modelo']} {f['campo']}: {f['baseline']:.9f} -> {f['atual']:.9f} ({fator})\")
-        if f.get('decisao'):
-            print(f\"    decisao registrada: {f['decisao']}\")
-except Exception:
-    print('__ERR__')" "$PRICE_MODEL" 2>/dev/null || echo "__ERR__")
-    file_issue "[watch-continuo] aumento de preço em modelo pago já em uso: $PRICE_MODEL" \
-      "[watch-continuo] aumento de preço em modelo pago já em uso: $PRICE_MODEL (OpenRouter, #6818)" \
-      "bug,P2" \
-      "Detectado por watch-continuo-health.sh via hermes-model-cost-report.py --price-check (#6818 item 4) — o catálogo público da OpenRouter mostra preço acima do baseline registrado em \`PAID_PRICE_BASELINE\` (hermes-model-cost-report.py) para o modelo pago já em uso \`$PRICE_MODEL\`:
-
-\`\`\`
-$PRICE_DETAILS
-\`\`\`
-
-Mesma classe da issue #6818: uma promoção de lançamento expira e o custo do tick dobra sem nenhuma mudança de config/código/volume. **Ação**: recalcular o custo-mix real com o preço novo (não pelo preço de prompt isolado — no mix do tick, output é ~9% dos tokens e até 84% da conta), decidir se mantém o modelo ao preço novo ou troca por um candidato mais barato medido contra o workload real (nunca por ficha técnica), e atualizar \`PAID_PRICE_BASELINE\` pra refletir o preço vigente — senão este alarme repete todo dia.
-
-Uma issue por modelo (#10345): a issue aberta de outro modelo não suprime esta, e esta não suprime a de outro.
-
-**Exceção (#10295)**: se a linha acima traz \`decisao registrada\`, o editor já decidiu sobre esta alta (ex.: glm-5.3-flash, #10278: trocar pelo deepseek-v4-flash). Para ele, **NÃO** atualizar \`PAID_PRICE_BASELINE\` — isso desfaria a decisão. A ação é concluir o que a decisão manda (\`PRICE_INCREASE_DECISIONS\` em hermes-model-cost-report.py)."
-  done <<< "$PRICE_MODELS"
-  fi # fim do loop por modelo (#10345)
-else
-  note "[watch] preço OpenRouter: ok (sem aumento vs baseline; #6818 item 4)"
-fi
+# ── 12. aumento de preço em modelo pago já em uso — ENCERRADO (#10387) ────
+# Até o #10387 (18/10/2026) esta checagem chamava
+# `hermes-model-cost-report.py --price-check --json` e abria uma issue POR
+# MODELO quando o catálogo público da OpenRouter mostrava preço acima de
+# PAID_PRICE_BASELINE (#6818 item 4; uma issue por modelo no #10345;
+# anotação de decisão já registrada no #10295 — o caso do glm-5.3-flash,
+# trocado pelo deepseek-v4-flash no #10278). Saiu do watchdog porque o editor
+# decidiu não usar mais NENHUM modelo pago do OpenRouter (#10387): sem modelo
+# pago em uso, não há preço a vigiar, e o baseline ficou vazio. Quem vigia
+# custo agora é o alarme de billing (`scripts/openrouter-billing-leak-check.ts`,
+# que acusa QUALQUER cobrança > 0) mais a checagem 4 acima (vazamento pago
+# em `session_model_usage`, com PAID_ALLOWLIST vazio). O código desta seção
+# está no histórico do repositório, e `--price-check` segue disponível no
+# script Python caso uma decisão futura reabra modelo pago.
 
 # ── 13. registro de sessão do contínuo ausente (#7890) ─────────────────────
 # Achado durante o #7814: o tick de 08/09 (#7641) nunca gravou

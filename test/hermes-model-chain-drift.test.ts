@@ -115,30 +115,23 @@ describe("cadeia de modelos do Hermes: wrapper e SKILL.md não podem divergir (#
   const models = parseModelsDefault(wrapperSource);
   const tableRow = findWrapperTableRow(skillSource);
 
-  it("MODELS_DEFAULT tem pelo menos 1 modelo :free, deepseek-v4-flash como último elo de GATEWAY (#10278), e o elo de assinatura (#7649) como terminal real", () => {
-    // #7649 (rodada overnight 260909) acrescentou 1 elo depois do glm —
-    // claude.ai via assinatura, sem gateway — como rede de segurança de
-    // CAUDA além do próprio glm. Isso NÃO reabre o risco que este teste
-    // sempre existiu pra travar (glm virar primário por reordenação
-    // acidental): glm continua sendo o ÚLTIMO elo PAGO DE GATEWAY da
-    // cadeia — só passou a existir um elo A MAIS depois dele, de natureza
-    // diferente (sem gateway, sem custo em dólar). As duas afirmações são
-    // compatíveis; o teste agora checa as duas explicitamente em vez de só
-    // "é o último elemento do array".
-    assert.ok(models.length >= 3, "cadeia degenerada — sem free tier, fallback pago E elo de assinatura.");
-    assert.ok(
-      models.slice(0, -2).some((m) => m.endsWith(":free")),
-      "nenhum dos modelos antes do fallback pago termina em :free — a cadeia deveria priorizar free tier.",
-    );
-    // #10278 (15/10/2026): o elo pago de gateway trocou de z-ai/glm-5.3-flash
-    // para deepseek/deepseek-v4-flash (decisão do editor, alta de 2,9x do glm).
-    assert.equal(
-      models[models.length - 2],
-      "deepseek/deepseek-v4-flash",
-      "o fallback pago (deepseek/deepseek-v4-flash, #10278) deve continuar como ÚLTIMO ELO DE GATEWAY da cadeia — " +
-        "é a rede de segurança paga, não deve virar primário por acidente de reordenação, e nenhum " +
-        "elo de gateway novo deveria entrar DEPOIS dele.",
-    );
+  it("MODELS_DEFAULT: todo elo de gateway é :free (#10387, sem modelo pago do OpenRouter) e o elo de assinatura (#7649) é o terminal real", () => {
+    // #7649 (rodada overnight 260909) acrescentou o elo de assinatura
+    // claude.ai (sem gateway, sem custo em dólar) como terminal da cadeia.
+    assert.ok(models.length >= 2, "cadeia degenerada — sem free tier E elo de assinatura.");
+    // #10387 (18/10/2026, decisão do editor): nenhum modelo pago do
+    // OpenRouter na cadeia, nem como fallback de último recurso. Todo elo
+    // de gateway é `:free`; o único elo não-`:free` é o de assinatura.
+    // (Até o #10387 havia um elo pago — deepseek-v4-flash desde o #10278,
+    // glm-5.3-flash antes — entre os `:free` e a assinatura.)
+    const gatewayLinks = models.slice(0, -1);
+    assert.ok(gatewayLinks.length > 0, "nenhum elo :free antes do de assinatura.");
+    for (const m of gatewayLinks) {
+      assert.ok(
+        m.endsWith(":free"),
+        `elo de gateway "${m}" não termina em :free — #10387 proíbe modelo pago do OpenRouter na cadeia.`,
+      );
+    }
     assert.equal(
       models[models.length - 1],
       "sonnet",

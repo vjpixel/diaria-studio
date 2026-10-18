@@ -13,7 +13,8 @@
  * `gh pr view <N> --json statusCheckRollup` já dá.
  *
  * Este teste cobre DUAS coisas, na mesma disciplina de
- * `watch-continuo-health-price-alarm-6818.test.ts` (extração estática do
+ * `watch-continuo-health-price-alarm-6818.test.ts` (removido no #10387 junto
+ * com o alarme de preço; extração estática do
  * bloco + `bash -n`), mas indo além com execução DINÂMICA da função nova
  * (`pr_first_failed_check`) contra um `gh` mockado — porque o formato de
  * saída por PR é o próprio ponto da issue, não algo que dê pra travar só

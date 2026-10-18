@@ -1,4 +1,23 @@
-# Lane de piloto em modelo de gateway (#6930) — hoje `deepseek/deepseek-v4-flash`
+# Lane de piloto em modelo de gateway (#6930) — ENCERRADA (#10387)
+
+**Encerrada em 18/10/2026 (#10387).** Decisão do editor: "não estou mais
+usando modelos pagos no OpenRouter". A lane existia para medir um modelo PAGO
+de gateway, então deixou de ter objeto. O que mudou no repo:
+
+- `scripts/dispatch-glm-lane-unit.sh` aborta logo no início (exit 3), antes de
+  qualquer claim, worktree ou dispatch;
+- `hermes/scripts/claude-delegate.sh` recusa `--model` que não seja `:free`
+  nem o elo de assinatura (exit 2), e a cadeia default não tem mais elo pago;
+- `scripts/glm-lane-credits.ts` fica só como leitura avulsa do saldo da conta
+  OpenRouter, sem consumidor;
+- o alarme de preço de modelo pago (#6818/#10278/#10295) saiu do
+  `watch-continuo-health.sh`; quem vigia custo é o alarme de billing
+  (`scripts/openrouter-billing-leak-check.ts`, qualquer cobrança > 0 acusa).
+
+Com isso a exceção à regra do `CLAUDE.md` (#5608/#6714) descrita abaixo **não
+está mais aberta**. O resto deste arquivo é histórico do piloto: condições,
+critérios de morte e medições valem como registro, não como autorização.
+Reabrir exige nova decisão do editor revertendo o #10387.
 
 **Reapontada em 16/10/2026 (#10367):** o modelo da lane passou de
 `z-ai/glm-5.3-flash` para `deepseek/deepseek-v4-flash` (decisão do editor no
