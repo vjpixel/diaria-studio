@@ -23,6 +23,9 @@
  *     `_internal/swap-destaque-titulo-pending.json` até `--finalize-titulo`,
  *     e o invariante `titulo-subtitulo-not-provisional` barra o gate 4
  *     enquanto isso); contagem da intro re-sincronizada
+ *   - `_internal/04-estilo-regen.json` (#10335): estado do plano de
+ *     regeneração por Noite Estrelada da posição zerado — a imagem nova não
+ *     herda o `pending`/contagem da antiga
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -90,6 +93,7 @@ import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9381
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
+import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
@@ -1113,6 +1117,18 @@ function main(): void {
   };
 
   if (dryRun) {
+    // #10335: só anuncia "zerado" quando havia estado da posição — o run real
+    // é no-op com arquivo ausente/sem a posição. dryRun=true não grava nada.
+    const estiloPlan = updateEstiloRegenStateFile(
+      internalDir,
+      (d) => clearEstiloRegenDestaques(d, [`d${demotePosition}`]),
+      true,
+    );
+    const estiloRegenPlan = estiloPlan.rewritten
+      ? `_internal/04-estilo-regen.json: estado de d${demotePosition} zerado (#10335)`
+      : estiloPlan.warning
+        ? `_internal/04-estilo-regen.json: ${estiloPlan.warning}`
+        : `_internal/04-estilo-regen.json: sem estado de d${demotePosition}, nada a zerar (#10335)`;
     console.log(
       JSON.stringify(
         {
@@ -1124,6 +1140,7 @@ function main(): void {
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
             images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
             prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
+            estilo_regen_state: estiloRegenPlan,
           },
         },
         null,
@@ -1286,6 +1303,19 @@ function main(): void {
   for (const d of deletedPrompts) {
     result.modified.deleted.push(d.deleted);
   }
+
+  // 6. Zera o estado do plano de Noite Estrelada da posição (#10335): a
+  // posição recebe outro item e imagem nova; um `pending` vivo da imagem
+  // antiga faria o plano seguinte tratar a imagem nova como a regenerada e
+  // levar o destaque a `exhausted` sem regeneração nenhuma.
+  const estilo = updateEstiloRegenStateFile(
+    internalDir,
+    (d) => clearEstiloRegenDestaques(d, [`d${demotePosition}`]),
+    false,
+    (path, content) => writeFilesVerified([{ path, content }], "swap-destaque"),
+  );
+  if (estilo.rewritten) result.modified.rewritten.push(estilo.rewritten);
+  if (estilo.warning) console.error(`AVISO: ${estilo.warning}`);
 
   // -------------------------------------------------------------------------
   // OUTPUT

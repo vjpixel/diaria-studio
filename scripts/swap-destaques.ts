@@ -26,7 +26,9 @@
  *   3. Bloco `**DESTAQUE N**` de `02-reviewed.md` substituído por
  *      placeholder `[RASCUNHO PENDENTE]`;
  *   4. Imagens (`04-d{N}-*`) e prompts (`02-d{N}-*`) antigos da posição
- *      removidos (precisam regenerar).
+ *      removidos (precisam regenerar);
+ *   5. `_internal/04-estilo-regen.json` (#10335): estado do plano de
+ *      regeneração por Noite Estrelada das posições trocadas zerado.
  *
  * O que NÃO faz (exige LLM/agente ou decisão editorial — sai em
  * `next_steps`, mesmo padrão do promote-to-destaque.ts):
@@ -67,6 +69,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
+import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import {
   extractUrl,
   extractTitle,
@@ -497,6 +500,22 @@ function main(): void {
     for (const d of deleteDestaquePrompts(internalDir, s.position, false)) {
       result.modified.deleted.push(d.deleted);
     }
+  }
+
+  // 5. Zera o estado do plano de Noite Estrelada das posições trocadas
+  // (#10335, mesmo passo do swap-destaque.ts): cada posição recebe outro item
+  // e imagem nova; um `pending` vivo da imagem antiga faria o plano seguinte
+  // tratar a imagem nova como a regenerada e levar o destaque a `exhausted`.
+  const estilo = updateEstiloRegenStateFile(
+    internalDir,
+    (d) => clearEstiloRegenDestaques(d, slots.map((s) => `d${s.position}`)),
+    false,
+    (path, content) => writeFilesVerified([{ path, content }], "swap-destaques"),
+  );
+  if (estilo.rewritten) result.modified.rewritten.push(estilo.rewritten);
+  if (estilo.warning) {
+    console.error(`AVISO: ${estilo.warning}`);
+    result.warnings.push(estilo.warning);
   }
 
   result.next_steps = buildSwapNextSteps(editionDir, slots);
