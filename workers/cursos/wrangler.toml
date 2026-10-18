@@ -136,10 +136,13 @@ KIT_ORIGEM_EXTERNALID_FIELD = "origem_external_id"
 # (IP, user agent, `_fbp`) pro lote `SubscriptionConfirmed` reusar
 # (`scripts/lib/meta-capi-confirmation-batch.ts`). LIGADOS em 18/10/2026
 # (decisão do editor, /diaria-develop 261018): campos criados na conta Kit
-# via API (ids 1400093 origem_client_ip, 1400094 origem_user_agent,
-# 1400095 origem_fbp) e política de privacidade atualizada para declarar a
-# coleta (workers/arquivo/src/render-privacy.ts). Desligar = comentar as 3
-# linhas abaixo, aqui e no wrangler.toml do worker irmão (poll/cursos).
+# via API (ids no momento da criação: 1400093 origem_client_ip, 1400094
+# origem_user_agent, 1400095 origem_fbp) e política de privacidade
+# atualizada para declarar a coleta (workers/arquivo/src/render-privacy.ts).
+# O push em master faz o deploy; a política sai pelo deploy-arquivo, à parte.
+# Desligar = comentar as 3 linhas abaixo, aqui e no worker irmão
+# (poll/cursos), e revisar a política: test/arquivo-privacidade-5262.test.ts
+# falha de propósito até isso acontecer.
 # Minimização: só grava quando o request tem
 # sinal da Meta (`_fbp`/`_fbc`/`fbclid:`) e nunca pra click id de outro canal
 # (`selectPersistableMatchSignals`, scripts/lib/shared/meta-capi.ts).

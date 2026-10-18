@@ -12,14 +12,26 @@
  *
  * Nenhum teste toca a rede: a rota é servida antes de qualquer fetch de
  * sitemap, então não precisa de mock de `globalThis.fetch`.
+ *
+ * #8543: também trava a coerência entre a política e a coleta de IP, user
+ * agent e _fbp ligada nos wrangler.toml de poll e cursos.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import worker from "../workers/arquivo/src/index.ts";
-import { readFileSync } from "node:fs";
-
 import { renderPrivacyPage } from "../workers/arquivo/src/render-privacy.ts";
+import { parseWorkerKitFieldVars } from "../scripts/lib/kit-worker-custom-fields-guard.ts";
+import {
+  KIT_CLIENT_IP_FIELD_NAME,
+  KIT_FBP_FIELD_NAME,
+  KIT_USER_AGENT_FIELD_NAME,
+} from "../scripts/lib/google-ads-confirmation-batch.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("#5262 — GET /privacidade no Worker arquivo", () => {
   it("responde 200 em HTML, sem depender do sitemap", async () => {
@@ -57,18 +69,31 @@ describe("#5262 — GET /privacidade no Worker arquivo", () => {
     }
   });
 
-  it("declara IP/navegador/cookie da Meta enquanto os workers de cadastro coletam esses sinais (#8543)", () => {
-    // Coerência política × código: com KIT_ORIGEM_CLIENTIP_FIELD ativo, o
-    // cadastro grava IP, user agent e _fbp no Kit. A política não pode voltar
-    // a dizer só "em forma agregada" / "sem cookies publicitários".
-    const active = ["workers/poll/wrangler.toml", "workers/cursos/wrangler.toml"].some((p) =>
-      /^KIT_ORIGEM_CLIENTIP_FIELD\s*=/m.test(readFileSync(p, "utf8")),
-    );
-    // Ligado em 18/10/2026. Se alguém desligar a coleta, este assert cai e
-    // obriga a decidir de novo o texto da política (não passa em silêncio).
-    assert.ok(active, "coleta desligada: revisar a política de privacidade e este teste juntos");
+  it("declara a coleta de IP/user agent/_fbp que os workers de cadastro fazem, com os nomes que o lote lê (#8543)", () => {
+    // Coerência política × código × leitor. Os workers poll e cursos gravam
+    // IP, user agent e _fbp no Kit quando o request tem sinal da Meta
+    // (selectPersistableMatchSignals); o lote SubscriptionConfirmed relê pelas
+    // constantes KIT_*_FIELD_NAME. Desligar a coleta derruba este teste de
+    // propósito: a política tem de ser revista junto.
+    const expected: Record<string, string> = {
+      KIT_ORIGEM_CLIENTIP_FIELD: KIT_CLIENT_IP_FIELD_NAME,
+      KIT_ORIGEM_USERAGENT_FIELD: KIT_USER_AGENT_FIELD_NAME,
+      KIT_ORIGEM_FBP_FIELD: KIT_FBP_FIELD_NAME,
+    };
+    for (const worker of ["poll", "cursos"]) {
+      const vars = parseWorkerKitFieldVars(worker, readFileSync(join(ROOT, "workers", worker, "wrangler.toml"), "utf8"));
+      for (const [varName, fieldKey] of Object.entries(expected)) {
+        const got = vars.find((v) => v.varName === varName);
+        assert.equal(
+          got?.fieldKey,
+          fieldKey,
+          `${worker}: ${varName} ausente ou diferente do que o lote lê (revisar a política junto)`,
+        );
+      }
+    }
     const html = renderPrivacyPage();
     assert.match(html, /endereço IP/);
+    assert.match(html, /enviados à Meta/);
     assert.match(html, /cookies de medição de anúncios/);
     assert.doesNotMatch(html, /não usam cookies de rastreamento publicitário/);
   });
