@@ -38,16 +38,17 @@ describe("writePrBodySafe — delega pro gh-pr-safe-edit.ts --body-file", () => 
     let seenBody = "";
     let seenArgs: string[] = [];
     const spawnFn = (cmd: string, args: string[]) => {
-      assert.equal(cmd, "npx");
+      // #10453: node --import tsx direto (sem npx/shell) — ver test/pr-create-review-hook-budget-10453.test.ts.
+      assert.equal(cmd, process.execPath);
       seenArgs = args;
-      seenFile = args[args.indexOf("--body-file") + 1].replace(/^"|"$/g, "");
+      seenFile = args[args.indexOf("--body-file") + 1];
       seenBody = readFileSync(seenFile, "utf8");
       return { status: 0, stdout: '{"ok":true}', stderr: "" };
     };
     const body = "Fecha #10442\n\nCloses #10442\n";
     const r = writePrBodySafe(10442, body, { spawnFn, cwd: ROOT });
     assert.deepEqual(r, { ok: true });
-    assert.deepEqual(seenArgs.slice(0, 4), ["tsx", SAFE_EDIT_SCRIPT, "--pr", "10442"]);
+    assert.deepEqual(seenArgs.slice(0, 5), ["--import", "tsx", SAFE_EDIT_SCRIPT, "--pr", "10442"]);
     assert.equal(seenBody, body);
     assert.equal(existsSync(dirname(seenFile)), false, "tmpdir do corpo deveria ter sido apagado");
   });
@@ -102,7 +103,7 @@ describe("ensureCloseKeywords não reporta sucesso sem a escrita confirmada (#10
   });
 
   it("o main do hook põe o aviso no additionalContext", () => {
-    assert.match(HOOK_SRC, /closeKeywordWarning\(ensureCloseKeywords\(prUrl\)\)/);
+    assert.match(HOOK_SRC, /closeKeywordWarning\(\s*ensureCloseKeywords\(prUrl,/);
     assert.match(HOOK_SRC, /closeWarning \? `\$\{closeWarning\}\\n\\n` : ""/);
   });
 });
