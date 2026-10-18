@@ -30,6 +30,8 @@ import {
   TEXTO_UNICO_CHANNELS,
   CURTO_CHANNELS,
   formatChannelLabels,
+  channelPublishLines, // #10451: linhas que o publish acrescenta
+  type SocialChannel,
 } from "./lib/social-cta-lines.ts"; // #4091: fonte única de verdade dos canais
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 preview override
 import {
@@ -41,7 +43,10 @@ import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #956
 import {
   finalizeUseMelhorPostText,
   finalizeUseMelhorTextChannelPostText,
-} from "./lib/use-melhor-dispatch.ts"; // #10087: preview = texto publicado do `## um`
+  applyUseMelhorUtmToText,
+  planUseMelhorDispatch,
+  prependUseMelhorCaptionTitle,
+} from "./lib/use-melhor-dispatch.ts"; // #10087: preview = texto publicado do `## um`; #10451: título da legenda
 
 export interface ImageMap {
   [key: string]: {
@@ -298,6 +303,46 @@ export function channelKeysForSection(sectionName: string): readonly string[] {
 export interface GroupedBlock {
   channels: string;
   post: Post;
+  /** #10451: o que cada canal do bloco acrescenta no publish (CTA, linha de
+   *  engajamento), fora do `03-social.md`. Só canais com alguma linha. */
+  publishAdditions?: PublishAddition[];
+}
+
+export interface PublishAddition {
+  /** Rótulo do canal ("📷 Instagram"). */
+  channel: string;
+  lines: string[];
+}
+
+/**
+ * #10451: linhas que o publish acrescenta, por canal, a um post da seção
+ * `# Social` (texto único). Fonte: `channelPublishLines`, a mesma do
+ * `injectChannelLine` dos publicadores. Só d1/d2/d3 e o 4º post (`um`) — são
+ * os únicos que passam por `injectChannelLine`; seções legadas por rede e o
+ * `# Curto` (X/Threads) não recebem linha nenhuma no publish.
+ */
+export function publishAdditionsFor(
+  sectionName: string,
+  destaqueKey: string,
+  /** Subconjunto dos canais da seção (o `## um` pode virar 2 blocos, #10087). */
+  channelKeys: readonly string[] = channelKeysForSection(sectionName),
+): PublishAddition[] {
+  if (!/social/i.test(sectionName)) return [];
+  const isUseMelhor = destaqueKey === USE_MELHOR_POST_ID;
+  if (!isUseMelhor && !/^d\d+$/.test(destaqueKey)) return [];
+  const out: PublishAddition[] = [];
+  for (const key of channelKeys) {
+    const lines = channelPublishLines(key as SocialChannel, { useMelhor: isUseMelhor });
+    if (lines.length) out.push({ channel: formatChannelLabels([key]), lines });
+  }
+  return out;
+}
+
+/** #10451: título que o publish põe na 1ª linha da legenda do `## um`
+ *  (`prependUseMelhorCaptionTitle`, #10201) — só nos canais do texto único
+ *  (LinkedIn/Facebook/Instagram); X/Threads não levam título. */
+function withUseMelhorCaptionTitle(sectionName: string, main: string, title: string | undefined): string {
+  return /social/i.test(sectionName) ? prependUseMelhorCaptionTitle(main, title) : main;
 }
 
 /** #9999: canais de TEXTO longo, onde o publish separa os itens do `## um`
@@ -314,20 +359,34 @@ const USE_MELHOR_TEXT_CHANNELS: ReadonlySet<string> = new Set(["linkedin", "face
  * LinkedIn/Facebook. Quando os textos finais dos dois grupos coincidem (lista
  * sem itens a separar), fica um bloco só com o rótulo da seção inteira.
  */
-export function useMelhorBlocksForSection(sectionName: string, post: Post): GroupedBlock[] {
+export function useMelhorBlocksForSection(
+  sectionName: string,
+  post: Post,
+  /** #10451: título da 1ª linha da legenda (`plan.captionTitle`); omitido = sem título. */
+  captionTitle?: string,
+): GroupedBlock[] {
   const keys = channelKeysForSection(sectionName);
   const textKeys = keys.filter((k) => USE_MELHOR_TEXT_CHANNELS.has(k));
   const otherKeys = keys.filter((k) => !USE_MELHOR_TEXT_CHANNELS.has(k));
-  const textMain = finalizeUseMelhorTextChannelPostText(post.main);
-  const otherMain = finalizeUseMelhorPostText(post.main);
+  const textMain = withUseMelhorCaptionTitle(sectionName, finalizeUseMelhorTextChannelPostText(post.main), captionTitle);
+  const otherMain = withUseMelhorCaptionTitle(sectionName, finalizeUseMelhorPostText(post.main), captionTitle);
+  const block = (blockKeys: readonly string[], main: string): GroupedBlock => {
+    // O publish aplica a UTM do 4º post DEPOIS de injetar a linha do canal —
+    // o link do CTA do Facebook sai com `utm_content` do USE MELHOR.
+    const publishAdditions = publishAdditionsFor(sectionName, USE_MELHOR_POST_ID, blockKeys).map((a) => ({
+      ...a,
+      lines: a.lines.map(applyUseMelhorUtmToText),
+    }));
+    return {
+      channels: formatChannelLabels(blockKeys),
+      post: { ...post, main },
+      ...(publishAdditions.length && { publishAdditions }),
+    };
+  };
   if (textKeys.length === 0 || otherKeys.length === 0 || textMain === otherMain) {
-    const main = textKeys.length > 0 ? textMain : otherMain;
-    return [{ channels: formatChannelLabels(keys), post: { ...post, main } }];
+    return [block(keys, textKeys.length > 0 ? textMain : otherMain)];
   }
-  return [
-    { channels: formatChannelLabels(textKeys), post: { ...post, main: textMain } },
-    { channels: formatChannelLabels(otherKeys), post: { ...post, main: otherMain } },
-  ];
+  return [block(textKeys, textMain), block(otherKeys, otherMain)];
 }
 
 export interface DestaqueGroup {
@@ -361,6 +420,8 @@ export function groupByDestaque(
   platforms: Platform[],
   imageUrls: ImageMap,
   postPixelImageNum = "1",
+  /** #10451: título da 1ª linha da legenda do `## um` (`plan.captionTitle`). */
+  useMelhorCaptionTitle?: string,
 ): DestaqueGroup[] {
   const groups = new Map<string, DestaqueGroup>();
   for (const platform of platforms) {
@@ -390,9 +451,10 @@ export function groupByDestaque(
         });
       }
       if (key === USE_MELHOR_POST_ID) {
-        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post)); // #10087
+        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post, useMelhorCaptionTitle)); // #10087
       } else {
-        groups.get(key)!.blocks.push({ channels, post });
+        const publishAdditions = publishAdditionsFor(platform.name, key); // #10451
+        groups.get(key)!.blocks.push({ channels, post, ...(publishAdditions.length && { publishAdditions }) });
       }
     }
   }
@@ -434,7 +496,25 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
           ${mainParas}
           ${hashtags}
         </div>
+        ${renderPublishAdditions(block.publishAdditions)}
       </div>`;
+}
+
+/** #10451: o que o publish acrescenta por canal, à parte do texto editável —
+ *  no post publicado essas linhas entram entre o corpo e as hashtags. */
+function renderPublishAdditions(additions: PublishAddition[] | undefined): string {
+  if (!additions?.length) return "";
+  return `<div class="publish-additions">
+          <div class="publish-additions-title">Acrescentado na publicação, entre o texto e as hashtags (não vem do 03-social.md):</div>
+          ${additions
+            .map(
+              (a) =>
+                `<div class="publish-addition"><span class="publish-addition-channel">${escHtml(a.channel)}</span> ${a.lines
+                  .map((l) => `<span class="publish-addition-line">${escHtml(l)}</span>`)
+                  .join(" ")}</div>`,
+            )
+            .join("\n          ")}
+        </div>`;
 }
 
 /** #6005 Parte B / #6064: galeria de rolagem horizontal com os 5 slides do
@@ -515,6 +595,8 @@ export function buildSocialHtml(
   editionDir?: string,
   /** #9568: linha(s) de status do 4º post (USE MELHOR) — aviso no topo do preview. Omitido = nada. */
   useMelhorNotice?: string[],
+  /** #10451: título da 1ª linha da legenda do `## um` — `resolveUseMelhorCaptionTitle`. Omitido = sem título. */
+  useMelhorCaptionTitle?: string,
 ): string {
   // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
   // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
@@ -657,6 +739,17 @@ export function buildSocialHtml(
   .channel-block {
     border-top: 1px solid #f0f0f0;
   }
+  .publish-additions {
+    margin: 0 16px 14px;
+    padding: 8px 10px;
+    background: #f6f6f6;
+    border-left: 3px solid #ccc;
+    font-size: 13px;
+    color: #555;
+  }
+  .publish-additions-title { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .publish-addition { margin-top: 4px; }
+  .publish-addition-channel { font-weight: 600; margin-right: 4px; }
   .channel-label {
     padding: 10px 16px 0;
     font-size: 16px;
@@ -697,7 +790,7 @@ export function buildSocialHtml(
 <h1>Social Preview</h1>
 ${useMelhorNotice?.length ? `<div class="platform-note use-melhor-notice">${useMelhorNotice.map((l) => escHtml(l)).join("<br>")}</div>` : ""}
 ${(() => {
-  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum);
+  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum, useMelhorCaptionTitle);
   // #8681/#8809: injeta a legenda de override como bloco SEPARADO em todo
   // destaque numerado (d1/d2/d3) — mesma semântica de `publish-instagram.ts`
   // (`testOverride?.caption` aplicado a "todos os destaques"). Só quando NÃO
@@ -724,6 +817,23 @@ ${(() => {
 </div>
 </body>
 </html>`;
+}
+
+/**
+ * #10451: título que os publicadores põem na 1ª linha da legenda do `## um`
+ * (`plan.captionTitle`, #10201/#10276) — o MESMO plano do Stage 5
+ * (`planUseMelhorDispatch`). Fail-soft: plano não-pronto, config ilegível ou
+ * erro → `undefined` (preview sem título, motivo no stderr quando é erro).
+ */
+export function resolveUseMelhorCaptionTitle(editionDir: string, rootDir: string): string | undefined {
+  try {
+    const config = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+    const plan = planUseMelhorDispatch(editionDir, config);
+    return plan.status === "ready" ? plan.captionTitle : undefined;
+  } catch (e) {
+    console.error(`[render-social-html] #10451: título do 4º post indisponível: ${(e as Error).message}`);
+    return undefined;
+  }
 }
 
 function main(): void {
@@ -769,7 +879,14 @@ function main(): void {
   } catch (e) {
     console.error(`[render-social-html] #9568: status do 4º post indisponível: ${(e as Error).message}`);
   }
-  const html = buildSocialHtml(platforms, imageUrls, postPixelImageNum, undefined, useMelhorNotice);
+  const html = buildSocialHtml(
+    platforms,
+    imageUrls,
+    postPixelImageNum,
+    undefined,
+    useMelhorNotice,
+    resolveUseMelhorCaptionTitle(dirname(mdPath), resolve(import.meta.dirname, "..")),
+  );
   writeFileSync(outPath, html);
 
   // #1800: validação pós-render — preview com menos <img> que posts de destaque

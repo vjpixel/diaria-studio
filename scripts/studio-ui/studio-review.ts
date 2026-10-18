@@ -66,7 +66,7 @@ import { substituteImagePlaceholders } from "../substitute-image-urls.ts";
 // parser/renderer que a pipeline REAL usa no Stage 4 (§4b step 3 de
 // orchestrator-stage-4.md) pra gerar `_internal/social-preview.html`, em vez
 // de reimplementar o parsing de `## d1/d2/d3` por plataforma aqui.
-import { parsePlatforms, buildSocialHtml, type ImageMap } from "../render-social-html.ts";
+import { parsePlatforms, buildSocialHtml, resolveUseMelhorCaptionTitle, type ImageMap } from "../render-social-html.ts";
 import { USE_MELHOR_POST_ID, describeUseMelhorPostStatus, loadUseMelhorPostConfigState } from "../lib/use-melhor-post.ts"; // #9568
 import { gatherUseMelhorStatusInput } from "../lib/use-melhor-status.ts"; // #9568
 import { readUseMelhorCarouselStamp } from "../lib/use-melhor-carousel.ts"; // #9568
@@ -986,7 +986,15 @@ export function buildSocialPreviewHtml(
     } catch {
       useMelhorNotice = undefined;
     }
-    const html = buildSocialHtml(platforms, imageMap, postPixelImageNum, editionDir, useMelhorNotice);
+    const html = buildSocialHtml(
+      platforms,
+      imageMap,
+      postPixelImageNum,
+      editionDir,
+      useMelhorNotice,
+      // #10451: título da 1ª linha da legenda do `## um`, como no publish.
+      resolveUseMelhorCaptionTitle(editionDir, resolve(import.meta.dirname, "..", "..")),
+    );
     return { ok: true, html };
   } catch (e) {
     const message = (e as Error).message;

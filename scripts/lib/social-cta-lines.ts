@@ -245,14 +245,23 @@ export function injectChannelLine(
   opts: { useMelhor?: boolean } = {},
 ): string {
   const { body, tags } = splitBodyAndTags(genericText);
-  const ctaLine = CHANNEL_CTA_LINES[channel];
-  // #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
-  // ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
-  // #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
-  const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
-  const parts = [body];
-  if (ctaLine) parts.push(ctaLine);
-  if (engagementLine) parts.push(engagementLine);
+  const parts = [body, ...channelPublishLines(channel, opts)];
   if (tags) parts.push(tags);
   return parts.join("\n\n");
+}
+
+/**
+ * Linhas que o publish acrescenta ao post de um canal, na ordem em que entram
+ * entre o corpo e as tags. Fonte única de `injectChannelLine` e do preview do
+ * gate 4 (`render-social-html.ts`, #10451), que as mostra à parte do texto
+ * editável — nunca uma cópia das frases.
+ *
+ * #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
+ * ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
+ * #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
+ */
+export function channelPublishLines(channel: SocialChannel, opts: { useMelhor?: boolean } = {}): string[] {
+  const ctaLine = CHANNEL_CTA_LINES[channel];
+  const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
+  return [ctaLine, engagementLine].filter((l): l is string => !!l);
 }
