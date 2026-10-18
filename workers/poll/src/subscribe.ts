@@ -62,7 +62,10 @@ import {
   releaseClaimOnSendFailure,
   deriveClickIdFromFbc,
   readCookieValue,
-} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230
+  selectPersistableMatchSignals,
+  applyMatchSignalFields,
+  type PersistedMatchSignals,
+} from "../../../scripts/lib/shared/meta-capi.ts"; // #5504, #7776, #8388, #8572, #10230, #8543
 import { resolveVisitorId, warnExternalIdFieldMissingOnce } from "../../../scripts/lib/shared/visitor-id.ts"; // #8978
 import { applyKitSignupOriginField } from "../../../scripts/lib/shared/kit-signup-origin.ts"; // #6048
 // #7723: consome a maquinaria COMPARTILHADA (scripts/lib/shared/kit-doi.ts),
@@ -400,6 +403,12 @@ export interface SubscribeOrigin {
   referrer: string;
   clickId: string;
   externalId: string;
+  /** #8543 (EMQ): IP, user agent e `_fbp` do request de cadastro, JÁ
+   * minimizados/sanitizados por `selectPersistableMatchSignals` — gravados
+   * em `KIT_ORIGEM_CLIENTIP_FIELD`/`KIT_ORIGEM_USERAGENT_FIELD`/
+   * `KIT_ORIGEM_FBP_FIELD` pro `SubscriptionConfirmed` reusar. Opcional:
+   * ausente = não grava (literais de teste anteriores ao #8543 não têm). */
+  matchSignals?: PersistedMatchSignals;
 }
 
 export interface ParsedSubscribe {
@@ -852,6 +861,10 @@ async function subscribeToKit(
     // #8978 (fleet review item 2): aviso ÚNICO por isolate.
     warnExternalIdFieldMissingOnce("poll", "kit");
   }
+  // #8543 (EMQ): sinais de match pro `SubscriptionConfirmed` — mesmo guard
+  // duplo (env configurado E valor presente); minimização já aplicada em
+  // `selectPersistableMatchSignals` no handler.
+  applyMatchSignalFields(fields, env, origin.matchSignals);
   // #6048: marcador "entrou pelo funil" — distingue de quem só foi copiado
   // da Beehiiv pelo sync unidirecional (necessário pra segmentar o envio
   // sem entrega duplicada, ver scripts/lib/shared/kit-signup-origin.ts).
@@ -1096,6 +1109,22 @@ export async function handleJogarSubscribe(
     clickId: v.clickId || (deriveClickIdFromFbc(readCookieValue(request.headers.get("Cookie"), "_fbc")) ?? deriveClickIdFromFbc(v.fbc) ?? "").slice(0, SUBSCRIBE_CLIENT_ORIGIN_MAX),
     externalId: resolveVisitorId(request.headers.get("Cookie"), v.externalId) ?? "",
   };
+  // #8388 item 3: sinais de match quality que este handler já tinha em
+  // mãos (IP/UA dos headers, `_fbp`/`_fbc` do cookie first-party, `fbc`
+  // derivado do `click_id` do #8003). Extração é pura e nunca lança — campo
+  // ausente é OMITIDO, nunca string vazia. #8978 (fleet review pós-#8983):
+  // `fbcBody`/`fbpBody`/`externalIdBody` cobrem o POST cross-origin — cookie
+  // do request continua vencendo quando existir. #8543: extraído ANTES do
+  // cadastro pra que IP/UA/fbp (minimizados) sejam gravados no Kit na MESMA
+  // chamada de criação — o `SubscriptionConfirmed` horário não tem request
+  // próprio de onde tirá-los.
+  const clientSignals = extractMetaCapiClientSignals(request.headers, {
+    clickId: origin.clickId,
+    fbcBody: v.fbc,
+    fbpBody: v.fbp,
+    externalIdBody: v.externalId,
+  });
+  origin.matchSignals = selectPersistableMatchSignals(clientSignals, origin.clickId);
   // #8553: click_id (prova de clique de ads) sobrepõe origemPaga quando o
   // utm_source do cliente ficou vazio/divergente — ver docstring de
   // `resolveOrigemPagaWithClickIdFallback`.
@@ -1122,19 +1151,7 @@ export async function handleJogarSubscribe(
     // vs. meta_error/network_error vs. sent) NO MEIO do mesmo caminho
     // fire-and-forget — não muda o tipo nem o timing do que `waitUntil`/
     // `await` abaixo já faziam.
-    // #8388 item 3: sinais de match quality que este handler já tinha em
-    // mãos e não mandava (IP/UA dos headers, `_fbp`/`_fbc` do cookie
-    // first-party, `fbc` derivado do `click_id` do #8003). Extração é pura
-    // e nunca lança — campo ausente é OMITIDO, nunca string vazia. #8978
-    // (fleet review pós-#8983): `fbcBody`/`fbpBody`/`externalIdBody` cobrem
-    // o mesmo POST cross-origin do comentário acima — cookie do request
-    // continua vencendo quando existir.
-    const clientSignals = extractMetaCapiClientSignals(request.headers, {
-      clickId: origin.clickId,
-      fbcBody: v.fbc,
-      fbpBody: v.fbp,
-      externalIdBody: v.externalId,
-    });
+    // `clientSignals` (#8388/#8978) foi extraído antes do cadastro (#8543).
     // #8572: o par (`event_id`, `event_time`) é resolvido UMA vez aqui e usado
     // nos DOIS lados — vai pra CAPI abaixo via `eventTimeSeconds` (é dele que
     // o builder deriva o id) e volta pro browser no corpo da resposta, pra tag

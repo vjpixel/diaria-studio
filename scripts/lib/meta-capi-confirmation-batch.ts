@@ -42,6 +42,12 @@
  *   o e-mail de quem clicou num anúncio do Google deixaria a Meta reivindicar
  *   crédito por view-through de um cadastro que não veio dela. Registrado como
  *   `skipped-other-channel`.
+ * - Sinais de match além do e-mail (#8543, EMQ 5.0/10 em 28/09/2026):
+ *   `external_id` (#8978) e IP, user agent e `_fbp` gravados no cadastro
+ *   (`origem_client_ip`/`origem_user_agent`/`origem_fbp`), todos revalidados
+ *   em `buildConfirmationClientSignals`. Cadastro anterior ao #8543 (ou que a
+ *   minimização não deixou gravar) sai sem eles, como antes. Cobertura medida
+ *   no resumo (`withClientIp`/`withUserAgent`/`withFbp`/`withExternalId`).
  *
  * ## Janela de 7 dias — perda registrada, nunca silenciosa
  *
@@ -98,6 +104,7 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import {
   KIT_CLICK_ID_FIELD_NAME,
   KIT_EXTERNAL_ID_FIELD_NAME,
+  persistedMatchFieldsFromKit,
   selectConfirmationCandidates,
   type ConfirmationCandidate,
   type ConfirmationPath,
@@ -110,7 +117,9 @@ import {
   META_CLICK_ID_PREFIX,
   buildFbcFromClickId,
   computeConfirmationEventId,
+  sanitizePersistedMatchSignals,
   sendCompleteRegistrationEvent,
+  type MetaCapiClientSignals,
   type BuildCompleteRegistrationEventInput,
   type MetaCapiSendResult,
   type SendMetaCapiEventOptions,
@@ -245,6 +254,12 @@ export interface MetaConfirmationSummary {
   toSend: number;
   withFbc: number;
   withoutClickId: number;
+  /** #8543 (EMQ): quantos dos `toSend` levam cada sinal de match além do
+   *  e-mail — mede a cobertura do enriquecimento. */
+  withExternalId: number;
+  withClientIp: number;
+  withUserAgent: number;
+  withFbp: number;
   sent: number;
   failed: number;
   failedPermanent: number;
@@ -284,6 +299,29 @@ interface Planned {
   fbc?: string;
 }
 
+/**
+ * Sinais de match do evento de confirmação a partir do que o cadastro gravou
+ * no Kit: `fbc` (derivado do click id), `external_id` (#8978) e, desde o
+ * #8543 (EMQ), IP, user agent e `_fbp`. Tudo revalidado aqui — custom field é
+ * editável à mão no painel; valor que não parece o original é OMITIDO.
+ * `undefined` quando não sobra nenhum sinal além do e-mail. @pure
+ */
+export function buildConfirmationClientSignals(
+  cand: Pick<ConfirmationCandidate, "externalId" | "clientIp" | "clientUserAgent" | "fbp">,
+  fbc: string | undefined,
+): MetaCapiClientSignals | undefined {
+  const signals: MetaCapiClientSignals = {};
+  if (fbc) signals.fbc = fbc;
+  if (isValidVisitorId(cand.externalId)) signals.externalId = cand.externalId;
+  const persisted = sanitizePersistedMatchSignals({
+    clientIpAddress: cand.clientIp,
+    clientUserAgent: cand.clientUserAgent,
+    fbp: cand.fbp,
+  });
+  Object.assign(signals, persisted);
+  return Object.keys(signals).length > 0 ? signals : undefined;
+}
+
 export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDeps): Promise<MetaConfirmationSummary> {
   const log = deps.log ?? ((m: string) => process.stderr.write(`[meta-capi-confirmations] ${m}\n`));
   const eventName = assertConfirmationEventName(deps.eventName ?? META_CAPI_CONFIRMATION_EVENT_NAME);
@@ -309,6 +347,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
         path: e.path,
         clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
         externalId: (s.fields?.[KIT_EXTERNAL_ID_FIELD_NAME] ?? "").trim() || undefined,
+        ...persistedMatchFieldsFromKit(s.fields),
         ambiguous: false,
       });
     }
@@ -338,6 +377,10 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
     toSend: 0,
     withFbc: 0,
     withoutClickId: 0,
+    withExternalId: 0,
+    withClientIp: 0,
+    withUserAgent: 0,
+    withFbp: 0,
     sent: 0,
     failed: 0,
     failedPermanent: 0,
@@ -393,6 +436,13 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
 
   const toSend = typeof deps.limit === "number" ? planned.slice(0, deps.limit) : planned;
   summary.toSend = toSend.length;
+  for (const p of toSend) {
+    const sig = buildConfirmationClientSignals(p.cand, p.fbc);
+    if (sig?.externalId) summary.withExternalId++;
+    if (sig?.clientIpAddress) summary.withClientIp++;
+    if (sig?.clientUserAgent) summary.withUserAgent++;
+    if (sig?.fbp) summary.withFbp++;
+  }
 
   if (effectiveDryRun) {
     if (!deps.dryRun) log("META_CAPI_ACCESS_TOKEN ausente — dry-run efetivo: nada enviado, índice intocado.");
@@ -401,11 +451,7 @@ export async function runMetaConfirmationBatch(deps: RunMetaConfirmationBatchDep
   }
 
   for (const { cand, eventId, fbc } of toSend) {
-    // #8978: `external_id` persistido no cadastro (ver `KIT_EXTERNAL_ID_FIELD_NAME`)
-    // — só entra quando o valor no Kit ainda parece um `_dia_vid` válido
-    // (defesa em profundidade: campo custom pode ter sido editado à mão).
-    const externalId = isValidVisitorId(cand.externalId) ? cand.externalId : undefined;
-    const clientSignals = fbc || externalId ? { fbc, externalId } : undefined;
+    const clientSignals = buildConfirmationClientSignals(cand, fbc);
     const result = await sendFn(
       {
         email: cand.email,

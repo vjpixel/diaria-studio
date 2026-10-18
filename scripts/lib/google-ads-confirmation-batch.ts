@@ -134,6 +134,14 @@ export const KIT_CLICK_ID_FIELD_NAME = "origem_click_id";
  * sem precisar de request/cookie próprio (o clique de confirmação DOI não
  * tem um). Google não consome este campo. */
 export const KIT_EXTERNAL_ID_FIELD_NAME = "origem_external_id";
+/** #8543 (EMQ, 28/09/2026): custom fields do Kit com os sinais de match
+ * persistidos no cadastro (IP, user agent, `_fbp`) — gravados por
+ * `workers/poll|cursos/src/subscribe.ts` sob a minimização de
+ * `selectPersistableMatchSignals` (meta-capi.ts) e relidos pelo lote da Meta.
+ * Google não consome estes campos. */
+export const KIT_CLIENT_IP_FIELD_NAME = "origem_client_ip";
+export const KIT_USER_AGENT_FIELD_NAME = "origem_user_agent";
+export const KIT_FBP_FIELD_NAME = "origem_fbp";
 export const DEFAULT_LOOKBACK_DAYS = 7;
 export const CONFIRMATION_ORDER_ID_PREFIX = "diaria-confirmacao-kit-";
 export const MAX_FAILED_ATTEMPTS = 3;
@@ -181,6 +189,11 @@ export interface ConfirmationCandidate {
    * (`KIT_EXTERNAL_ID_FIELD_NAME`), reusado pelo lote da Meta pra enriquecer
    * `SubscriptionConfirmed`. Google não consome este campo. */
   externalId?: string;
+  /** #8543: sinais de match CRUS gravados no cadastro (`KIT_CLIENT_IP_FIELD_NAME`
+   * e vizinhos) — o lote da Meta sanitiza de novo antes de usar. */
+  clientIp?: string;
+  clientUserAgent?: string;
+  fbp?: string;
   /** `true` = sem estado anterior na base (cadastrou depois dela). */
   ambiguous: boolean;
 }
@@ -267,6 +280,21 @@ export interface SelectionResult {
   skippedNoBase: number;
 }
 
+/** #8543: lê os 3 campos de sinal de match do Kit (crus; vazio = ausente). @pure */
+export function persistedMatchFieldsFromKit(
+  fields: Record<string, string> | undefined,
+): Pick<ConfirmationCandidate, "clientIp" | "clientUserAgent" | "fbp"> {
+  const read = (k: string): string | undefined => (fields?.[k] ?? "").trim() || undefined;
+  const out: Pick<ConfirmationCandidate, "clientIp" | "clientUserAgent" | "fbp"> = {};
+  const ip = read(KIT_CLIENT_IP_FIELD_NAME);
+  const ua = read(KIT_USER_AGENT_FIELD_NAME);
+  const fbp = read(KIT_FBP_FIELD_NAME);
+  if (ip) out.clientIp = ip;
+  if (ua) out.clientUserAgent = ua;
+  if (fbp) out.fbp = fbp;
+  return out;
+}
+
 /** Ver docstring do módulo pra critério. `baseDate` = `AAAA-MM-DD` do snapshot base. @pure */
 export function selectConfirmationCandidates(
   roster: readonly ConfirmationRosterEntry[],
@@ -296,6 +324,7 @@ export function selectConfirmationCandidates(
       gclid: extractGclid(s.fields),
       clickId: (s.fields?.[KIT_CLICK_ID_FIELD_NAME] ?? "").trim() || undefined,
       externalId: (s.fields?.[KIT_EXTERNAL_ID_FIELD_NAME] ?? "").trim() || undefined,
+      ...persistedMatchFieldsFromKit(s.fields),
       ambiguous: !base,
     });
   }

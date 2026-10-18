@@ -35,7 +35,9 @@
  * `client_user_agent`, `fbp` e `fbc` — esses NÃO são hasheados (a Meta
  * exige em claro; hashear invalida o match), então o título acima vale pro
  * E-MAIL, não pro evento inteiro. O que não mudou: nada disso entra em log
- * (ver `MetaCapiLogEvent`), nada disso é persistido por este módulo, e os
+ * (ver `MetaCapiLogEvent`), nada disso é persistido por este módulo (o
+ * cadastro grava IP/UA/fbp no Kit desde o #8543, mas quem grava é o worker,
+ * sob a minimização de `selectPersistableMatchSignals`), e os
  * 4 são exatamente os sinais que o pixel client-side já entregaria à Meta
  * a partir do navegador do visitante.
  *
@@ -287,15 +289,13 @@ export const META_CAPI_COMPLETE_REGISTRATION_CURRENCY = "BRL";
  * os 4 são exatamente os sinais que o pixel client-side no navegador do
  * visitante já entregaria à Meta por conta própria.
  *
- * **Cobertura deliberadamente parcial dos call sites:** só `workers/poll` e
- * `workers/cursos` mandam estes 4 — são os dois handlers que recebem o
- * `Request` do cadastro. `workers/reativar` NÃO manda: `handleConfirm`
- * recebe uma `URL`, não o `Request`, então não há headers/cookies de onde
- * tirá-los sem mudar a assinatura e os call sites; o batch
- * (`meta-capi-batch-send.ts`, `system_generated`) reprocessa um snapshot e
- * não tem request nenhum. Não é esquecimento — quem for fechar a ponta do
- * `reativar` depois precisa passar o `Request` (ou só os headers) pra
- * dentro do `handleConfirm`.
+ * **Cobertura dos call sites:** `workers/poll` e `workers/cursos` mandam
+ * estes sinais no cadastro e, desde o #8543, gravam IP/UA/fbp no Kit
+ * (`selectPersistableMatchSignals`) pro lote `SubscriptionConfirmed`
+ * (`meta-capi-confirmation-batch.ts`) reusar. `workers/reativar` manda desde
+ * o #8543 (`handleConfirm` recebe os headers do clique). O batch de cadastro
+ * da Beehiiv (`meta-capi-batch-send.ts`, `system_generated`) reprocessa um
+ * snapshot e segue sem request nenhum.
  */
 export interface MetaCapiClientSignals {
   /** IP do visitante — `CF-Connecting-IP` (ou 1ª entrada de
@@ -532,6 +532,137 @@ export function extractMetaCapiClientSignals(
   if (externalId) signals.externalId = externalId;
 
   return signals;
+}
+
+// ---------------------------------------------------------------------------
+// #8543 (28/09/2026, EMQ): sinais de match PERSISTIDOS no cadastro
+// ---------------------------------------------------------------------------
+
+/**
+ * Sinais de match que o cadastro grava no ESP pra eventos SÓ-SERVIDOR
+ * posteriores (`SubscriptionConfirmed`, lote horário sem request próprio).
+ * Medição no Events Manager (28/09/2026): `SubscriptionConfirmed` em EMQ
+ * 5.0/10 com só e-mail + fbc; a Meta estima +32% de EMQ cada pra IP e user
+ * agent e +24% pra fbp. `external_id` já era persistido desde o #8978
+ * (`origem_external_id`) — não entra aqui.
+ *
+ * Os 3 vão em CLARO pra Meta (mesmo contrato do `MetaCapiClientSignals`) e
+ * são os mesmos que o pixel client-side já entregaria. A diferença em
+ * relação ao envio síncrono do cadastro é que AQUI eles são guardados num
+ * custom field do Kit — por isso a minimização de `selectPersistableMatchSignals`.
+ */
+export interface PersistedMatchSignals {
+  clientIpAddress?: string;
+  clientUserAgent?: string;
+  fbp?: string;
+}
+
+/** Teto do user agent persistido — UA real fica bem abaixo disso; o corte é
+ * defesa contra header abusivo virando custom field gigante. */
+export const PERSISTED_USER_AGENT_MAX = 300;
+
+const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const IPV6_RE = /^[0-9A-Fa-f:.]{2,45}$/;
+
+/** `true` pra IPv4 canônico ou algo com a forma de IPv6 (hex + `:`, com
+ * IPv4 embutido opcional). Não pretende validar IPv6 por completo — só barrar
+ * lixo (header forjado, lista, porta) antes de persistir/enviar. @pure */
+export function isPlausibleClientIp(ip: string | undefined | null): boolean {
+  const v = (ip ?? "").trim();
+  if (!v) return false;
+  if (IPV4_RE.test(v)) return true;
+  // IPv6 tem sempre >= 2 `:` (`::1`); isso já recusa `ip:porta` de IPv4.
+  if (!IPV6_RE.test(v) || (v.match(/:/g) ?? []).length < 2) return false;
+  const lastColon = v.lastIndexOf(":");
+  const head = v.slice(0, lastColon);
+  const tail = v.slice(lastColon + 1);
+  if (head.includes(".")) return false;
+  // IPv4 embutido (`::ffff:1.2.3.4`) só no último segmento.
+  return tail.includes(".") ? IPV4_RE.test(tail) : /^[0-9A-Fa-f]{0,4}$/.test(tail);
+}
+
+/** Normaliza UA: trim, sem caracteres de controle, cortado no teto. Vazio = `undefined`. @pure */
+export function normalizePersistedUserAgent(ua: string | undefined | null): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  const v = (ua ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, PERSISTED_USER_AGENT_MAX).trim();
+  return v || undefined;
+}
+
+/**
+ * Valida/normaliza os 3 sinais (IP, UA, fbp). Usado nos DOIS lados: antes de
+ * gravar no Kit (cadastro) e de novo ao reler do Kit (lote) — custom field é
+ * editável à mão no painel, mesma defesa em profundidade do `external_id`
+ * (`isValidVisitorId`). Campo inválido é OMITIDO, nunca repassado cru. @pure
+ */
+export function sanitizePersistedMatchSignals(raw: {
+  clientIpAddress?: string | null;
+  clientUserAgent?: string | null;
+  fbp?: string | null;
+}): PersistedMatchSignals {
+  const out: PersistedMatchSignals = {};
+  const ip = (raw.clientIpAddress ?? "").trim();
+  if (isPlausibleClientIp(ip)) out.clientIpAddress = ip;
+  const ua = normalizePersistedUserAgent(raw.clientUserAgent);
+  if (ua) out.clientUserAgent = ua;
+  const fbp = (raw.fbp ?? "").trim();
+  if (fbp && fbp.length <= 300 && FB_COOKIE_RE.test(fbp)) out.fbp = fbp;
+  return out;
+}
+
+/**
+ * Minimização (#8543): decide QUAIS sinais do request de cadastro podem ir
+ * pro ESP. Regras, nesta ordem:
+ *
+ * 1. Click id de OUTRO canal (`gclid:`/`msclkid:`) → nada. O único consumidor
+ *    destes campos é o lote da Meta, que já pula esse cadastro
+ *    (`skipped-other-channel`) — guardar IP/UA dele seria dado sem uso.
+ * 2. Sem NENHUM sinal da Meta no request (`_fbp`, `_fbc` válidos, ou click id
+ *    `fbclid:`) → nada. Ausência de cookie da Meta é o sinal de que o pixel
+ *    não rodou nesse navegador (bloqueador, sem consentimento); o lote
+ *    continua mandando só o hash do e-mail, como antes.
+ * 3. Caso contrário → IP, UA e fbp já sanitizados (`sanitizePersistedMatchSignals`).
+ *
+ * @pure
+ */
+export function selectPersistableMatchSignals(
+  signals: MetaCapiClientSignals,
+  clickId: string | undefined,
+): PersistedMatchSignals {
+  const cid = (clickId ?? "").trim().toLowerCase();
+  if (cid && !cid.startsWith(META_CLICK_ID_PREFIX)) return {};
+  const hasMetaSignal = Boolean(signals.fbp || signals.fbc || cid.startsWith(META_CLICK_ID_PREFIX));
+  if (!hasMetaSignal) return {};
+  return sanitizePersistedMatchSignals({
+    clientIpAddress: signals.clientIpAddress,
+    clientUserAgent: signals.clientUserAgent,
+    fbp: signals.fbp,
+  });
+}
+
+/** Nomes dos custom fields do ESP onde gravar os sinais — vêm das env vars
+ * `KIT_ORIGEM_CLIENTIP_FIELD`/`KIT_ORIGEM_USERAGENT_FIELD`/`KIT_ORIGEM_FBP_FIELD`
+ * dos workers. Nome ausente = aquele sinal não é gravado. */
+export interface MatchSignalFieldNames {
+  KIT_ORIGEM_CLIENTIP_FIELD?: string;
+  KIT_ORIGEM_USERAGENT_FIELD?: string;
+  KIT_ORIGEM_FBP_FIELD?: string;
+}
+
+/**
+ * #8543: escreve os sinais (já minimizados por `selectPersistableMatchSignals`)
+ * no mapa `fields` do POST de criação do Kit. Guard duplo, mesmo padrão dos
+ * `KIT_ORIGEM_*`: env configurada E valor presente. Compartilhada pelos
+ * workers `poll` e `cursos` (sem import cross-worker). Muta `fields`. @pure
+ */
+export function applyMatchSignalFields(
+  fields: Record<string, string>,
+  names: MatchSignalFieldNames,
+  signals: PersistedMatchSignals | undefined,
+): void {
+  if (!signals) return;
+  if (names.KIT_ORIGEM_CLIENTIP_FIELD && signals.clientIpAddress) fields[names.KIT_ORIGEM_CLIENTIP_FIELD] = signals.clientIpAddress;
+  if (names.KIT_ORIGEM_USERAGENT_FIELD && signals.clientUserAgent) fields[names.KIT_ORIGEM_USERAGENT_FIELD] = signals.clientUserAgent;
+  if (names.KIT_ORIGEM_FBP_FIELD && signals.fbp) fields[names.KIT_ORIGEM_FBP_FIELD] = signals.fbp;
 }
 
 export type MetaCapiActionSource = "website" | "system_generated" | "email";
