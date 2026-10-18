@@ -97,3 +97,32 @@ export function getDiffLineStats(
   }
   return parseNumstat(r.stdout ?? "");
 }
+
+export type AncestryVerdict = "ancestor" | "not-ancestor" | "error";
+
+/**
+ * I/O (#10422): `git merge-base --is-ancestor {baseRef} {headRef}`.
+ * Exit 0 = `baseRef` é ancestral de `headRef`; exit 1 sem stderr = não é;
+ * qualquer outro resultado (ref inexistente, não é repo) = `error`, nunca
+ * confundido com "não é ancestral". `detail` traz o stderr do git.
+ *
+ * Por que importa: `git diff base..head` com `head` ATRÁS de `base` não
+ * falha — devolve o diff invertido (o que o checkout local ainda não tem
+ * aparece como remoção). Achado 261018: checkout 34 commits atrás da base,
+ * +595/−7573 persistido como rodada real.
+ */
+export function checkIsAncestor(
+  baseRef: string,
+  headRef: string,
+  opts: { cwd?: string; spawnFn?: typeof spawnSync } = {},
+): { verdict: AncestryVerdict; detail: string } {
+  const spawnFn = opts.spawnFn ?? spawnSync;
+  const r = spawnFn("git", ["merge-base", "--is-ancestor", baseRef, headRef], {
+    encoding: "utf8",
+    cwd: opts.cwd,
+  });
+  const detail = String(r.stderr ?? "").trim();
+  if (r.status === 0) return { verdict: "ancestor", detail };
+  if (r.status === 1 && !detail) return { verdict: "not-ancestor", detail };
+  return { verdict: "error", detail: detail || `exit ${r.status}` };
+}

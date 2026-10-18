@@ -36,6 +36,8 @@ import { resolveRunLogPath } from "./lib/run-log.ts";
 import {
   computeAllRoundDiffStatsWindows,
   evaluateRoundDiffAlarm,
+  excludeInvalidatedRoundDiffStats,
+  findRoundDiffStatsInvalidation,
   formatRoundDiffStatsReport,
   parseRoundDiffStatsEvents,
   ROUND_DIFF_RATIO_ALARM_THRESHOLD,
@@ -60,9 +62,15 @@ const ALARM_FINGERPRINT = "round-diff-ratio-7d-threshold";
  * execuções limpas seguidas antes de fechar a issue sozinho. */
 const CLOSE_ALARM_ISSUE_AFTER_RUNS = 2;
 
-/** Lê e parseia `data/run-log.jsonl` — fail-soft: arquivo ausente ou
- * ilegível vira lista vazia, nunca lança. */
+/** Lê e parseia `data/run-log.jsonl`, já sem os eventos sabidamente
+ * inválidos (`INVALIDATED_ROUND_DIFF_STATS`, #10422) — fail-soft: arquivo
+ * ausente ou ilegível vira lista vazia, nunca lança. */
 export function readRoundDiffStatsRecords(rootDir: string = ROOT): RoundDiffStatsRecord[] {
+  return excludeInvalidatedRoundDiffStats(readAllRoundDiffStatsRecords(rootDir)).valid;
+}
+
+/** Como `readRoundDiffStatsRecords`, mas SEM filtrar invalidados. */
+export function readAllRoundDiffStatsRecords(rootDir: string = ROOT): RoundDiffStatsRecord[] {
   const logPath = resolveRunLogPath(rootDir);
   if (!existsSync(logPath)) return [];
   let raw: string;
@@ -192,7 +200,11 @@ async function main(): Promise<void> {
   const checkAlarm = hasFlag(argv, "check-alarm");
   const dryRun = hasFlag(argv, "dry-run");
 
-  const records = readRoundDiffStatsRecords();
+  const { valid: records, excluded } = excludeInvalidatedRoundDiffStats(readAllRoundDiffStatsRecords());
+  for (const r of excluded) {
+    const inv = findRoundDiffStatsInvalidation(r);
+    console.log(`${LOG_PREFIX} ignorado (${r.sessionKind} base ${r.base}, ${r.capturedAt}): ${inv?.reason ?? "invalidado"}`);
+  }
   if (records.length === 0) {
     console.log(`${LOG_PREFIX} sem dados suficientes — nenhum evento round_diff_stats em data/run-log.jsonl ainda.`);
     return;
