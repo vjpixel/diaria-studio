@@ -160,6 +160,27 @@ describe("#10451 — achados do review da PR #10454", () => {
     assert.ok(!html.includes(INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE));
     assert.ok(html.includes(FACEBOOK_CTA_LINE.replace(/&/g, "&amp;")), "Facebook segue com o CTA");
     assert.equal(html.match(/Instagram \(override de teste\)/g)?.length, 2, "d1 e um");
+    assert.doesNotMatch(html, /LinkedIn · 📘 Facebook · 📷 Instagram/, "rótulo combinado perde o Instagram");
+    assert.doesNotMatch(html, /<div class="channel-label">📷 Instagram /, "bloco só-Instagram do um some");
+    assert.ok(html.includes(`<p>${TITLE}</p>`), "título segue no bloco LinkedIn/Facebook do um");
+  });
+
+  it("override: nota de negrito dos cards vem do 03-social.md, não da legenda de teste", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ig-override-bold-10451-"));
+    mkdirSync(join(dir, "_internal"));
+    writeFileSync(join(dir, "_internal", "instagram-test.json"), JSON.stringify({ caption: "Teste **ovr**." }));
+    const html = buildSocialHtml(parsePlatforms(MD), {}, "1", dir, undefined, TITLE);
+    assert.ok(html.includes("<strong>Peça o primeiro rascunho</strong>"), "negrito do ## um");
+    assert.ok(html.includes("<strong>destaque</strong>"), "negrito do ## d1");
+    assert.ok(!html.includes("<strong>ovr</strong>"), "negrito da legenda de teste não é dos cards");
+  });
+
+  it("override sem plano pronto (sem título): nenhum bloco de override no um", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ig-override-skip-10451-"));
+    mkdirSync(join(dir, "_internal"));
+    writeFileSync(join(dir, "_internal", "instagram-test.json"), JSON.stringify({ caption: "Legenda de teste." }));
+    const html = buildSocialHtml(parsePlatforms(MD), {}, "1", dir);
+    assert.equal(html.match(/Instagram \(override de teste\)/g)?.length, 1, "só d1");
   });
 
   it("# Facebook legado recebe o CTA, como em publish-facebook.ts", () => {

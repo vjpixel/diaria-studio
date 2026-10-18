@@ -421,6 +421,9 @@ export interface DestaqueGroup {
    * carrossel, nunca É IA?/post_pixel. */
   carouselImages?: { label: string; url: string }[];
   blocks: GroupedBlock[];
+  /** #10451: negrito dos cards fixado ANTES de o override de teste mexer nos
+   *  blocos — os cards leem o `03-social.md`, nunca a legenda de teste. */
+  cardBold?: string[];
 }
 
 /**
@@ -588,7 +591,7 @@ export function cardBoldSpans(group: DestaqueGroup): string[] {
  *  texto do post sai sem ele. Sem galeria (cards ainda não gerados), lista os
  *  trechos que vão em negrito nos cards. */
 function renderCardBoldNote(group: DestaqueGroup): string {
-  const spans = cardBoldSpans(group);
+  const spans = group.cardBold ?? cardBoldSpans(group);
   if (!spans.length) return "";
   if (group.carouselImages?.length) {
     return `<div class="card-bold-note">Negrito só nos cards acima — o texto do post sai sem negrito.</div>`;
@@ -834,18 +837,24 @@ ${(() => {
     // inclusive o `um` — sem CTA, engajamento nem título. Tira os acréscimos
     // do Instagram dos blocos e o bloco só-Instagram do `um` (que mostraria
     // título + texto que não vão ao ar).
+    // O rótulo dos blocos combinados também perde o Instagram ("LinkedIn ·
+    // Facebook"), e o negrito dos cards é fixado antes (`cardBold`).
     const igLabel = formatChannelLabels(["instagram"]);
+    const withoutIg = (label: string): string => label.split(" · ").filter((c) => c !== igLabel).join(" · ");
     for (const g of groups) {
       if (!/^d\d+$/.test(g.key) && g.key !== USE_MELHOR_POST_ID) continue;
+      g.cardBold = cardBoldSpans(g);
       g.blocks = g.blocks
         .filter((b) => b.channels !== igLabel)
         .map((b) => {
           const rest = b.publishAdditions?.filter((a) => a.channel !== igLabel);
-          return { ...b, publishAdditions: rest?.length ? rest : undefined };
+          return { ...b, channels: withoutIg(b.channels), publishAdditions: rest?.length ? rest : undefined };
         });
     }
     for (const g of groups) {
-      if (/^d\d+$/.test(g.key) || g.key === USE_MELHOR_POST_ID) {
+      // `um` só quando o 4º post sai no Instagram: sem título resolvido o plano
+      // não está pronto e o publish nem despacha o `um`.
+      if (/^d\d+$/.test(g.key) || (g.key === USE_MELHOR_POST_ID && useMelhorCaptionTitle)) {
         g.blocks.push({
           channels: "Instagram (override de teste)",
           post: { destaque: g.key, main: instagramOverrideCaption, hashtags: "" },
