@@ -79,7 +79,8 @@ import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
-import { listBroadcasts, getBroadcastStats } from "./lib/kit-client.ts";
+import { listBroadcasts, getBroadcastStats, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
@@ -153,15 +154,40 @@ async function measureBeehiivRecentDelivery(
   }
 }
 
-async function measureKitRecentDelivery(): Promise<RecentDeliveryMeasurement> {
+/**
+ * Pure (#10395): broadcast `completed` mais recente que NÃO é test-send. Sem o
+ * filtro, um `--send-test` (1 destinatário, `[teste]` no assunto) disparado
+ * depois da edição virava "a entrega recente" do Kit e o guard media 1.
+ */
+export function pickLatestRealKitBroadcast<
+  B extends Pick<KitBroadcastSummary, "id" | "subject" | "published_at" | "created_at">,
+>(broadcasts: readonly B[]): B | null {
+  const real = broadcasts.filter((b) => !isKitTestBroadcast(b));
+  if (real.length === 0) return null;
+  return real.reduce((best, b) =>
+    Date.parse(b.published_at ?? b.created_at) > Date.parse(best.published_at ?? best.created_at) ? b : best,
+  );
+}
+
+/** Fronteira de I/O de `measureKitRecentDelivery` — injetável nos testes (#10395). */
+export interface KitRecentDeliveryDeps {
+  listBroadcasts: typeof listBroadcasts;
+  getBroadcastStats: (id: number) => Promise<{ recipients: number }>;
+}
+
+export async function measureKitRecentDelivery(
+  deps: KitRecentDeliveryDeps = { listBroadcasts, getBroadcastStats },
+): Promise<RecentDeliveryMeasurement> {
+  const { listBroadcasts, getBroadcastStats } = deps;
   try {
     const { broadcasts } = await listBroadcasts({ status: "completed", perPage: 50 });
     if (broadcasts.length === 0) {
       return { platform: "kit", measured: false, reason: "nenhum broadcast completed encontrado" };
     }
-    const latest = broadcasts.reduce((best, b) =>
-      Date.parse(b.published_at ?? b.created_at) > Date.parse(best.published_at ?? best.created_at) ? b : best,
-    );
+    const latest = pickLatestRealKitBroadcast(broadcasts);
+    if (!latest) {
+      return { platform: "kit", measured: false, reason: "só broadcasts de teste entre os completed recentes" };
+    }
     const stats = await getBroadcastStats(latest.id);
     return { platform: "kit", measured: true, recipients: stats.recipients };
   } catch (e) {

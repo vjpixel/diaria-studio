@@ -24,6 +24,7 @@
  */
 
 import type { EditionOrigin } from "./edition-cache-reader.ts";
+import { isKitTestBroadcast } from "./kit-test-broadcast.ts";
 
 /**
  * Campos que a RESOLUÇÃO por data precisa — deliberadamente sem `stats`.
@@ -46,6 +47,12 @@ export interface ClickWindowPostBase {
    * desempate por origem vira no-op — ver `matchPostsToWindow`.
    */
   origin?: EditionOrigin;
+  /**
+   * #10395: no cache unificado, o `title` de um post Kit é o `subject` do
+   * broadcast (`normalizeKitBroadcast`) — lido só pra excluir test-send pelo
+   * prefixo `[teste]` (`isKitTestBroadcast`), em ADIÇÃO ao piso de entregas.
+   */
+  title?: string | null;
   /**
    * `unknown` DE PROPÓSITO. Este módulo lê exatamente dois bits de `stats`
    * (`email` presente? `email.recipients` numérico?), e o shape completo
@@ -149,6 +156,11 @@ export const MIN_REAL_DELIVERY_RECIPIENTS = 10;
  *   caminho Beehiiv-only (manifest de enriquecimento via MCP) inteiro.
  */
 function isRealDelivery(post: ClickWindowPostBase): boolean {
+  // #10395: test-send do Kit com `[teste]` no assunto fica de fora mesmo
+  // antes de a Kit agregar `recipients` — o piso abaixo continua valendo
+  // pro resto (este sinal soma, não substitui). Só origem Kit: o prefixo é
+  // do `--send-test` do Kit; Beehiiv usa `[TEST]` e nunca entra no cache.
+  if (post.origin === "kit" && isKitTestBroadcast({ title: post.title })) return false;
   const { present, recipients } = emailStatsOf(post);
   if (recipients === undefined) return post.origin !== "kit" || present;
   return recipients >= MIN_REAL_DELIVERY_RECIPIENTS;
