@@ -240,7 +240,7 @@ describe("#8574 — CLI google-ads-set-conversion-primary (dry-run)", () => {
           "false",
           "--customer-id",
           "2369219639",
-          "--send",
+          "--send", "--issue", "8574", "--motivo", "motivo de teste",
           "--edicoes-path",
           edicoesPath,
         ],
@@ -302,7 +302,7 @@ describe("#8574 — CLI google-ads-set-conversion-primary (dry-run)", () => {
 
     const code = await withEnv(AUTH_ENV, () =>
       setPrimaryMain(
-        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--edicoes-path", edicoesPath],
+        ["--conversion-action-id", "7758161410", "--target", "false", "--customer-id", "2369219639", "--send", "--issue", "8574", "--motivo", "motivo de teste", "--edicoes-path", edicoesPath],
         fetchMock as unknown as typeof fetch,
       ),
     );
