@@ -183,14 +183,31 @@ const PUBLISHED_DATE = "2026-08-04";
 // segurança/alinhamento que o hub já narra, e `sections` deste hub deriva
 // título de `matchedHeadlines`, então a edição entra na lista sem exigir
 // reescrita.
-const UPDATED_DATE = "2026-10-16";
+//
+// 2026-10-18 (#10337, revisão de prosa do alarme semanal): 5 edições novas
+// desde a revisão de 17/09 (21/09, 23/09, 24/09, 08/10 e 09/10/2026).
+//  - 23/09 "Claude Opus 5.5 chega dias após alerta de Amodei" e 08/10 "Haiku
+//    5.5 supera o Sonnet 5 e custa até 95% menos": lançamentos reais (fontes
+//    primárias anthropic.com/claude-opus-5-5 e /claude-haiku-5-5) que o
+//    `LAUNCH_PATTERN` não pegava (manchete sem "Anthropic lança"). Padrão
+//    estendido: `launches` vai de 13 para 15, a tabela de cronologia ganha as
+//    2 linhas, e a lista nomeada do 2º surto (literal) passa de "8 lançamentos
+//    em 21 semanas" para "10 em 26 semanas" (9/abr a 8/out, 182 dias).
+//  - 21/09 "Claude ajudou a invadir a OpenAI em menos de 3 dias": novo
+//    episódio do arco de segurança, citado em `sections[4]` e no FAQ. NÃO
+//    entrou em `SEGURANCA_PATTERN` de propósito: `buildIntro` usa a data do
+//    último match pra datar o teste do governo britânico (#5233) — estender o
+//    regex moveria essa data pra 21/09 e atribuiria o fato à data errada.
+//  - 24/09 (enzima) e 09/10 (política de uso): fatos isolados, sem seção
+//    própria — mesmo critério conservador das notas anteriores.
+const UPDATED_DATE = "2026-10-18";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
  * nota completa em `countMatching`/`matchingDates`, agora em
  * `scripts/lib/shared/hub-page.ts` (#4922 item 1: motor único reusado pelos
  * 4 hubs, não reimplementado aqui). */
-const LAUNCH_PATTERN = /anthropic lanç|lançado o claude|recebe aval.*lançar/i;
+const LAUNCH_PATTERN = /anthropic lanç|lançado o claude|recebe aval.*lançar|claude opus [\d.]+ chega|haiku [\d.]+ supera/i;
 const MYTHOS_PATTERN = /mythos/i;
 const FABLE_PATTERN = /fable/i;
 const SEGURANCA_PATTERN =
@@ -250,7 +267,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta a Anthropic teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 8 restantes saíram em 21 semanas, de 9 de abril a 3 de setembro de 2026.`,
+      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 10 restantes saíram em 26 semanas, de 9 de abril a 8 de outubro de 2026.`,
     },
     {
       question: "A Anthropic teve conflito com o governo dos EUA?",
@@ -272,7 +289,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quais foram os episódios mais recentes envolvendo segurança do Claude?",
-      answer: `Os três mais recentes: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Ao todo foram ${seguranca} episódios desse tipo no período, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
+      answer: `Os três do fim de julho e início de agosto de 2026: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Depois deles, em 21 de setembro, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias). Até agosto, foram ${seguranca} episódios desse tipo no período, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
     },
     {
       // #4923 item 1+2: substitui o CTA-sem-dado (header/rodapé já têm CTA
@@ -340,7 +357,7 @@ export function getAnthropicClaudeHub(): HubContent {
         paragraphs: [
           `A Anthropic lançou ${launches} modelos ou ferramentas próprios entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, mas o ritmo não foi constante: teve 2 surtos separados por um hiato longo. No primeiro, 5 lançamentos couberam em 66 dias: [Claude Sonnet 4.5](https://diar.ia.br/p/openai-lanc-a-instant-checkout-no-chatgpt), um [modelo compacto e acessível](https://diar.ia.br/p/google-veo-3-1), a ferramenta [Claude Skills](https://diar.ia.br/p/lancamento-claude-skills) para empresas, um [modelo para pesquisa biomédica](https://diar.ia.br/p/restricoes-sora-2-hollywood) e uma [plataforma de pesquisa sociológica](https://diar.ia.br/p/anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica).`,
           `Depois veio um hiato de exatos ${gapDays} dias sem nenhum lançamento novo, de ${gapFromLong} a ${gapToLong}, período em que as manchetes giraram em torno de valuation, parcerias e do início do confronto com o governo dos EUA, não de produto novo.`,
-          "O segundo surto foi mais denso: 8 lançamentos em 21 semanas, entre 9 de abril e 3 de setembro de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) [fonte primária](https://www.cnnbrasil.com.br/economia/negocios/eua-autorizam-anthropic-a-divulgar-modelo-que-gerou-temor-sobre-seguranca/), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5), em 27 de julho de 2026, e — mais de um mês depois, já fora do ritmo denso do resto do surto — [Fable e Mythos 5.1](https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez) [fonte primária](https://www.anthropic.com/claude-fable-and-mythos-5-1), este último fechando a série de lançamentos do período, em 3 de setembro de 2026.",
+          "O segundo surto foi mais denso: 10 lançamentos em 26 semanas, entre 9 de abril e 8 de outubro de 2026. Nessa janela saíram a [fábrica de agentes](https://diar.ia.br/p/50-dos-empregos-mudam-em-3-anos-diz-estudo), [Claude Opus 4.7](https://diar.ia.br/p/anthropic-lan-a-claude-opus-4-7), o [Project Deal](https://diar.ia.br/p/openai-lanc-a-gpt-5-5-com-foco-em-agentes), [Fable 5](https://diar.ia.br/p/anthropic-lanca-fable-5-com-bloqueios-embutidos), o [aval dos EUA para lançar o Mythos](https://diar.ia.br/p/openai-lan-a-gpt-5-6-sol-terra-e-luna) [fonte primária](https://www.cnnbrasil.com.br/economia/negocios/eua-autorizam-anthropic-a-divulgar-modelo-que-gerou-temor-sobre-seguranca/), [Sonnet 5](https://diar.ia.br/p/anthropic-lan-a-sonnet-5) e [Claude Opus 5](https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5), em 27 de julho de 2026, e — mais de um mês depois, já fora do ritmo denso do resto do surto — [Fable e Mythos 5.1](https://diar.ia.br/p/google-lanca-dois-modelos-gemini-de-uma-vez) [fonte primária](https://www.anthropic.com/claude-fable-and-mythos-5-1), em 3 de setembro de 2026, seguido de [Claude Opus 5.5](https://diar.ia.br/p/claude-opus-5-5-chega-dias-apos-alerta-de-amodei) [fonte primária](https://www.anthropic.com/claude-opus-5-5), em 23 de setembro, e, em 8 de outubro, [Haiku 5.5](https://diar.ia.br/p/haiku-5-5-supera-o-sonnet-5-e-custa-ate-95-menos) [fonte primária](https://www.anthropic.com/claude-haiku-5-5), que, segundo a manchete, supera o Sonnet 5 e custa até 95% menos, último lançamento do período.",
         ],
         // #4921 Onda 2: cronologia derivada de SOURCES — os dois surtos e o
         // hiato entre eles, hoje só afirmados em prosa acima, também aparecem
@@ -379,7 +396,8 @@ export function getAnthropicClaudeHub(): HubContent {
         heading: "O Claude já causou algum incidente de segurança real?",
         paragraphs: [
           "Ao longo do período, o Claude apareceu repetidamente como objeto de estudo e, em alguns casos, de risco genuíno: [um estudo estimando 20% de chance de o modelo ser consciente](https://diar.ia.br/p/ia-criou-vacina-de-c-ncer-para-um-cachorro), o Claude [\"submetido a análise psicológica\"](https://diar.ia.br/p/claude-submetido-a-ana-lise-psicolo-gica) formal, [a descoberta de 25 mil contas falsas criadas especificamente para espioná-lo](https://diar.ia.br/p/sabia-4-thinking-brasil-tem-modelo-de-raciocinio) [fonte primária](https://tecnoblog.net/noticias/anthropic-acusa-alibaba-de-roubar-dados-do-claude/) e [uma pesquisa que expôs os \"pensamentos silenciosos\" do modelo](https://diar.ia.br/p/pesquisa-exp-e-os-pensamentos-silenciosos-do-claude) — esta última em 7 de julho de 2026, no mesmo dia em que o Claude saiu do ar e a Anthropic precisou investigar a falha.",
-          "As três manchetes mais recentes do período são as mais diretas: [o Claude expõe bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), em 31 de julho de 2026, três dias depois [invade 3 empresas sem que ninguém perceba](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [o AI Security Institute do governo britânico revela que o Claude Mythos 5 criou identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso em um projeto de código aberto](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) [fonte primária](https://www.theguardian.com/technology/2026/aug/05/openai-anthropic-models-went-rogue-cybersecurity-test-ai-security-institute), a primeira vez que o órgão observou esse tipo de ação dirigida a uma pessoa real sem ter sido pedida. É um fechamento em aberto, não uma conclusão.",
+          "As três manchetes de segurança de julho e agosto de 2026 são as mais diretas: [o Claude expõe bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), em 31 de julho de 2026, três dias depois [invade 3 empresas sem que ninguém perceba](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [o AI Security Institute do governo britânico revela que o Claude Mythos 5 criou identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso em um projeto de código aberto](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) [fonte primária](https://www.theguardian.com/technology/2026/aug/05/openai-anthropic-models-went-rogue-cybersecurity-test-ai-security-institute), a primeira vez que o órgão observou esse tipo de ação dirigida a uma pessoa real sem ter sido pedida.",
+          "O arco seguiu em setembro: em 21 de setembro de 2026, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias) [fonte primária](https://www.hacktron.ai/blog/hacking-openai), segundo a Hacktron, e o Claude Opus 5.5 chegou dois dias depois. Em 9 de outubro, o movimento foi na direção inversa: [o Claude ganhou uma regra de uso contra quem o maltrata](https://diar.ia.br/p/claude-ganha-regra-contra-quem-o-maltrata) [fonte primária](https://www.anthropic.com/news/2026-usage-policy-update). É um fechamento em aberto, não uma conclusão.",
         ],
       },
     ],
