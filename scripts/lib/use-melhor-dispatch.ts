@@ -295,6 +295,31 @@ export function applyUseMelhorUtmToText(text: string): string {
 }
 
 /**
+ * Pure (#10458): acrescenta `tag` ao `utm_content` de todo link do PROJETO no
+ * texto, COMPONDO com um valor já presente (`usemelhor` + `page-memelab` →
+ * `usemelhor_page-memelab`) em vez de sobrescrever. Idempotente: valor que já
+ * contém a tag fica como está. Mesmos hosts/pontuação de
+ * `applyUseMelhorUtmToText`.
+ */
+export function composeUtmContentOnProjectLinks(text: string, tag: string): string {
+  return text.replace(URL_IN_TEXT_RE, (raw) => {
+    const trail = raw.match(TRAILING_PUNCT_RE)?.[0] ?? "";
+    const core = trail ? raw.slice(0, -trail.length) : raw;
+    let u: URL;
+    try {
+      u = new URL(core);
+    } catch {
+      return raw;
+    }
+    if (!PROJECT_HOST_RE.test(u.hostname)) return raw;
+    const current = u.searchParams.get("utm_content");
+    if (current && current.split("_").includes(tag)) return raw;
+    u.searchParams.set("utm_content", current ? `${current}_${tag}` : tag);
+    return u.toString() + trail;
+  });
+}
+
+/**
  * Pure (#9866): transformação final do texto do 4º post em TODO canal — linha
  * `{quebra}` (quebra visual dentro do card, `use-melhor-card-break.ts`) vira
  * linha em branco real, depois `applyUseMelhorUtmToText`. Ponto único: um

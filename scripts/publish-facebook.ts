@@ -23,6 +23,12 @@
  * cada post fora-do-horário deleta + republica. Posts já no horário certo são
  * pulados (idempotente).
  *
+ * #10458: publica em TODA página habilitada de
+ * `publishing.social.facebook.pages` (helper `scripts/lib/facebook-pages.ts`),
+ * mesmo texto e mesmo horário. Idempotência por (página, destaque) — entrada
+ * sem `page` é a `diaria`. Falha isolada: página habilitada sem credencial
+ * vira warning no resumo e as outras seguem; desabilitada é pulada sem ruído.
+ *
  * Output: appends em {edition-dir}/06-social-published.json
  */
 
@@ -35,6 +41,13 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import {
+  DEFAULT_FACEBOOK_PAGE_SLUG,
+  applyFacebookPageUtm,
+  loadResolvedFacebookPages,
+  resolvePostPage,
+  type ResolvedFacebookPage,
+} from "./lib/facebook-pages.ts"; // #10458 — publicar em mais de uma página
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
@@ -505,14 +518,87 @@ export async function publishFacebookCarouselByUrl(
   return data as { id: string; post_id?: string };
 }
 
+/** #10458: rótulo de log — a página default mantém o formato de sempre (`facebook/d1`). */
+export function facebookLogLabel(slug: string, destaque: string): string {
+  return slug === DEFAULT_FACEBOOK_PAGE_SLUG ? `facebook/${destaque}` : `facebook[${slug}]/${destaque}`;
+}
+
+/**
+ * Pure (#10458): entrada já draft/scheduled DESTA página pra este destaque —
+ * a chave de idempotência é (platform, page, destaque). Entrada sem `page` é
+ * da `diaria` (edições pré-#10458).
+ */
+export function findExistingFacebookPost(
+  posts: PostEntry[],
+  pageSlug: string,
+  destaque: string,
+): PostEntry | undefined {
+  return posts.find(
+    (p) =>
+      p.platform === "facebook" &&
+      p.destaque === destaque &&
+      resolvePostPage(p) === pageSlug &&
+      (p.status === "draft" || p.status === "scheduled"),
+  );
+}
+
+export interface FacebookPagePlan {
+  /** Habilitadas com credencial completa — recebem o dispatch. */
+  publishable: ResolvedFacebookPage[];
+  /** Habilitadas SEM credencial — warning no resumo, nunca derrubam as outras. */
+  missingCredentials: ResolvedFacebookPage[];
+  /** Desabilitadas no config — puladas sem ruído. */
+  disabled: string[];
+}
+
+/** Pure (#10458): separa as páginas por destino. */
+export function planFacebookPages(pages: ResolvedFacebookPage[]): FacebookPagePlan {
+  const enabled = pages.filter((p) => p.enabled);
+  return {
+    publishable: enabled.filter((p) => p.missing.length === 0),
+    missingCredentials: enabled.filter((p) => p.missing.length > 0),
+    disabled: pages.filter((p) => !p.enabled).map((p) => p.slug),
+  };
+}
+
+export interface FacebookPageSummary {
+  slug: string;
+  status: "dispatched" | "missing_credentials" | "disabled";
+  /** Env vars ausentes (só `missing_credentials`) — nomes, nunca valores. */
+  missing?: string[];
+  scheduled?: number;
+  draft?: number;
+  failed?: number;
+}
+
+/**
+ * Pure (#10458): resumo por página pro JSON final (o Stage 5 lê daqui o
+ * warning de página habilitada sem credencial, sem precisar parsear stderr).
+ */
+export function pageSummary(plan: FacebookPagePlan, results: PostEntry[]): FacebookPageSummary[] {
+  const count = (slug: string, status: string) =>
+    results.filter((r) => resolvePostPage(r) === slug && r.status === status).length;
+  return [
+    ...plan.publishable.map((p) => ({
+      slug: p.slug,
+      status: "dispatched" as const,
+      scheduled: count(p.slug, "scheduled"),
+      draft: count(p.slug, "draft"),
+      failed: count(p.slug, "failed"),
+    })),
+    ...plan.missingCredentials.map((p) => ({ slug: p.slug, status: "missing_credentials" as const, missing: p.missing })),
+    ...plan.disabled.map((slug) => ({ slug, status: "disabled" as const })),
+  ];
+}
+
 async function rescheduleFacebookPosts(opts: {
   editionDir: string;
   publishedPath: string;
   socialMd: string;
   editionDate: string;
   config: any;
-  pageId: string;
-  pageToken: string;
+  /** #10458 — página cujos posts são re-alinhados (credencial + slug + UTM). */
+  page: ResolvedFacebookPage;
   apiVersion: string;
   dayOffsetOverride?: number;
   /** #1056 — when true, tag entries com is_test:true */
@@ -524,12 +610,15 @@ async function rescheduleFacebookPosts(opts: {
   now?: number;
 }): Promise<{ rescheduled: number; skipped: number; failed: number; posts: PostEntry[] }> {
   const published = loadPublished(opts.publishedPath);
+  const slug = opts.page.slug;
+  // #10458: só os posts DESTA página (sem `page` = diaria) — o token de uma
+  // página não deleta post da outra.
   const fbPosts = published.posts.filter(
-    (p) => p.platform === "facebook" && p.status === "scheduled",
+    (p) => p.platform === "facebook" && p.status === "scheduled" && resolvePostPage(p) === slug,
   );
 
   if (fbPosts.length === 0) {
-    console.error("Nenhum post Facebook agendado em 06-social-published.json. Nada pra reagendar.");
+    console.error(`Nenhum post Facebook (página ${slug}) agendado em 06-social-published.json. Nada pra reagendar.`);
     return { rescheduled: 0, skipped: 0, failed: 0, posts: [] };
   }
 
@@ -547,7 +636,7 @@ async function rescheduleFacebookPosts(opts: {
     // foto local do destaque e não conhece o carrossel/UTM do "um". Mantém o
     // agendamento original; pra mudar, apagar e re-rodar o dispatch normal.
     if (d === "um") {
-      console.log("SKIP facebook/um (reschedule): 4º post não é re-alinhado por --reschedule (#9568) — agendamento original mantido.");
+      console.log(`SKIP ${facebookLogLabel(slug, "um")} (reschedule): 4º post não é re-alinhado por --reschedule (#9568) — agendamento original mantido.`);
       skipped++;
       results.push(existing);
       continue;
@@ -592,7 +681,7 @@ async function rescheduleFacebookPosts(opts: {
     // (a) + (b) são cobertas por needsReschedule depois desta checagem.
     if (isValidShiftedSchedule(expectedAt, existing.scheduled_at, nowMs, FB_MIN_FUTURE_MS)) {
       console.log(
-        `SKIP facebook/${d} — canônico (${expectedAt}) está no passado mas stored (${existing.scheduled_at}) ` +
+        `SKIP ${facebookLogLabel(slug, d)} — canônico (${expectedAt}) está no passado mas stored (${existing.scheduled_at}) ` +
         `é futuro válido — agendado corretamente via shift inicial (#2591)`,
       );
       skipped += 1;
@@ -601,7 +690,7 @@ async function rescheduleFacebookPosts(opts: {
     }
 
     if (!needsReschedule(existing.scheduled_at, expectedAt)) {
-      console.log(`SKIP facebook/${d} — já no horário (${existing.scheduled_at})`);
+      console.log(`SKIP ${facebookLogLabel(slug, d)} — já no horário (${existing.scheduled_at})`);
       skipped += 1;
       results.push(existing);
       continue;
@@ -612,7 +701,7 @@ async function rescheduleFacebookPosts(opts: {
       validateScheduledTime(scheduleAt);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`SKIP facebook/${d}: scheduled_time_invalid: ${msg}`);
+      console.error(`SKIP ${facebookLogLabel(slug, d)}: scheduled_time_invalid: ${msg}`);
       failed += 1;
       results.push({ ...existing, reason: `scheduled_time_invalid: ${msg}` });
       continue;
@@ -621,9 +710,9 @@ async function rescheduleFacebookPosts(opts: {
     // Re-extract caption + image (in case 03-social.md or images changed since first publish)
     let caption: string;
     try {
-      caption = extractPostText(opts.socialMd, "facebook", d);
+      caption = applyFacebookPageUtm(extractPostText(opts.socialMd, "facebook", d), opts.page); // #10458
     } catch (e: any) {
-      console.error(`ERROR re-extracting text for facebook/${d}: ${e.message}`);
+      console.error(`ERROR re-extracting text for ${facebookLogLabel(slug, d)}: ${e.message}`);
       failed += 1;
       results.push({ ...existing, status: "failed", reason: e.message });
       continue;
@@ -646,13 +735,13 @@ async function rescheduleFacebookPosts(opts: {
     // create a duplicate). If re-publish fails after DELETE, log and mark
     // failed — better to know the post is gone than have stale data.
     try {
-      console.log(`DELETING facebook/${d} (was ${existing.scheduled_at}, target ${scheduleAt})...`);
+      console.log(`DELETING ${facebookLogLabel(slug, d)} (was ${existing.scheduled_at}, target ${scheduleAt})...`);
       if (!existing.fb_post_id) {
         throw new Error(`fb_post_id ausente — não dá pra deletar`);
       }
-      await deleteFacebookPost(opts.pageToken, opts.apiVersion, existing.fb_post_id as string);
+      await deleteFacebookPost(opts.page.token, opts.apiVersion, existing.fb_post_id as string);
     } catch (e: any) {
-      console.error(`Failed to delete facebook/${d}: ${e.message}`);
+      console.error(`Failed to delete ${facebookLogLabel(slug, d)}: ${e.message}`);
       failed += 1;
       results.push({ ...existing, reason: `delete_failed: ${e.message}` });
       continue;
@@ -660,19 +749,20 @@ async function rescheduleFacebookPosts(opts: {
 
     // Re-publish at new time (using scheduleAt which has past-slot shift applied)
     try {
-      console.log(`Re-publishing facebook/${d} at ${scheduleAt}...`);
+      console.log(`Re-publishing ${facebookLogLabel(slug, d)} at ${scheduleAt}...`);
       const result = await publishPhoto(
-        opts.pageId,
-        opts.pageToken,
+        opts.page.pageId,
+        opts.page.token,
         opts.apiVersion,
         imagePath,
         caption,
         scheduleAt,
       );
       const postId = result.post_id || result.id;
-      const postUrl = `https://www.facebook.com/${opts.pageId}/posts/${postId}`;
+      const postUrl = `https://www.facebook.com/${opts.page.pageId}/posts/${postId}`;
       const newEntry: PostEntry = {
         platform: "facebook",
+        page: slug, // #10458
         destaque: d,
         url: postUrl,
         status: "scheduled",
@@ -683,11 +773,12 @@ async function rescheduleFacebookPosts(opts: {
       appendSocialPosts(opts.publishedPath, [newEntry]);
       rescheduled += 1;
       results.push(newEntry);
-      console.log(`OK facebook/${d} — rescheduled to ${scheduleAt} — ${postUrl}`);
+      console.log(`OK ${facebookLogLabel(slug, d)} — rescheduled to ${scheduleAt} — ${postUrl}`);
     } catch (e: any) {
-      console.error(`Re-publish failed for facebook/${d}: ${e.message}`);
+      console.error(`Re-publish failed for ${facebookLogLabel(slug, d)}: ${e.message}`);
       const lostEntry: PostEntry = {
         platform: "facebook",
+        page: slug, // #10458
         destaque: d,
         url: null,
         status: "failed",
@@ -738,37 +829,41 @@ async function main(): Promise<number | void> {
     }
   }
 
-  // Load credentials — env vars com fallback para data/.fb-credentials.json (compat retroativa)
-  // Migração para .env: FACEBOOK_PAGE_ID, FACEBOOK_PAGE_ACCESS_TOKEN, FACEBOOK_API_VERSION
-  let fileCreds: { page_id?: string; page_access_token?: string; api_version?: string } = {};
-  try {
-    fileCreds = JSON.parse(readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"));
-  } catch {
-    // Arquivo não existe — OK se env vars estão setadas
-  }
-  const page_id = process.env.FACEBOOK_PAGE_ID || fileCreds.page_id || "";
-  const page_access_token = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || fileCreds.page_access_token || "";
-  const api_version = process.env.FACEBOOK_API_VERSION || fileCreds.api_version || "v25.0";
-  if (!page_id) {
-    console.error(
-      "ERRO: FACEBOOK_PAGE_ID não está setado.\n" +
-      "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
-      `Encontrar Page ID em ${DIARIA_FACEBOOK_PAGE_URL} → Sobre → ID da página.`
-    );
-    return 1;
-  }
-  if (!page_access_token) {
-    console.error(
-      "ERRO: FACEBOOK_PAGE_ACCESS_TOKEN não está setado.\n" +
-      "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
-      "Gerar em https://developers.facebook.com/tools/explorer\n" +
-      "(selecionar app + Page Diar.ia → Generate Page Access Token long-lived)."
-    );
-    return 1;
-  }
-
   // Load config
   const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+
+  // #10458: páginas do Facebook (lista em publishing.social.facebook.pages,
+  // helper único). Env vars com fallback data/.fb-credentials.json (legado,
+  // só pra página default). Config de páginas inválido lança (runCli → exit 1).
+  const { pages: allPages, apiVersion: api_version } = loadResolvedFacebookPages(ROOT, config);
+  const pagePlan = planFacebookPages(allPages);
+  for (const slug of pagePlan.disabled) {
+    // Desabilitada no config: sem warning (#10458) — só rastro informativo.
+    console.log(`INFO facebook[${slug}]: página desabilitada em platform.config.json — pulada.`);
+  }
+  for (const p of pagePlan.missingCredentials) {
+    console.error(
+      `⚠️  WARN facebook[${p.slug}]: página habilitada sem credencial (faltam: ${p.missing.join(", ")}). ` +
+        "Adicionar em .env — as outras páginas seguem normalmente (#10458).",
+    );
+  }
+  if (pagePlan.publishable.length === 0) {
+    const defaultMissing = pagePlan.missingCredentials.find((p) => p.slug === DEFAULT_FACEBOOK_PAGE_SLUG);
+    if (defaultMissing) {
+      console.error(
+        `ERRO: credencial da página ${DEFAULT_FACEBOOK_PAGE_SLUG} incompleta (faltam: ${defaultMissing.missing.join(", ")}).\n` +
+          "Adicionar em .env (preferido) ou em data/.fb-credentials.json (legacy).\n" +
+          `Page ID: ${DIARIA_FACEBOOK_PAGE_URL} → Sobre → ID da página. Token: https://developers.facebook.com/tools/explorer\n` +
+          "(selecionar app + Page Diar.ia → Generate Page Access Token long-lived).",
+      );
+    } else {
+      console.error(
+        "ERRO: nenhuma página do Facebook habilitada com credencial completa " +
+          "(publishing.social.facebook.pages em platform.config.json, #10458).",
+      );
+    }
+    return 1;
+  }
 
   // Load social content
   const socialMdPath = resolve(editionDir, "03-social.md");
@@ -799,29 +894,34 @@ async function main(): Promise<number | void> {
   }
   // Reschedule mode (#123): align existing scheduled posts to canonical time.
   if (doReschedule) {
-    const result = await rescheduleFacebookPosts({
-      editionDir,
-      publishedPath,
-      socialMd,
-      editionDate,
-      config,
-      pageId: page_id,
-      pageToken: page_access_token,
-      apiVersion: api_version,
-      dayOffsetOverride,
-      isTest,
-    });
+    // #10458: cada página re-alinha só os próprios posts, com o próprio token.
+    const totals = { rescheduled: 0, skipped: 0, failed: 0 };
+    const allPosts: PostEntry[] = [];
+    for (const page of pagePlan.publishable) {
+      const result = await rescheduleFacebookPosts({
+        editionDir,
+        publishedPath,
+        socialMd,
+        editionDate,
+        config,
+        page,
+        apiVersion: api_version,
+        dayOffsetOverride,
+        isTest,
+      });
+      totals.rescheduled += result.rescheduled;
+      totals.skipped += result.skipped;
+      totals.failed += result.failed;
+      allPosts.push(...result.posts);
+    }
     console.log(
       JSON.stringify(
         {
           mode: "reschedule",
           out_path: publishedPath,
-          summary: {
-            rescheduled: result.rescheduled,
-            skipped: result.skipped,
-            failed: result.failed,
-          },
-          posts: result.posts,
+          summary: totals,
+          posts: allPosts,
+          pages: pageSummary(pagePlan, allPosts),
         },
         null,
         2,
@@ -869,167 +969,179 @@ async function main(): Promise<number | void> {
   const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
 
-  for (const d of dispatchIds) {
-    // Re-read published state from disk on each iteration (#758): LinkedIn agent
-    // may be writing concurrently; always read the latest state under lock.
-    const published = loadPublished(publishedPath);
+  // #10458: mesma sequência de posts, uma vez por página publicável (mesmo
+  // texto + mesmo horário). Falha de uma página fica nas entradas dela.
+  for (const page of pagePlan.publishable) {
+    for (const d of dispatchIds) {
+      // Re-read published state from disk on each iteration (#758): LinkedIn agent
+      // may be writing concurrently; always read the latest state under lock.
+      const published = loadPublished(publishedPath);
 
-    // Check if already published (skip-existing: ignore failed entries, retry them)
-    if (skipExisting) {
-      const existing = published.posts.find(
-        (p) => p.platform === "facebook" && p.destaque === d && (p.status === "draft" || p.status === "scheduled")
-      );
-      if (existing) {
-        console.log(`SKIP facebook/${d} — already ${existing.status}`);
-        results.push(existing);
-        continue;
+      // Check if already published (skip-existing: ignore failed entries, retry them)
+      if (skipExisting) {
+        // #10458: chave (platform, page, destaque) — a 2ª página não cai no skip da 1ª.
+        const existing = findExistingFacebookPost(published.posts, page.slug, d);
+        if (existing) {
+          console.log(`SKIP ${facebookLogLabel(page.slug, d)} — already ${existing.status}`);
+          results.push(existing);
+          continue;
+        }
       }
-    }
 
-    // Extract post text
-    let caption: string;
-    try {
-      caption = d === "um" && umPost?.ok ? umPost.caption : extractPostText(socialMd, "facebook", d);
-    } catch (e: any) {
-      console.error(`ERROR extracting text for facebook/${d}: ${e.message}`);
-      const entry: PostEntry = {
-        platform: "facebook",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: e.message,
-      };
-      tagAndAppend(entry);
-      results.push(entry);
-      continue;
-    }
-
-    // #6095 self-review — resolver o carrossel ANTES de checar o arquivo
-    // local: a via carrossel usa URLs públicas de 06-public-images.json e
-    // não depende do arquivo local single-image, então checar o arquivo
-    // local primeiro podia falhar um destaque com carrossel completo por
-    // um arquivo que a via carrossel nem usa.
-    // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
-    // slides existem em 06-public-images.json; senão cai pro post de imagem
-    // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
-    // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
-    const isUm = d === "um" && !!umPost?.ok; // #9568
-    const carouselImageUrls =
-      isUm && umPost?.ok ? umPost.carouselUrls : resolveCarouselImageUrls(publicImages.images, d);
-
-    // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
-    // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
-    // #9568: 4º post usa a capa tipográfica local.
-    const imageFile = isUm && umPost?.ok ? umPost.imageFile : selectSocialCardImageFile(editionDir, d);
-    const imagePath = resolve(editionDir, imageFile);
-    if (!carouselImageUrls && !existsSync(imagePath)) {
-      console.error(`ERROR: Image ${imageFile} not found`);
-      const entry: PostEntry = {
-        platform: "facebook",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: `${imageFile} not found`,
-      };
-      tagAndAppend(entry);
-      results.push(entry);
-      continue;
-    }
-
-    // Determine scheduling
-    let scheduledAt: string | null = null;
-    if (doSchedule) {
-      // #78: pre-schedule validation — fail fast com erro claro em vez de
-      // silenciosamente publicar imediato (bug anterior).
-      // #9568: o cálculo entrou no try — erro de agendamento (ex.:
-      // use_melhor_time inválido pro "um") vira entry failed, não derruba o run.
+      // Extract post text
+      let caption: string;
       try {
-        scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
-        validateScheduledTime(scheduledAt);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error(`SKIP facebook/${d}: scheduled_time_invalid: ${msg}`);
+        // #10458: utm_content=page-{slug} nos links do projeto (compõe com usemelhor).
+        caption = applyFacebookPageUtm(
+          d === "um" && umPost?.ok ? umPost.caption : extractPostText(socialMd, "facebook", d),
+          page,
+        );
+      } catch (e: any) {
+        console.error(`ERROR extracting text for ${facebookLogLabel(page.slug, d)}: ${e.message}`);
         const entry: PostEntry = {
           platform: "facebook",
+          page: page.slug, // #10458
           destaque: d,
           url: null,
           status: "failed",
-          scheduled_at: scheduledAt,
-          reason: `scheduled_time_invalid: ${msg}`,
+          scheduled_at: null,
+          reason: e.message,
         };
         tagAndAppend(entry);
         results.push(entry);
         continue;
       }
-    }
 
-    // Publish with retry + exponential backoff (#725 bug #10)
-    // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
-    // entre tentativas (sem sleep após a última).
-    let lastError: string = "";
-    let success = false;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        console.log(
-          `Publishing facebook/${d} (attempt ${attempt}${carouselImageUrls ? `, carrossel ${carouselImageUrls.length} fotos` : ""})...`,
-        );
-        const result = carouselImageUrls
-          ? await publishFacebookCarouselByUrl(
-              page_id,
-              page_access_token,
-              api_version,
-              carouselImageUrls,
-              caption,
-              scheduledAt,
-            )
-          : await publishPhoto(
-              page_id,
-              page_access_token,
-              api_version,
-              imagePath,
-              caption,
-              scheduledAt
-            );
+      // #6095 self-review — resolver o carrossel ANTES de checar o arquivo
+      // local: a via carrossel usa URLs públicas de 06-public-images.json e
+      // não depende do arquivo local single-image, então checar o arquivo
+      // local primeiro podia falhar um destaque com carrossel completo por
+      // um arquivo que a via carrossel nem usa.
+      // #6095 — carrossel diário (capa + 3 parágrafos + CTA) quando os 5
+      // slides existem em 06-public-images.json; senão cai pro post de imagem
+      // única de sempre (publishPhoto + arquivo local). Tudo-ou-nada via
+      // resolveCarouselImageUrls (mesmo helper que o Instagram já usa).
+      const isUm = d === "um" && !!umPost?.ok; // #9568
+      const carouselImageUrls =
+        isUm && umPost?.ok ? umPost.carouselUrls : resolveCarouselImageUrls(publicImages.images, d);
 
-        const postId = result.post_id || result.id;
-        const postUrl = `https://www.facebook.com/${page_id}/posts/${postId}`;
+      // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
+      // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
+      // #9568: 4º post usa a capa tipográfica local.
+      const imageFile = isUm && umPost?.ok ? umPost.imageFile : selectSocialCardImageFile(editionDir, d);
+      const imagePath = resolve(editionDir, imageFile);
+      if (!carouselImageUrls && !existsSync(imagePath)) {
+        console.error(`ERROR: Image ${imageFile} not found`);
         const entry: PostEntry = {
           platform: "facebook",
+          page: page.slug, // #10458
           destaque: d,
-          url: postUrl,
-          status: scheduledAt ? "scheduled" : "draft",
-          scheduled_at: scheduledAt,
-          fb_post_id: postId,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: `${imageFile} not found`,
         };
-
         tagAndAppend(entry);
         results.push(entry);
-        console.log(`OK facebook/${d} — ${entry.status} — ${postUrl}`);
-        success = true;
-        break;
-      } catch (e: any) {
-        lastError = e.message;
-        console.error(`Attempt ${attempt}/3 failed for facebook/${d}: ${lastError}`);
-        if (attempt < 3) {
-          const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
-          await new Promise((r) => setTimeout(r, delaySec * 1000));
+        continue;
+      }
+
+      // Determine scheduling
+      let scheduledAt: string | null = null;
+      if (doSchedule) {
+        // #78: pre-schedule validation — fail fast com erro claro em vez de
+        // silenciosamente publicar imediato (bug anterior).
+        // #9568: o cálculo entrou no try — erro de agendamento (ex.:
+        // use_melhor_time inválido pro "um") vira entry failed, não derruba o run.
+        try {
+          scheduledAt = computeScheduledAt(config, d, editionDate, dayOffsetOverride);
+          validateScheduledTime(scheduledAt);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error(`SKIP ${facebookLogLabel(page.slug, d)}: scheduled_time_invalid: ${msg}`);
+          const entry: PostEntry = {
+            platform: "facebook",
+            page: page.slug, // #10458
+            destaque: d,
+            url: null,
+            status: "failed",
+            scheduled_at: scheduledAt,
+            reason: `scheduled_time_invalid: ${msg}`,
+          };
+          tagAndAppend(entry);
+          results.push(entry);
+          continue;
         }
       }
-    }
 
-    if (!success) {
-      const entry: PostEntry = {
-        platform: "facebook",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: lastError,
-      };
-      tagAndAppend(entry);
-      results.push(entry);
+      // Publish with retry + exponential backoff (#725 bug #10)
+      // Antes: 2 tentativas com 2s fixo. Agora: 3 tentativas com backoff 1s/2s
+      // entre tentativas (sem sleep após a última).
+      let lastError: string = "";
+      let success = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          console.log(
+            `Publishing ${facebookLogLabel(page.slug, d)} (attempt ${attempt}${carouselImageUrls ? `, carrossel ${carouselImageUrls.length} fotos` : ""})...`,
+          );
+          const result = carouselImageUrls
+            ? await publishFacebookCarouselByUrl(
+                page.pageId,
+                page.token,
+                api_version,
+                carouselImageUrls,
+                caption,
+                scheduledAt,
+              )
+            : await publishPhoto(
+                page.pageId,
+                page.token,
+                api_version,
+                imagePath,
+                caption,
+                scheduledAt
+              );
+
+          const postId = result.post_id || result.id;
+          const postUrl = `https://www.facebook.com/${page.pageId}/posts/${postId}`;
+          const entry: PostEntry = {
+            platform: "facebook",
+            page: page.slug, // #10458
+            destaque: d,
+            url: postUrl,
+            status: scheduledAt ? "scheduled" : "draft",
+            scheduled_at: scheduledAt,
+            fb_post_id: postId,
+          };
+
+          tagAndAppend(entry);
+          results.push(entry);
+          console.log(`OK ${facebookLogLabel(page.slug, d)} — ${entry.status} — ${postUrl}`);
+          success = true;
+          break;
+        } catch (e: any) {
+          lastError = e.message;
+          console.error(`Attempt ${attempt}/3 failed for ${facebookLogLabel(page.slug, d)}: ${lastError}`);
+          if (attempt < 3) {
+            const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
+            await new Promise((r) => setTimeout(r, delaySec * 1000));
+          }
+        }
+      }
+
+      if (!success) {
+        const entry: PostEntry = {
+          platform: "facebook",
+          page: page.slug, // #10458
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: lastError,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+      }
     }
   }
 
@@ -1045,7 +1157,13 @@ async function main(): Promise<number | void> {
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
   // #10427: `um` só entra no registro se este publicador o agendou.
   if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), dayOffsetOverride });
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
+  console.log(
+    JSON.stringify(
+      { out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary, pages: pageSummary(pagePlan, results) },
+      null,
+      2,
+    ),
+  );
 }
 
 if (isMainModule(import.meta.url)) {

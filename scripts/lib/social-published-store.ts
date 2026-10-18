@@ -33,6 +33,11 @@ export interface PostEntry {
   destaque: string;
   /** #595 — subtipo do entry; default "main" pra backward-compat. */
   subtype?: PostSubtype;
+  /**
+   * #10458 — página do Facebook (`slug` de `publishing.social.facebook.pages`).
+   * Ausente = `diaria` (`resolvePostPage`). Só o Facebook grava.
+   */
+  page?: string;
   url: string | null;
   // #8303 — "skipped": canal deliberadamente pulado ANTES de tentar publicar
   // (ex: LinkedIn sem credencial da API direta pro carrossel semanal —
@@ -57,6 +62,22 @@ export function resolveSubtype(p: Pick<PostEntry, "subtype">): PostSubtype {
   return p.subtype ?? "main";
 }
 
+/**
+ * #10458: página do Facebook default — a única que existia antes da lista de
+ * páginas (`scripts/lib/facebook-pages.ts`, que re-exporta isto). Mora aqui
+ * (e não lá) pra o store não puxar o grafo de imports do helper.
+ */
+export const DEFAULT_FACEBOOK_PAGE_SLUG = "diaria";
+
+/**
+ * #10458: página de uma entrada — sem `page` = `diaria`, então edições
+ * publicadas antes da lista de páginas seguem válidas. Pras outras
+ * plataformas o campo nunca é gravado e as duas pontas resolvem igual.
+ */
+export function resolvePostPage(entry: { page?: unknown }): string {
+  return typeof entry.page === "string" && entry.page ? entry.page : DEFAULT_FACEBOOK_PAGE_SLUG;
+}
+
 export interface SocialPublished {
   posts: PostEntry[];
 }
@@ -66,7 +87,7 @@ export interface SocialPublished {
  * Uses a .lock file to serialize concurrent writes from parallel publishers.
  *
  * @param publishedPath  Absolute path to 06-social-published.json
- * @param posts          Posts to append (platform+destaque uniqueness enforced)
+ * @param posts          Posts to append ((platform, destaque, subtype, page) uniqueness enforced — #10458)
  */
 export function appendSocialPosts(publishedPath: string, posts: PostEntry[]): void {
   if (posts.length === 0) return;
@@ -82,12 +103,17 @@ export function appendSocialPosts(publishedPath: string, posts: PostEntry[]): vo
       // Upsert: replace existing entry with same (platform, destaque, subtype),
       // or append. Subtype defaulta a "main" pra backward-compat com entries
       // antigas (pré-#595) que não tinham o field.
+      // #10458: `page` entra na chave (Facebook em mais de uma página) —
+      // entrada sem `page` é a página default (`diaria`), então upsert de uma
+      // entrada nova `page: "diaria"` substitui a antiga sem o campo.
       const postSubtype = resolveSubtype(post);
+      const postPage = resolvePostPage(post);
       const idx = current.posts.findIndex(
         (p) =>
           p.platform === post.platform &&
           p.destaque === post.destaque &&
-          resolveSubtype(p) === postSubtype,
+          resolveSubtype(p) === postSubtype &&
+          resolvePostPage(p) === postPage,
       );
       if (idx >= 0) {
         current.posts[idx] = post;
