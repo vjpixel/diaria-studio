@@ -35,7 +35,7 @@ import {
 import { computeScheduledAt } from "../scripts/compute-social-schedule.ts";
 import { resolveArtigoEspecialScheduledAts } from "../scripts/lib/artigo-especial-schedule.ts";
 import { DEFAULT_WEEKLY_TIME, resolveWeeklyTime } from "../scripts/publish-weekly-social.ts";
-import { newRowsToRecord, parseCliDate } from "../scripts/social-schedule-rotation.ts";
+import { newRowsToRecord, parseCliDate, resolveCliPlanDate } from "../scripts/social-schedule-rotation.ts";
 import {
   dailyRotationRowsForEdition,
   editionForPublishDate,
@@ -324,7 +324,37 @@ describe("finding 1 — superfícies de exibição mostram o horário da rotaç�
     const lines = describeUseMelhorPostStatus({
       config: st, state: null, reviewedMd: null, approved: null, hasSocialSection: true, hasCurtoSection: true, carouselSlots: null,
     }).lines;
-    assert.match(lines[0], new RegExp(`às ${expected} BRT \\(teste rotativo #10305; fixo 07:45\\)`));
+    assert.match(lines[0], new RegExp(`às ${expected} BRT \\(teste rotativo #10305; fixo 07:45;`));
+  });
+  it("#10443: --day-offset manual conhecido muda o dia e o horário exibidos (mesma conta do agendamento)", () => {
+    // Edição de terça 261020 publicada com --day-offset 1: o post sai na quarta.
+    const st = useMelhorPostConfigState(config(), "261020", 1);
+    const iso = computeScheduledAt({
+      config: config(), editionDate: "261020", destaque: "um", platform: "linkedin", dayOffsetOverride: 1, now: FAR_PAST_NOW,
+    });
+    assert.equal(st.time, iso.slice(11, 16));
+    assert.equal(st.publishDate, "2026-10-21");
+    assert.notEqual(
+      weekdayRotationSlot(rot, d("2026-10-20"), "um")!.time,
+      st.time,
+      "pré-condição: terça e quarta têm horários diferentes na rotação",
+    );
+  });
+  it("#10443: o aviso do gate diz de qual dia é o horário e que um --day-offset manual o muda", () => {
+    const st = useMelhorPostConfigState(config(), "261020");
+    assert.equal(st.publishDate, "2026-10-20");
+    const lines = describeUseMelhorPostStatus({
+      config: st, state: null, reviewedMd: null, approved: null, hasSocialSection: true, hasCurtoSection: true, carouselSlots: null,
+    }).lines;
+    assert.match(lines[0], /horário do dia 2026-10-20, um --day-offset manual no Stage 5 muda o horário\)/);
+  });
+  it("#10443: CLI --date + --day-offset mostra o plano do dia de publicação", () => {
+    assert.deepEqual(resolveCliPlanDate("261020"), d("2026-10-20"));
+    assert.deepEqual(resolveCliPlanDate("261020", "1"), d("2026-10-21"));
+    assert.deepEqual(resolveCliPlanDate("2026-10-31", "1"), d("2026-11-01"));
+    assert.deepEqual(resolveCliPlanDate("261020", "0"), d("2026-10-20"));
+    assert.throws(() => resolveCliPlanDate("261020", "1.5"), /--day-offset inválido/);
+    assert.throws(() => resolveCliPlanDate("261020", ""), /--day-offset inválido/);
   });
   it("sem edição (ou fora da janela) segue o fixo 07:45, sem baseTime — chamadores antigos inalterados", () => {
     assert.deepEqual(useMelhorPostConfigState(config()), { enabled: true, time: "07:45" });
