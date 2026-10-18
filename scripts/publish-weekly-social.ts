@@ -61,6 +61,17 @@
  *     [--no-skip-existing] [--force-incomplete-week]
  *     [--force-incomplete-click-data] [--manifest-only]
  *     [--force-urls url1,url2,...] [--force-font-size N]
+ *     [--show-ranking] [--check-slot]
+ *
+ * `--show-ranking` (#10388, só `clicked`): imprime o ranking elegível
+ * completo por taxa + os excluídos. Os grupos de empate (vencedor e quem
+ * perdeu cada vaga) saem SEMPRE no preview do `clicked`, sem flag.
+ *
+ * `--check-slot` (#10389): só calcula o horário de agendamento de cada modo
+ * (`--mode both` checa os 2) contra o relógio atual e imprime 1 JSON
+ * `{saturday, now, slots: [{mode, scheduledAt, status, minutesFromNow,
+ * advice}]}` — sem ler edição nem cache. Sai 0 com todos os slots `ok`, 2 com
+ * algum `expired`/`too-soon` (a skill roda isto antes do Passo 1).
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
@@ -160,9 +171,12 @@ import {
   detectPostCutoverBeehiivDates,
   detectDualOriginDates,
   KIT_SEND_CUTOVER_AAMMDD,
+  formatTieGroupsForPreview,
+  formatRankingForPreview,
   type BeehiivCachePost,
   type InstagramRankedCandidate,
 } from "./lib/weekly-instagram-select.ts";
+import { checkWeeklySlot, formatSlotAdvice } from "./lib/weekly-slot-check.ts";
 import {
   filterPublicEditionsWithWarning,
   loadBeehiivCache as loadUnifiedBeehiivCache,
@@ -563,6 +577,8 @@ export async function main(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    /** Relógio injetável (#10389) — checagem de slot vencido e `validateScheduledTime`. */
+    now?: Date;
   } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
@@ -589,6 +605,14 @@ export async function main(
   if (modeArg !== "clicked" && modeArg !== "highlights" && modeArg !== "both") {
     console.error(`ERRO: --mode inválido: '${modeArg}' (esperado 'clicked', 'highlights' ou 'both').`);
     process.exit(1);
+    return;
+  }
+
+  // #10389: --check-slot — só a checagem de horário, antes de qualquer
+  // leitura de edição/cache. Aceita --mode both (checa os 2 modos).
+  if (flags.has("check-slot")) {
+    const code = runCheckSlot(modeArg, saturday, values, opts.now ?? new Date());
+    if (code !== 0) process.exit(code);
     return;
   }
 
@@ -661,6 +685,60 @@ export async function main(
   }
 }
 
+/** `platform.config.json` — leitura apenas, nunca escrito por este script. */
+function readPlatformConfig(): any {
+  return JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+}
+
+/** Timezone do agendamento (`publishing.social.timezone`). */
+function socialTimezoneOf(platformConfig: any): string {
+  return platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
+}
+
+/** Valida `--day-offset` (inteiro) — `null` quando inválido (erro já impresso). */
+function parseDayOffsetArg(raw: string | undefined, fallback: number): number | null {
+  if (raw == null) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    console.error(`ERRO: --day-offset inválido: '${raw}' (esperado inteiro, ex: 0, 1, -1).`);
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * `--check-slot` (#10389): calcula o slot de cada modo pedido e classifica
+ * contra `now`. Retorna o exit code (0 = todos ok, 2 = algum vencido/perto
+ * demais, 1 = argumento inválido).
+ */
+function runCheckSlot(modeArg: string, saturday: string, values: Record<string, string>, now: Date): number {
+  const modes: WeeklyInstagramMode[] = modeArg === "both" ? ["highlights", "clicked"] : [modeArg as WeeklyInstagramMode];
+  if (modeArg === "both" && values["day-offset"] != null) {
+    console.error("ERRO: --day-offset não é compatível com --mode both (cada modo usa seu próprio offset padrão). Rode cada modo separadamente para sobrescrever.");
+    return 1;
+  }
+  const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
+  const timezone = socialTimezoneOf(readPlatformConfig());
+  const slots = [];
+  for (const mode of modes) {
+    const dayOffset = parseDayOffsetArg(values["day-offset"], DEFAULT_MODE_DAY_OFFSET[mode]);
+    if (dayOffset == null) return 1;
+    let scheduledAt: string;
+    try {
+      scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
+    } catch (e: any) {
+      console.error(`ERRO: ${e.message}`);
+      return 1;
+    }
+    const check = checkWeeklySlot(scheduledAt, now);
+    const advice = formatSlotAdvice({ mode, saturday, check, now, dayOffset });
+    for (const line of advice) console.error(line);
+    slots.push({ mode, ...check, advice });
+  }
+  console.log(JSON.stringify({ saturday, now: now.toISOString(), slots }, null, 2));
+  return slots.every((s) => s.status === "ok") ? 0 : 2;
+}
+
 /**
  * Corpo do processamento de UM modo (#5349) — extraído de `main()` pra
  * permitir `--mode both` rodar os 2 modos em sequência dentro do MESMO
@@ -683,6 +761,7 @@ async function runOneMode(
     sectionCardGenerator?: SectionCardGenerator;
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
+    now?: Date;
   },
 ): Promise<boolean> {
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
@@ -692,15 +771,9 @@ async function runOneMode(
   // `DEFAULT_KIT_BROADCASTS_DIR` quando `dataRoot` é o default).
   const kitBroadcastsDir = resolve(dataRoot, "kit-cache/broadcasts");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
-  let dayOffset = DEFAULT_MODE_DAY_OFFSET[mode];
-  if (values["day-offset"] != null) {
-    const parsed = Number(values["day-offset"]);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-      console.error(`ERRO: --day-offset inválido: '${values["day-offset"]}' (esperado inteiro, ex: 0, 1, -1).`);
-      return false;
-    }
-    dayOffset = parsed;
-  }
+  const now = opts.now ?? new Date();
+  const dayOffset = parseDayOffsetArg(values["day-offset"], DEFAULT_MODE_DAY_OFFSET[mode]);
+  if (dayOffset == null) return false;
   const doSchedule = flags.has("schedule");
   // #8385: resolve/gera as imagens do carrossel (mesma pipeline de
   // `--schedule`) e imprime as URLs em JSON — sem despachar pra nenhum
@@ -1007,10 +1080,25 @@ async function runOneMode(
     console.log("\nWarnings:");
     for (const w of warnings) console.log(`  - ${w}`);
   }
+  // #10388: grupo de cada empate (vencedor + quem perdeu a vaga) sempre no
+  // `clicked` algorítmico; ranking completo sob `--show-ranking`. Com
+  // `--force-urls` a seleção não vem do ranking, então nada disso se aplica.
+  if (mode === "clicked" && !manualOverride) {
+    const tieLines = formatTieGroupsForPreview(selection.ties);
+    if (tieLines.length > 0) console.log(`\n${tieLines.join("\n")}`);
+    if (flags.has("show-ranking")) console.log(`\n${formatRankingForPreview(selection).join("\n")}`);
+  } else if (flags.has("show-ranking")) {
+    console.log(
+      `\n[publish-weekly-social] --show-ranking ignorado no modo ${mode}${manualOverride ? " com --force-urls" : ""} (só vale na seleção por clique).`,
+    );
+  }
 
-  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-  const timezone = platformConfig?.publishing?.social?.timezone ?? "America/Sao_Paulo";
+  const platformConfig = readPlatformConfig();
+  const timezone = socialTimezoneOf(platformConfig);
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
+  // #10389: slot vencido/perto demais avisado JÁ no preview (Passo 2 da
+  // skill), com as opções — antes só aparecia como erro no --images-only.
+  const slotAdvice = formatSlotAdvice({ mode, saturday, check: checkWeeklySlot(scheduledAt, now), now, dayOffset });
   // #5905: seleção manual (--force-urls) torna a intro padrão de "clicked"
   // ("As notícias de IA mais lidas da semana", #7571) factualmente incorreta
   // — a ordem não vem mais do ranking. `introOverride` troca por uma frase
@@ -1035,6 +1123,7 @@ async function runOneMode(
   if (!doSchedule && !imagesOnly) {
     console.log(`\n[publish-weekly-social] PREVIEW (--schedule ausente — nenhuma chamada de rede feita).`);
     console.log(`Agendamento planejado: ${scheduledAt}\n`);
+    if (slotAdvice.length > 0) console.error(`${slotAdvice.join("\n")}\n`);
     console.log(`── instagram (${mode}) ──\n${caption}\n`);
     console.log(`── facebook (${mode}) ──\n${fbCaption}\n`);
     console.log(`── threads (${mode}) ──\n${threadsCaption}\n`);
@@ -1098,9 +1187,10 @@ async function runOneMode(
   // pros 2 canais, então 1 validação basta — mas cada canal grava sua
   // PRÓPRIA entry de falha (se não foi pulado por skip-existing).
   try {
-    validateScheduledTime(scheduledAt);
+    validateScheduledTime(scheduledAt, now);
   } catch (e: any) {
     console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
+    for (const line of slotAdvice) console.error(line);
     // #8385 fleet review P1: --images-only NUNCA toca em
     // 06-weekly-published.json (nem em sucesso, nem em falha) — só resolve
     // imagem, não despacha pra canal nenhum. Sem este guard, os 4

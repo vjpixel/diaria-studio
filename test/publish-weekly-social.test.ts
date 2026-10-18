@@ -699,6 +699,128 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
+  describe("#10389: --check-slot (slot vencido detectado antes da etapa de imagens)", () => {
+    function captureStd(): { out: string[]; err: string[]; restore: () => void } {
+      const out: string[] = [];
+      const err: string[] = [];
+      const ol = console.log;
+      const oe = console.error;
+      console.log = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+      console.error = (...a: unknown[]) => void err.push(a.map(String).join(" "));
+      return { out, err, restore: () => ((console.log = ol), (console.error = oe)) };
+    }
+
+    it("cenário da issue: --mode both no sábado 12:01 BRT — highlights vencido (exit 2), clicked de domingo ok, sem ler edição", async () => {
+      const cap = captureStd();
+      try {
+        await expectMockedExit(
+          () =>
+            main(["--saturday", "261017", "--mode", "both", "--editions-root", editionsRoot, "--check-slot"], {
+              dataRoot,
+              now: new Date("2026-10-17T12:01:00-03:00"),
+            }),
+          2,
+        );
+      } finally {
+        cap.restore();
+      }
+      const parsed = JSON.parse(cap.out[cap.out.length - 1]);
+      const byMode = Object.fromEntries(parsed.slots.map((s: any) => [s.mode, s]));
+      assert.equal(byMode.highlights.status, "expired");
+      assert.equal(byMode.highlights.minutesFromNow, -61);
+      assert.equal(byMode.clicked.status, "ok");
+      assert.match(cap.err.join("\n"), /--mode highlights --time 12:45/);
+      assert.equal(existsSync(resolve(dataRoot, "weekly")), false);
+    });
+
+    it("slots com folga → sai sem exit (código 0) e sem aviso", async () => {
+      const cap = captureStd();
+      try {
+        await main(["--saturday", "261017", "--mode", "highlights", "--check-slot"], {
+          dataRoot,
+          now: new Date("2026-10-17T08:00:00-03:00"),
+        });
+      } finally {
+        cap.restore();
+      }
+      assert.equal(JSON.parse(cap.out[cap.out.length - 1]).slots[0].status, "ok");
+      assert.deepEqual(cap.err, []);
+    });
+
+    it("--time desloca o slot checado (workaround da rodada 261017: --time 13:00)", async () => {
+      const cap = captureStd();
+      try {
+        await main(["--saturday", "261017", "--mode", "highlights", "--time", "13:00", "--check-slot"], {
+          dataRoot,
+          now: new Date("2026-10-17T12:01:00-03:00"),
+        });
+      } finally {
+        cap.restore();
+      }
+      assert.equal(JSON.parse(cap.out[cap.out.length - 1]).slots[0].status, "ok");
+    });
+
+    it("preview (Passo 2) também avisa o slot vencido com as opções, sem abortar", async () => {
+      setupEdition(editionsRoot, "261012", [{ n: 1, title: "D1 da segunda", url: "https://exemplo.com/d1-seg" }]);
+      const cap = captureStd();
+      try {
+        await main(
+          ["--saturday", "261017", "--mode", "highlights", "--editions-root", editionsRoot, "--force-incomplete-week"],
+          { dataRoot, now: new Date("2026-10-17T12:01:00-03:00") },
+        );
+      } finally {
+        cap.restore();
+      }
+      assert.ok(cap.out.some((l) => /PREVIEW/.test(l)));
+      assert.match(cap.err.join("\n"), /AVISO: o slot do modo highlights .* já passou \(61min atrás\)/);
+      assert.match(cap.err.join("\n"), /--day-offset 1/);
+    });
+  });
+
+  describe("#10388: preview do clicked mostra quem perdeu cada empate", () => {
+    it("imprime o grupo empatado (vencedor + perdedor com taxa e edição); --show-ranking imprime o ranking completo", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      setupEdition(editionsRoot, "271220", [
+        { n: 2, title: "Guardian cobre IA no mundo", url: "https://exemplo.com/guardian" },
+        { n: 3, title: "Itaú lança ferramenta de IA no Brasil", url: "https://exemplo.com/itau" },
+      ]);
+      writeCachePost(dataRoot, "post_1220", {
+        id: "post_1220",
+        title: "Edição 271220",
+        status: "confirmed",
+        publish_date: epochFor("271220"),
+        stats: {
+          email: { clicks: 6, unique_opens: 100 },
+          clicks: [
+            { url: "https://exemplo.com/guardian", base_url: "https://exemplo.com/guardian", email: { unique_verified_clicks: 3 } },
+            { url: "https://exemplo.com/itau", base_url: "https://exemplo.com/itau", email: { unique_verified_clicks: 3 } },
+          ],
+        },
+      });
+      const out: string[] = [];
+      const ol = console.log;
+      const oe = console.error;
+      console.log = (...a: unknown[]) => void out.push(a.map(String).join(" "));
+      console.error = () => {};
+      try {
+        await main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--force-incomplete-week", "--show-ranking"], {
+          dataRoot,
+          flatCardGenerator: fakeFlatCardGenerator,
+          newsCardGenerator: fakeNewsCardGenerator,
+        });
+      } finally {
+        console.log = ol;
+        console.error = oe;
+      }
+      const text = out.join("\n");
+      assert.match(text, /Empates desfeitos pelo desempate editorial/);
+      assert.match(text, /venceu: \[3\.00%\] Itaú lança ferramenta de IA no Brasil \(271220 D3\)/);
+      assert.match(text, /perdeu: \[3\.00%\] Guardian cobre IA no mundo \(271220 D2\)/);
+      assert.match(text, /Ranking completo \(2 elegíveis/);
+    });
+  });
+
   describe("#8385: --images-only (resolve as imagens do carrossel sem despachar pra nenhum canal)", () => {
     it("resolve capa + itens + CTA em JSON, sem escrever 06-weekly-published.json nem chamar o Worker queue", async () => {
       const saturday = new Date(2027, 11, 25);

@@ -192,9 +192,14 @@ atual:
   modo `clicked`, a intro da caption troca automaticamente pra uma frase
   neutra ("Os destaques da semana"), já que "os mais clicados" deixaria de
   ser verdade. Todo o resto do pipeline (imagem, agendamento, persistência)
-  roda igual. Uso típico: o editor revisou o ranking completo (fora desta
-  skill, ex: consultando `weekly-instagram-select.ts` diretamente) e discorda
-  do desempate por ruído da seleção automática pra esta rodada.
+  roda igual. Uso típico: o editor revisou o ranking completo (grupos de
+  empate no preview do Passo 2, ou o ranking inteiro com `--show-ranking`,
+  #10388) e discorda do desempate por ruído da seleção automática pra esta
+  rodada.
+- `--show-ranking` (#10388, só `clicked`) — imprime no preview o ranking
+  elegível completo + os excluídos. Os grupos de empate saem sempre, sem
+  esta flag.
+- `--check-slot` (#10389) — ver Passo 0.
 
 ## Pré-requisitos
 
@@ -263,6 +268,35 @@ atual:
   inteiro em vez de publicar parcial" vale se a geração sob demanda falhar
   (ex: crédito de API esgotado, fonte de marca ausente na máquina).
 
+## Passo 0 — Checar se o slot de agendamento ainda está de pé (#10389)
+
+Antes de qualquer outro passo, para os modos que esta invocação vai rodar
+(os mesmos `--time`/`--day-offset` que serão usados depois):
+
+```bash
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {both|clicked|highlights} --check-slot
+```
+
+Não lê edição nem cache: só calcula o horário de cada modo contra o relógio
+e imprime `{saturday, now, slots: [{mode, scheduledAt, status,
+minutesFromNow, advice}]}`. Sai **0** com todos os slots `ok` e **2** com
+algum `expired` (já passou) ou `too-soon` (menos de 10min, margem da Graph
+API). Invocação tardia no sábado (depois das 11:00) cai aqui no
+`highlights`. Antes do #10389 isso só aparecia como erro no `--images-only`
+do Passo 2a, depois do Passo 1 e do preview.
+
+Com exit 2, o `advice` de cada slot vencido lista as saídas: outro horário
+no mesmo dia (`--time HH:MM`, já sugerido), o dia seguinte (`--day-offset
+N`) ou pular aquele modo e rodar só o outro com `--mode` explícito. É
+trade-off do editor (critério 2 de "Perguntar é exceção": muda quando o
+leitor vê o post). Em sessão interativa, pergunte com essas opções e a
+sugestão de `--time` como recomendada. Com `--no-gates`, aplique o `--time`
+sugerido (ou `--day-offset` se não houver horário viável no mesmo dia) e
+registre a premissa no resumo final. `--day-offset` não compõe com `--mode
+both`: ao aplicá-lo, rode os 2 modos separados nos passos seguintes. O
+preview do Passo 2 repete o mesmo aviso no stderr, caso este passo tenha
+sido pulado.
+
 ## Passo 1 — Aquecer o cache Kit + checar enriquecimento Beehiiv
 
 **Só se aplica ao modo `clicked`** — `highlights` não ranqueia por clique,
@@ -324,6 +358,16 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Warnings (empates dentro do ruído de 1 clique — só `clicked`, edições sem
   dado de clique — só `clicked`, linguagem comercial suspeita em item
   selecionado — os dois modos, etc).
+- **Os grupos de empate (#10388, só `clicked`):** para cada vaga decidida
+  pelo desempate editorial, o vencedor e quem perdeu aquela vaga, com taxa,
+  edição e posição de origem (`D1`/`D2`/`D3`/seção). Empate sem dado de
+  clique real sai rotulado "NÃO genuíno". Leve esse bloco pro Artifact do
+  Passo 2b e pro gate do Passo 3. Com `--show-ranking`, o script imprime
+  também o ranking elegível inteiro por taxa (marcando a posição de cada
+  selecionado no carrossel) e os excluídos (comercial/afiliado/próprio).
+  É a base pra um `--force-urls` quando o editor discordar do desempate.
+- Slot de agendamento vencido (#10389): mesmo aviso do Passo 0, no stderr,
+  sem abortar o preview.
 - A caption formatada do Instagram, Facebook E Threads (#5348) — MESMOS
   títulos numerados; Instagram/Facebook incluem 1 linha de contexto (`why`
   do destaque, ou a 1ª frase de `body` pra RADAR), Threads NÃO (orçamento
