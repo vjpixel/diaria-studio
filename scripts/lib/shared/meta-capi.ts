@@ -557,9 +557,14 @@ export interface PersistedMatchSignals {
   fbp?: string;
 }
 
-/** Teto do user agent persistido — UA real fica bem abaixo disso; o corte é
- * defesa contra header abusivo virando custom field gigante. */
-export const PERSISTED_USER_AGENT_MAX = 300;
+/** Teto do user agent persistido — defesa contra header abusivo virando
+ * custom field gigante. #10428: 255 (era 300). O UA do navegador interno do
+ * Facebook/Instagram (FBAN/FBAV) passa de 250 caracteres e é justamente o
+ * tráfego de anúncio da Meta; se o Kit limitar custom field em 255 (limite
+ * comum de VARCHAR, NÃO confirmado ao vivo), 300 provocaria 422 no cadastro.
+ * 255 cabe nos dois cenários; o retry escalonado de
+ * `postKitCreateWithSignalFallback` cobre um limite ainda menor. */
+export const PERSISTED_USER_AGENT_MAX = 255;
 
 const IPV4_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 const IPV6_RE = /^[0-9A-Fa-f:.]{2,45}$/;
@@ -609,6 +614,35 @@ export function sanitizePersistedMatchSignals(raw: {
   return out;
 }
 
+/** #10393 item 2: quais dos 3 sinais VIERAM (valor não-vazio) e foram
+ * DESCARTADOS pela sanitização. `false` tanto pra "nunca veio" quanto pra
+ * "veio e passou" — é o que separa as três situações no resumo do lote. */
+export interface MatchSignalRejections {
+  clientIpAddress: boolean;
+  clientUserAgent: boolean;
+  fbp: boolean;
+}
+
+/**
+ * #10393 item 2: mesma régua de `sanitizePersistedMatchSignals`, mas devolve
+ * quais campos tinham valor e foram rejeitados (IPv6 com zone id, UA só de
+ * caractere de controle, fbp fora do regex...). Sem isso o lote não
+ * distinguia "o cadastro não gravou" de "gravou lixo / foi editado à mão". @pure
+ */
+export function matchSignalRejections(raw: {
+  clientIpAddress?: string | null;
+  clientUserAgent?: string | null;
+  fbp?: string | null;
+}): MatchSignalRejections {
+  const kept = sanitizePersistedMatchSignals(raw);
+  const came = (v: string | null | undefined): boolean => (v ?? "").trim() !== "";
+  return {
+    clientIpAddress: came(raw.clientIpAddress) && !kept.clientIpAddress,
+    clientUserAgent: came(raw.clientUserAgent) && !kept.clientUserAgent,
+    fbp: came(raw.fbp) && !kept.fbp,
+  };
+}
+
 /**
  * Minimização (#8543): decide QUAIS sinais do request de cadastro podem ir
  * pro ESP. Regras, nesta ordem:
@@ -648,21 +682,145 @@ export interface MatchSignalFieldNames {
   KIT_ORIGEM_FBP_FIELD?: string;
 }
 
+/** #10393 item 2: estado module-level (vive enquanto o ISOLATE do Worker
+ * viver) — um aviso por var ausente, não um por cadastro. Mesmo racional de
+ * `warnExternalIdFieldMissingOnce` (`visitor-id.ts`). */
+const matchSignalFieldMissingWarned = new Set<string>();
+
+/** Só pra testes: zera o "já avisei" do isolate. */
+export function resetMatchSignalFieldWarningsForTest(): void {
+  matchSignalFieldMissingWarned.clear();
+}
+
+function warnMatchSignalFieldMissingOnce(worker: string, hint: keyof MatchSignalFieldNames): void {
+  if (matchSignalFieldMissingWarned.has(hint)) return;
+  matchSignalFieldMissingWarned.add(hint);
+  // `console.warn`: config pendente, não falha do worker. Nunca o VALOR do sinal.
+  console.warn(JSON.stringify({ event: "match_signal_field_missing", worker, hint }));
+}
+
 /**
  * #8543: escreve os sinais (já minimizados por `selectPersistableMatchSignals`)
  * no mapa `fields` do POST de criação do Kit. Guard duplo, mesmo padrão dos
  * `KIT_ORIGEM_*`: env configurada E valor presente. Compartilhada pelos
- * workers `poll` e `cursos` (sem import cross-worker). Muta `fields`. @pure
+ * workers `poll` e `cursos` (sem import cross-worker). Muta `fields`.
+ *
+ * #10393 item 2: sinal presente com a var ausente avisa UMA vez por isolate
+ * (`match_signal_field_missing`) — antes, desligar a coleta num worker só
+ * derrubava o EMQ, sem sinal nenhum. Devolve os nomes de campo gravados (o
+ * retry sem os opcionais, item 3, precisa saber quais tirar).
  */
 export function applyMatchSignalFields(
   fields: Record<string, string>,
   names: MatchSignalFieldNames,
   signals: PersistedMatchSignals | undefined,
-): void {
-  if (!signals) return;
-  if (names.KIT_ORIGEM_CLIENTIP_FIELD && signals.clientIpAddress) fields[names.KIT_ORIGEM_CLIENTIP_FIELD] = signals.clientIpAddress;
-  if (names.KIT_ORIGEM_USERAGENT_FIELD && signals.clientUserAgent) fields[names.KIT_ORIGEM_USERAGENT_FIELD] = signals.clientUserAgent;
-  if (names.KIT_ORIGEM_FBP_FIELD && signals.fbp) fields[names.KIT_ORIGEM_FBP_FIELD] = signals.fbp;
+  worker = "unknown",
+): string[] {
+  if (!signals) return [];
+  const written: string[] = [];
+  const pairs: Array<[keyof MatchSignalFieldNames, string | undefined]> = [
+    ["KIT_ORIGEM_CLIENTIP_FIELD", signals.clientIpAddress],
+    ["KIT_ORIGEM_USERAGENT_FIELD", signals.clientUserAgent],
+    ["KIT_ORIGEM_FBP_FIELD", signals.fbp],
+  ];
+  for (const [envName, value] of pairs) {
+    if (!value) continue;
+    const fieldName = names[envName];
+    if (fieldName) {
+      fields[fieldName] = value;
+      written.push(fieldName);
+    } else {
+      warnMatchSignalFieldMissingOnce(worker, envName);
+    }
+  }
+  return written;
+}
+
+/**
+ * #10393 item 3: troca cada ocorrência dos valores dados (IP, UA, fbp,
+ * e-mail) por `[redacted]` — o corpo de erro do Kit pode ecoar o payload e
+ * vai pro log do Worker. Valores vazios/curtos (< 3) são ignorados pra não
+ * picotar o texto. Comparação case-insensitive (#10416). @pure
+ */
+export function redactLogValues(text: string, values: ReadonlyArray<string | undefined>): string {
+  let out = text;
+  const uniq = [...new Set(values.filter((v): v is string => typeof v === "string" && v.trim().length >= 3))];
+  // Mais longo primeiro: um valor contido em outro (IP dentro do UA) não deixa sobra.
+  uniq.sort((a, b) => b.length - a.length);
+  for (const v of uniq) {
+    // #10416: case-insensitive — o caller nem sempre normaliza (cursos só faz
+    // `trim()` no e-mail) e o Kit ecoa em minúsculas: e-mail cadastrado com
+    // maiúsculas e ecoado em minúsculas no corpo passava em claro.
+    out = out.replace(new RegExp(escapeRegExp(v), "gi"), "[redacted]");
+    // JSON escapa `/` e `"` — o eco do Kit pode vir na forma escapada.
+    const jsonForm = JSON.stringify(v).slice(1, -1);
+    if (jsonForm !== v) out = out.replace(new RegExp(escapeRegExp(jsonForm), "gi"), "[redacted]");
+  }
+  return out;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * #10393 item 3: os sinais de match vão no MESMO `POST /v4/subscribers` que
+ * cria o assinante. Se o Kit recusar com 422 e houver campo de sinal no
+ * corpo, tenta UMA vez de novo sem eles — o cadastro nunca pode falhar por
+ * causa de um campo opcional. Não dá pra saber se o 422 foi MESMO por eles;
+ * o retry é seguro de qualquer jeito (se falhar de novo, a causa é outra e o
+ * caller loga a 2ª resposta). Exceção do `post` propaga pro caller (que já
+ * trata rede/timeout). Nunca loga valor de sinal nem e-mail.
+ *
+ * #10428: retry ESCALONADO. O UA é o único sinal de tamanho variável (o do
+ * navegador interno do FB/IG passa de 250 chars) e por isso o suspeito mais
+ * provável de um 422 por limite de custom field. Com `userAgentFieldName`
+ * presente no corpo junto de outros sinais, a 1ª tentativa extra tira SÓ o UA
+ * (`kit_create_422_retry_without_user_agent`); só se ela também voltar 422 é
+ * que IP e fbp saem (`kit_create_422_retry_without_match_signals`). Antes, um
+ * UA longo derrubava os 3 sinais de uma vez e o EMQ caía em silêncio. No
+ * máximo 3 POSTs; sem `userAgentFieldName` (ou UA sozinho) o comportamento é
+ * o de antes — 1 retry sem todos.
+ */
+export async function postKitCreateWithSignalFallback(opts: {
+  post: (body: Record<string, unknown>) => Promise<Response>;
+  body: Record<string, unknown>;
+  signalFieldNames: readonly string[];
+  /** #10428: nome do custom field do UA (`KIT_ORIGEM_USERAGENT_FIELD`). */
+  userAgentFieldName?: string;
+  redactValues: ReadonlyArray<string | undefined>;
+  log: (msg: string) => void;
+}): Promise<Response> {
+  const first = await opts.post(opts.body);
+  if (first.status !== 422 || opts.signalFieldNames.length === 0) return first;
+  const fields = opts.body.fields as Record<string, string> | undefined;
+  if (!fields || !opts.signalFieldNames.some((k) => k in fields)) return first;
+
+  const bodyWithout = (drop: readonly string[]): Record<string, unknown> => {
+    const rest: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fields)) if (!drop.includes(k)) rest[k] = v;
+    const out: Record<string, unknown> = { ...opts.body };
+    if (Object.keys(rest).length > 0) out.fields = rest;
+    else delete out.fields;
+    return out;
+  };
+  const logRetry = async (event: string, dropped: readonly string[], res: Response): Promise<void> => {
+    const text = await res.text().catch(() => "<unreadable>");
+    opts.log(JSON.stringify({ event, dropped, body: redactLogValues(text, opts.redactValues).slice(0, 300) }));
+  };
+
+  let lastFailure = first;
+  const ua = opts.userAgentFieldName;
+  const presentSignals = opts.signalFieldNames.filter((k) => k in fields);
+  if (ua && presentSignals.includes(ua) && presentSignals.length > 1) {
+    await logRetry("kit_create_422_retry_without_user_agent", [ua], first);
+    const second = await opts.post(bodyWithout([ua]));
+    if (second.status !== 422) return second;
+    lastFailure = second;
+  }
+
+  await logRetry("kit_create_422_retry_without_match_signals", opts.signalFieldNames, lastFailure);
+  return opts.post(bodyWithout(opts.signalFieldNames));
 }
 
 export type MetaCapiActionSource = "website" | "system_generated" | "email";
@@ -752,6 +910,30 @@ export interface BuildCompleteRegistrationEventInput {
   eventId?: string;
 }
 
+/**
+ * #10413: reduz `event_source_url` a `origin + pathname` — sem query string
+ * nem fragmento. A URL de confirmação do `reativar` carrega
+ * `?email=<e-mail em claro>&t=<token>`, e repassá-la crua mandava à Meta o
+ * e-mail (contrariando o invariante do módulo: só o hash sai daqui) e o
+ * token de confirmação. Sanitizar AQUI, nos dois builders, cobre todo
+ * chamador presente e futuro (poll/cursos usam `request.url`, o site usa o
+ * `Referer`) em vez de depender de cada um lembrar.
+ *
+ * Perde UTM/fbclid da query — aceito: o click id já viaja em `fbc`
+ * (`clientSignals`), e a Meta só precisa da página pra `action_source:
+ * "website"`. URL que não parseia é cortada no primeiro `?`/`#` — nunca
+ * devolvida crua. @pure, nunca lança.
+ */
+export function sanitizeEventSourceUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin + u.pathname;
+  } catch {
+    const cut = raw.search(/[?#]/);
+    return cut === -1 ? raw : raw.slice(0, cut);
+  }
+}
+
 /** Monta o evento `CompleteRegistration` pronto pra `sendMetaCapiEvent` —
  * pure exceto pelo hash assíncrono (Web Crypto). Nunca envia rede; separado
  * de `sendMetaCapiEvent` pra ser testável sem mock de fetch. */
@@ -776,7 +958,7 @@ export async function buildCompleteRegistrationEvent(
   return {
     event_name: input.eventName ?? "CompleteRegistration",
     event_time: eventTime,
-    event_source_url: input.eventSourceUrl,
+    event_source_url: sanitizeEventSourceUrl(input.eventSourceUrl),
     action_source: input.actionSource ?? "website",
     event_id: eventId,
     user_data: userData,
@@ -922,7 +1104,7 @@ export function buildMetaCapiCustomEvent(input: BuildMetaCapiCustomEventInput): 
   const event: MetaCapiGenericEvent = {
     event_name: input.eventName,
     event_time: input.eventTimeSeconds ?? Math.floor(Date.now() / 1000),
-    event_source_url: input.eventSourceUrl,
+    event_source_url: sanitizeEventSourceUrl(input.eventSourceUrl),
     action_source: input.actionSource ?? "website",
     event_id: input.eventId,
     user_data: userData,
@@ -990,8 +1172,10 @@ export type MetaCapiLogEvent =
 export function buildMetaCapiLogEvent(
   result: MetaCapiSendResult,
   worker: string,
-  eventSourceUrl?: string,
+  rawEventSourceUrl?: string,
 ): MetaCapiLogEvent {
+  // #10413: o log promete "nunca PII" — mesma sanitização do evento enviado.
+  const eventSourceUrl = rawEventSourceUrl === undefined ? undefined : sanitizeEventSourceUrl(rawEventSourceUrl);
   if (result.ok) {
     const event = { event: "meta_capi_sent" as const, worker, status: result.status };
     return eventSourceUrl === undefined ? event : { ...event, eventSourceUrl };

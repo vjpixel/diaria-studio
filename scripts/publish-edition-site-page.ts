@@ -2210,6 +2210,8 @@ export function commitAndPushSitePage(
     // — push, e (mais adiante) gh pr list/create — pra janela protegida não
     // exceder o TTL de 2min dimensionado pra uma operação bem mais curta.
     renewSitePublishLock(rootDir, lockSessionId, lock);
+    // #10266: ref de tracking stale (branch remota apagada por fora) faria o lease recusar.
+    dropStaleTrackingRef(git, gitCwd, branchName);
     git(["push", "--force-with-lease", "-u", "origin", branchName], gitCwd);
     pushed = true;
 
@@ -2466,7 +2468,7 @@ export function productionDeps(
 
       return { seoImageAdded, archiveIndexRegenerated };
     },
-    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args),
+    supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git),
     publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }) => {
       const { pushed, prUrl, prNumber, prCreated, fetchStale } = commitAndPushSitePage(
         rootDir,
@@ -2933,6 +2935,37 @@ function markSitePagePrSuperseded(editionDirAbs: string, prNumber: number): void
   );
 }
 
+/**
+ * #10266: a ref de tracking `refs/remotes/origin/{branch}` sobrevive quando a
+ * branch remota some por fora do fluxo (DELETE via API, "delete branch on
+ * close", limpeza manual) — nada roda `fetch --prune`. Num A→B→A o
+ * `push --force-with-lease` esperaria o commit antigo numa branch inexistente
+ * e recusaria. Só apaga a ref de tracking quando `ls-remote` CONFIRMA que a
+ * branch não existe no remoto (exit 2); erro de rede/ambíguo não apaga nada.
+ * Nunca lança; devolve nota em caso de falha.
+ */
+export function dropStaleTrackingRef(git: GitRunner, cwd: string, branch: string): string | undefined {
+  const ref = `refs/remotes/origin/${branch}`;
+  try {
+    git(["rev-parse", "--verify", "--quiet", ref], cwd);
+  } catch {
+    return undefined; // sem ref local: nada a limpar
+  }
+  let remoteHas: boolean;
+  try {
+    remoteHas = git(["ls-remote", "--heads", "origin", branch], cwd).trim().length > 0;
+  } catch (e) {
+    return `ref local origin/${branch} não conferida (${(e as Error).message}) — rodar git fetch --prune`;
+  }
+  if (remoteHas) return undefined;
+  try {
+    git(["update-ref", "-d", ref], cwd);
+  } catch (e) {
+    return `ref local origin/${branch} não apagada (${(e as Error).message}) — rodar git fetch --prune`;
+  }
+  return undefined;
+}
+
 export interface SupersedeArgs {
   oldSlug: string;
   newSlug: string;
@@ -3042,7 +3075,12 @@ function viewPrState(rootDir: string, prNumber: number, gh: GhRunner): string | 
  *
  * Fail-soft: nunca lança — cada passo que falha vira nota.
  */
-export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: SupersedeArgs): SupersedeOutcome {
+export function supersedePreviousSitePage(
+  rootDir: string,
+  gh: GhRunner,
+  args: SupersedeArgs,
+  git: GitRunner = defaultGitRunner,
+): SupersedeOutcome {
   const notes: string[] = [];
   const { oldSlug, newSlug, oldPrNumber, sitemapRelPath, editionDirAbs } = args;
   let oldPrState: OldSitePagePrState = "none";
@@ -3080,6 +3118,9 @@ export function supersedePreviousSitePage(rootDir: string, gh: GhRunner, args: S
         const oldBranch = sitePublishBranch(oldSlug);
         try {
           gh(["api", "-X", "DELETE", `repos/{owner}/{repo}/git/refs/heads/${oldBranch}`], rootDir);
+          // #10266: ver dropStaleTrackingRef.
+          const dropNote = dropStaleTrackingRef(git, rootDir, oldBranch);
+          if (dropNote) notes.push(dropNote);
         } catch (e) {
           notes.push(`branch remota ${oldBranch} não apagada (${(e as Error).message}) — apagar à mão`);
         }

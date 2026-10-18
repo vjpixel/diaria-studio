@@ -89,6 +89,12 @@ describe("#8543 — sanitização (dos dois lados)", () => {
     assert.equal(s.fbp, undefined);
   });
 
+  it("#10428: teto do UA cabe num custom field de 255 (UA do FBAN/FBAV passa de 250)", () => {
+    assert.ok(PERSISTED_USER_AGENT_MAX <= 255);
+    const s = sanitizePersistedMatchSignals({ clientUserAgent: "y".repeat(300) });
+    assert.ok((s.clientUserAgent?.length ?? 0) <= 255);
+  });
+
   it("applyMatchSignalFields: só grava com env configurada E valor presente", () => {
     const fields: Record<string, string> = {};
     applyMatchSignalFields(fields, { KIT_ORIGEM_CLIENTIP_FIELD: "origem_client_ip" }, { clientIpAddress: "1.2.3.4", fbp: FBP });
@@ -261,7 +267,7 @@ describe("#8543 — worker poll grava IP/UA/fbp no Kit", () => {
     assert.equal(f.origem_fbp, undefined);
   });
 
-  it("sem as env vars (estado do wrangler.toml hoje) → nada gravado", async () => {
+  it("sem as env vars (worker sem os campos configurados) → nada gravado", async () => {
     const { fn, calls } = kitFetch();
     await handleJogarSubscribe(
       pollReq({ email: "a@b.com", optin: true, source: "jogar", fbp: FBP }),

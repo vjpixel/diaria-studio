@@ -1,6 +1,13 @@
 #!/usr/bin/env npx tsx
 /**
- * glm-lane-credits.ts (#6930)
+ * glm-lane-credits.ts (#6930) — APOSENTADO no #10387 (18/10/2026)
+ *
+ * A lane de piloto do #6930 foi encerrada quando o editor decidiu não usar
+ * mais modelos pagos no OpenRouter (#10387; ver topo de `docs/lane-glm.md`).
+ * `dispatch-glm-lane-unit.sh` aborta antes de chamar este script, então ele
+ * ficou sem consumidor. Mantido só como leitura avulsa (somente-leitura,
+ * fail-soft) do saldo da conta OpenRouter: com só `:free` em uso,
+ * `totalUsageUsd` não deveria crescer. O texto abaixo é o desenho original.
  *
  * Snapshot de `GET /api/v1/credits` do OpenRouter — usado por
  * `scripts/dispatch-glm-lane-unit.sh` ANTES e DEPOIS de cada unidade

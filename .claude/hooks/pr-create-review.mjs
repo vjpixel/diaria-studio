@@ -112,9 +112,9 @@
 // by the skill's own coordinator — see that file's docblock for the split
 // rationale. Keep the two in sync by hand; each side has its own test file.
 
-import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { hostname } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
@@ -145,14 +145,19 @@ function localMachineTag() {
  * data/"). Usar a raiz errada faria este guard nunca encontrar
  * `data/overnight/`, justamente no processo que mais precisa dele — o subagente
  * cujo PR está sendo avaliado agora mesmo.
+ *
+ * #10457: `timeoutMs` vem do orçamento restante do hook (`callTimeoutMs`).
+ * `<= 0` não chama o git (no Node, `timeout: 0` significa SEM limite — o
+ * oposto do que se quer quando o prazo acabou) e cai direto no fallback.
  */
-function resolveMainRepoRoot(execFn = execFileSync) {
+function resolveMainRepoRoot(execFn = execFileSync, timeoutMs = 10_000) {
   try {
+    if (!(timeoutMs > 0)) throw new Error("sem orçamento de tempo (#10457)");
     // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
     // invisível ao guard estático que só casa o nome literal do child_process.
     const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
       encoding: "utf8",
-      timeout: 10_000,
+      timeout: timeoutMs,
       windowsHide: true,
     }).trim();
     return dirname(resolvePath(gitDir));
@@ -382,12 +387,12 @@ export const OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD = 1000;
  * diff" e nunca deixa isso virar "pular o review" (#4243/#4813: fail-soft
  * obrigatório, sempre cai no `DEFAULT_EFFORT`).
  */
-function getDiffLineCount(num, execFn) {
+function getDiffLineCount(num, execFn, timeoutMs = 10_000) {
   try {
     // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
     const raw = execFn("gh", ["pr", "view", num, "--json", "additions,deletions"], {
       encoding: "utf8",
-      timeout: 10_000,
+      timeout: timeoutMs,
       windowsHide: true,
     });
     const parsed = JSON.parse(raw);
@@ -409,10 +414,12 @@ function getDiffLineCount(num, execFn) {
  * BASE inalterado — overnight preserva o viés histórico de "não sei o
  * tamanho, confia no desconto" que já tinha antes desta issue (diferente do
  * caminho geral, que cai no `DEFAULT_EFFORT`/`max` quando o tamanho é
- * desconhecido).
+ * desconhecido). Recebe a contagem já medida (`getDiffLineCount`) desde o
+ * #10457 — quem chama precisa conferir o prazo do hook entre a medição e a
+ * decisão (um `null` por timeout de orçamento não pode virar o `low` do viés
+ * acima).
  */
-function resolveOvernightDiffEffort(num, execFn, baseReason) {
-  const diffLineCount = getDiffLineCount(num, execFn);
+function resolveOvernightDiffEffort(diffLineCount, baseReason) {
   if (diffLineCount !== null && diffLineCount >= OVERNIGHT_EFFORT_DIFF_LINE_THRESHOLD) {
     return { effort: "max", reason: `${baseReason}_diff_grande` };
   }
@@ -469,7 +476,10 @@ function resolveOvernightDiffEffort(num, execFn, baseReason) {
  * reformulados em #6393): código curto e estável identificando QUAL ramo
  * decidiu — `pr_sem_numero` | `branch_overnight` | `branch_overnight_diff_grande` |
  * `sessao_overnight_ativa` | `sessao_overnight_ativa_diff_grande` |
- * `diff_pequeno` | `diff_grande` | `default` | `estado_indeterminado`.
+ * `diff_pequeno` | `diff_grande` | `default` | `estado_indeterminado` |
+ * `orcamento_esgotado` (#10457: o prazo do hook — `deadlineAt` — acabou antes
+ * ou durante uma das chamadas `gh`/`git`; resolve o fail-safe `max` sem fazer
+ * mais nenhuma chamada, pra o entrypoint ainda emitir a instrução de review).
  * `diff_pequeno` e `diff_grande` (tamanho CONHECIDO, dos dois lados do
  * limiar) substituem o antigo `diff_trivial`; `default` agora significa
  * especificamente "tamanho DESCONHECIDO, caiu no fallback" — distinção que
@@ -498,26 +508,54 @@ export function resolveEffort(
   // `now` pelos defaults reais de `isOvernightRoundActive` (via `undefined`
   // explícito, que aciona o default de cada parâmetro) e só repassa
   // `callerSessionId` na posição correta (4º parâmetro).
-  checkRoundActive = (callerSessionId) => isOvernightRoundActive(undefined, undefined, undefined, callerSessionId),
+  //
+  // #10457: o default também recebe o timeout da chamada (`git rev-parse` de
+  // `resolveMainRepoRoot`), limitado ao orçamento do hook. Mocks de teste que
+  // só declaram `(sessionId)` ignoram o 2º argumento.
+  checkRoundActive = (callerSessionId, { timeoutMs } = {}) =>
+    isOvernightRoundActive(resolveMainRepoRoot(execFileSync, timeoutMs), undefined, undefined, callerSessionId),
   sessionId = undefined,
+  // #10457: prazo absoluto do hook (`hookDeadline(HOOK_STARTED_AT)`); default
+  // sem prazo preserva todos os call sites antigos.
+  { deadlineAt = Infinity, now = Date.now } = {},
 ) {
+  const BUDGET_EXHAUSTED = { effort: "max", warning: null, reason: "orcamento_esgotado" };
   try {
     const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
     // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
     // mantém max independente de qual seja o DEFAULT_EFFORT vigente.
     if (!num) return { effort: "max", warning: null, reason: "pr_sem_numero" };
+    // #10457: cada chamada externa leva `min(10s, restante)`; sem tempo, nem
+    // chama — devolve o fail-safe `max` e deixa o entrypoint emitir a
+    // instrução de review dentro do prazo.
+    let timeoutMs = callTimeoutMs(deadlineAt, now());
+    if (timeoutMs <= 0) return BUDGET_EXHAUSTED;
     // windowsHide (#8017): mesma razão de resolveMainRepoRoot acima.
     const branch = execFn(
       "gh",
       ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
-      { encoding: "utf8", timeout: 10_000, windowsHide: true },
+      { encoding: "utf8", timeout: timeoutMs, windowsHide: true },
     ).trim();
+    // Mede o diff respeitando o prazo; `undefined` = prazo esgotado (antes ou
+    // DURANTE a chamada) — distinto de `null` (tamanho desconhecido por outra
+    // falha), que segue o viés de cada caminho.
+    const measureDiff = () => {
+      const t = callTimeoutMs(deadlineAt, now());
+      if (t <= 0) return undefined;
+      const count = getDiffLineCount(num, execFn, t);
+      if (count === null && callTimeoutMs(deadlineAt, now()) <= 0) return undefined;
+      return count;
+    };
     // #6393: branch overnight/* deixou de ser `low` incondicional — resolve
     // por tamanho de diff, com o limiar PRÓPRIO (maior) do caminho overnight.
     if (branch.startsWith("overnight/")) {
-      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "branch_overnight");
+      const diffLineCount = measureDiff();
+      if (diffLineCount === undefined) return BUDGET_EXHAUSTED;
+      const { effort, reason } = resolveOvernightDiffEffort(diffLineCount, "branch_overnight");
       return { effort, warning: null, reason };
     }
+    timeoutMs = callTimeoutMs(deadlineAt, now());
+    if (timeoutMs <= 0) return BUDGET_EXHAUSTED;
     // #5156: `sessionId` (o session_id da chamada gh pr create que criou esta
     // PR, extraído do payload do hook no entrypoint CLI abaixo) é repassado a
     // checkRoundActive — quando o default real (isOvernightRoundActive) lê um
@@ -525,11 +563,13 @@ export function resolveEffort(
     // marker sem session_id (formato antigo) ignora o argumento e mantém o
     // comportamento pré-#5156. Mocks de teste (`noActiveRound`/`activeRound`)
     // ignoram o argumento livremente — não quebra nenhum teste existente.
-    if (checkRoundActive(sessionId)) {
+    if (checkRoundActive(sessionId, { timeoutMs })) {
       // #6393: mesmo tratamento de tamanho de diff do ramo `overnight/*`
       // acima — o warning de naming (#3321) é ortogonal ao tamanho, então
       // sai igual independente de o diff ter resolvido `low` ou `max`.
-      const { effort, reason } = resolveOvernightDiffEffort(num, execFn, "sessao_overnight_ativa");
+      const diffLineCount = measureDiff();
+      if (diffLineCount === undefined) return BUDGET_EXHAUSTED;
+      const { effort, reason } = resolveOvernightDiffEffort(diffLineCount, "sessao_overnight_ativa");
       return {
         effort,
         warning:
@@ -545,7 +585,8 @@ export function resolveEffort(
     // Sem sinal de overnight/rodada-ativa: effort resolve por tamanho de diff
     // (#4813). getDiffLineCount() retornando `null` (falha de qualquer tipo)
     // faz os dois ramos de tamanho abaixo serem ignorados de propósito.
-    const diffLineCount = getDiffLineCount(num, execFn);
+    const diffLineCount = measureDiff();
+    if (diffLineCount === undefined) return BUDGET_EXHAUSTED;
     if (diffLineCount !== null && diffLineCount < EFFORT_DIFF_LINE_THRESHOLD) {
       return { effort: "low", warning: null, reason: "diff_pequeno" };
     }
@@ -563,7 +604,10 @@ export function resolveEffort(
     // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
     // lançando erro) → `max` literal, nunca DEFAULT_EFFORT. São decisões
     // independentes: esta vale mesmo quando o default geral for `low`, porque o
-    // hook não consegue nem determinar o que está revisando.
+    // hook não consegue nem determinar o que está revisando. #10457: se o
+    // erro veio do prazo do hook (ex.: `gh pr view headRefName` estourou o
+    // timeout encurtado), o motivo registrado é o orçamento.
+    if (callTimeoutMs(deadlineAt, now()) <= 0) return BUDGET_EXHAUSTED;
     return { effort: "max", warning: null, reason: "estado_indeterminado" };
   }
 }
@@ -917,37 +961,209 @@ export function extractPrNumberFromUrl(prUrl) {
 }
 
 /**
- * Lê o corpo atual da PR recém-criada via `gh pr view`, computa o addendum
- * (função pura acima) e, se necessário, anexa via `gh pr edit --body`. Corrige
- * em vez de reclamar (Passo 2a da #6920) — o texto em português continua
- * sendo o que o humano lê, o `Closes #N` em inglês é só o que falta pro
- * GitHub entender. Fail-soft total: qualquer erro (gh indisponível, PR
- * deletada entre create e este passo, JSON malformado) nunca propaga — este
- * hook não pode bloquear nem atrasar a criação da PR, que já aconteceu.
+ * #10442: script que grava o corpo da PR (REST + releitura pós-escrita, falha
+ * alto). Spawnado como subprocesso — nunca importado: este hook é
+ * self-contained por design (import estático de `.ts` quebraria o hook inteiro
+ * num Node sem type-stripping, ver docblock de `stripQuotedSpans` abaixo).
+ * Caminho relativo à raiz do checkout em que a sessão roda (`cwd`), que é onde
+ * o `gh` também resolve `{owner}/{repo}`.
  */
-export function ensureCloseKeywords(prUrl, { execFn = execFileSync } = {}) {
+export const SAFE_EDIT_SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
+
+/**
+ * #10453: orçamento de tempo do hook. O harness MATA este hook aos
+ * `timeout` segundos declarados em `.claude/settings.json` (PostToolUse,
+ * `if: "Bash(gh pr create*)"`) — e um hook morto não emite nada: a instrução
+ * de review (gate do auto-merge #5251) some em silêncio. Por isso nenhum passo
+ * opcional (a escrita do `Closes #N`, #6920/#10442) pode ter timeout próprio
+ * maior que o que resta desse orçamento. `HOOK_TIMEOUT_MS` tem paridade
+ * travada por teste com o valor do `settings.json`
+ * (`test/pr-create-review-hook-budget-10453.test.ts`) — subir um sem o outro
+ * quebra o teste.
+ */
+export const HOOK_TIMEOUT_MS = 15_000;
+/** Folga reservada pra montar e emitir o `additionalContext` depois da escrita. */
+export const HOOK_OUTPUT_RESERVE_MS = 2_000;
+/** Abaixo disto nem tenta escrever: boot do tsx + PATCH + releitura não cabem. */
+export const MIN_WRITE_BUDGET_MS = 3_000;
+
+/** Prazo absoluto (epoch ms) até o qual o trabalho opcional pode rodar. */
+export function hookDeadline(startedAt) {
+  return startedAt + HOOK_TIMEOUT_MS - HOOK_OUTPUT_RESERVE_MS;
+}
+
+/** Milissegundos que restam até `deadlineAt` (nunca negativo). */
+export function remainingMs(deadlineAt, now = Date.now()) {
+  return Math.max(0, deadlineAt - now);
+}
+
+/** Teto por chamada `gh`/`git` do hook, antes do orçamento (#10457). */
+export const PER_CALL_TIMEOUT_MS = 10_000;
+
+/**
+ * #10457: timeout de UMA chamada externa do hook — `min(10s, restante)`.
+ * `0` significa "não chame": no Node, `timeout: 0` é SEM limite, então quem
+ * recebe `0` tem que pular a chamada, nunca repassá-lo.
+ */
+export function callTimeoutMs(deadlineAt, now = Date.now()) {
+  return Math.min(PER_CALL_TIMEOUT_MS, remainingMs(deadlineAt, now));
+}
+
+/**
+ * Grava `body` na PR `num` via `scripts/lib/gh-pr-safe-edit.ts --body-file`
+ * (#10442). Antes era `gh pr edit --body`, que esbarra em `projectCards`
+ * (Projects classic) e pode sair `exit 0` sem alterar o corpo (#6292) — o
+ * hook reportava `applied: true` sem nada gravado. O arquivo do corpo vai pro
+ * tmpdir do SO (nunca pra árvore do checkout, item 20 de
+ * `context/overnight-dispatch-rules.md`) e é apagado no fim.
+ *
+ * #10453: roda `node --import tsx` direto (`process.execPath`), sem `npx` nem
+ * shell — medido 0,2s de boot contra 0,6-0,7s do `npx tsx` (aquecido), e sem
+ * o `npx` tentar baixar o tsx num worktree sem `node_modules` (falha rápido e
+ * vira aviso). Sem shell também não há wrapper `.cmd` no Windows (#6777) nem
+ * aspas a montar à mão, e o `timeout` mata o próprio processo que escreve, não
+ * só um shell intermediário. `timeoutMs` vem do orçamento restante do hook
+ * (`remainingMs`), nunca de um valor fixo maior que ele.
+ */
+export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.cwd(), timeoutMs = 60_000 } = {}) {
+  let dir;
   try {
-    const num = extractPrNumberFromUrl(prUrl);
+    dir = mkdtempSync(join(tmpdir(), "pr-create-review-"));
+    const file = join(dir, "body.md");
+    writeFileSync(file, body, "utf8");
+    const result = spawnFn(
+      process.execPath,
+      ["--import", "tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", file],
+      {
+        cwd,
+        encoding: "utf8",
+        timeout: timeoutMs,
+        windowsHide: true,
+      },
+    );
+    if (!result || result.error) {
+      return { ok: false, error: String(result?.error?.message ?? result?.error ?? "spawn falhou") };
+    }
+    if (result.status !== 0) {
+      const out = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+      return { ok: false, error: out.slice(0, 500) || `gh-pr-safe-edit saiu com status ${result.status}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message ?? e) };
+  } finally {
+    if (dir) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // tmpdir do SO — sobra inofensiva.
+      }
+    }
+  }
+}
+
+/**
+ * Lê o corpo atual da PR recém-criada via `gh pr view`, computa o addendum
+ * (função pura acima) e, se necessário, anexa via `writePrBodySafe` (#10442 —
+ * REST + releitura, nunca `gh pr edit --body`). Corrige em vez de reclamar
+ * (Passo 2a da #6920) — o texto em português continua sendo o que o humano
+ * lê, o `Closes #N` em inglês é só o que falta pro GitHub entender. Nunca
+ * lança: qualquer erro (gh indisponível, PR deletada entre create e este
+ * passo, JSON malformado) vira `applied: false` — este hook não pode bloquear
+ * nem atrasar a criação da PR, que já aconteceu. A falha de ESCRITA, porém,
+ * volta como `reason: "write-failed"` + `error`, e o chamador a expõe no
+ * contexto da sessão (#10442): sumir em silêncio era o defeito.
+ *
+ * #10453: `deadlineAt` (epoch ms, default sem prazo) limita leitura e escrita
+ * ao que resta do orçamento do hook. Se depois da leitura sobrar menos que
+ * `MIN_WRITE_BUDGET_MS`, a escrita nem começa e volta como `write-failed`
+ * (o chamador avisa a sessão) — nunca arrisca o hook inteiro por ela.
+ * #10457: prazo esgotado antes da leitura, ou leitura cortada pelo timeout
+ * encurtado, volta como `reason: "budget-exhausted"` (+ `pr`) — não mais como
+ * `"error"`, que o chamador trata como silêncio.
+ */
+export function ensureCloseKeywords(
+  prUrl,
+  { execFn = execFileSync, writeFn = writePrBodySafe, deadlineAt = Infinity, now = Date.now } = {},
+) {
+  let num;
+  let addendum;
+  let newBody;
+  try {
+    num = extractPrNumberFromUrl(prUrl);
     if (!num) return { applied: false, reason: "no-pr-number" };
-    // windowsHide (#8017) nas 2 chamadas abaixo — mesma razão de
-    // resolveMainRepoRoot acima.
-    const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
-      encoding: "utf8",
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    const addendum = computeCloseKeywordAddendum(body);
+    // windowsHide (#8017) — mesma razão de resolveMainRepoRoot acima.
+    const viewTimeout = callTimeoutMs(deadlineAt, now());
+    // #10457: prazo esgotado ANTES da leitura tem motivo próprio — não dá pra
+    // saber se o corpo cita a issue só em português, e o chamador avisa.
+    if (viewTimeout <= 0) return { applied: false, reason: "budget-exhausted", pr: num };
+    let body;
+    try {
+      body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
+        encoding: "utf8",
+        timeout: viewTimeout,
+        windowsHide: true,
+      });
+    } catch (e) {
+      // #10457: leitura cortada pelo timeout encurtado (ETIMEDOUT) ou que
+      // terminou com o prazo já vencido = orçamento, não erro comum de leitura.
+      if (e?.code === "ETIMEDOUT" || remainingMs(deadlineAt, now()) <= 0) {
+        return { applied: false, reason: "budget-exhausted", pr: num };
+      }
+      throw e;
+    }
+    addendum = computeCloseKeywordAddendum(body);
     if (!addendum) return { applied: false, reason: "not-needed" };
-    const newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
-    execFn("gh", ["pr", "edit", String(num), "--body", newBody], {
-      encoding: "utf8",
-      timeout: 10_000,
-      windowsHide: true,
-    });
-    return { applied: true, addendum };
+    newBody = `${body.replace(/\s+$/, "")}\n\n${addendum}\n`;
   } catch {
     return { applied: false, reason: "error" };
   }
+  const writeBudget = Math.min(60_000, remainingMs(deadlineAt, now()));
+  if (writeBudget < MIN_WRITE_BUDGET_MS) {
+    return {
+      applied: false,
+      reason: "write-failed",
+      pr: num,
+      addendum,
+      error: `sem orçamento de tempo no hook (${writeBudget}ms restantes, mínimo ${MIN_WRITE_BUDGET_MS}ms) — escrita não tentada (#10453)`,
+    };
+  }
+  let write;
+  try {
+    write = writeFn(num, newBody, { timeoutMs: writeBudget });
+  } catch (e) {
+    write = { ok: false, error: String(e?.message ?? e) };
+  }
+  if (!write?.ok) return { applied: false, reason: "write-failed", pr: num, addendum, error: write?.error ?? "sem detalhe" };
+  return { applied: true, addendum };
+}
+
+/**
+ * #10442: aviso pro contexto da sessão quando o `Closes #N` não pôde ser
+ * gravado. `null` quando não há nada a avisar (aplicado, desnecessário, ou
+ * erro de LEITURA — esse já é fail-soft desde o #6920 e não deixa a PR pior).
+ * #10457: `budget-exhausted` (prazo do hook acabou antes/durante a leitura)
+ * também avisa — num dia de `gh` lento, "Fecha #N" seria mergeado sem fechar a
+ * issue (classe do #10442), e o silêncio escondia isso.
+ */
+export function closeKeywordWarning(result) {
+  if (result?.reason === "budget-exhausted") {
+    // #10457: o corpo nem foi lido — não se sabe se precisava do addendum, então
+    // o aviso pede a conferência em vez de afirmar que falta o `Closes`.
+    return (
+      `⚠️ #10457: o orçamento de tempo do hook acabou antes de ler o corpo da PR #${result.pr}, ` +
+      `então NÃO foi conferido se ela cita a issue só em português ("Fecha #N" etc. — o GitHub não ` +
+      `fecha a issue sem "Closes #N", #6920). Confira o corpo e, se faltar, anexe à mão: ` +
+      `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr ${result.pr} --body-file {arquivo no scratchpad}.`
+    );
+  }
+  if (!result || result.reason !== "write-failed") return null;
+  return (
+    `⚠️ #10442: o corpo desta PR cita a issue só em português e o hook NÃO conseguiu anexar ` +
+    `"${result.addendum}" (o GitHub não fecha a issue sem ele). Anexe à mão: ` +
+    `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr ${result.pr} --body-file {arquivo no scratchpad}. ` +
+    `Erro: ${result.error}`
+  );
 }
 
 /**
@@ -1124,6 +1340,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
+  // #10453: relógio do orçamento começa no boot do hook, não no fim do stdin.
+  const HOOK_STARTED_AT = Date.now();
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
@@ -1137,21 +1355,36 @@ if (
       const command = payload.tool_input?.command;
       const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
       if (prUrl) {
-        // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
-        // "Closes #N" ANTES do review — melhor esforço, nunca bloqueia o
-        // resto do hook se falhar (fail-soft dentro de ensureCloseKeywords).
-        ensureCloseKeywords(prUrl);
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
         // session_id ignora o argumento).
-        const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id);
-        logEffortDecision({ prUrl, effort, reason }); // #4252
+        // #10453: o effort (necessário pra instrução de review) vem PRIMEIRO;
+        // a escrita do Closes, opcional, só usa o que sobrar do orçamento.
+        // #10457: o próprio resolveEffort também respeita o prazo (cada
+        // chamada gh/git com min(10s, restante); sem tempo → `max`).
+        const deadlineAt = hookDeadline(HOOK_STARTED_AT);
+        const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id, {
+          deadlineAt,
+        });
+        // #10457: o `git rev-parse` do log também é limitado ao prazo.
+        logEffortDecision(
+          { prUrl, effort, reason },
+          { repoRoot: resolveMainRepoRoot(execFileSync, callTimeoutMs(deadlineAt)) },
+        ); // #4252
+        // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
+        // "Closes #N" — melhor esforço, nunca bloqueia o resto do hook se
+        // falhar (fail-soft dentro de ensureCloseKeywords) e, desde o #10453,
+        // limitado ao prazo do hook pra nunca impedir a instrução de review.
+        const closeWarning = closeKeywordWarning(
+          ensureCloseKeywords(prUrl, { deadlineAt }),
+        );
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
               hookEventName: "PostToolUse",
-              additionalContext: buildReviewInstruction(prUrl, effort, warning),
+              additionalContext:
+                (closeWarning ? `${closeWarning}\n\n` : "") + buildReviewInstruction(prUrl, effort, warning),
             },
           }),
         );

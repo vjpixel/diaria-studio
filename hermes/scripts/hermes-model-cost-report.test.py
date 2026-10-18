@@ -99,10 +99,11 @@ def _seed_usage_only(db_path: Path) -> None:
 
 
 def _seed_tick_composition(db_path: Path, job_id: str) -> None:
-    """Banco com 4 ticks do continuo — 1 saudavel (100% primario), 1
+    """Banco com 5 ticks do continuo — 1 saudavel (100% primario), 1
     degradado (chamou o fallback local), 1 com o id do modelo prefixado, 1
-    no formato historico de hifens — e 1 sessao fora do padrao (nao e do
-    job continuo, nao deve entrar na composicao).
+    no formato historico de hifens, 1 com chamada paga + :free (#10431) — e
+    1 sessao fora do padrao (nao e do job continuo, nao deve entrar na
+    composicao).
 
     #6963: os session_id usam o formato REAL de producao,
     `cron_{job_id}_<data>_<hora>` (UNDERSCORE). A fixture antiga usava
@@ -143,6 +144,13 @@ def _seed_tick_composition(db_path: Path, job_id: str) -> None:
         # pra um deploy antigo/futuro do Hermes que volte a produzi-lo nao
         # ficar invisivel do mesmo jeito que o real ficou.
         (f"hermes-cron-{job_id}-ddd444", "gpt-5.6-luna", "openai-codex", 3, 300, 150, 0.0, 0.0, now),
+        # #10431: tick com uma chamada num id PAGO da OpenRouter (o ex-modelo
+        # da lane, glm-5.3-flash; de proposito NAO o slug fixo antigo, deepseek) e outra num :free. A coluna
+        # pago=% nao pode depender de um slug fixo: o pago entra em
+        # paid_fallback, o :free em other_calls.
+        (f"cron_{job_id}_20260901_040404", "gpt-6-luna", "openai-codex", 6, 600, 300, 0.0, 0.0, now),
+        (f"cron_{job_id}_20260901_040404", "z-ai/glm-5.3-flash", "openrouter", 2, 200, 100, 0.01, 0.01, now),
+        (f"cron_{job_id}_20260901_040404", "poolside/laguna-s-2.1:free", "openrouter", 2, 200, 100, 0.0, 0.0, now),
         # sessão fora do padrão (não é job continuo) — não deve aparecer.
         ("outra-sessao-qualquer", "gpt-5.6-luna", "openai-codex", 9, 900, 900, 0.0, 0.0, now),
     ]
@@ -196,8 +204,8 @@ def main() -> int:
         session_ids = {t["session_id"] for t in ticks}
 
         assert_true(
-            "collect_tick_composition() só retorna sessões do job contínuo (4, não 5 — a alheia fica de fora)",
-            len(ticks) == 4,
+            "collect_tick_composition() só retorna sessões do job contínuo (5, não 6 — a alheia fica de fora)",
+            len(ticks) == 5,
         )
         assert_true(
             "sessão fora do padrão (outra-sessao-qualquer) NÃO entra na composição",
@@ -241,169 +249,65 @@ def main() -> int:
             and prefixado["other_calls"] == 0,
         )
 
-    # -----------------------------------------------------------------
-    # #6818 item 4 — aumento de preço em modelo PAGO já em uso
-    # -----------------------------------------------------------------
-    # O buraco que motiva: `_is_leak` só pergunta "está na allowlist?", então
-    # um modelo JÁ pago que dobra de preço (o degrau de 09/09 do glm-5.3-flash)
-    # não dispara nada. Estes testes travam a detecção do aumento e, tão
-    # importante quanto, travam que "não consegui medir" nunca vire "ok".
-    BASE = {"z-ai/glm-5.3-flash": {"prompt": 0.000000075, "completion": 0.00000025}}
+        # #10431: a coluna pago=% conta QUALQUER id pago (via _is_leak), nao
+        # mais o slug fixo CONTINUO_PAID_FALLBACK_MODEL (removido). Contra a
+        # implementacao anterior (slug fixo = deepseek), o glm cairia em
+        # other_calls e o tick pareceria sem chamada paga.
+        pago = next(t for t in ticks if t["session_id"].endswith("040404"))
+        assert_true(
+            "#10431: chamada num id pago da OpenRouter conta em paid_fallback, :free conta em other_calls",
+            pago["paid_fallback_calls"] == 2 and pago["other_calls"] == 2
+            and pago["primary_calls"] == 6 and pago["paid_fallback_pct"] == 20.0,
+        )
+        assert_true(
+            "#10431: tick só com primário não tem chamada paga",
+            saudavel["paid_fallback_calls"] == 0 and degradado["paid_fallback_calls"] == 0,
+        )
 
-    def _catalog(*entries: dict) -> dict:
-        return {"data": list(entries)}
+    # #10431: o --price-check (#6818 item 4) foi removido — inerte desde que o
+    # #10387 esvaziou o baseline e tirou a chamada do watchdog.
+    for gone in ("PAID_PRICE_BASELINE", "PAID_MODELS_NOT_ON_OPENROUTER", "PRICE_INCREASE_DECISIONS",
+                 "detect_price_changes", "extract_catalog_pricing", "price_check_exit_code",
+                 "CONTINUO_PAID_FALLBACK_MODEL"):
+        assert_true(f"#10431: {gone} removido do módulo", not hasattr(mod, gone))
 
-    # 1. O CENÁRIO DA ISSUE: promoção expira, prompt dobra 0,075 -> 0,15/M.
-    dobrou = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.00000015", "completion": "0.00000025"}},
-    ))
-    f = mod.detect_price_changes(dobrou, baseline=BASE, not_on_openrouter=set())
+    # #10387 (18/10/2026, decisao do editor): nenhum modelo pago do
+    # OpenRouter e intencional. PAID_ALLOWLIST vazio; o ex-fallback pago do
+    # continuo (deepseek) e o ex-modelo da lane (glm) sao vazamento.
     assert_true(
-        "#6818: prompt dobrando (promoção expirada) -> 1 aumento detectado, fator 2x",
-        len(f["increases"]) == 1
-        and f["increases"][0]["campo"] == "prompt"
-        and abs(f["increases"][0]["fator"] - 2.0) < 1e-9,
+        "#10387: PAID_ALLOWLIST vazio (nenhum modelo pago do OpenRouter e intencional)",
+        len(mod.PAID_ALLOWLIST) == 0,
     )
     assert_true(
-        "#6818: aumento -> exit code 3 (distinto de indeterminado)",
-        mod.price_check_exit_code(f) == 3,
+        "#10387: qualquer id pago do OpenRouter sem :free e vazamento; o mesmo id com :free nao",
+        mod._is_leak("deepseek/deepseek-v4-flash", "openrouter") is True
+        and mod._is_leak("z-ai/glm-5.3-flash", "openrouter") is True
+        and mod._is_leak("poolside/laguna-s-2.1:free", "openrouter") is False,
     )
-
-    # 2. Preço inalterado não alarma — senão o alarme vira ruído diário.
-    igual = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.000000075", "completion": "0.00000025"}},
-    ))
-    f_igual = mod.detect_price_changes(igual, baseline=BASE, not_on_openrouter=set())
     assert_true(
-        "#6818: preço igual ao baseline -> nenhum achado, exit 0",
-        not any(f_igual.values()) and mod.price_check_exit_code(f_igual) == 0,
-    )
-
-    # 3. Queda de preço é reportada mas NUNCA alarma.
-    caiu = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.00000005", "completion": "0.00000025"}},
-    ))
-    f_caiu = mod.detect_price_changes(caiu, baseline=BASE, not_on_openrouter=set())
-    assert_true(
-        "#6818: queda de preço -> reportada como 'decrease', exit 0, nunca alarme",
-        len(f_caiu["decreases"]) == 1 and not f_caiu["increases"]
-        and mod.price_check_exit_code(f_caiu) == 0,
+        "primario do continuo esta em SUBSCRIPTION_ROUTE_MODELS (nunca vazamento; mesma classe de erro)",
+        set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.SUBSCRIPTION_ROUTE_MODELS),
     )
 
-    # 4. FAIL-CLOSED: modelo do baseline sumiu do catálogo -> INDETERMINADO,
-    #    nunca silêncio. É o modo de falha que o alarme existe pra impedir.
-    f_sumiu = mod.detect_price_changes({}, baseline=BASE, not_on_openrouter=set())
+    # #10431 item 1: o luna da rota de assinatura (openai-codex) nao e
+    # vazamento; o MESMO luna faturado pela OpenRouter (id `openai/...`) e.
+    # Rota real verificada em 18/10/2026: ~/.hermes/config.yaml roda o luna so
+    # por provider openai-codex, e o state.db nao tem luna com
+    # billing_provider=openrouter. Luna la = config errada, deve acusar.
     assert_true(
-        "#6818: modelo ausente do catálogo -> unverifiable + exit 1, nunca 'ok'",
-        len(f_sumiu["unverifiable"]) == 1 and not f_sumiu["increases"]
-        and mod.price_check_exit_code(f_sumiu) == 1,
-    )
-
-    # 5. Campo de preço somiu (id existe, `prompt` não) -> também indeterminado.
-    f_campo = mod.detect_price_changes(
-        mod.extract_catalog_pricing(_catalog(
-            {"id": "z-ai/glm-5.3-flash", "pricing": {"completion": "0.00000025"}},
-        )),
-        baseline=BASE, not_on_openrouter=set(),
+        "#10431: luna via openai-codex -> nao e vazamento",
+        mod._is_leak("gpt-6-luna", "openai-codex") is False,
     )
     assert_true(
-        "#6818: campo de preço ausente -> unverifiable nomeando o campo, exit 1",
-        any(u.get("campo") == "prompt" for u in f_campo["unverifiable"])
-        and mod.price_check_exit_code(f_campo) == 1,
-    )
-
-    # 6. Modelo pago fora da OpenRouter é `out_of_scope`, NÃO `unverifiable`,
-    #    e NÃO alarma. Esses ids nunca vão aparecer no catálogo — somá-los ao
-    #    indeterminado faria o alarme sair INDETERMINADO todo dia, pra sempre,
-    #    e um alarme que sempre grita esconde o aumento real de 09/09.
-    f_fora = mod.detect_price_changes(
-        igual, baseline=BASE, not_on_openrouter={"openai-codex/gpt-5.6-luna"},
-    )
-    assert_true(
-        "#6818: modelo pago servido por outra rota -> out_of_scope com motivo próprio",
-        any(u["modelo"] == "openai-codex/gpt-5.6-luna" and "outra rota" in u["motivo"]
-            for u in f_fora["out_of_scope"]),
-    )
-    assert_true(
-        "#6818: out_of_scope sozinho NÃO alarma (exit 0) — fronteira conhecida não é medição falha",
-        not f_fora["unverifiable"] and mod.price_check_exit_code(f_fora) == 0,
-    )
-    # E o caso real: com o PAID_ALLOWLIST/baseline de produção e o catálogo
-    # sem alteração, a execução diária tem que sair limpa — senão o watchdog
-    # nasce ruidoso e é desligado na primeira semana.
-    f_prod = mod.detect_price_changes(igual, baseline=BASE)
-    assert_true(
-        "#6818: execução diária com preço inalterado sai exit 0, apesar dos modelos fora da OpenRouter"
-        " (2 do gpt-5.6-luna + 2 do gpt-6-luna, #8738 + 'sonnet' do elo de assinatura, #7649)",
-        mod.price_check_exit_code(f_prod) == 0 and len(f_prod["out_of_scope"]) == 5,
-    )
-
-    # 7. Preço não-numérico NUNCA vira 0.0 — 0.0 leria como "de graça" e
-    #    mascararia exatamente o que o alarme procura.
-    lixo = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash", "pricing": {"prompt": None, "completion": "abc"}},
-    ))
-    assert_true(
-        "#6818: preço não-parseável é OMITIDO, nunca coagido a 0.0",
-        lixo.get("z-ai/glm-5.3-flash") is None
-        or ("prompt" not in lixo["z-ai/glm-5.3-flash"]
-            and "completion" not in lixo["z-ai/glm-5.3-flash"]),
-    )
-
-    # 8. Tolerância cobre ruído decimal, não variação real de preço.
-    ruido = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.0000000753", "completion": "0.00000025"}},
-    ))
-    f_ruido = mod.detect_price_changes(ruido, baseline=BASE, not_on_openrouter=set())
-    assert_true(
-        "#6818: +0,4% (ruído de arredondamento) fica DENTRO da tolerância de 1%",
-        not f_ruido["increases"],
-    )
-
-    # 9. O baseline versionado tem que casar com a allowlist: um modelo pago
-    #    em uso que não esteja nem no baseline nem na lista de fora-da-OpenRouter
-    #    seria um ponto cego silencioso — exatamente o bug desta issue.
-    coberto = set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)
-    assert_true(
-        "#6818: todo modelo do PAID_ALLOWLIST está coberto pelo baseline ou nomeado fora da OpenRouter",
-        set(mod.PAID_ALLOWLIST) <= coberto,
-    )
-
-    # 9b. Regressao da troca glm -> deepseek (08/09/2026): quando o fallback
-    #     pago do config.yaml muda, CONTINUO_PAID_FALLBACK_MODEL e o
-    #     PAID_ALLOWLIST tem que andar JUNTOS. Se so a constante mudasse, todo
-    #     tick que caisse no fallback seria classificado como VAZAMENTO; se so
-    #     a allowlist mudasse, a composicao por tick atribuiria o fallback a
-    #     other_calls e a linha de base do #6912 ficaria silenciosamente
-    #     errada. Nenhum dos dois erros levanta excecao — sao ambos silenciosos,
-    #     que e o motivo de existir um teste em vez de confiar na revisao.
-    assert_true(
-        "fallback pago do continuo esta na PAID_ALLOWLIST (nunca classificado como vazamento)",
-        mod.CONTINUO_PAID_FALLBACK_MODEL in mod.PAID_ALLOWLIST,
-    )
-    assert_true(
-        "fallback pago do continuo tem baseline de preco (o alarme do #6818 o cobre)",
-        mod.CONTINUO_PAID_FALLBACK_MODEL in set(mod.PAID_PRICE_BASELINE)
-        | set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
-    )
-    assert_true(
-        "primario do continuo tambem esta na allowlist (mesma classe de erro)",
-        set(mod.CONTINUO_PRIMARY_MODEL_IDS) <= set(mod.PAID_ALLOWLIST),
+        "#10431: luna faturado pela OpenRouter (openai/gpt-6-luna) -> vazamento",
+        mod._is_leak("openai/gpt-6-luna", "openrouter") is True
+        and "openai/gpt-6-luna" not in mod.SUBSCRIPTION_ROUTE_MODELS,
     )
 
     # --- #7649 (08/09/2026): elo de assinatura claude.ai de claude-delegate.sh ---
-    #
-    # Mesma classe de drift do PR #7648 (glm -> deepseek): um elo novo que
-    # apareca em `session_model_usage` sem entrar na allowlist certa vira
-    # falso positivo de vazamento pago. Aqui e o oposto do #7648 (constante
-    # nova em vez de troca de slug), mas o invariante que protege e o mesmo.
     assert_true(
-        "#7649: elo de assinatura ('sonnet') esta na PAID_ALLOWLIST (nunca sinalizado como vazamento)",
-        "sonnet" in mod.PAID_ALLOWLIST,
+        "#7649: elo de assinatura ('sonnet') esta em SUBSCRIPTION_ROUTE_MODELS (nunca sinalizado como vazamento)",
+        "sonnet" in mod.SUBSCRIPTION_ROUTE_MODELS,
     )
     assert_true(
         "#7649: _is_leak('sonnet', 'anthropic') -> False (nao e vazamento, mesmo com provider billable)",
@@ -413,318 +317,6 @@ def main() -> int:
         "#7649: _is_leak('sonnet', '') -> False mesmo com provider AUSENTE (fail-closed do #6446 nao pega um id na allowlist)",
         mod._is_leak("sonnet", "") is False,
     )
-    assert_true(
-        "#7649: elo de assinatura esta em PAID_MODELS_NOT_ON_OPENROUTER (nao e um id do catalogo da OpenRouter)",
-        "sonnet" in mod.PAID_MODELS_NOT_ON_OPENROUTER,
-    )
-    # Controle negativo (mesma disciplina do PR #7648): sem as 2 entradas, o
-    # invariante da secao 9 acima (`PAID_ALLOWLIST <= coberto`) FALHA — prova
-    # que o teste discrimina de verdade, nao passa vazio.
-    coberto_sem_sonnet = (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)) - {"sonnet"}
-    assert_true(
-        "#7649 controle negativo: sem 'sonnet' em PAID_MODELS_NOT_ON_OPENROUTER, o invariante da secao 9 QUEBRA",
-        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_sonnet),
-    )
-    # detect_price_changes: o elo de assinatura tem que sair como out_of_scope
-    # (fronteira PERMANENTE — nao ha preco no catalogo da OpenRouter pra
-    # verificar), nunca como unverifiable (que alarmaria TODO dia, pra
-    # sempre, e o alarme que sempre grita e o que ninguem le — mesmo
-    # raciocinio do item 9b acima).
-    f_sonnet = mod.detect_price_changes(
-        {}, baseline={}, not_on_openrouter={"sonnet"},
-    )
-    assert_true(
-        "#7649: elo de assinatura no price-check -> out_of_scope, exit 0, nunca 'indeterminado'",
-        any(u["modelo"] == "sonnet" for u in f_sonnet["out_of_scope"])
-        and not f_sonnet["unverifiable"]
-        and mod.price_check_exit_code(f_sonnet) == 0,
-    )
-
-    # --- achados do review do PR #7085 ---
-
-    # 10. (P2) O caminho "catálogo inacessível" agora é função PURA. Antes era
-    #     dict literal inline no main() — o único ponto onde o shape de
-    #     `findings` era montado à mão, e um typo numa chave quebraria em
-    #     silêncio justamente no fail-closed. Trava as 4 chaves e o exit 1.
-    indisp = mod.build_catalog_unavailable_findings()
-    assert_true(
-        "#7085 P2: catálogo inacessível -> shape completo (4 chaves) e exit 1, nunca 0",
-        set(indisp) == {"increases", "decreases", "out_of_scope", "unverifiable"}
-        and len(indisp["unverifiable"]) == 1
-        and mod.price_check_exit_code(indisp) == 1,
-    )
-
-    # 11. (P3) Tolerância SIMÉTRICA: -0,4% é ruído decimal, não queda real.
-    #     Antes a folga valia só pro aumento e isso imprimia "queda" fantasma.
-    ruido_baixo = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.0000000747", "completion": "0.00000025"}},
-    ))
-    f_rb = mod.detect_price_changes(ruido_baixo, baseline=BASE, not_on_openrouter=set())
-    assert_true(
-        "#7085 P3: -0,4% fica dentro da tolerância — não vira 'queda' fantasma",
-        not f_rb["decreases"] and not f_rb["increases"],
-    )
-    # E queda REAL continua sendo reportada (a folga não pode engolir tudo).
-    f_qr = mod.detect_price_changes(caiu, baseline=BASE, not_on_openrouter=set())
-    assert_true(
-        "#7085 P3: queda real (-33%) continua reportada apesar da tolerância",
-        len(f_qr["decreases"]) == 1,
-    )
-
-    # 12. (robustez) Raiz do JSON como LISTA não pode explodir com
-    #     AttributeError — viraria traceback, e o exit 1 resultante seria
-    #     fail-closed por acidente, não por desenho.
-    assert_true(
-        "#7085: catálogo com raiz não-dict -> {} (indeterminado por desenho), nunca exceção",
-        mod.extract_catalog_pricing([]) == {} and mod.extract_catalog_pricing(None) == {},
-    )
-
-    # 13. `input_cache_read` é 90% do mix do tick (#6712) — é o campo que mais
-    #     pesa no custo real, e nenhum teste variava ele especificamente.
-    cache_subiu = mod.extract_catalog_pricing(_catalog(
-        {"id": "z-ai/glm-5.3-flash", "pricing": {
-            "prompt": "0.000000075", "completion": "0.00000025",
-            "input_cache_read": "0.0000000255"}},
-    ))
-    f_cache = mod.detect_price_changes(
-        cache_subiu,
-        baseline={"z-ai/glm-5.3-flash": dict(BASE["z-ai/glm-5.3-flash"],
-                                             input_cache_read=0.000000015)},
-        not_on_openrouter=set(),
-    )
-    assert_true(
-        "#7085: aumento SÓ no input_cache_read (campo dominante do custo) é detectado e alarma",
-        len(f_cache["increases"]) == 1
-        and f_cache["increases"][0]["campo"] == "input_cache_read"
-        and mod.price_check_exit_code(f_cache) == 3,
-    )
-
-    # #10367 (16/10/2026): troca do #10278 concluída — a lane do #6930 foi
-    # reapontada para o deepseek-v4-flash e o glm-5.3-flash saiu do baseline,
-    # da allowlist e do registro de decisões. Uso residual dele vira vazamento.
-    GLM = "z-ai/glm-5.3-flash"
-    assert_true(
-        "#10367: glm-5.3-flash fora de PAID_PRICE_BASELINE, PAID_ALLOWLIST e PRICE_INCREASE_DECISIONS",
-        GLM not in mod.PAID_PRICE_BASELINE
-        and GLM not in mod.PAID_ALLOWLIST
-        and GLM not in mod.PRICE_INCREASE_DECISIONS,
-    )
-    assert_true(
-        "#10367: glm-5.3-flash cobrado pela OpenRouter agora é vazamento pago (_is_leak True)",
-        mod._is_leak(GLM, "openrouter") is True,
-    )
-    assert_true(
-        "#10367: deepseek-v4-flash (novo modelo da lane) segue na allowlist e com baseline",
-        "deepseek/deepseek-v4-flash" in mod.PAID_ALLOWLIST
-        and "deepseek/deepseek-v4-flash" in mod.PAID_PRICE_BASELINE,
-    )
-    # Baselines históricos do glm, passados explicitamente nos testes de
-    # regressão abaixo (#10065/#10278/#10295) — o mecanismo continua coberto,
-    # só não é mais o baseline de produção.
-    BASELINE_GLM_10065 = {GLM: {"prompt": 0.0000000261, "completion": 0.0000009,
-                                "input_cache_read": 0.0000000108}}
-    DECISIONS_GLM_10278 = {GLM: (
-        "#10278 (15/10/2026): o editor decidiu TROCAR o glm-5.3-flash pelo "
-        "deepseek/deepseek-v4-flash, nao absorver a alta. NAO atualizar "
-        "PAID_PRICE_BASELINE deste modelo."
-    )}
-    # #9559 -> #9633 -> #10132: baseline vigente do deepseek-v4-flash. Em
-    # 13/10/2026 prompt subiu 0,03 -> 0,091/M, completion caiu 1,28 -> 0,182/M
-    # e input_cache_read caiu 0,03 -> 0,0182/M (custo-mix real -34%); o modelo
-    # é mantido e o baseline acompanha os 3 campos vigentes.
-    for campo, valor in (("prompt", 0.000000091), ("completion", 0.000000182),
-                         ("input_cache_read", 0.0000000182)):
-        assert_true(
-            f"#10132: baseline vigente do deepseek-v4-flash usa {campo}={valor}",
-            mod.PAID_PRICE_BASELINE["deepseek/deepseek-v4-flash"][campo] == valor,
-        )
-
-    # #9633 (regressão histórica): com o catálogo no preço reportado pela
-    # issue, o baseline daquela época (0,03/1,28/0,03) sai LIMPO (exit 0).
-    # Desde o #10132 o baseline de produção é outro, então o baseline da
-    # #9633 é passado explicitamente — o teste continua provando que a
-    # atualização daquela época silenciava o alarme.
-    BASELINE_9633 = {
-        "deepseek/deepseek-v4-flash": {"prompt": 0.000000030, "completion": 0.00000128,
-                                       "input_cache_read": 0.000000030},
-        "z-ai/glm-5.3-flash": {"prompt": 0.0000000261, "completion": 0.0000009,
-                               "input_cache_read": 0.0000000108},
-    }
-    cat_9633 = mod.extract_catalog_pricing(_catalog(
-        {"id": "deepseek/deepseek-v4-flash",
-         "pricing": {"prompt": "0.000000030", "completion": "0.00000128",
-                     "input_cache_read": "0.000000030"}},
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
-                     "input_cache_read": "0.0000000108"}},
-    ))
-    f_9633 = mod.detect_price_changes(cat_9633, baseline=BASELINE_9633)
-    assert_true(
-        "#9633: catálogo no preço de 05/10 do deepseek-v4-flash + baseline da época -> sem aumento, sem unverifiable, exit 0",
-        not f_9633["increases"] and not f_9633["unverifiable"]
-        and mod.price_check_exit_code(f_9633) == 0,
-    )
-    # E o baseline ANTIGO (0,0224/M) teria alarmado com esse mesmo catálogo —
-    # prova que o teste discrimina.
-    f_9633_old = mod.detect_price_changes(cat_9633, baseline={
-        "deepseek/deepseek-v4-flash": {"prompt": 0.0000000224, "completion": 0.00000128,
-                                       "input_cache_read": 0.0000000224},
-    }, not_on_openrouter=set())
-    assert_true(
-        "#9633: baseline antigo (0,0224/M) com o mesmo catálogo alarmaria (exit 3)",
-        mod.price_check_exit_code(f_9633_old) == 3
-        and {i["campo"] for i in f_9633_old["increases"]} == {"prompt", "input_cache_read"},
-    )
-
-    # #10065 (regressão): com o glm-5.3-flash no preço medido em 13/10/2026
-    # (string exata do catálogo), o baseline daquela época NÃO alarma pra ele.
-    # Desde o #10367 o glm não está mais no baseline de produção — o baseline
-    # histórico (BASELINE_GLM_10065) é passado explicitamente.
-    cat_10065 = mod.extract_catalog_pricing(_catalog(
-        {"id": GLM,
-         "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
-                     "input_cache_read": "0.0000000108"}},
-    ))
-    f_10065 = mod.detect_price_changes(cat_10065, baseline=BASELINE_GLM_10065,
-                                       not_on_openrouter=set())
-    assert_true(
-        "#10065: catálogo no preço de 13/10 do glm-5.3-flash -> nenhum aumento, exit 0",
-        not f_10065["increases"] and mod.price_check_exit_code(f_10065) == 0,
-    )
-    # O baseline ANTIGO (completion 0,50/M) teria alarmado com o mesmo catálogo.
-    f_10065_old = mod.detect_price_changes(cat_10065, baseline={
-        "z-ai/glm-5.3-flash": {"prompt": 0.00000015, "completion": 0.0000005,
-                               "input_cache_read": 0.000000030},
-    }, not_on_openrouter=set())
-    assert_true(
-        "#10065: baseline antigo (completion 0,50/M) com o mesmo catálogo alarmaria (exit 3)",
-        mod.price_check_exit_code(f_10065_old) == 3
-        and {i["campo"] for i in f_10065_old["increases"]} == {"completion"},
-    )
-    # E o preço do alarme de 12/10 (completion 1,20/M) segue alarmando contra
-    # o baseline de 13/10 — a atualização não cegou o watchdog pra novas altas.
-    f_10065_up = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
-        {"id": GLM,
-         "pricing": {"prompt": "0.0000000261", "completion": "0.0000012",
-                     "input_cache_read": "0.0000000108"}},
-    )), baseline=BASELINE_GLM_10065, not_on_openrouter=set())
-    assert_true(
-        "#10065: completion 1,20/M (alarme de 12/10) ainda alarma contra o baseline de 13/10",
-        any(i["modelo"] == GLM and i["campo"] == "completion"
-            for i in f_10065_up["increases"]),
-    )
-
-    # #10278 (regressão): o #10220 (PR #10221) subiu o baseline do glm para o
-    # preço de 14/10 sem decisão do editor, calando o alarme de uma alta de
-    # 2,9x. O catálogo de 14/10 alarma (prompt + cache) contra o baseline de
-    # 13/10 — mecanismo preservado com baseline/decisões explícitos (#10367).
-    cat_glm_1410 = mod.extract_catalog_pricing(_catalog(
-        {"id": GLM,
-         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                     "input_cache_read": "0.00000003"}},
-    ))
-    f_10278 = mod.detect_price_changes(cat_glm_1410, baseline=BASELINE_GLM_10065,
-                                       not_on_openrouter=set(),
-                                       decisions=DECISIONS_GLM_10278)
-    assert_true(
-        "#10278: catálogo de 14/10 do glm-5.3-flash alarma prompt+cache contra o baseline de 13/10",
-        {i["campo"] for i in f_10278["increases"] if i["modelo"] == GLM}
-        == {"prompt", "input_cache_read"}
-        and mod.price_check_exit_code(f_10278) == 3,
-    )
-
-    # #10295 (regressão): aumento de modelo com decisão registrada continua
-    # alarmando, mas sai anotado com a decisão — senão a issue do
-    # watch-continuo-health manda "atualizar PAID_PRICE_BASELINE" e uma sessão
-    # reaplica a alta revertida.
-    assert_true(
-        "#10295: aumentos com decisão registrada carregam o texto da decisão",
-        f_10278["increases"]
-        and all("#10278" in i.get("decisao", "") and "NAO atualizar" in i["decisao"]
-                for i in f_10278["increases"] if i["modelo"] == GLM),
-    )
-    f_10295_ds = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
-        {"id": "deepseek/deepseek-v4-flash",
-         "pricing": {"prompt": "0.00000015", "completion": "0.000000182",
-                     "input_cache_read": "0.0000000182"}},
-        {"id": GLM,
-         "pricing": {"prompt": "0.00000015", "completion": "0.0000005",
-                     "input_cache_read": "0.00000003"}},
-    )), baseline={**mod.PAID_PRICE_BASELINE, **BASELINE_GLM_10065},
-        decisions=DECISIONS_GLM_10278)
-    assert_true(
-        "#10295: aumento do deepseek (sem decisão) NÃO ganha 'decisao' e o exit segue 3",
-        any(i["modelo"] == "deepseek/deepseek-v4-flash" for i in f_10295_ds["increases"])
-        and all("decisao" not in i for i in f_10295_ds["increases"]
-                if i["modelo"] == "deepseek/deepseek-v4-flash")
-        and mod.price_check_exit_code(f_10295_ds) == 3,
-    )
-    f_sem_decisao = mod.detect_price_changes(cat_glm_1410, baseline=BASELINE_GLM_10065,
-                                             not_on_openrouter=set(), decisions={})
-    assert_true(
-        "#10295: decisions={} desliga a anotação (prova que o campo vem do registro, não do id)",
-        f_sem_decisao["increases"]
-        and all("decisao" not in i for i in f_sem_decisao["increases"]),
-    )
-    # #10367: contra o baseline de produção (glm fora dele desde a troca), o
-    # catálogo do glm não gera aumento algum pra ele.
-    f_10367 = mod.detect_price_changes(cat_glm_1410, not_on_openrouter=set())
-    assert_true(
-        "#10367: catálogo do glm não gera aumento contra o baseline de produção (glm fora dele)",
-        not [i for i in f_10367["increases"] if i["modelo"] == GLM],
-    )
-    assert_true(
-        "#10295: todo modelo em PRICE_INCREASE_DECISIONS tem baseline (senão a anotação nunca dispara)",
-        set(mod.PRICE_INCREASE_DECISIONS) <= set(mod.PAID_PRICE_BASELINE),
-    )
-
-    # #10132 (regressão): catálogo com os 2 modelos pagos no preço vigente
-    # medido em 13/10/2026 (strings exatas do catálogo) -> o --price-check de
-    # produção sai LIMPO (exit 0). Senão o alarme do prompt 3,03x repete todo
-    # dia sobre uma mudança já medida (custo-mix real -34%).
-    cat_10132 = mod.extract_catalog_pricing(_catalog(
-        {"id": "deepseek/deepseek-v4-flash",
-         "pricing": {"prompt": "0.000000091", "completion": "0.000000182",
-                     "input_cache_read": "0.0000000182"}},
-        {"id": "z-ai/glm-5.3-flash",
-         "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
-                     "input_cache_read": "0.0000000108"}},
-    ))
-    f_10132 = mod.detect_price_changes(cat_10132)
-    assert_true(
-        "#10132: catálogo no preço vigente (13/10) -> sem aumento, sem unverifiable, exit 0",
-        not f_10132["increases"] and not f_10132["unverifiable"]
-        and mod.price_check_exit_code(f_10132) == 0,
-    )
-    # O baseline ANTIGO (#9633) teria alarmado exatamente como a issue: só prompt.
-    f_10132_old = mod.detect_price_changes(cat_10132, baseline=BASELINE_9633,
-                                           not_on_openrouter=set())
-    assert_true(
-        "#10132: baseline da #9633 com o mesmo catálogo alarmaria só no prompt (exit 3)",
-        mod.price_check_exit_code(f_10132_old) == 3
-        and {(i["modelo"], i["campo"]) for i in f_10132_old["increases"]}
-        == {("deepseek/deepseek-v4-flash", "prompt")},
-    )
-    # E outra mudança de preço ainda dispara: a volta do completion a 1,28/M
-    # (a queda de 7x foi absorvida no baseline) e um novo aumento de prompt.
-    for campo, preco in (("completion", "0.00000128"), ("prompt", "0.00000015"),
-                         ("input_cache_read", "0.00000003")):
-        pricing = {"prompt": "0.000000091", "completion": "0.000000182",
-                   "input_cache_read": "0.0000000182"}
-        pricing[campo] = preco
-        f_up = mod.detect_price_changes(mod.extract_catalog_pricing(_catalog(
-            {"id": "deepseek/deepseek-v4-flash", "pricing": pricing},
-            {"id": "z-ai/glm-5.3-flash",
-             "pricing": {"prompt": "0.0000000261", "completion": "0.0000009",
-                         "input_cache_read": "0.0000000108"}},
-        )))
-        assert_true(
-            f"#10132: {campo}={preco} ainda alarma contra o baseline novo (exit 3)",
-            mod.price_check_exit_code(f_up) == 3
-            and {(i["modelo"], i["campo"]) for i in f_up["increases"]}
-            == {("deepseek/deepseek-v4-flash", campo)},
-        )
 
     # --- #8738 (23/09/2026): version bump gpt-5.6-luna -> gpt-6-luna ---
     #
@@ -747,33 +339,10 @@ def main() -> int:
         mod._is_leak("gpt-6-luna", "main") is False,
     )
     assert_true(
-        "#8738: gpt-6-luna (as 2 formas) está em PAID_MODELS_NOT_ON_OPENROUTER, exigido pelo invariante do #6818",
-        {"gpt-6-luna", "openai-codex/gpt-6-luna"} <= set(mod.PAID_MODELS_NOT_ON_OPENROUTER),
-    )
-    assert_true(
         "#8738: gpt-6-luna (as 2 formas) está em CONTINUO_PRIMARY_MODEL_IDS, senão o tick-composition "
         "classifica chamadas do modelo bumpado como 'outros' em vez de primário",
         {"gpt-6-luna", "openai-codex/gpt-6-luna"} <= set(mod.CONTINUO_PRIMARY_MODEL_IDS),
     )
-    # Controle negativo (mesma disciplina do #7649/PR #7648): sem as 2 formas
-    # em PAID_MODELS_NOT_ON_OPENROUTER, o invariante do #6818 (PAID_ALLOWLIST
-    # <= coberto) QUEBRA — prova que o teste discrimina de verdade.
-    coberto_sem_gpt6_luna = (
-        (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER))
-        - {"gpt-6-luna", "openai-codex/gpt-6-luna"}
-    )
-    assert_true(
-        "#8738 controle negativo: sem gpt-6-luna em PAID_MODELS_NOT_ON_OPENROUTER, o invariante do #6818 QUEBRA",
-        not (set(mod.PAID_ALLOWLIST) <= coberto_sem_gpt6_luna),
-    )
-    # E o invariante do #6818 (seção 9 acima) continua valendo com as
-    # entradas novas somadas — não é uma duplicata da asserção da seção 9,
-    # é a prova de que ESTA adição específica não quebrou o invariante geral.
-    assert_true(
-        "#8738: invariante do #6818 (PAID_ALLOWLIST <= baseline ∪ not_on_openrouter) segue valendo com gpt-6-luna",
-        set(mod.PAID_ALLOWLIST) <= (set(mod.PAID_PRICE_BASELINE) | set(mod.PAID_MODELS_NOT_ON_OPENROUTER)),
-    )
-
     if FAILED:
         print(f"\n{FAILED} asserção(ões) falharam")
         return 1

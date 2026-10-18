@@ -647,6 +647,12 @@ explicitamente, com ou sem continuação após o wordmark (#10385; o caso
 `http://diar.ia.br`, ver `context/publishers/linkedin.md` item (f)).
 
 - **`result.ok === true`:** prosseguir pro Passo 8d.
+- **Exceção, a perda esperada da menção (#10385, decisão do editor de
+  18/10/2026):** se os ÚNICOS issues forem `WORDMARK_HREF_REWRITE_HINT` na
+  âncora `mencao-abertura` (o LinkedIn reescreve todo "diar.ia.br" do corpo,
+  ver `context/publishers/linkedin.md` item (f)), NÃO tentar corrigir: seguir
+  pro 8d e entregar no Passo 9 com o pedido de ajuste manual (item 4).
+  Qualquer outro issue, sozinho ou junto desse, cai na regra abaixo.
 - **`result.ok === false`:** PARAR — não escrever o texto do post de feed
   nem entregar ao editor. Apresentar `result.issues` ao editor. Se algum
   issue citar o padrão conhecido de split de âncora "diar.ia.br" (PR #5987,
@@ -728,7 +734,20 @@ editor, nesta ordem:
    capa disponível (fail-soft do Passo 7), sem inventar substituto.
 3. **O texto do post de feed** (Passo 8d), já com humanizador + Clarice
    aplicados e sem travessão, pronto pra colar.
-4. **As instruções da ação manual**, resumidas:
+4. **Pedido de ajuste manual da âncora da menção (#10385, decisão do
+   editor de 18/10/2026)**, só quando o `ln-{cycle}.html` tiver uma âncora
+   com `utm_content=mencao-abertura` (abertura sem a marca não gera
+   âncora). O LinkedIn reescreve todo "diar.ia.br" do corpo para
+   `http://diar.ia.br` sem UTM, então essa âncora chega sem a UTM (o Passo
+   8c acusa com `WORDMARK_HREF_REWRITE_HINT`). Pedir ao editor, de forma
+   explícita, que corrija o link da menção à mão antes de agendar, e passar
+   o `href` dessa âncora no `ln-{cycle}.html` como a URL pronta pra colar.
+   Na UI: selecionar o texto "diar.ia.br" da menção arrastando o mouse (sem
+   clicar direto no link), abrir o diálogo de link e colar a URL. Depois de
+   corrigir, recarregar o rascunho e conferir que o link da menção ainda
+   tem `utm_content=mencao-abertura` (ainda não verificado se a correção
+   manual sobrevive ao salvar; se não sobreviver, avisar na #10385).
+5. **As instruções da ação manual**, resumidas:
    - Na aba já aberta com o rascunho colado, subir a imagem de capa no
      campo nativo (ícone no topo do editor, acima do título —
      `context/publishers/linkedin.md` §3).
@@ -737,9 +756,19 @@ editor, nesta ordem:
      certa não basta, a HORA importa mais, porque o post de feed nasce com
      o alcance definido pelo engajamento da 1ª hora (publicar de madrugada
      queima esse alcance de forma permanente); horário comercial da manhã,
-     mesma lógica do envio canônico das 06:00 BRT da diária. O horário
-     exato do artigo semanal ainda não tem definição (escolha do editor,
-     discutida na #10305).
+     mesma lógica do envio canônico das 06:00 BRT da diária. **O horário
+     vem do config (#10305), não da sessão:** rode
+     `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
+     e entregue ao editor o `HH:MM` impresso. Fora do teste rotativo é
+     `publishing.social.linkedin_weekly_article_time` (09:30 BRT); dentro
+     da janela de `publishing.social.rotation`, a segunda recebe o
+     candidato da semana (`linkedin_weekly_article_candidates`). Depois de
+     o editor agendar, registre o horário usado:
+     `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article`
+     (grava em `data/social-schedule-rotation.jsonl`, idempotente — é o
+     registro que a medição da #10305 cruza com os cliques `ln-{ciclo}`).
+     Se o editor escolher outro horário na hora, diga isso no resumo: o
+     registro fica com o planejado, não com o real.
    - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
      aparece agendado.
 

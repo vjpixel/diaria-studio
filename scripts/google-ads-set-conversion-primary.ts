@@ -30,6 +30,12 @@
  *     ver `scripts/lib/ads-rolling-window.ts`). Idempotente: rodar de novo
  *     com o mesmo alvo depois de já convergido não grava linha nova (nada
  *     mudou).
+ *   - `--issue` e `--motivo` são OBRIGATÓRIOS em `--send` (salvo
+ *     `--skip-registro`) e vão literalmente pra linha de `edicoes.jsonl`
+ *     (#10423). Até o #10423 a linha saía com `issue: "8574"` e um motivo
+ *     fixo do caso original, mesmo quando o script era usado pra outra
+ *     issue — o registro de auditoria ficava falso. A validação acontece
+ *     ANTES de qualquer chamada de rede: faltando um dos dois, nada é mutado.
  *
  * ## Uso
  *
@@ -38,7 +44,8 @@
  *     # dry-run — lê o estado atual, imprime o plano, não muta
  *
  *   doppler run -- npx tsx scripts/google-ads-set-conversion-primary.ts \
- *     --conversion-action-id 7758161410 --target false --send
+ *     --conversion-action-id 7758161410 --target false --send \
+ *     --issue 8574 --motivo "rebaixar ação de recuperação, autorizado pelo editor em 28/09/2026"
  *     # muta de verdade — requer as env vars GOOGLE_ADS_* (ver
  *     # docs/google-ads-api-setup.md) e --customer-id (ou
  *     # GOOGLE_ADS_CUSTOMER_ID) pra montar o resource name.
@@ -107,6 +114,29 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   const customerId = getStringArg(argv, "customer-id", { example: "2369219639" }) ?? process.env.GOOGLE_ADS_CUSTOMER_ID;
   const skipRegistro = hasFlag(argv, "skip-registro");
   const edicoesPath = getStringArg(argv, "edicoes-path", { example: "data/aquisicao/teste-2608/edicoes.jsonl" });
+  const issueRaw = getStringArg(argv, "issue", { example: "8574" });
+  const motivo = getStringArg(argv, "motivo", { example: "rebaixar ação X, autorizado pelo editor em DD/MM" })?.trim();
+
+  // #10423 — issue/motivo vão literalmente pra linha de edicoes.jsonl; nunca
+  // texto fixo. Validado ANTES de qualquer rede: sem eles, nada é mutado.
+  let issue: string | undefined;
+  if (issueRaw !== undefined) {
+    const m = /^#?(\d+)$/.exec(issueRaw.trim());
+    if (!m) {
+      console.error(`[google-ads-set-conversion-primary] ✖ --issue precisa ser um número de issue (ex: "8574" ou "#8574"), recebido: "${issueRaw}"`);
+      return 1;
+    }
+    issue = m[1];
+  }
+  if (send && !skipRegistro && (!issue || !motivo)) {
+    const faltando = [!issue ? "--issue" : null, !motivo ? "--motivo" : null].filter(Boolean).join(" e ");
+    console.error(
+      `[google-ads-set-conversion-primary] ✖ ${faltando} obrigatório(s) com --send (#10423): a linha gravada em edicoes.jsonl ` +
+        "registra a issue e o motivo desta mudança, nunca um texto fixo. Passe --issue N --motivo \"...\" " +
+        "(ou --skip-registro para não registrar). Nenhuma chamada à API foi feita.",
+    );
+    return 1;
+  }
 
   if (!customerId) {
     console.error("[google-ads-set-conversion-primary] ✖ --customer-id (ou GOOGLE_ADS_CUSTOMER_ID no ambiente) é obrigatório.");
@@ -214,17 +244,19 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
     "--origem",
     "agente",
     "--issue",
-    "8574",
+    issue!,
     "--conversion-action",
     conversionActionId,
+    "--primary-for-goal",
+    `${before.state.primaryForGoal} -> ${after.state.primaryForGoal}`,
     "--motivo",
-    `primary_for_goal ${before.state.primaryForGoal} -> ${after.state.primaryForGoal}, autorizado pelo editor em 28/09/2026 (janela do teste 2608 ja fechada)`,
+    motivo!,
     ...(edicoesPath ? ["--edicoes-path", edicoesPath] : []),
   ]);
   if (registroCode !== 0) {
     console.error(
       "[google-ads-set-conversion-primary] ⚠ mutação e confirmação OK, mas o registro em edicoes.jsonl falhou (ver mensagem acima). " +
-        "Registrar manualmente: npx tsx scripts/ads-registrar-edicao.ts --braco 'Google Ads (teste 2608)' --tipo conversion-action-secundaria --origem agente --issue 8574",
+        `Registrar manualmente: npx tsx scripts/ads-registrar-edicao.ts --braco 'Google Ads (teste 2608)' --tipo conversion-action-secundaria --origem agente --issue ${issue} --conversion-action ${conversionActionId} --motivo '...'`,
     );
     return 1;
   }

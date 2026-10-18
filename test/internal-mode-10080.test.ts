@@ -1,7 +1,7 @@
 /**
  * test/internal-mode-10080.test.ts (#10080)
  *
- * Modo interno das páginas `/evento/agente-ia/*` e `/guia/agente-ia`:
+ * Modo interno das páginas `/evento/agente-ia/*`, `/guia/agente-ia` e `/produto/conteudo-autentico`:
  * `?interno=1` grava um marcador no localStorage, `?interno=0` apaga. Com o
  * marcador, nenhuma chamada ao pixel da Meta, ao GTM nem ao beacon do clique;
  * o link para o checkout continua funcionando e a página mostra um aviso.
@@ -24,12 +24,13 @@ import {
 import { renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
 
 const PUBLIC = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), "workers/site/public");
-const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "evento/agente-ia/f", "guia/agente-ia"].map((p) => ({
+const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "evento/agente-ia/f", "guia/agente-ia", "produto/conteudo-autentico"].map((p) => ({
   name: p,
   html: readFileSync(join(PUBLIC, p, "index.html"), "utf8"),
 }));
 const EVENTO_JS = readFileSync(join(PUBLIC, "evento/agente-ia/script.js"), "utf8");
 const GUIA_JS = readFileSync(join(PUBLIC, "guia/agente-ia/script.js"), "utf8");
+const PRODUTO_JS = readFileSync(join(PUBLIC, "produto/conteudo-autentico/script.js"), "utf8");
 
 function fakeStorage(initial: Record<string, string> = {}, opts: { throws?: boolean } = {}) {
   const data = new Map(Object.entries(initial));
@@ -200,6 +201,7 @@ describe("#10080 script.js com o modo interno", () => {
   for (const [name, js] of [
     ["evento", EVENTO_JS],
     ["guia", GUIA_JS],
+    ["produto", PRODUTO_JS],
   ] as const) {
     it(`${name}: ligado — nenhuma chamada ao fbq nem ao beacon, aviso na página, clique segue para o checkout`, () => {
       const r = runPage(js, true);

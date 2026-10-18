@@ -160,6 +160,57 @@ export function parseRoundDiffStatsEvents(entries: readonly unknown[]): RoundDif
   return out;
 }
 
+/**
+ * Eventos `round_diff_stats` já persistidos e sabidamente inválidos (#10422).
+ * `data/run-log.jsonl` é append-only e vive replicado entre máquinas via
+ * OneDrive — editar à mão uma linha numa máquina não corrige as outras e
+ * apaga o registro do incidente. Em vez disso, o report ignora o evento
+ * aqui, com o motivo versionado.
+ *
+ * Casa por `sessionKind` + prefixo de `base` (o CLI grava o `--base` como
+ * recebido, curto ou completo — o prefixo cobre as duas formas).
+ */
+export interface InvalidatedRoundDiffStats {
+  sessionKind: RoundSessionKind;
+  basePrefix: string;
+  reason: string;
+}
+
+export const INVALIDATED_ROUND_DIFF_STATS: readonly InvalidatedRoundDiffStats[] = [
+  {
+    sessionKind: "develop",
+    basePrefix: "12353910b",
+    reason:
+      "#10422: /diaria-develop 261018 mediu com o checkout 34 commits ATRÁS da base — diff invertido (+595/−7573, 138 arquivos)",
+  },
+];
+
+/** Pura: o motivo de invalidação do record, ou `null` se ele vale. */
+export function findRoundDiffStatsInvalidation(
+  record: Pick<RoundDiffStatsRecord, "sessionKind" | "base">,
+  invalidated: readonly InvalidatedRoundDiffStats[] = INVALIDATED_ROUND_DIFF_STATS,
+): InvalidatedRoundDiffStats | null {
+  const base = record.base.toLowerCase();
+  return (
+    invalidated.find(
+      (inv) => inv.sessionKind === record.sessionKind && base.startsWith(inv.basePrefix.toLowerCase()),
+    ) ?? null
+  );
+}
+
+/** Pura: separa os records válidos dos invalidados (#10422). */
+export function excludeInvalidatedRoundDiffStats(
+  records: readonly RoundDiffStatsRecord[],
+  invalidated: readonly InvalidatedRoundDiffStats[] = INVALIDATED_ROUND_DIFF_STATS,
+): { valid: RoundDiffStatsRecord[]; excluded: RoundDiffStatsRecord[] } {
+  const valid: RoundDiffStatsRecord[] = [];
+  const excluded: RoundDiffStatsRecord[] = [];
+  for (const r of records) {
+    (findRoundDiffStatsInvalidation(r, invalidated) ? excluded : valid).push(r);
+  }
+  return { valid, excluded };
+}
+
 export interface WindowedRoundDiffStats {
   windowDays: number;
   /** Quantas rodadas caem dentro da janela. */

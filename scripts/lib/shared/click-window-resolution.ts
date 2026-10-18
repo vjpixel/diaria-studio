@@ -24,6 +24,7 @@
  */
 
 import type { EditionOrigin } from "./edition-cache-reader.ts";
+import { isKitTestBroadcast } from "./kit-test-broadcast.ts";
 
 /**
  * Campos que a RESOLUÇÃO por data precisa — deliberadamente sem `stats`.
@@ -46,6 +47,12 @@ export interface ClickWindowPostBase {
    * desempate por origem vira no-op — ver `matchPostsToWindow`.
    */
   origin?: EditionOrigin;
+  /**
+   * #10395: no cache unificado, o `title` de um post Kit é o `subject` do
+   * broadcast (`normalizeKitBroadcast`) — lido só pra excluir test-send pelo
+   * prefixo `[teste]` (`isKitTestBroadcast`), em ADIÇÃO ao piso de entregas.
+   */
+  title?: string | null;
   /**
    * `unknown` DE PROPÓSITO. Este módulo lê exatamente dois bits de `stats`
    * (`email` presente? `email.recipients` numérico?), e o shape completo
@@ -104,7 +111,9 @@ function originRank(post: ClickWindowPostBase): number {
 
 /**
  * Piso de entrega abaixo do qual um broadcast é test-send, não edição
- * (#7637). O `review-test-email` do Stage 5 dispara pro
+ * (#7637). O test-send — `publish-newsletter-kit.ts --send-test` (fallback
+ * sem Chrome) ou o Send test da UI do Kit, nunca o `review-test-email`, que
+ * só LÊ o e-mail no Gmail (#10400) — vai pro
  * `publishing.newsletter.test_email` — 1 destinatário (medido: o `[teste]`
  * de 260904 saiu com `recipients: 1`, contra 630 da edição real do mesmo
  * dia). O piso é 10 e não 2 de propósito: é uma FAIXA vazia, não uma
@@ -134,8 +143,8 @@ export const MIN_REAL_DELIVERY_RECIPIENTS = 10;
  *   fora. `normalizeKitBroadcast` popula os 4 campos de `stats.email`
  *   juntos, sob o mesmo gate `hasOpens` — então `email` ausente quer dizer
  *   que `kit-sync.ts` rodou antes de a Kit agregar as stats do envio.
- *   "Ausente" aí é **não sei**, e num broadcast que pode ser o test-send do
- *   `review-test-email` deixar entrar reabre exatamente o buraco que o
+ *   "Ausente" aí é **não sei**, e num broadcast que pode ser o test-send
+ *   (`--send-test`) deixar entrar reabre exatamente o buraco que o
  *   #7637 fechou. Fora do mapa, a data cai no warning
  *   `editionsMissingClickData` que os dois callers já emitem — a falha
  *   BARULHENTA: o editor re-roda `kit-sync.ts` e a data volta.
@@ -149,6 +158,11 @@ export const MIN_REAL_DELIVERY_RECIPIENTS = 10;
  *   caminho Beehiiv-only (manifest de enriquecimento via MCP) inteiro.
  */
 function isRealDelivery(post: ClickWindowPostBase): boolean {
+  // #10395: test-send do Kit com `[teste]` no assunto fica de fora mesmo
+  // antes de a Kit agregar `recipients` — o piso abaixo continua valendo
+  // pro resto (este sinal soma, não substitui). Só origem Kit: o prefixo é
+  // do `--send-test` do Kit; Beehiiv usa `[TEST]` e nunca entra no cache.
+  if (post.origin === "kit" && isKitTestBroadcast({ title: post.title })) return false;
   const { present, recipients } = emailStatsOf(post);
   if (recipients === undefined) return post.origin !== "kit" || present;
   return recipients >= MIN_REAL_DELIVERY_RECIPIENTS;
@@ -158,8 +172,8 @@ function isRealDelivery(post: ClickWindowPostBase): boolean {
  * Pure: mapa `AAMMDD → post` pros posts cacheados cujo `publish_date` cai
  * numa das datas de `windowDates` e `status === "confirmed"`.
  *
- * **Test-send nunca entra (#7637).** Um test-send do loop
- * `review-test-email` disparado DEPOIS da edição ganhava a vaga da data no
+ * **Test-send nunca entra (#7637).** Um test-send (`--send-test`, verificado
+ * depois pelo `review-test-email`) disparado DEPOIS da edição ganhava a vaga da data no
  * critério antigo (só `publish_date`), e a semana inteira passava a ranquear
  * pelos cliques do teste. Medido na janela `26w36`: o `[teste]` de 260904 só
  * perdeu porque saiu às 04:08 contra 09:02 do real. Discriminador é

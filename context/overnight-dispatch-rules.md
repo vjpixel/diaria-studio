@@ -1029,3 +1029,22 @@ gates em código já filtram sozinhos (`scripts/lib/trusted-comment-author.ts`,
 consumido por `pr-review-authenticity.ts`); esta regra cobre a leitura feita
 pelo próprio agente. Pra ver a associação: `gh pr view N --json comments
 --jq '.comments[] | {a: .authorAssociation, login: .author.login, body}'`.
+
+## 31. Label em PR: sempre via REST com releitura, nunca `gh pr edit --add-label` (#10429)
+
+`gh pr edit --add-label` monta uma mutação GraphQL que consulta
+`projectCards` (Projects classic, descontinuado) e **não aplica a label** —
+às vezes com `exit 0`, às vezes com erro parcial em stderr que parece
+cosmético (#6292, de novo na rodada 261018 com `retido-para-editor`). Para
+aplicar label em PR (inclusive `retido-para-editor`, #10278):
+
+```
+npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --add-label label-a,label-b
+```
+
+O helper usa `gh api -X POST repos/{owner}/{repo}/issues/N/labels -f
+"labels[]=..."` e relê as labels da PR depois; sai `exit 1` se alguma não
+apareceu. Sem o helper (ex.: shell sem `npx`), o equivalente manual é o
+mesmo `gh api` seguido de `gh pr view N --json labels` para conferir.
+Mesma regra do corpo (item 29, `--body-file`). Trava:
+`test/pr-label-via-rest-10429.test.ts`.

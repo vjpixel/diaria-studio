@@ -2,8 +2,8 @@
  * test/claude-openrouter-subscription-lane-7649.test.ts (#7649, Parte 1)
  *
  * Guard de regressão para o elo final de assinatura claude.ai adicionado a
- * `claude-delegate.sh` — depois do glm-5.3-flash, quando os 3 elos `:free`
- * E o pago falham, a cadeia agora tenta MAIS UM elo: o MESMO `claude -p`,
+ * `claude-delegate.sh` — quando os 3 elos `:free` falham (até o #10387 havia
+ * também um elo pago de gateway antes dele), a cadeia tenta MAIS UM elo: o MESMO `claude -p`,
  * mas SEM nenhuma das 8 vars ANTHROPIC_* / CLAUDE_CODE_USE_* de auth e gateway.
  *
  * A regra #5608/#6714 do CLAUDE.md deste repo (nunca trocar a assinatura
@@ -16,8 +16,8 @@
  * justamente a var do incidente REAL já documentado no CLAUDE.md (edição
  * 260818). Cobre:
  *
- *   1. A sentinela `sonnet` é o último elo de MODELS_DEFAULT (depois do
- *      glm-5.3-flash) e `is_subscription_lane_model()` existe.
+ *   1. A sentinela `sonnet` é o último elo de MODELS_DEFAULT (logo depois
+ *      dos `:free`, #10387) e `is_subscription_lane_model()` existe.
  *   2. O branch de invocação do elo de assinatura NUNCA exporta nenhuma das
  *      8 vars de auth/gateway (estático — grep na fatia do source) e o
  *      branch openrouter (else) continua exportando as 5 dele normalmente.
@@ -78,12 +78,12 @@ function openrouterBranch(src: string): string {
 }
 
 describe("claude-delegate.sh — sentinela do elo de assinatura (#7649)", () => {
-  it("MODELS_DEFAULT termina com a sentinela, depois do elo pago deepseek-v4-flash (#10278)", () => {
+  it("MODELS_DEFAULT termina com a sentinela, logo depois dos elos :free — sem elo pago de gateway (#10387)", () => {
     const src = readWrapper();
     assert.match(
       src,
-      /MODELS_DEFAULT=\("dots-studio\/dots-3-note-preview:free" "thinkingmachines\/inkling-small:free" "poolside\/laguna-s-2\.1:free" "deepseek\/deepseek-v4-flash" "\$SUBSCRIPTION_LANE_MODEL"\)/,
-      "MODELS_DEFAULT não termina com o sentinela do elo de assinatura logo depois do deepseek-v4-flash (#10278)",
+      /MODELS_DEFAULT=\("dots-studio\/dots-3-note-preview:free" "thinkingmachines\/inkling-small:free" "poolside\/laguna-s-2\.1:free" "\$SUBSCRIPTION_LANE_MODEL"\)/,
+      "MODELS_DEFAULT não termina com o sentinela do elo de assinatura logo depois dos :free (#10387: sem elo pago do OpenRouter)",
     );
   });
 

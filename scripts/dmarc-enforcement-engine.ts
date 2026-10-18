@@ -42,7 +42,8 @@
  * processo); 1 se qualquer fetch/DNS falhar por erro estrutural.
  */
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
-import { listBroadcasts, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { listAllBroadcasts, type KitBroadcastSummary } from "./lib/kit-client.ts";
+import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 import {
   decideDmarcEnforcement,
   type DmarcEnforcementDecision,
@@ -136,12 +137,21 @@ export function summarizeSubscriberStates(subs: { state: string }[]): {
 }
 
 /** Dias corridos entre o `send_at`/`published_at` do broadcast COMPLETADO
- *  mais antigo e `now` — `null` se não houver nenhum broadcast completado. */
+ *  mais antigo e `now` — `null` se não houver nenhum broadcast completado.
+ *  Test-sends/probes (`isKitTestBroadcast`, #10400) não contam: um probe de
+ *  1 destinatário não é maturidade de envio do domínio.
+ *
+ *  Só o sinal 2 (prefixo de assunto) é aplicado: o helper não carrega id de
+ *  broadcast de teste nem id da tag `diaria-test-email` (sinais 1 e 3 exigem
+ *  ler `newsletter-kit-published.json` das edições ou resolver a tag por
+ *  conta em runtime). Gap conhecido e aceito (PR #10409): um test-send sem
+ *  prefixo antecipa a maturidade; nenhum caminho atual grava test-send sem
+ *  prefixo. */
 export function daysSinceFirstCompletedBroadcast(
-  broadcasts: Pick<KitBroadcastSummary, "status" | "published_at" | "created_at">[],
+  broadcasts: Pick<KitBroadcastSummary, "status" | "published_at" | "created_at" | "subject">[],
   now: Date,
 ): number | null {
-  const completed = broadcasts.filter((b) => b.status === "completed");
+  const completed = broadcasts.filter((b) => b.status === "completed" && !isKitTestBroadcast(b));
   if (completed.length === 0) return null;
   const timestamps = completed
     .map((b) => Date.parse(b.published_at ?? b.created_at))
@@ -171,14 +181,16 @@ export interface DmarcEnforcementReport {
 export async function buildDmarcEnforcementReport(
   opts: FetchDmarcSignalsOptions,
 ): Promise<DmarcEnforcementReport> {
-  const [subs, broadcastsPage, dmarc] = await Promise.all([
+  const [subs, allBroadcasts, dmarc] = await Promise.all([
     listAllKitSubscribers(undefined, { status: "all" }),
-    listBroadcasts({ status: "completed", perPage: 50 }),
+    // #10400: todas as páginas — o "mais antigo" não está garantido na 1ª
+    // (a ordem da listagem do Kit não é fixada).
+    listAllBroadcasts({ status: "completed" }),
     readCurrentDmarcPolicy(opts.domain, opts.resolveTxtFn),
   ]);
 
   const { totalConsidered, bouncedCount, complainedCount } = summarizeSubscriberStates(subs);
-  const daysSinceFirstSend = daysSinceFirstCompletedBroadcast(broadcastsPage.broadcasts, opts.now);
+  const daysSinceFirstSend = daysSinceFirstCompletedBroadcast(allBroadcasts.broadcasts, opts.now);
 
   const signals: DmarcSignals = { totalConsidered, bouncedCount, complainedCount, daysSinceFirstSend };
   // `p=none` é o comportamento efetivo tanto pra "registro ausente" quanto

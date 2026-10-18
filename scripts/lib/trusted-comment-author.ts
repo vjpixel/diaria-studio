@@ -32,8 +32,8 @@
  * Actions aparecem como `NONE` — nenhum consumidor deste filtro depende de
  * comentário de bot hoje (o review do contínuo posta com a conta do dono).
  *
- * Consumidores em shell (`dispatch-glm-lane-unit.sh`,
- * `hermes/scripts/watch-continuo-health.sh`) não importam `.ts`: repetem o
+ * Consumidores em shell (`hermes/scripts/watch-continuo-health.sh`; o
+ * `dispatch-glm-lane-unit.sh` também era, até virar lápide no #10431) não importam `.ts`: repetem o
  * conjunto como literal em jq/python. A paridade é travada por
  * `test/trusted-comment-author-9632.test.ts` — editar o conjunto aqui sem
  * editar lá quebra o teste.

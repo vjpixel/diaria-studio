@@ -18,6 +18,7 @@ O `tools:` acima declara só a forma estável `mcp__claude_ai_Gmail__search_thre
 O JSON de saída `inconclusive` sempre inclui um campo `reason` para o orchestrator/log distinguirem as duas causas, que pedem ação diferente do editor (reconectar o conector vs. simplesmente aguardar/checar o Beehiiv):
 - `reason: "mcp_unavailable"` — `mcp__claude_ai_Gmail__search_threads`/`get_thread` não existiam nesta sessão sob o prefixo declarado no `tools:` (conector desconectado, ou exposto sob outro prefixo que este agent não tem como descobrir — #8953).
 - `reason: "not_found_timeout"` — a(s) tool(s) Gmail existiam e responderam, mas nenhuma thread bateu com a query em 30s (o cenário original do #1212 — email pode não ter chegado, chegado atrasado, ou com subject diferente do esperado).
+- `reason: "ui_test_not_marked"` — só Kit (#10395, ver K1): estado com `test_mode: "ui"` sem `test_sent_at`; o Send test da UI pode nunca ter saído.
 
 **Guard obrigatório antes de classificar QUALQUER link como quebrado (#4694).** Achado 260806: o dump salvo em `test-email-{AAMMDD}.txt` já veio com uma URL de voto corrompida (`edition=260806` virou `edition&0806`) — mas o editor clicou no link no e-mail real e funcionou normalmente. **Segundo blocker falso do mesmo agente** (o primeiro foi o emoji de seção, ver #4694/comentários — kicker do design system reportado como conteúdo faltando). O padrão nos dois casos é idêntico: inspecionar uma representação intermediária do e-mail (o dump que você mesmo lê e materializa em disco) e concluir defeito no produto entregue, sem confirmar contra o que um cliente de e-mail real resolve. **Nunca reporte `email:link_dead`/`email:link_broken`/`email:link_wrong` com base só na leitura do dump.** Antes de finalizar qualquer achado desse tipo, siga o procedimento da seção 3c-guard abaixo.
 
@@ -818,8 +819,18 @@ Beehiiv, incluindo os lints determinísticos (`lint-test-email.ts`,
 de reportar link quebrado (seção 3c-guard).
 
 **Pular a seção 0** (coleta de `unfixed_issues` do `publish-newsletter`) —
-o test-send do Kit é feito por `publish-newsletter-kit.ts`, que não produz
+o test-send do Kit não passa pelo `publish-newsletter`, que é quem produz
 esse arquivo. Não há issues `publish:` neste fluxo.
+
+**Quem dispara o teste — dois caminhos (#10395).** Ler `test_mode` e
+`test_sent_at` de `{edition_dir}/_internal/newsletter-kit-published.json`:
+- `test_mode: "ui"` (preferido): o top-level clicou em "Send test email" na
+  UI do Kit sobre o PRÓPRIO draft (`--draft-only-for-ui-test` +
+  `--mark-ui-test-sent --at`). Nenhum broadcast é criado e o assunto chega
+  **SEM** prefixo — `{edition_title}` puro.
+- `test_mode: "broadcast"` ou ausente (fallback, estados pré-#10395):
+  `publish-newsletter-kit.ts --send-test` cria um broadcast descartável e o
+  assunto chega com `[teste] ` na frente.
 
 ### K1. Buscar o email via Gmail MCP (substitui a seção 1)
 
@@ -828,7 +839,15 @@ esse arquivo. Não há issues `publish:` neste fluxo.
 1. Aguardar 20 segundos (achado ao vivo #464: o test-send do Kit agenda
    `send_at = agora + 15s`, mais folga que o test email da Beehiiv):
    `Bash("sleep 20")`.
-2. Buscar via `mcp__claude_ai_Gmail__search_threads` com query:
+2. Buscar via `mcp__claude_ai_Gmail__search_threads`. **Com `test_mode: "ui"`,
+   rodar PRIMEIRO a query sem prefixo** (`subject:"{edition_title}" from:news.diar.ia.br newer_than:1d`)
+   e só depois a com prefixo; em qualquer modo, **descartar mensagens com
+   `internalDate` anterior a `test_sent_at`** (menos 5s de folga) — o mesmo
+   título casa um teste antigo do mesmo dia, ou a própria edição de ontem
+   num título repetido. Sem `test_sent_at` com `test_mode: "ui"`, o teste
+   pela UI não foi registrado: reportar `inconclusive` com
+   `reason: "ui_test_not_marked"`. Fora do modo `ui`, a query com prefixo
+   vem primeiro:
    `subject:"[teste] {edition_title}" from:news.diar.ia.br newer_than:1d`.
    **Confirmado ao vivo (24/08/2026, threads reais de test-send do #464):**
    o Kit prefixa o subject com `[teste] ` minúsculo (não `[TEST] ` como a
@@ -837,7 +856,7 @@ esse arquivo. Não há issues `publish:` neste fluxo.
    `oi@news.diar.ia.br` (domínio próprio da diar.ia.br via Kit, não um
    domínio `kit.com`/`convertkit.com` genérico — footer do email traz
    "Built with Kit" mas o envelope From é nosso).
-3. Se não encontrar, tentar sem o prefixo: `subject:"{edition_title}" from:news.diar.ia.br newer_than:1d`.
+3. Se não encontrar, tentar a outra query (sem o prefixo, ou com ele no modo `ui`), com o mesmo corte por `test_sent_at`.
 4. Resto igual à seção 1 (ler via `get_thread`, sem fallback via Chrome (#8205), timeout 30s
    → `inconclusive` fail-closed — mesma disciplina do #1212). Se as tools
    `mcp__claude_ai_Gmail__*` não existirem, não há fallback executável (ver
@@ -845,10 +864,12 @@ esse arquivo. Não há issues `publish:` neste fluxo.
 
 ### K2. Subject esperado (substitui o item 0 da seção 3)
 
-O subject correto é `[teste] {edition_title}` (minúsculo, espaço depois do
-colchete — ver K1.2). Comparar como no item 0 original, mas com este
-prefixo em vez de `[TEST] `. Os mesmos 3 modos de falha (placeholder,
-título da edição anterior, divergência) se aplicam.
+O subject correto é `{edition_title}`, **com OU sem** o prefixo `[teste] `
+(minúsculo, espaço depois do colchete — ver K1.2): sem prefixo no caminho
+da UI (`test_mode: "ui"`, #10395), com prefixo no fallback `--send-test`.
+**Ausência do prefixo nunca é `subject_mismatch`** — comparar o restante
+como no item 0 original. Os mesmos 3 modos de falha (placeholder, título da
+edição anterior, divergência) se aplicam ao `{edition_title}`.
 
 ### K3. Ressalvas de renderização específicas do Kit — NÃO reportar como issue
 

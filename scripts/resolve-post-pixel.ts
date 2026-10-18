@@ -52,7 +52,7 @@ import { resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { BEEHIIV_BASE_URL, appendUtmToEditionUrl } from "./lib/edition-url.ts"; // #4295 — appendUtmToEditionUrl
 import { LINKEDIN_POST_PIXEL_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { stripMarkdownEmphasis } from "./lib/strip-markdown-emphasis.ts"; // #9568 — LinkedIn não renderiza markdown
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #9568 — LinkedIn não renderiza markdown; #10441 ponto único do texto de post
 import { finalizeUseMelhorTextChannelPostText, planUseMelhorDispatch, prependUseMelhorCaptionTitle, type UseMelhorDispatchPlan } from "./lib/use-melhor-dispatch.ts"; // #9568; #10201
 import { readSocialPublished } from "./lib/social-published-store.ts"; // #9568 — horário real do 4º post
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #9568
@@ -110,10 +110,11 @@ export function extractPersonalPostText(
   const social = extractSection(socialMd, "Social");
   const um = social ? extractDestaqueBlock(social, USE_MELHOR_POST_ID) : null;
   if (um && um.trim()) {
-    return { source: "um", text: finalizeUseMelhorTextChannelPostText(stripMarkdownEmphasis(um.trim())) };
+    return { source: "um", text: finalizeUseMelhorTextChannelPostText(toSocialPostText(um.trim())) };
   }
   const legacy = extractPostPixelText(socialMd);
-  return legacy === null ? null : { source: "post_pixel", text: legacy };
+  // #10441: o legado também vira texto de post (lembrete manual do Stage 6) — sem `**`.
+  return legacy === null ? null : { source: "post_pixel", text: toSocialPostText(legacy) };
 }
 
 /** #9568: imagem sugerida pro lembrete do post pessoal, conforme a fonte do texto. */

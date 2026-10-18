@@ -23,6 +23,12 @@
  *   # checar (modo padrão): sai 1 se houver pendência OU issue nova não-triangulada
  *   npx tsx scripts/check-state-changed-pending.ts --plan data/overnight/260817/plan.json
  *
+ *   # Desde #10407 o mesmo fetch também re-classifica (`classifyExecTrack`)
+ *   # as entradas de `issues[]` marcadas "não trabalhada por esta sessão"
+ *   # (`deixado-para-o-300`; e `claimed-por-outra-sessao` em plano develop) —
+ *   # track que virou develop/bloqueada desde a gravação → exit 1.
+ *   # `--kind develop|overnight|continuo` sobrepõe a inferência pelo path.
+ *
  *   # pular a re-varredura de convergência (gh indisponível/offline)
  *   npx tsx scripts/check-state-changed-pending.ts --plan {path} --skip-convergence
  *
@@ -48,11 +54,23 @@ import {
   addPendingToPlan,
   checkStateChangedPending,
   checkConvergenceScan,
+  findRetrackedUnworkedIssues,
   recordConvergenceScan,
   type ConvergenceScanIssue,
   type PlanWithGoal,
+  type RetrackedUnworkedIssue,
   removePendingFromPlan,
 } from "./lib/state-changed-tracker.ts";
+
+/** #10407 — `claimed-por-outra-sessao` só conta na re-classificação numa
+ * sessão develop (overnight/continuo não pegam develop/bloqueada, seria
+ * ruído). `--kind` explícito vence; sem ele, infere pelo segmento `develop`
+ * do path (`data/develop/{AAMMDD}/plan.json`, convenção dos 3 SKILL.md).
+ * Exportado para teste. */
+export function isDevelopPlan(planPath: string, kind?: string): boolean {
+  if (kind !== undefined) return kind === "develop";
+  return planPath.split(/[\\/]/).includes("develop");
+}
 
 interface GhIssueListItem {
   number: number;
@@ -195,6 +213,7 @@ if (isMainModule(import.meta.url)) {
   // reintroduzindo exatamente a classe de falso-"ok" que este gate existe
   // pra fechar.
   let convergenceRan = false;
+  let retracked: RetrackedUnworkedIssue[] = [];
   if (flags.has("skip-convergence")) {
     console.error(
       "[check-state-changed-pending] --skip-convergence: pulando re-varredura de convergência (não avaliada nesta invocação).",
@@ -220,13 +239,18 @@ if (isMainModule(import.meta.url)) {
         convergenceMissing = convergence.status === "missing" ? convergence.issues : [];
         recordConvergenceScan(planPath, convergence.novas_encontradas);
         convergenceRan = true;
+        // #10407 — issue JÁ no plano como "não trabalhada por esta sessão"
+        // que outra sessão re-roteou pra develop/bloqueada no meio da rodada.
+        retracked = findRetrackedUnworkedIssues(planRaw as PlanWithGoal, fetched.issues, {
+          includeClaimed: isDevelopPlan(planPath, values.kind),
+        });
       }
     }
   }
 
-  if (pendingResult.status === "ok" && convergenceMissing.length === 0) {
+  if (pendingResult.status === "ok" && convergenceMissing.length === 0 && retracked.length === 0) {
     const convergenceNote = convergenceRan
-      ? "nenhuma issue nova fora da varredura"
+      ? "nenhuma issue nova fora da varredura, nenhuma issue do plano re-roteada pra develop/bloqueada"
       : "re-varredura de convergência NÃO executada (--skip-convergence ou gh indisponível) — só pendência explícita foi checada";
     console.log(`ok — nenhuma pendência de re-triagem, ${convergenceNote}`);
     process.exit(0);
@@ -242,6 +266,14 @@ if (isMainModule(import.meta.url)) {
     const list = convergenceMissing.map((n) => `#${n}`).join(", ");
     console.error(
       `re-varredura de convergência: issue(s) nova(s) fora de target_set/tiers/issues e não-triangulada(s) (agendada/bloqueada/fora-de-rodada): ${list} — classifique e reavalie dispatch antes de fechar a rodada`,
+    );
+  }
+  if (retracked.length > 0) {
+    const list = retracked
+      .map((r) => `#${r.number} (${r.motivo}, ${r.track_gravado ?? "sem exec_track_painel"} → ${r.track_atual})`)
+      .join(", ");
+    console.error(
+      `re-classificação (#10407): issue(s) do plano marcada(s) como não trabalhada(s) por esta sessão que agora são develop/bloqueada: ${list} — o 300 não pega essas; atualize exec_track_painel e reavalie dispatch antes de fechar a rodada`,
     );
   }
   process.exit(1);

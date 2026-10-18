@@ -24,11 +24,12 @@
 #
 # Gotchas embutidos:
 #   - Prompt via STDIN (--allowedTools é variádico e engole prompt posicional).
-#   - Fallback de modelo: free primeiro; se free falhar (balde diário esgota —
-#     compartilhado por CONTA entre todos os :free), cai pro elo pago
-#     deepseek/deepseek-v4-flash (desde o #10278, 15/10/2026 — antes era o
-#     glm-5.3-flash; ver o aviso logo antes de MODELS_DEFAULT, mais abaixo; teto diário da
-#     chave limita o estrago).
+#   - Fallback de modelo: só `:free` no gateway; se os `:free` falharem (balde
+#     diário esgota — compartilhado por CONTA entre todos os :free), cai direto
+#     pro elo de assinatura claude.ai (abaixo). Desde o #10387 (18/10/2026,
+#     decisão do editor) NÃO existe mais elo pago do OpenRouter na cadeia —
+#     nem como último recurso (era deepseek/deepseek-v4-flash desde o #10278,
+#     e glm-5.3-flash antes dele). `--model` explícito pago é recusado (exit 2).
 #   - Exit codes na falha total da cadeia (#6617, 28/08/2026): 1 = falha
 #     transitória (quota/rate-limit/timeout — "volta sozinho" é uma leitura
 #     válida); 4 = pelo menos um modelo da cadeia falhou com sinal de CONFIG
@@ -52,8 +53,8 @@
 #     o catálogo: `curl -s https://openrouter.ai/api/v1/models` (sem auth) e
 #     procurar o id. Tratamento dos 3 casos: issue #6803.
 #   - Elo final de assinatura claude.ai (#7649, decisão do editor 08/09/2026):
-#     depois do elo pago (deepseek-v4-flash desde o #10278; era o
-#     glm-5.3-flash), a cadeia tenta MAIS UM elo — o MESMO `claude
+#     depois dos elos `:free` (até o #10387 havia um elo pago de gateway
+#     entre eles — deepseek-v4-flash, antes glm-5.3-flash), a cadeia tenta MAIS UM elo — o MESMO `claude
 #     -p`, mas SEM nenhuma das 8 vars ANTHROPIC_*/CLAUDE_CODE_USE_* de auth e
 #     gateway (unset explícito, nunca "deixar de exportar" — ANTHROPIC_AUTH_TOKEN
 #     e ANTHROPIC_API_KEY têm PRECEDÊNCIA sobre o OAuth da assinatura, então
@@ -76,7 +77,8 @@
 #     `${TMPDIR:-/tmp}/claude-openrouter-free-quota-exhausted-until` com o
 #     epoch do próximo reset (00:00 UTC). Invocações SEGUINTES (mesmo dia,
 #     processo diferente) leem esse marcador ANTES de montar a cadeia e
-#     pulam direto pro(s) elo(s) pago(s) — sem gastar requisição sabendo
+#     pulam direto pro elo de assinatura (o único não-`:free` desde o
+#     #10387) — sem gastar requisição sabendo
 #     que vai bater 429 de novo. Medido no diagnóstico da issue: ~70
 #     invocações/tick × 2 tentativas free desperdiçadas = ~140
 #     requisições/tick jogadas fora depois do 1º 429 do dia, sem esse
@@ -241,8 +243,45 @@ is_subscription_lane_model() {
 # default da Anthropic. O lane de piloto do #6930 (dispatch-glm-lane-unit.sh)
 # força --model explicitamente — também deepseek/deepseek-v4-flash desde o
 # #10367 (era z-ai/glm-5.3-flash).
-MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "deepseek/deepseek-v4-flash" "$SUBSCRIPTION_LANE_MODEL")
+#
+# #10387 (18/10/2026, decisão do editor no /diaria-desbloqueia): "não estou
+# mais usando modelos pagos no OpenRouter". O elo pago de gateway SAIU da
+# cadeia — nenhum caminho deste wrapper pode cair num modelo pago do
+# OpenRouter, nem como fallback de último recurso. A cadeia agora é só
+# `:free` → elo de assinatura claude.ai (sem gateway, sem custo por
+# chamada). O texto acima sobre deepseek/glm é histórico. Consequências:
+#   - o pressuposto (a) do BUDGET deixa de ter objeto (não há mais elo pago
+#     de gateway); o (b) segue valendo — `:free` que vire pago aparece no
+#     alarme de billing (scripts/openrouter-billing-leak-check.ts, que desde
+#     o #10387 acusa QUALQUER cobrança > 0 no OpenRouter);
+#   - `--model` explícito só aceita `:free` ou a sentinela de assinatura
+#     (`is_model_allowed`, abaixo) — a lane de piloto do #6930
+#     (dispatch-glm-lane-unit.sh), que forçava o deepseek, foi encerrada.
+MODELS_DEFAULT=("dots-studio/dots-3-note-preview:free" "thinkingmachines/inkling-small:free" "poolside/laguna-s-2.1:free" "$SUBSCRIPTION_LANE_MODEL")
 MODEL_FORCED=""
+
+# #10387: único portão de "este modelo pode rodar?". Aceita só slug `:free`
+# do OpenRouter ou a sentinela do elo de assinatura. Qualquer outro slug
+# (pago do gateway, id cru da Anthropic que o gateway faturaria) é recusado
+# com exit 2 — uso inválido, nunca "próximo elo". Vale pro `--model`
+# explícito E pra cada elo de MODELS_DEFAULT (defesa contra alguém
+# reintroduzir um elo pago no array sem nova decisão do editor).
+#
+# #10431 item 3, risco aceito: o portão confia no SUFIXO `:free`. Um `:free`
+# que o OpenRouter passe a cobrar (mudança de tier, overage) passa por aqui e
+# só aparece no alarme de billing do dia seguinte
+# (`scripts/openrouter-billing-leak-check.ts`, D-1, que acusa QUALQUER
+# usage > 0 e não tem atalho por `:free` — #6983). Fechar isso antes da
+# chamada exigiria consultar preço a cada invocação (o `--price-check` do
+# catálogo saiu no #10431); o custo de exposição é no máximo 1 dia de um
+# modelo barato, então fica registrado em vez de mecanizado.
+is_model_allowed() {
+  local m="${1:-}"
+  case "$m" in
+    *:free) return 0 ;;
+  esac
+  is_subscription_lane_model "$m"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -262,6 +301,20 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "ERRO: --effort deve ser low|medium|high|xhigh|max, veio '$EFFORT'" >&2; exit 2 ;;
 esac
+
+# #10387: nenhum modelo pago do OpenRouter, nem forçado por --model nem
+# reintroduzido na cadeia default. Validado ANTES de ler a chave e o prompt —
+# mesma disciplina do --effort acima.
+if [ -n "$MODEL_FORCED" ] && ! is_model_allowed "$MODEL_FORCED"; then
+  echo "ERRO: --model '$MODEL_FORCED' recusado (#10387) — só modelos ':free' do OpenRouter ou o elo de assinatura ('$SUBSCRIPTION_LANE_MODEL'). Modelo pago do OpenRouter não roda por este wrapper, nem como fallback." >&2
+  exit 2
+fi
+for m in "${MODELS_DEFAULT[@]}"; do
+  if ! is_model_allowed "$m"; then
+    echo "ERRO: MODELS_DEFAULT contém '$m', que não é ':free' nem o elo de assinatura (#10387) — corrigir a cadeia, nunca rodar pago." >&2
+    exit 2
+  fi
+done
 
 # Validar numéricos ANTES do loop (finding do review #6446: valor malformado
 # faria TODOS os modelos falharem identicamente, mascarado como "cadeia caiu").
@@ -302,7 +355,8 @@ if [ -n "$MODEL_FORCED" ]; then
 else
   MODELS=("${MODELS_DEFAULT[@]}")
   # #6712: se uma invocação ANTERIOR (mesmo dia, processo diferente) já
-  # detectou a cota free exaurida, pula direto pro(s) elo(s) pago(s) —
+  # detectou a cota free exaurida, pula direto pro(s) elo(s) não-:free
+  # (desde o #10387, só o de assinatura) —
   # sem gastar requisição sabendo que vai bater 429. `--model` explícito
   # (MODEL_FORCED acima) NUNCA é filtrado — é escolha deliberada do
   # caller, não a cadeia default.
@@ -312,10 +366,10 @@ else
     if [ -n "$MARKER_EPOCH" ] && [ "$(is_exhaustion_marker_valid "$MARKER_EPOCH" "$NOW_EPOCH" 2>/dev/null || echo false)" = "true" ]; then
       mapfile -t PAID_ONLY < <(filter_out_free_models "${MODELS[@]}")
       if [ "${#PAID_ONLY[@]}" -gt 0 ]; then
-        echo "[claude-openrouter] cota free marcada como exaurida até $(date -u -d "@$MARKER_EPOCH" -Iseconds 2>/dev/null || date -u -r "$MARKER_EPOCH" -Iseconds 2>/dev/null || echo "$MARKER_EPOCH epoch") (#6712) — pulando elos :free, indo direto pro(s) elo(s) pago(s)" >&2
+        echo "[claude-openrouter] cota free marcada como exaurida até $(date -u -d "@$MARKER_EPOCH" -Iseconds 2>/dev/null || date -u -r "$MARKER_EPOCH" -Iseconds 2>/dev/null || echo "$MARKER_EPOCH epoch") (#6712) — pulando elos :free, indo direto pro(s) elo(s) não-:free (só o de assinatura desde o #10387)" >&2
         MODELS=("${PAID_ONLY[@]}")
       fi
-      # PAID_ONLY vazio (cadeia é 100% :free, sem elo pago configurado) —
+      # PAID_ONLY vazio (cadeia é 100% :free, sem elo de assinatura) —
       # fail-soft: mantém a cadeia inteira, melhor tentar o free "exaurido"
       # (pode já ter resetado, marcador pode estar errado) do que ficar
       # sem NENHUM modelo pra tentar.
@@ -463,14 +517,13 @@ for MODEL in "${MODELS[@]}"; do
   # delegação em vez de 1 agora que HAIKU/SONNET/OPUS estão todos pinados
   # (era "2" quando só HAIKU existia; sobe se algum caminho interno da
   # família sonnet/opus disparar no mesmo tick que o de haiku), então o
-  # balde seca mais cedo e a cadeia cai no pago antes. Antes do fix essas
+  # balde seca mais cedo e a cadeia cai no elo seguinte antes (desde o
+  # #10387, direto no de assinatura). Antes do fix essas
   # chamadas iam pro Sonnet pago e não tocavam o balde. O custo em DINHEIRO
   # cai de qualquer forma; o que piora é a cota free, que já é o gargalo do
-  # #6712 (17h/dia de pausa). Se isso incomodar, a alternativa é fixar o
-  # background sempre no elo PAGO barato da cadeia (hoje deepseek/deepseek-
-  # v4-flash, #10278 — NUNCA o glm-5.3-flash, que o editor trocou) em vez de "$MODEL"
-  # — não feito aqui pra manter a propriedade "background nunca custa mais
-  # que o primário" e evitar um slug hardcoded.
+  # #6712 (17h/dia de pausa). A alternativa antiga — fixar o background num
+  # elo PAGO barato do gateway — deixou de existir no #10387 (nenhum modelo
+  # pago do OpenRouter, nem pro background).
   #
   # O que torna isso traiçoeiro: essas chamadas NÃO aparecem no transcript
   # .jsonl da sessão (as duas acima registravam só glm-5.3-flash, medido quando ele era o
@@ -746,8 +799,9 @@ done
 
 # #6617 review finding 2: qualquer sinal de config inválida em QUALQUER
 # modelo da cadeia já é acionável — não esperar que NENHUM modelo tenha
-# mostrado sinal de quota. MODELS_DEFAULT mistura :free com pago; é bem
-# possível que o modelo pago bata rate-limit real enquanto um :free tem id
+# mostrado sinal de quota. MODELS_DEFAULT mistura :free com o elo de
+# assinatura (até o #10387, também com um elo pago); é bem possível que um
+# elo bata rate-limit real enquanto um :free tem id
 # morto no mesmo run, e nesse caso misturar os dois sob exit 1 mascararia de
 # novo o exato incidente que esta issue corrige.
 if [ "$SAW_CONFIG_ERROR_SIGNAL" -eq 1 ]; then

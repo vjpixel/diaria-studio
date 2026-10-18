@@ -17,6 +17,10 @@
  *     --braco "Google Ads (teste 2608)" --tipo edicao-em-voo \
  *     --origem editor --motivo "..." --edicao "..."
  *   npx tsx scripts/ads-registrar-edicao.ts --braco todos --tipo pausa-total-anuncios --origem editor --efeito pausa --motivo "..."
+ *   npx tsx scripts/ads-registrar-edicao.ts \
+ *     --braco "Google Ads (teste 2608)" --tipo lance-alvo --origem editor \
+ *     --campanha "Max" --de "tCPA R$ 4,00" --para "tCPA R$ 3,00" --issue 8543 --motivo "..."
+ *     # #10423 — troca de lance/meta de lance (tCPA/tROAS/estratégia); efeito "mudanca"
  *
  * `--tipo` precisa estar no conjunto FECHADO de `TIPO_TO_EFEITO`
  * (`scripts/lib/ads-rolling-window.ts`, #8531) — `--efeito` é OPCIONAL e

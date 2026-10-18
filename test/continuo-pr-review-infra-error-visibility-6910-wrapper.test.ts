@@ -3,8 +3,8 @@
  *
  * Executa `test/continuo-pr-review-infra-error-visibility-6910.test.sh` sob
  * `node --test`, pra rodar em CI de verdade — mesmo padrão de
- * `test/glm-lane-headref-guard.test.ts` +
- * `scripts/lib/glm-lane-headref-guard.test.sh`.
+ * `test/claude-openrouter-symlink-preflight.test.ts` +
+ * `hermes/scripts/claude-openrouter-symlink-preflight.test.sh`.
  *
  * O `.sh` já existia (#6910) mas ficava fora de `run-tests.ts`, que só
  * varre `*.test.ts` — nunca rodou em CI (#7129, achado do crítico de

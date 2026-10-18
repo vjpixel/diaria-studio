@@ -303,6 +303,47 @@ export async function listBroadcasts(
   return kitFetch(`/broadcasts${qs ? `?${qs}` : ""}`, { config: opts.config });
 }
 
+/** Teto padrão de páginas de `listAllBroadcasts` (×`perPage` 100 = 2.000 broadcasts). */
+export const KIT_LIST_ALL_BROADCASTS_MAX_PAGES = 20;
+
+/**
+ * Pagina `GET /broadcasts` até o fim (#10400). A ordem da listagem do Kit não
+ * é fixada em lugar nenhum do código nem da doc pública — quem precisa do
+ * "mais recente" ou do "mais antigo" tem que ler TODAS as páginas e ordenar
+ * no cliente, nunca confiar na 1ª página.
+ *
+ * `has_next_page=true` sem `end_cursor` é envelope malformado — lança (mesma
+ * disciplina de `listAllCompletedBroadcasts`, #6491). Bater no teto de páginas
+ * não lança: devolve `truncated: true` pro chamador decidir/relatar.
+ */
+export async function listAllBroadcasts(
+  opts: Omit<ListBroadcastsOptions, "after" | "perPage"> & { maxPages?: number } = {},
+  listFn: typeof listBroadcasts = listBroadcasts,
+): Promise<{ broadcasts: KitBroadcastSummary[]; pages: number; truncated: boolean }> {
+  const { maxPages = KIT_LIST_ALL_BROADCASTS_MAX_PAGES, ...rest } = opts;
+  const out: KitBroadcastSummary[] = [];
+  let after: string | undefined;
+  let pages = 0;
+  while (pages < maxPages) {
+    const { broadcasts, pagination } = await listFn({ ...rest, perPage: 100, ...(after ? { after } : {}) });
+    pages++;
+    out.push(...broadcasts);
+    if (!pagination?.has_next_page) return { broadcasts: out, pages, truncated: false };
+    if (!pagination.end_cursor) {
+      throw new Error(
+        "[kit-client] listAllBroadcasts: has_next_page=true mas end_cursor ausente — lista truncada, abortando (#6491).",
+      );
+    }
+    after = pagination.end_cursor;
+  }
+  // Truncamento visível (fixer do PR #10409): o chamador também recebe
+  // `truncated`, mas nem todo chamador o relata — o aviso aqui vale pra todos.
+  process.stderr.write(
+    `[kit-client] listAllBroadcasts: teto de ${maxPages} página(s) atingido (${out.length} broadcasts lidos) — lista TRUNCADA; "mais recente"/"mais antigo" podem estar errados.\n`,
+  );
+  return { broadcasts: out, pages, truncated: true };
+}
+
 export interface KitBroadcastDetail extends KitBroadcastSummary {
   content: string | null;
   // #464 (achado do review, PR #6096): tipado `string` até aqui, mas nunca

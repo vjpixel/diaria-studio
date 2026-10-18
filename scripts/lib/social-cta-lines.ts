@@ -71,9 +71,16 @@ export function buildFacebookCtaUrl(): string {
 export const FACEBOOK_CTA_LINE =
   `Receba notícias de IA todo dia por e-mail, assine grátis em ${buildFacebookCtaUrl()}.`;
 
+/**
+ * Frase de follow do Instagram — 2ª metade de `INSTAGRAM_CTA_LINE`, exportada
+ * à parte (#10449) porque o slide CTA do carrossel USE MELHOR a reusa trocando
+ * só a 1ª frase. Fonte única: as duas cópias nunca divergem.
+ */
+export const INSTAGRAM_FOLLOW_SENTENCE = "Segue @diar.ia.br pra não perder a próxima.";
+
 /** Instagram: "link na bio" + follow (#3486, preservado). Sem URL crua — IG não linka no corpo. */
 export const INSTAGRAM_CTA_LINE =
-  "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.";
+  `Edição completa no link da bio. ${INSTAGRAM_FOLLOW_SENTENCE}`;
 
 /**
  * LinkedIn: `null` por decisão de preservar #595/#3627 — ver JSDoc do módulo
@@ -234,7 +241,8 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
  *
  * A sanitização de negrito markdown (`**`) NÃO acontece aqui — é feita uma
  * camada acima, no ponto de publicação de cada canal, via
- * `stripMarkdownEmphasis` (`scripts/lib/strip-markdown-emphasis.ts`, #6862):
+ * `toSocialPostText` (`scripts/lib/social-post-text.ts`, ponto único #10441,
+ * sobre `stripMarkdownEmphasis` do #6862):
  * cobre `**`/`__`/`*`/`_` com tratamento de bugs de fusão de span e boundary
  * Unicode que uma regex ingênua aqui duplicaria de forma mais estreita.
  */
@@ -244,14 +252,23 @@ export function injectChannelLine(
   opts: { useMelhor?: boolean } = {},
 ): string {
   const { body, tags } = splitBodyAndTags(genericText);
-  const ctaLine = CHANNEL_CTA_LINES[channel];
-  // #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
-  // ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
-  // #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
-  const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
-  const parts = [body];
-  if (ctaLine) parts.push(ctaLine);
-  if (engagementLine) parts.push(engagementLine);
+  const parts = [body, ...channelPublishLines(channel, opts)];
   if (tags) parts.push(tags);
   return parts.join("\n\n");
+}
+
+/**
+ * Linhas que o publish acrescenta ao post de um canal, na ordem em que entram
+ * entre o corpo e as tags. Fonte única de `injectChannelLine` e do preview do
+ * gate 4 (`render-social-html.ts`, #10451), que as mostra à parte do texto
+ * editável — nunca uma cópia das frases.
+ *
+ * #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
+ * ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
+ * #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
+ */
+export function channelPublishLines(channel: SocialChannel, opts: { useMelhor?: boolean } = {}): string[] {
+  const ctaLine = CHANNEL_CTA_LINES[channel];
+  const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
+  return [ctaLine, engagementLine].filter((l): l is string => !!l);
 }

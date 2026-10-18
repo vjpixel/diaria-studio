@@ -46,14 +46,19 @@
  *   4 = Gmail REST indisponível (credencial ausente/expirada, erro de API) →
  *       §5f cai pro caminho MCP do passo 0 (prefixo resolvido por
  *       `resolve-mcp-connector.ts`)
+ *   5 = (só Kit, #10395) `newsletter-kit-published.json` tem `test_mode: "ui"`
+ *       sem `test_sent_at`: o `--mark-ui-test-sent` não rodou, então o Send
+ *       test da UI pode nunca ter saído. Não busca (buscar sem corte leria um
+ *       teste antigo) → §5f grava `inconclusive`, reason `ui_test_not_marked`
  */
 
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { isMainModule, parseArgsSimple } from "./lib/cli-args.ts";
 import type { GmailMessagePart } from "./lib/schemas/gmail.ts";
 import { parseGmailThread, type GmailThread } from "./lib/schemas/gmail.ts";
 import { evaluateDeliveredSize, type DeliveredSizeResult } from "./lint-test-email-size.ts";
+import { KIT_TEST_SUBJECT_PREFIX } from "./lib/shared/kit-test-broadcast.ts";
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
@@ -61,7 +66,7 @@ export type TestEmailPlatform = "kit" | "beehiiv";
 
 /** Prefixo de assunto e remetente do test-send por ESP (mesmas queries do §5f / review-test-email). */
 const PLATFORM_QUERY: Record<TestEmailPlatform, { prefix: string; from: string; waitSeconds: number }> = {
-  kit: { prefix: "[teste] ", from: "news.diar.ia.br", waitSeconds: 20 },
+  kit: { prefix: `${KIT_TEST_SUBJECT_PREFIX} `, from: "news.diar.ia.br", waitSeconds: 20 },
   beehiiv: { prefix: "[TEST] ", from: "beehiiv.com", waitSeconds: 15 },
 };
 
@@ -76,7 +81,10 @@ export const FETCH_SUMMARY_FILENAME = "test-email-fetch.json";
 
 /**
  * Queries em ordem de tentativa: com o prefixo do test-send e, de fallback,
- * sem ele (o ESP já mudou o prefixo antes). Aspas do título viram espaço —
+ * sem ele (o ESP já mudou o prefixo antes). No Kit a 2ª é o caminho NORMAL
+ * desde o #10395: o "Send test email" da UI manda o assunto sem `[teste]` (só
+ * o fallback `--send-test` grava o prefixo); `--sent-after` impede que um
+ * `[teste]` antigo do mesmo dia, achado pela 1ª, seja lido. Aspas do título viram espaço —
  * dentro de `subject:"..."` elas fechariam a frase.
  *
  * @pure
@@ -123,7 +131,34 @@ export function decodeBase64Url(data: string): string {
   return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
 
-export type FetchStatus = "found" | "not_found_timeout" | "gmail_api_unavailable";
+export type FetchStatus = "found" | "not_found_timeout" | "gmail_api_unavailable" | "ui_test_not_marked";
+
+/** Estado do publisher Kit lido aqui (sem importar o publisher — só 2 campos). */
+const KIT_PUBLISHED_STATE_FILENAME = "newsletter-kit-published.json";
+
+/**
+ * (#10395) `true` quando o estado do Kit diz que o teste sai pela UI
+ * (`test_mode: "ui"`) mas ninguém registrou o envio (`test_sent_at` ausente)
+ * — o `--mark-ui-test-sent` não rodou. Estado ausente/ilegível ou de outro
+ * modo → `false` (comportamento anterior).
+ *
+ * @pure
+ */
+export function isKitUiTestUnmarked(state: unknown): boolean {
+  if (typeof state !== "object" || state === null) return false;
+  const { test_mode, test_sent_at } = state as { test_mode?: unknown; test_sent_at?: unknown };
+  return test_mode === "ui" && (typeof test_sent_at !== "string" || test_sent_at === "");
+}
+
+function readKitPublishedState(internalDir: string): unknown {
+  const path = resolve(internalDir, KIT_PUBLISHED_STATE_FILENAME);
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 export interface TestEmailFetchSummary {
   status: FetchStatus;
@@ -239,6 +274,18 @@ export async function fetchTestEmail(
     error: null,
   };
 
+  // #10395: teste pela UI sem `--mark-ui-test-sent` → não há âncora pro
+  // `--sent-after`; buscar sem corte acharia um teste antigo do mesmo dia.
+  if (opts.platform === "kit" && isKitUiTestUnmarked(readKitPublishedState(internalDir))) {
+    return {
+      ...base,
+      status: "ui_test_not_marked",
+      error:
+        "test_mode=ui sem test_sent_at em _internal/newsletter-kit-published.json — o --mark-ui-test-sent " +
+        "não rodou; o e-mail de teste pela UI pode nunca ter saído",
+    };
+  }
+
   const wait = opts.waitSeconds ?? PLATFORM_QUERY[opts.platform].waitSeconds;
   if (wait > 0) await deps.sleep(wait * 1000);
 
@@ -325,6 +372,7 @@ export const EXIT_BY_STATUS: Record<FetchStatus, number> = {
   found: 0,
   not_found_timeout: 3,
   gmail_api_unavailable: 4,
+  ui_test_not_marked: 5,
 };
 
 function nonNegative(raw: string | undefined, flag: string): number | undefined {

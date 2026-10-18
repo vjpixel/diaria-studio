@@ -27,7 +27,7 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orchestrator-stage-5.md` §5c-3/5c-3b (fonte de verdade operacional; não duplicar os detalhes de cada script aqui):
 
-1. **Newsletter** — Beehiiv (draft + test email, via `context/publishers/beehiiv-playbook.md`) OU Kit (`publish-newsletter-kit.ts --send-test`), conforme `publishing.newsletter.backend` em `platform.config.json`.
+1. **Newsletter** — Beehiiv (draft + test email, via `context/publishers/beehiiv-playbook.md`) OU Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit), conforme `publishing.newsletter.backend` em `platform.config.json`.
 2. **LinkedIn** — `publish-linkedin.ts --schedule` (Worker `diaria-linkedin-cron` + fallback Make webhook).
 3. **Facebook** — `publish-facebook.ts --schedule` (Graph API).
 4. **Instagram** — `publish-instagram.ts --schedule` (mesmo Worker do LinkedIn, `channel: "instagram"`; carrossel de 5 slides quando disponível, senão post single-image).
@@ -147,7 +147,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 
 **Newsletter primeiro (ordem obrigatória, #2454 — `{edition_url}` só existe depois do draft), depois todos os canais sociais + Brevo + Kit diária em uma única mensagem:**
 
-1. **Newsletter** — Beehiiv (`context/publishers/beehiiv-playbook.md`, você lê e executa direto — **não tente dispatchar via `Agent`**, `javascript_tool` é restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Desde #4196 o fetch roda com timeout (`AbortController`, 25s) e qualquer falha aciona o fallback chunked automaticamente, sem seleção manual. Editor finaliza metadata na UI) OU Kit (`publish-newsletter-kit.ts --send-test`), conforme `publishing.newsletter.backend`.
+1. **Newsletter** — Beehiiv (`context/publishers/beehiiv-playbook.md`, você lê e executa direto — **não tente dispatchar via `Agent`**, `javascript_tool` é restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Desde #4196 o fetch roda com timeout (`AbortController`, 25s) e qualquer falha aciona o fallback chunked automaticamente, sem seleção manual. Editor finaliza metadata na UI) OU Kit (`publish-newsletter-kit.ts`: Send test da UI do Kit, preferido, ou fallback `--send-test` — §5c-1-kit, #10395), conforme `publishing.newsletter.backend`.
 2. `publish-facebook.ts --schedule` (Graph API, ~30s)
 3. `publish-linkedin.ts --schedule` (Worker queue + Make webhook × 3)
 4. `publish-instagram.ts --schedule` (Worker, `channel: "instagram"`; carrossel de 5 slides quando disponível)

@@ -4,7 +4,9 @@
  * Remove marcação de ênfase markdown (`**bold**`, `__bold__`, `*italic*`,
  * `_italic_`) de um texto, preservando o conteúdo — usado no ponto de
  * PUBLICAÇÃO de cada canal social (Facebook, Instagram, Threads/Curto,
- * LinkedIn), nunca na fonte (`03-social.md`).
+ * LinkedIn), nunca na fonte (`03-social.md`). Desde #10441 os publicadores
+ * não importam este arquivo direto: chamam `toSocialPostText`
+ * (`./social-post-text.ts`), o ponto único do texto de post.
  *
  * ## Por que não pode ser na fonte (#6862)
  *

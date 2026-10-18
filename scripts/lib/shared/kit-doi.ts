@@ -26,6 +26,8 @@
  * worker `reativar`, #8194. O upsert com `state:"active"` NÃO promove.)
  */
 
+import { redactLogValues } from "./meta-capi.ts"; // #10405
+
 /**
  * Forms de SISTEMA do Kit (`format: null` em `GET /v4/forms`): não aparecem
  * em "Landing pages & forms", as URLs de edição dão 404, e **não têm o toggle
@@ -162,7 +164,10 @@ export async function extrairSubscriberId(res: Response): Promise<SubscriberIdEx
   try {
     corpo = await res.clone().json();
   } catch (err) {
-    return { ok: false, motivo: "parse-falhou", detalhe: String(err) };
+    // #10416: só o NOME do erro. A mensagem do `JSON.parse` traz um trecho do
+    // corpo — no V8, os 10 primeiros chars: um PREFIXO do e-mail ecoado, que
+    // nenhuma redação por valor inteiro pega (e outro runtime pode trazer mais).
+    return { ok: false, motivo: "parse-falhou", detalhe: err instanceof Error ? err.name : typeof err };
   }
   const bruto = (corpo as { subscriber?: { id?: unknown } } | null | undefined)?.subscriber?.id;
   if (bruto === undefined || bruto === null) return { ok: false, motivo: "campo-ausente" };
@@ -170,8 +175,15 @@ export async function extrairSubscriberId(res: Response): Promise<SubscriberIdEx
   return { ok: true, id: bruto };
 }
 
-/** Mensagem do fracasso de extração, já com o e-mail — sem ele, o log nomeia
- * um problema que ninguém consegue localizar depois. */
+/**
+ * Mensagem do fracasso de extração.
+ *
+ * #10405: NUNCA carrega o e-mail em claro — vai pro log do Worker (PII, mesmo
+ * princípio de minimização do #10393/#10402). `email` só serve pra redigi-lo
+ * de `detalhe`/`bruto`, que vêm da resposta do Kit e podem ecoá-lo. Pra achar
+ * o assinante preso depois: no Kit, os `inactive` criados no minuto do log
+ * (timestamp do próprio log do Worker).
+ */
 export function mensagemSubscriberIdAusente(
   e: Extract<SubscriberIdExtraction, { ok: false }>,
   email: string,
@@ -181,9 +193,11 @@ export function mensagemSubscriberIdAusente(
     e.motivo === "parse-falhou" ? `resposta não parseou como JSON (${e.detalhe})`
     : e.motivo === "tipo-inesperado" ? `subscriber.id veio como ${JSON.stringify(e.bruto)}, não number`
     : "resposta 2xx sem subscriber.id";
-  return (
-    `[kit-doi] ${causa} — status ${status}, e-mail ${email}. NÃO foi possível vincular ao form DOI: ` +
-    `o e-mail de confirmação não saiu e o assinante fica "inactive" até alguém vincular à mão.`
+  return redactLogValues(
+    `[kit-doi] ${causa} — status ${status}, e-mail omitido do log (PII). NÃO foi possível vincular ao form DOI: ` +
+      `o e-mail de confirmação não saiu e o assinante fica "inactive" até alguém vincular à mão ` +
+      `(no Kit: assinantes inactive criados no horário deste log).`,
+    [email],
   );
 }
 

@@ -196,7 +196,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 
-- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 07:45 BRT) — os dois saem juntos. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga = `04-d1-1x1.jpg`).
+- Agendar/postar no **MESMO horário do 4º post da página** (`publishing.social.use_melhor_time`, 07:45 BRT — durante o teste rotativo do #10305 o horário gira por dia; usar o `scheduled_at` da entry `linkedin`/`um` em `06-social-published.json`, que é o que a automação também lê) — os dois saem juntos. **Exceção conhecida do teste (self-review #10417 finding 6, só documentada, sem mudança na task):** nos dias em que a rotação põe o `um` às 07:00, a task `Diaria-LinkedIn-Personal` (07:46, minuto travado com `use_melhor_time` por teste) publica o pessoal ~46 min depois da página; nos demais candidatos a repescagem de hora em hora dispara em hora cheia, quase junto. `fireWindowCheck` (janela de 3h) aceita os dois casos — a diferença é aceita durante a janela do teste e some quando os horários definitivos forem gravados. Imagem: a capa tipográfica `04-um-carousel-cover-4x5.jpg` (`resolve-post-pixel.ts --image` imprime o arquivo certo; edição antiga = `04-d1-1x1.jpg`).
 - **⚠️ GUARD INVERTIDO (espelho do Passo 3):** o post da página exige `has_company_name===true` e aborta se cair no perfil pessoal. O post pessoal exige o **inverso** — confirmar que o composer está no **perfil pessoal (vjpixel)**, e abortar se cair na página Diar.ia:
   ```javascript
   const authorText = (authorBtn?.textContent || authorBtn?.getAttribute('aria-label') || '').trim();
@@ -343,13 +343,14 @@ nunca seja o último nó.
 regra que `endsInBareDomainLabel` já guardava, mas com uma consequência
 que não estava documentada: dá pra pré-linkar a menção em prosa a
 `diar.ia.br` **e manter a UTM**, desde que a âncora se estenda além do
-domínio. Testado nas duas formas em 260803:
+domínio. Testado nas duas formas em 260803 (**superado por (e)/(f):** a
+extensão da âncora não preserva a UTM; ver a reprodução de 18/10/2026):
 
     texto "diar.ia.br"                    -> href reescrito pra http://diar.ia.br, UTM perdida
     texto "diar.ia.br, newsletter de IA"  -> href preservado, UTM intacta (conclusão de 260803 — NÃO reproduzida em 260823, ver item (d) abaixo)
 
-`linkifyWordmark` (mesmo módulo) faz isso automaticamente na primeira
-menção da abertura, estendendo por até 3 palavras e validando com o
+`linkifyWordmark` (mesmo módulo) fazia isso na primeira menção da
+abertura (até o #8819, ver (e)), estendendo por até 3 palavras e validando com o
 próprio guard; se não der pra estender, não linka em vez de emitir link
 que se anuncia rastreado e não é.
 
@@ -373,8 +374,8 @@ sessões não foi isolada** — pode ser mudança de comportamento do editor do
 LinkedIn desde 260803, uma diferença sutil na construção do HTML colado
 não registrada na época, ou o teste original ter sido mal-verificado.
 Tratar (d) como o comportamento **atual e confirmado**, e (c) como
-histórico não confiável para este caso específico até alguém reproduzir
-um dos dois de forma controlada. O que se observa agora: o
+histórico não confiável para este caso específico (reproduzido de forma
+controlada em 18/10/2026, ver (f): (d) confirmado). O que se observa agora: o
 auto-linkificador do LinkedIn reconhece a substring "diar.ia.br" DENTRO do
 texto da âncora colada e a separa num `<a>` próprio sem UTM
 (`href="http://diar.ia.br/"`), deixando só o resto (", newsletter de IA")
@@ -407,11 +408,29 @@ se sustentou, ver (f) abaixo.**
 na âncora da menção da abertura e a UTM `mencao-abertura` se perdeu; as
 outras 7 âncoras com UTM sobreviveram. É exatamente a 1ª linha do caso
 (c): texto que termina em domínio nu tem o href reescrito. O #8819 trocou
-o SPLIT (d) pela REESCRITA (c), não eliminou a perda. **Estado atual:** a
-forma da âncora que sobrevive ao paste ainda não foi decidida — exige
-reprodução controlada ao vivo no LinkedIn (item 1 da #10385, fica para
-uma sessão com Chrome logado). Até lá, a perda é ESPERADA toda semana e a
-correção é manual, via o procedimento de resgate abaixo.
+o SPLIT (d) pela REESCRITA (c), não eliminou a perda.
+
+**Reprodução controlada (18/10/2026, /diaria-develop 261018, rascunho de
+teste lido depois de estabilizar E depois de recarregar a página):** o
+auto-linkificador do LinkedIn transforma **toda** ocorrência do texto
+"diar.ia.br" num link `http://diar.ia.br` sem UTM, esteja ela dentro ou
+fora de âncora. O mesmo vale para "diar.ia.br" em texto puro em qualquer
+ponto do corpo, que ganha uma âncora extra sem UTM. 7 formas testadas:
+`diar.ia.br` sozinho (reescrito),
+`diar.ia.br, newsletter de IA` (dividida: wordmark sem UTM + resto com
+UTM), `diar.ia.br/` e `Diar.ia.br` (reescritos), âncora sem o domínio
+seguida do wordmark em texto puro (âncora preservada, wordmark vira link
+sem UTM), `diar.ia.br (<a>assine aqui</a>)` (âncora preservada, wordmark
+vira link sem UTM), e `diar&#8203;.ia.br` com zero-width space (quebra em `diar.`
+com UTM + `ia.br` linkado para `http://ia.br`, pior). **Só sobrevive com
+UTM a âncora cujo texto não contém o domínio.**
+
+**Decisão do editor (18/10/2026): manter a âncora atual e corrigir à mão
+toda semana.** A skill `/diaria-linkedin-semanal` pede o ajuste ao editor
+no Passo 9 (item 4, com o passo a passo na UI e a releitura depois de
+recarregar). O procedimento de resgate abaixo é o histórico de 26w34,
+escrito para o agente e hoje não validado de ponta a ponta.
+
 `auditLinkedinPaste` acusa o caso explicitamente desde o #10385:
 `isWordmarkAnchorText` casa o wordmark com ou sem continuação, e toda
 âncora de wordmark com a UTM divergente (ou sumida do colado) recebe o
@@ -514,6 +533,17 @@ ao lado do botão Publish, e o artigo agendado aparece em
   horário comercial. O custo maior nem é o e-mail (que atinge poucos
   assinantes no começo) e sim o **post de feed**, que nasce sem engajamento
   inicial e fica com o alcance suprimido de forma permanente.
+- **Horário: vem do config, não da sessão (#10305).** Fonte:
+  `publishing.social.linkedin_weekly_article_time` (09:30 BRT, o horário
+  escolhido no ciclo `26w42`). Enquanto o teste rotativo de
+  `publishing.social.rotation` estiver na janela, a segunda-feira recebe o
+  candidato da semana (`linkedin_weekly_article_candidates`, alternando
+  semana a semana) — o Passo 9 imprime o horário certo com
+  `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
+  e grava o que foi usado com `--record --date {publish-monday} --kind linkedin_article`.
+  O artigo é peça própria, fora da restrição de horário único dos 4 posts do
+  dia útil; os candidatos ficam em `:30`, nunca no minuto de um post da
+  página.
 - **Artigo agendado SAI da lista de rascunhos.** Ao agendar, a URL
   `/article/edit/{id}/` passa a redirecionar pra `/article/new/`, exatamente
   como faria com um ID inválido. Isso parece perda de trabalho e não é —

@@ -48,7 +48,7 @@ chmod +x "$FAKE_BIN/claude"
 
 set +e
 OUT=$(PATH="$FAKE_BIN:$PATH" CLAUDE_BINARY_PREFLIGHT_CMD="claude" \
-  "$SYMLINK" --model z-ai/glm-5.3-flash --timeout 5 <<< "prompt de teste" 2>&1)
+  "$SYMLINK" --model poolside/laguna-s-2.1:free --timeout 5 <<< "prompt de teste" 2>&1)
 RC=$?
 set -e
 

@@ -39,13 +39,42 @@
  *    isto NUNCA vira "divergência confirmada" igual ao cenário 1, e sim
  *    `unregistered-branch-candidate`: candidato pra revisão humana, listado
  *    separadamente no relatório em vez de bloqueado com a mesma certeza.
+ *    **Desde o #10430 candidato não reprova o gate** (`status: "candidates"`,
+ *    CLI `exit 0` com aviso): na rodada 261018 o gate listou PRs `overnight/*`
+ *    de OUTRAS sessões e por isso nunca ficou verde — erro é só o cenário 1.
+ *
+ * ## PR retida para o editor (#10430)
+ *
+ * PR deliberadamente retida (`retido-para-editor`, #10278 — label na PR ou
+ * marcador `<!-- retido-para-editor -->` no corpo) é handoff terminal da
+ * rodada, igual a `draft-ci-vermelho`: segue aberta de propósito até o
+ * editor decidir. Conta como "accounted" por QUALQUER um de dois caminhos:
+ * o status `retida-para-editor` gravado na issue do `plan.json`, ou o sinal
+ * lido ao vivo da PR (`labels`/`body` do `gh pr list`, via
+ * `evaluatePrRetido`). O 2º caminho cobre o caso real da rodada 261018 — a
+ * issue ficou `pulada` no plano e a PR, retida no GitHub. Sinal ilegível
+ * (`retido: null`) NÃO conta: aqui a direção segura é reportar.
  */
+
+import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
 
 /** Shape mínimo de uma entrada de `gh pr list --json headRefName,number,createdAt`. */
 export interface OpenPrLike {
   number: number;
   headRefName?: string | null;
   createdAt?: string | null;
+  /** `labels` cru do `gh pr list --json labels` (#10430) — opcional: ausente
+   * = sem informação de retenção, nunca "retida". */
+  labels?: unknown;
+  /** `body` cru do `gh pr list --json body` (#10430). */
+  body?: unknown;
+}
+
+/** `true` só quando a PR carrega o sinal `retido-para-editor` (#10278) de
+ * forma legível. Labels ausentes/ilegíveis → `false` (ver docblock). */
+export function isPrRetidaParaEditor(pr: OpenPrLike): boolean {
+  if (pr.labels === undefined) return false;
+  return evaluatePrRetido({ labels: pr.labels, body: pr.body }).retido === true;
 }
 
 /** Shape mínimo de uma entrada de `plan.json.issues` relevante aqui — já
@@ -64,11 +93,13 @@ export interface PlanIssueWithPrLike {
  * (`mergeada`, `fechada-sem-merge` — este último ainda não usado em
  * nenhuma skill hoje, mas é o literal citado na issue #5831 como o par de
  * `mergeada`; incluído aqui pra o schema já aceitar o dia em que alguma
- * skill passar a gravá-lo). */
+ * skill passar a gravá-lo). `retida-para-editor` (#10430): PR deliberadamente
+ * retida para o editor (#10278) — handoff terminal, segue aberta de propósito. */
 export const PR_ACCOUNTED_STATUSES: ReadonlySet<string> = new Set([
   "mergeada",
   "draft-ci-vermelho",
   "fechada-sem-merge",
+  "retida-para-editor",
 ]);
 
 /** Prefixos de branch usados pelas 3 skills desta linha (overnight/develop/
@@ -93,12 +124,16 @@ export interface UnregisteredBranchCandidate {
   kind: "unregistered-branch-candidate";
   pr: number;
   headRefName: string;
+  /** #10430: a PR já está retida para o editor (#10278) — informativo pro relatório. */
+  retida?: boolean;
 }
 
 type PrTerminalDivergence = RegisteredNotTerminalDivergence | UnregisteredBranchCandidate;
 
 export interface PrTerminalStateVerdict {
-  status: "ok" | "divergent";
+  /** `divergent` = cenário 1 (erro, CLI `exit 1`); `candidates` = só cenário 2
+   * (aviso, CLI `exit 0`, #10430); `ok` = nada a reportar. */
+  status: "ok" | "candidates" | "divergent";
   registeredNotTerminal: RegisteredNotTerminalDivergence[];
   unregisteredCandidates: UnregisteredBranchCandidate[];
 }
@@ -117,6 +152,7 @@ export function findRegisteredNotTerminal(
   const openPrNumbers = new Set(
     openPrs.map((p) => p.number).filter((n): n is number => typeof n === "number" && Number.isFinite(n)),
   );
+  const retidaPrNumbers = new Set(openPrs.filter(isPrRetidaParaEditor).map((p) => p.number));
 
   const byPr = new Map<number, PlanIssueWithPrLike[]>();
   for (const issue of planIssues) {
@@ -131,6 +167,7 @@ export function findRegisteredNotTerminal(
     if (!openPrNumbers.has(pr)) continue; // PR já fechado/mergeado no GitHub — nada a checar aqui
     const accounted = issues.some((i) => typeof i.status === "string" && PR_ACCOUNTED_STATUSES.has(i.status));
     if (accounted) continue;
+    if (retidaPrNumbers.has(pr)) continue; // #10430: retida no GitHub = handoff terminal
     out.push({
       kind: "registered-not-terminal",
       pr,
@@ -168,14 +205,17 @@ export function findUnregisteredBranchCandidates(
     if (registeredPrNumbers.has(pr.number)) continue;
     const ref = pr.headRefName ?? "";
     if (!branchPrefixes.some((prefix) => ref.startsWith(prefix))) continue;
-    out.push({ kind: "unregistered-branch-candidate", pr: pr.number, headRefName: ref });
+    const candidate: UnregisteredBranchCandidate = { kind: "unregistered-branch-candidate", pr: pr.number, headRefName: ref };
+    if (isPrRetidaParaEditor(pr)) candidate.retida = true;
+    out.push(candidate);
   }
   return out.sort((a, b) => a.pr - b.pr);
 }
 
 /**
  * Pure: veredito combinado — roda os dois checadores acima e agrega.
- * `status: "divergent"` se qualquer um dos dois arrays tiver ≥1 item.
+ * `status: "divergent"` se houver ≥1 divergência confirmada (cenário 1);
+ * senão `"candidates"` se houver ≥1 candidato (cenário 2, #10430); senão `"ok"`.
  */
 export function checkPrTerminalState(
   openPrs: OpenPrLike[],
@@ -185,6 +225,12 @@ export function checkPrTerminalState(
   const registeredNotTerminal = findRegisteredNotTerminal(openPrs, planIssues);
   const unregisteredCandidates = findUnregisteredBranchCandidates(openPrs, planIssues, branchPrefixes);
   const status: PrTerminalStateVerdict["status"] =
-    registeredNotTerminal.length > 0 || unregisteredCandidates.length > 0 ? "divergent" : "ok";
+    registeredNotTerminal.length > 0 ? "divergent" : unregisteredCandidates.length > 0 ? "candidates" : "ok";
   return { status, registeredNotTerminal, unregisteredCandidates };
+}
+
+/** Pure: exit code do CLI para um veredito — só divergência confirmada
+ * reprova (#10430). */
+export function verdictExitCode(verdict: Pick<PrTerminalStateVerdict, "status">): 0 | 1 {
+  return verdict.status === "divergent" ? 1 : 0;
 }

@@ -17,6 +17,8 @@
   "kit": {
     "doiFormId": "9897918",
     "doiFormId_note": "#6810/#7723 — designer form \"Cadastro DOI (confirmacao)\" do Kit, criado no painel em 09/09/2026 e verificado ao vivo: subscriber criado inactive + vinculado a este form recebe o e-mail de confirmacao (copy em portugues, botao teal #00A0A0, remetente oi@news.diar.ia.br, redirect pos-confirmacao configurado no painel Incentive do Kit ainda aponta para o endereco antigo https://eia.diar.ia.br/confirmado — troca manual pendente; o destino final desde #7737 e https://diar.ia.br/confirmado (apex), e o endereco antigo hoje so faz 301 para la, entao o funil segue funcionando ate a troca ser feita). Copy canonica em docs/kit-doi-confirmation-copy.md. NAO voltar para 9839463 (\"Newsletter site\"): e form de SISTEMA (GET /v4/forms devolve format: null), nao aparece em \"Landing pages & forms\", as URLs de edicao dao 404 e ele NAO TEM o toggle \"Send confirmation email\" — apontar para ele deixou o DOI mudo de 26/08 a 09/09/2026, em silencio, porque o vinculo de subscriber responde 201 do mesmo jeito. verificarDoiForm (scripts/lib/shared/kit-doi.ts — o path antigo, workers/poll/src/doi-form-guard-7723.ts, virou re-export em 09/09/2026) recusa ids de sistema e faz o cadastro nascer \"active\", de proposito (#6565): criar \"inactive\" sem caminho de confirmacao prende o assinante para sempre. Config duplicada de proposito: o worker le KIT_DOI_FORM_ID via env do Cloudflare (workers/poll/wrangler.toml), os scripts Node leem daqui — os dois valores precisam andar juntos.",
+    "doiResendFormId": "10062841",
+    "doiResendFormId_note": "#9986 (18/10/2026, decisao do editor, opcao a) — 2o designer form de DOI do Kit, \"Reenvio DOI (#9986)\" (uid 1fb2ed8945), copia do Cadastro 9897918 com Send confirmation email ligado, auto-confirm desligado e o mesmo redirect. Usado SO pelo reenvio de DOI de scripts/evaluate-brevo-diaria.ts, para quem ja respondeu 200 no doiFormId (doi_resend_noop_at): o 201 aqui envia o e-mail; o 200 aqui (vinculado aos dois forms) e terminal (doi_resend_exhausted_at). Funciona uma vez por contato. Nao e usado por nenhum worker, entao nao tem par em wrangler.toml. Nunca apontar para o mesmo id do doiFormId (o script ignora com warn).",
     "tallyFormId": "xX5JJy",
     "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit",
     "affiliate_url": "",
@@ -285,6 +287,16 @@
         "day_offset": 0
       },
       "use_melhor_time": "07:45",
+      "linkedin_weekly_article_time": "09:30",
+      "rotation": {
+        "enabled": true,
+        "start_date": "2026-10-20",
+        "end_date": "2026-11-20",
+        "weekday_candidates": ["07:00", "09:00", "11:00", "13:00", "15:00", "17:00", "19:00", "21:00"],
+        "weekend_candidates": ["08:00", "11:00", "15:00", "19:00"],
+        "linkedin_weekly_article_candidates": ["07:30", "09:30", "12:30", "18:30"],
+        "note": "#10305: teste rotativo de horários (decisão do editor 18/10/2026, método do comentário de 15/10). Dia útil: cada tipo (um/d1/d2/d3) anda 1 candidato por dia útil — 8 candidatos = ciclo de 8 dias úteis em que cada horário recebe cada tipo 1 vez; 2026-10-20..2026-11-20 = 24 dias úteis = 3 ciclos. Sábado/domingo e artigo de segunda do LinkedIn alternam candidatos semana a semana. Fora da janela (ou enabled=false) valem fallback_schedule/use_melhor_time/DEFAULT_WEEKLY_TIME/linkedin_weekly_article_time. Feriados (02/11, 20/11): o ciclo conta dias úteis do CALENDÁRIO, então dia sem edição perde as 4 células daquele dia sem deslocar as seguintes; pra repor a cobertura uniforme, estender end_date em 1 dia útil por feriado sem edição (ex.: 2026-11-20 → 2026-11-24 com os dois feriados) — não muda nenhum dia anterior. Post deslocado pelo past-slot guard (Stage 5 rodando tarde) perde a célula: o stderr loga \"[rotação #10305] WARN: célula perdida\" e a medição descarta comparando scheduled_at real com o plano. Registro: os publicadores em --schedule gravam o dia sozinhos em data/social-schedule-rotation.jsonl (idempotente). A linha do Use Melhor (um) só é gravada quando algum publicador de fato agendou o post um naquele dia (#10427) e nunca sem use_melhor_time; o --record manual da CLI lê data/editions/{AAMM}/{AAMMDD}/06-social-published.json e só grava a linha um se o post um estiver scheduled/published; arquivo ausente = linha um não gravada + WARN no stderr (rodar --record de novo depois do Stage 5). Plano: npx tsx scripts/social-schedule-rotation.ts --plan. Lógica: scripts/lib/social-schedule-rotation.ts."
+      },
       "timezone": "America/Sao_Paulo"
     }
   },

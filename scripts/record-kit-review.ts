@@ -10,7 +10,7 @@
  * Uso:
  *   npx tsx scripts/record-kit-review.ts --edition-dir data/editions/2610/261005 \
  *     --status ok|inconclusive|issues_unfixable [--attempts 0|1|2] \
- *     [--reason mcp_unavailable|not_found_timeout|truncated_fetch] \
+ *     [--reason mcp_unavailable|not_found_timeout|truncated_fetch|ui_test_not_marked] \
  *     [--issues-json '["issue 1","issue 2"]'] [--email-file <corpo do e-mail entregue>]
  *
  * `--email-file` (#10243): confere em TS que `wrong_value` de

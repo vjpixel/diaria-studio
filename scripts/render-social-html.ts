@@ -20,15 +20,18 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
+import { toSocialPostText } from "./lib/social-post-text.ts"; // #10441 preview = texto publicado, sem negrito
 import {
   KNOWN_SOCIAL_CHANNELS,
   TEXTO_UNICO_CHANNELS,
   CURTO_CHANNELS,
   formatChannelLabels,
+  channelPublishLines, // #10451: linhas que o publish acrescenta
+  type SocialChannel,
 } from "./lib/social-cta-lines.ts"; // #4091: fonte única de verdade dos canais
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 preview override
 import {
@@ -40,7 +43,10 @@ import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts"; // #956
 import {
   finalizeUseMelhorPostText,
   finalizeUseMelhorTextChannelPostText,
-} from "./lib/use-melhor-dispatch.ts"; // #10087: preview = texto publicado do `## um`
+  applyUseMelhorUtmToText,
+  planUseMelhorDispatch,
+  prependUseMelhorCaptionTitle,
+} from "./lib/use-melhor-dispatch.ts"; // #10087: preview = texto publicado do `## um`; #10451: título da legenda
 
 export interface ImageMap {
   [key: string]: {
@@ -297,6 +303,67 @@ export function channelKeysForSection(sectionName: string): readonly string[] {
 export interface GroupedBlock {
   channels: string;
   post: Post;
+  /** #10451: o que cada canal do bloco acrescenta no publish (CTA, linha de
+   *  engajamento), fora do `03-social.md`. Só canais com alguma linha. */
+  publishAdditions?: PublishAddition[];
+}
+
+export interface PublishAddition {
+  /** Rótulo do canal ("📷 Instagram"). */
+  channel: string;
+  lines: string[];
+}
+
+/**
+ * #10451: canais que recebem `injectChannelLine` no publish, por seção:
+ * `# Social` (texto único) → LinkedIn/Facebook/Instagram; `# Facebook` legado
+ * (pré-#3991) → Facebook (`publish-facebook.ts` injeta qualquer que seja a
+ * seção); `# Instagram` legado e `# Curto` (X/Threads) → nenhum.
+ */
+function injectedChannelsForSection(sectionName: string): readonly SocialChannel[] {
+  if (/social/i.test(sectionName)) return TEXTO_UNICO_CHANNELS;
+  if (sectionName.trim().toLowerCase() === "facebook") return ["facebook"];
+  return [];
+}
+
+/**
+ * #10451: linhas que o publish acrescenta, por canal, a um post. Fonte:
+ * `channelPublishLines`, a mesma do `injectChannelLine` dos publicadores. Só
+ * d1/d2/d3 e o 4º post (`um`) — são os únicos que passam por
+ * `injectChannelLine`.
+ */
+export function publishAdditionsFor(
+  sectionName: string,
+  destaqueKey: string,
+  /** Subconjunto dos canais da seção (o `## um` pode virar 2 blocos, #10087). */
+  channelKeys: readonly string[] = channelKeysForSection(sectionName),
+): PublishAddition[] {
+  const isUseMelhor = destaqueKey === USE_MELHOR_POST_ID;
+  if (!isUseMelhor && !/^d\d+$/.test(destaqueKey)) return [];
+  const injected = injectedChannelsForSection(sectionName);
+  const out: PublishAddition[] = [];
+  for (const key of channelKeys) {
+    const channel = injected.find((c) => c === key);
+    if (!channel) continue;
+    const lines = channelPublishLines(channel, { useMelhor: isUseMelhor });
+    if (lines.length) out.push({ channel: formatChannelLabels([key]), lines });
+  }
+  return out;
+}
+
+/** #10451: título que o publish põe na 1ª linha da legenda do `## um`
+ *  (`prependUseMelhorCaptionTitle`, #10201) — só nos canais do texto único
+ *  (LinkedIn/Facebook/Instagram); X/Threads não levam título. A checagem de
+ *  "já abre com o título" roda sobre o texto SEM markdown, como no publish
+ *  (lá `toSocialPostText` vem antes do prepend); o `main` devolvido mantém o
+ *  markdown, que `cardBoldSpans` ainda lê. */
+function withUseMelhorCaptionTitle(sectionName: string, main: string, title: string | undefined): string {
+  if (!/social/i.test(sectionName)) return main;
+  const plain = toSocialPostText(main);
+  const prepended = prependUseMelhorCaptionTitle(plain, title);
+  if (prepended === plain) return main;
+  const titleLine = prepended.slice(0, prepended.indexOf("\n\n"));
+  return `${titleLine}\n\n${main.replace(/^\s+/, "")}`;
 }
 
 /** #9999: canais de TEXTO longo, onde o publish separa os itens do `## um`
@@ -313,20 +380,34 @@ const USE_MELHOR_TEXT_CHANNELS: ReadonlySet<string> = new Set(["linkedin", "face
  * LinkedIn/Facebook. Quando os textos finais dos dois grupos coincidem (lista
  * sem itens a separar), fica um bloco só com o rótulo da seção inteira.
  */
-export function useMelhorBlocksForSection(sectionName: string, post: Post): GroupedBlock[] {
+export function useMelhorBlocksForSection(
+  sectionName: string,
+  post: Post,
+  /** #10451: título da 1ª linha da legenda (`plan.captionTitle`); omitido = sem título. */
+  captionTitle?: string,
+): GroupedBlock[] {
   const keys = channelKeysForSection(sectionName);
   const textKeys = keys.filter((k) => USE_MELHOR_TEXT_CHANNELS.has(k));
   const otherKeys = keys.filter((k) => !USE_MELHOR_TEXT_CHANNELS.has(k));
-  const textMain = finalizeUseMelhorTextChannelPostText(post.main);
-  const otherMain = finalizeUseMelhorPostText(post.main);
+  const textMain = withUseMelhorCaptionTitle(sectionName, finalizeUseMelhorTextChannelPostText(post.main), captionTitle);
+  const otherMain = withUseMelhorCaptionTitle(sectionName, finalizeUseMelhorPostText(post.main), captionTitle);
+  const block = (blockKeys: readonly string[], main: string): GroupedBlock => {
+    // O publish aplica a UTM do 4º post DEPOIS de injetar a linha do canal —
+    // o link do CTA do Facebook sai com `utm_content` do USE MELHOR.
+    const publishAdditions = publishAdditionsFor(sectionName, USE_MELHOR_POST_ID, blockKeys).map((a) => ({
+      ...a,
+      lines: a.lines.map(applyUseMelhorUtmToText),
+    }));
+    return {
+      channels: formatChannelLabels(blockKeys),
+      post: { ...post, main },
+      ...(publishAdditions.length && { publishAdditions }),
+    };
+  };
   if (textKeys.length === 0 || otherKeys.length === 0 || textMain === otherMain) {
-    const main = textKeys.length > 0 ? textMain : otherMain;
-    return [{ channels: formatChannelLabels(keys), post: { ...post, main } }];
+    return [block(keys, textKeys.length > 0 ? textMain : otherMain)];
   }
-  return [
-    { channels: formatChannelLabels(textKeys), post: { ...post, main: textMain } },
-    { channels: formatChannelLabels(otherKeys), post: { ...post, main: otherMain } },
-  ];
+  return [block(textKeys, textMain), block(otherKeys, otherMain)];
 }
 
 export interface DestaqueGroup {
@@ -340,6 +421,9 @@ export interface DestaqueGroup {
    * carrossel, nunca É IA?/post_pixel. */
   carouselImages?: { label: string; url: string }[];
   blocks: GroupedBlock[];
+  /** #10451: negrito dos cards fixado ANTES de o override de teste mexer nos
+   *  blocos — os cards leem o `03-social.md`, nunca a legenda de teste. */
+  cardBold?: string[];
 }
 
 /**
@@ -360,6 +444,8 @@ export function groupByDestaque(
   platforms: Platform[],
   imageUrls: ImageMap,
   postPixelImageNum = "1",
+  /** #10451: título da 1ª linha da legenda do `## um` (`plan.captionTitle`). */
+  useMelhorCaptionTitle?: string,
 ): DestaqueGroup[] {
   const groups = new Map<string, DestaqueGroup>();
   for (const platform of platforms) {
@@ -389,9 +475,10 @@ export function groupByDestaque(
         });
       }
       if (key === USE_MELHOR_POST_ID) {
-        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post)); // #10087
+        groups.get(key)!.blocks.push(...useMelhorBlocksForSection(platform.name, post, useMelhorCaptionTitle)); // #10087
       } else {
-        groups.get(key)!.blocks.push({ channels, post });
+        const publishAdditions = publishAdditionsFor(platform.name, key); // #10451
+        groups.get(key)!.blocks.push({ channels, post, ...(publishAdditions.length && { publishAdditions }) });
       }
     }
   }
@@ -404,24 +491,20 @@ export function groupByDestaque(
 }
 
 function renderGroupedBlock(block: GroupedBlock, color: string): string {
-  // #6871 (achado 260901; nome da função corrigido #6940 — #6862 trocou a
-  // sanitização por `stripMarkdownEmphasis`, não `stripMarkdownBold`): o `**`
-  // de negrito seletivo (#6086 item c, pensado pro slide do carrossel) é
-  // removido do texto REAL publicado no LinkedIn/Facebook/Instagram
-  // (`stripMarkdownEmphasis` em `scripts/lib/strip-markdown-emphasis.ts`,
-  // chamado no ponto de publicação de cada canal — NÃO em
-  // `injectChannelLine`, ver `scripts/lib/social-cta-lines.ts`) —
-  // LinkedIn/Facebook/Instagram não renderizam markdown, e antes o `**`
-  // sobrevivia literal no post. Este preview,
-  // porém, deve mostrar a ênfase pretendida em negrito de verdade (não o
-  // texto exatamente como sai publicado) — converte pra <strong> aqui, DEPOIS
-  // do escHtml (`*` não é escapado por HTML, a ordem não perde nada).
-  const mainParas = block.post.main
+  // #10441 (revisa #6871): o preview mostra o texto EXATAMENTE como sai
+  // publicado — sem negrito. O `**` do `## dN` existe só pros cards do
+  // carrossel (#6086 item c); nenhuma plataforma renderiza negrito no texto do
+  // post, e o <strong> que o #6871 punha aqui fazia o editor achar que o post
+  // ia ao ar em negrito (pedido do editor no gate 4 da 261019). Mesmo ponto
+  // único dos publicadores: `toSocialPostText` (`lib/social-post-text.ts`).
+  // O negrito dos cards aparece à parte, na galeria do carrossel ou na linha
+  // "Negrito nos cards" (`renderCardBoldNote`).
+  const postText = toSocialPostText(block.post.main);
+  const mainParas = postText
     .split(/\n\n+/)
     .filter(Boolean)
     .map(p =>
       `<p>${escHtml(p)
-        .replace(/\*\*(.+?)\*\*/gs, "<strong>$1</strong>")
         .replace(/\n/g, "<br>")
         .replace(/\{edition_url\}/g, "<em>[link da edição]</em>")}</p>`,
     )
@@ -429,7 +512,7 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
   const hashtags = block.post.hashtags
     ? `<div class="hashtags">${escHtml(block.post.hashtags).replace(/#(\w+)/g, `<span style="color:${color}">#$1</span>`)}</div>`
     : "";
-  const chars = block.post.main.replace(/\s+/g, " ").trim().length;
+  const chars = postText.replace(/\s+/g, " ").trim().length;
   return `
       <div class="channel-block">
         <div class="channel-label">${escHtml(block.channels)} <span class="char-count">${chars} chars</span></div>
@@ -437,7 +520,34 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
           ${mainParas}
           ${hashtags}
         </div>
+        ${renderPublishAdditions(block.publishAdditions, postText, block.post.hashtags)}
       </div>`;
+}
+
+/** Limite da legenda do Instagram — `truncateCaption` (`publish-instagram.ts`) corta acima disto. */
+const INSTAGRAM_CAPTION_MAX = 2200;
+
+/** #10451: o que o publish acrescenta por canal, à parte do texto editável —
+ *  no post publicado essas linhas entram entre o corpo e as hashtags. Cada
+ *  canal mostra o total de caracteres do post final (corpo + acréscimos +
+ *  hashtags); no Instagram, acima de 2200 o publish corta o corpo. */
+function renderPublishAdditions(additions: PublishAddition[] | undefined, postText: string, hashtags: string): string {
+  if (!additions?.length) return "";
+  return `<div class="publish-additions">
+          <div class="publish-additions-title">Acrescentado na publicação, entre o texto e as hashtags (não vem do 03-social.md):</div>
+          ${additions
+            .map((a) => {
+              const total = [postText, ...a.lines, hashtags].filter(Boolean).join("\n\n").length;
+              const cut = /instagram/i.test(a.channel) && total > INSTAGRAM_CAPTION_MAX;
+              const count = `<span class="publish-addition-total${cut ? " over" : ""}">${total} chars no total${
+                cut ? ` — acima de ${INSTAGRAM_CAPTION_MAX}, o publish corta o texto` : ""
+              }</span>`;
+              return `<div class="publish-addition"><span class="publish-addition-channel">${escHtml(a.channel)}</span> ${a.lines
+                .map((l) => `<span class="publish-addition-line">${escHtml(l)}</span>`)
+                .join(" ")} ${count}</div>`;
+            })
+            .join("\n          ")}
+        </div>`;
 }
 
 /** #6005 Parte B / #6064: galeria de rolagem horizontal com os 5 slides do
@@ -460,6 +570,37 @@ function renderCarouselGallery(group: DestaqueGroup): string {
     </div>`;
 }
 
+/** #10441: trechos marcados com `**...**` no texto-fonte dos cards — o bloco
+ *  que vai pro Instagram (`# Social`, ou `# Instagram` legado), que é de onde
+ *  o carrossel lê. O `# Curto` (X/Threads) não tem card. É o que sai em
+ *  negrito nos cards (e só neles). Únicos, na ordem. */
+export function cardBoldSpans(group: DestaqueGroup): string[] {
+  const spans: string[] = [];
+  for (const b of group.blocks) {
+    if (!/instagram/i.test(b.channels)) continue;
+    for (const m of b.post.main.matchAll(/\*\*(\S(?:[\s\S]*?\S)??)\*\*/g)) {
+      const t = m[1].replace(/\s+/g, " ").trim();
+      if (t && !spans.includes(t)) spans.push(t);
+    }
+  }
+  return spans;
+}
+
+/** #10441: o negrito dos cards, SEPARADO do texto do post. Com a galeria do
+ *  carrossel, os próprios cards mostram o negrito — só uma legenda avisa que o
+ *  texto do post sai sem ele. Sem galeria (cards ainda não gerados), lista os
+ *  trechos que vão em negrito nos cards. */
+function renderCardBoldNote(group: DestaqueGroup): string {
+  const spans = group.cardBold ?? cardBoldSpans(group);
+  if (!spans.length) return "";
+  if (group.carouselImages?.length) {
+    return `<div class="card-bold-note">Negrito só nos cards acima — o texto do post sai sem negrito.</div>`;
+  }
+  return `<div class="card-bold-note">Negrito nos cards do carrossel (o texto do post sai sem negrito): ${spans
+    .map(t => `<strong>${escHtml(t)}</strong>`)
+    .join(" · ")}</div>`;
+}
+
 export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
   // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
   // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
@@ -475,6 +616,7 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   <div class="post">
     <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
     ${imgHtml}
+    ${renderCardBoldNote(group)}
     ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
   </div>`;
 }
@@ -486,6 +628,8 @@ export function buildSocialHtml(
   editionDir?: string,
   /** #9568: linha(s) de status do 4º post (USE MELHOR) — aviso no topo do preview. Omitido = nada. */
   useMelhorNotice?: string[],
+  /** #10451: título da 1ª linha da legenda do `## um` — `resolveUseMelhorCaptionTitle`. Omitido = sem título. */
+  useMelhorCaptionTitle?: string,
 ): string {
   // #8681/#8809: legenda de TESTE do Instagram (`_internal/instagram-test.json`).
   // Desde #3991 o `03-social.md` real tem uma seção `# Social` ÚNICA
@@ -623,10 +767,24 @@ export function buildSocialHtml(
   }
   .carousel-slide { flex: 0 0 82%; scroll-snap-align: center; margin: 0; }
   .carousel-slide img { width: 100%; height: auto; display: block; border-radius: 10px; }
+  .card-bold-note { font-size: 13px; color: #555; padding: 8px 16px; background: #f6f6f6; }
   .carousel-slide figcaption { font-size: 12px; color: #666; text-align: center; padding-top: 6px; }
   .channel-block {
     border-top: 1px solid #f0f0f0;
   }
+  .publish-additions {
+    margin: 0 16px 14px;
+    padding: 8px 10px;
+    background: #f6f6f6;
+    border-left: 3px solid #ccc;
+    font-size: 13px;
+    color: #555;
+  }
+  .publish-additions-title { font-size: 12px; color: #888; margin-bottom: 4px; }
+  .publish-addition { margin-top: 4px; }
+  .publish-addition-channel { font-weight: 600; margin-right: 4px; }
+  .publish-addition-total { color: #999; margin-left: 4px; }
+  .publish-addition-total.over { color: #b00020; font-weight: 600; }
   .channel-label {
     padding: 10px 16px 0;
     font-size: 16px;
@@ -667,7 +825,7 @@ export function buildSocialHtml(
 <h1>Social Preview</h1>
 ${useMelhorNotice?.length ? `<div class="platform-note use-melhor-notice">${useMelhorNotice.map((l) => escHtml(l)).join("<br>")}</div>` : ""}
 ${(() => {
-  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum);
+  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum, useMelhorCaptionTitle);
   // #8681/#8809: injeta a legenda de override como bloco SEPARADO em todo
   // destaque numerado (d1/d2/d3) — mesma semântica de `publish-instagram.ts`
   // (`testOverride?.caption` aplicado a "todos os destaques"). Só quando NÃO
@@ -675,8 +833,28 @@ ${(() => {
   // dedicado já foi resolvido por mutação direta acima, sem colisão com
   // LinkedIn/Facebook.
   if (instagramOverrideCaption && !hasDedicatedInstagramSection) {
+    // #10451: com override, o publish usa o caption de teste em TODO id,
+    // inclusive o `um` — sem CTA, engajamento nem título. Tira os acréscimos
+    // do Instagram dos blocos e o bloco só-Instagram do `um` (que mostraria
+    // título + texto que não vão ao ar).
+    // O rótulo dos blocos combinados também perde o Instagram ("LinkedIn ·
+    // Facebook"), e o negrito dos cards é fixado antes (`cardBold`).
+    const igLabel = formatChannelLabels(["instagram"]);
+    const withoutIg = (label: string): string => label.split(" · ").filter((c) => c !== igLabel).join(" · ");
     for (const g of groups) {
-      if (/^d\d+$/.test(g.key)) {
+      if (!/^d\d+$/.test(g.key) && g.key !== USE_MELHOR_POST_ID) continue;
+      g.cardBold = cardBoldSpans(g);
+      g.blocks = g.blocks
+        .filter((b) => b.channels !== igLabel)
+        .map((b) => {
+          const rest = b.publishAdditions?.filter((a) => a.channel !== igLabel);
+          return { ...b, channels: withoutIg(b.channels), publishAdditions: rest?.length ? rest : undefined };
+        });
+    }
+    for (const g of groups) {
+      // `um` só quando o 4º post sai no Instagram: sem título resolvido o plano
+      // não está pronto e o publish nem despacha o `um`.
+      if (/^d\d+$/.test(g.key) || (g.key === USE_MELHOR_POST_ID && useMelhorCaptionTitle)) {
         g.blocks.push({
           channels: "Instagram (override de teste)",
           post: { destaque: g.key, main: instagramOverrideCaption, hashtags: "" },
@@ -694,6 +872,30 @@ ${(() => {
 </div>
 </body>
 </html>`;
+}
+
+/**
+ * #10451: título que os publicadores põem na 1ª linha da legenda do `## um`
+ * (`plan.captionTitle`, #10201/#10276) — o MESMO plano do Stage 5
+ * (`planUseMelhorDispatch`). Fail-soft: plano não-pronto, config ilegível ou
+ * erro → `undefined` (preview sem título, motivo no stderr quando é erro).
+ */
+export function resolveUseMelhorCaptionTitle(editionDir: string, rootDir: string): string | undefined {
+  try {
+    const config = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+    const plan = planUseMelhorDispatch(editionDir, config);
+    if (plan.status === "ready") return plan.captionTitle;
+    // `planUseMelhorDispatch` já captura o próprio erro e devolve `skip` —
+    // esse caso precisa sair no stderr (os demais skips são estado normal,
+    // já explicados no aviso do 4º post no topo do preview).
+    if (plan.status === "skip" && plan.reason.startsWith("erro")) {
+      console.error(`[render-social-html] #10451: título do 4º post indisponível: ${plan.reason}`);
+    }
+    return undefined;
+  } catch (e) {
+    console.error(`[render-social-html] #10451: título do 4º post indisponível: ${(e as Error).message}`);
+    return undefined;
+  }
 }
 
 function main(): void {
@@ -730,12 +932,23 @@ function main(): void {
   try {
     const editionDir = dirname(mdPath);
     useMelhorNotice = describeUseMelhorPostStatus(
-      gatherUseMelhorStatusInput(editionDir, loadUseMelhorPostConfigState(resolve(import.meta.dirname, ".."))),
+      gatherUseMelhorStatusInput(
+        editionDir,
+        // #10305: com a edição, o horário exibido é o da rotação do dia (o que o Stage 5 agenda).
+        loadUseMelhorPostConfigState(resolve(import.meta.dirname, ".."), basename(resolve(editionDir))),
+      ),
     ).lines;
   } catch (e) {
     console.error(`[render-social-html] #9568: status do 4º post indisponível: ${(e as Error).message}`);
   }
-  const html = buildSocialHtml(platforms, imageUrls, postPixelImageNum, undefined, useMelhorNotice);
+  const html = buildSocialHtml(
+    platforms,
+    imageUrls,
+    postPixelImageNum,
+    undefined,
+    useMelhorNotice,
+    resolveUseMelhorCaptionTitle(dirname(mdPath), resolve(import.meta.dirname, "..")),
+  );
   writeFileSync(outPath, html);
 
   // #1800: validação pós-render — preview com menos <img> que posts de destaque

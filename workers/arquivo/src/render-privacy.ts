@@ -19,7 +19,7 @@
 
 import { renderAnalyticsHead } from "../../../scripts/lib/shared/seo-meta.ts"; // #5498: container GTM
 
-const UPDATED_AT = "3 de setembro de 2026";
+const UPDATED_AT = "18 de outubro de 2026";
 
 const CONTACT_EMAIL = "diariaeditor@gmail.com";
 
@@ -67,6 +67,7 @@ ${renderAnalyticsHead()}
   <li><strong>Interações com os e-mails</strong>: se a edição foi aberta e quais links foram clicados.</li>
   <li><strong>Respostas voluntárias</strong>: enquetes (como o "É IA?"), pesquisas e mensagens que você nos envia.</li>
   <li><strong>Dados de acesso às páginas</strong> do projeto: endereço de origem da visita, tipo de navegador e páginas vistas, em forma agregada.</li>
+  <li><strong>Dados técnicos do cadastro e da reativação</strong>: toda vez que você assina a newsletter ou reativa a assinatura por um link nosso, o endereço IP e a identificação técnica do navegador e do dispositivo (user agent) usados nesse momento são enviados à Meta, junto do seu e-mail em forma de hash (um código irreversível), só para medir se os anúncios geram cadastros. Isso acontece em todo cadastro e em toda reativação, tenha o seu navegador o cookie de medição da Meta ou não. Quando o cookie existe (por exemplo, depois de um anúncio ou de visitar uma página com o pixel da Meta), o identificador dele também vai para a Meta, e nesse caso o IP, o user agent e o identificador ficam guardados junto do seu cadastro.</li>
 </ul>
 
 <h2>Para que usamos</h2>
@@ -91,7 +92,7 @@ ${renderAnalyticsHead()}
 </ul>
 
 <h2>Por quanto tempo guardamos</h2>
-<p>Mantemos seu e-mail enquanto você for assinante. Ao cancelar, o endereço é mantido em uma lista de supressão — não para continuar contatando você, mas justamente para garantir que não voltemos a enviar mensagens. Métricas de abertura e clique são conservadas em forma histórica para análise editorial.</p>
+<p>Mantemos seu e-mail enquanto você for assinante. Ao cancelar, o endereço é mantido em uma lista de supressão — não para continuar contatando você, mas justamente para garantir que não voltemos a enviar mensagens. Métricas de abertura e clique são conservadas em forma histórica para análise editorial. Os dados técnicos guardados junto do cadastro ficam enquanto você for assinante; o que vai para a Meta passa a ser tratado conforme a política dela.</p>
 
 <h2>Seus direitos</h2>
 <p>Pela Lei Geral de Proteção de Dados (LGPD), você pode a qualquer momento pedir acesso aos seus dados, correção, portabilidade ou exclusão, e revogar o consentimento.</p>
@@ -101,7 +102,7 @@ ${renderAnalyticsHead()}
 </ul>
 
 <h2>Cookies</h2>
-<p>As páginas próprias do projeto não usam cookies de rastreamento publicitário. O site principal e os serviços de terceiros listados acima podem usar cookies próprios, sujeitos às políticas de cada um.</p>
+<p>As páginas próprias do projeto usam um identificador de visitante próprio e cookies de medição de anúncios (como os da Meta), para saber se um cadastro veio de um anúncio. Não usamos esses dados para publicidade de outras empresas; a Meta trata os dados do pixel conforme a política dela. O site principal e os serviços de terceiros listados acima podem usar cookies próprios, sujeitos às políticas de cada um.</p>
 
 <h2>Crianças</h2>
 <p>O projeto não é dirigido a menores de 13 anos e não coleta dados dessa faixa etária de forma consciente.</p>
