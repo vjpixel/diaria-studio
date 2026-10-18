@@ -10,6 +10,9 @@
  * hashtags = texto que o publicador monta, a partir do MESMO `03-social.md`.
  */
 import { describe, it } from "node:test";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { buildUseMelhorSlides } from "../scripts/lib/use-melhor-carousel.ts";
 import { useMelhorSlideImageKey } from "../scripts/lib/use-melhor-slide-files.ts";
@@ -32,6 +35,8 @@ import {
   groupByDestaque,
   parsePlatforms,
   publishAdditionsFor,
+  resolveUseMelhorCaptionTitle,
+  useMelhorBlocksForSection,
   type GroupedBlock,
 } from "../scripts/render-social-html.ts";
 
@@ -142,5 +147,52 @@ describe("#10451 — preview mostra o que o publish acrescenta", () => {
     assert.ok(html.includes(INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE));
     assert.ok(html.includes(FACEBOOK_CTA_LINE.replace(/&/g, "&amp;")));
     assert.ok(html.includes(`<p>${TITLE}</p>`));
+  });
+});
+
+describe("#10451 — achados do review da PR #10454", () => {
+  it("override de teste do Instagram: sem acréscimos do Instagram, bloco de override também no um", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ig-override-10451-"));
+    mkdirSync(join(dir, "_internal"));
+    writeFileSync(join(dir, "_internal", "instagram-test.json"), JSON.stringify({ caption: "Legenda de teste." }));
+    const html = buildSocialHtml(parsePlatforms(MD), {}, "1", dir, undefined, TITLE);
+    assert.ok(!html.includes(INSTAGRAM_CTA_LINE), "CTA do Instagram não vai ao ar com override");
+    assert.ok(!html.includes(INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE));
+    assert.ok(html.includes(FACEBOOK_CTA_LINE.replace(/&/g, "&amp;")), "Facebook segue com o CTA");
+    assert.equal(html.match(/Instagram \(override de teste\)/g)?.length, 2, "d1 e um");
+  });
+
+  it("# Facebook legado recebe o CTA, como em publish-facebook.ts", () => {
+    const legacy = "# Facebook\n\n## d1\n\nTexto legado.\n\n#Tag\n";
+    const g = groupByDestaque(parsePlatforms(legacy), {}).find((x) => x.key === "d1");
+    const b = g?.blocks[0];
+    assert.ok(b);
+    assert.equal(previewPublished(b, "Facebook"), extractFacebook(legacy, "facebook", "d1"));
+    assert.deepEqual(publishAdditionsFor("Instagram", "d1"), [], "Instagram legado não recebe linha");
+  });
+
+  it("1ª linha com ênfase *título* não duplica o título (comparação sem markdown, como no publish)", () => {
+    const [b] = useMelhorBlocksForSection("Social", { destaque: "UM", main: `*${TITLE}*\n\n1) a`, hashtags: "" }, TITLE);
+    assert.equal(b.post.main.split(TITLE).length - 1, 1, b.post.main);
+  });
+
+  it("total de caracteres por canal e aviso de corte acima de 2200 no Instagram", () => {
+    const longo = "palavra ".repeat(300).trim();
+    const md = `# Social\n\n## d1\n\n${longo}\n\n#Tag\n`;
+    const html = buildSocialHtml(parsePlatforms(md), {});
+    assert.match(html, /chars no total — acima de 2200, o publish corta o texto/);
+    assert.doesNotMatch(buildSocialHtml(parsePlatforms(MD), {}), /acima de 2200/);
+  });
+
+  it("resolveUseMelhorCaptionTitle: config ilegível → undefined, sem lançar", () => {
+    const dir = mkdtempSync(join(tmpdir(), "um-title-10451-"));
+    writeFileSync(join(dir, "platform.config.json"), "{ não é json");
+    assert.equal(resolveUseMelhorCaptionTitle(dir, dir), undefined);
+  });
+
+  it("Facebook e LinkedIn passam useMelhor ao injectChannelLine (preview assume a linha do 4º post)", () => {
+    for (const f of ["scripts/publish-facebook.ts", "scripts/publish-linkedin.ts"]) {
+      assert.match(readFileSync(f, "utf8"), /injectChannelLine\([\s\S]{0,80}\{ useMelhor: destaque === USE_MELHOR_POST_ID \}\)/, f);
+    }
   });
 });

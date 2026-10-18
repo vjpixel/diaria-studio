@@ -68,6 +68,7 @@ import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.t
 import { extractSection, extractDestaqueBlock as extractDestaqueBlockShared, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` compartilhada + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — LinkedIn não renderiza markdown; #10441 ponto único do texto de post
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
+import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10451 — linha própria do 4º post, como no Instagram
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { runCli } from "./lib/cli-exit.ts";
@@ -193,7 +194,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
   const commentRe = /\n### comment_(diaria|pixel)\b/;
   const cut = block.search(commentRe);
   const mainOnly = cut >= 0 ? block.slice(0, cut) : block;
-  const text = injectChannelLine(mainOnly.trim(), "linkedin");
+  const text = injectChannelLine(mainOnly.trim(), "linkedin", { useMelhor: destaque === USE_MELHOR_POST_ID });
   // #4309: guard no ponto de saída do texto FINAL (pós-corte dos comments) —
   // este é o texto que de fato vai pro post principal do LinkedIn.
   assertNoScaffolding(text, `destaque '${destaque}' (linkedin, post principal)`);

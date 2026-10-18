@@ -40,6 +40,7 @@ import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; /
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Facebook não renderiza markdown; #10441 ponto único do texto de post
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
+import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10451 — linha própria do 4º post, como no Instagram
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { runCli } from "./lib/cli-exit.ts";
@@ -160,7 +161,10 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
   const dText = extractDestaqueBlock(platMatch[1], destaque);
   if (dText === null) throw new Error(`Destaque '${destaque}' not found under '${platform}'`);
 
-  const text = platform === "facebook" ? injectChannelLine(dText.trim(), "facebook") : dText.trim();
+  const text =
+    platform === "facebook"
+      ? injectChannelLine(dText.trim(), "facebook", { useMelhor: destaque === USE_MELHOR_POST_ID })
+      : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (${platform})`);
   // #6862: nenhuma plataforma social renderiza markdown — remover `**`/`__`/
   // `*`/`_` aqui, no ponto de publicação, NUNCA na fonte (03-social.md

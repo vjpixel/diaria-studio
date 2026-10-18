@@ -315,11 +315,22 @@ export interface PublishAddition {
 }
 
 /**
- * #10451: linhas que o publish acrescenta, por canal, a um post da seção
- * `# Social` (texto único). Fonte: `channelPublishLines`, a mesma do
- * `injectChannelLine` dos publicadores. Só d1/d2/d3 e o 4º post (`um`) — são
- * os únicos que passam por `injectChannelLine`; seções legadas por rede e o
- * `# Curto` (X/Threads) não recebem linha nenhuma no publish.
+ * #10451: canais que recebem `injectChannelLine` no publish, por seção:
+ * `# Social` (texto único) → LinkedIn/Facebook/Instagram; `# Facebook` legado
+ * (pré-#3991) → Facebook (`publish-facebook.ts` injeta qualquer que seja a
+ * seção); `# Instagram` legado e `# Curto` (X/Threads) → nenhum.
+ */
+function injectedChannelsForSection(sectionName: string): readonly SocialChannel[] {
+  if (/social/i.test(sectionName)) return TEXTO_UNICO_CHANNELS;
+  if (sectionName.trim().toLowerCase() === "facebook") return ["facebook"];
+  return [];
+}
+
+/**
+ * #10451: linhas que o publish acrescenta, por canal, a um post. Fonte:
+ * `channelPublishLines`, a mesma do `injectChannelLine` dos publicadores. Só
+ * d1/d2/d3 e o 4º post (`um`) — são os únicos que passam por
+ * `injectChannelLine`.
  */
 export function publishAdditionsFor(
   sectionName: string,
@@ -327,12 +338,14 @@ export function publishAdditionsFor(
   /** Subconjunto dos canais da seção (o `## um` pode virar 2 blocos, #10087). */
   channelKeys: readonly string[] = channelKeysForSection(sectionName),
 ): PublishAddition[] {
-  if (!/social/i.test(sectionName)) return [];
   const isUseMelhor = destaqueKey === USE_MELHOR_POST_ID;
   if (!isUseMelhor && !/^d\d+$/.test(destaqueKey)) return [];
+  const injected = injectedChannelsForSection(sectionName);
   const out: PublishAddition[] = [];
   for (const key of channelKeys) {
-    const lines = channelPublishLines(key as SocialChannel, { useMelhor: isUseMelhor });
+    const channel = injected.find((c) => c === key);
+    if (!channel) continue;
+    const lines = channelPublishLines(channel, { useMelhor: isUseMelhor });
     if (lines.length) out.push({ channel: formatChannelLabels([key]), lines });
   }
   return out;
@@ -340,9 +353,17 @@ export function publishAdditionsFor(
 
 /** #10451: título que o publish põe na 1ª linha da legenda do `## um`
  *  (`prependUseMelhorCaptionTitle`, #10201) — só nos canais do texto único
- *  (LinkedIn/Facebook/Instagram); X/Threads não levam título. */
+ *  (LinkedIn/Facebook/Instagram); X/Threads não levam título. A checagem de
+ *  "já abre com o título" roda sobre o texto SEM markdown, como no publish
+ *  (lá `toSocialPostText` vem antes do prepend); o `main` devolvido mantém o
+ *  markdown, que `cardBoldSpans` ainda lê. */
 function withUseMelhorCaptionTitle(sectionName: string, main: string, title: string | undefined): string {
-  return /social/i.test(sectionName) ? prependUseMelhorCaptionTitle(main, title) : main;
+  if (!/social/i.test(sectionName)) return main;
+  const plain = toSocialPostText(main);
+  const prepended = prependUseMelhorCaptionTitle(plain, title);
+  if (prepended === plain) return main;
+  const titleLine = prepended.slice(0, prepended.indexOf("\n\n"));
+  return `${titleLine}\n\n${main.replace(/^\s+/, "")}`;
 }
 
 /** #9999: canais de TEXTO longo, onde o publish separa os itens do `## um`
@@ -496,23 +517,32 @@ function renderGroupedBlock(block: GroupedBlock, color: string): string {
           ${mainParas}
           ${hashtags}
         </div>
-        ${renderPublishAdditions(block.publishAdditions)}
+        ${renderPublishAdditions(block.publishAdditions, postText, block.post.hashtags)}
       </div>`;
 }
 
+/** Limite da legenda do Instagram — `truncateCaption` (`publish-instagram.ts`) corta acima disto. */
+const INSTAGRAM_CAPTION_MAX = 2200;
+
 /** #10451: o que o publish acrescenta por canal, à parte do texto editável —
- *  no post publicado essas linhas entram entre o corpo e as hashtags. */
-function renderPublishAdditions(additions: PublishAddition[] | undefined): string {
+ *  no post publicado essas linhas entram entre o corpo e as hashtags. Cada
+ *  canal mostra o total de caracteres do post final (corpo + acréscimos +
+ *  hashtags); no Instagram, acima de 2200 o publish corta o corpo. */
+function renderPublishAdditions(additions: PublishAddition[] | undefined, postText: string, hashtags: string): string {
   if (!additions?.length) return "";
   return `<div class="publish-additions">
           <div class="publish-additions-title">Acrescentado na publicação, entre o texto e as hashtags (não vem do 03-social.md):</div>
           ${additions
-            .map(
-              (a) =>
-                `<div class="publish-addition"><span class="publish-addition-channel">${escHtml(a.channel)}</span> ${a.lines
-                  .map((l) => `<span class="publish-addition-line">${escHtml(l)}</span>`)
-                  .join(" ")}</div>`,
-            )
+            .map((a) => {
+              const total = [postText, ...a.lines, hashtags].filter(Boolean).join("\n\n").length;
+              const cut = /instagram/i.test(a.channel) && total > INSTAGRAM_CAPTION_MAX;
+              const count = `<span class="publish-addition-total${cut ? " over" : ""}">${total} chars no total${
+                cut ? ` — acima de ${INSTAGRAM_CAPTION_MAX}, o publish corta o texto` : ""
+              }</span>`;
+              return `<div class="publish-addition"><span class="publish-addition-channel">${escHtml(a.channel)}</span> ${a.lines
+                .map((l) => `<span class="publish-addition-line">${escHtml(l)}</span>`)
+                .join(" ")} ${count}</div>`;
+            })
             .join("\n          ")}
         </div>`;
 }
@@ -750,6 +780,8 @@ export function buildSocialHtml(
   .publish-additions-title { font-size: 12px; color: #888; margin-bottom: 4px; }
   .publish-addition { margin-top: 4px; }
   .publish-addition-channel { font-weight: 600; margin-right: 4px; }
+  .publish-addition-total { color: #999; margin-left: 4px; }
+  .publish-addition-total.over { color: #b00020; font-weight: 600; }
   .channel-label {
     padding: 10px 16px 0;
     font-size: 16px;
@@ -798,8 +830,22 @@ ${(() => {
   // dedicado já foi resolvido por mutação direta acima, sem colisão com
   // LinkedIn/Facebook.
   if (instagramOverrideCaption && !hasDedicatedInstagramSection) {
+    // #10451: com override, o publish usa o caption de teste em TODO id,
+    // inclusive o `um` — sem CTA, engajamento nem título. Tira os acréscimos
+    // do Instagram dos blocos e o bloco só-Instagram do `um` (que mostraria
+    // título + texto que não vão ao ar).
+    const igLabel = formatChannelLabels(["instagram"]);
     for (const g of groups) {
-      if (/^d\d+$/.test(g.key)) {
+      if (!/^d\d+$/.test(g.key) && g.key !== USE_MELHOR_POST_ID) continue;
+      g.blocks = g.blocks
+        .filter((b) => b.channels !== igLabel)
+        .map((b) => {
+          const rest = b.publishAdditions?.filter((a) => a.channel !== igLabel);
+          return { ...b, publishAdditions: rest?.length ? rest : undefined };
+        });
+    }
+    for (const g of groups) {
+      if (/^d\d+$/.test(g.key) || g.key === USE_MELHOR_POST_ID) {
         g.blocks.push({
           channels: "Instagram (override de teste)",
           post: { destaque: g.key, main: instagramOverrideCaption, hashtags: "" },
@@ -829,7 +875,14 @@ export function resolveUseMelhorCaptionTitle(editionDir: string, rootDir: string
   try {
     const config = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
     const plan = planUseMelhorDispatch(editionDir, config);
-    return plan.status === "ready" ? plan.captionTitle : undefined;
+    if (plan.status === "ready") return plan.captionTitle;
+    // `planUseMelhorDispatch` já captura o próprio erro e devolve `skip` —
+    // esse caso precisa sair no stderr (os demais skips são estado normal,
+    // já explicados no aviso do 4º post no topo do preview).
+    if (plan.status === "skip" && plan.reason.startsWith("erro")) {
+      console.error(`[render-social-html] #10451: título do 4º post indisponível: ${plan.reason}`);
+    }
+    return undefined;
   } catch (e) {
     console.error(`[render-social-html] #10451: título do 4º post indisponível: ${(e as Error).message}`);
     return undefined;

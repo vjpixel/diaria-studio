@@ -993,6 +993,8 @@ export function buildSocialPreviewHtml(
       editionDir,
       useMelhorNotice,
       // #10451: título da 1ª linha da legenda do `## um`, como no publish.
+      // Vem do plano do Stage 5, que lê o `03-social.md` SALVO: com texto
+      // ainda não salvo (`overrideSocialText`), o título reflete o disco até o save.
       resolveUseMelhorCaptionTitle(editionDir, resolve(import.meta.dirname, "..", "..")),
     );
     return { ok: true, html };
