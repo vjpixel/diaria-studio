@@ -101,6 +101,7 @@ import {
   deriveCurrentEdition,
 } from "./dedup.ts";
 import { canonicalize } from "./lib/url-utils.ts"; // #2684 item 5: dedup cross-bucket highlight↔secundário
+import { extractAllLinkUrls } from "./lib/editor-rejected-items.ts"; // #10463: só itens publicados
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested (#3055)
 // #8951: gatilho "cross-source, threshold baixo" — miolo puro herdado de
 // `scripts/lib/repeat-theme-check.ts` (#8896), que tinha um script próprio
@@ -904,6 +905,35 @@ export interface PastSecondaryItem {
   bucket: string;
 }
 
+export interface ReadPastSecondaryOptions {
+  /**
+   * #10463: manter só os itens que de fato SAÍRAM — URL canônica presente
+   * num link de `02-reviewed.md` da edição passada. Item aprovado no gate 1
+   * mas cortado depois (cap de LANÇAMENTOS/RADAR do Stage 2,
+   * `apply-stage2-caps.ts`, ou corte do editor no gate 4) nunca chegou ao
+   * leitor e não pode gerar 🚨 MESMO FATO (nem, em `--no-gates`, remover o
+   * item corrente via `removeSameFactSecondary`). Caso real 261019 × 261016:
+   * "NVIDIA Nemotron 3.5 Super VL" foi LANÇAMENTO aprovado em 261016, caiu no
+   * cap do Stage 2, e o D3 de 261019 sobre o mesmo modelo foi sinalizado como
+   * repetição. Sem `02-reviewed.md` (edição que não chegou ao Stage 2, ou
+   * legado) a edição entra inteira — fail-soft conservador, igual ao
+   * comportamento anterior.
+   */
+  publishedOnly?: boolean;
+}
+
+/** #10463: URLs canônicas publicadas (`02-reviewed.md`) ou null se ausente/ilegível. */
+export function readPublishedUrls(editionDir: string): Set<string> | null {
+  const reviewed = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewed)) return null;
+  try {
+    const urls = extractAllLinkUrls(readFileSync(reviewed, "utf8"));
+    return urls.size > 0 ? urls : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface SecondaryThemeWarning {
   bucket: string;
   item_url: string;
@@ -1089,6 +1119,7 @@ export function readPastApprovedSecondary(
   window: number,
   currentAammdd?: string,
   buckets: string[] = DEFAULT_SECONDARY_BUCKETS,
+  opts: ReadPastSecondaryOptions = {},
 ): PastSecondaryItem[] {
   if (!existsSync(editionsDir)) return [];
   const recent = recentEditionDirs(editionsDir, window, currentAammdd);
@@ -1124,6 +1155,7 @@ export function readPastApprovedSecondary(
       }
     }
     if (!parsed) continue;
+    const published = opts.publishedOnly ? readPublishedUrls(editionDir) : null;
 
     for (const bucket of buckets) {
       const arr = parsed[bucket];
@@ -1134,6 +1166,10 @@ export function readPastApprovedSecondary(
         if (item === null || typeof item !== "object") continue;
         const art = item.article ?? {};
         const title = (art.title ?? item.title ?? "").trim();
+        if (published) {
+          const url = art.url ?? item.url;
+          if (typeof url !== "string" || !published.has(canonicalize(url))) continue;
+        }
         if (title) items.push({ edition: aammdd, title, bucket });
       }
     }
@@ -1512,7 +1548,11 @@ async function main(): Promise<void> {
   // #9386: também contra o pool secundário (RADAR/LANÇAMENTOS...) das mesmas
   // últimas edições — fato saído como RADAR ontem escapava — e usando o
   // resumo do item corrente (manchete de outro veículo omite a versão).
-  const pastSecondaryRecent = readPastApprovedSecondary(editionsDir, CROSS_SOURCE_DEFAULT_WINDOW, currentEdition);
+  // #10463: só o que saiu (02-reviewed.md) — item cortado pelo cap do Stage 2
+  // ou no gate 4 nunca chegou ao leitor e não é "mesmo fato".
+  const pastSecondaryRecent = readPastApprovedSecondary(
+    editionsDir, CROSS_SOURCE_DEFAULT_WINDOW, currentEdition, DEFAULT_SECONDARY_BUCKETS, { publishedOnly: true },
+  );
   const sameFactWarnings = findSameFactMatches(
     [
       ...candidates.map((c) => ({ kind: "highlight", rank: c.rank, title: c.title, url: c.url, summary: c.summary })),
