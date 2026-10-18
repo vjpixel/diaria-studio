@@ -17,7 +17,9 @@
  *     Os dois formatos do `## um` (#10246) passam pelo mesmo caminho: lista
  *     numerada (item com `steps`, até 2 itens por card) ou texto corrido (item
  *     sem `steps`, 3 parágrafos) — `useMelhorSlideBody` decide por parágrafo.
- *   - CTA: idêntico ao slide CTA do carrossel diário.
+ *   - CTA: mesmo kicker/rodapé/layout do slide CTA do carrossel diário, mas
+ *     com o título próprio `USE_MELHOR_CAROUSEL_CTA_TITLE` (#10449): convite a
+ *     compartilhar a dica no lugar de "Edição completa no link da bio.".
  *
  * Os textos vêm do MESMO `## um` que o `social-writer` escreve (nunca um texto
  * dedicado) — mesma regra do #6005 Parte B. Não toca em nada de D1/D2/D3.
@@ -42,7 +44,7 @@ import {
   DAILY_CAROUSEL_MICRO_CTA,
 } from "./daily-carousel-card.ts";
 import type { CarouselCtaOverride } from "./instagram-test-override.ts";
-import { splitBodyAndTags } from "./social-cta-lines.ts";
+import { splitBodyAndTags, INSTAGRAM_FOLLOW_SENTENCE } from "./social-cta-lines.ts";
 import { isUseMelhorCardBreakLine, stripUseMelhorCardBreaks } from "./use-melhor-card-break.ts"; // #9866
 import { USE_MELHOR_POST_ID, type UseMelhorUmFormat } from "./use-melhor-post.ts";
 import {
@@ -61,6 +63,19 @@ import {
 export const USE_MELHOR_MAX_PARAGRAPH_SLIDES = 8;
 
 export const USE_MELHOR_COVER_KICKER = "USE MELHOR";
+
+/**
+ * #10449: título do slide CTA do 4º post (USE MELHOR). Decisão do editor (gate
+ * 4 da 261019): sai "Edição completa no link da bio." e entra, em negrito, um
+ * convite a compartilhar a dica — mais amplo que "mande para alguém", serve
+ * tanto pra enviar a uma pessoa quanto pra repostar no próprio perfil. A frase
+ * de follow fica (`INSTAGRAM_FOLLOW_SENTENCE`, fonte única com a legenda).
+ * Vale SÓ pro slide: a legenda do 4º post e os carrosséis D1/D2/D3 seguem com
+ * `INSTAGRAM_CTA_LINE`. O override de teste (#8681, `cta_slide.title`) continua
+ * vencendo quando presente.
+ */
+export const USE_MELHOR_CAROUSEL_CTA_TITLE =
+  `**Essa dica ajuda mais alguém? Compartilhe!**\n\n${INSTAGRAM_FOLLOW_SENTENCE}`;
 
 /** Layout da capa (tipográfica, 84px fixo — a capa do carrossel semanal). */
 export const USE_MELHOR_COVER_LAYOUT: FlatCardLayout = WEEKLY_FLAT_CARD_LAYOUT;
@@ -181,8 +196,13 @@ export function buildUseMelhorSlides(
   const { body } = splitBodyAndTags(genericText);
   const paragraphs = splitUseMelhorParagraphs(body);
   const total = paragraphs.length;
-  // CTA reusado do carrossel diário (mesmo kicker/copy/rodapé) — fonte única.
+  // CTA reusado do carrossel diário (mesmo kicker/rodapé) — fonte única. O
+  // título padrão é o do USE MELHOR (#10449), já em 2 blocos (o corte de
+  // `splitParagraphIntoTwoBlocks` não cai logo após um `**...**`, então o
+  // respiro vai explícito na constante); o override de teste (#8681) vence
+  // quando traz `title`, igual ao carrossel diário.
   const dailyCta = buildCarouselSlideTexts("x", ctaOverride).cta;
+  const ctaText = ctaOverride?.title ? dailyCta : { ...dailyCta, title: USE_MELHOR_CAROUSEL_CTA_TITLE };
   return [
     {
       slot: "cover",
@@ -203,7 +223,7 @@ export function buildUseMelhorSlides(
         layout: DAILY_CAROUSEL_LAYOUT,
       }),
     ),
-    { slot: "cta", text: dailyCta, layout: DAILY_CAROUSEL_LAYOUT },
+    { slot: "cta", text: ctaText, layout: DAILY_CAROUSEL_LAYOUT },
   ];
 }
 

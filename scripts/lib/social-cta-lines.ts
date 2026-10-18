@@ -71,9 +71,16 @@ export function buildFacebookCtaUrl(): string {
 export const FACEBOOK_CTA_LINE =
   `Receba notícias de IA todo dia por e-mail, assine grátis em ${buildFacebookCtaUrl()}.`;
 
+/**
+ * Frase de follow do Instagram — 2ª metade de `INSTAGRAM_CTA_LINE`, exportada
+ * à parte (#10449) porque o slide CTA do carrossel USE MELHOR a reusa trocando
+ * só a 1ª frase. Fonte única: as duas cópias nunca divergem.
+ */
+export const INSTAGRAM_FOLLOW_SENTENCE = "Segue @diar.ia.br pra não perder a próxima.";
+
 /** Instagram: "link na bio" + follow (#3486, preservado). Sem URL crua — IG não linka no corpo. */
 export const INSTAGRAM_CTA_LINE =
-  "Edição completa no link da bio. Segue @diar.ia.br pra não perder a próxima.";
+  `Edição completa no link da bio. ${INSTAGRAM_FOLLOW_SENTENCE}`;
 
 /**
  * LinkedIn: `null` por decisão de preservar #595/#3627 — ver JSDoc do módulo
