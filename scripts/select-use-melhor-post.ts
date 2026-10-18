@@ -28,7 +28,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkUseMelhorItemInFinal,
@@ -166,7 +166,9 @@ async function main(): Promise<number | void> {
   const config = loadUseMelhorPostConfigState(ROOT);
 
   if (args.flags.has("status")) {
-    const status = describeUseMelhorPostStatus(gatherUseMelhorStatusInput(editionDir, config));
+    // #10305: o gate mostra o horário da rotação do dia (o que o Stage 5 agenda), não o fixo.
+    const statusConfig = loadUseMelhorPostConfigState(ROOT, basename(resolve(editionDir)));
+    const status = describeUseMelhorPostStatus(gatherUseMelhorStatusInput(editionDir, statusConfig));
     if (args.flags.has("json")) console.log(JSON.stringify(status, null, 2));
     else console.log(status.lines.join("\n"));
     return;

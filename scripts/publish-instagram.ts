@@ -73,6 +73,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
+import { recordDailyRotationFailSoft } from "./lib/social-schedule-rotation-record.ts"; // #10305
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10201
 import {
   USE_MELHOR_COVER_FILE,
@@ -924,6 +925,9 @@ async function main(): Promise<number | void> {
     skipped: skippedCount,
   };
 
+  // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
+  // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate);
   console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary }, null, 2));
 }
 

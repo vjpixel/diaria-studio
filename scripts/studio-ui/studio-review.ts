@@ -977,7 +977,11 @@ export function buildSocialPreviewHtml(
     let useMelhorNotice: string[] | undefined;
     try {
       useMelhorNotice = describeUseMelhorPostStatus(
-        gatherUseMelhorStatusInput(editionDir, loadUseMelhorPostConfigState(resolve(import.meta.dirname, "..", ".."))),
+        gatherUseMelhorStatusInput(
+          editionDir,
+          // #10305: horário da rotação do dia (o que o Stage 5 agenda), não o fixo.
+          loadUseMelhorPostConfigState(resolve(import.meta.dirname, "..", ".."), basename(resolve(editionDir))),
+        ),
       ).lines;
     } catch {
       useMelhorNotice = undefined;

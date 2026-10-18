@@ -756,9 +756,19 @@ editor, nesta ordem:
      certa não basta, a HORA importa mais, porque o post de feed nasce com
      o alcance definido pelo engajamento da 1ª hora (publicar de madrugada
      queima esse alcance de forma permanente); horário comercial da manhã,
-     mesma lógica do envio canônico das 06:00 BRT da diária. O horário
-     exato do artigo semanal ainda não tem definição (escolha do editor,
-     discutida na #10305).
+     mesma lógica do envio canônico das 06:00 BRT da diária. **O horário
+     vem do config (#10305), não da sessão:** rode
+     `npx tsx scripts/social-schedule-rotation.ts --linkedin-article --date {publish-monday}`
+     e entregue ao editor o `HH:MM` impresso. Fora do teste rotativo é
+     `publishing.social.linkedin_weekly_article_time` (09:30 BRT); dentro
+     da janela de `publishing.social.rotation`, a segunda recebe o
+     candidato da semana (`linkedin_weekly_article_candidates`). Depois de
+     o editor agendar, registre o horário usado:
+     `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article`
+     (grava em `data/social-schedule-rotation.jsonl`, idempotente — é o
+     registro que a medição da #10305 cruza com os cliques `ln-{ciclo}`).
+     Se o editor escolher outro horário na hora, diga isso no resumo: o
+     registro fica com o planejado, não com o real.
    - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
      aparece agendado.
 
