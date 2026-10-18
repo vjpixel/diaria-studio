@@ -898,6 +898,8 @@ describe("reenvio DOI — noop 200 sem relink destrutivo (#9986)", () => {
   it("o main() imprime o aviso de noop sem relink logo após o resumo", async () => {
     const { readFile } = await import("node:fs/promises");
     const src = await readFile(new URL("../scripts/evaluate-brevo-diaria.ts", import.meta.url), "utf8");
-    assert.match(src, /mensagemDoiNoopSemRelink\(result\.doiResendNoop\)/);
+    // #9986 — via mensagemDoiNoopResumo, que escolhe pelo 2º form VALIDADO.
+    assert.match(src, /const doiNoopMsg = mensagemDoiNoopResumo\(result\);/);
+    assert.match(src, /mensagemDoiNoopSemRelink\(r\.doiResendNoop\)/);
   });
 });
