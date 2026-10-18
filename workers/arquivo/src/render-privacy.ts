@@ -67,7 +67,7 @@ ${renderAnalyticsHead()}
   <li><strong>Interações com os e-mails</strong>: se a edição foi aberta e quais links foram clicados.</li>
   <li><strong>Respostas voluntárias</strong>: enquetes (como o "É IA?"), pesquisas e mensagens que você nos envia.</li>
   <li><strong>Dados de acesso às páginas</strong> do projeto: endereço de origem da visita, tipo de navegador e páginas vistas, em forma agregada.</li>
-  <li><strong>Dados técnicos do cadastro, quando o seu navegador tem o cookie de medição da Meta</strong> (por exemplo, depois de um anúncio ou de visitar uma página com o pixel da Meta): endereço IP, identificação técnica do navegador e do dispositivo (user agent) e o identificador desse cookie. Ficam guardados junto do seu cadastro e são enviados à Meta só para medir se os anúncios geram cadastros.</li>
+  <li><strong>Dados técnicos do cadastro e da reativação</strong>: toda vez que você assina a newsletter ou reativa a assinatura por um link nosso, o endereço IP e a identificação técnica do navegador e do dispositivo (user agent) usados nesse momento são enviados à Meta, junto do seu e-mail em forma cifrada (hash), só para medir se os anúncios geram cadastros. Isso acontece em todo cadastro e em toda reativação, tenha o seu navegador o cookie de medição da Meta ou não. Quando o cookie existe (por exemplo, depois de um anúncio ou de visitar uma página com o pixel da Meta), o identificador dele também vai para a Meta, e nesse caso o IP, o user agent e o identificador ficam guardados junto do seu cadastro.</li>
 </ul>
 
 <h2>Para que usamos</h2>
@@ -92,7 +92,7 @@ ${renderAnalyticsHead()}
 </ul>
 
 <h2>Por quanto tempo guardamos</h2>
-<p>Mantemos seu e-mail enquanto você for assinante. Ao cancelar, o endereço é mantido em uma lista de supressão — não para continuar contatando você, mas justamente para garantir que não voltemos a enviar mensagens. Métricas de abertura e clique são conservadas em forma histórica para análise editorial. Os dados técnicos do cadastro enviados à Meta ficam guardados enquanto você for assinante.</p>
+<p>Mantemos seu e-mail enquanto você for assinante. Ao cancelar, o endereço é mantido em uma lista de supressão — não para continuar contatando você, mas justamente para garantir que não voltemos a enviar mensagens. Métricas de abertura e clique são conservadas em forma histórica para análise editorial. Os dados técnicos guardados junto do cadastro ficam enquanto você for assinante; o que vai para a Meta passa a ser tratado conforme a política dela.</p>
 
 <h2>Seus direitos</h2>
 <p>Pela Lei Geral de Proteção de Dados (LGPD), você pode a qualquer momento pedir acesso aos seus dados, correção, portabilidade ou exclusão, e revogar o consentimento.</p>
