@@ -434,8 +434,17 @@ export function formatHighlightSameFactNotes(themeCheck: unknown, approved: unkn
     const why = ww.evidence === "numbers"
       ? `cifras: ${(ww.shared_numbers ?? []).join(", ")}`
       : `produto: ${(ww.shared_products ?? []).join(", ")}`;
+    // #10463: o passado casado pode ser item SECUNDÁRIO (LANÇAMENTOS/RADAR),
+    // não D1–D3. Dizer "repete o destaque" levou a 1ª sessão de 261019 a
+    // registrar que o rebaixamento (1u-quater) falhou — mas ele só age contra
+    // D1–D3 passados, por desenho (#9100). Nomear o bucket deixa visível por
+    // que não houve ⬇️.
+    const mb = ww.matched_bucket;
+    const what = !mb || mb === "highlight"
+      ? "o destaque"
+      : `o item [${mb}] (não D1–D3 — fora do rebaixamento automático, que só age contra destaques passados)`;
     out.push(
-      `🚨 MESMO FATO — D${d} "${ww.item_title ?? ""}" repete o destaque de ${ww.matched_edition ?? "?"} "${ww.matched_title ?? ""}" (${why}). Trocar o destaque no gate 4 se não for follow-up.`,
+      `🚨 MESMO FATO — D${d} "${ww.item_title ?? ""}" repete ${what} de ${ww.matched_edition ?? "?"} "${ww.matched_title ?? ""}" (${why}). Trocar o destaque no gate 4 se não for follow-up.`,
     );
   }
   return out;
