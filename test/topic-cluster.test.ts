@@ -9,6 +9,8 @@ import {
   jaccard,
   cosineSimilarity,
   clusterArticles,
+  clusterTexts,
+  topicSlugText,
   clusterArticlesWithEmbeddings,
   rankWithinCluster,
   clusterBucket,
@@ -766,5 +768,165 @@ describe("topic-cluster CLI main() — legacy shape não crasha (#1671 — site 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #10440 (edição 261019): sem embeddings (100% falharam), o fallback Jaccard
+// juntou eventos distintos por dois textos que não descrevem o artigo — o
+// título sintético `(newsletter:{remetente})` e a meta description boilerplate
+// do Hugging Face. Casos reais copiados de `_internal/tmp-categorized.json`.
+describe("#10440: cluster não funde eventos distintos por placeholder/boilerplate", () => {
+  const HF_BOILERPLATE =
+    "We’re on a journey to advance and democratize artificial intelligence through open source and open science.";
+  const hfLancamento: Article[] = [
+    {
+      url: "https://huggingface.co/blog/reflection-beam",
+      title: "Welcome Beam: a 501B open model you can own, customize, and scale",
+      summary: HF_BOILERPLATE,
+    },
+    { url: "https://huggingface.co/blog/flux-3", title: "Welcome FLUX.3 Image Klein in Diffusers", summary: HF_BOILERPLATE },
+    {
+      url: "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      title: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      summary: HF_BOILERPLATE,
+    },
+    { url: "https://huggingface.co/inclusionAI/Ling-3.1-flash", title: "inclusionAI/Ling-3.1-flash", summary: HF_BOILERPLATE },
+  ];
+  const newsletterRadar: Article[] = [
+    {
+      url: "https://aws.amazon.com/blogs/machine-learning/icymi-what-landed-for-ai-builders-in-september-2026",
+      title: "(newsletter:The Rundown AI)",
+    },
+    { url: "https://www.rundown.ai/", title: "(newsletter:The Rundown AI)" },
+    { url: "https://www.rundown.ai/tools", title: "(newsletter:The Rundown AI)" },
+    {
+      url: "https://techcrunch.com/2026/10/13/google-play-now-supports-private-vibe-coded-apps-built-just-for-you",
+      title: '(newsletter:"7min.ai")',
+    },
+    {
+      url: "https://www.marktechpost.com/2026/10/17/deepseek-just-released-v4-1-flash-1017-scores-77-0-on-deepswe-opens-search-api",
+      title: "(newsletter:Marktechpost AI)",
+    },
+    { url: "https://www.marktechpost.com/2026/10/14/fish-audio-drama-3-open-weight-tts-model", title: "(newsletter:Marktechpost AI)" },
+    { url: "https://aicampaign.live/30-wk2n", title: "(newsletter:Marktechpost AI)" },
+    { url: "https://aicampaign.live/90-wk2n", title: "(newsletter:Marktechpost AI)" },
+  ];
+
+  it("summary boilerplate do mesmo host não junta DeepSeek V4.1 Flash ao Beam da Reflection", () => {
+    const clusters = clusterArticles(hfLancamento, 0.5);
+    assert.equal(clusters.length, hfLancamento.length);
+  });
+
+  it("título (newsletter:X) não junta links de newsletter ao roundup AWS de setembro", () => {
+    const clusters = clusterArticles(newsletterRadar, 0.5);
+    assert.equal(clusters.length, newsletterRadar.length);
+  });
+
+  it("clusterBucket mantém o DeepSeek V4.1 Flash (marktechpost + HF) no pool", async () => {
+    const saved = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const r = await clusterBucket(newsletterRadar, 0.85);
+      assert.ok(r.kept.some((a) => a.url.includes("deepseek-just-released-v4-1-flash")));
+      assert.equal(r.clusters.length, 0);
+      const l = await clusterBucket(hfLancamento, 0.85);
+      assert.ok(l.kept.some((a) => a.url.includes("DeepSeek-V4.1-Flash")));
+      assert.equal(l.clusters.length, 0);
+    } finally {
+      if (saved !== undefined) process.env.GEMINI_API_KEY = saved;
+    }
+  });
+
+  it("placeholder usa o slug da URL — mesmo evento por slug ainda agrupa", () => {
+    const clusters = clusterArticles(
+      [
+        { url: "https://www.marktechpost.com/2026/10/17/deepseek-releases-v4-flash-model", title: "(newsletter:Marktechpost AI)" },
+        { url: "https://the-decoder.com/deepseek-releases-v4-flash-model", title: '(newsletter:"7min.ai")' },
+      ],
+      0.5,
+    );
+    assert.equal(clusters.length, 1);
+  });
+
+  it("summary repetido em hosts DIFERENTES (sindicação) continua contando", () => {
+    const shared = "Anthropic lança Claude Opus 6 com contexto de 2 milhões de tokens e preço menor";
+    const texts = clusterTexts([
+      { url: "https://a.com/x", title: "Título A", summary: shared },
+      { url: "https://b.com/y", title: "Título B", summary: shared },
+    ]);
+    assert.ok(texts.every((t) => t.includes("Opus 6")));
+  });
+
+  it("summary único de host não é tratado como boilerplate", () => {
+    const [t] = clusterTexts([{ url: "https://huggingface.co/blog/x", title: "X", summary: "Resumo real do post" }]);
+    assert.ok(t.includes("Resumo real"));
+  });
+
+  it("caminho com embeddings: artigo sem texto informativo não é embedado nem agrupado", async () => {
+    const saved = process.env.GEMINI_API_KEY;
+    const savedFetch = globalThis.fetch;
+    process.env.GEMINI_API_KEY = "test-key";
+    let calls = 0;
+    // Vetor idêntico pra todo texto: qualquer par embedado viraria cluster.
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ embedding: { values: [1, 0, 0] } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { clusters, stats } = await clusterArticlesWithEmbeddings(
+        [
+          { url: "https://www.rundown.ai/", title: "(newsletter:The Rundown AI)" },
+          { url: "https://www.rundown.ai/tools", title: "(newsletter:The Rundown AI)" },
+        ],
+        0.85,
+      );
+      assert.equal(calls, 0);
+      assert.equal(stats.attempted, 0);
+      assert.equal(stats.skipped_uninformative, 2, "attempted + skipped = lote (semântica pré-#10440)");
+      assert.equal(clusters.length, 2);
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (saved === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = saved;
+    }
+  });
+
+  it("remetente com parênteses no nome também é placeholder", () => {
+    const clusters = clusterArticles(
+      [
+        { url: "https://a.com/openai-lanca-agente-de-compras", title: "(newsletter:Foo (Bar))" },
+        { url: "https://b.com/meta-demite-equipe-de-llama", title: "(newsletter:Foo (Bar))" },
+      ],
+      0.5,
+    );
+    assert.equal(clusters.length, 2);
+  });
+
+  it("prefixos [INBOX]/(inbox são placeholder (título vira slug)", () => {
+    const [a, b] = clusterTexts([
+      { url: "https://a.com/openai-lanca-agente-de-compras", title: "[INBOX] encaminhado" },
+      { url: "https://b.com/meta-demite-equipe-de-llama", title: "(inbox: editor)" },
+    ]);
+    assert.ok(!a.includes("INBOX") && a.includes("openai"));
+    assert.ok(!b.includes("inbox") && b.includes("meta"));
+  });
+
+  it("topicSlugText descarta seções genéricas do caminho e mantém o org do HF", () => {
+    assert.equal(
+      topicSlugText("https://aws.amazon.com/blogs/machine-learning/icymi-what-landed-for-ai-builders-in-september-2026"),
+      "icymi what landed for ai builders in september",
+    );
+    assert.equal(topicSlugText("https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017"), "deepseek ai DeepSeek V4.1 Flash");
+  });
+
+  it("dois links da mesma seção com slug curto não juntam pela seção", () => {
+    const clusters = clusterArticles(
+      [
+        { url: "https://aws.amazon.com/blogs/machine-learning/bedrock-agents", title: "(newsletter:AWS)" },
+        { url: "https://aws.amazon.com/blogs/machine-learning/sagemaker-pricing", title: "(newsletter:AWS)" },
+      ],
+      0.5,
+    );
+    assert.equal(clusters.length, 2);
   });
 });
