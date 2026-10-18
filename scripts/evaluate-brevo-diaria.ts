@@ -372,6 +372,7 @@ import {
   markDoiResent, // #9835
   markDoiResendNoop, // #9979
   markDoiResendFailed, // #9986
+  markDoiResendExhausted, // #9986 — 200 nos dois forms de DOI
   lastDoiResendAttemptAt, // #9979
   findContact, // #9835
   normalizeEmail,
@@ -398,8 +399,10 @@ interface BrevoDiariaConfig {
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
-  /** #9835 — `kit.doiFormId`: designer form de DOI usado no reenvio. */
-  kit?: { doiFormId?: string };
+  /** #9835 — `kit.doiFormId`: designer form de DOI usado no reenvio.
+   *  #9986 — `kit.doiResendFormId`: 2º designer form de DOI, usado só pra
+   *  quem já respondeu 200 no `doiFormId` (ver `doiResendTargetForm`). */
+  kit?: { doiFormId?: string; doiResendFormId?: string };
   /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
    *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
   publishing?: { newsletter?: { backend?: string } };
@@ -1064,12 +1067,40 @@ export function decideKitPromotionAction(existing: { state: string } | null): Ki
 export function shouldResendKitDoi(input: {
   qualifiesByOpenRate: boolean;
   kitState: string;
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">;
+  contact: Pick<
+    BrevoDiariaContact,
+    "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at" | "doi_resend_exhausted_at"
+  >;
   now?: string;
 }): boolean {
   if (!input.qualifiesByOpenRate) return false;
   if (input.kitState !== "inactive") return false;
   return needsDoiResend(input.contact, input.now);
+}
+
+/**
+ * doiResendTargetForm (#9986) — pura. Qual form de DOI recebe a tentativa de
+ * reenvio deste contato.
+ *
+ * O form principal (`kit.doiFormId`, 9897918) é o mesmo do cadastro nos
+ * workers poll/cursos/reativar: quem entrou por eles, ou já recebeu um 201
+ * dele, está vinculado e toda tentativa responde 200 sem enviar nada. Decisão
+ * do editor (18/10/2026, opção a): um 2º designer form de DOI
+ * (`kit.doiResendFormId`, 10062841 "Reenvio DOI (#9986)", com "Send
+ * confirmation email" ligado), usado SÓ pra quem já respondeu 200 no
+ * principal (`doi_resend_noop_at` presente). O 201 nele envia o e-mail; o
+ * 200 nele (já vinculado aos dois) é terminal (`doi_resend_exhausted_at`).
+ *
+ * `"primary"` quando não houve noop no principal ou quando o 2º form não está
+ * configurado (comportamento pré-#9986: o contato segue tentando o principal
+ * a cada intervalo).
+ */
+export type DoiResendTarget = "primary" | "resend";
+export function doiResendTargetForm(
+  contact: Pick<BrevoDiariaContact, "doi_resend_noop_at">,
+  resendFormConfigured: boolean,
+): DoiResendTarget {
+  return resendFormConfigured && !!contact.doi_resend_noop_at ? "resend" : "primary";
 }
 
 /**
@@ -1197,10 +1228,14 @@ export async function probeKitDoiFormExists(params: {
  *    `inactive`) nunca mais o tiraria.
  *
  * Logo o relink não é implementável com segurança: o caminho do noop segue
- * só gravando `doi_resend_noop_at` + `doiResendNoop` (#9979/#10005), e o
- * resumo da rodada passa a dizer que esses contatos estão presos sem
- * mecanismo automático (`mensagemDoiNoopSemRelink`). O mecanismo alternativo
- * (ex.: segundo designer form de DOI) volta pro editor na issue.
+ * só gravando `doi_resend_noop_at` + `doiResendNoop` (#9979/#10005).
+ *
+ * Mecanismo adotado (decisão do editor 18/10/2026, opção a): um 2º designer
+ * form de DOI (`kit.doiResendFormId`), ver `doiResendTargetForm`. Sem ele
+ * configurado, o resumo diz que os noops estão presos sem mecanismo
+ * automático (`mensagemDoiNoopSemRelink`); com ele, o aviso passa a ser só
+ * sobre quem esgotou os dois forms (`mensagemDoiResendEsgotado`). Em nenhum
+ * dos dois caminhos há unsubscribe/DELETE/PUT.
  */
 export const KIT_DOI_NOOP_RELINK = {
   supported: false,
@@ -1217,6 +1252,20 @@ export function mensagemDoiNoopSemRelink(noops: number): string | null {
   return (
     `warn: ${noops} contato(s) inactive já vinculado(s) ao form DOI — nenhum e-mail de confirmação saiu ` +
     `e não há reenvio automático possível: ${KIT_DOI_NOOP_RELINK.reason} (#9986).`
+  );
+}
+
+/**
+ * mensagemDoiResendEsgotado (#9986) — pura. Linha do resumo quando houve
+ * contato que respondeu 200 também no 2º form de DOI: vinculado aos dois,
+ * nenhum reenvio automático envia mais nada, e o contato sai da fila de
+ * reenvio pra sempre (`doi_resend_exhausted_at`). `null` sem nenhum.
+ */
+export function mensagemDoiResendEsgotado(exhausted: number): string | null {
+  if (!Number.isFinite(exhausted) || exhausted <= 0) return null;
+  return (
+    `warn: ${exhausted} contato(s) inactive já vinculado(s) aos DOIS forms de DOI (kit.doiFormId e kit.doiResendFormId) — ` +
+    `nenhum e-mail de confirmação saiu e o reenvio automático parou de vez para eles (#9986).`
   );
 }
 
@@ -1655,6 +1704,14 @@ export interface RunEvaluationParams {
    * config e avisa se ele faltar com backend kit.
    */
   kitDoiFormId?: string;
+  /**
+   * #9986 — id do 2º designer form de DOI (`platform.config.json` →
+   * `kit.doiResendFormId`), usado só pra quem já respondeu 200 no
+   * `kitDoiFormId` (ver `doiResendTargetForm`). Omitido: comportamento
+   * pré-#9986 (o noop segue tentando o form principal). Ignorado com warn se
+   * for form de sistema ou igual ao `kitDoiFormId`.
+   */
+  kitDoiResendFormId?: string;
 }
 
 /**
@@ -1761,6 +1818,19 @@ export interface RunEvaluationResult {
    * ninguém perceber. Disjunto de `doiResent` e de `failed`.
    */
   doiResendNoop: number;
+  /**
+   * #9986 — subconjunto de `doiResent`: reenvios (HTTP 201) feitos pelo 2º
+   * form de DOI (`kitDoiResendFormId`), pra quem já respondia 200 no
+   * principal.
+   */
+  doiResentViaResendForm: number;
+  /**
+   * #9986 — contatos em que o 2º form de DOI também respondeu 200 nesta
+   * rodada: vinculados aos dois forms, estado terminal
+   * (`doi_resend_exhausted_at`), nunca mais tentados. Disjunto de
+   * `doiResent` e de `failed`.
+   */
+  doiResendExhausted: number;
   /**
    * #8753 — contatos `in_brevo` aguardando auto-confirmação no Kit há mais de
    * `AWAITING_KIT_CONFIRMATION_STALE_DAYS`. Sem isto, quem nunca confirma
@@ -1875,6 +1945,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitApiKey,
     appendDuplicateWindowLog,
     kitDoiFormId,
+    kitDoiResendFormId, // #9986
   } = params;
   let store = params.store;
 
@@ -1896,8 +1967,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   // rodada: só aí dá pra saber se são do contato ou do form (todas iguais e
   // nenhum 2xx = form inexistente/errado, global). Ver
   // `decideDoiPermanentFailureScope`.
-  const pendingDoiPermanentFailures: { email: string; status: number }[] = [];
-  let doiResendAttempts2xx = 0;
+  const pendingDoiPermanentFailures: { email: string; status: number; formId: string }[] = [];
+  // #9986 — 2xx por form: com 2 forms de DOI, um 2xx no principal não prova
+  // que o 2º existe (e vice-versa).
+  const doiResendAttempts2xx = new Map<string, number>();
+  let doiResentViaResendForm = 0; // #9986
+  let doiResendExhausted = 0; // #9986
   // #9835 review — valida o form de DOI UMA vez por rodada: form de sistema
   // (responde 201 e não envia nada, #7723) desliga o reenvio com um único
   // log alto, em vez de virar N falhas idênticas por contato todo dia.
@@ -1906,6 +1981,18 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     const verdict = verificarDoiForm(kitDoiFormId);
     if (verdict.ok) doiFormForResend = verdict.formId;
     else log(`warn: reenvio do double opt-in desligado nesta rodada (#9835): ${mensagemDoiFormInvalido(verdict) ?? "kit.doiFormId vazio"}`);
+  }
+  // #9986 — 2º form de DOI, só pra quem já respondeu 200 no principal.
+  let doiResendFormForNoop: string | undefined;
+  if (doiFormForResend !== undefined && kitDoiResendFormId !== undefined && kitDoiResendFormId.trim() !== "") {
+    const verdict = verificarDoiForm(kitDoiResendFormId);
+    if (!verdict.ok) {
+      log(`warn: kit.doiResendFormId ignorado nesta rodada (#9986): ${mensagemDoiFormInvalido(verdict) ?? "vazio"}`);
+    } else if (verdict.formId === doiFormForResend) {
+      log(`warn: kit.doiResendFormId igual a kit.doiFormId (${verdict.formId}) — ignorado, o 2º form precisa ser outro (#9986).`);
+    } else {
+      doiResendFormForNoop = verdict.formId;
+    }
   }
 
   for (const contact of contacts) {
@@ -2404,35 +2491,56 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 `${contact.email}: double opt-in NÃO reenviado (#9835) — ` +
                   (existingKitSubscriber!.state !== "inactive"
                     ? `estado '${existingKitSubscriber!.state}' no Kit nunca recebe reenvio.`
-                    : `última tentativa em ${lastDoiResendAttemptAt(storedContact)} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
+                    : storedContact.doi_resend_exhausted_at
+                      ? `vinculado aos dois forms de DOI desde ${storedContact.doi_resend_exhausted_at}, reenvio encerrado (#9986).`
+                      : `última tentativa em ${lastDoiResendAttemptAt(storedContact)} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
               );
             }
             if (resendAllowed) {
-              let resend: Awaited<ReturnType<typeof resendKitDoi>>;
-              try {
-                resend = await resendKitDoi({ subscriberId: existingKitSubscriber!.id, apiKey: kitApiKey, formId: doiFormForResend });
-              } catch (e) {
-                resend = { ok: false, reason: (e as Error).message };
-              }
-              if (resend.ok) doiResendAttempts2xx++; // #10023 — 2xx prova que o form existe
-              if (resend.ok && isKitDoiResendCounted(resend.status)) {
-                log(`${contact.email}: double opt-in do Kit reenviado (form ${doiFormForResend}, HTTP ${resend.status}, #9835).`);
-                doiResent++;
-                store = markDoiResent(store, contact.email);
-              } else if (resend.ok) {
-                // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
-                // form"): o Kit não reenvia o e-mail. Não conta como reenvio
-                // nem grava `doi_resent_at` (decisão do editor: só 201 conta;
-                // sem teto de reenvios). Também não é falha. #9979 — grava
-                // `doi_resend_noop_at` pro intervalo valer também aqui, senão
-                // o contato era re-chamado em toda rodada.
-                store = markDoiResendNoop(store, contact.email);
-                doiResendNoop++; // #9986
-                log(
-                  `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
-                    `(já vinculado ao form ${doiFormForResend}, nenhum e-mail sai); não conta como reenvio.`,
-                );
-              } else {
+              const subscriberId = existingKitSubscriber!.id;
+              // Uma tentativa num form de DOI; contabiliza e devolve o desfecho.
+              const attempt = async (formId: string, target: DoiResendTarget): Promise<"sent" | "noop" | "failed"> => {
+                let resend: Awaited<ReturnType<typeof resendKitDoi>>;
+                try {
+                  resend = await resendKitDoi({ subscriberId, apiKey: kitApiKey, formId });
+                } catch (e) {
+                  resend = { ok: false, reason: (e as Error).message };
+                }
+                // #10023 — 2xx prova que o form existe (contado por form, #9986).
+                if (resend.ok) doiResendAttempts2xx.set(formId, (doiResendAttempts2xx.get(formId) ?? 0) + 1);
+                if (resend.ok && isKitDoiResendCounted(resend.status)) {
+                  log(
+                    `${contact.email}: double opt-in do Kit reenviado (form ${formId}` +
+                      (target === "resend" ? ", 2º form de DOI, #9986" : "") +
+                      `, HTTP ${resend.status}, #9835).`,
+                  );
+                  doiResent++;
+                  if (target === "resend") doiResentViaResendForm++;
+                  store = markDoiResent(store, contact.email);
+                  return "sent";
+                }
+                if (resend.ok) {
+                  // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
+                  // form"): o Kit não reenvia o e-mail. Não conta como reenvio
+                  // nem grava `doi_resent_at` (decisão do editor: só 201 conta).
+                  // Também não é falha.
+                  if (target === "primary") {
+                    // #9979 — grava `doi_resend_noop_at` pro intervalo valer
+                    // também aqui; #9986 — é ele que manda o contato pro 2º form.
+                    store = markDoiResendNoop(store, contact.email);
+                    doiResendNoop++; // #9986
+                  } else {
+                    // #9986 — 200 também no 2º form: vinculado aos dois, terminal.
+                    store = markDoiResendExhausted(store, contact.email);
+                    doiResendExhausted++;
+                  }
+                  log(
+                    `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
+                      `(já vinculado ao form ${formId}, nenhum e-mail sai); não conta como reenvio.` +
+                      (target === "resend" ? " Vinculado aos dois forms de DOI: reenvio encerrado para este contato (#9986)." : ""),
+                  );
+                  return "noop";
+                }
                 // #9986 — falha permanente (404/422) grava o marcador de
                 // backoff: o contato só volta a ser tentado depois de
                 // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
@@ -2441,9 +2549,9 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                 // só é gravado no fim da rodada, depois de descartar falha
                 // global do form (`decideDoiPermanentFailureScope`).
                 const permanent = isPermanentKitDoiFailure(resend.status);
-                if (permanent) pendingDoiPermanentFailures.push({ email: contact.email, status: resend.status! });
+                if (permanent) pendingDoiPermanentFailures.push({ email: contact.email, status: resend.status!, formId });
                 log(
-                  `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (#9835): ${resend.reason}` +
+                  `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (form ${formId}, #9835): ${resend.reason}` +
                     (permanent ? ` — possível falha permanente (HTTP ${resend.status}); backoff decidido no fim da rodada (#9986/#10023)` : ""),
                 );
                 failed++;
@@ -2452,6 +2560,19 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
                   reason: `falha ao reenviar double opt-in do Kit: ${resend.reason}`,
                   kitRateLimited: resend.status === 429, // #9291 — 429 sem decisão volta na próxima rodada
                 });
+                return "failed";
+              };
+              // #9986 — quem já respondeu 200 no principal vai direto pro 2º
+              // form; quem responde 200 no principal NESTA rodada segue pro 2º
+              // na mesma rodada (sem esperar outros DOI_RESEND_INTERVAL_DAYS).
+              const target = doiResendTargetForm(storedContact, doiResendFormForNoop !== undefined);
+              if (target === "resend") {
+                await attempt(doiResendFormForNoop!, "resend");
+              } else {
+                const outcome = await attempt(doiFormForResend!, "primary");
+                if (outcome === "noop" && doiResendFormForNoop !== undefined) {
+                  await attempt(doiResendFormForNoop, "resend");
+                }
               }
             }
             continue;
@@ -2545,34 +2666,44 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
 
   // #10023 — aplica (ou descarta) o backoff das falhas permanentes do reenvio
   // DOI agora que a rodada inteira é conhecida.
-  if (pendingDoiPermanentFailures.length > 0) {
-    const permanentFailureStatuses = pendingDoiPermanentFailures.map((f) => f.status);
-    let scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes: doiResendAttempts2xx });
-    if (scope === "global" && doiFormForResend !== undefined && kitApiKey) {
+  // #9986 — decidido POR FORM: com 2 forms de DOI, falha global de um
+  // (apagado/ID errado) não pode ser deduzida das tentativas no outro.
+  const pendingByForm = new Map<string, { email: string; status: number }[]>();
+  for (const f of pendingDoiPermanentFailures) {
+    const list = pendingByForm.get(f.formId) ?? [];
+    list.push({ email: f.email, status: f.status });
+    pendingByForm.set(f.formId, list);
+  }
+  for (const [formId, pending] of pendingByForm) {
+    const permanentFailureStatuses = pending.map((f) => f.status);
+    const successes = doiResendAttempts2xx.get(formId) ?? 0;
+    const isResendForm = formId === doiResendFormForNoop;
+    let scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes });
+    if (scope === "global" && kitApiKey) {
       // #10051 — antes de declarar o form inexistente, confirma: 1 GET por
-      // rodada, só neste caso. Form existe → as falhas são dos contatos.
-      const formExists = await probeKitDoiFormExists({ formId: doiFormForResend, apiKey: kitApiKey });
-      scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes: doiResendAttempts2xx, formExists });
+      // rodada (por form), só neste caso. Form existe → as falhas são dos contatos.
+      const formExists = await probeKitDoiFormExists({ formId, apiKey: kitApiKey });
+      scope = decideDoiPermanentFailureScope({ permanentFailureStatuses, successes, formExists });
       if (scope === "per_contact") {
         log(
-          `reenvio DOI: ${pendingDoiPermanentFailures.length} falha(s) HTTP ${pendingDoiPermanentFailures[0]!.status} sem nenhum 2xx, ` +
-            `mas o form ${doiFormForResend} existe (GET /forms/{id}/subscribers 2xx) — falhas dos contatos, backoff por contato (#10051).`,
+          `reenvio DOI: ${pending.length} falha(s) HTTP ${pending[0]!.status} sem nenhum 2xx, ` +
+            `mas o form ${formId} existe (GET /forms/{id}/subscribers 2xx) — falhas dos contatos, backoff por contato (#10051).`,
         );
       } else if (formExists === "unknown") {
-        log(`warn: não deu pra confirmar a existência do form DOI ${doiFormForResend} (probe sem resposta conclusiva) — mantida a heurística do #10023 (#10051).`);
+        log(`warn: não deu pra confirmar a existência do form DOI ${formId} (probe sem resposta conclusiva) — mantida a heurística do #10023 (#10051).`);
       }
     }
     if (scope === "global") {
       log(
-        `warn: reenvio do double opt-in falhou com HTTP ${pendingDoiPermanentFailures[0]!.status} em TODAS as ` +
-          `${pendingDoiPermanentFailures.length} tentativa(s) da rodada, sem nenhum 2xx — provável form DOI inexistente ` +
-          `ou ID errado (kit.doiFormId=${doiFormForResend}). Tratado como falha GLOBAL de config: nenhum contato entra ` +
-          `no backoff de ${DOI_RESEND_INTERVAL_DAYS}d; confira KIT_DOI_FORM_ID (#10023).`,
+        `warn: reenvio do double opt-in falhou com HTTP ${pending[0]!.status} em TODAS as ` +
+          `${pending.length} tentativa(s) da rodada, sem nenhum 2xx — provável form DOI inexistente ` +
+          `ou ID errado (${isResendForm ? "kit.doiResendFormId" : "kit.doiFormId"}=${formId}). Tratado como falha GLOBAL de config: nenhum contato entra ` +
+          `no backoff de ${DOI_RESEND_INTERVAL_DAYS}d; confira ${isResendForm ? "kit.doiResendFormId no platform.config.json" : "KIT_DOI_FORM_ID"} (#10023).`,
       );
     } else {
-      for (const f of pendingDoiPermanentFailures) {
+      for (const f of pending) {
         store = markDoiResendFailed(store, f.email);
-        log(`${f.email}: falha permanente do reenvio DOI (HTTP ${f.status}), próxima tentativa em ${DOI_RESEND_INTERVAL_DAYS}d (#9986).`);
+        log(`${f.email}: falha permanente do reenvio DOI (form ${formId}, HTTP ${f.status}), próxima tentativa em ${DOI_RESEND_INTERVAL_DAYS}d (#9986).`);
       }
     }
   }
@@ -2592,6 +2723,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     awaitingKitConfirmation,
     doiResent,
     doiResendNoop,
+    doiResentViaResendForm,
+    doiResendExhausted,
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
@@ -2709,6 +2842,7 @@ async function main(): Promise<number> {
     kitApiKey,
     appendDuplicateWindowLog: appendBrevoKitDuplicateWindowLog, // #6705
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
+    kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
   });
 
   log(
@@ -2722,9 +2856,16 @@ async function main(): Promise<number> {
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
-      `${result.doiResendNoop} tentativa(s) de reenvio sem e-mail (Kit respondeu 200, já vinculado ao form, #9986).`,
+      `${result.doiResendNoop} tentativa(s) de reenvio sem e-mail (Kit respondeu 200, já vinculado ao form, #9986), ` +
+      `${result.doiResentViaResendForm} reenviado(s) pelo 2º form de DOI (subconjunto dos reenviados, #9986), ` +
+      `${result.doiResendExhausted} esgotado(s) (200 nos dois forms de DOI, reenvio encerrado, #9986).`,
   );
-  const doiNoopMsg = mensagemDoiNoopSemRelink(result.doiResendNoop); // #9986 — relink inviável na API do Kit
+  // #9986 — relink inviável na API do Kit. Com o 2º form de DOI configurado,
+  // os noops do principal seguem pra ele e o aviso passa a ser só sobre quem
+  // esgotou os dois forms.
+  const doiNoopMsg = platformConfig.kit?.doiResendFormId
+    ? mensagemDoiResendEsgotado(result.doiResendExhausted)
+    : mensagemDoiNoopSemRelink(result.doiResendNoop);
   if (doiNoopMsg) log(doiNoopMsg);
   // #8724 — impresso logo após o resumo, DE PROPÓSITO perto do fim do run
   // (só "dry-run"/"push concluído" seguem depois): com muitos contatos, o

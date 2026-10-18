@@ -125,6 +125,13 @@ export interface BrevoDiariaContact {
    * rodada. Falha transitória (5xx, 408, 429, rede) e de credencial/config
    * (401/403, afeta todos os contatos) não gravam. */
   doi_resend_failed_at?: string;
+  /** #9986 — ISO da tentativa em que o 2º designer form de DOI
+   * (`kit.doiResendFormId`, usado só pra quem já respondeu 200 no form
+   * principal) TAMBÉM respondeu 200: o contato já está vinculado aos dois
+   * forms e nenhum dos dois envia mais nada. Estado TERMINAL do reenvio:
+   * `needsDoiResend` devolve `false` pra sempre, sem intervalo (cada form só
+   * envia o e-mail uma vez por contato). Ausente = reenvio ainda possível. */
+  doi_resend_exhausted_at?: string;
   /** ISO — quando `resolution_reason` foi CORRIGIDO por
    * `applySuppressionReconciliation` (#5077), distinto de `suppressed_at`
    * (quando a supressão original aconteceu). Preserva as duas datas: "quando
@@ -576,13 +583,21 @@ export const DOI_RESEND_INTERVAL_DAYS = 7;
  * #9986 — `doi_resend_failed_at` (falha permanente 404/422) entra no mesmo
  * cálculo: é o backoff que impede o mesmo contato de virar `failed++` + warn
  * em toda rodada.
+ *
+ * #9986 — `doi_resend_exhausted_at` (200 também no 2º form de DOI) é
+ * terminal: `false` sem olhar intervalo.
  */
 export function needsDoiResend(
-  contact: Pick<BrevoDiariaContact, "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at">,
+  contact: Pick<
+    BrevoDiariaContact,
+    "status" | "doi_resent_at" | "doi_resend_noop_at" | "doi_resend_failed_at" | "doi_resend_exhausted_at"
+  >,
   now: string = new Date().toISOString(),
   days: number = DOI_RESEND_INTERVAL_DAYS,
 ): boolean {
   if (contact.status !== "in_brevo") return false;
+  // #9986 — 200 nos dois forms de DOI: terminal, nunca mais tenta.
+  if (contact.doi_resend_exhausted_at) return false;
   const marks = doiResendMarks(contact);
   if (marks.length === 0) return true;
   const ms = marks.map((m) => Date.parse(m));
@@ -670,6 +685,25 @@ export function markDoiResendFailed(
     ...store,
     contacts: store.contacts.map((c) =>
       c.email === norm && c.status === "in_brevo" ? { ...c, doi_resend_failed_at: now } : c,
+    ),
+  };
+}
+
+/** #9986 — grava `doi_resend_exhausted_at`: o 2º form de DOI
+ * (`kit.doiResendFormId`) também respondeu 200, então o contato já está
+ * vinculado aos dois forms e nenhum reenvio automático envia mais nada.
+ * Terminal pra `needsDoiResend`. Não toca os outros marcadores. No-op
+ * silencioso pra contato ausente ou fora de `in_brevo`. */
+export function markDoiResendExhausted(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    ...store,
+    contacts: store.contacts.map((c) =>
+      c.email === norm && c.status === "in_brevo" ? { ...c, doi_resend_exhausted_at: now } : c,
     ),
   };
 }
