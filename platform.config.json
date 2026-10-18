@@ -264,6 +264,26 @@
       "threads": {
         "enabled": true
       },
+      "facebook": {
+        "pages": [
+          {
+            "slug": "diaria",
+            "enabled": true,
+            "page_id_env": "FACEBOOK_PAGE_ID",
+            "token_env": "FACEBOOK_PAGE_ACCESS_TOKEN",
+            "utm_content": null,
+            "note": "#10458: pagina diar.ia.br (a historica). utm_content null = post sai identico ao de antes da lista de paginas; a ausencia da tag page-* identifica esta pagina na atribuicao. Trocar pra \"page-diaria\" e so editar aqui."
+          },
+          {
+            "slug": "memelab",
+            "enabled": false,
+            "page_id_env": "FACEBOOK_MEMELAB_PAGE_ID",
+            "token_env": "FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN",
+            "note": "#10458/#10456: pagina #memeLab. Desligada ate o editor gerar o token de pagina (pages_manage_posts) e setar as 2 env vars; ligar = trocar enabled pra true. utm_content ausente = page-memelab (compoe com usemelhor no 4o post)."
+          }
+        ],
+        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Hoje so publish-facebook.ts (diaria do Stage 5) percorre a lista; weekly/retrospectiva/eia/verify/seguidores seguem na pagina default ate o follow-up da issue."
+      },
       "twitter": {
         "enabled": true,
         "buffer_channel_id": "6a6679674b2d03035f46a4a3",
