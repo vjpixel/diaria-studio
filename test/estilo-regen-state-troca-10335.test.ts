@@ -169,6 +169,68 @@ describe("#10335: reorder/promote — o estado segue a imagem", () => {
   });
 });
 
+describe("#10404: promote não herda estado residual de d3 na posição inserida", () => {
+  /** Edição de 2 destaques cujo 04-estilo-regen.json ainda traz `d3` (D3 rebaixado à mão no Stage 4). */
+  function promoteWithStaleD3(position: number, state: Record<string, unknown>) {
+    const dir = mkdtempSync(join(tmpdir(), "estilo-10404-promote-"));
+    try {
+      const approved = {
+        highlights: [
+          { rank: 1, bucket: "noticias", url: "https://a.com/d1", article: { url: "https://a.com/d1", title: "D1" } },
+          { rank: 2, bucket: "noticias", url: "https://b.com/d2", article: { url: "https://b.com/d2", title: "D2" } },
+        ],
+        radar: [{ url: "https://r.com/1", title: "R1", score: 70, category: "noticias" }],
+        use_melhor: [],
+      };
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify(approved));
+      writeFileSync(join(dir, "_internal", "01-approved-capped.json"), JSON.stringify(approved));
+      writeFileSync(join(dir, "02-reviewed.md"), "**DESTAQUE 1 | IA**\n\nt1\n\n---\n\n**DESTAQUE 2 | IA**\n\nt2\n");
+      writeFileSync(join(dir, "_internal", "04-estilo-regen.json"), JSON.stringify(state));
+      const r = promoteToDestaque(dir, "https://r.com/1", position);
+      return { r, st: JSON.parse(readFileSync(join(dir, "_internal", "04-estilo-regen.json"), "utf8")) };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("--position 1: pending/images do D3 antigo NÃO vão para d1; d1/d2 antigos deslocam", () => {
+    const { st } = promoteWithStaleD3(1, {
+      pending: { d1: { "4x5": "a" }, d3: { "4x5": "velho" } },
+      pendingAll: { d3: { "2x1": "velho-2x1" } },
+      images: { d1: ["a"], d3: ["velho"] },
+      attempts: { d3: 1 },
+    });
+    assert.equal(st.pending.d1, undefined, "posição inserida não herda o pending do D3 rebaixado");
+    assert.equal(st.pendingAll.d1, undefined);
+    assert.equal(st.images.d1, undefined);
+    assert.equal(st.attempts.d1, undefined);
+    assert.deepEqual(st.pending.d2, { "4x5": "a" }, "estado do D1 antigo segue a imagem para d2");
+    assert.deepEqual(st.images.d2, ["a"]);
+  });
+
+  it("--position 3 (newOrder identidade): d3 residual é zerado mesmo sem deslocamento", () => {
+    const { r, st } = promoteWithStaleD3(3, {
+      pending: { d1: { "4x5": "a" }, d3: { "4x5": "velho" } },
+      images: { d3: ["velho"] },
+    });
+    assert.equal(st.pending.d3, undefined);
+    assert.equal(st.images.d3, undefined);
+    assert.deepEqual(st.pending.d1, { "4x5": "a" });
+    assert.ok(r.rewritten.some((p) => p.endsWith("04-estilo-regen.json")), "arquivo regravado mesmo com reorder no-op");
+  });
+
+  it("o plano seguinte NÃO esgota a imagem nova da posição inserida", () => {
+    const md5: Record<string, string> = { "2x1": "2x1-v1", "1x1": "1x1-v1", "4x5": "nativo-v1" };
+    const stale = planEstiloRegeneration(estilo("4x5", "d3"), {}, () => false, (_d, r) => md5[r] ?? null).state;
+    assert.ok(stale.pending?.d3, "fixture: D3 antigo com pending vivo");
+    const { st } = promoteWithStaleD3(1, stale as Record<string, unknown>);
+    const p = planEstiloRegeneration(estilo("1x1", "d1"), st as EstiloRegenState, () => false, curTrocada);
+    assert.deepEqual(p.exhausted, []);
+    assert.deepEqual(p.regenerate, ["d1"]);
+  });
+});
+
 describe("#10335: swap-destaque.ts e --estilo-regen-reset zeram a posição (CLI)", () => {
   const APPROVED = {
     highlights: [
