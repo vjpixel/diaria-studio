@@ -384,3 +384,103 @@ export function recordConvergenceScan(
   plan.goal = goal;
   writePlan(planPath, plan);
 }
+
+// ---------------------------------------------------------------------------
+// Re-classificação de issue JÁ no plano, não trabalhada por esta sessão (#10407)
+// ---------------------------------------------------------------------------
+
+/**
+ * Motivos terminais de "não trabalhada por esta sessão" sujeitos à
+ * re-classificação (#10407). `deixado-para-o-300` (e o alias legado
+ * `deixado-para-o-helios`, #7682) é exclusivo do develop: a sessão deixou a
+ * issue pro `300` porque ela era `overnight` NAQUELE momento.
+ * `claimed-por-outra-sessao` só entra quando o chamador pede
+ * (`includeClaimed`) — numa rodada overnight/continuo, issue re-roteada pra
+ * develop/bloqueada não é trabalho da rodada, e acusá-la seria ruído
+ * permanente.
+ */
+export const UNWORKED_300_MOTIVOS: ReadonlySet<string> = new Set([
+  "deixado-para-o-300",
+  "deixado-para-o-helios",
+]);
+export const UNWORKED_CLAIMED_MOTIVO = "claimed-por-outra-sessao";
+
+/** Tracks que o `300` nunca pega sozinho — re-roteamento pra um deles deixa a
+ * issue num buraco se a sessão já a marcou como "não minha". */
+const RETRACK_HOLE_TRACKS: ReadonlySet<string> = new Set(["develop", "bloqueada"]);
+
+export interface RetrackedUnworkedIssue {
+  number: number;
+  /** Motivo terminal gravado no plano (`deixado-para-o-300`, ...). */
+  motivo: string;
+  /** `exec_track_painel` gravado no plano, ou `null` se ausente. */
+  track_gravado: string | null;
+  /** Track atual por `classifyExecTrack` sobre as labels/body de agora. */
+  track_atual: string;
+}
+
+interface PlanIssueEntryLike {
+  number?: unknown;
+  status?: unknown;
+  motivo?: unknown;
+  exec_track_painel?: unknown;
+}
+
+/** Pure: motivo terminal "não trabalhada" de uma entrada, ou `null`. Aceita
+ * as duas formas vistas em `plan.json`: `status: "pulada"` + `motivo`
+ * (develop 261018) e o motivo gravado direto em `status` (forma que
+ * `findDeixadoPara300Buraco` também aceita). */
+function unworkedMotivo(entry: PlanIssueEntryLike, includeClaimed: boolean): string | null {
+  const candidates: unknown[] = [entry.status === "pulada" ? entry.motivo : undefined, entry.status];
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    if (UNWORKED_300_MOTIVOS.has(c)) return c;
+    if (includeClaimed && c === UNWORKED_CLAIMED_MOTIVO) return c;
+  }
+  return null;
+}
+
+/**
+ * Pure (#10407): entradas de `plan.issues` com status terminal "não
+ * trabalhada por esta sessão" cujo track ATUAL (`classifyExecTrack` sobre as
+ * labels de agora) virou `develop`/`bloqueada` e difere do
+ * `exec_track_painel` gravado. Caso real (develop 261018): #10385/#10387/
+ * #10393 gravadas `pulada`/`deixado-para-o-300`/`overnight`, re-roteadas pra
+ * `develop` pelo overnight do `300` no meio da sessão — o gate de
+ * convergência só olhava issue NOVA e deu "ok", a sessão fechou com
+ * `Goal: atingido` e 3 issues develop abertas. Mesmo princípio do #5586:
+ * herança não dispensa reverificação.
+ *
+ * Issue fechada (ausente de `openIssues`) não entra — saiu do backlog.
+ * Track gravado já igual ao atual não entra — a sessão já sabia (e
+ * `deixado-para-o-300` em track develop gravado é coberto por
+ * `validate-develop-plan-motivo.ts`, #5907 b).
+ */
+export function findRetrackedUnworkedIssues(
+  plan: PlanWithGoal,
+  openIssues: ConvergenceScanIssue[],
+  opts: { now?: Date; includeClaimed?: boolean } = {},
+): RetrackedUnworkedIssue[] {
+  const byNumber = new Map<number, ConvergenceScanIssue>();
+  for (const issue of openIssues) byNumber.set(issue.number, issue);
+  const out: RetrackedUnworkedIssue[] = [];
+  const seen = new Set<number>();
+  for (const entry of normalizeIssues<PlanIssueEntryLike>(
+    plan as IssuesBearing<PlanIssueEntryLike>,
+  )) {
+    if (!entry || typeof entry.number !== "number" || !Number.isFinite(entry.number)) continue;
+    if (seen.has(entry.number)) continue;
+    const motivo = unworkedMotivo(entry, opts.includeClaimed === true);
+    if (!motivo) continue;
+    const open = byNumber.get(entry.number);
+    if (!open) continue;
+    const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
+    if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
+    const trackGravado =
+      typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
+    if (trackGravado === trackAtual) continue;
+    seen.add(entry.number);
+    out.push({ number: entry.number, motivo, track_gravado: trackGravado, track_atual: trackAtual });
+  }
+  return out.sort((a, b) => a.number - b.number);
+}
