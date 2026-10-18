@@ -285,6 +285,16 @@
         "day_offset": 0
       },
       "use_melhor_time": "07:45",
+      "linkedin_weekly_article_time": "09:30",
+      "rotation": {
+        "enabled": true,
+        "start_date": "2026-10-20",
+        "end_date": "2026-11-20",
+        "weekday_candidates": ["07:00", "09:00", "11:00", "13:00", "15:00", "17:00", "19:00", "21:00"],
+        "weekend_candidates": ["08:00", "11:00", "15:00", "19:00"],
+        "linkedin_weekly_article_candidates": ["07:30", "09:30", "12:30", "18:30"],
+        "note": "#10305: teste rotativo de horários (decisão do editor 18/10/2026, método do comentário de 15/10). Dia útil: cada tipo (um/d1/d2/d3) anda 1 candidato por dia útil — 8 candidatos = ciclo de 8 dias úteis em que cada horário recebe cada tipo 1 vez; 2026-10-20..2026-11-20 = 24 dias úteis = 3 ciclos. Sábado/domingo e artigo de segunda do LinkedIn alternam candidatos semana a semana. Fora da janela (ou enabled=false) valem fallback_schedule/use_melhor_time/DEFAULT_WEEKLY_TIME/linkedin_weekly_article_time. Plano: npx tsx scripts/social-schedule-rotation.ts --plan. Lógica: scripts/lib/social-schedule-rotation.ts."
+      },
       "timezone": "America/Sao_Paulo"
     }
   },

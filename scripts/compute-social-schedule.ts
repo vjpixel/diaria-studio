@@ -12,6 +12,11 @@
  * da edição, `today()` ainda é a data anterior, e `today + 0` agendaria pra
  * D-1 (dessincronizando newsletter e social). Vide caso 260428.
  *
+ * #10305: com `publishing.social.rotation.enabled`, o horário de cada post
+ * (um/d1/d2/d3) num dia útil da janela do teste vem da rotação determinística
+ * de `scripts/lib/social-schedule-rotation.ts` (função da data de publicação),
+ * igual nas 5 redes. Fora da janela, os horários fixos de sempre.
+ *
  * Uso CLI:
  *   npx tsx scripts/compute-social-schedule.ts \
  *     --edition 260428 --destaque d1 --platform linkedin [--day-offset 0]
@@ -26,6 +31,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
+import { readSocialRotation, weekdayRotationSlot } from "./lib/social-schedule-rotation.ts";
 
 interface ScheduleConfig {
   d1_time?: string;
@@ -39,6 +45,8 @@ interface SocialConfig {
   fallback_schedule?: ScheduleConfig;
   /** #9568: slot "HH:MM" do 4º post (USE MELHOR, destaque "um"). */
   use_melhor_time?: string | null;
+  /** #10305: teste rotativo dos horários — ver `scripts/lib/social-schedule-rotation.ts`. */
+  rotation?: unknown;
   timezone?: string;
   [k: string]: unknown;
 }
@@ -96,6 +104,14 @@ export interface ComputeScheduleInput {
    * O shift ainda se aplica no agendamento INICIAL (não passar este flag lá).
    */
   disablePastSlotShift?: boolean;
+  /**
+   * #10305: `false` ignora `publishing.social.rotation` e usa o horário fixo
+   * do config. Para quem chama este helper com um config sintético fora da
+   * grade da diária (artigo especial, `artigo-especial-schedule.ts`), onde o
+   * horário é decisão própria e não pode girar. Default: segue o config — os
+   * 5 publicadores da diária giram juntos sem precisar de flag.
+   */
+  applyRotation?: boolean;
 }
 
 /**
@@ -239,12 +255,12 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   // day_offset, past-slot guard) é idêntico ao dos destaques.
   const timeKey = destaque === "um" ? "use_melhor_time" : (`${destaque}_time` as keyof ScheduleConfig);
   const slot = readSlotOverride(destaque, editionDate);
-  const time =
+  const baseTime =
     slot?.time ??
     (destaque === "um" ? (social.use_melhor_time ?? undefined) : (sched[timeKey as keyof ScheduleConfig] as string | undefined));
-  if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
+  if (!baseTime || !/^\d{1,2}:\d{2}$/.test(baseTime)) {
     throw new Error(
-      `time inválido para ${platform}.${timeKey}: '${time}' (esperado HH:MM).`,
+      `time inválido para ${platform}.${timeKey}: '${baseTime}' (esperado HH:MM).`,
     );
   }
 
@@ -259,6 +275,29 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
   // dos componentes (sem dependência da TZ local). #270.
   const target = new Date(year, month - 1, day);
   target.setDate(target.getDate() + dayOffset);
+
+  // #10305: teste rotativo. Depende da data de PUBLICAÇÃO (edição + day_offset),
+  // não de `now` — os 5 publicadores e o reagendamento do Facebook chegam no
+  // mesmo horário. O slot explícito (`DIARIA_SOCIAL_SLOTS_FILE`) vence: é
+  // publicação fora da grade da diária. O horário fixo acima continua sendo
+  // validado antes (sem `use_melhor_time` o 4º post segue desligado).
+  let time = baseTime;
+  if (!slot && input.applyRotation !== false) {
+    const rot = weekdayRotationSlot(
+      readSocialRotation(social),
+      { year: target.getFullYear(), month: target.getMonth() + 1, day: target.getDate() },
+      destaque,
+    );
+    if (rot) {
+      time = rot.time;
+      if (process.env.DIARIA_QUIET_SCHEDULE_LOG !== "1") {
+        console.error(
+          `[compute-schedule] rotação #10305: ${editionDate} ${platform}/${destaque} → ${rot.time} ` +
+            `(fixo ${baseTime}; dia útil #${rot.weekdayIndex}, ciclo ${rot.cycle})`,
+        );
+      }
+    }
+  }
 
   const dateStr =
     `${target.getFullYear()}-` +
