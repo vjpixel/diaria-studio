@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#FBFAF6" />
+    <title>Conteúdo Autêntico com IA: crie um assistente que produz um mês de conteúdo com identidade</title>
+    <meta name="description" content="Monte um assistente que aprende a identidade da sua marca e escreve os posts de cada rede, com a conta gratuita do ChatGPT e sem programar. Aula em vídeo com os materiais e dois bônus, por R$ 57." />
+    <link rel="canonical" href="https://diar.ia.br/produto/conteudo-autentico" />
+    <meta property="og:type" content="product" />
+    <meta property="og:locale" content="pt_BR" />
+    <meta property="og:site_name" content="diar.ia.br" />
+    <meta property="og:title" content="Conteúdo Autêntico com IA" />
+    <meta property="og:description" content="Crie um assistente que produz, em uma hora, um mês de conteúdo com a identidade da sua marca. Com a conta gratuita do ChatGPT e sem programar." />
+    <meta property="og:url" content="https://diar.ia.br/produto/conteudo-autentico" />
+    <meta property="og:image" content="https://diar.ia.br/produto/conteudo-autentico/assets/og-conteudo-autentico.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap" />
+    <link rel="stylesheet" href="/produto/conteudo-autentico/styles.css" />
+    <script src="/produto/conteudo-autentico/script.js" defer></script>
+    <!-- #10080: modo interno (?interno=1 liga, ?interno=0 desliga, marcador no localStorage; o parâmetro sai da URL). Ligado, a página não inicializa o pixel, não carrega o GTM e não manda o beacon do clique. -->
+    <script>(function () {var q = null;try {var key = "diaria_interno";q = new URLSearchParams(window.location.search).get("interno");if (q === '1') window.localStorage.setItem(key, '1');else if (q === '0') window.localStorage.removeItem(key);window.__DIA_INTERNO__ = window.localStorage.getItem(key) === '1';} catch (e) { window.__DIA_INTERNO__ = false; }if (q !== null) {try {var u = new URL(window.location.href);u.searchParams.delete("interno");window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);} catch (e) {}}})();</script>
+    <!-- #8978: ID first-party (_dia_vid) + _fbc em .diar.ia.br ANTES do pixel, pra fbq('init', ...) já sair com external_id/fbc no 1o disparo. -->
+    <script>try {var COOKIE="_dia_vid";var DOMAIN=".diar.ia.br";var MAXAGE=63072000;var VIDRE = new RegExp("^[0-9a-fA-F-]{16,64}$");var m = document.cookie.match(new RegExp('(?:^|; )' + COOKIE + '=([^;]+)'));var vid = m && VIDRE.test(m[1]) ? m[1] : null;if (!vid) {vid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function () { return (Math.random() * 16 | 0).toString(16); });if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {document.cookie = COOKIE + '=' + vid + '; Max-Age=' + MAXAGE + '; Domain=' + DOMAIN + '; Path=/; SameSite=Lax';}}window.__DIA_VID__ = vid;window.dataLayer = window.dataLayer || [];window.dataLayer.push({ external_id: vid });} catch (e) {}</script>
+    <script>try {if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname)) {var fbclid = new URLSearchParams(window.location.search).get('fbclid');var FBCLIDRE = new RegExp("^[A-Za-z0-9_.-]+$");if (fbclid && FBCLIDRE.test(fbclid) && !/(?:^|; )_fbc=/.test(document.cookie)) {var fbc = 'fb.1.' + Date.now() + '.' + fbclid;document.cookie = '_fbc=' + fbc + '; Max-Age=7776000; Domain=.diar.ia.br; Path=/; SameSite=Lax';}}} catch (e) {}</script>
+    <!-- #9590: container GTM (o mesmo de renderAnalyticsHead) DEPOIS do bootstrap _dia_vid (dataLayer já tem external_id). É por ele que o GA4 (G-SGXBD0R9CD, destino da Google tag AW-17790097065) recebe a sessão com as UTMs. O PageView do Meta continua só no pixel direto abaixo: a tag PageView do container só dispara em cursos|livros.diar.ia.br (gtm.js publicado, medido em 05/10/2026). -->
+    <script>if (!window.__DIA_INTERNO__) {(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);})(window,document,'script','dataLayer','GTM-TC8C65ZN');}</script>
+    <!-- Meta Pixel (Diar.ia). Só dispara em diar.ia.br: teste local (localhost) e preview não entram no dataset. -->
+    <script>
+      if (/(^|\.)diar\.ia\.br$/.test(window.location.hostname) && !window.__DIA_INTERNO__) {
+      !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+      n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+      n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+      t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+      document,'script','https://connect.facebook.net/en_US/fbevents.js');
+      fbq('init', '1285191740325112', { external_id: window.__DIA_VID__ });
+      fbq('track', 'PageView');
+      }
+    </script>
+    <noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=1285191740325112&ev=PageView&noscript=1" /></noscript>
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true" focusable="false"><defs><symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="m9 12 2 2 4-4" /></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /><path d="m9 12 2 2 4-4" /></symbol><symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol><symbol id="i-message" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol><symbol id="i-repeat" viewBox="0 0 24 24"><path d="m2 9 3-3 3 3"/><path d="M13 18H7a2 2 0 0 1-2-2V6"/><path d="m22 15-3 3-3-3"/><path d="M11 6h6a2 2 0 0 1 2 2v10"/></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></symbol><symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 2v13"/><path d="m16 6-4-4-4 4"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/></symbol><symbol id="i-bookmark" viewBox="0 0 24 24"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></symbol><symbol id="i-thumbs-up" viewBox="0 0 24 24"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></symbol></defs></svg>
+    <main>
+      <!-- 1. Primeira dobra: a promessa, três benefícios e posts de três marcas, cada uma com a sua identidade -->
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="kicker">Conteúdo Autêntico com IA</p>
+            <h1 id="hero-title">Crie um assistente que produz, em uma hora, <em>um mês de conteúdo com identidade</em></h1>
+            <p class="lead">Você monta esse assistente no ChatGPT gratuito, sem programar, acompanhando uma aula em vídeo passo a passo. Ele aprende a identidade da sua marca e escreve os posts de cada rede sem cara de IA, com o pedido da imagem pronto para gerar no ChatGPT.</p>
+            <ul class="hero-bullets">
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Atenda mais clientes sem levar trabalho para a noite: cada um ganha a própria identidade.</span></li>
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Pare de repetir comandos e refazer posts: a identidade da marca fica guardada no assistente, e cada pedido já sai no tom certo.</span></li>
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Comece a semana com os posts prontos para revisar, em vez da tela em branco.</span></li>
+            </ul>
+            <div class="hero-cta">
+              <a class="button checkout-link" href="https://pay.hotmart.com/U107768057V?off=lhwtb1jf" data-posicao="topo">Quero montar meu assistente</a>
+              <p class="hero-terms"><strong>R$ 57</strong> · acesso por 1 ano · garantia de 7 dias</p>
+            </div>
+          </div>
+          <div class="hero-visual" role="group" aria-label="Posts de três marcas, cada uma com a própria identidade">
+            <figure class="post post-ig fan-1">
+              <figcaption class="net-name">Cafeteria · Instagram</figcaption>
+              <div class="ph"><span class="av av-cafe" aria-hidden="true">CE</span><span class="who"><b>cafedaesquina</b></span><span class="more">···</span></div>
+              <div class="media"><img src="/produto/conteudo-autentico/assets/cafe-bolo.webp" width="540" height="675" alt="Ilustração em aquarela de uma fatia de bolo de fubá com goiabada ao lado de uma xícara de café coado." fetchpriority="high" /></div>
+              <div class="act act-ig"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg></span></div>
+              <p class="tx"><b>cafedaesquina</b> Quinta tem bolo de fubá com goiabada saindo da fornada. <span class="dim">… mais</span></p>
+            </figure>
+            <figure class="post post-li fan-2">
+              <figcaption class="net-name">Arquiteta · LinkedIn</figcaption>
+              <div class="ph"><span class="av av-lucia" aria-hidden="true">LP</span><span class="who"><b>Lúcia Prado</b><span>Arquitetura de interiores</span><span>2 h · <svg class="mi mi-s" aria-hidden="true" focusable="false"><use href="#i-globe"/></svg></span></span><span class="more">···</span></div>
+              <p class="tx">A cor da parede parece uma das primeiras escolhas da reforma. Na prática, ela funciona melhor quando vem depois das decisões que definem o ambiente. <span class="dim">… mais</span></p>
+              <img src="/produto/conteudo-autentico/assets/lucia-slide-1.webp" width="540" height="675" alt="Capa de carrossel em aquarela com o título Antes da cor, decida estas três coisas." />
+              <div class="act act-li"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-thumbs-up"/></svg>Gostei</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg>Comentar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg>Compartilhar</span></div>
+            </figure>
+            <figure class="post post-ig fan-3">
+              <figcaption class="net-name">Newsletter · Instagram</figcaption>
+              <div class="ph"><span class="av av-diaria" aria-hidden="true">d<i>..</i></span><span class="who"><b><strong class="wm">diar<span>.</span>ia<span>.br</span></strong></b></span><span class="more">···</span></div>
+              <div class="media"><img src="/produto/conteudo-autentico/assets/diaria-card.webp" width="480" height="600" alt="Post da diar.ia.br: pintura de um agente de IA azul em reunião com quatro pessoas e o título Gemini vira colega com e-mail e agenda próprios." /><span class="count">1/5</span></div>
+              <div class="act act-ig"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></span><span class="dots" aria-hidden="true"><i class="on"></i><i></i><i></i><i></i><i></i></span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg></span></div>
+              <p class="tx"><b><strong class="wm">diar<span>.</span>ia<span>.br</span></strong></b> O Gemini agent, apresentado pelo Google Cloud, trabalha por objetivos. <span class="dim">… mais</span></p>
+            </figure>
+            <p class="hero-note">Posts criados pelo assistente da aula para duas marcas fictícias e um post real da <strong class="wm">diar<span>.</span>ia<span>.br</span></strong>.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. O problema, com o antes e depois: o mesmo modelo e o mesmo tema, com e sem a identidade da marca (saídas reais, sem edição) -->
+      <section class="section section-ink" aria-labelledby="why-title">
+        <div class="wrap">
+          <div class="why-head">
+            <p class="kicker">Por que o ChatGPT devolve texto genérico</p>
+            <h2 id="why-title">A IA não sabe como a sua marca escreve. <em>Ninguém contou a ela.</em></h2>
+            <p>Sem a identidade da marca, a IA devolve o texto médio que serve para qualquer empresa. Você passa meia hora reescrevendo e, no fim, teria sido mais rápido escrever do zero. Veja o mesmo tema, para a mesma cafeteria:</p>
+          </div>
+          <div class="versus">
+            <figure class="vs vs-bad">
+              <div class="vs-head"><span class="vs-tag">Sem a identidade</span><p class="vs-ask">“Escreva um post para o Instagram da nossa cafeteria. Tema: bolo de fubá com goiabada, receita da casa que sai toda quinta.”</p></div>
+              <div class="post post-ig">
+                <div class="ph"><span class="av av-cafe" aria-hidden="true">CE</span><span class="who"><b>cafedaesquina</b></span><span class="more">···</span></div>
+                <p class="tx">Toda quinta tem cheirinho de casa por aqui. <mark class="no">☕🍰</mark></p>
+                <p class="tx">Nosso bolo de fubá com goiabada sai fresquinho, com <mark class="no">aquela combinação perfeita</mark> de massa macia e pedacinhos derretendo a cada fatia.</p>
+                <p class="tx"><mark class="no">Vem garantir o seu café da tarde favorito.</mark></p>
+              </div>
+              <ul class="vs-notes">
+                <li>Emoji de enfeite, que a marca não usa.</li>
+                <li>Frases que serviriam para qualquer cafeteria.</li>
+                <li>Nenhuma palavra da casa: nem fornada, nem café coado, nem “passa aqui”.</li>
+              </ul>
+            </figure>
+            <figure class="vs vs-good">
+              <div class="vs-head"><span class="vs-tag">Com o assistente</span><p class="vs-ask">O mesmo tema, com o arquivo de identidade da Café da Esquina.</p></div>
+              <div class="post post-ig">
+                <div class="ph"><span class="av av-cafe" aria-hidden="true">CE</span><span class="who"><b>cafedaesquina</b></span><span class="more">···</span></div>
+                <p class="tx">Quinta tem bolo de fubá com goiabada saindo da <mark class="ok">fornada</mark>.</p>
+                <p class="tx">É <mark class="ok">receita da casa</mark>: massa macia, pedaços de goiabada e <mark class="ok">café coado</mark> na hora para acompanhar.</p>
+                <p class="tx">Passou pelo bairro? <mark class="ok">Passa aqui</mark> para pegar uma fatia.</p>
+                <p class="tx"><span class="lnk">#CafeDaEsquina #ReceitaDaCasa #BoloDeFuba #CafeCoado #BeloHorizonte</span></p>
+              </div>
+              <ul class="vs-notes">
+                <li>As palavras que a marca usa, tiradas do arquivo de identidade.</li>
+                <li>O tom dos posts que já deram certo: curto, acolhedor e com convite.</li>
+                <li>Só os fatos que a marca deu, como o dia da fornada.</li>
+              </ul>
+            </figure>
+          </div>
+          <p class="why-turn">A saída é inverter a ordem. Em vez de caprichar no pedido a cada post, você escreve a identidade da marca uma vez: o tom, as palavras que ela usa e as que nunca diria, os temas e o estilo das imagens. O assistente segue essa identidade em todo pedido, e cada correção sua vira regra.</p>
+        </div>
+      </section>
+
+      <!-- 3. Como o assistente funciona: o pedido, a identidade e o post para aprovar -->
+      <section class="section" aria-labelledby="how-title">
+        <div class="wrap">
+          <p class="kicker">Como o assistente funciona</p>
+          <h2 id="how-title">Você dá o tema. Ele entrega o post <em>com a identidade da marca</em></h2>
+          <ol class="pipeline">
+            <li class="stage">
+              <span class="stage-label"><b>1</b>Você pede</span>
+              <div class="stage-card">
+                <p class="ask"><b>$posts</b> Tema: bolo de fubá com goiabada, receita da casa que sai toda quinta. Redes: Instagram, X e Threads. Quantidade: 1.</p>
+                <p class="hint">Se faltar alguma coisa, ele pergunta. Sem tema, ele sugere cinco.</p>
+              </div>
+            </li>
+            <li class="stage">
+              <span class="stage-label"><b>2</b>Ele segue a identidade</span>
+              <div class="stage-card identity">
+                <p class="file-name">identidade.md · Café da Esquina</p>
+                <ul>
+                  <li><b>Tom:</b> acolhedor, direto, bem-humorado.</li>
+                  <li><b>Palavras que usa:</b> café coado, fornada, receita da casa, “passa aqui”.</li>
+                  <li><b>Nunca diz:</b> “No mundo atual”, “imperdível”, “gourmet”, emoji em todas as frases.</li>
+                  <li><b>Imagens:</b> aquarela em tons terrosos, luz de manhã, sem pessoas.</li>
+                </ul>
+              </div>
+            </li>
+            <li class="stage">
+              <span class="stage-label"><b>3</b>Você revisa e aprova</span>
+              <div class="stage-card out">
+                <img src="/produto/conteudo-autentico/assets/cafe-bolo.webp" width="540" height="675" alt="" loading="lazy" />
+                <div class="out-text"><p>Quinta tem bolo de fubá com goiabada saindo da fornada.</p><p>É receita da casa: massa macia, pedaços de goiabada e café coado na hora para acompanhar.</p></div>
+                <p class="img-ask"><b>Pedido da imagem:</b> Crie uma imagem vertical 4:5 em ilustração em aquarela para o Café da Esquina. Mostre uma fatia generosa de bolo de fubá com pedaços visíveis de goiabada, ao lado de uma xícara de café coado fumegante…</p>
+              </div>
+            </li>
+          </ol>
+          <ul class="approvals">
+            <li><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>Para e espera você aprovar a pauta.</li>
+            <li><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>Confere clichê, tom, formato, fatos e imagem.</li>
+            <li><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>Para de novo antes da versão final.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 4. O que você vai aprender a criar: saídas reais do assistente para duas marcas fictícias -->
+      <section class="section section-recessed" aria-labelledby="gallery-title">
+        <div class="wrap">
+          <p class="kicker">O que você vai aprender a criar</p>
+          <h2 id="gallery-title">Os formatos de cada rede, <em>na identidade de cada marca</em></h2>
+          <p class="section-lead">Posts que o assistente da aula criou para duas marcas fictícias, sem edição. As imagens foram geradas no ChatGPT a partir dos pedidos que ele escreveu.</p>
+          <div class="gallery">
+            <figure class="post post-ig g g-full">
+              <figcaption class="net-name">Carrossel com texto · Instagram e LinkedIn</figcaption>
+              <div class="ph"><span class="av av-lucia" aria-hidden="true">LP</span><span class="who"><b>luciaprado.arq</b></span><span class="more">···</span></div>
+              <div class="slides" tabindex="0" role="group" aria-label="Os cinco slides do carrossel">
+                <img src="/produto/conteudo-autentico/assets/lucia-slide-1.webp" width="540" height="675" alt="Slide 1: Antes da cor, decida estas três coisas." loading="lazy" />
+                <img src="/produto/conteudo-autentico/assets/lucia-slide-2.webp" width="540" height="675" alt="Slide 2: Onde ficam os móveis. Antes de pintar, defina a planta: cama, sofá, mesa e circulação." loading="lazy" />
+                <img src="/produto/conteudo-autentico/assets/lucia-slide-3.webp" width="540" height="675" alt="Slide 3: Como entra a luz natural. A mesma cor muda perto da janela, no corredor e na parede oposta à luz." loading="lazy" />
+                <img src="/produto/conteudo-autentico/assets/lucia-slide-4.webp" width="540" height="675" alt="Slide 4: Quais acabamentos vão ficar. Piso, marcenaria, bancada e revestimentos já devem estar escolhidos." loading="lazy" />
+                <img src="/produto/conteudo-autentico/assets/lucia-slide-5.webp" width="540" height="675" alt="Slide 5: Cor é uma decisão do conjunto. Defina o ambiente primeiro." loading="lazy" />
+              </div>
+              <p class="cap"><b>luciaprado.arq</b> A cor da parede parece uma das primeiras escolhas da reforma. Na prática, ela funciona melhor quando vem depois das decisões que definem o ambiente. <span class="dim">… mais</span></p>
+            </figure>
+            <figure class="post post-ig g">
+              <figcaption class="net-name">Post com imagem · Instagram</figcaption>
+              <div class="ph"><span class="av av-cafe" aria-hidden="true">CE</span><span class="who"><b>cafedaesquina</b></span><span class="more">···</span></div>
+              <div class="media"><img src="/produto/conteudo-autentico/assets/cafe-bolo.webp" width="540" height="675" alt="Ilustração em aquarela de uma fatia de bolo de fubá com goiabada ao lado de uma xícara de café coado." loading="lazy" /></div>
+              <div class="act act-ig"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg></span></div>
+              <p class="tx"><b>cafedaesquina</b> Quinta tem bolo de fubá com goiabada saindo da fornada.</p>
+              <p class="tx">É receita da casa: massa macia, pedaços de goiabada e café coado na hora para acompanhar.</p>
+              <p class="tx">Passou pelo bairro? Passa aqui para pegar uma fatia. <span class="dim">… mais</span></p>
+            </figure>
+            <figure class="post post-li g">
+              <figcaption class="net-name">Texto longo · LinkedIn</figcaption>
+              <div class="ph"><span class="av av-lucia" aria-hidden="true">LP</span><span class="who"><b>Lúcia Prado</b><span>Arquitetura de interiores</span><span>2 h · <svg class="mi mi-s" aria-hidden="true" focusable="false"><use href="#i-globe"/></svg></span></span><span class="more">···</span></div>
+              <p class="tx">A cor da parede parece uma das primeiras escolhas da reforma. Na prática, ela funciona melhor quando vem depois das decisões que definem o ambiente.</p>
+              <p class="tx">Comece pela planta: onde ficam os móveis e por onde as pessoas passam. Uma parede atrás do sofá, por exemplo, tem um papel diferente de uma parede que fica quase escondida pela marcenaria.</p>
+              <p class="tx">Depois, observe a luz natural. A tinta pode mudar bastante entre a parede perto da janela e a que recebe menos luz ao longo do dia.</p>
+              <p class="tx">Por fim, junte os acabamentos que permanecem: piso, bancada, revestimentos e marcenaria. A cor não precisa aparecer sozinha; ela precisa funcionar no seu dia a dia.</p>
+              <p class="tx"><span class="lnk">#ReformaDeApartamento #ArquiteturaDeInteriores #AntesDaObra #ApartamentoPequeno #ProjetoDeInteriores</span></p>
+              <div class="act act-li"><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-thumbs-up"/></svg>Gostei</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg>Comentar</span><span><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg>Compartilhar</span></div>
+            </figure>
+            <div class="g stack">
+              <figure class="post post-x">
+                <figcaption class="net-name">Texto curto · X</figcaption>
+                <div class="side"><span class="av av-cafe" aria-hidden="true">CE</span><div class="main">
+                  <div class="ph2"><b>Café da Esquina</b><span class="dim">@cafedaesquina · 1 h</span></div>
+                  <p class="tx">Quinta tem bolo de fubá com goiabada saindo da fornada. Receita da casa, café coado na hora e uma boa desculpa para passar no Café da Esquina. Passa aqui. <span class="lnk">#ReceitaDaCasa #BoloDeFuba</span></p>
+                  <div class="act act-x"><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-chart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-bookmark"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-upload"/></svg></div>
+                </div></div>
+              </figure>
+              <figure class="post post-th">
+                <figcaption class="net-name">Texto curto · Threads</figcaption>
+                <div class="side"><span class="av av-cafe" aria-hidden="true">CE</span><div class="main">
+                  <div class="ph2"><b>cafedaesquina</b><span class="dim">1 h</span><span class="more">···</span></div>
+                  <p class="tx">Quinta tem bolo de fubá com goiabada saindo da fornada. Receita da casa, café coado na hora e uma boa desculpa para passar no Café da Esquina. Passa aqui. <span class="lnk">#ReceitaDaCasa #BoloDeFuba</span></p>
+                  <div class="act act-th"><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-heart"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-repeat"/></svg><svg class="mi" aria-hidden="true" focusable="false"><use href="#i-send"/></svg></div>
+                </div></div>
+              </figure>
+            </div>
+            <figure class="post g">
+              <figcaption class="net-name">Roteiro de vídeo curto · Reels</figcaption>
+              <div class="reel">
+                <div class="phone" aria-hidden="true"><img src="/produto/conteudo-autentico/assets/cafe-bolo.webp" width="540" height="675" alt="" loading="lazy" /><p class="on-screen">Bolo de fubá com goiabada</p><p class="play">▶ 0:30</p></div>
+                <ol class="scenes">
+                  <li><time>0–3 s</time><span>“Quinta-feira tem um cheiro que chama o bairro inteiro.”<em>Close do bolo sendo cortado, com a goiabada aparecendo.</em></span></li>
+                  <li><time>3–10 s</time><span>“É a nossa receita da casa, saindo quentinha da fornada.”<em>Bolo saindo da forma ou chegando ao balcão.</em></span></li>
+                  <li><time>10–20 s</time><span>“Fubá macio, goiabada em pedaços e café coado na hora.”<em>Café coado enchendo a xícara ao lado da fatia.</em></span></li>
+                  <li><time>20–30 s</time><span>“Toda quinta. Passa aqui para pegar a sua fatia.”<em>Fatia no prato, com luz da manhã.</em></span></li>
+                </ol>
+              </div>
+            </figure>
+            <figure class="post g g-wide">
+              <figcaption class="net-name">Sugestão de temas</figcaption>
+              <div class="chat">
+                <p class="bubble me">$posts Quero 1 post para o Instagram, mas estou sem tema.</p>
+                <div class="bubble ai">
+                  <p>Escolha uma pauta para o post:</p>
+                  <ol class="topics">
+                    <li><span><b>A primeira bandeja do dia</b>pão de queijo recém-saído do forno.</span></li>
+                    <li><span><b>Café coado, sem pressa</b>o ritual do café feito na hora.</span></li>
+                    <li><span><b>Bolo de receita da casa</b>a história afetiva de um bolo caseiro.</span></li>
+                    <li><span><b>Um pedaço do bairro na mesa</b>os encontros cotidianos na cafeteria.</span></li>
+                    <li><span><b>A dupla que resolve a manhã</b>café coado com pão de queijo.</span></li>
+                  </ol>
+                </div>
+              </div>
+            </figure>
+          </div>
+          <p class="gallery-note">A Café da Esquina e a Lúcia Prado Arquitetura são marcas fictícias, criadas para estes exemplos. Você monta o assistente com a identidade da sua marca e escolhe as redes e os formatos.</p>
+        </div>
+      </section>
+
+      <!-- 5. Prova: a diar.ia.br -->
+      <section class="section" aria-labelledby="proof-title">
+        <div class="wrap">
+          <div class="proof-box">
+            <div>
+              <p class="kicker">Funciona todo dia</p>
+              <h2 id="proof-title">A <strong class="wm">diar<span>.</span>ia<span>.br</span></strong> publica <em>20 posts por dia</em> com o mesmo processo</h2>
+              <p>Cada edição da newsletter vira posts para LinkedIn, Instagram, Facebook, Threads e X, com a mesma identidade em todas as redes. Nada vai ao ar sem revisão.</p>
+            </div>
+            <figure class="proof-strip">
+              <img src="/produto/conteudo-autentico/assets/diaria-card.webp" width="480" height="600" alt="Post da diar.ia.br com uma pintura de um agente de IA em reunião." loading="lazy" />
+              <img src="/produto/conteudo-autentico/assets/diaria-carrossel-1.webp" width="480" height="600" alt="Primeiro slide de um carrossel da diar.ia.br." loading="lazy" />
+              <img src="/produto/conteudo-autentico/assets/diaria-carrossel-2.webp" width="300" height="375" alt="Segundo slide do carrossel." loading="lazy" />
+              <figcaption>Post e carrossel publicados pela <strong class="wm">diar<span>.</span>ia<span>.br</span></strong> em 13 de outubro.</figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. O método, na ordem da aula -->
+      <section class="section section-recessed" aria-labelledby="program-title">
+        <div class="wrap">
+          <p class="kicker">O passo a passo da aula</p>
+          <h2 id="program-title">As 4 etapas da Máquina de Conteúdo Autoral</h2>
+          <div class="steps">
+            <article class="step"><span class="step-number">01 · CALIBRAGEM DE VOZ</span><h3>Escreva a identidade da marca</h3><p>O tom, as palavras que a marca usa e evita, os temas e o estilo das imagens. Pode ser a sua marca, a da empresa ou a de um cliente.</p><p class="step-result"><strong>Você termina com</strong> o arquivo de identidade.</p></article>
+            <article class="step"><span class="step-number">02 · CONSTRUÇÃO DA BASE</span><h3>Monte o assistente</h3><p>Você cola as instruções prontas e adapta, em português, os formatos de cada rede, o pedido de imagem de cada post e o que o assistente confere antes de entregar.</p><p class="step-result"><strong>Você termina com</strong> um assistente que não precisa ser explicado de novo.</p></article>
+            <article class="step"><span class="step-number">03 · FÁBRICA EM LOTE</span><h3>Teste com uma pauta sua</h3><p>O assistente pergunta os temas, as redes e quantos posts você quer. Você cria o primeiro post, com texto e imagem, e depois pede quantos quiser.</p><p class="step-result"><strong>Você termina com</strong> o assistente testado e sabendo pedir um lote de posts.</p></article>
+            <article class="step"><span class="step-number">04 · LOOP DE AFINAÇÃO</span><h3>Ajuste até ficar com a cara da marca</h3><p>Você confere cada post com o Checklist de Afinação e transforma cada ajuste em regra do assistente. Depois roda de novo e compara.</p><p class="step-result"><strong>Você termina com</strong> o assistente pronto para começar a produzir e um jeito de afiná-lo a cada rodada.</p></article>
+          </div>
+          <p class="pace-note">Você assiste no seu ritmo e monta junto, pausando em cada etapa.</p>
+        </div>
+      </section>
+
+      <!-- 7. Materiais e bônus -->
+      <section class="section" aria-labelledby="bul-title">
+        <div class="wrap">
+          <p class="kicker">O que você recebe</p>
+          <h2 id="bul-title">Três materiais para montar o assistente e <em>dois bônus</em></h2>
+          <div class="materials">
+            <article class="bullet">
+              <div class="doc" aria-hidden="true"><div class="sheet">
+                <p class="sheet-head">Modelo de Calibragem de Voz</p>
+                <ol class="sheet-q">
+                  <li><span>Em três palavras, como a marca fala?</span><em>acolhedor, direto, bem-humorado</em></li>
+                  <li><span>Que palavras ela usa sempre?</span><i></i></li>
+                  <li><span>O que ela nunca diria?</span><i></i></li>
+                  <li><span>Como são as imagens dela?</span><i></i></li>
+                </ol>
+              </div></div>
+              <h3>Modelo de Calibragem de Voz</h3><p>Perguntas prontas para escrever a identidade da marca. Você preenche na primeira etapa.</p></article>
+            <article class="bullet">
+              <div class="doc" aria-hidden="true"><div class="sheet">
+                <p class="sheet-head">Instruções do assistente</p>
+                <ol class="sheet-steps">
+                  <li>Pergunte os temas, as redes e quantos posts.</li>
+                  <li>Siga o arquivo de identidade em cada texto e imagem.</li>
+                  <li><strong>Pare e espere a minha aprovação.</strong></li>
+                </ol>
+              </div></div>
+              <h3>Instruções prontas do assistente</h3><p>O assistente completo, pronto para colar e adaptar às suas redes. Você usa na segunda etapa.</p></article>
+            <article class="bullet">
+              <div class="doc" aria-hidden="true"><div class="sheet">
+                <p class="sheet-head">Checklist de Afinação</p>
+                <ul class="sheet-check">
+                  <li class="on"><b></b><span><strong>Clichê:</strong> nada de “No mundo atual” nem emoji de enfeite</span></li>
+                  <li class="on"><b></b><span><strong>Tom:</strong> soa como a marca?</span></li>
+                  <li><b></b><span><strong>Formato:</strong> do jeito de cada rede?</span></li>
+                  <li><b></b><span><strong>Fato:</strong> nomes, números e datas conferidos?</span></li>
+                  <li><b></b><span><strong>Imagem:</strong> no estilo da marca?</span></li>
+                </ul>
+                <p class="sheet-foot">Cada ajuste vira regra do assistente.</p>
+              </div></div>
+              <h3>Checklist de Afinação</h3><p>A lista do que conferir em cada post. Você usa na última etapa.</p></article>
+          </div>
+          <div class="bonus-grid">
+            <article class="bonus"><span class="pill">Bônus 1</span><h3>Guia de publicação automática</h3><p>O próximo passo: agendar os posts aprovados em várias redes de uma vez.</p></article>
+            <article class="bonus"><span class="pill">Bônus 2</span><h3>Guia de Prompt Engineering</h3><p>Como escrever pedidos mais claros para qualquer IA.</p></article>
+          </div>
+          <p class="caderno-note">Os três materiais vêm no caderno da aula, em PDF, com cada prompt pronto para copiar e as soluções dos problemas mais comuns.</p>
+        </div>
+      </section>
+
+      <!-- 8. Quem ensina -->
+      <section class="section section-recessed" aria-labelledby="author-title">
+        <div class="wrap author">
+          <figure class="author-photo"><img src="/produto/conteudo-autentico/assets/pixel-portrait-friendly.webp" alt="Retrato de Angelo Pixel" width="900" height="1125" loading="lazy" decoding="async" /></figure>
+          <div class="author-copy">
+            <p class="kicker">Quem ensina</p>
+            <h2 id="author-title">Angelo Pixel</h2>
+            <ul class="creds">
+              <li><strong>Anthropic</strong>Selecionado para o programa Claude for Open Source</li>
+              <li><strong>Microsoft</strong>Certificação em inteligência artificial</li>
+              <li><strong>20 anos de carreira</strong>criando e gerindo produtos de tecnologia</li>
+              <li><strong>US$ 11 milhões</strong>a mais no lucro anual da Amazon Brasil, com um produto que liderou</li>
+            </ul>
+            <p>Edita a <strong class="wm">diar<span>.</span>ia<span>.br</span></strong>, newsletter diária sobre IA feita com agentes que ele mesmo montou, e trabalha com IA desde 2020. Tem projetos premiados pelo Google e pela Mozilla e mais de 150 palestras em cinco países, incluindo um TEDx.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9. Para quem é -->
+      <section class="section" aria-labelledby="audience-title">
+        <div class="wrap narrow">
+          <p class="kicker">Para quem é</p>
+          <h2 id="audience-title">Para você, se já disse <em>uma destas frases</em></h2>
+          <ul class="sayings">
+            <li><span>“Peço um post ao ChatGPT e passo meia hora reescrevendo.”</span></li>
+            <li><span>“Toda segunda eu abro a tela em branco sem saber o que postar.”</span></li>
+            <li><span>“Cuido de várias marcas, e cada uma tem uma voz diferente.”</span></li>
+            <li><span>“Entendo muito do meu trabalho, mas a rotina de redes sociais me cansa.”</span></li>
+            <li><span>“Comprei templates de post e nunca usei, para não ficar igual a todo mundo.”</span></li>
+          </ul>
+          <div class="not-for">
+            <p class="kicker">Não é para você se</p>
+            <p>Você procura renda passiva com IA sem saber fazer o trabalho, ou quer que a IA publique sem ninguém revisar.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 10. Garantia -->
+      <section class="section section-tight" aria-labelledby="gar-title">
+        <div class="wrap narrow">
+          <div class="guarantee">
+            <svg class="icon icon-guarantee" aria-hidden="true" focusable="false"><use href="#i-shield"/></svg>
+            <div>
+              <p class="kicker">Garantia</p>
+              <h2 id="gar-title">7 dias para experimentar</h2>
+              <p>Assista à primeira etapa, escreva a identidade da sua marca e veja se o método serve para você. Se mudar de ideia, você pede o reembolso pela Hotmart em até 7 dias depois da compra.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 11. Oferta -->
+      <section class="section section-recessed" id="oferta" aria-labelledby="offer-title">
+        <div class="wrap">
+          <div class="offer card">
+            <p class="kicker">Conteúdo Autêntico com IA</p>
+            <h2 id="offer-title">Tudo o que você recebe</h2>
+            <ul class="offer-list">
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Aula em vídeo com as 4 etapas da Máquina de Conteúdo Autoral, para assistir no seu ritmo</span></li>
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>O seu assistente montado e testado, pronto para começar a produzir</span></li>
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Modelo de Calibragem de Voz, instruções prontas do assistente e Checklist de Afinação, no caderno da aula em PDF</span></li>
+              <li><svg class="icon icon-check" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span>Bônus 1 e 2: guia de publicação automática e Guia de Prompt Engineering</span></li>
+            </ul>
+            <p class="price">R$ 57</p>
+            <p class="price-terms">Acesso por 1 ano</p>
+            <a class="button checkout-link" href="https://pay.hotmart.com/U107768057V?off=lhwtb1jf" data-posicao="oferta">Quero montar meu assistente</a>
+            <p class="small">Pagamento pela Hotmart, com garantia de 7 dias.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 12. Dúvidas -->
+      <section class="section" aria-labelledby="faq-title">
+        <div class="wrap narrow faq">
+          <p class="kicker">Dúvidas comuns</p>
+          <h2 id="faq-title">O que você precisa saber antes de começar</h2>
+          <details><summary>Os posts vão parecer feitos por IA?</summary><p>É isso que o método resolve: o assistente segue a identidade que você escreveu, e você revisa tudo antes de publicar.</p></details>
+          <details><summary>Preciso saber programar?</summary><p>Não. Tudo é escrito em português, sem código.</p></details>
+          <details><summary>Preciso pagar alguma ferramenta?</summary><p>Não. O assistente funciona com a conta gratuita do ChatGPT, no aplicativo para computador. A conta gratuita tem limite de uso; para volumes maiores de conteúdo, você pode assinar um plano pago.</p></details>
+          <details><summary>Do que eu preciso para montar o assistente?</summary><p>De um computador com Windows ou Mac, com o aplicativo do ChatGPT instalado, de uma marca e de 3 a 5 posts dela que deram certo. Não funciona só no celular.</p></details>
+          <details><summary>Serve para a marca de um cliente?</summary><p>Sim. Você monta a identidade de uma marca e depois repete para as outras.</p></details>
+          <details><summary>O assistente publica sozinho?</summary><p>Não. Ele escreve o texto e o pedido da imagem, que você gera no ChatGPT, e você revisa e aprova. Para agendar os posts aprovados, você recebe o guia de publicação automática.</p></details>
+          <details><summary>Como é a aula?</summary><p>Uma aula em vídeo, passo a passo, com as 4 etapas. Você assiste quando quiser, pausa e monta o assistente junto, no seu computador.</p></details>
+          <details><summary>Por quanto tempo tenho acesso?</summary><p>Por 1 ano, pela área de membros da Hotmart.</p></details>
+        </div>
+      </section>
+
+      <!-- 13. Fechamento -->
+      <section class="section final" id="cta-final" aria-labelledby="final-title">
+        <div class="wrap narrow center">
+          <p class="kicker">Conteúdo Autêntico com IA</p>
+          <h2 id="final-title">Com o assistente pronto, um mês de conteúdo sai em uma hora</h2>
+          <p class="final-price"><strong>R$ 57</strong></p>
+          <a class="button checkout-link" href="https://pay.hotmart.com/U107768057V?off=lhwtb1jf" data-posicao="final">Quero montar meu assistente</a>
+          <p class="small">Acesso por 1 ano e garantia de 7 dias.</p>
+        </div>
+      </section>
+    </main>
+    <footer class="site-footer"><p>Conteúdo Autêntico com IA · <strong class="wm">diar<span>.</span>ia<span>.br</span></strong></p></footer>
+    <a class="float-cta" href="#oferta" data-posicao="flutuante" hidden>Quero montar meu assistente por R$ 57</a>
+  </body>
+</html>
