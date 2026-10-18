@@ -20,6 +20,7 @@ import { isArticleAIRelevant } from "./ai-relevance.ts";
 import type { Article } from "./types/article.ts";
 import { readDriveCache, getPushCount } from "./drive-cache.ts";
 import { logEvent } from "./run-log.ts";
+import { embeddingCauseSentence, type EmbeddingErrorFields } from "./gemini-embedding-error.ts"; // #10448
 
 export type AssertionStatus = "ok" | "warn" | "blocker";
 
@@ -425,7 +426,7 @@ export function validateSectionMinimums(
  * `EmbeddingStats` de `scripts/topic-cluster.ts` sem importar o módulo
  * inteiro aqui (evita acoplar o validator ao CLI de clustering).
  */
-export interface EmbeddingHealthStats {
+export interface EmbeddingHealthStats extends EmbeddingErrorFields {
   model: string;
   key_present: boolean;
   attempted: number;
@@ -476,7 +477,7 @@ export function validateEmbeddingHealth(stats: EmbeddingHealthStats | null): Ass
     return {
       name: "embedding_health",
       status: "warn",
-      message: `100% dos ${stats.attempted} embeddings falharam (model=${stats.model}) — topic-cluster caiu inteiro no fallback Jaccard. Causa não confirmada por esta checagem (drift de catálogo Gemini #4654, quota ou rede indistinguíveis aqui) — rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`,
+      message: `100% dos ${stats.attempted} embeddings falharam (model=${stats.model}) — topic-cluster caiu inteiro no fallback Jaccard. ${embeddingCauseSentence(stats)}`,
       details: { ...stats },
     };
   }
@@ -484,7 +485,7 @@ export function validateEmbeddingHealth(stats: EmbeddingHealthStats | null): Ass
     return {
       name: "embedding_health",
       status: "warn",
-      message: `${stats.failed}/${stats.attempted} embeddings falharam (model=${stats.model}) — clustering parcialmente degradado.`,
+      message: `${stats.failed}/${stats.attempted} embeddings falharam (model=${stats.model}) — clustering parcialmente degradado. ${embeddingCauseSentence(stats)}`,
       details: { ...stats },
     };
   }

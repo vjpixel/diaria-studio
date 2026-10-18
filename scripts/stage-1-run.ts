@@ -236,6 +236,23 @@ export function realSpawnDetached(rootDir: string): SpawnDetachedFn {
 }
 
 /** Extrai o primeiro bloco JSON de stdout — mesmo helper de stage-0-run.ts/stage-3-run.ts. */
+/**
+ * #10448: extrai `name: message` de cada assertion `warn` do JSON do
+ * `validate-stage-1-output.ts`. Tolerante a shape inesperado (devolve []).
+ */
+export function stage1ValidatorWarningLines(json: unknown): string[] {
+  const assertions = (json as { assertions?: unknown } | undefined)?.assertions;
+  if (!Array.isArray(assertions)) return [];
+  const lines: string[] = [];
+  for (const a of assertions) {
+    if (!a || typeof a !== "object") continue;
+    const { name, status, message } = a as { name?: unknown; status?: unknown; message?: unknown };
+    if (status !== "warn") continue;
+    lines.push(`${typeof name === "string" ? name : "?"}: ${typeof message === "string" ? message : ""}`);
+  }
+  return lines;
+}
+
 export function parseStepJson<T = unknown>(stdout: string): T | undefined {
   const trimmed = stdout.trim();
   if (!trimmed) return undefined;
@@ -1478,6 +1495,10 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   }
   if (validateOutput.code === 1) {
     report.note("⚠️  validate-stage-1-output: warning(s) — apresentar banner no gate (ver validateOutput.assertions).");
+    // #10448: o texto de cada warning vai no próprio relatório. Só o ponteiro
+    // pro JSON deixou 14 edições seguidas (260930→261019) com 100% dos
+    // embeddings falhando sem que a causa chegasse a ninguém.
+    for (const line of stage1ValidatorWarningLines(validateOutputJson)) report.note(`   - ${line}`);
   }
 
   // --- §1w-quat check-invariants (pre-gate, categorized-has-eia-section, BLOQUEIA) ---

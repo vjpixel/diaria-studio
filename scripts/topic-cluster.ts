@@ -49,6 +49,12 @@ import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts"; // #8722
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts"; // #10440
+import {
+  describeEmbeddingError,
+  embeddingCauseSentence,
+  normalizeEmbeddingErrorMessage,
+  type EmbeddingError,
+} from "./lib/gemini-embedding-error.ts"; // #10448
 
 export interface Article {
   url: string;
@@ -114,6 +120,19 @@ export interface EmbeddingStats {
    * `null`/ausente = config lido normalmente (ou ausente por design).
    */
   config_error?: string | null;
+  /**
+   * #10448: contagem das falhas por status HTTP (`"402"`, `"404"`, …;
+   * `"network"` quando não houve resposta HTTP). Ausente quando `failed=0`
+   * ou em stats anteriores ao #10448.
+   */
+  errors_by_status?: Record<string, number>;
+  /**
+   * #10448: primeira falha observada (status + mensagem da API, chave
+   * removida). É o que o gate do Stage 1 mostra como causa — antes o
+   * `embedText` engolia a resposta e o aviso só podia dizer "causa não
+   * confirmada".
+   */
+  first_error?: EmbeddingError | null;
 }
 
 export interface ClusterOutput extends CategorizedInput {
@@ -179,6 +198,8 @@ export function resolveEmbeddingModel(rootDir: string = process.cwd()): string {
   return resolveEmbeddingModelWithDiagnostics(rootDir).model;
 }
 
+export type EmbedResult = { values: number[]; error: null } | { values: null; error: EmbeddingError | null };
+
 /**
  * Fetches a text embedding from the given Gemini embedding model.
  * Returns null when GEMINI_API_KEY is absent or the request fails.
@@ -187,8 +208,21 @@ export async function embedText(
   text: string,
   model: string = DEFAULT_EMBEDDING_MODEL,
 ): Promise<number[] | null> {
+  return (await embedTextDetailed(text, model)).values;
+}
+
+/**
+ * Igual a `embedText`, mas devolve a causa da falha (#10448): status HTTP +
+ * `error.message` da API (chave removida). `error=null` com `values=null` só
+ * quando GEMINI_API_KEY está ausente (não houve chamada).
+ */
+export async function embedTextDetailed(
+  text: string,
+  model: string = DEFAULT_EMBEDDING_MODEL,
+): Promise<EmbedResult> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) return { values: null, error: null };
+  let status: number | null = null;
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
@@ -201,11 +235,41 @@ export async function embedText(
         }),
       }
     );
-    const data = (await res.json()) as { embedding?: { values?: number[] } };
-    return data.embedding?.values ?? null;
-  } catch {
-    return null;
+    status = res.status;
+    const raw = await res.text();
+    let data: { embedding?: { values?: number[] }; error?: { message?: string; status?: string } } = {};
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      // corpo não-JSON (página de erro de proxy etc.) — cai no erro abaixo com o texto cru
+    }
+    const values = data.embedding?.values;
+    if (res.ok && Array.isArray(values) && values.length > 0) return { values, error: null };
+    const apiMessage = data.error?.message
+      ? `${data.error.status ? `${data.error.status}: ` : ""}${data.error.message}`
+      : raw || `resposta sem embedding (HTTP ${res.status})`;
+    return { values: null, error: { status: res.status, message: normalizeEmbeddingErrorMessage(apiMessage, apiKey) } };
+  } catch (e) {
+    return {
+      values: null,
+      error: { status, message: normalizeEmbeddingErrorMessage((e as Error)?.message ?? String(e), apiKey) },
+    };
   }
+}
+
+/** Agrega as falhas de um lote em `errors_by_status` + `first_error` (#10448). */
+export function summarizeEmbeddingErrors(
+  errors: Array<EmbeddingError | null>,
+): { errors_by_status: Record<string, number>; first_error: EmbeddingError | null } {
+  const errors_by_status: Record<string, number> = {};
+  let first_error: EmbeddingError | null = null;
+  for (const err of errors) {
+    if (!err) continue;
+    const k = err.status === null ? "network" : String(err.status);
+    errors_by_status[k] = (errors_by_status[k] ?? 0) + 1;
+    if (!first_error) first_error = err;
+  }
+  return { errors_by_status, first_error };
 }
 
 /**
@@ -458,9 +522,12 @@ export async function clusterArticlesWithEmbeddings(
   // attempted + skipped_uninformative = tamanho do lote (o `attempted` de
   // antes do #10440).
   const informative = tokensByArt.map((t) => t.size > 0);
-  const embeddingResults = await Promise.all(
-    texts.map((t, i) => (informative[i] ? embedText(t, model) : Promise.resolve(null))),
+  const detailed = await Promise.all(
+    texts.map((t, i) =>
+      informative[i] ? embedTextDetailed(t, model) : Promise.resolve<EmbedResult>({ values: null, error: null }),
+    ),
   );
+  const embeddingResults = detailed.map((d) => d.values);
 
   const attempted = informative.filter(Boolean).length;
   const failed = embeddingResults.filter((e, i) => informative[i] && e === null).length;
@@ -474,6 +541,14 @@ export async function clusterArticlesWithEmbeddings(
     fallback_triggered: allNull,
     skipped_uninformative: articles.length - attempted,
   };
+  if (failed > 0) {
+    // #10448: a causa real (status HTTP + mensagem da API) vai pro sidecar —
+    // sem isso o gate só podia dizer "drift, quota ou rede indistinguíveis".
+    const summary = summarizeEmbeddingErrors(detailed.filter((_, i) => informative[i]).map((d) => d.error));
+    stats.errors_by_status = summary.errors_by_status;
+    stats.first_error = summary.first_error;
+  }
+  const causeSuffix = stats.first_error ? ` — causa: ${describeEmbeddingError(stats.first_error)}` : "";
 
   if (allNull) {
     // Fallback total para Jaccard.
@@ -481,13 +556,13 @@ export async function clusterArticlesWithEmbeddings(
     // threshold=0.85 para Jaccard é extremamente alto e produziria quase zero clusters.
     const jaccardThreshold = Math.min(threshold, 0.5);
     console.warn(
-      `topic-cluster: todos os ${attempted} embeddings falharam (model=${model}, GEMINI_API_KEY presente) — usando Jaccard com threshold=${jaccardThreshold}`,
+      `topic-cluster: todos os ${attempted} embeddings falharam (model=${model}, GEMINI_API_KEY presente) — usando Jaccard com threshold=${jaccardThreshold}${causeSuffix}`,
     );
     return { clusters: clusterArticles(articles, jaccardThreshold), stats };
   }
   if (failed > 0) {
     console.warn(
-      `topic-cluster: ${failed}/${attempted} embeddings falharam (model=${model}) — degradação parcial, fallback por-par pra Jaccard onde faltou`,
+      `topic-cluster: ${failed}/${attempted} embeddings falharam (model=${model}) — degradação parcial, fallback por-par pra Jaccard onde faltou${causeSuffix}`,
     );
   }
 
@@ -622,7 +697,7 @@ export function aggregateEmbeddingStats(statsList: EmbeddingStats[]): EmbeddingS
   const attempted = statsList.reduce((sum, s) => sum + s.attempted, 0);
   const failed = statsList.reduce((sum, s) => sum + s.failed, 0);
   const skipped = statsList.reduce((sum, s) => sum + (s.skipped_uninformative ?? 0), 0);
-  return {
+  const out: EmbeddingStats = {
     model,
     key_present: statsList.some((s) => s.key_present),
     attempted,
@@ -631,6 +706,16 @@ export function aggregateEmbeddingStats(statsList: EmbeddingStats[]): EmbeddingS
     fallback_triggered: statsList.some((s) => s.fallback_triggered),
     skipped_uninformative: skipped,
   };
+  // #10448: soma as contagens por status e mantém a 1ª falha de qualquer bucket.
+  if (failed > 0) {
+    const byStatus: Record<string, number> = {};
+    for (const s of statsList) {
+      for (const [k, n] of Object.entries(s.errors_by_status ?? {})) byStatus[k] = (byStatus[k] ?? 0) + n;
+    }
+    out.errors_by_status = byStatus;
+    out.first_error = statsList.find((s) => s.first_error)?.first_error ?? null;
+  }
+  return out;
 }
 
 export async function clusterCategorized(
@@ -728,8 +813,8 @@ async function main(): Promise<number | void> {
     const allFailed = health.failed === health.attempted;
     const level = allFailed ? "error" : "warn";
     const message = allFailed
-      ? `topic-cluster: 100% dos ${health.attempted} embeddings falharam (model=${health.model}) — fallback Jaccard ativo. Causa não confirmada por esta checagem (drift de catálogo Gemini #4654, quota ou rede indistinguíveis aqui); rode 'npx tsx scripts/validate-gemini-config.ts' ou confira platform.config.json > gemini.embedding_model.`
-      : `topic-cluster: ${health.failed}/${health.attempted} embeddings falharam (model=${health.model}) — clustering parcialmente degradado.`;
+      ? `topic-cluster: 100% dos ${health.attempted} embeddings falharam (model=${health.model}) — fallback Jaccard ativo. ${embeddingCauseSentence(health)}`
+      : `topic-cluster: ${health.failed}/${health.attempted} embeddings falharam (model=${health.model}) — clustering parcialmente degradado. ${embeddingCauseSentence(health)}`;
     console.error(`⚠️ ${message}`);
     logEvent(
       { edition: null, stage: 1, agent: "topic-cluster.ts", level, message, details: health },
