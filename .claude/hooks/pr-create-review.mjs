@@ -927,6 +927,33 @@ export function extractPrNumberFromUrl(prUrl) {
 export const SAFE_EDIT_SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
 
 /**
+ * #10453: orçamento de tempo do hook. O harness MATA este hook aos
+ * `timeout` segundos declarados em `.claude/settings.json` (PostToolUse,
+ * `if: "Bash(gh pr create*)"`) — e um hook morto não emite nada: a instrução
+ * de review (gate do auto-merge #5251) some em silêncio. Por isso nenhum passo
+ * opcional (a escrita do `Closes #N`, #6920/#10442) pode ter timeout próprio
+ * maior que o que resta desse orçamento. `HOOK_TIMEOUT_MS` tem paridade
+ * travada por teste com o valor do `settings.json`
+ * (`test/pr-create-review-hook-budget-10453.test.ts`) — subir um sem o outro
+ * quebra o teste.
+ */
+export const HOOK_TIMEOUT_MS = 15_000;
+/** Folga reservada pra montar e emitir o `additionalContext` depois da escrita. */
+export const HOOK_OUTPUT_RESERVE_MS = 2_000;
+/** Abaixo disto nem tenta escrever: boot do tsx + PATCH + releitura não cabem. */
+export const MIN_WRITE_BUDGET_MS = 3_000;
+
+/** Prazo absoluto (epoch ms) até o qual o trabalho opcional pode rodar. */
+export function hookDeadline(startedAt) {
+  return startedAt + HOOK_TIMEOUT_MS - HOOK_OUTPUT_RESERVE_MS;
+}
+
+/** Milissegundos que restam até `deadlineAt` (nunca negativo). */
+export function remainingMs(deadlineAt, now = Date.now()) {
+  return Math.max(0, deadlineAt - now);
+}
+
+/**
  * Grava `body` na PR `num` via `scripts/lib/gh-pr-safe-edit.ts --body-file`
  * (#10442). Antes era `gh pr edit --body`, que esbarra em `projectCards`
  * (Projects classic) e pode sair `exit 0` sem alterar o corpo (#6292) — o
@@ -934,25 +961,30 @@ export const SAFE_EDIT_SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
  * tmpdir do SO (nunca pra árvore do checkout, item 20 de
  * `context/overnight-dispatch-rules.md`) e é apagado no fim.
  *
- * `shell: true` — mesma razão de `block-pr-create-orchestrator-snapshot-stale.mjs`:
- * `npx` é wrapper `.cmd` no Windows (#6777). Como o shell não aspa argumento
- * sozinho, o caminho do arquivo vai entre aspas duplas (tmpdir do Windows pode
- * ter espaço no nome do usuário).
+ * #10453: roda `node --import tsx` direto (`process.execPath`), sem `npx` nem
+ * shell — medido 0,2s de boot contra 0,6-0,7s do `npx tsx` (aquecido), e sem
+ * o `npx` tentar baixar o tsx num worktree sem `node_modules` (falha rápido e
+ * vira aviso). Sem shell também não há wrapper `.cmd` no Windows (#6777) nem
+ * aspas a montar à mão, e o `timeout` mata o próprio processo que escreve, não
+ * só um shell intermediário. `timeoutMs` vem do orçamento restante do hook
+ * (`remainingMs`), nunca de um valor fixo maior que ele.
  */
-export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.cwd() } = {}) {
+export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.cwd(), timeoutMs = 60_000 } = {}) {
   let dir;
   try {
     dir = mkdtempSync(join(tmpdir(), "pr-create-review-"));
     const file = join(dir, "body.md");
     writeFileSync(file, body, "utf8");
-    const result = spawnFn("npx", ["tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", `"${file}"`], {
-      cwd,
-      encoding: "utf8",
-      // Boot do tsx + PATCH + releitura; folga sobre os ~2-3s medidos.
-      timeout: 60_000,
-      shell: true,
-      windowsHide: true,
-    });
+    const result = spawnFn(
+      process.execPath,
+      ["--import", "tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", file],
+      {
+        cwd,
+        encoding: "utf8",
+        timeout: timeoutMs,
+        windowsHide: true,
+      },
+    );
     if (!result || result.error) {
       return { ok: false, error: String(result?.error?.message ?? result?.error ?? "spawn falhou") };
     }
@@ -985,8 +1017,16 @@ export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.
  * nem atrasar a criação da PR, que já aconteceu. A falha de ESCRITA, porém,
  * volta como `reason: "write-failed"` + `error`, e o chamador a expõe no
  * contexto da sessão (#10442): sumir em silêncio era o defeito.
+ *
+ * #10453: `deadlineAt` (epoch ms, default sem prazo) limita leitura e escrita
+ * ao que resta do orçamento do hook. Se depois da leitura sobrar menos que
+ * `MIN_WRITE_BUDGET_MS`, a escrita nem começa e volta como `write-failed`
+ * (o chamador avisa a sessão) — nunca arrisca o hook inteiro por ela.
  */
-export function ensureCloseKeywords(prUrl, { execFn = execFileSync, writeFn = writePrBodySafe } = {}) {
+export function ensureCloseKeywords(
+  prUrl,
+  { execFn = execFileSync, writeFn = writePrBodySafe, deadlineAt = Infinity, now = Date.now } = {},
+) {
   let num;
   let addendum;
   let newBody;
@@ -994,9 +1034,11 @@ export function ensureCloseKeywords(prUrl, { execFn = execFileSync, writeFn = wr
     num = extractPrNumberFromUrl(prUrl);
     if (!num) return { applied: false, reason: "no-pr-number" };
     // windowsHide (#8017) — mesma razão de resolveMainRepoRoot acima.
+    const viewTimeout = Math.min(10_000, remainingMs(deadlineAt, now()));
+    if (viewTimeout <= 0) return { applied: false, reason: "error" };
     const body = execFn("gh", ["pr", "view", String(num), "--json", "body", "-q", ".body"], {
       encoding: "utf8",
-      timeout: 10_000,
+      timeout: viewTimeout,
       windowsHide: true,
     });
     addendum = computeCloseKeywordAddendum(body);
@@ -1005,9 +1047,19 @@ export function ensureCloseKeywords(prUrl, { execFn = execFileSync, writeFn = wr
   } catch {
     return { applied: false, reason: "error" };
   }
+  const writeBudget = Math.min(60_000, remainingMs(deadlineAt, now()));
+  if (writeBudget < MIN_WRITE_BUDGET_MS) {
+    return {
+      applied: false,
+      reason: "write-failed",
+      pr: num,
+      addendum,
+      error: `sem orçamento de tempo no hook (${writeBudget}ms restantes, mínimo ${MIN_WRITE_BUDGET_MS}ms) — escrita não tentada (#10453)`,
+    };
+  }
   let write;
   try {
-    write = writeFn(num, newBody);
+    write = writeFn(num, newBody, { timeoutMs: writeBudget });
   } catch (e) {
     write = { ok: false, error: String(e?.message ?? e) };
   }
@@ -1204,6 +1256,8 @@ if (
   import.meta.url === `file://${_argv1}` ||
   import.meta.url === `file:///${_argv1.replace(/^\//, "")}`
 ) {
+  // #10453: relógio do orçamento começa no boot do hook, não no fim do stdin.
+  const HOOK_STARTED_AT = Date.now();
   let data = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (data += chunk));
@@ -1217,16 +1271,21 @@ if (
       const command = payload.tool_input?.command;
       const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
       if (prUrl) {
-        // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
-        // "Closes #N" ANTES do review — melhor esforço, nunca bloqueia o
-        // resto do hook se falhar (fail-soft dentro de ensureCloseKeywords).
-        const closeWarning = closeKeywordWarning(ensureCloseKeywords(prUrl));
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
         // session_id ignora o argumento).
+        // #10453: o effort (necessário pra instrução de review) vem PRIMEIRO;
+        // a escrita do Closes, opcional, só usa o que sobrar do orçamento.
         const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id);
         logEffortDecision({ prUrl, effort, reason }); // #4252
+        // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
+        // "Closes #N" — melhor esforço, nunca bloqueia o resto do hook se
+        // falhar (fail-soft dentro de ensureCloseKeywords) e, desde o #10453,
+        // limitado ao prazo do hook pra nunca impedir a instrução de review.
+        const closeWarning = closeKeywordWarning(
+          ensureCloseKeywords(prUrl, { deadlineAt: hookDeadline(HOOK_STARTED_AT) }),
+        );
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
