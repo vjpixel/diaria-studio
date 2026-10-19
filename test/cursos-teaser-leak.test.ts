@@ -50,9 +50,28 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
     assert.ok(open.length > 0, "precisa de ao menos 1 curso aberto");
   });
 
-  it("cota de abertos é 20% do catálogo, calculada dinamicamente (não fixada no seed)", () => {
-    assert.equal(open.length, Math.floor(courses.length * TEASER_OPEN_RATIO));
-    assert.equal(open.length, openCourseCount(courses.length));
+  it("cota de abertos é 20% dos cursos CURADOS, calculada dinamicamente (não fixada no seed); o card em destaque fica fora dela (#10497)", () => {
+    const featured = courses.filter((c) => c.featured);
+    const curated = courses.filter((c) => !c.featured);
+    const openCurated = open.filter((c) => !c.featured);
+    assert.equal(openCurated.length, Math.floor(curated.length * TEASER_OPEN_RATIO));
+    assert.equal(openCurated.length, openCourseCount(curated.length));
+    assert.equal(open.length, featured.length + openCurated.length);
+  });
+
+  it("#10497: o card em destaque está aberto no teaser e os 6 curados abertos seguem os do #8470", () => {
+    assert.ok(open.some((c) => c.id === "diaria-conteudo-autentico"), "aula em destaque deveria estar aberta");
+    assert.deepEqual(
+      open.filter((c) => !c.featured).map((c) => c.id),
+      [
+        "ibm-introducao-ia",
+        "usp-pnl-portugues-i",
+        "microsoft-azure-ai-900",
+        "deeplearning-ml-c2-advanced",
+        "google-ai-essentials",
+        "anthropic-claude-101",
+      ],
+    );
   });
 
   it("os marcados `teaser: true` no seed ocupam as vagas primeiro", () => {
@@ -67,8 +86,11 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
   // nova de comportamento que ninguém tinha olhado — as funções só eram
   // exercitadas contra o seed real, 31 cursos → 6 abertos, longe das pontas.
   describe("openCourseCount / selectOpenCourses nas pontas", () => {
+    // #10497: base sem `featured` (o 1º do seed real agora é o card em
+    // destaque, que fica fora da cota — copiá-lo distorceria as pontas).
+    const base = courses.find((c) => !c.featured)!;
     const fake = (n: number, markedCount = 0): Course[] =>
-      Array.from({ length: n }, (_, i) => ({ ...courses[0], id: `fake-${i}`, teaser: i < markedCount }));
+      Array.from({ length: n }, (_, i) => ({ ...base, id: `fake-${i}`, teaser: i < markedCount }));
 
     it("catálogo com 4 cursos ou menos abre ZERO — floor(0.2×n) literal", () => {
       // ATENÇÃO: com ≤4 cursos a página pública sai sem nenhum card, só com o

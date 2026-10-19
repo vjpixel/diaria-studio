@@ -1,7 +1,7 @@
 {
   "_meta": {
-    "issue": "#1745, #2451, #3458",
-    "status": "31 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451) + catálogo completo das duas academias mapeado via WebFetch/WebSearch (#3458). Todos gratuitos ou de auditoria livre; 11 PT-BR, 20 EN.",
+    "issue": "#1745, #2451, #3458, #10497",
+    "status": "32 cursos — 31 curados (fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451) + catálogo completo das duas academias mapeado via WebFetch/WebSearch (#3458); 30 gratuitos ou de auditoria livre + 1 por assinatura) + 1 aula paga da própria diar.ia.br em destaque (Conteúdo Autêntico com IA, featured:true, #10497). 12 PT-BR, 20 EN.",
     "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar. #4052: campo teaser marca cursos abertos (não-gated) no HTML público — 6 cursos marcados (rebalanceados em #8470, 19/09/2026: os 4 marcados originais eram homogêneos em nível/formato/certificado, o que fazia esses filtros sumirem no teaser antes do #8470 derivar as OPÇÕES do catálogo completo — ver `renderCursosPage`/`computeFacetOpts`), cobrindo ≥2 níveis, ≥2 formatos, ≥1 sem certificado, pt-br/en e 6 plataformas distintas (sem repetir nenhuma).",
     "schema": {
       "id": "slug-kebab-case (estável)",
@@ -17,11 +17,31 @@
       "certificate": "boolean (certificado SEM custo extra disponível)",
       "themes": "array de rótulos livres",
       "summary": "string (para quem é / o que cobre)",
-      "teaser": "boolean opcional (#4052 — true = aberto/não-gated no HTML público; ausente/false = gated)"
+      "teaser": "boolean opcional (#4052 — true = aberto/não-gated no HTML público; ausente/false = gated)",
+      "featured": "boolean opcional (#10497 — true = card em destaque: sempre o 1º da grade, aberto no teaser FORA da cota de 20%, link com UTM cursos-destaque)"
     },
-    "count": 31
+    "count": 32
   },
   "courses": [
+    {
+      "id": "diaria-conteudo-autentico",
+      "title": "Conteúdo Autêntico com IA",
+      "platform": "diar.ia.br",
+      "url": "https://diar.ia.br/produto/conteudo-autentico",
+      "language": "pt-br",
+      "level": "iniciante",
+      "format": "video",
+      "duration_hours": 1,
+      "duration_estimated": true,
+      "cost": "paid",
+      "certificate": false,
+      "themes": [
+        "IA Generativa",
+        "Produtividade"
+      ],
+      "summary": "Aula em vídeo, passo a passo, para montar sem programar um assistente no ChatGPT que aprende a identidade da sua marca e escreve os posts de cada rede social.",
+      "featured": true
+    },
     {
       "id": "ibm-introducao-ia",
       "title": "Introdução à Inteligência Artificial",

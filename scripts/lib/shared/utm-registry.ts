@@ -544,6 +544,17 @@ export const CURSOS_FOOTER_NAV_UTM = {
   medium: "footer-nav",
 } as const;
 
+/** Card em DESTAQUE da página de Cursos (#10497) — `featured: true` no seed,
+ * hoje a aula paga Conteúdo Autêntico com IA (`diar.ia.br/produto/
+ * conteudo-autentico`, #10403). Link cross-host cursos → apex: sem UTM, a
+ * venda vinda da vitrine de cursos chegaria como tráfego direto. Montado por
+ * `featuredCourseUrl` em `scripts/build-cursos-page.ts`. */
+export const CURSOS_FEATURED_CARD_UTM = {
+  source: "cursos",
+  medium: "featured-card",
+  campaign: "cursos-destaque",
+} as const;
+
 /**
  * Pills de curadoria do bloco PARA ENCERRAR (`CURADORIA_PILLS`,
  * `scripts/lib/shared/encerramento-snippet.ts`) — direção NEWSLETTER →
@@ -1459,6 +1470,19 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
       "faltava o 2º parâmetro de renderCuradoriaFooter que Livros já tinha desde " +
       "#4051 (assimetria pura, fechada no #4295). Sem utm_campaign de verdade " +
       "(mesmo padrão de arquivo-footer-nav), placeholder só pra satisfazer o schema.",
+    status: "ativo",
+  },
+  {
+    id: "cursos-featured-card",
+    label: "Cursos — card em destaque (1º da grade)",
+    source: CURSOS_FEATURED_CARD_UTM.source,
+    medium: CURSOS_FEATURED_CARD_UTM.medium,
+    campaignPattern: CURSOS_FEATURED_CARD_UTM.campaign,
+    originFile: "scripts/build-cursos-page.ts",
+    description:
+      "Título e CTA 'Saiba mais' do card em destaque da página de Cursos (#10497), " +
+      "sempre o 1º da grade e aberto também no teaser. Hoje aponta pra página de " +
+      "vendas da aula Conteúdo Autêntico com IA (diar.ia.br/produto/conteudo-autentico).",
     status: "ativo",
   },
   {

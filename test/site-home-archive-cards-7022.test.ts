@@ -187,9 +187,13 @@ describe("headings com quebra de linha — texto extraído nunca gruda palavras 
     assert.ok(!/minutos\.Toda/.test(extracted), "palavras grudadas no rodapé — mesma classe de bug do item 1");
   });
 
-  it("'Livros sobre IA.' e 'Cursos gratuitos.' saem numa linha só, sem <br> (decisão do editor, item 5)", () => {
+  it("'Livros sobre IA.' e 'Cursos sobre IA.' saem numa linha só, sem <br> (decisão do editor, item 5; 'gratuitos' saiu no #10497)", () => {
     assert.match(html, /<h3>Livros sobre IA\.<\/h3>/);
-    assert.match(html, /<h3>Cursos <span class="accent">gratuitos\.<\/span><\/h3>/);
+    assert.match(html, /<h3>Cursos <span class="accent">sobre IA\.<\/span><\/h3>/);
+    // #10497: a vitrine de cursos tem uma aula paga em destaque — a home não
+    // promete mais "cursos gratuitos" nem "cursos abertos".
+    assert.ok(!/Cursos <span class="accent">gratuitos/.test(html));
+    assert.ok(!/melhores cursos abertos sobre IA/.test(html));
     assert.ok(!/Livros<br>/.test(html), "Livros não deveria mais ter <br>");
     assert.ok(!/Cursos <br>/.test(html) && !/Cursos<br>/.test(html), "Cursos não deveria mais ter <br>");
   });
