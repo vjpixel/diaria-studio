@@ -29,21 +29,24 @@ import { readApoiadoresState } from "./lib/mensal/monthly-apoiadores-state.ts";
 import { buildDoneChannelState, buildFailedChannelState, withChannelState } from "./lib/artigo-especial-state.ts";
 import {
   RETROSPECTIVA_DIVULGACAO_CHANNELS,
-  type RetrospectivaDivulgacaoChannel,
+  type RetrospectivaStateKey,
   deriveEmailChannelState,
+  isRetrospectivaStateKey,
+  normalizeRetrospectivaStateKey,
   retrospectivaDivulgacaoStatePath,
   readRetrospectivaDivulgacaoState,
   writeRetrospectivaDivulgacaoState,
 } from "./lib/mensal/retrospectiva-divulgacao.ts";
 
-function isChannel(v: string): v is RetrospectivaDivulgacaoChannel {
-  return (RETROSPECTIVA_DIVULGACAO_CHANNELS as readonly string[]).includes(v);
+/** Canal fixo ou post do Facebook numa página não-default (`facebook@{slug}:d{N}`, #10458). */
+function isChannel(v: string): v is RetrospectivaStateKey {
+  return isRetrospectivaStateKey(v);
 }
 
 export interface MarkRetrospectivaChannelOptions {
   cycle: string;
   cycleDir: string;
-  channel: RetrospectivaDivulgacaoChannel;
+  channel: RetrospectivaStateKey;
   status: "done" | "failed";
   url?: string;
   reason?: string;
@@ -58,7 +61,8 @@ export function runMarkRetrospectivaChannel(o: MarkRetrospectivaChannelOptions):
   const state = readRetrospectivaDivulgacaoState(statePath, o.cycle);
   const at = new Date().toISOString();
   const ch = o.status === "done" ? buildDoneChannelState(at, o.url ?? null) : buildFailedChannelState(at, o.reason!);
-  writeRetrospectivaDivulgacaoState(statePath, withChannelState(state, o.channel, ch));
+  // `facebook@diaria:dN` grava em `facebook:dN`, a chave que o publisher lê pra página default (#10458).
+  writeRetrospectivaDivulgacaoState(statePath, withChannelState(state, normalizeRetrospectivaStateKey(o.channel), ch));
   return { statePath };
 }
 
@@ -119,7 +123,9 @@ function main(): void {
     process.exit(2);
   }
   if (!isChannel(channelArg)) {
-    console.error(`--channel inválido: "${channelArg}" — esperado um de {${RETROSPECTIVA_DIVULGACAO_CHANNELS.join(", ")}}.`);
+    console.error(
+      `--channel inválido: "${channelArg}" — esperado um de {${RETROSPECTIVA_DIVULGACAO_CHANNELS.join(", ")}}, ou facebook@{página}:d{1,2,3} (#10458).`,
+    );
     process.exit(2);
   }
   if (statusArg !== "done" && statusArg !== "failed") {

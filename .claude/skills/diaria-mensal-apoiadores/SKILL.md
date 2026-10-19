@@ -75,8 +75,12 @@ fecha de ponta a ponta com `--skip apoiase`.
 - `--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email` —
   pula canal(is). `linkedin` cobre perfil e os 3 posts da página; cada rede
   cobre as 3 histórias; `{rede}:d{N}` (#9508, ex: `instagram:d2`,
-  `linkedin:d3` = página da história 3) pula 1 post só. Token desconhecido é
-  erro (`parseRetrospectivaSkip`), nunca "não pulou nada".
+  `linkedin:d3` = página da história 3) pula 1 post só. Facebook (#10458):
+  `facebook`/`facebook:dN` cobrem TODAS as páginas habilitadas;
+  `facebook@{página}` / `facebook@{página}:dN` (ex: `facebook@memelab`) pulam
+  só aquela página. Token desconhecido (ou página fora de
+  `publishing.social.facebook.pages`) é erro (`parseRetrospectivaSkip`),
+  nunca "não pulou nada".
 - `--dry-run` — roda o preflight, gera os textos e mostra tudo no gate;
   **para no gate**, sem publicar/agendar/gravar nada.
 - `--force canal[,canal]` — reexecuta SÓ os canais nomeados que já estão
@@ -128,8 +132,10 @@ fecha de ponta a ponta com `--skip apoiase`.
 3. `KIT_API_KEY` (e-mail), `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN`
    (página: push + conferência do KV), `DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`
    (LinkedIn, Instagram e Threads — o mesmo Worker), `FACEBOOK_PAGE_ID`/
-   `FACEBOOK_PAGE_ACCESS_TOKEN` (Facebook) no ambiente; MCP do Buffer na
-   sessão (X).
+   `FACEBOOK_PAGE_ACCESS_TOKEN` (Facebook, página `diaria`; as outras páginas
+   habilitadas em `publishing.social.facebook.pages` usam as env vars que o
+   config nomeia — ex. `FACEBOOK_MEMELAB_PAGE_ID`/`_PAGE_ACCESS_TOKEN`, #10458)
+   no ambiente; MCP do Buffer na sessão (X).
 
 ## Passo 0 — preflight
 
@@ -166,7 +172,9 @@ fecha de ponta a ponta com `--skip apoiase`.
    `data/monthly/$CYCLE/_internal/divulgacao-published.json`
    (`scripts/lib/mensal/retrospectiva-divulgacao.ts` — canais `pagina`,
    `apoiase`, `linkedin_perfil`, `box`, `email` e, desde o #9508, um por post:
-   `{linkedin_pagina,facebook,instagram,threads,x}:d{1,2,3}`; as chaves sem
+   `{linkedin_pagina,facebook,instagram,threads,x}:d{1,2,3}`, mais
+   `facebook@{página}:d{1,2,3}` pras páginas Facebook além da `diaria` (#10458
+   — a `diaria` segue em `facebook:d{N}`); as chaves sem
    sufixo `linkedin_pagina`/`facebook`/`instagram`/`threads`/`x` são legado
    do post único, só lidas;
    `decideChannelAction` reusado do Artigo Especial). Canal `done` sem
@@ -496,6 +504,16 @@ Pulado post a post por `--skip` ou já `done` sem `--force` (#9508).
    deixa `done` e sai com exit 1). Rede desligada no `platform.config.json`
    (`publishing.social.{canal}.enabled: false`) é pulada com aviso.
 
+   **Facebook em mais de uma página (#10458, decisão do editor 19/10/2026):**
+   cada história sai em CADA página habilitada de
+   `publishing.social.facebook.pages`, com o mesmo texto e horário (mais a tag
+   `utm_content` da página). State, store, `--force` e `--old-cancelled` são
+   por página: `--force facebook:d1` refaz todas, `--force facebook@memelab:d1`
+   só a #memeLab (e `--old-cancelled facebook@memelab:d1` confirma que o post
+   anterior DELA foi apagado). Página desligada é pulada sem ruído; página
+   não-default sem credencial falha só ela (exit 1, `failed` no state,
+   retentável) — a `diaria` sem credencial segue barrando o pré-voo.
+
    **Post único legado da página (ciclo 2609-10):** com
    `--replace-linkedin-single`, a entry do #9474
    (`_internal/divulgacao-linkedin-published.json`) é cancelada no Worker
@@ -625,7 +643,7 @@ data/monthly/{ciclo}/
     04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg  slides da história N (idem)
     box-temas.md                       3 temas do box, 1 por linha (Passo 1, #9845)
   _internal/
-    divulgacao-published.json          status por canal — pagina/apoiase/linkedin_perfil/box/email + {linkedin_pagina,facebook,instagram,threads,x}:d{1,2,3} (#9508; chaves sem sufixo = legado)
+    divulgacao-published.json          status por canal — pagina/apoiase/linkedin_perfil/box/email + {linkedin_pagina,facebook,instagram,threads,x}:d{1,2,3} (#9508; chaves sem sufixo = legado) + facebook@{página}:d{1,2,3} (#10458, páginas além da diaria)
     divulgacao-social-d{N}-published.json  detalhe do dispatch da história N (worker_queue_key, fb_post_id, buffer_post_id)
     divulgacao-linkedin-published.json legado: post único da página (#9474) — `deleted` depois do --replace-linkedin-single
     apoiadores-kit-preview.html        HTML do broadcast (UTM mensal-apoiadores-kit)

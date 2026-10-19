@@ -679,10 +679,10 @@ describe("adaptador publish-retrospectiva-social", () => {
   it("store que não grava DEPOIS do dispatch: não aborta, grava o state (que segura a reexecução) e sinaliza", async () => {
     const { o } = opts({ posts: ["facebook:d1", "facebook:d2"] });
     const fb = o.dispatchers.facebook;
-    o.dispatchers.facebook = async (i) => {
+    o.dispatchers.facebook = async (i, page) => {
       // Simula lock/EPERM do OneDrive: o store da história vira um diretório.
       if (i.historia === "d1") mkdirSync(retrospectivaSocialPublishedPath(tmp, "d1"), { recursive: true });
-      return fb(i);
+      return fb(i, page);
     };
     const r = await runRetrospectivaSocialDispatch(o);
     assert.match(r.stateWriteErrors.join(), /facebook:d1: store NÃO gravado.*JÁ ESTÁ agendado/);
