@@ -114,6 +114,7 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -383,6 +384,13 @@ export function findActiveRun(
     const planPath = join(dir, "plan.json");
     const reportPath = join(dir, "report.md");
 
+    // #10579: rodada overnight em voo (sem report.md) cujo plan.json virou
+    // cópia de conflito do OneDrive ficaria invisível ao watchdog — restaura
+    // antes do critério estrutural. O mtime do backup é preservado, então uma
+    // carcaça restaurada continua expirando pelo `maxAgeMs` abaixo.
+    if (kind === "overnight" && !existsSync(planPath) && !existsSync(reportPath)) {
+      recoverPlanFromSafeBackupWithWarning(planPath);
+    }
     const isActive = kind === "continuo" ? existsSync(planPath) : existsSync(planPath) && !existsSync(reportPath);
     if (!isActive) continue;
 

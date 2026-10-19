@@ -124,6 +124,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { recoverPlanFromSafeBackupWithWarning } from "./plan-safe-backup.ts";
 
 /** Resultado de sondar um path candidato de `plan.json`. */
 export interface PlanPathProbeResult {
@@ -267,9 +268,15 @@ export function resolvePlanPath(
  * "existe, session_id desconhecido" — nunca "não existe": a checagem de
  * colisão continua conservadora, nunca escreve por cima de um arquivo que
  * não conseguiu ler.
+ *
+ * #10579: antes de sondar, restaura `plan.json` a partir de uma cópia de
+ * conflito do OneDrive (`plan-{máquina}-safeBackup-{NNNN}.json`) se o plano
+ * vivo sumiu — sem isso, o slot apareceria livre (`mode: "fresh"`) e o
+ * coordenador reescreveria um plano novo por cima do estado da rodada.
  */
 export function createFsPlanProbe(): PlanPathProbe {
   return (path: string): PlanPathProbeResult => {
+    recoverPlanFromSafeBackupWithWarning(path);
     if (!existsSync(path)) return { exists: false };
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as { session_id?: unknown };
