@@ -52,14 +52,24 @@
  *
  * ## Fail-soft
  *
- * Sem `CLAUDE_CODE_SESSION_ID`, sem transcript, sem diretório `subagents/` —
- * imprime o motivo e sai 0 sem gravar (não há subagente conhecido pra
- * representar). Subagente cujo transcript não tem usage → evento com
+ * Sem `CLAUDE_CODE_SESSION_ID` ou sem transcript da sessão: imprime o motivo
+ * e sai 0 sem gravar. Sessão com transcript mas sem `subagents/` (ou sem
+ * revisor consolidado) grava o marcador `token_instrumentation_empty` do
+ * tipo vazio, pra checagem da Fase 2 não acusar "coordenador esqueceu os
+ * checkpoints" numa rodada que só não despachou ninguém (#10483 finding 5). Subagente cujo transcript não tem usage → evento com
  * `tokens: null`, `source: "unavailable"`, `reason: "no_usage_entries"`
  * (nunca omitido, nunca zero). Nunca lança.
  *
- * Uso (comando standalone; idempotente, pode rodar a cada unidade e de novo
- * na Fase 2):
+ * ## Quando rodar: UMA vez, sem nada em voo (#10483 finding 1)
+ *
+ * Fase 2 do overnight/develop; fila drenada no continuo. Com a dedup por
+ * `agent_id`, um subagente emitido no meio congelaria os tokens parciais e
+ * perderia os turnos posteriores (inclusive os de um `SendMessage` que o
+ * retome depois). O script pula quem ainda não deu `end_turn` (ver
+ * `TranscriptSummary.finished`), mas isso é rede, não convite a rodar por
+ * unidade: um subagente retomado depois de emitido continua perdendo turnos.
+ *
+ * Uso (comando standalone; idempotente):
  *   npx tsx scripts/subagent-usage-metrics.ts --edition 261018d --agent overnight
  *   npx tsx scripts/subagent-usage-metrics.ts --edition 261019 --agent continuo --since 2026-10-19T03:00:00Z
  *   npx tsx scripts/subagent-usage-metrics.ts ... --dry-run   # imprime, não grava
@@ -148,6 +158,15 @@ export interface TranscriptSummary {
   toolUses: number;
   firstTimestamp: string | null;
   lastTimestamp: string | null;
+  /**
+   * O subagente terminou (#10483 finding 1): o último `stop_reason` não-nulo
+   * do transcript é `end_turn` e nenhuma linha `user` (tool_result, ou a
+   * mensagem de um `SendMessage` que o retomou) veio depois dele. Medido em
+   * 19/10/2026: subagente concluído termina em `end_turn`; um em voo, em
+   * `tool_use`. Subagente em voo NÃO é emitido — com a dedup por `agent_id`,
+   * emitir no meio congelaria os tokens parciais e perderia os turnos seguintes.
+   */
+  finished: boolean;
 }
 
 interface UsageShape {
@@ -180,6 +199,8 @@ export function summarizeTranscript(content: string): TranscriptSummary {
   let anonymousToolUses = 0;
   let first: string | null = null;
   let last: string | null = null;
+  let lastStopReason: string | null = null;
+  let userAfterStop = false;
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
     let obj: Record<string, unknown>;
@@ -194,8 +215,13 @@ export function summarizeTranscript(content: string): TranscriptSummary {
       if (first === null || ts < first) first = ts;
       if (last === null || ts > last) last = ts;
     }
+    if (obj.type === "user") userAfterStop = true;
     if (obj.type !== "assistant") continue;
-    const message = (obj.message ?? {}) as { id?: unknown; usage?: UsageShape; content?: unknown };
+    const message = (obj.message ?? {}) as { id?: unknown; usage?: UsageShape; content?: unknown; stop_reason?: unknown };
+    if (typeof message.stop_reason === "string" && message.stop_reason) {
+      lastStopReason = message.stop_reason;
+      userAfterStop = false;
+    }
     if (message.usage && typeof message.usage === "object") {
       const total = usageTotal(message.usage);
       if (typeof message.id === "string" && message.id) usageById.set(message.id, total);
@@ -218,7 +244,13 @@ export function summarizeTranscript(content: string): TranscriptSummary {
     tokens = anonymousTotal;
     for (const v of usageById.values()) tokens += v;
   }
-  return { tokens, toolUses: toolUseIds.size + anonymousToolUses, firstTimestamp: first, lastTimestamp: last };
+  return {
+    tokens,
+    toolUses: toolUseIds.size + anonymousToolUses,
+    firstTimestamp: first,
+    lastTimestamp: last,
+    finished: lastStopReason === "end_turn" && !userAfterStop,
+  };
 }
 
 export interface SubagentRecord {
@@ -272,8 +304,30 @@ export function readSessionSubagents(transcriptsDir: string, sessionId: string):
   );
 }
 
+/**
+ * Marcador de "rodada sem subagente desse tipo" (#10483 finding 5). Sem ele,
+ * uma rodada que não despachou nenhum implementador (ou nenhum review
+ * consolidado — diff trivial) sai com zero `subagent_metrics`/`review_metrics`
+ * e o `check-overnight-token-instrumentation.ts` acusa "coordenador esqueceu
+ * os checkpoints", que é falso. `details.tipo` diz qual dos dois está vazio.
+ */
+export const TOKEN_INSTRUMENTATION_EMPTY_MESSAGE = "token_instrumentation_empty";
+export const EMPTY_MARKER_TIPOS = [SUBAGENT_METRICS_MESSAGE, REVIEW_METRICS_MESSAGE] as const;
+const EMPTY_MARKER_REASON: Record<(typeof EMPTY_MARKER_TIPOS)[number], string> = {
+  [SUBAGENT_METRICS_MESSAGE]: "no_subagents",
+  [REVIEW_METRICS_MESSAGE]: "no_reviewers",
+};
+
+/**
+ * Subagente sem `end_turn` cuja última atividade é mais velha que isto é
+ * tratado como morto (abortado, sessão caída) e emitido com
+ * `finished: false` — senão nunca entraria no run-log. Uma chamada de
+ * ferramenta em foreground tem teto de 10 min; 1h dá folga larga.
+ */
+export const UNFINISHED_STALE_MS = 60 * 60 * 1000;
+
 export interface PlannedEvent {
-  message: SubagentClassification["message"];
+  message: SubagentClassification["message"] | typeof TOKEN_INSTRUMENTATION_EMPTY_MESSAGE;
   details: Record<string, unknown>;
 }
 
@@ -285,6 +339,8 @@ interface ExistingEventIndex {
   manualReviewCount: number;
   /** `fleet_review_metrics` à mão (sem agent_id) da edição: issues. */
   manualFleet: Array<{ issues: number[] }>;
+  /** Tipos com ≥1 evento (qualquer origem) ou marcador vazio já gravado nesta edição. */
+  presentInEdition: Set<string>;
 }
 
 function asIssueList(details: Record<string, unknown>): number[] {
@@ -295,7 +351,13 @@ function asIssueList(details: Record<string, unknown>): number[] {
 
 /** Pure: indexa o que já está no run-log para não duplicar. Linha malformada é ignorada. */
 export function indexExistingEvents(lines: string[], edition: string): ExistingEventIndex {
-  const idx: ExistingEventIndex = { agentIds: new Set(), manualSubagent: [], manualReviewCount: 0, manualFleet: [] };
+  const idx: ExistingEventIndex = {
+    agentIds: new Set(),
+    manualSubagent: [],
+    manualReviewCount: 0,
+    manualFleet: [],
+    presentInEdition: new Set(),
+  };
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -307,8 +369,13 @@ export function indexExistingEvents(lines: string[], edition: string): ExistingE
     }
     if (typeof rec !== "object" || rec === null) continue;
     const msg = rec.message;
-    if (msg !== SUBAGENT_METRICS_MESSAGE && msg !== REVIEW_METRICS_MESSAGE && msg !== FLEET_REVIEW_METRICS_MESSAGE) continue;
     const details = (typeof rec.details === "object" && rec.details !== null ? rec.details : {}) as Record<string, unknown>;
+    if (msg === TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) {
+      if (rec.edition === edition && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
+      continue;
+    }
+    if (msg !== SUBAGENT_METRICS_MESSAGE && msg !== REVIEW_METRICS_MESSAGE && msg !== FLEET_REVIEW_METRICS_MESSAGE) continue;
+    if (rec.edition === edition) idx.presentInEdition.add(msg);
     if (typeof details.agent_id === "string" && details.agent_id) {
       idx.agentIds.add(details.agent_id);
       continue;
@@ -349,18 +416,31 @@ function sourceFields(summary: TranscriptSummary): Record<string, unknown> {
     : { source: SUBAGENT_TRANSCRIPT_SOURCE };
 }
 
+export interface PlanResult {
+  events: PlannedEvent[];
+  skipped: number;
+  /** Subagentes em voo (sem `end_turn`, atividade recente) — não emitidos, ficam pra próxima execução. */
+  inFlight: number;
+  /** Marcadores `token_instrumentation_empty` a gravar (#10483 finding 5). */
+  markers: PlannedEvent[];
+}
+
 /**
  * Pure: decide quais eventos gravar. `sinceIso` restringe aos subagentes que
  * começaram a partir daquele instante (sessão `continuo` atravessa vários
  * dias/edições). `review_metrics.depth` = posição cronológica entre os
  * reviews consolidados da janela (0 = review inicial, 1 = 1.5b, 2 = 1.5c).
+ * Subagente em voo (ver `TranscriptSummary.finished`) é pulado e contado em
+ * `inFlight`; o sem `end_turn` com atividade mais velha que
+ * `UNFINISHED_STALE_MS` é emitido com `finished: false`.
  */
 export function planEvents(
   records: SubagentRecord[],
   existingLines: string[],
   edition: string,
   sinceIso?: string,
-): { events: PlannedEvent[]; skipped: number } {
+  nowMs: number = Date.now(),
+): PlanResult {
   const idx = indexExistingEvents(existingLines, edition);
   const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
   const inWindow = records.filter((r) => {
@@ -370,7 +450,9 @@ export function planEvents(
   });
   const events: PlannedEvent[] = [];
   let skipped = 0;
+  let inFlight = 0;
   let reviewDepth = 0;
+  const classesInWindow = new Set<string>();
   let manualReviewsToAbsorb = idx.manualReviewCount;
   const manualSubagent = [...idx.manualSubagent];
   const manualFleet = [...idx.manualFleet];
@@ -378,10 +460,18 @@ export function planEvents(
   for (const r of inWindow) {
     const cls = classifySubagent(r.meta);
     const { issues, prs } = extractRefs(r.meta.description);
+    classesInWindow.add(cls.message);
     const depth = cls.message === REVIEW_METRICS_MESSAGE ? reviewDepth++ : null;
     if (idx.agentIds.has(r.agentId)) {
       skipped++;
       continue;
+    }
+    if (!r.summary.finished) {
+      const lastMs = r.summary.lastTimestamp ? Date.parse(r.summary.lastTimestamp) : NaN;
+      if (!Number.isFinite(lastMs) || nowMs - lastMs < UNFINISHED_STALE_MS) {
+        inFlight++;
+        continue;
+      }
     }
     const tokens = r.summary.tokens;
     const common = {
@@ -391,6 +481,7 @@ export function planEvents(
       tool_uses: r.summary.toolUses,
       duration_ms: durationMs(r.summary),
       ...sourceFields(r.summary),
+      ...(r.summary.finished ? {} : { finished: false }),
     };
     if (cls.message === SUBAGENT_METRICS_MESSAGE) {
       const manualIdx = manualSubagent.findIndex((m) => m.papel === cls.papel && overlaps(m.issues, issues));
@@ -423,12 +514,17 @@ export function planEvents(
       });
     }
   }
-  return { events, skipped };
+  const markers: PlannedEvent[] = [];
+  for (const tipo of EMPTY_MARKER_TIPOS) {
+    if (classesInWindow.has(tipo) || idx.presentInEdition.has(tipo)) continue;
+    markers.push({ message: TOKEN_INSTRUMENTATION_EMPTY_MESSAGE, details: { tipo, reason: EMPTY_MARKER_REASON[tipo] } });
+  }
+  return { events, skipped, inFlight, markers };
 }
 
 export type CollectOutcome =
-  | { status: "ok"; events: PlannedEvent[]; skipped: number; subagents: number }
-  | { status: "unavailable"; reason: "no_session_id" | "no_subagents_dir" };
+  | { status: "ok"; events: PlannedEvent[]; skipped: number; inFlight: number; markers: PlannedEvent[]; subagents: number }
+  | { status: "unavailable"; reason: "no_session_id" | "session_transcript_not_found" };
 
 /** Orquestração com I/O (transcripts + run-log). Injetável pra teste. */
 export function collectSubagentMetrics(opts: {
@@ -439,13 +535,17 @@ export function collectSubagentMetrics(opts: {
   cwd?: string;
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
+  nowMs?: number;
 }): CollectOutcome {
   const rootDir = opts.rootDir ?? process.cwd();
   const sessionId = opts.sessionId !== undefined ? opts.sessionId : currentSessionId(opts.env ?? process.env);
   if (!sessionId) return { status: "unavailable", reason: "no_session_id" };
   const transcriptsDir = locateSessionTranscriptsDir(sessionId, opts.cwd ?? rootDir, opts.homeDir);
-  if (!existsSync(join(transcriptsDir, sessionId, "subagents"))) {
-    return { status: "unavailable", reason: "no_subagents_dir" };
+  // Sem transcript da sessão não dá pra afirmar nada. Com ele e sem
+  // `subagents/`, a sessão genuinamente não despachou ninguém (#10483
+  // finding 5): segue com zero registros e grava os marcadores vazios.
+  if (!existsSync(join(transcriptsDir, `${sessionId}.jsonl`)) && !existsSync(join(transcriptsDir, sessionId, "subagents"))) {
+    return { status: "unavailable", reason: "session_transcript_not_found" };
   }
   const records = readSessionSubagents(transcriptsDir, sessionId);
   const logPath = resolveRunLogPath(rootDir);
@@ -455,8 +555,8 @@ export function collectSubagentMetrics(opts: {
   } catch {
     lines = [];
   }
-  const { events, skipped } = planEvents(records, lines, opts.edition, opts.sinceIso);
-  return { status: "ok", events, skipped, subagents: records.length };
+  const { events, skipped, inFlight, markers } = planEvents(records, lines, opts.edition, opts.sinceIso, opts.nowMs);
+  return { status: "ok", events, skipped, inFlight, markers, subagents: records.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -486,18 +586,20 @@ function main(): void {
     console.log(JSON.stringify({ edition, agent, ...outcome }, null, 2));
     return;
   }
+  const toWrite = [...outcome.events, ...outcome.markers];
   let written = 0;
-  for (const ev of outcome.events) {
+  for (const ev of toWrite) {
     if (logEvent({ edition, stage: null, agent, level: "info", message: ev.message, details: ev.details })) written++;
   }
-  const byType = outcome.events.reduce<Record<string, number>>((acc, ev) => {
+  const byType = toWrite.reduce<Record<string, number>>((acc, ev) => {
     acc[ev.message] = (acc[ev.message] ?? 0) + 1;
     return acc;
   }, {});
   const summary = Object.entries(byType).map(([k, v]) => `${k}: ${v}`).join(", ") || "nenhum evento novo";
   console.log(
-    `✓ subagent-usage-metrics: ${written}/${outcome.events.length} gravado(s) (${summary}); ` +
-      `${outcome.skipped} já emitido(s); ${outcome.subagents} subagente(s) na sessão.`,
+    `✓ subagent-usage-metrics: ${written}/${toWrite.length} gravado(s) (${summary}); ` +
+      `${outcome.skipped} já emitido(s); ${outcome.inFlight} em voo (não emitido(s), rodar de novo quando terminarem); ` +
+      `${outcome.subagents} subagente(s) na sessão.`,
   );
   process.exit(0);
 }

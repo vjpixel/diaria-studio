@@ -5,9 +5,11 @@
  * Checagem DETERMINÍSTICA (não-LLM) de que o coordenador de uma rodada
  * `/diaria-overnight`/`/diaria-develop` de fato emitiu a instrumentação de
  * token mandatada pelo `SKILL.md` (#3453 Rec 1, #4815) — os eventos
- * `subagent_metrics` (fim de cada unidade, Fase 1 passo 5),
- * `coordinator_tokens_estimate` (fim de cada fase, #3453 Rec 1) e
- * `review_metrics` (fim de cada review pós-rodada, Fase 1.5).
+ * `subagent_metrics` e `review_metrics` (emitidos uma vez na Fase 2 por
+ * `subagent-usage-metrics.ts`, #10476/#10483) e `coordinator_tokens_estimate`
+ * (fim de cada fase, #3453 Rec 1). Tipo com zero eventos e com o marcador
+ * `token_instrumentation_empty` = rodada sem subagente daquele tipo, não
+ * esquecimento (#10483 finding 5).
  *
  * **Por que existe:** a rodada 260811 terminou com 0 eventos
  * `subagent_metrics`/`coordinator_tokens_estimate` e só 1 `review_metrics` —
@@ -56,9 +58,18 @@ export type TrackedTokenInstrumentationMessage = (typeof TRACKED_TOKEN_INSTRUMEN
 
 export type TokenInstrumentationCounts = Record<TrackedTokenInstrumentationMessage, number>;
 
+/**
+ * `empty` = tipos com zero eventos mas com o marcador
+ * `token_instrumentation_empty` gravado por `subagent-usage-metrics.ts`
+ * (#10483 finding 5): a rodada não despachou nenhum subagente daquele tipo.
+ * Não conta como "coordenador esqueceu". Ausente/vazio quando não se aplica.
+ */
 export type TokenInstrumentationVerdict =
-  | { status: "ok" }
-  | { status: "warning"; missing: TrackedTokenInstrumentationMessage[] };
+  | { status: "ok"; empty?: TrackedTokenInstrumentationMessage[] }
+  | { status: "warning"; missing: TrackedTokenInstrumentationMessage[]; empty?: TrackedTokenInstrumentationMessage[] };
+
+/** Mesmo literal de `TOKEN_INSTRUMENTATION_EMPTY_MESSAGE` em `subagent-usage-metrics.ts` (travado por teste). */
+export const TOKEN_INSTRUMENTATION_EMPTY_MESSAGE = "token_instrumentation_empty";
 
 /**
  * Papéis conhecidos de `subagent_metrics.details.papel` (#9875). Um evento por
@@ -135,6 +146,31 @@ export function countTokenInstrumentationEvents(lines: string[], edition: string
 }
 
 /**
+ * Pure (#10483 finding 5): tipos rastreados que têm o marcador
+ * `token_instrumentation_empty` (`details.tipo`) gravado nesta edição.
+ * Linha malformada é ignorada, nunca lança.
+ */
+export function countEmptyMarkers(lines: string[], edition: string): Set<TrackedTokenInstrumentationMessage> {
+  const marked = new Set<TrackedTokenInstrumentationMessage>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof obj !== "object" || obj === null) continue;
+    const rec = obj as Record<string, unknown>;
+    if (rec.edition !== edition || rec.message !== TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) continue;
+    const details = typeof rec.details === "object" && rec.details !== null ? (rec.details as Record<string, unknown>) : {};
+    if (isTrackedMessage(details.tipo)) marked.add(details.tipo);
+  }
+  return marked;
+}
+
+/**
  * Pure (#9875): agrupa os eventos `subagent_metrics` da edição por
  * `details.papel`, contando eventos e somando `subagent_tokens` numéricos.
  * Mesma tolerância de `countTokenInstrumentationEvents`: linha malformada é
@@ -187,10 +223,16 @@ export function formatPapelBreakdown(breakdown: PapelBreakdown): string {
  * menos 1 evento; caso contrário `warning` nomeando exatamente os tipos
  * ausentes (nunca "tudo ou nada" — uma rodada pode ter emitido 2 dos 3).
  */
-export function resolveTokenInstrumentationVerdict(counts: TokenInstrumentationCounts): TokenInstrumentationVerdict {
-  const missing = TRACKED_TOKEN_INSTRUMENTATION_MESSAGES.filter((m) => counts[m] === 0);
-  if (missing.length === 0) return { status: "ok" };
-  return { status: "warning", missing };
+export function resolveTokenInstrumentationVerdict(
+  counts: TokenInstrumentationCounts,
+  emptyMarked: ReadonlySet<TrackedTokenInstrumentationMessage> = new Set(),
+): TokenInstrumentationVerdict {
+  const zero = TRACKED_TOKEN_INSTRUMENTATION_MESSAGES.filter((m) => counts[m] === 0);
+  const empty = zero.filter((m) => emptyMarked.has(m));
+  const missing = zero.filter((m) => !emptyMarked.has(m));
+  const emptyField = empty.length > 0 ? { empty } : {};
+  if (missing.length === 0) return { status: "ok", ...emptyField };
+  return { status: "warning", missing, ...emptyField };
 }
 
 /**
@@ -204,17 +246,21 @@ export function buildTokenInstrumentationSection(
   verdict: TokenInstrumentationVerdict,
 ): string {
   const countsSummary = TRACKED_TOKEN_INSTRUMENTATION_MESSAGES.map((m) => `${m}: ${counts[m]}`).join(", ");
+  const emptyNote =
+    verdict.empty && verdict.empty.length > 0
+      ? ` Sem subagente despachado (marcador do script, não esquecimento): ${verdict.empty.join(", ")}.`
+      : "";
   if (verdict.status === "ok") {
     return (
       `Instrumentação de token (checagem automática, edição ${edition}): OK — ` +
-      `${countsSummary}.`
+      `${countsSummary}.${emptyNote}`
     );
   }
   const missingList = verdict.missing.join(", ");
   return (
     `Instrumentação de token (checagem automática, edição ${edition}): ` +
     `instrumentação de token não foi emitida nesta rodada (coordenador esqueceu os checkpoints) — ` +
-    `tipo(s) ausente(s): ${missingList} (${countsSummary}).`
+    `tipo(s) ausente(s): ${missingList} (${countsSummary}).${emptyNote}`
   );
 }
 
@@ -246,7 +292,7 @@ export function checkOvernightTokenInstrumentation(
   const lines = existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [];
   const counts = countTokenInstrumentationEvents(lines, edition);
   const papelBreakdown = countSubagentMetricsByPapel(lines, edition);
-  const verdict = resolveTokenInstrumentationVerdict(counts);
+  const verdict = resolveTokenInstrumentationVerdict(counts, countEmptyMarkers(lines, edition));
   const papelLine = formatPapelBreakdown(papelBreakdown);
   const baseSection = buildTokenInstrumentationSection(edition, counts, verdict);
   const section = papelLine ? `${baseSection}\n${papelLine}` : baseSection;

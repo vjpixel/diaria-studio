@@ -510,16 +510,23 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   o overnight emite ao fim de cada unidade de implementação
   (`.claude/skills/diaria-overnight/SKILL.md`, Fase 1 passo 5,
   "Instrumentação de token por unidade #4815") — é o grosso do gasto real de
-  uma sessão `continuo`, maior que o do próprio coordenador. Ao dispatchar
-  cada unidade via a Fase 1 reusada, emitir no mesmo ponto que o overnight já
-  documenta (unidade atingiu status terminal — merged/draft/pulada):
+  uma sessão `continuo`, maior que o do próprio coordenador. **Nunca ao fim
+  de cada unidade (#10483):** na onda paralela o fim de uma unidade pega
+  outros implementadores ainda rodando, e a dedup do script por `agent_id`
+  congelaria os tokens parciais deles. O equivalente à Fase 2 do overnight
+  aqui é o momento em que a onda drenou e nada está em voo — logo antes de
+  dormir com a fila vazia, e na rotina de custo acumulado do passo de sono
+  (antes do `continuo-cost-summary.ts`), só se não houver unidade em voo.
+  Uma chamada por drenagem:
   ```bash
   npx tsx scripts/subagent-usage-metrics.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --since {início-do-dia-corrente-ISO}
   ```
   Sempre por esse script, nunca à mão com `log-event.ts` (#10476 — rodada
   overnight 261018d: 16 subagentes, zero eventos). `--since` é obrigatório
   aqui: a sessão `continuo` atravessa dias, e sem a janela os subagentes de
-  ontem ainda não emitidos cairiam na edição de hoje. Evento gravado:
+  ontem ainda não emitidos cairiam na edição de hoje. Subagente sem
+  `end_turn` no transcript é pulado e reportado "em voo" (fica pra próxima
+  drenagem) — rede, não convite a rodar por unidade. Evento gravado:
   `{"unidade": "#NNNN | lote #A + #B", "issues": [123], "papel": "dev-implementador | dev-fixer | ci-retry", "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "subagent_transcript | unavailable", "agent_id": "..."}`.
   Campo `papel` obrigatório (#9875), mesma regra do overnight: um evento por
   invocação de `Agent` da unidade (`dev-implementador`, `dev-fixer`,

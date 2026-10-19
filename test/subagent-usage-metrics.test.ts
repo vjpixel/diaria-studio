@@ -26,15 +26,27 @@ import {
   FLEET_REVIEW_METRICS_MESSAGE,
   REVIEW_METRICS_MESSAGE,
   SUBAGENT_METRICS_MESSAGE,
+  TOKEN_INSTRUMENTATION_EMPTY_MESSAGE,
   type SubagentRecord,
 } from "../scripts/subagent-usage-metrics.ts";
 import { encodeProjectDirName } from "../scripts/lib/session-transcript.ts";
 import { logEvent } from "../scripts/lib/run-log.ts";
-import { checkOvernightTokenInstrumentation } from "../scripts/check-overnight-token-instrumentation.ts";
+import {
+  checkOvernightTokenInstrumentation,
+  TOKEN_INSTRUMENTATION_EMPTY_MESSAGE as CHECK_EMPTY_MESSAGE,
+} from "../scripts/check-overnight-token-instrumentation.ts";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-function assistantLine(opts: { id: string; ts: string; input?: number; cacheRead?: number; output?: number; toolUseId?: string }): string {
+function assistantLine(opts: {
+  id: string;
+  ts: string;
+  input?: number;
+  cacheRead?: number;
+  output?: number;
+  toolUseId?: string;
+  stopReason?: string | null;
+}): string {
   return JSON.stringify({
     type: "assistant",
     timestamp: opts.ts,
@@ -42,6 +54,7 @@ function assistantLine(opts: { id: string; ts: string; input?: number; cacheRead
     message: {
       id: opts.id,
       model: "claude-opus-5-5",
+      stop_reason: opts.stopReason ?? null,
       content: opts.toolUseId ? [{ type: "tool_use", id: opts.toolUseId, name: "Bash", input: {} }] : [{ type: "text", text: "ok" }],
       usage: {
         input_tokens: opts.input ?? 0,
@@ -84,9 +97,11 @@ function record(agentId: string, agentType: string, description: string, tokens:
   return {
     agentId,
     meta: { agentType, description },
-    summary: { tokens, toolUses: 1, firstTimestamp: first, lastTimestamp: first },
+    summary: { tokens, toolUses: 1, firstTimestamp: first, lastTimestamp: first, finished: true },
   };
 }
+
+const NOW = Date.parse("2026-10-19T12:00:00.000Z");
 
 describe("classifySubagent (#10476)", () => {
   it("dev-implementador e dev-fixer viram subagent_metrics com o papel do agentType", () => {
@@ -216,30 +231,33 @@ describe("collectSubagentMetrics — cenário real da 261018d (#10476)", () => {
         lines: [
           assistantLine({ id: "m1", ts: "2026-10-18T17:51:50.000Z", input: 2, cacheRead: 85000, output: 100, toolUseId: "t1" }),
           assistantLine({ id: "m1", ts: "2026-10-18T17:51:51.000Z", input: 2, cacheRead: 85000, output: 100 }),
-          assistantLine({ id: "m2", ts: "2026-10-18T17:59:37.000Z", input: 3, cacheRead: 90000, output: 200, toolUseId: "t2" }),
+          assistantLine({ id: "m2", ts: "2026-10-18T17:59:37.000Z", input: 3, cacheRead: 90000, output: 200, toolUseId: "t2", stopReason: "end_turn" }),
         ],
       },
       {
         id: "fix",
         agentType: "dev-fixer",
         description: "Fixer PR #10445 findings",
-        lines: [assistantLine({ id: "f1", ts: "2026-10-18T18:10:00.000Z", input: 1, cacheRead: 1000, output: 10 })],
+        lines: [assistantLine({ id: "f1", ts: "2026-10-18T18:10:00.000Z", input: 1, cacheRead: 1000, output: 10, stopReason: "end_turn" })],
       },
       {
         id: "rev",
         agentType: "pr-review-toolkit:code-reviewer",
         description: "Review consolidado pós-rodada",
-        lines: [assistantLine({ id: "r1", ts: "2026-10-18T19:00:00.000Z", input: 1, cacheRead: 5000, output: 50 })],
+        lines: [assistantLine({ id: "r1", ts: "2026-10-18T19:00:00.000Z", input: 1, cacheRead: 5000, output: 50, stopReason: "end_turn" })],
       },
     ]);
 
     // Antes: nenhum evento — o estado exato da 261018d.
     assert.equal(checkOvernightTokenInstrumentation("261018d", root).counts.subagent_metrics, 0);
 
-    const outcome = collectSubagentMetrics({ edition: "261018d", sessionId: SESSION, rootDir: root, homeDir: home });
+    const outcome = collectSubagentMetrics({ edition: "261018d", sessionId: SESSION, rootDir: root, homeDir: home, nowMs: NOW });
     assert.equal(outcome.status, "ok");
     if (outcome.status !== "ok") return;
     assert.equal(outcome.subagents, 3);
+    assert.equal(outcome.inFlight, 0);
+    assert.deepEqual(outcome.markers, []);
+    assert.equal(outcome.events.some((e) => "finished" in e.details), false);
     const byAgent = Object.fromEntries(outcome.events.map((e) => [e.details.agent_id, e]));
     assert.equal(byAgent.impl.message, SUBAGENT_METRICS_MESSAGE);
     assert.equal(byAgent.impl.details.papel, "dev-implementador");
@@ -274,16 +292,88 @@ describe("collectSubagentMetrics — cenário real da 261018d (#10476)", () => {
     });
   });
 
-  it("sessão sem diretório subagents/ → unavailable no_subagents_dir", () => {
+  it("sessão sem transcript nenhum → unavailable session_transcript_not_found (nada a afirmar)", () => {
+    const root = mkdtempSync(join(tmpdir(), "subagent-usage-metrics-"));
+    const home = join(root, ".home");
+    mkdirSync(join(home, ".claude", "projects"), { recursive: true });
+    assert.deepEqual(collectSubagentMetrics({ edition: "x", sessionId: SESSION, rootDir: root, homeDir: home }), {
+      status: "unavailable",
+      reason: "session_transcript_not_found",
+    });
+    assert.deepEqual(readRunLog(root), []);
+  });
+
+  // #10483 finding 5: rodada sem nenhum dispatch não pode virar "coordenador esqueceu".
+  it("sessão com transcript e sem subagents/ → marcadores vazios, e a checagem não acusa esquecimento", () => {
     const root = mkdtempSync(join(tmpdir(), "subagent-usage-metrics-"));
     const home = join(root, ".home");
     const dir = join(home, ".claude", "projects", encodeProjectDirName(root));
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${SESSION}.jsonl`), "\n");
-    assert.deepEqual(collectSubagentMetrics({ edition: "x", sessionId: SESSION, rootDir: root, homeDir: home }), {
-      status: "unavailable",
-      reason: "no_subagents_dir",
-    });
-    assert.deepEqual(readRunLog(root), []);
+    const outcome = collectSubagentMetrics({ edition: "261019", sessionId: SESSION, rootDir: root, homeDir: home, nowMs: NOW });
+    assert.equal(outcome.status, "ok");
+    if (outcome.status !== "ok") return;
+    assert.deepEqual(outcome.events, []);
+    assert.deepEqual(
+      outcome.markers.map((m) => [m.message, m.details.tipo, m.details.reason]),
+      [
+        [TOKEN_INSTRUMENTATION_EMPTY_MESSAGE, SUBAGENT_METRICS_MESSAGE, "no_subagents"],
+        [TOKEN_INSTRUMENTATION_EMPTY_MESSAGE, REVIEW_METRICS_MESSAGE, "no_reviewers"],
+      ],
+    );
+    for (const ev of outcome.markers) {
+      logEvent({ edition: "261019", stage: null, agent: "overnight", level: "info", message: ev.message, details: ev.details }, root);
+    }
+    logEvent(
+      { edition: "261019", stage: null, agent: "overnight", level: "info", message: "coordinator_tokens_estimate", details: {} },
+      root,
+    );
+    const check = checkOvernightTokenInstrumentation("261019", root);
+    assert.equal(check.verdict.status, "ok");
+    assert.doesNotMatch(check.section, /esqueceu/);
+    assert.match(check.section, /Sem subagente despachado/);
+    // Idempotente: rodar de novo não regrava o marcador.
+    const again = collectSubagentMetrics({ edition: "261019", sessionId: SESSION, rootDir: root, homeDir: home, nowMs: NOW });
+    assert.deepEqual(again.status === "ok" ? again.markers : null, []);
+  });
+
+  it("marcador do checador e do script usam o mesmo literal", () => {
+    assert.equal(CHECK_EMPTY_MESSAGE, TOKEN_INSTRUMENTATION_EMPTY_MESSAGE);
+  });
+});
+
+describe("subagente em voo (#10483 finding 1)", () => {
+  it("summarizeTranscript: end_turn final = terminado; tool_use final ou user depois do end_turn = em voo", () => {
+    const done = [
+      assistantLine({ id: "a", ts: "2026-10-19T10:00:00.000Z", toolUseId: "t1", stopReason: "tool_use" }),
+      JSON.stringify({ type: "user", timestamp: "2026-10-19T10:00:01.000Z" }),
+      assistantLine({ id: "b", ts: "2026-10-19T10:00:02.000Z", stopReason: "end_turn" }),
+    ];
+    assert.equal(summarizeTranscript(done.join("\n")).finished, true);
+    assert.equal(
+      summarizeTranscript([...done.slice(0, 1), JSON.stringify({ type: "user", timestamp: "2026-10-19T10:00:01.000Z" })].join("\n")).finished,
+      false,
+    );
+    // Retomado por SendMessage depois de terminar: volta a estar em voo.
+    const resumed = [...done, JSON.stringify({ type: "user", timestamp: "2026-10-19T11:00:00.000Z" })];
+    assert.equal(summarizeTranscript(resumed.join("\n")).finished, false);
+  });
+
+  it("planEvents pula o em voo recente (sem marcador do tipo) e emite o morto com finished:false", () => {
+    const live = { ...record("live", "dev-implementador", "Implementar #1", 10, "2026-10-19T11:50:00.000Z") };
+    live.summary = { ...live.summary, finished: false };
+    const dead = { ...record("dead", "dev-implementador", "Implementar #2", 20, "2026-10-19T09:00:00.000Z") };
+    dead.summary = { ...dead.summary, finished: false };
+    const { events, inFlight, markers } = planEvents([live, dead], [], "261019", undefined, NOW);
+    assert.equal(inFlight, 1);
+    assert.deepEqual(events.map((e) => [e.details.agent_id, e.details.finished]), [["dead", false]]);
+    // Implementador existe (mesmo em voo) → só o marcador de review vazio.
+    assert.deepEqual(markers.map((m) => m.details.tipo), [REVIEW_METRICS_MESSAGE]);
+  });
+
+  it("evento já gravado do tipo na edição suprime o marcador", () => {
+    const existing = [JSON.stringify({ edition: "261019", message: "review_metrics", details: { depth: 0 } })];
+    const { markers } = planEvents([record("a", "dev-implementador", "Implementar #1", 1)], existing, "261019", undefined, NOW);
+    assert.deepEqual(markers, []);
   });
 });

@@ -135,6 +135,30 @@ describe("#3453 Rec 1 / #3454 Rec 1 — instrumentação de token do coordenador
       }
     }
   });
+
+  // #10483 finding 1: rodar o emissor ao fim de cada unidade, na onda
+  // paralela, pega implementadores ainda em voo; a dedup por `agent_id`
+  // congela os tokens parciais e perde os turnos seguintes. Uma chamada só
+  // por skill, no ponto em que nada está em voo (Fase 2 no overnight/develop).
+  it("subagent-usage-metrics.ts aparece UMA vez por skill, no relatório final (#10483)", () => {
+    const continuo = readFileSync(resolve(ROOT, ".claude/skills/diaria-continuo/SKILL.md"), "utf8");
+    const cmd = /npx tsx scripts\/subagent-usage-metrics\.ts --edition/g;
+    for (const [name, text] of [
+      ["overnight", overnight],
+      ["develop", develop],
+      ["continuo", continuo],
+    ] as const) {
+      assert.equal((text.match(cmd) ?? []).length, 1, `${name}: o emissor deve ser chamado num único ponto`);
+    }
+    for (const [name, text] of [
+      ["overnight", overnight],
+      ["develop", develop],
+    ] as const) {
+      const fase2 = text.indexOf("\n## Fase 2");
+      assert.ok(fase2 > 0, `${name}: seção Fase 2 não encontrada`);
+      assert.ok(text.search(cmd) > fase2, `${name}: o emissor deve rodar na Fase 2, não por unidade`);
+    }
+  });
 });
 
 describe("#3453 Rec 3 — agrupamento mais agressivo por baixo risco", () => {
