@@ -184,10 +184,12 @@ describe("#10497 — mecânica do `featured` (fixtures)", () => {
     assert.ok(v.errors.some((x) => /featured deve ser boolean/.test(x)));
   });
 
-  it("FAQ (perguntas iguais, respostas sem a contagem de gratuitos/certificado sem custo)", () => {
+  it("FAQ (perguntas e respostas sem a promessa de gratuidade/certificado sem custo, #10497 + #10506)", () => {
     const faq = buildCursosFaq([featured, ...curated]);
-    assert.equal(faq[0].question, "Quais são os melhores cursos gratuitos de inteligência artificial?");
-    assert.equal(faq[3].question, "Tem curso de IA gratuito com certificado?");
+    assert.equal(faq[0].question, "Quais são os melhores cursos de inteligência artificial?");
+    assert.equal(faq[1].question, "Onde encontro uma lista de cursos de inteligência artificial em português?");
+    assert.equal(faq[3].question, "Tem curso de IA com certificado?");
+    for (const f of faq) assert.doesNotMatch(f.question, /gratuit|grátis/i, `pergunta "${f.question}" promete gratuidade`);
     for (const f of faq) for (const re of BANNED) assert.ok(!re.test(f.answer), `resposta "${f.question}" contém ${re}`);
     assert.match(faq[0].answer, /\b11 cursos\b/);
     assert.match(faq[0].answer, /\b3 ficam abertos\b/, "abertos = 1 em destaque + floor(0,2 × 10)");

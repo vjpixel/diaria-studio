@@ -178,8 +178,8 @@ ${renderCuradoriaFooterStyles()}
         <h2>Enquanto isso</h2>
         <ul>
           <li>
-            <a href="${DIARIA_CURSOS_URL}/">Cursos gratuitos de IA</a>
-            <p>Cursos verificados sobre inteligência artificial, a maioria gratuita, filtráveis por idioma, nível e plataforma.</p>
+            <a href="${DIARIA_CURSOS_URL}/">Cursos sobre IA</a>
+            <p>Cursos verificados sobre inteligência artificial, filtráveis por idioma, nível, custo e plataforma.</p>
           </li>
           <li>
             <a href="${DIARIA_LIVROS_URL}/">Livros sobre IA</a>
