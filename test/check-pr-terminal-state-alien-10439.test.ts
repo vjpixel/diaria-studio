@@ -11,6 +11,7 @@ import {
   checkPrTerminalState,
   foreignClaimedIssues,
   issueFromBranch,
+  partitionAlienCandidates,
   readAlienPrsConfirmed,
   verdictExitCode,
   type OpenPrLike,
@@ -115,5 +116,21 @@ describe("cruzamento com claims do session-registry (#10439)", () => {
     assert.equal(issueFromBranch("continuo/fix-12-x"), 12);
     assert.equal(issueFromBranch("overnight/batch-c"), null);
     assert.equal(issueFromBranch("fix/10390"), null);
+  });
+
+  it("issueFromBranch reconhece develop/feat-N e develop/blast-N (#10548)", () => {
+    assert.equal(issueFromBranch("develop/blast-10437-flags"), 10437);
+    assert.equal(issueFromBranch("develop/feat-123-x"), 123);
+    assert.equal(issueFromBranch("develop/blast-55"), 55);
+    assert.equal(issueFromBranch("develop/blaster-55"), null);
+  });
+
+  it("PR develop/blast-N com issue reivindicada por outra sessão vira alheia confirmada (#10548)", () => {
+    const { candidates, alienConfirmed } = partitionAlienCandidates(
+      [{ kind: "unregistered-branch-candidate", pr: 10532, headRefName: "develop/blast-10437-flags" }],
+      { liveForeignClaimedIssues: new Set([10437]) },
+    );
+    assert.equal(candidates.length, 0);
+    assert.equal(alienConfirmed[0]?.source, "session-registry");
   });
 });

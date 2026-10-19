@@ -106,20 +106,38 @@ const PR_REF_RE = /\bPR\s*#?\d+/i;
 /** Fixer despachado pra CI vermelho conta como `ci-retry` (#9875), não `dev-fixer`. */
 const CI_RETRY_RE = /\bCI\b|ci-retry/i;
 
-function isReviewerType(agentType: string): boolean {
-  return agentType.startsWith("pr-review-toolkit:") || agentType === "dev-revisor";
+/**
+ * Agents dedicados de uso geral que o SKILL.md do overnight/develop usa como
+ * 2º fallback de review quando nem o plugin nem o `dev-revisor` resolvem
+ * (#10547). Só contam como revisor quando o description declara review — o
+ * mesmo agent lê threads no `/diaria-desbloqueia` e despacha texto ad-hoc.
+ */
+const REVIEW_FALLBACK_TYPES = new Set(["adhoc-opus-medium"]);
+/** `Review consolidado pós-rodada`, `Review 1.5b`, `Review PR #N`, `revisão ...`. */
+const REVIEW_DESCRIPTION_RE = /\b(?:review|revis[ãa]o|revisor)\b/i;
+
+function isReviewer(meta: SubagentMeta): boolean {
+  if (meta.agentType.startsWith("pr-review-toolkit:") || meta.agentType === "dev-revisor") return true;
+  return REVIEW_FALLBACK_TYPES.has(meta.agentType) && REVIEW_DESCRIPTION_RE.test(meta.description);
 }
 
 /**
  * Pure: decide que evento um subagente vira. Revisor sem PR no description =
  * review consolidado pós-rodada (`review_metrics`, Fase 1.5); revisor com PR
  * = review de fleet pré-merge de uma unidade (`fleet_review_metrics`).
+ * Revisor = `pr-review-toolkit:*`, `dev-revisor`, ou o fallback
+ * `adhoc-opus-medium` com review no description (#10547).
  * Todo o resto vira `subagent_metrics` com `papel` = `agentType` (ou
  * `ci-retry` para fixer de CI) — papel fora da lista conhecida é contado
  * como veio pelo `check-overnight-token-instrumentation.ts`.
+ *
+ * `ci-retry` só existe quando o retry é um Agent NOVO (`dev-fixer` com CI no
+ * description). Um retry via `SendMessage` escreve no transcript do MESMO
+ * agente, então os tokens dele entram no evento do papel original — o
+ * script emite um evento por `agent_id`, não por segmento (#10547).
  */
 export function classifySubagent(meta: SubagentMeta): SubagentClassification {
-  if (isReviewerType(meta.agentType)) {
+  if (isReviewer(meta)) {
     return PR_REF_RE.test(meta.description)
       ? { message: FLEET_REVIEW_METRICS_MESSAGE }
       : { message: REVIEW_METRICS_MESSAGE };
