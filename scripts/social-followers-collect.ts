@@ -40,12 +40,19 @@
  * Credenciais: `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN` e
  * `FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN` (mesmas vars já usadas por
  * `publish-instagram.ts`/`publish-facebook.ts` — nenhuma credencial nova).
+ *
+ * #10458: o Facebook é coletado POR PÁGINA habilitada em
+ * `publishing.social.facebook.pages` (helper `lib/facebook-pages.ts`, só env
+ * var), cada uma na sua série (`page` na linha; a `diaria` omite o campo, então
+ * a série histórica continua igual). Página sem credencial falha só ela.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
+import { DEFAULT_FACEBOOK_PAGE_SLUG, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts"; // #10458
 import {
+  followerSamplePage,
   parseSocialFollowersJsonl,
   serializeSocialFollowerSample,
   type SocialFollowerSample,
@@ -59,6 +66,8 @@ export const DEFAULT_OUTPUT_PATH = "data/metrics/social-followers.jsonl";
 
 export interface CollectResult {
   platform: SocialPlatform;
+  /** #10458 — página do Facebook (só `platform: "facebook"`). */
+  page?: string;
   followersCount: number | null;
   error: string | null;
   written: boolean;
@@ -100,11 +109,13 @@ function ensureDir(fullPath: string): void {
 /** Já existe amostra desta plataforma NESTE dia? Evita linha duplicada se a
  *  task rodar 2× no mesmo dia (retry manual, cron sobreposto). Fail-soft:
  *  arquivo ausente/ilegível conta como "não existe ainda". */
-function hasSampleForToday(outputPath: string, platform: SocialPlatform, date: string): boolean {
+function hasSampleForToday(outputPath: string, platform: SocialPlatform, date: string, page?: string): boolean {
   if (!existsSync(outputPath)) return false;
   try {
     const { samples } = parseSocialFollowersJsonl(readFileSync(outputPath, "utf8"));
-    return samples.some((s) => s.platform === platform && s.date === date);
+    // #10458: idempotência por (plataforma, página, dia).
+    const want = followerSamplePage({ page });
+    return samples.some((s) => s.platform === platform && s.date === date && followerSamplePage(s) === want);
   } catch {
     return false;
   }
@@ -115,6 +126,16 @@ export interface CollectOptions {
   outputPath?: string;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
+  /** #10458 — `platform.config.json` (default: lido do cwd; ausente/ilegível → só a `diaria`). */
+  config?: unknown;
+}
+
+function readCwdPlatformConfig(): unknown {
+  try {
+    return JSON.parse(readFileSync(resolve(process.cwd(), "platform.config.json"), "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -130,47 +151,67 @@ export async function collectSocialFollowers(opts: CollectOptions = {}): Promise
   const outputPath = resolve(process.cwd(), opts.outputPath ?? DEFAULT_OUTPUT_PATH);
   const date = now().toISOString().slice(0, 10);
 
-  const targets: Array<{ platform: SocialPlatform; objectId: string | undefined; token: string | undefined; missingVars: string[] }> = [
+  type Target = { platform: SocialPlatform; page?: string; objectId: string | undefined; token: string | undefined; missingVars: string[] };
+  const targets: Target[] = [
     {
       platform: "instagram",
       objectId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
       token: env.INSTAGRAM_ACCESS_TOKEN,
       missingVars: ["INSTAGRAM_BUSINESS_ACCOUNT_ID", "INSTAGRAM_ACCESS_TOKEN"],
     },
-    {
-      platform: "facebook",
-      objectId: env.FACEBOOK_PAGE_ID,
-      token: env.FACEBOOK_PAGE_ACCESS_TOKEN,
-      missingVars: ["FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN"],
-    },
   ];
-
   const results: CollectResult[] = [];
+  // #10458: uma série por página do Facebook HABILITADA (só env var, como antes).
+  try {
+    const pages = resolveFacebookPages(loadFacebookPagesConfig(opts.config ?? readCwdPlatformConfig()), env);
+    for (const pg of pages.filter((p) => p.enabled)) {
+      targets.push({
+        platform: "facebook",
+        page: pg.slug,
+        objectId: pg.pageId || undefined,
+        token: pg.token || undefined,
+        missingVars: pg.missing,
+      });
+    }
+  } catch (e) {
+    results.push({ platform: "facebook", followersCount: null, error: `config de páginas inválido: ${(e as Error).message}`, written: false });
+  }
+
   for (const t of targets) {
+    const base = { platform: t.platform, ...(t.page ? { page: t.page } : {}) };
     if (!t.objectId || !t.token) {
-      results.push({ platform: t.platform, followersCount: null, error: `credencial ausente (${t.missingVars.join(", ")})`, written: false });
+      results.push({ ...base, followersCount: null, error: `credencial ausente (${t.missingVars.join(", ")})`, written: false });
       continue;
     }
-    if (hasSampleForToday(outputPath, t.platform, date)) {
-      results.push({ platform: t.platform, followersCount: null, error: null, written: false });
+    if (hasSampleForToday(outputPath, t.platform, date, t.page)) {
+      results.push({ ...base, followersCount: null, error: null, written: false });
       continue;
     }
     const { followersCount, error } = await fetchFollowersCount(fetchImpl, t.objectId, t.token);
     if (error || followersCount === null) {
-      results.push({ platform: t.platform, followersCount: null, error: error ?? "sem followers_count", written: false });
+      results.push({ ...base, followersCount: null, error: error ?? "sem followers_count", written: false });
       continue;
     }
-    const sample: SocialFollowerSample = { date, platform: t.platform, followersCount };
+    // A `diaria` omite `page` — a linha sai igual à de antes da lista de páginas.
+    const sample: SocialFollowerSample = {
+      date,
+      platform: t.platform,
+      followersCount,
+      ...(t.page && t.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? { page: t.page } : {}),
+    };
     try {
       ensureDir(outputPath);
       appendFileSync(outputPath, serializeSocialFollowerSample(sample) + "\n", "utf8");
-      results.push({ platform: t.platform, followersCount, error: null, written: true });
+      results.push({ ...base, followersCount, error: null, written: true });
     } catch (e) {
-      results.push({ platform: t.platform, followersCount, error: `falha ao gravar: ${(e as Error).message}`, written: false });
+      results.push({ ...base, followersCount, error: `falha ao gravar: ${(e as Error).message}`, written: false });
     }
   }
   return results;
 }
+
+const label = (r: CollectResult): string =>
+  r.page && r.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? `${r.platform}[${r.page}]` : r.platform;
 
 async function main(): Promise<void> {
   const results = await collectSocialFollowers();
@@ -178,11 +219,11 @@ async function main(): Promise<void> {
   for (const r of results) {
     if (r.error) {
       hadError = true;
-      console.error(`ERRO ${r.platform}: ${r.error}`);
+      console.error(`ERRO ${label(r)}: ${r.error}`);
     } else if (r.written) {
-      console.log(`OK ${r.platform}: followers_count=${r.followersCount}`);
+      console.log(`OK ${label(r)}: followers_count=${r.followersCount}`);
     } else {
-      console.log(`SKIP ${r.platform}: amostra de hoje já existe`);
+      console.log(`SKIP ${label(r)}: amostra de hoje já existe`);
     }
   }
   // Falha de 1 plataforma não é fatal (fail-soft) — mas sinaliza pro

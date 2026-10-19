@@ -28,7 +28,11 @@
  *
  * Pre-requisitos:
  *   - data/editions/{ed}/_internal/06-social-published.json (output de Etapa 4a)
- *   - FACEBOOK_PAGE_ACCESS_TOKEN no env (pra Graph API)
+ *   - credencial de cada página Facebook que aparece nas entries (#10458):
+ *     a `diaria` usa FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN (fallback
+ *     data/.fb-credentials.json); as outras, as env vars declaradas em
+ *     publishing.social.facebook.pages. /scheduled_posts é consultado POR
+ *     página, com o token dela.
  *   - DIARIA_LINKEDIN_CRON_URL + DIARIA_LINKEDIN_CRON_TOKEN no env (Worker /list)
  */
 
@@ -40,27 +44,16 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readSocialPublished, type PostEntry } from "./lib/social-published-store.ts";
+import {
+  DEFAULT_FACEBOOK_PAGE_SLUG,
+  loadResolvedFacebookPages,
+  resolveFacebookPageForEntry,
+  type ResolvedFacebookPage,
+} from "./lib/facebook-pages.ts"; // #10458
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-/**
- * Resolve FB Page ID com mesma precedência de publish-facebook.ts:
- * env FACEBOOK_PAGE_ID > data/.fb-credentials.json (legacy fallback).
- */
-function resolveFbPageId(): string {
-  const fromEnv = process.env.FACEBOOK_PAGE_ID;
-  if (fromEnv) return fromEnv;
-  try {
-    const creds = JSON.parse(
-      readFileSync(resolve(ROOT, "data/.fb-credentials.json"), "utf8"),
-    ) as { page_id?: string };
-    return creds.page_id ?? "";
-  } catch {
-    return "";
-  }
-}
 
 /**
  * Resolve URL do Worker LinkedIn com mesma precedência de publish-linkedin.ts:
@@ -93,6 +86,8 @@ export interface VerifyResult {
   external_state?: unknown;
   /** #595 — subtype do entry (main / comment_diaria / comment_pixel). */
   subtype?: string;
+  /** #10458 — página do Facebook da entry (só `platform: "facebook"`; sem `page` na entry = `diaria`). */
+  page?: string;
 }
 
 export interface VerifyReport {
@@ -504,6 +499,99 @@ export function reconcileLinkedin(
 
 // ---- Main ----
 
+/**
+ * #10458: verifica as entries do Facebook agrupadas por página. Cada página
+ * usa o próprio token e o próprio /scheduled_posts — com 2 páginas ligadas, a
+ * lista de uma não serve pra achar o post da outra (e o token de uma não lê o
+ * post da outra). Página que não está no config ou sem credencial marca só as
+ * entries DELA como unverified (`unknown_fb_page` / `missing_fb_token` /
+ * `missing_fb_page_id`); as outras seguem. Fetch injetável pra teste.
+ */
+export async function verifyFacebookEntries(
+  fbEntries: PostEntry[],
+  pages: ResolvedFacebookPage[],
+  apiVersion: string,
+  deps: {
+    fetchScheduled?: typeof fetchFbScheduledPosts;
+    fetchPost?: typeof fetchFbPostState;
+  } = {},
+): Promise<{ results: VerifyResult[]; warnings: string[] }> {
+  const fetchScheduled = deps.fetchScheduled ?? fetchFbScheduledPosts;
+  const fetchPost = deps.fetchPost ?? fetchFbPostState;
+  const results: VerifyResult[] = [];
+  const warnings: string[] = [];
+  // Agrupar preservando a ordem de 1ª aparição de cada página.
+  const bySlug = new Map<string, PostEntry[]>();
+  for (const e of fbEntries) {
+    const slug = resolveFacebookPageForEntry(e, pages).slug;
+    if (!bySlug.has(slug)) bySlug.set(slug, []);
+    bySlug.get(slug)!.push(e);
+  }
+  const unverified = (e: PostEntry, slug: string, reason: string): VerifyResult => ({
+    destaque: e.destaque,
+    platform: "facebook",
+    expected_status: e.status,
+    verified: false,
+    reason,
+    page: slug,
+  });
+  for (const [slug, entries] of bySlug) {
+    const where = slug === DEFAULT_FACEBOOK_PAGE_SLUG ? "" : ` (pagina ${slug})`;
+    const res = resolveFacebookPageForEntry(entries[0], pages);
+    if (!res.ok) {
+      if (res.reason === "unknown_fb_page") {
+        warnings.push(
+          `pagina Facebook "${slug}" nao existe em publishing.social.facebook.pages -- ` +
+            `${entries.length} FB entr${entries.length === 1 ? "y" : "ies"} marcada(s) como unverified.`,
+        );
+        for (const e of entries) results.push(unverified(e, slug, "unknown_fb_page"));
+        continue;
+      }
+      const page = pages.find((p) => p.slug === slug)!;
+      // Mantém os reasons de sempre (missing_fb_token tem precedência, como antes).
+      const reason = page.token ? "missing_fb_page_id" : "missing_fb_token";
+      warnings.push(
+        `${res.missing.join("/")} ausente${where} -- pulando verificacao Graph API. ` +
+          "FB entries serao marcadas como unverified.",
+      );
+      for (const e of entries) results.push(unverified(e, slug, reason));
+      continue;
+    }
+    const { pageId, token } = res.page;
+    let scheduledPosts: FbScheduledPost[] = [];
+    try {
+      const resp = await fetchScheduled(pageId, token, apiVersion);
+      if (resp.error) {
+        warnings.push(`/scheduled_posts${where} retornou erro: ${resp.error.message}`);
+      } else {
+        scheduledPosts = resp.data ?? [];
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`/scheduled_posts${where} falhou: ${msg}`);
+    }
+    for (const e of entries) {
+      const fbId = (e.fb_post_id as string | undefined) ?? null;
+      if (!fbId || e.status === "failed") {
+        results.push(unverified(e, slug, e.status === "failed" ? "publish_failed" : "no_fb_post_id"));
+        continue;
+      }
+      if (findScheduledMatch(fbId, scheduledPosts)) {
+        results.push({ ...reconcileFb(e, scheduledPosts), page: slug });
+        continue;
+      }
+      try {
+        const direct = await fetchPost(fbId, token, apiVersion);
+        results.push({ ...reconcileFb(e, scheduledPosts, direct), page: slug });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push(unverified(e, slug, `fetch_error: ${msg}`));
+      }
+    }
+  }
+  return { results, warnings };
+}
+
 async function main(): Promise<number | void> {
   const argv = process.argv.slice(2);
   // #2834: --strict é flag booleana incondicional no parser local original
@@ -537,87 +625,30 @@ async function main(): Promise<number | void> {
   const results: VerifyResult[] = [];
 
   // Facebook verification (#974: usar /scheduled_posts em vez de /{post_id})
-  const fbToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN ?? "";
-  const fbApiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
-  const fbPageId = resolveFbPageId();
-  if (!fbToken && fbEntries.length > 0) {
-    warnings.push(
-      "FACEBOOK_PAGE_ACCESS_TOKEN ausente -- pulando verificacao Graph API. " +
-        "FB entries serao marcadas como unverified.",
-    );
-    for (const e of fbEntries) {
-      results.push({
-        destaque: e.destaque,
-        platform: "facebook",
-        expected_status: e.status,
-        verified: false,
-        reason: "missing_fb_token",
-      });
-    }
-  } else if (!fbPageId && fbEntries.length > 0) {
-    warnings.push(
-      "FACEBOOK_PAGE_ID ausente -- nao consigo consultar /scheduled_posts. " +
-        "FB entries serao marcadas como unverified.",
-    );
-    for (const e of fbEntries) {
-      results.push({
-        destaque: e.destaque,
-        platform: "facebook",
-        expected_status: e.status,
-        verified: false,
-        reason: "missing_fb_page_id",
-      });
-    }
-  } else if (fbEntries.length > 0) {
-    let scheduledPosts: FbScheduledPost[] = [];
+  // #10458: cada entry FB é verificada com a credencial DA PÁGINA dela
+  // (sem `page` = diaria), e /scheduled_posts é consultado uma vez por página.
+  if (fbEntries.length > 0) {
+    let fbPages: ResolvedFacebookPage[] = [];
+    let fbApiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
+    let config: unknown = {};
     try {
-      const resp = await fetchFbScheduledPosts(fbPageId, fbToken, fbApiVersion);
-      if (resp.error) {
-        warnings.push(`/scheduled_posts retornou erro: ${resp.error.message}`);
-      } else {
-        scheduledPosts = resp.data ?? [];
-      }
+      config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+    } catch {
+      // config ausente/ilegível → fallback de compat do helper (só a `diaria`, env de sempre).
+    }
+    try {
+      const loaded = loadResolvedFacebookPages(ROOT, config);
+      fbPages = loaded.pages;
+      fbApiVersion = loaded.apiVersion;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      warnings.push(`/scheduled_posts falhou: ${msg}`);
+      warnings.push(`config de paginas do Facebook invalido (${msg}) -- FB entries serao marcadas como unverified.`);
     }
-
-    for (const e of fbEntries) {
-      const fbId = (e.fb_post_id as string | undefined) ?? null;
-      if (!fbId || e.status === "failed") {
-        results.push({
-          destaque: e.destaque,
-          platform: "facebook",
-          expected_status: e.status,
-          verified: false,
-          reason: e.status === "failed" ? "publish_failed" : "no_fb_post_id",
-        });
-        continue;
-      }
-      // Match na lista de scheduled. Se não achou, fallback pra GET direto
-      // (post pode ter sido publicado já, sai da queue de scheduled).
-      const match = findScheduledMatch(fbId, scheduledPosts);
-      if (match) {
-        results.push(reconcileFb(e, scheduledPosts));
-        continue;
-      }
-      try {
-        const direct = await fetchFbPostState(fbId, fbToken, fbApiVersion);
-        results.push(reconcileFb(e, scheduledPosts, direct));
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        results.push({
-          destaque: e.destaque,
-          platform: "facebook",
-          expected_status: e.status,
-          verified: false,
-          reason: `fetch_error: ${msg}`,
-        });
-      }
-    }
+    const fb = await verifyFacebookEntries(fbEntries, fbPages, fbApiVersion);
+    results.push(...fb.results);
+    warnings.push(...fb.warnings);
   }
 
-  // LinkedIn verification (#975: fallback URL pra platform.config.json)
   const workerUrl = resolveLinkedinWorkerUrl();
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   if ((!workerUrl || !workerToken) && liEntries.length > 0) {
@@ -710,7 +741,8 @@ async function main(): Promise<number | void> {
   for (const r of results) {
     const tag = r.verified ? "OK  " : "FAIL";
     const note = r.reason ? ` -- ${r.reason}` : "";
-    console.error(`  [${tag}] ${r.platform}/${r.destaque} (status=${r.expected_status})${note}`);
+    const label = r.page && r.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? `${r.platform}[${r.page}]` : r.platform;
+    console.error(`  [${tag}] ${label}/${r.destaque} (status=${r.expected_status})${note}`);
   }
   if (warnings.length > 0) {
     console.error("\nWarnings:");

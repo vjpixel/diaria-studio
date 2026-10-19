@@ -16,6 +16,7 @@ import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
+import { loadFacebookPagesConfig, type FacebookPageConfig } from "../facebook-pages.ts"; // #10458
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -84,44 +85,80 @@ function loadNewsletterBackend(): string {
 // logicamente ao Stage 5 (Publicação) onde são de fato necessárias.
 
 /**
- * `FACEBOOK_PAGE_ID` env var deve estar setada — publish-facebook usa pra postar
- * via Graph API. Nome confirmado em scripts/publish-facebook.ts:376.
+ * #10458 (follow-up): credencial das páginas do Facebook. Antes deste ajuste o
+ * check lia `FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN` direto — com a
+ * lista `publishing.social.facebook.pages` ele passa a percorrer as páginas
+ * HABILITADAS (helper único `facebook-pages.ts`) e checar a env var de cada
+ * uma (só env, como antes — o fallback `data/.fb-credentials.json` é legado).
+ *
+ * Severidade espelha a falha isolada do `publish-facebook.ts`: se pelo menos
+ * uma página habilitada tem credencial completa, a que falta é `warning` (o
+ * publisher pula só ela e segue); se nenhuma tem, é `error` (o publisher sai
+ * 1). Com a config de hoje (só `diaria` ligada) o resultado é o de sempre:
+ * `error` quando a env var da `diaria` falta. Página desligada não é checada.
  */
-function checkFbPageIdSet(): InvariantViolation[] {
-  if (!process.env.FACEBOOK_PAGE_ID || process.env.FACEBOOK_PAGE_ID.trim().length === 0) {
-    return [
-      {
-        rule: "facebook-page-id-set",
-        message:
-          "FACEBOOK_PAGE_ID env var ausente — publish-facebook vai falhar. " +
-          "Configure em .env.",
-        source_issue: "#facebook",
-        severity: "error",
-      },
-    ];
+function facebookCredentialViolations(
+  field: "page_id" | "token",
+  config: unknown,
+  env: Record<string, string | undefined>,
+): InvariantViolation[] {
+  const rule = field === "page_id" ? "facebook-page-id-set" : "facebook-token-set";
+  let pages: FacebookPageConfig[];
+  try {
+    pages = loadFacebookPagesConfig(config);
+  } catch (e) {
+    return [{ rule, message: (e as Error).message, source_issue: "#10458", severity: "error" }];
   }
-  return [];
+  const enabled = pages.filter((p) => p.enabled);
+  const has = (name: string) => (env[name] ?? "").trim().length > 0;
+  const anyComplete = enabled.some((p) => has(p.page_id_env) && has(p.token_env));
+  const out: InvariantViolation[] = [];
+  for (const p of enabled) {
+    const envVar = field === "page_id" ? p.page_id_env : p.token_env;
+    if (has(envVar)) continue;
+    out.push({
+      rule,
+      message:
+        `${envVar} ausente (página Facebook "${p.slug}") — ` +
+        (anyComplete
+          ? "publish-facebook pula só esta página, as outras seguem (#10458). Configure em .env."
+          : "publish-facebook vai falhar. Configure em .env."),
+      source_issue: "#facebook",
+      severity: anyComplete ? "warning" : "error",
+    });
+  }
+  return out;
+}
+
+/** Config lido do disco pro check (ausente/ilegível → `{}` = fallback de compat, só a `diaria`). */
+function readPlatformConfigForFacebook(): unknown {
+  try {
+    return JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 /**
- * `FACEBOOK_PAGE_ACCESS_TOKEN` deve estar setado. Nome confirmado em
- * scripts/publish-facebook.ts:377.
+ * Page ID de cada página Facebook HABILITADA deve estar no env — publish-facebook
+ * usa pra postar via Graph API (#10458: por página; a `diaria` usa `FACEBOOK_PAGE_ID`).
  */
-function checkFbTokenSet(): InvariantViolation[] {
-  if (
-    !process.env.FACEBOOK_PAGE_ACCESS_TOKEN ||
-    process.env.FACEBOOK_PAGE_ACCESS_TOKEN.trim().length === 0
-  ) {
-    return [
-      {
-        rule: "facebook-token-set",
-        message: "FACEBOOK_PAGE_ACCESS_TOKEN ausente — Facebook publishing vai falhar",
-        source_issue: "#facebook",
-        severity: "error",
-      },
-    ];
-  }
-  return [];
+function checkFbPageIdSet(
+  config: unknown = readPlatformConfigForFacebook(),
+  env: Record<string, string | undefined> = process.env,
+): InvariantViolation[] {
+  return facebookCredentialViolations("page_id", config, env);
+}
+
+/**
+ * Token de cada página Facebook HABILITADA deve estar no env (#10458: por
+ * página; a `diaria` usa `FACEBOOK_PAGE_ACCESS_TOKEN`).
+ */
+function checkFbTokenSet(
+  config: unknown = readPlatformConfigForFacebook(),
+  env: Record<string, string | undefined> = process.env,
+): InvariantViolation[] {
+  return facebookCredentialViolations("token", config, env);
 }
 
 /**
@@ -1217,14 +1254,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
   },
   {
     id: "facebook-page-id-set",
-    description: "FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch)",
+    description: "Page ID de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ID na diaria, #10458)",
     source_issue: "#facebook",
     stage: 5,
     run: () => checkFbPageIdSet(),
   },
   {
     id: "facebook-token-set",
-    description: "FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch)",
+    description: "Token de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ACCESS_TOKEN na diaria, #10458)",
     source_issue: "#facebook",
     stage: 5,
     run: () => checkFbTokenSet(),

@@ -44,6 +44,19 @@ export interface SocialFollowerSample {
   date: string;
   platform: SocialPlatform;
   followersCount: number;
+  /**
+   * #10458 — página do Facebook (`slug` de `publishing.social.facebook.pages`).
+   * Ausente = `diaria` (a página histórica; linhas gravadas antes da lista de
+   * páginas seguem valendo). Uma série por página — nunca somar 31 com ~2,8 mil
+   * na mesma linha. Só o Facebook grava; o coletor omite o campo na `diaria`.
+   */
+  page?: string;
+}
+
+/** #10458: página default de uma amostra (sem `page` = `diaria`). @pure */
+export const DEFAULT_FOLLOWER_PAGE = "diaria";
+export function followerSamplePage(s: Pick<SocialFollowerSample, "page">): string {
+  return typeof s.page === "string" && s.page ? s.page : DEFAULT_FOLLOWER_PAGE;
 }
 
 /** Resultado de parsear o JSONL inteiro — fail-soft POR LINHA (mesmo
@@ -100,7 +113,16 @@ export function parseSocialFollowersJsonl(content: string): SocialFollowersParse
       errors.push({ line: lineNo, reason: "followersCount ausente ou inválido" });
       continue;
     }
-    samples.push({ date: obj.date, platform: obj.platform, followersCount: obj.followersCount });
+    if (obj.page !== undefined && (typeof obj.page !== "string" || !obj.page)) {
+      errors.push({ line: lineNo, reason: "page presente mas não é string não vazia" });
+      continue;
+    }
+    samples.push({
+      date: obj.date,
+      platform: obj.platform,
+      followersCount: obj.followersCount,
+      ...(typeof obj.page === "string" ? { page: obj.page } : {}),
+    });
   }
   return { samples, errors };
 }
@@ -163,10 +185,13 @@ function daysBetweenDates(a: string, b: string): number {
 export function computeDailyBalances(
   samples: SocialFollowerSample[],
   platform: SocialPlatform,
+  /** #10458 — página (default `diaria`): cada página é uma série separada. */
+  page: string = DEFAULT_FOLLOWER_PAGE,
 ): DailyFollowerBalanceResult {
   const byDate = new Map<string, number>();
   for (const s of samples) {
     if (s.platform !== platform) continue;
+    if (followerSamplePage(s) !== page) continue;
     byDate.set(s.date, s.followersCount); // última ocorrência vence
   }
   const dates = [...byDate.keys()].sort();

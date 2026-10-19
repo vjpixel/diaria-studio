@@ -80,6 +80,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { appendSocialPosts, readSocialPublished, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
 import { deleteFromWorkerQueue, postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
+import { DEFAULT_FACEBOOK_PAGE_SLUG, loadResolvedFacebookPages } from "./lib/facebook-pages.ts"; // #10458
 import { dispatchEntry, type DispatchContext } from "./publish-linkedin.ts";
 import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worker-dispatch.ts";
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
@@ -833,21 +834,26 @@ async function main(): Promise<void> {
 
   const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? social.instagram?.cloudflare_worker_url ?? social.linkedin?.cloudflare_worker_url ?? "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
-  let fbCreds: { page_id?: string; page_access_token?: string; api_version?: string } = {};
-  const fbCredsPath = resolve(ROOT, "data/.fb-credentials.json");
-  if (existsSync(fbCredsPath)) {
-    try {
-      fbCreds = JSON.parse(readFileSync(fbCredsPath, "utf8"));
-    } catch (e) {
-      console.warn(`AVISO: ${fbCredsPath} existe mas não é JSON válido (${(e as Error).message}) — usando só as env vars.`);
-    }
+  // #10458: credencial via helper único (env > data/.fb-credentials.json, este
+  // só pra `diaria`). A Retrospectiva publica SÓ na página default — o state
+  // por chave `canal:historia` não tem eixo de página; outra página habilitada
+  // vira aviso, nunca post silenciosamente faltando.
+  const fbPages = loadResolvedFacebookPages(ROOT, config);
+  const fbDefault = fbPages.pages.find((p) => p.slug === DEFAULT_FACEBOOK_PAGE_SLUG);
+  const fbPageId = fbDefault?.pageId ?? "";
+  const fbToken = fbDefault?.token ?? "";
+  const fbApiVersion = fbPages.apiVersion;
+  const fbOtherEnabled = fbPages.pages.filter((p) => p.enabled && p.slug !== DEFAULT_FACEBOOK_PAGE_SLUG).map((p) => p.slug);
+  if (fbOtherEnabled.length > 0) {
+    console.warn(
+      `AVISO: página(s) Facebook habilitada(s) além da ${DEFAULT_FACEBOOK_PAGE_SLUG} (${fbOtherEnabled.join(", ")}) — ` +
+        "a Retrospectiva publica só na página default (#10458); publique nas outras à mão se quiser.",
+    );
   }
-  const fbPageId = process.env.FACEBOOK_PAGE_ID || fbCreds.page_id || "";
-  const fbToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || fbCreds.page_access_token || "";
-  const fbApiVersion = process.env.FACEBOOK_API_VERSION || fbCreds.api_version || "v25.0";
 
   const missingCredentials: Partial<Record<RetrospectivaPostChannel, string>> = {};
-  if (!fbPageId || !fbToken) missingCredentials.facebook = "FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN ausentes";
+  if (fbDefault && !fbDefault.enabled) missingCredentials.facebook = `página Facebook ${DEFAULT_FACEBOOK_PAGE_SLUG} desabilitada em platform.config.json (#10458)`;
+  else if (!fbPageId || !fbToken) missingCredentials.facebook = `${fbDefault?.missing.join("/") || "FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN"} ausentes`;
   if (!workerUrl || !workerToken) {
     // Sem o Worker não há agendamento (Instagram/Threads não agendam pela API;
     // a página LinkedIn cairia no `make_now` — publicaria AGORA).
