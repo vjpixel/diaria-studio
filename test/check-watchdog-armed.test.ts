@@ -35,8 +35,13 @@ import {
   buildWatchdogLinuxNotArmedMessage,
   buildWatchdogLinuxDisabledMessage,
   buildWatchdogLinuxCannotVerifyMessage,
+  parseTimerOnCalendar,
+  decideWatchdogScheduleStatus,
+  queryLinuxTimerOnCalendar,
+  buildWatchdogLinuxStaleScheduleMessage,
   type LinuxWatchdogArmedResult,
 } from "../scripts/lib/check-watchdog-armed.ts";
+import { buildWatchdogOnCalendar, buildWatchdogSystemdUnitFiles } from "../scripts/lib/watchdog-systemd-units.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures de output real do `schtasks /query /tn "..." /fo LIST`
@@ -593,6 +598,8 @@ describe("checkWatchdogArmed — roteamento systemd (#4857, #633)", () => {
     execModeFn: () => "local" as const,
     taskSchedulerFn: () => "systemd" as const,
     queryLinuxTimerArmedFn: () => result,
+    // #10571: nunca deixar o default (systemctl real) rodar em teste.
+    queryLinuxTimerOnCalendarFn: () => [buildWatchdogOnCalendar()],
   });
 
   it("timer armado → armed:true, action:'armed', armedStatus:'armed', sem emitir warning", () => {
@@ -655,5 +662,151 @@ describe("checkWatchdogArmed — roteamento systemd (#4857, #633)", () => {
     // "checkWatchdogArmed roteamento por agendador"). A cobertura do
     // ROTEAMENTO fica inteiramente nos testes acima, via injeção.
     assert.ok(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #10571 — timer habilitado com OnCalendar antigo não pode reportar "armed"
+// ---------------------------------------------------------------------------
+
+/** Unit REAL anterior ao #10565 (janela 18:00–09:00), como `systemctl --user cat` imprime. */
+const CAT_TIMER_PRE_10565 = [
+  "# /home/vjpixel/.config/systemd/user/diaria-overnight-watchdog.timer",
+  "[Unit]",
+  "Description=diar.ia.br: watchdog de stall overnight (#2688) (timer) — a cada 10 min, 18:00-09:00 BRT",
+  "",
+  "[Timer]",
+  "OnCalendar=*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo",
+  "Persistent=true",
+  "Unit=diaria-overnight-watchdog.service",
+  "",
+  "[Install]",
+  "WantedBy=timers.target",
+  "",
+].join("\n");
+
+describe("parseTimerOnCalendar (#10571)", () => {
+  it("extrai o OnCalendar da unit antiga", () => {
+    assert.deepEqual(parseTimerOnCalendar(CAT_TIMER_PRE_10565), [
+      "*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo",
+    ]);
+  });
+
+  it("unit gerada hoje casa com buildWatchdogOnCalendar()", () => {
+    const { timerContent } = buildWatchdogSystemdUnitFiles("/repo");
+    assert.deepEqual(parseTimerOnCalendar(timerContent), [buildWatchdogOnCalendar()]);
+  });
+
+  it("drop-in com OnCalendar= vazio zera a lista antes da nova expressão", () => {
+    const out = [
+      CAT_TIMER_PRE_10565,
+      "# /home/x/.config/systemd/user/diaria-overnight-watchdog.timer.d/override.conf",
+      "[Timer]",
+      "OnCalendar=",
+      `OnCalendar=${buildWatchdogOnCalendar()}`,
+    ].join("\n");
+    assert.deepEqual(parseTimerOnCalendar(out), [buildWatchdogOnCalendar()]);
+  });
+
+  it("comentário com OnCalendar não conta; output vazio → lista vazia", () => {
+    assert.deepEqual(parseTimerOnCalendar("# OnCalendar=foo\n; OnCalendar=bar\n"), []);
+    assert.deepEqual(parseTimerOnCalendar(""), []);
+  });
+});
+
+describe("decideWatchdogScheduleStatus (#10571)", () => {
+  it("unit antiga → stale", () => {
+    assert.equal(decideWatchdogScheduleStatus(parseTimerOnCalendar(CAT_TIMER_PRE_10565)), "stale");
+  });
+  it("expressão atual (com espaços extras) → match", () => {
+    assert.equal(decideWatchdogScheduleStatus([`  ${buildWatchdogOnCalendar().replace(" ", "   ")} `]), "match");
+  });
+  it("expressão atual + extra → match (extra só amplia cobertura)", () => {
+    assert.equal(decideWatchdogScheduleStatus(["*-*-* 03:00", buildWatchdogOnCalendar()]), "match");
+  });
+  it("leitura falhou (null) ou sem expressão → unknown (fail-soft)", () => {
+    assert.equal(decideWatchdogScheduleStatus(null), "unknown");
+    assert.equal(decideWatchdogScheduleStatus([]), "unknown");
+  });
+});
+
+describe("queryLinuxTimerOnCalendar (#10571, exec injetado)", () => {
+  it("chama systemctl --user cat <unit>.timer (só leitura) e parseia", () => {
+    const calls: Array<{ cmd: string; args: readonly string[] }> = [];
+    const exec = ((cmd: string, args: readonly string[]) => {
+      calls.push({ cmd, args });
+      return CAT_TIMER_PRE_10565;
+    }) as unknown as typeof execFileSync;
+    const r = queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec);
+    assert.deepEqual(r, ["*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo"]);
+    assert.equal(calls[0].cmd, "systemctl");
+    assert.deepEqual(calls[0].args, ["--user", "cat", watchdogTimerUnitName()]);
+  });
+
+  it("erro do systemctl → null (fail-soft)", () => {
+    const exec = (() => {
+      throw Object.assign(new Error("boom"), { status: 1 });
+    }) as unknown as typeof execFileSync;
+    assert.equal(queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec), null);
+  });
+});
+
+describe("checkWatchdogArmed — agendamento defasado (#10571, #633)", () => {
+  const base = {
+    execModeFn: () => "local" as const,
+    taskSchedulerFn: () => "systemd" as const,
+    queryLinuxTimerArmedFn: (): LinuxWatchdogArmedResult => ({ state: "armed", note: null }),
+  };
+
+  it("timer habilitado com OnCalendar pré-#10565 → armed_but_stale_schedule, not_armed_warn, emite warning", () => {
+    const emitted: string[] = [];
+    const result = checkWatchdogArmed({
+      ...base,
+      queryLinuxTimerOnCalendarFn: () => parseTimerOnCalendar(CAT_TIMER_PRE_10565),
+      emitWarn: (m) => emitted.push(m),
+    });
+    assert.equal(result.armed, false);
+    assert.equal(result.action, "not_armed_warn");
+    assert.equal(result.armedStatus, "armed_but_stale_schedule");
+    assert.match(result.message, /AGENDAMENTO DEFASADO/);
+    assert.match(result.message, /00\.\.08,18\.\.23/);
+    assert.equal(emitted.length, 1);
+  });
+
+  it("leitura do OnCalendar falha (null ou lança) → continua armed (fail-soft)", () => {
+    for (const fn of [() => null, () => { throw new Error("x"); }]) {
+      const emitted: string[] = [];
+      const result = checkWatchdogArmed({ ...base, queryLinuxTimerOnCalendarFn: fn, emitWarn: (m) => emitted.push(m) });
+      assert.equal(result.armedStatus, "armed");
+      assert.equal(result.action, "armed");
+      assert.equal(emitted.length, 0);
+    }
+  });
+
+  it("OnCalendar atual → armed", () => {
+    const result = checkWatchdogArmed({
+      ...base,
+      queryLinuxTimerOnCalendarFn: () => [buildWatchdogOnCalendar()],
+      emitWarn: () => {},
+    });
+    assert.equal(result.armedStatus, "armed");
+  });
+
+  it("timer desabilitado nem consulta o agendamento", () => {
+    let called = false;
+    const result = checkWatchdogArmed({
+      ...base,
+      queryLinuxTimerArmedFn: () => ({ state: "disabled", note: null }),
+      queryLinuxTimerOnCalendarFn: () => { called = true; return null; },
+      emitWarn: () => {},
+    });
+    assert.equal(result.armedStatus, "armed_but_disabled");
+    assert.equal(called, false);
+  });
+
+  it("mensagem cita o esperado e o comando de rearme", () => {
+    const msg = buildWatchdogLinuxStaleScheduleMessage(["*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo"]);
+    assert.ok(msg.includes(buildWatchdogOnCalendar()));
+    assert.match(msg, /daemon-reload/);
   });
 });

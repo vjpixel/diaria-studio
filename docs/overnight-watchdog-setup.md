@@ -95,6 +95,12 @@ detecta o agendador desta máquina automaticamente (`schtasks` no Windows,
 `armed_but_disabled` / `not_armed` / `cannot_verify` — o último caso (consulta
 ao `systemctl` falhou, ex: sem sessão `--user`/bus de sessão) é distinto de
 "não armado" e nunca sugere um comando de arme específico de plataforma.
+Desde o #10571, com o timer habilitado, também lê o `OnCalendar=` efetivo
+(`systemctl --user cat`, só leitura) e reporta `armed_but_stale_schedule`
+quando ele não é o que `buildWatchdogOnCalendar()` gera hoje (ex.: unit
+anterior ao #10565, janela 18:00–09:00) — rearme regenerando os units e
+rodando `daemon-reload` + `restart` do timer. Leitura que falha não rebaixa
+(`armed`, fail-soft).
 
 **Reativar** (unit presente mas desabilitado):
 

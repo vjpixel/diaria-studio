@@ -120,6 +120,7 @@ import { existsSync } from "node:fs";
 import { detectExecMode, detectTaskScheduler, type ExecMode, type TaskSchedulerKind } from "./exec-mode.ts";
 import { isMainModule } from "./cli-args.ts";
 import { unitBaseName } from "./systemd-units.ts";
+import { buildWatchdogOnCalendar } from "./watchdog-systemd-units.ts";
 
 /** Nome exato da scheduled task (Task Scheduler no Windows; base do unit systemd no Linux). */
 export const WATCHDOG_TASK_NAME = "Diaria-Overnight-Watchdog";
@@ -395,6 +396,11 @@ export type WatchdogArmedStatus =
   | "armed_but_disabled"
   | "armed_but_stale"
   | "armed_but_never_run"
+  /** #10571 (só caminho systemd): timer habilitado, mas o `OnCalendar=` efetivo
+   * não é o que `buildWatchdogOnCalendar()` gera hoje — ex.: unit antiga com a
+   * janela 18:00–09:00 anterior ao #10565, que deixa a rodada agendada sem
+   * vigia durante o dia. */
+  | "armed_but_stale_schedule"
   | "not_armed"
   | "cannot_verify";
 
@@ -629,6 +635,101 @@ export function buildWatchdogLinuxCannotVerifyMessage(note: string | null): stri
   );
 }
 
+// ---------------------------------------------------------------------------
+// Agendamento efetivo do timer (#10571) — "habilitado" ≠ "agendado certo"
+// ---------------------------------------------------------------------------
+
+/**
+ * #10571 (achado do self-review do #10565): `is-enabled` só diz que o timer
+ * existe e está habilitado, não QUANDO ele dispara. Um timer armado antes do
+ * #10565 (`OnCalendar=*-*-* 00..08,18..23:00/10:00 ...`, janela 18:00–09:00)
+ * continuava reportando `armed` com o buraco 09:00–18:00 intacto — falso-verde
+ * sobre a 2ª camada de proteção justamente na rodada agendada que passa das
+ * 09:00. Este bloco lê o `OnCalendar=` efetivo e compara com o gerador.
+ */
+
+/** Normaliza uma expressão `OnCalendar` pra comparação: trim + espaços colapsados. */
+export function normalizeOnCalendar(expr: string): string {
+  return expr.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Parser puro do output de `systemctl --user cat <unit>.timer` (arquivo
+ * principal + drop-ins, na ordem em que o systemd os aplica). Devolve a lista
+ * EFETIVA de `OnCalendar=` — uma atribuição vazia (`OnCalendar=`) zera a lista
+ * acumulada até ali, mesma semântica do systemd pra drop-ins. Linhas de
+ * comentário (`#`/`;`, inclusive o cabeçalho `# /path/do/arquivo` que o
+ * `systemctl cat` imprime) são ignoradas. Lista vazia = nenhuma expressão
+ * encontrada (o chamador trata como "não deu pra saber", fail-soft).
+ */
+export function parseTimerOnCalendar(catOutput: string): string[] {
+  let values: string[] = [];
+  for (const raw of (catOutput ?? "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#") || line.startsWith(";")) continue;
+    const m = line.match(/^OnCalendar\s*=(.*)$/);
+    if (!m) continue;
+    const v = normalizeOnCalendar(m[1]);
+    if (v === "") values = [];
+    else values.push(v);
+  }
+  return values;
+}
+
+export type WatchdogScheduleStatus = "match" | "stale" | "unknown";
+
+/**
+ * Pure: compara o `OnCalendar` efetivo com o esperado. `"unknown"` quando a
+ * leitura falhou (`null`) ou não achou expressão nenhuma — fail-soft, nunca
+ * rebaixa `armed` sem evidência positiva de divergência (mesma disciplina do
+ * #2944). `"match"` quando ALGUMA expressão efetiva é exatamente a do gerador
+ * (uma expressão extra só amplia a cobertura, não cria buraco); `"stale"`
+ * quando nenhuma é.
+ */
+export function decideWatchdogScheduleStatus(
+  effective: string[] | null,
+  expected: string = buildWatchdogOnCalendar(),
+): WatchdogScheduleStatus {
+  if (effective === null || effective.length === 0) return "unknown";
+  const want = normalizeOnCalendar(expected);
+  return effective.some((v) => normalizeOnCalendar(v) === want) ? "match" : "stale";
+}
+
+/**
+ * I/O: `systemctl --user cat <unit>.timer` — só LEITURA, nunca altera o
+ * systemd. `exec` injetável (mesmo motivo de `queryLinuxTimerArmed`).
+ * Retorna `null` em qualquer falha (fail-soft: sem dado, o status fica
+ * `"unknown"` e o `armed` do `is-enabled` prevalece).
+ */
+export function queryLinuxTimerOnCalendar(
+  taskName: string = WATCHDOG_TASK_NAME,
+  exec: typeof execFileSync = execFileSync,
+): string[] | null {
+  const unit = `${unitBaseName(taskName)}.timer`;
+  try {
+    const out = exec("systemctl", ["--user", "cat", unit], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }) as unknown as string | Buffer;
+    return parseTimerOnCalendar(typeof out === "string" ? out : String(out ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+/** Mensagem para `armedStatus: "armed_but_stale_schedule"` (#10571). */
+export function buildWatchdogLinuxStaleScheduleMessage(effective: string[], expected: string = buildWatchdogOnCalendar()): string {
+  const unit = watchdogTimerUnitName();
+  return (
+    `Watchdog overnight (#2688) unit "${unit}" está habilitada, mas com AGENDAMENTO DEFASADO ` +
+    `(OnCalendar efetivo: ${effective.map((v) => `"${v}"`).join(", ")}; esperado: "${expected}", #10565). ` +
+    `Um timer antigo pode deixar janelas sem vigia (ex.: 09:00–18:00 na janela pré-#10565) — ` +
+    `não confie nesta camada até rearmar (#10571). Regenere com: ` +
+    `npx tsx scripts/overnight/setup-watchdog-schedule-systemd.ts, copie pra ~/.config/systemd/user/ e rode: ` +
+    `systemctl --user daemon-reload && systemctl --user restart ${unit}.`
+  );
+}
+
 /**
  * `eventMessage` distingue, no run-log, "confirmei que não está armado"
  * (`"watchdog_not_armed"`, o default histórico) de "não deu pra verificar
@@ -726,6 +827,9 @@ export interface CheckWatchdogArmedOptions {
   taskSchedulerFn?: () => TaskSchedulerKind;
   emitWarn?: (message: string, eventMessage?: string) => void;
   queryLinuxTimerArmedFn?: (taskName?: string) => LinuxWatchdogArmedResult;
+  /** #10571: leitura do `OnCalendar` efetivo (default `queryLinuxTimerOnCalendar`, que roda
+   * `systemctl --user cat`). Só consultada quando o timer está `armed`. */
+  queryLinuxTimerOnCalendarFn?: (taskName?: string) => string[] | null;
 }
 
 /**
@@ -742,10 +846,31 @@ function checkWatchdogArmedSystemd(
   mode: ExecMode,
   queryLinuxTimerArmedFn: (taskName?: string) => LinuxWatchdogArmedResult,
   emitWarn: (message: string, eventMessage?: string) => void,
+  queryLinuxTimerOnCalendarFn: (taskName?: string) => string[] | null,
 ): CheckWatchdogArmedResult {
   const result = queryLinuxTimerArmedFn(WATCHDOG_TASK_NAME);
 
   if (result.state === "armed") {
+    // #10571: habilitado não basta — conferir se o agendamento é o atual.
+    // Fail-soft: leitura falhou/lançou → "unknown" → segue "armed".
+    let effective: string[] | null = null;
+    try {
+      effective = queryLinuxTimerOnCalendarFn(WATCHDOG_TASK_NAME);
+    } catch {
+      effective = null;
+    }
+    if (decideWatchdogScheduleStatus(effective) === "stale" && effective) {
+      const message = buildWatchdogLinuxStaleScheduleMessage(effective);
+      emitWarn(message);
+      return {
+        mode,
+        armed: false,
+        action: "not_armed_warn",
+        message,
+        armedStatus: "armed_but_stale_schedule",
+        taskState: null,
+      };
+    }
     return {
       mode,
       armed: true,
@@ -781,6 +906,7 @@ export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckW
     taskSchedulerFn = detectTaskScheduler,
     emitWarn = emitWarnEvent,
     queryLinuxTimerArmedFn = queryLinuxTimerArmed,
+    queryLinuxTimerOnCalendarFn = queryLinuxTimerOnCalendar,
   } = opts;
   const mode = execModeFn();
 
@@ -804,7 +930,7 @@ export function checkWatchdogArmed(opts: CheckWatchdogArmedOptions = {}): CheckW
   // cannot_verify genérico abaixo. Agora só "none" (nenhum agendador
   // reconhecido nesta máquina) cai nesse caminho.
   if (schedulerKind === "systemd") {
-    return checkWatchdogArmedSystemd(mode, queryLinuxTimerArmedFn, emitWarn);
+    return checkWatchdogArmedSystemd(mode, queryLinuxTimerArmedFn, emitWarn, queryLinuxTimerOnCalendarFn);
   }
 
   if (schedulerKind !== "windows-task-scheduler") {
