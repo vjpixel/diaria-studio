@@ -514,10 +514,13 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   cada unidade via a Fase 1 reusada, emitir no mesmo ponto que o overnight já
   documenta (unidade atingiu status terminal — merged/draft/pulada):
   ```bash
-  npx tsx scripts/log-event.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --level info \
-    --message "subagent_metrics" \
-    --details '{"unidade": "#NNNN | lote {slug}", "issues": [123], "papel": "dev-implementador | dev-fixer | ci-retry", "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "harness_usage | unavailable"}'
+  npx tsx scripts/subagent-usage-metrics.ts --edition {AAMMDD-do-dia-corrente} --agent continuo --since {início-do-dia-corrente-ISO}
   ```
+  Sempre por esse script, nunca à mão com `log-event.ts` (#10476 — rodada
+  overnight 261018d: 16 subagentes, zero eventos). `--since` é obrigatório
+  aqui: a sessão `continuo` atravessa dias, e sem a janela os subagentes de
+  ontem ainda não emitidos cairiam na edição de hoje. Evento gravado:
+  `{"unidade": "#NNNN | lote #A + #B", "issues": [123], "papel": "dev-implementador | dev-fixer | ci-retry", "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "subagent_transcript | unavailable", "agent_id": "..."}`.
   Campo `papel` obrigatório (#9875), mesma regra do overnight: um evento por
   invocação de `Agent` da unidade (`dev-implementador`, `dev-fixer`,
   `ci-retry`), nunca um só somando os três.
