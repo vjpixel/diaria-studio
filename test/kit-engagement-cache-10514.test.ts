@@ -103,6 +103,7 @@ async function run(
     isBrevoBlacklisted: async () => false,
     ingestBrevo: async (email) => void moved.push(email),
     tagKit: async () => {},
+    untagKit: async () => {},
     appendLog: () => {},
     ...extra,
   };

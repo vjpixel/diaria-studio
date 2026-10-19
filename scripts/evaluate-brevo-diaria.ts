@@ -1530,6 +1530,13 @@ export async function removeKitEnvioBrevoTag(params: {
   }
 }
 
+/** #10557 — I/O da remoção da tag `envio-brevo` (ver `removeKitEnvioBrevoTag`). */
+export interface KitEnvioBrevoTagDeps {
+  findTagId: (apiKey: string) => Promise<number | null>;
+  untag: (tagId: number, subscriberId: number, apiKey: string) => Promise<void>;
+  listTags: (subscriberId: number, apiKey: string) => Promise<KitTag[]>;
+}
+
 export interface UnsubscribeKitSemAberturaDeps {
   unsubscribe: (subscriberId: number, apiKey: string) => Promise<void>;
   /** GET singular — `state` do assinante depois do descadastro. */
@@ -1851,6 +1858,13 @@ export interface RunEvaluationParams {
   /** #10437 — injetável em teste; default = POST unsubscribe + GET singular no Kit. */
   unsubscribeKitSemAberturaDeps?: UnsubscribeKitSemAberturaDeps;
   /**
+   * #10557 — remoção da tag `envio-brevo` no Kit (promoção de um
+   * `kit-sem-abertura:` e desfazer a movimentação de quem já estava
+   * blacklisted). Injetável em teste; default = `findTagIdByName` +
+   * `untagSubscriber` + `listSubscriberTags` reais.
+   */
+  kitEnvioBrevoTagDeps?: KitEnvioBrevoTagDeps;
+  /**
    * #9835 — id do designer form de DOI do Kit (`platform.config.json` →
    * `kit.doiFormId`), usado pra reenviar o double opt-in a quem qualifica
    * por abertura mas está `inactive` no Kit (ver `shouldResendKitDoi`).
@@ -1940,10 +1954,20 @@ export interface RunEvaluationResult {
   /**
    * #10536 — contatos `kit-sem-abertura:` `emailBlacklisted` na Brevo sem
    * evento de blacklist posterior ao `added_at`: o bloqueio já existia quando
-   * o sync os moveu. O Kit NÃO é tocado (descadastro lá não tem volta); ficam
-   * `in_brevo` pra revisão manual. Disjunto de `failed`.
+   * o sync os moveu. Nunca descadastra no Kit (lá não tem volta). Desde o
+   * #10557, em `push`, a movimentação é DESFEITA (ver
+   * `kitSemAberturaBlacklistReverted`); a que não pôde ser desfeita entra
+   * também em `failed` (exit code não-zero), nunca fica só no log.
    */
   kitSemAberturaPreexistingBlacklist: number;
+  /**
+   * #10557 — subconjunto de `kitSemAberturaPreexistingBlacklist` cuja
+   * movimentação foi desfeita nesta rodada: tag `envio-brevo` removida no Kit
+   * (confirmada por releitura), contato desvinculado da lista Brevo e gravado
+   * `converted_to_kit` (motivo `kit_sem_abertura_preexisting_blacklist`). Ele
+   * volta a receber a diária pelo Kit.
+   */
+  kitSemAberturaBlacklistReverted: number;
   /**
    * #7382 — quantos contatos seriam promovidos pra Beehiiv (threshold de
    * score) mas já estavam `active` no Kit no momento da checagem: a
@@ -2119,6 +2143,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitDoiResendFormId, // #9986
     appendKitSemAberturaLog,
     unsubscribeKitSemAberturaDeps,
+    kitEnvioBrevoTagDeps,
   } = params;
   // #10437 — saída terminal na Brevo de um contato `kit-sem-abertura:` vale
   // nos DOIS lados ("sai das duas bases"): descadastra no Kit e confirma por
@@ -2159,6 +2184,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   const failedContacts: FailedContact[] = []; // #8724
   let kitAutoConfirmSkipped = 0;
   let kitSemAberturaPreexistingBlacklist = 0; // #10536
+  let kitSemAberturaBlacklistReverted = 0; // #10557
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
   let doiResent = 0; // #9835
@@ -2198,6 +2224,20 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   // #10437 — id da tag `envio-brevo`, resolvido 1x por rodada e só se algum
   // contato `kit-sem-abertura:` for promovido (`undefined` = não buscado).
   let envioBrevoTagId: number | null | undefined;
+  const removeEnvioBrevoTag = (subscriberId: number) =>
+    removeKitEnvioBrevoTag({
+      subscriberId,
+      kitApiKey,
+      resolveTagId: async () => {
+        if (envioBrevoTagId === undefined) {
+          envioBrevoTagId = kitEnvioBrevoTagDeps
+            ? await kitEnvioBrevoTagDeps.findTagId(kitApiKey!)
+            : await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME, { apiKey: kitApiKey! });
+        }
+        return envioBrevoTagId;
+      },
+      deps: kitEnvioBrevoTagDeps,
+    });
 
   for (const contact of contacts) {
     try {
@@ -2264,15 +2304,58 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           if (!isKitSemAberturaBlacklistNew(nativeState.blacklist_event_latest_at, contact.added_at)) {
             // #10536 — blacklist anterior à entrada na lista (ou sem evento
             // datado): o sync moveu alguém que a Brevo já bloqueava. Não é
-            // saída pedida pela pessoa — nunca descadastra no Kit. Fica
-            // `in_brevo`, visível no resumo, pra revisão manual (tirar a tag
-            // `envio-brevo` no Kit devolve o envio por lá).
+            // saída pedida pela pessoa — nunca descadastra no Kit.
+            // #10557 — e não pode ficar assim: a Brevo não envia pra ele e a
+            // tag `envio-brevo` o tira do segmento da diária no Kit. Desfaz a
+            // movimentação: tira a tag (releitura confirma), desvincula da
+            // lista Brevo e só então grava o store. Qualquer passo sem
+            // confirmação ⇒ fica `in_brevo` e conta em `failed` (exit code);
+            // a próxima rodada retenta (DELETE da tag já removida dá 404, a
+            // releitura decide).
             kitSemAberturaPreexistingBlacklist++;
             log(
               `warn: ${contact.email}: emailBlacklisted na Brevo, origem kit-sem-abertura, mas sem evento de blacklist ` +
                 `posterior à entrada (added_at=${contact.added_at}, último evento=${nativeState.blacklist_event_latest_at ?? "nenhum"}) — ` +
-                "blacklist pré-existente, Kit NÃO tocado (#10536). Revisar: remover a tag envio-brevo no Kit.",
+                `blacklist pré-existente: ${push ? "desfazendo a movimentação" : "a movimentação seria desfeita"} ` +
+                `(tag ${KIT_ENVIO_BREVO_TAG_NAME} removida no Kit, nunca descadastro) (#10536, #10557).`,
             );
+            if (!push) continue;
+            const removed = await removeEnvioBrevoTag(kitSemAberturaId!);
+            if (!removed.ok) {
+              log(`warn: ${contact.email} — tag ${KIT_ENVIO_BREVO_TAG_NAME} NÃO removida no Kit (${removed.reason}) — mantendo in_brevo, retenta na próxima rodada (#10557).`);
+              failed++;
+              failedContacts.push({
+                email: contact.email,
+                reason: `blacklist pré-existente: remoção da tag ${KIT_ENVIO_BREVO_TAG_NAME} não confirmada: ${removed.reason}`,
+              });
+              continue;
+            }
+            try {
+              await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+            } catch (e) {
+              log(
+                `warn: ${contact.email} — tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, mas desvincular da lista Brevo falhou ` +
+                  `(${(e as Error).message}) — mantendo in_brevo, retenta na próxima rodada (#10557).`,
+              );
+              failed++;
+              failedContacts.push({ email: contact.email, reason: `blacklist pré-existente: unlink da lista Brevo falhou: ${(e as Error).message}` });
+              continue;
+            }
+            store = applyConvertedToKit(store, contact.email, new Date().toISOString(), "kit_sem_abertura_preexisting_blacklist");
+            kitSemAberturaBlacklistReverted++;
+            try {
+              appendKitSemAberturaLog?.(
+                formatKitSemAberturaLogLine({
+                  ts: new Date().toISOString(),
+                  event: "kit_tag_removed_preexisting_blacklist",
+                  email: normalizeEmail(contact.email),
+                  kit_subscriber_id: kitSemAberturaId!,
+                  step: "evaluate",
+                }),
+              );
+            } catch (e) {
+              log(`aviso: ${contact.email} — falha ao gravar o log kit-sem-abertura (${(e as Error).message}); reversão já confirmada.`);
+            }
             continue;
           }
           const exitReason = nativeState.userUnsubscribed
@@ -2705,16 +2788,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // seletor (`selectKitSemAbertura`) exclui quem já passou pelo store
         // — por isso ele não volta pra Brevo na rodada seguinte, mesmo com
         // 0 aberturas no Kit (armadilha 6).
-        const removed = await removeKitEnvioBrevoTag({
-          subscriberId: kitSemAberturaId!,
-          kitApiKey,
-          resolveTagId: async () => {
-            if (envioBrevoTagId === undefined) {
-              envioBrevoTagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME, { apiKey: kitApiKey! });
-            }
-            return envioBrevoTagId;
-          },
-        });
+        const removed = await removeEnvioBrevoTag(kitSemAberturaId!);
         if (!removed.ok) {
           log(`warn: ${contact.email} — tag ${KIT_ENVIO_BREVO_TAG_NAME} NÃO removida no Kit (${removed.reason}) — mantendo in_brevo (#10437).`);
           failed++;
@@ -3052,6 +3126,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     failed,
     kitAutoConfirmSkipped,
     kitSemAberturaPreexistingBlacklist,
+    kitSemAberturaBlacklistReverted,
     skippedActiveOnKit,
     awaitingKitConfirmation,
     doiResent,
@@ -3198,7 +3273,8 @@ async function main(): Promise<number> {
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
-      `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada (Kit não tocado, revisar à mão, #10536), ` +
+      `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada ` +
+      `(${result.kitSemAberturaBlacklistReverted} devolvido(s) ao Kit, tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, #10536/#10557), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +

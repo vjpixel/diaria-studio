@@ -229,7 +229,13 @@ export interface BrevoDiariaContact {
      * mantido como união distinta (não reaproveitado de outro) porque o
      * mecanismo que grava (guard de exclusão pré-dispatch) é distinto de
      * todos os outros callers de `apply*` deste módulo. */
-    | "converted_to_kit";
+    | "converted_to_kit"
+    /** #10557 — também status `converted_to_kit`, mas por DESFAZER a
+     * movimentação Kit→Brevo (#10437) de um contato `kit-sem-abertura:` que
+     * já estava `emailBlacklisted` na Brevo antes de entrar na lista (#10536):
+     * a Brevo nunca o alcançaria, então a tag `envio-brevo` é removida no Kit
+     * (confirmada por releitura) e ele volta a receber a diária por lá. */
+    | "kit_sem_abertura_preexisting_blacklist";
 }
 
 export interface BrevoDiariaStore {
@@ -480,12 +486,14 @@ export function applyConvertedToKit(
   store: BrevoDiariaStore,
   email: string,
   now: string = new Date().toISOString(),
+  /** #10557 — motivo; default `converted_to_kit` (guard #6485). */
+  reason: Extract<BrevoDiariaContact["resolution_reason"], "converted_to_kit" | "kit_sem_abertura_preexisting_blacklist"> = "converted_to_kit",
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
   return {
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "in_brevo") return c;
-      return { ...c, status: "converted_to_kit", converted_to_kit_at: now, resolution_reason: "converted_to_kit" };
+      return { ...c, status: "converted_to_kit", converted_to_kit_at: now, resolution_reason: reason };
     }),
   };
 }
