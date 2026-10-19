@@ -13,7 +13,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -23,8 +23,10 @@ import {
   WRITER_INPUTS_CUTOVER_EDITION,
   WRITER_INPUTS_FILE,
   buildWriterInputsRecord,
+  checkWriterInputSnapshots,
   findWriterInputGaps,
   readWriterInputsRecord,
+  writeWriterInputsRecord,
 } from "../scripts/lib/writer-inputs-record.ts";
 import { collectSignals, signalsFromWriterInputs } from "../scripts/collect-edition-signals.ts";
 
@@ -72,15 +74,18 @@ describe("02-writer-inputs.json (#9648)", () => {
       assert.equal(rec.recorded_at, "2026-10-04T23:59:00.000Z");
       assert.equal(rec.approved_path, "_internal/01-approved-capped.json");
       assert.equal(rec.min_source_text_bytes, MIN_SOURCE_TEXT_BYTES);
+      assert.equal(rec.highlight_count, 3);
+      assert.equal(rec.history, undefined, "1ª gravação não tem histórico");
       assert.equal(rec.destaques.length, 3);
       for (const [i, d] of rec.destaques.entries()) {
         const src = readFileSync(join(ed, "_internal", "fact-check-sources", `d${i + 1}.txt`));
         assert.equal(d.destaque, i + 1);
         assert.equal(d.url, urls[i]);
         assert.equal(d.source_text_path, `_internal/fact-check-sources/d${i + 1}.txt`);
-        assert.equal(d.snapshot_path, `_internal/02-writer-inputs/d${i + 1}.txt`);
+        const sha = createHash("sha256").update(src).digest("hex");
+        assert.equal(d.snapshot_path, `_internal/02-writer-inputs/d${i + 1}-${sha.slice(0, 12)}.txt`);
         assert.equal(d.bytes, src.length);
-        assert.equal(d.sha256, createHash("sha256").update(src).digest("hex"));
+        assert.equal(d.sha256, sha);
         assert.equal(d.status, "ok");
         assert.equal(d.error, null);
         assert.deepEqual(readFileSync(join(ed, d.snapshot_path)), src);
@@ -95,7 +100,8 @@ describe("02-writer-inputs.json (#9648)", () => {
     try {
       await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true });
       const before = readFileSync(recordPath(ed), "utf8");
-      const snapBefore = readFileSync(join(ed, "_internal", "02-writer-inputs", "d2.txt"), "utf8");
+      const snap2 = join(ed, JSON.parse(before).destaques[1].snapshot_path);
+      const snapBefore = readFileSync(snap2, "utf8");
 
       // Editor troca D2 no gate 4 → manifest.json e d{1,2,3}.txt são apagados e re-baixados.
       writeApproved(ed, ["https://ex.com/a", "https://ex.com/NOVO", "https://ex.com/c"]);
@@ -107,7 +113,7 @@ describe("02-writer-inputs.json (#9648)", () => {
       assert.equal(manifest[1].url, "https://ex.com/NOVO");
 
       assert.equal(readFileSync(recordPath(ed), "utf8"), before, "registro do Stage 2 intocado");
-      assert.equal(readFileSync(join(ed, "_internal", "02-writer-inputs", "d2.txt"), "utf8"), snapBefore);
+      assert.equal(readFileSync(snap2, "utf8"), snapBefore);
       assert.match(snapBefore, /ex\.com\/b/);
     } finally {
       rmSync(ed, { recursive: true, force: true });
@@ -134,7 +140,8 @@ describe("02-writer-inputs.json (#9648)", () => {
       assert.equal(rec.destaques[2].source_text_path, null);
       assert.equal(rec.destaques[2].sha256, null);
       assert.match(rec.destaques[2].error, /451/);
-      assert.equal(existsSync(join(ed, "_internal", "02-writer-inputs", "d3.txt")), false);
+      assert.equal(rec.destaques[2].snapshot_path, null);
+      assert.ok(!readdirSync(join(ed, "_internal", "02-writer-inputs")).some((f) => f.startsWith("d3")));
 
       const sigs = signalsFromWriterInputs(readWriterInputsRecord(ed));
       assert.equal(sigs.length, 1);
@@ -248,10 +255,10 @@ describe("02-writer-inputs.json (#9648)", () => {
     const approvedPath = join(ed, "_internal", "01-approved-capped.json");
     try {
       const baseline = await refreshDestaqueSources(ed, { fetchImpl: fakeFetch({ blocked: [urls[1]] }), approvedPath });
-      // Diretório no lugar do JSON: writeFileSync lança EISDIR. (Um ARQUIVO em
-      // `02-writer-inputs/` não serve: o build faz rmSync recursivo antes do
-      // mkdir e o apagaria.)
-      mkdirSync(recordPath(ed));
+      // Arquivo no lugar do diretório das cópias: mkdirSync lança EEXIST/ENOTDIR.
+      // (Diretório no lugar do JSON não serve mais: registro ilegível é
+      // renomeado pra `.corrupt-*` e o novo é gravado.)
+      writeFileSync(join(ed, "_internal", "02-writer-inputs"), "não sou diretório");
       const r = await refreshDestaqueSources(ed, {
         fetchImpl: fakeFetch({ blocked: [urls[1]] }),
         approvedPath,
@@ -261,7 +268,7 @@ describe("02-writer-inputs.json (#9648)", () => {
       assert.deepEqual(r.sources, baseline.sources);
       assert.deepEqual(r.failed, [2]);
       assert.equal(r.writer_inputs, undefined);
-      assert.match(r.writer_inputs_error ?? "", /EISDIR|illegal operation/i);
+      assert.match(r.writer_inputs_error ?? "", /EEXIST|ENOTDIR|not a directory|file already exists/i);
 
       const events = readFileSync(join(root, "data", "run-log.jsonl"), "utf8")
         .trim()
@@ -298,6 +305,146 @@ describe("02-writer-inputs.json (#9648)", () => {
 
       assert.deepEqual(gapKinds(await mk("261001", true)), [], "pré-cutover = edição antiga");
       assert.deepEqual(gapKinds(await mk("261020", false)), [], "sem manifest = Stage 2 nem baixou fontes");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("02-writer-inputs.json — imutável + check de auditabilidade (#9648, resíduo itens 1 e 2)", () => {
+  it("re-record COM a flag depois de troca no Stage 4 empilha a gravação anterior em history[] e preserva a cópia antiga", async () => {
+    const ed = setup(["https://ex.com/a", "https://ex.com/b", "https://ex.com/c"], "01-approved.json");
+    try {
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true, now: new Date("2026-10-18T10:00:00Z") });
+      const first = JSON.parse(readFileSync(recordPath(ed), "utf8"));
+      const oldSnap = join(ed, first.destaques[1].snapshot_path);
+      const oldText = readFileSync(oldSnap, "utf8");
+
+      // Troca no Stage 4 e depois um re-run do passo 0 do Stage 2 (ex.: `/diaria-2-escrita social`).
+      writeApproved(ed, ["https://ex.com/a", "https://ex.com/NOVO", "https://ex.com/c"]);
+      await refreshDestaqueSources(ed, {
+        fetchImpl: fakeFetch({ tag: "v2 " }),
+        recordWriterInputs: true,
+        now: new Date("2026-10-18T12:00:00Z"),
+      });
+
+      const rec = JSON.parse(readFileSync(recordPath(ed), "utf8"));
+      assert.equal(rec.recorded_at, "2026-10-18T12:00:00.000Z");
+      assert.equal(rec.destaques[1].url, "https://ex.com/NOVO");
+      assert.equal(rec.history.length, 1, "gravação do Stage 2 original preservada");
+      assert.equal(rec.history[0].recorded_at, "2026-10-18T10:00:00.000Z");
+      assert.equal(rec.history[0].destaques[1].url, "https://ex.com/b");
+      assert.equal(rec.history[0].schema_version, undefined);
+      assert.equal(readFileSync(oldSnap, "utf8"), oldText, "cópia do texto antigo intocada");
+      assert.notEqual(rec.destaques[1].snapshot_path, first.destaques[1].snapshot_path);
+      assert.deepEqual(checkWriterInputSnapshots(ed, rec), []);
+
+      // 3ª gravação: a cadeia cresce, nunca encolhe.
+      writeApproved(ed, ["https://ex.com/a", "https://ex.com/NOVO2", "https://ex.com/c"]);
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true, now: new Date("2026-10-18T13:00:00Z") });
+      const rec3 = JSON.parse(readFileSync(recordPath(ed), "utf8"));
+      assert.deepEqual(
+        rec3.history.map((h: { recorded_at: string }) => h.recorded_at),
+        ["2026-10-18T10:00:00.000Z", "2026-10-18T12:00:00.000Z"],
+      );
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("re-record com os mesmos insumos é no-op (mantém recorded_at original, sem history)", async () => {
+    const ed = setup(["https://ex.com/a", "https://ex.com/b"], "01-approved.json");
+    try {
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true, now: new Date("2026-10-18T10:00:00Z") });
+      const before = readFileSync(recordPath(ed), "utf8");
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true, now: new Date("2026-10-18T11:00:00Z") });
+      assert.equal(readFileSync(recordPath(ed), "utf8"), before);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("registro anterior corrompido é preservado ao lado, nunca sobrescrito", () => {
+    const ed = mkdtempSync(join(tmpdir(), "writer-inputs-9648-"));
+    try {
+      mkdirSync(join(ed, "_internal"), { recursive: true });
+      writeFileSync(recordPath(ed), "{nao json");
+      const txt = join(ed, "_internal", "src.txt");
+      writeFileSync(txt, LONG);
+      const rec = buildWriterInputsRecord(ed, [{ destaque: 1, url: "https://ex.com/a", path: txt }], {
+        now: new Date("2026-10-18T10:00:00Z"),
+      });
+      writeWriterInputsRecord(ed, rec);
+      const kept = readdirSync(join(ed, "_internal")).filter((f) => f.startsWith("02-writer-inputs.corrupt-"));
+      assert.equal(kept.length, 1);
+      assert.equal(readFileSync(join(ed, "_internal", kept[0]), "utf8"), "{nao json");
+      assert.equal(readWriterInputsRecord(ed).kind, "ok");
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("check: destaque do approved sem entrada no registro vira gap `unrecorded`", () => {
+    const ed = mkdtempSync(join(tmpdir(), "writer-inputs-9648-"));
+    try {
+      mkdirSync(join(ed, "_internal"), { recursive: true });
+      const txt = join(ed, "_internal", "src.txt");
+      writeFileSync(txt, LONG);
+      const rec = buildWriterInputsRecord(ed, [{ destaque: 1, url: "https://ex.com/a", path: txt }], { highlightCount: 3 });
+      assert.deepEqual(
+        findWriterInputGaps(rec).map((g) => [g.destaque, g.status]),
+        [
+          [2, "unrecorded"],
+          [3, "unrecorded"],
+        ],
+      );
+      const sigs = signalsFromWriterInputs({ kind: "ok", record: rec });
+      assert.equal(sigs.length, 1);
+      assert.match(sigs[0].title, /D2 \(sem registro\)/);
+      // Registro legado (sem highlight_count) não inventa gap.
+      const { highlight_count: _hc, ...legacy } = rec;
+      assert.deepEqual(findWriterInputGaps(legacy), []);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("check: cópia congelada apagada ou alterada vira signal de registro não auditável", async () => {
+    const ed = setup(["https://ex.com/a", "https://ex.com/b", "https://ex.com/c"], "01-approved.json");
+    try {
+      await refreshDestaqueSources(ed, { fetchImpl: fakeFetch(), recordWriterInputs: true });
+      const rec = JSON.parse(readFileSync(recordPath(ed), "utf8"));
+      unlinkSync(join(ed, rec.destaques[0].snapshot_path));
+      writeFileSync(join(ed, rec.destaques[2].snapshot_path), "adulterado");
+      assert.deepEqual(
+        checkWriterInputSnapshots(ed, rec).map((i) => [i.destaque, i.problem]),
+        [
+          [1, "snapshot-ausente"],
+          [3, "hash-divergente"],
+        ],
+      );
+      const sigs = collectSignals({ rootDir: ed, editionDir: ed, edition: "261019" }).signals.filter(
+        (s) => s.kind === "writer_source_text_gap",
+      );
+      assert.equal(sigs.length, 1);
+      assert.match(sigs[0].title, /não auditável: D1 \(cópia ausente\), D3 \(hash divergente\)/);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
+  it("check: registro ausente pós-cutover acusa mesmo com fact-check-sources/ esvaziado, se o Stage 2 escreveu os destaques", () => {
+    const root = mkdtempSync(join(tmpdir(), "writer-inputs-9648-root-"));
+    try {
+      const ed = join(root, "data", "editions", "2610", "261016");
+      mkdirSync(join(ed, "_internal", "fact-check-sources"), { recursive: true });
+      const gaps = () =>
+        collectSignals({ rootDir: root, editionDir: ed }).signals.filter((s) => s.kind === "writer_source_text_gap");
+      assert.deepEqual(gaps(), [], "sem manifest e sem drafts = Stage 2 não rodou");
+      writeFileSync(join(ed, "_internal", "02-d1-draft.md"), "**DESTAQUE 1 | X**\n");
+      const sigs = gaps();
+      assert.equal(sigs.length, 1);
+      assert.match(sigs[0].title, /ausente/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
