@@ -23,7 +23,10 @@
  *   npx tsx scripts/mark-retrospectiva-channel.ts --cycle 2609-10 --sync-email
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { isMainModule, getStringArg, hasFlag } from "./lib/cli-args.ts";
+import { loadResolvedFacebookPages } from "./lib/facebook-pages.ts";
 import { monthlyDir, requireMonthlyCycleArg } from "./lib/mensal/monthly-paths.ts";
 import { readApoiadoresState } from "./lib/mensal/monthly-apoiadores-state.ts";
 import { buildDoneChannelState, buildFailedChannelState, withChannelState } from "./lib/artigo-especial-state.ts";
@@ -34,6 +37,7 @@ import {
   isRetrospectivaStateKey,
   normalizeRetrospectivaStateKey,
   retrospectivaDivulgacaoStatePath,
+  retrospectivaFacebookPageSlug,
   readRetrospectivaDivulgacaoState,
   writeRetrospectivaDivulgacaoState,
 } from "./lib/mensal/retrospectiva-divulgacao.ts";
@@ -41,6 +45,30 @@ import {
 /** Canal fixo ou post do Facebook numa página não-default (`facebook@{slug}:d{N}`, #10458). */
 function isChannel(v: string): v is RetrospectivaStateKey {
   return isRetrospectivaStateKey(v);
+}
+
+/**
+ * Pura (#10503 item 3): o slug de `facebook@{slug}:d{N}` existe em
+ * `publishing.social.facebook.pages`? Devolve o slug desconhecido, ou `null`
+ * (chave sem página, ou página conhecida). Sem isto um typo
+ * (`facebook@memlab:d1 --status done`) gravava chave órfã e a página real
+ * seguia `pending` — o publisher agendaria o post de novo.
+ */
+export function unknownFacebookPageInChannel(channel: string, knownSlugs: readonly string[]): string | null {
+  const slug = retrospectivaFacebookPageSlug(channel);
+  return slug !== null && !knownSlugs.includes(slug) ? slug : null;
+}
+
+const ROOT = resolve(import.meta.dirname, "..");
+
+function configuredFacebookPageSlugs(root: string): string[] {
+  let config: unknown = {};
+  try {
+    config = JSON.parse(readFileSync(resolve(root, "platform.config.json"), "utf8"));
+  } catch {
+    // config ausente/ilegível → fallback de compat do helper (só a `diaria`).
+  }
+  return loadResolvedFacebookPages(root, config).pages.map((p) => p.slug);
 }
 
 export interface MarkRetrospectivaChannelOptions {
@@ -125,6 +153,15 @@ function main(): void {
   if (!isChannel(channelArg)) {
     console.error(
       `--channel inválido: "${channelArg}" — esperado um de {${RETROSPECTIVA_DIVULGACAO_CHANNELS.join(", ")}}, ou facebook@{página}:d{1,2,3} (#10458).`,
+    );
+    process.exit(2);
+  }
+  const knownSlugs = configuredFacebookPageSlugs(ROOT);
+  const unknownSlug = unknownFacebookPageInChannel(channelArg, knownSlugs);
+  if (unknownSlug !== null) {
+    console.error(
+      `--channel inválido: página Facebook "${unknownSlug}" não existe em publishing.social.facebook.pages ` +
+        `(tem: ${knownSlugs.join(", ")}) — nada gravado (#10503).`,
     );
     process.exit(2);
   }
