@@ -455,7 +455,7 @@ O prompt do subagente inclui, obrigatoriamente:
      --message "ci_timeout" \
      --details '{"pr": {N}, "unidade": "#NNNN | lote {slug}", "elapsed_min": 30, "last_status": "pending"}'
    ```
-   Emitir `ci_timeout` e aplicar a regra hard são a mesma ação — acontecem ao cruzar os 30 min. Registrar `ci_timeout` no relatório.
+   Emitir `ci_timeout` e aplicar a regra hard são a mesma ação — acontecem ao cruzar os 30 min. Registrar `ci_timeout` no relatório. **Exceção — fila de runner (#10578):** tempo com checks ainda `QUEUED` (nenhum runner pegou o job) não conta pros 30 min; o helper estende o prazo por esse tempo até o teto absoluto do helper (`queue_ceiling_secs`, default 3600s) e, se estourar ainda em fila, sai com **exit 7 (FILA)** — não é CI vermelho nem `ci_timeout`: reaguardar com nova chamada do helper.
 
    **Retry de GitHub API (#2383):** qualquer chamada ao GitHub (graphql, REST, `gh pr merge`, `gh pr checks`) que retornar **401 ou 429** (erros transitórios de autenticação ou rate-limit) **não deve ser tratada imediatamente como falha**. O coordenador tenta ao menos 3 vezes com backoff exponencial (30 s, 60 s, 120 s) antes de tratar como falha permanente ou emitir halt banner. Em cada tentativa, emitir:
    ```bash
