@@ -35,9 +35,10 @@
  *
  * `--record-writer-inputs` (#9648, SÓ no Stage 2): grava também
  * `_internal/02-writer-inputs.json` + cópia de cada texto em
- * `_internal/02-writer-inputs/d{N}.txt` — o registro do que cada
+ * `_internal/02-writer-inputs/d{N}-{sha12}.txt` — o registro do que cada
  * writer-destaque recebeu, que as trocas do Stage 4 (que rodam este script
- * SEM a flag) não sobrescrevem. Ver `scripts/lib/writer-inputs-record.ts`.
+ * SEM a flag) não sobrescrevem; re-rodar COM a flag empilha a gravação
+ * anterior em `history[]`, nunca a apaga. Ver `scripts/lib/writer-inputs-record.ts`.
  *
  * Exit codes:
  *   0 — cache em dia (após refresh, ou já estava em dia no --check)
@@ -144,7 +145,11 @@ export async function refreshDestaqueSources(
     // Fail-soft: o registro é auditoria — falha ao gravá-lo nunca derruba o
     // download das fontes nem o dispatch dos writers. Vira `error` no stdout.
     try {
-      const record = buildWriterInputsRecord(editionDir, sources, { approvedPath, now: opts.now });
+      const record = buildWriterInputsRecord(editionDir, sources, {
+        approvedPath,
+        now: opts.now,
+        highlightCount: highlightSourceUrls(approved).length,
+      });
       result.writer_inputs = { path: writeWriterInputsRecord(editionDir, record), gaps: findWriterInputGaps(record) };
     } catch (e) {
       const msg = (e as Error).message;
