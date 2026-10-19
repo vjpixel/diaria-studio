@@ -536,11 +536,15 @@ export function readDiariaBroadcastRegistry(editionsRootAbs: string): DiariaBroa
   return dedupeBroadcastRecords(out);
 }
 
-async function listKitActiveCandidates(log: (msg: string) => void): Promise<KitActiveCandidate[]> {
+async function listKitActiveCandidates(
+  log: (msg: string) => void,
+  pace: () => Promise<void>,
+): Promise<KitActiveCandidate[]> {
   const out: KitActiveCandidate[] = [];
   let semEmail = 0;
   let after: string | undefined;
   for (let page = 0; page < 200; page++) {
+    await pace();
     const res = await listSubscribers({ status: "active", include: ["tags"], perPage: 500, after });
     for (const s of res.subscribers as (typeof res.subscribers[number] & { fields?: Record<string, string | null> })[]) {
       if (typeof s.email_address !== "string" || s.email_address.trim() === "") {
@@ -585,19 +589,23 @@ async function ingestWithOrigin(apiKey: string, listId: number, email: string): 
   }
 }
 
-async function tagAndConfirm(tagId: number, subscriberId: number): Promise<void> {
+async function tagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
+  await pace();
   await tagSubscriber(tagId, subscriberId);
+  await pace();
   const tags = await listSubscriberTags(subscriberId);
   if (!tags.some((t) => t.id === tagId)) throw new Error(`releitura das tags não mostra a tag ${tagId} (2xx não é prova)`);
 }
 
 /**
- * Intervalo mínimo entre requisições ao /subscribers/filter. O Kit limita a
- * ~120 req/60s por chave; a releitura percorre todo broadcast maduro (3 eixos,
- * paginados), e sem espaçamento a 1ª rodada real estourou 429 após o retry
- * padrão do kitFetch (dry-run de 19/10, 36 broadcasts).
+ * Intervalo mínimo entre TODAS as requisições ao Kit deste processo (listagem
+ * de ativos, releitura de engajamento, GET singular, tag + releitura). O Kit
+ * limita a ~120 req/60s por chave; a releitura percorre todo broadcast maduro
+ * (3 eixos, paginados), e sem espaçamento a 1ª rodada real estourou 429 após o
+ * retry padrão do kitFetch (dry-run de 19/10, 36 broadcasts). 750ms dá ~80
+ * req/min: folga para outra task na mesma chave (o pacer é por processo).
  */
-export const KIT_ENGAGEMENT_MIN_INTERVAL_MS = 600;
+export const KIT_MIN_INTERVAL_MS = 750;
 
 async function fetchDeliveredEngagement(
   id: number,
@@ -667,24 +675,28 @@ async function main(): Promise<void> {
   }
   const listId = brevo.list_id as number;
 
-  const engagementPacer = createRequestPacer(KIT_ENGAGEMENT_MIN_INTERVAL_MS);
+  const kitPacer = createRequestPacer(KIT_MIN_INTERVAL_MS);
   const result = await runKitSemAberturaSync(cfg, { push, maxAdd, sendDay }, {
     nowMs: Date.now(),
     log,
     readRegistry: () => readDiariaBroadcastRegistry(resolve(ROOT, editionsRoot())),
-    listKitActive: () => listKitActiveCandidates(log),
-    fetchEngagement: (id) => fetchDeliveredEngagement(id, log, engagementPacer),
-    findEnvioBrevoTagId: () => findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME),
+    listKitActive: () => listKitActiveCandidates(log, kitPacer),
+    fetchEngagement: (id) => fetchDeliveredEngagement(id, log, kitPacer),
+    findEnvioBrevoTagId: async () => {
+      await kitPacer();
+      return findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME);
+    },
     readStore: () => readStore(DEFAULT_STORE_PATH),
     writeStore: (s) => writeStore(s, DEFAULT_STORE_PATH),
     rolloutPaused: () => readRolloutGuardrailState(undefined, log).rollout_paused,
     transactionalOnSendDay: async (day) => (await fetchAccountQuotaSnapshot(apiKey, day)).transactionalRequestsOnSendDay,
     getApoioNivel: async (id) => {
+      await kitPacer();
       const s = await getSubscriberById(id);
       return s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY] ?? null;
     },
     ingestBrevo: (email) => ingestWithOrigin(apiKey, listId, email),
-    tagKit: (tagId, id) => tagAndConfirm(tagId, id),
+    tagKit: (tagId, id) => tagAndConfirm(tagId, id, kitPacer),
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line),
   });
   log(result.summary);

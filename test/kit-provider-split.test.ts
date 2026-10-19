@@ -509,7 +509,26 @@ describe("createRequestPacer (#10437)", () => {
     await pace();
     t += 700;
     await pace();
-    assert.deepEqual(waits, [500]);
+    t += 100;
+    t += 300;
+    await pace();
+    assert.deepEqual(waits, [500, 200]);
+  });
+
+  it("serializa chamadas concorrentes (nenhuma libera junto com outra)", async () => {
+    let t = 0;
+    const releases: number[] = [];
+    const pace = createRequestPacer(600, {
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    await Promise.all([0, 1, 2].map(async () => {
+      await pace();
+      releases.push(t);
+    }));
+    assert.deepEqual(releases, [0, 600, 1200]);
   });
 
   it("fetchAudience chama beforeRequest antes de CADA página", async () => {
