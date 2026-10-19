@@ -21,6 +21,7 @@
  *   | `email`           | `mark-retrospectiva-channel.ts --sync-email` (deriva do state do publisher) |
  *   | `{linkedin_pagina,facebook,instagram,threads}:d{1,2,3}` | `publish-retrospectiva-social.ts` (#9508) |
  *   | `x:d{1,2,3}`      | `mark-retrospectiva-channel.ts` (Buffer MCP, top-level)   |
+ *   | `facebook@{página}:d{1,2,3}` | `publish-retrospectiva-social.ts` — páginas Facebook além da `diaria` (#10458) |
  *
  * #9508: um post por (rede × história). As chaves sem sufixo `linkedin_pagina`
  * (post único da página, #9474) e `facebook`/`instagram`/`threads`/`x` (post
@@ -43,6 +44,7 @@ import { writeFileAtomic } from "../atomic-write.ts";
 import { parseChannelStates, type ChannelState } from "../artigo-especial-state.ts";
 import { DIARIA_RETROSPECTIVA_URL } from "../canonical-urls.ts";
 import { mensalPathFromCycle } from "../shared/retrospectiva-path.ts";
+import { DEFAULT_FACEBOOK_PAGE_SLUG } from "../social-published-store.ts";
 import type { ApoiadoresState } from "./monthly-apoiadores-state.ts";
 
 /** #9508: as 3 histórias da retrospectiva (DESTAQUE 1/2/3 do `draft.md`) — um post por rede para cada. */
@@ -62,6 +64,38 @@ export function retrospectivaPostKey(channel: RetrospectivaPostChannel, historia
 export const RETROSPECTIVA_POST_KEYS: readonly RetrospectivaPostKey[] = RETROSPECTIVA_POST_CHANNELS.flatMap((ch) =>
   RETROSPECTIVA_HISTORIAS.map((h) => retrospectivaPostKey(ch, h)),
 );
+
+/**
+ * #10458: o Facebook publica em cada página habilitada de
+ * `publishing.social.facebook.pages` (`scripts/lib/facebook-pages.ts`). O
+ * post de uma página é `facebook@{slug}:d{N}` — tanto no `--skip`/`--force`/
+ * `--old-cancelled` (ALVO) quanto no state. Exceção de compat: a página
+ * default (`diaria`) grava o state na chave de sempre, `facebook:d{N}` (ciclos
+ * anteriores ao #10458 seguem válidos); o alvo `facebook@diaria:d{N}` mira só
+ * ela. O token sem página (`facebook`, `facebook:d{N}`) cobre TODAS as páginas.
+ */
+export type RetrospectivaFacebookPageKey = `facebook@${string}:${RetrospectivaHistoria}`;
+
+/** Chave de post por página: `facebook@{slug}:d{N}` (slug no formato de `facebook-pages.ts`). */
+export const RETROSPECTIVA_FACEBOOK_PAGE_KEY_RE = /^facebook@([a-z0-9][a-z0-9-]*):(d[123])$/;
+
+/** Pura: alvo de CLI de um post do Facebook numa página (`facebook@memelab:d2`). */
+export function retrospectivaFacebookPageTarget(slug: string, historia: RetrospectivaHistoria): RetrospectivaFacebookPageKey {
+  return `facebook@${slug}:${historia}`;
+}
+
+/** Pura: chave de STATE de um post do Facebook numa página — a default fica em `facebook:d{N}` (compat). */
+export function retrospectivaFacebookStateKey(
+  slug: string,
+  historia: RetrospectivaHistoria,
+): RetrospectivaPostKey | RetrospectivaFacebookPageKey {
+  return slug === DEFAULT_FACEBOOK_PAGE_SLUG ? retrospectivaPostKey("facebook", historia) : retrospectivaFacebookPageTarget(slug, historia);
+}
+
+/** Pura: slug da página de um alvo `facebook@{slug}:d{N}`, ou `null` se não for um. */
+export function retrospectivaFacebookPageSlug(key: string): string | null {
+  return RETROSPECTIVA_FACEBOOK_PAGE_KEY_RE.exec(key)?.[1] ?? null;
+}
 
 export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
   "pagina",
@@ -84,9 +118,26 @@ export const RETROSPECTIVA_DIVULGACAO_CHANNELS = [
 /** Derivado da lista (nunca mantido à mão em paralelo): canal fora dela seria descartado em silêncio pelo `parseChannelStates`. */
 export type RetrospectivaDivulgacaoChannel = (typeof RETROSPECTIVA_DIVULGACAO_CHANNELS)[number];
 
+/** Chave aceita no state: os canais fixos + os posts do Facebook por página não-default (#10458). */
+export type RetrospectivaStateKey = RetrospectivaDivulgacaoChannel | RetrospectivaFacebookPageKey;
+
+/** Pura: a chave é aceita no state (canal fixo ou `facebook@{slug}:d{N}`)? */
+export function isRetrospectivaStateKey(key: string): key is RetrospectivaStateKey {
+  return (RETROSPECTIVA_DIVULGACAO_CHANNELS as readonly string[]).includes(key) || RETROSPECTIVA_FACEBOOK_PAGE_KEY_RE.test(key);
+}
+
+/**
+ * Pura: normaliza uma chave de state — o alvo `facebook@diaria:d{N}` vira
+ * `facebook:d{N}`, onde a página default grava (compat, #10458); o resto passa igual.
+ */
+export function normalizeRetrospectivaStateKey(key: RetrospectivaStateKey): RetrospectivaStateKey {
+  const m = RETROSPECTIVA_FACEBOOK_PAGE_KEY_RE.exec(key);
+  return m ? retrospectivaFacebookStateKey(m[1], m[2] as RetrospectivaHistoria) : key;
+}
+
 export interface RetrospectivaDivulgacaoState {
   cycle: string;
-  channels: Partial<Record<RetrospectivaDivulgacaoChannel, ChannelState>>;
+  channels: Partial<Record<RetrospectivaStateKey, ChannelState>>;
 }
 
 const STATE_FILENAME = "divulgacao-published.json";
@@ -126,9 +177,12 @@ export function readRetrospectivaDivulgacaoState(path: string, cycle: string): R
     if (parsed.cycle !== cycle) {
       return quarantine(`é do ciclo "${parsed.cycle}", não "${cycle}"`);
     }
-    const channels = parseChannelStates(
+    // #10458: as chaves por página não são uma lista fechada (o slug vem do
+    // config) — entram as que o arquivo tiver no formato `facebook@{slug}:d{N}`.
+    const pageKeys = Object.keys(parsed.channels).filter((k) => RETROSPECTIVA_FACEBOOK_PAGE_KEY_RE.test(k)) as RetrospectivaFacebookPageKey[];
+    const channels = parseChannelStates<RetrospectivaStateKey>(
       parsed.channels as Record<string, unknown>,
-      RETROSPECTIVA_DIVULGACAO_CHANNELS,
+      [...RETROSPECTIVA_DIVULGACAO_CHANNELS, ...pageKeys],
       path,
       "retrospectiva-divulgacao",
     );
@@ -180,27 +234,43 @@ const SKIP_TOKEN_TO_CHANNELS: Record<string, readonly RetrospectivaDivulgacaoCha
   ),
 };
 
+/** #10458: token por página — `facebook@{slug}` (3 histórias) ou `facebook@{slug}:d{N}`. */
+const FACEBOOK_PAGE_TOKEN_RE = /^facebook@([a-z0-9][a-z0-9-]*)(?::(d[123]))?$/;
+
 /**
  * Pura: `--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email` (e `{rede}:d{N}`, #9508) → conjunto de canais.
  * Token desconhecido LANÇA (typo nunca vira "não pulou nada" em silêncio —
  * mesma disciplina do `--only` de `publish-artigo-especial-linkedin.ts`).
+ *
+ * #10458: `facebook@{slug}` / `facebook@{slug}:d{N}` miram uma página só e
+ * viram ALVOS `facebook@{slug}:d{N}` no conjunto (inclusive pra `diaria` —
+ * o alvo, não a chave de state). Se o slug existe no config é checado pelo
+ * caller, que conhece o config.
  */
-export function parseRetrospectivaSkip(skipArg: string | undefined): Set<RetrospectivaDivulgacaoChannel> {
-  const out = new Set<RetrospectivaDivulgacaoChannel>();
+export function parseRetrospectivaSkip(skipArg: string | undefined): Set<RetrospectivaDivulgacaoChannel | RetrospectivaFacebookPageKey> {
+  const out = new Set<RetrospectivaDivulgacaoChannel | RetrospectivaFacebookPageKey>();
   if (!skipArg) return out;
   const tokens = skipArg
     .split(",")
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
-  const invalid = tokens.filter((t) => !Object.hasOwn(SKIP_TOKEN_TO_CHANNELS, t)); // hasOwn: "constructor" etc. não passam
+  const invalid = tokens.filter((t) => !Object.hasOwn(SKIP_TOKEN_TO_CHANNELS, t) && !FACEBOOK_PAGE_TOKEN_RE.test(t)); // hasOwn: "constructor" etc. não passam
   if (invalid.length > 0) {
     throw new Error(
       `--skip contém valor(es) não reconhecido(s): ${invalid.join(", ")} (esperado: ${Object.keys(SKIP_TOKEN_TO_CHANNELS)
         .filter((t) => !t.includes(":"))
-        .join(", ")}, ou {rede}:d{1,2,3} — ex: instagram:d2).`,
+        .join(", ")}, ou {rede}:d{1,2,3} — ex: instagram:d2 —, ou facebook@{página}[:dN] — ex: facebook@memelab).`,
     );
   }
-  for (const t of tokens) for (const ch of SKIP_TOKEN_TO_CHANNELS[t]) out.add(ch);
+  for (const t of tokens) {
+    const page = FACEBOOK_PAGE_TOKEN_RE.exec(t);
+    if (page) {
+      const hs = page[2] ? [page[2] as RetrospectivaHistoria] : RETROSPECTIVA_HISTORIAS;
+      for (const h of hs) out.add(retrospectivaFacebookPageTarget(page[1], h));
+      continue;
+    }
+    for (const ch of SKIP_TOKEN_TO_CHANNELS[t]) out.add(ch);
+  }
   return out;
 }
 

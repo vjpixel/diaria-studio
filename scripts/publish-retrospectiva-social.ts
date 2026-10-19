@@ -48,6 +48,19 @@
  * a entry antiga na fila do Worker ANTES de reenviar; Facebook/X exigem que o
  * editor remova o anterior na rede e confirme com `--old-cancelled canal[:dN]`.
  *
+ * ## Facebook em mais de uma página (#10458)
+ *
+ * O Facebook publica em CADA página habilitada de
+ * `publishing.social.facebook.pages` (decisão do editor, 19/10/2026 — igual ao
+ * weekly e ao "É IA?"). Tudo que era por post vira por (post × página): state
+ * (`facebook:d{N}` pra `diaria`, compat; `facebook@{página}:d{N}` pras
+ * outras), store (entrada com `page`; chave de upsert inclui a página),
+ * `--skip`/`--force`/`--old-cancelled` (`facebook`/`facebook:dN` = todas as
+ * páginas; `facebook@{página}[:dN]` = só ela). Página desligada é pulada sem
+ * ruído; página não-default sem credencial falha só ela (a default sem
+ * credencial segue barrando o pré-voo). O texto ganha a tag `utm_content` da
+ * página (`applyFacebookPageUtm`).
+ *
  * ## Post ÚNICO legado da página LinkedIn (#9474)
  *
  * O ciclo 2609-10 já tem o post único da página agendado no Worker
@@ -80,7 +93,13 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { appendSocialPosts, readSocialPublished, type PostEntry, type SocialPublished } from "./lib/social-published-store.ts";
 import { deleteFromWorkerQueue, postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { publishFacebookCarouselByUrl, validateScheduledTime } from "./publish-facebook.ts";
-import { DEFAULT_FACEBOOK_PAGE_SLUG, loadResolvedFacebookPages } from "./lib/facebook-pages.ts"; // #10458
+import {
+  DEFAULT_FACEBOOK_PAGE_SLUG,
+  applyFacebookPageUtm,
+  enabledFacebookPages,
+  loadResolvedFacebookPages,
+  resolvePostPage,
+} from "./lib/facebook-pages.ts"; // #10458
 import { dispatchEntry, type DispatchContext } from "./publish-linkedin.ts";
 import { verifyWorkerDispatch, formatVerifySummary } from "./verify-social-worker-dispatch.ts";
 import { WORKER_DESTAQUE_RE } from "./publish-artigo-especial-linkedin.ts";
@@ -107,10 +126,15 @@ import {
   retrospectivaPostKey,
   retrospectivaDivulgacaoStatePath,
   readRetrospectivaDivulgacaoState,
+  retrospectivaFacebookPageSlug,
+  retrospectivaFacebookPageTarget,
+  retrospectivaFacebookStateKey,
   writeRetrospectivaDivulgacaoState,
+  type RetrospectivaFacebookPageKey,
   type RetrospectivaHistoria,
   type RetrospectivaPostChannel,
   type RetrospectivaPostKey,
+  type RetrospectivaStateKey,
 } from "./lib/mensal/retrospectiva-divulgacao.ts";
 import {
   RETROSPECTIVA_SOCIAL_PLATFORM,
@@ -168,7 +192,8 @@ export interface SocialDispatchInput {
 export interface SocialDispatchers {
   /** Página LinkedIn — `dispatchEntry` grava o store sozinho; `publishedPath` = store da história. */
   linkedin: (i: SocialDispatchInput, publishedPath: string) => Promise<PostEntry>;
-  facebook: (i: SocialDispatchInput) => Promise<PostEntry>;
+  /** #10458: uma chamada por página habilitada; `page` = slug (o caller escolhe a credencial). */
+  facebook: (i: SocialDispatchInput, page: string) => Promise<PostEntry>;
   worker: (channel: "instagram" | "threads", i: SocialDispatchInput) => Promise<PostEntry>;
   /** Remove da fila do Worker um post anterior (`deleteFromWorkerQueue`). */
   cancelWorker: (key: string) => Promise<{ alreadyGone: boolean }>;
@@ -194,7 +219,25 @@ export interface HistoriaImages {
   pendingUpload: boolean;
 }
 
-type Base = { key: RetrospectivaPostKey; channel: RetrospectivaPostChannel; historia: RetrospectivaHistoria };
+/**
+ * #10458: página Facebook em que a Retrospectiva publica. `missing` = motivo
+ * de credencial ausente: o post DESSA página vira `failed` (isolado, nunca
+ * barra o pré-voo das outras redes/páginas). A página default sem credencial
+ * segue barrando o pré-voo inteiro via `missingCredentials.facebook`, como
+ * antes do #10458.
+ */
+export interface RetrospectivaFacebookPage {
+  slug: string;
+  /** Tag `utm_content` da página (`facebook-pages.ts`); `null`/ausente = texto intacto. */
+  utmContent?: string | null;
+  missing?: string | null;
+}
+
+/** Default (sem `facebookPages`): só a página `diaria`, sem tag — o comportamento pré-#10458. */
+const DEFAULT_RETROSPECTIVA_FB_PAGES: readonly RetrospectivaFacebookPage[] = [{ slug: DEFAULT_FACEBOOK_PAGE_SLUG, utmContent: null }];
+
+/** `page` só nos resultados do Facebook (#10458). */
+type Base = { key: RetrospectivaPostKey; channel: RetrospectivaPostChannel; historia: RetrospectivaHistoria; page?: string };
 export type SocialPostResult =
   | (Base & { action: "skipped"; reason: string })
   | (Base & { action: "dry-run"; scheduledAt: string; images: string[]; text: string })
@@ -220,9 +263,14 @@ export interface RunRetrospectivaSocialOptions {
   resolveScheduledAts: () => RetrospectivaPostSchedule;
   /** Gera (e fora do dry-run sobe) as imagens das histórias pedidas. Chamado só depois do pré-voo. */
   prepareImages: (historias: RetrospectivaHistoria[]) => Promise<Partial<Record<RetrospectivaHistoria, HistoriaImages>>>;
-  force: ReadonlySet<RetrospectivaPostKey>;
-  /** `--old-cancelled`: o editor já removeu na rede o post anterior (Facebook/X) — destrava o `--force` sobre post vivo. */
-  oldCancelled?: ReadonlySet<RetrospectivaPostKey>;
+  /** `facebook:d{N}` = todas as páginas; `facebook@{slug}:d{N}` = só aquela (#10458). */
+  force: ReadonlySet<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
+  /** `--old-cancelled`: o editor já removeu na rede o post anterior (Facebook/X) — destrava o `--force` sobre post vivo. Mesmos alvos do `force`. */
+  oldCancelled?: ReadonlySet<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
+  /** #10458: páginas Facebook habilitadas, em ordem. Ausente = só `diaria`; vazia = Facebook pulado. */
+  facebookPages?: readonly RetrospectivaFacebookPage[];
+  /** #10458: `--skip facebook@{slug}[:dN]` — alvos de página pulados (o post das outras páginas segue). */
+  skipFacebookPages?: ReadonlySet<RetrospectivaFacebookPageKey>;
   /** `--replace-linkedin-single`: cancela o post único legado da página antes dos 3 novos. */
   replaceLinkedinSingle?: boolean;
   dryRun: boolean;
@@ -264,15 +312,50 @@ export function splitPostKey(key: RetrospectivaPostKey): { channel: Retrospectiv
 
 /**
  * Pura: post vivo (agendado/publicado) de uma rede no store da história — 2º
- * guard de idempotência, igual ao do LinkedIn do #9474.
+ * guard de idempotência, igual ao do LinkedIn do #9474. `page` (#10458, só
+ * Facebook): restringe à página (entrada sem `page` = `diaria`); ausente =
+ * qualquer página.
  */
-export function findLiveSocialDispatch(published: SocialPublished, channel: RetrospectivaPostChannel): PostEntry | null {
+export function findLiveSocialDispatch(published: SocialPublished, channel: RetrospectivaPostChannel, page?: string): PostEntry | null {
   const platform = RETROSPECTIVA_SOCIAL_PLATFORM[channel];
   return (
     published.posts.find(
-      (p) => p.platform === platform && p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE && (p.status === "scheduled" || p.status === "published"),
+      (p) =>
+        p.platform === platform &&
+        p.destaque === RETROSPECTIVA_SOCIAL_DESTAQUE &&
+        (p.status === "scheduled" || p.status === "published") &&
+        (page === undefined || channel !== "facebook" || resolvePostPage(p) === page),
     ) ?? null
   );
+}
+
+/**
+ * Unidade de dispatch: um post lógico (`{rede}:d{N}`) numa página (#10458).
+ * Fora do Facebook, `page` é `null` e `stateKey`/`label` = `key`. No
+ * Facebook, `stateKey` é a chave de compat (`facebook:d{N}` pra `diaria`) e
+ * `label` o alvo que o editor passa no CLI pra mirar a página.
+ */
+interface DispatchUnit {
+  key: RetrospectivaPostKey;
+  channel: RetrospectivaPostChannel;
+  historia: RetrospectivaHistoria;
+  page: RetrospectivaFacebookPage | null;
+  /** `facebook@{slug}:d{N}` — `null` fora do Facebook. */
+  target: RetrospectivaFacebookPageKey | null;
+  stateKey: RetrospectivaStateKey;
+  /** Rótulo em mensagens: a chave de sempre, ou o alvo da página não-default. */
+  label: string;
+}
+
+/** Pura: unidades de um post lógico — uma por página habilitada no Facebook, uma só nas outras redes. */
+export function dispatchUnitsFor(key: RetrospectivaPostKey, pages: readonly RetrospectivaFacebookPage[]): DispatchUnit[] {
+  const { channel, historia } = splitPostKey(key);
+  if (channel !== "facebook") return [{ key, channel, historia, page: null, target: null, stateKey: key, label: key }];
+  return pages.map((page) => {
+    const target = retrospectivaFacebookPageTarget(page.slug, historia);
+    const stateKey = retrospectivaFacebookStateKey(page.slug, historia);
+    return { key, channel, historia, page, target, stateKey, label: stateKey };
+  });
 }
 
 /**
@@ -328,8 +411,13 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     RETROSPECTIVA_HISTORIAS.map((h) => [h, readSocialPublished(retrospectivaSocialPublishedPath(o.cycleDir, h))]),
   );
   const results: SocialPostResult[] = [];
-  const active: RetrospectivaPostKey[] = [];
-  const liveOnForce = new Map<RetrospectivaPostKey, PostEntry>();
+  const active: DispatchUnit[] = [];
+  // Indexado pelo `stateKey` da unidade (único por página no Facebook).
+  const liveOnForce = new Map<RetrospectivaStateKey, PostEntry>();
+  const fbPages = o.facebookPages ?? DEFAULT_RETROSPECTIVA_FB_PAGES;
+  const baseOf = (u: DispatchUnit) => ({ key: u.key, channel: u.channel, historia: u.historia, ...(u.page ? { page: u.page.slug } : {}) });
+  // `facebook:d{N}` mira todas as páginas; `facebook@{slug}:d{N}` só aquela.
+  const targets = (set: ReadonlySet<string> | undefined, u: DispatchUnit) => !!set && (set.has(u.key) || (u.target !== null && set.has(u.target)));
 
   // Ordem cronológica: história 1 (todas as redes), depois 2, depois 3.
   const ordered = RETROSPECTIVA_HISTORIAS.flatMap((h) => RETROSPECTIVA_POST_CHANNELS.map((ch) => retrospectivaPostKey(ch, h))).filter((k) =>
@@ -337,34 +425,42 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   );
   for (const key of ordered) {
     const { channel, historia } = splitPostKey(key);
-    const base = { key, channel, historia };
-    const decision = decideChannelAction(state, key, o.force.has(key));
-    if (decision.action === "skip") {
-      results.push({ ...base, action: "skipped", reason: decision.reason });
+    if (channel === "facebook" && fbPages.length === 0 && !o.disabled.facebook) {
+      results.push({ key, channel, historia, action: "skipped", reason: "nenhuma página Facebook habilitada em publishing.social.facebook.pages (#10458)" });
       continue;
     }
-    if (o.disabled[channel]) {
-      results.push({ ...base, action: "skipped", reason: `desligado no platform.config.json: ${o.disabled[channel]}` });
-      continue;
+    for (const u of dispatchUnitsFor(key, fbPages)) {
+      if (u.target !== null && o.skipFacebookPages?.has(u.target)) continue; // pulado por --skip, igual a um post fora de `posts`
+      const base = baseOf(u);
+      const forced = targets(o.force, u);
+      const decision = decideChannelAction(state, u.stateKey, forced);
+      if (decision.action === "skip") {
+        results.push({ ...base, action: "skipped", reason: decision.reason });
+        continue;
+      }
+      if (o.disabled[channel]) {
+        results.push({ ...base, action: "skipped", reason: `desligado no platform.config.json: ${o.disabled[channel]}` });
+        continue;
+      }
+      const live = findLiveSocialDispatch(stores.get(historia)!, channel, u.page?.slug);
+      if (live && !forced) {
+        results.push({
+          ...base,
+          action: "skipped",
+          reason:
+            `o store ${retrospectivaSocialPublishedPath(o.cycleDir, historia)} já tem o post (status ${live.status}, ${live.scheduled_at ?? "?"}) — ` +
+            `o state não registrou (escrita anterior falhou?). Confira na rede; --force ${u.label} despacha de novo.`,
+        });
+        continue;
+      }
+      if (live) liveOnForce.set(u.stateKey, live);
+      active.push(u);
     }
-    const live = findLiveSocialDispatch(stores.get(historia)!, channel);
-    if (live && !o.force.has(key)) {
-      results.push({
-        ...base,
-        action: "skipped",
-        reason:
-          `o store ${retrospectivaSocialPublishedPath(o.cycleDir, historia)} já tem o post (status ${live.status}, ${live.scheduled_at ?? "?"}) — ` +
-          `o state não registrou (escrita anterior falhou?). Confira na rede; --force ${key} despacha de novo.`,
-      });
-      continue;
-    }
-    if (live) liveOnForce.set(key, live);
-    active.push(key);
   }
 
   const legacyPath = resolve(o.cycleDir, "_internal", LEGACY_LINKEDIN_PUBLISHED_FILENAME);
   const legacy = findLegacyLinkedinSingle(readSocialPublished(legacyPath));
-  const linkedinActive = active.some((k) => splitPostKey(k).channel === "linkedin_pagina");
+  const linkedinActive = active.some((u) => u.channel === "linkedin_pagina");
   let legacyResult: LegacyLinkedinResult = { action: "none" };
   if (active.length === 0) return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [], warnings: [] };
 
@@ -376,7 +472,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
 
   // Pré-voo de TODOS os posts ativos — qualquer problema aborta antes do 1º
   // dispatch e antes do upload das imagens.
-  const historiasAtivas = RETROSPECTIVA_HISTORIAS.filter((h) => active.some((k) => splitPostKey(k).historia === h));
+  const historiasAtivas = RETROSPECTIVA_HISTORIAS.filter((h) => active.some((u) => u.historia === h));
   for (const h of historiasAtivas) {
     const files = retrospectivaHistoriaFiles(h);
     const t = o.texts[h] ?? {};
@@ -390,7 +486,9 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     if (!title) errors.push(`${h}: título da história não encontrado no draft.md (DESTAQUE ${h.slice(1)})`);
     else if (!retrospectivaCoverTitleFits(title)) errors.push(`${h}: título "${title}" não cabe na capa a 62px — reescreva-o no draft (#8589)`);
   }
-  for (const key of active) {
+  // Texto e agenda são do post lógico (iguais em todas as páginas): checados uma vez por chave.
+  const activeKeys = [...new Set(active.map((u) => u.key))];
+  for (const key of activeKeys) {
     const { channel, historia } = splitPostKey(key);
     const t = o.texts[historia] ?? {};
     if (isShortChannel(channel)) {
@@ -406,19 +504,27 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     const at = schedule[historia][channel];
     if (!(Date.parse(at) > now + MIN_LEAD_MS)) errors.push(`${key}: ${at} não está a ≥10 min no futuro — o post sairia fora da agenda`);
     if (channel === "x" && !o.xChannelId) errors.push(`${key}: publishing.social.twitter.buffer_channel_id ausente no platform.config.json`);
-    if (!o.dryRun && o.missingCredentials[channel]) errors.push(`${key}: ${o.missingCredentials[channel]}`);
+  }
+  for (const u of active) {
+    const { channel } = u;
+    // `missingCredentials.facebook` é a credencial da página DEFAULT (barra o
+    // pré-voo, como antes do #10458); a das outras páginas falha isolada no
+    // dispatch (`page.missing`).
+    const credBlocks = channel !== "facebook" || u.page?.slug === DEFAULT_FACEBOOK_PAGE_SLUG;
+    if (!o.dryRun && credBlocks && o.missingCredentials[channel]) errors.push(`${u.label}: ${o.missingCredentials[channel]}`);
     // --force sobre post vivo: as redes do Worker cancelam a entry antiga antes
     // de reenviar; Facebook/X não têm cancelamento por script — o editor
     // remove na rede e confirma com --old-cancelled (senão sairiam dois).
-    const live = liveOnForce.get(key);
-    if (live && !WORKER_CHANNELS.has(channel) && !o.oldCancelled?.has(key)) {
+    // No Facebook, por página: cada uma tem o seu post (#10458).
+    const live = liveOnForce.get(u.stateKey);
+    if (live && !WORKER_CHANNELS.has(channel) && !targets(o.oldCancelled, u)) {
       errors.push(
-        `${key}: --force sobre post vivo (${String(live.fb_post_id ?? live.buffer_post_id ?? live.url ?? "?")}, ${live.scheduled_at ?? "?"}) — ` +
-          `remova-o na rede e rode de novo com --old-cancelled ${key}`,
+        `${u.label}: --force sobre post vivo (${String(live.fb_post_id ?? live.buffer_post_id ?? live.url ?? "?")}, ${live.scheduled_at ?? "?"}) — ` +
+          `remova-o na rede e rode de novo com --old-cancelled ${u.label}`,
       );
     }
     if (live && WORKER_CHANNELS.has(channel) && typeof live.worker_queue_key !== "string") {
-      errors.push(`${key}: --force sobre post vivo sem worker_queue_key no store — não há como cancelá-lo na fila; confira no Worker`);
+      errors.push(`${u.label}: --force sobre post vivo sem worker_queue_key no store — não há como cancelá-lo na fila; confira no Worker`);
     }
   }
   if (linkedinActive && legacy && !o.replaceLinkedinSingle) {
@@ -431,7 +537,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   // script — se algum estiver vivo, os 3 por história somariam 4 naquela rede.
   const legacySocial = readSocialPublished(resolve(o.cycleDir, "_internal", LEGACY_SOCIAL_PUBLISHED_FILENAME));
   for (const ch of RETROSPECTIVA_POST_CHANNELS) {
-    if (ch === "linkedin_pagina" || !active.some((k) => splitPostKey(k).channel === ch)) continue;
+    if (ch === "linkedin_pagina" || !active.some((u) => u.channel === ch)) continue;
     const live = findLiveSocialDispatch(legacySocial, ch);
     if (live) {
       errors.push(
@@ -496,13 +602,20 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     };
   };
 
+  // Texto final do post: o do post lógico, com a tag `utm_content` da página
+  // no Facebook (#10458 — compõe com uma tag já presente; `null` = intacto).
+  const unitText = (u: DispatchUnit): string => {
+    const text = retrospectivaPostText(u.channel, o.texts[u.historia]!)!;
+    return u.page ? applyFacebookPageUtm(text, { utmContent: u.page.utmContent ?? null }) : text;
+  };
+
   if (o.dryRun) {
     if (linkedinActive && legacy) {
       legacyResult = { action: "would-cancel", key: String(legacy.worker_queue_key), scheduledAt: legacy.scheduled_at };
     }
-    for (const key of active) {
-      const { channel, historia } = splitPostKey(key);
-      const base = { key, channel, historia };
+    for (const u of active) {
+      const { channel, historia } = u;
+      const base = baseOf(u);
       if (channel === "x") results.push({ ...base, channel: "x", action: "x-payload", payload: xPayload(historia) });
       else
         results.push({
@@ -510,14 +623,14 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
           action: "dry-run",
           scheduledAt: schedule[historia][channel],
           images: imageUrlsFor(channel, images[historia]!.cards),
-          text: retrospectivaPostText(channel, o.texts[historia]!)!,
+          text: unitText(u),
         });
     }
     return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [], warnings };
   }
 
   const stateWriteErrors: string[] = [];
-  const record = (key: RetrospectivaPostKey, ok: boolean, reason: string | null, entry: PostEntry | null) => {
+  const record = (key: RetrospectivaStateKey, ok: boolean, reason: string | null, entry: PostEntry | null) => {
     const at = new Date().toISOString();
     try {
       state = withChannelState(state, key, ok ? buildDoneChannelState(at, entry?.url ?? null) : buildFailedChannelState(at, reason ?? "dispatch falhou"));
@@ -575,12 +688,12 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
 
   for (const h of historiasAtivas) mkdirSync(dirname(retrospectivaSocialPublishedPath(o.cycleDir, h)), { recursive: true });
   const workerDispatched = new Set<RetrospectivaHistoria>();
-  for (const key of active) {
-    const { channel, historia } = splitPostKey(key);
-    const base = { key, channel, historia };
+  for (const u of active) {
+    const { channel, historia, stateKey } = u;
+    const base = baseOf(u);
     const publishedPath = retrospectivaSocialPublishedPath(o.cycleDir, historia);
     if (channel === "linkedin_pagina" && linkedinBlocked) {
-      record(key, false, linkedinBlocked, null);
+      record(stateKey, false, linkedinBlocked, null);
       results.push({ ...base, action: "failed", reason: linkedinBlocked });
       continue;
     }
@@ -592,7 +705,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     // despachado pelo top-level fora de hora.
     if (!(Date.parse(schedule[historia][channel]) > clock() + MIN_LEAD_MS)) {
       const reason = `${schedule[historia][channel]} ficou a <10 min durante a execução — não despachado (sairia na hora); rode de novo com --at`;
-      record(key, false, reason, null);
+      record(stateKey, false, reason, null);
       results.push({ ...base, action: "failed", reason });
       continue;
     }
@@ -600,7 +713,15 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       results.push({ ...base, channel: "x", action: "x-payload", payload: xPayload(historia) });
       continue;
     }
-    const live = liveOnForce.get(key);
+    // #10458: página não-default sem credencial falha só ela — a mesma
+    // história segue nas outras páginas e redes.
+    if (u.page?.missing) {
+      const reason = `página Facebook ${u.page.slug}: ${u.page.missing}`;
+      record(stateKey, false, reason, null);
+      results.push({ ...base, action: "failed", reason });
+      continue;
+    }
+    const live = liveOnForce.get(stateKey);
     if (live && WORKER_CHANNELS.has(channel)) {
       // Cancela ANTES de reenviar: se o reenvio falhar, não sobra post antigo
       // vivo com o store dizendo `failed` (o que liberaria um 3º envio).
@@ -618,7 +739,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     }
     const input: SocialDispatchInput = {
       historia,
-      text: retrospectivaPostText(channel, o.texts[historia]!)!,
+      text: unitText(u),
       imageUrls: imageUrlsFor(channel, images[historia]!.cards),
       scheduledAt: schedule[historia][channel],
     };
@@ -628,7 +749,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
         channel === "linkedin_pagina"
           ? await o.dispatchers.linkedin(input, publishedPath)
           : channel === "facebook"
-            ? await o.dispatchers.facebook(input)
+            ? await o.dispatchers.facebook(input, u.page!.slug)
             : await o.dispatchers.worker(channel, input);
     } catch (e) {
       entry = {
@@ -640,7 +761,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
         reason: (e as Error).message,
       };
     }
-    entry = { ...entry, historia };
+    entry = { ...entry, historia, ...(u.page ? { page: u.page.slug } : {}) };
     try {
       appendSocialPosts(publishedPath, [entry]);
     } catch (e) {
@@ -648,7 +769,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       // registro e liberaria um 2º envio na reexecução. Segue pro state (que
       // então segura a reexecução) e pros outros posts.
       const msg =
-        `${key}: store NÃO gravado (${(e as Error).message})` +
+        `${u.label}: store NÃO gravado (${(e as Error).message})` +
         (entry.status !== "failed" ? ` — o post JÁ ESTÁ agendado (${String(entry.fb_post_id ?? entry.worker_queue_key ?? "?")}); NÃO rode de novo sem conferir` : "") +
         ".";
       console.error(msg);
@@ -656,11 +777,11 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     }
     if (entry.status === "failed") {
       const reason = entry.reason ?? "dispatch falhou";
-      record(key, false, reason, null);
+      record(stateKey, false, reason, null);
       results.push({ ...base, action: "failed", reason });
       continue;
     }
-    record(key, true, null, entry);
+    record(stateKey, true, null, entry);
     results.push({ ...base, action: "dispatched", entry });
     if (WORKER_CHANNELS.has(channel) && entry.status === "scheduled") workerDispatched.add(historia);
   }
@@ -726,15 +847,33 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   return { results, legacyLinkedin: legacyResult, verifyError: verifyErrors.length > 0 ? verifyErrors.join(" | ") : null, stateWriteErrors, warnings };
 }
 
-/** Pura: `--force`/`--old-cancelled` → chaves de post (mesmos tokens do `--skip`; tokens de outros canais são ignorados aqui). */
-export function parseSocialForce(forceArg: string | undefined, flag = "--force"): Set<RetrospectivaPostKey> {
+/**
+ * Pura: `--force`/`--old-cancelled` → chaves de post (mesmos tokens do `--skip`; tokens de outros canais são ignorados aqui).
+ * #10458: alvos de página (`facebook@{slug}:d{N}`) passam junto.
+ */
+export function parseSocialForce(forceArg: string | undefined, flag = "--force"): Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey> {
   let all: Set<string>;
   try {
     all = parseRetrospectivaSkip(forceArg);
   } catch (e) {
     throw new Error((e as Error).message.replace(/^--skip/, flag));
   }
-  return new Set(RETROSPECTIVA_POST_KEYS.filter((k) => all.has(k)));
+  const pageTargets = [...all].filter((k): k is RetrospectivaFacebookPageKey => retrospectivaFacebookPageSlug(k) !== null);
+  return new Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>([...RETROSPECTIVA_POST_KEYS.filter((k) => all.has(k)), ...pageTargets]);
+}
+
+/**
+ * Pura (#10458): slugs citados em alvos `facebook@{slug}:d{N}` que não existem
+ * em `publishing.social.facebook.pages` — typo de página nunca vira "não pulou/
+ * não forçou nada" em silêncio.
+ */
+export function unknownFacebookPageSlugs(keys: Iterable<string>, knownSlugs: readonly string[]): string[] {
+  const unknown = new Set<string>();
+  for (const k of keys) {
+    const slug = retrospectivaFacebookPageSlug(k);
+    if (slug !== null && !knownSlugs.includes(slug)) unknown.add(slug);
+  }
+  return [...unknown];
 }
 
 /**
@@ -744,8 +883,8 @@ export function parseSocialForce(forceArg: string | undefined, flag = "--force")
  */
 export function parseSocialListArgs(argv: string[]): {
   skip: Set<string>;
-  force: Set<RetrospectivaPostKey>;
-  oldCancelled: Set<RetrospectivaPostKey>;
+  force: Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
+  oldCancelled: Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
 } {
   const skip = parseRetrospectivaSkip(getStringArg(argv, "skip", { example: "instagram,x:d2" }));
   // `--force` sem lista NÃO é global (ver SKILL): exige os canais.
@@ -764,8 +903,8 @@ async function main(): Promise<void> {
   const cycleDir = monthlyDir(cycle);
 
   let skip: Set<string>;
-  let force: Set<RetrospectivaPostKey>;
-  let oldCancelled: Set<RetrospectivaPostKey>;
+  let force: Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
+  let oldCancelled: Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
   try {
     ({ skip, force, oldCancelled } = parseSocialListArgs(argv));
   } catch (e) {
@@ -773,6 +912,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const posts = RETROSPECTIVA_POST_KEYS.filter((k) => !skip.has(k));
+  const skipFacebookPages = new Set([...skip].filter((k): k is RetrospectivaFacebookPageKey => retrospectivaFacebookPageSlug(k) !== null));
 
   const texts: Partial<Record<RetrospectivaHistoria, { corpo?: string; curto?: string }>> = {};
   for (const h of RETROSPECTIVA_HISTORIAS) {
@@ -835,25 +975,35 @@ async function main(): Promise<void> {
   const workerUrl = process.env.DIARIA_LINKEDIN_CRON_URL ?? social.instagram?.cloudflare_worker_url ?? social.linkedin?.cloudflare_worker_url ?? "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
   // #10458: credencial via helper único (env > data/.fb-credentials.json, este
-  // só pra `diaria`). A Retrospectiva publica SÓ na página default — o state
-  // por chave `canal:historia` não tem eixo de página; outra página habilitada
-  // vira aviso, nunca post silenciosamente faltando.
-  const fbPages = loadResolvedFacebookPages(ROOT, config);
-  const fbDefault = fbPages.pages.find((p) => p.slug === DEFAULT_FACEBOOK_PAGE_SLUG);
-  const fbPageId = fbDefault?.pageId ?? "";
-  const fbToken = fbDefault?.token ?? "";
-  const fbApiVersion = fbPages.apiVersion;
-  const fbOtherEnabled = fbPages.pages.filter((p) => p.enabled && p.slug !== DEFAULT_FACEBOOK_PAGE_SLUG).map((p) => p.slug);
-  if (fbOtherEnabled.length > 0) {
-    console.warn(
-      `AVISO: página(s) Facebook habilitada(s) além da ${DEFAULT_FACEBOOK_PAGE_SLUG} (${fbOtherEnabled.join(", ")}) — ` +
-        "a Retrospectiva publica só na página default (#10458); publique nas outras à mão se quiser.",
+  // só pra `diaria`). A Retrospectiva publica em CADA página habilitada de
+  // publishing.social.facebook.pages (decisão do editor, 19/10/2026 — igual
+  // weekly e "É IA?"), com state e store por página. Página desligada é
+  // pulada sem ruído; nenhuma ligada = Facebook pulado.
+  const fbResolved = loadResolvedFacebookPages(ROOT, config);
+  const fbApiVersion = fbResolved.apiVersion;
+  const fbEnabled = enabledFacebookPages(fbResolved.pages);
+  const fbBySlug = new Map(fbEnabled.map((p) => [p.slug, p]));
+  const unknownSlugs = unknownFacebookPageSlugs([...skip, ...force, ...oldCancelled], fbResolved.pages.map((p) => p.slug));
+  if (unknownSlugs.length > 0) {
+    console.error(
+      `página(s) Facebook desconhecida(s) em --skip/--force/--old-cancelled: ${unknownSlugs.join(", ")} ` +
+        `(publishing.social.facebook.pages tem: ${fbResolved.pages.map((p) => p.slug).join(", ")}).`,
     );
+    process.exit(2);
+  }
+  const facebookPages: RetrospectivaFacebookPage[] = fbEnabled.map((p) => ({
+    slug: p.slug,
+    utmContent: p.utmContent,
+    // A default sem credencial barra o pré-voo (missingCredentials, abaixo); as outras falham isoladas.
+    missing: p.slug !== DEFAULT_FACEBOOK_PAGE_SLUG && p.missing.length > 0 ? `${p.missing.join("/")} ausentes` : null,
+  }));
+  if (fbEnabled.length === 0 && !disabled.facebook) {
+    disabled.facebook = "nenhuma página habilitada em publishing.social.facebook.pages (#10458)";
   }
 
   const missingCredentials: Partial<Record<RetrospectivaPostChannel, string>> = {};
-  if (fbDefault && !fbDefault.enabled) missingCredentials.facebook = `página Facebook ${DEFAULT_FACEBOOK_PAGE_SLUG} desabilitada em platform.config.json (#10458)`;
-  else if (!fbPageId || !fbToken) missingCredentials.facebook = `${fbDefault?.missing.join("/") || "FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN"} ausentes`;
+  const fbDefault = fbBySlug.get(DEFAULT_FACEBOOK_PAGE_SLUG);
+  if (fbDefault && fbDefault.missing.length > 0) missingCredentials.facebook = `${fbDefault.missing.join("/")} ausentes`;
   if (!workerUrl || !workerToken) {
     // Sem o Worker não há agendamento (Instagram/Threads não agendam pela API;
     // a página LinkedIn cairia no `make_now` — publicaria AGORA).
@@ -889,6 +1039,8 @@ async function main(): Promise<void> {
     prepareImages,
     force,
     oldCancelled,
+    facebookPages,
+    skipFacebookPages,
     replaceLinkedinSingle: flags.has("replace-linkedin-single"),
     dryRun,
     disabled,
@@ -924,14 +1076,17 @@ async function main(): Promise<void> {
           ctx,
         );
       },
-      facebook: async (i) => {
+      facebook: async (i, slug) => {
+        const pg = fbBySlug.get(slug);
+        if (!pg || pg.missing.length > 0) throw new Error(`página Facebook ${slug} sem credencial (${pg?.missing.join("/") ?? "fora do config"})`);
         validateScheduledTime(i.scheduledAt);
-        const res = await publishFacebookCarouselByUrl(fbPageId, fbToken, fbApiVersion, i.imageUrls, i.text, i.scheduledAt);
+        const res = await publishFacebookCarouselByUrl(pg.pageId, pg.token, fbApiVersion, i.imageUrls, i.text, i.scheduledAt);
         const postId = res.post_id || res.id;
         return {
           platform: "facebook",
+          page: slug,
           destaque: RETROSPECTIVA_SOCIAL_DESTAQUE,
-          url: `https://www.facebook.com/${fbPageId}/posts/${postId}`,
+          url: `https://www.facebook.com/${pg.pageId}/posts/${postId}`,
           status: "scheduled",
           scheduled_at: i.scheduledAt,
           fb_post_id: postId,
@@ -1002,7 +1157,7 @@ async function main(): Promise<void> {
         stage: null,
         agent: "publish-retrospectiva-social",
         level: x.action === "failed" || r.verifyError ? "warn" : "info",
-        message: `${x.key} ${x.action} para ${(schedule as RetrospectivaPostSchedule | null)?.[x.historia][x.channel] ?? "?"}`,
+        message: `${x.page && x.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? `facebook@${x.page}:${x.historia}` : x.key} ${x.action} para ${(schedule as RetrospectivaPostSchedule | null)?.[x.historia][x.channel] ?? "?"}`,
         details: x.action === "failed" ? { reason: x.reason } : { url: x.entry.url, worker_queue_key: x.entry.worker_queue_key ?? null },
       },
       ROOT,
