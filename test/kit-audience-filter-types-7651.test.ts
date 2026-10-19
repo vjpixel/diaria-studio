@@ -80,8 +80,10 @@ describe("#7651 — os 3 builders continuam intercambiáveis onde devem ser", ()
     // Documenta a assimetria: um filtro de tag serve como audiência do
     // broadcast (que aceita os dois), mas quem exigir explicitamente uma
     // restrição não aceita a sentinela.
-    const restrito: [{ all: { type: "tag"; ids: number[] }[] }, ...{ all: { type: "tag"; ids: number[] }[] }[]] =
-      buildTagFilter(1);
+    // #10437: a condição ganhou a variante `segment` — a forma do filtro restrito
+    // (tupla não-vazia de grupos) é o que este teste trava, não o `type`.
+    type Cond = { type: "tag" | "segment"; ids: number[] };
+    const restrito: [{ all: Cond[] }, ...{ all: Cond[] }[]] = buildTagFilter(1);
     assert.equal(restrito.length, 1);
   });
 });

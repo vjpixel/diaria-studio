@@ -70,6 +70,12 @@
  *  vira aviso no stderr e no `summary`, com o passo registrado em `steps`
  *  com o exit code real. Se o verify falhar, o sync não roda nesta rodada.
  *
+ * Passo 3c (#10437) — `sync-kit-sem-abertura-to-brevo.ts` (ativos no Kit com
+ *  `min_mature_sends` envios da diária sem abrir → Brevo, tag `envio-brevo` no Kit). Só entra
+ *  na sequência com `brevo_diaria.kit_sem_abertura.enabled` (default `false`:
+ *  sequência idêntica à de antes). Fail-soft como o 3b; dry-run no preflight,
+ *  `--push [--max-add N]` no apply.
+ *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
  * mesmo guard #4343 de `scripts/lib/task-runner.ts`/`clarice-novos-run.ts`),
  * nunca por import — spawn preserva stdout/stderr/exit code como contrato
@@ -109,6 +115,9 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { MV_COST_GUARD_THRESHOLD } from "./verify-pending-emails-mv.ts"; // #8192
 import { PARTIAL_FAILURE_EXIT_CODE } from "./evaluate-brevo-diaria.ts"; // #8686
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { readFileSync } from "node:fs";
+import { isKitSemAberturaEnabled } from "./lib/kit-sem-abertura.ts"; // #10437
+import type { KitSemAberturaPlatformConfig } from "./sync-kit-sem-abertura-to-brevo.ts"; // #10437
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope, pra process.env já estar populado
@@ -236,10 +245,30 @@ export function parseBrevoDiariaRunArgs(argv: string[]): BrevoDiariaRunOptions {
 export interface BrevoDiariaRunDeps {
   rootDir: string;
   exec: ExecFn;
+  /**
+   * #10437 — `brevo_diaria.kit_sem_abertura.enabled` em `platform.config.json`.
+   * Ausente ou `false` ⇒ o Passo 3c nem é invocado (a sequência de passos fica
+   * idêntica à de antes do #10437).
+   */
+  kitSemAberturaEnabled?: () => boolean;
+}
+
+/** #10437 — lê a flag; config ilegível ⇒ desligada (o resto do run já falha alto nesse caso). */
+export function readKitSemAberturaFlag(rootDir: string): boolean {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as KitSemAberturaPlatformConfig;
+    return isKitSemAberturaEnabled(cfg.brevo_diaria?.kit_sem_abertura);
+  } catch (e) {
+    process.stderr.write(
+      `[brevo-diaria-run] aviso: platform.config.json ilegível ao ler brevo_diaria.kit_sem_abertura ` +
+        `(${(e as Error).message}) — Passo 3c tratado como desligado (#10437).\n`,
+    );
+    return false;
+  }
 }
 
 export function productionDeps(rootDir: string = ROOT): BrevoDiariaRunDeps {
-  return { rootDir, exec: realExec(rootDir) };
+  return { rootDir, exec: realExec(rootDir), kitSemAberturaEnabled: () => readKitSemAberturaFlag(rootDir) };
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +409,9 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       step(deps, steps, "Passo 2 — refresh-pending-pool (dry-run)", "scripts/refresh-pending-pool.ts", []);
       step(deps, steps, "Passo 3 — sync-pending-to-brevo (dry-run)", "scripts/sync-pending-to-brevo.ts", []);
       softStep(deps, steps, warnings, "Passo 3b — sync-kit-inactive-to-brevo (dry-run)", "scripts/sync-kit-inactive-to-brevo.ts", []);
+      if (deps.kitSemAberturaEnabled?.() === true) {
+        softStep(deps, steps, warnings, "Passo 3c — sync-kit-sem-abertura-to-brevo (dry-run)", "scripts/sync-kit-sem-abertura-to-brevo.ts", []);
+      }
       return {
         code: 0,
         mode: "preflight",
@@ -436,6 +468,19 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         warnings,
         `Passo 3b — sync-kit-inactive-to-brevo --push${maxAddLabel}`,
         "scripts/sync-kit-inactive-to-brevo.ts",
+        ["--push", ...maxAddArgs],
+      );
+    }
+
+    // #10437 — ativos do Kit com `min_mature_sends` envios sem abrir → Brevo. Só com a flag
+    // ligada; fail-soft como o 3b (pool aditivo, nunca derruba a campanha).
+    if (deps.kitSemAberturaEnabled?.() === true) {
+      softStep(
+        deps,
+        steps,
+        warnings,
+        `Passo 3c — sync-kit-sem-abertura-to-brevo --push${maxAddLabel}`,
+        "scripts/sync-kit-sem-abertura-to-brevo.ts",
         ["--push", ...maxAddArgs],
       );
     }

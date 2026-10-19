@@ -3,7 +3,7 @@
  * `beehiiv_subscription_id` (#6678).
  *
  * O campo `BrevoDiariaContact.beehiiv_subscription_id: string` carrega HOJE
- * quatro origens distintas, separadas só por prefixo de string — nunca por
+ * cinco origens distintas (a 5ª, `kit-sem-abertura:`, é do #10437), separadas só por prefixo de string — nunca por
  * tipo. Cada produtor monta seu prefixo com template literal inline, sem
  * verificação centralizada. Consequências:
  *
@@ -14,10 +14,10 @@
  * 3. Adicionar uma 5ª origem não força revisão de nenhum `switch`.
  * 4. O campo mente no nome — qualquer código que leia `contact.beehiiv_subscription_id`
  *    e o passe para uma chamada da API da Beehiiv sem checar prefixo antes
- *    se comporta mal em três das quatro origens.
+ *    se comporta mal em quatro das cinco origens.
  *
  * Este módulo centraliza a convenção: um parser/construtor único que
- * devolve uma união discriminada sobre as quatro origens, com os produtores
+ * devolve uma união discriminada sobre as origens, com os produtores
  * construindo o prefixo por ele em vez de template literal inline.
  *
  * #6678: não muda o tipo do campo armazenado (continua `string`) — centraliza
@@ -34,9 +34,17 @@ export const ORIGIN_PREFIX = {
   KIT: "kit:" as const,
   CURATED: "curated:" as const,
   SUNSET: "sunset:" as const,
+  /** #10437 — assinante `active` no Kit que recebeu `min_mature_sends` edições sem abrir e foi
+   *  movido pra Brevo (com a tag de exclusão `envio-brevo` no Kit). DIFERENTE
+   *  de `kit:` (cohort `inactive` do Kit, #8192): este contato continua
+   *  `active` no Kit, então o Passo 1 de `evaluate-brevo-diaria.ts` não pode
+   *  tratá-lo como "confirmou o opt-in" (armadilha 5 da issue). Payload = o
+   *  kit_subscriber_id. Não colide com `kit:` (o prefixo é `kit-`, sem `:`
+   *  logo depois de `kit`). */
+  KIT_SEM_ABERTURA: "kit-sem-abertura:" as const,
 } as const;
 
-export type OriginKind = "beehiiv" | "kit" | "curated" | "sunset";
+export type OriginKind = "beehiiv" | "kit" | "curated" | "sunset" | "kit-sem-abertura";
 
 /** Valor bruto do campo, parseado em sua origem e payload. */
 export interface ParsedOrigin {
@@ -62,6 +70,11 @@ export function parseOrigin(raw: string): ParsedOrigin {
     const payload = raw.slice(ORIGIN_PREFIX.CURATED.length);
     if (!payload) throw new Error(`[brevo-diaria-origin] valor curated: sem payload: ${JSON.stringify(raw)}`);
     return { kind: "curated", payload, raw };
+  }
+  if (raw.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) {
+    const payload = raw.slice(ORIGIN_PREFIX.KIT_SEM_ABERTURA.length);
+    if (!payload) throw new Error(`[brevo-diaria-origin] valor kit-sem-abertura: sem payload: ${JSON.stringify(raw)}`);
+    return { kind: "kit-sem-abertura", payload, raw };
   }
   if (raw.startsWith(ORIGIN_PREFIX.SUNSET)) {
     const payload = raw.slice(ORIGIN_PREFIX.SUNSET.length);
@@ -90,6 +103,8 @@ export function buildOrigin(kind: OriginKind, payload: string): string {
       return `${ORIGIN_PREFIX.CURATED}${payload}`;
     case "sunset":
       return `${ORIGIN_PREFIX.SUNSET}${payload}`;
+    case "kit-sem-abertura":
+      return `${ORIGIN_PREFIX.KIT_SEM_ABERTURA}${payload}`;
   }
 }
 

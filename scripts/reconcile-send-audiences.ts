@@ -85,6 +85,9 @@ import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
 import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
+import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
+import { kitSemAberturaExemptEmails } from "./lib/brevo-kit-active-exclusion.ts"; // #10437
+import { readStore, DEFAULT_STORE_PATH, normalizeEmail } from "./lib/brevo-diaria-store.ts"; // #10437
 import {
   applyAlarmReconciliation,
   loadAlarmIssuesState,
@@ -115,6 +118,7 @@ interface PlatformConfig {
   kit_diaria?: { audience_tag?: string };
   brevo_diaria?: { api_key_env?: string; list_id?: number };
   publishing?: { newsletter?: { backend?: string } };
+  kit?: { diaria_exclusion_segment?: unknown };
 }
 
 function readPlatformConfig(): PlatformConfig {
@@ -303,6 +307,24 @@ export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boo
  */
 export function beehiivSendAudience(newsletterBackend: string | undefined, beehiivActiveEmails: string[]): string[] {
   return newsletterBackend === "kit" ? [] : beehiivActiveEmails;
+}
+
+/**
+ * Pura (#10437): audiência de ENVIO do Kit com `kit.diaria_exclusion_segment`
+ * ligado = todo ativo MENOS quem tem a tag `envio-brevo` (o segmento do
+ * broadcast) e menos quem o store diz que foi movido (`kit-sem-abertura:` em
+ * `in_brevo`; cobre a janela de propagação da listagem tag→assinantes).
+ * Sem isto, cada contato movido viraria "sobreposição Kit×Brevo" bloqueante.
+ * Com essa audiência, `findOrphans` passa a apontar o órfão REAL: ativo no
+ * Kit, com a tag, fora da lista da Brevo.
+ */
+export function kitSendAudienceWithExclusionSegment(
+  kitActiveEmails: readonly string[],
+  envioBrevoTagEmails: readonly string[],
+  storeMovedEmails: readonly string[],
+): string[] {
+  const out = new Set([...envioBrevoTagEmails, ...storeMovedEmails].map(normalizeEmail));
+  return kitActiveEmails.filter((e) => !out.has(normalizeEmail(e)));
 }
 
 export function decideOutcome(
@@ -549,7 +571,15 @@ async function main(): Promise<void> {
     const kitActiveSubscribers = await listAllKitSubscribers(undefined, { status: "active" });
     kitActiveEmails = kitActiveSubscribers.map((s) => s.email_address);
 
-    if (kitAudienceIsAllActive) {
+    const exclusionSegment = parseDiariaExclusionSegment(platformConfig.kit?.diaria_exclusion_segment);
+    if (kitAudienceIsAllActive && "enabled" in exclusionSegment && exclusionSegment.enabled) {
+      // #10437 — o broadcast mira o segmento "ativos sem a tag envio-brevo".
+      process.stderr.write(`${LOG_PREFIX} backend=kit com o segmento de exclusão ligado — audiência do Kit = ativos menos a tag "${KIT_ENVIO_BREVO_TAG_NAME}"…
+`);
+      const envioTagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME);
+      const tagged = envioTagId === null ? [] : await listAllTagSubscriberEmails(envioTagId);
+      kitAudienceEmails = kitSendAudienceWithExclusionSegment(kitActiveEmails, tagged, kitSemAberturaExemptEmails(readStore(DEFAULT_STORE_PATH)));
+    } else if (kitAudienceIsAllActive) {
       process.stderr.write(
         `${LOG_PREFIX} backend=kit — audiência de envio do Kit é TODO ativo (buildAllSubscribersFilter), não a tag "${kitAudienceTag}" — pulando lookup de tag.\n`,
       );

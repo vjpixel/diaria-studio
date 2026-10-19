@@ -40,6 +40,7 @@ import {
   PAGE_BG,
 } from "./newsletter-render-html.ts";
 import { LAYOUT } from "./shared/design-tokens.ts"; // #5176: container width em paridade com o real
+import { BREVO_ORIGEM_ATTRIBUTE, BREVO_ORIGEM_KIT_SEM_ABERTURA } from "./kit-sem-abertura.ts"; // #10437
 
 export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
 
@@ -120,13 +121,68 @@ export function renderPendingIntroHtml(rootDir?: string): string | null {
   // conditional comment embrulha numa tabela FIXA de LAYOUT.containerWidth
   // só no Outlook; clientes modernos ignoram o comentário e usam a tabela
   // `width:100%`/`max-width`.
+  return wrapIntroTable(parts, "#4266 intro Pending Brevo (achado 260803: fora de caixa)");
+}
+
+/**
+ * Embrulha as peças do intro na tabela própria (fundo PAGE_BG, largura do
+ * container, wrapper MSO). As 4 quebras documentadas em
+ * `renderPendingIntroHtml` valem pra qualquer intro inserido antes do
+ * `.ds-canvas`, por isso a variante do #10437 reusa este mesmo invólucro.
+ */
+function wrapIntroTable(parts: string[], label: string): string {
   return (
-    `<!-- #4266 intro Pending Brevo (achado 260803: fora de caixa) -->\n` +
+    `<!-- ${label} -->\n` +
     `<!--[if mso]><table role="presentation" align="center" width="${LAYOUT.containerWidth}" cellpadding="0" cellspacing="0"><tr><td width="${LAYOUT.containerWidth}"><![endif]-->\n` +
     `<table role="presentation" class="container" width="100%" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:${LAYOUT.containerWidth}px;margin:0 auto;background:${PAGE_BG};">\n` +
     parts.join("\n") +
     `\n</table>\n` +
     `<!--[if mso]></td></tr></table><![endif]-->`
+  );
+}
+
+// ── #10437: intro por ORIGEM ─────────────────────────────────────────────
+
+/**
+ * #10437 — intro do grupo que veio do Kit (ativo, `min_mature_sends` edições sem abrir). O
+ * intro do Pending pede pra confirmar a inscrição, o que não serve pra quem já
+ * confirmou (decisão do editor, 19/10/2026: variante por origem). Vive em
+ * `data/snippets/` como os demais (gitignored); o texto final passa pelo
+ * editor no Gate B do #10437. CTA opcional: este grupo já é assinante.
+ */
+export const KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME = "brevo-diaria-kit-sem-abertura-intro.md";
+
+/** `null` se o snippet não existir/estiver vazio. Parágrafo CTA isolado, se houver, vira botão. */
+export function renderKitSemAberturaIntroHtml(rootDir?: string): string | null {
+  const box = readSnippetFile(KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME, rootDir);
+  if (!box) return null;
+  const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const ctaIdx = paras.findIndex(isCtaOnlyParagraph);
+  const parts: string[] = [];
+  if (ctaIdx === -1) {
+    parts.push(renderCoverage(paras.join("\n\n")));
+  } else {
+    const cta = findMarkdownLinks(paras[ctaIdx])[0];
+    if (ctaIdx > 0) parts.push(renderCoverage(paras.slice(0, ctaIdx).join("\n\n")));
+    parts.push(renderBarePillButton(cta.url, cta.label));
+    if (ctaIdx + 1 < paras.length) parts.push(renderCoverageTrailer(paras.slice(ctaIdx + 1).join("\n\n")));
+  }
+  return wrapIntroTable(parts, "#10437 intro Brevo, origem kit-sem-abertura");
+}
+
+/**
+ * Pura — condicional da linguagem de template da Brevo: quem tem o atributo
+ * `ORIGEM_DIARIA = kit_sem_abertura` (gravado no ingest do #10437) vê o intro
+ * próprio; todo o resto (o segmento Pending, sem o atributo) segue vendo o
+ * intro de sempre.
+ */
+export function buildOriginConditionalIntro(pendingIntroHtml: string, kitSemAberturaIntroHtml: string): string {
+  return (
+    `{% if contact.${BREVO_ORIGEM_ATTRIBUTE} == "${BREVO_ORIGEM_KIT_SEM_ABERTURA}" %}\n` +
+    kitSemAberturaIntroHtml +
+    `\n{% else %}\n` +
+    pendingIntroHtml +
+    `\n{% endif %}`
   );
 }
 

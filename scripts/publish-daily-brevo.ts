@@ -119,7 +119,14 @@ import { hasFlag, isMainModule, getStringArg, parseArgs as parseCliArgs } from "
 import { extractContent, type NewsletterContent } from "./lib/newsletter-parse.ts";
 import { renderHTMLWithWarnings, type RenderWarningEvent } from "./lib/newsletter-render-html.ts"; // #4687
 import { buildFilenameMap, substituteImagePlaceholders, type PublicImagesFile } from "./substitute-image-urls.ts";
-import { renderPendingIntroHtml, injectPendingIntro } from "./lib/brevo-diaria-intro.ts";
+import {
+  renderPendingIntroHtml,
+  injectPendingIntro,
+  renderKitSemAberturaIntroHtml, // #10437
+  buildOriginConditionalIntro, // #10437
+  KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME, // #10437
+} from "./lib/brevo-diaria-intro.ts";
+import { isKitSemAberturaEnabled, readKitSemAberturaInBrevoCount, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { runInjectReativarToken as injectReativarToken } from "./inject-reativar-token-brevo.ts"; // #8194
@@ -151,6 +158,8 @@ interface BrevoDiariaConfig extends BrevoAccountLimitConfig {
    * configurou) — nesse caso `--send-test` sem `--send-test-to` é rejeitado
    * por `checkSendTestGuards`, nunca cai num `emailTo: [undefined]`. */
   test_email?: string | null;
+  /** #10437 — flag da movimentação Kit→Brevo; ligada ⇒ intro por origem. */
+  kit_sem_abertura?: KitSemAberturaConfig;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -635,6 +644,37 @@ export function buildDailyBrevoHtml(
   return { html: final, unresolvedImages: unresolved, renderWarnings: warnings };
 }
 
+/**
+ * #10437 — intro do e-mail da Brevo diária. Flag `kit_sem_abertura` desligada
+ * E nenhum contato `kit-sem-abertura:` em `in_brevo` ⇒ exatamente
+ * `renderPendingIntroHtml` (nada muda). Flag ligada, OU desligada com gente já
+ * movida (desligar a flag não tira ninguém da lista) ⇒ condicional por origem;
+ * sem o snippet da variante, lança (mandar "confirme sua inscrição" a quem já
+ * é assinante é o que a decisão do editor de 19/10 quis evitar). `null` do
+ * intro do Pending segue sendo tratado por `buildDailyBrevoHtml`.
+ */
+export function resolveDailyBrevoIntro(
+  kitSemAbertura: KitSemAberturaConfig | undefined,
+  rootDir?: string,
+  render: { pending: typeof renderPendingIntroHtml; kitSemAbertura: typeof renderKitSemAberturaIntroHtml } = {
+    pending: renderPendingIntroHtml,
+    kitSemAbertura: renderKitSemAberturaIntroHtml,
+  },
+  movedInBrevoCount = 0,
+): string | null {
+  const pending = render.pending(rootDir);
+  if (!isKitSemAberturaEnabled(kitSemAbertura) && movedInBrevoCount === 0) return pending;
+  if (!pending) return null;
+  const kit = render.kitSemAbertura(rootDir);
+  if (!kit) {
+    throw new Error(
+      `brevo_diaria.kit_sem_abertura ligado, mas data/snippets/${KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME} ` +
+        "ausente/vazio — sem o intro próprio, quem veio do Kit receberia o pedido de confirmação do Pending (#10437).",
+    );
+  }
+  return buildOriginConditionalIntro(pending, kit);
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 /**
@@ -710,7 +750,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
     ? (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesFile)
     : {};
 
-  const introHtml = renderPendingIntroHtml(rootDir);
+  // #10437 — com `brevo_diaria.kit_sem_abertura` ligado, a lista tem também
+  // quem veio do Kit já confirmado: intro por origem (condicional da Brevo no
+  // atributo ORIGEM_DIARIA). Flag desligada ⇒ intro do Pending, como sempre.
+  let introHtml: string | null;
+  try {
+    const moved = readKitSemAberturaInBrevoCount(rootDir);
+    if ("error" in moved) {
+      throw new Error(`${moved.error} — não dá pra escolher o intro por origem com segurança (#10437)`);
+    }
+    if (moved.warning) log(`warn: ${moved.warning} (#10437).`);
+    introHtml = resolveDailyBrevoIntro(brevoDiaria?.kit_sem_abertura, rootDir, undefined, moved.count);
+  } catch (e) {
+    log(`ERRO: ${(e as Error).message}`);
+    process.exitCode = 2;
+    return;
+  }
   const { html, unresolvedImages, renderWarnings } = buildDailyBrevoHtml(content, publicImages, introHtml);
   if (unresolvedImages.length > 0) {
     log(`warn: ${unresolvedImages.length} placeholder(s) de imagem sem URL: ${unresolvedImages.join(", ")}`);

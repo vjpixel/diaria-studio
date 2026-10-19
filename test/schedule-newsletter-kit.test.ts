@@ -121,7 +121,7 @@ describe("scheduleNewsletterKit (#464)", () => {
   });
 
   it("patchSchedule é chamado com broadcastId + scheduledAt corretos", async () => {
-    let calledWith: [number, string] | null = null;
+    let calledWith: [number, string | null] | null = null; // #10437: sendAt aceita null (desagendar)
     const deps = makeDeps({
       patchSchedule: async (broadcastId, sendAt) => {
         calledWith = [broadcastId, sendAt];
@@ -404,6 +404,47 @@ describe("main() — integração (guard de CLI)", () => {
       assert.equal(state?.scheduled_at, "2026-08-26T09:00:00.000Z");
     } finally {
       process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("main() — audiência da diária por segmento (#10437)", () => {
+  it("segmento ligado e ausente da conta: exitCode 7, nada agendado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-schedule-main-10437-"));
+    const origFetch = globalThis.fetch;
+    const origArgv = process.argv;
+    const origKey = process.env.KIT_API_KEY;
+    process.env.KIT_API_KEY = "kit_test_key_10437";
+    const seen: string[] = [];
+    try {
+      writeFileSync(
+        join(root, "platform.config.json"),
+        JSON.stringify({ publishing: { newsletter: { backend: "kit" } }, kit: { diaria_exclusion_segment: { enabled: true, segment_id: 99 } } }),
+        "utf8",
+      );
+      globalThis.fetch = (async (url: string, init?: RequestInit) => {
+        const u = new URL(url);
+        seen.push(`${init?.method ?? "GET"} ${u.pathname}`);
+        if (u.pathname === "/v4/segments") {
+          return new Response(JSON.stringify({ segments: [], pagination: { has_next_page: false, end_cursor: null } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`chamada inesperada: ${u.pathname}`);
+      }) as typeof fetch;
+      process.argv = ["node", "schedule-newsletter-kit.ts", "--edition-dir", root, "--scheduled-at", "2026-08-26T09:00:00.000Z", "--allow-other-date"];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 7);
+      assert.deepEqual(seen, ["GET /v4/segments"], "nenhum PATCH de send_at");
+    } finally {
+      process.exitCode = undefined;
+      process.argv = origArgv;
+      globalThis.fetch = origFetch;
+      if (origKey === undefined) delete process.env.KIT_API_KEY;
+      else process.env.KIT_API_KEY = origKey;
       rmSync(root, { recursive: true, force: true });
     }
   });

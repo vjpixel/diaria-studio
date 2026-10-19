@@ -1554,3 +1554,137 @@ describe("#10465: --verify-ui-test-draft (só leitura, sem --mark-ui-test-sent)"
     assert.equal(r.ok && r.checked && r.warning !== undefined, true);
   });
 });
+
+// ── #10437: wiring da audiência por segmento no main() ────────────────
+
+describe("main() — audiência da diária por segmento (#10437)", () => {
+  function writeConfigWithSegment(root: string, segment: { enabled: boolean; segment_id: number | null }): void {
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ publishing: { newsletter: { backend: "kit" } }, kit: { diaria_exclusion_segment: segment } }),
+      "utf8",
+    );
+  }
+
+  it("segmento ligado mas ausente da conta: exit 13, nenhum broadcast criado", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-10437-"));
+    try {
+      writeConfigWithSegment(root, { enabled: true, segment_id: 99 });
+      const editionDir = writeEdition(root, "260998");
+      mockFetch((call) => {
+        if (call.method === "GET" && call.pathname === "/v4/segments") {
+          return jsonRes(200, { segments: [{ id: 1, name: "outro" }], pagination: { has_next_page: false, end_cursor: null } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 13);
+      assert.ok(!calls.some((c) => c.pathname === "/v4/broadcasts" && c.method === "POST"));
+      assert.equal(readPublishedState(editionDir), null);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("segmento desligado com contatos kit-sem-abertura: em in_brevo no store: exit 13, nenhuma rede", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-10437-"));
+    try {
+      writeConfigWithSegment(root, { enabled: false, segment_id: null });
+      const editionDir = writeEdition(root, "260998");
+      mkdirSync(join(root, "data/brevo-diaria"), { recursive: true });
+      writeFileSync(
+        join(root, "data/brevo-diaria/contacts.json"),
+        JSON.stringify({ contacts: [{ email: "m@x.com", beehiiv_subscription_id: "kit-sem-abertura:42", status: "in_brevo" }] }),
+        "utf8",
+      );
+      mockFetch(() => {
+        throw new Error("não deveria chamar fetch");
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 13);
+      assert.equal(calls.length, 0);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("draft existente + segmento ligado: o PATCH leva subscriber_filter do segmento e a releitura confirma", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-10437-"));
+    try {
+      writeConfigWithSegment(root, { enabled: true, segment_id: 99 });
+      const editionDir = writeEdition(root, "260998");
+      writePublishedState(editionDir, { broadcast_id: 777, subject: "a", preview_text: "b", status: "draft", test_broadcast_ids: [] });
+      const segmentFilter = [{ all: [{ type: "segment", ids: [99] }] }];
+      mockFetch((call) => {
+        if (call.method === "GET" && call.pathname === "/v4/segments") {
+          return jsonRes(200, { segments: [{ id: 99, name: "ativos sem envio-brevo" }], pagination: { has_next_page: false, end_cursor: null } });
+        }
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
+          return jsonRes(200, { broadcast: { id: 777, status: "draft", public_url: "https://news.diar.ia.br/p/777" } });
+        }
+        if (call.method === "GET" && call.pathname === "/v4/broadcasts/777") {
+          return jsonRes(200, { broadcast: { id: 777, status: "draft", send_at: null, subscriber_filter: segmentFilter } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, undefined);
+      const patch = calls.find((c) => c.method === "PATCH");
+      assert.deepEqual((patch!.body as { subscriber_filter: unknown }).subscriber_filter, segmentFilter);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("re-run sobre broadcast JÁ agendado com a releitura divergente: desagenda, estado local vira draft, exit 13", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-main-10437-"));
+    try {
+      writeConfigWithSegment(root, { enabled: true, segment_id: 99 });
+      const editionDir = writeEdition(root, "260998");
+      writePublishedState(editionDir, {
+        broadcast_id: 777,
+        subject: "a",
+        preview_text: "b",
+        status: "scheduled",
+        scheduled_at: "2026-10-20T09:00:00.000Z",
+        test_broadcast_ids: [],
+      });
+      let sendAt: string | null = "2026-10-20T09:00:00.000Z";
+      mockFetch((call) => {
+        if (call.method === "GET" && call.pathname === "/v4/segments") {
+          return jsonRes(200, { segments: [{ id: 99, name: "s" }], pagination: { has_next_page: false, end_cursor: null } });
+        }
+        if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/777") {
+          const body = call.body as { send_at?: string | null };
+          if ("send_at" in body) sendAt = body.send_at ?? null;
+          return jsonRes(200, { broadcast: { id: 777, status: sendAt ? "scheduled" : "draft", send_at: sendAt, public_url: "u" } });
+        }
+        if (call.method === "GET" && call.pathname === "/v4/broadcasts/777") {
+          // O Kit "perdeu" o filtro: devolve a base inteira.
+          return jsonRes(200, { broadcast: { id: 777, status: sendAt ? "scheduled" : "draft", send_at: sendAt, subscriber_filter: [] } });
+        }
+        throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+      });
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.exitCode = undefined;
+      await main(root);
+      assert.equal(process.exitCode, 13);
+      assert.equal(sendAt, null, "agendamento desfeito");
+      const state = readPublishedState(editionDir);
+      assert.equal(state?.status, "draft");
+      assert.equal(state?.scheduled_at, undefined);
+    } finally {
+      process.exitCode = undefined;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

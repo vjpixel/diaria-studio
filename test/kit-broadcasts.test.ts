@@ -194,12 +194,14 @@ describe("listSubscriberTags (#6504 item 2)", () => {
     assert.deepEqual(tags, [{ id: 5, name: "rampa-kit", created_at: "2026-08-28" }]);
   });
 
-  it("resposta 2xx sem envelope 'tags' devolve [] em vez de lançar — chamador trata como 'não confirmado', nunca crasha o push", async () => {
-    const tags = await withMockFetch(
-      (async () => jsonResponse(200, {})) as typeof fetch,
-      () => listSubscriberTags(10, TEST_CONFIG),
+  it("#10437: resposta 2xx sem envelope 'tags' LANÇA — um [] fabricado 'confirmava' a remoção de tag sem nada removido", async () => {
+    // Os callers confirmam nos dois sentidos (tag presente pós-tag, ausente
+    // pós-untag); todos já tratam exceção por e-mail como "não confirmado"
+    // (kit-gmail-warmup-ramp, kit-apoio-tag-sync, evaluate-brevo-diaria).
+    await assert.rejects(
+      withMockFetch((async () => jsonResponse(200, {})) as typeof fetch, () => listSubscriberTags(10, TEST_CONFIG)),
+      /sem o array "tags"/,
     );
-    assert.deepEqual(tags, []);
   });
 });
 

@@ -38,6 +38,15 @@
  * (inbox placement por provedor) — nunca são candidatas a exclusão, mesmo
  * quando `active` no Kit.
  *
+ * ## Exceção: contatos `kit-sem-abertura:` em `in_brevo` (#10437)
+ *
+ * Quem o Passo 3c moveu do Kit pra Brevo continua `active` no Kit de
+ * propósito (sai do envio do Kit pela tag `envio-brevo`, não por
+ * descadastro). Sem isenção este guard os tiraria da Brevo no primeiro
+ * dispatch, desfazendo a mudança de canal. A isenção vem do STORE
+ * (`kitSemAberturaExemptEmails`), inclusive quem está com a tag pendente de
+ * confirmação (`kit_tag_pending`).
+ *
  * ## Guard de publicação (#6485 — ver issue)
  *
  * Este módulo é código puro + I/O injetável — a chamada REAL contra a
@@ -64,6 +73,7 @@ import {
   type BrevoDiariaStore,
 } from "./brevo-diaria-store.ts";
 import { EDITOR_SEED_EMAILS } from "./editor-copy.ts";
+import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts"; // #10437
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_KIT_EXCLUSION_LOG_PATH = resolve(ROOT, "data/brevo-diaria/kit-exclusion-log.jsonl");
@@ -82,16 +92,36 @@ export function computeKitActiveExclusions(params: {
   brevoListEmails: readonly string[];
   kitActiveEmails: readonly string[];
   seedEmails?: readonly string[];
+  /**
+   * #10437 — quem está na lista Brevo DE PROPÓSITO apesar de `active` no Kit:
+   * contatos de origem `kit-sem-abertura:` ainda `in_brevo` (saíram do envio
+   * do Kit pela tag `envio-brevo`, não por descadastro). Sem esta isenção o
+   * guard os tiraria da Brevo no primeiro dispatch, desfazendo a mudança de
+   * canal. Ver `kitSemAberturaExemptEmails`.
+   */
+  exemptEmails?: readonly string[];
 }): string[] {
-  const { brevoListEmails, kitActiveEmails, seedEmails = EDITOR_SEED_EMAILS } = params;
+  const { brevoListEmails, kitActiveEmails, seedEmails = EDITOR_SEED_EMAILS, exemptEmails = [] } = params;
   const kitActiveSet = new Set(kitActiveEmails.map(normalizeEmail));
-  const seedSet = new Set(seedEmails.map(normalizeEmail));
+  const seedSet = new Set([...seedEmails, ...exemptEmails].map(normalizeEmail));
   const brevoNormalized = new Set(brevoListEmails.map(normalizeEmail));
   const excluded: string[] = [];
   for (const email of brevoNormalized) {
     if (kitActiveSet.has(email) && !seedSet.has(email)) excluded.push(email);
   }
   return excluded.sort();
+}
+
+/**
+ * Pura (#10437) — e-mails do store de origem `kit-sem-abertura:` ainda
+ * `in_brevo`: ativos no Kit COM a tag `envio-brevo`, recebendo pela Brevo de
+ * propósito. Com a flag do #10437 desligada o store não tem nenhum, e a
+ * isenção é vazia (guard idêntico ao de antes).
+ */
+export function kitSemAberturaExemptEmails(store: BrevoDiariaStore): string[] {
+  return store.contacts
+    .filter((c) => c.status === "in_brevo" && c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA))
+    .map((c) => c.email);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +195,8 @@ export interface KitActiveExclusionResult {
 
 /**
  * I/O — aplica o guard completo: lê a lista Brevo + ativos Kit, calcula a
- * interseção (menos seeds), remove da lista Brevo, marca `converted_to_kit`
+ * interseção (menos seeds e menos os `kit-sem-abertura:` em `in_brevo` do
+ * store, #10437), remove da lista Brevo, marca `converted_to_kit`
  * no store (só quem existir lá — a lista Brevo pode ter contato nunca
  * ingerido por este store, ex: seed ou legado), e loga cada exclusão.
  *
@@ -195,10 +226,12 @@ export async function applyKitActiveExclusionGuard(
     deps.fetchKitActiveEmails(params.kitConfig),
   ]);
 
+  let store = deps.readStore();
   const excluded = computeKitActiveExclusions({
     brevoListEmails,
     kitActiveEmails,
     seedEmails: params.seedEmails,
+    exemptEmails: kitSemAberturaExemptEmails(store), // #10437
   });
 
   if (excluded.length === 0) {
@@ -208,7 +241,6 @@ export async function applyKitActiveExclusionGuard(
   const removeResult = await deps.removeFromBrevoList(params.brevoApiKey, params.brevoListId, excluded);
   const removedSet = new Set(removeResult.contacts.success.map(normalizeEmail));
 
-  let store = deps.readStore();
   const now = deps.now();
   for (const email of excluded) {
     if (!removedSet.has(email)) continue; // só marca store/log pro que a Brevo confirmou
