@@ -42,9 +42,10 @@ describe("renderConfirmadoPage (#7737, rename #8554) — unit", () => {
     assert.match(html, /<a href="https:\/\/arquivo\.diar\.ia\.br\/">/);
   });
 
-  it("porta de cursos (#5518 B4) cumpre a promessa do e-mail de confirmação", () => {
+  it("porta de cursos (#5518 B4) sem a promessa de gratuidade (#10506, decisão do editor)", () => {
     const html = renderConfirmadoPage();
-    assert.match(html, /Cursos gratuitos de IA/);
+    assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos sobre IA<\/a>/);
+    assert.doesNotMatch(html, /gratuit|grátis/i);
   });
 
   it("(#7855) sem o CTA do formulário de interesses — removido a pedido do editor", () => {

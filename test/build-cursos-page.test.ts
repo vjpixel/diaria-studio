@@ -217,8 +217,9 @@ describe("renderCursosPage (#1745)", () => {
     assert.doesNotMatch(withBadDuration, /NaNh/);
   });
 
-  it("badge de certificado grátis só no curso que tem", () => {
-    assert.equal((html.match(/Certificado grátis/g) ?? []).length, 1);
+  it("badge de certificado só no curso que tem, sem prometer gratuidade (#10506)", () => {
+    assert.equal((html.match(/<span class="badge badge--cert">Certificado<\/span>/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /Certificado grátis/);
   });
 
   it("review #1891: embute THEME_LABELS completo (slug→label) pra rebuild não perder o label", () => {
