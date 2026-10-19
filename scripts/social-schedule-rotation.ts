@@ -50,6 +50,7 @@ import {
 import {
   DEFAULT_ROTATION_LOG,
   filterUseMelhorRowsByPublished,
+  formatRecordSummary,
   newRowsToRecord,
   recordRotationRows,
   rowKey,
@@ -142,8 +143,10 @@ function main(): void {
   if (has("--record")) {
     const logPath = resolve(ROOT, get("--log") ?? DEFAULT_ROTATION_LOG);
     // #10427 (review #10432): a linha `um` só é gravada se o post existiu.
-    const n = recordRotationRows(logPath, filterUseMelhorRowsByPublished(rows, social, ROOT));
-    console.log(`[social-schedule-rotation] ${n} linha(s) nova(s) em ${logPath} (${rows.length - n} já gravada(s)).`);
+    const toRecord = filterUseMelhorRowsByPublished(rows, social, ROOT);
+    const n = recordRotationRows(logPath, toRecord);
+    // #10438: "já gravada(s)" sobre o array FILTRADO, não sobre `rows`.
+    console.log(formatRecordSummary(logPath, n, toRecord.length, rows.length - toRecord.length));
     return;
   }
 

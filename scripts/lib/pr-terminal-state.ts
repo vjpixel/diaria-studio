@@ -54,6 +54,17 @@
  * `evaluatePrRetido`). O 2º caminho cobre o caso real da rodada 261018 — a
  * issue ficou `pulada` no plano e a PR, retida no GitHub. Sinal ilegível
  * (`retido: null`) NÃO conta: aqui a direção segura é reportar.
+ *
+ * ## PR alheia confirmada (#10439)
+ *
+ * Duas rodadas overnight concorrentes (suportado desde #6328): a que termina
+ * antes via os PRs em voo da outra como candidatos. Um candidato vira
+ * `alienConfirmed` (só informativo, nunca candidato) quando a autoria alheia
+ * é CONFIRMADA por um de dois sinais — nunca pelo nome do branch sozinho:
+ * (a) o número da PR está em `plan.json.alien_prs_confirmed` (confirmação
+ * manual do coordenador, antes ignorada pelo gate), ou (b) o branch está em
+ * `known_worktrees` de OUTRA sessão viva do `session-registry` (cruzamento
+ * feito no CLI, que passa os branches já resolvidos pra cá).
  */
 
 import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
@@ -132,10 +143,83 @@ type PrTerminalDivergence = RegisteredNotTerminalDivergence | UnregisteredBranch
 
 export interface PrTerminalStateVerdict {
   /** `divergent` = cenário 1 (erro, CLI `exit 1`); `candidates` = só cenário 2
-   * (aviso, CLI `exit 0`, #10430); `ok` = nada a reportar. */
+   * (aviso, CLI `exit 0`, #10430); `ok` = nada a reportar (PRs alheias
+   * confirmadas, #10439, não mudam o status). */
   status: "ok" | "candidates" | "divergent";
   registeredNotTerminal: RegisteredNotTerminalDivergence[];
   unregisteredCandidates: UnregisteredBranchCandidate[];
+  /** #10439: candidatos cuja autoria alheia foi confirmada — informativo. */
+  alienConfirmed: AlienConfirmedPr[];
+}
+
+/** #10439: sinais de autoria alheia confirmada. */
+export interface AlienEvidence {
+  /** `plan.json.alien_prs_confirmed` (números de PR). */
+  confirmedPrs?: ReadonlySet<number>;
+  /** Branches em `known_worktrees` de OUTRA sessão viva. */
+  liveForeignBranches?: ReadonlySet<string>;
+}
+
+export interface AlienConfirmedPr {
+  pr: number;
+  headRefName: string;
+  source: "plan-alien_prs_confirmed" | "session-registry";
+}
+
+/** Lê `alien_prs_confirmed` do plano cru — só inteiros positivos; qualquer
+ * outra forma vira conjunto vazio (nunca lança). */
+export function readAlienPrsConfirmed(planRaw: unknown): Set<number> {
+  const out = new Set<number>();
+  if (!planRaw || typeof planRaw !== "object") return out;
+  const v = (planRaw as Record<string, unknown>).alien_prs_confirmed;
+  if (!Array.isArray(v)) return out;
+  for (const n of v) if (typeof n === "number" && Number.isInteger(n) && n > 0) out.add(n);
+  return out;
+}
+
+/** Shape mínimo de uma sessão do `session-registry` (`listActiveSessions`). */
+export interface LiveSessionLike {
+  sessionId?: string;
+  stale?: boolean;
+  known_worktrees?: Array<{ branch?: string }>;
+}
+
+/**
+ * Pure (#10439): branches em `known_worktrees` de sessões vivas (não-stale)
+ * DIFERENTES de `ownSessionId`. Sem `ownSessionId` (plano legado sem
+ * `session_id`) devolve vazio: sem saber qual sessão é a própria, um PR
+ * esquecido DESTA rodada (o caso #5823) seria rotulado alheio.
+ */
+export function foreignLiveBranches(
+  sessions: readonly LiveSessionLike[],
+  ownSessionId: string | undefined,
+): Set<string> {
+  const out = new Set<string>();
+  if (!ownSessionId) return out;
+  for (const s of sessions) {
+    if (s.stale || !s.sessionId || s.sessionId === ownSessionId) continue;
+    for (const w of s.known_worktrees ?? []) if (w.branch) out.add(w.branch);
+  }
+  return out;
+}
+
+/** Pure (#10439): separa os candidatos com autoria alheia confirmada. */
+export function partitionAlienCandidates(
+  candidates: UnregisteredBranchCandidate[],
+  evidence: AlienEvidence = {},
+): { candidates: UnregisteredBranchCandidate[]; alienConfirmed: AlienConfirmedPr[] } {
+  const remaining: UnregisteredBranchCandidate[] = [];
+  const alienConfirmed: AlienConfirmedPr[] = [];
+  for (const c of candidates) {
+    if (evidence.confirmedPrs?.has(c.pr)) {
+      alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "plan-alien_prs_confirmed" });
+    } else if (c.headRefName && evidence.liveForeignBranches?.has(c.headRefName)) {
+      alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "session-registry" });
+    } else {
+      remaining.push(c);
+    }
+  }
+  return { candidates: remaining, alienConfirmed };
 }
 
 /**
@@ -221,12 +305,16 @@ export function checkPrTerminalState(
   openPrs: OpenPrLike[],
   planIssues: PlanIssueWithPrLike[],
   branchPrefixes: readonly string[] = SESSION_BRANCH_PREFIXES,
+  alienEvidence: AlienEvidence = {},
 ): PrTerminalStateVerdict {
   const registeredNotTerminal = findRegisteredNotTerminal(openPrs, planIssues);
-  const unregisteredCandidates = findUnregisteredBranchCandidates(openPrs, planIssues, branchPrefixes);
+  const { candidates: unregisteredCandidates, alienConfirmed } = partitionAlienCandidates(
+    findUnregisteredBranchCandidates(openPrs, planIssues, branchPrefixes),
+    alienEvidence,
+  );
   const status: PrTerminalStateVerdict["status"] =
     registeredNotTerminal.length > 0 ? "divergent" : unregisteredCandidates.length > 0 ? "candidates" : "ok";
-  return { status, registeredNotTerminal, unregisteredCandidates };
+  return { status, registeredNotTerminal, unregisteredCandidates, alienConfirmed };
 }
 
 /** Pure: exit code do CLI para um veredito — só divergência confirmada

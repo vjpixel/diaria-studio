@@ -18,9 +18,14 @@
  * `retida-para-editor` no plano) é terminal; PR `overnight/`/`develop/`/`fix/`
  * sem registro no plano é só AVISO (candidata, `exit 0`) — #10430.
  *
+ * PR de OUTRA rodada viva (#10439) — branch em `known_worktrees` de outra
+ * sessão do `session-registry`, ou número em `plan.json.alien_prs_confirmed`
+ * — sai da lista de candidatos e é listada como "alheia confirmada".
+ *
  * Uso:
  *   npx tsx scripts/check-pr-terminal-state.ts --plan data/overnight/260820/plan.json
  *   npx tsx scripts/check-pr-terminal-state.ts --plan {path} --skip-gh-checks
+ *   npx tsx scripts/check-pr-terminal-state.ts --plan {path} --root {repoRoot}  # data/sessions/ (default: cwd)
  *
  * @see scripts/lib/pr-terminal-state.ts
  * @see scripts/check-overnight-comment-coverage.ts (padrão de estilo/gate irmão)
@@ -32,9 +37,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { listActiveSessions } from "./lib/session-registry.ts";
 import {
   checkPrTerminalState,
+  foreignLiveBranches,
+  readAlienPrsConfirmed,
   verdictExitCode,
+  type LiveSessionLike,
   type OpenPrLike,
   type PlanIssueWithPrLike,
 } from "./lib/pr-terminal-state.ts";
@@ -106,7 +115,29 @@ if (isMainModule(import.meta.url)) {
 
   const openPrs = fetched.value ?? [];
   const planIssues = normalizeIssues<PlanIssueWithPrLike>(planRaw as IssuesBearing<PlanIssueWithPrLike>);
-  const verdict = checkPrTerminalState(openPrs, planIssues);
+  // #10439: sessões vivas do registry — fail-soft (registro ilegível = sem
+  // evidência alheia, nunca reprova por isso).
+  let sessions: LiveSessionLike[] = [];
+  try {
+    sessions = listActiveSessions(values.root ?? process.cwd());
+  } catch (e) {
+    console.error(`[check-pr-terminal-state] session-registry ilegível — sem cruzamento alheio: ${(e as Error).message}`);
+  }
+  const ownSessionId =
+    planRaw && typeof planRaw === "object" && typeof (planRaw as Record<string, unknown>).session_id === "string"
+      ? ((planRaw as Record<string, unknown>).session_id as string)
+      : undefined;
+  const verdict = checkPrTerminalState(openPrs, planIssues, undefined, {
+    confirmedPrs: readAlienPrsConfirmed(planRaw),
+    liveForeignBranches: foreignLiveBranches(sessions, ownSessionId),
+  });
+
+  if (verdict.alienConfirmed.length > 0) {
+    console.log("[check-pr-terminal-state] informativo (#10439): PR(s) de outra sessão, autoria alheia confirmada:");
+    for (const a of verdict.alienConfirmed) {
+      console.log(`  PR #${a.pr} — branch ${a.headRefName} (${a.source})`);
+    }
+  }
 
   if (verdict.status === "ok") {
     console.log(
