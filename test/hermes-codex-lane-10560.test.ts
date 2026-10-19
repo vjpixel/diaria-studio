@@ -121,11 +121,28 @@ before(() => {
       'case "${CODEX_STUB_MODE:-ok}" in',
       '  ok) echo "resposta codex"; exit 0 ;;',
       '  fail) echo "erro qualquer" >&2; exit 1 ;;',
-      "  quota) echo \"You've hit your usage limit. Try again later.\" >&2; exit 1 ;;",
+      // Erro da própria Codex CLI: linha `ERROR: ...` (evento de erro do
+      // `codex exec`), com ou sem `[timestamp] ` na frente (#10586).
+      "  quota) echo \"[2026-10-19T00:00:00] ERROR: You've hit your usage limit. Try again later.\" >&2; exit 1 ;;",
+      // #10586 item 1: a TRANSCRIÇÃO de progresso também vai pro stderr e,
+      // neste repo, fala de \"rate limit\"/\"model not found\" o tempo todo.
+      '  transcript-noise) { echo "thinking"; echo "Vou tratar o rate limit do Brevo (usage limit 100/h) e o erro model not found do #6617."; echo "exec bash -lc \\"npm test\\""; echo "Error: rate limit exceeded (saída de um teste no meio da transcrição)"; echo "ERROR: stream disconnected before completion"; } >&2; exit 1 ;;',
       // Review da PR #10583 (P2): trabalho parcial antes de falhar.
       '  partial-branch) git -C "$CODEX_STUB_REPO" branch "continuo/fix-10560-parcial-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
       '  partial-pr) echo "2026-10-19T00:00:00+00:00 https://github.com/o/r/pull/77 continuo/fix-10560-y" >> "$TMPDIR/codex-lane-pr-created.log"; exit 1 ;;',
-      "  partial-quota) git -C \"$CODEX_STUB_REPO\" branch \"continuo/fix-10560-quota-$$\" >/dev/null 2>&1; echo \"You've hit your usage limit.\" >&2; exit 1 ;;",
+      "  partial-quota) git -C \"$CODEX_STUB_REPO\" branch \"continuo/fix-10560-quota-$$\" >/dev/null 2>&1; echo \"ERROR: You've hit your usage limit.\" >&2; exit 1 ;;",
+      '  partial-transcript-quota) git -C "$CODEX_STUB_REPO" branch "continuo/fix-10560-tq-$$" >/dev/null 2>&1; echo "o teste cobre o caso de rate limit / usage limit" >&2; exit 1 ;;',
+      // #10586 item 2: branch FORA de continuo/* + commit no checkout.
+      '  partial-plain-branch) git -C "$CODEX_STUB_REPO" checkout -q -b "fix-123-$$" && echo z > "$CODEX_STUB_REPO/z-$$.txt" && git -C "$CODEX_STUB_REPO" add . && git -C "$CODEX_STUB_REPO" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m parcial; echo "timeout no meio" >&2; exit 1 ;;',
+      '  partial-commit-current) echo w > "$CODEX_STUB_REPO/w-$$.txt" && git -C "$CODEX_STUB_REPO" add . && git -C "$CODEX_STUB_REPO" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m parcial; echo "timeout no meio" >&2; exit 1 ;;',
+      // #10584: commit em master num repo descartável (como os testes que
+      // fazem `git init` em tmp) passa; no checkout-alvo continua recusado.
+      "  master-scope)",
+      '    u="$TMPDIR/unrelated-$$"; mkdir -p "$u"',
+      '    G="git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false"',
+      '    $G -C "$u" init -q -b master && echo a > "$u/a" && $G -C "$u" add a && $G -C "$u" commit -q -m init 2> "$TMPDIR/unrelated-commit.err"; echo $? > "$TMPDIR/unrelated-commit.rc"',
+      '    $G -C "$CODEX_STUB_REPO" checkout -q master; echo b > "$CODEX_STUB_REPO/b-$$" && $G -C "$CODEX_STUB_REPO" add . && $G -C "$CODEX_STUB_REPO" commit -q -m x 2> "$TMPDIR/target-commit.err"; echo $? > "$TMPDIR/target-commit.rc"',
+      '    echo "resposta codex"; exit 0 ;;',
       "esac",
       "",
     ].join("\n"),
@@ -165,8 +182,8 @@ function writeSessionFile(id = "hermes-cron-test-20261019T000000Z") {
   return id;
 }
 
-function runWrapper(env: NodeJS.ProcessEnv, args: string[] = []) {
-  return spawnSync("bash", [WRAPPER, "--cwd", repo, "--timeout", "20", ...args], {
+function runWrapper(env: NodeJS.ProcessEnv, args: string[] = [], cwd = repo) {
+  return spawnSync("bash", [WRAPPER, "--cwd", cwd, "--timeout", "20", ...args], {
     input: "implemente a issue de teste",
     encoding: "utf8",
     env,
@@ -238,6 +255,136 @@ describe("#10560 — ordem da cadeia", () => {
     );
     assert.equal(r.status, 95, r.stderr);
     assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")));
+  });
+
+  // #10586 item 1: "rate limit" só na transcrição não é sinal de cota.
+  it("trabalho parcial + 'rate limit' só na transcrição: aborta SEM gravar o marcador de cota", () => {
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-transcript-quota", CODEX_STUB_REPO: repo }),
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.equal(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), false);
+  });
+
+  // #10586 item 2: a foto olhava só refs/heads/continuo/*.
+  it("falha do codex DEPOIS de `checkout -b fix-123` + commit (fora de continuo/*): aborta com exit 95", () => {
+    const r2 = join(tmp, `repo-plain-${Date.now()}`);
+    initRepo(r2);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-plain-branch", CODEX_STUB_REPO: r2 }),
+      [],
+      r2,
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /trabalho parcial — .*head-ref refs\/heads\/fix-123-/);
+    assert.match(r.stderr, /branch fix-123-\d+ [0-9a-f]{40}/);
+    assert.equal(existsSync(join(runTmp, "claude-calls.log")), false);
+  });
+
+  it("falha do codex DEPOIS de commitar na branch atual (sem branch nova): aborta com exit 95", () => {
+    const r2 = join(tmp, `repo-cur-${Date.now()}`);
+    initRepo(r2);
+    assert.equal(sh("git", ["checkout", "-q", "-b", "feature-x"], r2).status, 0);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-commit-current", CODEX_STUB_REPO: r2 }),
+      [],
+      r2,
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /trabalho parcial — .*head-sha [0-9a-f]{40}/);
+  });
+});
+
+describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () => {
+  it("'rate limit'/'model not found' na transcrição do stderr: nem marcador de cota, nem config inválida", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "transcript-noise" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.equal(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), false, "transcrição marcou a cota como esgotada");
+    assert.doesNotMatch(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: (RATE-LIMIT|Codex CLI recusou)/);
+    assert.match(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1 — sem sinal claro/);
+  });
+
+  it("linha `ERROR:` da CLI com usage limit continua classificada como cota", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "quota" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT\/QUOTA/);
+    assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")));
+  });
+
+  it("codex_lane_cli_error_lines: ERROR: (com/sem timestamp) + `Error:` só na última linha", () => {
+    const f = join(runTmp, "stderr.txt");
+    writeFileSync(
+      f,
+      [
+        "thinking",
+        "rate limit da Brevo",
+        "Error: no meio (saída de comando)",
+        "[2026-10-19T01:02:03] ERROR: unexpected status 429 Too Many Requests",
+        "ERROR: model not found",
+        "",
+        "Error: falha de topo da CLI",
+        "",
+      ].join("\n"),
+    );
+    const res = spawnSync(
+      "bash",
+      ["-c", `source '${join(ROOT, "hermes/scripts/lib/codex-lane.sh")}'; codex_lane_cli_error_lines '${f}'`],
+      { encoding: "utf8" },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    assert.deepEqual(res.stdout.trimEnd().split("\n"), [
+      "[2026-10-19T01:02:03] ERROR: unexpected status 429 Too Many Requests",
+      "ERROR: model not found",
+      "Error: falha de topo da CLI",
+    ]);
+  });
+});
+
+describe("#10584 — guard de master só no checkout-alvo", () => {
+  it("e2e: dentro do codex, commit em master de repo descartável passa; no checkout-alvo é recusado", () => {
+    const target = join(tmp, `repo-scope-${Date.now()}`);
+    initRepo(target);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "master-scope", CODEX_STUB_REPO: target }),
+      [],
+      target,
+    );
+    assert.equal(r.status, 0, r.stderr);
+    const unrelatedRc = readFileSync(join(runTmp, "unrelated-commit.rc"), "utf8").trim();
+    assert.equal(unrelatedRc, "0", readFileSync(join(runTmp, "unrelated-commit.err"), "utf8"));
+    const targetRc = readFileSync(join(runTmp, "target-commit.rc"), "utf8").trim();
+    assert.notEqual(targetRc, "0");
+    assert.match(readFileSync(join(runTmp, "target-commit.err"), "utf8"), /codex-lane #10560\] recusado/);
+  });
+
+  it("hook com CODEX_LANE_GUARDED_COMMON_DIR: repo não relacionado commita em master; worktree do alvo segue guardado", () => {
+    const target = join(tmp, `repo-guarded-${Date.now()}`);
+    initRepo(target);
+    const other = join(tmp, `repo-other-${Date.now()}`);
+    initRepo(other);
+    const env = { ...hookEnv(), CODEX_LANE_GUARDED_COMMON_DIR: join(target, ".git") };
+    writeFileSync(join(other, "o.txt"), "1\n");
+    assert.equal(sh("git", ["add", "o.txt"], other, env).status, 0);
+    const c = sh("git", ["commit", "-q", "-m", "o"], other, env);
+    assert.equal(c.status, 0, c.stderr);
+
+    const wt = join(tmp, `wt-guarded-${Date.now()}`);
+    assert.equal(sh("git", ["worktree", "add", "-q", "-b", "continuo/fix-10584-wt", wt], target).status, 0);
+    writeFileSync(join(wt, "w.txt"), "1\n");
+    assert.equal(sh("git", ["add", "w.txt"], wt, env).status, 0);
+    const cw = sh("git", ["commit", "-q", "-m", "w"], wt, env);
+    assert.equal(cw.status, 0, cw.stderr);
+    const head = sh("git", ["rev-parse", "HEAD"], wt).stdout.trim();
+    const u = sh("git", ["update-ref", "refs/heads/master", head], wt, env);
+    assert.notEqual(u.status, 0);
+    assert.match(u.stderr, /codex-lane #10560\] recusado/);
   });
 });
 
@@ -396,6 +543,7 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
   let r: string;
   let realGhDir: string;
   let ghLog: string;
+  let ghStdinLog: string;
 
   before(() => {
     r = join(tmp, "ghrepo");
@@ -403,16 +551,27 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     realGhDir = join(tmp, "realgh");
     mkdirSync(realGhDir);
     ghLog = join(tmp, "realgh.log");
+    ghStdinLog = join(tmp, "realgh-stdin.log");
     writeFileSync(
       join(realGhDir, "gh"),
-      `#!/usr/bin/env bash\necho "$*" >> '${ghLog}'\nif [ "$1 $2" = "pr create" ]; then echo "https://github.com/o/r/pull/42"; fi\nexit 0\n`,
+      [
+        "#!/usr/bin/env bash",
+        `echo "$*" >> '${ghLog}'`,
+        'if [ "$1 $2" = "pr create" ]; then echo "https://github.com/o/r/pull/42"; fi',
+        // #10585: alias já gravado na config do gh real.
+        'if [ "$1 $2" = "alias list" ]; then echo "m: pr merge"; echo "co: pr checkout"; fi',
+        `case " $* " in *" --input - "*) cat > '${ghStdinLog}' ;; esac`,
+        "exit 0",
+        "",
+      ].join("\n"),
     );
     chmodSync(join(realGhDir, "gh"), 0o755);
   });
 
-  function gh(args: string[], cwd = r) {
+  function gh(args: string[], cwd = r, input?: string) {
     return spawnSync("bash", [join(GH_SHIM_DIR, "gh"), ...args], {
       cwd,
+      input,
       encoding: "utf8",
       timeout: 30_000,
       env: { ...process.env, PATH: `${GH_SHIM_DIR}:${realGhDir}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
@@ -454,6 +613,100 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     assert.equal(gh(["api", "-X", "PUT", "repos/o/r/pulls/5/merge"]).status, 3);
     assert.equal(gh(["api", "graphql", "-f", "query=mutation { mergePullRequest(input:{}) { clientMutationId } }"]).status, 3);
     assert.doesNotMatch(realCalls(), /merge/i);
+  });
+
+  // #10585: corpo vindo de arquivo/stdin escapava da varredura do argv.
+  it("merge via gh api com corpo em --input <arq> / -F campo=@arq / --input - (stdin) é recusado", () => {
+    // Nome neutro: a recusa tem que vir do CONTEÚDO, não do path no argv.
+    const q = join(tmp, "q1.graphql");
+    writeFileSync(q, "mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }\n");
+    const before = realCalls();
+    for (const args of [
+      ["api", "graphql", "--input", q],
+      ["api", "graphql", `--input=${q}`],
+      ["api", "graphql", "-F", `query=@${q}`],
+      ["api", "graphql", `--field=query=@${q}`],
+      ["api", "graphql", `-Fquery=@${q}`],
+    ]) {
+      const res = gh(args);
+      assert.equal(res.status, 3, `${args.join(" ")}: ${res.stderr}`);
+    }
+    const viaStdin = gh(["api", "graphql", "--input", "-"], r, '{"query":"mutation { enablePullRequestAutoMerge(input:{}) { clientMutationId } }"}');
+    assert.equal(viaStdin.status, 3, viaStdin.stderr);
+    const viaStdinField = gh(["api", "graphql", "-F", "query=@-"], r, "mutation { mergeBranch(input:{}) { clientMutationId } }");
+    assert.equal(viaStdinField.status, 3, viaStdinField.stderr);
+    assert.equal(realCalls(), before);
+  });
+
+  it("gh api com --input benigno passa, com argv intacto e stdin repassado ao gh real", () => {
+    const q = join(tmp, "ok.graphql");
+    writeFileSync(q, "query { viewer { login } }\n");
+    assert.equal(gh(["api", "graphql", "--input", q]).status, 0);
+    assert.ok(realCalls().includes(`api graphql --input ${q}`));
+    const res = gh(["api", "graphql", "--input", "-"], r, '{"query":"query { viewer { login } }"}');
+    assert.equal(res.status, 0, res.stderr);
+    assert.equal(readFileSync(ghStdinLog, "utf8"), '{"query":"query { viewer { login } }"}');
+  });
+
+  it("gh api com corpo em arquivo ilegível é recusado (não dá pra checar)", () => {
+    const res = gh(["api", "graphql", "--input", join(tmp, "nao-existe.graphql")]);
+    assert.equal(res.status, 3, res.stderr);
+  });
+
+  it("criação de PR via gh api (POST em pulls, explícito ou implícito, e createPullRequest) é recusada", () => {
+    const before = realCalls();
+    for (const args of [
+      ["api", "repos/o/r/pulls", "-f", "head=fix-1", "-f", "base=master", "-f", "title=t"],
+      ["api", "-X", "POST", "repos/{owner}/{repo}/pulls"],
+      ["api", "--method=post", "/repos/o/r/pulls/"],
+      ["api", "-R", "o/r", "repos/o/r/pulls", "-F", "draft=true"],
+      ["api", "graphql", "-f", "query=mutation { createPullRequest(input:{}) { pullRequest { url } } }"],
+    ]) {
+      const res = gh(args);
+      assert.equal(res.status, 3, `${args.join(" ")}: ${res.stderr}`);
+    }
+    assert.equal(realCalls(), before);
+  });
+
+  it("leitura de pulls e PATCH numa PR existente passam", () => {
+    for (const args of [
+      ["api", "repos/o/r/pulls"],
+      ["api", "-X", "GET", "repos/o/r/pulls", "-f", "state=open"],
+      ["api", "-X", "PATCH", "repos/o/r/pulls/5", "-f", "body=novo corpo"],
+      ["api", "repos/o/r/issues/1/comments", "-f", "body=@fulano veja"],
+      ["api", "repos/o/r/git/refs/heads/master"],
+    ]) {
+      const res = gh(args);
+      assert.equal(res.status, 0, `${args.join(" ")}: ${res.stderr}`);
+    }
+  });
+
+  it("merge sem PR via REST (merges, escrita em git/refs/heads/master) é recusado", () => {
+    for (const args of [
+      ["api", "-X", "POST", "repos/o/r/merges", "-f", "base=master", "-f", "head=x"],
+      ["api", "-X", "PATCH", "repos/o/r/git/refs/heads/master", "-f", "sha=abc", "-F", "force=true"],
+      ["api", "repos/o/r/git/refs/heads/main", "-f", "sha=abc"],
+    ]) {
+      const res = gh(args);
+      assert.equal(res.status, 3, `${args.join(" ")}: ${res.stderr}`);
+    }
+  });
+
+  it("gh alias (set/import) e invocação de alias já existente são recusados", () => {
+    const before = realCalls();
+    assert.equal(gh(["alias", "set", "m", "pr merge"]).status, 3);
+    assert.equal(gh(["alias", "import", "-"], r, "m: pr merge\n").status, 3);
+    assert.doesNotMatch(realCalls().slice(before.length), /alias set|alias import/);
+    const res = gh(["m", "5"]);
+    assert.equal(res.status, 3, res.stderr);
+    assert.match(res.stderr, /alias do gh 'm'/);
+    assert.doesNotMatch(realCalls(), /^m 5$/m);
+  });
+
+  it("comando fora da lista embutida que não é alias passa direto", () => {
+    const res = gh(["minha-extensao", "x"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(realCalls(), /^minha-extensao x$/m);
   });
 
   it("gh pr create em master é recusado", () => {

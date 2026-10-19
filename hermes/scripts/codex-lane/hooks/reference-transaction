@@ -11,19 +11,43 @@
 # refs/heads/master ou refs/heads/main: commit, merge, cherry-pick, revert,
 # am, reset, pull, update-ref, branch -f/-D. `--no-verify` não pula este
 # hook. `git fetch` (refs/remotes/*) e trocar de branch (só HEAD) passam.
+#
+# Escopo (#10584): `core.hooksPath` por env vale pra TODO repo git que o
+# codex tocar — inclusive os repos descartáveis que testes como
+# test/diff-touched-lines.test.ts criam com `git init` e commitam em master.
+# Recusar lá fazia `npm test` falhar sem relação com a mudança (e o codex
+# podia "consertar" teste que não estava quebrado). Por isso a recusa só vale
+# quando o common-dir deste repo é o do checkout-alvo, que codex-lane.sh
+# exporta em CODEX_LANE_GUARDED_COMMON_DIR (absoluto; worktrees do alvo
+# compartilham o mesmo common-dir, então continuam guardados). Var ausente =
+# recusa em qualquer repo (fail-closed: hooksPath armado sem o alvo
+# declarado não sabe o que proteger).
 state="$1"
 input=$(cat)
+
+abs_dir() {
+  (cd "$1" 2>/dev/null && pwd -P)
+}
+
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=""
 
 if [ "$state" = "prepared" ]; then
   blocked=$(printf '%s\n' "$input" | awk '$3 == "refs/heads/master" || $3 == "refs/heads/main" { print $3; exit }')
   if [ -n "$blocked" ]; then
-    echo "[codex-lane #10560] recusado: sessão do contínuo (elo codex exec) não pode atualizar $blocked. Crie uma branch continuo/fix-<issue>-<slug> (ou um worktree em .claude/worktrees/) antes de commitar." >&2
-    exit 1
+    guarded="${CODEX_LANE_GUARDED_COMMON_DIR:-}"
+    in_scope=1
+    if [ -n "$guarded" ] && [ -n "$common_dir" ]; then
+      [ "$(abs_dir "$common_dir")" = "$(abs_dir "$guarded")" ] || in_scope=0
+    fi
+    if [ "$in_scope" -eq 1 ]; then
+      echo "[codex-lane #10560] recusado: sessão do contínuo (elo codex exec) não pode atualizar $blocked. Crie uma branch continuo/fix-<issue>-<slug> (ou um worktree em .claude/worktrees/) antes de commitar." >&2
+      exit 1
+    fi
   fi
 fi
 
 # Encadeia pro reference-transaction original do repo, se existir.
-common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+[ -n "$common_dir" ] || exit 0
 orig="$common_dir/hooks/reference-transaction"
 if [ -x "$orig" ]; then
   printf '%s\n' "$input" | "$orig" "$@"
