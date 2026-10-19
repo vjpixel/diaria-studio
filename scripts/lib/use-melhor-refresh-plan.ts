@@ -15,6 +15,8 @@ import { USE_MELHOR_POST_ID, type UseMelhorPostStatusInput } from "./use-melhor-
 export interface UseMelhorRefreshInput {
   /** URL do item gravado ANTES da re-seleção (null = nada gravado). */
   previousUrl: string | null;
+  /** URL cujo `## um` ficou pendente numa rodada anterior (marcador até `--done`). */
+  pendingUrl?: string | null;
   /** Status gathered DEPOIS da re-seleção. */
   status: UseMelhorPostStatusInput;
 }
@@ -54,6 +56,10 @@ export function buildUseMelhorRefreshPlan(
 
   if (input.previousUrl !== null && input.previousUrl !== item.url) {
     plan.reasons.push(`item trocado: ${input.previousUrl} → ${item.url}`);
+    plan.rewrite_text = true;
+  }
+  if (input.pendingUrl && input.pendingUrl === item.url && !plan.rewrite_text) {
+    plan.reasons.push("reescrita do '## um' pendente de rodada anterior (rode com --done ao terminar)");
     plan.rewrite_text = true;
   }
   if (!status.hasSocialSection) {
@@ -104,6 +110,7 @@ export function buildUseMelhorRefreshPlan(
   }
   plan.steps.push(
     `${n++}. Re-render/re-servir o social preview e conferir: npx tsx scripts/select-use-melhor-post.ts --edition-dir ${dir}/ --status`,
+    `${n++}. Ao terminar: npx tsx scripts/refresh-use-melhor-post.ts --edition-dir ${dir}/ --done`,
   );
   return plan;
 }

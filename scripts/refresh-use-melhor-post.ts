@@ -10,16 +10,20 @@
  * Só a re-seleção grava (`_internal/use-melhor-post.json`); social-writer /
  * social-curto / humanizador são agents/skills — ficam como passos do plano.
  *
- * Uso: npx tsx scripts/refresh-use-melhor-post.ts --edition-dir data/editions/AAMMDD/ [--force] [--json]
+ * Uso: npx tsx scripts/refresh-use-melhor-post.ts --edition-dir data/editions/AAMMDD/ [--force] [--json] | --done
+ * (--done limpa a pendência gravada em _internal/use-melhor-refresh-pending.json)
  * Exit 0 sempre (fail-soft, como o select), exceto uso errado (2).
  */
 
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { loadUseMelhorPostConfigState, readUseMelhorPostState } from "./lib/use-melhor-post.ts";
 import { gatherUseMelhorStatusInput } from "./lib/use-melhor-status.ts";
 import { buildUseMelhorRefreshPlan } from "./lib/use-melhor-refresh-plan.ts";
 import { runSelectionWithSteps } from "./select-use-melhor-post.ts";
+
+const PENDING_REL = "_internal/use-melhor-refresh-pending.json";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -30,7 +34,13 @@ async function main(): Promise<number | void> {
     console.error("uso: refresh-use-melhor-post.ts --edition-dir <dir> [--force] [--json]");
     return 2;
   }
-  const config = loadUseMelhorPostConfigState(ROOT);
+  const pendingAbs = resolve(editionDir, PENDING_REL);
+  if (args.flags.has("done")) {
+    rmSync(pendingAbs, { force: true });
+    console.log("pendência do 4º post limpa");
+    return;
+  }
+  const config = loadUseMelhorPostConfigState(ROOT, basename(resolve(editionDir)));
   const previous = config.enabled ? readUseMelhorPostState(editionDir) : null;
   await runSelectionWithSteps(editionDir, config, {
     useReviewed: true,
@@ -38,7 +48,20 @@ async function main(): Promise<number | void> {
   });
   const statusConfig = loadUseMelhorPostConfigState(ROOT, basename(resolve(editionDir)));
   const status = gatherUseMelhorStatusInput(editionDir, statusConfig);
-  const plan = buildUseMelhorRefreshPlan({ previousUrl: previous?.item?.url ?? null, status }, editionDir);
+  let pendingUrl: string | null = null;
+  if (existsSync(pendingAbs)) {
+    try {
+      pendingUrl = JSON.parse(readFileSync(pendingAbs, "utf8")).url ?? null;
+    } catch {
+      pendingUrl = null;
+    }
+  }
+  const plan = buildUseMelhorRefreshPlan({ previousUrl: previous?.item?.url ?? null, pendingUrl, status }, editionDir);
+  const itemUrl = status.state?.item?.url;
+  if (plan.rewrite_text && itemUrl) {
+    mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+    writeFileSync(pendingAbs, JSON.stringify({ url: itemUrl }), "utf8");
+  }
   if (args.flags.has("json")) console.log(JSON.stringify(plan, null, 2));
   else console.log([...plan.reasons.map((r) => `- ${r}`), ...plan.steps].join("\n"));
 }

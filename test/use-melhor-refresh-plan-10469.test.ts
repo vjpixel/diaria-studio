@@ -50,6 +50,18 @@ describe("buildUseMelhorRefreshPlan (#10469)", () => {
     assert.equal(p.carousel_slides, 3);
     assert.ok(!p.steps.join("\n").includes("social-writer"));
   });
+  it("2ª rodada sem concluir: pendência mantém a reescrita (review #10473)", () => {
+    const p = buildUseMelhorRefreshPlan(
+      { previousUrl: "https://a.com/x", pendingUrl: "https://a.com/x", status: status() },
+      DIR,
+    );
+    assert.equal(p.rewrite_text, true);
+    assert.match(p.steps.join("\n"), /--done/);
+  });
+  it("sem '## um' / com marca → reescreve", () => {
+    assert.equal(buildUseMelhorRefreshPlan({ previousUrl: "https://a.com/x", status: status({ hasSocialSection: false }) }, DIR).rewrite_text, true);
+    assert.equal(buildUseMelhorRefreshPlan({ previousUrl: "https://a.com/x", status: status({ socialUmMentionsBrand: true }) }, DIR).rewrite_text, true);
+  });
   it("desligado ou sem item → sem passos", () => {
     const off = status();
     off.config = { enabled: false, time: null } as UseMelhorPostStatusInput["config"];
