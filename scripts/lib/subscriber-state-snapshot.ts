@@ -47,6 +47,11 @@ import { KIT_ORIGEM_CADASTRO_FIELD_NAME } from "./shared/kit-signup-origin.ts";
  *  `beehiiv-backup-snapshots.ts`. */
 const SNAPSHOT_DIR_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Custom field do Kit com o `utm_source` do cadastro (#8548) — o mesmo
+ *  `fields.utm_source` que `ingestKitRoster` grava no store (#7174: a UTM
+ *  vive em `fields`, nunca no bloco `attribution`). */
+export const KIT_UTM_SOURCE_FIELD_NAME = "utm_source";
+
 /** Subconjunto mínimo do Kit subscriber que este domínio precisa: os 3
  *  campos obrigatórios da issue #8552 (`(id, state, created_at)`, que NÃO
  *  dependem de custom field e portanto escapam da armadilha de `fields`
@@ -68,6 +73,12 @@ export interface SubscriberStateRecord {
   /** #8552 — custom field `origem_cadastro` (canal de entrada), OPCIONAL,
    *  mesma disciplina de `confirmou_via`. */
   origem?: string;
+  /** #8548 — custom field `utm_source` (canal pago: `google-ads`/`meta-ads`/
+   *  …), OPCIONAL, mesma disciplina de `confirmou_via`. Ausente em snapshots
+   *  anteriores ao #8548 — o relatório cruza com o store de assinantes pra
+   *  cobrir esses. O reativar pode sobrescrever o `utm_source` do Kit
+   *  (#8235), então o relatório usa o PRIMEIRO valor visto, não o último. */
+  utm_source?: string;
   /** #8552 (a) — `true` quando o id estava vinculado ao form DOI
    *  (`KIT_DOI_FORM_ID`, `GET /v4/forms/{id}/subscribers?status=all`) NO
    *  MOMENTO deste snapshot. Ausente = snapshot antigo / sem form configurado
@@ -94,8 +105,10 @@ export function toSubscriberStateRecord(s: {
   const rec: SubscriberStateRecord = { id: s.id, state: s.state, created_at: s.created_at };
   const via = s.fields?.[REATIVAR_CONFIRMOU_VIA_FIELD_NAME];
   const origem = s.fields?.[KIT_ORIGEM_CADASTRO_FIELD_NAME];
+  const utmSource = s.fields?.[KIT_UTM_SOURCE_FIELD_NAME];
   if (via) rec.confirmou_via = via;
   if (origem) rec.origem = origem;
+  if (utmSource) rec.utm_source = utmSource;
   return rec;
 }
 
@@ -172,6 +185,7 @@ export function parseSubscriberStateJsonl(content: string): SubscriberStateRecor
         const rec: SubscriberStateRecord = { id: parsed.id, state: parsed.state, created_at: parsed.created_at };
         if (typeof parsed.confirmou_via === "string" && parsed.confirmou_via) rec.confirmou_via = parsed.confirmou_via;
         if (typeof parsed.origem === "string" && parsed.origem) rec.origem = parsed.origem;
+        if (typeof parsed.utm_source === "string" && parsed.utm_source) rec.utm_source = parsed.utm_source;
         if (parsed.doi_form === true) rec.doi_form = true;
         out.push(rec);
       }
