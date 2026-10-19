@@ -459,6 +459,13 @@ export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
   "/assinar",
   "/archive",
   /^\/archive\/[0-9]+$/,
+  // #10509: landings que `reconcile-site-sitemap.ts` passou a declarar no
+  // sitemap. Nomeadas uma a uma (não um prefixo `/produto/*`) pela mesma
+  // razão da allowlist inteira; `test/site-sitemap-landings-10509.test.ts`
+  // acusa landing em disco que entre no sitemap sem estar aqui.
+  "/produto/conteudo-autentico",
+  "/guia/agente-ia",
+  "/evento/agente-ia",
 ];
 
 /** `true` se `loc` é uma das superfícies estáticas conhecidas (`KNOWN_STATIC_SITEMAP_PATHS`). */
@@ -1240,6 +1247,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
 .special-card--dark p { color: rgba(244,239,226,0.7); }
 .special-card .btn { align-self: flex-start; }
 .special-card--dark .btn-ink { background: var(--teal); color: var(--ink); }
+.special-card p a { color: var(--teal); text-decoration: underline; text-underline-offset: 2px; }
 
 /* Archive */
 .archive { padding: 64px 0; }
@@ -1388,6 +1396,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
           <span class="kicker" style="color: var(--teal)">● Para assinantes</span>
           <h3>Cursos <span class="accent">sobre IA.</span></h3>
           <p>Selecionados entre os melhores cursos sobre IA, a maioria gratuita. Atualizamos toda semana.</p>
+          <p>Nova aula da diar.ia.br: <a href="/produto/conteudo-autentico">Conteúdo Autêntico com IA</a>.</p>
           <a class="btn btn-ink" href="https://cursos.diar.ia.br/">Ver todos os cursos</a>
         </div>
       </div>

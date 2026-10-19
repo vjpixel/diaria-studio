@@ -102,7 +102,7 @@ const PAGE_DESCRIPTION =
  * render fresco; "hoje" nunca bate com o commit de ontem). Bump manual
  * quando o conteúdo GEO (intro/FAQ) for reescrito de forma substancial —
  * não a cada atualização rotineira do seed de cursos. */
-const GEO_CONTENT_DATE = "2026-10-19"; // #10497: intro + FAQ sem a contagem de "acesso gratuito"/"certificado sem custo" (aula paga em destaque); antes 2026-09-19 (#8470)
+const GEO_CONTENT_DATE = "2026-10-19"; // #10506 (mesmo dia): perguntas 1/2/4 do FAQ sem "gratuito", badge "Certificado"; #10497: intro + FAQ sem a contagem de "acesso gratuito"/"certificado sem custo" (aula paga em destaque); antes 2026-09-19 (#8470)
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -354,13 +354,20 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
   // certificado de cada curso ficam no card e nos filtros "Custo"/
   // "Certificado", não numa afirmação agregada. As PERGUNTAS seguem as
   // mesmas (fraseado GEO, #4558 Parte B — mexer nelas é decisão editorial).
+  //
+  // #10506 (decisão do editor, briefing overnight 261019c): as PERGUNTAS 1, 2
+  // e 4 também perderam a promessa de "gratuito" — a decisão editorial que o
+  // #10497 deixou em aberto. A pergunta 2 do instrumento GEO
+  // (`GEO_QUESTIONS`, `scripts/lib/geo-citation-monitor.ts`) continua com o
+  // fraseado antigo de propósito: ali ela é demanda de busca medida em série
+  // desde 07/ago, não promessa desta página.
   return [
     {
-      question: "Quais são os melhores cursos gratuitos de inteligência artificial?",
+      question: "Quais são os melhores cursos de inteligência artificial?",
       answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, de ${plataformas} plataformas diferentes. Use o filtro de "Custo" para ver só os gratuitos. ${open} ficam abertos diretamente na página, e o restante é desbloqueado para assinantes da diar.ia.br.`,
     },
     {
-      question: "Onde encontro cursos gratuitos de inteligência artificial em português?",
+      question: "Onde encontro uma lista de cursos de inteligência artificial em português?",
       answer: `Aqui: a curadoria da diar.ia.br reúne ${ptBr} cursos em português, organizados por nível, formato, custo e plataforma nesta página.`,
     },
     {
@@ -368,7 +375,7 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
       answer: `Sim, ${ptBr} dos ${total} cursos da lista são em português, cobrindo desde fundamentos de IA até IA generativa e ética. Os outros ${en} estão em inglês, geralmente cursos mais técnicos.`,
     },
     {
-      question: "Tem curso de IA gratuito com certificado?",
+      question: "Tem curso de IA com certificado?",
       answer: `Use o filtro de "Certificado" na página para ver os cursos que emitem certificado ao concluir. As condições de cada certificado ficam na plataforma de origem do curso.`,
     },
     {
@@ -429,7 +436,10 @@ function renderCard(c: Course): string {
     ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a>`
     : esc(c.title);
   const featuredTag = c.featured ? `\n        <p class="featured-tag">Curso em destaque</p>` : "";
-  const certBadge = c.certificate ? `<span class="badge badge--cert">Certificado grátis</span>` : "";
+  // #10506: rótulo neutro ("Certificado", como o filtro "Com certificado") —
+  // a página não afirma gratuidade de certificado; as condições ficam na
+  // plataforma de origem.
+  const certBadge = c.certificate ? `<span class="badge badge--cert">Certificado</span>` : "";
   const badges = [
     `<span class="badge badge--lang">${esc(LANG_LABEL[c.language])}</span>`,
     `<span class="badge">${esc(LEVEL_LABEL[c.level])}</span>`,
@@ -727,7 +737,7 @@ ${gateBanner}  <header>
       <h1>Cursos sobre IA<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
 ${geoIntroHtml}
-      <p class="lede">Todos os links levam direto à plataforma. Auditoria gratuita dá acesso ao conteúdo; o certificado, quando pago, está marcado.</p>
+      <p class="lede">Todos os links levam direto à plataforma, onde ficam as condições de acesso e de certificado de cada curso.</p>
     </div>
   </header>
   <div class="filters">

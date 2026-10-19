@@ -5,6 +5,12 @@
  * `workers/site/public/sitemap.xml`. Miolo puro (e o porquê do invariante)
  * em `scripts/lib/site-sitemap-orphans.ts`; aqui só a CLI.
  *
+ * Desde o #10509 cobre também toda landing pública fora de `/p/` (todo
+ * `public/**\/index.html`: home, `/produto/…`, `/guia/…`, `/evento/…`),
+ * menos o que `SITEMAP_EXCLUDED_PATHS` nomeia ou a página marca `noindex`.
+ * `--public-dir` aponta a raiz da varredura; sem ele, a varredura só roda
+ * quando `--sitemap` é o default.
+ *
  * ## Por que este script existe, se já havia dois caminhos que mexem no sitemap
  *
  * Os dois cobrem casos disjuntos e nenhum cobre o buraco entre eles:
@@ -65,10 +71,13 @@ import { addSitemapEntry, archiveUrlForSlug } from "./lib/site-archive-pages.ts"
 import { ARCHIVE_CARD_LIMIT, buildHomeFeed, buildIndexHtml } from "./lib/site-home-page.ts";
 import {
   DEFAULT_PAGES_DIR,
+  DEFAULT_PUBLIC_DIR,
   DEFAULT_SITEMAP,
   buildSlugDateMap,
+  findLandingOrphanPaths,
   findOrphanSlugs,
   listPageSlugs,
+  locForPublicPath,
   slugsInSitemap,
 } from "./lib/site-sitemap-orphans.ts";
 
@@ -88,11 +97,21 @@ function parseArgs(argv: string[]) {
     // fizeram (a home passou a listar os slugs de fixture "a" e "b"), e o guard
     // do #6375 pegou. Um `--home` explícito continua vencendo.
     homePath: get("--home", join(dirname(get("--sitemap", DEFAULT_SITEMAP)), "index.html")),
+    // #10509: raiz da varredura de landings fora de `/p/`. Só tem default
+    // quando o sitemap também é o default — `--sitemap` apontado pra outro
+    // lugar sem `--public-dir` desliga a varredura, em vez de comparar um
+    // sitemap de fixture com as landings de PRODUÇÃO (mesma armadilha do
+    // `--home` logo acima).
+    publicDir: argv.includes("--public-dir")
+      ? get("--public-dir", DEFAULT_PUBLIC_DIR)
+      : get("--sitemap", DEFAULT_SITEMAP) === DEFAULT_SITEMAP
+        ? DEFAULT_PUBLIC_DIR
+        : null,
   };
 }
 
 export function main(argv = process.argv.slice(2)): number {
-  const { check, pagesDir, sitemapPath, homePath } = parseArgs(argv);
+  const { check, pagesDir, sitemapPath, homePath, publicDir } = parseArgs(argv);
 
   if (!existsSync(sitemapPath)) {
     console.error(`[reconcile-site-sitemap] sitemap ausente: ${sitemapPath}`);
@@ -106,17 +125,22 @@ export function main(argv = process.argv.slice(2)): number {
 
   const xml = readFileSync(sitemapPath, "utf8");
   const orphans = findOrphanSlugs(pageSlugs, xml);
+  // #10509: landings fora de `/p/` (home, /produto, /guia, /evento, …).
+  const landingOrphans = publicDir ? findLandingOrphanPaths(publicDir, xml) : [];
 
   console.log(
-    `[reconcile-site-sitemap] páginas=${pageSlugs.length} no sitemap=${slugsInSitemap(xml).size} órfãs=${orphans.length}`,
+    `[reconcile-site-sitemap] páginas=${pageSlugs.length} no sitemap=${slugsInSitemap(xml).size} órfãs=${orphans.length}` +
+      (publicDir ? ` landings órfãs=${landingOrphans.length}` : " (varredura de landings desligada: --sitemap sem --public-dir)"),
   );
-  if (orphans.length === 0) return 0;
+  if (orphans.length === 0 && landingOrphans.length === 0) return 0;
   for (const slug of orphans) console.log(`  órfã: ${slug}`);
+  for (const p of landingOrphans) console.log(`  landing órfã: ${p}`);
 
   if (check) {
     console.error(
-      `[reconcile-site-sitemap] ${orphans.length} página(s) fora do sitemap — invisíveis para buscador ` +
-        `E para arquivo.diar.ia.br. Corrigir: 'npx tsx scripts/reconcile-site-sitemap.ts'.`,
+      `[reconcile-site-sitemap] ${orphans.length + landingOrphans.length} página(s) fora do sitemap — invisíveis para buscador ` +
+        `(e, as de /p/, para arquivo.diar.ia.br). Corrigir: 'npx tsx scripts/reconcile-site-sitemap.ts' ` +
+        `— ou, se a landing não deve ser indexada, nomeá-la em SITEMAP_EXCLUDED_PATHS (scripts/lib/site-sitemap-orphans.ts).`,
     );
     return 2;
   }
@@ -144,6 +168,10 @@ export function main(argv = process.argv.slice(2)): number {
     if (!lastmod) semData += 1;
     next = addSitemapEntry(next, { loc: archiveUrlForSlug(slug), lastmod });
   }
+  // Landings entram sem `<lastmod>` — não há fonte de data de conteúdo pra
+  // elas (o `lastmod` é opcional no protocolo) e, por não terem slug de
+  // edição, ficam fora do feed da home (`KNOWN_STATIC_SITEMAP_PATHS`).
+  for (const p of landingOrphans) next = addSitemapEntry(next, { loc: locForPublicPath(p) });
   writeFileSync(sitemapPath, next, "utf8");
 
   // VERIFICA O PRÓPRIO CONSERTO antes de reportar sucesso. Contar chamadas a
@@ -151,13 +179,28 @@ export function main(argv = process.argv.slice(2)): number {
   // no-op devolveria exit 0 com "N entradas acrescentadas" e mandaria o editor
   // de volta ao gate achando que resolveu — que é exatamente a classe de falha
   // silenciosa que este script existe para acabar, reintroduzida no corretor.
-  const restantes = findOrphanSlugs(pageSlugs, readFileSync(sitemapPath, "utf8"));
+  const relido = readFileSync(sitemapPath, "utf8");
+  const restantes = [
+    ...findOrphanSlugs(pageSlugs, relido),
+    ...(publicDir ? findLandingOrphanPaths(publicDir, relido) : []),
+  ];
   if (restantes.length > 0) {
     console.error(
       `[reconcile-site-sitemap] a escrita não resolveu ${restantes.length} órfã(s): ` +
         `${restantes.join(", ")}. O sitemap foi gravado, mas segue incompleto — NÃO tratar como corrigido.`,
     );
     return 1;
+  }
+
+  // #10509: só landings entraram — elas nunca entram no feed da home
+  // (`KNOWN_STATIC_SITEMAP_PATHS`), então regenerar a home aqui só traria
+  // ruído (a eleição do hero depende do relógio, #7686) sem nada novo.
+  if (orphans.length === 0) {
+    console.log(
+      `[reconcile-site-sitemap] ${landingOrphans.length} landing(s) acrescentada(s), 0 órfãs restantes; ` +
+        `home não regenerada (nenhuma edição nova no sitemap)`,
+    );
+    return 0;
   }
 
   // A home (`index.html`) é DERIVADA do sitemap + das páginas
@@ -189,7 +232,7 @@ export function main(argv = process.argv.slice(2)): number {
   } else {
     writeFileSync(homePath, buildIndexHtml({ feature: feed[0] ?? null, archive: feed.slice(1) }), "utf8");
     console.log(
-      `[reconcile-site-sitemap] ${orphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
+      `[reconcile-site-sitemap] ${orphans.length + landingOrphans.length} entrada(s) acrescentada(s), 0 órfãs restantes; home regenerada` +
         (semData > 0
           ? ` (${semData} sem <lastmod> — sem data a entrada não compete pelo hero; re-rodar com data/ montada para datá-las)`
           : "") +

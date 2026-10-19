@@ -241,15 +241,7 @@ export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
   const { pageUrl, headline, description, datePublished, dateModified, faq, siteName = "diar.ia.br" } = opts;
   const author = opts.author ?? GEO_AUTHOR;
   const graph: Record<string, unknown>[] = [
-    {
-      "@type": "FAQPage",
-      "@id": `${pageUrl}#faq`,
-      mainEntity: faq.map((item) => ({
-        "@type": "Question",
-        name: item.question,
-        acceptedAnswer: { "@type": "Answer", text: stripMarkdownLinks(item.answer) },
-      })),
-    },
+    buildGeoFaqPageNode(pageUrl, faq),
     {
       "@type": "Article",
       "@id": `${pageUrl}#article`,
@@ -278,6 +270,31 @@ export function renderGeoJsonLd(opts: GeoJsonLdOptions): string {
       })),
     });
   }
+  return renderJsonLdGraphScript(graph);
+}
+
+/** Node `FAQPage` do `@graph` — extraído de `renderGeoJsonLd` (#10510) pra
+ * páginas que montam um `@graph` próprio (ex: `Course` + `FAQPage` +
+ * `BreadcrumbList` da página de venda `/produto/conteudo-autentico`) sem
+ * duplicar o formato das perguntas. Mesma regra de `acceptedAnswer.text`
+ * (texto puro, `[texto](url)` vira só `texto`). */
+export function buildGeoFaqPageNode(pageUrl: string, faq: readonly GeoFaqItem[]): Record<string, unknown> {
+  return {
+    "@type": "FAQPage",
+    "@id": `${pageUrl}#faq`,
+    mainEntity: faq.map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: { "@type": "Answer", text: stripMarkdownLinks(item.answer) },
+    })),
+  };
+}
+
+/** `<script type="application/ld+json">` com `@context` + `@graph`, seguro
+ * pra embutir no HTML (`<` vira `<`, então nenhum `</script>` dentro de
+ * um texto fecha a tag). Compartilhado por `renderGeoJsonLd` e pela página
+ * de venda do #10510. */
+export function renderJsonLdGraphScript(graph: readonly Record<string, unknown>[]): string {
   // </script>-safe embed — mesmo padrão de themeLabelJson em build-livros-page.ts/build-cursos-page.ts.
   const json = JSON.stringify({ "@context": "https://schema.org", "@graph": graph }).replaceAll("<", "\\u003c");
   return `<script type="application/ld+json">${json}</script>`;

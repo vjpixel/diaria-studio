@@ -136,6 +136,7 @@ import { dirname, resolve, win32 as pathWin32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { type FacebookCredentialsFile, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
@@ -380,6 +381,8 @@ export interface Stage0RunDeps {
   mkdirSync: (p: string) => void;
   readFile: (p: string) => string;
   writeFile: (path: string, content: string) => void;
+  /** Env pra resolver credencial por página do Facebook (0k, #10505). Ausente = `process.env`. */
+  env?: Record<string, string | undefined>;
 }
 
 export function productionDeps(rootDir: string = ROOT): Stage0RunDeps {
@@ -442,6 +445,40 @@ function softStep(
     report.note(`⚠️  ${label} falhou (exit ${result.code}) — fail-soft, não bloqueia Stage 0.`);
   }
   return { result, json: parseStepJson(result.stdout) };
+}
+
+/**
+ * Gate do verify-facebook-posts (0k, #10505): roda se ALGUMA página de
+ * `publishing.social.facebook.pages` (habilitada ou não — o verify age sobre
+ * posts que já existem, igual a `resolveFacebookPageForEntry`) tem credencial
+ * completa. Config inválido não pula: o próprio script falha e o `softStep`
+ * registra.
+ */
+export function facebookVerifyGate(deps: Stage0RunDeps): { run: true } | { run: false; reason: string } {
+  let config: unknown = {};
+  try {
+    config = JSON.parse(deps.readFile(resolve(deps.rootDir, "platform.config.json")));
+  } catch {
+    // config ausente/ilegível → fallback de compat do helper (só a `diaria`).
+  }
+  const credsPath = resolve(deps.rootDir, "data", ".fb-credentials.json");
+  let fileCreds: FacebookCredentialsFile = {};
+  if (deps.existsSync(credsPath)) {
+    try {
+      fileCreds = JSON.parse(deps.readFile(credsPath)) as FacebookCredentialsFile;
+    } catch {
+      // arquivo corrompido = sem credencial de arquivo (mesmo de `readFacebookCredentialsFile`).
+    }
+  }
+  let pages;
+  try {
+    pages = resolveFacebookPages(loadFacebookPagesConfig(config), deps.env ?? process.env, fileCreds);
+  } catch {
+    return { run: true };
+  }
+  if (pages.some((p) => p.missing.length === 0)) return { run: true };
+  const missing = pages.map((p) => `${p.slug} (${p.missing.join("/")})`).join(", ");
+  return { run: false, reason: `nenhuma página Facebook com credencial completa — ${missing}; posts da edição anterior sem verificação.` };
 }
 
 function logEvent(
@@ -971,8 +1008,15 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   const prevFbResult = deps.exec("scripts/find-last-edition-with-fb.ts", ["--current", opts.edition]);
   const prevDir = prevFbResult.code === 0 ? prevFbResult.stdout.trim() : "";
   if (prevDir) {
-    if (deps.existsSync(resolve(deps.rootDir, "data", ".fb-credentials.json"))) {
+    // #10505: a credencial vem do helper central por página (env por página
+    // OU o legado `data/.fb-credentials.json` da `diaria`) — antes só o
+    // arquivo legado destravava o passo, e credencial só no env pulava a
+    // verificação em silêncio. Sem credencial nenhuma, o pulo vira nota.
+    const fbGate = facebookVerifyGate(deps);
+    if (fbGate.run) {
       softStep(deps, report, "verify-facebook-posts (0k)", "scripts/verify-facebook-posts.ts", ["--edition-dir", `${prevDir}/`]);
+    } else {
+      report.note(`⚠️  0k — verify-facebook-posts pulado: ${fbGate.reason}`);
     }
     softStep(deps, report, "verify-social-worker-dispatch (0k)", "scripts/verify-social-worker-dispatch.ts", ["--edition-dir", `${prevDir}/`]);
     // #5766/#6152 — Twitter via API GraphQL do Buffer, token vem de env (não

@@ -77,7 +77,13 @@ export interface SubscriberStateRecord {
    *  …), OPCIONAL, mesma disciplina de `confirmou_via`. Ausente em snapshots
    *  anteriores ao #8548 — o relatório cruza com o store de assinantes pra
    *  cobrir esses. O reativar pode sobrescrever o `utm_source` do Kit
-   *  (#8235), então o relatório usa o PRIMEIRO valor visto, não o último. */
+   *  (#8235), então o relatório usa o PRIMEIRO valor visto, não o último.
+   *
+   *  #10507 — string VAZIA (`""`) é diferente de ausente: `""` = o Kit
+   *  devolveu `fields` e o `utm_source` estava vazio NESTE snapshot (prova de
+   *  campo vazio, base do "orgânico" no relatório); ausente = snapshot antigo
+   *  (pré-#8548) ou resposta sem `fields` (cobertura desconhecida). Só os
+   *  snapshots gravados a partir do #10507 carregam o `""`. */
   utm_source?: string;
   /** #8552 (a) — `true` quando o id estava vinculado ao form DOI
    *  (`KIT_DOI_FORM_ID`, `GET /v4/forms/{id}/subscribers?status=all`) NO
@@ -95,7 +101,10 @@ export function markDoiFormMembership(
 }
 
 /** Mapeia um subscriber do Kit pro record do snapshot (#8552). `fields`
- *  ausente/vazio ou campos vazios → só os 3 obrigatórios. Puro. */
+ *  ausente ou campos vazios → só os 3 obrigatórios, EXCETO `utm_source`:
+ *  com `fields` presente e o `utm_source` vazio/nulo, grava `utm_source: ""`
+ *  (#10507) — o snapshot passa a provar campo vazio em vez de omiti-lo, e o
+ *  relatório consegue separar orgânico de snapshot antigo. Puro. */
 export function toSubscriberStateRecord(s: {
   id: number;
   state: string;
@@ -109,6 +118,7 @@ export function toSubscriberStateRecord(s: {
   if (via) rec.confirmou_via = via;
   if (origem) rec.origem = origem;
   if (utmSource) rec.utm_source = utmSource;
+  else if (s.fields !== undefined && s.fields !== null) rec.utm_source = "";
   return rec;
 }
 
@@ -185,7 +195,8 @@ export function parseSubscriberStateJsonl(content: string): SubscriberStateRecor
         const rec: SubscriberStateRecord = { id: parsed.id, state: parsed.state, created_at: parsed.created_at };
         if (typeof parsed.confirmou_via === "string" && parsed.confirmou_via) rec.confirmou_via = parsed.confirmou_via;
         if (typeof parsed.origem === "string" && parsed.origem) rec.origem = parsed.origem;
-        if (typeof parsed.utm_source === "string" && parsed.utm_source) rec.utm_source = parsed.utm_source;
+        // #10507: `""` é preservado (prova de campo vazio), ausente segue ausente.
+        if (typeof parsed.utm_source === "string") rec.utm_source = parsed.utm_source;
         if (parsed.doi_form === true) rec.doi_form = true;
         out.push(rec);
       }

@@ -1059,12 +1059,18 @@ export type AlarmReconcileAction =
  * "parou de aparecer" porque a campanha já foi avaliada). Uma entry
  * `"evento"` fica CONGELADA (mesmo tratamento da allowlist acima) até um
  * humano fechar a issue manualmente — nunca por streak.
+ *
+ * `isAbsenceUnmeasured` (#10520, default nunca) — chave de estado cujo sinal
+ * NÃO foi medido nesta execução (API em erro, sonda inconclusiva). Ausência
+ * de achado aí não é evidência de resolução: a entry fica congelada (sem
+ * comentário, sem avançar streak, sem fechar) até o sinal voltar a medir.
  */
 export function planAlarmReconciliation(
   pending: readonly AlarmFinding[],
   state: AlarmIssuesState,
   closeAfterRuns: number,
   allowlist: AlarmAllowlist = [],
+  isAbsenceUnmeasured: (key: string) => boolean = () => false,
 ): AlarmReconcileAction[] {
   const actions: AlarmReconcileAction[] = [];
   const activePending = pending.filter((f) => !isAllowlisted(f.check, f.fingerprint, allowlist));
@@ -1082,6 +1088,7 @@ export function planAlarmReconciliation(
     // #5553 — entries sem `family` persistida (state.json pré-#5553) tratam
     // como "estado", preservando o comportamento de auto-close de antes.
     if ((entry.family ?? "estado") === "evento") continue;
+    if (isAbsenceUnmeasured(key)) continue;
     const nextStreak = entry.missingStreak + 1;
     if (nextStreak >= closeAfterRuns) {
       actions.push({ kind: "close", key, issueNumber: entry.issueNumber });
@@ -1108,6 +1115,8 @@ export interface ApplyAlarmReconciliationOptions {
   /** #5364 — achados aceitos como limitação permanente; default `[]`
    * (comportamento inalterado quando o caller não passa nada). */
   allowlist?: AlarmAllowlist;
+  /** #10520 — repassado a `planAlarmReconciliation`; default nunca. */
+  isAbsenceUnmeasured?: (key: string) => boolean;
 }
 
 export interface ApplyAlarmReconciliationResult {
@@ -1136,7 +1145,7 @@ export function applyAlarmReconciliation(
   const nextState: AlarmIssuesState = { ...state };
   const findingOutcomes: AlarmFindingOutcome[] = [];
 
-  const actions = planAlarmReconciliation(pending, state, opts.closeAfterRuns, allowlist);
+  const actions = planAlarmReconciliation(pending, state, opts.closeAfterRuns, allowlist, opts.isAbsenceUnmeasured);
 
   for (const action of actions) {
     if (action.kind === "ensure") {

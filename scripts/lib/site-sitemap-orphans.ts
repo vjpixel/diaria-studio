@@ -29,6 +29,10 @@ import { publishDateToIso, type ArchivePost } from "./site-archive-pages.ts";
 
 export const DEFAULT_PAGES_DIR = "workers/site/public/p";
 export const DEFAULT_SITEMAP = "workers/site/public/sitemap.xml";
+/** Raiz dos static assets do Worker `site` — de onde sai a varredura de landings (#10509). */
+export const DEFAULT_PUBLIC_DIR = "workers/site/public";
+/** Origem pública do apex — prefixo do `<loc>` das landings fora de `/p/`. */
+export const SITE_ORIGIN = "https://diar.ia.br";
 const BEEHIIV_POSTS_DIR = "data/beehiiv-cache/posts";
 const EDITIONS_ROOT = "data/editions";
 
@@ -154,4 +158,131 @@ export function buildSlugDateMap(
   }
 
   return { map, corrupt };
+}
+
+/*
+ * ## Landings fora de `/p/` (#10509)
+ *
+ * Até o #10509 o invariante acima só olhava `public/p/`. Toda página pública
+ * fora dali (a home `/`, `/produto/conteudo-autentico`, `/guia/agente-ia`,
+ * `/evento/agente-ia`) nascia órfã de sitemap: em 19/10/2026,
+ * `/produto/conteudo-autentico` estava havia ~40 h no ar sem uma única visita
+ * de Googlebot, bingbot ou OAI-SearchBot verificado. As funções abaixo cobrem
+ * todo `index.html` sob `public/`, com uma lista EXPLÍCITA do que não entra.
+ */
+
+/** Uma exclusão nomeada — o `reason` existe para a lista nunca virar "porque sim". */
+export interface SitemapExclusion {
+  /** Path público exato (`"/assinar"`) ou shape (`RegExp` sobre o path normalizado). */
+  path: string | RegExp;
+  reason: string;
+}
+
+/**
+ * O que existe em disco como página e NÃO entra no sitemap.
+ *
+ * Lista e não heurística de propósito (mesma direção segura do
+ * `KNOWN_STATIC_SITEMAP_PATHS` de `site-home-page.ts`): página nova que não
+ * está aqui é acusada como órfã. O default é entrar no sitemap; tirar uma
+ * página de lá exige nomeá-la com motivo.
+ *
+ * `noindex` declarado na própria página também exclui (`isNoindexHtml`), sem
+ * precisar estar listado: anunciar ao crawler uma URL que pede para não ser
+ * indexada é o erro "Enviada, marcada como noindex" do Search Console. A
+ * entrada de `/assinar` é redundante com isso de propósito: se o meta sumir
+ * num redesign, a página continua fora sem depender dele.
+ */
+export const SITEMAP_EXCLUDED_PATHS: readonly SitemapExclusion[] = [
+  { path: "/assinar", reason: "página de conversão com noindex (não é conteúdo de busca)" },
+  {
+    path: /^\/evento\/agente-ia\/[a-z]$/,
+    reason:
+      "variantes de criativo de anúncio (a–f) de /evento/agente-ia — mesmo conteúdo da landing canônica; " +
+      "entrar no sitemap seria anunciar duplicata",
+  },
+];
+
+/** Normaliza um path público: sem barra final, exceto a raiz. */
+function normalizePath(pathname: string): string {
+  return pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+}
+
+/** `true` se o path casa alguma exclusão de `SITEMAP_EXCLUDED_PATHS` (ou da lista passada). */
+export function isExcludedFromSitemap(
+  path: string,
+  exclusions: readonly SitemapExclusion[] = SITEMAP_EXCLUDED_PATHS,
+): boolean {
+  const p = normalizePath(path);
+  return exclusions.some((e) => (typeof e.path === "string" ? e.path === p : e.path.test(p)));
+}
+
+/** `<meta name="robots|googlebot" content="…noindex…">`, em qualquer ordem de atributos. */
+export function isNoindexHtml(html: string): boolean {
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = m[0];
+    if (
+      /\bname\s*=\s*["']?(robots|googlebot)["']?/i.test(tag) &&
+      /\bcontent\s*=\s*["'][^"']*\bnoindex\b/i.test(tag)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Paths públicos (`/`, `/produto/x`, …) de todo `index.html` sob `publicDir`,
+ * EXCETO a árvore `p/` — coberta por `listPageSlugs`/`findOrphanSlugs` acima,
+ * com o tratamento de slug-prefixo do #7280. Ordem estável.
+ */
+export function listPublicPagePaths(publicDir: string): string[] {
+  if (!existsSync(publicDir)) return [];
+  const out: string[] = [];
+  const walk = (dir: string, rel: string) => {
+    if (existsSync(join(dir, "index.html"))) out.push(rel === "" ? "/" : `/${rel}`);
+    for (const d of readdirSync(dir, { withFileTypes: true })) {
+      if (!d.isDirectory() || d.name.startsWith(".")) continue;
+      if (rel === "" && d.name === "p") continue;
+      walk(join(dir, d.name), rel === "" ? d.name : `${rel}/${d.name}`);
+    }
+  };
+  walk(publicDir, "");
+  return out.sort();
+}
+
+/** Paths (normalizados) de todos os `<loc>` do sitemap, `/p/` incluído. */
+export function pathsInSitemap(xml: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)) {
+    try {
+      out.add(normalizePath(new URL(m[1]).pathname));
+    } catch {
+      // `<loc>` que não é URL absoluta não declara path nenhum. Ignorar é o
+      // lado seguro: a página correspondente continua acusada como órfã.
+    }
+  }
+  return out;
+}
+
+/** `<loc>` canônico de um path público: `/` vira `https://diar.ia.br/`, o resto sem barra final. */
+export function locForPublicPath(path: string): string {
+  const p = normalizePath(path);
+  return p === "/" ? `${SITE_ORIGIN}/` : `${SITE_ORIGIN}${p}`;
+}
+
+/**
+ * Landings órfãs: página pública fora de `/p/`, não excluída (lista ou
+ * `noindex`), sem `<loc>` correspondente. Ordem estável.
+ */
+export function findLandingOrphanPaths(
+  publicDir: string,
+  sitemapXml: string,
+  exclusions: readonly SitemapExclusion[] = SITEMAP_EXCLUDED_PATHS,
+): string[] {
+  const declared = pathsInSitemap(sitemapXml);
+  return listPublicPagePaths(publicDir).filter((p) => {
+    if (declared.has(p) || isExcludedFromSitemap(p, exclusions)) return false;
+    const file = join(publicDir, p === "/" ? "" : p.slice(1), "index.html");
+    return !isNoindexHtml(readFileSync(file, "utf8"));
+  });
 }

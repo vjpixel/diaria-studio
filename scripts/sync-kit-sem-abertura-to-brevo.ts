@@ -73,7 +73,7 @@
  * store ausente, tag `envio-brevo` inexistente, registro de broadcasts
  * ilegível).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -124,6 +124,14 @@ import {
   type KitSemAberturaConfig,
   type KitSemAberturaLogEntry,
 } from "./lib/kit-sem-abertura.ts";
+import {
+  DEFAULT_KIT_ENGAGEMENT_CACHE_PATH,
+  extendKitEngagementCache,
+  mergeEngagementIndexes,
+  planKitEngagementFetch,
+  type KitEngagementCache,
+} from "./lib/kit-engagement-cache.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export { DEFAULT_KIT_SEM_ABERTURA_LOG_PATH };
@@ -148,6 +156,13 @@ export interface KitSemAberturaDeps {
   readRegistry: () => DiariaBroadcastRecord[];
   listKitActive: () => Promise<KitActiveCandidate[]>;
   fetchEngagement: (broadcastId: number) => Promise<BroadcastEngagement>;
+  /**
+   * Cache do engajamento de broadcasts com >= 7 dias (#10514,
+   * `lib/kit-engagement-cache.ts`). Ausente ⇒ relê todo o registro (como
+   * antes). `read` devolve o JSON cru ou `null`; erro em `read`/`write` é
+   * fail-soft (aviso + releitura completa).
+   */
+  engagementCache?: { read: () => unknown; write: (cache: KitEngagementCache) => void };
   findEnvioBrevoTagId: () => Promise<number | null>;
   readStore: () => BrevoDiariaStore;
   writeStore: (store: BrevoDiariaStore) => void;
@@ -350,9 +365,28 @@ export async function runKitSemAberturaSync(
     };
   }
 
+  let cacheRaw: unknown = null;
+  if (deps.engagementCache) {
+    try {
+      cacheRaw = deps.engagementCache.read();
+    } catch (e) {
+      log(`aviso: cache de engajamento ilegível (${(e as Error).message}) — relendo todos os broadcasts.`);
+    }
+  }
+  const plan = planKitEngagementFetch({ records, sentIds, nowMs: deps.nowMs, cacheRaw });
+  if (plan.discarded) log(`aviso: cache de engajamento descartado (${plan.discarded}) — relendo todos os broadcasts.`);
   const perBroadcast: BroadcastEngagement[] = [];
-  for (const id of sentIds) perBroadcast.push(await deps.fetchEngagement(id));
-  const engagement = buildEngagementIndex(perBroadcast, new Set(matureIds));
+  for (const id of plan.toFetch) perBroadcast.push(await deps.fetchEngagement(id));
+  log(`engajamento: ${plan.toFetch.length} broadcast(s) relido(s) do Kit, ${sentIds.length - plan.toFetch.length} do cache.`);
+  const engagement = mergeEngagementIndexes(plan.cachedIndex, buildEngagementIndex(perBroadcast, new Set(matureIds)));
+  const nextCache = deps.engagementCache ? extendKitEngagementCache(plan, perBroadcast) : null;
+  if (nextCache) {
+    try {
+      deps.engagementCache!.write(nextCache);
+    } catch (e) {
+      log(`aviso: falha ao gravar o cache de engajamento (${(e as Error).message}) — a próxima rodada relê mais.`);
+    }
+  }
 
   const selection = selectKitSemAbertura({
     subscribers: actives,
@@ -682,6 +716,13 @@ async function main(): Promise<void> {
     readRegistry: () => readDiariaBroadcastRegistry(resolve(ROOT, editionsRoot())),
     listKitActive: () => listKitActiveCandidates(log, kitPacer),
     fetchEngagement: (id) => fetchDeliveredEngagement(id, log, kitPacer),
+    engagementCache: {
+      read: () => (existsSync(DEFAULT_KIT_ENGAGEMENT_CACHE_PATH) ? JSON.parse(readFileSync(DEFAULT_KIT_ENGAGEMENT_CACHE_PATH, "utf8")) : null),
+      write: (c) => {
+        mkdirSync(dirname(DEFAULT_KIT_ENGAGEMENT_CACHE_PATH), { recursive: true });
+        writeFileAtomic(DEFAULT_KIT_ENGAGEMENT_CACHE_PATH, JSON.stringify(c) + "\n");
+      },
+    },
     findEnvioBrevoTagId: async () => {
       await kitPacer();
       return findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME);

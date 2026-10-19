@@ -29,6 +29,16 @@
  * responde 200 hoje, mas usar um UA identificável evita depender disso
  * continuar valendo se a Cloudflare endurecer challenge por UA no futuro.
  *
+ * **Crawler de IA barrado na borda (#10508)**: o texto do `robots.txt`
+ * pode estar certo e a zona ainda devolver 403 ao bot (regra gerenciada
+ * "Block AI bots" isenta o próprio `/robots.txt`). Por isso o script também
+ * (1) sonda `GET https://{host}/` com UA de GPTBot e ClaudeBot nos 6 hosts
+ * de `AI_CRAWLER_PROBE_HOSTS` (apex incluído) e (2) soma os 403 reais de
+ * `verifiedBotCategory = "AI Crawler"` das últimas 24h via GraphQL
+ * (`CLOUDFLARE_API_TOKEN`; zona por `CLOUDFLARE_ZONE_ID` ou o id fixo de
+ * `lib/apex-cutover.ts`), fora Amazonbot. Os dois sinais são fail-soft —
+ * lógica em `scripts/lib/ai-crawler-access-check.ts`.
+ *
  * Uso:
  *   npx tsx scripts/robots-txt-drift-check.ts               # avalia + persiste + alarma se NOVO drift
  *   npx tsx scripts/robots-txt-drift-check.ts --dry-run      # avalia + imprime, NÃO persiste nem alarma
@@ -78,6 +88,22 @@ import {
   type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
+import {
+  probeAllAiCrawlerAccess,
+  fetchAiCrawler403Rows,
+  summarizeAiCrawler403,
+  blockedProbesByHost,
+  hasPendingAiCrawlerFindings,
+  aiCrawlerProbeFindingKey,
+  aiCrawler403ContentSignature,
+  buildAiCrawlerProbeIssueBody,
+  buildAiCrawler403IssueBody,
+  buildAiCrawlerAlarmEmailLines,
+  AI_CRAWLER_403_ZONE_FINGERPRINT,
+  type AiCrawlerProbeResult,
+  type AiCrawler403Summary,
+} from "./lib/ai-crawler-access-check.ts";
+import { ZONE_ID as DIARIA_ZONE_ID } from "./lib/apex-cutover.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "robots-txt-drift-check", "state.json");
@@ -153,6 +179,82 @@ export function toAlarmFinding(r: RobotsDriftResult): AlarmFinding {
   };
 }
 
+/** #10508 — achados de crawler de IA barrado na borda, no mesmo formato
+ * `AlarmFinding`. Um por host bloqueado na sonda por UA + um agregado da
+ * zona para os 403 reais do dia (fingerprint FIXO; a mudança do conjunto
+ * host × bot vai como `contentSignature`, então vira comentário na issue
+ * aberta em vez de issue nova a cada dia). */
+export function toAiCrawlerAlarmFindings(
+  probes: readonly AiCrawlerProbeResult[],
+  summary: AiCrawler403Summary | null,
+): AlarmFinding[] {
+  const findings: AlarmFinding[] = blockedProbesByHost(probes).map(({ host, bots }) => ({
+    check: `ai-crawler-probe:${host}`,
+    fingerprint: aiCrawlerProbeFindingKey(host, bots),
+    family: "estado",
+    title: `[diar.ia.br] Cloudflare barra ${bots.join("/")} com 403 em ${host}`,
+    body: buildAiCrawlerProbeIssueBody(host, bots),
+    labels: ["bug"],
+    priority: "P2",
+  }));
+  if (summary !== null && summary.total > 0) {
+    findings.push({
+      check: "ai-crawler-403-zona",
+      fingerprint: AI_CRAWLER_403_ZONE_FINGERPRINT,
+      family: "estado",
+      title: "[diar.ia.br] zona Cloudflare devolve 403 a crawlers de IA verificados",
+      body: buildAiCrawler403IssueBody(summary),
+      labels: ["bug"],
+      priority: "P2",
+      contentSignature: aiCrawler403ContentSignature(summary),
+    });
+  }
+  return findings;
+}
+
+/** #10520 — chaves `ai-crawler-*` cujo sinal NÃO foi medido nesta execução:
+ * a zona inteira quando a GraphQL não voltou `ok` (erro/token ausente), e o
+ * host cuja sonda saiu `inconclusive` pra algum bot. Ausência de achado
+ * nessas chaves não prova resolução — `planAlarmReconciliation` preserva a
+ * issue aberta em vez de comentar/fechar por streak. */
+export function aiCrawlerUnmeasuredKeys(
+  probes: readonly AiCrawlerProbeResult[],
+  fetched403Status: "ok" | "skipped" | "error",
+): (key: string) => boolean {
+  const unmeasuredHosts = new Set(probes.filter((p) => p.status === "inconclusive").map((p) => p.host));
+  return (key) => {
+    if (fetched403Status !== "ok" && key.startsWith("ai-crawler-403-zona:")) return true;
+    for (const host of unmeasuredHosts) {
+      if (key.startsWith(`ai-crawler-probe:${host}:`)) return true;
+    }
+    return false;
+  };
+}
+
+/** E-mail combinado: seção do robots.txt (quando há drift) + seção dos
+ * crawlers de IA (quando há bloqueio). Assunto reflete o que está pendente. */
+export function buildCombinedAlarmEmail(
+  results: readonly RobotsDriftResult[],
+  probes: readonly AiCrawlerProbeResult[],
+  summary: AiCrawler403Summary | null,
+  now: Date,
+  issueRefs?: ReadonlyMap<string, { issueNumber: number | null; url: string | null; action: string; error?: string }>,
+): { subject: string; body: string } {
+  const aiLines = buildAiCrawlerAlarmEmailLines(probes, summary);
+  if (!hasPendingRobotsDrift(results)) {
+    return {
+      subject: "[diar.ia.br] Cloudflare barra crawlers de IA na borda",
+      body: [...aiLines, "", `(alarme automático — checagem rodou em ${now.toISOString()})`].join("\n"),
+    };
+  }
+  const robots = buildRobotsDriftAlarmEmail(results, now, issueRefs);
+  if (aiLines.length === 0) return robots;
+  return {
+    subject: `${robots.subject} + crawlers de IA barrados`,
+    body: `${robots.body}\n\n${aiLines.join("\n")}`,
+  };
+}
+
 // ─── Checagem HTTP por host (I/O, fail-soft) ───────────────────────────────
 
 /**
@@ -207,8 +309,9 @@ async function main(): Promise<void> {
 
   const discovered = discoverWorkerPublicHosts(WORKERS_DIR);
   if (discovered.length === 0) {
-    console.log(`${LOG_PREFIX} nenhum host público descoberto sob workers/ — nada a checar.`);
-    return;
+    // #10508: não retorna mais aqui — a sonda de crawler de IA usa lista
+    // própria de hosts e roda mesmo sem Worker descoberto.
+    console.log(`${LOG_PREFIX} nenhum host público descoberto sob workers/ — robots.txt não checado.`);
   }
 
   // Um mesmo host pode aparecer mais de uma vez (não acontece hoje — 1
@@ -233,8 +336,32 @@ async function main(): Promise<void> {
     console.log(`${LOG_PREFIX} ${r.host}: ${r.status} — ${r.message}`);
   }
 
+  // #10508 — sinal 1: a borda deixa GPTBot/ClaudeBot entrar? (fail-soft por par)
+  const probes = await probeAllAiCrawlerAccess();
+  for (const p of probes) {
+    const detail = p.fetchError ? `erro: ${p.fetchError}` : `HTTP ${p.httpStatus}`;
+    console.log(`${LOG_PREFIX} sonda ${p.bot} → ${p.host}: ${p.status} (${detail})`);
+  }
+
+  // #10508 — sinal 2: 403 reais de "AI Crawler" nas últimas 24h (GraphQL).
+  // Token ausente/erro de API = log, nunca alarme nem exceção.
+  const zoneId = process.env.CLOUDFLARE_ZONE_ID || DIARIA_ZONE_ID;
+  const fetched403 = await fetchAiCrawler403Rows(zoneId, process.env.CLOUDFLARE_API_TOKEN);
+  let summary403: AiCrawler403Summary | null = null;
+  if (fetched403.status === "ok") {
+    summary403 = summarizeAiCrawler403(fetched403.rows);
+    console.log(
+      `${LOG_PREFIX} 403 de AI Crawler (${fetched403.since} → ${fetched403.until}): ` +
+        `${summary403.total}${summary403.truncated ? "+" : ""} fora Amazonbot ` +
+        `(Amazonbot, bloqueado de propósito: ${summary403.intentionallyBlocked}).`,
+    );
+  } else {
+    console.warn(`${LOG_PREFIX} 403 de AI Crawler não consultado (${fetched403.status}): ${fetched403.detail}`);
+  }
+
   const state = loadState();
-  const pending = hasPendingRobotsDrift(results);
+  const robotsPending = hasPendingRobotsDrift(results);
+  const pending = robotsPending || hasPendingAiCrawlerFindings(probes, summary403);
   console.log(
     `${LOG_PREFIX} ${pending ? "drift pendente" : "nenhum drift pendente"} ` +
       `(última checagem: ${state.lastCheckedAt ?? "nunca"}).`,
@@ -245,13 +372,14 @@ async function main(): Promise<void> {
   // hub-drift-check.ts/home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "error");
-  const alarmFindings = driftedResults.map(toAlarmFinding);
+  const alarmFindings = [...driftedResults.map(toAlarmFinding), ...toAiCrawlerAlarmFindings(probes, summary403)];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+  const isAbsenceUnmeasured = aiCrawlerUnmeasuredKeys(probes, fetched403.status);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
   let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, [], isAbsenceUnmeasured);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
@@ -260,6 +388,7 @@ async function main(): Promise<void> {
     const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+      isAbsenceUnmeasured,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     allFindingOutcomes = findingOutcomes;
@@ -280,7 +409,7 @@ async function main(): Promise<void> {
 
   if (isDryRun) {
     if (pending) {
-      const { subject, body } = buildRobotsDriftAlarmEmail(results, new Date(), issueRefs);
+      const { subject, body } = buildCombinedAlarmEmail(results, probes, summary403, new Date(), issueRefs);
       console.log(`${LOG_PREFIX} --dry-run: enviaria e-mail pra ${toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH)}:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
     } else {
       console.log(`${LOG_PREFIX} nenhum e-mail necessário (sem drift pendente).`);
@@ -294,7 +423,7 @@ async function main(): Promise<void> {
     const result = await notifyEditorForOutcomes(
       allFindingOutcomes,
       "acao",
-      () => buildRobotsDriftAlarmEmail(results, new Date(), issueRefs),
+      () => buildCombinedAlarmEmail(results, probes, summary403, new Date(), issueRefs),
       { cwd: ROOT, platformConfigPath: PLATFORM_CONFIG_PATH, emailTo: toOverride, legacyResendIntent: "dedupe-new-occurrences-only" },
     );
     if (result.qualifying.length === 0) {
@@ -313,7 +442,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const nextFingerprint = pending ? computeRobotsDriftFingerprint(results) : null;
+  // #10508: o fingerprint do estado agrega robots.txt + crawler de IA.
+  const aiKeys = toAiCrawlerAlarmFindings(probes, summary403).map((f) => f.fingerprint);
+  const nextFingerprint = pending ? [computeRobotsDriftFingerprint(results), ...aiKeys].join("||") : null;
   saveState(advanceRobotsDriftState(nextFingerprint, new Date()), STATE_PATH);
 }
 

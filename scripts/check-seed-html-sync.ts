@@ -189,7 +189,7 @@ export function renderHomePageAtRef(ref: string, spawnFn: SpawnFn): string {
  * silêncio), OU quando o próprio re-render lança (sitemap ausente/corrompido
  * — fail-safe: sem conseguir confirmar "não é drift", reprova como hoje).
  */
-export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn): boolean {
+export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn, baseSha?: string): boolean {
   const committed = readFileAtRef(headSha, "workers/site/public/index.html", spawnFn);
   if (committed === null) return true;
   let rendered: string;
@@ -201,7 +201,31 @@ export function confirmHomeDrift(headSha: string, spawnFn: SpawnFn): boolean {
     );
     return true;
   }
-  return rendered !== committed;
+  if (rendered === committed) return false;
+  // #10509: o re-render depende do RELÓGIO (`buildHomeFeed` filtra edição
+  // com data editorial > hoje, #7686). A home committed em master fica
+  // legitimamente "atrás" do re-render entre a virada do dia e o commit do
+  // `regen-home.yml` — e aí QUALQUER PR que toque o sitemap reprovava, mesmo
+  // sem a mudança dele ter efeito nenhum na home (caso real: PR que só
+  // acrescentou landings fora de /p/, que nunca entram no feed). A pergunta
+  // do check é "a mudança DESTE PR no seed exige rebuild?", então compara o
+  // re-render do head com o da base, no mesmo relógio: iguais = o PR não
+  // mexeu no que a home mostra, e a defasagem (se houver) já existia na base.
+  // Re-render da base que lança cai no comportamento anterior (drift).
+  if (baseSha) {
+    try {
+      if (renderHomePageAtRef(baseSha, spawnFn) === rendered) {
+        console.log(
+          `[#10509] home re-renderizada difere da committed, mas é idêntica ao re-render da base — ` +
+            `a mudança deste PR no sitemap não afeta a home (defasagem pré-existente, é do regen-home.yml). Pass.`,
+        );
+        return false;
+      }
+    } catch (e) {
+      console.error(`[#10509] falha ao re-renderizar a home na base — tratando como drift real: ${(e as Error).message}`);
+    }
+  }
+  return true;
 }
 
 /**
@@ -214,10 +238,11 @@ export function filterConfirmedDrift(
   candidates: SeedHtmlPair[],
   headSha: string,
   spawnFn: SpawnFn,
+  baseSha?: string,
 ): SeedHtmlPair[] {
   return candidates.filter((pair) => {
     if (pair.name !== "home-do-site") return true;
-    return confirmHomeDrift(headSha, spawnFn);
+    return confirmHomeDrift(headSha, spawnFn, baseSha);
   });
 }
 
@@ -260,7 +285,7 @@ async function main(): Promise<void> {
   }
 
   const candidates = findDriftedPairs(changedFiles);
-  const drifted = filterConfirmedDrift(candidates, headSha, spawnSync as SpawnFn);
+  const drifted = filterConfirmedDrift(candidates, headSha, spawnSync as SpawnFn, baseSha);
   if (drifted.length === 0) {
     console.log("[#3105] Nenhum seed de página estática divergiu do HTML gerado. Pass.");
     process.exit(0);

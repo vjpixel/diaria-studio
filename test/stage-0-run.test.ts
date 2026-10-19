@@ -12,9 +12,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync as nodeMkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   runStage0,
+  facebookVerifyGate,
   parseStage0RunArgs,
   editionIsoFromAammdd,
   isoDateOnly,
@@ -649,6 +650,62 @@ describe("runStage0 --phase continue — caminho feliz", () => {
       result.notes.some((n) => n.includes("verify-twitter-posts") && n.includes("falhou")),
       `esperava nota de falha do verify-twitter-posts em result.notes, recebeu: ${JSON.stringify(result.notes)}`,
     );
+  });
+
+  const CONTINUE_ARGV = ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true", "--mcp-beehiiv", "true"];
+
+  it("0k — verify-facebook-posts roda com credencial só no env, sem data/.fb-credentials.json (#10505)", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    // existsSync sempre false (baseDeps): o arquivo legado não existe.
+    const deps = baseDeps({ exec, execAsync, env: { FACEBOOK_PAGE_ID: "123", FACEBOOK_PAGE_ACCESS_TOKEN: "tok" } });
+    await runStage0(CONTINUE_ARGV, deps);
+    const fbCall = calls.find((c) => c.script.includes("verify-facebook-posts"));
+    assert.ok(fbCall, "antes do fix o passo era pulado em silêncio sem o arquivo legado");
+    assert.ok(fbCall!.args.includes("--edition-dir"));
+  });
+
+  it("0k — sem credencial nenhuma, verify-facebook-posts é pulado com NOTA, nunca em silêncio (#10505)", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync, env: {} });
+    const result = await runStage0(CONTINUE_ARGV, deps);
+    assert.equal(result.code, 0);
+    assert.ok(!calls.some((c) => c.script.includes("verify-facebook-posts")));
+    assert.ok(
+      result.notes.some((n) => n.includes("verify-facebook-posts pulado") && n.includes("FACEBOOK_PAGE_ACCESS_TOKEN")),
+      JSON.stringify(result.notes),
+    );
+  });
+
+  it("0k — facebookVerifyGate: arquivo legado vale só pra diaria; página não-default com env completo destrava (#10505)", () => {
+    const cfg = {
+      publishing: {
+        social: {
+          facebook: {
+            pages: [
+              { slug: "diaria", enabled: true, page_id_env: "FACEBOOK_PAGE_ID", token_env: "FACEBOOK_PAGE_ACCESS_TOKEN" },
+              { slug: "memelab", enabled: false, page_id_env: "FB_MEMELAB_ID", token_env: "FB_MEMELAB_TOKEN" },
+            ],
+          },
+        },
+      },
+    };
+    const files: Record<string, string> = {};
+    const deps = (env: Record<string, string>) =>
+      baseDeps({
+        env,
+        existsSync: (p) => p in files,
+        readFile: (p) => {
+          if (p.endsWith("platform.config.json")) return JSON.stringify(cfg);
+          if (p in files) return files[p];
+          throw new Error(`unmocked readFile: ${p}`);
+        },
+      });
+    assert.equal(facebookVerifyGate(deps({})).run, false);
+    assert.equal(facebookVerifyGate(deps({ FB_MEMELAB_ID: "1", FB_MEMELAB_TOKEN: "t" })).run, true, "página desligada ainda verifica post já existente");
+    files[resolve("/fake-root", "data", ".fb-credentials.json")] = JSON.stringify({ page_id: "1", page_access_token: "t" });
+    assert.equal(facebookVerifyGate(deps({})).run, true, "arquivo legado (diaria) segue destravando");
   });
 
   it("0o — sem edição anterior com canal Kit, pula a medição com nota fail-soft, nunca 'ok' silencioso (#7021)", async () => {

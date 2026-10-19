@@ -44,3 +44,32 @@ incidente: issues #4910 e #5120 no GitHub).
 Ao subir Worker novo, `curl https://{host}/robots.txt` pra confirmar que o
 bloco gerenciado não reapareceu — é o que `Diaria-Robots-Txt-Drift-Check`
 audita diariamente (registro completo da task: `docs/scheduled-tasks-registry.md`).
+
+## O texto certo não basta: 403 na borda (#10508)
+
+Em outubro/2026 a zona devolvia **403 na borda** a GPTBot, ClaudeBot, CCBot,
+Bytespider e meta-externalagent nos 6 hosts onde esses bots aparecem (apex,
+`cursos.`, `livros.`, `arquivo.`, `especial.`, `eia.`), com o `robots.txt`
+servido correto o tempo todo — a regra gerenciada "Block AI bots" / AI Crawl
+Control isenta o próprio `/robots.txt`, então o drift check textual nunca
+acusou nada. Correção é no painel da zona (liberar os crawlers, **mantendo
+Amazonbot bloqueado**), não em código.
+
+Desde então `Diaria-Robots-Txt-Drift-Check` (`scripts/robots-txt-drift-check.ts`,
+miolo em `scripts/lib/ai-crawler-access-check.ts`) também:
+
+1. **sonda** `GET https://{host}/` com UA de GPTBot e ClaudeBot nos 6 hosts —
+   403 vira issue de alarme por host (`ai-crawler-probe:{host}`). Outro erro
+   (5xx, rede) é só log: alcançabilidade já é coberta pela checagem do
+   `robots.txt`. Ressalva: a sonda sai do nosso IP, então é bot NÃO
+   verificado com UA de bot verificado — por isso existe o sinal 2;
+2. **soma os 403 reais** das últimas 24h com `verifiedBotCategory = "AI
+   Crawler"` (GraphQL `httpRequestsAdaptiveGroups`, `CLOUDFLARE_API_TOKEN`,
+   zona por `CLOUDFLARE_ZONE_ID` ou o id fixo de `scripts/lib/apex-cutover.ts`),
+   **excluindo Amazonbot**. Total > 0 vira a issue agregada
+   `ai-crawler-403-zona` (fingerprint fixo; mudança do conjunto host × bot
+   comenta na issue aberta em vez de abrir outra). Token ausente ou erro de
+   API/autorização é log, nunca alarme.
+
+Os dois achados são da família `estado`: fecham sozinhos depois de 2
+execuções limpas, como os de `robots.txt`.
