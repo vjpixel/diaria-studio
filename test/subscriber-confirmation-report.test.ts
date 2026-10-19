@@ -355,9 +355,10 @@ describe("toSubscriberStateRecord / summarizeFieldCoverage (#8552 review)", () =
       ...base,
       confirmou_via: "brevo-reativar",
       origem: "kit-nativo",
+      utm_source: "", // #10507: fields presente sem utm_source → prova de campo vazio
     });
     assert.deepEqual(toSubscriberStateRecord(base), base);
-    assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "", origem_cadastro: "" } }), base);
+    assert.deepEqual(toSubscriberStateRecord({ ...base, fields: { confirmou_via: "", origem_cadastro: "" } }), { ...base, utm_source: "" });
   });
   it("cobertura: fields ausente em todos é detectável (comFields === 0)", () => {
     const subs: KitSub[] = [base, { ...base, id: 2 }];

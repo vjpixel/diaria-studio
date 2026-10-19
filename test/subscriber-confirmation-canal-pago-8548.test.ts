@@ -59,8 +59,47 @@ describe("snapshot grava/lê utm_source (#8548)", () => {
     assert.equal(r.utm_source, "meta-ads");
     const [back] = parseSubscriberStateJsonl(serializeSubscriberStateRecords([r]));
     assert.equal(back.utm_source, "meta-ads");
+  });
+
+  it("#10507: fields presente com utm_source vazio grava \"\" (prova de campo vazio) e o parse preserva", () => {
     const vazio = toSubscriberStateRecord({ id: 9, state: "inactive", created_at: at("2026-10-01"), fields: { utm_source: "" } });
-    assert.equal("utm_source" in vazio, false);
+    assert.equal(vazio.utm_source, "");
+    const semChave = toSubscriberStateRecord({ id: 9, state: "inactive", created_at: at("2026-10-01"), fields: {} });
+    assert.equal(semChave.utm_source, "");
+    const [back] = parseSubscriberStateJsonl(serializeSubscriberStateRecords([vazio]));
+    assert.equal(back.utm_source, "");
+  });
+
+  it("#10507: sem fields (cobertura desconhecida) e linha antiga sem o campo seguem ausentes", () => {
+    const semFields = toSubscriberStateRecord({ id: 9, state: "inactive", created_at: at("2026-10-01") });
+    assert.equal("utm_source" in semFields, false);
+    const [antigo] = parseSubscriberStateJsonl(JSON.stringify({ id: 9, state: "inactive", created_at: at("2026-10-01") }) + "\n");
+    assert.equal("utm_source" in antigo, false);
+  });
+});
+
+describe("#10507 — orgânico recente fora do store não cai em desconhecido", () => {
+  it("nascimento com utm_source \"\" e sem store = orgânico; snapshot antigo sem o campo = desconhecido", () => {
+    const s = new Map<string, SubscriberStateRecord[]>([
+      ["2026-10-01", [rec(1, "inactive", "2026-10-01", { utm_source: "" }), rec(2, "inactive", "2026-10-01")]],
+      ["2026-10-02", [rec(1, "active", "2026-10-01", { utm_source: "" }), rec(2, "active", "2026-10-01")]],
+    ]);
+    const r = buildConfirmationReport(s);
+    assert.equal(r.por_canal_pago[CANAL_PAGO_ORGANICO_LABEL].n, 1); // #1
+    assert.equal(r.por_canal_pago[CANAL_PAGO_UNKNOWN_LABEL].n, 1); // #2
+    assert.deepEqual(r.utm_cobertura, { snapshot: 1, store: 0, desconhecido: 1 });
+  });
+
+  it("\"\" no nascimento perde pro store e pro valor posterior (lag de fields do endpoint de lista)", () => {
+    const s = new Map<string, SubscriberStateRecord[]>([
+      ["2026-10-01", [rec(1, "inactive", "2026-10-01", { utm_source: "" }), rec(2, "inactive", "2026-10-01", { utm_source: "" })]],
+      ["2026-10-02", [rec(1, "active", "2026-10-01", { utm_source: "google-ads" }), rec(2, "active", "2026-10-01", { utm_source: "" })]],
+    ]);
+    const r = buildConfirmationReport(s, { utmSourceByKitId: new Map([[2, "meta-ads"]]) });
+    assert.equal(r.por_canal_pago["google-ads"].n, 1); // #1: valor posterior
+    assert.equal(r.por_canal_pago["meta-ads"].n, 1); // #2: store
+    assert.equal(r.por_canal_pago[CANAL_PAGO_ORGANICO_LABEL], undefined);
+    assert.deepEqual(r.utm_cobertura, { snapshot: 1, store: 1, desconhecido: 0 });
   });
 });
 

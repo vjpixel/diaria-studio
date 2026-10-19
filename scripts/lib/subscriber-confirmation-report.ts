@@ -56,9 +56,14 @@
  * sobrescrita do reativar, #8235); (3) o primeiro valor não vazio de um
  * snapshot POSTERIOR. O store vence o snapshot posterior porque, numa coorte
  * anterior ao #8548, o 1º snapshot com o campo pode ser de depois de o
- * reativar ter sobrescrito o `utm_source` no Kit. Id sem nenhuma fonte
- * vai para `CANAL_PAGO_UNKNOWN_LABEL` — nunca para `orgânico`, que inflaria
- * o orgânico com cadastros de anúncio sem dado.
+ * reativar ter sobrescrito o `utm_source` no Kit. (4) Por último, o snapshot
+ * de nascimento com `utm_source: ""` (#10507: campo comprovadamente vazio,
+ * gravado só a partir do #10507) → `orgânico`. Fica atrás das outras três
+ * porque o endpoint de lista do Kit serve `fields` com atraso: um `""` no
+ * nascimento pode ser lag de um cadastro de anúncio, e um valor não vazio
+ * visto depois (ou no store) vence. Id sem nenhuma fonte — inclusive snapshot
+ * antigo, que não grava o `""` — vai para `CANAL_PAGO_UNKNOWN_LABEL`, nunca
+ * para `orgânico`, que inflaria o orgânico com cadastros de anúncio sem dado.
  *
  * Métrica primária = TEMPO ATÉ CONFIRMAR em coorte FECHADA de 7d+
  * (`tempo_ate_confirmar_7d`): membros cuja coorte já tem 7 dias de snapshot
@@ -373,8 +378,11 @@ interface Track {
   firstActiveDate: string | null;
   origem: string | null;
   via: string | null;
-  /** `utm_source` do snapshot de nascimento (#8548). */
+  /** `utm_source` NÃO VAZIO do snapshot de nascimento (#8548). */
   utmAtBirth: string | null;
+  /** #10507 — o snapshot de nascimento gravou `utm_source: ""` (campo
+   *  comprovadamente vazio). `false` em snapshot antigo (campo ausente). */
+  utmBirthEmpty: boolean;
   /** PRIMEIRO `utm_source` não vazio de um snapshot posterior — pode já ter
    *  sido sobrescrito pelo reativar (#8235), por isso perde pro store. */
   utmLater: string | null;
@@ -427,6 +435,7 @@ export function buildConfirmationReport(
           origem: null,
           via: null,
           utmAtBirth: r.utm_source || null,
+          utmBirthEmpty: r.utm_source === "",
           utmLater: null,
         };
         tracks.set(r.id, t);
@@ -456,6 +465,12 @@ export function buildConfirmationReport(
     if (t.utmLater !== null) {
       utmCobertura.snapshot++;
       return classifyCanalPago(t.utmLater, true);
+    }
+    if (t.utmBirthEmpty) {
+      // #10507: o nascimento provou campo vazio e nenhuma outra fonte trouxe
+      // valor → orgânico conhecido, não desconhecido.
+      utmCobertura.snapshot++;
+      return classifyCanalPago("", true);
     }
     utmCobertura.desconhecido++;
     return classifyCanalPago(null, false);
@@ -507,7 +522,7 @@ export function buildConfirmationReport(
   }
   if (utmCobertura.desconhecido > 0) {
     avisos.push(
-      `${utmCobertura.desconhecido} assinante(s) sem utm_source em nenhuma fonte (snapshot anterior ao #8548 e fora do store) — agrupados em "${CANAL_PAGO_UNKNOWN_LABEL}", nunca contados como orgânico`,
+      `${utmCobertura.desconhecido} assinante(s) sem utm_source em nenhuma fonte (snapshot sem o campo, anterior ao #10507, e fora do store) — agrupados em "${CANAL_PAGO_UNKNOWN_LABEL}", nunca contados como orgânico`,
     );
   }
   if (invalido > 0) avisos.push(`${invalido} assinante(s) com created_at inválido/ausente ignorados`);
