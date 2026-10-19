@@ -125,6 +125,83 @@ describe("parseTranscriptFile", () => {
     assert.deepEqual(parseTranscriptFile("/does/not/exist.jsonl"), { entries: [], parseErrors: 0 });
   });
 
+  describe("#10481 — dedup por message.id (uma entrada por resposta, não por linha)", () => {
+    function blockLine(id: string | undefined, ts: string, usage: Record<string, number>, model = "claude-opus-5-5"): string {
+      return JSON.stringify({
+        type: "assistant",
+        timestamp: ts,
+        message: { ...(id ? { id } : {}), model, usage },
+      });
+    }
+    const u1 = { input_tokens: 5, output_tokens: 7, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 };
+    const u1final = { input_tokens: 5, output_tokens: 300, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 };
+    const u2 = { input_tokens: 3, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 2000 };
+
+    it("3 linhas da mesma resposta (mesmo message.id) viram 1 entrada — o cenário real da issue", () => {
+      withTempFile(
+        [
+          blockLine("msg_A", "2026-10-18T10:00:00.000Z", u1),
+          blockLine("msg_A", "2026-10-18T10:00:01.000Z", u1),
+          blockLine("msg_A", "2026-10-18T10:00:02.000Z", u1),
+          blockLine("msg_B", "2026-10-18T10:00:05.000Z", u2),
+          blockLine("msg_B", "2026-10-18T10:00:06.000Z", u2),
+        ],
+        (file) => {
+          const { entries } = parseTranscriptFile(file);
+          assert.equal(entries.length, 2);
+          const totalOut = entries.reduce((s, e) => s + e.outputTokens, 0);
+          // Sem dedup seriam 7*3 + 40*2 = 101.
+          assert.equal(totalOut, 47);
+        },
+      );
+    });
+
+    it("última linha por id vence (usage e timestamp), mantendo a posição da 1ª ocorrência", () => {
+      withTempFile(
+        [
+          blockLine("msg_A", "2026-10-18T10:00:00.000Z", u1),
+          blockLine("msg_B", "2026-10-18T10:00:05.000Z", u2),
+          blockLine("msg_A", "2026-10-18T10:00:09.000Z", u1final),
+        ],
+        (file) => {
+          const { entries } = parseTranscriptFile(file);
+          assert.equal(entries.length, 2);
+          assert.equal(entries[0].outputTokens, 300);
+          assert.equal(entries[0].timestamp, "2026-10-18T10:00:09.000Z");
+          assert.equal(entries[1].outputTokens, 40);
+        },
+      );
+    });
+
+    it("linhas sem message.id continuam contando uma vez cada (comportamento anterior)", () => {
+      withTempFile(
+        [blockLine(undefined, "2026-10-18T10:00:00.000Z", u2), blockLine(undefined, "2026-10-18T10:00:01.000Z", u2)],
+        (file) => {
+          assert.equal(parseTranscriptFile(file).entries.length, 2);
+        },
+      );
+    });
+
+    it("collectUsageInWindow soma a resposta repetida uma vez só", () => {
+      const dir = mkdtempSync(join(tmpdir(), "session-transcript-dedup-"));
+      try {
+        writeFileSync(
+          join(dir, "sess.jsonl"),
+          [
+            blockLine("msg_A", "2026-10-18T10:00:00.000Z", u1),
+            blockLine("msg_A", "2026-10-18T10:00:01.000Z", u1),
+          ].join("\n"),
+          "utf8",
+        );
+        const r = collectUsageInWindow(dir, "2026-10-18T00:00:00Z", "2026-10-18T23:59:59Z", { sessionId: "sess" });
+        assert.equal(r.tokensIn, 5 + 100 + 1000);
+        assert.equal(r.tokensOut, 7);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("ignora linhas em branco", () => {
     withTempFile(["", usageLine(), ""], (file) => {
       assert.equal(parseTranscriptFile(file).entries.length, 1);
