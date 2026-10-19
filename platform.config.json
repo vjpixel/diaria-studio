@@ -25,8 +25,8 @@
     "affiliate_url_note": "#6195 (26/08/2026) — link de afiliado do Kit (PartnerStack). VAZIO = o crédito do rodapé nas edições Kit sai NEUTRO (\"enviei por e-mail\"), sem link. Preencher quando o editor se cadastrar em partnerstack.com: 50% recorrente nos 12 primeiros meses, cookie 90 dias, paga no Brasil via PayPal/Stripe/AirWallex (verificado 26/08). Preencher aqui basta — não exige mudança de código.",
     "affiliate_offer_text": "ganhe 50% de desconto",
     "diaria_exclusion_segment": {
-      "enabled": false,
-      "segment_id": null
+      "enabled": true,
+      "segment_id": 599796
     },
     "diaria_exclusion_segment_note": "#10437 — DESLIGADO por default. Ligado, o broadcast PRINCIPAL da diária no Kit deixa de ir pra base inteira (buildAllSubscribersFilter) e passa a mirar o segmento segment_id, criado à mão no painel do Kit como 'ativos sem a tag envio-brevo' (a API não cria segmento). Falha segura: segmento ausente da conta, listagem falhando ou releitura do broadcast sem o filtro do segmento ABORTA o publish (exit 13) e o agendamento (exit 7) — nunca cai pra base inteira (#6126, #7651, #6582). Ligar é o Gate B do #10437: confirmar ao vivo que o segmento aceita 'sem a tag', que subscriber_filter type segment funciona no broadcast e que o GET do broadcast ecoa o filtro, e conferir os recipients contra POST /v4/subscribers/filter (GET /subscribers?segment_id= ignora o parâmetro, #7633). Precisa estar ligado ANTES de brevo_diaria.kit_sem_abertura.enabled mover alguém (o script recusa mover sem ele: tag sem segmento = edição em dobro)."
   },
@@ -61,7 +61,7 @@
     "seed_deliberately_blacklisted_note": "#8436 (20/09/2026) — blacklist do Gmail pessoal na Brevo da diária é deliberado (o editor recebe pelo Kit). Isento só do estado blacklisted no guard; test_email trocado pra caixa Workspace. Decisão final (20/09/2026): a sonda de inbox placement da diária é o próprio pixel@memelab.com.br (Workspace) — nenhuma outra caixa Gmail; consequência aceita: a sonda não mede o filtro do Gmail pessoal.",
     "daily_send_cap": 295,
     "kit_sem_abertura": {
-      "enabled": false,
+      "enabled": true,
       "min_mature_sends": 6,
       "new_signup_window_days": 30
     },
