@@ -1520,7 +1520,12 @@ async function main(): Promise<void> {
 
   // #2652: secondary check
   const secondaryItems = extractSecondaryItems(categorizedPath);
-  const pastSecondary = readPastApprovedSecondary(editionsDir, secondaryWindow, currentEdition);
+  // #10544: mesmo filtro do MESMO FATO abaixo (#10463) — item aprovado no
+  // gate 1 mas cortado no cap do Stage 2 ou no gate 4 nunca chegou ao leitor
+  // e não pode gerar "SECUNDÁRIO repete tema".
+  const pastSecondary = readPastApprovedSecondary(
+    editionsDir, secondaryWindow, currentEdition, DEFAULT_SECONDARY_BUCKETS, { publishedOnly: true },
+  );
   const secondaryResult = checkSecondaryThemes(secondaryItems, pastSecondary, secondaryWindow);
 
   if (secondaryResult.secondary_warnings.length > 0) {

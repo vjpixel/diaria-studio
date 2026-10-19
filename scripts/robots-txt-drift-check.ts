@@ -231,6 +231,99 @@ export function aiCrawlerUnmeasuredKeys(
   };
 }
 
+// ─── #10545 — sinal 2 cego (GraphQL não medido N rodadas seguidas) ─────────
+
+const ZONE_403_MEASUREMENT_PATH = resolve(ROOT, "data", "robots-txt-drift-check", "zone-403-measurement.json");
+/** Task diária: 3 rodadas seguidas sem medir = 3 dias cego. Abaixo disso é
+ * soluço de API, e o #10520 já preserva a issue aberta sem fechar. */
+export const ZONE_403_BLIND_AFTER_RUNS = 3;
+export const AI_CRAWLER_403_BLIND_CHECK = "ai-crawler-403-zona-sem-medicao";
+
+export interface Zone403MeasurementState {
+  /** Rodadas seguidas em que a consulta GraphQL não voltou `ok`. */
+  consecutiveUnmeasured: number;
+  /** ISO da 1ª rodada da sequência atual sem medição (null se medida). */
+  unmeasuredSince: string | null;
+  lastStatus: "ok" | "skipped" | "error" | null;
+  lastDetail: string | null;
+}
+
+export function emptyZone403MeasurementState(): Zone403MeasurementState {
+  return { consecutiveUnmeasured: 0, unmeasuredSince: null, lastStatus: null, lastDetail: null };
+}
+
+export function loadZone403MeasurementState(path: string = ZONE_403_MEASUREMENT_PATH): Zone403MeasurementState {
+  if (!existsSync(path)) return emptyZone403MeasurementState();
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<Zone403MeasurementState>;
+    const n = typeof raw.consecutiveUnmeasured === "number" && raw.consecutiveUnmeasured >= 0 ? raw.consecutiveUnmeasured : 0;
+    return {
+      consecutiveUnmeasured: n,
+      unmeasuredSince: typeof raw.unmeasuredSince === "string" ? raw.unmeasuredSince : null,
+      lastStatus: raw.lastStatus === "ok" || raw.lastStatus === "skipped" || raw.lastStatus === "error" ? raw.lastStatus : null,
+      lastDetail: typeof raw.lastDetail === "string" ? raw.lastDetail : null,
+    };
+  } catch {
+    return emptyZone403MeasurementState();
+  }
+}
+
+/** Avança o contador: `ok` zera; `skipped`/`error` soma 1. */
+export function advanceZone403MeasurementState(
+  prev: Zone403MeasurementState,
+  status: "ok" | "skipped" | "error",
+  detail: string | null,
+  now: Date,
+): Zone403MeasurementState {
+  if (status === "ok") return { consecutiveUnmeasured: 0, unmeasuredSince: null, lastStatus: "ok", lastDetail: null };
+  return {
+    consecutiveUnmeasured: prev.consecutiveUnmeasured + 1,
+    unmeasuredSince: prev.consecutiveUnmeasured > 0 && prev.unmeasuredSince ? prev.unmeasuredSince : now.toISOString(),
+    lastStatus: status,
+    lastDetail: detail,
+  };
+}
+
+/** Achado próprio para o sensor cego: sem isto, a issue `ai-crawler-403-zona`
+ * aberta fica congelada pelo #10520 (nem comenta, nem fecha) e ninguém
+ * percebe que a medição parou. Fingerprint fixo; o detalhe muda via
+ * `contentSignature` (status), então troca de `skipped` → `error` comenta.
+ * `estado`: fecha sozinho quando a consulta volta `ok` por
+ * `CLOSE_ALARM_ISSUE_AFTER_RUNS` rodadas — e nessas rodadas o sinal FOI
+ * medido, então a ausência é prova. */
+export function toZone403BlindFinding(
+  state: Zone403MeasurementState,
+  threshold: number = ZONE_403_BLIND_AFTER_RUNS,
+): AlarmFinding | null {
+  if (state.consecutiveUnmeasured < threshold) return null;
+  return {
+    check: AI_CRAWLER_403_BLIND_CHECK,
+    fingerprint: `${AI_CRAWLER_403_BLIND_CHECK}:graphql`,
+    family: "estado",
+    title: "[diar.ia.br] 403 de crawlers de IA na zona sem medição (sensor cego)",
+    body: [
+      "Achado automático do alarme `Diaria-Robots-Txt-Drift-Check`",
+      "(`scripts/robots-txt-drift-check.ts`, #10545).",
+      "",
+      `A consulta GraphQL dos 403 de \`AI Crawler\` (sinal 2, #10508) não voltou \`ok\` em ${state.consecutiveUnmeasured} execuções seguidas` +
+        (state.unmeasuredSince ? ` (desde ${state.unmeasuredSince}).` : "."),
+      `Último status: \`${state.lastStatus ?? "?"}\` — ${state.lastDetail ?? "sem detalhe"}`,
+      "",
+      "Consequência: enquanto o sinal não é medido, uma issue `ai-crawler-403-zona` aberta fica",
+      "congelada (#10520) — não recebe comentário nem fecha. Ela NÃO indica que os 403 persistem.",
+      "",
+      "Causas prováveis: `CLOUDFLARE_API_TOKEN` ausente (`skipped`) ou sem permissão de",
+      "Analytics na zona (`error`/authz). Conferir o token no Doppler/`.env` do servidor.",
+      "",
+      "Fecha sozinha quando a consulta voltar a medir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas.`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P2",
+    contentSignature: state.lastStatus ?? "",
+  };
+}
+
 /** E-mail combinado: seção do robots.txt (quando há drift) + seção dos
  * crawlers de IA (quando há bloqueio). Assunto reflete o que está pendente. */
 export function buildCombinedAlarmEmail(
@@ -372,7 +465,24 @@ async function main(): Promise<void> {
   // hub-drift-check.ts/home-meta-check.ts. Roda toda execução
   // não-dry-run, independente de um e-mail novo disparar nesta rodada.
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "error");
-  const alarmFindings = [...driftedResults.map(toAlarmFinding), ...toAiCrawlerAlarmFindings(probes, summary403)];
+  // #10545: sinal 2 não medido N rodadas seguidas vira achado próprio.
+  const zone403Measurement = advanceZone403MeasurementState(
+    loadZone403MeasurementState(),
+    fetched403.status,
+    fetched403.status === "ok" ? null : fetched403.detail,
+    new Date(),
+  );
+  const blindFinding = toZone403BlindFinding(zone403Measurement);
+  if (blindFinding) {
+    console.error(
+      `${LOG_PREFIX} sinal 2 (403 da zona) sem medição há ${zone403Measurement.consecutiveUnmeasured} execução(ões) seguidas — alarme de sensor cego.`,
+    );
+  }
+  const alarmFindings = [
+    ...driftedResults.map(toAlarmFinding),
+    ...toAiCrawlerAlarmFindings(probes, summary403),
+    ...(blindFinding ? [blindFinding] : []),
+  ];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   const isAbsenceUnmeasured = aiCrawlerUnmeasuredKeys(probes, fetched403.status);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
@@ -391,6 +501,7 @@ async function main(): Promise<void> {
       isAbsenceUnmeasured,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
+    saveState(zone403Measurement, ZONE_403_MEASUREMENT_PATH); // #10545
     allFindingOutcomes = findingOutcomes;
     issueRefs = new Map(
       findingOutcomes.map((o) => [

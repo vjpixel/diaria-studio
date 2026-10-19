@@ -91,6 +91,73 @@ export function decodeGenericRedirect(rawUrl: string): string | null {
   return null;
 }
 
+/** #10543: hosts de login/OAuth — destino de redirect "faça login e volte". */
+const LOGIN_HOSTS = new Set([
+  "accounts.google.com",
+  "login.microsoftonline.com",
+  "login.live.com",
+  "appleid.apple.com",
+]);
+/** 1º segmento de path EXATO (nunca substring de slug: `/login-com-passkeys` passa). */
+const LOGIN_PATH_RE = /^\/(login|log-in|signin|sign-in|sign_in|signup|sign-up|oauth2?|authorize|sso)(\/|$)/i;
+
+/** #10543: hosts de rede social — perfil (sem post) e share intent nunca são artigo. */
+const SOCIAL_HOSTS = new Set([
+  "twitter.com",
+  "x.com",
+  "linkedin.com",
+  "facebook.com",
+  "instagram.com",
+  "threads.net",
+  "threads.com",
+  "tiktok.com",
+  "youtube.com",
+  "bsky.app",
+  "reddit.com",
+  "pinterest.com",
+  "wa.me",
+  "api.whatsapp.com",
+  "t.me",
+]);
+
+/**
+ * #10543: destino de redirect que é rodapé/compartilhamento/login, nunca
+ * conteúdo editorial — share intent ("Share on X"), perfil social da própria
+ * newsletter ("siga no LinkedIn"), redirect de login/OAuth. Aplicado só ao
+ * destino DECODIFICADO de um wrapper de tracking (e ao wrapper em si, no
+ * caso de login): link social direto no corpo segue a regra antiga, porque
+ * newsletter cita post de X/LinkedIn como fonte legítima. Post de rede
+ * social (`x.com/u/status/1`, `linkedin.com/posts/...`, `youtube.com/watch`)
+ * continua passando — só perfil e intent caem.
+ *
+ * Patrocínio NÃO é coberto: a landing de um anunciante é um URL comum e
+ * nada no link a distingue de um artigo.
+ */
+export function isRedirectNoiseDestination(rawUrl: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const host = u.hostname.toLowerCase().replace(/^(www\.|m\.|mobile\.)/, "");
+  const path = u.pathname;
+  if (LOGIN_HOSTS.has(host) || LOGIN_PATH_RE.test(path)) return true;
+  if (!SOCIAL_HOSTS.has(host)) return false;
+  // Share intents.
+  if (/^\/(intent|share|sharer|sharing|submit)(\/|\.php|$)/i.test(path)) return true;
+  if (/^\/shareArticle\b/i.test(path) || /^\/pin\/create\b/i.test(path)) return true;
+  if (host === "wa.me" || host === "api.whatsapp.com" || host === "t.me") return true;
+  // Perfis: LinkedIn company/in/school, YouTube canal, Bluesky perfil sem post.
+  if (host === "linkedin.com") return /^\/(company|in|school|showcase)\//i.test(path);
+  if (host === "youtube.com") return /^\/(@|c\/|channel\/|user\/)/i.test(path);
+  if (host === "bsky.app") return /^\/profile\/[^/]+\/?$/i.test(path);
+  if (host === "reddit.com") return /^\/(u|user)\/[^/]+\/?$/i.test(path);
+  // X/Twitter, Instagram, Threads, TikTok, Facebook: 1 segmento só = perfil.
+  const segments = path.split("/").filter(Boolean);
+  return segments.length <= 1;
+}
+
 export interface CapturedThread {
   thread_id: string;
   sender: string;
@@ -286,6 +353,9 @@ export function processThreads(
       // (queremos a URL final, não o wrapper — issue #7662 é explícita nisso).
       let { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
       // #10467: redirect genérico no domínio do próprio sender → destino real.
+      // Wrapper que o redirect genérico abriu (pode diferir de rawUrl quando
+      // decodeTrackerUrl não decodificou) — usado no filtro de login abaixo.
+      const wrapperUrl = url;
       if (!trackerDecoded && isSenderOwnUrl(url, senderDom, senderBrand)) {
         const dest = decodeGenericRedirect(url);
         if (dest) {
@@ -300,7 +370,18 @@ export function processThreads(
         totalFiltered++;
         continue;
       }
-      const isTracking = !trackerDecoded && isTrackingUrl(rawUrl);
+      // #10543: destino decodificado de share/perfil social/login é rodapé,
+      // não conteúdo — mesma classe do unsubscribe acima (vale também para
+      // always_consider). Wrapper `/login?redirect=…` cai mesmo que o
+      // destino pareça um artigo: é "faça login e volte", não um link editorial.
+      if (trackerDecoded && (isRedirectNoiseDestination(url) || isRedirectNoiseDestination(wrapperUrl))) {
+        totalFiltered++;
+        continue;
+      }
+      // #10543: destino decodificado que é ele mesmo um tracker conhecido
+      // (`link.mail.beehiiv.com/...` embrulhado no redirect do sender) —
+      // antes `trackerDecoded` pulava o isTrackingUrl e o tracker passava.
+      const isTracking = trackerDecoded ? isTrackingUrl(url) : isTrackingUrl(rawUrl);
       const isAffiliate = isAffiliateUrl(url);
       const isSenderOwn = isSenderOwnUrl(url, senderDom, senderBrand);
 
