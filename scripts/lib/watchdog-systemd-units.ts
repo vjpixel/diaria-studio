@@ -11,14 +11,14 @@
  * `daily` / `weekly` / `interval` simples, ver `scheduled-tasks.ts`) não
  * modela:
  *
- *   1. **Cadência com JANELA**: roda a cada 10 min, mas só entre 18:00 e
- *      09:00 do dia seguinte — fora da janela não há trigger nenhum (não é
- *      "roda e sai cedo se não houver rodada ativa", é "não dispara"). Nenhum
- *      dos 3 `kind`s existentes expressa uma janela horária que cruza a
- *      meia-noite; generalizar o schema pra isso mexe nas outras 14 tasks já
- *      modeladas (`buildSystemdUnitFiles`/`scheduleToOnCalendar`,
- *      `test/systemd-units.test.ts` com paridade travada) por um ganho que
- *      serve UMA task — risco desnecessário fora do escopo desta issue.
+ *   1. **Cadência própria fora do schema**: roda a cada 10 min, o dia
+ *      inteiro (desde o #10565 — antes era só entre 18:00 e 09:00, janela
+ *      que cruzava a meia-noite e por isso não cabia no schema). Hoje a
+ *      expressão até caberia num `interval` simples, mas migrar pro
+ *      registry mexe nas outras tasks já modeladas
+ *      (`buildSystemdUnitFiles`/`scheduleToOnCalendar`,
+ *      `test/systemd-units.test.ts` com paridade travada) e no item 2 abaixo,
+ *      que continua valendo — fora de escopo do #10565.
  *   2. **Invocação direta** de `overnight-watchdog.ts`, sem passar por
  *      `run-task.ts`/o formato de log padronizado de `task-runner.ts` — a
  *      mesma exceção já documentada em `scheduled-tasks.ts` (linhas 20-28)
@@ -53,36 +53,28 @@ import type { SystemdUnitFiles } from "./systemd-units.ts";
 export const WATCHDOG_UNIT_NAME = "diaria-overnight-watchdog";
 
 /**
- * `OnCalendar=` da janela 18:00→09:00 BRT, a cada 10 min por padrão — MESMA
- * expressão validada AO VIVO no arme manual desta máquina (260810,
- * comentário de fechamento do #4857: `systemctl --user enable --now` + run
- * de teste confirmaram exit 0 e log real:
- * `[watchdog] Rodada 260810 ativa, sem stall (1/60 min).`).
+ * `OnCalendar=` do watchdog: a cada 10 min (padrão), **24h por dia** (#10565).
  *
- * `windowStartHour`/`windowEndHour`/`intervalMinutes` são parametrizados (não
- * hardcoded na string final) só para permitir testar a COMPOSIÇÃO sem
- * duplicar o literal mágico — os defaults reproduzem exatamente
- * `00..08,18..23:00/10:00`, a mesma janela do #2688 original (18:00 do dia D
- * até 09:00 do dia D+1, ver `setup-watchdog-schedule.ps1`: `-Daily -At 18:00`
- * + repetição de 10 min por 15 h).
+ * Até o #10565 a expressão era `00..08,18..23:00/10:00` — janela 18:00→09:00
+ * BRT herdada do #2688, da época em que o overnight só existia como rodada
+ * aberta à mão no fim do dia. A cadeia noturna agendada (#10552,
+ * `docs/overnight-nightly-chain.md`) roda `/diaria-overnight --agendado` sem
+ * teto de horário, e uma rodada dessas pode passar das 09:00 (a 260611 durou
+ * ~16h): com a janela antiga, um stall depois das 09:00 ficava sem detecção
+ * externa até as 18:00.
  *
- * `systemd.time(7)` não tem sintaxe de "hora de ontem à noite até hoje de
- * manhã" num único intervalo contínuo — a janela que cruza a meia-noite é
- * expressa como DOIS ranges de hora dentro do MESMO dia calendário
- * (`00..(windowEndHour-1)` cobre a madrugada até o fim da janela;
- * `windowStartHour..23` cobre a noite até o início dela) — exatamente como
- * `systemd.time(7)` já resolve isso pra qualquer horário do dia em que o
- * timer estiver "ligado".
+ * O sinal de "há rodada pra vigiar" nunca foi o relógio: é o próprio
+ * `overnight-watchdog.ts` (`findActiveRun` — `plan.json` sem `report.md`,
+ * com expiração de rodada abandonada `ABANDONED_RUN_MAX_AGE_MS`). Fora de
+ * rodada o disparo é noop e barato, então tirar a janela só remove o ponto
+ * cego, sem criar alarme novo.
+ *
+ * `intervalMinutes` é parametrizado só para testar a composição sem duplicar
+ * o literal.
  */
-export function buildWatchdogOnCalendar(
-  windowStartHour: number = 18,
-  windowEndHour: number = 9,
-  intervalMinutes: number = 10,
-): string {
+export function buildWatchdogOnCalendar(intervalMinutes: number = 10): string {
   const pad2 = (n: number): string => String(n).padStart(2, "0");
-  const morningEndHour = windowEndHour - 1;
-  const hours = `${pad2(0)}..${pad2(morningEndHour)},${pad2(windowStartHour)}..23`;
-  return `*-*-* ${hours}:00/${pad2(intervalMinutes)}:00 ${BRT_TIMEZONE}`;
+  return `*-*-* *:00/${pad2(intervalMinutes)}:00 ${BRT_TIMEZONE}`;
 }
 
 /**
@@ -123,13 +115,12 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
 
   const timerContent = [
     "[Unit]",
-    // Sufixo com janela/intervalo é literal (não derivado dos args de
-    // buildWatchdogOnCalendar) — reproduz a Description já usada no arme
-    // manual desta máquina (260810, reconciliação #4857). Só serve pra
-    // `systemctl --user list-timers`/journalctl ficarem auto-descritivos sem
-    // abrir a docs; se os defaults de buildWatchdogOnCalendar() mudarem,
-    // atualizar este literal junto.
-    "Description=diar.ia.br: watchdog de stall overnight (#2688) (timer) — a cada 10 min, 18:00-09:00 BRT",
+    // Sufixo com intervalo/cobertura é literal (não derivado dos args de
+    // buildWatchdogOnCalendar). Só serve pra `systemctl --user list-timers`/
+    // journalctl ficarem auto-descritivos sem abrir a docs; se os defaults
+    // de buildWatchdogOnCalendar() mudarem, atualizar este literal junto.
+    // #10565: era "18:00-09:00 BRT" (janela antiga).
+    "Description=diar.ia.br: watchdog de stall overnight (#2688) (timer) — a cada 10 min, 24h (#10565)",
     "",
     "[Timer]",
     // Fuso já embutido no valor de onCalendar (mesmo achado ao vivo do
@@ -145,8 +136,7 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
     // alguma ocorrência cai em (carimbo, agora] — carimbo =
     // `~/.local/share/systemd/timers/stamp-<unit>.timer`; `stop` não o
     // consome, então adiar o `start` não evita. Este gerador fica fora do
-    // registry declarativo de propósito (a janela cruza a meia-noite, ver
-    // docstring do topo), então quem mexe aqui não lê o aviso de
+    // registry declarativo de propósito (ver docstring do topo), então quem mexe aqui não lê o aviso de
     // `setup-systemd-timers.ts` — daí a duplicação. Menos grave que nas
     // demais (o watchdog só inspeciona estado), mas o mecanismo é o mesmo.
     "Persistent=true",

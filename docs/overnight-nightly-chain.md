@@ -61,6 +61,6 @@ Para desarmar, voltar `enabled: false` (o `run-task.ts` passa a pular) ou `syste
 
 ## Limitações conhecidas
 
-- **Watchdog só até as 09:00.** O `Diaria-Overnight-Watchdog` vigia de 18:00 a 09:00 BRT (`docs/overnight-watchdog-setup.md`). Uma rodada agendada sem teto que passe das 09:00 fica sem detecção externa de stall até as 18:00. Follow-up: #10565.
+- **Watchdog precisa do rearme pós-#10565.** Desde o #10565 o `Diaria-Overnight-Watchdog` roda 24h (antes, só de 18:00 a 09:00 BRT), então uma rodada agendada que passe das 09:00 continua vigiada. Isso só vale na máquina depois de regerar e recopiar o timer (`docs/overnight-watchdog-setup.md`, "Rearme depois do #10565"); com o timer antigo armado, a rodada fica sem detecção externa de stall entre 09:00 e 18:00.
 - **Sessão single-turn.** Em `claude --print` não existe turno seguinte, então a skill não pode esperar notificação de tarefa em background. O prompt leva a mesma diretiva `NO_BACKGROUND_DIRECTIVE` dos stages da edição agendada, e o "Modo agendado" da skill tira o passo de sonda que dependia de encerrar o turno.
 - **Permissões.** A sessão roda com `--permission-mode acceptEdits`, igual aos stages da edição agendada. Comando Bash fora da allowlist de `.claude/settings.json` é negado, e não há ninguém para aprovar. Se a primeira noite mostrar negações recorrentes no JSON de saída, o conserto é ampliar a allowlist.
