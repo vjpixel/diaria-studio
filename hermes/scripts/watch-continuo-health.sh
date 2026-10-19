@@ -171,7 +171,7 @@ if [ -f "$MARCO" ]; then
     file_issue "[watch-continuo] review Opus diário não roda" \
       "[watch-continuo] review Opus diário não roda há ${AGE_H}h — marco estagnado" \
       "bug,P2" \
-      "Detectado por hermes/scripts/watch-continuo-health.sh: \`data/continuo/last-daily-review-sha\` sem escrita há ${AGE_H}h (esperado: avanço diário ~12:00 UTC, cron 645d5debb7f0). Checar: \`hermes cron list\`, transcript em \`data/continuo/last-daily-review-output.txt\`, e se o gate RESUMO-DAILY-REVIEW segurou o marco de propósito (nesse caso o problema é o review incompleto, não o cron). P2: a auditoria Opus é a rede de qualidade dos merges autônomos."
+      "Detectado por hermes/scripts/watch-continuo-health.sh: \`data/continuo/last-daily-review-sha\` sem escrita há ${AGE_H}h (esperado: avanço diário ~12:00 UTC pelo cron Hermes 645d5debb7f0, ou ~03:15 UTC pela task Diaria-Nightly-Chain quando armada, #10552). Checar: \`hermes cron list\`, transcript em \`data/continuo/last-daily-review-output.txt\`, e se o gate RESUMO-DAILY-REVIEW segurou o marco de propósito (nesse caso o problema é o review incompleto, não o cron). P2: a auditoria Opus é a rede de qualidade dos merges autônomos."
   else
     note "[watch] review diário ok (${AGE_H}h)"
   fi
