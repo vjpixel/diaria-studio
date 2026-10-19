@@ -99,7 +99,7 @@ import { fetchAccountQuotaSnapshot, resolveAccountDailyLimit } from "./lib/brevo
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
-import { fetchAudience, kitDiariaPublishedPath, newsletterKitPublishedPath } from "./kit-provider-split.ts";
+import { createRequestPacer, fetchAudience, kitDiariaPublishedPath, newsletterKitPublishedPath } from "./kit-provider-split.ts";
 import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
 import {
@@ -591,10 +591,22 @@ async function tagAndConfirm(tagId: number, subscriberId: number): Promise<void>
   if (!tags.some((t) => t.id === tagId)) throw new Error(`releitura das tags não mostra a tag ${tagId} (2xx não é prova)`);
 }
 
-async function fetchDeliveredEngagement(id: number, log: (msg: string) => void): Promise<BroadcastEngagement> {
-  const delivered = await fetchAudience(id, "delivered");
-  const opens = await fetchAudience(id, "opens");
-  const clicks = await fetchAudience(id, "clicks");
+/**
+ * Intervalo mínimo entre requisições ao /subscribers/filter. O Kit limita a
+ * ~120 req/60s por chave; a releitura percorre todo broadcast maduro (3 eixos,
+ * paginados), e sem espaçamento a 1ª rodada real estourou 429 após o retry
+ * padrão do kitFetch (dry-run de 19/10, 36 broadcasts).
+ */
+export const KIT_ENGAGEMENT_MIN_INTERVAL_MS = 600;
+
+async function fetchDeliveredEngagement(
+  id: number,
+  log: (msg: string) => void,
+  beforeRequest: () => Promise<void>,
+): Promise<BroadcastEngagement> {
+  const delivered = await fetchAudience(id, "delivered", { beforeRequest });
+  const opens = await fetchAudience(id, "opens", { beforeRequest });
+  const clicks = await fetchAudience(id, "clicks", { beforeRequest });
   const descartadas = delivered.descartadas + opens.descartadas + clicks.descartadas;
   if (descartadas > 0) log(`aviso: broadcast ${id}: ${descartadas} linha(s) sem e-mail descartada(s) do /subscribers/filter.`);
   return { broadcastId: id, delivered: delivered.emails, opens: opens.emails, clicks: clicks.emails };
@@ -655,12 +667,13 @@ async function main(): Promise<void> {
   }
   const listId = brevo.list_id as number;
 
+  const engagementPacer = createRequestPacer(KIT_ENGAGEMENT_MIN_INTERVAL_MS);
   const result = await runKitSemAberturaSync(cfg, { push, maxAdd, sendDay }, {
     nowMs: Date.now(),
     log,
     readRegistry: () => readDiariaBroadcastRegistry(resolve(ROOT, editionsRoot())),
     listKitActive: () => listKitActiveCandidates(log),
-    fetchEngagement: (id) => fetchDeliveredEngagement(id, log),
+    fetchEngagement: (id) => fetchDeliveredEngagement(id, log, engagementPacer),
     findEnvioBrevoTagId: () => findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME),
     readStore: () => readStore(DEFAULT_STORE_PATH),
     writeStore: (s) => writeStore(s, DEFAULT_STORE_PATH),

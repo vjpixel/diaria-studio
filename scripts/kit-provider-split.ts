@@ -199,15 +199,43 @@ const ROTULO: Record<BroadcastAudience, string> = {
  * efeito/shape esperado, e o resto do módulo registra essa confirmação por
  * função.
  */
-export function fetchAudience(broadcastId: number, type: BroadcastAudience): Promise<DrainResult> {
+export function fetchAudience(
+  broadcastId: number,
+  type: BroadcastAudience,
+  opts: { beforeRequest?: () => Promise<void> } = {},
+): Promise<DrainResult> {
   return drainPages(
-    (after) =>
-      kitFetch<KitEngagedPage>("/subscribers/filter", {
+    async (after) => {
+      // Caller que itera N broadcasts precisa se auto-espaçar (kit-client.ts):
+      // o retry de 429 do kitFetch não cobre a janela real de cooldown do Kit.
+      if (opts.beforeRequest) await opts.beforeRequest();
+      return kitFetch<KitEngagedPage>("/subscribers/filter", {
         method: "POST",
         body: buildAudienceFilterBody(broadcastId, type, after),
-      }),
+      });
+    },
     ROTULO[type],
   );
+}
+
+/**
+ * Espaçador de requisições: garante pelo menos `minIntervalMs` entre o início
+ * de duas chamadas. `now`/`sleep` injetáveis para teste sem relógio real.
+ */
+export function createRequestPacer(
+  minIntervalMs: number,
+  deps: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): () => Promise<void> {
+  const now = deps.now ?? (() => Date.now());
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let last: number | null = null;
+  return async () => {
+    if (last !== null) {
+      const wait = last + minIntervalMs - now();
+      if (wait > 0) await sleep(wait);
+    }
+    last = now();
+  };
 }
 
 /**
