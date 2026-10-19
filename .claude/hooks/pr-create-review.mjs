@@ -150,7 +150,7 @@ function localMachineTag() {
  * `<= 0` não chama o git (no Node, `timeout: 0` significa SEM limite — o
  * oposto do que se quer quando o prazo acabou) e cai direto no fallback.
  */
-function resolveMainRepoRoot(execFn = execFileSync, timeoutMs = 10_000) {
+export function resolveMainRepoRoot(execFn = execFileSync, timeoutMs = 10_000) {
   try {
     if (!(timeoutMs > 0)) throw new Error("sem orçamento de tempo (#10457)");
     // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
@@ -242,6 +242,18 @@ export function isOvernightRoundActive(
   } catch {
     return false;
   }
+}
+
+/**
+ * Default de `checkRoundActive` em `resolveEffort` (#5156, #10457, #10461).
+ * Repassa o `timeoutMs` do orçamento pro `git rev-parse` de
+ * `resolveMainRepoRoot` — nunca o default fixo de 10s. Exportado (com `execFn`
+ * injetável) pra a fiação ser travada por teste: antes ela vivia num arrow
+ * inline e reverter pra `isOvernightRoundActive(undefined, ...)` não quebrava
+ * teste algum (#10461 item 2).
+ */
+export function defaultCheckRoundActive(callerSessionId, { timeoutMs } = {}, execFn = execFileSync) {
+  return isOvernightRoundActive(resolveMainRepoRoot(execFn, timeoutMs), undefined, undefined, callerSessionId);
 }
 
 /**
@@ -512,8 +524,7 @@ export function resolveEffort(
   // #10457: o default também recebe o timeout da chamada (`git rev-parse` de
   // `resolveMainRepoRoot`), limitado ao orçamento do hook. Mocks de teste que
   // só declaram `(sessionId)` ignoram o 2º argumento.
-  checkRoundActive = (callerSessionId, { timeoutMs } = {}) =>
-    isOvernightRoundActive(resolveMainRepoRoot(execFileSync, timeoutMs), undefined, undefined, callerSessionId),
+  checkRoundActive = defaultCheckRoundActive,
   sessionId = undefined,
   // #10457: prazo absoluto do hook (`hookDeadline(HOOK_STARTED_AT)`); default
   // sem prazo preserva todos os call sites antigos.
@@ -1010,6 +1021,21 @@ export function callTimeoutMs(deadlineAt, now = Date.now()) {
 }
 
 /**
+ * #10461: piso do `git rev-parse` que resolve a raiz do log de effort. Com o
+ * orçamento esgotado, `callTimeoutMs` vale 0, `resolveMainRepoRoot` pula o git
+ * e cai na pasta do próprio hook — que, numa PR de subagente, é o WORKTREE: o
+ * evento `effort_resolved motivo=orcamento_esgotado` (justo o que mais importa
+ * registrar) ia pra um `data/run-log.jsonl` que some com o worktree. O piso
+ * cabe dentro de `HOOK_OUTPUT_RESERVE_MS` (2s).
+ */
+export const LOG_ROOT_MIN_TIMEOUT_MS = 500;
+
+/** Timeout do `git rev-parse` do log: `max(callTimeoutMs, piso)` (#10461). */
+export function logRootTimeoutMs(deadlineAt, now = Date.now()) {
+  return Math.max(callTimeoutMs(deadlineAt, now), LOG_ROOT_MIN_TIMEOUT_MS);
+}
+
+/**
  * Grava `body` na PR `num` via `scripts/lib/gh-pr-safe-edit.ts --body-file`
  * (#10442). Antes era `gh pr edit --body`, que esbarra em `projectCards`
  * (Projects classic) e pode sair `exit 0` sem alterar o corpo (#6292) — o
@@ -1367,10 +1393,11 @@ if (
         const { effort, warning, reason } = resolveEffort(prUrl, undefined, undefined, payload.session_id, {
           deadlineAt,
         });
-        // #10457: o `git rev-parse` do log também é limitado ao prazo.
+        // #10457: o `git rev-parse` do log também é limitado ao prazo —
+        // com piso (#10461), senão orçamento esgotado grava o log no worktree.
         logEffortDecision(
           { prUrl, effort, reason },
-          { repoRoot: resolveMainRepoRoot(execFileSync, callTimeoutMs(deadlineAt)) },
+          { repoRoot: resolveMainRepoRoot(execFileSync, logRootTimeoutMs(deadlineAt)) },
         ); // #4252
         // #6920: corrige "Fecha #N" (não reconhecido pelo GitHub) anexando
         // "Closes #N" — melhor esforço, nunca bloqueia o resto do hook se

@@ -110,6 +110,36 @@ export function editionForPublishDate(publishDate: string, social: unknown): str
 }
 
 /**
+ * Lê os `posts` de um `06-social-published.json`. `null` = arquivo ausente OU
+ * malformado (#10438 item 2): JSON truncado por escrita concorrente de um
+ * publicador derrubava a CLI `--record`; agora vira "não dá pra saber" + WARN,
+ * igual ao arquivo ausente. `posts` não-array = `[]`.
+ */
+export function readPublishedPosts(
+  path: string,
+  warn: (msg: string) => void = (m) => console.error(m),
+): ReadonlyArray<{ destaque: string; status: string }> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const posts = (JSON.parse(readFileSync(path, "utf8")) as { posts?: unknown } | null)?.posts;
+    return Array.isArray(posts) ? (posts as Array<{ destaque: string; status: string }>) : [];
+  } catch (e) {
+    warn(`[rotação #10438] WARN: ${path} malformado (${(e as Error).message}) — tratado como ausente.`);
+    return null;
+  }
+}
+
+/**
+ * Pure (#10438 item 1): mensagem da CLI `--record`. "Já gravada(s)" conta só
+ * as linhas que PASSARAM no filtro do `um` (`candidates`) — a linha `um`
+ * descartada não foi gravada nem estava gravada; sai em contagem própria.
+ */
+export function formatRecordSummary(logPath: string, written: number, candidates: number, filteredOut: number): string {
+  const base = `[social-schedule-rotation] ${written} linha(s) nova(s) em ${logPath} (${candidates - written} já gravada(s)`;
+  return filteredOut > 0 ? `${base}, ${filteredOut} não gravada(s) — um sem post agendado).` : `${base}).`;
+}
+
+/**
  * Filtro da CLI `--record` (#10427, review #10432): a linha `…|weekday|um` só
  * fica quando `06-social-published.json` da edição do dia mostra o post `um`
  * agendado/publicado (`useMelhorScheduledIn`). Arquivo ausente = não dá pra
@@ -124,11 +154,8 @@ export function filterUseMelhorRowsByPublished(
   social: unknown,
   rootDir: string,
   warn: (msg: string) => void = (m) => console.error(m),
-  readPublished: (edition: string) => ReadonlyArray<{ destaque: string; status: string }> | null = (edition) => {
-    const p = resolve(rootDir, editionDir(edition), "06-social-published.json");
-    if (!existsSync(p)) return null;
-    return (JSON.parse(readFileSync(p, "utf8")) as { posts?: Array<{ destaque: string; status: string }> }).posts ?? [];
-  },
+  readPublished: (edition: string) => ReadonlyArray<{ destaque: string; status: string }> | null = (edition) =>
+    readPublishedPosts(resolve(rootDir, editionDir(edition), "06-social-published.json"), warn),
 ): RotationPlanRow[] {
   return rows.filter((r) => {
     if (!(r.kind === "weekday" && r.type === "um")) return true;
@@ -136,7 +163,7 @@ export function filterUseMelhorRowsByPublished(
     const posts = readPublished(edition);
     if (posts === null) {
       warn(
-        `[rotação #10427] WARN: ${editionDir(edition)}/06-social-published.json ausente — linha um de ${r.date} NÃO gravada (rode --record de novo depois do Stage 5).`,
+        `[rotação #10427] WARN: ${editionDir(edition)}/06-social-published.json ausente ou ilegível — linha um de ${r.date} NÃO gravada (rode --record de novo depois do Stage 5).`,
       );
       return false;
     }
