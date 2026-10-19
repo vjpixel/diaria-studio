@@ -8,7 +8,7 @@ O watchdog detecta stall em rodadas overnight de forma independente do coordenad
 
 ## Como funciona
 
-1. Roda a cada 10 min via systemd timer (entre 18:00 e 09:00 do dia seguinte).
+1. Roda a cada 10 min via systemd timer, 24h por dia (#10565 — até então só entre 18:00 e 09:00; a cadeia noturna agendada, #10552, roda sem teto de horário e pode passar das 09:00). Fora de rodada ativa o disparo é noop: quem decide se há o que vigiar é o passo 2, não o relógio.
 2. Procura rodada overnight ativa: `data/overnight/{AAMMDD}/plan.json` existe mas `report.md` está ausente.
 3. Mede **última atividade** = `max(mtime(plan.json), último evento run-log com agent:"overnight")`.
 4. Se inatividade > 45 min (limiar configurável — `OVERNIGHT_STALL_THRESHOLD_MIN`):
@@ -43,10 +43,18 @@ Via de arme é só systemd, abaixo.
 Diferente das outras 14 tasks agendadas do repo (registro declarativo em
 `scripts/lib/scheduled-tasks.ts` + geração via `scripts/setup-systemd-timers.ts`,
 épica #4798), o watchdog fica **fora** do registry — decisão documentada em
-`scripts/lib/watchdog-systemd-units.ts`: a janela 18:00→09:00 (cadência que
-cruza a meia-noite) e a invocação direta de `overnight-watchdog.ts` (sem
-passar por `run-task.ts`) não cabem no schema `ScheduledTaskSchedule` hoje
-(`daily`/`weekly`/`interval` simples).
+`scripts/lib/watchdog-systemd-units.ts`: a invocação direta de
+`overnight-watchdog.ts` (sem passar por `run-task.ts`) não cabe no registry.
+A janela 18:00→09:00 que cruzava a meia-noite era o outro motivo; saiu no
+#10565 (cadência agora é 24h), mas a migração pro registry ficou fora de
+escopo.
+
+**Rearme depois do #10565:** um timer armado antes do #10565 continua com a
+janela antiga até ser regerado e recopiado (passos 1 e 2 abaixo, seguidos de
+`systemctl --user daemon-reload` e `systemctl --user restart
+diaria-overnight-watchdog.timer`). O catch-up do `Persistent=true` pode
+disparar uma vez na hora (#5140) — inofensivo aqui, o watchdog só inspeciona
+estado.
 
 **As outras 14 tasks (registry) têm o passo de armar automatizado desde o
 #4828** — `npx tsx scripts/arm-systemd-timers.ts [--task <Nome>]

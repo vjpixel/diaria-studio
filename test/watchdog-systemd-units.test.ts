@@ -40,13 +40,19 @@ describe("WATCHDOG_UNIT_NAME (#4857)", () => {
   });
 });
 
-describe("buildWatchdogOnCalendar (#4857)", () => {
-  it("defaults (18:00->09:00 BRT, a cada 10 min) reproduzem a expressão validada AO VIVO no arme manual de 260810", () => {
-    assert.equal(buildWatchdogOnCalendar(), "*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo");
+describe("buildWatchdogOnCalendar (#4857, #10565)", () => {
+  it("default: a cada 10 min, 24h por dia (#10565, sem a janela 18:00->09:00 antiga)", () => {
+    assert.equal(buildWatchdogOnCalendar(), "*-*-* *:00/10:00 America/Sao_Paulo");
   });
 
-  it("é parametrizável (janela/intervalo diferentes) sem duplicar o literal mágico", () => {
-    assert.equal(buildWatchdogOnCalendar(20, 6, 15), "*-*-* 00..05,20..23:00/15:00 America/Sao_Paulo");
+  it("regressão #10565: nenhuma restrição de hora, nunca volta à janela 00..08,18..23", () => {
+    // A janela antiga deixava a rodada agendada da cadeia noturna (#10552,
+    // sem teto de horário) sem detecção externa de stall entre 09:00 e 18:00.
+    assert.doesNotMatch(buildWatchdogOnCalendar(), /\d{2}\.\.\d{2}/);
+  });
+
+  it("é parametrizável (intervalo diferente) sem duplicar o literal mágico", () => {
+    assert.equal(buildWatchdogOnCalendar(15), "*-*-* *:00/15:00 America/Sao_Paulo");
   });
 
   it("sempre inclui America/Sao_Paulo explícito — mesmo achado ao vivo do #4807 pro resto do registry", () => {
@@ -56,12 +62,10 @@ describe("buildWatchdogOnCalendar (#4857)", () => {
 
 describe("buildWatchdogOnCalendar — validação real via systemd-analyze (quando disponível)", () => {
   // Complementa os testes de string acima com a validação AUTORITATIVA: o
-  // próprio parser do systemd aceita o valor gerado, e ele dispara DENTRO da
-  // janela 18:00->09:00 BRT esperada, nunca fora dela. `systemd-analyze
-  // calendar` é uma consulta PURAMENTE de parsing/cálculo — não toca nenhuma
-  // unit registrada nem o daemon `--user`, então rodar isto aqui não conta
-  // como "tocar o systemd real desta máquina" (não muda nenhum estado,
-  // mesma disciplina de `test/systemd-units.test.ts`).
+  // próprio parser do systemd aceita o valor gerado e ele dispara também
+  // entre 09:00 e 17:59 BRT (#10565). `systemd-analyze calendar` é consulta
+  // PURAMENTE de parsing/cálculo — não toca nenhuma unit registrada nem o
+  // daemon `--user` (mesma disciplina de `test/systemd-units.test.ts`).
   let hasSystemdAnalyze = false;
   try {
     execFileSync("systemd-analyze", ["--version"], { stdio: "ignore" });
@@ -75,46 +79,32 @@ describe("buildWatchdogOnCalendar — validação real via systemd-analyze (quan
     assert.doesNotThrow(() => execFileSync("systemd-analyze", ["calendar", onCalendar], { stdio: "pipe" }));
   });
 
-  it("toda ocorrência calculada cai dentro da janela 18:00-23:59 ou 00:00-08:59 BRT, nunca das 09:00 às 17:59", {
+  it("regressão #10565: dispara a cada 10 min, inclusive das 09:00 às 17:59 BRT", {
     skip: !hasSystemdAnalyze,
   }, () => {
     const onCalendar = buildWatchdogOnCalendar();
-    // #6974: `TZ=UTC` explícito, pelo mesmo motivo de
-    // `test/systemd-units.test.ts` — o `systemd-analyze` renderiza no TZ DO
+    // #6974: `TZ=UTC` explícito — o `systemd-analyze` renderiza no TZ DO
     // PROCESSO, e o horário só sai com sufixo `UTC` na linha `Next elapse:`
-    // quando o processo já está em UTC; fora disso ele vai pra uma linha
-    // `(in UTC):` separada.
+    // quando o processo já está em UTC.
     //
-    // Este teste sobrevivia às duas formas por CONSTRUÇÃO (o regex abaixo
-    // procura o literal `UTC` em qualquer linha, e a linha `(in UTC):`
-    // aparece em toda iteração) — medido: 20 horários extraídos tanto em
-    // `TZ=UTC` quanto em `TZ=America/Sao_Paulo`. Mas isso é depender de um
-    // detalhe de formatação que não é contrato: bastaria o systemd omitir
-    // `(in UTC):` numa iteração pra `times` encolher em silêncio, e o
-    // `times.length > 0` abaixo passaria feliz validando 1 ocorrência em vez
-    // de 20. Forçar o TZ remove a dependência em vez de confiar nela.
-    //
-    // O comentário anterior justificava isto dizendo que "`300` roda em
-    // Etc/UTC". O TZ do SISTEMA é mesmo `Etc/UTC`, mas o do PROCESSO não
-    // precisa ser (a sessão que achou o #6974 rodava em `America/Sao_Paulo`
-    // por herança do shell) — a premissa era falsa e é justamente a que
-    // deixou o teste irmão vermelho.
-    const out = execFileSync("systemd-analyze", ["calendar", "--iterations=20", onCalendar], {
-      encoding: "utf8",
-      env: { ...process.env, TZ: "UTC" },
-    });
-    // BRT = UTC-3, então a janela 18:00-08:59 BRT corresponde a 21:00-11:59
-    // UTC. Extrai todos os HH:MM de cada linha e confirma que nenhum cai
-    // fora dessa faixa.
+    // --base-time fixo às 08:55 BRT (11:55 UTC): as 60 ocorrências seguintes
+    // cobrem 09:00..18:50 BRT, exatamente o trecho que a janela antiga
+    // deixava descoberto.
+    const out = execFileSync(
+      "systemd-analyze",
+      ["calendar", "--iterations=60", "--base-time=2026-10-19 11:55:00 UTC", onCalendar],
+      { encoding: "utf8", env: { ...process.env, TZ: "UTC" } },
+    );
     const times = [...out.matchAll(/\b(\d{2}):(\d{2}):\d{2} UTC\b/g)].map(
       (m) => Number(m[1]) * 60 + Number(m[2]),
     );
-    assert.ok(times.length > 0, `nenhum horário extraído da saída: ${out}`);
-    const windowStartUtcMin = 21 * 60; // 21:00 UTC = 18:00 BRT
-    const windowEndUtcMin = 11 * 60 + 59; // 11:59 UTC = 08:59 BRT
-    for (const t of times) {
-      const inWindow = t >= windowStartUtcMin || t <= windowEndUtcMin;
-      assert.ok(inWindow, `horário ${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")} UTC caiu fora da janela 21:00-11:59 UTC (18:00-08:59 BRT)`);
+    const unique = [...new Set(times)].sort((x, y) => x - y);
+    assert.equal(unique.length, 60, `esperava 60 horários distintos na saída: ${out}`);
+    // 12:00 UTC = 09:00 BRT; 20:59 UTC = 17:59 BRT.
+    const daytime = unique.filter((t) => t >= 12 * 60 && t <= 20 * 60 + 59);
+    assert.equal(daytime.length, 54, `esperava 54 disparos entre 09:00 e 17:59 BRT, veio ${daytime.length}: ${out}`);
+    for (let i = 1; i < unique.length; i++) {
+      assert.equal(unique[i] - unique[i - 1], 10, `intervalo != 10 min entre ocorrências consecutivas: ${out}`);
     }
   });
 });
@@ -147,7 +137,7 @@ describe("buildWatchdogSystemdUnitFiles (#4857)", () => {
   });
 
   it("timer: OnCalendar com fuso + Persistent=true + Unit aponta pro .service + WantedBy=timers.target", () => {
-    assert.match(files.timerContent, /OnCalendar=\*-\*-\* 00\.\.08,18\.\.23:00\/10:00 America\/Sao_Paulo/);
+    assert.match(files.timerContent, /^OnCalendar=\*-\*-\* \*:00\/10:00 America\/Sao_Paulo$/m);
     assert.match(files.timerContent, /Persistent=true/);
     assert.match(files.timerContent, /Unit=diaria-overnight-watchdog\.service/);
     assert.match(files.timerContent, /WantedBy=timers\.target/);

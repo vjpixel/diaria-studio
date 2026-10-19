@@ -15,7 +15,7 @@ cada parágrafo.
 
 ---
 
-**Watchdog de stall overnight (#2688):** task `Diaria-Overnight-Watchdog`, a cada 10 min, janela 18:00→09:00 BRT — fora do registry declarativo por schema (a janela cruza a meia-noite, #4857). Armado e validado ao vivo em `300` (260810). **Nenhuma tarefa `Diaria-*` roda no Windows** (política confirmada 260811, decisão do editor) — o par Windows deste watchdog foi desligado de propósito por redundância; auditoria de fechamento em #5074/#5091. Arme e detalhes: `docs/overnight-watchdog-setup.md`.
+**Watchdog de stall overnight (#2688):** task `Diaria-Overnight-Watchdog`, a cada 10 min, 24h por dia (#10565; era janela 18:00→09:00 BRT) — fora do registry declarativo (invocação direta do script, #4857). Armado e validado ao vivo em `300` (260810). **Nenhuma tarefa `Diaria-*` roda no Windows** (política confirmada 260811, decisão do editor) — o par Windows deste watchdog foi desligado de propósito por redundância; auditoria de fechamento em #5074/#5091. Arme e detalhes: `docs/overnight-watchdog-setup.md`.
 
 **Sync incremental diário do store Clarice (#2932):** task `Diaria-Clarice-Sync`, diária às 08:30. Confirmado ativo em `300` (260812). Arme e detalhes (dois passos store+KV, catch-up de opens #4688): `docs/clarice-sync-daily-setup.md`.
 
