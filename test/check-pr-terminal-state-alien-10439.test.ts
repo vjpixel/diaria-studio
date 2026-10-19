@@ -9,7 +9,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   checkPrTerminalState,
-  foreignLiveBranches,
+  foreignClaimedIssues,
+  issueFromBranch,
   readAlienPrsConfirmed,
   verdictExitCode,
   type OpenPrLike,
@@ -67,34 +68,52 @@ describe("alien_prs_confirmed no plano (#10439)", () => {
   });
 });
 
-describe("cruzamento com session-registry (#10439)", () => {
+describe("cruzamento com claims do session-registry (#10439)", () => {
+  // known_worktrees é foto GLOBAL (#7722): igual em toda sessão, e por isso
+  // nunca pode ser evidência de autoria — está aqui só pra provar que é ignorado.
+  const globalSnapshot = otherRoundPrs.map((p) => ({ branch: p.headRefName as string }));
   const sessions = [
-    { sessionId: "own", known_worktrees: [{ branch: "overnight/fix-esquecida" }] },
-    { sessionId: "0b68d4a7", known_worktrees: [{ branch: "overnight/fix-10390-a" }, { branch: "overnight/batch-c" }] },
-    { sessionId: "morta", stale: true, known_worktrees: [{ branch: "overnight/fix-10419-b" }] },
+    { sessionId: "own", claimed_issues_effective: [5815, 10500], known_worktrees: globalSnapshot },
+    { sessionId: "0b68d4a7", claimed_issues_effective: [10390, 10500], known_worktrees: globalSnapshot },
+    { sessionId: "morta", stale: true, claimed_issues_effective: [10419], known_worktrees: globalSnapshot },
   ];
 
-  it("branch em known_worktrees de outra sessão viva → alheio confirmado; stale não conta", () => {
+  it("issue do branch fix-{N} reivindicada por outra sessão viva → alheio; stale e lote não contam", () => {
     const v = checkPrTerminalState(otherRoundPrs, ownPlan, undefined, {
-      liveForeignBranches: foreignLiveBranches(sessions, "own"),
+      liveForeignClaimedIssues: foreignClaimedIssues(sessions, "own"),
     });
     assert.deepEqual(
       v.alienConfirmed.map((a) => [a.pr, a.source]),
-      [
-        [10396, "session-registry"],
-        [10435, "session-registry"],
-      ],
+      [[10396, "session-registry"]],
     );
-    assert.deepEqual(v.unregisteredCandidates.map((c) => c.pr), [10421]);
+    assert.deepEqual(v.unregisteredCandidates.map((c) => c.pr), [10421, 10435]);
     assert.equal(v.status, "candidates");
   });
 
-  it("branch da PRÓPRIA sessão nunca vira alheio (caso #5823 continua candidato)", () => {
-    const branches = foreignLiveBranches(sessions, "own");
-    assert.equal(branches.has("overnight/fix-esquecida"), false);
+  it("PR esquecido DESTA rodada (caso #5823) continua candidato mesmo com outra sessão viva", () => {
+    const v = checkPrTerminalState(
+      [{ number: 5823, headRefName: "develop/fix-5815" }],
+      [],
+      undefined,
+      { liveForeignClaimedIssues: foreignClaimedIssues(sessions, "own") },
+    );
+    assert.deepEqual(v.alienConfirmed, []);
+    assert.deepEqual(v.unregisteredCandidates.map((c) => c.pr), [5823]);
+  });
+
+  it("issue reivindicada também pela própria sessão não vira alheia", () => {
+    assert.equal(foreignClaimedIssues(sessions, "own").has(10500), false);
   });
 
   it("plano sem session_id → sem cruzamento (não dá pra saber qual é a própria)", () => {
-    assert.equal(foreignLiveBranches(sessions, undefined).size, 0);
+    assert.equal(foreignClaimedIssues(sessions, undefined).size, 0);
+  });
+
+  it("issueFromBranch só reconhece fix-{N} das skills", () => {
+    assert.equal(issueFromBranch("overnight/fix-10390-a"), 10390);
+    assert.equal(issueFromBranch("develop/fix-5815"), 5815);
+    assert.equal(issueFromBranch("continuo/fix-12-x"), 12);
+    assert.equal(issueFromBranch("overnight/batch-c"), null);
+    assert.equal(issueFromBranch("fix/10390"), null);
   });
 });

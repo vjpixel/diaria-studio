@@ -62,9 +62,10 @@
  * `alienConfirmed` (só informativo, nunca candidato) quando a autoria alheia
  * é CONFIRMADA por um de dois sinais — nunca pelo nome do branch sozinho:
  * (a) o número da PR está em `plan.json.alien_prs_confirmed` (confirmação
- * manual do coordenador, antes ignorada pelo gate), ou (b) o branch está em
- * `known_worktrees` de OUTRA sessão viva do `session-registry` (cruzamento
- * feito no CLI, que passa os branches já resolvidos pra cá).
+ * manual do coordenador, antes ignorada pelo gate), ou (b) a issue do branch
+ * `fix-{N}` está reivindicada por OUTRA sessão viva do `session-registry`
+ * (cruzamento feito no CLI). Lote (`batch-…`) não carrega número no branch:
+ * só (a) o confirma. Nunca `known_worktrees` — ver `foreignClaimedIssues`.
  */
 
 import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
@@ -156,8 +157,9 @@ export interface PrTerminalStateVerdict {
 export interface AlienEvidence {
   /** `plan.json.alien_prs_confirmed` (números de PR). */
   confirmedPrs?: ReadonlySet<number>;
-  /** Branches em `known_worktrees` de OUTRA sessão viva. */
-  liveForeignBranches?: ReadonlySet<string>;
+  /** Issues reivindicadas por OUTRA sessão viva (`foreignClaimedIssues`),
+   * casadas pelo branch `fix-{N}` do PR. */
+  liveForeignClaimedIssues?: ReadonlySet<number>;
 }
 
 export interface AlienConfirmedPr {
@@ -181,26 +183,42 @@ export function readAlienPrsConfirmed(planRaw: unknown): Set<number> {
 export interface LiveSessionLike {
   sessionId?: string;
   stale?: boolean;
-  known_worktrees?: Array<{ branch?: string }>;
+  /** Claims vigentes (`ActiveSessionRecord.claimed_issues_effective`). */
+  claimed_issues_effective?: number[];
 }
 
 /**
- * Pure (#10439): branches em `known_worktrees` de sessões vivas (não-stale)
- * DIFERENTES de `ownSessionId`. Sem `ownSessionId` (plano legado sem
- * `session_id`) devolve vazio: sem saber qual sessão é a própria, um PR
- * esquecido DESTA rodada (o caso #5823) seria rotulado alheio.
+ * Pure (#10439): issues reivindicadas por sessões vivas (não-stale)
+ * DIFERENTES de `ownSessionId` — e não também pela própria. O claim é o
+ * sinal POR SESSÃO que o overnight grava antes de cada dispatch
+ * (`claim-issue`, #5156). **Nunca `known_worktrees`**: aquele campo é a foto
+ * GLOBAL dos worktrees do repo (#7722), igual em toda sessão da máquina —
+ * usá-lo rotularia como alheio o PR esquecido DESTA rodada (o caso #5823)
+ * sempre que outra sessão estivesse viva. Sem `ownSessionId` (plano legado
+ * sem `session_id`) devolve vazio: sem saber qual é a própria, nada é
+ * confirmável.
  */
-export function foreignLiveBranches(
+export function foreignClaimedIssues(
   sessions: readonly LiveSessionLike[],
   ownSessionId: string | undefined,
-): Set<string> {
-  const out = new Set<string>();
+): Set<number> {
+  const out = new Set<number>();
   if (!ownSessionId) return out;
+  const own = new Set<number>();
+  for (const s of sessions) {
+    if (s.sessionId === ownSessionId) for (const n of s.claimed_issues_effective ?? []) own.add(n);
+  }
   for (const s of sessions) {
     if (s.stale || !s.sessionId || s.sessionId === ownSessionId) continue;
-    for (const w of s.known_worktrees ?? []) if (w.branch) out.add(w.branch);
+    for (const n of s.claimed_issues_effective ?? []) if (!own.has(n)) out.add(n);
   }
   return out;
+}
+
+/** Pure: issue de um branch de unidade solo (`{overnight,develop,continuo}/fix-{N}[-…]`), ou `null`. */
+export function issueFromBranch(ref: string): number | null {
+  const m = /^(?:overnight|develop|continuo)\/fix-(\d+)(?:-|$)/.exec(ref);
+  return m ? Number(m[1]) : null;
 }
 
 /** Pure (#10439): separa os candidatos com autoria alheia confirmada. */
@@ -213,7 +231,7 @@ export function partitionAlienCandidates(
   for (const c of candidates) {
     if (evidence.confirmedPrs?.has(c.pr)) {
       alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "plan-alien_prs_confirmed" });
-    } else if (c.headRefName && evidence.liveForeignBranches?.has(c.headRefName)) {
+    } else if (evidence.liveForeignClaimedIssues?.has(issueFromBranch(c.headRefName) ?? -1)) {
       alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "session-registry" });
     } else {
       remaining.push(c);

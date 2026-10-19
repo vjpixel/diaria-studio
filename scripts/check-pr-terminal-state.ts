@@ -18,8 +18,8 @@
  * `retida-para-editor` no plano) é terminal; PR `overnight/`/`develop/`/`fix/`
  * sem registro no plano é só AVISO (candidata, `exit 0`) — #10430.
  *
- * PR de OUTRA rodada viva (#10439) — branch em `known_worktrees` de outra
- * sessão do `session-registry`, ou número em `plan.json.alien_prs_confirmed`
+ * PR de OUTRA rodada viva (#10439) — issue do branch `fix-{N}` reivindicada
+ * por outra sessão do `session-registry`, ou número em `plan.json.alien_prs_confirmed`
  * — sai da lista de candidatos e é listada como "alheia confirmada".
  *
  * Uso:
@@ -40,7 +40,7 @@ import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize
 import { listActiveSessions } from "./lib/session-registry.ts";
 import {
   checkPrTerminalState,
-  foreignLiveBranches,
+  foreignClaimedIssues,
   readAlienPrsConfirmed,
   verdictExitCode,
   type LiveSessionLike,
@@ -129,7 +129,7 @@ if (isMainModule(import.meta.url)) {
       : undefined;
   const verdict = checkPrTerminalState(openPrs, planIssues, undefined, {
     confirmedPrs: readAlienPrsConfirmed(planRaw),
-    liveForeignBranches: foreignLiveBranches(sessions, ownSessionId),
+    liveForeignClaimedIssues: foreignClaimedIssues(sessions, ownSessionId),
   });
 
   if (verdict.alienConfirmed.length > 0) {
