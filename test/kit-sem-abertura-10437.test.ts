@@ -12,8 +12,15 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildEngagementIndex,
+  checkNewSignupsFitAccountQuota,
+  countKitSemAberturaInBrevo,
+  diariaSendDayUtc,
+  parseKitSemAberturaNumbers,
   classifyDiariaBroadcasts,
   computeBacklogSlots,
   dedupeBroadcastRecords,
@@ -24,11 +31,14 @@ import {
   type KitActiveCandidate,
 } from "../scripts/lib/kit-sem-abertura.ts";
 import {
+  parseDiariaExclusionSegment,
   resolveDiariaAudience,
   verifyDiariaAudienceFilter,
   KIT_ENVIO_BREVO_TAG_NAME,
 } from "../scripts/lib/kit-diaria-audience.ts";
-import { buildAllSubscribersFilter, buildSegmentFilter } from "../scripts/lib/kit-broadcasts.ts";
+import { buildAllSubscribersFilter, buildSegmentFilter, listSubscriberTags } from "../scripts/lib/kit-broadcasts.ts";
+import { KitApiError } from "../scripts/lib/kit-client.ts";
+import { kitSendAudienceWithExclusionSegment } from "../scripts/reconcile-send-audiences.ts";
 import { parseOrigin, buildOrigin } from "../scripts/lib/shared/brevo-diaria-origin.ts";
 import {
   parseKitSubscriberId,
@@ -37,9 +47,14 @@ import {
   runEvaluation,
 } from "../scripts/evaluate-brevo-diaria.ts";
 import { findContact, type BrevoDiariaContact, type BrevoDiariaStore } from "../scripts/lib/brevo-diaria-store.ts";
-import { runKitSemAberturaSync, type KitSemAberturaDeps, type KitSemAberturaPlatformConfig } from "../scripts/sync-kit-sem-abertura-to-brevo.ts";
+import {
+  readDiariaBroadcastRegistry,
+  runKitSemAberturaSync,
+  type KitSemAberturaDeps,
+  type KitSemAberturaPlatformConfig,
+} from "../scripts/sync-kit-sem-abertura-to-brevo.ts";
 import { scheduleNewsletterKit, type ScheduleNewsletterKitDeps } from "../scripts/schedule-newsletter-kit.ts";
-import { confirmDiariaAudienceOnBroadcast } from "../scripts/publish-newsletter-kit.ts";
+import { confirmDiariaAudienceOnBroadcast, unscheduleKitBroadcast } from "../scripts/publish-newsletter-kit.ts";
 import { runBrevoDiaria, type ExecFn } from "../scripts/brevo-diaria-run.ts";
 import { resolveDailyBrevoIntro } from "../scripts/publish-daily-brevo.ts";
 import { applyKitActiveExclusionGuard, kitSemAberturaExemptEmails } from "../scripts/lib/brevo-kit-active-exclusion.ts";
@@ -56,8 +71,8 @@ function candidate(email: string, overrides: Partial<KitActiveCandidate> = {}): 
 /** N broadcasts maduros onde `email` recebeu todos e não abriu nada. */
 function engagementFor(email: string, mature: number, extra: Partial<BroadcastEngagement>[] = []) {
   const per: BroadcastEngagement[] = [];
-  for (let i = 1; i <= mature; i++) per.push({ broadcastId: i, sent: [email], opens: [], clicks: [] });
-  extra.forEach((e, i) => per.push({ broadcastId: 1000 + i, sent: [], opens: [], clicks: [], ...e }));
+  for (let i = 1; i <= mature; i++) per.push({ broadcastId: i, delivered: [email], opens: [], clicks: [] });
+  extra.forEach((e, i) => per.push({ broadcastId: 1000 + i, delivered: [], opens: [], clicks: [], ...e }));
   const matureIds = new Set(per.filter((b) => b.broadcastId < 1000).map((b) => b.broadcastId));
   return buildEngagementIndex(per, matureIds);
 }
@@ -73,13 +88,6 @@ describe("predicado de seleção (#10437)", () => {
     assert.equal(r.selected[0].matureSends, 6);
   });
 
-  it("escopo nos broadcasts da diária: abertura do DOI/boas-vindas não está no registro e não conta (cadastro novo qualifica)", () => {
-    // O índice só é montado a partir dos broadcasts do registro da diária —
-    // nenhum evento fora dele (DOI, boas-vindas) existe aqui por construção.
-    const r = select(candidate("novo@x.com", { created_at: "2026-10-05T00:00:00.000Z" }));
-    assert.equal(r.selected.length, 1);
-  });
-
   it("borda: 5 envios maduros → fora (envios_insuficientes); 6 → dentro", () => {
     assert.equal(select(candidate("a@x.com"), engagementFor("a@x.com", 5)).excluded.envios_insuficientes, 1);
     assert.equal(select(candidate("a@x.com"), engagementFor("a@x.com", 6)).selected.length, 1);
@@ -93,7 +101,7 @@ describe("predicado de seleção (#10437)", () => {
     const { sentIds, matureIds } = classifyDiariaBroadcasts(records, NOW);
     assert.deepEqual(sentIds, [1, 2, 3, 4, 5, 6]);
     assert.deepEqual(matureIds, [1, 2, 3, 4, 5]);
-    const per = sentIds.map((id) => ({ broadcastId: id, sent: ["a@x.com"], opens: [], clicks: [] }));
+    const per = sentIds.map((id) => ({ broadcastId: id, delivered: ["a@x.com"], opens: [], clicks: [] }));
     const r = select(candidate("a@x.com"), buildEngagementIndex(per, new Set(matureIds)));
     assert.equal(r.excluded.envios_insuficientes, 1);
   });
@@ -207,7 +215,7 @@ function fakeDeps(overrides: Partial<KitSemAberturaDeps> = {}) {
     log: () => {},
     readRegistry: () => records,
     listKitActive: async () => [candidate("mover@x.com", { id: 42 })],
-    fetchEngagement: async (id) => ({ broadcastId: id, sent: ["mover@x.com"], opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["mover@x.com"], opens: [], clicks: [] }),
     findEnvioBrevoTagId: async () => 555,
     readStore: () => store,
     writeStore: (s) => {
@@ -215,7 +223,8 @@ function fakeDeps(overrides: Partial<KitSemAberturaDeps> = {}) {
       store = s;
     },
     rolloutPaused: () => false,
-    transactionalToday: async () => 0,
+    transactionalOnSendDay: async () => 0,
+    getApoioNivel: async () => null,
     ingestBrevo: async (email) => {
       calls.push(`brevo:${email}`);
     },
@@ -244,7 +253,8 @@ function throwingDeps(): KitSemAberturaDeps {
     readStore: boom,
     writeStore: boom,
     rolloutPaused: boom,
-    transactionalToday: boom,
+    transactionalOnSendDay: boom,
+    getApoioNivel: boom,
     ingestBrevo: boom,
     tagKit: boom,
     appendLog: boom,
@@ -274,15 +284,54 @@ describe("runKitSemAberturaSync (#10437)", () => {
     assert.equal(findContact(getStore(), "mover@x.com")!.beehiiv_subscription_id, "kit-sem-abertura:42");
   });
 
-  it("falha na tag do Kit ⇒ store NÃO gravado (próxima rodada retenta), exit 1", async () => {
-    const { deps, calls } = fakeDeps({
-      tagKit: async () => {
-        throw new Error("429");
+  it("falha na tag do Kit ⇒ store gravado COM kit_tag_pending (nunca órfão sem canal), exit 1; rodada seguinte retenta e limpa", async () => {
+    let tagFails = true;
+    const { deps, calls, getStore } = fakeDeps({
+      tagKit: async (tagId, id) => {
+        calls.push(`tag:${tagId}:${id}`);
+        if (tagFails) throw new Error("releitura das tags não mostra a tag");
       },
     });
     const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
     assert.equal(r.code, 1);
-    assert.deepEqual(calls, ["brevo:mover@x.com"]);
+    assert.equal(r.moved, 0);
+    assert.deepEqual(calls, ["brevo:mover@x.com", "tag:555:42", "store", "log:kit-sem-abertura:42"]);
+    const c = findContact(getStore(), "mover@x.com")!;
+    assert.equal(c.status, "in_brevo");
+    assert.equal(c.kit_tag_pending, true);
+    // O guard #6485 o isenta (está no store, in_brevo) — não sai da Brevo.
+    assert.deepEqual(kitSemAberturaExemptEmails(getStore()), ["mover@x.com"]);
+
+    // Rodada seguinte: o Kit já lista a tag (ou não) — o contato não é
+    // re-selecionado (está no store) e a tag pendente é retentada.
+    tagFails = false;
+    calls.length = 0;
+    const again = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(again.reconciled, 1);
+    assert.deepEqual(calls, ["tag:555:42", "store"]);
+    assert.equal(findContact(getStore(), "mover@x.com")!.kit_tag_pending, undefined);
+  });
+
+  it("writeStore falha depois da tag ⇒ falha contada; rodada seguinte reconcilia o órfão (tag sem store) em vez de excluí-lo", async () => {
+    let writes = 0;
+    const { deps, calls, getStore } = fakeDeps();
+    const realWrite = deps.writeStore;
+    deps.writeStore = (st) => {
+      writes++;
+      if (writes <= 2) throw new Error("EBUSY");
+      realWrite(st);
+    };
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(r.code, 1);
+    assert.equal(findContact(getStore(), "mover@x.com"), undefined);
+
+    // O Kit agora mostra a tag; o store não tem o contato ⇒ órfão.
+    calls.length = 0;
+    deps.listKitActive = async () => [candidate("mover@x.com", { id: 42, tagNames: [KIT_ENVIO_BREVO_TAG_NAME] })];
+    const again = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(again.reconciled, 1);
+    assert.deepEqual(calls.slice(0, 3), ["brevo:mover@x.com", "store", "log:kit-sem-abertura:42"]);
+    assert.equal(findContact(getStore(), "mover@x.com")!.beehiiv_subscription_id, "kit-sem-abertura:42");
   });
 
   it("falha no ingest da Brevo ⇒ Kit não é tocado", async () => {
@@ -630,5 +679,530 @@ describe("intro da Brevo por origem (#10437)", () => {
     const html = resolveDailyBrevoIntro({ enabled: true }, undefined, render)!;
     assert.match(html, /\{% if contact\.ORIGEM_DIARIA == "kit_sem_abertura" %\}\n<p>KIT<\/p>\n\{% else %\}\n<p>PENDING<\/p>\n\{% endif %\}/);
     assert.throws(() => resolveDailyBrevoIntro({ enabled: true }, undefined, { ...render, kitSemAbertura: () => null }));
+  });
+});
+
+// ── fixes do fleet review (#10437) ───────────────────────────────────────
+
+describe("registro de broadcasts: escopo DOI real no layout aninhado (#10437, armadilha 1)", () => {
+  function writeState(root: string, aamm: string, edition: string, file: string, body: string) {
+    const dir = join(root, aamm, edition, "_internal");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, file), body, "utf8");
+  }
+
+  it("lê {AAMM}/{AAMMDD}/_internal/*; draft/test_sent descartados; test_broadcast_ids nunca contam", () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-sem-abertura-reg-"));
+    try {
+      writeState(root, "2610", "261016", "newsletter-kit-published.json",
+        JSON.stringify({ broadcast_id: 501, status: "scheduled", scheduled_at: "2026-10-16T09:00:00Z", test_broadcast_ids: [9001, 9002] }));
+      writeState(root, "2610", "261017", "newsletter-kit-published.json",
+        JSON.stringify({ broadcast_id: 502, status: "draft", test_broadcast_ids: [9003] }));
+      writeState(root, "2610", "261018", "newsletter-kit-published.json",
+        JSON.stringify({ broadcast_id: 503, status: "test_sent", test_broadcast_ids: [9004] }));
+      writeState(root, "2609", "260930", "kit-diaria-published.json",
+        JSON.stringify({ broadcast_id: 400, status: "scheduled", scheduled_at: "2026-09-30T09:00:00Z" }));
+      const recs = readDiariaBroadcastRegistry(root);
+      assert.deepEqual(recs.map((r) => r.broadcastId), [400, 501]);
+      assert.deepEqual(recs.map((r) => r.edition), ["260930", "261016"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON ilegível no registro ⇒ lança (o Passo 3c aborta, nunca conta sem aquele broadcast)", () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-sem-abertura-reg-"));
+    try {
+      writeState(root, "2610", "261016", "newsletter-kit-published.json", "{ quebrado");
+      assert.throws(() => readDiariaBroadcastRegistry(root), /ilegível/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runKitSemAberturaSync: fetchEngagement recebe SÓ os ids do registro (nunca DOI/boas-vindas/teste)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kit-sem-abertura-reg-"));
+    try {
+      for (let i = 1; i <= 6; i++) {
+        const day = String(i).padStart(2, "0");
+        writeState(root, "2610", `2610${day}`, "newsletter-kit-published.json",
+          JSON.stringify({ broadcast_id: 700 + i, status: "scheduled", scheduled_at: `2026-10-${day}T09:00:00Z`, test_broadcast_ids: [9900 + i] }));
+      }
+      const asked: number[] = [];
+      const { deps } = fakeDeps({
+        readRegistry: () => readDiariaBroadcastRegistry(root),
+        fetchEngagement: async (id) => {
+          asked.push(id);
+          return { broadcastId: id, delivered: ["mover@x.com"], opens: [], clicks: [] };
+        },
+      });
+      const r = await runKitSemAberturaSync(cfg(true, true), { push: false }, deps);
+      assert.deepEqual(asked, [701, 702, 703, 704, 705, 706]);
+      assert.equal(r.selected, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("registro ilegível ⇒ exit 2, nada lido do Kit nem movido", async () => {
+    const { deps, calls } = fakeDeps({
+      readRegistry: () => {
+        throw new Error("1 arquivo(s) ilegível(is)");
+      },
+      listKitActive: async () => {
+        throw new Error("não deveria listar");
+      },
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(r.code, 2);
+    assert.match(r.summary, /lacuna/);
+    assert.deepEqual(calls, []);
+  });
+});
+
+describe("config única + validação (#10437)", () => {
+  it("parseDiariaExclusionSegment: ausente/false ⇒ off; true com id ruim ⇒ erro; enabled não booleano ⇒ erro", () => {
+    assert.deepEqual(parseDiariaExclusionSegment(undefined), { enabled: false });
+    assert.deepEqual(parseDiariaExclusionSegment({ enabled: false, segment_id: null }), { enabled: false });
+    assert.deepEqual(parseDiariaExclusionSegment({ enabled: true, segment_id: 99 }), { enabled: true, segmentId: 99 });
+    for (const bad of [{ enabled: true, segment_id: null }, { enabled: true, segment_id: 1.5 }, { enabled: true, segment_id: -3 }, { enabled: "true", segment_id: 9 }]) {
+      assert.ok("error" in parseDiariaExclusionSegment(bad), JSON.stringify(bad));
+    }
+  });
+
+  it("sync: segmento ligado com segment_id inválido ⇒ exit 2, ninguém movido", async () => {
+    const { deps, calls } = fakeDeps();
+    const c = cfg(true, true);
+    c.kit = { diaria_exclusion_segment: { enabled: true, segment_id: null } };
+    const r = await runKitSemAberturaSync(c, { push: true }, deps);
+    assert.equal(r.code, 2);
+    assert.deepEqual(calls, []);
+  });
+
+  it("parseKitSemAberturaNumbers: min_mature_sends inteiro >=1; janela inteira 1..365", () => {
+    assert.deepEqual(parseKitSemAberturaNumbers(undefined), { ok: true, minMatureSends: 6, newSignupWindowDays: 30 });
+    for (const bad of [{ min_mature_sends: 0 }, { min_mature_sends: 2.5 }, { new_signup_window_days: 0 }, { new_signup_window_days: 400 }, { new_signup_window_days: 3.2 }]) {
+      assert.equal(parseKitSemAberturaNumbers(bad).ok, false, JSON.stringify(bad));
+    }
+  });
+
+  it("sync: min_mature_sends 0 ⇒ exit 2 (nunca moveria quem nunca recebeu nada)", async () => {
+    const { deps, calls } = fakeDeps();
+    const c = cfg(true, true);
+    c.brevo_diaria!.kit_sem_abertura = { enabled: true, min_mature_sends: 0 };
+    const r = await runKitSemAberturaSync(c, { push: true }, deps);
+    assert.equal(r.code, 2);
+    assert.deepEqual(calls, []);
+  });
+});
+
+describe("cota da conta também pros cadastros novos, no DIA DE ENVIO (#10437)", () => {
+  it("diariaSendDayUtc: amanhã no calendário de Brasília", () => {
+    assert.equal(diariaSendDayUtc(Date.parse("2026-10-19T12:00:00Z")), "2026-10-20");
+    // 01:00 UTC do dia 20 ainda é dia 19 em BRT ⇒ envio dia 20.
+    assert.equal(diariaSendDayUtc(Date.parse("2026-10-20T01:00:00Z")), "2026-10-20");
+  });
+
+  it("sync consulta a cota do dia de envio", async () => {
+    const days: string[] = [];
+    const { deps } = fakeDeps({
+      transactionalOnSendDay: async (d) => {
+        days.push(d);
+        return 0;
+      },
+    });
+    await runKitSemAberturaSync(cfg(true, true), { push: false }, deps);
+    assert.deepEqual(days, [diariaSendDayUtc(NOW)]);
+  });
+
+  it("cadastros novos que não cabem na cota ⇒ Passo 3c abortado (exit 1), ninguém movido", async () => {
+    const { deps, calls } = fakeDeps({
+      listKitActive: async () => [candidate("novo@x.com", { id: 43, created_at: new Date(NOW - 5 * DAY).toISOString() })],
+      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: [], clicks: [] }),
+      transactionalOnSendDay: async () => 299,
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(r.code, 1);
+    assert.equal(r.moved, 0);
+    assert.match(r.summary, /abortado/);
+    assert.deepEqual(calls, []);
+  });
+
+  it("cota ilegível com cadastros novos ⇒ abortado (cota ilegível nunca vira permissão)", async () => {
+    const { deps, calls } = fakeDeps({
+      listKitActive: async () => [candidate("novo@x.com", { id: 43, created_at: new Date(NOW - 5 * DAY).toISOString() })],
+      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: [], clicks: [] }),
+      transactionalOnSendDay: async () => null,
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(r.code, 1);
+    assert.deepEqual(calls, []);
+  });
+
+  it("checkNewSignupsFitAccountQuota: 0 novos sempre ok", () => {
+    assert.deepEqual(
+      checkNewSignupsFitAccountQuota({ currentActiveCount: 0, seedCount: 0, newCount: 0, dailyLimit: 300, transactionalOnSendDay: null }),
+      { ok: true },
+    );
+  });
+});
+
+describe("apoiador confirmado pelo GET singular antes de mover (#10437)", () => {
+  it("listagem sem apoio_nivel mas GET singular com nível ⇒ não move", async () => {
+    const asked: number[] = [];
+    const { deps, calls } = fakeDeps({
+      getApoioNivel: async (id) => {
+        asked.push(id);
+        return "amigo";
+      },
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.deepEqual(asked, [42]);
+    assert.equal(r.moved, 0);
+    assert.deepEqual(calls, []);
+  });
+
+  it("GET singular falha ⇒ adiado, não movido", async () => {
+    const { deps, calls } = fakeDeps({
+      getApoioNivel: async () => {
+        throw new Error("429");
+      },
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
+    assert.equal(r.moved, 0);
+    assert.equal(r.deferred, 1);
+    assert.deepEqual(calls, []);
+  });
+});
+
+describe("contagem sobre ENTREGUES (#10437)", () => {
+  it("bounce não conta como envio: 6 broadcasts, entregue em 5 ⇒ envios_insuficientes", () => {
+    const per = [1, 2, 3, 4, 5, 6].map((id) => ({ broadcastId: id, delivered: id === 6 ? [] : ["a@x.com"], opens: [], clicks: [] }));
+    const idx = buildEngagementIndex(per, new Set([1, 2, 3, 4, 5, 6]));
+    assert.equal(select(candidate("a@x.com"), idx).excluded.envios_insuficientes, 1);
+  });
+});
+
+describe("flag do segmento desligada com gente já movida (#10437)", () => {
+  it("countKitSemAberturaInBrevo: conta só kit-sem-abertura: em in_brevo; JSON quebrado com o prefixo ⇒ erro", () => {
+    const store = {
+      contacts: [
+        movedContact("a@x.com"),
+        { ...movedContact("b@x.com"), status: "promoted_beehiiv" },
+        { ...movedContact("c@x.com"), beehiiv_subscription_id: "kit:1" },
+      ],
+    };
+    assert.deepEqual(countKitSemAberturaInBrevo(JSON.stringify(store)), { count: 1 });
+    assert.deepEqual(countKitSemAberturaInBrevo(null), { count: 0 });
+    assert.ok("error" in countKitSemAberturaInBrevo('{"contacts":[{"beehiiv_subscription_id":"kit-sem-abertura:1"'));
+    const semPrefixo = countKitSemAberturaInBrevo("{ quebrado");
+    assert.ok(!("error" in semPrefixo) && semPrefixo.count === 0 && semPrefixo.warning);
+  });
+
+  it("resolveDiariaAudience: flag desligada + movidos > 0 ⇒ aborta (nunca base inteira em silêncio)", async () => {
+    const r = await resolveDiariaAudience({ enabled: false }, { listSegments: async () => [] }, { movedToBrevoCount: 3 });
+    assert.equal(r.ok, false);
+    assert.match(!r.ok ? r.reason : "", /3 contato/);
+    const zero = await resolveDiariaAudience({ enabled: false }, { listSegments: async () => [] }, { movedToBrevoCount: 0 });
+    assert.equal(zero.ok && zero.mode, "all");
+  });
+
+  it("intro da Brevo: flag desligada mas gente movida ⇒ condicional por origem (snippet obrigatório)", () => {
+    const render = { pending: () => "<p>PENDING</p>", kitSemAbertura: () => "<p>KIT</p>" };
+    assert.match(resolveDailyBrevoIntro({ enabled: false }, undefined, render, 2)!, /ORIGEM_DIARIA/);
+    assert.throws(() => resolveDailyBrevoIntro(undefined, undefined, { ...render, kitSemAbertura: () => null }, 2));
+    assert.equal(resolveDailyBrevoIntro(undefined, undefined, render, 0), "<p>PENDING</p>");
+  });
+});
+
+describe("releitura do filtro por estrutura (#10437)", () => {
+  it("mesma estrutura com chaves em outra ordem passa; tipo ou id diferente reprova", () => {
+    const f = buildSegmentFilter(99);
+    assert.equal(verifyDiariaAudienceFilter([{ all: [{ ids: [99], type: "segment" }] }], f).ok, true);
+    assert.equal(verifyDiariaAudienceFilter([{ all: [{ type: "tag", ids: [99] }] }], f).ok, false);
+    assert.equal(verifyDiariaAudienceFilter([{ all: [{ type: "segment", ids: [98] }] }], f).ok, false);
+    assert.equal(verifyDiariaAudienceFilter("lixo", f).ok, false);
+  });
+});
+
+describe("re-run do publish/schedule sobre broadcast JÁ agendado (#10437)", () => {
+  it("publish: filtro divergente num broadcast agendado ⇒ desagenda (unschedule) e avisa o caller", async () => {
+    const unscheduled: number[] = [];
+    const r = await confirmDiariaAudienceOnBroadcast(7, buildSegmentFilter(99), {
+      getBroadcast: async () => ({ subscriber_filter: [] }),
+      unschedule: async (id) => {
+        unscheduled.push(id);
+      },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.unscheduled, true);
+    assert.deepEqual(unscheduled, [7]);
+  });
+
+  it("unscheduleKitBroadcast: PATCH send_at null + releitura; send_at ainda presente ⇒ lança", async () => {
+    const patches: unknown[] = [];
+    await unscheduleKitBroadcast(7, {
+      updateBroadcast: async (_id, input) => {
+        patches.push(input);
+      },
+      getBroadcast: async () => ({ send_at: null }),
+    });
+    assert.deepEqual(patches, [{ send_at: null }]);
+    await assert.rejects(
+      unscheduleKitBroadcast(7, { updateBroadcast: async () => {}, getBroadcast: async () => ({ send_at: "2026-10-20T09:00:00Z" }) }),
+      /send_at/,
+    );
+  });
+
+  it("schedule: pré-checagem acha o broadcast já agendado com filtro divergente ⇒ desagenda, estado local vira draft, code 7", async () => {
+    const published: KitNewsletterPublished = {
+      broadcast_id: 7,
+      subject: "s",
+      preview_text: "p",
+      status: "scheduled",
+      scheduled_at: "2026-10-20T09:00:00.000Z",
+    };
+    const patches: (string | null)[] = [];
+    const written: KitNewsletterPublished[] = [];
+    let sendAt: string | null = "2026-10-20T09:00:00.000Z";
+    const r = await scheduleNewsletterKit(
+      "/tmp/x",
+      "2026-10-20T09:00:00.000Z",
+      {
+        readPublished: () => published,
+        writePublished: (_d, st) => {
+          written.push(st);
+        },
+        patchSchedule: async (_id, at) => {
+          patches.push(at);
+          sendAt = at;
+        },
+        getBroadcastStatus: async () => ({ status: sendAt ? "scheduled" : "draft", sendAt, subscriberFilter: [] }),
+      },
+      { expectedAudienceFilter: buildSegmentFilter(99) },
+    );
+    assert.equal(!r.ok && r.code, 7);
+    assert.match(!r.ok ? r.reason : "", /JÁ ESTAVA agendado/);
+    assert.match(!r.ok ? r.reason : "", /confirmado por releitura/);
+    assert.deepEqual(patches, [null]);
+    assert.equal(written[0].status, "draft");
+    assert.equal(written[0].scheduled_at, undefined);
+  });
+});
+
+describe("listSubscriberTags não fabrica [] (#10437)", () => {
+  it("envelope sem tags lança; pagina até o fim", async () => {
+    const orig = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => jsonRes(200, {})) as typeof fetch;
+      await assert.rejects(listSubscriberTags(42, { apiKey: "k" }), /sem o array "tags"/);
+      const urls: string[] = [];
+      globalThis.fetch = (async (url: string | URL) => {
+        urls.push(String(url));
+        return String(url).includes("after=")
+          ? jsonRes(200, { tags: [{ id: 555, name: KIT_ENVIO_BREVO_TAG_NAME }], pagination: { has_next_page: false, end_cursor: null } })
+          : jsonRes(200, { tags: [{ id: 1, name: "x" }], pagination: { has_next_page: true, end_cursor: "c1" } });
+      }) as typeof fetch;
+      const tags = await listSubscriberTags(42, { apiKey: "k" });
+      assert.deepEqual(tags.map((t) => t.id), [1, 555]);
+      assert.equal(urls.length, 2);
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+});
+
+describe("promoção: DELETE 404 e unlink falhando (#10437)", () => {
+  it("DELETE da tag dá 404 ⇒ 'já removida', confirmado pela releitura", async () => {
+    const r = await removeKitEnvioBrevoTag({
+      subscriberId: 42,
+      kitApiKey: "k",
+      resolveTagId: async () => 555,
+      deps: {
+        untag: async () => {
+          throw new KitApiError("/tags/555/subscribers/42", 404, "not found");
+        },
+        listTags: async () => [],
+      },
+    });
+    assert.deepEqual(r, { ok: true });
+  });
+
+  it("DELETE 500 ⇒ não confirma", async () => {
+    const r = await removeKitEnvioBrevoTag({
+      subscriberId: 42,
+      kitApiKey: "k",
+      resolveTagId: async () => 555,
+      deps: {
+        untag: async () => {
+          throw new KitApiError("/tags/555/subscribers/42", 500, "boom");
+        },
+        listTags: async () => [],
+      },
+    });
+    assert.equal(r.ok, false);
+  });
+});
+
+/** fetch da Brevo/Kit pro Passo 0 / promoção com um contato `kit-sem-abertura:`. */
+function brevoRouter(
+  state: { blacklisted: boolean; unsubscribed?: boolean; hardBounce?: boolean; sent?: number; opened?: number },
+  log: string[],
+  failUnlink = false,
+) {
+  return (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    log.push(`${method} ${u}`);
+    if (u.includes("beehiiv")) throw new Error(`não deveria tocar a Beehiiv: ${u}`);
+    if (u.includes("api.kit.com")) {
+      if (u.includes("/tags?")) return jsonRes(200, { tags: [{ id: 555, name: KIT_ENVIO_BREVO_TAG_NAME }], pagination: { has_next_page: false } });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      if (u.includes("/subscribers/42/tags")) return jsonRes(200, { tags: [] });
+      throw new Error(`Kit inesperado: ${method} ${u}`);
+    }
+    if (method === "PUT") {
+      if (failUnlink && String(init?.body).includes("unlinkListIds")) return jsonRes(400, { message: "boom" });
+      return jsonRes(200, {});
+    }
+    const sent = state.sent ?? 1;
+    const ids = Array.from({ length: sent }, (_, i) => ({ campaignId: i + 1, eventTime: "2026-10-01T09:00:00Z" }));
+    return jsonRes(200, {
+      emailBlacklisted: state.blacklisted,
+      listIds: [7],
+      statistics: {
+        messagesSent: ids,
+        opened: ids.slice(0, state.opened ?? 0),
+        ...(state.unsubscribed
+          ? { unsubscriptions: { userUnsubscription: [{ campaignId: 1, eventTime: "2026-10-02T00:00:00Z" }], adminUnsubscription: [] } }
+          : {}),
+        ...(state.hardBounce ? { hardBounces: [{ campaignId: 1, eventTime: "2026-10-02T00:00:00Z" }] } : {}),
+      },
+    });
+  }) as typeof fetch;
+}
+
+function kitUnsubDeps(states: string[], calls: string[]) {
+  return {
+    unsubscribe: async (id: number) => {
+      calls.push(`unsubscribe:${id}`);
+    },
+    getState: async (id: number) => {
+      calls.push(`get:${id}`);
+      return states.shift() ?? "active";
+    },
+  };
+}
+
+function evalParams(contacts: BrevoDiariaContact[], extra: Partial<Parameters<typeof runEvaluation>[0]> = {}): Parameters<typeof runEvaluation>[0] {
+  return {
+    contacts,
+    store: { contacts },
+    push: true,
+    publicationId: "pub",
+    beehiivApiKey: "b",
+    brevoApiKey: "br",
+    kitApiKey: "k",
+    listId: 7,
+    log: () => {},
+    newsletterBackend: "kit",
+    ...extra,
+  };
+}
+
+describe("Passo 0 e supressão: saída de kit-sem-abertura: vale nas DUAS bases (#10437)", () => {
+  const origFetch = globalThis.fetch;
+
+  for (const [label, state, expected] of [
+    ["descadastro nativo", { blacklisted: true, unsubscribed: true }, "unsubscribed"],
+    ["hard bounce", { blacklisted: true, hardBounce: true }, "bounced"],
+  ] as const) {
+    it(`${label}: zero Beehiiv, descadastra no Kit (releitura), desvincula da lista, grava a saída e o log`, async () => {
+      const http: string[] = [];
+      const kit: string[] = [];
+      const logLines: string[] = [];
+      globalThis.fetch = brevoRouter(state, http);
+      try {
+        const r = await runEvaluation(
+          evalParams([movedContact("m@x.com")], {
+            unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "cancelled"], kit),
+            appendKitSemAberturaLog: (l) => logLines.push(l),
+          }),
+        );
+        assert.ok(!http.some((u) => u.includes("beehiiv")));
+        assert.deepEqual(kit, ["get:42", "unsubscribe:42", "get:42"]);
+        assert.ok(http.some((u) => u.startsWith("PUT ")), "desvincula da lista Brevo");
+        assert.equal(findContact(r.store, "m@x.com")!.status, expected);
+        assert.equal(logLines.length, 1);
+        assert.equal(JSON.parse(logLines[0]).event, "kit_unsubscribed");
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  }
+
+  it("descadastro no Kit NÃO confirmado (releitura segue active) ⇒ fica in_brevo, falha contada, nada desvinculado", async () => {
+    const http: string[] = [];
+    const kit: string[] = [];
+    globalThis.fetch = brevoRouter({ blacklisted: true, unsubscribed: true }, http);
+    try {
+      const r = await runEvaluation(
+        evalParams([movedContact("m@x.com")], { unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "active"], kit) }),
+      );
+      assert.equal(findContact(r.store, "m@x.com")!.status, "in_brevo");
+      assert.equal(r.failed, 1);
+      assert.ok(!http.some((u) => u.startsWith("PUT ")));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("supressão por baixa abertura também descadastra no Kit", async () => {
+    const kit: string[] = [];
+    let reads = 0;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("beehiiv") || u.includes("api.kit.com")) throw new Error(`inesperado: ${u}`);
+      if (method === "PUT") return jsonRes(200, {});
+      reads++;
+      const ids = Array.from({ length: 10 }, (_, i) => ({ campaignId: i + 1, eventTime: "2026-09-01T09:00:00Z" }));
+      return jsonRes(200, {
+        emailBlacklisted: reads > 1,
+        listIds: reads > 1 ? [] : [7],
+        statistics: { messagesSent: ids, opened: [] },
+      });
+    }) as typeof fetch;
+    try {
+      const r = await runEvaluation(
+        evalParams([movedContact("m@x.com")], { unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "cancelled"], kit) }),
+      );
+      assert.equal(findContact(r.store, "m@x.com")!.status, "suppressed");
+      assert.deepEqual(kit, ["get:42", "unsubscribe:42", "get:42"]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("promoção: unlink da Brevo falha depois de remover a tag ⇒ in_brevo, falha registrada (retenta na próxima)", async () => {
+    const http: string[] = [];
+    globalThis.fetch = brevoRouter({ blacklisted: false, sent: 3, opened: 3 }, http, true);
+    try {
+      const r = await runEvaluation(evalParams([movedContact("m@x.com")]));
+      assert.equal(findContact(r.store, "m@x.com")!.status, "in_brevo");
+      assert.equal(r.failed, 1);
+      assert.ok(http.some((u) => u.startsWith("DELETE ")));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("reconcile-send-audiences com o segmento ligado (#10437)", () => {
+  it("audiência do Kit = ativos menos a tag envio-brevo e menos os movidos do store", () => {
+    assert.deepEqual(
+      kitSendAudienceWithExclusionSegment(["a@x.com", "B@x.com", "c@x.com", "d@x.com"], ["b@x.com"], ["c@x.com"]),
+      ["a@x.com", "d@x.com"],
+    );
   });
 });

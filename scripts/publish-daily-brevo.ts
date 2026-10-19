@@ -126,7 +126,7 @@ import {
   buildOriginConditionalIntro, // #10437
   KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME, // #10437
 } from "./lib/brevo-diaria-intro.ts";
-import { isKitSemAberturaEnabled, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
+import { isKitSemAberturaEnabled, readKitSemAberturaInBrevoCount, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { runInjectReativarToken as injectReativarToken } from "./inject-reativar-token-brevo.ts"; // #8194
@@ -646,10 +646,12 @@ export function buildDailyBrevoHtml(
 
 /**
  * #10437 — intro do e-mail da Brevo diária. Flag `kit_sem_abertura` desligada
- * ⇒ exatamente `renderPendingIntroHtml` (nada muda). Ligada ⇒ condicional por
- * origem; sem o snippet da variante, lança (mandar "confirme sua inscrição" a
- * quem já é assinante é o que a decisão do editor de 19/10 quis evitar).
- * `null` do intro do Pending segue sendo tratado por `buildDailyBrevoHtml`.
+ * E nenhum contato `kit-sem-abertura:` em `in_brevo` ⇒ exatamente
+ * `renderPendingIntroHtml` (nada muda). Flag ligada, OU desligada com gente já
+ * movida (desligar a flag não tira ninguém da lista) ⇒ condicional por origem;
+ * sem o snippet da variante, lança (mandar "confirme sua inscrição" a quem já
+ * é assinante é o que a decisão do editor de 19/10 quis evitar). `null` do
+ * intro do Pending segue sendo tratado por `buildDailyBrevoHtml`.
  */
 export function resolveDailyBrevoIntro(
   kitSemAbertura: KitSemAberturaConfig | undefined,
@@ -658,9 +660,10 @@ export function resolveDailyBrevoIntro(
     pending: renderPendingIntroHtml,
     kitSemAbertura: renderKitSemAberturaIntroHtml,
   },
+  movedInBrevoCount = 0,
 ): string | null {
   const pending = render.pending(rootDir);
-  if (!isKitSemAberturaEnabled(kitSemAbertura)) return pending;
+  if (!isKitSemAberturaEnabled(kitSemAbertura) && movedInBrevoCount === 0) return pending;
   if (!pending) return null;
   const kit = render.kitSemAbertura(rootDir);
   if (!kit) {
@@ -752,7 +755,12 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // atributo ORIGEM_DIARIA). Flag desligada ⇒ intro do Pending, como sempre.
   let introHtml: string | null;
   try {
-    introHtml = resolveDailyBrevoIntro(brevoDiaria?.kit_sem_abertura, rootDir);
+    const moved = readKitSemAberturaInBrevoCount(rootDir);
+    if ("error" in moved) {
+      throw new Error(`${moved.error} — não dá pra escolher o intro por origem com segurança (#10437)`);
+    }
+    if (moved.warning) log(`warn: ${moved.warning} (#10437).`);
+    introHtml = resolveDailyBrevoIntro(brevoDiaria?.kit_sem_abertura, rootDir, undefined, moved.count);
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
     process.exitCode = 2;

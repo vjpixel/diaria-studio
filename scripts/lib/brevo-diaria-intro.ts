@@ -144,7 +144,7 @@ function wrapIntroTable(parts: string[], label: string): string {
 // ── #10437: intro por ORIGEM ─────────────────────────────────────────────
 
 /**
- * #10437 — intro do grupo que veio do Kit (ativo, 6 edições sem abrir). O
+ * #10437 — intro do grupo que veio do Kit (ativo, `min_mature_sends` edições sem abrir). O
  * intro do Pending pede pra confirmar a inscrição, o que não serve pra quem já
  * confirmou (decisão do editor, 19/10/2026: variante por origem). Vive em
  * `data/snippets/` como os demais (gitignored); o texto final passa pelo

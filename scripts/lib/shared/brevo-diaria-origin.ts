@@ -34,7 +34,7 @@ export const ORIGIN_PREFIX = {
   KIT: "kit:" as const,
   CURATED: "curated:" as const,
   SUNSET: "sunset:" as const,
-  /** #10437 — assinante `active` no Kit que recebeu 6 edições sem abrir e foi
+  /** #10437 — assinante `active` no Kit que recebeu `min_mature_sends` edições sem abrir e foi
    *  movido pra Brevo (com a tag de exclusão `envio-brevo` no Kit). DIFERENTE
    *  de `kit:` (cohort `inactive` do Kit, #8192): este contato continua
    *  `active` no Kit, então o Passo 1 de `evaluate-brevo-diaria.ts` não pode

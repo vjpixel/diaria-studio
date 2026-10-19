@@ -1,20 +1,28 @@
 /**
  * scripts/lib/kit-sem-abertura.ts (#10437)
  *
- * Miolo PURO da movimentação Kit → Brevo de quem recebeu 6 edições da diária
- * no Kit sem abrir nenhuma (e sem clicar). O I/O (Kit, Brevo, store) fica em
- * `scripts/sync-kit-sem-abertura-to-brevo.ts`; aqui só decisão testável.
+ * Miolo PURO da movimentação Kit → Brevo de quem recebeu `min_mature_sends`
+ * edições da diária no Kit sem abrir nenhuma (e sem clicar). O I/O (Kit,
+ * Brevo, store) fica em `scripts/sync-kit-sem-abertura-to-brevo.ts`; aqui só
+ * decisão testável (a exceção é `readKitSemAberturaInBrevoCount`, leitor fino
+ * do store usado pelos publishers).
  *
  * ## Critério (corpo da issue + decisões do editor de 19/10/2026)
  *
- * Entra quem está `active` no Kit E tem >= 6 envios MADUROS (>= 48h, mesma
- * janela do Passo 2b de `evaluate-brevo-diaria.ts`) de broadcasts da DIÁRIA E
- * 0 aberturas E 0 cliques nesses broadcasts.
+ * Entra quem está `active` no Kit E tem >= `min_mature_sends` (default
+ * `KIT_SEM_ABERTURA_MIN_MATURE_SENDS`) envios ENTREGUES e MADUROS (>= 48h,
+ * mesma janela do Passo 2b de `evaluate-brevo-diaria.ts`) de broadcasts da
+ * DIÁRIA E 0 aberturas E 0 cliques nesses broadcasts. Entregues, não enviados:
+ * o projeto mede e-mail sobre entregues (bounce não é "recebeu e não abriu"),
+ * e o `POST /v4/subscribers/filter` do Kit distingue `sent` de `delivered`
+ * (`kit-provider-split.ts`, medido ao vivo).
  *
  * - **Escopo nos broadcasts da diária (armadilha 1).** Abertura sem escopo
  *   conta o e-mail de confirmação (DOI) e o de boas-vindas — todo cadastro
- *   novo "abriu" algo, e o critério nunca dispararia pra ele. Envios,
- *   aberturas e cliques vêm só dos broadcasts do registro abaixo.
+ *   novo "abriu" algo, e o critério nunca dispararia pra ele. Entregas,
+ *   aberturas e cliques vêm só dos broadcasts do registro abaixo. Um arquivo
+ *   do registro ilegível ABORTA a rodada: o broadcast que falta poderia ter
+ *   justamente a abertura que tira a pessoa da seleção.
  * - **Registro determinístico, nunca regex de subject (armadilha 2).** A lista
  *   de broadcasts é o `broadcast_id` que o publish do Kit grava por edição
  *   (`_internal/newsletter-kit-published.json`, backend principal desde
@@ -27,7 +35,9 @@
  *   em qualquer broadcast da diária, maduro ou não, prova que a pessoa lê.
  *
  * Exclusões: apoiadores (custom field `apoio_nivel` preenchido ou tag
- * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660),
+ * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660; o
+ * `apoio_nivel` da listagem pode vir defasado, então o sync o confirma pelo
+ * GET singular só pros selecionados, antes de mover),
  * `EDITOR_SEED_EMAILS`, fixtures (`kit-fixture-patterns.ts`), tag
  * `diaria-test-email`, quem já tem a tag `envio-brevo` e quem já passou pelo
  * store da Brevo em qualquer status (armadilha 6: abertura na Brevo não chega
@@ -41,16 +51,34 @@ import { BREVO_DIARIA_MATURATION_HOURS } from "./shared/brevo-diaria-score.ts";
 import { KIT_TEST_SEND_TAG_NAME } from "./kit-broadcasts.ts";
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./kit-diaria-audience.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./apoio-segments-canonical-kit.ts";
+import { ORIGIN_PREFIX } from "./shared/brevo-diaria-origin.ts";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
 
 /** Piso de envios maduros da diária sem abertura (pedido do editor, 18/10/2026). */
 export const KIT_SEM_ABERTURA_MIN_MATURE_SENDS = 6;
 
-/** Default da janela que define "cadastro novo" (entra sempre, fora da onda). */
+/** Default da janela que define "cadastro novo" (entra antes do backlog). */
 export const KIT_SEM_ABERTURA_NEW_SIGNUP_WINDOW_DAYS = 30;
 
-/** Valor do atributo de origem gravado no contato Brevo (intro condicional). */
+/** Teto de `new_signup_window_days` aceito na config (um ano). */
+export const KIT_SEM_ABERTURA_MAX_NEW_SIGNUP_WINDOW_DAYS = 365;
+
+/** NOME do atributo de contato Brevo que carrega a origem (intro condicional)… */
 export const BREVO_ORIGEM_ATTRIBUTE = "ORIGEM_DIARIA";
+/** …e o VALOR que esse atributo recebe pra quem veio por este fluxo. */
 export const BREVO_ORIGEM_KIT_SEM_ABERTURA = "kit_sem_abertura";
+
+/** Log append-only das movimentações e das saídas propagadas pro Kit. */
+export const DEFAULT_KIT_SEM_ABERTURA_LOG_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../..",
+  "data/brevo-diaria/kit-sem-abertura-log.jsonl",
+);
+
+/** Caminho do store da Brevo diária relativo à raiz do repo (mesmo de `DEFAULT_STORE_PATH`). */
+export const BREVO_DIARIA_STORE_RELATIVE_PATH = "data/brevo-diaria/contacts.json";
 
 /** Fatia de `platform.config.json` → `brevo_diaria.kit_sem_abertura`. */
 export interface KitSemAberturaConfig {
@@ -62,6 +90,88 @@ export interface KitSemAberturaConfig {
 
 export function isKitSemAberturaEnabled(cfg: KitSemAberturaConfig | undefined): boolean {
   return cfg?.enabled === true;
+}
+
+/**
+ * Pura — valida os números da config. `min_mature_sends` inteiro >= 1;
+ * `new_signup_window_days` inteiro entre 1 e `KIT_SEM_ABERTURA_MAX_NEW_SIGNUP_WINDOW_DAYS`.
+ * Ausente ⇒ default. Inválido ⇒ erro (nunca um default silencioso: `0` em
+ * `min_mature_sends` moveria todo ativo sem abertura, inclusive quem nunca
+ * recebeu nada).
+ */
+export function parseKitSemAberturaNumbers(
+  cfg: KitSemAberturaConfig | undefined,
+): { ok: true; minMatureSends: number; newSignupWindowDays: number } | { ok: false; reason: string } {
+  const min = cfg?.min_mature_sends ?? KIT_SEM_ABERTURA_MIN_MATURE_SENDS;
+  if (typeof min !== "number" || !Number.isInteger(min) || min < 1) {
+    return { ok: false, reason: `brevo_diaria.kit_sem_abertura.min_mature_sends precisa ser inteiro >= 1 (veio ${JSON.stringify(min)}).` };
+  }
+  const win = cfg?.new_signup_window_days ?? KIT_SEM_ABERTURA_NEW_SIGNUP_WINDOW_DAYS;
+  if (typeof win !== "number" || !Number.isInteger(win) || win < 1 || win > KIT_SEM_ABERTURA_MAX_NEW_SIGNUP_WINDOW_DAYS) {
+    return {
+      ok: false,
+      reason:
+        `brevo_diaria.kit_sem_abertura.new_signup_window_days precisa ser inteiro entre 1 e ` +
+        `${KIT_SEM_ABERTURA_MAX_NEW_SIGNUP_WINDOW_DAYS} (veio ${JSON.stringify(win)}).`,
+    };
+  }
+  return { ok: true, minMatureSends: min, newSignupWindowDays: win };
+}
+
+/**
+ * Pura — quantos contatos `kit-sem-abertura:` estão `in_brevo`, a partir do
+ * TEXTO do store (`null` = arquivo ausente ⇒ 0). JSON ilegível: se o texto
+ * menciona o prefixo, é erro (não dá pra afirmar que ninguém foi movido); se
+ * não menciona, 0 com aviso (o store quebrado não esconde gente movida).
+ */
+export function countKitSemAberturaInBrevo(raw: string | null): { count: number; warning?: string } | { error: string } {
+  if (raw === null || raw.trim() === "") return { count: 0 };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    if (raw.includes(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) {
+      return { error: `store da Brevo ilegível (${(e as Error).message}) e menciona contatos ${ORIGIN_PREFIX.KIT_SEM_ABERTURA}` };
+    }
+    return { count: 0, warning: `store da Brevo ilegível (${(e as Error).message}); sem menção a ${ORIGIN_PREFIX.KIT_SEM_ABERTURA}` };
+  }
+  const contacts = (parsed as { contacts?: unknown })?.contacts;
+  if (!Array.isArray(contacts)) return { count: 0 };
+  let count = 0;
+  for (const c of contacts as { status?: unknown; beehiiv_subscription_id?: unknown }[]) {
+    if (c?.status === "in_brevo" && typeof c.beehiiv_subscription_id === "string" && c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) {
+      count++;
+    }
+  }
+  return { count };
+}
+
+/**
+ * I/O (a única do módulo, fina) — `countKitSemAberturaInBrevo` sobre o store
+ * em `{rootDir}/data/brevo-diaria/contacts.json`. Consumida pelo publish e
+ * pelo schedule do Kit e pelo publish da Brevo pra detectar "flag desligada
+ * com gente já movida".
+ */
+export function readKitSemAberturaInBrevoCount(rootDir: string): { count: number; warning?: string } | { error: string } {
+  const path = resolve(rootDir, BREVO_DIARIA_STORE_RELATIVE_PATH);
+  let raw: string | null;
+  try {
+    raw = existsSync(path) ? readFileSync(path, "utf8") : null;
+  } catch (e) {
+    return { error: `store da Brevo (${path}) não pôde ser lido: ${(e as Error).message}` };
+  }
+  return countKitSemAberturaInBrevo(raw);
+}
+
+/**
+ * Pura — dia UTC (`YYYY-MM-DD`) do ENVIO da campanha Brevo que vai levar quem
+ * for movido agora: a edição é D+1 e sai de manhã em BRT (UTC−3), então é o
+ * dia seguinte no calendário de Brasília. É esse dia que a cota da conta
+ * precisa ter livre, não o de hoje.
+ */
+export function diariaSendDayUtc(nowMs: number): string {
+  const BRT_OFFSET_MS = 3 * 60 * 60 * 1000;
+  return new Date(nowMs - BRT_OFFSET_MS + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 // ── registro de broadcasts da diária ─────────────────────────────────────
@@ -117,10 +227,11 @@ export function classifyDiariaBroadcasts(
 
 // ── engajamento por assinante ────────────────────────────────────────────
 
-/** Quem foi enviado/abriu/clicou num broadcast (`POST /v4/subscribers/filter`). */
+/** Quem recebeu (entregue)/abriu/clicou num broadcast (`POST /v4/subscribers/filter`). */
 export interface BroadcastEngagement {
   broadcastId: number;
-  sent: readonly string[];
+  /** `type: "delivered"` — entregues, não só enviados (bounce não conta como envio). */
+  delivered: readonly string[];
   opens: readonly string[];
   clicks: readonly string[];
 }
@@ -151,7 +262,7 @@ export function buildEngagementIndex(
     return e;
   };
   for (const b of perBroadcast) {
-    if (matureIds.has(b.broadcastId)) for (const email of new Set(b.sent.map(normalizeEmail))) get(email).matureSends++;
+    if (matureIds.has(b.broadcastId)) for (const email of new Set(b.delivered.map(normalizeEmail))) get(email).matureSends++;
     for (const email of new Set(b.opens.map(normalizeEmail))) get(email).opens++;
     for (const email of new Set(b.clicks.map(normalizeEmail))) get(email).clicks++;
   }
@@ -250,7 +361,9 @@ export function selectKitSemAbertura(params: {
       excluded[reason]++;
       continue;
     }
-    selected.push({ ...c, email, matureSends: ctx.engagement.get(email)!.matureSends });
+    // `classifyKitSemAberturaCandidate` só devolve `null` com matureSends >= piso,
+    // então a entrada existe; o `?? 0` só evita o `!` (nunca é exercitado).
+    selected.push({ ...c, email, matureSends: ctx.engagement.get(email)?.matureSends ?? 0 });
   }
   return { selected, excluded };
 }
@@ -294,6 +407,32 @@ export function computeBacklogSlots(params: {
   return Math.min(queueSlots, quotaSlots);
 }
 
+/**
+ * Pura — os cadastros novos (que entram antes do backlog) cabem na cota da
+ * CONTA no dia de envio? Sem novos ⇒ ok. Consumo transacional não lido ⇒
+ * reprova: cota ilegível nunca vira permissão de envio (mesma regra do
+ * backlog). O caller aborta o Passo 3c inteiro quando reprova.
+ */
+export function checkNewSignupsFitAccountQuota(params: {
+  currentActiveCount: number;
+  seedCount: number;
+  newCount: number;
+  dailyLimit: number;
+  transactionalOnSendDay: number | null;
+}): { ok: true } | { ok: false; reason: string } {
+  if (params.newCount === 0) return { ok: true };
+  if (params.transactionalOnSendDay === null) {
+    return { ok: false, reason: `cota da conta Brevo não lida — ${params.newCount} cadastro(s) novo(s) não cabem comprovadamente` };
+  }
+  const check = checkAccountSendQuota({
+    dailyLimit: params.dailyLimit,
+    transactionalRequestsOnSendDay: params.transactionalOnSendDay,
+    recipients: params.currentActiveCount + params.seedCount + params.newCount,
+  });
+  if (!check.ok) return { ok: false, reason: `${params.newCount} cadastro(s) novo(s) não cabem na cota da conta: ${check.reason}` };
+  return { ok: true };
+}
+
 export interface KitSemAberturaWave {
   /** Ordem de execução: cadastros novos primeiro, depois o backlog mais antigo. */
   toMove: (KitSemAberturaSelected & { wave: "novo" | "backlog" })[];
@@ -302,7 +441,9 @@ export interface KitSemAberturaWave {
   deferred: number;
 }
 
-/** Pura — "novo" = cadastrado no Kit há no máximo `newSignupWindowDays` dias. */
+/** Pura — "novo" = cadastrado no Kit há no máximo `newSignupWindowDays` dias.
+ *  Novos entram ANTES do backlog e sem o teto da fila, mas sujeitos à cota da
+ *  conta (`checkNewSignupsFitAccountQuota`, conferida pelo sync). */
 export function isNewSignup(createdAt: string, nowMs: number, newSignupWindowDays: number): boolean {
   const t = Date.parse(createdAt);
   return Number.isFinite(t) && nowMs - t <= newSignupWindowDays * 24 * 60 * 60 * 1000;
@@ -347,13 +488,26 @@ export interface KitSemAberturaLogEntry {
   email: string;
   kit_subscriber_id: number;
   origin: string;
-  wave: "novo" | "backlog";
+  /** `reconcile` = tinha a tag `envio-brevo` sem estar no store (órfão reconciliado). */
+  wave: "novo" | "backlog" | "reconcile";
   mature_sends: number;
   brevo_list_id: number;
   kit_tag: string;
+  /** `true` quando a tag não foi confirmada por releitura; o sync retenta na rodada seguinte. */
+  kit_tag_pending?: boolean;
+}
+
+/** Saída terminal na Brevo propagada pro Kit (descadastro com releitura). */
+export interface KitSemAberturaExitLogEntry {
+  ts: string;
+  event: "kit_unsubscribed";
+  email: string;
+  kit_subscriber_id: number;
+  /** Motivo da saída na Brevo (`native_unsubscribe`, `native_bounce`, `native_admin_block`, `suppress`). */
+  brevo_exit: string;
 }
 
 /** Pura — uma linha do log (`data/brevo-diaria/kit-sem-abertura-log.jsonl`). */
-export function formatKitSemAberturaLogLine(entry: KitSemAberturaLogEntry): string {
+export function formatKitSemAberturaLogLine(entry: KitSemAberturaLogEntry | KitSemAberturaExitLogEntry): string {
   return JSON.stringify(entry) + "\n";
 }

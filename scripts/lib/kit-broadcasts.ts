@@ -100,7 +100,7 @@ export const KIT_TEST_SEND_TAG_NAME = "diaria-test-email";
 export type KitFilterCondition =
   | { type: "tag"; ids: number[] }
   /** #10437 — segmento criado à mão no painel do Kit (a API não cria segmento).
-   *  Único consumidor: a audiência da diária com `kit.diaria_exclusion_segment`
+   *  Hoje usado pela audiência da diária com `kit.diaria_exclusion_segment`
    *  ligado (`scripts/lib/kit-diaria-audience.ts`). */
   | { type: "segment"; ids: number[] };
 export type KitFilterGroup = { all: KitFilterCondition[] };
@@ -280,8 +280,27 @@ export async function untagSubscriber(tagId: number, subscriberId: number, confi
  * nunca aborta nem marca o endereço como inválido.
  */
 export async function listSubscriberTags(subscriberId: number, config?: KitConfig): Promise<KitTag[]> {
-  const data = await kitFetch<{ tags: KitTag[] } | undefined>(`/subscribers/${subscriberId}/tags`, { config });
-  return data?.tags ?? [];
+  // #10437 (fleet review): envelope sem `tags` LANÇA em vez de virar `[]`, e a
+  // listagem pagina até o fim. Os callers confirmam por releitura nos DOIS
+  // sentidos: "a tag está lá" (pós-tag) e "a tag sumiu" (pós-untag). Um `[]`
+  // fabricado por resposta inesperada, ou uma 1ª página sem a tag, "confirmava"
+  // a remoção sem nada ter sido removido. Mesma disciplina de `listSegments`.
+  const out: KitTag[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const qs = after ? `?after=${encodeURIComponent(after)}` : "";
+    const data = await kitFetch<{ tags?: unknown; pagination?: KitPagination } | undefined>(
+      `/subscribers/${subscriberId}/tags${qs}`,
+      { config },
+    );
+    if (!data || !Array.isArray(data.tags)) {
+      throw new Error(`[kit-broadcasts] listSubscriberTags(${subscriberId}): resposta 2xx sem o array "tags" esperado`);
+    }
+    out.push(...(data.tags as KitTag[]));
+    if (!data.pagination?.has_next_page || !data.pagination.end_cursor) return out;
+    after = data.pagination.end_cursor;
+  }
+  throw new Error(`[kit-broadcasts] listSubscriberTags(${subscriberId}): paginação não terminou em 50 páginas`);
 }
 
 /**

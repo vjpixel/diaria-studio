@@ -110,6 +110,12 @@ export interface BrevoDiariaContact {
    * limpo quando o contato sai de `in_brevo` (mesmo tratamento de
    * `awaiting_kit_confirmation_since`); `needsDoiResend` checa o status. */
   doi_resent_at?: string;
+  /** #10437 — contato `kit-sem-abertura:` cuja tag `envio-brevo` no Kit NÃO
+   * foi confirmada por releitura no momento da movimentação (a tag pode ou não
+   * ter pegado). O contato entra no store mesmo assim, pra nunca ficar sem
+   * canal (o seletor e o guard #6485 leem o store); o sync retenta a tag a
+   * cada rodada e apaga o campo quando a releitura confirma. */
+  kit_tag_pending?: boolean;
   /** #9979 — ISO da última tentativa de reenvio do DOI em que o Kit respondeu
    * 200 ("já vinculado ao form": nenhum e-mail sai, então não conta como
    * reenvio nem toca `doi_resent_at`, #9945). Existe só pro anti-spam:
@@ -204,10 +210,11 @@ export interface BrevoDiariaContact {
      * `evaluate-brevo-diaria.ts`, comentário `#6340 item 4 fix B`). */
     | "native_unsubscribe_kit_origin"
     /** #10437 — descadastro nativo genuíno na Brevo de um contato de origem
-     *  `kit-sem-abertura:`. Local (nunca toca Beehiiv nem Kit): o contato
-     *  segue `active` no Kit COM a tag `envio-brevo`, então não recebe a
-     *  diária por canal nenhum. Ver PR do #10437 (ponto em aberto: propagar o
-     *  descadastro pro Kit). */
+     *  `kit-sem-abertura:`. Nunca toca a Beehiiv; no Kit o descadastro é
+     *  PROPAGADO (`POST /v4/subscribers/{id}/unsubscribe`, confirmado por
+     *  releitura) antes deste status ser gravado, então a pessoa sai das duas
+     *  bases. Kit sem confirmação ⇒ o contato fica `in_brevo` e a próxima
+     *  rodada retenta. */
     | "native_unsubscribe_kit_sem_abertura"
     | "self_confirmed_after_suppression"
     /** #5351 Parte B — `emailBlacklisted` com `statistics.hardBounces` não

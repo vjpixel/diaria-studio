@@ -38,6 +38,15 @@
  * (inbox placement por provedor) — nunca são candidatas a exclusão, mesmo
  * quando `active` no Kit.
  *
+ * ## Exceção: contatos `kit-sem-abertura:` em `in_brevo` (#10437)
+ *
+ * Quem o Passo 3c moveu do Kit pra Brevo continua `active` no Kit de
+ * propósito (sai do envio do Kit pela tag `envio-brevo`, não por
+ * descadastro). Sem isenção este guard os tiraria da Brevo no primeiro
+ * dispatch, desfazendo a mudança de canal. A isenção vem do STORE
+ * (`kitSemAberturaExemptEmails`), inclusive quem está com a tag pendente de
+ * confirmação (`kit_tag_pending`).
+ *
  * ## Guard de publicação (#6485 — ver issue)
  *
  * Este módulo é código puro + I/O injetável — a chamada REAL contra a
@@ -186,7 +195,8 @@ export interface KitActiveExclusionResult {
 
 /**
  * I/O — aplica o guard completo: lê a lista Brevo + ativos Kit, calcula a
- * interseção (menos seeds), remove da lista Brevo, marca `converted_to_kit`
+ * interseção (menos seeds e menos os `kit-sem-abertura:` em `in_brevo` do
+ * store, #10437), remove da lista Brevo, marca `converted_to_kit`
  * no store (só quem existir lá — a lista Brevo pode ter contato nunca
  * ingerido por este store, ex: seed ou legado), e loga cada exclusão.
  *

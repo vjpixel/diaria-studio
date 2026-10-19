@@ -176,10 +176,13 @@
  * sido enviada/agendada pela UI, nada gravado; 12 (`--mark-ui-test-sent`,
  * #10410) a releitura do broadcast falhou — estado não confirmável, nada gravado.
  * 11 e 12 valem igual para `--verify-ui-test-draft` (#10465), que nunca grava.
- * 13 (#10437, só com `kit.diaria_exclusion_segment.enabled`) o segmento da
- * audiência não foi confirmado (id inválido, ausente da conta, listagem
- * falhou) ou a releitura do broadcast não mostrou o filtro do segmento — nada
- * vai pra base inteira no lugar.
+ * 13 (#10437) audiência não confirmada: com `kit.diaria_exclusion_segment`
+ * ligado, o segmento não foi confirmado (id inválido, ausente da conta,
+ * listagem falhou) ou a releitura do broadcast não mostrou o filtro do
+ * segmento (draft recém-criado é apagado; broadcast já agendado é DESAGENDADO
+ * e o estado local volta pra "draft"); com ele desligado, o store da Brevo
+ * tem contatos `kit-sem-abertura:` em `in_brevo` (base inteira = envio em
+ * dobro pra eles) ou não pôde ser lido. Nada vai pra base inteira no lugar.
  *
  * Idempotência: `<edition-dir>/_internal/newsletter-kit-published.json` é
  * escrito assim que o draft é criado — uma invocação seguinte pra MESMA
@@ -216,6 +219,7 @@ import {
   verifyDiariaAudienceFilter,
   type DiariaExclusionSegmentConfig,
 } from "./lib/kit-diaria-audience.ts"; // #10437
+import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
@@ -783,11 +787,18 @@ export async function updateExistingKitBroadcast(
 
 /**
  * #10437 — relê o broadcast e confere o `subscriber_filter` do segmento.
- * `deleteBroadcast` presente (draft criado NESTA invocação) ⇒ apaga o draft
- * quando a conferência falha, best-effort, pra não sobrar um rascunho de
- * audiência não confirmada que a Etapa 6 possa agendar. Ausente (draft já
- * existia) ⇒ só reprova; o `schedule-newsletter-kit.ts` confere de novo antes
- * de agendar.
+ * Quando a conferência falha:
+ * - `deleteBroadcast` presente (draft criado NESTA invocação) ⇒ apaga o draft,
+ *   best-effort, pra não sobrar um rascunho de audiência não confirmada que a
+ *   Etapa 6 possa agendar;
+ * - `unschedule` presente (re-run sobre um broadcast JÁ AGENDADO pela Etapa 6)
+ *   ⇒ desagenda (`send_at: null` + releitura), como o
+ *   `schedule-newsletter-kit.ts` já faz: o `updateExistingKitBroadcast`
+ *   reforça `send_at`, então sem isto a edição sairia agendada com a
+ *   audiência divergente. `unscheduled: true` avisa o caller pra gravar o
+ *   estado local fora de "scheduled";
+ * - nenhum dos dois (draft já existia, não agendado) ⇒ só reprova; o
+ *   `schedule-newsletter-kit.ts` confere de novo antes de agendar.
  */
 export async function confirmDiariaAudienceOnBroadcast(
   broadcastId: number,
@@ -795,28 +806,55 @@ export async function confirmDiariaAudienceOnBroadcast(
   deps: {
     getBroadcast: (id: number) => Promise<{ subscriber_filter?: unknown }>;
     deleteBroadcast?: (id: number) => Promise<void>;
+    /** Desagenda E confirma por releitura; lança se `send_at` não voltar `null`. */
+    unschedule?: (id: number) => Promise<void>;
   },
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; unscheduled?: boolean }> {
   let reread: { subscriber_filter?: unknown };
   try {
     reread = await deps.getBroadcast(broadcastId);
   } catch (e) {
     const reason = `releitura do broadcast falhou (${(e as Error).message}) — audiência não confirmada (#6582).`;
-    return { ok: false, reason: await cleanup(reason) };
+    return { ok: false, ...(await cleanup(reason)) };
   }
   const verdict = verifyDiariaAudienceFilter(reread.subscriber_filter, expected);
   if (verdict.ok) return { ok: true };
-  return { ok: false, reason: await cleanup(verdict.reason) };
+  return { ok: false, ...(await cleanup(verdict.reason)) };
 
-  async function cleanup(reason: string): Promise<string> {
-    if (!deps.deleteBroadcast) return reason;
-    try {
-      await deps.deleteBroadcast(broadcastId);
-      return `${reason} Draft recém-criado apagado.`;
-    } catch (e) {
-      return `${reason} FALHA ao apagar o draft recém-criado (${(e as Error).message}) — apague à mão antes da Etapa 6.`;
+  async function cleanup(reason: string): Promise<{ reason: string; unscheduled?: boolean }> {
+    if (deps.deleteBroadcast) {
+      try {
+        await deps.deleteBroadcast(broadcastId);
+        return { reason: `${reason} Draft recém-criado apagado.` };
+      } catch (e) {
+        return { reason: `${reason} FALHA ao apagar o draft recém-criado (${(e as Error).message}) — apague à mão antes da Etapa 6.` };
+      }
     }
+    if (deps.unschedule) {
+      try {
+        await deps.unschedule(broadcastId);
+        return { reason: `${reason} O broadcast estava agendado: agendamento desfeito (send_at: null, confirmado por releitura).`, unscheduled: true };
+      } catch (e) {
+        return {
+          reason: `${reason} O broadcast estava agendado e a tentativa de desagendar FALHOU (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA.`,
+        };
+      }
+    }
+    return { reason };
   }
+}
+
+/** #10437 — desagenda (`send_at: null`) e confirma por releitura; lança se não confirmar. */
+export async function unscheduleKitBroadcast(
+  id: number,
+  deps: {
+    updateBroadcast: (id: number, input: UpdateBroadcastInput) => Promise<unknown>;
+    getBroadcast: (id: number) => Promise<{ send_at?: string | null }>;
+  } = { updateBroadcast, getBroadcast },
+): Promise<void> {
+  await deps.updateBroadcast(id, { send_at: null });
+  const reread = await deps.getBroadcast(id);
+  if (reread.send_at) throw new Error(`releitura ainda mostra send_at=${reread.send_at}`);
 }
 
 // ── main ──────────────────────────────────────────────────────────────
@@ -986,9 +1024,20 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // #10437 — audiência do broadcast principal. Flag `kit.diaria_exclusion_segment`
   // desligada (default) ⇒ base inteira, sem rede, exatamente como antes. Ligada
   // ⇒ segmento confirmado na conta, ou aborta (nunca cai pra base inteira).
-  const audience = await resolveDiariaAudience(platformConfig.kit?.diaria_exclusion_segment, {
-    listSegments: () => listSegments(),
-  });
+  // Com a flag desligada e gente já movida pra Brevo, a base inteira seria
+  // envio em dobro: `resolveDiariaAudience` aborta (exit 13).
+  const moved = readKitSemAberturaInBrevoCount(rootDir);
+  if ("error" in moved) {
+    log(`ERRO: ${moved.error} — não dá pra afirmar que ninguém foi movido pra Brevo (#10437); abortando.`);
+    process.exitCode = 13;
+    return;
+  }
+  if (moved.warning) log(`warn: ${moved.warning} (#10437).`);
+  const audience = await resolveDiariaAudience(
+    platformConfig.kit?.diaria_exclusion_segment,
+    { listSegments: () => listSegments() },
+    { movedToBrevoCount: moved.count },
+  );
   if (!audience.ok) {
     log(`ERRO: ${audience.reason}`);
     process.exitCode = 13;
@@ -1046,12 +1095,21 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // prova, #6582). Divergente/ausente ⇒ aborta; um draft recém-criado é apagado
   // pra a Etapa 6 nunca agendar um broadcast de audiência não confirmada.
   if (audience.mode === "segment") {
+    const wasScheduled = existing?.status === "scheduled";
     const check = await confirmDiariaAudienceOnBroadcast(broadcastId, audience.filter, {
       getBroadcast: (id) => getBroadcast(id),
       deleteBroadcast: existing ? undefined : (id) => deleteBroadcast(id),
+      unschedule: wasScheduled ? (id) => unscheduleKitBroadcast(id) : undefined,
     });
     if (!check.ok) {
       log(`ERRO: broadcast_id=${broadcastId}: ${check.reason}`);
+      if (check.unscheduled && existing) {
+        // O estado local não pode seguir dizendo "scheduled": um re-run
+        // reforçaria `send_at` no PATCH e reagendaria a audiência divergente.
+        const { scheduled_at: _dropped, ...rest } = existing;
+        writePublishedState(editionDir, { ...rest, status: "draft" });
+        log("estado local voltou pra status draft (agendamento desfeito) — reagende pela Etapa 6 depois de corrigir a audiência.");
+      }
       process.exitCode = 13;
       return;
     }

@@ -386,12 +386,14 @@ import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } fro
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382
+import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail, unsubscribeKitSubscriber } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382, #10437
 import { KitApiError } from "./lib/kit-client.ts"; // #9291
 import { kitApiBase } from "./lib/kit-config.ts"; // #9835
 import { vincularKitDoiForm, verificarDoiForm, mensagemDoiFormInvalido } from "./lib/shared/kit-doi.ts"; // #9835 — reenvio do DOI
 import { findTagIdByName, untagSubscriber, listSubscriberTags, type KitTag } from "./lib/kit-broadcasts.ts"; // #10437
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
+import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
+import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1476,12 +1478,57 @@ export async function removeKitEnvioBrevoTag(params: {
   try {
     const tagId = await params.resolveTagId();
     if (tagId === null) return { ok: false, reason: `tag ${KIT_ENVIO_BREVO_TAG_NAME} não existe no Kit` };
-    await deps.untag(tagId, subscriberId, kitApiKey);
+    try {
+      await deps.untag(tagId, subscriberId, kitApiKey);
+    } catch (e) {
+      // 404 = a tag já não está no assinante (ex.: rodada anterior removeu e
+      // caiu antes de desvincular da Brevo). Não é erro: a releitura abaixo é
+      // quem decide, como em qualquer outro caso.
+      if (!(e instanceof KitApiError && e.status === 404)) throw e;
+    }
     const tags = await deps.listTags(subscriberId, kitApiKey);
     if (tags.some((t) => t.id === tagId)) return { ok: false, reason: "releitura ainda mostra a tag" };
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
+  }
+}
+
+export interface UnsubscribeKitSemAberturaDeps {
+  unsubscribe: (subscriberId: number, apiKey: string) => Promise<void>;
+  /** GET singular — `state` do assinante depois do descadastro. */
+  getState: (subscriberId: number, apiKey: string) => Promise<string>;
+}
+
+/**
+ * #10437 — propaga pro Kit a saída terminal na Brevo de um contato
+ * `kit-sem-abertura:` (descadastro, bounce/bloqueio, supressão por baixa
+ * abertura): `POST /v4/subscribers/{id}/unsubscribe` + releitura pelo GET
+ * singular. Confirmado = `state` diferente de `active` (já `cancelled`/
+ * `bounced`/`complained` antes também conta: a pessoa não recebe mais nada do
+ * Kit). Nunca lança.
+ */
+export async function unsubscribeKitSemAbertura(params: {
+  subscriberId: number;
+  kitApiKey: string | undefined;
+  deps?: UnsubscribeKitSemAberturaDeps;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { subscriberId, kitApiKey } = params;
+  if (!kitApiKey) return { ok: false, reason: "KIT_API_KEY ausente — descadastro no Kit não propagado" };
+  if (!Number.isInteger(subscriberId) || subscriberId <= 0) return { ok: false, reason: "id de subscriber Kit malformado na origem" };
+  const deps = params.deps ?? {
+    unsubscribe: (id: number, apiKey: string) => unsubscribeKitSubscriber(id, { apiKey }),
+    getState: async (id: number, apiKey: string) => (await getSubscriberById(id, { apiKey })).state,
+  };
+  try {
+    const before = await deps.getState(subscriberId, kitApiKey);
+    if (before !== "active") return { ok: true };
+    await deps.unsubscribe(subscriberId, kitApiKey);
+    const after = await deps.getState(subscriberId, kitApiKey);
+    if (after === "active") return { ok: false, reason: "releitura do Kit ainda mostra state=active (2xx não é prova)" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `descadastro no Kit falhou: ${(e as Error).message}` };
   }
 }
 
@@ -1759,6 +1806,15 @@ export interface RunEvaluationParams {
    */
   appendDuplicateWindowLog?: (entry: BrevoKitDuplicateWindowEntry) => void;
   /**
+   * #10437 — linha append-only (`data/brevo-diaria/kit-sem-abertura-log.jsonl`)
+   * pra cada saída terminal de um contato `kit-sem-abertura:` propagada pro
+   * Kit (descadastro confirmado). Omitida ⇒ nenhuma linha gravada (suíte sem
+   * I/O de arquivo); `main()` injeta a de produção.
+   */
+  appendKitSemAberturaLog?: (line: string) => void;
+  /** #10437 — injetável em teste; default = POST unsubscribe + GET singular no Kit. */
+  unsubscribeKitSemAberturaDeps?: UnsubscribeKitSemAberturaDeps;
+  /**
    * #9835 — id do designer form de DOI do Kit (`platform.config.json` →
    * `kit.doiFormId`), usado pra reenviar o double opt-in a quem qualifica
    * por abertura mas está `inactive` no Kit (ver `shouldResendKitDoi`).
@@ -2018,7 +2074,35 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     appendDuplicateWindowLog,
     kitDoiFormId,
     kitDoiResendFormId, // #9986
+    appendKitSemAberturaLog,
+    unsubscribeKitSemAberturaDeps,
   } = params;
+  // #10437 — saída terminal na Brevo de um contato `kit-sem-abertura:` vale
+  // nos DOIS lados ("sai das duas bases"): descadastra no Kit e confirma por
+  // releitura. Sem confirmação, o caller mantém o contato `in_brevo` (a
+  // próxima rodada retenta) — nunca grava a saída só de um lado.
+  const propagateKitSemAberturaExit = async (
+    email: string,
+    subscriberId: number,
+    brevoExit: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    const r = await unsubscribeKitSemAbertura({ subscriberId, kitApiKey, deps: unsubscribeKitSemAberturaDeps });
+    if (!r.ok) return r;
+    try {
+      appendKitSemAberturaLog?.(
+        formatKitSemAberturaLogLine({
+          ts: new Date().toISOString(),
+          event: "kit_unsubscribed",
+          email: normalizeEmail(email),
+          kit_subscriber_id: subscriberId,
+          brevo_exit: brevoExit,
+        }),
+      );
+    } catch (e) {
+      log(`aviso: ${email} — falha ao gravar o log kit-sem-abertura (${(e as Error).message}); descadastro no Kit já confirmado.`);
+    }
+    return { ok: true };
+  };
   let store = params.store;
 
   let unsubscribedNative = 0;
@@ -2082,7 +2166,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // dupla checagem do mesmo prefixo por 2 caminhos diferentes).
       const kitParseResult = parseKitSubscriberId(contact.beehiiv_subscription_id);
       const isKitOrigin = kitParseResult.kind !== "not-kit";
-      // #10437 — origem `kit-sem-abertura:` (ativo no Kit, 6 envios sem abrir,
+      // #10437 — origem `kit-sem-abertura:` (ativo no Kit, `min_mature_sends` envios sem abrir,
       // movido pra cá com a tag `envio-brevo`). NÃO é `kit:` (o prefixo é
       // `kit-`), então `isKitOrigin` é false — e ele também não pode cair no
       // caminho Beehiiv: tem tratamento próprio nos Passos 0, 1 e 2 abaixo.
@@ -2127,24 +2211,37 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           continue;
         }
         if (nativeState.emailBlacklisted && isKitSemAberturaOrigin) {
-          // #10437 — saída LOCAL, nunca toca Beehiiv nem Kit. O contato segue
-          // `active` no Kit com a tag `envio-brevo` (fora do segmento do
-          // broadcast), então não recebe a diária por canal nenhum.
-          if (nativeState.userUnsubscribed) {
-            log(`${contact.email}: descadastro nativo na Brevo, origem kit-sem-abertura → saída local (#10437).`);
-            unsubscribedNative++;
-            if (push) {
-              await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
-              store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_kit_sem_abertura");
-            }
+          // #10437 — nunca toca a Beehiiv. A saída vale nas DUAS bases: o
+          // contato segue `active` no Kit (só fora do segmento da diária pela
+          // tag), e outros broadcasts do Kit pra base inteira (anual,
+          // especial) ainda o alcançariam. Descadastra no Kit com releitura
+          // ANTES de gravar a saída; sem confirmação, fica `in_brevo` e a
+          // próxima rodada retenta.
+          const exitReason = nativeState.userUnsubscribed
+            ? "native_unsubscribe"
+            : nativeState.hardBounced
+              ? "native_bounce"
+              : "native_admin_block";
+          log(`${contact.email}: emailBlacklisted na Brevo (${exitReason}), origem kit-sem-abertura → saída nas duas bases (#10437).`);
+          if (!push) {
+            if (nativeState.userUnsubscribed) unsubscribedNative++;
+            else bouncedNative++;
             continue;
           }
-          const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
-          log(`${contact.email}: emailBlacklisted sem userUnsubscription (${bounceReason}), origem kit-sem-abertura → bounced local (#10437).`);
-          bouncedNative++;
-          if (push) {
-            await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
-            store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
+          const kitExit = await propagateKitSemAberturaExit(contact.email, kitSemAberturaId!, exitReason);
+          if (!kitExit.ok) {
+            log(`warn: ${contact.email} — saída NÃO propagada pro Kit (${kitExit.reason}) — mantendo in_brevo, retenta na próxima rodada.`);
+            failed++;
+            failedContacts.push({ email: contact.email, reason: `descadastro no Kit não confirmado: ${kitExit.reason}` });
+            continue;
+          }
+          await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+          if (nativeState.userUnsubscribed) {
+            unsubscribedNative++;
+            store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_kit_sem_abertura");
+          } else {
+            bouncedNative++;
+            store = applyBrevoDiariaBounced(store, contact.email, exitReason as "native_bounce" | "native_admin_block");
           }
           continue;
         }
@@ -2567,7 +2664,22 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
-        await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        try {
+          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        } catch (e) {
+          // Tag já removida e confirmada; só a Brevo falhou. Fica `in_brevo`:
+          // a próxima rodada promove de novo, o DELETE da tag dá 404 ("já
+          // removida", a releitura confirma) e o unlink é retentado. Até lá a
+          // pessoa recebe pelos dois canais, nunca por nenhum.
+          log(
+            `warn: ${contact.email} — tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, mas desvincular da lista Brevo falhou ` +
+              `(${(e as Error).message}) — mantendo in_brevo, retenta na próxima rodada (#10437).`,
+          );
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `unlink da lista Brevo após remover a tag falhou: ${(e as Error).message}` });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
         store = applyEvaluation(store, contact.email, {
           ...counts.instant,
           open_rate: evalResult.open_rate,
@@ -2797,6 +2909,20 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
+        if (isKitSemAberturaOrigin) {
+          // #10437 — "quem não abre sai das duas bases": supressão por baixa
+          // abertura também descadastra no Kit (releitura confirma). Sem
+          // confirmação, fica `in_brevo`; na próxima rodada o contato já está
+          // blacklisted na Brevo e o Passo 0 retenta o Kit.
+          const kitExit = await propagateKitSemAberturaExit(contact.email, kitSemAberturaId!, "suppress");
+          if (!kitExit.ok) {
+            log(`warn: ${contact.email} — suprimido na Brevo, mas o descadastro no Kit NÃO foi confirmado (${kitExit.reason}) — mantendo in_brevo.`);
+            failed++;
+            failedContacts.push({ email: contact.email, reason: `descadastro no Kit não confirmado após supressão: ${kitExit.reason}` });
+            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+            continue;
+          }
+        }
         store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "suppress" });
       } else {
         store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
@@ -2955,7 +3081,12 @@ async function main(): Promise<number> {
       c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA),
   );
   if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
-    const why = newsletterBackend === "kit" ? "newsletterBackend=kit" : `${inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length} contato(s) de origem Kit no store`;
+    const kitOriginCount = inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length;
+    const kitSemAberturaCount = inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)).length;
+    const why =
+      newsletterBackend === "kit"
+        ? "newsletterBackend=kit"
+        : `${kitOriginCount} contato(s) de origem kit: e ${kitSemAberturaCount} de origem kit-sem-abertura: no store`;
     log(`ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push — ${why}, #6340 item 4 fix A).`);
     return 2;
   }
@@ -2995,6 +3126,7 @@ async function main(): Promise<number> {
     newsletterBackend,
     kitApiKey,
     appendDuplicateWindowLog: appendBrevoKitDuplicateWindowLog, // #6705
+    appendKitSemAberturaLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line), // #10437
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
     kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
   });

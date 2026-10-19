@@ -45,11 +45,14 @@
  *   5 — GET de verificação pós-PATCH não confirma o agendamento esperado
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
- *   7 — (#10437, só com `kit.diaria_exclusion_segment.enabled`) audiência por
- *       segmento não confirmada: segmento não resolvido, ou o broadcast relido
- *       ANTES do PATCH não mostra o filtro do segmento (nada agendado), ou o
- *       relido DEPOIS do PATCH diverge (o agendamento é desfeito com
- *       `send_at: null`). Nunca agenda pra base inteira no lugar.
+ *   7 — (#10437) audiência não confirmada. Com `kit.diaria_exclusion_segment`
+ *       ligado: segmento não resolvido, ou o broadcast relido ANTES do PATCH
+ *       não mostra o filtro do segmento (nada agendado; se ele JÁ estava
+ *       agendado, é desagendado com `send_at: null` + releitura e o estado
+ *       local volta pra "draft"), ou o relido DEPOIS do PATCH diverge (mesmo
+ *       desfazer). Com ele desligado: o store da Brevo tem contatos
+ *       `kit-sem-abertura:` em `in_brevo`, ou não pôde ser lido. Nunca agenda
+ *       pra base inteira no lugar.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +61,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/kit-broadcasts.ts";
 import { resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
+import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
@@ -148,7 +152,22 @@ export async function scheduleNewsletterKit(
     }
     const verdict = verifyDiariaAudienceFilter(before.subscriberFilter, options.expectedAudienceFilter);
     if (!verdict.ok) {
-      return { ok: false, code: 7, reason: `broadcast_id=${broadcastId} NÃO agendado: ${verdict.reason}` };
+      if (before.sendAt == null) {
+        return { ok: false, code: 7, reason: `broadcast_id=${broadcastId} NÃO agendado: ${verdict.reason}` };
+      }
+      // Já estava agendado (Etapa 6 anterior, ou agendado à mão) com a
+      // audiência divergente: "não agendar" não basta, ele sairia assim
+      // mesmo. Desagenda e confirma por releitura.
+      const undo = await undoSchedule(deps, broadcastId);
+      if (undo.ok) {
+        const { scheduled_at: _dropped, ...rest } = published;
+        deps.writePublished(editionDir, { ...rest, status: "draft" });
+      }
+      return {
+        ok: false,
+        code: 7,
+        reason: `broadcast_id=${broadcastId} JÁ ESTAVA agendado (send_at=${before.sendAt}) com a audiência divergente: ${verdict.reason} ${undo.message}.`,
+      };
     }
   }
 
@@ -218,13 +237,12 @@ export async function scheduleNewsletterKit(
   if (options.expectedAudienceFilter) {
     const verdict = verifyDiariaAudienceFilter(verified.subscriberFilter, options.expectedAudienceFilter);
     if (!verdict.ok) {
-      let undo = "agendamento desfeito (send_at: null)";
-      try {
-        await deps.patchSchedule(broadcastId, null);
-      } catch (e) {
-        undo = `FALHA ao desfazer o agendamento (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA`;
+      const undo = await undoSchedule(deps, broadcastId);
+      if (undo.ok && published.status === "scheduled") {
+        const { scheduled_at: _dropped, ...rest } = published;
+        deps.writePublished(editionDir, { ...rest, status: "draft" });
       }
-      return { ok: false, code: 7, reason: `broadcast_id=${broadcastId}: ${verdict.reason} ${undo}.` };
+      return { ok: false, code: 7, reason: `broadcast_id=${broadcastId}: ${verdict.reason} ${undo.message}.` };
     }
   }
 
@@ -232,6 +250,20 @@ export async function scheduleNewsletterKit(
   deps.writePublished(editionDir, { ...published, status: "scheduled", scheduled_at: verified.sendAt! });
 
   return { ok: true, broadcastId, scheduledAt: verified.sendAt!, status: verified.status };
+}
+
+/** #10437 — `send_at: null` + releitura (2xx não é prova). Nunca lança. */
+async function undoSchedule(deps: ScheduleNewsletterKitDeps, broadcastId: number): Promise<{ ok: boolean; message: string }> {
+  try {
+    await deps.patchSchedule(broadcastId, null);
+    const reread = await deps.getBroadcastStatus(broadcastId);
+    if (reread.sendAt != null) {
+      return { ok: false, message: `desagendamento NÃO confirmado (releitura mostra send_at=${reread.sendAt}) — DESAGENDE À MÃO no Kit AGORA` };
+    }
+    return { ok: true, message: "agendamento desfeito (send_at: null, confirmado por releitura)" };
+  } catch (e) {
+    return { ok: false, message: `FALHA ao desfazer o agendamento (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA` };
+  }
 }
 
 export function productionDeps(): ScheduleNewsletterKitDeps {
@@ -285,10 +317,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
   const editionDir = resolvedArg.editionDir;
   const allowOtherDate = hasFlag(argv, "allow-other-date");
-  // #10437 — flag desligada (default) ⇒ `mode: "all"`, sem rede, sem conferência extra.
-  const audience = await resolveDiariaAudience(platformConfig.kit?.diaria_exclusion_segment, {
-    listSegments: () => listSegments(),
-  });
+  // #10437 — flag desligada (default) ⇒ `mode: "all"`, sem rede, sem
+  // conferência extra; salvo se o store da Brevo tiver gente já movida (aí
+  // a base inteira seria envio em dobro e o agendamento é recusado).
+  const moved = readKitSemAberturaInBrevoCount(rootDir);
+  if ("error" in moved) {
+    const reason = `${moved.error} — não dá pra afirmar que ninguém foi movido pra Brevo (#10437); nada agendado.`;
+    console.log(JSON.stringify({ ok: false, code: 7, reason }));
+    process.exitCode = 7;
+    return;
+  }
+  if (moved.warning) process.stderr.write(`[schedule-newsletter-kit] warn: ${moved.warning} (#10437).\n`);
+  const audience = await resolveDiariaAudience(
+    platformConfig.kit?.diaria_exclusion_segment,
+    { listSegments: () => listSegments() },
+    { movedToBrevoCount: moved.count },
+  );
   if (!audience.ok) {
     console.log(JSON.stringify({ ok: false, code: 7, reason: audience.reason }));
     process.exitCode = 7;

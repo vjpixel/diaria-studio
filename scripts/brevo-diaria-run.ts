@@ -71,7 +71,7 @@
  *  com o exit code real. Se o verify falhar, o sync não roda nesta rodada.
  *
  * Passo 3c (#10437) — `sync-kit-sem-abertura-to-brevo.ts` (ativos no Kit com
- *  6 envios da diária sem abrir → Brevo, tag `envio-brevo` no Kit). Só entra
+ *  `min_mature_sends` envios da diária sem abrir → Brevo, tag `envio-brevo` no Kit). Só entra
  *  na sequência com `brevo_diaria.kit_sem_abertura.enabled` (default `false`:
  *  sequência idêntica à de antes). Fail-soft como o 3b; dry-run no preflight,
  *  `--push [--max-add N]` no apply.
@@ -258,7 +258,11 @@ export function readKitSemAberturaFlag(rootDir: string): boolean {
   try {
     const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as KitSemAberturaPlatformConfig;
     return isKitSemAberturaEnabled(cfg.brevo_diaria?.kit_sem_abertura);
-  } catch {
+  } catch (e) {
+    process.stderr.write(
+      `[brevo-diaria-run] aviso: platform.config.json ilegível ao ler brevo_diaria.kit_sem_abertura ` +
+        `(${(e as Error).message}) — Passo 3c tratado como desligado (#10437).\n`,
+    );
     return false;
   }
 }
@@ -468,7 +472,7 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       );
     }
 
-    // #10437 — ativos do Kit com 6 envios sem abrir → Brevo. Só com a flag
+    // #10437 — ativos do Kit com `min_mature_sends` envios sem abrir → Brevo. Só com a flag
     // ligada; fail-soft como o 3b (pool aditivo, nunca derruba a campanha).
     if (deps.kitSemAberturaEnabled?.() === true) {
       softStep(

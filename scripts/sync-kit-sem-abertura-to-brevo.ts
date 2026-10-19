@@ -2,11 +2,12 @@
 /**
  * scripts/sync-kit-sem-abertura-to-brevo.ts (#10437)
  *
- * Move pra Brevo (lista 7, `brevo_diaria`) quem está `active` no Kit e recebeu
- * 6 edições da diária sem abrir nem clicar. Saída do Kit por TAG de exclusão
- * `envio-brevo`, nunca descadastro (decisão do editor, 19/10/2026; armadilha 4
- * da issue: descadastro no Kit não tem volta, e a promoção de volta travaria).
- * Critério e exclusões: `scripts/lib/kit-sem-abertura.ts`.
+ * Move pra Brevo (lista `brevo_diaria.list_id`) quem está `active` no Kit e
+ * recebeu `min_mature_sends` edições da diária sem abrir nem clicar. Saída do
+ * Kit por TAG de exclusão `envio-brevo`, nunca descadastro (decisão do editor,
+ * 19/10/2026; armadilha 4 da issue: descadastro no Kit não tem volta, e a
+ * promoção de volta travaria). Critério e exclusões:
+ * `scripts/lib/kit-sem-abertura.ts`.
  *
  * ## Duas flags, ambas desligadas por default
  *
@@ -15,11 +16,13 @@
  * - `kit.diaria_exclusion_segment.enabled` — troca o `subscriber_filter` do
  *   broadcast da diária pra o segmento "ativos sem a tag". Este script EXIGE
  *   as duas pra mover alguém: tag sem o segmento no envio é edição em dobro
- *   pra todo movido, todo dia. Com a 1ª ligada e a 2ª não, só faz dry-run.
+ *   pra todo movido, todo dia. Com a 1ª ligada e a 2ª não, só faz dry-run. A
+ *   config do segmento é lida pelo MESMO parser do publish/schedule
+ *   (`parseDiariaExclusionSegment`): `segment_id` inválido não move ninguém.
  *
  * ## Ordem por contato (corpo da issue)
  *
- * 1. Ingere na lista 7 com o atributo `ORIGEM_DIARIA = kit_sem_abertura`
+ * 1. Ingere na lista com o atributo `ORIGEM_DIARIA = kit_sem_abertura`
  *    (intro própria na Brevo, decisão do editor de 19/10) e RELÊ: lista E
  *    atributo precisam conferir.
  * 2. Aplica a tag `envio-brevo` no Kit e relê (`listSubscriberTags`, a
@@ -29,17 +32,31 @@
  *    no Kit; estes continuam ativos lá de propósito).
  * 4. Uma linha em `data/brevo-diaria/kit-sem-abertura-log.jsonl`.
  *
- * Brevo antes do Kit: falha no meio deixa envio duplicado (visível,
- * reversível), nunca uma pessoa sem canal. Falha no passo 2 NÃO grava o store:
- * a próxima rodada seleciona de novo (o ingest é idempotente) e retenta a tag.
- * O store é gravado a cada contato, então uma queda no meio não perde quem já
- * foi movido.
+ * ## O que o código garante (nunca uma pessoa sem canal)
+ *
+ * - Falha no passo 1 ⇒ nada tocado no Kit; a próxima rodada seleciona de novo.
+ * - Falha no passo 2 (a tag pode ou não ter pegado) ⇒ o store é gravado
+ *   MESMO ASSIM, com `kit_tag_pending: true`. Sem isso o contato com a tag
+ *   aplicada ficaria fora do store: o seletor o exclui por ter a tag, e o guard
+ *   #6485 o tira da Brevo por estar `active` no Kit, sem canal pra sempre. Com
+ *   o marcador, o guard o isenta, o seletor o pula, e cada rodada retenta a
+ *   tag até a releitura confirmar. Até lá ele pode receber em dobro (visível,
+ *   reversível).
+ * - Falha no passo 3 (escrita do store) ⇒ contada como falha; o contato tem a
+ *   tag e não está no store. A rodada seguinte o encontra como ÓRFÃO
+ *   ("tem a tag `envio-brevo` e não está no store"), re-ingere (idempotente) e
+ *   grava o store — nunca o exclui em silêncio.
+ * - O store é gravado a cada contato, então uma queda no meio não perde quem
+ *   já foi movido.
  *
  * ## Onda
  *
- * Cadastros novos (até `new_signup_window_days`, default 30) entram sempre; o
- * backlog entra limitado pela fila (`daily_send_cap`) e pela cota da conta
- * (`checkAccountSendQuota`). Circuit breaker pausado zera a rodada.
+ * Cadastros novos (até `new_signup_window_days`, default 30) entram antes do
+ * backlog, mas só se couberem na cota da CONTA Brevo no dia do ENVIO
+ * (`checkNewSignupsFitAccountQuota`): não cabendo, o Passo 3c inteiro aborta
+ * sem mover ninguém. O backlog entra limitado pela fila (`daily_send_cap`) e
+ * pela mesma cota. Circuit breaker pausado zera a rodada. `--max-add N`
+ * limita a rodada inteira deste passo (novos inclusive).
  *
  * Sem MillionVerifier: são contatos que confirmaram o double opt-in (mesmo
  * raciocínio do #5807).
@@ -49,17 +66,21 @@
  *   npx tsx scripts/sync-kit-sem-abertura-to-brevo.ts            # dry-run
  *   npx tsx scripts/sync-kit-sem-abertura-to-brevo.ts --push     # exige as 2 flags
  *   npx tsx scripts/sync-kit-sem-abertura-to-brevo.ts --push --max-add 5
+ *   npx tsx scripts/sync-kit-sem-abertura-to-brevo.ts --send-day 2026-10-21   # dia UTC do envio (default: amanhã em BRT)
  *
- * Exit: 0 ok/desligado; 1 falha em algum contato (os demais seguem); 2
- * precondição (config, chave, store ausente, tag `envio-brevo` inexistente).
+ * Exit: 0 ok/desligado; 1 falha em algum contato (os demais seguem), ou cota
+ * da conta sem espaço pros cadastros novos; 2 precondição (config, chave,
+ * store ausente, tag `envio-brevo` inexistente, registro de broadcasts
+ * ilegível).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, isMainModule, getIntArg } from "./lib/cli-args.ts";
+import { hasFlag, isMainModule, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { listSubscribers } from "./lib/kit-client.ts";
+import { getSubscriberById } from "./lib/kit-subscribers.ts";
 import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import { readRolloutGuardrailState } from "./lib/brevo-diaria-guardrail.ts";
@@ -67,30 +88,34 @@ import {
   readStore,
   writeStore,
   upsertIngested,
+  normalizeEmail,
   DEFAULT_STORE_PATH,
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { computeCurrentActiveCount, assertStoreFileGuard } from "./sync-pending-to-brevo.ts";
-import { buildOrigin } from "./lib/shared/brevo-diaria-origin.ts";
+import { buildOrigin, ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { fetchAccountQuotaSnapshot, resolveAccountDailyLimit, toStatsDay } from "./lib/brevo-account-quota.ts";
+import { fetchAccountQuotaSnapshot, resolveAccountDailyLimit } from "./lib/brevo-account-quota.ts";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { fetchAudience, kitDiariaPublishedPath, newsletterKitPublishedPath } from "./kit-provider-split.ts";
-import { isDiariaExclusionSegmentEnabled, KIT_ENVIO_BREVO_TAG_NAME, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts";
+import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts";
+import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
 import {
   BREVO_ORIGEM_ATTRIBUTE,
   BREVO_ORIGEM_KIT_SEM_ABERTURA,
-  KIT_SEM_ABERTURA_MIN_MATURE_SENDS,
-  KIT_SEM_ABERTURA_NEW_SIGNUP_WINDOW_DAYS,
+  DEFAULT_KIT_SEM_ABERTURA_LOG_PATH,
   buildEngagementIndex,
+  checkNewSignupsFitAccountQuota,
   classifyDiariaBroadcasts,
   computeBacklogSlots,
   dedupeBroadcastRecords,
+  diariaSendDayUtc,
   formatKitSemAberturaLogLine,
   isKitSemAberturaEnabled,
   parseDiariaBroadcastState,
+  parseKitSemAberturaNumbers,
   planKitSemAberturaWave,
   selectKitSemAbertura,
   type BroadcastEngagement,
@@ -101,7 +126,7 @@ import {
 } from "./lib/kit-sem-abertura.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const DEFAULT_KIT_SEM_ABERTURA_LOG_PATH = resolve(ROOT, "data/brevo-diaria/kit-sem-abertura-log.jsonl");
+export { DEFAULT_KIT_SEM_ABERTURA_LOG_PATH };
 const DEFAULT_QUEUE_CAP = 300;
 
 export interface KitSemAberturaPlatformConfig {
@@ -119,6 +144,7 @@ export interface KitSemAberturaPlatformConfig {
 export interface KitSemAberturaDeps {
   nowMs: number;
   log: (msg: string) => void;
+  /** Lança se algum arquivo do registro estiver ilegível (o Passo 3c aborta). */
   readRegistry: () => DiariaBroadcastRecord[];
   listKitActive: () => Promise<KitActiveCandidate[]>;
   fetchEngagement: (broadcastId: number) => Promise<BroadcastEngagement>;
@@ -126,8 +152,13 @@ export interface KitSemAberturaDeps {
   readStore: () => BrevoDiariaStore;
   writeStore: (store: BrevoDiariaStore) => void;
   rolloutPaused: () => boolean;
-  /** `null` = não lido (falha) ⇒ backlog 0 nesta rodada. */
-  transactionalToday: () => Promise<number | null>;
+  /** Consumo transacional no dia UTC do ENVIO; `null` = não lido (falha). */
+  transactionalOnSendDay: (sendDay: string) => Promise<number | null>;
+  /**
+   * `apoio_nivel` pelo GET SINGULAR do assinante (a listagem serve `fields`
+   * defasado). `null`/vazio = não é apoiador. Lança se a leitura falhar.
+   */
+  getApoioNivel: (subscriberId: number) => Promise<string | null>;
   ingestBrevo: (email: string) => Promise<void>;
   tagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
@@ -141,16 +172,24 @@ export interface KitSemAberturaRunResult {
   moved: number;
   failed: number;
   deferred: number;
+  /** Órfãos reconciliados (tag `envio-brevo` sem store) + tags pendentes confirmadas. */
+  reconciled?: number;
   summary: string;
+}
+
+/** Pura — id do subscriber Kit de uma origem `kit-sem-abertura:`; `null` se malformada. */
+function kitIdFromOrigin(origin: string): number | null {
+  const raw = origin.slice(ORIGIN_PREFIX.KIT_SEM_ABERTURA.length);
+  return /^[0-9]+$/.test(raw) && Number(raw) > 0 ? Number(raw) : null;
 }
 
 /**
  * Pura o bastante pra teste (todo I/O em `deps`). Ver docstring do módulo pra
- * ordem e flags.
+ * ordem, garantias e flags.
  */
 export async function runKitSemAberturaSync(
   cfg: KitSemAberturaPlatformConfig,
-  opts: { push: boolean; maxAdd?: number },
+  opts: { push: boolean; maxAdd?: number; sendDay?: string },
   deps: KitSemAberturaDeps,
 ): Promise<KitSemAberturaRunResult> {
   const { log } = deps;
@@ -162,9 +201,15 @@ export async function runKitSemAberturaSync(
   if (!brevo || brevo.list_id == null) {
     return { code: 2, dryRun: true, ...base, summary: "brevo_diaria.list_id não configurado." };
   }
-  const segmentOn = isDiariaExclusionSegmentEnabled(cfg.kit?.diaria_exclusion_segment);
+  const listId = brevo.list_id;
+  const numbers = parseKitSemAberturaNumbers(brevo.kit_sem_abertura);
+  if (!numbers.ok) return { code: 2, dryRun: true, ...base, summary: numbers.reason };
+  const segment = parseDiariaExclusionSegment(cfg.kit?.diaria_exclusion_segment);
+  if ("error" in segment) {
+    return { code: 2, dryRun: true, ...base, summary: `${segment.error} Ninguém é movido com a config do segmento inválida.` };
+  }
   let push = opts.push;
-  if (push && !segmentOn) {
+  if (push && !segment.enabled) {
     log(
       "AVISO: kit.diaria_exclusion_segment.enabled = false — sem o segmento no broadcast do Kit, todo movido " +
         "receberia a edição em dobro. Rodando em dry-run (#10437).",
@@ -172,24 +217,147 @@ export async function runKitSemAberturaSync(
     push = false;
   }
 
-  const records = deps.readRegistry();
+  let records: DiariaBroadcastRecord[];
+  try {
+    records = deps.readRegistry();
+  } catch (e) {
+    return {
+      code: 2,
+      dryRun: !push,
+      ...base,
+      summary:
+        `registro de broadcasts da diária com lacuna (${(e as Error).message}) — abortando o Passo 3c: o broadcast ` +
+        "que falta poderia ter a abertura que tira alguém da seleção.",
+    };
+  }
   const { sentIds, matureIds } = classifyDiariaBroadcasts(records, deps.nowMs);
   log(`registro da diária: ${records.length} broadcast(s), ${sentIds.length} enviado(s), ${matureIds.length} maduro(s) (>=48h).`);
-  const minSends = brevo.kit_sem_abertura?.min_mature_sends ?? KIT_SEM_ABERTURA_MIN_MATURE_SENDS;
+
+  const store = deps.readStore();
+  const actives = await deps.listKitActive();
+  const nowIso = new Date(deps.nowMs).toISOString();
+  let current = store;
+  let failed = 0;
+  let reconciled = 0;
+  let storeWriteFailed = false;
+  const persist = (s: BrevoDiariaStore, email: string): boolean => {
+    try {
+      deps.writeStore(s);
+      storeWriteFailed = false;
+      return true;
+    } catch (e) {
+      storeWriteFailed = true;
+      log(
+        `FALHA ao gravar o store depois de mover ${email} (${(e as Error).message}) — a próxima rodada o reconcilia ` +
+          `como órfão (tag ${KIT_ENVIO_BREVO_TAG_NAME} sem store).`,
+      );
+      return false;
+    }
+  };
+  const appendLogSafe = (entry: KitSemAberturaLogEntry) => {
+    try {
+      deps.appendLog(formatKitSemAberturaLogLine(entry));
+    } catch (e) {
+      log(`aviso: falha ao gravar o log de ${entry.email} (${(e as Error).message}).`);
+    }
+  };
+
+  // ── reconciliação: órfãos e tags pendentes (antes de qualquer seleção) ──
+  const storeEmails = new Set(store.contacts.map((c) => normalizeEmail(c.email)));
+  const orphans = actives.filter((a) => a.tagNames.includes(KIT_ENVIO_BREVO_TAG_NAME) && !storeEmails.has(normalizeEmail(a.email)));
+  const pending = store.contacts.filter(
+    (c) => c.status === "in_brevo" && c.kit_tag_pending === true && c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA),
+  );
+  if (orphans.length > 0) {
+    log(`${orphans.length} órfão(s): tag ${KIT_ENVIO_BREVO_TAG_NAME} no Kit e fora do store — ${push ? "reconciliando" : "seriam reconciliados"}.`);
+  }
+  if (pending.length > 0) log(`${pending.length} contato(s) com a tag ${KIT_ENVIO_BREVO_TAG_NAME} pendente de confirmação.`);
+  if (push) {
+    for (const o of orphans) {
+      try {
+        await deps.ingestBrevo(o.email);
+      } catch (e) {
+        failed++;
+        log(`FALHA ao reconciliar o órfão ${o.email} (Brevo: ${(e as Error).message}) — fica pra próxima rodada.`);
+        continue;
+      }
+      const origin = buildOrigin("kit-sem-abertura", String(o.id));
+      current = upsertIngested(current, { email: o.email, beehiiv_subscription_id: origin }, nowIso);
+      if (!persist(current, o.email)) {
+        failed++;
+        continue;
+      }
+      reconciled++;
+      appendLogSafe({
+        ts: nowIso,
+        email: normalizeEmail(o.email),
+        kit_subscriber_id: o.id,
+        origin,
+        wave: "reconcile",
+        mature_sends: 0,
+        brevo_list_id: listId,
+        kit_tag: KIT_ENVIO_BREVO_TAG_NAME,
+      });
+    }
+  }
+
+  let tagId: number | null | undefined;
+  const resolveTag = async (): Promise<number | null> => {
+    if (tagId === undefined) tagId = await deps.findEnvioBrevoTagId();
+    return tagId;
+  };
+  if (push && pending.length > 0) {
+    const id = await resolveTag();
+    if (id === null) {
+      return {
+        code: 2,
+        dryRun: false,
+        ...base,
+        failed,
+        reconciled,
+        summary: `tag "${KIT_ENVIO_BREVO_TAG_NAME}" não existe no Kit — crie-a (Gate B do #10437) antes de ligar a flag.`,
+      };
+    }
+    for (const p of pending) {
+      const kitId = kitIdFromOrigin(p.beehiiv_subscription_id);
+      if (kitId === null) {
+        failed++;
+        log(`FALHA: ${p.email} com origem malformada (${p.beehiiv_subscription_id}) — tag pendente não retentada.`);
+        continue;
+      }
+      try {
+        await deps.tagKit(id, kitId);
+      } catch (e) {
+        failed++;
+        log(`tag ainda não confirmada em ${p.email} (${(e as Error).message}) — retenta na próxima rodada.`);
+        continue;
+      }
+      current = { contacts: current.contacts.map((c) => (c.email === p.email ? { ...c, kit_tag_pending: undefined } : c)) };
+      if (persist(current, p.email)) reconciled++;
+      else failed++;
+    }
+  }
+
+  const minSends = numbers.minMatureSends;
   if (matureIds.length < minSends) {
-    return { code: 0, dryRun: !push, ...base, summary: `menos de ${minSends} broadcast(s) maduro(s) no registro — ninguém pode qualificar ainda.` };
+    return {
+      code: failed > 0 ? 1 : 0,
+      dryRun: !push,
+      ...base,
+      failed,
+      reconciled,
+      summary: `menos de ${minSends} broadcast(s) maduro(s) no registro — ninguém pode qualificar ainda.`,
+    };
   }
 
   const perBroadcast: BroadcastEngagement[] = [];
   for (const id of sentIds) perBroadcast.push(await deps.fetchEngagement(id));
   const engagement = buildEngagementIndex(perBroadcast, new Set(matureIds));
 
-  const store = deps.readStore();
-  const actives = await deps.listKitActive();
   const selection = selectKitSemAbertura({
     subscribers: actives,
     engagement,
-    storeEmails: store.contacts.map((c) => c.email),
+    storeEmails: current.contacts.map((c) => c.email),
     seedEmails: EDITOR_SEED_EMAILS,
     minMatureSends: minSends,
   });
@@ -201,18 +369,19 @@ export async function runKitSemAberturaSync(
   );
 
   const queueCap = brevo.daily_send_cap ?? DEFAULT_QUEUE_CAP;
-  const currentActiveCount = computeCurrentActiveCount(store.contacts);
+  const currentActiveCount = computeCurrentActiveCount(current.contacts);
   const dailyLimit = resolveAccountDailyLimit(brevo);
+  const sendDay = opts.sendDay ?? diariaSendDayUtc(deps.nowMs);
   let transactional: number | null = null;
   try {
-    transactional = await deps.transactionalToday();
+    transactional = await deps.transactionalOnSendDay(sendDay);
   } catch (e) {
-    log(`aviso: cota da conta Brevo não lida (${(e as Error).message}) — backlog fica pra próxima rodada.`);
+    log(`aviso: cota da conta Brevo (dia de envio ${sendDay}) não lida (${(e as Error).message}).`);
   }
   const wave = planKitSemAberturaWave({
     selected: selection.selected,
     nowMs: deps.nowMs,
-    newSignupWindowDays: brevo.kit_sem_abertura?.new_signup_window_days ?? KIT_SEM_ABERTURA_NEW_SIGNUP_WINDOW_DAYS,
+    newSignupWindowDays: numbers.newSignupWindowDays,
     rolloutPaused: deps.rolloutPaused(),
     backlogSlots: (newCount) => {
       const slots = computeBacklogSlots({
@@ -226,37 +395,65 @@ export async function runKitSemAberturaSync(
       return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
     },
   });
-  // `--max-add N` é teto explícito do operador sobre a rodada INTEIRA —
-  // inclusive cadastros novos (`--max-add 0` = ninguém, mesma semântica do
-  // `brevo-diaria-run.ts`).
-  const toMove = opts.maxAdd !== undefined ? wave.toMove.slice(0, opts.maxAdd) : wave.toMove;
-  const deferred = wave.deferred + (wave.toMove.length - toMove.length);
-  log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${toMove.length} nesta rodada, ${deferred} adiado(s).`);
+  // `--max-add N` é teto explícito do operador sobre a rodada INTEIRA deste
+  // passo, inclusive cadastros novos (`--max-add 0` = ninguém).
+  const capped = opts.maxAdd !== undefined ? wave.toMove.slice(0, opts.maxAdd) : wave.toMove;
+  const cappedNew = capped.filter((c) => c.wave === "novo").length;
+  const quotaNew = checkNewSignupsFitAccountQuota({
+    currentActiveCount,
+    seedCount: EDITOR_SEED_EMAILS.length,
+    newCount: cappedNew,
+    dailyLimit,
+    transactionalOnSendDay: transactional,
+  });
+  if (!quotaNew.ok) {
+    const summary = `${quotaNew.reason} (dia de envio ${sendDay}) — Passo 3c abortado, ninguém movido nesta rodada.`;
+    return { code: push ? 1 : 0, dryRun: !push, ...base, selected: selection.selected.length, deferred: selection.selected.length, failed, reconciled, summary };
+  }
+  let deferred = wave.deferred + (wave.toMove.length - capped.length);
+  log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${capped.length} nesta rodada, ${deferred} adiado(s).`);
+
+  // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
+  const toMove: typeof capped = [];
+  for (const c of capped) {
+    let nivel: string | null;
+    try {
+      nivel = await deps.getApoioNivel(c.id);
+    } catch (e) {
+      deferred++;
+      log(`  ${c.email}: apoio_nivel não confirmado pelo GET singular (${(e as Error).message}) — adiado.`);
+      continue;
+    }
+    if (typeof nivel === "string" && nivel.trim() !== "") {
+      log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
+      continue;
+    }
+    toMove.push(c);
+  }
   const counts = { selected: selection.selected.length, deferred };
 
   if (!push) {
     for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
-    return { code: 0, dryRun: true, moved: 0, failed: 0, ...counts, summary: "dry-run — nenhuma mutação." };
+    return { code: 0, dryRun: true, moved: 0, failed: 0, reconciled, ...counts, summary: "dry-run — nenhuma mutação." };
   }
   if (toMove.length === 0) {
-    return { code: 0, dryRun: false, moved: 0, failed: 0, ...counts, summary: "nada a mover nesta rodada." };
+    return { code: failed > 0 ? 1 : 0, dryRun: false, moved: 0, failed, reconciled, ...counts, summary: "nada a mover nesta rodada." };
   }
 
-  const tagId = await deps.findEnvioBrevoTagId();
-  if (tagId === null) {
+  const id = await resolveTag();
+  if (id === null) {
     return {
       code: 2,
       dryRun: false,
       moved: 0,
-      failed: 0,
+      failed,
+      reconciled,
       ...counts,
       summary: `tag "${KIT_ENVIO_BREVO_TAG_NAME}" não existe no Kit — crie-a (Gate B do #10437) antes de ligar a flag.`,
     };
   }
 
-  let current = store;
   let moved = 0;
-  let failed = 0;
   for (const c of toMove) {
     try {
       await deps.ingestBrevo(c.email);
@@ -265,51 +462,65 @@ export async function runKitSemAberturaSync(
       log(`FALHA (Brevo) em ${c.email}: ${(e as Error).message} — nada tocado no Kit.`);
       continue;
     }
+    let tagPending = false;
     try {
-      await deps.tagKit(tagId, c.id);
+      await deps.tagKit(id, c.id);
     } catch (e) {
       failed++;
+      tagPending = true;
       log(
-        `FALHA (tag no Kit) em ${c.email}: ${(e as Error).message} — já está na lista da Brevo (envio duplicado ` +
-          "até a próxima rodada retentar a tag); store NÃO gravado.",
+        `FALHA (tag no Kit) em ${c.email}: ${(e as Error).message} — já está na lista da Brevo; store gravado com ` +
+          "kit_tag_pending (a próxima rodada retenta a tag; até lá pode receber em dobro, nunca sem canal).",
       );
-      continue;
     }
     const origin = buildOrigin("kit-sem-abertura", String(c.id));
-    current = upsertIngested(current, { email: c.email, beehiiv_subscription_id: origin }, new Date(deps.nowMs).toISOString());
-    deps.writeStore(current);
-    const entry: KitSemAberturaLogEntry = {
-      ts: new Date(deps.nowMs).toISOString(),
+    current = upsertIngested(current, { email: c.email, beehiiv_subscription_id: origin }, nowIso);
+    if (tagPending) {
+      current = { contacts: current.contacts.map((x) => (x.email === normalizeEmail(c.email) ? { ...x, kit_tag_pending: true } : x)) };
+    }
+    if (!persist(current, c.email)) {
+      if (!tagPending) failed++;
+      continue;
+    }
+    appendLogSafe({
+      ts: nowIso,
       email: c.email,
       kit_subscriber_id: c.id,
       origin,
       wave: c.wave,
       mature_sends: c.matureSends,
-      brevo_list_id: brevo.list_id,
+      brevo_list_id: listId,
       kit_tag: KIT_ENVIO_BREVO_TAG_NAME,
-    };
-    try {
-      deps.appendLog(formatKitSemAberturaLogLine(entry));
-    } catch (e) {
-      log(`aviso: falha ao gravar o log de ${c.email} (${(e as Error).message}) — store já gravado.`);
-    }
-    moved++;
+      ...(tagPending ? { kit_tag_pending: true } : {}),
+    });
+    if (!tagPending) moved++;
+  }
+  if (storeWriteFailed) {
+    // Última tentativa: o `current` acumulado tem todo mundo desta rodada.
+    persist(current, "(rodada)");
   }
   return {
     code: failed > 0 ? 1 : 0,
     dryRun: false,
     moved,
     failed,
+    reconciled,
     ...counts,
-    summary: `${moved} movido(s) pra Brevo, ${failed} falha(s).`,
+    summary: `${moved} movido(s) pra Brevo, ${reconciled} reconciliado(s), ${failed} falha(s).`,
   };
 }
 
 // ── I/O de produção ──────────────────────────────────────────────────────
 
-/** Lê o registro de broadcasts da diária das edições (ver `parseDiariaBroadcastState`). */
-export function readDiariaBroadcastRegistry(editionsRootAbs: string, warn: (msg: string) => void): DiariaBroadcastRecord[] {
+/**
+ * Lê o registro de broadcasts da diária das edições (ver
+ * `parseDiariaBroadcastState`). Arquivo ilegível LANÇA: um broadcast faltando
+ * tira envios da contagem (direção segura) mas também tira ABERTURAS
+ * (direção perigosa: quem abriu justamente aquele seria movido).
+ */
+export function readDiariaBroadcastRegistry(editionsRootAbs: string): DiariaBroadcastRecord[] {
   const out: DiariaBroadcastRecord[] = [];
+  const unreadable: string[] = [];
   for (const [edition, dir] of enumerateEditionDirs(editionsRootAbs)) {
     for (const path of [newsletterKitPublishedPath(dir), kitDiariaPublishedPath(dir)]) {
       if (!existsSync(path)) continue;
@@ -317,20 +528,25 @@ export function readDiariaBroadcastRegistry(editionsRootAbs: string, warn: (msg:
         const rec = parseDiariaBroadcastState(JSON.parse(readFileSync(path, "utf8")), edition);
         if (rec) out.push(rec);
       } catch (e) {
-        // Broadcast faltando = menos envios contados = seleção MENOR (direção segura).
-        warn(`aviso: ${path} ilegível (${(e as Error).message}) — broadcast fora da contagem.`);
+        unreadable.push(`${path} (${(e as Error).message})`);
       }
     }
   }
+  if (unreadable.length > 0) throw new Error(`${unreadable.length} arquivo(s) ilegível(is): ${unreadable.join("; ")}`);
   return dedupeBroadcastRecords(out);
 }
 
-async function listKitActiveCandidates(): Promise<KitActiveCandidate[]> {
+async function listKitActiveCandidates(log: (msg: string) => void): Promise<KitActiveCandidate[]> {
   const out: KitActiveCandidate[] = [];
+  let semEmail = 0;
   let after: string | undefined;
   for (let page = 0; page < 200; page++) {
     const res = await listSubscribers({ status: "active", include: ["tags"], perPage: 500, after });
     for (const s of res.subscribers as (typeof res.subscribers[number] & { fields?: Record<string, string | null> })[]) {
+      if (typeof s.email_address !== "string" || s.email_address.trim() === "") {
+        semEmail++;
+        continue;
+      }
       out.push({
         id: s.id,
         email: s.email_address,
@@ -339,7 +555,10 @@ async function listKitActiveCandidates(): Promise<KitActiveCandidate[]> {
         tagNames: (s.tags ?? []).map((t) => t.name),
       });
     }
-    if (!res.pagination.has_next_page || !res.pagination.end_cursor) return out;
+    if (!res.pagination.has_next_page || !res.pagination.end_cursor) {
+      if (semEmail > 0) log(`aviso: ${semEmail} ativo(s) do Kit sem email_address descartado(s) da listagem.`);
+      return out;
+    }
     after = res.pagination.end_cursor;
   }
   throw new Error("listagem de ativos do Kit não terminou em 200 páginas");
@@ -372,6 +591,15 @@ async function tagAndConfirm(tagId: number, subscriberId: number): Promise<void>
   if (!tags.some((t) => t.id === tagId)) throw new Error(`releitura das tags não mostra a tag ${tagId} (2xx não é prova)`);
 }
 
+async function fetchDeliveredEngagement(id: number, log: (msg: string) => void): Promise<BroadcastEngagement> {
+  const delivered = await fetchAudience(id, "delivered");
+  const opens = await fetchAudience(id, "opens");
+  const clicks = await fetchAudience(id, "clicks");
+  const descartadas = delivered.descartadas + opens.descartadas + clicks.descartadas;
+  if (descartadas > 0) log(`aviso: broadcast ${id}: ${descartadas} linha(s) sem e-mail descartada(s) do /subscribers/filter.`);
+  return { broadcastId: id, delivered: delivered.emails, opens: opens.emails, clicks: clicks.emails };
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -398,10 +626,17 @@ async function main(): Promise<void> {
     return;
   }
   let maxAdd: number | undefined;
+  let sendDay: string | undefined;
   try {
     maxAdd = getIntArg(argv, "max-add", { min: 0 });
+    sendDay = getStringArg(argv, "send-day", { example: "2026-10-21" });
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (sendDay !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(sendDay)) {
+    log(`ERRO: --send-day precisa ser YYYY-MM-DD (veio ${JSON.stringify(sendDay)}).`);
     process.exitCode = 2;
     return;
   }
@@ -420,25 +655,20 @@ async function main(): Promise<void> {
   }
   const listId = brevo.list_id as number;
 
-  const result = await runKitSemAberturaSync(cfg, { push, maxAdd }, {
+  const result = await runKitSemAberturaSync(cfg, { push, maxAdd, sendDay }, {
     nowMs: Date.now(),
     log,
-    readRegistry: () => readDiariaBroadcastRegistry(resolve(ROOT, editionsRoot()), log),
-    listKitActive: () => listKitActiveCandidates(),
-    fetchEngagement: async (id) => ({
-      broadcastId: id,
-      sent: (await fetchAudience(id, "sent")).emails,
-      opens: (await fetchAudience(id, "opens")).emails,
-      clicks: (await fetchAudience(id, "clicks")).emails,
-    }),
+    readRegistry: () => readDiariaBroadcastRegistry(resolve(ROOT, editionsRoot())),
+    listKitActive: () => listKitActiveCandidates(log),
+    fetchEngagement: (id) => fetchDeliveredEngagement(id, log),
     findEnvioBrevoTagId: () => findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME),
     readStore: () => readStore(DEFAULT_STORE_PATH),
     writeStore: (s) => writeStore(s, DEFAULT_STORE_PATH),
     rolloutPaused: () => readRolloutGuardrailState(undefined, log).rollout_paused,
-    transactionalToday: async () => {
-      const today = toStatsDay(new Date());
-      const snap = await fetchAccountQuotaSnapshot(apiKey, today, today);
-      return snap.transactionalRequestsOnSendDay;
+    transactionalOnSendDay: async (day) => (await fetchAccountQuotaSnapshot(apiKey, day)).transactionalRequestsOnSendDay,
+    getApoioNivel: async (id) => {
+      const s = await getSubscriberById(id);
+      return s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY] ?? null;
     },
     ingestBrevo: (email) => ingestWithOrigin(apiKey, listId, email),
     tagKit: (tagId, id) => tagAndConfirm(tagId, id),
