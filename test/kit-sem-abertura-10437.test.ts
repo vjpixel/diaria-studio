@@ -225,6 +225,7 @@ function fakeDeps(overrides: Partial<KitSemAberturaDeps> = {}) {
     rolloutPaused: () => false,
     transactionalOnSendDay: async () => 0,
     getApoioNivel: async () => null,
+    isBrevoBlacklisted: async () => false,
     ingestBrevo: async (email) => {
       calls.push(`brevo:${email}`);
     },
@@ -255,6 +256,7 @@ function throwingDeps(): KitSemAberturaDeps {
     rolloutPaused: boom,
     transactionalOnSendDay: boom,
     getApoioNivel: boom,
+    isBrevoBlacklisted: boom,
     ingestBrevo: boom,
     tagKit: boom,
     appendLog: boom,
@@ -1074,9 +1076,9 @@ function brevoRouter(
         messagesSent: ids,
         opened: ids.slice(0, state.opened ?? 0),
         ...(state.unsubscribed
-          ? { unsubscriptions: { userUnsubscription: [{ campaignId: 1, eventTime: "2026-10-02T00:00:00Z" }], adminUnsubscription: [] } }
+          ? { unsubscriptions: { userUnsubscription: [{ campaignId: 1, eventTime: "2026-10-12T00:00:00Z" }], adminUnsubscription: [] } }
           : {}),
-        ...(state.hardBounce ? { hardBounces: [{ campaignId: 1, eventTime: "2026-10-02T00:00:00Z" }] } : {}),
+        ...(state.hardBounce ? { hardBounces: [{ campaignId: 1, eventTime: "2026-10-12T00:00:00Z" }] } : {}),
       },
     });
   }) as typeof fetch;

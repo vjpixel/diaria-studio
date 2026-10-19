@@ -100,6 +100,7 @@ async function run(
     rolloutPaused: () => false,
     transactionalOnSendDay: async () => 0,
     getApoioNivel: async () => null,
+    isBrevoBlacklisted: async () => false,
     ingestBrevo: async (email) => void moved.push(email),
     tagKit: async () => {},
     appendLog: () => {},
