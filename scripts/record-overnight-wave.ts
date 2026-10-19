@@ -22,6 +22,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { appendWave, buildWaveRecord, checkOvernightWaves, findDuplicateWave } from "./lib/overnight-waves.ts";
 
 const INT = /^\d+$/;
@@ -44,6 +45,8 @@ if (isMainModule(import.meta.url)) {
     console.error(usage);
     process.exit(2);
   }
+  // #10579: plano trocado por cópia de conflito do OneDrive → restaura antes de ler.
+  recoverPlanFromSafeBackupWithWarning(values.plan);
   if (!existsSync(values.plan)) {
     console.error(`[record-overnight-wave] plan.json não encontrado: ${values.plan}`);
     process.exit(2);
