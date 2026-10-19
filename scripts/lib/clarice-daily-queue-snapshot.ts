@@ -139,6 +139,10 @@ function createdTime(created: string): number {
  * Compara extremos (mínimo dos incluídos contra máximo dos excluídos), então
  * é linear no tamanho da fila. Onda sem excluídos passa trivialmente: a fila
  * inteira coube no budget.
+ *
+ * Sozinho, só pega mudança no comparador — o snapshot já sai ordenado por
+ * ele (#10546). A prova vale junto com `compareQueueWithImported`, que
+ * confere o snapshot contra a onda efetivamente importada.
  */
 export function verifyDailyQueueOrder(rows: ReadonlyArray<DailyQueueSnapshotRow>): DailyQueueOrderReport {
   const inc = rows.filter((r) => r.included);
@@ -191,4 +195,47 @@ export function verifyDailyQueueOrder(rows: ReadonlyArray<DailyQueueSnapshotRow>
   }
 
   return { total: rows.length, included: inc.length, excluded: exc.length, ok: violations.length === 0, violations };
+}
+
+/**
+ * #10546: o verificador de ordem acima é CIRCULAR quando roda sozinho — o
+ * snapshot é a saída de `buildDailySendQueue`, já ordenada por
+ * `compareDailyQueueOrder`, e "incluído" é `i < selected.length`; (a) e (b)
+ * passam por construção. O que ele não via é a divergência entre a fila
+ * gravada e a onda que de fato foi pra Brevo (rerun com outro `--budget`
+ * depois do import, contato tirado do `daily.csv` antes do split). Esta
+ * comparação fecha esse buraco: os incluídos do snapshot têm de ser
+ * EXATAMENTE os e-mails importados (as células da onda que
+ * `clarice-import-waves.ts` subiu e reconciliou contra a lista da Brevo,
+ * #4577/#4720). E-mails comparados com trim + lowercase.
+ */
+export interface DailyQueueImportCheck {
+  /** E-mails distintos importados na onda. */
+  imported: number;
+  /** Incluídos no snapshot que não estão na onda importada. */
+  includedNotImported: { count: number; sample: string[] };
+  /** Importados que o snapshot não marca como incluídos (excluídos ou ausentes da fila). */
+  importedNotIncluded: { count: number; sample: string[] };
+  ok: boolean;
+}
+
+const IMPORT_CHECK_SAMPLE = 5;
+
+/** @pure */
+export function compareQueueWithImported(
+  rows: ReadonlyArray<DailyQueueSnapshotRow>,
+  importedEmails: Iterable<string>,
+): DailyQueueImportCheck {
+  const norm = (e: string) => e.trim().toLowerCase();
+  const imported = new Set<string>();
+  for (const e of importedEmails) if (e.trim()) imported.add(norm(e));
+  const included = new Set(rows.filter((r) => r.included).map((r) => norm(r.email)));
+  const includedNotImported = [...included].filter((e) => !imported.has(e));
+  const importedNotIncluded = [...imported].filter((e) => !included.has(e));
+  return {
+    imported: imported.size,
+    includedNotImported: { count: includedNotImported.length, sample: includedNotImported.slice(0, IMPORT_CHECK_SAMPLE) },
+    importedNotIncluded: { count: importedNotIncluded.length, sample: importedNotIncluded.slice(0, IMPORT_CHECK_SAMPLE) },
+    ok: includedNotImported.length === 0 && importedNotIncluded.length === 0,
+  };
 }

@@ -23,6 +23,7 @@ import {
   toSubscriberStateRecord,
   type SubscriberStateRecord,
 } from "../scripts/lib/subscriber-state-snapshot.ts";
+import { classifyPhase2Channel } from "../scripts/lib/ads-confirmation-phase2-report.ts";
 import { CHANNEL_KEY_SPECS } from "../scripts/lib/shared/channel-key-specs.ts";
 import { openDiariaSubscribersDb } from "../scripts/lib/diaria-subscribers-db.ts";
 import { loadKitUtmSourceMap, defaultSubscribersDbPath } from "../scripts/subscriber-confirmation-report.ts";
@@ -45,6 +46,25 @@ describe("classifyCanalPago", () => {
     assert.equal(classifyCanalPago(null, true), CANAL_PAGO_ORGANICO_LABEL);
     assert.equal(classifyCanalPago("", true), CANAL_PAGO_ORGANICO_LABEL);
     assert.equal(classifyCanalPago("google-ads", false), CANAL_PAGO_UNKNOWN_LABEL);
+  });
+
+  it("#10539: sufixo de campanha conta no canal base, sem casar por substring solta", () => {
+    assert.equal(classifyCanalPago("meta-ads-260901", true), "meta-ads");
+    assert.equal(classifyCanalPago(" Google-Ads-PMax ", true), "google-ads");
+    assert.equal(classifyCanalPago("microsoft-ads-x", true), "microsoft-ads");
+    assert.equal(classifyCanalPago("meta-adsxyz", true), CANAL_PAGO_ORGANICO_LABEL);
+    assert.equal(classifyCanalPago("xmeta-ads", true), CANAL_PAGO_ORGANICO_LABEL);
+  });
+
+  it("#10539: mesma fronteira do relatório da fase 2 (classifyPhase2Channel)", () => {
+    const phase2Label = { google: "google-ads", meta: "meta-ads", outros: CANAL_PAGO_ORGANICO_LABEL } as const;
+    for (const src of ["google-ads", "google-ads-pmax", "meta-ads", "meta-ads-260901", "meta-adsxyz", "linkedin", ""]) {
+      assert.equal(
+        classifyCanalPago(src, true),
+        phase2Label[classifyPhase2Channel({ origem_paga: src, origem_click_id: null }).channel],
+        `divergência em ${JSON.stringify(src)}`,
+      );
+    }
   });
 
   it("PAID_UTM_SOURCES casa com as specs 'teste 2608' de CHANNEL_KEY_SPECS (drift)", () => {

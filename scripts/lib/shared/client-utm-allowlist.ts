@@ -34,6 +34,17 @@ export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = [
 ] as const;
 
 /**
+ * Pure: fronteira canônica "fonte casa o canal `prefix`" — igual, ou com
+ * sufixo de campanha depois de um traço (`meta-ads-260901`). `source` já deve
+ * vir normalizada (trim + lowercase). Fonte única pros relatórios que
+ * classificam canal pago (#10539) — antes cada um reimplementava a regra e o
+ * de confirmação por canal aceitava só o valor exato.
+ */
+export function utmSourceMatchesPrefix(source: string, prefix: string): boolean {
+  return source === prefix || source.startsWith(`${prefix}-`);
+}
+
+/**
  * Pure: `true` só quando `rawSource` é uma string não-vazia IGUAL a um
  * prefixo da allowlist, ou que começa com `"{prefixo}-"` (fronteira de
  * traço — `"googleadsxyz"` não casa `"google-ads"` por substring solta).
@@ -41,7 +52,7 @@ export const CLIENT_UTM_SOURCE_ALLOWED_PREFIXES = [
 export function isAllowedClientUtmSource(rawSource: unknown): boolean {
   const s = typeof rawSource === "string" ? rawSource.trim().toLowerCase() : "";
   if (!s) return false;
-  return CLIENT_UTM_SOURCE_ALLOWED_PREFIXES.some((prefix) => s === prefix || s.startsWith(`${prefix}-`));
+  return CLIENT_UTM_SOURCE_ALLOWED_PREFIXES.some((prefix) => utmSourceMatchesPrefix(s, prefix));
 }
 
 /**

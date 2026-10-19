@@ -42,6 +42,8 @@
  * copiado pra saída.
  */
 
+import { utmSourceMatchesPrefix } from "./shared/client-utm-allowlist.ts";
+
 export type Phase2Channel = "google" | "meta" | "outros";
 
 export interface Phase2RosterEntry {
@@ -128,7 +130,7 @@ export function brtDay(iso: string): string | null {
  * do que `resolveOrigemPagaWithClickIdFallback` preserva (#10412). @pure
  */
 function origemPagaMatches(origemPaga: string, prefix: string): boolean {
-  return origemPaga === prefix || origemPaga.startsWith(`${prefix}-`);
+  return utmSourceMatchesPrefix(origemPaga, prefix);
 }
 
 /** Canal pago de um assinante + se veio só do click id. @pure */

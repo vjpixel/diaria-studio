@@ -94,6 +94,7 @@
 
 import type { SubscriberStateRecord } from "./subscriber-state-snapshot.ts";
 import { normalizeKey } from "./shared/attribution-keys.ts";
+import { utmSourceMatchesPrefix } from "./shared/client-utm-allowlist.ts";
 
 export const CONFIRMATION_WINDOWS = [
   { key: "1h", days: null },
@@ -135,12 +136,15 @@ export const CLOSED_COHORT_DAYS = 7;
 /**
  * Reduz um `utm_source` ao canal pago. `known === false` (nenhuma fonte tem
  * dado do id) → desconhecido; `known` com valor vazio/não pago → orgânico.
+ * Fonte com sufixo de campanha (`meta-ads-260901`) conta no canal base — mesma
+ * fronteira `prefix || prefix-*` do relatório da fase 2 e da allowlist do
+ * cliente (#10539; antes só o valor exato contava e o sufixo caía em orgânico).
  * @pure
  */
 export function classifyCanalPago(utmSource: string | null | undefined, known: boolean): string {
   if (!known) return CANAL_PAGO_UNKNOWN_LABEL;
   const k = normalizeKey(utmSource);
-  return (PAID_UTM_SOURCES as readonly string[]).includes(k) ? k : CANAL_PAGO_ORGANICO_LABEL;
+  return PAID_UTM_SOURCES.find((canal) => utmSourceMatchesPrefix(k, canal)) ?? CANAL_PAGO_ORGANICO_LABEL;
 }
 
 export interface WindowStats {

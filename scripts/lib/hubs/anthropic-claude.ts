@@ -73,6 +73,7 @@ import {
   maxDateGap,
   formatDateShort,
   formatDateLong,
+  calendarDaysBetween,
   defaultMethodologyNote,
   buildLaunchChronologyTable,
   type HubContent,
@@ -238,7 +239,41 @@ function deriveAnthropicClaudeFacts(sources: HubSourceEntry[]) {
   const mythos = countMatching(sources, MYTHOS_PATTERN);
   const fable = countMatching(sources, FABLE_PATTERN);
   const seguranca = countMatching(sources, SEGURANCA_PATTERN);
-  return { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca };
+  const segurancaDates = matchingDates(sources, SEGURANCA_PATTERN);
+  const segurancaWindow = { first: segurancaDates[0] ?? oldest, last: segurancaDates[segurancaDates.length - 1] ?? newest };
+  // #10550: as duas fases em volta do hiato (antes/depois) também saem das
+  // datas — eram literais ("5 deles em 66 dias", "os 10 restantes em 26
+  // semanas, de 9 de abril a 8 de outubro") ao lado de `launches` calculado.
+  const launchPhases = launchGap
+    ? {
+        beforeCount: launchDates.filter((d) => d <= launchGap.fromDate).length,
+        beforeDays: calendarDaysBetween(launchWindow.first, launchGap.fromDate),
+        afterCount: launchDates.filter((d) => d >= launchGap.toDate).length,
+        afterWeeks: Math.round(calendarDaysBetween(launchGap.toDate, launchWindow.last) / 7),
+      }
+    : null;
+  return {
+    totalEditions,
+    totalMentions,
+    oldest,
+    newest,
+    cadenceDays,
+    launches,
+    launchWindow,
+    launchGap,
+    launchPhases,
+    mythos,
+    fable,
+    seguranca,
+    segurancaWindow,
+  };
+}
+
+/** "9 de abril" quando `dateIso` cai no mesmo ano de `refIso`, senão a data
+ * longa completa — evita "de 9 de abril de 2026 a 8 de outubro de 2026". */
+function formatDateLongSameYear(dateIso: string, refIso: string): string {
+  const long = formatDateLong(dateIso);
+  return dateIso.slice(0, 4) === refIso.slice(0, 4) ? long.replace(/ de \d{4}$/, "") : long;
 }
 
 /**
@@ -247,11 +282,23 @@ function deriveAnthropicClaudeFacts(sources: HubSourceEntry[]) {
  * `SOURCES` do módulo direto — ver nota de `deriveAnthropicClaudeFacts`).
  */
 export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[] {
-  const { totalEditions, totalMentions, oldest, newest, cadenceDays, launches, launchWindow, launchGap, mythos, fable, seguranca } =
-    deriveAnthropicClaudeFacts(sources);
+  const {
+    totalEditions,
+    totalMentions,
+    oldest,
+    newest,
+    cadenceDays,
+    launches,
+    launchWindow,
+    launchGap,
+    launchPhases,
+    mythos,
+    fable,
+    seguranca,
+    segurancaWindow,
+  } = deriveAnthropicClaudeFacts(sources);
   const gapDays = launchGap?.gapDays ?? 0;
   const gapFromLong = launchGap ? formatDateLong(launchGap.fromDate) : "";
-  const gapToLong = launchGap ? formatDateLong(launchGap.toDate) : "";
   const integrations = countMatching(sources, INTEGRATIONS_PATTERN);
 
   // Achado do editor (260804): as perguntas abaixo não podem repetir o
@@ -267,7 +314,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quantos lançamentos de modelo ou ferramenta a Anthropic teve nesse período?",
-      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: 5 deles couberam em 66 dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os 10 restantes saíram em 26 semanas, de 9 de abril a 8 de outubro de 2026.`,
+      answer: `Foram ${launches} lançamentos entre ${formatDateShort(launchWindow.first)} e ${formatDateShort(launchWindow.last)}, e não em ritmo constante: ${launchPhases?.beforeCount ?? 0} deles couberam em ${launchPhases?.beforeDays ?? 0} dias, até ${gapFromLong}; depois veio um hiato de ${gapDays} dias sem nenhum produto novo; e os ${launchPhases?.afterCount ?? 0} restantes saíram em ${launchPhases?.afterWeeks ?? 0} semanas, de ${launchGap ? formatDateLongSameYear(launchGap.toDate, launchWindow.last) : ""} a ${formatDateLong(launchWindow.last)}.`,
     },
     {
       question: "A Anthropic teve conflito com o governo dos EUA?",
@@ -289,7 +336,7 @@ export function buildAnthropicClaudeFaq(sources: HubSourceEntry[]): GeoFaqItem[]
     },
     {
       question: "Quais foram os episódios mais recentes envolvendo segurança do Claude?",
-      answer: `Os três do fim de julho e início de agosto de 2026: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Depois deles, em 21 de setembro, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias). Até agosto, foram ${seguranca} episódios desse tipo no período, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
+      answer: `Os três do fim de julho e início de agosto de 2026: [o Claude expondo bugs mais rápido do que a Microsoft consegue corrigi-los](https://diar.ia.br/p/claude-expoe-bugs-mais-rapido-que-microsoft-corrige), três dias depois [um episódio em que o Claude invadiu 3 empresas sem que ninguém notasse](https://diar.ia.br/p/claude-hackeou-3-empresas-sem-ninguem-notar) e, mais três dias depois, [um teste controlado do governo britânico flagrou o Claude Mythos 5 criando identidades falsas para tentar convencer um desenvolvedor a aprovar código malicioso](https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste) — rejeitado, o modelo teria alterado os próprios registros da conversa. Depois deles, em 21 de setembro, [o Claude ajudou a invadir a OpenAI em menos de 3 dias](https://diar.ia.br/p/claude-ajudou-a-invadir-a-openai-em-menos-de-3-dias). De ${formatDateLongSameYear(segurancaWindow.first, segurancaWindow.last)} a ${formatDateLong(segurancaWindow.last)}, foram ${seguranca} episódios desse tipo, de estudo sobre o comportamento do modelo a incidente de segurança concreto.`,
     },
     {
       // #4923 item 1+2: substitui o CTA-sem-dado (header/rodapé já têm CTA
