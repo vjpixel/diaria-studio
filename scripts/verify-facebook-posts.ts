@@ -13,7 +13,12 @@
  *   npx tsx scripts/verify-facebook-posts.ts --edition-dir data/editions/260423/
  *   npm run verify-facebook-posts -- --edition-dir data/editions/260423/
  *
- * Requer: `data/.fb-credentials.json` com `page_access_token` + `api_version`.
+ * Requer: credencial da página de cada entry (#10458) — a `diaria` usa
+ * `FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN` (fallback
+ * `data/.fb-credentials.json`); as outras, as env vars declaradas em
+ * `publishing.social.facebook.pages`. Cada post é lido com o token DA PÁGINA
+ * dele; entry de página sem credencial fica intocada (sem token não dá pra
+ * saber o estado real — marcar `failed` seria inventar).
  *
  * Output: atualiza in-place o `06-social-published.json` da edição.
  */
@@ -33,7 +38,14 @@ import { fileURLToPath } from "node:url";
 import type { PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { loadResolvedFacebookPages, resolveFacebookPageForEntry } from "./lib/facebook-pages.ts"; // #10458
 export type { PostEntry, SocialPublished };
+
+/**
+ * #10458: credencial por entry (página do Facebook). `null` = sem credencial
+ * pra página dessa entry → entry fica intocada.
+ */
+export type FacebookCredentialsForEntry = (entry: PostEntry) => { token: string; pageId?: string } | null;
 
 /**
  * Pure: resolve canonical path of `06-social-published.json` (#920).
@@ -287,6 +299,11 @@ export async function verifyPublished(
   now: Date = new Date(),
   /** #3816 fix (a) — necessário pra compor `{pageId}_{fb_post_id}` na leitura. */
   pageId?: string,
+  /**
+   * #10458: quando presente, decide token/pageId POR ENTRY (página dela) e
+   * sobrepõe `pageToken`/`pageId`. Retorno `null` → entry intocada.
+   */
+  credentialsFor?: FacebookCredentialsForEntry,
 ): Promise<{ updated: SocialPublished; changes: number }> {
   const updatedPosts: PostEntry[] = [];
   let changes = 0;
@@ -303,9 +320,14 @@ export async function verifyPublished(
       updatedPosts.push(entry);
       continue;
     }
+    const creds = credentialsFor ? credentialsFor(entry) : { token: pageToken, pageId };
+    if (!creds) {
+      updatedPosts.push(entry);
+      continue;
+    }
     try {
-      const resolvedId = resolveGraphPostId(fbPostId, pageId);
-      const graph = await fetchPost(resolvedId, pageToken, apiVersion);
+      const resolvedId = resolveGraphPostId(fbPostId, creds.pageId);
+      const graph = await fetchPost(resolvedId, creds.token, apiVersion);
       const next = reconcilePost(entry, graph, now);
       if (next.status !== entry.status || next.verification_note !== entry.verification_note) {
         changes++;
@@ -341,31 +363,41 @@ async function main(): Promise<number | void> {
     return 1;
   }
 
-  const credsPath = resolve(ROOT, "data/.fb-credentials.json");
-  if (!existsSync(credsPath)) {
-    console.error(`Credenciais não encontradas: ${credsPath}`);
-    return 1;
-  }
-
-  const creds = JSON.parse(readFileSync(credsPath, "utf8")) as {
-    page_id?: string;
-    page_access_token: string;
-    api_version: string;
-  };
   const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
 
-  // #3816 fix (a) — mesmo padrão de resolução de publish-facebook.ts: env var
-  // tem prioridade, arquivo legacy é fallback. Sem pageId, resolveGraphPostId
-  // faz best-effort (usa o fb_post_id cru) — degradação graciosa, não abort.
-  const pageId = process.env.FACEBOOK_PAGE_ID || creds.page_id || undefined;
+  // #10458: credencial por página (helper único). A `diaria` mantém a
+  // precedência de sempre — env var > data/.fb-credentials.json (#3816 fix a).
+  let config: unknown = {};
+  try {
+    config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  } catch {
+    // config ausente/ilegível → fallback de compat do helper (só a `diaria`).
+  }
+  // `process.env` explícito: o `.env` já foi carregado pelo `dotenv/config` do topo (#6166).
+  const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config, process.env);
+  const warned = new Set<string>();
+  const credentialsFor: FacebookCredentialsForEntry = (entry) => {
+    const res = resolveFacebookPageForEntry(entry, pages);
+    if (res.ok) return { token: res.page.token, pageId: res.page.pageId };
+    if (!warned.has(res.slug)) {
+      warned.add(res.slug);
+      console.error(
+        `⚠️  página Facebook "${res.slug}": ${res.reason}` +
+          ("missing" in res ? ` (faltam: ${res.missing.join(", ")})` : "") +
+          " — entries dela ficam sem verificação.",
+      );
+    }
+    return null;
+  };
 
   const { updated, changes } = await verifyPublished(
     published,
-    creds.page_access_token,
-    creds.api_version,
+    "",
+    apiVersion,
     defaultFetchPost,
     new Date(),
-    pageId,
+    undefined,
+    credentialsFor,
   );
 
   if (changes > 0) {
@@ -374,6 +406,9 @@ async function main(): Promise<number | void> {
   } else {
     console.log("Nenhuma mudança de status detectada.");
   }
+  // Sem credencial pra alguma página com post a verificar → exit 1 (antes do
+  // #10458 o arquivo de credencial ausente já saía 1; não virar sucesso mudo).
+  if (warned.size > 0) return 1;
 }
 
 if (isMainModule(import.meta.url)) {

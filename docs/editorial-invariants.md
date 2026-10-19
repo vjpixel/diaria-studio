@@ -128,8 +128,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `close-poll-marker-exists` | _internal/.close-poll-done.json escrito (#1367) | #1367 |
 | `consent-binding` | canais com consent=auto devem ter dispatch real (#1575) | #1575 |
 | `edition-url-file-exists` | _internal/05-edition-url.txt existe e contém URL válida antes do dispatch social (#2454) | #2454 |
-| `facebook-page-id-set` | FACEBOOK_PAGE_ID env var presente (necessário para Stage 5 dispatch) | #facebook |
-| `facebook-token-set` | FACEBOOK_PAGE_ACCESS_TOKEN env var presente (necessário para Stage 5 dispatch) | #facebook |
+| `facebook-page-id-set` | Page ID de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ID na diaria, #10458) | #facebook |
+| `facebook-token-set` | Token de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ACCESS_TOKEN na diaria, #10458) | #facebook |
 | `instagram-creds-set` | INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49) | #49 |
 | `kit-diaria-exclusive-audience-dispatched` | canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504) | #6582 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |

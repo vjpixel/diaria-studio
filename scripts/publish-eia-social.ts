@@ -64,6 +64,13 @@ import { runMain } from "./lib/exit-handler.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — nenhum canal social renderiza markdown; #10441 ponto único do texto de post
+import {
+  DEFAULT_FACEBOOK_PAGE_SLUG,
+  applyFacebookPageUtm,
+  enabledFacebookPages,
+  loadResolvedFacebookPages,
+  type ResolvedFacebookPage,
+} from "./lib/facebook-pages.ts"; // #10458 — É IA? em cada página habilitada
 
 export const EIA_CHANNELS = ["linkedin", "facebook", "instagram", "threads", "twitter"] as const;
 export type EiaChannel = (typeof EIA_CHANNELS)[number];
@@ -76,6 +83,33 @@ export interface EiaDispatchPlan {
   text: string;
   /** Carrossel (Instagram) ou imagem única (resto). */
   images: string[];
+  /** #10458 — página do Facebook (só `channel: "facebook"`, depois de `expandFacebookPlans`). */
+  page?: ResolvedFacebookPage;
+}
+
+/**
+ * Pure (#10458): chave do plano no estado de idempotência. A página default
+ * mantém a chave de sempre (`facebook`) — estado gravado antes da lista de
+ * páginas segue valendo; as outras viram `facebook[{slug}]`.
+ */
+export function eiaPlanKey(plan: Pick<EiaDispatchPlan, "channel" | "page">): string {
+  if (plan.channel !== "facebook" || !plan.page || plan.page.slug === DEFAULT_FACEBOOK_PAGE_SLUG) return plan.channel;
+  return `facebook[${plan.page.slug}]`;
+}
+
+/**
+ * Pure (#10458): o plano do Facebook vira um por página HABILITADA, cada um
+ * com a tag `utm_content` da página nos links do projeto (a `diaria` vem com
+ * `null` no config — texto idêntico ao de antes). Nenhuma página habilitada →
+ * o plano do Facebook some (não há onde publicar).
+ */
+export function expandFacebookPlans(plans: EiaDispatchPlan[], pages: ResolvedFacebookPage[]): EiaDispatchPlan[] {
+  const enabled = enabledFacebookPages(pages);
+  return plans.flatMap((plan) =>
+    plan.channel !== "facebook"
+      ? [plan]
+      : enabled.map((page) => ({ ...plan, text: applyFacebookPageUtm(plan.text, page), page })),
+  );
 }
 
 /**
@@ -142,24 +176,18 @@ export function parseScheduledAt(raw: string, now: Date): string {
 }
 
 async function scheduleFacebook(
+  page: ResolvedFacebookPage,
+  apiVersion: string,
   text: string,
   imageUrl: string,
   scheduledAtIso: string,
 ): Promise<string> {
-  const apiVersion = process.env.FACEBOOK_API_VERSION ?? "v25.0";
-  let pageId = process.env.FACEBOOK_PAGE_ID ?? "";
-  let token = process.env.FACEBOOK_PAGE_ACCESS_TOKEN ?? "";
-  // Fallback pro arquivo legado nos DOIS campos, como `publish-facebook.ts`:
-  // ambiente que ainda guarda o page_id só ali funcionava lá e falharia aqui.
-  if (!pageId || !token) {
-    const credsPath = resolve(process.cwd(), "data/.fb-credentials.json");
-    if (existsSync(credsPath)) {
-      const creds = JSON.parse(readFileSync(credsPath, "utf8"));
-      pageId ||= creds.page_id ?? "";
-      token ||= creds.page_access_token ?? "";
-    }
+  // #10458: credencial da página vem do helper único (env > arquivo legado,
+  // este só pra `diaria`) — falta de credencial falha só esta página.
+  if (page.missing.length > 0) {
+    throw new Error(`Facebook[${page.slug}] sem credencial (faltam: ${page.missing.join(", ")})`);
   }
-  if (!pageId || !token) throw new Error("Facebook sem credencial (FACEBOOK_PAGE_ID + token no env ou data/.fb-credentials.json)");
+  const { pageId, token } = page;
 
   const res = await fetch(`https://graph.facebook.com/${apiVersion}/${pageId}/photos`, {
     method: "POST",
@@ -215,7 +243,8 @@ export function pendingChannels(
   const todo: EiaDispatchPlan[] = [];
   const alreadyDone: string[] = [];
   for (const plan of plans) {
-    if (state.channels[plan.channel]) alreadyDone.push(plan.channel);
+    const key = eiaPlanKey(plan); // #10458: por página no Facebook
+    if (state.channels[key]) alreadyDone.push(key);
     else todo.push(plan);
   }
   return { todo, alreadyDone };
@@ -274,7 +303,10 @@ async function main(): Promise<void> {
     if (!existsSync(p)) throw new Error(`Arte ausente (${k}): ${p} — rode gen-eia-linkedin-cards.ts antes.`);
   }
 
-  const allPlans = buildPlans(readFileSync(mdPath, "utf8"), files, skip);
+  // #10458: Facebook → um plano por página habilitada (config de páginas
+  // inválido lança aqui, antes de qualquer upload/dispatch).
+  const fb = loadResolvedFacebookPages(process.cwd(), JSON.parse(readFileSync(resolve(process.cwd(), "platform.config.json"), "utf8")));
+  const allPlans = expandFacebookPlans(buildPlans(readFileSync(mdPath, "utf8"), files, skip), fb.pages);
   const state = readEiaPublishedState(dir);
   const { todo: plans, alreadyDone } = pendingChannels(allPlans, state, force);
 
@@ -327,6 +359,7 @@ async function main(): Promise<void> {
   }
 
   for (const plan of plans) {
+    const key = eiaPlanKey(plan); // #10458: `facebook[memelab]` etc.
     const urls = plan.images.map((p) => publicUrl[p]);
     try {
       if (plan.channel === "twitter") {
@@ -336,8 +369,8 @@ async function main(): Promise<void> {
       }
 
       if (dryRun) {
-        console.log(`[eia-social] ${plan.channel}: ${urls.length} imagem(ns), ${plan.text.length} chars — DRY-RUN, nada enviado`);
-        result.scheduled.push({ channel: plan.channel, ref: "(dry-run)" });
+        console.log(`[eia-social] ${key}: ${urls.length} imagem(ns), ${plan.text.length} chars — DRY-RUN, nada enviado`);
+        result.scheduled.push({ channel: key, ref: "(dry-run)" });
         continue;
       }
 
@@ -352,18 +385,18 @@ async function main(): Promise<void> {
         });
         ref = queued.key;
       } else {
-        ref = await scheduleFacebook(plan.text, urls[0], scheduledAtIso);
+        ref = await scheduleFacebook(plan.page!, fb.apiVersion, plan.text, urls[0], scheduledAtIso);
       }
-      result.scheduled.push({ channel: plan.channel, ref });
+      result.scheduled.push({ channel: key, ref });
       // Grava a CADA canal, não no fim: um crash no meio do lote não pode
       // apagar a memória do que já foi agendado — é isso que faz o re-run ser
       // seguro.
-      recordScheduled(dir, edition, scheduledAtIso, plan.channel, ref);
-      console.log(`[eia-social] ${plan.channel}: agendado`);
+      recordScheduled(dir, edition, scheduledAtIso, key, ref);
+      console.log(`[eia-social] ${key}: agendado`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[eia-social] ${plan.channel}: FALHOU — ${msg}`);
-      result.failed.push({ channel: plan.channel, error: msg });
+      console.error(`[eia-social] ${key}: FALHOU — ${msg}`);
+      result.failed.push({ channel: key, error: msg });
     }
   }
 

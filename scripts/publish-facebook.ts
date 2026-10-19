@@ -44,6 +44,7 @@ import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-publ
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
   applyFacebookPageUtm,
+  facebookPageLabel,
   loadResolvedFacebookPages,
   resolvePostPage,
   type ResolvedFacebookPage,
@@ -520,7 +521,7 @@ export async function publishFacebookCarouselByUrl(
 
 /** #10458: rótulo de log — a página default mantém o formato de sempre (`facebook/d1`). */
 export function facebookLogLabel(slug: string, destaque: string): string {
-  return slug === DEFAULT_FACEBOOK_PAGE_SLUG ? `facebook/${destaque}` : `facebook[${slug}]/${destaque}`;
+  return facebookPageLabel(slug, destaque);
 }
 
 /**

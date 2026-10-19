@@ -12,7 +12,10 @@
  *   npx tsx scripts/delete-test-schedules.ts --edition-dir ... --dry-run
  *
  * Pré-requisitos:
- *   - data/.fb-credentials.json com page_access_token + api_version (FB)
+ *   - credencial da página de cada entry FB (#10458): a `diaria` usa
+ *     FACEBOOK_PAGE_ACCESS_TOKEN (fallback data/.fb-credentials.json); as
+ *     outras, a env var declarada em publishing.social.facebook.pages. Cada
+ *     post é deletado com o token DA PÁGINA dele.
  *   - DIARIA_LINKEDIN_CRON_URL + DIARIA_LINKEDIN_CRON_TOKEN no env (LinkedIn)
  *
  * Background: /diaria-test --with-publish cria posts agendados pra +10 dias
@@ -32,36 +35,65 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import {
   readSocialPublished,
-  appendSocialPosts,
   type PostEntry,
 } from "./lib/social-published-store.ts";
+import {
+  loadResolvedFacebookPages,
+  resolveFacebookPageForEntry,
+  socialEntryKey,
+  type ResolvedFacebookPage,
+} from "./lib/facebook-pages.ts"; // #10458
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-
-interface FbCredentials {
-  page_id?: string;
-  page_access_token?: string;
-  api_version?: string;
-}
 
 interface DeleteResult {
   platform: "facebook" | "linkedin";
   destaque: string;
   subtype?: string;
+  /** #10458 — página do Facebook (só `platform: "facebook"`). */
+  page?: string;
   identifier: string; // fb_post_id ou worker_queue_key
   status: "deleted" | "skipped" | "failed" | "dry_run";
   reason?: string;
   http_status?: number;
 }
 
-function loadFbCredentials(): FbCredentials | null {
-  const path = resolve(ROOT, "data/.fb-credentials.json");
-  if (!existsSync(path)) return null;
+/**
+ * #10458: páginas do Facebook com credencial resolvida (helper único). Config
+ * ausente/ilegível → fallback de compat (só a `diaria`); config de páginas
+ * inválido → lista vazia (cada entry FB falha com `unknown_fb_page`, sem
+ * derrubar o cleanup do LinkedIn).
+ */
+function loadFbPages(): { pages: ResolvedFacebookPage[]; apiVersion: string; error?: string } {
+  let config: unknown = {};
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as FbCredentials;
+    config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   } catch {
-    return null;
+    // fallback de compat
   }
+  try {
+    return loadResolvedFacebookPages(ROOT, config);
+  } catch (e) {
+    return { pages: [], apiVersion: "v25.0", error: (e as Error).message };
+  }
+}
+
+/**
+ * Pure (#10458): marca como `deleted` as entries cujos posts foram deletados.
+ * A chave inclui a página (`socialEntryKey`) — sem isso, deletar o post da
+ * #memeLab marcaria também a entry da `diaria` do mesmo destaque.
+ */
+export function markDeletedEntries(
+  posts: PostEntry[],
+  results: Array<Pick<DeleteResult, "status" | "platform" | "destaque" | "subtype" | "page">>,
+  now: string,
+): PostEntry[] {
+  const deletedKeys = new Set(results.filter((r) => r.status === "deleted").map((r) => socialEntryKey(r)));
+  return posts.map((p) =>
+    deletedKeys.has(socialEntryKey(p))
+      ? { ...p, status: "deleted" as const, deleted_at: now, deleted_reason: "test_mode_cleanup" }
+      : p,
+  );
 }
 
 function resolveLinkedinWorkerUrl(): string {
@@ -174,7 +206,8 @@ async function main(): Promise<number | void> {
   console.error(`[delete-test-schedules] ${targets.length} posts pra deletar (dry_run=${args.dryRun}, require_is_test=${args.requireIsTest})`);
 
   const results: DeleteResult[] = [];
-  const fbCreds = loadFbCredentials();
+  const fb = loadFbPages();
+  if (fb.error) console.error(`[delete-test-schedules] config de páginas do Facebook inválido: ${fb.error}`);
   const liWorkerUrl = resolveLinkedinWorkerUrl();
   const liToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
 
@@ -182,43 +215,29 @@ async function main(): Promise<number | void> {
     const subtype = (post.subtype as string | undefined) ?? "main";
     if (post.platform === "facebook") {
       const fbPostId = (post.fb_post_id as string | undefined) ?? "";
+      const pageRes = resolveFacebookPageForEntry(post, fb.pages); // #10458
+      const base = { platform: "facebook" as const, destaque: post.destaque, subtype, page: pageRes.slug };
       if (!fbPostId) {
-        results.push({
-          platform: "facebook", destaque: post.destaque, subtype,
-          identifier: "(no fb_post_id)", status: "skipped", reason: "no_fb_post_id",
-        });
+        results.push({ ...base, identifier: "(no fb_post_id)", status: "skipped", reason: "no_fb_post_id" });
         continue;
       }
       if (args.dryRun) {
-        results.push({
-          platform: "facebook", destaque: post.destaque, subtype,
-          identifier: fbPostId, status: "dry_run",
-        });
+        results.push({ ...base, identifier: fbPostId, status: "dry_run" });
         continue;
       }
-      if (!fbCreds?.page_access_token) {
-        results.push({
-          platform: "facebook", destaque: post.destaque, subtype,
-          identifier: fbPostId, status: "failed", reason: "missing_fb_credentials",
-        });
+      if (!pageRes.ok) {
+        results.push({ ...base, identifier: fbPostId, status: "failed", reason: pageRes.reason });
         continue;
       }
       try {
-        const r = await deleteFbPost(
-          fbPostId,
-          fbCreds.page_access_token,
-          fbCreds.api_version ?? "v25.0",
-        );
+        const r = await deleteFbPost(fbPostId, pageRes.page.token, fb.apiVersion);
         results.push({
-          platform: "facebook", destaque: post.destaque, subtype,
+          ...base,
           identifier: fbPostId, status: r.ok ? "deleted" : "failed",
           http_status: r.httpStatus, reason: r.ok ? undefined : r.body,
         });
       } catch (e) {
-        results.push({
-          platform: "facebook", destaque: post.destaque, subtype,
-          identifier: fbPostId, status: "failed", reason: (e as Error).message,
-        });
+        results.push({ ...base, identifier: fbPostId, status: "failed", reason: (e as Error).message });
       }
       continue;
     }
@@ -264,19 +283,7 @@ async function main(): Promise<number | void> {
   // Atualizar 06-social-published.json com deleted_at em entries deletadas
   if (!args.dryRun) {
     const now = new Date().toISOString();
-    const deletedKeys = new Set(
-      results.filter((r) => r.status === "deleted").map((r) => r.platform + "|" + r.destaque + "|" + (r.subtype ?? "main")),
-    );
-    const updated: PostEntry[] = [];
-    for (const p of published.posts) {
-      const subtype = (p.subtype as string | undefined) ?? "main";
-      const key = p.platform + "|" + p.destaque + "|" + subtype;
-      if (deletedKeys.has(key)) {
-        updated.push({ ...p, status: "deleted" as const, deleted_at: now, deleted_reason: "test_mode_cleanup" });
-      } else {
-        updated.push(p);
-      }
-    }
+    const updated = markDeletedEntries(published.posts, results, now);
     writeFileSync(publishedPath, JSON.stringify({ posts: updated }, null, 2) + "\n", "utf8");
   }
 

@@ -180,6 +180,54 @@ export function loadResolvedFacebookPages(
 }
 
 /**
+ * Resolução da página de uma entrada já gravada em `06-social-published.json`
+ * (#10458 follow-up). Usado por quem age sobre um post que JÁ existe
+ * (verificar, deletar, reconciliar) — por isso ignora `enabled`: desligar a
+ * página no config não faz o post agendado sumir dela, e o token dela ainda é
+ * o único que enxerga/deleta esse post.
+ */
+export type FacebookEntryPageResolution =
+  | { ok: true; slug: string; page: ResolvedFacebookPage }
+  | { ok: false; slug: string; reason: "unknown_fb_page" }
+  | { ok: false; slug: string; reason: "missing_fb_credentials"; missing: string[] };
+
+/** Pure: página (com credencial) de uma entrada — sem `page` = `diaria`. */
+export function resolveFacebookPageForEntry(
+  entry: { page?: unknown },
+  pages: ResolvedFacebookPage[],
+): FacebookEntryPageResolution {
+  const slug = resolvePostPage(entry);
+  const page = pages.find((p) => p.slug === slug);
+  if (!page) return { ok: false, slug, reason: "unknown_fb_page" };
+  if (page.missing.length > 0) return { ok: false, slug, reason: "missing_fb_credentials", missing: page.missing };
+  return { ok: true, slug, page };
+}
+
+/**
+ * Pure: chave de upsert/idempotência de uma entrada do Facebook —
+ * `(platform, destaque, subtype, page)`, a mesma de `appendSocialPosts`.
+ * Pra quem precisa casar resultado → entrada (ex: `delete-test-schedules.ts`)
+ * sem colapsar as duas páginas na mesma chave.
+ */
+export function socialEntryKey(entry: { platform: string; destaque: string; subtype?: unknown; page?: unknown }): string {
+  const subtype = typeof entry.subtype === "string" && entry.subtype ? entry.subtype : "main";
+  return `${entry.platform}|${entry.destaque}|${subtype}|${resolvePostPage(entry)}`;
+}
+
+/** Pure: só as páginas habilitadas no config (com ou sem credencial). */
+export function enabledFacebookPages(pages: ResolvedFacebookPage[]): ResolvedFacebookPage[] {
+  return pages.filter((p) => p.enabled);
+}
+
+/**
+ * Pure: rótulo de log por página — a default mantém o formato de sempre
+ * (`facebook/d1`), as outras ganham o slug (`facebook[memelab]/d1`).
+ */
+export function facebookPageLabel(slug: string, destaque: string): string {
+  return slug === DEFAULT_FACEBOOK_PAGE_SLUG ? `facebook/${destaque}` : `facebook[${slug}]/${destaque}`;
+}
+
+/**
  * Pure: acrescenta a tag da página ao `utm_content` dos links do projeto no
  * texto do post, compondo com um `utm_content` já presente (o 4º post USE
  * MELHOR usa `usemelhor` → vira `usemelhor_page-memelab`). Tag `null` → texto

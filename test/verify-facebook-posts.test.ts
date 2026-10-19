@@ -23,7 +23,10 @@ describe("#6166 — carrega .env (mesmo defeito do #6152)", () => {
     const src = readFileSync(resolve(import.meta.dirname, "..", "scripts", "verify-facebook-posts.ts"), "utf8");
     const importIdx = src.indexOf('import "dotenv/config"');
     assert.ok(importIdx >= 0, "esperava import \"dotenv/config\" no topo do arquivo");
-    const firstEnvReadIdx = src.indexOf("process.env.");
+    // #10458: a leitura agora passa `process.env` inteiro pro helper de páginas
+    // (sem `.VAR`) — `\bprocess\.env\b` cobre as duas formas.
+    const firstEnvReadIdx = src.search(/\bprocess\.env\b/);
+    assert.ok(firstEnvReadIdx >= 0, "esperava alguma leitura de process.env no script");
     assert.ok(firstEnvReadIdx > importIdx, "o import de dotenv/config precisa vir ANTES de qualquer leitura de process.env");
   });
 });

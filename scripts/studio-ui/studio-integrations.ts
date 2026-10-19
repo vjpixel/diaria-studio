@@ -81,6 +81,7 @@ import { beehiivApiBase } from "../lib/beehiiv-config.ts";
 import { kitApiBase } from "../lib/kit-config.ts";
 import { checkCloudflareToken, type CloudflareTokenHealth } from "../check-cloudflare-token.ts";
 import { checkClariceHealth } from "../clarice-healthcheck.ts";
+import { DEFAULT_FACEBOOK_PAGE_SLUG, loadFacebookPagesConfig } from "../lib/facebook-pages.ts"; // #10458
 
 // Garante que `.env` está carregado mesmo quando
 // `studio-integrations.ts` é importado sem o processo ter passado por um
@@ -129,6 +130,11 @@ export interface IntegrationDef {
   probe: ProbeStrategy;
   /** Nota estática sempre mostrada (constraint conhecida, expiração de token, etc.). */
   note?: string;
+  /**
+   * #10458 — env vars do nó Graph (id + token) que o probe `facebook-graph`
+   * consulta. Ausente = a página default (`FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN`).
+   */
+  graphNode?: { idEnv: string; tokenEnv: string };
 }
 
 export interface IntegrationStatus {
@@ -498,6 +504,55 @@ export function readLinkedInWorkerUrl(rootDir: string): string | null {
   }
 }
 
+// ─── Facebook: uma integração por página (#10458) ──────────────────────
+
+/**
+ * Pure (#10458): integrações do Facebook a partir de
+ * `publishing.social.facebook.pages`. A página default fica com o id de
+ * sempre (`facebook`); cada outra página ganha a sua (`facebook_{slug}`), com
+ * as env vars dela e o estado liga/desliga na nota. Config sem a chave ou
+ * inválido → só a default (o painel nunca quebra por config).
+ */
+export function facebookIntegrationDefs(config: unknown, base: IntegrationDef): IntegrationDef[] {
+  let pages;
+  try {
+    pages = loadFacebookPagesConfig(config);
+  } catch {
+    return [base];
+  }
+  const out: IntegrationDef[] = [];
+  for (const p of pages) {
+    if (p.slug === DEFAULT_FACEBOOK_PAGE_SLUG) {
+      out.push({ ...base, envVars: [p.token_env, p.page_id_env], graphNode: { idEnv: p.page_id_env, tokenEnv: p.token_env } });
+      continue;
+    }
+    out.push({
+      ...base,
+      id: `facebook_${p.slug.replace(/-/g, "_")}`,
+      name: `${base.name} (página ${p.slug})`,
+      envVars: [p.token_env, p.page_id_env],
+      graphNode: { idEnv: p.page_id_env, tokenEnv: p.token_env },
+      note: `${p.enabled ? "Ligada" : "Desligada"} em publishing.social.facebook.pages (#10458). ${base.note ?? ""}`.trim(),
+    });
+  }
+  // Default ausente da lista (config sem a `diaria`) → nada de linha fantasma pra ela.
+  return out;
+}
+
+function readPlatformConfigSafe(rootDir: string): unknown {
+  try {
+    return JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Lista efetiva do painel: `INTEGRATIONS` com o Facebook expandido por página. */
+export function effectiveIntegrations(rootDir: string): IntegrationDef[] {
+  const config = readPlatformConfigSafe(rootDir);
+  return INTEGRATIONS.flatMap((def) => (def.id === "facebook" ? facebookIntegrationDefs(config, def) : [def]));
+}
+
 // ─── orquestração por integração (fail-soft) ───────────────────────────
 
 async function evaluateIntegration(
@@ -571,7 +626,9 @@ async function evaluateIntegration(
       }
       case "facebook-graph": {
         const version = env.FACEBOOK_API_VERSION || "v25.0";
-        const probe = await probeGraphNode(env.FACEBOOK_PAGE_ID ?? "", env.FACEBOOK_PAGE_ACCESS_TOKEN ?? "", version, fetchImpl);
+        const idEnv = def.graphNode?.idEnv ?? "FACEBOOK_PAGE_ID";
+        const tokenEnv = def.graphNode?.tokenEnv ?? "FACEBOOK_PAGE_ACCESS_TOKEN";
+        const probe = await probeGraphNode(env[idEnv] ?? "", env[tokenEnv] ?? "", version, fetchImpl);
         return { ...base, configured, missingEnvVars: missing, reachable: probe.reachable, error: probe.error };
       }
       case "instagram-graph": {
@@ -666,7 +723,7 @@ export async function buildIntegrationsData(
   const generatedAt = new Date(nowMs).toISOString();
 
   const integrations = await Promise.all(
-    INTEGRATIONS.map((def) => evaluateIntegration(def, rootDir, env, fetchImpl, generatedAt)),
+    effectiveIntegrations(rootDir).map((def) => evaluateIntegration(def, rootDir, env, fetchImpl, generatedAt)),
   );
 
   const data: IntegrationsSnapshot = { execMode, generatedAt, cached: false, integrations };

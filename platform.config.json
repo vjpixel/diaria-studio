@@ -282,7 +282,7 @@
             "note": "#10458/#10456: pagina #memeLab. Desligada ate o editor gerar o token de pagina (pages_manage_posts) e setar as 2 env vars; ligar = trocar enabled pra true. utm_content ausente = page-memelab (compoe com usemelhor no 4o post)."
           }
         ],
-        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Hoje so publish-facebook.ts (diaria do Stage 5) percorre a lista; weekly/retrospectiva/eia/verify/seguidores seguem na pagina default ate o follow-up da issue."
+        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal publica so na diaria (avisa se outra pagina estiver ligada)."
       },
       "twitter": {
         "enabled": true,

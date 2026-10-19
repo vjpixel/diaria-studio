@@ -2205,6 +2205,94 @@ describe("main(): dispatch mockado", () => {
       assert.match(fb.reason, /Facebook POST \/photos/);
       assert.equal(ig.status, "scheduled", "Facebook falhando não desfaz o Instagram já agendado");
     });
+
+    it("#10458: 2 páginas habilitadas — skip-existing é POR PÁGINA (diaria já agendada é pulada, memelab publica com o token/página dela e utm_content=page-memelab)", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: "Único", url: "https://exemplo.com/unico" }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      process.env.FACEBOOK_PAGE_ID = "999";
+      process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "fbtoken";
+      process.env.FACEBOOK_MEMELAB_PAGE_ID = "777";
+      process.env.FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN = "memetoken";
+      const facebookPagesConfig = {
+        publishing: {
+          social: {
+            facebook: {
+              pages: [
+                { slug: "diaria", enabled: true, page_id_env: "FACEBOOK_PAGE_ID", token_env: "FACEBOOK_PAGE_ACCESS_TOKEN", utm_content: null },
+                { slug: "memelab", enabled: true, page_id_env: "FACEBOOK_MEMELAB_PAGE_ID", token_env: "FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN" },
+              ],
+            },
+          },
+        },
+      };
+
+      // Re-run parcial: a diaria (entry SEM `page`, formato pré-#10458) já
+      // está agendada; Instagram/Threads/LinkedIn também — só a memelab falta.
+      const publishedDir = resolve(dataRoot, "weekly", saturdayStr);
+      mkdirSync(publishedDir, { recursive: true });
+      const pre = (platform: string, extra: Record<string, unknown> = {}) => ({
+        platform,
+        destaque: "weekly-clicked",
+        url: null,
+        status: "scheduled",
+        scheduled_at: "2027-12-26T11:00:00-03:00",
+        ...extra,
+      });
+      writeFileSync(
+        resolve(publishedDir, "06-weekly-published.json"),
+        JSON.stringify({
+          posts: [
+            pre("facebook", { fb_post_id: "999_old" }),
+            pre("instagram", { worker_queue_key: "k1" }),
+            pre("threads", { worker_queue_key: "k2" }),
+            pre("linkedin", { worker_queue_key: "k3" }),
+          ],
+        }),
+      );
+
+      const fbMock = mockAgent.get("https://graph.facebook.com");
+      let photoCalls = 0;
+      const authSeen: string[] = [];
+      fbMock
+        .intercept({ path: "/v25.0/777/photos", method: "POST" })
+        .reply((opts) => {
+          photoCalls++;
+          const body = opts.body as FormData;
+          authSeen.push(String(body.get("access_token")));
+          return { statusCode: 200, data: JSON.stringify({ id: `photo_${photoCalls}` }) };
+        })
+        .times(3);
+      let feedBody: FormData | null = null;
+      fbMock
+        .intercept({ path: "/v25.0/777/feed", method: "POST" })
+        .reply((opts) => {
+          feedBody = opts.body as FormData;
+          return { statusCode: 200, data: JSON.stringify({ id: "777_post1" }) };
+        });
+      // Nenhum interceptor pra /999/* — se a diaria fosse re-publicada,
+      // disableNetConnect() derrubaria o teste.
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig },
+      );
+
+      assert.equal(photoCalls, 3, "só a memelab publica (cover+news+cta)");
+      assert.deepEqual(authSeen, ["memetoken", "memetoken", "memetoken"], "token DA memelab, nunca o da diaria");
+      assert.ok(feedBody, "/777/feed chamado");
+      assert.match(String((feedBody as unknown as FormData).get("message")), /utm_content=page-memelab/);
+
+      const out = JSON.parse(readFileSync(resolve(publishedDir, "06-weekly-published.json"), "utf8"));
+      const fbs = out.posts.filter((p: any) => p.platform === "facebook");
+      assert.equal(fbs.length, 2, "uma entry por página — a da memelab não sobrescreve a da diaria");
+      const meme = fbs.find((p: any) => p.page === "memelab");
+      assert.equal(meme.status, "scheduled");
+      assert.equal(meme.url, "https://www.facebook.com/777/posts/777_post1");
+      const diaria = fbs.find((p: any) => p.page === undefined);
+      assert.equal(diaria.fb_post_id, "999_old", "entry da diaria intocada");
+    });
   });
 
   describe("#8052: LinkedIn — wiring real do dispatch (mecanismo já existia desde #8083)", () => {

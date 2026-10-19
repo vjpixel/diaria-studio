@@ -201,6 +201,15 @@ import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.t
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { DEFAULT_WEEKLY_CAROUSEL_TIME, readSocialRotation, weekendRotationSlot } from "./lib/social-schedule-rotation.ts";
 import { validateScheduledTime, publishFacebookCarouselByUrl } from "./publish-facebook.ts";
+import {
+  applyFacebookPageUtm,
+  enabledFacebookPages,
+  facebookPageLabel,
+  loadFacebookPagesConfig,
+  resolveFacebookPages,
+  resolvePostPage,
+  type ResolvedFacebookPage,
+} from "./lib/facebook-pages.ts"; // #10458 — carrossel semanal em cada página habilitada
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -615,6 +624,8 @@ export async function main(
     newsCardGenerator?: NewsCardGenerator;
     /** Relógio injetável (#10389) — checagem de slot vencido e `validateScheduledTime`. */
     now?: Date;
+    /** #10458 — config com `publishing.social.facebook.pages` (teste); default: `platform.config.json`. */
+    facebookPagesConfig?: unknown;
   } = {},
 ) {
   const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
@@ -801,6 +812,7 @@ async function runOneMode(
     flatCardGenerator?: FlatCardGenerator;
     newsCardGenerator?: NewsCardGenerator;
     now?: Date;
+    facebookPagesConfig?: unknown;
   },
 ): Promise<boolean> {
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
@@ -1184,8 +1196,15 @@ async function runOneMode(
   // LinkedIn) — um já publicado (re-run parcial após uma falha anterior) não
   // deveria impedir os outros de tentar.
   let skipInstagram = false;
-  let skipFacebook = false;
   let skipThreads = false;
+  // #10458: Facebook percorre as páginas HABILITADAS de
+  // publishing.social.facebook.pages (só env var, como antes — sem o
+  // fallback legado data/.fb-credentials.json). Skip-existing é POR PÁGINA
+  // (chave platform+page+destaque): a página já agendada é pulada, a outra
+  // ainda tenta. `skipFacebook` = nenhuma página pendente.
+  let fbPendingPages: ResolvedFacebookPage[] = enabledFacebookPages(
+    resolveFacebookPages(loadFacebookPagesConfig(opts.facebookPagesConfig ?? platformConfig), process.env),
+  );
   let skipLinkedIn = false;
   // #8385: --images-only nunca lê/escreve `06-weekly-published.json` (não
   // despacha, não tem status de canal pra pular) — skip-existing não se
@@ -1195,9 +1214,14 @@ async function runOneMode(
     const existingIg = published.posts.find(
       (p) => p.platform === "instagram" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
     );
-    const existingFb = published.posts.find(
-      (p) => p.platform === "facebook" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
-    );
+    const existingFbFor = (slug: string) =>
+      published.posts.find(
+        (p) =>
+          p.platform === "facebook" &&
+          p.destaque === destaqueKey &&
+          resolvePostPage(p) === slug &&
+          (p.status === "draft" || p.status === "scheduled"),
+      );
     const existingThreads = published.posts.find(
       (p) => p.platform === "threads" && p.destaque === destaqueKey && (p.status === "draft" || p.status === "scheduled"),
     );
@@ -1208,10 +1232,11 @@ async function runOneMode(
       console.log(`SKIP instagram/${destaqueKey} — already ${existingIg.status}`);
       skipInstagram = true;
     }
-    if (existingFb) {
-      console.log(`SKIP facebook/${destaqueKey} — already ${existingFb.status}`);
-      skipFacebook = true;
-    }
+    fbPendingPages = fbPendingPages.filter((pg) => {
+      const existingFb = existingFbFor(pg.slug);
+      if (existingFb) console.log(`SKIP ${facebookPageLabel(pg.slug, destaqueKey)} — already ${existingFb.status}`);
+      return !existingFb;
+    });
     if (existingThreads) {
       console.log(`SKIP threads/${destaqueKey} — already ${existingThreads.status}`);
       skipThreads = true;
@@ -1220,8 +1245,15 @@ async function runOneMode(
       console.log(`SKIP linkedin/${destaqueKey} — already ${existingLinkedIn.status}`);
       skipLinkedIn = true;
     }
-    if (skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
   }
+  const skipFacebook = fbPendingPages.length === 0;
+  // #10458: entrada de falha do Facebook = uma por página pendente.
+  const failFacebook = (fields: { scheduled_at: string | null; reason: string }): void => {
+    for (const pg of fbPendingPages) {
+      tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", ...fields });
+    }
+  };
+  if (skipExisting && !imagesOnly && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
 
   // #4101 self-review finding 10: valida scheduled_at ANTES de qualquer
   // chamada de rede — agendar pro passado falharia mais adiante no
@@ -1250,16 +1282,7 @@ async function runOneMode(
         reason: `scheduled_time_invalid: ${e.message}`,
       });
     }
-    if (!skipFacebook) {
-      tagAndAppend({
-        platform: "facebook",
-        destaque: destaqueKey,
-        url: null,
-        status: "failed",
-        scheduled_at: scheduledAt,
-        reason: `scheduled_time_invalid: ${e.message}`,
-      });
-    }
+    failFacebook({ scheduled_at: scheduledAt, reason: `scheduled_time_invalid: ${e.message}` });
     if (!skipThreads) {
       tagAndAppend({
         platform: "threads",
@@ -1345,7 +1368,7 @@ async function runOneMode(
     );
     if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     return true;
@@ -1397,7 +1420,7 @@ async function runOneMode(
     // caller ter sinal mecânico via exit code.
     if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     return true;
@@ -1430,7 +1453,7 @@ async function runOneMode(
     // #8385 fleet review P1: mesmo guard dos 2 blocos acima.
     if (imagesOnly) return false;
     if (!skipInstagram) tagAndAppend({ platform: "instagram", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
-    if (!skipFacebook) tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
+    failFacebook({ scheduled_at: null, reason });
     if (!skipThreads) tagAndAppend({ platform: "threads", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     if (!skipLinkedIn) tagAndAppend({ platform: "linkedin", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason });
     return true;
@@ -1572,31 +1595,36 @@ async function runOneMode(
   // `SCHEDULED-mas-falhou-ao-persistir` fatal separado — `tagAndAppend`
   // roda sempre dentro do MESMO try/catch (consistente com o padrão do
   // publisher diário, `publishPhoto`/`main()` em publish-facebook.ts).
-  if (!skipFacebook) {
-    const fbPageId = process.env.FACEBOOK_PAGE_ID || "";
-    const fbPageToken = process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "";
-    const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
-    if (!fbPageId || !fbPageToken) {
-      console.error(`ERRO facebook/${destaqueKey}: Facebook não configurado (FACEBOOK_PAGE_ID/FACEBOOK_PAGE_ACCESS_TOKEN).`);
-      tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "facebook_not_configured" });
-    } else {
-      try {
-        const result = await publishFacebookCarouselByUrl(fbPageId, fbPageToken, fbApiVersion, carouselImageUrls, fbCaption, scheduledAt);
-        const postId = result.post_id || result.id;
-        const postUrl = `https://www.facebook.com/${fbPageId}/posts/${postId}`;
-        console.log(`OK facebook/${destaqueKey} — scheduled at ${scheduledAt} — ${postUrl}`);
-        tagAndAppend({
-          platform: "facebook",
-          destaque: destaqueKey,
-          url: postUrl,
-          status: "scheduled",
-          scheduled_at: scheduledAt,
-          fb_post_id: postId,
-        });
-      } catch (e: any) {
-        console.error(`FAILED facebook/${destaqueKey}: ${e.message}`);
-        tagAndAppend({ platform: "facebook", destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
-      }
+  //
+  // #10458: uma publicação por página pendente (habilitada e ainda não
+  // agendada). Página sem credencial falha SÓ ela (`facebook_not_configured`);
+  // a tag `utm_content` da página entra nos links do projeto (a `diaria` vem
+  // com `utm_content: null` no config — caption idêntica à de antes).
+  const fbApiVersion = process.env.FACEBOOK_API_VERSION || "v25.0";
+  for (const pg of fbPendingPages) {
+    const label = facebookPageLabel(pg.slug, destaqueKey);
+    if (pg.missing.length > 0) {
+      console.error(`ERRO ${label}: Facebook não configurado (${pg.missing.join("/")}).`);
+      tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: "facebook_not_configured" });
+      continue;
+    }
+    try {
+      const result = await publishFacebookCarouselByUrl(pg.pageId, pg.token, fbApiVersion, carouselImageUrls, applyFacebookPageUtm(fbCaption, pg), scheduledAt);
+      const postId = result.post_id || result.id;
+      const postUrl = `https://www.facebook.com/${pg.pageId}/posts/${postId}`;
+      console.log(`OK ${label} — scheduled at ${scheduledAt} — ${postUrl}`);
+      tagAndAppend({
+        platform: "facebook",
+        page: pg.slug,
+        destaque: destaqueKey,
+        url: postUrl,
+        status: "scheduled",
+        scheduled_at: scheduledAt,
+        fb_post_id: postId,
+      });
+    } catch (e: any) {
+      console.error(`FAILED ${label}: ${e.message}`);
+      tagAndAppend({ platform: "facebook", page: pg.slug, destaque: destaqueKey, url: null, status: "failed", scheduled_at: null, reason: e.message });
     }
   }
 
