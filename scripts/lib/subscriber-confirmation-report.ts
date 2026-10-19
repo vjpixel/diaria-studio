@@ -40,6 +40,32 @@
  * 30d já maturou; senão, coortes recentes só contribuiriam com confirmações
  * rápidas e enviesariam a distribuição pra baixo.
  *
+ * ## Canal pago e métrica primária (#8548, decisão do editor 19/10/2026)
+ *
+ * `por_canal_pago` agrupa pelo `utm_source` do cadastro no Kit, reduzido a
+ * `google-ads` / `meta-ads` / `microsoft-ads` (as chaves EXATAS que os
+ * anúncios do teste 2608 escrevem na URL, `CHANNEL_KEY_SPECS`) e `orgânico`
+ * (qualquer outro valor, ou `utm_source` comprovadamente vazio). Não confundir
+ * com `por_canal`, que é `origem_cadastro` (MECANISMO de cadastro:
+ * kit-nativo/beehiiv-sync), não canal de aquisição.
+ *
+ * Fonte do `utm_source`, em ordem: (1) o PRIMEIRO valor não vazio gravado nos
+ * snapshots (`SubscriberStateRecord.utm_source`, só existe a partir do
+ * #8548 — o reativar pode sobrescrever o campo depois, #8235, por isso o
+ * primeiro e não o último); (2) o store de assinantes
+ * (`opts.utmSourceByKitId`, `subscription.utm_source` do Kit, que já protege
+ * a origem contra a sobrescrita do reativar). Id sem nenhuma das duas fontes
+ * vai para `CANAL_PAGO_UNKNOWN_LABEL` — nunca para `orgânico`, que inflaria
+ * o orgânico com cadastros de anúncio sem dado.
+ *
+ * Métrica primária = TEMPO ATÉ CONFIRMAR em coorte FECHADA de 7d+
+ * (`tempo_ate_confirmar_7d`): membros cuja coorte já tem 7 dias de snapshot
+ * (`addDays(D, 7) <= as_of`) e, entre eles, os que confirmaram ATÉ D+7 —
+ * horizonte uniforme de 7 dias pra todos, senão coortes mais velhas
+ * contribuiriam com confirmações mais tardias que as novas e a mediana
+ * misturaria horizontes. Quem confirma depois do dia 7 aparece no
+ * `tempo_ate_confirmar` (30d) já existente, não aqui.
+ *
  * ## Limites de resolução (honestos, não escondidos)
  *
  * - Granularidade DIÁRIA: o instante real da confirmação só é conhecido como
@@ -60,6 +86,7 @@
  */
 
 import type { SubscriberStateRecord } from "./subscriber-state-snapshot.ts";
+import { normalizeKey } from "./shared/attribution-keys.ts";
 
 export const CONFIRMATION_WINDOWS = [
   { key: "1h", days: null },
@@ -90,6 +117,25 @@ export const CONFIRMOU_VIA_LABELS: Record<string, string> = {
 export const CONFIRMOU_VIA_NONE_LABEL = "Kit (DOI, sem confirmou_via)";
 export const CANAL_UNKNOWN_LABEL = "(sem origem_cadastro)";
 
+/** `utm_source` dos canais pagos medidos (#8548) — as chaves exatas das specs
+ *  "teste 2608" de `CHANNEL_KEY_SPECS` (drift travado por teste). */
+export const PAID_UTM_SOURCES = ["google-ads", "meta-ads", "microsoft-ads"] as const;
+export const CANAL_PAGO_ORGANICO_LABEL = "orgânico";
+export const CANAL_PAGO_UNKNOWN_LABEL = "(utm_source desconhecido)";
+/** Horizonte da coorte fechada da métrica primária (#8548). */
+export const CLOSED_COHORT_DAYS = 7;
+
+/**
+ * Reduz um `utm_source` ao canal pago. `known === false` (nenhuma fonte tem
+ * dado do id) → desconhecido; `known` com valor vazio/não pago → orgânico.
+ * @pure
+ */
+export function classifyCanalPago(utmSource: string | null | undefined, known: boolean): string {
+  if (!known) return CANAL_PAGO_UNKNOWN_LABEL;
+  const k = normalizeKey(utmSource);
+  return (PAID_UTM_SOURCES as readonly string[]).includes(k) ? k : CANAL_PAGO_ORGANICO_LABEL;
+}
+
 export interface WindowStats {
   resolvivel: boolean;
   /** Presente quando `resolvivel === false`. */
@@ -111,6 +157,20 @@ export interface TimeToConfirmStats {
   p90_dias: number | null;
 }
 
+/** Métrica primária do #8548: tempo até confirmar em coorte fechada de 7d+. */
+export interface ClosedCohortTimeStats {
+  horizonte_dias: number;
+  /** Membros com coorte fechada (>= `horizonte_dias` de snapshot). */
+  base_coorte_fechada: number;
+  /** Desses, os que confirmaram até D + `horizonte_dias`. */
+  confirmados: number;
+  /** `confirmados / base_coorte_fechada`; `null` com base 0. */
+  taxa: number | null;
+  /** Percentis do tempo até confirmar ENTRE os confirmados (dias). */
+  p50_dias: number | null;
+  p90_dias: number | null;
+}
+
 export interface GroupStats {
   /** Tamanho da coorte (inactive no nascimento). */
   n: number;
@@ -119,6 +179,8 @@ export interface GroupStats {
   ambiguos_active: number;
   janelas: Record<ConfirmationWindowKey, WindowStats>;
   tempo_ate_confirmar: TimeToConfirmStats;
+  /** #8548 — métrica primária (coorte fechada de 7d+). */
+  tempo_ate_confirmar_7d: ClosedCohortTimeStats;
 }
 
 /** Grupo por `confirmou_via`: SEM taxa (ver docstring do topo). */
@@ -148,6 +210,10 @@ export interface ConfirmationReport {
   total: GroupStats;
   por_coorte: Record<string, GroupStats>;
   por_canal: Record<string, GroupStats>;
+  /** #8548 — por canal pago (`utm_source` do Kit). */
+  por_canal_pago: Record<string, GroupStats>;
+  /** #8548 — de onde veio o `utm_source` de cada membro/ambíguo active. */
+  utm_cobertura: { snapshot: number; store: number; desconhecido: number };
   por_confirmou_via: Record<string, ViaStats>;
   avisos: string[];
 }
@@ -157,6 +223,10 @@ export interface ConfirmationReportOptions {
   since?: string;
   /** Só coortes com data <= until. */
   until?: string;
+  /** #8548 — `utm_source` por id de assinante Kit, vindo do store
+   *  (`subscription.utm_source`). Id presente com `null` = sem UTM conhecido
+   *  (orgânico); id ausente = sem dado. */
+  utmSourceByKitId?: ReadonlyMap<number, string | null>;
 }
 
 /** Dia BRT (AAAA-MM-DD) de um instante ISO; `null` se inválido. */
@@ -184,6 +254,7 @@ interface Member {
   /** Dias entre a coorte e o 1º snapshot `active`; `null` = nunca confirmou. */
   daysToConfirm: number | null;
   canal: string;
+  canalPago: string;
   via: string;
 }
 
@@ -214,6 +285,23 @@ function timeToConfirm(members: readonly Member[], asOf: string): TimeToConfirmS
   };
 }
 
+function closedCohortTime(members: readonly Member[], asOf: string): ClosedCohortTimeStats {
+  const h = CLOSED_COHORT_DAYS;
+  const fechados = members.filter((m) => addDays(m.cohortDay, h) <= asOf);
+  const days = fechados
+    .map((m) => m.daysToConfirm)
+    .filter((d): d is number => d !== null && d <= h)
+    .sort((a, b) => a - b);
+  return {
+    horizonte_dias: h,
+    base_coorte_fechada: fechados.length,
+    confirmados: days.length,
+    taxa: fechados.length > 0 ? days.length / fechados.length : null,
+    p50_dias: percentile(days, 0.5),
+    p90_dias: percentile(days, 0.9),
+  };
+}
+
 function computeGroupStats(members: readonly Member[], asOf: string, ambiguosActive = 0): GroupStats {
   const janelas = {} as Record<ConfirmationWindowKey, WindowStats>;
   for (const w of CONFIRMATION_WINDOWS) {
@@ -230,7 +318,13 @@ function computeGroupStats(members: readonly Member[], asOf: string, ambiguosAct
     }
     janelas[w.key] = { resolvivel: true, maduros, confirmados, taxa: maduros > 0 ? confirmados / maduros : null };
   }
-  return { n: members.length, ambiguos_active: ambiguosActive, janelas, tempo_ate_confirmar: timeToConfirm(members, asOf) };
+  return {
+    n: members.length,
+    ambiguos_active: ambiguosActive,
+    janelas,
+    tempo_ate_confirmar: timeToConfirm(members, asOf),
+    tempo_ate_confirmar_7d: closedCohortTime(members, asOf),
+  };
 }
 
 function groupBy(members: readonly Member[], keyOf: (m: Member) => string): Map<string, Member[]> {
@@ -277,6 +371,9 @@ interface Track {
   firstActiveDate: string | null;
   origem: string | null;
   via: string | null;
+  /** PRIMEIRO `utm_source` não vazio visto (#8548 — o reativar sobrescreve
+   *  depois, #8235). */
+  utm: string | null;
 }
 
 /**
@@ -301,6 +398,8 @@ export function buildConfirmationReport(
       total: computeGroupStats([], "0000-00-00"),
       por_coorte: {},
       por_canal: {},
+      por_canal_pago: {},
+      utm_cobertura: { snapshot: 0, store: 0, desconhecido: 0 },
       por_confirmou_via: {},
       avisos,
     };
@@ -316,12 +415,21 @@ export function buildConfirmationReport(
       let t = tracks.get(r.id);
       const isFirst = !t;
       if (!t) {
-        t = { created_at: r.created_at, firstDate: date, firstState: r.state, firstActiveDate: null, origem: null, via: null };
+        t = {
+          created_at: r.created_at,
+          firstDate: date,
+          firstState: r.state,
+          firstActiveDate: null,
+          origem: null,
+          via: null,
+          utm: null,
+        };
         tracks.set(r.id, t);
       }
       if (!isFirst && r.state === "active" && t.firstActiveDate === null) t.firstActiveDate = date;
       if (r.origem) t.origem = r.origem;
       if (r.confirmou_via) t.via = r.confirmou_via;
+      if (r.utm_source && t.utm === null) t.utm = r.utm_source;
     }
   }
 
@@ -329,7 +437,20 @@ export function buildConfirmationReport(
   let foraDeEscopo = 0;
   let invalido = 0;
   const members: Member[] = [];
-  const ambActive: Array<{ dia: string; canal: string }> = [];
+  const ambActive: Array<{ dia: string; canal: string; canalPago: string }> = [];
+  const utmCobertura = { snapshot: 0, store: 0, desconhecido: 0 };
+  const resolveCanalPago = (id: number, t: Track): string => {
+    if (t.utm !== null) {
+      utmCobertura.snapshot++;
+      return classifyCanalPago(t.utm, true);
+    }
+    if (opts.utmSourceByKitId?.has(id)) {
+      utmCobertura.store++;
+      return classifyCanalPago(opts.utmSourceByKitId.get(id), true);
+    }
+    utmCobertura.desconhecido++;
+    return classifyCanalPago(null, false);
+  };
   for (const [id, t] of tracks) {
     const cohortDay = brtDay(t.created_at);
     if (!cohortDay) {
@@ -348,7 +469,7 @@ export function buildConfirmationReport(
       continue;
     }
     if (t.firstState === "active") {
-      ambActive.push({ dia: cohortDay, canal: t.origem ?? CANAL_UNKNOWN_LABEL });
+      ambActive.push({ dia: cohortDay, canal: t.origem ?? CANAL_UNKNOWN_LABEL, canalPago: resolveCanalPago(id, t) });
       continue;
     }
     if (t.firstState !== "inactive") {
@@ -360,6 +481,7 @@ export function buildConfirmationReport(
       cohortDay,
       daysToConfirm: t.firstActiveDate ? diffDays(cohortDay, t.firstActiveDate) : null,
       canal: t.origem ?? CANAL_UNKNOWN_LABEL,
+      canalPago: resolveCanalPago(id, t),
       via: t.via ? (CONFIRMOU_VIA_LABELS[t.via] ?? t.via) : CONFIRMOU_VIA_NONE_LABEL,
     });
   }
@@ -372,6 +494,11 @@ export function buildConfirmationReport(
   if (ambiguosOutros > 0) {
     avisos.push(
       `${ambiguosOutros} assinante(s) já aparecem em estado não-active/não-inactive (bounced/cancelled/complained…) no 1º snapshot — fora das taxas, sem leitura de single opt-in`,
+    );
+  }
+  if (utmCobertura.desconhecido > 0) {
+    avisos.push(
+      `${utmCobertura.desconhecido} assinante(s) sem utm_source em nenhuma fonte (snapshot anterior ao #8548 e fora do store) — agrupados em "${CANAL_PAGO_UNKNOWN_LABEL}", nunca contados como orgânico`,
     );
   }
   if (invalido > 0) avisos.push(`${invalido} assinante(s) com created_at inválido/ausente ignorados`);
@@ -389,6 +516,12 @@ export function buildConfirmationReport(
     total: computeGroupStats(members, asOf, ambActive.length),
     por_coorte: statsMap(groupBy(members, (m) => m.cohortDay), asOf, countBy(ambActive.map((a) => ({ key: a.dia })))),
     por_canal: statsMap(groupBy(members, (m) => m.canal), asOf, countBy(ambActive.map((a) => ({ key: a.canal })))),
+    por_canal_pago: statsMap(
+      groupBy(members, (m) => m.canalPago),
+      asOf,
+      countBy(ambActive.map((a) => ({ key: a.canalPago }))),
+    ),
+    utm_cobertura: utmCobertura,
     por_confirmou_via: viaStatsMap(groupBy(members, (m) => m.via), asOf),
     avisos,
   };
@@ -411,6 +544,22 @@ function renderGroupLine(label: string, g: GroupStats): string {
   );
 }
 
+function fmtClosedRate(c: ClosedCohortTimeStats): string {
+  if (c.taxa === null) return "—";
+  return `${(c.taxa * 100).toFixed(1)}% (${c.confirmados}/${c.base_coorte_fechada})`;
+}
+
+/** Linha do canal pago: métrica primária (tempo até confirmar, coorte
+ *  fechada 7d+) primeiro, depois as janelas e o tempo 30d. */
+function renderCanalPagoLine(label: string, g: GroupStats): string {
+  const c = g.tempo_ate_confirmar_7d;
+  return (
+    `${label.padEnd(26)} coorte fechada ${c.horizonte_dias}d+: p50=${c.p50_dias ?? "—"}d p90=${c.p90_dias ?? "—"}d ` +
+    `confirmou até ${c.horizonte_dias}d ${fmtClosedRate(c).padEnd(16)} || ` +
+    renderGroupLine("", g).trimStart()
+  );
+}
+
 function renderViaLine(label: string, g: ViaStats): string {
   const t = g.tempo_ate_confirmar;
   const dist = TIME_TO_CONFIRM_BUCKETS.map((b) => `${b.key}:${t.buckets[b.key]}`).join(" ");
@@ -428,6 +577,13 @@ export function renderConfirmationReportText(report: ConfirmationReport): string
   lines.push("");
   lines.push("TOTAL");
   lines.push(renderGroupLine("todos", report.total));
+  lines.push("");
+  lines.push(
+    `POR CANAL PAGO (utm_source, #8548) — métrica primária: tempo até confirmar, coorte fechada ${CLOSED_COHORT_DAYS}d+ ` +
+      `(utm_source: snapshot=${report.utm_cobertura.snapshot} store=${report.utm_cobertura.store} desconhecido=${report.utm_cobertura.desconhecido})`,
+  );
+  for (const [k, g] of Object.entries(report.por_canal_pago)) lines.push(renderCanalPagoLine(k, g));
+  if (Object.keys(report.por_canal_pago).length === 0) lines.push("(vazio)");
   const sections: Array<[string, Record<string, GroupStats>]> = [
     ["POR CANAL (origem_cadastro)", report.por_canal],
     ["POR COORTE DE CADASTRO (dia BRT)", report.por_coorte],
