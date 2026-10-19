@@ -470,7 +470,13 @@ _COVERED_BY = re.compile(
 # dentro de "deliberad_"/"deliberou" (sem fronteira de palavra entre "de"
 # e "liberad_"/"liberou"), mas continua casando "Claim liberada"/"liberou
 # a claim" normalmente (fronteira real antes de "liberad_"/"liberou").
-_RELEASE_SIGNAL = re.compile(r"\bliberad|\bliberou", re.IGNORECASE)
+#
+# #10563: 1ª pessoa ("Confirmei e liberei a claim", relatório real do tick
+# 16:14 UTC de 19/10/2026) não casava — o detector só não acusou o #10557
+# porque o evento 'ended' trazia `claimed_issues_ever`. Sem esse histórico
+# (relatório antigo, evento sem o campo), a mesma linha viraria
+# `fabrication_suspected`. `\bliberei` segue a mesma regra de fronteira.
+_RELEASE_SIGNAL = re.compile(r"\bliberad|\bliberou|\bliberei", re.IGNORECASE)
 
 # #8521 (20/09/2026): "não foram reivindicadas"/"nunca foi reivindicada"
 # casava como claim POSITIVO porque `_CLAIM_KEYWORDS` só procura a palavra
@@ -534,6 +540,18 @@ _NEGATION_WINDOW = 30
 _ANTES_CLAIM_MARKER = re.compile(r"\bantes d[oa]\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 _ANTES_CLAIM_WINDOW = 20
 
+# #10563: relatório real do tick 16:14 UTC de 19/10/2026 — "#10560
+# permanece sem claim por rejeição do gate de coerência." — "sem claim" é
+# AUSÊNCIA de claim, mas `_NEGATION_MARKER` não cobria "sem" e o #10560
+# virou `fabrication_suspected`. "sem" é preposição comum demais pra entrar
+# na janela genérica de 30 chars ("sem conflito, reivindiquei #N" é claim
+# real), então só nega quando está COLADO ao keyword, com no máximo 1
+# palavra no meio ("sem claim", "sem o claim", "sem reivindicação") — mesmo
+# desenho estreito do `_ANTES_CLAIM_MARKER`, mas valendo pra qualquer
+# keyword (o substantivo "reivindicação" também cabe aqui).
+_SEM_CLAIM_MARKER = re.compile(r"\bsem\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
+_SEM_CLAIM_WINDOW = 20
+
 
 def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: str) -> bool:
     """True quando um marcador de negação ('não'/'nunca'/'nenhum(a)') aparece
@@ -549,10 +567,17 @@ def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: st
     NÃO aconteceu, não uma declaração de claim (#8863). Restrito ao keyword
     "claim" e a uma janela curta para não apagar claims genuínos atrás de
     um "antes de" comum de português técnico em outra parte da cláusula
-    (achado 1 da revisão da PR #8864)."""
+    (achado 1 da revisão da PR #8864).
+
+    E (qualquer keyword): nega quando "sem" está colado ao keyword, com no
+    máximo 1 palavra no meio (`_SEM_CLAIM_MARKER`) — "permanece sem claim"
+    é ausência de claim (#10563)."""
     window_start = max(0, keyword_start - _NEGATION_WINDOW)
     window = segment[window_start:keyword_start]
     if _NEGATION_MARKER.search(window):
+        return True
+    sem_start = max(0, keyword_start - _SEM_CLAIM_WINDOW)
+    if _SEM_CLAIM_MARKER.search(segment[sem_start:keyword_start]):
         return True
     if keyword_text.lower() == "claim":
         antes_start = max(0, keyword_start - _ANTES_CLAIM_WINDOW)
