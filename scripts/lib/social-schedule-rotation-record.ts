@@ -78,13 +78,21 @@ export interface DailyRotationRecordOptions {
    * medição tratar post inexistente como dado. Outro publicador que agendou o
    * `um` no mesmo dia grava a linha depois (o registro é por dia, não por
    * canal). `undefined` = desconhecido, mantém a linha. A CLI `--record` não
-   * passa por aqui: ela filtra a linha `um` por `06-social-published.json`
+   * passa por aqui: ela filtra `um`/`d3` por `_internal/06-social-published.json`
    * (`filterUseMelhorRowsByPublished`). Ressalva (review #10432 finding 2):
    * o valor vem só dos `results` do run atual — publicador que pule um `um`
    * já agendado sem empurrá-lo pra `results` passa `false` na re-rodada; não
    * apaga nada (append-only), só não grava se a 1ª gravação fosse essa.
    */
   useMelhorScheduled?: boolean;
+  /**
+   * O post `d3` foi agendado por ESTE publicador (#10541). `false` tira a
+   * linha `…|weekday|d3`: edição de 2 destaques (o editor rebaixou o D3 pro
+   * Radar, #2316) não tem post d3, e gravar a célula faria `weekdayCoverage`
+   * contar como coberto um horário × d3 que nunca recebeu post — mesma classe
+   * do `um` acima, com a mesma ressalva de re-rodada. `undefined` = mantém.
+   */
+  d3Scheduled?: boolean;
   /** `--day-offset` do publicador — mesma data de `computeScheduledAt`. */
   dayOffsetOverride?: number;
 }
@@ -94,7 +102,37 @@ export interface DailyRotationRecordOptions {
  * entradas que o publicador acumulou. `failed`/`draft`/`skipped` não contam.
  */
 export function useMelhorScheduledIn(posts: ReadonlyArray<{ destaque: string; status: string }>): boolean {
-  return posts.some((p) => p.destaque === "um" && (p.status === "scheduled" || p.status === "published"));
+  return destaqueScheduledIn(posts, "um");
+}
+
+/** Pure (#10541): generalização de `useMelhorScheduledIn` pra qualquer post (`d3`, …). */
+export function destaqueScheduledIn(posts: ReadonlyArray<{ destaque: string; status: string }>, destaque: string): boolean {
+  return posts.some((p) => p.destaque === destaque && (p.status === "scheduled" || p.status === "published"));
+}
+
+/**
+ * Caminhos de `06-social-published.json` de uma edição, na ordem de leitura
+ * (#10540): os 5 publicadores gravam em `_internal/`; a raiz é legado. Mesma
+ * ordem de `readUseMelhorScheduledAt` (`resolve-post-pixel.ts`).
+ */
+export function socialPublishedCandidates(editionDirAbs: string): string[] {
+  return [resolve(editionDirAbs, "_internal", "06-social-published.json"), resolve(editionDirAbs, "06-social-published.json")];
+}
+
+/**
+ * Lê os posts do 1º `06-social-published.json` existente da edição
+ * (`_internal/` antes da raiz, #10540). `null` = nenhum dos dois existe, ou o
+ * 1º existente está malformado (não cai pro legado: um `_internal/` truncado
+ * por escrita concorrente é o estado atual, não um arquivo ausente).
+ */
+export function readEditionPublishedPosts(
+  editionDirAbs: string,
+  warn: (msg: string) => void = (m) => console.error(m),
+): ReadonlyArray<{ destaque: string; status: string }> | null {
+  for (const p of socialPublishedCandidates(editionDirAbs)) {
+    if (existsSync(p)) return readPublishedPosts(p, warn);
+  }
+  return null;
 }
 
 /**
@@ -131,12 +169,12 @@ export function readPublishedPosts(
 
 /**
  * Pure (#10438 item 1): mensagem da CLI `--record`. "Já gravada(s)" conta só
- * as linhas que PASSARAM no filtro do `um` (`candidates`) — a linha `um`
+ * as linhas que PASSARAM no filtro do `um`/`d3` (`candidates`) — a linha
  * descartada não foi gravada nem estava gravada; sai em contagem própria.
  */
 export function formatRecordSummary(logPath: string, written: number, candidates: number, filteredOut: number): string {
   const base = `[social-schedule-rotation] ${written} linha(s) nova(s) em ${logPath} (${candidates - written} já gravada(s)`;
-  return filteredOut > 0 ? `${base}, ${filteredOut} não gravada(s) — um sem post agendado).` : `${base}).`;
+  return filteredOut > 0 ? `${base}, ${filteredOut} não gravada(s) — um/d3 sem post agendado).` : `${base}).`;
 }
 
 /**
@@ -144,10 +182,13 @@ export function formatRecordSummary(logPath: string, written: number, candidates
  * fica quando `06-social-published.json` da edição do dia mostra o post `um`
  * agendado/publicado (`useMelhorScheduledIn`). Arquivo ausente = não dá pra
  * saber → a linha NÃO é gravada e `warn` recebe o motivo (rodar de novo
- * depois do Stage 5 grava, o registro é idempotente). Demais linhas passam
- * intactas. `readPublished(edition)` devolve os posts, ou `null` se o arquivo
- * não existe — injetável pra teste; o default lê `editionDir(edition)` sob
- * `rootDir`.
+ * depois do Stage 5 grava, o registro é idempotente). A linha `d3` (#10541)
+ * sai quando o arquivo existe e não tem o post `d3` agendado (edição de 2
+ * destaques); arquivo ausente mantém a `d3` — 3 destaques é o padrão. Demais
+ * linhas passam intactas. `readPublished(edition)` devolve os posts, ou
+ * `null` se o arquivo não existe — injetável pra teste; o default lê
+ * `_internal/06-social-published.json` (onde os publicadores gravam) e cai
+ * pra raiz legada (#10540), sob `editionDir(edition)` em `rootDir`.
  */
 export function filterUseMelhorRowsByPublished(
   rows: RotationPlanRow[],
@@ -155,19 +196,23 @@ export function filterUseMelhorRowsByPublished(
   rootDir: string,
   warn: (msg: string) => void = (m) => console.error(m),
   readPublished: (edition: string) => ReadonlyArray<{ destaque: string; status: string }> | null = (edition) =>
-    readPublishedPosts(resolve(rootDir, editionDir(edition), "06-social-published.json"), warn),
+    readEditionPublishedPosts(resolve(rootDir, editionDir(edition)), warn),
 ): RotationPlanRow[] {
+  // Uma leitura por edição: `um` e `d3` do mesmo dia consultam o mesmo arquivo.
+  const cache = new Map<string, ReturnType<typeof readPublished>>();
   return rows.filter((r) => {
-    if (!(r.kind === "weekday" && r.type === "um")) return true;
+    if (!(r.kind === "weekday" && (r.type === "um" || r.type === "d3"))) return true;
     const edition = editionForPublishDate(r.date, social);
-    const posts = readPublished(edition);
+    if (!cache.has(edition)) cache.set(edition, readPublished(edition));
+    const posts = cache.get(edition) ?? null;
     if (posts === null) {
+      if (r.type === "d3") return true;
       warn(
-        `[rotação #10427] WARN: ${editionDir(edition)}/06-social-published.json ausente ou ilegível — linha um de ${r.date} NÃO gravada (rode --record de novo depois do Stage 5).`,
+        `[rotação #10427] WARN: ${editionDir(edition)}/_internal/06-social-published.json ausente ou ilegível — linha um de ${r.date} NÃO gravada (rode --record de novo depois do Stage 5).`,
       );
       return false;
     }
-    return useMelhorScheduledIn(posts);
+    return destaqueScheduledIn(posts, r.type);
   });
 }
 
@@ -188,7 +233,8 @@ export function dailyRotationRowsForEdition(
     (r) =>
       r.kind === "weekday" &&
       r.source === "rotation" &&
-      !(r.type === "um" && opts.useMelhorScheduled === false),
+      !(r.type === "um" && opts.useMelhorScheduled === false) &&
+      !(r.type === "d3" && opts.d3Scheduled === false),
   );
 }
 

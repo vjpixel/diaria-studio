@@ -39,7 +39,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
-import { recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305
+import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import {
   DEFAULT_FACEBOOK_PAGE_SLUG,
@@ -1157,7 +1157,7 @@ async function main(): Promise<number | void> {
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.
   // #10427: `um` só entra no registro se este publicador o agendou.
-  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), dayOffsetOverride });
+  if (doSchedule) recordDailyRotationFailSoft(ROOT, editionDate, { useMelhorScheduled: useMelhorScheduledIn(results), d3Scheduled: destaqueScheduledIn(results, "d3"), dayOffsetOverride });
   console.log(
     JSON.stringify(
       { out_path: publishedPath, summary, posts: results, use_melhor: useMelhorSummary, pages: pageSummary(pagePlan, results) },
