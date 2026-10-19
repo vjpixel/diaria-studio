@@ -425,8 +425,14 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   );
   for (const key of ordered) {
     const { channel, historia } = splitPostKey(key);
-    if (channel === "facebook" && fbPages.length === 0 && !o.disabled.facebook) {
-      results.push({ key, channel, historia, action: "skipped", reason: "nenhuma página Facebook habilitada em publishing.social.facebook.pages (#10458)" });
+    // Zero páginas = zero unidades: sem este `skipped` o Facebook sumiria do
+    // resumo sem motivo. Vale também quando o `main()` já setou
+    // `disabled.facebook` por falta de página habilitada (#10503 item 1).
+    if (channel === "facebook" && fbPages.length === 0) {
+      const reason = o.disabled.facebook
+        ? `desligado no platform.config.json: ${o.disabled.facebook}`
+        : "nenhuma página Facebook habilitada em publishing.social.facebook.pages (#10458)";
+      results.push({ key, channel, historia, action: "skipped", reason });
       continue;
     }
     for (const u of dispatchUnitsFor(key, fbPages)) {
@@ -617,6 +623,9 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
       const { channel, historia } = u;
       const base = baseOf(u);
       if (channel === "x") results.push({ ...base, channel: "x", action: "x-payload", payload: xPayload(historia) });
+      // #10503 item 2: o dry-run devolve o mesmo `failed` que o envio real
+      // daria pra página sem credencial — antes mostrava a página como ok.
+      else if (u.page?.missing) results.push({ ...base, action: "failed", reason: `(dry-run) página Facebook ${u.page.slug}: ${u.page.missing}` });
       else
         results.push({
           ...base,

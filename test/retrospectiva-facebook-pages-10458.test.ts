@@ -42,7 +42,7 @@ import {
   type RunRetrospectivaSocialOptions,
   type SocialDispatchInput,
 } from "../scripts/publish-retrospectiva-social.ts";
-import { runMarkRetrospectivaChannel } from "../scripts/mark-retrospectiva-channel.ts";
+import { runMarkRetrospectivaChannel, unknownFacebookPageInChannel } from "../scripts/mark-retrospectiva-channel.ts";
 import { readSocialPublished } from "../scripts/lib/social-published-store.ts";
 
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
@@ -306,5 +306,33 @@ describe("#10458 — dispatch da Retrospectiva em cada página habilitada", () =
     assert.deepEqual(r.results.map((x) => `${x.page}:${x.action}`), ["diaria:dry-run", "memelab:dry-run"]);
     const mem = r.results.find((x) => x.page === "memelab");
     assert.ok(mem?.action === "dry-run" && mem.text.includes("utm_content=page-memelab"));
+  });
+});
+
+describe("#10503 — achados do review do multi-página", () => {
+  it("item 1: zero páginas + disabled.facebook (o que o main() seta) ainda emite skipped com motivo por post", async () => {
+    const { o, calls } = opts({ facebookPages: [], disabled: { facebook: "nenhuma página habilitada em publishing.social.facebook.pages (#10458)" } });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(r.results.map((x) => x.key), FB_ALL, "o Facebook não some do resumo");
+    assert.ok(r.results.every((x) => x.action === "skipped" && /desligado no platform\.config\.json: nenhuma página habilitada/.test(x.reason)));
+  });
+
+  it("item 2: dry-run com página sem credencial devolve failed (como o envio real), não dry-run ok", async () => {
+    const pages: RetrospectivaFacebookPage[] = [TWO_PAGES[0], { ...TWO_PAGES[1], missing: "FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN ausentes" }];
+    const { o, calls } = opts({ dryRun: true, posts: ["facebook:d1"], facebookPages: pages });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(r.results.map((x) => `${x.page}:${x.action}`), ["diaria:dry-run", "memelab:failed"]);
+    const mem = r.results.find((x) => x.page === "memelab");
+    assert.ok(mem?.action === "failed" && /\(dry-run\).*MEMELAB/.test(mem.reason));
+    assert.equal(state()["facebook@memelab:d1"], undefined, "dry-run não grava state");
+  });
+
+  it("item 3: mark-retrospectiva-channel recusa página fora do config", () => {
+    assert.equal(unknownFacebookPageInChannel("facebook@memlab:d1", ["diaria", "memelab"]), "memlab");
+    assert.equal(unknownFacebookPageInChannel("facebook@memelab:d1", ["diaria", "memelab"]), null);
+    assert.equal(unknownFacebookPageInChannel("facebook:d1", ["diaria"]), null);
+    assert.equal(unknownFacebookPageInChannel("apoiase", ["diaria"]), null);
   });
 });
