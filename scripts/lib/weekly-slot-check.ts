@@ -78,8 +78,15 @@ export function formatSlotAdvice(opts: {
   now: Date;
   /** Offset de dias em uso pelo modo (default do modo ou `--day-offset`). */
   dayOffset: number;
+  /**
+   * #10541: horário que `--day-offset N+1` SEM `--time` produziria
+   * (`resolveWeeklyTime` recalcula pro dia novo — durante o teste rotativo
+   * #10305 é o slot da rotação desse dia, não o horário atual). Omitido =
+   * desconhecido: mantém o conselho antigo, sem `--time`.
+   */
+  nextDay?: { time: string; fromRotation: boolean };
 }): string[] {
-  const { mode, saturday, check, now, dayOffset } = opts;
+  const { mode, saturday, check, now, dayOffset, nextDay } = opts;
   if (check.status === "ok") return [];
   const what =
     check.status === "expired"
@@ -89,7 +96,20 @@ export function formatSlotAdvice(opts: {
   const lines = [`AVISO: o slot do modo ${mode} (${check.scheduledAt}) ${what} — agendar assim aborta.`, "Opções:"];
   const sameDay = suggestSameDayTime(check.scheduledAt, now);
   if (sameDay) lines.push(`  - outro horário no mesmo dia: ${base} --time ${sameDay}`);
-  lines.push(`  - dia seguinte, mesmo horário: ${base} --day-offset ${dayOffset + 1}`);
+  const slotTime = /T(\d{2}:\d{2})/.exec(check.scheduledAt)?.[1] ?? null;
+  if (!nextDay || !slotTime || nextDay.time === slotTime) {
+    lines.push(`  - dia seguinte, mesmo horário: ${base} --day-offset ${dayOffset + 1}`);
+  } else {
+    // #10541: sem `--time` o dia seguinte NÃO mantém o horário — o conselho
+    // antigo ("mesmo horário") levava o carrossel pro slot da rotação do dia
+    // novo, que no domingo é o do carrossel `clicked` (mesmo minuto).
+    lines.push(`  - dia seguinte, mesmo horário (${slotTime}): ${base} --day-offset ${dayOffset + 1} --time ${slotTime}`);
+    lines.push(
+      nextDay.fromRotation
+        ? `    (sem --time, o dia seguinte cai em ${nextDay.time}, o horário da rotação #10305 desse dia — no domingo é o mesmo do carrossel clicked e os dois colidem. Com --time, o post fica fora da medição da rotação.)`
+        : `    (sem --time, o dia seguinte cai em ${nextDay.time}, não em ${slotTime}.)`,
+    );
+  }
   lines.push(`  - pular o modo ${mode} nesta semana (rodar só o outro com --mode explícito)`);
   lines.push("  (--day-offset não compõe com --mode both: rode cada modo separado.)");
   return lines;

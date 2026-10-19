@@ -495,9 +495,11 @@ describe("#10427 — registro não conta o Use Melhor que não foi agendado", ()
     assert.match(warns[0], /2610\/261020/);
     assert.deepEqual(asked, ["261020"]);
     // arquivo presente sem o `um` agendado (falhou / só destaques)
-    assert.deepEqual(types(run([{ destaque: "d1", status: "scheduled" }, { destaque: "um", status: "failed" }])), ["d1", "d2", "d3"]);
+    // (#10541: o `d3` agendado entra na fixture — sem ele a linha d3 também sai)
+    const d3 = { destaque: "d3", status: "scheduled" };
+    assert.deepEqual(types(run([{ destaque: "d1", status: "scheduled" }, d3, { destaque: "um", status: "failed" }])), ["d1", "d2", "d3"]);
     // `um` agendado: as 4 linhas
-    assert.deepEqual(types(run([{ destaque: "um", status: "scheduled" }])), ["d1", "d2", "d3", "um"]);
+    assert.deepEqual(types(run([d3, { destaque: "um", status: "scheduled" }])), ["d1", "d2", "d3", "um"]);
     assert.equal(warns.length, 1, "só o caso de arquivo ausente avisa");
   });
   it("CLI --record: default lê 06-social-published.json via editionDir sob rootDir", () => {
@@ -509,7 +511,15 @@ describe("#10427 — registro não conta o Use Melhor que não foi agendado", ()
       assert.equal(warns.length, 1);
       const edDir = resolve(dir, "data/editions/2610/261020");
       mkdirSync(edDir, { recursive: true });
-      writeFileSync(resolve(edDir, "06-social-published.json"), JSON.stringify({ posts: [{ platform: "linkedin", destaque: "um", status: "scheduled", url: null, scheduled_at: null }] }));
+      writeFileSync(
+        resolve(edDir, "06-social-published.json"),
+        JSON.stringify({
+          posts: [
+            { platform: "linkedin", destaque: "d3", status: "scheduled", url: null, scheduled_at: null },
+            { platform: "linkedin", destaque: "um", status: "scheduled", url: null, scheduled_at: null },
+          ],
+        }),
+      );
       assert.equal(filterUseMelhorRowsByPublished(rows, social(), dir, (m) => warns.push(m)).length, 4);
       assert.equal(warns.length, 1);
     } finally {

@@ -231,13 +231,7 @@ export function resolveWeeklyTime(opts: {
   dayOffset: number;
 }): string {
   if (opts.explicitTime) return opts.explicitTime;
-  const { year, month, day } = parseEditionDate(opts.saturday);
-  const target = new Date(Date.UTC(year, month - 1, day + opts.dayOffset));
-  const slot = weekendRotationSlot(readSocialRotation(opts.social), {
-    year: target.getUTCFullYear(),
-    month: target.getUTCMonth() + 1,
-    day: target.getUTCDate(),
-  });
+  const { target, slot } = weekendSlotFor(opts.social, opts.saturday, opts.dayOffset);
   if (slot) {
     console.error(
       `[publish-weekly-social] rotação #10305: ${target.toISOString().slice(0, 10)} → ${slot.time} ` +
@@ -246,6 +240,32 @@ export function resolveWeeklyTime(opts: {
     return slot.time;
   }
   return DEFAULT_WEEKLY_TIME;
+}
+
+function weekendSlotFor(social: { rotation?: unknown } | null | undefined, saturday: string, dayOffset: number) {
+  const { year, month, day } = parseEditionDate(saturday);
+  const target = new Date(Date.UTC(year, month - 1, day + dayOffset));
+  const slot = weekendRotationSlot(readSocialRotation(social), {
+    year: target.getUTCFullYear(),
+    month: target.getUTCMonth() + 1,
+    day: target.getUTCDate(),
+  });
+  return { target, slot };
+}
+
+/**
+ * Pure (#10541): horário que `--day-offset dayOffset+1` SEM `--time`
+ * produziria — o conselho de slot vencido (`formatSlotAdvice`) precisa dele
+ * pra não chamar de "mesmo horário" o slot que a rotação #10305 recalcula pro
+ * dia novo. Sem log (ao contrário de `resolveWeeklyTime`).
+ */
+export function weeklyNextDayTime(
+  social: { rotation?: unknown } | null | undefined,
+  saturday: string,
+  dayOffset: number,
+): { time: string; fromRotation: boolean } {
+  const { slot } = weekendSlotFor(social, saturday, dayOffset + 1);
+  return slot ? { time: slot.time, fromRotation: true } : { time: DEFAULT_WEEKLY_TIME, fromRotation: false };
 }
 
 /**
@@ -781,7 +801,8 @@ function runCheckSlot(modeArg: string, saturday: string, values: Record<string, 
       return 1;
     }
     const check = checkWeeklySlot(scheduledAt, now);
-    const advice = formatSlotAdvice({ mode, saturday, check, now, dayOffset });
+    const nextDay = weeklyNextDayTime(platformConfig?.publishing?.social, saturday, dayOffset);
+    const advice = formatSlotAdvice({ mode, saturday, check, now, dayOffset, nextDay });
     for (const line of advice) console.error(line);
     slots.push({ mode, ...check, advice });
   }
@@ -1152,7 +1173,14 @@ async function runOneMode(
   const scheduledAt = computeWeeklyScheduledAt({ saturday, time, timezone, dayOffset });
   // #10389: slot vencido/perto demais avisado JÁ no preview (Passo 2 da
   // skill), com as opções — antes só aparecia como erro no --images-only.
-  const slotAdvice = formatSlotAdvice({ mode, saturday, check: checkWeeklySlot(scheduledAt, now), now, dayOffset });
+  const slotAdvice = formatSlotAdvice({
+    mode,
+    saturday,
+    check: checkWeeklySlot(scheduledAt, now),
+    now,
+    dayOffset,
+    nextDay: weeklyNextDayTime(platformConfig?.publishing?.social, saturday, dayOffset),
+  });
   // #5905: seleção manual (--force-urls) torna a intro padrão de "clicked"
   // ("As notícias de IA mais lidas da semana", #7571) factualmente incorreta
   // — a ordem não vem mais do ranking. `introOverride` troca por uma frase
