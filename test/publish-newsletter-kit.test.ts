@@ -1513,9 +1513,20 @@ describe("#10465: --verify-ui-test-draft (só leitura, sem --mark-ui-test-sent)"
     }),
   );
 
+  const sendTestOnly: KitNewsletterPublished = {
+    broadcast_id: 555,
+    subject: "S",
+    preview_text: "P",
+    status: "test_sent",
+    test_broadcast_ids: [556],
+    test_mode: "broadcast",
+  };
   for (const [label, state] of [
     ["sem estado", null],
-    ["test_mode broadcast (--send-test)", uiDraft({ test_mode: "broadcast" })],
+    [
+      "test_mode broadcast sem ui_test_url (--send-test puro, UI nunca usada)",
+      sendTestOnly,
+    ],
     ["status scheduled (agendamento legítimo da Etapa 6)", uiDraft({ status: "scheduled", scheduled_at: "2026-10-19T09:00:00Z" })],
   ] as const) {
     it(
@@ -1534,6 +1545,72 @@ describe("#10465: --verify-ui-test-draft (só leitura, sem --mark-ui-test-sent)"
       }),
     );
   }
+
+  // #10538: o fallback --send-test (playbook do Stage 5, "tela inesperada" na
+  // UI) sobrescreve test_mode pra "broadcast". Antes do fix, o verify olhava
+  // só o test_mode atual e respondia checked:false — desligando a releitura
+  // justamente no cenário de clique errado em Send/Schedule no broadcast real.
+  for (const [label, remote] of [
+    ["enviado por clique errado na UI", { status: "completed", send_at: "2026-10-18T22:00:00Z", published_at: "2026-10-18T22:00:05Z" }],
+    ["agendado por clique errado na UI", { status: "scheduled", send_at: "2026-10-19T09:00:00Z", published_at: null }],
+  ] as const) {
+    it(
+      `REGRESSÃO #10538: --draft-only-for-ui-test → --send-test (fallback) → verify relê o real ${label} → exit 11`,
+      withEdition(async (root, editionDir) => {
+        let posts = 0;
+        mockFetch((call) => {
+          if (call.method === "GET" && call.pathname === "/v4/tags") {
+            return jsonRes(200, {
+              tags: [{ id: 42, name: "diaria-test-email", created_at: "x" }],
+              pagination: { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 },
+            });
+          }
+          if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
+            posts++;
+            return jsonRes(201, { broadcast: { id: 554 + posts, status: "draft", public_url: "https://news.diar.ia.br/p/x" } });
+          }
+          if (call.method === "PATCH" && call.pathname === "/v4/broadcasts/555") {
+            return jsonRes(200, { broadcast: { id: 555, status: "draft", public_url: "https://news.diar.ia.br/p/555" } });
+          }
+          throw new Error(`chamada inesperada: ${call.method} ${call.pathname}`);
+        });
+        process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--draft-only-for-ui-test"];
+        process.exitCode = undefined;
+        await main(root);
+        process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--send-test"];
+        await main(root);
+        assert.equal(process.exitCode, undefined);
+        const afterFallback = readPublishedState(editionDir);
+        assert.equal(afterFallback?.test_mode, "broadcast", "pré-condição: o fallback trocou o modo");
+        assert.equal(afterFallback?.ui_test_url, "https://app.kit.com/campaigns/555/draft", "ui_test_url sobrevive ao fallback");
+
+        mockFetch((call) => {
+          if (call.method === "GET" && call.pathname === "/v4/broadcasts/555") {
+            return jsonRes(200, { broadcast: { id: 555, ...remote } });
+          }
+          throw new Error(`--verify-ui-test-draft só pode ler: ${call.method} ${call.pathname}`);
+        });
+        const out = await runVerify(root, editionDir);
+        assert.equal(process.exitCode, 11);
+        const summary = JSON.parse(out.trim());
+        assert.equal(summary.ok, false);
+        assert.equal(summary.broadcast_id, 555);
+        assert.deepEqual(readPublishedState(editionDir), afterFallback, "verify nunca grava");
+      }),
+    );
+  }
+
+  it("REGRESSÃO #10538 (pure): test_mode broadcast + ui_test_url gravado → relê (checked:true)", async () => {
+    let gets = 0;
+    const r = await resolveVerifyUiTestDraft(uiDraft({ test_mode: "broadcast", status: "test_sent" }), {
+      getBroadcast: async () => {
+        gets++;
+        return { status: "draft", send_at: null, published_at: null };
+      },
+    });
+    assert.equal(gets, 1);
+    assert.deepEqual(r, { ok: true, checked: true, broadcast_id: 555 });
+  });
 
   it(
     "mutuamente exclusivo com --mark-ui-test-sent: exit 1 antes de qualquer rede",
