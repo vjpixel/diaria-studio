@@ -200,6 +200,9 @@ function significantWords(s: string): string[] {
  *   - (#8877) idem para `wrong_value` — reply que aponta só a grafia plantada;
  *   - (#9792) `wrong_value` de 2+ palavras (>=6 chars úteis) citado inteiro e
  *     contíguo (`containsWholePhrase`);
+ *   - (#10575) só o token de `wrong_value` multi-palavra que difere do
+ *     `correct_value` na mesma posição, citado como palavra inteira
+ *     (`differingWrongTokens`);
  *   - (#9792) `wrong_value` E `correct_value` (distintos) citados os dois como
  *     palavras inteiras — "X quando deveria ser Y", vale até pra palavra única.
  */
@@ -249,6 +252,34 @@ function containsWholePhrase(value: string, bodyNorm: string): boolean {
   return bodyTokens.includes(` ${phrase} `);
 }
 
+/**
+ * (#10575) Tokens de `wrongValue` que DIFEREM do token na mesma posição de
+ * `correctValue` — a grafia plantada isolada ("Amerika" em "Bank of Amerika" vs
+ * "Bank of America"). Só quando os dois valores têm o mesmo número de tokens
+ * (2+), pra o alinhamento posicional ser confiável. Cada token devolvido tem
+ * >=5 chars, tem letra, não é stopword e não aparece em lugar nenhum de
+ * `correctValue` — tokens curtos ou palavras comuns ("race" em "Hugging Race")
+ * aparecem por acaso numa reply e não provam acerto sozinhos.
+ */
+function differingWrongTokens(
+  wrongValue: string | undefined | null,
+  correctValue: string | undefined | null,
+): string[] {
+  if (!wrongValue || !correctValue) return [];
+  const wrong = normalizePhrase(wrongValue).split(" ").filter(Boolean);
+  const correct = normalizePhrase(correctValue).split(" ").filter(Boolean);
+  if (wrong.length < 2 || wrong.length !== correct.length) return [];
+  const correctSet = new Set(correct);
+  return wrong.filter(
+    (t, i) =>
+      t !== correct[i] &&
+      !correctSet.has(t) &&
+      t.length >= 5 &&
+      /[a-z]/.test(t) &&
+      !STOPWORDS.has(t),
+  );
+}
+
 export function matchesIntentionalError(
   replyBody: string,
   error: IntentionalErrorForMatch,
@@ -295,6 +326,14 @@ export function matchesIntentionalError(
   // pelo editor não aparece por acaso numa reply (já sem citação). Palavra
   // única comum ("numero") segue exigindo contexto (ver #8877).
   if (isMultiWordPhrase(error.wrong_value) && containsWholePhrase(error.wrong_value, bodyNorm)) return true;
+
+  // #10575: reply que cita só a PALAVRA errada de um wrong_value multi-palavra
+  // ('o erro está na palavra "Amerika"', com "Bank of Amerika" plantado no
+  // lugar de "Bank of America"). O token que difere do correct_value é a grafia
+  // plantada em si; citado como palavra inteira fora da citação, é acerto.
+  if (differingWrongTokens(error.wrong_value, error.correct_value).some((t) => containsWholePhrase(t, bodyNorm))) {
+    return true;
+  }
 
   // #9792: reply que cita as DUAS formas, a errada e a certa ("X quando
   // deveria ser Y"), está apontando a correção — vale mesmo pra palavra única.

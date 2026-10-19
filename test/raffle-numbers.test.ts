@@ -635,3 +635,50 @@ describe("matchesIntentionalError (#9792) — reply cita o wrong_value de vária
     assert.equal(matchesIntentionalError("é milhões mesmo", e), false);
   });
 });
+
+describe("matchesIntentionalError (#10575) — reply cita só a palavra errada de wrong_value multi-palavra", () => {
+  const ERR_261019 = {
+    category: "ortografico",
+    location: "RADAR, item 4",
+    description: "nome de banco grafado errado",
+    correct_value: "Bank of America",
+    wrong_value: "Bank of Amerika",
+  };
+
+  it("caso real 261019: 'O erro está na palavra \"Amerika\" na seção Radar.' → acerto", () => {
+    const body = 'O erro está na palavra "Amerika" na seção Radar.';
+    assert.equal(matchesIntentionalError(body, ERR_261019), true);
+  });
+
+  it("só a palavra errada, sem contexto nenhum → acerto", () => {
+    assert.equal(matchesIntentionalError("amerika?", ERR_261019), true);
+  });
+
+  it("palavra errada só dentro da citação do e-mail original → sem crédito", () => {
+    const body = [
+      "Obrigado!",
+      "",
+      "Em seg., 19 de out. de 2026 às 06:00, diar.ia.br escreveu:",
+      "> ... Bank of Amerika ...",
+    ].join("\n");
+    assert.equal(matchesIntentionalError(body, ERR_261019), false);
+  });
+
+  it("token comum que aparece também no correct_value ('Bank') não basta", () => {
+    assert.equal(matchesIntentionalError("Gostei do bank.", ERR_261019), false);
+  });
+
+  it("substring da palavra errada não conta (palavra inteira)", () => {
+    assert.equal(matchesIntentionalError("amerikanos são legais", ERR_261019), false);
+  });
+
+  it("token diferente curto (<5 chars, 'race' em Hugging Race) segue sem bastar sozinho", () => {
+    const e = { description: "x", location: "y", correct_value: "Hugging Face", wrong_value: "Hugging Race" };
+    assert.equal(matchesIntentionalError("a race foi boa", e), false);
+  });
+
+  it("número de tokens diferente entre wrong e correct → sem alinhamento, regra não dispara", () => {
+    const e = { description: "x", location: "y", correct_value: "Bank of America Corp", wrong_value: "Bank of Amerika" };
+    assert.equal(matchesIntentionalError("amerika?", e), false);
+  });
+});
