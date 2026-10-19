@@ -165,6 +165,7 @@ interface RawTranscriptLine {
   timestamp?: string;
   isSidechain?: boolean;
   message?: {
+    id?: string;
     model?: string;
     usage?: {
       input_tokens?: number;
@@ -222,6 +223,23 @@ export interface ParsedTranscriptFile {
  * classificadas por `looksLikeTruncatedTranscriptEvent`: as que parecem
  * truncamento real incrementam `parseErrors`; lixo genérico continua pulado
  * sem contar, como sempre foi.
+ *
+ * **Uma entrada por RESPOSTA, não por linha (#10481, virada em 19/10/2026).**
+ * O harness grava uma linha `type: "assistant"` por bloco de conteúdo da
+ * mesma resposta (texto, `tool_use`, thinking…), todas com o mesmo
+ * `message.id` e o mesmo `message.usage`. Até o #10481 cada linha virava uma
+ * `UsageEntry` e a mesma resposta era somada N vezes — medido ao vivo num
+ * implementador da rodada 261018d: 64 linhas assistant para 36 `message.id`
+ * distintos (~1,8x de inflação em todo número de custo derivado deste módulo).
+ * Agora as linhas com `message.id` são deduplicadas por id, **última linha
+ * vence** (mesma regra de `summarizeTranscript` em
+ * `scripts/subagent-usage-metrics.ts`, #10476): a entrada fica na posição da
+ * 1ª ocorrência, com os valores (usage, timestamp, model) da última. Linha
+ * sem `message.id` (formato antigo/fixture) continua contando uma vez cada,
+ * como antes. **Quebra de série histórica:** custo/tokens calculados antes de
+ * 19/10/2026 a partir deste parser estão inflados e não são comparáveis com
+ * os de depois; recalcular com `recompute-stage-costs.ts` dá o número
+ * deduplicado.
  */
 export function parseTranscriptFile(filePath: string): ParsedTranscriptFile {
   let content: string;
@@ -231,6 +249,8 @@ export function parseTranscriptFile(filePath: string): ParsedTranscriptFile {
     return { entries: [], parseErrors: 0 };
   }
   const entries: UsageEntry[] = [];
+  // #10481: `message.id` → índice em `entries` da entrada dessa resposta.
+  const indexById = new Map<string, number>();
   let parseErrors = 0;
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
@@ -246,7 +266,7 @@ export function parseTranscriptFile(filePath: string): ParsedTranscriptFile {
     if (!usage) continue;
     const timestamp = obj.timestamp;
     if (!timestamp) continue;
-    entries.push({
+    const entry: UsageEntry = {
       timestamp,
       model: obj.message?.model ?? "unknown",
       inputTokens: usage.input_tokens ?? 0,
@@ -255,7 +275,17 @@ export function parseTranscriptFile(filePath: string): ParsedTranscriptFile {
       cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
       sessionFile: filePath,
       isSidechain: obj.isSidechain === true,
-    });
+    };
+    const messageId = obj.message?.id;
+    if (typeof messageId === "string" && messageId) {
+      const existing = indexById.get(messageId);
+      if (existing !== undefined) {
+        entries[existing] = entry; // última linha vence
+        continue;
+      }
+      indexById.set(messageId, entries.length);
+    }
+    entries.push(entry);
   }
   return { entries, parseErrors };
 }
