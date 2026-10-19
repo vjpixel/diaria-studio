@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 16 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 19 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Meta admite que seus óculos gravaram sem comando</title>
+      <link>https://diar.ia.br/p/meta-admite-que-seus-oculos-gravaram-sem-comando</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/meta-admite-que-seus-oculos-gravaram-sem-comando</guid>
+      <pubDate>Mon, 19 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Itaú põe GPT na conta de 300 mil clientes | NVIDIA põe agente para rodar no seu PC, sem nuvem</description>
+    </item>
     <item>
       <title>RH da Riachuelo cria sistema em 12 dias sem código</title>
       <link>https://diar.ia.br/p/rh-da-riachuelo-cria-sistema-em-12-dias-sem-codigo</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/meta-lucrou-com-anuncios-de-abuso-infantil-por-ia</guid>
       <pubDate>Fri, 07 Aug 2026 09:00:00 GMT</pubDate>
       <description>ChatGPT libera mensagens ilimitadas no gratuito | O que acontece quando você conversa com uma IA</description>
-    </item>
-    <item>
-      <title>Modelo da Anthropic finge ser humano em teste</title>
-      <link>https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/modelo-da-anthropic-finge-ser-humano-em-teste</guid>
-      <pubDate>Thu, 06 Aug 2026 09:00:00 GMT</pubDate>
-      <description>IA do Chrome consome 20 GB sem aviso prévio | Correção nas ações de IA reacende debate</description>
     </item>
   </channel>
 </rss>
