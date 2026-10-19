@@ -117,7 +117,10 @@
  * `--mark-ui-test-sent`, sem `--at` e sem gravar nada. Rede de segurança pro
  * caso em que o agente do Chrome erra o clique e pula o passo 4 — sem ele,
  * nada relia o broadcast. Não se aplica (exit 0, `checked: false`, sem rede)
- * sem estado, com `test_mode` != "ui" ou com `status: "scheduled"` no estado.
+ * sem estado, sem nenhum sinal de teste pela UI (`test_mode` != "ui" E sem
+ * `ui_test_url` — #10538: o fallback `--send-test` troca o `test_mode` mas o
+ * `ui_test_url` fica, e a releitura continua valendo) ou com
+ * `status: "scheduled"` no estado.
  * Resumo JSON no stdout. Exit 0 rascunho confirmado/não se aplica; 11 fora do
  * rascunho; 12 releitura falhou.
  *
@@ -580,10 +583,20 @@ export type VerifyUiTestDraftOutcome =
  * (`ui_test_not_marked`) e nada mais relia o broadcast real. Os playbooks dos
  * Stages 5 e 6 rodam este modo incondicionalmente no backend Kit.
  *
- * Só se aplica ao teste pela UI ainda não agendado: sem estado, `test_mode`
- * != "ui" (o `--send-test` usa broadcast descartável, nunca toca o real) ou
- * `status: "scheduled"` (agendamento legítimo da Etapa 6) → `checked: false`,
- * sem rede. Nunca escreve nada, em disco ou no Kit.
+ * Só se aplica quando o broadcast real JÁ FOI aberto na UI e ainda não foi
+ * agendado: sem estado, sem nenhum sinal de teste pela UI (nem `test_mode:
+ * "ui"` nem `ui_test_url` gravado — o `--send-test` puro usa broadcast
+ * descartável e nunca toca o real) ou `status: "scheduled"` (agendamento
+ * legítimo da Etapa 6) → `checked: false`, sem rede. Nunca escreve nada, em
+ * disco ou no Kit.
+ *
+ * #10538: o critério é "`ui_test_url` já foi gravado alguma vez", não o
+ * `test_mode` ATUAL. O playbook do Stage 5 manda cair pro `--send-test` quando
+ * a UI mostra tela inesperada — justamente o cenário de clique errado em
+ * Schedule/Send no broadcast real — e o `--send-test` sobrescreve `test_mode`
+ * pra `"broadcast"`. Olhar só o `test_mode` desligava a releitura exatamente
+ * no caso que ela existe pra pegar; o `ui_test_url` sobrevive ao fallback
+ * (preservado no re-run, ver `main()`).
  */
 export async function resolveVerifyUiTestDraft(
   current: KitNewsletterPublished | null,
@@ -592,11 +605,11 @@ export async function resolveVerifyUiTestDraft(
   if (!current) {
     return { ok: true, checked: false, skipped_reason: "nenhum draft registrado em _internal/newsletter-kit-published.json" };
   }
-  if (current.test_mode !== "ui") {
+  if (current.test_mode !== "ui" && !current.ui_test_url) {
     return {
       ok: true,
       checked: false,
-      skipped_reason: `test_mode=${current.test_mode ?? "ausente"} — teste pela UI não usado, broadcast real não foi aberto na UI`,
+      skipped_reason: `test_mode=${current.test_mode ?? "ausente"} e sem ui_test_url — teste pela UI nunca usado, broadcast real não foi aberto na UI`,
     };
   }
   if (current.status === "scheduled") {

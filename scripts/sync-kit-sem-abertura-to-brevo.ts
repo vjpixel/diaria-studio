@@ -9,7 +9,8 @@
  * promoção de volta travaria). Critério e exclusões:
  * `scripts/lib/kit-sem-abertura.ts`.
  *
- * ## Duas flags, ambas desligadas por default
+ * ## Duas flags (default do código: desligadas; LIGADAS no
+ * `platform.config.json` desde 19/10/2026, PR #10532 — #10537)
  *
  * - `brevo_diaria.kit_sem_abertura.enabled` — liga ESTE script. Desligada ⇒
  *   sai 0 sem nenhuma chamada de rede (e `brevo-diaria-run.ts` nem o invoca).

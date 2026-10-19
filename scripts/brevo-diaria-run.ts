@@ -72,8 +72,9 @@
  *
  * Passo 3c (#10437) — `sync-kit-sem-abertura-to-brevo.ts` (ativos no Kit com
  *  `min_mature_sends` envios da diária sem abrir → Brevo, tag `envio-brevo` no Kit). Só entra
- *  na sequência com `brevo_diaria.kit_sem_abertura.enabled` (default `false`:
- *  sequência idêntica à de antes). Fail-soft como o 3b; dry-run no preflight,
+ *  na sequência com `brevo_diaria.kit_sem_abertura.enabled` (ausente/`false`:
+ *  sequência idêntica à de antes; LIGADA no `platform.config.json` desde
+ *  19/10/2026, PR #10532 — #10537). Fail-soft como o 3b; dry-run no preflight,
  *  `--push [--max-add N]` no apply.
  *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
