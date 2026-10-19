@@ -122,6 +122,10 @@ before(() => {
       '  ok) echo "resposta codex"; exit 0 ;;',
       '  fail) echo "erro qualquer" >&2; exit 1 ;;',
       "  quota) echo \"You've hit your usage limit. Try again later.\" >&2; exit 1 ;;",
+      // Review da PR #10583 (P2): trabalho parcial antes de falhar.
+      '  partial-branch) git -C "$CODEX_STUB_REPO" branch "continuo/fix-10560-parcial-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
+      '  partial-pr) echo "2026-10-19T00:00:00+00:00 https://github.com/o/r/pull/77 continuo/fix-10560-y" >> "$TMPDIR/codex-lane-pr-created.log"; exit 1 ;;',
+      "  partial-quota) git -C \"$CODEX_STUB_REPO\" branch \"continuo/fix-10560-quota-$$\" >/dev/null 2>&1; echo \"You've hit your usage limit.\" >&2; exit 1 ;;",
       "esac",
       "",
     ].join("\n"),
@@ -204,6 +208,36 @@ describe("#10560 — ordem da cadeia", () => {
     const order = attemptOrder(r.stderr);
     assert.equal(order[0], "codex:gpt-6.1-sol");
     assert.ok(FIRST_NON_CODEX.has(order[1]), `2º elo inesperado: ${order}`);
+  });
+
+  // Review da PR #10583 (P2): o MESMO prompt no elo seguinte reimplementaria
+  // e podia abrir uma 2ª PR.
+  it("falha do codex DEPOIS de criar branch continuo/*: aborta com exit 95, sem próximo elo", () => {
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-branch", CODEX_STUB_REPO: repo }),
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /trabalho parcial — .*branch continuo\/fix-10560-parcial-/);
+    assert.deepEqual(attemptOrder(r.stderr), ["codex:gpt-6.1-sol"]);
+    assert.equal(existsSync(join(runTmp, "claude-calls.log")), false, "claude rodou depois de trabalho parcial do codex");
+  });
+
+  it("falha do codex DEPOIS de abrir PR (log do gh shim): aborta com exit 95", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-pr" }));
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /prlog-lines 1/);
+    assert.equal(existsSync(join(runTmp, "claude-calls.log")), false);
+  });
+
+  it("trabalho parcial + usage limit: aborta E grava o marcador de cota", () => {
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-quota", CODEX_STUB_REPO: repo }),
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")));
   });
 });
 
@@ -376,9 +410,9 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     chmodSync(join(realGhDir, "gh"), 0o755);
   });
 
-  function gh(args: string[]) {
+  function gh(args: string[], cwd = r) {
     return spawnSync("bash", [join(GH_SHIM_DIR, "gh"), ...args], {
-      cwd: r,
+      cwd,
       encoding: "utf8",
       timeout: 30_000,
       env: { ...process.env, PATH: `${GH_SHIM_DIR}:${realGhDir}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
@@ -393,6 +427,27 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     const res = gh(["pr", "merge", "5", "--squash"]);
     assert.equal(res.status, 3, res.stderr);
     assert.doesNotMatch(realCalls(), /merge/);
+  });
+
+  // Review da PR #10583 (P2): o valor de -R/--repo era lido como subcomando.
+  it("gh pr -R/--repo owner/repo merge é recusado (valor da flag não vira subcomando)", () => {
+    for (const args of [
+      ["pr", "-R", "o/r", "merge", "5"],
+      ["pr", "--repo", "o/r", "merge", "5", "--squash"],
+      ["pr", "--repo=o/r", "merge", "5"],
+      ["-R", "o/r", "pr", "merge", "5"],
+      ["pr", "--hostname", "github.com", "-R", "o/r", "merge", "5"],
+    ]) {
+      const res = gh(args);
+      assert.equal(res.status, 3, `${args.join(" ")}: ${res.stderr}`);
+    }
+    assert.doesNotMatch(realCalls(), /merge/);
+  });
+
+  it("gh pr -R owner/repo list passa direto (o pulo do valor não recusa outros subcomandos)", () => {
+    const res = gh(["pr", "-R", "o/r", "list"]);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(realCalls(), /pr -R o\/r list/);
   });
 
   it("merge via gh api (REST e GraphQL) é recusado", () => {
@@ -431,6 +486,19 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     assert.equal(res.status, 3, res.stderr);
     assert.match(res.stderr, /guard de PII\/artefato de runtime/);
     assert.equal(realCalls(), before);
+  });
+
+  // Review da PR #10583 (P3): fail-open continua, mas com rastro em stderr.
+  it("guard de PII que quebra: gh pr create segue (fail-open) com AVISO em stderr", () => {
+    const r2 = join(tmp, "ghrepo-piibroken");
+    initRepo(r2);
+    mkdirSync(join(r2, ".claude/hooks"), { recursive: true });
+    writeFileSync(join(r2, ".claude/hooks/block-pr-create-pii-runtime-artifacts.mjs"), 'throw new Error("boom-pii");\n');
+    assert.equal(sh("git", ["checkout", "-q", "-b", "continuo/fix-10560-pii"], r2).status, 0);
+    const res = gh(["pr", "create", "--title", "t3", "--body", "b"], r2);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stderr, /AVISO: guard de PII\/artefato de runtime falhou \(rc=\d+\).*boom-pii/);
+    assert.match(realCalls(), /pr create --title t3/);
   });
 
   it("comando qualquer passa direto (argv intacto)", () => {

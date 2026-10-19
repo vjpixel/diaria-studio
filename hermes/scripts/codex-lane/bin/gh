@@ -45,10 +45,22 @@ refuse() {
   exit 3
 }
 
-# Subcomando = os 2 primeiros argumentos que não são flag.
+# Subcomando = os 2 primeiros argumentos posicionais. Flags que levam valor
+# na forma separada (`-R owner/repo`, `--repo owner/repo`, `--hostname h`)
+# têm o VALOR pulado — senão `gh pr -R owner/repo merge 5` lia
+# `sub=owner/repo` e o merge passava direto pro gh real (review da PR #10583,
+# P2). Flag desconhecida com valor separado ainda poderia deslocar a leitura;
+# por isso, além disso, `merge` em QUALQUER posição depois de `pr` também é
+# recusado (lado seguro: falso positivo só recusa).
 pos=()
+skip_next=0
 for a in "$@"; do
+  if [ "$skip_next" -eq 1 ]; then
+    skip_next=0
+    continue
+  fi
   case "$a" in
+    -R|--repo|--hostname) skip_next=1 ;;
     -*) ;;
     *) pos+=("$a") ;;
   esac
@@ -57,8 +69,15 @@ done
 group="${pos[0]:-}"
 sub="${pos[1]:-}"
 
-if [ "$group" = "pr" ] && [ "$sub" = "merge" ]; then
-  refuse "gh pr merge — a sessão do contínuo nunca mergeia; o merge é do continuo-pr-review.sh (#6864)"
+if [ "$group" = "pr" ]; then
+  [ "$sub" = "merge" ] && refuse "gh pr merge — a sessão do contínuo nunca mergeia; o merge é do continuo-pr-review.sh (#6864)"
+  seen_pr=0
+  for a in "$@"; do
+    if [ "$seen_pr" -eq 1 ] && [ "$a" = "merge" ]; then
+      refuse "gh pr ... merge (argv: $*) — a sessão do contínuo nunca mergeia; o merge é do continuo-pr-review.sh (#6864)"
+    fi
+    [ "$a" = "pr" ] && seen_pr=1
+  done
 fi
 if [ "$group" = "api" ]; then
   for a in "$@"; do
@@ -95,7 +114,18 @@ if [ "$group" = "pr" ] && [ "$sub" = "create" ]; then
   [ -n "$repo_root" ] && pii_hook="$repo_root/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs"
   if [ -n "$pii_hook" ] && [ -f "$pii_hook" ] && command -v node >/dev/null 2>&1; then
     payload=$(node -e 'process.stdout.write(JSON.stringify({tool_name:"Bash",tool_input:{command:"gh pr create"},cwd:process.argv[1]}))' "$repo_root")
-    verdict=$(printf '%s' "$payload" | node "$pii_hook" 2>/dev/null || true)
+    # Fail-open, em paridade com o hook original — mas com rastro em stderr
+    # (review da PR #10583, P3): node quebrado, hook lançando ou JSON
+    # malformado deixava o `gh pr create` seguir sem aviso nenhum.
+    pii_err="${TMPDIR:-/tmp}/codex-lane-pii-guard.$$.err"
+    verdict=$(printf '%s' "$payload" | node "$pii_hook" 2>"$pii_err")
+    pii_rc=$?
+    if [ "$pii_rc" -ne 0 ]; then
+      echo "[codex-lane gh #10560] AVISO: guard de PII/artefato de runtime falhou (rc=$pii_rc) — seguindo SEM o guard (fail-open, paridade com o hook): $(head -c 400 "$pii_err" 2>/dev/null | tr '\n' ' ')" >&2
+    elif [ -n "$verdict" ] && ! printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{JSON.parse(s)}catch{process.exit(1)}})' 2>/dev/null; then
+      echo "[codex-lane gh #10560] AVISO: guard de PII/artefato de runtime devolveu JSON malformado — seguindo SEM o guard (fail-open): $(printf '%s' "$verdict" | head -c 400 | tr '\n' ' ')" >&2
+    fi
+    rm -f "$pii_err" 2>/dev/null || true
     if printf '%s' "$verdict" | command grep -q '"permissionDecision":"deny"'; then
       reason=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).hookSpecificOutput.permissionDecisionReason)}catch{process.stdout.write(s)}})')
       refuse "guard de PII/artefato de runtime: $reason"

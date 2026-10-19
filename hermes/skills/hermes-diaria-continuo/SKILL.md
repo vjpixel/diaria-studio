@@ -518,6 +518,7 @@ delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
    não commitado) foi relatado como "trabalho de OUTRA sessão em curso" —
    verificado que o worktree nascera dentro da janela do tick.
 
+   Exit 95 (#10560) = o elo codex deixou branch/PR e falhou: sempre isto.
    Antes de rodar `unclaim-issue` por causa de erro de delegação, checar
    AMBOS:
    ```bash

@@ -202,6 +202,40 @@ codex_lane_mark_quota_exhausted() {
   echo $(( $(date -u +%s) + backoff )) > "$(codex_lane_quota_marker)" 2>/dev/null || true
 }
 
+codex_lane_pr_log() {
+  echo "${TMPDIR:-/tmp}/codex-lane-pr-created.log"
+}
+
+# Foto do estado que um `codex exec` deixa pra trás quando trabalha: linhas do
+# log de PRs criadas pelo gh shim, branches `continuo/*` (nome + sha) e
+# worktrees do repo de $1. Comparada antes/depois da tentativa por
+# `codex_lane_partial_work` (review da PR #10583, P2): se o codex criou
+# branch, commitou, abriu worktree ou PR e depois saiu com rc≠0 (timeout,
+# usage limit no meio), passar o MESMO prompt pro próximo elo reimplementaria
+# e podia abrir uma 2ª PR. Mudança feita por OUTRA sessão no mesmo intervalo
+# também conta — falso positivo aqui só aborta a cadeia (lado seguro), nunca
+# duplica trabalho.
+codex_lane_snapshot_state() {
+  local cwd="$1" log n=0
+  log="$(codex_lane_pr_log)"
+  [ -f "$log" ] && n=$(wc -l < "$log" 2>/dev/null | tr -d '[:space:]')
+  printf 'prlog-lines %s\n' "${n:-0}"
+  git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/continuo/' 2>/dev/null || true
+  git -C "$cwd" worktree list --porcelain 2>/dev/null | command grep '^worktree ' || true
+}
+
+# 0 = houve trabalho parcial desde o snapshot $2 (descrição em stdout);
+# 1 = estado idêntico.
+codex_lane_partial_work() {
+  local cwd="$1" before="$2" after
+  after=$(codex_lane_snapshot_state "$cwd")
+  [ "$before" = "$after" ] && return 1
+  # Só as linhas novas/alteradas (`comm` exige entrada ordenada).
+  comm -13 <(printf '%s\n' "$before" | sort) <(printf '%s\n' "$after" | sort) | tr '\n' ';' | sed 's/;$//'
+  echo
+  return 0
+}
+
 codex_lane_preamble() {
   cat <<'EOF'
 [Elo codex exec do contínuo — #10560]

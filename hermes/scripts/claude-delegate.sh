@@ -603,6 +603,10 @@ for MODEL in "${MODELS[@]}"; do
     # & cia. (fail-closed, RC=97 como o elo de assinatura) e a invocação
     # pinada (gpt-6.1-sol, model_reasoning_effort="low") vivem em
     # lib/codex-lane.sh. Sem --max-budget-usd: não há custo por token no plano.
+    # Review da PR #10583 (P2): foto do estado ANTES da tentativa, pra
+    # detectar trabalho parcial (branch/commit/worktree/PR) se o codex
+    # falhar no meio — ver o ABORT com exit 95 mais abaixo.
+    CODEX_LANE_STATE_BEFORE=$(codex_lane_snapshot_state "$CWD")
     OUT=$(printf '%s' "$PROMPT" | codex_lane_run "$TIMEOUT" "$CWD" "$ATTEMPT_LOG")
   elif is_subscription_lane_model "$MODEL"; then
     # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
@@ -726,7 +730,14 @@ for MODEL in "${MODELS[@]}"; do
     # de incidente que a regra #5608/#6714 do diaria-studio existe pra
     # prevenir). Log já redigido/persistido pelas linhas acima.
     if [ "$RC" -eq 97 ]; then
-      echo "[claude-openrouter] ABORT IMEDIATO (#7649): guard fail-closed do elo de assinatura disparou — resíduo de ANTHROPIC_* sobreviveu ao unset explícito. Não repetir sem correção manual do ambiente; stderr cru em $STDERR_LOG" >&2
+      if is_codex_lane_model "$MODEL"; then
+        # #10560 (review da PR #10583, P3): no elo codex o RC 97 sai do guard
+        # de env do próprio elo (CODEX_LANE_STRIPPED_ENV_VARS), não do elo
+        # de assinatura.
+        echo "[claude-openrouter] ABORT IMEDIATO (#10560): guard fail-closed do elo codex (model=$MODEL) disparou — uma de ${CODEX_LANE_STRIPPED_ENV_VARS[*]} sobreviveu ao unset explícito (chave de API OpenAI cobraria por token em vez do plano). Não repetir sem correção manual do ambiente; stderr cru em $STDERR_LOG" >&2
+      else
+        echo "[claude-openrouter] ABORT IMEDIATO (#7649): guard fail-closed do elo de assinatura (model=$MODEL) disparou — resíduo de ANTHROPIC_*/CLAUDE_CODE_USE_* sobreviveu ao unset explícito. Não repetir sem correção manual do ambiente; stderr cru em $STDERR_LOG" >&2
+      fi
       exit 96
     fi
     # #6696 finding 3: filtro de ruído só no caminho de FALHA. Antes disto
@@ -756,6 +767,20 @@ for MODEL in "${MODELS[@]}"; do
     # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
     echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$ATTEMPT_LOG"
     cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
+    # Review da PR #10583 (P2): o codex falhou DEPOIS de deixar trabalho
+    # (branch continuo/*, commit, worktree ou PR registrada pelo gh shim).
+    # Passar o MESMO prompt pro próximo elo reimplementaria e podia abrir
+    # uma 2ª PR — aborta a cadeia com exit 95 e deixa o §4 do SKILL.md
+    # (checar PR/worktree antes de unclaim) decidir. Cota do plano esgotada
+    # ainda grava o marcador, como no ramo de rate-limit abaixo.
+    if is_codex_lane_model "$MODEL" && CODEX_LANE_PARTIAL=$(codex_lane_partial_work "$CWD" "$CODEX_LANE_STATE_BEFORE"); then
+      if command grep -qiE "rate.?limit|too many requests|quota exceeded|usage limit" "$STDERR_ONLY_LOG"; then
+        codex_lane_mark_quota_exhausted
+      fi
+      echo "[claude-openrouter] ABORT (#10560): elo codex falhou (rc=$RC) depois de deixar trabalho parcial — $CODEX_LANE_PARTIAL. NÃO passando pro próximo elo (reimplementaria e podia abrir uma 2ª PR); conferir PR/worktree da unidade antes de unclaim (SKILL.md §4); stderr cru em $STDERR_LOG" >&2
+      rm -f "$STDERR_ONLY_LOG" "$ATTEMPT_LOG"
+      exit 95
+    fi
     # Classificar o motivo desta tentativa (finding do review #6446 cobria só
     # rc=0/saída-vazia vs timeout vs rc≠0 genérico; #6617 acrescenta a
     # distinção quota-transitória vs config-permanente dentro do rc≠0/vazio).
