@@ -20,7 +20,17 @@
 # rede real por iteração (ver `test/wait-pr-checks-6921.test.ts`).
 #
 # Uso:
-#   scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20]
+#   scripts/lib/wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600]
+#
+# Fila de runner (#10578): o tempo em que o gate reporta checks ainda na
+# FILA do GitHub (`queued=K` com K>0 na linha `queue:` de
+# check-pr-checks-gate.ts — nenhum runner pegou o job) NÃO consome o teto:
+# o prazo efetivo é `timeout_secs + tempo_em_fila`, limitado por
+# `queue_ceiling_secs` (teto absoluto, nunca um laço sem fim — #6921 segue
+# valendo). Achado da rodada 261019d: runs enfileiradas ~35 min fizeram o
+# teto de 30 min estourar em 6 PRs que depois ficaram verdes. Check
+# RODANDO sem concluir (queued=0) segue com o teto normal — esse é o caso
+# "sem progresso".
 #
 # Exit codes:
 #   0 = checks pararam de estar "pending" (chamador decide se PASSOU ou
@@ -29,6 +39,11 @@
 #   1 = TIMEOUT — teto de vida estourou; mensagem nomeada em stderr, nunca
 #       confundida com "ainda rodando silenciosamente"
 #   2 = uso inválido (PR ausente)
+#   7 = FILA — o teto absoluto (`queue_ceiling_secs`) estourou com checks
+#       ainda na fila de runner, sem nenhuma falha (#10578). NÃO é CI
+#       vermelho nem `ci_timeout`: o coordenador reaguarda (nova chamada
+#       deste helper) em vez de tratar como falha. rc=1 fica reservado pra
+#       "rodando sem concluir dentro do prazo".
 #   3 = ERRO PERSISTENTE do gate (rc=3/"error" de check-pr-checks-gate.ts
 #       repetido `MAX_ERROR_STREAK` vezes seguidas — #6937, achado de
 #       review: uma falha TRANSITÓRIA isolada (`gh` com rate-limit, blip de
@@ -68,9 +83,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # tempo decorrido) sem depender de rede nem de uma PR real.
 #
 # Captura stdout+stderr em `LAST_GATE_OUTPUT` (variável global, não local —
-# precisa sobreviver ao `return` desta função) só pra poder citar o motivo
-# na mensagem de abort do rc=6 (#8425); as demais chamadas do laço ignoram
-# a variável, comportamento idêntico ao `>/dev/null 2>&1` anterior.
+# precisa sobreviver ao `return` desta função) pra citar o motivo na
+# mensagem de abort do rc=6 (#8425) e pra ler a linha `queue: queued=K` no
+# rc=2 (#10578 — fila de runner estende o teto).
 check_pr_checks_once() {
   local pr="$1"
   LAST_GATE_OUTPUT=$( cd "$REPO_ROOT" && npx tsx scripts/check-pr-checks-gate.ts --pr "$pr" 2>&1 )
@@ -81,19 +96,47 @@ check_pr_checks_once() {
 # pelo mesmo motivo (testável isoladamente via source, sem herdar o `exit`
 # do script inteiro).
 wait_pr_checks() {
-  local pr="$1" timeout_secs="${2:-1800}" poll_secs="${3:-20}"
-  local start elapsed rc
+  local pr="$1" timeout_secs="${2:-1800}" poll_secs="${3:-20}" queue_ceiling_secs="${4:-3600}"
+  local start elapsed rc now deadline
   local error_streak=0
   local max_error_streak=5
+  # #10578: segundos acumulados em que o gate viu checks na FILA de runner
+  # (queued>0) — somados ao teto. `last_queued` é o queued da última leitura
+  # pending (um rc=3 transitório não o zera), usado pra escolher rc=7 (fila)
+  # vs rc=1 (sem progresso).
+  local queued_secs=0 last_queued=0 last_poll_at queued
+
+  # O teto absoluto nunca fica abaixo do teto normal (chamador que passou
+  # timeout > ceiling mantém o comportamento pré-#10578).
+  if [ "$queue_ceiling_secs" -lt "$timeout_secs" ]; then
+    queue_ceiling_secs="$timeout_secs"
+  fi
 
   start=$(date +%s)
+  last_poll_at="$start"
   while true; do
-    elapsed=$(( $(date +%s) - start ))
-    if [ "$elapsed" -ge "$timeout_secs" ]; then
-      echo "[wait-pr-checks] TIMEOUT: PR #$pr com checks pendentes após ${timeout_secs}s — abortando espera (teto de vida, #6921, nunca um laço órfão). Investigar manualmente: gh pr checks $pr" >&2
+    now=$(date +%s)
+    # #10578: o intervalo desde a última leitura conta como fila quando essa
+    # leitura viu checks na fila de runner (o job seguia sem runner até aqui).
+    if [ "$last_queued" -gt 0 ]; then
+      queued_secs=$(( queued_secs + now - last_poll_at ))
+    fi
+    last_poll_at="$now"
+    elapsed=$(( now - start ))
+    deadline=$(( timeout_secs + queued_secs ))
+    if [ "$deadline" -gt "$queue_ceiling_secs" ]; then
+      deadline="$queue_ceiling_secs"
+    fi
+    if [ "$elapsed" -ge "$deadline" ]; then
+      if [ "$last_queued" -gt 0 ]; then
+        echo "[wait-pr-checks] FILA: PR #$pr com $last_queued check(s) ainda na fila de runner do GitHub após ${elapsed}s (teto absoluto ${queue_ceiling_secs}s, ${queued_secs}s em fila) — nenhuma falha; NÃO é CI vermelho nem ci_timeout, reaguardar (#10578). Conferir: gh pr checks $pr" >&2
+        return 7
+      fi
+      echo "[wait-pr-checks] TIMEOUT: PR #$pr com checks pendentes após ${elapsed}s — abortando espera (teto de vida, #6921, nunca um laço órfão). Investigar manualmente: gh pr checks $pr" >&2
       return 1
     fi
 
+    LAST_GATE_OUTPUT=""
     check_pr_checks_once "$pr"
     rc=$?
 
@@ -128,6 +171,11 @@ wait_pr_checks() {
       return 0
     fi
 
+    # #10578: pending — quantos checks seguem na fila de runner? Ausência da
+    # linha `queue:` (gate antigo, rollup vazio, janela de corrida) = 0.
+    queued=$(printf '%s\n' "${LAST_GATE_OUTPUT:-}" | grep -o 'queue: queued=[0-9][0-9]*' | tail -n 1 | grep -o '[0-9][0-9]*$')
+    last_queued="${queued:-0}"
+
     sleep "$poll_secs"
   done
 }
@@ -138,9 +186,9 @@ wait_pr_checks() {
 # sobrescrever `check_pr_checks_once` sem disparar o loop de verdade.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   if [ -z "${1:-}" ]; then
-    echo "[wait-pr-checks] uso: wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20]" >&2
+    echo "[wait-pr-checks] uso: wait-pr-checks.sh <PR> [timeout_secs=1800] [poll_secs=20] [queue_ceiling_secs=3600]" >&2
     exit 2
   fi
-  wait_pr_checks "$1" "${2:-1800}" "${3:-20}"
+  wait_pr_checks "$1" "${2:-1800}" "${3:-20}" "${4:-3600}"
   exit $?
 fi

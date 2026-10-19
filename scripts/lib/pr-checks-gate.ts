@@ -258,11 +258,35 @@ export interface PrChecksGateResult {
   failingChecks: string[];
   /** Nomes dos checks ainda não `COMPLETED` (só quando `verdict === "pending"` por check em andamento). */
   pendingChecks: string[];
+  /**
+   * #10578: subconjunto de `pendingChecks` que ainda está na FILA de runner
+   * (`CheckRun` com status `QUEUED`/`WAITING`/`PENDING`/`REQUESTED` e sem
+   * `startedAt`) — nenhum runner pegou o job ainda. Só preenchido quando
+   * `verdict === "pending"` por check em andamento; ausente nos demais
+   * vereditos. Existe pra `scripts/lib/wait-pr-checks.sh` distinguir "fila
+   * do GitHub" (estende o teto) de "rodando sem concluir" (teto normal).
+   */
+  queuedChecks?: string[];
   /** Motivo legível — sempre presente, útil pra log/halt banner. */
   reason: string;
 }
 
 const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+
+/** #10578: status de `CheckRun` que significam "esperando runner", não "rodando". */
+const QUEUED_CHECK_RUN_STATUSES = new Set(["QUEUED", "WAITING", "PENDING", "REQUESTED"]);
+
+/**
+ * #10578: `CheckRun` ainda na fila de runner — status de espera E sem
+ * `startedAt` válido (um `startedAt` presente é prova de que algum runner já
+ * pegou o job, prevalece sobre o status). `StatusContext` nunca conta: o
+ * `state` `PENDING` dele não diz se é fila ou execução.
+ */
+export function isQueuedCheckRun(node: PrCheckNode): boolean {
+  if (typeof node.status !== "string") return false;
+  if (!QUEUED_CHECK_RUN_STATUSES.has(node.status)) return false;
+  return parseStartedAt(node.startedAt) === null;
+}
 
 /** `StatusContext.state` — o vocabulário é outro e menor que o de `CheckRun`. */
 const PASSING_STATES = new Set(["SUCCESS"]);
@@ -378,6 +402,7 @@ export function evaluatePrChecksGate(
 
   const failingChecks: string[] = [];
   const pendingChecks: string[] = [];
+  const queuedChecks: string[] = [];
 
   // Descarta runs supersedidas por force-push antes de julgar — ver
   // `keepLatestPerName`.
@@ -418,6 +443,7 @@ export function evaluatePrChecksGate(
 
     if (node.status !== "COMPLETED") {
       pendingChecks.push(label);
+      if (isQueuedCheckRun(node)) queuedChecks.push(label);
       continue;
     }
     const conclusion = typeof node.conclusion === "string" ? node.conclusion : null;
@@ -510,6 +536,7 @@ export function evaluatePrChecksGate(
       verdict: "pending",
       failingChecks: [],
       pendingChecks,
+      queuedChecks,
       reason: `${pendingChecks.length} check(s) ainda não concluído(s): ${pendingChecks.join(", ")}`,
     };
   }

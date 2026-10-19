@@ -282,6 +282,19 @@ function fetchPrChecksGate(prNumber: number, cwd: string): CliGateResult {
   return resolveGateResult(result);
 }
 
+/**
+ * #10578: `[check-pr-checks-gate] queue: queued=K pending=P` — contrato com
+ * `scripts/lib/wait-pr-checks.sh` (que faz grep de `queued=N`). `null` fora
+ * do veredito `pending` ou quando o resultado não traz `queuedChecks`
+ * (janela de corrida do #7060, rollup vazio): o laço lê ausência como
+ * queued=0, que é o comportamento pré-#10578.
+ */
+export function formatQueueLine(result: CliGateResult): string | null {
+  if (result.verdict !== "pending") return null;
+  if (!("queuedChecks" in result) || !Array.isArray(result.queuedChecks)) return null;
+  return `[check-pr-checks-gate] queue: queued=${result.queuedChecks.length} pending=${result.pendingChecks.length}`;
+}
+
 const EXIT_CODES: Record<CliGateResult["verdict"], number> = {
   pass: 0,
   fail: 1,
@@ -309,6 +322,10 @@ if (isMainModule(import.meta.url)) {
   } else {
     console.error(`${prefix} — ${result.reason}`);
   }
+  // #10578: linha legível por máquina pro `wait-pr-checks.sh` separar fila de
+  // runner (estende o teto) de check rodando sem concluir. Só em `pending`.
+  const queueLine = formatQueueLine(result);
+  if (queueLine) console.error(queueLine);
 
   process.exit(EXIT_CODES[result.verdict]);
 }

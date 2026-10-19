@@ -127,6 +127,74 @@ else
   FAILED=1
 fi
 
+# ── 8. #10578: checks na FILA de runner estendem o teto ────────────────────
+# Achado da rodada 261019d: runs enfileiradas ~35 min estouraram o teto de
+# 30 min em 6 PRs que depois ficaram verdes. Fixture: 5 leituras pending com
+# `queued=3` (nenhum runner pegou), depois o CI resolve. Com timeout=3, sem
+# a extensão o laço sairia com rc=1 (TIMEOUT) por volta da 4ª leitura.
+CALL_COUNT_FILE8="$(mktemp)"
+echo 0 > "$CALL_COUNT_FILE8"
+check_pr_checks_once() {
+  local n
+  n=$(( $(cat "$CALL_COUNT_FILE8") + 1 ))
+  echo "$n" > "$CALL_COUNT_FILE8"
+  if [ "$n" -le 5 ]; then
+    LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #8: verdict=pending — 3 check(s) ainda não concluído(s): a, b, c
+[check-pr-checks-gate] queue: queued=3 pending=3"
+    return 2
+  fi
+  return 0
+}
+OUT8=$(wait_pr_checks "8" 3 1 60 2>&1)
+RC8=$?
+rm -f "$CALL_COUNT_FILE8"
+assert_eq "fila de runner (queued>0) estende o teto e o CI resolve -> exit 0, nunca TIMEOUT" "0" "$RC8"
+if echo "$OUT8" | grep -q "TIMEOUT"; then
+  echo "FAIL: fila de runner foi tratada como TIMEOUT — obtido: $OUT8"
+  FAILED=1
+else
+  echo "ok: sem TIMEOUT enquanto os checks estavam na fila"
+fi
+
+# ── 9. #10578: fila que nunca anda estoura o teto ABSOLUTO com exit 7 (FILA) ─
+# A extensão nunca vira laço sem fim (#6921): `queue_ceiling_secs` limita, e
+# o código de saída é próprio (7), distinto do TIMEOUT (1) de "rodando sem
+# concluir" — o coordenador reaguarda em vez de logar ci_timeout.
+check_pr_checks_once() {
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #9: verdict=pending — 2 check(s) ainda não concluído(s): a, b
+[check-pr-checks-gate] queue: queued=2 pending=2"
+  return 2
+}
+START9=$(date +%s)
+OUT9=$(wait_pr_checks "9" 1 1 3 2>&1)
+RC9=$?
+ELAPSED9=$(( $(date +%s) - START9 ))
+assert_eq "fila eterna estoura o teto absoluto -> exit 7 (FILA), nunca 1" "7" "$RC9"
+if echo "$OUT9" | grep -q "FILA.*#10578"; then
+  echo "ok: mensagem de FILA nomeada presente (cita #10578)"
+else
+  echo "FAIL: mensagem de FILA esperada não encontrada — obtido: $OUT9"
+  FAILED=1
+fi
+if [ "$ELAPSED9" -le 10 ]; then
+  echo "ok: teto absoluto respeitado (${ELAPSED9}s)"
+else
+  echo "FAIL: teto absoluto de 3s não respeitado — levou ${ELAPSED9}s"
+  FAILED=1
+fi
+
+# ── 10. #10578: check RODANDO (queued=0) segue com o teto normal -> exit 1 ──
+# Distinção pedida pela issue: "sem progresso" (job pegou runner e não
+# termina) não ganha extensão, mesmo com teto absoluto folgado.
+check_pr_checks_once() {
+  LAST_GATE_OUTPUT="[check-pr-checks-gate] PR #10: verdict=pending — 1 check(s) ainda não concluído(s): a
+[check-pr-checks-gate] queue: queued=0 pending=1"
+  return 2
+}
+wait_pr_checks "10" 1 1 60 >/dev/null 2>&1
+RC10=$?
+assert_eq "check em execução sem concluir (queued=0) -> exit 1 no teto normal" "1" "$RC10"
+
 # ── 4. uso inválido do entrypoint (PR ausente) -> exit 2 ────────────────────
 OUT4=$(bash "$DIR/wait-pr-checks.sh" 2>&1)
 RC4=$?
