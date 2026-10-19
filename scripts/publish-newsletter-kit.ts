@@ -215,7 +215,6 @@ import {
   type UpdateBroadcastInput,
 } from "./lib/kit-broadcasts.ts";
 import {
-  hasBrevoDiariaCampaign,
   resolveDiariaAudience,
   verifyDiariaAudienceFilter,
   type DiariaExclusionSegmentConfig,
@@ -1037,7 +1036,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const audience = await resolveDiariaAudience(
     platformConfig.kit?.diaria_exclusion_segment,
     { listSegments: () => listSegments() },
-    { movedToBrevoCount: moved.count, brevoCampaignPublished: hasBrevoDiariaCampaign(editionDir) },
+    { movedToBrevoCount: moved.count }, // #10533: sem checar a Brevo aqui — Stage 5 roda Kit e Brevo em paralelo; a trava está no schedule
   );
   if (!audience.ok) {
     log(`ERRO: ${audience.reason}`);
