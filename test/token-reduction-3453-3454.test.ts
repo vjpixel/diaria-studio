@@ -110,8 +110,54 @@ describe("#3453 Rec 1 / #3454 Rec 1 — instrumentação de token do coordenador
   });
 
   it("develop emite subagent_metrics e coordinator_model", () => {
-    assert.match(develop, /--message "subagent_metrics"/);
+    assert.match(develop, /npx tsx scripts\/subagent-usage-metrics\.ts --edition \{AAMMDD\} --agent develop/);
     assert.match(develop, /--message "coordinator_model"/);
+  });
+
+  // #10476: a rodada 261018d despachou 16 subagentes e gravou zero
+  // `subagent_metrics`/`review_metrics` — a emissão à mão via `log-event.ts`
+  // dependia de o coordenador lembrar. Mesmo remédio do #9874: trava as 3
+  // skills no script que lê os transcripts dos subagentes e proíbe a forma à mão.
+  it("overnight, develop e continuo emitem subagent/review metrics via subagent-usage-metrics.ts, nunca à mão (#10476)", () => {
+    const continuo = readFileSync(resolve(ROOT, ".claude/skills/diaria-continuo/SKILL.md"), "utf8");
+    for (const [name, text, agent] of [
+      ["overnight", overnight, "overnight"],
+      ["develop", develop, "develop"],
+      ["continuo", continuo, "continuo"],
+    ] as const) {
+      assert.match(
+        text,
+        new RegExp(`npx tsx scripts/subagent-usage-metrics\\.ts --edition \\{[^}]+\\} --agent ${agent}`),
+        `${name} deve emitir via subagent-usage-metrics.ts`,
+      );
+      for (const msg of ["subagent_metrics", "review_metrics", "fleet_review_metrics"]) {
+        assert.doesNotMatch(text, new RegExp(`--message "${msg}"`), `${name} não pode instruir ${msg} à mão via log-event.ts`);
+      }
+    }
+  });
+
+  // #10483 finding 1: rodar o emissor ao fim de cada unidade, na onda
+  // paralela, pega implementadores ainda em voo; a dedup por `agent_id`
+  // congela os tokens parciais e perde os turnos seguintes. Uma chamada só
+  // por skill, no ponto em que nada está em voo (Fase 2 no overnight/develop).
+  it("subagent-usage-metrics.ts aparece UMA vez por skill, no relatório final (#10483)", () => {
+    const continuo = readFileSync(resolve(ROOT, ".claude/skills/diaria-continuo/SKILL.md"), "utf8");
+    const cmd = /npx tsx scripts\/subagent-usage-metrics\.ts --edition/g;
+    for (const [name, text] of [
+      ["overnight", overnight],
+      ["develop", develop],
+      ["continuo", continuo],
+    ] as const) {
+      assert.equal((text.match(cmd) ?? []).length, 1, `${name}: o emissor deve ser chamado num único ponto`);
+    }
+    for (const [name, text] of [
+      ["overnight", overnight],
+      ["develop", develop],
+    ] as const) {
+      const fase2 = text.indexOf("\n## Fase 2");
+      assert.ok(fase2 > 0, `${name}: seção Fase 2 não encontrada`);
+      assert.ok(text.search(cmd) > fase2, `${name}: o emissor deve rodar na Fase 2, não por unidade`);
+    }
   });
 });
 
