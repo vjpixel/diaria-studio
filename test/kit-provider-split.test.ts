@@ -17,7 +17,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  createRequestPacer,
   drainPages,
+  fetchAudience,
   resolveBroadcastId,
   resolveEditionArg,
   kitDiariaPublishedPath,
@@ -487,5 +489,73 @@ describe("persistKitDeliverySplit / appendKitDeliveryHistory — I/O injetado, s
       },
     });
     assert.equal(called, false);
+  });
+});
+
+// #10437 — o Passo 3c percorre todo broadcast maduro e estourou 429 sem espaçamento.
+describe("createRequestPacer (#10437)", () => {
+  it("espera o restante do intervalo entre chamadas e não espera na 1ª", async () => {
+    let t = 1000;
+    const waits: number[] = [];
+    const pace = createRequestPacer(600, {
+      now: () => t,
+      sleep: async (ms) => {
+        waits.push(ms);
+        t += ms;
+      },
+    });
+    await pace();
+    t += 100;
+    await pace();
+    t += 700;
+    await pace();
+    t += 100;
+    t += 300;
+    await pace();
+    assert.deepEqual(waits, [500, 200]);
+  });
+
+  it("serializa chamadas concorrentes (nenhuma libera junto com outra)", async () => {
+    let t = 0;
+    const releases: number[] = [];
+    const pace = createRequestPacer(600, {
+      now: () => t,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    await Promise.all([0, 1, 2].map(async () => {
+      await pace();
+      releases.push(t);
+    }));
+    assert.deepEqual(releases, [0, 600, 1200]);
+  });
+
+  it("fetchAudience chama beforeRequest antes de CADA página", async () => {
+    const events: string[] = [];
+    const pages = [
+      { subscribers: [{ email_address: "a@x.com" }], pagination: { has_next_page: true, end_cursor: "c1" } },
+      { subscribers: [{ email_address: "b@x.com" }], pagination: { has_next_page: false, end_cursor: null } },
+    ];
+    const prevKey = process.env.KIT_API_KEY;
+    const prevFetch = globalThis.fetch;
+    process.env.KIT_API_KEY = "test-key";
+    globalThis.fetch = (async () => {
+      events.push("fetch");
+      return new Response(JSON.stringify(pages.shift()), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      const res = await fetchAudience(42, "opens", {
+        beforeRequest: async () => {
+          events.push("pace");
+        },
+      });
+      assert.deepEqual(res.emails, ["a@x.com", "b@x.com"]);
+      assert.deepEqual(events, ["pace", "fetch", "pace", "fetch"]);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) delete process.env.KIT_API_KEY;
+      else process.env.KIT_API_KEY = prevKey;
+    }
   });
 });
