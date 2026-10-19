@@ -16,7 +16,9 @@
  *   --cycle-extra  outros ciclos, separados por vírgula: 3 ondas consecutivas
  *                  podem cruzar a virada de ciclo. As ondas são ordenadas pelo
  *                  carimbo de montagem no nome do arquivo, não pelo ciclo.
- *   --last N       quantas ondas mais recentes verificar (default 3).
+ *   --last N       quantas ondas mais recentes verificar (default 3). Vários
+ *                  snapshots da mesma data de envio (rerun do build) contam
+ *                  como UMA onda: vale o mais recente (#10489).
  *   --files        lista explícita de snapshots; ignora --cycle/--last.
  *
  * Saída: JSON com o relatório por onda em stdout.
@@ -47,10 +49,44 @@ export function listDailyQueueSnapshots(cycle: string, dataRoot?: string): strin
     .map((f) => resolve(dir, f));
 }
 
-/** As `last` mais recentes, em ordem cronológica (carimbo no início do nome). */
-export function pickLastSnapshots(paths: string[], last: number): string[] {
+/**
+ * Data de envio no nome do snapshot (`{carimbo}_send-{data}.csv.gz`). `null`
+ * para `send-sem-data` ou nome fora do padrão: sem data não há como saber se
+ * dois arquivos são a mesma onda.
+ */
+export function snapshotSendDate(path: string): string | null {
+  const m = /_send-(.+)\.csv\.gz$/.exec(basename(path));
+  if (!m || m[1] === "sem-data") return null;
+  return m[1];
+}
+
+/**
+ * Um snapshot por onda (#10489): o build `--daily` grava um arquivo a cada
+ * execução não-dry, então rerun da mesma onda (falha no import, ajuste de
+ * --budget, rerun manual) deixa vários arquivos do mesmo `send-{data}`. Fica
+ * o de carimbo mais recente, que é a fila que de fato valeu. Snapshot sem data
+ * de envio não é agrupado (cada um conta como onda própria).
+ */
+export function latestSnapshotPerSendDate(paths: string[]): string[] {
   const sorted = [...paths].sort((a, b) => basename(a).localeCompare(basename(b)));
-  return sorted.slice(Math.max(0, sorted.length - last));
+  const latestByDate = new Map<string, string>();
+  for (const p of sorted) {
+    const date = snapshotSendDate(p);
+    if (date !== null) latestByDate.set(date, p);
+  }
+  return sorted.filter((p) => {
+    const date = snapshotSendDate(p);
+    return date === null || latestByDate.get(date) === p;
+  });
+}
+
+/**
+ * As `last` ondas mais recentes, em ordem cronológica (carimbo no início do
+ * nome), já com um snapshot só por data de envio (#10489).
+ */
+export function pickLastSnapshots(paths: string[], last: number): string[] {
+  const waves = latestSnapshotPerSendDate(paths);
+  return waves.slice(Math.max(0, waves.length - last));
 }
 
 export interface WaveVerification extends DailyQueueOrderReport {

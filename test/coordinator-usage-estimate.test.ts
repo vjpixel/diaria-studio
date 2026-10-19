@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   computeCheckpointDelta,
-  lastFiniteCoordinatorTokens,
+  lastCoordinatorCumulativeBase,
   decideEstimate,
   estimateToDetails,
   estimateCoordinatorUsage,
@@ -69,7 +69,7 @@ describe("computeCheckpointDelta (#6634 — delta, não cumulativo: o aggregate 
   });
 });
 
-describe("lastFiniteCoordinatorTokens (#6634)", () => {
+describe("lastCoordinatorCumulativeBase (#6634, #10490)", () => {
   it("pega o ÚLTIMO evento com tokens finito da mesma edition+agent; ignora outros kinds, editions e unavailable", () => {
     const lines = [
       JSON.stringify({ agent: "overnight", edition: "260901", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "fase_0", tokens: 10_000 } }),
@@ -79,9 +79,47 @@ describe("lastFiniteCoordinatorTokens (#6634)", () => {
       JSON.stringify({ agent: "overnight", edition: "260901", message: "subagent_metrics", details: { subagent_tokens: 123 } }),
       "linha truncada {",
     ];
-    assert.equal(lastFiniteCoordinatorTokens(lines, "260901", "overnight"), 10_000);
-    assert.equal(lastFiniteCoordinatorTokens(lines, "260901", "develop"), 999_999);
-    assert.equal(lastFiniteCoordinatorTokens(lines, "260903", "overnight"), null);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "260901", "overnight"), 10_000);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "260901", "develop"), 999_999);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "260903", "overnight"), null);
+  });
+
+  it("#10490: a base é o cumulative_tokens do último evento, nunca o tokens (que é delta)", () => {
+    const lines = [
+      JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "a", tokens: 100, cumulative_tokens: 100 } }),
+      JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "b", tokens: 50, cumulative_tokens: 150 } }),
+    ];
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261019", "overnight"), 150);
+  });
+
+  it("#10490: evento unavailable com cumulative_tokens espúrio continua ignorado", () => {
+    const lines = [
+      JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "a", tokens: 100, cumulative_tokens: 100 } }),
+      JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "b", tokens: null, cumulative_tokens: 999 } }),
+    ];
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261019", "overnight"), 100);
+  });
+});
+
+describe("#10490 — 3 checkpoints: a soma dos deltas é o acumulado real", () => {
+  it("acumulados 100, 150, 200 → deltas 100, 50, 50 (soma 200, não 300)", () => {
+    const lines: string[] = [];
+    const emitted: number[] = [];
+    for (const [phase, cumulative] of [["a", 100], ["b", 150], ["c", 200]] as const) {
+      const est = decideEstimate({
+        sessionId: "s",
+        sessionFilter: "current_session",
+        usageEntries: 1,
+        tokensIn: cumulative,
+        tokensOut: 0,
+        lastFiniteTokens: lastCoordinatorCumulativeBase(lines, "261019", "overnight"),
+      });
+      const details = estimateToDetails(est, phase);
+      emitted.push(details.tokens as number);
+      lines.push(JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details }));
+    }
+    assert.deepEqual(emitted, [100, 50, 50]);
+    assert.equal(emitted.reduce((a, b) => a + b, 0), 200);
   });
 });
 

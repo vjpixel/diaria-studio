@@ -23,9 +23,10 @@
  * `aggregate-session-tokens.ts` SOMA os eventos da categoria — então o
  * `tokens` gravado é o DELTA desde o último evento com número da mesma
  * (edition, agent), não o total acumulado (cumulativo somaria N vezes o
- * mesmo contexto). A base vem do próprio `data/run-log.jsonl` (último
- * `coordinator_tokens_estimate` com `tokens` finito para a mesma edition +
- * agent). Detalhes, todos documentados no `details` do evento:
+ * mesmo contexto). A base vem do próprio `data/run-log.jsonl`: o
+ * `cumulative_tokens` do último `coordinator_tokens_estimate` com `tokens`
+ * finito para a mesma edition + agent — nunca o `tokens` dele, que é delta
+ * (#10490). Detalhes, todos documentados no `details` do evento:
  * - `cumulative_tokens` — o total da sessão até o checkpoint (o que o painel
  *   da #6634 chama de contexto acumulado; fica no evento pra leitura direta
  *   sem re-somar deltas).
@@ -111,25 +112,33 @@ export type CoordinatorEstimate =
     };
 
 /**
- * Pure: delta a gravar a partir do cumulativo atual e da base lida do
- * run-log (último evento da mesma edition+agent com `tokens` finito; `null`
- * se não há nenhum). `cumulative < base` = sessão reiniciou entre os
+ * Pure: delta a gravar a partir do cumulativo atual e da base ACUMULADA lida
+ * do run-log (`cumulative_tokens` do último evento numerado da mesma
+ * edition+agent, ver `lastCoordinatorCumulativeBase`; `null` se não há nenhum). `cumulative < base` = sessão reiniciou entre os
  * checkpoints — o delta honesto disponível é o cumulativo da sessão nova
  * (ver docstring, nunca negativo).
  */
-export function computeCheckpointDelta(cumulative: number, lastFiniteTokens: number | null): number {
-  if (lastFiniteTokens === null) return cumulative;
-  if (cumulative >= lastFiniteTokens) return cumulative - lastFiniteTokens;
+export function computeCheckpointDelta(cumulative: number, lastCumulativeBase: number | null): number {
+  if (lastCumulativeBase === null) return cumulative;
+  if (cumulative >= lastCumulativeBase) return cumulative - lastCumulativeBase;
   return cumulative;
 }
 
 /**
- * Pure: último `tokens` finito entre os eventos `coordinator_tokens_estimate`
- * da mesma edition + agent (varre de trás pra frente — o mais recente vence).
- * Linhas malformadas são ignoradas, mesmo padrão de
- * `countTokenInstrumentationEvents`. `null` = nenhum evento numerado ainda.
+ * Pure: base ACUMULADA para o próximo delta — o `details.cumulative_tokens` do
+ * último evento `coordinator_tokens_estimate` numerado da mesma edition +
+ * agent (varre de trás pra frente — o mais recente vence). Linhas malformadas
+ * são ignoradas, mesmo padrão de `countTokenInstrumentationEvents`. `null` =
+ * nenhum evento numerado ainda.
+ *
+ * #10490: até aqui a base era `details.tokens`, que é um DELTA. A partir do 3º
+ * checkpoint o delta anterior virava base acumulada (acumulados 100/150/200 →
+ * eventos 100/50/150, soma 300 contra 200 reais). `cumulative_tokens` é o total
+ * da sessão no checkpoint, a base certa para `computeCheckpointDelta`.
+ * Evento numerado SEM `cumulative_tokens` (gravado à mão, anterior ao campo)
+ * cai no `tokens` como antes — único dado disponível.
  */
-export function lastFiniteCoordinatorTokens(
+export function lastCoordinatorCumulativeBase(
   lines: string[],
   edition: string,
   agent: CoordinatorKind,
@@ -148,13 +157,15 @@ export function lastFiniteCoordinatorTokens(
     if (rec.message !== COORDINATOR_ESTIMATE_MESSAGE) continue;
     if (rec.edition !== edition) continue;
     if (rec.agent !== agent) continue;
-    const details = rec.details as { tokens?: unknown } | null | undefined;
+    const details = rec.details as { tokens?: unknown; cumulative_tokens?: unknown } | null | undefined;
     // `Number(null)` é 0 — um evento `unavailable` ({tokens: null}) seria lido
     // como base 0 e o próximo delta viraria o cumulativo inteiro de novo.
     // Só um `number` finito conta como base (mesmo critério do aggregate).
-    const raw = details?.tokens;
-    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
-    return raw;
+    const delta = details?.tokens;
+    if (typeof delta !== "number" || !Number.isFinite(delta)) continue;
+    const cumulative = details?.cumulative_tokens;
+    if (typeof cumulative === "number" && Number.isFinite(cumulative)) return cumulative;
+    return delta;
   }
   return null;
 }
@@ -252,7 +263,7 @@ export function estimateCoordinatorUsage(opts: {
   const sessionId = opts.sessionId !== undefined ? opts.sessionId : currentSessionId(env);
 
   const logPath = resolveRunLogPath(rootDir);
-  const lastFiniteTokens = lastFiniteCoordinatorTokens(
+  const lastFiniteTokens = lastCoordinatorCumulativeBase(
     existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [],
     edition,
     agent,
