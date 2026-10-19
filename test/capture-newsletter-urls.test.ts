@@ -12,6 +12,7 @@ import {
   loadCursor,
   saveCursor,
   processThreads,
+  decodeGenericRedirect,
   stripHtml,
   main,
   loadAlwaysConsiderConfig,
@@ -465,11 +466,13 @@ describe("#7662 — always_consider_senders allowlist", () => {
       { processed_thread_ids: [] },
       { alwaysConsiderSenders: ["email@newsletter.7min.ai"] },
     );
-    // Só tracking + affiliate são filtrados aqui — o "sender-own" da fixture
-    // aponta pra newsletter.7min.ai, que não é o domínio DESTE sender, então
-    // isSenderOwnUrl nunca dispararia pra ele mesmo sem allowlist nenhuma.
-    assert.equal(result.urls_filtered, 2);
-    assert.equal(articles.length, 2);
+    // Só o affiliate é filtrado — o "sender-own" da fixture aponta pra
+    // newsletter.7min.ai (não é o domínio DESTE sender). #10467: o wrapper
+    // link.mail.beehiiv.com é do domínio do sender e carrega o destino em
+    // ?url=, então é decodificado em vez de descartado.
+    assert.equal(result.urls_filtered, 1);
+    assert.equal(articles.length, 3);
+    assert.ok(articles.some((a) => a.url === "https://example.com/article-a" && a.tracker_decoded));
     assert.ok(articles.every((a) => a.always_consider === undefined));
   });
 
@@ -751,5 +754,33 @@ describe("regressão #9645: cauda markdown `)**` em urls_extraidas persistido", 
       `cauda suja sobrou: ${urls.join(" ")}`,
     );
     assert.equal(urls.filter((u) => u.includes("runway.com")).length, 1);
+  });
+});
+
+// #10467: redirect no domínio do sender decodificado; unsubscribe nunca vira candidato
+describe("redirect no domínio do sender (#10467)", () => {
+  it("decodeGenericRedirect extrai destino externo", () => {
+    assert.equal(
+      decodeGenericRedirect("https://link.alphasignal.ai/c?url=https%3A%2F%2Farxiv.org%2Fabs%2F1"),
+      "https://arxiv.org/abs/1",
+    );
+    assert.equal(decodeGenericRedirect("https://link.alphasignal.ai/c?id=3"), null);
+    assert.equal(decodeGenericRedirect("https://a.ai/c?url=https%3A%2F%2Fa.ai%2Fx"), null);
+  });
+  it("newsletter com só redirects próprios gera candidato e não o unsubscribe", () => {
+    const thread = {
+      thread_id: "t1",
+      sender: "AlphaSignal <news@alphasignal.ai>",
+      subject: "NCM",
+      date: "2026-10-18T14:59:00Z",
+      body: "Texto puro sem links",
+      urls_extraidas: [
+        "https://link.alphasignal.ai/c?u=https%3A%2F%2Farxiv.org%2Fabs%2F2610.00001",
+        "https://app.alphasignal.ai/unsubscribe/u/abc?cid=1",
+        "https://app.alphasignal.ai/unsubscribe/u/abc?u=https%3A%2F%2Fexample.com%2Funsubscribe%2Fx",
+      ],
+    };
+    const { articles } = processThreads([thread], { processed_thread_ids: [] });
+    assert.deepEqual(articles.map((a) => a.url), ["https://arxiv.org/abs/2610.00001"]);
   });
 });

@@ -64,6 +64,33 @@ const ROOT = resolve(import.meta.dirname, "..");
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * #10467: redirect de tracking no PRÓPRIO domínio do sender (ex.:
+ * `link.alphasignal.ai/c?url=https%3A%2F%2Farxiv.org%2F...`) era descartado
+ * como "sender-own" antes de alguém olhar o destino — newsletter cujo corpo
+ * só tem links assim chegava sem nenhum candidato. Extrai o destino externo
+ * de um query param conhecido (url/u/redirect/target/link/dest). Só devolve
+ * destino http(s) de OUTRO host; o caller filtra isNonContentUrl no destino,
+ * então unsubscribe nunca vira candidato.
+ */
+export function decodeGenericRedirect(rawUrl: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  for (const key of ["url", "u", "redirect", "redirect_url", "target", "link", "dest", "destination", "to"]) {
+    const v = u.searchParams.get(key);
+    if (!v || !/^https?:\/\//i.test(v)) continue;
+    try {
+      const dest = new URL(v);
+      if (dest.hostname.toLowerCase() !== u.hostname.toLowerCase()) return dest.toString();
+    } catch { /* tenta próximo param */ }
+  }
+  return null;
+}
+
 export interface CapturedThread {
   thread_id: string;
   sender: string;
@@ -257,7 +284,15 @@ export function processThreads(
     for (const rawUrl of urls) {
       // Decode tracker URLs before filtering — sempre, mesmo em always_consider
       // (queremos a URL final, não o wrapper — issue #7662 é explícita nisso).
-      const { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
+      let { url, decoded: trackerDecoded } = decodeTrackerUrl(rawUrl);
+      // #10467: redirect genérico no domínio do próprio sender → destino real.
+      if (!trackerDecoded && isSenderOwnUrl(url, senderDom, senderBrand)) {
+        const dest = decodeGenericRedirect(url);
+        if (dest) {
+          url = dest;
+          trackerDecoded = true;
+        }
+      }
 
       // #9250: unsubscribe/preferências nunca é conteúdo — filtrado ANTES
       // da isenção always_consider (que cobre só as heurísticas abaixo).
