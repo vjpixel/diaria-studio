@@ -350,13 +350,14 @@ interface CliFlags {
 
 /**
  * Default dinâmico baseado no dia da semana (#675).
- * Segunda: 96h (cobre até a sexta anterior); Terça: 72h; demais: 48h.
- * Evita alarme falso toda segunda-feira quando a newsletter não publica no fim de semana.
+ * Segunda: 96h (cobre até a sexta anterior); Domingo: 72h (#10468 — o Stage 0 da
+ * edição de segunda roda no domingo, 54-63h depois da sexta); Terça: 72h; demais: 48h.
+ * Evita alarme falso quando a newsletter não publica no fim de semana.
  */
 export function defaultMaxStalenessHours(now: Date = new Date()): number {
   const dow = now.getUTCDay(); // 0=Dom, 1=Seg, 2=Ter
   if (dow === 1) return 96;
-  if (dow === 2) return 72;
+  if (dow === 0 || dow === 2) return 72;
   return 48;
 }
 

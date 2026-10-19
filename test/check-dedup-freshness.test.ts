@@ -320,6 +320,25 @@ describe("defaultMaxStalenessHours (#675) — threshold dinâmico por dia da sem
     assert.equal(defaultMaxStalenessHours(wednesday), 48);
   });
 
+  it("domingo: 72h (#10468 — Stage 0 da edição de segunda)", () => {
+    const sunday = new Date("2026-10-18T15:48:00Z");
+    assert.equal(defaultMaxStalenessHours(sunday), 72);
+  });
+
+  it("#10468: domingo 15:48Z com última edição sexta 09:00Z (54,8h) → ok=true", () => {
+    const sunday = new Date("2026-10-18T15:48:00Z");
+    const posts = [{ id: "a", published_at: "2026-10-16T09:00:00Z" }];
+    const r = evaluateFreshness(posts, sunday.getTime(), defaultMaxStalenessHours(sunday));
+    assert.equal(r.ok, true);
+  });
+
+  it("#10468: não enfraquece — domingo com última edição na quinta (~79h) segue stale", () => {
+    const sunday = new Date("2026-10-18T15:48:00Z");
+    const posts = [{ id: "a", published_at: "2026-10-15T09:00:00Z" }];
+    const r = evaluateFreshness(posts, sunday.getTime(), defaultMaxStalenessHours(sunday));
+    assert.equal(r.ok, false);
+  });
+
   it("sexta-feira: 48h (padrão)", () => {
     const friday = new Date("2026-05-08T09:00:00Z");
     assert.equal(defaultMaxStalenessHours(friday), 48);
