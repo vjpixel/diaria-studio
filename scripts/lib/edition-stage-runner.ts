@@ -593,12 +593,32 @@ export function assertNoPublishStage(plan: ReadonlyArray<EditionStage>): void {
   }
 }
 
-/** Últimas `FAILURE_TAIL_LINES` linhas não-vazias, achatadas em uma linha. */
+/**
+ * #9597 item 3: aviso do CLI que não é erro. `[claude-code:unrecognized_model]
+ * claude-sonnet-5-5` apareceu no log do Stage 2 da 261005 (agent
+ * `title-picker`) e foi lido como ID de modelo inválido — o ID está no mix
+ * aprovado (`test/model-mix-no-sonnet-medium-8941.test.ts`). É o mesmo ruído
+ * que `hermes/scripts/claude-delegate.sh` já filtra. No tail de falha ele
+ * ocupa linhas que deveriam mostrar a causa real e induz diagnóstico errado.
+ */
+const CLI_NOISE_LINE = /\[claude-code:unrecognized_model\]|not a model this version/;
+
+export function isCliNoiseLine(line: string): boolean {
+  return CLI_NOISE_LINE.test(line);
+}
+
+/**
+ * Últimas `FAILURE_TAIL_LINES` linhas não-vazias, achatadas em uma linha.
+ * Ruído conhecido do CLI (`isCliNoiseLine`) sai do tail — a menos que seja
+ * tudo o que houve, caso em que fica (melhor que o placeholder "sem stdout").
+ */
 export function summarizeFailure(raw: string): string {
-  const flattened = raw
+  const nonEmpty = raw
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l !== "")
+    .filter((l) => l !== "");
+  const signal = nonEmpty.filter((l) => !isCliNoiseLine(l));
+  const flattened = (signal.length > 0 ? signal : nonEmpty)
     .slice(-FAILURE_TAIL_LINES)
     .join(" | ");
   // Um traço nu no resumo ("FALHOU exit=1 — ") é pior que verboso: o leitor
