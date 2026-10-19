@@ -685,6 +685,15 @@ score 0 e negativo num bloco único ordenado só por safra: com o teto de volume
 por onda, aquilo cortou 45 elegíveis de score ≥ 0 da onda `d3-qua07`
 (campanha Brevo 332) enquanto -10/-20 de cadastros mais novos entravam.
 
+**Prova da ordem por onda (#10479).** Cada `--daily` fora de `--dry-run` grava
+a fila ORDENADA inteira de elegíveis (score, cadastro, incluído ou não) em
+`segments/daily-queue/{carimbo}_send-{data}.csv.gz`, um arquivo por onda, nunca
+sobrescrito. `npx tsx scripts/clarice-verify-daily-queue-order.ts --cycle {ciclo}
+[--cycle-extra {ciclo anterior}] [--last 3]` checa nas N ondas mais recentes que
+nenhum incluído tem score menor que um excluído e que, no empate, nenhum incluído
+tem cadastro mais antigo que um excluído. Exit 0 = ok, 1 = violação, 2 = menos de
+N ondas gravadas.
+
 ---
 
 ## Verificação final

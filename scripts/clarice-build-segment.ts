@@ -235,6 +235,11 @@
  *                             import e não deve ganhar coluna que ela não espera. Não escrito
  *                             em --dry-run (mesma disciplina do resto do script).)
  *   {group}-manifest.json    ([{ key, file, desc, count }], mesmo shape de waves-manifest.json)
+ *   daily-queue/{carimbo}_send-{data}.csv.gz   (#10479 — só `--daily`, um arquivo POR ONDA, nunca
+ *                             sobrescrito: a fila ORDENADA inteira de elegíveis da invocação,
+ *                             colunas rank,email,priority_points,created,included. Prova a ordem
+ *                             do #9824 via `scripts/clarice-verify-daily-queue-order.ts`. Não
+ *                             escrito em --dry-run.)
  *   sent-or-queued.json      (#3227 — ÚNICO por ciclo, não por grupo; ver guard abaixo. Não
  *                             escrito em --dry-run.)
  *
@@ -335,6 +340,11 @@ import {
   type RecencyCutoffSource,
 } from "./lib/clarice-recency.ts";
 import { firstName, hasCorruptedName } from "./lib/clarice-name.ts";
+import {
+  DAILY_QUEUE_SNAPSHOT_DIR,
+  buildDailyQueueSnapshotGz,
+  dailyQueueSnapshotFileName,
+} from "./lib/clarice-daily-queue-snapshot.ts"; // #10479
 
 loadProjectEnv();
 
@@ -1274,6 +1284,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // quantos o guard por contato excluiu (não confundir com o corte de
     // budget, que não é "excluído", é "próxima rodada pega o resto").
     dailyPreBudgetCount?: number;
+    // #10479: só `--daily` preenche — a fila ORDENADA inteira (antes do corte
+    // de `--budget`), gravada como snapshot pra verificar a ordem do #9824.
+    dailyOrdered?: SegmentRow[];
   } {
     const effBudget = budgetOverride ?? budget;
     if (tiersPathArg) {
@@ -1315,6 +1328,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         selected,
         recencyViolations,
         dailyPreBudgetCount: ordered.length,
+        dailyOrdered: ordered,
       };
     }
     return buildSegmentArtifact(inputRows, group as NamedGroupKey, effBudget, minScore, ctx);
@@ -1322,7 +1336,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // #5922: `let` (não const) — o auto-fatiamento do D13 (grupo `novos` acima
   // do teto, sem --force) substitui estas três pelo artefato fatiado.
-  let { csv, manifestEntry, selected, tierStats, recencyViolations, dailyPreBudgetCount } = computeArtifact(holdResult.kept);
+  let { csv, manifestEntry, selected, tierStats, recencyViolations, dailyPreBudgetCount, dailyOrdered } =
+    computeArtifact(holdResult.kept);
 
   // #4979/#7406: identificador único do artefato nos 3 modos — nome do
   // grupo no modo --group, --key no modo --tiers, "daily" fixo no modo
@@ -1571,6 +1586,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       JSON.stringify([manifestEntry], null, 2),
       "utf8",
     );
+    // #10479: fila COMPLETA de elegíveis desta onda (score + cadastro +
+    // incluído/excluído), um arquivo por onda — `daily.csv` e o snapshot de
+    // prioridade são sobrescritos a cada onda e só têm os incluídos. Insumo de
+    // `scripts/clarice-verify-daily-queue-order.ts` (definição de feito do #9824).
+    if (dailyOrdered) {
+      const queueDir = resolve(dir, DAILY_QUEUE_SNAPSHOT_DIR);
+      ensureDir(queueDir);
+      const queueFile = resolve(queueDir, dailyQueueSnapshotFileName(new Date(), sendDateArg));
+      writeFileSync(queueFile, buildDailyQueueSnapshotGz(dailyOrdered, selected.length));
+      console.error(`🧾 fila completa (${dailyOrdered.length} elegível(is), ${selected.length} incluído(s)) em ${queueFile}`);
+    }
     appendSentOrQueuedEmails(dir, cycle, artifactKey, selected.map((r) => r.email));
     console.error(`✅ ${manifestEntry.count} contato(s) de '${artifactKey}' em ${resolve(dir, manifestEntry.file)}`);
   } else {
