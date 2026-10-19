@@ -42,7 +42,11 @@ import {
   type RunRetrospectivaSocialOptions,
   type SocialDispatchInput,
 } from "../scripts/publish-retrospectiva-social.ts";
-import { runMarkRetrospectivaChannel, unknownFacebookPageInChannel } from "../scripts/mark-retrospectiva-channel.ts";
+import {
+  runMarkRetrospectivaChannel,
+  unknownFacebookPageInChannel,
+  unknownFacebookPageInChannelLazy,
+} from "../scripts/mark-retrospectiva-channel.ts";
 import { readSocialPublished } from "../scripts/lib/social-published-store.ts";
 
 process.env.DIARIA_QUIET_SCHEDULE_LOG = "1";
@@ -334,5 +338,22 @@ describe("#10503 — achados do review do multi-página", () => {
     assert.equal(unknownFacebookPageInChannel("facebook@memelab:d1", ["diaria", "memelab"]), null);
     assert.equal(unknownFacebookPageInChannel("facebook:d1", ["diaria"]), null);
     assert.equal(unknownFacebookPageInChannel("apoiase", ["diaria"]), null);
+  });
+
+  it("#10542 item 1: config de páginas inválida não derruba o registro de canal que não é facebook@", () => {
+    const broken = (): string[] => {
+      throw new Error("publishing.social.facebook.pages: slug duplicado");
+    };
+    // Antes a lista era carregada pra TODO --channel: x:d1 abortava e o post ficava pending.
+    for (const ch of ["x:d1", "apoiase", "facebook:d1", "linkedin_pagina:d2"]) {
+      assert.equal(unknownFacebookPageInChannelLazy(ch, broken), null, ch);
+    }
+    // Só o canal que nomeia uma página consulta a config (e aí o erro sobe, como deve).
+    assert.throws(() => unknownFacebookPageInChannelLazy("facebook@memelab:d1", broken), /slug duplicado/);
+    assert.deepEqual(unknownFacebookPageInChannelLazy("facebook@memlab:d1", () => ["diaria", "memelab"]), {
+      unknown: "memlab",
+      known: ["diaria", "memelab"],
+    });
+    assert.equal(unknownFacebookPageInChannelLazy("facebook@memelab:d1", () => ["diaria", "memelab"]), null);
   });
 });

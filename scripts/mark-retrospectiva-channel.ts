@@ -59,6 +59,23 @@ export function unknownFacebookPageInChannel(channel: string, knownSlugs: readon
   return slug !== null && !knownSlugs.includes(slug) ? slug : null;
 }
 
+/**
+ * Pura (#10542 item 1): valida a página de `facebook@{slug}:d{N}` carregando
+ * a lista de páginas SÓ quando o canal nomeia uma. Antes a lista era carregada
+ * pra todo `--channel`, e uma config de páginas inválida (slug duplicado,
+ * `enabled` não booleano) fazia `--channel x:d1 --status done` abortar — o post
+ * do X ficava `pending` e a próxima rodada o entregava de novo.
+ */
+export function unknownFacebookPageInChannelLazy(
+  channel: string,
+  loadKnownSlugs: () => readonly string[],
+): { unknown: string; known: readonly string[] } | null {
+  if (retrospectivaFacebookPageSlug(channel) === null) return null;
+  const known = loadKnownSlugs();
+  const unknown = unknownFacebookPageInChannel(channel, known);
+  return unknown === null ? null : { unknown, known };
+}
+
 const ROOT = resolve(import.meta.dirname, "..");
 
 function configuredFacebookPageSlugs(root: string): string[] {
@@ -156,12 +173,11 @@ function main(): void {
     );
     process.exit(2);
   }
-  const knownSlugs = configuredFacebookPageSlugs(ROOT);
-  const unknownSlug = unknownFacebookPageInChannel(channelArg, knownSlugs);
-  if (unknownSlug !== null) {
+  const unknownPage = unknownFacebookPageInChannelLazy(channelArg, () => configuredFacebookPageSlugs(ROOT));
+  if (unknownPage !== null) {
     console.error(
-      `--channel inválido: página Facebook "${unknownSlug}" não existe em publishing.social.facebook.pages ` +
-        `(tem: ${knownSlugs.join(", ")}) — nada gravado (#10503).`,
+      `--channel inválido: página Facebook "${unknownPage.unknown}" não existe em publishing.social.facebook.pages ` +
+        `(tem: ${unknownPage.known.join(", ")}) — nada gravado (#10503).`,
     );
     process.exit(2);
   }

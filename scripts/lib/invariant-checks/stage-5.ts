@@ -16,7 +16,13 @@ import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
-import { loadFacebookPagesConfig, type FacebookPageConfig } from "../facebook-pages.ts"; // #10458
+import {
+  loadFacebookPagesConfig,
+  readFacebookCredentialsFile,
+  resolveFacebookPages,
+  type FacebookCredentialsFile,
+  type FacebookPageConfig,
+} from "../facebook-pages.ts"; // #10458
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -88,8 +94,11 @@ function loadNewsletterBackend(): string {
  * #10458 (follow-up): credencial das páginas do Facebook. Antes deste ajuste o
  * check lia `FACEBOOK_PAGE_ID`/`FACEBOOK_PAGE_ACCESS_TOKEN` direto — com a
  * lista `publishing.social.facebook.pages` ele passa a percorrer as páginas
- * HABILITADAS (helper único `facebook-pages.ts`) e checar a env var de cada
- * uma (só env, como antes — o fallback `data/.fb-credentials.json` é legado).
+ * HABILITADAS (helper único `facebook-pages.ts`) e checar a credencial de
+ * cada uma pela MESMA resolução do publisher (`resolveFacebookPages`): env var
+ * e, só pra página default (`diaria`), o fallback legado
+ * `data/.fb-credentials.json` (#10542 item 3 — antes o check olhava só env e
+ * acusava "publish-facebook pula só esta página" quando o post saía normal).
  *
  * Severidade espelha a falha isolada do `publish-facebook.ts`: se pelo menos
  * uma página habilitada tem credencial completa, a que falta é `warning` (o
@@ -101,6 +110,7 @@ function facebookCredentialViolations(
   field: "page_id" | "token",
   config: unknown,
   env: Record<string, string | undefined>,
+  fileCreds: FacebookCredentialsFile,
 ): InvariantViolation[] {
   const rule = field === "page_id" ? "facebook-page-id-set" : "facebook-token-set";
   let pages: FacebookPageConfig[];
@@ -109,13 +119,15 @@ function facebookCredentialViolations(
   } catch (e) {
     return [{ rule, message: (e as Error).message, source_issue: "#10458", severity: "error" }];
   }
-  const enabled = pages.filter((p) => p.enabled);
-  const has = (name: string) => (env[name] ?? "").trim().length > 0;
-  const anyComplete = enabled.some((p) => has(p.page_id_env) && has(p.token_env));
+  // Valor só de espaços conta como ausente (comportamento anterior do check).
+  const trimmedEnv = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, (v ?? "").trim()]));
+  const enabled = resolveFacebookPages(pages, trimmedEnv, fileCreds).filter((p) => p.enabled);
+  const anyComplete = enabled.some((p) => p.missing.length === 0);
   const out: InvariantViolation[] = [];
   for (const p of enabled) {
-    const envVar = field === "page_id" ? p.page_id_env : p.token_env;
-    if (has(envVar)) continue;
+    const cfg = pages.find((c) => c.slug === p.slug)!;
+    const envVar = field === "page_id" ? cfg.page_id_env : cfg.token_env;
+    if (!p.missing.includes(envVar)) continue;
     out.push({
       rule,
       message:
@@ -146,8 +158,9 @@ function readPlatformConfigForFacebook(): unknown {
 function checkFbPageIdSet(
   config: unknown = readPlatformConfigForFacebook(),
   env: Record<string, string | undefined> = process.env,
+  fileCreds: FacebookCredentialsFile = readFacebookCredentialsFile(ROOT),
 ): InvariantViolation[] {
-  return facebookCredentialViolations("page_id", config, env);
+  return facebookCredentialViolations("page_id", config, env, fileCreds);
 }
 
 /**
@@ -157,8 +170,9 @@ function checkFbPageIdSet(
 function checkFbTokenSet(
   config: unknown = readPlatformConfigForFacebook(),
   env: Record<string, string | undefined> = process.env,
+  fileCreds: FacebookCredentialsFile = readFacebookCredentialsFile(ROOT),
 ): InvariantViolation[] {
-  return facebookCredentialViolations("token", config, env);
+  return facebookCredentialViolations("token", config, env, fileCreds);
 }
 
 /**

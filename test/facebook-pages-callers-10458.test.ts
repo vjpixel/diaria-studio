@@ -108,7 +108,7 @@ describe("#10458 helpers de entry", () => {
 
 describe("#10458 invariante do Stage 5 — credencial por página habilitada", () => {
   it("só diaria ligada (config de hoje): env da diaria ausente → error (comportamento de sempre)", () => {
-    const v = checkFbTokenSet(TWO_PAGES(false), { FACEBOOK_PAGE_ID: "111" });
+    const v = checkFbTokenSet(TWO_PAGES(false), { FACEBOOK_PAGE_ID: "111" }, {});
     assert.equal(v.length, 1);
     assert.equal(v[0].rule, "facebook-token-set");
     assert.equal(v[0].severity, "error");
@@ -117,13 +117,13 @@ describe("#10458 invariante do Stage 5 — credencial por página habilitada", (
 
   it("memelab desligada sem credencial não gera violation", () => {
     const env = { FACEBOOK_PAGE_ID: "111", FACEBOOK_PAGE_ACCESS_TOKEN: "t" };
-    assert.deepEqual(checkFbPageIdSet(TWO_PAGES(false), env), []);
-    assert.deepEqual(checkFbTokenSet(TWO_PAGES(false), env), []);
+    assert.deepEqual(checkFbPageIdSet(TWO_PAGES(false), env, {}), []);
+    assert.deepEqual(checkFbTokenSet(TWO_PAGES(false), env, {}), []);
   });
 
   it("memelab ligada sem credencial, diaria completa → WARNING só da memelab (falha isolada)", () => {
     const env = { FACEBOOK_PAGE_ID: "111", FACEBOOK_PAGE_ACCESS_TOKEN: "t" };
-    const v = checkFbPageIdSet(TWO_PAGES(true), env);
+    const v = checkFbPageIdSet(TWO_PAGES(true), env, {});
     assert.equal(v.length, 1);
     assert.equal(v[0].severity, "warning");
     assert.match(v[0].message, /FACEBOOK_MEMELAB_PAGE_ID/);
@@ -131,13 +131,30 @@ describe("#10458 invariante do Stage 5 — credencial por página habilitada", (
   });
 
   it("nenhuma página habilitada com credencial completa → error em cada uma", () => {
-    const v = checkFbTokenSet(TWO_PAGES(true), { FACEBOOK_PAGE_ID: "111", FACEBOOK_MEMELAB_PAGE_ID: "222" });
+    const v = checkFbTokenSet(TWO_PAGES(true), { FACEBOOK_PAGE_ID: "111", FACEBOOK_MEMELAB_PAGE_ID: "222" }, {});
     assert.equal(v.length, 2);
     assert.ok(v.every((x) => x.severity === "error"));
   });
 
+  it("#10542 item 3: credencial da diaria só no data/.fb-credentials.json conta como presente (igual ao publisher)", () => {
+    const file = { page_id: "111", page_access_token: "t" };
+    assert.deepEqual(checkFbPageIdSet(TWO_PAGES(false), {}, file), []);
+    assert.deepEqual(checkFbTokenSet(TWO_PAGES(false), {}, file), []);
+    // Com a memelab ligada sem env: a diaria (via arquivo) está completa → warning só da memelab.
+    const v = checkFbTokenSet(TWO_PAGES(true), { FACEBOOK_MEMELAB_PAGE_ID: "222" }, file);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
+    assert.match(v[0].message, /FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN/);
+  });
+
+  it("#10542 item 3: o arquivo legado nunca cobre página que não é a default", () => {
+    const file = { page_id: "111", page_access_token: "t" };
+    const v = checkFbPageIdSet(TWO_PAGES(true), {}, file);
+    assert.deepEqual(v.map((x) => x.message.match(/^\S+/)?.[0]), ["FACEBOOK_MEMELAB_PAGE_ID"]);
+  });
+
   it("config de páginas inválido → error (não vira 'publica em lugar nenhum' em silêncio)", () => {
-    const v = checkFbPageIdSet({ publishing: { social: { facebook: { pages: [] } } } }, FULL_ENV);
+    const v = checkFbPageIdSet({ publishing: { social: { facebook: { pages: [] } } } }, FULL_ENV, {});
     assert.equal(v.length, 1);
     assert.equal(v[0].severity, "error");
   });
