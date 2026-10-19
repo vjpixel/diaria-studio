@@ -40,7 +40,7 @@ test("main --daily grava daily-eligible-queue.csv com TODOS os elegíveis (inclu
   process.env.BREVO_CLARICE_API_KEY = "test-fake-key";
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ campaigns: [] }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch;
-  const err = console.error, log = console.log;
+  const log = console.log;
   const real = process.exit; process.exit = ((c?: number) => { throw new Error("exit " + c); }) as typeof process.exit; console.log = () => {};
   try {
     await main(["--cycle", "2608-09", "--db", dbPath, "--data-root", dir, "--daily", "--budget", "2", "--send-date", "2026-09-05"]);
@@ -50,7 +50,7 @@ test("main --daily grava daily-eligible-queue.csv com TODOS os elegíveis (inclu
     if (prevKey !== undefined) process.env.BREVO_CLARICE_API_KEY = prevKey;
     else delete process.env.BREVO_CLARICE_API_KEY;
   }
-  const f = resolve(clariceSegmentsDir("2608-09", dir), "daily-eligible-queue.csv");
+  const f = resolve(clariceSegmentsDir("2608-09", dir), "daily-eligible-queue-2026-09-05.csv");
   assert.ok(existsSync(f));
   const csv = readFileSync(f, "utf8");
   const linhas = csv.trim().split(/\r?\n/);

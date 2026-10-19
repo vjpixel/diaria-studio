@@ -1574,7 +1574,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // verificar a ordem por script (verify-clarice-daily-order.ts).
     if (dailyOrdered) {
       writeFileSync(
-        resolve(dir, "daily-eligible-queue.csv"),
+        resolve(dir, `daily-eligible-queue-${sendDateArg ?? new Date().toISOString().slice(0, 10)}.csv`),
         buildEligibleQueueCsv(dailyOrdered, selected.length),
         "utf8",
       );
