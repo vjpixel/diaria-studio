@@ -43,6 +43,8 @@
  * reprova (`ok: false`): o Gate B precisa provar que o Kit ecoa o campo antes
  * de ligar.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   buildAllSubscribersFilter,
   buildSegmentFilter,
@@ -105,7 +107,7 @@ export type DiariaAudienceResolution =
 export async function resolveDiariaAudience(
   cfg: DiariaExclusionSegmentConfig | undefined,
   deps: { listSegments: () => Promise<KitSegment[]> },
-  ctx: { movedToBrevoCount?: number } = {},
+  ctx: { movedToBrevoCount?: number; brevoCampaignPublished?: boolean } = {},
 ): Promise<DiariaAudienceResolution> {
   const parsed = parseDiariaExclusionSegment(cfg);
   if ("error" in parsed) return { ok: false, reason: parsed.error };
@@ -123,6 +125,19 @@ export async function resolveDiariaAudience(
     return { ok: true, mode: "all", filter: buildAllSubscribersFilter() };
   }
   const segmentId = parsed.segmentId;
+  // #10533 — o segmento exclui os movidos; sem campanha Brevo da edição eles
+  // ficariam sem ela. `undefined` = caller não checou (compat); `false` aborta.
+  const movedCount = ctx.movedToBrevoCount ?? 0;
+  if (movedCount > 0 && ctx.brevoCampaignPublished === false) {
+    return {
+      ok: false,
+      reason:
+        `o segmento exclui ${movedCount} contato(s) kit-sem-abertura: movidos pra Brevo, mas esta edição não ` +
+        "tem campanha Brevo (_internal/brevo-diaria-published.json sem campaign_id — --skip brevo, publisher " +
+        "falhou ou conta suspensa): eles ficariam SEM a edição. Rode a Brevo diária antes (Stage 5), ou desligue " +
+        "o segmento conscientemente (#10533).",
+    };
+  }
   let segments: KitSegment[];
   try {
     segments = await deps.listSegments();
@@ -191,4 +206,14 @@ export function verifyDiariaAudienceFilter(reread: unknown, expected: KitSubscri
     };
   }
   return { ok: true };
+}
+
+/** #10533 — existe campanha Brevo da diária (`campaign_id` numérico) nesta edição? Leitor fino de I/O. */
+export function hasBrevoDiariaCampaign(editionDir: string): boolean {
+  try {
+    const raw = readFileSync(resolve(editionDir, "_internal", "brevo-diaria-published.json"), "utf8");
+    return typeof (JSON.parse(raw) as { campaign_id?: unknown }).campaign_id === "number";
+  } catch {
+    return false;
+  }
 }

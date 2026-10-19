@@ -60,7 +60,7 @@ import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/kit-broadcasts.ts";
-import { resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
+import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
@@ -331,7 +331,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const audience = await resolveDiariaAudience(
     platformConfig.kit?.diaria_exclusion_segment,
     { listSegments: () => listSegments() },
-    { movedToBrevoCount: moved.count },
+    { movedToBrevoCount: moved.count, brevoCampaignPublished: hasBrevoDiariaCampaign(editionDir) },
   );
   if (!audience.ok) {
     console.log(JSON.stringify({ ok: false, code: 7, reason: audience.reason }));

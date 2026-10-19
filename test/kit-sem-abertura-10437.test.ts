@@ -1206,3 +1206,30 @@ describe("reconcile-send-audiences com o segmento ligado (#10437)", () => {
     );
   });
 });
+
+describe("#10533: movidos sem campanha Brevo", () => {
+  const seg = { enabled: true, segment_id: 99 };
+  const deps = { listSegments: async () => [{ id: 99, name: "sem envio-brevo" }] };
+  it("segmento + movidos + sem campanha Brevo ⇒ aborta (não agenda o Kit em silêncio)", async () => {
+    const r = await resolveDiariaAudience(seg, deps, { movedToBrevoCount: 215, brevoCampaignPublished: false });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.reason, /SEM a edição/);
+  });
+  it("segmento + movidos + campanha Brevo existe ⇒ ok; sem movidos ⇒ ok", async () => {
+    assert.equal((await resolveDiariaAudience(seg, deps, { movedToBrevoCount: 215, brevoCampaignPublished: true })).ok, true);
+    assert.equal((await resolveDiariaAudience(seg, deps, { movedToBrevoCount: 0, brevoCampaignPublished: false })).ok, true);
+  });
+  it("hasBrevoDiariaCampaign: exige campaign_id numérico", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { hasBrevoDiariaCampaign } = await import("../scripts/lib/kit-diaria-audience.ts");
+    const d = mkdtempSync(join(tmpdir(), "t10533-"));
+    assert.equal(hasBrevoDiariaCampaign(d), false);
+    mkdirSync(join(d, "_internal"));
+    writeFileSync(join(d, "_internal", "brevo-diaria-published.json"), "{}");
+    assert.equal(hasBrevoDiariaCampaign(d), false);
+    writeFileSync(join(d, "_internal", "brevo-diaria-published.json"), '{"campaign_id":7}');
+    assert.equal(hasBrevoDiariaCampaign(d), true);
+  });
+});
