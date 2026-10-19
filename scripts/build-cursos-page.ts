@@ -33,6 +33,14 @@
  * `GEO_CONTENT_DATE` abaixo. As PERGUNTAS do FAQ (e o H2, que espelha a
  * pergunta principal) ficam fora do escopo do Humanizador de propósito — são
  * fraseado GEO calibrado para bater com busca real do leitor (#4558 Parte B).
+ *
+ * #10497 (261019): respostas 1, 2 e 4 do FAQ e a intro reescritas sem a
+ * contagem de "acesso gratuito ou auditoria livre"/"certificado sem custo"
+ * (a aula paga Conteúdo Autêntico entrou como 1º card, `featured`). Passe do
+ * Humanizador feito à mão sobre as frases novas (curtas, sem gerúndio,
+ * travessão ou vocabulário inflado); `mcp__clarice__correct_text` retornou
+ * HTTP 401 na rodada overnight que fez a mudança (mesmo sintoma de 260919) —
+ * repetir o passe da Clarice na próxima revisão da prosa.
  */
 
 import { mkdirSync } from "node:fs";
@@ -61,7 +69,7 @@ import {
   loadSeedItems,
   type ValidationResult,
 } from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-livros-page.ts
-import { CURSOS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4295 — link de rodapé sem UTM (assimetria com Livros/#4051)
+import { CURSOS_FOOTER_NAV_UTM, CURSOS_FEATURED_CARD_UTM } from "./lib/shared/utm-registry.ts"; // #4295 — link de rodapé sem UTM (assimetria com Livros/#4051); #10497 — card em destaque
 import {
   formatMonthYear,
   renderGeoByline,
@@ -94,7 +102,7 @@ const PAGE_DESCRIPTION =
  * render fresco; "hoje" nunca bate com o commit de ontem). Bump manual
  * quando o conteúdo GEO (intro/FAQ) for reescrito de forma substancial —
  * não a cada atualização rotineira do seed de cursos. */
-const GEO_CONTENT_DATE = "2026-09-19"; // #8470: FAQ 8→7 perguntas + H2 desduplicado, revisado por Humanizador + Clarice
+const GEO_CONTENT_DATE = "2026-10-19"; // #10497: intro + FAQ sem a contagem de "acesso gratuito"/"certificado sem custo" (aula paga em destaque); antes 2026-09-19 (#8470)
 
 // #1936/#1935: DS canônico (vjpixel/diaria-design via lib/shared/design-tokens.ts).
 // Era ad-hoc (Newsreader + paleta #F5F1E8/#FFFDF8/#1A1A1A divergente do canvas
@@ -132,6 +140,12 @@ export interface Course {
    * demais cursos, também na ordem do seed. Marcar mais que o teto não abre
    * mais cursos; marcar menos não deixa vaga vazia. */
   teaser?: boolean;
+  /** #10497: card em DESTAQUE — sempre o 1º da grade (independente da posição
+   * no seed), com estilo próprio, e sempre aberto no teaser FORA da cota de
+   * `openCourseCount` (não tira vaga dos cursos curados abertos, rebalanceados
+   * no #8470). O link de saída ganha `CURSOS_FEATURED_CARD_UTM`. Hoje é a
+   * aula paga da própria diar.ia.br (Conteúdo Autêntico com IA, #10403). */
+  featured?: boolean;
 }
 
 /** #4052: modo de render — `"teaser"` é o HTML PÚBLICO/estático (asset), só
@@ -164,10 +178,36 @@ export function openCourseCount(total: number): number {
  * não impõe nada disso.
  */
 export function selectOpenCourses(courses: Course[]): Course[] {
-  const limit = openCourseCount(courses.length);
-  const marked = courses.filter((c) => c.teaser);
-  const rest = courses.filter((c) => !c.teaser);
-  return [...marked, ...rest].slice(0, limit);
+  // #10497: `featured` fica aberto SEMPRE e FORA da cota — a cota é calculada
+  // só sobre os cursos curados (não-featured), então incluir a aula em
+  // destaque não muda quais curados ficam abertos.
+  const featured = courses.filter((c) => c.featured);
+  const curated = courses.filter((c) => !c.featured);
+  const limit = openCourseCount(curated.length);
+  const marked = curated.filter((c) => c.teaser);
+  const rest = curated.filter((c) => !c.teaser);
+  return [...featured, ...[...marked, ...rest].slice(0, limit)];
+}
+
+/** #10497: ordem de render — `featured` primeiro (na ordem do seed entre si),
+ * depois o resto na ordem do seed. Pure. */
+export function orderForRender(courses: Course[]): Course[] {
+  return [...courses.filter((c) => c.featured), ...courses.filter((c) => !c.featured)];
+}
+
+/** #10497: URL de saída do card em destaque com o UTM do registry (nunca
+ * literal no call site). Preserva path/hash; UTM que já viesse na URL do seed
+ * é sobrescrito pelo do registry. URL inválida volta intacta. Pure. */
+export function featuredCourseUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set("utm_source", CURSOS_FEATURED_CARD_UTM.source);
+    u.searchParams.set("utm_medium", CURSOS_FEATURED_CARD_UTM.medium);
+    u.searchParams.set("utm_campaign", CURSOS_FEATURED_CARD_UTM.campaign);
+    return u.toString();
+  } catch {
+    return url;
+  }
 }
 
 const LEVEL_LABEL: Record<Level, string> = {
@@ -240,6 +280,7 @@ export function validateCourses(courses: Course[]): ValidationResult {
     if (!(c.cost in COST_LABEL)) errors.push(`${where}: cost inválido (${c.cost})`);
     if (!(c.format in FORMAT_LABEL)) errors.push(`${where}: format inválido (${c.format})`);
     if (typeof c.certificate !== "boolean") errors.push(`${where}: certificate deve ser boolean`);
+    if (c.featured !== undefined && typeof c.featured !== "boolean") errors.push(`${where}: featured deve ser boolean`);
     if (!Array.isArray(c.themes)) errors.push(`${where}: themes deve ser array`);
     if (typeof c.duration_hours !== "number" || c.duration_hours <= 0) {
       warnings.push(`${where}: duration_hours ausente/inválida`);
@@ -272,13 +313,13 @@ export function loadCourses(seedPath = SEED_PATH): Course[] {
  */
 export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
   const total = courses.length;
-  const free = courses.filter((c) => c.cost === "free").length;
-  const comCertificado = courses.filter((c) => c.certificate).length;
+  const plataformas = distinctPlatforms(courses).length;
   const ptBr = courses.filter((c) => c.language === "pt-br").length;
   const en = total - ptBr;
-  const ptBrFree = courses.filter((c) => c.language === "pt-br" && c.cost === "free").length;
   const iniciante = courses.filter((c) => c.level === "iniciante").length;
-  const open = openCourseCount(total);
+  // #10497: quantos ficam abertos de fato na página (curados na cota + o card
+  // em destaque, que fica fora dela) — não só `openCourseCount(total)`.
+  const open = selectOpenCourses(courses).length;
   const curto = courses.filter((c) => durationBin(c.duration_hours) === "curto").length;
   const medio = courses.filter((c) => durationBin(c.duration_hours) === "medio").length;
   const longo = courses.filter((c) => durationBin(c.duration_hours) === "longo").length;
@@ -306,14 +347,21 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
   // PERGUNTAS ficam intocadas de propósito: são fraseado GEO calibrado pra bater com
   // busca real do leitor (#4558 Parte B) — reescrevê-las é decisão editorial, não
   // higienização de prosa.
+  //
+  // #10497 (decisão do editor, 19/10/2026): com uma aula paga como 1º card,
+  // saíram das respostas 1, 2 e 4 as contagens de "acesso gratuito ou
+  // auditoria livre" e de "certificado sem custo ao concluir" — custo e
+  // certificado de cada curso ficam no card e nos filtros "Custo"/
+  // "Certificado", não numa afirmação agregada. As PERGUNTAS seguem as
+  // mesmas (fraseado GEO, #4558 Parte B — mexer nelas é decisão editorial).
   return [
     {
       question: "Quais são os melhores cursos gratuitos de inteligência artificial?",
-      answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, dos quais ${free} têm acesso gratuito ou auditoria livre. ${comCertificado} deles emitem certificado sem custo ao concluir. ${open} ficam abertos diretamente na página, e o restante é desbloqueado para assinantes da diar.ia.br.`,
+      answer: `Esta curadoria reúne ${total} cursos sobre inteligência artificial, de ${plataformas} plataformas diferentes. Use o filtro de "Custo" para ver só os gratuitos. ${open} ficam abertos diretamente na página, e o restante é desbloqueado para assinantes da diar.ia.br.`,
     },
     {
       question: "Onde encontro cursos gratuitos de inteligência artificial em português?",
-      answer: `Aqui: a curadoria da diar.ia.br reúne ${ptBr} cursos em português, dos quais ${ptBrFree} têm acesso gratuito ou auditoria livre. Todos ficam organizados por nível, formato e plataforma nesta página.`,
+      answer: `Aqui: a curadoria da diar.ia.br reúne ${ptBr} cursos em português, organizados por nível, formato, custo e plataforma nesta página.`,
     },
     {
       question: "Tem curso de inteligência artificial em português?",
@@ -321,7 +369,7 @@ export function buildCursosFaq(courses: Course[]): GeoFaqItem[] {
     },
     {
       question: "Tem curso de IA gratuito com certificado?",
-      answer: `Sim, ${comCertificado} dos ${total} cursos da lista emitem certificado sem custo ao concluir. Procure o selo específico no card do curso, ou utilize o filtro de "Certificado" na página.`,
+      answer: `Use o filtro de "Certificado" na página para ver os cursos que emitem certificado ao concluir. As condições de cada certificado ficam na plataforma de origem do curso.`,
     },
     {
       question: "Tem curso de IA pra iniciante, sem experiência técnica?",
@@ -357,8 +405,6 @@ function joinPtBr(items: string[]): string {
  * repetir literalmente a pergunta 1 do FAQ logo abaixo. */
 function renderGeoIntro(courses: Course[], availableFilterLabels: string[]): string {
   const total = courses.length;
-  const free = courses.filter((c) => c.cost === "free").length;
-  const comCertificado = courses.filter((c) => c.certificate).length;
   const plataformas = distinctPlatforms(courses).length;
   const filtrosSentence =
     availableFilterLabels.length > 0
@@ -366,19 +412,23 @@ function renderGeoIntro(courses: Course[], availableFilterLabels: string[]): str
       : "Role até o final";
   return `    <div class="geo-intro-wrap">
       <h2 class="geo-h2">O que você encontra na curadoria de cursos de IA da diar.ia.br?</h2>
-      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes: ${free} deles com acesso gratuito ou auditoria livre, e ${comCertificado} com certificado sem custo ao concluir. A curadoria abrange desde fundamentos de IA e IA generativa até especializações técnicas, em português e inglês. ${filtrosSentence} para as perguntas frequentes com os números completos da curadoria.</p>
+      <p class="geo-intro">Esta página reúne ${total} cursos sobre inteligência artificial de ${plataformas} plataformas diferentes. A curadoria abrange desde fundamentos de IA e IA generativa até especializações técnicas, em português e inglês. ${filtrosSentence} para as perguntas frequentes com os números completos da curadoria.</p>
 ${renderGeoByline(undefined, `atualizado em ${formatMonthYear(GEO_CONTENT_DATE)}`)}
     </div>`;
 }
 
 function renderCard(c: Course): string {
   const dur = `<span class="note">${esc(fmtDuration(c.duration_hours, c.duration_estimated))}</span>`;
+  // #10497: card em destaque leva o UTM do registry e CTA próprio; sem preço
+  // (decisão do editor — o valor fica só na página de vendas).
+  const href = c.featured ? featuredCourseUrl(c.url) : c.url;
   const cta = isSafeUrl(c.url)
-    ? `<a class="cta" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Ver curso</a>`
+    ? `<a class="cta" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${c.featured ? "Saiba mais" : "Ver curso"}</a>`
     : `<span class="cta cta--off" aria-disabled="true">Link em breve</span>`;
   const titleInner = isSafeUrl(c.url)
-    ? `<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a>`
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(c.title)}</a>`
     : esc(c.title);
+  const featuredTag = c.featured ? `\n        <p class="featured-tag">Curso em destaque</p>` : "";
   const certBadge = c.certificate ? `<span class="badge badge--cert">Certificado grátis</span>` : "";
   const badges = [
     `<span class="badge badge--lang">${esc(LANG_LABEL[c.language])}</span>`,
@@ -388,7 +438,7 @@ function renderCard(c: Course): string {
     certBadge,
     ...c.themes.map((t) => `<span class="badge">${esc(t)}</span>`),
   ].join("");
-  return `      <article class="card"
+  return `      <article class="card${c.featured ? " card--featured" : ""}"
         data-lang="${esc(c.language)}"
         data-level="${esc(c.level)}"
         data-cost="${esc(c.cost)}"
@@ -396,7 +446,7 @@ function renderCard(c: Course): string {
         data-duration="${esc(durationBin(c.duration_hours))}"
         data-platform="${esc(slugify(c.platform))}"
         data-cert="${c.certificate ? "sim" : "nao"}"
-        data-themes="${esc(c.themes.map(slugify).join(" "))}">
+        data-themes="${esc(c.themes.map(slugify).join(" "))}">${featuredTag}
         <div class="title-row">
           <h2>${titleInner}</h2>
           ${dur}
@@ -483,7 +533,10 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
   // `renderPageBody` — o boundary de "curso individual nunca atravessa"
   // continua intacto, só o agregado atravessa.
   const openIds = new Set((mode === "teaser" ? selectOpenCourses(courses) : courses).map((c) => c.id));
-  const visible = courses.filter((c) => openIds.has(c.id));
+  // #10497: `featured` sempre como 1º card (nos dois modos), mesmo que o seed
+  // o coloque em outra posição. O filtro client-side só alterna `display`,
+  // nunca reordena — então, com qualquer filtro que o inclua, ele segue 1º.
+  const visible = orderForRender(courses).filter((c) => openIds.has(c.id));
   // #8470: opções de faceta de ENUM (idioma/nível/custo/formato/duração/cert)
   // vêm do CATÁLOGO COMPLETO, não de `visible` — ver `computeFacetOpts`.
   const facetOpts = computeFacetOpts(courses);
@@ -494,6 +547,7 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
   const availableFilterLabels = [
     facetOpts.lang.length >= 2 && "idioma",
     facetOpts.level.length >= 2 && "nível",
+    facetOpts.cost.length >= 2 && "custo", // #10497: aponta pro filtro no lugar da contagem de gratuitos que saiu da prosa
     facetOpts.format.length >= 2 && "formato",
     facetOpts.duration.length >= 2 && "duração",
     distinctPlatforms(visible).length >= 2 && "plataforma",
@@ -634,6 +688,11 @@ ${renderCuradoriaFiltersBaseStyles()}
 ${renderCuradoriaGridCardStyles()}
   .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
+  /* #10497: card em destaque (sempre o 1º da grade). Contorno interno pra não
+     mexer na métrica da grade (gap de 1px sobre o fundo --rule). */
+  .card--featured { box-shadow: inset 0 0 0 2px var(--teal); }
+  .featured-tag { font-family: ${SANS}; font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--teal); margin: 0 0 10px; }
   /* #8470: estado vazio do teaser (filtro sem match) vira gancho de
      assinatura em vez de dead end — link precisa do mesmo tratamento visual
      dos outros CTAs de texto da página. */
@@ -845,7 +904,7 @@ function main(): void {
   for (const w of v.warnings) process.stderr.write(`[build-cursos] ⚠ ${w}\n`);
   const open = selectOpenCourses(courses);
   process.stderr.write(
-    `[build-cursos] ${courses.length} cursos (${open.length} abertos no teaser = floor(${TEASER_OPEN_RATIO}×${courses.length}); ${courses.length - open.length} só pra assinante); ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`,
+    `[build-cursos] ${courses.length} cursos (${open.length} abertos no teaser = ${courses.filter((c) => c.featured).length} em destaque + floor(${TEASER_OPEN_RATIO}×${courses.filter((c) => !c.featured).length} curados); ${courses.length - open.length} só pra assinante); ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`,
   );
 
   if (check) {
