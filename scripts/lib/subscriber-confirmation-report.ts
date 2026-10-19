@@ -49,12 +49,14 @@
  * com `por_canal`, que é `origem_cadastro` (MECANISMO de cadastro:
  * kit-nativo/beehiiv-sync), não canal de aquisição.
  *
- * Fonte do `utm_source`, em ordem: (1) o PRIMEIRO valor não vazio gravado nos
- * snapshots (`SubscriberStateRecord.utm_source`, só existe a partir do
- * #8548 — o reativar pode sobrescrever o campo depois, #8235, por isso o
- * primeiro e não o último); (2) o store de assinantes
- * (`opts.utmSourceByKitId`, `subscription.utm_source` do Kit, que já protege
- * a origem contra a sobrescrita do reativar). Id sem nenhuma das duas fontes
+ * Fonte do `utm_source`, em ordem: (1) o valor gravado no snapshot de
+ * NASCIMENTO (`SubscriberStateRecord.utm_source`, só existe a partir do
+ * #8548); (2) o store de assinantes (`opts.utmSourceByKitId`,
+ * `subscription.utm_source` do Kit, que já protege a origem contra a
+ * sobrescrita do reativar, #8235); (3) o primeiro valor não vazio de um
+ * snapshot POSTERIOR. O store vence o snapshot posterior porque, numa coorte
+ * anterior ao #8548, o 1º snapshot com o campo pode ser de depois de o
+ * reativar ter sobrescrito o `utm_source` no Kit. Id sem nenhuma fonte
  * vai para `CANAL_PAGO_UNKNOWN_LABEL` — nunca para `orgânico`, que inflaria
  * o orgânico com cadastros de anúncio sem dado.
  *
@@ -371,9 +373,11 @@ interface Track {
   firstActiveDate: string | null;
   origem: string | null;
   via: string | null;
-  /** PRIMEIRO `utm_source` não vazio visto (#8548 — o reativar sobrescreve
-   *  depois, #8235). */
-  utm: string | null;
+  /** `utm_source` do snapshot de nascimento (#8548). */
+  utmAtBirth: string | null;
+  /** PRIMEIRO `utm_source` não vazio de um snapshot posterior — pode já ter
+   *  sido sobrescrito pelo reativar (#8235), por isso perde pro store. */
+  utmLater: string | null;
 }
 
 /**
@@ -422,14 +426,15 @@ export function buildConfirmationReport(
           firstActiveDate: null,
           origem: null,
           via: null,
-          utm: null,
+          utmAtBirth: r.utm_source || null,
+          utmLater: null,
         };
         tracks.set(r.id, t);
       }
       if (!isFirst && r.state === "active" && t.firstActiveDate === null) t.firstActiveDate = date;
       if (r.origem) t.origem = r.origem;
       if (r.confirmou_via) t.via = r.confirmou_via;
-      if (r.utm_source && t.utm === null) t.utm = r.utm_source;
+      if (!isFirst && r.utm_source && t.utmLater === null) t.utmLater = r.utm_source;
     }
   }
 
@@ -440,13 +445,17 @@ export function buildConfirmationReport(
   const ambActive: Array<{ dia: string; canal: string; canalPago: string }> = [];
   const utmCobertura = { snapshot: 0, store: 0, desconhecido: 0 };
   const resolveCanalPago = (id: number, t: Track): string => {
-    if (t.utm !== null) {
+    if (t.utmAtBirth !== null) {
       utmCobertura.snapshot++;
-      return classifyCanalPago(t.utm, true);
+      return classifyCanalPago(t.utmAtBirth, true);
     }
     if (opts.utmSourceByKitId?.has(id)) {
       utmCobertura.store++;
       return classifyCanalPago(opts.utmSourceByKitId.get(id), true);
+    }
+    if (t.utmLater !== null) {
+      utmCobertura.snapshot++;
+      return classifyCanalPago(t.utmLater, true);
     }
     utmCobertura.desconhecido++;
     return classifyCanalPago(null, false);

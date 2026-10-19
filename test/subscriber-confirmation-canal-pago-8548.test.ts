@@ -110,6 +110,17 @@ describe("buildConfirmationReport — por_canal_pago e tempo até confirmar 7d+"
     assert.deepEqual(Object.keys(r.por_canal_pago), ["google-ads"]);
   });
 
+  it("coorte anterior ao campo: store vence utm_source de snapshot posterior (pode ser pós-reativar)", () => {
+    const s = new Map<string, SubscriberStateRecord[]>([
+      ["2026-09-01", [rec(1, "inactive", "2026-09-01"), rec(2, "inactive", "2026-09-01")]],
+      ["2026-09-09", [rec(1, "active", "2026-09-01", { utm_source: "reativar" }), rec(2, "active", "2026-09-01", { utm_source: "meta-ads" })]],
+    ]);
+    const r = buildConfirmationReport(s, { utmSourceByKitId: new Map([[1, "google-ads"]]) });
+    // #1: store (google-ads) vence o "reativar" posterior; #2: fora do store, usa o posterior.
+    assert.deepEqual(Object.keys(r.por_canal_pago).sort(), ["google-ads", "meta-ads"]);
+    assert.deepEqual(r.utm_cobertura, { snapshot: 1, store: 1, desconhecido: 0 });
+  });
+
   it("snapshot sem utm_source cai no store; fora dos dois = desconhecido, nunca orgânico", () => {
     const s = new Map<string, SubscriberStateRecord[]>([
       ["2026-09-01", [rec(1, "inactive", "2026-09-01"), rec(2, "inactive", "2026-09-01"), rec(3, "inactive", "2026-09-01"), rec(4, "active", "2026-09-01")]],
