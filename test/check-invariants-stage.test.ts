@@ -1674,7 +1674,7 @@ describe("Stage 4 invariants", () => {
     const original = process.env.FACEBOOK_PAGE_ID;
     delete process.env.FACEBOOK_PAGE_ID;
     try {
-      const v = checkFbPageIdSet();
+      const v = checkFbPageIdSet(undefined, undefined, {}); // #10542: sem o data/.fb-credentials.json da máquina
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "facebook-page-id-set");
     } finally {
@@ -1688,7 +1688,7 @@ describe("Stage 4 invariants", () => {
     const original = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
     delete process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
     try {
-      const v = checkFbTokenSet();
+      const v = checkFbTokenSet(undefined, undefined, {}); // #10542: sem o data/.fb-credentials.json da máquina
       assert.equal(v.length, 1, `esperava 1 violation, recebeu ${JSON.stringify(v)}`);
       assert.equal(v[0].rule, "facebook-token-set");
       assert.equal(v[0].severity, "error");
@@ -1702,7 +1702,7 @@ describe("Stage 4 invariants", () => {
     const original = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
     process.env.FACEBOOK_PAGE_ACCESS_TOKEN = "test-token-value";
     try {
-      const v = checkFbTokenSet();
+      const v = checkFbTokenSet(undefined, undefined, {}); // #10542: sem o data/.fb-credentials.json da máquina
       assert.equal(v.length, 0, `esperava 0 violations, recebeu ${JSON.stringify(v)}`);
     } finally {
       if (original !== undefined) process.env.FACEBOOK_PAGE_ACCESS_TOKEN = original;
