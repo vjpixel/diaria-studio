@@ -433,6 +433,10 @@ export interface BrevoContactStatistics {
    * inválido/caixa cheia) de qualquer outra causa de `emailBlacklisted`
    * sem clique do usuário (ação admin-side/complaint na Brevo). */
   hardBounces?: BrevoStatEvent[];
+  /** #10568 — reclamação de spam. Bloqueia o contato na Brevo
+   * (`emailBlacklisted`) igual a um descadastro, e por isso entra na
+   * datação do blacklist (`latestBlacklistEventTime`). */
+  complaints?: BrevoStatEvent[];
 }
 
 /** Pura — `true` se existir >=1 evento de hard bounce
@@ -543,10 +547,16 @@ export interface BrevoContactState {
    * promoção/supressão em si. */
   last_messagesSent_at: string | null;
   /** #10536 — ISO do evento mais recente que explica o `emailBlacklisted`
-   * (`userUnsubscription`, `adminUnsubscription`, `hardBounces`), ou `null`
-   * se nenhum tem horário (bloqueio sem evento de campanha, ex.: onboarding
-   * transacional #6042). Opcional: ausente equivale a `null`. */
+   * (`userUnsubscription`, `adminUnsubscription`, `hardBounces`,
+   * `complaints` — #10568), ou `null` se nenhum tem horário (bloqueio sem
+   * evento de campanha, ex.: onboarding transacional #6042). Opcional:
+   * ausente equivale a `null`. */
   blacklist_event_latest_at?: string | null;
+  /** #10568 — existe evento de blacklist (unsub/bounce/complaint) SEM
+   * horário legível. Não dá pra saber se é anterior ou posterior à entrada
+   * na lista, então nem descadastra no Kit nem desfaz a movimentação (#10557).
+   * Opcional: ausente equivale a `false`. */
+  blacklist_event_undated?: boolean;
 }
 
 /** #10536 — Pura: ISO do evento de blacklist mais recente (ver `BrevoContactState.blacklist_event_latest_at`). */
@@ -555,9 +565,27 @@ export function latestBlacklistEventTime(statistics: BrevoContactStatistics | un
     latestEventTime(statistics?.unsubscriptions?.userUnsubscription),
     latestEventTime(statistics?.unsubscriptions?.adminUnsubscription),
     latestEventTime(statistics?.hardBounces),
+    latestEventTime(statistics?.complaints), // #10568
   ].filter((t): t is string => t !== null);
   if (candidates.length === 0) return null;
   return candidates.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
+}
+
+/**
+ * #10568 — Pura: há evento de blacklist (descadastro user/admin, hard bounce
+ * ou reclamação de spam) cujo horário não é legível? Um evento assim pode ser
+ * posterior à entrada na lista — tratar o blacklist como pré-existente e
+ * devolver a pessoa ao Kit (#10557) seria reenviar a quem saiu ou reclamou.
+ * Entrada malformada (não-objeto) conta como sem data (fail-safe).
+ */
+export function hasUndatedBlacklistEvent(statistics: BrevoContactStatistics | undefined): boolean {
+  const groups: unknown[] = [
+    statistics?.unsubscriptions?.userUnsubscription,
+    statistics?.unsubscriptions?.adminUnsubscription,
+    statistics?.hardBounces,
+    statistics?.complaints,
+  ];
+  return groups.some((g) => Array.isArray(g) && g.some((e) => eventTimestampMs(e) === null));
 }
 
 /**
@@ -586,6 +614,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
   // #10536 — só presente quando há evento datado (ausente ≡ null; mantém o
   // shape dos contatos sem blacklist igual ao de antes).
   const blacklistAt = latestBlacklistEventTime(res.body?.statistics);
+  const blacklistUndated = hasUndatedBlacklistEvent(res.body?.statistics);
   return {
     ...counts,
     mature_sends_count: mature.sends_count,
@@ -595,6 +624,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     hardBounced: hasHardBounce(res.body?.statistics),
     last_messagesSent_at: latestEventTime(res.body?.statistics?.messagesSent),
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
+    ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
   };
 }
 
@@ -1969,6 +1999,14 @@ export interface RunEvaluationResult {
    */
   kitSemAberturaBlacklistReverted: number;
   /**
+   * #10568 — contatos `kit-sem-abertura:` `emailBlacklisted` com evento de
+   * blacklist SEM data legível (e nenhum evento datado posterior à entrada).
+   * Ambíguo: nem descadastra no Kit nem desfaz a movimentação — fica
+   * `in_brevo` (sem envio por nenhum dos lados, a direção segura) e o warn
+   * pede checagem manual. Não conta em `failed`: retentar não muda o dado.
+   */
+  kitSemAberturaBlacklistUndated: number;
+  /**
    * #7382 — quantos contatos seriam promovidos pra Beehiiv (threshold de
    * score) mas já estavam `active` no Kit no momento da checagem: a
    * promoção pra Beehiiv foi PULADA (nunca duplicada) e o contato saiu da
@@ -2185,6 +2223,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kitAutoConfirmSkipped = 0;
   let kitSemAberturaPreexistingBlacklist = 0; // #10536
   let kitSemAberturaBlacklistReverted = 0; // #10557
+  let kitSemAberturaBlacklistUndated = 0; // #10568
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
   let doiResent = 0; // #9835
@@ -2301,6 +2340,22 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // especial) ainda o alcançariam. Descadastra no Kit com releitura
           // ANTES de gravar a saída; sem confirmação, fica `in_brevo` e a
           // próxima rodada retenta.
+          if (
+            !isKitSemAberturaBlacklistNew(nativeState.blacklist_event_latest_at, contact.added_at) &&
+            nativeState.blacklist_event_undated === true
+          ) {
+            // #10568 — há evento de blacklist sem data legível: pode ser uma
+            // saída (ou reclamação de spam) posterior à entrada. Desfazer a
+            // movimentação devolveria a pessoa à diária pelo Kit; descadastrar
+            // no Kit é irreversível. Nenhum dos dois: fica `in_brevo`.
+            kitSemAberturaBlacklistUndated++;
+            log(
+              `warn: ${contact.email}: emailBlacklisted na Brevo, origem kit-sem-abertura, com evento de blacklist SEM data ` +
+                `(added_at=${contact.added_at}) — não dá pra saber se é anterior à entrada: nem descadastro no Kit nem ` +
+                `reversão pro Kit; fica in_brevo, checar à mão (#10568).`,
+            );
+            continue;
+          }
           if (!isKitSemAberturaBlacklistNew(nativeState.blacklist_event_latest_at, contact.added_at)) {
             // #10536 — blacklist anterior à entrada na lista (ou sem evento
             // datado): o sync moveu alguém que a Brevo já bloqueava. Não é
@@ -3127,6 +3182,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitAutoConfirmSkipped,
     kitSemAberturaPreexistingBlacklist,
     kitSemAberturaBlacklistReverted,
+    kitSemAberturaBlacklistUndated,
     skippedActiveOnKit,
     awaitingKitConfirmation,
     doiResent,
@@ -3275,6 +3331,7 @@ async function main(): Promise<number> {
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
       `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada ` +
       `(${result.kitSemAberturaBlacklistReverted} devolvido(s) ao Kit, tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, #10536/#10557), ` +
+      `${result.kitSemAberturaBlacklistUndated} kit-sem-abertura com blacklist sem data (intocado(s), checar à mão, #10568), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
