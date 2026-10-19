@@ -9,7 +9,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -128,7 +128,7 @@ describe("run-nightly-chain — o overnight sobe sempre (#10552)", () => {
 
 describe("run-nightly-chain — invocação headless do overnight", () => {
   it("par sonnet/medium do #9530 e flag --agendado explícita", () => {
-    const args = buildOvernightClaudeArgs();
+    const args = buildOvernightClaudeArgs("/repo", (p) => p.replaceAll("\\", "/"));
     assert.equal(NIGHTLY_OVERNIGHT_MODEL, "claude-sonnet-5-5");
     assert.equal(NIGHTLY_OVERNIGHT_EFFORT, "medium");
     assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-5-5");
@@ -139,7 +139,7 @@ describe("run-nightly-chain — invocação headless do overnight", () => {
   });
 
   it("sem --no-session-persistence (a Fase 0 lê o próprio transcript) e sem --max-turns (sem teto, decisão do editor)", () => {
-    const args = buildOvernightClaudeArgs();
+    const args = buildOvernightClaudeArgs("/repo", (p) => p.replaceAll("\\", "/"));
     assert.ok(!args.includes("--no-session-persistence"));
     assert.ok(!args.includes("--max-turns"));
   });
@@ -215,5 +215,37 @@ describe("run-nightly-chain — classificação e exit code", () => {
     assert.equal(chainExitCode("ok", { status: "skipped-active-session", exitCode: null }), 0);
     assert.equal(chainExitCode("failed", { status: "skipped-active-session", exitCode: null }), EXIT_REVIEW_FAILED);
     assert.equal(chainExitCode("ok", { status: "failed", exitCode: null }), EXIT_OVERNIGHT_FAILED);
+  });
+});
+
+// #10569 — mesmo fix do #9086 no runner da edição: no `300`, `data` é link pro
+// OneDrive (fora do repo) e `acceptEdits` só aceita escrita dentro do
+// diretório de trabalho. Sem `--add-dir`, o overnight agendado tinha o
+// `plan.json`/`report.md` negados sem ninguém pra aprovar.
+describe("run-nightly-chain — --add-dir de data/ fora do repo (#10569)", () => {
+  const posix = (p: string) => p.replaceAll("\\", "/");
+  const junction = (p: string) => (posix(p) === "/repo/data" ? "/onedrive/diaria/data" : posix(p));
+
+  it("data/ link pra fora do repo -> --add-dir=<alvo real>, antes do --", () => {
+    const args = buildOvernightClaudeArgs("/repo", junction);
+    const i = args.indexOf("--add-dir=/onedrive/diaria/data");
+    assert.ok(i >= 0, `esperava --add-dir no args: ${args.join(" ")}`);
+    assert.ok(i < args.indexOf("--"), "--add-dir antes do -- (senão vira parte do prompt)");
+    assert.ok(!args.includes("--add-dir"), "forma --add-dir=<path>, nunca separada (#9348)");
+  });
+
+  it("data/ dentro do repo -> nenhum --add-dir", () => {
+    const args = buildOvernightClaudeArgs("/repo", posix);
+    assert.ok(!args.some((a) => a.startsWith("--add-dir")));
+  });
+
+  it("spawn real do main(): data/ como symlink pra fora do repo chega ao claude como --add-dir", { skip: process.platform === "win32" }, () => {
+    const root = makeRepo();
+    const outside = mkdtempSync(join(tmpdir(), "nightly-chain-data-"));
+    symlinkSync(outside, join(root, "data"), "dir");
+    const { deps, calls } = harness({ status: 0 }, { status: 0 });
+    main(root, deps);
+    const overnightArgs = calls[1].args;
+    assert.ok(overnightArgs.includes(`--add-dir=${realpathSync(outside)}`), overnightArgs.join(" "));
   });
 });

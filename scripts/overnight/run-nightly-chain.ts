@@ -30,6 +30,12 @@
  *   - SEM `--no-session-persistence`, ao contrário do runner da edição: a
  *     Fase 0 do overnight lê o PRÓPRIO transcript (sonda
  *     `effective-model-probe.ts`, `coordinator-usage-estimate.ts`).
+ *   - `--add-dir=<alvo real de data/>` quando `data/` resolve pra fora do
+ *     repo (#10569, mesmo fix do #9086 no runner da edição): no `300`,
+ *     `data` é link pro OneDrive, e `--permission-mode acceptEdits` só
+ *     aceita escrita dentro do diretório de trabalho. Sem isso, o
+ *     `plan.json`/`report.md` da rodada seriam negados sem ninguém pra
+ *     aprovar.
  *   - SEM `--max-turns`: o editor decidiu "sem teto" pro modo agendado
  *     (comentário de 19/10/2026 na #10552, mesmo racional do #5272). A
  *     rodada para quando a fila seca; a colisão com a edição segue sob o
@@ -51,13 +57,13 @@
  * `enabled: false`. Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { hasActiveSessionOfKind } from "../lib/session-registry.ts";
-import { NO_BACKGROUND_DIRECTIVE } from "../lib/edition-stage-runner.ts";
+import { NO_BACKGROUND_DIRECTIVE, dataAddDirArgs } from "../lib/edition-stage-runner.ts";
 import { claudeCliEnv } from "./run-scheduled-edicao.ts";
 
 /** Script do review, relativo à raiz do repo. */
@@ -103,8 +109,15 @@ export function buildOvernightPrompt(): string {
   return `/diaria-overnight ${AGENDADO_FLAG} ${NO_BACKGROUND_DIRECTIVE}`;
 }
 
-/** Argumentos do `claude` pro overnight agendado. `--` antes do prompt (#9579). */
-export function buildOvernightClaudeArgs(): string[] {
+/**
+ * Argumentos do `claude` pro overnight agendado. `--` antes do prompt (#9579).
+ * `--add-dir` do alvo real de `data/` quando fora do repo (#10569/#9086) — na
+ * forma `--add-dir=<path>` (#9348) e antes do `--`.
+ */
+export function buildOvernightClaudeArgs(
+  repoRootAbs: string,
+  realpathFn: (p: string) => string = realpathSync,
+): string[] {
   return [
     "--print",
     "--model",
@@ -115,6 +128,7 @@ export function buildOvernightClaudeArgs(): string[] {
     "acceptEdits",
     "--output-format",
     "json",
+    ...dataAddDirArgs(repoRootAbs, realpathFn),
     "--",
     buildOvernightPrompt(),
   ];
@@ -228,7 +242,7 @@ export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyC
 }
 
 export function runOvernight(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): OvernightOutcome {
-  const r = deps.spawn(claudeBin, buildOvernightClaudeArgs(), {
+  const r = deps.spawn(claudeBin, buildOvernightClaudeArgs(repoRootAbs), {
     cwd: repoRootAbs,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
