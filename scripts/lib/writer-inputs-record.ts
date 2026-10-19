@@ -202,8 +202,8 @@ function asRecording(r: WriterInputsRecord): WriterInputsRecording {
 
 /**
  * Grava o registro SEM apagar o anterior (#9648): se já existe um registro
- * com os mesmos insumos (URL+sha256+status por destaque), é no-op e o
- * original fica intocado; se difere, o anterior vai pra `history[]` (junto
+ * com os mesmos insumos (URL+sha256+status por destaque) e o mesmo
+ * `highlight_count` (#10549), é no-op e o original fica intocado; se difere, o anterior vai pra `history[]` (junto
  * com o histórico que ele já carregava). Registro anterior ilegível é
  * preservado ao lado (`02-writer-inputs.corrupt-{ts}.json`), nunca
  * sobrescrito.
@@ -214,7 +214,12 @@ export function writeWriterInputsRecord(editionDir: string, record: WriterInputs
   const prev = readWriterInputsRecord(editionDir);
   const history = [...(record.history ?? [])];
   if (prev.kind === "ok") {
-    if (sameInputs(prev.record.destaques, record.destaques)) return p;
+    // #10549: registro anterior ao `highlight_count` (70517d77e) com os mesmos insumos
+    // NÃO é no-op quando a gravação nova traz o campo — senão o check `unrecorded`
+    // fica cego justamente para as edições antigas. Regrava, empilhando o anterior.
+    const addsHighlightCount =
+      typeof record.highlight_count === "number" && prev.record.highlight_count !== record.highlight_count;
+    if (sameInputs(prev.record.destaques, record.destaques) && !addsHighlightCount) return p;
     history.unshift(...(prev.record.history ?? []), asRecording(prev.record));
   } else if (prev.kind === "corrupt") {
     renameSync(p, p.replace(/\.json$/, `.corrupt-${record.recorded_at.replace(/[:.]/g, "-")}.json`));

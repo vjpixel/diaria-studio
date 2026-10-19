@@ -530,7 +530,9 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   `{"unidade": "#NNNN | lote #A + #B", "issues": [123], "papel": "dev-implementador | dev-fixer | ci-retry", "subagent_tokens": N, "tool_uses": N, "duration_ms": N, "source": "subagent_transcript | unavailable", "agent_id": "..."}`.
   Campo `papel` obrigatório (#9875), mesma regra do overnight: um evento por
   invocação de `Agent` da unidade (`dev-implementador`, `dev-fixer`,
-  `ci-retry`), nunca um só somando os três.
+  `ci-retry`), nunca um só somando os três. `ci-retry` só sai de agent NOVO
+  (`dev-fixer` com CI no description); retry via `SendMessage` fica no evento
+  do papel original (um evento por `agent_id`, #10547).
   `continuo-cost-summary.ts` (#5344 Parte B0) soma `details.subagent_tokens`
   destes eventos como categoria "Implementação", separada da categoria
   "Coordenador" (`coordinator_tokens_estimate` acima) — as duas somadas

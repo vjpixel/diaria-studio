@@ -215,9 +215,11 @@ export function foreignClaimedIssues(
   return out;
 }
 
-/** Pure: issue de um branch de unidade solo (`{overnight,develop,continuo}/fix-{N}[-…]`), ou `null`. */
+/** Pure: issue de um branch de unidade solo (`{overnight,develop,continuo}/{fix,feat,blast}-{N}[-…]`), ou `null`.
+ * `feat-N`/`blast-N` (#10548) são convenções do develop (`blast` = cat. D), já reconhecidas por
+ * `branchDeclaredIssueNumbers` em `issue-open-pr-check.ts`. Branch fundida (`fix-N-M-slug`) devolve só o 1º N. */
 export function issueFromBranch(ref: string): number | null {
-  const m = /^(?:overnight|develop|continuo)\/fix-(\d+)(?:-|$)/.exec(ref);
+  const m = /^(?:overnight|develop|continuo)\/(?:fix|feat|blast)-(\d+)(?:-|$)/.exec(ref);
   return m ? Number(m[1]) : null;
 }
 

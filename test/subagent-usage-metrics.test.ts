@@ -135,6 +135,53 @@ describe("classifySubagent (#10476)", () => {
   });
 });
 
+describe("review via fallback adhoc-opus-medium (#10547)", () => {
+  it("adhoc-opus-medium com review no description é revisor; sem review segue subagent_metrics", () => {
+    assert.equal(
+      classifySubagent({ agentType: "adhoc-opus-medium", description: "Review consolidado pós-rodada" }).message,
+      REVIEW_METRICS_MESSAGE,
+    );
+    assert.equal(
+      classifySubagent({ agentType: "adhoc-opus-medium", description: "Revisão 1.5b da mini-rodada" }).message,
+      REVIEW_METRICS_MESSAGE,
+    );
+    assert.equal(
+      classifySubagent({ agentType: "adhoc-opus-medium", description: "Review PR #10474 (fleet fallback)" }).message,
+      FLEET_REVIEW_METRICS_MESSAGE,
+    );
+    assert.deepEqual(classifySubagent({ agentType: "adhoc-opus-medium", description: "Ler thread da #10200" }), {
+      message: SUBAGENT_METRICS_MESSAGE,
+      papel: "adhoc-opus-medium",
+    });
+    // Só o fallback documentado — dev-implementador com "review" no description continua implementação.
+    assert.equal(
+      classifySubagent({ agentType: "dev-implementador", description: "Implementar #1 (review de prompt)" }).message,
+      SUBAGENT_METRICS_MESSAGE,
+    );
+  });
+
+  it("sessão sem plugin: review em adhoc-opus-medium emite review_metrics e não grava marcador no_reviewers", () => {
+    const { events, markers } = planEvents(
+      [
+        record("i1", "dev-implementador", "Implementar #10", 1000),
+        record("r1", "adhoc-opus-medium", "Review consolidado pós-rodada", 5000, "2026-10-18T19:00:00.000Z"),
+      ],
+      [],
+      "261019",
+      undefined,
+      NOW,
+    );
+    const review = events.find((e) => e.message === REVIEW_METRICS_MESSAGE);
+    assert.equal(review?.details.review_tokens, 5000);
+    assert.equal(review?.details.depth, 0);
+    assert.equal(
+      events.some((e) => e.message === SUBAGENT_METRICS_MESSAGE && e.details.papel === "adhoc-opus-medium"),
+      false,
+    );
+    assert.deepEqual(markers, []);
+  });
+});
+
 describe("extractRefs (#10476)", () => {
   it("separa issue (#N) de PR (PR #N)", () => {
     assert.deepEqual(extractRefs("Implementar lote #10443 + #10442"), { issues: [10443, 10442], prs: [] });

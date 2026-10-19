@@ -364,6 +364,44 @@ describe("02-writer-inputs.json — imutável + check de auditabilidade (#9648, 
     }
   });
 
+  it("registro legado sem highlight_count: re-record com os mesmos insumos grava o campo e acusa `unrecorded` (#10549)", () => {
+    const ed = mkdtempSync(join(tmpdir(), "writer-inputs-9648-"));
+    try {
+      mkdirSync(join(ed, "_internal"), { recursive: true });
+      const txt = join(ed, "_internal", "src.txt");
+      writeFileSync(txt, LONG);
+      const sources = [{ destaque: 1, url: "https://ex.com/a", path: txt }];
+      // Registro pré-70517d77e: sem highlight_count, D2/D3 sem entrada.
+      const legacy = buildWriterInputsRecord(ed, sources, { now: new Date("2026-10-01T10:00:00Z") });
+      assert.equal("highlight_count" in legacy, false);
+      writeWriterInputsRecord(ed, legacy);
+      assert.deepEqual(findWriterInputGaps(legacy), []);
+      // Re-rodar o Stage 2 com as mesmas fontes, agora com highlight_count.
+      const fresh = buildWriterInputsRecord(ed, sources, { now: new Date("2026-10-18T10:00:00Z"), highlightCount: 3 });
+      writeWriterInputsRecord(ed, fresh);
+      const read = readWriterInputsRecord(ed);
+      assert.equal(read.kind, "ok");
+      if (read.kind !== "ok") return;
+      assert.equal(read.record.highlight_count, 3);
+      assert.deepEqual(
+        findWriterInputGaps(read.record).map((g) => [g.destaque, g.status]),
+        [
+          [2, "unrecorded"],
+          [3, "unrecorded"],
+        ],
+      );
+      // O registro antigo não é apagado: vai pra history[].
+      assert.equal(read.record.history?.length, 1);
+      assert.equal(read.record.history?.[0].recorded_at, "2026-10-01T10:00:00.000Z");
+      // E a 2ª gravação idêntica (com highlight_count) volta a ser no-op.
+      const before = readFileSync(recordPath(ed), "utf8");
+      writeWriterInputsRecord(ed, buildWriterInputsRecord(ed, sources, { now: new Date("2026-10-19T10:00:00Z"), highlightCount: 3 }));
+      assert.equal(readFileSync(recordPath(ed), "utf8"), before);
+    } finally {
+      rmSync(ed, { recursive: true, force: true });
+    }
+  });
+
   it("registro anterior corrompido é preservado ao lado, nunca sobrescrito", () => {
     const ed = mkdtempSync(join(tmpdir(), "writer-inputs-9648-"));
     try {
