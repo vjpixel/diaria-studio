@@ -184,7 +184,7 @@ import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 // pra enriquecer a mensagem de erro com a fonte única sem duplicar a lista
 // — ver docblock de `session-id-required-subcommands.ts` pro motivo de ser
 // um módulo à parte em vez de o hook importar `session-registry.ts` inteiro.
-import { SESSION_ID_REQUIRED_SUBCOMMANDS } from "./session-id-required-subcommands.ts";
+import { SESSION_ID_REQUIRED_SUBCOMMANDS, resolveEnvInjectedSessionId } from "./session-id-required-subcommands.ts";
 
 /**
  * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
@@ -6236,6 +6236,11 @@ function main(): void {
   const argv = process.argv.slice(2);
   const { positional, values, flags } = parseArgs(argv);
   const command = positional[0];
+  // #10560: equivalente, por env, do `.claude/hooks/inject-session-id.mjs`
+  // para o elo `codex exec` do contínuo (nenhum hook do Claude Code roda lá).
+  // Só subcomandos de claim/lease; `--session-id` explícito sempre vence.
+  const envInjectedSessionId = resolveEnvInjectedSessionId(command, values, process.env);
+  if (envInjectedSessionId) values["session-id"] = envInjectedSessionId;
 
   try {
     const repoRoot = resolveRepoRoot();

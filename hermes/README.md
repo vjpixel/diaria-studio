@@ -293,3 +293,30 @@ interceptar.
   rodar `npm run setup-hooks` nele (1x; sobrevive a `npm ci`/`npm install`
   seguintes, mas não a recriar o checkout do zero sem rodar o passo de
   novo).
+
+## Elo `codex exec` na cadeia de implementação (#10560) — DESLIGADO por padrão
+
+Decisão do editor (briefing overnight 261019e): Sol 6.1 (`gpt-6.1-sol`,
+`model_reasoning_effort="low"`) pelo plano OpenAI da Codex CLI, como elo
+ANTES dos `:free` em `claude-delegate.sh`, com fallback na cadeia atual.
+Liga com `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente do call site (o cron do
+contínuo não exporta isso hoje). Os hooks de `.claude/hooks/` não rodam
+dentro do `codex exec`, então o elo só arma com os substitutos no lugar
+(`hermes/scripts/lib/codex-lane.sh`, preflight fail-closed — se algo falta,
+o elo é pulado e a cadeia segue como antes):
+
+- master/main: `core.hooksPath` por env (nunca gravado no repo) →
+  `hermes/scripts/codex-lane/hooks/reference-transaction` recusa qualquer
+  atualização de `refs/heads/master|main`, inclusive com `--no-verify`; os
+  outros hooks encadeiam pro `.git/hooks` original (o pre-commit do #8878).
+- `--session-id`: `DIARIA_INJECTED_SESSION_ID` (id do tick) →
+  `session-registry.ts` injeta em claim/lease (`resolveEnvInjectedSessionId`).
+- PR: `hermes/scripts/codex-lane/bin/gh` na frente do PATH recusa merge,
+  recusa `pr create` fora de `continuo/*` e roda o guard de PII; o review
+  segue sendo o `continuo-pr-review.sh`.
+
+Antes de ligar no `300`: medir o consumo da cota do plano (compartilhada com
+o orquestrador `gpt-6-luna`) e validar o `codex exec` real no checkout
+(sandbox `danger-full-access` por padrão, `CODEX_LANE_SANDBOX` troca).
+Esgotamento de cota grava `${TMPDIR}/codex-lane-quota-exhausted-until` e o
+elo fica pulado por 6h (`CODEX_LANE_QUOTA_BACKOFF_S`).

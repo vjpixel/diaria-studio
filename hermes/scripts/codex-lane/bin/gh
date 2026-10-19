@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# gh shim do elo `codex exec` do contínuo (#10560). Fica na frente do PATH só
+# no ambiente do processo `codex` (hermes/scripts/lib/codex-lane.sh) — nunca
+# instalado globalmente. Substitui, fora do Claude Code, o que os hooks de
+# `.claude/hooks/` fazem em volta de `gh pr create`/`gh pr merge`:
+#
+#   - `gh pr merge` e merge via `gh api` (REST `pulls/N/merge`, GraphQL
+#     `mergePullRequest`/`enablePullRequestAutoMerge`) → recusados (exit 3).
+#     O merge do contínuo é do `continuo-pr-review.sh`, nunca da sessão que
+#     implementa (#6864; equivalente do block-gh-pr-merge-subagent.mjs).
+#   - `gh pr create` → só a partir de branch `continuo/*` (#6446/#8588); roda
+#     antes o guard de PII/artefato de runtime
+#     (.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs, #6753/#6971)
+#     com um payload sintético; depois de criada, registra a URL em
+#     ${TMPDIR}/codex-lane-pr-created.log. O review (papel do
+#     pr-create-review.mjs no Claude Code) é o `continuo-pr-review.sh`, que
+#     revisa toda PR aberta e é o único merger.
+#
+# Todo o resto passa direto pro próximo `gh` do PATH (inclusive o
+# gh-wrapper.mjs do #8884, quando instalado), sem alterar argv.
+set -uo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(dirname "$SELF")"
+
+find_real_gh() {
+  local d cand
+  local IFS=:
+  for d in $PATH; do
+    [ -n "$d" ] || continue
+    cand="$d/gh"
+    [ -x "$cand" ] || continue
+    [ "$(readlink -f "$cand")" = "$SELF" ] && continue
+    [ "$(readlink -f "$d")" = "$SELF_DIR" ] && continue
+    echo "$cand"
+    return 0
+  done
+  return 1
+}
+
+REAL_GH=$(find_real_gh) || { echo "[codex-lane gh] gh real não encontrado no PATH" >&2; exit 127; }
+
+refuse() {
+  echo "[codex-lane gh #10560] recusado: $1" >&2
+  exit 3
+}
+
+# Subcomando = os 2 primeiros argumentos posicionais. Flags que levam valor
+# na forma separada (`-R owner/repo`, `--repo owner/repo`, `--hostname h`)
+# têm o VALOR pulado — senão `gh pr -R owner/repo merge 5` lia
+# `sub=owner/repo` e o merge passava direto pro gh real (review da PR #10583,
+# P2). Flag desconhecida com valor separado ainda poderia deslocar a leitura;
+# por isso, além disso, `merge` em QUALQUER posição depois de `pr` também é
+# recusado (lado seguro: falso positivo só recusa).
+pos=()
+skip_next=0
+for a in "$@"; do
+  if [ "$skip_next" -eq 1 ]; then
+    skip_next=0
+    continue
+  fi
+  case "$a" in
+    -R|--repo|--hostname) skip_next=1 ;;
+    -*) ;;
+    *) pos+=("$a") ;;
+  esac
+  [ "${#pos[@]}" -ge 2 ] && break
+done
+group="${pos[0]:-}"
+sub="${pos[1]:-}"
+
+if [ "$group" = "pr" ]; then
+  [ "$sub" = "merge" ] && refuse "gh pr merge — a sessão do contínuo nunca mergeia; o merge é do continuo-pr-review.sh (#6864)"
+  seen_pr=0
+  for a in "$@"; do
+    if [ "$seen_pr" -eq 1 ] && [ "$a" = "merge" ]; then
+      refuse "gh pr ... merge (argv: $*) — a sessão do contínuo nunca mergeia; o merge é do continuo-pr-review.sh (#6864)"
+    fi
+    [ "$a" = "pr" ] && seen_pr=1
+  done
+fi
+if [ "$group" = "api" ]; then
+  for a in "$@"; do
+    case "$a" in
+      *pulls/[0-9]*/merge*|*mergePullRequest*|*enablePullRequestAutoMerge*)
+        refuse "merge via gh api ('$a') — a sessão do contínuo nunca mergeia (#6864)" ;;
+    esac
+  done
+fi
+
+if [ "$group" = "pr" ] && [ "$sub" = "create" ]; then
+  head_branch=""
+  prev=""
+  for a in "$@"; do
+    case "$prev" in
+      -H|--head) head_branch="$a" ;;
+    esac
+    case "$a" in
+      --head=*) head_branch="${a#--head=}" ;;
+    esac
+    prev="$a"
+  done
+  if [ -z "$head_branch" ]; then
+    head_branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || true)
+  fi
+  head_branch="${head_branch#*:}"
+  case "$head_branch" in
+    continuo/*) ;;
+    *) refuse "gh pr create a partir de '${head_branch:-HEAD destacado}' — só branch continuo/fix-<issue>-<slug> (#6446/#8588)" ;;
+  esac
+
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  pii_hook=""
+  [ -n "$repo_root" ] && pii_hook="$repo_root/.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs"
+  if [ -n "$pii_hook" ] && [ -f "$pii_hook" ] && command -v node >/dev/null 2>&1; then
+    payload=$(node -e 'process.stdout.write(JSON.stringify({tool_name:"Bash",tool_input:{command:"gh pr create"},cwd:process.argv[1]}))' "$repo_root")
+    # Fail-open, em paridade com o hook original — mas com rastro em stderr
+    # (review da PR #10583, P3): node quebrado, hook lançando ou JSON
+    # malformado deixava o `gh pr create` seguir sem aviso nenhum.
+    pii_err="${TMPDIR:-/tmp}/codex-lane-pii-guard.$$.err"
+    verdict=$(printf '%s' "$payload" | node "$pii_hook" 2>"$pii_err")
+    pii_rc=$?
+    if [ "$pii_rc" -ne 0 ]; then
+      echo "[codex-lane gh #10560] AVISO: guard de PII/artefato de runtime falhou (rc=$pii_rc) — seguindo SEM o guard (fail-open, paridade com o hook): $(head -c 400 "$pii_err" 2>/dev/null | tr '\n' ' ')" >&2
+    elif [ -n "$verdict" ] && ! printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{JSON.parse(s)}catch{process.exit(1)}})' 2>/dev/null; then
+      echo "[codex-lane gh #10560] AVISO: guard de PII/artefato de runtime devolveu JSON malformado — seguindo SEM o guard (fail-open): $(printf '%s' "$verdict" | head -c 400 | tr '\n' ' ')" >&2
+    fi
+    rm -f "$pii_err" 2>/dev/null || true
+    if printf '%s' "$verdict" | command grep -q '"permissionDecision":"deny"'; then
+      reason=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).hookSpecificOutput.permissionDecisionReason)}catch{process.stdout.write(s)}})')
+      refuse "guard de PII/artefato de runtime: $reason"
+    fi
+  fi
+
+  out=$("$REAL_GH" "$@")
+  rc=$?
+  printf '%s\n' "$out"
+  if [ "$rc" -eq 0 ]; then
+    url=$(printf '%s\n' "$out" | command grep -oE 'https://github\.com/[^ ]+/pull/[0-9]+' | tail -n1)
+    printf '%s %s %s\n' "$(date -u -Iseconds)" "${url:-?}" "$head_branch" >> "${TMPDIR:-/tmp}/codex-lane-pr-created.log" 2>/dev/null || true
+    echo "[codex-lane gh] PR criada (${url:-url não lida}); o review é do continuo-pr-review.sh — não espere CI nem review aqui." >&2
+  fi
+  exit "$rc"
+fi
+
+exec "$REAL_GH" "$@"
