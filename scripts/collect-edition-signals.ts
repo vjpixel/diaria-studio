@@ -66,9 +66,11 @@ import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 import { readHandoff, type HandoffEntry, type HandoffRead } from "./lib/session-handoff.ts";
 import {
   WRITER_INPUTS_CUTOVER_EDITION,
+  checkWriterInputSnapshots,
   findWriterInputGaps,
   readWriterInputsRecord,
   type ReadWriterInputs,
+  type WriterInputSnapshotIssue,
 } from "./lib/writer-inputs-record.ts";
 
 /**
@@ -992,19 +994,30 @@ export function signalsFromTestEmailReview(
 //     `writer_inputs_record_failed:` no run-log, ou Stage 2 rodado sem a
 //     flag) → signal `low`. Regra puramente por data + presença de arquivo,
 //     sem depender de achar o evento no run-log (que pode ter sido perdido).
+//   - idem quando o manifest SUMIU mas o Stage 2 escreveu os destaques
+//     (`_internal/02-d1-draft.md`): `fact-check-sources/` aparece esvaziado
+//     depois do Stage 4 (edições 261006, 261013–261016), e só o manifest
+//     como prova de "Stage 2 rodou" deixava a ausência passar calada.
+// Registro presente: além dos gaps de texto (ausente/truncado/sem entrada),
+// confere que cada cópia congelada existe e bate com o sha256 gravado —
+// registro cujo texto não se pode reler não serve à medição do item 3.
 
 export interface WriterInputsContext {
   /** AAMMDD da edição; null = não identificável (sem sinal de ausência). */
   edition: string | null;
   /** `_internal/fact-check-sources/manifest.json` existe. */
   sourcesManifestPresent: boolean;
+  /** `_internal/02-d1-draft.md` existe (o Stage 2 despachou writer-destaque). */
+  stage2DraftsPresent?: boolean;
+  /** Resultado de `checkWriterInputSnapshots` (só quando o registro é legível). */
+  snapshotIssues?: WriterInputSnapshotIssue[];
 }
 
 export function signalsFromWriterInputs(read: ReadWriterInputs, ctx?: WriterInputsContext): Signal[] {
   if (read.kind === "absent") {
     if (
       !ctx ||
-      !ctx.sourcesManifestPresent ||
+      !(ctx.sourcesManifestPresent || ctx.stage2DraftsPresent) ||
       !ctx.edition ||
       !/^\d{6}$/.test(ctx.edition) ||
       ctx.edition < WRITER_INPUTS_CUTOVER_EDITION
@@ -1018,7 +1031,7 @@ export function signalsFromWriterInputs(read: ReadWriterInputs, ctx?: WriterInpu
         title: "Registro de texto-fonte do writer-destaque ausente (02-writer-inputs.json)",
         details: { edition: ctx.edition, cutover_edition: WRITER_INPUTS_CUTOVER_EDITION },
         suggested_action:
-          "As fontes dos destaques foram baixadas mas `_internal/02-writer-inputs.json` não existe — falha ao gravar o registro (ver evento `writer_inputs_record_failed:` em data/run-log.jsonl) ou Stage 2 rodado sem `--record-writer-inputs` (#9648).",
+          "O Stage 2 baixou as fontes ou escreveu os destaques mas `_internal/02-writer-inputs.json` não existe — falha ao gravar o registro (ver evento `writer_inputs_record_failed:` em data/run-log.jsonl) ou Stage 2 rodado sem `--record-writer-inputs` (#9648).",
         related_issue: "#9648",
       },
     ];
@@ -1036,11 +1049,29 @@ export function signalsFromWriterInputs(read: ReadWriterInputs, ctx?: WriterInpu
       },
     ];
   }
+  const out: Signal[] = [];
+  const snapshotIssues = ctx?.snapshotIssues ?? [];
+  if (snapshotIssues.length > 0) {
+    out.push({
+      kind: "writer_source_text_gap",
+      severity: "low",
+      title: `Cópia do texto-fonte do writer-destaque não auditável: ${snapshotIssues
+        .map((i) => `D${i.destaque} (${i.problem === "hash-divergente" ? "hash divergente" : "cópia ausente"})`)
+        .join(", ")}`,
+      details: { issues: snapshotIssues },
+      suggested_action:
+        "O registro `_internal/02-writer-inputs.json` aponta pra uma cópia em `_internal/02-writer-inputs/` que sumiu ou foi alterada depois do Stage 2 — sem ela não dá pra conferir se um fato ausente no corpo estava no texto recebido (#9648). Procurar quem apaga/reescreve o diretório.",
+      related_issue: "#9648",
+    });
+  }
   const gaps = findWriterInputGaps(read.record);
-  if (gaps.length === 0) return [];
+  if (gaps.length === 0) return out;
   const missing = gaps.filter((g) => g.status === "missing");
-  const labels = gaps.map((g) => `D${g.destaque} (${g.status === "missing" ? "sem texto" : `${g.bytes} bytes`})`);
+  const gapLabel = (g: (typeof gaps)[number]): string =>
+    g.status === "missing" ? "sem texto" : g.status === "unrecorded" ? "sem registro" : `${g.bytes} bytes`;
+  const labels = gaps.map((g) => `D${g.destaque} (${gapLabel(g)})`);
   return [
+    ...out,
     {
       kind: "writer_source_text_gap",
       severity: missing.length > 0 ? "medium" : "low",
@@ -1805,12 +1836,17 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
 
   // Signal 9 (#9648): texto-fonte do writer-destaque ausente/truncado.
   // Fail-soft: `readWriterInputsRecord` devolve "corrupt" em vez de lançar.
-  signals.push(
-    ...signalsFromWriterInputs(readWriterInputsRecord(editionDir), {
-      edition,
-      sourcesManifestPresent: existsSync(resolve(editionDir, "_internal/fact-check-sources/manifest.json")),
-    }),
-  );
+  {
+    const writerInputs = readWriterInputsRecord(editionDir);
+    signals.push(
+      ...signalsFromWriterInputs(writerInputs, {
+        edition,
+        sourcesManifestPresent: existsSync(resolve(editionDir, "_internal/fact-check-sources/manifest.json")),
+        stage2DraftsPresent: existsSync(resolve(editionDir, "_internal/02-d1-draft.md")),
+        snapshotIssues: writerInputs.kind === "ok" ? checkWriterInputSnapshots(editionDir, writerInputs.record) : [],
+      }),
+    );
+  }
 
   // Signal 7 (#4966): recurring_editor_request — cross-edição, últimas 7
   // (atual + 6 anteriores). Fail-soft: erro de IO/parse nunca derruba o
