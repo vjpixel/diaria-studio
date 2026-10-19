@@ -1395,7 +1395,7 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; margin: 0; }
         <div class="special-card special-card--dark">
           <span class="kicker" style="color: var(--teal)">● Para assinantes</span>
           <h3>Cursos <span class="accent">sobre IA.</span></h3>
-          <p>Selecionados entre os melhores cursos sobre IA, a maioria gratuita. Atualizamos toda semana.</p>
+          <p>Selecionados entre os melhores cursos sobre IA. Atualizamos toda semana.</p>
           <p>Nova aula da diar.ia.br: <a href="/produto/conteudo-autentico">Conteúdo Autêntico com IA</a>.</p>
           <a class="btn btn-ink" href="https://cursos.diar.ia.br/">Ver todos os cursos</a>
         </div>
