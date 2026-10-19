@@ -335,6 +335,7 @@ import {
   type RecencyCutoffSource,
 } from "./lib/clarice-recency.ts";
 import { firstName, hasCorruptedName } from "./lib/clarice-name.ts";
+import { buildEligibleQueueCsv, type EligibleQueueRow } from "./lib/clarice-daily-eligible-queue.ts";
 
 loadProjectEnv();
 
@@ -1274,6 +1275,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // quantos o guard por contato excluiu (não confundir com o corte de
     // budget, que não é "excluído", é "próxima rodada pega o resto").
     dailyPreBudgetCount?: number;
+    // #10479: fila completa (ordem canônica) — só `--daily`.
+    dailyOrdered?: EligibleQueueRow[];
   } {
     const effBudget = budgetOverride ?? budget;
     if (tiersPathArg) {
@@ -1315,6 +1318,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         selected,
         recencyViolations,
         dailyPreBudgetCount: ordered.length,
+        dailyOrdered: ordered,
       };
     }
     return buildSegmentArtifact(inputRows, group as NamedGroupKey, effBudget, minScore, ctx);
@@ -1322,7 +1326,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // #5922: `let` (não const) — o auto-fatiamento do D13 (grupo `novos` acima
   // do teto, sem --force) substitui estas três pelo artefato fatiado.
-  let { csv, manifestEntry, selected, tierStats, recencyViolations, dailyPreBudgetCount } = computeArtifact(holdResult.kept);
+  let { csv, manifestEntry, selected, tierStats, recencyViolations, dailyPreBudgetCount, dailyOrdered } = computeArtifact(holdResult.kept);
 
   // #4979/#7406: identificador único do artefato nos 3 modos — nome do
   // grupo no modo --group, --key no modo --tiers, "daily" fixo no modo
@@ -1566,6 +1570,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       buildPrioritySnapshotCsv(selected),
       "utf8",
     );
+    // #10479: fila completa de elegíveis (score + cadastro + incluído) pra
+    // verificar a ordem por script (verify-clarice-daily-order.ts).
+    if (dailyOrdered) {
+      writeFileSync(
+        resolve(dir, "daily-eligible-queue.csv"),
+        buildEligibleQueueCsv(dailyOrdered, selected.length),
+        "utf8",
+      );
+    }
     writeFileSync(
       resolve(dir, `${artifactKey}-manifest.json`),
       JSON.stringify([manifestEntry], null, 2),
