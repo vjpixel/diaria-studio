@@ -212,6 +212,25 @@ export function toAiCrawlerAlarmFindings(
   return findings;
 }
 
+/** #10520 — chaves `ai-crawler-*` cujo sinal NÃO foi medido nesta execução:
+ * a zona inteira quando a GraphQL não voltou `ok` (erro/token ausente), e o
+ * host cuja sonda saiu `inconclusive` pra algum bot. Ausência de achado
+ * nessas chaves não prova resolução — `planAlarmReconciliation` preserva a
+ * issue aberta em vez de comentar/fechar por streak. */
+export function aiCrawlerUnmeasuredKeys(
+  probes: readonly AiCrawlerProbeResult[],
+  fetched403Status: "ok" | "skipped" | "error",
+): (key: string) => boolean {
+  const unmeasuredHosts = new Set(probes.filter((p) => p.status === "inconclusive").map((p) => p.host));
+  return (key) => {
+    if (fetched403Status !== "ok" && key.startsWith("ai-crawler-403-zona:")) return true;
+    for (const host of unmeasuredHosts) {
+      if (key.startsWith(`ai-crawler-probe:${host}:`)) return true;
+    }
+    return false;
+  };
+}
+
 /** E-mail combinado: seção do robots.txt (quando há drift) + seção dos
  * crawlers de IA (quando há bloqueio). Assunto reflete o que está pendente. */
 export function buildCombinedAlarmEmail(
@@ -355,11 +374,12 @@ async function main(): Promise<void> {
   const driftedResults = results.filter((r) => r.status === "drift" || r.status === "error");
   const alarmFindings = [...driftedResults.map(toAlarmFinding), ...toAiCrawlerAlarmFindings(probes, summary403)];
   const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+  const isAbsenceUnmeasured = aiCrawlerUnmeasuredKeys(probes, fetched403.status);
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
   let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, [], isAbsenceUnmeasured);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado.`,
@@ -368,6 +388,7 @@ async function main(): Promise<void> {
     const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
       cwd: ROOT,
       closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+      isAbsenceUnmeasured,
     });
     saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
     allFindingOutcomes = findingOutcomes;
