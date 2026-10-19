@@ -542,6 +542,38 @@ export interface BrevoContactState {
    * `lib/brevo-kit-duplicate-window.ts`) — nunca influencia a decisão de
    * promoção/supressão em si. */
   last_messagesSent_at: string | null;
+  /** #10536 — ISO do evento mais recente que explica o `emailBlacklisted`
+   * (`userUnsubscription`, `adminUnsubscription`, `hardBounces`), ou `null`
+   * se nenhum tem horário (bloqueio sem evento de campanha, ex.: onboarding
+   * transacional #6042). Opcional: ausente equivale a `null`. */
+  blacklist_event_latest_at?: string | null;
+}
+
+/** #10536 — Pura: ISO do evento de blacklist mais recente (ver `BrevoContactState.blacklist_event_latest_at`). */
+export function latestBlacklistEventTime(statistics: BrevoContactStatistics | undefined): string | null {
+  const candidates = [
+    latestEventTime(statistics?.unsubscriptions?.userUnsubscription),
+    latestEventTime(statistics?.unsubscriptions?.adminUnsubscription),
+    latestEventTime(statistics?.hardBounces),
+  ].filter((t): t is string => t !== null);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
+}
+
+/**
+ * #10536 — Pura: o `emailBlacklisted` de um contato `kit-sem-abertura:` é uma
+ * saída NOVA (posterior à entrada na lista, `added_at`)? Só com um evento
+ * datado em `>= added_at`. Sem evento datado, ou com o evento anterior à
+ * entrada, o blacklist já existia quando o sync o moveu: não é saída, e o
+ * descadastro no Kit (irreversível) não pode acontecer. `added_at`
+ * ilegível também devolve `false` — na dúvida, a direção reversível.
+ */
+export function isKitSemAberturaBlacklistNew(blacklistEventLatestAt: string | null | undefined, addedAt: string): boolean {
+  if (!blacklistEventLatestAt) return false;
+  const eventMs = new Date(blacklistEventLatestAt).getTime();
+  const addedMs = new Date(addedAt).getTime();
+  if (!Number.isFinite(eventMs) || !Number.isFinite(addedMs)) return false;
+  return eventMs >= addedMs;
 }
 
 export async function fetchBrevoContactState(apiKey: string, email: string): Promise<BrevoContactState> {
@@ -551,6 +583,9 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
   }
   const counts = computeCountsFromBrevoStatistics(res.body?.statistics);
   const mature = computeMatureCountsFromBrevoStatistics(res.body?.statistics);
+  // #10536 — só presente quando há evento datado (ausente ≡ null; mantém o
+  // shape dos contatos sem blacklist igual ao de antes).
+  const blacklistAt = latestBlacklistEventTime(res.body?.statistics);
   return {
     ...counts,
     mature_sends_count: mature.sends_count,
@@ -559,6 +594,7 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     userUnsubscribed: hasUserUnsubscription(res.body?.statistics),
     hardBounced: hasHardBounce(res.body?.statistics),
     last_messagesSent_at: latestEventTime(res.body?.statistics?.messagesSent),
+    ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
   };
 }
 
@@ -1902,6 +1938,13 @@ export interface RunEvaluationResult {
    */
   kitAutoConfirmSkipped: number;
   /**
+   * #10536 — contatos `kit-sem-abertura:` `emailBlacklisted` na Brevo sem
+   * evento de blacklist posterior ao `added_at`: o bloqueio já existia quando
+   * o sync os moveu. O Kit NÃO é tocado (descadastro lá não tem volta); ficam
+   * `in_brevo` pra revisão manual. Disjunto de `failed`.
+   */
+  kitSemAberturaPreexistingBlacklist: number;
+  /**
    * #7382 — quantos contatos seriam promovidos pra Beehiiv (threshold de
    * score) mas já estavam `active` no Kit no momento da checagem: a
    * promoção pra Beehiiv foi PULADA (nunca duplicada) e o contato saiu da
@@ -2115,6 +2158,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let failed = 0;
   const failedContacts: FailedContact[] = []; // #8724
   let kitAutoConfirmSkipped = 0;
+  let kitSemAberturaPreexistingBlacklist = 0; // #10536
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
   let doiResent = 0; // #9835
@@ -2217,6 +2261,20 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // especial) ainda o alcançariam. Descadastra no Kit com releitura
           // ANTES de gravar a saída; sem confirmação, fica `in_brevo` e a
           // próxima rodada retenta.
+          if (!isKitSemAberturaBlacklistNew(nativeState.blacklist_event_latest_at, contact.added_at)) {
+            // #10536 — blacklist anterior à entrada na lista (ou sem evento
+            // datado): o sync moveu alguém que a Brevo já bloqueava. Não é
+            // saída pedida pela pessoa — nunca descadastra no Kit. Fica
+            // `in_brevo`, visível no resumo, pra revisão manual (tirar a tag
+            // `envio-brevo` no Kit devolve o envio por lá).
+            kitSemAberturaPreexistingBlacklist++;
+            log(
+              `warn: ${contact.email}: emailBlacklisted na Brevo, origem kit-sem-abertura, mas sem evento de blacklist ` +
+                `posterior à entrada (added_at=${contact.added_at}, último evento=${nativeState.blacklist_event_latest_at ?? "nenhum"}) — ` +
+                "blacklist pré-existente, Kit NÃO tocado (#10536). Revisar: remover a tag envio-brevo no Kit.",
+            );
+            continue;
+          }
           const exitReason = nativeState.userUnsubscribed
             ? "native_unsubscribe"
             : nativeState.hardBounced
@@ -2993,6 +3051,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kept,
     failed,
     kitAutoConfirmSkipped,
+    kitSemAberturaPreexistingBlacklist,
     skippedActiveOnKit,
     awaitingKitConfirmation,
     doiResent,
@@ -3139,6 +3198,7 @@ async function main(): Promise<number> {
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +
       `${result.kitAutoConfirmSkipped} pulado(s) por KIT_API_KEY ausente (#6340 item 4 fix A), ` +
+      `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada (Kit não tocado, revisar à mão, #10536), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +

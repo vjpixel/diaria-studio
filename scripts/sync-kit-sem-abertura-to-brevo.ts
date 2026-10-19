@@ -174,6 +174,12 @@ export interface KitSemAberturaDeps {
    * defasado). `null`/vazio = não é apoiador. Lança se a leitura falhar.
    */
   getApoioNivel: (subscriberId: number) => Promise<string | null>;
+  /**
+   * #10536 — o e-mail já está `emailBlacklisted` na conta Brevo da diária?
+   * 404 (contato inexistente) = `false`. Lança se a leitura falhar (o contato
+   * é adiado, nunca movido às cegas).
+   */
+  isBrevoBlacklisted: (email: string) => Promise<boolean>;
   ingestBrevo: (email: string) => Promise<void>;
   tagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
@@ -189,6 +195,8 @@ export interface KitSemAberturaRunResult {
   deferred: number;
   /** Órfãos reconciliados (tag `envio-brevo` sem store) + tags pendentes confirmadas. */
   reconciled?: number;
+  /** #10536 — selecionados que já estavam `emailBlacklisted` na Brevo: ficam no Kit. */
+  skippedBlacklisted?: number;
   summary: string;
 }
 
@@ -449,6 +457,7 @@ export async function runKitSemAberturaSync(
 
   // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
   const toMove: typeof capped = [];
+  let skippedBlacklisted = 0;
   for (const c of capped) {
     let nivel: string | null;
     try {
@@ -462,9 +471,29 @@ export async function runKitSemAberturaSync(
       log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
       continue;
     }
+    // #10536 — já `emailBlacklisted` na conta Brevo da diária (bloqueio no
+    // onboarding transacional #6042, hard bounce antigo, contato anterior ao
+    // store): a campanha nunca chegaria, a tag a tiraria do envio do Kit, e o
+    // Passo 0 do evaluate leria o blacklist como saída nova. Fica no Kit.
+    let blacklisted: boolean;
+    try {
+      blacklisted = await deps.isBrevoBlacklisted(c.email);
+    } catch (e) {
+      deferred++;
+      log(`  ${c.email}: estado de blacklist na Brevo não lido (${(e as Error).message}) — adiado.`);
+      continue;
+    }
+    if (blacklisted) {
+      skippedBlacklisted++;
+      log(`  ${c.email}: já emailBlacklisted na Brevo diária — fica no Kit, não é movido (#10536).`);
+      continue;
+    }
     toMove.push(c);
   }
-  const counts = { selected: selection.selected.length, deferred };
+  if (skippedBlacklisted > 0) {
+    log(`${skippedBlacklisted} selecionado(s) já blacklisted na Brevo — mantido(s) no Kit (#10536).`);
+  }
+  const counts = { selected: selection.selected.length, deferred, skippedBlacklisted };
 
   if (!push) {
     for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
@@ -540,7 +569,7 @@ export async function runKitSemAberturaSync(
     failed,
     reconciled,
     ...counts,
-    summary: `${moved} movido(s) pra Brevo, ${reconciled} reconciliado(s), ${failed} falha(s).`,
+    summary: `${moved} movido(s) pra Brevo, ${reconciled} reconciliado(s), ${skippedBlacklisted} já blacklisted na Brevo (mantido(s) no Kit), ${failed} falha(s).`,
   };
 }
 
@@ -600,6 +629,14 @@ async function listKitActiveCandidates(
     after = res.pagination.end_cursor;
   }
   throw new Error("listagem de ativos do Kit não terminou em 200 páginas");
+}
+
+/** #10536 — `emailBlacklisted` do contato na conta Brevo da diária; 404 = não existe = `false`. */
+export async function readBrevoBlacklisted(apiKey: string, email: string): Promise<boolean> {
+  const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
+  if (res.status === 404) return false;
+  if (res.status !== 200) throw new Error(`GET /contacts falhou (HTTP ${res.status})`);
+  return (res.body as { emailBlacklisted?: unknown } | undefined)?.emailBlacklisted === true;
 }
 
 /** Ingest com o atributo de origem + releitura de lista E atributo. */
@@ -736,6 +773,7 @@ async function main(): Promise<void> {
       const s = await getSubscriberById(id);
       return s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY] ?? null;
     },
+    isBrevoBlacklisted: (email) => readBrevoBlacklisted(apiKey, email),
     ingestBrevo: (email) => ingestWithOrigin(apiKey, listId, email),
     tagKit: (tagId, id) => tagAndConfirm(tagId, id, kitPacer),
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line),
