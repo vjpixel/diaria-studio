@@ -332,7 +332,7 @@ describe("defaultMaxStalenessHours (#675) — threshold dinâmico por dia da sem
     assert.equal(r.ok, true);
   });
 
-  it("#10468: não enfraquece — domingo com última edição na quinta (~87h) segue stale", () => {
+  it("#10468: não enfraquece — domingo com última edição na quinta (~79h) segue stale", () => {
     const sunday = new Date("2026-10-18T15:48:00Z");
     const posts = [{ id: "a", published_at: "2026-10-15T09:00:00Z" }];
     const r = evaluateFreshness(posts, sunday.getTime(), defaultMaxStalenessHours(sunday));
