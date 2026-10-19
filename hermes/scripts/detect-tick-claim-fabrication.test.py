@@ -363,6 +363,56 @@ def test_regressao_8863_nenhuma_e_antes_do_claim():
     print("regressão #8863: 'nenhuma issue reivindicada'/'antes do claim' não vira claim — OK")
 
 
+def test_regressao_10563_sem_claim_e_liberei():
+    """#10563: relatório REAL do tick 16:14 UTC de 19/10/2026 (verbatim, só
+    a URL do comentário encurtada). "#10560 permanece sem claim por rejeição
+    do gate de coerência" virava claim positivo — `_NEGATION_MARKER` não
+    cobria "sem" — e o alarme abriu a issue acusando fabricação de #10560.
+    De quebra, "Confirmei e liberei a claim" (1ª pessoa) não era sinal de
+    liberação: o #10557 só escapou porque o evento 'ended' trazia
+    `claimed_issues_ever=[10557]`."""
+    mod = _load_module()
+    relatorio = (
+        "## Tick 16:14 BRT\n### Trabalhado\n"
+        "Nenhuma implementação concluída neste tick. #10557 foi reivindicada e "
+        "delegada, mas o harness não implementou: a issue depende de mudanças "
+        "ainda fora de master na PR #10554. Confirmei e liberei a claim; nenhuma "
+        "PR/worktree própria ficou aberta. #10560 foi pulada pelo gate de "
+        "coerência por sobreposição com `hermes/scripts/claude-delegate.sh` em "
+        "PR aberta/merge recente.\n"
+        "### Decisões/bloqueios registrados\n"
+        "Comentário de bloqueio confirmado na #10557: https://github.com/x/y/"
+        "issues/10557#issuecomment-1. #10560 permanece sem claim por rejeição "
+        "do gate de coerência.\n"
+    )
+    refs = mod.extract_claimed_issue_refs(relatorio)
+    assert 10560 not in refs, f"#10560 ('sem claim') indevido: {refs}"
+    assert refs.get(10557) is True, f"#10557 ('liberei a claim') deveria ser released: {refs}"
+
+    # Fim-a-fim na checagem: snapshot do 'ended' real = {10557}, nada vivo.
+    chk = mod.check_claimed_issues(
+        relatorio, set(), True, session_correlated=True,
+        ended_session_in_window=True, ended_claimed_snapshot={10557},
+    )
+    assert chk["status"] != "fabrication_suspected", f"falso positivo #10563: {chk}"
+
+    # Variantes de ausência coladas ao keyword.
+    for linha in (
+        "- #9100: pulada, sem o claim.",
+        "- #9101 ficou sem reivindicação (gate de coerência).",
+    ):
+        r = mod.extract_claimed_issue_refs(linha)
+        assert not any(n in r for n in (9100, 9101)), f"'sem' indevido: {linha!r} -> {r}"
+
+    # Controles: "sem" LONGE do keyword não apaga claim real, e "deliberei"
+    # não é liberação (mesma regra de fronteira do #8014).
+    r_ctrl = mod.extract_claimed_issue_refs("Sem conflito de paths, reivindiquei #9200.")
+    assert 9200 in r_ctrl, f"claim real #9200 apagado por 'sem' distante: {r_ctrl}"
+    r_delib = mod.extract_claimed_issue_refs("#9300 foi reivindicada; deliberei seguir.")
+    assert r_delib.get(9300) is False, f"'deliberei' virou liberação: {r_delib}"
+    print("regressão #10563: 'sem claim' não é claim e 'liberei' é liberação — OK")
+
+
 def test_regressao_8863_antes_do_nao_apaga_claim_real():
     """Revisão da PR #8864 (achado 1, P1): a 1ª versão do fix negava
     QUALQUER keyword de claim precedido por "antes do/da" dentro da janela
@@ -1311,6 +1361,7 @@ def main() -> int:
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
+        test_regressao_10563_sem_claim_e_liberei()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
         test_regressao_9026_pela_feminino()
         test_regressao_9210_outros_solto_nao_e_ator()
