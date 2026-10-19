@@ -234,6 +234,12 @@ describe("#1968 — verificação POSITIVA de ferramenta", () => {
     assert.ok(!isVerifiedTool("https://openai.com/index/public-policy-update"));
   });
 
+  it("isVerifiedTool: 'now generally available' em anúncio oficial é sinal de lançamento (#10470)", () => {
+    const url = "https://claude.com/resources/articles/code-review-is-now-generally-available";
+    assert.ok(hasProductSignal(url));
+    assert.ok(isVerifiedTool(url), "sem allowlist → verificado");
+  });
+
   it("isVerifiedTool: allowlist faz override de slug atípico", () => {
     const url = "https://nvidia.com/blog/jetson-thor-edge"; // hardware, slug sem sinal
     assert.ok(!isVerifiedTool(url), "sem allowlist → não verificado");
