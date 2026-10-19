@@ -4,10 +4,19 @@
 # instalado globalmente. Substitui, fora do Claude Code, o que os hooks de
 # `.claude/hooks/` fazem em volta de `gh pr create`/`gh pr merge`:
 #
-#   - `gh pr merge` e merge via `gh api` (REST `pulls/N/merge`, GraphQL
-#     `mergePullRequest`/`enablePullRequestAutoMerge`) → recusados (exit 3).
-#     O merge do contínuo é do `continuo-pr-review.sh`, nunca da sessão que
-#     implementa (#6864; equivalente do block-gh-pr-merge-subagent.mjs).
+#   - `gh pr merge` e merge via `gh api` (REST `pulls/N/merge`, `merges`,
+#     escrita em `git/refs/heads/master|main`; GraphQL `mergePullRequest`/
+#     `enablePullRequestAutoMerge`/`mergeBranch`) → recusados (exit 3) — no
+#     argv E no conteúdo de `--input <arq>`/`-F campo=@arq` (inclusive stdin,
+#     #10585). O merge do contínuo é do `continuo-pr-review.sh`, nunca da
+#     sessão que implementa (#6864; equivalente do
+#     block-gh-pr-merge-subagent.mjs).
+#   - Criação de PR por fora do `gh pr create` (#10585) → recusada: `gh api`
+#     com método ≠ GET em `repos/O/R/pulls` (o gh usa POST sozinho quando há
+#     -f/-F/--input) e a mutation GraphQL `createPullRequest`.
+#   - `gh alias` (set/import/…) e invocação de alias já existente (#10585) →
+#     recusados: o alias expande DENTRO do gh real, depois deste shim ler o
+#     argv (`gh alias set m 'pr merge'` + `gh m 5`).
 #   - `gh pr create` → só a partir de branch `continuo/*` (#6446/#8588); roda
 #     antes o guard de PII/artefato de runtime
 #     (.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs, #6753/#6971)
@@ -15,6 +24,16 @@
 #     ${TMPDIR}/codex-lane-pr-created.log. O review (papel do
 #     pr-create-review.mjs no Claude Code) é o `continuo-pr-review.sh`, que
 #     revisa toda PR aberta e é o único merger.
+#
+# GARANTIA REAL (#10585) — este shim NÃO é fronteira de segurança. Ele barra
+# o caminho óbvio (o modelo seguindo o hábito de `gh pr merge`), não um
+# processo determinado a contornar: com o sandbox `danger-full-access` o
+# codex alcança o gh real por caminho absoluto (`/usr/bin/gh`), por `curl`
+# na API com o token do gh, ou editando ~/.config/gh. O que de fato impede
+# merge fora do gate é o `continuo-pr-review.sh` ser o ÚNICO merger do
+# contínuo (e, idealmente, proteção de branch no GitHub exigindo o review);
+# PR aberta por fora do shim continua passando pelo mesmo review, só sem o
+# guard de PII/branch daqui.
 #
 # Todo o resto passa direto pro próximo `gh` do PATH (inclusive o
 # gh-wrapper.mjs do #8884, quando instalado), sem alterar argv.
@@ -42,6 +61,7 @@ REAL_GH=$(find_real_gh) || { echo "[codex-lane gh] gh real não encontrado no PA
 
 refuse() {
   echo "[codex-lane gh #10560] recusado: $1" >&2
+  [ -n "${STDIN_BUF:-}" ] && rm -f "$STDIN_BUF"
   exit 3
 }
 
@@ -79,13 +99,119 @@ if [ "$group" = "pr" ]; then
     [ "$a" = "pr" ] && seen_pr=1
   done
 fi
+# #10585: alias expande dentro do gh real, depois deste shim ler o argv.
+# `gh alias` inteiro é recusado; e um 1º posicional que não é comando
+# embutido só é repassado se NÃO for alias já gravado na config do gh.
+if [ "$group" = "alias" ]; then
+  refuse "gh alias — alias expande dentro do gh real, fora do alcance deste shim (#10585)"
+fi
+case "$group" in
+  ''|agent-task|api|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|org|pr|preview|project|release|repo|ruleset|run|search|secret|ssh-key|status|variable|workflow) ;;
+  *)
+    if "$REAL_GH" alias list 2>/dev/null | command grep -qE "^[[:space:]]*$(printf '%s' "$group" | sed 's/[][\.*^$/]/\\&/g'):"; then
+      refuse "alias do gh '$group' — alias expande dentro do gh real, fora do alcance deste shim (#10585)"
+    fi
+    ;;
+esac
+
+# Merge (REST pulls/N/merge e merges, GraphQL mergePullRequest/enablePullRequestAutoMerge/mergeBranch).
+MERGE_RE='pulls/[0-9]+/merge|(^|[^a-z_])repos/[^/[:space:]]+/[^/[:space:]]+/merges([^a-z_]|$)|mergePullRequest|enablePullRequestAutoMerge|mergeBranch'
+# Criação de PR por GraphQL.
+CREATE_PR_RE='createPullRequest'
+STDIN_BUF=""
+
 if [ "$group" = "api" ]; then
+  # Parse do `gh api`: endpoint (1º posicional depois de `api`), método, e as
+  # fontes de corpo — `--input <arq>` e `-F campo=@arq` (o gh LÊ o arquivo;
+  # `@-` e `--input -` = stdin). Valores de flag em forma separada,
+  # `--flag=valor` e `-Xvalor` (pflag aceita os três).
+  endpoint=""
+  method=""
+  has_body=0
+  body_files=()
+  seen_api=0
+  prev=""
   for a in "$@"; do
-    case "$a" in
-      *pulls/[0-9]*/merge*|*mergePullRequest*|*enablePullRequestAutoMerge*)
-        refuse "merge via gh api ('$a') — a sessão do contínuo nunca mergeia (#6864)" ;;
+    if [ "$seen_api" -eq 0 ]; then
+      [ "$a" = "api" ] && seen_api=1
+      prev=""
+      continue
+    fi
+    val=""
+    flag=""
+    case "$prev" in
+      -X|--method) method="$a"; prev=""; continue ;;
+      -f|--raw-field|-F|--field) flag="$prev"; val="$a" ;;
+      --input) has_body=1; body_files+=("$a"); prev=""; continue ;;
+      -H|--header|-q|--jq|-t|--template|--hostname|--cache|-p|--preview|-R|--repo) prev=""; continue ;;
+    esac
+    if [ -z "$flag" ]; then
+      case "$a" in
+        --method=*) method="${a#--method=}"; prev=""; continue ;;
+        -X?*) method="${a#-X}"; prev=""; continue ;;
+        --input=*) has_body=1; body_files+=("${a#--input=}"); prev=""; continue ;;
+        --raw-field=*|--field=*) flag="${a%%=*}"; val="${a#*=}" ;;
+        -f?*|-F?*) flag="${a:0:2}"; val="${a:2}" ;;
+        -*) prev="$a"; continue ;;
+        *) [ -z "$endpoint" ] && endpoint="$a"; prev=""; continue ;;
+      esac
+    fi
+    has_body=1
+    prev=""
+    # Só -F/--field lê `@arq` (-f/--raw-field manda o texto literal, já
+    # coberto pela varredura do argv abaixo).
+    case "$flag" in
+      -F|--field)
+        case "$val" in
+          *=@*) body_files+=("${val#*=@}") ;;
+        esac
+        ;;
     esac
   done
+
+  # Corpo vindo do stdin: bufferizado num arquivo (checado como os demais) e
+  # devolvido como stdin do gh real no exec final.
+  for f in "${body_files[@]+"${body_files[@]}"}"; do
+    if [ "$f" = "-" ] && [ -z "$STDIN_BUF" ]; then
+      STDIN_BUF=$(mktemp "${TMPDIR:-/tmp}/codex-lane-gh-stdin.XXXXXX") || refuse "gh api com corpo no stdin e mktemp falhou — sem como checar o conteúdo (#10585)"
+      cat > "$STDIN_BUF"
+    fi
+  done
+
+  for a in "$@"; do
+    printf '%s' "$a" | command grep -qE "$MERGE_RE" && \
+      refuse "merge via gh api ('$a') — a sessão do contínuo nunca mergeia (#6864)"
+    printf '%s' "$a" | command grep -qE "$CREATE_PR_RE" && \
+      refuse "criação de PR via gh api GraphQL ('$a') — só gh pr create, a partir de continuo/* (#10585)"
+  done
+  for f in "${body_files[@]+"${body_files[@]}"}"; do
+    src="$f"
+    [ "$f" = "-" ] && src="$STDIN_BUF"
+    if [ ! -r "$src" ]; then
+      # Arquivo que o shim não lê, o gh real também não lê com sucesso —
+      # mas recusar é o lado seguro de "não sei o que vai ser enviado".
+      refuse "gh api com corpo em '$f' ilegível pelo shim — não dá pra checar merge/criação de PR (#10585)"
+    fi
+    command grep -qE "$MERGE_RE" "$src" && \
+      refuse "merge via gh api (corpo em '$f') — a sessão do contínuo nunca mergeia (#6864)"
+    command grep -qE "$CREATE_PR_RE" "$src" && \
+      refuse "criação de PR via gh api GraphQL (corpo em '$f') — só gh pr create, a partir de continuo/* (#10585)"
+  done
+
+  # REST: método efetivo (o gh troca GET por POST sozinho quando há corpo).
+  eff_method=$(printf '%s' "${method:-}" | tr '[:lower:]' '[:upper:]')
+  if [ -z "$eff_method" ]; then
+    if [ "$has_body" -eq 1 ]; then eff_method="POST"; else eff_method="GET"; fi
+  fi
+  if [ "$eff_method" != "GET" ] && [ "$eff_method" != "HEAD" ] && \
+     printf '%s' "$endpoint" | command grep -qE '(^|/)repos/[^/]+/[^/]+/pulls/?(\?.*)?$'; then
+    refuse "gh api $eff_method $endpoint — criação de PR só por gh pr create, a partir de continuo/* (#10585)"
+  fi
+  # Escrita direta no ref de master/main (equivale a merge sem PR).
+  if [ "$eff_method" != "GET" ] && [ "$eff_method" != "HEAD" ] && \
+     printf '%s' "$endpoint" | command grep -qE 'git/refs/heads/(master|main)/?(\?.*)?$'; then
+    refuse "gh api $eff_method $endpoint — escrita em master/main é do continuo-pr-review.sh, nunca da sessão (#6864)"
+  fi
 fi
 
 if [ "$group" = "pr" ] && [ "$sub" = "create" ]; then
@@ -143,4 +269,10 @@ if [ "$group" = "pr" ] && [ "$sub" = "create" ]; then
   exit "$rc"
 fi
 
+if [ -n "$STDIN_BUF" ]; then
+  # Devolve o stdin já consumido pela checagem (abre o fd e apaga o arquivo
+  # antes do exec — nada fica pra trás em TMPDIR).
+  exec 0<"$STDIN_BUF"
+  rm -f "$STDIN_BUF"
+fi
 exec "$REAL_GH" "$@"

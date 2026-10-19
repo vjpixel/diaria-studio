@@ -26,19 +26,27 @@
 #      texto do comando) e não é contornável por `--no-verify`. Os demais
 #      nomes de hook encadeiam pro diretório de hooks original do repo
 #      (`.git/hooks`, ex.: o pre-commit do #8878), então nada que já roda
-#      deixa de rodar.
+#      deixa de rodar. Escopo (#10584): a recusa só vale no repo cujo
+#      common-dir é o do checkout-alvo (CODEX_LANE_GUARDED_COMMON_DIR,
+#      resolvido no preflight) — repo descartável de teste (`git init` em
+#      tmp + commit em master) passa.
 #   2. inject-session-id.mjs (#5751) → `DIARIA_INJECTED_SESSION_ID` (id do
 #      TICK) no ambiente do `codex`; `session-registry.ts` usa esse valor
 #      quando `--session-id` falta, só em claim/lease
 #      (`resolveEnvInjectedSessionId`, scripts/lib/session-id-required-
 #      subcommands.ts). Sem session-id do tick legível, o elo NÃO liga.
 #   3. pr-create-review.mjs → `gh` shim em `codex-lane/bin/gh` na frente do
-#      PATH: recusa `gh pr merge` (e merge via `gh api`), recusa `gh pr
-#      create` fora de branch `continuo/*`, roda o guard de PII/artefato de
-#      runtime (`block-pr-create-pii-runtime-artifacts.mjs`) antes de criar, e
+#      PATH: recusa `gh pr merge` (e merge/criação de PR via `gh api`, `gh
+#      alias`), recusa `gh pr create` fora de branch `continuo/*`, roda o
+#      guard de PII/artefato de runtime
+#      (`block-pr-create-pii-runtime-artifacts.mjs`) antes de criar, e
 #      registra a PR criada. O review em si é o `continuo-pr-review.sh` (cron,
 #      revisa TODA PR aberta e é o único merger) — o mesmo gate que já vale
-#      pras PRs do elo `claude -p`.
+#      pras PRs do elo `claude -p`. O shim é barreira contra o caminho
+#      ÓBVIO, não fronteira de segurança (#10585): com sandbox
+#      `danger-full-access` o codex alcança o gh real por caminho absoluto.
+#      A garantia real é o continuo-pr-review.sh ser o único merger (e,
+#      idealmente, proteção de branch no GitHub) — ver a docstring do shim.
 #
 # Preflight fail-closed: se qualquer guard não puder ser armado, o elo é
 # PULADO (a cadeia segue nos `:free` → assinatura); nunca roda sem guard.
@@ -118,7 +126,8 @@ codex_lane_resolve_session_id() {
 
 # Preflight: imprime o motivo em stdout e devolve 1 quando o elo não pode
 # rodar com os guards armados. Devolve 0 e exporta CODEX_LANE_BIN,
-# CODEX_LANE_SESSION_ID e CODEX_LANE_SANDBOX quando pode.
+# CODEX_LANE_SESSION_ID, CODEX_LANE_SANDBOX e CODEX_LANE_GUARDED_COMMON_DIR
+# quando pode.
 codex_lane_preflight() {
   local cwd="$1"
   local dir
@@ -149,6 +158,13 @@ codex_lane_preflight() {
     echo "o repo já define core.hooksPath ('$repo_hooks_path') — o encadeamento pros hooks originais assume .git/hooks"
     return 1
   fi
+  # #10584: o guard de master só recusa no repo cujo common-dir é este —
+  # sem ele resolvível, o hook não sabe o que proteger (fail-closed: pula).
+  if ! CODEX_LANE_GUARDED_COMMON_DIR=$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+      || [ -z "$CODEX_LANE_GUARDED_COMMON_DIR" ] || [ ! -d "$CODEX_LANE_GUARDED_COMMON_DIR" ]; then
+    echo "common-dir git de '$cwd' não resolvido — o guard de master (#10584) não tem alvo"
+    return 1
+  fi
   if ! CODEX_LANE_SESSION_ID=$(codex_lane_resolve_session_id); then
     echo "session-id do tick ausente (DIARIA_CONTINUO_SESSION_ID ou \${TMPDIR}/hermes-continuo-current-session-id) — sem ele a injeção de --session-id (#5751) não tem valor"
     return 1
@@ -173,7 +189,7 @@ codex_lane_preflight() {
         ;;
     esac
   fi
-  export CODEX_LANE_BIN CODEX_LANE_SESSION_ID CODEX_LANE_SANDBOX
+  export CODEX_LANE_BIN CODEX_LANE_SESSION_ID CODEX_LANE_SANDBOX CODEX_LANE_GUARDED_COMMON_DIR
   return 0
 }
 
@@ -207,21 +223,47 @@ codex_lane_pr_log() {
 }
 
 # Foto do estado que um `codex exec` deixa pra trás quando trabalha: linhas do
-# log de PRs criadas pelo gh shim, branches `continuo/*` (nome + sha) e
-# worktrees do repo de $1. Comparada antes/depois da tentativa por
+# log de PRs criadas pelo gh shim, HEAD do checkout de $1 (symbolic-ref +
+# sha), TODAS as branches locais (nome + sha) e os worktrees do repo (com o
+# HEAD/branch de cada um). Comparada antes/depois da tentativa por
 # `codex_lane_partial_work` (review da PR #10583, P2): se o codex criou
 # branch, commitou, abriu worktree ou PR e depois saiu com rc≠0 (timeout,
 # usage limit no meio), passar o MESMO prompt pro próximo elo reimplementaria
-# e podia abrir uma 2ª PR. Mudança feita por OUTRA sessão no mesmo intervalo
-# também conta — falso positivo aqui só aborta a cadeia (lado seguro), nunca
-# duplica trabalho.
+# e podia abrir uma 2ª PR. #10586 item 2: a foto olhava só refs/heads/continuo/*
+# — `git checkout -b fix-123` + commit no checkout principal passava
+# despercebido. Mudança feita por OUTRA sessão no mesmo intervalo também conta
+# — falso positivo aqui só aborta a cadeia (lado seguro), nunca duplica
+# trabalho.
 codex_lane_snapshot_state() {
   local cwd="$1" log n=0
   log="$(codex_lane_pr_log)"
   [ -f "$log" ] && n=$(wc -l < "$log" 2>/dev/null | tr -d '[:space:]')
   printf 'prlog-lines %s\n' "${n:-0}"
-  git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/continuo/' 2>/dev/null || true
-  git -C "$cwd" worktree list --porcelain 2>/dev/null | command grep '^worktree ' || true
+  printf 'head-ref %s\n' "$(git -C "$cwd" symbolic-ref -q HEAD 2>/dev/null || echo '(destacado)')"
+  printf 'head-sha %s\n' "$(git -C "$cwd" rev-parse -q --verify HEAD 2>/dev/null || echo '(sem-commit)')"
+  git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/' 2>/dev/null || true
+  # Porcelain inteiro, não só a linha `worktree`: commit dentro de um
+  # worktree já existente muda a linha `HEAD <sha>` dele.
+  git -C "$cwd" worktree list --porcelain 2>/dev/null | command grep -E '^(worktree|HEAD|branch|detached)( |$)' | sed 's/^/wt /' || true
+}
+
+# #10586 item 1: só as linhas de ERRO da própria Codex CLI no stderr do
+# `codex exec` — nunca a transcrição de progresso, que vai pro MESMO stderr e
+# carrega o raciocínio/saída de comandos do modelo. Neste checkout as tarefas
+# falam de "rate limit"/"model not found" o tempo todo (mesma classe do #6696
+# finding 2): classificar a transcrição marcava a cota como esgotada por 6h
+# ou virava exit 4 sobre um modelo são. Formatos da CLI:
+#   - evento de erro: `ERROR: <msg>` (com ou sem prefixo `[<timestamp>] `);
+#   - erro de topo do binário (anyhow): `Error: <msg>` — só quando é a ÚLTIMA
+#     linha não vazia, pra não casar `Error:` impresso por comando que o
+#     modelo rodou no meio da transcrição.
+codex_lane_cli_error_lines() {
+  local f="$1" last
+  command grep -E '^[[:space:]]*(\[[^]]*\][[:space:]]*)?ERROR:' "$f" 2>/dev/null || true
+  last=$(command grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -n1) || true
+  case "$last" in
+    Error:*) printf '%s\n' "$last" ;;
+  esac
 }
 
 # 0 = houve trabalho parcial desde o snapshot $2 (descrição em stdout);
@@ -275,6 +317,7 @@ codex_lane_run() {
     export GIT_CONFIG_COUNT=1
     export GIT_CONFIG_KEY_0="core.hooksPath"
     export GIT_CONFIG_VALUE_0="$dir/hooks"
+    export CODEX_LANE_GUARDED_COMMON_DIR
     export DIARIA_INJECTED_SESSION_ID="$CODEX_LANE_SESSION_ID"
     export DIARIA_SESSION_KIND=continuo
     export DIARIA_CODEX_LANE=1

@@ -767,6 +767,19 @@ for MODEL in "${MODELS[@]}"; do
     # Fix: apendar a linha de diagnóstico ao ATTEMPT_LOG antes da cópia.
     echo "[claude-openrouter] diagnóstico model=$MODEL rc=$RC duracao_s=$ATTEMPT_DURATION_S timeout_s=$TIMEOUT bytes_stdout=$BYTES_STDOUT bytes_stderr=$BYTES_STDERR" >> "$ATTEMPT_LOG"
     cp -f "$ATTEMPT_LOG" "${TMPDIR:-/tmp}/claude-openrouter-last-failure.log" 2>/dev/null || true
+    # #10586 item 1: no elo codex, o stderr do `codex exec` carrega a
+    # TRANSCRIÇÃO de progresso (raciocínio e saída dos comandos do modelo),
+    # e classificar o arquivo inteiro reabria exatamente o #6696 finding 2
+    # (tarefas deste repo falam de "rate limit"/"model not found"). O
+    # snapshot que os classificadores de cota/config abaixo leem
+    # ($STDERR_ONLY_LOG) é reduzido IN PLACE às linhas de erro da própria CLI
+    # (codex_lane_cli_error_lines, lib/codex-lane.sh). bytes_stderr já foi
+    # medido acima sobre o stderr inteiro, e o STDERR_LOG/last-failure.log
+    # persistidos guardam a transcrição completa.
+    if is_codex_lane_model "$MODEL"; then
+      codex_lane_cli_error_lines "$STDERR_ONLY_LOG" > "$STDERR_ONLY_LOG.cli" || true
+      mv -f "$STDERR_ONLY_LOG.cli" "$STDERR_ONLY_LOG"
+    fi
     # Review da PR #10583 (P2): o codex falhou DEPOIS de deixar trabalho
     # (branch continuo/*, commit, worktree ou PR registrada pelo gh shim).
     # Passar o MESMO prompt pro próximo elo reimplementaria e podia abrir
