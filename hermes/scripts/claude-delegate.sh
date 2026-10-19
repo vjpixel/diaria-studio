@@ -88,6 +88,12 @@
 # Uso:
 #   echo "<tarefa>" | claude-delegate.sh [--tools "Read,Bash(npx tsx:*)"] \
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
+#
+#   Elo codex (#10560, desligado por padrão): `CLAUDE_DELEGATE_CODEX_LANE=1`
+#   no ambiente do call site põe `codex:gpt-6.1-sol` (codex exec, esforço
+#   low, plano OpenAI) na frente da cadeia, com fallback nos elos de sempre.
+#   Também aceito como `--model codex:gpt-6.1-sol`. Env opcionais: CODEX_BIN,
+#   CODEX_LANE_SANDBOX, CODEX_LANE_QUOTA_BACKOFF_S, DIARIA_CONTINUO_SESSION_ID.
 set -euo pipefail
 
 # #6891 (01/09/2026): desliga o auto-updater DENTRO deste processo — nunca
@@ -112,6 +118,13 @@ claude_binary_preflight
 
 # shellcheck source=./lib/free-quota-exhaustion.sh
 source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/free-quota-exhaustion.sh"
+
+# #10560: elo `codex exec` (Sol 6.1, esforço leve, plano OpenAI) ANTES dos
+# `:free`, DESLIGADO por padrão (`CLAUDE_DELEGATE_CODEX_LANE=1` liga). Guards
+# que substituem os hooks de .claude/hooks/ fora do Claude Code e preflight
+# fail-closed: ver docstring de lib/codex-lane.sh.
+# shellcheck source=./lib/codex-lane.sh
+source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/codex-lane.sh"
 
 # #6712 (31/08/2026): marcador de exaustão da cota free-models-per-day —
 # ver docstring de lib/free-quota-exhaustion.sh pro mecanismo completo.
@@ -280,6 +293,9 @@ is_model_allowed() {
   case "$m" in
     *:free) return 0 ;;
   esac
+  # #10560: o elo codex usa o plano OpenAI (OAuth), sem custo por token —
+  # nunca o OpenRouter.
+  is_codex_lane_model "$m" && return 0
   is_subscription_lane_model "$m"
 }
 
@@ -352,6 +368,13 @@ PROMPT=$(cat)
 
 if [ -n "$MODEL_FORCED" ]; then
   MODELS=("$MODEL_FORCED")
+  # #10560: `--model codex:...` explícito nunca roda sem os guards armados.
+  if is_codex_lane_model "$MODEL_FORCED"; then
+    if ! codex_lane_try_arm "$CWD"; then
+      echo "ERRO: --model '$MODEL_FORCED' recusado (#10560) — guard do elo codex não pôde ser armado: $CODEX_LANE_PREFLIGHT_REASON" >&2
+      exit 2
+    fi
+  fi
 else
   MODELS=("${MODELS_DEFAULT[@]}")
   # #6712: se uma invocação ANTERIOR (mesmo dia, processo diferente) já
@@ -393,6 +416,19 @@ else
     if [ "${#ONLY_SUBSCRIPTION_LANE[@]}" -gt 0 ]; then
       echo "[claude-openrouter] sem chave OpenRouter legível — pulando direto pro elo de assinatura (#7649), sem queimar tentativas que falhariam com token vazio" >&2
       MODELS=("${ONLY_SUBSCRIPTION_LANE[@]}")
+    fi
+  fi
+  # #10560: elo codex (plano OpenAI) na FRENTE da cadeia, só quando ligado
+  # (`CLAUDE_DELEGATE_CODEX_LANE=1`) E com todos os guards armados. Fica fora
+  # dos dois filtros acima de propósito: não depende da chave OpenRouter nem
+  # da cota free. Preflight que falha não aborta nada — a cadeia segue como
+  # sempre foi, a partir dos `:free`.
+  if codex_lane_enabled; then
+    if codex_lane_try_arm "$CWD"; then
+      echo "[claude-openrouter] elo codex ligado (#10560) — tentando model=$CODEX_LANE_MODEL effort=$CODEX_LANE_EFFORT antes dos :free" >&2
+      MODELS=("$CODEX_LANE_SENTINEL" "${MODELS[@]}")
+    else
+      echo "[claude-openrouter] elo codex ligado mas NÃO armado (#10560): $CODEX_LANE_PREFLIGHT_REASON — seguindo na cadeia atual" >&2
     fi
   fi
 fi
@@ -562,7 +598,13 @@ for MODEL in "${MODELS[@]}"; do
   if is_subscription_lane_model "$MODEL" && [ -z "$ATTEMPT_EFFORT" ]; then
     ATTEMPT_EFFORT="low"
   fi
-  if is_subscription_lane_model "$MODEL"; then
+  if is_codex_lane_model "$MODEL"; then
+    # #10560: elo `codex exec` (plano OpenAI). Guards, strip de OPENAI_API_KEY
+    # & cia. (fail-closed, RC=97 como o elo de assinatura) e a invocação
+    # pinada (gpt-6.1-sol, model_reasoning_effort="low") vivem em
+    # lib/codex-lane.sh. Sem --max-budget-usd: não há custo por token no plano.
+    OUT=$(printf '%s' "$PROMPT" | codex_lane_run "$TIMEOUT" "$CWD" "$ATTEMPT_LOG")
+  elif is_subscription_lane_model "$MODEL"; then
     # #7649: elo final de assinatura claude.ai. SEM nenhuma das 8 vars de
     # auth/gateway (ANTHROPIC_*, CLAUDE_CODE_USE_BEDROCK/VERTEX) — `unset`
     # EXPLÍCITO, nunca "deixar de exportar": ANTHROPIC_AUTH_TOKEN e
@@ -734,14 +776,20 @@ for MODEL in "${MODELS[@]}"; do
       # #6803: antes de marcar como config PERMANENTE (exit 4), reconsulta o
       # catálogo — o provedor pode ter recusado o modelo por indisponibilidade
       # TRANSITÓRIA, não porque o id deixou de existir.
-      if model_in_openrouter_catalog "$MODEL"; then
+      if is_codex_lane_model "$MODEL"; then
+        # #10560: o catálogo do OpenRouter não diz nada sobre o modelo do
+        # plano OpenAI — id recusado pela Codex CLI é config a corrigir
+        # (CODEX_LANE_MODEL), conferindo com `codex debug models` no `300`.
+        SAW_CONFIG_ERROR_SIGNAL=1
+        echo "[claude-openrouter] falhou model=$MODEL rc=$RC: Codex CLI recusou o modelo '$CODEX_LANE_MODEL' — conferir com 'codex debug models' no 300 (#10560); próximo da cadeia; stderr cru em $STDERR_LOG" >&2
+      elif model_in_openrouter_catalog "$MODEL"; then
         SAW_QUOTA_SIGNAL=1
         echo "[claude-openrouter] falhou model=$MODEL rc=$RC: PROVEDOR REJEITOU, mas o id CONTINUA no catálogo agora (/api/v1/models) — provável indisponibilidade TRANSITÓRIA (#6803), tratando como rate-limit/quota, NÃO como config permanente; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
       else
         SAW_CONFIG_ERROR_SIGNAL=1
         echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — confirmado ausente do catálogo agora (ou catálogo inacessível) (#6803); config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
       fi
-    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
+    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|usage limit|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
       # #6617 review finding 4: "429" sozinho podia casar com ruído não
       # relacionado (contagem de bytes, linha) — agora exige contexto de
       # rate-limit textual OU o número junto de "http"/"status".
@@ -754,6 +802,12 @@ for MODEL in "${MODELS[@]}"; do
       # elos free também vão falhar; um elo PAGO batendo rate-limit é outra
       # causa (teto de gasto da chave, ex.) e não diz nada sobre a cota
       # free — não escrever o marcador nesse caso.
+      # #10560: cota do plano OpenAI esgotada no elo codex → marcador
+      # próprio, pra as invocações seguintes pularem o elo e não disputarem a
+      # cota com o orquestrador do tick (gpt-6-luna, mesmo plano).
+      if is_codex_lane_model "$MODEL"; then
+        codex_lane_mark_quota_exhausted
+      fi
       case "$MODEL" in
         *:free)
           RESET_EPOCH=$(next_utc_midnight_epoch "$(date -u +%s)")

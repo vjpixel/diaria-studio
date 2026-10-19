@@ -1,0 +1,32 @@
+#!/bin/sh
+# reference-transaction (#10560) — guard de master/main do elo `codex exec`
+# do contínuo. Só fica ativo quando `core.hooksPath` aponta pra este
+# diretório, o que acontece APENAS no ambiente do processo `codex` montado por
+# hermes/scripts/lib/codex-lane.sh (GIT_CONFIG_COUNT/KEY/VALUE por env, nunca
+# gravado no repo). Equivalente git-level do
+# .claude/hooks/block-continuo-master-commit.mjs (#8588), que não roda fora
+# do Claude Code.
+#
+# Recusa, no estado `prepared`, qualquer transação que toque
+# refs/heads/master ou refs/heads/main: commit, merge, cherry-pick, revert,
+# am, reset, pull, update-ref, branch -f/-D. `--no-verify` não pula este
+# hook. `git fetch` (refs/remotes/*) e trocar de branch (só HEAD) passam.
+state="$1"
+input=$(cat)
+
+if [ "$state" = "prepared" ]; then
+  blocked=$(printf '%s\n' "$input" | awk '$3 == "refs/heads/master" || $3 == "refs/heads/main" { print $3; exit }')
+  if [ -n "$blocked" ]; then
+    echo "[codex-lane #10560] recusado: sessão do contínuo (elo codex exec) não pode atualizar $blocked. Crie uma branch continuo/fix-<issue>-<slug> (ou um worktree em .claude/worktrees/) antes de commitar." >&2
+    exit 1
+  fi
+fi
+
+# Encadeia pro reference-transaction original do repo, se existir.
+common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+orig="$common_dir/hooks/reference-transaction"
+if [ -x "$orig" ]; then
+  printf '%s\n' "$input" | "$orig" "$@"
+  exit $?
+fi
+exit 0

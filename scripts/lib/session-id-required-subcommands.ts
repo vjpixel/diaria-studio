@@ -72,3 +72,51 @@ export const SESSION_ID_REQUIRED_SUBCOMMANDS = [
 // (session-registry.ts, inject-session-id.mjs) usam de verdade. Reintroduzir
 // o export é seguro se um consumidor futuro precisar tipar contra ela.
 type SessionIdRequiredSubcommand = (typeof SESSION_ID_REQUIRED_SUBCOMMANDS)[number];
+
+/**
+ * #10560 — injeção de `--session-id` por VARIÁVEL DE AMBIENTE, para processos
+ * que não passam pelo `.claude/hooks/inject-session-id.mjs` (o elo `codex
+ * exec` do contínuo, `hermes/scripts/lib/codex-lane.sh`: a sessão deixa de
+ * ser Claude Code e nenhum hook de `.claude/hooks/` roda).
+ *
+ * O wrapper exporta `DIARIA_INJECTED_SESSION_ID` (o id do TICK do contínuo)
+ * só no ambiente do processo `codex` — nunca no shell global. Quando o CLI é
+ * chamado sem `--session-id` num dos subcomandos abaixo, usa esse valor.
+ * `--session-id` explícito sempre vence (mesma disciplina fail-open do hook).
+ *
+ * Lista DELIBERADAMENTE menor que `SESSION_ID_REQUIRED_SUBCOMMANDS`: só os
+ * subcomandos de claim/lease que uma sessão delegada pode legitimamente
+ * precisar. Os de merge (`grant-merge`, `check-merge-grant`,
+ * `consume-merge-grant`, `merge-lock-*`, `self-authorize-merge`) e os de
+ * ciclo de vida da sessão (`register`, `end`) ficam DE FORA de propósito:
+ * a sessão delegada nunca mergeia nem registra/encerra o tick — sem
+ * `--session-id` explícito eles seguem falhando fechado
+ * (`requireSessionId`), em vez de agir com a identidade do tick.
+ */
+export const ENV_INJECTED_SESSION_ID_VAR = "DIARIA_INJECTED_SESSION_ID";
+
+export const ENV_INJECTABLE_SUBCOMMANDS: readonly SessionIdRequiredSubcommand[] = [
+  "heartbeat",
+  "claim-issue",
+  "unclaim-issue",
+  "is-claimed",
+  "conflicts",
+];
+
+/**
+ * Devolve o session-id a injetar (ou `undefined` quando não se aplica):
+ * subcomando fora de `ENV_INJECTABLE_SUBCOMMANDS`, `--session-id` já
+ * presente, ou variável ausente/vazia. Pura — o chamador decide gravar em
+ * `values`.
+ */
+export function resolveEnvInjectedSessionId(
+  subcommand: string | undefined,
+  values: Readonly<Record<string, string | undefined>>,
+  env: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  if (!subcommand) return undefined;
+  if (!(ENV_INJECTABLE_SUBCOMMANDS as readonly string[]).includes(subcommand)) return undefined;
+  if (values["session-id"]) return undefined;
+  const fromEnv = env[ENV_INJECTED_SESSION_ID_VAR]?.trim();
+  return fromEnv ? fromEnv : undefined;
+}

@@ -1,0 +1,14 @@
+#!/bin/sh
+# _chain (#10560) — encadeia um hook git pro diretório de hooks ORIGINAL do
+# repo. Os demais nomes deste diretório são symlinks pra este arquivo: como o
+# elo `codex exec` aponta `core.hooksPath` pra cá (por env), sem o
+# encadeamento os hooks já instalados em .git/hooks (ex.: o pre-commit do
+# #8878, que barra commit direto em master pra qualquer chamador) deixariam de
+# rodar dentro do elo. stdin é herdado (pre-push o usa).
+name=$(basename "$0")
+common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+orig="$common_dir/hooks/$name"
+if [ -x "$orig" ]; then
+  exec "$orig" "$@"
+fi
+exit 0
