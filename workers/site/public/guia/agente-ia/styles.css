@@ -46,6 +46,7 @@ p+p{margin-top:16px}
 .brand-bar img{height:26px;width:auto;margin:0 auto}
 .site-footer{border-top:2px solid var(--ink);padding:32px var(--gutter) calc(var(--float-h) + 16px + 32px)}
 .site-footer img{height:22px;width:auto;margin:0 auto}
+.site-footer p{text-align:center;font-size:14px;margin:16px 0 0}
 
 /* Botões: pílulas de tinta, hover só com opacidade */
 .button{display:inline-flex;align-items:center;justify-content:center;min-height:56px;padding:16px 32px;border-radius:999px;background:var(--ink);color:var(--paper);font-family:var(--sans);font-weight:600;font-size:18px;line-height:1.2;text-decoration:none;text-align:center;transition:opacity .15s}
