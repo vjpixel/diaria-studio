@@ -28,6 +28,7 @@ import {
   assessBroadcastStillDraft,
   resolveMarkUiTestSent,
   resolveUiTestSentAt,
+  resolveVerifyUiTestDraft,
   type KitNewsletterPublished,
 } from "../scripts/publish-newsletter-kit.ts";
 import { extractContent } from "../scripts/lib/newsletter-parse.ts";
@@ -1402,4 +1403,154 @@ describe("#10395: --draft-only-for-ui-test e --mark-ui-test-sent — recusas e e
       assert.ok(state?.test_sent_at && Date.parse(state.test_sent_at) >= before, "âncora nova do --send-test");
     }),
   );
+});
+
+// #10465: o --mark-ui-test-sent só relê o broadcast real se o agente do Chrome
+// chegar ao passo 4. Se ele errar o clique e pular a marcação, nada relia o
+// broadcast — o --verify-ui-test-draft é a releitura só-leitura que os
+// playbooks dos Stages 5 e 6 rodam incondicionalmente.
+describe("#10465: --verify-ui-test-draft (só leitura, sem --mark-ui-test-sent)", () => {
+  const uiDraft = (extra: Partial<KitNewsletterPublished> = {}): KitNewsletterPublished => ({
+    broadcast_id: 555,
+    subject: "S",
+    preview_text: "P",
+    status: "draft",
+    test_broadcast_ids: [],
+    test_mode: "ui",
+    ui_test_url: "https://app.kit.com/campaigns/555/draft",
+    ...extra,
+  });
+
+  async function runVerify(root: string, editionDir: string, ...extra: string[]): Promise<string> {
+    process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--verify-ui-test-draft", ...extra];
+    process.exitCode = undefined;
+    const origWrite = process.stdout.write.bind(process.stdout);
+    let out = "";
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await main(root);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    return out;
+  }
+
+  function withEdition(fn: (root: string, editionDir: string) => Promise<void>): () => Promise<void> {
+    return async () => {
+      const root = mkdtempSync(join(tmpdir(), "kit-verify-"));
+      try {
+        writePlatformConfig(root, "kit");
+        await fn(root, writeEdition(root, "260997"));
+      } finally {
+        process.exitCode = undefined;
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+  }
+
+  for (const [label, remote] of [
+    ["agendado pela UI", { status: "scheduled", send_at: "2026-10-19T09:00:00Z", published_at: null }],
+    ["enviado pela UI", { status: "completed", send_at: "2026-10-18T22:00:00Z", published_at: "2026-10-18T22:00:05Z" }],
+  ] as const) {
+    it(
+      `REGRESSÃO #10465: passo 4 pulado (estado ui SEM test_sent_at) e broadcast real ${label} → exit 11, nada gravado`,
+      withEdition(async (root, editionDir) => {
+        const before = uiDraft();
+        writePublishedState(editionDir, before);
+        mockFetch((call) => {
+          if (call.method === "GET" && call.pathname === "/v4/broadcasts/555") {
+            return jsonRes(200, { broadcast: { id: 555, ...remote } });
+          }
+          throw new Error(`--verify-ui-test-draft só pode ler: ${call.method} ${call.pathname}`);
+        });
+        const out = await runVerify(root, editionDir);
+        assert.equal(process.exitCode, 11);
+        assert.equal(calls.length, 1, "só o GET");
+        const summary = JSON.parse(out.trim());
+        assert.equal(summary.ok, false);
+        assert.equal(summary.exitCode, 11);
+        assert.equal(summary.broadcast_id, 555);
+        assert.deepEqual(readPublishedState(editionDir), before, "estado local intocado");
+      }),
+    );
+  }
+
+  it(
+    "broadcast real em rascunho → exit 0, checked:true, nada gravado (test_sent_at segue ausente)",
+    withEdition(async (root, editionDir) => {
+      const before = uiDraft();
+      writePublishedState(editionDir, before);
+      mockFetch(() => jsonRes(200, { broadcast: { id: 555, status: "draft", send_at: null, published_at: null } }));
+      const out = await runVerify(root, editionDir);
+      assert.equal(process.exitCode, undefined);
+      assert.deepEqual(JSON.parse(out.trim()), { ok: true, checked: true, broadcast_id: 555 });
+      assert.deepEqual(readPublishedState(editionDir), before);
+    }),
+  );
+
+  it(
+    "também roda depois do --mark-ui-test-sent (status test_sent) — releitura idempotente",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, uiDraft({ status: "test_sent", test_sent_at: "2026-10-18T20:00:00.000Z" }));
+      mockFetch(() => jsonRes(200, { broadcast: { id: 555, status: "scheduled", send_at: "2026-10-19T09:00:00Z" } }));
+      await runVerify(root, editionDir);
+      assert.equal(process.exitCode, 11);
+    }),
+  );
+
+  it(
+    "releitura falha → exit 12, nada gravado",
+    withEdition(async (root, editionDir) => {
+      const before = uiDraft();
+      writePublishedState(editionDir, before);
+      mockFetch(() => jsonRes(401, { errors: ["unauthorized"] }));
+      await runVerify(root, editionDir);
+      assert.equal(process.exitCode, 12);
+      assert.deepEqual(readPublishedState(editionDir), before);
+    }),
+  );
+
+  for (const [label, state] of [
+    ["sem estado", null],
+    ["test_mode broadcast (--send-test)", uiDraft({ test_mode: "broadcast" })],
+    ["status scheduled (agendamento legítimo da Etapa 6)", uiDraft({ status: "scheduled", scheduled_at: "2026-10-19T09:00:00Z" })],
+  ] as const) {
+    it(
+      `não se aplica — ${label}: exit 0, checked:false, ZERO rede`,
+      withEdition(async (root, editionDir) => {
+        if (state) writePublishedState(editionDir, state);
+        mockFetch((call) => {
+          throw new Error(`rede inesperada: ${call.method} ${call.pathname}`);
+        });
+        const out = await runVerify(root, editionDir);
+        assert.equal(process.exitCode, undefined);
+        assert.equal(calls.length, 0);
+        const summary = JSON.parse(out.trim());
+        assert.equal(summary.checked, false);
+        assert.deepEqual(readPublishedState(editionDir), state, "nada gravado");
+      }),
+    );
+  }
+
+  it(
+    "mutuamente exclusivo com --mark-ui-test-sent: exit 1 antes de qualquer rede",
+    withEdition(async (root, editionDir) => {
+      writePublishedState(editionDir, uiDraft());
+      mockFetch((call) => {
+        throw new Error(`rede inesperada: ${call.method} ${call.pathname}`);
+      });
+      await runVerify(root, editionDir, "--mark-ui-test-sent", "--at", new Date().toISOString());
+      assert.equal(process.exitCode, 1);
+      assert.equal(calls.length, 0);
+    }),
+  );
+
+  it("pure: status ausente com send_at/published_at nulos → ok com warning", async () => {
+    const r = await resolveVerifyUiTestDraft(uiDraft(), { getBroadcast: async () => ({ send_at: null, published_at: null }) });
+    assert.equal(r.ok, true);
+    assert.equal(r.ok && r.checked && r.warning !== undefined, true);
+  });
 });
