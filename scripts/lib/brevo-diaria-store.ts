@@ -172,6 +172,11 @@ export interface BrevoDiariaContact {
      * pros dois casos (nome do status não foi trocado, ver docstring de
      * `promoteKitSubscription` em `evaluate-brevo-diaria.ts`). */
     | "score_threshold_kit"
+    /** #10437 — mesma decisão de `score_threshold` (abertura acima do piso na
+     *  Brevo), pra um contato de origem `kit-sem-abertura:`: ele já era
+     *  `active` no Kit, então a "promoção" é só REMOVER a tag de exclusão
+     *  `envio-brevo` (confirmada por releitura) e desvincular da lista Brevo. */
+    | "score_threshold_kit_tag_removed"
     | "self_confirmed_beehiiv"
     /** #6677 — mesma decisão de `self_confirmed_beehiiv` (confirmação do opt-in
      * por iniciativa própria), mas o contato tem origem Kit (`beehiiv_subscription_id`
@@ -198,6 +203,12 @@ export interface BrevoDiariaContact {
      * `inactive` do Kit, então não há assinatura ativa lá pra desativar; ver
      * `evaluate-brevo-diaria.ts`, comentário `#6340 item 4 fix B`). */
     | "native_unsubscribe_kit_origin"
+    /** #10437 — descadastro nativo genuíno na Brevo de um contato de origem
+     *  `kit-sem-abertura:`. Local (nunca toca Beehiiv nem Kit): o contato
+     *  segue `active` no Kit COM a tag `envio-brevo`, então não recebe a
+     *  diária por canal nenhum. Ver PR do #10437 (ponto em aberto: propagar o
+     *  descadastro pro Kit). */
+    | "native_unsubscribe_kit_sem_abertura"
     | "self_confirmed_after_suppression"
     /** #5351 Parte B — `emailBlacklisted` com `statistics.hardBounces` não
      * vazio: bounce de entrega genuíno (endereço inválido/caixa cheia). */
@@ -401,7 +412,10 @@ export function applyNativeUnsubscribe(
   now: string = new Date().toISOString(),
   reason: Extract<
     BrevoDiariaContact["resolution_reason"],
-    "native_unsubscribe" | "native_unsubscribe_beehiiv_404" | "native_unsubscribe_kit_origin"
+    | "native_unsubscribe"
+    | "native_unsubscribe_beehiiv_404"
+    | "native_unsubscribe_kit_origin"
+    | "native_unsubscribe_kit_sem_abertura"
   > = "native_unsubscribe",
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);

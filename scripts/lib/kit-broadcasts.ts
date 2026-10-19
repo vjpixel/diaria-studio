@@ -97,7 +97,12 @@ export const KIT_TEST_SEND_TAG_NAME = "diaria-test-email";
  * via Kit: 422 "Only `segment` or `tag` filters allowed") — removido da união;
  * "todo mundo" é `subscriber_filter: []`, ver `buildAllSubscribersFilter`.
  */
-export type KitFilterCondition = { type: "tag"; ids: number[] };
+export type KitFilterCondition =
+  | { type: "tag"; ids: number[] }
+  /** #10437 — segmento criado à mão no painel do Kit (a API não cria segmento).
+   *  Único consumidor: a audiência da diária com `kit.diaria_exclusion_segment`
+   *  ligado (`scripts/lib/kit-diaria-audience.ts`). */
+  | { type: "segment"; ids: number[] };
 export type KitFilterGroup = { all: KitFilterCondition[] };
 
 /**
@@ -315,6 +320,50 @@ export async function resolveTestSendTagId(config?: KitConfig): Promise<number> 
  */
 export function buildTagFilter(tagId: number): KitSubscriberFilter {
   return [{ all: [{ type: "tag", ids: [tagId] }] }];
+}
+
+/**
+ * #10437 — `subscriber_filter` escopado a UM segmento do Kit. Mesmo cuidado do
+ * `buildTagFilter`: o `segmentId` precisa ter sido resolvido (existir na conta)
+ * ANTES de criar o broadcast — ver `resolveDiariaAudience`.
+ */
+export function buildSegmentFilter(segmentId: number): KitSubscriberFilter {
+  return [{ all: [{ type: "segment", ids: [segmentId] }] }];
+}
+
+/** Segmento do Kit como `GET /v4/segments` devolve (só id + nome — o Kit não
+ *  expõe a condição do segmento, ver `apoio-segments-canonical-kit.ts`). */
+export interface KitSegment {
+  id: number;
+  name: string;
+}
+
+/**
+ * #10437 — `GET /v4/segments`, paginado até o fim. Envelope sem `segments`
+ * (array) é ERRO, nunca "lista vazia": o consumidor (`resolveDiariaAudience`)
+ * decide se o broadcast da diária sai, e "não achei o segmento" precisa ser
+ * distinguível de "a API respondeu algo inesperado".
+ */
+export async function listSegments(config?: KitConfig): Promise<KitSegment[]> {
+  const out: KitSegment[] = [];
+  let after: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const params = new URLSearchParams({ per_page: "500" });
+    if (after) params.set("after", after);
+    const data = await kitFetch<{ segments?: unknown; pagination?: KitPagination } | undefined>(
+      `/segments?${params.toString()}`,
+      { config },
+    );
+    if (!data || !Array.isArray(data.segments)) {
+      throw new Error("[kit-broadcasts] listSegments: resposta 2xx sem o array \"segments\" esperado");
+    }
+    for (const s of data.segments as { id?: unknown; name?: unknown }[]) {
+      if (typeof s.id === "number") out.push({ id: s.id, name: typeof s.name === "string" ? s.name : "" });
+    }
+    if (!data.pagination?.has_next_page || !data.pagination.end_cursor) return out;
+    after = data.pagination.end_cursor;
+  }
+  throw new Error("[kit-broadcasts] listSegments: paginação não terminou em 50 páginas");
 }
 
 /** `subscriber_filter` escopado só à tag de test-send — ver docstring do

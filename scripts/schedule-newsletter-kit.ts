@@ -45,13 +45,19 @@
  *   5 — GET de verificação pós-PATCH não confirma o agendamento esperado
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *   7 — (#10437, só com `kit.diaria_exclusion_segment.enabled`) audiência por
+ *       segmento não confirmada: segmento não resolvido, ou o broadcast relido
+ *       ANTES do PATCH não mostra o filtro do segmento (nada agendado), ou o
+ *       relido DEPOIS do PATCH diverge (o agendamento é desfeito com
+ *       `send_at: null`). Nunca agenda pra base inteira no lugar.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { updateBroadcast } from "./lib/kit-broadcasts.ts";
+import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/kit-broadcasts.ts";
+import { resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
@@ -61,11 +67,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface PlatformConfig {
   publishing?: { newsletter?: { backend?: string } };
+  kit?: { diaria_exclusion_segment?: DiariaExclusionSegmentConfig };
 }
 
 export type ScheduleNewsletterKitResult =
   | { ok: true; broadcastId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
-  | { ok: false; code: 3 | 4 | 5 | 6; reason: string };
+  | { ok: false; code: 3 | 4 | 5 | 6 | 7; reason: string };
 
 /**
  * Pura o suficiente pra ser testável — `deps.readPublished`/`deps.writePublished`/
@@ -78,15 +85,26 @@ export type ScheduleNewsletterKitResult =
 export interface ScheduleNewsletterKitDeps {
   readPublished: (editionDir: string) => KitNewsletterPublished | null;
   writePublished: (editionDir: string, state: KitNewsletterPublished) => void;
-  patchSchedule: (broadcastId: number, sendAt: string) => Promise<unknown>;
-  getBroadcastStatus: (broadcastId: number) => Promise<{ status: string; sendAt: string | null }>;
+  /** `sendAt: null` desfaz o agendamento (#10437, filtro divergente pós-PATCH). */
+  patchSchedule: (broadcastId: number, sendAt: string | null) => Promise<unknown>;
+  /** `subscriberFilter` (#10437): o `subscriber_filter` relido, quando o Kit o ecoa. */
+  getBroadcastStatus: (broadcastId: number) => Promise<{ status: string; sendAt: string | null; subscriberFilter?: unknown }>;
 }
 
 export async function scheduleNewsletterKit(
   editionDir: string,
   scheduledAtIso: string,
   deps: ScheduleNewsletterKitDeps,
-  options: { allowOtherDate?: boolean } = {},
+  options: {
+    allowOtherDate?: boolean;
+    /**
+     * #10437 — presente só com `kit.diaria_exclusion_segment` ligado: o filtro
+     * de segmento que o broadcast PRECISA ter. Relido antes do PATCH (aborta
+     * sem agendar) e depois (desfaz o agendamento se divergir). Ausente =
+     * comportamento de sempre, nenhuma leitura extra.
+     */
+    expectedAudienceFilter?: KitSubscriberFilter;
+  } = {},
 ): Promise<ScheduleNewsletterKitResult> {
   // #8207 item 2 — recusa `--scheduled-at` cuja data-calendário em BRT diverge
   // da data da edição, salvo `--allow-other-date` explícito. Roda ANTES de
@@ -113,6 +131,26 @@ export async function scheduleNewsletterKit(
     };
   }
   const broadcastId = published.broadcast_id;
+
+  // #10437 — antes de qualquer agendamento (inclusive o atalho idempotente
+  // abaixo): com a audiência por segmento, o broadcast relido tem que mostrar
+  // o filtro do segmento. Senão nada é agendado.
+  if (options.expectedAudienceFilter) {
+    let before: Awaited<ReturnType<ScheduleNewsletterKitDeps["getBroadcastStatus"]>>;
+    try {
+      before = await deps.getBroadcastStatus(broadcastId);
+    } catch (e) {
+      return {
+        ok: false,
+        code: 7,
+        reason: `GET /broadcasts/${broadcastId} (conferência da audiência antes de agendar, #10437) falhou: ${(e as Error).message}`,
+      };
+    }
+    const verdict = verifyDiariaAudienceFilter(before.subscriberFilter, options.expectedAudienceFilter);
+    if (!verdict.ok) {
+      return { ok: false, code: 7, reason: `broadcast_id=${broadcastId} NÃO agendado: ${verdict.reason}` };
+    }
+  }
 
   // Idempotência HONESTA (#8207 item 3, achado do bug secundário que mascarou
   // a causa raiz do agendamento-no-dia-errado: reagendar pelo script oficial
@@ -146,7 +184,7 @@ export async function scheduleNewsletterKit(
     return { ok: false, code: 4, reason: `PATCH /broadcasts/${broadcastId} falhou: ${(e as Error).message}` };
   }
 
-  let verified: { status: string; sendAt: string | null };
+  let verified: Awaited<ReturnType<ScheduleNewsletterKitDeps["getBroadcastStatus"]>>;
   try {
     verified = await deps.getBroadcastStatus(broadcastId);
   } catch (e) {
@@ -175,6 +213,21 @@ export async function scheduleNewsletterKit(
     };
   }
 
+  // #10437 — o PATCH de `send_at` não pode ter trocado a audiência. Divergiu ⇒
+  // desfaz o agendamento (send_at: null) e reprova.
+  if (options.expectedAudienceFilter) {
+    const verdict = verifyDiariaAudienceFilter(verified.subscriberFilter, options.expectedAudienceFilter);
+    if (!verdict.ok) {
+      let undo = "agendamento desfeito (send_at: null)";
+      try {
+        await deps.patchSchedule(broadcastId, null);
+      } catch (e) {
+        undo = `FALHA ao desfazer o agendamento (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA`;
+      }
+      return { ok: false, code: 7, reason: `broadcast_id=${broadcastId}: ${verdict.reason} ${undo}.` };
+    }
+  }
+
   // Só persiste depois da verificação via GET confirmar — nunca a partir só do PATCH.
   deps.writePublished(editionDir, { ...published, status: "scheduled", scheduled_at: verified.sendAt! });
 
@@ -188,7 +241,7 @@ export function productionDeps(): ScheduleNewsletterKitDeps {
     patchSchedule: async (broadcastId, sendAt) => updateBroadcast(broadcastId, { send_at: sendAt }),
     getBroadcastStatus: async (broadcastId) => {
       const broadcast = await getBroadcast(broadcastId);
-      return { status: broadcast.status, sendAt: broadcast.send_at };
+      return { status: broadcast.status, sendAt: broadcast.send_at, subscriberFilter: broadcast.subscriber_filter };
     },
   };
 }
@@ -232,7 +285,19 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
   const editionDir = resolvedArg.editionDir;
   const allowOtherDate = hasFlag(argv, "allow-other-date");
-  const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps(), { allowOtherDate });
+  // #10437 — flag desligada (default) ⇒ `mode: "all"`, sem rede, sem conferência extra.
+  const audience = await resolveDiariaAudience(platformConfig.kit?.diaria_exclusion_segment, {
+    listSegments: () => listSegments(),
+  });
+  if (!audience.ok) {
+    console.log(JSON.stringify({ ok: false, code: 7, reason: audience.reason }));
+    process.exitCode = 7;
+    return;
+  }
+  const result = await scheduleNewsletterKit(editionDir, scheduledAtArg, productionDeps(), {
+    allowOtherDate,
+    ...(audience.mode === "segment" ? { expectedAudienceFilter: audience.filter } : {}),
+  });
   console.log(JSON.stringify(result));
   process.exitCode = result.ok ? 0 : result.code;
 }

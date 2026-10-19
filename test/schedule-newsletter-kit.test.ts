@@ -121,7 +121,7 @@ describe("scheduleNewsletterKit (#464)", () => {
   });
 
   it("patchSchedule é chamado com broadcastId + scheduledAt corretos", async () => {
-    let calledWith: [number, string] | null = null;
+    let calledWith: [number, string | null] | null = null; // #10437: sendAt aceita null (desagendar)
     const deps = makeDeps({
       patchSchedule: async (broadcastId, sendAt) => {
         calledWith = [broadcastId, sendAt];

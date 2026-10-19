@@ -390,6 +390,8 @@ import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail } 
 import { KitApiError } from "./lib/kit-client.ts"; // #9291
 import { kitApiBase } from "./lib/kit-config.ts"; // #9835
 import { vincularKitDoiForm, verificarDoiForm, mensagemDoiFormInvalido } from "./lib/shared/kit-doi.ts"; // #9835 — reenvio do DOI
+import { findTagIdByName, untagSubscriber, listSubscriberTags, type KitTag } from "./lib/kit-broadcasts.ts"; // #10437
+import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -1437,6 +1439,52 @@ export type KitOriginParseResult =
  */
 const KIT_SUBSCRIBER_ID_RE = /^[0-9]+$/;
 
+/**
+ * #10437 — id do subscriber Kit de um contato de origem `kit-sem-abertura:`.
+ * `undefined` pra qualquer outra origem. Sufixo malformado devolve `0` (não
+ * `undefined`): o contato continua reconhecido como kit-sem-abertura — nunca
+ * cai no caminho Beehiiv —, e a remoção da tag recusa o id inválido, deixando
+ * o contato `in_brevo` (fail-safe).
+ */
+export function parseKitSemAberturaSubscriberId(beehiivSubscriptionId: string): number | undefined {
+  if (!beehiivSubscriptionId.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) return undefined;
+  const raw = beehiivSubscriptionId.slice(ORIGIN_PREFIX.KIT_SEM_ABERTURA.length);
+  return KIT_SUBSCRIBER_ID_RE.test(raw) && Number(raw) > 0 ? Number(raw) : 0;
+}
+
+/**
+ * #10437 — "promoção" de volta pro Kit de um contato `kit-sem-abertura:`:
+ * remove a tag `envio-brevo` e RELÊ as tags do assinante (o 2xx do DELETE não
+ * é prova, ver `untagSubscriber`). Injetável em teste via `deps`.
+ */
+export async function removeKitEnvioBrevoTag(params: {
+  subscriberId: number;
+  kitApiKey: string | undefined;
+  resolveTagId: () => Promise<number | null>;
+  deps?: {
+    untag: (tagId: number, subscriberId: number, apiKey: string) => Promise<void>;
+    listTags: (subscriberId: number, apiKey: string) => Promise<KitTag[]>;
+  };
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { subscriberId, kitApiKey } = params;
+  if (!kitApiKey) return { ok: false, reason: "KIT_API_KEY ausente" };
+  if (!Number.isInteger(subscriberId) || subscriberId <= 0) return { ok: false, reason: "id de subscriber Kit malformado na origem" };
+  const deps = params.deps ?? {
+    untag: (tagId: number, id: number, apiKey: string) => untagSubscriber(tagId, id, { apiKey }),
+    listTags: (id: number, apiKey: string) => listSubscriberTags(id, { apiKey }),
+  };
+  try {
+    const tagId = await params.resolveTagId();
+    if (tagId === null) return { ok: false, reason: `tag ${KIT_ENVIO_BREVO_TAG_NAME} não existe no Kit` };
+    await deps.untag(tagId, subscriberId, kitApiKey);
+    const tags = await deps.listTags(subscriberId, kitApiKey);
+    if (tags.some((t) => t.id === tagId)) return { ok: false, reason: "releitura ainda mostra a tag" };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message };
+  }
+}
+
 export function parseKitSubscriberId(beehiivSubscriptionId: string): KitOriginParseResult {
   if (!beehiivSubscriptionId.startsWith(KIT_ORIGIN_ID_PREFIX)) return { kind: "not-kit" };
   const raw = beehiivSubscriptionId.slice(KIT_ORIGIN_ID_PREFIX.length);
@@ -2019,6 +2067,10 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     }
   }
 
+  // #10437 — id da tag `envio-brevo`, resolvido 1x por rodada e só se algum
+  // contato `kit-sem-abertura:` for promovido (`undefined` = não buscado).
+  let envioBrevoTagId: number | null | undefined;
+
   for (const contact of contacts) {
     try {
       // #6340 item 4 fix B/C — origem do contato, determinada UMA vez no
@@ -2030,6 +2082,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // dupla checagem do mesmo prefixo por 2 caminhos diferentes).
       const kitParseResult = parseKitSubscriberId(contact.beehiiv_subscription_id);
       const isKitOrigin = kitParseResult.kind !== "not-kit";
+      // #10437 — origem `kit-sem-abertura:` (ativo no Kit, 6 envios sem abrir,
+      // movido pra cá com a tag `envio-brevo`). NÃO é `kit:` (o prefixo é
+      // `kit-`), então `isKitOrigin` é false — e ele também não pode cair no
+      // caminho Beehiiv: tem tratamento próprio nos Passos 0, 1 e 2 abaixo.
+      const kitSemAberturaId = parseKitSemAberturaSubscriberId(contact.beehiiv_subscription_id);
+      const isKitSemAberturaOrigin = kitSemAberturaId !== undefined;
       // Cache do status Kit — mesmo papel de `beehiivStatus` abaixo, pro
       // lado Kit: `undefined` = ainda não checado nesta iteração; setado
       // pelo Passo 0 (quando `emailBlacklisted`) e reusado pelo Passo 1 —
@@ -2066,6 +2124,28 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           failedContacts.push({ email: contact.email, reason: `falha ao checar estado Brevo: ${(e as Error).message}` });
           // Sem estado confiável — não decide com dado incompleto, tenta de
           // novo na próxima rodada. Não passa pra auto-confirmação/score.
+          continue;
+        }
+        if (nativeState.emailBlacklisted && isKitSemAberturaOrigin) {
+          // #10437 — saída LOCAL, nunca toca Beehiiv nem Kit. O contato segue
+          // `active` no Kit com a tag `envio-brevo` (fora do segmento do
+          // broadcast), então não recebe a diária por canal nenhum.
+          if (nativeState.userUnsubscribed) {
+            log(`${contact.email}: descadastro nativo na Brevo, origem kit-sem-abertura → saída local (#10437).`);
+            unsubscribedNative++;
+            if (push) {
+              await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+              store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_kit_sem_abertura");
+            }
+            continue;
+          }
+          const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
+          log(`${contact.email}: emailBlacklisted sem userUnsubscription (${bounceReason}), origem kit-sem-abertura → bounced local (#10437).`);
+          bouncedNative++;
+          if (push) {
+            await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
+            store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
+          }
           continue;
         }
         if (nativeState.emailBlacklisted && isKitOrigin) {
@@ -2271,7 +2351,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // mesmo run pro mesmo contato. `isKitOrigin`/`kitParseResult` já
       // computados no topo da iteração (#6340 item 4 fix B) — reusados aqui,
       // não recalculados.
-      if (isKitOrigin) {
+      if (isKitSemAberturaOrigin) {
+        // #10437 (armadilha 5) — SEM auto-confirmação: este contato já era
+        // `active` no Kit quando foi movido, então "ativo no Kit" não prova
+        // nada. Volta pro Kit só pela abertura na Brevo (Passo 2, remove a
+        // tag). Nenhuma leitura de Kit/Beehiiv aqui.
+      } else if (isKitOrigin) {
         // Reusa `kitConfirmed` se o Passo 0 já buscou (contato
         // `emailBlacklisted`, origem Kit) — nunca um 2º GET ao Kit no mesmo
         // run pro mesmo contato.
@@ -2457,7 +2542,39 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
 
       if (!push) continue;
 
-      if (evalResult.action === "promote_to_beehiiv") {
+      if (evalResult.action === "promote_to_beehiiv" && isKitSemAberturaOrigin) {
+        // #10437 — a pessoa nunca saiu do Kit (`active` com a tag de
+        // exclusão). Promover = remover a tag `envio-brevo` (releitura
+        // confirma) e desvincular da lista Brevo, sem DOI nem POST de
+        // assinante. O contato fica `promoted_beehiiv` no store, e o
+        // seletor (`selectKitSemAbertura`) exclui quem já passou pelo store
+        // — por isso ele não volta pra Brevo na rodada seguinte, mesmo com
+        // 0 aberturas no Kit (armadilha 6).
+        const removed = await removeKitEnvioBrevoTag({
+          subscriberId: kitSemAberturaId!,
+          kitApiKey,
+          resolveTagId: async () => {
+            if (envioBrevoTagId === undefined) {
+              envioBrevoTagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME, { apiKey: kitApiKey! });
+            }
+            return envioBrevoTagId;
+          },
+        });
+        if (!removed.ok) {
+          log(`warn: ${contact.email} — tag ${KIT_ENVIO_BREVO_TAG_NAME} NÃO removida no Kit (${removed.reason}) — mantendo in_brevo (#10437).`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `remoção da tag ${KIT_ENVIO_BREVO_TAG_NAME} não confirmada: ${removed.reason}` });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
+        await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        store = applyEvaluation(store, contact.email, {
+          ...counts.instant,
+          open_rate: evalResult.open_rate,
+          action: "promote_to_beehiiv",
+          resolutionReason: "score_threshold_kit_tag_removed",
+        });
+      } else if (evalResult.action === "promote_to_beehiiv") {
         // #6339: qual backend recebe a promoção depende de `newsletterBackend`
         // (default "beehiiv", preservando o caminho pré-#6339 — main() sempre
         // passa o valor real de platform.config.json). Ver docstring de
@@ -2831,7 +2948,12 @@ async function main(): Promise<number> {
   // função. `KIT_API_KEY` é uma env var sempre presente em produção (ver
   // `.env.example`/Doppler), então este caminho fail-safe é o caso raro
   // (dev local sem a env), não o esperado.
-  const hasKitOriginContacts = inBrevo.some((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX));
+  // #10437 — origem `kit-sem-abertura:` também precisa do Kit (promoção = remover a tag).
+  const hasKitOriginContacts = inBrevo.some(
+    (c) =>
+      c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX) ||
+      c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA),
+  );
   if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
     const why = newsletterBackend === "kit" ? "newsletterBackend=kit" : `${inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length} contato(s) de origem Kit no store`;
     log(`ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push — ${why}, #6340 item 4 fix A).`);

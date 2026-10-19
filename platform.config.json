@@ -23,7 +23,12 @@
     "tallyFormId_note": "#466 (24/08/2026) — survey de audiência que substitui a survey Beehiiv (Kit não tem builder nativo, editor escolheu Tally). scripts/fetch-tally-audience.ts lê este id via GET /forms/{id}/submissions. Form: https://tally.so/forms/xX5JJy/edit",
     "affiliate_url": "",
     "affiliate_url_note": "#6195 (26/08/2026) — link de afiliado do Kit (PartnerStack). VAZIO = o crédito do rodapé nas edições Kit sai NEUTRO (\"enviei por e-mail\"), sem link. Preencher quando o editor se cadastrar em partnerstack.com: 50% recorrente nos 12 primeiros meses, cookie 90 dias, paga no Brasil via PayPal/Stripe/AirWallex (verificado 26/08). Preencher aqui basta — não exige mudança de código.",
-    "affiliate_offer_text": "ganhe 50% de desconto"
+    "affiliate_offer_text": "ganhe 50% de desconto",
+    "diaria_exclusion_segment": {
+      "enabled": false,
+      "segment_id": null
+    },
+    "diaria_exclusion_segment_note": "#10437 — DESLIGADO por default. Ligado, o broadcast PRINCIPAL da diária no Kit deixa de ir pra base inteira (buildAllSubscribersFilter) e passa a mirar o segmento segment_id, criado à mão no painel do Kit como 'ativos sem a tag envio-brevo' (a API não cria segmento). Falha segura: segmento ausente da conta, listagem falhando ou releitura do broadcast sem o filtro do segmento ABORTA o publish (exit 13) e o agendamento (exit 7) — nunca cai pra base inteira (#6126, #7651, #6582). Ligar é o Gate B do #10437: confirmar ao vivo que o segmento aceita 'sem a tag', que subscriber_filter type segment funciona no broadcast e que o GET do broadcast ecoa o filtro, e conferir os recipients contra POST /v4/subscribers/filter (GET /subscribers?segment_id= ignora o parâmetro, #7633). Precisa estar ligado ANTES de brevo_diaria.kit_sem_abertura.enabled mover alguém (o script recusa mover sem ele: tag sem segmento = edição em dobro)."
   },
   "annual": {
     "top_k_per_month": 10,
@@ -55,6 +60,12 @@
     "seed_deliberately_blacklisted": ["vjpixel@gmail.com"],
     "seed_deliberately_blacklisted_note": "#8436 (20/09/2026) — blacklist do Gmail pessoal na Brevo da diária é deliberado (o editor recebe pelo Kit). Isento só do estado blacklisted no guard; test_email trocado pra caixa Workspace. Decisão final (20/09/2026): a sonda de inbox placement da diária é o próprio pixel@memelab.com.br (Workspace) — nenhuma outra caixa Gmail; consequência aceita: a sonda não mede o filtro do Gmail pessoal.",
     "daily_send_cap": 295,
+    "kit_sem_abertura": {
+      "enabled": false,
+      "min_mature_sends": 6,
+      "new_signup_window_days": 30
+    },
+    "kit_sem_abertura_note": "#10437 — DESLIGADO por default. Ligado, brevo-diaria-run.ts --apply roda o Passo 3c (sync-kit-sem-abertura-to-brevo.ts --push): quem está active no Kit com >= min_mature_sends envios maduros (>=48h) de broadcasts da diária (registro _internal/newsletter-kit-published.json + kit-diaria-published.json, status scheduled) e 0 aberturas e 0 cliques neles entra na lista 7 com o atributo ORIGEM_DIARIA=kit_sem_abertura, ganha a tag envio-brevo no Kit e entra no store com origem kit-sem-abertura:{id}; log em data/brevo-diaria/kit-sem-abertura-log.jsonl. Fora: apoiadores, EDITOR_SEED_EMAILS, fixtures, tag diaria-test-email, quem já passou pelo store. Cadastros até new_signup_window_days entram sempre; o backlog entra em ondas pela fila (daily_send_cap) e pela cota da conta (checkAccountSendQuota). Ligado também troca o intro da campanha pela condicional por origem (data/snippets/brevo-diaria-kit-sem-abertura-intro.md obrigatório). Promoção de volta (abertura >51% na Brevo) remove a tag. Só move com kit.diaria_exclusion_segment.enabled também ligado.",
     "account_daily_limit": 300,
     "account_daily_limit_note": "#6146 — teto da CONTA Brevo (plano free): 300 e-mails/dia num balde ÚNICO, transacional + marketing. Constante DIFERENTE de `daily_send_cap`, que é o teto da FILA de reativação: a fila pode caber folgada (295) e a conta estar sem cota nenhuma porque outro processo (onboarding transacional, #6042) já gastou os 300. Consumido por `scripts/lib/brevo-account-quota.ts`.",
     "stage5_target_total": 290,

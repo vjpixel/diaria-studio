@@ -176,6 +176,10 @@
  * sido enviada/agendada pela UI, nada gravado; 12 (`--mark-ui-test-sent`,
  * #10410) a releitura do broadcast falhou — estado não confirmável, nada gravado.
  * 11 e 12 valem igual para `--verify-ui-test-draft` (#10465), que nunca grava.
+ * 13 (#10437, só com `kit.diaria_exclusion_segment.enabled`) o segmento da
+ * audiência não foi confirmado (id inválido, ausente da conta, listagem
+ * falhou) ou a releitura do broadcast não mostrou o filtro do segmento — nada
+ * vai pra base inteira no lugar.
  *
  * Idempotência: `<edition-dir>/_internal/newsletter-kit-published.json` é
  * escrito assim que o draft é criado — uma invocação seguinte pra MESMA
@@ -202,9 +206,16 @@ import {
   updateBroadcast,
   resolveTestSendTagId,
   buildTestSendFilter,
-  buildAllSubscribersFilter,
+  deleteBroadcast,
+  listSegments,
+  type KitSubscriberFilter,
   type UpdateBroadcastInput,
 } from "./lib/kit-broadcasts.ts";
+import {
+  resolveDiariaAudience,
+  verifyDiariaAudienceFilter,
+  type DiariaExclusionSegmentConfig,
+} from "./lib/kit-diaria-audience.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
@@ -622,8 +633,9 @@ export interface PlatformConfig {
       backend?: string;
     };
   };
-  /** #6195 — crédito de plataforma no rodapé das edições Kit. */
-  kit?: KitAffiliateConfig;
+  /** #6195 — crédito de plataforma no rodapé das edições Kit.
+   *  #10437 — `diaria_exclusion_segment`: audiência por segmento (flag). */
+  kit?: KitAffiliateConfig & { diaria_exclusion_segment?: DiariaExclusionSegmentConfig };
 }
 
 export type BackendCheck = { ok: true } | { ok: false; reason: string };
@@ -687,7 +699,14 @@ export type UpdateExistingBroadcastResult =
  */
 export async function updateExistingKitBroadcast(
   existing: KitNewsletterPublished,
-  patchFields: { subject: string; preview_text: string; content: string; public: boolean },
+  patchFields: {
+    subject: string;
+    preview_text: string;
+    content: string;
+    public: boolean;
+    /** #10437 — só com `kit.diaria_exclusion_segment` ligado; ausente = PATCH de sempre. */
+    subscriber_filter?: KitSubscriberFilter;
+  },
   log: (msg: string) => void,
   deps: UpdateExistingBroadcastDeps = { updateBroadcast, getBroadcast },
 ): Promise<UpdateExistingBroadcastResult> {
@@ -758,6 +777,46 @@ export async function updateExistingKitBroadcast(
   }
   log(`[#8208] reagendamento automático confirmado: send_at=${rescheduled.send_at}`);
   return { ok: true, broadcastId: updated.id, publicUrl: updated.public_url, sendAtRescued: true };
+}
+
+// ── releitura da audiência por segmento (#10437) ────────────────────────
+
+/**
+ * #10437 — relê o broadcast e confere o `subscriber_filter` do segmento.
+ * `deleteBroadcast` presente (draft criado NESTA invocação) ⇒ apaga o draft
+ * quando a conferência falha, best-effort, pra não sobrar um rascunho de
+ * audiência não confirmada que a Etapa 6 possa agendar. Ausente (draft já
+ * existia) ⇒ só reprova; o `schedule-newsletter-kit.ts` confere de novo antes
+ * de agendar.
+ */
+export async function confirmDiariaAudienceOnBroadcast(
+  broadcastId: number,
+  expected: KitSubscriberFilter,
+  deps: {
+    getBroadcast: (id: number) => Promise<{ subscriber_filter?: unknown }>;
+    deleteBroadcast?: (id: number) => Promise<void>;
+  },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let reread: { subscriber_filter?: unknown };
+  try {
+    reread = await deps.getBroadcast(broadcastId);
+  } catch (e) {
+    const reason = `releitura do broadcast falhou (${(e as Error).message}) — audiência não confirmada (#6582).`;
+    return { ok: false, reason: await cleanup(reason) };
+  }
+  const verdict = verifyDiariaAudienceFilter(reread.subscriber_filter, expected);
+  if (verdict.ok) return { ok: true };
+  return { ok: false, reason: await cleanup(verdict.reason) };
+
+  async function cleanup(reason: string): Promise<string> {
+    if (!deps.deleteBroadcast) return reason;
+    try {
+      await deps.deleteBroadcast(broadcastId);
+      return `${reason} Draft recém-criado apagado.`;
+    } catch (e) {
+      return `${reason} FALHA ao apagar o draft recém-criado (${(e as Error).message}) — apague à mão antes da Etapa 6.`;
+    }
+  }
 }
 
 // ── main ──────────────────────────────────────────────────────────────
@@ -924,13 +983,34 @@ export async function main(rootDirOverride?: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // #10437 — audiência do broadcast principal. Flag `kit.diaria_exclusion_segment`
+  // desligada (default) ⇒ base inteira, sem rede, exatamente como antes. Ligada
+  // ⇒ segmento confirmado na conta, ou aborta (nunca cai pra base inteira).
+  const audience = await resolveDiariaAudience(platformConfig.kit?.diaria_exclusion_segment, {
+    listSegments: () => listSegments(),
+  });
+  if (!audience.ok) {
+    log(`ERRO: ${audience.reason}`);
+    process.exitCode = 13;
+    return;
+  }
+  if (audience.mode === "segment") {
+    log(`audiência: segmento ${audience.segmentId} do Kit (kit.diaria_exclusion_segment ligado, #10437).`);
+  }
+
   let broadcastId: number;
   let publicUrl: string | undefined;
   if (existing) {
     log(`draft já existe (broadcast_id=${existing.broadcast_id}) — atualizando em vez de criar um 2º.`);
     const updateResult = await updateExistingKitBroadcast(
       existing,
-      { subject, preview_text: previewText, content: html, public: true },
+      {
+        subject,
+        preview_text: previewText,
+        content: html,
+        public: true,
+        ...(audience.mode === "segment" ? { subscriber_filter: audience.filter } : {}),
+      },
       log,
     );
     if (!updateResult.ok) {
@@ -946,7 +1026,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
       content: html,
       preview_text: previewText,
       send_at: null, // rascunho — Etapa 6 é quem agenda de verdade
-      subscriber_filter: buildAllSubscribersFilter(),
+      // #10437: `buildAllSubscribersFilter()` com a flag desligada (default),
+      // o segmento confirmado com ela ligada — ver `resolveDiariaAudience`.
+      subscriber_filter: audience.filter,
       // #6323 (achado ao vivo): sem `public: true` o Kit nunca gera um
       // `public_url` com slug — a doc oficial confirma que o campo controla
       // exatamente isso ("publish this broadcast to the web... appears in a
@@ -958,6 +1040,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
     broadcastId = created.id;
     publicUrl = created.public_url;
     log(`draft criado: broadcast_id=${broadcastId}`);
+  }
+
+  // #10437 — com o segmento, relê o broadcast e confere o filtro (2xx não é
+  // prova, #6582). Divergente/ausente ⇒ aborta; um draft recém-criado é apagado
+  // pra a Etapa 6 nunca agendar um broadcast de audiência não confirmada.
+  if (audience.mode === "segment") {
+    const check = await confirmDiariaAudienceOnBroadcast(broadcastId, audience.filter, {
+      getBroadcast: (id) => getBroadcast(id),
+      deleteBroadcast: existing ? undefined : (id) => deleteBroadcast(id),
+    });
+    if (!check.ok) {
+      log(`ERRO: broadcast_id=${broadcastId}: ${check.reason}`);
+      process.exitCode = 13;
+      return;
+    }
+    log(`subscriber_filter confirmado por releitura: segmento ${audience.segmentId} (#10437).`);
   }
 
   // #464 (achado do review, PR #6080): grava o estado do draft REAL
