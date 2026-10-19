@@ -57,10 +57,12 @@ export const AI_CRAWLER_PROBE_HOSTS: readonly string[] = [
   "eia.diar.ia.br",
 ];
 
-/** UAs publicados pelos operadores (OpenAI / Anthropic). */
+/** UAs dos operadores (OpenAI / Anthropic). O do ClaudeBot troca o contato
+ * de e-mail publicado por URL (guard de PII #6753) — a regra da borda casa
+ * pelo token `ClaudeBot`, não pelo sufixo. */
 export const AI_CRAWLER_PROBE_UAS: Readonly<Record<string, string>> = {
   GPTBot: "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.1; +https://openai.com/gptbot)",
-  ClaudeBot: "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)",
+  ClaudeBot: "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +https://www.anthropic.com/claude-bot)",
 };
 
 /** Bots bloqueados DE PROPÓSITO (`docs/ai-crawlers-policy.md`) — 403 deles
