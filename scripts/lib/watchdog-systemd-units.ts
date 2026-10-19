@@ -45,8 +45,9 @@ import type { SystemdUnitFiles } from "./systemd-units.ts";
  * porque o watchdog não passa pelo registry (`ScheduledTaskDefinition`) que
  * `unitBaseName` deriva — evita puxar `check-watchdog-armed.ts` (que É a
  * fonte do literal `"Diaria-Overnight-Watchdog"`) só por essa constante e
- * arriscar um import cycle (`check-watchdog-armed.ts` importa deste módulo
- * indiretamente via `systemd-units.ts`/`unitBaseName` — ver #4857 item 3).
+ * arriscar um import cycle (`check-watchdog-armed.ts` importa DESTE módulo —
+ * `buildWatchdogOnCalendar`, #10571 — então este nunca pode importar aquele;
+ * ver #4857 item 3).
  * `test/watchdog-systemd-units.test.ts` trava a igualdade com
  * `unitBaseName(WATCHDOG_TASK_NAME)` para nunca deixar os dois divergirem
  * em silêncio. */
