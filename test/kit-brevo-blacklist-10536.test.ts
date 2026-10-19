@@ -67,6 +67,9 @@ function syncDeps(isBlacklisted: (email: string) => Promise<boolean>) {
     tagKit: async (tagId, id) => {
       calls.push(`tag:${tagId}:${id}`);
     },
+    untagKit: async (tagId, id) => {
+      calls.push(`untag:${tagId}:${id}`);
+    },
     appendLog: () => {},
   };
   return { deps, calls, getStore: () => store };
@@ -173,7 +176,7 @@ describe("evaluate: blacklist anterior à entrada não descadastra no Kit (#1053
     ["hard bounce anterior ao added_at", { hardBounces: [{ campaignId: 9, eventTime: "2026-08-01T00:00:00Z" }] }],
     ["descadastro anterior ao added_at", { unsubscriptions: { userUnsubscription: [{ campaignId: 9, eventTime: "2026-09-01T00:00:00Z" }] } }],
   ] as const) {
-    it(`${label}: Kit intocado, fica in_brevo, contado à parte (não é falha)`, async () => {
+    it(`${label}: dry-run — Kit intocado, fica in_brevo, contado à parte (não é falha)`, async () => {
       const http: string[] = [];
       const kit: string[] = [];
       globalThis.fetch = brevoBlacklisted(statistics, http);
@@ -182,7 +185,7 @@ describe("evaluate: blacklist anterior à entrada não descadastra no Kit (#1053
         const r = await runEvaluation({
           contacts: [contact],
           store: { contacts: [contact] },
-          push: true,
+          push: false,
           publicationId: "pub",
           beehiivApiKey: "b",
           brevoApiKey: "br",

@@ -507,7 +507,24 @@ export interface KitSemAberturaExitLogEntry {
   brevo_exit: string;
 }
 
+/**
+ * #10557 — movimentação DESFEITA: o contato já estava `emailBlacklisted` na
+ * Brevo antes de entrar na lista (#10536), então a tag `envio-brevo` foi
+ * removida no Kit (confirmada por releitura) e ele volta a receber por lá.
+ * `step`: `evaluate` (Passo 0 de `evaluate-brevo-diaria.ts`) ou
+ * `sync_orphan` (órfão do sync, nunca gravado no store).
+ */
+export interface KitSemAberturaRevertLogEntry {
+  ts: string;
+  event: "kit_tag_removed_preexisting_blacklist";
+  email: string;
+  kit_subscriber_id: number;
+  step: "evaluate" | "sync_orphan";
+}
+
 /** Pura — uma linha do log (`data/brevo-diaria/kit-sem-abertura-log.jsonl`). */
-export function formatKitSemAberturaLogLine(entry: KitSemAberturaLogEntry | KitSemAberturaExitLogEntry): string {
+export function formatKitSemAberturaLogLine(
+  entry: KitSemAberturaLogEntry | KitSemAberturaExitLogEntry | KitSemAberturaRevertLogEntry,
+): string {
   return JSON.stringify(entry) + "\n";
 }

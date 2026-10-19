@@ -49,6 +49,10 @@
  *   grava o store — nunca o exclui em silêncio.
  * - O store é gravado a cada contato, então uma queda no meio não perde quem
  *   já foi movido.
+ * - Órfão já `emailBlacklisted` na Brevo (#10557) não é re-ingerido: a tag
+ *   `envio-brevo` é removida no Kit (com releitura) e ele volta a receber por
+ *   lá. O par no `evaluate-brevo-diaria.ts` (Passo 0) desfaz do mesmo jeito a
+ *   movimentação de quem entrou no store já bloqueado na Brevo.
  *
  * ## Onda
  *
@@ -80,9 +84,9 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
-import { listSubscribers } from "./lib/kit-client.ts";
+import { listSubscribers, KitApiError } from "./lib/kit-client.ts";
 import { getSubscriberById } from "./lib/kit-subscribers.ts";
-import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
+import { findTagIdByName, tagSubscriber, untagSubscriber, listSubscriberTags } from "./lib/kit-broadcasts.ts";
 import { brevoPost, brevoGet } from "./lib/brevo-client.ts";
 import { readRolloutGuardrailState } from "./lib/brevo-diaria-guardrail.ts";
 import {
@@ -183,6 +187,13 @@ export interface KitSemAberturaDeps {
   isBrevoBlacklisted: (email: string) => Promise<boolean>;
   ingestBrevo: (email: string) => Promise<void>;
   tagKit: (tagId: number, subscriberId: number) => Promise<void>;
+  /**
+   * #10557 — remove a tag do assinante no Kit e RELÊ (`listSubscriberTags`):
+   * lança se a releitura ainda mostrar a tag (o 2xx do DELETE não é prova).
+   * Tag já ausente (404 no DELETE) conta como removida se a releitura
+   * confirmar.
+   */
+  untagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
 }
 
@@ -198,6 +209,12 @@ export interface KitSemAberturaRunResult {
   reconciled?: number;
   /** #10536 — selecionados que já estavam `emailBlacklisted` na Brevo: ficam no Kit. */
   skippedBlacklisted?: number;
+  /**
+   * #10557 — órfãos (tag `envio-brevo` sem store) já `emailBlacklisted` na
+   * Brevo: em vez de re-ingeridos, tiveram a tag removida no Kit (releitura
+   * confirmou) e voltam a receber a diária por lá. Nunca gravados no store.
+   */
+  orphansReturnedToKit?: number;
   summary: string;
 }
 
@@ -286,6 +303,12 @@ export async function runKitSemAberturaSync(
     }
   };
 
+  let tagId: number | null | undefined;
+  const resolveTag = async (): Promise<number | null> => {
+    if (tagId === undefined) tagId = await deps.findEnvioBrevoTagId();
+    return tagId;
+  };
+
   // ── reconciliação: órfãos e tags pendentes (antes de qualquer seleção) ──
   const storeEmails = new Set(store.contacts.map((c) => normalizeEmail(c.email)));
   const orphans = actives.filter((a) => a.tagNames.includes(KIT_ENVIO_BREVO_TAG_NAME) && !storeEmails.has(normalizeEmail(a.email)));
@@ -296,8 +319,60 @@ export async function runKitSemAberturaSync(
     log(`${orphans.length} órfão(s): tag ${KIT_ENVIO_BREVO_TAG_NAME} no Kit e fora do store — ${push ? "reconciliando" : "seriam reconciliados"}.`);
   }
   if (pending.length > 0) log(`${pending.length} contato(s) com a tag ${KIT_ENVIO_BREVO_TAG_NAME} pendente de confirmação.`);
+  let orphansReturnedToKit = 0;
   if (push) {
     for (const o of orphans) {
+      // #10557 — órfão já `emailBlacklisted` na Brevo: re-ingerir o deixaria
+      // `in_brevo` sem canal (a Brevo não envia, a tag o tira do segmento da
+      // diária no Kit). Desfaz a movimentação: tira a tag no Kit com
+      // releitura e não grava o store. Sem confirmação (leitura do blacklist
+      // ou remoção da tag), conta falha e a próxima rodada retenta — o
+      // contato segue órfão, nunca é ingerido às cegas.
+      // Limite conhecido: o órfão não tem `added_at` (o store nunca foi
+      // gravado), então não dá pra distinguir um blacklist anterior à
+      // movimentação de um descadastro feito numa campanha entre a
+      // movimentação e esta rodada (janela de ~1 dia). Os dois caem aqui;
+      // remover a tag nunca descadastra ninguém, e o Kit segue honrando o
+      // descadastro feito no próprio Kit.
+      let orphanBlacklisted: boolean;
+      try {
+        orphanBlacklisted = await deps.isBrevoBlacklisted(o.email);
+      } catch (e) {
+        failed++;
+        log(`FALHA ao reconciliar o órfão ${o.email} (blacklist na Brevo não lido: ${(e as Error).message}) — fica pra próxima rodada.`);
+        continue;
+      }
+      if (orphanBlacklisted) {
+        const id = await resolveTag();
+        if (id === null) {
+          failed++;
+          log(`FALHA: órfão ${o.email} blacklisted na Brevo, mas a tag "${KIT_ENVIO_BREVO_TAG_NAME}" não foi achada no Kit — fica pra próxima rodada.`);
+          continue;
+        }
+        try {
+          await deps.untagKit(id, o.id);
+        } catch (e) {
+          failed++;
+          log(`FALHA: órfão ${o.email} blacklisted na Brevo — tag ${KIT_ENVIO_BREVO_TAG_NAME} NÃO removida no Kit (${(e as Error).message}) — retenta na próxima rodada (#10557).`);
+          continue;
+        }
+        orphansReturnedToKit++;
+        log(`  ${o.email}: órfão já emailBlacklisted na Brevo — tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, volta a receber pelo Kit (#10557).`);
+        try {
+          deps.appendLog(
+            formatKitSemAberturaLogLine({
+              ts: nowIso,
+              event: "kit_tag_removed_preexisting_blacklist",
+              email: normalizeEmail(o.email),
+              kit_subscriber_id: o.id,
+              step: "sync_orphan",
+            }),
+          );
+        } catch (e) {
+          log(`aviso: falha ao gravar o log de ${o.email} (${(e as Error).message}).`);
+        }
+        continue;
+      }
       try {
         await deps.ingestBrevo(o.email);
       } catch (e) {
@@ -325,11 +400,6 @@ export async function runKitSemAberturaSync(
     }
   }
 
-  let tagId: number | null | undefined;
-  const resolveTag = async (): Promise<number | null> => {
-    if (tagId === undefined) tagId = await deps.findEnvioBrevoTagId();
-    return tagId;
-  };
   if (push && pending.length > 0) {
     const id = await resolveTag();
     if (id === null) {
@@ -339,6 +409,7 @@ export async function runKitSemAberturaSync(
         ...base,
         failed,
         reconciled,
+        orphansReturnedToKit,
         summary: `tag "${KIT_ENVIO_BREVO_TAG_NAME}" não existe no Kit — crie-a (Gate B do #10437) antes de ligar a flag.`,
       };
     }
@@ -370,6 +441,7 @@ export async function runKitSemAberturaSync(
       ...base,
       failed,
       reconciled,
+      orphansReturnedToKit,
       summary: `menos de ${minSends} broadcast(s) maduro(s) no registro — ninguém pode qualificar ainda.`,
     };
   }
@@ -451,7 +523,17 @@ export async function runKitSemAberturaSync(
   });
   if (!quotaNew.ok) {
     const summary = `${quotaNew.reason} (dia de envio ${sendDay}) — Passo 3c abortado, ninguém movido nesta rodada.`;
-    return { code: push ? 1 : 0, dryRun: !push, ...base, selected: selection.selected.length, deferred: selection.selected.length, failed, reconciled, summary };
+    return {
+      code: push ? 1 : 0,
+      dryRun: !push,
+      ...base,
+      selected: selection.selected.length,
+      deferred: selection.selected.length,
+      failed,
+      reconciled,
+      orphansReturnedToKit,
+      summary,
+    };
   }
   let deferred = wave.deferred + (wave.toMove.length - capped.length);
   log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${capped.length} nesta rodada, ${deferred} adiado(s).`);
@@ -494,7 +576,7 @@ export async function runKitSemAberturaSync(
   if (skippedBlacklisted > 0) {
     log(`${skippedBlacklisted} selecionado(s) já blacklisted na Brevo — mantido(s) no Kit (#10536).`);
   }
-  const counts = { selected: selection.selected.length, deferred, skippedBlacklisted };
+  const counts = { selected: selection.selected.length, deferred, skippedBlacklisted, orphansReturnedToKit };
 
   if (!push) {
     for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
@@ -570,7 +652,9 @@ export async function runKitSemAberturaSync(
     failed,
     reconciled,
     ...counts,
-    summary: `${moved} movido(s) pra Brevo, ${reconciled} reconciliado(s), ${skippedBlacklisted} já blacklisted na Brevo (mantido(s) no Kit), ${failed} falha(s).`,
+    summary:
+      `${moved} movido(s) pra Brevo, ${reconciled} reconciliado(s), ${skippedBlacklisted} já blacklisted na Brevo (mantido(s) no Kit), ` +
+      `${orphansReturnedToKit} órfão(s) blacklisted devolvido(s) ao Kit, ${failed} falha(s).`,
   };
 }
 
@@ -667,6 +751,19 @@ async function tagAndConfirm(tagId: number, subscriberId: number, pace: () => Pr
   await pace();
   const tags = await listSubscriberTags(subscriberId);
   if (!tags.some((t) => t.id === tagId)) throw new Error(`releitura das tags não mostra a tag ${tagId} (2xx não é prova)`);
+}
+
+/** #10557 — remove a tag e confirma pela releitura (404 no DELETE = já ausente; a releitura decide). */
+async function untagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
+  await pace();
+  try {
+    await untagSubscriber(tagId, subscriberId);
+  } catch (e) {
+    if (!(e instanceof KitApiError && e.status === 404)) throw e;
+  }
+  await pace();
+  const tags = await listSubscriberTags(subscriberId);
+  if (tags.some((t) => t.id === tagId)) throw new Error(`releitura das tags ainda mostra a tag ${tagId} (2xx não é prova)`);
 }
 
 /**
@@ -777,6 +874,7 @@ async function main(): Promise<void> {
     isBrevoBlacklisted: (email) => readBrevoBlacklisted(apiKey, email),
     ingestBrevo: (email) => ingestWithOrigin(apiKey, listId, email),
     tagKit: (tagId, id) => tagAndConfirm(tagId, id, kitPacer),
+    untagKit: (tagId, id) => untagAndConfirm(tagId, id, kitPacer),
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line),
   });
   log(result.summary);

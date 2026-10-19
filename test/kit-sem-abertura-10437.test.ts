@@ -232,6 +232,9 @@ function fakeDeps(overrides: Partial<KitSemAberturaDeps> = {}) {
     tagKit: async (tagId, id) => {
       calls.push(`tag:${tagId}:${id}`);
     },
+    untagKit: async (tagId, id) => {
+      calls.push(`untag:${tagId}:${id}`);
+    },
     appendLog: (line) => {
       calls.push(`log:${JSON.parse(line).origin}`);
     },
@@ -259,6 +262,7 @@ function throwingDeps(): KitSemAberturaDeps {
     isBrevoBlacklisted: boom,
     ingestBrevo: boom,
     tagKit: boom,
+    untagKit: boom,
     appendLog: boom,
   };
 }
