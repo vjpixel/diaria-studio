@@ -187,7 +187,14 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
    * busca orgânica) — 1ª página estática do sitemap desde a criação deste
    * teste (#6359), que assumia até então que só `/p/` existia ali.
    */
-  const KNOWN_STATIC_SITEMAP_PATHS = new Set(["https://diar.ia.br/clarice"]);
+  const KNOWN_STATIC_SITEMAP_PATHS = new Set([
+    "https://diar.ia.br/clarice",
+    // #10509: home + landings fora de /p/ passaram a entrar no sitemap.
+    "https://diar.ia.br/",
+    "https://diar.ia.br/produto/conteudo-autentico",
+    "https://diar.ia.br/guia/agente-ia",
+    "https://diar.ia.br/evento/agente-ia",
+  ]);
   /**
    * #8353 item 2: o índice paginado do acervo (`/archive`, `/archive/{n}`)
    * entra no sitemap com uma entrada POR PÁGINA — o nº de páginas cresce com

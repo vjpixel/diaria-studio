@@ -459,6 +459,13 @@ export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
   "/assinar",
   "/archive",
   /^\/archive\/[0-9]+$/,
+  // #10509: landings que `reconcile-site-sitemap.ts` passou a declarar no
+  // sitemap. Nomeadas uma a uma (não um prefixo `/produto/*`) pela mesma
+  // razão da allowlist inteira; `test/site-sitemap-landings-10509.test.ts`
+  // acusa landing em disco que entre no sitemap sem estar aqui.
+  "/produto/conteudo-autentico",
+  "/guia/agente-ia",
+  "/evento/agente-ia",
 ];
 
 /** `true` se `loc` é uma das superfícies estáticas conhecidas (`KNOWN_STATIC_SITEMAP_PATHS`). */
