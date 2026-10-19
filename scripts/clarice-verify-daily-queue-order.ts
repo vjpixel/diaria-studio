@@ -6,7 +6,15 @@
  * grava em `segments/daily-queue/` (um por onda) e checa, em cada onda:
  *   (a) nenhum contato incluído tem score menor que algum elegível deixado de fora;
  *   (b) entre scores iguais, todo incluído tem cadastro igual ou mais recente
- *       que todo excluído.
+ *       que todo excluído;
+ *   (c) #10546: os incluídos do snapshot são EXATAMENTE a onda importada na
+ *       Brevo. Sem (c) a prova é circular: o snapshot já sai ordenado pelo
+ *       mesmo comparador que (a)/(b) testam. A onda importada sai das células
+ *       `d{N}-{dia}{DD}-manifest.json` do `segments/` do snapshot (as mesmas
+ *       que `clarice-import-waves.ts` subiu e reconciliou contra a lista da
+ *       Brevo, #4577/#4720), e só conta quando o registro
+ *       `d{N}-{dia}{DD}-lists.json` prova que o import terminou. Snapshot sem
+ *       data de envio ou sem import registrado não conta como onda provada.
  *
  * Uso:
  *   npx tsx scripts/clarice-verify-daily-queue-order.ts --cycle 2610-11 [--cycle-extra 2609-10] [--last 3] [--data-root DIR]
@@ -22,21 +30,27 @@
  *   --files        lista explícita de snapshots; ignora --cycle/--last.
  *
  * Saída: JSON com o relatório por onda em stdout.
- * Exit: 0 = todas as ondas verificadas passam e há pelo menos N;
- *       1 = alguma onda viola a ordem, ou erro de leitura/argumento;
- *       2 = ordem ok, mas menos de N ondas gravadas (evidência insuficiente).
+ * Exit: 0 = todas as ondas passam, inclusive contra o import, e há pelo menos N;
+ *       1 = alguma onda viola a ordem ou diverge da onda importada, ou erro de
+ *           leitura/argumento;
+ *       2 = sem violação, mas menos de N ondas gravadas ou alguma sem import
+ *           registrado (evidência insuficiente).
  * Só lê arquivos locais. Não toca Brevo nem o store.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { clariceSegmentsDir, isValidCycle } from "./lib/clarice-paths.ts";
 import {
   DAILY_QUEUE_SNAPSHOT_DIR,
+  compareQueueWithImported,
   parseDailyQueueSnapshotGz,
   verifyDailyQueueOrder,
+  type DailyQueueImportCheck,
   type DailyQueueOrderReport,
 } from "./lib/clarice-daily-queue-snapshot.ts";
+import { waveDateFragment } from "./lib/clarice-wave-plan.ts";
+import { extractCsvEmails, normalizeImportCsv } from "./clarice-import-waves.ts";
 
 export const DEFAULT_LAST = 3;
 
@@ -91,6 +105,47 @@ export function pickLastSnapshots(paths: string[], last: number): string[] {
 
 export interface WaveVerification extends DailyQueueOrderReport {
   file: string;
+  /** #10546: comparação com a onda importada; `null` = sem import registrado
+   *  para a data de envio do snapshot (onda não provada). */
+  importCheck: DailyQueueImportCheck | null;
+  /** Grupos (`d{N}-{dia}{DD}`) cujas células formaram a onda importada. */
+  importedGroups: string[];
+}
+
+/**
+ * #10546: e-mails da onda IMPORTADA na data de envio de um snapshot.
+ * `segmentsDir` é o `segments/` do ciclo (o pai de `daily-queue/`). Lê cada
+ * `d{N}-{dia}{DD}-manifest.json` daquela data que tenha o registro
+ * `-lists.json` ao lado (import concluído) e une os e-mails das células.
+ * `null` quando a data é desconhecida ou nenhuma onda dela foi importada.
+ */
+export function importedWaveEmails(
+  segmentsDir: string,
+  sendDate: string | null,
+): { groups: string[]; emails: string[] } | null {
+  if (!sendDate || !existsSync(segmentsDir)) return null;
+  let frag: string;
+  try {
+    frag = waveDateFragment(sendDate);
+  } catch {
+    return null;
+  }
+  const re = new RegExp(`^(d\\d+-${frag})-manifest\\.json$`);
+  const groups = readdirSync(segmentsDir)
+    .map((f) => re.exec(f)?.[1])
+    .filter((g): g is string => !!g && existsSync(resolve(segmentsDir, `${g}-lists.json`)))
+    .sort();
+  if (groups.length === 0) return null;
+  const emails: string[] = [];
+  for (const g of groups) {
+    const manifest = JSON.parse(readFileSync(resolve(segmentsDir, `${g}-manifest.json`), "utf8")) as unknown;
+    if (!Array.isArray(manifest)) throw new Error(`${g}-manifest.json não é uma lista`);
+    for (const entry of manifest as Array<{ file?: unknown }>) {
+      if (typeof entry?.file !== "string") throw new Error(`${g}-manifest.json: entrada sem 'file'`);
+      emails.push(...extractCsvEmails(normalizeImportCsv(readFileSync(resolve(segmentsDir, entry.file), "utf8"))));
+    }
+  }
+  return { groups, emails };
 }
 
 export function main(argv: string[] = process.argv.slice(2)): number {
@@ -123,27 +178,46 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   const waves: WaveVerification[] = [];
   try {
     for (const file of files) {
-      waves.push({ file, ...verifyDailyQueueOrder(parseDailyQueueSnapshotGz(readFileSync(file))) });
+      const rows = parseDailyQueueSnapshotGz(readFileSync(file));
+      const imported = importedWaveEmails(dirname(dirname(file)), snapshotSendDate(file));
+      const importCheck = imported ? compareQueueWithImported(rows, imported.emails) : null;
+      waves.push({ file, ...verifyDailyQueueOrder(rows), importCheck, importedGroups: imported?.groups ?? [] });
     }
   } catch (e) {
     console.error(`❌ falha ao ler snapshot: ${(e as Error).message}`);
     return 1;
   }
 
-  const ok = waves.every((w) => w.ok);
-  const enough = waves.length >= last;
-  console.log(JSON.stringify({ expected: last, found: waves.length, ok, enough, waves }, null, 2));
+  const orderOk = waves.every((w) => w.ok);
+  const importOk = waves.every((w) => w.importCheck === null || w.importCheck.ok);
+  const ok = orderOk && importOk;
+  const unproven = waves.filter((w) => w.importCheck === null).length;
+  const enough = waves.length >= last && unproven === 0;
+  console.log(JSON.stringify({ expected: last, found: waves.length, ok, enough, unproven, waves }, null, 2));
 
   for (const w of waves) {
-    const tag = w.ok ? "✅" : "❌";
-    console.error(`${tag} ${basename(w.file)}: ${w.included} incluído(s), ${w.excluded} excluído(s), ${w.violations.length} violação(ões)`);
+    const imp = w.importCheck;
+    const tag = !w.ok || (imp && !imp.ok) ? "❌" : imp ? "✅" : "⚠️ ";
+    const impText = imp
+      ? `import ${imp.imported} (${imp.includedNotImported.count} incluído(s) fora do import, ${imp.importedNotIncluded.count} importado(s) fora dos incluídos)`
+      : "sem import registrado";
+    console.error(
+      `${tag} ${basename(w.file)}: ${w.included} incluído(s), ${w.excluded} excluído(s), ${w.violations.length} violação(ões) de ordem, ${impText}`,
+    );
   }
-  if (!ok) {
+  if (!orderOk) {
     console.error("❌ a ordem da fila (score DESC, cadastro mais recente desempata, #9824) foi violada em pelo menos uma onda.");
-    return 1;
   }
+  if (!importOk) {
+    console.error("❌ o snapshot da fila diverge da onda importada em pelo menos uma onda (#10546): a fila gravada não é a que foi enviada.");
+  }
+  if (!ok) return 1;
   if (!enough) {
-    console.error(`⚠️  só ${waves.length} onda(s) gravada(s), ${last} exigida(s) — ordem ok, mas evidência insuficiente.`);
+    console.error(
+      `⚠️  ${waves.length - unproven} onda(s) provada(s) contra o import, ${last} exigida(s)` +
+        (unproven > 0 ? ` (${unproven} sem import registrado)` : "") +
+        " — sem violação, mas evidência insuficiente.",
+    );
     return 2;
   }
   return 0;

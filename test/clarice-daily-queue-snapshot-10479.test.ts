@@ -20,8 +20,10 @@ import {
   parseDailyQueueSnapshotCsv,
   parseDailyQueueSnapshotGz,
   verifyDailyQueueOrder,
+  compareQueueWithImported,
   type DailyQueueSnapshotRow,
 } from "../scripts/lib/clarice-daily-queue-snapshot.ts";
+import { waveDateFragment } from "../scripts/lib/clarice-wave-plan.ts";
 
 type R = { email: string; priority_points: number; created: string };
 const r = (email: string, priority_points: number, created: string): R => ({ email, priority_points, created });
@@ -60,6 +62,25 @@ async function comBrevoFake<T>(fn: () => Promise<T>): Promise<T> {
     globalThis.fetch = prevFetch;
     if (prevKey !== undefined) process.env.BREVO_CLARICE_API_KEY = prevKey;
     else delete process.env.BREVO_CLARICE_API_KEY;
+  }
+}
+
+/** #10546: grava a onda IMPORTADA de uma data de envio como
+ *  `clarice-split-group-cells.ts` + `clarice-import-waves.ts` deixam no
+ *  `segments/`: manifest de células, CSV da célula e o registro `-lists.json`. */
+function importWave(segDir: string, sendDate: string, emails: string[], n = 1, withRegistry = true): void {
+  const group = `d${n}-${waveDateFragment(sendDate)}`;
+  mkdirSync(segDir, { recursive: true });
+  writeFileSync(resolve(segDir, `${group}.csv`), ["email,NOME", ...emails.map((e) => `${e},X`)].join("\n"));
+  writeFileSync(
+    resolve(segDir, `${group}-manifest.json`),
+    JSON.stringify([{ key: group, file: `${group}.csv`, desc: "onda única", count: emails.length }]),
+  );
+  if (withRegistry) {
+    writeFileSync(
+      resolve(segDir, `${group}-lists.json`),
+      JSON.stringify({ cycle: "x", group, lists: [{ key: group, listId: 1, listName: group, count: emails.length, importedAt: "" }] }),
+    );
   }
 }
 
@@ -209,6 +230,10 @@ test("build-segment --daily grava a fila completa de elegíveis por onda, com in
 
   // Uma onda só: ordem ok, mas evidência insuficiente para as 3 exigidas.
   assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir])), 2);
+  // #10546: sem import registrado a onda não está provada, mesmo com --last 1.
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 2);
+  // Import da onda = daily.csv: provada.
+  importWave(segDir, "2026-11-03", dailyEmails);
   assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 0);
 });
 
@@ -241,6 +266,10 @@ test("verificador: 3 ondas entre 2 ciclos, uma violando, sai 1; só as N última
   write("2609-10", "2026-10-30T09:00:00.000Z", boa);
   write("2610-11", "2026-11-02T09:00:00.000Z", boa);
   write("2610-11", "2026-11-03T09:00:00.000Z", boa);
+  importWave(clariceSegmentsDir("2609-10", dir), "2026-10-06", ["n@x.com"]);
+  importWave(clariceSegmentsDir("2609-10", dir), "2026-10-30", ["a@x.com"]);
+  importWave(clariceSegmentsDir("2610-11", dir), "2026-11-02", ["a@x.com"]);
+  importWave(clariceSegmentsDir("2610-11", dir), "2026-11-03", ["a@x.com"]);
 
   // As 3 últimas (cruzando ciclos) estão boas: a ruim é a 4ª mais recente.
   assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--cycle-extra", "2609-10", "--data-root", dir])), 0);
@@ -284,4 +313,63 @@ test("#10489 verificador: 3 builds da mesma onda não provam 3 ondas (sai 2); a 
   writeFileSync(resolve(d, dailyQueueSnapshotFileName(new Date("2026-11-02T09:00:00.000Z"), "2026-11-02")), boa);
   // Antes do #10489 isto saía 1 (a onda descartada contava) ou 0 com 3 builds bons, afirmando 3 ondas.
   assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir])), 2);
+});
+
+// ---------------------------------------------------------------------------
+// #10546: o verificador era circular — confere o snapshot contra a onda importada
+// ---------------------------------------------------------------------------
+
+test("#10546 compareQueueWithImported: incluídos = importados passa; divergência nos dois sentidos falha", () => {
+  const queue = [r("a@x.com", 5, ""), r("b@x.com", 3, ""), r("c@x.com", 0, "")];
+  const snap = rows(queue, ["a@x.com", "b@x.com"]);
+  assert.ok(compareQueueWithImported(snap, [" A@x.com", "b@x.com"]).ok, "trim + lowercase");
+  const faltou = compareQueueWithImported(snap, ["a@x.com"]);
+  assert.equal(faltou.ok, false);
+  assert.deepEqual(faltou.includedNotImported, { count: 1, sample: ["b@x.com"] });
+  const sobrou = compareQueueWithImported(snap, ["a@x.com", "b@x.com", "c@x.com"]);
+  assert.equal(sobrou.ok, false);
+  assert.deepEqual(sobrou.importedNotIncluded, { count: 1, sample: ["c@x.com"] });
+});
+
+/** Uma onda (send-date 2026-11-02) com o snapshot dado e a importação dada. */
+function waveFixture(prefix: string, snapshots: Array<[string, Buffer]>): { dir: string; segDir: string } {
+  const dir = mkdtempSync(resolve(tmpdir(), prefix));
+  const segDir = clariceSegmentsDir("2610-11", dir);
+  const d = resolve(segDir, DAILY_QUEUE_SNAPSHOT_DIR);
+  mkdirSync(d, { recursive: true });
+  for (const [stamp, gz] of snapshots) writeFileSync(resolve(d, dailyQueueSnapshotFileName(new Date(stamp), "2026-11-02")), gz);
+  return { dir, segDir };
+}
+
+test("#10546 verificador: rerun com outro --budget depois do import — snapshot em ordem, mas diverge da onda enviada (sai 1)", async () => {
+  const queue = [r("a@x.com", 5, ""), r("b@x.com", 3, ""), r("c@x.com", 0, "")];
+  // Onda importada com budget 1; o rerun posterior (budget 2) gravou o snapshot que fica.
+  const { dir, segDir } = waveFixture("daily-queue-verify-10546-", [
+    ["2026-11-01T08:00:00.000Z", buildDailyQueueSnapshotGz(queue, 1)],
+    ["2026-11-01T09:00:00.000Z", buildDailyQueueSnapshotGz(queue, 2)],
+  ]);
+  importWave(segDir, "2026-11-02", ["a@x.com"]);
+  // Antes do #10546 isto saía 0: a ordem do snapshot está certa por construção.
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 1);
+});
+
+test("#10546 verificador: contato tirado do daily.csv antes do split não passa calado (sai 1)", async () => {
+  const queue = [r("a@x.com", 5, ""), r("b@x.com", 3, ""), r("c@x.com", 0, "")];
+  const { dir, segDir } = waveFixture("daily-queue-verify-10546b-", [
+    ["2026-11-01T08:00:00.000Z", buildDailyQueueSnapshotGz(queue, 2)],
+  ]);
+  importWave(segDir, "2026-11-02", ["a@x.com"]);
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 1);
+});
+
+test("#10546 verificador: células sem o registro -lists.json (import não concluído) não provam a onda (sai 2)", async () => {
+  const queue = [r("a@x.com", 5, ""), r("b@x.com", 3, "")];
+  const { dir, segDir } = waveFixture("daily-queue-verify-10546c-", [
+    ["2026-11-01T08:00:00.000Z", buildDailyQueueSnapshotGz(queue, 1)],
+  ]);
+  importWave(segDir, "2026-11-02", ["a@x.com"], 1, false);
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 2);
+  // Com o registro, a mesma onda passa.
+  importWave(segDir, "2026-11-02", ["a@x.com"]);
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir, "--last", "1"])), 0);
 });

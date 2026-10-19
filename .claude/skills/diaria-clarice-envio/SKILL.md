@@ -691,8 +691,12 @@ a fila ORDENADA inteira de elegíveis (score, cadastro, incluído ou não) em
 sobrescrito. `npx tsx scripts/clarice-verify-daily-queue-order.ts --cycle {ciclo}
 [--cycle-extra {ciclo anterior}] [--last 3]` checa nas N ondas mais recentes que
 nenhum incluído tem score menor que um excluído e que, no empate, nenhum incluído
-tem cadastro mais antigo que um excluído. Exit 0 = ok, 1 = violação, 2 = menos de
-N ondas gravadas.
+tem cadastro mais antigo que um excluído. Como o snapshot já sai ordenado pelo
+próprio comparador, essas duas regras sozinhas passam por construção; por isso
+(#10546) cada onda também precisa bater com a onda IMPORTADA (as células
+`d{N}-{dia}{DD}` com `-lists.json` ao lado, no mesmo `segments/`): incluídos do
+snapshot = e-mails importados. Exit 0 = ok, 1 = violação de ordem ou divergência
+do import, 2 = menos de N ondas provadas (gravadas e com import registrado).
 
 ---
 

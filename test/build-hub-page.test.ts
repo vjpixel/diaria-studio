@@ -122,6 +122,44 @@ describe("buildAnthropicClaudeFaq (#4558 Parte A) — regression do bug NFD/NFC"
     assert.match(mythosFaq.answer, /citado em 1 edições/);
   });
 
+  it("#10550: números da resposta de lançamentos e janela do contador de segurança saem dos dados, não de literal", () => {
+    // Fixture sintético: 2 lançamentos antes do hiato (10 dias), hiato de
+    // 100 dias, 3 depois (21/04 → 19/05 = 28 dias = 4 semanas). Segurança:
+    // 2 matches, o último em 10 de novembro — com o texto antigo a frase
+    // seguia dizendo "Até agosto" e "os 10 restantes em 26 semanas".
+    const mk = (date: string, headline: string) => ({
+      date,
+      editionSlug: `e-${date}`,
+      url: `https://diar.ia.br/p/e-${date}`,
+      matchedHeadlines: [headline],
+    });
+    const synthetic = [
+      mk("2026-01-01", "Anthropic lança modelo A"),
+      mk("2026-01-11", "Anthropic lança modelo B"),
+      mk("2026-04-21", "Anthropic lança modelo C"),
+      mk("2026-05-15", "Anthropic lança modelo D"),
+      mk("2026-05-19", "Anthropic lança modelo E"),
+      mk("2026-06-02", "Claude hackeou um sistema"),
+      mk("2026-11-10", "Grupo hacker usou Claude"),
+    ];
+    const answers = buildAnthropicClaudeFaq(synthetic).map((f) => f.answer);
+    const launch = answers.find((a) => /Foram \d+ lançamentos/.test(a)) ?? "";
+    assert.match(launch, /Foram 5 lançamentos/);
+    assert.match(launch, /2 deles couberam em 10 dias, até 11 de janeiro de 2026/);
+    assert.match(launch, /hiato de 100 dias/);
+    assert.match(launch, /os 3 restantes saíram em 4 semanas, de 21 de abril a 19 de maio de 2026\./);
+    const seg = answers.find((a) => /episódios desse tipo/.test(a)) ?? "";
+    assert.match(seg, /De 2 de junho a 10 de novembro de 2026, foram 2 episódios desse tipo/);
+    assert.doesNotMatch(seg, /Até agosto/);
+  });
+
+  it("#10550: com o dado real, as fases do hiato somam o total de lançamentos", () => {
+    const launch = faq.find((f) => /Foram \d+ lançamentos/.test(f.answer))?.answer ?? "";
+    const m = /Foram (\d+) lançamentos.*?: (\d+) deles couberam.*os (\d+) restantes/.exec(launch);
+    assert.ok(m, launch);
+    assert.equal(Number(m[2]) + Number(m[3]), Number(m[1]));
+  });
+
   it("buildIntro: data do incidente de segurança citado no INTRO é a do match SEGURANCA_PATTERN mais recente, NÃO a manchete mais recente do dataset inteiro (regression #5233 — PR de manutenção de hubs achou isso ao vivo)", () => {
     // Achado do review da PR #5233: `buildIntro` interpolava
     // `hubCoverageWindow(sources).lastDate` na frase sobre o teste do governo
