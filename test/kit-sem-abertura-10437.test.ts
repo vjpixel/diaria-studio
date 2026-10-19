@@ -296,6 +296,16 @@ describe("runKitSemAberturaSync (#10437)", () => {
     assert.deepEqual(calls, []);
   });
 
+  it("--max-add 0 ⇒ ninguém, nem cadastro novo (mesma semântica do brevo-diaria-run)", async () => {
+    const { deps, calls } = fakeDeps({
+      listKitActive: async () => [candidate("mover@x.com", { id: 42, created_at: new Date(NOW - 12 * DAY).toISOString() })],
+    });
+    const r = await runKitSemAberturaSync(cfg(true, true), { push: true, maxAdd: 0 }, deps);
+    assert.equal(r.moved, 0);
+    assert.equal(r.deferred, 1);
+    assert.deepEqual(calls, []);
+  });
+
   it("tag envio-brevo inexistente no Kit ⇒ exit 2, nada movido", async () => {
     const { deps, calls } = fakeDeps({ findEnvioBrevoTagId: async () => null });
     const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);

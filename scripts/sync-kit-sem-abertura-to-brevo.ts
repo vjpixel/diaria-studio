@@ -226,14 +226,19 @@ export async function runKitSemAberturaSync(
       return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
     },
   });
-  log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${wave.deferred} adiado(s).`);
-  const counts = { selected: selection.selected.length, deferred: wave.deferred };
+  // `--max-add N` é teto explícito do operador sobre a rodada INTEIRA —
+  // inclusive cadastros novos (`--max-add 0` = ninguém, mesma semântica do
+  // `brevo-diaria-run.ts`).
+  const toMove = opts.maxAdd !== undefined ? wave.toMove.slice(0, opts.maxAdd) : wave.toMove;
+  const deferred = wave.deferred + (wave.toMove.length - toMove.length);
+  log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${toMove.length} nesta rodada, ${deferred} adiado(s).`);
+  const counts = { selected: selection.selected.length, deferred };
 
   if (!push) {
-    for (const c of wave.toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
+    for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
     return { code: 0, dryRun: true, moved: 0, failed: 0, ...counts, summary: "dry-run — nenhuma mutação." };
   }
-  if (wave.toMove.length === 0) {
+  if (toMove.length === 0) {
     return { code: 0, dryRun: false, moved: 0, failed: 0, ...counts, summary: "nada a mover nesta rodada." };
   }
 
@@ -252,7 +257,7 @@ export async function runKitSemAberturaSync(
   let current = store;
   let moved = 0;
   let failed = 0;
-  for (const c of wave.toMove) {
+  for (const c of toMove) {
     try {
       await deps.ingestBrevo(c.email);
     } catch (e) {
