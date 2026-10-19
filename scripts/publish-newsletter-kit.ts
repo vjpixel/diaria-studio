@@ -110,6 +110,16 @@
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --send-test
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --draft-only-for-ui-test
  *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --mark-ui-test-sent --at <ISO>
+ *   npx tsx scripts/publish-newsletter-kit.ts <edition-dir> --verify-ui-test-draft
+ *
+ * `--verify-ui-test-draft` (#10465) é SÓ LEITURA: relê o broadcast real
+ * (`GET /v4/broadcasts/{id}`) e aplica o mesmo `assessBroadcastStillDraft` do
+ * `--mark-ui-test-sent`, sem `--at` e sem gravar nada. Rede de segurança pro
+ * caso em que o agente do Chrome erra o clique e pula o passo 4 — sem ele,
+ * nada relia o broadcast. Não se aplica (exit 0, `checked: false`, sem rede)
+ * sem estado, com `test_mode` != "ui" ou com `status: "scheduled"` no estado.
+ * Resumo JSON no stdout. Exit 0 rascunho confirmado/não se aplica; 11 fora do
+ * rascunho; 12 releitura falhou.
  *
  * ## Teste pela UI do Kit, sem broadcast descartável (#10395)
  *
@@ -165,6 +175,7 @@
  * (`status` != draft, `send_at`/`published_at` preenchidos) — a edição pode ter
  * sido enviada/agendada pela UI, nada gravado; 12 (`--mark-ui-test-sent`,
  * #10410) a releitura do broadcast falhou — estado não confirmável, nada gravado.
+ * 11 e 12 valem igual para `--verify-ui-test-draft` (#10465), que nunca grava.
  *
  * Idempotência: `<edition-dir>/_internal/newsletter-kit-published.json` é
  * escrito assim que o draft é criado — uma invocação seguinte pra MESMA
@@ -541,6 +552,62 @@ export async function resolveMarkUiTestSent(
   return { ok: true, state: marked.state, ...(draft.warning ? { warning: draft.warning } : {}) };
 }
 
+export type VerifyUiTestDraftOutcome =
+  | { ok: true; checked: false; skipped_reason: string }
+  | { ok: true; checked: true; broadcast_id: number; warning?: string }
+  | { ok: false; exitCode: 11 | 12; broadcast_id: number; reason: string };
+
+/**
+ * #10465: `--verify-ui-test-draft` — a MESMA releitura do `--mark-ui-test-sent`
+ * (#10410), só que sem gravar nada e sem depender do `--at`. Fecha o buraco
+ * em que o agente do Chrome erra o clique e pula o passo 4: aí o
+ * `--mark-ui-test-sent` nunca roda, o `fetch-test-email.ts` sai com exit 5
+ * (`ui_test_not_marked`) e nada mais relia o broadcast real. Os playbooks dos
+ * Stages 5 e 6 rodam este modo incondicionalmente no backend Kit.
+ *
+ * Só se aplica ao teste pela UI ainda não agendado: sem estado, `test_mode`
+ * != "ui" (o `--send-test` usa broadcast descartável, nunca toca o real) ou
+ * `status: "scheduled"` (agendamento legítimo da Etapa 6) → `checked: false`,
+ * sem rede. Nunca escreve nada, em disco ou no Kit.
+ */
+export async function resolveVerifyUiTestDraft(
+  current: KitNewsletterPublished | null,
+  deps: MarkUiTestSentDeps,
+): Promise<VerifyUiTestDraftOutcome> {
+  if (!current) {
+    return { ok: true, checked: false, skipped_reason: "nenhum draft registrado em _internal/newsletter-kit-published.json" };
+  }
+  if (current.test_mode !== "ui") {
+    return {
+      ok: true,
+      checked: false,
+      skipped_reason: `test_mode=${current.test_mode ?? "ausente"} — teste pela UI não usado, broadcast real não foi aberto na UI`,
+    };
+  }
+  if (current.status === "scheduled") {
+    return { ok: true, checked: false, skipped_reason: "status scheduled no estado — agendamento legítimo da Etapa 6" };
+  }
+  const id = current.broadcast_id;
+  let remote: Awaited<ReturnType<MarkUiTestSentDeps["getBroadcast"]>>;
+  try {
+    remote = await deps.getBroadcast(id);
+  } catch (e) {
+    return {
+      ok: false,
+      exitCode: 12,
+      broadcast_id: id,
+      reason:
+        `GET /broadcasts/${id} falhou (${e instanceof Error ? e.message : String(e)}) — não dá pra confirmar ` +
+        "que o broadcast real segue em rascunho depois do teste pela UI. Conferir na UI do Kit",
+    };
+  }
+  const draft = assessBroadcastStillDraft(remote);
+  if (!draft.ok) {
+    return { ok: false, exitCode: 11, broadcast_id: id, reason: `broadcast_id=${id}: ${draft.reason.replace(/; test_sent NÃO gravado$/, "")}` };
+  }
+  return { ok: true, checked: true, broadcast_id: id, ...(draft.warning ? { warning: draft.warning } : {}) };
+}
+
 // ── platform.config.json (leitura mínima) ─────────────────────────────
 
 export interface KitAffiliateConfig {
@@ -704,18 +771,21 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const sendTest = hasFlag(argv, "send-test");
   const draftOnlyForUiTest = hasFlag(argv, "draft-only-for-ui-test"); // #10395
   const markUiTest = hasFlag(argv, "mark-ui-test-sent"); // #10395
+  const verifyUiTestDraft = hasFlag(argv, "verify-ui-test-draft"); // #10465
   const log = (msg: string) => process.stderr.write(`[publish-newsletter-kit] ${msg}\n`);
 
   if (!editionDirArg) {
     log(
       "uso: npx tsx scripts/publish-newsletter-kit.ts <edition-dir> [--dry-run] " +
-        "[--send-test | --draft-only-for-ui-test | --mark-ui-test-sent --at <ISO>]",
+        "[--send-test | --draft-only-for-ui-test | --mark-ui-test-sent --at <ISO> | --verify-ui-test-draft]",
     );
     process.exitCode = 1;
     return;
   }
-  if ([sendTest, draftOnlyForUiTest, markUiTest].filter(Boolean).length > 1) {
-    log("ERRO: --send-test, --draft-only-for-ui-test e --mark-ui-test-sent são mutuamente exclusivos.");
+  if ([sendTest, draftOnlyForUiTest, markUiTest, verifyUiTestDraft].filter(Boolean).length > 1) {
+    log(
+      "ERRO: --send-test, --draft-only-for-ui-test, --mark-ui-test-sent e --verify-ui-test-draft são mutuamente exclusivos.",
+    );
     process.exitCode = 1;
     return;
   }
@@ -742,6 +812,35 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
   const editionDir = resolvedArg.editionDir;
+
+  // #10465: só leitura — relê o broadcast real depois do teste pela UI, com ou
+  // sem o `--mark-ui-test-sent` ter rodado. Nunca grava nada. Resumo JSON no
+  // stdout (decisão determinística dos playbooks, #573), detalhe no stderr.
+  if (verifyUiTestDraft) {
+    const outcome = await resolveVerifyUiTestDraft(readPublishedState(editionDir), {
+      getBroadcast: (id) => getBroadcast(id),
+    });
+    process.stdout.write(JSON.stringify(outcome) + "\n");
+    if (!outcome.ok) {
+      if (outcome.exitCode === 11) {
+        log("=".repeat(72));
+        log("ALERTA #10465 — BROADCAST REAL FORA DO RASCUNHO DEPOIS DO TESTE PELA UI");
+        log(`ERRO: ${outcome.reason}`);
+        log("=".repeat(72));
+      } else {
+        log(`ERRO: ${outcome.reason}`);
+      }
+      process.exitCode = outcome.exitCode;
+      return;
+    }
+    if (!outcome.checked) {
+      log(`verificação do teste pela UI não se aplica: ${outcome.skipped_reason}`);
+    } else {
+      if (outcome.warning) log(`warn: ${outcome.warning}`);
+      log(`broadcast_id=${outcome.broadcast_id} confirmado em rascunho no Kit (só leitura, nada gravado)`);
+    }
+    return;
+  }
 
   // #10395: só registra que o Send test da UI saiu — sem render; a única rede
   // é a releitura do broadcast (#10410, `resolveMarkUiTestSent`).
