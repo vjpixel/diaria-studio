@@ -254,3 +254,34 @@ test("verificador: 3 ondas entre 2 ciclos, uma violando, sai 1; só as N última
   // Sem --cycle nem --files: erro de argumento.
   assert.equal(await quiet(() => verifyMain([])), 1);
 });
+
+// ---------------------------------------------------------------------------
+// #10489: vários snapshots do mesmo send-date (rerun do build) são UMA onda
+// ---------------------------------------------------------------------------
+
+test("#10489 pickLastSnapshots: dois snapshots da mesma data de envio contam como uma onda (vale o mais recente)", () => {
+  const cedo = dailyQueueSnapshotFileName(new Date("2026-10-07T08:00:00.000Z"), "2026-10-07");
+  const rerun = dailyQueueSnapshotFileName(new Date("2026-10-07T09:30:00.000Z"), "2026-10-07");
+  const outra = dailyQueueSnapshotFileName(new Date("2026-10-08T09:00:00.000Z"), "2026-10-08");
+  const semData1 = dailyQueueSnapshotFileName(new Date("2026-10-09T09:00:00.000Z"), null);
+  const semData2 = dailyQueueSnapshotFileName(new Date("2026-10-09T10:00:00.000Z"), null);
+  const paths = [outra, rerun, cedo].map((f) => "/q/" + f);
+  assert.deepEqual(pickLastSnapshots(paths, 3), ["/q/" + rerun, "/q/" + outra]);
+  assert.deepEqual(pickLastSnapshots(paths, 1), ["/q/" + outra]);
+  // Sem data de envio não há como agrupar: cada um segue contando.
+  assert.deepEqual(pickLastSnapshots(["/q/" + semData1, "/q/" + semData2], 5), ["/q/" + semData1, "/q/" + semData2]);
+});
+
+test("#10489 verificador: 3 builds da mesma onda não provam 3 ondas (sai 2); a fila que vale é a do último rerun", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "daily-queue-verify-10489-"));
+  const d = resolve(clariceSegmentsDir("2610-11", dir), DAILY_QUEUE_SNAPSHOT_DIR);
+  mkdirSync(d, { recursive: true });
+  const boa = buildDailyQueueSnapshotGz([r("a@x.com", 5, ""), r("b@x.com", 0, "")], 1);
+  const ruim = buildDailyQueueSnapshotGz([r("n@x.com", -10, "2026-01-01T00:00:00Z"), r("z@x.com", 0, "2021-01-01T00:00:00Z")], 1);
+  // 1º build da onda violava a ordem; os 2 reruns do mesmo dia saíram certos.
+  writeFileSync(resolve(d, dailyQueueSnapshotFileName(new Date("2026-11-02T08:00:00.000Z"), "2026-11-02")), ruim);
+  writeFileSync(resolve(d, dailyQueueSnapshotFileName(new Date("2026-11-02T08:30:00.000Z"), "2026-11-02")), boa);
+  writeFileSync(resolve(d, dailyQueueSnapshotFileName(new Date("2026-11-02T09:00:00.000Z"), "2026-11-02")), boa);
+  // Antes do #10489 isto saía 1 (a onda descartada contava) ou 0 com 3 builds bons, afirmando 3 ondas.
+  assert.equal(await quiet(() => verifyMain(["--cycle", "2610-11", "--data-root", dir])), 2);
+});
