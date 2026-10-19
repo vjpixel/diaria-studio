@@ -669,8 +669,16 @@ manual da fila usa `clarice-build-segment.ts --daily --cycle {ciclo} --budget N 
 **`priority_points` é ORDENAÇÃO, nunca FILTRO de elegibilidade (#7873, corrige
 desvio introduzido na implementação inicial desta fila).** Quem já recebeu
 (`sends_count>0`) e decaiu pra score ≤0 continua elegível pra fila única —
-só ordena por último (`compareDailyQueueOrder`), nunca é excluído por causa
-do score. `isDailyQueueEligible` chegou a herdar `priority_points > 0` como
+só ordena depois dos scores maiores (`compareDailyQueueOrder`), nunca é
+excluído por causa do score.
+
+**Ordem da fila (#9824, decisão do editor de 07/10/2026):** `priority_points`
+DESC na fila INTEIRA — positivo, zero e negativo —, com cadastro mais recente
+primeiro como desempate entre scores iguais. Score 0 de cadastro antigo vem
+antes de -10 de cadastro novo; -10 antes de -20. Reverte o #7876, que juntava
+score 0 e negativo num bloco único ordenado só por safra: com o teto de volume
+por onda, aquilo cortou 45 elegíveis de score ≥ 0 da onda `d3-qua07`
+(campanha Brevo 332) enquanto -10/-20 de cadastros mais novos entravam. `isDailyQueueEligible` chegou a herdar `priority_points > 0` como
 corte pra esse ramo (mesmo predicado do extinto grupo `engajados`), o que
 reduziu a fila medida de ~268k pra 9 contatos em produção (09/09/2026) —
 contradizia a própria decisão do editor citada acima ("trabalha tudo só a
