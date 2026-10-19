@@ -242,6 +242,60 @@ describe("#7864: confirmHomeDrift/filterConfirmedDrift — falso-positivo do par
     assert.deepEqual(filterConfirmedDrift([HOME_PAIR], REF, spawnFn), [HOME_PAIR]);
   });
 
+  /** Mock de `git show` com uma árvore por ref (base e head). */
+  function mockGitShowRefs(trees: Record<string, Record<string, string>>): SpawnFn {
+    return (cmd, args) => {
+      const spec = args[1] ?? "";
+      const sep = spec.indexOf(":");
+      if (cmd !== "git" || args[0] !== "show" || sep < 0) throw new Error(`chamada inesperada: ${cmd} ${args.join(" ")}`);
+      const files = trees[spec.slice(0, sep)];
+      const path = spec.slice(sep + 1);
+      if (!files || !(path in files)) return { status: 128, stdout: "", stderr: "fatal: no such path" };
+      return { status: 0, stdout: files[path] as string, stderr: "" };
+    };
+  }
+  const BASE = "base0000";
+  const STALE = "<html><body>home de ontem (regen-home.yml ainda não rodou)</body></html>";
+
+  it("#10509: home committed defasada pelo relógio, mas o sitemap do PR não muda o re-render — não é drift deste PR", () => {
+    // Caso real do PR #10518: o PR só acrescentou landings (/produto/…) ao
+    // sitemap; elas nunca entram no feed. A home committed estava atrás do
+    // re-render por causa do dia (edição de hoje já elegível), na base também.
+    const head = baseFiles();
+    head["workers/site/public/sitemap.xml"] = SITEMAP_XML.replace(
+      "</urlset>",
+      "<url><loc>https://diar.ia.br/produto/conteudo-autentico</loc></url></urlset>",
+    );
+    head["workers/site/public/index.html"] = STALE;
+    const base = { ...baseFiles(), "workers/site/public/index.html": STALE };
+    const spawnFn = mockGitShowRefs({ [REF]: head, [BASE]: base });
+
+    assert.equal(confirmHomeDrift(REF, spawnFn, BASE), false);
+    assert.deepEqual(filterConfirmedDrift([HOME_PAIR], REF, spawnFn, BASE), []);
+    // Sem a base, o comportamento antigo (reprova) segue intacto.
+    assert.equal(confirmHomeDrift(REF, spawnFn), true);
+  });
+
+  it("#10509: PR que torna uma edição elegível sem regenerar a home continua reprovando", () => {
+    const head = baseFiles();
+    head["workers/site/public/sitemap.xml"] = SITEMAP_XML.replace(
+      "</urlset>",
+      "<url><loc>https://diar.ia.br/p/edicao-nova/</loc><lastmod>2021-01-01</lastmod></url></urlset>",
+    );
+    head["workers/site/public/p/edicao-nova/index.html"] = fakePageHtml("Edição Nova", "nova");
+    head["workers/site/public/index.html"] = expectedRenderedHtml(); // home da base, não regenerada
+    const base = { ...baseFiles(), "workers/site/public/index.html": expectedRenderedHtml() };
+    const spawnFn = mockGitShowRefs({ [REF]: head, [BASE]: base });
+
+    assert.equal(confirmHomeDrift(REF, spawnFn, BASE), true);
+  });
+
+  it("#10509: re-render da base que lança cai no fail-safe (drift)", () => {
+    const head = { ...baseFiles(), "workers/site/public/index.html": STALE };
+    const spawnFn = mockGitShowRefs({ [REF]: head, [BASE]: {} });
+    assert.equal(confirmHomeDrift(REF, spawnFn, BASE), true);
+  });
+
   it("index.html ausente no ref inteiramente — tratado como drift (nunca engolido em silêncio)", () => {
     const files = baseFiles(); // sem "workers/site/public/index.html"
     const spawnFn = mockGitShow(REF, files);
