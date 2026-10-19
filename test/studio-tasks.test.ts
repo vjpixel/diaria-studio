@@ -131,14 +131,31 @@ describe("buildTasksData (#4799) — orquestração fim-a-fim", () => {
       // `now` DINAMICAMENTE como grace+1min depois da última daily/weekly
       // do dia (em vez de um literal ISO hardcoded) — nenhuma task nova
       // registrada mais tarde no dia pode voltar a quebrar este teste.
-      const latestDailyMinutes = Math.max(
-        0,
-        ...SCHEDULED_TASKS.filter((t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
-          t.schedule.kind === "daily",
-        ).map((t) => t.schedule.hour * 60 + t.schedule.minute),
-      );
-      // 2026-08-10T03:00:00.000Z = 00:00 BRT — base do dia, em cima da qual somamos o horário mais tardio + grace.
-      const now = new Date(Date.parse("2026-08-10T03:00:00.000Z") + (latestDailyMinutes + DEFAULT_OVERDUE_GRACE_MINUTES + 1) * 60_000);
+      // #10552: "última daily + grace" deixou de bastar quando uma task passou
+      // a rodar logo depois da meia-noite (Diaria-Nightly-Chain, 00:15):
+      // 23:55 + 61min cai às 00:56, só 41min depois das 00:15, dentro do
+      // grace. Correção: achar o MAIOR intervalo circular entre horários do
+      // dia (daily/weekly/monthly, todos, sem filtrar por dia — conservador)
+      // e pôr `now` em início-do-intervalo + grace + 1min. Vale pra qualquer
+      // task nova, em qualquer horário, enquanto existir um intervalo > grace.
+      const dayMinutes = [
+        ...new Set(
+          SCHEDULED_TASKS.flatMap((t) =>
+            t.schedule.kind === "interval" ? [] : [t.schedule.hour * 60 + t.schedule.minute],
+          ),
+        ),
+      ].sort((a, b) => a - b);
+      let gapStart = dayMinutes[dayMinutes.length - 1] ?? 0;
+      let gapSize = (dayMinutes[0] ?? 0) + 1440 - gapStart;
+      for (let i = 1; i < dayMinutes.length; i++) {
+        if (dayMinutes[i] - dayMinutes[i - 1] > gapSize) {
+          gapStart = dayMinutes[i - 1];
+          gapSize = dayMinutes[i] - dayMinutes[i - 1];
+        }
+      }
+      assert.ok(gapSize > DEFAULT_OVERDUE_GRACE_MINUTES + 1, "nenhum intervalo do dia maior que o grace — o teste não tem onde pôr `now`");
+      // 2026-08-10T03:00:00.000Z = 00:00 BRT — base do dia, em cima da qual somamos o início do intervalo + grace.
+      const now = new Date(Date.parse("2026-08-10T03:00:00.000Z") + (gapStart + DEFAULT_OVERDUE_GRACE_MINUTES + 1) * 60_000);
       const data = buildTasksData(root, {
         now: () => now,
         queryArmedFn: () => ({ scheduler: "systemd", state: "disabled", note: null }),

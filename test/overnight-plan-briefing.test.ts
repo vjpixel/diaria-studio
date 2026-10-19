@@ -22,8 +22,8 @@ import {
 } from "../scripts/lib/overnight-plan-briefing.ts";
 
 describe("OVERNIGHT_BRIEFING_REASONS", () => {
-  it("inclui os 5 valores do vocabulário fechado", () => {
-    for (const reason of ["asked", "dry-run", "plano-legado", "sem-editor-presente", "desconhecido"]) {
+  it("inclui os 6 valores do vocabulário fechado", () => {
+    for (const reason of ["asked", "dry-run", "plano-legado", "sem-editor-presente", "agendado-desassistido", "desconhecido"]) {
       assert.ok(isOvernightBriefingReason(reason), `"${reason}" deveria estar no vocabulário`);
     }
   });
@@ -157,5 +157,50 @@ describe("isSuspiciousMissingBriefing", () => {
 
   it("false quando o plano não tem briefing nenhum (legado)", () => {
     assert.equal(isSuspiciousMissingBriefing({}), false);
+  });
+});
+
+describe("#10552 — reason agendado-desassistido (cadeia noturna, /diaria-overnight --agendado)", () => {
+  const agendado = (over: Record<string, unknown> = {}, root: Record<string, unknown> = {}): OvernightPlanRootLike => ({
+    loop_estendido: true,
+    ...root,
+    briefing: {
+      asked: false,
+      reason: "agendado-desassistido",
+      precisa_resposta_count: 2,
+      loop_estendido_asked: false,
+      batch_approval_asked: false,
+      ...over,
+    },
+  });
+
+  it("está no vocabulário fechado", () => {
+    assert.ok(isOvernightBriefingReason("agendado-desassistido"));
+  });
+
+  it("plano agendado bem formado valida e não é suspeito", () => {
+    const plan = agendado();
+    assert.deepEqual(checkOvernightPlanBriefingFromRoot(plan), { status: "ok", present: true });
+    assert.equal(isSuspiciousMissingBriefing(plan), false);
+  });
+
+  it("exige asked: false (o modo agendado nunca pergunta)", () => {
+    assert.equal(checkOvernightPlanBriefingFromRoot(agendado({ asked: true })).status, "invalid");
+  });
+
+  it("exige loop_estendido: true na raiz — a resposta vem pré-fixada em s", () => {
+    for (const value of [false, undefined, "true"]) {
+      const result = checkOvernightPlanBriefingFromRoot(agendado({}, { loop_estendido: value }));
+      assert.equal(result.status, "invalid", `loop_estendido=${JSON.stringify(value)} deveria reprovar`);
+    }
+  });
+
+  it("rejeita loop_estendido_asked: true", () => {
+    assert.equal(checkOvernightPlanBriefingFromRoot(agendado({ loop_estendido_asked: true })).status, "invalid");
+  });
+
+  it("os outros reasons continuam não exigindo loop_estendido (sem regressão)", () => {
+    const plan: OvernightPlanRootLike = { loop_estendido: false, briefing: { asked: false, reason: "sem-editor-presente" } };
+    assert.deepEqual(checkOvernightPlanBriefingFromRoot(plan), { status: "ok", present: true });
   });
 });

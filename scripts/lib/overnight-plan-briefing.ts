@@ -47,6 +47,12 @@
  *   indício de sessão interativa) sugere que não havia editor pra
  *   perguntar. É heurística, não prova (ver docstring da SKILL — detectar
  *   "editor presente" com certeza pode não ser possível).
+ * - `"agendado-desassistido"` (#10552) — rodada disparada pela cadeia
+ *   noturna (`scripts/overnight/run-nightly-chain.ts`) com a flag explícita
+ *   `--agendado`. Ao contrário de `"sem-editor-presente"`, não é heurística:
+ *   a flag é o sinal, passada pelo runner. Zero perguntas por desenho, e o
+ *   loop estendido vem pré-fixado em `s` — por isso este `reason` exige
+ *   `loop_estendido: true` na raiz do plano e `loop_estendido_asked` falso.
  * - `"desconhecido"` — nenhuma das causas legítimas acima explica a
  *   ausência da pergunta. Este é o valor que torna (b) do relato acima
  *   visível: rodada com sinal de editor presente e `asked: false` sem causa
@@ -57,6 +63,7 @@ export const OVERNIGHT_BRIEFING_REASONS = [
   "dry-run",
   "plano-legado",
   "sem-editor-presente",
+  "agendado-desassistido",
   "desconhecido",
 ] as const;
 
@@ -131,6 +138,20 @@ export function checkOvernightPlanBriefingFromRoot(
       problems.push(
         `briefing.asked (${asked}) inconsistente com briefing.reason ("${reason}") — "asked" exige reason "asked" e vice-versa`,
       );
+    }
+  }
+
+  // #10552: o modo agendado pré-fixa a resposta do loop estendido em `s`.
+  // Plano agendado com `loop_estendido` diferente de `true`, ou registrando
+  // que a pergunta foi feita, contradiz o próprio modo.
+  if (reason === "agendado-desassistido") {
+    if (plan.loop_estendido !== true) {
+      problems.push(
+        `briefing.reason "agendado-desassistido" exige loop_estendido: true na raiz do plano (#10552): ${JSON.stringify(plan.loop_estendido)}`,
+      );
+    }
+    if (briefing.loop_estendido_asked === true) {
+      problems.push(`briefing.reason "agendado-desassistido" com loop_estendido_asked: true — o modo agendado não pergunta (#10552)`);
     }
   }
 

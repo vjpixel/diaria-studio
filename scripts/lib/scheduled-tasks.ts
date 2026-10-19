@@ -521,6 +521,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#8552",
   },
   {
+    name: "Diaria-Nightly-Chain",
+    description: "cadeia noturna: review Opus do diff do dia (opus-daily-diff-review.sh) e, sempre em seguida, /diaria-overnight --agendado headless (#10552)",
+    steps: [{ key: "chain", script: "scripts/overnight/run-nightly-chain.ts" }],
+    logPath: "overnight/.nightly-chain.log",
+    // 00:15 BRT, decisão do editor (#10552, 19/10/2026). Vizinho mais
+    // próximo: Diaria-Subscriber-State-Snapshot às 23:55, leve. Sem teto de
+    // horário (mesmo racional do #5272): a rodada corre até a fila secar, e
+    // o Type=oneshot do unit gerado não tem TimeoutStartSec por padrão.
+    // Exit 3 = review falhou mas o overnight rodou: fica FORA de
+    // successExitCodes de propósito, pra unit sair `failed` e o
+    // Diaria-Systemd-Failed-Units-Alarm avisar.
+    // enabled:false DE PROPÓSITO: sem isso o Remediate-Never-Armed-Tasks
+    // (#8153) a auto-armaria em qualquer máquina, ANTES de o job Hermes
+    // 645d5debb7f0 (review das 09:00) ser pausado. Armar só no 300, à mão,
+    // seguindo docs/overnight-nightly-chain.md.
+    enabled: false,
+    schedule: { kind: "daily", hour: 0, minute: 15 },
+    issue: "#10552",
+  },
+  {
     name: "Diaria-Audience-Profile-Staleness-Alarm",
     description: "escala o guard de arquivamento duplicado do #4366 (context/audience-profile.md regenerando idêntico ao anterior) de linha muda em run-log.jsonl pra issue GitHub por ocorrência (#8148)",
     steps: [{ key: "alarm", script: "scripts/audience-profile-staleness-alarm.ts" }],
