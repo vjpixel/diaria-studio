@@ -332,7 +332,7 @@ export interface PilotKitDeps {
   getBroadcast(id: number): Promise<{ status?: string; send_at?: string | null; subscriber_filter?: unknown }>;
   updateBroadcast(
     id: number,
-    patch: { send_at: string; subscriber_filter: KitSubscriberFilter },
+    patch: { send_at: string | null; subscriber_filter: KitSubscriberFilter },
   ): Promise<{ status: string; send_at?: string | null }>;
   deleteBroadcast(id: number): Promise<void>;
   sleep(ms: number): Promise<void>;

@@ -400,10 +400,10 @@ export function buildKitTransportAlarmEmail(
     subject,
     body:
       `Transporte Kit do onboarding (#7922): ${describeKitTransportSignal(evaluation)}\n\n` +
-      `Enquanto isso, quem foi detectado não recebe o e-mail 1/2 e o rascunho do e-mail 3 não nasce — a ` +
+      `Enquanto isso, quem foi detectado não recebe o e-mail 1/2 e o e-mail 3 não é criado/agendado — a ` +
       `detecção continua saudável, então o alarme de detecção zerada NÃO cobre esta falha.\n\n` +
       `Onde olhar: \`kit_transport.last_send_run\` e o \`last_error\` dos lotes em ` +
-      `\`data/onboarding/store.json\`, e o log da task do executor. Rollback: §6 de ` +
+      `\`data/onboarding/store.json\`, e o log da task (passo \`kit\` de Diaria-Onboarding-Welcome-Run). Rollback: §6 de ` +
       `docs/onboarding-kit-cutover.md (desligar \`onboarding.kit_transport.enabled\` devolve os candidatos ` +
       `novos à Brevo; com o switch desligado este check deixa de ser avaliado e a issue fecha sozinha após 2 ` +
       `execuções — conferir a causa antes de religar).\n\n` +

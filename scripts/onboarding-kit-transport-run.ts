@@ -10,9 +10,12 @@
  * (`buildRunPlan`, `selectCandidatesNeedingRefresh` — reusados sem
  * modificação de comportamento, mesmo store `data/onboarding/store.json`).
  *
- * **Esta fatia NÃO faz cutover.** `onboarding-welcome-run.ts` continua sendo
- * quem de fato envia (Brevo) — este script roda AO LADO, sobre o MESMO
- * store, sem escrever nos campos que só o script Brevo possui
+ * **Cutover ligado em 20/10/2026** (`onboarding.kit_transport.enabled: true`,
+ * editor na #7922). Roda como 2º passo da task `Diaria-Onboarding-Welcome-Run`,
+ * DEPOIS da rodada Brevo (`onboarding-welcome-run.ts`, que detecta as
+ * entradas novas), sobre o MESMO store. Entradas novas são do Kit (e-mails
+ * 1, 2 e 3); escadas iniciadas na Brevo terminam lá (`ownerTransportFor`).
+ * Nunca escreve nos campos que só o script Brevo possui
  * (`email{1,2}_brevo_id`, `email3_campaign_id` continuam exclusivos do
  * caminho Brevo). O estado dos lotes vive em
  * `store.kit_transport.lots`, um namespace próprio dentro do MESMO
@@ -26,9 +29,10 @@
  * `email3_kit_lot_id` (`email3_campaign_id`, id Brevo, segue intocado).
  * Desde #9060, `--reconcile` também faz backfill local das entries de lotes
  * já terminais (`backfillTerminalLotEntries`) — cobre lotes concluídos antes
- * do #9058. Cutover real (decidir
- * QUEM envia de fato, migrar novas entradas, corte explícito Brevo→Kit) é
- * escopo residual — ver corpo do PR.
+ * do #9058. Também grava a decisão terminal do e-mail 3 (`skipped_*`) das
+ * entradas DELE (`persistKitEmail3Decisions`) — a rodada Brevo não toca o
+ * e-mail 3 de entrada do Kit. Procedimento de corte e rollback:
+ * docs/onboarding-kit-cutover.md.
  *
  * SEGURANÇA (ver docstring de `scripts/lib/onboarding-kit-transport.ts` para
  * os guards estruturais — este script só os invoca, não os reimplementa):
@@ -39,20 +43,26 @@
  *     estado real.
  *   - Kill switch DEDICADO: `onboarding.kit_transport.enabled` precisa ser
  *     `true` em `platform.config.json` — ausente/`false` = aborta antes de
- *     qualquer chamada, mesmo com `--send`. Este PR não liga o switch.
+ *     qualquer chamada, mesmo com `--send` (ligado desde 20/10/2026; com
+ *     `--skip-if-disabled`, o passo agendado sai 0 no rollback).
  *     **Exceto com `--pilot`** (#7922): o modo piloto ignora o kill switch
  *     porque só opera sobre um store ISOLADO e destinatários em allowlist
  *     (ver "MODO PILOTO" abaixo) — nunca toca o store nem a base real.
  *   - Backend precisa ser "kit" (`publishing.newsletter.subscriber_backend`).
- *   - E-mail 3 (D+10) só agenda com `--approve-email3-lot <lot_id> --send-at <iso>`
- *     explícitos — nunca como parte do `--send` normal.
+ *   - E-mail 3 (D+10) sai AUTOMÁTICO no `--send` desde 20/10/2026 (decisão
+ *     do editor na #7922): criado rascunho, audiência conferida (tag +
+ *     `subscriber_filter` relido), só então agendado e relido de novo
+ *     (`runProductionKitLot`), igual aos e-mails 1/2. A elegibilidade
+ *     (abriu ≥1 edição até D+10) segue em `buildRunPlan`. `--approve-email3-lot`
+ *     fica como comando MANUAL opcional (agendar um rascunho legado de antes
+ *     da mudança, ou reagendar à mão) — o fluxo diário não depende dele.
  *
  * Uso:
  *   npx tsx scripts/onboarding-kit-transport-run.ts                    # dry-run (plano)
- *   npx tsx scripts/onboarding-kit-transport-run.ts --send              # cria/tageia lotes vencidos (email1/email2; email3 só cria RASCUNHO)
+ *   npx tsx scripts/onboarding-kit-transport-run.ts --send              # cria/tageia/agenda lotes vencidos (email1/email2/email3)
  *   npx tsx scripts/onboarding-kit-transport-run.ts --reconcile         # só releitura de status dos lotes já criados
  *   npx tsx scripts/onboarding-kit-transport-run.ts --cancel-lot <id>   # apaga (draft/scheduled) um lote
- *   npx tsx scripts/onboarding-kit-transport-run.ts --approve-email3-lot <id> --send-at <iso>
+ *   npx tsx scripts/onboarding-kit-transport-run.ts --approve-email3-lot <id> --send-at <iso>   # manual, opcional
  *
  * MODO PILOTO (#7922, seção 4 de docs/onboarding-kit-cutover.md):
  *   npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email> --store <isolado> [--send]
@@ -96,15 +106,15 @@ import {
   planLot,
   selectEligibleKitRecipients,
   buildOnboardingBroadcastInput,
-  assertEmail3ScheduleAuthorized,
+  buildOnboardingLotFilter,
   decideLotReconciliation,
   reconcileLotWithKit,
   rebuildLotPlanForRecreate,
   findLatestLotForKindDate,
   applyKitLotToEntries,
   recordKitSendRun,
+  shouldExitNonZeroForKitSendRun,
   countKitContentSkips,
-  mapKitBroadcastStatusToLocal,
   type KitSendRunRecord,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
@@ -114,6 +124,7 @@ import {
 } from "./lib/onboarding-kit-transport.ts";
 import { loadOnboardingConfig, fetchSubscriptionByIdKit } from "./onboarding-welcome-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { notifyEditor } from "./lib/editor-notify.ts";
 import { listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
 import {
   parsePilotRecipients,
@@ -122,6 +133,8 @@ import {
   selectPilotEntriesForKind,
   runPilotLot,
   approvePilotEmail3Lot,
+  assertPilotTagAudience,
+  rereadPilotFilter,
   assertPilotCancelable,
   buildPilotLotTagName,
   redactEmails,
@@ -148,10 +161,14 @@ interface CliArgs {
   pilot: boolean;
   pilotRecipientsRaw?: string;
   pilotAllowUnechoedFilter: boolean;
+  /** Task agendada (2º passo de `Diaria-Onboarding-Welcome-Run`): com o kill
+   *  switch desligado (rollback), sai 0 sem fazer nada em vez de exit 2 — o
+   *  rollback não pode virar unit `failed` todo dia. */
+  skipIfDisabled: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { send: false, reconcileOnly: false, pilot: false, pilotAllowUnechoedFilter: false };
+  const args: CliArgs = { send: false, reconcileOnly: false, pilot: false, pilotAllowUnechoedFilter: false, skipIfDisabled: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--send") args.send = true;
@@ -166,6 +183,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--pilot") args.pilot = true;
     else if (a === "--pilot-recipients") args.pilotRecipientsRaw = argv[++i];
     else if (a === "--pilot-allow-unechoed-filter") args.pilotAllowUnechoedFilter = true;
+    else if (a === "--skip-if-disabled") args.skipIfDisabled = true;
     else {
       process.stderr.write(`[onboarding-kit-transport] flag desconhecida: ${a}\n`);
       process.exit(2);
@@ -187,7 +205,7 @@ function loadSnippet(dirAbs: string, numero: 1 | 2 | 3): ReturnType<typeof parse
 const KIND_TO_SNIPPET_NUM: Record<OnboardingKitLotKind, 1 | 2 | 3> = { email1: 1, email2: 2, email3: 3 };
 
 // ---------------------------------------------------------------------------
-// Kill switch dedicado — #7922: nasce OFF, ligar é decisão do editor
+// Kill switch dedicado — #7922: nasceu OFF; ligado pelo editor em 20/10/2026
 // ---------------------------------------------------------------------------
 
 interface KitTransportConfig {
@@ -199,17 +217,6 @@ function loadKitTransportConfig(configPathAbs: string): KitTransportConfig {
     onboarding?: { kit_transport?: KitTransportConfig };
   };
   return raw.onboarding?.kit_transport ?? { enabled: false };
-}
-
-// ---------------------------------------------------------------------------
-// Tag resolution — cria só se ausente (mesmo padrão de resolveTestSendTagId)
-// ---------------------------------------------------------------------------
-
-async function resolveOrCreateLotTagId(tagName: string, config: KitConfig): Promise<number> {
-  const found = await findTagIdByName(tagName, config);
-  if (found != null) return found;
-  const created = await createTag(tagName, config);
-  return created.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +380,39 @@ export function persistLotUpdate(storePath: string, lot: OnboardingKitLot, nowMs
 }
 
 /**
+ * #7922 (fleet review da PR #10607): grava, sob o lock do store, a decisão
+ * terminal do e-mail 3 que ESTE executor tomou pras entradas do Kit — só em
+ * entry que no disco ainda está `pending` (nunca sobrescreve um
+ * `campaign_created` nem uma decisão gravada por outra rodada). Devolve
+ * quantas foram gravadas.
+ */
+export function persistKitEmail3Decisions(
+  storePath: string,
+  decisions: readonly { subscription_id: string; email3_state: OnboardingEntry["email3_state"]; email3_decided_at: string | null }[],
+): number {
+  let n = 0;
+  withFileLock(
+    `${storePath}.lock`,
+    () => {
+      const { store: fresh, corrupted } = readStore(storePath);
+      if (corrupted) {
+        throw new Error(`[onboarding-kit-transport] store em "${storePath}" está CORROMPIDO — recusando gravar decisões do e-mail 3.`);
+      }
+      for (const d of decisions) {
+        const entry = fresh.entries[d.subscription_id];
+        if (!entry || entry.email3_state !== "pending") continue;
+        entry.email3_state = d.email3_state;
+        entry.email3_decided_at = d.email3_decided_at;
+        n++;
+      }
+      if (n > 0) writeStore(fresh, storePath);
+    },
+    30_000,
+  );
+  return n;
+}
+
+/**
  * #9060 item 1: backfill LOCAL (sem rede) das entries de lotes JÁ TERMINAIS
  * (`completed`/`cancelled`) — o `--reconcile` pula esses lotes na releitura
  * do Kit (status terminal não muda), então um lote concluído ANTES do #9058
@@ -416,14 +456,14 @@ export interface OpenLotReconcileRow {
   after: string;
   error?: string;
   backfilled?: number;
-  /** Só pra lote de e-mail 1/2 `unverified` relido com limpeza permitida. */
+  /** Só pra lote `unverified` (qualquer kind, desde o e-mail 3 automático) relido com limpeza permitida. */
   recovered?: "scheduled" | "unscheduled" | "unverified";
 }
 
 export interface ReconcileOpenLotsDeps {
   getBroadcast(id: number): Promise<{ status: KitBroadcastSummary["status"]; send_at?: string | null }>;
   /**
-   * Presente = a releitura pode APAGAR o broadcast de um lote de e-mail 1/2
+   * Presente = a releitura pode APAGAR o broadcast de um lote (e-mail 1/2/3)
    * `unverified` que o Kit mostra não-agendado (mesma regra do `--send` em
    * `confirmOrCleanUpScheduledLot`). Ausente = só leitura (`--reconcile`,
    * dry-run): nunca escreve no Kit.
@@ -459,7 +499,8 @@ export interface ReconcileOpenLotsDeps {
  * Para cada lote:
  *   - terminal (`completed`/`cancelled`): backfill local das entries (#9060).
  *   - sem `broadcast_id` (`pending`): nada a reler (`claimLot` decide).
- *   - e-mail 1/2 `unverified` (`created`, sem `schedule_failed`) com
+ *   - lote `unverified` (`created`, sem `schedule_failed` — e-mail 1/2 e,
+ *     desde 20/10/2026, também o 3) com
  *     `deps.deleteBroadcast`: `confirmOrCleanUpScheduledLot`.
  *   - resto: `reconcileLotWithKit` (só leitura); falha vira `last_error`.
  *
@@ -489,7 +530,12 @@ export async function reconcileOpenLots(
     }
     if (lot.broadcast_id == null) continue;
     const before = lot.status;
-    const isUnverified = (lot.kind === "email1" || lot.kind === "email2") && lot.status === "created" && lot.schedule_failed !== true;
+    // Desde 20/10/2026 (#7922) o e-mail 3 também nasce agendado, então um
+    // lote de e-mail 3 `created` é agendamento não confirmado, igual ao 1/2.
+    // Rascunho LEGADO de e-mail 3 (anterior à mudança, nunca aprovado) cai
+    // aqui também: a releitura o vê não-agendado, apaga e cancela, e as
+    // entries voltam ao plano automático (dentro da janela de graça).
+    const isUnverified = lot.status === "created" && lot.schedule_failed !== true;
     let updated: OnboardingKitLot;
     const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
     if (isUnverified && deps.deleteBroadcast) {
@@ -563,6 +609,12 @@ async function main(): Promise<void> {
 
   const configPathAbs = args.configPath ?? resolve(ROOT, "platform.config.json");
   const kitTransportCfg = loadKitTransportConfig(configPathAbs);
+  if (args.skipIfDisabled && !args.pilot && kitTransportCfg.enabled !== true) {
+    // Rollback (§6 de docs/onboarding-kit-cutover.md): nada a fazer, e não é
+    // falha. Sem a flag, `--send` com o switch desligado segue saindo 2.
+    console.log(JSON.stringify({ mode: "skip", reason: "onboarding.kit_transport.enabled não é true — transporte Kit desligado (rollback)" }));
+    return;
+  }
   const onboardingCfg = loadOnboardingConfig(configPathAbs);
   const realStorePath = resolve(ROOT, onboardingCfg.store_path ?? DEFAULT_STORE_PATH);
   let pilotRecipients: string[] = [];
@@ -702,19 +754,16 @@ async function main(): Promise<void> {
       process.stderr.write(`[onboarding-kit-transport] lote "${args.approveEmail3LotId}" não tem broadcast criado ainda — rode --send primeiro.\n`);
       process.exit(2);
     }
-    // #8136 fleet review (code-reviewer, P3): `assertEmail3ScheduleAuthorized`
-    // só lança quando `kind === "email3" && !humanApproved` — é um NO-OP pra
-    // qualquer outro `kind` (comentário anterior aqui afirmava o contrário).
-    // Sem este check explícito, `--approve-email3-lot` aceitaria um lot_id
-    // de email1/email2 e reagendaria aquele broadcast silenciosamente.
+    // #8136 fleet review (code-reviewer, P3): sem este check explícito,
+    // `--approve-email3-lot` aceitaria um lot_id de email1/email2 e
+    // reagendaria aquele broadcast silenciosamente. Desde 20/10/2026 o
+    // comando é MANUAL e opcional (o `--send` diário já agenda o e-mail 3).
     if (lot.kind !== "email3") {
       process.stderr.write(
         `[onboarding-kit-transport] lote "${args.approveEmail3LotId}" é kind="${lot.kind}", não "email3" — --approve-email3-lot só se aplica a lotes de e-mail 3.\n`,
       );
       process.exit(2);
     }
-    // aprovação É este próprio comando (só existe por invocação explícita).
-    assertEmail3ScheduleAuthorized(lot.kind, true);
     if (args.pilot) {
       // #7922 piloto: repete prefixo + allowlist + tag + filtro e agenda pelo
       // caminho verificado (PATCH com filtro + releitura pós-PATCH).
@@ -746,11 +795,18 @@ async function main(): Promise<void> {
       }
       return;
     }
-    const updated = await updateBroadcast(lot.broadcast_id, { send_at: args.sendAt }, kitCfg);
-    lot.send_at = args.sendAt;
-    lot.status = updated.status === "scheduled" ? "scheduled" : lot.status;
-    persistLotUpdate(storePath, lot);
-    console.log(JSON.stringify({ mode: "approve-email3-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, send_at: args.sendAt, kit_status: updated.status }, null, 2));
+    // Mesma confirmação do `runProductionKitLot` (#7922, re-review da PR
+    // #10607): tag + filtro relido antes do PATCH, filtro + `scheduled` com
+    // `send_at` ecoado depois; senão o rascunho é apagado.
+    try {
+      await approveProductionEmail3Lot(buildPilotKitDeps(kitCfg), lot, { sendAt: args.sendAt, alert: productionOrphanAlert() });
+      console.log(JSON.stringify({ mode: "approve-email3-lot", lot_id: lot.lot_id, broadcast_id: lot.broadcast_id, status: lot.status, send_at: lot.send_at }, null, 2));
+    } catch (e) {
+      process.stderr.write(`${redactEmails((e as Error).message)}\n`);
+      process.exitCode = 1;
+    } finally {
+      persistLotUpdate(storePath, lot);
+    }
     return;
   }
 
@@ -821,6 +877,13 @@ async function main(): Promise<void> {
     runNormalPlan({ args, onboardingCfg, store, kitCfg, kitTransportEnabled: kitTransportCfg.enabled === true, storePath }, counters),
   );
   console.log(JSON.stringify(summary, null, 2));
+  // #7922 (fleet review da PR #10607, lição do #10603): rodada que FALHOU em
+  // entregar sai != 0 — nunca exit 0 com ERRO no log. Só abort ou lote falho
+  // (inclui `schedule_failed` novo): um 429 transitório no refresh, um snippet
+  // ausente ou um lote ainda `unverified` contam na streak do alarme de
+  // continuidade (`isFailedKitSendRun`), mas não derrubam a unit no dia.
+  const run = summary.send_run as KitSendRunRecord | undefined;
+  if (run != null && shouldExitNonZeroForKitSendRun(run)) process.exitCode = 1;
 }
 
 /**
@@ -849,7 +912,8 @@ export async function runAndRecordSendRun(
 }
 
 /**
- * #7922: confirma o agendamento de um broadcast de e-mail 1/2 recém-criado
+ * #7922: confirma o agendamento de um broadcast de onboarding recém-criado
+ * (e-mail 1/2 e, desde 20/10/2026, também o 3)
  * pela RELEITURA no Kit (mesma regra de `schedule-newsletter-kit.ts`: 2xx do
  * POST não é prova; o que vale é o `send_at` ecoado no GET — `status` é só
  * diagnóstico). Muta `lot`.
@@ -1092,6 +1156,251 @@ function recordKitSendRunSafely(storePath: string, run: Omit<KitSendRunRecord, "
   return record;
 }
 
+/** Alerta imediato de broadcast que PODE ESTAR AGENDADO sem audiência
+ *  confirmada e não pôde ser apagado (#7922, re-review do fleet review da PR
+ *  #10607). Em produção: `notifyEditor` severidade `"urgente"` (issue + e-mail). */
+export type OrphanBroadcastAlert = (info: { lot_id: string; broadcast_id: number; reason: string }) => Promise<void>;
+
+/** Estado de segurança de UM lote enquanto é agendado — decide o que a
+ *  limpeza pode afirmar sobre o broadcast quando algo falha. */
+interface LotScheduleSafety {
+  /** Releitura PRÉ-PATCH confirmou o filtro só com a tag do lote. */
+  audienceVerified: boolean;
+  /** O PATCH de agendamento foi tentado (pode ter sido aplicado mesmo se lançou). */
+  patchAttempted: boolean;
+  /** A releitura pós-PATCH funcionou, confirmou o filtro e viu `draft`. */
+  knownDraft: boolean;
+}
+
+function newLotScheduleSafety(): LotScheduleSafety {
+  return { audienceVerified: false, patchAttempted: false, knownDraft: false };
+}
+
+/**
+ * Relê o RASCUNHO (filtro só com a tag do lote), agenda por PATCH (filtro +
+ * `send_at`, #8208) e relê de novo exigindo filtro verificado e `scheduled`
+ * com `send_at` ecoado (ou `sending`/`completed`, que já saiu). Lança se não
+ * confirmar; `st` registra o que se sabe pro `cleanupUnconfirmedLot`. Muta `lot`.
+ */
+async function verifyDraftAndSchedule(
+  deps: PilotKitDeps,
+  lot: OnboardingKitLot,
+  tagId: number,
+  sendAtFn: () => string,
+  st: LotScheduleSafety,
+): Promise<void> {
+  const broadcastId = lot.broadcast_id as number;
+  const { verification: pre } = await rereadPilotFilter(deps, broadcastId, tagId);
+  if (pre.status !== "verified") {
+    throw new Error(`[onboarding-kit-transport] audiência do broadcast ${broadcastId} NÃO confirmada antes de agendar (${pre.status}): ${"reason" in pre ? pre.reason : ""}`);
+  }
+  st.audienceVerified = true;
+
+  // PATCH que lança pode ter sido aplicado: a releitura decide, nunca o retorno.
+  const sendAt = sendAtFn();
+  let patchError: string | null = null;
+  st.patchAttempted = true;
+  try {
+    await deps.updateBroadcast(broadcastId, { send_at: sendAt, subscriber_filter: buildOnboardingLotFilter(tagId) });
+  } catch (e) {
+    patchError = redactEmails((e as Error).message);
+  }
+  const { verification: post, reread } = await rereadPilotFilter(deps, broadcastId, tagId);
+  if (post.status !== "verified") {
+    st.audienceVerified = false;
+    throw new Error(`[onboarding-kit-transport] audiência do broadcast ${broadcastId} NÃO confirmada depois do PATCH (${post.status}): ${"reason" in post ? post.reason : ""}`);
+  }
+  const status = reread?.status ?? null;
+  const echoed = reread?.send_at ?? null;
+  if (status === "sending" || status === "completed") {
+    lot.status = "completed";
+    lot.send_at = echoed ?? sendAt;
+  } else if (status === "scheduled" && echoed != null && !Number.isNaN(Date.parse(echoed))) {
+    lot.status = "scheduled";
+    lot.send_at = echoed;
+  } else {
+    if (status === "draft") st.knownDraft = true;
+    throw new Error(
+      `[onboarding-kit-transport] broadcast ${broadcastId} sem agendamento na releitura (status "${status ?? "?"}", send_at ${JSON.stringify(echoed)})` +
+        (patchError ? `; o PATCH lançou: ${patchError}` : "") +
+        " — e-mail não sai sozinho",
+    );
+  }
+  lot.last_error = null;
+  delete lot.schedule_failed;
+}
+
+/**
+ * Limpa um lote cujo agendamento NÃO foi confirmado e RELANÇA (exceto DELETE
+ * 422 "already sent" com audiência confirmada, que é entrega: devolve sem
+ * lançar). Broadcast apagado → `cancelled`; DELETE falho → `schedule_failed`.
+ * Se o PATCH chegou a ser tentado e não há prova de que o broadcast seguiu
+ * rascunho, ele PODE ESTAR AGENDADO com audiência não confirmada: tenta
+ * desagendar (PATCH `send_at: null` + filtro) e apagar de novo; falhando
+ * tudo, a mensagem manda apagar no painel do Kit AGORA e o `alert` dispara.
+ */
+async function cleanupUnconfirmedLot(
+  deps: PilotKitDeps,
+  lot: OnboardingKitLot,
+  msg: string,
+  st: LotScheduleSafety,
+  alert?: OrphanBroadcastAlert,
+): Promise<void> {
+  lot.last_error = msg;
+  if (lot.broadcast_id == null || lot.status !== "created") throw new Error(msg);
+  const id = lot.broadcast_id;
+  const tryDelete = async (): Promise<"deleted" | "gone" | "sent" | { error: string }> => {
+    try {
+      await deps.deleteBroadcast(id);
+      return "deleted";
+    } catch (de) {
+      if (isKitNotFoundError(de)) return "gone";
+      if (isKitAlreadySentError(de)) return "sent";
+      return { error: redactEmails((de as Error).message) };
+    }
+  };
+  let del = await tryDelete();
+  let unscheduled = false;
+  const maybeScheduled = st.patchAttempted && !st.knownDraft;
+  if (typeof del === "object" && maybeScheduled && lot.tag_id != null) {
+    try {
+      await deps.updateBroadcast(id, { send_at: null, subscriber_filter: buildOnboardingLotFilter(lot.tag_id) });
+      unscheduled = true;
+    } catch {
+      // segue pro alerta abaixo
+    }
+    if (unscheduled) del = await tryDelete();
+  }
+  if (del === "deleted" || del === "gone") {
+    lot.status = "cancelled";
+    lot.send_at = null;
+    lot.last_error = `${msg}; broadcast ${id} ${del === "gone" ? "já não existia (DELETE 404)" : "apagado"}, lote cancelado (entradas voltam ao plano)`;
+    throw new Error(lot.last_error);
+  }
+  if (del === "sent") {
+    // O Kit diz que já saiu: nunca devolver as entradas ao plano (seria o
+    // e-mail em dobro). Com a audiência confirmada antes do PATCH, é entrega.
+    lot.status = "completed";
+    delete lot.schedule_failed;
+    lot.last_error = `${msg}; DELETE recusado com 422 "already been sent" — broadcast JÁ ENVIADO, lote marcado completed`;
+    if (st.audienceVerified) return;
+    throw new Error(lot.last_error);
+  }
+  lot.schedule_failed = true;
+  if (maybeScheduled && !unscheduled) {
+    lot.last_error =
+      `[onboarding-kit-transport] ${msg} E o broadcast ${id} NÃO pôde ser apagado nem desagendado (${del.error}) — ` +
+      `ele PODE ESTAR AGENDADO com audiência não confirmada. APAGUE NO PAINEL DO KIT AGORA, antes que saia.`;
+    try {
+      await alert?.({ lot_id: lot.lot_id, broadcast_id: id, reason: lot.last_error });
+    } catch (ae) {
+      process.stderr.write(`[onboarding-kit-transport] alerta do broadcast ${id} falhou: ${redactEmails((ae as Error).message)}\n`);
+    }
+    process.stderr.write(`${lot.last_error}\n`);
+  } else {
+    lot.last_error = `${msg}; DELETE falhou (${del.error}) — rascunho do broadcast ${id} ficou no Kit${unscheduled ? " (desagendado)" : ""}, lote marcado schedule_failed`;
+  }
+  throw new Error(lot.last_error);
+}
+
+/**
+ * #7922 (fleet review da PR #10607, P1): cria e agenda UM lote de PRODUÇÃO
+ * pela mesma sequência segura do piloto — `subscriber_filter` não resolvido
+ * no Kit é a BASE INTEIRA (#6126) e 2xx não prova nada (#6582):
+ *   1. tag do lote (achada por nome ou criada) + tagueia os destinatários;
+ *   2. confere que a tag resolve pro id do lote e tem EXATAMENTE os
+ *      destinatários (`assertPilotTagAudience`, retry de propagação);
+ *   3. cria o broadcast como RASCUNHO;
+ *   4-5. `verifyDraftAndSchedule`: relê o filtro, agenda por PATCH e relê.
+ * Qualquer passo que não confirma LANÇA, depois de `cleanupUnconfirmedLot`
+ * (apaga; desagenda se preciso; alerta se não conseguir). O caller conta a
+ * falha (`lots_failed`) e persiste o lote. Vale pros 3 kinds. Muta `lot`.
+ */
+export async function runProductionKitLot(
+  deps: PilotKitDeps,
+  lot: OnboardingKitLot,
+  opts: {
+    kitIdBySubscription: Record<string, number | null | undefined>;
+    subject: string;
+    content: string;
+    previewText?: string;
+    sendAtFn: () => string;
+    tagCheckAttempts?: number;
+    tagCheckDelayMs?: number;
+    beforeCreate?: () => Promise<void>;
+    alert?: OrphanBroadcastAlert;
+  },
+): Promise<void> {
+  const st = newLotScheduleSafety();
+  try {
+    if (lot.tag_id == null) {
+      lot.tag_id = (await deps.findTagIdByName(lot.tag_name)) ?? (await deps.createTag(lot.tag_name)).id;
+    }
+    const tagId = lot.tag_id;
+    const missing = lot.recipient_subscription_ids.filter((id) => opts.kitIdBySubscription[id] == null);
+    if (missing.length > 0) {
+      throw new Error(`[onboarding-kit-transport] ${missing.length} destinatário(s) do lote ${lot.lot_id} sem kit_subscriber_id — abortando antes de criar o broadcast.`);
+    }
+    for (const id of lot.recipient_subscription_ids) await deps.tagSubscriber(tagId, opts.kitIdBySubscription[id] as number);
+    await assertPilotTagAudience(deps, lot, lot.recipient_emails, opts.tagCheckAttempts, opts.tagCheckDelayMs);
+
+    await opts.beforeCreate?.();
+    const created = await deps.createBroadcast(
+      buildOnboardingBroadcastInput({ kind: lot.kind, subject: opts.subject, content: opts.content, previewText: opts.previewText, tagId, sendAt: null }),
+    );
+    lot.broadcast_id = created.id;
+    lot.status = "created";
+    lot.send_at = null;
+    await verifyDraftAndSchedule(deps, lot, tagId, opts.sendAtFn, st);
+  } catch (e) {
+    await cleanupUnconfirmedLot(deps, lot, redactEmails((e as Error).message), st, opts.alert);
+  }
+}
+
+/**
+ * `--approve-email3-lot` em produção (#7922, re-review da PR #10607): agenda
+ * à mão um lote de e-mail 3 que ficou RASCUNHO, pela mesma confirmação do
+ * `runProductionKitLot` — confere a tag (exatamente os destinatários),
+ * relê o filtro do rascunho, agenda por PATCH (filtro + `send_at`) e relê
+ * exigindo `scheduled` com `send_at` ecoado e filtro verificado; senão,
+ * apaga (`cleanupUnconfirmedLot`). Lança em qualquer falha. Muta `lot`.
+ */
+export async function approveProductionEmail3Lot(
+  deps: PilotKitDeps,
+  lot: OnboardingKitLot,
+  opts: { sendAt: string; tagCheckAttempts?: number; tagCheckDelayMs?: number; alert?: OrphanBroadcastAlert },
+): Promise<void> {
+  if (lot.kind !== "email3") throw new Error(`[onboarding-kit-transport] lote "${lot.lot_id}" é kind="${lot.kind}", não "email3".`);
+  if (lot.broadcast_id == null) throw new Error(`[onboarding-kit-transport] lote "${lot.lot_id}" sem broadcast — nada a agendar.`);
+  if (lot.tag_id == null) throw new Error(`[onboarding-kit-transport] lote "${lot.lot_id}" sem tag_id — recusando agendar sem poder conferir/reenviar o filtro.`);
+  if (lot.status !== "created") throw new Error(`[onboarding-kit-transport] lote "${lot.lot_id}" está "${lot.status}" — só um rascunho ("created") pode ser aprovado.`);
+  if (Number.isNaN(Date.parse(opts.sendAt))) throw new Error(`[onboarding-kit-transport] --send-at "${opts.sendAt}" não é um ISO válido.`);
+  const st = newLotScheduleSafety();
+  try {
+    await assertPilotTagAudience(deps, lot, lot.recipient_emails, opts.tagCheckAttempts, opts.tagCheckDelayMs);
+    await verifyDraftAndSchedule(deps, lot, lot.tag_id, () => opts.sendAt, st);
+  } catch (e) {
+    await cleanupUnconfirmedLot(deps, lot, redactEmails((e as Error).message), st, opts.alert);
+  }
+}
+
+/** Alerta de produção: `notifyEditor` "urgente" (issue + e-mail na criação). */
+function productionOrphanAlert(): OrphanBroadcastAlert {
+  return async ({ lot_id, broadcast_id, reason }) => {
+    await notifyEditor({
+      check: "onboarding-kit-transport-orphan-broadcast",
+      fingerprint: `onboarding-kit-orphan-broadcast-${broadcast_id}`,
+      severity: "urgente",
+      priority: "P1",
+      subject: `[diar.ia.br] URGENTE: broadcast Kit ${broadcast_id} do onboarding pode estar agendado sem audiência confirmada`,
+      body:
+        `Lote ${lot_id} (#7922). ${reason}\n\n` +
+        `Apague o broadcast ${broadcast_id} no painel do Kit (Broadcasts) agora. Depois, rode ` +
+        `\`npx tsx scripts/onboarding-kit-transport-run.ts --reconcile\` para o lote refletir o estado real.`,
+    }, { cwd: ROOT });
+  };
+}
+
 interface NormalPlanCtx {
   args: CliArgs;
   onboardingCfg: ReturnType<typeof loadOnboardingConfig>;
@@ -1117,8 +1426,8 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   // comparado com o gravado quando uma releitura dá 404.
   const getAccountId = memoizedKitAccountId(kitCfg);
 
-  // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote de e-mail
-  // 1/2 `unverified` de uma rodada anterior (releitura de confirmação falhou)
+  // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote
+  // `unverified` de uma rodada anterior (releitura de confirmação falhou)
   // prendia as entradas em silêncio até alguém rodar `--reconcile`, que nada
   // agenda em produção. No `--send` a releitura pode limpar (apagar broadcast
   // não agendado) e persiste; no dry-run é só leitura, em memória.
@@ -1131,7 +1440,12 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   );
   counters.lots_unverified += preSend.stillUnverified;
 
-  const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days);
+  // #7922 (fleet review da PR #10607, P2): só refresca entrada cujo próximo
+  // passo é DESTE executor — as escadas da Brevo já são refrescadas pela
+  // rodada Brevo, e repetir ~800 consultas aqui gerava 429 nos dois lados.
+  const kitOwns = (e: OnboardingEntry) =>
+    ownerTransportFor(e, e.email1_sent_at == null ? "email1" : "email3", ctx.kitTransportEnabled) === "kit";
+  const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days).filter(kitOwns);
   const statsById: Record<string, { total_unique_opened?: number | null; total_clicked?: number | null } | null> = {};
   // #8136 fleet review (silent-failure-hunter, alta/P1): antes, um lookup
   // falho deixava `e.status_detectado` intocado — como esse campo é o
@@ -1169,6 +1483,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   }
 
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? onboardingCfg.snippets_dir ?? "data/snippets");
+  const email3Before = new Map(Object.values(store.entries).map((e) => [e.subscription_id, e.email3_state]));
   // #8966: espelho do guard aplicado do lado Brevo (`onboarding-welcome-run.ts`)
   // — sem isto, uma entrada cujo e-mail 1 já saiu pela Brevo seria planejada
   // pelos DOIS executores no mesmo e-mail 2. Ver docstring de
@@ -1186,12 +1501,23 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
         2: loadSnippet(snippetsDirAbs, 2),
         3: loadSnippet(snippetsDirAbs, 3),
       },
+      // #7922: só o dono decide (e grava) o e-mail 3 da entrada.
+      ownsEmail3: (e) => ownerTransportFor(e, "email3", ctx.kitTransportEnabled) === "kit",
     }),
     ctx.kitTransportEnabled,
     // #9014: defesa em profundidade — entrada já presente num lote Kit
     // confirmado de QUALQUER dia anterior nunca entra num lote novo.
     Object.values(store.kit_transport.lots),
   );
+
+  // #7922: a decisão terminal do e-mail 3 (`skipped_no_open`/`skipped_sem_dados`)
+  // das entradas do Kit é gravada AQUI — a rodada Brevo não as toca mais
+  // (`ownsEmail3`). Sem isto a entrada ficaria `pending` e seria refrescada
+  // e reavaliada todo dia.
+  const email3Decisions = Object.values(store.entries)
+    .filter((e) => email3Before.get(e.subscription_id) === "pending" && (e.email3_state === "skipped_no_open" || e.email3_state === "skipped_sem_dados"))
+    .map((e) => ({ subscription_id: e.subscription_id, email3_state: e.email3_state, email3_decided_at: e.email3_decided_at }));
+  if (args.send && email3Decisions.length > 0) persistKitEmail3Decisions(storePath, email3Decisions);
 
   const dateIso = unixSecondsToBrtDate(nowSec);
   const summary: Record<string, unknown> = { mode: args.send ? "SEND" : "dry-run", now: new Date(nowSec * 1000).toISOString(), lots: [] as unknown[] };
@@ -1331,55 +1657,36 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     // com `lotPlan.tag_name` aqui reintroduziria exatamente o problema que a
     // identidade nova existe pra evitar.
     try {
-      const tagId = await resolveOrCreateLotTagId(lot.tag_name, kitCfg);
-      lot.tag_id = tagId;
-      for (const subId of lot.recipient_subscription_ids) {
-        const entry = store.entries[subId];
-        const kitId = entry?.kit_subscriber_id;
-        if (kitId != null) await tagSubscriber(tagId, kitId, kitCfg);
-      }
       const snippet = loadSnippet(snippetsDirAbs, KIND_TO_SNIPPET_NUM[kind]);
-      const input = buildOnboardingBroadcastInput({
-        kind,
+      const kitIdBySubscription = Object.fromEntries(lot.recipient_subscription_ids.map((id) => [id, store.entries[id]?.kit_subscriber_id ?? null]));
+      await runProductionKitLot(buildPilotKitDeps(kitCfg), lot, {
+        alert: productionOrphanAlert(),
+        kitIdBySubscription,
         subject: snippet?.assunto ?? "",
         content: snippet?.body ?? "",
         previewText: snippet?.previewText ?? undefined,
-        tagId,
-        sendAt: kind === "email3" ? null : new Date(Date.now() + 60_000).toISOString(),
+        // E-mail 3 automático desde 20/10/2026 (#7922): os 3 kinds agendam
+        // igual. 5 min de folga: o agendamento é relido depois do PATCH, e o
+        // broadcast não pode estar "sending" nessa releitura.
+        sendAtFn: () => new Date(Date.now() + 5 * 60_000).toISOString(),
+        // #9487: grava a conta dona ANTES de criar — se `/account` falhar, o
+        // lote nasce sem id (404 numa releitura futura nunca cancela).
+        beforeCreate: async () => {
+          try {
+            lot.kit_account_id = await getAccountId();
+          } catch (e) {
+            process.stderr.write(`[onboarding-kit-transport] GET /account falhou ao criar o lote ${lot.lot_id} — lote sem id de conta (404 numa releitura futura não será tratado como deleção): ${redactEmails((e as Error).message)}\n`);
+          }
+        },
       });
-      // #9487: grava a conta dona ANTES de criar — se `/account` falhar, o
-      // lote nasce sem id (mesmo tratamento de um legado: 404 na releitura
-      // nunca cancela) em vez de bloquear o envio.
-      try {
-        lot.kit_account_id = await getAccountId();
-      } catch (e) {
-        process.stderr.write(`[onboarding-kit-transport] GET /account falhou ao criar o lote ${lot.lot_id} — lote sem id de conta (404 numa releitura futura não será tratado como deleção): ${redactEmails((e as Error).message)}\n`);
-      }
-      const broadcast = await createBroadcast(input, kitCfg);
-      lot.broadcast_id = broadcast.id;
-      lot.status = mapKitBroadcastStatusToLocal(broadcast.status);
-      lot.send_at = broadcast.send_at ?? null;
-      // #7922: e-mail 1/2 nasce com `send_at` — o agendamento só vale
-      // confirmado pela RELEITURA (`confirmOrCleanUpScheduledLot`), nunca
-      // pelo `status` da resposta do POST. E-mail 3 nasce rascunho por
-      // desenho (aprovação humana), então `created` é o sucesso dele.
-      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg), getAccountId });
       persistLotUpdate(storePath, lot);
-      if (outcome === "scheduled") {
-        counters.lots_created++;
-        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: broadcast.id, recipients: lot.recipient_emails.length });
-      } else if (outcome === "unverified") {
-        counters.lots_unverified++;
-        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, unverified: true, broadcast_id: broadcast.id, warning: lot.last_error });
-      } else {
-        counters.lots_failed++;
-        (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, broadcast_id: broadcast.id, status: lot.status, error: lot.last_error });
-      }
+      counters.lots_created++;
+      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: lot.broadcast_id, recipients: lot.recipient_emails.length, send_at: lot.send_at });
     } catch (e) {
       counters.lots_failed++;
-      lot.last_error = (e as Error).message;
+      lot.last_error = lot.last_error ?? redactEmails((e as Error).message);
       persistLotUpdate(storePath, lot);
-      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, error: (e as Error).message });
+      (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, broadcast_id: lot.broadcast_id, status: lot.status, error: lot.last_error });
     }
   }
 

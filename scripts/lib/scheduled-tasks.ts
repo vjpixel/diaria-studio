@@ -2357,9 +2357,19 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Onboarding-Welcome-Run",
     description:
-      "sequencia diaria de boas-vindas via Brevo transacional (e-mail 1 imediato, e-mail 2 D+3, " +
-      "e-mail 3 CAMPANHA D+10 condicional a zero aberturas e cliques) para assinantes novos da Beehiiv",
-    steps: [{ key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] }],
+      "sequencia diaria do onboarding: deteccao + escadas da Brevo (passo run) e, em seguida, o executor " +
+      "do transporte Kit (passo kit: lotes de e-mail 1/2/3 das entradas do Kit)",
+    // #7922 (fleet review da PR #10607): o executor Kit é o 2º PASSO, não uma
+    // task separada. A rodada Brevo leva ~13 min e só grava as entradas novas
+    // no fim; uma task Kit às 09:07 não as via, e como a Brevo já pula o
+    // e-mail 1 delas (dono Kit), o boas-vindas atrasava ~24h sem alarme. O
+    // task-runner roda os passos em sequência e SEMPRE roda o seguinte, mesmo
+    // se o anterior falhar (a task sai com o código do 1º passo que falhou).
+    // `--skip-if-disabled`: no rollback (switch desligado) o passo sai 0.
+    steps: [
+      { key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] },
+      { key: "kit", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send", "--skip-if-disabled"] },
+    ],
     logPath: "onboarding/.welcome-run.log",
     // 09:05 BRT — logo depois de Diaria-Clarice-Novos (09:00, mesmo cluster
     // matinal de detecção/onboarding de gente nova), antes do resto do
@@ -2400,12 +2410,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "log que ninguem lia (#7665)",
     steps: [{ key: "check", script: "scripts/onboarding-continuity-alarm.ts" }],
     logPath: "onboarding/.continuity-alarm.log",
-    // 09:10 BRT — 5 minutos DEPOIS de Diaria-Onboarding-Welcome-Run (09:05,
-    // acima), tempo suficiente pra rodada diária terminar de persistir
-    // `consecutive_zero_detections` no store antes deste alarme ler o
-    // mesmo arquivo (ver grep de `kind: "daily"` neste arquivo — slot
-    // livre, sem colisão com nenhuma outra).
-    schedule: { kind: "daily", hour: 9, minute: 10 },
+    // 09:58 BRT — bem DEPOIS de Diaria-Onboarding-Welcome-Run (09:05, acima).
+    // Era 09:10, mas a rodada Brevo sozinha leva ~13 min e, desde #7922, o
+    // executor Kit roda como 2º passo da mesma task (refresh + até ~4 min de
+    // propagação de tag por lote). 09:58 deixa ~50 min pros dois passos
+    // persistirem `consecutive_zero_detections` e `kit_transport.last_send_run`
+    // antes deste alarme ler o store (slot livre, ver grep de `kind: "daily"`).
+    // Mudou de horário: rearmar no `300` (`setup-systemd-timers.ts --task`).
+    schedule: { kind: "daily", hour: 9, minute: 58 },
     // Mesmo guard da task-irmã acima: sem ele, uma junction `data/` caída
     // faria este alarme ler um store vazio (`emptyStore()`,
     // `consecutive_zero_detections: 0`) e reportar "ok" quando na verdade

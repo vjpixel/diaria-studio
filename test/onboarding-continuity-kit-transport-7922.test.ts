@@ -37,6 +37,7 @@ import {
 import {
   recordKitSendRun,
   isFailedKitSendRun,
+  shouldExitNonZeroForKitSendRun,
   hasConfirmedKitLotForEntry,
   mapKitBroadcastStatusToLocal,
   reconcileLotWithKit,
@@ -142,9 +143,9 @@ describe("#7922 — executor Kit alimenta o sinal (recordKitSendRun / stampKitSe
     assert.equal(kt.consecutive_failed_send_runs, 0);
   });
 
-  it("Kit fora do ar (refresh de TODOS os candidatos falhou, 0 lotes tentados) conta como falha; falha parcial não", () => {
+  it("refresh com QUALQUER falha de transporte conta como falha (fleet review da PR #10607 — antes só 'todos falharam')", () => {
     assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 3, refresh_failed: 3 })), true);
-    assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 1, lots_failed: 0, refresh_candidates: 3, refresh_failed: 1 })), false);
+    assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 1, lots_failed: 0, refresh_candidates: 3, refresh_failed: 1 })), true, "falha parcial também: a entrada do Kit que falhou não recebe nesta rodada");
     assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 0, refresh_failed: 0 })), false);
     assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 0, lots_failed: 0 } as KitSendRunRecord), false, "registro antigo sem os campos novos");
     assert.equal(isFailedKitSendRun(rec({ aborted: true, error: "x" })), true, "rodada abortada é falha");
@@ -152,6 +153,14 @@ describe("#7922 — executor Kit alimenta o sinal (recordKitSendRun / stampKitSe
     const kt: { consecutive_failed_send_runs?: number } = {};
     recordKitSendRun(kt, rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 2, refresh_failed: 2 }));
     assert.equal(kt.consecutive_failed_send_runs, 1);
+  });
+
+  it("exit code da rodada (re-review da PR #10607): só abort ou lote falho saem != 0; refresh/snippet/unverified só contam na streak", () => {
+    assert.equal(shouldExitNonZeroForKitSendRun(rec({ aborted: true, error: "x" })), true);
+    assert.equal(shouldExitNonZeroForKitSendRun(rec({ lots_failed: 1 })), true, "inclui schedule_failed novo (conta em lots_failed)");
+    const soft = rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 1, refresh_failed: 1, content_skipped: 1, lots_unverified: 1 });
+    assert.equal(isFailedKitSendRun(soft), true, "conta na streak do alarme");
+    assert.equal(shouldExitNonZeroForKitSendRun(soft), false, "um 429 transitório não deixa a unit failed");
   });
 
   it("readStore preserva last_send_run/consecutive_failed_send_runs (regressão #7922: normalizava kit_transport só pra { lots })", () => {

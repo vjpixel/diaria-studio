@@ -250,18 +250,23 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       assert.equal(afterDry.kitLots.lastSendRun, null, "sem rodada --send registrada ainda");
 
       // 2) Rodada --send com o switch ligado SÓ no config temporário: Kit
-      //    respondendo 401 → refresh de TODOS os candidatos falha → ninguém
-      //    elegível → nenhum lote criado. A rodada fica registrada e conta
+      //    respondendo 401 → releitura dos lotes abertos e refresh falham →
+      //    nenhum lote criado. A rodada fica registrada e conta
       //    como FALHA de entrega (isFailedKitSendRun) — sem isso um Kit fora
       //    do ar pareceria uma rodada saudável "0 lotes, 0 falhas".
       writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: true } } }));
       const send = await runExecutor(["--send"], configPath, storePath, snippetsDir, kit.url);
+      // Conta como falha na streak do alarme, mas sem lote falho nem abort o
+      // exit code é 0 (re-review da PR #10607).
       assert.equal(send.status, 0, `--send deveria sair 0. stdout: ${send.stdout} stderr: ${send.stderr}`);
       const summary = JSON.parse(send.stdout);
       assert.equal(summary.mode, "SEND");
       assert.deepEqual({ c: summary.send_run.lots_created, f: summary.send_run.lots_failed }, { c: 0, f: 0 });
-      assert.ok(summary.send_run.refresh_candidates > 0, `esperava candidatos a refresh: ${send.stdout}`);
+      // Desde o fleet review da PR #10607 o refresh cobre só entradas cujo
+      // próximo passo é do Kit; a falha desta rodada vem da releitura 401 do
+      // lote aberto (lots_unverified).
       assert.equal(summary.send_run.refresh_failed, summary.send_run.refresh_candidates);
+      assert.ok(summary.send_run.lots_unverified + summary.send_run.refresh_failed > 0, send.stdout);
       const afterSend = assertPanel(root);
       assert.ok(afterSend.kitLots.lastSendRun, "rodada --send aparece no painel");
       assert.equal(afterSend.kitLots.lastSendRun!.lots_created, 0);

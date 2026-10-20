@@ -1555,24 +1555,24 @@ describe("#6802 — Diaria-Branch-Cleanup registrada, diária, isolada da Diaria
 });
 
 describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, systemd-only, NÃO armada", () => {
-  it("está presente no registro, com o step apontando pro script correto, diária às 09:10", () => {
+  it("está presente no registro, com o step apontando pro script correto, diária às 09:58 (#7922: depois dos 2 passos do Welcome-Run)", () => {
     const t = getScheduledTaskByName("Diaria-Onboarding-Continuity-Alarm");
     assert.ok(t, "Diaria-Onboarding-Continuity-Alarm ausente de SCHEDULED_TASKS");
     assert.deepEqual(
       t!.steps.map((s) => s.script),
       ["scripts/onboarding-continuity-alarm.ts"],
     );
-    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 10 });
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 58 });
     assert.equal(t!.issue, "#7665");
   });
 
-  it("horário de 09:10 não colide com nenhuma outra daily do registro", () => {
+  it("horário de 09:58 não colide com nenhuma outra daily do registro", () => {
     const dailies = SCHEDULED_TASKS.filter(
       (t): t is typeof t & { schedule: { kind: "daily"; hour: number; minute: number } } =>
         t.schedule.kind === "daily",
     );
     const collisions = dailies.filter(
-      (t) => t.name !== "Diaria-Onboarding-Continuity-Alarm" && t.schedule.hour === 9 && t.schedule.minute === 10,
+      (t) => t.name !== "Diaria-Onboarding-Continuity-Alarm" && t.schedule.hour === 9 && t.schedule.minute === 58,
     );
     assert.deepEqual(collisions, []);
   });
@@ -1595,6 +1595,32 @@ describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, syst
   it("nenhum outro step do registro aponta pro mesmo script (task nova, não reaproveitamento)", () => {
     const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Onboarding-Continuity-Alarm").flatMap((t) => t.steps);
     assert.ok(!others.some((s) => s.script === "scripts/onboarding-continuity-alarm.ts"));
+  });
+});
+
+describe("#7922 — executor Kit do onboarding é o 2º passo de Diaria-Onboarding-Welcome-Run", () => {
+  it("passo run (Brevo) e depois passo kit (--send --skip-if-disabled), nessa ordem", () => {
+    const t = getScheduledTaskByName("Diaria-Onboarding-Welcome-Run")!;
+    assert.deepEqual(t.steps, [
+      { key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] },
+      { key: "kit", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send", "--skip-if-disabled"] },
+    ]);
+    assert.ok(!SCHEDULED_TASKS.find((x) => x.name === "Diaria-Onboarding-Welcome-Run")!.steps.some((s) => s.bestEffort === true), "falha de qualquer passo deixa a task failed (alarme de units)");
+    assert.notEqual(t.enabled, false);
+  });
+
+  it("não existe task separada do executor Kit (rodaria antes de a Brevo gravar as entradas novas)", () => {
+    assert.equal(getScheduledTaskByName("Diaria-Onboarding-Kit-Transport-Run"), undefined);
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== "Diaria-Onboarding-Welcome-Run").flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/onboarding-kit-transport-run.ts"));
+  });
+
+  it("o alarme de continuidade roda pelo menos 45 min depois do início do Welcome-Run", () => {
+    const at = (name: string) => {
+      const sc = getScheduledTaskByName(name)!.schedule as { hour: number; minute: number };
+      return sc.hour * 60 + sc.minute;
+    };
+    assert.ok(at("Diaria-Onboarding-Continuity-Alarm") - at("Diaria-Onboarding-Welcome-Run") >= 45);
   });
 });
 

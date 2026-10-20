@@ -18,8 +18,9 @@
  *     4. Kill switch Kit LIGADO + candidato devido pro email2 mas cujo email1
  *        foi servido pelo KIT (email1_sent_at preenchido, email1_brevo_id
  *        null) → Brevo recusa email2 (a escada termina no Kit).
- *     5. email3_campaign nunca é tocado pelo guard (fora de escopo — #8966 só
- *        cobre e-mail 1/2).
+ *     5. email3_campaign de escada Brevo (e-mail 1 legado, sem proveniência)
+ *        segue na Brevo. Desde 20/10/2026 (#7922) o e-mail 3 entra na decisão
+ *        de dono — casos Kit/Brevo em test/onboarding-kit-email3-auto-7922.test.ts.
  *
  *   Lado KIT (`filterKitPlanForBrevoInFlight`) — metade que faltava na
  *   fatia original da PR #8976 (achado do coordenador: os dois executores
@@ -163,7 +164,7 @@ describe("filterBrevoPlanForKitCutover (#8966)", () => {
     assert.equal(skip!.etapa, "email2");
   });
 
-  it("email3_campaign nunca é tocado pelo guard (fora de escopo #8966)", () => {
+  it("email3_campaign de escada Brevo (e-mail 1 legado) segue na Brevo com o switch ligado", () => {
     const elegivel = entry({
       email1_sent_at: iso(T0),
       email1_brevo_id: "brevo-msg-1",
@@ -181,7 +182,7 @@ describe("filterBrevoPlanForKitCutover (#8966)", () => {
     });
     assert.deepEqual(actionsSummary(plan), [{ kind: "email3_campaign", n: 1 }]);
     const filtered = filterBrevoPlanForKitCutover(plan, true);
-    assert.deepEqual(actionsSummary(filtered), [{ kind: "email3_campaign", n: 1 }], "kill switch ligado não deve afetar email3_campaign");
+    assert.deepEqual(actionsSummary(filtered), [{ kind: "email3_campaign", n: 1 }], "escada iniciada na Brevo termina na Brevo, inclusive o e-mail 3");
   });
 });
 
@@ -272,7 +273,7 @@ describe("filterKitPlanForBrevoInFlight (#8966) — metade Kit do guard de mútu
     assert.deepEqual(kitPlan.actions, [], "Kit desligado não deve planejar NENHUMA ação de e-mail 1/2");
   });
 
-  it("email3_campaign nunca é tocado pelo lado Kit do guard (fora de escopo #8966)", () => {
+  it("email3_campaign de escada Brevo (e-mail 1 legado) sai do plano Kit (#7922, 20/10/2026)", () => {
     const elegivel = entry({
       email1_sent_at: iso(T0),
       email1_brevo_id: "brevo-msg-1",
@@ -289,6 +290,7 @@ describe("filterKitPlanForBrevoInFlight (#8966) — metade Kit do guard de mútu
       snippets: { 1: sendable(1), 2: sendable(2), 3: sendable(3) },
     });
     const kitPlan = filterKitPlanForBrevoInFlight(plan, true);
-    assert.deepEqual(actionsSummary(kitPlan), [{ kind: "email3_campaign", n: 1 }]);
+    assert.deepEqual(actionsSummary(kitPlan), [], "e-mail 3 segue o transporte do e-mail 1 (Brevo)");
+    assert.equal(kitPlan.skips.find((s) => s.etapa === "email3")?.motivo, "escada_iniciada_na_brevo");
   });
 });

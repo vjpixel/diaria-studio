@@ -12,10 +12,14 @@
  *   - criação de tag 422 → `lots_failed`, streak 1, `last_error` no lote;
  *   - rodada seguinte dentro da janela de stale (`blocked_concurrent` sobre o
  *     `pending` com erro) NÃO conta falha nova (sem dupla contagem);
- *   - e-mail 1 cuja RELEITURA no Kit não ecoa `send_at` → broadcast apagado,
- *     lote cancelado, entrada volta ao plano (não fica presa); com o DELETE
- *     falhando → `schedule_failed`, e a rodada seguinte recria o lote;
- *   - releitura que falha (rede/API) → `lots_unverified`, lote `created`;
+ *   - e-mail 1 cujo PATCH de agendamento não agenda (releitura sem `send_at`)
+ *     → broadcast apagado, lote cancelado, entrada volta ao plano (não fica
+ *     presa); com o DELETE falhando → `schedule_failed`, e a rodada seguinte
+ *     recria o lote;
+ *   - releitura que falha (rede/API) na criação → nunca agenda: broadcast
+ *     apagado, lote cancelado, falha contada (fleet review da PR #10607);
+ *   - exit 1 só com abort ou lote falho (lição do #10603); refresh/snippet/
+ *     lote `unverified` contam só na streak do alarme;
  *   - exceção no meio da rodada → registro `aborted` com contadores parciais;
  *   - switch DESLIGADO ou `--pilot` com aborto → nada registrado;
  *   - snippet ausente → `content_skipped`, rodada falha;
@@ -26,7 +30,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer, type Server } from "node:http";
+import { startMockKitOnboarding, unverifiedEmail1Lot, type MockKitOnboardingOpts } from "./_helpers/mock-kit-onboarding.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -45,118 +49,7 @@ function fingerprintRealStore(): string | null {
   return `${statSync(REAL_STORE_PATH).size}:${createHash("sha256").update(readFileSync(REAL_STORE_PATH)).digest("hex")}`;
 }
 
-interface MockOpts {
-  /** Status de `POST /tags` (default 201). */
-  tagCreateStatus?: number;
-  /** `status` devolvido por `POST /broadcasts` (default "scheduled"). */
-  broadcastStatus?: string;
-  /** Responde este status a QUALQUER rota (simula auth quebrada / Kit fora). */
-  everything?: number;
-  /** `GET /subscribers/{id}` devolve 404 e a busca por e-mail vem vazia. */
-  subscriberMissing?: boolean;
-  /** Releitura `GET /broadcasts/{id}` devolve `send_at: null` (não agendado). */
-  rereadNoSendAt?: boolean;
-  /** Status HTTP da releitura `GET /broadcasts/{id}` (default 200). */
-  rereadHttpStatus?: number;
-  /** Status HTTP do `DELETE /broadcasts/{id}` (default 204). */
-  deleteHttpStatus?: number;
-  /** Chamado ao receber `POST /tags` (antes de responder) — injeta efeitos. */
-  onTagCreate?: () => void;
-  /** Muda o comportamento a partir da N-ésima releitura (1-based). */
-  rereadNoSendAtOnlyFirst?: boolean;
-  /** `rereadNoSendAt` vale só pro 1º broadcast criado (id 4242), em TODAS as
-   *  releituras dele — os criados depois agendam normal (#9367). */
-  rereadNoSendAtFirstBroadcastOnly?: boolean;
-  /** Status Kit devolvido na releitura (sobrepõe o default "scheduled"/"draft"). */
-  rereadStatus?: string;
-  /** Corpo do erro do `DELETE` quando `deleteHttpStatus` ≥ 400. */
-  deleteErrorBody?: unknown;
-  /** #9487: `account.id` de `GET /account` (default 111); `null` = resposta sem id. */
-  accountId?: number | null;
-  /** #9487: estes broadcasts dão 404 na releitura (apagados na UI / outra conta). */
-  notFoundIds?: Set<number>;
-}
-
-function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: string; hits: string[] }> {
-  const hits: string[] = [];
-  const broadcasts = new Map<number, { id: number; send_at: string | null }>();
-  let nextId = 4242;
-  let rereads = 0;
-  return new Promise((resolvePromise) => {
-    const server = createServer((req, res) => {
-      let raw = "";
-      req.on("data", (c) => (raw += c));
-      req.on("end", () => {
-        const u = new URL(req.url ?? "/", "http://127.0.0.1");
-        const p = u.pathname;
-        hits.push(`${req.method} ${p}`);
-        const send = (status: number, body: unknown) => {
-          res.writeHead(status, { "content-type": "application/json" });
-          res.end(JSON.stringify(body));
-        };
-        if (opts.everything) return send(opts.everything, { errors: ["mock"] });
-        const pagination = { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 };
-        let m: RegExpMatchArray | null;
-        if (req.method === "GET" && (m = p.match(/^\/subscribers\/(\d+)\/stats$/))) {
-          return send(200, { subscriber: { id: Number(m[1]), stats: { opened: 2 } } });
-        }
-        if (req.method === "GET" && (m = p.match(/^\/subscribers\/(\d+)$/))) {
-          if (opts.subscriberMissing) return send(404, { errors: ["Not Found"] });
-          return send(200, { subscriber: { id: Number(m[1]), email_address: "x@example.com", state: "active", created_at: "2026-09-01T00:00:00Z" } });
-        }
-        if (req.method === "GET" && p === "/account") {
-          const id = opts.accountId === undefined ? 111 : opts.accountId;
-          return send(200, { account: { ...(id === null ? {} : { id }), name: "mock", plan_type: "creator" } });
-        }
-        if (req.method === "GET" && p === "/subscribers") return send(200, { subscribers: [], pagination });
-        if (req.method === "GET" && p === "/tags") return send(200, { tags: [], pagination });
-        if (req.method === "POST" && p === "/tags") {
-          opts.onTagCreate?.();
-          const status = opts.tagCreateStatus ?? 201;
-          if (status >= 400) return send(status, { errors: ["Name is invalid"] });
-          return send(201, { tag: { id: 777, name: JSON.parse(raw || "{}").name, created_at: "2026-10-01T00:00:00Z" } });
-        }
-        if (req.method === "POST" && /^\/tags\/\d+\/subscribers\/\d+$/.test(p)) return send(201, { subscriber: {} });
-        if (req.method === "POST" && p === "/broadcasts") {
-          const body = JSON.parse(raw || "{}") as { send_at?: string | null };
-          const id = nextId++;
-          broadcasts.set(id, { id, send_at: body.send_at ?? null });
-          return send(201, {
-            broadcast: { id, status: opts.broadcastStatus ?? "scheduled", send_at: body.send_at ?? null, public: false, subject: "s" },
-          });
-        }
-        if ((m = p.match(/^\/broadcasts\/(\d+)$/))) {
-          const id = Number(m[1]);
-          if (req.method === "GET") {
-            rereads++;
-            if (opts.rereadHttpStatus && opts.rereadHttpStatus >= 400) return send(opts.rereadHttpStatus, { errors: ["mock"] });
-            if (opts.notFoundIds?.has(id)) return send(404, { errors: ["Not Found"] });
-            const b = broadcasts.get(id);
-            if (!b) return send(404, { errors: ["Not Found"] });
-            const drop =
-              opts.rereadNoSendAt &&
-              (opts.rereadNoSendAtFirstBroadcastOnly ? id === 4242 : !opts.rereadNoSendAtOnlyFirst || rereads === 1);
-            return send(200, {
-              broadcast: { id, status: opts.rereadStatus ?? (drop ? "draft" : "scheduled"), send_at: drop ? null : b.send_at, public: false, subject: "s" },
-            });
-          }
-          if (req.method === "DELETE") {
-            if (opts.deleteHttpStatus && opts.deleteHttpStatus >= 400) return send(opts.deleteHttpStatus, opts.deleteErrorBody ?? { errors: ["mock"] });
-            broadcasts.delete(id);
-            res.writeHead(204);
-            return res.end();
-          }
-        }
-        send(404, { error: `unexpected ${req.method} ${p}` });
-      });
-    });
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolvePromise({ server, url: `http://127.0.0.1:${port}`, hits });
-    });
-  });
-}
+type MockOpts = MockKitOnboardingOpts;
 
 function runExecutor(args: string[], kitUrl: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -230,13 +123,26 @@ function setup(opts: { backend?: string; snippets?: number[]; entries?: Record<s
 }
 
 async function withMock<T>(opts: MockOpts, fn: (url: string, hits: string[]) => Promise<T>): Promise<T> {
-  const { server, url, hits } = await startMockKit(opts);
+  const { server, url, hits } = await startMockKitOnboarding(opts);
   try {
     return await fn(url, hits);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
 }
+
+/** Store com um lote de e-mail 1 `unverified` de uma rodada anterior. */
+function setupWithUnverifiedLot(over: Record<string, unknown> = {}) {
+  const t = setup();
+  const store = JSON.parse(readFileSync(t.storePath, "utf8"));
+  const lot = unverifiedEmail1Lot(over);
+  store.kit_transport.lots[lot.lot_id] = lot;
+  writeFileSync(t.storePath, JSON.stringify(store));
+  return t;
+}
+
+const SEED_4242_SCHEDULED = { id: 4242, status: "scheduled", send_at: new Date(Date.now() + 3_600_000).toISOString(), subscriber_filter: [{ all: [{ type: "tag", ids: [700] }] }] };
+const SEED_4242_DRAFT = { id: 4242, status: "draft", send_at: null, subscriber_filter: [{ all: [{ type: "tag", ids: [700] }] }] };
 
 describe("#7922 — contadores da rodada --send do executor Kit (alimentam o alarme de continuidade)", () => {
   const realBefore = fingerprintRealStore();
@@ -264,7 +170,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({ tagCreateStatus: 422 }, async (url) => {
         const r1 = await runExecutor(t.args, url);
-        assert.equal(r1.status, 0, `stdout: ${r1.stdout} stderr: ${r1.stderr}`);
+        assert.equal(r1.status, 1, `rodada falha sai 1 — stdout: ${r1.stdout} stderr: ${r1.stderr}`);
         const kt1 = t.readKt();
         assert.equal(kt1.last_send_run.lots_failed, 1);
         assert.equal(kt1.consecutive_failed_send_runs, 1);
@@ -287,12 +193,12 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     }
   });
 
-  it("releitura sem send_at → broadcast apagado, lote cancelado, entrada NÃO fica presa (rodada seguinte recria)", async () => {
+  it("PATCH que não agenda (releitura sem send_at) → broadcast apagado, lote cancelado, entrada NÃO fica presa (rodada seguinte recria)", async () => {
     const t = setup();
     try {
-      await withMock({ rereadNoSendAt: true, rereadNoSendAtOnlyFirst: true }, async (url, hits) => {
+      await withMock({ patchNoSchedule: "first" }, async (url, hits) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
         assert.equal(kt.last_send_run.lots_created, 0);
         assert.equal(kt.last_send_run.lots_failed, 1);
@@ -316,15 +222,14 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     }
   });
 
-  it("releitura sem send_at + DELETE falho → schedule_failed; não conta como confirmado e a rodada seguinte recria", async () => {
+  it("PATCH que não agenda + DELETE falho → schedule_failed; não conta como confirmado e a rodada seguinte recria", async () => {
     const t = setup();
     try {
-      // #9367: o 1º broadcast continua rascunho em TODAS as releituras (a
-      // releitura do início da rodada seguinte também o vê não-agendado);
-      // só o recriado agenda.
-      await withMock({ rereadNoSendAt: true, rereadNoSendAtFirstBroadcastOnly: true, deleteHttpStatus: 401 }, async (url) => {
+      // #9367: o 1º broadcast continua rascunho (a releitura do início da
+      // rodada seguinte também o vê não-agendado); só o recriado agenda.
+      await withMock({ patchNoSchedule: "firstBroadcast", deleteHttpStatus: 401 }, async (url) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
         const lot = Object.values(kt.lots as Record<string, { status: string; schedule_failed?: boolean; last_error: string }>)[0]!;
         assert.equal(lot.status, "created");
@@ -343,21 +248,64 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     }
   });
 
-  it("releitura que FALHA (401) → lots_unverified, lote created sem marcar a entry, rodada conta falha de transporte", async () => {
+  it("releitura que FALHA (401) na criação → nunca agenda: broadcast apagado, lote cancelado, falha contada, exit 1", async () => {
     const t = setup();
     try {
       await withMock({ rereadHttpStatus: 401 }, async (url, hits) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
-        assert.equal(kt.last_send_run.lots_unverified, 1);
-        assert.equal(kt.last_send_run.lots_failed, 0, "sem leitura não se declara falha de entrega");
+        assert.equal(kt.last_send_run.lots_failed, 1);
         assert.equal(kt.consecutive_failed_send_runs, 1);
-        const lot = Object.values(kt.lots as Record<string, { status: string }>)[0]!;
-        assert.equal(lot.status, "created");
-        assert.ok(!hits.some((h) => h.startsWith("DELETE")), "sem leitura, nunca apaga");
+        const lot = Object.values(kt.lots as Record<string, { status: string; last_error: string }>)[0]!;
+        assert.equal(lot.status, "cancelled");
+        assert.match(lot.last_error, /NÃO confirmada antes de agendar/);
+        assert.ok(!hits.some((h) => h.startsWith("PATCH")), "audiência não confirmada → nunca agenda");
+        assert.ok(hits.some((h) => h.startsWith("DELETE /broadcasts/")), "rascunho de audiência incerta é apagado");
         assert.equal(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, null);
       });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filtro NÃO ecoado na releitura → nenhum agendamento, broadcast apagado, falha contada (P1 do fleet review da PR #10607)", async () => {
+    const t = setup();
+    try {
+      await withMock({ rereadNoFilter: true }, async (url, hits) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const kt = t.readKt();
+        assert.equal(kt.last_send_run.lots_failed, 1);
+        assert.equal(kt.last_send_run.lots_created, 0);
+        const lot = Object.values(kt.lots as Record<string, { status: string; last_error: string }>)[0]!;
+        assert.equal(lot.status, "cancelled");
+        assert.match(lot.last_error, /not_echoed/);
+        assert.ok(!hits.some((h) => h.startsWith("PATCH")), "nunca agenda sem ver o filtro");
+        assert.ok(hits.some((h) => h.startsWith("DELETE /broadcasts/")));
+        assert.equal(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, null);
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lote agendado: o broadcast nasce RASCUNHO e só é agendado por PATCH depois de conferir a tag e o filtro", async () => {
+    const t = setup();
+    try {
+      const { server, url, hits, createdSendAt } = await startMockKitOnboarding({});
+      try {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.deepEqual(createdSendAt, [null], "POST /broadcasts sem send_at (rascunho)");
+        const order = hits
+          .filter((h) => /^(GET \/tags\/\d+\/subscribers|POST \/broadcasts|PATCH \/broadcasts|GET \/broadcasts)/.test(h))
+          .map((h) => `${h.split(" ")[0]} ${h.split("/")[1]}`);
+        assert.deepEqual(order.slice(0, 4), ["GET tags", "POST broadcasts", "GET broadcasts", "PATCH broadcasts"]);
+        assert.equal(Object.values(t.readKt().lots as Record<string, { status: string }>)[0]!.status, "scheduled");
+      } finally {
+        await new Promise<void>((res) => server.close(() => res()));
+      }
     } finally {
       rmSync(t.dir, { recursive: true, force: true });
     }
@@ -368,6 +316,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({}, async (url) => {
         const r = await runExecutor(t.args, url);
+        // Conta na streak do alarme, mas não derruba a unit (só abort/lote falho saem 1).
         assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
         assert.ok(kt.last_send_run.content_skipped >= 1, JSON.stringify(kt.last_send_run));
@@ -410,7 +359,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({ everything: 401 }, async (url) => {
         const r = await runExecutor(t401.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 0, `refresh_failed sozinho não muda o exit code — stdout: ${r.stdout} stderr: ${r.stderr}`);
         const run = t401.readKt().last_send_run;
         assert.equal(run.refresh_candidates, 1);
         assert.equal(run.refresh_failed, 1);
@@ -766,7 +715,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     const t = setup();
     try {
       await withMock(
-        { rereadNoSendAt: true, deleteHttpStatus: 422, deleteErrorBody: { errors: ["Broadcast has already been sent."] } },
+        { patchNoSchedule: "always", deleteHttpStatus: 422, deleteErrorBody: { errors: ["Broadcast has already been sent."] } },
         async (url, hits) => {
           const r = await runExecutor(t.args, url);
           assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
@@ -787,18 +736,10 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9367 item 1: lote `unverified` é relido no INÍCIO do --send seguinte — agendado no Kit → grava o envio, não recria, streak zera", async () => {
-    const t = setup();
+    const t = setupWithUnverifiedLot();
     try {
-      const opts: MockOpts = { rereadHttpStatus: 401 };
-      await withMock(opts, async (url, hits) => {
-        const r1 = await runExecutor(t.args, url);
-        assert.equal(r1.status, 0, `stdout: ${r1.stdout} stderr: ${r1.stderr}`);
-        assert.equal(t.readKt().last_send_run.lots_unverified, 1);
-        assert.equal(t.readKt().consecutive_failed_send_runs, 1);
-        assert.equal(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, null);
-
-        // A rede volta: SEM nenhum --reconcile agendado, o próprio --send relê.
-        opts.rereadHttpStatus = undefined;
+      await withMock({ seedBroadcasts: [SEED_4242_SCHEDULED] }, async (url, hits) => {
+        // SEM nenhum --reconcile agendado, o próprio --send relê.
         const r2 = await runExecutor(t.args, url);
         assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         const summary = JSON.parse(r2.stdout);
@@ -807,7 +748,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
         const lot = Object.values(kt.lots as Record<string, { status: string }>)[0]!;
         assert.equal(lot.status, "scheduled");
         assert.equal(Object.keys(kt.lots).length, 1, "nenhum lote novo");
-        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "nenhum 2º broadcast");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 0, "nenhum 2º broadcast");
         assert.ok(JSON.parse(readFileSync(t.storePath, "utf8")).entries["501"].email1_sent_at, "régua ancora: email1_sent_at gravado");
         assert.equal(kt.last_send_run.lots_unverified, 0);
         assert.equal(kt.consecutive_failed_send_runs, 0);
@@ -818,16 +759,15 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9367 item 1: lote `unverified` que CONTINUA ilegível no --send seguinte conta de novo (streak não zera em silêncio)", async () => {
-    const t = setup();
+    const t = setupWithUnverifiedLot();
     try {
-      await withMock({ rereadHttpStatus: 401 }, async (url, hits) => {
-        await runExecutor(t.args, url);
+      await withMock({ seedBroadcasts: [SEED_4242_SCHEDULED], rereadHttpStatus: 401 }, async (url, hits) => {
         const r2 = await runExecutor(t.args, url);
-        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.equal(r2.status, 0, `lots_unverified sozinho não muda o exit code — stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         const kt = t.readKt();
         assert.equal(kt.last_send_run.lots_unverified, 1, "o lote preso segue contando");
-        assert.equal(kt.consecutive_failed_send_runs, 2, "a streak cresce em vez de zerar");
-        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "sem leitura, nunca recria");
+        assert.equal(kt.consecutive_failed_send_runs, 1);
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 0, "sem leitura, nunca recria");
         assert.ok(!hits.some((h) => h.startsWith("DELETE")), "sem leitura, nunca apaga");
       });
     } finally {
@@ -836,14 +776,9 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9367 item 1: lote `unverified` que o Kit mostra RASCUNHO no --send seguinte → apagado + cancelado, entrada replanejada no mesmo --send", async () => {
-    const t = setup();
+    const t = setupWithUnverifiedLot();
     try {
-      const opts: MockOpts = { rereadHttpStatus: 401 };
-      await withMock(opts, async (url, hits) => {
-        await runExecutor(t.args, url);
-        opts.rereadHttpStatus = undefined;
-        opts.rereadNoSendAt = true;
-        opts.rereadNoSendAtFirstBroadcastOnly = true;
+      await withMock({ seedBroadcasts: [SEED_4242_DRAFT] }, async (url, hits) => {
         const r2 = await runExecutor(t.args, url);
         assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         assert.ok(hits.includes("DELETE /broadcasts/4242"), "rascunho órfão apagado");
@@ -860,14 +795,10 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9367 item 1: dry-run relê os lotes abertos SEM escrever (nem no Kit, nem no store)", async () => {
-    const t = setup();
+    const t = setupWithUnverifiedLot();
     try {
-      const opts: MockOpts = { rereadHttpStatus: 401 };
-      await withMock(opts, async (url, hits) => {
-        await runExecutor(t.args, url);
+      await withMock({ seedBroadcasts: [SEED_4242_DRAFT] }, async (url, hits) => {
         const before = readFileSync(t.storePath, "utf8");
-        opts.rereadHttpStatus = undefined;
-        opts.rereadNoSendAt = true;
         const dry = await runExecutor(t.args.filter((a) => a !== "--send"), url);
         assert.equal(dry.status, 0, `stdout: ${dry.stdout} stderr: ${dry.stderr}`);
         assert.equal(readFileSync(t.storePath, "utf8"), before, "dry-run não grava o store");
@@ -891,14 +822,15 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   it("#9487 (wiring runNormalPlan): o lote nasce com kit_account_id e a releitura 404 da criação, mesma conta → cancelled", async () => {
     const t = setup();
     try {
-      // 4242 = 1º broadcast criado: a releitura de confirmação dá 404.
+      // 4242 = 1º broadcast criado: a releitura dá 404 (audiência ilegível →
+      // nunca agenda; o DELETE apaga o rascunho → lote cancelado).
       await withMock({ notFoundIds: new Set([4242]) }, async (url, hits) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
         const lot = Object.values(kt.lots as Record<string, { status: string; kit_account_id?: string; last_error: string }>)[0]!;
         assert.equal(lot.kit_account_id, "111", "id da conta gravado no lote na criação");
-        assert.equal(lot.status, "cancelled", `runNormalPlan precisa repassar getAccountId — sem ele fica unverified: ${lot.last_error}`);
+        assert.equal(lot.status, "cancelled", lot.last_error);
         assert.ok(hits.includes("GET /account"));
       });
     } finally {
@@ -907,54 +839,45 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
   });
 
   it("#9487 (wiring reconcileOpenLots): lote unverified relido no --send — 404 com OUTRA conta fica unverified; com a MESMA conta cancela e replaneja", async () => {
-    const t = setup();
+    const t = setupWithUnverifiedLot();
     try {
-      const opts: MockOpts = { rereadHttpStatus: 401 };
+      // Chave de OUTRA conta: o broadcast dá 404, /account dá 200 com id 222.
+      const opts: MockOpts = { seedBroadcasts: [SEED_4242_SCHEDULED], notFoundIds: new Set([4242]), accountId: 222 };
       await withMock(opts, async (url, hits) => {
-        // 1ª rodada: releitura de confirmação falha → lote `created` (unverified), conta 111 gravada.
-        const r1 = await runExecutor(t.args, url);
-        assert.equal(r1.status, 0, `stdout: ${r1.stdout} stderr: ${r1.stderr}`);
-        const lot1 = Object.values(t.readKt().lots as Record<string, { status: string; kit_account_id?: string }>)[0]!;
-        assert.equal(lot1.status, "created");
-        assert.equal(lot1.kit_account_id, "111");
-
-        // 2ª rodada com a chave de OUTRA conta: o broadcast dá 404, /account dá 200 com id 222.
-        opts.rereadHttpStatus = undefined;
-        opts.notFoundIds = new Set([4242]);
-        opts.accountId = 222;
         const r2 = await runExecutor(t.args, url);
         assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         assert.equal(JSON.parse(r2.stdout).reconciled_before_send?.[0]?.recovered, "unverified", r2.stdout);
         const kt2 = t.readKt();
         assert.equal(Object.keys(kt2.lots).length, 1, "nenhum lote novo");
         assert.equal(Object.values(kt2.lots as Record<string, { status: string }>)[0]!.status, "created");
-        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "nenhum 2º broadcast (e-mail em dobro)");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 0, "nenhum 2º broadcast (e-mail em dobro)");
         assert.equal(kt2.last_send_run.lots_unverified, 1);
 
-        // 3ª rodada de volta à conta dona: 404 = apagado → cancela e a entrada volta ao plano.
+        // De volta à conta dona: 404 = apagado → cancela e a entrada volta ao plano.
         opts.accountId = 111;
+        opts.notFoundIds = new Set([4242]);
         const r3 = await runExecutor(t.args, url);
         assert.equal(r3.status, 0, `stdout: ${r3.stdout} stderr: ${r3.stderr}`);
         assert.equal(JSON.parse(r3.stdout).reconciled_before_send?.[0]?.recovered, "unscheduled", r3.stdout);
         const kt3 = t.readKt();
         const lots3 = Object.values(kt3.lots as Record<string, { status: string; broadcast_id: number }>);
         assert.equal(lots3.find((l) => l.broadcast_id === 4242)?.status, "cancelled");
-        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 2, "entrada replanejada no mesmo --send");
+        assert.equal(hits.filter((h) => h === "POST /broadcasts").length, 1, "entrada replanejada no mesmo --send");
       });
     } finally {
       rmSync(t.dir, { recursive: true, force: true });
     }
   });
 
-  it("#9487: /account sem id na criação → lote nasce sem kit_account_id e um 404 posterior fica unverified", async () => {
+  it("#9487: /account sem id na criação → lote nasce sem kit_account_id (aviso no stderr), e o envio segue", async () => {
     const t = setup();
     try {
-      await withMock({ accountId: null, notFoundIds: new Set([4242]) }, async (url) => {
+      await withMock({ accountId: null }, async (url) => {
         const r = await runExecutor(t.args, url);
         assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const lot = Object.values(t.readKt().lots as Record<string, { status: string; kit_account_id?: string }>)[0]!;
         assert.equal(lot.kit_account_id, undefined);
-        assert.equal(lot.status, "created");
+        assert.equal(lot.status, "scheduled");
         assert.match(r.stderr, /GET \/account falhou ao criar o lote/);
       });
     } finally {

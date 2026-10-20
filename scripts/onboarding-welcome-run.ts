@@ -105,6 +105,8 @@ import {
   zeroDetectionAlarm,
   filterBrevoPlanForKitCutover,
   dropActionsCoveredOnDisk,
+  ownerTransportFor,
+  stripForeignEmail3Delta,
   type DetectedSubscription,
   type OpenStats,
   type RunAction,
@@ -1140,6 +1142,9 @@ async function main(): Promise<number | void> {
         2: args.skip.has("email2") ? null : snippets[2],
         3: args.skip.has("email3") ? null : snippets[3],
       },
+      // #7922: o e-mail 3 de entrada do Kit é decidido SÓ pelo executor Kit —
+      // a Brevo nem avalia a elegibilidade nem grava skipped_* nela.
+      ownsEmail3: (e) => ownerTransportFor(e, "email3", kitTransportEnabled) === "brevo",
     }),
     kitTransportEnabled,
     kitLots,
@@ -1224,6 +1229,9 @@ async function main(): Promise<number | void> {
   }
 
   // --- 5. Persistência ---
+  // #7922: a rodada Brevo nunca sobrescreve o estado do e-mail 3 de entrada
+  // do Kit — nem num conflito com um `campaign_created` que o Kit gravou.
+  stripForeignEmail3Delta(baseline, store, (e) => ownerTransportFor(e, "email3", kitTransportEnabled) !== "brevo");
   persistBrevoStore(storePath, baseline, store);
   console.log(JSON.stringify(summary, null, 2));
 }

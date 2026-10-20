@@ -159,7 +159,8 @@ export interface OnboardingEntry {
   email2_kit_lot_id?: string;
   /**
    * #9059: `lot_id` do lote Kit de e-mail 3 que levou esta entrada a
-   * `email3_state = "campaign_created"` (rascunho Kit criado). Usado pra
+   * `email3_state = "campaign_created"` (lote Kit criado; desde 20/10/2026 o
+   * e-mail 3 é agendado automaticamente, não fica rascunho). Usado pra
    * desfazer exatamente essa decisão se o lote for cancelado depois
    * (`--cancel-lot` → `email3_state` volta a `pending`). Ausente = decisão do
    * e-mail 3 não veio de um lote Kit (Brevo, skip, ou ainda pendente).

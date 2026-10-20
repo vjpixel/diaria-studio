@@ -43,12 +43,13 @@
  *   incondicionalmente — não é parâmetro, não há como um caller pedir
  *   `public: true` por engano (issue: "não publicar onboarding no arquivo
  *   público da Kit").
- * - **E-mail 3 (D+10) nunca sai de rascunho sozinho**: `buildOnboardingBroadcastInput`
- *   força `send_at: null` para `kind === "email3"` INDEPENDENTE do que o
- *   caller passar, e `assertEmail3ScheduleAuthorized` é o único caminho para
- *   agendar/enviar um lote já criado — exige `humanApproved: true` explícito
- *   (issue: "e-mail 3 permanece rascunho com aprovação humana para
- *   agendar/enviar").
+ * - **E-mail 3 (D+10) sai automático desde 20/10/2026** (decisão do editor
+ *   na #7922, que revoga o "e-mail 3 permanece rascunho com aprovação humana"
+ *   do corpo original da issue): `buildOnboardingBroadcastInput` trata os 3
+ *   kinds igual — o `send_at` do caller vale também pro e-mail 3, e o lote é
+ *   confirmado pela mesma releitura dos e-mails 1/2. A elegibilidade (abriu
+ *   pelo menos 1 edição até D+10, #7599) continua em `buildRunPlan`, e a
+ *   exclusão de `seeded_by` em `selectEligibleKitRecipients`.
  * - **Coortes #7665/#7675 excluídas da seleção automática**: `seeded_by`
  *   (campo que `onboarding-store.ts`/o modo dirigido #7674 já gravam pra
  *   essas duas recuperações manuais) é motivo de exclusão em
@@ -278,15 +279,21 @@ export function hasConfirmedKitLotForEntry(
  *     `email3_state = "campaign_created"` + `email3_decided_at` (= `nowIso`,
  *     a decisão, não o envio) + `email3_kit_lot_id` SÓ em entries ainda
  *     `pending` — nunca sobrescreve uma decisão terminal (`skipped_*`) nem uma
- *     campanha Brevo. `created` conta aqui porque o e-mail 3 é SEMPRE rascunho
- *     por desenho (aprovação humana pra agendar): o rascunho criado já é o
- *     estado terminal equivalente ao `campaign_created` da Brevo.
+ *     campanha Brevo. `created` segue contando (conservador): desde que o
+ *     e-mail 3 passou a sair automático (20/10/2026) um lote `created` é um
+ *     agendamento ainda não confirmado pela releitura (`unverified`), relido
+ *     pela rodada `--send` seguinte (`reconcileOpenLots`) — ou um rascunho
+ *     legado de antes da mudança. Marcar já evita um 2º lote pra mesma
+ *     pessoa enquanto a releitura não decide.
  *     `email3_campaign_id` (id de campanha BREVO) fica intocado — o broadcast
  *     Kit mora no lote (`findKitLotForEntry`), e gravar um id Kit ali faria o
  *     Studio consultar a Brevo com um id que não é dela.
- *   - Lote `cancelled`: volta `email3_state` a `pending` (e zera
- *     `email3_decided_at`) SÓ nas entries cujo `email3_kit_lot_id` aponta pra
- *     este lote.
+ *   - Lote `cancelled`, OU `created` com `schedule_failed` (broadcast que a
+ *     releitura viu não-agendado e cujo DELETE falhou — o e-mail não sai): volta
+ *     `email3_state` a `pending` (e zera `email3_decided_at`) SÓ nas entries
+ *     cujo `email3_kit_lot_id` aponta pra este lote. Sem o caso
+ *     `schedule_failed`, a entrada marcada quando o lote ainda era `created`
+ *     ficaria presa em `campaign_created` sem e-mail nenhum.
  *
  * `pending` (sem broadcast confirmado): no-op em qualquer etapa.
  *
@@ -335,7 +342,10 @@ function applyKitEmail3LotToEntries(
   nowIso: string,
 ): number {
   let touched = 0;
-  if (lot.status === "cancelled") {
+  // `schedule_failed` só reabre junto com `created` (broadcast rascunho que
+  // não pôde ser apagado). Um lote contraditório `scheduled`/`completed` com
+  // a flag ainda ligada NUNCA reabre — seria o e-mail 3 em dobro.
+  if (lot.status === "cancelled" || (lot.status === "created" && lot.schedule_failed === true)) {
     for (const subId of lot.recipient_subscription_ids) {
       const entry = entries[subId];
       if (!entry || entry.email3_kit_lot_id !== lot.lot_id) continue;
@@ -567,7 +577,7 @@ export function buildOnboardingLotFilter(tagId: number): KitSubscriberFilter {
 }
 
 // ---------------------------------------------------------------------------
-// Payload do broadcast — "public: false" + "D+10 sempre rascunho"
+// Payload do broadcast — "public: false" + filtro por tag do lote
 // ---------------------------------------------------------------------------
 
 export interface BuildOnboardingBroadcastInputOpts {
@@ -576,42 +586,23 @@ export interface BuildOnboardingBroadcastInputOpts {
   content: string;
   previewText?: string;
   tagId: number;
-  /** ISO — quando agendar o envio. `null` = rascunho. Ignorado (forçado a
-   *  `null`) quando `kind === "email3"`, ver docstring do módulo. */
+  /** ISO — quando agendar o envio. `null` = rascunho. Vale pros 3 kinds
+   *  (e-mail 3 automático desde 20/10/2026, ver docstring do módulo). */
   sendAt: string | null;
 }
 
 /** Monta o payload de `createBroadcast` (kit-broadcasts.ts) para um lote de
- *  onboarding — `public: false` e o guard de e-mail 3 são incondicionais,
+ *  onboarding — `public: false` e o filtro por tag são incondicionais,
  *  nunca dependem de o caller lembrar de passá-los certo. */
 export function buildOnboardingBroadcastInput(opts: BuildOnboardingBroadcastInputOpts): CreateBroadcastInput {
-  const sendAt = opts.kind === "email3" ? null : opts.sendAt;
   return {
     subject: opts.subject,
     content: opts.content,
     preview_text: opts.previewText,
     public: false,
-    send_at: sendAt,
+    send_at: opts.sendAt,
     subscriber_filter: buildOnboardingLotFilter(opts.tagId),
   };
-}
-
-/**
- * Guard que TODO caminho de agendar/enviar um lote de e-mail 3 já criado
- * (ex: `updateBroadcast(id, { send_at })`) precisa passar por ANTES de
- * chamar a API — lança se `kind === "email3"` e `humanApproved` não é
- * `true`. Nenhum outro parâmetro pode contornar isto (não há flag "confia em
- * mim"): a única forma de `humanApproved` virar `true` é o executor CLI
- * receber um flag explícito do operador (`--approve-email3-lot`), nunca um
- * default.
- */
-export function assertEmail3ScheduleAuthorized(kind: OnboardingKitLotKind, humanApproved: boolean): void {
-  if (kind === "email3" && !humanApproved) {
-    throw new Error(
-      "[onboarding-kit-transport] agendar/enviar o e-mail 3 (D+10) exige aprovação humana explícita " +
-        "(--approve-email3-lot) — nunca automático (#7922).",
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -774,7 +765,8 @@ export interface KitSendRunRecord {
    *  uma falha anterior há < 15 min). Rodada só com isso (nenhum lote criado)
    *  é NEUTRA na streak (#9367 item 4). */
   blocked_concurrent: number;
-  /** Candidatos que precisaram de refresh de status/stats no Kit. */
+  /** Candidatos que precisaram de refresh de status/stats no Kit — só as
+   *  entradas cujo próximo passo é do Kit (#7922, fleet review da PR #10607). */
   refresh_candidates: number;
   /** Refreshes que falharam por erro de CONSULTA (rede, ou qualquer erro HTTP
    *  exceto 404/422 — ver `isKitTransportError` em `onboarding-welcome-run.ts`) —
@@ -813,11 +805,12 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
  *     (`lots_unverified` — falha de transporte, não de entrega); ou
  *   - ≥1 ação devida barrada por guard de conteúdo (sem isto, snippet
  *     ausente/pendente produziria "0 lotes, 0 falhas" indefinidamente); ou
- *   - o refresh de TODOS os candidatos falhou por erro de transporte. Com
- *     muitos candidatos isso é o Kit fora do ar / auth quebrada; com N
- *     pequeno (1-2) pode ser um erro pontual — o limiar de 2 rodadas
- *     seguidas do alarme absorve o caso pontual. Falha PARCIAL não conta
- *     (os demais candidatos seguiram).
+ *   - ≥1 refresh falhou por erro de transporte (#7922, fleet review da PR
+ *     #10607 — antes só contava quando TODOS falhavam). Desde então o
+ *     refresh cobre só as entradas cujo próximo passo é do Kit; a que
+ *     falha fica fora da seleção nesta rodada (e-mail que não sai). O limiar
+ *     de 2 rodadas seguidas do alarme absorve o erro pontual, e o exit code
+ *     da rodada não olha pra isto (`shouldExitNonZeroForKitSendRun`).
  *
  * @pure
  */
@@ -826,8 +819,25 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
   if (run.lots_failed > 0) return true;
   if ((run.lots_unverified ?? 0) > 0) return true;
   if ((run.content_skipped ?? 0) > 0) return true;
-  const candidates = run.refresh_candidates ?? 0;
-  return candidates > 0 && (run.refresh_failed ?? 0) >= candidates;
+  // #7922 (fleet review da PR #10607): desde que o refresh só cobre entradas
+  // do Kit devidas nesta rodada, QUALQUER falha de transporte (rede, auth,
+  // 429/5xx) é e-mail que pode não sair — não só "todas falharam".
+  return (run.refresh_failed ?? 0) > 0;
+}
+
+/**
+ * #7922 (re-review do fleet review da PR #10607): o exit code da rodada
+ * `--send` é mais estreito que `isFailedKitSendRun`. Sai != 0 só quando a
+ * rodada abortou ou ≥1 lote falhou (inclui lote que virou `schedule_failed`
+ * nesta rodada) — falha de entrega concreta. `refresh_failed`,
+ * `content_skipped` e `lots_unverified` sozinhos contam na streak do alarme
+ * de continuidade (2 rodadas seguidas abrem issue), mas não deixam a unit
+ * `failed` no dia: um 429 transitório não é incidente.
+ *
+ * @pure
+ */
+export function shouldExitNonZeroForKitSendRun(run: KitSendRunRecord): boolean {
+  return run.aborted === true || run.lots_failed > 0;
 }
 
 /**
@@ -854,8 +864,11 @@ export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport
 }
 
 /** Conta as ações devidas a ESTE executor barradas por guard de conteúdo.
- *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`); e-mail
- *  3 fica fora da decisão de dono (mesma regra dos filtros do #8966).
+ *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`). O
+ *  e-mail 3 conta sempre: desde 20/10/2026 ele também tem dono (#7922), mas
+ *  `buildRunPlan` registra UM skip pro cohort inteiro (com a 1ª entry), que
+ *  pode misturar entradas Kit e Brevo — contar sempre é o lado conservador
+ *  (snippet 3 ausente barra o e-mail 3 nos dois transportes).
  *  @pure */
 export function countKitContentSkips(
   skips: readonly { etapa: "email1" | "email2" | "email3"; motivo: string; entry: OnboardingEntry }[],
