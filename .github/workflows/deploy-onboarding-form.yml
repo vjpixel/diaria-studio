@@ -16,6 +16,12 @@ on:
     branches: [master]
     paths:
       - 'workers/onboarding-form/**'
+      # #10630: o Worker importa o contrato compartilhado com o executor
+      # (FORM_QUESTIONS, parseFormSubmission). Mudar só o contrato sem
+      # redeployar deixaria o Worker no ar na versão antiga — a divergência
+      # que o módulo existe pra impedir. Trava:
+      # test/deploy-onboarding-form-paths-10630.test.ts.
+      - 'scripts/lib/onboarding-form-contract.ts'
   workflow_dispatch:
 
 concurrency:

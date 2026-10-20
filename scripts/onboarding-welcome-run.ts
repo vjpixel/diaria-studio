@@ -739,6 +739,67 @@ export async function ensureD10List(opts: {
   return created.id;
 }
 
+/**
+ * #10629: nome da lista D+10 de UMA campanha. Leva data E hora (UTC, até o
+ * segundo) da rodada, não só a data: `ensureD10List` reusa lista pelo nome, e
+ * com o nome só por dia uma 2ª rodada `--send` no mesmo dia (reexecução após
+ * falha, rodada manual) punha o cohort novo na lista do cohort anterior — a
+ * campanha 2, mirando a lista inteira, reenviava o e-mail 3 ao cohort 1.
+ * Premissa: duas rodadas `--send` no mesmo segundo não acontecem (a task é
+ * diária e o store é gravado sob lock).
+ */
+export function d10ListNameFor(baseName: string | undefined, nowSec: number): string {
+  const stamp = new Date(nowSec * 1000).toISOString().slice(0, 19).replace("T", " ");
+  return `${baseName ?? "Onboarding D10 sem abertura"} ${stamp}`;
+}
+
+/**
+ * Executa o ramo `email3_campaign` do lado Brevo: lista dedicada a ESTA
+ * campanha → contatos do cohort → campanha agendada mirando só essa lista.
+ * Marca as entradas como `campaign_created`. Lança em qualquer falha HTTP
+ * (o chamador registra o streak/alarme do #10603).
+ */
+export async function scheduleEmail3Campaign(opts: {
+  apiKey: string;
+  cfg: Pick<OnboardingConfig, "d10_list_name" | "d10_folder_id" | "d10_folder_name" | "reply_to">;
+  sender: { email: string; name: string };
+  snippet: { assunto?: string | null; body: string };
+  entries: OnboardingEntry[];
+  nowSec: number;
+  isoNow: string;
+}): Promise<{ campaignId: number; listId: number }> {
+  const { apiKey, cfg, entries } = opts;
+  const listId = await ensureD10List({
+    apiKey,
+    listName: d10ListNameFor(cfg.d10_list_name, opts.nowSec),
+    folderId: cfg.d10_folder_id,
+    folderName: cfg.d10_folder_name,
+  });
+  for (const e of entries) {
+    await upsertContactInList({ apiKey, email: e.email, listId });
+  }
+  const dateTag = new Date(opts.nowSec * 1000).toISOString().slice(0, 10);
+  const campaign = (await brevoPost(apiKey, "/emailCampaigns", {
+    name: `Onboarding D10 ${dateTag}`,
+    subject: opts.snippet.assunto ?? "",
+    sender: opts.sender,
+    ...(cfg.reply_to ? { replyTo: cfg.reply_to } : {}),
+    htmlContent: opts.snippet.body,
+    recipients: { lists: [listId] },
+    // #10603: decisão do editor (20/10/2026) — e-mail 3 sai automático,
+    // sem aprovação manual por lote. Mesmo lead mínimo do transacional.
+    scheduledAt: computeMinScheduledAt(),
+  })) as { id: number };
+  for (const e of entries) {
+    e.email3_state = "campaign_created";
+    e.email3_campaign_id = campaign.id;
+    // #10623: prova de que esta campanha saiu AGENDADA (não rascunho pré-#10603).
+    e.email3_scheduled_at = opts.isoNow;
+    e.email3_decided_at = opts.isoNow;
+  }
+  return { campaignId: campaign.id, listId };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1279,43 +1340,22 @@ async function main(): Promise<number | void> {
       } else if (action.kind === "email3_campaign") {
         const snip = snippets[3];
         if (!snip) continue;
-        // #10603 (review): UMA lista por cohort/dia. A lista única reusada
-        // acumulava membros e, com o envio agora automático, cada campanha
-        // alcançaria todos os cohorts anteriores.
-        const dateTagList = new Date(nowSec * 1000).toISOString().slice(0, 10);
-        const listName = `${cfg.d10_list_name ?? "Onboarding D10 sem abertura"} ${dateTagList}`;
-        const listId = await ensureD10List({
+        // #10603 (review) + #10629: UMA lista por CAMPANHA (data+hora da
+        // rodada). Lista reusada acumula membros e a campanha nova alcançaria
+        // os cohorts anteriores — ver `d10ListNameFor`.
+        const { campaignId, listId } = await scheduleEmail3Campaign({
           apiKey: brevoKey,
-          listName,
-          folderId: cfg.d10_folder_id,
-          folderName: cfg.d10_folder_name,
-        });
-        for (const e of action.entries) {
-          await upsertContactInList({ apiKey: brevoKey, email: e.email, listId });
-        }
-        const dateTag = new Date(nowSec * 1000).toISOString().slice(0, 10);
-        const campaign = (await brevoPost(brevoKey, "/emailCampaigns", {
-          name: `Onboarding D10 ${dateTag}`,
-          subject: snip.assunto ?? "",
+          cfg,
           sender,
-          ...(cfg.reply_to ? { replyTo: cfg.reply_to } : {}),
-          htmlContent: snip.body,
-          recipients: { lists: [listId] },
-          // #10603: decisão do editor (20/10/2026) — e-mail 3 sai automático,
-          // sem aprovação manual por lote. Mesmo lead mínimo do transacional.
-          scheduledAt: computeMinScheduledAt(),
-        })) as { id: number };
-        for (const e of action.entries) {
-          e.email3_state = "campaign_created";
-          e.email3_campaign_id = campaign.id;
-          // #10623: prova de que esta campanha saiu AGENDADA (não rascunho pré-#10603).
-          e.email3_scheduled_at = isoNow;
-          e.email3_decided_at = isoNow;
-        }
+          snippet: snip,
+          entries: action.entries,
+          nowSec,
+          isoNow,
+        });
         process.stderr.write(
-          `[onboarding] email3 CAMPANHA AGENDADA id=${campaign.id} lista=${listId} cohort=${action.entries.length}\n`,
+          `[onboarding] email3 CAMPANHA AGENDADA id=${campaignId} lista=${listId} cohort=${action.entries.length}\n`,
         );
-        summary.notes.push(`campanha ${campaign.id} agendada (lista ${listId}) — envio automático (#10603)`);
+        summary.notes.push(`campanha ${campaignId} agendada (lista ${listId}) — envio automático (#10603)`);
         email3Ok = true;
       }
     } catch (e) {
