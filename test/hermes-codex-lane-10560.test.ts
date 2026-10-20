@@ -135,6 +135,13 @@ before(() => {
       // #10586 item 2: branch FORA de continuo/* + commit no checkout.
       '  partial-plain-branch) git -C "$CODEX_STUB_REPO" checkout -q -b "fix-123-$$" && echo z > "$CODEX_STUB_REPO/z-$$.txt" && git -C "$CODEX_STUB_REPO" add . && git -C "$CODEX_STUB_REPO" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m parcial; echo "timeout no meio" >&2; exit 1 ;;',
       '  partial-commit-current) echo w > "$CODEX_STUB_REPO/w-$$.txt" && git -C "$CODEX_STUB_REPO" add . && git -C "$CODEX_STUB_REPO" -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false commit -q -m parcial; echo "timeout no meio" >&2; exit 1 ;;',
+      // #10588 (P2): atividade de OUTRA sessão durante a tentativa — commit
+      // num worktree pré-existente e remoção de branch — não é trabalho do
+      // codex; a cadeia segue.
+      '  foreign-activity) G="git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false"; echo f > "$CODEX_STUB_WT/f-$$.txt" && $G -C "$CODEX_STUB_WT" add . && $G -C "$CODEX_STUB_WT" commit -q -m alheio; git -C "$CODEX_STUB_REPO" branch -D "$CODEX_STUB_DEL" >/dev/null 2>&1; echo "erro qualquer" >&2; exit 1 ;;',
+      '  partial-new-worktree) git -C "$CODEX_STUB_REPO" worktree add -q --detach "$TMPDIR/wt-novo-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
+      // #10588 item a: `ERROR:` de script no MEIO da transcrição não é erro da CLI.
+      '  transcript-error-mid) { echo "exec bash -lc npx-tsx-scripts-x"; echo "ERROR: Brevo rate limit exceeded (429) — usage limit"; echo "vou tentar de novo mais tarde"; echo "timeout no meio"; } >&2; exit 1 ;;',
       // #10584: commit em master num repo descartável (como os testes que
       // fazem `git init` em tmp) passa; no checkout-alvo continua recusado.
       "  master-scope)",
@@ -283,6 +290,50 @@ describe("#10560 — ordem da cadeia", () => {
     assert.equal(existsSync(join(runTmp, "claude-calls.log")), false);
   });
 
+  // #10588 (P2): o $CWD default é o checkout compartilhado do `300`, onde
+  // overnight/develop commitam nos próprios worktrees o tempo todo.
+  it("commit de outra sessão num worktree pré-existente + branch removida: NÃO é trabalho parcial, cadeia segue", () => {
+    const r2 = join(tmp, `repo-foreign-${Date.now()}`);
+    initRepo(r2);
+    const wt = join(tmp, `wt-foreign-${Date.now()}`);
+    assert.equal(sh("git", ["worktree", "add", "-q", "-b", "dev-outra-sessao", wt], r2).status, 0);
+    assert.equal(sh("git", ["branch", "branch-que-some"], r2).status, 0);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({
+        CLAUDE_DELEGATE_CODEX_LANE: "1",
+        CODEX_STUB_MODE: "foreign-activity",
+        CODEX_STUB_REPO: r2,
+        CODEX_STUB_WT: wt,
+        CODEX_STUB_DEL: "branch-que-some",
+      }),
+      [],
+      r2,
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /trabalho parcial/);
+    assert.match(r.stdout, /resposta fake claude/);
+    // A atividade alheia aconteceu de fato (senão o teste não discrimina).
+    assert.match(sh("git", ["log", "-1", "--format=%s", "dev-outra-sessao"], r2).stdout, /alheio/);
+    assert.notEqual(sh("git", ["rev-parse", "-q", "--verify", "refs/heads/branch-que-some"], r2).status, 0);
+    const order = attemptOrder(r.stderr);
+    assert.equal(order[0], "codex:gpt-6.1-sol");
+    assert.ok(FIRST_NON_CODEX.has(order[1]), `2º elo inesperado: ${order}`);
+  });
+
+  it("falha do codex DEPOIS de abrir worktree NOVO: aborta com exit 95", () => {
+    const r2 = join(tmp, `repo-newwt-${Date.now()}`);
+    initRepo(r2);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "partial-new-worktree", CODEX_STUB_REPO: r2 }),
+      [],
+      r2,
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /trabalho parcial — .*wt \S*wt-novo-/);
+  });
+
   it("falha do codex DEPOIS de commitar na branch atual (sem branch nova): aborta com exit 95", () => {
     const r2 = join(tmp, `repo-cur-${Date.now()}`);
     initRepo(r2);
@@ -315,6 +366,36 @@ describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () 
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT\/QUOTA/);
     assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")));
+  });
+
+  // #10588 item a: scripts do repo imprimem `ERROR: ...` em coluna 0.
+  it("'ERROR: ... rate limit' de script no MEIO da transcrição: sem marcador de cota", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "transcript-error-mid" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), false, "ERROR: do meio marcou a cota");
+    assert.doesNotMatch(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT/);
+  });
+
+  it("codex_lane_cli_error_lines: só o bloco final de `ERROR:` em coluna 0", () => {
+    const f = join(runTmp, "stderr-mid.txt");
+    const run = (lines: string[]) => {
+      writeFileSync(f, lines.join("\n"));
+      const res = spawnSync(
+        "bash",
+        ["-c", `source '${join(ROOT, "hermes/scripts/lib/codex-lane.sh")}'; codex_lane_cli_error_lines '${f}'`],
+        { encoding: "utf8" },
+      );
+      assert.equal(res.status, 0, res.stderr);
+      return res.stdout.trimEnd();
+    };
+    assert.equal(
+      run(["thinking", "ERROR: Brevo rate limit exceeded", "seguindo", "ERROR: stream disconnected", ""]),
+      "ERROR: stream disconnected",
+    );
+    assert.equal(run(["thinking", "ERROR: Brevo rate limit exceeded", "seguindo com outra coisa"]), "");
+    assert.equal(run(["thinking", "  ERROR: indentado (saída de comando)"]), "");
+    assert.equal(run([]), "");
   });
 
   it("codex_lane_cli_error_lines: ERROR: (com/sem timestamp) + `Error:` só na última linha", () => {
@@ -385,6 +466,18 @@ describe("#10584 — guard de master só no checkout-alvo", () => {
     const u = sh("git", ["update-ref", "refs/heads/master", head], wt, env);
     assert.notEqual(u.status, 0);
     assert.match(u.stderr, /codex-lane #10560\] recusado/);
+  });
+
+  // #10588 item c: alvo inválido deixava in_scope=0 (fail-open).
+  it("hook com CODEX_LANE_GUARDED_COMMON_DIR inexistente: commit em master continua recusado", () => {
+    const target = join(tmp, `repo-badguard-${Date.now()}`);
+    initRepo(target);
+    const env = { ...hookEnv(), CODEX_LANE_GUARDED_COMMON_DIR: join(tmp, "nao-existe", ".git") };
+    writeFileSync(join(target, "x.txt"), "1\n");
+    assert.equal(sh("git", ["add", "x.txt"], target, env).status, 0);
+    const c = sh("git", ["commit", "-q", "-m", "x"], target, env);
+    assert.notEqual(c.status, 0);
+    assert.match(c.stderr, /codex-lane #10560\] recusado/);
   });
 });
 
@@ -559,7 +652,7 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
         `echo "$*" >> '${ghLog}'`,
         'if [ "$1 $2" = "pr create" ]; then echo "https://github.com/o/r/pull/42"; fi',
         // #10585: alias já gravado na config do gh real.
-        'if [ "$1 $2" = "alias list" ]; then echo "m: pr merge"; echo "co: pr checkout"; fi',
+        'if [ "$1 $2" = "alias list" ]; then echo "m: pr merge"; echo "co: pr checkout"; echo "m+: pr merge"; fi',
         `case " $* " in *" --input - "*) cat > '${ghStdinLog}' ;; esac`,
         "exit 0",
         "",
@@ -701,6 +794,16 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     assert.equal(res.status, 3, res.stderr);
     assert.match(res.stderr, /alias do gh 'm'/);
     assert.doesNotMatch(realCalls(), /^m 5$/m);
+  });
+
+  // #10588 item b: o escape por sed deixava `+` cru — alias `m+` não casava.
+  it("alias com metacaractere ERE no nome (m+) é recusado; nome parecido que não é alias passa", () => {
+    const res = gh(["m+", "5"]);
+    assert.equal(res.status, 3, res.stderr);
+    assert.match(res.stderr, /alias do gh 'm\+'/);
+    assert.doesNotMatch(realCalls(), /^m\+ 5$/m);
+    const ok = gh(["mm+", "5"]);
+    assert.equal(ok.status, 0, ok.stderr);
   });
 
   it("comando fora da lista embutida que não é alias passa direto", () => {
