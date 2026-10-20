@@ -226,6 +226,94 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
   });
 });
 
+describe("#10633 conta Kit gravada no lote: 404 na releitura cancela quando a conta confere", () => {
+  async function dayOneWithAccount(storePath: string, accountId: () => Promise<string>): Promise<void> {
+    const calls: string[] = [];
+    const r = await runFollowupRound(
+      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 30 * DAY) * 1000 },
+      deps({ calls, listActiveSubscribers: apoioSubs, runLot: failingRunLot(calls), getAccountId: accountId }),
+    );
+    assert.equal(r.run.lots_failed, 1);
+  }
+  const notFound = async () => {
+    throw new KitApiError("/broadcasts/9001", 404, "Not Found");
+  };
+
+  it("o envio real grava kit_account_id no lote (persistido no store)", async () => {
+    const storePath = tempStore();
+    await dayOneWithAccount(storePath, async () => "acc-1");
+    const lot = Object.values(readStore(storePath).store.followup!.lots)[0];
+    assert.equal(lot.kit_account_id, "acc-1");
+  });
+
+  it("404 + mesma conta: lote cancelado, rodada não conta falha e a pessoa volta ao plano", async () => {
+    const storePath = tempStore();
+    await dayOneWithAccount(storePath, async () => "acc-1");
+    const calls: string[] = [];
+    const r2 = await runFollowupRound(
+      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      deps({
+        calls,
+        listActiveSubscribers: apoioSubs,
+        getBroadcast: notFound,
+        async deleteBroadcast() {
+          calls.push("deleteBroadcast");
+        },
+        async getAccountId() {
+          return "acc-1";
+        },
+      }),
+    );
+    assert.equal(r2.run.lots_unresolved, 0);
+    assert.equal(isFailedFollowupRun(r2.run), false, "alarme não toca de novo");
+    assert.deepEqual(calls, ["lot:apoio30"], "a pessoa entra num lote novo");
+    const lots = Object.values(readStore(storePath).store.followup!.lots);
+    assert.deepEqual(lots.map((l) => l.status).sort(), ["cancelled", "scheduled"]);
+  });
+
+  it("404 + conta diferente: NÃO cancela (credencial de outra conta dá 404 em tudo)", async () => {
+    const storePath = tempStore();
+    await dayOneWithAccount(storePath, async () => "acc-1");
+    const calls: string[] = [];
+    const r2 = await runFollowupRound(
+      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      deps({
+        calls,
+        listActiveSubscribers: apoioSubs,
+        getBroadcast: notFound,
+        async getAccountId() {
+          return "acc-2";
+        },
+      }),
+    );
+    assert.equal(calls.filter((c) => c.startsWith("lot:")).length, 0);
+    assert.equal(r2.run.lots_unresolved, 1);
+    assert.equal(Object.values(readStore(storePath).store.followup!.lots)[0].status, "created");
+  });
+
+  it("GET /account falhando na criação não trava o envio: lote sai sem id e 404 depois não cancela", async () => {
+    const storePath = tempStore();
+    await dayOneWithAccount(storePath, async () => {
+      throw new Error("HTTP 503");
+    });
+    const lot = Object.values(readStore(storePath).store.followup!.lots)[0];
+    assert.equal(lot.kit_account_id, undefined);
+    const calls: string[] = [];
+    const r2 = await runFollowupRound(
+      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      deps({
+        calls,
+        listActiveSubscribers: apoioSubs,
+        getBroadcast: notFound,
+        async getAccountId() {
+          return "acc-1";
+        },
+      }),
+    );
+    assert.equal(r2.run.lots_unresolved, 1);
+  });
+});
+
 describe("#10628 form_lembrete: mesma barreira (a dedup dele dependia só de people.sends)", () => {
   const entry: OnboardingEntry = {
     subscription_id: "7", email: "f@x.com", status_detectado: "active", created_at: T0, detected_at: "2026-01-01T00:00:00Z",

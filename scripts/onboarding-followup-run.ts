@@ -238,6 +238,13 @@ export interface FollowupRoundDeps {
    */
   getBroadcast?(id: number): Promise<{ status?: string | null; send_at?: string | null }>;
   deleteBroadcast?(id: number): Promise<void>;
+  /**
+   * #10633 (follow-up do #10628): id da conta Kit da credencial em uso
+   * (`GET /account`). Gravado em `lot.kit_account_id` antes de criar o lote e
+   * usado na releitura — 404 só cancela o lote quando a conta atual é a dona
+   * (`verifyLotAccount`). Ausente = lote nasce sem id e 404 nunca cancela.
+   */
+  getAccountId?(): Promise<string>;
 }
 
 export interface FollowupLotReconcileRow {
@@ -270,7 +277,7 @@ export interface FollowupLotReconcileRow {
  */
 export async function reconcileFollowupLots(
   opts: { storePath: string; block: FollowupBlock; persist: boolean; nowMs: number },
-  deps: Pick<FollowupRoundDeps, "getBroadcast" | "deleteBroadcast">,
+  deps: Pick<FollowupRoundDeps, "getBroadcast" | "deleteBroadcast" | "getAccountId">,
 ): Promise<{ results: FollowupLotReconcileRow[]; unresolved: number }> {
   const { storePath, block, persist, nowMs } = opts;
   const nowIso = new Date(nowMs).toISOString();
@@ -294,6 +301,9 @@ export async function reconcileFollowupLots(
     const outcome = await confirmOrCleanUpScheduledLot(updated, {
       getBroadcast: (id) => getB(id),
       deleteBroadcast: (id) => delB(id),
+      // #10633: sem isto um 404 (broadcast apagado à mão na UI) nunca
+      // cancelava o lote e o alarme tocava toda rodada.
+      getAccountId: deps.getAccountId ? () => deps.getAccountId!() : undefined,
     });
     updated.last_reconciled_at = nowIso;
     block.lots[updated.lot_id] = updated;
@@ -480,6 +490,16 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     }
     const lot = claim.lot!;
     const snip = snippets[kind]!;
+    // #10633: grava a conta Kit dona ANTES de criar o broadcast (mesma regra
+    // do `beforeCreate` da escada, #9487). Falha não trava o envio: o lote
+    // nasce sem id e um 404 numa releitura futura só não cancela (lado seguro).
+    if (deps.getAccountId) {
+      try {
+        lot.kit_account_id = await deps.getAccountId();
+      } catch (e) {
+        process.stderr.write(`${LOG} GET /account falhou ao criar o lote ${lot.lot_id} — lote sem id de conta (404 numa releitura futura não será tratado como deleção): ${redactEmails((e as Error).message)}\n`);
+      }
+    }
     try {
       await deps.runLot(lot, {
         subject: snip.assunto ?? "",
@@ -535,6 +555,8 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDeps {
+  // #10633: `GET /account` memoizado por rodada (só o sucesso; ver `memoizeAccountId`).
+  let accountIdMemo: (() => Promise<string>) | null = null;
   return {
     async listActiveSubscribers() {
       const subs = await listAllKitSubscribers(kitCfg, { status: "active" });
@@ -577,6 +599,13 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     },
     getBroadcast: (id) => getBroadcast(id, kitCfg),
     deleteBroadcast: (id) => deleteBroadcast(id, kitCfg),
+    async getAccountId() {
+      if (!accountIdMemo) {
+        const { memoizeAccountId, fetchKitAccountId } = await import("./onboarding-kit-transport-run.ts");
+        accountIdMemo = memoizeAccountId(() => fetchKitAccountId(kitCfg));
+      }
+      return accountIdMemo();
+    },
   };
 }
 
