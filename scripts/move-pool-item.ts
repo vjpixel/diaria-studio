@@ -79,7 +79,7 @@ export function normalizeUrl(url: string): string {
   return url.trim().replace(/#.*$/, "").replace(/\/+$/, "");
 }
 
-function sameUrl(a: unknown, url: string): boolean {
+export function sameUrl(a: unknown, url: string): boolean {
   return typeof a === "string" && normalizeUrl(a) === normalizeUrl(url);
 }
 
@@ -172,7 +172,7 @@ const SECTION_HEADER_RES = SECTIONS.map((s) => ({
 
 const ITEM_URL_RE = /\]\((https?:\/\/[^\s)]*(?:\([^\s)]*\)[^\s)]*)*)\)/;
 
-interface SectionRange {
+export interface SectionRange {
   bucket: SectionBucket;
   label: string;
   legacy: boolean;
@@ -229,6 +229,75 @@ export interface MdMoveResult {
   intro_count: { before: number; after: number } | null;
 }
 
+/** Item do pool localizado em `02-reviewed.md` (linhas já normalizadas pra `\n`). */
+export interface LocatedPoolItem {
+  sec: SectionRange;
+  block: { start: number; end: number };
+}
+
+/**
+ * Pure: acha o bloco do item com `url` numa seção do pool. Lança se não acha
+ * (destaques ficam fora: não são seção do pool). Compartilhado com
+ * `remove-pool-item.ts` (#10598).
+ */
+export function locatePoolItem(lines: string[], url: string): LocatedPoolItem {
+  for (const sec of findSections(lines)) {
+    const b = itemBlocks(lines, sec).find((x) => sameUrl(x.url, url));
+    if (b) return { sec, block: b };
+  }
+  throw new Error(
+    `URL não encontrada em nenhuma seção do pool (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS) de 02-reviewed.md: ${url}`,
+  );
+}
+
+/**
+ * Pure (muta `lines`): tira o bloco do item (+ 1 linha em branco adjacente,
+ * pra não acumular) e, se a seção de origem ficar sem itens, remove a seção
+ * inteira (header até o `---`, + branco seguinte). Retorna se a seção sumiu.
+ */
+export function removeBlockFromSection(lines: string[], found: LocatedPoolItem): boolean {
+  const { start, end } = found.block;
+  const removeFrom = start > 0 && lines[start - 1].trim() === "" ? start - 1 : start;
+  lines.splice(removeFrom, end - removeFrom);
+
+  const src = findSections(lines).find((s) => s.header === found.sec.header);
+  if (src && itemBlocks(lines, src).length === 0) {
+    let cut = src.end;
+    if (cut < lines.length && lines[cut].trim() === "---") {
+      cut++;
+      if (cut < lines.length && lines[cut].trim() === "") cut++;
+    }
+    lines.splice(src.header, cut - src.header);
+    return true;
+  }
+  return false;
+}
+
+/** Pure (muta `lines`): singular/plural dos headers das seções `buckets` pela contagem atual. */
+export function fixSectionHeaderPlurals(lines: string[], buckets: readonly SectionBucket[]): void {
+  for (const sec of findSections(lines)) {
+    if (sec.legacy || !buckets.includes(sec.bucket)) continue;
+    const count = itemBlocks(lines, sec).length;
+    if (count === 0) continue;
+    const wanted = singularizeSectionName(sec.label, count);
+    const line = lines[sec.header];
+    const inner = line.trim().replace(/^\*\*/, "").replace(/\*\*$/, "");
+    const bare = stripEmojiPrefix(inner);
+    if (bare !== wanted) lines[sec.header] = line.replace(bare, wanted);
+  }
+}
+
+/** Pure: recalcula a intro "selecionei os N" se a contagem real divergiu. */
+export function reconcileIntroCount(md: string): { md: string; intro_count: { before: number; after: number } | null } {
+  const intro = lintIntroCount(md);
+  if (!intro.ok && intro.claimed !== undefined) {
+    const actual = countSelectedItems(md).total;
+    const r = replaceIntroClaimedCount(md, actual);
+    if (r.changed) return { md: r.md, intro_count: { before: intro.claimed, after: actual } };
+  }
+  return { md, intro_count: null };
+}
+
 /**
  * Pure: move o bloco do item com `url` pra seção `to`. Lança (sem efeito) se
  * o item não está numa seção do pool, já está em `to`, a seção `to` não existe,
@@ -241,25 +310,12 @@ export function moveItemInReviewedMd(
   opts: { tempo?: number } = {},
 ): MdMoveResult {
   const eol = md.includes("\r\n") ? "\r\n" : "\n";
-  let lines = md.replace(/\r\n/g, "\n").split("\n");
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
 
-  let sections = findSections(lines);
-  let found: { sec: SectionRange; block: { start: number; end: number } } | null = null;
-  for (const sec of sections) {
-    const b = itemBlocks(lines, sec).find((x) => sameUrl(x.url, url));
-    if (b) {
-      found = { sec, block: b };
-      break;
-    }
-  }
-  if (!found) {
-    throw new Error(
-      `URL não encontrada em nenhuma seção do pool (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS) de 02-reviewed.md: ${url}`,
-    );
-  }
+  const found = locatePoolItem(lines, url);
   const from = found.sec.bucket;
   if (from === to) throw new Error(`o item já está na seção de destino (${found.sec.label}): ${url}`);
-  if (!sections.some((s) => s.bucket === to)) {
+  if (!findSections(lines).some((s) => s.bucket === to)) {
     const label = SECTIONS.find((s) => s.bucket === to && !s.legacy)?.label ?? to;
     throw new Error(
       `a seção ${label} não existe em 02-reviewed.md — o script não cria seções (posição é editorial). ` +
@@ -267,7 +323,7 @@ export function moveItemInReviewedMd(
     );
   }
 
-  let block = lines.slice(found.block.start, found.block.end);
+  const block = lines.slice(found.block.start, found.block.end);
   let tempoAdded: string | null = null;
   let tempoRemoved = false;
   if (to === "use_melhor" && !USE_MELHOR_TEMPO_RE.test(block.join(" "))) {
@@ -289,58 +345,20 @@ export function moveItemInReviewedMd(
     }
   }
 
-  // 1. Remove da origem (+ 1 linha em branco adjacente, pra não acumular).
-  const { start, end } = found.block;
-  const removeFrom = start > 0 && lines[start - 1].trim() === "" ? start - 1 : start;
-  lines.splice(removeFrom, end - removeFrom);
-
-  // 1b. Seção de origem vazia → some (header até o `---`, + branco seguinte).
-  let sourceRemoved = false;
-  sections = findSections(lines);
-  const src = sections.find((s) => s.header === found!.sec.header);
-  if (src && itemBlocks(lines, src).length === 0) {
-    let cut = src.end;
-    if (cut < lines.length && lines[cut].trim() === "---") {
-      cut++;
-      if (cut < lines.length && lines[cut].trim() === "") cut++;
-    }
-    lines.splice(src.header, cut - src.header);
-    sourceRemoved = true;
-  }
+  // 1. Remove da origem; seção de origem vazia some.
+  const sourceRemoved = removeBlockFromSection(lines, found);
 
   // 2. Insere no fim da seção de destino.
-  sections = findSections(lines);
-  const dst = sections.find((s) => s.bucket === to)!;
+  const dst = findSections(lines).find((s) => s.bucket === to)!;
   let lastNonBlank = dst.end - 1;
   while (lastNonBlank > dst.header && lines[lastNonBlank].trim() === "") lastNonBlank--;
   lines.splice(lastNonBlank + 1, 0, "", ...block);
 
   // 3. Singular/plural dos headers afetados.
-  sections = findSections(lines);
-  for (const sec of sections) {
-    if (sec.legacy || (sec.bucket !== to && sec.bucket !== from)) continue;
-    const count = itemBlocks(lines, sec).length;
-    if (count === 0) continue;
-    const wanted = singularizeSectionName(sec.label, count);
-    const line = lines[sec.header];
-    const inner = line.trim().replace(/^\*\*/, "").replace(/\*\*$/, "");
-    const bare = stripEmojiPrefix(inner);
-    if (bare !== wanted) lines[sec.header] = line.replace(bare, wanted);
-  }
-
-  let out = lines.join("\n");
+  fixSectionHeaderPlurals(lines, [to, from]);
 
   // 4. Intro "selecionei os N".
-  let introCount: MdMoveResult["intro_count"] = null;
-  const intro = lintIntroCount(out);
-  if (!intro.ok && intro.claimed !== undefined) {
-    const actual = countSelectedItems(out).total;
-    const r = replaceIntroClaimedCount(out, actual);
-    if (r.changed) {
-      out = r.md;
-      introCount = { before: intro.claimed, after: actual };
-    }
-  }
+  const { md: out, intro_count: introCount } = reconcileIntroCount(lines.join("\n"));
 
   return {
     md: eol === "\r\n" ? out.replace(/\n/g, "\r\n") : out,
