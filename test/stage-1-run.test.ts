@@ -29,6 +29,8 @@ import {
   computeMinSectionWarnings,
   assembleFinalCategorized,
   parseStepJson,
+  formatHighlightSourceNotes,
+  formatOfficialSwapNotes,
   Stage1Abort,
   type Stage1RunDeps,
   type ExecFn,
@@ -1241,6 +1243,56 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  // Regressão #10137 (resíduo): review-highlight-source/-official-swap rodavam
+  // como softStep mas o JSON era descartado — `flagged[]`/`suggestions[]`
+  // (destaque de imprensa com a URL oficial já no pool, caso 261007) nunca
+  // chegavam ao relatório nem ao gate.
+  it("§1v-quater/quinquies: flagged[] e suggestions[] viram notas do relatório (#10137)", async () => {
+    return withTmpRoot("stage-1-run-p4-official-swap-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec } = makeFakeExec(
+        happyHandlers({
+          "review-highlight-source.ts": () =>
+            ok(JSON.stringify({ total: 3, flagged: [{ url: "https://venturebeat.com/haiku", title: "Claude Haiku 5.5 launches", suggested_domain: "anthropic.com" }] })),
+          // Pretty-print multi-linha, como o script real imprime.
+          "review-highlight-official-swap.ts": () =>
+            ok(
+              JSON.stringify(
+                {
+                  total: 3,
+                  suggestions: [
+                    {
+                      highlight_url: "https://canaltech.com.br/chatgpt-carimbar",
+                      highlight_title: "ChatGPT começa a carimbar textos",
+                      official_url: "https://openai.com/index/eu-text-provenance",
+                      match_type: "entity",
+                      score: 0.5,
+                      source: "pool",
+                    },
+                  ],
+                },
+                null,
+                2,
+              ),
+            ),
+        }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(
+          result.notes.some((n) => n.includes("https://canaltech.com.br/chatgpt-carimbar") && n.includes("https://openai.com/index/eu-text-provenance")),
+          "sugestão de troca pela URL oficial do pool tem que chegar ao relatório",
+        );
+        assert.ok(
+          result.notes.some((n) => n.includes("https://venturebeat.com/haiku") && n.includes("anthropic.com")),
+          "destaque de lançamento com URL de imprensa tem que chegar ao relatório",
+        );
+      });
+    });
+  });
+
   it("§1u-sexies falhando NÃO bloqueia o Stage 1 (fail-soft, #10137)", async () => {
     return withTmpRoot("stage-1-run-p4-primary-source-soft-", (root, editionDir) => {
       seedScored(root, editionDir);
@@ -1469,5 +1521,31 @@ describe("runStage1 — erro inesperado", () => {
     const result = await runStage1(["--phase", "pre-research", "--edition", "260423"], deps);
     assert.equal(result.code, 1);
     assert.ok(result.notes.some((n) => n.includes("boom inesperado")));
+  });
+});
+
+describe("formatOfficialSwapNotes / formatHighlightSourceNotes (#10137)", () => {
+  it("sem sugestões ou shape inválido → nenhuma nota", () => {
+    assert.deepEqual(formatOfficialSwapNotes(undefined), []);
+    assert.deepEqual(formatOfficialSwapNotes({ suggestions: [] }), []);
+    assert.deepEqual(formatOfficialSwapNotes({ suggestions: "x" }), []);
+    assert.deepEqual(formatOfficialSwapNotes({ suggestions: [{ highlight_url: "https://a.com" }] }), []);
+    assert.deepEqual(formatHighlightSourceNotes(undefined), []);
+    assert.deepEqual(formatHighlightSourceNotes({ flagged: [null, { title: "sem url" }] }), []);
+  });
+
+  it("uma nota por item, com as duas URLs", () => {
+    const notes = formatOfficialSwapNotes({
+      suggestions: [
+        { highlight_url: "https://a.com/x", official_url: "https://openai.com/y", match_type: "jaccard" },
+        { highlight_url: "https://b.com/x", official_url: "https://google.com/y" },
+      ],
+    });
+    assert.equal(notes.length, 2);
+    assert.ok(notes[0].includes("https://a.com/x → https://openai.com/y [jaccard]"));
+    assert.ok(!notes[1].includes("["));
+    const src = formatHighlightSourceNotes({ flagged: [{ url: "https://c.com/z" }] });
+    assert.equal(src.length, 1);
+    assert.ok(src[0].includes("https://c.com/z") && !src[0].includes("fonte primária provável"));
   });
 });
