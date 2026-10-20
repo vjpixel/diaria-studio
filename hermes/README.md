@@ -294,13 +294,22 @@ interceptar.
   seguintes, mas não a recriar o checkout do zero sem rodar o passo de
   novo).
 
-## Elo `codex exec` na cadeia de implementação (#10560) — DESLIGADO por padrão
+## Elo `codex exec` na cadeia de implementação (#10560)
 
 Decisão do editor (briefing overnight 261019e): Sol 6.1 (`gpt-6.1-sol`,
-`model_reasoning_effort="low"`) pelo plano OpenAI da Codex CLI, como elo
-ANTES dos `:free` em `claude-delegate.sh`, com fallback na cadeia atual.
-Liga com `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente do call site (o cron do
-contínuo não exporta isso hoje). Os hooks de `.claude/hooks/` não rodam
+`model_reasoning_effort="low"`) pelo plano OpenAI da Codex CLI. Posição
+revista pelo editor em 20/10/2026 (/diaria-desbloqueia): os `:free`
+primeiro, depois o codex, e a assinatura por último —
+`:free` → `codex:gpt-6.1-sol` → `sonnet`. A 1ª versão (PR #10583) punha o
+elo antes dos `:free`. Sem a chave OpenRouter, ou com a cota free marcada
+como exaurida, a cadeia fica `codex` → `sonnet`.
+
+Liga com `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente de quem chama o
+wrapper. O call site do contínuo é o passo 2 de
+`hermes/skills/hermes-diaria-continuo/SKILL.md` (versionado aqui e lido
+pelo cron do Hermes via symlink), que passa a var na própria linha da
+chamada. Nada precisa ser exportado no job do cron (`~/.hermes/cron/jobs.json`).
+Os hooks de `.claude/hooks/` não rodam
 dentro do `codex exec`, então o elo só arma com os substitutos no lugar
 (`hermes/scripts/lib/codex-lane.sh`, preflight fail-closed — se algo falta,
 o elo é pulado e a cadeia segue como antes):
@@ -315,8 +324,12 @@ o elo é pulado e a cadeia segue como antes):
   recusa `pr create` fora de `continuo/*` e roda o guard de PII; o review
   segue sendo o `continuo-pr-review.sh`.
 
-Antes de ligar no `300`: medir o consumo da cota do plano (compartilhada com
-o orquestrador `gpt-6-luna`) e validar o `codex exec` real no checkout
-(sandbox `danger-full-access` por padrão, `CODEX_LANE_SANDBOX` troca).
+Validado no `300` em 20/10/2026: `codex exec` real com o modelo e o
+esforço pinados, exit 0 (sandbox `danger-full-access` por padrão,
+`CODEX_LANE_SANDBOX` troca). Pendente: o stderr REAL de cota esgotada, que
+só dá pra capturar quando a cota acabar. Os testes usam o formato
+`ERROR: ... usage limit` de um stub; se o formato real for outro, o
+marcador de cota não grava e o elo é tentado (e falha) a cada invocação
+até o reset, sempre caindo no `sonnet` em seguida.
 Esgotamento de cota grava `${TMPDIR}/codex-lane-quota-exhausted-until` e o
 elo fica pulado por 6h (`CODEX_LANE_QUOTA_BACKOFF_S`).
