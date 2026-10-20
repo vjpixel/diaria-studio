@@ -133,7 +133,13 @@ function realisticStore() {
       email3_kit_lot_id: e3Lot.lot_id,
       email3_decided_at: iso(3),
     }),
-    "2003": entry("2003", { created_at: sec(1), detected_at: iso(1) }),
+    // #10610 item 4: `inactive` (aguardando confirmação → candidato a refresh).
+    // Antes era `active`, que NÃO é refrescado — e só não virava lote de
+    // e-mail 1 porque toda entrada nascida no Kit era excluída como
+    // `sem_kit_subscriber_id` (o bug). Com o id resolvido, uma entrada ativa
+    // iria pro lote e o 401 do mock viraria `lots_failed`, fora do que este
+    // teste mede (refresh/releitura falhando).
+    "2003": entry("2003", { created_at: sec(1), detected_at: iso(1), status_detectado: "inactive" }),
     "pilot:editor@example.com": entry("pilot:editor@example.com", { email: "editor@example.com", email1_sent_at: iso(1), email1_transport: "kit", email1_kit_lot_id: pilotLots[0]!.lot_id }),
   };
   const lots: Record<string, OnboardingKitLot> = {};

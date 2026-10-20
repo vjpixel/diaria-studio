@@ -369,7 +369,20 @@ async function fetchSubscriptionsSinceKit(config: KitConfig, gteSec: number): Pr
  * garantir (se o plano Free devolve exatamente este shape, sem campo a
  * menos) foi verificada e bate.
  */
-export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Promise<OpenStats | null> {
+export async function fetchSubscriberStatsKit(
+  id: number,
+  config: KitConfig,
+  /** #10620: preenchido com `true` quando o `null` veio de erro de CONSULTA
+   *  (`isKitTransportError`: rede, 429, 5xx, auth) — não de shape/ausência.
+   *  Sem isto, um 429 na leitura de stats era indistinguível de "assinante
+   *  sem dado" e, passada a janela de tolerância, virava `skipped_sem_dados`
+   *  terminal. */
+  diag?: { transportError: boolean; transient?: boolean },
+): Promise<OpenStats | null> {
+  if (diag) {
+    diag.transportError = false;
+    diag.transient = false;
+  }
   try {
     const data = await kitFetch<Record<string, unknown> | undefined>(`/subscribers/${id}/stats`, { config });
     if (!data) return null;
@@ -378,7 +391,11 @@ export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Pr
     const opens = stats["opened"] ?? null;
     if (typeof opens !== "number") return null;
     return { total_unique_opened: opens, total_clicked: null };
-  } catch {
+  } catch (err) {
+    if (diag) {
+      diag.transportError = isKitTransportError(err);
+      diag.transient = isKitTransientError(err);
+    }
     return null;
   }
 }
@@ -397,6 +414,18 @@ export async function fetchSubscriberStatsKit(id: number, config: KitConfig): Pr
 export function isKitTransportError(err: unknown): boolean {
   if (err instanceof KitApiError) return err.status !== 404 && err.status !== 422;
   if (err instanceof Error && err.message.startsWith("getKitSubscriberByEmail(")) return false;
+  return true;
+}
+
+/**
+ * #10616: subconjunto de `isKitTransportError` que vale RETENTAR mais tarde na
+ * mesma rodada (`refreshKitCandidates`): 429, 5xx e erro de rede. 401/403/400
+ * não passam com o tempo (chave revogada, request malformado) — retentá-los só
+ * alongaria a rodada.
+ */
+export function isKitTransientError(err: unknown): boolean {
+  if (!isKitTransportError(err)) return false;
+  if (err instanceof KitApiError) return err.status === 429 || err.status >= 500;
   return true;
 }
 
@@ -433,16 +462,35 @@ export async function fetchSubscriptionByIdKit(
   subscriptionId: string,
   emailFallback?: string,
   /** #7922: preenchido quando o resultado é `null` POR erro de transporte
-   *  (`isKitTransportError`) — `null` por "não encontrado" deixa `false`. */
-  diag?: { transportError: boolean },
+   *  (`isKitTransportError`) — `null` por "não encontrado" deixa `false`.
+   *  #10620: `statsTransportError` = o status veio, mas a leitura de stats
+   *  falhou por erro de consulta (o `stats: null` devolvido NÃO é falta de
+   *  dado do assinante). #10616: `transient` = o erro que preencheu um dos
+   *  dois campos é retentável mais tarde na rodada (`isKitTransientError`). */
+  diag?: { transportError: boolean; statsTransportError?: boolean; transient?: boolean },
 ): Promise<{ status: string; stats: OpenStats | null; resolvedKitId?: number } | null> {
-  if (diag) diag.transportError = false;
+  if (diag) {
+    diag.transportError = false;
+    diag.statsTransportError = false;
+    diag.transient = false;
+  }
+  const statsDiag: { transportError: boolean; transient?: boolean } = { transportError: false };
+  const copyStatsDiag = () => {
+    if (!diag) return;
+    diag.statsTransportError = statsDiag.transportError;
+    diag.transient = statsDiag.transportError && statsDiag.transient === true;
+  };
   const id = Number(subscriptionId);
   if (Number.isFinite(id)) {
     try {
       const subscriber = await getKitSubscriberById(id, config);
-      const stats = await fetchSubscriberStatsKit(id, config);
-      return { status: subscriber.state, stats };
+      const stats = await fetchSubscriberStatsKit(id, config, statsDiag);
+      copyStatsDiag();
+      // #10610 item 4: `resolvedKitId` também no caminho numérico. Entrada
+      // nascida no Kit guarda o id em `subscription_id` e nunca tinha
+      // `kit_subscriber_id` gravado — o executor Kit monta o candidato com
+      // `kit_subscriber_id`, e sem isto a excluía como `sem_kit_subscriber_id`.
+      return { status: subscriber.state, stats, resolvedKitId: id };
     } catch (err) {
       // NÃO devolve `null` aqui quando há e-mail disponível (achado do review
       // da PR #7693, confiança 82): o id numérico pode ser um
@@ -454,7 +502,10 @@ export async function fetchSubscriptionByIdKit(
       // gatilho mais raro. O e-mail é a identidade estável da entrada; se o
       // id falhou, vale tentar por ele antes de desistir.
       if (!emailFallback) {
-        if (diag) diag.transportError = isKitTransportError(err);
+        if (diag) {
+          diag.transportError = isKitTransportError(err);
+          diag.transient = isKitTransientError(err);
+        }
         return null;
       }
     }
@@ -468,7 +519,8 @@ export async function fetchSubscriptionByIdKit(
     // Ausência real na busca por e-mail: o Kit respondeu (alcançável), então
     // não é erro de transporte mesmo que o id numérico antes tenha falhado.
     if (!subscriber) return null;
-    const stats = await fetchSubscriberStatsKit(subscriber.id, config);
+    const stats = await fetchSubscriberStatsKit(subscriber.id, config, statsDiag);
+    copyStatsDiag();
     return { status: subscriber.state, stats, resolvedKitId: subscriber.id };
   } catch (err) {
     // `getKitSubscriberByEmail` LANÇA quando a API devolve assinantes mas
@@ -478,7 +530,10 @@ export async function fetchSubscriptionByIdKit(
     process.stderr.write(
       `[onboarding] resolução por e-mail falhou para ${emailFallback}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
-    if (diag) diag.transportError = isKitTransportError(err);
+    if (diag) {
+      diag.transportError = isKitTransportError(err);
+      diag.transient = isKitTransientError(err);
+    }
     return null;
   }
 }
@@ -1092,7 +1147,12 @@ async function main(): Promise<number | void> {
    *  decisão do e-mail 3 depende de stats de abertura que o store não guarda.
    *  Contadas à parte pra virarem aviso explícito no sumário. */
   const refreshFalhouEmail3: string[] = [];
+  /** #10620: entradas cujos stats não foram LIDOS nesta rodada (refresh
+   *  falho, ou erro de consulta só na leitura de stats) — `buildRunPlan`
+   *  nunca as marca `skipped_sem_dados`; ficam pendentes pra próxima rodada. */
+  const statsUnavailableIds = new Set<string>();
   for (const e of candidates) {
+    const kitDiag = { transportError: false, statsTransportError: false };
     const fresh =
       backend === "kit"
         ? await fetchSubscriptionByIdKit(
@@ -1101,8 +1161,14 @@ async function main(): Promise<number | void> {
             // caminho numérico direto, sem repetir o lookup por e-mail.
             e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id,
             e.email,
+            kitDiag,
           )
         : await fetchSubscriptionById(beeCfg!.config.publicationId, beeCfg!.config.apiKey, e.subscription_id);
+    // Kit: só erro de CONSULTA (404/"saiu do Kit" é ausência real e pode virar
+    // terminal). Beehiiv (legado, sem diagnóstico): qualquer `null`.
+    const consultaFalhou =
+      backend === "kit" ? (fresh == null && kitDiag.transportError) || kitDiag.statsTransportError : fresh == null;
+    if (consultaFalhou) statsUnavailableIds.add(e.subscription_id);
     if (fresh) {
       e.status_detectado = fresh.status ?? e.status_detectado;
       statsById[e.subscription_id] = fresh.stats ?? null;
@@ -1161,6 +1227,7 @@ async function main(): Promise<number | void> {
       // #7922: o e-mail 3 de entrada do Kit é decidido SÓ pelo executor Kit —
       // a Brevo nem avalia a elegibilidade nem grava skipped_* nela.
       ownsEmail3: (e) => ownerTransportFor(e, "email3", kitTransportEnabled) === "brevo",
+      statsUnavailable: (e) => statsUnavailableIds.has(e.subscription_id),
     }),
     kitTransportEnabled,
     kitLots,

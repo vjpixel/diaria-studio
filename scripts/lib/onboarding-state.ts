@@ -198,15 +198,59 @@ export function selectCandidatesNeedingRefresh(
   nowSec: number,
   email2Days: number,
   email3Days: number,
+  opts: { staleUnconfirmedDays?: number } = {},
 ): OnboardingEntry[] {
+  const staleDays = opts.staleUnconfirmedDays ?? STALE_UNCONFIRMED_DAYS;
   return entries.filter((e) => {
     const anchor = reguaAnchorSec(e);
+    const awaitingConfirmation = e.email1_sent_at == null && e.status_detectado !== "active";
+    // #10616: quem nunca confirmou o double opt-in há mais de N dias sai do
+    // refresh DIÁRIO e passa a ser consultado 1×/semana (`isWeeklyRefreshSlot`).
+    if (awaitingConfirmation && isStaleUnconfirmed(e, nowSec, staleDays) && !isWeeklyRefreshSlot(e.subscription_id, nowSec)) {
+      return false;
+    }
     const needsStatusRefresh =
-      (e.email1_sent_at == null && e.status_detectado !== "active") ||
+      awaitingConfirmation ||
       (e.email2_sent_at == null && anchor != null && nowSec >= anchor + email2Days * DAY_S) ||
       (e.email3_state === "pending" && anchor != null && nowSec >= anchor + email3Days * DAY_S);
     return needsStatusRefresh;
   });
+}
+
+/**
+ * #10616: dias sem confirmar o double opt-in depois dos quais a entrada sai
+ * do refresh diário. Na 1ª rodada real do executor Kit (20/10/2026), 387 dos
+ * candidatos eram cadastros `inactive` que nunca confirmaram — 192 detectados
+ * há mais de 30 dias — e consultá-los todos, todo dia, em sequência, gerava
+ * 429 no Kit (também concorrendo com a rodada Brevo).
+ *
+ * Premissa registrada (desenho mais simples dos dois sugeridos na issue):
+ * refresh ESPAÇADO semanal, não estado terminal. Terminal exigiria um estado
+ * novo no e-mail 1 (store + funil + Studio) e mataria a régua de quem
+ * confirma tarde; o espaçamento mantém a pessoa alcançável — quem confirmar
+ * depois do dia 30 recebe o e-mail 1 com até 7 dias de atraso.
+ */
+export const STALE_UNCONFIRMED_DAYS = 30;
+
+/** `true` quando a entrada aguarda confirmação há mais de `staleDays`,
+ *  medido de `detected_at` (data de entrada no store). `detected_at`
+ *  ilegível → `false` (fail-safe: continua no refresh diário). @pure */
+export function isStaleUnconfirmed(entry: OnboardingEntry, nowSec: number, staleDays = STALE_UNCONFIRMED_DAYS): boolean {
+  const ms = Date.parse(entry.detected_at);
+  if (!Number.isFinite(ms)) return false;
+  return nowSec - Math.floor(ms / 1000) > staleDays * DAY_S;
+}
+
+/**
+ * Dia da semana (0-6, por dia UTC) em que uma entrada "parada" é consultada.
+ * Hash estável do `subscription_id`, não um dia fixo pra todas: espalha o
+ * volume (~1/7 por dia) em vez de concentrar as ~200 consultas num dia só —
+ * que recriaria o 429 que o espaçamento existe pra evitar. @pure
+ */
+export function isWeeklyRefreshSlot(subscriptionId: string, nowSec: number): boolean {
+  let h = 0;
+  for (let i = 0; i < subscriptionId.length; i++) h = (h * 31 + subscriptionId.charCodeAt(i)) >>> 0;
+  return Math.floor(nowSec / DAY_S) % 7 === h % 7;
 }
 
 /** Stats por assinante que a decisão D+10 consome (expand[]=stats). */
@@ -354,8 +398,17 @@ export function buildRunPlan(opts: {
    * do Kit antes do filtro de dono. Ausente = decide pra todas (compat).
    */
   ownsEmail3?: (entry: OnboardingEntry) => boolean;
+  /**
+   * #10620: `true` quando os stats da entrada NÃO puderam ser lidos nesta
+   * rodada por falha de consulta (refresh falho, 429/rede na leitura de
+   * stats). Nesse caso "stats ausentes" não é falta de dado do assinante, é
+   * falta de leitura — a entrada fica `pending` (retenta na próxima rodada,
+   * com skip explícito) e NUNCA vira `skipped_sem_dados` terminal, mesmo
+   * depois da janela de tolerância. Ausente = comportamento anterior.
+   */
+  statsUnavailable?: (entry: OnboardingEntry) => boolean;
 }): RunPlanResult {
-  const { entries, statsById, nowSec, email2Days, email3Days, email3GraceDays, snippets, ownsEmail3 } = opts;
+  const { entries, statsById, nowSec, email2Days, email3Days, email3GraceDays, snippets, ownsEmail3, statsUnavailable } = opts;
   const actions: RunAction[] = [];
   const skips: RunSkip[] = [];
   const detectedEntries: OnboardingEntry[] = [];
@@ -429,6 +482,9 @@ export function buildRunPlan(opts: {
         // (nunca reavaliado), não mais o gatilho de envio.
         entry.email3_state = "skipped_no_open";
         entry.email3_decided_at = new Date(nowSec * 1000).toISOString();
+      } else if (dec.reason === "stats_ausentes" && statsUnavailable?.(entry) === true) {
+        // #10620: leitura falhou nesta rodada — retentável, nunca terminal.
+        skips.push({ entry, etapa: "email3", motivo: "stats_ausentes", detalhe: "consulta de stats falhou nesta rodada — retenta na próxima" });
       } else if (
         dec.reason === "stats_ausentes" &&
         nowSec >= anchor3 + (email3Days + email3GraceDays) * DAY_S
