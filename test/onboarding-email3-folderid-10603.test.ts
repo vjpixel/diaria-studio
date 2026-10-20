@@ -176,10 +176,12 @@ describe("alarme de falha do e-mail 3 (#10603)", () => {
 });
 
 describe("lista por cohort (review #10603)", () => {
-  it("fonte: a lista D+10 leva a data do cohort e não reusa d10_brevo_list_id", async () => {
+  it("fonte: a lista D+10 leva data/hora da campanha e não reusa d10_brevo_list_id", async () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("../scripts/onboarding-welcome-run.ts", import.meta.url), "utf8");
-    assert.match(src, /listName = `\$\{cfg\.d10_list_name[^`]*\$\{dateTagList\}`/);
+    // #10629: o nome vem de `d10ListNameFor` (data + hora); comportamento em
+    // test/onboarding-email3-lista-por-campanha-10629.test.ts.
+    assert.match(src, /listName: d10ListNameFor\(cfg\.d10_list_name, opts\.nowSec\)/);
     assert.ok(!/store\.d10_brevo_list_id = listId/.test(src));
   });
 
