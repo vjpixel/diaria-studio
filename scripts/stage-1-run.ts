@@ -266,6 +266,53 @@ export function parseStepJson<T = unknown>(stdout: string): T | undefined {
 }
 
 /**
+ * #10137: notas do relatório a partir do `flagged[]` de
+ * `review-highlight-source.ts` (destaque de lançamento com URL de imprensa,
+ * #1699). Warn-only — o editor decide a troca no gate. Shape inválido → [].
+ */
+export function formatHighlightSourceNotes(json: unknown): string[] {
+  const flagged = (json as { flagged?: unknown } | undefined)?.flagged;
+  if (!Array.isArray(flagged)) return [];
+  const lines: string[] = [];
+  for (const f of flagged) {
+    if (!f || typeof f !== "object") continue;
+    const { url, title, suggested_domain } = f as { url?: unknown; title?: unknown; suggested_domain?: unknown };
+    if (typeof url !== "string" || !url) continue;
+    const label = typeof title === "string" && title ? `"${title}" ` : "";
+    const domain = typeof suggested_domain === "string" && suggested_domain ? ` — fonte primária provável: ${suggested_domain}` : "";
+    lines.push(`⚠️  destaque ${label}usa cobertura de imprensa (${url})${domain}. Conferir no gate se troca pela URL oficial.`);
+  }
+  return lines;
+}
+
+/**
+ * #10137 (item 3 da issue): notas a partir do `suggestions[]` de
+ * `review-highlight-official-swap.ts` — destaque de imprensa cujo fato já tem
+ * a URL OFICIAL no pool da mesma edição (caso 261007: canaltech no D1 com
+ * openai.com no RADAR). Só sugere: trocar automaticamente com o matcher do
+ * dedup intra-edição é o que o #10141 reverteu. Shape inválido → [].
+ */
+export function formatOfficialSwapNotes(json: unknown): string[] {
+  const suggestions = (json as { suggestions?: unknown } | undefined)?.suggestions;
+  if (!Array.isArray(suggestions)) return [];
+  const lines: string[] = [];
+  for (const s of suggestions) {
+    if (!s || typeof s !== "object") continue;
+    const { highlight_url, highlight_title, official_url, match_type } = s as {
+      highlight_url?: unknown;
+      highlight_title?: unknown;
+      official_url?: unknown;
+      match_type?: unknown;
+    };
+    if (typeof highlight_url !== "string" || typeof official_url !== "string" || !highlight_url || !official_url) continue;
+    const label = typeof highlight_title === "string" && highlight_title ? `"${highlight_title}" ` : "";
+    const match = typeof match_type === "string" && match_type ? ` [${match_type}]` : "";
+    lines.push(`🔁 destaque ${label}tem a fonte oficial no pool desta edição: ${highlight_url} → ${official_url}${match}. Preferir a oficial no gate.`);
+  }
+  return lines;
+}
+
+/**
  * Lê o JSON que um sub-script escreveu no arquivo `--out` dele (#5891,
  * validação ao vivo 260821). Vários scripts do Stage 1 (`dedup.ts`,
  * `check-source-blocklist.ts`) NÃO imprimem JSON no stdout quando recebem
@@ -1467,8 +1514,14 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
   const lancamentosResult = deps.exec("scripts/validate-lancamentos.ts", [mdPath]);
   const lancamentosWarnings: string[] = lancamentosResult.code !== 0 ? [`validate-lancamentos: URLs não-oficiais em LANÇAMENTOS (ver stdout/stderr do lint)`] : [];
   softStep(deps, report, "review-use-melhor (1v-ter)", "scripts/review-use-melhor.ts", ["--approved", categorizedPath]);
-  softStep(deps, report, "review-highlight-source (1v-quater)", "scripts/review-highlight-source.ts", ["--approved", categorizedPath]);
-  softStep(deps, report, "review-highlight-official-swap (1v-quinquies)", "scripts/review-highlight-official-swap.ts", ["--categorized", categorizedPath]);
+  // #10137: os dois guards de fonte primária abaixo são warn-only e existem
+  // pra o editor trocar a URL no gate — mas o JSON deles era descartado aqui,
+  // então `flagged[]`/`suggestions[]` nunca chegavam ao relatório (nem ao
+  // gate, nem ao log do `--no-gates`). Agora viram notas do Stage 1.
+  const highlightSource = softStep(deps, report, "review-highlight-source (1v-quater)", "scripts/review-highlight-source.ts", ["--approved", categorizedPath]);
+  for (const line of formatHighlightSourceNotes(highlightSource.json)) report.note(line);
+  const officialSwap = softStep(deps, report, "review-highlight-official-swap (1v-quinquies)", "scripts/review-highlight-official-swap.ts", ["--categorized", categorizedPath]);
+  for (const line of formatOfficialSwapNotes(officialSwap.json)) report.note(line);
 
   // --- §1w-quint anti-skip 1f (BLOQUEIA) ---
   const completeness = deps.exec("scripts/validate-stage-1-completeness.ts", ["--edition-dir", `${editionDir}/`]);
