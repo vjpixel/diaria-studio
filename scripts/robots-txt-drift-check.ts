@@ -80,6 +80,7 @@ import {
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
+  listFrozenUnmeasuredKeys,
   emptyAlarmIssuesState,
   loadAlarmIssuesState,
   saveAlarmIssuesState,
@@ -213,22 +214,70 @@ export function toAiCrawlerAlarmFindings(
 }
 
 /** #10520 — chaves `ai-crawler-*` cujo sinal NÃO foi medido nesta execução:
- * a zona inteira quando a GraphQL não voltou `ok` (erro/token ausente), e o
- * host cuja sonda saiu `inconclusive` pra algum bot. Ausência de achado
- * nessas chaves não prova resolução — `planAlarmReconciliation` preserva a
- * issue aberta em vez de comentar/fechar por streak. */
+ * a zona inteira quando a GraphQL não voltou `ok` (erro/token ausente), e a
+ * chave de sonda cujo conjunto de bots guardado inclui algum bot que saiu
+ * `inconclusive` NAQUELE host (#10522: granularidade host × bot — antes era
+ * o host inteiro, e um bot inconclusivo alheio à issue congelava uma issue
+ * cujo bot foi medido `allowed`). Ausência de achado nessas chaves não prova
+ * resolução — `planAlarmReconciliation` preserva a issue aberta em vez de
+ * comentar/fechar por streak. Chave de sonda que não dá pra parsear cai no
+ * critério antigo (host inteiro): na dúvida, congela em vez de fechar. */
 export function aiCrawlerUnmeasuredKeys(
   probes: readonly AiCrawlerProbeResult[],
   fetched403Status: "ok" | "skipped" | "error",
 ): (key: string) => boolean {
-  const unmeasuredHosts = new Set(probes.filter((p) => p.status === "inconclusive").map((p) => p.host));
+  const unmeasured = new Map<string, Set<string>>();
+  for (const p of probes) {
+    if (p.status !== "inconclusive") continue;
+    if (!unmeasured.has(p.host)) unmeasured.set(p.host, new Set());
+    unmeasured.get(p.host)!.add(p.bot);
+  }
   return (key) => {
     if (fetched403Status !== "ok" && key.startsWith("ai-crawler-403-zona:")) return true;
-    for (const host of unmeasuredHosts) {
-      if (key.startsWith(`ai-crawler-probe:${host}:`)) return true;
+    for (const [host, bots] of unmeasured) {
+      const prefix = `ai-crawler-probe:${host}:`;
+      if (!key.startsWith(prefix)) continue;
+      const keyBots = parseAiCrawlerProbeKeyBots(key.slice(prefix.length), host);
+      if (keyBots === null) return true;
+      return keyBots.some((b) => bots.has(b));
     }
     return false;
   };
+}
+
+/** Lê o conjunto de bots do fingerprint `ai-crawler-probe|{host}|{bots}|403`
+ * (`aiCrawlerProbeFindingKey`). `null` quando o formato não bate. */
+export function parseAiCrawlerProbeKeyBots(fingerprint: string, host: string): string[] | null {
+  const parts = fingerprint.split("|");
+  if (parts.length !== 4 || parts[0] !== "ai-crawler-probe" || parts[1] !== host || parts[3] !== "403") return null;
+  const bots = parts[2].split(",").filter((b) => b.length > 0);
+  return bots.length > 0 ? bots : null;
+}
+
+/** #10522 — evita a issue DUPLICADA quando parte dos bots de uma issue aberta
+ * sai `inconclusive`. Sem isto: issue aberta para {ClaudeBot, GPTBot}, rodada
+ * com GPTBot `blocked` e ClaudeBot `inconclusive` → fingerprint novo {GPTBot}
+ * abre 2ª issue enquanto a antiga fica congelada. Aqui, um par (host, bot)
+ * `inconclusive` que pertence a uma issue de sonda ABERTA herda o último
+ * estado medido (`blocked`) — o fingerprint fica igual ao da issue aberta.
+ * Só serve para montar os achados; log e e-mail continuam com a sonda real. */
+export function carryForwardInconclusiveProbes(
+  probes: readonly AiCrawlerProbeResult[],
+  state: AlarmIssuesState,
+): AiCrawlerProbeResult[] {
+  const openBots = new Map<string, Set<string>>();
+  for (const [key, entry] of Object.entries(state)) {
+    if (entry.closedAt) continue;
+    const m = /^ai-crawler-probe:([^:]+):(.+)$/.exec(key);
+    if (!m) continue;
+    const bots = parseAiCrawlerProbeKeyBots(m[2], m[1]);
+    if (!bots) continue;
+    if (!openBots.has(m[1])) openBots.set(m[1], new Set());
+    for (const b of bots) openBots.get(m[1])!.add(b);
+  }
+  return probes.map((p) =>
+    p.status === "inconclusive" && openBots.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
+  );
 }
 
 // ─── #10545 — sinal 2 cego (GraphQL não medido N rodadas seguidas) ─────────
@@ -478,13 +527,21 @@ async function main(): Promise<void> {
       `${LOG_PREFIX} sinal 2 (403 da zona) sem medição há ${zone403Measurement.consecutiveUnmeasured} execução(ões) seguidas — alarme de sensor cego.`,
     );
   }
+  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
+  // #10522: bot inconclusivo de uma issue de sonda aberta herda o último
+  // estado medido, senão o conjunto de bots muda e nasce issue duplicada.
+  const findingProbes = carryForwardInconclusiveProbes(probes, alarmState);
   const alarmFindings = [
     ...driftedResults.map(toAlarmFinding),
-    ...toAiCrawlerAlarmFindings(probes, summary403),
+    ...toAiCrawlerAlarmFindings(findingProbes, summary403),
     ...(blindFinding ? [blindFinding] : []),
   ];
-  const alarmState = loadAlarmIssuesState(ALARM_ISSUES_STATE_PATH);
   const isAbsenceUnmeasured = aiCrawlerUnmeasuredKeys(probes, fetched403.status);
+  // #10522: o congelamento é silencioso e pode durar indefinidamente —
+  // registrar no log cada issue mantida aberta sem medição nesta rodada.
+  for (const { key, issueNumber } of listFrozenUnmeasuredKeys(alarmFindings, alarmState, isAbsenceUnmeasured)) {
+    console.warn(`${LOG_PREFIX} issue #${issueNumber} mantida aberta: sinal não medido nesta execução (${key}).`);
+  }
   let issueRefs: Map<string, { issueNumber: number | null; url: string | null; action: string; error?: string }> | undefined;
   let allFindingOutcomes: AlarmFindingOutcome[] = [];
 
@@ -554,7 +611,7 @@ async function main(): Promise<void> {
   }
 
   // #10508: o fingerprint do estado agrega robots.txt + crawler de IA.
-  const aiKeys = toAiCrawlerAlarmFindings(probes, summary403).map((f) => f.fingerprint);
+  const aiKeys = toAiCrawlerAlarmFindings(findingProbes, summary403).map((f) => f.fingerprint);
   const nextFingerprint = pending ? [computeRobotsDriftFingerprint(results), ...aiKeys].join("||") : null;
   saveState(advanceRobotsDriftState(nextFingerprint, new Date()), STATE_PATH);
 }

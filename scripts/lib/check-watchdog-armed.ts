@@ -696,25 +696,69 @@ export function decideWatchdogScheduleStatus(
 }
 
 /**
- * I/O: `systemctl --user cat <unit>.timer` — só LEITURA, nunca altera o
+ * #10576 — parser puro do output de `systemctl --user show -p TimersCalendar
+ * <unit>.timer`, que reflete o agendamento CARREGADO pelo systemd (não o
+ * arquivo em disco). Formato real (systemd 255+, medido no `300` em
+ * 20/10/2026), uma linha por expressão:
+ *   `TimersCalendar={ OnCalendar=*-*-* *:00/10:00 America/Sao_Paulo ; next_elapse=... }`
+ * O systemd imprime a forma NORMALIZADA da expressão; para as expressões que
+ * o gerador produz ela coincide com o texto escrito (`systemd-analyze
+ * calendar` confirma). Lista vazia = nada parseável.
+ */
+export function parseTimersCalendarShow(showOutput: string): string[] {
+  const values: string[] = [];
+  for (const m of (showOutput ?? "").matchAll(/\{\s*OnCalendar=(.*?)\s;/g)) {
+    const v = normalizeOnCalendar(m[1]);
+    if (v !== "") values.push(v);
+  }
+  return values;
+}
+
+/** Aviso que o `systemctl cat` imprime quando o arquivo em disco difere do
+ * carregado (falta `daemon-reload`). */
+export const UNIT_FILE_CHANGED_ON_DISK_RE = /^#\s*Warning:.*changed on disk/im;
+
+/** Marcador devolvido no lugar das expressões quando só o `cat` respondeu e
+ * ele avisa que o disco diverge do carregado: nunca casa com o esperado, então
+ * vira `"stale"` (o agendamento em vigor é desconhecido e provavelmente velho). */
+export const NOT_RELOADED_MARKER = "(arquivo do timer mudou em disco e não foi recarregado — falta daemon-reload)";
+
+/**
+ * I/O: lê o agendamento EFETIVO do timer — só LEITURA, nunca altera o
  * systemd. `exec` injetável (mesmo motivo de `queryLinuxTimerArmed`).
- * Retorna `null` em qualquer falha (fail-soft: sem dado, o status fica
- * `"unknown"` e o `armed` do `is-enabled` prevalece).
+ *
+ * #10576: a fonte primária é `systemctl --user show -p TimersCalendar`, o
+ * agendamento CARREGADO. O `systemctl cat` (fonte única até o #10576) mostra
+ * o arquivo em disco: com o timer novo copiado e sem `daemon-reload`, o
+ * systemd seguia disparando na janela antiga e o check respondia `armed`.
+ * Fallback para o `cat` só quando o `show` não devolve nada parseável; nesse
+ * caminho, o aviso "unit file changed on disk" vira `[NOT_RELOADED_MARKER]`
+ * (→ `"stale"`). Retorna `null` quando nenhuma das duas leituras funcionou
+ * (fail-soft: o status fica `"unknown"` e o `armed` do `is-enabled` prevalece).
  */
 export function queryLinuxTimerOnCalendar(
   taskName: string = WATCHDOG_TASK_NAME,
   exec: typeof execFileSync = execFileSync,
 ): string[] | null {
   const unit = `${unitBaseName(taskName)}.timer`;
-  try {
-    const out = exec("systemctl", ["--user", "cat", unit], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }) as unknown as string | Buffer;
-    return parseTimerOnCalendar(typeof out === "string" ? out : String(out ?? ""));
-  } catch {
-    return null;
-  }
+  const run = (args: string[]): string | null => {
+    try {
+      const out = exec("systemctl", args, {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }) as unknown as string | Buffer;
+      return typeof out === "string" ? out : String(out ?? "");
+    } catch {
+      return null;
+    }
+  };
+  const shown = run(["--user", "show", "-p", "TimersCalendar", unit]);
+  const loaded = shown === null ? [] : parseTimersCalendarShow(shown);
+  if (loaded.length > 0) return loaded;
+  const cat = run(["--user", "cat", unit]);
+  if (cat === null) return null;
+  if (UNIT_FILE_CHANGED_ON_DISK_RE.test(cat)) return [NOT_RELOADED_MARKER];
+  return parseTimerOnCalendar(cat);
 }
 
 /** Mensagem para `armedStatus: "armed_but_stale_schedule"` (#10571). */
@@ -828,7 +872,8 @@ export interface CheckWatchdogArmedOptions {
   emitWarn?: (message: string, eventMessage?: string) => void;
   queryLinuxTimerArmedFn?: (taskName?: string) => LinuxWatchdogArmedResult;
   /** #10571: leitura do `OnCalendar` efetivo (default `queryLinuxTimerOnCalendar`, que roda
-   * `systemctl --user cat`). Só consultada quando o timer está `armed`. */
+   * `systemctl --user show -p TimersCalendar`, com fallback pro `cat`, #10576). Só
+   * consultada quando o timer está `armed`. */
   queryLinuxTimerOnCalendarFn?: (taskName?: string) => string[] | null;
 }
 
