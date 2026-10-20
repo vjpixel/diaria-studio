@@ -183,8 +183,8 @@ describe("Diaria-Nightly-Chain no registro (#10552)", () => {
     assert.ok(!SCHEDULED_TASKS.some((t) => t !== task && t.logPath === task!.logPath));
   });
 
-  it("nasce enabled:false — o arme é manual no 300, depois de pausar o job Hermes 645d5debb7f0", () => {
-    assert.equal(getScheduledTaskByName("Diaria-Nightly-Chain")!.enabled, false);
+  it("está ligada (armada em 20/10/2026, job Hermes 645d5debb7f0 pausado)", () => {
+    assert.notEqual(getScheduledTaskByName("Diaria-Nightly-Chain")!.enabled, false);
   });
 
   it("exit de review falho (3) fica fora de successExitCodes — a unit sai failed e o alarme avisa", () => {

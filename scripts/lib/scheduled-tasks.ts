@@ -532,11 +532,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Exit 3 = review falhou mas o overnight rodou: fica FORA de
     // successExitCodes de propósito, pra unit sair `failed` e o
     // Diaria-Systemd-Failed-Units-Alarm avisar.
-    // enabled:false DE PROPÓSITO: sem isso o Remediate-Never-Armed-Tasks
-    // (#8153) a auto-armaria em qualquer máquina, ANTES de o job Hermes
-    // 645d5debb7f0 (review das 09:00) ser pausado. Armar só no 300, à mão,
-    // seguindo docs/overnight-nightly-chain.md.
-    enabled: false,
+    // Ligada em 20/10/2026 a pedido do editor (job Hermes 645d5debb7f0
+    // pausado no mesmo dia). Passos: docs/overnight-nightly-chain.md.
     schedule: { kind: "daily", hour: 0, minute: 15 },
     issue: "#10552",
   },

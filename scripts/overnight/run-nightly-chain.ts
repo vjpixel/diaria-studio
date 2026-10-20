@@ -53,8 +53,8 @@
  * editor). Ver `.claude/skills/diaria-overnight/SKILL.md` §Argumentos.
  *
  * Este script NÃO arma nada: o timer é gerado por
- * `scripts/setup-systemd-timers.ts` a partir do registro, e a task nasce
- * `enabled: false`. Passos manuais: `docs/overnight-nightly-chain.md`.
+ * `scripts/setup-systemd-timers.ts` a partir do registro (a task nasceu
+ * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
