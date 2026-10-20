@@ -486,6 +486,9 @@ describe("run-edition-stages CLI — main() (#5744, gap apontado no review da PR
     const deps = {
       execFn: spawnInto(W, prompts),
       resolveClaudeBinFn: () => "/fake/bin/claude",
+      // #10597: estes testes contam spawns de stage; o preflight de auth tem
+      // teste próprio (run-edition-stages-auth-preflight-10597.test.ts).
+      authPreflightFn: () => ({ error: null, warning: null }),
       assertSentinelFn: W.assertFn,
       env: { SAFE: "1" } as NodeJS.ProcessEnv,
       stdout: (l: string) => out.push(l),
