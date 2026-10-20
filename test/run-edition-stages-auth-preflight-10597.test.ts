@@ -103,6 +103,21 @@ describe("#10597 main", () => {
       assert.ok(err.some((l) => /claude \/login/.test(l)));
     }));
 
+  it("binário do claude não encontrado → exit 1 com mensagem, nunca exceção", () =>
+    withRoot((root) => {
+      const err: string[] = [];
+      const code = main(["--edition", "261020", "--through", "1"], {
+        execFn: asExec(() => { throw new Error("não deveria spawnar"); }),
+        resolveClaudeBinFn: () => { throw new Error("claude não encontrado em nenhum candidato"); },
+        env: {},
+        stdout: () => {},
+        stderr: (l) => err.push(l),
+        repoRootAbs: root,
+      });
+      assert.equal(code, 1);
+      assert.ok(err.some((l) => /não encontrado/.test(l)));
+    }));
+
   it("cenário real: preflight passa, Stage 1 falha com OAuth expirado → sem AVISO de erro intencional, com dica de login", () =>
     withRoot((root) => {
       const err: string[] = [];

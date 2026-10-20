@@ -258,7 +258,16 @@ export function main(
   const editionDir = resolveEditionDir(join(repoRootAbs, "data", "editions"), aammdd);
 
   // #10597: auth do CLI antes de qualquer spawn. Nunca sugerir API key (#5608).
-  const claudeBin = resolveClaudeBinFn();
+  // `resolveClaudeBin` lança quando não acha binário — antes isso só
+  // acontecia dentro do try do runner (falha de stage legível); aqui fora,
+  // sem o catch, viraria stack trace.
+  let claudeBin: string;
+  try {
+    claudeBin = resolveClaudeBinFn();
+  } catch (e) {
+    stderr(`ERRO: ${(e as Error).message}`);
+    return 1;
+  }
   const auth = authPreflightFn(claudeBin, env);
   if (auth.error) {
     stderr(`ERRO: ${auth.error}`);
