@@ -737,8 +737,24 @@ describe("#8238 (5a/5b) — evaluateApuracaoCohortGuard", () => {
       arm({ ativos: 67, ativosComEntrega: 1, ativosCom20Recebidas: 0 }),
       arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
     ]);
+    assert.ok(r.problems.some((p) => /só 1 de 203 ativos/.test(p)), r.problems.join("\n"));
+  });
+
+  it("(b) por braço: Google 67 ativos SEM entrega + Meta 136 cobertos (67% no total) -> bloqueia (review P2 #10594)", () => {
+    const r = evaluateApuracaoCohortGuard([
+      arm({ ativos: 67, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
+      arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 136, ativosCom20Recebidas: 120 }),
+    ]);
     assert.equal(r.problems.length, 1);
-    assert.match(r.problems[0], /só 1 de 203 ativos/);
+    assert.match(r.problems[0], /^Google Ads \(teste 2608\): cobertura de entrega do braço — só 0 de 67 ativos/);
+  });
+
+  it("(b) por braço: braço abaixo do volume mínimo (Microsoft 1 ativo sem entrega) não alarma sozinho", () => {
+    const r = evaluateApuracaoCohortGuard([
+      arm(),
+      arm({ braco: "Microsoft Ads (teste 2608)", cadastrosRelatorio: 1, cadastrosStore: 1, ativos: 1, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
+    ]);
+    assert.deepEqual(r.problems, []);
   });
 
   it("(b) cobertura exatamente no piso -> passa (piso é inclusivo)", () => {

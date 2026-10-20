@@ -804,12 +804,19 @@ export function buildApuracaoStoreStaleEmail(snapshotDate: DateOnlyString, reaso
 //      não por comportamento do leitor.
 // ---------------------------------------------------------------------------
 
-/** Piso da fração de ATIVOS da coorte (3 braços somados) com >=1 entrega
+/** Piso da fração de ATIVOS (por braço e nos 3 braços somados) com >=1 entrega
  *  ligada no store. Na data de apuração todo ativo cadastrado até o fim da
  *  janela já recebeu semanas de edições — ativo com 0 recebida é identidade
  *  partida (#8236), não comportamento. Mesmo valor de
  *  `LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION` (leitor-store.ts). */
 export const APURACAO_DELIVERY_COVERAGE_FLOOR = 0.5;
+
+/** Volume mínimo de ativos num braço pra o piso de cobertura valer POR BRAÇO
+ *  (PR #10594 review P2). Sem piso por braço, um braço inteiro sem entrega
+ *  passa escondido pelos outros (ex.: Google 67 ativos com 0 entregas + Meta
+ *  136 cobertos = 67% no total, acima do piso). O mínimo evita alarmar braço
+ *  de volume desprezível (ex.: Microsoft com 1 cadastro), onde 0/1 não é sinal. */
+export const APURACAO_ARM_COVERAGE_MIN_ATIVOS = 10;
 
 /** Limiar de recebidas do `leitor-v1` — só pra linha informativa da Emenda
  *  17/09 (#8249 item 5: "imprimir a fração da coorte com >=20 recebidas"). */
@@ -865,7 +872,9 @@ function fmtFrac(n: number, d: number): string {
 }
 
 /** Ver bloco acima — (a) braço zerado no relatório com cadastro no store;
- *  (b) cobertura de entrega dos ativos da coorte abaixo do piso. @pure */
+ *  (b) cobertura de entrega dos ativos abaixo do piso, avaliada POR BRAÇO
+ *  (braço com >= `APURACAO_ARM_COVERAGE_MIN_ATIVOS` ativos) e na coorte
+ *  somada. @pure */
 export function evaluateApuracaoCohortGuard(
   stats: readonly ApuracaoArmStats[],
   coverageFloor: number = APURACAO_DELIVERY_COVERAGE_FLOOR,
@@ -875,6 +884,14 @@ export function evaluateApuracaoCohortGuard(
     if (s.cadastrosRelatorio === 0 && s.cadastrosStore > 0) {
       problems.push(
         `${s.braco}: o relatório saiu com 0 cadastros, mas o store tem ${s.cadastrosStore} cadastro(s) com essa UTM — coorte perdida no caminho.`,
+      );
+    }
+  }
+  for (const s of stats) {
+    if (s.ativos >= APURACAO_ARM_COVERAGE_MIN_ATIVOS && s.ativosComEntrega / s.ativos < coverageFloor) {
+      problems.push(
+        `${s.braco}: cobertura de entrega do braço — só ${s.ativosComEntrega} de ${s.ativos} ativos (${fmtFrac(s.ativosComEntrega, s.ativos)}) ` +
+          `têm >=1 entrega ligada no store (piso ${(coverageFloor * 100).toFixed(0)}% por braço) — leitor-v1 do braço sairia 0 por defeito de dado.`,
       );
     }
   }
