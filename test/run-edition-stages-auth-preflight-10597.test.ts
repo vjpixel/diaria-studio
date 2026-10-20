@@ -17,6 +17,10 @@ describe("#10597 claudeAuthPreflightError", () => {
     const e = claudeAuthPreflightError(asExec(() => JSON.stringify({ loggedIn: false })), "claude", {});
     assert.match(e ?? "", /claude \/login/);
   });
+  it("authMethod de API → erro citando #5608", () => {
+    const e = claudeAuthPreflightError(asExec(() => JSON.stringify({ loggedIn: true, authMethod: "api_key" })), "claude", {});
+    assert.match(e ?? "", /5608/);
+  });
   it("exec com status != 0 → falha", () => {
     const e = claudeAuthPreflightError(asExec(() => { throw Object.assign(new Error("x"), { status: 1 }); }), "claude", {});
     assert.match(e ?? "", /claude \/login/);

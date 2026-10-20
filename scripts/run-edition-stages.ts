@@ -119,7 +119,10 @@ export function claudeAuthPreflightError(
   const hint = `rode \`claude /login\` no CLI (${claudeBin}) e repita`;
   try {
     const raw = execFn(claudeBin, ["auth", "status"], { encoding: "utf8", env, timeout: 30_000 });
-    const parsed = JSON.parse(String(raw)) as { loggedIn?: boolean };
+    const parsed = JSON.parse(String(raw)) as { loggedIn?: boolean; authMethod?: string };
+    if (parsed.authMethod && parsed.authMethod !== "claude.ai") {
+      return `CLI autenticado via ${parsed.authMethod}, não pela assinatura claude.ai (#5608) — remova a fonte de auth de API do ambiente e ${hint}.`;
+    }
     if (parsed.loggedIn === false) return `CLI do Claude sem sessão autenticada — ${hint}.`;
   } catch (e) {
     const err = e as { status?: number | null; name?: string };
@@ -221,7 +224,8 @@ export function main(
   // ainda (Stage 2 não spawnou nesta invocação).
   // #10597: stage que falhou (ex: api_error de OAuth) não escreveu nada — o
   // aviso seria consequência, não causa, e desvia a leitura.
-  if (result.exitCode === 0 && plan.some((s) => s.stage === 2)) {
+  const stage2Reached = result.failedStage === null || result.failedStage > 2;
+  if (stage2Reached && plan.some((s) => s.stage === 2)) {
     const warn = intentionalErrorHeadlessWarning(editionDir);
     if (warn) stderr(`AVISO: ${warn}`);
   }
