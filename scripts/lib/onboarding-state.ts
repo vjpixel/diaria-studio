@@ -415,7 +415,14 @@ export function buildRunPlan(opts: {
       (ownsEmail3 == null || ownsEmail3(entry))
     ) {
       const dec = email3Eligibility(entry, statsById[entry.subscription_id] ?? null, nowSec, email3Days);
-      if (dec.eligible) {
+      if (dec.eligible && nowSec >= anchor3 + (email3Days + email3GraceDays) * DAY_S) {
+        // #10603: elegível mas já fora da janela D+10 + tolerância = backlog
+        // que o bug do `folderId` represou. Decisão do editor (20/10/2026):
+        // descartar, nunca enviar atrasado (o texto é da sequência de
+        // boas-vindas). Sem isto, consertar a lista dispararia o backlog todo.
+        entry.email3_state = "skipped_backlog_descartado";
+        entry.email3_decided_at = new Date(nowSec * 1000).toISOString();
+      } else if (dec.eligible) {
         cohort3.push(entry);
       } else if (dec.reason === "sem_abertura") {
         // #7599: condição invertida — zero aberturas em D+10 é TERMINAL
@@ -567,6 +574,27 @@ export function zeroDetectionAlarm(
     `ALARME: ${streak} rodadas --send consecutivas com 0 novos assinantes detectados ` +
     `(limiar ${threshold}) — possível quebra silenciosa na detecção (fonte errada, filtro no-op, etc). ` +
     `Ver #7599.`
+  );
+}
+
+/** #10603: rodadas `--send` seguidas com `email3_campaign` falhando que disparam o alarme. */
+export const EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS = 2;
+
+/** Zera quando a rodada não falhou no e-mail 3; incrementa quando falhou. @pure */
+export function updateEmail3FailureStreak(previousStreak: number, failedThisRun: boolean): number {
+  return failedThisRun ? previousStreak + 1 : 0;
+}
+
+/** Mensagem de alarme quando o e-mail 3 falha em rodadas seguidas — `null` abaixo do limiar. @pure */
+export function email3FailureAlarm(
+  streak: number,
+  lastError: string | null | undefined,
+  threshold: number = EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS,
+): string | null {
+  if (streak < threshold) return null;
+  return (
+    `ALARME: ${streak} rodadas --send consecutivas com falha em email3_campaign (limiar ${threshold})` +
+    `${lastError ? ` — último erro: ${lastError}` : ""}. O pedido de apoio D+10 não está saindo. Ver #10603.`
   );
 }
 

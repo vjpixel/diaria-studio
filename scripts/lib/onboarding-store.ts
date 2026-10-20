@@ -61,7 +61,11 @@ export type OnboardingEmail3State =
   /** Stats de abertura ausentes mesmo após a janela de tolerância — não dá
    * pra avaliar "abriu pelo menos 1 edição" sem dado; desiste de propósito
    * (terminal), nunca envia às cegas. */
-  | "skipped_sem_dados";
+  | "skipped_sem_dados"
+  /** #10603: passou da janela D+10 + tolerância sem o e-mail 3 ter saído (bug do
+   * `folderId`). Decisão do editor (20/10/2026): descartar — o texto se refere à
+   * sequência de boas-vindas. Terminal, nunca enviado. */
+  | "skipped_backlog_descartado";
 
 export interface OnboardingEntry {
   /**
@@ -219,6 +223,15 @@ export interface OnboardingStore {
   last_zero_detection_run_at?: string | null;
 
   /**
+   * #10603: rodadas `--send` consecutivas em que `email3_campaign` FALHOU
+   * (zera na 1ª que cria a campanha). Alimenta o alarme de continuidade —
+   * o `Folder id is missing` repetiu 72 vezes em 5 semanas com a task verde.
+   */
+  consecutive_email3_failures?: number;
+  /** #10603: último erro de `email3_campaign` (diagnóstico do alarme). */
+  last_email3_error?: string | null;
+
+  /**
    * #7922 (fatia 1/N): estado dos LOTES de transporte Kit (broadcasts
    * segmentados por tag) — reusa este mesmo store por decisão explícita da
    * issue ("integrar com a base de #7916, sem criar outra fonte de
@@ -248,6 +261,8 @@ export function emptyStore(): OnboardingStore {
     last_detection_backend: null,
     consecutive_zero_detections: 0,
     last_zero_detection_run_at: null,
+    consecutive_email3_failures: 0,
+    last_email3_error: null,
     kit_transport: { lots: {} },
   };
 }
@@ -274,6 +289,8 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
         // não sabe quando rodou, e fingir frescor aqui seria exatamente o
         // `ok` mentiroso que o campo existe pra impedir.
         last_zero_detection_run_at: raw.last_zero_detection_run_at ?? null,
+        consecutive_email3_failures: raw.consecutive_email3_failures ?? 0,
+        last_email3_error: raw.last_email3_error ?? null,
         // #7922: store anterior ao transporte Kit não tem este bloco —
         // normaliza pra "nenhum lote" em vez de deixar `undefined` vazar
         // para callers que assumem `.lots` sempre presente.
@@ -315,6 +332,8 @@ const BREVO_OWNED_TOP_LEVEL = [
   "last_detection_backend",
   "consecutive_zero_detections",
   "last_zero_detection_run_at",
+  "consecutive_email3_failures",
+  "last_email3_error",
   "d10_brevo_list_id",
 ] as const;
 
