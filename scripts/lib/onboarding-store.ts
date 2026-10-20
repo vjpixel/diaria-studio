@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnboardingKitLot, KitTransportHealthBlock } from "./onboarding-kit-transport.ts";
+import type { FollowupBlock } from "./onboarding-followup.ts";
 import { withFileLock } from "./file-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -250,6 +251,19 @@ export interface OnboardingStore {
   kit_transport?: {
     lots: Record<string, OnboardingKitLot>;
   } & KitTransportHealthBlock;
+
+  /**
+   * #10604/#10605/#10606: sequências DEPOIS da escada de boas-vindas — pedido
+   * de apoio em D+30/90/180/360 e formulário (D+6 + lembrete a cada 30 dias).
+   * Namespace PRÓPRIO dentro do mesmo arquivo (mesma decisão do
+   * `kit_transport`: sem outra fonte de verdade): `people` guarda, por id
+   * Kit, cada envio com data (o painel `/assinantes` conta daqui, sem
+   * consultar o ESP), `lots` os broadcasts por tag, `last_run` a saúde do
+   * executor (`scripts/onboarding-followup-run.ts`). Ausente = executor nunca
+   * rodou; normalizado em `readStore` para que um `writeStore` de OUTRO
+   * executor nunca o apague. Tipos e regras em `onboarding-followup.ts`.
+   */
+  followup?: FollowupBlock;
 }
 
 export function emptyStore(): OnboardingStore {
@@ -264,6 +278,7 @@ export function emptyStore(): OnboardingStore {
     consecutive_email3_failures: 0,
     last_email3_error: null,
     kit_transport: { lots: {} },
+    followup: { people: {}, lots: {} },
   };
 }
 
@@ -302,6 +317,16 @@ export function readStore(path: string = DEFAULT_STORE_PATH): { store: Onboardin
           ...(raw.kit_transport?.last_send_run != null ? { last_send_run: raw.kit_transport.last_send_run } : {}),
           ...(raw.kit_transport?.consecutive_failed_send_runs != null
             ? { consecutive_failed_send_runs: raw.kit_transport.consecutive_failed_send_runs }
+            : {}),
+        },
+        // #10604: sem isto, todo `writeStore` dos OUTROS executores (Brevo,
+        // Kit) — que relêem via `readStore` — apagaria o bloco inteiro.
+        followup: {
+          people: raw.followup?.people ?? {},
+          lots: raw.followup?.lots ?? {},
+          ...(raw.followup?.last_run != null ? { last_run: raw.followup.last_run } : {}),
+          ...(raw.followup?.consecutive_failed_runs != null
+            ? { consecutive_failed_runs: raw.followup.consecutive_failed_runs }
             : {}),
         },
       },

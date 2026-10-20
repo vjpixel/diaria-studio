@@ -71,6 +71,7 @@ import {
 } from "../lib/onboarding-funnel-report.ts";
 import { buildApoiadorEmailIndex, type LinkableApoiador } from "../lib/metrics/apoiador-link.ts";
 import { brevoGetCampaign } from "../lib/brevo-client.ts";
+import { buildFollowupPanel, type FollowupPanelView } from "../lib/onboarding-followup-panel.ts";
 import { loadLinkableApoiadores } from "./studio-subscribers.ts";
 
 export interface OnboardingFunnelDbLayer {
@@ -190,6 +191,9 @@ export interface OnboardingFunnelData {
   summary: OnboardingFunnelSummary;
   /** #7922: lotes do transporte Kit (produção e piloto separados). */
   kitLots: OnboardingKitLotsView;
+  /** #10606: contagem por e-mail (escada + apoio D+30/90/180/360 + formulário),
+   *  tabela por pessoa (e-mail mascarado) e falhas em destaque. */
+  followup: FollowupPanelView;
   apoiadorDataError: string | null;
   liveBrevoChecked: boolean;
   note: string;
@@ -282,6 +286,10 @@ export function buildOnboardingFunnelData(rootDir: string, opts: BuildOnboarding
     entries: funnelEntries,
     summary,
     kitLots: buildKitLotsView(allKitLots, pilotEntriesExcluded, store.kit_transport),
+    followup: buildFollowupPanel(store, {
+      // Sem índice (apoia.se indisponível) não fabrica "não apoia": fica `null`.
+      apoiaByEmail: apoiadorIndex ? (email) => (apoiadorIndex!.get(email)?.currentMonthlyValue ?? null) != null : undefined,
+    }),
     apoiadorDataError,
     liveBrevoChecked: (opts.brevoCampaignStates?.size ?? 0) > 0 || (opts.brevoFailedCampaignIds?.size ?? 0) > 0,
     note: NOTE,

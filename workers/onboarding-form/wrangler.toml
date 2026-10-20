@@ -1,0 +1,24 @@
+name = "onboarding-form"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+# #10605 — formulário de perfil/interesses do onboarding (decisão do editor,
+# 20/10/2026: form próprio num Worker nosso). STUB NÃO IMPLANTADO: não há
+# workflow de deploy (.github/workflows/deploy-*.yml) nem rota pública ainda.
+# Contrato (endpoints, formato, gravação no store): scripts/lib/onboarding-form-contract.ts.
+#
+# Para publicar (ação pendente, ver README.md):
+#   1. wrangler kv namespace create ONBOARDING_FORM
+#   2. Declarar aqui o binding (NÃO declarado agora de propósito: um id
+#      placeholder quebraria `wrangler deploy`, mesmo racional de
+#      workers/reativar/wrangler.toml):
+#        [[kv_namespaces]]
+#        binding = "ONBOARDING_FORM"
+#        id = "<id do passo 1>"
+#   3. wrangler secret put RESPONSES_TOKEN (mesmo valor de ONBOARDING_FORM_TOKEN no .env do servidor)
+#   4. Rota/domínio + onboarding.followup.form_url/form_responses_url no platform.config.json
+# Sem o binding o Worker responde 503 "not_configured" — nunca lança.
+
+[observability]
+enabled = true

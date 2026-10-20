@@ -59,7 +59,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DEFAULT_STORE_PATH, readStore, type OnboardingStore } from "./onboarding-store.ts";
 
-type KitLots = NonNullable<OnboardingStore["kit_transport"]>["lots"];
+/** Só os campos que a exclusão lê — cobre os lotes da escada (`kit_transport`)
+ *  e os das sequências de apoio/formulário (`followup`, #10604/#10605). */
+type KitLots = Record<string, Pick<NonNullable<OnboardingStore["kit_transport"]>["lots"][string], "broadcast_id" | "status" | "lot_id">>;
 
 export interface OnboardingBroadcastExclusion {
   /** `broadcast_id`s (como string, mesma chave do manifest de ingestão) a excluir. */
@@ -194,7 +196,10 @@ export function readOnboardingBroadcastExclusion(configPathAbs: string): Onboard
   return decideOnboardingBroadcastExclusion({
     storeExists,
     corrupted,
-    lots: store?.kit_transport?.lots,
+    // #10604/#10605: os broadcasts das sequências de apoio/formulário também
+    // não são edição — sem eles aqui, cada pedido de apoio contaria como uma
+    // "edição recebida" no leitor-v1. Chaves não colidem (prefixo de kind).
+    lots: store == null ? undefined : { ...(store.kit_transport?.lots ?? {}), ...(store.followup?.lots ?? {}) },
     kitTransportEnabled,
     storePath,
   });

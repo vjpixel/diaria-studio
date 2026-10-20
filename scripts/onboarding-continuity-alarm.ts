@@ -90,6 +90,7 @@ import {
   type OnboardingTransportLabel,
 } from "./lib/onboarding-continuity-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
+import { evaluateFollowupHealth, type FollowupHealthEvaluation } from "./lib/onboarding-followup.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
@@ -124,6 +125,10 @@ export const KIT_TRANSPORT_CHECK = "onboarding-kit-transport";
 export const EMAIL3_CHECK = "onboarding-email3";
 const EMAIL3_FINGERPRINT = "email3-campaign-failure-streak";
 const KIT_FINDING_FINGERPRINT = "kit-send-failure-streak";
+/** #10604/#10605: eixo PRÓPRIO do executor das sequências de apoio/formulário. */
+export const FOLLOWUP_CHECK = "onboarding-followup";
+const FOLLOWUP_NOT_RUNNING_FINGERPRINT = "followup-run-stalled";
+const FOLLOWUP_FAILURE_FINGERPRINT = "followup-run-failure-streak";
 const KIT_NOT_RUNNING_FINGERPRINT = "kit-send-run-stalled";
 
 /** Lê `onboarding.kit_transport.enabled` sem lançar — config ilegível vira
@@ -135,6 +140,45 @@ export function readKitTransportEnabled(configPath: string): { enabled: unknown;
   } catch (e) {
     return { enabled: undefined, error: (e as Error).message };
   }
+}
+
+/** #10604: lê `onboarding.followup.enabled` sem lançar (mesma disciplina de `readKitTransportEnabled`). */
+export function readFollowupEnabled(configPath: string): { enabled: unknown; error: string | null } {
+  try {
+    const raw = JSON.parse(readFileSync(configPath, "utf8")) as { onboarding?: { followup?: { enabled?: unknown } } };
+    return { enabled: raw.onboarding?.followup?.enabled, error: null };
+  } catch (e) {
+    return { enabled: undefined, error: (e as Error).message };
+  }
+}
+
+/** #10604/#10605: achado do executor das sequências de apoio/formulário — a
+ *  lição do #10603 (etapa falhando 5 semanas sem ninguém ver). Travado por
+ *  texto pendente NÃO é achado (estado esperado; o painel mostra). */
+export function toFollowupAlarmFinding(evaluation: FollowupHealthEvaluation): AlarmFinding {
+  const notRunning = evaluation.reason === "rodada_ausente" || evaluation.reason === "rodada_parada";
+  return {
+    check: FOLLOWUP_CHECK,
+    fingerprint: notRunning ? FOLLOWUP_NOT_RUNNING_FINGERPRINT : FOLLOWUP_FAILURE_FINGERPRINT,
+    family: "estado",
+    title: notRunning
+      ? "[diar.ia.br] Executor das sequências de apoio/formulário do onboarding não está rodando"
+      : "[diar.ia.br] Sequências de apoio/formulário do onboarding falhando em rodadas seguidas",
+    body: [
+      "Achado automático do alarme `Diaria-Onboarding-Continuity-Alarm` (#10604/#10605).",
+      "",
+      notRunning
+        ? `Sinal: ${evaluation.reason === "rodada_ausente" ? "nenhuma rodada registrada" : `última rodada em ${evaluation.lastRunAt}`} ` +
+          "com `onboarding.followup.enabled: true` (passo `followup` da task `Diaria-Onboarding-Welcome-Run`)."
+        : `Sinal: ${evaluation.consecutiveFailedRuns} rodadas \`--send\` seguidas com falha (lote falho, teto de lote, consulta ao Kit ou ao formulário).`,
+      "",
+      "Ver `followup.last_run` em `data/onboarding/store.json` e o painel `/assinantes` do Studio.",
+      "",
+      `Comentada/fechada sozinha quando o sinal sumir por ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas.`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P1",
+  };
 }
 
 /** Subconjunto do estado de issues que pertence aos checks avaliados nesta
@@ -281,8 +325,10 @@ export interface ContinuityRoundInput {
   store: Pick<
     OnboardingStore,
     "consecutive_zero_detections" | "last_zero_detection_run_at" | "kit_transport" | "consecutive_email3_failures" | "last_email3_error"
-  >;
+  > & Partial<Pick<OnboardingStore, "followup">>;
   cfgRead: { enabled: unknown; error: string | null };
+  /** #10604: `onboarding.followup.enabled`. Ausente = check das sequências não avaliado. */
+  followupCfgRead?: { enabled: unknown; error: string | null };
   now?: Date;
 }
 
@@ -292,6 +338,8 @@ export interface ContinuityRound {
   evaluation: OnboardingContinuityEvaluation;
   /** `null` quando o check Kit não foi avaliado (transporte Brevo ou desconhecido). */
   kitEvaluation: KitTransportHealthEvaluation | null;
+  /** #10604: `null` quando o check das sequências não foi avaliado. */
+  followupEvaluation: FollowupHealthEvaluation | null;
   /** Checks que participam da reconciliação de issues nesta rodada. */
   evaluatedChecks: Set<string>;
   findings: AlarmFinding[];
@@ -357,7 +405,23 @@ export function evaluateContinuityRound(input: ContinuityRoundInput): Continuity
     // junction `data/` desmontada, criaria `data/onboarding/` real.
     evaluatedChecks.add(KIT_TRANSPORT_CHECK);
   }
-  return { transport, evaluation, kitEvaluation, evaluatedChecks, findings };
+
+  // #10604/#10605: executor das sequências — só com o switch LIGADO; desligado
+  // (store lido) entra sem achado, pra uma issue aberta fechar sozinha.
+  let followupEvaluation: FollowupHealthEvaluation | null = null;
+  const fcfg = input.followupCfgRead;
+  if (fcfg != null && fcfg.error == null) {
+    if (fcfg.enabled === true) {
+      followupEvaluation = evaluateFollowupHealth(input.storeExists, input.corrupted, input.store.followup, now);
+      if (followupEvaluation.verdict !== "cannot-verify") {
+        evaluatedChecks.add(FOLLOWUP_CHECK);
+        if (followupEvaluation.verdict === "stale") findings.push(toFollowupAlarmFinding(followupEvaluation));
+      }
+    } else if (input.storeExists && !input.corrupted) {
+      evaluatedChecks.add(FOLLOWUP_CHECK);
+    }
+  }
+  return { transport, evaluation, kitEvaluation, followupEvaluation, evaluatedChecks, findings };
 }
 
 async function main(): Promise<void> {
@@ -372,7 +436,8 @@ async function main(): Promise<void> {
   if (cfgRead.error != null) {
     console.error(`${LOG_PREFIX} platform.config.json ilegível (${cfgRead.error}) — check do transporte Kit NÃO avaliado nesta rodada.`);
   }
-  const round = evaluateContinuityRound({ storeExists, corrupted, store, cfgRead });
+  const followupCfgRead = readFollowupEnabled(PLATFORM_CONFIG_PATH);
+  const round = evaluateContinuityRound({ storeExists, corrupted, store, cfgRead, followupCfgRead });
   const { transport, evaluation, kitEvaluation, evaluatedChecks, findings: alarmFindings } = round;
   console.log(`${LOG_PREFIX} transporte ativo: ${transport}`);
 
@@ -478,6 +543,12 @@ export function buildContinuityAlarmMessage(
   }
   if (kitEvaluation != null && qualifying.some((r) => r.check === KIT_TRANSPORT_CHECK)) {
     parts.push(buildKitTransportAlarmEmail(kitEvaluation, issueLinesFor(KIT_TRANSPORT_CHECK)));
+  }
+  if (qualifying.some((r) => r.check === FOLLOWUP_CHECK)) {
+    parts.push({
+      subject: "⚠️ Diaria-Onboarding-Continuity-Alarm: sequências de apoio/formulário com problema",
+      body: "O executor das sequências de apoio (D+30/90/180/360) e formulário do onboarding parou ou está falhando (#10604/#10605)." + issueLinesFor(FOLLOWUP_CHECK),
+    });
   }
   if (qualifying.some((r) => r.check === EMAIL3_CHECK)) {
     parts.push({

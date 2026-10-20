@@ -121,6 +121,7 @@ import {
   type OnboardingKitLotKind,
   type OnboardingKitLotPlan,
   type LotReconciliationDecision,
+  type KitBroadcastLot,
 } from "./lib/onboarding-kit-transport.ts";
 import { loadOnboardingConfig, fetchSubscriptionByIdKit } from "./onboarding-welcome-run.ts";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -1184,7 +1185,7 @@ function newLotScheduleSafety(): LotScheduleSafety {
  */
 async function verifyDraftAndSchedule(
   deps: PilotKitDeps,
-  lot: OnboardingKitLot,
+  lot: KitBroadcastLot,
   tagId: number,
   sendAtFn: () => string,
   st: LotScheduleSafety,
@@ -1241,7 +1242,7 @@ async function verifyDraftAndSchedule(
  */
 async function cleanupUnconfirmedLot(
   deps: PilotKitDeps,
-  lot: OnboardingKitLot,
+  lot: KitBroadcastLot,
   msg: string,
   st: LotScheduleSafety,
   alert?: OrphanBroadcastAlert,
@@ -1318,7 +1319,7 @@ async function cleanupUnconfirmedLot(
  */
 export async function runProductionKitLot(
   deps: PilotKitDeps,
-  lot: OnboardingKitLot,
+  lot: KitBroadcastLot,
   opts: {
     kitIdBySubscription: Record<string, number | null | undefined>;
     subject: string;
@@ -1384,8 +1385,9 @@ export async function approveProductionEmail3Lot(
   }
 }
 
-/** Alerta de produção: `notifyEditor` "urgente" (issue + e-mail na criação). */
-function productionOrphanAlert(): OrphanBroadcastAlert {
+/** Alerta de produção: `notifyEditor` "urgente" (issue + e-mail na criação).
+ *  Exportado pro executor das sequências de apoio/formulário (#10604/#10605). */
+export function productionOrphanAlert(): OrphanBroadcastAlert {
   return async ({ lot_id, broadcast_id, reason }) => {
     await notifyEditor({
       check: "onboarding-kit-transport-orphan-broadcast",
@@ -1703,7 +1705,9 @@ export function isWriteBlockedByKillSwitch(writeRequested: boolean, enabled: boo
   return writeRequested && enabled !== true && !pilot;
 }
 
-function buildPilotKitDeps(kitCfg: KitConfig): PilotKitDeps {
+/** Deps reais do Kit pra `runProductionKitLot` — exportado pro executor das
+ *  sequências de apoio/formulário (#10604/#10605). */
+export function buildPilotKitDeps(kitCfg: KitConfig): PilotKitDeps {
   return {
     findTagIdByName: (name) => findTagIdByName(name, kitCfg),
     createTag: (name) => createTag(name, kitCfg),

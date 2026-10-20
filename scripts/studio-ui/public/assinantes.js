@@ -48,6 +48,13 @@ const el = {
   onboardingKitLotsTbody: document.getElementById("onboarding-kit-lots-tbody"),
   onboardingKitLotsEmpty: document.getElementById("onboarding-kit-lots-empty"),
   onboardingKitPilot: document.getElementById("onboarding-kit-pilot"),
+  onboardingAlerts: document.getElementById("onboarding-alerts"),
+  onboardingFollowupBlocked: document.getElementById("onboarding-followup-blocked"),
+  onboardingStepsTbody: document.getElementById("onboarding-steps-tbody"),
+  onboardingPeopleNaoApoia: document.getElementById("onboarding-people-nao-apoia"),
+  onboardingPeopleSort: document.getElementById("onboarding-people-sort"),
+  onboardingPeopleCount: document.getElementById("onboarding-people-count"),
+  onboardingPeopleTbody: document.getElementById("onboarding-people-tbody"),
 };
 
 function escapeHtml(s) {
@@ -499,6 +506,86 @@ function renderOnboardingRefreshErrors(refreshErrors) {
   el.onboardingRefreshErrors.innerHTML = `⚠ Falha ao consultar ${refreshErrors.length} campanha(s) na Brevo — entradas afetadas aparecem como "Falha de consulta":<ul>${items}</ul>`;
 }
 
+// #10606 — contagem por e-mail, tabela por pessoa (e-mail já vem MASCARADO
+// do servidor) e falha em destaque no topo da página.
+const FOLLOWUP_MOTIVO_LABELS = {
+  aguardando_confirmacao: "aguardando confirmação",
+  na_fila: "na fila",
+  d3_nao_venceu_ou_na_fila: "D+3 não venceu / na fila",
+  d10_nao_venceu_ou_na_fila: "D+10 não venceu / na fila",
+  lote_kit_nao_confirmado: "lote Kit não confirmado",
+  vencida: "janela passou (base anterior ou envio travado)",
+  espacamento: "adiado (espaçamento entre apoio e formulário)",
+  apoia: "já apoia",
+  nao_ativo: "não ativo",
+  consulta_falhou: "consulta ao Kit falhou",
+  acima_do_teto: "acima do teto do lote",
+  ja_em_lote: "já em lote confirmado",
+};
+
+function motivosHtml(rec) {
+  const parts = Object.entries(rec ?? {}).map(([k, n]) => {
+    const label = FOLLOWUP_MOTIVO_LABELS[k] ?? (k.startsWith("bloqueado_") ? `travado (${k.slice(10)})` : k);
+    return `${escapeHtml(label)}: ${n}`;
+  });
+  return parts.length ? parts.join("<br>") : "—";
+}
+
+let onboardingPeople = [];
+
+function renderOnboardingPeople() {
+  let rows = onboardingPeople.slice();
+  if (el.onboardingPeopleNaoApoia.checked) rows = rows.filter((r) => r.apoia !== true);
+  const sort = el.onboardingPeopleSort.value;
+  rows.sort((a, b) =>
+    sort === "form" ? b.formRecebidos - a.formRecebidos : sort === "cadastro" ? (b.cadastroAt ?? "").localeCompare(a.cadastroAt ?? "") : b.apoioRecebidos - a.apoioRecebidos,
+  );
+  const shown = rows.slice(0, 500);
+  el.onboardingPeopleCount.textContent = `${rows.length} pessoa(s)${rows.length > shown.length ? ` — mostrando as ${shown.length} primeiras` : ""}.`;
+  const yesNo = (v) => (v == null ? "sem dado" : v ? "sim" : "não");
+  el.onboardingPeopleTbody.innerHTML = shown
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.emailMasked)}</td><td>${fmtTime(r.cadastroAt)}</td><td class="mono">${r.apoioRecebidos}</td><td class="mono">${r.formRecebidos}</td><td>${r.preencheu ? "sim" : "não"}</td><td>${yesNo(r.apoia)}</td></tr>`,
+    )
+    .join("");
+}
+
+function renderOnboardingFollowup(followup) {
+  if (!followup) {
+    el.onboardingAlerts.hidden = true;
+    el.onboardingFollowupBlocked.hidden = true;
+    el.onboardingStepsTbody.innerHTML = "";
+    onboardingPeople = [];
+    renderOnboardingPeople();
+    return;
+  }
+  if (followup.alerts.length > 0) {
+    el.onboardingAlerts.hidden = false;
+    el.onboardingAlerts.innerHTML =
+      `⚠ Onboarding com falha:<ul>` + followup.alerts.map((a) => `<li><strong>${escapeHtml(a.etapa)}</strong>: ${escapeHtml(a.mensagem)}</li>`).join("") + `</ul>`;
+  } else {
+    el.onboardingAlerts.hidden = true;
+  }
+  const blocked = [];
+  if (followup.blocked.apoio) blocked.push(`Apoio D+30/90/180/360 travado: ${followup.blocked.apoio.detalhe}`);
+  if (followup.blocked.form) blocked.push(`Formulário travado: ${followup.blocked.form.detalhe}`);
+  el.onboardingFollowupBlocked.hidden = blocked.length === 0 && followup.lastRunAt != null;
+  el.onboardingFollowupBlocked.textContent =
+    followup.lastRunAt == null ? "Executor das sequências de apoio/formulário ainda sem rodada registrada." : blocked.join(" · ");
+  el.onboardingStepsTbody.innerHTML = followup.steps
+    .map(
+      (s) =>
+        `<tr><td>${escapeHtml(s.label)}</td><td class="mono">${s.recebidos}</td><td class="mono">${s.porTransporte.kit}</td><td class="mono">${s.porTransporte.brevo}</td><td>${motivosHtml(s.pendentes)}</td><td>${motivosHtml(s.pulados)}</td><td class="mono">${s.falhos}</td></tr>`,
+    )
+    .join("");
+  onboardingPeople = followup.people;
+  renderOnboardingPeople();
+}
+
+el.onboardingPeopleNaoApoia.addEventListener("change", renderOnboardingPeople);
+el.onboardingPeopleSort.addEventListener("change", renderOnboardingPeople);
+
 function renderOnboardingData(data) {
   // #7917 item 1 (fleet review PR #8955): `db.corrupted` é distinto de
   // "sem dados" — um store.json presente mas ilegível NUNCA deve renderizar
@@ -512,6 +599,7 @@ function renderOnboardingData(data) {
     renderOnboardingStale([]);
     renderOnboardingProviderCounts(null);
     renderOnboardingKitLots(null);
+    renderOnboardingFollowup(null);
     return;
   }
   el.onboardingCorrupted.hidden = true;
@@ -522,6 +610,7 @@ function renderOnboardingData(data) {
     renderOnboardingStale([]);
     renderOnboardingProviderCounts(null);
     renderOnboardingKitLots(null);
+    renderOnboardingFollowup(null);
     return;
   }
   el.onboardingNodata.hidden = true;
@@ -538,6 +627,7 @@ function renderOnboardingData(data) {
   renderOnboardingStale(data.summary.staleDrafts);
   renderOnboardingProviderCounts(data.summary.sentByProvider);
   renderOnboardingKitLots(data.kitLots);
+  renderOnboardingFollowup(data.followup);
 }
 
 async function loadOnboarding() {
