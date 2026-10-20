@@ -162,8 +162,10 @@ export interface OnboardingEmail3Info {
    *  `createdAt`. */
   ageDays: number | null;
   /** `true` quando `stage` é `"rascunho_criado"`/`"agendado"` E
-   *  `ageDays >= STALE_DRAFT_DAYS` — "aguardando ação humana há tempo
-   *  demais" (issue: "rascunhos pendentes mostram idade e próxima ação"). */
+   *  `ageDays >= STALE_DRAFT_DAYS` — parado há tempo demais (issue:
+   *  "rascunhos pendentes mostram idade e próxima ação"). No Kit, desde o
+   *  e-mail 3 automático (20/10/2026), um lote `created` é agendamento não
+   *  confirmado que a próxima rodada reconcilia — parado = algo travou. */
   stale: boolean;
   /** Texto curto, pro editor — nunca vazio. */
   nextAction: string;
@@ -264,7 +266,7 @@ function buildEmail3Info(entry: OnboardingEntry, input: Email3ResolutionInput): 
             ? "nenhuma — lote cancelado"
             : stale
               ? `lote Kit parado há ${age} dia(s) sem agendar/enviar — revisar broadcast ${kitLot.broadcast_id ?? "(sem id ainda)"}`
-              : "aguardar ação humana de agendar/enviar o broadcast Kit";
+              : `agendamento não confirmado; a próxima rodada do executor Kit reconcilia — intervir só se parado há ${STALE_DRAFT_DAYS} dia(s) ou mais`;
     return { stage, provider: "kit", campaignOrBroadcastId: kitLot.broadcast_id, createdAt: kitLot.created_at, ageDays: age, stale, nextAction };
   }
 

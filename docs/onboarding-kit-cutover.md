@@ -2,10 +2,10 @@
 
 **Status: FLIP AUTORIZADO pelo editor em 20/10/2026** ("pode ligar",
 sessão `/diaria-develop` 261020, depois de aprovar os e-mails do piloto). O
-PR do flip liga `onboarding.kit_transport.enabled`, declara a task
-`Diaria-Onboarding-Kit-Transport-Run` e torna o e-mail 3 automático (§1). O
-arme do timer no `300` e o acompanhamento do 1º ciclo (§3, passos 3-5)
-ficam com o coordenador depois do merge. Até 20/10 este documento era só o
+PR do flip (#10607) liga `onboarding.kit_transport.enabled`, põe o executor
+Kit como 2º passo (`kit`) da task `Diaria-Onboarding-Welcome-Run` e torna o
+e-mail 3 automático (§1). Regenerar os units no `300` e acompanhar o 1º
+ciclo (§3, passos 3-5) ficam com o coordenador depois do merge. Até 20/10 este documento era só o
 procedimento acordado antes da virada — a issue #7922 dizia: "Sua criação
 não autoriza enviar e-mails, alterar a conta, armar serviços nem executar a
 virada em produção nesta conversa".
@@ -39,16 +39,22 @@ tag).
 - ~~O e-mail 3 continua rascunho com aprovação humana explícita.~~
   **Revogado em 20/10/2026 por decisão do editor** (comentário
   `decisao-editor` na #7922): o e-mail 3 **sai automático**. No Kit, o
-  `--send` diário agenda o lote de e-mail 3 igual aos e-mails 1/2 e o
-  confirma pela mesma releitura (`confirmOrCleanUpScheduledLot`);
+  `--send` diário trata o lote de e-mail 3 igual aos e-mails 1/2
+  (`runProductionKitLot`): broadcast criado RASCUNHO, audiência conferida
+  (tag com exatamente os destinatários + `subscriber_filter` relido só com
+  a tag do lote), só então agendado por PATCH e relido de novo;
   `buildOnboardingBroadcastInput` não força mais `send_at: null` e
   `assertEmail3ScheduleAuthorized` foi removido. A elegibilidade não muda
   (pelo menos 1 abertura de edição até D+10) e as coortes com `seeded_by`
   seguem fora. `--approve-email3-lot <id> --send-at <iso>` continua
   existindo como comando MANUAL opcional (reagendar à mão, ou agendar um
   rascunho legado), mas o fluxo diário não depende dele. O e-mail 3 segue
-  o transporte do e-mail 1 da mesma entrada (§2.4), então quem entrou pelo
-  Kit não depende do lado Brevo do e-mail 3, tratado na #10603.
+  o transporte do e-mail 1 da mesma entrada (§2.4), e só o executor dono
+  avalia a elegibilidade e grava o estado final (`skipped_*`,
+  `campaign_created`) — a rodada Brevo nem decide nem persiste o e-mail 3 de
+  entrada do Kit (`buildRunPlan` com `ownsEmail3`, `stripForeignEmail3Delta`).
+  Então quem entrou pelo Kit não depende do lado Brevo do e-mail 3, tratado
+  na #10603.
 - Nenhum outro uso da Brevo (diária, reativação, Clarice) é tocado por este
   corte — escopo explícito da issue.
 
@@ -82,16 +88,15 @@ Mecanicamente, isto significa:
    `filterKitPlanForBrevoInFlight` recebe os lotes e pula
    (`kit_lot_existente`) qualquer entrada já presente num lote confirmado da
    mesma etapa, de qualquer dia.
-3. A identidade "novas entradas" é operacionalizada por **qual dos dois
-   scripts processa a detecção do dia primeiro** e cria a entrada no store
-   com `email1_sent_at: null` ainda vazio — a partir desse instante, qual
-   executor efetivamente ENVIA o e-mail 1 dessa entrada é quem primeiro
-   rodar com seu próprio kill switch ligado. Hoje só o kill switch Brevo
-   está ligado (`onboarding-welcome-run.ts` não tem kill switch dedicado —
-   é o caminho em produção); o corte real é: **ligar
-   `onboarding.kit_transport.enabled=true` E, no mesmo commit/mudança de
-   config, impedir `onboarding-welcome-run.ts` de processar candidatos a
-   e-mail 1 para os quais o Kit já criou um lote** (ver item 4).
+3. Quem DETECTA é sempre `onboarding-welcome-run.ts` (passo `run` da task
+   `Diaria-Onboarding-Welcome-Run`): cria a entrada no store com
+   `email1_sent_at: null`. Com `onboarding.kit_transport.enabled=true`
+   (ligado em 20/10/2026), o e-mail 1 de toda entrada nova é do Kit
+   (`ownerTransportFor`), a Brevo o pula (`kit_transport_ativo`), e o
+   executor Kit roda logo depois, no passo `kit` da MESMA task — nunca
+   antes de a rodada Brevo gravar as entradas novas (uma task separada às
+   09:07 não as via: a rodada Brevo leva ~13 min e grava no fim, e o
+   boas-vindas atrasaria ~24h).
 4. **Risco identificado e MITIGADO nos DOIS lados (#8966, guard implementado).**
    Os dois executores rodam sobre o MESMO `selectCandidatesNeedingRefresh`/
    `buildRunPlan`, e se ambos tiverem seus respectivos "envio" habilitado ao
@@ -128,9 +133,16 @@ Mecanicamente, isto significa:
    entrou pelo Kit recebe o e-mail 3 pelo Kit, e o executor Brevo o pula
    (skip `kit_transport_ativo`); o Kit pula quem é da Brevo (skip
    `escada_iniciada_na_brevo`). Antes, o `email3_campaign` ficava fora (o
-   escopo do #8966 era só e-mail 1/2) e, como a Brevo roda às 09:05 e o Kit
-   às 09:07, o e-mail 3 dos cadastros novos acabava na campanha Brevo,
-   quebrada na #10603. Continuam valendo como defesa em profundidade:
+   escopo do #8966 era só e-mail 1/2) e, como a Brevo roda antes do Kit, o
+   e-mail 3 dos cadastros novos acabava na campanha Brevo, quebrada na
+   #10603. Além da decisão de dono no plano, a decisão de ELEGIBILIDADE e o
+   estado final do e-mail 3 são escritos só pelo dono: a Brevo não avalia
+   nem grava `skipped_*` em entrada do Kit (`buildRunPlan` com
+   `ownsEmail3`), e a persistência Brevo devolve ao valor de partida os
+   campos do e-mail 3 de entrada do Kit antes do merge
+   (`stripForeignEmail3Delta`), então nunca sobrescreve um
+   `campaign_created` que o Kit gravou durante a rodada. O executor Kit
+   grava as decisões terminais dele (`persistKitEmail3Decisions`). Continuam valendo como defesa em profundidade:
    `email3_state` deixa de ser `pending` quando um transporte cria a
    campanha/lote, a releitura do disco sob lock do lado Brevo, e os DOIS
    filtros checam lote Kit de e-mail 3: entry já coberta
@@ -163,7 +175,7 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
 
 - [x] Guard do item 2.4 acima (mutua-exclusão entre os dois executores
       para candidatos NOVOS) implementado, com teste de regressão (#8966)
-      — ainda pendente de REVISÃO humana antes do flip real.
+      — revisado nos fleet reviews das PRs #8976/#9181 e do flip (#10607).
 - [x] Piloto supervisionado (seção 4) executado (30/09/2026) e aprovado
       pelo editor (20/10/2026).
 - [x] `data/snippets/onboarding-{1,2,3}.md` confirmados corretos para
@@ -207,12 +219,13 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
         `test/onboarding-continuity-kit-transport-7922.test.ts` e
         `test/onboarding-kit-transport-run-counters-7922.test.ts`.
   - [ ] Confirmação em produção: depende de 1 ciclo real depois do flip
-        (rodada `--send` do executor Kit seguida do alarme). A task
-        `Diaria-Onboarding-Continuity-Alarm` já está ARMADA na `300` (09:10
-        BRT; `npx tsx scripts/lib/scheduled-tasks.ts --list`). A task do
-        executor Kit, `Diaria-Onboarding-Kit-Transport-Run` (09:07 BRT),
-        foi **declarada no PR do flip (20/10/2026)**; armá-la no `300` é
-        passo do coordenador depois do merge (abaixo). Sem o arme, o alarme
+        (rodada `--send` do executor Kit seguida do alarme). O executor Kit
+        é o passo `kit` de `Diaria-Onboarding-Welcome-Run` (09:05 BRT, logo
+        depois do passo `run` da Brevo); o alarme
+        `Diaria-Onboarding-Continuity-Alarm` mudou de 09:10 para 09:58 BRT
+        no PR do flip, pra ler o store depois dos dois passos. Os dois units
+        precisam ser regenerados no `300` depois do merge
+        (`scripts/setup-systemd-timers.ts --task ...`). Sem isso, o alarme
         abre a issue "executor não está rodando" já na 1ª manhã.
 - [x] Lote `unverified` nunca fica preso sem `--reconcile` agendado (#9367
       item 1): toda rodada `--send` relê os lotes abertos ANTES de planejar
@@ -223,7 +236,11 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
       voltam ao plano na mesma rodada); ainda ilegível → conta de novo em
       `lots_unverified` (a streak cresce, não zera). Por isso NÃO é preciso
       agendar `--reconcile` como task separada para o flip — ele segue
-      disponível para releitura manual. Dry-run relê só em memória.
+      disponível para releitura manual. Dry-run relê só em memória. Desde o
+      PR do flip (#10607) a CRIAÇÃO de um lote nunca deixa `unverified`:
+      releitura que falha antes ou depois do PATCH é falha (broadcast
+      apagado, lote cancelado); `created` só sobra de lote antigo ou de uma
+      releitura do `reconcileOpenLots`.
 - [x] Bordas da releitura de confirmação (`confirmOrCleanUpScheduledLot`,
       #9367 itens 2-3): só status `scheduled` (com `send_at` ecoado),
       `sending` ou `completed` confirmam — `aborted`/rascunho/fora do enum
@@ -247,15 +264,17 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
 
 Sequência de flip:
 
-1. Declarar a task agendada do executor Kit (`onboarding-kit-transport-run.ts
-   --send`, diária, ANTES das 09:10 BRT do alarme de continuidade e depois
-   das 09:05 da detecção) em `scripts/lib/scheduled-tasks.ts` e armá-la na
-   `300` via `scripts/setup-systemd-timers.ts` — no mesmo dia do flip. Sem
-   ela, nada envia pelo Kit e o alarme abre "executor não está rodando".
-   **Declarada no PR do flip (20/10/2026):** `Diaria-Onboarding-Kit-Transport-Run`,
-   09:07 BRT, log em `data/onboarding/.kit-transport-run.log`. O arme no
-   `300` (`scripts/setup-systemd-timers.ts --task Diaria-Onboarding-Kit-Transport-Run`)
-   é feito pelo coordenador depois do merge.
+1. Agendar o executor Kit (`onboarding-kit-transport-run.ts --send`) DEPOIS
+   da detecção e antes do alarme de continuidade, e armar no `300` via
+   `scripts/setup-systemd-timers.ts` no mesmo dia do flip. Sem ele, nada
+   envia pelo Kit e o alarme abre "executor não está rodando". **Feito no
+   PR do flip (20/10/2026)** como 2º passo (`kit`, com
+   `--skip-if-disabled`) da task `Diaria-Onboarding-Welcome-Run` — o
+   task-runner roda os passos em sequência e sempre roda o seguinte —, e o
+   alarme passou para 09:58 BRT. Regenerar os units no `300`
+   (`--task Diaria-Onboarding-Welcome-Run` e
+   `--task Diaria-Onboarding-Continuity-Alarm`) fica com o coordenador
+   depois do merge.
 2. `platform.config.json` → `onboarding.kit_transport.enabled: true`.
    Commitado, revisado, nunca editado direto em produção sem PR (mesma
    disciplina de "pipeline reproducible" do `CLAUDE.md`). **Feito no mesmo
@@ -290,7 +309,10 @@ Sequência de flip:
 
 **Status (30/09/2026):** doc aprovado e piloto autorizado pelo editor na
 #7922 para UM destinatário de teste (o próprio editor); kill switch de
-produção segue OFF até o editor ver o resultado.
+produção segue OFF até o editor ver o resultado. **Atualização
+(20/10/2026):** piloto executado (30/09) e aprovado; kill switch de
+produção LIGADO no PR do flip (#10607). O caminho de produção passou a usar
+a mesma sequência segura de audiência do piloto (`runProductionKitLot`).
 
 ### 4.1 Comando exato do piloto (modo `--pilot`)
 
@@ -442,8 +464,11 @@ cego que reenvie pela Brevo em cima do que o Kit já entregou.**
    forma de auditar o que ficou pendente.
 2. **Reconciliar/cancelar pendências ANTES de qualquer fallback**: rodar
    `--reconcile` para atualizar o status real de todos os lotes não-
-   terminais contra o Kit. Para cada lote em `pending`/`created` (rascunho
-   ainda não enviado), decidir explicitamente:
+   terminais contra o Kit. `pending` é lote sem broadcast; `created` é
+   broadcast cujo agendamento NÃO foi confirmado (releitura falhou numa
+   rodada anterior, ou rascunho cujo DELETE falhou — `schedule_failed`):
+   pode estar agendado de fato no Kit, então confira pelo `--reconcile`
+   antes de decidir. Para cada um, decidir explicitamente:
    - Se o conteúdo/timing ainda faz sentido: deixar como rascunho e
      agendar manualmente mais tarde (não é uma emergência automática).
    - Se o rollback é por um problema no CONTEÚDO/segmentação: `--cancel-lot
@@ -469,9 +494,16 @@ cego que reenvie pela Brevo em cima do que o Kit já entregou.**
    consolidado 260928c, issue #8979) confirmou o cenário descrito nesta
    seção: entrada com e-mail 1/2 servido por lote Kit `completed` seria
    reenviada pela Brevo assim que o rollback desligasse o switch. Só um
-   lote `cancelled` (ou a ausência de qualquer lote) libera a Brevo para
-   aquela etapa — não é preciso mais nenhuma ação manual de conferência
-   antes de reativar o transporte Brevo, o guard já recusa a duplicação.
+   lote `cancelled` (ou a ausência de qualquer lote, ou um `created` com
+   `schedule_failed`) libera a Brevo para aquela etapa — não é preciso mais
+   nenhuma ação manual de conferência antes de reativar o transporte Brevo,
+   o guard já recusa a duplicação. **Exceção do e-mail 3:** com o switch
+   desligado a Brevo vira dona do e-mail 3 de TODAS as entradas, mas a
+   campanha Brevo pula (`kit_lot_existente`, #9151) quem está num lote Kit
+   de e-mail 3 não-cancelado — inclusive `created`. Um lote de e-mail 3
+   `created` deixado para trás no rollback segura o e-mail 3 dessas
+   entradas até ser reconciliado ou cancelado (`--cancel-lot`); limpar
+   esses lotes antes do rollback é follow-up.
 4. **Alarme de continuidade no rollback**: com o switch `false`, o check do
    transporte Kit (`onboarding-continuity-alarm.ts`, check
    `onboarding-kit-transport`) deixa de se aplicar — uma issue dele que

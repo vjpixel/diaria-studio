@@ -26,7 +26,7 @@
  */
 
 import type { OnboardingEntry, OnboardingStore } from "./onboarding-store.ts";
-import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot } from "./onboarding-kit-transport.ts";
+import { findKitLotForEntry, hasConfirmedKitLotForEntry, type OnboardingKitLot, type OnboardingKitLotKind } from "./onboarding-kit-transport.ts";
 
 // ---------------------------------------------------------------------------
 // Snippets (data/snippets/onboarding-{1,2,3}.md)
@@ -346,8 +346,16 @@ export function buildRunPlan(opts: {
   email3Days: number;
   email3GraceDays: number;
   snippets: PlanSnippets;
+  /**
+   * #7922 (fleet review da PR #10607): só o executor DONO do e-mail 3 da
+   * entrada decide a elegibilidade e grava o estado final
+   * (`skipped_no_open`/`skipped_sem_dados`) ou põe a entry no cohort. Sem
+   * isto, a rodada Brevo (09:05) decidia e persistia o e-mail 3 de entradas
+   * do Kit antes do filtro de dono. Ausente = decide pra todas (compat).
+   */
+  ownsEmail3?: (entry: OnboardingEntry) => boolean;
 }): RunPlanResult {
-  const { entries, statsById, nowSec, email2Days, email3Days, email3GraceDays, snippets } = opts;
+  const { entries, statsById, nowSec, email2Days, email3Days, email3GraceDays, snippets, ownsEmail3 } = opts;
   const actions: RunAction[] = [];
   const skips: RunSkip[] = [];
   const detectedEntries: OnboardingEntry[] = [];
@@ -400,7 +408,12 @@ export function buildRunPlan(opts: {
     // --- E-mail 3: D+10 condicional ---
     // #7723: D+10 conta da CONFIRMAÇÃO (`reguaAnchorSec`), não do cadastro.
     const anchor3 = reguaAnchorSec(entry);
-    if (entry.email3_state === "pending" && anchor3 != null && nowSec >= anchor3 + email3Days * DAY_S) {
+    if (
+      entry.email3_state === "pending" &&
+      anchor3 != null &&
+      nowSec >= anchor3 + email3Days * DAY_S &&
+      (ownsEmail3 == null || ownsEmail3(entry))
+    ) {
       const dec = email3Eligibility(entry, statsById[entry.subscription_id] ?? null, nowSec, email3Days);
       if (dec.eligible) {
         cohort3.push(entry);
@@ -564,8 +577,8 @@ export function zeroDetectionAlarm(
 export type OnboardingTransport = "brevo" | "kit";
 
 /**
- * Decisão ÚNICA de qual transporte é dono do próximo passo (e-mail 1/2) de
- * uma entrada — fonte de verdade consultada pelos DOIS executores
+ * Decisão ÚNICA de qual transporte é dono do próximo passo (e-mail 1, 2 ou
+ * 3) de uma entrada — fonte de verdade consultada pelos DOIS executores
  * (`onboarding-welcome-run.ts`/Brevo e `onboarding-kit-transport-run.ts`/Kit)
  * pra que a mútua-exclusão do corte Brevo→Kit (#7922 §2.4, #8966) nunca
  * dependa de duas implementações concordarem por acaso — a raiz do achado
@@ -578,9 +591,10 @@ export type OnboardingTransport = "brevo" | "kit";
  * histórico de transporte) — por isso a decisão consulta o campo de
  * proveniência já persistido na entry:
  *
- *   - Kill switch desligado (`kitTransportEnabled === false`, estado atual
- *     em produção): Brevo é dono de tudo — o Kit ainda nem existe pra essas
- *     entradas.
+ *   - Kill switch desligado (`kitTransportEnabled === false` — o rollback
+ *     do §6; ligado em produção desde 20/10/2026): Brevo é dona de tudo. O
+ *     guard de lote Kit existente (#8979) continua impedindo a Brevo de
+ *     reenviar o que o Kit já entregou.
  *   - Kill switch ligado — em ordem, a primeira regra que casa vence:
  *       1. `email1_transport` gravado na entry (#9015) → esse transporte,
  *          para e-mail 1, 2 e 3. É a proveniência EXPLÍCITA, gravada no envio
@@ -604,8 +618,10 @@ export type OnboardingTransport = "brevo" | "kit";
  * transporte do e-mail 1 da MESMA entrada, igual ao e-mail 2. Até ali o
  * `email3_campaign` ficava fora (o #8966 pedia só e-mail 1/2) e os DOIS
  * executores planejavam o e-mail 3 das mesmas entradas: como a Brevo roda
- * às 09:05 e o Kit às 09:07, o e-mail 3 de quem entrou pelo Kit acabava na
- * campanha Brevo (rascunho, quebrada na #10603). Continuam valendo, como
+ * antes do Kit, o e-mail 3 de quem entrou pelo Kit acabava na campanha
+ * Brevo (rascunho, quebrada na #10603). A elegibilidade e o estado final
+ * também são só do dono (`buildRunPlan` com `ownsEmail3`,
+ * `stripForeignEmail3Delta`). Continuam valendo, como
  * defesa em profundidade: o estado da entry (`email3_state` deixa de ser
  * `pending` quando um transporte cria a campanha/lote), a checagem de LOTE
  * Kit do e-mail 3 nos dois filtros (#9059 lado Kit, #9151 lado Brevo) e a
@@ -616,7 +632,7 @@ export type OnboardingTransport = "brevo" | "kit";
  */
 export function ownerTransportFor(
   entry: OnboardingEntry,
-  kind: "email1" | "email2" | "email3",
+  kind: OnboardingKitLotKind,
   kitTransportEnabled: boolean,
 ): OnboardingTransport {
   if (!kitTransportEnabled) return "brevo";
@@ -624,6 +640,42 @@ export function ownerTransportFor(
   if (entry.seeded_by) return "brevo";
   if (kind === "email1") return "kit";
   return "brevo";
+}
+
+/** Campos do e-mail 3 que só o executor DONO da entrada pode gravar (#7922). */
+export const EMAIL3_OWNED_FIELDS = ["email3_state", "email3_decided_at", "email3_campaign_id", "email3_kit_lot_id"] as const;
+
+/**
+ * #7922 (fleet review da PR #10607): antes de persistir a rodada de um
+ * executor, devolve os campos do e-mail 3 de toda entry ALHEIA (`isForeign`)
+ * ao valor do `baseline` — o delta da rodada fica vazio nesses campos e o
+ * merge (`persistStoreDelta`) nunca os escreve, nem num conflito em que o
+ * valor desta rodada prevaleceria. Muta `updated`; devolve quantas entries
+ * tiveram campo revertido.
+ *
+ * @pure (sem I/O — só muta o objeto recebido)
+ */
+export function stripForeignEmail3Delta(
+  baseline: { entries: Record<string, OnboardingEntry> },
+  updated: { entries: Record<string, OnboardingEntry> },
+  isForeign: (entry: OnboardingEntry) => boolean,
+): number {
+  let n = 0;
+  for (const [id, upd] of Object.entries(updated.entries)) {
+    const base = baseline.entries[id];
+    if (!base || !isForeign(base)) continue;
+    const u = upd as unknown as Record<string, unknown>;
+    const b = base as unknown as Record<string, unknown>;
+    let touched = false;
+    for (const k of EMAIL3_OWNED_FIELDS) {
+      if (JSON.stringify(u[k]) === JSON.stringify(b[k])) continue;
+      if (b[k] === undefined) delete u[k];
+      else u[k] = b[k];
+      touched = true;
+    }
+    if (touched) n++;
+  }
+  return n;
 }
 
 /**
@@ -640,10 +692,11 @@ export function ownerTransportFor(
  * kill switch (`kitTransportEnabled`).** Antes deste fix, o switch
  * desligado era passagem livre byte a byte — exatamente o "fallback cego"
  * que `docs/onboarding-kit-cutover.md` §6.3 proíbe no procedimento de
- * rollback: uma entrada que recebeu e-mail 1/2 por um lote Kit (gravado só
- * em `store.kit_transport.lots`, sem tocar `email{1,2}_sent_at`) ficaria
- * `null` nesses campos pro lado Brevo, que a reenviaria assim que o switch
- * fosse desligado. Agora, para CADA ação `email1`/`email2`, primeiro
+ * rollback: uma entrada que recebeu e-mail 1/2 por um lote Kit (até o
+ * #9014 gravado só em `store.kit_transport.lots`, sem tocar
+ * `email{1,2}_sent_at`; desde então os dois são gravados, e esta checagem
+ * virou defesa em profundidade) ficaria `null` nesses campos pro lado Brevo,
+ * que a reenviaria assim que o switch fosse desligado. Agora, para CADA ação `email1`/`email2`, primeiro
  * consultamos `findKitLotForEntry`: se existir um lote Kit para esta etapa
  * e ele não estiver `cancelled` (`pending`/`created`/`scheduled`/
  * `completed` todos contam — conservador, doc §6.3), a ação vira skip

@@ -288,8 +288,8 @@ export function hasConfirmedKitLotForEntry(
  *     `email3_campaign_id` (id de campanha BREVO) fica intocado — o broadcast
  *     Kit mora no lote (`findKitLotForEntry`), e gravar um id Kit ali faria o
  *     Studio consultar a Brevo com um id que não é dela.
- *   - Lote `cancelled`, OU `schedule_failed` (broadcast que a releitura viu
- *     não-agendado e cujo DELETE falhou — o e-mail não sai): volta
+ *   - Lote `cancelled`, OU `created` com `schedule_failed` (broadcast que a
+ *     releitura viu não-agendado e cujo DELETE falhou — o e-mail não sai): volta
  *     `email3_state` a `pending` (e zera `email3_decided_at`) SÓ nas entries
  *     cujo `email3_kit_lot_id` aponta pra este lote. Sem o caso
  *     `schedule_failed`, a entrada marcada quando o lote ainda era `created`
@@ -342,7 +342,10 @@ function applyKitEmail3LotToEntries(
   nowIso: string,
 ): number {
   let touched = 0;
-  if (lot.status === "cancelled" || lot.schedule_failed === true) {
+  // `schedule_failed` só reabre junto com `created` (broadcast rascunho que
+  // não pôde ser apagado). Um lote contraditório `scheduled`/`completed` com
+  // a flag ainda ligada NUNCA reabre — seria o e-mail 3 em dobro.
+  if (lot.status === "cancelled" || (lot.status === "created" && lot.schedule_failed === true)) {
     for (const subId of lot.recipient_subscription_ids) {
       const entry = entries[subId];
       if (!entry || entry.email3_kit_lot_id !== lot.lot_id) continue;
@@ -762,7 +765,8 @@ export interface KitSendRunRecord {
    *  uma falha anterior há < 15 min). Rodada só com isso (nenhum lote criado)
    *  é NEUTRA na streak (#9367 item 4). */
   blocked_concurrent: number;
-  /** Candidatos que precisaram de refresh de status/stats no Kit. */
+  /** Candidatos que precisaram de refresh de status/stats no Kit — só as
+   *  entradas cujo próximo passo é do Kit (#7922, fleet review da PR #10607). */
   refresh_candidates: number;
   /** Refreshes que falharam por erro de CONSULTA (rede, ou qualquer erro HTTP
    *  exceto 404/422 — ver `isKitTransportError` em `onboarding-welcome-run.ts`) —
@@ -801,11 +805,11 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
  *     (`lots_unverified` — falha de transporte, não de entrega); ou
  *   - ≥1 ação devida barrada por guard de conteúdo (sem isto, snippet
  *     ausente/pendente produziria "0 lotes, 0 falhas" indefinidamente); ou
- *   - o refresh de TODOS os candidatos falhou por erro de transporte. Com
- *     muitos candidatos isso é o Kit fora do ar / auth quebrada; com N
- *     pequeno (1-2) pode ser um erro pontual — o limiar de 2 rodadas
- *     seguidas do alarme absorve o caso pontual. Falha PARCIAL não conta
- *     (os demais candidatos seguiram).
+ *   - ≥1 refresh falhou por erro de transporte (#7922, fleet review da PR
+ *     #10607 — antes só contava quando TODOS falhavam). Desde então o
+ *     refresh cobre só as entradas cujo próximo passo é do Kit; a que
+ *     falha fica fora da seleção nesta rodada (e-mail que não sai). O limiar
+ *     de 2 rodadas seguidas do alarme absorve o erro pontual.
  *
  * @pure
  */
@@ -814,8 +818,10 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
   if (run.lots_failed > 0) return true;
   if ((run.lots_unverified ?? 0) > 0) return true;
   if ((run.content_skipped ?? 0) > 0) return true;
-  const candidates = run.refresh_candidates ?? 0;
-  return candidates > 0 && (run.refresh_failed ?? 0) >= candidates;
+  // #7922 (fleet review da PR #10607): desde que o refresh só cobre entradas
+  // do Kit devidas nesta rodada, QUALQUER falha de transporte (rede, auth,
+  // 429/5xx) é e-mail que pode não sair — não só "todas falharam".
+  return (run.refresh_failed ?? 0) > 0;
 }
 
 /**

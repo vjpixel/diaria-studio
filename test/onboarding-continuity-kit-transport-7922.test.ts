@@ -142,9 +142,9 @@ describe("#7922 — executor Kit alimenta o sinal (recordKitSendRun / stampKitSe
     assert.equal(kt.consecutive_failed_send_runs, 0);
   });
 
-  it("Kit fora do ar (refresh de TODOS os candidatos falhou, 0 lotes tentados) conta como falha; falha parcial não", () => {
+  it("refresh com QUALQUER falha de transporte conta como falha (fleet review da PR #10607 — antes só 'todos falharam')", () => {
     assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 3, refresh_failed: 3 })), true);
-    assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 1, lots_failed: 0, refresh_candidates: 3, refresh_failed: 1 })), false);
+    assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 1, lots_failed: 0, refresh_candidates: 3, refresh_failed: 1 })), true, "falha parcial também: a entrada do Kit que falhou não recebe nesta rodada");
     assert.equal(isFailedKitSendRun(rec({ at: FRESH, lots_created: 0, lots_failed: 0, refresh_candidates: 0, refresh_failed: 0 })), false);
     assert.equal(isFailedKitSendRun({ at: FRESH, lots_created: 0, lots_failed: 0 } as KitSendRunRecord), false, "registro antigo sem os campos novos");
     assert.equal(isFailedKitSendRun(rec({ aborted: true, error: "x" })), true, "rodada abortada é falha");

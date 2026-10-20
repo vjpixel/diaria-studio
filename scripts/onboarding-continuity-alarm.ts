@@ -2,7 +2,7 @@
 /**
  * scripts/onboarding-continuity-alarm.ts (#7665, follow-up de detecção)
  *
- * Task diária (`Diaria-Onboarding-Continuity-Alarm`, 09:10 BRT, ARMADA na
+ * Task diária (`Diaria-Onboarding-Continuity-Alarm`, 09:58 BRT desde #7922 — era 09:10, ARMADA na
  * `300` — confirmado pelo drift-check em 10/09/2026, #7553; estado vivo:
  * `npx tsx scripts/lib/scheduled-tasks.ts --list`): lê `data/onboarding/store.json` e
  * alarma (issue + e-mail) quando `consecutive_zero_detections` cruza o
@@ -232,7 +232,7 @@ export function toKitTransportAlarmFinding(evaluation: KitTransportHealthEvaluat
       "",
       `Sinal: ${describeKitTransportSignal(evaluation)}`,
       "",
-      "Quem foi detectado nesse período não recebeu o e-mail 1/2, e o rascunho do e-mail 3 não nasceu.",
+      "Quem foi detectado nesse período não recebeu o e-mail 1/2, e o e-mail 3 não foi criado/agendado.",
       "Ver `kit_transport.last_send_run` e o `last_error` dos lotes em `data/onboarding/store.json`.",
       "",
       "**Rollback (§6 de `docs/onboarding-kit-cutover.md`):** com `onboarding.kit_transport.enabled`",

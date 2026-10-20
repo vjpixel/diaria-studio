@@ -24,7 +24,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer, type Server } from "node:http";
+import { startMockKitOnboarding, type MockKitOnboardingOpts } from "./_helpers/mock-kit-onboarding.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -36,7 +36,8 @@ import {
   type OnboardingKitLot,
 } from "../scripts/lib/onboarding-kit-transport.ts";
 import { reconcileOpenLots } from "../scripts/onboarding-kit-transport-run.ts";
-import { buildRunPlan, filterBrevoPlanForKitCutover, filterKitPlanForBrevoInFlight, ownerTransportFor } from "../scripts/lib/onboarding-state.ts";
+import { buildRunPlan, filterBrevoPlanForKitCutover, filterKitPlanForBrevoInFlight, ownerTransportFor, stripForeignEmail3Delta } from "../scripts/lib/onboarding-state.ts";
+import { persistStoreDelta } from "../scripts/lib/onboarding-store.ts";
 import type { OnboardingEntry, OnboardingStore } from "../scripts/lib/onboarding-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -85,79 +86,8 @@ function email3Lot(over: Partial<OnboardingKitLot> = {}): OnboardingKitLot {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Mock HTTP do Kit — só as rotas que o executor toca neste cenário.
-// ---------------------------------------------------------------------------
-
-interface MockOpts {
-  /** Releitura `GET /broadcasts/{id}` devolve rascunho sem `send_at`. */
-  rereadNoSendAt?: boolean;
-}
-
-function startMockKit(opts: MockOpts = {}): Promise<{ server: Server; url: string; hits: string[]; created: { send_at: string | null }[] }> {
-  const hits: string[] = [];
-  const created: { send_at: string | null }[] = [];
-  const broadcasts = new Map<number, { send_at: string | null }>();
-  let nextId = 4242;
-  return new Promise((resolvePromise) => {
-    const server = createServer((req, res) => {
-      let raw = "";
-      req.on("data", (c) => (raw += c));
-      req.on("end", () => {
-        const p = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-        hits.push(`${req.method} ${p}`);
-        const send = (status: number, body: unknown) => {
-          res.writeHead(status, { "content-type": "application/json" });
-          res.end(JSON.stringify(body));
-        };
-        const pagination = { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 };
-        let m: RegExpMatchArray | null;
-        if (req.method === "GET" && (m = p.match(/^\/subscribers\/(\d+)\/stats$/))) {
-          return send(200, { subscriber: { id: Number(m[1]), stats: { opened: 2 } } });
-        }
-        if (req.method === "GET" && (m = p.match(/^\/subscribers\/(\d+)$/))) {
-          return send(200, { subscriber: { id: Number(m[1]), email_address: "x@example.com", state: "active", created_at: "2026-09-01T00:00:00Z" } });
-        }
-        if (req.method === "GET" && p === "/account") return send(200, { account: { id: 111, name: "mock", plan_type: "creator" } });
-        if (req.method === "GET" && p === "/subscribers") return send(200, { subscribers: [], pagination });
-        if (req.method === "GET" && p === "/tags") return send(200, { tags: [], pagination });
-        if (req.method === "POST" && p === "/tags") {
-          return send(201, { tag: { id: 777, name: JSON.parse(raw || "{}").name, created_at: "2026-10-20T00:00:00Z" } });
-        }
-        if (req.method === "POST" && /^\/tags\/\d+\/subscribers\/\d+$/.test(p)) return send(201, { subscriber: {} });
-        if (req.method === "POST" && p === "/broadcasts") {
-          const body = JSON.parse(raw || "{}") as { send_at?: string | null };
-          const id = nextId++;
-          created.push({ send_at: body.send_at ?? null });
-          broadcasts.set(id, { send_at: body.send_at ?? null });
-          return send(201, { broadcast: { id, status: body.send_at ? "scheduled" : "draft", send_at: body.send_at ?? null, public: false, subject: "s" } });
-        }
-        if ((m = p.match(/^\/broadcasts\/(\d+)$/))) {
-          const id = Number(m[1]);
-          const b = broadcasts.get(id);
-          if (req.method === "GET") {
-            if (!b) return send(404, { errors: ["Not Found"] });
-            const drop = opts.rereadNoSendAt === true;
-            return send(200, {
-              broadcast: { id, status: drop ? "draft" : "scheduled", send_at: drop ? null : b.send_at, public: false, subject: "s" },
-            });
-          }
-          if (req.method === "DELETE") {
-            broadcasts.delete(id);
-            res.writeHead(204);
-            return res.end();
-          }
-        }
-        send(404, { error: `unexpected ${req.method} ${p}` });
-      });
-    });
-    server.listen(0, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      resolvePromise({ server, url: `http://127.0.0.1:${port}`, hits, created });
-    });
-  });
-}
+type MockOpts = MockKitOnboardingOpts;
+const emailForKitId = (id: number) => `d${id}@example.com`;
 
 function runExecutor(args: string[], kitUrl: string): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
@@ -207,8 +137,8 @@ function setup(entries: Record<string, unknown>) {
   return { dir, args, readStore };
 }
 
-async function withMock<T>(opts: MockOpts, fn: (m: { url: string; hits: string[]; created: { send_at: string | null }[] }) => Promise<T>): Promise<T> {
-  const { server, ...rest } = await startMockKit(opts);
+async function withMock<T>(opts: MockOpts, fn: (m: { url: string; hits: string[]; createdSendAt: (string | null)[] }) => Promise<T>): Promise<T> {
+  const { server, ...rest } = await startMockKitOnboarding({ emailForKitId, ...opts });
   try {
     return await fn(rest);
   } finally {
@@ -229,14 +159,14 @@ describe("#7922 (20/10/2026) — e-mail 3 automático no transporte Kit", () => 
     assert.equal(input.public, false);
   });
 
-  it("--send: lote de e-mail 3 nasce com send_at, é confirmado scheduled e a entry vira campaign_created", async () => {
+  it("--send: lote de e-mail 3 é AGENDADO (PATCH com send_at depois de conferir a audiência), confirmado scheduled, e a entry vira campaign_created", async () => {
     const t = setup({ "601": d10Entry("601") });
     try {
-      await withMock({}, async ({ url, hits, created }) => {
+      await withMock({}, async ({ url, hits, createdSendAt }) => {
         const r = await runExecutor(t.args, url);
         assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-        assert.equal(created.length, 1, "um broadcast (o lote de e-mail 3)");
-        assert.ok(created[0].send_at, "o POST do lote de e-mail 3 leva send_at preenchido (não é mais rascunho)");
+        assert.equal(createdSendAt.length, 1, "um broadcast (o lote de e-mail 3)");
+        assert.ok(hits.some((h) => h.startsWith("PATCH /broadcasts/")), "o e-mail 3 é agendado (não fica rascunho)");
         assert.ok(hits.some((h) => h.startsWith("GET /broadcasts/")), "agendamento confirmado pela releitura");
         const store = t.readStore();
         const lots = Object.values(store.kit_transport.lots as Record<string, OnboardingKitLot>);
@@ -253,12 +183,12 @@ describe("#7922 (20/10/2026) — e-mail 3 automático no transporte Kit", () => 
     }
   });
 
-  it("--send: releitura sem send_at → broadcast apagado, lote cancelado, entry volta a pending (não fica presa)", async () => {
+  it("--send: PATCH que não agenda → broadcast apagado, lote cancelado, entry volta a pending (não fica presa)", async () => {
     const t = setup({ "601": d10Entry("601") });
     try {
-      await withMock({ rereadNoSendAt: true }, async ({ url, hits }) => {
+      await withMock({ patchNoSchedule: "always" }, async ({ url, hits }) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         assert.ok(hits.some((h) => h.startsWith("DELETE /broadcasts/")));
         const store = t.readStore();
         const lot = Object.values(store.kit_transport.lots as Record<string, OnboardingKitLot>)[0]!;
@@ -274,10 +204,10 @@ describe("#7922 (20/10/2026) — e-mail 3 automático no transporte Kit", () => 
   it("--send: entry com seeded_by fica fora do lote de e-mail 3", async () => {
     const t = setup({ "601": d10Entry("601", { seeded_by: "#7675" }) });
     try {
-      await withMock({}, async ({ url, created }) => {
+      await withMock({}, async ({ url, createdSendAt }) => {
         const r = await runExecutor(t.args, url);
         assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
-        assert.equal(created.length, 0, "seed nunca entra num lote automático");
+        assert.equal(createdSendAt.length, 0, "seed nunca entra num lote automático");
         assert.equal(t.readStore().entries["601"].email3_state, "pending");
       });
     } finally {
@@ -293,6 +223,17 @@ describe("#7922 (20/10/2026) — e-mail 3 automático no transporte Kit", () => 
     assert.equal(touched, 1);
     assert.equal(entries["601"].email3_state, "pending");
     assert.equal(entries["601"].email3_kit_lot_id, undefined);
+  });
+
+  it("lote contraditório {completed|scheduled, schedule_failed:true} NUNCA reabre o e-mail 3 (seria envio em dobro)", () => {
+    for (const status of ["completed", "scheduled"] as const) {
+      const entries = {
+        "601": d10Entry("601", { email3_state: "campaign_created", email3_decided_at: iso(0), email3_kit_lot_id: "email3-2026-10-20-01" }),
+      } as unknown as Record<string, OnboardingEntry>;
+      applyKitLotToEntries(entries, email3Lot({ status, schedule_failed: true }), iso(0));
+      assert.equal(entries["601"].email3_state, "campaign_created", status);
+      assert.equal(entries["601"].email3_kit_lot_id, "email3-2026-10-20-01", status);
+    }
   });
 
   it("reconcileOpenLots relê lote de e-mail 3 created (agendamento não confirmado) e confirma pelo send_at ecoado", async () => {
@@ -401,3 +342,157 @@ describe("#7922 (20/10/2026) — dono do e-mail 3 = transporte do e-mail 1 da me
     assert.equal(excluded.length, 1);
   });
 });
+
+describe("#7922 (fleet review da PR #10607, item C) — só o dono decide e grava o estado do e-mail 3", () => {
+  it("buildRunPlan com ownsEmail3=false não avalia nem grava skipped_* (a Brevo não toca entrada do Kit)", () => {
+    const entry = d10Entry("601") as unknown as OnboardingEntry;
+    const plan = buildRunPlan({
+      entries: [entry],
+      statsById: { "601": { total_unique_opened: 0, total_clicked: 0 } },
+      nowSec: sec(0),
+      email2Days: 3,
+      email3Days: 10,
+      email3GraceDays: 10,
+      snippets: Object.fromEntries(
+        ([1, 2, 3] as const).map((n) => [n, { numero: n, assunto: `a${n}`, previewText: "p", body: "<p>c</p>", hasPendingMarker: false }]),
+      ) as never,
+      ownsEmail3: () => false,
+    });
+    assert.equal(entry.email3_state, "pending", "sem abertura, mas a decisão é do dono (Kit), não da Brevo");
+    assert.deepEqual(plan.actions, []);
+  });
+
+  it("stripForeignEmail3Delta: a rodada Brevo nunca sobrescreve campaign_created do Kit nem grava skipped_* de entrada do Kit", () => {
+    const baseline = { entries: { "601": d10Entry("601", { email1_transport: "kit" }), "602": d10Entry("602", { email1_transport: "brevo" }) } } as unknown as { entries: Record<string, OnboardingEntry> };
+    const updated = JSON.parse(JSON.stringify(baseline)) as typeof baseline;
+    updated.entries["601"].email3_state = "skipped_no_open";
+    updated.entries["601"].email3_decided_at = iso(0);
+    updated.entries["602"].email3_state = "skipped_no_open";
+    const n = stripForeignEmail3Delta(baseline, updated, (e) => ownerTransportFor(e, "email3", true) !== "brevo");
+    assert.equal(n, 1);
+    assert.equal(updated.entries["601"].email3_state, "pending", "delta do e-mail 3 de entrada Kit revertido");
+    assert.equal(updated.entries["601"].email3_decided_at, null);
+    assert.equal(updated.entries["602"].email3_state, "skipped_no_open", "entrada da Brevo segue com a decisão da Brevo");
+
+    // Persistência real: o Kit gravou campaign_created no disco durante a rodada Brevo.
+    const dir = mkdtempSync(join(tmpdir(), "kit-email3-strip-"));
+    try {
+      const storePath = join(dir, "store.json");
+      const disk = { version: 1, entries: JSON.parse(JSON.stringify(baseline.entries)), kit_transport: { lots: {} } };
+      disk.entries["601"].email3_state = "campaign_created";
+      disk.entries["601"].email3_kit_lot_id = "email3-x-01";
+      writeFileSync(storePath, JSON.stringify(disk));
+      const upd2 = JSON.parse(JSON.stringify(baseline)) as typeof baseline;
+      upd2.entries["601"].email3_state = "skipped_no_open";
+      stripForeignEmail3Delta(baseline, upd2, (e) => ownerTransportFor(e, "email3", true) !== "brevo");
+      persistStoreDelta(storePath, baseline as never, upd2 as never);
+      const after = JSON.parse(readFileSync(storePath, "utf8"));
+      assert.equal(after.entries["601"].email3_state, "campaign_created");
+      assert.equal(after.entries["601"].email3_kit_lot_id, "email3-x-01");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("executor Kit grava a decisão terminal (skipped_no_open) das entradas dele — sem isso ficariam pending pra sempre", async () => {
+    const t = setup({ "601": d10Entry("601") });
+    try {
+      await withMock({ opened: 0 }, async ({ url, createdSendAt }) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(createdSendAt.length, 0);
+        assert.equal(t.readStore().entries["601"].email3_state, "skipped_no_open");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#7922 (fleet review da PR #10607, item G1) — partição: cada entrada cai em exatamente um dos dois planos", () => {
+  const transports = ["kit", "brevo", undefined] as const;
+  const seeds = [undefined, "#7675"] as const;
+  for (const enabled of [true, false]) {
+    for (const tr of transports) {
+      for (const seed of seeds) {
+        it(`switch ${enabled ? "on" : "off"} × email1_transport=${tr ?? "undefined"} × seeded_by=${seed ?? "—"}`, () => {
+          const mk = () => d10Entry("601", { email1_transport: tr, ...(seed ? { seeded_by: seed } : {}) }) as unknown as OnboardingEntry;
+          const owner = ownerTransportFor(mk(), "email3", enabled);
+          const stats = { "601": { total_unique_opened: 2, total_clicked: 0 } };
+          const snippets = Object.fromEntries(
+            ([1, 2, 3] as const).map((n) => [n, { numero: n, assunto: `a${n}`, previewText: "p", body: "<p>c</p>", hasPendingMarker: false }]),
+          ) as never;
+          const base = { statsById: stats, nowSec: sec(0), email2Days: 3, email3Days: 10, email3GraceDays: 10, snippets };
+          const brevo = filterBrevoPlanForKitCutover(
+            buildRunPlan({ ...base, entries: [mk()], ownsEmail3: (e) => ownerTransportFor(e, "email3", enabled) === "brevo" }),
+            enabled,
+            [],
+          );
+          const kit = filterKitPlanForBrevoInFlight(
+            buildRunPlan({ ...base, entries: [mk()], ownsEmail3: (e) => ownerTransportFor(e, "email3", enabled) === "kit" }),
+            enabled,
+            [],
+          );
+          const inBrevo = email3Ids(brevo).length;
+          const inKit = email3Ids(kit).length;
+          assert.equal(inBrevo + inKit, 1, `brevo=${inBrevo} kit=${inKit}`);
+          assert.equal(inKit, owner === "kit" ? 1 : 0);
+          if (!enabled) assert.equal(inKit, 0, "switch desligado: Kit não planeja nada");
+          // Sem proveniência gravada: seed e legado são da Brevo. Com proveniência,
+          // ela manda (a semeadura grava "brevo", #9015).
+          if (tr === undefined || !enabled) assert.equal(owner, "brevo", "seed/legado sem proveniência (ou switch off) são da Brevo");
+        });
+      }
+    }
+  }
+});
+
+describe("#7922 (fleet review da PR #10607, item G2/G3) — executor real", () => {
+  it("rollback: --send com kit_transport.enabled=false e entrada Kit em D+10 → nenhum broadcast (exit 2; com --skip-if-disabled, exit 0)", async () => {
+    const t = setup({ "601": d10Entry("601", { email1_transport: "kit" }) });
+    try {
+      const cfgPath = t.args[t.args.indexOf("--config") + 1];
+      writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: false } } }));
+      await withMock({}, async ({ url, hits, createdSendAt }) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const r2 = await runExecutor([...t.args, "--skip-if-disabled"], url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.match(r2.stdout, /rollback/);
+        assert.equal(createdSendAt.length, 0);
+        assert.equal(hits.length, 0, "nenhuma chamada ao Kit");
+        assert.equal(t.readStore().entries["601"].email3_state, "pending");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("schedule_failed pelo caminho real: PATCH não agenda + DELETE 500 → lote schedule_failed, entry volta a pending e é replanejada na rodada seguinte", async () => {
+    const t = setup({ "601": d10Entry("601") });
+    try {
+      const opts: MockOpts = { patchNoSchedule: "firstBroadcast", deleteHttpStatus: 500 };
+      await withMock(opts, async ({ url, createdSendAt }) => {
+        const r = await runExecutor(t.args, url);
+        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        const s1 = t.readStore();
+        const lot = Object.values(s1.kit_transport.lots as Record<string, OnboardingKitLot>)[0]!;
+        assert.equal(lot.status, "created");
+        assert.equal(lot.schedule_failed, true);
+        assert.equal(s1.entries["601"].email3_state, "pending", "entrada não fica presa em campaign_created");
+
+        opts.deleteHttpStatus = undefined;
+        const r2 = await runExecutor(t.args, url);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.equal(createdSendAt.length, 2, "replanejada num lote novo");
+        const s2 = t.readStore();
+        const lots = Object.values(s2.kit_transport.lots as Record<string, OnboardingKitLot>);
+        assert.ok(lots.some((l) => l.status === "scheduled"));
+        assert.equal(s2.entries["601"].email3_state, "campaign_created");
+      });
+    } finally {
+      rmSync(t.dir, { recursive: true, force: true });
+    }
+  });
+});
+
