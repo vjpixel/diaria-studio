@@ -151,6 +151,16 @@ export interface OnboardingKitLot {
   kit_account_id?: string;
 }
 
+/**
+ * #10604/#10605: forma de um lote cujo `kind` não é necessariamente uma etapa
+ * da escada de boas-vindas — as sequências de apoio (D+30/90/180/360) e de
+ * formulário (`onboarding-followup.ts`) reusam a mesma maquinaria segura de
+ * criação/agendamento (`runProductionKitLot`), que nunca lê `kind` para
+ * decidir nada (só tag, destinatários e broadcast). `OnboardingKitLot` é
+ * atribuível a este tipo.
+ */
+export type KitBroadcastLot = Omit<OnboardingKitLot, "kind"> & { kind: string };
+
 /** `yyyy-mm-dd` (dia BRT do run) + kind + sequência dentro do dia — 1 lote
  *  por etapa por dia é o caso normal (todos os vencidos da rodada entram
  *  juntos); `seq` existe só para o raro caso de precisar mais de 1 lote no
@@ -581,7 +591,8 @@ export function buildOnboardingLotFilter(tagId: number): KitSubscriberFilter {
 // ---------------------------------------------------------------------------
 
 export interface BuildOnboardingBroadcastInputOpts {
-  kind: OnboardingKitLotKind;
+  /** Etapa do lote — informativo (não muda o payload; #10604 aceita kinds das sequências de apoio/formulário). */
+  kind: string;
   subject: string;
   content: string;
   previewText?: string;
@@ -617,10 +628,10 @@ export function buildOnboardingBroadcastInput(opts: BuildOnboardingBroadcastInpu
  *  depois de um crash real. */
 export const LOT_STALE_AFTER_MS = 15 * 60_000;
 
-export type LotReconciliationDecision =
+export type LotReconciliationDecision<L extends KitBroadcastLot = OnboardingKitLot> =
   /** Existe um lote com broadcast já confirmado (criado/agendado/concluído)
    *  — reusa, nunca recria. */
-  | { action: "reuse"; lot: OnboardingKitLot }
+  | { action: "reuse"; lot: L }
   /** Nenhum lote local para esta chave — seguro criar do zero. */
   | { action: "create" }
   /**
@@ -641,10 +652,10 @@ export type LotReconciliationDecision =
    * o Kit também não tem o broadcast — ver o risco residual documentado na
    * docstring do módulo, seção "Idempotência/reconciliação".
    */
-  | { action: "recreate_after_timeout"; staleLot: OnboardingKitLot }
+  | { action: "recreate_after_timeout"; staleLot: L }
   /** Lote local sem broadcast confirmado e DENTRO da janela de stale — outra
    *  rodada pode estar no meio do processamento agora. Nunca criar em cima. */
-  | { action: "blocked_concurrent"; lot: OnboardingKitLot };
+  | { action: "blocked_concurrent"; lot: L };
 
 /**
  * Decide o que fazer para uma chave de lote (`lot_id`) dado o registro local
@@ -653,11 +664,11 @@ export type LotReconciliationDecision =
  * primeiro quando há broadcast_id; só recorrer a este timeout quando não há
  * broadcast_id para reconciliar contra).
  */
-export function decideLotReconciliation(
-  existingLot: OnboardingKitLot | null,
+export function decideLotReconciliation<L extends KitBroadcastLot = OnboardingKitLot>(
+  existingLot: L | null,
   nowMs: number,
   staleAfterMs: number = LOT_STALE_AFTER_MS,
-): LotReconciliationDecision {
+): LotReconciliationDecision<L> {
   if (existingLot == null) return { action: "create" };
   if (existingLot.status === "cancelled") return { action: "create" };
   // #7922: broadcast que nunca foi agendado (releitura sem `send_at` e DELETE

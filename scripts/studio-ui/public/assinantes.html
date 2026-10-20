@@ -26,6 +26,8 @@
   </header>
 
   <main>
+    <div id="onboarding-alerts" class="panel alert-banner" role="alert" hidden></div>
+
     <section class="panel">
       <h1>Assinantes — histórico unificado</h1>
       <p class="hint">
@@ -186,6 +188,43 @@
       </div>
       <p class="hint" id="onboarding-kit-lots-empty" hidden>Nenhum lote Kit de produção no store.</p>
       <p class="hint" id="onboarding-kit-pilot" hidden></p>
+
+      <h3>Por e-mail (escada + apoio D+30/90/180/360 + formulário)</h3>
+      <p class="hint">
+        "Recebidos" = enviado/agendado confirmado pelo nosso registro
+        (<code>data/onboarding/store.json</code>), sem consultar o ESP — entrega
+        e abertura reais são outra métrica (#10606). Piloto (<code>pilot:*</code>)
+        fica fora. Nas sequências de apoio e formulário, pendentes e pulados por
+        motivo vêm da última rodada do executor.
+      </p>
+      <p class="hint" id="onboarding-followup-blocked" hidden></p>
+      <div class="table-scroll">
+        <table class="triage-table" id="onboarding-steps-table">
+          <thead>
+            <tr><th>E-mail</th><th>Recebidos</th><th>Kit</th><th>Brevo</th><th>Pendentes</th><th>Pulados</th><th>Falhos</th></tr>
+          </thead>
+          <tbody id="onboarding-steps-tbody"></tbody>
+        </table>
+      </div>
+
+      <h3>Por pessoa</h3>
+      <form id="onboarding-people-filter" class="assinantes-search-form">
+        <label><input type="checkbox" id="onboarding-people-nao-apoia" /> só quem não apoia</label>
+        <select id="onboarding-people-sort" aria-label="Ordenar">
+          <option value="apoio">mais pedidos de apoio</option>
+          <option value="form">mais e-mails de formulário</option>
+          <option value="cadastro">cadastro mais recente</option>
+        </select>
+      </form>
+      <p class="hint" id="onboarding-people-count"></p>
+      <div class="table-scroll">
+        <table class="triage-table" id="onboarding-people-table">
+          <thead>
+            <tr><th>E-mail</th><th>Cadastro</th><th>E-mails de apoio</th><th>E-mails de formulário</th><th>Preencheu</th><th>Apoia</th></tr>
+          </thead>
+          <tbody id="onboarding-people-tbody"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 

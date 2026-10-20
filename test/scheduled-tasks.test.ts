@@ -1599,11 +1599,12 @@ describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, syst
 });
 
 describe("#7922 — executor Kit do onboarding é o 2º passo de Diaria-Onboarding-Welcome-Run", () => {
-  it("passo run (Brevo) e depois passo kit (--send --skip-if-disabled), nessa ordem", () => {
+  it("passo run (Brevo), depois kit e depois followup (#10604/#10605), nessa ordem", () => {
     const t = getScheduledTaskByName("Diaria-Onboarding-Welcome-Run")!;
     assert.deepEqual(t.steps, [
       { key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] },
       { key: "kit", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send", "--skip-if-disabled"] },
+      { key: "followup", script: "scripts/onboarding-followup-run.ts", args: ["--send", "--skip-if-disabled"] },
     ]);
     assert.ok(!SCHEDULED_TASKS.find((x) => x.name === "Diaria-Onboarding-Welcome-Run")!.steps.some((s) => s.bestEffort === true), "falha de qualquer passo deixa a task failed (alarme de units)");
     assert.notEqual(t.enabled, false);

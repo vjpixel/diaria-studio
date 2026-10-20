@@ -2358,7 +2358,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Onboarding-Welcome-Run",
     description:
       "sequencia diaria do onboarding: deteccao + escadas da Brevo (passo run) e, em seguida, o executor " +
-      "do transporte Kit (passo kit: lotes de e-mail 1/2/3 das entradas do Kit)",
+      "do transporte Kit (passo kit: lotes de e-mail 1/2/3 das entradas do Kit) e as sequencias de apoio " +
+      "D+30/90/180/360 e formulario (passo followup, #10604/#10605)",
     // #7922 (fleet review da PR #10607): o executor Kit é o 2º PASSO, não uma
     // task separada. A rodada Brevo leva ~13 min e só grava as entradas novas
     // no fim; uma task Kit às 09:07 não as via, e como a Brevo já pula o
@@ -2369,6 +2370,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     steps: [
       { key: "run", script: "scripts/onboarding-welcome-run.ts", args: ["--send"] },
       { key: "kit", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send", "--skip-if-disabled"] },
+      // #10604/#10605: sequências de apoio (D+30/90/180/360) e formulário (D+6 +
+      // lembrete a cada 30 dias). Depois do passo kit (mesmo store, mesmo lock).
+      // Travado pelos textos pendentes, sai 0 sem chamar o Kit e só registra o
+      // bloqueio (`followup.last_run`, lido pelo alarme e pelo painel).
+      { key: "followup", script: "scripts/onboarding-followup-run.ts", args: ["--send", "--skip-if-disabled"] },
     ],
     logPath: "onboarding/.welcome-run.log",
     // 09:05 BRT — logo depois de Diaria-Clarice-Novos (09:00, mesmo cluster
