@@ -476,7 +476,13 @@ cego que reenvie pela Brevo em cima do que o Kit já entregou.**
    broadcast cujo agendamento NÃO foi confirmado (releitura falhou numa
    rodada anterior, ou rascunho cujo DELETE falhou — `schedule_failed`):
    pode estar agendado de fato no Kit, então confira pelo `--reconcile`
-   antes de decidir. Para cada um, decidir explicitamente:
+   antes de decidir. Desde o #10610 o `--reconcile` marca sozinho como
+   `schedule_failed` o lote `created` que o Kit mostra em RASCUNHO há mais de
+   15 min (`shouldMarkStaleDraftScheduleFailed`): o e-mail não sai sozinho, e
+   as entradas de e-mail 3 voltam a `pending` em vez de ficarem presas em
+   `campaign_created`. O rascunho continua no Kit — apague-o à mão no
+   rollback (com o switch ligado, o `--send` seguinte retenta o DELETE e
+   conta o lote como falha enquanto ele existir). Para cada um, decidir explicitamente:
    - Se o conteúdo/timing ainda faz sentido: deixar como rascunho e
      agendar manualmente mais tarde (não é uma emergência automática).
    - Se o rollback é por um problema no CONTEÚDO/segmentação: `--cancel-lot

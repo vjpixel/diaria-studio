@@ -115,6 +115,10 @@ import {
   recordKitSendRun,
   shouldExitNonZeroForKitSendRun,
   countKitContentSkips,
+  refreshKitCandidates,
+  selectEmail3InactiveExclusions,
+  LOT_STALE_AFTER_MS,
+  type RefreshKitCandidatesOpts,
   type KitSendRunRecord,
   type OnboardingKitCandidate,
   type OnboardingKitLot,
@@ -124,6 +128,7 @@ import {
   type KitBroadcastLot,
 } from "./lib/onboarding-kit-transport.ts";
 import { loadOnboardingConfig, fetchSubscriptionByIdKit } from "./onboarding-welcome-run.ts";
+import { kitIdForEntry } from "./lib/onboarding-followup.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
 import { listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
@@ -513,13 +518,14 @@ export interface ReconcileOpenLotsDeps {
 export async function reconcileOpenLots(
   opts: { storePath: string; store: OnboardingStore; persist: boolean; nowMs?: number },
   deps: ReconcileOpenLotsDeps,
-): Promise<{ results: OpenLotReconcileRow[]; stillUnverified: number }> {
+): Promise<{ results: OpenLotReconcileRow[]; stillUnverified: number; orphanDrafts: number }> {
   const { storePath, store, persist } = opts;
   const nowMs = opts.nowMs ?? Date.now();
   const nowIso = new Date(nowMs).toISOString();
   store.kit_transport ??= { lots: {} };
   const results: OpenLotReconcileRow[] = [];
   let stillUnverified = 0;
+  let orphanDrafts = 0;
   for (const lot of Object.values(store.kit_transport.lots)) {
     if (lot.status === "completed" || lot.status === "cancelled") {
       // #9060 item 1: terminal não é relido no Kit, mas as entries de um
@@ -537,9 +543,17 @@ export async function reconcileOpenLots(
     // aqui também: a releitura o vê não-agendado, apaga e cancela, e as
     // entries voltam ao plano automático (dentro da janela de graça).
     const isUnverified = lot.status === "created" && lot.schedule_failed !== true;
+    // #10610 item 1: rascunho órfão de lote `schedule_failed` (o DELETE de
+    // limpeza falhou numa rodada anterior). As entradas já foram pra um lote
+    // novo — um envio manual desse rascunho pela UI do Kit mandaria o e-mail
+    // em dobro. Com limpeza permitida, retenta o DELETE (mesma releitura de
+    // `confirmOrCleanUpScheduledLot`: agendado à mão → vira agendado; 404 da
+    // conta dona → cancelado); se o rascunho continuar lá, conta em
+    // `orphanDrafts` (falha da rodada enquanto existir).
+    const isOrphanDraft = lot.status === "created" && lot.schedule_failed === true;
     let updated: OnboardingKitLot;
     const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
-    if (isUnverified && deps.deleteBroadcast) {
+    if ((isUnverified || isOrphanDraft) && deps.deleteBroadcast) {
       updated = { ...lot };
       const outcome = await confirmOrCleanUpScheduledLot(updated, {
         getBroadcast: deps.getBroadcast,
@@ -548,13 +562,42 @@ export async function reconcileOpenLots(
       });
       updated.last_reconciled_at = nowIso;
       row.recovered = outcome;
-      if (outcome === "unverified") {
+      if (isOrphanDraft) {
+        // Releitura falha (`unverified`) ou DELETE falho de novo: o marcador
+        // segue no lote (copiado acima) e o rascunho pode seguir no Kit.
+        if (updated.status === "created" && updated.schedule_failed === true) {
+          orphanDrafts++;
+          row.error = updated.last_error ?? undefined;
+        }
+      } else if (outcome === "unverified") {
         stillUnverified++;
         row.error = updated.last_error ?? undefined;
       }
     } else {
+      // #10610 item 2: no `--reconcile` (só leitura) a releitura é capturada
+      // pra detectar o lote `created` que o Kit mostra como RASCUNHO.
+      let remoteStatus: string | null | undefined;
+      const getBroadcastSpy = async (id: number) => {
+        const r = await deps.getBroadcast(id);
+        remoteStatus = r.status;
+        return r;
+      };
       try {
-        updated = await reconcileLotWithKit(lot, deps.getBroadcast, nowIso);
+        updated = await reconcileLotWithKit(lot, getBroadcastSpy, nowIso);
+        if (isUnverified && shouldMarkStaleDraftScheduleFailed(lot, remoteStatus, nowMs)) {
+          // Rollback (switch desligado): nada mais roda o `--send` do Kit, e o
+          // lote `created` prendia as entradas (contam como confirmadas, e no
+          // e-mail 3 ficam `campaign_created`) sem e-mail nenhum. Marcar
+          // `schedule_failed` devolve as entradas ao plano (a Brevo assume no
+          // rollback) e, com o switch ligado, o próximo `--send` retenta o
+          // DELETE (item 1). Só lote velho (> LOT_STALE_AFTER_MS): um `--send`
+          // concorrente pode estar entre criar e agendar o broadcast.
+          updated = {
+            ...updated,
+            schedule_failed: true,
+            last_error: `releitura (--reconcile) viu o broadcast ${lot.broadcast_id} ainda em rascunho — e-mail não sai sozinho; lote marcado schedule_failed (entradas voltam ao plano; o rascunho fica no Kit até o próximo --send apagar) (#10610)`,
+          };
+        }
       } catch (e) {
         updated = { ...lot, last_error: (e as Error).message };
         row.error = (e as Error).message;
@@ -567,7 +610,26 @@ export async function reconcileOpenLots(
     if (persist) persistLotUpdate(storePath, updated, nowMs);
     results.push(row);
   }
-  return { results, stillUnverified };
+  return { results, stillUnverified, orphanDrafts };
+}
+
+/**
+ * #10610 item 2: no `--reconcile` só-leitura, um lote `created` (sem
+ * `schedule_failed`) cujo broadcast o Kit mostra EXATAMENTE como `draft`, e
+ * cujo registro local tem mais de `LOT_STALE_AFTER_MS`, nunca vai sair
+ * sozinho — vira `schedule_failed`. Status remoto ausente/desconhecido NÃO
+ * marca (o `created` default de `mapKitBroadcastStatusToLocal` não prova
+ * rascunho); data ilegível também não (fail-safe: tratado como recente). @pure
+ */
+export function shouldMarkStaleDraftScheduleFailed(
+  lot: Pick<OnboardingKitLot, "created_at">,
+  remoteStatus: string | null | undefined,
+  nowMs: number,
+): boolean {
+  if (remoteStatus !== "draft") return false;
+  const createdMs = Date.parse(lot.created_at);
+  if (!Number.isFinite(createdMs)) return false;
+  return nowMs - createdMs > LOT_STALE_AFTER_MS;
 }
 
 /**
@@ -1410,6 +1472,8 @@ interface NormalPlanCtx {
   kitCfg: KitConfig;
   kitTransportEnabled: boolean;
   storePath: string;
+  /** #10616: espaçamento/cooldown do refresh — injetável só pra teste. */
+  refreshOpts?: RefreshKitCandidatesOpts;
 }
 
 /**
@@ -1441,6 +1505,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     },
   );
   counters.lots_unverified += preSend.stillUnverified;
+  counters.lots_orphan_draft = (counters.lots_orphan_draft ?? 0) + preSend.orphanDrafts;
 
   // #7922 (fleet review da PR #10607, P2): só refresca entrada cujo próximo
   // passo é DESTE executor — as escadas da Brevo já são refrescadas pela
@@ -1461,25 +1526,26 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   // persistido — nunca mutar `status_detectado` numa falha (preserva o
   // último estado bom conhecido pro store), mas forçar `kit_state: null`
   // só na hora de montar `rawCandidates` (abaixo) pra quem falhou agora.
-  const refreshFailedThisRun = new Set<string>();
   counters.refresh_candidates = candidates.length;
+  // #10616: retry NA RODADA (1ª passada espaçada + passada extra após
+  // cooldown só sobre erro de consulta) antes de contar `refresh_failed` —
+  // um 429 transitório que passa no retry não marca a rodada como falha.
+  // #7922: só erro de TRANSPORTE (rede/auth/429/5xx) conta no alarme —
+  // "assinante não existe mais no Kit" é crônico por pessoa, não apagão.
+  const refreshed = await refreshKitCandidates(
+    candidates,
+    (e, diag) => fetchSubscriptionByIdKit(kitCfg, e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id, e.email, diag),
+    ctx.refreshOpts,
+  );
+  const refreshFailedThisRun = refreshed.failed;
+  counters.refresh_failed += refreshed.transportFailed;
   for (const e of candidates) {
-    // #7922: só erro de TRANSPORTE (rede/auth/5xx) conta no alarme —
-    // "assinante não existe mais no Kit" é crônico por pessoa, não apagão.
-    const diag = { transportError: false };
-    const fresh = await fetchSubscriptionByIdKit(
-      kitCfg,
-      e.kit_subscriber_id != null ? String(e.kit_subscriber_id) : e.subscription_id,
-      e.email,
-      diag,
-    );
+    const fresh = refreshed.fresh.get(e.subscription_id);
     if (fresh) {
       e.status_detectado = fresh.status ?? e.status_detectado;
       statsById[e.subscription_id] = fresh.stats ?? null;
       if (typeof fresh.resolvedKitId === "number") e.kit_subscriber_id = fresh.resolvedKitId;
     } else {
-      refreshFailedThisRun.add(e.subscription_id);
-      if (diag.transportError) counters.refresh_failed++;
       process.stderr.write(`[onboarding-kit-transport] refresh falhou pra ${e.subscription_id} — status NÃO CONFIRMADO nesta rodada, excluído da seleção (fail-safe)\n`);
     }
   }
@@ -1505,6 +1571,8 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       },
       // #7922: só o dono decide (e grava) o e-mail 3 da entrada.
       ownsEmail3: (e) => ownerTransportFor(e, "email3", ctx.kitTransportEnabled) === "kit",
+      // #10620: stats não LIDOS por erro de consulta nunca viram `skipped_sem_dados`.
+      statsUnavailable: (e) => refreshed.statsUnavailable.has(e.subscription_id),
     }),
     ctx.kitTransportEnabled,
     // #9014: defesa em profundidade — entrada já presente num lote Kit
@@ -1516,8 +1584,14 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   // das entradas do Kit é gravada AQUI — a rodada Brevo não as toca mais
   // (`ownsEmail3`). Sem isto a entrada ficaria `pending` e seria refrescada
   // e reavaliada todo dia.
+  // #10610 item 4: inclui `skipped_backlog_descartado` (#10603) — antes ele
+  // só mudava em memória e a entrada voltava `pending` (e ao refresh) toda rodada.
   const email3Decisions = Object.values(store.entries)
-    .filter((e) => email3Before.get(e.subscription_id) === "pending" && (e.email3_state === "skipped_no_open" || e.email3_state === "skipped_sem_dados"))
+    .filter(
+      (e) =>
+        email3Before.get(e.subscription_id) === "pending" &&
+        (e.email3_state === "skipped_no_open" || e.email3_state === "skipped_sem_dados" || e.email3_state === "skipped_backlog_descartado"),
+    )
     .map((e) => ({ subscription_id: e.subscription_id, email3_state: e.email3_state, email3_decided_at: e.email3_decided_at }));
   if (args.send && email3Decisions.length > 0) persistKitEmail3Decisions(storePath, email3Decisions);
 
@@ -1552,7 +1626,10 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     const rawCandidates: OnboardingKitCandidate[] = entries.map((e) => ({
       subscription_id: e.subscription_id,
       email: e.email,
-      kit_subscriber_id: e.kit_subscriber_id ?? null,
+      // #10610 item 4: entrada nascida no Kit guarda o id em `subscription_id`
+      // (sem `kit_subscriber_id`) — `kitIdForEntry` cobre os dois casos; só
+      // `kit_subscriber_id` excluía toda entrada Kit como `sem_kit_subscriber_id`.
+      kit_subscriber_id: kitIdForEntry(e),
       // #8136 fleet review, achado acima: refresh falho nesta rodada força
       // null (não-confirmado), mesmo que `status_detectado` persistido
       // ainda carregue um valor antigo "active" de uma checagem anterior.
@@ -1560,6 +1637,31 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       seeded_by: e.seeded_by ?? null,
     }));
     const { eligible, excluded } = selectEligibleKitRecipients(rawCandidates);
+    if (kind === "email3") {
+      // #10610 item 4: excluída do lote de e-mail 3 com status Kit LIDO nesta
+      // rodada e ≠ active (saiu, bounce, reclamação) ficava `pending` pra
+      // sempre, refrescada todo dia, sem contar em lugar nenhum. Vira
+      // `skipped_inactive` (terminal). Falha de consulta (`kit_state: null`)
+      // NÃO — essa já conta em `refresh_failed` e retenta amanhã.
+      const inactive = selectEmail3InactiveExclusions(excluded);
+      const decidedAt = new Date(nowSec * 1000).toISOString();
+      for (const x of inactive) {
+        const entry = store.entries[x.subscription_id];
+        if (entry?.email3_state === "pending") {
+          entry.email3_state = "skipped_inactive";
+          entry.email3_decided_at = decidedAt;
+        }
+      }
+      if (inactive.length > 0) {
+        summary.email3_skipped_inactive = inactive.length;
+        if (args.send) {
+          persistKitEmail3Decisions(
+            storePath,
+            inactive.map((x) => ({ subscription_id: x.subscription_id, email3_state: "skipped_inactive" as const, email3_decided_at: decidedAt })),
+          );
+        }
+      }
+    }
     if (eligible.length === 0) {
       // `excluded` fica como contagem (compat com o formato anterior do
       // resumo) — o MOTIVO de cada exclusão (ex: "falha de consulta" nunca
@@ -1660,7 +1762,9 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
     // identidade nova existe pra evitar.
     try {
       const snippet = loadSnippet(snippetsDirAbs, KIND_TO_SNIPPET_NUM[kind]);
-      const kitIdBySubscription = Object.fromEntries(lot.recipient_subscription_ids.map((id) => [id, store.entries[id]?.kit_subscriber_id ?? null]));
+      const kitIdBySubscription = Object.fromEntries(
+        lot.recipient_subscription_ids.map((id) => [id, store.entries[id] != null ? kitIdForEntry(store.entries[id]) : null]),
+      );
       await runProductionKitLot(buildPilotKitDeps(kitCfg), lot, {
         alert: productionOrphanAlert(),
         kitIdBySubscription,

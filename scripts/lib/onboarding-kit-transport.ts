@@ -450,6 +450,20 @@ export function selectEligibleKitRecipients(candidates: OnboardingKitCandidate[]
   return { eligible, excluded };
 }
 
+/**
+ * #10610 item 4: exclusões do lote de e-mail 3 que são decisão TERMINAL
+ * (`skipped_inactive`): status Kit lido nesta rodada e diferente de `active`.
+ * `kit_state: null` (consulta falhou) fica de fora de propósito — é
+ * retentável, não "a pessoa saiu". @pure
+ */
+export function selectEmail3InactiveExclusions(
+  excluded: OnboardingKitSelectionResult["excluded"],
+): OnboardingKitCandidate[] {
+  return excluded
+    .filter((x) => x.reason === "status_nao_confirmado" && x.candidate.kit_state != null && x.candidate.kit_state !== KIT_SENDABLE_STATE)
+    .map((x) => x.candidate);
+}
+
 // ---------------------------------------------------------------------------
 // Plano do lote
 // ---------------------------------------------------------------------------
@@ -789,6 +803,12 @@ export interface KitSendRunRecord {
    *  (`snippet_ausente`/`corpo_pendente`/`snippet_invalido`) — o e-mail não
    *  sai enquanto o snippet não for corrigido. */
   content_skipped: number;
+  /** #10610 item 1: lotes `schedule_failed` cujo rascunho continua no Kit
+   *  depois de o DELETE ser retentado no início desta rodada. As entradas já
+   *  foram pra um lote novo, então um envio manual desse rascunho pela UI
+   *  mandaria o e-mail em dobro — conta como falha enquanto existir.
+   *  Ausente = registro anterior ao campo (0). */
+  lots_orphan_draft?: number;
   /** `true` quando a rodada `--send` morreu antes de terminar (exceção,
    *  backend/config/store inválido) — os contadores acima são parciais. */
   aborted?: boolean;
@@ -816,7 +836,11 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
  *     (`lots_unverified` — falha de transporte, não de entrega); ou
  *   - ≥1 ação devida barrada por guard de conteúdo (sem isto, snippet
  *     ausente/pendente produziria "0 lotes, 0 falhas" indefinidamente); ou
- *   - ≥1 refresh falhou por erro de transporte (#7922, fleet review da PR
+ *   - ≥1 lote `schedule_failed` com rascunho órfão ainda no Kit
+ *     (`lots_orphan_draft`, #10610 item 1); ou
+ *   - ≥1 refresh falhou por erro de transporte DEPOIS do retry da rodada
+ *     (`refreshKitCandidates`, #10616 — um 429 que passa na 2ª passada não
+ *     conta) (#7922, fleet review da PR
  *     #10607 — antes só contava quando TODOS falhavam). Desde então o
  *     refresh cobre só as entradas cujo próximo passo é do Kit; a que
  *     falha fica fora da seleção nesta rodada (e-mail que não sai). O limiar
@@ -830,6 +854,7 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
   if (run.lots_failed > 0) return true;
   if ((run.lots_unverified ?? 0) > 0) return true;
   if ((run.content_skipped ?? 0) > 0) return true;
+  if ((run.lots_orphan_draft ?? 0) > 0) return true;
   // #7922 (fleet review da PR #10607): desde que o refresh só cobre entradas
   // do Kit devidas nesta rodada, QUALQUER falha de transporte (rede, auth,
   // 429/5xx) é e-mail que pode não sair — não só "todas falharam".
@@ -876,10 +901,11 @@ export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport
 
 /** Conta as ações devidas a ESTE executor barradas por guard de conteúdo.
  *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`). O
- *  e-mail 3 conta sempre: desde 20/10/2026 ele também tem dono (#7922), mas
- *  `buildRunPlan` registra UM skip pro cohort inteiro (com a 1ª entry), que
- *  pode misturar entradas Kit e Brevo — contar sempre é o lado conservador
- *  (snippet 3 ausente barra o e-mail 3 nos dois transportes).
+ *  e-mail 3 conta sempre, e é exato: `buildRunPlan` registra UM skip pro
+ *  cohort inteiro (com a 1ª entry), mas o executor Kit passa `ownsEmail3`,
+ *  então o cohort só tem entradas do Kit — nunca mistura com a Brevo
+ *  (#10610 item 3, travado em `test/onboarding-kit-robustez-10616-10620-10610.test.ts`).
+ *  A unidade é a AÇÃO barrada (1 lote de e-mail 3), não o número de pessoas.
  *  @pure */
 export function countKitContentSkips(
   skips: readonly { etapa: "email1" | "email2" | "email3"; motivo: string; entry: OnboardingEntry }[],
@@ -891,4 +917,124 @@ export function countKitContentSkips(
     if (s.etapa === "email3" || isKitOwned(s.entry, s.etapa)) n++;
   }
   return n;
+}
+
+// ---------------------------------------------------------------------------
+// Refresh dos candidatos com retry da rodada (#10616)
+// ---------------------------------------------------------------------------
+
+/** Resultado de UM refresh (status + stats) — forma de `fetchSubscriptionByIdKit`. */
+export interface KitRefreshOutcome {
+  status?: string;
+  stats: { total_unique_opened?: number | null; total_clicked?: number | null } | null;
+  resolvedKitId?: number;
+}
+
+/** Diagnóstico preenchido pelo fetcher: `transportError` = `null` por erro de
+ *  consulta (não ausência); `statsTransportError` = status veio, stats não. */
+export interface KitRefreshDiag {
+  transportError: boolean;
+  statsTransportError?: boolean;
+  /** O erro de consulta é retentável mais tarde (429, 5xx, rede). Só esses
+   *  entram na passada de retry — 401/403 não passam com o tempo. */
+  transient?: boolean;
+}
+
+export interface RefreshKitCandidatesOpts {
+  /** Espera entre consultas, ms. Default 350 — o espaçamento que o import do
+   *  #6047 mediu como seguro nos endpoints singulares do Kit (ver docstring de
+   *  `kit-client.ts`, "Rate limit"). */
+  spacingMs?: number;
+  /** Cooldown antes de cada passada de retry, ms. Default 60000. */
+  retryDelayMs?: number;
+  /** Passadas extras só sobre quem falhou por erro de consulta. Default 1. */
+  retryPasses?: number;
+  /** Injetável pra teste — nunca espera de verdade fora de produção. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface RefreshKitCandidatesResult {
+  /** Refresh que trouxe status (com ou sem stats), por `subscription_id`. */
+  fresh: Map<string, KitRefreshOutcome>;
+  /** Sem status nesta rodada (qualquer causa) — excluídos da seleção (#8136). */
+  failed: Set<string>;
+  /** Stats NÃO lidos por erro de consulta (status ou stats) depois do retry —
+   *  `buildRunPlan` nunca os marca `skipped_sem_dados` (#10620). */
+  statsUnavailable: Set<string>;
+  /** Consultas que seguiram falhando por erro de transporte depois do retry
+   *  (status OU stats) — é o número que vai pra `refresh_failed`. */
+  transportFailed: number;
+  /** Quantos candidatos entraram em alguma passada de retry. */
+  retried: number;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * #10616: refresca os candidatos com retry NA RODADA antes de declarar falha.
+ *
+ * `kitFetch` já retenta cada chamada (4 tentativas, `Retry-After` respeitado
+ * até 20s, #9291) — isso cobre o blip isolado, não a janela de rate limit de
+ * ~400 consultas sequenciais: na 1ª rodada real (20/10/2026) 5 candidatos
+ * esgotaram o retry por chamada e a rodada inteira contou como FALHA no
+ * alarme. Aqui: 1ª passada espaçada (`spacingMs`), depois `retryPasses`
+ * passadas só sobre quem falhou por erro de consulta, cada uma depois de
+ * `retryDelayMs` de cooldown. Só o que segue falhando conta em
+ * `transportFailed`. Ausência real (404, sem match por e-mail) não é
+ * retentada — é crônica por pessoa, não blip — e erro de consulta não
+ * transitório (401/403) também não: conta na hora, sem pagar o cooldown.
+ */
+export async function refreshKitCandidates<E extends { subscription_id: string }>(
+  candidates: readonly E[],
+  fetchOne: (entry: E, diag: KitRefreshDiag) => Promise<KitRefreshOutcome | null>,
+  opts: RefreshKitCandidatesOpts = {},
+): Promise<RefreshKitCandidatesResult> {
+  const spacingMs = opts.spacingMs ?? 350;
+  const retryDelayMs = opts.retryDelayMs ?? 60_000;
+  const retryPasses = opts.retryPasses ?? 1;
+  const sleep = opts.sleep ?? defaultSleep;
+
+  const last = new Map<string, { out: KitRefreshOutcome | null; transport: boolean }>();
+  /** Devolve `true` quando vale retentar (erro de consulta transitório). */
+  const attempt = async (e: E): Promise<boolean> => {
+    const diag: KitRefreshDiag = { transportError: false, statsTransportError: false, transient: false };
+    const out = await fetchOne(e, diag);
+    const transport = out == null ? diag.transportError : diag.statsTransportError === true;
+    last.set(e.subscription_id, { out, transport });
+    return transport && diag.transient === true;
+  };
+  const runPass = async (list: readonly E[]): Promise<E[]> => {
+    const failedAgain: E[] = [];
+    for (let i = 0; i < list.length; i++) {
+      if (i > 0 && spacingMs > 0) await sleep(spacingMs);
+      if (await attempt(list[i])) failedAgain.push(list[i]);
+    }
+    return failedAgain;
+  };
+
+  let pending = await runPass(candidates);
+  const retried = pending.length;
+  for (let pass = 0; pass < retryPasses && pending.length > 0; pass++) {
+    await sleep(retryDelayMs);
+    pending = await runPass(pending);
+  }
+
+  const result: RefreshKitCandidatesResult = {
+    fresh: new Map(),
+    failed: new Set(),
+    statsUnavailable: new Set(),
+    transportFailed: 0,
+    retried,
+  };
+  for (const e of candidates) {
+    const r = last.get(e.subscription_id);
+    if (r == null) continue;
+    if (r.out != null) result.fresh.set(e.subscription_id, r.out);
+    else result.failed.add(e.subscription_id);
+    if (r.transport) {
+      result.statsUnavailable.add(e.subscription_id);
+      result.transportFailed++;
+    }
+  }
+  return result;
 }
