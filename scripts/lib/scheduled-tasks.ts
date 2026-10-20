@@ -2393,6 +2393,39 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5908",
   },
   {
+    name: "Diaria-Onboarding-Kit-Transport-Run",
+    description:
+      "executor diario do transporte Kit do onboarding: cria, tageia e agenda os lotes de e-mail 1/2/3 " +
+      "vencidos (broadcasts segmentados por tag, confirmados por releitura)",
+    steps: [{ key: "run", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send"] }],
+    logPath: "onboarding/.kit-transport-run.log",
+    // 09:07 BRT — 2 minutos DEPOIS da detecção (Diaria-Onboarding-Welcome-Run,
+    // 09:05, que cria as entradas novas no store) e 3 minutos ANTES do
+    // Diaria-Onboarding-Continuity-Alarm (09:10), que lê o
+    // `kit_transport.last_send_run` gravado por esta rodada. Sem esta task,
+    // com `onboarding.kit_transport.enabled: true` nada sai pelo Kit e o
+    // alarme abre "executor não está rodando" (docs/onboarding-kit-cutover.md
+    // §3, sequência de flip, passo 1). As duas rodadas gravam o mesmo store
+    // sob o mesmo `withFileLock` (#9151), então uma sobreposição eventual da
+    // 09:05 com esta não corrompe nada.
+    schedule: { kind: "daily", hour: 9, minute: 7 },
+    // Mesmo guard das tasks-irmãs que escrevem o MESMO arquivo: sem ele, uma
+    // junction `data/` caída faria `readStore` devolver store vazio — com
+    // envio externo real em jogo.
+    guard: {
+      requiredFile: "onboarding/store.json",
+      abortMessage:
+        "store.json nao encontrado (data/onboarding/store.json) -- provavel junction data/ nao " +
+        "montada; abortando por seguranca, sem criar lote nem broadcast no Kit.",
+    },
+    // Declarada no flip de 20/10/2026 (/diaria-develop, editor autorizou).
+    // Armar só no `300` (`scripts/setup-systemd-timers.ts --task
+    // Diaria-Onboarding-Kit-Transport-Run`) — o mesmo checkout das
+    // tasks-irmãs; `data/` é junction OneDrive, armar em 2 máquinas gera
+    // escrita concorrente no store.
+    issue: "#7922",
+  },
+  {
     name: "Diaria-Onboarding-Continuity-Alarm",
     description:
       "alarma (issue + e-mail) quando a deteccao diaria de assinante novo do onboarding fica " +

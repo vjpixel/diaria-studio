@@ -43,12 +43,13 @@
  *   incondicionalmente — não é parâmetro, não há como um caller pedir
  *   `public: true` por engano (issue: "não publicar onboarding no arquivo
  *   público da Kit").
- * - **E-mail 3 (D+10) nunca sai de rascunho sozinho**: `buildOnboardingBroadcastInput`
- *   força `send_at: null` para `kind === "email3"` INDEPENDENTE do que o
- *   caller passar, e `assertEmail3ScheduleAuthorized` é o único caminho para
- *   agendar/enviar um lote já criado — exige `humanApproved: true` explícito
- *   (issue: "e-mail 3 permanece rascunho com aprovação humana para
- *   agendar/enviar").
+ * - **E-mail 3 (D+10) sai automático desde 20/10/2026** (decisão do editor
+ *   na #7922, que revoga o "e-mail 3 permanece rascunho com aprovação humana"
+ *   do corpo original da issue): `buildOnboardingBroadcastInput` trata os 3
+ *   kinds igual — o `send_at` do caller vale também pro e-mail 3, e o lote é
+ *   confirmado pela mesma releitura dos e-mails 1/2. A elegibilidade (abriu
+ *   pelo menos 1 edição até D+10, #7599) continua em `buildRunPlan`, e a
+ *   exclusão de `seeded_by` em `selectEligibleKitRecipients`.
  * - **Coortes #7665/#7675 excluídas da seleção automática**: `seeded_by`
  *   (campo que `onboarding-store.ts`/o modo dirigido #7674 já gravam pra
  *   essas duas recuperações manuais) é motivo de exclusão em
@@ -278,15 +279,21 @@ export function hasConfirmedKitLotForEntry(
  *     `email3_state = "campaign_created"` + `email3_decided_at` (= `nowIso`,
  *     a decisão, não o envio) + `email3_kit_lot_id` SÓ em entries ainda
  *     `pending` — nunca sobrescreve uma decisão terminal (`skipped_*`) nem uma
- *     campanha Brevo. `created` conta aqui porque o e-mail 3 é SEMPRE rascunho
- *     por desenho (aprovação humana pra agendar): o rascunho criado já é o
- *     estado terminal equivalente ao `campaign_created` da Brevo.
+ *     campanha Brevo. `created` segue contando (conservador): desde que o
+ *     e-mail 3 passou a sair automático (20/10/2026) um lote `created` é um
+ *     agendamento ainda não confirmado pela releitura (`unverified`), relido
+ *     pela rodada `--send` seguinte (`reconcileOpenLots`) — ou um rascunho
+ *     legado de antes da mudança. Marcar já evita um 2º lote pra mesma
+ *     pessoa enquanto a releitura não decide.
  *     `email3_campaign_id` (id de campanha BREVO) fica intocado — o broadcast
  *     Kit mora no lote (`findKitLotForEntry`), e gravar um id Kit ali faria o
  *     Studio consultar a Brevo com um id que não é dela.
- *   - Lote `cancelled`: volta `email3_state` a `pending` (e zera
- *     `email3_decided_at`) SÓ nas entries cujo `email3_kit_lot_id` aponta pra
- *     este lote.
+ *   - Lote `cancelled`, OU `schedule_failed` (broadcast que a releitura viu
+ *     não-agendado e cujo DELETE falhou — o e-mail não sai): volta
+ *     `email3_state` a `pending` (e zera `email3_decided_at`) SÓ nas entries
+ *     cujo `email3_kit_lot_id` aponta pra este lote. Sem o caso
+ *     `schedule_failed`, a entrada marcada quando o lote ainda era `created`
+ *     ficaria presa em `campaign_created` sem e-mail nenhum.
  *
  * `pending` (sem broadcast confirmado): no-op em qualquer etapa.
  *
@@ -335,7 +342,7 @@ function applyKitEmail3LotToEntries(
   nowIso: string,
 ): number {
   let touched = 0;
-  if (lot.status === "cancelled") {
+  if (lot.status === "cancelled" || lot.schedule_failed === true) {
     for (const subId of lot.recipient_subscription_ids) {
       const entry = entries[subId];
       if (!entry || entry.email3_kit_lot_id !== lot.lot_id) continue;
@@ -567,7 +574,7 @@ export function buildOnboardingLotFilter(tagId: number): KitSubscriberFilter {
 }
 
 // ---------------------------------------------------------------------------
-// Payload do broadcast — "public: false" + "D+10 sempre rascunho"
+// Payload do broadcast — "public: false" + filtro por tag do lote
 // ---------------------------------------------------------------------------
 
 export interface BuildOnboardingBroadcastInputOpts {
@@ -576,42 +583,23 @@ export interface BuildOnboardingBroadcastInputOpts {
   content: string;
   previewText?: string;
   tagId: number;
-  /** ISO — quando agendar o envio. `null` = rascunho. Ignorado (forçado a
-   *  `null`) quando `kind === "email3"`, ver docstring do módulo. */
+  /** ISO — quando agendar o envio. `null` = rascunho. Vale pros 3 kinds
+   *  (e-mail 3 automático desde 20/10/2026, ver docstring do módulo). */
   sendAt: string | null;
 }
 
 /** Monta o payload de `createBroadcast` (kit-broadcasts.ts) para um lote de
- *  onboarding — `public: false` e o guard de e-mail 3 são incondicionais,
+ *  onboarding — `public: false` e o filtro por tag são incondicionais,
  *  nunca dependem de o caller lembrar de passá-los certo. */
 export function buildOnboardingBroadcastInput(opts: BuildOnboardingBroadcastInputOpts): CreateBroadcastInput {
-  const sendAt = opts.kind === "email3" ? null : opts.sendAt;
   return {
     subject: opts.subject,
     content: opts.content,
     preview_text: opts.previewText,
     public: false,
-    send_at: sendAt,
+    send_at: opts.sendAt,
     subscriber_filter: buildOnboardingLotFilter(opts.tagId),
   };
-}
-
-/**
- * Guard que TODO caminho de agendar/enviar um lote de e-mail 3 já criado
- * (ex: `updateBroadcast(id, { send_at })`) precisa passar por ANTES de
- * chamar a API — lança se `kind === "email3"` e `humanApproved` não é
- * `true`. Nenhum outro parâmetro pode contornar isto (não há flag "confia em
- * mim"): a única forma de `humanApproved` virar `true` é o executor CLI
- * receber um flag explícito do operador (`--approve-email3-lot`), nunca um
- * default.
- */
-export function assertEmail3ScheduleAuthorized(kind: OnboardingKitLotKind, humanApproved: boolean): void {
-  if (kind === "email3" && !humanApproved) {
-    throw new Error(
-      "[onboarding-kit-transport] agendar/enviar o e-mail 3 (D+10) exige aprovação humana explícita " +
-        "(--approve-email3-lot) — nunca automático (#7922).",
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------

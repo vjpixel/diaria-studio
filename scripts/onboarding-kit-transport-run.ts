@@ -44,15 +44,19 @@
  *     porque só opera sobre um store ISOLADO e destinatários em allowlist
  *     (ver "MODO PILOTO" abaixo) — nunca toca o store nem a base real.
  *   - Backend precisa ser "kit" (`publishing.newsletter.subscriber_backend`).
- *   - E-mail 3 (D+10) só agenda com `--approve-email3-lot <lot_id> --send-at <iso>`
- *     explícitos — nunca como parte do `--send` normal.
+ *   - E-mail 3 (D+10) sai AUTOMÁTICO no `--send` desde 20/10/2026 (decisão
+ *     do editor na #7922): agendado como os e-mails 1/2 e confirmado pela
+ *     mesma releitura (`confirmOrCleanUpScheduledLot`). A elegibilidade
+ *     (abriu ≥1 edição até D+10) segue em `buildRunPlan`. `--approve-email3-lot`
+ *     fica como comando MANUAL opcional (agendar um rascunho legado de antes
+ *     da mudança, ou reagendar à mão) — o fluxo diário não depende dele.
  *
  * Uso:
  *   npx tsx scripts/onboarding-kit-transport-run.ts                    # dry-run (plano)
- *   npx tsx scripts/onboarding-kit-transport-run.ts --send              # cria/tageia lotes vencidos (email1/email2; email3 só cria RASCUNHO)
+ *   npx tsx scripts/onboarding-kit-transport-run.ts --send              # cria/tageia/agenda lotes vencidos (email1/email2/email3)
  *   npx tsx scripts/onboarding-kit-transport-run.ts --reconcile         # só releitura de status dos lotes já criados
  *   npx tsx scripts/onboarding-kit-transport-run.ts --cancel-lot <id>   # apaga (draft/scheduled) um lote
- *   npx tsx scripts/onboarding-kit-transport-run.ts --approve-email3-lot <id> --send-at <iso>
+ *   npx tsx scripts/onboarding-kit-transport-run.ts --approve-email3-lot <id> --send-at <iso>   # manual, opcional
  *
  * MODO PILOTO (#7922, seção 4 de docs/onboarding-kit-cutover.md):
  *   npx tsx scripts/onboarding-kit-transport-run.ts --pilot --pilot-recipients <email> --store <isolado> [--send]
@@ -96,7 +100,6 @@ import {
   planLot,
   selectEligibleKitRecipients,
   buildOnboardingBroadcastInput,
-  assertEmail3ScheduleAuthorized,
   decideLotReconciliation,
   reconcileLotWithKit,
   rebuildLotPlanForRecreate,
@@ -416,14 +419,14 @@ export interface OpenLotReconcileRow {
   after: string;
   error?: string;
   backfilled?: number;
-  /** Só pra lote de e-mail 1/2 `unverified` relido com limpeza permitida. */
+  /** Só pra lote `unverified` (qualquer kind, desde o e-mail 3 automático) relido com limpeza permitida. */
   recovered?: "scheduled" | "unscheduled" | "unverified";
 }
 
 export interface ReconcileOpenLotsDeps {
   getBroadcast(id: number): Promise<{ status: KitBroadcastSummary["status"]; send_at?: string | null }>;
   /**
-   * Presente = a releitura pode APAGAR o broadcast de um lote de e-mail 1/2
+   * Presente = a releitura pode APAGAR o broadcast de um lote (e-mail 1/2/3)
    * `unverified` que o Kit mostra não-agendado (mesma regra do `--send` em
    * `confirmOrCleanUpScheduledLot`). Ausente = só leitura (`--reconcile`,
    * dry-run): nunca escreve no Kit.
@@ -459,7 +462,8 @@ export interface ReconcileOpenLotsDeps {
  * Para cada lote:
  *   - terminal (`completed`/`cancelled`): backfill local das entries (#9060).
  *   - sem `broadcast_id` (`pending`): nada a reler (`claimLot` decide).
- *   - e-mail 1/2 `unverified` (`created`, sem `schedule_failed`) com
+ *   - lote `unverified` (`created`, sem `schedule_failed` — e-mail 1/2 e,
+ *     desde 20/10/2026, também o 3) com
  *     `deps.deleteBroadcast`: `confirmOrCleanUpScheduledLot`.
  *   - resto: `reconcileLotWithKit` (só leitura); falha vira `last_error`.
  *
@@ -489,7 +493,12 @@ export async function reconcileOpenLots(
     }
     if (lot.broadcast_id == null) continue;
     const before = lot.status;
-    const isUnverified = (lot.kind === "email1" || lot.kind === "email2") && lot.status === "created" && lot.schedule_failed !== true;
+    // Desde 20/10/2026 (#7922) o e-mail 3 também nasce agendado, então um
+    // lote de e-mail 3 `created` é agendamento não confirmado, igual ao 1/2.
+    // Rascunho LEGADO de e-mail 3 (anterior à mudança, nunca aprovado) cai
+    // aqui também: a releitura o vê não-agendado, apaga e cancela, e as
+    // entries voltam ao plano automático (dentro da janela de graça).
+    const isUnverified = lot.status === "created" && lot.schedule_failed !== true;
     let updated: OnboardingKitLot;
     const row: OpenLotReconcileRow = { lot_id: lot.lot_id, before, after: before };
     if (isUnverified && deps.deleteBroadcast) {
@@ -702,19 +711,16 @@ async function main(): Promise<void> {
       process.stderr.write(`[onboarding-kit-transport] lote "${args.approveEmail3LotId}" não tem broadcast criado ainda — rode --send primeiro.\n`);
       process.exit(2);
     }
-    // #8136 fleet review (code-reviewer, P3): `assertEmail3ScheduleAuthorized`
-    // só lança quando `kind === "email3" && !humanApproved` — é um NO-OP pra
-    // qualquer outro `kind` (comentário anterior aqui afirmava o contrário).
-    // Sem este check explícito, `--approve-email3-lot` aceitaria um lot_id
-    // de email1/email2 e reagendaria aquele broadcast silenciosamente.
+    // #8136 fleet review (code-reviewer, P3): sem este check explícito,
+    // `--approve-email3-lot` aceitaria um lot_id de email1/email2 e
+    // reagendaria aquele broadcast silenciosamente. Desde 20/10/2026 o
+    // comando é MANUAL e opcional (o `--send` diário já agenda o e-mail 3).
     if (lot.kind !== "email3") {
       process.stderr.write(
         `[onboarding-kit-transport] lote "${args.approveEmail3LotId}" é kind="${lot.kind}", não "email3" — --approve-email3-lot só se aplica a lotes de e-mail 3.\n`,
       );
       process.exit(2);
     }
-    // aprovação É este próprio comando (só existe por invocação explícita).
-    assertEmail3ScheduleAuthorized(lot.kind, true);
     if (args.pilot) {
       // #7922 piloto: repete prefixo + allowlist + tag + filtro e agenda pelo
       // caminho verificado (PATCH com filtro + releitura pós-PATCH).
@@ -849,7 +855,8 @@ export async function runAndRecordSendRun(
 }
 
 /**
- * #7922: confirma o agendamento de um broadcast de e-mail 1/2 recém-criado
+ * #7922: confirma o agendamento de um broadcast de onboarding recém-criado
+ * (e-mail 1/2 e, desde 20/10/2026, também o 3)
  * pela RELEITURA no Kit (mesma regra de `schedule-newsletter-kit.ts`: 2xx do
  * POST não é prova; o que vale é o `send_at` ecoado no GET — `status` é só
  * diagnóstico). Muta `lot`.
@@ -1117,8 +1124,8 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   // comparado com o gravado quando uma releitura dá 404.
   const getAccountId = memoizedKitAccountId(kitCfg);
 
-  // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote de e-mail
-  // 1/2 `unverified` de uma rodada anterior (releitura de confirmação falhou)
+  // #9367 item 1: reler os lotes abertos ANTES de planejar — um lote
+  // `unverified` de uma rodada anterior (releitura de confirmação falhou)
   // prendia as entradas em silêncio até alguém rodar `--reconcile`, que nada
   // agenda em produção. No `--send` a releitura pode limpar (apagar broadcast
   // não agendado) e persiste; no dry-run é só leitura, em memória.
@@ -1345,7 +1352,8 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
         content: snippet?.body ?? "",
         previewText: snippet?.previewText ?? undefined,
         tagId,
-        sendAt: kind === "email3" ? null : new Date(Date.now() + 60_000).toISOString(),
+        // E-mail 3 automático desde 20/10/2026 (#7922): os 3 kinds agendam igual.
+        sendAt: new Date(Date.now() + 60_000).toISOString(),
       });
       // #9487: grava a conta dona ANTES de criar — se `/account` falhar, o
       // lote nasce sem id (mesmo tratamento de um legado: 404 na releitura
@@ -1359,11 +1367,11 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       lot.broadcast_id = broadcast.id;
       lot.status = mapKitBroadcastStatusToLocal(broadcast.status);
       lot.send_at = broadcast.send_at ?? null;
-      // #7922: e-mail 1/2 nasce com `send_at` — o agendamento só vale
+      // #7922: os 3 kinds nascem com `send_at` — o agendamento só vale
       // confirmado pela RELEITURA (`confirmOrCleanUpScheduledLot`), nunca
-      // pelo `status` da resposta do POST. E-mail 3 nasce rascunho por
-      // desenho (aprovação humana), então `created` é o sucesso dele.
-      const outcome = kind === "email3" ? "scheduled" : await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg), getAccountId });
+      // pelo `status` da resposta do POST. Desde 20/10/2026 o e-mail 3 segue
+      // a mesma regra (antes nascia rascunho e `created` era o sucesso dele).
+      const outcome = await confirmOrCleanUpScheduledLot(lot, { getBroadcast: (id) => getBroadcast(id, kitCfg), deleteBroadcast: (id) => deleteBroadcast(id, kitCfg), getAccountId });
       persistLotUpdate(storePath, lot);
       if (outcome === "scheduled") {
         counters.lots_created++;

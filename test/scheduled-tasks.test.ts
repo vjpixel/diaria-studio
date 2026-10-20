@@ -1598,6 +1598,47 @@ describe("#7665 — Diaria-Onboarding-Continuity-Alarm registrada, diária, syst
   });
 });
 
+describe("#7922 — Diaria-Onboarding-Kit-Transport-Run (executor Kit do onboarding, flip de 20/10/2026)", () => {
+  const NOME = "Diaria-Onboarding-Kit-Transport-Run";
+  const minutesOf = (name: string) => {
+    const t = getScheduledTaskByName(name)!;
+    assert.equal(t.schedule.kind, "daily", `${name} deveria ser daily`);
+    const s = t.schedule as { hour: number; minute: number };
+    return s.hour * 60 + s.minute;
+  };
+
+  it("roda onboarding-kit-transport-run.ts --send, diária às 09:07, habilitada", () => {
+    const t = getScheduledTaskByName(NOME);
+    assert.ok(t, `${NOME} ausente de SCHEDULED_TASKS`);
+    assert.deepEqual(t!.steps, [{ key: "run", script: "scripts/onboarding-kit-transport-run.ts", args: ["--send"] }]);
+    assert.deepEqual(t!.schedule, { kind: "daily", hour: 9, minute: 7 });
+    assert.notEqual(t!.enabled, false, "a task do executor precisa estar ligada no flip");
+    assert.equal(t!.issue, "#7922");
+  });
+
+  it("fica DEPOIS da detecção (09:05) e ANTES do alarme de continuidade (09:10)", () => {
+    const run = minutesOf(NOME);
+    assert.ok(run > minutesOf("Diaria-Onboarding-Welcome-Run"), "precisa rodar depois da detecção que cria as entradas");
+    assert.ok(run < minutesOf("Diaria-Onboarding-Continuity-Alarm"), "o alarme lê o last_send_run desta rodada");
+  });
+
+  it("guard no mesmo store.json das tasks-irmãs; logPath próprio em onboarding/", () => {
+    const t = getScheduledTaskByName(NOME)!;
+    assert.equal(t.guard?.requiredFile, "onboarding/store.json");
+    assert.ok(t.logPath.startsWith("onboarding/"));
+    assert.ok(!SCHEDULED_TASKS.some((o) => o !== t && o.logPath === t.logPath));
+  });
+
+  it("09:07 não colide com nenhuma outra daily; nenhum outro step roda o mesmo script", () => {
+    const collisions = SCHEDULED_TASKS.filter(
+      (t) => t.name !== NOME && t.schedule.kind === "daily" && t.schedule.hour === 9 && t.schedule.minute === 7,
+    );
+    assert.deepEqual(collisions, []);
+    const others = SCHEDULED_TASKS.filter((t) => t.name !== NOME).flatMap((t) => t.steps);
+    assert.ok(!others.some((s) => s.script === "scripts/onboarding-kit-transport-run.ts"));
+  });
+});
+
 describe("#7660 — Diaria-Kit-Subscriber-State-Transition-Alarm registrada, diária 11:15, NÃO armada", () => {
   const NOME = "Diaria-Kit-Subscriber-State-Transition-Alarm";
 

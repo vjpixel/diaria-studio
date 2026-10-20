@@ -601,10 +601,13 @@ export type OnboardingTransport = "brevo" | "kit";
  *          Brevo com id nulo/zerado por `--cancel-pending` (#9015).
  *
  * `email3_campaign` fica FORA de escopo desta decisão de DONO (issue #8966 e
- * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2 — o e-mail 3 já é
- * sempre rascunho com aprovação humana explícita nos dois transportes). A
- * checagem de LOTE Kit do e-mail 3 roda nos dois filtros (#9059 lado Kit,
- * #9151 lado Brevo).
+ * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2). Quem impede o
+ * e-mail 3 em dobro é o estado da entry (`email3_state` deixa de ser
+ * `pending` assim que um dos dois transportes cria a campanha/lote) somado à
+ * checagem de LOTE Kit do e-mail 3 nos dois filtros (#9059 lado Kit, #9151
+ * lado Brevo) e à releitura do disco sob lock antes do envio Brevo
+ * (`dropActionsCoveredOnDisk`). Desde 20/10/2026 o e-mail 3 sai automático
+ * no transporte Kit (decisão do editor na #7922).
  *
  * @pure testável sem I/O
  */

@@ -15,7 +15,6 @@ import {
   selectEligibleKitRecipients,
   buildOnboardingLotFilter,
   buildOnboardingBroadcastInput,
-  assertEmail3ScheduleAuthorized,
   decideLotReconciliation,
   reconcileLotWithKit,
   mapKitBroadcastStatusToLocal,
@@ -163,7 +162,7 @@ describe("buildOnboardingLotFilter — nunca vazio/base inteira", () => {
   });
 });
 
-describe("buildOnboardingBroadcastInput — public:false e D+10 sempre rascunho", () => {
+describe("buildOnboardingBroadcastInput — public:false; e-mail 3 agenda como os demais (20/10/2026)", () => {
   it("email1/email2 aceitam send_at explícito e embutem public:false", () => {
     const input = buildOnboardingBroadcastInput({
       kind: "email1",
@@ -176,7 +175,7 @@ describe("buildOnboardingBroadcastInput — public:false e D+10 sempre rascunho"
     assert.equal(input.send_at, "2026-09-15T12:00:00.000Z");
   });
 
-  it("email3 FORÇA send_at para null mesmo se o caller passar uma data", () => {
+  it("email3 mantém o send_at do caller (decisão do editor de 20/10/2026: sai automático)", () => {
     const input = buildOnboardingBroadcastInput({
       kind: "email3",
       subject: "Apoie",
@@ -184,28 +183,13 @@ describe("buildOnboardingBroadcastInput — public:false e D+10 sempre rascunho"
       tagId: 5,
       sendAt: "2026-09-25T12:00:00.000Z",
     });
-    assert.equal(input.send_at, null, "e-mail 3 nunca sai de rascunho pela criação — precisa de aprovação humana explícita depois");
+    assert.equal(input.send_at, "2026-09-25T12:00:00.000Z");
     assert.equal(input.public, false);
   });
 
   it("subscriber_filter nunca é vazio no payload resultante", () => {
     const input = buildOnboardingBroadcastInput({ kind: "email2", subject: "s", content: "c", tagId: 3, sendAt: null });
     assert.notDeepEqual(input.subscriber_filter, []);
-  });
-});
-
-describe("assertEmail3ScheduleAuthorized — aprovação humana obrigatória pro e-mail 3", () => {
-  it("lança para email3 sem aprovação", () => {
-    assert.throws(() => assertEmail3ScheduleAuthorized("email3", false), /aprovação humana explícita/);
-  });
-
-  it("não lança para email3 com aprovação explícita", () => {
-    assert.doesNotThrow(() => assertEmail3ScheduleAuthorized("email3", true));
-  });
-
-  it("não lança para email1/email2 independente da flag (guard é específico do e-mail 3)", () => {
-    assert.doesNotThrow(() => assertEmail3ScheduleAuthorized("email1", false));
-    assert.doesNotThrow(() => assertEmail3ScheduleAuthorized("email2", false));
   });
 });
 
