@@ -63,6 +63,15 @@
  * disciplina que o épico #7172 estabeleceu para as métricas (decisão 14):
  * "não sei" e "está tudo bem" nunca podem colapsar no mesmo valor.
  *
+ * ─── 429 falso/velho no pool (#10609) ───────────────────────────────────────
+ *
+ * Um 429 gravado há mais de `CODEX_STALE_429_HOURS` (via `last_status_at`) vira
+ * `indeterminada`, não `esgotada`. Se o Hermes mantiver a conta parada mesmo
+ * assim, `hermes auth reset openai-codex` respeita o `resets_at` futuro e pode
+ * não limpá-la: confirme com um `codex exec` mínimo e, só então, limpe o
+ * `last_status`/`last_error_*` dessa entrada à mão em `~/.hermes/auth.json`
+ * (faça backup antes).
+ *
  * ─── Aviso na PENÚLTIMA conta, não só na última ─────────────────────────────
  *
  * Decisão do editor (#7250): alarmar quando resta UMA conta viva, não quando
@@ -84,6 +93,23 @@ export const CODEX_EXHAUSTION_CODE = 429;
  */
 export const CODEX_ALARM_LIVE_THRESHOLD = 1;
 
+/** Idade (horas) a partir da qual um 429 gravado deixa de ser tratado como
+ *  esgotamento confirmado (#10609): não há endpoint de saldo, então um 429
+ *  velho pode já não refletir a conta (caso memelab, 20/10/2026). */
+export const CODEX_STALE_429_HOURS = 6;
+
+/** Converte `last_status_at` (epoch s, epoch ms ou ISO) em ms; `null` se ilegível. */
+export function parseStatusAtMs(raw: number | string | null | undefined): number | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (typeof raw === "number" || /^\d+(\.\d+)?$/.test(raw)) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n < 1e12 ? n * 1000 : n;
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /** Uma entrada do `credential_pool` como o Hermes a persiste. Campos extras
  *  (tokens, fingerprints) são deliberadamente omitidos: este módulo nunca
  *  precisa deles, e não tê-los no tipo impede que vazem por acidente.
@@ -101,6 +127,8 @@ export interface CodexCredentialEntry {
   readonly last_error_reason?: string | null;
   readonly last_error_code?: number | string | null;
   readonly last_error_reset_at?: number | string | null;
+  /** Quando o Hermes gravou `last_status` (#10609). Epoch em segundos ou ISO. */
+  readonly last_status_at?: number | string | null;
 }
 
 export type CodexCredentialState = "viva" | "esgotada" | "indeterminada";
@@ -205,6 +233,20 @@ export function classifyCodexCredential(
         state: "indeterminada",
         resetsAtIso,
         reason: `${base}, mas a data de retorno já passou e nada tentou usar a conta desde então`,
+      };
+    }
+    // #10609: 429 gravado há mais de N horas não é reconfirmado — "não sei",
+    // não "esgotada". Sem `last_status_at` legível, mantém esgotada.
+    const statusAtMs = parseStatusAtMs(entry.last_status_at);
+    if (
+      statusAtMs !== null && Number.isFinite(nowMs) &&
+      nowMs - statusAtMs > CODEX_STALE_429_HOURS * 3_600_000
+    ) {
+      return {
+        label,
+        state: "indeterminada",
+        resetsAtIso,
+        reason: `${base}, mas o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h e não foi reconfirmado (rode um codex exec mínimo para confirmar)`,
       };
     }
     return { label, state: "esgotada", resetsAtIso, reason: base };
