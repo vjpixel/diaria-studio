@@ -70,7 +70,24 @@
  * assim, `hermes auth reset openai-codex` respeita o `resets_at` futuro e pode
  * não limpá-la: confirme com um `codex exec` mínimo e, só então, limpe o
  * `last_status`/`last_error_*` dessa entrada à mão em `~/.hermes/auth.json`
- * (faça backup antes).
+ * (faça backup antes). Passo a passo: `docs/scheduled-tasks-registry.md`,
+ * bloco do alarme das contas Codex.
+ *
+ * **Por que as 3 contas apareceram com o MESMO `resets_at` (20/10/2026).**
+ * Conclusão por leitura deste módulo e do script: o alarme NÃO agrega nem
+ * propaga data entre contas — `classifyCodexCredential` lê só o
+ * `last_error_reset_at` da própria entrada, e `evaluateCodexPool` só mapeia.
+ * A data idêntica já estava gravada assim em `auth.json`, e quem grava é o
+ * Hermes (código externo a este repo; nenhum script daqui escreve no pool
+ * `openai-codex`). Ou o Hermes copiou o 429 de uma conta para as outras, ou
+ * as 3 credenciais batem na mesma cota do lado da OpenAI. O alarme não tem
+ * como distinguir, então desde o #10609 ele SINALIZA a coincidência
+ * (`findSharedResetAt`) em vez de repeti-la como três fatos independentes.
+ *
+ * Sonda ativa (`codex exec` mínimo antes de declarar esgotamento) ficou de
+ * fora de propósito: este alarme nunca usa nem escreve credencial (ver o
+ * cabeçalho de `scripts/codex-credential-alarm.ts`), e uma sonda consumiria
+ * cota da própria conta que ele vigia. O 429 velho vira `indeterminada`.
  *
  * ─── Aviso na PENÚLTIMA conta, não só na última ─────────────────────────────
  *
@@ -315,6 +332,47 @@ export function evaluateCodexPool(
   };
 }
 
+/**
+ * Datas de retorno repetidas entre contas (#10609). Pura.
+ *
+ * Devolve, para cada `resetsAtIso` compartilhado por 2+ contas, os rótulos
+ * envolvidos. Contas independentes esgotadas em momentos diferentes não
+ * ganham o mesmo `resets_at` ao segundo; a coincidência indica 429 copiado
+ * entre entradas do pool (ou cota compartilhada), e é sinal para reconfirmar,
+ * não para somar três esgotamentos.
+ */
+export function findSharedResetAt(
+  verdicts: readonly CodexCredentialVerdict[],
+): ReadonlyArray<{ readonly resetsAtIso: string; readonly labels: readonly string[] }> {
+  const byIso = new Map<string, string[]>();
+  for (const v of verdicts) {
+    if (v.state === "viva" || v.resetsAtIso === null) continue;
+    const labels = byIso.get(v.resetsAtIso) ?? [];
+    labels.push(v.label);
+    byIso.set(v.resetsAtIso, labels);
+  }
+  return [...byIso.entries()]
+    .filter(([, labels]) => labels.length > 1)
+    .map(([resetsAtIso, labels]) => ({ resetsAtIso, labels }));
+}
+
+/** `true` só quando TODAS as contas estão confirmadas esgotadas (#10609).
+ *  `allExhausted` é `vivas === 0`, que também cobre pool misto de esgotadas +
+ *  indeterminadas — e nesse caso "TODAS esgotadas" seria afirmação falsa. */
+export function allConfirmedExhausted(v: CodexPoolVerdict): boolean {
+  return v.allExhausted && v.esgotadas === v.verdicts.length;
+}
+
+/** Assunto do registro do alarme. Pura, para o título e o assunto não
+ *  divergirem (antes do #10609 o assunto dizia "TODAS esgotadas" sempre que
+ *  `vivas === 0`, mesmo com contas indeterminadas). */
+export function buildCodexAlarmSubject(v: CodexPoolVerdict): string {
+  if (v.poolVazio) return "[diar.ia.br] pool de contas Codex VAZIO — nada mais está sendo vigiado";
+  if (allConfirmedExhausted(v)) return "[diar.ia.br] TODAS as contas Codex esgotadas — delegação parada";
+  if (v.allExhausted) return "[diar.ia.br] nenhuma conta Codex confirmada viva — estado a reconfirmar";
+  return `[diar.ia.br] resta ${v.vivas} conta Codex viva de ${v.verdicts.length}`;
+}
+
 /** Fingerprint para idempotência do alarme — muda quando o CONJUNTO de
  *  estados muda, não a cada leitura. Assim o alarme não repete enquanto a
  *  situação for a mesma, e volta a disparar quando piora ou melhora. */
@@ -353,27 +411,45 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
   // inteiro utilizável (3 contas vencidas e nunca retestadas, com o contínuo
   // pausado). Overclaim exatamente do tipo que esta issue existe pra remover.
   const nenhumaConfirmadaEsgotada = v.allExhausted && v.esgotadas === 0;
+  // #10609: zero vivas com MISTURA de esgotadas e indeterminadas (ex.: um 429
+  // recente + dois 429 velhos) também não é "TODAS esgotadas".
+  const todasConfirmadas = allConfirmedExhausted(v);
 
-  const titulo = v.allExhausted
-    ? nenhumaConfirmadaEsgotada
-      ? "NENHUMA conta Codex confirmada viva — e nenhuma confirmada esgotada: o estado das " +
-        `${v.verdicts.length} é desconhecido.`
-      : "TODAS as contas Codex estão esgotadas — a delegação está parada."
-    : `Resta ${v.vivas} conta Codex viva de ${v.verdicts.length}.`;
+  const titulo = !v.allExhausted
+    ? `Resta ${v.vivas} conta Codex viva de ${v.verdicts.length}.`
+    : todasConfirmadas
+      ? "TODAS as contas Codex estão esgotadas — a delegação está parada."
+      : nenhumaConfirmadaEsgotada
+        ? "NENHUMA conta Codex confirmada viva — e nenhuma confirmada esgotada: o estado das " +
+          `${v.verdicts.length} é desconhecido.`
+        : `NENHUMA conta Codex confirmada viva — ${v.esgotadas} confirmada(s) esgotada(s) e ` +
+          `${v.indeterminadas} em estado desconhecido.`;
 
-  const nota = v.allExhausted
-    ? nenhumaConfirmadaEsgotada
-      ? "A data de retorno passou para todas e nada tentou usá-las desde então — podem estar todas " +
-        "utilizáveis, ou nenhuma. Rodar qualquer trabalho delegado ao Codex resolve a dúvida."
-      : "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
-    : "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas.";
+  // #10609: a nota do caso "nenhuma confirmada" dizia sempre que a data de
+  // retorno tinha passado — falso quando a origem é um 429 velho com data
+  // FUTURA. A razão de cada conta está na linha dela; aqui só o que vale
+  // para todas as origens.
+  const nota = !v.allExhausted
+    ? "Quando a última esgotar, a delegação para — e a volta é medida em SEMANAS, não em horas."
+    : todasConfirmadas
+      ? "Nenhum trabalho delegado ao Codex vai rodar até uma conta voltar ou ser recarregada."
+      : "Nenhuma conta tem esgotamento reconfirmado para todas — podem estar todas " +
+        "utilizáveis, ou nenhuma. Um `codex exec` mínimo com a conta em dúvida resolve a dúvida.";
 
-  // #7320: `indeterminada` passou a ter DUAS origens, e a nota agregada não
+  // #7320/#10609: `indeterminada` tem TRÊS origens, e a nota agregada não
   // pode afirmar a errada. A razão específica de cada conta já sai na linha
-  // dela acima; aqui fica só o que vale para as duas.
+  // dela acima; aqui fica só o que vale para todas.
   const indet = v.indeterminadas > 0
-    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
+    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então, ou o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h e não foi reconfirmado. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
     : "";
+
+  // #10609: mesma data de retorno em 2+ contas — provável 429 copiado.
+  const compartilhadas = findSharedResetAt(v.verdicts).map(
+    (g) =>
+      `ATENÇÃO: ${g.labels.join(", ")} têm a MESMA data de retorno (${g.resetsAtIso.slice(0, 16).replace("T", " ")} UTC). ` +
+      "Contas independentes não esgotam no mesmo segundo: provável 429 de uma conta copiado para as outras " +
+      "no pool, ou cota compartilhada. Reconfirme cada conta antes de tratar como esgotamento real.",
+  );
 
   return [
     titulo,
@@ -382,6 +458,7 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
     "",
     nota,
     indet,
+    ...(compartilhadas.length > 0 ? [compartilhadas.join("\n"), ""] : []),
     `Fonte: ~/.hermes/auth.json → credential_pool["openai-codex"], lido em ${nowIso}.`,
     "Não há endpoint de saldo — estas contas são OAuth, então o único sinal é o resultado da última tentativa de uso.",
     "A data de retorno é a que a OpenAI devolve no 429 (`resets_at`), não uma estimativa nossa.",

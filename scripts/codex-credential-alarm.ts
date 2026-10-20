@@ -69,6 +69,7 @@ import {
   evaluateCodexPool,
   computeCodexPoolFingerprint,
   buildCodexAlarmMessage,
+  buildCodexAlarmSubject,
   type CodexCredentialEntry,
   type CodexPoolVerdict,
 } from "./lib/codex-credential-pool.ts";
@@ -223,11 +224,9 @@ async function main(argv: string[]): Promise<number> {
   // `notifyEditor` nunca lança pra "silencio" (só grava em run-log.jsonl),
   // então não há mais um caminho de "falha no envio" a propagar aqui.
   const { notifyEditor } = await import("./lib/editor-notify.ts");
-  const assunto = verdict.poolVazio
-    ? "[diar.ia.br] pool de contas Codex VAZIO — nada mais está sendo vigiado"
-    : verdict.allExhausted
-      ? "[diar.ia.br] TODAS as contas Codex esgotadas — delegação parada"
-      : `[diar.ia.br] resta ${verdict.vivas} conta Codex viva de ${verdict.verdicts.length}`;
+  // #10609: assunto derivado da mesma regra do título (não mais `allExhausted`
+  // cru, que dizia "TODAS esgotadas" com contas indeterminadas no pool).
+  const assunto = buildCodexAlarmSubject(verdict);
 
   await notifyEditor(
     { check: "codex-credential-alarm", fingerprint, severity: "silencio", subject: assunto, body: render(verdict, nowIso) },
