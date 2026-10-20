@@ -18,7 +18,8 @@
  *     recria o lote;
  *   - releitura que falha (rede/API) na criação → nunca agenda: broadcast
  *     apagado, lote cancelado, falha contada (fleet review da PR #10607);
- *   - rodada que conta como falha sai com exit 1 (lição do #10603);
+ *   - exit 1 só com abort ou lote falho (lição do #10603); refresh/snippet/
+ *     lote `unverified` contam só na streak do alarme;
  *   - exceção no meio da rodada → registro `aborted` com contadores parciais;
  *   - switch DESLIGADO ou `--pilot` com aborto → nada registrado;
  *   - snippet ausente → `content_skipped`, rodada falha;
@@ -315,7 +316,8 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({}, async (url) => {
         const r = await runExecutor(t.args, url);
-        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        // Conta na streak do alarme, mas não derruba a unit (só abort/lote falho saem 1).
+        assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
         const kt = t.readKt();
         assert.ok(kt.last_send_run.content_skipped >= 1, JSON.stringify(kt.last_send_run));
         assert.equal(kt.last_send_run.lots_created, 0);
@@ -357,7 +359,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({ everything: 401 }, async (url) => {
         const r = await runExecutor(t401.args, url);
-        assert.equal(r.status, 1, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+        assert.equal(r.status, 0, `refresh_failed sozinho não muda o exit code — stdout: ${r.stdout} stderr: ${r.stderr}`);
         const run = t401.readKt().last_send_run;
         assert.equal(run.refresh_candidates, 1);
         assert.equal(run.refresh_failed, 1);
@@ -761,7 +763,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
     try {
       await withMock({ seedBroadcasts: [SEED_4242_SCHEDULED], rereadHttpStatus: 401 }, async (url, hits) => {
         const r2 = await runExecutor(t.args, url);
-        assert.equal(r2.status, 1, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.equal(r2.status, 0, `lots_unverified sozinho não muda o exit code — stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         const kt = t.readKt();
         assert.equal(kt.last_send_run.lots_unverified, 1, "o lote preso segue contando");
         assert.equal(kt.consecutive_failed_send_runs, 1);
@@ -843,7 +845,7 @@ describe("#7922 — contadores da rodada --send do executor Kit (alimentam o ala
       const opts: MockOpts = { seedBroadcasts: [SEED_4242_SCHEDULED], notFoundIds: new Set([4242]), accountId: 222 };
       await withMock(opts, async (url, hits) => {
         const r2 = await runExecutor(t.args, url);
-        assert.equal(r2.status, 1, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
+        assert.equal(r2.status, 0, `stdout: ${r2.stdout} stderr: ${r2.stderr}`);
         assert.equal(JSON.parse(r2.stdout).reconciled_before_send?.[0]?.recovered, "unverified", r2.stdout);
         const kt2 = t.readKt();
         assert.equal(Object.keys(kt2.lots).length, 1, "nenhum lote novo");

@@ -256,8 +256,9 @@ describe("#7922 — painel /assinantes mostra os lotes Kit num ciclo do executor
       //    do ar pareceria uma rodada saudável "0 lotes, 0 falhas".
       writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "kit" } }, onboarding: { kit_transport: { enabled: true } } }));
       const send = await runExecutor(["--send"], configPath, storePath, snippetsDir, kit.url);
-      // Rodada que o alarme conta como falha sai 1 (fleet review da PR #10607).
-      assert.equal(send.status, 1, `--send com falha deveria sair 1. stdout: ${send.stdout} stderr: ${send.stderr}`);
+      // Conta como falha na streak do alarme, mas sem lote falho nem abort o
+      // exit code é 0 (re-review da PR #10607).
+      assert.equal(send.status, 0, `--send deveria sair 0. stdout: ${send.stdout} stderr: ${send.stderr}`);
       const summary = JSON.parse(send.stdout);
       assert.equal(summary.mode, "SEND");
       assert.deepEqual({ c: summary.send_run.lots_created, f: summary.send_run.lots_failed }, { c: 0, f: 0 });

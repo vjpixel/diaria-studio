@@ -809,7 +809,8 @@ export const CONTENT_SKIP_REASONS: ReadonlySet<string> = new Set(["snippet_ausen
  *     #10607 — antes só contava quando TODOS falhavam). Desde então o
  *     refresh cobre só as entradas cujo próximo passo é do Kit; a que
  *     falha fica fora da seleção nesta rodada (e-mail que não sai). O limiar
- *     de 2 rodadas seguidas do alarme absorve o erro pontual.
+ *     de 2 rodadas seguidas do alarme absorve o erro pontual, e o exit code
+ *     da rodada não olha pra isto (`shouldExitNonZeroForKitSendRun`).
  *
  * @pure
  */
@@ -822,6 +823,21 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
   // do Kit devidas nesta rodada, QUALQUER falha de transporte (rede, auth,
   // 429/5xx) é e-mail que pode não sair — não só "todas falharam".
   return (run.refresh_failed ?? 0) > 0;
+}
+
+/**
+ * #7922 (re-review do fleet review da PR #10607): o exit code da rodada
+ * `--send` é mais estreito que `isFailedKitSendRun`. Sai != 0 só quando a
+ * rodada abortou ou ≥1 lote falhou (inclui lote que virou `schedule_failed`
+ * nesta rodada) — falha de entrega concreta. `refresh_failed`,
+ * `content_skipped` e `lots_unverified` sozinhos contam na streak do alarme
+ * de continuidade (2 rodadas seguidas abrem issue), mas não deixam a unit
+ * `failed` no dia: um 429 transitório não é incidente.
+ *
+ * @pure
+ */
+export function shouldExitNonZeroForKitSendRun(run: KitSendRunRecord): boolean {
+  return run.aborted === true || run.lots_failed > 0;
 }
 
 /**

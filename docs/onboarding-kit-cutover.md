@@ -240,7 +240,15 @@ Pré-requisitos, todos verificados ANTES de qualquer flip:
       PR do flip (#10607) a CRIAÇÃO de um lote nunca deixa `unverified`:
       releitura que falha antes ou depois do PATCH é falha (broadcast
       apagado, lote cancelado); `created` só sobra de lote antigo ou de uma
-      releitura do `reconcileOpenLots`.
+      releitura do `reconcileOpenLots`. Se o PATCH chegou a ser tentado, a
+      releitura não provou rascunho e o DELETE falha, o executor tenta
+      desagendar (`send_at: null` + filtro) e apagar de novo; falhando,
+      grava "PODE ESTAR AGENDADO — APAGUE NO PAINEL DO KIT AGORA" com o id
+      e dispara alerta `urgente` (`notifyEditor`: issue + e-mail). O
+      `--approve-email3-lot` manual passa pela mesma confirmação
+      (`approveProductionEmail3Lot`). Exit code da rodada: só abort ou lote
+      falho saem 1; refresh/snippet/`unverified` contam só na streak do
+      alarme.
 - [x] Bordas da releitura de confirmação (`confirmOrCleanUpScheduledLot`,
       #9367 itens 2-3): só status `scheduled` (com `send_at` ecoado),
       `sending` ou `completed` confirmam — `aborted`/rascunho/fora do enum
