@@ -89,9 +89,11 @@
 #   echo "<tarefa>" | claude-delegate.sh [--tools "Read,Bash(npx tsx:*)"] \
 #     [--cwd DIR] [--budget USD] [--timeout SECS] [--model SLUG] [--effort LEVEL]
 #
-#   Elo codex (#10560, desligado por padrão): `CLAUDE_DELEGATE_CODEX_LANE=1`
-#   no ambiente do call site põe `codex:gpt-6.1-sol` (codex exec, esforço
-#   low, plano OpenAI) na frente da cadeia, com fallback nos elos de sempre.
+#   Elo codex (#10560): `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente do call
+#   site põe `codex:gpt-6.1-sol` (codex exec, esforço low, plano OpenAI)
+#   DEPOIS dos `:free` e ANTES do elo de assinatura (decisão do editor,
+#   20/10/2026). Sem a var, o elo não entra. O call site do contínuo
+#   (hermes/skills/hermes-diaria-continuo/SKILL.md §2) já liga.
 #   Também aceito como `--model codex:gpt-6.1-sol`. Env opcionais: CODEX_BIN,
 #   CODEX_LANE_SANDBOX, CODEX_LANE_QUOTA_BACKOFF_S, DIARIA_CONTINUO_SESSION_ID.
 set -euo pipefail
@@ -119,8 +121,8 @@ claude_binary_preflight
 # shellcheck source=./lib/free-quota-exhaustion.sh
 source "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/lib/free-quota-exhaustion.sh"
 
-# #10560: elo `codex exec` (Sol 6.1, esforço leve, plano OpenAI) ANTES dos
-# `:free`, DESLIGADO por padrão (`CLAUDE_DELEGATE_CODEX_LANE=1` liga). Guards
+# #10560: elo `codex exec` (Sol 6.1, esforço leve, plano OpenAI) DEPOIS dos
+# `:free` e antes da assinatura, só com `CLAUDE_DELEGATE_CODEX_LANE=1`. Guards
 # que substituem os hooks de .claude/hooks/ fora do Claude Code e preflight
 # fail-closed: ver docstring de lib/codex-lane.sh.
 # shellcheck source=./lib/codex-lane.sh
@@ -340,10 +342,14 @@ case "$BUDGET" in (*[!0-9.]*|''|.|*.*.*) echo "ERRO: --budget deve ser numérico
 # Mesma fonte de chave que o próprio Hermes usa (credential_pool.openrouter).
 # try/except (finding do review #6446): auth.json ausente/corrompido imprimia
 # traceback cru e matava o script via set -e ANTES do guard de mensagem abaixo.
+# CLAUDE_DELEGATE_HERMES_AUTH_JSON (#10560): só pra teste apontar um
+# auth.json falso e exercitar a cadeia COM os `:free` em qualquer máquina
+# (sem ele, o resultado do teste dependia de o auth.json real existir). Em
+# produção fica vazio e vale o caminho de sempre.
 KEY=$(python3 - <<'PY'
-import json
+import json, os
 try:
-    a = json.load(open('/home/vjpixel/.hermes/auth.json'))
+    a = json.load(open(os.environ.get('CLAUDE_DELEGATE_HERMES_AUTH_JSON') or '/home/vjpixel/.hermes/auth.json'))
 except Exception:
     raise SystemExit(0)  # stdout vazio -> guard do shell dá a mensagem
 for c in a.get('credential_pool', {}).get('openrouter', []):
@@ -418,15 +424,19 @@ else
       MODELS=("${ONLY_SUBSCRIPTION_LANE[@]}")
     fi
   fi
-  # #10560: elo codex (plano OpenAI) na FRENTE da cadeia, só quando ligado
-  # (`CLAUDE_DELEGATE_CODEX_LANE=1`) E com todos os guards armados. Fica fora
-  # dos dois filtros acima de propósito: não depende da chave OpenRouter nem
-  # da cota free. Preflight que falha não aborta nada — a cadeia segue como
-  # sempre foi, a partir dos `:free`.
+  # #10560: elo codex (plano OpenAI) DEPOIS dos `:free` e ANTES do elo de
+  # assinatura — decisão do editor de 20/10/2026 (/diaria-desbloqueia): os
+  # `:free` primeiro, depois o da OpenAI, e a assinatura por último. Até ali
+  # (PR #10583) o elo entrava na FRENTE da cadeia. Só quando ligado
+  # (`CLAUDE_DELEGATE_CODEX_LANE=1`) E com todos os guards armados. Entra
+  # DEPOIS dos dois filtros acima de propósito: não depende da chave
+  # OpenRouter nem da cota free, então sobrevive aos dois (sem key ou com a
+  # cota free marcada como exaurida, a cadeia vira codex → assinatura).
+  # Preflight que falha não aborta nada — a cadeia segue como antes, sem o elo.
   if codex_lane_enabled; then
     if codex_lane_try_arm "$CWD"; then
-      echo "[claude-openrouter] elo codex ligado (#10560) — tentando model=$CODEX_LANE_MODEL effort=$CODEX_LANE_EFFORT antes dos :free" >&2
-      MODELS=("$CODEX_LANE_SENTINEL" "${MODELS[@]}")
+      echo "[claude-openrouter] elo codex ligado (#10560) — model=$CODEX_LANE_MODEL effort=$CODEX_LANE_EFFORT entra depois dos :free e antes do elo de assinatura" >&2
+      mapfile -t MODELS < <(codex_lane_insert_before_subscription "$CODEX_LANE_SENTINEL" "${MODELS[@]}")
     else
       echo "[claude-openrouter] elo codex ligado mas NÃO armado (#10560): $CODEX_LANE_PREFLIGHT_REASON — seguindo na cadeia atual" >&2
     fi

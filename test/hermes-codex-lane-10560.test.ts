@@ -2,13 +2,18 @@
  * test/hermes-codex-lane-10560.test.ts (#10560)
  *
  * Elo `codex exec` (Sol 6.1, esforço low, plano OpenAI) na cadeia de
- * implementação do contínuo, ANTES dos `:free`, DESLIGADO por padrão. Nunca
- * roda `codex` real (cota compartilhada com o orquestrador): `codex`, `claude`
- * e `gh` são stubs no PATH.
+ * implementação do contínuo, DEPOIS dos `:free` e ANTES do elo de assinatura
+ * (decisão do editor, 20/10/2026), só com `CLAUDE_DELEGATE_CODEX_LANE=1`.
+ * Nunca roda `codex` real (cota compartilhada com o orquestrador): `codex`,
+ * `claude` e `gh` são stubs no PATH. O auth.json do Hermes é apontado por
+ * `CLAUDE_DELEGATE_HERMES_AUTH_JSON` — ausente por padrão (cadeia sem os
+ * `:free`, como no CI), ou um arquivo falso com `sk-or-*` nos testes da ordem
+ * completa, pra o resultado não depender da máquina.
  *
  * Trava:
- *   1. Ordem da cadeia — desligado: nada de codex; ligado: codex primeiro,
- *      fallback nos elos de sempre quando falha.
+ *   1. Ordem da cadeia — desligado: nada de codex; ligado: `:free` → codex →
+ *      assinatura, com fallback no `sonnet` quando o codex falha ou está com a
+ *      cota marcada como esgotada.
  *   2. Invocação pinada (`exec -m gpt-6.1-sol -c model_reasoning_effort="low"`).
  *   3. Ambiente do processo codex: sem OPENAI_API_KEY/ANTHROPIC_*, com
  *      core.hooksPath por env, gh shim na frente do PATH e o session-id do tick.
@@ -98,6 +103,9 @@ before(() => {
       "#!/usr/bin/env bash",
       'if [ "$1" = "--version" ]; then echo "1.0.0 (fake)"; exit 0; fi',
       'echo "$*" >> "$TMPDIR/claude-calls.log"',
+      // #10560 (ordem de 20/10): os `:free` falham sob demanda, pra cadeia
+      // chegar ao codex.
+      'case "$*" in *:free*) if [ "${FAKE_CLAUDE_FREE_FAIL:-0}" = 1 ]; then echo "erro qualquer do free" >&2; exit 1; fi ;; esac',
       'echo "resposta fake claude"',
       "exit 0",
       "",
@@ -175,6 +183,9 @@ function wrapperEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     CLAUDE_BINARY_PREFLIGHT_CMD: "claude",
     TMPDIR: runTmp,
     CODEX_BIN: join(fakeBin, "codex"),
+    // Sem chave OpenRouter por padrão (arquivo inexistente): a cadeia é só o
+    // elo de assinatura, com o codex na frente dele quando ligado.
+    CLAUDE_DELEGATE_HERMES_AUTH_JSON: join(tmp, "auth-ausente.json"),
     ...extra,
   };
   delete env.GIT_CONFIG_COUNT;
@@ -202,7 +213,9 @@ function attemptOrder(stderr: string): string[] {
   return [...stderr.matchAll(/\[claude-openrouter\] tentando model=(\S+)/g)].map((m) => m[1]);
 }
 
-const FIRST_NON_CODEX = new Set(["dots-studio/dots-3-note-preview:free", "sonnet"]);
+// Sem chave OpenRouter (default de wrapperEnv) o elo seguinte ao codex é
+// sempre o de assinatura.
+const FIRST_NON_CODEX = new Set(["sonnet"]);
 
 describe("#10560 — ordem da cadeia", () => {
   it("desligado por padrão: codex nunca é chamado", () => {
@@ -215,7 +228,7 @@ describe("#10560 — ordem da cadeia", () => {
     assert.equal(existsSync(join(runTmp, "codex-argv.log")), false);
   });
 
-  it("ligado: codex é o 1º elo e, com sucesso, nenhum claude roda", () => {
+  it("ligado, sem chave OpenRouter: codex é o 1º elo e, com sucesso, nenhum claude roda", () => {
     writeSessionFile();
     const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1" }));
     assert.equal(r.status, 0, r.stderr);
@@ -346,6 +359,119 @@ describe("#10560 — ordem da cadeia", () => {
     );
     assert.equal(r.status, 95, r.stderr);
     assert.match(r.stderr, /trabalho parcial — .*head-sha [0-9a-f]{40}/);
+  });
+});
+
+// Decisão do editor de 20/10/2026 (/diaria-desbloqueia): `:free` → codex →
+// assinatura. A 1ª versão (PR #10583) punha o codex na frente dos `:free`.
+describe("#10560 — ordem :free → codex → sonnet (decisão de 20/10)", () => {
+  const FREE = [
+    "dots-studio/dots-3-note-preview:free",
+    "thinkingmachines/inkling-small:free",
+    "poolside/laguna-s-2.1:free",
+  ];
+
+  function keyEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    const auth = join(runTmp, "auth-fake.json");
+    writeFileSync(
+      auth,
+      JSON.stringify({ credential_pool: { openrouter: [{ access_token: "sk-or-fake-10560" }] } }),
+    );
+    return wrapperEnv({ CLAUDE_DELEGATE_HERMES_AUTH_JSON: auth, ...extra });
+  }
+
+  it("ligado, :free falham: tenta os 3 :free, depois o codex, que responde", () => {
+    writeSessionFile();
+    const r = runWrapper(keyEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", FAKE_CLAUDE_FREE_FAIL: "1" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta codex/);
+    assert.deepEqual(attemptOrder(r.stderr), [...FREE, "codex:gpt-6.1-sol"]);
+    const calls = readFileSync(join(runTmp, "claude-calls.log"), "utf8").split("\n").filter(Boolean);
+    assert.equal(calls.length, 3, calls.join("\n"));
+    assert.ok(calls.every((c) => c.includes(":free")), `claude rodou fora dos :free: ${calls.join("\n")}`);
+  });
+
+  it("ligado, 1º :free responde: codex nunca é chamado (a cota do plano fica pro orquestrador)", () => {
+    writeSessionFile();
+    const r = runWrapper(keyEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.deepEqual(attemptOrder(r.stderr), [FREE[0]]);
+    assert.equal(existsSync(join(runTmp, "codex-argv.log")), false, "codex rodou antes de os :free falharem");
+  });
+
+  it("ligado, :free e codex falham: cai no elo de assinatura por último", () => {
+    writeSessionFile();
+    const r = runWrapper(
+      keyEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", FAKE_CLAUDE_FREE_FAIL: "1", CODEX_STUB_MODE: "fail" }),
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.deepEqual(attemptOrder(r.stderr), [...FREE, "codex:gpt-6.1-sol", "sonnet"]);
+  });
+
+  it("ligado, codex com cota esgotada: grava o marcador, cai no sonnet e a invocação seguinte pula o codex", () => {
+    writeSessionFile();
+    const env = keyEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", FAKE_CLAUDE_FREE_FAIL: "1", CODEX_STUB_MODE: "quota" });
+    const r1 = runWrapper(env);
+    assert.equal(r1.status, 0, r1.stderr);
+    assert.deepEqual(attemptOrder(r1.stderr), [...FREE, "codex:gpt-6.1-sol", "sonnet"]);
+    assert.match(r1.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT\/QUOTA/);
+    assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")));
+
+    rmSync(join(runTmp, "codex-argv.log"), { force: true });
+    const r2 = runWrapper(env);
+    assert.equal(r2.status, 0, r2.stderr);
+    assert.deepEqual(attemptOrder(r2.stderr), [...FREE, "sonnet"]);
+    assert.match(r2.stderr, /elo codex ligado mas NÃO armado .*cota do plano marcada como esgotada/);
+    assert.equal(existsSync(join(runTmp, "codex-argv.log")), false, "codex rodou com a cota marcada como esgotada");
+  });
+
+  it("cota free marcada como exaurida: cadeia vira codex → sonnet (o codex não depende da cota free)", () => {
+    writeSessionFile();
+    writeFileSync(
+      join(runTmp, "claude-openrouter-free-quota-exhausted-until"),
+      `${Math.floor(Date.now() / 1000) + 3600}\n`,
+    );
+    const r = runWrapper(keyEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "fail" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(attemptOrder(r.stderr), ["codex:gpt-6.1-sol", "sonnet"]);
+  });
+
+  it("desligado, com chave: cadeia de sempre, sem codex", () => {
+    writeSessionFile();
+    const r = runWrapper(keyEnv({ FAKE_CLAUDE_FREE_FAIL: "1" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(attemptOrder(r.stderr), [...FREE, "sonnet"]);
+    assert.equal(existsSync(join(runTmp, "codex-argv.log")), false);
+  });
+
+  it("codex_lane_insert_before_subscription: posição pura do sentinela", () => {
+    const lib = join(ROOT, "hermes/scripts/lib/codex-lane.sh");
+    const run = (models: string[]) => {
+      const r = spawnSync(
+        "bash",
+        [
+          "-c",
+          'is_subscription_lane_model() { [ "$1" = sonnet ]; }; source "$0"; codex_lane_insert_before_subscription "$@"',
+          lib,
+          "codex:gpt-6.1-sol",
+          ...models,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.split("\n").filter(Boolean);
+    };
+    assert.deepEqual(run(["a:free", "b:free", "sonnet"]), ["a:free", "b:free", "codex:gpt-6.1-sol", "sonnet"]);
+    assert.deepEqual(run(["sonnet"]), ["codex:gpt-6.1-sol", "sonnet"]);
+    assert.deepEqual(run(["a:free"]), ["a:free", "codex:gpt-6.1-sol"]);
+    assert.deepEqual(run(["a:free", "codex:gpt-6.1-sol", "sonnet"]), ["a:free", "codex:gpt-6.1-sol", "sonnet"]);
+  });
+
+  it("call site do contínuo (SKILL.md §2) liga o elo na linha da chamada", () => {
+    const skill = readFileSync(join(ROOT, "hermes/skills/hermes-diaria-continuo/SKILL.md"), "utf8");
+    assert.match(skill, /\|\s*\\?\n\s*CLAUDE_DELEGATE_CODEX_LANE=1 ~\/\.hermes\/scripts\/claude-delegate\.sh \\/);
   });
 });
 

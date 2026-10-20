@@ -4,14 +4,20 @@
 #
 # Decisão do editor (briefing overnight 261019e): caminho 2 — Sol 6.1 com
 # esforço leve pelo plano OpenAI (OAuth da Codex CLI, o mesmo que o Hermes
-# usa), como elo ANTERIOR aos `:free`, com fallback na cadeia atual. Nunca
-# pelo OpenRouter (pago por token, #10387) nem por ANTHROPIC_BASE_URL.
+# usa). Nunca pelo OpenRouter (pago por token, #10387) nem por
+# ANTHROPIC_BASE_URL.
 #
-# DESLIGADO POR PADRÃO. Liga com `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente
-# do call site. Motivo: a issue manda medir o consumo da cota (compartilhada
-# com o orquestrador `gpt-6-luna` do tick) antes de pôr o elo em primeiro, e
-# o comportamento real do `codex exec` no `300` (sandbox, auth do plano) não é
-# exercitável em CI — os testes usam um `codex` falso.
+# POSIÇÃO (decisão do editor, 20/10/2026, /diaria-desbloqueia): `:free` →
+# codex → assinatura (`codex_lane_insert_before_subscription`). A 1ª versão
+# (PR #10583) punha o elo ANTES dos `:free`; a prioridade passou a ser gastar
+# os `:free` primeiro e só então a cota do plano OpenAI, que é compartilhada
+# com o orquestrador `gpt-6-luna` do tick.
+#
+# Liga com `CLAUDE_DELEGATE_CODEX_LANE=1` no ambiente do call site; sem a
+# var o elo não entra. O call site do contínuo
+# (hermes/skills/hermes-diaria-continuo/SKILL.md §2) passa a var desde a
+# decisão de 20/10. O comportamento real do `codex exec` não é exercitável
+# em CI — os testes usam um `codex` falso.
 #
 # O que se perde ao sair do Claude Code: os hooks de `.claude/hooks/` não
 # rodam dentro do `codex exec`. Os 3 que a issue nomeia viram guard AQUI,
@@ -49,7 +55,7 @@
 #      idealmente, proteção de branch no GitHub) — ver a docstring do shim.
 #
 # Preflight fail-closed: se qualquer guard não puder ser armado, o elo é
-# PULADO (a cadeia segue nos `:free` → assinatura); nunca roda sem guard.
+# PULADO (a cadeia fica `:free` → assinatura); nunca roda sem guard.
 
 CODEX_LANE_SENTINEL="codex:gpt-6.1-sol"
 # ID e esforço confirmados ao vivo no `300` (comentário do editor na #10560,
@@ -88,6 +94,28 @@ is_codex_lane_model() {
 
 codex_lane_enabled() {
   [ "${CLAUDE_DELEGATE_CODEX_LANE:-0}" = "1" ]
+}
+
+# Posição do elo na cadeia (decisão do editor, 20/10/2026): `:free` → codex
+# → assinatura. Imprime, um por linha, a cadeia `$2..` com o sentinela `$1`
+# logo antes do 1º elo de assinatura (`is_subscription_lane_model`, definida
+# no claude-delegate.sh). Sem elo de assinatura na cadeia, o codex vai pro
+# fim — nunca na frente dos `:free`. Idempotente: sentinela já presente não
+# duplica.
+codex_lane_insert_before_subscription() {
+  local sentinel="$1"; shift
+  local m inserted=0
+  for m in "$@"; do
+    [ "$m" = "$sentinel" ] && inserted=1
+  done
+  for m in "$@"; do
+    if [ "$inserted" = 0 ] && is_subscription_lane_model "$m"; then
+      printf '%s\n' "$sentinel"
+      inserted=1
+    fi
+    printf '%s\n' "$m"
+  done
+  [ "$inserted" = 1 ] || printf '%s\n' "$sentinel"
 }
 
 codex_lane_quota_marker() {
