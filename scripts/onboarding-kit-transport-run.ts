@@ -1003,7 +1003,9 @@ export async function runAndRecordSendRun(
  *     item 1) — sem depender de um `--reconcile` agendado.
  */
 export async function confirmOrCleanUpScheduledLot(
-  lot: OnboardingKitLot,
+  // #10628: `KitBroadcastLot` (não só `OnboardingKitLot`) — o executor das
+  // sequências de apoio/formulário relê os lotes dele com esta MESMA regra.
+  lot: KitBroadcastLot,
   deps: {
     getBroadcast: (id: number) => Promise<{ status?: string | null; send_at?: string | null }>;
     deleteBroadcast: (id: number) => Promise<void>;
@@ -1098,7 +1100,7 @@ export async function confirmOrCleanUpScheduledLot(
  *  `null` = mesma conta (404 pode ser tratado como deleção); string = motivo
  *  de NÃO confiar no 404. Lote sem `kit_account_id` (legado) nem consulta a
  *  conta — não há com o que comparar. */
-async function verifyLotAccount(lot: OnboardingKitLot, getAccountId: (() => Promise<string>) | undefined): Promise<string | null> {
+async function verifyLotAccount(lot: KitBroadcastLot, getAccountId: (() => Promise<string>) | undefined): Promise<string | null> {
   const saved = lot.kit_account_id;
   if (saved == null || saved === "") return "lote sem id de conta Kit gravado (legado)";
   if (!getAccountId) return "probe de conta ausente";

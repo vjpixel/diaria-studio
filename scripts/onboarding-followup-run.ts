@@ -46,7 +46,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers, getSubscriberById } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
-import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
+import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast } from "./lib/kit-broadcasts.ts";
+import { getBroadcast } from "./lib/kit-client.ts";
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
@@ -66,6 +67,8 @@ import {
   formCandidatesFromEntries,
   formContentGate,
   idsInConfirmedFollowupLots,
+  idsInUnresolvedFollowupLots,
+  isUnresolvedFollowupLot,
   normalizeEmail,
   parseFollowupSnippet,
   planFollowup,
@@ -227,6 +230,80 @@ export interface FollowupRoundDeps {
   fetchFormResponses(): Promise<FormResponseRecord[]>;
   /** Cria/agenda o lote no Kit (muta `lot`; lança se não confirmar). */
   runLot(lot: FollowupLot, content: { subject: string; body: string; previewText?: string }): Promise<void>;
+  /**
+   * #10628: releitura (e limpeza) dos lotes não resolvidos no início do
+   * `--send`, pela mesma regra da escada (`confirmOrCleanUpScheduledLot`).
+   * Ausentes = o lote segue não resolvido: destinatários fora de `due` e a
+   * rodada conta como falha (`lots_unresolved`).
+   */
+  getBroadcast?(id: number): Promise<{ status?: string | null; send_at?: string | null }>;
+  deleteBroadcast?(id: number): Promise<void>;
+}
+
+export interface FollowupLotReconcileRow {
+  lot_id: string;
+  kind: FollowupStepKind;
+  before: FollowupLot["status"];
+  after: FollowupLot["status"];
+  reconciled: "scheduled" | "unscheduled" | "unverified" | "not_attempted";
+  /** Pessoas que ganharam registro de envio com esta releitura. */
+  marked: number;
+  error?: string | null;
+}
+
+/**
+ * #10628: relê os lotes `created` (releitura pós-PATCH falhou ou limpeza
+ * falhou → `schedule_failed`) com `confirmOrCleanUpScheduledLot` — a MESMA
+ * regra que `reconcileOpenLots` aplica aos lotes da escada no início do
+ * `--send`. Agendado/enviado → grava os envios por pessoa
+ * (`applyFollowupLotToPeople`); não agendado e apagado → `cancelled` (as
+ * pessoas voltam ao plano); releitura/DELETE falhando de novo → segue não
+ * resolvido (conta em `unresolved`; o caller tira os destinatários de `due`).
+ *
+ * Sem `persist` (dry-run) ou sem as deps de releitura, não chama o Kit: só
+ * conta. Atualiza `block` EM MEMÓRIA (o plano que vem depois enxerga) e, com
+ * `persist`, grava cada lote no disco sob lock (`persistFollowupLot`).
+ *
+ * Sem corrida com rodada concorrente: um lote só chega ao disco como
+ * `created` DEPOIS de `runLot` terminar (antes disso ele é `pending`, sem
+ * broadcast), então um `created` no disco é sempre resultado final de rodada.
+ */
+export async function reconcileFollowupLots(
+  opts: { storePath: string; block: FollowupBlock; persist: boolean; nowMs: number },
+  deps: Pick<FollowupRoundDeps, "getBroadcast" | "deleteBroadcast">,
+): Promise<{ results: FollowupLotReconcileRow[]; unresolved: number }> {
+  const { storePath, block, persist, nowMs } = opts;
+  const nowIso = new Date(nowMs).toISOString();
+  const results: FollowupLotReconcileRow[] = [];
+  let unresolved = 0;
+  const open = Object.values(block.lots).filter(isUnresolvedFollowupLot);
+  if (open.length === 0) return { results, unresolved };
+  const getB = deps.getBroadcast;
+  const delB = deps.deleteBroadcast;
+  if (!persist || !getB || !delB) {
+    for (const lot of open) {
+      unresolved++;
+      results.push({ lot_id: lot.lot_id, kind: lot.kind, before: lot.status, after: lot.status, reconciled: "not_attempted", marked: 0, error: lot.last_error });
+    }
+    return { results, unresolved };
+  }
+  // Import tardio, como em `runLot`: o executor da escada carrega o transporte Kit inteiro.
+  const { confirmOrCleanUpScheduledLot } = await import("./onboarding-kit-transport-run.ts");
+  for (const lot of open) {
+    const updated: FollowupLot = { ...lot };
+    const outcome = await confirmOrCleanUpScheduledLot(updated, {
+      getBroadcast: (id) => getB(id),
+      deleteBroadcast: (id) => delB(id),
+    });
+    updated.last_reconciled_at = nowIso;
+    block.lots[updated.lot_id] = updated;
+    applyFollowupLotToPeople(block.people, updated, nowIso);
+    const marked = persistFollowupLot(storePath, updated, new Map(), nowMs);
+    const still = isUnresolvedFollowupLot(updated);
+    if (still) unresolved++;
+    results.push({ lot_id: updated.lot_id, kind: updated.kind, before: lot.status, after: updated.status, reconciled: outcome, marked, error: still ? updated.last_error : null });
+  }
+  return { results, unresolved };
 }
 
 export interface FollowupRoundOpts {
@@ -269,6 +346,13 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
 
   const store = readStoreOrThrow(storePath, "planejar");
   const block = store.followup!;
+
+  // #10628: relê os lotes que ficaram sem confirmação numa rodada anterior
+  // ANTES de planejar — senão a pessoa segue na janela, entra num lote novo e
+  // recebe o mesmo e-mail duas vezes.
+  const rec = await reconcileFollowupLots({ storePath, block, persist: send, nowMs }, deps);
+  run.lots_unresolved = rec.unresolved;
+  for (const r of rec.results) lotsOut.push({ reconcile: true, ...r });
 
   // Formulário: quem preencheu sai dos lembretes ANTES de planejar.
   if (!formBlocked) {
@@ -327,9 +411,17 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     k[motivo] = (k[motivo] ?? 0) + n;
   };
 
+  // #10628: num lote ainda não resolvido (de qualquer etapa) o broadcast pode
+  // ter saído — fica fora até a releitura resolver o lote.
+  const unresolvedIds = idsInUnresolvedFollowupLots(block.lots);
   // Defesa em profundidade: já num lote confirmado desta etapa (registro perdido).
   const due = plan.due.filter((d) => {
-    if (!idsInConfirmedFollowupLots(block.lots, d.kind).has(String(d.kit_subscriber_id))) return true;
+    const id = String(d.kit_subscriber_id);
+    if (unresolvedIds.has(id)) {
+      bump(d.kind, "lote_nao_confirmado");
+      return false;
+    }
+    if (!idsInConfirmedFollowupLots(block.lots, d.kind).has(id)) return true;
     bump(d.kind, "ja_em_lote");
     return false;
   });
@@ -483,6 +575,8 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
         sendAtFn: () => new Date(Date.now() + 5 * 60_000).toISOString(),
       });
     },
+    getBroadcast: (id) => getBroadcast(id, kitCfg),
+    deleteBroadcast: (id) => deleteBroadcast(id, kitCfg),
   };
 }
 
@@ -561,7 +655,7 @@ async function main(): Promise<void> {
   }
   record(out.run);
   console.log(JSON.stringify({ mode: args.send ? "SEND" : "dry-run", ...out.run, lots: out.lots }, null, 2));
-  if (out.run.lots_failed > 0 || out.run.over_cap > 0) process.exitCode = 1;
+  if (out.run.lots_failed > 0 || out.run.over_cap > 0 || (out.run.lots_unresolved ?? 0) > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {

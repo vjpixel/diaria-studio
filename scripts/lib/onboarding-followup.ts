@@ -160,6 +160,10 @@ export interface FollowupRunRecord {
   over_cap: number;
   /** Consultas ao Kit (listagem, leitura singular) que falharam. */
   lookups_failed: number;
+  /** #10628: lotes que seguem sem confirmação depois da releitura do início do
+   *  `--send` (releitura falhou, ou rascunho que não deu pra apagar). Opcional:
+   *  registros anteriores não têm o campo. */
+  lots_unresolved?: number;
   /** Por etapa: contagem de enviados nesta rodada e de pulados/adiados por motivo. */
   counts: Partial<Record<FollowupStepKind, Record<string, number>>>;
   aborted?: boolean;
@@ -764,6 +768,29 @@ export function idsInConfirmedFollowupLots(lots: Readonly<Record<string, Followu
   return ids;
 }
 
+/**
+ * Lote com broadcast que NÃO terminou confirmado (#10628): `created` — releitura
+ * pós-PATCH falhou (`unverified`) ou a limpeza falhou (`schedule_failed`). Em
+ * ambos o broadcast PODE ter saído ou estar agendado, então o destinatário não
+ * entra em lote novo enquanto o lote não for relido (`confirmOrCleanUpScheduledLot`
+ * no início do `--send`). @pure
+ */
+export function isUnresolvedFollowupLot(lot: Pick<FollowupLot, "status" | "broadcast_id">): boolean {
+  return lot.status === "created" && lot.broadcast_id != null;
+}
+
+/** Pessoas em algum lote não resolvido (`isUnresolvedFollowupLot`), de QUALQUER
+ *  etapa — o broadcast pendente pode ter saído, então nem outra etapa (que
+ *  ignoraria o espaçamento, já que nada foi registrado) entra por cima. @pure */
+export function idsInUnresolvedFollowupLots(lots: Readonly<Record<string, FollowupLot>>): Set<string> {
+  const ids = new Set<string>();
+  for (const lot of Object.values(lots)) {
+    if (!isUnresolvedFollowupLot(lot)) continue;
+    for (const id of lot.recipient_subscription_ids) ids.add(id);
+  }
+  return ids;
+}
+
 // ---------------------------------------------------------------------------
 // Saúde do executor + alarme de continuidade
 // ---------------------------------------------------------------------------
@@ -772,7 +799,7 @@ export function idsInConfirmedFollowupLots(lots: Readonly<Record<string, Followu
  *  (estado esperado até o editor aprovar) — o painel mostra o bloqueio. */
 export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if (run.aborted === true) return true;
-  if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0) return true;
+  if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0 || (run.lots_unresolved ?? 0) > 0) return true;
   return run.form_blocked?.motivo === "respostas_indisponiveis";
 }
 
