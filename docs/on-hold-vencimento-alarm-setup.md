@@ -54,5 +54,6 @@ alarme, que até então nunca tinha rodado nesta máquina.
 O carimbo (`~/.local/share/systemd/timers/stamp-diaria-on-hold-vencimento-alarm.timer`)
 foi tocado ANTES do `enable --now`: `Persistent=true` num timer sem carimbo
 trata "nunca rodou" como ocorrência devida e dispara na hora do arme, o que
-aqui seria um e-mail real (havia 1 achado pendente). É a saída 3 do aviso que
-o próprio `setup-systemd-timers.ts` imprime.
+aqui seria um e-mail real (havia 1 achado pendente). É o caso "unit nova" da
+receita que o próprio `setup-systemd-timers.ts` imprime (touch → `enable --now`;
+para timer já ativo é `stop` → touch → `daemon-reload` → `start`, #10619).

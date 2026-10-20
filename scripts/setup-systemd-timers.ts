@@ -57,6 +57,47 @@ export function generateSystemdUnits(
   return written;
 }
 
+/**
+ * Instruções de armar/rearmar impressas ao fim do script. Pura (testável).
+ *
+ * #10619 — a receita antiga ("touch no carimbo antes do start") NÃO evitava o
+ * catch-up quando o timer já estava ATIVO: o systemd guarda o último disparo
+ * em memória e só relê o mtime do carimbo no `start` de um timer parado.
+ * Medido com um timer descartável: stop → touch → start e stop → rm carimbo →
+ * start não disparam; touch com o timer ativo + restart dispara. Por isso o
+ * `stop` vem PRIMEIRO.
+ */
+export function buildArmInstructions(): string {
+  return (
+    "\nARMAR (fora do escopo desta task, #4807): por unit gerado, copiar/linkar pra " +
+    "~/.config/systemd/user/ e rodar:\n" +
+    "  systemctl --user daemon-reload\n" +
+    "  systemctl --user enable --now <nome>.timer\n" +
+    "\n⚠️  MUDOU O HORÁRIO DE UMA TASK? Os units usam Persistent=true, e o systemd\n" +
+    "   dispara NA HORA se existe uma ocorrência do OnCalendar entre o último\n" +
+    "   disparo e agora. Para task que manda e-mail ou gasta crédito de API isso\n" +
+    "   é um envio REAL, não ensaio (aconteceu ao vivo no #5140 e no #10619).\n" +
+    "\n" +
+    "   O que manda é o CARIMBO em ~/.local/share/systemd/timers/stamp-<unit>.timer\n" +
+    "   (mtime = último disparo). Com o timer ATIVO o systemd usa o valor em\n" +
+    "   memória: touch + restart NÃO evita o catch-up (#10619).\n" +
+    "\n" +
+    "   Receita segura (ordem importa — o stop vem ANTES do touch):\n" +
+    "     1. cp das units novas pra ~/.config/systemd/user/\n" +
+    "     2. systemctl --user stop <nome>.timer\n" +
+    "     3. touch ~/.local/share/systemd/timers/stamp-<nome>.timer\n" +
+    "     4. systemctl --user daemon-reload\n" +
+    "     5. systemctl --user start <nome>.timer\n" +
+    "   Unit NOVA ou desabilitada (sem carimbo/sem stop útil): pule o passo 2 (o stop\n" +
+    "   falharia) e troque o 5 por `systemctl --user enable --now <nome>.timer`,\n" +
+    "   sempre com o touch ANTES (sem carimbo, Persistent=true trata 'nunca rodou'\n" +
+    "   como devido e dispara na hora).\n" +
+    "   Alternativas: rearmar ANTES de a próxima ocorrência do horário novo; ou, em\n" +
+    "   task com kill switch (ex: Diaria-Clarice-Novos), desligar o switch, rearmar\n" +
+    "   e religar depois do catch-up no vazio.\n"
+  );
+}
+
 export function main(argv: string[], repoRootAbs: string): number {
   let taskName: string | undefined;
   let outDirArg: string | undefined;
@@ -86,30 +127,7 @@ export function main(argv: string[], repoRootAbs: string): number {
 
   console.log(`${tasks.length} task(s) -> ${written.length} arquivo(s) gerado(s) em ${outDirAbs}:\n`);
   for (const p of written) console.log(`  ${p}`);
-  console.log(
-    "\nARMAR (fora do escopo desta task, #4807): por unit gerado, copiar/linkar pra " +
-      "~/.config/systemd/user/ e rodar:\n" +
-      "  systemctl --user daemon-reload\n" +
-      "  systemctl --user enable --now <nome>.timer\n" +
-      "\n⚠️  MUDOU O HORÁRIO DE UMA TASK? Os units usam Persistent=true, e o systemd\n" +
-      "   dispara NA HORA se existe uma ocorrência do OnCalendar entre o último\n" +
-      "   disparo e agora. Para task que manda e-mail ou gasta crédito de API isso\n" +
-      "   é um envio REAL, não ensaio (aconteceu ao vivo no #5140).\n" +
-      "\n" +
-      "   O que manda é o CARIMBO em ~/.local/share/systemd/timers/stamp-<unit>.timer\n" +
-      "   (mtime = último disparo), não o relógio do re-arme. Consequências:\n" +
-      "     - `stop` NÃO consome o carimbo. Adiar o `start` não evita nada: a\n" +
-      "       ocorrência perdida continua devida e dispara na hora do start.\n" +
-      "     - Rearmar mais tarde no dia é justamente o caso RUIM.\n" +
-      "\n" +
-      "   Saídas que funcionam:\n" +
-      "     1. Rearmar ANTES de a próxima ocorrência do horário novo acontecer\n" +
-      "        (janela entre o último disparo e o horário novo).\n" +
-      "     2. Task com kill switch (ex: Diaria-Clarice-Novos): desligar o switch,\n" +
-      "        rearmar, deixar o catch-up sair no vazio, religar.\n" +
-      "     3. `touch` no arquivo de carimbo antes do start — declara \"já disparou\n" +
-      "        agora\" e não sobra ocorrência devida.\n",
-  );
+  console.log(buildArmInstructions());
   return 0;
 }
 

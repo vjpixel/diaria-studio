@@ -99,8 +99,10 @@ export function buildEdicaoSystemdUnitFiles(repoRootAbs: string): SystemdUnitFil
     // VERDADE. Este gerador fica fora do registry declarativo de propósito
     // (ver docstring do topo), então o aviso de `setup-systemd-timers.ts` não
     // é lido por quem mexe nesta task — daí a duplicação deste comentário.
-    // Saída segura: rearmar antes da próxima ocorrência, ou `touch` no carimbo
-    // antes do `start`. (A idempotência de `data/editions/{AAMMDD}/` limita o
+    // Saída segura: rearmar antes da próxima ocorrência, ou `stop` → `touch`
+    // no carimbo → `daemon-reload` → `start` (com o timer ATIVO, touch +
+    // restart NÃO evita o catch-up, #10619; unit nova/desabilitada: touch →
+    // `enable --now`). (A idempotência de `data/editions/{AAMMDD}/` limita o
     // dano, mas não é motivo pra disparar sem querer.)
     "Persistent=true",
     `Unit=${EDICAO_UNIT_NAME}.service`,

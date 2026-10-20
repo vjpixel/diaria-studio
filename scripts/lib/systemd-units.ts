@@ -217,7 +217,8 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     // manda e-mail e gasta crédito de MillionVerifier, é disparo REAL. As
     // saídas que funcionam estão na saída de `scripts/setup-systemd-timers.ts`
     // (rearmar antes da próxima ocorrência; usar o kill switch da task; ou
-    // `touch` no carimbo antes do start).
+    // `stop` → `touch` no carimbo → `daemon-reload` → `start`; com o timer
+    // ATIVO, touch + restart NÃO evita o catch-up, #10619).
     "Persistent=true",
     `Unit=${unitName}.service`,
     "",

@@ -136,7 +136,9 @@ export function buildWatchdogSystemdUnitFiles(repoRootAbs: string): SystemdUnitF
     // quando o OnCalendar MUDA. Ao iniciar o timer, o systemd roda na hora se
     // alguma ocorrência cai em (carimbo, agora] — carimbo =
     // `~/.local/share/systemd/timers/stamp-<unit>.timer`; `stop` não o
-    // consome, então adiar o `start` não evita. Este gerador fica fora do
+    // consome, então adiar o `start` não evita; a receita segura é `stop` →
+    // `touch` no carimbo → `daemon-reload` → `start` (touch + restart com o
+    // timer ativo NÃO evita, #10619). Este gerador fica fora do
     // registry declarativo de propósito (ver docstring do topo), então quem mexe aqui não lê o aviso de
     // `setup-systemd-timers.ts` — daí a duplicação. Menos grave que nas
     // demais (o watchdog só inspeciona estado), mas o mecanismo é o mesmo.
