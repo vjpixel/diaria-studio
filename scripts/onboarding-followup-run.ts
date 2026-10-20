@@ -91,6 +91,7 @@ import {
   type LiveSubscriberCheck,
 } from "./lib/onboarding-followup.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG = "[onboarding-followup]";
@@ -435,7 +436,7 @@ function parseArgs(argv: string[]): CliArgs {
     else if (f === "--env-root") a.envRoot = argv[++i];
     else {
       process.stderr.write(`${LOG} flag desconhecida: ${f}\n`);
-      process.exit(2);
+      throw new CliExit(2);
     }
   }
   return a;
@@ -504,7 +505,7 @@ async function main(): Promise<void> {
       return;
     }
     process.stderr.write(`${LOG} ${msg}; recusando --send.\n`);
-    process.exit(2);
+    throw new CliExit(2);
   }
   const storePath = args.storePath ?? resolve(ROOT, rawCfg.onboarding?.store_path ?? DEFAULT_STORE_PATH);
   const snippets = loadFollowupSnippets(snippetsDirAbs);
@@ -521,7 +522,10 @@ async function main(): Promise<void> {
   const abortRun = (reason: string): never => {
     record({ at: new Date().toISOString(), apoio_blocked: null, form_blocked: null, lots_created: 0, lots_failed: 0, over_cap: 0, lookups_failed: 0, counts: {}, aborted: true, error: reason });
     process.stderr.write(`${LOG} ${reason}\n`);
-    process.exit(2);
+    // #9911: CliExit em vez de process.exit — o script usa fetch, e no
+    // Windows process.exit depois de fetch sai 127. Chamado fora do try/catch
+    // de runFollowupRound, então nada engole a exceção até o runCli.
+    throw new CliExit(2);
   };
 
   const apoioGate = apoioContentGate(snippets);
@@ -558,8 +562,7 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    process.stderr.write(`${LOG} erro: ${redactEmails((e as Error).message)}\n`);
-    process.exitCode = 1;
+  void runCli(main, {
+    onError: (e) => process.stderr.write(`${LOG} erro: ${redactEmails((e as Error).message)}\n`),
   });
 }
