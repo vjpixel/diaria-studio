@@ -137,6 +137,7 @@ export type OnboardingEmail3Stage =
   | "skipped_no_open"
   | "skipped_inactive"
   | "skipped_sem_dados"
+  | "skipped_backlog_descartado"
   | "falha_consulta"
   /** #7917 item 4 (fleet review PR #8955): Brevo devolveu um status ambíguo
    *  (`suspended`/`in_review`, ambos mapeados pra `PublishState = "unknown"`
@@ -275,6 +276,8 @@ function buildEmail3Info(entry: OnboardingEntry, input: Email3ResolutionInput): 
       return terminalEmail3("skipped_inactive", "nenhuma — assinante não estava ativo quando a decisão foi tomada.");
     case "skipped_sem_dados":
       return terminalEmail3("skipped_sem_dados", "nenhuma — stats de abertura nunca ficaram disponíveis dentro da janela de tolerância.");
+    case "skipped_backlog_descartado":
+      return terminalEmail3("skipped_backlog_descartado", "nenhuma — backlog pós-D+10 descartado por decisão do editor (#10603).");
 
     case "campaign_created": {
       // Sem lote Kit (checado acima) → o transporte foi Brevo (campanha clássica, #5908/#7599).
@@ -514,6 +517,7 @@ const EMAIL3_STAGES: OnboardingEmail3Stage[] = [
   "skipped_no_open",
   "skipped_inactive",
   "skipped_sem_dados",
+  "skipped_backlog_descartado",
   "falha_consulta",
   "estado_ambiguo",
 ];

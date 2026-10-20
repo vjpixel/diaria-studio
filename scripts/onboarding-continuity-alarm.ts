@@ -77,6 +77,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { readStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
+import { EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS } from "./lib/onboarding-state.ts";
 import {
   evaluateOnboardingContinuity,
   buildOnboardingContinuityAlarmEmail,
@@ -119,6 +120,9 @@ const FINDING_FINGERPRINT = "zero-detection-streak";
  *  remédios diferentes. */
 export const DETECTION_CHECK = "onboarding-continuity";
 export const KIT_TRANSPORT_CHECK = "onboarding-kit-transport";
+/** #10603: eixo PRÓPRIO pra falha repetida do `email3_campaign` (Brevo). */
+export const EMAIL3_CHECK = "onboarding-email3";
+const EMAIL3_FINGERPRINT = "email3-campaign-failure-streak";
 const KIT_FINDING_FINGERPRINT = "kit-send-failure-streak";
 const KIT_NOT_RUNNING_FINGERPRINT = "kit-send-run-stalled";
 
@@ -213,6 +217,29 @@ export function toAlarmFinding(evaluation: OnboardingContinuityEvaluation): Alar
   };
 }
 
+/** #10603: achado de `email3_campaign` falhando em rodadas seguidas. */
+export function toEmail3AlarmFinding(streak: number, lastError: string | null | undefined): AlarmFinding {
+  return {
+    check: EMAIL3_CHECK,
+    fingerprint: EMAIL3_FINGERPRINT,
+    family: "estado",
+    title: "[diar.ia.br] E-mail 3 do onboarding (pedido de apoio D+10) falhando em rodadas seguidas",
+    body: [
+      "Achado automático do alarme `Diaria-Onboarding-Continuity-Alarm` (#10603).",
+      "",
+      `\`email3_campaign\` falhou em ${streak} rodadas \`--send\` seguidas (limiar ${EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS}).`,
+      `Último erro: ${lastError ?? "(não registrado)"}`,
+      "",
+      "O pedido de apoio D+10 não está saindo. Ver `consecutive_email3_failures` / `last_email3_error`",
+      "em `data/onboarding/store.json` e `data/onboarding/.welcome-run.log`.",
+      "",
+      `Comentada/fechada sozinha após ${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções sem falha.`,
+    ].join("\n"),
+    labels: ["bug"],
+    priority: "P1",
+  };
+}
+
 /** #7922: achado do executor Kit (transporte ativo = Kit). Dois fingerprints
  *  de propósito: "executor não roda" (task desarmada) e "executor roda mas
  *  não entrega" pedem remédios diferentes e não devem se fundir numa issue. */
@@ -251,7 +278,10 @@ export function toKitTransportAlarmFinding(evaluation: KitTransportHealthEvaluat
 export interface ContinuityRoundInput {
   storeExists: boolean;
   corrupted: boolean;
-  store: Pick<OnboardingStore, "consecutive_zero_detections" | "last_zero_detection_run_at" | "kit_transport">;
+  store: Pick<
+    OnboardingStore,
+    "consecutive_zero_detections" | "last_zero_detection_run_at" | "kit_transport" | "consecutive_email3_failures" | "last_email3_error"
+  >;
   cfgRead: { enabled: unknown; error: string | null };
   now?: Date;
 }
@@ -302,6 +332,16 @@ export function evaluateContinuityRound(input: ContinuityRoundInput): Continuity
   if (evaluation.verdict !== "cannot-verify") {
     evaluatedChecks.add(DETECTION_CHECK);
     if (evaluation.verdict === "stale") findings.push(toAlarmFinding(evaluation));
+  }
+
+  // #10603: falha repetida do e-mail 3 — só com o store LIDO (mesma disciplina
+  // do #7776: store ausente/ilegível não é leitura, não fecha issue aberta).
+  if (input.storeExists && !input.corrupted) {
+    evaluatedChecks.add(EMAIL3_CHECK);
+    const streak = input.store.consecutive_email3_failures ?? 0;
+    if (streak >= EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS) {
+      findings.push(toEmail3AlarmFinding(streak, input.store.last_email3_error));
+    }
   }
 
   let kitEvaluation: KitTransportHealthEvaluation | null = null;
@@ -438,6 +478,14 @@ export function buildContinuityAlarmMessage(
   }
   if (kitEvaluation != null && qualifying.some((r) => r.check === KIT_TRANSPORT_CHECK)) {
     parts.push(buildKitTransportAlarmEmail(kitEvaluation, issueLinesFor(KIT_TRANSPORT_CHECK)));
+  }
+  if (qualifying.some((r) => r.check === EMAIL3_CHECK)) {
+    parts.push({
+      subject: "⚠️ Diaria-Onboarding-Continuity-Alarm: e-mail 3 (pedido de apoio) falhando em rodadas seguidas",
+      body:
+        "O e-mail 3 do onboarding (D+10, pedido de apoio) falhou em rodadas seguidas (#10603)." +
+        issueLinesFor(EMAIL3_CHECK),
+    });
   }
   if (parts.length === 0) {
     // Defensivo: outcome de check desconhecido — nunca e-mail vazio.

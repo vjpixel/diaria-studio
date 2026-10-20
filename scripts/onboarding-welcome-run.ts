@@ -102,6 +102,8 @@ import {
   buildBackendSwitchNote,
   BOOTSTRAP_GAP_COUNT_UNKNOWN,
   updateZeroDetectionStreak,
+  updateEmail3FailureStreak,
+  email3FailureAlarm,
   zeroDetectionAlarm,
   filterBrevoPlanForKitCutover,
   dropActionsCoveredOnDisk,
@@ -109,7 +111,7 @@ import {
   type OpenStats,
   type RunAction,
 } from "./lib/onboarding-state.ts";
-import { brevoPost, brevoGet, brevoDelete } from "./lib/brevo-client.ts";
+import { brevoPost, brevoGet, brevoDelete, resolveOrCreateBrevoFolder } from "./lib/brevo-client.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { CliExit, runCli } from "./lib/cli-exit.ts";
 
@@ -134,6 +136,10 @@ export interface OnboardingConfig {
   email3_grace_days?: number;
   /** Nome da lista Brevo dedicada ao cohort D+10 (criada sob demanda). */
   d10_list_name?: string;
+  /** #10603: id da pasta Brevo da lista D+10 (a Brevo exige `folderId` ao criar lista). Ausente → resolve/cria a pasta `d10_folder_name`. */
+  d10_folder_id?: number;
+  /** #10603: nome da pasta resolvida/criada quando `d10_folder_id` falta (default "Onboarding"). */
+  d10_folder_name?: string;
   /**
    * #8966: kill switch dedicado do transporte Kit (#7922) — lido daqui SÓ
    * pra decidir se o guard de mútua-exclusão (`filterBrevoPlanForKitCutover`)
@@ -655,14 +661,24 @@ async function upsertContactInList(opts: { apiKey: string; email: string; listId
 }
 
 /** Acha (ou cria) a lista Brevo dedicada ao cohort D+10 pelo nome configurado. */
-async function ensureD10List(opts: { apiKey: string; listName: string }): Promise<number> {
+export async function ensureD10List(opts: {
+  apiKey: string;
+  listName: string;
+  folderId?: number;
+  folderName?: string;
+}): Promise<number> {
   const { status, body } = await brevoGet(opts.apiKey, `/contacts/lists?limit=50&offset=0`);
   if (status === 200) {
     const lists = (body as { lists?: { id: number; name: string }[] }).lists ?? [];
     const found = lists.find((l) => l.name === opts.listName);
     if (found) return found.id;
   }
-  const created = (await brevoPost(opts.apiKey, "/contacts/lists", { name: opts.listName })) as { id: number };
+  // #10603: a Brevo recusa POST /contacts/lists sem `folderId` ("Folder id is missing").
+  const folderId =
+    opts.folderId ?? (await resolveOrCreateBrevoFolder(opts.apiKey, opts.folderName ?? "Onboarding"));
+  const created = (await brevoPost(opts.apiKey, "/contacts/lists", { name: opts.listName, folderId })) as {
+    id: number;
+  };
   return created.id;
 }
 
@@ -1171,6 +1187,8 @@ async function main(): Promise<number | void> {
   const execPlan = dropActionsCoveredOnDisk(plan, readStoreUnderLock(storePath));
   summary.skips = execPlan.skips.map((s) => ({ etapa: s.etapa, motivo: s.motivo, detalhe: s.detalhe }));
 
+  let email3Ok = false;
+  let email3Failed: string | null = null;
   for (const action of execPlan.actions as RunAction[]) {
     try {
       if (action.kind === "email1" || action.kind === "email2") {
@@ -1192,7 +1210,12 @@ async function main(): Promise<number | void> {
         const listName = cfg.d10_list_name ?? "Onboarding D10 sem abertura";
         let listId = store.d10_brevo_list_id;
         if (listId == null) {
-          listId = await ensureD10List({ apiKey: brevoKey, listName });
+          listId = await ensureD10List({
+            apiKey: brevoKey,
+            listName,
+            folderId: cfg.d10_folder_id,
+            folderName: cfg.d10_folder_name,
+          });
           store.d10_brevo_list_id = listId;
         }
         for (const e of action.entries) {
@@ -1206,6 +1229,9 @@ async function main(): Promise<number | void> {
           ...(cfg.reply_to ? { replyTo: cfg.reply_to } : {}),
           htmlContent: snip.body,
           recipients: { lists: [listId] },
+          // #10603: decisão do editor (20/10/2026) — e-mail 3 sai automático,
+          // sem aprovação manual por lote. Mesmo lead mínimo do transacional.
+          scheduledAt: computeMinScheduledAt(),
         })) as { id: number };
         for (const e of action.entries) {
           e.email3_state = "campaign_created";
@@ -1213,13 +1239,29 @@ async function main(): Promise<number | void> {
           e.email3_decided_at = isoNow;
         }
         process.stderr.write(
-          `[onboarding] email3 CAMPANHA RASCUNHO id=${campaign.id} lista=${listId} cohort=${action.entries.length}\n`,
+          `[onboarding] email3 CAMPANHA AGENDADA id=${campaign.id} lista=${listId} cohort=${action.entries.length}\n`,
         );
-        summary.notes.push(`campanha rascunho ${campaign.id} criada (lista ${listId}) — agendar/enviar é ação humana`);
+        summary.notes.push(`campanha ${campaign.id} agendada (lista ${listId}) — envio automático (#10603)`);
+        email3Ok = true;
       }
     } catch (e) {
       process.stderr.write(`[onboarding] ERRO executando ${action.kind}: ${(e as Error).message}\n`);
       summary.notes.push(`erro em ${action.kind}: ${(e as Error).message}`);
+      if (action.kind === "email3_campaign") email3Failed = (e as Error).message;
+    }
+  }
+
+  // #10603: streak de falha do e-mail 3 (só atualiza em rodada que tentou).
+  if (email3Ok || email3Failed != null) {
+    store.consecutive_email3_failures = updateEmail3FailureStreak(
+      store.consecutive_email3_failures ?? 0,
+      email3Failed != null,
+    );
+    store.last_email3_error = email3Failed;
+    const email3Alarm = email3FailureAlarm(store.consecutive_email3_failures, email3Failed);
+    if (email3Alarm) {
+      summary.notes.push(email3Alarm);
+      process.stderr.write(`[onboarding] ${email3Alarm}\n`);
     }
   }
 

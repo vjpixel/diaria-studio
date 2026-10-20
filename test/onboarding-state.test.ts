@@ -293,8 +293,9 @@ describe("buildRunPlan — cenário-carro de segurança (#5908)", () => {
     const entries = [
       entry({ subscription_id: "novo" }),
       entry({ subscription_id: "d3", email1_sent_at: iso(T0 - 4 * DAY) }),
-      entry({ subscription_id: "d10a", email1_sent_at: iso(T0 - 12 * DAY), email2_sent_at: "x" }),
-      entry({ subscription_id: "d10b", email1_sent_at: iso(T0 - 13 * DAY), email2_sent_at: "x" }),
+      // #10603: dentro da janela D+10 + tolerância (agora = T0 + 11d); fora dela vira backlog descartado.
+      entry({ subscription_id: "d10a", email1_sent_at: iso(T0 - 1 * DAY), email2_sent_at: "x" }),
+      entry({ subscription_id: "d10b", email1_sent_at: iso(T0 - 2 * DAY), email2_sent_at: "x" }),
       entry({
         subscription_id: "sem_abertura",
         email1_sent_at: iso(T0 - 12 * DAY),
