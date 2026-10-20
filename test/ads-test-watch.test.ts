@@ -24,6 +24,10 @@ import {
   detectZeroCadastrosAcrossArms,
   detectZeroCadastrosAcrossArmsFromReport,
   buildApuracaoZeroCadastrosEmail,
+  evaluateStoreFreshness,
+  evaluateApuracaoCohortGuard,
+  APURACAO_STORE_MAX_AGE_HOURS,
+  type ApuracaoArmStats,
   type AdsTestWatchState,
 } from "../scripts/lib/ads-test-watch.ts";
 import type { CacRow, CacReport } from "../scripts/lib/cac.ts";
@@ -670,5 +674,75 @@ describe("#8238 — buildApuracaoZeroCadastrosEmail", () => {
     assert.match(subject, /NÃO congelada/);
     for (const braco of ADS_TEST_2608_BRACOS) assert.match(body, new RegExp(braco.replace(/[()]/g, "\\$&")));
     assert.doesNotMatch(body, /apuração congelada rodou/i);
+  });
+});
+
+describe("#8238 — evaluateStoreFreshness (gate da apuração olha o STORE, não o snapshot Beehiiv)", () => {
+  const NOW = "2026-10-25T09:30:00.000Z";
+
+  it("ingestão Kit de 2h atrás -> usável", () => {
+    assert.deepEqual(evaluateStoreFreshness("2026-10-25T07:25:00.000Z", NOW), { usable: true, reason: null });
+  });
+
+  it("exatamente no teto -> usável; 1 minuto além -> inutilizável", () => {
+    const atLimit = new Date(Date.parse(NOW) - APURACAO_STORE_MAX_AGE_HOURS * 3_600_000).toISOString();
+    assert.equal(evaluateStoreFreshness(atLimit, NOW).usable, true);
+    const past = new Date(Date.parse(atLimit) - 60_000).toISOString();
+    assert.equal(evaluateStoreFreshness(past, NOW).usable, false);
+  });
+
+  it("sem linha Kit (null) -> inutilizável, nunca 'fresco por omissão'", () => {
+    const r = evaluateStoreFreshness(null, NOW);
+    assert.equal(r.usable, false);
+    assert.match(r.reason ?? "", /nenhuma linha Kit/);
+  });
+
+  it("timestamp ilegível -> inutilizável", () => {
+    assert.equal(evaluateStoreFreshness("ontem", NOW).usable, false);
+  });
+});
+
+describe("#8238 (5a/5b) — evaluateApuracaoCohortGuard", () => {
+  function arm(overrides: Partial<ApuracaoArmStats> = {}): ApuracaoArmStats {
+    return {
+      braco: "Google Ads (teste 2608)",
+      cadastrosRelatorio: 80,
+      cadastrosStore: 80,
+      ativos: 67,
+      ativosComEntrega: 66,
+      ativosCom20Recebidas: 60,
+      ...overrides,
+    };
+  }
+
+  it("coorte saudável -> sem problema", () => {
+    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 130, ativosCom20Recebidas: 120 })]);
+    assert.deepEqual(r.problems, []);
+    assert.ok(r.coverageLines.some((l) => l.startsWith("- Total: 203 ativo(s)")));
+  });
+
+  it("(a) UM braço com 0 no relatório e cadastros no store -> problema (o guard antigo só pegava os 3 zerados)", () => {
+    const r = evaluateApuracaoCohortGuard([arm({ cadastrosRelatorio: 0 }), arm({ braco: "Meta Ads (teste 2608)" })]);
+    assert.equal(r.problems.length, 1);
+    assert.match(r.problems[0], /Google Ads \(teste 2608\): o relatório saiu com 0 cadastros, mas o store tem 80/);
+  });
+
+  it("(a) braço zerado nos DOIS lados (sem cadastro real) -> não é problema de coorte perdida", () => {
+    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Microsoft Ads (teste 2608)", cadastrosRelatorio: 0, cadastrosStore: 0, ativos: 0, ativosComEntrega: 0, ativosCom20Recebidas: 0 })]);
+    assert.deepEqual(r.problems, []);
+  });
+
+  it("(b) cenário medido em 17/09: 203 ativos, só 1 com entrega ligada -> problema", () => {
+    const r = evaluateApuracaoCohortGuard([
+      arm({ ativos: 67, ativosComEntrega: 1, ativosCom20Recebidas: 0 }),
+      arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
+    ]);
+    assert.equal(r.problems.length, 1);
+    assert.match(r.problems[0], /só 1 de 203 ativos/);
+  });
+
+  it("(b) cobertura exatamente no piso -> passa (piso é inclusivo)", () => {
+    const r = evaluateApuracaoCohortGuard([arm({ ativos: 10, ativosComEntrega: 5 })], 0.5);
+    assert.deepEqual(r.problems, []);
   });
 });

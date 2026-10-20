@@ -46,7 +46,8 @@ import Papa from "papaparse";
 import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
 import { plannedBudgetBRL, type AdsTestBudgetPeriod, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
-import type { CacReport, CacRow } from "./cac.ts";
+import { subscribersForChannel, type CacReport, type CacRow } from "./cac.ts";
+import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 
 // ---------------------------------------------------------------------------
 // Plano diário
@@ -652,23 +653,11 @@ export function buildReligarBrevoDueEmail(religarDate: DateOnlyString): { subjec
   };
 }
 
-export function buildApuracaoSnapshotUnusableEmail(snapshotDate: DateOnlyString, reason: string): { subject: string; body: string } {
-  return {
-    subject: `🚨 Teste 2608: apuração de ${snapshotDate} NÃO rodou — snapshot inutilizável`,
-    body: [
-      `Alarme automático do Diaria-Ads-Test-Watch (#5845).`,
-      "",
-      `Hoje é a data de apuração pré-registrada (${snapshotDate}), mas o snapshot correspondente de`,
-      `data/beehiiv-backup/${snapshotDate}/ está inutilizável: ${reason}`,
-      "",
-      "A apuração NÃO foi rodada (00-PROTOCOLO.md §7.2 — um relatório congelado sobre snapshot ruim é",
-      "pior que nenhum, porque o id do relatório é a data do snapshot e re-rodar sobrescreve). Este alarme",
-      "REPETE todo dia até o snapshot ficar utilizável ou você intervir manualmente.",
-    ].join("\n"),
-  };
-}
-
-export function buildApuracaoSuccessEmail(snapshotDate: DateOnlyString, reportUrl: string): { subject: string; body: string } {
+export function buildApuracaoSuccessEmail(
+  snapshotDate: DateOnlyString,
+  reportUrl: string,
+  coverageLines: readonly string[] = [],
+): { subject: string; body: string } {
   return {
     subject: `Teste 2608: apuração congelada rodou (snapshot ${snapshotDate})`,
     body: [
@@ -677,6 +666,7 @@ export function buildApuracaoSuccessEmail(snapshotDate: DateOnlyString, reportUr
       `Relatório: ${reportUrl}`,
       "",
       "build-origem-map.ts rodou imediatamente antes de cac-report.ts, como exige a §7.2.",
+      ...(coverageLines.length > 0 ? ["", ...coverageLines] : []),
     ].join("\n"),
   };
 }
@@ -734,6 +724,199 @@ export function buildApuracaoZeroCadastrosEmail(
       "",
       "A apuração NÃO foi marcada como concluída — este alarme repete todo dia até os cadastros aparecerem",
       'ou até você investigar manualmente (checar "--fonte store" em cac-report.ts, #8238).',
+    ].join("\n"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Gate de frescor do store (#8238 — resíduo do PR #8481). A apuração lê a
+// coorte do store unificado (`cac-report.ts --fonte store`), não do snapshot
+// Beehiiv — então o gate de usabilidade tem que olhar o frescor do STORE.
+// Antes disto o gate ainda checava `data/beehiiv-backup/{data}/`: um store
+// com a ingestão do Kit parada há dias passava (números velhos congelados
+// como se fossem do dia), e um snapshot Beehiiv ausente bloqueava a
+// apuração mesmo com o store em dia.
+// ---------------------------------------------------------------------------
+
+/** Idade máxima (horas) da última ingestão do Kit no store pra apuração
+ *  rodar. `Diaria-Kit-Roster-Ingest` roda 04:25 BRT e `Diaria-Ads-Test-Watch`
+ *  06:30 BRT — no dia normal a idade é ~2h; 30h tolera um atraso da ingestão
+ *  sem aceitar um dia inteiro perdido. */
+export const APURACAO_STORE_MAX_AGE_HOURS = 30;
+
+/**
+ * `kitAsOf` = `MAX(subscription.updated_at)` das linhas `platform='kit'`
+ * (`getSubscriptionAsOf`, gravado a cada rodada de ingestão). `null` (store
+ * sem linha Kit, ou store ilegível) é inutilizável — nunca "fresco por
+ * omissão". @pure
+ */
+export function evaluateStoreFreshness(
+  kitAsOf: string | null,
+  nowIso: string,
+  maxAgeHours: number = APURACAO_STORE_MAX_AGE_HOURS,
+): { usable: boolean; reason: string | null } {
+  if (kitAsOf == null) {
+    return { usable: false, reason: "store sem nenhuma linha Kit em `subscription` (ingestão do Kit nunca rodou, ou store ilegível)" };
+  }
+  const asOfMs = Date.parse(kitAsOf);
+  const nowMs = Date.parse(nowIso);
+  if (!Number.isFinite(asOfMs) || !Number.isFinite(nowMs)) {
+    return { usable: false, reason: `timestamp de frescor ilegível (kitAsOf=${kitAsOf})` };
+  }
+  const ageHours = (nowMs - asOfMs) / 3_600_000;
+  if (ageHours > maxAgeHours) {
+    return {
+      usable: false,
+      reason:
+        `última ingestão do Kit no store foi em ${kitAsOf} (${ageHours.toFixed(1)}h atrás, teto ${maxAgeHours}h) — ` +
+        "Diaria-Kit-Roster-Ingest parada?",
+    };
+  }
+  return { usable: true, reason: null };
+}
+
+export function buildApuracaoStoreStaleEmail(snapshotDate: DateOnlyString, reason: string): { subject: string; body: string } {
+  return {
+    subject: `🚨 Teste 2608: apuração de ${snapshotDate} NÃO rodou — store desatualizado`,
+    body: [
+      `Alarme automático do Diaria-Ads-Test-Watch (#8238).`,
+      "",
+      `Hoje é a data de apuração pré-registrada (${snapshotDate}), mas o store unificado`,
+      `(data/diaria-subscribers/diaria-subscribers.db), de onde a apuração lê a coorte, não está fresco: ${reason}`,
+      "",
+      "A apuração NÃO foi rodada — congelar números de um store parado é pior que nenhum relatório.",
+      "Este alarme REPETE todo dia até a ingestão do Kit voltar (ou você intervir manualmente).",
+    ].join("\n"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Guard de coorte da apuração (#8238 itens 5a/5b — resíduo do PR #8481).
+// O guard original só pegava os 3 braços zerados ao mesmo tempo. Ficavam de
+// fora dois modos de congelar lixo com exit 0:
+//  (a) UM braço sai com 0 cadastros no relatório enquanto o store tem
+//      cadastro com aquela UTM (coorte perdida no caminho — override de
+//      origem, filtro, janela);
+//  (b) a coorte existe, mas quase ninguém dela tem entrega (`delivered`)
+//      ligada ao próprio subscriber — identidade partida no store (#8236).
+//      `leitor-v1` exige >=20 recebidas, então sai 0 leitor em todos os
+//      braços e o relatório congelado diz "sem sinal" por defeito de dado,
+//      não por comportamento do leitor.
+// ---------------------------------------------------------------------------
+
+/** Piso da fração de ATIVOS da coorte (3 braços somados) com >=1 entrega
+ *  ligada no store. Na data de apuração todo ativo cadastrado até o fim da
+ *  janela já recebeu semanas de edições — ativo com 0 recebida é identidade
+ *  partida (#8236), não comportamento. Mesmo valor de
+ *  `LEITOR_SUBSCRIPTION_COVERAGE_WARN_FRACTION` (leitor-store.ts). */
+export const APURACAO_DELIVERY_COVERAGE_FLOOR = 0.5;
+
+/** Limiar de recebidas do `leitor-v1` — só pra linha informativa da Emenda
+ *  17/09 (#8249 item 5: "imprimir a fração da coorte com >=20 recebidas"). */
+const APURACAO_LEITOR_MIN_RECEIVED = 20;
+
+export interface ApuracaoArmStats {
+  braco: string;
+  /** Cadastros que o RELATÓRIO congelado mostra pro braço. */
+  cadastrosRelatorio: number;
+  /** Cadastros que o store tem pra UTM do braço (já sem contas internas/teste). */
+  cadastrosStore: number;
+  ativos: number;
+  ativosComEntrega: number;
+  ativosCom20Recebidas: number;
+}
+
+/**
+ * Estatísticas por braço a partir dos subscribers do store (já filtrados de
+ * internos/teste) + linhas do relatório. Casamento por canal via
+ * `subscribersForChannel` — as MESMAS chaves de `CHANNEL_KEY_SPECS` que o
+ * relatório usa, sem mapa paralelo. @pure
+ */
+export function computeApuracaoArmStats(
+  storeSubs: readonly BeehiivBackupSubscriber[],
+  reportRows: readonly CacRow[],
+  bracos: readonly string[],
+): ApuracaoArmStats[] {
+  const relatorio = cadastrosPorCanal(reportRows);
+  const received = (s: BeehiivBackupSubscriber): number => s.stats?.total_received ?? 0;
+  return bracos.map((braco) => {
+    const cohort = subscribersForChannel([...storeSubs], braco);
+    const ativos = cohort.filter((s) => s.status === "active");
+    return {
+      braco,
+      cadastrosRelatorio: relatorio.get(braco) ?? 0,
+      cadastrosStore: cohort.length,
+      ativos: ativos.length,
+      ativosComEntrega: ativos.filter((s) => received(s) >= 1).length,
+      ativosCom20Recebidas: ativos.filter((s) => received(s) >= APURACAO_LEITOR_MIN_RECEIVED).length,
+    };
+  });
+}
+
+export interface ApuracaoCohortGuardResult {
+  /** Problemas que IMPEDEM congelar — vazio = pode marcar como concluída. */
+  problems: string[];
+  /** Linhas informativas (cobertura por braço e total) pra e-mail/log. */
+  coverageLines: string[];
+}
+
+function fmtFrac(n: number, d: number): string {
+  return d === 0 ? "n/a" : `${((n / d) * 100).toFixed(1)}%`;
+}
+
+/** Ver bloco acima — (a) braço zerado no relatório com cadastro no store;
+ *  (b) cobertura de entrega dos ativos da coorte abaixo do piso. @pure */
+export function evaluateApuracaoCohortGuard(
+  stats: readonly ApuracaoArmStats[],
+  coverageFloor: number = APURACAO_DELIVERY_COVERAGE_FLOOR,
+): ApuracaoCohortGuardResult {
+  const problems: string[] = [];
+  for (const s of stats) {
+    if (s.cadastrosRelatorio === 0 && s.cadastrosStore > 0) {
+      problems.push(
+        `${s.braco}: o relatório saiu com 0 cadastros, mas o store tem ${s.cadastrosStore} cadastro(s) com essa UTM — coorte perdida no caminho.`,
+      );
+    }
+  }
+  const ativos = stats.reduce((a, s) => a + s.ativos, 0);
+  const comEntrega = stats.reduce((a, s) => a + s.ativosComEntrega, 0);
+  const com20 = stats.reduce((a, s) => a + s.ativosCom20Recebidas, 0);
+  if (ativos > 0 && comEntrega / ativos < coverageFloor) {
+    problems.push(
+      `Cobertura de entrega da coorte: só ${comEntrega} de ${ativos} ativos (${fmtFrac(comEntrega, ativos)}) têm >=1 entrega ligada no store ` +
+        `(piso ${(coverageFloor * 100).toFixed(0)}%) — identidade partida no store (#8236)? leitor-v1 sairia 0 por defeito de dado.`,
+    );
+  }
+  const coverageLines = [
+    "Cobertura da coorte no store (Emenda 17/09, #8249 item 5):",
+    ...stats.map(
+      (s) =>
+        `- ${s.braco}: ${s.cadastrosStore} cadastro(s) no store, ${s.cadastrosRelatorio} no relatório; ` +
+        `${s.ativos} ativo(s), ${fmtFrac(s.ativosComEntrega, s.ativos)} com >=1 entrega, ` +
+        `${fmtFrac(s.ativosCom20Recebidas, s.ativos)} com >=${APURACAO_LEITOR_MIN_RECEIVED} recebidas`,
+    ),
+    `- Total: ${ativos} ativo(s), ${fmtFrac(comEntrega, ativos)} com >=1 entrega, ` +
+      `${fmtFrac(com20, ativos)} com >=${APURACAO_LEITOR_MIN_RECEIVED} recebidas`,
+  ];
+  return { problems, coverageLines };
+}
+
+export function buildApuracaoCohortGuardEmail(
+  snapshotDate: DateOnlyString,
+  problems: readonly string[],
+  coverageLines: readonly string[],
+): { subject: string; body: string } {
+  return {
+    subject: `🚨 Teste 2608: apuração de ${snapshotDate} com coorte suspeita — NÃO congelada`,
+    body: [
+      `Alarme automático do Diaria-Ads-Test-Watch (#8238).`,
+      "",
+      `A apuração pré-registrada (${snapshotDate}) rodou, mas a coorte não passou no guard:`,
+      ...problems.map((p) => `- ${p}`),
+      ...(coverageLines.length > 0 ? ["", ...coverageLines] : []),
+      "",
+      "A apuração NÃO foi marcada como concluída — este alarme repete todo dia até o dado ser corrigido",
+      "ou até você investigar manualmente.",
     ].join("\n"),
   };
 }

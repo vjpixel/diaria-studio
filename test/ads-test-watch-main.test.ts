@@ -23,8 +23,11 @@ import {
   DEFAULT_PLANNED_D0,
   realResolveBrevoTaskEnabled,
   BREVO_DIARIA_TASK_NAME,
+  loadApuracaoCohortGuard,
+  realIsStoreFresh,
   type AdsTestWatchDeps,
 } from "../scripts/ads-test-watch.ts";
+import type { CacReport } from "../scripts/lib/cac.ts";
 import { buildAdsTestRunState } from "../scripts/lib/ads-test-run-state.ts";
 import { unitBaseName } from "../scripts/lib/systemd-units.ts";
 import type { QueryUnitStateResult } from "../scripts/lib/systemd-unit-state.ts";
@@ -57,7 +60,6 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
     runStatePath: join(dir, "run-state.json"),
     watchStatePath: join(dir, "watch-state.json"),
     clicksCsvPath: join(dir, "clicks-2608.csv"),
-    backupRoot: join(dir, "beehiiv-backup"),
     plannedD0: DEFAULT_PLANNED_D0,
     plannedDailyBudgetBRL: 100,
     now: () => new Date("2026-08-26T06:30:00.000Z"),
@@ -70,7 +72,7 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
       calls.push("cac");
       return { ok: true, zeroCadastrosArms: [] };
     },
-    isSnapshotUsable: () => ({ usable: true, reason: null }),
+    isStoreFresh: () => ({ usable: true, reason: null }),
     commentOnReligarBrevoIssue: () => ({ status: 0, stdout: "", stderr: "" }),
     execMode: () => "local",
     // #8853 — default do teste simula a task AINDA desarmada (o cenário
@@ -82,7 +84,7 @@ function baseDeps(dir: string, overrides: Partial<AdsTestWatchDeps> = {}): Parti
 }
 
 describe("#5845 — ads-test-watch main (I/O): apuração", () => {
-  it("snapshot INUTILIZÁVEL → NÃO roda build-origem-map nem cac-report, alarma, watch-state intacto", async () => {
+  it("#8238 — store DESATUALIZADO → NÃO roda build-origem-map nem cac-report, alarma, watch-state intacto", async () => {
     await withTmpDir(async (dir) => {
       const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
       writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
@@ -101,7 +103,7 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
         [],
         baseDeps(dir, {
           now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
-          isSnapshotUsable: () => ({ usable: false, reason: "manifest.json reporta erro no endpoint subscribers" }),
+          isStoreFresh: () => ({ usable: false, reason: "última ingestão do Kit no store foi há 50h" }),
           runBuildOrigemMap: () => {
             origemCalls.push("origem");
             return true;
@@ -114,11 +116,11 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
         }),
       );
 
-      assert.equal(origemCalls.length, 0, "build-origem-map NUNCA deve rodar sobre snapshot inutilizável");
-      assert.equal(cacCalls.length, 0, "cac-report NUNCA deve rodar sobre snapshot inutilizável");
+      assert.equal(origemCalls.length, 0, "build-origem-map NUNCA deve rodar sobre store desatualizado");
+      assert.equal(cacCalls.length, 0, "cac-report NUNCA deve rodar sobre store desatualizado");
       assert.equal(notifyCalls.length, 1);
       assert.equal(notifyCalls[0].severity, "urgente");
-      assert.match(notifyCalls[0].subject, /NÃO rodou/);
+      assert.match(notifyCalls[0].subject, /NÃO rodou — store desatualizado/);
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.equal(watchState.apuracaoCompletedAt, null, "watch-state não deve marcar apuração como completa");
     });
@@ -220,6 +222,73 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
       assert.equal(notifyCalls.length, 1);
       assert.match(notifyCalls[0].subject, /apuração congelada rodou/, "guard só dispara com TODOS os braços zerados");
 
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.ok(watchState.apuracaoCompletedAt);
+    });
+  });
+
+  it("#8238 (5a/5b) — guard de coorte com problema → NÃO marca completa, alarma 'coorte suspeita', nunca o e-mail de sucesso", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const notifyCalls: NotifyEditorFinding[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => true,
+          runCacReport: async () => ({
+            ok: true,
+            zeroCadastrosArms: [],
+            cohortProblems: ["Cobertura de entrega da coorte: só 1 de 203 ativos (0.5%) têm >=1 entrega ligada no store"],
+            coverageLines: ["Cobertura da coorte no store (Emenda 17/09, #8249 item 5):"],
+          }),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+
+      assert.equal(notifyCalls.length, 1);
+      assert.match(notifyCalls[0].subject, /coorte suspeita/);
+      assert.match(notifyCalls[0].body, /só 1 de 203 ativos/);
+      assert.doesNotMatch(notifyCalls[0].subject, /apuração congelada rodou/);
+      const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
+      assert.equal(watchState.apuracaoCompletedAt, null, "guard de coorte nunca marca a apuração como concluída");
+    });
+  });
+
+  it("#8238 — sucesso leva as linhas de cobertura da coorte (fração >=20 recebidas, Emenda 17/09) no corpo do e-mail", async () => {
+    await withTmpDir(async (dir) => {
+      const runState = buildAdsTestRunState("2026-08-26", "2026-08-26T09:00:00.000Z");
+      writeFileSync(join(dir, "run-state.json"), JSON.stringify(runState));
+      writeFileSync(
+        join(dir, "watch-state.json"),
+        JSON.stringify({ religarBrevoTriggeredAt: "2026-09-16T06:30:00.000Z", apuracaoCompletedAt: null, apuracaoReportPath: null }),
+      );
+      const notifyCalls: NotifyEditorFinding[] = [];
+
+      await main(
+        [],
+        baseDeps(dir, {
+          now: () => new Date(runState.apuracao_snapshot + "T06:30:00.000Z"),
+          runBuildOrigemMap: () => true,
+          runCacReport: async () => ({
+            ok: true,
+            zeroCadastrosArms: [],
+            cohortProblems: [],
+            coverageLines: ["- Total: 203 ativo(s), 97.0% com >=1 entrega, 88.2% com >=20 recebidas"],
+          }),
+          notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
+        }),
+      );
+
+      assert.equal(notifyCalls.length, 1);
+      assert.match(notifyCalls[0].subject, /apuração congelada rodou/);
+      assert.match(notifyCalls[0].body, /88\.2% com >=20 recebidas/);
       const watchState = JSON.parse(readFileSync(join(dir, "watch-state.json"), "utf8"));
       assert.ok(watchState.apuracaoCompletedAt);
     });
@@ -713,6 +782,99 @@ describe("#7960 — ads-test-watch main (I/O): --dry-run nunca notifica o editor
         }),
       );
       assert.notEqual(process.exitCode, 1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #8238 (resíduo do #8481) — guard de coorte e gate de frescor sobre um
+// store REAL em arquivo temporário (nunca o `data/` de produção).
+// ---------------------------------------------------------------------------
+
+describe("#8238 — loadApuracaoCohortGuard / realIsStoreFresh sobre store fixture", () => {
+  const NOW = "2026-10-25T06:30:00.000Z";
+  const GOOGLE = "Google Ads (teste 2608)";
+
+  async function seedStore(dir: string, opts: { linkDelivered: boolean; kitUpdatedAt?: string }): Promise<string> {
+    const { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription, recordEvent } = await import(
+      "../scripts/lib/diaria-subscribers-db.ts"
+    );
+    const storePath = join(dir, "diaria-subscribers.db");
+    const db = openDiariaSubscribersDb(storePath);
+    const updatedAt = opts.kitUpdatedAt ?? NOW;
+    for (let i = 0; i < 4; i++) {
+      const id = ensureSubscriber(db, "kit", `kit-${i}`, `leitor${i}@example.com`, "2026-09-10T00:00:00.000Z");
+      upsertSubscription(
+        db,
+        id,
+        "kit",
+        { status: "active", enteredAt: "2026-09-10T00:00:00.000Z", exitedAt: null, source: "kit", utmSource: "google-ads" },
+        updatedAt,
+      );
+      // Identidade partida (#8236): a entrega existe, mas ligada a OUTRO
+      // subscriber_id (alias órfão), não ao cadastro da coorte.
+      const target = opts.linkDelivered ? id : ensureSubscriber(db, "kit", `orfao-${i}`, `orfao${i}@example.com`, NOW);
+      for (let e = 0; e < 21; e++) {
+        // 1 edição por dia (a dedup por edição canônica colapsa broadcasts do mesmo dia).
+        const ts = new Date(Date.parse("2026-09-15T09:00:00.000Z") + e * 86_400_000).toISOString();
+        recordEvent(db, { subscriberId: target, platform: "kit", type: "delivered", externalEventId: `d-${i}-${e}`, edicao: `b${e}`, ts });
+      }
+    }
+    db.close();
+    return storePath;
+  }
+
+  function reportWith(cadastros: number): CacReport {
+    return { rows: [{ kind: "measured", canal: GOOGLE, cadastros }] } as unknown as CacReport;
+  }
+
+  it("coorte do Kit SEM delivered ligado ao próprio subscriber → guard dispara (leitor-v1 sairia 0 por defeito de dado)", async () => {
+    await withTmpDir(async (dir) => {
+      const storePath = await seedStore(dir, { linkDelivered: false });
+      const guard = loadApuracaoCohortGuard(reportWith(4), [GOOGLE], storePath);
+      assert.equal(guard.problems.length, 1, guard.problems.join("\n"));
+      assert.match(guard.problems[0], /Cobertura de entrega da coorte: só 0 de 4 ativos/);
+    });
+  });
+
+  it("coorte com delivered ligado → sem problema; linha informativa traz a fração com >=20 recebidas", async () => {
+    await withTmpDir(async (dir) => {
+      const storePath = await seedStore(dir, { linkDelivered: true });
+      const guard = loadApuracaoCohortGuard(reportWith(4), [GOOGLE], storePath);
+      assert.deepEqual(guard.problems, []);
+      assert.ok(guard.coverageLines.some((l) => /100\.0% com >=20 recebidas/.test(l)), guard.coverageLines.join("\n"));
+    });
+  });
+
+  it("braço com cadastros no store mas 0 no relatório → guard dispara (coorte perdida no caminho)", async () => {
+    await withTmpDir(async (dir) => {
+      const storePath = await seedStore(dir, { linkDelivered: true });
+      const guard = loadApuracaoCohortGuard(reportWith(0), [GOOGLE], storePath);
+      assert.ok(guard.problems.some((p) => /0 cadastros, mas o store tem 4/.test(p)), guard.problems.join("\n"));
+    });
+  });
+
+  it("store ilegível → problema, nunca 'passa'", async () => {
+    await withTmpDir(async (dir) => {
+      const guard = loadApuracaoCohortGuard(reportWith(4), [GOOGLE], join(dir, "nao-existe.db"));
+      assert.equal(guard.problems.length, 1);
+      assert.match(guard.problems[0], /store ilegível/);
+    });
+  });
+
+  it("realIsStoreFresh: ingestão Kit de 2h atrás → usável; de 3 dias atrás → inutilizável; store ausente → inutilizável", async () => {
+    await withTmpDir(async (dir) => {
+      const fresh = await seedStore(dir, { linkDelivered: true, kitUpdatedAt: "2026-10-25T04:25:00.000Z" });
+      assert.deepEqual(realIsStoreFresh(new Date(NOW), fresh), { usable: true, reason: null });
+    });
+    await withTmpDir(async (dir) => {
+      const stale = await seedStore(dir, { linkDelivered: true, kitUpdatedAt: "2026-10-22T04:25:00.000Z" });
+      const r = realIsStoreFresh(new Date(NOW), stale);
+      assert.equal(r.usable, false);
+      assert.match(r.reason ?? "", /Diaria-Kit-Roster-Ingest parada/);
+    });
+    await withTmpDir(async (dir) => {
+      assert.equal(realIsStoreFresh(new Date(NOW), join(dir, "nao-existe.db")).usable, false);
     });
   });
 });

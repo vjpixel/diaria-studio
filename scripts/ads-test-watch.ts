@@ -44,7 +44,13 @@ import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
 import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-state.ts";
-import { isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
+import {
+  DEFAULT_DB_PATH as DEFAULT_STORE_DB_PATH,
+  openDiariaSubscribersDbSafe,
+  getSubscriptionAsOf,
+} from "./lib/diaria-subscribers-db.ts";
+import { buildCacCompatibleSubscribersFromStore } from "./lib/leitor-store.ts";
+import { filterInternalAndTestSubscribers, type CacReport } from "./lib/cac.ts";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
 import { main as cacReportMain, cacReportSnapshotId } from "./cac-report.ts";
@@ -65,10 +71,14 @@ import {
   buildMissingClicksCoverageEmail,
   buildDeathConditionEmail,
   buildReligarBrevoDueEmail,
-  buildApuracaoSnapshotUnusableEmail,
+  buildApuracaoStoreStaleEmail,
   buildApuracaoSuccessEmail,
   buildApuracaoZeroCadastrosEmail,
+  buildApuracaoCohortGuardEmail,
   detectZeroCadastrosAcrossArmsFromReport,
+  evaluateStoreFreshness,
+  computeApuracaoArmStats,
+  evaluateApuracaoCohortGuard,
   DEFAULT_PLANNED_DAILY_BUDGET_BRL,
   DEFAULT_NOMINAL_ARM_BUDGET_BRL,
   type AdsTestWatchState,
@@ -86,7 +96,6 @@ const AQUISICAO_DIR = resolve(ROOT, "data/aquisicao");
 export const DEFAULT_RUN_STATE_PATH = resolve(AQUISICAO_DIR, "teste-2608/run-state.json");
 export const DEFAULT_WATCH_STATE_PATH = resolve(AQUISICAO_DIR, "teste-2608/watch-state.json");
 export const DEFAULT_CLICKS_CSV_PATH = resolve(AQUISICAO_DIR, "clicks-2608.csv");
-export const DEFAULT_BACKUP_ROOT = resolve(ROOT, "data/beehiiv-backup");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[ads-test-watch]";
 
@@ -103,11 +112,17 @@ export const DEFAULT_PLANNED_D0 = "2026-08-26";
  *  (#5838) — comentar nela em vez de reimplementar o mecanismo. */
 export const RELIGAR_BREVO_ISSUE_NUMBER = 5838;
 
+export interface CacReportRunResult {
+  ok: boolean;
+  zeroCadastrosArms: readonly string[];
+  cohortProblems?: readonly string[];
+  coverageLines?: readonly string[];
+}
+
 export interface AdsTestWatchDeps {
   runStatePath: string;
   watchStatePath: string;
   clicksCsvPath: string;
-  backupRoot: string;
   plannedD0: string | null;
   plannedDailyBudgetBRL: number;
   now: () => Date;
@@ -129,12 +144,18 @@ export interface AdsTestWatchDeps {
    *  existir de fato). `zeroCadastrosArms` vem de
    *  `detectZeroCadastrosAcrossArmsFromReport` sobre o `CacReport` que
    *  `cac-report.ts::main()` agora retorna — `[]` quando `ok:false` (não dá
-   *  pra avaliar cadastros de um relatório que não rodou). */
-  runCacReport: (
-    snapshotDate: string,
-    bracos: readonly string[],
-  ) => Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }>;
-  isSnapshotUsable: (root: string, date: string) => { usable: boolean; reason: string | null };
+   *  pra avaliar cadastros de um relatório que não rodou).
+   *
+   *  `cohortProblems`/`coverageLines` (#8238, resíduo do #8481) vêm de
+   *  `evaluateApuracaoCohortGuard`: braço zerado no relatório com cadastro
+   *  no store, ou cobertura de entrega da coorte abaixo do piso. Qualquer
+   *  `cohortProblems` não-vazio impede marcar a apuração como concluída.
+   *  Opcionais só pra teste — `realCacReport` sempre preenche. */
+  runCacReport: (snapshotDate: string, bracos: readonly string[]) => Promise<CacReportRunResult>;
+  /** #8238 — gate de usabilidade da apuração: frescor do STORE (de onde a
+   *  coorte é lida), não mais o snapshot Beehiiv. Produção:
+   *  `realIsStoreFresh` (última ingestão Kit em `subscription.updated_at`). */
+  isStoreFresh: (now: Date) => { usable: boolean; reason: string | null };
   commentOnReligarBrevoIssue: (body: string) => GhSpawnResult;
   /** Injetável só pra teste (evita depender do junction `data/` real do
    *  worktree que roda a suíte) — em produção sempre `detectExecMode`. */
@@ -213,17 +234,65 @@ function realBuildOrigemMap(): boolean {
  * `--fonte store` (#8238): a coorte do teste 2608 nasce no Kit, nunca no
  * snapshot Beehiiv — ver docstring de `AdsTestWatchDeps.runCacReport`.
  */
-async function realCacReport(
-  snapshotDate: string,
-  bracos: readonly string[],
-): Promise<{ ok: boolean; zeroCadastrosArms: readonly string[] }> {
+async function realCacReport(snapshotDate: string, bracos: readonly string[]): Promise<CacReportRunResult> {
   const priorExitCode = process.exitCode;
   process.exitCode = undefined;
   const report = await cacReportMain(["--snapshot", snapshotDate, "--fonte", "store"]);
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
-  if (failed || !report) return { ok: !failed, zeroCadastrosArms: [] };
-  return { ok: true, zeroCadastrosArms: detectZeroCadastrosAcrossArmsFromReport(report, bracos) };
+  // `!report` sem exitCode != 0 não deveria acontecer (todo `return null` de
+  // `cacReportMain` seta exitCode=1), mas se acontecer é falha, nunca
+  // sucesso — um relatório que não existe não pode virar "apuração concluída".
+  if (failed || !report) return { ok: false, zeroCadastrosArms: [] };
+  const guard = loadApuracaoCohortGuard(report, bracos);
+  return {
+    ok: true,
+    zeroCadastrosArms: detectZeroCadastrosAcrossArmsFromReport(report, bracos),
+    cohortProblems: guard.problems,
+    coverageLines: guard.coverageLines,
+  };
+}
+
+/**
+ * #8238 (itens 5a/5b) — relê a coorte do store (mesma montagem que
+ * `cac-report.ts --fonte store` usa, menos contas internas/teste) e avalia
+ * o guard de coorte contra o relatório recém-gerado. Store ilegível aqui
+ * (ele acabou de ser lido pelo `cac-report`) vira PROBLEMA, nunca "passa":
+ * sem o guard avaliado não há como afirmar que a coorte é confiável.
+ */
+export function loadApuracaoCohortGuard(
+  report: CacReport,
+  bracos: readonly string[],
+  storeDbPath: string = DEFAULT_STORE_DB_PATH,
+): { problems: string[]; coverageLines: string[] } {
+  // `existsSync` antes: `openDiariaSubscribersDb` CRIA um store vazio num
+  // path ausente — e um store vazio "passaria" no guard (0 ativos).
+  const db = existsSync(storeDbPath) ? openDiariaSubscribersDbSafe(storeDbPath) : null;
+  if (!db) {
+    return { problems: [`store ilegível em ${storeDbPath} — guard de coorte não pôde ser avaliado.`], coverageLines: [] };
+  }
+  try {
+    const subs = filterInternalAndTestSubscribers(buildCacCompatibleSubscribersFromStore(db)).kept;
+    return evaluateApuracaoCohortGuard(computeApuracaoArmStats(subs, report.rows, bracos));
+  } catch (e) {
+    return { problems: [`falha ao avaliar o guard de coorte no store: ${(e as Error).message}`], coverageLines: [] };
+  } finally {
+    db.close();
+  }
+}
+
+/** #8238 — frescor do store (última ingestão do Kit), ver
+ *  `evaluateStoreFreshness`. Store ausente/ilegível = inutilizável. */
+export function realIsStoreFresh(now: Date, storeDbPath: string = DEFAULT_STORE_DB_PATH): { usable: boolean; reason: string | null } {
+  const db = existsSync(storeDbPath) ? openDiariaSubscribersDbSafe(storeDbPath) : null;
+  if (!db) return { usable: false, reason: `store não encontrado/ilegível em ${storeDbPath}` };
+  try {
+    return evaluateStoreFreshness(getSubscriptionAsOf(db, ["kit"]), now.toISOString());
+  } catch (e) {
+    return { usable: false, reason: `falha ao ler o frescor do store: ${(e as Error).message}` };
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -263,7 +332,6 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
     runStatePath: getArg(argv, "run-state-path") || DEFAULT_RUN_STATE_PATH,
     watchStatePath: getArg(argv, "watch-state-path") || DEFAULT_WATCH_STATE_PATH,
     clicksCsvPath: getArg(argv, "clicks-csv-path") || DEFAULT_CLICKS_CSV_PATH,
-    backupRoot: getArg(argv, "backup-root") || DEFAULT_BACKUP_ROOT,
     plannedD0: getStringArg(argv, "planned-d0") ?? DEFAULT_PLANNED_D0,
     // getIntArg (não Number(getArg(...) || default)) — distingue flag AUSENTE
     // (undefined -> default) de flag PRESENTE mas vazia/inválida (lança, em
@@ -274,7 +342,7 @@ function defaultDeps(argv: string[]): AdsTestWatchDeps {
     notify: (finding) => notifyEditor(finding, { cwd: ROOT, emailTo: toOverride || undefined, platformConfigPath: PLATFORM_CONFIG_PATH }),
     runBuildOrigemMap: realBuildOrigemMap,
     runCacReport: realCacReport,
-    isSnapshotUsable: (root, date) => isSubscribersSnapshotUsable(root, date),
+    isStoreFresh: (now) => realIsStoreFresh(now),
     commentOnReligarBrevoIssue: (body) =>
       spawnGhSync(["issue", "comment", String(RELIGAR_BREVO_ISSUE_NUMBER), "--body", body], ROOT),
     execMode: () => detectExecMode({ projectRoot: ROOT }),
@@ -498,9 +566,11 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
   }
 
   if (plan.runApuracao && runState) {
-    const usability = deps.isSnapshotUsable(deps.backupRoot, runState.apuracao_snapshot);
+    // #8238: a coorte vem do store (`--fonte store`), então o gate é o
+    // frescor do STORE — não mais o snapshot Beehiiv, que nunca viu a coorte.
+    const usability = deps.isStoreFresh(now);
     if (!usability.usable) {
-      const { subject, body } = buildApuracaoSnapshotUnusableEmail(runState.apuracao_snapshot, usability.reason ?? "motivo desconhecido");
+      const { subject, body } = buildApuracaoStoreStaleEmail(runState.apuracao_snapshot, usability.reason ?? "motivo desconhecido");
       findings.push({
         check: "ads-test-watch-apuracao-unusable",
         fingerprint: `apuracao-unusable:${runState.apuracao_snapshot}`,
@@ -508,7 +578,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
         subject,
         body,
       });
-      console.error(`${LOG_PREFIX} apuração NÃO rodou — snapshot ${runState.apuracao_snapshot} inutilizável: ${usability.reason}`);
+      console.error(`${LOG_PREFIX} apuração NÃO rodou — store desatualizado para ${runState.apuracao_snapshot}: ${usability.reason}`);
     } else if (!isDryRun) {
       // SEMPRE build-origem-map.ts imediatamente antes de cac-report.ts (§7.2) —
       // nunca separados, nunca fora de ordem.
@@ -523,7 +593,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           // #8238: TODOS os braços zeraram — sinal forte de fonte de dados
           // errada (ex: cac-report.ts ainda lendo o snapshot Beehiiv em vez
           // do store). NUNCA marcar como concluída silenciosamente — alarme
-          // que se repete todo dia, mesma disciplina do snapshot inutilizável
+          // que se repete todo dia, mesma disciplina do store desatualizado
           // acima, até o dado aparecer ou o editor investigar.
           const { subject, body } = buildApuracaoZeroCadastrosEmail(runState.apuracao_snapshot, cacResult.zeroCadastrosArms);
           findings.push({
@@ -537,6 +607,21 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
             `${LOG_PREFIX} apuração gerou 0 cadastros nos ${runState.bracos.length} braços (${cacResult.zeroCadastrosArms.join(", ")}) — ` +
               `fonte de dados provavelmente errada; NÃO marcando como concluída (#8238).`,
           );
+        } else if ((cacResult.cohortProblems ?? []).length > 0) {
+          // #8238 itens 5a/5b: 1 braço zerado com cadastro no store, ou
+          // cobertura de entrega abaixo do piso — mesmo tratamento do guard
+          // de 0 cadastros acima: alarme diário, nunca "concluída".
+          const problems = cacResult.cohortProblems ?? [];
+          const { subject, body } = buildApuracaoCohortGuardEmail(runState.apuracao_snapshot, problems, cacResult.coverageLines ?? []);
+          findings.push({
+            check: "ads-test-watch-apuracao-cohort-guard",
+            fingerprint: `apuracao-cohort-guard:${runState.apuracao_snapshot}`,
+            severity: "urgente",
+            subject,
+            body,
+          });
+          for (const p of problems) console.error(`${LOG_PREFIX} guard de coorte: ${p}`);
+          console.error(`${LOG_PREFIX} apuração NÃO marcada como concluída — coorte não passou no guard (#8238).`);
         } else {
           // #8238: `realCacReport` sempre roda com `--fonte store` — o id
           // (e portanto o path) leva o sufixo `--store` (`cacReportSnapshotId`,
@@ -545,7 +630,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           const reportPath = `data/aquisicao/cac-reports/${reportId("cac", snapshotId)}.md`;
           const reportUrl = `/relatorios/${reportId("cac", snapshotId)}`;
           pendingApuracaoState = markApuracaoCompleted(watchState, now.toISOString(), reportPath);
-          const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl);
+          const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl, cacResult.coverageLines ?? []);
           findings.push({
             check: "ads-test-watch-apuracao-success",
             fingerprint: `apuracao-success:${runState.apuracao_snapshot}`,
