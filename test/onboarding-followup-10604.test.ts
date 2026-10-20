@@ -217,8 +217,10 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     assert.equal((formContentGate(allApproved(), resolveFollowupConfig({})) as { motivo: string }).motivo, "form_nao_configurado");
   });
 
-  it("link do formulário leva o e-mail pré-preenchido via merge tag do Kit", () => {
-    assert.equal(renderFollowupBody("Responda: {{FORM_URL}}", "https://f.example/"), "Responda: https://f.example/?email={{ subscriber.email_address | url_encode }}");
+  it("link do formulário leva o e-mail pré-preenchido via merge tag do Kit, sem filtro Liquid não confirmado (#10623)", () => {
+    const out = renderFollowupBody("Responda: {{FORM_URL}}", "https://f.example/");
+    assert.equal(out, "Responda: https://f.example/?email={{ subscriber.email_address }}");
+    assert.ok(!out.includes("url_encode"));
   });
 
   it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {
@@ -251,6 +253,10 @@ function fakeDeps(over: Partial<FollowupRoundDeps> = {}): FollowupRoundDeps & { 
     async getSubscriber(id) {
       calls.push(`get:${id}`);
       return { state: "active", apoioNivel: "" };
+    },
+    async listEnvioBrevoEmails() {
+      calls.push("envio-brevo");
+      return [];
     },
     async fetchFormResponses() {
       calls.push("responses");
@@ -322,6 +328,66 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     const block = { people: {}, lots: {} };
     recordFollowupRun(block, run);
     assert.equal((block as { consecutive_failed_runs?: number }).consecutive_failed_runs, 1);
+  });
+
+  it("#10623 teto aplicado ANTES das leituras singulares: etapa acima do teto não consulta o Kit por pessoa", async () => {
+    const storePath = tempStore();
+    const cad = new Date(T0 * 1000).toISOString();
+    const deps = fakeDeps({
+      async listActiveSubscribers() {
+        return [1, 2, 3].map((i) => ({ kit_subscriber_id: i, email: `${i}@x.com`, cadastro_at: cad }));
+      },
+    });
+    const small = { ...cfg, maxRecipientsPerLot: 2 };
+    const { run, lots } = await runFollowupRound({ storePath, send: false, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    assert.equal(deps.calls.filter((c) => c.startsWith("get:")).length, 0, "nenhum GET /subscribers/{id} pra lote descartado");
+    assert.equal(run.over_cap, 1);
+    assert.equal(run.counts.apoio30?.acima_do_teto, 3);
+    assert.equal(lots.length, 1);
+  });
+
+  it("#10623 quem tem a tag envio-brevo não recebe apoio nem formulário pelo Kit", async () => {
+    const storePath = tempStore();
+    const cad = new Date(T0 * 1000).toISOString();
+    const deps = fakeDeps({
+      async listEnvioBrevoEmails() {
+        return [" B@X.com"];
+      },
+      async listActiveSubscribers() {
+        return [
+          { kit_subscriber_id: 1, email: "a@x.com", cadastro_at: cad },
+          { kit_subscriber_id: 2, email: "b@x.com", cadastro_at: cad },
+        ];
+      },
+    });
+    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    assert.equal(run.counts.apoio30?.envio_brevo, 1);
+    assert.equal(run.counts.apoio30?.enviado, 1);
+    assert.ok(!deps.calls.includes("get:2"), "excluído antes da checagem singular");
+    const { store } = readStore(storePath);
+    assert.equal(store.followup?.people["2"], undefined);
+
+    const plan = planFollowup({
+      apoioCandidates: [],
+      formCandidates: [{ kit_subscriber_id: 2, email: "b@x.com", anchorSec: T0 }],
+      people: {},
+      nowSec: T0 + 6 * DAY,
+      cfg,
+      apoioBlocked: null,
+      formBlocked: null,
+      excludedEmails: new Set(["b@x.com"]),
+    });
+    assert.equal(plan.due.length, 0);
+    assert.equal(plan.counts.form?.envio_brevo, 1);
+  });
+
+  it("#10623 tag envio-brevo ilegível trava os dois lados (nunca envia às cegas)", async () => {
+    const storePath = tempStore();
+    const deps = fakeDeps({ async listEnvioBrevoEmails() { throw new Error("tag envio-brevo não existe no Kit"); } });
+    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: allApproved(), nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    assert.equal(run.apoio_blocked?.motivo, "kit_indisponivel");
+    assert.equal(run.form_blocked?.motivo, "kit_indisponivel");
+    assert.equal(deps.calls.filter((c) => c.startsWith("lot:") || c.startsWith("get:")).length, 0);
   });
 
   it("dry-run não grava nada no store nem cria lote", async () => {

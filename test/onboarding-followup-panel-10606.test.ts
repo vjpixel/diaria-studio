@@ -16,6 +16,7 @@ import {
   parseFormResponsesPayload,
   isAuthorizedResponsesRequest,
   formResponseKey,
+  prefillEmailFromQuery,
 } from "../scripts/lib/onboarding-form-contract.ts";
 import { evaluateContinuityRound, FOLLOWUP_CHECK } from "../scripts/onboarding-continuity-alarm.ts";
 
@@ -115,6 +116,23 @@ describe("#10606 contagem por e-mail e por pessoa", () => {
   });
 });
 
+describe("#10623 e-mail 3 da Brevo: rascunho pré-#10603 não conta como recebido", () => {
+  it("campaign_created sem email3_scheduled_at fica em pendentes; com ele conta como brevo", () => {
+    const store = emptyStore();
+    store.entries = {
+      "1": entry({ subscription_id: "1", email: "a@x.com", email3_state: "campaign_created", email3_campaign_id: 77, email3_decided_at: "2026-09-01T12:00:00Z" }),
+      "2": entry({ subscription_id: "2", email: "b@x.com", email3_state: "campaign_created", email3_campaign_id: 88, email3_decided_at: "2026-10-20T12:00:00Z", email3_scheduled_at: "2026-10-20T12:00:00Z" }),
+    };
+    const view = buildFollowupPanel(store);
+    const e3 = view.steps.find((x) => x.step === "email3")!;
+    assert.equal(e3.recebidos, 1);
+    assert.deepEqual(e3.porTransporte, { kit: 0, brevo: 1 });
+    assert.equal(e3.pendentes.rascunho_brevo_sem_envio_confirmado, 1);
+    assert.equal(view.people.find((r) => r.key === "1")!.apoioRecebidos, 0, "rascunho não é pedido de apoio recebido");
+    assert.equal(view.people.find((r) => r.key === "2")!.apoioRecebidos, 1);
+  });
+});
+
 describe("#10605 contrato do formulário", () => {
   const qs = [
     { id: "area", label: "Área", kind: "select" as const, options: ["tech", "direito"], required: true },
@@ -140,6 +158,13 @@ describe("#10605 contrato do formulário", () => {
     assert.equal(isAuthorizedResponsesRequest(null, "abc"), false);
     assert.equal(isAuthorizedResponsesRequest("Bearer ", undefined), false);
     assert.equal(formResponseKey(" A@X.com"), "resp:a@x.com");
+  });
+  it("#10623 prefill: o + do e-mail cru (sem url_encode) volta da query como espaço e é restaurado", () => {
+    const q = new URL("https://f.example/?email=ana+news@x.com").searchParams.get("email");
+    assert.equal(q, "ana news@x.com");
+    assert.equal(prefillEmailFromQuery(q), "ana+news@x.com");
+    assert.equal(prefillEmailFromQuery(null), "");
+    assert.equal(prefillEmailFromQuery(new URL("https://f.example/?email=a.b@x.com").searchParams.get("email")), "a.b@x.com");
   });
 });
 

@@ -284,11 +284,15 @@ export function formContentGate(snippets: FollowupSnippets, cfg: Pick<FollowupCo
 }
 
 /** @pure — troca o placeholder pelo link do formulário com o e-mail
- *  pré-preenchido (merge tag Liquid do Kit, URL-encoded). */
+ *  pré-preenchido pela merge tag do Kit. SEM filtro Liquid de propósito
+ *  (review #10623): `url_encode` não foi confirmado ao vivo no Kit, e um
+ *  filtro desconhecido pode quebrar o link inteiro. O e-mail vai cru; o Worker
+ *  restaura o `+` que a query decodifica como espaço (`prefillEmailFromQuery`)
+ *  e o campo segue editável. */
 export function renderFollowupBody(body: string, formUrl: string | null): string {
   if (formUrl == null || !body.includes(FORM_URL_PLACEHOLDER)) return body;
   const sep = formUrl.includes("?") ? "&" : "?";
-  const link = `${formUrl}${sep}email={{ subscriber.email_address | url_encode }}`;
+  const link = `${formUrl}${sep}email={{ subscriber.email_address }}`;
   return body.split(FORM_URL_PLACEHOLDER).join(link);
 }
 
@@ -445,8 +449,15 @@ export function planFollowup(opts: {
   cfg: Pick<FollowupConfig, "graceDays" | "minGapDays" | "formFirstDays" | "formReminderDays">;
   apoioBlocked: FollowupBlockReason | null;
   formBlocked: FollowupBlockReason | null;
+  /**
+   * E-mails (normalizados, `normalizeEmail`) com a tag `envio-brevo` no Kit
+   * (#10437 — movidos pra Brevo por entregabilidade). Não recebem pedido de
+   * apoio nem formulário pelo Kit: contados como `envio_brevo`, fora de `due`.
+   */
+  excludedEmails?: ReadonlySet<string>;
 }): FollowupPlan {
   const { nowSec, cfg, people } = opts;
+  const isEnvioBrevo = (email: string) => opts.excludedEmails?.has(normalizeEmail(email)) ?? false;
   const counts: FollowupPlan["counts"] = {};
   const byId = new Map<number, { email: string; apoio: ApoioStepKind | null; form: FormStepKind | null }>();
 
@@ -455,6 +466,10 @@ export function planFollowup(opts: {
     const r = apoioStepDue(isoToSec(c.cadastro_at), nowSec, person, cfg.graceDays);
     for (const v of r.vencidas) bump(counts, v, "vencida");
     if (r.due == null) continue;
+    if (isEnvioBrevo(c.email)) {
+      bump(counts, r.due, "envio_brevo");
+      continue;
+    }
     if (opts.apoioBlocked) {
       bump(counts, r.due, `bloqueado_${opts.apoioBlocked}`);
       continue;
@@ -467,6 +482,10 @@ export function planFollowup(opts: {
     const r = formStepDue(c.anchorSec, nowSec, person, cfg);
     if (r.due == null) {
       if (r.motivo === "vencida") bump(counts, "form", "vencida");
+      continue;
+    }
+    if (isEnvioBrevo(c.email)) {
+      bump(counts, r.due, "envio_brevo");
       continue;
     }
     if (opts.formBlocked) {
@@ -500,6 +519,28 @@ export function planFollowup(opts: {
 }
 
 /** Resultado da leitura singular no Kit perto do envio. `null` = falhou. */
+/**
+ * @pure — aplica o teto de lote POR ETAPA sobre os devidos ANTES da checagem
+ * singular no Kit (review da PR #10623): uma coorte inteira caindo no mesmo
+ * D+N (ex.: base migrada com `created_at` da importação) não pode gerar
+ * milhares de `GET /subscribers/{id}` só pra ser descartada por
+ * `acima_do_teto` depois. A etapa acima do teto sai INTEIRA (nunca um corte
+ * parcial arbitrário) — mesma semântica do teto pós-checagem.
+ */
+export function splitDueByCap(
+  due: readonly FollowupDue[],
+  cap: number,
+): { within: FollowupDue[]; overCap: { kind: FollowupStepKind; eligible: number }[] } {
+  const byKind = new Map<FollowupStepKind, number>();
+  for (const d of due) byKind.set(d.kind, (byKind.get(d.kind) ?? 0) + 1);
+  const over = new Set<FollowupStepKind>();
+  for (const [kind, n] of byKind) if (n > cap) over.add(kind);
+  return {
+    within: due.filter((d) => !over.has(d.kind)),
+    overCap: ALL_FOLLOWUP_STEPS.filter((k) => over.has(k)).map((kind) => ({ kind, eligible: byKind.get(kind)! })),
+  };
+}
+
 export interface LiveSubscriberCheck {
   state: string | null;
   /** Valor de `apoio_nivel` (`""` = não apoia). */

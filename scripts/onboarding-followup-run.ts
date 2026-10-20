@@ -46,6 +46,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import { listAllKitSubscribers, getSubscriberById } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
+import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
+import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts";
 import { withFileLock } from "./lib/file-lock.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
@@ -64,12 +66,14 @@ import {
   formCandidatesFromEntries,
   formContentGate,
   idsInConfirmedFollowupLots,
+  normalizeEmail,
   parseFollowupSnippet,
   planFollowup,
   recordApoiaSkips,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
+  splitDueByCap,
   resolveFollowupConfig,
   snippetFileFor,
   snippetTemplate,
@@ -217,6 +221,8 @@ export function initFollowupSnippets(dirAbs: string): string[] {
 export interface FollowupRoundDeps {
   listActiveSubscribers(): Promise<ApoioCandidate[]>;
   getSubscriber(kitId: number): Promise<LiveSubscriberCheck>;
+  /** E-mails com a tag `envio-brevo` (#10437). Lança se a tag não existir ou a leitura falhar (a rodada trava). */
+  listEnvioBrevoEmails(): Promise<string[]>;
   fetchFormResponses(): Promise<FormResponseRecord[]>;
   /** Cria/agenda o lote no Kit (muta `lot`; lança se não confirmar). */
   runLot(lot: FollowupLot, content: { subject: string; body: string; previewText?: string }): Promise<void>;
@@ -277,6 +283,21 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     }
   }
 
+  // #10437: quem tem a tag `envio-brevo` foi movido pra Brevo — nada de pedido
+  // de apoio/formulário pelo Kit (review #10623). Sem conseguir ler a tag,
+  // trava os dois lados: enviar às cegas mandaria pra quem saiu do Kit.
+  let envioBrevoEmails = new Set<string>();
+  if (!apoioBlocked || !formBlocked) {
+    try {
+      envioBrevoEmails = new Set((await deps.listEnvioBrevoEmails()).map(normalizeEmail));
+    } catch (e) {
+      run.lookups_failed++;
+      const detalhe = `tag envio-brevo ilegível: ${redactEmails((e as Error).message)}`;
+      if (!apoioBlocked) run.apoio_blocked = apoioBlocked = { motivo: "kit_indisponivel", detalhe };
+      if (!formBlocked) run.form_blocked = formBlocked = { motivo: "kit_indisponivel", detalhe };
+    }
+  }
+
   let apoioCandidates: ApoioCandidate[] = [];
   if (!apoioBlocked) {
     try {
@@ -297,6 +318,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     cfg,
     apoioBlocked: apoioBlocked?.motivo ?? null,
     formBlocked: formBlocked?.motivo ?? null,
+    excludedEmails: envioBrevoEmails,
   });
   run.counts = plan.counts;
   const bump = (kind: FollowupStepKind, motivo: string, n = 1) => {
@@ -311,9 +333,19 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     return false;
   });
 
+  // Teto de lote ANTES das leituras singulares (review #10623): etapa acima do
+  // teto não gasta uma consulta ao Kit por pessoa só pra ser descartada.
+  const capOverflowMsg = `acima do teto (${cfg.maxRecipientsPerLot}) — nada enviado; conferir com o editor e subir onboarding.followup.max_recipients_per_lot`;
+  const { within: dueWithinCap, overCap } = splitDueByCap(due, cfg.maxRecipientsPerLot);
+  for (const o of overCap) {
+    run.over_cap++;
+    bump(o.kind, "acima_do_teto", o.eligible);
+    lotsOut.push({ kind: o.kind, eligible: o.eligible, skipped: capOverflowMsg });
+  }
+
   // Checagem perto do envio: ativo + não apoia (leitura singular, nunca a listagem).
   const checks = new Map<number, LiveSubscriberCheck | null>();
-  for (const d of due) {
+  for (const d of dueWithinCap) {
     if (checks.has(d.kit_subscriber_id)) continue;
     try {
       checks.set(d.kit_subscriber_id, await deps.getSubscriber(d.kit_subscriber_id));
@@ -322,7 +354,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       run.lookups_failed++;
     }
   }
-  const { send: toSend, excluded } = filterDueByLiveCheck(due, checks);
+  const { send: toSend, excluded } = filterDueByLiveCheck(dueWithinCap, checks);
   for (const x of excluded) bump(x.due.kind, x.motivo);
   if (send) {
     persistFollowupPeople(storePath, (people) => {
@@ -336,10 +368,12 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   for (const kind of ALL_FOLLOWUP_STEPS) {
     const recipients = toSend.filter((d) => d.kind === kind);
     if (recipients.length === 0) continue;
+    // Redundante com o corte acima (a checagem só remove gente), mantido como
+    // defesa em profundidade caso a ordem mude.
     if (recipients.length > cfg.maxRecipientsPerLot) {
       run.over_cap++;
       bump(kind, "acima_do_teto", recipients.length);
-      lotsOut.push({ kind, eligible: recipients.length, skipped: `acima do teto (${cfg.maxRecipientsPerLot}) — nada enviado; conferir com o editor e subir onboarding.followup.max_recipients_per_lot` });
+      lotsOut.push({ kind, eligible: recipients.length, skipped: capOverflowMsg });
       continue;
     }
     if (!send) {
@@ -418,6 +452,13 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
       const nivel = s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY];
       return { state: s.state ?? null, apoioNivel: typeof nivel === "string" ? nivel : "" };
     },
+    async listEnvioBrevoEmails() {
+      // Tag ausente lança (trava a rodada): um rename no painel do Kit não pode
+      // virar "ninguém foi movido" e mandar pedido pra quem está na Brevo.
+      const tagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME, kitCfg);
+      if (tagId == null) throw new Error(`tag ${KIT_ENVIO_BREVO_TAG_NAME} não existe no Kit`);
+      return listAllTagSubscriberEmails(tagId, kitCfg);
+    },
     async fetchFormResponses() {
       const token = process.env[cfg.formResponsesTokenEnv];
       if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
@@ -491,6 +532,7 @@ async function main(): Promise<void> {
     deps = {
       listActiveSubscribers: () => Promise.reject(new Error("não chamado")),
       getSubscriber: () => Promise.reject(new Error("não chamado")),
+      listEnvioBrevoEmails: () => Promise.reject(new Error("não chamado")),
       fetchFormResponses: () => Promise.reject(new Error("não chamado")),
       runLot: () => Promise.reject(new Error("não chamado")),
     };

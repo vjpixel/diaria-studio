@@ -9,7 +9,8 @@
  *
  * "Recebeu" = enviado/agendado confirmado pelo nosso registro (lote Kit
  * relido `scheduled`/`completed`, `email{1,2}_sent_at` gravado, campanha
- * Brevo do e-mail 3 criada). Entrega/abertura real no ESP é outra métrica
+ * Brevo do e-mail 3 criada AGENDADA — `email3_scheduled_at`, #10603; a
+ * rascunho anterior fica em pendentes). Entrega/abertura real no ESP é outra métrica
  * (fora do escopo inicial da issue).
  *
  * E-mail sempre MASCARADO (`a***@dominio`), nunca cru. Entrada/lote de
@@ -127,7 +128,10 @@ function email3Received(entry: OnboardingEntry, lotsById: ReadonlyMap<string, On
     const lot = lotsById.get(entry.email3_kit_lot_id);
     return lot && (lot.status === "scheduled" || lot.status === "completed") ? "kit" : null;
   }
-  return entry.email3_campaign_id != null ? "brevo" : null;
+  // Brevo: só conta com `email3_scheduled_at` (campanha criada AGENDADA, #10603).
+  // Antes do #10603 a campanha era RASCUNHO — `campaign_created` sozinho não
+  // prova envio (review #10623).
+  return entry.email3_campaign_id != null && entry.email3_scheduled_at != null && ISO_RE.test(entry.email3_scheduled_at) ? "brevo" : null;
 }
 
 /**
@@ -176,7 +180,9 @@ export function buildFollowupPanel(
     } else if (e.email3_state === "pending") {
       if (failed3.has(e.subscription_id)) c3.falhos++;
       else bump(c3.pendentes, "d10_nao_venceu_ou_na_fila");
-    } else if (e.email3_state === "campaign_created") bump(c3.pendentes, "lote_kit_nao_confirmado");
+    } else if (e.email3_state === "campaign_created") {
+      bump(c3.pendentes, e.email3_kit_lot_id ? "lote_kit_nao_confirmado" : "rascunho_brevo_sem_envio_confirmado");
+    }
     else bump(c3.pulados, e.email3_state);
   }
 

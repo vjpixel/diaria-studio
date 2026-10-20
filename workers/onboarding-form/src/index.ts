@@ -12,6 +12,7 @@ import {
   formResponseKey,
   isAuthorizedResponsesRequest,
   parseFormSubmission,
+  prefillEmailFromQuery,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
 
@@ -55,7 +56,7 @@ export default {
     if (!env.ONBOARDING_FORM) return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
 
     if (request.method === "GET" && url.pathname === "/") {
-      return formPage(url.searchParams.get("email") ?? "");
+      return formPage(prefillEmailFromQuery(url.searchParams.get("email")));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {

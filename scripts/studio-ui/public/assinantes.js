@@ -514,6 +514,7 @@ const FOLLOWUP_MOTIVO_LABELS = {
   d3_nao_venceu_ou_na_fila: "D+3 não venceu / na fila",
   d10_nao_venceu_ou_na_fila: "D+10 não venceu / na fila",
   lote_kit_nao_confirmado: "lote Kit não confirmado",
+  rascunho_brevo_sem_envio_confirmado: "rascunho Brevo (pré-#10603), envio não confirmado",
   vencida: "janela passou (base anterior ou envio travado)",
   espacamento: "adiado (espaçamento entre apoio e formulário)",
   apoia: "já apoia",

@@ -671,7 +671,7 @@ export function ownerTransportFor(
 }
 
 /** Campos do e-mail 3 que só o executor DONO da entrada pode gravar (#7922). */
-export const EMAIL3_OWNED_FIELDS = ["email3_state", "email3_decided_at", "email3_campaign_id", "email3_kit_lot_id"] as const;
+export const EMAIL3_OWNED_FIELDS = ["email3_state", "email3_decided_at", "email3_campaign_id", "email3_kit_lot_id", "email3_scheduled_at"] as const;
 
 /**
  * #7922 (fleet review da PR #10607): antes de persistir a rodada de um

@@ -57,6 +57,19 @@ export interface FormResponsesPayload {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * @pure — e-mail pré-preenchido a partir do `?email=` do link (review #10623).
+ * O link vai SEM filtro Liquid (`url_encode` não foi confirmado no Kit), então
+ * o e-mail chega cru na query: `@` e `.` passam intactos, mas um `+` do local
+ * part vira espaço no `URLSearchParams`. E-mail não tem espaço, então espaço
+ * aqui é sempre um `+` decodificado — restaurado. Caracteres raros que a query
+ * corta (`&`, `#`) deixam o campo incompleto, nunca errado em silêncio: o
+ * campo é visível, editável e validado no envio.
+ */
+export function prefillEmailFromQuery(raw: string | null | undefined): string {
+  return String(raw ?? "").trim().replace(/ /g, "+");
+}
+
 export function normalizeFormEmail(raw: string): string {
   return String(raw ?? "").trim().toLowerCase();
 }

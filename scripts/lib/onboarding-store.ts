@@ -171,6 +171,14 @@ export interface OnboardingEntry {
    * e-mail 3 não veio de um lote Kit (Brevo, skip, ou ainda pendente).
    */
   email3_kit_lot_id?: string;
+  /**
+   * #10603/#10623: ISO de quando a campanha BREVO do e-mail 3 foi criada já
+   * AGENDADA (`scheduledAt`, envio automático desde 20/10/2026). Antes do
+   * #10603 a campanha nascia RASCUNHO e este campo não existe — por isso
+   * `email3_state = "campaign_created"` com `email3_campaign_id` e sem este
+   * campo NÃO prova envio (o painel `/assinantes` conta como pendente).
+   */
+  email3_scheduled_at?: string;
 }
 
 export interface OnboardingStore {

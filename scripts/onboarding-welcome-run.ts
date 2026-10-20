@@ -1241,6 +1241,8 @@ async function main(): Promise<number | void> {
         for (const e of action.entries) {
           e.email3_state = "campaign_created";
           e.email3_campaign_id = campaign.id;
+          // #10623: prova de que esta campanha saiu AGENDADA (não rascunho pré-#10603).
+          e.email3_scheduled_at = isoNow;
           e.email3_decided_at = isoNow;
         }
         process.stderr.write(
