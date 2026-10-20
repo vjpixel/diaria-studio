@@ -365,7 +365,14 @@ const CODEX_PROBE_PROMPT = 'Reply with just "ok". Do not run any command.';
 export function runCodexRefreshProbe(): CodexStatusResult {
   const env = { ...process.env };
   for (const k of CODEX_STRIPPED_ENV_VARS) delete env[k];
-  const args = ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "-c", 'forced_login_method="chatgpt"', "-"];
+  // `model_reasoning_effort="low"` (#10612 review P3): a sonda só precisa de UMA
+  // chamada autenticada — effort alto do config.toml gastaria cota e arriscaria
+  // estourar o timeout (vira `unchecked`). O modelo NÃO é fixado: forçar `-m`
+  // poderia escolher um modelo indisponível pra conta e falhar por outro motivo.
+  const args = [
+    "exec", "--skip-git-repo-check", "--sandbox", "read-only",
+    "-c", 'forced_login_method="chatgpt"', "-c", 'model_reasoning_effort="low"', "-",
+  ];
   const opts = {
     encoding: "utf8" as const, timeout: CODEX_REFRESH_PROBE_TIMEOUT_MS, env, cwd: tmpdir(),
     input: CODEX_PROBE_PROMPT, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
@@ -384,22 +391,32 @@ export function runCodexRefreshProbe(): CodexStatusResult {
 
 /** Assinaturas de falha de AUTENTICAÇÃO no output do `codex exec` (#10602, texto medido no 300). */
 const CODEX_AUTH_FAILURE_RE = /refresh token|could not be refreshed|sign in again|log ?in again|unauthori[sz]ed|\b401\b|token_expired|invalid_grant/i;
+/**
+ * Subconjunto INEQUÍVOCO, usado também com exit 0 (#10612 review P2): sem o
+ * `401` solto, que com exit 0 pode ser só uma contagem (`tokens used: 401`).
+ */
+const CODEX_AUTH_FAILURE_STRONG_RE = /refresh token|could not be refreshed|sign in again|log ?in again|unauthori[sz]ed|token_expired|invalid_grant/i;
 
 /**
  * #10602: classifica o resultado da sonda `codex exec`. Pura.
+ * - output com assinatura INEQUÍVOCA de auth → `expired`, MESMO com exit 0
+ *   (#10612 review P2: uma versão do `codex exec` que imprima "Failed to
+ *   refresh token" e encerre o turno com 0 não pode deixar o lock `ok`);
  * - exit 0 → `ok` (o refresh, se era necessário, aconteceu);
- * - output com assinatura de auth → `expired` (o caso do issue: status ok +
- *   refresh falha);
+ * - exit != 0 com assinatura de auth (incluindo `401` solto) → `expired`
+ *   (o caso do issue: status ok + refresh falha);
  * - qualquer outra falha (timeout, rede, limite de uso) → `unchecked`: não
  *   prova que a credencial morreu, então não bloqueia — mas fica visível.
  */
 export function classifyCodexRefreshProbe(r: CodexStatusResult, why: string): LockCheckResult {
   const dependency = "Codex CLI (login ChatGPT — image_generator=codex, Stages 1, 3)";
   const out = redactSecrets(`${r.stdout ?? ""}\n${r.stderr ?? ""}`.trim());
-  if (!r.error && r.status === 0) {
+  const exitOk = !r.error && r.status === 0;
+  const authFailed = exitOk ? CODEX_AUTH_FAILURE_STRONG_RE.test(out) : CODEX_AUTH_FAILURE_RE.test(out);
+  if (exitOk && !authFailed) {
     return { dependency, state: "ok", blocks_stages: [], reauth_action: "", detail: `refresh testado via \`codex exec\` (${why}) — ok` };
   }
-  if (CODEX_AUTH_FAILURE_RE.test(out)) {
+  if (authFailed) {
     return {
       dependency, state: "expired", blocks_stages: [1, 3],
       reauth_action: "Rodar `codex logout && codex login --device-auth` (conta ChatGPT) nesta máquina — `login status` diz 'Logged in' mas o refresh do token falha",

@@ -529,6 +529,25 @@ describe("Codex: sonda de refresh além do `login status` (#10602)", () => {
     assert.equal(net.state, "unchecked");
   });
 
+  it("#10612 review P2: exit 0 NÃO mascara assinatura de auth no output — erro de auth vence", () => {
+    const r = classifyCodexRefreshProbe({
+      status: 0,
+      stdout: "",
+      stderr: "ERROR: Failed to refresh token: 401 Unauthorized. Please log out and sign in again.",
+    }, "x");
+    assert.equal(r.state, "expired");
+    assert.equal(isBlockingLock(r), true);
+    assert.deepEqual(r.blocks_stages, [1, 3]);
+  });
+
+  it("#10612 review P2: exit 0 com `401` solto (contagem de tokens) segue ok — só assinatura inequívoca vence o exit 0", () => {
+    const r = classifyCodexRefreshProbe({ status: 0, stdout: "ok", stderr: "tokens used: 401" }, "x");
+    assert.equal(r.state, "ok");
+    // Com exit != 0, o `401` solto continua contando como falha de auth.
+    const fail = classifyCodexRefreshProbe({ status: 1, stdout: "", stderr: "http status 401" }, "x");
+    assert.equal(fail.state, "expired");
+  });
+
   it("assessCodexAuthFreshness: exp longe → fresh; exp perto/passado → needs-refresh; last_refresh velho → needs-refresh; opaco → unknown", () => {
     const auth = (exp: number, last?: string) => ({ tokens: { access_token: jwt(exp) }, last_refresh: last });
     assert.equal(assessCodexAuthFreshness(auth(NOW + 9 * DAY, new Date(NOW - DAY).toISOString()), NOW).kind, "fresh");
