@@ -1207,17 +1207,17 @@ async function main(): Promise<number | void> {
       } else if (action.kind === "email3_campaign") {
         const snip = snippets[3];
         if (!snip) continue;
-        const listName = cfg.d10_list_name ?? "Onboarding D10 sem abertura";
-        let listId = store.d10_brevo_list_id;
-        if (listId == null) {
-          listId = await ensureD10List({
-            apiKey: brevoKey,
-            listName,
-            folderId: cfg.d10_folder_id,
-            folderName: cfg.d10_folder_name,
-          });
-          store.d10_brevo_list_id = listId;
-        }
+        // #10603 (review): UMA lista por cohort/dia. A lista única reusada
+        // acumulava membros e, com o envio agora automático, cada campanha
+        // alcançaria todos os cohorts anteriores.
+        const dateTagList = new Date(nowSec * 1000).toISOString().slice(0, 10);
+        const listName = `${cfg.d10_list_name ?? "Onboarding D10 sem abertura"} ${dateTagList}`;
+        const listId = await ensureD10List({
+          apiKey: brevoKey,
+          listName,
+          folderId: cfg.d10_folder_id,
+          folderName: cfg.d10_folder_name,
+        });
         for (const e of action.entries) {
           await upsertContactInList({ apiKey: brevoKey, email: e.email, listId });
         }

@@ -174,3 +174,30 @@ describe("alarme de falha do e-mail 3 (#10603)", () => {
     assert.ok(!semStore.evaluatedChecks.has(EMAIL3_CHECK));
   });
 });
+
+describe("lista por cohort (review #10603)", () => {
+  it("fonte: a lista D+10 leva a data do cohort e não reusa d10_brevo_list_id", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../scripts/onboarding-welcome-run.ts", import.meta.url), "utf8");
+    assert.match(src, /listName = `\$\{cfg\.d10_list_name[^`]*\$\{dateTagList\}`/);
+    assert.ok(!/store\.d10_brevo_list_id = listId/.test(src));
+  });
+
+  it("dois dias consecutivos criam listas distintas (nomes diferentes)", async () => {
+    const created: string[] = [];
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? "GET") === "GET") return json(200, { lists: [], folders: [] });
+      const body = JSON.parse(String(init!.body)) as { name: string };
+      if (url.endsWith("/contacts/lists")) {
+        created.push(body.name);
+        return json(201, { id: created.length });
+      }
+      return json(201, { id: 1 });
+    }) as typeof fetch;
+    const a = await ensureD10List({ apiKey: "k", listName: "Onboarding D10 2026-10-21", folderId: 1 });
+    const b = await ensureD10List({ apiKey: "k", listName: "Onboarding D10 2026-10-22", folderId: 1 });
+    assert.notEqual(a, b);
+    assert.equal(new Set(created).size, 2);
+  });
+});

@@ -378,6 +378,7 @@ const ONBOARDING_STAGE_LABELS = {
   skipped_no_open: "Sem abertura (terminal)",
   skipped_inactive: "Inativo na decisão",
   skipped_sem_dados: "Sem dados (terminal)",
+  skipped_backlog_descartado: "Backlog descartado (terminal)",
   falha_consulta: "Falha de consulta",
   estado_ambiguo: "Estado ambíguo (Brevo)",
 };
