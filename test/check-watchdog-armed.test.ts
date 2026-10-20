@@ -38,6 +38,8 @@ import {
   parseTimerOnCalendar,
   decideWatchdogScheduleStatus,
   queryLinuxTimerOnCalendar,
+  parseTimersCalendarShow,
+  NOT_RELOADED_MARKER,
   buildWatchdogLinuxStaleScheduleMessage,
   type LinuxWatchdogArmedResult,
 } from "../scripts/lib/check-watchdog-armed.ts";
@@ -731,16 +733,17 @@ describe("decideWatchdogScheduleStatus (#10571)", () => {
 });
 
 describe("queryLinuxTimerOnCalendar (#10571, exec injetado)", () => {
-  it("chama systemctl --user cat <unit>.timer (só leitura) e parseia", () => {
+  it("show sem nada parseável → cai no systemctl --user cat <unit>.timer (só leitura) e parseia", () => {
     const calls: Array<{ cmd: string; args: readonly string[] }> = [];
     const exec = ((cmd: string, args: readonly string[]) => {
       calls.push({ cmd, args });
-      return CAT_TIMER_PRE_10565;
+      return args[1] === "show" ? "TimersCalendar=\n" : CAT_TIMER_PRE_10565;
     }) as unknown as typeof execFileSync;
     const r = queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec);
     assert.deepEqual(r, ["*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo"]);
     assert.equal(calls[0].cmd, "systemctl");
-    assert.deepEqual(calls[0].args, ["--user", "cat", watchdogTimerUnitName()]);
+    assert.deepEqual(calls[0].args, ["--user", "show", "-p", "TimersCalendar", watchdogTimerUnitName()]);
+    assert.deepEqual(calls[1].args, ["--user", "cat", watchdogTimerUnitName()]);
   });
 
   it("erro do systemctl → null (fail-soft)", () => {
@@ -748,6 +751,68 @@ describe("queryLinuxTimerOnCalendar (#10571, exec injetado)", () => {
       throw Object.assign(new Error("boom"), { status: 1 });
     }) as unknown as typeof execFileSync;
     assert.equal(queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec), null);
+  });
+});
+
+/** Saída REAL de `systemctl --user show -p TimersCalendar diaria-overnight-watchdog.timer`
+ * no `300` (20/10/2026), com o timer pré-#10565 carregado. */
+const SHOW_TIMER_PRE_10565 =
+  "TimersCalendar={ OnCalendar=*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo ; next_elapse=Tue 2026-10-20 00:30:00 UTC }\n";
+
+/** `systemctl cat` quando o arquivo novo foi copiado mas falta daemon-reload:
+ * o disco já tem a expressão atual, o carregado ainda é o velho. */
+const CAT_TIMER_CHANGED_ON_DISK = [
+  "# Warning: diaria-overnight-watchdog.timer changed on disk, the version systemd has loaded is outdated.",
+  "# This output shows the current version of the unit's original fragment and drop-in files.",
+  "# If fragments or drop-ins were added or removed, they are not properly reflected in this output.",
+  "# Run 'systemctl --user daemon-reload' to reload units.",
+  "# /home/vjpixel/.config/systemd/user/diaria-overnight-watchdog.timer",
+  "[Timer]",
+  `OnCalendar=${buildWatchdogOnCalendar()}`,
+  "",
+].join("\n");
+
+describe("#10576 — agendamento CARREGADO, não o arquivo em disco", () => {
+  it("parseTimersCalendarShow lê a saída real do show", () => {
+    assert.deepEqual(parseTimersCalendarShow(SHOW_TIMER_PRE_10565), ["*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo"]);
+  });
+
+  it("várias expressões (uma linha cada) → todas; vazio → []", () => {
+    const out = SHOW_TIMER_PRE_10565 + `TimersCalendar={ OnCalendar=${buildWatchdogOnCalendar()} ; next_elapse=n/a }\n`;
+    assert.deepEqual(parseTimersCalendarShow(out), ["*-*-* 00..08,18..23:00/10:00 America/Sao_Paulo", buildWatchdogOnCalendar()]);
+    assert.deepEqual(parseTimersCalendarShow("TimersCalendar=\n"), []);
+    assert.deepEqual(parseTimersCalendarShow(""), []);
+  });
+
+  it("disco atualizado sem daemon-reload: show (carregado, velho) vence o cat (disco, novo) → stale", () => {
+    const exec = ((_cmd: string, args: readonly string[]) =>
+      args[1] === "show" ? SHOW_TIMER_PRE_10565 : CAT_TIMER_CHANGED_ON_DISK) as unknown as typeof execFileSync;
+    const effective = queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec);
+    assert.equal(decideWatchdogScheduleStatus(effective), "stale");
+    const result = checkWatchdogArmed({
+      execModeFn: () => "local",
+      taskSchedulerFn: () => "systemd",
+      queryLinuxTimerArmedFn: () => ({ state: "armed", note: null }),
+      queryLinuxTimerOnCalendarFn: () => effective,
+      emitWarn: () => {},
+    });
+    assert.equal(result.armedStatus, "armed_but_stale_schedule");
+  });
+
+  it("show falha e cat traz o aviso 'changed on disk' → marcador de não-recarregado → stale", () => {
+    const exec = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "show") throw new Error("Unknown property");
+      return CAT_TIMER_CHANGED_ON_DISK;
+    }) as unknown as typeof execFileSync;
+    const effective = queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec);
+    assert.deepEqual(effective, [NOT_RELOADED_MARKER]);
+    assert.equal(decideWatchdogScheduleStatus(effective), "stale");
+  });
+
+  it("controle: carregado com a expressão atual → match", () => {
+    const show = `TimersCalendar={ OnCalendar=${buildWatchdogOnCalendar()} ; next_elapse=Tue 2026-10-20 00:30:00 UTC }\n`;
+    const exec = (() => show) as unknown as typeof execFileSync;
+    assert.equal(decideWatchdogScheduleStatus(queryLinuxTimerOnCalendar(WATCHDOG_TASK_NAME, exec)), "match");
   });
 });
 

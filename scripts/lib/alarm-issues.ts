@@ -1102,6 +1102,32 @@ export function planAlarmReconciliation(
   return actions;
 }
 
+/**
+ * #10522 — chaves que `planAlarmReconciliation` congela NESTA execução por
+ * `isAbsenceUnmeasured` (aberta, família `estado`, fora de `pending` e da
+ * allowlist, sinal não medido). O congelamento é silencioso por desenho (não
+ * comenta nem fecha) e pode durar indefinidamente — host inalcançável, token
+ * ausente. O caller loga cada chave para que fique visível no log da task.
+ * Mesmas condições do laço de `planAlarmReconciliation`, na mesma ordem.
+ */
+export function listFrozenUnmeasuredKeys(
+  pending: readonly AlarmFinding[],
+  state: AlarmIssuesState,
+  isAbsenceUnmeasured: (key: string) => boolean,
+  allowlist: AlarmAllowlist = [],
+): { key: string; issueNumber: number }[] {
+  const activePending = pending.filter((f) => !isAllowlisted(f.check, f.fingerprint, allowlist));
+  const pendingKeys = new Set(activePending.map((f) => alarmIssueStateKey(f.check, f.fingerprint)));
+  const allowlistedKeys = new Set(allowlist.map((e) => alarmIssueStateKey(e.check, e.fingerprint)));
+  const frozen: { key: string; issueNumber: number }[] = [];
+  for (const [key, entry] of Object.entries(state)) {
+    if (allowlistedKeys.has(key) || pendingKeys.has(key) || entry.closedAt) continue;
+    if ((entry.family ?? "estado") === "evento") continue;
+    if (isAbsenceUnmeasured(key)) frozen.push({ key, issueNumber: entry.issueNumber });
+  }
+  return frozen;
+}
+
 export interface AlarmFindingOutcome extends AlarmIssueResult {
   check: string;
   fingerprint: string;
