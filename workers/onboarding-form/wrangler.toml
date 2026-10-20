@@ -4,8 +4,9 @@ compatibility_date = "2024-01-01"
 workers_dev = true
 
 # #10605 — formulário de perfil/interesses do onboarding (decisão do editor,
-# 20/10/2026: form próprio num Worker nosso). STUB NÃO IMPLANTADO: não há
-# workflow de deploy (.github/workflows/deploy-*.yml) nem rota pública ainda.
+# 20/10/2026: form próprio num Worker nosso). STUB: deploy automático via
+# .github/workflows/deploy-onboarding-form.yml (#5337), mas sem rota pública
+# nem KV ainda — publicado, responde 503 "not_configured".
 # Contrato (endpoints, formato, gravação no store): scripts/lib/onboarding-form-contract.ts.
 #
 # Para publicar (ação pendente, ver README.md):

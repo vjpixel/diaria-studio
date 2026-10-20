@@ -12,7 +12,7 @@ Contrato: `scripts/lib/onboarding-form-contract.ts`.
 
 1. Perguntas do formulário (`FORM_QUESTIONS`), que dependem do editor.
 2. KV `ONBOARDING_FORM` + secret `RESPONSES_TOKEN` (ver `wrangler.toml`).
-3. Workflow de deploy + rota pública.
+3. Rota pública (o workflow de deploy já existe: `.github/workflows/deploy-onboarding-form.yml`).
 4. `onboarding.followup.form_url` / `form_responses_url` no `platform.config.json`
    e `ONBOARDING_FORM_TOKEN` no `.env` do servidor.
 

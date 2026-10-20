@@ -1,0 +1,30 @@
+name: Deploy onboarding-form Worker
+
+# #10605: formulário de perfil/interesses do onboarding. Todo worker em
+# workers/ precisa de deploy automático (#5337, guard em
+# test/workers-deploy-workflow-coverage.test.ts) — sem isso o código no ar
+# defasa em silêncio até o alarme Diaria-Worker-Drift-Check.
+#
+# Enquanto o KV ONBOARDING_FORM e o secret RESPONSES_TOKEN não existirem
+# (ver workers/onboarding-form/wrangler.toml), o Worker publicado responde
+# 503 "not_configured" — nunca lança, e o executor
+# scripts/onboarding-followup-run.ts segue travado por formContentGate
+# (form_url/form_responses_url ausentes no platform.config.json).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/onboarding-form/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-onboarding-form
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: onboarding-form
+    secrets: inherit

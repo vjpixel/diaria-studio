@@ -464,7 +464,10 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
       const token = process.env[cfg.formResponsesTokenEnv];
       if (!cfg.formResponsesUrl || !token) throw new Error(`endpoint de respostas ou ${cfg.formResponsesTokenEnv} ausente`);
       const res = await fetch(cfg.formResponsesUrl, { headers: { authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {});
+        throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
+      }
       return parseFormResponsesPayload(await res.json());
     },
     async runLot(lot, content) {
