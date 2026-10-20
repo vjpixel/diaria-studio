@@ -842,8 +842,11 @@ export function recordKitSendRun<T extends KitTransportHealthBlock>(kitTransport
 }
 
 /** Conta as ações devidas a ESTE executor barradas por guard de conteúdo.
- *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`); e-mail
- *  3 fica fora da decisão de dono (mesma regra dos filtros do #8966).
+ *  E-mail 1/2 só conta se o dono da entrada for o Kit (`isKitOwned`). O
+ *  e-mail 3 conta sempre: desde 20/10/2026 ele também tem dono (#7922), mas
+ *  `buildRunPlan` registra UM skip pro cohort inteiro (com a 1ª entry), que
+ *  pode misturar entradas Kit e Brevo — contar sempre é o lado conservador
+ *  (snippet 3 ausente barra o e-mail 3 nos dois transportes).
  *  @pure */
 export function countKitContentSkips(
   skips: readonly { etapa: "email1" | "email2" | "email3"; motivo: string; entry: OnboardingEntry }[],

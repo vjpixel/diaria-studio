@@ -36,7 +36,7 @@ import {
   type OnboardingKitLot,
 } from "../scripts/lib/onboarding-kit-transport.ts";
 import { reconcileOpenLots } from "../scripts/onboarding-kit-transport-run.ts";
-import { buildRunPlan, filterBrevoPlanForKitCutover } from "../scripts/lib/onboarding-state.ts";
+import { buildRunPlan, filterBrevoPlanForKitCutover, filterKitPlanForBrevoInFlight, ownerTransportFor } from "../scripts/lib/onboarding-state.ts";
 import type { OnboardingEntry, OnboardingStore } from "../scripts/lib/onboarding-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -320,23 +320,77 @@ describe("#7922 (20/10/2026) — e-mail 3 automático no transporte Kit", () => 
     assert.equal(store.kit_transport!.lots[lot.lot_id].status, "scheduled");
   });
 
-  it("guard cruzado (#9151): lote Kit de e-mail 3 agendado tira a entry do rascunho Brevo", () => {
-    const entry = d10Entry("601") as unknown as OnboardingEntry;
-    const plan = buildRunPlan({
-      entries: [entry],
-      statsById: { "601": { total_unique_opened: 2, total_clicked: 0 } },
-      nowSec: sec(0),
-      email2Days: 3,
-      email3Days: 10,
-      email3GraceDays: 10,
-      snippets: Object.fromEntries(
-        ([1, 2, 3] as const).map((n) => [n, { numero: n, assunto: `a${n}`, previewText: "p", body: "<p>c</p>", hasPendingMarker: false }]),
-      ) as never,
-    });
+  it("guard cruzado (#9151): lote Kit de e-mail 3 agendado tira a entry do rascunho Brevo, mesmo com o switch desligado", () => {
+    const plan = d10Plan([d10Entry("601") as unknown as OnboardingEntry]);
     assert.deepEqual(plan.actions.map((a) => a.kind), ["email3_campaign"], "pré-condição: e-mail 3 devido");
-    const brevo = filterBrevoPlanForKitCutover(plan, true, [email3Lot()]);
-    assert.deepEqual(brevo.actions, [], "Brevo não cria o e-mail 3 de quem já está num lote Kit agendado");
-    assert.equal(brevo.skips.find((s) => s.etapa === "email3")?.motivo, "kit_lot_existente");
+    for (const enabled of [true, false]) {
+      const brevo = filterBrevoPlanForKitCutover(plan, enabled, [email3Lot()]);
+      assert.deepEqual(brevo.actions, [], "Brevo não cria o e-mail 3 de quem já está num lote Kit agendado");
+      assert.equal(brevo.skips.find((s) => s.etapa === "email3")?.motivo, "kit_lot_existente");
+    }
+  });
+});
+
+/** Plano com o e-mail 3 devido (D+10, ≥1 abertura) pra cada entry. */
+function d10Plan(entries: OnboardingEntry[]) {
+  return buildRunPlan({
+    entries,
+    statsById: Object.fromEntries(entries.map((e) => [e.subscription_id, { total_unique_opened: 2, total_clicked: 0 }])),
+    nowSec: sec(0),
+    email2Days: 3,
+    email3Days: 10,
+    email3GraceDays: 10,
+    snippets: Object.fromEntries(
+      ([1, 2, 3] as const).map((n) => [n, { numero: n, assunto: `a${n}`, previewText: "p", body: "<p>c</p>", hasPendingMarker: false }]),
+    ) as never,
+  });
+}
+
+const email3Ids = (p: ReturnType<typeof d10Plan>) =>
+  p.actions.flatMap((a) => (a.kind === "email3_campaign" ? a.entries.map((e) => e.subscription_id) : []));
+
+describe("#7922 (20/10/2026) — dono do e-mail 3 = transporte do e-mail 1 da mesma entrada", () => {
+  it("email1_transport kit + D+10 elegível → plano Brevo vazio pra ela, plano Kit com o e-mail 3", () => {
+    const plan = d10Plan([d10Entry("601", { email1_transport: "kit" }) as unknown as OnboardingEntry]);
+    const brevo = filterBrevoPlanForKitCutover(plan, true, []);
+    assert.deepEqual(email3Ids(brevo), []);
+    assert.equal(brevo.skips.find((s) => s.etapa === "email3")?.motivo, "kit_transport_ativo");
+    const kit = filterKitPlanForBrevoInFlight(plan, true, []);
+    assert.deepEqual(email3Ids(kit), ["601"]);
+  });
+
+  it("email1_transport brevo + D+10 elegível → plano Kit vazio pra ela, plano Brevo com o e-mail 3", () => {
+    const plan = d10Plan([d10Entry("602", { email1_transport: "brevo", email1_brevo_id: "m-1" }) as unknown as OnboardingEntry]);
+    const kit = filterKitPlanForBrevoInFlight(plan, true, []);
+    assert.deepEqual(email3Ids(kit), []);
+    assert.equal(kit.skips.find((s) => s.etapa === "email3")?.motivo, "escada_iniciada_na_brevo");
+    assert.deepEqual(email3Ids(filterBrevoPlanForKitCutover(plan, true, [])), ["602"]);
+  });
+
+  it("seed e e-mail 1 legado sem proveniência continuam brevo", () => {
+    const seed = d10Entry("603", { email1_transport: undefined, seeded_by: "#7675" }) as unknown as OnboardingEntry;
+    const legado = d10Entry("604", { email1_transport: undefined }) as unknown as OnboardingEntry;
+    assert.equal(ownerTransportFor(seed, "email3", true), "brevo");
+    assert.equal(ownerTransportFor(legado, "email3", true), "brevo");
+    const plan = d10Plan([seed, legado]);
+    assert.deepEqual(email3Ids(filterBrevoPlanForKitCutover(plan, true, [])), ["603", "604"]);
+    assert.deepEqual(email3Ids(filterKitPlanForBrevoInFlight(plan, true, [])), []);
+  });
+
+  it("cohort misto é dividido entre os dois transportes, sem sobreposição", () => {
+    const plan = d10Plan([
+      d10Entry("601", { email1_transport: "kit" }) as unknown as OnboardingEntry,
+      d10Entry("602", { email1_transport: "brevo" }) as unknown as OnboardingEntry,
+    ]);
+    assert.deepEqual(email3Ids(filterKitPlanForBrevoInFlight(plan, true, [])), ["601"]);
+    assert.deepEqual(email3Ids(filterBrevoPlanForKitCutover(plan, true, [])), ["602"]);
+  });
+
+  it("switch desligado (rollback): Brevo é dona do e-mail 3 de todos, Kit não planeja nenhum", () => {
+    const plan = d10Plan([d10Entry("601", { email1_transport: "kit" }) as unknown as OnboardingEntry]);
+    assert.equal(ownerTransportFor(d10Entry("601", { email1_transport: "kit" }) as unknown as OnboardingEntry, "email3", false), "brevo");
+    assert.deepEqual(email3Ids(filterBrevoPlanForKitCutover(plan, false, [])), ["601"]);
+    assert.deepEqual(email3Ids(filterKitPlanForBrevoInFlight(plan, false, [])), []);
   });
 
   it("seeded_by segue excluído da seleção Kit (selectEligibleKitRecipients)", () => {

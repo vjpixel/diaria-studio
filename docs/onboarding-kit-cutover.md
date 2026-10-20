@@ -46,8 +46,9 @@ tag).
   (pelo menos 1 abertura de edição até D+10) e as coortes com `seeded_by`
   seguem fora. `--approve-email3-lot <id> --send-at <iso>` continua
   existindo como comando MANUAL opcional (reagendar à mão, ou agendar um
-  rascunho legado), mas o fluxo diário não depende dele. O lado Brevo do
-  e-mail 3 (campanha rascunho) é tratado na #10603.
+  rascunho legado), mas o fluxo diário não depende dele. O e-mail 3 segue
+  o transporte do e-mail 1 da mesma entrada (§2.4), então quem entrou pelo
+  Kit não depende do lado Brevo do e-mail 3, tratado na #10603.
 - Nenhum outro uso da Brevo (diária, reativação, Clarice) é tocado por este
   corte — escopo explícito da issue.
 
@@ -120,11 +121,19 @@ Mecanicamente, isto significa:
        cujo dono não seja `"kit"` (a metade que faltou na fatia original da
        PR #8976: sem isto, uma entrada iniciada na Brevo — devida no e-mail
        2 — continuava sendo planejada pelo executor Kit ao mesmo tempo).
-   `email3_campaign` fica fora da decisão de DONO nos dois filtros (o
-   escopo do #8966 era só e-mail 1/2; o que impede o e-mail 3 em dobro é
-   `email3_state` deixar de ser `pending` quando um dos transportes cria a
-   campanha/lote, mais a releitura do disco sob lock do lado Brevo), mas os
-   DOIS checam lote Kit de e-mail 3: entry já coberta
+   **Desde 20/10/2026 (#7922) o `email3_campaign` também entra na decisão
+   de DONO nos dois filtros:** o e-mail 3 segue o transporte do e-mail 1 da
+   mesma entrada (`ownerTransportFor(entry, "email3", ...)`, mesma regra do
+   e-mail 2 — seeds e e-mail 1 legado sem proveniência são `"brevo"`). Quem
+   entrou pelo Kit recebe o e-mail 3 pelo Kit, e o executor Brevo o pula
+   (skip `kit_transport_ativo`); o Kit pula quem é da Brevo (skip
+   `escada_iniciada_na_brevo`). Antes, o `email3_campaign` ficava fora (o
+   escopo do #8966 era só e-mail 1/2) e, como a Brevo roda às 09:05 e o Kit
+   às 09:07, o e-mail 3 dos cadastros novos acabava na campanha Brevo,
+   quebrada na #10603. Continuam valendo como defesa em profundidade:
+   `email3_state` deixa de ser `pending` quando um transporte cria a
+   campanha/lote, a releitura do disco sob lock do lado Brevo, e os DOIS
+   filtros checam lote Kit de e-mail 3: entry já coberta
    por um lote Kit de e-mail 3 sai do cohort (#9059 no lado Kit, só lote
    confirmado; #9151 no lado Brevo, qualquer lote não-cancelado). Testes de
    regressão: `test/onboarding-brevo-kit-mutex-8966.test.ts`,

@@ -583,7 +583,7 @@ export type OnboardingTransport = "brevo" | "kit";
  *     entradas.
  *   - Kill switch ligado — em ordem, a primeira regra que casa vence:
  *       1. `email1_transport` gravado na entry (#9015) → esse transporte,
- *          para e-mail 1 e 2. É a proveniência EXPLÍCITA, gravada no envio
+ *          para e-mail 1, 2 e 3. É a proveniência EXPLÍCITA, gravada no envio
  *          (`applySendResult` → brevo, `applyKitLotToEntries` → kit) e na
  *          semeadura (→ brevo).
  *       2. `seeded_by` presente (#9015) → `brevo`. Seeds (#7660/#7674/
@@ -594,26 +594,29 @@ export type OnboardingTransport = "brevo" | "kit";
  *       3. `email1` → `kit`: é SEMPRE o primeiro toque de uma entrada NOVA
  *          (`buildRunPlan` só produz essa ação quando `email1_sent_at ==
  *          null`) — a partir do corte, toda entrada nova é do Kit.
- *       4. `email2` sem proveniência gravada → `brevo`. Até o #9014 o Kit
+ *       4. `email2`/`email3` sem proveniência gravada → `brevo`. Até o #9014 o Kit
  *          nunca gravava `email1_sent_at`, então todo e-mail 1 já enviado
  *          sem `email1_transport` foi da Brevo. A versão anterior inferia o
  *          dono de `email1_brevo_id != null` e errava pra seeds e pra envios
  *          Brevo com id nulo/zerado por `--cancel-pending` (#9015).
  *
- * `email3_campaign` fica FORA de escopo desta decisão de DONO (issue #8966 e
- * docs/onboarding-kit-cutover.md §2.4 pedem só e-mail 1/2). Quem impede o
- * e-mail 3 em dobro é o estado da entry (`email3_state` deixa de ser
- * `pending` assim que um dos dois transportes cria a campanha/lote) somado à
- * checagem de LOTE Kit do e-mail 3 nos dois filtros (#9059 lado Kit, #9151
- * lado Brevo) e à releitura do disco sob lock antes do envio Brevo
- * (`dropActionsCoveredOnDisk`). Desde 20/10/2026 o e-mail 3 sai automático
- * no transporte Kit (decisão do editor na #7922).
+ * **E-mail 3 entra na decisão de DONO desde 20/10/2026 (#7922)** — segue o
+ * transporte do e-mail 1 da MESMA entrada, igual ao e-mail 2. Até ali o
+ * `email3_campaign` ficava fora (o #8966 pedia só e-mail 1/2) e os DOIS
+ * executores planejavam o e-mail 3 das mesmas entradas: como a Brevo roda
+ * às 09:05 e o Kit às 09:07, o e-mail 3 de quem entrou pelo Kit acabava na
+ * campanha Brevo (rascunho, quebrada na #10603). Continuam valendo, como
+ * defesa em profundidade: o estado da entry (`email3_state` deixa de ser
+ * `pending` quando um transporte cria a campanha/lote), a checagem de LOTE
+ * Kit do e-mail 3 nos dois filtros (#9059 lado Kit, #9151 lado Brevo) e a
+ * releitura do disco sob lock antes do envio Brevo
+ * (`dropActionsCoveredOnDisk`).
  *
  * @pure testável sem I/O
  */
 export function ownerTransportFor(
   entry: OnboardingEntry,
-  kind: "email1" | "email2",
+  kind: "email1" | "email2" | "email3",
   kitTransportEnabled: boolean,
 ): OnboardingTransport {
   if (!kitTransportEnabled) return "brevo";
@@ -627,10 +630,11 @@ export function ownerTransportFor(
  * Aplica, sobre o plano JÁ MONTADO pelo executor Brevo (`buildRunPlan`), o
  * lado BREVO do guard de mútua-exclusão: qualquer ação `email1`/`email2`
  * cujo dono (`ownerTransportFor`) não seja `"brevo"` vira skip
- * `kit_transport_ativo`, nunca ação. `email3_campaign` não passa pela
- * decisão de dono (ver docstring de `ownerTransportFor`), mas desde #9151 as
- * entries já num lote Kit de e-mail 3 não-cancelado saem do cohort (skip
- * `kit_lot_existente`).
+ * `kit_transport_ativo`, nunca ação. No `email3_campaign` a decisão é por
+ * entry do cohort (desde 20/10/2026, #7922): entry de dono Kit sai com o
+ * mesmo skip `kit_transport_ativo`; antes disso, e com o switch ligado OU
+ * desligado, entries já num lote Kit de e-mail 3 não-cancelado saem com
+ * `kit_lot_existente` (#9151).
  *
  * **#8979 — checagem de lote Kit é MECÂNICA e roda SEMPRE, independente do
  * kill switch (`kitTransportEnabled`).** Antes deste fix, o switch
@@ -687,7 +691,23 @@ export function filterBrevoPlanForKitCutover(
             `Brevo não cria rascunho (#9151)`,
         });
       }
-      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
+      // #7922 (20/10/2026): dono do e-mail 3 = transporte do e-mail 1.
+      const brevoOwned: OnboardingEntry[] = [];
+      for (const entry of remaining) {
+        if (kitTransportEnabled && ownerTransportFor(entry, "email3", kitTransportEnabled) !== "brevo") {
+          skips.push({
+            entry,
+            etapa: "email3",
+            motivo: "kit_transport_ativo",
+            detalhe:
+              "onboarding.kit_transport.enabled=true — e-mail 1 desta entrada foi servido pelo Kit " +
+              "(email1_transport=kit); o e-mail 3 sai pelo Kit (#7922)",
+          });
+          continue;
+        }
+        brevoOwned.push(entry);
+      }
+      if (brevoOwned.length > 0) actions.push({ ...action, entries: brevoOwned });
       continue;
     }
 
@@ -739,10 +759,10 @@ export function filterBrevoPlanForKitCutover(
  * coordenador: metade Kit faltando na fatia original desta issue).
  *
  * Qualquer ação `email1`/`email2` cujo dono não seja `"kit"` vira skip
- * `escada_iniciada_na_brevo`. `email3_campaign` não passa pela decisão de
- * dono (mesmo motivo de escopo do lado Brevo), mas desde #9059 as entries
- * já num lote Kit de e-mail 3 confirmado saem do cohort (skip
- * `kit_lot_existente`).
+ * `escada_iniciada_na_brevo`. No `email3_campaign` a decisão de dono é por
+ * entry do cohort desde 20/10/2026 (#7922, mesmo skip
+ * `escada_iniciada_na_brevo`), depois da checagem do #9059: entries já num
+ * lote Kit de e-mail 3 confirmado saem com `kit_lot_existente`.
  *
  * Nota: com o kill switch DESLIGADO, `ownerTransportFor` devolve `"brevo"`
  * pra tudo — este filtro esvaziaria o plano Kit por completo nesse estado.
@@ -789,7 +809,23 @@ export function filterKitPlanForBrevoInFlight(
             `nunca entra num lote novo (#9059)`,
         });
       }
-      if (remaining.length > 0) actions.push({ ...action, entries: remaining });
+      // #7922 (20/10/2026): dono do e-mail 3 = transporte do e-mail 1.
+      const kitOwned: OnboardingEntry[] = [];
+      for (const entry of remaining) {
+        if (ownerTransportFor(entry, "email3", kitTransportEnabled) !== "kit") {
+          skips.push({
+            entry,
+            etapa: "email3",
+            motivo: "escada_iniciada_na_brevo",
+            detalhe: kitTransportEnabled
+              ? "escada desta entrada começou na Brevo (email1_transport=brevo, seed, ou e-mail 1 legado) — o e-mail 3 sai lá"
+              : "onboarding.kit_transport.enabled=false — Brevo é dono de todas as entradas",
+          });
+          continue;
+        }
+        kitOwned.push(entry);
+      }
+      if (kitOwned.length > 0) actions.push({ ...action, entries: kitOwned });
       continue;
     }
     const confirmedLot = hasConfirmedKitLotForEntry(kitLots, action.kind, action.entry.subscription_id);
