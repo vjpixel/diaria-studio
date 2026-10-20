@@ -224,16 +224,25 @@ codex_lane_pr_log() {
 
 # Foto do estado que um `codex exec` deixa pra trás quando trabalha: linhas do
 # log de PRs criadas pelo gh shim, HEAD do checkout de $1 (symbolic-ref +
-# sha), TODAS as branches locais (nome + sha) e os worktrees do repo (com o
-# HEAD/branch de cada um). Comparada antes/depois da tentativa por
+# sha), as branches locais (nome + sha) e os caminhos dos worktrees do repo.
+# Comparada antes/depois da tentativa por
 # `codex_lane_partial_work` (review da PR #10583, P2): se o codex criou
 # branch, commitou, abriu worktree ou PR e depois saiu com rc≠0 (timeout,
 # usage limit no meio), passar o MESMO prompt pro próximo elo reimplementaria
 # e podia abrir uma 2ª PR. #10586 item 2: a foto olhava só refs/heads/continuo/*
 # — `git checkout -b fix-123` + commit no checkout principal passava
-# despercebido. Mudança feita por OUTRA sessão no mesmo intervalo também conta
-# — falso positivo aqui só aborta a cadeia (lado seguro), nunca duplica
-# trabalho.
+# despercebido.
+#
+# #10588 (P2): a foto registrava o sha de TODA branch e o HEAD de TODO
+# worktree. O $CWD default é o checkout compartilhado do `300`, onde
+# overnight/develop commitam nos próprios worktrees o tempo todo — commit
+# alheio durante a tentativa virava exit 95 falso e os elos `:free`/sonnet
+# nunca rodavam. Agora só conta o que ESTA tentativa pode produzir: HEAD do
+# $CWD (ref + sha), branches com NOME novo (o sha vai só pra descrição),
+# worktrees com CAMINHO novo e linhas novas no log de PRs do gh shim. Commit
+# em branch/worktree pré-existente fora do $CWD e remoções não contam.
+# Branch/worktree NOVO de outra sessão no mesmo intervalo ainda conta — falso
+# positivo residual, do lado seguro (aborta a cadeia, nunca duplica trabalho).
 codex_lane_snapshot_state() {
   local cwd="$1" log n=0
   log="$(codex_lane_pr_log)"
@@ -242,9 +251,9 @@ codex_lane_snapshot_state() {
   printf 'head-ref %s\n' "$(git -C "$cwd" symbolic-ref -q HEAD 2>/dev/null || echo '(destacado)')"
   printf 'head-sha %s\n' "$(git -C "$cwd" rev-parse -q --verify HEAD 2>/dev/null || echo '(sem-commit)')"
   git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/' 2>/dev/null || true
-  # Porcelain inteiro, não só a linha `worktree`: commit dentro de um
-  # worktree já existente muda a linha `HEAD <sha>` dele.
-  git -C "$cwd" worktree list --porcelain 2>/dev/null | command grep -E '^(worktree|HEAD|branch|detached)( |$)' | sed 's/^/wt /' || true
+  # Só o caminho de cada worktree (#10588): HEAD de worktree pré-existente
+  # muda a cada commit de outra sessão.
+  git -C "$cwd" worktree list --porcelain 2>/dev/null | awk 'sub(/^worktree /, "") { print "wt " $0 }' || true
 }
 
 # #10586 item 1: só as linhas de ERRO da própria Codex CLI no stderr do
@@ -257,24 +266,44 @@ codex_lane_snapshot_state() {
 #   - erro de topo do binário (anyhow): `Error: <msg>` — só quando é a ÚLTIMA
 #     linha não vazia, pra não casar `Error:` impresso por comando que o
 #     modelo rodou no meio da transcrição.
+#
+# #10588 item a: `ERROR:` só conta em COLUNA 0 (opcionalmente depois do
+# `[timestamp] `) e só no BLOCO FINAL do stderr — a sequência de linhas não
+# vazias no fim do arquivo formada só por `ERROR:` (mais um `Error:` opcional
+# como última linha). Scripts deste repo imprimem `ERROR: ...` em coluna 0 e
+# essa saída aparece no meio da transcrição; o erro que derruba o `codex exec`
+# é o que fica por último.
 codex_lane_cli_error_lines() {
-  local f="$1" last
-  command grep -E '^[[:space:]]*(\[[^]]*\][[:space:]]*)?ERROR:' "$f" 2>/dev/null || true
-  last=$(command grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -n1) || true
-  case "$last" in
-    Error:*) printf '%s\n' "$last" ;;
-  esac
+  local f="$1"
+  [ -r "$f" ] || return 0
+  awk '
+    /^[[:space:]]*$/ { next }
+    { n++; l[n] = $0 }
+    END {
+      if (n == 0) exit
+      i = n
+      if (l[n] ~ /^Error:/) i = n - 1
+      while (i >= 1 && l[i] ~ /^(\[[^]]*\][[:space:]]*)?ERROR:/) i--
+      for (j = i + 1; j <= n; j++) print l[j]
+    }' "$f" 2>/dev/null || true
 }
 
 # 0 = houve trabalho parcial desde o snapshot $2 (descrição em stdout);
-# 1 = estado idêntico.
+# 1 = nada que a tentativa possa ter produzido mudou.
 codex_lane_partial_work() {
-  local cwd="$1" before="$2" after
+  local cwd="$1" before="$2" after changed
   after=$(codex_lane_snapshot_state "$cwd")
   [ "$before" = "$after" ] && return 1
-  # Só as linhas novas/alteradas (`comm` exige entrada ordenada).
-  comm -13 <(printf '%s\n' "$before" | sort) <(printf '%s\n' "$after" | sort) | tr '\n' ';' | sed 's/;$//'
-  echo
+  # Linhas de `after` ausentes de `before`; `branch` compara só pelo NOME
+  # (sha novo numa branch que já existia não conta, #10588). Remoções não
+  # contam.
+  changed=$(awk '
+    NR == FNR { seen[$0] = 1; if ($1 == "branch") names[$2] = 1; next }
+    $1 == "branch" { if (!($2 in names)) print; next }
+    !($0 in seen) { print }
+  ' <(printf '%s\n' "$before") <(printf '%s\n' "$after") | tr '\n' ';' | sed 's/;$//')
+  [ -n "$changed" ] || return 1
+  printf '%s\n' "$changed"
   return 0
 }
 

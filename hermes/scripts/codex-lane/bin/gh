@@ -108,7 +108,14 @@ fi
 case "$group" in
   ''|agent-task|api|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|org|pr|preview|project|release|repo|ruleset|run|search|secret|ssh-key|status|variable|workflow) ;;
   *)
-    if "$REAL_GH" alias list 2>/dev/null | command grep -qE "^[[:space:]]*$(printf '%s' "$group" | sed 's/[][\.*^$/]/\\&/g'):"; then
+    # #10588 item b: comparação LITERAL do nome (awk + ENVIRON, sem regex nem
+    # escape de `-v`). O escape por sed cobria só parte dos metacaracteres
+    # ERE — alias `m+` virava a regex `m+:`, que não casa a linha `m+: ...`
+    # (fail-open).
+    if "$REAL_GH" alias list 2>/dev/null | CODEX_LANE_GH_GROUP="$group" awk '
+        { s = $0; sub(/^[ \t]+/, "", s); i = index(s, ":")
+          if (i > 1 && substr(s, 1, i - 1) == ENVIRON["CODEX_LANE_GH_GROUP"]) found = 1 }
+        END { exit !found }'; then
       refuse "alias do gh '$group' — alias expande dentro do gh real, fora do alcance deste shim (#10585)"
     fi
     ;;

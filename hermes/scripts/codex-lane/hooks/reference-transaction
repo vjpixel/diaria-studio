@@ -36,8 +36,16 @@ if [ "$state" = "prepared" ]; then
   if [ -n "$blocked" ]; then
     guarded="${CODEX_LANE_GUARDED_COMMON_DIR:-}"
     in_scope=1
+    # #10588 item c: só sai de escopo quando OS DOIS caminhos resolvem e
+    # diferem. CODEX_LANE_GUARDED_COMMON_DIR inválido (diretório que não
+    # existe/sumiu) fazia abs_dir devolver vazio e o `=` falhar → in_scope=0,
+    # ou seja, recusa desligada (fail-open). Alvo irresolúvel = guarda.
     if [ -n "$guarded" ] && [ -n "$common_dir" ]; then
-      [ "$(abs_dir "$common_dir")" = "$(abs_dir "$guarded")" ] || in_scope=0
+      cur_abs=$(abs_dir "$common_dir")
+      guarded_abs=$(abs_dir "$guarded")
+      if [ -n "$cur_abs" ] && [ -n "$guarded_abs" ] && [ "$cur_abs" != "$guarded_abs" ]; then
+        in_scope=0
+      fi
     fi
     if [ "$in_scope" -eq 1 ]; then
       echo "[codex-lane #10560] recusado: sessão do contínuo (elo codex exec) não pode atualizar $blocked. Crie uma branch continuo/fix-<issue>-<slug> (ou um worktree em .claude/worktrees/) antes de commitar." >&2
