@@ -103,6 +103,35 @@ export function planThrough(through: number, plan: ReadonlyArray<EditionStage> =
   return plan.filter((p) => p.stage <= through);
 }
 
+/**
+ * #10597: preflight barato (`claude auth status`, sem custo de tokens) antes de
+ * spawnar o Stage 1. Sessão desktop logada não implica CLI logado — sem isto o
+ * editor só descobre `OAuth session expired` 5s depois de iniciar a rodada.
+ * Retorna a mensagem acionável, ou `null` quando está tudo ok. Só `loggedIn:
+ * false` explícito ou exec que lança contam como falha — saída não parseável
+ * não bloqueia (fail-soft: o preflight não pode virar nova causa de parada).
+ */
+export function claudeAuthPreflightError(
+  execFn: typeof execFileSync,
+  claudeBin: string,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  const hint = `rode \`claude /login\` no CLI (${claudeBin}) e repita`;
+  try {
+    const raw = execFn(claudeBin, ["auth", "status"], { encoding: "utf8", env, timeout: 30_000 });
+    const parsed = JSON.parse(String(raw)) as { loggedIn?: boolean };
+    if (parsed.loggedIn === false) return `CLI do Claude sem sessão autenticada — ${hint}.`;
+  } catch (e) {
+    const err = e as { status?: number | null; name?: string };
+    // JSON ilegível: não bloqueia. Exec com saída != 0: CLI deslogado/quebrado.
+    if (err.name === "SyntaxError") return null;
+    if (typeof err.status === "number" && err.status !== 0) {
+      return `CLI do Claude reportou falha de autenticação (auth status saiu ${err.status}) — ${hint}.`;
+    }
+  }
+  return null;
+}
+
 /** Dependências injetáveis — existem só para `main` ser testável sem tocar
  * o `claude` real nem o disco. Mesmo padrão de `run-scheduled-edicao.ts`. */
 export interface MainDeps {
@@ -161,6 +190,12 @@ export function main(
 
   const editionDir = resolveEditionDir(join(repoRootAbs, "data", "editions"), aammdd);
 
+  const authError = claudeAuthPreflightError(execFn, resolveClaudeBinFn(), env);
+  if (authError) {
+    stderr(`ERRO: ${authError}`);
+    return 1;
+  }
+
   const result = runEditionStages({
     aammdd,
     editionDir,
@@ -184,7 +219,9 @@ export function main(
   // `{PREENCHER...}` ainda pendente, ou o arquivo nem existe. Só roda
   // quando o plano de fato chega até lá: `--through 1` não tem o que checar
   // ainda (Stage 2 não spawnou nesta invocação).
-  if (plan.some((s) => s.stage === 2)) {
+  // #10597: stage que falhou (ex: api_error de OAuth) não escreveu nada — o
+  // aviso seria consequência, não causa, e desvia a leitura.
+  if (result.exitCode === 0 && plan.some((s) => s.stage === 2)) {
     const warn = intentionalErrorHeadlessWarning(editionDir);
     if (warn) stderr(`AVISO: ${warn}`);
   }
