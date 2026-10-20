@@ -88,6 +88,10 @@ export function buildArmInstructions(): string {
     "     3. touch ~/.local/share/systemd/timers/stamp-<nome>.timer\n" +
     "     4. systemctl --user daemon-reload\n" +
     "     5. systemctl --user start <nome>.timer\n" +
+    "   Unit NOVA ou desabilitada (sem carimbo/sem stop útil): pule o passo 2 (o stop\n" +
+    "   falharia) e troque o 5 por `systemctl --user enable --now <nome>.timer`,\n" +
+    "   sempre com o touch ANTES (sem carimbo, Persistent=true trata 'nunca rodou'\n" +
+    "   como devido e dispara na hora).\n" +
     "   Alternativas: rearmar ANTES de a próxima ocorrência do horário novo; ou, em\n" +
     "   task com kill switch (ex: Diaria-Clarice-Novos), desligar o switch, rearmar\n" +
     "   e religar depois do catch-up no vazio.\n"
