@@ -240,7 +240,10 @@ describe("buildCodexAlarmMessage (#7250)", () => {
 
   it("quando todas esgotam, a mensagem diz que a delegação PAROU", () => {
     const todas = POOL_REAL.map((e) => ({ ...e, last_status: "exhausted", last_error_code: 429 }));
-    const msg = buildCodexAlarmMessage(evaluateCodexPool(todas), "2026-09-03T07:52:00Z");
+    // Relógio pinado (#10609): sem ele, as datas de retorno da fixture vencem
+    // e as contas viram indeterminadas — e desde o #10609 a mensagem só diz
+    // "TODAS" quando todas estão confirmadas.
+    const msg = buildCodexAlarmMessage(evaluateCodexPool(todas, undefined, "2026-09-03T07:52:00Z"), "2026-09-03T07:52:00Z");
     assert.match(msg, /TODAS as contas Codex estão esgotadas/);
     assert.match(msg, /delegação está parada/);
   });
