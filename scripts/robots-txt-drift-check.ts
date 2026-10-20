@@ -260,11 +260,17 @@ export function parseAiCrawlerProbeKeyBots(fingerprint: string, host: string): s
  * abre 2ª issue enquanto a antiga fica congelada. Aqui, um par (host, bot)
  * `inconclusive` que pertence a uma issue de sonda ABERTA herda o último
  * estado medido (`blocked`) — o fingerprint fica igual ao da issue aberta.
+ * O carry-forward só vale quando o conjunto resultante do host é EXATAMENTE o
+ * de uma issue aberta: com {ClaudeBot, GPTBot} aberta, GPTBot medido
+ * `allowed` e ClaudeBot `inconclusive`, herdar daria {ClaudeBot} — outra
+ * issue nova, sem medição. Nesse caso o host fica só com o medido e a issue
+ * antiga segue congelada por `aiCrawlerUnmeasuredKeys`.
  * Só serve para montar os achados; log e e-mail continuam com a sonda real. */
 export function carryForwardInconclusiveProbes(
   probes: readonly AiCrawlerProbeResult[],
   state: AlarmIssuesState,
 ): AiCrawlerProbeResult[] {
+  const openSets = new Map<string, string[]>(); // host → conjuntos abertos, serializados
   const openBots = new Map<string, Set<string>>();
   for (const [key, entry] of Object.entries(state)) {
     if (entry.closedAt) continue;
@@ -274,10 +280,17 @@ export function carryForwardInconclusiveProbes(
     if (!bots) continue;
     if (!openBots.has(m[1])) openBots.set(m[1], new Set());
     for (const b of bots) openBots.get(m[1])!.add(b);
+    openSets.set(m[1], [...(openSets.get(m[1]) ?? []), [...bots].sort().join(",")]);
   }
-  return probes.map((p) =>
+  const carried = probes.map((p) =>
     p.status === "inconclusive" && openBots.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
   );
+  const acceptedHosts = new Set(
+    blockedProbesByHost(carried)
+      .filter(({ host, bots }) => openSets.get(host)?.includes(bots.join(",")))
+      .map(({ host }) => host),
+  );
+  return probes.map((p, i) => (acceptedHosts.has(p.host) ? carried[i] : p));
 }
 
 // ─── #10545 — sinal 2 cego (GraphQL não medido N rodadas seguidas) ─────────

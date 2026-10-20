@@ -89,6 +89,18 @@ describe("#10522 — congelamento por par host × bot", () => {
     assert.equal(state[OLD].closedAt, null);
   });
 
+  it("issue {ClaudeBot,GPTBot}, GPTBot allowed + ClaudeBot inconclusive → nenhuma issue nova; antiga congelada", () => {
+    const OLD = keyFor(["ClaudeBot", "GPTBot"]);
+    const { nextState, ghCalls, findings, frozen } = round({ [OLD]: openEntry() }, [
+      probe("GPTBot", "allowed"),
+      probe("ClaudeBot", "inconclusive"),
+    ]);
+    assert.deepEqual(findings, []);
+    assert.deepEqual(ghCalls, []);
+    assert.deepEqual(frozen, [{ key: OLD, issueNumber: 42 }]);
+    assert.equal(nextState[OLD].closedAt, null);
+  });
+
   it("issue fechada não herda bot inconclusivo", () => {
     const OLD = keyFor(["GPTBot"]);
     const state: AlarmIssuesState = { [OLD]: { ...openEntry(), closedAt: "2026-10-01T00:00:00Z" } };
