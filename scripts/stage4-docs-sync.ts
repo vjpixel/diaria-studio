@@ -148,7 +148,7 @@ function run(argv: string[]): number {
     case "apply": {
       if (flags.has("no-edits")) {
         const docVersion = values["doc-version"];
-        if (!docVersion) usage("--no-edits exige --doc-version (container.version lida agora do doc)");
+        if (!docVersion) usage("--no-edits exige --doc-version (rev do read barato do doc — mesmo contador da container.version, #10310)");
         if (docExport || values["expected-bytes"] || values["resolve"]) {
           usage("--no-edits não aceita --doc-export/--expected-bytes/--resolve");
         }
