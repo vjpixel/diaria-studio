@@ -34,6 +34,11 @@ import {
   checkWranglerLock,
   checkApiKeyLocks,
   classifyCodexStatus,
+  classifyCodexRefreshProbe,
+  assessCodexAuthFreshness,
+  readCodexAuthFreshness,
+  redactSecrets,
+  CODEX_REFRESH_MARGIN_MS,
   checkMcpConnectors,
   preflightExternalLocks,
   isBlockingLock,
@@ -348,12 +353,14 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     return p;
   };
   const ok = () => ({ status: 0, stdout: "Logged in using ChatGPT", stderr: "" });
+  // #10602: hermético — nunca lê o ~/.codex/auth.json real nem roda `codex exec`.
+  const fresh = { readCodexAuth: () => ({ kind: "fresh" as const, detail: "fixture" }), runCodexProbe: () => { throw new Error("sonda não deveria rodar"); } };
 
   it("login válido → codex ok; key do fallback ausente não bloqueia", () => {
     const orig = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
-      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok });
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok, ...fresh });
       const codex = r.find((x) => x.dependency.startsWith("Codex CLI"));
       assert.equal(codex?.state, "ok");
       const fb = r.find((x) => x.dependency.includes("GEMINI"));
@@ -368,7 +375,7 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     const orig = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
-      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }) });
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }), ...fresh });
       const codex = r.find((x) => x.dependency.startsWith("Codex CLI"))!;
       assert.equal(codex.state, "expired");
       assert.deepEqual(codex.blocks_stages, [1, 3]);
@@ -380,7 +387,7 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
   });
 
   it("sem fallback configurado → só a entrada do Codex", () => {
-    const r = checkApiKeyLocks({ configPath: cfg({ codex: {} }), runCodexStatus: ok });
+    const r = checkApiKeyLocks({ configPath: cfg({ codex: {} }), runCodexStatus: ok, ...fresh });
     assert.equal(r.length, 1);
   });
 
@@ -400,7 +407,7 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     const orig = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
-      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok });
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: ok, ...fresh });
       const fb = r.find((x) => x.dependency.includes("GEMINI"))!;
       assert.equal(fb.state, "missing");
       assert.equal(isBlockingLock(fb), false);
@@ -418,7 +425,7 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     const orig = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
-      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }) });
+      const r = checkApiKeyLocks({ configPath: cfg(), runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }), ...fresh });
       assert.equal(r.filter(isBlockingLock).length, 2);
       assert.equal(exitCodeForLocks(r), 1);
       assert.match(formatRow(r[0]!), /❌ .*bloqueia stages: 1, 3/);
@@ -431,6 +438,144 @@ describe("checkApiKeyLocks — image_generator=codex (#9093)", () => {
     const mcp = checkMcpConnectors();
     assert.ok(mcp.every((m) => m.blocks_stages.length > 0 && !isBlockingLock(m)));
     assert.equal(exitCodeForLocks(mcp), 0);
+  });
+});
+
+// ── #10602: `codex login status` ok com o refresh token morto ─────────────────
+
+describe("Codex: sonda de refresh além do `login status` (#10602)", () => {
+  const cfg = () => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-codex-10602-"));
+    const p = join(dir, "platform.config.json");
+    writeFileSync(p, JSON.stringify({ image_generator: "codex", codex: { fallback: "gemini" } }));
+    return p;
+  };
+  const statusOk = () => ({ status: 0, stdout: "Logged in using ChatGPT", stderr: "" });
+  const NOW = Date.parse("2026-10-20T12:00:00Z");
+  const DAY = 86_400_000;
+  const jwt = (exp: number) =>
+    `eyJhbGciOiJSUzI1NiJ9.${Buffer.from(JSON.stringify({ exp: Math.floor(exp / 1000) })).toString("base64url")}.c2lnbmF0dXJl`;
+  // Texto medido no 300 (issue #10602).
+  const refreshFails = () => ({
+    status: 1,
+    stdout: "",
+    stderr: "ERROR: Failed to refresh token: Your access token could not be refreshed. Please log out and sign in again.\nworkspace routing discovery unauthorized (401)",
+  });
+
+  it("REGRESSÃO: status 'Logged in' + refresh falha → expired e bloqueia (antes dava ok)", () => {
+    const orig = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      let probed = 0;
+      const r = checkApiKeyLocks({
+        configPath: cfg(),
+        runCodexStatus: statusOk,
+        readCodexAuth: () => ({ kind: "needs-refresh", detail: "access token expirou há 11.0 dia(s)" }),
+        runCodexProbe: () => { probed++; return refreshFails(); },
+      });
+      assert.equal(probed, 1, "a sonda de refresh tem que rodar");
+      const codex = r.find((x) => x.dependency.startsWith("Codex CLI"))!;
+      assert.equal(codex.state, "expired");
+      assert.deepEqual(codex.blocks_stages, [1, 3]);
+      assert.match(codex.reauth_action, /codex login --device-auth/);
+      assert.match(codex.detail ?? "", /refresh falhou/);
+      assert.equal(isBlockingLock(codex), true);
+      assert.equal(exitCodeForLocks(r), 1);
+      // com o Codex quebrado, a key do fallback ausente também passa a bloquear
+      assert.deepEqual(r.find((x) => x.dependency.includes("GEMINI"))?.blocks_stages, [1, 3]);
+    } finally {
+      if (orig !== undefined) process.env.GEMINI_API_KEY = orig;
+    }
+  });
+
+  it("token perto de vencer + refresh funciona → ok (a sonda renovou)", () => {
+    const r = checkApiKeyLocks({
+      configPath: cfg(),
+      runCodexStatus: statusOk,
+      readCodexAuth: () => ({ kind: "needs-refresh", detail: "x" }),
+      runCodexProbe: () => ({ status: 0, stdout: "ok", stderr: "" }),
+    });
+    assert.equal(r.find((x) => x.dependency.startsWith("Codex CLI"))?.state, "ok");
+  });
+
+  it("token fresco → não roda a sonda (zero chamada de modelo)", () => {
+    const r = checkApiKeyLocks({
+      configPath: cfg(),
+      runCodexStatus: statusOk,
+      readCodexAuth: () => ({ kind: "fresh", detail: "válido por mais 9.0 dia(s)" }),
+      runCodexProbe: () => { throw new Error("não deveria rodar"); },
+    });
+    const codex = r.find((x) => x.dependency.startsWith("Codex CLI"))!;
+    assert.equal(codex.state, "ok");
+    assert.match(codex.detail ?? "", /válido por mais/);
+  });
+
+  it("status já quebrado → não roda a sonda", () => {
+    const r = checkApiKeyLocks({
+      configPath: cfg(),
+      runCodexStatus: () => ({ status: 1, stdout: "", stderr: "Not logged in" }),
+      readCodexAuth: () => { throw new Error("não deveria ler"); },
+      runCodexProbe: () => { throw new Error("não deveria rodar"); },
+    });
+    assert.equal(r.find((x) => x.dependency.startsWith("Codex CLI"))?.state, "expired");
+  });
+
+  it("classifyCodexRefreshProbe: timeout/erro sem assinatura de auth → unchecked (não bloqueia)", () => {
+    const t = classifyCodexRefreshProbe({ status: null, error: { code: "ETIMEDOUT", message: "t" } }, "x");
+    assert.equal(t.state, "unchecked");
+    assert.equal(isBlockingLock(t), false);
+    assert.match(t.detail ?? "", /não respondeu/);
+    const net = classifyCodexRefreshProbe({ status: 1, stdout: "", stderr: "stream error: connection reset" }, "x");
+    assert.equal(net.state, "unchecked");
+  });
+
+  it("#10612 review P2: exit 0 NÃO mascara assinatura de auth no output — erro de auth vence", () => {
+    const r = classifyCodexRefreshProbe({
+      status: 0,
+      stdout: "",
+      stderr: "ERROR: Failed to refresh token: 401 Unauthorized. Please log out and sign in again.",
+    }, "x");
+    assert.equal(r.state, "expired");
+    assert.equal(isBlockingLock(r), true);
+    assert.deepEqual(r.blocks_stages, [1, 3]);
+  });
+
+  it("#10612 review P2: exit 0 com `401` solto (contagem de tokens) segue ok — só assinatura inequívoca vence o exit 0", () => {
+    const r = classifyCodexRefreshProbe({ status: 0, stdout: "ok", stderr: "tokens used: 401" }, "x");
+    assert.equal(r.state, "ok");
+    // Com exit != 0, o `401` solto continua contando como falha de auth.
+    const fail = classifyCodexRefreshProbe({ status: 1, stdout: "", stderr: "http status 401" }, "x");
+    assert.equal(fail.state, "expired");
+  });
+
+  it("assessCodexAuthFreshness: exp longe → fresh; exp perto/passado → needs-refresh; last_refresh velho → needs-refresh; opaco → unknown", () => {
+    const auth = (exp: number, last?: string) => ({ tokens: { access_token: jwt(exp) }, last_refresh: last });
+    assert.equal(assessCodexAuthFreshness(auth(NOW + 9 * DAY, new Date(NOW - DAY).toISOString()), NOW).kind, "fresh");
+    assert.equal(assessCodexAuthFreshness(auth(NOW + CODEX_REFRESH_MARGIN_MS - DAY), NOW).kind, "needs-refresh");
+    assert.equal(assessCodexAuthFreshness(auth(NOW - 11 * DAY), NOW).kind, "needs-refresh");
+    assert.equal(assessCodexAuthFreshness(auth(NOW + 9 * DAY, new Date(NOW - 21 * DAY).toISOString()), NOW).kind, "needs-refresh");
+    assert.equal(assessCodexAuthFreshness({ tokens: { access_token: "opaco" } }, NOW).kind, "unknown");
+    assert.equal(assessCodexAuthFreshness(null, NOW).kind, "unknown");
+  });
+
+  it("readCodexAuthFreshness: nunca expõe token no detail; arquivo ausente/ilegível → unknown", () => {
+    const dir = mkdtempSync(join(tmpdir(), "preflight-codex-auth-"));
+    const p = join(dir, "auth.json");
+    const access = jwt(NOW - DAY);
+    writeFileSync(p, JSON.stringify({ tokens: { access_token: access, refresh_token: "rt-SEGREDOSEGREDOSEGREDO" }, last_refresh: "2026-09-29T00:00:00Z" }));
+    const f = readCodexAuthFreshness(p, NOW);
+    assert.equal(f.kind, "needs-refresh");
+    assert.ok(!f.detail.includes(access) && !f.detail.includes("SEGREDO"), "detail não pode carregar token");
+    assert.equal(readCodexAuthFreshness(join(dir, "nao-existe.json"), NOW).kind, "unknown");
+    writeFileSync(p, "{corrompido");
+    assert.equal(readCodexAuthFreshness(p, NOW).kind, "unknown");
+  });
+
+  it("redactSecrets: JWT, rt-/sk- e tokens longos somem do detail", () => {
+    const s = redactSecrets(`bearer ${jwt(NOW)} refresh rt-abcdefghijklmnop key sk-abcdefghijklmnop x${"A".repeat(50)}`);
+    assert.doesNotMatch(s, /eyJ/);
+    assert.doesNotMatch(s, /abcdefghijklmnop/);
+    assert.doesNotMatch(s, /A{40}/);
   });
 });
 
