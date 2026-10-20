@@ -103,11 +103,105 @@ export function planThrough(through: number, plan: ReadonlyArray<EditionStage> =
   return plan.filter((p) => p.stage <= through);
 }
 
+/**
+ * #10597: resultado do preflight de auth. `error` bloqueia a rodada antes de
+ * spawnar o Stage 1; `warning` só é impresso (o preflight não pode virar uma
+ * nova causa de parada quando ele mesmo não conseguiu concluir nada).
+ */
+export interface AuthPreflightResult {
+  error: string | null;
+  warning: string | null;
+}
+
+/** Valor de `authMethod` que `claude auth status` (JSON é o default da
+ * saída) reporta para a assinatura claude.ai — capturado ao vivo em 20/10/2026. */
+const SUBSCRIPTION_AUTH_METHOD = "claude.ai";
+
+function loginHint(claudeBin: string): string {
+  return `rode \`claude /login\` no CLI (${claudeBin}) e repita — a sessão do app desktop logada não implica o CLI logado`;
+}
+
+/**
+ * #10597: preflight barato (`claude auth status`, sem custo de tokens) antes de
+ * spawnar o Stage 1. Sem isto o editor só descobre `OAuth session expired` 5s
+ * depois de iniciar a rodada, e o resumo ainda mostrava o AVISO de erro
+ * intencional como se fosse a causa.
+ *
+ * Bloqueia só quando o CLI diz explicitamente que não há sessão: `loggedIn:
+ * false`, ou `auth status` saindo com código != 0. Todo o resto vira aviso:
+ * - `authMethod` diferente de `claude.ai` (#5608) — o env já passa por
+ *   `claudeCliEnv`, que remove as vars de API; um rótulo inesperado aqui pode
+ *   ser só mudança de versão do CLI, e barrar toda edição por isso seria pior.
+ * - binário ausente/timeout ou saída não-JSON — o preflight não concluiu.
+ *
+ * Limite conhecido: token expirado e não-refrescável pode aparecer como
+ * `loggedIn: true` (o status lê credencial local). Esse caso é coberto depois
+ * da falha por `authFailureHint`.
+ */
+export function claudeAuthPreflight(
+  execFn: typeof execFileSync,
+  claudeBin: string,
+  env: NodeJS.ProcessEnv,
+): AuthPreflightResult {
+  let raw: string;
+  try {
+    raw = String(execFn(claudeBin, ["auth", "status"], { encoding: "utf8", env, timeout: 30_000 }));
+  } catch (e) {
+    const err = e as { status?: number | null; code?: string; message?: string };
+    if (typeof err.status === "number" && err.status !== 0) {
+      return { error: `CLI do Claude sem sessão autenticada (\`auth status\` saiu ${err.status}) — ${loginHint(claudeBin)}.`, warning: null };
+    }
+    return {
+      error: null,
+      warning: `preflight de auth não concluiu (${err.code ?? err.message ?? "erro desconhecido"}) — seguindo sem checar.`,
+    };
+  }
+  let parsed: { loggedIn?: unknown; authMethod?: unknown };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return { error: null, warning: "preflight de auth: `claude auth status` não devolveu JSON — seguindo sem checar." };
+  }
+  if (parsed.loggedIn === false) {
+    return { error: `CLI do Claude sem sessão autenticada — ${loginHint(claudeBin)}.`, warning: null };
+  }
+  if (typeof parsed.authMethod === "string" && parsed.authMethod !== SUBSCRIPTION_AUTH_METHOD) {
+    return {
+      error: null,
+      warning:
+        `CLI reporta authMethod=${parsed.authMethod}, não a assinatura claude.ai (#5608) — se for API/gateway, ` +
+        `remova essa fonte de auth do ambiente (nunca configure uma key) e ${loginHint(claudeBin)}.`,
+    };
+  }
+  return { error: null, warning: null };
+}
+
+/** Assinatura de falha de autenticação no `failureTail` de um stage. */
+const AUTH_FAILURE_RE = /Failed to authenticate|OAuth (session|token)[^|]*expired|authentication_error|invalid[_ ]grant/i;
+
+/**
+ * #10597: o caso que o preflight não vê (token expirado com `loggedIn: true`).
+ * Quando o stage falhou com a assinatura de auth, devolve a dica acionável
+ * para o resumo; `null` caso contrário.
+ */
+export function authFailureHint(
+  outcomes: ReadonlyArray<{ status: string; failureTail?: string }>,
+  claudeBin: string,
+): string | null {
+  const failed = outcomes.find((o) => o.status === "failed");
+  if (!failed?.failureTail || !AUTH_FAILURE_RE.test(failed.failureTail)) return null;
+  return `o stage falhou por autenticação do CLI, não por conteúdo da edição — ${loginHint(claudeBin)}.`;
+}
+
 /** Dependências injetáveis — existem só para `main` ser testável sem tocar
  * o `claude` real nem o disco. Mesmo padrão de `run-scheduled-edicao.ts`. */
 export interface MainDeps {
   execFn: typeof execFileSync;
   resolveClaudeBinFn: () => string;
+  /** #10597: default roda `claudeAuthPreflight` com o MESMO `execFn` — teste
+   * que injeta `execFn` nunca chama o `claude` real. Separado para que testes
+   * que contam spawns de stage possam desligá-lo sem filtrar chamadas. */
+  authPreflightFn?: (claudeBin: string, env: NodeJS.ProcessEnv) => AuthPreflightResult;
   assertSentinelFn?: typeof import("./lib/pipeline-state.ts").assertSentinel;
   env: NodeJS.ProcessEnv;
   stdout: (line: string) => void;
@@ -128,6 +222,8 @@ export function main(
     stderr = (l: string) => console.error(l),
     repoRootAbs = ROOT,
   } = deps;
+  const authPreflightFn =
+    deps.authPreflightFn ?? ((bin: string, e: NodeJS.ProcessEnv) => claudeAuthPreflight(execFn, bin, e));
 
   const { values, flags } = parseArgsLib(argv);
   const aammdd = values["edition"];
@@ -161,6 +257,24 @@ export function main(
 
   const editionDir = resolveEditionDir(join(repoRootAbs, "data", "editions"), aammdd);
 
+  // #10597: auth do CLI antes de qualquer spawn. Nunca sugerir API key (#5608).
+  // `resolveClaudeBin` lança quando não acha binário — antes isso só
+  // acontecia dentro do try do runner (falha de stage legível); aqui fora,
+  // sem o catch, viraria stack trace.
+  let claudeBin: string;
+  try {
+    claudeBin = resolveClaudeBinFn();
+  } catch (e) {
+    stderr(`ERRO: ${(e as Error).message}`);
+    return 1;
+  }
+  const auth = authPreflightFn(claudeBin, env);
+  if (auth.error) {
+    stderr(`ERRO: ${auth.error}`);
+    return 1;
+  }
+  if (auth.warning) stderr(`AVISO: ${auth.warning}`);
+
   const result = runEditionStages({
     aammdd,
     editionDir,
@@ -184,10 +298,16 @@ export function main(
   // `{PREENCHER...}` ainda pendente, ou o arquivo nem existe. Só roda
   // quando o plano de fato chega até lá: `--through 1` não tem o que checar
   // ainda (Stage 2 não spawnou nesta invocação).
-  if (plan.some((s) => s.stage === 2)) {
+  // #10597: se o laço parou no Stage 1 ou 2, o Stage 2 não concluiu — o JSON
+  // pendente é consequência da falha, não a causa, e o aviso desviaria a
+  // leitura (ex: OAuth expirado, `terminal_reason=api_error`).
+  const stage2Completed = result.failedStage === null || result.failedStage > 2;
+  if (stage2Completed && plan.some((s) => s.stage === 2)) {
     const warn = intentionalErrorHeadlessWarning(editionDir);
     if (warn) stderr(`AVISO: ${warn}`);
   }
+  const authHint = authFailureHint(result.outcomes, claudeBin);
+  if (authHint) stderr(`ERRO: ${authHint}`);
 
   if (flags.has("json")) {
     stdout(JSON.stringify(result, null, 2));
