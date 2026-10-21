@@ -11,6 +11,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   isKitWebhookEventRecord,
   type KitWebhookEventRecord,
+  type KitWebhookEventsPayload,
 } from "./kit-webhook-events-contract.ts";
 import { getLatestKitWebhookEventReceivedAt, recordKitWebhookEvent } from "./diaria-subscribers-db.ts";
 
@@ -57,7 +58,9 @@ export async function fetchKitWebhookEvents(
   } catch {
     return { ok: false, error: "resposta não é JSON" };
   }
-  const list = (body as { events?: unknown })?.events;
+  // Corpo não confiável: as chaves do contrato, mas com valor `unknown` até o
+  // filtro item a item abaixo.
+  const list = (body as { [K in keyof KitWebhookEventsPayload]?: unknown } | null)?.events;
   if (!Array.isArray(list)) return { ok: false, error: "resposta sem lista `events`" };
   const events = list.filter(isKitWebhookEventRecord);
   return { ok: true, events, malformed: list.length - events.length };
