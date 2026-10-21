@@ -120,6 +120,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { isGhPrMergeCommand, extractGhPrMergeTargetPr } from "./lib/gh-pr-merge-command.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
 // `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
@@ -898,70 +899,25 @@ export function machineTag() {
  */
 export { stripQuotedSpans };
 
-/** `true` se `command` contém `gh pr merge` como um comando REAL — só no
- * início da string ou depois de separador de comando (`&&`/`;`/`|`/`||`/
- * newline).
- *
- * #5787 Defeito 3: o regex antigo `/\\bgh\\s+pr\\s+merge\\b/` rodava sobre a
- * string inteira e casava com a CITAÇÃO da mensagem de erro dentro do corpo
- * de uma issue — qualquer comando que MENCIONASSE a expressão era negado.
- * O fix casou só no início do comando ou depois de um separador, quando é de
- * fato um comando que o shell executaria.
- *
- * #5805: o conjunto de separadores declarado no comentário ("&& ; | ||
- * newline") nunca incluiu newline no regex — `^` sem a flag `m` ancora só no
- * início da STRING inteira, não de cada linha, então um comando Bash
- * multi-linha cuja 1ª linha não é `gh pr merge` mas contém a chamada numa
- * linha posterior (ex: heredoc, `cmd1\ncmd2`) passava direto pelo guard.
- * Adicionar `\n` à alternação de separadores sozinho reabriria o Defeito 3
- * em variante multi-linha: um `--body` com newline LITERAL dentro das aspas
- * (`--body "linha1\ngh pr merge citado\nlinha3"`) teria a citação vista como
- * comando real, porque o regex não entende quoting.
- *
- * Por isso o matcher roda sobre `stripQuotedSpans(command)`, não sobre
- * `command` bruto: todo conteúdo entre aspas (single-line OU multi-line) é
- * removido antes do regex de separadores rodar, então `gh pr merge` citado
- * dentro de um `--body`/`--title`/string nunca é visto como comando real —
- * independente de ter newline dentro das aspas ou não — e um `gh pr merge`
- * genuíno depois de um separador (incluindo `\n`) fora de qualquer aspas
- * continua detectado normalmente.
- */
-export function isGhPrMergeCommand(command) {
-  if (typeof command !== "string") return false;
-  const stripped = stripQuotedSpans(command);
-  return /^\s*gh\s+pr\s+merge\b|(?:&&|;|\|\||\||\n)\s*gh\s+pr\s+merge\b/.test(stripped);
-}
-
 /**
- * Extrai o número do PR alvo de um comando `gh pr merge` real (#6303 Finding
- * S). `undefined` quando não dá pra determinar — inclusive o caso legítimo em
- * que `gh pr merge` roda SEM número (infere o PR pela branch corrente) e o
- * caso de comando malformado/sem `gh pr merge` real nenhum.
+ * `isGhPrMergeCommand` (é um `gh pr merge` REAL?) e `extractGhPrMergeTargetPr`
+ * (#6303 Finding S — nº da PR da ÚLTIMA invocação, `undefined` sem número)
+ * vivem em `./lib/gh-pr-merge-command.mjs` desde o #10681 — fonte única deste
+ * guard e de `consume-merge-grant-on-merge.mjs`.
  *
- * Roda sobre `stripQuotedSpans(command)` pela mesma razão de
- * `isGhPrMergeCommand`: dígitos dentro de uma string entre aspas (ex: um
- * `--body` citando "aconteceu depois de 100 dias") já saem removidos antes do
- * parsing, então nunca viram um número de PR por engano.
- *
- * Pega a ÚLTIMA ocorrência real de `gh pr merge` no comando (mesmos
- * separadores de `isGhPrMergeCommand`) e o primeiro token TODO-dígitos dentro
- * do segmento até o próximo separador — cobre tanto `gh pr merge 123 --squash`
- * quanto `gh pr merge --squash 123`.
+ * Histórico: #5787 Defeito 3 — o regex antigo casava com a CITAÇÃO de
+ * `gh pr merge` dentro do corpo de uma issue. #5805 — newline precisa contar
+ * como separador sem reabrir o Defeito 3 em variante multi-linha
+ * (`--body "...\ngh pr merge..."`). Até o #10681 isso era um regex sobre
+ * `stripQuotedSpans(command)` que só aceitava `gh pr merge` no início ou
+ * depois de separador — e não via `GH_REPO=x gh pr merge`, `env`/`command`/
+ * `sudo` antes do gh, `/usr/bin/gh`, `gh pr -R x merge`, subshell nem
+ * `bash -c '...'`: o guard nem rodava. Hoje um lexer separa os comandos
+ * simples (aspas resolvidas, então texto citado nunca ocupa a posição de
+ * comando) e lê cada um pela posição de comando. Limites conhecidos: topo de
+ * `./lib/gh-pr-merge-command.mjs`.
  */
-export function extractGhPrMergeTargetPr(command) {
-  if (typeof command !== "string") return undefined;
-  const stripped = stripQuotedSpans(command);
-  const invocationRe = /(?:^\s*|(?:&&|;|\|\||\||\n)\s*)gh\s+pr\s+merge\b/g;
-  let end = -1;
-  let m;
-  while ((m = invocationRe.exec(stripped))) end = m.index + m[0].length;
-  if (end === -1) return undefined;
-  const segment = /^[^\n;&|]*/.exec(stripped.slice(end))?.[0] ?? "";
-  const numMatch = /(?:^|\s)(\d+)(?=\s|$)/.exec(segment);
-  if (!numMatch) return undefined;
-  const n = Number(numMatch[1]);
-  return Number.isFinite(n) ? n : undefined;
-}
+export { isGhPrMergeCommand, extractGhPrMergeTargetPr };
 
 /**
  * Função pura — decide se um `gh pr merge` deve ser bloqueado, dado o

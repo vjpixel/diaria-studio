@@ -3,7 +3,8 @@
 // (#6303 fleet review, Finding T; o que isso prova ou não, ver #8793 abaixo).
 //
 // Wired em .claude/settings.json sob hooks.PostToolUse:
-//   matcher "Bash", if "Bash(gh pr merge*)".
+//   matcher "Bash", SEM filtro `if` desde o #10681 (o portão é
+//   `isGhPrMergeCommand`, checado antes de qualquer I/O).
 //
 // ─────────────────────────────────────────────────────────────────────────
 // POR QUE ISTO EXISTE
@@ -119,6 +120,7 @@ import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from ".
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { extractGhPrMergeTargetPr, isGhPrMergeCommand } from "./lib/gh-pr-merge-command.mjs";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
  * block-gh-pr-merge-subagent.mjs pro racional (10min: cobre a janela da
@@ -170,53 +172,25 @@ export function sessionsDir(repoRoot) {
  */
 export { stripQuotedSpans };
 
-/** Uma invocação REAL de `gh pr merge`: início da string ou depois de
- * separador (`&&`/`;`/`||`/`|`/newline). Fonte única de
- * `extractGhPrMergeTargetPr` e `isGhPrMergeCommand` (#8793) — mesma
- * expressão de `block-gh-pr-merge-subagent.mjs`, paridade travada por teste. */
-const GH_PR_MERGE_INVOCATION_SRC = String.raw`(?:^\s*|(?:&&|;|\|\||\||\n)\s*)gh\s+pr\s+merge\b`;
-
 /**
- * Extrai o número do PR alvo de um comando `gh pr merge` real. `undefined`
- * quando não dá pra determinar (comando sem número — infere a PR pela
- * branch corrente — ou sem `gh pr merge` real nenhum). Duplicado de
- * `block-gh-pr-merge-subagent.mjs` (`extractGhPrMergeTargetPr`) pela mesma
- * razão "self-contained" — ver #8188 no topo.
- */
-export function extractGhPrMergeTargetPr(command) {
-  if (typeof command !== "string") return undefined;
-  const stripped = stripQuotedSpans(command);
-  const invocationRe = new RegExp(GH_PR_MERGE_INVOCATION_SRC, "g");
-  let end = -1;
-  let m;
-  while ((m = invocationRe.exec(stripped))) end = m.index + m[0].length;
-  if (end === -1) return undefined;
-  const segment = /^[^\n;&|]*/.exec(stripped.slice(end))?.[0] ?? "";
-  const numMatch = /(?:^|\s)(\d+)(?=\s|$)/.exec(segment);
-  if (!numMatch) return undefined;
-  const n = Number(numMatch[1]);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-/**
- * `true` se `command` contém `gh pr merge` como comando REAL (início da
- * string ou depois de separador, fora de aspas). Duplicado de
- * `block-gh-pr-merge-subagent.mjs` (`isGhPrMergeCommand`) pela mesma razão
- * "self-contained" — paridade travada por
- * `test/consume-merge-grant-only-after-real-merge-8793.test.ts`.
+ * `extractGhPrMergeTargetPr` e `isGhPrMergeCommand` (#8793) vêm de
+ * `./lib/gh-pr-merge-command.mjs` desde o #10681 — o MESMO detector do guard
+ * `block-gh-pr-merge-subagent.mjs` (antes era uma cópia do regex, com
+ * paridade travada por teste).
  *
- * #8793: até aqui o hook confiava 100% no filtro `if: "Bash(gh pr merge*)"`
- * do `.claude/settings.json` pra só rodar depois de um merge. Se esse filtro
- * não for aplicado (CLI que ignora o campo `if`, matcher alterado, payload
- * de outro comando), `extractGhPrMergeTargetPr` devolve `undefined` também
- * pra comando SEM `gh pr merge` nenhum, e `undefined` casa com qualquer
- * concessão: um `check-merge-grant` ou `merge-lock-acquire` consumia a
- * janela antes do merge. Este é o portão local, independente do settings.
+ * `isGhPrMergeCommand` é o portão local deste hook. #8793: sem ele,
+ * `extractGhPrMergeTargetPr` devolve `undefined` também pra comando SEM
+ * `gh pr merge` nenhum, e `undefined` casa com qualquer concessão — um
+ * `check-merge-grant` ou `merge-lock-acquire` consumia a janela antes do
+ * merge.
+ *
+ * #10681: o settings não filtra mais este hook por `if: "Bash(gh pr
+ * merge*)"`. O filtro só casava comando que COMEÇA com `gh pr merge`, e
+ * `GH_REPO=x gh pr merge 5`, `env ... gh pr merge`, `/usr/bin/gh pr merge` ou
+ * `gh pr -R x merge` mergeavam com a concessão sem consumi-la. O portão é
+ * este detector, checado antes de qualquer I/O no `main`.
  */
-export function isGhPrMergeCommand(command) {
-  if (typeof command !== "string") return false;
-  return new RegExp(GH_PR_MERGE_INVOCATION_SRC).test(stripQuotedSpans(command));
-}
+export { extractGhPrMergeTargetPr, isGhPrMergeCommand };
 
 /** Consulta GraphQL do estado de merge (#8793). `gh pr view --json` não expõe
  * `mergeQueueEntry` (medido no gh 2.92: "Unknown JSON field"); `gh api
@@ -573,6 +547,9 @@ if (
       const payload = JSON.parse(data || "{}");
       const sessionId = payload.session_id;
       if (!sessionId) return; // sem identidade não há concessão pra procurar
+      // #10681: sem o filtro `if` do settings este hook roda depois de TODO
+      // Bash — o portão vem antes do `git rev-parse` de `resolveMainRepoRoot`.
+      if (!isGhPrMergeCommand(payload.tool_input?.command)) return;
       const repoRoot = resolveMainRepoRoot();
       // #8793: só consome depois de um `gh pr merge` REAL (nunca de um
       // `check-merge-grant`/`merge-lock-acquire` que chegue aqui por falha
