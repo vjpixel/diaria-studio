@@ -77,8 +77,11 @@ export function main(argv: string[], cwd: string): number {
   }
 
   // #10618: multi-repo só por opt-in explícito (`--repos all` ou lista
-  // validada contra `issue_repos`). Sem a flag: só o diaria-studio.
-  const resolvedRepos = resolveTriageRepos(values.repos, triageAllowedRepos());
+  // validada contra `issue_repos`). Sem a flag: só o diaria-studio, sem ler o
+  // config (nenhum AVISO de config num caminho que master nunca tocava).
+  const resolvedRepos = values.repos?.trim()
+    ? resolveTriageRepos(values.repos, triageAllowedRepos())
+    : { repos: undefined };
   if ("error" in resolvedRepos) {
     console.error(`[fetch-open-issues-for-triage] ${resolvedRepos.error}`);
     return 1;
