@@ -265,6 +265,9 @@ export function parseAiCrawlerProbeKeyBots(fingerprint: string, host: string): s
  * `allowed` e ClaudeBot `inconclusive`, herdar daria {ClaudeBot} — outra
  * issue nova, sem medição. Nesse caso o host fica só com o medido e a issue
  * antiga segue congelada por `aiCrawlerUnmeasuredKeys`.
+ * #10596: exige ao menos uma sonda medida no próprio host nesta rodada.
+ * Sem nenhuma medição, não herda: a issue fica congelada e aparece no log
+ * de sinais não medidos, sem zerar seu missingStreak.
  * Só serve para montar os achados; log e e-mail continuam com a sonda real. */
 export function carryForwardInconclusiveProbes(
   probes: readonly AiCrawlerProbeResult[],
@@ -285,9 +288,10 @@ export function carryForwardInconclusiveProbes(
   const carried = probes.map((p) =>
     p.status === "inconclusive" && openBots.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
   );
+  const measuredHosts = new Set(probes.filter((p) => p.status !== "inconclusive").map((p) => p.host));
   const acceptedHosts = new Set(
     blockedProbesByHost(carried)
-      .filter(({ host, bots }) => openSets.get(host)?.includes(bots.join(",")))
+      .filter(({ host, bots }) => measuredHosts.has(host) && openSets.get(host)?.includes(bots.join(",")))
       .map(({ host }) => host),
   );
   return probes.map((p, i) => (acceptedHosts.has(p.host) ? carried[i] : p));

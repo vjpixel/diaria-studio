@@ -82,7 +82,7 @@ describe("#10522 — congelamento por par host × bot", () => {
     assert.notEqual(state[OLD].closedAt, null);
   });
 
-  it("issue só de GPTBot, GPTBot inconclusive → mantida (carry-forward), nunca fecha", () => {
+  it("issue só de GPTBot, GPTBot inconclusive → mantida sem medição, nunca fecha", () => {
     const OLD = keyFor(["GPTBot"]);
     let state: AlarmIssuesState = { [OLD]: openEntry() };
     for (let i = 0; i < 3; i++) state = round(state, [probe("GPTBot", "inconclusive")]).nextState;
@@ -99,6 +99,26 @@ describe("#10522 — congelamento por par host × bot", () => {
     assert.deepEqual(ghCalls, []);
     assert.deepEqual(frozen, [{ key: OLD, issueNumber: 42 }]);
     assert.equal(nextState[OLD].closedAt, null);
+  });
+
+  it("#10596 — todos inconclusive no host continuam congelados e visíveis a cada rodada", () => {
+    const OLD = keyFor(["ClaudeBot", "GPTBot"]);
+    let state: AlarmIssuesState = { [OLD]: { ...openEntry(), missingStreak: 1 } };
+    const probes = [
+      probe("ClaudeBot", "inconclusive"),
+      probe("GPTBot", "inconclusive"),
+      // Medir outro host não autoriza herança no host inacessível.
+      probe("GPTBot", "allowed", "outro.diar.ia.br"),
+    ];
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(carryForwardInconclusiveProbes(probes, state), probes);
+      const result = round(state, probes);
+      assert.deepEqual(result.findings, []);
+      assert.deepEqual(result.frozen, [{ key: OLD, issueNumber: 42 }]);
+      assert.deepEqual(result.ghCalls, []);
+      assert.deepEqual(result.nextState, state);
+      state = result.nextState;
+    }
   });
 
   it("issue fechada não herda bot inconclusivo", () => {
