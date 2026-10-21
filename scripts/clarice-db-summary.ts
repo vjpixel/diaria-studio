@@ -13,8 +13,10 @@
  *   CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_WORKERS_TOKEN
  *
  * Uso:
- *   npx tsx scripts/clarice-db-summary.ts [--db <path>] [--dry-run]
+ *   npx tsx scripts/clarice-db-summary.ts [--db <path>] [--dry-run] [--help]
  *   --dry-run: computa e imprime o JSON, NÃO grava no KV.
+ *   --help/-h: imprime o uso e sai 0, sem ler o banco nem gravar (#10737).
+ *   Flag desconhecida aborta com exit 2 (nunca é ignorada).
  *
  * Stdout: o JSON do sumário. Stderr: progresso.
  */
@@ -22,7 +24,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { parseArgs } from "node:util";
+import { isMainModule } from "./lib/cli-args.ts";
 import {
   openClariceDb,
   DEFAULT_DB_PATH,
@@ -453,46 +456,142 @@ function computeCohortStats(
   return out;
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
-  loadProjectEnv();
-  const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
-  const dryRun = hasFlag(argv, "dry-run");
+export const USAGE = `Uso: npx tsx scripts/clarice-db-summary.ts [--db <path>] [--dry-run] [--help]
 
-  const db = openClariceDb(dbPath);
-  const summary = computeStoreSummary(db);
-  db.close();
+Lê o store SQLite da Clarice e grava um sumário só-números no KV do dashboard
+(chave ${CONTACTS_SUMMARY_KV_KEY}).
+
+  --db <path>  caminho do SQLite (default: ${DEFAULT_DB_PATH})
+  --dry-run    computa e imprime o JSON, NÃO grava no KV
+  -h, --help   imprime este uso e sai, sem ler o banco nem gravar`;
+
+export interface SummaryCliArgs {
+  help: boolean;
+  dryRun: boolean;
+  dbPath: string;
+}
+
+/** Erro de uso da CLI (flag desconhecida, valor ausente) — exit 2. */
+export class SummaryUsageError extends Error {}
+
+/**
+ * #10737: parse ESTRITO via `node:util` `parseArgs` — flag desconhecida ou
+ * posicional abortam com `SummaryUsageError` em vez de serem ignoradas. Antes,
+ * `--help` (e qualquer typo, ex. `--dryrun`) caía fora do radar de
+ * `getArg`/`hasFlag` e o script executava inteiro, GRAVANDO no KV. Num script
+ * que escreve, flag não reconhecida tem que parar, nunca degradar pra execução
+ * normal.
+ */
+export function parseSummaryArgs(argv: string[]): SummaryCliArgs {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: {
+        db: { type: "string" },
+        "dry-run": { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
+      strict: true,
+      allowPositionals: false,
+    });
+  } catch (e) {
+    throw new SummaryUsageError(e instanceof Error ? e.message : String(e));
+  }
+  const { values } = parsed;
+  if (values.db !== undefined && values.db.trim() === "") {
+    throw new SummaryUsageError("--db foi passado com valor vazio.");
+  }
+  return {
+    help: values.help === true,
+    dryRun: values["dry-run"] === true,
+    dbPath: values.db ?? DEFAULT_DB_PATH,
+  };
+}
+
+/** Pontos de efeito colateral — injetáveis pra teste (#10737). */
+export interface SummaryDeps {
+  loadEnv: () => void;
+  openDb: (path: string) => DatabaseSync;
+  upload: typeof uploadTextToWorkerKV;
+  stdout: (s: string) => void;
+  stderr: (s: string) => void;
+}
+
+const defaultDeps: SummaryDeps = {
+  loadEnv: () => loadProjectEnv(),
+  openDb: (path) => openClariceDb(path),
+  upload: uploadTextToWorkerKV,
+  stdout: (s) => console.log(s),
+  stderr: (s) => console.error(s),
+};
+
+/**
+ * Retorna o exit code: 0 = ok (inclui `--help`), 1 = credenciais ausentes,
+ * 2 = erro de uso (flag desconhecida). Erros de runtime (banco, upload)
+ * propagam como exceção.
+ */
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  deps: Partial<SummaryDeps> = {},
+): Promise<number> {
+  const d: SummaryDeps = { ...defaultDeps, ...deps };
+  let args: SummaryCliArgs;
+  try {
+    args = parseSummaryArgs(argv);
+  } catch (e) {
+    if (!(e instanceof SummaryUsageError)) throw e;
+    d.stderr(`[clarice-db-summary] ${e.message}\n\n${USAGE}`);
+    return 2;
+  }
+  if (args.help) {
+    d.stdout(USAGE);
+    return 0;
+  }
+
+  d.loadEnv();
+  const db = d.openDb(args.dbPath);
+  let summary: StoreSummary;
+  try {
+    summary = computeStoreSummary(db);
+  } finally {
+    db.close();
+  }
 
   const payload = { generated_at: new Date().toISOString(), ...summary };
   const json = JSON.stringify(payload, null, 2);
-  console.log(json);
+  d.stdout(json);
 
-  if (dryRun) {
-    console.error("[clarice-db-summary] --dry-run: KV NÃO atualizado.");
-    return;
+  if (args.dryRun) {
+    d.stderr("[clarice-db-summary] --dry-run: KV NÃO atualizado.");
+    return 0;
   }
 
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const token = process.env.CLOUDFLARE_WORKERS_TOKEN ?? "";
   if (!accountId || !token) {
-    console.error(
+    d.stderr(
       "[clarice-db-summary] CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN ausentes — " +
         "use --dry-run ou configure as credenciais.",
     );
-    process.exit(1);
+    return 1;
   }
 
-  await uploadTextToWorkerKV(json, CONTACTS_SUMMARY_KV_KEY, {
+  await d.upload(json, CONTACTS_SUMMARY_KV_KEY, {
     kvNamespaceId: DASHBOARD_KV_NAMESPACE_ID,
     accountId,
     token,
     contentType: "application/json",
   });
-  console.error(`[clarice-db-summary] KV atualizado: ${CONTACTS_SUMMARY_KV_KEY}.`);
+  d.stderr(`[clarice-db-summary] KV atualizado: ${CONTACTS_SUMMARY_KV_KEY}.`);
+  return 0;
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error("[clarice-db-summary]", e);
-    process.exit(1);
-  });
+  main()
+    .then((code) => process.exit(code))
+    .catch((e) => {
+      console.error("[clarice-db-summary]", e);
+      process.exit(1);
+    });
 }
