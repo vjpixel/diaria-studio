@@ -304,6 +304,36 @@ describe("PrismML no gate de LANÇAMENTOS (#8576)", () => {
   });
 });
 
+/**
+ * Regressão do gate da edição 261021 (#10640) — mesma arquitetura do bloco
+ * PrismML acima: bate direto em `isOfficialLancamentoUrl`, a função que o
+ * `validate-lancamentos.ts` consulta, com a URL real (com `www.`).
+ */
+describe("Inception Labs no gate de LANÇAMENTOS (#10640)", () => {
+  it("inceptionlabs.ai está entre os domínios oficiais de lançamento", () => {
+    assert.ok(lancamentoDomains().has("inceptionlabs.ai"));
+  });
+
+  it("isOfficialLancamentoUrl aceita o anúncio do Mercury 3 (com e sem www)", () => {
+    assert.equal(
+      isOfficialLancamentoUrl("https://www.inceptionlabs.ai/blog/introducing-mercury-3"),
+      true,
+    );
+    assert.equal(
+      isOfficialLancamentoUrl("https://inceptionlabs.ai/blog/introducing-mercury-3"),
+      true,
+    );
+  });
+
+  it("cobertura de terceiro e domínio parecido seguem NÃO-oficiais", () => {
+    assert.equal(
+      isOfficialLancamentoUrl("https://techcrunch.com/inception-labs-mercury-3"),
+      false,
+    );
+    assert.equal(isOfficialLancamentoUrl("https://not-inceptionlabs.ai/blog/x"), false);
+  });
+});
+
 describe("Qwen no GitHub é lançamento oficial (260922)", () => {
   it("repo da org QwenLM conta; outras orgs e github.com raiz não", () => {
     assert.equal(isOfficialLancamentoUrl("https://github.com/QwenLM/Qwen-Image-2.1"), true);
