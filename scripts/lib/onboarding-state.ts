@@ -726,6 +726,22 @@ export function ownerTransportFor(
   return "brevo";
 }
 
+/**
+ * Dono do PRÓXIMO passo da entrada para decidir quem a refresca (#10677).
+ * E-mail 2 e 3 seguem o mesmo dono (o do e-mail 1), então basta distinguir
+ * "ainda no e-mail 1" de "escada já começou". Fonte única dos dois
+ * executores: o Kit (`onboarding-kit-transport-run.ts`, fix P2 da PR #10607)
+ * refresca só o que é dele, e a Brevo (`onboarding-welcome-run.ts`) também —
+ * antes ela consultava `GET /subscribers/{id}` + `/stats` no Kit pras entradas
+ * do transporte Kit e jogava o resultado fora (`kit_transport_ativo`),
+ * gastando o balde de rate limit que o passo Kit seguinte precisa.
+ *
+ * @pure testável sem I/O
+ */
+export function refreshOwnerFor(entry: OnboardingEntry, kitTransportEnabled: boolean): OnboardingTransport {
+  return ownerTransportFor(entry, entry.email1_sent_at == null ? "email1" : "email3", kitTransportEnabled);
+}
+
 /** Campos do e-mail 3 que só o executor DONO da entrada pode gravar (#7922). */
 export const EMAIL3_OWNED_FIELDS = ["email3_state", "email3_decided_at", "email3_campaign_id", "email3_kit_lot_id", "email3_scheduled_at"] as const;
 

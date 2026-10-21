@@ -108,6 +108,7 @@ import {
   filterBrevoPlanForKitCutover,
   dropActionsCoveredOnDisk,
   ownerTransportFor,
+  refreshOwnerFor,
   stripForeignEmail3Delta,
   type DetectedSubscription,
   type OpenStats,
@@ -1201,7 +1202,15 @@ async function main(): Promise<number | void> {
   // (onboarding-state.ts) — mesmo critério, agora reusável pelo executor de
   // transporte Kit sem duplicar a lógica. Comportamento preservado 1:1 (ver
   // docstring da função extraída para o racional original do #7741).
-  const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days);
+  // #10677: espelho do filtro do executor Kit (fix P2 da PR #10607) — só
+  // refresca entrada cujo próximo passo é da BREVO. As do transporte Kit são
+  // refrescadas pelo executor Kit e aqui seriam descartadas depois
+  // (`kit_transport_ativo` / `ownsEmail3` falso); consultá-las gastava o balde
+  // de rate limit do Kit logo antes do passo `kit`.
+  const kitTransportEnabled = cfg.kit_transport?.enabled === true;
+  const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days).filter(
+    (e) => refreshOwnerFor(e, kitTransportEnabled) === "brevo",
+  );
   const statsById: Record<string, OpenStats | null> = {};
   /** #7670: entradas cujo refresh falhou E que estão vencidas no e-mail 3 —
    *  pra essas o fallback "usa o estado do store" NÃO resolve nada, porque a
@@ -1270,7 +1279,6 @@ async function main(): Promise<number | void> {
   // de lote Kit existente dentro dela roda mesmo com o switch desligado
   // (rollback) — por isso `kitLots` do store é sempre passado, não só
   // quando `kitTransportEnabled`.
-  const kitTransportEnabled = cfg.kit_transport?.enabled === true;
   const kitLots = Object.values(store.kit_transport?.lots ?? {});
   const plan = filterBrevoPlanForKitCutover(
     buildRunPlan({
