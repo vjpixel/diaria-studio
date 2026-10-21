@@ -214,7 +214,9 @@ export function buildFollowupPanel(
     if (!c) continue;
     for (const [motivo, n] of Object.entries(byMotivo)) {
       // `enviado`/`falhou` já contados pelos registros; `apoia` vem dos pulos gravados.
-      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia") continue;
+      // `excede_janela` (#10652) é projeção sobre quem já está em `adiado_teto` —
+      // somar dobraria a contagem; aparece como alerta.
+      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia" || motivo === "excede_janela") continue;
       bump(TERMINAL_RUN_MOTIVOS.has(motivo) ? c.pulados : c.pendentes, motivo, n);
     }
   }
@@ -269,6 +271,18 @@ export function buildFollowupPanel(
   const fFails = followup.consecutive_failed_runs ?? 0;
   if (fFails >= 2) {
     alerts.push({ etapa: "Sequências de apoio/formulário", mensagem: `${fFails} rodadas seguidas com falha${lastRun?.error ? `: ${maskInText(lastRun.error)}` : ""}` });
+  }
+  // #10652: excedente do teto que não cabe na janela — aparece já na 1ª rodada,
+  // sem esperar o contador de rodadas falhas.
+  if ((lastRun?.cap_window_overflow ?? 0) > 0) {
+    const perda = Object.entries(lastRun?.counts ?? {})
+      .filter(([, c]) => (c?.excede_janela ?? 0) > 0)
+      .map(([k, c]) => `${STEP_LABELS[k as OnboardingEmailStep] ?? k}: ${c!.excede_janela}`)
+      .join(", ");
+    alerts.push({
+      etapa: "Sequências de apoio/formulário",
+      mensagem: `excedente do teto de lote não cabe na janela — ao menos ${perda} vão vencer sem receber (subir max_recipients_per_lot ou grace_days)`,
+    });
   }
   for (const lot of [...kitLots, ...fLots]) {
     if (lot.schedule_failed === true && lot.status !== "cancelled") {
