@@ -76,8 +76,11 @@
  * onboarding.followup.form_responses_url`, token em
  * `form_responses_token_env`) e as soma às da survey, no mesmo formato. As 3
  * perguntas de perfil caem nas seções que já existem; as de produto ganham a
- * seção 4 do perfil. Fail-soft: sem formulário configurado, sem token ou com
- * a leitura falhando, o perfil sai só com a survey (aviso no stderr).
+ * seção 4 do perfil. Formulário não configurado (sem `form_responses_url`):
+ * segue só com a survey. Configurado mas a leitura falha (token ausente,
+ * HTTP de erro, timeout, payload malformado): ABORTA (exit 1), para nunca
+ * gravar um perfil que finge incluir o formulário. Survey vazia aborta, a
+ * menos que `--allow-form-only`.
  *
  * Cada sub-script downstream (`update-audience.ts`) é invocado por SPAWN
  * (`process.execPath --import tsx`, nunca `npx tsx` — guard #4343), nunca
@@ -107,7 +110,11 @@ import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseFormResponsesPayload, type FormResponse } from "./lib/onboarding-form-contract.ts";
 import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
-import { onboardingFormToSurveyResponses } from "./lib/audience-survey-questions.ts";
+import {
+  onboardingFormToSurveyResponses,
+  type SurveyAnswerRecord,
+  type SurveyResponseRecord,
+} from "./lib/audience-survey-questions.ts";
 
 // #4983 (mesma lição do clarice-novos-run.ts): este é o processo
 // ORQUESTRADOR — precisa de BEEHIIV_API_KEY no PRÓPRIO process.env pra
@@ -257,17 +264,9 @@ export function resolveProfileSurveyId(
 // regra da SKILL.md original, preservada aqui).
 // ---------------------------------------------------------------------------
 
-export interface BeehiivSurveyAnswer {
-  question_id: string;
-  question_prompt: string;
-  answer: string;
-}
-
-export interface BeehiivSurveyResponse {
-  id: string;
-  status?: string;
-  answers: BeehiivSurveyAnswer[];
-}
+/** Tipo único das respostas de `data/audience-raw.json` (#10605) — aliases mantidos pelos importadores antigos. */
+export type BeehiivSurveyAnswer = SurveyAnswerRecord;
+export type BeehiivSurveyResponse = SurveyResponseRecord;
 
 export interface NormalizeResult {
   valid: BeehiivSurveyResponse[];
@@ -322,9 +321,9 @@ export function normalizeSurveyResponses(raw: unknown[]): NormalizeResult {
 // ---------------------------------------------------------------------------
 // Passo 4b (#10605) — respostas do formulário do onboarding (Worker
 // `workers/onboarding-form`). Somadas às da survey antes de gravar
-// `data/audience-raw.json`. FAIL-SOFT: formulário não configurado, token
-// ausente ou leitura falhando nunca derruba a regeneração do perfil, só sai
-// sem essas respostas (com aviso no stderr).
+// `data/audience-raw.json`. Formulário NÃO configurado = segue só com a
+// survey (aviso). Configurado mas a leitura falha = ABORTA: um perfil gerado
+// sem as respostas, sem ninguém perceber, seria pior que perfil nenhum novo.
 // ---------------------------------------------------------------------------
 
 /** `null` = formulário não configurado (sem `form_responses_url`). Lança em falha de leitura. */
@@ -339,26 +338,46 @@ export async function loadOnboardingFormSurveyResponses(
   try {
     responses = await fetchFn(cfg);
   } catch (e) {
-    console.error(`[audience-run] ⚠ respostas do formulário do onboarding não lidas, perfil sai sem elas: ${(e as Error).message}`);
-    return [];
+    throw new AudienceAbort(
+      `respostas do formulário do onboarding não lidas (form_responses_url configurado): ${(e as Error).message}. ` +
+        "Perfil NÃO regenerado — corrija o acesso ao Worker ou remova form_responses_url para rodar só com a survey.",
+    );
   }
   if (responses == null) {
     console.error("[audience-run] formulário do onboarding não configurado (onboarding.followup.form_responses_url ausente) — seguindo só com a survey.");
     return [];
   }
   const converted = onboardingFormToSurveyResponses(responses);
-  console.error(`[audience-run] ${converted.length} resposta(s) do formulário do onboarding somada(s) à survey.`);
-  return converted;
+  if (converted.unknownAnswers > 0) {
+    console.error(
+      `[audience-run] ⚠ ${converted.unknownAnswers} resposta(s) do formulário a pergunta(s) que não existem mais em FORM_QUESTIONS — descartada(s).`,
+    );
+  }
+  console.error(`[audience-run] ${converted.responses.length} resposta(s) do formulário do onboarding somada(s) à survey.`);
+  return converted.responses;
 }
 
-async function fetchOnboardingFormResponsesReal(cfg: PlatformConfig): Promise<FormResponse[] | null> {
+export interface FormFetchEnv {
+  fetchImpl?: typeof fetch;
+  env?: Readonly<Record<string, string | undefined>>;
+  timeoutMs?: number;
+}
+
+/**
+ * Lê `GET form_responses_url` com o token de `form_responses_token_env`.
+ * `null` só quando a URL não está configurada; qualquer outra falha LANÇA
+ * (token ausente, HTTP de erro, timeout, payload malformado).
+ */
+export async function fetchOnboardingFormResponsesReal(cfg: PlatformConfig, io: FormFetchEnv = {}): Promise<FormResponse[] | null> {
+  const fetchImpl = io.fetchImpl ?? fetch;
+  const env = io.env ?? process.env;
   const fc = resolveFollowupConfig(cfg.onboarding?.followup);
   if (fc.formResponsesUrl == null) return null;
-  const token = process.env[fc.formResponsesTokenEnv];
-  if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente (form_responses_url está configurado)`);
-  const res = await fetch(fc.formResponsesUrl, {
+  const token = env[fc.formResponsesTokenEnv];
+  if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente`);
+  const res = await fetchImpl(fc.formResponsesUrl, {
     headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(io.timeoutMs ?? 30_000),
   });
   if (!res.ok) {
     await res.body?.cancel().catch(() => {});
@@ -385,6 +404,11 @@ export interface AudienceRunOptions {
    *  `--surveys-json`) incondicionalmente — confirmado ao vivo que
    *  `fetch-tally-audience.ts` quebrava 100% das vezes por causa disso. */
   skipBeehiivResolve: boolean;
+  /** #10605: aceita gerar o perfil SÓ com respostas do formulário do
+   *  onboarding quando `--responses` não tem nenhuma resposta válida. Sem a
+   *  flag, survey vazia continua abortando: um dump `[]` por engano nunca
+   *  pode trocar o perfil inteiro por um feito só do formulário. */
+  allowFormOnly: boolean;
 }
 
 export function parseAudienceRunArgs(argv: string[]): AudienceRunOptions {
@@ -394,6 +418,7 @@ export function parseAudienceRunArgs(argv: string[]): AudienceRunOptions {
     responsesPath: getStringArg(argv, "responses", { example: "data/_tmp/survey-responses.json" }),
     dryRun: hasFlag(argv, "dry-run"),
     skipBeehiivResolve: hasFlag(argv, "skip-beehiiv-resolve"),
+    allowFormOnly: hasFlag(argv, "allow-form-only"),
   };
 }
 
@@ -463,7 +488,7 @@ export function productionDeps(rootDir: string = ROOT): AudienceRunDeps {
     exec: realExec(rootDir),
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
-    fetchFormResponses: fetchOnboardingFormResponsesReal,
+    fetchFormResponses: (cfg) => fetchOnboardingFormResponsesReal(cfg),
   };
 }
 
@@ -585,12 +610,19 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
     }
     console.error(`[audience-run] ${normalized.valid.length} resposta(s) válida(s) de ${rawResponses.length} total.`);
 
-    // --- Passo 4b (#10605): soma as respostas do formulário do onboarding (fail-soft) ---
+    if (normalized.valid.length === 0 && !opts.allowFormOnly) {
+      throw new AudienceAbort(
+        "Nenhuma resposta válida após normalização — 0 respostas não gera profile novo " +
+          "(para gerar só com o formulário do onboarding, passe --allow-form-only).",
+      );
+    }
+
+    // --- Passo 4b (#10605): soma as respostas do formulário do onboarding ---
     const formResponses = await loadOnboardingFormSurveyResponses(cfg, deps.fetchFormResponses);
     const allResponses = [...normalized.valid, ...formResponses];
 
     if (allResponses.length === 0) {
-      throw new AudienceAbort("Nenhuma resposta válida após normalização — 0 respostas não gera profile novo.");
+      throw new AudienceAbort("Nenhuma resposta válida (survey vazia e formulário sem respostas) — 0 respostas não gera profile novo.");
     }
 
     const audienceRawPath = resolve(deps.rootDir, "data/audience-raw.json");

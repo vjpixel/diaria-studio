@@ -4,9 +4,11 @@
  * CONTRATO do formulário de perfil/interesses do onboarding — decisão do
  * editor (briefing do overnight 261020): formulário PRÓPRIO num Worker nosso
  * (custo zero, dados nossos, `?email=` pré-preenchido pela merge tag do Kit).
- * Puro e sem dependência de Node: importado tanto pelo Worker
- * (`workers/onboarding-form/src/index.ts`) quanto pelo executor das
- * sequências (`scripts/onboarding-followup-run.ts`), pra os dois lados nunca
+ * Puro e sem dependência de Node: importado pelo Worker
+ * (`workers/onboarding-form/src/index.ts` e `src/render.ts`), pelo executor
+ * das sequências (`scripts/onboarding-followup-run.ts`, que marca "preencheu")
+ * e pela regeneração do perfil de audiência (`scripts/audience-run.ts` via
+ * `scripts/lib/audience-survey-questions.ts`), pra os três lados nunca
  * divergirem sobre o formato.
  *
  * ## Endpoints do Worker
@@ -29,25 +31,44 @@
  * e-mails do formulário segue travado pelo marcador de texto pendente
  * (`formContentGate`), então nenhum leitor chega ao formulário antes disso.
  *
- * As 3 primeiras perguntas reusam o TEXTO e as OPÇÕES da survey de perfil
- * antiga da Beehiiv, para as respostas somarem nas mesmas seções de
- * `context/audience-profile.md` (`scripts/lib/audience-survey-questions.ts`
- * tem os matchers; `test/onboarding-form-questions-10605.test.ts` trava o
- * casamento). Mudar o rótulo de uma delas sem mexer no matcher tira a
- * pergunta do perfil em silêncio, e o teste existe para pegar isso.
+ * As 3 primeiras perguntas (nível, área, tipos de conteúdo) têm rótulo
+ * DIFERENTE do da survey de perfil antiga da Beehiiv, mas casam com os mesmos
+ * matchers de `scripts/lib/audience-survey-questions.ts` e usam opções
+ * compatíveis (as mesmas da survey, mais "Estudante" em área), para as
+ * respostas somarem nas mesmas seções de `context/audience-profile.md`.
+ * `test/onboarding-form-questions-10605.test.ts` trava o casamento e congela
+ * as opções. Mudar o rótulo sem mexer no matcher tiraria a pergunta do perfil
+ * em silêncio; o teste existe para pegar isso.
  */
 
-export interface FormQuestion {
+interface FormQuestionBase {
   /** Chave da resposta (`answers[id]`) — estável, sem espaço. */
   id: string;
   label: string;
-  /** `select` = uma opção; `checkbox` = várias (gravadas numa string só,
-   *  separadas por `FORM_MULTI_SEPARATOR`). */
-  kind: "text" | "textarea" | "select" | "checkbox";
-  options?: string[];
   required?: boolean;
   /** Linha de ajuda curta abaixo do rótulo. */
   help?: string;
+}
+
+/** Pergunta de escolha: `select` = uma opção; `checkbox` = várias (gravadas
+ *  numa string só, separadas por `FORM_MULTI_SEPARATOR`). */
+export interface ChoiceQuestion extends FormQuestionBase {
+  kind: "select" | "checkbox";
+  options: readonly string[];
+  /** Só `checkbox`: opção que não pode ser marcada junto com outras
+   *  (ex.: "Nada disso"). Precisa estar em `options`. */
+  exclusiveOption?: string;
+}
+
+/** Pergunta aberta, sempre texto livre truncado em `FORM_ANSWER_MAX_LEN`. */
+export interface OpenQuestion extends FormQuestionBase {
+  kind: "text" | "textarea";
+}
+
+export type FormQuestion = ChoiceQuestion | OpenQuestion;
+
+export function isChoiceQuestion(q: FormQuestion): q is ChoiceQuestion {
+  return q.kind === "select" || q.kind === "checkbox";
 }
 
 /** Separador das opções marcadas numa pergunta `checkbox`, dentro da string
@@ -122,6 +143,7 @@ export const FORM_QUESTIONS: readonly FormQuestion[] = [
       "Comunidade para trocar experiências com outros leitores",
       "Nada disso, a newsletter já me basta",
     ],
+    exclusiveOption: "Nada disso, a newsletter já me basta",
   },
   {
     id: "produto_tema",
@@ -198,7 +220,10 @@ export function normalizeFormEmail(raw: string): string {
  * @pure — valida a submissão: e-mail válido, só respostas de perguntas
  * conhecidas (campo desconhecido é descartado, nunca gravado), obrigatórias
  * presentes, texto truncado em `FORM_ANSWER_MAX_LEN`, `select` só aceita uma
- * das opções.
+ * das opções. `checkbox`: aceita string única ou lista (um valor por caixa
+ * marcada); toda opção precisa ser conhecida, a gravação segue a ordem da
+ * pergunta e descarta repetição; `exclusiveOption` junto com outra opção é
+ * recusado; obrigatória = pelo menos uma marcada.
  */
 export function parseFormSubmission(
   fields: Readonly<Record<string, string | readonly string[] | undefined>>,
@@ -217,9 +242,13 @@ export function parseFormSubmission(
         if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
         continue;
       }
-      const opts = q.options ?? [];
+      const opts = q.options;
       if (picked.some((x) => !opts.includes(x))) return { ok: false, error: `opção inválida em: ${q.label}` };
-      answers[q.id] = opts.filter((o) => picked.includes(o)).join(FORM_MULTI_SEPARATOR);
+      const chosen = opts.filter((o) => picked.includes(o));
+      if (q.exclusiveOption && chosen.includes(q.exclusiveOption) && chosen.length > 1) {
+        return { ok: false, error: `"${q.exclusiveOption}" não combina com outras opções em: ${q.label}` };
+      }
+      answers[q.id] = chosen.join(FORM_MULTI_SEPARATOR);
       continue;
     }
     const v = firstValue(raw).trim();
@@ -227,7 +256,7 @@ export function parseFormSubmission(
       if (q.required) return { ok: false, error: `resposta obrigatória ausente: ${q.label}` };
       continue;
     }
-    if (q.kind === "select" && !(q.options ?? []).includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
+    if (q.kind === "select" && !q.options.includes(v)) return { ok: false, error: `opção inválida em: ${q.label}` };
     answers[q.id] = v.slice(0, FORM_ANSWER_MAX_LEN);
   }
   return { ok: true, submission: { email, answers } };

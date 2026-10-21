@@ -226,8 +226,9 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
   it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
-    const created = initFollowupSnippets(dir);
-    assert.equal(created.length, 5);
+    const { written, skipped } = initFollowupSnippets(dir);
+    assert.equal(written.length, 5);
+    assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);
     assert.equal(snips.apoio90?.hasPendingMarker, true);

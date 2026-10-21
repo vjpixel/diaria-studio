@@ -2,18 +2,21 @@
  * audience-survey-questions.ts (#10605)
  *
  * Matchers das perguntas que `scripts/update-audience.ts` agrega em
- * `context/audience-profile.md`, e a conversão das respostas do formulário do
- * onboarding (`scripts/lib/onboarding-form-contract.ts`) para o mesmo formato
- * das respostas da survey (`data/audience-raw.json`).
+ * `context/audience-profile.md`, o tipo único das respostas de survey
+ * (`data/audience-raw.json`, usado também por `scripts/audience-run.ts`) e a
+ * conversão das respostas do formulário do onboarding
+ * (`scripts/lib/onboarding-form-contract.ts`) para esse formato.
  *
  * A survey antiga da Beehiiv e o formulário do onboarding entram no MESMO
- * perfil: as 3 perguntas de perfil do formulário repetem o texto e as opções
- * da survey, e os matchers abaixo casam as duas. As perguntas de produto só
- * existem no formulário e têm seção própria no perfil.
+ * perfil. Os rótulos das 3 perguntas de perfil do formulário são diferentes
+ * dos da survey, mas os dois casam com os mesmos matchers abaixo e usam
+ * opções compatíveis, então as contagens somam nas mesmas linhas. As
+ * perguntas de produto só existem no formulário e têm seção própria no
+ * perfil.
  *
  * Puro (sem I/O). `test/onboarding-form-questions-10605.test.ts` trava que
- * toda pergunta de múltipla escolha do formulário cai em exatamente um
- * matcher.
+ * toda pergunta do formulário cai em exatamente um matcher e que nenhum
+ * prompt da survey antiga cai num matcher de produto.
  */
 
 import { FORM_QUESTIONS, splitMultiAnswer, type FormQuestion, type FormResponse } from "./onboarding-form-contract.ts";
@@ -38,6 +41,7 @@ export interface SurveyAnswerRecord {
   answer: string;
 }
 
+/** Uma resposta em `data/audience-raw.json` — survey Beehiiv, Tally ou formulário do onboarding. */
 export interface SurveyResponseRecord {
   id: string;
   status?: string;
@@ -51,25 +55,40 @@ export function isOnboardingFormResponse(r: { id: string }): boolean {
   return r.id.startsWith(ONBOARDING_FORM_RESPONSE_ID_PREFIX);
 }
 
+export interface FormToSurveyResult {
+  responses: SurveyResponseRecord[];
+  /** Respostas a ids que não estão mais em `questions` (pergunta removida ou renomeada) — descartadas. */
+  unknownAnswers: number;
+}
+
 /**
  * @pure — respostas do formulário no formato da survey. Uma resposta
  * `checkbox` vira uma entrada por opção marcada (mesma forma da survey
  * Beehiiv de múltipla escolha, que `countAnswers` conta por opção). O `id`
- * não carrega o e-mail: o perfil só precisa de contagens. Pergunta que não
- * existe mais em `questions` é ignorada.
+ * não carrega o e-mail: o perfil só precisa de contagens. Sem `status`: o
+ * Worker não tem esse conceito, e `update-audience.ts` trata ausente como
+ * ativo. Resposta a pergunta que não existe mais em `questions` é descartada
+ * e contada em `unknownAnswers`, para o caller avisar.
  */
 export function onboardingFormToSurveyResponses(
   responses: readonly FormResponse[],
   questions: readonly FormQuestion[] = FORM_QUESTIONS,
-): SurveyResponseRecord[] {
-  return responses.map((r, i) => {
+): FormToSurveyResult {
+  const known = new Map(questions.map((q) => [q.id, q]));
+  let unknownAnswers = 0;
+  const out = responses.map((r, i) => {
     const answers: SurveyAnswerRecord[] = [];
-    for (const q of questions) {
-      const value = r.answers[q.id];
+    for (const [id, value] of Object.entries(r.answers)) {
+      const q = known.get(id);
+      if (!q) {
+        unknownAnswers++;
+        continue;
+      }
       if (typeof value !== "string" || value.trim() === "") continue;
       const parts = q.kind === "checkbox" ? splitMultiAnswer(value) : [value.trim()];
       for (const answer of parts) answers.push({ question_id: `form:${q.id}`, question_prompt: q.label, answer });
     }
-    return { id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${i + 1}`, status: "active", answers };
+    return { id: `${ONBOARDING_FORM_RESPONSE_ID_PREFIX}${i + 1}`, answers };
   });
+  return { responses: out, unknownAnswers };
 }

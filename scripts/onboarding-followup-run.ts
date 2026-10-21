@@ -222,29 +222,45 @@ export const FOLLOWUP_DRAFTS_DIR = resolve(ROOT, "context/templates/onboarding-f
  * modelo vazio (`snippetTemplate`) pelo rascunho, caso de quem rodou
  * `--init-snippets` antes de o rascunho existir. Rascunho sem o marcador
  * pendente é recusado (lança): a semente nunca pode destravar envio sozinha.
- * Devolve os caminhos gravados.
+ * A validação de TODOS os rascunhos acontece antes de qualquer escrita, então
+ * uma recusa não deixa o diretório pela metade.
+ * Devolve os caminhos gravados (`written`) e os que ficaram como estavam
+ * (`skipped`, com o motivo).
  */
-export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): string[] {
-  mkdirSync(dirAbs, { recursive: true });
-  const written: string[] = [];
+export interface InitSnippetsResult {
+  written: string[];
+  skipped: { path: string; reason: "texto_existente" | "ja_e_o_rascunho" }[];
+}
+
+export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): InitSnippetsResult {
+  const drafts = new Map<FollowupStepKind, string | null>();
   for (const kind of ALL_FOLLOWUP_STEPS) {
-    const file = snippetFileFor(kind);
-    const p = resolve(dirAbs, file);
-    const draftPath = resolve(draftsDirAbs, file);
+    const draftPath = resolve(draftsDirAbs, snippetFileFor(kind));
     const draft = existsSync(draftPath) ? readFileSync(draftPath, "utf8") : null;
     if (draft != null && !draft.includes(PENDING_BODY_MARKER)) {
       throw new Error(`[onboarding-followup] rascunho ${draftPath} sem ${PENDING_BODY_MARKER}: a semente nunca pode sair já aprovada`);
     }
+    drafts.set(kind, draft);
+  }
+  mkdirSync(dirAbs, { recursive: true });
+  const out: InitSnippetsResult = { written: [], skipped: [] };
+  for (const kind of ALL_FOLLOWUP_STEPS) {
+    const p = resolve(dirAbs, snippetFileFor(kind));
+    const draft = drafts.get(kind) ?? null;
     if (existsSync(p)) {
-      if (draft == null || readFileSync(p, "utf8") !== snippetTemplate(kind)) continue;
-      writeFileSync(p, draft);
-      written.push(p);
+      const current = readFileSync(p, "utf8");
+      if (draft != null && current === snippetTemplate(kind)) {
+        writeFileSync(p, draft);
+        out.written.push(p);
+      } else {
+        out.skipped.push({ path: p, reason: draft != null && current === draft ? "ja_e_o_rascunho" : "texto_existente" });
+      }
       continue;
     }
     writeFileSync(p, draft ?? snippetTemplate(kind), { flag: "wx" });
-    written.push(p);
+    out.written.push(p);
   }
-  return written;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -654,8 +670,11 @@ async function main(): Promise<void> {
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? rawCfg.onboarding?.snippets_dir ?? "data/snippets");
 
   if (args.initSnippets) {
-    const written = initFollowupSnippets(snippetsDirAbs);
-    console.log(JSON.stringify({ mode: "init-snippets", created: written }));
+    // JSON: `written` = caminhos gravados (criados, ou modelo vazio trocado pelo
+    // rascunho); `skipped` = {path, reason} dos que ficaram como estavam.
+    // (Antes do #10605 a chave única era `created`.)
+    const { written, skipped } = initFollowupSnippets(snippetsDirAbs);
+    console.log(JSON.stringify({ mode: "init-snippets", written, skipped }));
     return;
   }
   if (!cfg.enabled) {

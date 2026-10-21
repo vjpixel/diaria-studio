@@ -36,12 +36,24 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
-      const form = await request.formData();
+      let form: FormData;
+      try {
+        form = await request.formData();
+      } catch (e) {
+        console.error(`[onboarding-form] corpo do POST ilegível: ${(e as Error).message}`);
+        return html(renderErrorHtml("o envio chegou incompleto"), 400);
+      }
       // Caixas de seleção mandam um valor por opção marcada: preservar os repetidos.
       const parsed = parseFormSubmission(collectFormFields(form.entries()));
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
       const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString() };
-      await env.ONBOARDING_FORM.put(formResponseKey(record.email), JSON.stringify(record));
+      try {
+        await env.ONBOARDING_FORM.put(formResponseKey(record.email), JSON.stringify(record));
+      } catch (e) {
+        // Falha de gravação nunca vira "Obrigado": a pessoa precisa saber que não registrou.
+        console.error(`[onboarding-form] falha ao gravar resposta no KV: ${(e as Error).message}`);
+        return html(renderErrorHtml("tivemos um problema para guardar suas respostas, tente de novo em alguns minutos"), 503);
+      }
       return html(renderThanksHtml());
     }
 

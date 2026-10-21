@@ -15,5 +15,5 @@ Este texto se repete a cada 30 dias, sem teto, até a pessoa responder
 <p>Pixel de novo. Há um tempo mandei um formulário curto sobre você e seus interesses, e ainda não vi sua resposta por aqui.</p>
 <p>São sete perguntas, quase todas de marcar. Com elas eu entendo melhor quem lê a diar.ia.br e ajusto o que entra nas edições. Também pergunto se algum curso faria sentido para você.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder agora</a></p>
-<p>Depois que você responder, este lembrete para de chegar. Se preferir não responder, tudo bem: a newsletter continua igual.</p>
+<p>Depois que você responder, este lembrete logo para de chegar. Se preferir não responder, tudo bem: a newsletter continua igual.</p>
 <p>Pixel</p>

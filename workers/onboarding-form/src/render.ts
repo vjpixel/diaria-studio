@@ -3,11 +3,15 @@
  *
  * Separado do `index.ts` para ser testável sem runtime de Worker
  * (`test/onboarding-form-questions-10605.test.ts`). Mobile primeiro: coluna
- * única, alvos de toque grandes, opções curtas como botões de rádio/caixa e
- * listas longas (mais de 8 opções) como menu suspenso.
+ * única de no máximo 560px com 16px de margem lateral, alvos de toque
+ * grandes. Regra de layout por tipo: `checkbox` vira caixas sempre; `select`
+ * com até `RADIO_MAX_OPTIONS` opções vira botões de rádio (tudo visível de
+ * uma vez, um toque) e acima disso vira menu suspenso (uma lista de 16 rádios
+ * empurraria o resto do formulário para fora da tela); `text`/`textarea`
+ * são campos livres limitados a `FORM_ANSWER_MAX_LEN`.
  */
 
-import { FORM_QUESTIONS, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
+import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
 
 /** Acima disso uma pergunta de escolha única vira menu suspenso. */
 export const RADIO_MAX_OPTIONS = 8;
@@ -47,8 +51,14 @@ function renderQuestion(q: FormQuestion): string {
   const id = escapeHtml(q.id);
   const help = q.help ? `<p class="help">${escapeHtml(q.help)}</p>` : "";
   const req = q.required ? " required" : "";
-  const opts = q.options ?? [];
-  if (q.kind === "checkbox" || (q.kind === "select" && opts.length <= RADIO_MAX_OPTIONS)) {
+  if (!isChoiceQuestion(q)) {
+    const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
+    const max = ` maxlength="${FORM_ANSWER_MAX_LEN}"`;
+    if (q.kind === "textarea") return `<fieldset>${label}${help}<textarea id="${id}" name="${id}"${max}${req}></textarea></fieldset>`;
+    return `<fieldset>${label}${help}<input id="${id}" name="${id}" type="text"${max}${req}></fieldset>`;
+  }
+  const opts = q.options;
+  if (q.kind === "checkbox" || opts.length <= RADIO_MAX_OPTIONS) {
     const type = q.kind === "checkbox" ? "checkbox" : "radio";
     const items = opts
       .map((o, i) => {
@@ -61,12 +71,8 @@ function renderQuestion(q: FormQuestion): string {
     return `<fieldset><legend>${escapeHtml(q.label)}</legend>${help}${items}</fieldset>`;
   }
   const label = `<label class="q" for="${id}">${escapeHtml(q.label)}</label>`;
-  if (q.kind === "select") {
-    const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
-    return `<fieldset>${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
-  }
-  if (q.kind === "textarea") return `<fieldset>${label}${help}<textarea id="${id}" name="${id}" maxlength="2000"${req}></textarea></fieldset>`;
-  return `<fieldset>${label}${help}<input id="${id}" name="${id}" type="text"${req}></fieldset>`;
+  const options = opts.map((o) => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+  return `<fieldset>${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
 }
 
 /** Página do formulário com o e-mail pré-preenchido (editável). */
@@ -85,7 +91,7 @@ export function renderFormHtml(email: string, questions: readonly FormQuestion[]
 
 export function renderThanksHtml(): string {
   return renderPage(
-    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Você não vai receber mais lembretes sobre este formulário.</p>` +
+    `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` +
       `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`,
   );
 }

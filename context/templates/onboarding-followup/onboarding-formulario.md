@@ -17,5 +17,5 @@ FORM_QUESTIONS em scripts/lib/onboarding-form-contract.ts (teste trava).
 <p>Montei um formulário com sete perguntas sobre o seu trabalho e sobre o que você quer ler por aqui. Leva uns dois minutos, quase tudo é de marcar.</p>
 <p>As respostas ajudam a decidir que notícias entram nas edições. No fim tem também umas perguntas sobre cursos: estou pensando no que oferecer além da newsletter e prefiro perguntar antes de fazer.</p>
 <p><a target="_blank" rel="noopener noreferrer nofollow" class="link" href="{{FORM_URL}}">Responder o formulário</a></p>
-<p>Seu e-mail já vem preenchido. Depois que você responder, não chega mais nenhum e-mail sobre isso.</p>
+<p>Seu e-mail já vem preenchido. Depois que você responder, os lembretes sobre isso param.</p>
 <p>Obrigado,<br>Pixel</p>

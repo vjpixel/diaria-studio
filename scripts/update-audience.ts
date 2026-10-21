@@ -38,7 +38,7 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 // compatibilidade com testes e importadores externos.
 import { isAprofundeAnchor, isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { SURVEY_MATCHERS, isOnboardingFormResponse } from "./lib/audience-survey-questions.ts";
+import { SURVEY_MATCHERS, isOnboardingFormResponse, type SurveyResponseRecord } from "./lib/audience-survey-questions.ts";
 import {
   DEFAULT_DB_PATH,
   openDiariaSubscribersDbSafe,
@@ -69,11 +69,8 @@ const H4_HISTORY = resolve(ROOT, "data/scorer-ctr-history.jsonl");
 
 // ─── Survey helpers ────────────────────────────────────────────────────────────
 
-export type BeehiivResponse = {
-  id: string;
-  status?: string;
-  answers: { question_id: string; question_prompt: string; answer: string }[];
-};
+/** Uma resposta de `data/audience-raw.json` (tipo único, #10605: `SurveyResponseRecord`). */
+export type BeehiivResponse = SurveyResponseRecord;
 
 function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
   const counts = new Map<string, number>();

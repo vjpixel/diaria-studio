@@ -39,7 +39,7 @@ npx tsx scripts/audience-run.ts --responses data/_tmp/audience-responses.json
 
 O script:
 - Valida cada resposta (item malformado é logado e pulado — fail-soft, nunca trava o lote).
-- Soma as respostas do formulário do onboarding (#10605, Worker `workers/onboarding-form`, lidas sozinho via `onboarding.followup.form_responses_url`). Perfil e nível caem nas seções da survey; as perguntas de produto viram a seção 4. Fail-soft: formulário não configurado ou leitura falhando só gera aviso.
+- Soma as respostas do formulário do onboarding (#10605, Worker `workers/onboarding-form`, lidas sozinho via `onboarding.followup.form_responses_url`). Perfil e nível caem nas seções da survey; as perguntas de produto viram a seção 4. Formulário não configurado: segue só com a survey (aviso). Configurado mas a leitura falha: aborta (exit 1), o perfil não é regenerado. Survey vazia aborta, a menos que `--allow-form-only`.
 - Grava `data/audience-raw.json` no formato que `scripts/update-audience.ts` espera.
 - Roda `update-audience.ts` (spawn), que arquiva o profile atual em `docs/audience-history/{YYYY-MM-DD}.md` e gera o novo `context/audience-profile.md` com pesos por content_type, sector, themes.
 - Imprime o topo do arquivo gerado (stdout) para confirmação.
