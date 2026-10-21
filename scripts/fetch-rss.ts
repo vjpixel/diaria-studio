@@ -26,6 +26,7 @@ import { truncateAtBoundary } from "./lib/truncate-at-boundary.ts";
 import { stripHtmlBasic as stripHtml } from "./lib/strip-html.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { describeFeedHttpFailure } from "./lib/anti-bot-challenge.ts";
 
 // Re-export pra backward compat (test/fetch-rss.test.ts importa Article daqui).
 export { capArticles, MAX_ARTICLES_PER_SOURCE };
@@ -258,7 +259,7 @@ export async function fetchRss(opts: FetchOptions): Promise<FetchResult> {
         method: "rss",
         feed_url: opts.url,
         articles: [],
-        error: `HTTP ${res.status}`,
+        error: describeFeedHttpFailure(res),
       };
     }
 

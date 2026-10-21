@@ -130,19 +130,26 @@ export interface OutcomeLike {
   path?: string | null;
 }
 
+/** `HTTP NNN`, opcionalmente com o sufixo de challenge do #10240. */
+const FEED_HTTP_FAILURE_RE = /^HTTP \d{3}(?: \(challenge anti-bot: [a-z]+\))?$/;
+
 /**
  * #9657: caminho de uma linha já gravada. Usa `path` quando presente; no
  * histórico sem `path`, uma falha cujo motivo é EXATAMENTE `HTTP NNN` é do
- * feed — é o formato literal que `fetch-rss.ts` grava (`error: \`HTTP ${status}\``,
- * repassado por `fetch-rss-batch.ts`). A busca grava `${status}: ${mensagem}`
+ * feed — é o formato literal que `fetch-rss.ts` grava (`HTTP ${status}`, via
+ * `describeFeedHttpFailure`, repassado por `fetch-rss-batch.ts`). A busca grava `${status}: ${mensagem}`
  * ou `rate_limited: ...` (ver `isSearchQuotaFailure`). Match exato, sem prefixo
  * nem sufixo: um fallback de fetch fora do feed (agent/WebFetch) que grave
  * "HTTP 403 Forbidden" ou similar não vira "RSS falhou" por acidente (review
- * do PR #9664). Linhas novas trazem `path` explícito e não dependem disto.
+ * do PR #9664). Única extensão aceita: o sufixo ` (challenge anti-bot: X)`
+ * que `fetch-rss.ts`/`lib/fetch-sitemap.ts` acrescentam desde o #10240 via
+ * `describeFeedHttpFailure` (`lib/anti-bot-challenge.ts`) quando a resposta é
+ * challenge da plataforma (Vercel/Cloudflare). Linhas novas trazem `path`
+ * explícito e não dependem disto.
  */
 export function outcomePath(o: OutcomeLike): OutcomePath | undefined {
   if (o.path === "feed" || o.path === "search") return o.path;
-  if (o.outcome && isHardFailure(o.outcome) && o.reason && /^HTTP \d{3}$/.test(o.reason.trim())) {
+  if (o.outcome && isHardFailure(o.outcome) && o.reason && FEED_HTTP_FAILURE_RE.test(o.reason.trim())) {
     return "feed";
   }
   return undefined;
