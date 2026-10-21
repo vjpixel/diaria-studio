@@ -11,7 +11,11 @@
  * Só lê o NOSSO Worker — nenhuma chamada ao Kit.
  *
  * Uso:
- *   npx tsx scripts/diaria-subscribers-ingest-kit-webhooks.ts [--since ISO] [--all] [--dry-run] [--db PATH]
+ *   npx tsx scripts/diaria-subscribers-ingest-kit-webhooks.ts [--write] [--since ISO] [--all] [--db PATH]
+ *
+ * Sem `--write` só lê o Worker e imprime a contagem (dry-run), mesma convenção
+ * de `diaria-subscribers-ingest-kit.ts`: só a task agendada passa `--write`, o
+ * que mantém um escritor único no banco (#10746). `--dry-run` segue aceito.
  *
  * Config (.env): `KIT_EVENTS_URL` (base do Worker, ex.
  * https://kit-events.<conta>.workers.dev) e `KIT_EVENTS_READ_TOKEN` (mesmo
@@ -23,11 +27,12 @@
  * `getKitWebhookEventsForSubscriber` (diaria-subscribers-db.ts).
  */
 
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { DEFAULT_DB_PATH, openDiariaSubscribersDb } from "./lib/diaria-subscribers-db.ts";
+import { detectSiblingConflictFiles } from "./diaria-subscribers-ingest-kit.ts";
 import {
   fetchKitWebhookEvents,
   incrementalSinceFromDb,
@@ -56,6 +61,16 @@ export async function main(
     return 1;
   }
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+  const shouldWrite = hasFlag(argv, "write") && !hasFlag(argv, "dry-run");
+  // Escritor único (#10746): cópia de conflito do OneDrive ao lado do banco
+  // indica que outra máquina gravou nele. Mesmo guard do roster.
+  if (shouldWrite) {
+    const conflicts = detectSiblingConflictFiles(readdirSync(dbDir), basename(dbPath));
+    if (conflicts.length > 0) {
+      console.error(`❌ cópias de conflito do OneDrive em ${dbDir}: ${conflicts.join(", ")} — abortando a escrita (escritor único).`);
+      return 1;
+    }
+  }
 
   const db = openDiariaSubscribersDb(dbPath);
   try {
@@ -73,7 +88,7 @@ export async function main(
     if (fetched.malformed > 0) {
       console.error(`⚠️  ${fetched.malformed} evento(s) fora do contrato ignorado(s).`);
     }
-    if (hasFlag(argv, "dry-run")) {
+    if (!shouldWrite) {
       console.log(JSON.stringify({ since, fetched: fetched.events.length, dry_run: true }));
       return 0;
     }

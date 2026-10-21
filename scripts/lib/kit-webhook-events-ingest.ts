@@ -53,7 +53,11 @@ export async function fetchKitWebhookEvents(
   if (since) url.searchParams.set("since", since);
   let res: Response;
   try {
-    res = await fetchImpl(url.toString(), { headers: { authorization: `Bearer ${token}` } });
+    res = await fetchImpl(url.toString(), {
+      headers: { authorization: `Bearer ${token}` },
+      // #10746: Worker travado não segura a task agendada (unit oneshot sem timeout).
+      signal: AbortSignal.timeout(30_000),
+    });
   } catch (e) {
     return { ok: false, error: `fetch falhou: ${(e as Error).message}` };
   }

@@ -4,7 +4,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -358,7 +359,7 @@ describe("integração com diaria-subscribers-db", () => {
     const dir = mkdtempSync(join(tmpdir(), "kit-webhooks-cli-10648-"));
     const dbPath = join(dir, "diaria-subscribers", "store.db");
     const envVars = { KIT_EVENTS_URL: "https://kit-events.example.workers.dev", KIT_EVENTS_READ_TOKEN: READ_TOKEN };
-    assert.equal(await ingestMain(["--db", dbPath], workerFetch, envVars), 0);
+    assert.equal(await ingestMain(["--db", dbPath, "--write"], workerFetch, envVars), 0);
     const db = openDiariaSubscribersDb(dbPath);
     const [id] = findSubscriberIdsByEmail(db, "x@y.com");
     assert.deepEqual(getKitWebhookEventsForSubscriber(db, id).map((e) => e.type), ["unsubscribe"]);
@@ -373,5 +374,41 @@ describe("deploy", () => {
     const yml = readFileSync(resolve(ROOT, ".github/workflows/deploy-kit-events.yml"), "utf8");
     assert.match(yml, /'workers\/kit-events\/\*\*'/);
     assert.match(yml, /'scripts\/lib\/kit-webhook-events-contract\.ts'/);
+  });
+});
+
+describe("escritor único e task agendada (#10746)", () => {
+  const envVars = { KIT_EVENTS_URL: "https://kit-events.example.workers.dev", KIT_EVENTS_READ_TOKEN: READ_TOKEN };
+  const workerWith = async (kv: FakeKv) => {
+    await handleRequest(post(`/webhook/${SECRET}/unsubscribe`, sub(78, "w@y.com")), env(kv), deps("2026-10-21T10:00:00.000Z"));
+    return (async (input: string | URL | Request, init?: RequestInit) =>
+      handleRequest(new Request(input as string, init), env(kv))) as typeof fetch;
+  };
+
+  it("sem --write só lê: não grava no banco", async () => {
+    const fetchW = await workerWith(new FakeKv());
+    const dir = mkdtempSync(join(tmpdir(), "kit-webhooks-nowrite-"));
+    const dbPath = join(dir, "diaria-subscribers", "store.db");
+    assert.equal(await ingestMain(["--db", dbPath], fetchW, envVars), 0);
+    const db = openDiariaSubscribersDb(dbPath);
+    assert.deepEqual(findSubscriberIdsByEmail(db, "w@y.com"), []);
+    db.close();
+  });
+
+  it("cópia de conflito do OneDrive ao lado do banco aborta a escrita", async () => {
+    const fetchW = await workerWith(new FakeKv());
+    const dir = mkdtempSync(join(tmpdir(), "kit-webhooks-conflict-"));
+    const dbDir = join(dir, "diaria-subscribers");
+    mkdirSync(dbDir, { recursive: true });
+    writeFileSync(join(dbDir, "store-Neo.db"), "");
+    assert.equal(await ingestMain(["--db", join(dbDir, "store.db"), "--write"], fetchW, envVars), 1);
+  });
+
+  it("Diaria-Kit-Roster-Ingest roda a ingestão dos webhooks com --write", () => {
+    const task = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Kit-Roster-Ingest");
+    assert.ok(task);
+    const step = task.steps.find((s) => s.script === "scripts/diaria-subscribers-ingest-kit-webhooks.ts");
+    assert.ok(step, "passo de webhooks ausente da task");
+    assert.deepEqual(step.args, ["--write"]);
   });
 });
