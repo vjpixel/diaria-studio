@@ -2726,7 +2726,8 @@ function renderHTMLUnsanitized(content: NewsletterContent, opts: RenderOpts): st
   if (content.boxDivulgacao0 && selectedDivulgacaoSlots.has(0)) {
     const label0 = content.boxDivulgacao0Categoria
       || (isAgradecimentoBox(content.boxDivulgacao0) ? "Agradecimento" : "Divulgação");
-    parts.push(renderDivulgacaoSeparator(label0));
+    // #10638: `<!-- box0-sem-rotulo -->` no MD tira o kicker do box0.
+    if (!content.boxDivulgacao0SemRotulo) parts.push(renderDivulgacaoSeparator(label0));
     // #8575: kicker "Recomendação de Leitura" já rotula o box — sem isso, um
     // box de livro no slot 0 sintetizaria o MESMO rótulo de novo por dentro.
     const dedup0 = dedupeBookKickerTitle(content.boxDivulgacao0, label0);

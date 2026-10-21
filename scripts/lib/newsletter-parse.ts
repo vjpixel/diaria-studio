@@ -168,6 +168,9 @@ export interface NewsletterContent {
   boxDivulgacao0Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 0. */
   boxDivulgacao0Categoria?: string | null;
+  /** #10638: `true` quando o MD traz `<!-- box0-sem-rotulo -->` na intro — o
+   * box0 sai sem o kicker ("Divulgação"/categoria) acima dele. Default `false`. */
+  boxDivulgacao0SemRotulo?: boolean;
   /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
    * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
    * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
@@ -839,8 +842,14 @@ const BOLD_WRAP_RE = /^\*\*\s*([\s\S]+)\*\*\s*$/m;
  * chegar aqui.
  */
 function findIntroCalloutMatch(
-  introRegion: string,
+  rawIntroRegion: string,
 ): { groupText: string; matchStart: number; matchEnd: number } | null {
+  // #10638: o bloco do box0 (marcado por `BOX0_SENTINEL`) nunca é callout de
+  // intro. Sem a máscara, um box0 com título em negrito numa linha só
+  // (`**Título**` + parágrafos) casava `BOLD_WRAP_RE` e saía DUPLICADO no HTML
+  // (callout + box0). A máscara preserva o comprimento, então as posições
+  // devolvidas continuam absolutas em `rawIntroRegion`.
+  const introRegion = maskBox0Block(rawIntroRegion);
   for (const seg of boldWrapSegments(introRegion)) {
     const m = seg.text.match(BOLD_WRAP_RE);
     if (m && m.index !== undefined) {
@@ -856,6 +865,49 @@ function findIntroCalloutMatch(
     return { groupText: whole[1].trim(), matchStart: whole.index, matchEnd: whole.index + whole[0].length };
   }
   return null;
+}
+
+/**
+ * #10638: faixa [start, end) do bloco do box0 numa região de intro — do
+ * `BOX0_SENTINEL` até o próximo `---` isolado (ou o fim da região). `null`
+ * quando a região não tem o marcador. Mesma delimitação de `locateBoxAtIntro`.
+ */
+function box0BlockRange(introRegion: string): { start: number; end: number } | null {
+  const sentinelIdx = introRegion.indexOf(BOX0_SENTINEL);
+  if (sentinelIdx === -1) return null;
+  const contentStart = sentinelIdx + BOX0_SENTINEL.length;
+  const boundary = GAP_SEPARATOR_RE.exec(introRegion.slice(contentStart));
+  const end = boundary ? contentStart + boundary.index : introRegion.length;
+  return { start: sentinelIdx, end };
+}
+
+/**
+ * #10638: troca cada caractere (exceto quebra de linha) do bloco do box0 por
+ * espaço — comprimento e estrutura de linhas preservados, então offsets
+ * calculados na região mascarada valem na original. Sem marcador, devolve a
+ * região intacta.
+ */
+function maskBox0Block(introRegion: string): string {
+  const range = box0BlockRange(introRegion);
+  if (!range) return introRegion;
+  const masked = introRegion.slice(range.start, range.end).replace(/[^\r\n]/g, " ");
+  return introRegion.slice(0, range.start) + masked + introRegion.slice(range.end);
+}
+
+/**
+ * #10638: marcador opcional que tira o kicker ("Divulgação"/categoria) de cima
+ * do box0. Escrito pelo editor DENTRO do bloco do box0 (ex: logo após
+ * `BOX0_SENTINEL`); nunca vai pro conteúdo do box (`locateBoxAtIntro` o remove).
+ */
+export const BOX0_SEM_ROTULO_MARKER = "<!-- box0-sem-rotulo -->";
+
+/** #10638: `true` quando o bloco do box0 traz `BOX0_SEM_ROTULO_MARKER`. */
+export function isBoxDivulgacao0SemRotulo(text: string): boolean {
+  const firstMarkerMatch = /^\*\*DESTAQUE/m.exec(text);
+  if (!firstMarkerMatch) return false;
+  const region = text.slice(0, firstMarkerMatch.index);
+  const range = box0BlockRange(region);
+  return !!range && region.slice(range.start, range.end).includes(BOX0_SEM_ROTULO_MARKER);
 }
 
 export function extractIntroCallout(text: string): string | null {
@@ -882,7 +934,9 @@ export function extractCoverageLineTrailer(text: string): string | null {
   // `introRegion`, não do segmento) pra fatiar o texto que vem depois.
   const calloutMatch = findIntroCalloutMatch(introRegion);
   if (!calloutMatch) return null;
-  const rest = introRegion.slice(calloutMatch.matchEnd);
+  // #10638: o bloco do box0 nunca é trailer de cobertura (é renderizado como
+  // box0) — mascarado pra não ser capturado aqui também.
+  const rest = maskBox0Block(introRegion).slice(calloutMatch.matchEnd);
   // O primeiro `---` logo após o callout é o boundary que FECHA o box (#3705)
   // — precisa ser descartado antes de procurar o boundary que fecha o trailer,
   // senão o match cai nele mesmo e o trailer sai vazio.
@@ -1343,8 +1397,14 @@ export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
   if (firstMarkerMatch) {
     const introRegion = text.slice(0, firstMarkerMatch.index);
     const introMatch = findIntroCalloutMatch(introRegion);
+    // #10638: com o box0 marcado (`BOX0_SENTINEL`), só contam os blocos a
+    // partir do marcador — o que vem antes (título/subtítulo, cobertura) é
+    // intro, nunca candidato a box. Sem isso, cobertura + box0 davam "2 blocos
+    // extras" e o lint gate-blocking reprovava todo slot 0 marcado.
+    const sentinelIdx = introRegion.indexOf(BOX0_SENTINEL);
     const extraIntro: string[] = [];
     for (const block of splitByGapSeparator(introRegion).slice(1)) {
+      if (sentinelIdx !== -1 && block.rawEnd <= sentinelIdx) continue;
       if (
         introMatch &&
         introMatch.matchStart >= block.rawStart &&
@@ -1510,7 +1570,8 @@ function locateBoxAtIntro(
   // da string passada, sem estado de `lastIndex` pra vazar entre chamadas.
   const boundaryMatch = GAP_SEPARATOR_RE.exec(afterSentinel);
   const rawContent = boundaryMatch ? afterSentinel.slice(0, boundaryMatch.index) : afterSentinel;
-  const trimmed = rawContent.trim();
+  // #10638: o marcador sem-rótulo é metadado, nunca conteúdo do box.
+  const trimmed = rawContent.split(BOX0_SEM_ROTULO_MARKER).join("").trim();
   if (!trimmed) return null;
   const leadingWs = rawContent.length - rawContent.trimStart().length;
   const trailingWs = rawContent.length - rawContent.trimEnd().length;
@@ -2353,6 +2414,8 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
   const boxDivulgacao0Image = readBoxDivulgacao0Image(editionDir, boxDivulgacao0);
   const boxDivulgacao0Bold = isBoxDivulgacao0Bold(reviewedText);
   const boxDivulgacao0Categoria = boxDivulgacao0 ? readBoxDivulgacaoCategoriaForSlot(0) : null;
+  // #10638: marcador opcional que tira o kicker de cima do box0.
+  const boxDivulgacao0SemRotulo = boxDivulgacao0 ? isBoxDivulgacao0SemRotulo(reviewedText) : false;
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
@@ -2453,6 +2516,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
     boxDivulgacao0Image,
     boxDivulgacao0Bold,
     boxDivulgacao0Categoria,
+    boxDivulgacao0SemRotulo,
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao1Bold,

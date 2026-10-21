@@ -296,3 +296,8 @@ o conteúdo do snippet a cada reuso, ou troca `boxes_divulgacao` em
 auto-injetáveis); slots 1/2/3 não-pinados são resolvidos automaticamente por
 `scripts/select-boxes-by-clicks.ts` (**#4626**, rotação por cliques +
 tendência + anti-repetição — ver seção acima).
+
+**Slot 0 sem kicker (#10638):** pra tirar o rótulo ("Divulgação"/categoria)
+de cima do box do topo, coloque `<!-- box0-sem-rotulo -->` dentro do bloco
+do box no `02-reviewed.md` (logo após o `<!-- box0 -->`, antes do `---` que
+fecha o box). O marcador nunca entra no conteúdo do box nem no HTML.
