@@ -1,13 +1,12 @@
 /**
  * scripts/lib/ads-campaign-economics-fetch.ts (#7536, "Economia da
- * campanha ao vivo" — Google Ads + Microsoft Ads + Meta Ads, os 3 canais do
- * teste 2608).
+ * campanha ao vivo" — Google Ads + Meta Ads, os canais pagos ainda ativos
+ * do teste 2608).
  *
  * Orquestração de I/O (rede) por trás de `scripts/lib/ads-campaign-economics.ts`
  * (núcleo puro) — busca ao vivo, sob demanda, nunca via `spend.csv` (que só
- * agrega por MÊS): Google Ads GAQL diário + Microsoft Ads Reporting API
- * diária + Meta Ads Graph API (`insights`) diária + cadastros por canal via
- * Kit API. Fail-soft POR FONTE — uma fonte falhando (credencial ausente,
+ * agrega por MÊS): Google Ads GAQL diário + Meta Ads Graph API (`insights`)
+ * diária + cadastros por canal via Kit API. Fail-soft POR FONTE — uma fonte falhando (credencial ausente,
  * rede, quota) nunca derruba as outras; o caller (`studio-ads.ts`) decide
  * como apresentar `error`/`fetchedAt` de cada uma (ver `computeSourceFreshness`).
  *
@@ -21,6 +20,13 @@
  * como está, fora de escopo desta unidade; este módulo é o caminho DIÁRIO
  * ao vivo do `/ads`, que não precisa do MCP porque o System User token dá
  * acesso REST direto).
+ *
+ * **Microsoft Ads saiu no #10755** (canal encerrado em 21/10/2026): este
+ * módulo não busca mais a Reporting API. O braço segue existindo no
+ * histórico — `MICROSOFT_ADS_TESTE_CANAL` continua exportado, os cadastros
+ * com `utm_source=microsoft-ads` seguem atribuídos a ele (Kit, abaixo) e o
+ * gasto vem do que já está gravado em `data/aquisicao/spend.csv` (ver
+ * `CANAIS_ENCERRADOS_GASTO_HISTORICO` em `studio-ads.ts`).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -38,14 +44,6 @@ import {
 import type { DailyConversionCount } from "./shared/daily-conversion-count.ts";
 
 export type { DailyConversionCount };
-import {
-  refreshMicrosoftAdsAccessToken,
-  fetchMicrosoftAdsPerformanceRows,
-  normalizeMicrosoftAdsPerformanceRowsByCampaign,
-  ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN,
-  type MicrosoftAdsAuthConfig,
-  type FetchLike as MicrosoftFetchLike,
-} from "./microsoft-ads-ingest.ts";
 import { listKitSubscribersPage, type KitSubscriberSummary } from "./kit-subscribers.ts";
 import type { KitConfig } from "./kit-config.ts";
 import { META_ADS_AD_ACCOUNT_ID } from "./meta-ads-ingest.ts";
@@ -53,36 +51,15 @@ import type { ChannelDailyMetric, ChannelDailySignup } from "./ads-campaign-econ
 import { isEditorTestEmail } from "./google-ads-enhanced-conversions.ts";
 import { EDITOR_WORKSPACE_EMAIL } from "./editor-copy.ts";
 
-/** `ChannelDailyMetric` + `campaignId` (#8256, achado do type-design-analyzer
- *  na PR #8450) — reusar `ChannelDailyMetric` puro deixaria `campaignId`
- *  disponível só no rótulo `canal` (string livre, ex: "Microsoft Ads
- *  (campanha 123)"), forçando quem consome a fazer parsing de string pra
- *  recuperar o id. Com o campo próprio, o id de campanha sobrevive como
- *  dado estruturado (chave estável mesmo se o rótulo mudar) e o tipo deixa
- *  de ser estruturalmente idêntico a `ChannelDailyMetric` — o compilador
- *  ajuda a não confundir/concatenar `metrics` (total do canal) com
- *  `campaignBreakdown` (por campanha) por engano. */
-export interface ChannelCampaignDailyMetric extends ChannelDailyMetric {
-  campaignId: string;
-}
-
 export interface ChannelFetchResult {
   metrics: ChannelDailyMetric[];
   fetchedAt: string | null;
   error: string | null;
-  /** Quebra ADICIONAL por campanha (#8256) — só `fetchMicrosoftAdsChannelMetrics`
-   *  preenche hoje (o braço Microsoft do teste 2608 tem 2 campanhas, PMax e
-   *  Search, na mesma conta). `metrics` acima segue sendo o total do canal,
-   *  inalterado — este campo nunca substitui `metrics`, só o complementa;
-   *  ausente/`undefined` em qualquer outro canal (Google/Meta), nunca um
-   *  array vazio fingindo "sem campanha" quando a informação simplesmente
-   *  não foi coletada. */
-  campaignBreakdown?: ChannelCampaignDailyMetric[];
 }
 
 // ---------------------------------------------------------------------------
 // Resolução de credencial a partir do ambiente — mesmos nomes de variável
-// dos CLIs de ingestão (`google-ads-ingest-spend.ts`/`microsoft-ads-ingest-spend.ts`),
+// dos CLIs de ingestão (`google-ads-ingest-spend.ts`/`meta-ads-ingest-spend.ts`),
 // duplicado aqui (não importado deles) de propósito: aqueles arquivos são
 // CLIs com `main()`/`isMainModule` — este módulo é consumido por um SERVIDOR
 // long-running (`studio-ads.ts`), então resolve o env por conta própria em
@@ -118,37 +95,8 @@ export function googleAdsAuthConfigFromEnv(
   };
 }
 
-const MICROSOFT_ADS_ALWAYS_REQUIRED_ENV_VARS = ["MICROSOFT_ADS_DEVELOPER_TOKEN", "MICROSOFT_ADS_CUSTOMER_ID", "MICROSOFT_ADS_ACCOUNT_ID"] as const;
-const MICROSOFT_ADS_AZURE_ENV_VARS = ["MICROSOFT_ADS_CLIENT_ID", "MICROSOFT_ADS_REFRESH_TOKEN"] as const;
-const MICROSOFT_ADS_GOOGLE_ENV_VARS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN"] as const;
-
-/** Espelha `authConfigFromEnv` de `scripts/microsoft-ads-ingest-spend.ts`
- *  (mesma prioridade Google-antes-de-Azure-AD, ver docstring de lá). Nunca
- *  lança. */
-export function microsoftAdsAuthConfigFromEnv(
-  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
-): { auth: MicrosoftAdsAuthConfig } | { missing: string[] } {
-  const missingAlways = MICROSOFT_ADS_ALWAYS_REQUIRED_ENV_VARS.filter((name) => !env[name]);
-  const missingGoogle = MICROSOFT_ADS_GOOGLE_ENV_VARS.filter((name) => !env[name]);
-  const missingAzure = MICROSOFT_ADS_AZURE_ENV_VARS.filter((name) => !env[name]);
-  if (missingAlways.length > 0) return { missing: missingAlways };
-  if (missingGoogle.length > 0 && missingAzure.length > 0) return { missing: [...missingGoogle, ...missingAzure] };
-  return {
-    auth: {
-      clientId: env.MICROSOFT_ADS_CLIENT_ID,
-      refreshToken: env.MICROSOFT_ADS_REFRESH_TOKEN,
-      developerToken: env.MICROSOFT_ADS_DEVELOPER_TOKEN!,
-      customerId: env.MICROSOFT_ADS_CUSTOMER_ID!,
-      accountId: env.MICROSOFT_ADS_ACCOUNT_ID!,
-      googleClientId: env.GOOGLE_CLIENT_ID,
-      googleClientSecret: env.GOOGLE_CLIENT_SECRET,
-      googleRefreshToken: env.MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN,
-    },
-  };
-}
-
 /** Resolve `{ accessToken }` do ambiente pra Meta Ads — bem mais simples que
- *  Google/Microsoft porque o System User token não expira (não há refresh
+ *  o Google porque o System User token não expira (não há refresh
  *  token nem client secret nesse caminho, ver comentário da issue #7536).
  *  `META_ADS_AD_ACCOUNT_ID` NÃO é lido do ambiente de propósito — já é uma
  *  constante testada (`meta-ads-ingest.ts`), consistente com o pedido
@@ -193,101 +141,15 @@ export async function fetchGoogleAdsChannelMetrics(
 }
 
 // ---------------------------------------------------------------------------
-// Microsoft Ads — Reporting API diária (gasto + cliques + impressões)
+// Microsoft Ads — canal encerrado (#10755), só o rótulo do braço fica
 // ---------------------------------------------------------------------------
 
-export interface FetchMicrosoftAdsChannelMetricsOptions {
-  now?: Date;
-  lookbackDays?: number;
-  canal?: string;
-}
-
-/** Mesmo padrão de `META_ADS_TESTE_CANAL` abaixo — extraído aqui (#8256)
- *  porque o literal `"Microsoft Ads (teste 2608)"` vivia duplicado em 2
- *  lugares (`fetchMicrosoftAdsChannelMetrics`/`DEFAULT_UTM_SOURCE_TO_CANAL`)
- *  e um 3º consumidor (`ads-live-spend-signups.ts`, quebra por campanha)
- *  precisava do mesmo valor pra casar `signupsByCampaign` com o braço certo. */
+/** Rótulo do braço Microsoft do teste 2608. Sem fonte ao vivo desde o
+ *  #10755: segue exportado porque os cadastros com `utm_source=microsoft-ads`
+ *  continuam atribuídos a ele (`DEFAULT_UTM_SOURCE_TO_CANAL` abaixo) e
+ *  porque `studio-ads.ts` precisa do nome pra ler o gasto do histórico em
+ *  `spend.csv`. Mesma string de `CHANNEL_KEY_SPECS`/`ADS_TEST_2608_BRACOS`. */
 export const MICROSOFT_ADS_TESTE_CANAL = "Microsoft Ads (teste 2608)";
-
-/**
- * As 2 campanhas do braço Microsoft do teste 2608 (#8256) — PMax e Search,
- * na mesma conta, cada uma com seu `utm_campaign` próprio (registrado em
- * `utm-registry.ts`). `CampaignId` é o identificador ESTÁVEL vindo da
- * Reporting API (lado do GASTO); os rótulos aqui são só pra exibição —
- * nunca usados pra decidir se um cadastro/gasto conta no braço (isso segue
- * sendo só `utm_source=microsoft-ads`, ver `fetchKitSignupsByChannel`
- * abaixo e `classifyAcquisition`, que é agnóstico a `utm_campaign` por
- * construção).
- */
-export const MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL: Record<string, string> = {
-  "571543153": `${MICROSOFT_ADS_TESTE_CANAL} — PMax`,
-  "571615527": `${MICROSOFT_ADS_TESTE_CANAL} — Search`,
-};
-
-/** Busca gasto/cliques/impressões diários do Microsoft Ads pra `canal`,
- *  via `fetchMicrosoftAdsPerformanceRows` (#7536/#7539 — colunas
- *  estendidas). Nunca lança, mesma disciplina de `runMicrosoftAdsIngest`.
- *
- *  Desde #8256, a MESMA chamada pede `CampaignId`
- *  (`ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN`) — isso faz a Reporting
- *  API devolver 1 linha por campanha/dia em vez do total já agregado da
- *  conta (ver docstring da constante de colunas). `metrics` reconstitui o
- *  total SOMANDO essas linhas em TS (idêntico ao valor que a variante sem
- *  `CampaignId` devolvia antes — nenhuma mudança pra quem só lê `metrics`);
- *  `campaignBreakdown` expõe as linhas por campanha separadamente, rotuladas
- *  via `MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL` (campanha desconhecida cai
- *  no fallback `Microsoft Ads (campanha {id})`, nunca é descartada). */
-export async function fetchMicrosoftAdsChannelMetrics(
-  fetchImpl: MicrosoftFetchLike,
-  auth: MicrosoftAdsAuthConfig,
-  opts: FetchMicrosoftAdsChannelMetricsOptions = {},
-): Promise<ChannelFetchResult> {
-  const now = opts.now ?? new Date();
-  const canal = opts.canal ?? MICROSOFT_ADS_TESTE_CANAL;
-  const lookbackDays = opts.lookbackDays ?? 30;
-
-  const tokenResult = await refreshMicrosoftAdsAccessToken(fetchImpl, auth);
-  if ("error" in tokenResult) return { metrics: [], fetchedAt: null, error: tokenResult.error };
-
-  const end = new Date(now.getTime());
-  const start = new Date(now.getTime() - (lookbackDays - 1) * 24 * 60 * 60 * 1000);
-  const perfResult = await fetchMicrosoftAdsPerformanceRows(fetchImpl, auth, tokenResult.accessToken, { start, end }, {
-    columns: ADS_DASHBOARD_PERFORMANCE_COLUMNS_BY_CAMPAIGN,
-  });
-  if ("error" in perfResult) return { metrics: [], fetchedAt: null, error: perfResult.error };
-
-  const byCampaign = normalizeMicrosoftAdsPerformanceRowsByCampaign(perfResult.rows, MICROSOFT_ADS_2608_CAMPAIGN_ID_TO_CANAL);
-
-  // Reconstitui o total da conta somando as linhas por campanha/dia — com
-  // `CampaignId` no header, `normalizeMicrosoftAdsPerformanceRowsByCampaign`
-  // produz 1 linha por CAMPANHA (não agrupa), então a soma explícita abaixo
-  // é o que preserva o total inalterado (#8256, "com o total do braço
-  // inalterado"). A antiga `normalizeMicrosoftAdsPerformanceRows`
-  // (1 linha por dia, sem campanha) foi removida por não ter mais chamador
-  // depois desta migração — só a variante por campanha segue em uso.
-  const totalByDate = new Map<string, { gastoBrl: number; cliques: number; impressoes: number }>();
-  for (const row of byCampaign) {
-    const acc = totalByDate.get(row.date) ?? { gastoBrl: 0, cliques: 0, impressoes: 0 };
-    acc.gastoBrl = Math.round((acc.gastoBrl + row.gastoBrl) * 100) / 100;
-    acc.cliques += row.cliques;
-    acc.impressoes += row.impressoes;
-    totalByDate.set(row.date, acc);
-  }
-  const metrics: ChannelDailyMetric[] = [...totalByDate.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, acc]) => ({ canal, date, ...acc }));
-
-  const campaignBreakdown: ChannelCampaignDailyMetric[] = byCampaign.map(({ canal: campaignCanal, campaignId, date, gastoBrl, cliques, impressoes }) => ({
-    canal: campaignCanal,
-    campaignId,
-    date,
-    gastoBrl,
-    cliques,
-    impressoes,
-  }));
-
-  return { metrics, fetchedAt: now.toISOString(), error: null, campaignBreakdown };
-}
 
 // ---------------------------------------------------------------------------
 // Meta Ads — Graph API `insights` diária (gasto + cliques + impressões)
@@ -310,8 +172,8 @@ export async function fetchMicrosoftAdsChannelMetrics(
  *  este mesmo valor. */
 export const META_ADS_TESTE_CANAL = "Meta Ads (teste 2608)";
 
-/** Subconjunto de `fetch` usado — mesma assinatura de `GoogleFetchLike`/
- *  `MicrosoftFetchLike`, permite injetar mock em teste. */
+/** Subconjunto de `fetch` usado — mesma assinatura de `GoogleFetchLike`,
+ *  permite injetar mock em teste. */
 export type MetaFetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 const META_GRAPH_API_VERSION_DEFAULT = "v21.0";
@@ -345,8 +207,7 @@ export interface MetaAdsInsightsApiRow {
 }
 
 /** `{since, until}` (`YYYY-MM-DD`, calendário UTC) — mesma convenção de
- *  `buildGoogleAdsPerformanceQuery`/`fetchMicrosoftAdsChannelMetrics`
- *  acima: `now` menos `lookbackDays - 1` dias, inclusive nas duas pontas.
+ *  `buildGoogleAdsPerformanceQuery` acima: `now` menos `lookbackDays - 1` dias, inclusive nas duas pontas.
  *  Exportado (#9413 item 4) pra `runHeadless` (`meta-ads-ingest-spend.ts`)
  *  derivar a janela do guard de mês truncado daqui em vez de duplicar a conta.
  *  @pure */
@@ -479,8 +340,7 @@ export interface FetchMetaAdsChannelMetricsOptions {
  * sem expiração, ver comentário da issue #7536 de 09/09/2026). Nunca lança
  * — qualquer falha (rede, credencial inválida, erro do Graph API, corpo
  * não-JSON, paginação sem fim) vira `{ metrics: [], error }`, mesma
- * disciplina fail-soft de `fetchGoogleAdsChannelMetrics`/
- * `fetchMicrosoftAdsChannelMetrics`.
+ * disciplina fail-soft de `fetchGoogleAdsChannelMetrics`.
  */
 export async function fetchMetaAdsChannelMetrics(
   fetchImpl: MetaFetchLike,
@@ -868,17 +728,13 @@ export async function fetchKitSignupsByChannel(
 export interface CampaignEconomicsSourcesResult {
   metrics: ChannelDailyMetric[];
   signups: ChannelDailySignup[];
-  /** 1 entrada por fonte — `Google Ads`, `Microsoft Ads`, `Meta Ads`, `Kit`
-   *  — pra `computeSourceFreshness` (ads-campaign-economics.ts, requisito 5). */
+  /** 1 entrada por fonte — `Google Ads`, `Meta Ads`, `Kit` — pra
+   *  `computeSourceFreshness` (ads-campaign-economics.ts, requisito 5).
+   *  `Microsoft Ads` saiu no #10755 (canal encerrado, sem fonte ao vivo). */
   sources: Record<string, { fetchedAt: string | null; error: string | null }>;
-  /** Quebra ADICIONAL do braço Microsoft por campanha (PMax/Search, #8256)
-   *  — `[]` quando a fonte Microsoft falhou/não rodou (ver `sources["Microsoft Ads"]`
-   *  pro erro). Nunca faz parte de `metrics` acima, que segue sendo o total
-   *  do braço, inalterado. */
-  microsoftCampaignBreakdown: ChannelCampaignDailyMetric[];
   /** Quebra ADICIONAL dos cadastros do Kit por `utm_campaign` dentro de
-   *  cada canal (#8256) — mesma disciplina de `microsoftCampaignBreakdown`:
-   *  nunca substitui `signups`, `[]` quando o Kit falhou/não rodou. */
+   *  cada canal (#8256) — nunca substitui `signups`, `[]` quando o Kit
+   *  falhou/não rodou. */
   signupsByCampaign: ChannelCampaignDailySignup[];
 }
 
@@ -890,15 +746,15 @@ export interface FetchCampaignEconomicsSourcesOptions {
 }
 
 /**
- * Busca Google Ads + Microsoft Ads + Meta Ads + Kit EM PARALELO (`Promise.all`
- * sobre 4 promises que já são fail-soft individualmente — uma rejeitando
+ * Busca Google Ads + Meta Ads + Kit EM PARALELO (`Promise.all`
+ * sobre 3 promises que já são fail-soft individualmente — uma rejeitando
  * nunca acontece, cada uma resolve com `{ error }` no pior caso). Credencial
  * ausente por completo (env sem as vars) é reportada como `error` da fonte,
  * não como exceção — mesma disciplina de "servidor sem GOOGLE_ADS_* ainda
  * não configurado" que os CLIs de ingestão já seguem.
  */
 export async function fetchCampaignEconomicsSources(
-  fetchImpl: GoogleFetchLike & MicrosoftFetchLike & MetaFetchLike,
+  fetchImpl: GoogleFetchLike & MetaFetchLike,
   kitConfig: { apiKey: string } | null,
   opts: FetchCampaignEconomicsSourcesOptions = {},
 ): Promise<CampaignEconomicsSourcesResult> {
@@ -916,16 +772,6 @@ export async function fetchCampaignEconomicsSources(
           error: `GOOGLE_ADS_*: variável(is) de ambiente ausente(s): ${googleAuthResult.missing.join(", ")}`,
         });
 
-  const microsoftAuthResult = microsoftAdsAuthConfigFromEnv(env);
-  const microsoftPromise: Promise<ChannelFetchResult> =
-    "auth" in microsoftAuthResult
-      ? fetchMicrosoftAdsChannelMetrics(fetchImpl, microsoftAuthResult.auth, { now, lookbackDays })
-      : Promise.resolve({
-          metrics: [],
-          fetchedAt: null,
-          error: `MICROSOFT_ADS_*: variável(is) de ambiente ausente(s): ${microsoftAuthResult.missing.join(", ")}`,
-        });
-
   const metaAuthResult = metaAdsAuthConfigFromEnv(env);
   const metaPromise: Promise<ChannelFetchResult> =
     "auth" in metaAuthResult
@@ -940,18 +786,16 @@ export async function fetchCampaignEconomicsSources(
     ? fetchKitSignupsByChannel(kitConfig, { dateRangeStart: opts.kitDateRangeStart })
     : Promise.resolve({ signups: [], signupsByCampaign: [], fetchedAt: null, error: "KIT_API_KEY não definida." });
 
-  const [google, microsoft, meta, kit] = await Promise.all([googlePromise, microsoftPromise, metaPromise, kitPromise]);
+  const [google, meta, kit] = await Promise.all([googlePromise, metaPromise, kitPromise]);
 
   return {
-    metrics: [...google.metrics, ...microsoft.metrics, ...meta.metrics],
+    metrics: [...google.metrics, ...meta.metrics],
     signups: kit.signups,
     sources: {
       "Google Ads": { fetchedAt: google.fetchedAt, error: google.error },
-      "Microsoft Ads": { fetchedAt: microsoft.fetchedAt, error: microsoft.error },
       "Meta Ads": { fetchedAt: meta.fetchedAt, error: meta.error },
       Kit: { fetchedAt: kit.fetchedAt, error: kit.error },
     },
-    microsoftCampaignBreakdown: microsoft.campaignBreakdown ?? [],
     signupsByCampaign: kit.signupsByCampaign,
   };
 }

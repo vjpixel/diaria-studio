@@ -9,8 +9,9 @@
  * Trava: (1) a task não volta ao registro por engano; (2) o nome fica em
  * `RETIRED_TASK_NAMES`, então o unit ainda instalado na `300` vira no-op
  * (exit 0) em vez de "Task desconhecida" (exit 1, que alimentaria o
- * `Diaria-Systemd-Failed-Units-Alarm`); (3) o CLI segue no repo para uso
- * manual, mas nenhuma task agendada aponta mais pra ele.
+ * `Diaria-Systemd-Failed-Units-Alarm`); (3) nenhuma task agendada aponta
+ * pro CLI. Desde o #10755 (canal Microsoft Ads encerrado) o próprio CLI saiu
+ * do repo — a asserção de "segue no repo para uso manual" virou a inversa.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -36,10 +37,10 @@ describe("#10148 — Diaria-Microsoft-Ads-Editorial-Reasons removida do registro
     assert.ok(!listScheduledTaskNames().includes(TASK));
   });
 
-  it("nenhuma task agendada aponta pro CLI (o script fica só para uso manual)", () => {
+  it("nenhuma task agendada aponta pro CLI, e o CLI saiu do repo com o canal (#10755)", () => {
     const refs = SCHEDULED_TASKS.filter((t) => t.steps.some((s) => s.script === SCRIPT)).map((t) => t.name);
     assert.deepEqual(refs, []);
-    assert.ok(existsSync(join(ROOT, SCRIPT)), `${SCRIPT} deveria continuar no repo (uso manual)`);
+    assert.ok(!existsSync(join(ROOT, SCRIPT)), `${SCRIPT} deveria ter saído do repo no encerramento do canal (#10755)`);
   });
 
   it("está em RETIRED_TASK_NAMES — nome retirado conhecido, não typo", () => {

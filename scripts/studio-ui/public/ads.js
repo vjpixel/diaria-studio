@@ -303,7 +303,7 @@ function renderCampaignTiles(testState) {
   } else {
     tiles.push(tile("Janela do teste", "—", "run-state.json ainda não existe (teste não começou)"));
   }
-  tiles.push(tile("Gasto acumulado (Google+Microsoft)", fmtBrl(testState.gastoAcumuladoTotalBrl), null));
+  tiles.push(tile("Gasto acumulado ao vivo (Google+Meta)", fmtBrl(testState.gastoAcumuladoTotalBrl), null));
   tiles.push(tile("Cadastros acumulados", fmtInt(testState.cadastrosAcumuladosTotal), null));
   tiles.push(
     tile(

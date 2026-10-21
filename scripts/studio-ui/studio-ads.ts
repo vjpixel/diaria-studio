@@ -373,9 +373,15 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
  *  desconhecido" (#8210 Bug 3). */
 const SOURCE_TO_TESTE_2608_CANAL: Readonly<Record<string, string>> = {
   "Google Ads": "Google Ads (teste 2608)",
-  "Microsoft Ads": "Microsoft Ads (teste 2608)",
   "Meta Ads": META_ADS_TESTE_CANAL,
 };
+
+/** Canais pagos ENCERRADOS (#10755): sem fonte ao vivo, mas com histórico.
+ *  Entram sempre no conjunto de "gasto ao vivo desconhecido", então a
+ *  tabela "Canais" mostra o último gasto reconciliado em `spend.csv` (selo
+ *  `gastoFonte: "manual"`) em vez de sumir com o braço ou fingir gasto 0.
+ *  Os cadastros do braço seguem vindo do Kit (`utm_source=microsoft-ads`). */
+const CANAIS_ENCERRADOS_GASTO_HISTORICO: readonly string[] = [MICROSOFT_ADS_TESTE_CANAL];
 
 /** Canais fora do gráfico "Custo/cadastro acumulado por canal" por ESCALA
  *  (#8475 Parte A, ligado no #8533) — nunca por estarem descontinuados: os 3
@@ -500,8 +506,10 @@ export function clearAdsCampaignEconomicsCache(): void {
 
 /**
  * Monta o snapshot de "Economia da campanha ao vivo" pra `GET /api/ads`
- * (#7536) — Google Ads + Microsoft Ads + Meta Ads via REST ao vivo (nunca
+ * (#7536) — Google Ads + Meta Ads via REST ao vivo (nunca
  * via `spend.csv`, que só agrega por MÊS) + cadastros por canal via Kit API.
+ * O braço Microsoft Ads (encerrado no #10755) aparece só com o gasto do
+ * histórico em `spend.csv`.
  * **Assíncrona** (diferente de `buildAdsData`) — bate em rede de verdade;
  * mesmo padrão de `buildMetricsData` (`studio-metrics.ts`). Nunca lança:
  * cada fonte é fail-soft por conta própria
@@ -538,8 +546,8 @@ export async function buildAdsCampaignEconomics(
   // revisitando o teste 2608 já em cauda, ~dia 35-40), um lookback fixo
   // perderia os primeiros dias de gasto e SUBESTIMARIA o acumulado em
   // silêncio, sem nenhum sinal de erro. `+1` inclusivo (D0..hoje). Sem
-  // `run-state.json`, cai no default de 30 dias de `fetchGoogleAdsChannelMetrics`/
-  // `fetchMicrosoftAdsChannelMetrics` (teste ainda não começou, nada a cobrir).
+  // `run-state.json`, cai no default de 30 dias de `fetchGoogleAdsChannelMetrics`
+  // (teste ainda não começou, nada a cobrir).
   const todayIsoForLookback = generatedAt.slice(0, 10);
   const lookbackDays = runState ? Math.max(daysBetween(runState.d0, todayIsoForLookback) + 1, 1) : undefined;
 
@@ -595,7 +603,7 @@ export async function buildAdsCampaignEconomics(
   // falhou (`sourcesResult.sources[fonte].error`) cai pro último gasto
   // reconciliado em `spend.csv` (selo `gastoFonte: "manual"`), ou `null`
   // (`"unknown"`) se nem isso existir — nunca soma silenciosamente com 0.
-  const channelsWithUnknownLiveSpend = new Set<string>();
+  const channelsWithUnknownLiveSpend = new Set<string>(CANAIS_ENCERRADOS_GASTO_HISTORICO);
   for (const [source, info] of Object.entries(sourcesResult.sources)) {
     if (!info.error) continue;
     const canal = SOURCE_TO_TESTE_2608_CANAL[source];

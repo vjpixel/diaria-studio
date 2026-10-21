@@ -3,22 +3,20 @@
  *
  * `scripts/ads-live-spend-signups.ts` porta `gasto-ao-vivo.mts` (só existia
  * fora do git, em `~/.claude/scheduled-tasks/relatorio-diario-teste-2608/`
- * no Neo) pro repo. Cobre as 3 partes puras testáveis sem rede: os 2
- * formatadores de tabela e o force de env restrito às 3 chaves conhecidas
- * poluídas (#8237) — nunca bate na API do Google/Microsoft/Meta/Kit.
+ * no Neo) pro repo. Cobre as partes puras testáveis sem rede: os 2
+ * formatadores de tabela — nunca bate na API do Google/Meta/Kit. O force
+ * de env do #8237 saiu com o canal Microsoft Ads (#10755).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatSpendTable,
   formatSignupsTable,
-  forceFromDotenvText,
-  FORCE_FROM_DOTENV_KEYS,
 } from "../scripts/ads-live-spend-signups.ts";
 import { daysBetween, formatDateOnly } from "../scripts/lib/ads-test-schedule.ts";
 import { isEditorTestSignupEmail } from "../scripts/lib/ads-campaign-economics-fetch.ts";
 
-describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => {
+describe("#8246 — ads-live-spend-signups: formatadores", () => {
   it("formatSpendTable ordena por data e acumula, independente da ordem de entrada", () => {
     const out = formatSpendTable("Google Ads (teste 2608)", [
       { date: "2026-09-07", gastoBrl: 50 },
@@ -69,30 +67,12 @@ describe("#8246 — ads-live-spend-signups: formatadores e force de env", () => 
     assert.equal(isEditorTestSignupEmail("leitor.qualquer@gmail.com"), false);
   });
 
-  it("forceFromDotenvText só sobrescreve as 3 chaves da allowlist, nunca outras", () => {
-    const target: NodeJS.ProcessEnv = {
-      GOOGLE_CLIENT_ID: "poluido-pelo-app-desktop",
-      GOOGLE_CLIENT_SECRET: "poluido-tambem",
-      MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN: "token-velho",
-      OUTRA_VAR_QUALQUER: "nunca deveria mudar",
-    };
-    const envText = [
-      "GOOGLE_CLIENT_ID=id-do-dotenv",
-      'GOOGLE_CLIENT_SECRET="secret-do-dotenv"',
-      "MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN=refresh-do-dotenv",
-      "OUTRA_VAR_QUALQUER=nao-deveria-forcar-mesmo-presente-no-dotenv",
-    ].join("\n");
-    forceFromDotenvText(envText, FORCE_FROM_DOTENV_KEYS, target);
-    assert.equal(target.GOOGLE_CLIENT_ID, "id-do-dotenv");
-    assert.equal(target.GOOGLE_CLIENT_SECRET, "secret-do-dotenv", "aspas do .env devem ser removidas");
-    assert.equal(target.MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN, "refresh-do-dotenv");
-    assert.equal(target.OUTRA_VAR_QUALQUER, "nunca deveria mudar", "força restrita às 3 chaves — nunca generalizar (#8237)");
-  });
-
-  it("forceFromDotenvText não mexe numa chave ausente do .env", () => {
-    const target: NodeJS.ProcessEnv = { GOOGLE_CLIENT_ID: "valor-original" };
-    forceFromDotenvText("OUTRA_COISA=x", FORCE_FROM_DOTENV_KEYS, target);
-    assert.equal(target.GOOGLE_CLIENT_ID, "valor-original");
+  // #10755: o force de 3 variáveis do .env (#8237) saiu junto com o canal
+  // Microsoft Ads — só existia pra renovação do token dele.
+  it("#10755 — o workaround de env do Microsoft Ads saiu do script", async () => {
+    const mod = await import("../scripts/ads-live-spend-signups.ts");
+    assert.equal("forceFromDotenvText" in mod, false);
+    assert.equal("FORCE_FROM_DOTENV_KEYS" in mod, false);
   });
 
   it("lookbackDays (daysBetween + formatDateOnly) é insensível à hora do dia — mesmo d0, hora diferente de 'now'", () => {

@@ -2,7 +2,7 @@
  * test/ads-campaign-economics-fetch.test.ts (#7536)
  *
  * Cobre `scripts/lib/ads-campaign-economics-fetch.ts` — fail-soft por
- * fonte (Google Ads / Microsoft Ads / Kit), nunca lança, e a atribuição
+ * fonte (Google Ads / Meta Ads / Kit), nunca lança, e a atribuição
  * correta de cadastros do Kit por `fields.utm_source` (nunca `attribution`,
  * ver docstring do módulo). Sem rede real — `fetchImpl`/`globalThis.fetch`
  * mockados, mesmo padrão de `test/google-ads-ingest-5237.test.ts`/
@@ -13,18 +13,15 @@ import assert from "node:assert/strict";
 
 import {
   fetchGoogleAdsChannelMetrics,
-  fetchMicrosoftAdsChannelMetrics,
   fetchMetaAdsChannelMetrics,
   normalizeMetaAdsInsightsRows,
   fetchKitSignupsByChannel,
   fetchCampaignEconomicsSources,
   googleAdsAuthConfigFromEnv,
-  microsoftAdsAuthConfigFromEnv,
   metaAdsAuthConfigFromEnv,
   META_ADS_TESTE_CANAL,
 } from "../scripts/lib/ads-campaign-economics-fetch.ts";
 import type { GoogleAdsAuthConfig } from "../scripts/lib/google-ads-ingest.ts";
-import type { MicrosoftAdsAuthConfig } from "../scripts/lib/microsoft-ads-ingest.ts";
 
 const GOOGLE_AUTH: GoogleAdsAuthConfig = {
   clientId: "client-id",
@@ -66,24 +63,6 @@ describe("#7536 — fetchGoogleAdsChannelMetrics", () => {
     assert.deepEqual(result.metrics, []);
     assert.ok(result.error);
     assert.equal(result.fetchedAt, null);
-  });
-});
-
-describe("#7536 — fetchMicrosoftAdsChannelMetrics", () => {
-  const AUTH: MicrosoftAdsAuthConfig = {
-    developerToken: "dev-token",
-    customerId: "123",
-    accountId: "456",
-    googleClientId: "gcid",
-    googleClientSecret: "gsecret",
-    googleRefreshToken: "grefresh",
-  };
-
-  it("falha de auth nunca lança — vira { metrics: [], error }", async () => {
-    const fetchImpl = (async () => jsonResponse(400, { error: "invalid_grant" })) as typeof fetch;
-    const result = await fetchMicrosoftAdsChannelMetrics(fetchImpl, AUTH);
-    assert.deepEqual(result.metrics, []);
-    assert.ok(result.error);
   });
 });
 
@@ -384,7 +363,7 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
   });
 });
 
-describe("#7536 — googleAdsAuthConfigFromEnv / microsoftAdsAuthConfigFromEnv", () => {
+describe("#7536 — googleAdsAuthConfigFromEnv", () => {
   it("Google: todas as vars presentes -> auth completo", () => {
     const result = googleAdsAuthConfigFromEnv({
       GOOGLE_ADS_DEVELOPER_TOKEN: "dt",
@@ -402,38 +381,15 @@ describe("#7536 — googleAdsAuthConfigFromEnv / microsoftAdsAuthConfigFromEnv",
     assert.ok("missing" in result);
     if ("missing" in result) assert.equal(result.missing.length, 6);
   });
-
-  it("Microsoft: caminho Google completo -> auth, sem exigir Azure AD", () => {
-    const result = microsoftAdsAuthConfigFromEnv({
-      MICROSOFT_ADS_DEVELOPER_TOKEN: "dt",
-      MICROSOFT_ADS_CUSTOMER_ID: "c",
-      MICROSOFT_ADS_ACCOUNT_ID: "a",
-      GOOGLE_CLIENT_ID: "gci",
-      GOOGLE_CLIENT_SECRET: "gcs",
-      MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN: "grt",
-    });
-    assert.ok("auth" in result);
-    if ("auth" in result) assert.equal(result.auth.googleRefreshToken, "grt");
-  });
-
-  it("Microsoft: nem Google nem Azure completos -> missing concatena os 2 conjuntos", () => {
-    const result = microsoftAdsAuthConfigFromEnv({
-      MICROSOFT_ADS_DEVELOPER_TOKEN: "dt",
-      MICROSOFT_ADS_CUSTOMER_ID: "c",
-      MICROSOFT_ADS_ACCOUNT_ID: "a",
-    });
-    assert.ok("missing" in result);
-    if ("missing" in result) assert.equal(result.missing.length, 5); // 3 Google + 2 Azure
-  });
 });
 
 describe("#7536 — fetchCampaignEconomicsSources", () => {
   const TEST_CONFIG = { apiKey: "kit_test_key" };
   const emptyPagination = { has_previous_page: false, has_next_page: false, start_cursor: null, end_cursor: null, per_page: 500 };
 
-  it("credenciais Google/Microsoft ausentes + Kit ok: sources reporta os 2 erros, metrics vazio, signups do Kit presentes", async () => {
+  it("credenciais Google/Meta ausentes + Kit ok: sources reporta os erros, metrics vazio, signups do Kit presentes", async () => {
     // Kit vai por `kitFetch` (global `fetch`), não pelo `fetchImpl` injetado
-    // (esse só serve Google/Microsoft) — mesmo padrão de `withMockFetch`
+    // (esse só serve Google/Meta) — mesmo padrão de `withMockFetch`
     // usado no describe de `fetchKitSignupsByChannel` acima.
     const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
     const orig = globalThis.fetch;
@@ -452,7 +408,8 @@ describe("#7536 — fetchCampaignEconomicsSources", () => {
     assert.deepEqual(result.metrics, []);
     assert.equal(result.signups.length, 1);
     assert.match(result.sources["Google Ads"].error ?? "", /GOOGLE_ADS_/);
-    assert.match(result.sources["Microsoft Ads"].error ?? "", /MICROSOFT_ADS_/);
+    // #10755: canal Microsoft encerrado — não é mais fonte ao vivo.
+    assert.equal("Microsoft Ads" in result.sources, false);
     assert.match(result.sources["Meta Ads"].error ?? "", /META_ADS_/);
     assert.equal(result.sources["Kit"].error, null);
   });
@@ -464,13 +421,13 @@ describe("#7536 — fetchCampaignEconomicsSources", () => {
     assert.match(result.sources["Kit"].error ?? "", /KIT_API_KEY/);
   });
 
-  it("META_ADS_ACCESS_TOKEN presente: fonte Meta Ads entra em metrics junto de Google/Microsoft", async () => {
+  it("META_ADS_ACCESS_TOKEN presente: fonte Meta Ads entra em metrics junto do Google", async () => {
     const fetchImpl = (async (url: string) => {
       if (url.includes("oauth2.googleapis.com")) return jsonResponse(200, { access_token: "tok" });
       if (url.includes("graph.facebook.com")) {
         return jsonResponse(200, { data: [{ date_start: "2026-01-05", spend: "42", clicks: "4", impressions: "40" }], paging: {} });
       }
-      // Google/Microsoft GAQL/Reporting API — sem credencial completa nesta chamada, então nunca alcançado.
+      // Google GAQL — sem credencial completa nesta chamada, então nunca alcançado.
       return jsonResponse(200, { results: [] });
     }) as typeof fetch;
     const orig = globalThis.fetch;

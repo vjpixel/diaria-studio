@@ -3,18 +3,18 @@
  * scripts/ads-spend-ingest-alarm.ts (#5597, reescrito no #7518)
  *
  * Alarme que interpreta o CONTEÚDO (não só o exit code) dos logs
- * acumulados de `scripts/google-ads-ingest-spend.ts`,
- * `scripts/microsoft-ads-ingest-spend.ts` e (#8245 item 6)
- * `scripts/meta-ads-ingest-spend.ts`. Até o #9071 (#9012 pro Meta), os
+ * acumulados de `scripts/google-ads-ingest-spend.ts` e (#8245 item 6)
+ * `scripts/meta-ads-ingest-spend.ts`. O braço Microsoft Ads saiu no #10755
+ * (canal encerrado em 21/10/2026, task de ingestão retirada do registro). Até o #9071 (#9012 pro Meta), os
  * scripts saíam com exit 0 mesmo em `defect` (decisão do #5237/#5502, pra
  * não calar a plataforma vizinha num encadeamento que não existe mais), e
- * este alarme era o ÚNICO sinal. Hoje os três saem não-zero em falha real
+ * este alarme era o ÚNICO sinal. Hoje os dois saem não-zero em falha real
  * (a unit fica `failed` e o alarme de units falhas também dispara — dois
  * sinais pro mesmo evento, intencional); este alarme segue relevante por
  * ler a CLASSE da falha no log (defeito × transitório × gasto zero).
  *
  * Lógica pura em `scripts/lib/ads-spend-ingest-alarm.ts` — este arquivo é
- * só I/O: ler os TRÊS logs em disco (um por plataforma), enviar e-mail,
+ * só I/O: ler os DOIS logs em disco (um por plataforma), enviar e-mail,
  * dedup/criação de issue via `scripts/lib/alarm-issues.ts`. **Meta ainda
  * sem task armada em toda máquina (#8245 item 8, pendente `sync-env` no
  * `300`)** — até lá, `.meta-ads-ingest.log` não existe e a plataforma
@@ -40,7 +40,7 @@
  *   npx tsx scripts/ads-spend-ingest-alarm.ts               # avalia + alarma se necessário
  *   npx tsx scripts/ads-spend-ingest-alarm.ts --dry-run      # avalia + imprime, NÃO envia nem persiste
  *   npx tsx scripts/ads-spend-ingest-alarm.ts --to email@x   # override do destinatário
- *   npx tsx scripts/ads-spend-ingest-alarm.ts --google-log-path X --microsoft-log-path Y  # override p/ teste manual
+ *   npx tsx scripts/ads-spend-ingest-alarm.ts --google-log-path X --meta-log-path Y  # override p/ teste manual
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
@@ -87,22 +87,17 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const AQUISICAO_DIR = join(DATA_DIR, "aquisicao");
-/** Paths REAIS — batem com `logPath` de `Diaria-Google-Ads-Spend-Ingest` e
- *  `Diaria-Microsoft-Ads-Spend-Ingest` em `scripts/lib/scheduled-tasks.ts`
- *  (relativo a `data/`, mesma convenção de `ScheduledTaskDef.logPath`).
- *  `test/ads-spend-ingest-alarm-log-path-guard.test.ts` trava que os dois
- *  batem — é o guard que impede esta issue de reproduzir com um path
- *  diferente no futuro. */
-/** Exportados pra `test/ads-spend-ingest-alarm-log-path-guard.test.ts` —
- *  o guard estático que compara estes 2 paths contra o `logPath` real das
- *  2 tasks em `scripts/lib/scheduled-tasks.ts`, pra nunca mais deixar este
- *  alarme apontar pra um arquivo que nenhuma task grava (a causa raiz do
- *  #7518). */
+/** Path REAL — bate com `logPath` de `Diaria-Google-Ads-Spend-Ingest` em
+ *  `scripts/lib/scheduled-tasks.ts` (relativo a `data/`, mesma convenção de
+ *  `ScheduledTaskDef.logPath`). Exportado pra
+ *  `test/ads-spend-ingest-alarm-log-path-guard.test.ts` — o guard estático
+ *  que compara os paths deste alarme contra o `logPath` real das tasks, pra
+ *  nunca mais deixar o alarme apontar pra um arquivo que nenhuma task grava
+ *  (a causa raiz do #7518). */
 export const DEFAULT_GOOGLE_LOG_PATH = join(AQUISICAO_DIR, ".google-ads-ingest.log");
-export const DEFAULT_MICROSOFT_LOG_PATH = join(AQUISICAO_DIR, ".microsoft-ads-ingest.log");
 /** #8245 item 6 — bate com `logPath` de `Diaria-Meta-Ads-Spend-Ingest`
- *  (`scripts/lib/scheduled-tasks.ts`), mesmo guard do par Google/Microsoft
- *  acima (`test/ads-spend-ingest-alarm-log-path-guard.test.ts`). */
+ *  (`scripts/lib/scheduled-tasks.ts`), mesmo guard do Google acima
+ *  (`test/ads-spend-ingest-alarm-log-path-guard.test.ts`). */
 export const DEFAULT_META_LOG_PATH = join(AQUISICAO_DIR, ".meta-ads-ingest.log");
 const ALARM_ISSUES_STATE_PATH = join(AQUISICAO_DIR, ".ads-spend-ingest-alarm-issues.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -194,15 +189,12 @@ async function main(): Promise<void> {
   // essa razão. `getStringArg` retorna `undefined` genuíno quando a flag
   // está ausente (ver docstring de `cli-args.ts`) — o `??` funciona.
   const googleLogPath = getStringArg(argv, "google-log-path", { example: DEFAULT_GOOGLE_LOG_PATH }) ?? DEFAULT_GOOGLE_LOG_PATH;
-  const microsoftLogPath =
-    getStringArg(argv, "microsoft-log-path", { example: DEFAULT_MICROSOFT_LOG_PATH }) ?? DEFAULT_MICROSOFT_LOG_PATH;
   const metaLogPath = getStringArg(argv, "meta-log-path", { example: DEFAULT_META_LOG_PATH }) ?? DEFAULT_META_LOG_PATH;
 
   const now = new Date();
   const google = readPlatformLog(googleLogPath);
-  const microsoft = readPlatformLog(microsoftLogPath);
   const meta = readPlatformLog(metaLogPath);
-  const evaluation = evaluateAdsSpendIngestAlarm(google, microsoft, now, meta);
+  const evaluation = evaluateAdsSpendIngestAlarm(google, now, meta);
   console.log(
     `${LOG_PREFIX} verdict=${evaluation.verdict} ` +
       evaluation.platforms.map((p) => `${p.platform}=${p.verdict}(${p.logPath})`).join(" "),

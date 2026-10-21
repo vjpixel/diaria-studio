@@ -113,7 +113,7 @@
         "consentSettings": {
           "consentStatus": "notSet"
         },
-        "notes": "#8387 — a base UET ja carrega em /confirmada (medido no #5500); esta tag so empurra o evento. Criar o goal de evento 'newsletter_confirmed' no Microsoft Advertising sem vincula-lo a otimizacao. Microsoft tem 1 cadastro no teste inteiro: baixa prioridade."
+        "notes": "NAO IMPORTAR (#10755, 21/10/2026): o canal Microsoft Ads foi encerrado; a tag UET base (__baut, ids 17/18 no container v24) tambem deve ser despublicada pelo editor. #8387 — a base UET ja carrega em /confirmada (medido no #5500); esta tag so empurra o evento. Criar o goal de evento 'newsletter_confirmed' no Microsoft Advertising sem vincula-lo a otimizacao. Microsoft tem 1 cadastro no teste inteiro: baixa prioridade."
       },
       {
         "accountId": "000000000",

@@ -1994,41 +1994,6 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5704",
   },
   {
-    // #7544 — a credencial Microsoft Ads existe e funciona desde 21/08/2026
-    // (#5928: identidade Google, validada ao vivo), mas nenhuma task rodava
-    // a ingestão de gasto correspondente — o registro (linha acima) ainda
-    // dizia "Microsoft segue sem credencial" quando a premissa já tinha
-    // vencido. Decisão default (sem pergunta ao editor, CLAUDE.md "Perguntar
-    // é exceção" — escolha técnica de baixo impacto no leitor): task
-    // PRÓPRIA em vez de compartilhada com o Google, espelhando
-    // Diaria-Google-Ads-Spend-Ingest ponto a ponto (mesmo motivo do #5704
-    // original de não compartilhar: exit não-zero de um encadeado com `&&`
-    // calaria o outro — por isso 2 tasks independentes, o que desde o
-    // #9071 permite que cada uma saia não-zero em falha real sem afetar
-    // a outra).
-    //
-    // 09:55 BRT (5min depois do Google, mesma disciplina de espaçamento)
-    // já está ocupado por Diaria-Session-Registry-Gc — usa 09:52 (slot
-    // livre entre 09:50 e 09:55, ver grep de `hour: 9, minute:` neste
-    // arquivo), ainda dentro do cluster matinal e antes de
-    // Diaria-Ads-Spend-Ingest-Alarm (10:05, que lê o log desta ingestão).
-    name: "Diaria-Microsoft-Ads-Spend-Ingest",
-    description: "ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv",
-    steps: [{ key: "ingest", script: "scripts/microsoft-ads-ingest-spend.ts" }],
-    logPath: "aquisicao/.microsoft-ads-ingest.log",
-    // Fail-soft nos dados (#5237/#5502): sem credencial ou com a API
-    // indisponivel (apos retry), o script nao toca spend.csv e, desde o
-    // #9071, sai com exit NAO-ZERO; gasto zero real segue exit 0 -- mesma
-    // disciplina do Google Ads acima.
-    //
-    // DECLARADA, NAO ARMADA nesta unidade (worktree isolado, mesma
-    // disciplina do #5704/#5878 acima) -- maquina Windows nao roda mais
-    // tasks Diaria (#5074); arme real e acao POSTERIOR do editor via
-    // `scripts/setup-systemd-timers.ts` na checkout compartilhada (300).
-    schedule: { kind: "daily", hour: 9, minute: 52 },
-    issue: "#7544",
-  },
-  {
     // #8245 — a credencial Meta Ads (`META_ADS_ACCESS_TOKEN`, System User
     // token `ads_read`, sem expiração, #7536) já alimenta o fetch REST ao
     // vivo do `/ads` desde 09/09/2026, mas nenhuma task rodava a mesma
@@ -2039,8 +2004,8 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // (`scripts/lib/ads-campaign-economics-fetch.ts`) — mesmo fetch/auth/
     // paginação do `/ads`, nada reimplementado.
     //
-    // 09:54 BRT — livre entre o Microsoft Ads acima (09:52) e
-    // Diaria-Session-Registry-Gc (09:55, ver grep de `hour: 9, minute:`
+    // 09:54 BRT — livre entre o antigo slot do Microsoft Ads (09:52,
+    // task retirada no #10755) e Diaria-Session-Registry-Gc (09:55, ver grep de `hour: 9, minute:`
     // neste arquivo), ainda dentro do cluster matinal e antes de
     // Diaria-Ads-Spend-Ingest-Alarm (10:05) — mesma disciplina de
     // espaçamento de 2min usada entre Google (09:50) e Microsoft (09:52).
@@ -2697,7 +2662,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Ads-Spend-Ingest-Alarm",
     description:
       "interpreta o CONTEUDO (nao so exit code) do log acumulado de google-ads-ingest-spend.ts/" +
-      "microsoft-ads-ingest-spend.ts/meta-ads-ingest-spend.ts -- classifica a falha (defeito x gasto zero) " +
+      "meta-ads-ingest-spend.ts -- classifica a falha (defeito x gasto zero) " +
       "a partir do log; desde #9012/#9071 a falha real tambem sai com exit nao-zero, #5597",
     steps: [{ key: "alarm", script: "scripts/ads-spend-ingest-alarm.ts" }],
     logPath: "aquisicao/.ads-spend-ingest-alarm.log",
@@ -3239,15 +3204,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
  * - `"Diaria-Microsoft-Ads-Editorial-Reasons"` — removida no #10148 (decisão
  *   do editor no briefing overnight 261014): o timer já estava parado à mão
  *   na `300` (`ActiveState=inactive`) e a task não fazia mais sentido. O CLI
- *   `scripts/microsoft-ads-editorial-reasons.ts` e o núcleo SOAP em
- *   `scripts/lib/microsoft-ads-editorial-reasons.ts` FICAM no repo (uso
- *   manual, testes próprios) — só a execução agendada saiu. A limpeza do
- *   unit `diaria-microsoft-ads-editorial-reasons.{service,timer}` na `300`
- *   é ação manual do editor; até lá, um disparo acidental vira no-op aqui.
+ *   e o núcleo SOAP ficaram no repo para uso manual até o #10755, que
+ *   encerrou o canal Microsoft Ads e removeu os dois. A limpeza do unit
+ *   `diaria-microsoft-ads-editorial-reasons.{service,timer}` na `300` é ação
+ *   manual do editor; até lá, um disparo acidental vira no-op aqui.
+ * - `"Diaria-Microsoft-Ads-Spend-Ingest"` — removida no #10755 (decisão do
+ *   editor, 21/10/2026: o canal Microsoft Ads foi encerrado depois do teste
+ *   2608; ver `docs/microsoft-ads-encerramento.md`). O script de ingestão
+ *   saiu do repo junto. O gasto já gravado em `data/aquisicao/spend.csv`
+ *   continua sendo lido pelo relatório de CAC e pela apuração do teste.
+ *   Desarmar `diaria-microsoft-ads-spend-ingest.{service,timer}` na `300` é
+ *   ação manual do editor; até lá, o disparo diário vira no-op aqui.
  */
 export const RETIRED_TASK_NAMES: ReadonlySet<string> = new Set([
   "Diaria-Clarice-Novos-Abort-Alarm",
   "Diaria-Microsoft-Ads-Editorial-Reasons",
+  "Diaria-Microsoft-Ads-Spend-Ingest",
 ]);
 
 /** `true` quando `name` é uma task retirada conhecida (ver `RETIRED_TASK_NAMES`). */
