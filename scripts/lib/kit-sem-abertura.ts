@@ -522,7 +522,7 @@ export interface KitSemAberturaExitLogEntry {
   event: "kit_unsubscribed";
   email: string;
   kit_subscriber_id: number;
-  /** Motivo da saída na Brevo (`native_unsubscribe`, `native_bounce`, `native_admin_block`, `suppress`). */
+  /** Motivo da saída na Brevo (`native_unsubscribe`, `native_complaint` #10666, `native_bounce`, `native_admin_block`, `suppress`). */
   brevo_exit: string;
 }
 
