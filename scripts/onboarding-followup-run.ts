@@ -57,7 +57,8 @@ import { withFileLock } from "./lib/file-lock.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
-import { decideLotReconciliation, LOT_STALE_AFTER_MS } from "./lib/onboarding-kit-transport.ts";
+import { decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
+import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
@@ -68,6 +69,7 @@ import {
   applyFormResponses,
   buildFollowupLotId,
   filterDueByLiveCheck,
+  isConcreteKitState,
   findLatestFollowupLot,
   formCandidatesFromEntries,
   formContentGate,
@@ -79,12 +81,13 @@ import {
   normalizeEmail,
   parseFollowupSnippet,
   planFollowup,
-  recordApoiaSkips,
+  recordLiveCheckSkips,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
   splitDueByCap,
   capWindowOverflows,
+  classifyLookupFailures,
   resolveFollowupConfig,
   snippetFileFor,
   snippetTemplate,
@@ -100,6 +103,7 @@ import {
   type FollowupStepKind,
   type FormResponseRecord,
   type LiveSubscriberCheck,
+  type LookupFailure,
 } from "./lib/onboarding-followup.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { CliExit, runCli } from "./lib/cli-exit.ts";
@@ -185,7 +189,7 @@ export function persistFollowupLot(storePath: string, lot: FollowupLot, cadastro
   });
 }
 
-/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`). */
+/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`/`nao_ativo`). */
 export function persistFollowupPeople(storePath: string, mutate: (people: FollowupBlock["people"]) => void): void {
   withStore(storePath, "gravar pessoas", (_store, block) => {
     mutate(block.people);
@@ -291,6 +295,15 @@ export interface FollowupRoundDeps {
    * (`verifyLotAccount`). Ausente = lote nasce sem id e 404 nunca cancela.
    */
   getAccountId?(): Promise<string>;
+  /**
+   * #10676: espera entre as leituras singulares e antes da passada de retry
+   * (espaçamento/cooldown de `refreshKitCandidates`, #10616). Ausente = não
+   * espera (testes); o executor real passa `setTimeout`.
+   */
+  sleep?(ms: number): Promise<void>;
+  /** #10676: o erro da leitura singular é retentável mais tarde (429/5xx/rede).
+   *  Ausente = todo erro conta como transitório. */
+  isTransientLookupError?(err: unknown): boolean;
 }
 
 export interface FollowupLotReconcileRow {
@@ -368,6 +381,80 @@ export interface FollowupRoundOpts {
   cfg: FollowupConfig;
   snippets: FollowupSnippets;
   nowMs?: number;
+  /** #10676: espaçamento/cooldown/passadas das leituras singulares (defaults
+   *  de `refreshKitCandidates`: 350ms, 60s, 1 passada extra). A espera em si
+   *  vem de `deps.sleep`. */
+  lookupOpts?: Omit<RefreshKitCandidatesOpts, "sleep">;
+}
+
+const noSleep = () => Promise.resolve();
+
+export interface LiveCheckOutcome {
+  /** Leitura por id — `null` = falhou (nunca autoriza envio). */
+  results: Map<number, LiveSubscriberCheck | null>;
+  /** Ids que seguiram falhando depois do retry, com o devido, se o erro era
+   *  transitório e a mensagem (já sem e-mail) para o log. */
+  failed: Map<number, { due: FollowupDue; transient: boolean; error: string }>;
+  /** Leituras distintas tentadas. */
+  total: number;
+}
+
+/**
+ * #10676: leitura singular dos devidos (1 por pessoa) via `refreshKitCandidates`
+ * (#10616) — 1ª passada espaçada, depois passada(s) extra(s) só sobre erro
+ * transitório após cooldown. Erro não transitório (401/403) não é retentado.
+ */
+class MissingStateError extends Error {
+  constructor(id: number) {
+    super(`GET /subscribers/${id} sem state`);
+    this.name = "MissingStateError";
+  }
+}
+
+export async function liveCheckDue(
+  due: readonly FollowupDue[],
+  opts: Pick<FollowupRoundOpts, "lookupOpts">,
+  deps: Pick<FollowupRoundDeps, "getSubscriber" | "sleep" | "isTransientLookupError">,
+): Promise<LiveCheckOutcome> {
+  const byId = new Map<number, FollowupDue>();
+  for (const d of due) if (!byId.has(d.kit_subscriber_id)) byId.set(d.kit_subscriber_id, d);
+  const isTransient = deps.isTransientLookupError ?? (() => true);
+  const reads = new Map<number, LiveSubscriberCheck>();
+  const lastError = new Map<number, { transient: boolean; error: string }>();
+  const list = [...byId.keys()].map((id) => ({ subscription_id: String(id), id }));
+  const refreshed = await refreshKitCandidates(
+    list,
+    async (c, diag) => {
+      try {
+        const r = await deps.getSubscriber(c.id);
+        // #10685: resposta sem `state` concreto não prova saída — é leitura
+        // falha (transitória, entra no retry), nunca pulo terminal `nao_ativo`.
+        if (!isConcreteKitState(r.state)) throw new MissingStateError(c.id);
+        reads.set(c.id, r);
+        lastError.delete(c.id);
+        return { status: r.state ?? undefined, stats: null };
+      } catch (e) {
+        diag.transportError = true;
+        diag.transient = e instanceof MissingStateError ? true : isTransient(e);
+        lastError.set(c.id, { transient: diag.transient, error: redactEmails((e as Error)?.message ?? String(e)) });
+        return null;
+      }
+    },
+    { ...opts.lookupOpts, sleep: deps.sleep ?? noSleep },
+  );
+  const results = new Map<number, LiveSubscriberCheck | null>();
+  const failed: LiveCheckOutcome["failed"] = new Map();
+  for (const { id } of list) {
+    const ok = reads.get(id);
+    if (ok && !refreshed.failed.has(String(id))) {
+      results.set(id, ok);
+      continue;
+    }
+    results.set(id, null);
+    const err = lastError.get(id) ?? { transient: true, error: "leitura sem resultado" };
+    failed.set(id, { due: byId.get(id)!, ...err });
+  }
+  return { results, failed, total: list.length };
 }
 
 function gateReason(g: ReturnType<typeof apoioContentGate>): { motivo: FollowupBlockReason; detalhe: string } | null {
@@ -512,21 +599,28 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   }
 
   // Checagem perto do envio: ativo + não apoia (leitura singular, nunca a listagem).
-  const checks = new Map<number, LiveSubscriberCheck | null>();
-  for (const d of dueWithinCap) {
-    if (checks.has(d.kit_subscriber_id)) continue;
-    try {
-      checks.set(d.kit_subscriber_id, await deps.getSubscriber(d.kit_subscriber_id));
-    } catch {
-      checks.set(d.kit_subscriber_id, null);
-      run.lookups_failed++;
-    }
+  // #10676: até `max_recipients_per_lot` GETs por etapa — mesmo espaçamento e
+  // passada de retry após cooldown do refresh da escada (#10616), senão uma
+  // coorte enchendo o teto toma 429 e um GET esgotado derrubava a rodada.
+  const checks = await liveCheckDue(dueWithinCap, opts, deps);
+  const failures: LookupFailure[] = [];
+  for (const f of checks.failed.values()) {
+    failures.push({ due: f.due, transient: f.transient, anchorSec: orderSec(f.due) });
   }
-  const { send: toSend, excluded } = filterDueByLiveCheck(dueWithinCap, checks);
+  const lookupSplit = classifyLookupFailures(failures, checks.total, nowSec, cfg);
+  run.lookups_failed += lookupSplit.blocking;
+  if (lookupSplit.deferred > 0) run.lookups_deferred = lookupSplit.deferred;
+  for (const [id, f] of checks.failed) {
+    process.stderr.write(`${LOG} leitura de ${id} (${f.due.kind}) falhou depois do retry — fora do envio de hoje: ${f.error}\n`);
+  }
+  if (failures.length > 0) {
+    process.stderr.write(`${LOG} leituras singulares falhas: ${failures.length}/${checks.total} — ${lookupSplit.deferred} adiadas para amanhã, ${lookupSplit.blocking} contam como falha da rodada\n`);
+  }
+  const { send: toSend, excluded } = filterDueByLiveCheck(dueWithinCap, checks.results);
   for (const x of excluded) bump(x.due.kind, x.motivo);
   if (send) {
     persistFollowupPeople(storePath, (people) => {
-      recordApoiaSkips(people, excluded, nowIso);
+      recordLiveCheckSkips(people, excluded, nowIso);
       recordApoioChecks(people, toSend, nowIso);
     });
   }
@@ -664,6 +758,9 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     },
     getBroadcast: (id) => getBroadcast(id, kitCfg),
     deleteBroadcast: (id) => deleteBroadcast(id, kitCfg),
+    // #10676: espaçamento/cooldown reais das leituras singulares (#10616).
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    isTransientLookupError: isKitTransientError,
     async getAccountId() {
       if (!accountIdMemo) {
         const { memoizeAccountId, fetchKitAccountId } = await import("./onboarding-kit-transport-run.ts");
