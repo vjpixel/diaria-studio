@@ -31,6 +31,11 @@ on:
     branches: [master]
     paths:
       - 'workers/meta-leads/**'
+      # #10637: módulos de fora de workers/meta-leads/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/shared/kit-signup-origin.ts'
   workflow_dispatch:
 
 concurrency:

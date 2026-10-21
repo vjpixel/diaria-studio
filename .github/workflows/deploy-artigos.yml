@@ -33,6 +33,16 @@ on:
     branches: [master]
     paths:
       - 'workers/artigos/**'
+      # #10637: módulos de fora de workers/artigos/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/reward-tier-thresholds.ts'
+      - 'scripts/lib/shared/apoio-level-verify.ts'
+      - 'scripts/lib/shared/apoio-nivel-types.ts'
+      - 'scripts/lib/shared/rate-limit.ts'
+      - 'scripts/lib/shared/session-cookie.ts'
+      - 'scripts/lib/shared/subscriber-verify.ts'
   workflow_dispatch:
 
 concurrency:
