@@ -14,15 +14,17 @@ Aberturas não têm webhook no Kit e continuam vindo da ingestão por broadcast.
 
 ## Estado
 
-Ligado em 21/10/2026 (`/diaria-develop 261021`): KV `KIT_EVENTS` criado e
-declarado em `wrangler.toml` (passo 1), segredos e webhooks dos passos 2-3
-registrados na mesma sessão (estado por passo no comentário da #10648). Sem os
-segredos, o Worker não grava nada (POST responde 404, leitura responde 401/503).
+Em 21/10/2026 (`/diaria-develop 261021`): KV `KIT_EVENTS` criado e declarado
+em `wrangler.toml` (passo 1) e os 2 segredos gravados no Worker e no Doppler
+(passo 2). O binding só vale depois do deploy pós-merge. Webhooks no Kit
+(passo 3) e o agendamento da ingestão (passo 5): estado no comentário da #10648.
+Se os segredos forem removidos, o Worker volta a não gravar nada (POST responde
+404, leitura responde 401/503).
 
 ## Como ligar (sessão `/diaria-develop` com o editor)
 
 1. `cd workers/kit-events && npx wrangler kv namespace create KIT_EVENTS` e
-   declarar o binding em `wrangler.toml` (bloco comentado lá), via PR.
+   declarar o binding em `wrangler.toml` (bloco `[[kv_namespaces]]` lá), via PR.
 2. Gerar 2 segredos longos (≥24 caracteres; ex. `openssl rand -hex 24`):
    - `npx wrangler secret put KIT_WEBHOOK_SECRET` — vai na URL dos webhooks.
    - `npx wrangler secret put EVENTS_READ_TOKEN` — mesmo valor em
