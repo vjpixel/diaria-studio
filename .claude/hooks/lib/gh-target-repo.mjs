@@ -58,6 +58,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mergeTargetHints } from "./gh-pr-merge-command.mjs";
 
 export const DIARIA_STUDIO_REPO = "vjpixel/diaria-studio";
 
@@ -404,15 +405,20 @@ export function commandComplexity(command) {
 }
 
 const SLUG_IN_TEXT_RE = /(?:github\.com[/:])?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/g;
+const API_REPOS_PATH_RE = /\brepos\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
 
 /** Repos PERMITIDOS que aparecem em qualquer lugar do texto do comando. */
 export function reposMentioned(command, allowed = loadAllowedForeignRepos()) {
   const out = new Set();
   if (typeof command !== "string") return out;
-  for (const m of command.matchAll(SLUG_IN_TEXT_RE)) {
-    const slug = normalizeRepoSlug(m[1]);
+  const add = (raw) => {
+    const slug = normalizeRepoSlug(raw);
     if (slug && (slug === DIARIA_STUDIO_REPO || allowed.has(slug))) out.add(slug);
-  }
+  };
+  for (const m of command.matchAll(SLUG_IN_TEXT_RE)) add(m[1]);
+  // #10689: caminho da API (`gh api -X PUT repos/o/r/pulls/5/merge`) — o
+  // regex acima consome `repos/o` e nunca enxerga o `o/r` que vem depois.
+  for (const m of command.matchAll(API_REPOS_PATH_RE)) add(m[1]);
   return out;
 }
 
@@ -637,6 +643,10 @@ export function parseStrictMerge(command) {
  *     `GH_REPO` herdado) → `targets = [diaria-studio]`, concessão do studio conta;
  *   - `strict`: qualquer outra coisa → diaria-studio + todo repo permitido
  *     que o comando possa tocar; NENHUMA concessão conta (`grantRepo: null`).
+ *     Com o alvo do merge indeterminado (`indeterminate: true` — GraphQL,
+ *     caminho/PR/repo opaco, alias ilegível; ver `mergeTargetHints`), TODO
+ *     repo de `issue_repos` entra (#10689 M).
+ * `opts.aliases` (testes): Map de aliases do gh repassado ao detector.
  */
 export function resolveMergeTargets(command, cwd, opts = {}) {
   const { execFn = execFileSync, allowed = loadAllowedForeignRepos(), env = process.env } = opts;
@@ -664,6 +674,21 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
   }
   // ESTRITO: studio + tudo que o comando possa tocar.
   const repos = new Set([DIARIA_STUDIO_REPO, ...reposMentioned(command, allowed)]);
+  // #10689 M: o repo que o merge mira pode não estar no TEXTO (alias do gh
+  // vindo do config.yml, `-R` dentro da expansão) ou ser indeterminado
+  // (GraphQL por `pullRequestId`, caminho opaco, `-R "$R"`). Indeterminado →
+  // o lock de todo repo permitido entra. Exceção na leitura → indeterminado.
+  let hints = { repos: [], unknown: true };
+  try {
+    hints = mergeTargetHints(command, opts.aliases !== undefined ? { aliases: opts.aliases } : {});
+  } catch {
+    // fica indeterminado (fail-closed)
+  }
+  for (const r of hints.repos) {
+    const slug = normalizeRepoSlug(r);
+    if (slug && allowed.has(slug)) repos.add(slug);
+  }
+  if (hints.unknown) for (const a of allowed) repos.add(a);
   const base = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
   const dirs = [cwd];
   for (const m of String(command).matchAll(/(?:^|[\s;&|(){}!])(?:cd|pushd)\s+([^\s;&|()]+)/g)) {
@@ -677,7 +702,14 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
     const o = repoFromCwdOrigin(d, execFn);
     if (o && allowed.has(o)) repos.add(o);
   }
-  return { mode: "strict", targets: [...repos], grantRepo: null, pr: parsed?.pr ?? null, explicitRepo: null };
+  return {
+    mode: "strict",
+    targets: [...repos],
+    grantRepo: null,
+    pr: parsed?.pr ?? null,
+    explicitRepo: null,
+    indeterminate: hints.unknown,
+  };
 }
 
 /** `true` quando a resolução caiu no modo COMPLEXO (fail-closed). */

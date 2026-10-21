@@ -21,6 +21,7 @@ import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { closeSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -821,7 +822,7 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
         // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
-        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        env: { ...withIsolatedGhConfig(), GH_REPO: "", GH_HOST: "github.invalid" },
         input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
@@ -855,7 +856,7 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
         // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
-        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        env: { ...withIsolatedGhConfig(), GH_REPO: "", GH_HOST: "github.invalid" },
         input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
@@ -875,7 +876,7 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
         // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
-        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        env: { ...withIsolatedGhConfig(), GH_REPO: "", GH_HOST: "github.invalid" },
         input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
@@ -999,7 +1000,7 @@ describe("#8188 — findLiveMergeGrantFile/consumeGrantUnderLock escopam por PR,
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
         // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
-        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        env: { ...withIsolatedGhConfig(), GH_REPO: "", GH_HOST: "github.invalid" },
         input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
@@ -1105,7 +1106,7 @@ describe("#7286 — concessão consumida por TERCEIRO (sessão diferente da bene
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
         // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
-        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        env: { ...withIsolatedGhConfig(), GH_REPO: "", GH_HOST: "github.invalid" },
         input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,

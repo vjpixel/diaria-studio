@@ -36,6 +36,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -97,7 +98,7 @@ function runCli(root: string, ...args: string[]) {
 function runHook(root: string, sessionId: string, command: string, extraEnv: Record<string, string> = {}, binDir?: string) {
   // Sem GH_REPO/GH_HOST: a consulta do hook precisa falhar no repo temporário
   // sem remote (ou cair no gh falso), nunca consultar um PR real por herança.
-  const env: Record<string, string | undefined> = { ...process.env, ...extraEnv };
+  const env: Record<string, string | undefined> = { ...withIsolatedGhConfig(), ...extraEnv };
   delete env.GH_REPO;
   delete env.GH_HOST;
   // #10618: com o origin do studio no repo temporário, o `gh` real resolveria

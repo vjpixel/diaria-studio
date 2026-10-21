@@ -23,11 +23,44 @@
 // aspas vira UMA palavra só (`echo "gh pr merge"` → [echo, "gh pr merge"]) e
 // nunca ocupa a posição de comando; texto depois de `#` é comentário.
 //
+// DESDE O #10689 também contam como merge (ver `ghInvocation`):
+//   - `gh api` com método de escrita (PUT/POST/…, explícito ou implícito por
+//     `-f`/`-F`/`--input`, ou possível por uma expansão que pode trazer flags:
+//     `gh api $F …`, `"$@"`, `xargs` sem `-I`) num endpoint `…/pulls/N/merge`
+//     (`/repos/…`, `{owner}/{repo}`, URL `https://api.github.com/…`, GHE,
+//     `merg%65`, `$'merg\x65'`, `merge/.`), `repos/o/r/merges`, escrita (não
+//     DELETE) em `git/refs/heads/*`, ou de fim OPACO (`"$URL"`, `"$P/$E"`,
+//     `repos/$R/$P`, `{}` do `xargs -I`/`find -exec`); GET/HEAD não conta;
+//   - `gh api graphql` com `mergePullRequest`/`enablePullRequestAutoMerge`/
+//     `enqueuePullRequest`/`mergeBranch`/`updateRef(s)` — ou com a query
+//     ilegível (`@arquivo`, `--input`, qualquer `$` que o shell expande:
+//     `"$Q"`, `"$A$B"`, `"…${M}…"`, `$(…)`): fail-closed. `$var` entre aspas
+//     SIMPLES é variável do GraphQL e o texto é lido normalmente;
+//   - alias do gh (`gh m 5` com `m: pr merge` no `config.yml` do gh, ou
+//     definido no próprio comando por `gh alias set [--shell[=true]]`), com
+//     fail-closed quando o config não é confiável (ilegível, linha não
+//     entendida, ou o comando redefine `GH_CONFIG_DIR`/`XDG_CONFIG_HOME`/
+//     `APPDATA`/`HOME`/`USERPROFILE`) e em alias que volta a si mesmo;
+//   - subcomando do gh opaco (`gh $S merge 5`, `gh pr $M 5`) e aninhamento
+//     além de `MAX_DEPTH`.
+// Invocação cujo REPO não dá pra saber (GraphQL, caminho/`-R`/URL opaco,
+// alias ilegível) é marcada `targetUnknown`: o modo estrito do guard confere
+// o lock de todo repo de `issue_repos` (`mergeTargetHints`).
+//
 // LIMITES CONHECIDOS (documentados, não cobertos):
-//   - alias/função de shell (`alias m='gh pr merge'`; `m 5`) e alias do gh
-//     (`gh alias set m 'pr merge'`; `gh m 5`) — o nome não diz o que roda;
-//   - merge pela API (`gh api -X PUT repos/o/r/pulls/5/merge`), por outra
-//     ferramenta (curl, script) ou por um script em arquivo (`bash x.sh`);
+//   - alias/função de SHELL (`alias m='gh pr merge'`; `m 5`) — vive no
+//     ambiente do shell, que o hook não vê; e alias do gh criado FORA do
+//     comando depois que o hook leu o config (o config é relido a cada
+//     processo do hook, então só uma corrida dentro do mesmo comando escapa
+//     — e `gh alias set`/`import` no próprio comando são lidos); variável de
+//     config herdada do AMBIENTE (não redefinida no comando) é a do processo
+//     do hook, que é o mesmo ambiente do Bash;
+//   - merge por outra ferramenta (curl, script) ou por um script em arquivo
+//     (`bash x.sh`); variável opaca no MEIO de um endpoint cujo fim é
+//     literal e não é de merge (`repos/$R/issues/5`, `"$BASE"/comments`);
+//     variável sem aspas no MEIO de um endpoint de início literal
+//     (`repos/o/r/pulls/$N` com `N="5 -X PUT"`) — o word splitting só é
+//     considerado quando a palavra COMEÇA pela expansão;
 //   - expansão de variável na posição de comando (`$GH pr merge 5`,
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
 //   - corpo de heredoc: FAIL-CLOSED, lido como comandos E como string entre
@@ -43,9 +76,111 @@
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
 
-/** Teto de aninhamento (subshell, `$(...)`, `bash -c`, `eval`). Além dele
- * o conteúdo não é inspecionado — limite contra entrada patológica. */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+/** Teto de aninhamento (subshell, `$(...)`, `bash -c`, `eval`, alias). Além
+ * dele o conteúdo não é inspecionado — e conta como merge (#10689 N): entrada
+ * patológica nunca passa livre só por ser funda demais. */
 const MAX_DEPTH = 8;
+
+// Marcadores internos que o lexer põe nas palavras (nunca aparecem num
+// comando digitado de verdade; se aparecerem, só deixam a palavra mais opaca).
+/** `$(...)`/crase FORA de aspas: valor desconhecido E sujeito a word splitting. */
+const SUBST = "\u0000";
+/** `$(...)`/crase DENTRO de aspas duplas: valor desconhecido, palavra única. */
+const SUBST_Q = "\u0004";
+/** Antes de um `$VAR` FORA de aspas: o shell expande (e pode quebrar em várias palavras). */
+const EXP_U = "\u0001";
+/** Antes de um `$VAR` DENTRO de aspas duplas: o shell expande, palavra única. */
+const EXP_Q = "\u0003";
+/** Sentinela de comando: aninhamento além de `MAX_DEPTH` — lido como merge. */
+const DEPTH_EXCEEDED = "\u0002";
+/** Caractere que, logo depois de `$`, abre uma expansão de parâmetro. */
+const PARAM_START_RE = /[A-Za-z_{0-9@*#?$!-]/;
+const MARKER_RE = /[\u0000-\u0004]/;
+
+/** A palavra tem algo que o SHELL expande em execução (`$VAR` fora de aspas simples, `$(…)`, crase). */
+function isExpanded(v) {
+  return typeof v !== "string" || MARKER_RE.test(v);
+}
+
+/** Conservador: expansão do shell OU um `$` literal (ex.: `'…/$N'` entre aspas simples). */
+function isOpaque(v) {
+  return isExpanded(v) || v.includes("$");
+}
+
+/** Marca a invocação como de REPO indeterminado (lido por `mergeTargetHints`). */
+function unknownTarget(args) {
+  Object.defineProperty(args, "targetUnknown", { value: true, enumerable: false });
+  return args;
+}
+
+/**
+ * Corpo de `$'...'` (ANSI-C quoting) decodificado como o bash faz (#10689 G):
+ * `\xHH`, `\uHHHH`, `\UHHHHHHHH`, octal, `\cX` e os escapes de uma letra. Um
+ * `\0` decodificado trunca a palavra (o bash corta no NUL). Devolve o texto e
+ * o índice logo depois do `'` de fecho.
+ */
+function decodeAnsiC(src, from) {
+  const n = src.length;
+  const simple = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
+  let j = from;
+  let text = "";
+  let truncated = false;
+  const put = (s) => {
+    if (!truncated) text += s;
+  };
+  while (j < n && src[j] !== "'") {
+    if (src[j] !== "\\" || j + 1 >= n) {
+      put(src[j]);
+      j++;
+      continue;
+    }
+    const c = src[j + 1];
+    j += 2;
+    if (Object.hasOwn(simple, c)) {
+      put(simple[c]);
+      continue;
+    }
+    const digits = (re, max) => {
+      const m = re.exec(src.slice(j, j + max));
+      return m ? m[0] : "";
+    };
+    let code;
+    if (c === "x" || c === "u" || c === "U") {
+      const max = c === "x" ? 2 : c === "u" ? 4 : 8;
+      const h = digits(new RegExp(`^[0-9A-Fa-f]{1,${max}}`), max);
+      if (h === "") {
+        put(`\\${c}`);
+        continue;
+      }
+      code = parseInt(h, 16);
+      j += h.length;
+    } else if (/[0-7]/.test(c)) {
+      const more = digits(/^[0-7]{1,2}/, 2);
+      code = parseInt(c + more, 8) & 0xff;
+      j += more.length;
+    } else if (c === "c" && j < n) {
+      code = src.charCodeAt(j) & 0x1f;
+      j++;
+    } else {
+      put(`\\${c}`);
+      continue;
+    }
+    if (code === 0) {
+      truncated = true;
+      continue;
+    }
+    try {
+      put(String.fromCodePoint(code));
+    } catch {
+      put("�");
+    }
+  }
+  return { text, end: j + 1 };
+}
 
 /**
  * Lexer: devolve a lista PLANA de comandos simples de `src` — cada um é um
@@ -57,7 +192,8 @@ const MAX_DEPTH = 8;
  */
 export function parseShellCommands(src, depth = 0, ctx = DEFAULT_CTX) {
   const commands = [];
-  if (typeof src !== "string" || depth > MAX_DEPTH) return commands;
+  if (typeof src !== "string") return commands;
+  if (depth > MAX_DEPTH) return [[DEPTH_EXCEEDED]];
   scan(src, 0, null, commands, depth, ctx);
   return commands;
 }
@@ -71,7 +207,10 @@ const DEFAULT_CTX = Object.freeze({ skipHeredocData: false });
  * uma `'` solta no texto não podem esconder um `$(gh pr merge 5)`).
  */
 function scanSubstitutionsOnly(body, commands, depth, ctx) {
-  if (depth > MAX_DEPTH) return;
+  if (depth > MAX_DEPTH) {
+    commands.push([DEPTH_EXCEEDED]);
+    return;
+  }
   let j = 0;
   while (j < body.length) {
     if (body[j] === "\\") j += 2;
@@ -109,7 +248,10 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
     if (heredocOp !== null) {
       // Delimitador com substituição (`<<"$(x)"`): o valor só existe em
       // execução — o corpo nunca é pulado, segue lido como comandos inline.
-      if (!word.includes("\u0000")) heredocs.push({ delim: word, quoted: wordQuoted, strip: heredocOp === "<<-" });
+      if (!word.includes(SUBST) && !word.includes(SUBST_Q)) {
+        // `<<$X`: o bash não expande o delimitador — tira os marcadores.
+        heredocs.push({ delim: word.replace(/[\u0001\u0003]/g, ""), quoted: wordQuoted, strip: heredocOp === "<<-" });
+      }
       heredocOp = null;
     }
     if (hereString) {
@@ -180,13 +322,18 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
         scan(body, 0, null, commands, depth + 1, ctx);
         scanSubstitutionsOnly(body, commands, depth + 1, ctx);
+      } else if (!ctx.skipHeredocData) {
+        commands.push([DEPTH_EXCEEDED]);
       }
     }
     heredocs.length = 0;
     return pos;
   };
   const nested = (from, close) => {
-    if (depth >= MAX_DEPTH) return n;
+    if (depth >= MAX_DEPTH) {
+      commands.push([DEPTH_EXCEEDED]);
+      return n;
+    }
     return scan(src, from, close, commands, depth + 1, ctx);
   };
 
@@ -210,19 +357,11 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
       continue;
     }
     if (ch === "$" && src[i + 1] === "'") {
-      let j = i + 2;
-      while (j < n && src[j] !== "'") {
-        if (src[j] === "\\" && j + 1 < n) {
-          word += src[j + 1];
-          j += 2;
-          continue;
-        }
-        word += src[j];
-        j++;
-      }
+      const { text, end } = decodeAnsiC(src, i + 2);
+      word += text;
       inWord = true;
       wordQuoted = true;
-      i = j + 1;
+      i = end;
       continue;
     }
     if (ch === "'") {
@@ -246,14 +385,15 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
         }
         if (src[j] === "$" && src[j + 1] === "(") {
           j = nested(j + 2, ")");
-          word += "\u0000"; // valor desconhecido em tempo de análise
+          word += SUBST_Q; // valor desconhecido em tempo de análise
           continue;
         }
         if (src[j] === "`") {
           j = nested(j + 1, "`");
-          word += "\u0000";
+          word += SUBST_Q;
           continue;
         }
+        if (src[j] === "$" && PARAM_START_RE.test(src[j + 1] ?? "")) word += EXP_Q; // #10689 H
         word += src[j];
         j++;
       }
@@ -264,20 +404,20 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
     }
     if (ch === "$" && src[i + 1] === "(") {
       i = nested(i + 2, ")");
-      word += "\u0000";
+      word += SUBST;
       inWord = true;
       continue;
     }
     if (ch === "$" && src[i + 1] === "[") {
       // `$[1<<2]`: aritmética antiga, um span só — o `<<` dali não é heredoc.
       i = arithEnd(src, i + 1);
-      word += "\u0000";
+      word += SUBST;
       inWord = true;
       continue;
     }
     if (ch === "`") {
       i = nested(i + 1, "`");
-      word += "\u0000";
+      word += SUBST;
       inWord = true;
       continue;
     }
@@ -344,6 +484,7 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
       i++;
       continue;
     }
+    if (ch === "$" && PARAM_START_RE.test(src[i + 1] ?? "")) word += EXP_U; // #10689 H
     word += ch;
     inWord = true;
     i++;
@@ -413,7 +554,12 @@ const MERGE_VALUE_FLAGS = new Set([
  * `merge` se ele for um `gh pr merge`, ou `null`. Desce por wrappers,
  * `bash -c '...'`, `eval ...` e `env -S '...'` (recursão em `depth`).
  */
-function mergeArgsOf(words, depth, out) {
+function mergeArgsOf(words, depth, out, env) {
+  // Aninhamento além do teto (#10689 N): acusa em vez de aceitar.
+  if (depth > MAX_DEPTH || words[0] === DEPTH_EXCEEDED) {
+    out.push(unknownTarget([]));
+    return;
+  }
   // `bash <<< 'gh pr merge 5'` / `eval`/`source` com here-string: o texto
   // vai pro stdin de quem o executa. Fail-closed: qualquer palavra que seja
   // um shell/source/./eval, ou a palavra de comando vinda de expansão
@@ -422,23 +568,29 @@ function mergeArgsOf(words, depth, out) {
     const cmdWord = words.find((w) => !ASSIGNMENT_RE.test(w)) ?? "";
     const runs =
       cmdWord.startsWith("$") ||
-      cmdWord.includes("\u0000") ||
+      isExpanded(cmdWord) ||
       words.some((w) => BODY_RUNNERS.has(basename(w).replace(/\.exe$/i, "")));
-    if (runs) for (const s of words.hereStrings) collect(s, depth + 1, out);
+    if (runs) for (const s of words.hereStrings) collect(s, depth + 1, out, DEFAULT_CTX, env);
   }
   let i = 0;
   let viaXargs = false;
+  /** String de substituição do `xargs -I`/`-i`/`--replace` (#10689 E). */
+  let xargsReplace = null;
   for (;;) {
     while (i < words.length && (ASSIGNMENT_RE.test(words[i]) || RESERVED_PREFIX.has(words[i]))) i++;
     if (i >= words.length) return;
     const name = basename(words[i]);
+    if (name === "find") {
+      findExecCommands(words, i + 1, depth, out, env);
+      return;
+    }
     if (name === "eval") {
-      collect(words.slice(i + 1).join(" "), depth + 1, out);
+      collect(words.slice(i + 1).join(" "), depth + 1, out, DEFAULT_CTX, env);
       return;
     }
     if (SHELLS.has(name)) {
       const script = shellDashCScript(words, i + 1);
-      if (script !== null) collect(script, depth + 1, out);
+      if (script !== null) collect(script, depth + 1, out, DEFAULT_CTX, env);
       return;
     }
     const wrapper = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : null;
@@ -453,6 +605,13 @@ function mergeArgsOf(words, depth, out) {
         break;
       }
       if (name === "command" && (w === "-v" || w === "-V")) return; // só consulta, não executa
+      if (name === "xargs") {
+        if (w === "-I") xargsReplace = words[i + 1] ?? "{}";
+        else if (w.startsWith("-I")) xargsReplace = w.slice(2);
+        else if (w === "-i" || w === "--replace") xargsReplace = "{}";
+        else if (/^-i[^-]/.test(w)) xargsReplace = w.slice(2);
+        else if (w.startsWith("--replace=")) xargsReplace = w.slice(10) || "{}";
+      }
       if (w.startsWith("-") && w.length > 1) {
         const flag = w.includes("=") ? w.slice(0, w.indexOf("=")) : w;
         // `env -S 'gh pr merge 5'` / `-S'...'` / `--split-string=...`: a
@@ -469,7 +628,7 @@ function mergeArgsOf(words, depth, out) {
             sTakesNext = rest === "";
             value = sTakesNext ? words[i + 1] : rest;
           }
-          if (typeof value === "string") collect(value, depth + 1, out);
+          if (typeof value === "string") collect(value, depth + 1, out, DEFAULT_CTX, env);
         }
         if (sTakesNext || (wrapper.valueFlags.has(w) && !w.includes("="))) i += 2;
         else i++;
@@ -488,23 +647,576 @@ function mergeArgsOf(words, depth, out) {
     }
   }
   if (i >= words.length || !isGhWord(words[i])) return;
-  i++;
-  // Subcomando `pr`, depois `merge`, com flags permitidas no meio.
-  for (const expected of ["pr", "merge"]) {
-    while (i < words.length && words[i].startsWith("-") && words[i] !== "-") {
-      if (GH_VALUE_FLAGS.has(words[i])) i += 2;
+  let ghArgs = words.slice(i + 1);
+  // `xargs -I{} gh api -X PUT {}`: o `{}` vira o que vier do stdin — opaco.
+  if (viaXargs && xargsReplace) ghArgs = ghArgs.map((a) => (a.includes(xargsReplace) ? a.split(xargsReplace).join(SUBST) : a));
+  // Sem `-I`, o xargs ANEXA o stdin ao fim do comando (inclusive flags).
+  ghInvocation(ghArgs, depth, out, { appends: viaXargs && !xargsReplace, env, chain: [] });
+}
+
+/** Ações do `find` que executam um comando (`-exec … ;`/`+`). */
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
+/** `find . -exec gh pr merge 5 \;` — cada `-exec` é um comando à parte; `{}` é opaco. */
+function findExecCommands(words, from, depth, out, env) {
+  for (let k = from; k < words.length; k++) {
+    if (!FIND_EXEC.has(words[k])) continue;
+    const sub = [];
+    let m = k + 1;
+    while (m < words.length && words[m] !== ";" && words[m] !== "+") {
+      sub.push(words[m].split("{}").join(SUBST));
+      m++;
+    }
+    if (sub.length > 0) mergeArgsOf(sub, depth + 1, out, env);
+    k = m;
+  }
+}
+
+/**
+ * Argumentos depois da palavra `gh`. Reconhece como merge (#10681, #10689):
+ *   - `gh pr merge …` (flags permitidas entre `gh`/`pr`/`merge`);
+ *   - `gh api` com método de escrita num endpoint `…/merge` (`apiMergeArgs`);
+ *   - `gh api graphql` com mutation de merge (`graphqlIsMerge`);
+ *   - alias do gh (`gh m 5` com `m: pr merge` no config, ou definido no
+ *     próprio comando por `gh alias set`) — expandido e lido de novo.
+ */
+function ghInvocation(args, depth, out, ctx) {
+  const { appends, env, chain } = ctx;
+  if (depth > MAX_DEPTH) {
+    out.push(unknownTarget([]));
+    return;
+  }
+  let i = 0;
+  // `-R`/`--repo` global (`gh -R o/r m 5`, `gh pr -R o/r merge 5`): vai junto
+  // na invocação, pra `mergeTargetHints` saber o repo (#10689 M).
+  const repoArgs = [];
+  const skipFlags = () => {
+    while (i < args.length && args[i].startsWith("-") && args[i] !== "-") {
+      const a = args[i];
+      if (a === "-R" || a === "--repo") {
+        repoArgs.push("-R", args[i + 1] ?? SUBST);
+        i += 2;
+      } else if (a.startsWith("--repo=")) {
+        repoArgs.push("-R", a.slice(7));
+        i++;
+      } else if (/^-R./.test(a)) {
+        repoArgs.push("-R", a.slice(2).replace(/^=/, ""));
+        i++;
+      } else if (GH_VALUE_FLAGS.has(a)) i += 2;
       else i++;
     }
-    // `xargs … gh` / `xargs gh pr`: o xargs completa o comando com o que vier
-    // do stdin (`pr merge 5`) — fail-closed, conta como merge.
-    if (i >= words.length && viaXargs) {
-      out.push([]);
+  };
+  skipFlags();
+  // `xargs … gh`: o xargs completa o comando com o que vier do stdin
+  // (`pr merge 5`) — fail-closed, conta como merge.
+  if (i >= args.length) {
+    if (appends) out.push(unknownTarget([...repoArgs]));
+    return;
+  }
+  const sub = args[i];
+  i++;
+  // `gh $S merge 5`: o subcomando só existe em execução (#10689 O).
+  if (isExpanded(sub)) {
+    out.push(unknownTarget([...repoArgs]));
+    return;
+  }
+  if (sub === "pr") {
+    skipFlags();
+    if (i >= args.length) {
+      if (appends) out.push(unknownTarget([...repoArgs]));
       return;
     }
-    if (i >= words.length || words[i] !== expected) return;
-    i++;
+    if (isExpanded(args[i])) {
+      out.push(unknownTarget([...repoArgs, ...args.slice(i + 1)])); // `gh pr $M 5` (#10689 O)
+      return;
+    }
+    if (args[i] !== "merge") return;
+    out.push([...repoArgs, ...args.slice(i + 1)]);
+    return;
   }
-  out.push(words.slice(i));
+  if (sub === "api") {
+    const merge = apiMergeArgs(args.slice(i), appends);
+    if (merge !== null) out.push(merge);
+    return;
+  }
+  if (sub === "alias") {
+    recordAliasDefinition(args.slice(i), env);
+    return;
+  }
+  if (GH_BUILTINS.has(sub)) return;
+  const expansion = lookupGhAlias(sub, env);
+  if (expansion === undefined) return; // extensão do gh ou typo — não é alias
+  if (expansion === null || chain.includes(sub)) {
+    // Alias cuja expansão não dá pra ler (bloco YAML, `gh alias import` no
+    // mesmo comando, valor vindo de expansão, config ilegível) ou que volta
+    // a si mesmo: fail-closed, conta como merge, repo indeterminado.
+    out.push(unknownTarget([...repoArgs]));
+    return;
+  }
+  const rest = args.slice(i);
+  if (expansion.startsWith("!")) {
+    // Alias de shell do gh (`gh alias set --shell`): o resto roda num `sh -c`.
+    collect(expansion.slice(1), depth + 1, out, DEFAULT_CTX, env);
+    return;
+  }
+  const expanded = parseShellCommands(expansion, depth + 1)[0] ?? [];
+  ghInvocation([...repoArgs, ...expanded, ...rest], depth + 1, out, { appends, env, chain: [...chain, sub] });
+}
+
+// ─── `gh api` (#10689) ───────────────────────────────────────────────────
+// `gh api -X PUT repos/o/r/pulls/5/merge` mergeia exatamente como
+// `gh pr merge 5`, e `gh api graphql -f query='mutation { mergePullRequest
+// (…) }'` também. Os dois passam a contar como merge — e, por não casarem a
+// whitelist estrita de `parseStrictMerge` (gh-target-repo.mjs), sempre caem
+// no modo ESTRITO do guard: todo lock que o comando possa tocar é conferido
+// e nenhuma concessão conta. A coordenadora continua podendo mergear por aí.
+
+/** Flags LONGAS de `gh api` que consomem a palavra seguinte (as curtas: `API_SHORT_VALUE`). */
+const API_VALUE_FLAGS = new Set([
+  "--method", "--header", "--raw-field", "--field", "--input", "--jq", "--template", "--hostname", "--cache", "--preview",
+]);
+/** Letras de flag curta de `gh api` que consomem valor (o resto é booleano, ex.: `-i`). */
+const API_SHORT_VALUE = new Set(["X", "H", "f", "F", "q", "t", "p"]);
+/** Flags cujo valor é um campo do corpo da requisição (`chave=valor`). */
+const API_FIELD_FLAGS = new Set(["-f", "--raw-field", "-F", "--field"]);
+/** Métodos que só leem — `GET …/pulls/5/merge` só consulta se a PR foi mergeada. */
+const READ_METHODS = new Set(["GET", "HEAD"]);
+/**
+ * Mutations do GraphQL que mergeiam uma PR (ou enfileiram o merge), mergeiam
+ * duas branches (`mergeBranch`) ou movem a ponta de uma branch (`updateRef`/
+ * `updateRefs`, #10689 K). `\b` deixa de fora as parecidas que não mergeiam
+ * (`disablePullRequestAutoMerge`, `dequeuePullRequest`, `updatePullRequestBranch`).
+ */
+const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeBranch|updateRefs?)\b/i;
+
+/** Começa com uma expansão (`"$URL"`, `$F`, `$(…)`): pode até virar flags. */
+const startsWithExpansion = (w) => /^[\u0000-\u0004]/.test(w);
+/** Expansão FORA de aspas no início: sujeita a word splitting (`$F` = `-X PUT`). */
+const splitsIntoWords = (w) => /^[\u0000\u0001]/.test(w);
+/** `"$@"`, `$*`, `"${arr[@]}"`: vira várias palavras mesmo entre aspas. */
+const isMultiWordExpansion = (w) => /[\u0001\u0003]\$(?:[@*]|\{[^}]*\[[@*]\]\})/.test(w);
+
+/**
+ * Lê os argumentos depois de `gh api`. Devolve a lista de argumentos no
+ * formato de `gh pr merge` (`["-R", "o/r", "5"]`, `["5"]` ou `[]` quando o nº
+ * não é legível) se a chamada mergeia — ou pode mergear — uma PR, ou `null`.
+ *
+ * `appends`: o comando veio de um `xargs` sem `-I`, que ANEXA o stdin (inclusive
+ * flags como `-X PUT`) ao fim — o método nunca é dado como só-leitura.
+ */
+function apiMergeArgs(args, appends) {
+  let method = null;
+  let hasBody = false;
+  let bodyFromFile = false;
+  /** Alguma palavra pode virar flag/método/campo em execução (#10689 C). */
+  let uncertain = appends;
+  const positional = [];
+  const fields = [];
+  const take = (flag, value) => {
+    if (flag === "-X" || flag === "--method") method = value ?? SUBST;
+    else if (API_FIELD_FLAGS.has(flag)) {
+      hasBody = true;
+      fields.push(value ?? SUBST);
+    } else if (flag === "--input") {
+      hasBody = true;
+      bodyFromFile = true;
+    }
+  };
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k];
+    if (w === "--") {
+      positional.push(...args.slice(k + 1));
+      break;
+    }
+    if (w.startsWith("--") && w.length > 2) {
+      const eq = w.indexOf("=");
+      const flag = eq > 0 ? w.slice(0, eq) : w;
+      if (isExpanded(flag)) uncertain = true; // `--$F=…`
+      if (eq > 0) take(flag, w.slice(eq + 1));
+      else if (API_VALUE_FLAGS.has(w)) {
+        take(w, args[k + 1]);
+        k++;
+      }
+      continue;
+    }
+    if (w.startsWith("-") && w.length > 1) {
+      // Cluster de flags curtas (`-iXPUT`, `-X=PUT`, `-fquery=…`): a 1ª letra
+      // que consome valor leva o resto do cluster ou, vazio, a próxima palavra.
+      for (let c = 1; c < w.length; c++) {
+        if (MARKER_RE.test(w[c]) || w[c] === "$") {
+          uncertain = true; // `-$F`: a letra da flag só existe em execução
+          break;
+        }
+        if (!API_SHORT_VALUE.has(w[c])) continue;
+        const rest = w.slice(c + 1).replace(/^=/, "");
+        if (rest !== "") take(`-${w[c]}`, rest);
+        else {
+          take(`-${w[c]}`, args[k + 1]);
+          k++;
+        }
+        break;
+      }
+      continue;
+    }
+    positional.push(w);
+  }
+  // O endpoint é o 1º posicional LITERAL; uma expansão em outra posição (ou
+  // que se quebra em palavras) pode estar trazendo `-X PUT`/campos (#10689 C):
+  // `gh api $F repos/o/r/pulls/5/merge`, `gh api "$@"`. Um único `"$URL"`
+  // entre aspas continua sendo só o endpoint (GET livre).
+  let endIdx = positional.findIndex((w) => !startsWithExpansion(w));
+  if (endIdx === -1) endIdx = positional.length > 0 ? 0 : -1;
+  positional.forEach((w, idx) => {
+    if (isMultiWordExpansion(w)) uncertain = true;
+    else if (idx !== endIdx && startsWithExpansion(w)) uncertain = true;
+    else if (idx === endIdx && splitsIntoWords(w)) uncertain = true;
+  });
+  // `xargs gh api …` sem endpoint: ele vem do stdin — fail-closed.
+  if (endIdx === -1) return uncertain ? unknownTarget([]) : null;
+  const segs = normalizeApiPath(positional[endIdx]);
+  const lower = segs.map((s) => s.toLowerCase());
+  if ((segs.length === 1 && lower[0] === "graphql") || (segs.length === 2 && lower[0] === "api" && lower[1] === "graphql")) {
+    return graphqlIsMerge(fields, bodyFromFile || uncertain) ? unknownTarget([]) : null;
+  }
+  // Sem `-X`, o gh usa POST quando há campos/corpo e GET quando não há.
+  const effective = method === null ? (hasBody ? "POST" : "GET") : method;
+  if (!uncertain && !isOpaque(effective) && READ_METHODS.has(effective.toUpperCase())) return null;
+  return restMergeArgs(segs, isOpaque(effective) ? SUBST : effective.toUpperCase());
+}
+
+/**
+ * Segmentos do caminho de um endpoint: sem esquema/host (`https://api.github.com`,
+ * GHE `/api/v3/`), query e fragmento; percent-encoding decodificado uma vez,
+ * como o servidor faz (`merg%65`, `5%2Fmerge` — #10689 P); `.`/`..` e barras
+ * repetidas resolvidos (`merge/.`).
+ */
+function normalizeApiPath(endpoint) {
+  let s = endpoint.trim();
+  s = s.replace(/^https?:\/\/[^/]+/i, "");
+  s = s.replace(/^\/+/, "");
+  s = s.replace(/^api\/v3\//i, "");
+  s = s.replace(/[?#].*$/s, "");
+  if (s.includes("%")) {
+    try {
+      s = decodeURIComponent(s).replace(/[?#].*$/s, "");
+    } catch {
+      // `%` malformado: o servidor recusa (400) — fica literal.
+    }
+  }
+  const out = [];
+  for (const seg of s.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") out.pop();
+    else out.push(seg);
+  }
+  return out;
+}
+
+/** Nome de owner/repo legível num caminho da API. */
+const isRepoWord = (s) => typeof s === "string" && /^[A-Za-z0-9._-]+$/.test(s);
+
+/**
+ * Coleções da API que NÃO levam a um merge: um caminho com uma delas literal
+ * e o fim opaco (`repos/$REPO/issues/$N`, `pulls/comments/$ID`) segue livre.
+ */
+const NON_MERGE_COLLECTIONS = new Set([
+  "issues", "comments", "reviews", "requested_reviewers", "files", "commits", "labels", "assignees",
+  "milestones", "releases", "actions", "runs", "jobs", "workflows", "contents", "statuses", "check-runs",
+  "check-suites", "hooks", "collaborators", "deployments", "environments", "branches", "tags", "events",
+  "notifications", "search", "users", "user", "orgs", "teams", "gists", "projects", "secrets", "variables",
+  "pages", "forks", "topics", "keys", "invitations", "compare", "readme", "languages", "contributors",
+]);
+
+/** Segmentos literais que levam a um caminho de merge (`pulls/N/merge`, `merges`, `git/refs/heads`). */
+const MERGE_PATH_WORDS = new Set(["pulls", "merges", "git"]);
+
+/** `…/git/refs/heads/<branch>` com os três segmentos literais. */
+function isBranchRefPath(lower, opaque) {
+  for (let g = 0; g + 3 < lower.length; g++) {
+    if (lower[g] === "git" && lower[g + 1] === "refs" && lower[g + 2] === "heads" && !opaque[g] && !opaque[g + 1] && !opaque[g + 2]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Texto literal depois da última expansão de um segmento (`merg$E` → ``). */
+function literalSuffix(seg) {
+  let end = 0;
+  for (const m of seg.matchAll(/[\u0000\u0002\u0004]|[\u0001\u0003]?\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])?/g)) {
+    end = m.index + m[0].length;
+  }
+  return seg.slice(end);
+}
+
+/**
+ * Endpoint REST com método de escrita. É merge quando o caminho é:
+ *   - `…/pulls/{n}/merge` (o único endpoint da API que termina em `merge`);
+ *   - `repos/{o}/{r}/merges` (merge de branch) ou escrita (não DELETE) em
+ *     `…/git/refs/heads/<branch>` (#10689 K) — sem nº de PR;
+ *   - de fim OPACO (`$URL`, `"$P/$E"`, `repos/$R/$P`, `pul$X/5/merg$E`, `{}`
+ *     do xargs — #10689 D/E), salvo quando uma coleção literal que não leva a
+ *     merge vem depois de tudo que poderia levar (`repos/$REPO/issues/$N`).
+ * O repo (`-R o/r`) vai junto quando `repos/{o}/{r}` é literal; `{owner}/
+ * {repo}` é o repo do diretório; qualquer outra forma marca o repo como
+ * indeterminado (`unknownTarget`).
+ */
+function restMergeArgs(segs, method) {
+  const n = segs.length;
+  if (n === 0) return null;
+  const lower = segs.map((s) => s.toLowerCase());
+  const opaque = segs.map(isOpaque);
+  let repoArgs = null;
+  if (n >= 3 && lower[0] === "repos" && !opaque[1] && !opaque[2]) {
+    if (segs[1] === "{owner}" && segs[2] === "{repo}") repoArgs = [];
+    else if (isRepoWord(segs[1]) && isRepoWord(segs[2])) repoArgs = ["-R", `${segs[1]}/${segs[2]}`];
+  }
+  const result = (pr) => {
+    const args = [...(repoArgs ?? []), ...pr];
+    return repoArgs === null ? unknownTarget(args) : args;
+  };
+  const last = n - 1;
+  if (!opaque[last]) {
+    if (lower[last] === "merge") {
+      const num = segs[n - 2];
+      return result(n >= 3 && lower[n - 3] === "pulls" && /^\d+$/.test(num ?? "") ? [num] : []);
+    }
+    if (lower[last] === "merges") return result([]);
+    if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result([]);
+    return null;
+  }
+  if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result([]);
+  const suffix = literalSuffix(segs[last]).toLowerCase();
+  if (suffix !== "" && !"merge".endsWith(suffix) && !"merges".endsWith(suffix)) return null;
+  // Última coleção literal que não leva a merge; se nenhum `pulls`/`merges`/
+  // `git` literal vem depois dela, o fim opaco é dela (`issues/$N`).
+  let anchor = -1;
+  for (let k = 0; k < last; k++) if (!opaque[k] && NON_MERGE_COLLECTIONS.has(lower[k])) anchor = k;
+  if (anchor !== -1 && !lower.some((s, k) => k > anchor && !opaque[k] && MERGE_PATH_WORDS.has(s))) return null;
+  return result([]);
+}
+
+/**
+ * `true` quando a query GraphQL mergeia — ou quando o texto dela não dá pra
+ * ler (`-F query=@arquivo`, `--input`, flags vindas de expansão). #10689 H:
+ * `$` que o SHELL expande (fora de aspas simples: `query="$Q"`, `"$A$B"`,
+ * `"mutation { ${M}(…) }"`) torna a query opaca; `$owner`/`$endCursor`
+ * literais (entre aspas simples) são variáveis do GraphQL e o texto é lido.
+ * Campos que não são `query` (variáveis) nunca mudam a operação.
+ */
+function graphqlIsMerge(fields, unreadable) {
+  if (unreadable) return true;
+  for (const f of fields) {
+    const eq = f.indexOf("=");
+    const key = eq === -1 ? f : f.slice(0, eq);
+    const value = eq === -1 ? "" : f.slice(eq + 1);
+    if (isExpanded(key)) return true; // `-f "$K=…"` pode ser a própria query
+    if (key !== "query") continue;
+    if (value.startsWith("@")) return true;
+    if (isExpanded(value)) return true;
+    if (GRAPHQL_MERGE_RE.test(value)) return true;
+  }
+  return false;
+}
+
+// ─── Aliases do gh (#10689) ──────────────────────────────────────────────
+// `gh alias set m 'pr merge'` + `gh m 5` mergeia sem a palavra `merge` na
+// posição do `gh pr`. Lidos sem rede nem subprocesso: a seção `aliases:` do
+// `config.yml` do gh (`$GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh`, `%AppData%\GitHub
+// CLI` no Windows, `~/.config/gh`), mais os `gh alias set` do próprio comando.
+// Alias de SHELL (`alias m='gh pr merge'` no bash) segue fora de alcance: o
+// hook só vê o texto do comando, nunca o ambiente do shell que o executa.
+//
+// FAIL-CLOSED quando a leitura não é confiável: config que existe mas não abre
+// (EACCES, EISDIR, lock no Windows — #10689 I), seção `aliases:` com linha que
+// o parser não entende (flow style, anchor, chave ilegível — J), ou o próprio
+// comando redefinindo de onde o gh lê o config (`GH_CONFIG_DIR=…`, `HOME=…`,
+// `env -i` — F). Nesses casos todo subcomando que não é builtin conta como
+// alias de merge de repo indeterminado.
+
+/** Comandos de topo do gh (`gh help`, gh 2.8x). Builtin nunca é alias. */
+const GH_BUILTINS = new Set([
+  "auth", "browse", "codespace", "cs", "gist", "issue", "org", "pr", "project", "release", "repo", "skill",
+  "cache", "run", "workflow", "agent-task", "alias", "api", "attestation", "completion", "config", "copilot",
+  "extension", "extensions", "ext", "gpg-key", "label", "licenses", "preview", "ruleset", "search", "secret",
+  "ssh-key", "status", "variable", "help", "version",
+]);
+
+/** Variáveis que decidem de onde o gh lê o `config.yml` (ver `ghConfigPath`). */
+const GH_CONFIG_VARS = "GH_CONFIG_DIR|XDG_CONFIG_HOME|APPDATA|LOCALAPPDATA|HOME|USERPROFILE";
+/** O comando redefine/apaga uma delas (prefixo, `export`, `env`, `unset`, `env -u`, `env -i`). */
+const CONFIG_OVERRIDE_RES = [
+  new RegExp(`(?:^|[^A-Za-z0-9_$])(?:${GH_CONFIG_VARS})\\+?=`, "i"),
+  new RegExp(`\\bunset\\b[^;&|\\n]*\\b(?:${GH_CONFIG_VARS})\\b`, "i"),
+  new RegExp(`(?:\\s-u\\s*|\\s--unset[=\\s])['"]?(?:${GH_CONFIG_VARS})\\b`, "i"),
+  /\benv\b(?:\s+-[A-Za-z]*i[A-Za-z]*|\s+--ignore-environment|\s+-)(?=\s|$)/,
+];
+
+/**
+ * Caminho do `config.yml` do gh, na mesma ordem que o gh procura:
+ * `GH_CONFIG_DIR` > `XDG_CONFIG_HOME/gh` > (Windows) `%AppData%\GitHub CLI` >
+ * `~/.config/gh` (home de `HOME`, ou `USERPROFILE` no Windows).
+ */
+export function ghConfigPath(e = process.env, platform = process.platform) {
+  if (e.GH_CONFIG_DIR) return join(e.GH_CONFIG_DIR, "config.yml");
+  if (e.XDG_CONFIG_HOME) return join(e.XDG_CONFIG_HOME, "gh", "config.yml");
+  if (platform === "win32") {
+    const appData = e.AppData || e.APPDATA;
+    if (appData) return join(appData, "GitHub CLI", "config.yml");
+  }
+  const home = (platform === "win32" ? e.USERPROFILE || e.HOME : e.HOME) || homedir();
+  return join(home, ".config", "gh", "config.yml");
+}
+
+/** Indentação (espaços/tabs iniciais) de uma linha. */
+const indentOf = (line) => /^[ \t]*/.exec(line)[0].length;
+
+/**
+ * Aliases da seção `aliases:` de um `config.yml` do gh: `Map<nome, expansão>`;
+ * expansão `null` quando o valor não é um escalar de uma linha legível
+ * (bloco `|`/`>`, aspas não fechadas, anchor/tag/flow) — quem consulta trata
+ * como merge. Linha da seção que o parser não entende (flow style na própria
+ * chave `aliases:`, chave ilegível, `<<`, continuação de escalar) vai pra
+ * propriedade não-enumerável `unparsed` do Map (#10689 J): com ela, qualquer
+ * nome desconhecido conta como alias ilegível.
+ */
+export function parseGhAliasesYaml(text) {
+  const aliases = new Map();
+  if (typeof text !== "string") return aliases;
+  const unparsed = [];
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/);
+  const keyRe = /^["']?aliases["']?[ \t]*:/;
+  const start = lines.findIndex((l) => keyRe.test(l));
+  if (start !== -1) {
+    const head = lines[start].replace(keyRe, "").replace(/\s+#.*$/, "").trim();
+    if (head !== "") unparsed.push(lines[start]); // `aliases: {m: pr merge}`, `aliases: &a`, `aliases: *a`
+    let keyIndent = -1; // indentação da chave anterior
+    let skipDeeper = false; // linhas mais indentadas pertencem a um valor de bloco
+    let lastName = null;
+    for (let k = start + 1; k < lines.length; k++) {
+      const line = lines[k];
+      if (/^\s*(#.*)?$/.test(line)) continue;
+      if (!/^\s/.test(line)) break; // próxima chave de topo
+      const ind = indentOf(line);
+      if (keyIndent !== -1 && ind > keyIndent) {
+        // Continuação: corpo de bloco (`blk: |`) é esperado; depois de um
+        // escalar de uma linha é continuação de plain scalar — ilegível.
+        if (!skipDeeper && lastName !== null) aliases.set(lastName, null);
+        continue;
+      }
+      const m = /^\s+("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:\s][^:]*?):(?:\s+(.*))?$/.exec(line);
+      if (!m) {
+        unparsed.push(line);
+        continue;
+      }
+      const name = unquoteYaml(m[1]);
+      if (name === null || name === "<<") {
+        unparsed.push(line);
+        continue;
+      }
+      keyIndent = ind;
+      lastName = name;
+      const raw = (m[2] ?? "").trim();
+      if (raw === "" || /^[|>&*!{[]/.test(raw)) {
+        aliases.set(name, null);
+        skipDeeper = true;
+        continue;
+      }
+      skipDeeper = false;
+      aliases.set(name, unquoteYaml(raw.replace(/\s+#.*$/, "")));
+    }
+  }
+  if (unparsed.length > 0) Object.defineProperty(aliases, "unparsed", { value: unparsed, enumerable: false });
+  return aliases;
+}
+
+function unquoteYaml(v) {
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1).replace(/\\(.)/g, "$1");
+  if (v.startsWith("'") || v.startsWith('"')) return null;
+  return v;
+}
+
+let aliasCache = null;
+/**
+ * Aliases do config do gh, lidos uma vez por processo (cache por caminho).
+ * Config AUSENTE (`ENOENT`/`ENOTDIR`, gh nunca configurado) → nenhum alias.
+ * Qualquer outro erro de leitura (#10689 I) → Map vazio com a propriedade
+ * não-enumerável `loadError` (`{ code, message }`): quem consulta trata todo
+ * nome desconhecido como alias ilegível, e o guard loga o erro.
+ */
+export function loadGhAliases(e = process.env, platform = process.platform) {
+  const path = ghConfigPath(e, platform);
+  if (aliasCache !== null && aliasCache.path === path) return aliasCache.aliases;
+  let aliases;
+  try {
+    aliases = parseGhAliasesYaml(readFileSync(path, "utf8"));
+  } catch (err) {
+    aliases = new Map();
+    const code = err && typeof err === "object" && "code" in err ? String(err.code) : "unknown";
+    if (code !== "ENOENT" && code !== "ENOTDIR") {
+      const message = err instanceof Error ? err.message : String(err);
+      Object.defineProperty(aliases, "loadError", { value: { code, message, path }, enumerable: false });
+    }
+  }
+  aliasCache = { path, aliases };
+  return aliases;
+}
+
+/** O Map de aliases não é confiável (config ilegível ou com linha não entendida). */
+const aliasesUnreliable = (aliases) => Boolean(aliases.loadError || aliases.unparsed);
+
+/** Expansão do alias `name` (`undefined` = não é alias; `null` = ilegível). */
+function lookupGhAlias(name, env) {
+  if (env.local.has(name)) return env.local.get(name);
+  // `GH_CONFIG_DIR=/x gh m 5`: o gh vai ler OUTRO config — nada do que foi
+  // lido aqui vale (#10689 F).
+  if (env.configOverridden) return null;
+  const fromConfig = env.aliases.get(name);
+  if (fromConfig !== undefined) return fromConfig;
+  // `gh alias import` no mesmo comando (ou nome de alias opaco), ou config
+  // que não deu pra ler inteiro: qualquer nome desconhecido pode ser alias.
+  return env.importSeen || aliasesUnreliable(env.aliases) ? null : undefined;
+}
+
+/** Valor de `--shell`/`-s` (`--shell=false` desliga; ausente = ligado). */
+function shellFlagValue(w) {
+  const eq = w.indexOf("=");
+  if (eq === -1) return true;
+  const v = w.slice(eq + 1);
+  if (isExpanded(v)) return true; // ilegível: o lado que acusa
+  return !/^(?:false|f|0)$/i.test(v);
+}
+
+/** `gh alias set [--shell] [--clobber] NOME EXPANSÃO` e `gh alias import` do próprio comando. */
+function recordAliasDefinition(args, env) {
+  const sub = args[0];
+  if (sub === "import") {
+    env.importSeen = true;
+    return;
+  }
+  if (sub !== "set") return;
+  let shell = false;
+  const positional = [];
+  for (const w of args.slice(1)) {
+    // #10689 B: `--shell=true`/`-s=true` também ligam o modo shell.
+    if (/^(?:--shell|-s)(?:=|$)/.test(w)) shell = shellFlagValue(w);
+    else if (w.startsWith("-") && w !== "-") continue;
+    else positional.push(w);
+  }
+  const [name, expansion] = positional;
+  if (typeof name !== "string") return;
+  if (isExpanded(name)) {
+    // `gh alias set "$N" 'pr merge'`: o nome só existe em execução.
+    env.importSeen = true;
+    return;
+  }
+  // #10689 A: expansão vinda do shell (`"$X"`, `$X`, `$(…)`) é ilegível.
+  if (typeof expansion !== "string" || expansion === "-" || isExpanded(expansion)) {
+    env.local.set(name, null);
+    return;
+  }
+  env.local.set(name, shell && !expansion.startsWith("!") ? `!${expansion}` : expansion);
 }
 
 /** Script de `bash -c 'script'` (e `-lc`, `-ec`, ...), ou `null`. */
@@ -531,9 +1243,12 @@ function shellDashCScript(words, from) {
   return hasC && i < words.length ? words[i] : null;
 }
 
-function collect(command, depth, out, ctx = DEFAULT_CTX) {
-  if (depth > MAX_DEPTH) return;
-  for (const words of parseShellCommands(command, depth, ctx)) mergeArgsOf(words, depth, out);
+function collect(command, depth, out, ctx, env) {
+  if (depth > MAX_DEPTH) {
+    out.push(unknownTarget([])); // #10689 N: fundo demais conta como merge
+    return;
+  }
+  for (const words of parseShellCommands(command, depth, ctx ?? DEFAULT_CTX)) mergeArgsOf(words, depth, out, env);
 }
 
 // ─── Whitelist de heredoc-como-DADO ──────────────────────────────────────
@@ -587,29 +1302,62 @@ export function isHeredocDataCommand(command) {
 }
 
 /**
- * Todas as invocações reais de `gh pr merge` em `command`, na ordem em que
- * aparecem; cada item é a lista de argumentos depois de `merge`.
+ * Todas as invocações reais de merge em `command` (`gh pr merge`, `gh api`
+ * de merge, alias do gh que expande pra um deles — #10689), na ordem em que
+ * aparecem; cada item é a lista de argumentos no formato de `gh pr merge`
+ * (o que vem depois de `merge`, precedido do `-R` global se houver; pra
+ * `gh api`, `["-R", "o/r", "N"]`/`["N"]` ou `[]` quando o nº não é legível).
+ * Invocação de repo indeterminado leva a propriedade não-enumerável
+ * `targetUnknown: true` (ver `mergeTargetHints`).
+ *
+ * `opts.aliases`: `Map<nome, expansão>` dos aliases do gh — default: os do
+ * `config.yml` do gh (`loadGhAliases`). Testes passam um Map explícito; um
+ * valor que não é Map é erro de programação (`TypeError`), nunca "sem aliases".
+ * `opts.onDiagnostic(kind, details)`: chamado quando o config do gh não pôde
+ * ser lido por inteiro (`gh_alias_config_unreadable`/`gh_alias_config_unparsed`).
  */
-export function findGhPrMergeInvocations(command) {
+export function findGhPrMergeInvocations(command, opts = {}) {
   const out = [];
   if (typeof command !== "string") return out;
-  collect(command, 0, out, { skipHeredocData: isHeredocDataCommand(command) });
+  if (opts?.aliases !== undefined && !(opts.aliases instanceof Map)) {
+    throw new TypeError("findGhPrMergeInvocations: opts.aliases precisa ser um Map (ou ausente)");
+  }
+  const onDiagnostic = typeof opts?.onDiagnostic === "function" ? opts.onDiagnostic : null;
+  // Lazy: o consumidor de concessão roda depois de TODO Bash — o config do gh
+  // só é lido quando aparece um `gh <subcomando não-builtin>`.
+  let aliases = opts?.aliases ?? null;
+  const env = {
+    get aliases() {
+      if (aliases === null) {
+        aliases = loadGhAliases();
+        if (onDiagnostic && aliases.loadError) onDiagnostic("gh_alias_config_unreadable", aliases.loadError);
+        if (onDiagnostic && aliases.unparsed) onDiagnostic("gh_alias_config_unparsed", { lines: aliases.unparsed.length });
+      }
+      return aliases;
+    },
+    local: new Map(),
+    importSeen: false,
+    configOverridden: CONFIG_OVERRIDE_RES.some((re) => re.test(command)),
+  };
+  collect(command, 0, out, { skipHeredocData: isHeredocDataCommand(command) }, env);
   return out;
 }
 
-/** `true` se `command` executa `gh pr merge` (ver limites no topo). */
-export function isGhPrMergeCommand(command) {
-  return findGhPrMergeInvocations(command).length > 0;
+/** `true` se `command` executa um merge de PR (ver limites no topo). */
+export function isGhPrMergeCommand(command, opts = {}) {
+  return findGhPrMergeInvocations(command, opts).length > 0;
 }
 
 /**
- * Número da PR alvo da ÚLTIMA invocação de `gh pr merge` (#6303 Finding S):
- * o primeiro argumento todo-dígitos que não seja valor de uma flag
- * (`--body "100 dias"`, `--subject 5`). `undefined` quando a invocação não
- * traz número (o gh infere a PR pela branch) ou não há merge nenhum.
+ * Número da PR alvo da ÚLTIMA invocação de merge (#6303 Finding S) — de
+ * `gh pr merge`, de `gh api …/pulls/N/merge` ou de um alias expandido: o
+ * primeiro argumento todo-dígitos que não seja valor de uma flag (`--body
+ * "100 dias"`, `--subject 5`, `-R o/r`). `undefined` quando a invocação não
+ * traz número (o gh infere a PR pela branch; mutation GraphQL; caminho
+ * opaco) ou não há merge nenhum.
  */
-export function extractGhPrMergeTargetPr(command) {
-  const all = findGhPrMergeInvocations(command);
+export function extractGhPrMergeTargetPr(command, opts = {}) {
+  const all = findGhPrMergeInvocations(command, opts);
   if (all.length === 0) return undefined;
   const args = all[all.length - 1];
   for (let i = 0; i < args.length; i++) {
@@ -624,4 +1372,45 @@ export function extractGhPrMergeTargetPr(command) {
     }
   }
   return undefined;
+}
+
+const PR_URL_RE = /^https?:\/\/(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+/i;
+
+/**
+ * Repos que as invocações de merge de `command` miram (#10689 M), pro modo
+ * ESTRITO de `resolveMergeTargets`: `repos` = os `-R`/`--repo`/URL de PR
+ * legíveis; `unknown` = alguma invocação tem o repo indeterminado (GraphQL por
+ * `pullRequestId`, caminho opaco, alias ilegível, `-R "$R"`, URL/PR vinda de
+ * expansão, `GH_REPO=$X`) — aí quem chama confere o lock de TODO repo permitido.
+ * O repo do diretório (sem `-R`) não entra aqui: `resolveMergeTargets` já o lê.
+ */
+export function mergeTargetHints(command, opts = {}) {
+  const repos = new Set();
+  let unknown = false;
+  const invocations = findGhPrMergeInvocations(command, opts);
+  if (invocations.length > 0 && /GH_REPO\+?=["']?(?:\$|`)/.test(String(command))) unknown = true;
+  for (const inv of invocations) {
+    if (inv.targetUnknown === true) unknown = true;
+    for (let k = 0; k < inv.length; k++) {
+      const a = inv[k];
+      let value = null;
+      if (a === "-R" || a === "--repo") {
+        value = inv[k + 1] ?? SUBST;
+        k++;
+      } else if (a.startsWith("--repo=")) value = a.slice(7);
+      else if (/^-R./.test(a)) value = a.slice(2).replace(/^=/, "");
+      else if (MERGE_VALUE_FLAGS.has(a)) {
+        k++; // valor de --body/--subject/…: não é PR nem repo
+        continue;
+      } else if (!a.startsWith("-")) {
+        const url = PR_URL_RE.exec(a);
+        if (url) value = url[1];
+        else if (isOpaque(a)) unknown = true; // `gh pr merge "$URL"`: pode ser PR de outro repo
+        continue;
+      } else continue;
+      if (isOpaque(value)) unknown = true;
+      else repos.add(value);
+    }
+  }
+  return { repos: [...repos], unknown };
 }

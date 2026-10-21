@@ -1144,6 +1144,8 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     cpSync(join(ROOT, ".claude/hooks/lib/shell-quote-strip.mjs"), join(r, ".claude/hooks/lib/shell-quote-strip.mjs"));
     // #10618: o guard de PII importa gh-target-repo.mjs (checagem de -R × checkout).
     cpSync(join(ROOT, ".claude/hooks/lib/gh-target-repo.mjs"), join(r, ".claude/hooks/lib/gh-target-repo.mjs"));
+    // #10689: gh-target-repo.mjs importa o detector de merge (alvo do modo estrito).
+    cpSync(join(ROOT, ".claude/hooks/lib/gh-pr-merge-command.mjs"), join(r, ".claude/hooks/lib/gh-pr-merge-command.mjs"));
     writeFileSync(join(r, "_prbody.md"), "corpo solto\n");
     assert.equal(sh("git", ["add", "_prbody.md"], r).status, 0);
     assert.equal(sh("git", ["commit", "-q", "-m", "artefato"], r).status, 0);

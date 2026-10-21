@@ -10,6 +10,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,7 +136,7 @@ describe("e2e: guard do #5716 com --subject/--body (#10716)", () => {
   }
 
   function run(root: string, command: string, sessionId: string): string {
-    const env = { ...process.env };
+    const env = withIsolatedGhConfig();
     delete env.GH_REPO;
     const r = spawnSync(process.execPath, [HOOK], {
       cwd: root,

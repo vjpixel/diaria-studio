@@ -12,6 +12,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -423,6 +424,7 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
       encoding: "utf8",
       timeout: 15_000,
       windowsHide: true,
+      env: withIsolatedGhConfig(),
     });
     return r.stdout ?? "";
   }
@@ -887,6 +889,7 @@ describe("fail-closed: comando fora da forma simples (verificação da PR #10668
       encoding: "utf8",
       timeout: 15_000,
       windowsHide: true,
+      env: withIsolatedGhConfig(),
     });
     return r.stdout ?? "";
   }
@@ -1134,6 +1137,7 @@ describe("ônus da prova invertido: whitelist estrita de merge de fora (re-verif
       encoding: "utf8",
       timeout: 15_000,
       windowsHide: true,
+      env: withIsolatedGhConfig(),
     });
     return r.stdout ?? "";
   }
@@ -1314,7 +1318,7 @@ describe("studio-plain só com prova positiva do origin (ataque final à PR #106
   ): string {
     const payload: Record<string, unknown> = { session_id: o.sessionId ?? "coord-A", tool_name: "Bash", tool_input: { command } };
     if (o.cwd !== null) payload.cwd = o.cwd ?? root;
-    const env = { ...process.env, ...(o.env ?? {}) };
+    const env = { ...withIsolatedGhConfig(), ...(o.env ?? {}) };
     if (!o.env?.GH_REPO) delete env.GH_REPO;
     const r = spawnSync(process.execPath, [HOOK], {
       cwd: root,
