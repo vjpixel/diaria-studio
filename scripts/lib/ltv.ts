@@ -692,6 +692,112 @@ export function computeChurnExitsBetweenSnapshots(
   return { exits, avgActiveBase: (baselineActive.size + latestActive.size) / 2 };
 }
 
+// ---------------------------------------------------------------------------
+// Churn pelo ciclo de vida do Kit (#10703) — a base migrou da Beehiiv pro Kit
+// (#7386) e o snapshot Beehiiv ficou sem ativo nenhum, então ARPU e churn
+// passam a sair do store unificado (`subscription` com `platform='kit'`).
+// ---------------------------------------------------------------------------
+
+/** Linha de `subscription` Kit do store, já com o e-mail resolvido. */
+export interface KitLifecycleRow {
+  email: string;
+  status: string | null;
+  enteredAt: string | null;
+  exitedAt: string | null;
+}
+
+/** Saída por ação do LEITOR (descadastro, reclamação de spam) — churn orgânico. */
+export const KIT_ORGANIC_EXIT_STATUSES: readonly string[] = ["cancelled", "complained"];
+/** Saída por higiene de lista (bounce) — entra só no churn "com limpeza". */
+export const KIT_CLEANUP_EXIT_STATUSES: readonly string[] = ["bounced"];
+
+export interface KitLifetimeChurnResult {
+  /** Pronto pra `computeChurnRate`. */
+  churnInput: ChurnRateInput;
+  /** Ativos (`status='active'`) — denominador do ARPU. */
+  activeCount: number;
+  /** Menor `entered_at` considerado — início do período observado. */
+  periodStart: string | null;
+  /** Soma de assinante×mês ativo no período (exposição). */
+  exposureMonths: number;
+  /** Linhas ativas/saídas sem `entered_at` parseável — fora da exposição e
+   *  das saídas (nunca contadas como tempo zero em silêncio). */
+  semEntradaCount: number;
+}
+
+const DAY_MS = 86_400_000;
+const MONTH_DAYS = 30;
+
+/**
+ * Monta o insumo de churn a partir do ciclo de vida das assinaturas Kit
+ * (#10703). Não há série histórica do Kit por dia que sirva pra um diff de
+ * 2 snapshots (`kit-active-history.jsonl` tem leituras de teste com
+ * `count: 1` misturadas), e o `exited_at` do store é o momento em que a
+ * ingestão VIU a saída, não o momento real dela. Por isso o churn é medido
+ * sobre o período inteiro do Kit, por exposição:
+ *
+ * - período = do menor `entered_at` até `nowMs`;
+ * - exposição = soma dos meses ativos de cada assinatura: ativa conta de
+ *   `entered_at` até agora; a que saiu conta METADE do intervalo entre
+ *   `entered_at` e `exited_at` (ou agora, se `exited_at` faltar), porque a
+ *   data real da saída é desconhecida dentro desse intervalo;
+ * - base ativa média = exposição ÷ período, então `computeChurnRate`
+ *   devolve saídas ÷ exposição.
+ *
+ * Status `inactive` (nunca confirmou) e desconhecidos ficam fora: quem
+ * nunca esteve ativo não pode sair. Bounce e limpeza manual conhecida
+ * contam só no churn "com limpeza". @pure
+ */
+export function computeKitLifetimeChurn(
+  rows: readonly KitLifecycleRow[],
+  manualCleanupEmails: ReadonlySet<string>,
+  nowMs: number,
+): KitLifetimeChurnResult {
+  const exits: ChurnExitEvent[] = [];
+  const cleanupEmails = new Set(manualCleanupEmails);
+  let activeCount = 0;
+  let exposureMonths = 0;
+  let periodStartMs: number | null = null;
+  let semEntradaCount = 0;
+
+  for (const row of rows) {
+    const status = row.status ?? "";
+    const isActive = status === "active";
+    const isOrganicExit = KIT_ORGANIC_EXIT_STATUSES.includes(status);
+    const isCleanupExit = KIT_CLEANUP_EXIT_STATUSES.includes(status);
+    if (!isActive && !isOrganicExit && !isCleanupExit) continue;
+    if (isActive) activeCount++;
+
+    const enteredMs = row.enteredAt ? Date.parse(row.enteredAt) : NaN;
+    if (!Number.isFinite(enteredMs) || enteredMs > nowMs) {
+      semEntradaCount++;
+      continue;
+    }
+    periodStartMs = periodStartMs == null ? enteredMs : Math.min(periodStartMs, enteredMs);
+    const email = normalizeEmailLocal(row.email);
+
+    if (isActive) {
+      exposureMonths += (nowMs - enteredMs) / DAY_MS / MONTH_DAYS;
+      continue;
+    }
+    const exitedMs = row.exitedAt ? Date.parse(row.exitedAt) : NaN;
+    const upperMs = Number.isFinite(exitedMs) ? Math.min(Math.max(exitedMs, enteredMs), nowMs) : nowMs;
+    exposureMonths += (upperMs - enteredMs) / 2 / DAY_MS / MONTH_DAYS;
+    exits.push({ email });
+    if (isCleanupExit) cleanupEmails.add(email);
+  }
+
+  const periodMonths = periodStartMs == null ? 0 : (nowMs - periodStartMs) / DAY_MS / MONTH_DAYS;
+  const avgActiveBase = periodMonths > 0 && exposureMonths > 0 ? exposureMonths / periodMonths : null;
+  return {
+    churnInput: { exits, manualCleanupEmails: cleanupEmails, periodMonths, avgActiveBase },
+    activeCount,
+    periodStart: periodStartMs == null ? null : new Date(periodStartMs).toISOString(),
+    exposureMonths,
+    semEntradaCount,
+  };
+}
+
 const NORMALIZED_INTERNAL_EMAILS_LTV = new Set(INTERNAL_EMAILS.map(normalizeEmailLocal));
 
 /**
