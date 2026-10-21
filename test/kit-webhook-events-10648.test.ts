@@ -261,6 +261,30 @@ describe("integração com diaria-subscribers-db", () => {
     assert.equal(subscriberId, rosterId);
   });
 
+  it("e-mail trocado no Kit resolve pelo id do Kit, sem criar 2ª pessoa (#10717)", () => {
+    const db = freshDb();
+    const rosterId = ensureSubscriber(db, "kit", "123", "pessoa@exemplo.com");
+    const before = (db.prepare("SELECT COUNT(*) AS n FROM subscriber").get() as { n: number }).n;
+    const { subscriberId, inserted } = recordKitWebhookEvent(db, ev({ email: "Novo@Exemplo.com" }));
+    assert.equal(inserted, true);
+    assert.equal(subscriberId, rosterId);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM subscriber").get() as { n: number }).n, before);
+    const kitAliases = db
+      .prepare("SELECT DISTINCT subscriber_id FROM identity_alias WHERE platform = 'kit' AND external_id = '123'")
+      .all() as Array<{ subscriber_id: number }>;
+    assert.deepEqual(kitAliases.map((r) => r.subscriber_id), [rosterId]);
+    const [row] = getKitWebhookEventsForSubscriber(db, rosterId);
+    assert.equal(row.email, "novo@exemplo.com");
+    // Idempotência pela chave segue valendo.
+    assert.equal(recordKitWebhookEvent(db, ev({ email: "novo@exemplo.com" })).inserted, false);
+  });
+
+  it("id do Kit ainda desconhecido: cria pelo find-or-create de sempre", () => {
+    const db = freshDb();
+    const { subscriberId } = recordKitWebhookEvent(db, ev({ kit_subscriber_id: "999", email: "outra@exemplo.com" }));
+    assert.equal(subscriberId, ensureSubscriber(db, "kit", "999", "outra@exemplo.com"));
+  });
+
   it("merge de identidade carrega a linha do tempo junto", () => {
     const db = freshDb();
     const beehiivId = ensureSubscriber(db, "beehiiv", "b-1", "pessoa@exemplo.com");

@@ -1733,9 +1733,10 @@ export interface KitWebhookEventInput {
 }
 
 /**
- * Grava 1 evento de webhook do Kit, resolvendo o subscriber pelo MESMO alias
- * que o roster usa (`kit`, id do Kit, e-mail) — o evento cai na pessoa que a
- * ingestão do Kit já conhece. Idempotente pela chave do KV (`INSERT OR
+ * Grava 1 evento de webhook do Kit, resolvendo o subscriber pelo id do Kit que
+ * o roster já gravou (`identity_alias` com `platform = 'kit'`) — o evento cai
+ * na pessoa que a ingestão do Kit já conhece, mesmo com e-mail ausente ou
+ * trocado no Kit (#10717). Id desconhecido cai em `ensureSubscriber`. Idempotente pela chave do KV (`INSERT OR
  * IGNORE` sobre `event_key UNIQUE`).
  */
 export function recordKitWebhookEvent(
@@ -1743,14 +1744,16 @@ export function recordKitWebhookEvent(
   ev: KitWebhookEventInput,
   now: string = new Date().toISOString(),
 ): { inserted: boolean; subscriberId: number } {
-  // Corpo sem e-mail: a tripla exata (kit, id, NULL) nunca casa com o alias
-  // do roster (kit, id, e-mail), e `ensureSubscriber` criaria uma 2ª pessoa.
-  // Pelo id do Kit sozinho a identidade já é inequívoca dentro da plataforma.
-  const byKitId = ev.email
-    ? undefined
-    : (db
-        .prepare("SELECT MIN(subscriber_id) AS id FROM identity_alias WHERE platform = 'kit' AND external_id = ?")
-        .get(ev.kit_subscriber_id) as { id: number | null } | undefined);
+  // Resolve SEMPRE pelo id do Kit primeiro, com ou sem e-mail no corpo: o id
+  // é inequívoco dentro da plataforma, o e-mail não. Sem e-mail, a tripla
+  // (kit, id, NULL) nunca casa com o alias do roster; com e-mail trocado no
+  // Kit depois da ingestão do roster (#10717), a tripla (kit, id, e-mail novo)
+  // também não casa — nos dois casos `ensureSubscriber` criaria uma 2ª pessoa
+  // com o mesmo id Kit. Só quando o id ainda não está no store cai no
+  // find-or-create de sempre.
+  const byKitId = db
+    .prepare("SELECT MIN(subscriber_id) AS id FROM identity_alias WHERE platform = 'kit' AND external_id = ?")
+    .get(ev.kit_subscriber_id) as { id: number | null } | undefined;
   const subscriberId =
     byKitId?.id != null ? byKitId.id : ensureSubscriber(db, "kit", ev.kit_subscriber_id, ev.email, now);
   const result = db
