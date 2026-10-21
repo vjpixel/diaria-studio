@@ -24,6 +24,9 @@ import {
   assertNoDuplicateClassKeys,
   NAO_PAGO_NAO_REATIVACAO,
   isNaoPagoNaoReativacao,
+  ACQUISITION_CLASSES,
+  emptyAcquisitionClassCounts,
+  REDE_UTM_SOURCES,
   adaptBeehiivAttribution,
   adaptKitAttribution,
   NAO_AQUISICAO_UTM_SOURCES,
@@ -61,8 +64,8 @@ describe("acquisition-class: módulo puro, sem I/O na cadeia de import", () => {
 // ---------------------------------------------------------------------------
 
 describe("NAO_PAGO_NAO_REATIVACAO", () => {
-  it("é organico + iniciativa, e nada mais", () => {
-    assert.deepEqual([...NAO_PAGO_NAO_REATIVACAO].sort(), ["iniciativa", "organico"]);
+  it("é organico + iniciativa + rede (#10735), e nada mais", () => {
+    assert.deepEqual([...NAO_PAGO_NAO_REATIVACAO].sort(), ["iniciativa", "organico", "rede"]);
   });
 
   it("isNaoPagoNaoReativacao casa só as duas classes do placar", () => {
@@ -115,8 +118,8 @@ describe("classifyAcquisition — armadilha 1: linkedin* é ambíguo", () => {
     ["linkedin / newsletter", { utm_source: "linkedin", utm_medium: "newsletter", utm_channel: null, referring_site: null, created }],
   ];
   for (const [label, input] of cases) {
-    it(`${label} → organico (spec LinkedIn nunca casa como pago sem gasto real)`, () => {
-      assert.equal(classifyAcquisition(input), "organico");
+    it(`${label} → rede (#10735; spec LinkedIn nunca casa como pago sem gasto real)`, () => {
+      assert.equal(classifyAcquisition(input), "rede");
     });
   }
 });
@@ -215,10 +218,10 @@ describe("classifyAcquisition — google.com (spec ambígua com janela)", () => 
 // ---------------------------------------------------------------------------
 
 describe("classifyAcquisition — cadastro que não é aquisição", () => {
-  it("utm_channel=import → indeterminado", () => {
+  it("utm_channel=import → rede (#10735; era indeterminado)", () => {
     assert.equal(
       classifyAcquisition({ utm_source: null, utm_medium: null, utm_channel: "import", referring_site: null, created: 1_785_542_400 }),
-      "indeterminado",
+      "rede",
     );
   });
   it("utm_channel=api → indeterminado", () => {
@@ -372,7 +375,7 @@ describe("classifyAcquisition — corpus congelado (test/fixtures/acquisition-cl
   const entries = loadCorpus();
 
   it("teto de indeterminado ≤ 20% do corpus — nomeando as chaves responsáveis", () => {
-    const counts: Record<AcquisitionClass, number> = { pago: 0, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 };
+    const counts: Record<AcquisitionClass, number> = emptyAcquisitionClassCounts();
     const indeterminadoKeys: string[] = [];
     let total = 0;
     for (const entry of entries) {
@@ -400,7 +403,7 @@ describe("classifyAcquisition — corpus congelado (test/fixtures/acquisition-cl
   });
 
   it("distribuição bate com os números citados no corpo da issue #7173", () => {
-    const counts: Record<AcquisitionClass, number> = { pago: 0, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 };
+    const counts: Record<AcquisitionClass, number> = emptyAcquisitionClassCounts();
     for (const entry of entries) {
       const cls = classifyAcquisition({
         utm_source: entry.utm_source,
@@ -414,7 +417,10 @@ describe("classifyAcquisition — corpus congelado (test/fixtures/acquisition-cl
     assert.equal(counts.pago, 0);
     assert.equal(counts.reativacao, 67);
     assert.equal(counts.iniciativa, 62);
-    assert.equal(counts.organico, 14);
+    // organico 14 da issue #7173 = linkedin 8 + linkedin.com 3 (rede desde
+    // o #10735) + beehiiv.com 1 + google.com 1 + instagram 1.
+    assert.equal(counts.rede, 11);
+    assert.equal(counts.organico, 3);
     // indeterminado = 30 (direct) + 5 (internal) = 35 no fixture (a issue
     // separa "interno" da distribuição de classe — aqui os dois caem em
     // `indeterminado`, decisão documentada no módulo).
@@ -470,5 +476,63 @@ describe("adaptKitAttribution", () => {
   it("aceita createdEpochSeconds diretamente", () => {
     const out = adaptKitAttribution({ fields: {}, createdEpochSeconds: 1_785_542_400 });
     assert.equal(out.created, 1_785_542_400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #10735 — classe `rede` (direct/import/linkedin) separada de organico
+// ---------------------------------------------------------------------------
+
+describe("classifyAcquisition — #10735: classe rede", () => {
+  const created = 1_785_542_400;
+  it("utm_source=direct (literal da plataforma) → rede, nunca organico", () => {
+    assert.equal(classifyAcquisition({ utm_source: "direct", created }), "rede");
+    assert.equal(classifyAcquisition({ utm_source: " Direct ", created }), "rede");
+  });
+  it("utm_channel=import → rede, mesmo sem utm_source", () => {
+    assert.equal(classifyAcquisition({ utm_channel: "import", created }), "rede");
+  });
+  it("linkedin por referring_site (sem utm_source) → rede", () => {
+    assert.equal(classifyAcquisition({ referring_site: "linkedin.com", created }), "rede");
+  });
+  it("direct PURO (sem utm_source nem referring_site) continua indeterminado — sem sinal não é rede", () => {
+    assert.equal(classifyAcquisition({ created }), "indeterminado");
+  });
+  it("import com utm_source interno → indeterminado (regra de não-aquisição vence)", () => {
+    assert.equal(classifyAcquisition({ utm_source: "internal", utm_channel: "import", created }), "indeterminado");
+  });
+  it("import com utm_source de reativação → reativacao (regra 2 vence)", () => {
+    assert.equal(classifyAcquisition({ utm_source: "brevo-diaria", utm_channel: "import", created }), "reativacao");
+  });
+  it("utm_channel=api segue indeterminado (só import virou rede)", () => {
+    assert.equal(classifyAcquisition({ utm_channel: "api", created }), "indeterminado");
+  });
+  it("orgânico frio (instagram, beehiiv.com) segue organico", () => {
+    assert.equal(classifyAcquisition({ utm_source: "instagram", utm_medium: "social", created }), "organico");
+    assert.equal(classifyAcquisition({ referring_site: "beehiiv.com", created }), "organico");
+  });
+  it("rede conta no placar da meta (não-pago e não-reativação)", () => {
+    assert.equal(isNaoPagoNaoReativacao("rede"), true);
+  });
+  it("ACQUISITION_CLASSES lista as 6 classes, sem repetição, e emptyAcquisitionClassCounts zera todas", () => {
+    assert.deepEqual(
+      [...ACQUISITION_CLASSES].sort(),
+      ["pago", "reativacao", "iniciativa", "rede", "organico", "indeterminado"].sort(),
+    );
+    assert.equal(new Set(ACQUISITION_CLASSES).size, ACQUISITION_CLASSES.length);
+    const counts = emptyAcquisitionClassCounts();
+    assert.deepEqual(Object.keys(counts).sort(), [...ACQUISITION_CLASSES].sort());
+    assert.ok(Object.values(counts).every((v) => v === 0));
+  });
+  it("REDE_UTM_SOURCES não colide com outra classe (guard de chave duplicada cobre rede)", () => {
+    assert.doesNotThrow(() => assertNoDuplicateClassKeys());
+    assert.throws(
+      () =>
+        assertNoDuplicateClassKeys([
+          { keys: REDE_UTM_SOURCES, cls: "rede" },
+          { keys: ["direct"], cls: "organico" },
+        ]),
+      /duas classes/,
+    );
   });
 });

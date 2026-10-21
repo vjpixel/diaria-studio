@@ -318,10 +318,10 @@ describe("cadastros-dia (#7176) — nunca 0 por dado ausente", () => {
     assert.equal(r.valor, 1);
   });
 
-  it("decomposicao 'classe' devolve as 5 classes somando o total", async () => {
+  it("decomposicao 'classe' devolve as 6 classes somando o total", async () => {
     const deps = baseAcquisitionDeps({
       registros: () => [
-        record({ utm_source: "linkedin" }), // organico
+        record({ utm_source: "linkedin" }), // rede (#10735)
         record({ utm_source: "sparkloop-upscribe" }), // iniciativa
         record({ utm_source: null, referring_site: null }), // indeterminado (direct)
       ],
@@ -342,10 +342,11 @@ describe("cadastros-dia (#7176) — nunca 0 por dado ausente", () => {
 describe("cadastros-nao-pago-nao-reativacao-dia — o placar (#7176)", () => {
   const def = getMetric("cadastros-nao-pago-nao-reativacao-dia")!;
 
-  it("faixa: piso organico+iniciativa, teto soma indeterminados, nunca por subtração", async () => {
+  it("faixa: piso organico+iniciativa+rede, teto soma indeterminados, nunca por subtração", async () => {
     const deps = baseAcquisitionDeps({
       registros: () => [
-        record({ utm_source: "linkedin" }), // organico
+        record({ utm_source: "instagram" }), // organico
+        record({ utm_source: "linkedin" }), // rede (#10735) — conta no placar
         record({ utm_source: "sparkloop-upscribe" }), // iniciativa
         record({ utm_source: null, referring_site: null }), // indeterminado
         record({ utm_source: "brevo-diaria" }), // reativacao — fora do placar
@@ -353,8 +354,8 @@ describe("cadastros-nao-pago-nao-reativacao-dia — o placar (#7176)", () => {
     });
     const r = await def.computar({ janela: janelaDia("2026-08-26"), deps });
     assert.equal(r.qualidade, "faixa");
-    assert.equal(r.valor, 2); // piso = organico(1) + iniciativa(1)
-    assert.deepEqual(r.limites, { min: 2, max: 3, rotuloMax: "com não-atribuídos" });
+    assert.equal(r.valor, 3); // piso = organico(1) + iniciativa(1) + rede(1)
+    assert.deepEqual(r.limites, { min: 3, max: 4, rotuloMax: "com não-atribuídos" });
   });
 
   it("sem coleta devolve indeterminado", async () => {
@@ -371,7 +372,8 @@ describe("cadastros-organicos-dia — orgânico estrito", () => {
   it("piso = só organico, teto soma indeterminados", async () => {
     const deps = baseAcquisitionDeps({
       registros: () => [
-        record({ utm_source: "linkedin" }),
+        record({ utm_source: "instagram" }),
+        record({ utm_source: "linkedin" }), // rede (#10735), não conta no orgânico estrito
         record({ utm_source: "sparkloop-upscribe" }), // iniciativa, não conta aqui
         record({ utm_source: null, referring_site: null }),
       ],
@@ -669,7 +671,7 @@ describe("sessoes-dia (#7184) — nunca 0 por dado ausente", () => {
     assert.equal(r.qualidade, "exato");
   });
 
-  it("decomposicao 'classe' devolve as 5 classes somando o total", async () => {
+  it("decomposicao 'classe' devolve as 6 classes somando o total", async () => {
     const deps = baseGa4Deps({
       sessoes: () => [
         ga4Session({ sessionSource: "google", sessionMedium: "cpc", sessions: 5 }), // pago

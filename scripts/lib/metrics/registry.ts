@@ -78,6 +78,8 @@
 
 import {
   classifyAcquisition,
+  emptyAcquisitionClassCounts,
+  NAO_PAGO_NAO_REATIVACAO,
   type AcquisitionClass,
   type AcquisitionClassInput,
 } from "./acquisition-class.ts";
@@ -420,13 +422,7 @@ async function aggregateAcquisition(
   const raw = await deps.registros(janela);
   const { kept } = filterInternalAndTestSubscribers(raw);
   const filtered = kept.filter((r) => r.dia !== KIT_IMPORT_DAY);
-  const porClasse: Record<AcquisitionClass, number> = {
-    pago: 0,
-    reativacao: 0,
-    iniciativa: 0,
-    organico: 0,
-    indeterminado: 0,
-  };
+  const porClasse: Record<AcquisitionClass, number> = emptyAcquisitionClassCounts();
   for (const r of filtered) {
     const input: AcquisitionClassInput = {
       utm_source: r.utm_source,
@@ -459,7 +455,7 @@ const cadastrosDiaDef: MetricDef<AcquisitionMetricDeps> = {
     KIT_SERIES_FLOOR +
     " — dias anteriores vêm do snapshot Beehiiv (F7, fora desta fatia); o CHAMADOR decide quais " +
     "registros passa para registros(), este texto só documenta o piso, nunca filtra sozinho. " +
-    "decomposicao 'classe' devolve as 5 classes de #7173.",
+    "decomposicao 'classe' devolve as 6 classes de #7173.",
   unidade: "contagem",
   direcao: "maior-melhor",
   fonte: "store do #6464 (data/diaria-subscribers/diaria-subscribers.db, subscriber/subscription) + data/metrics/captura-log.jsonl (F2)",
@@ -482,8 +478,8 @@ const cadastrosNaoPagoNaoReativacaoDiaDef: MetricDef<AcquisitionMetricDeps> = {
   produto: "diaria",
   etapa: "aquisicao",
   definicao:
-    "cadastros-dia restrito às classes organico + iniciativa de #7173 (o placar da meta de 5/dia). " +
-    "Piso = organico + iniciativa; teto = piso + indeterminado do dia (não distribuído entre classes). " +
+    "cadastros-dia restrito às classes organico + iniciativa + rede de #7173/#10735 (o placar da meta de 5/dia). " +
+    "Piso = organico + iniciativa + rede; teto = piso + indeterminado do dia (não distribuído entre classes). " +
     "Nunca por subtração do total.",
   unidade: "contagem",
   direcao: "maior-melhor",
@@ -494,14 +490,16 @@ const cadastrosNaoPagoNaoReativacaoDiaDef: MetricDef<AcquisitionMetricDeps> = {
     const result = await aggregateAcquisition(args.janela, args.deps);
     if ("indeterminado" in result) return result.indeterminado;
     const { porClasse, frescor } = result.aggregate;
-    const min = porClasse.organico + porClasse.iniciativa;
+    // #10735: soma as classes de NAO_PAGO_NAO_REATIVACAO (organico +
+    // iniciativa + rede) — fonte única da definição do placar.
+    const min = NAO_PAGO_NAO_REATIVACAO.reduce((acc, c) => acc + porClasse[c], 0);
     const max = min + porClasse.indeterminado;
     return faixa(
       min,
       max,
       args.janela,
       frescor,
-      "faixa: piso = organico+iniciativa; teto soma os cadastros indeterminados do período, nunca distribuídos entre classes",
+      "faixa: piso = organico+iniciativa+rede; teto soma os cadastros indeterminados do período, nunca distribuídos entre classes",
       "com não-atribuídos",
     );
   },
@@ -513,8 +511,8 @@ const cadastrosOrganicosDiaDef: MetricDef<AcquisitionMetricDeps> = {
   produto: "diaria",
   etapa: "aquisicao",
   definicao:
-    "cadastros-dia restrito à classe organico ESTRITA de #7173 (SEO, direct atribuível, social orgânico " +
-    "recorrente, indicação de leitor) — métrica de saúde de descoberta pura, exibida ao lado do placar, " +
+    "cadastros-dia restrito à classe organico ESTRITA de #7173 (SEO, social orgânico recorrente, indicação " +
+    "de leitor; sem a rede do editor — direct/import/linkedin são a classe rede desde #10735) — métrica de saúde de descoberta pura, exibida ao lado do placar, " +
     "nunca no lugar dele. Piso = organico; teto = organico + indeterminado do período.",
   unidade: "contagem",
   direcao: "maior-melhor",
@@ -959,7 +957,7 @@ export interface Ga4TrafficMetricDeps extends MetricDeps {
 }
 
 /** Núcleo compartilhado por `sessoes-dia`/`sessoes-por-classe-dia`: aplica a
- *  allowlist de `hostName` e classifica cada linha nas 5 classes de F1.
+ *  allowlist de `hostName` e classifica cada linha nas 6 classes de F1.
  *  Nunca soma host fora da allowlist — linhas descartadas ficam em
  *  `unclassifiedHosts`, disponíveis para quem quiser expor a conferência
  *  (não incluído no `MetricResult` desta fatia, ver "Fora de escopo" da
@@ -993,7 +991,7 @@ const sessoesDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
     "SUM(sessions) do relatório fino GA4 (date,sessionSource,sessionMedium,sessionCampaignName,hostName) " +
     `restrito à allowlist de hostName [${GA4_HOSTNAME_ALLOWLIST.join(", ")}] (host fora da allowlist nunca ` +
     "entra, mesmo que a propriedade GA4 516813959 cubra o Vigil.ia.br inteiro). decomposicao 'classe' " +
-    "devolve as 5 classes de #7173, classificadas por GA4_SOURCE_MEDIUM_CLASSE_TABLE (ga4-channel.ts) — " +
+    "devolve as 6 classes de #7173, classificadas por GA4_SOURCE_MEDIUM_CLASSE_TABLE (ga4-channel.ts) — " +
     "NUNCA sessionDefaultChannelGroup, que é só coluna de conferência.",
   unidade: "contagem",
   direcao: "maior-melhor",

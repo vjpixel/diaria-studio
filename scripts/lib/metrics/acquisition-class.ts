@@ -1,7 +1,8 @@
 /**
  * scripts/lib/metrics/acquisition-class.ts (#7173, fatia 1 do épico #7172)
  *
- * Taxonomia canônica de classe de aquisição — 5 valores exclusivos, primeira
+ * Taxonomia canônica de classe de aquisição — 6 valores exclusivos (5 até o
+ * #10735, que separou `rede`), primeira
  * regra que casa vence (mesma disciplina de `classifyExecTrack`,
  * `scripts/lib/issue-exec-track.ts`).
  *
@@ -36,7 +37,8 @@
  *    resolve.** `CHANNEL_KEY_SPECS` lista as chaves LinkedIn como pagas, mas
  *    nenhuma campanha rodou (`spend.csv` tem só a linha placeholder R$0).
  *    Enquanto a spec LinkedIn não tiver gasto > 0, todo `utm_source` com
- *    prefixo `linkedin` é `organico` — resolvido aqui excluindo a spec
+ *    prefixo `linkedin` é não-pago (`rede` desde o #10735; era `organico`
+ *    antes) — resolvido aqui excluindo a spec
  *    "LinkedIn" do matching de `pago` (nunca casa, decisão explícita, não
  *    efeito colateral da ordem das regras).
  * 2. **`utm_medium=referral` rotula o maior canal pago não-boost.**
@@ -80,17 +82,41 @@ import {
 // Taxonomia
 // ---------------------------------------------------------------------------
 
-/** As 5 classes exclusivas (decisão do editor, #7172, 02/09/2026). */
-export type AcquisitionClass = "pago" | "reativacao" | "iniciativa" | "organico" | "indeterminado";
+/** As 6 classes exclusivas (decisão do editor, #7172, 02/09/2026; `rede`
+ *  separada de `organico`/`indeterminado` no #10735, 21/10/2026). */
+export type AcquisitionClass = "pago" | "reativacao" | "iniciativa" | "rede" | "organico" | "indeterminado";
+
+/**
+ * Todas as classes, na ordem de exibição — fonte única pra quem precisa
+ * enumerá-las (contadores zerados por classe, tabelas). Travado contra o
+ * union por `test/acquisition-class.test.ts`.
+ */
+export const ACQUISITION_CLASSES: readonly AcquisitionClass[] = [
+  "pago",
+  "reativacao",
+  "iniciativa",
+  "rede",
+  "organico",
+  "indeterminado",
+];
+
+/** Contador zerado por classe — evita que cada consumidor repita o literal
+ *  (e esqueça uma classe nova, que foi o risco do #10735). @pure */
+export function emptyAcquisitionClassCounts(): Record<AcquisitionClass, number> {
+  return Object.fromEntries(ACQUISITION_CLASSES.map((c) => [c, 0])) as Record<AcquisitionClass, number>;
+}
 
 /**
  * O placar da meta de 5/dia (`não-pago e não-reativação`, decisão 1 do
- * #7172) = `organico + iniciativa`. Símbolo nomeado — F4 (registry) e F6
+ * #7172) = `organico + iniciativa + rede`. `rede` (#10735) entra no placar
+ * porque é não-paga e não-reativação por definição — e porque `direct` e
+ * `linkedin`, que a compõem, já contavam no placar como `organico` antes da
+ * separação (o placar não encolhe por causa de uma mudança de rótulo). Símbolo nomeado — F4 (registry) e F6
  * (painel) leem daqui em vez de somar as duas classes na tela cada um do seu
  * jeito, que é exatamente como a definição da meta divergiria de si mesma.
  * @pure
  */
-export const NAO_PAGO_NAO_REATIVACAO: readonly AcquisitionClass[] = ["organico", "iniciativa"];
+export const NAO_PAGO_NAO_REATIVACAO: readonly AcquisitionClass[] = ["organico", "iniciativa", "rede"];
 
 /** `true` se a classe conta para o placar da meta de ativação. @pure */
 export function isNaoPagoNaoReativacao(cls: AcquisitionClass): boolean {
@@ -133,8 +159,32 @@ export const INICIATIVA_UTM_SOURCE_CATALOG: readonly string[] = [
 
 /** `utm_channel` que sinaliza cadastro que NÃO É AQUISIÇÃO — nunca cai em
  *  `organico` por omissão. Inclui as fontes internas medidas no snapshot de
- *  30/08 com 1-2 registros cada. */
-export const NAO_AQUISICAO_UTM_CHANNELS: readonly string[] = ["import", "api"];
+ *  30/08 com 1-2 registros cada. `import` saiu daqui no #10735 — é cadastro
+ *  da rede do editor (`REDE_UTM_CHANNELS`), não sistema. */
+export const NAO_AQUISICAO_UTM_CHANNELS: readonly string[] = ["api"];
+
+/**
+ * Classe `rede` (#10735): cadastro vindo da rede pessoal do editor — quem
+ * chega por ele, não por descoberta fria. Na análise de LTV por origem de
+ * 21/10/2026 esses cadastros tiveram LTV de R$ 31–36 contra R$ 2–3 do
+ * orgânico frio e do pago, e concentram os apoiadores do apoia.se — misturá-
+ * los em `organico` (direct/linkedin) ou `indeterminado` (import) apagava a
+ * diferença. Três sinais, todos explícitos:
+ * - `utm_channel = import` (`REDE_UTM_CHANNELS`) — contato importado pelo
+ *   editor. O import EM MASSA da migração Beehiiv→Kit já sai antes, por dia
+ *   (`KIT_IMPORT_DAY` em `registry.ts`), não por esta regra;
+ * - `utm_source = direct` (`REDE_UTM_SOURCES`) — o literal que a plataforma
+ *   grava pra quem digitou/colou o link (`utm-canonical.ts`, classe
+ *   `"direct"`). Direct PURO (sem `utm_source` nem `referring_site`) NÃO é
+ *   rede: sem sinal nenhum, segue `indeterminado`;
+ * - `utm_source`/grupo com prefixo `linkedin` — os posts do editor. Enquanto
+ *   a spec "LinkedIn" de `CHANNEL_KEY_SPECS` não tiver gasto (armadilha 1),
+ *   nunca é `pago`; se um dia tiver, `pago` casa antes (regra 1).
+ */
+export const REDE_UTM_CHANNELS: readonly string[] = ["import"];
+export const REDE_UTM_SOURCES: readonly string[] = ["direct"];
+/** Prefixo de `utm_source`/grupo que classifica como `rede` (ver acima). */
+export const REDE_UTM_SOURCE_PREFIX = "linkedin";
 
 /** `utm_source`/marcadores internos que nunca são aquisição real — mesma
  *  disciplina do item acima, valores medidos no snapshot de 30/08.
@@ -171,7 +221,7 @@ export const NAO_AQUISICAO_UTM_SOURCES: readonly string[] = [
  * Classe = `organico`, não `iniciativa`: `iniciativa` é audiência de
  * PARCEIRO ou de outro produto nosso (Clarice, boost, SparkLoop);
  * `SUPERFICIE_PROPRIA_UTM_SOURCES` é tráfego que chegou numa página NOSSA
- * (mesma natureza do apex). O placar (`organico + iniciativa`) sai igual
+ * (mesma natureza do apex). O placar (`organico + iniciativa + rede`) sai igual
  * nas duas leituras — só muda o "orgânico estrito".
  */
 export const SUPERFICIE_PROPRIA_UTM_SOURCES: readonly string[] = [
@@ -218,6 +268,7 @@ export function assertNoDuplicateClassKeys(
     { keys: INICIATIVA_UTM_SOURCE_CATALOG, cls: "iniciativa" },
     { keys: SUPERFICIE_PROPRIA_UTM_SOURCES, cls: "organico" },
     { keys: NAO_AQUISICAO_UTM_SOURCES, cls: "indeterminado" },
+    { keys: REDE_UTM_SOURCES, cls: "rede" },
   ],
 ): void {
   const seen = new Map<string, string>();
@@ -334,7 +385,7 @@ function withinSpecWindow(created: number, janela: CohortWindow | undefined): bo
 }
 
 /**
- * Classifica UMA tupla de atribuição nas 5 classes exclusivas. Primeira
+ * Classifica UMA tupla de atribuição nas 6 classes exclusivas. Primeira
  * regra que casa vence.
  *
  * @pure
@@ -374,14 +425,22 @@ export function classifyAcquisition(input: AcquisitionClassInput): AcquisitionCl
   //    o #8244 — ver a nota em `NAO_AQUISICAO_UTM_SOURCES`).
   if (SUPERFICIE_PROPRIA_UTM_SOURCES.includes(source)) return "organico";
 
-  // 5. indeterminado — cadastro que não é aquisição (import/api, fontes internas).
+  // 5. indeterminado — cadastro que não é aquisição (api, fontes internas).
+  //    Antes de `rede`: um `utm_source` interno nunca vira rede só porque o
+  //    registro também traz `utm_channel=import`.
   if (NAO_AQUISICAO_UTM_CHANNELS.includes(channel)) return "indeterminado";
   if (NAO_AQUISICAO_UTM_SOURCES.includes(source)) return "indeterminado";
 
-  // 6. organico — todo utm_source com prefixo "linkedin" (enquanto a spec
-  //    LinkedIn não tiver gasto real), mais qualquer outro sinal positivo
-  //    de origem (source ou referring_site presentes e não capturados acima).
-  if (source.startsWith("linkedin") || groupKey.startsWith("linkedin")) return "organico";
+  // 6. rede (#10735) — rede pessoal do editor: utm_channel=import,
+  //    utm_source=direct, ou prefixo "linkedin" (enquanto a spec LinkedIn não
+  //    tiver gasto real — com gasto, a regra 1 casa antes). Ver
+  //    `REDE_UTM_CHANNELS`.
+  if (REDE_UTM_CHANNELS.includes(channel)) return "rede";
+  if (REDE_UTM_SOURCES.includes(source)) return "rede";
+  if (source.startsWith(REDE_UTM_SOURCE_PREFIX) || groupKey.startsWith(REDE_UTM_SOURCE_PREFIX)) return "rede";
+
+  // 7. organico — qualquer outro sinal positivo de origem (source ou
+  //    referring_site presentes e não capturados acima).
   if (groupKey !== "__none__") return "organico";
 
   // direct puro / utm_source vazio e sem referring_site: sem sinal positivo.

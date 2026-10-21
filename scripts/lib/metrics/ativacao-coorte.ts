@@ -199,6 +199,7 @@ function emptyPorClasse(): AtivacaoCoortePorClasse {
     pago: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
     reativacao: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
     iniciativa: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
+    rede: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
     organico: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
     indeterminado: { denom: 0, numeradorResolvido: 0, naoResolvidos: 0 },
   };

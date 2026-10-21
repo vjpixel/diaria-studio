@@ -1,7 +1,7 @@
 /**
  * scripts/lib/metrics/ga4-channel.ts (#7184, fatia 12 do épico #7172)
  *
- * Classificação de sessões GA4 nas mesmas 5 classes de aquisição de F1
+ * Classificação de sessões GA4 nas mesmas 6 classes de aquisição de F1
  * (`scripts/lib/metrics/acquisition-class.ts`) + allowlist de `hostName` —
  * o núcleo puro que F12 usa para calcular `sessoes-dia`,
  * `sessoes-por-classe-dia` e `conversao-visita-cadastro`.
@@ -14,7 +14,7 @@
  * (`google`/`cpc`, `facebook`/`paid_social`, `linkedin`/`referral`) — dois
  * espaços de nomes diferentes, casamento por igualdade de string sempre
  * falharia. `GA4_SOURCE_MEDIUM_CLASSE_TABLE` é a tabela de equivalência
- * explícita e versionada entre o vocabulário GA4 e as 5 classes de F1.
+ * explícita e versionada entre o vocabulário GA4 e as 6 classes de F1.
  *
  * ## Allowlist de `hostName`
  *
@@ -73,7 +73,7 @@ interface Ga4ClasseRule {
  * tem classe própria em F1 (`reativacao`, o mesmo `utm_source` que
  * `activateSubscription`/`promoteBeehiivSubscription` escrevem). `google/cpc`,
  * `bing/cpc`, `microsoft/cpc` e `facebook|instagram/paid_social` cobrem os 3
- * braços de `PREFLIGHT_UTM_ARMS`. `linkedin/*` é sempre `organico` (mesma
+ * braços de `PREFLIGHT_UTM_ARMS`. `linkedin/*` é sempre `rede` (#10735; mesma
  * regra da armadilha 1 de `acquisition-class.ts` — nenhuma campanha paga
  * rodou ainda).
  */
@@ -97,9 +97,11 @@ export const GA4_SOURCE_MEDIUM_CLASSE_TABLE: readonly Ga4ClasseRule[] = [
   { source: "newsletter", medium: "email", classe: "indeterminado" },
   { source: "beehiiv", medium: "email", classe: "indeterminado" },
 
-  // organico — LinkedIn sempre orgânico enquanto não houver gasto real
-  // (mesma armadilha 1 de acquisition-class.ts).
-  { sourcePrefix: "linkedin", classe: "organico" },
+  // rede — LinkedIn (posts do editor) enquanto não houver gasto real
+  // (mesma armadilha 1 de acquisition-class.ts; `rede` desde o #10735, pra
+  // casar com a classe que `classifyAcquisition` dá ao cadastro — senão a
+  // conversão sessão→cadastro por classe sairia "sem-par" dos dois lados).
+  { sourcePrefix: "linkedin", classe: "rede" },
   { medium: "organic", classe: "organico" },
   { medium: "social", classe: "organico" },
   { medium: "referral", classe: "organico" },
@@ -114,7 +116,7 @@ function normalize(value: string | undefined | null): string {
 
 /**
  * Classifica UMA linha de sessão GA4 (sessionSource/sessionMedium) numa das
- * 5 classes de F1. Nunca lança — combinação não mapeada cai em
+ * 6 classes de F1. Nunca lança — combinação não mapeada cai em
  * `indeterminado` (mesmo default de `classifyAcquisition` para
  * direct/sem-sinal), nunca em `organico` por omissão.
  *
@@ -186,17 +188,21 @@ export function filterByHostAllowlist(
 // ---------------------------------------------------------------------------
 
 /**
- * Soma `sessions` por classe (5 classes de F1) sobre linhas JÁ filtradas
+ * Soma `sessions` por classe (6 classes de F1) sobre linhas JÁ filtradas
  * pela allowlist (`filterByHostAllowlist().included`). Não filtra por dia —
  * o CHAMADOR decide a janela ao montar `rows`.
  *
  * @pure
  */
 export function aggregateGa4SessionsByClasse(rows: readonly Ga4ChannelRow[]): Record<AcquisitionClass, number> {
+  // Literal (não `emptyAcquisitionClassCounts`): este módulo só importa TIPO
+  // de `acquisition-class.ts` — o `Record<AcquisitionClass, …>` já faz o tsc
+  // recusar uma classe esquecida.
   const porClasse: Record<AcquisitionClass, number> = {
     pago: 0,
     reativacao: 0,
     iniciativa: 0,
+    rede: 0,
     organico: 0,
     indeterminado: 0,
   };

@@ -196,6 +196,26 @@ export function toEngagementSubscriber(sub: BeehiivBackupSubscriber): Engagement
  *  mágico dentro de cada call site. */
 const ENGAGEMENT_THRESHOLD_UNUSED = 40;
 
+/**
+ * #10729: algum ativo com `stats` traz `total_unique_opened` numérico? A
+ * coorte montada a partir do store unificado (`--fonte store`,
+ * `buildCacCompatibleSubscribersFromStore`) só tem recebidas/cliques — sem o
+ * campo de abertura, `computeGroupEngagement` soma 0 abertos e devolve
+ * `abertura_agregada = 0`, um "0.0%" que parece medido e não é. Sem NENHUM
+ * ativo com o campo, a abertura é "sem dado" (`null`, renderizado `—`), nunca
+ * zero. Cobertura parcial (parte dos ativos com o campo) segue calculada como
+ * sempre — o caso real é tudo-ou-nada por fonte. @pure
+ */
+export function hasOpenData(subs: readonly EngagementSubscriber[]): boolean {
+  return subs.some((s) => s.status === "active" && s.stats != null && typeof s.stats.total_unique_opened === "number");
+}
+
+/** `abertura` quando a coorte tem dado de abertura; `null` quando não tem
+ *  (#10729 — ver `hasOpenData`). @pure */
+function aberturaOrNull(abertura: number | null, subs: readonly EngagementSubscriber[]): number | null {
+  return hasOpenData(subs) ? abertura : null;
+}
+
 // ---------------------------------------------------------------------------
 // Chaves de grupo conhecidas por canal (Google Ads, LinkedIn — medidos)
 // ---------------------------------------------------------------------------
@@ -433,18 +453,20 @@ export function computeMeasuredRow(
 
   const engagementSubs = effectiveSubs.map(toEngagementSubscriber);
   const engagement = computeGroupEngagement(engagementSubs, { threshold: ENGAGEMENT_THRESHOLD_UNUSED });
+  const aberturaAgregada = aberturaOrNull(engagement.abertura_agregada, engagementSubs);
   const leitores = countLeitoresV1(effectiveSubs);
 
   let aberturaAgregadaAnterior: number | null = null;
   let degradado: boolean | null = null;
   if (opts.previousChannelSubs) {
     const previousEffectiveSubs = window ? filterSubsByWindow(opts.previousChannelSubs, window) : opts.previousChannelSubs;
-    const prevEngagement = computeGroupEngagement(previousEffectiveSubs.map(toEngagementSubscriber), {
+    const prevEngagementSubs = previousEffectiveSubs.map(toEngagementSubscriber);
+    const prevEngagement = computeGroupEngagement(prevEngagementSubs, {
       threshold: ENGAGEMENT_THRESHOLD_UNUSED,
     });
-    aberturaAgregadaAnterior = prevEngagement.abertura_agregada;
-    if (engagement.abertura_agregada != null && prevEngagement.abertura_agregada != null) {
-      const deltaPct = (engagement.abertura_agregada - prevEngagement.abertura_agregada) * 100;
+    aberturaAgregadaAnterior = aberturaOrNull(prevEngagement.abertura_agregada, prevEngagementSubs);
+    if (aberturaAgregada != null && aberturaAgregadaAnterior != null) {
+      const deltaPct = (aberturaAgregada - aberturaAgregadaAnterior) * 100;
       degradado = deltaPct <= -DEGRADATION_THRESHOLD_PCT;
     }
   }
@@ -463,7 +485,7 @@ export function computeMeasuredRow(
     window,
     excludedMissingCreated,
     custoPorLeitor: leitores > 0 ? spend.valor / leitores : null,
-    aberturaAgregada: engagement.abertura_agregada,
+    aberturaAgregada,
     amostraConsiderada: engagement.amostra_considerada,
     amostraInstavel: engagement.amostra_instavel,
     amostraVazia: engagement.amostra_vazia,
@@ -562,10 +584,14 @@ export interface CacReport {
  *  stats, independente de canal) — o denominador contra o qual cada canal é
  *  comparado ("aprova ou reprova", regra de saída do #4466). @pure */
 export function computeBaseMetrics(subs: BeehiivBackupSubscriber[]): CacBaseMetrics {
-  const engagement = computeGroupEngagement(subs.map(toEngagementSubscriber), {
+  const engagementSubs = subs.map(toEngagementSubscriber);
+  const engagement = computeGroupEngagement(engagementSubs, {
     threshold: ENGAGEMENT_THRESHOLD_UNUSED,
   });
-  return { aberturaAgregada: engagement.abertura_agregada, amostraConsiderada: engagement.amostra_considerada };
+  return {
+    aberturaAgregada: aberturaOrNull(engagement.abertura_agregada, engagementSubs),
+    amostraConsiderada: engagement.amostra_considerada,
+  };
 }
 
 /** Combina duas janelas por INTERSECÇÃO (a mais restritiva de cada borda
