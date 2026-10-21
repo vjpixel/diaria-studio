@@ -68,6 +68,8 @@ import {
   formContentGate,
   idsInConfirmedFollowupLots,
   idsInUnresolvedFollowupLots,
+  isApoioStep,
+  isoToSec,
   isUnresolvedFollowupLot,
   normalizeEmail,
   parseFollowupSnippet,
@@ -436,14 +438,19 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     return false;
   });
 
-  // Teto de lote ANTES das leituras singulares (review #10623): etapa acima do
-  // teto não gasta uma consulta ao Kit por pessoa só pra ser descartada.
+  // Teto de lote ANTES das leituras singulares (review #10623), em lote PARCIAL
+  // (#10631): saem até o teto, cadastro mais antigo primeiro (a janela dele
+  // fecha antes); o excedente fica sem registro e volta a ser devido na rodada
+  // seguinte, dentro da janela da etapa.
   const capOverflowMsg = `acima do teto (${cfg.maxRecipientsPerLot}) — nada enviado; conferir com o editor e subir onboarding.followup.max_recipients_per_lot`;
-  const { within: dueWithinCap, overCap } = splitDueByCap(due, cfg.maxRecipientsPerLot);
-  for (const o of overCap) {
-    run.over_cap++;
-    bump(o.kind, "acima_do_teto", o.eligible);
-    lotsOut.push({ kind: o.kind, eligible: o.eligible, skipped: capOverflowMsg });
+  const cadastroSecById = new Map(apoioCandidates.map((c) => [c.kit_subscriber_id, isoToSec(c.cadastro_at)] as const));
+  const anchorSecById = new Map(formCandidates.map((c) => [c.kit_subscriber_id, c.anchorSec] as const));
+  const orderSec = (d: { kit_subscriber_id: number; kind: FollowupStepKind }) =>
+    (isApoioStep(d.kind) ? cadastroSecById.get(d.kit_subscriber_id) : anchorSecById.get(d.kit_subscriber_id)) ?? null;
+  const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(due, cfg.maxRecipientsPerLot, orderSec);
+  for (const o of capDeferred) {
+    bump(o.kind, "adiado_teto", o.deferred);
+    lotsOut.push({ kind: o.kind, eligible: o.eligible, deferred: o.deferred, cap: cfg.maxRecipientsPerLot });
   }
 
   // Checagem perto do envio: ativo + não apoia (leitura singular, nunca a listagem).

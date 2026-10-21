@@ -521,6 +521,7 @@ const FOLLOWUP_MOTIVO_LABELS = {
   nao_ativo: "não ativo",
   consulta_falhou: "consulta ao Kit falhou",
   acima_do_teto: "acima do teto do lote",
+  adiado_teto: "adiado (teto do lote — sai nos próximos dias)",
   ja_em_lote: "já em lote confirmado",
 };
 

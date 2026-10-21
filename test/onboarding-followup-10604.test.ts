@@ -313,7 +313,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     assert.equal(r2.run.lots_created, 0, "etapa já enviada/pulada não volta");
   });
 
-  it("acima do teto de lote: nada sai e a rodada conta como falha", async () => {
+  it("#10631 acima do teto de lote: sai um lote parcial até o teto e a rodada NÃO conta como falha", async () => {
     const storePath = tempStore();
     const cad = new Date(T0 * 1000).toISOString();
     const deps = fakeDeps({
@@ -323,14 +323,16 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     });
     const small = { ...cfg, maxRecipientsPerLot: 2 };
     const { run } = await runFollowupRound({ storePath, send: true, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
-    assert.equal(run.over_cap, 1);
-    assert.equal(deps.calls.filter((c) => c.startsWith("lot:")).length, 0);
+    assert.equal(run.over_cap, 0);
+    assert.equal(run.counts.apoio30?.enviado, 2);
+    assert.equal(run.counts.apoio30?.adiado_teto, 1);
+    assert.equal(deps.calls.filter((c) => c.startsWith("lot:")).length, 1);
     const block = { people: {}, lots: {} };
     recordFollowupRun(block, run);
-    assert.equal((block as { consecutive_failed_runs?: number }).consecutive_failed_runs, 1);
+    assert.equal((block as { consecutive_failed_runs?: number }).consecutive_failed_runs, 0);
   });
 
-  it("#10623 teto aplicado ANTES das leituras singulares: etapa acima do teto não consulta o Kit por pessoa", async () => {
+  it("#10623/#10631 teto aplicado ANTES das leituras singulares: só quem cabe no lote é consultado no Kit", async () => {
     const storePath = tempStore();
     const cad = new Date(T0 * 1000).toISOString();
     const deps = fakeDeps({
@@ -340,10 +342,10 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     });
     const small = { ...cfg, maxRecipientsPerLot: 2 };
     const { run, lots } = await runFollowupRound({ storePath, send: false, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
-    assert.equal(deps.calls.filter((c) => c.startsWith("get:")).length, 0, "nenhum GET /subscribers/{id} pra lote descartado");
-    assert.equal(run.over_cap, 1);
-    assert.equal(run.counts.apoio30?.acima_do_teto, 3);
-    assert.equal(lots.length, 1);
+    assert.deepEqual(deps.calls.filter((c) => c.startsWith("get:")), ["get:1", "get:2"], "nenhum GET /subscribers/{id} pro excedente adiado");
+    assert.equal(run.over_cap, 0);
+    assert.equal(run.counts.apoio30?.adiado_teto, 1);
+    assert.equal(lots.length, 2, "registro do adiamento + lote parcial (dry-run)");
   });
 
   it("#10623 quem tem a tag envio-brevo não recebe apoio nem formulário pelo Kit", async () => {
