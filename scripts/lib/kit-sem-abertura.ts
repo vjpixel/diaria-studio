@@ -439,7 +439,25 @@ export interface KitSemAberturaWave {
   newCount: number;
   backlogCount: number;
   deferred: number;
+  /**
+   * #10664 — o resto do backlog (fora de `slots`), na mesma ordem (mais antigo
+   * primeiro). O sync puxa daqui quando um contato do backlog da onda é pulado
+   * na confirmação (blacklisted na Brevo, apoiador pelo GET singular): sem a
+   * reposição, quem é pulado não fica registrado em lugar nenhum, volta a ser
+   * selecionado na rodada seguinte e, sendo o mais antigo, ocupa a mesma vaga
+   * todo dia — a fila para. Contado em `deferred`.
+   */
+  backlogReserve: KitSemAberturaSelected[];
 }
+
+/**
+ * #10664 — teto de reposições do backlog por rodada (contatos pulados na
+ * confirmação e trocados pelo próximo da fila). Cada reposição custa uma
+ * leitura na Brevo (blacklist) e, se passar, um GET singular no Kit; o teto só
+ * limita o pior caso de uma rodada (milhares de blacklisted seguidos na cabeça
+ * do backlog). Atingido, o sync avisa no log.
+ */
+export const KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS = 1000;
 
 /** Pura — "novo" = cadastrado no Kit há no máximo `newSignupWindowDays` dias.
  *  Novos entram ANTES do backlog e sem o teto da fila, mas sujeitos à cota da
@@ -462,7 +480,7 @@ export function planKitSemAberturaWave(params: {
   rolloutPaused: boolean;
 }): KitSemAberturaWave {
   if (params.rolloutPaused) {
-    return { toMove: [], newCount: 0, backlogCount: 0, deferred: params.selected.length };
+    return { toMove: [], newCount: 0, backlogCount: 0, deferred: params.selected.length, backlogReserve: [] };
   }
   const novos = params.selected.filter((s) => isNewSignup(s.created_at, params.nowMs, params.newSignupWindowDays));
   const backlog = params.selected
@@ -478,6 +496,7 @@ export function planKitSemAberturaWave(params: {
     newCount: novos.length,
     backlogCount: backlogNow.length,
     deferred: backlog.length - backlogNow.length,
+    backlogReserve: backlog.slice(backlogNow.length),
   };
 }
 
