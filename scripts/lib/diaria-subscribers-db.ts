@@ -1789,26 +1789,45 @@ export function hasKitWebhookEventKey(db: DatabaseSync, key: string): boolean {
  * simétrica: se a listagem eventualmente consistente do KV entregar a
  * tentativa posterior numa ingestão e a anterior só na seguinte, a segunda a
  * chegar ainda casa com a primeira.
+ *
+ * Evento de OUTRO tipo do mesmo assinante entre os dois desfaz o casamento
+ * (#10747): `activate` → `unsubscribe` → `activate` em 20 min são 3 fatos, não
+ * um retry — o 2º `activate` é uma reativação real. O intervalo é aberto nas
+ * pontas e conta tanto o que já está no store quanto `pending` (o resto do
+ * lote sendo ingerido), porque a listagem do KV pode entregar o `unsubscribe`
+ * do meio só depois de um dos `activate`.
  */
 export function hasKitWebhookEventNear(
   db: DatabaseSync,
   ev: Pick<KitWebhookEventInput, "key" | "type" | "kit_subscriber_id" | "url" | "received_at">,
   windowMs: number,
+  pending: readonly Pick<KitWebhookEventInput, "type" | "kit_subscriber_id" | "received_at">[] = [],
 ): boolean {
   const t = Date.parse(ev.received_at);
   if (Number.isNaN(t)) return false;
   const from = new Date(t - windowMs).toISOString();
   const to = new Date(t + windowMs).toISOString();
-  return (
-    db
-      .prepare(
-        `SELECT 1 FROM kit_webhook_event
-         WHERE received_at >= ? AND received_at <= ?
-           AND kit_subscriber_id = ? AND type = ? AND url IS ? AND event_key <> ?
-         LIMIT 1`,
-      )
-      .get(from, to, ev.kit_subscriber_id, ev.type, ev.url, ev.key) !== undefined
-  );
+  const matches = db
+    .prepare(
+      `SELECT m.received_at AS ts FROM kit_webhook_event m
+       WHERE m.received_at >= ? AND m.received_at <= ?
+         AND m.kit_subscriber_id = ? AND m.type = ? AND m.url IS ? AND m.event_key <> ?
+         AND NOT EXISTS (
+           SELECT 1 FROM kit_webhook_event o
+           WHERE o.kit_subscriber_id = m.kit_subscriber_id AND o.type <> m.type
+             AND o.received_at > min(m.received_at, ?) AND o.received_at < max(m.received_at, ?)
+         )`,
+    )
+    .all(from, to, ev.kit_subscriber_id, ev.type, ev.url, ev.key, ev.received_at, ev.received_at) as unknown as {
+    ts: string;
+  }[];
+  if (matches.length === 0) return false;
+  const others = pending.filter((p) => p.kit_subscriber_id === ev.kit_subscriber_id && p.type !== ev.type);
+  return matches.some(({ ts }) => {
+    const lo = ts < ev.received_at ? ts : ev.received_at;
+    const hi = ts < ev.received_at ? ev.received_at : ts;
+    return !others.some((o) => o.received_at > lo && o.received_at < hi);
+  });
 }
 
 /** Linha do tempo de webhooks do Kit de 1 assinante, em ordem cronológica. */

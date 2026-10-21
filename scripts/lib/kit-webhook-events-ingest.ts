@@ -92,6 +92,10 @@ export async function fetchKitWebhookEvents(
  *    retry, não há como separar). Para cancelamento/bounce/reclamação/
  *    ativação, repetir o mesmo fato em 30 min não acrescenta informação.
  *  - Eventos de tipo, URL ou assinante diferentes nunca são agrupados.
+ *  - Evento de OUTRO tipo do mesmo assinante entre os dois desfaz o retry
+ *    (#10747): `activate` → `unsubscribe` → `activate` dentro da janela são 3
+ *    registros. Mesmo tipo com URL diferente no meio (clique em A, em B, em A)
+ *    NÃO desfaz — segue o custo aceito acima para cliques.
  */
 export const KIT_WEBHOOK_RETRY_DEDUPE_MS = 30 * 60 * 1000;
 
@@ -112,12 +116,21 @@ export function ingestKitWebhookEvents(
   let alreadyKnown = 0;
   let retryDuplicates = 0;
   // Ordem cronológica: dentro de um lote, a 1ª tentativa é a que fica.
-  for (const ev of sortKitWebhookEvents([...events])) {
+  const sorted = sortKitWebhookEvents([...events]);
+  // Eventos do lote por assinante: um evento de outro tipo ainda não gravado
+  // (vem depois na ordem) também desfaz o casamento de retry (#10747).
+  const bySubscriber = new Map<string, KitWebhookEventRecord[]>();
+  for (const ev of sorted) {
+    const list = bySubscriber.get(ev.kit_subscriber_id);
+    if (list) list.push(ev);
+    else bySubscriber.set(ev.kit_subscriber_id, [ev]);
+  }
+  for (const ev of sorted) {
     if (hasKitWebhookEventKey(db, ev.key)) {
       alreadyKnown++;
       continue;
     }
-    if (hasKitWebhookEventNear(db, ev, KIT_WEBHOOK_RETRY_DEDUPE_MS)) {
+    if (hasKitWebhookEventNear(db, ev, KIT_WEBHOOK_RETRY_DEDUPE_MS, bySubscriber.get(ev.kit_subscriber_id))) {
       retryDuplicates++;
       continue;
     }
