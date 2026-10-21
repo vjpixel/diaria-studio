@@ -159,7 +159,7 @@ describe("#10605 contrato do formulário", () => {
     assert.equal(isAuthorizedResponsesRequest("Bearer ", undefined), false);
     assert.equal(formResponseKey(" A@X.com"), "resp:a@x.com");
   });
-  it("#10623 prefill: o + do e-mail cru (sem url_encode) volta da query como espaço e é restaurado", () => {
+  it("#10623/#10657 prefill: o + do e-mail cru (link sem filtro Liquid) volta da query como espaço e é restaurado", () => {
     const q = new URL("https://f.example/?email=ana+news@x.com").searchParams.get("email");
     assert.equal(q, "ana news@x.com");
     assert.equal(prefillEmailFromQuery(q), "ana+news@x.com");

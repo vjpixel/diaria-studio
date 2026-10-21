@@ -13,6 +13,9 @@
  *
  * Puro e só com Web Crypto (`globalThis.crypto.subtle`): roda igual no Node
  * (executor `scripts/onboarding-followup-run.ts`) e no Worker — sem `node:*`.
+ * Os DOIS lados usam este módulo, então a normalização do segredo (trim) e do
+ * e-mail vive só aqui: um `\n` sobrando no `.env` ou no `wrangler secret put`
+ * não faz um lado assinar com um valor e o outro verificar com outro.
  *
  * ## Como a assinatura chega ao e-mail
  *
@@ -23,14 +26,21 @@
  * padrão do `voto_token` (`scripts/publish-voto-tema-kit.ts`).
  *
  * Segredo: `ONBOARDING_FORM_LINK_SECRET` — secret do Worker (wrangler) E var
- * do executor (.env/Doppler), com o MESMO valor. Ausente no executor = envio
- * do formulário travado (fail-closed); ausente no Worker = 503 not_configured.
+ * do executor (.env/Doppler), com o MESMO valor, de pelo menos
+ * `MIN_LINK_SECRET_LENGTH` caracteres. Ausente ou curto no executor = envio
+ * do formulário travado (fail-closed); ausente ou curto no Worker = 503
+ * not_configured. Trocar o valor invalida os links já enviados E um
+ * formulário aberto antes da troca (o POST dele volta 403 e a pessoa perde as
+ * respostas digitadas) — trocar só fora de horário de envio.
  */
 
 import { normalizeFormEmail } from "./onboarding-form-contract.ts";
 
 /** Nome do secret no Worker e da var de ambiente do executor. */
 export const ONBOARDING_FORM_LINK_SECRET_ENV = "ONBOARDING_FORM_LINK_SECRET";
+
+/** Tamanho mínimo do segredo (depois do trim). `openssl rand -base64 32` dá 44. */
+export const MIN_LINK_SECRET_LENGTH = 32;
 
 /** Custom field do Kit que guarda a assinatura de cada pessoa. Precisa
  *  EXISTIR no Kit: o Kit descarta campo desconhecido em silêncio (2xx), por
@@ -40,6 +50,18 @@ export const FORM_SIG_KIT_FIELD = "form_sig";
 /** Versão no material assinado: trocar o formato invalida links antigos de
  *  propósito, sem colidir com outro uso do mesmo segredo. */
 const SIG_CONTEXT = "onboarding-form:v1:";
+
+export type LinkSecretCheck = { ok: true; secret: string } | { ok: false; detalhe: string };
+
+/** Único lugar que normaliza o segredo: trim + tamanho mínimo. */
+export function checkLinkSecret(raw: string | null | undefined): LinkSecretCheck {
+  const secret = String(raw ?? "").trim();
+  if (secret === "") return { ok: false, detalhe: `${ONBOARDING_FORM_LINK_SECRET_ENV} ausente` };
+  if (secret.length < MIN_LINK_SECRET_LENGTH) {
+    return { ok: false, detalhe: `${ONBOARDING_FORM_LINK_SECRET_ENV} com ${secret.length} caracteres (mínimo ${MIN_LINK_SECRET_LENGTH})` };
+  }
+  return { ok: true, secret };
+}
 
 function base64url(bytes: Uint8Array): string {
   let bin = "";
@@ -54,10 +76,12 @@ async function hmac(secret: string, message: string): Promise<Uint8Array> {
 }
 
 /** Assinatura (base64url, sem padding) do e-mail normalizado. Lança com
- *  segredo vazio: assinar com segredo vazio daria link forjável. */
-export async function signFormEmail(email: string, secret: string): Promise<string> {
-  if (!secret) throw new Error("[onboarding-form-link-sig] segredo vazio — recusando assinar");
-  return base64url(await hmac(secret, normalizeFormEmail(email)));
+ *  segredo ausente ou curto (`checkLinkSecret`): assinar com segredo fraco
+ *  daria link forjável. */
+export async function signFormEmail(email: string, rawSecret: string): Promise<string> {
+  const s = checkLinkSecret(rawSecret);
+  if (!s.ok) throw new Error(`[onboarding-form-link-sig] recusando assinar: ${s.detalhe}`);
+  return base64url(await hmac(s.secret, normalizeFormEmail(email)));
 }
 
 /** Compara em tempo constante (para o mesmo tamanho). */
@@ -68,15 +92,29 @@ export function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** `true` só com segredo, e-mail e assinatura presentes e a assinatura certa
- *  para aquele e-mail. Nunca lança. */
-export async function verifyFormEmailSig(email: string | null | undefined, sig: string | null | undefined, secret: string | null | undefined): Promise<boolean> {
-  if (!secret || !email || !sig) return false;
-  const normalized = normalizeFormEmail(email);
-  if (normalized === "") return false;
+/** Motivo da recusa, para o log do Worker (nunca o e-mail nem a assinatura). */
+export type FormSigRejection = "segredo_invalido" | "email_vazio" | "sig_vazia" | "sig_divergente";
+
+/** Verificação com motivo. Nunca lança. */
+export async function checkFormEmailSig(
+  email: string | null | undefined,
+  sig: string | null | undefined,
+  rawSecret: string | null | undefined,
+): Promise<{ ok: true } | { ok: false; reason: FormSigRejection }> {
+  const s = checkLinkSecret(rawSecret);
+  if (!s.ok) return { ok: false, reason: "segredo_invalido" };
+  const normalized = normalizeFormEmail(email ?? "");
+  if (normalized === "") return { ok: false, reason: "email_vazio" };
+  if (!sig) return { ok: false, reason: "sig_vazia" };
   try {
-    return constantTimeEqual(await signFormEmail(normalized, secret), sig);
+    return constantTimeEqual(await signFormEmail(normalized, s.secret), sig) ? { ok: true } : { ok: false, reason: "sig_divergente" };
   } catch {
-    return false;
+    return { ok: false, reason: "sig_divergente" };
   }
+}
+
+/** `true` só com segredo válido, e-mail e assinatura presentes e a assinatura
+ *  certa para aquele e-mail. Nunca lança. */
+export async function verifyFormEmailSig(email: string | null | undefined, sig: string | null | undefined, secret: string | null | undefined): Promise<boolean> {
+  return (await checkFormEmailSig(email, sig, secret)).ok;
 }

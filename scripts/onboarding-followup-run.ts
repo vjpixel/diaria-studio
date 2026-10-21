@@ -74,6 +74,8 @@ import {
   findLatestFollowupLot,
   formCandidatesFromEntries,
   formContentGate,
+  buildFormLink,
+  FORM_LINK_PROBE_EMAIL,
   idsInConfirmedFollowupLots,
   idsInUnresolvedFollowupLots,
   isApoioStep,
@@ -308,23 +310,45 @@ export interface FollowupRoundDeps {
   isTransientLookupError?(err: unknown): boolean;
   /**
    * #10657: grava a assinatura do link do formulário no custom field
-   * `form_sig` da pessoa e devolve o valor lido da RESPOSTA do PATCH (o Kit
-   * descarta campo inexistente com 2xx): string = valor guardado; `null` = a
-   * resposta trouxe `fields` sem `form_sig`; `undefined` = a resposta veio sem
-   * `fields` (não prova nada — o executor relê pelo GET singular). Ausente =
-   * nenhuma assinatura gravável: quem ainda não tem a assinatura certa fica
-   * fora do lote do formulário.
+   * `form_sig` da pessoa (PATCH) e diz o que a RESPOSTA mostra do campo (o
+   * Kit descarta campo inexistente com 2xx, #9663). Ausente = nenhuma
+   * assinatura gravável: quem ainda não tem a assinatura certa fica fora do
+   * lote do formulário.
    */
-  setFormSig?(kitId: number, sig: string): Promise<string | null | undefined>;
+  setFormSig?(kitId: number, sig: string): Promise<FormSigWriteResult>;
+  /**
+   * #10657: sonda de ponta a ponta do link — `GET` no link do formulário
+   * assinado para `FORM_LINK_PROBE_EMAIL`, sem efeito colateral. Devolve o
+   * status HTTP; lança em erro de rede. Ausente = formulário travado
+   * (`link_rejeitado_pelo_worker`): sem a sonda ninguém sabe se o Worker
+   * aceita o link.
+   */
+  probeFormLink?(url: string): Promise<number>;
 }
+
+/** O que a resposta do PATCH mostra do `form_sig`:
+ *  - `stored`: `fields` traz o campo com este valor;
+ *  - `absent`: `fields` veio sem o campo (o Kit descartou a chave);
+ *  - `unknown`: a resposta veio sem `fields` — não prova nada, relê pelo GET singular. */
+export type FormSigWriteResult = { kind: "stored"; value: string } | { kind: "absent" } | { kind: "unknown" };
+
+/** Por que uma pessoa ficou fora do lote do formulário (vira contagem por etapa). */
+export type FormSigFailureReason =
+  /** Erro na gravação (depois do retry, ou não transitório). */
+  | "assinatura_falhou"
+  /** A releitura trouxe OUTRO valor (concorrência, ou Kit mexendo no valor) — por pessoa. */
+  | "assinatura_divergente_pos_escrita"
+  /** Releitura sem o campo: `form_sig` não existe no Kit — trava o formulário inteiro. */
+  | "campo_assinatura_ausente";
 
 export interface FormSigProvisionResult {
   /** Devidos do formulário com a assinatura certa gravada no Kit. */
   ok: FollowupDue[];
-  /** Gravação falhou para a pessoa (fica fora do lote; volta na próxima rodada). */
-  failed: { due: FollowupDue; error: string }[];
-  /** O Kit respondeu sem guardar o campo: `form_sig` não existe na conta.
-   *  Todo o resto do formulário fica fora (não adianta tentar pessoa a pessoa). */
+  /** Fora do lote nesta rodada (volta na próxima). `ok` + `failed` cobrem todos os devidos. */
+  failed: { due: FollowupDue; motivo: FormSigFailureReason; error: string }[];
+  /** A releitura (resposta do PATCH, ou GET singular quando ela veio sem
+   *  `fields`) não trouxe o `form_sig`: o campo não existe na conta. Todo o
+   *  resto do formulário fica fora (não adianta tentar pessoa a pessoa). */
   fieldMissing: string | null;
   /** Gravações (PATCH) tentadas nesta rodada, contando as de retry. */
   written: number;
@@ -337,19 +361,22 @@ export type FormSigWriteOpts = Pick<RefreshKitCandidatesOpts, "spacingMs" | "ret
 /**
  * #10657: garante, pessoa a pessoa, que o custom field `form_sig` do Kit
  * guarda a assinatura do e-mail ATUAL dela (o da leitura singular, que é o
- * mesmo que a merge tag `{{ subscriber.email_address }}` vai pôr no link).
- * Quem já tem o valor certo não gera escrita; o lembrete mensal reaproveita.
- * Nunca deixa passar alguém sem assinatura confirmada: o link dela seria
- * recusado pelo Worker.
+ * mesmo que a merge tag `{{ subscriber.email_address }}` vai pôr no link; sem
+ * ele, o e-mail do store). Quem já tem o valor certo não gera escrita; o
+ * lembrete reaproveita. A mesma pessoa devida em `form` e `form_lembrete`
+ * gera UMA escrita e as duas entram em `ok`. Nunca deixa passar alguém sem
+ * assinatura confirmada: o link dela seria recusado pelo Worker.
  *
  * Mesmo regime das leituras (#10676): 1ª passada espaçada, depois passada(s)
  * extra(s) só sobre erro transitório (429/5xx/rede) após cooldown; erro não
  * transitório (401/403) não é retentado.
  *
- * Confirmação pós-escrita: o valor da resposta do PATCH; se a resposta vier
- * sem `fields`, relê pelo GET singular (autoritativo — a LISTAGEM do Kit serve
- * `fields` defasado, o GET singular não). Só conclui "campo ausente" com um
- * `fields` lido que não traz o valor.
+ * Confirmação pós-escrita: o que a resposta do PATCH mostra; se ela vier sem
+ * `fields`, relê pelo GET singular (autoritativo — a LISTAGEM do Kit serve
+ * `fields` defasado, o GET singular não). Releitura SEM o campo = campo
+ * ausente no Kit (`fieldMissing`, trava tudo); releitura com OUTRO valor =
+ * falha só daquela pessoa (`assinatura_divergente_pos_escrita`).
+ * `secret` é o segredo já validado por `formContentGate`.
  */
 export async function provisionFormSigs(
   due: readonly FollowupDue[],
@@ -373,15 +400,15 @@ export async function provisionFormSigs(
     const id = d.kit_subscriber_id;
     if (!expectedById.has(id)) {
       const check = checks.get(id);
-      expectedById.set(id, await signFormEmail(check?.email ?? d.email, secret));
+      expectedById.set(id, await signFormEmail(check?.email || d.email, secret));
     }
     const list = dueById.get(id) ?? [];
     list.push(d);
     dueById.set(id, list);
   }
   const accept = (id: number) => out.ok.push(...dueById.get(id)!);
-  const reject = (id: number, error: string) => {
-    for (const d of dueById.get(id)!) out.failed.push({ due: d, error });
+  const reject = (id: number, motivo: FormSigFailureReason, error: string) => {
+    for (const d of dueById.get(id)!) out.failed.push({ due: d, motivo, error });
   };
 
   let pending: number[] = [];
@@ -390,18 +417,19 @@ export async function provisionFormSigs(
     else pending.push(id);
   }
   if (pending.length > 0 && !deps.setFormSig) {
-    for (const id of pending) reject(id, "sem gravação de form_sig configurada");
+    for (const id of pending) reject(id, "assinatura_falhou", "sem gravação de form_sig configurada");
     return out;
   }
 
-  const missingMsg = `PATCH de ${FORM_SIG_KIT_FIELD} respondeu 2xx sem guardar o valor — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
+  const missingMsg = `releitura do ${FORM_SIG_KIT_FIELD} sem o campo depois do PATCH 2xx — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
+  const skippedMsg = `não tentado: ${FORM_SIG_KIT_FIELD} ausente no Kit`;
   for (let pass = 0; pass <= retryPasses && pending.length > 0; pass++) {
     if (pass > 0) await sleep(retryDelayMs);
     const retry: number[] = [];
     let first = true;
     for (const id of pending) {
       if (out.fieldMissing) {
-        reject(id, "campo form_sig ausente no Kit");
+        reject(id, "campo_assinatura_ausente", skippedMsg);
         continue;
       }
       if (!first) await sleep(spacingMs);
@@ -409,30 +437,38 @@ export async function provisionFormSigs(
       const expected = expectedById.get(id)!;
       try {
         out.written++;
-        let stored = await deps.setFormSig!(id, expected);
-        if (stored === undefined) {
+        let res = await deps.setFormSig!(id, expected);
+        if (res.kind === "unknown") {
           // Resposta sem `fields`: não prova nada — relê pelo GET singular.
           await sleep(spacingMs);
-          const reread = await deps.getSubscriber(id);
-          stored = reread.formSig ?? null;
+          const reread = (await deps.getSubscriber(id)).formSig;
+          res = typeof reread === "string" && reread !== "" ? { kind: "stored", value: reread } : { kind: "absent" };
         }
-        if (stored === expected) {
+        if (res.kind === "stored" && res.value === expected) {
           accept(id);
           continue;
         }
+        if (res.kind === "stored") {
+          reject(
+            id,
+            "assinatura_divergente_pos_escrita",
+            `releitura do ${FORM_SIG_KIT_FIELD} com outro valor (${res.value.length} caracteres, esperado ${expected.length})`,
+          );
+          continue;
+        }
         out.fieldMissing = missingMsg;
-        reject(id, missingMsg);
+        reject(id, "campo_assinatura_ausente", missingMsg);
       } catch (e) {
         const msg = redactEmails((e as Error)?.message ?? String(e));
         if (isTransient(e) && pass < retryPasses) {
           retry.push(id);
         } else {
-          reject(id, msg);
+          reject(id, "assinatura_falhou", msg);
         }
       }
     }
     if (out.fieldMissing) {
-      for (const id of retry) reject(id, "campo form_sig ausente no Kit");
+      for (const id of retry) reject(id, "campo_assinatura_ausente", skippedMsg);
       break;
     }
     pending = retry;
@@ -594,8 +630,36 @@ export async function liveCheckDue(
   return { results, failed, total: list.length };
 }
 
-function gateReason(g: ReturnType<typeof apoioContentGate>): { motivo: FollowupBlockReason; detalhe: string } | null {
+function gateReason(g: { blocked: false } | { blocked: true; motivo: FollowupBlockReason; detalhe: string }): { motivo: FollowupBlockReason; detalhe: string } | null {
   return g.blocked ? { motivo: g.motivo, detalhe: g.detalhe } : null;
+}
+
+/**
+ * #10657: sonda de ponta a ponta antes do 1º lote do formulário da rodada —
+ * assina `FORM_LINK_PROBE_EMAIL` com o segredo do executor e faz `GET` no
+ * link (montado igual ao do e-mail, com o e-mail cru). Pega segredo diferente
+ * do Worker, Worker defasado e `form_url` errado ANTES de alguém receber um
+ * link que daria "Link inválido". `null` = Worker aceitou (200).
+ */
+export async function probeFormLinkEndToEnd(
+  formUrl: string,
+  secret: string,
+  deps: Pick<FollowupRoundDeps, "probeFormLink">,
+): Promise<{ motivo: "link_rejeitado_pelo_worker"; detalhe: string } | null> {
+  if (!deps.probeFormLink) {
+    return { motivo: "link_rejeitado_pelo_worker", detalhe: "sonda do link não configurada no executor — sem ela não há como saber se o Worker aceita o link" };
+  }
+  const url = buildFormLink(formUrl, FORM_LINK_PROBE_EMAIL, await signFormEmail(FORM_LINK_PROBE_EMAIL, secret));
+  try {
+    const status = await deps.probeFormLink(url);
+    if (status === 200) return null;
+    return {
+      motivo: "link_rejeitado_pelo_worker",
+      detalhe: `GET do link assinado de sonda respondeu HTTP ${status} (esperado 200) — conferir ONBOARDING_FORM_LINK_SECRET igual no Worker e no executor, Worker publicado e onboarding.followup.form_url`,
+    };
+  } catch (e) {
+    return { motivo: "link_rejeitado_pelo_worker", detalhe: `GET do link assinado de sonda falhou: ${redactEmails((e as Error)?.message ?? String(e))}` };
+  }
 }
 
 /**
@@ -609,7 +673,10 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const nowIso = new Date(nowMs).toISOString();
   const { cfg, snippets, storePath, send } = opts;
   let apoioBlocked = gateReason(apoioContentGate(snippets));
-  let formBlocked = gateReason(formContentGate(snippets, cfg, opts.formLinkSecret));
+  const formGate = formContentGate(snippets, cfg, opts.formLinkSecret);
+  // Segredo já validado (trim + tamanho) — é o que assina; nunca o valor cru.
+  const linkSecret = formGate.blocked ? null : formGate.linkSecret;
+  let formBlocked = gateReason(formGate);
   const run: FollowupRunRecord = {
     at: nowIso,
     apoio_blocked: apoioBlocked,
@@ -762,24 +829,36 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     });
   }
 
-  // #10657: assinatura do link do formulário, pessoa a pessoa, no custom field
-  // do Kit. Só com `--send` (o dry-run nunca escreve no Kit). Quem não ficou
-  // com a assinatura confirmada sai do lote: o link dela seria recusado.
+  // #10657: assinatura do link do formulário. Só com `--send` (o dry-run
+  // nunca escreve no Kit nem chama o Worker). 1º a sonda de ponta a ponta
+  // (o Worker aceita um link assinado por este executor?), depois a
+  // assinatura pessoa a pessoa no custom field do Kit. Quem não ficou com a
+  // assinatura confirmada sai do lote: o link dela seria recusado.
   let toSend = liveOk;
   const formDue = liveOk.filter((d) => isFormStep(d.kind));
-  if (send && formDue.length > 0) {
-    const prov = await provisionFormSigs(formDue, checks.results, opts.formLinkSecret ?? "", deps, opts.lookupOpts);
-    const okSet = new Set(prov.ok);
-    toSend = liveOk.filter((d) => !isFormStep(d.kind) || okSet.has(d));
-    for (const f of prov.failed) bump(f.due.kind, "assinatura_falhou");
-    if (prov.fieldMissing) {
-      formBlocked = { motivo: "campo_assinatura_ausente", detalhe: prov.fieldMissing };
+  if (send && formDue.length > 0 && linkSecret != null && cfg.formUrl != null) {
+    const probe = await probeFormLinkEndToEnd(cfg.formUrl, linkSecret, deps);
+    if (probe) {
+      formBlocked = probe;
       run.form_blocked = formBlocked;
-      process.stderr.write(`${LOG} ${prov.fieldMissing}\n`);
-    } else if (prov.failed.length > 0) {
-      run.lookups_failed += prov.failed.length;
+      for (const d of formDue) bump(d.kind, "link_rejeitado");
+      toSend = liveOk.filter((d) => !isFormStep(d.kind));
+      process.stderr.write(`${LOG} formulário travado: ${probe.detalhe}\n`);
+    } else {
+      const prov = await provisionFormSigs(formDue, checks.results, linkSecret, deps, opts.lookupOpts);
+      const okSet = new Set(prov.ok);
+      toSend = liveOk.filter((d) => !isFormStep(d.kind) || okSet.has(d));
       for (const f of prov.failed) {
-        process.stderr.write(`${LOG} assinatura do formulário de ${f.due.kit_subscriber_id} não gravada — fora do envio de hoje: ${f.error}\n`);
+        bump(f.due.kind, f.motivo);
+        process.stderr.write(`${LOG} assinatura do formulário de ${f.due.kit_subscriber_id} (${f.due.kind}) não confirmada — fora do envio de hoje: ${f.motivo}: ${f.error}\n`);
+      }
+      // Falhas por pessoa contam como falha da rodada (alarme); o campo
+      // ausente já conta pelo `form_blocked`.
+      run.lookups_failed += prov.failed.filter((f) => f.motivo !== "campo_assinatura_ausente").length;
+      if (prov.fieldMissing) {
+        formBlocked = { motivo: "campo_assinatura_ausente", detalhe: prov.fieldMissing };
+        run.form_blocked = formBlocked;
+        process.stderr.write(`${LOG} formulário travado: ${prov.fieldMissing}\n`);
       }
     }
   }
@@ -891,14 +970,20 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
         formSig: typeof sig === "string" ? sig : null,
       };
     },
+    async probeFormLink(url) {
+      // GET sem efeito colateral: o Worker só renderiza a página.
+      const res = await fetch(url, { redirect: "manual" });
+      await res.body?.cancel().catch(() => {});
+      return res.status;
+    },
     async setFormSig(kitId, sig) {
       // #10657: o PATCH devolve o assinante; o valor relido prova que o
       // campo existe (o Kit descarta chave desconhecida com 2xx, #9663).
       const s = await updateSubscriberFields(kitId, { [FORM_SIG_KIT_FIELD]: sig }, kitCfg);
-      // Sem `fields` na resposta: `undefined` faz o executor reler pelo GET singular.
-      if (s.fields == null || typeof s.fields !== "object") return undefined;
+      // Sem `fields` na resposta: `unknown` faz o executor reler pelo GET singular.
+      if (s.fields == null || typeof s.fields !== "object") return { kind: "unknown" };
       const stored = s.fields[FORM_SIG_KIT_FIELD];
-      return typeof stored === "string" ? stored : null;
+      return typeof stored === "string" && stored !== "" ? { kind: "stored", value: stored } : { kind: "absent" };
     },
     async listEnvioBrevoEmails() {
       // Tag ausente lança (trava a rodada): um rename no painel do Kit não pode
@@ -994,7 +1079,8 @@ async function main(): Promise<void> {
   };
 
   const apoioGate = apoioContentGate(snippets);
-  const formLinkSecret = process.env[ONBOARDING_FORM_LINK_SECRET_ENV]?.trim() || null;
+  // Cru: a normalização (trim + tamanho mínimo) é do `formContentGate`/`checkLinkSecret`.
+  const formLinkSecret = process.env[ONBOARDING_FORM_LINK_SECRET_ENV] ?? null;
   const formGate = formContentGate(snippets, cfg, formLinkSecret);
   // Travado pelos dois lados: nem precisa de credencial do Kit.
   let deps: FollowupRoundDeps;

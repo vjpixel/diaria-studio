@@ -249,9 +249,9 @@ describe("#10605 rascunhos dos e-mails (semente do --init-snippets)", () => {
       assert.ok(word.test(snip.previewText!), "número de perguntas no preview bate com FORM_QUESTIONS");
 
       const approved = parseFollowupSnippet(raw.split("\n").filter((l) => !l.includes(PENDING_BODY_MARKER)).join("\n"));
-      assert.deepEqual(formContentGate({ form: approved, form_lembrete: approved }, cfgOk, "segredo"), { blocked: false });
+      assert.deepEqual(formContentGate({ form: approved, form_lembrete: approved }, cfgOk, "segredo-de-teste-com-32-caracteres-ou-mais"), { blocked: false, linkSecret: "segredo-de-teste-com-32-caracteres-ou-mais" });
       const pend: FollowupSnippets = { form: snip, form_lembrete: snip };
-      assert.equal((formContentGate(pend, cfgOk, "segredo") as { motivo: string }).motivo, "texto_pendente");
+      assert.equal((formContentGate(pend, cfgOk, "segredo-de-teste-com-32-caracteres-ou-mais") as { motivo: string }).motivo, "texto_pendente");
     });
   }
 

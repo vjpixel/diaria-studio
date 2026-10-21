@@ -201,13 +201,14 @@ export interface FormResponsesPayload {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * @pure — e-mail do `?email=` do link (review #10623, #10657). Desde o #10657
- * o link leva `{{ subscriber.email_address | url_encode }}`, e o
- * `URLSearchParams` decodifica `%2B`/`%26`/`%23` de volta para `+`/`&`/`#`.
- * Mantido para link SEM o filtro (enviado antes, ou se o Kit ignorar o
- * filtro): ali um `+` cru vira espaço na query. E-mail não tem espaço, então
- * espaço aqui é sempre um `+` decodificado, e é restaurado. Um e-mail cortado
- * na query não passa na verificação da assinatura (nunca grava errado).
+ * @pure — e-mail do `?email=` do link (review #10623, #10657). O link vai SEM
+ * filtro Liquid (`url_encode` não foi confirmado no Kit), então o e-mail chega
+ * cru na query: `@` e `.` passam intactos, mas um `+` do local part vira
+ * espaço no `URLSearchParams`. E-mail não tem espaço, então espaço aqui é
+ * sempre um `+` decodificado — restaurado, e é isso que faz a assinatura de
+ * `a+b@x.com` conferir. Resíduo aceito (#10657): `&` ou `#` no local part
+ * cortam o e-mail na query, a assinatura não confere e a pessoa vê "Link
+ * inválido" — nunca grava para o e-mail errado.
  */
 export function prefillEmailFromQuery(raw: string | null | undefined): string {
   return String(raw ?? "").trim().replace(/ /g, "+");
