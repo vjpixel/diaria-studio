@@ -34,6 +34,7 @@ import {
   liveLogRelFromLogPath,
   main,
   rotateLiveLog,
+  spawnWithPersistentOutput,
   type NightlyChainDeps,
 } from "../scripts/overnight/run-nightly-chain.ts";
 import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
@@ -383,5 +384,66 @@ describe("run-nightly-chain — log incremental derivado do registro e rotaciona
     mkdirSync(join(root, "data"));
     rotateLiveLog(root);
     assert.ok(!existsSync(`${liveLogPath(root)}${LIVE_LOG_PREV_SUFFIX}`));
+  });
+});
+
+// #10699 item 4: exercita o spawn real, sem serviço externo ou Claude pago.
+describe("saída dos filhos persiste antes de o runner morrer", () => {
+  it("spawn persistente mantém stdout/stderr e exit code no término normal", () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const r = spawnWithPersistentOutput(process.execPath, ["-e", "process.stdout.write('result'); process.stderr.write('error'); process.exit(7)"], { cwd: root, encoding: "utf8" });
+    assert.equal(r.status, 7);
+    assert.equal(r.stdout, "result");
+    assert.equal(r.stderr, "error");
+  });
+
+  for (const phase of ["review", "overnight"] as const) {
+    it(`${phase}: SIGKILL preserva stdout/stderr e a geração anterior`, { skip: process.platform === "win32" }, () => {
+      const root = makeRepo();
+      const dir = join(root, "data", "overnight");
+      mkdirSync(dir, { recursive: true });
+      const output = join(dir, `.nightly-chain-last-${phase}.${phase === "overnight" ? "json" : "log"}`);
+      writeFileSync(output, "previous run");
+      const mod = pathToFileURL(join(import.meta.dirname, "..", "scripts", "overnight", "run-nightly-chain.ts")).href;
+      const killer = join(root, "killer.cjs");
+      writeFileSync(killer, `require('node:fs').writeSync(1, '{"type":"assistant"}\\n'); require('node:fs').writeSync(2, 'diagnostic\\n'); process.kill(process.ppid, 'SIGKILL');`);
+      const runner = join(root, "runner.ts");
+      writeFileSync(runner, [
+        `import { spawnWithPersistentOutput } from ${JSON.stringify(mod)};`,
+        phase === "review"
+          ? `spawnWithPersistentOutput('bash', ['-c', 'exec "$1" "$2"', 'bash', process.execPath, process.argv[3]], {cwd: process.argv[2], encoding: 'utf8'});`
+          : `spawnWithPersistentOutput(process.execPath, [process.argv[3]], {cwd: process.argv[2], encoding: 'utf8'});`,
+      ].join("\n"));
+      const r = spawnSync(process.execPath, ["--import", "tsx", runner, root, killer], { encoding: "utf8", timeout: 60_000 });
+      assert.equal(r.signal, "SIGKILL", r.stderr);
+      assert.equal(readFileSync(output, "utf8"), '{"type":"assistant"}\n');
+      assert.equal(readFileSync(`${output}.prev`, "utf8"), "previous run");
+      assert.equal(readFileSync(join(dir, `.nightly-chain-last-${phase}.stderr.log`), "utf8"), "diagnostic\n");
+    });
+  }
+
+  it("overnight emite eventos em stream-json com --verbose", () => {
+    const args = buildOvernightClaudeArgs("/repo", (p) => p);
+    assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
+    assert.ok(args.includes("--verbose"));
+  });
+
+  it("review persiste eventos e valida apenas o resultado final", () => {
+    const script = readFileSync(join(import.meta.dirname, "..", DAILY_REVIEW_SCRIPT), "utf8");
+    assert.match(script, /--output-format stream-json --verbose \| tee "\$STREAM_FILE"/);
+    const parser = script.match(/node -e '([\s\S]*?)' "\$STREAM_FILE"/);
+    assert.ok(parser);
+    const root = makeRepo();
+    const stream = join(root, "review.jsonl");
+    const run = (events: unknown[]) => {
+      writeFileSync(stream, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+      return spawnSync(process.execPath, ["-e", parser[1], stream], { encoding: "utf8" });
+    };
+    assert.equal(run([{ type: "assistant", text: "RESUMO-DAILY-REVIEW: fake" }]).status, 4);
+    assert.equal(run([{ type: "result", is_error: true, result: "RESUMO-DAILY-REVIEW: fake" }]).status, 4);
+    const ok = run([{ type: "system" }, { type: "result", result: "RESUMO-DAILY-REVIEW: findings=0" }]);
+    assert.equal(ok.status, 0);
+    assert.equal(ok.stdout, "RESUMO-DAILY-REVIEW: findings=0");
   });
 });
