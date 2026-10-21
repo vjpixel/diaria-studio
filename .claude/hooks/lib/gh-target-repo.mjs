@@ -404,15 +404,20 @@ export function commandComplexity(command) {
 }
 
 const SLUG_IN_TEXT_RE = /(?:github\.com[/:])?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/g;
+const API_REPOS_PATH_RE = /\brepos\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/gi;
 
 /** Repos PERMITIDOS que aparecem em qualquer lugar do texto do comando. */
 export function reposMentioned(command, allowed = loadAllowedForeignRepos()) {
   const out = new Set();
   if (typeof command !== "string") return out;
-  for (const m of command.matchAll(SLUG_IN_TEXT_RE)) {
-    const slug = normalizeRepoSlug(m[1]);
+  const add = (raw) => {
+    const slug = normalizeRepoSlug(raw);
     if (slug && (slug === DIARIA_STUDIO_REPO || allowed.has(slug))) out.add(slug);
-  }
+  };
+  for (const m of command.matchAll(SLUG_IN_TEXT_RE)) add(m[1]);
+  // #10689: caminho da API (`gh api -X PUT repos/o/r/pulls/5/merge`) — o
+  // regex acima consome `repos/o` e nunca enxerga o `o/r` que vem depois.
+  for (const m of command.matchAll(API_REPOS_PATH_RE)) add(m[1]);
   return out;
 }
 
