@@ -1,53 +1,29 @@
 /**
- * workers/onboarding-form/src/index.ts (#10605) — STUB mínimo, não implantado.
+ * workers/onboarding-form/src/index.ts (#10605)
  *
  * Formulário de perfil/interesses do onboarding. Contrato completo (rotas,
  * formato, como o executor grava "preencheu" no store) em
- * `scripts/lib/onboarding-form-contract.ts`. Sem o KV `ONBOARDING_FORM`
- * declarado (ver wrangler.toml) toda rota responde 503 `not_configured`.
+ * `scripts/lib/onboarding-form-contract.ts`; HTML em `./render.ts`. Sem o KV
+ * `ONBOARDING_FORM` declarado (ver wrangler.toml) toda rota responde 503
+ * `not_configured`.
  */
 
 import {
-  FORM_QUESTIONS,
   formResponseKey,
   isAuthorizedResponsesRequest,
   parseFormSubmission,
   prefillEmailFromQuery,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
+import { collectFormFields, renderErrorHtml, renderFormHtml, renderThanksHtml } from "./render.ts";
 
 interface Env {
   ONBOARDING_FORM?: KVNamespace;
   RESPONSES_TOKEN?: string;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function page(body: string, status = 200): Response {
-  return new Response(
-    `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>diar.ia.br</title></head><body style="font-family:Georgia,serif;max-width:560px;margin:2rem auto;padding:0 16px">${body}</body></html>`,
-    { status, headers: { "content-type": "text/html; charset=utf-8" } },
-  );
-}
-
-function formPage(email: string): Response {
-  const fields = FORM_QUESTIONS.map((q) => {
-    const name = escapeHtml(q.id);
-    const label = `<label for="${name}">${escapeHtml(q.label)}</label>`;
-    if (q.kind === "textarea") return `<p>${label}<br><textarea id="${name}" name="${name}" rows="4"></textarea></p>`;
-    if (q.kind === "select") {
-      const opts = (q.options ?? []).map((o) => `<option>${escapeHtml(o)}</option>`).join("");
-      return `<p>${label}<br><select id="${name}" name="${name}"><option value=""></option>${opts}</select></p>`;
-    }
-    return `<p>${label}<br><input id="${name}" name="${name}" type="text"></p>`;
-  }).join("");
-  return page(
-    `<h1>Conte pra gente sobre você</h1><form method="post" action="/enviar">` +
-      `<p><label for="email">Seu e-mail</label><br><input id="email" name="email" type="email" required value="${escapeHtml(email)}"></p>` +
-      `${fields}<p><button type="submit">Enviar</button></p></form>`,
-  );
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 export default {
@@ -56,18 +32,29 @@ export default {
     if (!env.ONBOARDING_FORM) return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
 
     if (request.method === "GET" && url.pathname === "/") {
-      return formPage(prefillEmailFromQuery(url.searchParams.get("email")));
+      return html(renderFormHtml(prefillEmailFromQuery(url.searchParams.get("email"))));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
-      const form = await request.formData();
-      const fields: Record<string, string> = {};
-      for (const [k, v] of form.entries()) if (typeof v === "string") fields[k] = v;
-      const parsed = parseFormSubmission(fields);
-      if (!parsed.ok) return page(`<p>Não deu para registrar: ${escapeHtml(parsed.error)}.</p>`, 400);
+      let form: FormData;
+      try {
+        form = await request.formData();
+      } catch (e) {
+        console.error(`[onboarding-form] corpo do POST ilegível: ${(e as Error).message}`);
+        return html(renderErrorHtml("o envio chegou incompleto"), 400);
+      }
+      // Caixas de seleção mandam um valor por opção marcada: preservar os repetidos.
+      const parsed = parseFormSubmission(collectFormFields(form.entries()));
+      if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
       const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString() };
-      await env.ONBOARDING_FORM.put(formResponseKey(record.email), JSON.stringify(record));
-      return page("<h1>Obrigado!</h1><p>Recebemos suas respostas.</p>");
+      try {
+        await env.ONBOARDING_FORM.put(formResponseKey(record.email), JSON.stringify(record));
+      } catch (e) {
+        // Falha de gravação nunca vira "Obrigado": a pessoa precisa saber que não registrou.
+        console.error(`[onboarding-form] falha ao gravar resposta no KV: ${(e as Error).message}`);
+        return html(renderErrorHtml("tivemos um problema para guardar suas respostas, tente de novo em alguns minutos"), 503);
+      }
+      return html(renderThanksHtml());
     }
 
     if (request.method === "GET" && url.pathname === "/api/respostas") {
