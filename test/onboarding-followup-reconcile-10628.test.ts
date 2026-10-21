@@ -75,7 +75,7 @@ function deps(over: Partial<FollowupRoundDeps> & { calls: string[] }): FollowupR
       return { kind: "stored" as const, value: sig };
     },
     async probeFormLink() {
-      return 200;
+      return { status: 200, bodyHasForm: true };
     },
     async fetchFormResponses() {
       return [];

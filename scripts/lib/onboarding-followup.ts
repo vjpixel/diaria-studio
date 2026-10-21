@@ -287,11 +287,20 @@ function checkSnippet(kind: FollowupStepKind, snip: OnboardingSnippet | null | u
   return { blocked: false };
 }
 
-/** @pure — a sequência de apoio só destrava com os 4 textos aprovados. */
+/** @pure — a sequência de apoio só destrava com os 4 textos aprovados. Um
+ *  `{{FORM_URL}}` num texto de apoio TRAVA (#10657): o placeholder só é
+ *  trocado nas etapas do formulário, e o leitor receberia o texto cru. */
 export function apoioContentGate(snippets: FollowupSnippets): ContentGate {
   for (const step of APOIO_STEPS) {
     const gate = checkSnippet(step.kind, snippets[step.kind]);
     if (gate.blocked) return gate;
+    if (snippets[step.kind]!.body.includes(FORM_URL_PLACEHOLDER)) {
+      return {
+        blocked: true,
+        motivo: "snippet_invalido",
+        detalhe: `data/snippets/${step.snippetFile} contém ${FORM_URL_PLACEHOLDER}, que só vale nos e-mails do formulário (o leitor veria o texto cru)`,
+      };
+    }
   }
   return { blocked: false };
 }

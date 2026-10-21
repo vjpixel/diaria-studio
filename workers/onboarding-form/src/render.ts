@@ -12,6 +12,7 @@
  */
 
 import { FORM_ANSWER_MAX_LEN, FORM_QUESTIONS, isChoiceQuestion, type FormQuestion } from "../../../scripts/lib/onboarding-form-contract.ts";
+import { FORM_PAGE_MARKER } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 
 /** Acima disso uma pergunta de escolha única vira menu suspenso. */
 export const RADIO_MAX_OPTIONS = 8;
@@ -85,7 +86,8 @@ export function renderFormHtml(email: string, sig: string, questions: readonly F
       `As respostas ajudam a escolher o que entra na diar.ia.br e o que mais podemos oferecer além dela.</p>` +
       `<form method="post" action="/enviar">` +
       `<input type="hidden" name="email" value="${escapeHtml(email)}">` +
-      `<input type="hidden" name="sig" value="${escapeHtml(sig)}">` +
+      // FORM_PAGE_MARKER: a sonda do executor reconhece a página real por este campo.
+      `${FORM_PAGE_MARKER} value="${escapeHtml(sig)}">` +
       `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
       questions.map(renderQuestion).join("") +
       `<button type="submit">Enviar respostas</button></form>`,

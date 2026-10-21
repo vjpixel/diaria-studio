@@ -18,12 +18,14 @@ import {
   checkFormEmailSig,
   checkLinkSecret,
   constantTimeEqual,
+  FORM_PAGE_MARKER,
   FORM_SIG_KIT_FIELD,
   MIN_LINK_SECRET_LENGTH,
   signFormEmail,
   verifyFormEmailSig,
 } from "../scripts/lib/onboarding-form-link-sig.ts";
 import {
+  apoioContentGate,
   buildFormLink,
   FORM_LINK_PROBE_EMAIL,
   formContentGate,
@@ -36,6 +38,8 @@ import {
   type LiveSubscriberCheck,
 } from "../scripts/lib/onboarding-followup.ts";
 import {
+  fetchFormProbe,
+  FORM_PROBE_TIMEOUT_MS,
   probeFormLinkEndToEnd,
   provisionFormSigs,
   runFollowupRound,
@@ -44,6 +48,7 @@ import {
 } from "../scripts/onboarding-followup-run.ts";
 import { emptyStore, readStore, writeStore, type OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 import worker, { type Env } from "../workers/onboarding-form/src/index.ts";
+import { renderFormHtml, renderInvalidLinkHtml } from "../workers/onboarding-form/src/render.ts";
 import { FORM_QUESTIONS } from "../scripts/lib/onboarding-form-contract.ts";
 
 const SECRET = "segredo-de-teste-10657-com-mais-de-32-caracteres";
@@ -112,6 +117,16 @@ describe("#10657 executor: link com assinatura, envio travado sem segredo / camp
     assert.ok(!out.includes("url_encode"), "url_encode não confirmado no Kit — revertido por decisão do coordenador");
   });
 
+  it("{{FORM_URL}} num texto de APOIO trava a sequência de apoio (o placeholder só é trocado no formulário)", () => {
+    const apoio = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nApoie a diar.ia.br`);
+    const comLink = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nApoie e responda: {{FORM_URL}}`);
+    assert.deepEqual(apoioContentGate({ apoio30: apoio, apoio90: apoio, apoio180: apoio, apoio360: apoio }), { blocked: false });
+    const g = apoioContentGate({ apoio30: apoio, apoio90: comLink, apoio180: apoio, apoio360: apoio });
+    assert.equal(g.blocked, true);
+    assert.equal((g as { motivo: string }).motivo, "snippet_invalido");
+    assert.match((g as { detalhe: string }).detalhe, /apoio-90\.md contém \{\{FORM_URL\}\}/);
+  });
+
   it("segredo ausente, vazio, só espaços ou curto trava o formulário (fail-closed) e conta como falha (alarme)", () => {
     for (const s of [undefined, null, "", "   ", "curto-demais"]) {
       const g = formContentGate(formSnippets, cfg, s);
@@ -168,7 +183,7 @@ describe("#10657 executor: link com assinatura, envio travado sem segredo / camp
       },
       async probeFormLink(url) {
         probes.push(url);
-        return 200;
+        return { status: 200, bodyHasForm: true };
       },
       async runLot(lot, content) {
         lots.push([...lot.recipient_subscription_ids]);
@@ -211,7 +226,7 @@ describe("#10657 executor: link com assinatura, envio travado sem segredo / camp
 
   for (const status of [403, 404, 503]) {
     it(`sonda recusada pelo Worker (HTTP ${status}): trava o formulário, alarma, ninguém recebe nem é gravado`, async () => {
-      const d = deps({ probeFormLink: async () => status });
+      const d = deps({ probeFormLink: async () => ({ status, bodyHasForm: false }) });
       const { run } = await runFollowupRound({ storePath: storeWith([1, 2]), send: true, cfg, snippets: formSnippets, nowMs, formLinkSecret: SECRET }, d);
       assert.equal(run.form_blocked?.motivo, "link_rejeitado_pelo_worker");
       assert.match(run.form_blocked!.detalhe, new RegExp(`HTTP ${status}`));
@@ -227,14 +242,59 @@ describe("#10657 executor: link com assinatura, envio travado sem segredo / camp
     assert.match(net!.detalhe, /ECONNREFUSED/);
     const none = await probeFormLinkEndToEnd("https://form.example/", SECRET, {});
     assert.equal(none?.motivo, "link_rejeitado_pelo_worker");
-    assert.equal(await probeFormLinkEndToEnd("https://form.example/", SECRET, { probeFormLink: async () => 200 }), null);
+    assert.equal(await probeFormLinkEndToEnd("https://form.example/", SECRET, { probeFormLink: async () => ({ status: 200, bodyHasForm: true }) }), null);
+  });
+
+  it("sonda: 200 SEM a página do formulário (desafio da Cloudflare) trava; 403 trava; página real passa", async () => {
+    const challenge = "<!doctype html><html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>";
+    const fake = (status: number, body: string) => (async () => new Response(body, { status })) as unknown as typeof fetch;
+    const viaFetch = (status: number, body: string) => ({ probeFormLink: (url: string) => fetchFormProbe(url, fake(status, body)) });
+
+    const ch = await probeFormLinkEndToEnd("https://form.example/", SECRET, viaFetch(200, challenge));
+    assert.equal(ch?.motivo, "link_rejeitado_pelo_worker");
+    assert.match(ch!.detalhe, /HTTP 200 sem a página do formulário/);
+    const invalid = await probeFormLinkEndToEnd("https://form.example/", SECRET, viaFetch(200, renderInvalidLinkHtml()));
+    assert.equal(invalid?.motivo, "link_rejeitado_pelo_worker", "\"Link inválido\" servido com 200 também trava");
+    const forbidden = await probeFormLinkEndToEnd("https://form.example/", SECRET, viaFetch(403, renderInvalidLinkHtml()));
+    assert.match(forbidden!.detalhe, /HTTP 403/);
+    assert.equal(await probeFormLinkEndToEnd("https://form.example/", SECRET, viaFetch(200, renderFormHtml("a@x.com", "s"))), null);
+  });
+
+  it("fetchFormProbe manda User-Agent de navegador, não segue redirect e tem timeout", async () => {
+    let seen: RequestInit | undefined;
+    const fetchFn = (async (_u: string, init?: RequestInit) => {
+      seen = init;
+      return new Response(renderFormHtml("a@x.com", "s"), { status: 200 });
+    }) as unknown as typeof fetch;
+    assert.deepEqual(await fetchFormProbe("https://form.example/", fetchFn), { status: 200, bodyHasForm: true });
+    assert.match(String((seen!.headers as Record<string, string>)["user-agent"]), /^Mozilla\/5\.0 /);
+    assert.equal(seen!.redirect, "manual");
+    assert.ok(seen!.signal instanceof AbortSignal);
+    assert.equal(FORM_PROBE_TIMEOUT_MS, 15_000);
+  });
+
+  it("sonda que estoura o timeout (abort) trava o formulário", async () => {
+    // fetch que só termina quando o sinal aborta — como um Worker que não responde.
+    const hanging = ((_u: string, init?: RequestInit) =>
+      new Promise<Response>((_res, rej) => {
+        init!.signal!.addEventListener("abort", () => rej(init!.signal!.reason));
+      })) as unknown as typeof fetch;
+    const r = await probeFormLinkEndToEnd("https://form.example/", SECRET, { probeFormLink: (url) => fetchFormProbe(url, hanging, 20) });
+    assert.equal(r?.motivo, "link_rejeitado_pelo_worker");
+    assert.match(r!.detalhe, /falhou/);
+  });
+
+  it("marcador da página real: está no formulário, não na página \"Link inválido\"", () => {
+    assert.ok(renderFormHtml("a@x.com", "s").includes(FORM_PAGE_MARKER));
+    assert.ok(!renderInvalidLinkHtml().includes(FORM_PAGE_MARKER));
   });
 
   it("sonda contra o Worker de verdade: mesmo segredo passa; segredo diferente volta 403", async () => {
     const realProbe = (workerSecret: string) => ({
       probeFormLink: async (url: string) => {
         const e = { ONBOARDING_FORM: { put: async () => {} } as unknown as KVNamespace, ONBOARDING_FORM_LINK_SECRET: workerSecret } as Env;
-        return (await worker.fetch(new Request(url), e)).status;
+        const res = await worker.fetch(new Request(url), e);
+        return { status: res.status, bodyHasForm: (await res.text()).includes(FORM_PAGE_MARKER) };
       },
     });
     assert.equal(await probeFormLinkEndToEnd("https://form.example/", SECRET, realProbe(`${SECRET}\n`)), null);

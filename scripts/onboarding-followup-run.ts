@@ -61,7 +61,7 @@ import { decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
-import { FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
+import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
@@ -319,11 +319,41 @@ export interface FollowupRoundDeps {
   /**
    * #10657: sonda de ponta a ponta do link — `GET` no link do formulário
    * assinado para `FORM_LINK_PROBE_EMAIL`, sem efeito colateral. Devolve o
-   * status HTTP; lança em erro de rede. Ausente = formulário travado
-   * (`link_rejeitado_pelo_worker`): sem a sonda ninguém sabe se o Worker
-   * aceita o link.
+   * status HTTP e se o corpo é a página REAL do formulário
+   * (`FORM_PAGE_MARKER`); lança em erro de rede/timeout. Ausente = formulário
+   * travado (`link_rejeitado_pelo_worker`): sem a sonda ninguém sabe se o
+   * Worker aceita o link. O executor real usa `fetchFormProbe`.
    */
-  probeFormLink?(url: string): Promise<number>;
+  probeFormLink?(url: string): Promise<FormProbeResult>;
+}
+
+export interface FormProbeResult {
+  status: number;
+  /** O corpo traz `FORM_PAGE_MARKER` — 200 sem ele (página de desafio da
+   *  Cloudflare, "Link inválido" servido com 200 por algum proxy) não vale. */
+  bodyHasForm: boolean;
+}
+
+/** User-Agent de navegador na sonda: sem ele a Cloudflare pode responder com
+ *  página de desafio em vez do Worker. */
+export const FORM_PROBE_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+export const FORM_PROBE_TIMEOUT_MS = 15_000;
+
+/** #10657: o GET real da sonda — User-Agent de navegador, sem seguir
+ *  redirect, com timeout (lança no abort; o chamador trava o formulário). */
+export async function fetchFormProbe(
+  url: string,
+  fetchFn: typeof fetch = fetch,
+  timeoutMs = FORM_PROBE_TIMEOUT_MS,
+): Promise<FormProbeResult> {
+  const res = await fetchFn(url, {
+    redirect: "manual",
+    headers: { "user-agent": FORM_PROBE_USER_AGENT, accept: "text/html" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const body = await res.text();
+  return { status: res.status, bodyHasForm: body.includes(FORM_PAGE_MARKER) };
 }
 
 /** O que a resposta do PATCH mostra do `form_sig`:
@@ -639,7 +669,8 @@ function gateReason(g: { blocked: false } | { blocked: true; motivo: FollowupBlo
  * assina `FORM_LINK_PROBE_EMAIL` com o segredo do executor e faz `GET` no
  * link (montado igual ao do e-mail, com o e-mail cru). Pega segredo diferente
  * do Worker, Worker defasado e `form_url` errado ANTES de alguém receber um
- * link que daria "Link inválido". `null` = Worker aceitou (200).
+ * link que daria "Link inválido". `null` = Worker aceitou (200 com a página
+ * real do formulário).
  */
 export async function probeFormLinkEndToEnd(
   formUrl: string,
@@ -651,11 +682,12 @@ export async function probeFormLinkEndToEnd(
   }
   const url = buildFormLink(formUrl, FORM_LINK_PROBE_EMAIL, await signFormEmail(FORM_LINK_PROBE_EMAIL, secret));
   try {
-    const status = await deps.probeFormLink(url);
-    if (status === 200) return null;
+    const { status, bodyHasForm } = await deps.probeFormLink(url);
+    if (status === 200 && bodyHasForm) return null;
+    const what = status === 200 ? "HTTP 200 sem a página do formulário (desafio da Cloudflare ou página errada)" : `HTTP ${status} (esperado 200)`;
     return {
       motivo: "link_rejeitado_pelo_worker",
-      detalhe: `GET do link assinado de sonda respondeu HTTP ${status} (esperado 200) — conferir ONBOARDING_FORM_LINK_SECRET igual no Worker e no executor, Worker publicado e onboarding.followup.form_url`,
+      detalhe: `GET do link assinado de sonda respondeu ${what} — conferir ONBOARDING_FORM_LINK_SECRET igual no Worker e no executor, Worker publicado e onboarding.followup.form_url`,
     };
   } catch (e) {
     return { motivo: "link_rejeitado_pelo_worker", detalhe: `GET do link assinado de sonda falhou: ${redactEmails((e as Error)?.message ?? String(e))}` };
@@ -900,7 +932,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     try {
       await deps.runLot(lot, {
         subject: snip.assunto ?? "",
-        body: renderFollowupBody(snip.body, cfg.formUrl),
+        // {{FORM_URL}} só existe nas etapas do formulário; num texto de apoio
+        // o `apoioContentGate` já travou (#10657).
+        body: isFormStep(kind) ? renderFollowupBody(snip.body, cfg.formUrl) : snip.body,
         previewText: snip.previewText ?? undefined,
       });
       const marked = persistFollowupLot(storePath, lot, cadastroById, nowMs);
@@ -970,12 +1004,8 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
         formSig: typeof sig === "string" ? sig : null,
       };
     },
-    async probeFormLink(url) {
-      // GET sem efeito colateral: o Worker só renderiza a página.
-      const res = await fetch(url, { redirect: "manual" });
-      await res.body?.cancel().catch(() => {});
-      return res.status;
-    },
+    // GET sem efeito colateral: o Worker só renderiza a página.
+    probeFormLink: (url) => fetchFormProbe(url),
     async setFormSig(kitId, sig) {
       // #10657: o PATCH devolve o assinante; o valor relido prova que o
       // campo existe (o Kit descarta chave desconhecida com 2xx, #9663).

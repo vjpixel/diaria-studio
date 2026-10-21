@@ -42,6 +42,12 @@ export const ONBOARDING_FORM_LINK_SECRET_ENV = "ONBOARDING_FORM_LINK_SECRET";
 /** Tamanho mínimo do segredo (depois do trim). `openssl rand -base64 32` dá 44. */
 export const MIN_LINK_SECRET_LENGTH = 32;
 
+/** Trecho que SÓ a página real do formulário tem (o campo oculto da
+ *  assinatura, `workers/onboarding-form/src/render.ts`): ausente na página
+ *  "Link inválido" e numa página de desafio da Cloudflare. A sonda do
+ *  executor exige 200 E este trecho no corpo. */
+export const FORM_PAGE_MARKER = '<input type="hidden" name="sig"';
+
 /** Custom field do Kit que guarda a assinatura de cada pessoa. Precisa
  *  EXISTIR no Kit: o Kit descarta campo desconhecido em silêncio (2xx), por
  *  isso o executor relê o valor gravado (#9663). */
