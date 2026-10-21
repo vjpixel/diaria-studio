@@ -14,9 +14,10 @@ Aberturas não têm webhook no Kit e continuam vindo da ingestão por broadcast.
 
 ## Estado
 
-Código e deploy automático prontos. Sem KV e sem segredos, o Worker publicado
-não grava nada (POST responde 404, leitura responde 401/503). Nenhum webhook do
-Kit aponta pra cá ainda.
+Ligado em 21/10/2026 (`/diaria-develop 261021`): KV `KIT_EVENTS` criado e
+declarado em `wrangler.toml` (passo 1), segredos e webhooks dos passos 2-3
+registrados na mesma sessão (estado por passo no comentário da #10648). Sem os
+segredos, o Worker não grava nada (POST responde 404, leitura responde 401/503).
 
 ## Como ligar (sessão `/diaria-develop` com o editor)
 

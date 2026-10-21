@@ -24,6 +24,11 @@ workers_dev = true
 #   4. wrangler secret put EVENTS_READ_TOKEN   (KIT_EVENTS_READ_TOKEN no .env do servidor)
 #   5. Registrar os webhooks no Kit (README.md, tabela KIT_WEBHOOK_ROUTES).
 
+# Passo 1 feito em 21/10/2026 (/diaria-develop 261021).
+[[kv_namespaces]]
+binding = "KIT_EVENTS"
+id = "a7b81b1c392f44cd9b605b5f7188a902"
+
 # #10724: a URL contém KIT_WEBHOOK_SECRET. Workers Logs inclui a URL nos
 # metadados de invocação, mesmo sem console.log(request.url). Desligar a
 # coleta persistida; reduzir a amostragem ainda exporia parte dos segredos.
