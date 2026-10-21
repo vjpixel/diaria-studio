@@ -138,7 +138,6 @@
   "test/log-editor-request.test.ts::TS2345": 3,
   "test/merge-guard-continuo-sem-autoridade-7702.test.ts::TS7016": 1,
   "test/meta-description.test.ts::TS2367": 1,
-  "test/microsoft-ads-ingest-5502.test.ts::TS2345": 1,
   "test/minify-email-html-5232.test.ts::TS2353": 3,
   "test/monthly-apoiadores-state.test.ts::TS2339": 2,
   "test/newsletter-render-html-esp-4266.test.ts::TS2459": 1,

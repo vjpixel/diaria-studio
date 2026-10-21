@@ -10,21 +10,24 @@
  * errado, e nunca detectou um defeito real em produção.
  *
  * Este teste garante que os paths que o alarme lê hoje
- * (`DEFAULT_GOOGLE_LOG_PATH`/`DEFAULT_MICROSOFT_LOG_PATH`/
- * `DEFAULT_META_LOG_PATH`, exportados de `scripts/ads-spend-ingest-alarm.ts`)
- * correspondem EXATAMENTE ao `logPath` das tasks reais que gravam esses
- * logs (`Diaria-Google-Ads-Spend-Ingest`/`Diaria-Microsoft-Ads-Spend-Ingest`/
+ * (`DEFAULT_GOOGLE_LOG_PATH`/`DEFAULT_META_LOG_PATH`, exportados de
+ * `scripts/ads-spend-ingest-alarm.ts`) correspondem EXATAMENTE ao `logPath`
+ * das tasks reais que gravam esses logs (`Diaria-Google-Ads-Spend-Ingest`/
  * `Diaria-Meta-Ads-Spend-Ingest` — #8245 item 6 — em
  * `scripts/lib/scheduled-tasks.ts`) — se algum dos arquivos mudar o path
  * sem o outro acompanhar, este teste falha ANTES do alarme voltar a ler
- * silenciosamente um arquivo fantasma.
+ * silenciosamente um arquivo fantasma. O braço Microsoft Ads saiu no
+ * #10755 (canal encerrado): sem task gravando `.microsoft-ads-ingest.log`,
+ * o alarme também não pode mais lê-lo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
-import { DEFAULT_GOOGLE_LOG_PATH, DEFAULT_MICROSOFT_LOG_PATH, DEFAULT_META_LOG_PATH } from "../scripts/ads-spend-ingest-alarm.ts";
+import * as alarmCli from "../scripts/ads-spend-ingest-alarm.ts";
+
+const { DEFAULT_GOOGLE_LOG_PATH, DEFAULT_META_LOG_PATH } = alarmCli;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -47,9 +50,10 @@ describe("ads-spend-ingest-alarm — path guard (#7518)", () => {
     assert.equal(DEFAULT_GOOGLE_LOG_PATH, resolveTaskLogPath(task.logPath));
   });
 
-  it("DEFAULT_MICROSOFT_LOG_PATH bate com o logPath real de Diaria-Microsoft-Ads-Spend-Ingest", () => {
-    const task = findTask("Diaria-Microsoft-Ads-Spend-Ingest");
-    assert.equal(DEFAULT_MICROSOFT_LOG_PATH, resolveTaskLogPath(task.logPath));
+  it("#10755 — canal Microsoft encerrado: nenhuma task grava .microsoft-ads-ingest.log e o alarme não exporta mais esse path", () => {
+    const writers = SCHEDULED_TASKS.filter((t) => t.logPath === "aquisicao/.microsoft-ads-ingest.log").map((t) => t.name);
+    assert.deepEqual(writers, []);
+    assert.equal("DEFAULT_MICROSOFT_LOG_PATH" in alarmCli, false);
   });
 
   it("DEFAULT_META_LOG_PATH bate com o logPath real de Diaria-Meta-Ads-Spend-Ingest (#8245 item 6)", () => {
@@ -57,14 +61,13 @@ describe("ads-spend-ingest-alarm — path guard (#7518)", () => {
     assert.equal(DEFAULT_META_LOG_PATH, resolveTaskLogPath(task.logPath));
   });
 
-  it("os 3 paths são DIFERENTES entre si — nunca colapsam pro mesmo arquivo (cada plataforma tem log próprio)", () => {
-    const paths = [DEFAULT_GOOGLE_LOG_PATH, DEFAULT_MICROSOFT_LOG_PATH, DEFAULT_META_LOG_PATH];
+  it("os 2 paths são DIFERENTES entre si — nunca colapsam pro mesmo arquivo (cada plataforma tem log próprio)", () => {
+    const paths = [DEFAULT_GOOGLE_LOG_PATH, DEFAULT_META_LOG_PATH];
     assert.equal(new Set(paths).size, paths.length);
   });
 
-  it("nenhum dos 3 paths é o log unificado fantasma que causou o bug original (.ads-spend-ingest.log)", () => {
+  it("nenhum dos 2 paths é o log unificado fantasma que causou o bug original (.ads-spend-ingest.log)", () => {
     assert.doesNotMatch(DEFAULT_GOOGLE_LOG_PATH, /\.ads-spend-ingest\.log$/);
-    assert.doesNotMatch(DEFAULT_MICROSOFT_LOG_PATH, /\.ads-spend-ingest\.log$/);
     assert.doesNotMatch(DEFAULT_META_LOG_PATH, /\.ads-spend-ingest\.log$/);
   });
 });

@@ -2,8 +2,11 @@
  * scripts/lib/ads-spend-ingest-alarm.ts (#5597, reescrito no #7518)
  *
  * Lógica PURA do alarme que interpreta o CONTEÚDO dos logs de
- * `scripts/google-ads-ingest-spend.ts` e `scripts/microsoft-ads-ingest-spend.ts`
- * — não só o exit code. Até o #9071, decisão do #5237/#5502: os dois scripts
+ * `scripts/google-ads-ingest-spend.ts` e `scripts/meta-ads-ingest-spend.ts`
+ * — não só o exit code. Até o #10755 (21/10/2026) havia também o braço
+ * Microsoft Ads; o canal foi encerrado, a task de ingestão saiu do registro
+ * e o alarme deixou de ler `.microsoft-ads-ingest.log` (senão o log parado
+ * viraria `alarm-no-run` todo dia). Até o #9071, decisão do #5237/#5502: os dois scripts
  * mantinham exit code 0 em toda classe de falha, e a distinção ficava só no
  * BANNER (`console.error`/`console.warn` de "✖ DEFEITO"/"fallback pro CSV
  * manual") — nenhum alarme baseado em `systemctl --state=failed` (#5563)
@@ -64,7 +67,7 @@
  *      reportado como `ok` nem como `alarm-no-run`.
  *   3. Nenhum defeito nem cannot-verify, mas alguma plataforma `no-run` →
  *      combinado `alarm-no-run` (ALARMA).
- *   4. As duas `ok` → combinado `ok`.
+ *   4. Todas as plataformas `ok` → combinado `ok`.
  *
  * **Por que `cannot-verify` NÃO auto-alarma (email/issue), diferente de
  * `alarm-defect`/`alarm-no-run`:** consistente com os dois alarmes tri-state
@@ -100,10 +103,11 @@
  * nenhuma task grava) de voltar — não um alarme em runtime.
  */
 
-/** Verdict por PLATAFORMA (Google, Microsoft ou Meta), lido do log real dela. */
+/** Verdict por PLATAFORMA (Google ou Meta), lido do log real dela. */
 export type SinglePlatformVerdict = "ok" | "defect" | "no-run" | "cannot-verify";
 
-export type AdsSpendPlatform = "google" | "microsoft" | "meta";
+/** Microsoft saiu no #10755 (canal encerrado). */
+export type AdsSpendPlatform = "google" | "meta";
 
 /** Motivo de `cannot-verify` — usado só pra mensagem, não muda a composição. */
 export type CannotVerifyReason = "log_missing" | "log_unparseable";
@@ -121,14 +125,14 @@ export interface SinglePlatformEvaluation {
   cannotVerifyReason?: CannotVerifyReason;
 }
 
-/** Veredito COMBINADO das plataformas avaliadas (Google+Microsoft sempre,
- *  Meta quando passada) — ver docstring do módulo pra a tabela de
+/** Veredito COMBINADO das plataformas avaliadas (Google sempre, Meta
+ *  quando passada) — ver docstring do módulo pra a tabela de
  *  precedência completa. */
 export type AdsSpendIngestAlarmVerdict = "ok" | "alarm-defect" | "alarm-no-run" | "cannot-verify";
 
 export interface AdsSpendIngestAlarmEvaluation {
   verdict: AdsSpendIngestAlarmVerdict;
-  /** Sempre as plataformas avaliadas (2 ou 3, conforme `meta` foi passado),
+  /** Sempre as plataformas avaliadas (1 ou 2, conforme `meta` foi passado),
    *  nesta ordem — nunca omitido, mesmo quando `verdict` só reflete uma
    *  delas (a que "venceu" a precedência). */
   platforms: SinglePlatformEvaluation[];
@@ -143,8 +147,8 @@ export interface AdsSpendIngestAlarmEvaluation {
  *  esperado, sempre conta como `defect`. */
 const DEFECT_BANNER_MARKER = "✖ DEFEITO";
 
-/** Marcador GENÉRICO de fallback — `google-ads-ingest-spend.ts` E
- *  `microsoft-ads-ingest-spend.ts` emitem "fallback pro CSV manual —
+/** Marcador GENÉRICO de fallback — `google-ads-ingest-spend.ts` (e, até o
+ *  #10755, o ingest do Microsoft Ads) emite "fallback pro CSV manual —
  *  {reason}" em TODA classe de falha que não tem banner próprio (`defect`
  *  usa `DEFECT_BANNER_MARKER` acima; `empty` do Google e, desde o #9071, do
  *  Microsoft usa `✔`). Achado ao
@@ -169,10 +173,6 @@ const DEFECT_BANNER_MARKER = "✖ DEFEITO";
  *  excluídos. */
 const GENERIC_FALLBACK_MARKER = "fallback pro CSV manual";
 
-/** Literal da reason de perda TOTAL por malformação
- *  (`runMicrosoftAdsIngest`, #5605) — sempre defeito, ver `classifyRunText`. */
-const TOTAL_LOSS_MARKER = "descartada(s) por malformação (#5605)";
-
 /** Textos de `reason` que, mesmo carregando `GENERIC_FALLBACK_MARKER`, são
  *  estado ESPERADO documentado — nunca contam como defeito:
  *  - "acesso ainda não liberado (Basic Access na fila" — literal do ramo
@@ -180,10 +180,9 @@ const TOTAL_LOSS_MARKER = "descartada(s) por malformação (#5605)";
  *  - "fetch não devolveu nenhuma linha com custo" — literal do fallback de
  *    `runSpendIngest` (`scripts/lib/spend-ingest.ts`) quando o fetch não
  *    devolveu NENHUMA linha — "sem gasto no período" pro Microsoft. Desde o
- *    #9071 o Microsoft separa isso num banner `✔` próprio (sem o marcador
- *    genérico); o literal fica aqui pra logs anteriores e por defesa. A
- *    perda TOTAL (#5605) carrega este mesmo literal como prefixo — por isso
- *    `TOTAL_LOSS_MARKER` é checado antes. */
+ *    #9071 o Microsoft separava isso num banner `✔` próprio (sem o marcador
+ *    genérico); o literal fica por defesa, já que o núcleo genérico de
+ *    `runSpendIngest` ainda o emite. */
 const BENIGN_FALLBACK_REASON_MARKERS = [
   "acesso ainda não liberado (Basic Access na fila",
   "fetch não devolveu nenhuma linha com custo",
@@ -200,11 +199,6 @@ const BENIGN_FALLBACK_REASON_MARKERS = [
  */
 function classifyRunText(text: string): "ok" | "defect" {
   if (text.includes(DEFECT_BANNER_MARKER)) return "defect";
-  // Perda TOTAL por malformação (#5605) do Microsoft reusa o literal benigno
-  // "fetch não devolveu nenhuma linha com custo" como PREFIXO da reason —
-  // sem esta checagem ela passava como zero-spend (achado do review da PR
-  // do #9071). Vence sobre `BENIGN_FALLBACK_REASON_MARKERS`.
-  if (text.includes(TOTAL_LOSS_MARKER)) return "defect";
   if (text.includes(GENERIC_FALLBACK_MARKER)) {
     const isBenign = BENIGN_FALLBACK_REASON_MARKERS.some((m) => text.includes(m));
     return isBenign ? "ok" : "defect";
@@ -299,14 +293,14 @@ export interface PlatformLogInput {
 }
 
 /**
- * Avalia Google + Microsoft (sempre) e, opcionalmente, Meta (#8245 item 6) —
+ * Avalia Google (sempre) e, opcionalmente, Meta (#8245 item 6) —
  * compõe o veredito combinado. Ver docstring do módulo pra a tabela de
  * precedência (`defect` > `cannot-verify` > `no-run` > `ok`).
  *
  * `meta` é OPCIONAL, de propósito: `Diaria-Meta-Ads-Spend-Ingest` foi
  * declarada mas ainda não armada em toda máquina (#8245 item 8, pendente
  * `sync-env` no `300`) — chamadores que ainda não têm o path do log do
- * Meta continuam avaliando só as 2 plataformas originais, sem que a
+ * Meta continuam avaliando só o Google, sem que a
  * ausência do 3º input vire `cannot-verify`/alarme por conta própria
  * (omitido ≠ log ausente). Passar `meta` inclui a 3ª plataforma na mesma
  * composição de precedência.
@@ -315,13 +309,11 @@ export interface PlatformLogInput {
  */
 export function evaluateAdsSpendIngestAlarm(
   google: PlatformLogInput,
-  microsoft: PlatformLogInput,
   now: Date,
   meta?: PlatformLogInput,
 ): AdsSpendIngestAlarmEvaluation {
   const platforms: SinglePlatformEvaluation[] = [
     evaluateSinglePlatformLog("google", google.logPath, google.exists, google.content, now),
-    evaluateSinglePlatformLog("microsoft", microsoft.logPath, microsoft.exists, microsoft.content, now),
   ];
   if (meta) {
     platforms.push(evaluateSinglePlatformLog("meta", meta.logPath, meta.exists, meta.content, now));
@@ -391,7 +383,6 @@ export function markAdsSpendIngestAlarmed(now: Date): AdsSpendIngestAlarmState {
  *  self-review da #7518). */
 export function platformLabel(platform: AdsSpendPlatform): string {
   if (platform === "google") return "Google Ads";
-  if (platform === "microsoft") return "Microsoft Ads";
   return "Meta Ads";
 }
 
@@ -417,13 +408,13 @@ export function buildAdsSpendIngestAlarmEmail(
     return {
       subject: "⚠️ Diaria-Ads-Spend-Ingest: DEFEITO real detectado no log",
       body:
-        `Uma das ingestões de gasto (Google Ads / Microsoft Ads / Meta Ads) contém sinal de defeito no run mais recente ` +
+        `Uma das ingestões de gasto (Google Ads / Meta Ads) contém sinal de defeito no run mais recente ` +
         `(${evaluation.latestRunAt}) — "✖ DEFEITO" ou fallback pro CSV manual sem ser o caso normal de gasto ` +
-        `zero. Desde o #9012 (Meta) e o #9071 (Google/Microsoft) os scripts também saem com exit não-zero ` +
+        `zero. Desde o #9012 (Meta) e o #9071 (Google) os scripts também saem com exit não-zero ` +
         `nesse caso (a unit fica failed); este alarme acrescenta a CLASSE da falha lida no log.\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +
         `Trecho do run:\n\n${evaluation.latestRun}\n\n` +
-        `Corrigir em scripts/lib/google-ads-ingest.ts / scripts/lib/microsoft-ads-ingest.ts / scripts/meta-ads-ingest-spend.ts (query/token/versão de ` +
+        `Corrigir em scripts/lib/google-ads-ingest.ts / scripts/meta-ads-ingest-spend.ts (query/token/versão de ` +
         `API) — esperar não resolve.` +
         issueLines,
     };
@@ -436,7 +427,7 @@ export function buildAdsSpendIngestAlarmEmail(
         `(systemd não armado/desabilitado, máquina desligada na janela).\n\n` +
         `Estado por plataforma:\n${platformLines}\n\n` +
         `Verifique: systemctl --user list-timers | grep ads-spend, e journalctl --user -u ` +
-        `diaria-google-ads-spend-ingest.service / diaria-microsoft-ads-spend-ingest.service / diaria-meta-ads-spend-ingest.service -n 50 se a unit existir.` +
+        `diaria-google-ads-spend-ingest.service / diaria-meta-ads-spend-ingest.service -n 50 se a unit existir.` +
         issueLines,
     };
   }

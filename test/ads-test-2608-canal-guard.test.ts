@@ -1,9 +1,9 @@
 /**
  * test/ads-test-2608-canal-guard.test.ts (#8239 item 3 — "guard único")
  *
- * Guard ÚNICO sobre os 3 scripts de ingestão de gasto do teste 2608. Os
- * testes por script (`test/microsoft-ads-ingest-spend.test.ts` #7544,
- * `test/meta-ads-ingest-spend.test.ts` #8239) travam cada constante
+ * Guard ÚNICO sobre os scripts de ingestão de gasto do teste 2608. Os
+ * testes por script (`test/meta-ads-ingest-spend.test.ts` #8239, e até o
+ * #10755 o do Microsoft Ads, #7544) travam cada constante
  * isoladamente; nada garantia que um 4º braço, ou um braço renomeado,
  * entrasse na mesma disciplina — o defeito do #8239 foi exatamente o
  * Google ficar de fora por 2 meses depois do Microsoft ter sido corrigido
@@ -16,7 +16,14 @@
  * atribuído a nenhum braço do teste, e `sumTeste2608Spend` o ignora).
  *
  * Quando a #5862 renomear ou remover as specs temporárias "(teste 2608)",
- * as 3 constantes mudam juntas e este teste é o que exige que mudem juntas.
+ * as constantes mudam juntas e este teste é o que exige que mudem juntas.
+ *
+ * #10755 (21/10/2026): o canal Microsoft Ads foi encerrado e o ingest dele
+ * saiu do repo. O braço `Microsoft Ads (teste 2608)` CONTINUA em
+ * `CHANNEL_KEY_SPECS` e em `ADS_TEST_2608_BRACOS` — é o que mantém o gasto
+ * já gravado em `spend.csv` atribuído ao braço no relatório de CAC e na
+ * apuração do teste. Ele entra aqui como exceção documentada (braço só de
+ * histórico, sem ingest), em `BRACOS_SO_HISTORICO`.
  *
  * Não chama API/MCP — só importa as constantes e compara com as specs.
  */
@@ -25,16 +32,20 @@ import assert from "node:assert/strict";
 
 import { GOOGLE_ADS_CANAL } from "../scripts/google-ads-ingest-spend.ts";
 import { META_ADS_CANAL } from "../scripts/meta-ads-ingest-spend.ts";
-import { MICROSOFT_ADS_CANAL } from "../scripts/microsoft-ads-ingest-spend.ts";
 import { CHANNEL_KEY_SPECS } from "../scripts/lib/shared/channel-key-specs.ts";
 import { ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
 
-/** Os 3 canais escritos em `spend.csv` pelos ingests do teste 2608. */
+/** Os canais escritos em `spend.csv` pelos ingests ATIVOS do teste 2608. */
 const CANAIS_DE_INGESTAO = [
   { script: "google-ads-ingest-spend.ts", canal: GOOGLE_ADS_CANAL },
   { script: "meta-ads-ingest-spend.ts", canal: META_ADS_CANAL },
-  { script: "microsoft-ads-ingest-spend.ts", canal: MICROSOFT_ADS_CANAL },
 ] as const;
+
+/** Braços do teste 2608 sem ingest de propósito: canal encerrado, gasto só
+ *  no histórico de `spend.csv` (#10755). Continuam precisando de spec e de
+ *  lugar em `ADS_TEST_2608_BRACOS`, senão o histórico vira "canal
+ *  desconhecido" no cac-report e some de `sumTeste2608Spend`. */
+const BRACOS_SO_HISTORICO = ["Microsoft Ads (teste 2608)"] as const;
 
 /**
  * Valores que os scripts JÁ usaram e que causaram (ou teriam causado) o
@@ -59,7 +70,7 @@ const VALORES_DEFEITUOSOS = ["Google Ads", "Meta"] as const;
 const specCanais = CHANNEL_KEY_SPECS.map((spec) => spec.canal);
 const bracos = ADS_TEST_2608_BRACOS as readonly string[];
 
-describe("#8239 — guard único: os 3 ingests do teste 2608 escrevem canal com spec e braço", () => {
+describe("#8239 — guard único: os ingests do teste 2608 escrevem canal com spec e braço", () => {
   for (const { script, canal } of CANAIS_DE_INGESTAO) {
     it(`${script}: canal "${canal}" tem entrada em CHANNEL_KEY_SPECS`, () => {
       assert.ok(
@@ -80,7 +91,7 @@ describe("#8239 — guard único: os 3 ingests do teste 2608 escrevem canal com 
     });
   }
 
-  it("os 3 canais são distintos entre si", () => {
+  it("os canais de ingestão são distintos entre si", () => {
     const canais = CANAIS_DE_INGESTAO.map((c) => c.canal);
     assert.equal(
       new Set(canais).size,
@@ -95,7 +106,7 @@ describe("#8239 — guard único: os 3 ingests do teste 2608 escrevem canal com 
     // teste falha até que o ingest correspondente entre em CANAIS_DE_INGESTAO
     // — é o que impede a assimetria que gerou o #8239 (Microsoft corrigido
     // em #7544, Google esquecido por 2 meses, sem nada acusando).
-    const canaisCobertos = new Set<string>(CANAIS_DE_INGESTAO.map((c) => c.canal));
+    const canaisCobertos = new Set<string>([...CANAIS_DE_INGESTAO.map((c) => c.canal), ...BRACOS_SO_HISTORICO]);
     const semCobertura = bracos.filter((braco) => !canaisCobertos.has(braco));
     assert.deepEqual(
       semCobertura,
@@ -106,6 +117,20 @@ describe("#8239 — guard único: os 3 ingests do teste 2608 escrevem canal com 
         `documente a exceção aqui).`,
     );
   });
+
+  for (const braco of BRACOS_SO_HISTORICO) {
+    it(`#10755 — braço só de histórico "${braco}" segue com spec e em ADS_TEST_2608_BRACOS (o gasto gravado continua lido)`, () => {
+      assert.ok(specCanais.includes(braco), `${braco} perdeu a spec — o gasto histórico viraria "canal desconhecido"`);
+      assert.ok(bracos.includes(braco), `${braco} saiu de ADS_TEST_2608_BRACOS — sumTeste2608Spend deixaria de somar o histórico`);
+    });
+
+    it(`#10755 — "${braco}" não tem mais ingest ativo (nenhum script escreve esse canal)`, () => {
+      assert.equal(
+        CANAIS_DE_INGESTAO.some((c) => (c.canal as string) === braco),
+        false,
+      );
+    });
+  }
 
   describe("caso negativo — os valores que causaram o #8239 falhariam este guard", () => {
     for (const defeituoso of VALORES_DEFEITUOSOS) {
@@ -123,7 +148,7 @@ describe("#8239 — guard único: os 3 ingests do teste 2608 escrevem canal com 
       });
     }
 
-    it("nenhum dos 3 ingests escreve um dos valores defeituosos", () => {
+    it("nenhum dos ingests escreve um dos valores defeituosos", () => {
       for (const { script, canal } of CANAIS_DE_INGESTAO) {
         assert.equal(
           (VALORES_DEFEITUOSOS as readonly string[]).includes(canal),

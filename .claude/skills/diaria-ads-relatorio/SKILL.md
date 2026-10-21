@@ -67,17 +67,14 @@ Complementa o Passo 1 quando o CSV (`clicks-2608.csv`) está atrasado ou
 você quer conferir a fonte automática direto — imprime, por braço, a série
 diária de gasto (dia fechado + hoje parcial) e a série diária de cadastros
 do Kit, ambas desde `d0`. Mesma fonte de dados do Passo 2 abaixo
-(`fetchCampaignEconomicsSources`), no nível de CONTA — as tabelas "por
-braço" seguem somando PMax + Search no total do braço Microsoft, inalterado.
+(`fetchCampaignEconomicsSources`), no nível de CONTA.
 
-**Desde o #8256, a mesma chamada também separa por campanha.** Uma seção
-adicional, "Quebra por campanha (Microsoft Ads, #8256)", imprime gasto e
-cadastros de PMax e Search SEPARADAMENTE — gasto via `CampaignId` na
-Reporting API (`res.microsoftCampaignBreakdown`), cadastros via
-`fields.utm_campaign` do Kit (`res.signupsByCampaign`, filtrado ao canal
-Microsoft). Narrar essa seção quando presente (ela só aparece com dado —
-braço pausado ou sem cadastro no período não some, mas fica vazia). `--json`
-devolve os 2 campos crus junto do resto.
+**Microsoft Ads encerrado (#10755):** o braço não tem mais
+gasto ao vivo (a Reporting API saiu do repo junto com a seção "Quebra por
+campanha" do #8256). Os cadastros com `utm_source=microsoft-ads` seguem na
+tabela de cadastros, e o gasto do braço é o que já está gravado em
+`data/aquisicao/spend.csv`. `--json` ainda devolve `signupsByCampaign` (Kit,
+por `utm_campaign`).
 
 **Desde o #8349, os cadastros aqui JÁ excluem e-mail de teste do editor** —
 `fetchKitSignupsByChannel` filtra por `isEditorTestSignupEmail` (plus-address
@@ -103,9 +100,9 @@ avalia e imprime; não envia e-mail nem grava estado (isso é papel da task
 `Diaria-Ads-Test-Watch`, separada desta).
 
 Gasto de cada braço junta CSV manual (`clicks-2608.csv`, reconciliado
-§8.3) com a fonte automática (Google/Microsoft/Meta Ads via API — não
-navegador) quando disponível; credencial ausente cai pro CSV manual sem
-abortar (`resolveArmSpend`). Um braço com mais de uma campanha em voo
+§8.3) com a fonte automática (Google/Meta Ads via API — não navegador;
+Microsoft Ads sem fonte automática desde o #10755) quando disponível;
+credencial ausente cai pro CSV manual sem abortar (`resolveArmSpend`). Um braço com mais de uma campanha em voo
 (ex: 2 campanhas Microsoft no mesmo braço do teste) é responsabilidade da
 fonte automática/`run-state.json` somar — esta skill nunca soma campanhas
 por conta própria.

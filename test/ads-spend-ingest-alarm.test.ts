@@ -9,6 +9,9 @@
  * log unificado de 2 steps que a v1 (#5597) fixturava, que descrevia uma
  * task (`Diaria-Ads-Spend-Ingest`) que nunca chegou a existir (ver
  * docstring do módulo pro racional completo da causa raiz).
+ *
+ * #10755 (21/10/2026): o braço Microsoft Ads saiu do alarme junto com o
+ * canal. As composições de 2 plataformas usam Google + Meta.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -31,7 +34,6 @@ import {
 import {
   toAlarmFinding,
   DEFAULT_GOOGLE_LOG_PATH,
-  DEFAULT_MICROSOFT_LOG_PATH,
   DEFAULT_META_LOG_PATH,
 } from "../scripts/ads-spend-ingest-alarm.ts";
 
@@ -39,7 +41,6 @@ const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = resolve(PROJECT_ROOT, "scripts", "ads-spend-ingest-alarm.ts");
 
 const GOOGLE_LOG_PATH = "data/aquisicao/.google-ads-ingest.log";
-const MICROSOFT_LOG_PATH = "data/aquisicao/.microsoft-ads-ingest.log";
 const META_LOG_PATH = "data/aquisicao/.meta-ads-ingest.log";
 
 const GOOGLE_OK_RUN =
@@ -72,12 +73,6 @@ const GOOGLE_FALLBACK_502_RUN =
   "  spend.csv não foi alterado. Editar manualmente ou rodar seed-spend-csv.ts se necessário.\n" +
   "===== fim (ingest=0) =====\n";
 
-const MICROSOFT_OK_RUN =
-  "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
-  "----- ingest -----\n" +
-  "[microsoft-ads-ingest-spend] ✔ data/aquisicao/spend.csv atualizado via identidade Google (12 linha(s) de relatório agregadas).\n" +
-  "===== fim (ingest=0) =====\n";
-
 /** Estado esperado, NÃO defeito (achado do self-review da #7518): Basic
  *  Access do Google ainda na fila (#5262). `reportFallback` cai no ramo
  *  `auth-pending` (avisa) e então chama `fallback()` — o mesmo texto
@@ -92,21 +87,9 @@ const GOOGLE_AUTH_PENDING_RUN =
   "  spend.csv não foi alterado. Editar manualmente ou rodar seed-spend-csv.ts se necessário.\n" +
   "===== fim (ingest=0) =====\n";
 
-/** Estado esperado, NÃO defeito: Microsoft não separa `empty`/`defect`
- *  como o Google faz — um dia sem NENHUM gasto (legítimo, ver docstring de
- *  `microsoft-ads-ingest-spend.ts`: "Zero gasto no período consultado
- *  também é fail-soft") passa pelo MESMO `fallback()` genérico que um
- *  defeito real usaria. Sem a exclusão, isto alarmaria todo dia sem
- *  campanha rodando. */
-const MICROSOFT_ZERO_SPEND_RUN =
-  "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
-  "----- ingest -----\n" +
-  "[microsoft-ads-ingest-spend] fallback pro CSV manual — [identidade: Google] fetch não devolveu nenhuma linha com custo — nada pra atualizar\n" +
-  "===== fim (ingest=0) =====\n";
-
 /** Run real de `scripts/meta-ads-ingest-spend.ts` (headless, #8245) sem
  *  `META_ADS_ACCESS_TOKEN` no ambiente — mesmo texto/formato de fallback
- *  genérico do Google/Microsoft (`fallback()` em `meta-ads-ingest-spend.ts`).
+ *  genérico do Google (`fallback()` em `meta-ads-ingest-spend.ts`).
  *  Por decisão explícita do item 6 da issue #8245, este texto NÃO entra em
  *  `BENIGN_FALLBACK_REASON_MARKERS` — token ausente é DEFEITO real (o
  *  próprio pré-requisito não satisfeito no `300`), não estado esperado. */
@@ -227,64 +210,45 @@ describe("evaluateSinglePlatformLog — tri-state honesto por plataforma", () =>
     );
     assert.equal(ev.verdict, "ok");
   });
-
-  it("Microsoft zero-spend legítimo → ok, NÃO defect, mesmo carregando 'fallback pro CSV manual' (regressão do self-review #7820)", () => {
-    const ev = evaluateSinglePlatformLog(
-      "microsoft",
-      MICROSOFT_LOG_PATH,
-      true,
-      MICROSOFT_ZERO_SPEND_RUN.replace("2026-08-17", NOW.toISOString().slice(0, 10)),
-      NOW,
-    );
-    assert.equal(ev.verdict, "ok");
-  });
 });
 
 describe("evaluateAdsSpendIngestAlarm — composição do veredito combinado", () => {
   const NOW = new Date("2026-08-17T20:00:00.000Z");
 
   it("as 2 plataformas ok → combinado ok", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(ev.verdict, "ok");
   });
 
   it("os 2 logs ausentes → cannot-verify, NUNCA no-run (o bug original desta issue)", () => {
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, false, null), input(MICROSOFT_LOG_PATH, false, null), NOW);
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, false, null), NOW, input(META_LOG_PATH, false, null));
     assert.equal(ev.verdict, "cannot-verify");
   });
 
   it("1 log ausente + outro ok → cannot-verify (nunca reporta ok sem ter olhado as 2)", () => {
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, false, null), NOW);
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, false, null));
     assert.equal(ev.verdict, "cannot-verify");
   });
 
   it("1 plataforma defect + outra ok → combinado alarm-defect (defeito confirmado sempre vence)", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(ev.verdict, "alarm-defect");
   });
 
   it("1 plataforma defect + outra cannot-verify → alarm-defect (defeito vence estado desconhecido)", () => {
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), input(MICROSOFT_LOG_PATH, false, null), NOW);
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, false, null));
     assert.equal(ev.verdict, "alarm-defect");
   });
 
   it("1 plataforma no-run + outra ok, nenhuma cannot-verify/defect → alarm-no-run", () => {
-    const yesterdayRun = MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-16");
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, true, yesterdayRun), NOW);
+    const yesterdayRun = META_OK_RUN.replace("2026-08-17", "2026-08-16");
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, yesterdayRun));
     assert.equal(ev.verdict, "alarm-no-run");
   });
 
   it("run REAL do dia (fallback 502) numa plataforma, outra ok → combinado alarm-defect, não alarm-no-run", () => {
     const todayFallback = GOOGLE_FALLBACK_502_RUN.replace("2026-09-09", "2026-08-17");
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, todayFallback), input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN), NOW);
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, todayFallback), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(ev.verdict, "alarm-defect");
   });
 });
@@ -302,34 +266,22 @@ describe("shouldSendAdsSpendIngestAlarm — idempotência por dia", () => {
   const NOW = new Date("2026-08-17T20:00:00.000Z");
 
   it("verdict ok nunca alarma", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(shouldSendAdsSpendIngestAlarm(ev, emptyAdsSpendIngestAlarmState(), NOW), false);
   });
 
   it("verdict cannot-verify nunca alarma", () => {
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, false, null), input(MICROSOFT_LOG_PATH, false, null), NOW);
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, false, null), NOW, input(META_LOG_PATH, false, null));
     assert.equal(shouldSendAdsSpendIngestAlarm(ev, emptyAdsSpendIngestAlarmState(), NOW), false);
   });
 
   it("1ª detecção do dia alarma", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(shouldSendAdsSpendIngestAlarm(ev, emptyAdsSpendIngestAlarmState(), NOW), true);
   });
 
   it("já alarmado HOJE não reenvia", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     const state = markAdsSpendIngestAlarmed(NOW);
     assert.equal(shouldSendAdsSpendIngestAlarm(ev, state, NOW), false);
   });
@@ -337,11 +289,7 @@ describe("shouldSendAdsSpendIngestAlarm — idempotência por dia", () => {
   it("dia seguinte com o mesmo defeito reenvia (dedup é por dia, não por conteúdo)", () => {
     const state = markAdsSpendIngestAlarmed(NOW);
     const tomorrow = new Date("2026-08-18T20:00:00.000Z");
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN_NEXT_DAY),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-18")),
-      tomorrow,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN_NEXT_DAY), tomorrow, input(META_LOG_PATH, true, META_OK_RUN.replace("2026-08-17", "2026-08-18")));
     assert.equal(shouldSendAdsSpendIngestAlarm(ev, state, tomorrow), true);
   });
 });
@@ -350,11 +298,7 @@ describe("buildAdsSpendIngestAlarmEmail", () => {
   const NOW = new Date("2026-08-17T20:00:00.000Z");
 
   it("alarm-defect: assunto/corpo mencionam DEFEITO e citam os logPaths", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     const { subject, body } = buildAdsSpendIngestAlarmEmail(ev, "");
     assert.match(subject, /DEFEITO/);
     assert.match(body, new RegExp(GOOGLE_LOG_PATH.replace(/[/.]/g, "\\$&")));
@@ -362,19 +306,15 @@ describe("buildAdsSpendIngestAlarmEmail", () => {
   });
 
   it("alarm-no-run: assunto/corpo mencionam ausência de execução", () => {
-    const yesterdayRun = MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-16");
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, true, yesterdayRun), NOW);
+    const yesterdayRun = META_OK_RUN.replace("2026-08-17", "2026-08-16");
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, yesterdayRun));
     const { subject, body } = buildAdsSpendIngestAlarmEmail(ev, "");
     assert.match(subject, /nenhuma execução/);
     assert.match(body, /systemctl/);
   });
 
   it("inclui issueLines quando fornecido", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     const { body } = buildAdsSpendIngestAlarmEmail(ev, "\n\nIssues:\n  - #999 (https://x)");
     assert.match(body, /#999/);
   });
@@ -384,11 +324,7 @@ describe("toAlarmFinding", () => {
   const NOW = new Date("2026-08-17T20:00:00.000Z");
 
   it("family 'estado', priority P1 pra defeito real", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     const f = toAlarmFinding(ev);
     assert.equal(f.family, "estado");
     assert.equal(f.priority, "P1");
@@ -396,23 +332,15 @@ describe("toAlarmFinding", () => {
   });
 
   it("priority P2 pra 'nenhuma execução hoje' — menos grave que defeito confirmado", () => {
-    const yesterdayRun = MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-16");
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, true, yesterdayRun), NOW);
+    const yesterdayRun = META_OK_RUN.replace("2026-08-17", "2026-08-16");
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, yesterdayRun));
     const f = toAlarmFinding(ev);
     assert.equal(f.priority, "P2");
   });
 
   it("fingerprint distingue defect de no-run, mas cada um é fixo (nunca varia por timestamp/plataforma) — family 'estado' precisa disso pro auto-close por streak", () => {
-    const defectEv = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-    );
-    const noRunEv = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-16")),
-      NOW,
-    );
+    const defectEv = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
+    const noRunEv = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN.replace("2026-08-17", "2026-08-16")));
     const defectFinding = toAlarmFinding(defectEv);
     const noRunFinding = toAlarmFinding(noRunEv);
     assert.notEqual(defectFinding.fingerprint, noRunFinding.fingerprint);
@@ -423,46 +351,37 @@ describe("toAlarmFinding", () => {
     // produzir o MESMO fingerprint — senão cada dia com defeito abre uma
     // issue nova em vez de acumular streak pro auto-close (mesmo padrão de
     // `clarice-envio-alarm.ts` pros achados family "estado").
-    const defectEvNextDay = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN_NEXT_DAY),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN.replace("2026-08-17", "2026-08-18")),
-      new Date("2026-08-18T20:00:00.000Z"),
-    );
+    const defectEvNextDay = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_DEFECT_RUN_NEXT_DAY), new Date("2026-08-18T20:00:00.000Z"), input(META_LOG_PATH, true, META_OK_RUN.replace("2026-08-17", "2026-08-18")));
     assert.equal(toAlarmFinding(defectEvNextDay).fingerprint, defectFinding.fingerprint);
 
-    // Defeito na OUTRA plataforma (Microsoft, não Google) deve produzir o
+    // Defeito na OUTRA plataforma (Meta, não Google) deve produzir o
     // MESMO fingerprint "defect" — o streak/auto-close é por TIPO de
     // achado, não por qual plataforma falhou.
-    const defectMicrosoftEv = evaluateAdsSpendIngestAlarm(
+    const defectMetaEv = evaluateAdsSpendIngestAlarm(
       input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(
-        MICROSOFT_LOG_PATH,
-        true,
-        MICROSOFT_OK_RUN.replace("✔ data/aquisicao/spend.csv atualizado via identidade Google", "✖ DEFEITO na ingestão — não indisponibilidade"),
-      ),
       NOW,
+      input(
+        META_LOG_PATH,
+        true,
+        META_OK_RUN.replace("✔ data/aquisicao/spend.csv atualizado", "✖ DEFEITO na ingestão — não indisponibilidade"),
+      ),
     );
-    assert.equal(toAlarmFinding(defectMicrosoftEv).fingerprint, "defect");
+    assert.equal(toAlarmFinding(defectMetaEv).fingerprint, "defect");
   });
 });
 
-describe("#8245 item 6 — 3ª plataforma (meta), OPCIONAL em evaluateAdsSpendIngestAlarm", () => {
+describe("#8245 item 6 — plataforma meta, OPCIONAL em evaluateAdsSpendIngestAlarm", () => {
   const NOW = new Date("2026-08-17T20:00:00.000Z");
 
-  it("sem passar `meta`: composição idêntica à de antes (2 plataformas), meta nunca aparece em `platforms`", () => {
-    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN), NOW);
+  it("sem passar `meta`: só o Google é avaliado, meta nunca aparece em `platforms`", () => {
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW);
     assert.equal(ev.verdict, "ok");
-    assert.equal(ev.platforms.length, 2);
+    assert.equal(ev.platforms.length, 1);
     assert.ok(!ev.platforms.some((p) => p.platform === "meta"));
   });
 
-  it("google+microsoft ok, meta com log ausente (task ainda não armada): combinado cannot-verify, não alarma", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-      input(META_LOG_PATH, false, null),
-    );
+  it("google ok, meta com log ausente (task ainda não armada): combinado cannot-verify, não alarma", () => {
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, false, null));
     assert.equal(ev.verdict, "cannot-verify");
     assert.equal(isAlarmingVerdict(ev.verdict), false);
     const meta = ev.platforms.find((p) => p.platform === "meta")!;
@@ -471,12 +390,7 @@ describe("#8245 item 6 — 3ª plataforma (meta), OPCIONAL em evaluateAdsSpendIn
   });
 
   it("token ausente no run de hoje do Meta: veredito da plataforma é `defect` (não `cannot-verify`) — decisão explícita do item 6", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-      input(META_LOG_PATH, true, META_TOKEN_MISSING_RUN),
-    );
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_TOKEN_MISSING_RUN));
     assert.equal(ev.verdict, "alarm-defect");
     const meta = ev.platforms.find((p) => p.platform === "meta")!;
     assert.equal(meta.verdict, "defect");
@@ -484,15 +398,18 @@ describe("#8245 item 6 — 3ª plataforma (meta), OPCIONAL em evaluateAdsSpendIn
     assert.match(toAlarmFinding(ev).title, /Meta Ads/);
   });
 
-  it("as 3 plataformas ok: combinado ok", () => {
-    const ev = evaluateAdsSpendIngestAlarm(
-      input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN),
-      input(MICROSOFT_LOG_PATH, true, MICROSOFT_OK_RUN),
-      NOW,
-      input(META_LOG_PATH, true, META_OK_RUN),
-    );
+  it("Google e Meta ok: combinado ok", () => {
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
     assert.equal(ev.verdict, "ok");
-    assert.equal(ev.platforms.length, 3);
+    assert.equal(ev.platforms.length, 2);
+  });
+
+  it("#10755 — Microsoft não é mais plataforma do alarme: nenhuma avaliação inclui o braço encerrado", () => {
+    const ev = evaluateAdsSpendIngestAlarm(input(GOOGLE_LOG_PATH, true, GOOGLE_OK_RUN), NOW, input(META_LOG_PATH, true, META_OK_RUN));
+    assert.deepEqual(
+      ev.platforms.map((p) => p.platform),
+      ["google", "meta"],
+    );
   });
 
   it("platformLabel(meta) === 'Meta Ads'", () => {
@@ -504,7 +421,7 @@ describe("#8245 item 6 — 3ª plataforma (meta), OPCIONAL em evaluateAdsSpendIn
   });
 });
 
-describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#7518, achado 260910)", () => {
+describe("CLI: resolução de --google-log-path/--meta-log-path ausentes (#7518, achado 260910)", () => {
   it("sem os overrides de path, usa os DEFAULT_*_LOG_PATH reais — nunca colapsa pra string vazia", () => {
     // Achado ao vivo (rodada overnight 260910): `getArg(argv, "google-log-path") ?? DEFAULT_GOOGLE_LOG_PATH`
     // nunca caía no default, porque `getArg` (scripts/lib/cli-args.ts) retorna
@@ -521,16 +438,16 @@ describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#
     const stdout = result.stdout ?? "";
     // Nunca reproduz o padrão de bug — paths vazios entre parênteses.
     assert.doesNotMatch(stdout, /google=[a-z-]+\(\)/);
-    assert.doesNotMatch(stdout, /microsoft=[a-z-]+\(\)/);
+    // #10755: o braço Microsoft saiu — o CLI não lê mais o log dele.
+    assert.doesNotMatch(stdout, /microsoft=/);
     // O path efetivamente usado é o DEFAULT_* real (absoluto, não vazio) —
     // presente e existente mesmo que os arquivos apontados não existam
     // neste ambiente (cannot-verify por log_missing é aceitável; log_path
     // vazio nunca é).
     assert.ok(stdout.includes(DEFAULT_GOOGLE_LOG_PATH), `stdout deveria conter o path default do Google: ${stdout}`);
-    assert.ok(stdout.includes(DEFAULT_MICROSOFT_LOG_PATH), `stdout deveria conter o path default do Microsoft: ${stdout}`);
   });
 
-  it("#8245 item 6 — sem --meta-log-path, usa DEFAULT_META_LOG_PATH real (mesmo guard do Google/Microsoft acima, agora com a 3ª plataforma)", () => {
+  it("#8245 item 6 — sem --meta-log-path, usa DEFAULT_META_LOG_PATH real (mesmo guard do Google acima)", () => {
     const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT_PATH, "--dry-run"], {
       cwd: PROJECT_ROOT,
       encoding: "utf8",
@@ -563,25 +480,3 @@ describe("CLI: resolução de --google-log-path/--microsoft-log-path ausentes (#
   });
 });
 
-describe("#9071 — classificação do log do Microsoft depois do banner ✔ próprio", () => {
-  const NOW = new Date("2026-08-17T20:00:00.000Z");
-  const header =
-    "\n===== 2026-08-17T09:52:00.000Z - ingestao diaria de gasto do Microsoft Ads (Reporting API) para data/aquisicao/spend.csv =====\n" +
-    "----- ingest -----\n";
-
-  it("banner ✔ de gasto zero (formato novo) → ok", () => {
-    const run =
-      header +
-      "[microsoft-ads-ingest-spend] ✔ API respondeu via identidade Google, sem gasto no período consultado — spend.csv fica como está.\n" +
-      "===== fim (ingest=0) =====\n";
-    assert.equal(evaluateSinglePlatformLog("microsoft", MICROSOFT_LOG_PATH, true, run, NOW).verdict, "ok");
-  });
-
-  it("perda TOTAL por malformação (#5605) → defect, apesar de carregar o literal benigno como prefixo", () => {
-    const run =
-      header +
-      "[microsoft-ads-ingest-spend] fallback pro CSV manual — [identidade: Google] fetch não devolveu nenhuma linha com custo — nada pra atualizar — 3 linha(s) do CampaignPerformanceReport recebida(s) mas descartada(s) por malformação (#5605); possível schema drift na API, não necessariamente ausência real de gasto no período.\n" +
-      "===== fim (ingest=1) =====\n";
-    assert.equal(evaluateSinglePlatformLog("microsoft", MICROSOFT_LOG_PATH, true, run, NOW).verdict, "defect");
-  });
-});

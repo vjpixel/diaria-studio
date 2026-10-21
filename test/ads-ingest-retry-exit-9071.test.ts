@@ -6,7 +6,8 @@
  * `microsoft-ads-ingest-spend.ts` continuavam (1) sem retry — um blip de
  * DNS como o de 29/09/2026 12:54 UTC derrubava o run do dia — e (2) com
  * exit 0 em TODA falha, então a unit systemd terminava "sucesso". Este
- * teste trava, pros dois CLIs:
+ * teste trava, pro CLI do Google (o do Microsoft saiu no #10755, canal
+ * encerrado):
  *
  *   1. blip de rede na 1ª chamada é retentado (`withFetchRetry` com
  *      `SPEND_INGEST_FETCH_RETRY`) e o run se recupera;
@@ -29,7 +30,6 @@ import {
   exitCodeForFailureClass,
   GOOGLE_ADS_CANAL,
 } from "../scripts/google-ads-ingest-spend.ts";
-import { main as microsoftMain, isMicrosoftAdsRetriableStatus } from "../scripts/microsoft-ads-ingest-spend.ts";
 import {
   META_ADS_FETCH_RETRY,
   META_ADS_INGEST_FAILURE_EXIT_CODE,
@@ -199,125 +199,6 @@ describe("#9071 — google-ads-ingest-spend: retry + exit code", () => {
     assert.equal(exitCodeForFailureClass("empty"), 0);
     for (const c of ["defect", "transient", "auth-pending"] as const) {
       assert.equal(exitCodeForFailureClass(c), SPEND_INGEST_FAILURE_EXIT_CODE, c);
-    }
-  });
-});
-
-describe("#9071 — microsoft-ads-ingest-spend: retry + exit code", () => {
-  const SERVICE_URL = "https://reporting.api.bingads.microsoft.com/Api/Advertiser/Reporting/v13/ReportingService.svc";
-  let tmpDir: string;
-  let spendPath: string;
-  let restoreEnv: () => void;
-  let sleeps: number[];
-  const sleep = async (ms: number) => {
-    sleeps.push(ms);
-  };
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "msads-9071-"));
-    spendPath = join(tmpDir, "spend.csv");
-    sleeps = [];
-    // Caminho Azure AD (token em login.microsoftonline.com); Google limpo
-    // pra não depender do .env local.
-    restoreEnv = withEnv({
-      MICROSOFT_ADS_DEVELOPER_TOKEN: "dev",
-      MICROSOFT_ADS_CUSTOMER_ID: "111",
-      MICROSOFT_ADS_ACCOUNT_ID: "222",
-      MICROSOFT_ADS_CLIENT_ID: "cid",
-      MICROSOFT_ADS_REFRESH_TOKEN: "rt",
-      GOOGLE_CLIENT_ID: undefined,
-      GOOGLE_CLIENT_SECRET: undefined,
-      MICROSOFT_ADS_GOOGLE_REFRESH_TOKEN: undefined,
-    });
-  });
-
-  afterEach(() => {
-    restoreEnv();
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  /** Fluxo SOAP mínimo: Success sem ReportDownloadUrl = relatório sem
-   *  linhas (comportamento real da API, #5928) → `empty`. */
-  function msFetch(opts: { tokenFailures?: number }) {
-    let tokenCalls = 0;
-    const impl = async (url: string, init?: RequestInit): Promise<Response> => {
-      if (url.includes("login.microsoftonline.com")) {
-        tokenCalls++;
-        if (tokenCalls <= (opts.tokenFailures ?? 0)) throw new TypeError("fetch failed");
-        return new Response(JSON.stringify({ access_token: "tok" }), { status: 200 });
-      }
-      if (url === SERVICE_URL) {
-        const body = String(init?.body ?? "");
-        if (body.includes(">SubmitGenerateReport<")) {
-          return new Response(
-            `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><SubmitGenerateReportResponse xmlns="https://bingads.microsoft.com/Reporting/v13"><ReportRequestId>req-1</ReportRequestId></SubmitGenerateReportResponse></s:Body></s:Envelope>`,
-            { status: 200 },
-          );
-        }
-        if (body.includes(">PollGenerateReport<")) {
-          return new Response(
-            `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><PollGenerateReportResponse xmlns="https://bingads.microsoft.com/Reporting/v13"><ReportRequestStatus><ReportRequestId>req-1</ReportRequestId><Status>Success</Status></ReportRequestStatus></PollGenerateReportResponse></s:Body></s:Envelope>`,
-            { status: 200 },
-          );
-        }
-      }
-      throw new Error(`URL inesperada no mock: ${url}`);
-    };
-    return { impl, tokenCalls: () => tokenCalls };
-  }
-
-  it("blip de rede no token, depois API sem gasto → recupera, exit 0 com banner ✔ (não fallback)", async () => {
-    const f = msFetch({ tokenFailures: 1 });
-    const { result, out } = await silenceConsole(() => microsoftMain(["--spend", spendPath], { fetchImpl: f.impl, sleep }));
-    assert.equal(result, 0);
-    assert.equal(f.tokenCalls(), 2);
-    // 1 backoff do retry; o poll resolve na 1ª tentativa (sem sleep de poll).
-    assert.deepEqual(sleeps, [SPEND_INGEST_FETCH_RETRY.backoffMs[0]]);
-    assert.match(out, /✔ API respondeu/);
-    assert.doesNotMatch(out, /fallback pro CSV manual/);
-    assert.equal(existsSync(spendPath), false);
-  });
-
-  it("HTTP 500 (SOAP Fault) no submit NÃO é retentado; 503 é", async () => {
-    assert.equal(isMicrosoftAdsRetriableStatus(500), false);
-    assert.equal(isMicrosoftAdsRetriableStatus(503), true);
-    assert.equal(isMicrosoftAdsRetriableStatus(401), false);
-
-    let submitCalls = 0;
-    const base = msFetch({}).impl;
-    const faulting = async (url: string, init?: RequestInit): Promise<Response> => {
-      if (url === SERVICE_URL && String(init?.body ?? "").includes(">SubmitGenerateReport<")) {
-        submitCalls++;
-        return new Response(
-          `<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault><faultstring>InvalidCredentials</faultstring></s:Fault></s:Body></s:Envelope>`,
-          { status: 500 },
-        );
-      }
-      return base(url, init);
-    };
-    const { result } = await silenceConsole(() => microsoftMain(["--spend", spendPath], { fetchImpl: faulting, sleep }));
-    assert.equal(result, SPEND_INGEST_FAILURE_EXIT_CODE);
-    assert.equal(submitCalls, 1);
-  });
-
-  it("rede persistente (retry esgotado) → exit não-zero, spend.csv intocado", async () => {
-    const f = msFetch({ tokenFailures: Infinity });
-    const { result, out } = await silenceConsole(() => microsoftMain(["--spend", spendPath], { fetchImpl: f.impl, sleep }));
-    assert.equal(result, SPEND_INGEST_FAILURE_EXIT_CODE);
-    assert.equal(f.tokenCalls(), SPEND_INGEST_FETCH_RETRY.attempts);
-    assert.equal(existsSync(spendPath), false);
-    assert.match(out, /fallback pro CSV manual/);
-  });
-
-  it("credencial ausente → exit não-zero (antes: 0)", async () => {
-    const restore = withEnv({ MICROSOFT_ADS_DEVELOPER_TOKEN: undefined });
-    try {
-      const { result } = await silenceConsole(() =>
-        microsoftMain(["--spend", spendPath], { fetchImpl: msFetch({}).impl, sleep }),
-      );
-      assert.equal(result, SPEND_INGEST_FAILURE_EXIT_CODE);
-    } finally {
-      restore();
     }
   });
 });
