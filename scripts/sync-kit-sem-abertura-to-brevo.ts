@@ -199,6 +199,12 @@ export interface KitSemAberturaDeps {
    */
   untagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
+  /**
+   * #10701 — teto de reposições do backlog por rodada. Ausente ⇒
+   * `KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS`; injetável pra testar o caso
+   * em que o teto é atingido sem montar mil contatos.
+   */
+  maxBacklogReplacements?: number;
 }
 
 export interface KitSemAberturaRunResult {
@@ -219,6 +225,12 @@ export interface KitSemAberturaRunResult {
    * confirmou) e voltam a receber a diária por lá. Nunca gravados no store.
    */
   orphansReturnedToKit?: number;
+  /**
+   * #10701 — o teto de reposições do backlog (`KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS`)
+   * foi atingido: vagas ficaram vazias com gente ainda na fila. Se aparecer em
+   * produção, é o gatilho pra registrar os pulados (2ª opção da #10664).
+   */
+  backlogReplacementCapHit?: boolean;
   summary: string;
 }
 
@@ -550,16 +562,22 @@ export async function runKitSemAberturaSync(
   // DEFINITIVO; falha de leitura adia sem repor (transitória — repor
   // queimaria a fila numa instabilidade da API). Os cortados pelo
   // `--max-add` vêm primeiro (são os mais antigos fora da rodada).
+  // #10701 — cadastro NOVO pulado também cede a vaga: ele ocupou uma vaga da
+  // fila/cota (`computeBacklogSlots` desconta os novos) ou do `--max-add`, e
+  // trocá-lo por um do backlog mantém o total da rodada. Sem isso, com
+  // `--max-add` cortando o backlog, um novo blacklisted deixava a rodada
+  // abaixo do teto pedido pelo operador.
   const reserve: typeof capped = [
     ...wave.toMove.slice(capped.length).filter((c) => c.wave === "backlog"),
     ...wave.backlogReserve.map((s) => ({ ...s, wave: "backlog" as const })),
   ];
+  const maxReplacements = deps.maxBacklogReplacements ?? KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS;
   let replacements = 0;
   let replacementCapHit = false;
   const queue: typeof capped = [...capped];
-  const replace = (c: (typeof capped)[number]) => {
-    if (c.wave !== "backlog" || reserve.length === 0) return;
-    if (replacements >= KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS) {
+  const replace = () => {
+    if (reserve.length === 0) return;
+    if (replacements >= maxReplacements) {
       replacementCapHit = true;
       return;
     }
@@ -589,7 +607,7 @@ export async function runKitSemAberturaSync(
     if (blacklisted) {
       skippedBlacklisted++;
       log(`  ${c.email}: já emailBlacklisted na Brevo diária — fica no Kit, não é movido (#10536).`);
-      replace(c);
+      replace();
       continue;
     }
     // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
@@ -603,7 +621,7 @@ export async function runKitSemAberturaSync(
     }
     if (typeof nivel === "string" && nivel.trim() !== "") {
       log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
-      replace(c);
+      replace();
       continue;
     }
     toMove.push(c);
@@ -616,11 +634,17 @@ export async function runKitSemAberturaSync(
   }
   if (replacementCapHit) {
     log(
-      `AVISO: teto de ${KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS} reposições do backlog atingido nesta rodada — ` +
+      `AVISO: teto de ${maxReplacements} reposições do backlog atingido nesta rodada — ` +
         "vagas ficaram sem preencher; se repetir, a cabeça do backlog está dominada por pulados (#10664).",
     );
   }
-  const counts = { selected: selection.selected.length, deferred, skippedBlacklisted, orphansReturnedToKit };
+  const counts = {
+    selected: selection.selected.length,
+    deferred,
+    skippedBlacklisted,
+    orphansReturnedToKit,
+    ...(replacementCapHit ? { backlogReplacementCapHit: true } : {}),
+  };
 
   if (!push) {
     for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);
