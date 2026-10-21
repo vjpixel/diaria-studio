@@ -74,6 +74,8 @@ export function alertAction(alert) {
       return { acao: "Investigar falha de envio: rodar npx tsx scripts/onboarding-welcome-run.ts (dry-run) e ler o erro", link: TAREFAS_LINK };
     case "followup_streak":
       return { acao: "Investigar falha de envio: rodar npx tsx scripts/onboarding-followup-run.ts (dry-run) e ler o erro", link: TAREFAS_LINK };
+    case "cap_window_overflow":
+      return { acao: "Subir onboarding.followup.max_recipients_per_lot ou grace_days em platform.config.json (#10652)", link: null };
     default:
       return { acao: "Investigar o alerta: ler o erro da última rodada do executor", link: TAREFAS_LINK };
   }

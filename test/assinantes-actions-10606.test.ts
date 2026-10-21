@@ -147,6 +147,14 @@ describe("buildActionItems (#10606)", () => {
     for (const it of items.slice(0, 3)) assert.equal(it.link?.href, "/tarefas");
   });
 
+  it("excedente do teto fora da janela (#10652) vira ação de config, já na 1ª rodada", () => {
+    const items = buildActionItems(
+      funnel({ followup: followup({ alerts: [{ kind: "cap_window_overflow", etapa: "Sequências de apoio/formulário", mensagem: "excedente do teto" }] }) }),
+    );
+    assert.equal(items.length, 1);
+    assert.match(items[0].acao, /max_recipients_per_lot ou grace_days/);
+  });
+
   it("sequência travada por texto pendente: ação de aprovar o texto, link pra Caixas", () => {
     const items = buildActionItems(funnel({ followup: followup({ blocked: { apoio: { motivo: "texto_pendente", detalhe: "PENDENTE" }, form: null } }) }));
     assert.deepEqual(items.map((i) => i.titulo), ["Apoio D+30/90/180/360 travado"]);

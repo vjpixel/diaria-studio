@@ -94,7 +94,9 @@ export type PanelAlertKind =
   /** Rodadas seguidas com falha nas sequências de apoio/formulário. */
   | "followup_streak"
   /** Lote com broadcast não agendado e não apagado (`schedule_failed`). */
-  | "lot_schedule_failed";
+  | "lot_schedule_failed"
+  /** Excedente do teto de lote que não cabe na janela (#10652). */
+  | "cap_window_overflow";
 
 export interface PanelAlert {
   kind: PanelAlertKind;
@@ -295,6 +297,7 @@ export function buildFollowupPanel(
       .map(([k, c]) => `${STEP_LABELS[k as OnboardingEmailStep] ?? k}: ${c!.excede_janela}`)
       .join(", ");
     alerts.push({
+      kind: "cap_window_overflow",
       etapa: "Sequências de apoio/formulário",
       mensagem: `excedente do teto de lote não cabe na janela — ao menos ${perda} vão vencer sem receber (subir max_recipients_per_lot ou grace_days)`,
     });
