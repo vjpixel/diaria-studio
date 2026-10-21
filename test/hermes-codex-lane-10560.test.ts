@@ -153,7 +153,11 @@ before(() => {
       // #10560: stderr verbatim do codex-rs (tag rust-v0.159.1), escrito pelo teste.
       '  stderr-file) cat "$CODEX_STUB_STDERR_FILE" >&2; exit 1 ;;',
       '  partial-stderr-file) git -C "$CODEX_STUB_REPO" branch "continuo/fix-10560-sf-$$" >/dev/null 2>&1; cat "$CODEX_STUB_STDERR_FILE" >&2; exit 1 ;;',
-      '  partial-new-worktree) git -C "$CODEX_STUB_REPO" worktree add -q --detach "$TMPDIR/wt-novo-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
+      // #10669: o overnight agendado cria `overnight/*` e worktrees `worktree-*`
+      // (e `develop/*`) durante a tentativa do codex.
+      '  foreign-overnight) git -C "$CODEX_STUB_REPO" branch "overnight/fix-999-x-$$" >/dev/null 2>&1; git -C "$CODEX_STUB_REPO" worktree add -q -b "worktree-agent-$$" "$TMPDIR/wt-agent-$$" >/dev/null 2>&1; git -C "$CODEX_STUB_REPO" worktree add -q -b "develop/fix-998-$$" "$TMPDIR/wt-dev-$$" >/dev/null 2>&1; echo "erro qualquer" >&2; exit 1 ;;',
+      '  foreign-overnight-plus-partial) git -C "$CODEX_STUB_REPO" branch "overnight/fix-997-$$" >/dev/null 2>&1; git -C "$CODEX_STUB_REPO" worktree add -q -b "continuo/fix-10669-$$" "$TMPDIR/wt-cont-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
+      '  partial-new-worktree)git -C "$CODEX_STUB_REPO" worktree add -q --detach "$TMPDIR/wt-novo-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
       // #10588 item a: `ERROR:` de script no MEIO da transcrição não é erro da CLI.
       '  transcript-error-mid) { echo "exec bash -lc npx-tsx-scripts-x"; echo "ERROR: Brevo rate limit exceeded (429) — usage limit"; echo "vou tentar de novo mais tarde"; echo "timeout no meio"; } >&2; exit 1 ;;',
       // #10584: commit em master num repo descartável (como os testes que
@@ -358,6 +362,45 @@ describe("#10560 — ordem da cadeia", () => {
       assert.match(r.stdout, /resposta fake claude/);
     });
   }
+
+  // #10669: o overnight agendado (#10552) roda junto com o contínuo e cria
+  // branches/worktrees `overnight/*`/`worktree-*`/`develop/*` no mesmo repo.
+  it("#10669: branch overnight/* e worktrees worktree-*/develop/* de outra trilha NÃO são trabalho parcial, cadeia segue", () => {
+    const r2 = join(tmp, `repo-overnight-${Date.now()}`);
+    initRepo(r2);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "foreign-overnight", CODEX_STUB_REPO: r2 }),
+      [],
+      r2,
+    );
+    // A atividade alheia aconteceu de fato (senão o teste não discrimina).
+    const heads = sh("git", ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], r2).stdout;
+    assert.match(heads, /^overnight\/fix-999-x-/m);
+    assert.match(heads, /^worktree-agent-/m);
+    assert.match(heads, /^develop\/fix-998-/m);
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stderr, /trabalho parcial/);
+    assert.match(r.stdout, /resposta fake claude/);
+    const order = attemptOrder(r.stderr);
+    assert.equal(order[0], "codex:gpt-6.1-sol");
+    assert.ok(FIRST_NON_CODEX.has(order[1]), `2º elo inesperado: ${order}`);
+  });
+
+  it("#10669: com overnight/* concorrente, worktree continuo/* do codex continua sendo trabalho parcial (exit 95)", () => {
+    const r2 = join(tmp, `repo-overnight-partial-${Date.now()}`);
+    initRepo(r2);
+    writeSessionFile();
+    const r = runWrapper(
+      wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "foreign-overnight-plus-partial", CODEX_STUB_REPO: r2 }),
+      [],
+      r2,
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.match(r.stderr, /trabalho parcial — .*branch continuo\/fix-10669-/);
+    assert.match(r.stderr, /wt \S*wt-cont-/);
+    assert.doesNotMatch(r.stderr, /overnight\/fix-997/);
+  });
 
   it("falha do codex DEPOIS de abrir worktree NOVO: aborta com exit 95", () => {
     const r2 = join(tmp, `repo-newwt-${Date.now()}`);
