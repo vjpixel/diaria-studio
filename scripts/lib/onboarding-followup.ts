@@ -119,8 +119,14 @@ export interface FollowupSkipRecord {
   /** ISO de quando a etapa foi pulada para esta pessoa (terminal pra etapa). */
   at: string;
   /** `apoia`: na checagem perto do envio, a pessoa já apoiava — a etapa de
-   *  apoio não sai para ela (a próxima ainda é avaliada de novo). */
-  motivo: "apoia";
+   *  apoio não sai para ela (a próxima ainda é avaliada de novo).
+   *  `nao_ativo` (#10675): na checagem perto do envio, a pessoa não estava
+   *  mais `active` no Kit (descadastrou, bounce, cancelada). Terminal para a
+   *  etapa; numa etapa de FORMULÁRIO encerra a sequência inteira do
+   *  formulário (`formStepDue` → `saiu`) — senão o lembrete, que não tem
+   *  janela, ficaria devido para sempre e ocuparia o teto do lote. Não
+   *  ressuscita se a pessoa voltar a se inscrever. */
+  motivo: "apoia" | "nao_ativo";
 }
 
 export interface FollowupPerson {
@@ -169,8 +175,14 @@ export interface FollowupRunRecord {
    *  Conta como rodada falha (alarme de continuidade + exit 1). Opcional:
    *  registros anteriores não têm o campo. */
   cap_window_overflow?: number;
-  /** Consultas ao Kit (listagem, leitura singular) que falharam. */
+  /** Consultas ao Kit que falharam e contam como rodada falha: listagem/tag
+   *  (travam a sequência) e, desde o #10676, só as leituras singulares cujo
+   *  adiamento NÃO é seguro (ver `classifyLookupFailures`). */
   lookups_failed: number;
+  /** #10676: leituras singulares que falharam depois do retry da rodada mas
+   *  foram adiadas com segurança (a pessoa volta amanhã, dentro da janela) —
+   *  não contam como falha. Opcional: registros anteriores não têm o campo. */
+  lookups_deferred?: number;
   /** #10628: lotes que seguem sem confirmação depois da releitura do início do
    *  `--send` (releitura falhou, ou rascunho que não deu pra apagar). Opcional:
    *  registros anteriores não têm o campo. */
@@ -374,7 +386,13 @@ export function apoioStepDue(
 
 export type FormDueResult =
   | { due: FormStepKind }
-  | { due: null; motivo: "preencheu" | "sem_ancora" | "nao_venceu" | "vencida" };
+  | { due: null; motivo: "preencheu" | "saiu" | "sem_ancora" | "nao_venceu" | "vencida" };
+
+/** #10675: a checagem perto do envio já viu a pessoa fora do Kit numa etapa
+ *  do formulário — a sequência do formulário acabou para ela. */
+export function leftKitInFormSequence(person: FollowupPerson | undefined): boolean {
+  return (person?.skips ?? []).some((s) => s.motivo === "nao_ativo" && isFormStep(s.step));
+}
 
 /** Último envio de formulário registrado (epoch s), ou `null`. */
 export function lastFormSendSec(person: FollowupPerson | undefined): number | null {
@@ -395,6 +413,8 @@ export function formStepDue(
   cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays">,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
+  // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
+  if (leftKitInFormSequence(person)) return { due: null, motivo: "saiu" };
   const last = lastFormSendSec(person);
   if (last == null) {
     if (anchorSec == null) return { due: null, motivo: "sem_ancora" };
@@ -700,6 +720,13 @@ export interface LiveSubscriberCheck {
 
 export type LiveExclusionReason = "apoia" | "nao_ativo" | "consulta_falhou";
 
+/** @pure — #10685: `state` é string não vazia. Só um estado concreto
+ *  diferente de `active` (cancelled, bounced, complained, inactive…) prova
+ *  saída e vira pulo terminal; nulo/vazio é leitura falha. */
+export function isConcreteKitState(state: unknown): state is string {
+  return typeof state === "string" && state.trim() !== "";
+}
+
 /**
  * @pure — filtra o plano pela leitura FRESCA do Kit. Só `active` recebe;
  * `apoio_nivel` não-vazio exclui das etapas de APOIO (o formulário segue
@@ -713,7 +740,9 @@ export function filterDueByLiveCheck(
   const excluded: { due: FollowupDue; motivo: LiveExclusionReason }[] = [];
   for (const d of due) {
     const c = checks.get(d.kit_subscriber_id);
-    if (c == null) {
+    // #10685: `state` nulo/vazio não é estado de saída — tratar como leitura
+    // falha (adia, sem pulo terminal), nunca como `nao_ativo`.
+    if (c == null || !isConcreteKitState(c.state)) {
       excluded.push({ due: d, motivo: "consulta_falhou" });
       continue;
     }
@@ -728,6 +757,49 @@ export function filterDueByLiveCheck(
     send.push(d);
   }
   return { send, excluded };
+}
+
+/** #10676: fração de leituras singulares falhas (depois do retry) a partir da
+ *  qual a falha deixa de ser "isolada" e a rodada conta como falha. */
+export const FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION = 0.5;
+
+export interface LookupFailure {
+  due: FollowupDue;
+  /** O erro é retentável mais tarde (429, 5xx, rede). 401/403 não é. */
+  transient: boolean;
+  /** Âncora da janela da etapa (a mesma de `capWindowStartSec`). */
+  anchorSec: number | null;
+}
+
+/**
+ * @pure — #10676: separa as leituras singulares que falharam (já depois do
+ * retry espaçado da rodada) entre ADIADAS com segurança e as que contam como
+ * rodada falha. Quem falha fica fora do envio de hoje (`consulta_falhou`,
+ * nunca autoriza envio) e volta a ser devido amanhã — perda só existe se
+ * amanhã já estiver fora da janela. Conta como falha (`blocking`):
+ *   - erro não transitório (401/403: não passa com o tempo);
+ *   - último dia da janela da etapa (amanhã a pessoa vira `vencida`);
+ *   - falha sistêmica: `≥ FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION` das leituras.
+ * O resto é `deferred`. `form_lembrete` não tem janela, então só sai por
+ * erro não transitório ou falha sistêmica.
+ */
+export function classifyLookupFailures(
+  failures: readonly LookupFailure[],
+  totalLookups: number,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
+): { blocking: number; deferred: number } {
+  if (failures.length === 0) return { blocking: 0, deferred: 0 };
+  if (totalLookups > 0 && failures.length / totalLookups >= FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION) {
+    return { blocking: failures.length, deferred: 0 };
+  }
+  let blocking = 0;
+  for (const f of failures) {
+    const start = capWindowStartSec(f.due.kind, f.anchorSec, cfg);
+    const lastChance = start != null && start + cfg.graceDays * DAY_S <= nowSec + DAY_S;
+    if (!f.transient || lastChance) blocking++;
+  }
+  return { blocking, deferred: failures.length - blocking };
 }
 
 // ---------------------------------------------------------------------------
@@ -775,21 +847,28 @@ export function applyFollowupLotToPeople(
   return n;
 }
 
-/** Registra o pulo terminal `apoia` (etapa de apoio, pessoa já apoiava). */
-export function recordApoiaSkips(
+/**
+ * Registra os pulos terminais da checagem perto do envio: `apoia` (etapa de
+ * apoio, pessoa já apoiava) e `nao_ativo` (#10675, pessoa fora do Kit — em
+ * qualquer etapa). `consulta_falhou` nunca vira pulo: a pessoa volta no dia
+ * seguinte. Idempotente por etapa.
+ */
+export function recordLiveCheckSkips(
   people: Record<string, FollowupPerson>,
   excluded: readonly { due: FollowupDue; motivo: LiveExclusionReason }[],
   nowIso: string,
 ): number {
   let n = 0;
   for (const x of excluded) {
-    if (x.motivo !== "apoia") continue;
+    if (x.motivo !== "apoia" && x.motivo !== "nao_ativo") continue;
     const person = ensurePerson(people, x.due.kit_subscriber_id, x.due.email);
-    person.apoia = true;
-    person.apoio_checked_at = nowIso;
+    if (x.motivo === "apoia") {
+      person.apoia = true;
+      person.apoio_checked_at = nowIso;
+    }
     person.skips ??= [];
     if (person.skips.some((s) => s.step === x.due.kind)) continue;
-    person.skips.push({ step: x.due.kind, at: nowIso, motivo: "apoia" });
+    person.skips.push({ step: x.due.kind, at: nowIso, motivo: x.motivo });
     n++;
   }
   return n;

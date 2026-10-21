@@ -726,6 +726,65 @@ export function ownerTransportFor(
   return "brevo";
 }
 
+/**
+ * Dono do PRÓXIMO passo da entrada para decidir quem a refresca (#10677).
+ * E-mail 2 e 3 seguem o mesmo dono (o do e-mail 1), então basta distinguir
+ * "ainda no e-mail 1" de "escada já começou". Fonte única dos dois
+ * executores: o Kit (`onboarding-kit-transport-run.ts`, fix P2 da PR #10607)
+ * refresca só o que é dele, e a Brevo (`onboarding-welcome-run.ts`) também —
+ * antes ela consultava `GET /subscribers/{id}` + `/stats` no Kit pras entradas
+ * do transporte Kit e jogava o resultado fora (`kit_transport_ativo`),
+ * gastando o balde de rate limit que o passo Kit seguinte precisa.
+ *
+ * @pure testável sem I/O
+ */
+export function refreshOwnerFor(entry: OnboardingEntry, kitTransportEnabled: boolean): OnboardingTransport {
+  return ownerTransportFor(entry, entry.email1_sent_at == null ? "email1" : "email3", kitTransportEnabled);
+}
+
+/**
+ * #10678: resultado do e-mail 3 numa rodada `--send` do executor Brevo.
+ * `no_attempt` = a rodada não tentou `email3_campaign` (sem cohort elegível).
+ */
+export type Email3RunOutcome = "ok" | "failed" | "no_attempt";
+
+/**
+ * #10678: `true` enquanto existir entrada da BREVO com e-mail 3 ainda
+ * alcançável — `pending` e com âncora da régua (sem âncora o gate do e-mail 3
+ * nunca abre, ver `buildRunPlan`). É o que separa "não tentou HOJE" (cohort
+ * pode aparecer amanhã) de "não há mais nada a tentar" (escadas Brevo
+ * esgotadas depois do flip pro Kit, #7922).
+ *
+ * @pure testável sem I/O
+ */
+export function hasReachableBrevoEmail3(entries: readonly OnboardingEntry[], kitTransportEnabled: boolean): boolean {
+  return entries.some(
+    (e) =>
+      e.email3_state === "pending" &&
+      reguaAnchorSec(e) != null &&
+      ownerTransportFor(e, "email3", kitTransportEnabled) === "brevo",
+  );
+}
+
+/**
+ * #10678: próximo valor do streak de falha do e-mail 3. Tentativa → zera
+ * (ok) ou incrementa (falhou), como `updateEmail3FailureStreak`. Rodada SEM
+ * tentativa mantém o streak enquanto ainda houver e-mail 3 Brevo alcançável
+ * (a próxima tentativa decide) e ZERA quando não há mais nada a tentar —
+ * antes o streak congelava em ≥2 e a issue do alarme (`EMAIL3_CHECK` do
+ * `onboarding-continuity-alarm.ts`, avaliado toda rodada) nunca fechava.
+ *
+ * @pure testável sem I/O
+ */
+export function nextEmail3FailureStreak(
+  previousStreak: number,
+  outcome: Email3RunOutcome,
+  attemptStillPossible: boolean,
+): number {
+  if (outcome === "no_attempt") return attemptStillPossible ? previousStreak : 0;
+  return updateEmail3FailureStreak(previousStreak, outcome === "failed");
+}
+
 /** Campos do e-mail 3 que só o executor DONO da entrada pode gravar (#7922). */
 export const EMAIL3_OWNED_FIELDS = ["email3_state", "email3_decided_at", "email3_campaign_id", "email3_kit_lot_id", "email3_scheduled_at"] as const;
 

@@ -270,8 +270,15 @@ codex_lane_pr_log() {
 # (o sha vai só pra descrição),
 # worktrees com CAMINHO novo e linhas novas no log de PRs do gh shim. Commit
 # em branch/worktree pré-existente fora do $CWD e remoções não contam.
-# Branch/worktree NOVO de outra sessão no mesmo intervalo ainda conta — falso
-# positivo residual, do lado seguro (aborta a cadeia, nunca duplica trabalho).
+# #10669: branch/worktree NOVO de outra sessão no mesmo intervalo contava, e
+# desde o #10552 o overnight agendado cria até 6 `overnight/*` (worktrees
+# `worktree-*` do Claude Code) toda noite — a cadeia abortava com exit 95 em
+# vez de cair pro próximo elo. Branches com prefixo de OUTRA trilha
+# (`CODEX_LANE_FOREIGN_BRANCH_RE`) e worktrees cuja branch tem esse prefixo saem
+# da foto. Fica de fora só o que o codex não produz: o preâmbulo o manda
+# criar `continuo/*` e o gh shim só aceita `gh pr create` dessa trilha.
+# Worktree DESTACADO novo ainda conta (o codex pode abrir um), e branch nova
+# sem prefixo de trilha também (#10586 item 2) — residual do lado seguro.
 codex_lane_snapshot_state() {
   local cwd="$1" log head_ref n=0
   log="$(codex_lane_pr_log)"
@@ -285,11 +292,24 @@ codex_lane_snapshot_state() {
     refs/heads/master|refs/heads/main) ;;
     *) printf 'head-sha %s\n' "$(git -C "$cwd" rev-parse -q --verify HEAD 2>/dev/null || echo '(sem-commit)')" ;;
   esac
-  git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/' 2>/dev/null || true
+  git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/' 2>/dev/null \
+    | awk -v re="$CODEX_LANE_FOREIGN_BRANCH_RE" '!($2 ~ re)' || true
   # Só o caminho de cada worktree (#10588): HEAD de worktree pré-existente
-  # muda a cada commit de outra sessão.
-  git -C "$cwd" worktree list --porcelain 2>/dev/null | awk 'sub(/^worktree /, "") { print "wt " $0 }' || true
+  # muda a cada commit de outra sessão. #10669: worktree cuja branch é de
+  # outra trilha não entra.
+  git -C "$cwd" worktree list --porcelain 2>/dev/null | awk -v re="$CODEX_LANE_FOREIGN_BRANCH_RE" '
+    function flush() { if (p != "" && !(b ~ re)) print "wt " p; p = ""; b = "" }
+    /^worktree / { flush(); p = substr($0, 10); next }
+    /^branch refs\/heads\// { b = substr($0, 19); next }
+    END { flush() }
+  ' || true
 }
+
+# #10669: prefixos de branch das OUTRAS trilhas que escrevem neste repo —
+# overnight/develop (`context/overnight-dispatch-rules.md` item 2) e os
+# worktrees isolados do Claude Code (`worktree-<nome>`). Regex ERE ancorada,
+# casada contra o nome curto da branch.
+CODEX_LANE_FOREIGN_BRANCH_RE='^(overnight|develop)/|^worktree-'
 
 # #10586 item 1: só as linhas de ERRO da própria Codex CLI no stderr do
 # `codex exec` — nunca a transcrição de progresso, que vai pro MESMO stderr e

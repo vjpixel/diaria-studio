@@ -57,7 +57,7 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
@@ -201,6 +201,48 @@ export interface NightlyChainDeps {
   log: (line: string) => void;
   /** Grava o JSON do `claude --print` do overnight (default: `data/overnight/.nightly-chain-last-overnight.json`). */
   writeOvernightOutput: (repoRootAbs: string, stdout: string) => void;
+  /**
+   * Anexa UMA linha ao log incremental (`LIVE_LOG_REL`, #10672) no momento em
+   * que ela é emitida. Opcional: ausente, a cadeia só loga via `log`.
+   */
+  appendLiveLog?: (repoRootAbs: string, line: string) => void;
+}
+
+/**
+ * Log INCREMENTAL da cadeia, relativo a `data/` (#10672). O task-runner
+ * (`execTsxStep`, `spawnSync`) só grava `overnight/.nightly-chain.log` quando
+ * o processo termina, e a cadeia pode passar de 16h: reboot, OOM ou
+ * `systemctl stop` no meio apagavam tudo, inclusive o veredito do review,
+ * que roda antes do overnight. Este arquivo recebe cada linha na hora, via
+ * `appendFileSync`. É um arquivo separado de propósito: anexar direto no log
+ * do task-runner duplicaria todas as linhas quando a run termina normalmente,
+ * e o contrato do task-runner vale pras outras tasks também.
+ */
+export const LIVE_LOG_REL = "overnight/.nightly-chain.live.log";
+
+/** Formato de cada linha do log incremental: mesmo prefixo ISO do `log` default. */
+export function formatLiveLogLine(line: string, at: Date = new Date()): string {
+  return `[${at.toISOString()}] ${line}\n`;
+}
+
+let liveLogWarned = false;
+
+function defaultAppendLiveLog(repoRootAbs: string, line: string): void {
+  // Clone sem `data/` (sessão cloud, CI): nada a gravar, igual ao
+  // `defaultWriteOvernightOutput`.
+  if (!existsSync(join(repoRootAbs, "data"))) return;
+  const path = join(repoRootAbs, "data", ...LIVE_LOG_REL.split("/"));
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, formatLiveLogLine(line), "utf8");
+  } catch (e) {
+    // Fail-soft: perder o log incremental não pode derrubar a cadeia. Avisa
+    // uma vez só, pra não repetir o warning a cada linha.
+    if (!liveLogWarned) {
+      liveLogWarned = true;
+      console.warn(`run-nightly-chain: falha ao gravar o log incremental ${path} — ${(e as Error).message}`);
+    }
+  }
 }
 
 function defaultWriteOvernightOutput(repoRootAbs: string, stdout: string): void {
@@ -221,6 +263,7 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   env: process.env,
   log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
   writeOvernightOutput: defaultWriteOvernightOutput,
+  appendLiveLog: defaultAppendLiveLog,
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -259,7 +302,16 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
   return { status: "ok", exitCode: 0 };
 }
 
-export function main(repoRootAbs: string, deps: NightlyChainDeps = DEFAULT_DEPS): number {
+export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_DEPS): number {
+  // Toda linha vai pro `log` (stdout → log final do task-runner) E, na hora,
+  // pro log incremental (#10672) — inclusive as que `runOvernight` emite.
+  const deps: NightlyChainDeps = {
+    ...baseDeps,
+    log: (line) => {
+      baseDeps.log(line);
+      baseDeps.appendLiveLog?.(repoRootAbs, line);
+    },
+  };
   deps.log("cadeia noturna: início (#10552)");
 
   let claudeBin: string;

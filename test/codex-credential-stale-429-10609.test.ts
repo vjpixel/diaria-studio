@@ -141,6 +141,30 @@ describe("classifyCodexCredential — esgotamento real além de 6h (#10639)", ()
     assert.deepEqual([...shared[0]!.labels].sort(), ["a", "b"], "conta sem assinatura de esgotamento não entra no grupo");
   });
 
+  // #10670: cenário exato da issue — 429 genuíno de 7h, `resets_at` em +14d.
+  it("#10670: 429 de 7h com resets_at em +14d segue esgotada (conta só e pool), sem mudar assunto nem fingerprint", () => {
+    const now = "2026-10-21T12:00:00.000Z";
+    const nowS = Date.parse(now) / 1000;
+    const acct = { ...base, last_error_reset_at: nowS + 14 * 86_400, last_status_at: nowS - 7 * 3600 };
+    assert.ok(nowS - acct.last_status_at > CODEX_STALE_429_HOURS * 3600, "fixture precisa passar do limiar de 6h");
+    assert.equal(classifyCodexCredential(acct, now).state, "esgotada");
+    const pool = [
+      { ...acct, label: "a" },
+      { ...acct, label: "b", last_error_reset_at: acct.last_error_reset_at + 3600 },
+    ];
+    const v = evaluateCodexPool(pool, undefined, now);
+    assert.equal(v.esgotadas, 2);
+    assert.equal(v.indeterminadas, 0);
+    assert.match(buildCodexAlarmSubject(v), /TODAS as contas Codex esgotadas/);
+    assert.doesNotMatch(buildCodexAlarmMessage(v, now), /não foi reconfirmado|podem estar todas utilizáveis/);
+    // 1h depois do 429 (antes do limiar) e 7h depois: mesmo fingerprint, sem 2º alarme.
+    const at1h = new Date((nowS - 6 * 3600) * 1000).toISOString();
+    assert.equal(
+      computeCodexPoolFingerprint(evaluateCodexPool(pool, undefined, at1h)),
+      computeCodexPoolFingerprint(v),
+    );
+  });
+
   it("data de retorno vencida continua indeterminada (#7320 intacto)", () => {
     const after = new Date((RESET + 60) * 1000).toISOString();
     assert.equal(evaluateCodexPool([{ ...real, label: "a" }], undefined, after).verdicts[0]?.state, "indeterminada");

@@ -9,14 +9,18 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   AGENDADO_FLAG,
   DAILY_REVIEW_SCRIPT,
+  DEFAULT_DEPS,
   EXIT_OVERNIGHT_FAILED,
   EXIT_REVIEW_FAILED,
+  LIVE_LOG_REL,
   NIGHTLY_OVERNIGHT_EFFORT,
   NIGHTLY_OVERNIGHT_MODEL,
   buildOvernightClaudeArgs,
@@ -24,6 +28,7 @@ import {
   buildReviewEnv,
   chainExitCode,
   classifyReviewResult,
+  formatLiveLogLine,
   main,
   type NightlyChainDeps,
 } from "../scripts/overnight/run-nightly-chain.ts";
@@ -247,5 +252,86 @@ describe("run-nightly-chain — --add-dir de data/ fora do repo (#10569)", () =>
     main(root, deps);
     const overnightArgs = calls[1].args;
     assert.ok(overnightArgs.includes(`--add-dir=${realpathSync(outside)}`), overnightArgs.join(" "));
+  });
+});
+
+// #10672 — o task-runner só grava `.nightly-chain.log` quando o processo
+// termina; numa cadeia de 16h morta por reboot/OOM/`systemctl stop`, nada
+// sobrava. O log incremental recebe cada linha na hora.
+describe("run-nightly-chain — log incremental sobrevive a processo morto (#10672)", () => {
+  const liveLogPath = (root: string) => join(root, "data", ...LIVE_LOG_REL.split("/"));
+
+  it("início e veredito do review já estão em disco quando o overnight sobe", () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const { deps } = harness({ status: 0, stderr: "[daily-review] concluído" }, { status: 0, stdout: "{}" });
+    deps.appendLiveLog = DEFAULT_DEPS.appendLiveLog;
+    const realSpawn = deps.spawn as unknown as (c: string, a: string[], o: unknown) => unknown;
+    let onDiskAtOvernight = "";
+    deps.spawn = ((cmd: string, args: string[], o: unknown) => {
+      if (cmd !== "bash") onDiskAtOvernight = readFileSync(liveLogPath(root), "utf8");
+      return realSpawn(cmd, args, o);
+    }) as unknown as NightlyChainDeps["spawn"];
+    assert.equal(main(root, deps), 0);
+    assert.match(onDiskAtOvernight, /cadeia noturna: início/);
+    assert.match(onDiskAtOvernight, /review: ok exit=0/);
+    assert.match(onDiskAtOvernight, /overnight: claude --print/);
+    const final = readFileSync(liveLogPath(root), "utf8");
+    assert.match(final, /cadeia noturna: fim review=ok overnight=ok exit=0/);
+    for (const line of final.trimEnd().split("\n")) assert.match(line, /^\[\d{4}-\d{2}-\d{2}T[^\]]+Z\] /);
+  });
+
+  it("linhas emitidas por runOvernight (falha) também vão pro log incremental", () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const { deps } = harness({ status: 0 }, { status: 9, stderr: "boom" });
+    deps.appendLiveLog = DEFAULT_DEPS.appendLiveLog;
+    assert.equal(main(root, deps), EXIT_OVERNIGHT_FAILED);
+    assert.match(readFileSync(liveLogPath(root), "utf8"), /overnight: FALHOU exit=9/);
+  });
+
+  it("sem data/ (clone fresco) não cria nada nem lança", () => {
+    const root = makeRepo();
+    const { deps } = harness({ status: 0 }, { status: 0 });
+    deps.appendLiveLog = DEFAULT_DEPS.appendLiveLog;
+    assert.equal(main(root, deps), 0);
+    assert.ok(!existsSync(join(root, "data")));
+  });
+
+  it("formatLiveLogLine: prefixo ISO e quebra de linha", () => {
+    assert.equal(formatLiveLogLine("x", new Date("2026-10-21T03:15:00.000Z")), "[2026-10-21T03:15:00.000Z] x\n");
+  });
+
+  it("processo morto por SIGKILL no meio do overnight deixa as linhas já emitidas", { skip: process.platform === "win32" }, () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const scriptsDir = mkdtempSync(join(tmpdir(), "nightly-chain-kill-"));
+    const mod = pathToFileURL(join(import.meta.dirname, "..", "scripts", "overnight", "run-nightly-chain.ts")).href;
+    const child = join(scriptsDir, "child.ts");
+    writeFileSync(
+      child,
+      [
+        `import { main, DEFAULT_DEPS } from ${JSON.stringify(mod)};`,
+        `main(process.argv[2], {`,
+        `  ...DEFAULT_DEPS,`,
+        `  resolveClaudeBin: () => "/opt/claude",`,
+        `  hasActiveOvernight: () => false,`,
+        `  log: () => {},`,
+        `  writeOvernightOutput: () => {},`,
+        `  spawn: ((cmd: string) => {`,
+        `    if (cmd !== "bash") process.kill(process.pid, "SIGKILL");`,
+        `    return { pid: 1, output: [], stdout: "", stderr: "[daily-review] concluído", status: 0, signal: null };`,
+        `  }) as never,`,
+        `});`,
+        ``,
+      ].join("\n"),
+    );
+    const r = spawnSync(process.execPath, ["--import", "tsx", child, root], { encoding: "utf8", timeout: 60_000 });
+    assert.equal(r.signal, "SIGKILL", `esperava morte por SIGKILL: status=${r.status} stderr=${r.stderr}`);
+    const live = readFileSync(liveLogPath(root), "utf8");
+    assert.match(live, /cadeia noturna: início/);
+    assert.match(live, /review: ok exit=0/);
+    assert.match(live, /overnight: claude --print/);
+    assert.doesNotMatch(live, /cadeia noturna: fim/);
   });
 });

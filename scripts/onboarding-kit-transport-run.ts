@@ -100,6 +100,7 @@ import {
   selectCandidatesNeedingRefresh,
   filterKitPlanForBrevoInFlight,
   ownerTransportFor,
+  refreshOwnerFor,
   type RunAction,
 } from "./lib/onboarding-state.ts";
 import {
@@ -1512,8 +1513,8 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
   // #7922 (fleet review da PR #10607, P2): só refresca entrada cujo próximo
   // passo é DESTE executor — as escadas da Brevo já são refrescadas pela
   // rodada Brevo, e repetir ~800 consultas aqui gerava 429 nos dois lados.
-  const kitOwns = (e: OnboardingEntry) =>
-    ownerTransportFor(e, e.email1_sent_at == null ? "email1" : "email3", ctx.kitTransportEnabled) === "kit";
+  // #10677: `refreshOwnerFor` é a mesma regra usada pelo lado Brevo.
+  const kitOwns = (e: OnboardingEntry) => refreshOwnerFor(e, ctx.kitTransportEnabled) === "kit";
   const candidates = selectCandidatesNeedingRefresh(Object.values(store.entries), nowSec, email2Days, email3Days).filter(kitOwns);
   const statsById: Record<string, { total_unique_opened?: number | null; total_clicked?: number | null } | null> = {};
   // #8136 fleet review (silent-failure-hunter, alta/P1): antes, um lookup

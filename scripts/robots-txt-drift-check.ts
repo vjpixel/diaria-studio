@@ -265,9 +265,10 @@ export function parseAiCrawlerProbeKeyBots(fingerprint: string, host: string): s
  * `allowed` e ClaudeBot `inconclusive`, herdar daria {ClaudeBot} — outra
  * issue nova, sem medição. Nesse caso o host fica só com o medido e a issue
  * antiga segue congelada por `aiCrawlerUnmeasuredKeys`.
- * #10596: exige ao menos uma sonda medida no próprio host nesta rodada.
- * Sem nenhuma medição, não herda: a issue fica congelada e aparece no log
- * de sinais não medidos, sem zerar seu missingStreak.
+ * #10596/#10665: exige, nesta rodada, ao menos um bot do conjunto da própria
+ * issue aberta medido no host — sonda medida de bot alheio não conta. Sem
+ * essa medição, não herda: a issue fica congelada e aparece no log de sinais
+ * não medidos, sem zerar seu missingStreak.
  * Só serve para montar os achados; log e e-mail continuam com a sonda real. */
 export function carryForwardInconclusiveProbes(
   probes: readonly AiCrawlerProbeResult[],
@@ -288,10 +289,22 @@ export function carryForwardInconclusiveProbes(
   const carried = probes.map((p) =>
     p.status === "inconclusive" && openBots.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
   );
-  const measuredHosts = new Set(probes.filter((p) => p.status !== "inconclusive").map((p) => p.host));
+  // #10665: a medição que autoriza a herança tem que ser de um bot da PRÓPRIA
+  // issue aberta. Um bot alheio (CCBot `allowed`) medido no host não diz nada
+  // sobre {ClaudeBot, GPTBot} — aceitar o host por ele reemitia o achado sem
+  // medição e zerava o missingStreak.
+  const measuredBotsByHost = new Map<string, Set<string>>();
+  for (const p of probes) {
+    if (p.status === "inconclusive") continue;
+    if (!measuredBotsByHost.has(p.host)) measuredBotsByHost.set(p.host, new Set());
+    measuredBotsByHost.get(p.host)!.add(p.bot);
+  }
   const acceptedHosts = new Set(
     blockedProbesByHost(carried)
-      .filter(({ host, bots }) => measuredHosts.has(host) && openSets.get(host)?.includes(bots.join(",")))
+      .filter(
+        ({ host, bots }) =>
+          openSets.get(host)?.includes(bots.join(",")) && bots.some((b) => measuredBotsByHost.get(host)?.has(b)),
+      )
       .map(({ host }) => host),
   );
   return probes.map((p, i) => (acceptedHosts.has(p.host) ? carried[i] : p));
