@@ -86,3 +86,38 @@ describe("isRedirectNoiseDestination", () => {
     it(`conteúdo: ${u}`, () => assert.equal(isRedirectNoiseDestination(u), false));
   }
 });
+
+describe("#10673 — post/vídeo do Facebook com 1 segmento não é perfil", () => {
+  for (const u of [
+    "https://facebook.com/watch/?v=123",
+    "https://www.facebook.com/watch?v=123",
+    "https://www.facebook.com/permalink.php?story_fbid=1&id=2",
+    "https://m.facebook.com/story.php?story_fbid=1&id=2",
+    "https://www.facebook.com/photo.php?fbid=1",
+    "https://www.facebook.com/video.php?v=1",
+    "https://www.facebook.com/reel/123",
+    "https://www.facebook.com/videos/123",
+    "https://www.facebook.com/share/p/AbC123/",
+    "https://www.facebook.com/share/v/AbC123/",
+    "https://www.facebook.com/diaria/posts/pfbid0abc",
+    // Outras redes do fallback: conteúdo sempre tem 2+ segmentos.
+    "https://www.instagram.com/reel/abc/",
+    "https://www.threads.net/@openai/post/abc",
+    "https://www.tiktok.com/@openai/video/123",
+    "https://www.tiktok.com/t/ZT8abc/",
+  ]) {
+    it(`conteúdo: ${u}`, () => assert.equal(isRedirectNoiseDestination(u), false));
+  }
+  for (const u of [
+    "https://www.facebook.com/diaria",
+    "https://www.facebook.com/profile.php?id=100",
+    "https://www.facebook.com/watch/",
+    "https://www.facebook.com/sharer/sharer.php?u=x",
+    "https://www.facebook.com/sharer.php?u=x",
+    "https://www.facebook.com/share.php?u=x",
+    "https://www.threads.net/@openai",
+    "https://www.tiktok.com/@openai",
+  ]) {
+    it(`ruído: ${u}`, () => assert.equal(isRedirectNoiseDestination(u), true));
+  }
+});
