@@ -26,9 +26,10 @@
   </header>
 
   <main>
-    <!-- #10606 (revisão do editor, 20/10/2026): só fica visível o que pede
-         uma ação. Cada bloco abaixo tem a ação escrita ao lado; números de
-         contexto ficam em "Detalhes", recolhido no fim da página. -->
+    <!-- #10606 (revisão do editor, 20/10/2026): no topo, só o que pede uma
+         ação, com a ação escrita ao lado (itens e tabela de rascunhos
+         parados); a busca serve para atender um leitor. Números de contexto
+         ficam em "Detalhes", recolhido no fim da página. -->
     <section class="panel" id="acoes-panel">
       <h1>Assinantes: o que pede ação</h1>
       <p class="hint">
@@ -102,11 +103,20 @@
         </div>
         <h3>Convite de apoio (D+10)</h3>
         <div class="assinantes-summary-grid" id="onboarding-cohort-summary"></div>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-stage-table">
+            <thead>
+              <tr><th>Estágio do convite</th><th>Assinantes</th></tr>
+            </thead>
+            <tbody id="onboarding-stage-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint">Reconsultar a Brevo atualiza só as campanhas do e-mail 3 ainda em rascunho local; lotes Kit não mudam.</p>
+        <button id="refresh-onboarding-details-btn" type="button" class="assinantes-action-btn">Reconsultar a Brevo</button>
       </details>
 
       <details class="assinantes-subdetails">
         <summary>Onboarding: por pessoa</summary>
-        <p class="hint" id="onboarding-apoiador-error" hidden></p>
         <form id="onboarding-people-filter" class="assinantes-search-form">
           <label><input type="checkbox" id="onboarding-people-nao-apoia" /> só quem não apoia</label>
           <select id="onboarding-people-sort" aria-label="Ordenar">

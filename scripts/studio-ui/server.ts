@@ -1438,8 +1438,10 @@ function handleApiOnboardingFunnel(rootDir: string, res: ServerResponse): void {
  * observacional (GET puro na Brevo, `brevoGetCampaign`) — nunca cria,
  * agenda ou cancela nada. Sem `BREVO_DIARIA_API_KEY` configurada nesta
  * sessão: 200 com o snapshot LOCAL de qualquer forma (mesmo padrão de
- * `handleApiOnboardingFunnel`) + aviso — refresh é um extra, sua ausência
- * não deveria derrubar o painel. Falha de rede por campanha isolada vira
+ * `handleApiOnboardingFunnel`) + o campo `refreshWarning` no payload, que o
+ * painel /assinantes mostra no topo como item de ação ("Configurar
+ * BREVO_DIARIA_API_KEY nesta sessão", #10606) — refresh é um extra, sua
+ * ausência não deveria derrubar o painel. Falha de rede por campanha isolada vira
  * `falha_consulta` só pras entradas daquela campanha (`buildOnboardingFunnelData`
  * já trata isso), nunca 500 pro payload inteiro. */
 function handleApiOnboardingFunnelRefresh(rootDir: string, res: ServerResponse): void {

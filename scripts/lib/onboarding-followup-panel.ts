@@ -84,7 +84,22 @@ export interface PersonRow {
   apoia: boolean | null;
 }
 
+/** Tipo do alerta (#10606, fleet review da PR #10651): o painel roteia a
+ *  ação e o dedupe por este discriminante, nunca pelo texto de `etapa`. */
+export type PanelAlertKind =
+  /** Rodadas `--send` seguidas com falha no transporte Kit (e-mails 1/2/3). */
+  | "kit_streak"
+  /** Rodadas seguidas com falha no e-mail 3 via Brevo. */
+  | "email3_brevo_streak"
+  /** Rodadas seguidas com falha nas sequências de apoio/formulário. */
+  | "followup_streak"
+  /** Lote com broadcast não agendado e não apagado (`schedule_failed`). */
+  | "lot_schedule_failed";
+
 export interface PanelAlert {
+  kind: PanelAlertKind;
+  /** Etapa do lote — só em `lot_schedule_failed`. */
+  step?: OnboardingEmailStep;
   etapa: string;
   mensagem: string;
 }
@@ -261,18 +276,19 @@ export function buildFollowupPanel(
   // --- Falha visível no topo ---
   const alerts: PanelAlert[] = [];
   const kitFails = store.kit_transport?.consecutive_failed_send_runs ?? 0;
-  if (kitFails >= 2) alerts.push({ etapa: "E-mails 1/2/3 (transporte Kit)", mensagem: `${kitFails} rodadas --send seguidas com falha` });
+  if (kitFails >= 2) alerts.push({ kind: "kit_streak", etapa: "E-mails 1/2/3 (transporte Kit)", mensagem: `${kitFails} rodadas --send seguidas com falha` });
   const e3Fails = store.consecutive_email3_failures ?? 0;
   if (e3Fails >= 2) {
-    alerts.push({ etapa: "E-mail 3 (Brevo)", mensagem: `${e3Fails} rodadas seguidas com falha${store.last_email3_error ? `: ${maskInText(store.last_email3_error)}` : ""}` });
+    alerts.push({ kind: "email3_brevo_streak", etapa: "E-mail 3 (Brevo)", mensagem: `${e3Fails} rodadas seguidas com falha${store.last_email3_error ? `: ${maskInText(store.last_email3_error)}` : ""}` });
   }
   const fFails = followup.consecutive_failed_runs ?? 0;
   if (fFails >= 2) {
-    alerts.push({ etapa: "Sequências de apoio/formulário", mensagem: `${fFails} rodadas seguidas com falha${lastRun?.error ? `: ${maskInText(lastRun.error)}` : ""}` });
+    alerts.push({ kind: "followup_streak", etapa: "Sequências de apoio/formulário", mensagem: `${fFails} rodadas seguidas com falha${lastRun?.error ? `: ${maskInText(lastRun.error)}` : ""}` });
   }
   for (const lot of [...kitLots, ...fLots]) {
     if (lot.schedule_failed === true && lot.status !== "cancelled") {
-      alerts.push({ etapa: STEP_LABELS[lot.kind as OnboardingEmailStep] ?? lot.kind, mensagem: `lote ${lot.lot_id}: broadcast não agendado e não apagado (${maskInText(lot.last_error ?? "sem detalhe")})` });
+      const step = lot.kind in STEP_LABELS ? (lot.kind as OnboardingEmailStep) : undefined;
+      alerts.push({ kind: "lot_schedule_failed", step, etapa: step ? STEP_LABELS[step] : lot.kind, mensagem: `lote ${lot.lot_id}: broadcast não agendado e não apagado (${maskInText(lot.last_error ?? "sem detalhe")})` });
     }
   }
 

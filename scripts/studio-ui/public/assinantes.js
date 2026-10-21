@@ -1,13 +1,15 @@
 // assinantes.js (#6590) — busca por e-mail -> timeline unificada + coorte
 // por migração. Vanilla JS, sem build step (mesmo padrão de ads.js/
-// tarefas.js). READ-ONLY: nenhuma chamada de escrita nesta página, de
-// propósito (decisão do editor, corpo da issue #6590).
+// tarefas.js). READ-ONLY: nenhuma escrita em assinante ou em ESP, de
+// propósito (decisão do editor, corpo da issue #6590). O único POST
+// (`/api/onboarding/funnel/refresh-brevo`) só faz GET de campanhas na Brevo
+// e devolve o snapshot; não cria, agenda nem cancela nada.
 //
-// #10606 (revisão do editor, 20/10/2026): o topo da página só mostra o que
-// pede ação (assinantes-actions.js, lógica pura e testada); o resto vive no
-// <details> "Detalhes".
+// #10606 (revisão do editor, 20/10/2026): o topo da página mostra o que pede
+// ação, com a ação ao lado (assinantes-actions.js, lógica pura e testada); o
+// contexto sem ação vive no <details> "Detalhes".
 
-import { escapeHtml, buildActionItems, actionItemsHtml, staleDraftRows } from "./assinantes-actions.js";
+import { escapeHtml, actionItemsHtml, panelState, stageBreakdownRows } from "./assinantes-actions.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -45,7 +47,8 @@ const el = {
   onboardingLoadError: document.getElementById("onboarding-load-error"),
   staleBlock: document.getElementById("stale-block"),
   onboardingNote: document.getElementById("onboarding-note"),
-  onboardingApoiadorError: document.getElementById("onboarding-apoiador-error"),
+  onboardingStageTbody: document.getElementById("onboarding-stage-tbody"),
+  refreshOnboardingDetailsBtn: document.getElementById("refresh-onboarding-details-btn"),
   onboardingCohortSummary: document.getElementById("onboarding-cohort-summary"),
   onboardingStaleTbody: document.getElementById("onboarding-stale-tbody"),
   onboardingKitRun: document.getElementById("onboarding-kit-run"),
@@ -369,16 +372,31 @@ el.cohortOrigemFilterForm.addEventListener("submit", (ev) => {
 // ---------------------------------------------------------------------------
 
 // #10606: os 13 cartões por estágio do e-mail 3 e os 4 cartões "e-mails 1/2
-// por transporte" saíram da página — repetiam a tabela "quantos receberam
-// cada e-mail" (Detalhes) e nenhum levava a uma ação. O que pede ação nesses
-// estágios (falha de consulta, estado ambíguo) virou item do bloco do topo.
+// por transporte" saíram da página. O detalhamento por estágio virou uma
+// tabela só com os estágios > 0 em Detalhes > Convite de apoio; o que pede
+// ação (falha de consulta, estado ambíguo) virou item do bloco do topo.
 
-function renderActions(data) {
-  const items = buildActionItems(data);
-  el.acoesList.innerHTML = actionItemsHtml(items);
-  // "Nada pedindo ação" só quando há dado pra afirmar isso — sem store, o
-  // aviso de "sem dados" é que aparece, nunca um falso "tudo certo".
-  el.acoesEmpty.hidden = !(items.length === 0 && data?.db?.available && !data.db.corrupted);
+// Topo da página: decisão inteira em panelState (assinantes-actions.js, puro
+// e testado) — aqui só aplica no DOM.
+function applyPanelState(state) {
+  el.acoesList.innerHTML = actionItemsHtml(state.items);
+  el.acoesEmpty.hidden = state.emptyHidden;
+  el.onboardingNodata.hidden = state.nodataHidden;
+  el.onboardingLoadError.hidden = state.loadErrorText == null;
+  el.onboardingLoadError.textContent = state.loadErrorText ?? "";
+  el.staleBlock.hidden = state.staleRows.length === 0;
+  el.onboardingStaleTbody.innerHTML = state.staleRows
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td><td class="mono">${escapeHtml(r.idade)}</td><td class="mono">${escapeHtml(r.campanha)}</td><td>${escapeHtml(r.acao)}</td></tr>`,
+    )
+    .join("");
+}
+
+function renderStageBreakdown(byEmail3Stage) {
+  el.onboardingStageTbody.innerHTML = stageBreakdownRows(byEmail3Stage)
+    .map((r) => `<tr><td>${escapeHtml(r.label)}</td><td class="mono">${r.count}</td></tr>`)
+    .join("");
 }
 
 function renderOnboardingCohortSummary(cohort) {
@@ -395,18 +413,6 @@ function renderOnboardingCohortSummary(cohort) {
     tile("Cliques no convite", cliques),
     tile("1º apoio confirmado", apoios),
   ].join("");
-}
-
-// Bloco só aparece com rascunho parado: cada linha tem a ação do relatório.
-function renderOnboardingStale(staleDrafts) {
-  const rows = staleDraftRows(staleDrafts);
-  el.staleBlock.hidden = rows.length === 0;
-  el.onboardingStaleTbody.innerHTML = rows
-    .map(
-      (r) =>
-        `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td><td class="mono">${escapeHtml(r.idade)}</td><td class="mono">${escapeHtml(r.campanha)}</td><td>${escapeHtml(r.acao)}</td></tr>`,
-    )
-    .join("");
 }
 
 // #7922 — lotes Kit (produção e piloto separados), em Detalhes desde #10606.
@@ -538,41 +544,28 @@ function renderOnboardingData(data) {
   // "sem dados" — um store.json presente mas ilegível NUNCA deve renderizar
   // como onboarding vazio (`onboarding-nodata`), que o editor leria como
   // "nenhuma rodada rodou ainda".
-  // Desde #10606 o store corrompido é um item do bloco de ação
-  // (buildActionItems), com o que fazer ao lado — continua nunca virando
-  // "nada pedindo ação" nem "sem dados".
-  el.onboardingLoadError.hidden = true;
-  renderActions(data);
+  // Desde #10606 o store corrompido é um item do bloco de ação, com o que
+  // fazer ao lado — continua nunca virando "nada pedindo ação" nem "sem
+  // dados" (panelState).
+  lastOnboardingData = data;
+  applyPanelState(panelState({ data }));
   if (data.db.corrupted || !data.db.available) {
-    el.onboardingNodata.hidden = data.db.corrupted === true;
     renderOnboardingCohortSummary(null);
-    renderOnboardingStale([]);
+    renderStageBreakdown(null);
     renderOnboardingKitLots(null);
     renderOnboardingFollowup(null);
     return;
   }
-  el.onboardingNodata.hidden = true;
   el.onboardingNote.textContent = data.note;
-  if (data.apoiadorDataError) {
-    el.onboardingApoiadorError.hidden = false;
-    el.onboardingApoiadorError.textContent = `Vínculo com apoiadores indisponível: ${data.apoiadorDataError}`;
-  } else {
-    el.onboardingApoiadorError.hidden = true;
-  }
   renderOnboardingCohortSummary(data.summary.cohort);
-  renderOnboardingStale(data.summary.staleDrafts);
+  renderStageBreakdown(data.summary.byEmail3Stage);
   renderOnboardingKitLots(data.kitLots);
   renderOnboardingFollowup(data.followup);
 }
 
-// Falha de carga fica no TOPO (não num parágrafo dentro de Detalhes): sem o
-// funil, o bloco de ação não sabe dizer se há algo a fazer.
-function showOnboardingLoadError(msg) {
-  el.acoesList.innerHTML = "";
-  el.acoesEmpty.hidden = true;
-  el.onboardingLoadError.hidden = false;
-  el.onboardingLoadError.textContent = msg;
-}
+// Último payload bom: numa falha de refresh, o topo segue mostrando a lista
+// anterior (ainda válida) junto do erro.
+let lastOnboardingData = null;
 
 async function loadOnboarding() {
   try {
@@ -580,15 +573,21 @@ async function loadOnboarding() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderOnboardingData(await res.json());
   } catch (e) {
-    showOnboardingLoadError(`Falha ao carregar o onboarding: ${e.message}. Recarregue a página; se persistir, confira o log do Studio.`);
+    // Falha de carga fica no TOPO: sem o funil, o bloco de ação não sabe
+    // dizer se há algo a fazer.
+    applyPanelState(panelState({ loadError: e.message }));
   }
 }
 
-// Dois pontos de entrada pro mesmo POST: o botão do bloco de rascunhos
-// parados e o botão dentro do item "Consulta à Brevo falhou".
+function refreshButtons() {
+  return [el.refreshOnboardingBtn, el.refreshOnboardingDetailsBtn, ...el.acoesList.querySelectorAll('[data-action="refresh-brevo"]')];
+}
+
+// Três pontos de entrada pro mesmo POST (bloco de rascunhos parados, item
+// "Consulta à Brevo falhou" e Detalhes > Convite de apoio). Só consulta
+// campanhas BREVO do e-mail 3 ainda em rascunho local; lotes Kit não mudam.
 async function refreshOnboardingViaBrevo() {
-  const buttons = [el.refreshOnboardingBtn, ...el.acoesList.querySelectorAll('[data-action="refresh-brevo"]')];
-  for (const b of buttons) {
+  for (const b of refreshButtons()) {
     b.disabled = true;
     b.textContent = "Consultando a Brevo…";
   }
@@ -597,13 +596,9 @@ async function refreshOnboardingViaBrevo() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderOnboardingData(await res.json());
   } catch (e) {
-    // Mantém a lista de ações já exibida (o estado anterior continua válido).
-    el.onboardingLoadError.hidden = false;
-    el.onboardingLoadError.textContent = `Falha ao reconsultar a Brevo: ${e.message}. Tente de novo em alguns minutos (cota de 100 consultas/hora).`;
+    applyPanelState(panelState({ data: lastOnboardingData, refreshError: e.message }));
   } finally {
-    // Botões do item de ação já foram recriados se o render rodou; reabilitar
-    // todos cobre o caso de falha, em que a lista antiga continua na tela.
-    for (const b of [el.refreshOnboardingBtn, ...el.acoesList.querySelectorAll('[data-action="refresh-brevo"]')]) {
+    for (const b of refreshButtons()) {
       b.disabled = false;
       b.textContent = "Reconsultar a Brevo";
     }
@@ -611,6 +606,7 @@ async function refreshOnboardingViaBrevo() {
 }
 
 el.refreshOnboardingBtn.addEventListener("click", refreshOnboardingViaBrevo);
+el.refreshOnboardingDetailsBtn.addEventListener("click", refreshOnboardingViaBrevo);
 el.acoesList.addEventListener("click", (ev) => {
   const btn = ev.target instanceof Element ? ev.target.closest('[data-action="refresh-brevo"]') : null;
   if (btn) refreshOnboardingViaBrevo();
