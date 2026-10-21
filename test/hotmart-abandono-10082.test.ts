@@ -360,12 +360,14 @@ describe("#10082 POST /webhooks/hotmart", () => {
   });
 
   it("outro evento da Hotmart → 200 ignorado, nada gravado, aviso no log", async () => {
+    // #10734: PURCHASE_APPROVED passou a ser gravado (hotmart-vendas.ts);
+    // boleto impresso continua fora.
     const kv = fakeKv();
-    const res = await worker.fetch(webhook({ event: "PURCHASE_APPROVED", version: "2.0.0", data: {} }), envWith(kv));
+    const res = await worker.fetch(webhook({ event: "PURCHASE_BILLET_PRINTED", version: "2.0.0", data: {} }), envWith(kv));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, ignored: true });
     assert.equal(kv.store.size, 0);
-    assert.ok(logs.some((l) => l.includes("evento ignorado: PURCHASE_APPROVED")));
+    assert.ok(logs.some((l) => l.includes("evento ignorado: PURCHASE_BILLET_PRINTED")));
   });
 
   it("JSON inválido ou corpo sem forma → 400; KV indisponível → 503; falha ao gravar → 500 (a Hotmart reenvia)", async () => {

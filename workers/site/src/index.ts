@@ -113,6 +113,18 @@ import {
   lerAbandonos,
   resolvePeriodo,
 } from "../../../scripts/lib/shared/hotmart-abandono.ts";
+// #10734: compras aprovadas/canceladas/reembolsadas/chargeback da Hotmart,
+// na mesma URL e com o mesmo hottok do abandono — ver hotmart-vendas.ts.
+import {
+  HOTMART_VENDAS_PATH,
+  VENDA_TTL_SECONDS,
+  buildVendaRecord,
+  isVendaEvent,
+  vendaKvKey,
+  vendaFitsKvMetadata,
+  lerVendas,
+  saldoLiquido,
+} from "../../../scripts/lib/shared/hotmart-vendas.ts";
 import { secretMatches } from "../../../scripts/lib/shared/secret-compare.ts";
 
 export interface Env {
@@ -149,6 +161,13 @@ export interface Env {
    *  HOTMART_ABANDONOS_TOKEN --name diaria-site`. Ausente = a leitura recusa
    *  tudo (503). */
   HOTMART_ABANDONOS_TOKEN?: string;
+  /** #10734: token da leitura `GET /hotmart/vendas` (cabeçalho
+   *  `Authorization: Bearer ...`). Separado do token dos abandonos de
+   *  propósito: as vendas levam valor e hash de e-mail, e quem lê abandonos
+   *  (vjpixel/vtsd) não precisa delas. Provisionado com `wrangler secret put
+   *  HOTMART_VENDAS_TOKEN --name diaria-site`. Ausente = a leitura recusa
+   *  tudo (503). */
+  HOTMART_VENDAS_TOKEN?: string;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -167,8 +186,9 @@ async function bodyHashHex(text: string): Promise<string> {
 }
 
 /**
- * #10082: `POST /webhooks/hotmart` — webhook da Hotmart. Só o evento
- * `PURCHASE_OUT_OF_SHOPPING_CART` é gravado; outros eventos recebem 200 e
+ * #10082: `POST /webhooks/hotmart` — webhook da Hotmart. Grava o evento
+ * `PURCHASE_OUT_OF_SHOPPING_CART` e, desde o #10734, os de venda
+ * (`HOTMART_VENDA_EVENTS`, via `handleHotmartVenda`); outros eventos recebem 200 e
  * são ignorados com aviso no log (a Hotmart reenvia o que não recebe 2xx, e
  * um evento a mais marcado no painel não deve virar fila de reenvio). O
  * registro vai para o KV `CURSOS_SUBSCRIBERS` com prefixo próprio, e também
@@ -193,7 +213,9 @@ async function handleHotmartWebhook(request: Request, env: Env): Promise<Respons
     console.warn(`hotmart-webhook: corpo não é JSON (${raw.length} caracteres); recusado (400)`);
     return jsonResponse({ ok: false, error: "invalid_json" }, 400);
   }
-  const built = buildAbandonoRecord(payload, Date.now(), await bodyHashHex(raw));
+  const bodyHash = await bodyHashHex(raw);
+  if (isVendaEvent((payload as Record<string, unknown> | null)?.event)) return handleHotmartVenda(payload, bodyHash, env);
+  const built = buildAbandonoRecord(payload, Date.now(), bodyHash);
   if (!built.ok) {
     if (built.reason === "not_abandono") {
       const root = (payload ?? {}) as Record<string, unknown>;
@@ -230,6 +252,45 @@ async function handleHotmartWebhook(request: Request, env: Env): Promise<Respons
     return jsonResponse({ ok: false, error: "storage_error" }, 500);
   }
   console.log(`hotmart-webhook: abandono gravado ${key}`);
+  return jsonResponse({ ok: true });
+}
+
+/**
+ * #10734: grava um evento de venda da Hotmart (já autenticado e com o JSON
+ * lido por `handleHotmartWebhook`). Mesmo KV e mesmo desenho do abandono:
+ * registro por allowlist, também como metadata, 5xx em falha de gravação
+ * para a Hotmart reenviar (o reenvio cai na mesma chave). O log leva só a
+ * chave (dia, transação e evento), nunca o corpo, o e-mail nem o hash.
+ */
+async function handleHotmartVenda(payload: unknown, bodyHash: string, env: Env): Promise<Response> {
+  const built = await buildVendaRecord(payload, Date.now(), bodyHash);
+  if (!built.ok) {
+    // Inalcançável hoje (o chamador já conferiu o evento); defesa.
+    return jsonResponse({ ok: false, error: built.reason }, 400);
+  }
+  if (!env.CURSOS_SUBSCRIBERS) {
+    console.error("hotmart-webhook: KV CURSOS_SUBSCRIBERS indisponível (503)");
+    return jsonResponse({ ok: false, error: "storage_unavailable" }, 503);
+  }
+  const record = built.record;
+  const key = vendaKvKey(record);
+  if (record.criado_em_origem === "recebimento") {
+    console.warn(`hotmart-webhook: creation_date ausente ou inválido em ${key}; usada a hora do recebimento`);
+  }
+  if (record.valor_liquido === null) console.warn(`hotmart-webhook: venda sem comissão PRODUCER legível em ${key}; valor líquido null`);
+  if (record.email_hash === null) console.warn(`hotmart-webhook: venda sem e-mail de comprador válido em ${key}; email_hash null`);
+  const metadataOk = vendaFitsKvMetadata(record);
+  if (!metadataOk) console.warn(`hotmart-webhook: registro maior que o limite de metadata em ${key}; gravado só no valor`);
+  try {
+    await env.CURSOS_SUBSCRIBERS.put(key, JSON.stringify(record), {
+      ...(metadataOk ? { metadata: record } : {}),
+      expirationTtl: VENDA_TTL_SECONDS,
+    });
+  } catch (err) {
+    console.error(`hotmart-webhook: falha ao gravar ${key}: ${err instanceof Error ? err.message : String(err)}`);
+    return jsonResponse({ ok: false, error: "storage_error" }, 500);
+  }
+  console.log(`hotmart-webhook: venda gravada ${key}`);
   return jsonResponse({ ok: true });
 }
 
@@ -276,6 +337,43 @@ async function handleHotmartAbandonos(request: Request, env: Env, reqUrl: URL): 
     total: lidos.registros.length,
     registros: lidos.registros,
     ignorados: lidos.ignorados,
+  });
+}
+
+/**
+ * #10734: `GET /hotmart/vendas?de=AAAA-MM-DD&ate=AAAA-MM-DD` — eventos de
+ * venda do período (mesmas regras de período da leitura de abandonos),
+ * deduplicados por transação + evento, mais o saldo líquido por moeda.
+ * Autenticada por `Authorization: Bearer <HOTMART_VENDAS_TOKEN>`,
+ * fail-closed. Resposta 200: `{ ok, de, ate, total, registros, saldo,
+ * ignorados, duplicados }`. Erros: 400, 401, 503, 502 (como abandonos).
+ */
+async function handleHotmartVendas(request: Request, env: Env, reqUrl: URL): Promise<Response> {
+  if (!env.HOTMART_VENDAS_TOKEN) return jsonResponse({ ok: false, error: "not_configured" }, 503);
+  const bearer = (request.headers.get("Authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (!(await secretMatches(bearer, env.HOTMART_VENDAS_TOKEN))) {
+    return jsonResponse({ ok: false, error: "unauthorized" }, 401);
+  }
+  const periodo = resolvePeriodo(reqUrl.searchParams.get("de"), reqUrl.searchParams.get("ate"), Date.now());
+  if (!periodo.ok) return jsonResponse({ ok: false, error: periodo.reason, mensagem: PERIODO_ERROS[periodo.reason] }, 400);
+  if (!env.CURSOS_SUBSCRIBERS) return jsonResponse({ ok: false, error: "storage_unavailable" }, 503);
+  let lidas;
+  try {
+    lidas = await lerVendas(env.CURSOS_SUBSCRIBERS, periodo.dias);
+  } catch (err) {
+    console.error(`hotmart-vendas: falha ao ler o KV (${periodo.de} a ${periodo.ate}): ${err instanceof Error ? err.message : String(err)}`);
+    return jsonResponse({ ok: false, error: "storage_error" }, 502);
+  }
+  if (lidas.ignorados.length) console.warn(`hotmart-vendas: ${lidas.ignorados.length} chave(s) com conteúdo inválido puladas`);
+  return jsonResponse({
+    ok: true,
+    de: periodo.de,
+    ate: periodo.ate,
+    total: lidas.registros.length,
+    registros: lidas.registros,
+    saldo: saldoLiquido(lidas.registros),
+    ignorados: lidas.ignorados,
+    duplicados: lidas.duplicados,
   });
 }
 
@@ -429,6 +527,7 @@ export default {
       const pathname = hotmartUrl.pathname.replace(/\/+$/, "");
       if (pathname === HOTMART_WEBHOOK_PATH && request.method === "POST") return handleHotmartWebhook(request, env);
       if (pathname === HOTMART_ABANDONOS_PATH && request.method === "GET") return handleHotmartAbandonos(request, env, hotmartUrl);
+      if (pathname === HOTMART_VENDAS_PATH && request.method === "GET") return handleHotmartVendas(request, env, hotmartUrl);
     }
     // #8062: mesmo par de blocos fail-soft de workers/arquivo/src/index.ts —
     // log de Referer de assistente + contador de fetch por bot nomeado.

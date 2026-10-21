@@ -122,6 +122,9 @@ id = "72784da4ae39444481eb422ebac357c6"
 # dados pessoais, no prefixo "hotmart:abandono:{AAAA-MM-DD}:" (TTL de 400
 # dias) — ver scripts/lib/shared/hotmart-abandono.ts. Script que liste ou
 # apague chaves deste namespace precisa filtrar por prefixo.
+# #10734: também guarda as vendas da Hotmart (aprovada/cancelada/reembolsada/
+# chargeback) no prefixo "hotmart:venda:{AAAA-MM-DD}:{transação}:{evento}"
+# (TTL de 400 dias, e-mail só como hash) — ver scripts/lib/shared/hotmart-vendas.ts.
 [[kv_namespaces]]
 binding = "CURSOS_SUBSCRIBERS"
 id = "a3415c3bf4b840d6975dbac290b99153"
