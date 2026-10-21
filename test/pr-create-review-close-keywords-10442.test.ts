@@ -53,6 +53,23 @@ describe("writePrBodySafe — delega pro gh-pr-safe-edit.ts --body-file", () => 
     assert.equal(existsSync(dirname(seenFile)), false, "tmpdir do corpo deveria ter sido apagado");
   });
 
+  it("#10716: passa --allow-missing-issue-marker (o hook só anexa marcador; a recusa do #10698 não se aplica)", () => {
+    // Cenário real: branch `*/fix-10698-…` com corpo "Fecha #10700". O hook
+    // anexa `Closes #10700`; sem a flag o safe-edit exige `#10698` no corpo,
+    // recusa com exit 1 e a #10700 não fecha no merge.
+    let seenArgs: string[] = [];
+    const spawnFn = (_cmd: string, args: string[]) => {
+      seenArgs = args;
+      return { status: 0, stdout: '{"ok":true}', stderr: "" };
+    };
+    const r = writePrBodySafe(10708, "Fecha #10700\n\nCloses #10700\n", { spawnFn, cwd: ROOT });
+    assert.deepEqual(r, { ok: true });
+    assert.ok(seenArgs.includes("--allow-missing-issue-marker"), seenArgs.join(" "));
+    // A flag precisa existir com esse nome exato no helper — senão vira no-op silencioso.
+    const helperSrc = readFileSync(join(ROOT, SAFE_EDIT_SCRIPT), "utf8");
+    assert.match(helperSrc, /flags\.has\("allow-missing-issue-marker"\)/);
+  });
+
   it("releitura que não bate (exit 1 do helper) vira ok:false com o erro", () => {
     const spawnFn = () => ({ status: 1, stdout: '{"ok":false,"error":"corpo lido de volta NÃO bate"}', stderr: "" });
     const r = writePrBodySafe(1, "x", { spawnFn, cwd: ROOT });

@@ -1060,7 +1060,11 @@ export function writePrBodySafe(num, body, { spawnFn = spawnSync, cwd = process.
     writeFileSync(file, body, "utf8");
     const result = spawnFn(
       process.execPath,
-      ["--import", "tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", file],
+      // #10716: o hook só ANEXA marcadores `Closes #N` ao corpo existente,
+      // nunca troca o corpo — a recusa do #10698 (corpo que não cita a issue
+      // da branch) não se aplica aqui. Sem a flag, branch `*/fix-A-*` com
+      // corpo "Fecha #B" teria o anexo recusado e #B não fecharia no merge.
+      ["--import", "tsx", SAFE_EDIT_SCRIPT, "--pr", String(num), "--body-file", file, "--allow-missing-issue-marker"],
       {
         cwd,
         encoding: "utf8",
