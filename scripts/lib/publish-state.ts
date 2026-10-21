@@ -2,7 +2,7 @@
  * publish-state.ts (#782)
  *
  * State machine normalizado pra estado de publicação externa
- * (Beehiiv, LinkedIn, Facebook). Centraliza a lógica de "este post está
+ * (Beehiiv, LinkedIn, Facebook, Threads, Brevo, YouTube). Centraliza a lógica de "este post está
  * agendado ou já saiu?" pra evitar que cada caller re-derive isso (ou
  * pior, deixe pra um subagente Haiku descobrir e errar).
  *
@@ -200,5 +200,53 @@ export function resolveBrevoCampaignState(campaign: BrevoCampaignLike): PublishS
   if (status === "draft") return "draft";
   if (status === "queued") return "scheduled";
   if (status === "sent" || status === "inprocess" || status === "in_process") return "published";
+  return "unknown";
+}
+
+// ─── YouTube (resource `videos` da YouTube Data API v3, #10659) ──────────────
+
+export interface YouTubeVideoLike {
+  /** `status` do resource `videos` (`part=status`). */
+  status?: {
+    /** "uploaded" | "processed" | "failed" | "rejected" | "deleted". */
+    uploadStatus?: string;
+    /** "public" | "private" | "unlisted". */
+    privacyStatus?: string;
+    /** ISO 8601 — só existe com `privacyStatus: "private"` agendado. */
+    publishAt?: string | null;
+  } | null;
+}
+
+/**
+ * Normaliza o estado de um vídeo do YouTube (#10659, mesma disciplina do #573:
+ * nunca relayar `privacyStatus` raw). Armadilha específica: projeto GCP não
+ * auditado força `privacyStatus=private` em TODO upload via API — um vídeo
+ * `private` sem `publishAt` foi subido mas o leitor não vê, então é "draft",
+ * nunca "published".
+ *
+ *   - `uploadStatus` failed/rejected/deleted → "unknown" (terminal de erro);
+ *   - `public` → "published";
+ *   - `private` + `publishAt` futuro → "scheduled";
+ *   - `private` + `publishAt` passado → "unknown" (o YouTube deveria ter virado
+ *     público; continuar privado é drift — reconsultar, não afirmar);
+ *   - `private` sem `publishAt` → "draft";
+ *   - `unlisted` ou ausente/desconhecido → "unknown" (acessível por link mas
+ *     fora do canal: nem rascunho nem publicado no sentido do editor).
+ */
+export function resolveYouTubeState(
+  video: YouTubeVideoLike,
+  now: Date = new Date(),
+): PublishState {
+  const st = video.status ?? {};
+  const upload = (st.uploadStatus ?? "").toLowerCase();
+  if (upload === "failed" || upload === "rejected" || upload === "deleted") return "unknown";
+  const privacy = (st.privacyStatus ?? "").toLowerCase();
+  if (privacy === "public") return "published";
+  if (privacy === "private") {
+    if (!st.publishAt) return "draft";
+    const ms = Date.parse(st.publishAt);
+    if (Number.isNaN(ms)) return "unknown";
+    return ms > now.getTime() ? "scheduled" : "unknown";
+  }
   return "unknown";
 }

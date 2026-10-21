@@ -1,0 +1,288 @@
+/**
+ * test/publish-youtube-10659.test.ts (#10659)
+ *
+ * Miolo puro do publisher do YouTube diário: metadados derivados do D1,
+ * agendamento 06:00 BRT, request de `videos.insert`, estado (#573) e o plano
+ * do dry-run. Nenhum teste toca rede nem a API.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  YOUTUBE_DESCRIPTION_MAX_BYTES,
+  YOUTUBE_TAGS_MAX_CHARS,
+  YOUTUBE_TITLE_MAX_CHARS,
+  buildYouTubeDescription,
+  buildYouTubeInsertRequest,
+  buildYouTubeMetadata,
+  buildYouTubeTags,
+  buildYouTubeTitle,
+  deriveEpisodeNumber,
+  resolveYouTubeSchedule,
+  stripInlineMarkdown,
+  withYouTubeUtm,
+  youtubeSubscribeCtaUrl,
+  youtubeVideoFileName,
+} from "../scripts/lib/diaria/youtube-video.ts";
+import { resolveYouTubeState } from "../scripts/lib/publish-state.ts";
+import { planYouTubePublish } from "../scripts/publish-youtube.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const D1 = {
+  title: "IA ladra? O cofre que o modelo abriu",
+  body: "Pesquisadores mostraram que um **agente** conseguiu [abrir o cofre](https://exemplo.com/a) sem senha.\n\nO teste usou 3 modelos.",
+  url: "https://fonte.exemplo.com/artigo",
+  category: "SEGURANÇA",
+};
+
+const REVIEWED_MD = `DESTAQUE 1 | SEGURANÇA
+${D1.title}
+${D1.url}
+
+${D1.body}
+
+Por que isso importa:
+Porque sim.
+
+---
+DESTAQUE 2 | NEGÓCIOS
+Outro título
+https://outra.exemplo.com/b
+
+Corpo do D2.
+
+Por que isso importa:
+Motivo.
+`;
+
+describe("metadados do vídeo (#10659 item 2)", () => {
+  it("título segue `{D1} | diar.ia.br comentada #{N}` (decisão do editor no #1)", () => {
+    assert.equal(buildYouTubeTitle(D1.title, 1), `${D1.title} | diar.ia.br comentada #1`);
+  });
+
+  it("título longo trunca só a parte do D1 e fica ≤ 100 chars", () => {
+    const t = buildYouTubeTitle("x".repeat(200), 12);
+    assert.ok(Array.from(t).length <= YOUTUBE_TITLE_MAX_CHARS, `len=${t.length}`);
+    assert.ok(t.endsWith(" | diar.ia.br comentada #12"));
+    assert.ok(t.includes("…"));
+  });
+
+  it("título e descrição nunca levam < ou > (a API recusa)", () => {
+    const meta = buildYouTubeMetadata({
+      aammdd: "261022",
+      episode: 2,
+      editionUrl: "https://diar.ia.br/p/x",
+      d1: { ...D1, title: "A <tag> e o >", body: "a < b > c" },
+    });
+    assert.doesNotMatch(meta.title, /[<>]/);
+    assert.doesNotMatch(meta.description, /[<>]/);
+  });
+
+  it("descrição = resumo sem markdown + fonte + edição com UTM + CTA com UTM youtube", () => {
+    const desc = buildYouTubeDescription({ aammdd: "261022", episode: 2, editionUrl: "https://diar.ia.br/p/ia-ladra", d1: D1 });
+    assert.match(desc, /^Pesquisadores mostraram que um agente conseguiu abrir o cofre sem senha\./);
+    assert.doesNotMatch(desc, /\*\*|\]\(/);
+    assert.match(desc, /Fonte: https:\/\/fonte\.exemplo\.com\/artigo/);
+    assert.match(desc, /https:\/\/diar\.ia\.br\/p\/ia-ladra\?utm_source=youtube&utm_medium=video&utm_campaign=261022/);
+    assert.ok(desc.includes("https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign=261022"));
+  });
+
+  it("CTA bate exatamente com o usado no vídeo #1", () => {
+    assert.equal(youtubeSubscribeCtaUrl("261021"), "https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign=261021");
+  });
+
+  it("withYouTubeUtm sobrescreve UTM pré-existente em vez de duplicar", () => {
+    const u = withYouTubeUtm("https://diar.ia.br/p/x?utm_source=email", "261022");
+    assert.equal(new URL(u).searchParams.getAll("utm_source").join(","), "youtube");
+  });
+
+  it("descrição gigante é cortada abaixo de 5000 bytes preservando os links do fim", () => {
+    const desc = buildYouTubeDescription({
+      aammdd: "261022",
+      episode: 2,
+      editionUrl: "https://diar.ia.br/p/x",
+      d1: { ...D1, body: "ação ".repeat(3000) },
+    });
+    assert.ok(Buffer.byteLength(desc, "utf8") <= YOUTUBE_DESCRIPTION_MAX_BYTES);
+    assert.ok(desc.includes("utm_source=youtube&utm_medium=video&utm_campaign=261022"));
+    assert.ok(desc.includes("Fonte: "));
+  });
+
+  it("6 tags (decisão do editor), categoria do D1 entra em minúsculas, soma ≤ 500", () => {
+    const tags = buildYouTubeTags("SEGURANÇA");
+    assert.equal(tags.length, 6);
+    assert.ok(tags.includes("segurança"));
+    const total = tags.reduce((s, t) => s + t.length + (/\s/.test(t) ? 2 : 0), 0) + tags.length - 1;
+    assert.ok(total <= YOUTUBE_TAGS_MAX_CHARS);
+  });
+
+  it("sem categoria (ou categoria repetida) ainda dá 6 tags", () => {
+    assert.equal(buildYouTubeTags().length, 6);
+    assert.equal(buildYouTubeTags("IA").length, 6);
+  });
+
+  it("stripInlineMarkdown remove negrito, itálico e links", () => {
+    assert.equal(stripInlineMarkdown("um **b** e *i* e [l](https://x.com/a_(b))"), "um b e i e l");
+  });
+
+  it("episódio pela cadência diária: 261021 = #1, 261022 = #2, virada de mês ok", () => {
+    assert.equal(deriveEpisodeNumber("261021"), 1);
+    assert.equal(deriveEpisodeNumber("261022"), 2);
+    assert.equal(deriveEpisodeNumber("261101"), 12);
+    assert.throws(() => deriveEpisodeNumber("261020"), /anterior/);
+  });
+
+  it("buildYouTubeMetadata recusa episódio inválido", () => {
+    assert.throws(() => buildYouTubeMetadata({ aammdd: "261022", episode: 0, editionUrl: "https://diar.ia.br/", d1: D1 }));
+  });
+
+  it("convenção do arquivo de vídeo por edição", () => {
+    assert.equal(youtubeVideoFileName("261022"), "diaria-comentada-261022.mp4");
+  });
+});
+
+describe("agendamento publishAt (#10659 item 1/6)", () => {
+  it("antes das 06:00 BRT do dia → agendado 09:00Z, privado (publishAt exige private)", () => {
+    const s = resolveYouTubeSchedule("261022", new Date("2026-10-21T23:00:00Z"));
+    assert.equal(s.mode, "scheduled");
+    assert.equal(s.publishAt, "2026-10-22T09:00:00.000Z");
+    assert.equal(s.privacyStatus, "private");
+  });
+
+  it("depois das 06:00 BRT → publica na hora com premissa registrada", () => {
+    const s = resolveYouTubeSchedule("261022", new Date("2026-10-22T15:00:00Z"));
+    assert.equal(s.mode, "immediate");
+    assert.equal(s.publishAt, null);
+    assert.equal(s.privacyStatus, "public");
+    assert.match(s.premise, /já passou/);
+  });
+
+  it("--publish-at explícito vence o default", () => {
+    const s = resolveYouTubeSchedule("261022", new Date("2026-10-21T00:00:00Z"), "2026-10-22T12:00:00Z");
+    assert.equal(s.publishAt, "2026-10-22T12:00:00.000Z");
+  });
+
+  it("--publish-at inválido lança", () => {
+    assert.throws(() => resolveYouTubeSchedule("261022", new Date(), "amanhã"));
+  });
+});
+
+describe("request de videos.insert", () => {
+  const meta = buildYouTubeMetadata({ aammdd: "261022", episode: 2, editionUrl: "https://diar.ia.br/p/x", d1: D1 });
+
+  it("agendado: private + publishAt + não-infantil + pt-BR + resumable", () => {
+    const req = buildYouTubeInsertRequest(meta, resolveYouTubeSchedule("261022", new Date("2026-10-21T23:00:00Z")), {
+      contentLength: 1234,
+    });
+    assert.match(req.url, /uploadType=resumable/);
+    assert.equal(req.body.status.privacyStatus, "private");
+    assert.equal(req.body.status.publishAt, "2026-10-22T09:00:00.000Z");
+    assert.equal(req.body.status.selfDeclaredMadeForKids, false);
+    assert.equal(req.body.snippet.defaultLanguage, "pt-BR");
+    assert.equal(req.headers["X-Upload-Content-Length"], "1234");
+    assert.equal(req.headers["X-Upload-Content-Type"], "video/mp4");
+  });
+
+  it("imediato: public sem publishAt; nunca carrega Authorization", () => {
+    const req = buildYouTubeInsertRequest(meta, resolveYouTubeSchedule("261022", new Date("2026-10-22T15:00:00Z")));
+    assert.equal(req.body.status.privacyStatus, "public");
+    assert.equal("publishAt" in req.body.status, false);
+    assert.equal("X-Upload-Content-Length" in req.headers, false);
+    assert.equal(Object.keys(req.headers).some((h) => h.toLowerCase() === "authorization"), false);
+  });
+});
+
+describe("resolveYouTubeState (#10659 item 5, #573)", () => {
+  const NOW = new Date("2026-10-22T08:00:00Z");
+  it("public → published", () => {
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "public", uploadStatus: "processed" } }, NOW), "published");
+  });
+  it("private + publishAt futuro → scheduled", () => {
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "private", publishAt: "2026-10-22T09:00:00Z" } }, NOW), "scheduled");
+  });
+  it("private sem publishAt (projeto GCP não auditado) → draft, nunca published", () => {
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "private", uploadStatus: "uploaded" } }, NOW), "draft");
+  });
+  it("private + publishAt passado → unknown (drift)", () => {
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "private", publishAt: "2026-10-22T07:00:00Z" } }, NOW), "unknown");
+  });
+  it("upload failed/rejected/deleted → unknown mesmo se public", () => {
+    for (const u of ["failed", "rejected", "deleted"]) {
+      assert.equal(resolveYouTubeState({ status: { privacyStatus: "public", uploadStatus: u } }, NOW), "unknown");
+    }
+  });
+  it("unlisted, publishAt malformado e status ausente → unknown", () => {
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "unlisted" } }, NOW), "unknown");
+    assert.equal(resolveYouTubeState({ status: { privacyStatus: "private", publishAt: "xx" } }, NOW), "unknown");
+    assert.equal(resolveYouTubeState({}, NOW), "unknown");
+    assert.equal(resolveYouTubeState({ status: null }, NOW), "unknown");
+  });
+});
+
+describe("planYouTubePublish (dry-run)", () => {
+  const base = {
+    aammdd: "261022",
+    reviewedMd: REVIEWED_MD,
+    now: new Date("2026-10-21T23:00:00Z"),
+    video: { path: "/x/diaria-comentada-261022.mp4", exists: true, sizeBytes: 99 },
+    thumb: { path: "/x/04-youtube-thumb.jpg", exists: true },
+  };
+
+  it("deriva tudo do D1 de 02-reviewed.md e registra premissas de episódio e link", () => {
+    const plan = planYouTubePublish(base);
+    assert.equal(plan.episode, 2);
+    assert.equal(plan.metadata.title, `${D1.title} | diar.ia.br comentada #2`);
+    assert.match(plan.request.body.snippet.description, /Fonte: https:\/\/fonte\.exemplo\.com\/artigo/);
+    assert.equal(plan.schedule.mode, "scheduled");
+    assert.ok(plan.premises.some((p) => /cadência diária/.test(p)));
+    assert.ok(plan.premises.some((p) => /slug do título/.test(p)));
+    assert.equal(plan.warnings.length, 0);
+    assert.ok(plan.thumbnail?.endpoint.includes("thumbnails/set"));
+  });
+
+  it("--episode e --edition-url explícitos não geram premissa", () => {
+    const plan = planYouTubePublish({ ...base, episode: 7, editionUrl: "https://diar.ia.br/p/real" });
+    assert.equal(plan.episode, 7);
+    assert.ok(plan.metadata.description.includes("https://diar.ia.br/p/real?utm_source=youtube"));
+    assert.equal(plan.premises.some((p) => /cadência|slug/.test(p)), false);
+  });
+
+  it("vídeo e capa ausentes viram aviso (fail-soft), não erro", () => {
+    const plan = planYouTubePublish({
+      ...base,
+      video: { path: "/x/v.mp4", exists: false, sizeBytes: null },
+      thumb: { path: "/x/t.jpg", exists: false },
+    });
+    assert.equal(plan.warnings.length, 2);
+    assert.equal(plan.thumbnail, null);
+  });
+
+  it("sem DESTAQUE 1 lança", () => {
+    assert.throws(() => planYouTubePublish({ ...base, reviewedMd: "nada aqui" }), /DESTAQUE 1/);
+  });
+});
+
+describe("guardas do CLI e da skill", () => {
+  const cli = readFileSync(resolve(ROOT, "scripts/publish-youtube.ts"), "utf8");
+
+  it("CLI tem guard de import (isMainModule) e não chama a API (sem fetch)", () => {
+    assert.match(cli, /if \(isMainModule\(import\.meta\.url\)\)/);
+    assert.doesNotMatch(cli, /\bfetch\(/);
+    assert.doesNotMatch(cli, /process\.exit\(/);
+  });
+
+  it("sem --dry-run o CLI recusa (exit 2) — upload real pendente de OAuth", () => {
+    assert.match(cli, /if \(!flags\.has\("dry-run"\)\)[\s\S]{0,400}return 2;/);
+  });
+
+  it("skill /diaria-youtube existe e usa o publisher com --dry-run", () => {
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-youtube/SKILL.md"), "utf8");
+    assert.match(skill, /^---\nname: diaria-youtube\n/);
+    assert.match(skill, /scripts\/publish-youtube\.ts \{AAMMDD\} --dry-run/);
+    assert.match(skill, /#10659/);
+  });
+});
