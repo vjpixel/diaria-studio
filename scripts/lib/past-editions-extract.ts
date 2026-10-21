@@ -708,6 +708,71 @@ export function readApprovedTitles(approvedPath: string): string[] {
 }
 
 /**
+ * #10641: URL canônica → título real de cada artigo de `01-approved.json`
+ * (mesmos buckets de `readApprovedTitles`). Alimenta o título substituto do
+ * dedup para artigo da edição corrente que ainda tem título placeholder
+ * (`scripts/lib/placeholder-dedup-title.ts`). Primeiro título visto vence.
+ */
+export function readApprovedTitleByUrl(approvedPath: string, into: Map<string, string> = new Map()): Map<string, string> {
+  if (!existsSync(approvedPath)) return into;
+  let parsed: ApprovedJsonShape;
+  try {
+    parsed = JSON.parse(readFileSync(approvedPath, "utf8")) as ApprovedJsonShape;
+  } catch {
+    return into;
+  }
+  const buckets: ApprovedArticleLike[][] = [
+    parsed.highlights ?? [],
+    parsed.runners_up ?? [],
+    parsed.lancamento ?? [],
+    parsed.radar ?? [],
+    parsed.use_melhor ?? [],
+    parsed.video ?? [],
+    parsed.pesquisa ?? [],
+    parsed.noticias ?? [],
+    parsed.tutorial ?? [],
+  ];
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      const t = item?.article?.title ?? item?.title;
+      const u = item?.article?.url ?? item?.url;
+      if (typeof t !== "string" || !t.trim() || typeof u !== "string" || !u) continue;
+      const key = canonicalize(u);
+      if (!into.has(key)) into.set(key, t.trim());
+    }
+  }
+  return into;
+}
+
+/**
+ * #10641: `readApprovedTitleByUrl` agregado sobre as últimas `window` edições
+ * (mesma janela e exclusão da edição corrente de `extractPastEditionArticleTitles`).
+ * Edição mais recente primeiro — o título dela vence.
+ */
+export function extractPastEditionArticleTitleByUrl(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!existsSync(editionsDir)) return out;
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  for (const aammdd of recentEditionDirs(editionsDir, window, currentAammdd)) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
+    for (const path of [
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
+    ]) {
+      if (!existsSync(path)) continue;
+      readApprovedTitleByUrl(path, out);
+      break;
+    }
+  }
+  return out;
+}
+
+/**
  * Lê títulos individuais de artigos cobertos nas últimas `window` edições
  * salvas localmente em `data/editions/{AAMMDD}/`. Procura `01-approved.json`
  * em `_internal/` (formato pós-#574) e em root (formato anterior).

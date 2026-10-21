@@ -62,6 +62,7 @@ import {
   extractPastEditionArticleTitles,
   extractPastTitlesWithEdition,
   extractPastEditionArticleTitlesWithEdition,
+  extractPastEditionArticleTitleByUrl,
 } from "./lib/past-editions-extract.ts";
 // #2833: extraido pra scripts/lib/inbox-title-resolve.ts (movimentacao pura)
 // -- re-exportado abaixo pra manter compat com importadores existentes.
@@ -79,6 +80,7 @@ import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // 
 import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
 import { findSameEvent, minDistanceByTitle, STRONG_CONCEPT_MAX_DISTANCE_DAYS } from "./lib/event-dedup.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
+import { dedupComparisonTitle, proxyNote } from "./lib/placeholder-dedup-title.ts"; // #10641
 
 export { canonicalize };
 export {
@@ -195,6 +197,10 @@ export function dedup(
   // D1). Presente → Pass-1d exige entidade (palavra inteira) E ≥1 termo em
   // comum com esse fato. Vazio (callers legados) → regra antiga só-entidade.
   pastThemeFacts: Map<string, string> = new Map(),
+  // #10641: URL canônica → título real nos 01-approved.json recentes. Artigo
+  // com título ainda placeholder é comparado (Pass-1b/1c) por esse título, ou
+  // pelo slug da URL — ver lib/placeholder-dedup-title.ts.
+  pastArticleTitleByUrl: Map<string, string> = new Map(),
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -311,18 +317,21 @@ export function dedup(
   const afterPass1b: Article[] = [];
   if (pastTitles.length > 0) {
     for (const art of afterPass1) {
-      if (!art.title) {
+      // #10641: título placeholder compara pelo substituto (mesma URL no
+      // pool recente, ou slug), senão o placeholder não casa com nada.
+      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastArticleTitleByUrl);
+      if (!cmpTitle) {
         afterPass1b.push(art);
         continue;
       }
       let isDupVsPast = false;
       for (const pastTitle of pastTitles) {
-        const sim = titleSimilarity(art.title, pastTitle);
+        const sim = titleSimilarity(cmpTitle, pastTitle);
         if (sim >= titleVsPastThreshold) {
           pushRemoved(
             removed,
             art,
-            `título similar (${(sim * 100).toFixed(0)}%) ao headline de edição anterior "${pastTitle}"`,
+            `título similar (${(sim * 100).toFixed(0)}%) ao headline de edição anterior "${pastTitle}"${proxyNote(cmpSource)}`,
           );
           isDupVsPast = true;
           break;
@@ -355,11 +364,13 @@ export function dedup(
       tokens: tokenizeForJaccard(t),
     }));
     for (const art of afterPass1b) {
-      if (!art.title) {
+      // #10641: idem Pass-1b — placeholder compara pelo substituto.
+      const { title: cmpTitle, source: cmpSource } = dedupComparisonTitle(art, pastArticleTitleByUrl);
+      if (!cmpTitle) {
         afterPass1c.push(art);
         continue;
       }
-      const candidateTokens = tokenizeForJaccard(art.title);
+      const candidateTokens = tokenizeForJaccard(cmpTitle);
       // Títulos sem tokens significativos (curtos/vazios) não disparam
       // — Jaccard contra qualquer set vazio = 0.
       if (candidateTokens.size === 0) {
@@ -373,7 +384,7 @@ export function dedup(
         // #1331: lower threshold (default 0.55) quando candidato e past
         // compartilham entidades nomeadas. Sem entity overlap, mantém 0.6.
         const { threshold: effThreshold, sharedEntities } = thresholdForPair(
-          art.title,
+          cmpTitle,
           pt.title,
           subjectVsPastThreshold,
           subjectVsPastThresholdLowered,
@@ -394,7 +405,7 @@ export function dedup(
         pushRemoved(
           removed,
           art,
-          `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}`,
+          `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}${proxyNote(cmpSource)}`,
         );
         isDupVsPastSubject = true;
       }
@@ -882,6 +893,10 @@ async function main() {
     );
   }
 
+  // #10641: título real por URL nos pools recentes — substituto de comparação
+  // pra artigo que chegou com título placeholder (enrichment falhou).
+  const pastArticleTitleByUrl = extractPastEditionArticleTitleByUrl(editionsDir, window, currentAammdd);
+
   // #1068: extrair URLs que foram destaques (highlights) em edições passadas.
   // Dedup usa pra permitir promoção secondary→destaque (URL em past mas não
   // como destaque → permite na edição corrente como destaque).
@@ -972,6 +987,7 @@ async function main() {
     editorRejected,
     pastEventDistanceDays,
     pastThemeFacts,
+    pastArticleTitleByUrl,
   );
 
   console.error(
