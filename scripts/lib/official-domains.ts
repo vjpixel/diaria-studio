@@ -238,6 +238,17 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     detection_keywords: /\b(groq)\b/i,
   },
   {
+    // #10640: edição 261021 — "Introducing Mercury 3" (blog oficial da
+    // Inception Labs, www.inceptionlabs.ai/blog/...) movido pelo editor de
+    // RADAR pra LANÇAMENTOS foi barrado pelo validate-lancamentos porque o
+    // lab não constava no registro (mesmo padrão do microsoft.ai, #7401).
+    company: "Inception Labs",
+    domains: ["inceptionlabs.ai", "www.inceptionlabs.ai"],
+    // Sem "mercury" solto: o nome colide com planeta/Mercury (fintech) e
+    // outros produtos — só a marca do lab identifica a fonte.
+    detection_keywords: /\b(inception\s?labs)\b/i,
+  },
+  {
     company: "Inflection",
     domains: ["inflection.ai"],
     detection_keywords: /\b(inflection)\b/i,
