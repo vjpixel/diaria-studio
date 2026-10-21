@@ -646,12 +646,25 @@ export function extractCoverageLine(text: string): string | null {
   // `calloutMatch.matchEnd` (#3705) — falta a metade simétrica: coverage
   // terminando em `calloutMatch.matchStart`. A região de intro passa a ser
   // particionada em três faixas sem sobreposição (coverage → callout → trailer).
+  const start = findCoverageStart(text);
+  if (!start) return null;
+  if (start.kind === "welcome") return captureUntilCoverageBoundary(text, start.index);
+  // Formatos legados (linha única): #592/#609 original + #3456.
+  return start.legacyLine.trim();
+}
+
+/**
+ * #10696: posição (absoluta em `text`) onde começa o bloco de cobertura, com
+ * a mesma precedência de `extractCoverageLine` — fonte única pra quem precisa
+ * saber ONDE a cobertura está (ex: `findOrphanBoxWarnings`), não só o texto.
+ */
+function findCoverageStart(
+  text: string,
+): { kind: "welcome"; index: number } | { kind: "legacy"; index: number; legacyLine: string } | null {
   const anchorMatch = text.match(
     /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
-  if (anchorMatch) {
-    return captureUntilCoverageBoundary(text, anchorMatch.index ?? 0);
-  }
+  if (anchorMatch) return { kind: "welcome", index: anchorMatch.index ?? 0 };
 
   // #3691: fallback quando o editor remove a frase-CTA de apoio do bloco de
   // boas-vindas (ex: pra não competir com o box de apoio dedicado) — a
@@ -660,13 +673,10 @@ export function extractCoverageLine(text: string): string | null {
   // retornava null e a intro inteira sumia do HTML em silêncio (caso real:
   // edição 260720).
   const welcomeMatch = text.match(/^Olá! Eu sou o [^\n]*$/m);
-  if (welcomeMatch) {
-    return captureUntilCoverageBoundary(text, welcomeMatch.index ?? 0);
-  }
+  if (welcomeMatch) return { kind: "welcome", index: welcomeMatch.index ?? 0 };
 
-  // Formatos legados (linha única): #592/#609 original + #3456.
   const m = text.match(/^Para esta edição,[^\n]+$/m);
-  return m ? m[0].trim() : null;
+  return m ? { kind: "legacy", index: m.index ?? 0, legacyLine: m[0] } : null;
 }
 
 /**
@@ -887,7 +897,12 @@ function box0BlockRange(introRegion: string): { start: number; end: number } | n
  * calculados na região mascarada valem na original. Sem marcador, devolve a
  * região intacta.
  */
-function maskBox0Block(introRegion: string): string {
+function maskBox0Block(rawIntroRegion: string): string {
+  // #10696: o marcador sem-rótulo é metadado onde quer que esteja (inclusive
+  // na linha acima do sentinel) — nunca vira texto de callout/trailer.
+  const introRegion = rawIntroRegion
+    .split(BOX0_SEM_ROTULO_MARKER)
+    .join(" ".repeat(BOX0_SEM_ROTULO_MARKER.length));
   const range = box0BlockRange(introRegion);
   if (!range) return introRegion;
   const masked = introRegion.slice(range.start, range.end).replace(/[^\r\n]/g, " ");
@@ -901,12 +916,29 @@ function maskBox0Block(introRegion: string): string {
  */
 export const BOX0_SEM_ROTULO_MARKER = "<!-- box0-sem-rotulo -->";
 
+/**
+ * #10696: faixa [start, end) do bloco `---`-isolado que CONTÉM o
+ * `BOX0_SENTINEL` — do separador anterior ao sentinel até o próximo. Mais
+ * larga que `box0BlockRange` (que começa NO sentinel): é onde o marcador
+ * sem-rótulo vale, antes ou depois do `<!-- box0 -->` (caso real 261021: o
+ * editor escreveu o marcador na linha ACIMA do sentinel e ele era ignorado).
+ */
+function box0EnclosingBlockRange(introRegion: string): { start: number; end: number } | null {
+  const range = box0BlockRange(introRegion);
+  if (!range) return null;
+  const before = introRegion.slice(0, range.start);
+  let start = 0;
+  const sepRe = new RegExp(GAP_SEPARATOR_RE.source, "gm");
+  for (const m of before.matchAll(sepRe)) start = (m.index ?? 0) + m[0].length;
+  return { start, end: range.end };
+}
+
 /** #10638: `true` quando o bloco do box0 traz `BOX0_SEM_ROTULO_MARKER`. */
 export function isBoxDivulgacao0SemRotulo(text: string): boolean {
   const firstMarkerMatch = /^\*\*DESTAQUE/m.exec(text);
   if (!firstMarkerMatch) return false;
   const region = text.slice(0, firstMarkerMatch.index);
-  const range = box0BlockRange(region);
+  const range = box0EnclosingBlockRange(region);
   return !!range && region.slice(range.start, range.end).includes(BOX0_SEM_ROTULO_MARKER);
 }
 
@@ -1382,6 +1414,45 @@ export interface OrphanBoxWarning {
  * silenciosamente descartaria os demais sem este aviso. Usado pelo lint
  * `orphan-box-in-gap` (gate-blocking no Stage 4, §4c.2).
  */
+/**
+ * #10696: blocos `---`-isolados da introdução ANTES do `BOX0_SENTINEL` que o
+ * render não emite em lugar nenhum. O #10638 passou a ignorar tudo antes do
+ * sentinel em `findOrphanBoxWarnings` (pra não contar a cobertura como "bloco
+ * extra"), e com isso um bloco perdido entre a cobertura e o box0 sumia do
+ * HTML sem aviso. Aqui só ficam de fora os blocos que de fato são renderizados:
+ * o bloco 0 (TÍTULO/SUBTÍTULO, mesma convenção do `.slice(1)` do loop de
+ * slot 0), o bloco onde começa a cobertura (`findCoverageStart`), o bloco do
+ * callout (`introMatch`) e o bloco logo após o callout quando este fecha o
+ * próprio bloco (é o trailer de `extractCoverageLineTrailer`). No bloco que
+ * contém o sentinel, só conta o texto ANTES dele (o resto é o box0), sem o
+ * marcador sem-rótulo, que é metadado.
+ */
+function findLostBlocksBeforeBox0(
+  introRegion: string,
+  sentinelIdx: number,
+  introMatch: { matchStart: number; matchEnd: number } | null,
+): string[] {
+  const blocks = splitByGapSeparator(introRegion);
+  const coverageIdx = findCoverageStart(introRegion)?.index ?? -1;
+  const within = (idx: number, b: GapBlock) => idx >= b.rawStart && idx < b.rawEnd;
+  const lost: string[] = [];
+  let prevWasClosedCallout = false;
+  for (let i = 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    if (block.rawStart >= sentinelIdx) break;
+    const isCallout = !!introMatch && within(introMatch.matchStart, block);
+    const isTrailer = prevWasClosedCallout;
+    prevWasClosedCallout =
+      isCallout && introRegion.slice(introMatch!.matchEnd, block.rawEnd).trim() === "";
+    if (isCallout || isTrailer) continue;
+    if (coverageIdx !== -1 && within(coverageIdx, block)) continue;
+    const end = Math.min(block.rawEnd, sentinelIdx);
+    const pre = introRegion.slice(block.rawStart, end).split(BOX0_SEM_ROTULO_MARKER).join("").trim();
+    if (pre) lost.push(pre);
+  }
+  return lost;
+}
+
 export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
   const warnings: OrphanBoxWarning[] = [];
   // #4290: região de introdução (slot 0) — entre o bloco de cobertura e
@@ -1402,6 +1473,30 @@ export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
     // intro, nunca candidato a box. Sem isso, cobertura + box0 davam "2 blocos
     // extras" e o lint gate-blocking reprovava todo slot 0 marcado.
     const sentinelIdx = introRegion.indexOf(BOX0_SENTINEL);
+    if (sentinelIdx !== -1) {
+      const lost = findLostBlocksBeforeBox0(introRegion, sentinelIdx, introMatch);
+      if (lost.length > 0) {
+        warnings.push({
+          gapIndex: -1,
+          reason:
+            `${lost.length} bloco(s) na introdução (slot 0) entre a cobertura e o \`${BOX0_SENTINEL}\` ` +
+            `não são cobertura, callout nem box — seriam descartados silenciosamente do HTML ` +
+            `(início: "${lost[0].slice(0, 60)}"). Junte o texto à cobertura (sem \`---\` no meio), ` +
+            `mova pra dentro do box0 (depois do \`${BOX0_SENTINEL}\`) ou remova.`,
+        });
+      }
+    }
+    // #10696: marcador sem-rótulo fora do bloco do box0 (ou sem box0) é
+    // ignorado pelo render — avisar em vez de deixar o kicker sair calado.
+    if (introRegion.includes(BOX0_SEM_ROTULO_MARKER) && !isBoxDivulgacao0SemRotulo(text)) {
+      warnings.push({
+        gapIndex: -1,
+        reason:
+          `\`${BOX0_SEM_ROTULO_MARKER}\` está fora do bloco do box0 (ou não há \`${BOX0_SENTINEL}\`) ` +
+          `e será ignorado — o kicker continua. Coloque o marcador no mesmo bloco do ` +
+          `\`${BOX0_SENTINEL}\` (entre os \`---\` que delimitam o box).`,
+      });
+    }
     const extraIntro: string[] = [];
     for (const block of splitByGapSeparator(introRegion).slice(1)) {
       if (sentinelIdx !== -1 && block.rawEnd <= sentinelIdx) continue;
