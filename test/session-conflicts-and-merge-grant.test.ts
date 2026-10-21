@@ -792,6 +792,9 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
     const root = mkdtempSync(join(tmpdir(), "consume-grant-e2e-"));
     mkdirSync(join(root, "data", "sessions"), { recursive: true });
     spawnSync("git", ["init", "-q"], { cwd: root });
+    // #10618: checkout do studio de verdade — o consume só usa concessão com prova
+    // POSITIVA de que o merge é do diaria-studio (origin do cwd).
+    spawnSync("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], { cwd: root });
     return root;
   }
 
@@ -817,7 +820,9 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const payload = { session_id: "interativa", tool_name: "Bash", tool_input: { command: "gh pr merge 6303 --squash" } };
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
-        input: JSON.stringify(payload),
+        // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
+        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
       });
@@ -849,7 +854,9 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const payload = { session_id: "ninguem-tem-grant", tool_name: "Bash", tool_input: { command: "gh pr merge 1 --squash" } };
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
-        input: JSON.stringify(payload),
+        // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
+        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
       });
@@ -867,7 +874,9 @@ describe("#6303 Finding T — CLI end-to-end via stdin real (mesmo padrão do #5
       const payload = { tool_name: "Bash", tool_input: { command: "gh pr merge 1" } };
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
-        input: JSON.stringify(payload),
+        // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
+        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
       });
@@ -952,6 +961,9 @@ describe("#8188 — findLiveMergeGrantFile/consumeGrantUnderLock escopam por PR,
     try {
       mkdirSync(join(root, "data", "sessions"), { recursive: true });
       spawnSync("git", ["init", "-q"], { cwd: root });
+      // #10618: checkout do studio de verdade — o consume só usa concessão com prova
+      // POSITIVA de que o merge é do diaria-studio (origin do cwd).
+      spawnSync("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], { cwd: root });
 
       const grantedAt = new Date().toISOString();
       const startedAt = new Date(Date.now() - 60_000).toISOString();
@@ -986,7 +998,9 @@ describe("#8188 — findLiveMergeGrantFile/consumeGrantUnderLock escopam por PR,
       const payload = { session_id: "interativa", tool_name: "Bash", tool_input: { command: "gh pr merge 100 --squash" } };
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
-        input: JSON.stringify(payload),
+        // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
+        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
       });
@@ -1044,6 +1058,9 @@ describe("#7286 — concessão consumida por TERCEIRO (sessão diferente da bene
     try {
       mkdirSync(join(root, "data", "sessions"), { recursive: true });
       spawnSync("git", ["init", "-q"], { cwd: root });
+      // #10618: checkout do studio de verdade — o consume só usa concessão com prova
+      // POSITIVA de que o merge é do diaria-studio (origin do cwd).
+      spawnSync("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], { cwd: root });
 
       // Coordenadora "coord-A" concede a janela do PR #7273 pra sessão
       // interativa "sess-A" — cenário idêntico ao medido ao vivo.
@@ -1087,7 +1104,9 @@ describe("#7286 — concessão consumida por TERCEIRO (sessão diferente da bene
       };
       const result = spawnSync(process.execPath, [CONSUME_HOOK_PATH], {
         cwd: root,
-        input: JSON.stringify(payload),
+        // #10618: GH_HOST inválido — a consulta de estado falha offline (como antes, sem origin).
+        env: { ...process.env, GH_REPO: "", GH_HOST: "github.invalid" },
+        input: JSON.stringify({ ...payload, cwd: root }),
         encoding: "utf8",
         timeout: 10_000,
       });
