@@ -922,8 +922,17 @@ export function isHeredocDataCommand(command) {
 export function findGhPrMergeInvocations(command, opts = {}) {
   const out = [];
   if (typeof command !== "string") return out;
-  const aliases = opts?.aliases instanceof Map ? opts.aliases : loadGhAliases();
-  const env = { aliases, local: new Map(), importSeen: false };
+  // Lazy: o consumidor de concessão roda depois de TODO Bash — o config do gh
+  // só é lido quando aparece um `gh <subcomando não-builtin>`.
+  let aliases = opts?.aliases instanceof Map ? opts.aliases : null;
+  const env = {
+    get aliases() {
+      if (aliases === null) aliases = loadGhAliases();
+      return aliases;
+    },
+    local: new Map(),
+    importSeen: false,
+  };
   collect(command, 0, out, { skipHeredocData: isHeredocDataCommand(command) }, env);
   return out;
 }
