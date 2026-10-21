@@ -165,6 +165,9 @@ function mergeSubscribers(
     const eventResult = db
       .prepare("UPDATE event SET subscriber_id = ? WHERE subscriber_id = ?")
       .run(canonicalId, loserId);
+    // #10648: a linha do tempo de webhooks do Kit também aponta pro subscriber
+    // — sem isto, o merge deixaria esses eventos órfãos do id apagado abaixo.
+    db.prepare("UPDATE kit_webhook_event SET subscriber_id = ? WHERE subscriber_id = ?").run(canonicalId, loserId);
 
     db.prepare("DELETE FROM subscriber WHERE id = ?").run(loserId);
     db.prepare("UPDATE subscriber SET updated_at = ? WHERE id = ?").run(now, canonicalId);
