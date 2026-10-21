@@ -209,11 +209,77 @@ export interface EvaluateQuedaResult {
   skipMotivo: string | null;
 }
 
+/** Intervalo `AAAA-MM-DD` inclusivo cujos dias saem da BASELINE de
+ *  `evaluateQueda` (#10647). `motivo` vai pro texto do achado/skip — o
+ *  leitor do alarme precisa ver que a baseline foi recortada e por quê. */
+export interface JanelaExcluida {
+  de: string;
+  ate: string;
+  motivo: string;
+}
+
+export interface EvaluateQuedaOptions {
+  /** Ver {@link JanelaExcluida}. Ausente/vazio = comportamento anterior
+   *  (baseline = todos os dias anteriores ao atual). */
+  baselineExcluida?: readonly JanelaExcluida[];
+}
+
+/** Subconjunto de `AdsTestRunState` (`scripts/lib/ads-test-run-state.ts`)
+ *  que define a janela de veiculação paga — `d0` (1º dia) e `fim_janela`
+ *  (último dia; já reflete revisão/encerramento antecipado, que regravam o
+ *  campo no próprio `run-state.json`). */
+export interface PaidTestWindowSource {
+  /** Rótulo humano do teste (ex.: "teste 2608"). */
+  rotulo: string;
+  d0: string;
+  fim_janela: string;
+}
+
+/**
+ * Janelas de aquisição PAGA já ENCERRADAS (`fim_janela < hoje`) — a fonte
+ * é o pré-registro do teste (`data/aquisicao/teste-2608/run-state.json`),
+ * nunca datas fixas no código (#10647). Teste ainda em veiculação não é
+ * excluído: comparar o dia atual (inflado pelo pago) contra uma baseline
+ * orgânica só move pra CIMA, nunca dispara `queda` — e excluir o próprio
+ * período corrente esvaziaria a baseline.
+ *
+ * @pure
+ */
+export function closedPaidAcquisitionWindows(
+  sources: readonly PaidTestWindowSource[],
+  hoje: string,
+): JanelaExcluida[] {
+  return sources
+    .filter((s) => s.d0 <= s.fim_janela && s.fim_janela < hoje)
+    .map((s) => ({ de: s.d0, ate: s.fim_janela, motivo: `(aquisição paga encerrada — ${s.rotulo})` }));
+}
+
+/**
+ * Remove o dia corrente (`hoje`, BRT) da série usada pelo sinal de QUEDA das
+ * métricas de aquisição (#10647). O store só recebe os cadastros do dia na
+ * ingestão da madrugada seguinte (`Diaria-Kit-Roster-Ingest`, 04:25 BRT) —
+ * às 04:40 o dia corrente tem no máximo ~4h de cadastros e, fora disso,
+ * nenhum: `valor` sai 0 quase sempre e o "atual" de `evaluateQueda` vira um
+ * artefato de ingestão, não uma queda. O ponto atual passa a ser o último
+ * dia COMPLETO (ontem). Só a série de queda muda — frescor e metas seguem
+ * recebendo a série inteira.
+ *
+ * @pure
+ */
+export function serieQuedaSemDiaCorrente(medicoes: readonly MedicaoDia[], hoje: string): MedicaoDia[] {
+  return medicoes.filter((m) => m.chave < hoje);
+}
+
 /**
  * Avalia queda pra 1 métrica: baseline = média dos valores numéricos da
  * série MENOS o mais recente; atual = valor mais recente. Alarma só quando
  * o movimento na direção RUIM (`direcao`) cruza os DOIS pisos — relativo
  * (`QUEDA_MIN_PCT`) E absoluto (`QUEDA_MIN_ABS[unidade]`).
+ *
+ * `opts.baselineExcluida` (#10647) tira da baseline os dias de janelas que
+ * não representam o regime normal — hoje, testes de aquisição paga
+ * encerrados (`closedPaidAcquisitionWindows`). Sem isso, o platô pago entra
+ * na média e o fim do teste vira "queda" toda execução.
  *
  * `medicoes` precisa estar em ordem cronológica ASCENDENTE (mais antigo
  * primeiro, mais recente por último — `baseline`/`atual` dependem disso) —
@@ -237,6 +303,7 @@ export function evaluateQueda(
   medicoes: readonly MedicaoDia[],
   diasComInsumo: readonly string[],
   thresholds: MetricsHealthThresholds = METRICS_HEALTH_THRESHOLDS,
+  opts: EvaluateQuedaOptions = {},
 ): EvaluateQuedaResult {
   if (def.direcao === "neutro") {
     return { finding: null, skipMotivo: `"${def.id}": direcao neutro (decomposição pura) — queda nunca avaliada` };
@@ -258,8 +325,8 @@ export function evaluateQueda(
         "disponível) — sinal de queda não avaliado, gate mecânico, não recomendação",
     };
   }
-  const valores = medicoes.map((m) => m.resultado.valor).filter((v): v is number => v !== null);
-  if (valores.length < 2) {
+  const pontos = medicoes.filter((m): m is MedicaoDia & { resultado: { valor: number } } => m.resultado.valor !== null);
+  if (pontos.length < 2) {
     return {
       finding: null,
       skipMotivo: `"${def.id}": menos de 2 medições com valor numérico na série — sinal de queda não avaliado`,
@@ -272,9 +339,32 @@ export function evaluateQueda(
     throw new Error(`[metrics/health] "${def.id}": unidade "${def.unidade}" sem piso QUEDA_MIN_ABS declarado`);
   }
 
-  const atual = valores[valores.length - 1];
-  const anteriores = valores.slice(0, -1);
+  const atualPonto = pontos[pontos.length - 1];
+  const atual = atualPonto.resultado.valor;
+  // #10647: dias dentro de uma janela excluída (ex.: teste pago encerrado)
+  // saem SÓ da baseline — o ponto "atual" nunca é removido aqui (se ele
+  // mesmo cair numa janela excluída, quem decide é o chamador, que só deve
+  // passar janelas JÁ ENCERRADAS antes do dia atual — ver
+  // `closedPaidAcquisitionWindows`).
+  const excluidas = opts.baselineExcluida ?? [];
+  const janelaDe = (chave: string) => excluidas.find((j) => chave >= j.de && chave <= j.ate) ?? null;
+  const anterioresPontos = pontos.slice(0, -1);
+  const anteriores = anterioresPontos.filter((p) => janelaDe(p.chave) === null).map((p) => p.resultado.valor);
+  const excluidosDaBaseline = anterioresPontos.length - anteriores.length;
+  if (anteriores.length === 0) {
+    return {
+      finding: null,
+      skipMotivo:
+        `"${def.id}": todos os ${anterioresPontos.length} dia(s) anteriores ao atual caem em janela excluída da ` +
+        `baseline (${excluidas.map((j) => `${j.de}..${j.ate} ${j.motivo}`).join("; ")}) — sinal de queda não avaliado`,
+    };
+  }
   const baseline = anteriores.reduce((a, b) => a + b, 0) / anteriores.length;
+  const notaExclusao =
+    excluidosDaBaseline > 0
+      ? ` [baseline sem ${excluidosDaBaseline} dia(s) de janela excluída: ` +
+        `${excluidas.map((j) => `${j.de}..${j.ate} ${j.motivo}`).join("; ")}]`
+      : "";
 
   // Movimento na direção RUIM: positivo = ruim, independente de `direcao`.
   const deltaAbs = def.direcao === "maior-melhor" ? baseline - atual : atual - baseline;
@@ -292,7 +382,7 @@ export function evaluateQueda(
       motivo:
         `"${def.nome}" moveu na direção ruim ${(deltaPct * 100).toFixed(1)}% (delta absoluto ${deltaAbs.toFixed(2)} ` +
         `${def.unidade}, baseline=${baseline.toFixed(2)}, atual=${atual}) — acima dos pisos QUEDA_MIN_PCT=` +
-        `${thresholds.QUEDA_MIN_PCT} e QUEDA_MIN_ABS[${def.unidade}]=${pisoAbs}`,
+        `${thresholds.QUEDA_MIN_PCT} e QUEDA_MIN_ABS[${def.unidade}]=${pisoAbs}${notaExclusao}`,
     },
     skipMotivo: null,
   };
