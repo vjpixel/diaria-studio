@@ -57,7 +57,7 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
@@ -128,7 +128,8 @@ export function buildOvernightClaudeArgs(
     "--permission-mode",
     "acceptEdits",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     ...dataAddDirArgs(repoRootAbs, realpathFn),
     "--",
     buildOvernightPrompt(),
@@ -200,7 +201,7 @@ export interface NightlyChainDeps {
   hasActiveOvernight: (repoRootAbs: string) => boolean;
   env: NodeJS.ProcessEnv;
   log: (line: string) => void;
-  /** Grava o JSON do `claude --print` do overnight (default: `data/overnight/.nightly-chain-last-overnight.json`). */
+  /** Compatibilidade para injeções de teste; a implementação default grava durante o spawn. */
   writeOvernightOutput: (repoRootAbs: string, stdout: string) => void;
   /**
    * Anexa UMA linha ao log incremental (`LIVE_LOG_REL`, #10672) no momento em
@@ -273,7 +274,7 @@ let liveLogWarned = false;
 
 function defaultAppendLiveLog(repoRootAbs: string, line: string): void {
   // Clone sem `data/` (sessão cloud, CI): nada a gravar, igual ao
-  // `defaultWriteOvernightOutput`.
+  // captura persistente dos filhos.
   if (!existsSync(join(repoRootAbs, "data"))) return;
   const path = liveLogAbs(repoRootAbs);
   try {
@@ -289,24 +290,38 @@ function defaultAppendLiveLog(repoRootAbs: string, line: string): void {
   }
 }
 
-function defaultWriteOvernightOutput(repoRootAbs: string, stdout: string): void {
-  const dir = join(repoRootAbs, "data", "overnight");
-  if (!existsSync(join(repoRootAbs, "data"))) return;
+/** stdout/stderr vão direto ao disco, inclusive enquanto spawnSync bloqueia (#10699).
+ * Uma geração anterior é preservada. Sem data/, mantém a captura em memória.
+ * Erros de armazenamento falham explicitamente antes de iniciar o filho.
+ */
+export const spawnWithPersistentOutput: typeof spawnSync = ((command, args, options) => {
+  const root = String(options?.cwd ?? process.cwd());
+  if (!existsSync(join(root, "data"))) return spawnSync(command, args, options);
+  const phase = command === "bash" ? "review" : "overnight";
+  const dir = join(root, "data", "overnight");
+  mkdirSync(dir, { recursive: true });
+  const stdoutPath = join(dir, `.nightly-chain-last-${phase}.${phase === "overnight" ? "json" : "log"}`);
+  const stderrPath = join(dir, `.nightly-chain-last-${phase}.stderr.log`);
+  const fds: number[] = [];
   try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, ".nightly-chain-last-overnight.json"), stdout, "utf8");
-  } catch (e) {
-    console.warn(`run-nightly-chain: falha ao gravar o output do overnight — ${(e as Error).message}`);
+    for (const path of [stdoutPath, stderrPath]) {
+      if (existsSync(path)) renameSync(path, `${path}.prev`);
+      fds.push(openSync(path, "w"));
+    }
+    const result = spawnSync(command, args, { ...options, stdio: ["ignore", fds[0], fds[1]] });
+    return { ...result, stdout: readFileSync(stdoutPath, "utf8"), stderr: readFileSync(stderrPath, "utf8") };
+  } finally {
+    for (const fd of fds) closeSync(fd);
   }
-}
+}) as typeof spawnSync;
 
 export const DEFAULT_DEPS: NightlyChainDeps = {
-  spawn: spawnSync,
+  spawn: spawnWithPersistentOutput,
   resolveClaudeBin,
   hasActiveOvernight: (root) => hasActiveSessionOfKind(root, "overnight"),
   env: process.env,
   log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
-  writeOvernightOutput: defaultWriteOvernightOutput,
+  writeOvernightOutput: () => {},
   appendLiveLog: defaultAppendLiveLog,
   rotateLiveLog,
 };

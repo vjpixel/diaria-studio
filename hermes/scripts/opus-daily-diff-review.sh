@@ -126,12 +126,24 @@ Se alguma chamada de gh issue create FALHOU, conte em issues_falharam e liste o 
 # avança se o marcador de resumo existir no output capturado. timeout de 90min
 # cobre o P2 de stall indefinido (CLAUDE.md: stall silencioso é inaceitável).
 OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
+# Eventos persistidos enquanto Claude trabalha; o texto final segue no contrato antigo (#10699).
+STREAM_FILE="$STATE_DIR/last-daily-review-output.jsonl"
+[ ! -f "$STREAM_FILE" ] || mv -f "$STREAM_FILE" "$STREAM_FILE.prev"
 # #9153: strip explícito das vars de auth/gateway (ver bloco AUTH no topo).
 echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
   -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
   timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
-  --model claude-opus-5-5 --effort high | tee "$OUT_FILE" >&2
+  --model claude-opus-5-5 --effort high --output-format stream-json --verbose | tee "$STREAM_FILE" >&2
+# Só o evento result pode satisfazer o gate: prompts/tool calls também podem
+# conter RESUMO-DAILY-REVIEW sem que o review tenha terminado.
+node -e '
+const fs = require("node:fs");
+const events = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+const result = events.findLast(event => event.type === "result");
+if (!result || result.is_error || typeof result.result !== "string") process.exit(4);
+process.stdout.write(result.result);
+' "$STREAM_FILE" > "$OUT_FILE"
 
 # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
 # função de shell que shella pro binário `claude`; se ele quebrar, todo
