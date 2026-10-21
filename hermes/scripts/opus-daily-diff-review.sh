@@ -129,21 +129,38 @@ OUT_FILE="$STATE_DIR/last-daily-review-output.txt"
 # Eventos persistidos enquanto Claude trabalha; o texto final segue no contrato antigo (#10699).
 STREAM_FILE="$STATE_DIR/last-daily-review-output.jsonl"
 [ ! -f "$STREAM_FILE" ] || mv -f "$STREAM_FILE" "$STREAM_FILE.prev"
+# #10749: esvazia o texto final ANTES do claude. Sem isto, um `claude` que sai
+# não-zero aborta antes da extração e o .txt fica com o transcript do último
+# run BEM-SUCEDIDO — justo o arquivo que o health-check
+# (watch-continuo-health.sh) manda o operador ler pra diagnosticar.
+: > "$OUT_FILE"
 # #9153: strip explícito das vars de auth/gateway (ver bloco AUTH no topo).
+# #10749: rc capturado com `||` (não o abort cru do `set -e`), pra a falha
+# deixar uma linha `[daily-review] ERRO` nomeada no log em vez de silêncio.
+CLAUDE_RC=0
 echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
   -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
   timeout 5400 claude -p \
   --allowedTools "Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(gh issue create:*),Bash(gh issue list:*),Bash(gh pr list:*)" \
-  --model claude-opus-5-5 --effort high --output-format stream-json --verbose | tee "$STREAM_FILE" >&2
+  --model claude-opus-5-5 --effort high --output-format stream-json --verbose | tee "$STREAM_FILE" >&2 || CLAUDE_RC=$?
+if [ "$CLAUDE_RC" -ne 0 ]; then
+  echo "[daily-review] ERRO: a sessão Opus saiu com rc=$CLAUDE_RC (124 = timeout de 90min) — marco NÃO avançado (eventos em $STREAM_FILE)" >&2
+  exit "$CLAUDE_RC"
+fi
 # Só o evento result pode satisfazer o gate: prompts/tool calls também podem
 # conter RESUMO-DAILY-REVIEW sem que o review tenha terminado.
-node -e '
+# #10749: falha da extração (sem evento result, result com is_error, linha
+# JSONL truncada) sai com ERRO nomeado — antes o `set -e` abortava calado.
+if ! node -e '
 const fs = require("node:fs");
 const events = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
 const result = events.findLast(event => event.type === "result");
 if (!result || result.is_error || typeof result.result !== "string") process.exit(4);
 process.stdout.write(result.result);
-' "$STREAM_FILE" > "$OUT_FILE"
+' "$STREAM_FILE" > "$OUT_FILE"; then
+  echo "[daily-review] ERRO: extração do evento result falhou (sem evento result, result com is_error ou JSONL truncado) — marco NÃO avançado (eventos em $STREAM_FILE)" >&2
+  exit 4
+fi
 
 # #6987/#6989 (01/09/2026): `command grep` — neste ambiente `grep` é uma
 # função de shell que shella pro binário `claude`; se ele quebrar, todo
