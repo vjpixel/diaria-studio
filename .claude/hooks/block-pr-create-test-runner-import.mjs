@@ -54,6 +54,7 @@ import {
   resolveRepoRootCandidates,
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
+import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
 
 /**
  * Roda a checagem estática contra `{repoRoot}/test`. Devolve `null` quando
@@ -122,6 +123,10 @@ if (
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
       if (cwd === null) return; // fail-open: nenhum candidato é repo git
+      // #10618: PR de OUTRO repo (ex: vjpixel/diaria-design, `-R` ou cwd num
+      // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
+      // Repo indeterminado segue aplicando a regra (comportamento anterior).
+      if (isForeignRepoGhCommand(command, cwd)) return;
 
       const result = await runTestRunnerImportCheck(cwd);
       if (result === null) return; // fail-open: test/ não existe

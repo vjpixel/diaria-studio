@@ -79,6 +79,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
@@ -740,6 +741,10 @@ if (
       // worktree e fazia o guard julgar a branch errada).
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
       if (cwd === null) return; // fail-open: nenhum candidato é repo git
+      // #10618: PR de OUTRO repo (ex: vjpixel/diaria-design, `-R` ou cwd num
+      // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
+      // Repo indeterminado segue aplicando a regra (comportamento anterior).
+      if (isForeignRepoGhCommand(command, cwd)) return;
 
       const baseRef = resolveBaseRef(cwd);
       if (!baseRef) return; // fail-open: não deu pra achar master/origin-master

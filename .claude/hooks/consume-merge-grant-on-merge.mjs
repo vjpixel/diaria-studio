@@ -119,6 +119,7 @@ import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from ".
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { DIARIA_STUDIO_REPO, normalizeRepoSlug, resolveGhTargetRepo } from "./lib/gh-target-repo.mjs";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
  * block-gh-pr-merge-subagent.mjs pro racional (10min: cobre a janela da
@@ -253,15 +254,20 @@ const GH_MERGE_STATE_TIMEOUT_MS = 2_000;
  * `log(level, message, details)` opcional: falha da consulta sai como
  * `warn merge_state_check_failed {pr, code}`. Devolve `{ state, raw }`.
  */
-export function resolveMergeState(targetPr, execFn = execFileSync, log = () => {}) {
+export function resolveMergeState(targetPr, execFn = execFileSync, log = () => {}, repo = undefined) {
   if (!Number.isInteger(targetPr)) return { state: "unknown", raw: undefined };
+  // #10618: PR de outro repo (`gh pr merge -R owner/name N`) é consultado
+  // naquele repo — `{owner}`/`{repo}` resolveria o repo do cwd, que pode ser
+  // o diaria-studio e ter um PR de mesmo número.
+  const slug = normalizeRepoSlug(repo ?? "");
+  const [owner, name] = slug ? slug.split("/") : ["{owner}", "{repo}"];
   let pr;
   try {
     const out = execFn(
       "gh",
       [
         "api", "graphql",
-        "-F", "owner={owner}", "-F", "name={repo}", "-F", `number=${targetPr}`,
+        "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${targetPr}`,
         "-f", `query=${MERGE_STATE_QUERY}`,
         "-q", ".data.repository.pullRequest",
       ],
@@ -308,7 +314,7 @@ export function resolveMergeState(targetPr, execFn = execFileSync, log = () => {
  *   - `auto-merge-queued` — estado `auto-queued`;
  *   - `unverified-fail-open` — estado `unknown` (direção pré-#8793).
  */
-export function decideConsumeAfterBash(command, { findLiveGrant, execFn = execFileSync, log = () => {} }) {
+export function decideConsumeAfterBash(command, { findLiveGrant, execFn = execFileSync, log = () => {}, repo = undefined }) {
   if (typeof findLiveGrant !== "function") throw new TypeError("decideConsumeAfterBash: findLiveGrant é obrigatório");
   if (!isGhPrMergeCommand(command)) return { consume: false, targetPr: undefined, reason: "not-a-merge-command" };
   const targetPr = extractGhPrMergeTargetPr(command);
@@ -316,7 +322,7 @@ export function decideConsumeAfterBash(command, { findLiveGrant, execFn = execFi
   if (!grant) return { consume: false, targetPr, reason: "no-live-grant" };
   if (targetPr === undefined) return { consume: true, targetPr, reason: "pr-undetermined" };
   if (grant.pr !== targetPr) return { consume: true, targetPr, reason: "generic-grant" };
-  const { state, raw } = resolveMergeState(targetPr, execFn, log);
+  const { state, raw } = resolveMergeState(targetPr, execFn, log, repo);
   if (state === "merged") return { consume: true, targetPr, reason: "merged" };
   if (state === "auto-queued") return { consume: true, targetPr, reason: "auto-merge-queued" };
   if (state === "not-merged") {
@@ -382,6 +388,17 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
     return { path, record, grant };
   }
   return null;
+}
+
+/**
+ * #10618 — espelho de `grantMatchesRepo` em `block-gh-pr-merge-subagent.mjs`:
+ * a concessão vale só pro repo em que foi emitida (sem `repo` = diaria-studio).
+ */
+export function grantMatchesRepo(grant, targetRepo) {
+  if (!grant) return false;
+  const grantRepo = normalizeRepoSlug(grant.repo ?? "") ?? DIARIA_STUDIO_REPO;
+  const target = normalizeRepoSlug(targetRepo ?? "") ?? DIARIA_STUDIO_REPO;
+  return grantRepo === target;
 }
 
 /**
@@ -581,8 +598,19 @@ if (
       // que este `gh pr merge` mergeou — `undefined` quando o comando não
       // traz número, preservando o comportamento pré-#8188 nesse caso (ver
       // docblock de `consumeGrantUnderLock`).
-      const decision = decideConsumeAfterBash(payload.tool_input?.command, {
-        findLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr)?.grant ?? null,
+      // #10618: a concessão só é consumida pelo merge do MESMO repo em que
+      // foi emitida (ausente = diaria-studio) — ver `grantMatchesRepo`.
+      const command = payload.tool_input?.command;
+      const targetRepo =
+        resolveGhTargetRepo(command, payload.cwd, { subcommands: ["merge"] }).repo ?? DIARIA_STUDIO_REPO;
+      const decision = decideConsumeAfterBash(command, {
+        // Só o repo de FORA vai explícito: pro diaria-studio a consulta segue
+        // resolvendo `{owner}/{repo}` pelo cwd, exatamente como antes.
+        repo: targetRepo === DIARIA_STUDIO_REPO ? undefined : targetRepo,
+        findLiveGrant: (pr) => {
+          const g = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr)?.grant ?? null;
+          return grantMatchesRepo(g, targetRepo) ? g : null;
+        },
         log: (level, message, details) => appendHookRunLog(repoRoot, "consume-merge-grant", level, message, details),
       });
       if (!decision.consume) return;

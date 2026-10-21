@@ -108,6 +108,14 @@
  *     comando SEM `--pr` deixou `gh pr merge` bloqueado repetidamente pelo
  *     guard #5716 mesmo com lock genuinamente adquirido.)
  *   npx tsx scripts/lib/session-registry.ts merge-lock-release --pr N
+ *   (#10618: `merge-lock-*`, `grant-merge` e `self-authorize-merge` aceitam
+ *   `--repo owner/name` — o lock é POR REPO. Sem `--repo` = diaria-studio,
+ *   o significado de sempre. Ex: merge do vjpixel/diaria-design#23 →
+ *   `merge-lock-acquire --pr 23 --repo vjpixel/diaria-design`, que não
+ *   espera nem trava o lock do diaria-studio. `claim-issue`/`is-claimed`/
+ *   `unclaim-issue` aceitam `--issue owner/repo#N`, mas só do repo default
+ *   por enquanto — claim de outro repo é recusada alto, ver
+ *   `requireLegacyClaimIssue`.)
  *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
  *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
  *     concede um hold novo. Ver `renewMergeLock`.)
@@ -185,6 +193,7 @@ import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 // — ver docblock de `session-id-required-subcommands.ts` pro motivo de ser
 // um módulo à parte em vez de o hook importar `session-registry.ts` inteiro.
 import { SESSION_ID_REQUIRED_SUBCOMMANDS, resolveEnvInjectedSessionId } from "./session-id-required-subcommands.ts";
+import { DEFAULT_ISSUE_REPO, legacyIssueNumber, mergeLockFileName, normalizeRepoSlug, parseIssueRef } from "./issue-repos.ts";
 
 /**
  * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
@@ -724,6 +733,13 @@ export interface MergeGrant {
   grantedBy: string;
   /** PR que a janela autoriza — informativo/auditoria. */
   pr?: number;
+  /**
+   * #10618: repo do `pr` (`owner/name`). Ausente = `vjpixel/diaria-studio`
+   * (todo grant anterior ao #10618). O guard do #5716 só aceita a janela
+   * quando bate com o repo do `gh pr merge` — o PR #23 do diaria-design não
+   * é o #23 do diaria-studio.
+   */
+  repo?: string;
   grantedAt: string;
   /** Preenchido quando a janela é consumida; concessão consumida não vale mais. */
   consumedAt?: string;
@@ -766,6 +782,8 @@ export interface SelfAuthorizedMerge {
   /** PR que a auto-autorização cobre — informativo/auditoria, e escopo
    * (mesma semântica de `MergeGrant.pr`: ausente = cobre qualquer PR). */
   pr?: number;
+  /** #10618: mesmo papel de `MergeGrant.repo` (ausente = diaria-studio). */
+  repo?: string;
   authorizedAt: string;
 }
 
@@ -821,8 +839,16 @@ export function sessionFilePath(repoRoot: string, kind: SessionKind, tag: string
   return join(sessionsDir(repoRoot), `${kind}-${tag}-${sessionId}.json`);
 }
 
-export function mergeLockPath(repoRoot: string): string {
-  return join(sessionsDir(repoRoot), ".merge-lock.json");
+/**
+ * Caminho do merge lock. **Por repo desde o #10618** (decisão do editor: a
+ * linearidade do squash só importa dentro de um mesmo repo — um merge no
+ * `vjpixel/diaria-design` nunca precisa esperar um do `diaria-studio`). O repo
+ * default segue em `.merge-lock.json` (sessões e hooks já rodando continuam
+ * lendo o mesmo arquivo); os outros, em `.merge-lock--{owner}--{repo}.json`
+ * (`mergeLockFileName` em `scripts/lib/issue-repos.ts`).
+ */
+export function mergeLockPath(repoRoot: string, repo: string = DEFAULT_ISSUE_REPO): string {
+  return join(sessionsDir(repoRoot), mergeLockFileName(repo));
 }
 
 /**
@@ -3895,8 +3921,9 @@ export function acquireMergeLock(
   now: number = Date.now(),
   ttlMs: number = MERGE_LOCK_TTL_MS,
   io: MergeLockIo = REAL_MERGE_LOCK_IO,
+  repo: string = DEFAULT_ISSUE_REPO,
 ): boolean {
-  const path = mergeLockPath(repoRoot);
+  const path = mergeLockPath(repoRoot, repo);
   const data = JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
 
   // Fast path: nenhum lock existia — criação exclusiva atômica (ver docblock).
@@ -3953,8 +3980,9 @@ export function renewMergeLock(
   sessionId: string,
   now: number = Date.now(),
   io: MergeLockIo = REAL_MERGE_LOCK_IO,
+  repo: string = DEFAULT_ISSUE_REPO,
 ): boolean {
-  const path = mergeLockPath(repoRoot);
+  const path = mergeLockPath(repoRoot, repo);
   const current = io.readCurrent(path);
   if (!current || current.heldBy !== sessionId) return false;
   const data = JSON.stringify({ heldBy: sessionId, acquiredAt: new Date(now).toISOString() } satisfies MergeLockRecord);
@@ -3967,8 +3995,8 @@ export function renewMergeLock(
  * liberado por quem o segurava; `false` quando outra sessão é a dona atual
  * (nunca libera lock alheio por engano).
  */
-export function releaseMergeLock(repoRoot: string, sessionId: string): boolean {
-  const path = mergeLockPath(repoRoot);
+export function releaseMergeLock(repoRoot: string, sessionId: string, repo: string = DEFAULT_ISSUE_REPO): boolean {
+  const path = mergeLockPath(repoRoot, repo);
   const current = readJsonSafe<MergeLockRecord>(path);
   if (!current) return true;
   if (current.heldBy !== sessionId) return false;
@@ -5602,7 +5630,7 @@ export interface SelfAuthorizeMergeResult {
 export function selfAuthorizeMerge(
   repoRoot: string,
   sessionId: string,
-  opts: { reason: string; pr?: number; now?: string },
+  opts: { reason: string; pr?: number; repo?: string; now?: string },
 ): SelfAuthorizeMergeResult {
   const reason = (opts.reason ?? "").trim();
   if (reason === "") return { ok: false, reason: "reason-required" };
@@ -5644,7 +5672,16 @@ export function selfAuthorizeMerge(
   const path = findExistingSessionFileAnyKind(repoRoot, sessionId);
   if (!path) return { ok: false, reason: "session-not-registered" };
 
-  const record: SelfAuthorizedMerge = { reason, authorizedAt: now, ...(opts.pr !== undefined ? { pr: opts.pr } : {}) };
+  const record: SelfAuthorizedMerge = {
+    reason,
+    authorizedAt: now,
+    ...(opts.pr !== undefined ? { pr: opts.pr } : {}),
+    // #10618: só grava quando NÃO é o default — record legado e novo do
+    // diaria-studio ficam idênticos.
+    ...(opts.repo !== undefined && normalizeRepoSlug(opts.repo) !== DEFAULT_ISSUE_REPO
+      ? { repo: normalizeRepoSlug(opts.repo) ?? opts.repo }
+      : {}),
+  };
   writeJsonSafeWithCas(
     path,
     (current) => {
@@ -5722,7 +5759,7 @@ export function grantMergeWindow(
   kind: SessionKind,
   sessionId: string,
   grantedTo: string,
-  meta: { pr?: number; tag?: string; now?: string; force?: boolean } = {},
+  meta: { pr?: number; repo?: string; tag?: string; now?: string; force?: boolean } = {},
 ): GrantMergeResult {
   // #7702: quem concede janela precisa ter AUTORIDADE DE MERGE, não só ser
   // uma rodada. `continuo` deixou de qualificar — ela nunca decidiu merge
@@ -5776,6 +5813,10 @@ export function grantMergeWindow(
 
   const grant: MergeGrant = { grantedTo, grantedBy: sessionId, grantedAt: now };
   if (meta.pr !== undefined) grant.pr = meta.pr;
+  // #10618: mesmo critério do self-authorize — só grava o repo não-default.
+  if (meta.repo !== undefined && normalizeRepoSlug(meta.repo) !== DEFAULT_ISSUE_REPO) {
+    grant.repo = normalizeRepoSlug(meta.repo) ?? meta.repo;
+  }
 
   // #7043 achado 1 (1º caminho) — `merge_grant` é campo ÚNICO no record da
   // concedente: uma 2ª chamada de `grant-merge` (outro beneficiário e/ou
@@ -5813,6 +5854,9 @@ export function grantMergeWindow(
         s.sessionId !== sessionId &&
         isCoordinatorKind(s.kind) &&
         s.merge_grant?.pr === meta.pr &&
+        // #10618: o mesmo número em repos diferentes é outro PR.
+        (normalizeRepoSlug(s.merge_grant?.repo ?? "") ?? DEFAULT_ISSUE_REPO) ===
+          (normalizeRepoSlug(meta.repo ?? "") ?? DEFAULT_ISSUE_REPO) &&
         isMergeGrantLive(s.merge_grant, s.merge_grant?.grantedTo ?? "", nowMs),
     );
     if (clashing) {
@@ -6118,6 +6162,45 @@ function requireSessionId(values: Record<string, string>): string {
 }
 
 /**
+ * `--repo owner/name` (#10618). Ausente → repo default (`vjpixel/diaria-studio`),
+ * que é o que todo comando significava antes. Presente e ilegível → erro alto:
+ * cair no default em silêncio faria um lock/claim do diaria-design pousar no
+ * do diaria-studio.
+ */
+export function requireRepoFlag(values: Record<string, string | undefined>): string {
+  const raw = values.repo;
+  if (raw === undefined || raw === "") return DEFAULT_ISSUE_REPO;
+  const slug = normalizeRepoSlug(raw);
+  if (!slug) throw new Error(`--repo inválido: "${raw}" (esperado owner/name, ex: vjpixel/diaria-design)`);
+  return slug;
+}
+
+/**
+ * `--issue` dos subcomandos de claim (#10618). Aceita a forma legada (`123`,
+ * `#123` — sempre o repo default, ou o de `--repo`) e a canônica
+ * `owner/repo#N`. Devolve o NÚMERO legado que `claimed_issues` guarda.
+ *
+ * Claim de issue de OUTRO repo ainda não tem onde morar (`claimed_issues` é
+ * `number[]` e número pelado = diaria-studio em todo consumidor), então é
+ * recusada alto — gravar `21` pro `vjpixel/diaria-design#21` reivindicaria o
+ * `vjpixel/diaria-studio#21` em silêncio, que é exatamente a colisão que a
+ * #10618 existe pra evitar. Próxima fatia da #10618.
+ */
+export function requireLegacyClaimIssue(values: Record<string, string | undefined>): number {
+  const ref = parseIssueRef(values.issue ?? "", requireRepoFlag(values));
+  if (!ref) throw new Error("--issue deve ser um inteiro ou owner/repo#N");
+  const n = legacyIssueNumber(ref);
+  if (n === null) {
+    throw new Error(
+      `claim de issue de outro repo (${ref.repo}#${ref.number}) ainda não é suportado pelo session-registry — ` +
+        "claimed_issues só guarda número do repo default e gravar o número colidiria com " +
+        `${DEFAULT_ISSUE_REPO}#${ref.number} (#10618).`,
+    );
+  }
+  return n;
+}
+
+/**
  * Resolve a raiz do checkout PRINCIPAL do repositório (#6372) — nunca
  * `process.cwd()` nem `git rev-parse --show-toplevel`, os dois candidatos
  * óbvios que devolvem o WORKTREE atual em vez do checkout principal.
@@ -6359,8 +6442,7 @@ function main(): void {
       case "claim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
-        const issue = Number(values.issue);
-        if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
+        const issue = requireLegacyClaimIssue(values); // #10618: aceita owner/repo#N
         const force = flags.has("force");
         // #6369: sessão sem registro prévio (ex: ciclo `continuo` do cron
         // Hermes chamando `claim-issue` antes de qualquer `register`) não
@@ -6425,8 +6507,7 @@ function main(): void {
       case "unclaim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
-        const issue = Number(values.issue);
-        if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
+        const issue = requireLegacyClaimIssue(values); // #10618: aceita owner/repo#N
         const result = unclaimIssue(repoRoot, kind, sessionId, issue);
         switch (result.reason) {
           case "unclaimed":
@@ -6455,8 +6536,7 @@ function main(): void {
         break;
       }
       case "is-claimed": {
-        const issue = Number(values.issue);
-        if (!Number.isInteger(issue)) throw new Error("--issue deve ser um inteiro");
+        const issue = requireLegacyClaimIssue(values); // #10618: aceita owner/repo#N
         const excludeSessionId = values["session-id"] ?? "";
         const owner = isIssueClaimedByOther(repoRoot, issue, excludeSessionId);
         process.stdout.write(JSON.stringify({ claimed: owner !== null, by: owner }) + "\n");
@@ -6498,9 +6578,12 @@ function main(): void {
       }
       case "merge-lock-acquire": {
         const sessionId = requireSessionId(values);
-        const ok = acquireMergeLock(repoRoot, sessionId);
+        // #10618: lock POR REPO (`--repo owner/name`, default diaria-studio).
+        const lockRepo = requireRepoFlag(values);
+        const ok = acquireMergeLock(repoRoot, sessionId, Date.now(), MERGE_LOCK_TTL_MS, REAL_MERGE_LOCK_IO, lockRepo);
         process.stdout.write(
-          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} [repoRoot=${repoRoot}]\n`,
+          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} ` +
+            `[repo=${lockRepo}] [repoRoot=${repoRoot}]\n`,
         );
         const activeSessions = listActiveSessions(repoRoot);
         // #7169 direção (c) — "guard de frescor": nunca muda o resultado do
@@ -6560,8 +6643,9 @@ function main(): void {
         // advisory" de erro de verdade. `releaseMergeLock` já recusa liberar
         // lock alheio (nunca lança) — a leitura aqui é só pra mensagem, sem
         // mudar essa decisão.
-        const heldByBefore = readJsonSafe<MergeLockRecord>(mergeLockPath(repoRoot))?.heldBy;
-        const ok = releaseMergeLock(repoRoot, sessionId);
+        const lockRepo = requireRepoFlag(values);
+        const heldByBefore = readJsonSafe<MergeLockRecord>(mergeLockPath(repoRoot, lockRepo))?.heldBy;
+        const ok = releaseMergeLock(repoRoot, sessionId, lockRepo);
         if (ok) {
           process.stdout.write("session-registry: merge-lock-release ok\n");
           break;
@@ -6597,7 +6681,7 @@ function main(): void {
         // #6334: renova o TTL de um hold que a PRÓPRIA sessão já detém —
         // nunca concede um hold novo (ver docblock de `renewMergeLock`).
         const sessionId = requireSessionId(values);
-        const ok = renewMergeLock(repoRoot, sessionId);
+        const ok = renewMergeLock(repoRoot, sessionId, Date.now(), REAL_MERGE_LOCK_IO, requireRepoFlag(values));
         process.stdout.write(`session-registry: merge-lock-renew ${ok ? "ok" : "denied (not held by this session)"}\n`);
         if (!ok) process.exitCode = 1;
         break;
@@ -6641,8 +6725,10 @@ function main(): void {
         if (!grantedTo) throw new Error("--granted-to (sessionId de quem recebe a janela) é obrigatório");
         const pr = values.pr ? Number(values.pr) : undefined;
         const force = flags.has("force");
+        const grantRepo = requireRepoFlag(values);
         const result = grantMergeWindow(repoRoot, kind, sessionId, grantedTo, {
           ...(pr !== undefined ? { pr } : {}),
+          ...(grantRepo !== DEFAULT_ISSUE_REPO ? { repo: grantRepo } : {}),
           ...(force ? { force } : {}),
         });
         switch (result.reason) {
@@ -6825,7 +6911,12 @@ function main(): void {
           );
         }
         const pr = values.pr ? Number(values.pr) : undefined;
-        const result = selfAuthorizeMerge(repoRoot, sessionId, { reason: reasonArg, ...(pr !== undefined ? { pr } : {}) });
+        const selfAuthRepo = requireRepoFlag(values);
+        const result = selfAuthorizeMerge(repoRoot, sessionId, {
+          reason: reasonArg,
+          ...(pr !== undefined ? { pr } : {}),
+          ...(selfAuthRepo !== DEFAULT_ISSUE_REPO ? { repo: selfAuthRepo } : {}),
+        });
         switch (result.reason) {
           case "authorized":
             process.stdout.write(

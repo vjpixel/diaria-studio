@@ -118,6 +118,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { isForeignRepo } from "./lib/gh-target-repo.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1312,6 +1313,17 @@ export function resolveEmitDecision(toolResponseText, command) {
  * pré-#6298. Só quando o comando está presente E resolve `"not-create"` é
  * que o fix 2 nega o disparo — nunca por ausência do campo.
  */
+/**
+ * #10618 — `true` quando a URL do PR criado é de um repo que NÃO é o
+ * diaria-studio. URL ilegível → `false` (aplica o review, como antes).
+ */
+export function isForeignRepoPrUrl(prUrl) {
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
+    typeof prUrl === "string" ? prUrl.trim() : "",
+  );
+  return m ? isForeignRepo(m[1]) : false;
+}
+
 export function shouldEmitReviewInstruction(toolResponseText, command) {
   return resolveEmitDecision(toolResponseText, command).prUrl;
 }
@@ -1380,7 +1392,13 @@ if (
           : JSON.stringify(payload.tool_response ?? "");
       const command = payload.tool_input?.command;
       const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
-      if (prUrl) {
+      if (prUrl && isForeignRepoPrUrl(prUrl)) {
+        // #10618: PR criado em OUTRO repo (ex: vjpixel/diaria-design) — o
+        // review automatizado, o effort por branch e o "Closes #N" são regras
+        // do diaria-studio. A URL devolvida pelo `gh` é a prova mais direta
+        // de onde o PR nasceu.
+        logSuppressedReviewInstruction({ reason: "foreign_repo", command });
+      } else if (prUrl) {
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
