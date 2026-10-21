@@ -641,6 +641,107 @@ function resolveChannelSubs(
   return { subs: [], matched: false };
 }
 
+const SPEND_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+/** Início (epoch segundos, UTC — mesma convenção de `parseSinceToEpochSeconds`)
+ *  do mês `AAAA-MM`; `null` quando `mes` não é um mês único válido (a coluna
+ *  é livre, ver `SpendRow.mes`). @pure */
+function spendMonthStartEpoch(mes: string): number | null {
+  const m = SPEND_MONTH_RE.exec(mes);
+  if (!m) return null;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, 1) / 1000;
+}
+
+/**
+ * Distribui a coorte de UM canal (canal + sub-canal) entre as linhas de
+ * gasto desse canal quando ele tem MAIS DE UMA linha em meses diferentes
+ * (#10679). Antes, cada linha recebia a coorte INTEIRA do canal — uma linha
+ * posterior pequena (Meta Ads, R$ 8,30 em 2026-10) herdava os ~420 cadastros
+ * de setembro e mostrava um custo por leitor de R$ 0,19 inexistente, com o
+ * canal listado duas vezes com os mesmos leitores (soma duplicada).
+ *
+ * Regra: cada assinante entra em EXATAMENTE uma linha — a de mês mais
+ * recente cujo início é `<= created` (o período de gasto que cobre o
+ * cadastro e segue valendo até o mês da linha seguinte). Cadastro anterior
+ * ao mês da 1ª linha (ex: clique de teste antes de a campanha começar) e
+ * assinante sem `created` ficam na 1ª linha — nunca descartados, nunca
+ * duplicados. Com uma linha só, nada muda (retorna a coorte inteira).
+ *
+ * Retorna `null` (o caller mantém o comportamento antigo, coorte inteira por
+ * linha) quando o grupo não dá pra particionar com segurança: algum `mes`
+ * que não é `AAAA-MM`, ou dois meses repetidos no mesmo canal. Nesses casos
+ * não há período inequívoco pra separar — e o guard de canal duplicado do
+ * mês (`detectDuplicateChannelSpend`) já é quem avisa do mês repetido.
+ *
+ * `rowMonths[i]` corresponde à i-ésima linha do grupo; o retorno tem a mesma
+ * ordem. @pure
+ */
+export function partitionChannelSubsBySpendMonth(
+  rowMonths: readonly string[],
+  channelSubs: readonly BeehiivBackupSubscriber[],
+): BeehiivBackupSubscriber[][] | null {
+  if (rowMonths.length <= 1) return [channelSubs.slice()];
+  const starts = rowMonths.map(spendMonthStartEpoch);
+  if (starts.some((s) => s == null)) return null;
+  if (new Set(starts).size !== starts.length) return null;
+  // Índices das linhas em ordem cronológica.
+  const order = starts.map((s, i) => ({ s: s as number, i })).sort((a, b) => a.s - b.s);
+  const buckets: BeehiivBackupSubscriber[][] = rowMonths.map(() => []);
+  for (const sub of channelSubs) {
+    let target = order[0].i;
+    if (typeof sub.created === "number" && Number.isFinite(sub.created)) {
+      for (const { s, i } of order) {
+        if (sub.created >= s) target = i;
+        else break;
+      }
+    }
+    buckets[target].push(sub);
+  }
+  return buckets;
+}
+
+/** Chave de agrupamento de linhas de gasto do MESMO canal resolvido. @pure */
+function spendChannelGroupKey(spend: SpendRow): string {
+  return `${spend.canal}\u0000${spend.subcanal ?? ""}`;
+}
+
+/** Pré-calcula, por índice de `spendRows`, a coorte já particionada por mês
+ *  (#10679) — `undefined` no índice = usar a coorte inteira do canal
+ *  (grupo de 1 linha, canal não resolvido, ou grupo não particionável). @pure */
+function partitionSubsAcrossSpendRows(
+  spendRows: readonly SpendRow[],
+  subsPool: BeehiivBackupSubscriber[],
+): Array<BeehiivBackupSubscriber[] | undefined> {
+  const result: Array<BeehiivBackupSubscriber[] | undefined> = spendRows.map(() => undefined);
+  const groups = new Map<string, number[]>();
+  spendRows.forEach((row, idx) => {
+    const key = spendChannelGroupKey(row);
+    const list = groups.get(key) ?? [];
+    list.push(idx);
+    groups.set(key, list);
+  });
+  for (const indices of groups.values()) {
+    if (indices.length <= 1) continue;
+    const resolved = resolveChannelSubs(spendRows[indices[0]], subsPool);
+    if (!resolved.matched) continue;
+    const buckets = partitionChannelSubsBySpendMonth(
+      indices.map((i) => spendRows[i].mes),
+      resolved.subs,
+    );
+    if (!buckets) {
+      console.warn(
+        `[cac] ${spendChannelLabel(spendRows[indices[0]])}: ${indices.length} linhas de gasto sem mês AAAA-MM único por linha — ` +
+          `cada linha recebe a coorte INTEIRA do canal (não dá pra separar por período, #10679).`,
+      );
+      continue;
+    }
+    indices.forEach((rowIdx, k) => {
+      result[rowIdx] = buckets[k];
+    });
+  }
+  return result;
+}
+
 /** Recusa `spendRows` que misturem, no mesmo `(canal, mes)`, uma linha de
  *  CANAL INTEIRO (sem `subcanal`) com linha(s) de SUB-canal — dupla-contagem
  *  em `totalGastoMedido` (o total teria o gasto do canal inteiro E de suas
@@ -742,13 +843,22 @@ export function buildCacReport(
   const unmappedChannels: string[] = [];
   const unattributedSpend: UnattributedSpend[] = [];
 
+  // #10679: canal com várias linhas de gasto (meses diferentes) reparte a
+  // coorte entre elas — cada cadastro só entra na linha do período que o
+  // cobre, nunca em todas.
+  const partitionedSubs = partitionSubsAcrossSpendRows(spendRows, subs);
+  const partitionedPrevious = opts.previousSubs ? partitionSubsAcrossSpendRows(spendRows, opts.previousSubs) : undefined;
+
   const rows: CacRow[] = [];
-  for (const spend of spendRows) {
+  for (const [rowIdx, spend] of spendRows.entries()) {
     const resolved = resolveChannelSubs(spend, subs);
     if (resolved.matched) {
       const effectiveWindow = intersectWindows(opts.window, resolved.specWindow);
-      const resolvedPrevious = opts.previousSubs ? resolveChannelSubs(spend, opts.previousSubs).subs : undefined;
-      rows.push(computeMeasuredRow(spend, resolved.subs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow }));
+      const resolvedPrevious = opts.previousSubs
+        ? (partitionedPrevious?.[rowIdx] ?? resolveChannelSubs(spend, opts.previousSubs).subs)
+        : undefined;
+      const channelSubs = partitionedSubs[rowIdx] ?? resolved.subs;
+      rows.push(computeMeasuredRow(spend, channelSubs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow }));
       continue;
     }
     // Canal sem spec conhecida: tratado como boost-estimate SÓ se for

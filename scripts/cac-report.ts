@@ -540,10 +540,12 @@ export function detectTeste2608BeehiivStoreMismatch(
     const testeCanais = [...new Set(CHANNEL_KEY_SPECS.filter((s) => s.canal.includes("(teste 2608)")).map((s) => s.canal))];
     const warnings: string[] = [];
     for (const canal of testeCanais) {
-      const beehiivRow = report.rows.find(
-        (r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured" && r.canal === canal,
-      );
-      const beehiivCadastros = beehiivRow?.cadastros ?? 0;
+      // Soma TODAS as linhas do canal: desde #10679 um canal com gasto em
+      // meses diferentes reparte a coorte entre as linhas, então a 1ª linha
+      // sozinha pode ter 0 cadastros com o canal inteiro tendo vários.
+      const beehiivCadastros = report.rows
+        .filter((r): r is Extract<CacRow, { kind: "measured" }> => r.kind === "measured" && r.canal === canal)
+        .reduce((sum, r) => sum + r.cadastros, 0);
       if (beehiivCadastros > 0) continue;
       const storeCount = subscribersForChannel(storeSubs, canal).length;
       if (storeCount > 0) {
