@@ -175,8 +175,14 @@ export interface FollowupRunRecord {
    *  Conta como rodada falha (alarme de continuidade + exit 1). Opcional:
    *  registros anteriores não têm o campo. */
   cap_window_overflow?: number;
-  /** Consultas ao Kit (listagem, leitura singular) que falharam. */
+  /** Consultas ao Kit que falharam e contam como rodada falha: listagem/tag
+   *  (travam a sequência) e, desde o #10676, só as leituras singulares cujo
+   *  adiamento NÃO é seguro (ver `classifyLookupFailures`). */
   lookups_failed: number;
+  /** #10676: leituras singulares que falharam depois do retry da rodada mas
+   *  foram adiadas com segurança (a pessoa volta amanhã, dentro da janela) —
+   *  não contam como falha. Opcional: registros anteriores não têm o campo. */
+  lookups_deferred?: number;
   /** #10628: lotes que seguem sem confirmação depois da releitura do início do
    *  `--send` (releitura falhou, ou rascunho que não deu pra apagar). Opcional:
    *  registros anteriores não têm o campo. */
@@ -742,6 +748,49 @@ export function filterDueByLiveCheck(
     send.push(d);
   }
   return { send, excluded };
+}
+
+/** #10676: fração de leituras singulares falhas (depois do retry) a partir da
+ *  qual a falha deixa de ser "isolada" e a rodada conta como falha. */
+export const FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION = 0.5;
+
+export interface LookupFailure {
+  due: FollowupDue;
+  /** O erro é retentável mais tarde (429, 5xx, rede). 401/403 não é. */
+  transient: boolean;
+  /** Âncora da janela da etapa (a mesma de `capWindowStartSec`). */
+  anchorSec: number | null;
+}
+
+/**
+ * @pure — #10676: separa as leituras singulares que falharam (já depois do
+ * retry espaçado da rodada) entre ADIADAS com segurança e as que contam como
+ * rodada falha. Quem falha fica fora do envio de hoje (`consulta_falhou`,
+ * nunca autoriza envio) e volta a ser devido amanhã — perda só existe se
+ * amanhã já estiver fora da janela. Conta como falha (`blocking`):
+ *   - erro não transitório (401/403: não passa com o tempo);
+ *   - último dia da janela da etapa (amanhã a pessoa vira `vencida`);
+ *   - falha sistêmica: `≥ FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION` das leituras.
+ * O resto é `deferred`. `form_lembrete` não tem janela, então só sai por
+ * erro não transitório ou falha sistêmica.
+ */
+export function classifyLookupFailures(
+  failures: readonly LookupFailure[],
+  totalLookups: number,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
+): { blocking: number; deferred: number } {
+  if (failures.length === 0) return { blocking: 0, deferred: 0 };
+  if (totalLookups > 0 && failures.length / totalLookups >= FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION) {
+    return { blocking: failures.length, deferred: 0 };
+  }
+  let blocking = 0;
+  for (const f of failures) {
+    const start = capWindowStartSec(f.due.kind, f.anchorSec, cfg);
+    const lastChance = start != null && start + cfg.graceDays * DAY_S <= nowSec + DAY_S;
+    if (!f.transient || lastChance) blocking++;
+  }
+  return { blocking, deferred: failures.length - blocking };
 }
 
 // ---------------------------------------------------------------------------
