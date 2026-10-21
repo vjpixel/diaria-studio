@@ -21,12 +21,13 @@ o evento do mesmo assinante, tipo e URL a até 30 min de um já ingerido
 
 Ligado em 21/10/2026 (`/diaria-develop 261021`):
 - passo 1: KV `KIT_EVENTS` criado e declarado em `wrangler.toml`;
-- passo 2: os 2 segredos estão no Worker e no Doppler (`KIT_WEBHOOK_SECRET`,
-  `KIT_EVENTS_READ_TOKEN`, `KIT_EVENTS_URL`);
+- passo 2: segredos do Worker `KIT_WEBHOOK_SECRET` e `EVENTS_READ_TOKEN`; no
+  Doppler, `KIT_WEBHOOK_SECRET`, `KIT_EVENTS_READ_TOKEN` (mesmo valor do
+  `EVENTS_READ_TOKEN`) e `KIT_EVENTS_URL`;
 - passo 3: webhooks `unsubscribe`, `bounce`, `complaint` e `activate` registrados
   no Kit. Os de `click` (um por link) não foram registrados;
 - passo 5: a ingestão roda como 2º passo da task `Diaria-Kit-Roster-Ingest`
-  (04:25 BRT). No `300`, o `.env` precisa das duas vars `KIT_EVENTS_*`
+  (04:25 BRT), com `--write`. Rodada manual sem `--write` só lê (escritor único). No `300`, o `.env` precisa das duas vars `KIT_EVENTS_*`
   (`npm run sync-env`); sem elas, a ingestão sai 0 com aviso.
 
 Se os segredos forem removidos, o Worker volta a não gravar nada (POST responde
