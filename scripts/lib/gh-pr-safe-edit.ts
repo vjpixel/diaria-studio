@@ -124,20 +124,103 @@ export function addPrLabelsRest(
   return { ok: true };
 }
 
+// ─── Corpo cita as issues da PR (#10698) ─────────────────────────────────
+//
+// Rodada overnight 261021: dois implementadores paralelos usaram o mesmo nome
+// de arquivo temporário pro corpo de PR, e as PRs #10643/#10644 nasceram com o
+// corpo uma da outra. O sinal mecânico desse cruzamento é o corpo não citar a
+// issue da própria branch (`Closes #N` ou `REFS #N`): é isso que estas funções
+// conferem, antes de escrever (`--body-file`) ou logo depois do `gh pr create`
+// (`--verify-body`).
+
+/**
+ * Números de issue que o nome da branch declara, pela convenção das trilhas
+ * autônomas (`overnight/fix-N-slug`, `develop/fix-N`, `develop/blast-N`,
+ * `continuo/fix-N-slug`, `feat-N`). Branch de lote (`overnight/batch-{slug}`)
+ * não carrega número: devolve `[]` e a conferência precisa de `--issues`.
+ */
+export function issuesFromBranch(branch: string): number[] {
+  const out: number[] = [];
+  for (const m of branch.matchAll(/(?:^|[/-])(?:fix|feat|blast)-(\d+)(?!\d)/g)) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Issues de `issues` que o corpo NÃO cita com marcador de fechamento
+ * (`closes`/`fixes`/`resolves #N`) nem com `REFS #N`. Case-insensitive;
+ * `#77` nunca casa com `#7788`.
+ */
+export function issuesMissingFromBody(body: string, issues: readonly number[]): number[] {
+  return issues.filter((n) => {
+    const re = new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\\s+#${n}(?!\\d)`, "i");
+    return !re.test(body);
+  });
+}
+
+/**
+ * Resolve as issues esperadas: `explicit` (de `--issues`) quando dado, senão
+ * as do nome da branch da PR (`gh pr view N --json headRefName`). Falha de
+ * consulta é erro (fail-closed): sem saber a branch não dá pra confirmar que o
+ * corpo é desta PR.
+ */
+export function resolveExpectedIssues(
+  pr: number,
+  explicit: readonly number[] | null,
+  cwd: string,
+  ghRun: GhRunFn = spawnGhSync,
+): { ok: true; issues: number[]; branch?: string } | { ok: false; error: string } {
+  if (explicit && explicit.length > 0) return { ok: true, issues: [...explicit] };
+  const r = ghRun(["pr", "view", String(pr), "--json", "headRefName", "--jq", ".headRefName"], cwd);
+  if (r.status !== 0) {
+    return { ok: false, error: `não consegui ler a branch da PR #${pr}: ${r.stderr.trim() || "gh pr view falhou"} — passe --issues N,M` };
+  }
+  const branch = r.stdout.trim();
+  return { ok: true, issues: issuesFromBranch(branch), branch };
+}
+
+/** Confere o corpo contra as issues esperadas. Lista vazia = nada a conferir (ok). */
+export function checkBodyCitesIssues(body: string, issues: readonly number[]): SafeEditResult {
+  const missing = issuesMissingFromBody(body, issues);
+  if (missing.length === 0) return { ok: true };
+  return {
+    ok: false,
+    error:
+      `o corpo não cita ${missing.map((n) => `#${n}`).join(", ")} com \`Closes #N\` nem \`REFS #N\` — ` +
+      `provável corpo de OUTRA PR (arquivo temporário de nome comum sobrescrito por outro implementador, #10698). ` +
+      `Confira o arquivo; se a omissão é intencional, passe --allow-missing-issue-marker.`,
+  };
+}
+
+/** `"10698,10699"` → `[10698, 10699]`; `null` se ausente/vazio; lança se algum item não é inteiro positivo. */
+export function parseIssuesFlag(raw: string | undefined): number[] | null {
+  if (raw === undefined || raw.trim() === "") return null;
+  return raw.split(",").map((s) => {
+    const n = Number(s.trim().replace(/^#/, ""));
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`--issues inválido: "${s}"`);
+    return n;
+  });
+}
+
 // ─── CLI ────────────────────────────────────────────────────────────────
 
 function usage(): string {
   return (
     "Uso:\n" +
-    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --body-file arquivo.md\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --body-file arquivo.md [--issues N,M] [--allow-missing-issue-marker]\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body [--issues N,M]\n" +
     "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --add-label a,b,c\n" +
-    "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita."
+    "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita.\n" +
+    "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
+    "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`."
   );
 }
 
 async function main() {
   const argv = process.argv.slice(2);
-  const { values } = parseArgs(argv);
+  const { values, flags } = parseArgs(argv);
   const prRaw = values.pr;
   const pr = prRaw ? Number(prRaw) : NaN;
   if (!Number.isInteger(pr) || pr <= 0) {
@@ -148,9 +231,53 @@ async function main() {
 
   const cwd = process.cwd();
 
+  let explicitIssues: number[] | null;
+  try {
+    explicitIssues = parseIssuesFlag(values.issues);
+  } catch (e) {
+    console.error(`[gh-pr-safe-edit] ${(e as Error).message}\n\n${usage()}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Conferência do corpo contra as issues da PR (#10698). Devolve `null` se ok.
+  const citesCheck = (body: string): SafeEditResult | null => {
+    const expected = resolveExpectedIssues(pr, explicitIssues, cwd);
+    if (!expected.ok) return { ok: false, error: expected.error };
+    if (expected.issues.length === 0) {
+      console.error(
+        `[gh-pr-safe-edit] aviso: branch ${expected.branch ?? "?"} não declara issue (lote?) — corpo não conferido; passe --issues N,M para conferir (#10698).`,
+      );
+      return null;
+    }
+    const check = checkBodyCitesIssues(body, expected.issues);
+    return check.ok ? null : check;
+  };
+
+  if (flags.has("verify-body")) {
+    const view = spawnGhSync(["pr", "view", String(pr), "--json", "body", "--jq", ".body"], cwd);
+    if (view.status !== 0) {
+      console.log(JSON.stringify({ ok: false, error: `gh pr view falhou: ${view.stderr.trim() || "sem saída"}` }));
+      process.exitCode = 1;
+      return;
+    }
+    const result = citesCheck(view.stdout) ?? { ok: true };
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
   if (values["body-file"]) {
     const { readFileSync } = await import("node:fs");
     const body = readFileSync(values["body-file"], "utf8");
+    if (!flags.has("allow-missing-issue-marker")) {
+      const refused = citesCheck(body);
+      if (refused) {
+        console.log(JSON.stringify(refused));
+        process.exitCode = 1;
+        return;
+      }
+    }
     const result = setPrBodyRest(pr, body, cwd);
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
