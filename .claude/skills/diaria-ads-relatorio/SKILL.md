@@ -155,11 +155,11 @@ vigente: `canal,data_apuracao,gasto_acumulado,cadastros_acumulado,custo_por_cada
   opcionais, baixa prioridade — só se o número já estiver na tela aberta
   pra ler o gasto.
 - `fonte`: de onde veio cada número e a hora de corte. Um braço com mais de
-  uma campanha em voo (Microsoft: PMax + Search) sempre soma as campanhas
-  na mesma linha — nunca uma linha por campanha aqui. A quebra por campanha
-  (#8256) sai à parte, na seção "Quebra por campanha" do Passo 1b — nunca
-  neste CSV, que é lido por `ads-test-watch.ts`/`ads-kill-switch.ts` como o
-  total por braço.
+  uma campanha em voo sempre soma as campanhas na mesma linha — nunca uma
+  linha por campanha aqui: este CSV é lido por
+  `ads-test-watch.ts`/`ads-kill-switch.ts` como o total por braço. (A seção
+  "Quebra por campanha" do Passo 1b, #8256, saiu do repo junto com o
+  Microsoft Ads no #10755.)
 
 Atualize também o gasto acumulado do mês vigente em `data/aquisicao/spend.csv`.
 Os nomes de canal precisam bater **byte a byte** com `CHANNEL_KEY_SPECS`
