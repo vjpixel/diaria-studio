@@ -45,6 +45,11 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverWorkers } from "../scripts/worker-drift-check.ts";
+import {
+  computeWorkerExternalImports,
+  extractPushPaths,
+  uncoveredByPaths,
+} from "../scripts/lib/worker-import-closure.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOWS_DIR = resolve(ROOT, ".github", "workflows");
@@ -100,6 +105,44 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
       `worker(s) sem workflow de deploy correspondente em .github/workflows/: ${missing.join(", ")} — ` +
         "criar um deploy-{worker}.yml espelhando deploy-poll.yml/deploy-reativar.yml (push em master " +
         `tocando "workers/{worker}/**" + workflow_dispatch).`,
+    );
+  });
+
+  // #10637: o 1º teste garante que o workflow EXISTE e dispara em
+  // `workers/{dir}/**`, mas um Worker que importa `scripts/lib/**` (ou outro
+  // worker) também precisa redeployar quando SÓ o módulo importado muda —
+  // senão o código no ar defasa em silêncio, e o drift-check não vê (ele só
+  // olha `workers/{dir}/`). O fecho é calculado a partir do `main` do
+  // wrangler, nunca de lista à mão: um import novo de fora quebra este
+  // teste até entrar no `paths:` do deploy.
+  it("o paths: do deploy cobre todo módulo de fora de workers/{dir}/ que entra no bundle (#10637)", () => {
+    const workflowFiles = readWorkflowFiles().map((f) => ({ ...f, paths: extractPushPaths(f.content) }));
+    const problems: string[] = [];
+    let workersWithExternal = 0;
+
+    for (const worker of discoverWorkers()) {
+      const own = `workers/${worker.workerDir}/**`;
+      const deployWorkflows = workflowFiles.filter((f) => f.paths.includes(own));
+      if (deployWorkflows.length === 0) continue; // 1º teste já reprova esse caso
+
+      const { external, unresolved } = computeWorkerExternalImports(ROOT, worker.workerDir);
+      for (const u of unresolved) problems.push(`${worker.workerDir}: import relativo não resolvido (${u})`);
+      if (external.length > 0) workersWithExternal++;
+
+      const patterns = deployWorkflows.flatMap((f) => f.paths);
+      for (const file of uncoveredByPaths(external, patterns)) {
+        problems.push(`${worker.workerDir}: '${file}' fora do paths: de ${deployWorkflows.map((f) => f.name).join(", ")}`);
+      }
+    }
+
+    // Sanidade do detector: se nenhum worker importar nada de fora, o mais
+    // provável é o parser ter quebrado, não o repo ter mudado.
+    assert.ok(workersWithExternal > 0, "nenhum worker com import externo detectado — extractRelativeSpecifiers quebrou?");
+    assert.deepEqual(
+      problems,
+      [],
+      `deploy(s) sem trigger pra módulo importado: ${problems.join("; ")} — ` +
+        "adicionar o caminho (ou um glob de diretório que o cubra) em on.push.paths do deploy-{worker}.yml.",
     );
   });
 

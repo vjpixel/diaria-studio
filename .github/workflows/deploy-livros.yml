@@ -40,6 +40,15 @@ on:
     branches: [master]
     paths:
       - 'workers/livros/**'
+      # #10637: módulos de fora de workers/livros/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/canonical-urls.ts'
+      - 'scripts/lib/shared/ai-referrer-log.ts'
+      - 'scripts/lib/shared/indexnow-key-route.ts'
+      - 'scripts/lib/shared/workers-dev-redirect.ts'
+      - 'scripts/lib/title-similarity.ts'
   workflow_dispatch:
 
 concurrency:

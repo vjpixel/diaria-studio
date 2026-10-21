@@ -35,6 +35,18 @@ on:
     branches: [master]
     paths:
       - 'workers/brevo-dashboard/**'
+      # #10637: módulos de fora de workers/brevo-dashboard/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/clarice-sector.ts'
+      - 'scripts/lib/clarice-segment.ts'
+      - 'scripts/lib/cohorts.ts'
+      - 'scripts/lib/coupon-clarice-class.ts'
+      - 'scripts/lib/dashboard-kv-types.ts'
+      - 'scripts/lib/editor-copy.ts'
+      - 'scripts/lib/next-edition-date.ts'
+      - 'scripts/lib/stripe-coupons.ts'
   workflow_dispatch:
 
 concurrency:

@@ -29,6 +29,18 @@ on:
     branches: [master]
     paths:
       - 'workers/arquivo/**'
+      # #10637: módulos de fora de workers/arquivo/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/shared/**'
+      - 'scripts/lib/article-cap.ts'
+      - 'scripts/lib/canonical-urls.ts'
+      - 'scripts/lib/fetch-sitemap.ts'
+      - 'scripts/lib/html-escape.ts'
+      - 'scripts/lib/site-home-page.ts'
+      - 'scripts/lib/strip-html.ts'
+      - 'scripts/lib/title-similarity.ts'
   workflow_dispatch:
 
 concurrency:

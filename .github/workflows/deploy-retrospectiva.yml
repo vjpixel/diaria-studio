@@ -12,6 +12,11 @@ on:
     branches: [master]
     paths:
       - 'workers/retrospectiva/**'
+      # #10637: módulos de fora de workers/retrospectiva/ que entram no bundle
+      # (fecho de imports a partir do `main`). Sem eles, mudar só o módulo
+      # compartilhado não redeploya o Worker. Trava:
+      # test/workers-deploy-workflow-coverage.test.ts.
+      - 'scripts/lib/shared/**'
   workflow_dispatch:
 
 concurrency:
