@@ -155,13 +155,24 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
       while (pos < n) {
         const nl = src.indexOf("\n", pos);
         const lineEnd = nl === -1 ? n : nl;
-        let line = src.slice(pos, lineEnd).replace(/\r$/, "");
-        if (h.strip) line = line.replace(/^\t+/, "");
+        const raw = src.slice(pos, lineEnd).replace(/\r$/, "");
+        const lead = h.strip ? /^\t*/.exec(raw)[0].length : 0;
+        const line = raw.slice(lead);
         const next = nl === -1 ? n : nl + 1;
         if (line === h.delim) {
           bodyEnd = pos;
           pos = next;
           break;
+        }
+        // Dentro de `$(...)` o bash também fecha o heredoc em `D)`/`D )`: a
+        // leitura volta como comando a partir do `)` (que fecha este nível).
+        if (closer === ")" && line.startsWith(h.delim)) {
+          const gap = /^[ \t]*\)/.exec(line.slice(h.delim.length));
+          if (gap) {
+            bodyEnd = pos;
+            pos = pos + lead + h.delim.length + gap[0].length - 1;
+            break;
+          }
         }
         pos = next;
       }
@@ -561,6 +572,15 @@ export function isHeredocDataCommand(command) {
     if (!m) continue;
     const close = lines.indexOf(m[1], 1);
     if (close === -1) return false;
+    // Dentro de `$(...)` o bash também fecha o heredoc numa linha `D` seguida
+    // de espaços/tabs e `)` (`D)"`, `D )"; gh pr merge 5`) — e a variante com
+    // espaço no fim é ambígua entre shells. Qualquer linha dessas ANTES do
+    // fecho exato tira o comando da whitelist (fail-closed).
+    const delim = m[1];
+    const early = new RegExp(`^${delim}[ \\t]*\\)`);
+    for (let k = 1; k < close; k++) {
+      if (early.test(lines[k]) || lines[k].replace(/[ \t]+$/, "") === delim) return false;
+    }
     return tail.test(lines.slice(close + 1).join("\n"));
   }
   return false;

@@ -199,6 +199,14 @@ const HEREDOC_FAIL_OPEN_PROBES: string[] = [
   `git commit -m "$(cat <<'EOF'\nfix\nEOF\ngh pr merge 5\nEOF\n)"`,
   "git commit -F - <<'EOF' | sh\ngh pr merge 5\nEOF",
   `gh pr create --body "$(cat <<'EOF'\nx\nEOF\n)" ; gh pr merge 5`,
+  // Dentro de `$(...)` o bash fecha o heredoc em `D)` / `D )` antes do `D` exato.
+  `git commit -m "$(cat <<'D'\nmsg\nD)"\ngh pr merge 5\nD\n)"`,
+  `git commit -m "$(cat <<'D'\nmsg\nD )"\ngh pr merge 5\nD\n)"`,
+  `git commit -m "$(cat <<'D'\nmsg\nD))"\ngh pr merge 5\nD\n)"`,
+  `git commit -m "$(cat <<'D'\nmsg\nD)"; gh pr merge 5\nD\n)"`,
+  `git commit -m "$(cat <<'D'\nmsg\nD)" && gh pr merge 5\nD\n)"`,
+  `gh pr comment 1 --body "$(cat <<'D'\nmsg\nD)" && gh pr merge 5\nD\n)"`,
+  "git commit -F - <<'D'\nmsg\nD \ngh pr merge 5\nD",
 ];
 
 describe("#10681 — heredoc FAIL-CLOSED: probes da verificação adversarial", () => {
