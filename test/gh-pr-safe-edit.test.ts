@@ -10,7 +10,16 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { addPrLabelsRest, setPrBodyRest, type GhRunFn } from "../scripts/lib/gh-pr-safe-edit.ts";
+import {
+  addPrLabelsRest,
+  checkBodyCitesIssues,
+  issuesFromBranch,
+  issuesMissingFromBody,
+  parseIssuesFlag,
+  resolveExpectedIssues,
+  setPrBodyRest,
+  type GhRunFn,
+} from "../scripts/lib/gh-pr-safe-edit.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
 
 function ok(stdout = ""): GhSpawnResult {
@@ -126,5 +135,94 @@ describe("addPrLabelsRest (#6292)", () => {
     const result = addPrLabelsRest(1, ["a", "b"], "/repo", run);
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /\bb\b/);
+  });
+});
+
+// ─── #10698: corpo de PR cruzado entre implementadores ────────────────────
+
+describe("issuesFromBranch (#10698)", () => {
+  it("extrai o número das convenções das trilhas autônomas", () => {
+    assert.deepEqual(issuesFromBranch("overnight/fix-10643-kit-eventos"), [10643]);
+    assert.deepEqual(issuesFromBranch("develop/fix-5700"), [5700]);
+    assert.deepEqual(issuesFromBranch("develop/blast-4242"), [4242]);
+    assert.deepEqual(issuesFromBranch("continuo/fix-8123-slug"), [8123]);
+    assert.deepEqual(issuesFromBranch("feat-77"), [77]);
+  });
+
+  it("branch de lote não carrega número", () => {
+    assert.deepEqual(issuesFromBranch("overnight/batch-overnight-dispatch"), []);
+    assert.deepEqual(issuesFromBranch("master"), []);
+  });
+
+  it("não casa prefixo que só termina em fix (`hotfix-N`)", () => {
+    assert.deepEqual(issuesFromBranch("overnight/hotfix-123"), []);
+  });
+});
+
+describe("issuesMissingFromBody (#10698)", () => {
+  it("aceita Closes/fixes/Resolves e REFS", () => {
+    const body = "Closes #10\nfixes #11\nResolves #12\nREFS #13, NÃO CLOSES (parcial)";
+    assert.deepEqual(issuesMissingFromBody(body, [10, 11, 12, 13]), []);
+  });
+
+  it("menção solta não conta como marcador", () => {
+    assert.deepEqual(issuesMissingFromBody("ver #10 e #11", [10, 11]), [10, 11]);
+  });
+
+  it("boundary de dígito: `#7788` não satisfaz `#77`", () => {
+    assert.deepEqual(issuesMissingFromBody("Closes #7788", [77]), [77]);
+  });
+});
+
+describe("checkBodyCitesIssues — cenário real do #10698", () => {
+  it("corpo da PR vizinha (sobrescrito no arquivo de nome comum) é recusado", () => {
+    // A PR da issue 10640 recebeu, pelo arquivo temporário compartilhado, o
+    // corpo escrito por outro implementador para a issue 10641.
+    const crossed = "Closes #10641\n\nCorpo de outra PR";
+    const r = checkBodyCitesIssues(crossed, issuesFromBranch("overnight/fix-10640-algo"));
+    assert.equal(r.ok, false);
+    assert.match(r.error ?? "", /#10640/);
+  });
+
+  it("corpo certo passa", () => {
+    assert.equal(checkBodyCitesIssues("Closes #10640", [10640]).ok, true);
+  });
+
+  it("lista vazia de issues (lote sem --issues) não recusa", () => {
+    assert.equal(checkBodyCitesIssues("qualquer coisa", []).ok, true);
+  });
+});
+
+describe("resolveExpectedIssues (#10698)", () => {
+  it("--issues explícito vence e não consulta gh", () => {
+    const run: GhRunFn = () => {
+      throw new Error("não devia chamar gh");
+    };
+    assert.deepEqual(resolveExpectedIssues(1, [5, 6], "/repo", run), { ok: true, issues: [5, 6] });
+  });
+
+  it("sem --issues, lê a branch da PR", () => {
+    const run: GhRunFn = (args) => {
+      assert.deepEqual(args.slice(0, 4), ["pr", "view", "9", "--json"]);
+      return ok("overnight/fix-321-slug\n");
+    };
+    assert.deepEqual(resolveExpectedIssues(9, null, "/repo", run), {
+      ok: true,
+      issues: [321],
+      branch: "overnight/fix-321-slug",
+    });
+  });
+
+  it("falha de consulta é erro (fail-closed), nunca lista vazia", () => {
+    const r = resolveExpectedIssues(9, null, "/repo", () => fail("rate limit"));
+    assert.equal(r.ok, false);
+  });
+});
+
+describe("parseIssuesFlag (#10698)", () => {
+  it("aceita lista com ou sem #", () => {
+    assert.deepEqual(parseIssuesFlag("10698,#10699"), [10698, 10699]);
+    assert.equal(parseIssuesFlag(undefined), null);
+    assert.throws(() => parseIssuesFlag("abc"));
   });
 });

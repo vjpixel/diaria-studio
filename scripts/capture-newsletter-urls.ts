@@ -130,11 +130,45 @@ const SOCIAL_HOSTS = new Set([
  * (`/p/ID`, `/reel/ID`), Threads (`/@u/post/ID`) e TikTok (`/@u/video/1`,
  * `/t/ID`) sempre têm 2+ segmentos no conteúdo.
  */
-const FACEBOOK_CONTENT_PATH_RE =
-  /^\/((watch|reel|videos)(\/|$)|share\/[pvr]\/|(permalink|story|photo|video)\.php$)/i;
+const FACEBOOK_CONTENT_PATH_RE = /^\/((reel|videos)\/[^/]+|share\/[pvr]\/[^/]+)/i;
+/**
+ * #10700 item 1: `/reel` e `/videos` sem ID não são conteúdo, e o parâmetro
+ * que identifica o post só vale no endpoint que o lê — `story_fbid` em
+ * `/profile.php` (ou em `/{página}`) não transforma perfil em post.
+ */
+const FACEBOOK_PHP_CONTENT_PARAM: Record<string, string> = {
+  "/permalink.php": "story_fbid",
+  "/story.php": "story_fbid",
+  "/photo.php": "fbid",
+  "/video.php": "v",
+};
 function isFacebookContent(u: URL): boolean {
   if (/^\/watch(\/|$)/i.test(u.pathname)) return u.searchParams.has("v");
-  return FACEBOOK_CONTENT_PATH_RE.test(u.pathname) || u.searchParams.has("story_fbid");
+  const phpParam = FACEBOOK_PHP_CONTENT_PARAM[u.pathname.toLowerCase()];
+  if (phpParam) return u.searchParams.has(phpParam);
+  return FACEBOOK_CONTENT_PATH_RE.test(u.pathname);
+}
+
+/**
+ * #10700 item 2: aba de perfil com 2 segmentos (`instagram.com/user/reels/`,
+ * `facebook.com/pagina/videos`) é perfil, não post — o inverso do #10673.
+ * O conteúdo de 2 segmentos começa com um prefixo de conteúdo (`/p/ID`,
+ * `/reel/ID`, `/reels/ID`, `/tv/ID`), que nunca é nome de aba.
+ */
+const PROFILE_TAB_SEGMENTS: Record<string, ReadonlySet<string>> = {
+  "instagram.com": new Set(["reels", "tagged", "saved", "guides", "igtv", "feed", "followers", "following", "channel"]),
+  "facebook.com": new Set(["videos", "reels", "photos", "posts", "about", "events", "community", "mentions"]),
+};
+const CONTENT_PREFIX_SEGMENTS: Record<string, ReadonlySet<string>> = {
+  "instagram.com": new Set(["p", "reel", "reels", "tv", "stories"]),
+  "facebook.com": new Set(["reel", "videos", "share", "watch", "groups", "events", "photo", "story"]),
+};
+function isProfileTab(host: string, segments: readonly string[]): boolean {
+  if (segments.length !== 2) return false;
+  const tabs = PROFILE_TAB_SEGMENTS[host];
+  if (!tabs) return false;
+  const [first, second] = segments.map((s) => s.toLowerCase());
+  return tabs.has(second) && !CONTENT_PREFIX_SEGMENTS[host]?.has(first);
 }
 
 /**
@@ -173,7 +207,13 @@ export function isRedirectNoiseDestination(rawUrl: string): boolean {
   if (host === "reddit.com") return /^\/(u|user)\/[^/]+\/?$/i.test(path);
   // X/Twitter, Instagram, Threads, TikTok, Facebook: 1 segmento só = perfil.
   const segments = path.split("/").filter(Boolean);
-  return segments.length <= 1;
+  if (segments.length <= 1) return true;
+  // #10700 item 2: Threads só tem conteúdo em `/@u/post/ID` (3 segmentos) ou
+  // `/t/ID`; `/@u/replies`, `/@u/reposts` etc. são abas do perfil.
+  if (host === "threads.net" || host === "threads.com") {
+    return segments.length === 2 && segments[0].toLowerCase() !== "t";
+  }
+  return isProfileTab(host, segments);
 }
 
 export interface CapturedThread {

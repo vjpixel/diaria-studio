@@ -20,7 +20,9 @@ import {
   DEFAULT_DEPS,
   EXIT_OVERNIGHT_FAILED,
   EXIT_REVIEW_FAILED,
+  LIVE_LOG_PREV_SUFFIX,
   LIVE_LOG_REL,
+  NIGHTLY_CHAIN_TASK_NAME,
   NIGHTLY_OVERNIGHT_EFFORT,
   NIGHTLY_OVERNIGHT_MODEL,
   buildOvernightClaudeArgs,
@@ -29,7 +31,9 @@ import {
   chainExitCode,
   classifyReviewResult,
   formatLiveLogLine,
+  liveLogRelFromLogPath,
   main,
+  rotateLiveLog,
   type NightlyChainDeps,
 } from "../scripts/overnight/run-nightly-chain.ts";
 import { CLAUDE_CLI_STRIPPED_ENV_VARS } from "../scripts/overnight/run-scheduled-edicao.ts";
@@ -333,5 +337,51 @@ describe("run-nightly-chain — log incremental sobrevive a processo morto (#106
     assert.match(live, /review: ok exit=0/);
     assert.match(live, /overnight: claude --print/);
     assert.doesNotMatch(live, /cadeia noturna: fim/);
+  });
+});
+
+// #10699 itens 2 e 3 — caminho do log vivo derivado do registro e rotação por run.
+describe("run-nightly-chain — log incremental derivado do registro e rotacionado (#10699)", () => {
+  const liveLogPath = (root: string) => join(root, "data", ...LIVE_LOG_REL.split("/"));
+
+  it("LIVE_LOG_REL deriva do logPath da task Diaria-Nightly-Chain", () => {
+    const task = getScheduledTaskByName(NIGHTLY_CHAIN_TASK_NAME);
+    assert.ok(task, "task do registro sumiu ou foi renomeada");
+    assert.equal(LIVE_LOG_REL, liveLogRelFromLogPath(task.logPath));
+    assert.equal(LIVE_LOG_REL, "overnight/.nightly-chain.live.log");
+  });
+
+  it("liveLogRelFromLogPath troca .log por .live.log e acrescenta quando não há .log", () => {
+    assert.equal(liveLogRelFromLogPath("a/b.log"), "a/b.live.log");
+    assert.equal(liveLogRelFromLogPath("a/b.txt"), "a/b.txt.live.log");
+  });
+
+  it("cada run começa com o log vivo novo; a run anterior fica em .prev (uma geração só)", () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const run = (stderr: string) => {
+      const { deps } = harness({ status: 0, stderr }, { status: 0, stdout: "{}" });
+      deps.appendLiveLog = DEFAULT_DEPS.appendLiveLog;
+      deps.rotateLiveLog = DEFAULT_DEPS.rotateLiveLog;
+      assert.equal(main(root, deps), 0);
+    };
+    run("[daily-review] concluído");
+    run("[daily-review] nada novo (x) — noop");
+    run("[daily-review] concluído");
+    const current = readFileSync(liveLogPath(root), "utf8");
+    const prev = readFileSync(`${liveLogPath(root)}${LIVE_LOG_PREV_SUFFIX}`, "utf8");
+    assert.equal(current.match(/cadeia noturna: início/g)?.length, 1, "log vivo acumulou runs anteriores");
+    assert.match(current, /review: ok/);
+    assert.equal(prev.match(/cadeia noturna: início/g)?.length, 1);
+    assert.match(prev, /review: noop/);
+  });
+
+  it("rotateLiveLog sem data/ ou sem arquivo não lança nem cria nada", () => {
+    const root = makeRepo();
+    rotateLiveLog(root);
+    assert.ok(!existsSync(join(root, "data")));
+    mkdirSync(join(root, "data"));
+    rotateLiveLog(root);
+    assert.ok(!existsSync(`${liveLogPath(root)}${LIVE_LOG_PREV_SUFFIX}`));
   });
 });

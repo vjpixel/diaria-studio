@@ -33,6 +33,12 @@
  * - **Abertura/clique em envio ainda não maduro também exclui.** A maturação
  *   só vale pra CONTAR envios (dar tempo de a abertura chegar); engajamento
  *   em qualquer broadcast da diária, maduro ou não, prova que a pessoa lê.
+ * - **O filtro do Kit indexa com atraso (#10697, medido ao vivo).** No
+ *   broadcast segmentado 26499469 (envio 20/10 09:00 UTC), `sent`/`opens`
+ *   pelo `/subscribers/filter` voltavam 0 ~17h depois do envio e 954/348 ~22h
+ *   depois (stats: 954 destinatários, 362 aberturas). A maturação de 48h
+ *   cobre esse atraso. Enquanto o filtro devolve 0 entregues, o broadcast não
+ *   soma envio maduro a ninguém, então não faz ninguém parecer "sem abertura".
  *
  * Exclusões: apoiadores (custom field `apoio_nivel` preenchido ou tag
  * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660; o
@@ -455,7 +461,13 @@ export interface KitSemAberturaWave {
  * confirmação e trocados pelo próximo da fila). Cada reposição custa uma
  * leitura na Brevo (blacklist) e, se passar, um GET singular no Kit; o teto só
  * limita o pior caso de uma rodada (milhares de blacklisted seguidos na cabeça
- * do backlog). Atingido, o sync avisa no log.
+ * do backlog). Atingido, o sync avisa no log e marca
+ * `backlogReplacementCapHit` no resultado (#10701, teste do caso atingido em
+ * `test/kit-sem-abertura-replacement-cap-10701.test.ts`).
+ *
+ * O valor 1000 é estimativa, sem medição. Os pulados (blacklisted na Brevo)
+ * seguem sem registro e são relidos a cada rodada; registrá-los (2ª opção da
+ * #10664) fica para quando o aviso aparecer em produção.
  */
 export const KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS = 1000;
 

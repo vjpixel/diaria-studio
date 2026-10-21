@@ -174,6 +174,20 @@ a ausência do `Closes` ambígua entre "esqueci" e "decidi que não fecha" — o
 padrão correto já existe no repo (PR #4969, lote geo-baratos): seguir esse
 exemplo.
 
+**Arquivo do corpo do PR com nome ÚNICO + conferência logo após o `gh pr create`
+(#10698).** Implementadores paralelos compartilham `/tmp` e às vezes o
+scratchpad: na rodada 261021 dois usaram o mesmo nome de arquivo e as PRs
+#10643/#10644 nasceram com o corpo uma da outra. O nome do arquivo leva os
+números das issues da unidade e um sufixo aleatório (ex.:
+`/tmp/pr-body-10698-10699-$RANDOM.md`), nunca um nome genérico como
+`pr-body.md`. Logo após o `gh pr create`, rodar `npx tsx
+scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body --issues A,B` (em PR solo
+`--issues` é opcional: o número sai da branch `*/fix-N-*`). `exit 1` = o corpo
+não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
+`--body-file`. O `--body-file` faz a mesma conferência antes de escrever e
+recusa o corpo que não cita as issues (`--allow-missing-issue-marker` só
+quando a omissão é intencional).
+
 **"PR mergeado com `REFS`" e "issue fechada" são estados DIFERENTES (#5327
 item 2).** Antes de qualquer resumo de status ao editor que mencione uma issue
 como "fechada"/"resolvida", confirmar via `gh issue view {N} --json state` —

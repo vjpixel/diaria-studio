@@ -463,6 +463,18 @@ export type NativeBounceReason = "native_complaint" | "native_bounce" | "native_
  * Reclamação de spam vem antes do hard bounce: é sinal de reputação e nunca
  * pode ser diluída em `native_admin_block`. `spamComplained` ausente (estado
  * montado antes do #10666) equivale a `false`.
+ *
+ * Precedência quando reclamação e hard bounce coexistem (decisão do #10701):
+ * vence `native_complaint`. A ação é a mesma nos dois casos (o contato sai e
+ * não volta), então a escolha só afeta a contagem. A taxa de reclamação tem
+ * limiar bem mais baixo que a de bounce (spam ≥0,1% contra bounce duro
+ * ≥2% em `lib/brevo-diaria-guardrail.ts`), e uma reclamação contada como bounce some de onde pesa mais.
+ *
+ * Consequências pra quem monitora:
+ * - a taxa de reclamação deve ler `resolution_reason: "native_complaint"` no
+ *   store; o contador `complainedNative` só aparece no log da rodada;
+ * - registros gravados antes do #10666 continuam `native_admin_block`, sem
+ *   migração (a reclamação deles não foi lida na época).
  */
 export function nativeBounceReason(state: Pick<BrevoContactState, "hardBounced" | "spamComplained">): NativeBounceReason {
   if (state.spamComplained === true) return "native_complaint";

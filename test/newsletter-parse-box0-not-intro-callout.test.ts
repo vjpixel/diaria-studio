@@ -168,3 +168,83 @@ describe("#10638 — box0 com título em negrito não vira callout de intro", ()
     });
   });
 });
+
+/** Insere `extra` logo antes do bloco do box0 (depois do `---` da cobertura). */
+function withBeforeBox0(reviewed: string, extra: string): string {
+  const idx = reviewed.indexOf(BOX0_SENTINEL);
+  assert.ok(idx !== -1);
+  return reviewed.slice(0, idx) + extra + reviewed.slice(idx);
+}
+
+const slot0Warnings = (md: string) => findOrphanBoxWarnings(md).filter((w) => w.gapIndex === -1);
+
+describe("#10696 — bloco perdido antes do box0 e marcador sem-rótulo fora do bloco", () => {
+  it("regressão: bloco extra entre a cobertura e o box0 gera warning (não some calado)", () => {
+    const reviewed = withBeforeBox0(buildReviewed(), "Parágrafo perdido que o render não emite.\n\n---\n\n");
+    const warnings = slot0Warnings(reviewed);
+    assert.equal(warnings.length, 1, JSON.stringify(warnings));
+    assert.match(warnings[0].reason, /Parágrafo perdido/);
+    assert.match(warnings[0].reason, /descartados/);
+    // E de fato o render não emite esse bloco — o warning não é falso alarme.
+    withEdition(reviewed, (dir) => {
+      assert.ok(!renderHTML(extractContent(dir)).includes("Parágrafo perdido"));
+    });
+  });
+
+  it("texto colado antes do sentinel no mesmo bloco também é avisado", () => {
+    const reviewed = withBeforeBox0(buildReviewed(), "Texto solto antes do marcador.\n");
+    assert.match(slot0Warnings(reviewed)[0]?.reason ?? "", /Texto solto/);
+  });
+
+  it("sem bloco perdido: cobertura + box0 e cobertura + callout + box0 seguem sem warning", () => {
+    assert.deepEqual(slot0Warnings(buildReviewed()), []);
+    const callout = "**🎥 Hoje às 19h tem sorteio ao vivo: [participe](https://example.com/live).**";
+    assert.deepEqual(slot0Warnings(buildReviewed({ callout })), []);
+  });
+
+  it("trailer depois do callout é renderizado — não conta como bloco perdido", () => {
+    const callout = "**🎥 Sorteio ao vivo hoje: [participe](https://example.com/live).**";
+    const reviewed = buildReviewed({ callout: `${callout}\n\n---\n\nTexto de trailer da cobertura.` });
+    assert.equal(extractCoverageLineTrailer(reviewed), "Texto de trailer da cobertura.");
+    assert.deepEqual(slot0Warnings(reviewed), []);
+  });
+
+  it("marcador sem-rótulo na linha ACIMA do <!-- box0 --> vale (caso real 261021)", () => {
+    const reviewed = withBeforeBox0(buildReviewed(), `${BOX0_SEM_ROTULO_MARKER}\n`);
+    assert.equal(isBoxDivulgacao0SemRotulo(reviewed), true);
+    assert.deepEqual(slot0Warnings(reviewed), []);
+    withEdition(reviewed, (dir) => {
+      const content = extractContent(dir);
+      assert.equal(content.boxDivulgacao0SemRotulo, true);
+      const html = renderHTML(content);
+      const kicker = renderDivulgacaoSeparator(content.boxDivulgacao0Categoria || "Divulgação");
+      assert.ok(!html.includes(kicker));
+      assert.ok(!html.includes("box0-sem-rotulo"));
+    });
+  });
+
+  it("marcador sem-rótulo ao lado de um callout não vaza como trailer", () => {
+    const callout = "**🎥 Sorteio ao vivo hoje: [participe](https://example.com/live).**";
+    const reviewed = withBeforeBox0(buildReviewed({ callout }), `${BOX0_SEM_ROTULO_MARKER}\n`);
+    assert.equal(extractCoverageLineTrailer(reviewed), null);
+    assert.equal(isBoxDivulgacao0SemRotulo(reviewed), true);
+  });
+
+  it("marcador sem-rótulo fora do bloco do box0 gera warning", () => {
+    const reviewed = buildReviewed().replace(
+      "[considere apoiar o projeto](https://example.com/apoie).",
+      `[considere apoiar o projeto](https://example.com/apoie).\n\n${BOX0_SEM_ROTULO_MARKER}`,
+    );
+    assert.equal(isBoxDivulgacao0SemRotulo(reviewed), false);
+    assert.ok(slot0Warnings(reviewed).some((w) => /box0-sem-rotulo/.test(w.reason)));
+  });
+
+  it("limitação documentada: `---` dentro do box0 corta o box e o lint acusa a sobra", () => {
+    const reviewed = buildReviewed().replace(
+      "[Inscreva-se](https://example.com/curso)",
+      "Parte 1 do box.\n\n---\n\nParte 2 do box, depois do separador interno.",
+    );
+    assert.doesNotMatch(extractBoxDivulgacao0(reviewed) ?? "", /Parte 2/);
+    assert.ok(slot0Warnings(reviewed).length > 0, "a sobra do box precisa ser avisada");
+  });
+});

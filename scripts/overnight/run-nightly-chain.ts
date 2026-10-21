@@ -57,11 +57,12 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
+import { getScheduledTaskByName } from "../lib/scheduled-tasks.ts";
 import { hasActiveSessionOfKind } from "../lib/session-registry.ts";
 import { NO_BACKGROUND_DIRECTIVE, dataAddDirArgs } from "../lib/edition-stage-runner.ts";
 import { claudeCliEnv } from "./run-scheduled-edicao.ts";
@@ -206,19 +207,62 @@ export interface NightlyChainDeps {
    * que ela é emitida. Opcional: ausente, a cadeia só loga via `log`.
    */
   appendLiveLog?: (repoRootAbs: string, line: string) => void;
+  /** Rotaciona o log incremental da run anterior (#10699). Opcional, chamado uma vez no início do `main`. */
+  rotateLiveLog?: (repoRootAbs: string) => void;
+}
+
+/** Nome da task no registro (`scripts/lib/scheduled-tasks.ts`) que dispara este runner. */
+export const NIGHTLY_CHAIN_TASK_NAME = "Diaria-Nightly-Chain";
+
+/** Caminho usado se a task sumir do registro (renomeada): o log incremental não pode derrubar a cadeia. */
+const FALLBACK_LIVE_LOG_REL = "overnight/.nightly-chain.live.log";
+
+/**
+ * Deriva o log incremental do `logPath` da task (#10699 item 2): `x.log` →
+ * `x.live.log`. Mudar o `logPath` no registro move os dois juntos.
+ */
+export function liveLogRelFromLogPath(logPath: string): string {
+  return logPath.endsWith(".log") ? `${logPath.slice(0, -".log".length)}.live.log` : `${logPath}.live.log`;
 }
 
 /**
  * Log INCREMENTAL da cadeia, relativo a `data/` (#10672). O task-runner
- * (`execTsxStep`, `spawnSync`) só grava `overnight/.nightly-chain.log` quando
+ * (`execTsxStep`, `spawnSync`) só grava o `logPath` da task quando
  * o processo termina, e a cadeia pode passar de 16h: reboot, OOM ou
  * `systemctl stop` no meio apagavam tudo, inclusive o veredito do review,
  * que roda antes do overnight. Este arquivo recebe cada linha na hora, via
  * `appendFileSync`. É um arquivo separado de propósito: anexar direto no log
  * do task-runner duplicaria todas as linhas quando a run termina normalmente,
- * e o contrato do task-runner vale pras outras tasks também.
+ * e o contrato do task-runner vale pras outras tasks também. Derivado do
+ * `logPath` da task (#10699), hoje `overnight/.nightly-chain.live.log`.
  */
-export const LIVE_LOG_REL = "overnight/.nightly-chain.live.log";
+export const LIVE_LOG_REL = (() => {
+  const task = getScheduledTaskByName(NIGHTLY_CHAIN_TASK_NAME);
+  return task ? liveLogRelFromLogPath(task.logPath) : FALLBACK_LIVE_LOG_REL;
+})();
+
+/**
+ * Sufixo da rotação (#10699 item 3): no início de cada run o log incremental
+ * da run anterior vira `{LIVE_LOG_REL}.prev` (sobrescrevendo o `.prev` mais
+ * antigo). O arquivo sincroniza pelo OneDrive; sem rotação ele só crescia.
+ */
+export const LIVE_LOG_PREV_SUFFIX = ".prev";
+
+function liveLogAbs(repoRootAbs: string): string {
+  return join(repoRootAbs, "data", ...LIVE_LOG_REL.split("/"));
+}
+
+/** Renomeia o log incremental da run anterior pra `.prev`. Fail-soft: nunca lança. */
+export function rotateLiveLog(repoRootAbs: string): void {
+  if (!existsSync(join(repoRootAbs, "data"))) return;
+  const path = liveLogAbs(repoRootAbs);
+  if (!existsSync(path)) return;
+  try {
+    renameSync(path, `${path}${LIVE_LOG_PREV_SUFFIX}`);
+  } catch (e) {
+    console.warn(`run-nightly-chain: falha ao rotacionar o log incremental ${path} — ${(e as Error).message}`);
+  }
+}
 
 /** Formato de cada linha do log incremental: mesmo prefixo ISO do `log` default. */
 export function formatLiveLogLine(line: string, at: Date = new Date()): string {
@@ -231,7 +275,7 @@ function defaultAppendLiveLog(repoRootAbs: string, line: string): void {
   // Clone sem `data/` (sessão cloud, CI): nada a gravar, igual ao
   // `defaultWriteOvernightOutput`.
   if (!existsSync(join(repoRootAbs, "data"))) return;
-  const path = join(repoRootAbs, "data", ...LIVE_LOG_REL.split("/"));
+  const path = liveLogAbs(repoRootAbs);
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, formatLiveLogLine(line), "utf8");
@@ -264,6 +308,7 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
   writeOvernightOutput: defaultWriteOvernightOutput,
   appendLiveLog: defaultAppendLiveLog,
+  rotateLiveLog,
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -305,6 +350,8 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
 export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_DEPS): number {
   // Toda linha vai pro `log` (stdout → log final do task-runner) E, na hora,
   // pro log incremental (#10672) — inclusive as que `runOvernight` emite.
+  // Antes da 1ª linha, a run anterior vira `.prev` (#10699).
+  baseDeps.rotateLiveLog?.(repoRootAbs);
   const deps: NightlyChainDeps = {
     ...baseDeps,
     log: (line) => {

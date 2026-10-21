@@ -1,0 +1,31 @@
+name = "kit-events"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+# #10648 — eventos por assinante do Kit (cancelamento, clique, bounce,
+# reclamação, ativação) recebidos por webhook e gravados com horário. Decisão
+# do editor (briefing overnight 261021b): Worker + KV, segredo na URL, leitura
+# integrada ao diaria-subscribers-db. Contrato: scripts/lib/kit-webhook-events-contract.ts.
+#
+# Deploy automático via .github/workflows/deploy-kit-events.yml (#5337).
+# Publicado SEM KV e SEM segredos, ele falha FECHADO: POST /webhook/* responde
+# 404 (segredo ausente) e GET /api/eventos responde 401/503 — nada é gravado.
+#
+# Para ligar (ação pendente, sessão /diaria-develop com o editor — ver README.md):
+#   1. wrangler kv namespace create KIT_EVENTS
+#   2. Declarar aqui o binding (NÃO declarado agora de propósito: um id
+#      placeholder quebraria `wrangler deploy`, mesmo racional de
+#      workers/onboarding-form/wrangler.toml):
+#        [[kv_namespaces]]
+#        binding = "KIT_EVENTS"
+#        id = "<id do passo 1>"
+#   3. wrangler secret put KIT_WEBHOOK_SECRET  (vai na URL registrada no Kit)
+#   4. wrangler secret put EVENTS_READ_TOKEN   (KIT_EVENTS_READ_TOKEN no .env do servidor)
+#   5. Registrar os webhooks no Kit (README.md, tabela KIT_WEBHOOK_ROUTES).
+
+# Webhook externo sem volume previsível: erro/latência observáveis sem
+# `wrangler tail` aberto (mesmo padrão de workers/meta-leads, #5920).
+[observability]
+enabled = true
+head_sampling_rate = 1
