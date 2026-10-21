@@ -47,6 +47,17 @@ export function alertAction(alert) {
   return { acao: "Investigar falha de envio: rodar npx tsx scripts/onboarding-followup-run.ts (dry-run) e ler o erro", link: TAREFAS_LINK };
 }
 
+const LADDER_STEPS = new Set(["email1", "email2", "email3"]);
+
+/** O alerta de rodadas seguidas cobre a etapa? Kit da escada cobre e-mails
+ *  1/2/3; o das sequências cobre apoio/formulário. O do e-mail 3 via Brevo
+ *  não é lote Kit e nunca é absorvido. */
+export function streakCovers(alert, stepKey) {
+  if (alert.etapa.includes("transporte Kit")) return LADDER_STEPS.has(stepKey);
+  if (alert.etapa.startsWith("Sequências de apoio")) return !LADDER_STEPS.has(stepKey);
+  return false;
+}
+
 /**
  * Lista do que pede ação agora. Cada item: `{ id, titulo, detalhe, acao,
  * link, button }` — `link` é `{ href, label }` ou null; `button` é
@@ -71,26 +82,49 @@ export function buildActionItems(data) {
   if (!data.db.available) return items;
 
   const followup = data.followup ?? null;
+  const alerts = followup?.alerts ?? [];
+  const failingSteps = (followup?.steps ?? []).filter((s) => s.falhos > 0);
 
-  for (const [i, alert] of (followup?.alerts ?? []).entries()) {
+  // Dedupe (#10606, self-review da PR #10651): um lote Kit que falha gera
+  // até 3 sinais — o item de envios falhos da etapa, o alerta de lote não
+  // agendado (mesma etapa) e o alerta de rodadas seguidas com falha. Fica um
+  // item por etapa, o mais específico, com os outros sinais citados dentro:
+  //   lote não agendado (nomeia o lote, ação no painel do Kit)
+  //   > envios falhos da etapa
+  //   > alerta de rodadas seguidas (só sobra se nenhuma etapa dele falhou).
+  const lotAlertSteps = new Set(alerts.filter((a) => /^lote /.test(a.mensagem)).map((a) => a.etapa));
+  const streakFor = (step) => alerts.find((a) => !/^lote /.test(a.mensagem) && streakCovers(a, step.step));
+  const absorbedStreaks = new Set(failingSteps.map(streakFor).filter(Boolean));
+
+  for (const [i, alert] of alerts.entries()) {
+    if (absorbedStreaks.has(alert)) continue;
     const a = alertAction(alert);
-    items.push({ id: `alerta-${i}`, titulo: alert.etapa, detalhe: alert.mensagem, acao: a.acao, link: a.link, button: null });
+    let detalhe = alert.mensagem;
+    if (/^lote /.test(alert.mensagem)) {
+      const step = failingSteps.find((s) => s.label === alert.etapa);
+      const streak = step ? streakFor(step) : null;
+      if (step) detalhe += `. ${step.falhos} envio(s) falho(s) nesta etapa`;
+      if (streak) detalhe += `. ${streak.mensagem}`;
+    }
+    items.push({ id: `alerta-${i}`, titulo: alert.etapa, detalhe, acao: a.acao, link: a.link, button: null });
   }
 
   for (const key of ["apoio", "form"]) {
     const b = followup?.blocked?.[key];
-    if (!b) continue;
-    const a = BLOCK_ACTIONS[b.motivo];
-    if (!a) continue; // `desligado` e motivos novos sem ação mapeada: só em Detalhes
+    if (!b || b.motivo === "desligado") continue; // `desligado` é escolha de config: só em Detalhes
+    // Motivo sem ação mapeada (ex.: motivo novo no executor) NUNCA some do
+    // topo: trava real escondida é a classe de falha do #10603.
+    const a = BLOCK_ACTIONS[b.motivo] ?? { acao: `Investigar por que a sequência travou (motivo "${b.motivo}")`, link: TAREFAS_LINK };
     items.push({ id: `travado-${key}`, titulo: `${SEQUENCIA_LABEL[key]} travado`, detalhe: b.detalhe, acao: a.acao, link: a.link, button: null });
   }
 
-  for (const step of followup?.steps ?? []) {
-    if (!(step.falhos > 0)) continue;
+  for (const step of failingSteps) {
+    if (lotAlertSteps.has(step.label)) continue; // já citado no item do lote
+    const streak = streakFor(step);
     items.push({
       id: `falhos-${step.step}`,
       titulo: `${step.label}: ${step.falhos} envio(s) falho(s)`,
-      detalhe: "Destinatários de lote que falhou e ainda não têm envio registrado.",
+      detalhe: "Destinatários de lote que falhou e ainda não têm envio registrado." + (streak ? ` ${streak.etapa}: ${streak.mensagem}.` : ""),
       acao: "Investigar falha de envio: ler o erro da última rodada do executor",
       link: TAREFAS_LINK,
       button: null,

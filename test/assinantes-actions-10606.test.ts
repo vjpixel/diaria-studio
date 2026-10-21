@@ -43,7 +43,7 @@ function funnel(overrides: Record<string, unknown> = {}) {
     summary: { byEmail3Stage: {}, staleDrafts: [] },
     refreshErrors: [],
     followup: {
-      alerts: [],
+      alerts: [] as Array<{ etapa: string; mensagem: string }>,
       blocked: { apoio: null, form: null },
       steps: [step("email1", "E-mail 1"), step("email2", "E-mail 2"), step("email3", "E-mail 3 (apoio, D+10)")],
       people: [],
@@ -113,6 +113,56 @@ describe("buildActionItems (#10606)", () => {
     );
     assert.deepEqual(items, []);
     assert.equal("desligado" in BLOCK_ACTIONS, false);
+  });
+
+  it("motivo de trava novo, sem ação mapeada, NÃO some do topo: vira item genérico (self-review #10651)", () => {
+    const items = buildActionItems(
+      funnel({
+        followup: { ...funnel().followup, blocked: { apoio: null, form: { motivo: "motivo_que_ainda_nao_existe", detalhe: "algo travou" } } },
+      }),
+    );
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, "travado-form");
+    assert.match(items[0].acao, /Investigar por que a sequência travou \(motivo "motivo_que_ainda_nao_existe"\)/);
+    assert.equal(items[0].link?.href, "/tarefas");
+  });
+
+  it("lote Kit da escada falhando: 1 item por etapa, com a sequência de rodadas citada dentro (self-review #10651)", () => {
+    const f = funnel();
+    f.followup.alerts = [{ etapa: "E-mails 1/2/3 (transporte Kit)", mensagem: "3 rodadas --send seguidas com falha" }];
+    f.followup.steps = [step("email1", "E-mail 1", 5), step("email2", "E-mail 2", 0)];
+    const items = buildActionItems(f);
+    assert.equal(items.length, 1, JSON.stringify(items.map((i) => i.id)));
+    assert.equal(items[0].id, "falhos-email1");
+    assert.match(items[0].detalhe, /3 rodadas --send seguidas com falha/);
+  });
+
+  it("alerta de rodadas seguidas sem etapa falha continua sozinho no topo", () => {
+    const f = funnel();
+    f.followup.alerts = [{ etapa: "E-mails 1/2/3 (transporte Kit)", mensagem: "2 rodadas --send seguidas com falha" }];
+    const items = buildActionItems(f);
+    assert.deepEqual(items.map((i) => i.id), ["alerta-0"]);
+  });
+
+  it("lote não agendado é o mais específico: absorve envios falhos e a sequência da mesma etapa", () => {
+    const f = funnel();
+    f.followup.alerts = [
+      { etapa: "Sequências de apoio/formulário", mensagem: "2 rodadas seguidas com falha" },
+      { etapa: "Apoio D+30", mensagem: "lote ap-1: broadcast não agendado e não apagado (Kit 422)" },
+    ];
+    f.followup.steps = [step("apoio_d30", "Apoio D+30", 4)];
+    const items = buildActionItems(f);
+    assert.equal(items.length, 1, JSON.stringify(items.map((i) => i.id)));
+    assert.match(items[0].acao, /painel do Kit/);
+    assert.match(items[0].detalhe, /4 envio\(s\) falho\(s\) nesta etapa/);
+    assert.match(items[0].detalhe, /2 rodadas seguidas com falha/);
+  });
+
+  it("alerta do e-mail 3 via Brevo nunca é absorvido por falha de lote Kit", () => {
+    const f = funnel();
+    f.followup.alerts = [{ etapa: "E-mail 3 (Brevo)", mensagem: "2 rodadas seguidas com falha" }];
+    f.followup.steps = [step("email3", "E-mail 3 (apoio, D+10)", 2)];
+    assert.deepEqual(buildActionItems(f).map((i) => i.id), ["alerta-0", "falhos-email3"]);
   });
 
   it("todo motivo de trava, exceto `desligado`, tem ação mapeada", () => {
@@ -196,6 +246,10 @@ describe("assinantes.html enxuto (#10606)", () => {
     for (const id of ["onboarding-stage-counts", "onboarding-provider-counts", "onboarding-alerts", "onboarding-refresh-errors", "onboarding-corrupted"]) {
       assert.ok(!html.includes(`id="${id}"`), `${id} voltou ao HTML`);
     }
+  });
+
+  it("código morto `refreshWarning` removido (campo não existe no payload)", () => {
+    assert.ok(!js.includes("refreshWarning"));
   });
 
   it("todo id que assinantes.js procura existe no HTML", () => {

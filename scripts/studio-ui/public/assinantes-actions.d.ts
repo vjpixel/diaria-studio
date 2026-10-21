@@ -29,6 +29,7 @@ export const BLOCK_ACTIONS: Record<
 >;
 
 export function escapeHtml(s: unknown): string;
+export function streakCovers(alert: { etapa: string; mensagem: string }, stepKey: string): boolean;
 export function alertAction(alert: { etapa: string; mensagem: string }): { acao: string; link: ActionLink | null };
 // `data` é o JSON de GET /api/onboarding/funnel, lido de forma defensiva.
 export function buildActionItems(data: unknown): ActionItem[];

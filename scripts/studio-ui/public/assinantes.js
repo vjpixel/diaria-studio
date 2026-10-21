@@ -552,7 +552,7 @@ function renderOnboardingData(data) {
     return;
   }
   el.onboardingNodata.hidden = true;
-  el.onboardingNote.textContent = data.refreshWarning ? `${data.note} ${data.refreshWarning}` : data.note;
+  el.onboardingNote.textContent = data.note;
   if (data.apoiadorDataError) {
     el.onboardingApoiadorError.hidden = false;
     el.onboardingApoiadorError.textContent = `Vínculo com apoiadores indisponível: ${data.apoiadorDataError}`;
