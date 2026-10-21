@@ -34,5 +34,10 @@ export function ghPrSegments(command: unknown, subcommands?: string[]): GhPrSegm
 export function repoFromCwdOrigin(cwd: unknown, execFn?: ExecFn): string | null;
 export function resolveGhTargets(command: unknown, cwd: unknown, opts?: ResolveOpts): GhTarget[];
 export function resolveGhTargetRepo(command: unknown, cwd: unknown, opts?: ResolveOpts): GhTargetRepo;
+/** Motivos de o comando não estar na forma simples (vazio = simples). */
+export function commandComplexity(command: unknown): string[];
+export function reposMentioned(command: unknown, allowed?: Set<string>): Set<string>;
+/** `true` quando a resolução caiu no modo complexo (fail-closed). */
+export function isComplexTarget(targets: GhTarget[]): boolean;
 export function isForeignRepo(repo: string | null | undefined, allowed?: Set<string>): boolean;
 export function isForeignRepoGhCommand(command: unknown, cwd: unknown, opts?: ResolveOpts): boolean;

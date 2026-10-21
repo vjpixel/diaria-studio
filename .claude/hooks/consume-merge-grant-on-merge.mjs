@@ -119,7 +119,7 @@ import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from ".
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { DIARIA_STUDIO_REPO, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
+import { DIARIA_STUDIO_REPO, isComplexTarget, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
  * block-gh-pr-merge-subagent.mjs pro racional (10min: cobre a janela da
@@ -644,13 +644,15 @@ if (
       // #10618: a concessão só é consumida pelo merge do MESMO repo em que
       // foi emitida (ausente = diaria-studio) — ver `grantMatchesRepo`.
       const command = payload.tool_input?.command;
-      const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"] });
+      // Mesma resolução do guard (cdStrict + modo complexo): os dois hooks
+      // concordam sobre quando uma concessão foi de fato usada.
+      const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"], cdStrict: true });
       appendHookRunLog(repoRoot, "consume-merge-grant", targets.some((t) => t.source === null) ? "warn" : "info", "merge_target_repo", {
         targets,
       });
       // Comando com mais de um repo: concessão nenhuma foi usada pelo guard
       // (cada uma vale pra um repo só) — não há o que consumir.
-      if (targets.length > 1) return;
+      if (targets.length > 1 || isComplexTarget(targets)) return;
       const target = targets[0] ?? { repo: DIARIA_STUDIO_REPO, source: null };
       const targetRepo = target.repo;
       // O repo vai explícito pra consulta do estado sempre que foi

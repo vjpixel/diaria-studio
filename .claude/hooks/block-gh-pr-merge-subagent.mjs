@@ -122,7 +122,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { DIARIA_STUDIO_REPO, mergeLockFileName, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
+import { DIARIA_STUDIO_REPO, isComplexTarget, mergeLockFileName, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
@@ -1462,8 +1462,15 @@ export function combineMergeLockHolders(holders, callerSessionId) {
 }
 
 /** Sufixo da mensagem de bloqueio quando o PR não é (só) do diaria-studio (#10618). */
-export function buildRepoHint(targetRepos) {
+export function buildRepoHint(targetRepos, complex = false) {
   const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
+  if (complex) {
+    return (
+      " (#10618) Comando fora da forma simples (`&` solto, `#`, subshell, `$(`, heredoc, prefixo antes do gh...): " +
+      `o guard confere o lock de todo repo que ele pode tocar (${targetRepos.join(", ")}) e não aceita ` +
+      "concessão/auto-autorização. Rode o merge sozinho: `gh pr merge N --squash [-R owner/name]`."
+    );
+  }
   if (targetRepos.length > 1) {
     return (
       ` (#10618) Este comando mexe em MAIS DE UM repo (${targetRepos.join(", ")}): o guard confere o lock de ` +
@@ -1544,7 +1551,10 @@ if (
       // segue global — as rodadas são as mesmas pros dois repos.
       const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"], cdStrict: true });
       const targetRepos = targets.length > 0 ? targets.map((t) => t.repo) : [DIARIA_STUDIO_REPO];
-      const singleRepo = targetRepos.length === 1 ? targetRepos[0] : null;
+      // Comando COMPLEXO (`&` solto, `#`, subshell, prefixo antes do gh...,
+      // ver `commandComplexity`): FAIL-CLOSED — todos os locks, nenhuma concessão.
+      const complex = isComplexTarget(targets);
+      const singleRepo = targetRepos.length === 1 && !complex ? targetRepos[0] : null;
       if (repoRoot !== null) {
         appendHookRunLog(repoRoot, "merge-guard", targets.some((t) => t.source === null) ? "warn" : "info", "merge_target_repo", {
           targets,
@@ -1561,7 +1571,7 @@ if (
               permissionDecisionReason:
                 `${BLOCK_REASON} (#10618) Não foi possível localizar o checkout do diaria-studio (data/sessions/) ` +
                 "a partir do cwd nem do diretório do hook — varredura de sessões indeterminada, bloqueado na dúvida." +
-                buildRepoHint(targetRepos),
+                buildRepoHint(targetRepos, complex),
             },
           }),
         );
@@ -1655,7 +1665,7 @@ if (
               permissionDecision: "deny",
               // #10618: os comandos citados acima miram o lock do
               // diaria-studio por padrão — PR de outro repo precisa do --repo.
-              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause }) + buildRepoHint(targetRepos),
+              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause }) + buildRepoHint(targetRepos, complex),
             },
           }),
         );

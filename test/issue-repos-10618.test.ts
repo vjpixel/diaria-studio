@@ -213,7 +213,6 @@ describe("repo alvo de gh pr create/merge (#10618)", () => {
       "gh pr merge 23 -R $REPO",
       'gh pr merge 23 --repo "$REPO"',
       "gh pr merge 23 -R ghe.host/o/r",
-      "GH_REPO=$X gh pr merge 23",
       `gh pr merge https://github.com/${DESIGN}/pull/23 -R vjpixel/diaria-studio`,
       "gh pr merge 23 -R a--b/c",
     ]) {
@@ -225,6 +224,13 @@ describe("repo alvo de gh pr create/merge (#10618)", () => {
         cmd,
       );
     }
+  });
+
+  it("GH_REPO=$X antes do gh: segmento ilegível e comando complexo (studio + tudo que pode tocar)", () => {
+    assert.deepEqual(seg("GH_REPO=$X gh pr merge 23"), [{ repo: null, source: "unparseable" }]);
+    const t = hookRepo.resolveGhTargets("GH_REPO=$X gh pr merge 23", "/x", { execFn: fakeOrigin(`https://github.com/${DESIGN}.git`) });
+    assert.ok(hookRepo.isComplexTarget(t));
+    assert.deepEqual(t.map((x) => x.repo).sort(), [DEFAULT_ISSUE_REPO, DESIGN].sort());
   });
 
   it("TODOS os segmentos contam (não só o último)", () => {
@@ -820,5 +826,202 @@ describe("resolveMainRepoRoot com cwd em checkout de outro repo (#10618)", () =>
     for (const fn of [guardResolveMainRepoRoot, consumeResolveMainRepoRoot]) {
       assert.equal(fn(() => join(studioLike, ".git")), studioLike);
     }
+  });
+});
+
+describe("fail-closed: comando fora da forma simples (verificação da PR #10668)", () => {
+  const HOOK = fileURLToPath(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url));
+  const tag = machineTag();
+
+  /**
+   * Coordenadora `coord-A` ativa; `lockHolder` segura o lock do diaria-studio;
+   * opcionalmente uma concessão viva de coord-A pra `benef` no PR `grantPr`
+   * (`grantRepo` ausente = diaria-studio).
+   */
+  function setup(opts: { lockHolder: string; grantPr?: number; grantRepo?: string }): string {
+    const root = tmpRoot("failclosed");
+    const dir = join(root, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    sh("git", ["init", "-q"], root);
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(dir, `overnight-${tag}-coord-A.json`),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "coord-A",
+        machineTag: tag,
+        startedAt: now,
+        lastHeartbeat: now,
+        ...(opts.grantPr !== undefined
+          ? {
+              merge_grant: {
+                grantedTo: "benef",
+                grantedBy: "coord-A",
+                pr: opts.grantPr,
+                grantedAt: now,
+                ...(opts.grantRepo ? { repo: opts.grantRepo } : {}),
+              },
+            }
+          : {}),
+      }),
+    );
+    writeFileSync(join(dir, ".merge-lock.json"), JSON.stringify({ heldBy: opts.lockHolder, acquiredAt: now }));
+    return root;
+  }
+
+  function checkout(repo: string): string {
+    const dir = tmpRoot("co");
+    sh("git", ["init", "-q"], dir);
+    sh("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], dir);
+    return dir;
+  }
+
+  function run(root: string, command: string, sessionId = "coord-A", cwd = root): string {
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: root,
+      input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", cwd, tool_input: { command } }),
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    return r.stdout ?? "";
+  }
+
+  const DENY = /"permissionDecision":"deny"/;
+
+  // Cada comando da sonda, com o lock do STUDIO na mão de outra sessão: tem
+  // que bloquear (antes, todos resolviam pro design e passavam).
+  const probeStudio: Array<[string, string]> = [
+    ["& solto, studio primeiro", `gh pr merge 6 --squash & gh pr merge 23 -R ${DESIGN} --squash`],
+    ["& solto, design primeiro", `gh pr merge 23 -R ${DESIGN} --squash & gh pr merge 6 --squash`],
+    ["comentário #", `gh pr merge 6 --squash # -R ${DESIGN}`],
+    ["-m booleano + URL do studio + -R design", `gh pr merge -m https://github.com/vjpixel/diaria-studio/pull/6 -R ${DESIGN}`],
+    ["; cd . & ...", `gh pr merge 23 -R ${DESIGN}; cd . & gh pr merge 6`],
+    ["|&", `gh pr merge 23 -R ${DESIGN} |& gh pr merge 6`],
+    ["herestring <<<", `gh pr merge 23 -R ${DESIGN} --body-file=- <<< x`],
+  ];
+  for (const [name, command] of probeStudio) {
+    it(`bloqueia com o lock do studio preso: ${name}`, () => {
+      const root = setup({ lockHolder: "outra-sessao" });
+      const out = run(root, command);
+      assert.match(out, DENY, command);
+    });
+  }
+
+  it("prefixo/flag global antes do merge: o resolver já é estrito (detecção do merge é a #10688)", () => {
+    // `isGhPrMergeCommand` ainda não reconhece estas formas (#10681, PR #10688):
+    // até lá o guard nem roda pra elas. O lado deste PR — o alvo — já é estrito.
+    for (const command of [`GH_REPO=${DESIGN} gh pr merge 6`, `gh pr -R ${DESIGN} merge 6`, `env gh pr merge 6 -R ${DESIGN}`]) {
+      const t = hookRepo.resolveGhTargets(command, "/x", { subcommands: ["merge"], cdStrict: true, execFn: () => { throw new Error("x"); } });
+      assert.ok(hookRepo.isComplexTarget(t), command);
+      assert.ok(t.some((x) => x.repo === DEFAULT_ISSUE_REPO), command);
+    }
+  });
+
+  it("subshell/pushd a partir do checkout do design também conferem o lock do studio", () => {
+    const root = setup({ lockHolder: "outra-sessao" });
+    const design = checkout(DESIGN);
+    const studio = checkout(DEFAULT_ISSUE_REPO);
+    for (const command of [
+      `(cd "${studio}" && gh pr merge 6)`,
+      `( cd "${studio}" && gh pr merge 6 )`,
+      `pushd "${studio}" && gh pr merge 6`,
+    ]) {
+      assert.match(run(root, command, "coord-A", design), DENY, command);
+    }
+  });
+
+  it("-r é booleano no merge: `gh pr merge 6 -r -R design` mira o design (lock do design livre → passa)", () => {
+    const root = setup({ lockHolder: "outra-sessao" });
+    assert.equal(run(root, `gh pr merge 6 -r -R ${DESIGN}`), "");
+    assert.deepEqual(
+      hookRepo.ghPrSegments(`gh pr merge 6 -r -R ${DESIGN}`).map((s) => s.repo),
+      [DESIGN],
+    );
+  });
+
+  it("concessão do OUTRO repo nunca vale; comando complexo ignora até a concessão certa", () => {
+    // Concessão pro design#23; quem chama é a beneficiária, segurando o lock do studio.
+    const rootA = setup({ lockHolder: "benef", grantPr: 23, grantRepo: DESIGN });
+    assert.match(run(rootA, "gh pr merge 23 --squash", "benef"), DENY, "concessão é do design, merge é do studio");
+    // Concessão certa (studio#123), mas comando complexo: estrito.
+    const rootB = setup({ lockHolder: "benef", grantPr: 123 });
+    assert.match(run(rootB, "gh pr merge 123 --squash # comentário", "benef"), DENY);
+    assert.match(run(rootB, "gh pr merge 123 --squash & true", "benef"), DENY);
+  });
+
+  it("casos comuns seguem passando", () => {
+    // Coordenadora com o próprio lock.
+    const root = setup({ lockHolder: "coord-A" });
+    assert.equal(run(root, "gh pr merge 123 --squash"), "");
+    assert.equal(run(root, "gh pr merge 123 --squash 2>&1 | tail -5"), "", "2>&1 é redirecionamento, não background");
+    // `cd` pro checkout do studio.
+    const studio = checkout(DEFAULT_ISSUE_REPO);
+    assert.equal(run(root, `cd "${studio}" && gh pr merge 123 --squash`), "");
+    // Beneficiária com concessão pro PR, segurando o lock.
+    const g = setup({ lockHolder: "benef", grantPr: 123 });
+    assert.equal(run(g, "gh pr merge 123 --squash", "benef"), "");
+  });
+
+  it("unit: commandComplexity e redirecionamentos", () => {
+    assert.deepEqual(hookRepo.commandComplexity("gh pr merge 6 --squash 2>&1 | tail -5"), []);
+    assert.deepEqual(hookRepo.commandComplexity("cd x && gh pr merge 6"), []);
+    for (const c of [
+      "gh pr merge 6 & x",
+      "gh pr merge 6 # y",
+      "(gh pr merge 6)",
+      "{ gh pr merge 6; }",
+      "gh pr merge $(echo 6)",
+      "gh pr merge `echo 6`",
+      "bash -c 'gh pr merge 6'",
+      "eval gh pr merge 6",
+      "echo 6 | xargs gh pr merge",
+      "env gh pr merge 6",
+      "command gh pr merge 6",
+      "/usr/bin/gh pr merge 6",
+      "gh -R x/y pr merge 6",
+      "gh pr merge 6 <<EOF\nx\nEOF",
+    ]) {
+      assert.ok(hookRepo.commandComplexity(c).length > 0, c);
+    }
+  });
+});
+
+describe("hooks de gh pr create com comando complexo (#10618)", () => {
+  const HOOK = fileURLToPath(new URL("../.claude/hooks/block-pr-create-test-runner-import.mjs", import.meta.url));
+  function makeRepo(origin: string): string {
+    const root = tmpRoot("cx-create");
+    sh("git", ["init", "-q"], root);
+    mkdirSync(join(root, "test"), { recursive: true });
+    mkdirSync(join(root, "scripts", "lib"), { recursive: true });
+    writeFileSync(
+      join(root, "scripts", "lib", "test-runner-import-guard.ts"),
+      readFileSync(join(ROOT, "scripts", "lib", "test-runner-import-guard.ts"), "utf8"),
+    );
+    writeFileSync(join(root, "test", "bad.test.ts"), 'import { describe } from "vitest";\ndescribe("x", () => {});\n');
+    sh("git", ["remote", "add", "origin", origin], root);
+    return root;
+  }
+  function run(root: string, command: string): string {
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: root,
+      input: JSON.stringify({ tool_name: "Bash", cwd: root, tool_input: { command } }),
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    return r.stdout ?? "";
+  }
+
+  it("body via $(cat <<EOF) no checkout do design: segue pulando (não reabre o #23)", () => {
+    const root = makeRepo(`https://github.com/${DESIGN}.git`);
+    assert.equal(run(root, 'gh pr create --title t --body "$(cat <<\'EOF\'\ncorpo\nEOF\n)"'), "");
+  });
+
+  it("complexo citando o diaria-studio, ou no checkout do studio: aplica a regra", () => {
+    const design = makeRepo(`https://github.com/${DESIGN}.git`);
+    assert.match(run(design, 'gh pr create -R vjpixel/diaria-studio --body "$(cat x)"'), /"permissionDecision":"deny"/);
+    const studio = makeRepo("https://github.com/vjpixel/diaria-studio.git");
+    assert.match(run(studio, 'gh pr create --body "$(cat x)"'), /"permissionDecision":"deny"/);
   });
 });

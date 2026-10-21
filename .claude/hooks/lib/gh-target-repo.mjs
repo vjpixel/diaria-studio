@@ -29,6 +29,18 @@
 //      `platform.config.json → issue_repos`. Qualquer outro (typo, fork,
 //      origin renomeado) recebe as regras do diaria-studio.
 //
+// FAIL-CLOSED (verificação da PR #10668): o resolver só confia num comando
+// em FORMA SIMPLES — palavras + separadores `&&` `;` `||` `|` newline, `cd X`
+// opcional, `-R`/`--repo`/URL. Qualquer `&` solto, `|&`, `#`, `(` `)` `{` `}`,
+// `$(`, crase, `<<`, pushd/popd, eval, `bash -c`/`sh -c`, xargs, ou prefixo
+// antes do `gh` (atribuição de env, `env`, `command`, caminho até o gh, flag
+// global antes de `pr merge`) torna o comando COMPLEXO: o alvo vira o
+// diaria-studio + todo repo permitido que o comando possa mencionar (texto,
+// `origin` do cwd e de cada `cd`/`pushd`), e quem chama confere TODOS os locks
+// e ignora concessão/auto-autorização. Detectar SE o comando é um merge é
+// outra função (`isGhPrMergeCommand`, #10681/#10688) — aqui só se decide QUAL
+// repo ele toca.
+//
 // Self-contained (só `node:*`), como os outros módulos de `hooks/lib/`. A
 // constante do repo default, `normalizeRepoSlug` e o nome do arquivo de lock
 // são espelho de `scripts/lib/issue-repos.ts`, paridade travada por
@@ -101,7 +113,7 @@ export function loadAllowedForeignRepos(root = HOOK_REPO_ROOT) {
   return out;
 }
 
-const SEPARATORS = new Set(["&&", "||", ";", "|", "\n"]);
+const SEPARATORS = new Set(["&&", "||", ";", "|", "\n", "&", "|&"]);
 
 /**
  * Quebra um comando shell em palavras, respeitando aspas simples/duplas e
@@ -163,15 +175,31 @@ export function splitShellWords(command) {
       i++;
       continue;
     }
-    if (ch === "&" && command[i + 1] === "&") {
+    if (ch === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) {
+      // Redirecionamento (`2>&1`, `<&3`, `&>arq`), não background: fica na palavra.
+      cur += ch;
+      has = true;
+      i++;
+      continue;
+    }
+    if (ch === "&") {
+      // `&&`, ou `&` solto (background) — os dois separam comandos.
       flush();
-      out.push("&&");
-      i += 2;
+      if (command[i + 1] === "&") {
+        out.push("&&");
+        i += 2;
+      } else {
+        out.push("&");
+        i++;
+      }
       continue;
     }
     if (ch === "|") {
       flush();
-      if (command[i + 1] === "|") {
+      if (command[i + 1] === "&") {
+        out.push("|&");
+        i += 2;
+      } else if (command[i + 1] === "|") {
         out.push("||");
         i += 2;
       } else {
@@ -195,13 +223,16 @@ export function splitShellWords(command) {
 
 const PR_URL_RE = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+(?:[/?#].*)?$/i;
 
-/** Flags de `gh pr create|merge` que consomem o token seguinte como VALOR —
- * o valor delas nunca é lido como `-R`/URL (ex: `--body "veja -R x/y"`). */
-const VALUE_FLAGS = new Set([
-  "-b", "--body", "-t", "--title", "--subject", "-F", "--body-file", "--match-head-commit",
-  "-A", "--author-email", "-H", "--head", "-B", "--base", "-l", "--label", "-a", "--assignee",
-  "-r", "--reviewer", "-m", "--milestone", "-p", "--project", "-T", "--template",
-]);
+/** Flags que consomem o token seguinte como VALOR, POR SUBCOMANDO — o valor
+ * delas nunca é lido como `-R`/URL (ex: `--body "veja -R x/y"`). No `merge`,
+ * `-m`/`-r`/`-s` são booleanos (--merge/--rebase/--squash), no `create` não. */
+const VALUE_FLAGS = {
+  merge: new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit"]),
+  create: new Set([
+    "-b", "--body", "-F", "--body-file", "-t", "--title", "-H", "--head", "-B", "--base", "-l", "--label",
+    "-a", "--assignee", "-r", "--reviewer", "-m", "--milestone", "-p", "--project", "-T", "--template", "--recover",
+  ]),
+};
 
 /**
  * Lê os segmentos `gh pr <sub>` do comando. Pra cada um: `{ repo, source,
@@ -240,7 +271,7 @@ export function ghPrSegments(command, subcommands = ["create", "merge"]) {
     };
     for (let k = ghAt + 3; k < seg.length; k++) {
       const w = seg[k];
-      if (VALUE_FLAGS.has(w)) {
+      if ((VALUE_FLAGS[seg[ghAt + 2]] ?? VALUE_FLAGS.create).has(w)) {
         k++;
         continue;
       }
@@ -270,6 +301,103 @@ export function ghPrSegments(command, subcommands = ["create", "merge"]) {
     else if (flagRepo) out.push({ repo: flagRepo, source: "flag", cd: lastCd });
     else if (envRepo) out.push({ repo: envRepo, source: "gh-repo-env", cd: lastCd });
     else out.push({ repo: null, source: null, cd: lastCd });
+  }
+  return out;
+}
+
+/** Palavras que, em posição de comando, tiram o `gh` da forma simples. */
+const COMPLEX_COMMAND_WORDS = new Set(["pushd", "popd", "eval", "xargs", "env", "command", "exec", "sudo", "nohup", "time", "timeout", "source", "."]);
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+
+/**
+ * Motivos pelos quais o comando NÃO está na forma simples (lista vazia =
+ * simples). Varre fora de aspas simples; dentro de aspas duplas só `$(` e
+ * crase contam (são executados ali também).
+ */
+export function commandComplexity(command) {
+  const reasons = new Set();
+  if (typeof command !== "string") return [];
+  let i = 0;
+  const n = command.length;
+  let atWordStart = true;
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "\\" && i + 1 < n) {
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      i = end === -1 ? n : end + 1;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && command[j] !== '"') {
+        if (command[j] === "\\") j++;
+        else if (command[j] === "`") reasons.add("crase");
+        else if (command[j] === "$" && command[j + 1] === "(") reasons.add("$(");
+        j++;
+      }
+      i = j + 1;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) {
+      i++; // redirecionamento (`2>&1`, `&>arq`), não background
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "&") {
+      if (command[i + 1] === "&") i += 2;
+      else {
+        reasons.add("& solto");
+        i++;
+      }
+      atWordStart = true;
+      continue;
+    }
+    if (ch === "|" && command[i + 1] === "&") reasons.add("|&");
+    if (ch === "#" && atWordStart) reasons.add("#");
+    if ("(){}".includes(ch)) reasons.add(ch);
+    if (ch === "`") reasons.add("crase");
+    if (ch === "$" && command[i + 1] === "(") reasons.add("$(");
+    if (ch === "<" && command[i + 1] === "<") reasons.add("<<");
+    atWordStart = ch === " " || ch === "\t" || ch === "\n" || ch === ";" || ch === "|";
+    i++;
+  }
+  const words = splitShellWords(command);
+  let segStart = 0;
+  for (let k = 0; k <= words.length; k++) {
+    if (k < words.length && !SEPARATORS.has(words[k])) continue;
+    const seg = words.slice(segStart, k);
+    segStart = k + 1;
+    if (seg.length === 0) continue;
+    const first = seg[0];
+    if (COMPLEX_COMMAND_WORDS.has(first)) reasons.add(first);
+    if (SHELLS.has(first.replace(/^.*[\\/]/, "").replace(/\.exe$/i, ""))) reasons.add("shell");
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) reasons.add("env=");
+    seg.forEach((w, idx) => {
+      const isGhWord = w === "gh" || /[\\/]gh(?:\.exe)?$/i.test(w) || /^gh\.exe$/i.test(w);
+      if (!isGhWord) return;
+      if (idx !== 0 || w !== "gh") reasons.add("prefixo antes do gh");
+      else if (seg[1] !== "pr" || (seg[2] ?? "").startsWith("-")) reasons.add("flag global do gh");
+    });
+  }
+  return [...reasons];
+}
+
+const SLUG_IN_TEXT_RE = /(?:github\.com[/:])?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+)/g;
+
+/** Repos PERMITIDOS que aparecem em qualquer lugar do texto do comando. */
+export function reposMentioned(command, allowed = loadAllowedForeignRepos()) {
+  const out = new Set();
+  if (typeof command !== "string") return out;
+  for (const m of command.matchAll(SLUG_IN_TEXT_RE)) {
+    const slug = normalizeRepoSlug(m[1]);
+    if (slug && (slug === DIARIA_STUDIO_REPO || allowed.has(slug))) out.add(slug);
   }
   return out;
 }
@@ -305,6 +433,30 @@ export function repoFromCwdOrigin(cwd, execFn = execFileSync) {
 export function resolveGhTargets(command, cwd, opts = {}) {
   const { execFn = execFileSync, subcommands, allowed = loadAllowedForeignRepos(), cdStrict = false, cwdAlreadyResolved = false } = opts;
   const targets = [];
+  const complexReasons = commandComplexity(command);
+  if (complexReasons.length > 0) {
+    // FAIL-CLOSED: diaria-studio + tudo que o comando possa tocar. Quem chama
+    // confere todos os locks e ignora concessões (ver `isComplexTarget`).
+    const source = `complex:${complexReasons.join(",")}`;
+    const repos = new Set([DIARIA_STUDIO_REPO, ...reposMentioned(command, allowed)]);
+    const base = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
+    const dirs = [cwd];
+    const words = splitShellWords(command).map((w) => w.replace(/^[({]+|[)}]+$/g, ""));
+    words.forEach((w, k) => {
+      if ((w === "cd" || w === "pushd") && words[k + 1]) {
+        try {
+          dirs.push(resolvePath(base, words[k + 1]));
+        } catch {
+          // diretório ilegível: o studio já está no conjunto
+        }
+      }
+    });
+    for (const d of dirs) {
+      const origin = repoFromCwdOrigin(d, execFn);
+      if (origin && allowed.has(origin)) repos.add(origin);
+    }
+    return [...repos].map((repo) => ({ repo, source }));
+  }
   const add = (repo, source) => {
     const slug = normalizeRepoSlug(repo ?? "");
     const isForeign = slug !== null && slug !== DIARIA_STUDIO_REPO && allowed.has(slug);
@@ -337,6 +489,11 @@ export function resolveGhTargets(command, cwd, opts = {}) {
   return targets;
 }
 
+/** `true` quando a resolução caiu no modo COMPLEXO (fail-closed). */
+export function isComplexTarget(targets) {
+  return Array.isArray(targets) && targets.some((t) => typeof t.source === "string" && t.source.startsWith("complex:"));
+}
+
 /**
  * Compat: um único `{ repo, source }`. Mais de um repo envolvido →
  * `{ repo: null, source: "mixed" }`; nenhum segmento → indeterminado.
@@ -363,6 +520,16 @@ export function isForeignRepo(repo, allowed = loadAllowedForeignRepos()) {
  * alvo de `cd`).
  */
 export function isForeignRepoGhCommand(command, cwd, opts = {}) {
+  // Comando COMPLEXO (ex: o habitual `--body "$(cat <<'EOF' ...)"`): decide
+  // pelo checkout em `cwd` — de onde o `gh pr create` sai — e só pula se ele
+  // é um repo de fora permitido E o texto não menciona o diaria-studio.
+  // Tratar todo create complexo como diaria-studio reabriria o bloqueio do
+  // vjpixel/diaria-design#23; sem lock em jogo aqui, o checkout basta.
+  if (commandComplexity(command).length > 0) {
+    const allowed = opts.allowed ?? loadAllowedForeignRepos();
+    const origin = repoFromCwdOrigin(cwd, opts.execFn ?? execFileSync);
+    return isForeignRepo(origin, allowed) && !reposMentioned(command, allowed).has(DIARIA_STUDIO_REPO);
+  }
   const targets = resolveGhTargets(command, cwd, { cwdAlreadyResolved: true, ...opts });
   return targets.length > 0 && targets.every((t) => t.repo !== DIARIA_STUDIO_REPO);
 }

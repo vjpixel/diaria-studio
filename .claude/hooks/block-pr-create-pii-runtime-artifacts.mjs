@@ -813,9 +813,15 @@ if (
       }
 
       const nameStatusRaw = runGit(["diff", "--name-status", base, "HEAD"], cwd);
-      if (nameStatusRaw === null) return; // fail-open
-      const diffRaw = runGit(["diff", base, "HEAD"], cwd);
-      if (diffRaw === null) return; // fail-open
+      const diffRaw = nameStatusRaw === null ? null : runGit(["diff", base, "HEAD"], cwd);
+      if (nameStatusRaw === null || diffRaw === null) {
+        // #10618: fail-CLOSED — sem o diff não dá pra saber o que a PR leva.
+        denyWith(
+          `gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): \`git diff ${base}..HEAD\` falhou em ` +
+            `"${cwd}" — não dá pra auditar o que a PR leva. Confira o checkout e tente de novo.`,
+        );
+        return;
+      }
 
       const nameStatusEntries = parseNameStatus(nameStatusRaw);
       const addedLinesByFile = parseAddedLinesByFile(diffRaw);
