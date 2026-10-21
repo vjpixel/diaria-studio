@@ -1653,7 +1653,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description:
       "captura diaria do roster completo do Kit (status=all) no store unificado do #6464 -- popula a dimensao " +
       "subscription (fatia F2 do epico #7172), que nenhuma ingestao tocava ate aqui",
-    steps: [{ key: "ingest", script: "scripts/diaria-subscribers-ingest-kit.ts", args: ["--write"] }],
+    steps: [
+      { key: "ingest", script: "scripts/diaria-subscribers-ingest-kit.ts", args: ["--write"] },
+      // #10648: eventos por assinante dos webhooks do Kit (Worker kit-events,
+      // ligado em 21/10/2026). Incremental pelo último evento já no banco; sem
+      // KIT_EVENTS_URL/KIT_EVENTS_READ_TOKEN no .env sai 0 com aviso.
+      { key: "webhooks", script: "scripts/diaria-subscribers-ingest-kit-webhooks.ts", args: [] },
+    ],
     logPath: "diaria-subscribers/.kit-roster-ingest.log",
     // Daily 04:25 BRT — depois da fronteira do dia (00:00 BRT) e antes do
     // cluster matinal (a 1ª daily é Diaria-Clarice-Envio-Guard, 05:00), fora

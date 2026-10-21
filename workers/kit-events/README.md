@@ -19,10 +19,16 @@ o evento do mesmo assinante, tipo e URL a até 30 min de um já ingerido
 
 ## Estado
 
-Em 21/10/2026 (`/diaria-develop 261021`): KV `KIT_EVENTS` criado e declarado
-em `wrangler.toml` (passo 1) e os 2 segredos gravados no Worker e no Doppler
-(passo 2). O binding só vale depois do deploy pós-merge. Webhooks no Kit
-(passo 3) e o agendamento da ingestão (passo 5): estado no comentário da #10648.
+Ligado em 21/10/2026 (`/diaria-develop 261021`):
+- passo 1: KV `KIT_EVENTS` criado e declarado em `wrangler.toml`;
+- passo 2: os 2 segredos estão no Worker e no Doppler (`KIT_WEBHOOK_SECRET`,
+  `KIT_EVENTS_READ_TOKEN`, `KIT_EVENTS_URL`);
+- passo 3: webhooks `unsubscribe`, `bounce`, `complaint` e `activate` registrados
+  no Kit. Os de `click` (um por link) não foram registrados;
+- passo 5: a ingestão roda como 2º passo da task `Diaria-Kit-Roster-Ingest`
+  (04:25 BRT). No `300`, o `.env` precisa das duas vars `KIT_EVENTS_*`
+  (`npm run sync-env`); sem elas, a ingestão sai 0 com aviso.
+
 Se os segredos forem removidos, o Worker volta a não gravar nada (POST responde
 404, leitura responde 401/503).
 
