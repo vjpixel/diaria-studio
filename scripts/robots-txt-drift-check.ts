@@ -274,40 +274,56 @@ export function carryForwardInconclusiveProbes(
   probes: readonly AiCrawlerProbeResult[],
   state: AlarmIssuesState,
 ): AiCrawlerProbeResult[] {
-  const openSets = new Map<string, string[]>(); // host → conjuntos abertos, serializados
-  const openBots = new Map<string, Set<string>>();
+  // #10700 item 3: conjuntos abertos por host, um por issue — nunca a união.
+  // Com duas issues abertas no mesmo host, herdar pela união carregava como
+  // `blocked` bots de uma issue enquanto se casava a outra, e o conjunto
+  // resultante não batia com nenhuma: a issue cuja medição bastava abria
+  // duplicata e a outra perdia o congelamento.
+  const openSets = new Map<string, string[][]>(); // host → conjuntos abertos (ordenados)
   for (const [key, entry] of Object.entries(state)) {
     if (entry.closedAt) continue;
     const m = /^ai-crawler-probe:([^:]+):(.+)$/.exec(key);
     if (!m) continue;
     const bots = parseAiCrawlerProbeKeyBots(m[2], m[1]);
     if (!bots) continue;
-    if (!openBots.has(m[1])) openBots.set(m[1], new Set());
-    for (const b of bots) openBots.get(m[1])!.add(b);
-    openSets.set(m[1], [...(openSets.get(m[1]) ?? []), [...bots].sort().join(",")]);
+    openSets.set(m[1], [...(openSets.get(m[1]) ?? []), [...bots].sort()]);
   }
-  const carried = probes.map((p) =>
-    p.status === "inconclusive" && openBots.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
-  );
   // #10665: a medição que autoriza a herança tem que ser de um bot da PRÓPRIA
   // issue aberta. Um bot alheio (CCBot `allowed`) medido no host não diz nada
   // sobre {ClaudeBot, GPTBot} — aceitar o host por ele reemitia o achado sem
   // medição e zerava o missingStreak.
   const measuredBotsByHost = new Map<string, Set<string>>();
+  const blockedByHost = new Map<string, Set<string>>();
+  const inconclusiveByHost = new Map<string, Set<string>>();
   for (const p of probes) {
-    if (p.status === "inconclusive") continue;
-    if (!measuredBotsByHost.has(p.host)) measuredBotsByHost.set(p.host, new Set());
-    measuredBotsByHost.get(p.host)!.add(p.bot);
+    const target = p.status === "inconclusive" ? inconclusiveByHost : measuredBotsByHost;
+    if (!target.has(p.host)) target.set(p.host, new Set());
+    target.get(p.host)!.add(p.bot);
+    if (p.status === "blocked") {
+      if (!blockedByHost.has(p.host)) blockedByHost.set(p.host, new Set());
+      blockedByHost.get(p.host)!.add(p.bot);
+    }
   }
-  const acceptedHosts = new Set(
-    blockedProbesByHost(carried)
-      .filter(
-        ({ host, bots }) =>
-          openSets.get(host)?.includes(bots.join(",")) && bots.some((b) => measuredBotsByHost.get(host)?.has(b)),
-      )
-      .map(({ host }) => host),
+  // Por host, os bots inconclusivos que herdam `blocked`: só os do conjunto
+  // aberto que, somados aos bloqueados medidos, reproduz EXATAMENTE esse
+  // conjunto, com ao menos um bot dele medido nesta rodada.
+  const carryByHost = new Map<string, Set<string>>();
+  for (const [host, sets] of openSets) {
+    const blocked = blockedByHost.get(host) ?? new Set<string>();
+    const inconclusive = inconclusiveByHost.get(host) ?? new Set<string>();
+    const measured = measuredBotsByHost.get(host) ?? new Set<string>();
+    for (const set of sets) {
+      const carry = set.filter((b) => inconclusive.has(b));
+      const result = [...new Set([...blocked, ...carry])].sort();
+      if (result.join(",") !== set.join(",")) continue;
+      if (!set.some((b) => measured.has(b))) continue;
+      carryByHost.set(host, new Set(carry));
+      break;
+    }
+  }
+  return probes.map((p) =>
+    p.status === "inconclusive" && carryByHost.get(p.host)?.has(p.bot) ? { ...p, status: "blocked" as const } : p,
   );
-  return probes.map((p, i) => (acceptedHosts.has(p.host) ? carried[i] : p));
 }
 
 // ─── #10545 — sinal 2 cego (GraphQL não medido N rodadas seguidas) ─────────
