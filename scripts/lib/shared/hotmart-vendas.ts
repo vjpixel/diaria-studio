@@ -367,14 +367,47 @@ export interface SaldoVendas {
   readonly semValorLiquido: number;
 }
 
+/**
+ * Escolhe, por transação, a ÚNICA reversão (reembolso ou chargeback) que entra
+ * no saldo (#10750). A mesma compra pode chegar como reembolsada E como
+ * chargeback (reembolso pedido e depois disputado, ou o contrário): são
+ * eventos distintos, a dedup de `lerVendas` (transação + evento) guarda os
+ * dois, e somar os dois desfaria a receita duas vezes. Fica a reversão com
+ * valor líquido (a sem valor só deixaria o saldo como piso), e entre elas a
+ * mais antiga por `criado_em`; empate cai no `evento_id`, para o resultado não
+ * depender da ordem de chegada. Devolve o conjunto de registros escolhidos.
+ */
+function reversoesContadas(registros: readonly VendaRecord[]): Set<VendaRecord> {
+  const escolhida = new Map<string, VendaRecord>();
+  const melhor = (a: VendaRecord, b: VendaRecord): VendaRecord => {
+    const aVal = a.valor_liquido !== null && a.moeda_liquido !== null;
+    const bVal = b.valor_liquido !== null && b.moeda_liquido !== null;
+    if (aVal !== bVal) return aVal ? a : b;
+    const t = a.criado_em.localeCompare(b.criado_em);
+    if (t !== 0) return t < 0 ? a : b;
+    return a.evento_id <= b.evento_id ? a : b;
+  };
+  for (const r of registros) {
+    if (sinalReceita(r.evento) >= 0) continue;
+    const atual = escolhida.get(r.transacao);
+    escolhida.set(r.transacao, atual ? melhor(atual, r) : r);
+  }
+  return new Set(escolhida.values());
+}
+
 /** Saldo líquido do período, por moeda (regime de caixa: o reembolso conta no
- * dia em que chegou, não no da compra). */
+ * dia em que chegou, não no da compra). No máximo UMA reversão por transação
+ * (`reversoesContadas`, #10750) — dentro dos registros recebidos: um reembolso
+ * e um chargeback da mesma compra lidos em períodos diferentes contam um em
+ * cada leitura. */
 export function saldoLiquido(registros: readonly VendaRecord[]): SaldoVendas {
   const acc = new Map<string, { liquido: number; aprovadas: number; estornos: number }>();
   let semValorLiquido = 0;
+  const reversoes = reversoesContadas(registros);
   for (const r of registros) {
     const s = sinalReceita(r.evento);
     if (s === 0) continue;
+    if (s < 0 && !reversoes.has(r)) continue;
     if (r.valor_liquido === null || r.moeda_liquido === null) {
       semValorLiquido++;
       continue;

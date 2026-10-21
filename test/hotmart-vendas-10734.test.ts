@@ -334,6 +334,45 @@ describe("#10734 chave, parse e saldo", () => {
     assert.deepEqual(saldoLiquido(regs), { porMoeda: [{ moeda: "BRL", liquido: 100, aprovadas: 2, estornos: 1 }], semValorLiquido: 1 });
   });
 
+  // #10750: reembolso + chargeback da MESMA transação desfaziam a receita 2x.
+  it("#10750 aprovada + reembolsada + chargeback da mesma transação: líquido 0, uma reversão só", async () => {
+    const a = await rec("PURCHASE_APPROVED", "HP1", Date.UTC(2026, 9, 20, 12), 100);
+    const r = await rec("PURCHASE_REFUNDED", "HP1", Date.UTC(2026, 9, 20, 13), 100);
+    const c = await rec("PURCHASE_CHARGEBACK", "HP1", Date.UTC(2026, 9, 20, 14), 100);
+    const esperado = { porMoeda: [{ moeda: "BRL", liquido: 0, aprovadas: 1, estornos: 1 }], semValorLiquido: 0 };
+    // Independe da ordem de chegada (chargeback antes do reembolso, ou fora de ordem).
+    for (const ordem of [[a, r, c], [a, c, r], [c, r, a], [r, a, c]]) {
+      assert.deepEqual(saldoLiquido(ordem), esperado);
+    }
+  });
+
+  it("#10750 reversões de transações DIFERENTES continuam contando cada uma", async () => {
+    const regs = [
+      await rec("PURCHASE_APPROVED", "HP1", Date.UTC(2026, 9, 20, 12), 100),
+      await rec("PURCHASE_REFUNDED", "HP1", Date.UTC(2026, 9, 20, 13), 100),
+      await rec("PURCHASE_APPROVED", "HP2", Date.UTC(2026, 9, 20, 12), 40),
+      await rec("PURCHASE_CHARGEBACK", "HP2", Date.UTC(2026, 9, 20, 14), 40),
+      await rec("PURCHASE_APPROVED", "HP3", Date.UTC(2026, 9, 20, 12), 25),
+    ];
+    assert.deepEqual(saldoLiquido(regs), { porMoeda: [{ moeda: "BRL", liquido: 25, aprovadas: 3, estornos: 2 }], semValorLiquido: 0 });
+  });
+
+  it("#10750 entre as duas reversões fica a que tem valor líquido (a sem valor não vira piso à toa)", async () => {
+    const a = await rec("PURCHASE_APPROVED", "HP1", Date.UTC(2026, 9, 20, 12), 100);
+    const rSemValor = { ...(await rec("PURCHASE_REFUNDED", "HP1", Date.UTC(2026, 9, 20, 13), 100)), valor_liquido: null };
+    const c = await rec("PURCHASE_CHARGEBACK", "HP1", Date.UTC(2026, 9, 20, 14), 100);
+    assert.deepEqual(saldoLiquido([a, rSemValor, c]), { porMoeda: [{ moeda: "BRL", liquido: 0, aprovadas: 1, estornos: 1 }], semValorLiquido: 0 });
+    // Só reversões sem valor: conta uma no piso, não duas.
+    const cSemValor = { ...c, valor_liquido: null };
+    assert.deepEqual(saldoLiquido([a, rSemValor, cSemValor]), { porMoeda: [{ moeda: "BRL", liquido: 100, aprovadas: 1, estornos: 0 }], semValorLiquido: 1 });
+  });
+
+  it("#10750 reversão sem aprovação no período (compra de período anterior) ainda conta uma vez", async () => {
+    const r = await rec("PURCHASE_REFUNDED", "HP9", Date.UTC(2026, 9, 20, 13), 60);
+    const c = await rec("PURCHASE_CHARGEBACK", "HP9", Date.UTC(2026, 9, 20, 14), 60);
+    assert.deepEqual(saldoLiquido([r, c]), { porMoeda: [{ moeda: "BRL", liquido: -60, aprovadas: 0, estornos: 1 }], semValorLiquido: 0 });
+  });
+
   it("lerVendas deduplica transação + evento (fica o mais antigo) e pula registro inválido", async () => {
     const kv = fakeKv();
     const a1 = await rec("PURCHASE_APPROVED", "HP1", Date.UTC(2026, 9, 20, 12));
