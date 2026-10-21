@@ -7,7 +7,7 @@
  * `source_feed_broken` reabria/comentava a issue toda edição, sem fim.
  *
  * Fix: `signalsFromSourceHealth` recebe o conjunto de fontes com RSS
- * configurado (`loadFeedSourceNames`); fonte fora dele não emite
+ * configurado em `context/sources.md` (`loadFeedSourceNames`); fonte fora dele não emite
  * `source_feed_broken`. Fonte com RSS configurado segue sinalizando.
  */
 import { describe, it } from "node:test";
@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { applyRun, emptyEntry, type RunRecord, type SourceEntry } from "../scripts/lib/source-runs.ts";
+import { applyRun, emptyEntry, outcomePath, type RunRecord, type SourceEntry } from "../scripts/lib/source-runs.ts";
 import {
   loadFeedSourceNames,
   signalsFromSourceHealth,
@@ -105,41 +105,92 @@ describe("#10240 — feed aposentado no seed não reabre source_feed_broken", ()
   });
 });
 
-describe("#10240 — loadFeedSourceNames lê a coluna RSS do seed", () => {
-  it("só fontes com RSS não-vazio entram", () => {
-    const root = mkdtempSync(join(tmpdir(), "feed-src-10240-"));
-    try {
+function withSourcesMd(md: string | null, fn: (root: string) => void): void {
+  const root = mkdtempSync(join(tmpdir(), "feed-src-10240-"));
+  try {
+    if (md !== null) {
+      mkdirSync(join(root, "context"));
+      writeFileSync(join(root, "context/sources.md"), md);
+    }
+    fn(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe("#10240 — loadFeedSourceNames lê o RSS de context/sources.md (o que o Stage 1 usa)", () => {
+  it("só fontes com bullet `- RSS:` não-vazio entram", () => {
+    const md = [
+      "# Fontes",
+      "## Secundária",
+      `### ${VB}`,
+      "- URL: https://venturebeat.com/category/ai/",
+      "- Site query: `site:venturebeat.com`",
+      "",
+      `### ${OTHER}`,
+      "- URL: https://x.example/",
+      "- Site query: `site:x.example`",
+      "- RSS: https://x.example/feed/",
+      "",
+    ].join("\n");
+    withSourcesMd(md, (root) => {
+      assert.deepEqual([...(loadFeedSourceNames(root) ?? [])], [OTHER]);
+    });
+  });
+
+  it("CSV com RSS mas sources.md sem (sync não rodou) → segue fora: o feed nem é coletado", () => {
+    // O loader ignora seed/sources.csv de propósito (review PR #10650).
+    withSourcesMd(`### ${VB}
+- URL: https://venturebeat.com/
+
+### ${OTHER}
+- RSS: https://x.example/feed/
+`, (root) => {
       mkdirSync(join(root, "seed"));
       writeFileSync(
         join(root, "seed/sources.csv"),
-        [
-          "Nome,Tipo,URL,RSS,topic_filter,use_melhor,low_cadence",
-          `${VB},Secundária,https://venturebeat.com/category/ai/,,"AI,IA",,`,
-          `${OTHER},Secundária,https://x.example/,https://x.example/feed/,,,`,
-          "Espaços,Secundária,https://y.example/,   ,,,",
-        ].join("\n"),
+        `Nome,Tipo,URL,RSS
+${VB},Secundária,https://venturebeat.com/,${FEED_URL}
+`,
       );
-      const names = loadFeedSourceNames(root);
-      assert.deepEqual([...(names ?? [])].sort(), [OTHER]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+      assert.ok(!loadFeedSourceNames(root)!.has(VB));
+    });
   });
 
-  it("seed ausente → undefined (comportamento anterior preservado)", () => {
-    const root = mkdtempSync(join(tmpdir(), "feed-src-10240-"));
-    try {
-      assert.equal(loadFeedSourceNames(root), undefined);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it("nenhuma fonte com RSS (formato renomeado) → undefined, não silencia todo mundo", () => {
+    const md = `### ${VB}
+- URL: https://venturebeat.com/
+- Feed: ${FEED_URL}
+`;
+    withSourcesMd(md, (root) => assert.equal(loadFeedSourceNames(root), undefined));
   });
 
-  it("o seed real não tem RSS pra VentureBeat (IA) — a marcação vigente", () => {
+  it("sources.md ausente → undefined (comportamento anterior preservado)", () => {
+    withSourcesMd(null, (root) => assert.equal(loadFeedSourceNames(root), undefined));
+  });
+
+  it("o context/sources.md real é legível e tem fontes com feed", () => {
     const names = loadFeedSourceNames(join(import.meta.dirname, ".."));
-    assert.ok(names, "seed/sources.csv do repo deve ser legível");
-    assert.ok(!names.has(VB));
+    assert.ok(names, "context/sources.md do repo deve ser legível");
     assert.ok(names.size > 0);
+  });
+});
+
+describe("#10240 — outcomePath reconhece o motivo com sufixo de challenge (histórico sem path)", () => {
+  it("`HTTP 429 (challenge anti-bot: vercel)` é feed; outros sufixos seguem fora", () => {
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 429 (challenge anti-bot: vercel)" }), "feed");
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 403 (challenge anti-bot: cloudflare)" }), "feed");
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 429" }), "feed");
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 403 Forbidden" }), undefined);
+    assert.equal(outcomePath({ outcome: "fail", reason: "HTTP 429 (blocked)" }), undefined);
+  });
+
+  it("o motivo gerado por describeFeedHttpFailure casa com o fallback", () => {
+    const reason = describeFeedHttpFailure({
+      status: 429,
+      headers: new Headers({ "x-vercel-mitigated": "challenge" }),
+    });
+    assert.equal(outcomePath({ outcome: "fail", reason }), "feed");
   });
 });
 

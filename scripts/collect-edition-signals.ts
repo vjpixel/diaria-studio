@@ -690,28 +690,34 @@ export function loadPrimarySourceNames(rootDir: string): Set<string> | undefined
 }
 
 /**
- * #10240: fontes com caminho FEED configurado — coluna `RSS` não-vazia em
- * `seed/sources.csv`. Esvaziar a coluna é a forma de marcar "feed aposentado
- * (ex.: challenge anti-bot da plataforma no domínio inteiro), cobertura só
- * pela busca `site:`": o Stage 1 deixa de buscar o feed (`list-active-sources
- * --rss-only` filtra) e `source_feed_broken` deixa de disparar pelas falhas
- * antigas que seguem em `recent_outcomes` (sem rodada nova de feed, o streak
- * congelava e reabria a issue toda edição — VentureBeat (IA), #10240).
- * Desmarcar = preencher a coluna RSS de novo.
+ * #10240: fontes com caminho FEED configurado — bullet `- RSS:` não-vazio em
+ * `context/sources.md`, o arquivo que o Stage 1 usa pra decidir se busca o
+ * feed (`list-active-sources --rss-only`). Ler o mesmo arquivo da coleta
+ * (e não `seed/sources.csv`) garante que "sem feed no sinal" = "sem feed
+ * coletado": CSV re-preenchido sem `npm run sync-sources` não volta a
+ * sinalizar um feed que nem está sendo buscado (review do PR #10650).
+ *
+ * Esvaziar a coluna RSS no seed + `npm run sync-sources` é a forma de marcar
+ * "feed aposentado (ex.: challenge anti-bot da plataforma no domínio inteiro),
+ * cobertura só pela busca `site:`": `source_feed_broken` deixa de disparar
+ * pelas falhas antigas que seguem em `recent_outcomes` (sem rodada nova de
+ * feed, o streak congelava e reabria a issue toda edição — VentureBeat (IA),
+ * #10240). Desmarcar = preencher a coluna RSS de novo e rodar o sync.
+ *
+ * Conjunto VAZIO → `undefined` (comportamento anterior, todo feed conta): um
+ * formato renomeado (bullet `RSS` com outro nome) que zerasse o parse não
+ * pode silenciar o sinal de todas as fontes de uma vez.
  */
 export function loadFeedSourceNames(rootDir: string): Set<string> | undefined {
-  const csvPath = resolve(rootDir, "seed/sources.csv");
-  if (!existsSync(csvPath)) return undefined;
+  const sourcesMdPath = resolve(rootDir, "context/sources.md");
+  if (!existsSync(sourcesMdPath)) return undefined;
   try {
-    const { data } = Papa.parse<{ Nome?: string; RSS?: string }>(readFileSync(csvPath, "utf8"), {
-      header: true,
-      skipEmptyLines: true,
-    });
-    return new Set(
-      data
-        .filter((r) => r.RSS?.trim() && r.Nome?.trim())
-        .map((r) => (r.Nome as string).trim()),
+    const names = new Set(
+      parseSourcesMd(readFileSync(sourcesMdPath, "utf8"))
+        .filter((s) => s.rss?.trim())
+        .map((s) => s.name),
     );
+    return names.size > 0 ? names : undefined;
   } catch {
     return undefined;
   }
@@ -782,7 +788,7 @@ export const SOURCE_FEED_BROKEN_THRESHOLD_ROUNDS = 3;
  * desativar a fonte — ela está trazendo artigo pela busca.
  */
 export const SOURCE_FEED_BROKEN_ACTION =
-  "O caminho RSS/sitemap desta fonte falha há várias rodadas, mas a busca `site:` cobre a fonte — NÃO desativar em seed/sources.csv. Consertar o feed: (1) testar a URL do RSS com curl (com e sem User-Agent de navegador); (2) se mudou de endereço, atualizar a coluna RSS em seed/sources.csv; (3) se o site bloqueia leitura automatizada do feed (ex.: 429/403 de challenge da Cloudflare/Vercel), esvaziar a coluna RSS da fonte em seed/sources.csv e rodar `npm run sync-sources` — a busca vira o único caminho e este sinal para de disparar (#10240); sem burlar o bloqueio. Enquanto isso, a cobertura da fonte depende só da cota da API de busca.";
+  "O caminho RSS/sitemap desta fonte falha há várias rodadas, mas a busca `site:` cobre a fonte — NÃO desativar em seed/sources.csv. Consertar o feed: (1) testar a URL do RSS com curl (com e sem User-Agent de navegador); (2) se mudou de endereço, atualizar a coluna RSS em seed/sources.csv; (3) se o site bloqueia leitura automatizada do feed (ex.: 429/403 de challenge da Cloudflare/Vercel), esvaziar a coluna RSS da fonte em seed/sources.csv e rodar `npm run sync-sources` (o sinal lê context/sources.md) — a busca vira o único caminho e este sinal para de disparar (#10240); sem burlar o bloqueio. Enquanto isso, a cobertura da fonte depende só da cota da API de busca.";
 
 export function signalsFromSourceHealth(
   health: SourceHealthFile,
