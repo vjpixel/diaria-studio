@@ -846,6 +846,7 @@ describe("fail-closed: comando fora da forma simples (verificação da PR #10668
     const dir = join(root, "data", "sessions");
     mkdirSync(dir, { recursive: true });
     sh("git", ["init", "-q"], root);
+    sh("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], root);
     const now = new Date().toISOString();
     writeFileSync(
       join(dir, `overnight-${tag}-coord-A.json`),
@@ -1042,6 +1043,7 @@ describe("ônus da prova invertido: whitelist estrita de merge de fora (re-verif
     const dir = join(root, "data", "sessions");
     mkdirSync(dir, { recursive: true });
     sh("git", ["init", "-q"], root);
+    sh("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], root);
     const now = new Date().toISOString();
     writeFileSync(
       join(dir, `overnight-${tag}-coord-A.json`),
@@ -1208,5 +1210,137 @@ describe("ônus da prova invertido: whitelist estrita de merge de fora (re-verif
     ]) {
       assert.equal(hookRepo.parseStrictMerge(bad), null, JSON.stringify(bad));
     }
+  });
+});
+
+describe("studio-plain só com prova positiva do origin (ataque final à PR #10668)", () => {
+  const HOOK = fileURLToPath(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url));
+  const tag = machineTag();
+  const DENY = /"permissionDecision":"deny"/;
+  const AT = "@";
+
+  /** `C:\x\y` → `/c/x/y` (forma do Git Bash); em POSIX devolve o próprio caminho. */
+  const msys = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? `/${p[0].toLowerCase()}/${p.slice(3).replaceAll("\\", "/")}` : p);
+
+  function setup(opts: { studioLock: string; grant?: { pr: number; repo?: string }; origin?: string | null }): string {
+    const root = tmpRoot("pos");
+    const dir = join(root, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    sh("git", ["init", "-q"], root);
+    const origin = opts.origin === undefined ? "https://github.com/vjpixel/diaria-studio.git" : opts.origin;
+    if (origin) sh("git", ["remote", "add", "origin", origin], root);
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(dir, `overnight-${tag}-coord-A.json`),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "coord-A",
+        machineTag: tag,
+        startedAt: now,
+        lastHeartbeat: now,
+        ...(opts.grant ? { merge_grant: { grantedTo: "benef", grantedBy: "coord-A", grantedAt: now, ...opts.grant } } : {}),
+      }),
+    );
+    writeFileSync(join(dir, ".merge-lock.json"), JSON.stringify({ heldBy: opts.studioLock, acquiredAt: now }));
+    return root;
+  }
+
+  function checkout(repo: string): string {
+    const dir = tmpRoot("pos-co");
+    sh("git", ["init", "-q"], dir);
+    sh("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], dir);
+    return dir;
+  }
+
+  function run(
+    root: string,
+    command: string,
+    o: { sessionId?: string; cwd?: string | null; env?: Record<string, string> } = {},
+  ): string {
+    const payload: Record<string, unknown> = { session_id: o.sessionId ?? "coord-A", tool_name: "Bash", tool_input: { command } };
+    if (o.cwd !== null) payload.cwd = o.cwd ?? root;
+    const env = { ...process.env, ...(o.env ?? {}) };
+    if (!o.env?.GH_REPO) delete env.GH_REPO;
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: root,
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+      env,
+    });
+    return r.stdout ?? "";
+  }
+
+  it("Git Bash: cd /c/... pro checkout do design a partir do studio → estrito (bloqueia com o lock do studio preso)", () => {
+    const root = setup({ studioLock: "outra-sessao" });
+    const design = msys(checkout(DESIGN));
+    assert.match(run(root, `cd ${design} && gh pr merge 5 --squash`), DENY);
+  });
+
+  it("Git Bash: cd /c/... pro checkout do studio a partir do design → bloqueia com o lock do studio preso", () => {
+    const root = setup({ studioLock: "outra-sessao" });
+    const design = checkout(DESIGN);
+    const studio = msys(checkout(DEFAULT_ISSUE_REPO));
+    assert.match(run(root, `cd ${studio} && gh pr merge 5 --squash`, { cwd: design }), DENY);
+  });
+
+  it("origin indeterminado não prova nada: sem payload.cwd, sem origin, alias de host → concessão do studio não conta", () => {
+    const g = setup({ studioLock: "benef", grant: { pr: 123 } });
+    assert.match(run(g, "gh pr merge 123 --squash", { sessionId: "benef", cwd: null }), DENY, "sem payload.cwd");
+    const noOrigin = setup({ studioLock: "benef", grant: { pr: 123 }, origin: null });
+    assert.match(run(noOrigin, "gh pr merge 123 --squash", { sessionId: "benef" }), DENY, "sem origin");
+    const alias = setup({ studioLock: "benef", grant: { pr: 123 }, origin: "github-work:vjpixel/diaria-studio.git" });
+    assert.match(run(alias, "gh pr merge 123 --squash", { sessionId: "benef" }), DENY, "alias de host ssh");
+  });
+
+  it("GH_REPO herdado do ambiente sem -R/URL → estrito", () => {
+    const g = setup({ studioLock: "benef", grant: { pr: 123 } });
+    assert.match(run(g, "gh pr merge 123 --squash", { sessionId: "benef", env: { GH_REPO: DESIGN } }), DENY);
+    // Com -R explícito do studio, o -R vence o GH_REPO no gh: forma simples do studio.
+    assert.equal(
+      run(g, "gh pr merge 123 --squash -R vjpixel/diaria-studio", { sessionId: "benef", env: { GH_REPO: DESIGN } }),
+      "",
+    );
+    const boom = () => {
+      throw new Error("x");
+    };
+    assert.equal(
+      hookRepo.resolveMergeTargets("gh pr merge 1", "/x", {
+        execFn: () => "https://github.com/vjpixel/diaria-studio.git",
+        env: { GH_REPO: DESIGN },
+      }).mode,
+      "strict",
+    );
+    assert.equal(hookRepo.resolveMergeTargets("gh pr merge 1", undefined, { execFn: boom, env: {} }).mode, "strict");
+  });
+
+  it("caso comum: worktree/checkout do studio, gh pr merge 123 --squash → studio-plain, concessão conta", () => {
+    const g = setup({ studioLock: "benef", grant: { pr: 123 } });
+    assert.equal(run(g, "gh pr merge 123 --squash", { sessionId: "benef" }), "");
+    assert.equal(
+      hookRepo.resolveMergeTargets("gh pr merge 123 --squash", "/x", {
+        execFn: () => "https://github.com/vjpixel/diaria-studio.git",
+        env: {},
+      }).mode,
+      "studio-plain",
+    );
+  });
+
+  it("unit: remotes ssh com porta / ssh.github.com; alias de host fica indeterminado", () => {
+    assert.equal(hookRepo.repoFromRemoteUrl(`ssh://git${AT}github.com:22/vjpixel/diaria-design.git`), DESIGN);
+    assert.equal(hookRepo.repoFromRemoteUrl(`ssh://git${AT}ssh.github.com:443/vjpixel/diaria-design`), DESIGN);
+    assert.equal(hookRepo.repoFromRemoteUrl(`git${AT}ssh.github.com:vjpixel/diaria-design.git`), DESIGN);
+    assert.equal(hookRepo.repoFromRemoteUrl(`git${AT}github.com:vjpixel/diaria-studio.git`), DEFAULT_ISSUE_REPO);
+    assert.equal(hookRepo.repoFromRemoteUrl("https://github.com:443/vjpixel/diaria-studio.git"), DEFAULT_ISSUE_REPO);
+    assert.equal(hookRepo.repoFromRemoteUrl("github-work:vjpixel/diaria-studio.git"), null);
+  });
+
+  it("unit: caminho MSYS vira nativo só no win32", () => {
+    assert.equal(hookRepo.toNativePath("/c/Users/vjpix/x", "win32"), "C:\\Users\\vjpix\\x");
+    assert.equal(hookRepo.toNativePath("/D/a/b", "win32"), "D:\\a\\b");
+    assert.equal(hookRepo.toNativePath("/c", "win32"), "C:\\");
+    assert.equal(hookRepo.toNativePath("/srv/x", "win32"), "/srv/x");
+    assert.equal(hookRepo.toNativePath("/c/x", "linux"), "/c/x");
   });
 });

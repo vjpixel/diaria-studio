@@ -82,10 +82,16 @@ export function repoFromRemoteUrl(url) {
   if (typeof url !== "string") return null;
   const s = url.trim();
   // Montado em partes: o literal usuário+arroba+host casa o guard de PII do #6753.
-  const ssh = new RegExp("^(?:ssh://)?git" + "@" + "github\\.com[:/](.+)$", "i").exec(s);
-  if (ssh) return normalizeRepoSlug(ssh[1]);
-  const https = /^https?:\/\/(?:[^@/]+@)?github\.com\/(.+)$/i.exec(s);
+  // `ssh://git@github.com[:porta]/o/r` e `ssh://git@ssh.github.com:443/o/r`.
+  const sshUrl = new RegExp("^ssh://git" + "@" + "(?:ssh\\.)?github\\.com(?::\\d+)?/(.+)$", "i").exec(s);
+  if (sshUrl) return normalizeRepoSlug(sshUrl[1]);
+  // Forma scp: `git` + arroba + `github.com:o/r` ou `ssh.github.com:o/r`.
+  const scp = new RegExp("^git" + "@" + "(?:ssh\\.)?github\\.com:(.+)$", "i").exec(s);
+  if (scp) return normalizeRepoSlug(scp[1]);
+  const https = /^https?:\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/(.+)$/i.exec(s);
   if (https) return normalizeRepoSlug(https[1]);
+  // Alias de host (`github-work:o/r` do ~/.ssh/config) ou qualquer outro: null
+  // — quem decide trata origin desconhecido como NÃO provado (estrito).
   return null;
 }
 
@@ -410,12 +416,25 @@ export function reposMentioned(command, allowed = loadAllowedForeignRepos()) {
   return out;
 }
 
+/**
+ * Caminho MSYS/Git Bash (`/c/Users/...`) → caminho nativo do Windows
+ * (`C:\\Users\\...`), só em win32 — o Node leria `/c/...` como `C:\\c\\...`
+ * e o `origin` sairia indeterminado. Em outra plataforma (ou outro formato)
+ * devolve o próprio caminho.
+ */
+export function toNativePath(path, platform = process.platform) {
+  if (platform !== "win32" || typeof path !== "string") return path;
+  const m = /^\/([A-Za-z])(?:\/(.*))?$/.exec(path);
+  if (!m) return path;
+  return `${m[1].toUpperCase()}:\\${(m[2] ?? "").replaceAll("/", "\\")}`;
+}
+
 /** `origin` do repo git em `cwd`. `null` quando indeterminado (sem cwd, git falhou). */
 export function repoFromCwdOrigin(cwd, execFn = execFileSync) {
   if (typeof cwd !== "string" || cwd.trim() === "") return null;
   try {
     const url = execFn("git", ["remote", "get-url", "origin"], {
-      cwd,
+      cwd: toNativePath(cwd),
       encoding: "utf8",
       timeout: 10_000,
       windowsHide: true,
@@ -453,7 +472,7 @@ export function resolveGhTargets(command, cwd, opts = {}) {
     words.forEach((w, k) => {
       if ((w === "cd" || w === "pushd") && words[k + 1]) {
         try {
-          dirs.push(resolvePath(base, words[k + 1]));
+          dirs.push(resolvePath(toNativePath(base), toNativePath(words[k + 1])));
         } catch {
           // diretório ilegível: o studio já está no conjunto
         }
@@ -485,7 +504,7 @@ export function resolveGhTargets(command, cwd, opts = {}) {
     let dir = cwd;
     if (useCd) {
       try {
-        dir = resolvePath(typeof cwd === "string" && cwd !== "" ? cwd : process.cwd(), seg.cd);
+        dir = resolvePath(toNativePath(typeof cwd === "string" && cwd !== "" ? cwd : process.cwd()), toNativePath(seg.cd));
       } catch {
         dir = null;
       }
@@ -587,13 +606,14 @@ export function parseStrictMerge(command) {
  * `{ mode, targets, grantRepo, pr }`:
  *   - `foreign-whitelist`: o comando PROVA ser um único merge de um repo de
  *     fora permitido → `targets = [esse repo]`, concessão desse repo conta;
- *   - `studio-plain`: forma estrita sem repo de fora, cwd (e `cd`) sem origin
- *     de fora → `targets = [diaria-studio]`, concessão do studio conta;
+ *   - `studio-plain`: forma estrita com `-R`/URL do studio, ou sem repo e com
+ *     o `origin` do cwd (ou do `cd`) PROVADAMENTE o diaria-studio (e sem
+ *     `GH_REPO` herdado) → `targets = [diaria-studio]`, concessão do studio conta;
  *   - `strict`: qualquer outra coisa → diaria-studio + todo repo permitido
  *     que o comando possa tocar; NENHUMA concessão conta (`grantRepo: null`).
  */
 export function resolveMergeTargets(command, cwd, opts = {}) {
-  const { execFn = execFileSync, allowed = loadAllowedForeignRepos() } = opts;
+  const { execFn = execFileSync, allowed = loadAllowedForeignRepos(), env = process.env } = opts;
   const parsed = parseStrictMerge(command);
   if (parsed) {
     const { repo, cd, pr } = parsed;
@@ -604,10 +624,14 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
       }
     } else if (repo === DIARIA_STUDIO_REPO) {
       return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
-    } else {
-      // Sem -R/URL o gh mira o repo do diretório: não pode ser um de fora.
+    } else if (!(typeof env?.GH_REPO === "string" && env.GH_REPO !== "")) {
+      // Sem -R/URL o gh mira o repo do DIRETÓRIO (ou o `GH_REPO` herdado do
+      // ambiente — aí não há prova, estrito). Forma simples do studio só com
+      // PROVA POSITIVA: o `origin` do diretório tem que ser o diaria-studio.
+      // Indeterminado (sem cwd, git falhou, alias de host, caminho ilegível)
+      // NUNCA conta como "não é de fora".
       const o = repoFromCwdOrigin(cd ?? cwd, execFn);
-      if (!(o && allowed.has(o))) {
+      if (o === DIARIA_STUDIO_REPO) {
         return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
       }
     }
@@ -618,7 +642,7 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
   const dirs = [cwd];
   for (const m of String(command).matchAll(/(?:^|[\s;&|(){}!])(?:cd|pushd)\s+([^\s;&|()]+)/g)) {
     try {
-      dirs.push(resolvePath(base, m[1].replace(/^['"]|['"]$/g, "")));
+      dirs.push(resolvePath(toNativePath(base), toNativePath(m[1].replace(/^['"]|['"]$/g, ""))));
     } catch {
       // diretório ilegível: o studio já está no conjunto
     }

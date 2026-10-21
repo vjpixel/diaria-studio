@@ -45,8 +45,10 @@ export type MergeResolution =
 export function resolveMergeTargets(
   command: unknown,
   cwd: unknown,
-  opts?: { execFn?: ExecFn; allowed?: Set<string> },
+  opts?: { execFn?: ExecFn; allowed?: Set<string>; env?: Record<string, string | undefined> },
 ): MergeResolution;
+/** `/c/x` → `C:\x` só em win32. */
+export function toNativePath<T>(path: T, platform?: string): T;
 
 /** Motivos de o comando não estar na forma simples (vazio = simples). */
 export function commandComplexity(command: unknown): string[];
