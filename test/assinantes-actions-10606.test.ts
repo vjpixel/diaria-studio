@@ -137,7 +137,9 @@ describe("buildActionItems (#10606)", () => {
   it("alertas roteados por `kind`, nunca pelo texto de `etapa`", () => {
     const a = (kind: PanelAlert["kind"]): PanelAlert => ({ kind, etapa: "rótulo qualquer", mensagem: "2 rodadas seguidas com falha" });
     const items = buildActionItems(
-      funnel({ followup: followup({ alerts: [a("kit_streak"), a("email3_brevo_streak"), a("followup_streak"), { ...a("lot_schedule_failed"), step: "apoio30", mensagem: "lote ap-1: x" }] }) }),
+      funnel({ followup: followup({ alerts: [a("kit_streak"), a("email3_brevo_streak"), a("followup_streak"), { ...a("lot_schedule_failed"), mensagem: "lote ap-1: x" }] }) }),
+      // lote sem `step` (kind fora de STEP_LABELS): não absorve nenhuma sequência,
+      // então as 4 rotas aparecem; a absorção tem teste próprio abaixo.
     );
     assert.equal(items.length, 4);
     assert.match(items[0].acao, /onboarding-kit-transport-run\.ts/);
@@ -231,6 +233,22 @@ describe("buildActionItems (#10606)", () => {
     const items = buildActionItems(funnel({ followup: followup({ alerts, steps: [step("apoio30", 4)] }) }));
     assert.deepEqual(items.map((i) => i.id), ["alerta-0", "alerta-1"]);
     assert.equal(items.filter((i) => /envio\(s\) falho\(s\)/.test(i.detalhe)).length, 1);
+  });
+
+  it("lote não agendado em etapa SEM falhos: a sequência citada nele não vira item próprio", () => {
+    const alerts: PanelAlert[] = [
+      { kind: "followup_streak", etapa: "Sequências de apoio/formulário", mensagem: "2 rodadas seguidas com falha" },
+      { kind: "lot_schedule_failed", step: "apoio30", etapa: STEP_LABELS.apoio30, mensagem: "lote ap-1: x" },
+    ];
+    const items = buildActionItems(funnel({ followup: followup({ alerts, steps: [step("apoio30", 0)] }) }));
+    assert.deepEqual(items.map((i) => i.id), ["alerta-1"]);
+    assert.match(items[0].detalhe, /2 rodadas seguidas com falha/);
+  });
+
+  it("rodada Kit só com lote sem confirmação na releitura (lots_unverified) aparece no topo", () => {
+    const items = buildActionItems(funnel({ kitLots: { lastSendRun: run({ lots_unverified: 2 }), consecutiveFailedSendRuns: 1 } }));
+    assert.deepEqual(items.map((i) => i.id), ["kit-rodada"]);
+    assert.match(items[0].detalhe, /2 lote\(s\) sem confirmação/);
   });
 
   it("alerta do e-mail 3 via Brevo nunca é absorvido por falha de lote Kit", () => {

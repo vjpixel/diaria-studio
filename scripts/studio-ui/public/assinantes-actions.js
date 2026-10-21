@@ -149,6 +149,7 @@ export function buildActionItems(data) {
     if (run.aborted === true) problemas.push(`rodada abortada (${run.error ?? "sem motivo registrado"})`);
     if ((run.refresh_failed ?? 0) > 0) problemas.push(`refresh falhou em ${run.refresh_failed} de ${run.refresh_candidates ?? "?"} candidato(s)`);
     if ((run.lots_orphan_draft ?? 0) > 0) problemas.push(`${run.lots_orphan_draft} rascunho(s) órfão(s) no Kit (enviar pela UI mandaria o e-mail em dobro)`);
+    if ((run.lots_unverified ?? 0) > 0) problemas.push(`${run.lots_unverified} lote(s) sem confirmação na releitura do Kit`);
     if ((run.lots_failed ?? 0) > 0 && !ladderFailing) problemas.push(`${run.lots_failed} lote(s) com falha`);
     if (problemas.length > 0) {
       const streak = alerts.find((a) => a.kind === "kit_streak" && !absorbed.has(a));
@@ -176,6 +177,15 @@ export function buildActionItems(data) {
         ),
       );
     }
+  }
+
+  // A sequência citada dentro de um item de lote não agendado não vira item
+  // próprio também (achado da verificação do fleet, PR #10651): marcar antes
+  // do laço, porque os alertas de sequência vêm antes dos de lote no array.
+  for (const alert of alerts) {
+    if (alert.kind !== "lot_schedule_failed" || !alert.step) continue;
+    const streak = streakFor(alert.step);
+    if (streak) absorbed.add(streak);
   }
 
   const falhosCitados = new Set();
