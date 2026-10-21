@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,6 +25,7 @@ import {
   NIGHTLY_CHAIN_TASK_NAME,
   NIGHTLY_OVERNIGHT_EFFORT,
   NIGHTLY_OVERNIGHT_MODEL,
+  PERSISTED_OUTPUT_TAIL_BYTES,
   buildOvernightClaudeArgs,
   buildOvernightEnv,
   buildReviewEnv,
@@ -33,6 +34,7 @@ import {
   formatLiveLogLine,
   liveLogRelFromLogPath,
   main,
+  readFileTail,
   rotateLiveLog,
   spawnWithPersistentOutput,
   type NightlyChainDeps,
@@ -68,7 +70,6 @@ function harness(review: FakeResult, overnight: FakeResult, opts: { active?: boo
     hasActiveOvernight: () => opts.active === true,
     env: { PATH: "/usr/bin:/bin", ANTHROPIC_API_KEY: "sk-x", ANTHROPIC_BASE_URL: "https://gw", ANTHROPIC_AUTH_TOKEN: "t", CLAUDECODE: "1", KEEP: "y" },
     log: (l) => logs.push(l),
-    writeOvernightOutput: () => {},
   };
   return { deps, calls, logs };
 }
@@ -322,7 +323,6 @@ describe("run-nightly-chain — log incremental sobrevive a processo morto (#106
         `  resolveClaudeBin: () => "/opt/claude",`,
         `  hasActiveOvernight: () => false,`,
         `  log: () => {},`,
-        `  writeOvernightOutput: () => {},`,
         `  spawn: ((cmd: string) => {`,
         `    if (cmd !== "bash") process.kill(process.pid, "SIGKILL");`,
         `    return { pid: 1, output: [], stdout: "", stderr: "[daily-review] concluído", status: 0, signal: null };`,
@@ -396,6 +396,36 @@ describe("saída dos filhos persiste antes de o runner morrer", () => {
     assert.equal(r.status, 7);
     assert.equal(r.stdout, "result");
     assert.equal(r.stderr, "error");
+  });
+
+  // #10748: o stream-json do overnight não tem teto; ler o arquivo inteiro de
+  // volta lançava acima do limite de string do V8 e virava "overnight: FALHOU"
+  // num overnight que terminou bem. Só a cauda volta pra memória.
+  it("spawn persistente devolve só a cauda de uma saída maior que o teto, e o arquivo fica inteiro no disco", () => {
+    const root = makeRepo();
+    mkdirSync(join(root, "data"));
+    const total = PERSISTED_OUTPUT_TAIL_BYTES + 512 * 1024;
+    const script = `const s = "x".repeat(${total - 4}) + "FIM\\n"; process.stdout.write(s); process.stderr.write("e".repeat(${total - 4}) + "ERR\\n");`;
+    const r = spawnWithPersistentOutput(process.execPath, ["-e", script], { cwd: root, encoding: "utf8" });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout.length, PERSISTED_OUTPUT_TAIL_BYTES, "stdout devolvido inteiro em vez da cauda");
+    assert.ok(r.stdout.endsWith("FIM\n"));
+    assert.equal(r.stderr.length, PERSISTED_OUTPUT_TAIL_BYTES);
+    assert.ok(r.stderr.endsWith("ERR\n"));
+    assert.equal(statSync(join(root, "data", "overnight", ".nightly-chain-last-overnight.json")).size, total);
+  });
+
+  it("readFileTail: arquivo menor que o teto volta inteiro; corte no meio de multibyte não deixa U+FFFD", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nightly-tail-"));
+    const small = join(dir, "small.txt");
+    writeFileSync(small, "ação\n");
+    assert.equal(readFileTail(small, 1024), "ação\n");
+    const cut = join(dir, "cut.txt");
+    writeFileSync(cut, "çabc"); // "ç" = 2 bytes; teto de 4 bytes corta no meio dele
+    assert.equal(readFileTail(cut, 4), "abc");
+    const empty = join(dir, "empty.txt");
+    writeFileSync(empty, "");
+    assert.equal(readFileTail(empty, 4), "");
   });
 
   for (const phase of ["review", "overnight"] as const) {

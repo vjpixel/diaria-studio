@@ -248,6 +248,66 @@ assert_true \
   "daily-review: gate do marcador RESUMO-DAILY-REVIEW preservado (exit 4, review incompleto)" \
   "$(grep -q 'exit 4' "$DAILY" && echo 1 || echo 0)"
 
+# ── opus-daily-diff-review.sh: falha do claude/extração deixa rastro (#10749) ─
+# Executa o bloco REAL (do `OUT_FILE=` até antes do gate `command grep`) com um
+# `claude` falso no PATH. Antes do fix: (1) `claude` não-zero abortava via
+# `set -e` sem linha de ERRO e deixava no .txt o transcript do run anterior;
+# (2) evento result com is_error / JSONL truncado abortava calado.
+XBLOCK="$TMPDIR/daily-extract.sh"
+awk '/^OUT_FILE=/,/^# #6987/' "$DAILY" | grep -v '^# #6987' > "$XBLOCK"
+case "$(cat "$XBLOCK")" in
+  *'claude -p'*'node -e'*) ;;
+  *) echo "FAIL: não extraiu o bloco claude+extração de $DAILY (marcadores OUT_FILE=/# #6987 mudaram?)"; exit 1 ;;
+esac
+FAKEBIN="$TMPDIR/fakebin"
+mkdir -p "$FAKEBIN"
+# $FAKE_MODE escolhe o cenário; o stdin (prompt) é drenado como o real faria.
+cat > "$FAKEBIN/claude" <<'FAKE'
+#!/usr/bin/env bash
+cat >/dev/null
+case "$FAKE_MODE" in
+  crash) echo '{"type":"system"}'; exit 3 ;;
+  is_error) echo '{"type":"result","is_error":true,"result":"RESUMO-DAILY-REVIEW: x"}' ;;
+  truncated) echo '{"type":"system"}'; printf '{"type":"result","resu' ;;
+  ok) echo '{"type":"result","result":"RESUMO-DAILY-REVIEW: commits=1 findings=0"}' ;;
+esac
+FAKE
+chmod +x "$FAKEBIN/claude"
+
+# Roda o bloco com o .txt pré-semeado com transcript velho; ecoa "rc|stderr".
+run_extract() {
+  local state="$TMPDIR/state-$1" rc
+  rm -rf "$state"; mkdir -p "$state"
+  printf 'TRANSCRIPT-VELHO-DO-RUN-ANTERIOR\n' > "$state/last-daily-review-output.txt"
+  set +e
+  FAKE_MODE="$1" PATH="$FAKEBIN:$PATH" bash -c "
+    set -euo pipefail
+    STATE_DIR='$state' PROMPT='p'
+    source '$XBLOCK'
+  " >/dev/null 2>"$state/stderr"
+  rc=$?
+  set -e
+  echo "$rc"
+}
+out_of() { cat "$TMPDIR/state-$1/last-daily-review-output.txt"; }
+err_of() { cat "$TMPDIR/state-$1/stderr"; }
+
+for mode in crash is_error truncated; do
+  RC=$(run_extract "$mode")
+  assert_true "daily-review: cenário $mode sai não-zero (marco não avança)" \
+    "$([ "$RC" -ne 0 ] && echo 1 || echo 0)"
+  assert_true "daily-review: cenário $mode deixa linha [daily-review] ERRO no log (#10749)" \
+    "$(err_of "$mode" | grep -q '\[daily-review\] ERRO' && echo 1 || echo 0)"
+  assert_true "daily-review: cenário $mode não deixa transcript do run anterior no .txt (#10749)" \
+    "$(out_of "$mode" | grep -q 'TRANSCRIPT-VELHO' && echo 0 || echo 1)"
+done
+RC=$(run_extract crash)
+assert_true "daily-review: claude não-zero propaga o rc original (124 = timeout fica distinguível)" \
+  "$([ "$RC" -eq 3 ] && echo 1 || echo 0)"
+RC=$(run_extract ok)
+assert_true "daily-review: caminho feliz segue saindo 0 e grava só o texto do result" \
+  "$([ "$RC" -eq 0 ] && [ "$(out_of ok)" = 'RESUMO-DAILY-REVIEW: commits=1 findings=0' ] && echo 1 || echo 0)"
+
 # ── watch-continuo-health.sh: portão de stdout executado de verdade ─────────
 WBLOCK="$TMPDIR/watch-delivery.sh"
 awk '/^if \[ "\$ISSUES_CREATED" -gt 0 \]; then$/,/^fi$/' "$WATCH" > "$WBLOCK"

@@ -57,7 +57,7 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
@@ -201,8 +201,6 @@ export interface NightlyChainDeps {
   hasActiveOvernight: (repoRootAbs: string) => boolean;
   env: NodeJS.ProcessEnv;
   log: (line: string) => void;
-  /** Compatibilidade para injeções de teste; a implementação default grava durante o spawn. */
-  writeOvernightOutput: (repoRootAbs: string, stdout: string) => void;
   /**
    * Anexa UMA linha ao log incremental (`LIVE_LOG_REL`, #10672) no momento em
    * que ela é emitida. Opcional: ausente, a cadeia só loga via `log`.
@@ -290,9 +288,43 @@ function defaultAppendLiveLog(repoRootAbs: string, line: string): void {
   }
 }
 
+/**
+ * Teto de bytes lidos de volta de cada arquivo de saída persistido (#10748).
+ * Os consumidores (`tailLines`, `classifyReviewResult`) só olham a cauda; o
+ * arquivo inteiro segue no disco pra diagnóstico.
+ */
+export const PERSISTED_OUTPUT_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Lê só os últimos `maxBytes` bytes de `path` (#10748). O stream-json do
+ * overnight não tem teto de tamanho: `readFileSync` do arquivo inteiro lança
+ * acima do limite de string do V8 e transformava um overnight que terminou bem
+ * em "overnight: FALHOU". Um caractere multibyte cortado no início vira U+FFFD
+ * e é descartado.
+ */
+export function readFileTail(path: string, maxBytes: number = PERSISTED_OUTPUT_TAIL_BYTES): string {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buf = Buffer.alloc(length);
+    let read = 0;
+    while (read < length) {
+      const n = readSync(fd, buf, read, length - read, size - length + read);
+      if (n === 0) break;
+      read += n;
+    }
+    const text = buf.subarray(0, read).toString("utf8");
+    return length < size ? text.replace(/^�+/, "") : text;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** stdout/stderr vão direto ao disco, inclusive enquanto spawnSync bloqueia (#10699).
  * Uma geração anterior é preservada. Sem data/, mantém a captura em memória.
  * Erros de armazenamento falham explicitamente antes de iniciar o filho.
+ * Só a cauda de cada arquivo volta pra memória (#10748).
  */
 export const spawnWithPersistentOutput: typeof spawnSync = ((command, args, options) => {
   const root = String(options?.cwd ?? process.cwd());
@@ -309,7 +341,7 @@ export const spawnWithPersistentOutput: typeof spawnSync = ((command, args, opti
       fds.push(openSync(path, "w"));
     }
     const result = spawnSync(command, args, { ...options, stdio: ["ignore", fds[0], fds[1]] });
-    return { ...result, stdout: readFileSync(stdoutPath, "utf8"), stderr: readFileSync(stderrPath, "utf8") };
+    return { ...result, stdout: readFileTail(stdoutPath), stderr: readFileTail(stderrPath) };
   } finally {
     for (const fd of fds) closeSync(fd);
   }
@@ -321,7 +353,6 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   hasActiveOvernight: (root) => hasActiveSessionOfKind(root, "overnight"),
   env: process.env,
   log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
-  writeOvernightOutput: () => {},
   appendLiveLog: defaultAppendLiveLog,
   rotateLiveLog,
 };
@@ -352,7 +383,6 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     env: buildOvernightEnv(deps.env),
     maxBuffer: 256 * 1024 * 1024,
   });
-  deps.writeOvernightOutput(repoRootAbs, r.stdout ?? "");
   if (r.error || r.status !== 0) {
     deps.log(
       `overnight: FALHOU exit=${r.status ?? "?"} ${r.error ? `erro=${r.error.message} ` : ""}tail=${tailLines(r.stderr ?? "")}`,
