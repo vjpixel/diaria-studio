@@ -120,6 +120,13 @@
  * reabre o teto revogado em #5235/#5236). Só `--no-ltv` omite a seção por
  * completo. Simplificação DECLARADA: usa o LTV BLENDED (ponto médio da
  * faixa) igual pra todo canal — LTV medido POR CANAL dependeria de #7916.
+ *
+ * **População desde #10703:** a base migrou pro Kit (#7386) e o snapshot
+ * Beehiiv ficou sem nenhum ativo, o que deixava ARPU e churn sempre
+ * indisponíveis. Com o store unificado presente e com ativo Kit, ARPU e
+ * churn saem do ciclo de vida das assinaturas Kit (`computeKitLifetimeChurn`);
+ * o diff de snapshots Beehiiv fica como fallback pra quando não há store.
+ * Hotmart não tem fonte no repo e aparece como fonte sem dado (ARPU = PISO).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -179,7 +186,11 @@ import {
   computeChurnExitsBetweenSnapshots,
   excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
+  computeKitLifetimeChurn,
   type ApoiaSeMonthCacheEntry,
+  type ArpuResult,
+  type ChurnRateResult,
+  type KitLifecycleRow,
 } from "./lib/ltv.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -307,10 +318,94 @@ export type CacReportLtvSection =
       /** Snapshots Beehiiv efetivamente usados (#9075): "atual" (ARPU + lado novo do churn) e baseline (~30d). */
       snapshotAtual?: string;
       snapshotBaseline?: string;
-      /** Base ativa Beehiiv que divide a receita no ARPU — NÃO é `CacRow.ativos` (#9075). */
+      /** Base ativa que divide a receita no ARPU (Kit ou Beehiiv, ver
+       *  `populacao`) — NÃO é `CacRow.ativos` (#9075). */
       ativosArpu?: number;
+      /** De onde vêm ARPU e churn (#10703). Ausente quando a seção parou
+       *  antes de escolher a população. */
+      populacao?: CacReportLtvPopulacao;
+      /** ARPU mensal (BRL/ativo) — presente sempre que computável, mesmo
+       *  com o LTV indisponível por falta de churn. */
+      arpuMensalBrl?: number;
+      /** Fontes de receita sem dado (ex.: Hotmart, sem fonte no repo) —
+       *  presença aqui faz o ARPU e o LTV serem PISO (#10703). */
+      fontesSemDado?: readonly string[];
+      /** Churn mensal usado na faixa (orgânico = teto do LTV, com limpeza = piso). */
+      churnMensal?: { organico: number; comLimpeza: number };
+      /** Início do período de churn no modo Kit (menor `entered_at`). */
+      churnDesde?: string;
     }
   | { applied: false; reason: string };
+
+export type CacReportLtvPopulacao = "kit-store" | "beehiiv-snapshot";
+
+/** Hotmart vende, mas não tem fonte de receita no repo (#10703): entra no
+ *  ARPU como fonte SEM dado, então o relatório diz qual falta e trata o
+ *  número como piso em vez de omitir a fonte em silêncio. */
+const LTV_FONTES_SEM_INTEGRACAO = ["hotmart"] as const;
+
+export interface ComputeLtvSectionOptions {
+  /** Store unificado de onde sai a população Kit (#10703). Default:
+   *  `{rootDir}/data/diaria-subscribers/diaria-subscribers.db`. */
+  storeDbPath?: string;
+  /** Injetável pra teste — mesmo padrão de `loadStoreLeitorSection`. */
+  openDb?: (path: string) => DatabaseSync | null;
+}
+
+/**
+ * Lê as assinaturas Kit do store com o e-mail do alias Kit (#10703). Linha
+ * sem alias com e-mail ganha um identificador sintético, pra não sumir da
+ * contagem. Leitura pura sobre um `db` já aberto.
+ */
+export function loadKitLifecycleRows(db: DatabaseSync): KitLifecycleRow[] {
+  const raw = db
+    .prepare(
+      `SELECT s.id AS id, MIN(ia.email) AS email, s.status AS status,
+              s.entered_at AS enteredAt, s.exited_at AS exitedAt
+       FROM subscription s
+       LEFT JOIN identity_alias ia
+         ON ia.subscriber_id = s.subscriber_id AND ia.platform = 'kit' AND ia.email IS NOT NULL
+       WHERE s.platform = 'kit'
+       GROUP BY s.id`,
+    )
+    .all() as Array<{ id: number; email: string | null; status: string | null; enteredAt: string | null; exitedAt: string | null }>;
+  return raw.map((r) => ({
+    email: r.email ?? `kit-subscription:${r.id}`,
+    status: r.status,
+    enteredAt: r.enteredAt,
+    exitedAt: r.exitedAt,
+  }));
+}
+
+function defaultLtvStoreDbPath(rootDir: string): string {
+  return resolve(rootDir, "data", "diaria-subscribers", "diaria-subscribers.db");
+}
+
+/** Abre o store só se o arquivo existir — o relatório é leitura e não pode
+ *  criar um `.db` vazio como efeito colateral. Nunca lança. */
+function tryLoadKitRows(opts: ComputeLtvSectionOptions, rootDir: string): KitLifecycleRow[] | null {
+  const path = opts.storeDbPath ?? defaultLtvStoreDbPath(rootDir);
+  if (!existsSync(path)) return null;
+  let db: DatabaseSync | null = null;
+  try {
+    db = (opts.openDb ?? openDiariaSubscribersDbSafe)(path);
+    if (!db) return null;
+    return loadKitLifecycleRows(db);
+  } catch (e) {
+    console.error(`[cac-report] LTV: falha ao ler assinaturas Kit do store (${path}) — cai no snapshot Beehiiv: ${(e as Error).message}`);
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/** Motivo de LTV indisponível: o insumo que de fato faltou, nunca o
+ *  genérico "ARPU mensal indisponível" que escondia a causa (#10703). */
+function ltvUnavailableMotivo(arpu: ArpuResult, churn: ChurnRateResult, faixaMotivo: string | null): string {
+  if (arpu.valor == null) return `ARPU mensal indisponível: ${arpu.motivo ?? "sem motivo"}`;
+  if (churn.monthly == null) return `churn mensal indisponível: ${churn.motivo ?? "sem motivo"}`;
+  return faixaMotivo ?? "LTV indisponível";
+}
 
 /**
  * Calcula o LTV de caixa (blended, mesma metodologia de `studio-metrics.ts`
@@ -345,6 +440,7 @@ function computeLtvSectionCore(
   rootDir: string,
   now: () => Date = () => new Date(),
   env: Readonly<Record<string, string | undefined>> = process.env as Record<string, string | undefined>,
+  opts: ComputeLtvSectionOptions = {},
 ): CacReportLtvSection {
   const campaign = resolveApoiaSeCampaignName(env);
   const month = previousCompetenceMonth(now());
@@ -366,6 +462,35 @@ function computeLtvSectionCore(
   const revSummary = summarizeApoiaSeMonthRevenue(apoiaSeCache);
 
   const amazonConfig = loadAmazonRevenueConfig(rootDir);
+  const revenueBySource: Record<string, number | null> = {
+    "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null,
+    amazon: amazonConfig.valorMensalBrl,
+  };
+  for (const fonte of LTV_FONTES_SEM_INTEGRACAO) revenueBySource[fonte] = null;
+
+  // #10703: população Kit (store unificado) primeiro — o snapshot Beehiiv
+  // ficou sem ativo depois da migração pro Kit (#7386).
+  const kitRows = tryLoadKitRows(opts, rootDir);
+  const kitPopulation = kitRows ? excludeInternalAndTestSubscribers(kitRows).kept : null;
+  if (kitPopulation && kitPopulation.some((r) => r.status === "active")) {
+    const manualCleanupKit = loadManualCleanupEmails(rootDir);
+    if (manualCleanupKit.error) {
+      return {
+        applied: true,
+        ltvFaixaBrl: null,
+        motivo: `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupKit.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`,
+        rows: [],
+        populacao: "kit-store",
+      };
+    }
+    const kit = computeKitLifetimeChurn(kitPopulation, manualCleanupKit.emails, now().getTime());
+    const arpuKit = computeArpu({ revenueBySource, activeBase: kit.activeCount });
+    return finishLtvSection(report, arpuKit, computeChurnRate(kit.churnInput), {
+      populacao: "kit-store",
+      ativosArpu: kit.activeCount,
+      ...(kit.periodStart ? { churnDesde: kit.periodStart } : {}),
+    });
+  }
 
   const dates = listSnapshotDates(backupRoot);
   const latestDate = resolveLtvLatestSnapshotDate(dates, snapshotDate);
@@ -394,10 +519,21 @@ function computeLtvSectionCore(
     };
   }
   const activeCount = latestSubs.filter((s) => s.status === "active").length;
-  const arpu = computeArpu({
-    revenueBySource: { "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null, amazon: amazonConfig.valorMensalBrl },
-    activeBase: activeCount > 0 ? activeCount : null,
-  });
+  const arpu = computeArpu({ revenueBySource, activeBase: activeCount > 0 ? activeCount : null });
+  if (arpu.valor == null && activeCount === 0) {
+    // Causa raiz do #10703: snapshot Beehiiv sem ativo nenhum (a base migrou
+    // pro Kit) e store sem ativo Kit pra substituir — dizer isso, não só
+    // "ARPU indisponível".
+    return {
+      applied: true,
+      ltvFaixaBrl: null,
+      motivo:
+        `ARPU mensal indisponível: snapshot Beehiiv ${latestDate} sem nenhum assinante ativo (a base migrou pro Kit, #7386) ` +
+        `e o store unificado não tem ativo Kit (${kitRows == null ? "store ausente/ilegível" : "0 ativos Kit"})`,
+      rows: [],
+      populacao: "beehiiv-snapshot",
+    };
+  }
 
   const baselineDate = findChurnBaselineDate(dates, latestDate);
   if (!baselineDate) {
@@ -429,20 +565,40 @@ function computeLtvSectionCore(
     periodMonths,
     avgActiveBase,
   });
+  return finishLtvSection(report, arpu, churn, { populacao: "beehiiv-snapshot" });
+}
 
+/**
+ * Parte comum aos dois modos de população (#10703): faixa de LTV a partir de
+ * ARPU + churn, linhas LTV÷CAC por canal e os campos de rastreio (ARPU,
+ * fontes sem dado, churn) que o markdown mostra.
+ */
+function finishLtvSection(
+  report: CacReport,
+  arpu: ArpuResult,
+  churn: ChurnRateResult,
+  extra: { populacao: CacReportLtvPopulacao; ativosArpu?: number; churnDesde?: string },
+): CacReportLtvSection {
   const ltvFaixa = computeLtvCaixaFaixa({
     arpuMonthlyBrl: arpu.valor,
     churnOrganicoMonthly: churn.monthly?.organico ?? null,
     churnComLimpezaMonthly: churn.monthly?.comLimpeza ?? null,
     horizonMonths: LTV_DEFAULT_HORIZON_MONTHS,
   });
+  const trace = {
+    ...extra,
+    ...(arpu.valor != null ? { arpuMensalBrl: arpu.valor } : {}),
+    ...(arpu.fontesSemDado.length > 0 ? { fontesSemDado: arpu.fontesSemDado } : {}),
+    ...(churn.monthly ? { churnMensal: churn.monthly } : {}),
+  };
 
   if (ltvFaixa.faixa == null) {
     return {
       applied: true,
       ltvFaixaBrl: null,
-      motivo: ltvFaixa.motivo ?? arpu.motivo ?? churn.motivo ?? "LTV indisponível",
+      motivo: ltvUnavailableMotivo(arpu, churn, ltvFaixa.motivo),
       rows: [],
+      ...trace,
     };
   }
 
@@ -461,7 +617,7 @@ function computeLtvSectionCore(
     ];
   });
 
-  return { applied: true, ltvFaixaBrl: { min: ltvFaixa.faixa.min, max: ltvFaixa.faixa.max }, motivo: null, rows };
+  return { applied: true, ltvFaixaBrl: { min: ltvFaixa.faixa.min, max: ltvFaixa.faixa.max }, motivo: null, rows, ...trace };
 }
 
 export function computeLtvSection(
@@ -471,9 +627,12 @@ export function computeLtvSection(
   rootDir: string,
   now: () => Date = () => new Date(),
   env: Readonly<Record<string, string | undefined>> = process.env as Record<string, string | undefined>,
+  opts: ComputeLtvSectionOptions = {},
 ): CacReportLtvSection {
-  const section = computeLtvSectionCore(report, backupRoot, snapshotDate, rootDir, now, env);
+  const section = computeLtvSectionCore(report, backupRoot, snapshotDate, rootDir, now, env, opts);
   if (!section.applied) return section;
+  // Snapshots Beehiiv só descrevem a população no modo Beehiiv (#10703).
+  if (section.populacao === "kit-store") return section;
   const dates = listSnapshotDates(backupRoot);
   const atual = resolveLtvLatestSnapshotDate(dates, snapshotDate);
   if (!atual) return section;
@@ -697,6 +856,22 @@ function fmtPct(frac: number | null): string {
 function fmtBrl(n: number | null): string {
   if (n == null) return "—";
   return `R$ ${n.toFixed(2).replace(".", ",")}`;
+}
+
+/** Linhas de rastreio da seção LTV (#10703): ARPU, fontes sem dado e churn —
+ *  aparecem também quando o LTV fica indisponível, pra mostrar o que deu. */
+function formatLtvTraceLines(s: Extract<CacReportLtvSection, { applied: true }>): string[] {
+  const out: string[] = [];
+  if (s.arpuMensalBrl != null) {
+    out.push(`ARPU mensal: ${fmtBrl(s.arpuMensalBrl)} por ativo${s.fontesSemDado?.length ? " (PISO)" : ""}.`);
+  }
+  if (s.fontesSemDado?.length) {
+    out.push(`Fonte(s) de receita sem dado, fora da soma: ${s.fontesSemDado.join(", ")} — ARPU e LTV são piso.`);
+  }
+  if (s.churnMensal) {
+    out.push(`Churn mensal: ${fmtPct(s.churnMensal.organico)} orgânico, ${fmtPct(s.churnMensal.comLimpeza)} com limpeza.`);
+  }
+  return out;
 }
 
 function amostraQualifier(row: Extract<CacRow, { kind: "measured" }>): string {
@@ -943,6 +1118,7 @@ export function formatCacReportMarkdown(
       lines.push(`⚠ seção LTV não aplicada: ${ltvSection.reason}`);
     } else if (ltvSection.ltvFaixaBrl == null) {
       lines.push(`⚠ LTV de caixa indisponível: ${ltvSection.motivo ?? "sem motivo"}`);
+      lines.push(...formatLtvTraceLines(ltvSection));
     } else {
       lines.push(
         "LTV de caixa (BRUTO, só CAIXA — sem valor indireto de indicação/parceria) formalizado a partir do " +
@@ -957,13 +1133,28 @@ export function formatCacReportMarkdown(
         "Piso = LTV assumindo o churn mais alto (com limpeza manual conhecida, " +
           "`data/analysis/descadastrados-manuais-2607.json`); teto = assumindo o churn mais baixo (orgânico).",
       );
-      if (ltvSection.snapshotAtual) {
+      lines.push(...formatLtvTraceLines(ltvSection));
+      if (ltvSection.ltvFaixaBrl.min === ltvSection.ltvFaixaBrl.max) {
+        lines.push(
+          `Piso e teto coincidem: as duas leituras de churn dão vida útil acima do horizonte de ${LTV_DEFAULT_HORIZON_MONTHS} meses, ` +
+            "então o LTV é ARPU × horizonte.",
+        );
+      }
+      if (ltvSection.populacao === "kit-store") {
+        if (ltvSection.ativosArpu != null) {
+          lines.push(
+            `ARPU = receita ÷ ${ltvSection.ativosArpu} ativos do Kit (store unificado, sem contas internas/teste). ` +
+              `Churn = saídas Kit ÷ meses-assinante ativos desde ${ltvSection.churnDesde?.slice(0, 10) ?? "o início do Kit"}; ` +
+              "orgânico = descadastro + reclamação, com limpeza = também bounce e limpeza manual (#10703).",
+          );
+        }
+      } else if (ltvSection.snapshotAtual) {
         lines.push(
           `Snapshots Beehiiv usados: atual ${ltvSection.snapshotAtual}` +
             `${ltvSection.snapshotBaseline ? `, baseline de churn ${ltvSection.snapshotBaseline}` : ""}.`,
         );
       }
-      if (ltvSection.ativosArpu != null) {
+      if (ltvSection.populacao !== "kit-store" && ltvSection.ativosArpu != null) {
         lines.push(
           `ARPU = receita ÷ ${ltvSection.ativosArpu} ativos da Beehiiv (snapshot ${ltvSection.snapshotAtual}); ` +
             "os ativos por canal abaixo vêm da coorte do funil (em `--fonte store`, multi-plataforma) — " +
@@ -1163,9 +1354,10 @@ export async function main(
   // churn, mesmo em `--fonte store` — a metodologia de LTV depende do
   // histórico de snapshot, que `--fonte store` não substitui. ARPU e os
   // dois lados do churn leem o snapshot Beehiiv menos internos/teste
-  // (nunca `subs`), #9023/#9074.
+  // (nunca `subs`), #9023/#9074. Desde #10703, com ativo Kit no store
+  // (`args.storeDbPath`), ARPU e churn saem do Kit e o snapshot vira fallback.
   const ltvSection: CacReportLtvSection | undefined = args.ltv
-    ? computeLtvSection(report, args.backupRoot, snapshotDate, rootDir, now)
+    ? computeLtvSection(report, args.backupRoot, snapshotDate, rootDir, now, undefined, { storeDbPath: args.storeDbPath })
     : undefined;
 
   if (args.json) {
