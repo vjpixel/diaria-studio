@@ -16,6 +16,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  filterDueByLiveCheck,
   formStepDue,
   parseFollowupSnippet,
   recordLiveCheckSkips,
@@ -70,7 +71,10 @@ function seededStore(): string {
   return p;
 }
 
-function deps(inactive: ReadonlySet<number>): FollowupRoundDeps & { gets: number[]; lots: string[][] } {
+function deps(
+  inactive: ReadonlySet<number>,
+  stateOf?: (id: number) => string | null,
+): FollowupRoundDeps & { gets: number[]; lots: string[][] } {
   const gets: number[] = [];
   const lots: string[][] = [];
   let seq = 0;
@@ -82,7 +86,8 @@ function deps(inactive: ReadonlySet<number>): FollowupRoundDeps & { gets: number
     },
     async getSubscriber(id) {
       gets.push(id);
-      return { state: inactive.has(id) ? "inactive" : "active", apoioNivel: "" };
+      const state = stateOf ? stateOf(id) : inactive.has(id) ? "inactive" : "active";
+      return { state, apoioNivel: "" };
     },
     async listEnvioBrevoEmails() {
       return [];
@@ -160,5 +165,41 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
       skips: [{ step: "apoio30", at: iso(T0), motivo: "nao_ativo" }],
     };
     assert.deepEqual(formStepDue(T0, T0 + 6 * DAY, p, cfgBase), { due: "form" });
+  });
+
+  it("#10685: `state: null` não grava pulo terminal — a pessoa volta no dia seguinte; estado concreto de saída grava", async () => {
+    const storePath = seededStore();
+    const cfg = { ...cfgBase, maxRecipientsPerLot: 3 };
+    let state1: string | null = null;
+    const d = deps(new Set(), (id) => (id === 1 ? state1 : "active"));
+    const day = (n: number) => (T0 + 36 * DAY + n * DAY) * 1000;
+
+    // D+36: leitura da id 1 sem state → consulta falha (adiada), sem pulo.
+    const r1 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(0) }, d);
+    assert.equal(r1.run.counts.form_lembrete?.nao_ativo, undefined);
+    assert.equal(r1.run.counts.form_lembrete?.consulta_falhou, 1);
+    assert.equal(readStore(storePath).store.followup!.people["1"].skips, undefined, "state nulo nunca vira pulo terminal");
+
+    // D+37: a id 1 continua devida (nova leitura) e agora vem `cancelled` → pulo terminal.
+    state1 = "cancelled";
+    d.gets.length = 0;
+    const r2 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(1) }, d);
+    assert.ok(d.gets.includes(1), "quem teve leitura sem state volta no dia seguinte");
+    assert.equal(r2.run.counts.form_lembrete?.nao_ativo, 1);
+    assert.deepEqual(
+      readStore(storePath).store.followup!.people["1"].skips?.map((s) => [s.step, s.motivo]),
+      [["form_lembrete", "nao_ativo"]],
+    );
+  });
+
+  it("#10685: filterDueByLiveCheck trata state nulo/vazio como consulta falha, não nao_ativo", () => {
+    const due = [1, 2, 3].map((id) => ({ kit_subscriber_id: id, email: `${id}@x.com`, kind: "form_lembrete" as const }));
+    const { send, excluded } = filterDueByLiveCheck(due, new Map([
+      [1, { state: null, apoioNivel: "" }],
+      [2, { state: "  ", apoioNivel: "" }],
+      [3, { state: "bounced", apoioNivel: "" }],
+    ]));
+    assert.equal(send.length, 0);
+    assert.deepEqual(excluded.map((x) => [x.due.kit_subscriber_id, x.motivo]), [[1, "consulta_falhou"], [2, "consulta_falhou"], [3, "nao_ativo"]]);
   });
 });

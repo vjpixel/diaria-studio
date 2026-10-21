@@ -720,6 +720,13 @@ export interface LiveSubscriberCheck {
 
 export type LiveExclusionReason = "apoia" | "nao_ativo" | "consulta_falhou";
 
+/** @pure — #10685: `state` é string não vazia. Só um estado concreto
+ *  diferente de `active` (cancelled, bounced, complained, inactive…) prova
+ *  saída e vira pulo terminal; nulo/vazio é leitura falha. */
+export function isConcreteKitState(state: unknown): state is string {
+  return typeof state === "string" && state.trim() !== "";
+}
+
 /**
  * @pure — filtra o plano pela leitura FRESCA do Kit. Só `active` recebe;
  * `apoio_nivel` não-vazio exclui das etapas de APOIO (o formulário segue
@@ -733,7 +740,9 @@ export function filterDueByLiveCheck(
   const excluded: { due: FollowupDue; motivo: LiveExclusionReason }[] = [];
   for (const d of due) {
     const c = checks.get(d.kit_subscriber_id);
-    if (c == null) {
+    // #10685: `state` nulo/vazio não é estado de saída — tratar como leitura
+    // falha (adia, sem pulo terminal), nunca como `nao_ativo`.
+    if (c == null || !isConcreteKitState(c.state)) {
       excluded.push({ due: d, motivo: "consulta_falhou" });
       continue;
     }

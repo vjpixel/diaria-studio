@@ -64,6 +64,7 @@ import {
   applyFormResponses,
   buildFollowupLotId,
   filterDueByLiveCheck,
+  isConcreteKitState,
   findLatestFollowupLot,
   formCandidatesFromEntries,
   formContentGate,
@@ -360,6 +361,13 @@ export interface LiveCheckOutcome {
  * (#10616) — 1ª passada espaçada, depois passada(s) extra(s) só sobre erro
  * transitório após cooldown. Erro não transitório (401/403) não é retentado.
  */
+class MissingStateError extends Error {
+  constructor(id: number) {
+    super(`GET /subscribers/${id} sem state`);
+    this.name = "MissingStateError";
+  }
+}
+
 export async function liveCheckDue(
   due: readonly FollowupDue[],
   opts: Pick<FollowupRoundOpts, "lookupOpts">,
@@ -376,12 +384,15 @@ export async function liveCheckDue(
     async (c, diag) => {
       try {
         const r = await deps.getSubscriber(c.id);
+        // #10685: resposta sem `state` concreto não prova saída — é leitura
+        // falha (transitória, entra no retry), nunca pulo terminal `nao_ativo`.
+        if (!isConcreteKitState(r.state)) throw new MissingStateError(c.id);
         reads.set(c.id, r);
         lastError.delete(c.id);
         return { status: r.state ?? undefined, stats: null };
       } catch (e) {
         diag.transportError = true;
-        diag.transient = isTransient(e);
+        diag.transient = e instanceof MissingStateError ? true : isTransient(e);
         lastError.set(c.id, { transient: diag.transient, error: redactEmails((e as Error)?.message ?? String(e)) });
         return null;
       }
